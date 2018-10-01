@@ -1,7 +1,10 @@
+language: go
 sudo: required
 language: go
 go:
  - tip
 
-script:
- - go test -v ./...
+script: go test -v -covermode=atomic -coverprofile=coverage.out
+
+after_success:
+  - bash <(curl -s https://codecov.io/bash)
