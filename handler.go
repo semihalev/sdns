@@ -123,6 +123,11 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	if mesg.Rcode == dns.RcodeSuccess && len(mesg.Answer) == 0 {
+		h.handleFailed(w, req)
+		return
+	}
+
 	ttl := Config.Expire
 	var candidateTTL uint32
 
@@ -137,15 +142,13 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 	h.writeReplyMsg(w, mesg)
 
-	if mesg != nil {
-		err := h.cache.Set(key, mesg)
-		if err != nil {
-			log.Error("Set query cache failed", "query", Q.String(), "error", err.Error())
-			return
-		}
-
-		log.Debug("Set query into cache with ttl", "query", Q.String(), "ttl", ttl)
+	err = h.cache.Set(key, mesg)
+	if err != nil {
+		log.Error("Set query cache failed", "query", Q.String(), "error", err.Error())
+		return
 	}
+
+	log.Debug("Set query into cache with ttl", "query", Q.String(), "ttl", ttl)
 }
 
 func (h *DNSHandler) handleFailed(w dns.ResponseWriter, message *dns.Msg) {
