@@ -49,6 +49,11 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
+	if q.Qtype == dns.TypeANY {
+		h.handleFailed(w, req)
+		return
+	}
+
 	log.Debug("Lookup", "query", Q.String())
 
 	key := keyGen(Q)
