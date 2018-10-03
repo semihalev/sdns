@@ -13,29 +13,31 @@ import (
 )
 
 // BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "2.0.0"
+var BuildVersion = "2.0.1"
 
 // ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-var ConfigVersion = "2.0.0"
+var ConfigVersion = "2.0.1"
 
 type config struct {
-	Version     string
-	Sources     []string
-	SourceDirs  []string
-	Log         string
-	LogLevel    string
-	Bind        string
-	API         string
-	Nullroute   string
-	Nullroutev6 string
-	Nameservers []string
-	Interval    int
-	Timeout     int
-	Expire      uint32
-	Maxcount    int
-	Maxdepth    int
-	Blocklist   []string
-	Whitelist   []string
+	Version        string
+	Sources        []string
+	SourceDirs     []string
+	Log            string
+	LogLevel       string
+	Bind           string
+	API            string
+	Nullroute      string
+	Nullroutev6    string
+	Nameservers    []string
+	OutboundIP     string
+	Interval       int
+	Timeout        int
+	ConnectTimeout int
+	Expire         uint32
+	Maxcount       int
+	Maxdepth       int
+	Blocklist      []string
+	Whitelist      []string
 }
 
 var defaultConfig = `# version this config was generated from
@@ -64,6 +66,9 @@ loglevel = "info"
 # address to bind to for the DNS server
 bind = "0.0.0.0:53"
 
+# outbound ip address
+#outboundip = ""
+
 # address to bind to for the API server
 api = "127.0.0.1:8080"
 
@@ -81,6 +86,9 @@ interval = 200
 
 # query timeout for dns lookups in seconds
 timeout = 5
+
+# connect timeout for dns lookups in seconds
+connecttimeout = 2
 
 # cache entry lifespan in seconds
 expire = 600

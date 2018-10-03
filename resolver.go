@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -34,10 +35,11 @@ var roothints = []string{
 // Lookup will ask each nameserver in top-to-bottom fashion, starting a new request
 // in every second, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
-func (r *Resolver) Lookup(net string, req *dns.Msg) (message *dns.Msg, err error) {
+func (r *Resolver) Lookup(Net string, req *dns.Msg) (message *dns.Msg, err error) {
 	c := &dns.Client{
-		Net:          net,
+		Net:          Net,
 		UDPSize:      dns.DefaultMsgSize,
+		Dialer:       &net.Dialer{Timeout: time.Duration(Config.ConnectTimeout) * time.Second},
 		ReadTimeout:  time.Duration(Config.Timeout) * time.Second,
 		WriteTimeout: time.Duration(Config.Timeout) * time.Second,
 	}
@@ -54,17 +56,17 @@ func (r *Resolver) Lookup(net string, req *dns.Msg) (message *dns.Msg, err error
 
 		r, _, err := c.Exchange(req, nameserver)
 		if err != nil && err != dns.ErrTruncated {
-			log.Error("Got an error from resolver", "qname", qname, "qtype", qtype, "resolver", nameserver, "net", net, "error", err.Error())
+			log.Error("Got an error from resolver", "qname", qname, "qtype", qtype, "resolver", nameserver, "net", Net, "error", err.Error())
 			return
 		}
 
 		if r != nil && r.Rcode != dns.RcodeSuccess {
-			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "resolver", nameserver, "net", net)
+			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "resolver", nameserver, "net", Net)
 			if r.Rcode == dns.RcodeServerFailure && req.Question[0].Qtype != dns.TypePTR {
 				return
 			}
 		} else {
-			log.Debug("Resolve query", "qname", unFqdn(qname), "qtype", qtype, "resolver", nameserver, "net", net)
+			log.Debug("Resolve query", "qname", unFqdn(qname), "qtype", qtype, "resolver", nameserver, "net", Net)
 		}
 
 		select {
@@ -198,12 +200,21 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 	return
 }
 
-func (r *Resolver) lookup(net string, req *dns.Msg, servers []string) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns.Msg, err error) {
 	c := &dns.Client{
-		Net:          net,
+		Net:          Net,
 		UDPSize:      dns.DefaultMsgSize,
+		Dialer:       &net.Dialer{Timeout: time.Duration(Config.ConnectTimeout) * time.Second},
 		ReadTimeout:  time.Duration(Config.Timeout) * time.Second,
 		WriteTimeout: time.Duration(Config.Timeout) * time.Second,
+	}
+
+	if Config.OutboundIP != "" {
+		if Net == "tcp" {
+			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIP)}
+		} else if Net == "udp" {
+			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIP)}
+		}
 	}
 
 	qname := req.Question[0].Name
@@ -218,17 +229,17 @@ func (r *Resolver) lookup(net string, req *dns.Msg, servers []string) (resp *dns
 
 		r, _, err := c.Exchange(req, server)
 		if err != nil && err != dns.ErrTruncated {
-			log.Error("Got an error from resolver", "qname", qname, "qtype", qtype, "server", server, "net", net, "error", err.Error())
+			log.Error("Got an error from resolver", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
 			return
 		}
 
 		if r != nil && r.Rcode != dns.RcodeSuccess {
-			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "server", server, "net", net)
+			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "server", server, "net", Net)
 			if r.Rcode == dns.RcodeServerFailure {
 				return
 			}
 		} else {
-			log.Debug("Resolve query", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", net)
+			log.Debug("Resolve query", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net)
 		}
 
 		select {

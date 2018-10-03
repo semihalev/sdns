@@ -28,14 +28,18 @@ func (s *Server) Run() {
 		Net:          "tcp",
 		Handler:      tcpHandler,
 		ReadTimeout:  s.rTimeout,
-		WriteTimeout: s.wTimeout}
+		WriteTimeout: s.wTimeout,
+		ReusePort:    true,
+	}
 
 	udpServer := &dns.Server{Addr: s.host,
 		Net:          "udp",
 		Handler:      udpHandler,
 		UDPSize:      dns.DefaultMsgSize,
 		ReadTimeout:  s.rTimeout,
-		WriteTimeout: s.wTimeout}
+		WriteTimeout: s.wTimeout,
+		ReusePort:    true,
+	}
 
 	go s.start(udpServer)
 	go s.start(tcpServer)
