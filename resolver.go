@@ -56,7 +56,7 @@ func (r *Resolver) Lookup(Net string, req *dns.Msg) (message *dns.Msg, err error
 
 		r, _, err := c.Exchange(req, nameserver)
 		if err != nil && err != dns.ErrTruncated {
-			log.Error("Got an error from resolver", "qname", qname, "qtype", qtype, "resolver", nameserver, "net", Net, "error", err.Error())
+			log.Debug("Got an error from resolver", "qname", qname, "qtype", qtype, "resolver", nameserver, "net", Net, "error", err.Error())
 			return
 		}
 
@@ -132,7 +132,7 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 			key := keyGen(Q)
 
 			ns, err := r.nsCache.Get(key)
-			if err == nil {
+			if err == nil && len(resp.Ns) == len(ns.Servers) {
 				log.Debug("Nameserver cache hit", "query", Q.String())
 
 				depth--
@@ -229,7 +229,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 
 		r, _, err := c.Exchange(req, server)
 		if err != nil && err != dns.ErrTruncated {
-			log.Error("Got an error from resolver", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
+			log.Debug("Got an error from resolver", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
 			return
 		}
 
