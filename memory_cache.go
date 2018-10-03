@@ -53,15 +53,6 @@ type Mesg struct {
 	LastUpdateTime time.Time
 }
 
-// Cache interface
-type Cache interface {
-	Get(key string) (Msg *dns.Msg, err error)
-	Set(key string, Msg *dns.Msg) error
-	Exists(key string) bool
-	Remove(key string)
-	Length() int
-}
-
 // MemoryCache type
 type MemoryCache struct {
 	mu sync.RWMutex
@@ -113,6 +104,15 @@ func (c *MemoryCache) Get(key string) (*dns.Msg, error) {
 			return nil, KeyExpired{key}
 		}
 		answer.Header().Ttl -= elapsed
+	}
+
+	for _, ns := range mesg.Msg.Ns {
+		if elapsed > ns.Header().Ttl {
+			log.Debug("Cache expired", "key", key)
+			c.Remove(key)
+			return nil, KeyExpired{key}
+		}
+		ns.Header().Ttl -= elapsed
 	}
 
 	return mesg.Msg, nil

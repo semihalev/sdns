@@ -13,10 +13,10 @@ import (
 )
 
 // BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "1.0.6"
+var BuildVersion = "2.0.0"
 
 // ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-var ConfigVersion = "1.0.6"
+var ConfigVersion = "2.0.0"
 
 type config struct {
 	Version     string
@@ -33,6 +33,7 @@ type config struct {
 	Timeout     int
 	Expire      uint32
 	Maxcount    int
+	Maxdepth    int
 	Blocklist   []string
 	Whitelist   []string
 }
@@ -86,6 +87,9 @@ expire = 600
 
 # cache capacity, 0 for infinite
 maxcount = 0
+
+# maximum recursion depth for nameservers
+maxdepth = 30
 
 # manual blocklist entries
 blocklist = []

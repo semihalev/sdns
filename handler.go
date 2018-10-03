@@ -22,22 +22,17 @@ func (q *Question) String() string {
 // DNSHandler type
 type DNSHandler struct {
 	resolver *Resolver
-	cache    Cache
+	cache    *MemoryCache
 }
 
 // NewHandler returns a new DNSHandler
 func NewHandler() *DNSHandler {
-	var (
-		clientConfig *dns.ClientConfig
-		resolver     *Resolver
-		cache        Cache
-	)
 
-	resolver = &Resolver{clientConfig}
-
-	cache = NewMemoryCache(Config.Maxcount)
-
-	return &DNSHandler{resolver, cache}
+	return &DNSHandler{
+		&Resolver{&dns.ClientConfig{},
+			NewNameServerCache(Config.Maxcount)},
+		NewMemoryCache(Config.Maxcount),
+	}
 }
 
 // TCP begins a tcp query
@@ -65,7 +60,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		// we need this copy against concurrent modification of Id
 		msg := *mesg
 		msg.Id = req.Id
-		h.writeReplyMsg(w, &msg)
+
+		h.writeReplyMsg(w, h.checkGLUE(proto, req, &msg))
 		return
 	}
 
@@ -98,6 +94,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 				m.Answer = append(m.Answer, a)
 			}
 
+			m.RecursionAvailable = true
+
 			h.writeReplyMsg(w, m)
 
 			log.Debug("Found in blocklist", "name", Q.Qname)
@@ -111,7 +109,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	mesg, err = h.resolver.Lookup(proto, req)
+	depth := Config.Maxdepth
+	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", Q.String())
 		h.handleFailed(w, req)
@@ -123,24 +122,17 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	if mesg.Rcode == dns.RcodeSuccess && len(mesg.Answer) == 0 {
+	if mesg.Rcode == dns.RcodeSuccess &&
+		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
+
 		h.handleFailed(w, req)
 		return
 	}
 
-	ttl := Config.Expire
-	var candidateTTL uint32
+	mesg.RecursionAvailable = true
 
-	for index, answer := range mesg.Answer {
-		log.Debug("Message answer", "index", index, "answer", answer.String())
-
-		candidateTTL = answer.Header().Ttl
-		if candidateTTL > 0 {
-			ttl = candidateTTL
-		}
-	}
-
-	h.writeReplyMsg(w, mesg)
+	msg := *mesg
+	h.writeReplyMsg(w, h.checkGLUE(proto, req, &msg))
 
 	err = h.cache.Set(key, mesg)
 	if err != nil {
@@ -148,12 +140,84 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	log.Debug("Set query into cache with ttl", "query", Q.String(), "ttl", ttl)
+	log.Debug("Set query into cache", "query", Q.String())
+}
+
+func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
+	//check cname response
+	answerFound := false
+	var cnameReq dns.Msg
+
+	for _, answer := range mesg.Answer {
+		if answer.Header().Rrtype == req.Question[0].Qtype {
+			answerFound = true
+		}
+
+		if answer.Header().Rrtype == dns.TypeCNAME {
+			cnameAnswer, _ := answer.(*dns.CNAME)
+			cnameReq.SetQuestion(cnameAnswer.Target, req.Question[0].Qtype)
+		}
+	}
+
+	cnameDepth := 5
+
+	if !answerFound && len(cnameReq.Question) > 0 {
+	lookup:
+		q := cnameReq.Question[0]
+		Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
+		childCNAME := false
+
+		log.Debug("Lookup", "query", Q.String())
+
+		key := keyGen(Q)
+		respCname, err := h.cache.Get(key)
+		if err == nil {
+			log.Debug("Cache hit", "query", Q.String())
+			for _, answerCname := range respCname.Answer {
+				mesg.Answer = append(mesg.Answer, answerCname)
+				if answerCname.Header().Rrtype == dns.TypeCNAME {
+					cnameAnswer, _ := answerCname.(*dns.CNAME)
+					cnameReq.Question[0].Name = cnameAnswer.Target
+					childCNAME = true
+				}
+			}
+		} else {
+			depth := Config.Maxdepth
+			respCname, err := h.resolver.Resolve(proto, &cnameReq, roothints, true, depth)
+			if err == nil && len(respCname.Answer) > 0 && respCname.Rcode == dns.RcodeSuccess {
+				for _, answerCname := range respCname.Answer {
+					mesg.Answer = append(mesg.Answer, answerCname)
+					if answerCname.Header().Rrtype == dns.TypeCNAME {
+						cnameAnswer, _ := answerCname.(*dns.CNAME)
+						cnameReq.Question[0].Name = cnameAnswer.Target
+						childCNAME = true
+					}
+				}
+
+				err = h.cache.Set(key, respCname)
+				if err != nil {
+					log.Error("Set query cache failed", "query", Q.String(), "error", err.Error())
+				} else {
+					log.Debug("Set query into cache", "query", Q.String())
+				}
+			}
+		}
+
+		cnameDepth--
+
+		if childCNAME && cnameDepth > 0 {
+			goto lookup
+		}
+	}
+
+	return mesg
 }
 
 func (h *DNSHandler) handleFailed(w dns.ResponseWriter, message *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetRcode(message, dns.RcodeServerFailure)
+	m.RecursionAvailable = true
+
 	h.writeReplyMsg(w, m)
 }
 
