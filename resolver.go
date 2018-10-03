@@ -196,6 +196,10 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
 			Q := Question{unFqdn(nsrec.Header().Name), dns.TypeToString[nsrec.Header().Rrtype], dns.ClassToString[nsrec.Header().Class]}
+			if Q.Qname == "" {
+				return resp, fmt.Errorf("root servers detection")
+			}
+
 			key := keyGen(Q)
 
 			err := r.nsCache.Set(key, nsrec.Header().Ttl, nservers)
