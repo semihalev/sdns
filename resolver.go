@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"time"
 
@@ -132,14 +133,24 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 			key := keyGen(Q)
 
 			ns, err := r.nsCache.Get(key)
-			if err == nil && len(resp.Ns) == len(ns.Servers) {
-				log.Debug("Nameserver cache hit", "query", Q.String())
+			if err == nil {
+				if len(resp.Ns) != len(ns.Servers) {
+					r.nsCache.Remove(key)
+					goto tryservers
+				}
+
+				if reflect.DeepEqual(ns.Servers, servers) {
+					return resp, fmt.Errorf("loop detection")
+				}
+
+				log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 
 				depth--
 				return r.Resolve(net, req, ns.Servers, false, depth)
 			}
 		}
 
+	tryservers:
 		ns := make(map[string]string)
 		for _, n := range resp.Ns {
 			nsrec, _ := n.(*dns.NS)
@@ -283,7 +294,7 @@ func (r *Resolver) searchCache(q *dns.Question) (servers []string) {
 
 	ns, err := r.nsCache.Get(key)
 	if err == nil {
-		log.Debug("Nameserver cache hit", "query", Q.String())
+		log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 		return ns.Servers
 	}
 

@@ -64,7 +64,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 	mesg, err := h.cache.Get(key)
 	if err == nil {
-		log.Debug("Cache hit", "query", Q.String())
+		log.Debug("Cache hit", "key", key, "query", Q.String())
 
 		// we need this copy against concurrent modification of Id
 		msg := *mesg
@@ -76,7 +76,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 	err = h.errorCache.Get(key)
 	if err == nil {
-		log.Debug("Error cache hit", "query", Q.String())
+		log.Debug("Error cache hit", "key", key, "query", Q.String())
 
 		h.handleFailed(w, req)
 		return
@@ -129,7 +129,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	depth := Config.Maxdepth
 	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth)
 	if err != nil {
-		log.Warn("Resolve query failed", "query", Q.String())
+		log.Warn("Resolve query failed", "query", Q.String(), "error", err.Error())
 
 		h.errorCache.Set(key)
 
@@ -194,7 +194,7 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 		key := keyGen(Q)
 		respCname, err := h.cache.Get(key)
 		if err == nil {
-			log.Debug("Cache hit", "query", Q.String())
+			log.Debug("Cache hit", "key", key, "query", Q.String())
 			for _, answerCname := range respCname.Answer {
 				mesg.Answer = append(mesg.Answer, answerCname)
 				if answerCname.Header().Rrtype == dns.TypeCNAME {
