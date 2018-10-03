@@ -106,7 +106,6 @@ func (r *Resolver) Lookup(Net string, req *dns.Msg) (message *dns.Msg, err error
 // Resolve func
 func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool, depth int) (resp *dns.Msg, err error) {
 	if depth == 0 {
-		log.Error("Maximum recursion depth for DNS tree queried", "qname", req.Question[0].Name, "qtype", dns.Type(req.Question[0].Qtype).String())
 		return resp, fmt.Errorf("maximum recursion depth for DNS tree queried")
 	}
 
@@ -130,6 +129,10 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 	if len(resp.Answer) == 0 && len(resp.Ns) > 0 {
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
 			Q := Question{unFqdn(nsrec.Header().Name), dns.TypeToString[nsrec.Header().Rrtype], dns.ClassToString[nsrec.Header().Class]}
+			if Q.Qname == "" {
+				return resp, fmt.Errorf("root servers detection")
+			}
+
 			key := keyGen(Q)
 
 			ns, err := r.nsCache.Get(key)
