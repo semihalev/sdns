@@ -14,9 +14,9 @@ import (
 
 // Resolver type
 type Resolver struct {
-	config    *dns.ClientConfig
-	nsCache   *NameServerCache
-	tempCache *MemoryCache
+	config  *dns.ClientConfig
+	nsCache *NameServerCache
+	//tempCache *MemoryCache
 }
 
 var roothints = []string{
@@ -260,7 +260,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	q := nsReq.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
-	key := keyGen(Q)
+	/*key := keyGen(Q)
 	nsres, err := r.tempCache.Get(key)
 	if err == nil {
 		for _, ans := range nsres.Answer {
@@ -269,11 +269,9 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 				return arec.A.String(), nil
 			}
 		}
-	}
+	}*/
 
-	/*nsDepth := Config.Maxdepth
-	nsres, err = r.Resolve(Net, nsReq, roothints, true, nsDepth, 0)*/
-	nsres, err = r.lookup(Net, nsReq, []string{"8.8.8.8:53"})
+	nsres, err := r.lookup(Net, nsReq, []string{Config.Bind})
 	if err != nil {
 		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
 		return
@@ -283,7 +281,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		arec, ok := ans.(*dns.A)
 		if ok {
 			addr = arec.A.String()
-			r.tempCache.Set(key, nsres)
+			//r.tempCache.Set(key, nsres)
 			return
 		}
 	}
