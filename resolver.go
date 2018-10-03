@@ -36,7 +36,7 @@ var roothints = []string{
 // Resolve will ask each nameserver in top-to-bottom fashion, starting a new request
 // in every interval, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
-func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool, depth int) (resp *dns.Msg, err error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool, depth int) (resp *dns.Msg, err error) {
 	if depth == 0 {
 		return resp, fmt.Errorf("maximum recursion depth for DNS tree queried")
 	}
@@ -46,7 +46,7 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 		servers = r.searchCache(&q)
 	}
 
-	resp, err = r.lookup(net, req, servers)
+	resp, err = r.lookup(Net, req, servers)
 	if err != nil {
 		return
 	}
@@ -81,7 +81,7 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 				log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 
 				depth--
-				return r.Resolve(net, req, ns.Servers, false, depth)
+				return r.Resolve(Net, req, ns.Servers, false, depth)
 			}
 		}
 
@@ -111,7 +111,8 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 				nsReq.SetQuestion(k, dns.TypeA)
 				nsReq.RecursionDesired = true
 
-				nsres, err := r.lookup(net, nsReq, Config.Nameservers)
+				nsDepth := Config.Maxdepth
+				nsres, err := r.Resolve(Net, nsReq, roothints, true, nsDepth)
 				if err == nil {
 					for _, ans := range nsres.Answer {
 						arec, ok := ans.(*dns.A)
@@ -144,7 +145,7 @@ func (r *Resolver) Resolve(net string, req *dns.Msg, servers []string, root bool
 		}
 
 		depth--
-		return r.Resolve(net, req, nservers, false, depth)
+		return r.Resolve(Net, req, nservers, false, depth)
 	}
 
 	return

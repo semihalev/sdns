@@ -13,10 +13,10 @@ import (
 )
 
 // BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "2.0.1"
+var BuildVersion = "2.0.2"
 
 // ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-var ConfigVersion = "2.0.1"
+var ConfigVersion = "2.0.2"
 
 type config struct {
 	Version        string
@@ -28,7 +28,6 @@ type config struct {
 	API            string
 	Nullroute      string
 	Nullroutev6    string
-	Nameservers    []string
 	OutboundIP     string
 	Interval       int
 	Timeout        int
@@ -77,9 +76,6 @@ nullroute = "0.0.0.0"
 
 # ipv6 address to forward blocked queries to
 nullroutev6 = "0:0:0:0:0:0:0:0"
-
-# nameservers to forward queries to
-nameservers = ["8.8.8.8:53", "8.8.4.4:53"]
 
 # concurrency interval for lookups in miliseconds
 interval = 200

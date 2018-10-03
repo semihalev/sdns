@@ -158,11 +158,11 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 	err = h.cache.Set(key, mesg)
 	if err != nil {
-		log.Error("Set query cache failed", "query", Q.String(), "error", err.Error())
+		log.Error("Set msg failed", "query", Q.String(), "error", err.Error())
 		return
 	}
 
-	log.Debug("Set query into cache", "query", Q.String())
+	log.Debug("Set msg into cache", "query", Q.String())
 }
 
 func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {

@@ -3,7 +3,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
 
-Fast dns proxy that can run anywhere, built to black-hole internet advertisements and malware servers.
+Fast dns resursor that can run anywhere, built to black-hole internet advertisements and malware servers.
 
 Based on [kenshinx/godns](https://github.com/kenshinx/godns), [looterz/grimd](https://github.com/looterz/grimd) and [miekg/dns](https://github.com/miekg/dns).
 
