@@ -271,8 +271,9 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		}
 	}
 
-	nsDepth := Config.Maxdepth
-	nsres, err = r.Resolve(Net, nsReq, roothints, true, nsDepth, 0)
+	/*nsDepth := Config.Maxdepth
+	nsres, err = r.Resolve(Net, nsReq, roothints, true, nsDepth, 0)*/
+	nsres, err = r.lookup(Net, nsReq, []string{"8.8.8.8:53"})
 	if err != nil {
 		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
 		return
