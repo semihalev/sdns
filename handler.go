@@ -21,17 +21,21 @@ func (q *Question) String() string {
 
 // DNSHandler type
 type DNSHandler struct {
-	resolver *Resolver
-	cache    *MemoryCache
+	resolver   *Resolver
+	cache      *MemoryCache
+	errorCache *ErrorCache
 }
 
 // NewHandler returns a new DNSHandler
 func NewHandler() *DNSHandler {
 
 	return &DNSHandler{
-		&Resolver{&dns.ClientConfig{},
-			NewNameServerCache(Config.Maxcount)},
+		&Resolver{
+			&dns.ClientConfig{},
+			NewNameServerCache(Config.Maxcount),
+		},
 		NewMemoryCache(Config.Maxcount),
+		NewErrorCache(Config.Maxcount, Config.Expire),
 	}
 }
 
@@ -67,6 +71,14 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		msg.Id = req.Id
 
 		h.writeReplyMsg(w, h.checkGLUE(proto, req, &msg))
+		return
+	}
+
+	err = h.errorCache.Get(key)
+	if err == nil {
+		log.Debug("Error cache hit", "query", Q.String())
+
+		h.handleFailed(w, req)
 		return
 	}
 
@@ -118,6 +130,9 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", Q.String())
+
+		h.errorCache.Set(key)
+
 		h.handleFailed(w, req)
 		return
 	}
@@ -129,6 +144,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 	if mesg.Rcode == dns.RcodeSuccess &&
 		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
+
+		h.errorCache.Set(key)
 
 		h.handleFailed(w, req)
 		return
