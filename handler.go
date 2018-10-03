@@ -33,6 +33,7 @@ func NewHandler() *DNSHandler {
 		&Resolver{
 			&dns.ClientConfig{},
 			NewNameServerCache(Config.Maxcount),
+			NewMemoryCache(Config.Maxcount),
 		},
 		NewMemoryCache(Config.Maxcount),
 		NewErrorCache(Config.Maxcount, Config.Expire),
@@ -126,8 +127,10 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
+	//h.appendEDNS0Subnet(w, req)
+
 	depth := Config.Maxdepth
-	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth)
+	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth, 0)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", Q.String(), "error", err.Error())
 
@@ -205,7 +208,7 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 			}
 		} else {
 			depth := Config.Maxdepth
-			respCname, err := h.resolver.Resolve(proto, &cnameReq, roothints, true, depth)
+			respCname, err := h.resolver.Resolve(proto, &cnameReq, roothints, true, depth, 0)
 			if err == nil && len(respCname.Answer) > 0 && respCname.Rcode == dns.RcodeSuccess {
 				for _, answerCname := range respCname.Answer {
 					mesg.Answer = append(mesg.Answer, answerCname)
@@ -235,23 +238,56 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 	return mesg
 }
 
-func (h *DNSHandler) handleFailed(w dns.ResponseWriter, message *dns.Msg) {
+func (h *DNSHandler) handleFailed(w dns.ResponseWriter, msg *dns.Msg) {
 	m := new(dns.Msg)
-	m.SetRcode(message, dns.RcodeServerFailure)
+	m.SetRcode(msg, dns.RcodeServerFailure)
 	m.RecursionAvailable = true
 
 	h.writeReplyMsg(w, m)
 }
 
-func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, message *dns.Msg) {
+func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Recovered in WriteReplyMsg", "recover", r)
 		}
 	}()
 
-	err := w.WriteMsg(message)
+	err := w.WriteMsg(msg)
 	if err != nil {
 		log.Error("Message writing failed", "error", err.Error())
 	}
+}
+
+func (h *DNSHandler) appendEDNS0Subnet(w dns.ResponseWriter, msg *dns.Msg) {
+	remote, _, _ := net.SplitHostPort(w.RemoteAddr().String())
+	addr := net.ParseIP(remote)
+
+	opt := msg.IsEdns0()
+
+	if opt == nil {
+		opt = new(dns.OPT)
+		opt.Hdr.Name = "."
+		opt.Hdr.Rrtype = dns.TypeOPT
+		opt.SetUDPSize(dns.DefaultMsgSize)
+		opt.SetDo(false)
+
+		msg.Extra = append([]dns.RR{opt}, msg.Extra...)
+	}
+
+	e := &dns.EDNS0_SUBNET{
+		Code:        dns.EDNS0SUBNET,
+		SourceScope: 0,
+		Address:     addr,
+	}
+
+	if addr.To4() == nil {
+		e.Family = 2 // IP6
+		e.SourceNetmask = net.IPv6len * 8
+	} else {
+		e.Family = 1 // IP4
+		e.SourceNetmask = net.IPv4len * 8
+	}
+
+	opt.Option = append(opt.Option, e)
 }

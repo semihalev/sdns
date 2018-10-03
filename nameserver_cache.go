@@ -4,8 +4,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/semihalev/log"
 )
 
 // NS represents a cache entry
@@ -44,7 +42,6 @@ func (c *NameServerCache) Get(key string) (*NS, error) {
 	c.mu.RUnlock()
 
 	if !ok {
-		log.Debug("Nameserver cache miss", "key", key)
 		return nil, KeyNotFound{key}
 	}
 
@@ -55,7 +52,6 @@ func (c *NameServerCache) Get(key string) (*NS, error) {
 	ns.LastUpdateTime = now
 
 	if elapsed > ns.TTL {
-		log.Debug("Nameserver cache expired", "key", key)
 		c.Remove(key)
 		return nil, KeyExpired{key}
 	}

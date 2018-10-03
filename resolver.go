@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 
 // Resolver type
 type Resolver struct {
-	config  *dns.ClientConfig
-	nsCache *NameServerCache
+	config    *dns.ClientConfig
+	nsCache   *NameServerCache
+	tempCache *MemoryCache
 }
 
 var roothints = []string{
@@ -36,7 +38,7 @@ var roothints = []string{
 // Resolve will ask each nameserver in top-to-bottom fashion, starting a new request
 // in every interval, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
-func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool, depth int) (resp *dns.Msg, err error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool, depth int, level int) (resp *dns.Msg, err error) {
 	if depth == 0 {
 		return resp, fmt.Errorf("maximum recursion depth for DNS tree queried")
 	}
@@ -52,7 +54,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 	}
 
 	if len(resp.Answer) > 0 {
-		resp.Extra = []dns.RR{}
+		//resp.Extra = []dns.RR{}
 		resp.Ns = []dns.RR{}
 
 		return
@@ -60,6 +62,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 	if len(resp.Answer) == 0 && len(resp.Ns) > 0 {
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
+			nlevel := len(strings.Split(nsrec.Header().Name, "."))
+			if level > nlevel {
+				return resp, fmt.Errorf("parent detection")
+			}
+
 			Q := Question{unFqdn(nsrec.Header().Name), dns.TypeToString[nsrec.Header().Rrtype], dns.ClassToString[nsrec.Header().Class]}
 			if Q.Qname == "" {
 				return resp, fmt.Errorf("root servers detection")
@@ -81,8 +88,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 
 				depth--
-				return r.Resolve(Net, req, ns.Servers, false, depth)
+				return r.Resolve(Net, req, ns.Servers, false, depth, nlevel)
 			}
+
+			log.Debug("Nameserver cache failed", "key", key, "query", Q.String(), "error", err.Error())
 		}
 
 	tryservers:
@@ -99,7 +108,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			if ok {
 				_, ok := ns[extra.Header().Name]
 				if ok {
-					ns[extra.Header().Name] = fmt.Sprintf("%s:53", extra.A.String())
+					ns[extra.Header().Name] = extra.A.String()
 				}
 			}
 		}
@@ -107,22 +116,16 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		nservers := []string{}
 		for k, addr := range ns {
 			if addr == "" {
-				nsReq := new(dns.Msg)
-				nsReq.SetQuestion(k, dns.TypeA)
-				nsReq.RecursionDesired = true
+				if k == req.Question[0].Name {
+					break
+				}
 
-				nsDepth := Config.Maxdepth
-				nsres, err := r.Resolve(Net, nsReq, roothints, true, nsDepth)
+				addr, err = r.lookupNSAddr(Net, k)
 				if err == nil {
-					for _, ans := range nsres.Answer {
-						arec, ok := ans.(*dns.A)
-						if ok {
-							nservers = append(nservers, fmt.Sprintf("%s:53", arec.A.String()))
-						}
-					}
+					nservers = append(nservers, fmt.Sprintf("%s:53", addr))
 				}
 			} else {
-				nservers = append(nservers, addr)
+				nservers = append(nservers, fmt.Sprintf("%s:53", addr))
 			}
 		}
 
@@ -131,6 +134,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		}
 
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
+			nlevel := len(strings.Split(nsrec.Header().Name, "."))
+			if level > nlevel {
+				return resp, fmt.Errorf("parent detection")
+			}
+
 			Q := Question{unFqdn(nsrec.Header().Name), dns.TypeToString[nsrec.Header().Rrtype], dns.ClassToString[nsrec.Header().Class]}
 			if Q.Qname == "" {
 				return resp, fmt.Errorf("root servers detection")
@@ -142,10 +150,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			if err != nil {
 				log.Error("Set nameserver cache failed", "query", Q.String(), "error", err.Error())
 			}
-		}
 
-		depth--
-		return r.Resolve(Net, req, nservers, false, depth)
+			depth--
+			return r.Resolve(Net, req, nservers, false, depth, nlevel)
+		}
 	}
 
 	return
@@ -207,8 +215,6 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 		wg.Add(1)
 		go L(server)
 
-		log.Debug("Try resursive from one of server", "server", server)
-
 		// but exit early, if we have an answer
 		select {
 		case r := <-res:
@@ -244,4 +250,42 @@ func (r *Resolver) searchCache(q *dns.Question) (servers []string) {
 	}
 
 	return r.searchCache(q)
+}
+
+func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) {
+	nsReq := new(dns.Msg)
+	nsReq.SetQuestion(ns, dns.TypeA)
+	nsReq.RecursionDesired = true
+
+	q := nsReq.Question[0]
+	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
+
+	key := keyGen(Q)
+	nsres, err := r.tempCache.Get(key)
+	if err == nil {
+		for _, ans := range nsres.Answer {
+			arec, ok := ans.(*dns.A)
+			if ok {
+				return arec.A.String(), nil
+			}
+		}
+	}
+
+	nsDepth := Config.Maxdepth
+	nsres, err = r.Resolve(Net, nsReq, roothints, true, nsDepth, 0)
+	if err != nil {
+		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
+		return
+	}
+
+	for _, ans := range nsres.Answer {
+		arec, ok := ans.(*dns.A)
+		if ok {
+			addr = arec.A.String()
+			r.tempCache.Set(key, nsres)
+			return
+		}
+	}
+
+	return addr, fmt.Errorf("not found")
 }

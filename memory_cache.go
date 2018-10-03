@@ -16,7 +16,7 @@ type KeyNotFound struct {
 
 // Error formats an error for the KeyNotFound type
 func (e KeyNotFound) Error() string {
-	return e.key + " " + "not found"
+	return e.key + " " + "cache miss"
 }
 
 // KeyExpired type
@@ -26,7 +26,7 @@ type KeyExpired struct {
 
 // Error formats an error for the KeyExpired type
 func (e KeyExpired) Error() string {
-	return e.Key + " " + "expired"
+	return e.Key + " " + "cache expired"
 }
 
 // CacheIsFull type
@@ -35,16 +35,7 @@ type CacheIsFull struct {
 
 // Error formats an error for the CacheIsFull type
 func (e CacheIsFull) Error() string {
-	return "Cache is Full"
-}
-
-// SerializerError type
-type SerializerError struct {
-}
-
-// Error formats an error for the SerializerError type
-func (e SerializerError) Error() string {
-	return "Serializer error"
+	return "cache full"
 }
 
 // Mesg represents a cache entry
