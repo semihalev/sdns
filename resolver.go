@@ -58,8 +58,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		return
 	}
 
-	trycount := 0
-
 	if len(resp.Answer) == 0 && len(resp.Ns) > 0 {
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
 			nlevel := len(strings.Split(nsrec.Header().Name, "."))
@@ -131,12 +129,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		}
 
 		if len(nservers) == 0 {
-			if trycount < 2 {
-				trycount++
-				goto tryservers
-			} else {
-				return resp, fmt.Errorf("couldn't find auth servers")
-			}
+			return resp, fmt.Errorf("couldn't find auth servers")
 		}
 
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
