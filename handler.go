@@ -33,7 +33,6 @@ func NewHandler() *DNSHandler {
 		&Resolver{
 			&dns.ClientConfig{},
 			NewNameServerCache(Config.Maxcount),
-			//NewMemoryCache(Config.Maxcount),
 		},
 		NewMemoryCache(Config.Maxcount),
 		NewErrorCache(Config.Maxcount, Config.Expire),
@@ -127,10 +126,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		}
 	}
 
-	//h.appendEDNS0Subnet(w, req)
-
 	depth := Config.Maxdepth
-	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth, 0)
+	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth, 0, false)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", Q.String(), "error", err.Error())
 
@@ -208,7 +205,7 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 			}
 		} else {
 			depth := Config.Maxdepth
-			respCname, err := h.resolver.Resolve(proto, &cnameReq, roothints, true, depth, 0)
+			respCname, err := h.resolver.Resolve(proto, &cnameReq, roothints, true, depth, 0, false)
 			if err == nil && len(respCname.Answer) > 0 && respCname.Rcode == dns.RcodeSuccess {
 				for _, answerCname := range respCname.Answer {
 					mesg.Answer = append(mesg.Answer, answerCname)

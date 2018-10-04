@@ -16,7 +16,6 @@ import (
 type Resolver struct {
 	config  *dns.ClientConfig
 	nsCache *NameServerCache
-	//tempCache *MemoryCache
 }
 
 var roothints = []string{
@@ -38,7 +37,7 @@ var roothints = []string{
 // Resolve will ask each nameserver in top-to-bottom fashion, starting a new request
 // in every interval, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
-func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool, depth int, level int) (resp *dns.Msg, err error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool, depth int, level int, nsl bool) (resp *dns.Msg, err error) {
 	if depth == 0 {
 		return resp, fmt.Errorf("maximum recursion depth for DNS tree queried")
 	}
@@ -54,7 +53,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 	}
 
 	if len(resp.Answer) > 0 {
-		//resp.Extra = []dns.RR{}
 		resp.Ns = []dns.RR{}
 
 		return
@@ -88,7 +86,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 
 				depth--
-				return r.Resolve(Net, req, ns.Servers, false, depth, nlevel)
+				return r.Resolve(Net, req, ns.Servers, false, depth, nlevel, nsl)
 			}
 
 			log.Debug("Nameserver cache failed", "key", key, "query", Q.String(), "error", err.Error())
@@ -116,8 +114,12 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		nservers := []string{}
 		for k, addr := range ns {
 			if addr == "" {
-				if k == req.Question[0].Name {
+				if nsl && len(nservers) >= 1 {
 					break
+				}
+
+				if k == req.Question[0].Name {
+					continue
 				}
 
 				addr, err = r.lookupNSAddr(Net, k)
@@ -152,7 +154,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			}
 
 			depth--
-			return r.Resolve(Net, req, nservers, false, depth, nlevel)
+			return r.Resolve(Net, req, nservers, false, depth, nlevel, nsl)
 		}
 	}
 
@@ -260,28 +262,17 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	q := nsReq.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
-	/*key := keyGen(Q)
-	nsres, err := r.tempCache.Get(key)
-	if err == nil {
-		for _, ans := range nsres.Answer {
-			arec, ok := ans.(*dns.A)
-			if ok {
-				return arec.A.String(), nil
-			}
-		}
-	}*/
+	depth := Config.Maxdepth
 
-	nsres, err := r.lookup(Net, nsReq, []string{Config.Bind})
+	nsres, err := r.Resolve(Net, nsReq, roothints, true, depth, 0, true)
 	if err != nil {
 		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
 		return
 	}
 
 	for _, ans := range nsres.Answer {
-		arec, ok := ans.(*dns.A)
-		if ok {
+		if arec, ok := ans.(*dns.A); ok {
 			addr = arec.A.String()
-			//r.tempCache.Set(key, nsres)
 			return
 		}
 	}
