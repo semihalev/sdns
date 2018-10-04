@@ -25,6 +25,7 @@ func unFqdn(s string) string {
 }
 
 func upperName(s string) string {
+
 	idx := strings.Index(s, ".")
 	if idx != -1 {
 		return s[idx+1:]
