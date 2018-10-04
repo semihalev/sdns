@@ -129,7 +129,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		}
 
 		if len(nservers) == 0 {
-			return
+			depth--
+			return r.Resolve(Net, req, servers, false, depth, level, nsl)
 		}
 
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
@@ -192,11 +193,11 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 		}
 
 		if r != nil && r.Rcode != dns.RcodeSuccess && !last {
-			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "server", server, "net", Net, "code", r.Rcode)
+			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
 			return
 		}
 
-		log.Debug("Resolve query", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net)
+		log.Debug("Resolve query with rcode", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
 
 		select {
 		case res <- r:
