@@ -94,18 +94,15 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 	tryservers:
 		ns := make(map[string]string)
-		for _, n := range resp.Ns {
-			nsrec, _ := n.(*dns.NS)
-			if nsrec != nil {
+		for _, n := range shuffleRR(resp.Ns) {
+			if nsrec, ok := n.(*dns.NS); ok {
 				ns[nsrec.Ns] = ""
 			}
 		}
 
 		for _, a := range resp.Extra {
-			extra, ok := a.(*dns.A)
-			if ok {
-				_, ok := ns[extra.Header().Name]
-				if ok {
+			if extra, ok := a.(*dns.A); ok {
+				if _, ok := ns[extra.Header().Name]; ok {
 					ns[extra.Header().Name] = extra.A.String()
 				}
 			}
@@ -185,7 +182,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 
 	var wg sync.WaitGroup
 
-	L := func(server string) {
+	L := func(server string, last bool) {
 		defer wg.Done()
 
 		r, _, err := c.Exchange(req, server)
@@ -194,14 +191,12 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 			return
 		}
 
-		if r != nil && r.Rcode != dns.RcodeSuccess {
-			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "server", server, "net", Net)
-			if r.Rcode == dns.RcodeServerFailure {
-				return
-			}
-		} else {
-			log.Debug("Resolve query", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net)
+		if r != nil && r.Rcode != dns.RcodeSuccess && !last {
+			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "server", server, "net", Net, "code", r.Rcode)
+			return
 		}
+
+		log.Debug("Resolve query", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net)
 
 		select {
 		case res <- r:
@@ -213,9 +208,9 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 	defer ticker.Stop()
 
 	// Start lookup on each nameserver top-down, in interval
-	for _, server := range servers {
+	for index, server := range servers {
 		wg.Add(1)
-		go L(server)
+		go L(server, len(servers)-1 == index)
 
 		// but exit early, if we have an answer
 		select {
@@ -277,5 +272,5 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		}
 	}
 
-	return addr, fmt.Errorf("not found")
+	return addr, fmt.Errorf("nameserver not found")
 }

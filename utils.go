@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/md5"
 	"fmt"
+	"math/rand"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -32,4 +34,14 @@ func upperName(s string) string {
 	}
 
 	return s
+}
+
+func shuffleRR(vals []dns.RR) []dns.RR {
+	r := rand.New(rand.NewSource(time.Now().Unix()))
+	ret := make([]dns.RR, len(vals))
+	perm := r.Perm(len(vals))
+	for i, randIndex := range perm {
+		ret[i] = vals[randIndex]
+	}
+	return ret
 }
