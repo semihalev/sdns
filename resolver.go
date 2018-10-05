@@ -74,11 +74,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 			ns, err := r.nsCache.Get(key)
 			if err == nil {
-				if len(resp.Ns) != len(ns.Servers) {
-					r.nsCache.Remove(key)
-					goto tryservers
-				}
-
 				if reflect.DeepEqual(ns.Servers, servers) {
 					return resp, fmt.Errorf("loop detection")
 				}
@@ -92,7 +87,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			log.Debug("Nameserver cache failed", "key", key, "query", Q.String(), "error", err.Error())
 		}
 
-	tryservers:
 		ns := make(map[string]string)
 		for _, n := range shuffleRR(resp.Ns) {
 			if nsrec, ok := n.(*dns.NS); ok {
@@ -100,8 +94,20 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			}
 		}
 
+		if nsl && len(ns) == 0 {
+			if _, ok := resp.Ns[0].(*dns.SOA); ok {
+				return resp, fmt.Errorf("nameserver addr nxdomain")
+			}
+		}
+
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
+				if nsl && extra.Header().Name == req.Question[0].Name && extra.A.String() != "" {
+					resp.Answer = append(resp.Answer, extra)
+					log.Debug("Glue NS addr", "qname", extra.Header().Name, "a", extra.A.String())
+					return
+				}
+
 				if _, ok := ns[extra.Header().Name]; ok {
 					ns[extra.Header().Name] = extra.A.String()
 				}
@@ -272,5 +278,5 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		}
 	}
 
-	return addr, fmt.Errorf("nameserver not found")
+	return addr, fmt.Errorf("ns addr failed")
 }
