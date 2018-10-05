@@ -129,7 +129,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		}
 
 		if len(nservers) == 0 {
-			return
+			return resp, fmt.Errorf("no auth servers")
 		}
 
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
