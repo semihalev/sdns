@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/miekg/dns"
 )
 
 func Test_keyGen(t *testing.T) {
@@ -42,5 +44,17 @@ func Test_upperName(t *testing.T) {
 		if u := upperName(e.Asset); u != e.Expect {
 			t.Errorf("unexpected value. asset: %s, expect: %s, value: %s", e.Asset, e.Expect, u)
 		}
+	}
+}
+
+func Test_shuffleRR(t *testing.T) {
+
+	vals := make([]dns.RR, 1)
+	vals[0] = *new(dns.RR)
+
+	rr := shuffleRR(vals)
+
+	if len(rr) != 1 {
+		t.Error("invalid array lenght")
 	}
 }

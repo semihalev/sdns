@@ -37,11 +37,33 @@ func upperName(s string) string {
 }
 
 func shuffleRR(vals []dns.RR) []dns.RR {
-	r := rand.New(rand.NewSource(time.Now().Unix()))
-	ret := make([]dns.RR, len(vals))
+
+	r := newRand()
 	perm := r.Perm(len(vals))
+	ret := make([]dns.RR, len(vals))
+
 	for i, randIndex := range perm {
 		ret[i] = vals[randIndex]
 	}
+
 	return ret
+}
+
+func newRand() *rand.Rand {
+	return rand.New(rand.NewSource(time.Now().Unix()))
+}
+
+func searchAddr(msg *dns.Msg) (addr string, ok bool) {
+
+	ok = false
+	for _, ans := range msg.Answer {
+
+		if arec, ok := ans.(*dns.A); ok {
+			addr = arec.A.String()
+			ok = true
+			break
+		}
+	}
+
+	return
 }

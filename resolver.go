@@ -48,13 +48,13 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 	}
 
 	resp, err = r.lookup(Net, req, servers)
+
 	if err != nil {
 		return
 	}
 
 	if len(resp.Answer) > 0 {
 		resp.Ns = []dns.RR{}
-
 		return
 	}
 
@@ -229,6 +229,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 
 	// wait for all the namservers to finish
 	wg.Wait()
+
 	select {
 	case r := <-res:
 		return r, nil
@@ -242,12 +243,14 @@ func (r *Resolver) searchCache(q *dns.Question) (servers []string) {
 	key := keyGen(Q)
 
 	ns, err := r.nsCache.Get(key)
+
 	if err == nil {
 		log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 		return ns.Servers
 	}
 
 	q.Name = upperName(q.Name)
+
 	if q.Name == "" {
 		return roothints
 	}
@@ -266,16 +269,14 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	depth := Config.Maxdepth
 
 	nsres, err := r.Resolve(Net, nsReq, roothints, true, depth, 0, true)
+
 	if err != nil {
 		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
 		return
 	}
 
-	for _, ans := range nsres.Answer {
-		if arec, ok := ans.(*dns.A); ok {
-			addr = arec.A.String()
-			return
-		}
+	if addr, ok := searchAddr(nsres); ok {
+		return addr, nil
 	}
 
 	return addr, fmt.Errorf("ns addr failed")
