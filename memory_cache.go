@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	rl "github.com/bsm/ratelimit"
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 )
@@ -41,6 +42,7 @@ func (e CacheIsFull) Error() string {
 // Mesg represents a cache entry
 type Mesg struct {
 	Msg            *dns.Msg
+	RateLimit      *rl.RateLimiter
 	LastUpdateTime time.Time
 }
 
@@ -65,7 +67,7 @@ func NewMemoryCache(maxcount int) *MemoryCache {
 }
 
 // Get returns the entry for a key or an error
-func (c *MemoryCache) Get(key string) (*dns.Msg, error) {
+func (c *MemoryCache) Get(key string) (*dns.Msg, *rl.RateLimiter, error) {
 	key = strings.ToLower(key)
 
 	c.mu.RLock()
@@ -74,12 +76,12 @@ func (c *MemoryCache) Get(key string) (*dns.Msg, error) {
 
 	if !ok {
 		log.Debug("Cache miss", "key", key)
-		return nil, KeyNotFound{key}
+		return nil, nil, KeyNotFound{key}
 	}
 
 	if mesg.Msg == nil {
 		c.Remove(key)
-		return nil, KeyNotFound{key}
+		return nil, nil, KeyNotFound{key}
 	}
 
 	//Truncate time to the second, so that subsecond queries won't keep moving
@@ -92,7 +94,7 @@ func (c *MemoryCache) Get(key string) (*dns.Msg, error) {
 		if elapsed > answer.Header().Ttl {
 			log.Debug("Cache expired", "key", key)
 			c.Remove(key)
-			return nil, KeyExpired{key}
+			return nil, nil, KeyExpired{key}
 		}
 		answer.Header().Ttl -= elapsed
 	}
@@ -101,12 +103,12 @@ func (c *MemoryCache) Get(key string) (*dns.Msg, error) {
 		if elapsed > ns.Header().Ttl {
 			log.Debug("Cache expired", "key", key)
 			c.Remove(key)
-			return nil, KeyExpired{key}
+			return nil, nil, KeyExpired{key}
 		}
 		ns.Header().Ttl -= elapsed
 	}
 
-	return mesg.Msg, nil
+	return mesg.Msg, mesg.RateLimit, nil
 }
 
 // Set sets a keys value to a Mesg
@@ -117,7 +119,7 @@ func (c *MemoryCache) Set(key string, msg *dns.Msg) error {
 		return CacheIsFull{}
 	}
 
-	mesg := Mesg{msg, WallClock.Now().Truncate(time.Second)}
+	mesg := Mesg{msg, rl.New(3, time.Second), WallClock.Now().Truncate(time.Second)}
 	c.mu.Lock()
 	c.Backend[key] = &mesg
 	c.mu.Unlock()

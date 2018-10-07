@@ -63,9 +63,16 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 	key := keyGen(Q)
 
-	mesg, err := h.cache.Get(key)
+	mesg, rl, err := h.cache.Get(key)
 	if err == nil {
 		log.Debug("Cache hit", "key", key, "query", Q.String())
+
+		if rl.Limit() {
+			log.Warn("Query rate limited", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype])
+
+			h.handleFailed(w, req)
+			return
+		}
 
 		// we need this copy against concurrent modification of Id
 		msg := *mesg
@@ -193,7 +200,7 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 		log.Debug("Lookup", "query", Q.String())
 
 		key := keyGen(Q)
-		respCname, err := h.cache.Get(key)
+		respCname, _, err := h.cache.Get(key)
 		if err == nil {
 			log.Debug("Cache hit", "key", key, "query", Q.String())
 			for _, answerCname := range respCname.Answer {

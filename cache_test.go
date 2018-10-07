@@ -34,13 +34,13 @@ func TestCache(t *testing.T) {
 		t.Error(err)
 	}
 
-	if _, err := cache.Get(testDomain); err != nil {
+	if _, _, err := cache.Get(testDomain); err != nil {
 		t.Error(err)
 	}
 
 	cache.Remove(testDomain)
 
-	if _, err := cache.Get(testDomain); err == nil {
+	if _, _, err := cache.Get(testDomain); err == nil {
 		t.Error("cache entry still existed after remove")
 	}
 }
@@ -148,7 +148,7 @@ func TestCacheTtl(t *testing.T) {
 		t.Error(err)
 	}
 
-	msg, err := cache.Get(testDomain)
+	msg, _, err := cache.Get(testDomain)
 	assert.Nil(t, err)
 
 	for _, answer := range msg.Answer {
@@ -163,7 +163,7 @@ func TestCacheTtl(t *testing.T) {
 	}
 
 	fakeClock.Advance(5 * time.Second)
-	msg, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(testDomain)
 	assert.Nil(t, err)
 
 	for _, answer := range msg.Answer {
@@ -178,7 +178,7 @@ func TestCacheTtl(t *testing.T) {
 	}
 
 	fakeClock.Advance(5 * time.Second)
-	_, err = cache.Get(testDomain)
+	_, _, err = cache.Get(testDomain)
 	assert.Nil(t, err)
 
 	for _, answer := range msg.Answer {
@@ -195,13 +195,13 @@ func TestCacheTtl(t *testing.T) {
 	fakeClock.Advance(1 * time.Second)
 
 	// accessing an expired key will return KeyExpired error
-	_, err = cache.Get(testDomain)
+	_, _, err = cache.Get(testDomain)
 	if _, ok := err.(KeyExpired); !ok {
 		t.Error(err)
 	}
 
 	// accessing an expired key will remove it from the cache
-	_, err = cache.Get(testDomain)
+	_, _, err = cache.Get(testDomain)
 
 	if _, ok := err.(KeyNotFound); !ok {
 		t.Error("cache entry still existed after expiring - ", err)
@@ -236,7 +236,7 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 		t.Error(err)
 	}
 
-	msg, err := cache.Get(testDomain)
+	msg, _, err := cache.Get(testDomain)
 	assert.Nil(t, err)
 
 	assert.Equal(t, attl, msg.Answer[0].Header().Ttl, "TTL should be unchanged")
@@ -244,11 +244,11 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 	//Poll 50 times at 100ms intervals: the TTL should go down by 5s
 	for i := 0; i < 50; i++ {
 		fakeClock.Advance(100 * time.Millisecond)
-		_, err := cache.Get(testDomain)
+		_, _, err := cache.Get(testDomain)
 		assert.Nil(t, err)
 	}
 
-	msg, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(testDomain)
 	assert.Nil(t, err)
 
 	assert.Equal(t, attl-5, msg.Answer[0].Header().Ttl, "TTL should be decreased")

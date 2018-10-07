@@ -8,6 +8,12 @@
   version = "v0.3.1"
 
 [[projects]]
+  name = "github.com/bsm/ratelimit"
+  packages = ["."]
+  revision = "4a38dca83ebadb017e83301642fab61b1c17edb7"
+  version = "v2.0.0"
+
+[[projects]]
   name = "github.com/davecgh/go-spew"
   packages = ["spew"]
   revision = "8991bc29aa16c548c550c7ff78260e27b9ab7c73"
@@ -162,6 +168,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "8a1b5dcd85a64a45cd068d4353cbe53825e61e7f3b6a1cb14bded88ffb1c0127"
+  inputs-digest = "335233503dc57a92c40f097108f02821189a84ecd6ce75c5b8d1bef861f691e0"
   solver-name = "gps-cdcl"
   solver-version = 1

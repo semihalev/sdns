@@ -272,7 +272,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr s
 
 	key := keyGen(Q)
 
-	nsres, err := r.addrCache.Get(key)
+	nsres, _, err := r.addrCache.Get(key)
 	if err == nil {
 		if addr, ok := searchAddr(nsres); ok {
 			return addr, nil
