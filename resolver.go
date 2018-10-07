@@ -122,19 +122,19 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		}
 
 		nservers := []string{}
+		for _, addr := range ns {
+			if addr != "" {
+				nservers = append(nservers, fmt.Sprintf("%s:53", addr))
+			}
+		}
+
 		for k, addr := range ns {
 			if addr == "" {
-				if nsl && dns.CompareDomainName(k, req.Question[0].Name) >= len(dns.SplitDomainName(k))-1 {
-					log.Debug("Nameserver lookup passed", "qname", req.Question[0].Name, "nameserver", k)
-					continue
-				}
+				addr, err := r.lookupNSAddr(Net, k, nservers)
 
-				addr, err := r.lookupNSAddr(Net, k)
 				if err == nil {
 					nservers = append(nservers, fmt.Sprintf("%s:53", addr))
 				}
-			} else {
-				nservers = append(nservers, fmt.Sprintf("%s:53", addr))
 			}
 		}
 
@@ -262,7 +262,7 @@ func (r *Resolver) searchCache(q *dns.Question) (servers []string) {
 	return r.searchCache(q)
 }
 
-func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) {
+func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr string, err error) {
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(ns, dns.TypeA)
 	nsReq.RecursionDesired = true
@@ -279,8 +279,12 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		}
 	}
 
-	depth := Config.Maxdepth
-	nsres, err = r.Resolve(Net, nsReq, roothints, true, depth, 0, true)
+	if len(servers) == 0 {
+		depth := Config.Maxdepth
+		nsres, err = r.Resolve(Net, nsReq, roothints, true, depth, 0, true)
+	} else {
+		nsres, err = r.lookup(Net, nsReq, servers)
+	}
 
 	if err != nil {
 		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
