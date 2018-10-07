@@ -124,8 +124,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		nservers := []string{}
 		for k, addr := range ns {
 			if addr == "" {
-				if (nsl && dns.CompareDomainName(k, req.Question[0].Name) > 1) ||
-					k == req.Question[0].Name {
+				if nsl && dns.CompareDomainName(k, req.Question[0].Name) >= len(dns.SplitDomainName(k))-1 {
 					log.Debug("Nameserver lookup passed", "qname", req.Question[0].Name, "nameserver", k)
 					continue
 				}
