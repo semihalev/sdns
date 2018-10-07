@@ -119,7 +119,7 @@ func (c *MemoryCache) Set(key string, msg *dns.Msg) error {
 		return CacheIsFull{}
 	}
 
-	mesg := Mesg{msg, rl.New(3, time.Second), WallClock.Now().Truncate(time.Second)}
+	mesg := Mesg{msg, rl.New(Config.RateLimit, time.Second), WallClock.Now().Truncate(time.Second)}
 	c.mu.Lock()
 	c.Backend[key] = &mesg
 	c.mu.Unlock()
