@@ -33,6 +33,7 @@ func NewHandler() *DNSHandler {
 		&Resolver{
 			&dns.ClientConfig{},
 			NewNameServerCache(Config.Maxcount),
+			NewMemoryCache(Config.Maxcount),
 		},
 		NewMemoryCache(Config.Maxcount),
 		NewErrorCache(Config.Maxcount, Config.Expire),

@@ -53,14 +53,14 @@ func newRand() *rand.Rand {
 	return rand.New(rand.NewSource(time.Now().Unix()))
 }
 
-func searchAddr(msg *dns.Msg) (addr string, ok bool) {
+func searchAddr(msg *dns.Msg) (addr string, found bool) {
 
-	ok = false
+	found = false
 	for _, ans := range msg.Answer {
 
 		if arec, ok := ans.(*dns.A); ok {
 			addr = arec.A.String()
-			ok = true
+			found = true
 			break
 		}
 	}

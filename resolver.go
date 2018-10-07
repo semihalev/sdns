@@ -14,8 +14,9 @@ import (
 
 // Resolver type
 type Resolver struct {
-	config  *dns.ClientConfig
-	nsCache *NameServerCache
+	config    *dns.ClientConfig
+	nsCache   *NameServerCache
+	addrCache *MemoryCache
 }
 
 var roothints = []string{
@@ -60,6 +61,18 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 	if len(resp.Answer) == 0 && len(resp.Ns) > 0 {
 		if nsrec, ok := resp.Ns[0].(*dns.NS); ok {
+			if req.Question[0].Qtype == dns.TypeNS && req.Question[0].Name == nsrec.Header().Name {
+				for _, n := range resp.Ns {
+					if nsrec, ok := n.(*dns.NS); ok {
+						resp.Answer = append(resp.Answer, nsrec)
+					}
+				}
+
+				resp.Ns = []dns.RR{}
+
+				return
+			}
+
 			nlevel := len(strings.Split(nsrec.Header().Name, "."))
 			if level > nlevel {
 				return resp, fmt.Errorf("parent detection")
@@ -94,17 +107,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			}
 		}
 
-		if nsl && len(ns) == 0 {
-			if _, ok := resp.Ns[0].(*dns.SOA); ok {
-				return resp, fmt.Errorf("nameserver addr nxdomain")
-			}
-		}
-
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
 				if nsl && extra.Header().Name == req.Question[0].Name && extra.A.String() != "" {
 					resp.Answer = append(resp.Answer, extra)
-					log.Debug("Glue NS addr", "qname", extra.Header().Name, "a", extra.A.String())
+					log.Debug("Glue NS addr in extra response", "qname", extra.Header().Name, "a", extra.A.String())
 					return
 				}
 
@@ -117,11 +124,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		nservers := []string{}
 		for k, addr := range ns {
 			if addr == "" {
-				if nsl && len(nservers) >= 1 {
-					break
-				}
-
-				if k == req.Question[0].Name {
+				if nsl || k == req.Question[0].Name {
 					continue
 				}
 
@@ -266,9 +269,17 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	q := nsReq.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
-	depth := Config.Maxdepth
+	key := keyGen(Q)
 
-	nsres, err := r.Resolve(Net, nsReq, roothints, true, depth, 0, true)
+	nsres, err := r.addrCache.Get(key)
+	if err == nil {
+		if addr, ok := searchAddr(nsres); ok {
+			return addr, nil
+		}
+	}
+
+	depth := Config.Maxdepth
+	nsres, err = r.Resolve(Net, nsReq, roothints, true, depth, 0, true)
 
 	if err != nil {
 		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
@@ -276,8 +287,9 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	}
 
 	if addr, ok := searchAddr(nsres); ok {
+		r.addrCache.Set(key, nsres)
 		return addr, nil
 	}
 
-	return addr, fmt.Errorf("ns addr failed")
+	return addr, fmt.Errorf("ns addr lookup failed for %s", ns)
 }
