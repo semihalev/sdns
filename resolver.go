@@ -124,6 +124,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		nservers := []string{}
 		for _, addr := range ns {
 			if addr != "" {
+				if isLocalIP(addr) {
+					continue
+				}
 				nservers = append(nservers, fmt.Sprintf("%s:53", addr))
 			}
 		}
@@ -133,6 +136,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				addr, err := r.lookupNSAddr(Net, k, nservers)
 
 				if err == nil {
+					if isLocalIP(addr) {
+						continue
+					}
 					nservers = append(nservers, fmt.Sprintf("%s:53", addr))
 				}
 			}
@@ -158,6 +164,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			err := r.nsCache.Set(key, nsrec.Header().Ttl, nservers)
 			if err != nil {
 				log.Error("Set nameserver cache failed", "query", Q.String(), "error", err.Error())
+			} else {
+				log.Debug("Nameserver cache insert", "key", key, "query", Q.String())
 			}
 
 			depth--
@@ -237,6 +245,8 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 	select {
 	case r := <-res:
 		return r, nil
+	case <-time.After(time.Duration(Config.Timeout*len(servers)) * time.Second):
+		return nil, fmt.Errorf("timedout")
 	default:
 		return nil, fmt.Errorf("resolv failed")
 	}

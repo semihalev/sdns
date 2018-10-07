@@ -15,6 +15,7 @@ var (
 	configPath  string
 	forceUpdate bool
 	blockCache  = &MemoryBlockCache{Backend: make(map[string]bool)}
+	localIPs    []string
 )
 
 func init() {
@@ -37,6 +38,11 @@ func main() {
 	}
 
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
+
+	localIPs, err = findLocalIPAddresses()
+	if err != nil {
+		log.Crit("Local ip addresses failed", "error", err.Error())
+	}
 
 	log.Info("Starting sdns...", "version", BuildVersion)
 

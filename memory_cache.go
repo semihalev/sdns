@@ -17,7 +17,7 @@ type KeyNotFound struct {
 
 // Error formats an error for the KeyNotFound type
 func (e KeyNotFound) Error() string {
-	return e.key + " " + "cache miss"
+	return "cache miss"
 }
 
 // KeyExpired type
@@ -27,7 +27,7 @@ type KeyExpired struct {
 
 // Error formats an error for the KeyExpired type
 func (e KeyExpired) Error() string {
-	return e.Key + " " + "cache expired"
+	return "cache expired"
 }
 
 // CacheIsFull type

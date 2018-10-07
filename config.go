@@ -96,7 +96,7 @@ maxcount = 0
 # maximum recursion depth for nameservers
 maxdepth = 30
 
-# ratelimit per second, 0 for disable
+# query based ratelimit per second, 0 for disable
 ratelimit = 0
 
 # manual blocklist entries
