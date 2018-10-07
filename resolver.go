@@ -97,7 +97,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				return r.Resolve(Net, req, ns.Servers, false, depth, nlevel, nsl)
 			}
 
-			log.Debug("Nameserver cache failed", "key", key, "query", Q.String(), "error", err.Error())
+			log.Debug("Nameserver cache not found", "key", key, "query", Q.String(), "error", err.Error())
 		}
 
 		ns := make(map[string]string)
@@ -124,11 +124,13 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		nservers := []string{}
 		for k, addr := range ns {
 			if addr == "" {
-				if nsl || k == req.Question[0].Name {
+				if (nsl && dns.CompareDomainName(k, req.Question[0].Name) > 1) ||
+					k == req.Question[0].Name {
+					log.Debug("Nameserver lookup passed", "qname", req.Question[0].Name, "nameserver", k)
 					continue
 				}
 
-				addr, err = r.lookupNSAddr(Net, k)
+				addr, err := r.lookupNSAddr(Net, k)
 				if err == nil {
 					nservers = append(nservers, fmt.Sprintf("%s:53", addr))
 				}
@@ -201,11 +203,11 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 		}
 
 		if r != nil && r.Rcode != dns.RcodeSuccess && !last {
-			log.Debug("Failed to get a valid answer", "qname", qname, "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
+			log.Debug("Failed to get valid response", "qname", qname, "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
 			return
 		}
 
-		log.Debug("Resolve query with rcode", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
+		log.Debug("Query response", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
 
 		select {
 		case res <- r:
@@ -291,5 +293,5 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		return addr, nil
 	}
 
-	return addr, fmt.Errorf("ns addr lookup failed for %s", ns)
+	return addr, fmt.Errorf("ns addr not found %s", ns)
 }
