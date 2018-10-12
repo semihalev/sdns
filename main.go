@@ -24,7 +24,7 @@ const (
 )
 
 func init() {
-	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated (default sdns.toml)")
+	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated")
 	flag.BoolVar(&forceUpdate, "update", false, "force an update of the blocklist database")
 }
 
@@ -55,7 +55,7 @@ func main() {
 		for _, k := range initialkeys {
 			rr, err := dns.NewRR(k)
 			if err != nil {
-				panic(err)
+				log.Crit("Root keys invalid", "error", err.Error())
 			}
 			rootkeys = append(rootkeys, rr)
 		}
