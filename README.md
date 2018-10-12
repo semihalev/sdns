@@ -6,9 +6,9 @@
 
 Lightweight, fast dns recursive server with dnssec support
 
-![Logo](https://github.com/semihalev/sdns/blob/master/logo.png?raw=true)
-
 Based on [kenshinx/godns](https://github.com/kenshinx/godns), [looterz/grimd](https://github.com/looterz/grimd)
+
+![Logo](https://github.com/semihalev/sdns/blob/master/logo.png?raw=true)
 
 ## Installation
 
