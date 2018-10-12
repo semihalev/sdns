@@ -171,17 +171,6 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	/*if opt := req.IsEdns0(); opt != nil {
-		if opt.Do() {
-			err := h.verifyDNSSEC(proto, q.Name, mesg)
-			if err != nil {
-				log.Info("DNSSEC verify failed", "query", Q.String(), "error", err.Error())
-				h.handleFailed(w, req)
-				return
-			}
-		}
-	}*/
-
 	mesg.RecursionAvailable = true
 
 	msg := new(dns.Msg)
