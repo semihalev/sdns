@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 )
 
@@ -42,6 +43,23 @@ func main() {
 	}
 
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
+
+	if len(Config.RootServers) > 0 {
+		rootservers = Config.RootServers
+	}
+
+	if len(Config.RootKeys) > 0 {
+		initialkeys = Config.RootKeys
+		rootkeys = []dns.RR{}
+
+		for _, k := range initialkeys {
+			rr, err := dns.NewRR(k)
+			if err != nil {
+				panic(err)
+			}
+			rootkeys = append(rootkeys, rr)
+		}
+	}
 
 	localIPs, err = findLocalIPAddresses()
 	if err != nil {
