@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -9,6 +10,18 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+)
+
+var (
+	errNoDNSKEY               = errors.New("no DNSKEY records found")
+	errMissingKSK             = errors.New("no KSK DNSKEY found for DS records")
+	errFailedToConvertKSK     = errors.New("failed to convert KSK DNSKEY record to DS record")
+	errMismatchingDS          = errors.New("KSK DNSKEY record does not match DS record from parent zone")
+	errNoSignatures           = errors.New("no RRSIG records for zone that should be signed")
+	errMissingDNSKEY          = errors.New("no matching DNSKEY found for RRSIG records")
+	errInvalidSignaturePeriod = errors.New("incorrect signature validity period")
+	errBadAnswer              = errors.New("response contained a non-zero RCODE")
+	errMissingSigned          = errors.New("signed records are missing")
 )
 
 func keyGen(q Question) string {
@@ -108,4 +121,96 @@ func isLocalIP(ip string) (ok bool) {
 	}
 
 	return
+}
+
+func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
+	out := []dns.RR{}
+	tMap := make(map[uint16]struct{}, len(t))
+	for _, t := range t {
+		tMap[t] = struct{}{}
+	}
+	for _, r := range in {
+		if _, present := tMap[r.Header().Rrtype]; present {
+			if name != "" && name != r.Header().Name {
+				continue
+			}
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
+	for _, r := range parentDSSet {
+		parentDS, ok := r.(*dns.DS)
+		if !ok {
+			continue
+		}
+		ksk, present := keyMap[parentDS.KeyTag]
+		if !present {
+			continue
+		}
+		ds := ksk.ToDS(parentDS.DigestType)
+		if ds == nil {
+			return errFailedToConvertKSK
+		}
+		if ds.Digest != parentDS.Digest {
+			return errMismatchingDS
+		}
+		return nil
+	}
+
+	return errMissingKSK
+}
+
+func isDO(req *dns.Msg) bool {
+	if opt := req.IsEdns0(); opt != nil {
+		return opt.Do()
+	}
+
+	return false
+}
+
+func clearRRSIG(msg *dns.Msg) *dns.Msg {
+	for i := 0; i < len(msg.Answer); i++ {
+		if _, ok := msg.Answer[i].(*dns.RRSIG); ok {
+			msg.Answer = append(msg.Answer[:i], msg.Answer[i+1:]...)
+			i--
+		}
+	}
+
+	return msg
+}
+
+func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) error {
+	rr := msg.Answer
+	if len(rr) == 0 {
+		rr = msg.Ns
+	}
+
+	sigs := extractRRSet(rr, "", dns.TypeRRSIG)
+	if len(sigs) == 0 {
+		return errNoSignatures
+	}
+
+	for _, sigRR := range sigs {
+		sig := sigRR.(*dns.RRSIG)
+		rest := extractRRSet(rr, sig.Header().Name, sig.TypeCovered)
+		if len(rest) == 0 {
+			return errMissingSigned
+		}
+		k, present := keys[sig.KeyTag]
+		if !present {
+			return errMissingDNSKEY
+		}
+		err := sig.Verify(k, rest)
+		if err != nil {
+			return err
+		}
+		if !sig.ValidityPeriod(time.Time{}) {
+			return errInvalidSignaturePeriod
+		}
+	}
+
+	return nil
 }

@@ -18,6 +18,10 @@ var (
 	localIPs    []string
 )
 
+const (
+	edns0size = 4096
+)
+
 func init() {
 	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated (default sdns.toml)")
 	flag.BoolVar(&forceUpdate, "update", false, "force an update of the blocklist database")

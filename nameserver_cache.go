@@ -4,11 +4,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // NS represents a cache entry
 type NS struct {
 	Servers        []string
+	DSRR           []dns.RR
 	TTL            uint32
 	LastUpdateTime time.Time
 }
@@ -61,14 +64,14 @@ func (c *NameServerCache) Get(key string) (*NS, error) {
 }
 
 // Set sets a keys value to a NS
-func (c *NameServerCache) Set(key string, ttl uint32, servers []string) error {
+func (c *NameServerCache) Set(key string, dsRR []dns.RR, ttl uint32, servers []string) error {
 	key = strings.ToLower(key)
 
 	if c.Full() && !c.Exists(key) {
 		return CacheIsFull{}
 	}
 
-	ns := NS{servers, ttl, WallClock.Now().Truncate(time.Second)}
+	ns := NS{servers, dsRR, ttl, WallClock.Now().Truncate(time.Second)}
 	c.mu.Lock()
 	c.Backend[key] = &ns
 	c.mu.Unlock()

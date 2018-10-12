@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/miekg/dns"
@@ -16,7 +17,7 @@ type Question struct {
 
 // String formats a question
 func (q *Question) String() string {
-	return q.Qname + " " + q.Qclass + " " + q.Qtype
+	return fmt.Sprintf("%s %s %s", q.Qname, q.Qclass, q.Qtype)
 }
 
 // DNSHandler type
@@ -28,13 +29,8 @@ type DNSHandler struct {
 
 // NewHandler returns a new DNSHandler
 func NewHandler() *DNSHandler {
-
 	return &DNSHandler{
-		&Resolver{
-			&dns.ClientConfig{},
-			NewNameServerCache(Config.Maxcount),
-			NewMemoryCache(Config.Maxcount),
-		},
+		NewResolver(),
 		NewMemoryCache(Config.Maxcount),
 		NewErrorCache(Config.Maxcount, Config.Expire),
 	}
@@ -51,6 +47,15 @@ func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
+	var dsReq bool
+
+	if opt := req.IsEdns0(); opt != nil {
+		dsReq = opt.Do()
+		opt.SetDo()
+	} else {
+		req.SetEdns0(edns0size, true)
+	}
+
 	q := req.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
@@ -75,10 +80,17 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		}
 
 		// we need this copy against concurrent modification of Id
-		msg := *mesg
-		msg.Id = req.Id
+		msg := new(dns.Msg)
+		*msg = *mesg
 
-		h.writeReplyMsg(w, h.checkGLUE(proto, req, &msg))
+		msg.Id = req.Id
+		msg = h.checkGLUE(proto, req, msg)
+
+		if !dsReq {
+			msg = clearRRSIG(msg)
+		}
+
+		h.writeReplyMsg(w, msg)
 		return
 	}
 
@@ -135,7 +147,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	depth := Config.Maxdepth
-	mesg, err = h.resolver.Resolve(proto, req, roothints, true, depth, 0, false)
+	mesg, err = h.resolver.Resolve(proto, req, rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", Q.String(), "error", err.Error())
 
@@ -159,10 +171,29 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	/*if opt := req.IsEdns0(); opt != nil {
+		if opt.Do() {
+			err := h.verifyDNSSEC(proto, q.Name, mesg)
+			if err != nil {
+				log.Info("DNSSEC verify failed", "query", Q.String(), "error", err.Error())
+				h.handleFailed(w, req)
+				return
+			}
+		}
+	}*/
+
 	mesg.RecursionAvailable = true
 
-	msg := *mesg
-	h.writeReplyMsg(w, h.checkGLUE(proto, req, &msg))
+	msg := new(dns.Msg)
+	*msg = *mesg
+
+	msg = h.checkGLUE(proto, req, msg)
+
+	if !dsReq {
+		msg = clearRRSIG(msg)
+	}
+
+	h.writeReplyMsg(w, msg)
 
 	err = h.cache.Set(key, mesg)
 	if err != nil {
@@ -177,6 +208,8 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 	//check cname response
 	answerFound := false
 	var cnameReq dns.Msg
+
+	cnameReq.SetEdns0(edns0size, true)
 
 	for _, answer := range mesg.Answer {
 		if answer.Header().Rrtype == req.Question[0].Qtype {
@@ -213,7 +246,7 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 			}
 		} else {
 			depth := Config.Maxdepth
-			respCname, err := h.resolver.Resolve(proto, &cnameReq, roothints, true, depth, 0, false)
+			respCname, err := h.resolver.Resolve(proto, &cnameReq, rootservers, true, depth, 0, false, nil)
 			if err == nil && len(respCname.Answer) > 0 && respCname.Rcode == dns.RcodeSuccess {
 				for _, answerCname := range respCname.Answer {
 					mesg.Answer = append(mesg.Answer, answerCname)
