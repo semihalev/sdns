@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func Test_AllRequests(t *testing.T) {
@@ -17,6 +19,7 @@ func Test_AllRequests(t *testing.T) {
 	}{
 		{"GET", "/api/v1/block/set/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/get/test.com", http.StatusOK},
+		{"GET", "/api/v1/block/get/test2.com", http.StatusOK},
 		{"GET", "/api/v1/block/exists/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/remove/test.com", http.StatusOK},
 	}
@@ -36,6 +39,11 @@ func Test_AllRequests(t *testing.T) {
 			t.Fatalf("not expected status code: %d", w.Code)
 		}
 	}
+}
+
+func Test_runServer(t *testing.T) {
+	err := StartAPIServer(":111111")
+	assert.Error(t, err)
 }
 
 // func Test_getBlockExists(t *testing.T) {

@@ -68,6 +68,13 @@ func Test_shuffleRR(t *testing.T) {
 
 func Test_searchAddr(t *testing.T) {
 	m := new(dns.Msg)
+	m.SetQuestion(testDomain, dns.TypeA)
+
+	m.SetEdns0(512, true)
+	assert.Equal(t, isDO(m), true)
+
+	m.Extra = []dns.RR{}
+	assert.Equal(t, isDO(m), false)
 
 	a := &dns.A{
 		Hdr: dns.RR_Header{
@@ -87,6 +94,7 @@ func Test_searchAddr(t *testing.T) {
 func Test_findLocalIPAddresses(t *testing.T) {
 	var err error
 	localIPs, err = findLocalIPAddresses()
+
 	assert.Nil(t, err)
 	assert.Equal(t, len(localIPs) > 0, true)
 

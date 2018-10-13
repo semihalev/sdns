@@ -22,7 +22,7 @@ or
 ## Building
 
 ```shell
-$ go build 
+$ go build
 ```
 
 ## Flags
@@ -41,6 +41,7 @@ $ go build
 * DNS RFC support
 * Concurrent DNS lookups within listed servers
 * DNS caching
+* DNS TLS support
 * Basic IPv6 support
 * Basic DNSSEC validation
 * Query based ratelimit
@@ -50,7 +51,7 @@ $ go build
 
 ## TODO
 
-- [ ] More tests
+- [x] More tests
 - [ ] Try lookup NS address better way
 - [x] TLS support
 - [ ] DNS-Over-HTTPS
