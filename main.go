@@ -15,7 +15,7 @@ import (
 var (
 	configPath  string
 	forceUpdate bool
-	blockCache  = &MemoryBlockCache{Backend: make(map[string]bool)}
+	blockCache  = &BlockCache{Backend: make(map[string]bool)}
 	localIPs    []string
 )
 

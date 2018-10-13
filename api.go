@@ -34,7 +34,7 @@ func removeBlock(c *gin.Context) {
 }
 
 func setBlock(c *gin.Context) {
-	_ = blockCache.Set(c.Param("key"), true)
+	blockCache.Set(c.Param("key"), true)
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
