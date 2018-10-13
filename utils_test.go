@@ -6,9 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/assert"
 )
 
 func Test_keyGen(t *testing.T) {
@@ -95,7 +94,7 @@ func Test_findLocalIPAddresses(t *testing.T) {
 	var err error
 	localIPs, err = findLocalIPAddresses()
 
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 	assert.Equal(t, len(localIPs) > 0, true)
 
 	assert.Equal(t, isLocalIP(localIPs[0]), true)

@@ -89,7 +89,7 @@ func generateCertificate() error {
 
 func Test_server(t *testing.T) {
 	err := generateCertificate()
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	s := &Server{
 		host:           ":5553",

@@ -103,7 +103,7 @@ func TestCacheTtl(t *testing.T) {
 	}
 
 	msg, _, err := cache.Get(testDomain)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	for _, answer := range msg.Answer {
 		switch answer.Header().Rrtype {
@@ -127,7 +127,7 @@ func TestCacheTtl(t *testing.T) {
 
 	fakeClock.Advance(5 * time.Second)
 	msg, _, err = cache.Get(testDomain)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	for _, answer := range msg.Answer {
 		switch answer.Header().Rrtype {
@@ -151,7 +151,7 @@ func TestCacheTtl(t *testing.T) {
 
 	fakeClock.Advance(5 * time.Second)
 	_, _, err = cache.Get(testDomain)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	for _, answer := range msg.Answer {
 		switch answer.Header().Rrtype {
@@ -231,7 +231,7 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 	}
 
 	msg, _, err := cache.Get(testDomain)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	assert.Equal(t, attl, msg.Answer[0].Header().Ttl, "TTL should be unchanged")
 
@@ -241,11 +241,11 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		fakeClock.Advance(100 * time.Millisecond)
 		_, _, err := cache.Get(testDomain)
-		assert.Nil(t, err)
+		assert.NoError(t, err)
 	}
 
 	msg, _, err = cache.Get(testDomain)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	assert.Equal(t, attl-5, msg.Answer[0].Header().Ttl, "TTL should be decreased")
 

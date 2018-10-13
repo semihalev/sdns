@@ -285,36 +285,3 @@ func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
 		log.Error("Message writing failed", "error", err.Error())
 	}
 }
-
-func (h *DNSHandler) appendEDNS0Subnet(w dns.ResponseWriter, msg *dns.Msg) {
-	remote, _, _ := net.SplitHostPort(w.RemoteAddr().String())
-	addr := net.ParseIP(remote)
-
-	opt := msg.IsEdns0()
-
-	if opt == nil {
-		opt = new(dns.OPT)
-		opt.Hdr.Name = "."
-		opt.Hdr.Rrtype = dns.TypeOPT
-		opt.SetUDPSize(dns.DefaultMsgSize)
-		opt.SetDo(false)
-
-		msg.Extra = append([]dns.RR{opt}, msg.Extra...)
-	}
-
-	e := &dns.EDNS0_SUBNET{
-		Code:        dns.EDNS0SUBNET,
-		SourceScope: 0,
-		Address:     addr,
-	}
-
-	if addr.To4() == nil {
-		e.Family = 2 // IP6
-		e.SourceNetmask = net.IPv6len * 8
-	} else {
-		e.Family = 1 // IP4
-		e.SourceNetmask = net.IPv4len * 8
-	}
-
-	opt.Option = append(opt.Option, e)
-}

@@ -19,8 +19,8 @@ func Test_Blocklist(t *testing.T) {
 	Config.BlockLists = append(Config.BlockLists, "https://test.dev/hosts")
 
 	err := updateBlocklists(tempDir)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	err = readBlocklists(tempDir)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }
