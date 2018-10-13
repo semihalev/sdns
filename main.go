@@ -83,9 +83,12 @@ func main() {
 	}()
 
 	server := &Server{
-		host:     Config.Bind,
-		rTimeout: 5 * time.Second,
-		wTimeout: 5 * time.Second,
+		host:           Config.Bind,
+		tlsHost:        Config.BindTLS,
+		tlsCertificate: Config.TLSCertificate,
+		tlsPrivateKey:  Config.TLSPrivateKey,
+		rTimeout:       5 * time.Second,
+		wTimeout:       5 * time.Second,
 	}
 
 	server.Run()

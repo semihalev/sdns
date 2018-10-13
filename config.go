@@ -13,10 +13,10 @@ import (
 )
 
 // BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "0.1.4"
+var BuildVersion = "0.1.5"
 
 // ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-var ConfigVersion = "0.1.4"
+var ConfigVersion = "0.1.5"
 
 type config struct {
 	Version        string
@@ -27,6 +27,9 @@ type config struct {
 	Log            string
 	LogLevel       string
 	Bind           string
+	BindTLS        string
+	TLSCertificate string
+	TLSPrivateKey  string
 	API            string
 	Nullroute      string
 	Nullroutev6    string
@@ -66,10 +69,19 @@ sourcedirs = [
 loglevel = "info"
 
 # address to bind to for the DNS server
-bind = "0.0.0.0:53"
+bind = ":53"
+
+# address to bind to for the DNS-TLS server
+# bindtls = ":853"
+
+# tls certificate file
+# tlscertificate = "server.crt"
+
+# tls private key file
+# tlsprivatekey = "server.key"
 
 # outbound ip address
-#outboundip = ""
+# outboundip = ""
 
 # root servers
 rootservers = [
