@@ -79,7 +79,7 @@ func main() {
 	server.Run()
 
 	go func() {
-		if err := StartAPIServer(); err != nil {
+		if err := StartAPIServer(Config.API); err != nil {
 			log.Crit("Start API server failed", "error", err.Error())
 		}
 	}()

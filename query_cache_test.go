@@ -10,19 +10,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeCache() QueryCache {
-	return QueryCache{
-		Backend:  make(map[string]*Mesg, Config.Maxcount),
-		Maxcount: Config.Maxcount,
-	}
+func makeCache(maxcount int) *QueryCache {
+	return NewQueryCache(maxcount)
 }
 
 func TestCache(t *testing.T) {
 	const (
-		testDomain = "www.google.com"
+		testDomain  = "www.google.com"
+		test2Domain = "google.com"
 	)
 
-	cache := makeCache()
+	cache := makeCache(1)
 	WallClock = clockwork.NewFakeClock()
 
 	m := new(dns.Msg)
@@ -36,11 +34,21 @@ func TestCache(t *testing.T) {
 		t.Error(err)
 	}
 
+	assert.Equal(t, cache.Exists(testDomain), true)
+
+	m2 := new(dns.Msg)
+	m2.SetQuestion(dns.Fqdn(test2Domain), dns.TypeA)
+	err := cache.Set(test2Domain, m2)
+	assert.Error(t, err)
+	assert.Equal(t, err.Error(), "cache full")
+
 	cache.Remove(testDomain)
 
 	if _, _, err := cache.Get(testDomain); err == nil {
 		t.Error("cache entry still existed after remove")
 	}
+
+	assert.Equal(t, cache.Exists(testDomain), false)
 }
 
 func TestCacheTtl(t *testing.T) {
@@ -50,13 +58,14 @@ func TestCacheTtl(t *testing.T) {
 
 	fakeClock := clockwork.NewFakeClock()
 	WallClock = fakeClock
-	cache := makeCache()
+	cache := makeCache(0)
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 
 	var attl uint32 = 10
 	var aaaattl uint32 = 20
+	var nsttl uint32 = 10
 	nullroute := net.ParseIP(Config.Nullroute)
 	nullroutev6 := net.ParseIP(Config.Nullroutev6)
 	a := &dns.A{
@@ -79,6 +88,16 @@ func TestCacheTtl(t *testing.T) {
 		AAAA: nullroutev6}
 	m.Answer = append(m.Answer, aaaa)
 
+	ns := &dns.NS{
+		Hdr: dns.RR_Header{
+			Name:   testDomain,
+			Rrtype: dns.TypeNS,
+			Class:  dns.ClassINET,
+			Ttl:    nsttl,
+		},
+		Ns: "localhost"}
+	m.Ns = append(m.Ns, ns)
+
 	if err := cache.Set(testDomain, m); err != nil {
 		t.Error(err)
 	}
@@ -92,6 +111,15 @@ func TestCacheTtl(t *testing.T) {
 			assert.Equal(t, attl, answer.Header().Ttl, "TTL should be unchanged")
 		case dns.TypeAAAA:
 			assert.Equal(t, aaaattl, answer.Header().Ttl, "TTL should be unchanged")
+		default:
+			t.Error("Unexpected RR type")
+		}
+	}
+
+	for _, ns := range msg.Ns {
+		switch ns.Header().Rrtype {
+		case dns.TypeNS:
+			assert.Equal(t, nsttl, ns.Header().Ttl, "TTL should be unchanged")
 		default:
 			t.Error("Unexpected RR type")
 		}
@@ -112,6 +140,15 @@ func TestCacheTtl(t *testing.T) {
 		}
 	}
 
+	for _, ns := range msg.Ns {
+		switch ns.Header().Rrtype {
+		case dns.TypeNS:
+			assert.Equal(t, nsttl-5, ns.Header().Ttl, "TTL should be decreased")
+		default:
+			t.Error("Unexpected RR type")
+		}
+	}
+
 	fakeClock.Advance(5 * time.Second)
 	_, _, err = cache.Get(testDomain)
 	assert.Nil(t, err)
@@ -127,6 +164,15 @@ func TestCacheTtl(t *testing.T) {
 		}
 	}
 
+	for _, ns := range msg.Ns {
+		switch ns.Header().Rrtype {
+		case dns.TypeNS:
+			assert.Equal(t, uint32(0), ns.Header().Ttl, "TTL should be zero")
+		default:
+			t.Error("Unexpected RR type")
+		}
+	}
+
 	fakeClock.Advance(1 * time.Second)
 
 	// accessing an expired key will return KeyExpired error
@@ -134,13 +180,14 @@ func TestCacheTtl(t *testing.T) {
 	if _, ok := err.(KeyExpired); !ok {
 		t.Error(err)
 	}
+	assert.Equal(t, err.Error(), "cache expired")
 
 	// accessing an expired key will remove it from the cache
 	_, _, err = cache.Get(testDomain)
-
 	if _, ok := err.(KeyNotFound); !ok {
 		t.Error("cache entry still existed after expiring - ", err)
 	}
+	assert.Equal(t, err.Error(), "cache miss")
 }
 
 func TestCacheTtlFrequentPolling(t *testing.T) {
@@ -150,12 +197,14 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 
 	fakeClock := clockwork.NewFakeClock()
 	WallClock = fakeClock
-	cache := makeCache()
+	cache := makeCache(0)
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 
 	var attl uint32 = 10
+	var nsttl uint32 = 5
+
 	nullroute := net.ParseIP(Config.Nullroute)
 	a := &dns.A{
 		Hdr: dns.RR_Header{
@@ -167,6 +216,16 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 		A: nullroute}
 	m.Answer = append(m.Answer, a)
 
+	ns := &dns.NS{
+		Hdr: dns.RR_Header{
+			Name:   testDomain,
+			Rrtype: dns.TypeNS,
+			Class:  dns.ClassINET,
+			Ttl:    nsttl,
+		},
+		Ns: "localhost"}
+	m.Ns = append(m.Ns, ns)
+
 	if err := cache.Set(testDomain, m); err != nil {
 		t.Error(err)
 	}
@@ -175,6 +234,8 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 	assert.Nil(t, err)
 
 	assert.Equal(t, attl, msg.Answer[0].Header().Ttl, "TTL should be unchanged")
+
+	assert.Equal(t, nsttl, msg.Ns[0].Header().Ttl, "TTL should be unchanged")
 
 	//Poll 50 times at 100ms intervals: the TTL should go down by 5s
 	for i := 0; i < 50; i++ {
@@ -188,6 +249,12 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 
 	assert.Equal(t, attl-5, msg.Answer[0].Header().Ttl, "TTL should be decreased")
 
-	cache.Remove(testDomain)
+	assert.Equal(t, nsttl-5, msg.Ns[0].Header().Ttl, "TTL should be unchanged")
 
+	fakeClock.Advance(1 * time.Second)
+
+	_, _, err = cache.Get(testDomain)
+	if _, ok := err.(KeyExpired); !ok {
+		t.Error(err)
+	}
 }

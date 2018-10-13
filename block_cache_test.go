@@ -1,9 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestBlockCache(t *testing.T) {
@@ -17,19 +18,17 @@ func TestBlockCache(t *testing.T) {
 
 	cache.Set(testDomain, true)
 
-	if exists := cache.Exists(testDomain); !exists {
-		t.Error(testDomain, "didnt exist in block cache")
-	}
+	assert.Equal(t, cache.Exists(testDomain), true)
+	assert.Equal(t, cache.Exists(strings.ToUpper(testDomain)), true)
 
-	if exists := cache.Exists(strings.ToUpper(testDomain)); !exists {
-		t.Error(strings.ToUpper(testDomain), "didnt exist in block cache")
-	}
+	_, err := cache.Get(testDomain)
+	assert.Nil(t, err)
 
-	if _, err := cache.Get(testDomain); err != nil {
-		t.Error(err)
-	}
+	assert.Equal(t, cache.Length(), 1)
 
-	if exists := cache.Exists(fmt.Sprintf("%sfuzz", testDomain)); exists {
-		t.Error("fuzz existed in block cache")
-	}
+	cache.Remove(testDomain)
+	assert.Equal(t, cache.Exists(testDomain), false)
+
+	_, err = cache.Get(testDomain)
+	assert.Error(t, err)
 }

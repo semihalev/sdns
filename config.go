@@ -160,10 +160,6 @@ func LoadConfig(path string) error {
 	}
 
 	if Config.Version != ConfigVersion {
-		if Config.Version == "" {
-			Config.Version = "none"
-		}
-
 		log.Warn("Config file sdns.toml is out of date!")
 	}
 

@@ -31,7 +31,7 @@ func setBlock(c *gin.Context) {
 }
 
 // StartAPIServer launches the API server
-func StartAPIServer() error {
+func StartAPIServer(addr string) error {
 	gin.SetMode(gin.ReleaseMode)
 
 	r := gin.Default()
@@ -45,11 +45,11 @@ func StartAPIServer() error {
 		block.GET("/set/:key", setBlock)
 	}
 
-	if err := r.Run(Config.API); err != nil {
+	if err := r.Run(addr); err != nil {
 		return err
 	}
 
-	log.Info("API server listening on", "addr", Config.API)
+	log.Info("API server listening on", "addr", addr)
 
 	return nil
 }
