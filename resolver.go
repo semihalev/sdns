@@ -166,7 +166,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				if len(ns.DSRR) > 0 {
 					err := r.verifyDNSSEC(Net, signer, resp, ns.DSRR, servers)
 					if err != nil {
-						log.Info("DNSSEC verify failed", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+						log.Info("DNSSEC verify failed (cached)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
 						return nil, err
 					}
 				}
@@ -250,19 +250,21 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				}
 			}
 
+			var olddsrr []dns.RR
 			if signer == rootzone || len(parentdsrr) > 0 {
 				err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
 				if err != nil {
-					log.Info("DNSSEC verify failed", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+					log.Info("DNSSEC verify failed (not cached)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
 					return nil, err
 				}
 
+				copy(olddsrr, parentdsrr)
 				parentdsrr = extractRRSet(resp.Ns, nsrec.Header().Name, dns.TypeDS)
 			}
 
 			key := keyGen(Q)
 
-			err := r.nsCache.Set(key, parentdsrr, nsrec.Header().Ttl, nservers)
+			err := r.nsCache.Set(key, olddsrr, nsrec.Header().Ttl, nservers)
 			if err != nil {
 				log.Error("Set nameserver cache failed", "query", Q.String(), "error", err.Error())
 			} else {
@@ -410,7 +412,13 @@ func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr s
 	return addr, fmt.Errorf("ns addr not found %s", ns)
 }
 
-func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentdsRR []dns.RR, servers []string) error {
+func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentdsRR []dns.RR, servers []string) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("%v for parentname=%s qname=%s", err, qname, resp.Question[0].Name)
+		}
+	}()
+
 	req := new(dns.Msg)
 	req.SetQuestion(qname, dns.TypeDNSKEY)
 	req.SetEdns0(edns0size, true)
@@ -429,7 +437,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 		} else {
 			msg, err = r.lookup(Net, req, servers)
 			if err != nil {
-				return err
+				return
 			}
 		}
 	}
@@ -453,12 +461,12 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 		err = verifyDS(keys, parentdsRR)
 		if err != nil {
 			log.Debug("DNSSEC DS verify failed", "qname", qname, "error", err.Error())
-			return err
+			return
 		}
 	}
 
-	if err := verifyRRSIG(keys, resp); err != nil {
-		return err
+	if err = verifyRRSIG(keys, resp); err != nil {
+		return
 	}
 
 	r.rCache.Set(cacheKey, msg)
