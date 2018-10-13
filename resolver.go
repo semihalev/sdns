@@ -118,7 +118,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
 			err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
 			if err != nil {
-				log.Info("DNSSEC verify failed", "query", req.Question[0].String(), "error", err.Error())
+				log.Info("DNSSEC verify failed", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
 				return nil, err
 			}
 		}
@@ -166,7 +166,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				if len(ns.DSRR) > 0 {
 					err := r.verifyDNSSEC(Net, signer, resp, ns.DSRR, servers)
 					if err != nil {
-						log.Debug("DNSSEC verify failed", "query", req.Question[0].String(), "error", err.Error())
+						log.Info("DNSSEC verify failed", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
 						return nil, err
 					}
 				}
@@ -253,7 +253,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			if signer == rootzone || len(parentdsrr) > 0 {
 				err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
 				if err != nil {
-					log.Debug("DNSSEC verify failed", "query", req.Question[0].String(), "error", err.Error())
+					log.Info("DNSSEC verify failed", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
 					return nil, err
 				}
 
