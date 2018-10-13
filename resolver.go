@@ -455,7 +455,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 	}
 
 	if err = verifyRRSIG(keys, resp); err != nil {
-		log.Debug("not verified rrsig", err)
+		log.Debug("RRSIG not verified", "error", err.Error())
 		return
 	}
 
