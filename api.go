@@ -8,21 +8,13 @@ import (
 	"gopkg.in/gin-contrib/cors.v1"
 )
 
-func getBlocks(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"length": blockCache.Length(), "items": blockCache.Backend})
-}
-
 func existsBlock(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"exists": blockCache.Exists(c.Param("key"))})
 }
 
-func lengthBlock(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"length": blockCache.Length()})
-}
-
 func getBlock(c *gin.Context) {
 	if ok, _ := blockCache.Get(c.Param("key")); !ok {
-		c.JSON(http.StatusOK, gin.H{"error": c.Param("key") + " not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": c.Param("key") + " not found"})
 	} else {
 		c.JSON(http.StatusOK, gin.H{"success": ok})
 	}
@@ -45,11 +37,9 @@ func StartAPIServer() error {
 	r := gin.Default()
 	r.Use(cors.Default())
 
-	block := r.Group("/block")
+	block := r.Group("/api/v1/block")
 	{
-		block.GET("/", getBlocks)
 		block.GET("/exists/:key", existsBlock)
-		block.GET("/length", lengthBlock)
 		block.GET("/get/:key", getBlock)
 		block.GET("/remove/:key", removeBlock)
 		block.GET("/set/:key", setBlock)

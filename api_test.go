@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +14,7 @@ var (
 
 func TestMain(m *testing.M) {
 
-	blockCache.Set("cf", true)
+	blockCache.Set("test.com", true)
 	gin.SetMode(gin.TestMode)
 	ginr = gin.Default()
 
@@ -25,9 +23,9 @@ func TestMain(m *testing.M) {
 
 func Test_getBlocks(t *testing.T) {
 
-	ginr.GET("/block", getBlocks)
+	ginr.GET("/api/v1/block/:key", getBlock)
 
-	request, err := http.NewRequest(http.MethodGet, "/block", nil)
+	request, err := http.NewRequest(http.MethodGet, "/api/v1/block/test.com", nil)
 
 	if err != nil {
 		t.Fatalf("Couldn't create request: %v\n", err)
@@ -40,20 +38,4 @@ func Test_getBlocks(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("Its not okey!")
 	}
-
-	js := struct {
-		Items struct {
-			Key bool `json:"cf"`
-		} `json:"items"`
-		Length int `json:"length"`
-	}{}
-
-	_ = json.Unmarshal(w.Body.Bytes(), &js)
-
-	if js.Length < 1 {
-		t.Error("invalid lenght")
-	}
-
-	log.Println("Key:", js.Items.Key)
-	log.Println("Lenght:", js.Length)
 }
