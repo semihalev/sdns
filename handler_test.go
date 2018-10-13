@@ -67,7 +67,6 @@ func Test_handler(t *testing.T) {
 
 	m := new(dns.Msg)
 	m.SetQuestion("www.google.com.", dns.TypeA)
-	m.SetEdns0(edns0size, true)
 	m.RecursionDesired = true
 
 	r, _, err := c.Exchange(m, addrstr)
@@ -110,4 +109,10 @@ func Test_handler(t *testing.T) {
 
 	aaaa := r.Answer[0].(*dns.AAAA)
 	assert.Equal(t, aaaa.AAAA.String(), "::")
+
+	m.SetEdns0(edns0size, true)
+	m.SetQuestion("example.com.", dns.TypeA)
+	r, _, err = c.Exchange(m, addrstr)
+	assert.NoError(t, err)
+	assert.Equal(t, len(r.Answer) > 0, true)
 }
