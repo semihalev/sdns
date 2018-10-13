@@ -2,7 +2,8 @@ language: go
 sudo: required
 language: go
 go:
- - tip
+  - "1.10"
+  - "1.11"
 
 script: 
   - env GO111MODULE=on go test -v -covermode=atomic -coverprofile=coverage.out
