@@ -151,28 +151,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 				log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 
-				signer := upperName(nsrec.Header().Name)
-				if signer == "" {
-					signer = rootzone
-				}
-
-				for _, rr := range resp.Ns {
-					if sigrec, ok := rr.(*dns.RRSIG); ok {
-						signer = sigrec.SignerName
-						break
-					}
-				}
-
-				if len(ns.DSRR) > 0 {
-					err := r.verifyDNSSEC(Net, signer, resp, ns.DSRR, servers)
-					if err != nil {
-						log.Info("DNSSEC verify failed (cached)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
-						return nil, err
-					}
-				}
-
 				depth--
-				return r.Resolve(Net, req, ns.Servers, false, depth, nlevel, nsl, ns.DSRR)
+				return r.Resolve(Net, req, ns.Servers, false, depth, nlevel, nsl, nil)
 			}
 
 			log.Debug("Nameserver cache not found", "key", key, "query", Q.String(), "error", err.Error())
@@ -250,7 +230,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				}
 			}
 
-			var olddsrr []dns.RR
 			if signer == rootzone || len(parentdsrr) > 0 {
 				err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
 				if err != nil {
@@ -258,13 +237,12 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 					return nil, err
 				}
 
-				copy(olddsrr, parentdsrr)
 				parentdsrr = extractRRSet(resp.Ns, nsrec.Header().Name, dns.TypeDS)
 			}
 
 			key := keyGen(Q)
 
-			err := r.nsCache.Set(key, olddsrr, nsrec.Header().Ttl, nservers)
+			err := r.nsCache.Set(key, parentdsrr, nsrec.Header().Ttl, nservers)
 			if err != nil {
 				log.Error("Set nameserver cache failed", "query", Q.String(), "error", err.Error())
 			} else {
@@ -471,6 +449,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 
 	r.rCache.Set(cacheKey, msg)
 
-	log.Debug("DNSSEC verified", "qname", qname)
+	log.Debug("DNSSEC verified", "parent", qname, "qname", resp.Question[0].Name)
+
 	return nil
 }
