@@ -22,7 +22,7 @@ or
 ## Building
 
 ```shell
-$ go build
+$ go build 
 ```
 
 ## Flags

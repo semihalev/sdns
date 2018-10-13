@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
@@ -25,6 +26,16 @@ const (
 
 func init() {
 	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated")
+	flag.Usage = usage
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
+	fmt.Fprintln(os.Stderr, "OPTIONS:")
+	flag.PrintDefaults()
+	fmt.Fprintln(os.Stderr, "USAGE:")
+	fmt.Fprintln(os.Stderr, "./sdns -config=sdns.toml")
+	fmt.Fprintln(os.Stderr, "")
 }
 
 func main() {

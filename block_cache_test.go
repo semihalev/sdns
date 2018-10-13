@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -25,6 +26,14 @@ func TestBlockCache(t *testing.T) {
 	assert.Nil(t, err)
 
 	assert.Equal(t, cache.Length(), 1)
+
+	if exists := cache.Exists(fmt.Sprintf("%sfuzz", testDomain)); exists {
+		t.Error("fuzz existed in block cache")
+	}
+
+	if cacheLen := cache.Length(); cacheLen != 1 {
+		t.Error("invalid lenght: ", cacheLen)
+	}
 
 	cache.Remove(testDomain)
 	assert.Equal(t, cache.Exists(testDomain), false)

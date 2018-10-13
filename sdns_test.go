@@ -17,8 +17,17 @@ var (
 )
 
 func TestMain(m *testing.M) {
+
 	gin.SetMode(gin.TestMode)
 	ginr = gin.Default()
+
+	block := ginr.Group("/api/v1/block")
+	{
+		block.GET("/exists/:key", existsBlock)
+		block.GET("/get/:key", getBlock)
+		block.GET("/remove/:key", removeBlock)
+		block.GET("/set/:key", setBlock)
+	}
 
 	m.Run()
 }
