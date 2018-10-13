@@ -40,7 +40,7 @@ $ go build
 
 * Linux/BSD/Windows/Darwin supported
 * DNS RFC support
-* Concurrect DNS lookups within listed servers
+* Concurrent DNS lookups within listed servers
 * DNS caching
 * Basic IPv6 support
 * Basic DNSSEC validation
