@@ -29,8 +29,7 @@ $ go build
 
 | Flag        | Desc           | 
 | ------------- |-------------| 
-| config | Location of the config file, if not found it will be generated | 
-| update | Force an update of the blocklist database | 
+| config | Location of the config file, if not found it will be generated |
 
 ## Server Configuration Checklist
 

@@ -1,3 +1,5 @@
-sources
+blacklist
+server.crt
+server.key
 sdns
 sdns.toml

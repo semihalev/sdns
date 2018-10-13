@@ -25,7 +25,6 @@ const (
 
 func init() {
 	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated")
-	flag.BoolVar(&forceUpdate, "update", false, "force an update of the blocklist database")
 }
 
 func main() {
@@ -68,20 +67,6 @@ func main() {
 
 	log.Info("Starting sdns...", "version", BuildVersion)
 
-	// delay updating the blocklists, cache until the server starts and can serve requests as the local resolver
-	timer := time.NewTimer(time.Second * 1)
-	go func() {
-		<-timer.C
-		if _, err := os.Stat("lists"); os.IsNotExist(err) || forceUpdate {
-			if err := updateBlocklist(); err != nil {
-				log.Crit("Update block cache failed", "error", err.Error())
-			}
-		}
-		if err := UpdateBlockCache(); err != nil {
-			log.Crit("Update block cache failed", "error", err.Error())
-		}
-	}()
-
 	server := &Server{
 		host:           Config.Bind,
 		tlsHost:        Config.BindTLS,
@@ -93,9 +78,39 @@ func main() {
 
 	server.Run()
 
-	if err := StartAPIServer(); err != nil {
-		log.Crit("Start API server failed", "error", err.Error())
-	}
+	go func() {
+		if err := StartAPIServer(); err != nil {
+			log.Crit("Start API server failed", "error", err.Error())
+		}
+	}()
+
+	go func() {
+		us := make(chan os.Signal, 1)
+		signal.Notify(us, syscall.SIGUSR1)
+
+		timer := time.NewTimer(time.Second)
+
+		for {
+			select {
+			case <-timer.C:
+				if err := updateBlocklists(Config.BlockListDir); err != nil {
+					log.Error("Update blocklists failed", "error", err.Error())
+				}
+
+				if err := readBlocklists(Config.BlockListDir); err != nil {
+					log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
+				}
+			case <-us:
+				if err := updateBlocklists(Config.BlockListDir); err != nil {
+					log.Error("Update blocklists failed", "error", err.Error())
+				}
+
+				if err := readBlocklists(Config.BlockListDir); err != nil {
+					log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
+				}
+			}
+		}
+	}()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)

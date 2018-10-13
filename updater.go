@@ -15,11 +15,12 @@ import (
 )
 
 var timesSeen = make(map[string]int)
-var whitelist = make(map[string]bool)
 
-func updateBlocklist() error {
-	if _, err := os.Stat("sources"); os.IsNotExist(err) {
-		if err := os.Mkdir("sources", 0700); err != nil {
+//var whitelist = make(map[string]bool)
+
+func updateBlocklists(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := os.Mkdir(path, 0700); err != nil {
 			return fmt.Errorf("error creating sources directory: %s", err)
 		}
 	}
@@ -32,15 +33,15 @@ func updateBlocklist() error {
 		blockCache.Set(entry, true)
 	}
 
-	if err := fetchSources(); err != nil {
+	if err := fetchBlocklist(path); err != nil {
 		return fmt.Errorf("error fetching sources: %s", err)
 	}
 
 	return nil
 }
 
-func downloadBlocklist(uri string, name string) error {
-	filePath := filepath.FromSlash(fmt.Sprintf("sources/%s", name))
+func downloadBlocklist(uri, path, name string) error {
+	filePath := filepath.FromSlash(fmt.Sprintf("%s/%s", path, name))
 
 	output, err := os.Create(filePath)
 	if err != nil {
@@ -61,20 +62,20 @@ func downloadBlocklist(uri string, name string) error {
 	return nil
 }
 
-func fetchSources() error {
+func fetchBlocklist(path string) error {
 	var wg sync.WaitGroup
 
-	for _, uri := range Config.Sources {
+	for _, uri := range Config.BlockLists {
 		wg.Add(1)
 
 		u, _ := url.Parse(uri)
 		host := u.Host
 		timesSeen[host] = timesSeen[host] + 1
-		fileName := fmt.Sprintf("%s.%d.list", host, timesSeen[host])
+		fileName := fmt.Sprintf("%s.%d.tmp", host, timesSeen[host])
 
 		go func(uri string, name string) {
-			log.Info("Fetching source", "uri", uri)
-			if err := downloadBlocklist(uri, name); err != nil {
+			log.Info("Fetching blacklist", "uri", uri)
+			if err := downloadBlocklist(uri, path, name); err != nil {
 				fmt.Println(err)
 			}
 
@@ -87,38 +88,41 @@ func fetchSources() error {
 	return nil
 }
 
-// UpdateBlockCache updates the BlockCache
-func UpdateBlockCache() error {
-	log.Info("Loading blocked domains from sources", "sources", len(Config.SourceDirs))
+func readBlocklists(dir string) error {
+	log.Info("Loading blocked domains", "dir", dir)
 
-	for _, dir := range Config.SourceDirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			log.Info("Path not found, skipping...", "path", dir)
-			continue
-		}
-
-		err := filepath.Walk(dir, func(path string, f os.FileInfo, _ error) error {
-			if !f.IsDir() {
-				file, err := os.Open(filepath.FromSlash(path))
-				if err != nil {
-					return fmt.Errorf("error opening file: %s", err)
-				}
-				defer file.Close()
-
-				if err = parseHostFile(file); err != nil {
-					return fmt.Errorf("error parsing hostfile %s", err)
-				}
-			}
-
-			return nil
-		})
-
-		if err != nil {
-			return fmt.Errorf("error walking location %s", err)
-		}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		log.Warn("Path not found, skipping...", "path", dir)
+		return nil
 	}
 
-	log.Info("Domains loaded from sources", "total", blockCache.Length())
+	err := filepath.Walk(dir, func(path string, f os.FileInfo, _ error) error {
+		if !f.IsDir() {
+			file, err := os.Open(filepath.FromSlash(path))
+			if err != nil {
+				return fmt.Errorf("error opening file: %s", err)
+			}
+
+			if err = parseHostFile(file); err != nil {
+				file.Close()
+				return fmt.Errorf("error parsing hostfile %s", err)
+			}
+
+			file.Close()
+
+			if filepath.Ext(path) == ".tmp" {
+				os.Remove(filepath.FromSlash(path))
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("error walking location %s", err)
+	}
+
+	log.Info("Blocked domains loaded", "total", blockCache.Length())
 
 	return nil
 }
