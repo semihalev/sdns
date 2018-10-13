@@ -230,6 +230,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			}
 
 			signer := upperName(nsrec.Header().Name)
+			signerFound := false
 			if signer == "" {
 				signer = rootzone
 			}
@@ -237,7 +238,27 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			for _, rr := range resp.Ns {
 				if sigrec, ok := rr.(*dns.RRSIG); ok {
 					signer = sigrec.SignerName
+					signerFound = true
 					break
+				}
+			}
+
+			if signerFound && len(parentdsrr) > 0 {
+				if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
+					if dsrr.Header().Name != signer && req.Question[0].Qtype != dns.TypeDS {
+						//try lookup DS records
+						dsReq := new(dns.Msg)
+						dsReq.SetQuestion(signer, dns.TypeDS)
+						dsReq.SetEdns0(edns0size, true)
+
+						dsDepth := Config.Maxdepth
+						dsResp, err := r.Resolve(Net, dsReq, rootservers, true, dsDepth, 0, false, nil)
+						if err == nil {
+							parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
+						} else {
+							signerFound = false
+						}
+					}
 				}
 			}
 
@@ -463,6 +484,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 	if len(parentdsRR) > 0 {
 		err = verifyDS(keys, parentdsRR)
 		if err != nil {
+			fmt.Println(qname, parentdsRR, resp)
 			log.Debug("DNSSEC DS verify failed", "qname", qname, "error", err.Error())
 			return
 		}
