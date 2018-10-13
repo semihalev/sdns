@@ -16,7 +16,7 @@ import (
 type Resolver struct {
 	config  *dns.ClientConfig
 	nsCache *NameServerCache
-	rCache  *MemoryCache
+	rCache  *QueryCache
 }
 
 var (
@@ -61,7 +61,7 @@ func NewResolver() *Resolver {
 	return &Resolver{
 		&dns.ClientConfig{},
 		NewNameServerCache(Config.Maxcount),
-		NewMemoryCache(Config.Maxcount),
+		NewQueryCache(Config.Maxcount),
 	}
 }
 

@@ -23,7 +23,7 @@ func (q *Question) String() string {
 // DNSHandler type
 type DNSHandler struct {
 	resolver   *Resolver
-	cache      *MemoryCache
+	cache      *QueryCache
 	errorCache *ErrorCache
 }
 
@@ -31,7 +31,7 @@ type DNSHandler struct {
 func NewHandler() *DNSHandler {
 	return &DNSHandler{
 		NewResolver(),
-		NewMemoryCache(Config.Maxcount),
+		NewQueryCache(Config.Maxcount),
 		NewErrorCache(Config.Maxcount, Config.Expire),
 	}
 }

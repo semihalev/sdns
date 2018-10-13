@@ -46,17 +46,17 @@ type Mesg struct {
 	LastUpdateTime time.Time
 }
 
-// MemoryCache type
-type MemoryCache struct {
+// QueryCache type
+type QueryCache struct {
 	mu sync.RWMutex
 
 	Backend  map[string]*Mesg
 	Maxcount int
 }
 
-// NewMemoryCache return new cache
-func NewMemoryCache(maxcount int) *MemoryCache {
-	c := &MemoryCache{
+// NewQueryCache return new cache
+func NewQueryCache(maxcount int) *QueryCache {
+	c := &QueryCache{
 		Backend:  make(map[string]*Mesg, maxcount),
 		Maxcount: maxcount,
 	}
@@ -67,7 +67,7 @@ func NewMemoryCache(maxcount int) *MemoryCache {
 }
 
 // Get returns the entry for a key or an error
-func (c *MemoryCache) Get(key string) (*dns.Msg, *rl.RateLimiter, error) {
+func (c *QueryCache) Get(key string) (*dns.Msg, *rl.RateLimiter, error) {
 	key = strings.ToLower(key)
 
 	c.mu.RLock()
@@ -112,7 +112,7 @@ func (c *MemoryCache) Get(key string) (*dns.Msg, *rl.RateLimiter, error) {
 }
 
 // Set sets a keys value to a Mesg
-func (c *MemoryCache) Set(key string, msg *dns.Msg) error {
+func (c *QueryCache) Set(key string, msg *dns.Msg) error {
 	key = strings.ToLower(key)
 
 	if c.Full() && !c.Exists(key) {
@@ -128,7 +128,7 @@ func (c *MemoryCache) Set(key string, msg *dns.Msg) error {
 }
 
 // Remove removes an entry from the cache
-func (c *MemoryCache) Remove(key string) {
+func (c *QueryCache) Remove(key string) {
 	key = strings.ToLower(key)
 
 	c.mu.Lock()
@@ -137,7 +137,7 @@ func (c *MemoryCache) Remove(key string) {
 }
 
 // Exists returns whether or not a key exists in the cache
-func (c *MemoryCache) Exists(key string) bool {
+func (c *QueryCache) Exists(key string) bool {
 	key = strings.ToLower(key)
 
 	c.mu.RLock()
@@ -147,21 +147,21 @@ func (c *MemoryCache) Exists(key string) bool {
 }
 
 // Length returns the caches length
-func (c *MemoryCache) Length() int {
+func (c *QueryCache) Length() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.Backend)
 }
 
 // Full returns whether or not the cache is full
-func (c *MemoryCache) Full() bool {
+func (c *QueryCache) Full() bool {
 	if c.Maxcount == 0 {
 		return false
 	}
 	return c.Length() >= c.Maxcount
 }
 
-func (c *MemoryCache) run() {
+func (c *QueryCache) run() {
 	ticker := time.NewTicker(time.Hour)
 
 	for range ticker.C {

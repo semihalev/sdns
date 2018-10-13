@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeCache() MemoryCache {
-	return MemoryCache{
+func makeCache() QueryCache {
+	return QueryCache{
 		Backend:  make(map[string]*Mesg, Config.Maxcount),
 		Maxcount: Config.Maxcount,
 	}
