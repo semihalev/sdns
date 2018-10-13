@@ -34,6 +34,14 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
+func Test_SDNS(t *testing.T) {
+	Config.Bind = ":0"
+	Config.BindTLS = ""
+	Config.API = ""
+
+	startSDNS()
+}
+
 func BenchmarkResolver(b *testing.B) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
