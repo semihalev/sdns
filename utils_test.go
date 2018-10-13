@@ -61,7 +61,7 @@ func Test_shuffleRR(t *testing.T) {
 	rr := shuffleRR(vals)
 
 	if len(rr) != 1 {
-		t.Error("invalid array lenght")
+		t.Error("invalid array length")
 	}
 }
 

@@ -32,7 +32,7 @@ func TestBlockCache(t *testing.T) {
 	}
 
 	if cacheLen := cache.Length(); cacheLen != 1 {
-		t.Error("invalid lenght: ", cacheLen)
+		t.Error("invalid length: ", cacheLen)
 	}
 
 	cache.Remove(testDomain)
