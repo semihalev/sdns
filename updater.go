@@ -19,7 +19,7 @@ var whitelist = make(map[string]bool)
 
 func updateBlocklists(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.Mkdir(path, 0700); err != nil {
+		if err := os.Mkdir(path, 0755); err != nil {
 			return fmt.Errorf("error creating sources directory: %s", err)
 		}
 	}
@@ -32,9 +32,7 @@ func updateBlocklists(path string) error {
 		blockCache.Set(entry, true)
 	}
 
-	if err := fetchBlocklist(path); err != nil {
-		return fmt.Errorf("error fetching sources: %s", err)
-	}
+	fetchBlocklist(path)
 
 	return nil
 }
@@ -61,7 +59,7 @@ func downloadBlocklist(uri, path, name string) error {
 	return nil
 }
 
-func fetchBlocklist(path string) error {
+func fetchBlocklist(path string) {
 	var wg sync.WaitGroup
 
 	for _, uri := range Config.BlockLists {
@@ -75,7 +73,7 @@ func fetchBlocklist(path string) error {
 		go func(uri string, name string) {
 			log.Info("Fetching blacklist", "uri", uri)
 			if err := downloadBlocklist(uri, path, name); err != nil {
-				fmt.Println(err)
+				log.Error("Fetching blacklist", "uri", uri, "error", err.Error())
 			}
 
 			wg.Done()
@@ -83,8 +81,6 @@ func fetchBlocklist(path string) error {
 	}
 
 	wg.Wait()
-
-	return nil
 }
 
 func readBlocklists(dir string) error {
