@@ -22,7 +22,7 @@ func Test_resolver(t *testing.T) {
 
 func Test_resolverDNSSEC(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("dnssec-tools.org.", dns.TypeA)
+	req.SetQuestion("good.dnssec-or-not.com.", dns.TypeA)
 	req.SetEdns0(edns0size, true)
 
 	r := NewResolver()
