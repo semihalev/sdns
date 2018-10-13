@@ -295,10 +295,17 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 	L := func(server string, last bool) {
 		defer wg.Done()
 
+	try:
 		r, _, err := c.Exchange(req, server)
 		if err != nil && err != dns.ErrTruncated {
 			log.Info("Got an error from resolver", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
 			return
+		}
+
+		if r != nil && r.Rcode == dns.RcodeFormatError {
+			// try again without edns tags
+			req.Extra = []dns.RR{}
+			goto try
 		}
 
 		if r != nil && r.Rcode != dns.RcodeSuccess && !last {
@@ -407,6 +414,13 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 			err = fmt.Errorf("%v for parentname=%s qname=%s", err, qname, resp.Question[0].Name)
 		}
 	}()
+
+	//FIX: remove here after NSEC3 impl.
+	for _, rr := range resp.Ns {
+		if _, ok := rr.(*dns.NSEC3); ok {
+			return nil
+		}
+	}
 
 	req := new(dns.Msg)
 	req.SetQuestion(qname, dns.TypeDNSKEY)
