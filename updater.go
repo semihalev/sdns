@@ -15,8 +15,7 @@ import (
 )
 
 var timesSeen = make(map[string]int)
-
-//var whitelist = make(map[string]bool)
+var whitelist = make(map[string]bool)
 
 func updateBlocklists(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
