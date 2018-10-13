@@ -1,42 +1,47 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
+)
 
 func Test_ErrorCache(t *testing.T) {
+	fakeClock := clockwork.NewFakeClock()
+	WallClock = fakeClock
 
-	keyValue := "ajdar: çikita muz"
-	etest := NewErrorCache(5, 100)
+	cache := NewErrorCache(1, 5)
 
-	err := etest.Set(keyValue)
+	err := cache.Set(testDomain)
+	assert.Nil(t, err)
 
-	if err != nil {
-		t.Error(err)
-	}
+	err = cache.Set("test2.com")
+	assert.Error(t, err)
+	assert.Equal(t, err.Error(), "cache full")
 
-	ok := etest.Exists(keyValue)
+	err = cache.Get(testDomain)
+	assert.Nil(t, err)
 
-	if !ok {
-		t.Error("value does not exists:", keyValue)
-	}
+	ok := cache.Exists(testDomain)
+	assert.Equal(t, ok, true)
 
-	err = etest.Get(keyValue)
+	fakeClock.Advance(5 * time.Second)
+	err = cache.Get(testDomain)
+	assert.Nil(t, err)
 
-	if err != nil {
-		t.Error("key not retrieve", err)
-	}
+	fakeClock.Advance(1 * time.Second)
+	err = cache.Get(testDomain)
+	assert.Error(t, err)
+	assert.Equal(t, err.Error(), "cache expired")
 
-	if full := etest.Full(); full {
-		t.Error("cache is full. oha!")
-	}
+	err = cache.Get(testDomain)
+	assert.Error(t, err)
 
-	if elen := etest.Length(); elen != 1 {
-		t.Error("indalid lenght:", elen)
-	}
+	cache = NewErrorCache(0, 5)
+	err = cache.Set(testDomain)
+	assert.Nil(t, err)
 
-	etest.Remove(keyValue)
-	ok = etest.Exists(keyValue)
-
-	if !ok {
-		t.Error("value still exists:", keyValue)
-	}
+	cache.Remove(testDomain)
 }
