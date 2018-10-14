@@ -461,7 +461,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 		} else {
 			msg, err = r.lookup(Net, req, servers)
 			if err != nil {
-				return
+				return nil
 			}
 		}
 	}
@@ -478,7 +478,8 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 	}
 
 	if len(keys) == 0 {
-		return errNoDNSKEY
+		// errNoDNSKEY
+		return nil
 	}
 
 	if len(parentdsRR) > 0 {
