@@ -43,6 +43,10 @@ func startSDNS() {
 		rootservers = Config.RootServers
 	}
 
+	if len(Config.Root6Servers) > 0 {
+		root6servers = Config.Root6Servers
+	}
+
 	if len(Config.RootKeys) > 0 {
 		initialkeys = Config.RootKeys
 		rootkeys = []dns.RR{}

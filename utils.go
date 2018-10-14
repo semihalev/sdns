@@ -231,7 +231,10 @@ main:
 	for _, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
 		for _, k := range keys {
-			if !strings.HasPrefix(sig.Header().Name, k.Header().Name) {
+			if !strings.HasSuffix(sig.Header().Name, k.Header().Name) {
+				continue main
+			}
+			if sig.SignerName != k.Header().Name {
 				continue main
 			}
 		}
