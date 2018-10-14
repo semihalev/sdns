@@ -43,8 +43,8 @@ $ go build
 * Concurrent DNS lookups within listed servers
 * DNS caching
 * DNS TLS support
+* DNSSEC validation
 * Basic IPv6 support
-* Basic DNSSEC validation
 * Query based ratelimit
 * Black-hole internet advertisements and malware servers
 * HTTP API support 
@@ -56,7 +56,7 @@ $ go build
 - [ ] Try lookup NS address better way
 - [x] TLS support
 - [ ] ~~DNS-Over-HTTPS~~
-- [ ] Full DNSSEC support
+- [x] Full DNSSEC support
 - [ ] Full IPv6 support
 
 ## Made With
