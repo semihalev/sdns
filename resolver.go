@@ -110,8 +110,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 	}
 
 	if len(resp.Answer) > 0 {
-		signer := req.Question[0].Name
-		signerFound := false
+		var signer string
+		var signerFound bool
 
 		for _, rr := range resp.Answer {
 			if sigrec, ok := rr.(*dns.RRSIG); ok {
@@ -196,6 +196,19 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			}
 		}
 
+		if len(ns) == 0 && len(resp.Ns) > 0 {
+			nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+			if len(nsecSet) > 0 {
+				err = verifyNODATA(&resp.Question[0], nsecSet)
+				if err != nil {
+					log.Info("NSEC3 verify failed (NODATA)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+					return
+				}
+			}
+
+			return
+		}
+
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
 				if nsl && extra.Header().Name == req.Question[0].Name && extra.A.String() != "" {
@@ -257,11 +270,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 					log.Info("NSEC3 verify failed (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
 				}
 			} else {
-				signer := upperName(nsrec.Header().Name)
-				signerFound := false
-				if signer == "" {
-					signer = rootzone
-				}
+				var signer string
+				var signerFound bool
 
 				for _, rr := range resp.Ns {
 					if sigrec, ok := rr.(*dns.RRSIG); ok {
@@ -273,7 +283,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 				if signerFound && len(parentdsrr) > 0 {
 					if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
-						if dsrr.Header().Name != signer && req.Question[0].Qtype != dns.TypeDS {
+						if req.Question[0].Qtype != dns.TypeDS && dsrr.Header().Name != signer {
 							//try lookup DS records
 							dsReq := new(dns.Msg)
 							dsReq.SetQuestion(signer, dns.TypeDS)
@@ -290,13 +300,13 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 					}
 				}
 
-				if signer == rootzone || len(parentdsrr) > 0 {
+				if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
 					err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
 					if err != nil {
 						log.Info("DNSSEC verify failed (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
-					} else {
-						parentdsrr = extractRRSet(resp.Ns, nsrec.Header().Name, dns.TypeDS)
 					}
+
+					parentdsrr = extractRRSet(resp.Ns, nsrec.Header().Name, dns.TypeDS)
 				}
 			}
 
