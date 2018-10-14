@@ -33,7 +33,7 @@ type config struct {
 	API            string
 	Nullroute      string
 	Nullroutev6    string
-	OutboundIP     []string
+	OutboundIPs    []string
 	Interval       int
 	Timeout        int
 	ConnectTimeout int
@@ -79,7 +79,7 @@ bind = ":53"
 # tlsprivatekey = "server.key"
 
 # outbound ip addresses, if you set multiple, sdns can use random outbound ip address 
-# outboundips = []
+outboundips = []
 
 # root servers
 rootservers = [

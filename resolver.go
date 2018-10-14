@@ -326,13 +326,13 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 		WriteTimeout: time.Duration(Config.Timeout) * time.Second,
 	}
 
-	if len(Config.OutboundIP) > 0 {
-		Config.OutboundIP = shuffleStr(Config.OutboundIP)
+	if len(Config.OutboundIPs) > 0 {
+		Config.OutboundIPs = shuffleStr(Config.OutboundIPs)
 
 		if Net == "tcp" {
-			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIP[0])}
+			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIPs[0])}
 		} else if Net == "udp" {
-			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIP[0])}
+			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIPs[0])}
 		}
 	}
 
