@@ -227,8 +227,14 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) error {
 		return errNoSignatures
 	}
 
+main:
 	for _, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
+		for _, k := range keys {
+			if !strings.HasPrefix(sig.Header().Name, k.Header().Name) {
+				continue main
+			}
+		}
 		rest := extractRRSet(rr, sig.Header().Name, sig.TypeCovered)
 		if len(rest) == 0 {
 			return errMissingSigned

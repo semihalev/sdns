@@ -117,6 +117,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		var signerFound bool
 
 		for _, rr := range resp.Answer {
+			if rr.Header().Name != req.Question[0].Name {
+				continue
+			}
 			if sigrec, ok := rr.(*dns.RRSIG); ok {
 				signer = sigrec.SignerName
 				signerFound = true
@@ -277,6 +280,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				var signerFound bool
 
 				for _, rr := range resp.Ns {
+					if rr.Header().Name != nsrec.Header().Name {
+						continue
+					}
 					if sigrec, ok := rr.(*dns.RRSIG); ok {
 						signer = sigrec.SignerName
 						signerFound = true

@@ -48,7 +48,7 @@ $ go build
 * Query based ratelimit
 * Black-hole internet advertisements and malware servers
 * HTTP API support 
-* Outbount IP selection
+* Outbound IP selection
 
 ## TODO
 
