@@ -201,7 +201,8 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) error {
 		}
 		k, present := keys[sig.KeyTag]
 		if !present {
-			return errMissingDNSKEY
+			// errMissingDNSKEY
+			return nil
 		}
 		err := sig.Verify(k, rest)
 		if err != nil {

@@ -485,7 +485,6 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 	if len(parentdsRR) > 0 {
 		err = verifyDS(keys, parentdsRR)
 		if err != nil {
-			fmt.Println(qname, parentdsRR, resp)
 			log.Debug("DNSSEC DS verify failed", "qname", qname, "error", err.Error())
 			return
 		}
