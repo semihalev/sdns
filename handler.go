@@ -47,8 +47,16 @@ func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
-	var dsReq bool
+	q := req.Question[0]
+	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
+	if q.Qtype == dns.TypeANY ||
+		(q.Name != rootzone && req.RecursionDesired == false) {
+		h.handleFailed(w, req)
+		return
+	}
+
+	dsReq := false
 	if opt := req.IsEdns0(); opt != nil {
 		dsReq = opt.Do()
 		opt.SetDo()
@@ -56,15 +64,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		req.SetEdns0(edns0size, true)
 	}
 
-	q := req.Question[0]
-	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
-
-	if q.Qtype == dns.TypeANY {
-		h.handleFailed(w, req)
-		return
-	}
-
-	log.Debug("Lookup", "query", Q.String())
+	log.Debug("Lookup", "query", Q.String(), "dsreq", dsReq)
 
 	key := keyGen(Q)
 
@@ -87,7 +87,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		msg = h.checkGLUE(proto, req, msg)
 
 		if !dsReq {
-			msg = clearRRSIG(msg)
+			msg = clearDNSSEC(msg)
 		}
 
 		h.writeReplyMsg(w, msg)
@@ -131,6 +131,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 				m.Answer = append(m.Answer, a)
 			}
 
+			m.AuthenticatedData = true
+			m.Authoritative = false
 			m.RecursionAvailable = true
 
 			h.writeReplyMsg(w, m)
@@ -171,15 +173,13 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
-	mesg.RecursionAvailable = true
-
 	msg := new(dns.Msg)
 	*msg = *mesg
 
 	msg = h.checkGLUE(proto, req, msg)
 
 	if !dsReq {
-		msg = clearRRSIG(msg)
+		msg = clearDNSSEC(msg)
 	}
 
 	h.writeReplyMsg(w, msg)

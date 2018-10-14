@@ -13,10 +13,10 @@ import (
 )
 
 // BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "0.1.6"
+var BuildVersion = "0.1.7"
 
 // ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-var ConfigVersion = "0.1.6"
+var ConfigVersion = "0.1.7"
 
 type config struct {
 	Version        string
@@ -33,7 +33,7 @@ type config struct {
 	API            string
 	Nullroute      string
 	Nullroutev6    string
-	OutboundIP     string
+	OutboundIP     []string
 	Interval       int
 	Timeout        int
 	ConnectTimeout int
@@ -78,8 +78,8 @@ bind = ":53"
 # tls private key file
 # tlsprivatekey = "server.key"
 
-# outbound ip address
-# outboundip = ""
+# outbound ip addresses, if you set multiple, sdns can use random outbound ip address 
+# outboundips = []
 
 # root servers
 rootservers = [

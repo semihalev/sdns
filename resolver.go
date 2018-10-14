@@ -83,7 +83,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		return resp, errMaxDeph
 	}
 
-	if root {
+	if root && req.Question[0].Qtype != dns.TypeDS {
 		q := req.Question[0]
 		servers, parentdsrr = r.searchCache(&q)
 	}
@@ -93,6 +93,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 	if err != nil {
 		return
 	}
+
+	resp.RecursionAvailable = true
+	resp.AuthenticatedData = true
+	resp.Authoritative = false
 
 	if resp.Rcode != dns.RcodeSuccess {
 		if resp.Rcode == dns.RcodeNameError {
@@ -119,7 +123,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 		if signerFound && len(parentdsrr) > 0 {
 			if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
-				if dsrr.Header().Name != signer && req.Question[0].Qtype != dns.TypeDS {
+				if req.Question[0].Qtype != dns.TypeDS && dsrr.Header().Name != signer {
 					//try lookup DS records
 					dsReq := new(dns.Msg)
 					dsReq.SetQuestion(signer, dns.TypeDS)
@@ -251,7 +255,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 				err = verifyDelegation(resp.Question[0].Name, nsecSet)
 				if err != nil {
 					log.Info("NSEC3 verify failed (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
-					return
 				}
 			} else {
 				signer := upperName(nsrec.Header().Name)
@@ -291,7 +294,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 					err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
 					if err != nil {
 						log.Info("DNSSEC verify failed (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
-						return nil, err
 					}
 
 					parentdsrr = extractRRSet(resp.Ns, nsrec.Header().Name, dns.TypeDS)
@@ -324,11 +326,13 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 		WriteTimeout: time.Duration(Config.Timeout) * time.Second,
 	}
 
-	if Config.OutboundIP != "" {
+	if len(Config.OutboundIP) > 0 {
+		Config.OutboundIP = shuffleStr(Config.OutboundIP)
+
 		if Net == "tcp" {
-			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIP)}
+			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIP[0])}
 		} else if Net == "udp" {
-			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIP)}
+			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIP[0])}
 		}
 	}
 
@@ -480,7 +484,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 		} else {
 			msg, err = r.lookup(Net, req, servers)
 			if err != nil {
-				return nil
+				return
 			}
 		}
 	}
@@ -497,8 +501,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 	}
 
 	if len(keys) == 0 {
-		// errNoDNSKEY
-		return nil
+		return errNoDNSKEY
 	}
 
 	if len(parentdsRR) > 0 {

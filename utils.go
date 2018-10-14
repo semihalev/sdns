@@ -63,6 +63,19 @@ func shuffleRR(vals []dns.RR) []dns.RR {
 	return ret
 }
 
+func shuffleStr(vals []string) []string {
+
+	r := newRand()
+	perm := r.Perm(len(vals))
+	ret := make([]string, len(vals))
+
+	for i, randIndex := range perm {
+		ret[i] = vals[randIndex]
+	}
+
+	return ret
+}
+
 func newRand() *rand.Rand {
 	return rand.New(rand.NewSource(time.Now().Unix()))
 }
@@ -171,11 +184,32 @@ func isDO(req *dns.Msg) bool {
 	return false
 }
 
-func clearRRSIG(msg *dns.Msg) *dns.Msg {
-	for i := 0; i < len(msg.Answer); i++ {
-		if _, ok := msg.Answer[i].(*dns.RRSIG); ok {
-			msg.Answer = append(msg.Answer[:i], msg.Answer[i+1:]...)
-			i--
+func clearDNSSEC(msg *dns.Msg) *dns.Msg {
+	answer := make([]dns.RR, len(msg.Answer))
+	copy(answer, msg.Answer)
+
+	msg.Answer = []dns.RR{}
+
+	for _, rr := range answer {
+		switch rr.(type) {
+		case *dns.RRSIG, *dns.NSEC3, *dns.NSEC:
+			continue
+		default:
+			msg.Answer = append(msg.Answer, rr)
+		}
+	}
+
+	ns := make([]dns.RR, len(msg.Ns))
+	copy(ns, msg.Ns)
+
+	msg.Ns = []dns.RR{}
+
+	for _, rr := range ns {
+		switch rr.(type) {
+		case *dns.RRSIG, *dns.NSEC3, *dns.NSEC:
+			continue
+		default:
+			msg.Ns = append(msg.Ns, rr)
 		}
 	}
 
@@ -201,8 +235,7 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) error {
 		}
 		k, present := keys[sig.KeyTag]
 		if !present {
-			// errMissingDNSKEY
-			return nil
+			return errMissingDNSKEY
 		}
 		err := sig.Verify(k, rest)
 		if err != nil {
