@@ -294,9 +294,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 					err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
 					if err != nil {
 						log.Info("DNSSEC verify failed (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+					} else {
+						parentdsrr = extractRRSet(resp.Ns, nsrec.Header().Name, dns.TypeDS)
 					}
-
-					parentdsrr = extractRRSet(resp.Ns, nsrec.Header().Name, dns.TypeDS)
 				}
 			}
 
