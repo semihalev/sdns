@@ -103,6 +103,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 			if len(nsecSet) > 0 {
 				err = verifyNameError(&resp.Question[0], nsecSet)
+				if err != nil {
+					log.Info("NSEC3 verify failed (NXDOMAIN)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+				}
 			}
 		}
 
