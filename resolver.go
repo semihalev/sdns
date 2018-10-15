@@ -149,7 +149,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 					//try lookup DS records
 					dsReq := new(dns.Msg)
 					dsReq.SetQuestion(signer, dns.TypeDS)
-					dsReq.SetEdns0(edns0size, true)
+					dsReq.SetEdns0(DefaultMsgSize, true)
 
 					dsDepth := Config.Maxdepth
 					dsResp, err := r.Resolve(Net, dsReq, rootservers, true, dsDepth, 0, false, nil)
@@ -312,7 +312,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 							//try lookup DS records
 							dsReq := new(dns.Msg)
 							dsReq.SetQuestion(signer, dns.TypeDS)
-							dsReq.SetEdns0(edns0size, true)
+							dsReq.SetEdns0(DefaultMsgSize, true)
 
 							dsDepth := Config.Maxdepth
 							dsResp, err := r.Resolve(Net, dsReq, rootservers, true, dsDepth, 0, false, nil)
@@ -394,7 +394,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 
 		if r != nil && r.Rcode == dns.RcodeFormatError {
 			// try again without edns tags
-			req.Extra = []dns.RR{}
+			req = clearOPT(req)
 			goto try
 		}
 
@@ -507,7 +507,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 
 	req := new(dns.Msg)
 	req.SetQuestion(qname, dns.TypeDNSKEY)
-	req.SetEdns0(edns0size, true)
+	req.SetEdns0(DefaultMsgSize, true)
 
 	q := req.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}

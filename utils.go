@@ -184,6 +184,24 @@ func isDO(req *dns.Msg) bool {
 	return false
 }
 
+func clearOPT(msg *dns.Msg) *dns.Msg {
+	extra := make([]dns.RR, len(msg.Extra))
+	copy(extra, msg.Extra)
+
+	msg.Extra = []dns.RR{}
+
+	for _, rr := range extra {
+		switch rr.(type) {
+		case *dns.OPT:
+			continue
+		default:
+			msg.Extra = append(msg.Extra, rr)
+		}
+	}
+
+	return msg
+}
+
 func clearDNSSEC(msg *dns.Msg) *dns.Msg {
 	answer := make([]dns.RR, len(msg.Answer))
 	copy(answer, msg.Answer)

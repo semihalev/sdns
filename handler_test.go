@@ -110,7 +110,7 @@ func Test_handler(t *testing.T) {
 	aaaa := r.Answer[0].(*dns.AAAA)
 	assert.Equal(t, aaaa.AAAA.String(), "::")
 
-	m.SetEdns0(edns0size, true)
+	m.SetEdns0(DefaultMsgSize, true)
 	m.SetQuestion("example.com.", dns.TypeA)
 	r, _, err = c.Exchange(m, addrstr)
 	assert.NoError(t, err)

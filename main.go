@@ -20,10 +20,6 @@ var (
 	localIPs    []string
 )
 
-const (
-	edns0size = 4096
-)
-
 func init() {
 	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated")
 	flag.Usage = usage
