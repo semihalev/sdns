@@ -119,11 +119,20 @@ func Test_handler(t *testing.T) {
 	m.SetQuestion(".", dns.TypeANY)
 	r, _, err = c.Exchange(m, addrstr)
 	assert.NoError(t, err)
-	assert.NotEqual(t, r.Rcode, dns.RcodeBadVers)
+	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
 
 	m.SetQuestion(".", dns.TypeSOA)
 	m.RecursionDesired = false
 	r, _, err = c.Exchange(m, addrstr)
 	assert.NoError(t, err)
 	assert.NotEqual(t, r.Rcode, dns.RcodeServerFailure)
+
+	m.RecursionDesired = true
+	m.SetEdns0(DefaultMsgSize, true)
+	opt := m.IsEdns0()
+	opt.SetVersion(100)
+	opt.SetDo()
+	r, _, err = c.Exchange(m, addrstr)
+	assert.NoError(t, err)
+	assert.NotEqual(t, r.Rcode, dns.RcodeBadVers)
 }
