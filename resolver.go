@@ -68,8 +68,12 @@ var (
 		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
 	}
 
-	lookupDNS = []string{"8.8.8.8:53", "8.8.4.4:53"}
-	rootkeys  = []dns.RR{}
+	fallbackservers = []string{
+		"8.8.8.8:53",
+		"8.8.4.4:53",
+	}
+
+	rootkeys = []dns.RR{}
 )
 
 func init() {
@@ -258,7 +262,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		for k, addr := range ns {
 			if addr == "" {
 				//FIX: temprorary, need fix loops and change to inside resolver
-				addr, err := r.lookupNSAddr(Net, k, lookupDNS)
+				addr, err := r.lookupNSAddr(Net, k, fallbackservers)
 
 				if err == nil {
 					if isLocalIP(addr) {
