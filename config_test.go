@@ -11,12 +11,12 @@ func Test_config(t *testing.T) {
 	const configFile = "temp.toml"
 
 	err := generateConfig(configFile)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	ConfigVersion = "0.0.0"
 
 	err = LoadConfig(configFile)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	os.Remove(configFile)
 }

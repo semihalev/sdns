@@ -2,9 +2,12 @@ language: go
 sudo: required
 language: go
 go:
- - tip
+  - "1.10.x"
+  - "1.11"
 
-script: go test -v -covermode=atomic -coverprofile=coverage.out
-
+script: 
+  - env GO111MODULE=on go test -v -covermode=atomic -coverprofile=coverage.out
+  - env GO111MODULE=on go build
+  
 after_success:
   - bash <(curl -s https://codecov.io/bash)

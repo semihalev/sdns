@@ -8,6 +8,11 @@ import (
 	"github.com/semihalev/log"
 )
 
+const (
+	// DefaultMsgSize EDNS0 message size
+	DefaultMsgSize = 1536
+)
+
 // Question type
 type Question struct {
 	Qname  string `json:"name"`
@@ -47,24 +52,58 @@ func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
-	var dsReq bool
-
-	if opt := req.IsEdns0(); opt != nil {
-		dsReq = opt.Do()
-		opt.SetDo()
-	} else {
-		req.SetEdns0(edns0size, true)
-	}
-
 	q := req.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
+	dsReq := false
+
+	opt := req.IsEdns0()
+	if opt != nil {
+		opt.SetUDPSize(DefaultMsgSize)
+
+		if opt.Version() != 0 {
+			opt.SetVersion(0)
+			opt.SetExtendedRcode(dns.RcodeBadVers)
+
+			h.handleFailed(w, req, dns.RcodeBadVers, dsReq)
+			return
+		}
+
+		ops := make([]dns.EDNS0, len(opt.Option))
+		copy(ops, opt.Option)
+		opt.Option = []dns.EDNS0{}
+
+		for _, option := range ops {
+			if option.Option() == dns.EDNS0SUBNET {
+				opt.Option = append(opt.Option, option)
+			}
+		}
+
+		dsReq = opt.Do()
+
+		opt.Header().Ttl = 0
+		opt.SetDo()
+	} else {
+		opt = new(dns.OPT)
+		opt.Hdr.Name = "."
+		opt.Hdr.Rrtype = dns.TypeOPT
+		opt.SetUDPSize(DefaultMsgSize)
+		opt.SetDo()
+
+		req.Extra = append(req.Extra, opt)
+	}
+
 	if q.Qtype == dns.TypeANY {
-		h.handleFailed(w, req)
+		h.handleFailed(w, req, dns.RcodeNotImplemented, dsReq)
 		return
 	}
 
-	log.Debug("Lookup", "query", Q.String())
+	if q.Name != rootzone && req.RecursionDesired == false {
+		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
+		return
+	}
+
+	log.Debug("Lookup", "query", Q.String(), "dsreq", dsReq)
 
 	key := keyGen(Q)
 
@@ -75,7 +114,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		if Config.RateLimit > 0 && rl.Limit() {
 			log.Warn("Query rate limited", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype])
 
-			h.handleFailed(w, req)
+			h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
 			return
 		}
 
@@ -87,8 +126,13 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		msg = h.checkGLUE(proto, req, msg)
 
 		if !dsReq {
-			msg = clearRRSIG(msg)
+			msg = clearDNSSEC(msg)
 		}
+
+		msg = clearOPT(msg)
+
+		opt.SetDo(dsReq)
+		msg.Extra = append(msg.Extra, opt)
 
 		h.writeReplyMsg(w, msg)
 		return
@@ -98,7 +142,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	if err == nil {
 		log.Debug("Error cache hit", "key", key, "query", Q.String())
 
-		h.handleFailed(w, req)
+		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
 		return
 	}
 
@@ -131,6 +175,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 				m.Answer = append(m.Answer, a)
 			}
 
+			m.AuthenticatedData = true
+			m.Authoritative = false
 			m.RecursionAvailable = true
 
 			h.writeReplyMsg(w, m)
@@ -153,7 +199,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 		h.errorCache.Set(key)
 
-		h.handleFailed(w, req)
+		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
 		return
 	}
 
@@ -167,11 +213,9 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 		h.errorCache.Set(key)
 
-		h.handleFailed(w, req)
+		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
 		return
 	}
-
-	mesg.RecursionAvailable = true
 
 	msg := new(dns.Msg)
 	*msg = *mesg
@@ -179,8 +223,13 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	msg = h.checkGLUE(proto, req, msg)
 
 	if !dsReq {
-		msg = clearRRSIG(msg)
+		msg = clearDNSSEC(msg)
 	}
+
+	msg = clearOPT(msg)
+
+	opt.SetDo(dsReq)
+	msg.Extra = append(msg.Extra, opt)
 
 	h.writeReplyMsg(w, msg)
 
@@ -198,7 +247,7 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 	answerFound := false
 	var cnameReq dns.Msg
 
-	cnameReq.SetEdns0(edns0size, true)
+	cnameReq.SetEdns0(DefaultMsgSize, true)
 
 	for _, answer := range mesg.Answer {
 		if answer.Header().Rrtype == req.Question[0].Qtype {
@@ -265,10 +314,15 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 	return mesg
 }
 
-func (h *DNSHandler) handleFailed(w dns.ResponseWriter, msg *dns.Msg) {
+func (h *DNSHandler) handleFailed(w dns.ResponseWriter, msg *dns.Msg, rcode int, dsf bool) {
 	m := new(dns.Msg)
-	m.SetRcode(msg, dns.RcodeServerFailure)
+	m.Extra = msg.Extra
+	m.SetRcode(msg, rcode)
 	m.RecursionAvailable = true
+
+	if opt := m.IsEdns0(); opt != nil {
+		opt.SetDo(dsf)
+	}
 
 	h.writeReplyMsg(w, m)
 }
@@ -284,37 +338,4 @@ func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
 	if err != nil {
 		log.Error("Message writing failed", "error", err.Error())
 	}
-}
-
-func (h *DNSHandler) appendEDNS0Subnet(w dns.ResponseWriter, msg *dns.Msg) {
-	remote, _, _ := net.SplitHostPort(w.RemoteAddr().String())
-	addr := net.ParseIP(remote)
-
-	opt := msg.IsEdns0()
-
-	if opt == nil {
-		opt = new(dns.OPT)
-		opt.Hdr.Name = "."
-		opt.Hdr.Rrtype = dns.TypeOPT
-		opt.SetUDPSize(dns.DefaultMsgSize)
-		opt.SetDo(false)
-
-		msg.Extra = append([]dns.RR{opt}, msg.Extra...)
-	}
-
-	e := &dns.EDNS0_SUBNET{
-		Code:        dns.EDNS0SUBNET,
-		SourceScope: 0,
-		Address:     addr,
-	}
-
-	if addr.To4() == nil {
-		e.Family = 2 // IP6
-		e.SourceNetmask = net.IPv6len * 8
-	} else {
-		e.Family = 1 // IP4
-		e.SourceNetmask = net.IPv4len * 8
-	}
-
-	opt.Option = append(opt.Option, e)
 }

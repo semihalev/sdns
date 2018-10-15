@@ -3,8 +3,9 @@
 [![Travis](https://img.shields.io/travis/semihalev/sdns.svg?style=flat-square)](https://travis-ci.org/semihalev/sdns)
 [![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
+[![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
 
-Lightweight, fast dns recursive server with dnssec support
+Lightweight, fast recursive dns server with dnssec support
 
 Based on [kenshinx/godns](https://github.com/kenshinx/godns), [looterz/grimd](https://github.com/looterz/grimd)
 
@@ -22,7 +23,7 @@ or
 ## Building
 
 ```shell
-$ go build 
+$ go build
 ```
 
 ## Flags
@@ -41,20 +42,21 @@ $ go build
 * DNS RFC support
 * Concurrent DNS lookups within listed servers
 * DNS caching
+* DNS TLS support
+* DNSSEC validation
 * Basic IPv6 support
-* Basic DNSSEC validation
 * Query based ratelimit
 * Black-hole internet advertisements and malware servers
 * HTTP API support 
-* Outbount IP selection
+* Outbound IP selection
 
 ## TODO
 
-- [ ] More tests
+- [x] More tests
 - [ ] Try lookup NS address better way
 - [x] TLS support
-- [ ] DNS-Over-HTTPS
-- [ ] Full DNSSEC support
+- [ ] ~~DNS-Over-HTTPS~~
+- [x] Full DNSSEC support
 - [ ] Full IPv6 support
 
 ## Made With

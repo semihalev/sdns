@@ -32,6 +32,10 @@ func setBlock(c *gin.Context) {
 
 // StartAPIServer launches the API server
 func StartAPIServer(addr string) error {
+	if addr == "" {
+		return nil
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 
 	r := gin.Default()

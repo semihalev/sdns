@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/miekg/dns"
+	"github.com/semihalev/log"
 )
 
 const (
@@ -17,9 +18,10 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
 	gin.SetMode(gin.TestMode)
-	ginr = gin.Default()
+	ginr = gin.New()
 
 	block := ginr.Group("/api/v1/block")
 	{
@@ -30,6 +32,14 @@ func TestMain(m *testing.M) {
 	}
 
 	m.Run()
+}
+
+func Test_SDNS(t *testing.T) {
+	Config.Bind = ":0"
+	Config.BindTLS = ""
+	Config.API = ""
+
+	startSDNS()
 }
 
 func BenchmarkResolver(b *testing.B) {

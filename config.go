@@ -13,16 +13,17 @@ import (
 )
 
 // BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "0.1.6"
+var BuildVersion = "0.1.8-rc1"
 
 // ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-var ConfigVersion = "0.1.6"
+var ConfigVersion = "0.1.8"
 
 type config struct {
 	Version        string
 	BlockLists     []string
 	BlockListDir   string
 	RootServers    []string
+	Root6Servers   []string
 	RootKeys       []string
 	Log            string
 	LogLevel       string
@@ -33,7 +34,7 @@ type config struct {
 	API            string
 	Nullroute      string
 	Nullroutev6    string
-	OutboundIP     string
+	OutboundIPs    []string
 	Interval       int
 	Timeout        int
 	ConnectTimeout int
@@ -78,17 +79,17 @@ bind = ":53"
 # tls private key file
 # tlsprivatekey = "server.key"
 
-# outbound ip address
-# outboundip = ""
+# outbound ip addresses, if you set multiple, sdns can use random outbound ip address 
+outboundips = []
 
 # root servers
 rootservers = [
+"192.5.5.241:53",
 "198.41.0.4:53",
 "192.228.79.201:53",
 "192.33.4.12:53",
 "199.7.91.13:53",
 "192.203.230.10:53",
-"192.5.5.241:53",
 "192.112.36.4:53",
 "128.63.2.53:53",
 "192.36.148.17:53",
@@ -98,13 +99,30 @@ rootservers = [
 "202.12.27.33:53"
 ]
 
+# root ipv6 servers
+root6servers = [
+"[2001:500:2f::f]:53",
+"[2001:503:ba3e::2:30]:53",
+"[2001:500:200::b]:53",
+"[2001:500:2::c]:53",
+"[2001:500:2d::d]:53",
+"[2001:500:a8::e]:53",
+"[2001:500:12::d0d]:53",
+"[2001:500:1::53]:53",
+"[2001:7fe::53]:53",
+"[2001:503:c27::2:30]:53",
+"[2001:7fd::1]:53",
+"[2001:500:9f::42]:53",
+"[2001:dc3::35]:53"
+]
+
 # root keys for dnssec
 rootkeys = [
 ".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
 ".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78="
 ]
 
-# address to bind to for the API server
+# address to bind to for the http API server disable for left blank
 api = "127.0.0.1:8080"
 
 # ipv4 address to forward blocked queries to

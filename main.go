@@ -20,10 +20,6 @@ var (
 	localIPs    []string
 )
 
-const (
-	edns0size = 4096
-)
-
 func init() {
 	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated")
 	flag.Usage = usage
@@ -38,24 +34,13 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "")
 }
 
-func main() {
-	flag.Parse()
-
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	if err := LoadConfig(configPath); err != nil {
-		log.Crit("Config loading failed", "error", err.Error())
-	}
-
-	lvl, err := log.LvlFromString(Config.LogLevel)
-	if err != nil {
-		log.Crit("Log verbosity level unknown")
-	}
-
-	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
-
+func startSDNS() {
 	if len(Config.RootServers) > 0 {
 		rootservers = Config.RootServers
+	}
+
+	if len(Config.Root6Servers) > 0 {
+		root6servers = Config.Root6Servers
 	}
 
 	if len(Config.RootKeys) > 0 {
@@ -71,12 +56,12 @@ func main() {
 		}
 	}
 
+	var err error
+
 	localIPs, err = findLocalIPAddresses()
 	if err != nil {
 		log.Crit("Local ip addresses failed", "error", err.Error())
 	}
-
-	log.Info("Starting sdns...", "version", BuildVersion)
 
 	server := &Server{
 		host:           Config.Bind,
@@ -122,6 +107,27 @@ func main() {
 			}
 		}
 	}()
+}
+
+func main() {
+	flag.Parse()
+
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	if err := LoadConfig(configPath); err != nil {
+		log.Crit("Config loading failed", "error", err.Error())
+	}
+
+	lvl, err := log.LvlFromString(Config.LogLevel)
+	if err != nil {
+		log.Crit("Log verbosity level unknown")
+	}
+
+	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
+
+	log.Info("Starting sdns...", "version", BuildVersion)
+
+	startSDNS()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)

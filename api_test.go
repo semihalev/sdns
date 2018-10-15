@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func Test_AllRequests(t *testing.T) {
+func Test_AllAPICalls(t *testing.T) {
 
 	blockCache.Set("test.com", true)
 
@@ -17,6 +19,7 @@ func Test_AllRequests(t *testing.T) {
 	}{
 		{"GET", "/api/v1/block/set/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/get/test.com", http.StatusOK},
+		{"GET", "/api/v1/block/get/test2.com", http.StatusOK},
 		{"GET", "/api/v1/block/exists/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/remove/test.com", http.StatusOK},
 	}
@@ -38,10 +41,15 @@ func Test_AllRequests(t *testing.T) {
 	}
 }
 
+func Test_runServer(t *testing.T) {
+	err := StartAPIServer(":111111")
+	assert.Error(t, err)
+}
+
 // func Test_getBlockExists(t *testing.T) {
 // 	request, err := http.NewRequest(http.MethodGet, "/api/v1/block/get/testexists.com", nil)
 
-// 	assert.Nil(t, err)
+// 	assert.NoError(t, err)
 
 // 	w := httptest.NewRecorder()
 
@@ -56,7 +64,7 @@ func Test_AllRequests(t *testing.T) {
 
 // 	request, err := http.NewRequest(http.MethodGet, "/api/v1/block/remove/test.com", nil)
 
-// 	assert.Nil(t, err)
+// 	assert.NoError(t, err)
 
 // 	w := httptest.NewRecorder()
 
@@ -71,7 +79,7 @@ func Test_AllRequests(t *testing.T) {
 
 // 	request, err := http.NewRequest(http.MethodGet, "/api/v1/block/exists/test.com", nil)
 
-// 	assert.Nil(t, err)
+// 	assert.NoError(t, err)
 
 // 	w := httptest.NewRecorder()
 

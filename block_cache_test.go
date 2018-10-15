@@ -23,7 +23,7 @@ func TestBlockCache(t *testing.T) {
 	assert.Equal(t, cache.Exists(strings.ToUpper(testDomain)), true)
 
 	_, err := cache.Get(testDomain)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	assert.Equal(t, cache.Length(), 1)
 
@@ -32,7 +32,7 @@ func TestBlockCache(t *testing.T) {
 	}
 
 	if cacheLen := cache.Length(); cacheLen != 1 {
-		t.Error("invalid lenght: ", cacheLen)
+		t.Error("invalid length: ", cacheLen)
 	}
 
 	cache.Remove(testDomain)
