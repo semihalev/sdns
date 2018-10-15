@@ -10,7 +10,7 @@ import (
 
 const (
 	// DefaultMsgSize EDNS0 message size
-	DefaultMsgSize = 4096
+	DefaultMsgSize = 1536
 )
 
 // Question type

@@ -70,6 +70,19 @@ func Test_resolverDS(t *testing.T) {
 	assert.Equal(t, len(resp.Answer) > 0, true)
 }
 
+func Test_resolverDSDelegate(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("nic.co.id.", dns.TypeNS)
+	req.SetEdns0(DefaultMsgSize, true)
+
+	r := NewResolver()
+
+	resp, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
+
+	assert.NoError(t, err)
+	assert.Equal(t, len(resp.Answer) > 0, true)
+}
+
 func Test_resolverAllNS(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("sds4wdwf.", dns.TypeNS)
