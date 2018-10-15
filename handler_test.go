@@ -46,10 +46,21 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 }
 
 func Test_handler(t *testing.T) {
+	var err error
+
 	Config.Maxdepth = 30
 	Config.Interval = 200
 	Config.Nullroute = "0.0.0.0"
 	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
+	Config.OutboundIPs, err = findLocalIPAddresses()
+	assert.NoError(t, err)
+
+	for i, ip := range Config.OutboundIPs {
+		if ip == "127.0.0.1" {
+			Config.OutboundIPs = append(Config.OutboundIPs[:i], Config.OutboundIPs[i+1:]...)
+			break
+		}
+	}
 
 	handler := NewHandler()
 
