@@ -146,7 +146,19 @@ func Test_resolverNSEC3nodata(t *testing.T) {
 
 func Test_resolverNSEC3nameerror(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("sdsfsf.", dns.TypeNS)
+	req.SetQuestion("asdsada.", dns.TypeNS)
+	req.SetEdns0(DefaultMsgSize, true)
+
+	r := NewResolver()
+
+	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
+
+	assert.NoError(t, err)
+}
+
+func Test_resolverRootKeys(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion(".", dns.TypeDNSKEY)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	r := NewResolver()
