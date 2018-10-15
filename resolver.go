@@ -513,6 +513,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
 	cacheKey := keyGen(Q)
+
 	msg, _, err := r.rCache.Get(cacheKey)
 	if msg == nil {
 		if qname == rootzone {
@@ -526,6 +527,13 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 				return
 			}
 		}
+
+		r.rCache.Set(cacheKey, msg)
+	}
+
+	if resp.Question[0].Name == rootzone &&
+		resp.Question[0].Qtype == dns.TypeDNSKEY {
+		msg = resp
 	}
 
 	keys := make(map[uint16]*dns.DNSKEY)
@@ -555,8 +563,6 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 		log.Debug("RRSIG not verified", "error", err.Error())
 		return
 	}
-
-	r.rCache.Set(cacheKey, msg)
 
 	log.Debug("DNSSEC verified", "parent", qname, "qname", resp.Question[0].Name)
 
