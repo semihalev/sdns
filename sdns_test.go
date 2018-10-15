@@ -1,14 +1,12 @@
 package main
 
 import (
-	"os"
-	"syscall"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -42,13 +40,9 @@ func Test_SDNS(t *testing.T) {
 	Config.BindTLS = ""
 	Config.API = ""
 
-	go startSDNS()
+	startSDNS()
 
-	p, err := os.FindProcess(os.Getpid())
-	assert.NoError(t, err)
-
-	err = p.Signal(syscall.SIGUSR1)
-	assert.NoError(t, err)
+	time.Sleep(2 * time.Second)
 }
 
 func BenchmarkResolver(b *testing.B) {
