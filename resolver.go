@@ -488,6 +488,14 @@ func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr s
 		return
 	}
 
+	if nsres.Truncated {
+		//retrying in TCP mode
+		nsres, err = r.lookup("tcp", nsReq, servers)
+		if err != nil {
+			return
+		}
+	}
+
 	if addr, ok := searchAddr(nsres); ok {
 		r.rCache.Set(key, nsres)
 		return addr, nil
@@ -523,6 +531,14 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 			msg, err = r.lookup(Net, req, servers)
 			if err != nil {
 				return
+			}
+
+			if msg.Truncated {
+				//retrying in TCP mode
+				msg, err = r.lookup("tcp", req, servers)
+				if err != nil {
+					return
+				}
 			}
 		}
 

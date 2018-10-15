@@ -42,7 +42,7 @@ func Test_AllAPICalls(t *testing.T) {
 }
 
 func Test_runServer(t *testing.T) {
-	err := StartAPIServer(":111111")
+	err := runAPIServer(":111111")
 	assert.Error(t, err)
 }
 
