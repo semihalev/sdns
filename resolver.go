@@ -434,8 +434,6 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 	select {
 	case r := <-res:
 		return r, nil
-	case <-time.After(time.Duration(Config.Timeout*len(servers)) * time.Second):
-		return nil, errTimeout
 	default:
 		return nil, errResolver
 	}
@@ -478,13 +476,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr s
 		}
 	}
 
-	if len(servers) == 0 {
-		depth := Config.Maxdepth
-		nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
-	} else {
-		nsres, err = r.lookup(Net, nsReq, servers)
-	}
-
+	nsres, err = r.lookup(Net, nsReq, servers)
 	if err != nil {
 		log.Debug("NS record failed", "qname", Q.Qname, "qtype", Q.Qtype, "error", err.Error())
 		return
