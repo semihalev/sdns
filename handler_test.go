@@ -115,4 +115,15 @@ func Test_handler(t *testing.T) {
 	r, _, err = c.Exchange(m, addrstr)
 	assert.NoError(t, err)
 	assert.Equal(t, len(r.Answer) > 0, true)
+
+	m.SetQuestion(".", dns.TypeANY)
+	r, _, err = c.Exchange(m, addrstr)
+	assert.NoError(t, err)
+	assert.NotEqual(t, r.Rcode, dns.RcodeBadVers)
+
+	m.SetQuestion(".", dns.TypeSOA)
+	m.RecursionDesired = false
+	r, _, err = c.Exchange(m, addrstr)
+	assert.NoError(t, err)
+	assert.NotEqual(t, r.Rcode, dns.RcodeServerFailure)
 }

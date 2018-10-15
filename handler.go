@@ -85,6 +85,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		opt.SetDo()
 	} else {
 		opt = new(dns.OPT)
+		opt.Hdr.Name = "."
+		opt.Hdr.Rrtype = dns.TypeOPT
 		opt.SetUDPSize(DefaultMsgSize)
 		opt.SetDo()
 
