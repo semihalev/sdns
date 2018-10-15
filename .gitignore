@@ -3,3 +3,4 @@ server.crt
 server.key
 sdns
 sdns.toml
+sdns_*
