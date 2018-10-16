@@ -93,6 +93,7 @@ func Test_server(t *testing.T) {
 
 	s := &Server{
 		host:           ":5553",
+		dohHost:        ":8953",
 		tlsHost:        ":8853",
 		tlsCertificate: "test.cert",
 		tlsPrivateKey:  "test.key",
@@ -101,6 +102,8 @@ func Test_server(t *testing.T) {
 	}
 
 	s.Run()
+
+	time.Sleep(2 * time.Second)
 
 	os.Remove("test.cert")
 	os.Remove("test.key")
