@@ -17,7 +17,7 @@ func RunLocalUDPServer(laddr string) (*dns.Server, string, error) {
 }
 
 func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns.Server, string, chan error, error) {
-	pc, err := net.ListenPacket("udp", laddr)
+	pc, err := net.ListenPacket("udp4", laddr)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -67,7 +67,7 @@ func Test_handler(t *testing.T) {
 	dns.HandleFunc(".", handler.UDP)
 	defer dns.HandleRemove(".")
 
-	s, addrstr, err := RunLocalUDPServer(":0")
+	s, addrstr, err := RunLocalUDPServer("127.0.0.1:0")
 	assert.NoError(t, err)
 
 	defer s.Shutdown()

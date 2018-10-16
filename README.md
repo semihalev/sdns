@@ -39,12 +39,12 @@ $ go build
 ## Features
 
 * Linux/BSD/Windows/Darwin supported
-* DNS RFC support
+* DNS RFC compatibility
 * Concurrent DNS lookups within listed servers
 * DNS caching
-* DNS TLS support
+* DNS over TLS support
 * DNSSEC validation
-* Basic IPv6 support
+* Basic IPv6 support (client<->server)
 * Query based ratelimit
 * Black-hole internet advertisements and malware servers
 * HTTP API support 
@@ -54,10 +54,12 @@ $ go build
 
 - [x] More tests
 - [ ] Try lookup NS address better way
-- [x] TLS support
-- [ ] ~~DNS-Over-HTTPS~~
+- [x] DNS over TLS support
+- [ ] DNS over HTTPS support
 - [x] Full DNSSEC support
-- [ ] Full IPv6 support
+- [ ] Full IPv6 support (server<->server communication)
+- [ ] Access list
+- [ ] Client based ratelimit
 
 ## Made With
 
