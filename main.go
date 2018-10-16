@@ -79,7 +79,7 @@ func startSDNS() {
 	server.Run()
 
 	go func() {
-		if err := StartAPIServer(Config.API); err != nil {
+		if err := runAPIServer(Config.API); err != nil {
 			log.Crit("Start API server failed", "error", err.Error())
 		}
 	}()

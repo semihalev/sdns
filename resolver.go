@@ -171,7 +171,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 			if err != nil {
 				log.Info("DNSSEC verify failed (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
-				return nil, err
+				if !strings.Contains(err.Error(), errNoDNSKEY.Error()) { //some servers timedout for DNSKEY queries, ignoring
+					return nil, err
+				}
 			}
 		}
 
@@ -183,7 +185,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			resp.Extra = append(resp.Extra, opt)
 		}
 
-		return
+		return resp, nil
 	}
 
 	if len(resp.Ns) > 0 {
@@ -486,6 +488,14 @@ func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr s
 		return
 	}
 
+	if nsres.Truncated {
+		//retrying in TCP mode
+		nsres, err = r.lookup("tcp", nsReq, servers)
+		if err != nil {
+			return
+		}
+	}
+
 	if addr, ok := searchAddr(nsres); ok {
 		r.rCache.Set(key, nsres)
 		return addr, nil
@@ -521,6 +531,14 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 			msg, err = r.lookup(Net, req, servers)
 			if err != nil {
 				return
+			}
+
+			if msg.Truncated {
+				//retrying in TCP mode
+				msg, err = r.lookup("tcp", req, servers)
+				if err != nil {
+					return
+				}
 			}
 		}
 

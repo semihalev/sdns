@@ -30,8 +30,7 @@ func setBlock(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// StartAPIServer launches the API server
-func StartAPIServer(addr string) error {
+func runAPIServer(addr string) error {
 	if addr == "" {
 		return nil
 	}
