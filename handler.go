@@ -52,8 +52,19 @@ func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
+	msg := h.query(proto, req)
+
+	h.writeReplyMsg(w, msg)
+}
+
+func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
+
+	resolverProto := proto
+	if proto == "http" {
+		resolverProto = "udp"
+	}
 
 	dsReq := false
 
@@ -65,8 +76,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 			opt.SetVersion(0)
 			opt.SetExtendedRcode(dns.RcodeBadVers)
 
-			h.handleFailed(w, req, dns.RcodeBadVers, dsReq)
-			return
+			return h.handleFailed(req, dns.RcodeBadVers, dsReq)
 		}
 
 		ops := make([]dns.EDNS0, len(opt.Option))
@@ -94,13 +104,11 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	if q.Qtype == dns.TypeANY {
-		h.handleFailed(w, req, dns.RcodeNotImplemented, dsReq)
-		return
+		return h.handleFailed(req, dns.RcodeNotImplemented, dsReq)
 	}
 
 	if q.Name != rootzone && req.RecursionDesired == false {
-		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
-		return
+		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
 	log.Debug("Lookup", "query", Q.String(), "dsreq", dsReq)
@@ -114,8 +122,7 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		if Config.RateLimit > 0 && rl.Limit() {
 			log.Warn("Query rate limited", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype])
 
-			h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
-			return
+			return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 		}
 
 		// we need this copy against concurrent modification of Id
@@ -123,7 +130,8 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		*msg = *mesg
 
 		msg.Id = req.Id
-		msg = h.checkGLUE(proto, req, msg)
+		msg = h.checkGLUE(resolverProto, req, msg)
+		msg.CheckingDisabled = req.CheckingDisabled
 
 		if !dsReq {
 			msg = clearDNSSEC(msg)
@@ -134,16 +142,14 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		opt.SetDo(dsReq)
 		msg.Extra = append(msg.Extra, opt)
 
-		h.writeReplyMsg(w, msg)
-		return
+		return msg
 	}
 
 	err = h.errorCache.Get(key)
 	if err == nil {
 		log.Debug("Error cache hit", "key", key, "query", Q.String())
 
-		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
-		return
+		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
 	if q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA {
@@ -179,8 +185,6 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 			m.Authoritative = false
 			m.RecursionAvailable = true
 
-			h.writeReplyMsg(w, m)
-
 			log.Debug("Found in blocklist", "name", Q.Qname)
 
 			err := h.cache.Set(key, m)
@@ -188,24 +192,25 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 				log.Error("Set block cache failed", "query", Q.String(), "error", err.Error())
 			}
 
-			return
+			return m
 		}
 	}
 
 	depth := Config.Maxdepth
-	mesg, err = h.resolver.Resolve(proto, req, rootservers, true, depth, 0, false, nil)
+	mesg, err = h.resolver.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", Q.String(), "error", err.Error())
 
 		h.errorCache.Set(key)
 
-		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
-		return
+		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
 	if mesg.Truncated && proto == "udp" {
-		h.writeReplyMsg(w, mesg)
-		return
+		return mesg
+	} else if mesg.Truncated && proto == "http" {
+		opt.SetDo(dsReq)
+		return h.query("tcp", req)
 	}
 
 	if mesg.Rcode == dns.RcodeSuccess &&
@@ -213,14 +218,13 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 		h.errorCache.Set(key)
 
-		h.handleFailed(w, req, dns.RcodeServerFailure, dsReq)
-		return
+		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
 	msg := new(dns.Msg)
 	*msg = *mesg
 
-	msg = h.checkGLUE(proto, req, msg)
+	msg = h.checkGLUE(resolverProto, req, msg)
 
 	if !dsReq {
 		msg = clearDNSSEC(msg)
@@ -231,15 +235,14 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	opt.SetDo(dsReq)
 	msg.Extra = append(msg.Extra, opt)
 
-	h.writeReplyMsg(w, msg)
-
 	err = h.cache.Set(key, mesg)
 	if err != nil {
 		log.Error("Set msg failed", "query", Q.String(), "error", err.Error())
-		return
+		return msg
 	}
 
 	log.Debug("Set msg into cache", "query", Q.String())
+	return msg
 }
 
 func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
@@ -314,7 +317,7 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 	return mesg
 }
 
-func (h *DNSHandler) handleFailed(w dns.ResponseWriter, msg *dns.Msg, rcode int, dsf bool) {
+func (h *DNSHandler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
 	m := new(dns.Msg)
 	m.Extra = msg.Extra
 	m.SetRcode(msg, rcode)
@@ -324,7 +327,7 @@ func (h *DNSHandler) handleFailed(w dns.ResponseWriter, msg *dns.Msg, rcode int,
 		opt.SetDo(dsf)
 	}
 
-	h.writeReplyMsg(w, m)
+	return m
 }
 
 func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
@@ -333,6 +336,10 @@ func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
 			log.Error("Recovered in WriteReplyMsg", "recover", r)
 		}
 	}()
+
+	if w == nil {
+		return
+	}
 
 	err := w.WriteMsg(msg)
 	if err != nil {

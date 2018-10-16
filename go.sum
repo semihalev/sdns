@@ -36,7 +36,6 @@ github.com/onsi/gomega v1.4.2 h1:3mYCb7aPxS/RU7TI1y4rkEn1oKmPRjNJLNEXgw7MH2I=
 github.com/onsi/gomega v1.4.2/go.mod h1:ex+gbHU/CVuBBDIJjb2X0qEXbFg53c61hWP/1CpauHY=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/ryanuber/go-glob v0.0.0-20160226084822-572520ed46db/go.mod h1:807d1WSdnB0XRJzKNil9Om6lcp/3a0v4qIHxIXzX/Yc=
 github.com/semihalev/log v0.0.0-20180629090546-6475db4d55c6 h1:+AkSoLX9NYFffxvudqCBiTH8XvzeHQ3Uk2HkayDCtX0=
 github.com/semihalev/log v0.0.0-20180629090546-6475db4d55c6/go.mod h1:z6GDVBF3EOdP96FGcSHgKuWIgfYi9e31fY0tA0vx2yA=
 github.com/stretchr/testify v1.2.2 h1:bSDNvY7ZPG5RlJ8otE/7V6gMiyenm9RtJ7IUVIAoJ1w=

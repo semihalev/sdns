@@ -55,7 +55,7 @@ $ go build
 - [x] More tests
 - [ ] Try lookup NS address better way
 - [x] DNS over TLS support
-- [ ] DNS over HTTPS support
+- [x] DNS over HTTPS support
 - [x] Full DNSSEC support
 - [ ] Full IPv6 support (server<->server communication)
 - [ ] Access list

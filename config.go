@@ -30,6 +30,7 @@ type config struct {
 	LogLevel        string
 	Bind            string
 	BindTLS         string
+	BindDOH         string
 	TLSCertificate  string
 	TLSPrivateKey   string
 	API             string
@@ -71,8 +72,11 @@ loglevel = "info"
 # address to bind to for the DNS server
 bind = ":53"
 
-# address to bind to for the DNS-TLS server
+# address to bind to for the DNS-over-TLS server
 # bindtls = ":853"
+
+# address to bind to for the DNS-over-HTTPS server
+# binddoh = ":8053"
 
 # tls certificate file
 # tlscertificate = "server.crt"

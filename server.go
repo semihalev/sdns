@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"net/http"
 	"time"
 
 	"github.com/miekg/dns"
@@ -13,6 +14,7 @@ type Server struct {
 	host string
 
 	tlsHost        string
+	dohHost        string
 	tlsCertificate string
 	tlsPrivateKey  string
 
@@ -69,6 +71,24 @@ func (s *Server) Run() {
 		}
 
 		go s.start(tlsServer)
+	}
+
+	if s.dohHost != "" {
+		srv := &http.Server{
+			Addr:         s.dohHost,
+			Handler:      handler,
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 30 * time.Second,
+			IdleTimeout:  30 * time.Second,
+		}
+
+		go func() {
+			log.Info("DNS server listening...", "net", "https", "addr", s.dohHost)
+
+			if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
+				log.Crit("DNS listener failed", "net", "https", "addr", s.dohHost, "error", err.Error())
+			}
+		}()
 	}
 }
 

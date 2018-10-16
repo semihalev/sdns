@@ -70,6 +70,7 @@ func startSDNS() {
 	server := &Server{
 		host:           Config.Bind,
 		tlsHost:        Config.BindTLS,
+		dohHost:        Config.BindDOH,
 		tlsCertificate: Config.TLSCertificate,
 		tlsPrivateKey:  Config.TLSPrivateKey,
 		rTimeout:       5 * time.Second,

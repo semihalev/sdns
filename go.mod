@@ -16,7 +16,6 @@ require (
 	github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742 // indirect
 	github.com/onsi/gomega v1.4.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/ryanuber/go-glob v0.0.0-20160226084822-572520ed46db // indirect
 	github.com/semihalev/log v0.0.0-20180629090546-6475db4d55c6
 	github.com/stretchr/testify v1.2.2
 	github.com/ugorji/go v1.1.1 // indirect
