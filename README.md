@@ -58,6 +58,7 @@ $ go build
 - [x] DNS over TLS support
 - [x] DNS over HTTPS support
 - [x] Full DNSSEC support
+- [ ] RTT calculation for nameservers
 - [ ] Full IPv6 support (server<->server communication)
 - [ ] Access list
 - [ ] Client based ratelimit
