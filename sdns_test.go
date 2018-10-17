@@ -7,11 +7,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
-	testNameserver = "127.0.0.1:53"
-	testDomain     = "www.google.com"
+	testDomain = "www.google.com"
 )
 
 var (
@@ -46,14 +46,75 @@ func Test_SDNS(t *testing.T) {
 }
 
 func BenchmarkResolver(b *testing.B) {
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+	Config.Maxdepth = 30
+	Config.Interval = 200
+	Config.Nullroute = "0.0.0.0"
+	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
+
+	s, addrstr, err := RunLocalUDPServer("127.0.0.1:0")
+	assert.NoError(b, err)
+
+	defer s.Shutdown()
+
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+	req.RecursionDesired = true
 
 	c := new(dns.Client)
+
+	//caching
+	_, _, err = c.Exchange(req, addrstr)
+	assert.NoError(b, err)
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		c.Exchange(m, testNameserver)
+		c.Exchange(req, addrstr)
+	}
+}
+
+func BenchmarkUDPHandler(b *testing.B) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+	Config.Nullroute = "0.0.0.0"
+	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
+
+	h := NewHandler()
+
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+	req.RecursionDesired = true
+
+	//caching
+	resp := h.query("udp", req)
+	assert.NotNil(b, resp)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		h.query("udp", req)
+	}
+}
+
+func BenchmarkTCPHandler(b *testing.B) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+	Config.Nullroute = "0.0.0.0"
+	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
+
+	h := NewHandler()
+
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+	req.RecursionDesired = true
+
+	//caching
+	resp := h.query("udp", req)
+	assert.NotNil(b, resp)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		h.query("tcp", req)
 	}
 }
