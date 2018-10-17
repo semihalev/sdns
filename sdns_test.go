@@ -109,7 +109,7 @@ func BenchmarkTCPHandler(b *testing.B) {
 	req.RecursionDesired = true
 
 	//caching
-	resp := h.query("udp", req)
+	resp := h.query("tcp", req)
 	assert.NotNil(b, resp)
 
 	b.ResetTimer()

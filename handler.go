@@ -52,6 +52,13 @@ func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
+	client, _, _ := net.SplitHostPort(w.RemoteAddr().String())
+	allowed, _ := accessList.Contains(net.ParseIP(client))
+	if !allowed {
+		log.Debug("Client denied to make new query", "client", client, "net", proto)
+		return
+	}
+
 	msg := h.query(proto, req)
 
 	h.writeReplyMsg(w, msg)

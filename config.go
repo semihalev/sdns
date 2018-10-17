@@ -26,6 +26,7 @@ type config struct {
 	Root6Servers    []string
 	RootKeys        []string
 	FallbackServers []string
+	AccessList      []string
 	Log             string
 	LogLevel        string
 	Bind            string
@@ -141,6 +142,12 @@ nullroute = "0.0.0.0"
 
 # ipv6 address to forward blocked queries to
 nullroutev6 = "0:0:0:0:0:0:0:0"
+
+# which clients allowed to make queries
+accesslist = [
+"0.0.0.0/0",
+"::0/0"
+]
 
 # concurrency interval for lookups in miliseconds
 interval = 200

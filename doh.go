@@ -10,10 +10,19 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/doh"
 )
 
 func (h *DNSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	client, _, _ := net.SplitHostPort(r.RemoteAddr)
+	allowed, _ := accessList.Contains(net.ParseIP(client))
+	if !allowed {
+		log.Debug("Client denied to make new query", "client", client, "net", "https")
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
 	var f func(http.ResponseWriter, *http.Request)
 	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
 		f = h.handleJSON()

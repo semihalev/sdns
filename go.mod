@@ -19,6 +19,7 @@ require (
 	github.com/semihalev/log v0.0.0-20180629090546-6475db4d55c6
 	github.com/stretchr/testify v1.2.2
 	github.com/ugorji/go v1.1.1 // indirect
+	github.com/yl2chen/cidranger v0.0.0-20180214081945-928b519e5268 // indirect
 	golang.org/x/crypto v0.0.0-20181001203147-e3636079e1a4 // indirect
 	golang.org/x/net v0.0.0-20181004194319-68fc911561ed // indirect
 	golang.org/x/sys v0.0.0-20181004145325-8469e314837c // indirect

@@ -21,16 +21,6 @@ type Resolver struct {
 	rCache  *QueryCache
 }
 
-// AuthServer type
-type AuthServer struct {
-	Host string
-	RTT  time.Duration
-}
-
-func (a *AuthServer) String() string {
-	return fmt.Sprintf("Host:%s, RTT:%s", a.Host, a.RTT)
-}
-
 var (
 	errMaxDeph              = errors.New("maximum recursion depth for DNS tree queried")
 	errParentDetection      = errors.New("parent detection")
@@ -86,6 +76,16 @@ var (
 
 	rootkeys = []dns.RR{}
 )
+
+// AuthServer type
+type AuthServer struct {
+	Host string
+	RTT  time.Duration
+}
+
+func (a *AuthServer) String() string {
+	return fmt.Sprintf("host:%s, rtt:%s", a.Host, a.RTT)
+}
 
 func init() {
 	for _, k := range initialkeys {

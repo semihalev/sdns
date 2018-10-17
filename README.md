@@ -48,6 +48,7 @@ $ go build
 * RTT priority within listed servers
 * Basic IPv6 support (client<->server)
 * Query based ratelimit
+* Access list
 * Black-hole internet advertisements and malware servers
 * HTTP API support 
 * Outbound IP selection
@@ -61,7 +62,7 @@ $ go build
 - [x] Full DNSSEC support
 - [x] RTT optimization
 - [ ] Full IPv6 support (server<->server communication)
-- [ ] Access list
+- [x] Access list
 - [ ] Client based ratelimit
 
 ## Made With

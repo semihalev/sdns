@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/yl2chen/cidranger"
 )
 
 var (
@@ -18,6 +20,7 @@ var (
 	forceUpdate bool
 	blockCache  = &BlockCache{Backend: make(map[string]bool)}
 	localIPs    []string
+	accessList  cidranger.Ranger
 )
 
 func init() {
@@ -74,6 +77,19 @@ func startSDNS() {
 	localIPs, err = findLocalIPAddresses()
 	if err != nil {
 		log.Crit("Local ip addresses failed", "error", err.Error())
+	}
+
+	accessList = cidranger.NewPCTrieRanger()
+	for _, cidr := range Config.AccessList {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Crit("Access list parse cidr failed", "error", err.Error())
+		}
+
+		err = accessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
+		if err != nil {
+			log.Crit("Access list insert cidr failed", "error", err.Error())
+		}
 	}
 
 	server := &Server{
