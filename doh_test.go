@@ -40,7 +40,73 @@ func Test_dohJSON(t *testing.T) {
 	assert.Equal(t, len(dm.Answer) > 0, true)
 }
 
-func Test_dohWIREGET(t *testing.T) {
+func Test_dohJSONerror(t *testing.T) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+
+	h := NewHandler()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?name=", nil)
+	assert.NoError(t, err)
+
+	h.ServeHTTP(w, request)
+
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func Test_dohJSONuknownType(t *testing.T) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+
+	h := NewHandler()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?name=www.google.com&type=unknown", nil)
+	assert.NoError(t, err)
+
+	h.ServeHTTP(w, request)
+
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func Test_dohJSONsubnet(t *testing.T) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+
+	h := NewHandler()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?name=www.google.com&edns_client_subnet=127.0.0.1", nil)
+	assert.NoError(t, err)
+
+	h.ServeHTTP(w, request)
+
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func Test_dohJSONaccepthtml(t *testing.T) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+
+	h := NewHandler()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?name=www.google.com", nil)
+	assert.NoError(t, err)
+
+	request.Header.Add("Accept", "text/html")
+	h.ServeHTTP(w, request)
+
+	assert.Equal(t, w.Code, http.StatusOK)
+	assert.Equal(t, w.Header().Get("Content-Type"), "application/x-javascript")
+}
+
+func Test_dohWireGET(t *testing.T) {
 	Config.Maxdepth = 30
 	Config.Interval = 200
 
@@ -76,7 +142,55 @@ func Test_dohWIREGET(t *testing.T) {
 	assert.Equal(t, len(msg.Answer) > 0, true)
 }
 
-func Test_dohWIREPOST(t *testing.T) {
+func Test_dohWireGETerror(t *testing.T) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+
+	h := NewHandler()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?dns=", nil)
+	assert.NoError(t, err)
+
+	h.ServeHTTP(w, request)
+
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func Test_dohWireGETbadquery(t *testing.T) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+
+	h := NewHandler()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?dns=Df4", nil)
+	assert.NoError(t, err)
+
+	h.ServeHTTP(w, request)
+
+	assert.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func Test_dohWireHEAD(t *testing.T) {
+	Config.Maxdepth = 30
+	Config.Interval = 200
+
+	h := NewHandler()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("HEAD", "/dns-query?dns=", nil)
+	assert.NoError(t, err)
+
+	h.ServeHTTP(w, request)
+
+	assert.Equal(t, w.Code, http.StatusMethodNotAllowed)
+}
+
+func Test_dohWirePOST(t *testing.T) {
 	Config.Maxdepth = 30
 	Config.Interval = 200
 

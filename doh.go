@@ -76,11 +76,6 @@ func (h *DNSHandler) handleWireFormat() func(http.ResponseWriter, *http.Request)
 
 func (h *DNSHandler) handleJSON() func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-			return
-		}
-
 		name := r.URL.Query().Get("name")
 		if name == "" {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)

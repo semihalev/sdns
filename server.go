@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
+	"io"
 	"net/http"
+	"strings"
 	"time"
+
+	l "log"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -73,6 +78,22 @@ func (s *Server) Run() {
 		go s.start(tlsServer)
 	}
 
+	logReader, logWriter := io.Pipe()
+	go func(rd io.Reader) {
+		buf := bufio.NewReader(rd)
+		for {
+			line, err := buf.ReadBytes('\n')
+			if err != nil {
+				continue
+			}
+
+			parts := strings.SplitN(string(line[:len(line)-1]), " ", 2)
+			if len(parts) > 1 {
+				log.Warn("Client http socket failed", "net", "https", "error", parts[1])
+			}
+		}
+	}(logReader)
+
 	if s.dohHost != "" {
 		srv := &http.Server{
 			Addr:         s.dohHost,
@@ -80,6 +101,7 @@ func (s *Server) Run() {
 			ReadTimeout:  30 * time.Second,
 			WriteTimeout: 30 * time.Second,
 			IdleTimeout:  30 * time.Second,
+			ErrorLog:     l.New(logWriter, "", 0),
 		}
 
 		go func() {

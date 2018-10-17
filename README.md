@@ -42,8 +42,9 @@ $ go build
 * DNS RFC compatibility
 * Concurrent DNS lookups within listed servers
 * DNS caching
-* DNS over TLS support
 * DNSSEC validation
+* DNS over TLS support
+* DNS over HTTPS support
 * Basic IPv6 support (client<->server)
 * Query based ratelimit
 * Black-hole internet advertisements and malware servers
