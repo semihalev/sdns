@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/yl2chen/cidranger"
 )
 
 const (
@@ -20,6 +22,21 @@ var (
 
 func TestMain(m *testing.M) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
+	Config.Maxdepth = 30
+	Config.Interval = 200
+	Config.Nullroute = "0.0.0.0"
+	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
+	Config.Bind = ":0"
+	Config.BindTLS = ""
+	Config.BindDOH = ""
+	Config.API = ""
+
+	accessList = cidranger.NewPCTrieRanger()
+	_, ipnet, _ := net.ParseCIDR("0.0.0.0/0")
+	accessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
+	_, ipnet, _ = net.ParseCIDR("::0/0")
+	accessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
 
 	gin.SetMode(gin.TestMode)
 	ginr = gin.New()
@@ -38,6 +55,7 @@ func TestMain(m *testing.M) {
 func Test_SDNS(t *testing.T) {
 	Config.Bind = ":0"
 	Config.BindTLS = ""
+	Config.BindDOH = ""
 	Config.API = ""
 
 	startSDNS()
@@ -46,11 +64,6 @@ func Test_SDNS(t *testing.T) {
 }
 
 func BenchmarkResolver(b *testing.B) {
-	Config.Maxdepth = 30
-	Config.Interval = 200
-	Config.Nullroute = "0.0.0.0"
-	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
-
 	s, addrstr, err := RunLocalUDPServer("127.0.0.1:0")
 	assert.NoError(b, err)
 
@@ -74,11 +87,6 @@ func BenchmarkResolver(b *testing.B) {
 }
 
 func BenchmarkUDPHandler(b *testing.B) {
-	Config.Maxdepth = 30
-	Config.Interval = 200
-	Config.Nullroute = "0.0.0.0"
-	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
-
 	h := NewHandler()
 
 	req := new(dns.Msg)
@@ -97,11 +105,6 @@ func BenchmarkUDPHandler(b *testing.B) {
 }
 
 func BenchmarkTCPHandler(b *testing.B) {
-	Config.Maxdepth = 30
-	Config.Interval = 200
-	Config.Nullroute = "0.0.0.0"
-	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
-
 	h := NewHandler()
 
 	req := new(dns.Msg)

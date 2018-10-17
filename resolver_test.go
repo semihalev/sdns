@@ -96,7 +96,6 @@ func Test_resolverAllNS(t *testing.T) {
 }
 
 func Test_resolverTimeout(t *testing.T) {
-	Config.Interval = 200
 	req := new(dns.Msg)
 	req.SetQuestion("baddns.com.", dns.TypeA)
 	req.SetEdns0(DefaultMsgSize, true)
