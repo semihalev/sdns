@@ -16,9 +16,10 @@ import (
 
 // Resolver type
 type Resolver struct {
-	config  *dns.ClientConfig
-	nsCache *NameServerCache
-	rCache  *QueryCache
+	config   *dns.ClientConfig
+	nsCache  *NameServerCache
+	rCache   *QueryCache
+	errCache *ErrorCache
 }
 
 var (
@@ -103,6 +104,7 @@ func NewResolver() *Resolver {
 		&dns.ClientConfig{},
 		NewNameServerCache(Config.Maxcount),
 		NewQueryCache(Config.Maxcount),
+		NewErrorCache(Config.Maxcount, Config.Expire),
 	}
 }
 
@@ -515,6 +517,11 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		}
 	}
 
+	err = r.errCache.Get(key)
+	if err == nil {
+		return "", fmt.Errorf("an error occurred for %s", ns)
+	}
+
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, 30, 0, true, nil)
 	if err != nil {
 		log.Info("Fallback servers will be use", "qname", ns)
@@ -523,6 +530,8 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 
 	if err != nil {
 		log.Debug("Nameserver resolve failed", "qname", ns, "error", err.Error())
+
+		r.errCache.Set(key)
 		return addr, fmt.Errorf("%s nameserver resolve failed", ns)
 	}
 
@@ -536,6 +545,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 		return addr, nil
 	}
 
+	r.errCache.Set(key)
 	return addr, fmt.Errorf("%s nameserver resolve failed", ns)
 }
 
