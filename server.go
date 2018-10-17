@@ -78,23 +78,23 @@ func (s *Server) Run() {
 		go s.start(tlsServer)
 	}
 
-	logReader, logWriter := io.Pipe()
-	go func(rd io.Reader) {
-		buf := bufio.NewReader(rd)
-		for {
-			line, err := buf.ReadBytes('\n')
-			if err != nil {
-				continue
-			}
-
-			parts := strings.SplitN(string(line[:len(line)-1]), " ", 2)
-			if len(parts) > 1 {
-				log.Warn("Client http socket failed", "net", "https", "error", parts[1])
-			}
-		}
-	}(logReader)
-
 	if s.dohHost != "" {
+		logReader, logWriter := io.Pipe()
+		go func(rd io.Reader) {
+			buf := bufio.NewReader(rd)
+			for {
+				line, err := buf.ReadBytes('\n')
+				if err != nil {
+					continue
+				}
+
+				parts := strings.SplitN(string(line[:len(line)-1]), " ", 2)
+				if len(parts) > 1 {
+					log.Warn("Client http socket failed", "net", "https", "error", parts[1])
+				}
+			}
+		}(logReader)
+
 		srv := &http.Server{
 			Addr:         s.dohHost,
 			Handler:      handler,
