@@ -45,6 +45,7 @@ $ go build
 * DNSSEC validation
 * DNS over TLS support
 * DNS over HTTPS support
+* RTT priority within listed servers
 * Basic IPv6 support (client<->server)
 * Query based ratelimit
 * Black-hole internet advertisements and malware servers
@@ -58,7 +59,7 @@ $ go build
 - [x] DNS over TLS support
 - [x] DNS over HTTPS support
 - [x] Full DNSSEC support
-- [ ] RTT calculation for nameservers
+- [x] RTT optimization
 - [ ] Full IPv6 support (server<->server communication)
 - [ ] Access list
 - [ ] Client based ratelimit
