@@ -19,6 +19,7 @@ type Resolver struct {
 	nsCache  *NameServerCache
 	rCache   *QueryCache
 	errCache *ErrorCache
+	lqueue   *LQueue
 }
 
 var (
@@ -104,6 +105,7 @@ func NewResolver() *Resolver {
 		NewNameServerCache(Config.Maxcount),
 		NewQueryCache(Config.Maxcount),
 		NewErrorCache(Config.Maxcount, Config.Expire),
+		NewLookupQueue(),
 	}
 }
 
@@ -499,6 +501,10 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 
 	key := keyGen(Q)
 
+	if ch := r.lqueue.Get(key); ch != nil {
+		<-ch
+	}
+
 	nsres, _, err := r.rCache.Get(key)
 	if err == nil {
 		if addr, ok := searchAddr(nsres); ok {
@@ -510,6 +516,9 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	if err == nil {
 		return "", fmt.Errorf("an error occurred for %s", ns)
 	}
+
+	r.lqueue.Set(key)
+	defer r.lqueue.Remove(key)
 
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, 30, 0, true, nil)
 	if err != nil {
