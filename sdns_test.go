@@ -57,6 +57,7 @@ func Test_SDNS(t *testing.T) {
 	Config.BindTLS = ""
 	Config.BindDOH = ""
 	Config.API = ""
+	Config.Timeout = 15
 
 	startSDNS()
 

@@ -177,7 +177,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		}
 
 		if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
-			err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
+			err := r.verifyDNSSEC(Net, signer, req.Question[0].Name, resp, parentdsrr, servers)
 
 			if err != nil {
 				log.Info("DNSSEC verify failed (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
@@ -280,7 +280,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 					authservers = append(authservers, &AuthServer{Host: s, RTT: time.Hour})
 				}
 
-				r.nsCache.Set(key, parentdsrr, nsrr.Header().Ttl, authservers)
+				r.nsCache.Set(key, nil, nsrr.Header().Ttl, authservers)
 			}
 			//non extra rr for some nameservers, try lookup
 			for k, addr := range nsmap {
@@ -345,9 +345,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 
 			if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
-				err := r.verifyDNSSEC(Net, signer, resp, parentdsrr, servers)
+				err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr, servers)
 				if err != nil {
-					log.Warn("DNSSEC verify failed (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+					log.Warn("DNSSEC verify failed (delegation)", "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
 				}
 
 				parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
@@ -400,40 +400,47 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 	qname := req.Question[0].Name
 	qtype := dns.Type(req.Question[0].Qtype).String()
 
-	res := make(chan *dns.Msg)
+	resCh := make(chan *dns.Msg)
+	errCh := make(chan error)
 
 	var wg sync.WaitGroup
 
 	L := func(server *AuthServer, last bool) {
-		defer wg.Done()
-
 	tryagain:
-		var r *dns.Msg
+		var resp *dns.Msg
 		var err error
-		r, server.RTT, err = c.Exchange(req, server.Host)
+
+		resp, server.RTT, err = c.Exchange(req, server.Host)
 		if err != nil && err != dns.ErrTruncated {
 			server.RTT = time.Hour
-			log.Info("Got an error from resolver", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
+			log.Info("Socket error in server communication", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
+
+			wg.Done()
+
+			if last {
+				errCh <- err
+			}
 			return
 		}
 
-		if r != nil && r.Rcode == dns.RcodeFormatError {
+		if resp != nil && resp.Rcode == dns.RcodeFormatError {
 			// try again without edns tags
 			req = clearOPT(req)
 			goto tryagain
 		}
 
-		if r != nil && r.Rcode != dns.RcodeSuccess && !last {
-			log.Debug("Failed to get valid response", "qname", qname, "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
+		if resp != nil && resp.Rcode != dns.RcodeSuccess && !last {
+			log.Debug("Failed to get valid response", "qname", qname, "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
+
+			wg.Done()
 			return
 		}
 
-		log.Debug("Query response", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[r.Rcode])
+		log.Debug("Query response", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
 
-		select {
-		case res <- r:
-		default:
-		}
+		wg.Done()
+
+		resCh <- resp
 	}
 
 	ticker := time.NewTicker(time.Duration(Config.Interval) * time.Millisecond)
@@ -448,8 +455,10 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 
 		// but exit early, if we have an answer
 		select {
-		case r := <-res:
-			return r, nil
+		case resp = <-resCh:
+			return resp, nil
+		case err = <-errCh:
+			return nil, err
 		case <-ticker.C:
 			continue
 		}
@@ -459,10 +468,10 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 	wg.Wait()
 
 	select {
-	case r := <-res:
-		return r, nil
-	default:
-		return nil, errResolver
+	case resp = <-resCh:
+		return resp, nil
+	case err = <-errCh:
+		return nil, err
 	}
 }
 
@@ -491,8 +500,8 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(ns, dns.TypeA)
+	nsReq.SetEdns0(DefaultMsgSize, true)
 	nsReq.RecursionDesired = true
-	nsReq.AuthenticatedData = true
 
 	q := nsReq.Question[0]
 	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
@@ -530,15 +539,15 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	return addr, fmt.Errorf("%s nameserver resolve failed", ns)
 }
 
-func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentdsRR []dns.RR, servers []*AuthServer) (err error) {
+func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR, servers []*AuthServer) (err error) {
 	defer func() {
 		if err != nil {
-			err = fmt.Errorf("%v for parentname=%s qname=%s", err, qname, resp.Question[0].Name)
+			err = fmt.Errorf("%v for signer=%s signed=%s", err, signer, signed)
 		}
 	}()
 
 	req := new(dns.Msg)
-	req.SetQuestion(qname, dns.TypeDNSKEY)
+	req.SetQuestion(signer, dns.TypeDNSKEY)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	q := req.Question[0]
@@ -548,7 +557,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 
 	msg, _, err := r.rCache.Get(cacheKey)
 	if msg == nil {
-		if qname == rootzone {
+		if signer == rootzone {
 			msg = new(dns.Msg)
 			msg.SetQuestion(".", dns.TypeDNSKEY)
 
@@ -594,7 +603,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 	if len(parentdsRR) > 0 {
 		err = verifyDS(keys, parentdsRR)
 		if err != nil {
-			log.Debug("DNSSEC DS verify failed", "qname", qname, "error", err.Error())
+			log.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error())
 			return
 		}
 	}
@@ -604,7 +613,7 @@ func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentd
 		return
 	}
 
-	log.Debug("DNSSEC verified", "parent", qname, "qname", resp.Question[0].Name)
+	log.Debug("DNSSEC verified", "signer", signer, "signed", signed)
 
 	return nil
 }

@@ -155,18 +155,6 @@ func Test_resolverNSEC3nameerror(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func Test_resolverNSEC3nameerrorError(t *testing.T) {
-	req := new(dns.Msg)
-	req.SetQuestion("kont.la.", dns.TypeNS)
-	req.SetEdns0(DefaultMsgSize, true)
-
-	r := NewResolver()
-
-	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
-
-	assert.Error(t, err)
-}
-
 func Test_resolverRootKeys(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeDNSKEY)
