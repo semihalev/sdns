@@ -442,7 +442,10 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 
 		wg.Done()
 
-		resCh <- resp
+		select {
+		case resCh <- resp:
+		default:
+		}
 	}
 
 	ticker := time.NewTicker(time.Duration(Config.Interval) * time.Millisecond)
