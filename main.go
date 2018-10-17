@@ -41,21 +41,21 @@ func startSDNS() {
 	if len(Config.RootServers) > 0 {
 		rootservers = []*AuthServer{}
 		for _, s := range Config.RootServers {
-			rootservers = append(rootservers, &AuthServer{Host: s})
+			rootservers = append(rootservers, &AuthServer{Host: s, RTT: time.Hour})
 		}
 	}
 
 	if len(Config.Root6Servers) > 0 {
 		root6servers = []*AuthServer{}
 		for _, s := range Config.Root6Servers {
-			root6servers = append(root6servers, &AuthServer{Host: s})
+			root6servers = append(root6servers, &AuthServer{Host: s, RTT: time.Hour})
 		}
 	}
 
 	if len(Config.FallbackServers) > 0 {
 		fallbackservers = []*AuthServer{}
 		for _, s := range Config.FallbackServers {
-			fallbackservers = append(fallbackservers, &AuthServer{Host: s})
+			fallbackservers = append(fallbackservers, &AuthServer{Host: s, RTT: time.Hour})
 		}
 	}
 
