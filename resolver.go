@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -402,10 +401,8 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 	qname := req.Question[0].Name
 	qtype := dns.Type(req.Question[0].Qtype).String()
 
-	resCh := make(chan *dns.Msg)
-	errCh := make(chan error)
-
-	var wg sync.WaitGroup
+	resCh := make(chan *dns.Msg, len(servers))
+	errCh := make(chan error, len(servers))
 
 	L := func(server *AuthServer, last bool) {
 	tryagain:
@@ -416,8 +413,6 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 		if err != nil && err != dns.ErrTruncated {
 			server.RTT = time.Hour
 			log.Info("Socket error in server communication", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
-
-			wg.Done()
 
 			if last {
 				errCh <- err
@@ -433,29 +428,23 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 
 		if resp != nil && resp.Rcode != dns.RcodeSuccess && !last {
 			log.Debug("Failed to get valid response", "qname", qname, "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
-
-			wg.Done()
 			return
 		}
 
 		log.Debug("Query response", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
 
-		wg.Done()
-
-		select {
-		case resCh <- resp:
-		default:
-		}
+		resCh <- resp
 	}
 
 	ticker := time.NewTicker(time.Duration(Config.Interval) * time.Millisecond)
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+	}()
 
 	sort.Slice(servers, func(i, j int) bool { return servers[i].RTT < servers[j].RTT })
 
 	// Start lookup on each nameserver top-down, in interval
 	for index, server := range servers {
-		wg.Add(1)
 		go L(server, len(servers)-1 == index)
 
 		// but exit early, if we have an answer
@@ -468,9 +457,6 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 			continue
 		}
 	}
-
-	// wait for all the namservers to finish
-	wg.Wait()
 
 	select {
 	case resp = <-resCh:
