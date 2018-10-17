@@ -36,15 +36,24 @@ func usage() {
 
 func startSDNS() {
 	if len(Config.RootServers) > 0 {
-		rootservers = Config.RootServers
+		rootservers = []*AuthServer{}
+		for _, s := range Config.RootServers {
+			rootservers = append(rootservers, &AuthServer{Host: s})
+		}
 	}
 
 	if len(Config.Root6Servers) > 0 {
-		root6servers = Config.Root6Servers
+		root6servers = []*AuthServer{}
+		for _, s := range Config.Root6Servers {
+			root6servers = append(root6servers, &AuthServer{Host: s})
+		}
 	}
 
 	if len(Config.FallbackServers) > 0 {
-		fallbackservers = Config.FallbackServers
+		fallbackservers = []*AuthServer{}
+		for _, s := range Config.FallbackServers {
+			fallbackservers = append(fallbackservers, &AuthServer{Host: s})
+		}
 	}
 
 	if len(Config.RootKeys) > 0 {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,16 @@ type Resolver struct {
 	rCache  *QueryCache
 }
 
+// AuthServer type
+type AuthServer struct {
+	Host string
+	RTT  time.Duration
+}
+
+func (a *AuthServer) String() string {
+	return fmt.Sprintf("Host:%s, RTT:%s", a.Host, a.RTT)
+}
+
 var (
 	errMaxDeph              = errors.New("maximum recursion depth for DNS tree queried")
 	errParentDetection      = errors.New("parent detection")
@@ -31,36 +42,36 @@ var (
 	rootzone   = "."
 	dnsPortTmp = "%s:53"
 
-	rootservers = []string{
-		"192.5.5.241:53",
-		"198.41.0.4:53",
-		"192.228.79.201:53",
-		"192.33.4.12:53",
-		"199.7.91.13:53",
-		"192.203.230.10:53",
-		"192.112.36.4:53",
-		"128.63.2.53:53",
-		"192.36.148.17:53",
-		"192.58.128.30:53",
-		"193.0.14.129:53",
-		"199.7.83.42:53",
-		"202.12.27.33:53",
+	rootservers = []*AuthServer{
+		&AuthServer{Host: "192.5.5.241:53"},
+		&AuthServer{Host: "198.41.0.4:53"},
+		&AuthServer{Host: "192.228.79.201:53"},
+		&AuthServer{Host: "192.33.4.12:53"},
+		&AuthServer{Host: "199.7.91.13:53"},
+		&AuthServer{Host: "192.203.230.10:53"},
+		&AuthServer{Host: "192.112.36.4:53"},
+		&AuthServer{Host: "128.63.2.53:53"},
+		&AuthServer{Host: "192.36.148.17:53"},
+		&AuthServer{Host: "192.58.128.30:53"},
+		&AuthServer{Host: "193.0.14.129:53"},
+		&AuthServer{Host: "199.7.83.42:53"},
+		&AuthServer{Host: "202.12.27.33:53"},
 	}
 
-	root6servers = []string{
-		"[2001:500:2f::f]:53",
-		"[2001:503:ba3e::2:30]:53",
-		"[2001:500:200::b]:53",
-		"[2001:500:2::c]:53",
-		"[2001:500:2d::d]:53",
-		"[2001:500:a8::e]:53",
-		"[2001:500:12::d0d]:53",
-		"[2001:500:1::53]:53",
-		"[2001:7fe::53]:53",
-		"[2001:503:c27::2:30]:53",
-		"[2001:7fd::1]:53",
-		"[2001:500:9f::42]:53",
-		"[2001:dc3::35]:53",
+	root6servers = []*AuthServer{
+		&AuthServer{Host: "[2001:500:2f::f]:53"},
+		&AuthServer{Host: "[2001:503:ba3e::2:30]:53"},
+		&AuthServer{Host: "[2001:500:200::b]:53"},
+		&AuthServer{Host: "[2001:500:2::c]:53"},
+		&AuthServer{Host: "[2001:500:2d::d]:53"},
+		&AuthServer{Host: "[2001:500:a8::e]:53"},
+		&AuthServer{Host: "[2001:500:12::d0d]:53"},
+		&AuthServer{Host: "[2001:500:1::53]:53"},
+		&AuthServer{Host: "[2001:7fe::53]:53"},
+		&AuthServer{Host: "[2001:503:c27::2:30]:53"},
+		&AuthServer{Host: "[2001:7fd::1]:53"},
+		&AuthServer{Host: "[2001:500:9f::42]:53"},
+		&AuthServer{Host: "[2001:dc3::35]:53"},
 	}
 
 	initialkeys = []string{
@@ -68,9 +79,9 @@ var (
 		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
 	}
 
-	fallbackservers = []string{
-		"8.8.8.8:53",
-		"8.8.4.4:53",
+	fallbackservers = []*AuthServer{
+		&AuthServer{Host: "8.8.8.8:53"},
+		&AuthServer{Host: "8.8.4.4:53"},
 	}
 
 	rootkeys = []dns.RR{}
@@ -98,7 +109,7 @@ func NewResolver() *Resolver {
 // Resolve will ask each nameserver in top-to-bottom fashion, starting a new request
 // in every interval, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
-func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (resp *dns.Msg, err error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (resp *dns.Msg, err error) {
 	if depth == 0 {
 		return resp, errMaxDeph
 	}
@@ -218,7 +229,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 		}
 
 		ns := make(map[string]string)
-		for _, n := range shuffleRR(resp.Ns) {
+		for _, n := range resp.Ns {
 			if nsrec, ok := n.(*dns.NS); ok {
 				ns[nsrec.Ns] = ""
 			}
@@ -343,7 +354,12 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 
 			key := keyGen(Q)
 
-			err := r.nsCache.Set(key, parentdsrr, nsrec.Header().Ttl, nservers)
+			authservers := []*AuthServer{}
+			for _, s := range nservers {
+				authservers = append(authservers, &AuthServer{Host: s})
+			}
+
+			err := r.nsCache.Set(key, parentdsrr, nsrec.Header().Ttl, authservers)
 			if err != nil {
 				log.Error("Set nameserver cache failed", "query", Q.String(), "error", err.Error())
 			} else {
@@ -351,14 +367,14 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []string, root bool
 			}
 
 			depth--
-			return r.Resolve(Net, req, nservers, false, depth, nlevel, nsl, parentdsrr)
+			return r.Resolve(Net, req, authservers, false, depth, nlevel, nsl, parentdsrr)
 		}
 	}
 
 	return
 }
 
-func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp *dns.Msg, err error) {
 	c := &dns.Client{
 		Net:     Net,
 		UDPSize: dns.DefaultMsgSize,
@@ -388,12 +404,15 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 
 	var wg sync.WaitGroup
 
-	L := func(server string, last bool) {
+	L := func(server *AuthServer, last bool) {
 		defer wg.Done()
 
 	try:
-		r, _, err := c.Exchange(req, server)
+		var r *dns.Msg
+		var err error
+		r, server.RTT, err = c.Exchange(req, server.Host)
 		if err != nil && err != dns.ErrTruncated {
+			server.RTT = time.Hour
 			log.Info("Got an error from resolver", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
 			return
 		}
@@ -420,6 +439,8 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 	ticker := time.NewTicker(time.Duration(Config.Interval) * time.Millisecond)
 	defer ticker.Stop()
 
+	sort.Slice(servers, func(i, j int) bool { return servers[i].RTT < servers[j].RTT })
+
 	// Start lookup on each nameserver top-down, in interval
 	for index, server := range servers {
 		wg.Add(1)
@@ -445,7 +466,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []string) (resp *dns
 	}
 }
 
-func (r *Resolver) searchCache(q *dns.Question) (servers []string, parentdsrr []dns.RR) {
+func (r *Resolver) searchCache(q *dns.Question) (servers []*AuthServer, parentdsrr []dns.RR) {
 	Q := Question{unFqdn(q.Name), dns.TypeToString[dns.TypeNS], dns.ClassToString[q.Qclass]}
 	key := keyGen(Q)
 
@@ -465,7 +486,7 @@ func (r *Resolver) searchCache(q *dns.Question) (servers []string, parentdsrr []
 	return r.searchCache(q)
 }
 
-func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr string, err error) {
+func (r *Resolver) lookupNSAddr(Net string, ns string, servers []*AuthServer) (addr string, err error) {
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(ns, dns.TypeA)
 	nsReq.RecursionDesired = true
@@ -504,7 +525,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string, servers []string) (addr s
 	return addr, fmt.Errorf("ns addr not found %s", ns)
 }
 
-func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentdsRR []dns.RR, servers []string) (err error) {
+func (r *Resolver) verifyDNSSEC(Net string, qname string, resp *dns.Msg, parentdsRR []dns.RR, servers []*AuthServer) (err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("%v for parentname=%s qname=%s", err, qname, resp.Question[0].Name)
