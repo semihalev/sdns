@@ -518,6 +518,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	r.lqueue.New(key)
 	defer r.lqueue.Broadcast(key)
 
+	depth--
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
 	if err != nil {
 		log.Info("Fallback servers will be use", "NS", ns, "qname", qname)
