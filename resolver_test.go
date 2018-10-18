@@ -131,6 +131,18 @@ func Test_resolverRootServersDetect(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func Test_resolverNameserverError(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("33.38.244.195.in-addr.arpa.", dns.TypePTR)
+	req.SetEdns0(DefaultMsgSize, true)
+
+	r := NewResolver()
+
+	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
+
+	assert.Error(t, err)
+}
+
 func Test_resolverNSEC3nodata(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("org.", dns.TypeCNAME)

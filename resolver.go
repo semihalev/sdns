@@ -300,10 +300,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		}
 
 		if len(nservers) == 0 {
-			log.Info("Nameservers not reachable", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype])
-			resp.Rcode = dns.RcodeServerFailure
-			resp.Ns = []dns.RR{}
-			return resp, nil
+			return nil, errors.New("nameservers are not reachable")
 		}
 
 		nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
