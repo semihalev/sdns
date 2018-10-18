@@ -33,7 +33,7 @@ func (q *LQueue) Set(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	q.delay[key] = sync.NewCond(&sync.Mutex{})
+	q.delay[key] = sync.NewCond(&q.mu)
 }
 
 // Remove func
@@ -42,9 +42,7 @@ func (q *LQueue) Remove(key string) {
 	defer q.mu.Unlock()
 
 	if cond, ok := q.delay[key]; ok {
-		cond.L.Lock()
 		cond.Broadcast()
-		cond.L.Unlock()
 	}
 
 	delete(q.delay, key)
