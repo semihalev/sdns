@@ -233,7 +233,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 		h.errorCache.Set(key)
 
-		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
+		return h.handleFailed(req, dns.RcodeSuccess, dsReq)
 	}
 
 	msg := new(dns.Msg)
