@@ -300,7 +300,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		}
 
 		if len(nservers) == 0 {
-			log.Warn("All nameservers cannot reachable", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype])
+			log.Info("Nameservers not reachable", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype])
 			resp.Rcode = dns.RcodeServerFailure
 			resp.Ns = []dns.RR{}
 			return resp, nil
@@ -414,7 +414,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 		resp, server.RTT, err = c.Exchange(req, server.Host)
 		if err != nil && err != dns.ErrTruncated {
 			server.RTT = time.Hour
-			log.Info("Socket error in server communication", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
+			log.Debug("Socket error in server communication", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
 
 			if last {
 				errCh <- err
@@ -521,12 +521,12 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	depth--
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
 	if err != nil {
-		log.Info("Fallback servers will be use", "NS", ns, "qname", qname)
+		log.Debug("Fallback servers will be use", "ns", ns, "qname", qname)
 		nsres, err = r.lookup(Net, nsReq, fallbackservers)
 	}
 
 	if err != nil {
-		log.Debug("Nameserver resolve failed", "NS", ns, "error", err.Error())
+		log.Debug("Nameserver resolve failed", "ns", ns, "error", err.Error())
 
 		r.errCache.Set(key)
 		return addr, fmt.Errorf("%s nameserver resolve failed", ns)
