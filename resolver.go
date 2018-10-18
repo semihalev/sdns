@@ -113,10 +113,6 @@ func NewResolver() *Resolver {
 // in every interval, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
 func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (*dns.Msg, error) {
-	if depth <= 0 {
-		return nil, errMaxDepth
-	}
-
 	if root && req.Question[0].Qtype != dns.TypeDS {
 		q := req.Question[0]
 		servers, parentdsrr = r.searchCache(&q)
@@ -244,6 +240,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 			log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
 
+			if depth <= 0 {
+				return nil, errMaxDepth
+			}
+
 			depth--
 			return r.Resolve(Net, req, nsCache.Servers, false, depth, nlevel, nsl, nil)
 		}
@@ -369,6 +369,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			log.Error("Set nameserver cache failed", "query", Q.String(), "error", err.Error())
 		} else {
 			log.Debug("Nameserver cache insert", "key", key, "query", Q.String())
+		}
+
+		if depth <= 0 {
+			return nil, errMaxDepth
 		}
 
 		depth--
@@ -503,7 +507,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	key := keyGen(Q)
 
 	if c := r.lqueue.Get(key); c != nil {
-		return "", fmt.Errorf("an error occurred for %s", ns)
+		return "", fmt.Errorf("double nameserver lookup %s", ns)
 	}
 
 	nsres, _, err := r.rCache.Get(key)
@@ -521,10 +525,14 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	r.lqueue.New(key)
 	defer r.lqueue.Broadcast(key)
 
+	if depth <= 0 {
+		return "", errMaxDepth
+	}
+
 	depth--
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
 	if err != nil {
-		log.Debug("Fallback servers will be use", "ns", ns, "qname", qname)
+		log.Info("Fallback servers will be use", "ns", ns, "qname", qname, "error", err.Error())
 		nsres, err = r.lookup(Net, nsReq, fallbackservers)
 	}
 
