@@ -154,7 +154,7 @@ func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
 }
 
 func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
-	for _, r := range parentDSSet {
+	for i, r := range parentDSSet {
 		parentDS, ok := r.(*dns.DS)
 		if !ok {
 			continue
@@ -168,6 +168,9 @@ func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
 			return errFailedToConvertKSK
 		}
 		if ds.Digest != parentDS.Digest {
+			if i != len(parentDSSet)-1 {
+				continue
+			}
 			return errMismatchingDS
 		}
 		return nil
