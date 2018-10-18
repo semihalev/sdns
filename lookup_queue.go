@@ -22,7 +22,10 @@ func (q *LQueue) Wait(key string) {
 	defer q.mu.RUnlock()
 
 	if ch, ok := q.delay[key]; ok {
-		<-ch
+		select {
+		case <-ch:
+		default:
+		}
 	}
 }
 
