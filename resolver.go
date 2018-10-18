@@ -150,11 +150,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		var signerFound bool
 
 		for _, rr := range resp.Answer {
-			if rr.Header().Name != req.Question[0].Name {
+			if strings.ToLower(rr.Header().Name) != strings.ToLower(req.Question[0].Name) {
 				continue
 			}
 			if sigrec, ok := rr.(*dns.RRSIG); ok {
-				signer = sigrec.SignerName
+				signer = strings.ToLower(sigrec.SignerName)
 				signerFound = true
 				break
 			}
@@ -162,7 +162,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 		if signerFound && len(parentdsrr) > 0 {
 			if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
-				if req.Question[0].Qtype != dns.TypeDS && dsrr.Header().Name != signer {
+				if req.Question[0].Qtype != dns.TypeDS && strings.ToLower(dsrr.Header().Name) != signer {
 					//try lookup DS records
 					dsReq := new(dns.Msg)
 					dsReq.SetQuestion(signer, dns.TypeDS)
@@ -180,7 +180,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		}
 
 		if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
-			err := r.verifyDNSSEC(Net, signer, req.Question[0].Name, resp, parentdsrr, servers)
+			err := r.verifyDNSSEC(Net, signer, strings.ToLower(req.Question[0].Name), resp, parentdsrr, servers)
 
 			if err != nil {
 				log.Info("DNSSEC verify failed (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
@@ -208,7 +208,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		for _, n := range resp.Ns {
 			if nsrec, ok := n.(*dns.NS); ok {
 				nsrr = nsrec
-				nsmap[nsrec.Ns] = ""
+				nsmap[strings.ToLower(nsrec.Ns)] = ""
 			}
 		}
 
@@ -252,14 +252,15 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
-				if nsl && extra.Header().Name == req.Question[0].Name && extra.A.String() != "" {
+				name := strings.ToLower(extra.Header().Name)
+				if nsl && name == strings.ToLower(req.Question[0].Name) && extra.A.String() != "" {
 					resp.Answer = append(resp.Answer, extra)
 					log.Debug("Glue NS addr in extra response", "qname", extra.Header().Name, "A", extra.A.String())
 					return resp, nil
 				}
 
-				if _, ok := nsmap[extra.Header().Name]; ok {
-					nsmap[extra.Header().Name] = extra.A.String()
+				if _, ok := nsmap[name]; ok {
+					nsmap[name] = extra.A.String()
 				}
 			}
 		}
@@ -318,11 +319,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			var signerFound bool
 
 			for _, rr := range resp.Ns {
-				if rr.Header().Name != nsrr.Header().Name {
+				if strings.ToLower(rr.Header().Name) != strings.ToLower(nsrr.Header().Name) {
 					continue
 				}
 				if sigrec, ok := rr.(*dns.RRSIG); ok {
-					signer = sigrec.SignerName
+					signer = strings.ToLower(sigrec.SignerName)
 					signerFound = true
 					break
 				}
@@ -330,7 +331,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 			if signerFound && len(parentdsrr) > 0 {
 				if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
-					if req.Question[0].Qtype != dns.TypeDS && dsrr.Header().Name != signer {
+					if req.Question[0].Qtype != dns.TypeDS && strings.ToLower(dsrr.Header().Name) != signer {
 						//try lookup DS records
 						dsReq := new(dns.Msg)
 						dsReq.SetQuestion(signer, dns.TypeDS)
@@ -353,7 +354,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 					log.Warn("DNSSEC verify failed (delegation)", "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
 				}
 
-				parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
+				parentdsrr = extractRRSet(resp.Ns, strings.ToLower(nsrr.Header().Name), dns.TypeDS)
 			}
 		}
 

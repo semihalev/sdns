@@ -1,6 +1,9 @@
 package main
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // LQueue type
 type LQueue struct {
@@ -24,7 +27,7 @@ func (q *LQueue) Wait(key string) {
 	if ch, ok := q.delay[key]; ok {
 		select {
 		case <-ch:
-		default:
+		case <-time.After(2 * time.Second):
 		}
 	}
 }

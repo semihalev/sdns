@@ -144,7 +144,7 @@ func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
 	}
 	for _, r := range in {
 		if _, present := tMap[r.Header().Rrtype]; present {
-			if name != "" && name != r.Header().Name {
+			if name != "" && name != strings.ToLower(r.Header().Name) {
 				continue
 			}
 			out = append(out, r)
