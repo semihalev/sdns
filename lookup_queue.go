@@ -2,33 +2,38 @@ package main
 
 import (
 	"sync"
-	"time"
 )
 
 // LQueue type
 type LQueue struct {
 	mu sync.RWMutex
 
-	delay map[string]chan bool
+	wqm map[string][]chan struct{}
+}
+
+// WaitQueue is a lockable work queue
+type WaitQueue struct {
+	locked bool
+	work   chan struct{}
 }
 
 // NewLookupQueue func
 func NewLookupQueue() *LQueue {
 	return &LQueue{
-		delay: make(map[string]chan bool, 2),
+		wqm: make(map[string][]chan struct{}),
 	}
 }
 
 // Wait func
 func (q *LQueue) Wait(key string) {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
-	if ch, ok := q.delay[key]; ok {
-		select {
-		case <-ch:
-		case <-time.After(2 * time.Second):
-		}
+	if w, ok := q.wqm[key]; ok {
+		c := make(chan struct{})
+		w = append(w, c)
+
+		<-c
 	}
 }
 
@@ -37,7 +42,7 @@ func (q *LQueue) New(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	q.delay[key] = make(chan bool)
+	q.wqm[key] = []chan struct{}{}
 }
 
 // Broadcast func
@@ -45,9 +50,12 @@ func (q *LQueue) Broadcast(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if ch, ok := q.delay[key]; ok {
-		close(ch)
+	if w, ok := q.wqm[key]; ok {
+		for _, c := range w {
+			c <- struct{}{}
+			close(c)
+		}
 	}
 
-	delete(q.delay, key)
+	delete(q.wqm, key)
 }
