@@ -4,44 +4,44 @@ import "sync"
 
 // LQueue type
 type LQueue struct {
-	sync.Mutex
+	mu sync.RWMutex
 
-	delay map[string]*sync.Cond
+	delay map[string]chan bool
 }
 
 // NewLookupQueue func
 func NewLookupQueue() *LQueue {
 	return &LQueue{
-		delay: make(map[string]*sync.Cond),
+		delay: make(map[string]chan bool),
 	}
 }
 
 // Wait func
 func (q *LQueue) Wait(key string) {
-	q.Lock()
-	defer q.Unlock()
+	q.mu.RLock()
+	defer q.mu.RUnlock()
 
-	if cond, ok := q.delay[key]; ok {
-		cond.Wait()
+	if ch, ok := q.delay[key]; ok {
+		<-ch
 	}
 }
 
 // New func
 func (q *LQueue) New(key string) {
-	q.Lock()
-	defer q.Unlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
-	q.delay[key] = sync.NewCond(q)
+	q.delay[key] = make(chan bool)
 }
 
 // Broadcast func
 func (q *LQueue) Broadcast(key string) {
-	q.Lock()
-	defer q.Unlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
-	if cond, ok := q.delay[key]; ok {
-		delete(q.delay, key)
-
-		cond.Broadcast()
+	if ch, ok := q.delay[key]; ok {
+		close(ch)
 	}
+
+	delete(q.delay, key)
 }
