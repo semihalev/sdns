@@ -6,23 +6,23 @@ import "sync"
 type LQueue struct {
 	mu sync.RWMutex
 
-	delay map[string]chan struct{}
+	delay map[string]*sync.Cond
 }
 
 // NewLookupQueue func
 func NewLookupQueue() *LQueue {
 	return &LQueue{
-		delay: make(map[string]chan struct{}),
+		delay: make(map[string]*sync.Cond),
 	}
 }
 
 // Get func
-func (q *LQueue) Get(key string) chan struct{} {
+func (q *LQueue) Get(key string) *sync.Cond {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	if ch, ok := q.delay[key]; ok {
-		return ch
+	if cond, ok := q.delay[key]; ok {
+		return cond
 	}
 
 	return nil
@@ -33,7 +33,7 @@ func (q *LQueue) Set(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	q.delay[key] = make(chan struct{})
+	q.delay[key] = sync.NewCond(&sync.Mutex{})
 }
 
 // Remove func
@@ -41,8 +41,8 @@ func (q *LQueue) Remove(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if ch, ok := q.delay[key]; ok {
-		close(ch)
+	if cond, ok := q.delay[key]; ok {
+		cond.Broadcast()
 	}
 
 	delete(q.delay, key)
