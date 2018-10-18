@@ -224,6 +224,8 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		return mesg
 	} else if mesg.Truncated && proto == "http" {
 		opt.SetDo(dsReq)
+
+		h.lqueue.Broadcast(key)
 		return h.query("tcp", req)
 	}
 
