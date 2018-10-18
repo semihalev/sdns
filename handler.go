@@ -124,13 +124,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	key := keyGen(Q)
 
-	if cond := h.lqueue.Get(key); cond != nil {
-		log.Info("Query waiting on queue", "query", Q.String())
-
-		cond.L.Lock()
-		cond.Wait()
-		cond.L.Unlock()
-	}
+	h.lqueue.Wait(key)
 
 	mesg, rl, err := h.cache.Get(key)
 	if err == nil {

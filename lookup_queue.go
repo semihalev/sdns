@@ -16,16 +16,14 @@ func NewLookupQueue() *LQueue {
 	}
 }
 
-// Get func
-func (q *LQueue) Get(key string) *sync.Cond {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+// Wait func
+func (q *LQueue) Wait(key string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	if cond, ok := q.delay[key]; ok {
-		return cond
+		cond.Wait()
 	}
-
-	return nil
 }
 
 // Set func
@@ -42,8 +40,8 @@ func (q *LQueue) Remove(key string) {
 	defer q.mu.Unlock()
 
 	if cond, ok := q.delay[key]; ok {
+		delete(q.delay, key)
+
 		cond.Broadcast()
 	}
-
-	delete(q.delay, key)
 }

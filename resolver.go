@@ -501,13 +501,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string) (addr string, err 
 
 	key := keyGen(Q)
 
-	if cond := r.lqueue.Get(key); cond != nil {
-		log.Info("Waiting on queue", "NS", ns, "qname", qname)
-
-		cond.L.Lock()
-		cond.Wait()
-		cond.L.Unlock()
-	}
+	r.lqueue.Wait(key)
 
 	nsres, _, err := r.rCache.Get(key)
 	if err == nil {
