@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"strconv"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -231,9 +232,9 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	if mesg.Rcode == dns.RcodeSuccess &&
 		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
 
-		h.errorCache.Set(key)
-
-		return h.handleFailed(req, dns.RcodeSuccess, dsReq)
+		rr, _ := dns.NewRR(req.Question[0].Name + " " + strconv.Itoa(int(Config.Expire)) +
+			" IN HINFO comment \"no answer found on authoritative server\"")
+		mesg.Ns = append(mesg.Ns, rr)
 	}
 
 	msg := new(dns.Msg)

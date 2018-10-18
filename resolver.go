@@ -376,13 +376,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 	}
 
 	// no answer, no authority, create new msg safer, sometimes received broken response
-
 	m := new(dns.Msg)
+	m.SetRcode(req, dns.RcodeSuccess)
 	m.RecursionAvailable = true
-	m.SetQuestion(req.Question[0].Name, req.Question[0].Qtype)
-	m.Id = resp.Id
 	m.Extra = req.Extra
-	m.Rcode = dns.RcodeSuccess
 
 	return m, nil
 }
