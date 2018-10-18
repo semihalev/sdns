@@ -30,6 +30,7 @@ type DNSHandler struct {
 	resolver   *Resolver
 	cache      *QueryCache
 	errorCache *ErrorCache
+	lqueue     *LQueue
 }
 
 // NewHandler returns a new DNSHandler
@@ -38,6 +39,7 @@ func NewHandler() *DNSHandler {
 		NewResolver(),
 		NewQueryCache(Config.Maxcount),
 		NewErrorCache(Config.Maxcount, Config.Expire),
+		NewLookupQueue(),
 	}
 }
 
@@ -122,6 +124,14 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	key := keyGen(Q)
 
+	if cond := h.lqueue.Get(key); cond != nil {
+		log.Info("Query waiting on queue", "query", Q.String())
+
+		cond.L.Lock()
+		cond.Wait()
+		cond.L.Unlock()
+	}
+
 	mesg, rl, err := h.cache.Get(key)
 	if err == nil {
 		log.Debug("Cache hit", "key", key, "query", Q.String())
@@ -202,6 +212,9 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 			return m
 		}
 	}
+
+	h.lqueue.Set(key)
+	defer h.lqueue.Remove(key)
 
 	depth := Config.Maxdepth
 	mesg, err = h.resolver.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)
