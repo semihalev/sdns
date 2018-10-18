@@ -375,13 +375,16 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		return r.Resolve(Net, req, authservers, false, depth, nlevel, nsl, parentdsrr)
 	}
 
-	// no answer, no authority, return req msg safer, sometimes received broken response
+	// no answer, no authority, create new msg safer, sometimes received broken response
 
-	req.RecursionAvailable = true
-	req.AuthenticatedData = true
-	req.Authoritative = false
+	m := new(dns.Msg)
+	m.RecursionAvailable = true
+	m.SetQuestion(req.Question[0].Name, req.Question[0].Qtype)
+	m.Id = resp.Id
+	m.Extra = req.Extra
+	m.Rcode = dns.RcodeSuccess
 
-	return req, nil
+	return m, nil
 }
 
 func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp *dns.Msg, err error) {
