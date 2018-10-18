@@ -113,7 +113,7 @@ func NewResolver() *Resolver {
 // in every interval, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
 func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (*dns.Msg, error) {
-	if depth == 0 {
+	if depth <= 0 {
 		return nil, errMaxDepth
 	}
 
