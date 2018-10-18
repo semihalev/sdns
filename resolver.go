@@ -507,7 +507,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	key := keyGen(Q)
 
 	if c := r.lqueue.Get(key); c != nil {
-		return "", fmt.Errorf("double nameserver lookup %s", ns)
+		return "", fmt.Errorf("double ns lookup %s", ns)
 	}
 
 	nsres, _, err := r.rCache.Get(key)
@@ -522,8 +522,8 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 		return "", fmt.Errorf("an error occurred for %s", ns)
 	}
 
-	r.lqueue.New(key)
-	defer r.lqueue.Broadcast(key)
+	r.lqueue.Add(key)
+	defer r.lqueue.Done(key)
 
 	if depth <= 0 {
 		return "", errMaxDepth
@@ -545,7 +545,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 
 	if len(nsres.Answer) == 0 && nsres.Truncated {
 		//retrying in TCP mode
-		r.lqueue.Broadcast(key)
+		r.lqueue.Done(key)
 		return r.lookupNSAddr("tcp", ns, qname, depth)
 	}
 

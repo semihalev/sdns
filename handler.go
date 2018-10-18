@@ -207,8 +207,8 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		}
 	}
 
-	h.lqueue.New(key)
-	defer h.lqueue.Broadcast(key)
+	h.lqueue.Add(key)
+	defer h.lqueue.Done(key)
 
 	depth := Config.Maxdepth
 	mesg, err = h.resolver.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)
@@ -225,7 +225,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	} else if mesg.Truncated && proto == "http" {
 		opt.SetDo(dsReq)
 
-		h.lqueue.Broadcast(key)
+		h.lqueue.Done(key)
 		return h.query("tcp", req)
 	}
 

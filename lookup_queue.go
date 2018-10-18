@@ -43,16 +43,16 @@ func (q *LQueue) Wait(key string) {
 	q.mu.RUnlock()
 }
 
-// New func
-func (q *LQueue) New(key string) {
+// Add func
+func (q *LQueue) Add(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	q.delay[key] = make(chan struct{})
 }
 
-// Broadcast func
-func (q *LQueue) Broadcast(key string) {
+// Done func
+func (q *LQueue) Done(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
