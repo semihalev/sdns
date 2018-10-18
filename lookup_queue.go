@@ -42,8 +42,6 @@ func (q *LQueue) Remove(key string) {
 	defer q.mu.Unlock()
 
 	if ch, ok := q.delay[key]; ok {
-		ch <- struct{}{}
-
 		close(ch)
 	}
 

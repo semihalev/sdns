@@ -502,7 +502,10 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	key := keyGen(Q)
 
 	if ch := r.lqueue.Get(key); ch != nil {
-		<-ch
+		select {
+		case <-ch:
+		case <-time.After(time.Duration(Config.Timeout) * time.Second):
+		}
 	}
 
 	nsres, _, err := r.rCache.Get(key)
