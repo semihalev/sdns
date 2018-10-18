@@ -56,13 +56,13 @@ $ go build
 ## TODO
 
 - [x] More tests
-- [ ] Try lookup NS address better way
+- [x] Try lookup NS address better way
 - [x] DNS over TLS support
 - [x] DNS over HTTPS support
 - [x] Full DNSSEC support
 - [x] RTT optimization
-- [ ] Full IPv6 support (server<->server communication)
 - [x] Access list
+- [ ] Full IPv6 support (server<->server communication)
 - [ ] Client based ratelimit
 
 ## Made With

@@ -88,8 +88,8 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 			return h.handleFailed(req, dns.RcodeBadVers, dsReq)
 		}
 
-		ops := make([]dns.EDNS0, len(opt.Option))
-		copy(ops, opt.Option)
+		ops := opt.Option
+
 		opt.Option = []dns.EDNS0{}
 
 		for _, option := range ops {

@@ -93,6 +93,7 @@ func BenchmarkUDPHandler(b *testing.B) {
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 	req.RecursionDesired = true
+	req.SetEdns0(DefaultMsgSize, true)
 
 	//caching
 	resp := h.query("udp", req)
