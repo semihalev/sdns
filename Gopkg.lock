@@ -73,10 +73,10 @@
   version = "v0.0.4"
 
 [[projects]]
+  branch = "master"
   name = "github.com/miekg/dns"
   packages = ["."]
-  revision = "ba6747e8a94115e9dc7738afb87850687611df1b"
-  version = "v1.0.12"
+  revision = "17c1bc6792fdf1918200e9a675cdf2e3c9d585cd"
 
 [[projects]]
   name = "github.com/modern-go/concurrent"
@@ -171,6 +171,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "1e2656882d54ffdf15369195fc800bd11cf842f3ae46c19536869efdae10ecf2"
+  inputs-digest = "dcbe6a13a51580bbe5965247192de9a023c1ab2272489ee92c7b9a9f791d789a"
   solver-name = "gps-cdcl"
   solver-version = 1

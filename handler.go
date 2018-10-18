@@ -52,7 +52,7 @@ func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
-	client, _, _ := net.SplitHostPort(w.RemoteAddr().String())
+	client, _, _ := net.SplitHostPort(h.remoteAddr(w))
 	allowed, _ := accessList.Contains(net.ParseIP(client))
 	if !allowed {
 		log.Debug("Client denied to make new query", "client", client, "net", proto)
@@ -352,4 +352,14 @@ func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
 	if err != nil {
 		log.Error("Message writing failed", "error", err.Error())
 	}
+}
+
+func (h *DNSHandler) remoteAddr(w dns.ResponseWriter) string {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Recovered in remoteAddr", "recover", r)
+		}
+	}()
+
+	return w.RemoteAddr().String()
 }
