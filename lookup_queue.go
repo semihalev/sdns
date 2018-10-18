@@ -4,7 +4,7 @@ import "sync"
 
 // LQueue type
 type LQueue struct {
-	mu sync.RWMutex
+	sync.Mutex
 
 	delay map[string]*sync.Cond
 }
@@ -18,26 +18,26 @@ func NewLookupQueue() *LQueue {
 
 // Wait func
 func (q *LQueue) Wait(key string) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.Lock()
+	defer q.Unlock()
 
 	if cond, ok := q.delay[key]; ok {
 		cond.Wait()
 	}
 }
 
-// Set func
-func (q *LQueue) Set(key string) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+// New func
+func (q *LQueue) New(key string) {
+	q.Lock()
+	defer q.Unlock()
 
-	q.delay[key] = sync.NewCond(&q.mu)
+	q.delay[key] = sync.NewCond(q)
 }
 
-// Remove func
-func (q *LQueue) Remove(key string) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+// Broadcast func
+func (q *LQueue) Broadcast(key string) {
+	q.Lock()
+	defer q.Unlock()
 
 	if cond, ok := q.delay[key]; ok {
 		delete(q.delay, key)

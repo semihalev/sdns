@@ -207,8 +207,8 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		}
 	}
 
-	h.lqueue.Set(key)
-	defer h.lqueue.Remove(key)
+	h.lqueue.New(key)
+	defer h.lqueue.Broadcast(key)
 
 	depth := Config.Maxdepth
 	mesg, err = h.resolver.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)

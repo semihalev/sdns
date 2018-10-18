@@ -515,8 +515,8 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string) (addr string, err 
 		return "", fmt.Errorf("an error occurred for %s", ns)
 	}
 
-	r.lqueue.Set(key)
-	defer r.lqueue.Remove(key)
+	r.lqueue.New(key)
+	defer r.lqueue.Broadcast(key)
 
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, 30, 0, true, nil)
 	if err != nil {
