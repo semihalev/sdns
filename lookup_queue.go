@@ -15,7 +15,7 @@ type LQueue struct {
 // NewLookupQueue func
 func NewLookupQueue() *LQueue {
 	return &LQueue{
-		delay: make(map[string]chan bool),
+		delay: make(map[string]chan bool, 2),
 	}
 }
 

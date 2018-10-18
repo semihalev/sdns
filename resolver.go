@@ -533,6 +533,11 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 		return addr, fmt.Errorf("%s nameserver resolve failed", ns)
 	}
 
+	if len(nsres.Answer) == 0 && nsres.Truncated {
+		//retrying in TCP mode
+		return r.lookupNSAddr("tcp", ns, qname, depth)
+	}
+
 	if addr, ok := searchAddr(nsres); ok {
 		r.rCache.Set(key, nsres)
 		return addr, nil
