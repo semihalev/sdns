@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 
 	"github.com/miekg/dns"
@@ -22,7 +21,7 @@ type Question struct {
 
 // String formats a question
 func (q *Question) String() string {
-	return fmt.Sprintf("%s %s %s", q.Qname, q.Qclass, q.Qtype)
+	return q.Qname + " " + q.Qclass + " " + q.Qtype
 }
 
 // DNSHandler type

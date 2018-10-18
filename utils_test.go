@@ -19,6 +19,16 @@ func Test_keyGen(t *testing.T) {
 	assert.Equal(t, asset, "b78555bf3268be8a25d31ab80a47b6e9")
 }
 
+func Benchmark_keyGen(b *testing.B) {
+	q := Question{"@", "A", "ANY"}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		keyGen(q)
+	}
+}
+
 func Test_unFqdn(t *testing.T) {
 
 	q := "demo-domain.com."

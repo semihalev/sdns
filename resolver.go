@@ -30,8 +30,7 @@ var (
 	errTimeout              = errors.New("timedout")
 	errResolver             = errors.New("resolv failed")
 
-	rootzone   = "."
-	dnsPortTmp = "%s:53"
+	rootzone = "."
 
 	rootservers = []*AuthServer{
 		&AuthServer{Host: "192.5.5.241:53", RTT: time.Hour},
@@ -85,7 +84,7 @@ type AuthServer struct {
 }
 
 func (a *AuthServer) String() string {
-	return fmt.Sprintf("host:%s, rtt:%s", a.Host, a.RTT)
+	return "host:" + a.Host + " " + "rtt:" + a.RTT.String()
 }
 
 func init() {
@@ -272,7 +271,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 				if isLocalIP(addr) {
 					continue
 				}
-				nservers = append(nservers, fmt.Sprintf(dnsPortTmp, addr))
+				nservers = append(nservers, addr+":53")
 			}
 		}
 
@@ -294,7 +293,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 						if isLocalIP(addr) {
 							continue
 						}
-						nservers = append(nservers, fmt.Sprintf(dnsPortTmp, addr))
+						nservers = append(nservers, addr+":53")
 					}
 				}
 			}

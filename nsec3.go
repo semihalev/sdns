@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/miekg/dns"
 )
@@ -72,7 +71,7 @@ func verifyNameError(q *dns.Question, nsec []dns.RR) error {
 	if ce == "" {
 		return errNSECMissingCoverage
 	}
-	_, _, err := findCoverer(fmt.Sprintf("*.%s", ce), nsec)
+	_, _, err := findCoverer("*."+ce, nsec)
 	if err != nil {
 		return err
 	}
