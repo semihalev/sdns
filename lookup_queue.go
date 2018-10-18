@@ -42,7 +42,9 @@ func (q *LQueue) Remove(key string) {
 	defer q.mu.Unlock()
 
 	if cond, ok := q.delay[key]; ok {
+		cond.L.Lock()
 		cond.Broadcast()
+		cond.L.Unlock()
 	}
 
 	delete(q.delay, key)

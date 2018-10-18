@@ -288,7 +288,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			//non extra rr for some nameservers, try lookup
 			for k, addr := range nsmap {
 				if addr == "" {
-					addr, err := r.lookupNSAddr(Net, k)
+					addr, err := r.lookupNSAddr(Net, k, req.Question[0].Name)
 					if err == nil {
 						if isLocalIP(addr) {
 							continue
@@ -488,7 +488,7 @@ func (r *Resolver) searchCache(q *dns.Question) (servers []*AuthServer, parentds
 	return r.searchCache(q)
 }
 
-func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) {
+func (r *Resolver) lookupNSAddr(Net string, ns, qname string) (addr string, err error) {
 	log.Debug("Lookup NS address", "qname", ns)
 
 	nsReq := new(dns.Msg)
@@ -502,7 +502,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 	key := keyGen(Q)
 
 	if cond := r.lqueue.Get(key); cond != nil {
-		log.Info("Waiting on queue", "qname", ns)
+		log.Info("Waiting on queue", "NS", ns, "qname", qname)
 
 		cond.L.Lock()
 		cond.Wait()
@@ -526,12 +526,12 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, 30, 0, true, nil)
 	if err != nil {
-		log.Info("Fallback servers will be use", "qname", ns)
+		log.Info("Fallback servers will be use", "NS", ns, "qname", qname)
 		nsres, err = r.lookup(Net, nsReq, fallbackservers)
 	}
 
 	if err != nil {
-		log.Debug("Nameserver resolve failed", "qname", ns, "error", err.Error())
+		log.Debug("Nameserver resolve failed", "NS", ns, "error", err.Error())
 
 		r.errCache.Set(key)
 		return addr, fmt.Errorf("%s nameserver resolve failed", ns)
@@ -539,7 +539,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns string) (addr string, err error) 
 
 	if nsres.Truncated {
 		//retrying in TCP mode
-		return r.lookupNSAddr("tcp", ns)
+		return r.lookupNSAddr("tcp", ns, qname)
 	}
 
 	if addr, ok := searchAddr(nsres); ok {
