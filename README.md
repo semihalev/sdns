@@ -26,6 +26,12 @@ or
 $ go build
 ```
 
+## Testing
+
+```shell
+$ go test -v
+```
+
 ## Flags
 
 | Flag        | Desc           | 
@@ -34,11 +40,11 @@ $ go build
 
 ## Server Configuration Checklist
 
-* Increase ulimit on your server
+* Increase file descriptor on your server
 
 ## Features
 
-* Linux/BSD/Windows/Darwin supported
+* Linux/BSD/Darwin supported
 * DNS RFC compatibility
 * Concurrent DNS lookups within listed servers
 * DNS caching
