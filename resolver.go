@@ -294,6 +294,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 							continue
 						}
 						nservers = append(nservers, addr+":53")
+					} else {
+						log.Info("Lookup NS addr failed", "qname", req.Question[0].Name, "ns", k, "error", err.Error())
 					}
 				}
 			}
@@ -509,7 +511,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	key := keyGen(Q)
 
 	if c := r.lqueue.Get(key); c != nil {
-		return "", fmt.Errorf("double ns lookup %s", ns)
+		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", ns)
 	}
 
 	nsres, _, err := r.rCache.Get(key)
@@ -521,34 +523,41 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 
 	err = r.errCache.Get(key)
 	if err == nil {
-		return "", fmt.Errorf("an error occurred for %s", ns)
+		return "", fmt.Errorf("nameserver address lookup failed for %s (cached)", ns)
 	}
 
 	r.lqueue.Add(key)
 	defer r.lqueue.Done(key)
 
 	if depth <= 0 {
-		return "", errMaxDepth
+		return "", fmt.Errorf("nameserver address lookup failed for %s (max depth)", ns)
 	}
 
 	depth--
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
 	if err != nil {
-		log.Info("Fallback servers will be use", "ns", ns, "qname", qname, "error", err.Error())
+		//try fallback servers
 		nsres, err = r.lookup(Net, nsReq, fallbackservers)
 	}
 
 	if err != nil {
-		log.Debug("Nameserver resolve failed", "ns", ns, "error", err.Error())
-
 		r.errCache.Set(key)
-		return addr, fmt.Errorf("%s nameserver resolve failed", ns)
+		return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", ns, err)
 	}
 
-	if len(nsres.Answer) == 0 && nsres.Truncated {
+	if nsres.Truncated && nsres.Rcode == dns.RcodeSuccess {
 		//retrying in TCP mode
 		r.lqueue.Done(key)
 		return r.lookupNSAddr("tcp", ns, qname, depth)
+	}
+
+	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
+		//try fallback servers
+		nsres, err = r.lookup(Net, nsReq, fallbackservers)
+		if err != nil {
+			r.errCache.Set(key)
+			return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", ns, err)
+		}
 	}
 
 	if addr, ok := searchAddr(nsres); ok {
@@ -557,7 +566,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	}
 
 	r.errCache.Set(key)
-	return addr, fmt.Errorf("%s nameserver resolve failed", ns)
+	return addr, fmt.Errorf("nameserver address lookup failed for %s (no answer)", ns)
 }
 
 func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR, servers []*AuthServer) (err error) {
