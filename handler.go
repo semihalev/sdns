@@ -251,6 +251,13 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	opt.SetDo(dsReq)
 	msg.Extra = append(msg.Extra, opt)
 
+	//ignore auths TTL for caching, replace with default expire
+	if mesg.Rcode == dns.RcodeNameError {
+		for _, rr := range mesg.Ns {
+			rr.Header().Ttl = Config.Expire
+		}
+	}
+
 	err = h.cache.Set(key, mesg)
 	if err != nil {
 		log.Error("Set msg failed", "query", Q.String(), "error", err.Error())
@@ -269,7 +276,8 @@ func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
 	cnameReq.SetEdns0(DefaultMsgSize, true)
 
 	for _, answer := range mesg.Answer {
-		if answer.Header().Rrtype == req.Question[0].Qtype {
+		if answer.Header().Rrtype == req.Question[0].Qtype &&
+			(req.Question[0].Qtype == dns.TypeA || req.Question[0].Qtype == dns.TypeAAAA) {
 			answerFound = true
 		}
 

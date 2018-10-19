@@ -52,7 +52,7 @@ type config struct {
 var defaultConfig = `# version this config was generated from
 version = "%s"
 
-# list of sources to pull blocklists from, stores them in ./sources
+# list of remote blocklists
 blocklists = [
 "http://mirror1.malwaredomains.com/files/justdomains",
 "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
@@ -158,7 +158,7 @@ timeout = 5
 # connect timeout for dns lookups in seconds
 connecttimeout = 2
 
-# cache entry lifespan in seconds
+# default cache entry lifespan in seconds
 expire = 600
 
 # cache capacity, 0 for infinite
