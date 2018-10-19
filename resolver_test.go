@@ -57,6 +57,18 @@ func Test_resolverBadKeyDNSSEC(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func Test_resolverExponentDNSSEC(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("sigfail.verteiltesysteme.net.", dns.TypeA)
+	req.SetEdns0(DefaultMsgSize, true)
+
+	r := NewResolver()
+
+	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
+
+	assert.NoError(t, err)
+}
+
 func Test_resolverDS(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("nic.cz.", dns.TypeA)

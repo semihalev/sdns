@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/md5"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"math/rand"
@@ -277,4 +278,42 @@ main:
 	}
 
 	return nil
+}
+
+func fromBase64(s []byte) (buf []byte, err error) {
+	buflen := base64.StdEncoding.DecodedLen(len(s))
+	buf = make([]byte, buflen)
+	n, err := base64.StdEncoding.Decode(buf, s)
+	buf = buf[:n]
+	return
+}
+
+func checkExponent(key string) bool {
+	keybuf, err := fromBase64([]byte(key))
+	if err != nil {
+		return true
+	}
+
+	if len(keybuf) < 1+1+64 {
+		// Exponent must be at least 1 byte and modulus at least 64
+		return true
+	}
+
+	// RFC 2537/3110, section 2. RSA Public KEY Resource Records
+	// Length is in the 0th byte, unless its zero, then it
+	// it in bytes 1 and 2 and its a 16 bit number
+	explen := uint16(keybuf[0])
+	keyoff := 1
+	if explen == 0 {
+		explen = uint16(keybuf[1])<<8 | uint16(keybuf[2])
+		keyoff = 3
+	}
+
+	if explen > 4 || explen == 0 || keybuf[keyoff] == 0 {
+		// Exponent larger than supported by the crypto package,
+		// empty, or contains prohibited leading zero.
+		return false
+	}
+
+	return true
 }

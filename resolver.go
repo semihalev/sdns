@@ -175,13 +175,15 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		}
 
 		if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
-			err := r.verifyDNSSEC(Net, signer, strings.ToLower(req.Question[0].Name), resp, parentdsrr, servers)
+			ok, err := r.verifyDNSSEC(Net, signer, strings.ToLower(req.Question[0].Name), resp, parentdsrr, servers)
 
 			if err != nil {
-				log.Info("DNSSEC verify failed (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+				log.Warn("DNSSEC verify failed (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
 				if !strings.Contains(err.Error(), errNoDNSKEY.Error()) { //some servers timedout for DNSKEY queries, ignoring
 					return nil, err
 				}
+			} else if !ok {
+				log.Warn("DNSSEC cannot verify at the moment (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype])
 			}
 		}
 
@@ -347,9 +349,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 
 			if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
-				err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr, servers)
+				ok, err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr, servers)
 				if err != nil {
 					log.Warn("DNSSEC verify failed (delegation)", "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
+				} else if !ok {
+					log.Warn("DNSSEC cannot verify at the moment (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype])
 				}
 
 				parentdsrr = extractRRSet(resp.Ns, strings.ToLower(nsrr.Header().Name), dns.TypeDS)
@@ -569,7 +573,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	return addr, fmt.Errorf("nameserver address lookup failed for %s (no answer)", ns)
 }
 
-func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR, servers []*AuthServer) (err error) {
+func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR, servers []*AuthServer) (ok bool, err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("%v for signer=%s signed=%s", err, signer, signed)
@@ -619,6 +623,9 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	for _, a := range msg.Answer {
 		if a.Header().Rrtype == dns.TypeDNSKEY {
 			dnskey := a.(*dns.DNSKEY)
+			if !checkExponent(dnskey.PublicKey) {
+				return false, nil
+			}
 			tag := dnskey.KeyTag()
 			if dnskey.Flags == 256 || dnskey.Flags == 257 {
 				keys[tag] = dnskey
@@ -627,7 +634,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	}
 
 	if len(keys) == 0 {
-		return errNoDNSKEY
+		return false, errNoDNSKEY
 	}
 
 	if len(parentdsRR) > 0 {
@@ -645,5 +652,5 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 
 	log.Debug("DNSSEC verified", "signer", signer, "signed", signed)
 
-	return nil
+	return true, nil
 }
