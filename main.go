@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -111,29 +110,16 @@ func startSDNS() {
 	}()
 
 	go func() {
-		us := make(chan os.Signal, 1)
-		signal.Notify(us, syscall.SIGUSR1)
-
 		timer := time.NewTimer(time.Second)
 
-		for {
-			select {
-			case <-timer.C:
-				if err := updateBlocklists(Config.BlockListDir); err != nil {
-					log.Error("Update blocklists failed", "error", err.Error())
-				}
+		select {
+		case <-timer.C:
+			if err := updateBlocklists(Config.BlockListDir); err != nil {
+				log.Error("Update blocklists failed", "error", err.Error())
+			}
 
-				if err := readBlocklists(Config.BlockListDir); err != nil {
-					log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
-				}
-			case <-us:
-				if err := updateBlocklists(Config.BlockListDir); err != nil {
-					log.Error("Update blocklists failed", "error", err.Error())
-				}
-
-				if err := readBlocklists(Config.BlockListDir); err != nil {
-					log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
-				}
+			if err := readBlocklists(Config.BlockListDir); err != nil {
+				log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
 			}
 		}
 	}()
@@ -160,7 +146,7 @@ func main() {
 	startSDNS()
 
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
+	signal.Notify(c, os.Interrupt)
 
 	<-c
 

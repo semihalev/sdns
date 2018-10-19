@@ -44,7 +44,7 @@ $ go test -v
 
 ## Features
 
-* Linux/BSD/Darwin supported
+* Linux/BSD/Darwin/Windows supported
 * DNS RFC compatibility
 * Concurrent DNS lookups within listed servers
 * DNS caching
