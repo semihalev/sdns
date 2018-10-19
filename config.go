@@ -13,7 +13,7 @@ import (
 )
 
 // BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "0.2.0-rc1"
+var BuildVersion = "0.2.0"
 
 // ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 var ConfigVersion = "0.1.9"
