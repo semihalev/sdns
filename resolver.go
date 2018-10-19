@@ -33,35 +33,35 @@ var (
 	rootzone = "."
 
 	rootservers = []*AuthServer{
-		&AuthServer{Host: "192.5.5.241:53", RTT: time.Hour},
-		&AuthServer{Host: "198.41.0.4:53", RTT: time.Hour},
-		&AuthServer{Host: "192.228.79.201:53", RTT: time.Hour},
-		&AuthServer{Host: "192.33.4.12:53", RTT: time.Hour},
-		&AuthServer{Host: "199.7.91.13:53", RTT: time.Hour},
-		&AuthServer{Host: "192.203.230.10:53", RTT: time.Hour},
-		&AuthServer{Host: "192.112.36.4:53", RTT: time.Hour},
-		&AuthServer{Host: "128.63.2.53:53", RTT: time.Hour},
-		&AuthServer{Host: "192.36.148.17:53", RTT: time.Hour},
-		&AuthServer{Host: "192.58.128.30:53", RTT: time.Hour},
-		&AuthServer{Host: "193.0.14.129:53", RTT: time.Hour},
-		&AuthServer{Host: "199.7.83.42:53", RTT: time.Hour},
-		&AuthServer{Host: "202.12.27.33:53", RTT: time.Hour},
+		NewAuthServer("192.5.5.241:53"),
+		NewAuthServer("198.41.0.4:53"),
+		NewAuthServer("192.228.79.201:53"),
+		NewAuthServer("192.33.4.12:53"),
+		NewAuthServer("199.7.91.13:53"),
+		NewAuthServer("192.203.230.10:53"),
+		NewAuthServer("192.112.36.4:53"),
+		NewAuthServer("128.63.2.53:53"),
+		NewAuthServer("192.36.148.17:53"),
+		NewAuthServer("192.58.128.30:53"),
+		NewAuthServer("193.0.14.129:53"),
+		NewAuthServer("199.7.83.42:53"),
+		NewAuthServer("202.12.27.33:53"),
 	}
 
 	root6servers = []*AuthServer{
-		&AuthServer{Host: "[2001:500:2f::f]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:503:ba3e::2:30]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:500:200::b]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:500:2::c]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:500:2d::d]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:500:a8::e]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:500:12::d0d]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:500:1::53]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:7fe::53]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:503:c27::2:30]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:7fd::1]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:500:9f::42]:53", RTT: time.Hour},
-		&AuthServer{Host: "[2001:dc3::35]:53", RTT: time.Hour},
+		NewAuthServer("[2001:500:2f::f]:53"),
+		NewAuthServer("[2001:503:ba3e::2:30]:53"),
+		NewAuthServer("[2001:500:200::b]:53"),
+		NewAuthServer("[2001:500:2::c]:53"),
+		NewAuthServer("[2001:500:2d::d]:53"),
+		NewAuthServer("[2001:500:a8::e]:53"),
+		NewAuthServer("[2001:500:12::d0d]:53"),
+		NewAuthServer("[2001:500:1::53]:53"),
+		NewAuthServer("[2001:7fe::53]:53"),
+		NewAuthServer("[2001:503:c27::2:30]:53"),
+		NewAuthServer("[2001:7fd::1]:53"),
+		NewAuthServer("[2001:500:9f::42]:53"),
+		NewAuthServer("[2001:dc3::35]:53"),
 	}
 
 	initialkeys = []string{
@@ -70,8 +70,8 @@ var (
 	}
 
 	fallbackservers = []*AuthServer{
-		&AuthServer{Host: "8.8.8.8:53", RTT: time.Hour},
-		&AuthServer{Host: "8.8.4.4:53", RTT: time.Hour},
+		NewAuthServer("8.8.8.8:53"),
+		NewAuthServer("8.8.4.4:53"),
 	}
 
 	rootkeys = []dns.RR{}
@@ -81,6 +81,14 @@ var (
 type AuthServer struct {
 	Host string
 	RTT  time.Duration
+}
+
+// NewAuthServer return a server
+func NewAuthServer(host string) *AuthServer {
+	return &AuthServer{
+		Host: host,
+		RTT:  time.Hour, //default untrusted rtt
+	}
 }
 
 func (a *AuthServer) String() string {
@@ -282,7 +290,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 				// temprorary cache before lookup
 				authservers := []*AuthServer{}
 				for _, s := range nservers {
-					authservers = append(authservers, &AuthServer{Host: s, RTT: time.Hour})
+					authservers = append(authservers, NewAuthServer(s))
 				}
 
 				r.nsCache.Set(key, nil, nsrr.Header().Ttl, authservers)
@@ -362,7 +370,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 		authservers := []*AuthServer{}
 		for _, s := range nservers {
-			authservers = append(authservers, &AuthServer{Host: s, RTT: time.Hour})
+			authservers = append(authservers, NewAuthServer(s))
 		}
 
 		//final cache
