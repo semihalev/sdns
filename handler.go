@@ -244,9 +244,12 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		}
 	}
 
-	//WTF? I have seen this before
-	if mesg.Rcode == dns.RcodeServerFailure && len(mesg.Answer) > 0 {
-		mesg.Rcode = dns.RcodeSuccess
+	if mesg.Rcode != dns.RcodeSuccess &&
+		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
+
+		h.errorCache.Set(key)
+
+		return h.handleFailed(req, mesg.Rcode, dsReq)
 	}
 
 	msg := new(dns.Msg)
