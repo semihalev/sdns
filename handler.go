@@ -237,6 +237,18 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		mesg.Ns = append(mesg.Ns, rr)
 	}
 
+	//ignore auths TTL for caching, replace with default expire
+	if mesg.Rcode == dns.RcodeNameError {
+		for _, rr := range mesg.Ns {
+			rr.Header().Ttl = Config.Expire
+		}
+	}
+
+	//WTF? I have seen this before
+	if mesg.Rcode == dns.RcodeServerFailure && len(mesg.Answer) > 0 {
+		mesg.Rcode = dns.RcodeSuccess
+	}
+
 	msg := new(dns.Msg)
 	*msg = *mesg
 
@@ -250,13 +262,6 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	opt.SetDo(dsReq)
 	msg.Extra = append(msg.Extra, opt)
-
-	//ignore auths TTL for caching, replace with default expire
-	if mesg.Rcode == dns.RcodeNameError {
-		for _, rr := range mesg.Ns {
-			rr.Header().Ttl = Config.Expire
-		}
-	}
 
 	err = h.cache.Set(key, mesg)
 	if err != nil {
