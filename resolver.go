@@ -185,7 +185,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 		}
 
-		if !signerFound && len(parentdsrr) > 0 {
+		if !signerFound && len(parentdsrr) > 0 && level != 1 {
 			err = fmt.Errorf("ds records found on parent zone but no signature records found")
 			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err
@@ -390,6 +390,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 
 			parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
+		}
+
+		if !signerFound && len(parentdsrr) > 0 && len(nsecSet) == 0 {
+			parentdsrr = []dns.RR{}
 		}
 
 		authservers := []*AuthServer{}
