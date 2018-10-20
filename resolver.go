@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -257,6 +258,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 		nsCache, err := r.nsCache.Get(key)
 		if err == nil {
+
+			if reflect.DeepEqual(nsCache.Servers, servers) {
+				return nil, errLoopDetection
+			}
+
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
 
 			if depth <= 0 {

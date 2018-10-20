@@ -248,7 +248,7 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
 	//TODO: check rrset covered from rrsig records
 
 main:
-	for _, sigRR := range sigs {
+	for i, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
 		for _, k := range keys {
 			if !strings.HasSuffix(sig.Header().Name, k.Header().Name) {
@@ -265,6 +265,9 @@ main:
 		}
 		k, present := keys[sig.KeyTag]
 		if !present {
+			if i != len(sigs)-1 {
+				continue
+			}
 			return false, errMissingDNSKEY
 		}
 		switch k.Algorithm {
