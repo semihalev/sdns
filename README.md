@@ -69,7 +69,7 @@ $ go test -v
 - [x] RTT optimization
 - [x] Access list
 - [ ] Full IPv6 support (server<->server communication)
-- [ ] ~~~Client based ratelimit~~~
+- [ ] ~~Client based ratelimit~~
 
 ## Made With
 
