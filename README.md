@@ -38,6 +38,40 @@ $ go test -v
 | ------------- |-------------| 
 | config | Location of the config file, if not found it will be generated |
 
+
+## Configs
+
+| Key        | Desc           | 
+| ------------- |-------------| 
+| version | version this config was generated from |
+| blocklists | list of remote blocklists |
+| blocklistdir | list of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
+| loglevel | what kind of information should be logged, Log verbosity level crit,error,warn,info,debug|
+| bind | address to bind to for the DNS server. Default :53|
+| bindtls | address to bind to for the DNS-over-TLS server. Default :853|
+| binddoh | address to bind to for the DNS-over-HTTPS server. Default :8053|
+| tlscertificate | tls certificate file path|
+| tlsprivatekey | ls private key file path|
+| outboundips | outbound ip addresses, if you set multiple, sdns can use random outbound ip address |
+| outboundips | outbound ip addresses, if you set multiple, sdns can use random outbound ip address |
+| rootservers | DNS Root servers |
+| root6servers | DNS Root IPv6 servers |
+| rootkeys | DNS Root keys for dnssec |
+| fallbackservers | Fallback servers IP addresses |
+| api | Address to bind to for the http API server disable for left blank |
+| nullroute | IPv4 address to forward blocked queries to |
+| nullroutev6 | IPv6 address to forward blocked queries to |
+| accesslist | Which clients allowed to make queries |
+| interval | Concurrency interval for lookups in miliseconds. Default: 200 |
+| timeout | Query timeout for dns lookups in seconds. Default: 5 |
+| connecttimeout | Connect timeout for dns lookups in seconds. Default: 2 |
+| expire | Default cache entry lifespan in seconds. Default: 600 |
+| maxcount | Cache capacity, 0 for infinite. Default: 0 |
+| maxdepth | Maximum recursion depth for nameservers. Default: 30 |
+| ratelimit | Query based ratelimit per second, 0 for disable. Default: 30 |
+| blocklist | Manual blocklist entries |
+| whitelist | Manual whitelist entries |
+
 ## Server Configuration Checklist
 
 * Increase file descriptor on your server
