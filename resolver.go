@@ -631,8 +631,11 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	for _, a := range msg.Answer {
 		if a.Header().Rrtype == dns.TypeDNSKEY {
 			dnskey := a.(*dns.DNSKEY)
-			if !checkExponent(dnskey.PublicKey) {
-				return false, nil
+			switch dnskey.Algorithm {
+			case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512, dns.RSAMD5:
+				if !checkExponent(dnskey.PublicKey) {
+					return false, nil
+				}
 			}
 			tag := dnskey.KeyTag()
 			if dnskey.Flags == 256 || dnskey.Flags == 257 {
