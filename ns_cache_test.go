@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -44,4 +45,152 @@ func Test_NameServerCache(t *testing.T) {
 	assert.NoError(t, err)
 
 	cache.Remove(testDomain)
+}
+
+func Test_ameleCompare(t *testing.T) {
+
+	obj1 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 2},
+	}
+
+	obj2 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 3},
+	}
+
+	ok := ameleCompare(obj1, obj2)
+
+	assert.Equal(t, false, ok, "equal")
+
+}
+
+func Test_hashCompare(t *testing.T) {
+
+	obj1 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 2},
+	}
+
+	obj2 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 3},
+	}
+
+	ok := hashCompare(obj1, obj2)
+
+	assert.Equal(t, false, ok, "equal")
+}
+
+func Test_byteCompare(t *testing.T) {
+
+	obj1 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 2},
+	}
+
+	obj2 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 3},
+	}
+
+	ok := byteCompare(obj1, obj2)
+	assert.Equal(t, false, ok, "equal")
+
+}
+
+func Benchmark_byteCompare(b *testing.B) {
+
+	obj1 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 2},
+	}
+
+	obj2 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 3},
+	}
+
+	for i := 0; i < b.N; i++ {
+		_ = byteCompare(obj1, obj2)
+	}
+}
+
+func Benchmark_hashCompare(b *testing.B) {
+
+	obj1 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 2},
+	}
+
+	obj2 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 3},
+	}
+
+	for i := 0; i < b.N; i++ {
+		_ = hashCompare(obj1, obj2)
+	}
+}
+
+func Benchmark_ameleCompare(b *testing.B) {
+
+	obj1 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 2},
+	}
+
+	obj2 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 3},
+	}
+
+	for i := 0; i < b.N; i++ {
+		_ = ameleCompare(obj1, obj2)
+	}
+}
+
+func Benchmark_Deep(b *testing.B) {
+
+	obj1 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 2},
+	}
+
+	obj2 := []*AuthServer{
+		{"domain.com", time.Millisecond * 1},
+		{"domain.net", time.Millisecond * 2},
+		{"domain.org", time.Millisecond * 2},
+		{"domain.info", time.Millisecond * 3},
+	}
+
+	for i := 0; i < b.N; i++ {
+		_ = reflect.DeepEqual(obj1, obj2)
+	}
 }

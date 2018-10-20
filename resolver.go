@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -258,7 +257,12 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 		nsCache, err := r.nsCache.Get(key)
 		if err == nil {
-			if reflect.DeepEqual(nsCache.Servers, servers) {
+
+			// if reflect.DeepEqual(nsCache.Servers, servers) {
+			// 	return nil, errLoopDetection
+			// }
+
+			if ameleCompare(nsCache.Servers, servers) {
 				return nil, errLoopDetection
 			}
 
