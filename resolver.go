@@ -122,7 +122,7 @@ func NewResolver() *Resolver {
 func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (*dns.Msg, error) {
 	if root && req.Question[0].Qtype != dns.TypeDS {
 		q := req.Question[0]
-		servers, parentdsrr = r.searchCache(&q)
+		servers, parentdsrr = r.searchCache(q)
 	}
 
 	resp, err := r.lookup(Net, req, servers)
@@ -134,10 +134,15 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 	resp.AuthenticatedData = true
 	resp.Authoritative = false
 
+	if resp.Truncated {
+		return resp, nil
+	}
+
 	if resp.Rcode != dns.RcodeSuccess {
 		if resp.Rcode == dns.RcodeNameError {
 			nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 			if len(nsecSet) > 0 {
+				//should verify nsec records
 				err = verifyNameError(&resp.Question[0], nsecSet)
 				if err != nil {
 					log.Info("NSEC3 verify failed (NXDOMAIN)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
@@ -152,27 +157,25 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		var signer string
 		var signerFound bool
 
+		q := req.Question[0]
+
 		for _, rr := range resp.Answer {
-			if strings.ToLower(rr.Header().Name) != strings.ToLower(req.Question[0].Name) {
+			if strings.ToLower(rr.Header().Name) != strings.ToLower(q.Name) {
 				continue
 			}
 			if sigrec, ok := rr.(*dns.RRSIG); ok {
-				signer = strings.ToLower(sigrec.SignerName)
+				signer = sigrec.SignerName
 				signerFound = true
 				break
 			}
 		}
 
-		if signerFound && len(parentdsrr) > 0 {
+		if q.Qtype != dns.TypeDS && signerFound && len(parentdsrr) > 0 {
 			if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
-				if req.Question[0].Qtype != dns.TypeDS && strings.ToLower(dsrr.Header().Name) != signer {
+				if strings.ToLower(dsrr.Header().Name) != signer {
 					//try lookup DS records
-					dsReq := new(dns.Msg)
-					dsReq.SetQuestion(signer, dns.TypeDS)
-					dsReq.SetEdns0(DefaultMsgSize, true)
-
 					dsDepth := Config.Maxdepth
-					dsResp, err := r.Resolve(Net, dsReq, rootservers, true, dsDepth, 0, false, nil)
+					dsResp, err := r.lookupDSRR(Net, signer, dsDepth)
 					if err == nil {
 						parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
 					} else {
@@ -182,16 +185,26 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 		}
 
-		if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
-			ok, err := r.verifyDNSSEC(Net, signer, strings.ToLower(req.Question[0].Name), resp, parentdsrr, servers)
+		if !signerFound && len(parentdsrr) > 0 {
+			err = fmt.Errorf("ds records found on parent zone but no signature records found")
+			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
+			return nil, err
+		}
+
+		if signer == rootzone && len(parentdsrr) == 0 {
+			parentdsrr = r.dsRRFromRootKeys()
+		}
+
+		if signerFound && len(parentdsrr) > 0 {
+			ok, err := r.verifyDNSSEC(Net, signer, strings.ToLower(q.Name), resp, parentdsrr)
 
 			if err != nil {
-				log.Warn("DNSSEC verify failed (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+				log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
 				if !strings.Contains(err.Error(), errNoDNSKEY.Error()) { //some servers timedout for DNSKEY queries, ignoring
 					return nil, err
 				}
 			} else if !ok {
-				log.Warn("DNSSEC cannot verify at the moment (answer)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype])
+				log.Warn("DNSSEC cannot verify at the moment (answer)", "query", formatQuestion(q))
 			}
 		}
 
@@ -220,6 +233,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		if len(nsmap) == 0 {
 			nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 			if len(nsecSet) > 0 && req.Question[0].Qtype == dns.TypeDS {
+				//should verify nsec records
 				err = verifyNODATA(&resp.Question[0], nsecSet)
 				if err != nil {
 					log.Info("NSEC3 verify failed (NODATA)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
@@ -234,12 +248,13 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			return resp, errParentDetection
 		}
 
-		Q := Question{unFqdn(nsrr.Header().Name), dns.TypeToString[nsrr.Header().Rrtype], dns.ClassToString[nsrr.Header().Class]}
-		if Q.Qname == "" {
+		if nsrr.Header().Name == rootzone {
 			return resp, errRootServersDetection
 		}
 
-		key := keyGen(Q)
+		q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
+
+		key := keyGen(q)
 
 		nsCache, err := r.nsCache.Get(key)
 		if err == nil {
@@ -247,17 +262,17 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 				return nil, errLoopDetection
 			}
 
-			log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
+			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
 
 			if depth <= 0 {
 				return nil, errMaxDepth
 			}
 
 			depth--
-			return r.Resolve(Net, req, nsCache.Servers, false, depth, nlevel, nsl, nil)
+			return r.Resolve(Net, req, nsCache.Servers, false, depth, nlevel, nsl, nsCache.DSRR)
 		}
 
-		log.Debug("Nameserver cache not found", "key", key, "query", Q.String(), "error", err.Error())
+		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "error", err.Error())
 
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
@@ -298,14 +313,14 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			//non extra rr for some nameservers, try lookup
 			for k, addr := range nsmap {
 				if addr == "" {
-					addr, err := r.lookupNSAddr(Net, k, req.Question[0].Name, depth)
+					addr, err := r.lookupNSAddr(Net, k, q.Name, depth)
 					if err == nil {
 						if isLocalIP(addr) {
 							continue
 						}
 						nservers = append(nservers, addr+":53")
 					} else {
-						log.Info("Lookup NS addr failed", "qname", req.Question[0].Name, "ns", k, "error", err.Error())
+						log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", k, "error", err.Error())
 					}
 				}
 			}
@@ -315,57 +330,65 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			return nil, errors.New("nameservers are not reachable")
 		}
 
-		nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+		var signer string
+		var signerFound bool
 
-		if len(nsecSet) > 0 {
-			err = verifyDelegation(resp.Question[0].Name, nsecSet)
-			if err != nil {
-				log.Warn("NSEC3 verify failed (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype], "error", err.Error())
+		for _, rr := range resp.Ns {
+			if sigrec, ok := rr.(*dns.RRSIG); ok {
+				signer = sigrec.SignerName
+				signerFound = true
+				break
 			}
-		} else {
-			var signer string
-			var signerFound bool
+		}
 
-			for _, rr := range resp.Ns {
-				if strings.ToLower(rr.Header().Name) != strings.ToLower(nsrr.Header().Name) {
-					continue
-				}
-				if sigrec, ok := rr.(*dns.RRSIG); ok {
-					signer = strings.ToLower(sigrec.SignerName)
-					signerFound = true
-					break
-				}
-			}
+		if signer == rootzone && len(parentdsrr) == 0 {
+			parentdsrr = r.dsRRFromRootKeys()
+		}
 
-			if signerFound && len(parentdsrr) > 0 {
-				if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
-					if req.Question[0].Qtype != dns.TypeDS && strings.ToLower(dsrr.Header().Name) != signer {
-						//try lookup DS records
-						dsReq := new(dns.Msg)
-						dsReq.SetQuestion(signer, dns.TypeDS)
-						dsReq.SetEdns0(DefaultMsgSize, true)
-
-						dsDepth := Config.Maxdepth
-						dsResp, err := r.Resolve(Net, dsReq, rootservers, true, dsDepth, 0, false, nil)
-						if err == nil {
-							parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
-						} else {
-							signerFound = false
-						}
+		if q.Qtype != dns.TypeDS && signerFound && len(parentdsrr) > 0 {
+			if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
+				if strings.ToLower(dsrr.Header().Name) != signer {
+					//try lookup DS records
+					dsDepth := Config.Maxdepth
+					dsResp, err := r.lookupDSRR(Net, signer, dsDepth)
+					if err == nil {
+						parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
+					} else {
+						signerFound = false
 					}
 				}
 			}
+		}
 
-			if signerFound && (signer == rootzone || len(parentdsrr) > 0) {
-				ok, err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr, servers)
-				if err != nil {
-					log.Warn("DNSSEC verify failed (delegation)", "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
-				} else if !ok {
-					log.Warn("DNSSEC cannot verify at the moment (delegation)", "qname", req.Question[0].Name, "qtype", dns.TypeToString[req.Question[0].Qtype])
-				}
-
-				parentdsrr = extractRRSet(resp.Ns, strings.ToLower(nsrr.Header().Name), dns.TypeDS)
+		rrsigverify := false
+		if signerFound && len(parentdsrr) > 0 {
+			ok, err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr)
+			if err != nil {
+				log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
 			}
+
+			if !ok {
+				log.Warn("DNSSEC cannot verify at the moment (delegation)", "query", formatQuestion(q), "signer", signer, "signed", nsrr.Header().Name)
+				ok = true
+			}
+
+			parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
+
+			rrsigverify = ok
+		}
+
+		nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+		if signerFound && len(nsecSet) > 0 {
+			if !rrsigverify {
+				return nil, fmt.Errorf("DNSSEC verify failed for NSEC3 rrset")
+			}
+
+			err = verifyDelegation(resp.Question[0].Name, nsecSet)
+			if err != nil {
+				log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+			}
+
+			parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
 		}
 
 		authservers := []*AuthServer{}
@@ -376,9 +399,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		//final cache
 		err = r.nsCache.Set(key, parentdsrr, nsrr.Header().Ttl, authservers)
 		if err != nil {
-			log.Error("Set nameserver cache failed", "query", Q.String(), "error", err.Error())
+			log.Error("Set nameserver cache failed", "query", formatQuestion(q), "error", err.Error())
 		} else {
-			log.Debug("Nameserver cache insert", "key", key, "query", Q.String())
+			log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
 		}
 
 		if depth <= 0 {
@@ -421,8 +444,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 		}
 	}
 
-	qname := req.Question[0].Name
-	qtype := dns.Type(req.Question[0].Qtype).String()
+	q := req.Question[0]
 
 	resCh := make(chan *dns.Msg, len(servers))
 	errCh := make(chan error, len(servers))
@@ -435,7 +457,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 		resp, server.RTT, err = c.Exchange(req, server.Host)
 		if err != nil && err != dns.ErrTruncated {
 			server.RTT = time.Hour
-			log.Debug("Socket error in server communication", "qname", qname, "qtype", qtype, "server", server, "net", Net, "error", err.Error())
+			log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", Net, "error", err.Error())
 
 			if last {
 				errCh <- err
@@ -450,11 +472,11 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 		}
 
 		if resp != nil && resp.Rcode != dns.RcodeSuccess && !last {
-			log.Debug("Failed to get valid response", "qname", qname, "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
+			log.Debug("Failed to get valid response", "query", formatQuestion(q), "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
 			return
 		}
 
-		log.Debug("Query response", "qname", unFqdn(qname), "qtype", qtype, "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
+		log.Debug("Query response", "query", formatQuestion(q), "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
 
 		resCh <- resp
 	}
@@ -489,14 +511,13 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 	}
 }
 
-func (r *Resolver) searchCache(q *dns.Question) (servers []*AuthServer, parentdsrr []dns.RR) {
-	Q := Question{unFqdn(q.Name), dns.TypeToString[dns.TypeNS], dns.ClassToString[q.Qclass]}
-	key := keyGen(Q)
+func (r *Resolver) searchCache(q dns.Question) (servers []*AuthServer, parentdsrr []dns.RR) {
+	key := keyGen(q)
 
 	ns, err := r.nsCache.Get(key)
 
 	if err == nil {
-		log.Debug("Nameserver cache hit", "key", key, "query", Q.String())
+		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
 		return ns.Servers, ns.DSRR
 	}
 
@@ -509,6 +530,51 @@ func (r *Resolver) searchCache(q *dns.Question) (servers []*AuthServer, parentds
 	return r.searchCache(q)
 }
 
+func (r *Resolver) lookupDSRR(Net, qname string, depth int) (msg *dns.Msg, err error) {
+	log.Debug("Lookup DS record", "qname", qname)
+
+	dsReq := new(dns.Msg)
+	dsReq.SetQuestion(qname, dns.TypeDS)
+	dsReq.SetEdns0(DefaultMsgSize, true)
+	dsReq.RecursionDesired = true
+
+	key := keyGen(dsReq.Question[0])
+
+	dsres, _, err := r.rCache.Get(key)
+	if err == nil {
+		return dsres, nil
+	}
+
+	err = r.errCache.Get(key)
+	if err == nil {
+		return nil, fmt.Errorf("ds records error occurred (cached)")
+	}
+
+	if depth <= 0 {
+		return nil, fmt.Errorf("ds records max depth reach")
+	}
+
+	depth--
+	dsres, err = r.Resolve(Net, dsReq, rootservers, true, depth, 0, true, nil)
+	if err != nil {
+		r.errCache.Set(key)
+		return nil, err
+	}
+
+	if dsres.Truncated && dsres.Rcode == dns.RcodeSuccess {
+		//retrying in TCP mode
+		return r.lookupDSRR("tcp", qname, depth+1)
+	}
+
+	if len(dsres.Answer) == 0 && len(dsres.Ns) == 0 {
+		return nil, fmt.Errorf("no answer found")
+	}
+
+	r.rCache.Set(key, dsres)
+
+	return dsres, nil
+}
+
 func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr string, err error) {
 	log.Debug("Lookup NS address", "qname", ns)
 
@@ -518,9 +584,8 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	nsReq.RecursionDesired = true
 
 	q := nsReq.Question[0]
-	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
-	key := keyGen(Q)
+	key := keyGen(q)
 
 	if c := r.lqueue.Get(key); c != nil {
 		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", ns)
@@ -560,7 +625,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	if nsres.Truncated && nsres.Rcode == dns.RcodeSuccess {
 		//retrying in TCP mode
 		r.lqueue.Done(key)
-		return r.lookupNSAddr("tcp", ns, qname, depth)
+		return r.lookupNSAddr("tcp", ns, qname, depth+1)
 	}
 
 	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
@@ -581,7 +646,59 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	return addr, fmt.Errorf("nameserver address lookup failed for %s (no answer)", ns)
 }
 
-func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR, servers []*AuthServer) (ok bool, err error) {
+func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
+	for _, a := range rootkeys {
+		if dnskey, ok := a.(*dns.DNSKEY); ok {
+			dsset = append(dsset, dnskey.ToDS(dns.RSASHA1))
+		}
+	}
+
+	return
+}
+
+func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
+	keys := make(map[uint16]*dns.DNSKEY)
+	for _, a := range msg.Answer {
+		if a.Header().Rrtype == dns.TypeDNSKEY {
+			dnskey := a.(*dns.DNSKEY)
+			tag := dnskey.KeyTag()
+			if dnskey.Flags == 256 || dnskey.Flags == 257 {
+				keys[tag] = dnskey
+			}
+		}
+	}
+
+	if len(keys) == 0 {
+		log.Error("root zone keys empty")
+		return
+	}
+
+	dsset := []dns.RR{}
+	for _, a := range rootkeys {
+		if dnskey, ok := a.(*dns.DNSKEY); ok {
+			dsset = append(dsset, dnskey.ToDS(dns.RSASHA1))
+		}
+	}
+
+	if len(dsset) == 0 {
+		log.Error("root zone dsset empty")
+		return
+	}
+
+	if err := verifyDS(keys, dsset); err != nil {
+		log.Error("root zone DS not verified")
+		return
+	}
+
+	if ok, err := verifyRRSIG(keys, msg); err != nil {
+		log.Error("root zone keys not verified", "error", err.Error())
+		return ok
+	}
+
+	return true
+}
+
+func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("%v for signer=%s signed=%s", err, signer, signed)
@@ -591,39 +708,40 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	req := new(dns.Msg)
 	req.SetQuestion(signer, dns.TypeDNSKEY)
 	req.SetEdns0(DefaultMsgSize, true)
+	req.RecursionDesired = true
 
 	q := req.Question[0]
-	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
-	cacheKey := keyGen(Q)
+	cacheKey := keyGen(q)
 
 	msg, _, err := r.rCache.Get(cacheKey)
-	if msg == nil {
-		if signer == rootzone {
-			msg = new(dns.Msg)
-			msg.SetQuestion(".", dns.TypeDNSKEY)
+	if resp.Question[0].Qtype != dns.TypeDNSKEY && msg == nil {
+		depth := Config.Maxdepth
+		msg, err = r.Resolve(Net, req, rootservers, true, depth, 0, false, nil)
+		if err != nil {
+			return
+		}
 
-			msg.Answer = append(msg.Answer, rootkeys...)
-		} else {
-			msg, err = r.lookup(Net, req, servers)
+		if msg.Truncated {
+			//retrying in TCP mode
+			msg, err = r.Resolve("tcp", req, rootservers, true, depth, 0, false, nil)
 			if err != nil {
 				return
 			}
-
-			if msg.Truncated {
-				//retrying in TCP mode
-				msg, err = r.lookup("tcp", req, servers)
-				if err != nil {
-					return
-				}
-			}
 		}
-
-		r.rCache.Set(cacheKey, msg)
 	}
 
-	if resp.Question[0].Name == rootzone &&
-		resp.Question[0].Qtype == dns.TypeDNSKEY {
+	if resp.Question[0].Qtype == dns.TypeDNSKEY {
+		if resp.Question[0].Name == rootzone {
+			if !r.verifyRootKeys(resp) {
+				return false, fmt.Errorf("root zone keys not verified")
+			}
+
+			r.rCache.Set(cacheKey, resp)
+			log.Info("Good! root keys verified and set in cache")
+			return true, nil
+		}
+
 		msg = resp
 	}
 
@@ -631,12 +749,6 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	for _, a := range msg.Answer {
 		if a.Header().Rrtype == dns.TypeDNSKEY {
 			dnskey := a.(*dns.DNSKEY)
-			switch dnskey.Algorithm {
-			case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512, dns.RSAMD5:
-				if !checkExponent(dnskey.PublicKey) {
-					return false, nil
-				}
-			}
 			tag := dnskey.KeyTag()
 			if dnskey.Flags == 256 || dnskey.Flags == 257 {
 				keys[tag] = dnskey
@@ -648,20 +760,27 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 		return false, errNoDNSKEY
 	}
 
-	if len(parentdsRR) > 0 {
-		err = verifyDS(keys, parentdsRR)
-		if err != nil {
-			log.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error())
-			return
-		}
+	if len(parentdsRR) == 0 {
+		return false, fmt.Errorf("DS RR set empty")
 	}
 
-	if err = verifyRRSIG(keys, resp); err != nil {
-		log.Debug("RRSIG not verified", "error", err.Error())
+	err = verifyDS(keys, parentdsRR)
+	if err != nil {
+		log.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error())
 		return
 	}
 
-	log.Debug("DNSSEC verified", "signer", signer, "signed", signed)
+	if ok, err = verifyRRSIG(keys, resp); err != nil {
+		return
+	}
+
+	r.rCache.Set(cacheKey, msg)
+
+	if !ok {
+		return false, nil
+	}
+
+	log.Debug("DNSSEC verified", "signer", signer, "signed", signed, "query", formatQuestion(resp.Question[0]))
 
 	return true, nil
 }

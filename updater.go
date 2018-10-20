@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 )
 
@@ -25,11 +26,11 @@ func updateBlocklists(path string) error {
 	}
 
 	for _, entry := range Config.Whitelist {
-		whitelist[entry] = true
+		whitelist[dns.Fqdn(entry)] = true
 	}
 
 	for _, entry := range Config.Blocklist {
-		blockCache.Set(entry, true)
+		blockCache.Set(dns.Fqdn(entry), true)
 	}
 
 	fetchBlocklist(path)
@@ -137,6 +138,8 @@ func parseHostFile(file *os.File) error {
 			} else {
 				line = fields[0]
 			}
+
+			line = dns.Fqdn(line)
 
 			if !blockCache.Exists(line) && !whitelist[line] {
 				blockCache.Set(line, true)

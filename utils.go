@@ -25,20 +25,16 @@ var (
 	errMissingSigned          = errors.New("signed records are missing")
 )
 
-func keyGen(q Question) string {
+func keyGen(q dns.Question) string {
 	h := md5.New()
-	h.Write([]byte(q.String()))
+	h.Write([]byte(formatQuestion(q)))
 	x := h.Sum(nil)
 
 	return hex.EncodeToString(x)
 }
 
-func unFqdn(s string) string {
-	s = strings.ToLower(s)
-	if dns.IsFqdn(s) {
-		return s[:len(s)-1]
-	}
-	return s
+func formatQuestion(q dns.Question) string {
+	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
 }
 
 func upperName(s string) string {
@@ -238,7 +234,7 @@ func clearDNSSEC(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) error {
+func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
 	rr := msg.Answer
 	if len(rr) == 0 {
 		rr = msg.Ns
@@ -246,8 +242,10 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) error {
 
 	sigs := extractRRSet(rr, "", dns.TypeRRSIG)
 	if len(sigs) == 0 {
-		return errNoSignatures
+		return false, errNoSignatures
 	}
+
+	//TODO: check rrset covered from rrsig records
 
 main:
 	for _, sigRR := range sigs {
@@ -260,24 +258,31 @@ main:
 				continue main
 			}
 		}
-		rest := extractRRSet(rr, sig.Header().Name, sig.TypeCovered)
+
+		rest := extractRRSet(rr, strings.ToLower(sig.Header().Name), sig.TypeCovered)
 		if len(rest) == 0 {
-			return errMissingSigned
+			return false, errMissingSigned
 		}
 		k, present := keys[sig.KeyTag]
 		if !present {
-			return errMissingDNSKEY
+			return false, errMissingDNSKEY
+		}
+		switch k.Algorithm {
+		case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512, dns.RSAMD5:
+			if !checkExponent(k.PublicKey) {
+				return false, nil
+			}
 		}
 		err := sig.Verify(k, rest)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !sig.ValidityPeriod(time.Time{}) {
-			return errInvalidSignaturePeriod
+			return false, errInvalidSignaturePeriod
 		}
 	}
 
-	return nil
+	return true, nil
 }
 
 func fromBase64(s []byte) (buf []byte, err error) {

@@ -10,7 +10,7 @@ import (
 
 func TestBlockCache(t *testing.T) {
 	const (
-		testDomain = "www.google.com"
+		testDomain = "www.google.com."
 	)
 
 	cache := &BlockCache{

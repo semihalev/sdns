@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"net"
-	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -12,7 +11,7 @@ import (
 
 func Test_keyGen(t *testing.T) {
 
-	q := Question{"@", "A", "ANY"}
+	q := dns.Question{Name: "@", Qtype: dns.TypeA, Qclass: dns.ClassANY}
 
 	asset := keyGen(q)
 
@@ -20,27 +19,13 @@ func Test_keyGen(t *testing.T) {
 }
 
 func Benchmark_keyGen(b *testing.B) {
-	q := Question{"@", "A", "ANY"}
+	q := dns.Question{Name: "@", Qtype: dns.TypeA, Qclass: dns.ClassANY}
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		keyGen(q)
 	}
-}
-
-func Test_unFqdn(t *testing.T) {
-
-	q := "demo-domain.com."
-
-	asset := unFqdn(q)
-
-	if strings.HasSuffix(asset, ".") {
-		t.Error("dot not removed dot in unFqdn func. asset:", asset)
-	}
-
-	q = "demo-domain.com"
-	assert.Equal(t, unFqdn(q), q)
 }
 
 func Test_upperName(t *testing.T) {

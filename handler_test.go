@@ -96,12 +96,7 @@ func Test_handler(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
-	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
-	assert.Equal(t, len(r.Answer) == 0, true)
-
-	blockCache.Set("example.com", true)
+	blockCache.Set("example.com.", true)
 
 	m.SetQuestion("example.com.", dns.TypeA)
 	r, _, err = c.Exchange(m, addrstr)
@@ -118,6 +113,11 @@ func Test_handler(t *testing.T) {
 	assert.Equal(t, aaaa.AAAA.String(), "::")
 
 	m.SetEdns0(DefaultMsgSize, true)
+	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
+	r, _, err = c.Exchange(m, addrstr)
+	assert.NoError(t, err)
+	assert.Equal(t, len(r.Answer) == 0, true)
+
 	m.SetQuestion("example.com.", dns.TypeA)
 	r, _, err = c.Exchange(m, addrstr)
 	assert.NoError(t, err)

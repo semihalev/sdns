@@ -13,18 +13,6 @@ const (
 	DefaultMsgSize = 1536
 )
 
-// Question type
-type Question struct {
-	Qname  string `json:"name"`
-	Qtype  string `json:"type"`
-	Qclass string `json:"class"`
-}
-
-// String formats a question
-func (q *Question) String() string {
-	return q.Qname + " " + q.Qclass + " " + q.Qtype
-}
-
 // DNSHandler type
 type DNSHandler struct {
 	resolver   *Resolver
@@ -68,7 +56,6 @@ func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
-	Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 
 	resolverProto := proto
 	if proto == "http" {
@@ -120,15 +107,15 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
-	log.Debug("Lookup", "query", Q.String(), "dsreq", dsReq)
+	log.Debug("Lookup", "query", formatQuestion(q), "dsreq", dsReq)
 
-	key := keyGen(Q)
+	key := keyGen(q)
 
 	h.lqueue.Wait(key)
 
 	mesg, rl, err := h.cache.Get(key)
 	if err == nil {
-		log.Debug("Cache hit", "key", key, "query", Q.String())
+		log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
 
 		if Config.RateLimit > 0 && rl.Limit() {
 			log.Warn("Query rate limited", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype])
@@ -158,13 +145,13 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	err = h.errorCache.Get(key)
 	if err == nil {
-		log.Debug("Error cache hit", "key", key, "query", Q.String())
+		log.Debug("Error cache hit", "key", key, "query", formatQuestion(q))
 
 		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
 	if q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA {
-		if blockCache.Exists(Q.Qname) {
+		if blockCache.Exists(q.Name) {
 			m := new(dns.Msg)
 			m.SetReply(req)
 
@@ -196,11 +183,11 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 			m.Authoritative = false
 			m.RecursionAvailable = true
 
-			log.Debug("Found in blocklist", "name", Q.Qname)
+			log.Debug("Found in blocklist", "name", q.Name)
 
 			err := h.cache.Set(key, m)
 			if err != nil {
-				log.Error("Set block cache failed", "query", Q.String(), "error", err.Error())
+				log.Error("Set block cache failed", "query", formatQuestion(q), "error", err.Error())
 			}
 
 			return m
@@ -213,7 +200,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	depth := Config.Maxdepth
 	mesg, err = h.resolver.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)
 	if err != nil {
-		log.Warn("Resolve query failed", "query", Q.String(), "error", err.Error())
+		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
 		h.errorCache.Set(key)
 
@@ -268,11 +255,11 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	err = h.cache.Set(key, mesg)
 	if err != nil {
-		log.Error("Set msg failed", "query", Q.String(), "error", err.Error())
+		log.Error("Set msg failed", "query", formatQuestion(q), "error", err.Error())
 		return msg
 	}
 
-	log.Debug("Set msg into cache", "query", Q.String())
+	log.Debug("Set msg into cache", "query", formatQuestion(q))
 	return msg
 }
 
@@ -300,15 +287,14 @@ func (h *DNSHandler) additionalAnswer(proto string, req, mesg *dns.Msg) *dns.Msg
 	if !answerFound && len(cnameReq.Question) > 0 {
 	lookup:
 		q := cnameReq.Question[0]
-		Q := Question{unFqdn(q.Name), dns.TypeToString[q.Qtype], dns.ClassToString[q.Qclass]}
 		childCNAME := false
 
-		log.Debug("Lookup", "query", Q.String())
+		log.Debug("Lookup", "query", formatQuestion(q))
 
-		key := keyGen(Q)
+		key := keyGen(q)
 		respCname, _, err := h.cache.Get(key)
 		if err == nil {
-			log.Debug("Cache hit", "key", key, "query", Q.String())
+			log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
 			for _, answerCname := range respCname.Answer {
 				mesg.Answer = append(mesg.Answer, answerCname)
 				if answerCname.Header().Rrtype == dns.TypeCNAME {
@@ -332,9 +318,9 @@ func (h *DNSHandler) additionalAnswer(proto string, req, mesg *dns.Msg) *dns.Msg
 
 				err = h.cache.Set(key, respCname)
 				if err != nil {
-					log.Error("Set query cache failed", "query", Q.String(), "error", err.Error())
+					log.Error("Set query cache failed", "query", formatQuestion(q), "error", err.Error())
 				} else {
-					log.Debug("Set query into cache", "query", Q.String())
+					log.Debug("Set query into cache", "query", formatQuestion(q))
 				}
 			}
 		}

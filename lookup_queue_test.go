@@ -4,13 +4,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_lqueueWait(t *testing.T) {
 	lqueue := NewLookupQueue()
 
-	key := keyGen(Question{"google.com", "A", "IN"})
+	key := keyGen(dns.Question{Name: "google.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	lqueue.Add(key)
 
