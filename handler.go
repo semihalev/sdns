@@ -141,7 +141,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		*msg = *mesg
 
 		msg.Id = req.Id
-		msg = h.checkGLUE(resolverProto, req, msg)
+		msg = h.additionalAnswer(resolverProto, req, msg)
 		msg.CheckingDisabled = req.CheckingDisabled
 
 		if !dsReq {
@@ -255,7 +255,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	msg := new(dns.Msg)
 	*msg = *mesg
 
-	msg = h.checkGLUE(resolverProto, req, msg)
+	msg = h.additionalAnswer(resolverProto, req, msg)
 
 	if !dsReq {
 		msg = clearDNSSEC(msg)
@@ -276,7 +276,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func (h *DNSHandler) checkGLUE(proto string, req, mesg *dns.Msg) *dns.Msg {
+func (h *DNSHandler) additionalAnswer(proto string, req, mesg *dns.Msg) *dns.Msg {
 	//check cname response
 	answerFound := false
 	var cnameReq dns.Msg
