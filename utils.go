@@ -1,16 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"crypto/md5"
 	"encoding/base64"
-	"encoding/gob"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"math/rand"
 	"net"
-	"sort"
 	"strings"
 	"time"
 
@@ -325,52 +321,4 @@ func checkExponent(key string) bool {
 	}
 
 	return true
-}
-
-func ameleCompare(a, b []*AuthServer) bool {
-
-	if len(a) != len(b) {
-		return false
-	}
-
-	sort.Slice(a, func(i, j int) bool {
-		return a[i].Host > a[j].Host
-	})
-
-	sort.Slice(b, func(i, j int) bool {
-		return b[i].Host > b[j].Host
-	})
-
-	for i := 0; i < len(a); i++ {
-		if a[i].Host != b[i].Host || int64(a[i].RTT) != int64(b[i].RTT) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func hashCompare(a, b []*AuthServer) bool {
-	buf1 := []byte{}
-	buf2 := []byte{}
-
-	aj, _ := json.Marshal(a)
-	bj, _ := json.Marshal(b)
-
-	buf1 = append(buf1, aj...)
-	buf2 = append(buf2, bj...)
-
-	//TODO: sha256.New()
-	return md5.Sum(buf1) == md5.Sum(buf2)
-}
-
-func byteCompare(a, b []*AuthServer) bool {
-	var ab, bb bytes.Buffer
-	aenc := gob.NewEncoder(&ab)
-	benc := gob.NewEncoder(&bb)
-
-	_ = aenc.Encode(a)
-	_ = benc.Encode(b)
-
-	return bytes.Compare(ab.Bytes(), bb.Bytes()) == 0
 }
