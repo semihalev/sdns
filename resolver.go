@@ -154,10 +154,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 	}
 
 	if len(resp.Answer) > 0 {
-		var signer string
-		var signerFound bool
-
 		q := req.Question[0]
+
+		signer := q.Name
+		signerFound := false
 
 		for _, rr := range resp.Answer {
 			if strings.ToLower(rr.Header().Name) != strings.ToLower(q.Name) {
@@ -170,7 +170,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 		}
 
-		if q.Qtype != dns.TypeDS && signerFound && len(parentdsrr) > 0 {
+		if q.Qtype != dns.TypeDS && len(parentdsrr) > 0 {
 			if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
 				if strings.ToLower(dsrr.Header().Name) != signer {
 					//try lookup DS records
@@ -180,12 +180,13 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 						parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
 					} else {
 						signerFound = false
+						parentdsrr = []dns.RR{}
 					}
 				}
 			}
 		}
 
-		if !signerFound && len(parentdsrr) > 0 && level != 1 {
+		if !signerFound && len(parentdsrr) > 0 {
 			err = fmt.Errorf("ds records found on parent zone but no signature records found")
 			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err
@@ -346,7 +347,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			parentdsrr = r.dsRRFromRootKeys()
 		}
 
-		if q.Qtype != dns.TypeDS && signerFound && len(parentdsrr) > 0 {
+		if signer != rootzone && q.Qtype != dns.TypeDS && len(parentdsrr) > 0 {
 			if dsrr, ok := parentdsrr[0].(*dns.DS); ok {
 				if strings.ToLower(dsrr.Header().Name) != signer {
 					//try lookup DS records
@@ -361,7 +362,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 		}
 
-		rrsigverify := false
 		if signerFound && len(parentdsrr) > 0 {
 			ok, err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr)
 			if err != nil {
@@ -373,26 +373,19 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 				ok = true
 			}
 
-			parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
-
-			rrsigverify = ok
-		}
-
-		nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-		if signerFound && len(nsecSet) > 0 {
-			if !rrsigverify {
-				return nil, fmt.Errorf("DNSSEC verify failed for NSEC3 rrset")
-			}
-
-			err = verifyDelegation(resp.Question[0].Name, nsecSet)
-			if err != nil {
-				log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
-			}
+			nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 
 			parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
+
+			if ok && len(nsecSet) > 0 {
+				err = verifyDelegation(resp.Question[0].Name, nsecSet)
+				if err != nil {
+					log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+				}
+			}
 		}
 
-		if !signerFound && len(parentdsrr) > 0 && len(nsecSet) == 0 {
+		if !signerFound && len(parentdsrr) > 0 {
 			parentdsrr = []dns.RR{}
 		}
 
