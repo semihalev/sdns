@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 func Test_lqueueWait(t *testing.T) {
 	lqueue := NewLookupQueue()
+	mu := sync.RWMutex{}
 
 	key := keyGen(dns.Question{Name: "google.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
@@ -29,9 +31,16 @@ func Test_lqueueWait(t *testing.T) {
 		go func() {
 			w := new(string)
 			*w = "running"
+
+			mu.Lock()
 			workers = append(workers, w)
+			mu.Unlock()
+
 			lqueue.Wait(key)
+
+			mu.Lock()
 			*w = "stopped"
+			mu.Unlock()
 		}()
 	}
 
@@ -41,6 +50,8 @@ func Test_lqueueWait(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
+	mu.RLock()
+	defer mu.RUnlock()
 	for _, w := range workers {
 		assert.Equal(t, *w, "stopped")
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"time"
 )
 
 // LQueue type
@@ -36,7 +37,10 @@ func (q *LQueue) Wait(key string) {
 
 	if c, ok := q.delay[key]; ok {
 		q.mu.RUnlock()
-		<-c
+		select {
+		case <-c:
+		case <-time.After(10 * time.Second):
+		}
 		return
 	}
 
