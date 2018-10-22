@@ -157,7 +157,19 @@ func Test_resolverNameserverError(t *testing.T) {
 
 func Test_resolverNSEC3nodata(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("org.", dns.TypeCNAME)
+	req.SetQuestion("ns-lacnic.nic.mx.", dns.TypeDS)
+	req.SetEdns0(DefaultMsgSize, true)
+
+	r := NewResolver()
+
+	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
+
+	assert.NoError(t, err)
+}
+
+func Test_resolverNSECnodata(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("tr.", dns.TypeDS)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	r := NewResolver()
