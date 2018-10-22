@@ -162,6 +162,9 @@ func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
 		}
 		ds := ksk.ToDS(parentDS.DigestType)
 		if ds == nil {
+			if i != len(parentDSSet)-1 {
+				continue
+			}
 			return errFailedToConvertKSK
 		}
 		if ds.Digest != parentDS.Digest {
