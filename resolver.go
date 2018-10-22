@@ -142,16 +142,25 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 	if resp.Rcode != dns.RcodeSuccess {
 		if resp.Rcode == dns.RcodeNameError {
-			nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-			if len(nsecSet) > 0 {
-				//TODO: should verify nsec3 records
-				err = verifyNameError(&resp.Question[0], nsecSet)
-				if err != nil {
-					log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-					//TODO: after tests return error
+			//TODO: should verify rrsig for nsecX records
+			if upperName(q.Name) == "" {
+				parentdsrr = r.dsRRFromRootKeys()
+			}
+
+			if len(parentdsrr) > 0 {
+				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+				if len(nsec3Set) > 0 {
+					err = verifyNameError(&q, nsec3Set)
+					if err != nil {
+						log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+						//TODO: after tests return error?
+					}
+				} else {
+					nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)
+					if len(nsecSet) > 0 {
+						//TODO: verify NSEC??
+					}
 				}
-			} else if len(extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)) > 0 {
-				//TODO: check nsec nameerror
 			}
 		}
 
@@ -265,8 +274,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 						log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
 					}
-				} else if len(extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)) > 0 {
-					//TODO: verify nsec type bits
+				} else {
+					nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)
+					if len(nsecSet) > 0 {
+						//verifiy NSEC?
+					}
 				}
 			}
 
@@ -365,6 +377,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		var signerFound bool
 
 		for _, rr := range resp.Ns {
+			if strings.ToLower(rr.Header().Name) != strings.ToLower(q.Name) {
+				continue
+			}
 			if sigrec, ok := rr.(*dns.RRSIG); ok {
 				signer = sigrec.SignerName
 				signerFound = true
@@ -442,9 +457,15 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 				}
 
 				parentdsrr = []dns.RR{}
-			} else if len(extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeNSEC)) > 0 {
-				//TODO: verify NSEC, check typebits
-				parentdsrr = []dns.RR{}
+			} else {
+				nsecSet := extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeNSEC)
+				if ok && len(nsecSet) > 0 {
+					if !verifyNSEC(&q, nsecSet) {
+						log.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+						return nil, fmt.Errorf("NSEC verify failed")
+					}
+					parentdsrr = []dns.RR{}
+				}
 			}
 		}
 

@@ -296,6 +296,20 @@ func fromBase64(s []byte) (buf []byte, err error) {
 	return
 }
 
+func verifyNSEC(q *dns.Question, nsecSet []dns.RR) (typeMatch bool) {
+	for _, rr := range nsecSet {
+		nsec := rr.(*dns.NSEC)
+		for _, t := range nsec.TypeBitMap {
+			if t == q.Qtype {
+				typeMatch = true
+				break
+			}
+		}
+	}
+
+	return
+}
+
 func checkExponent(key string) bool {
 	keybuf, err := fromBase64([]byte(key))
 	if err != nil {
