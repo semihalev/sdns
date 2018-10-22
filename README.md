@@ -53,7 +53,6 @@ $ go test -v
 | tlscertificate | tls certificate file path|
 | tlsprivatekey | ls private key file path|
 | outboundips | outbound ip addresses, if you set multiple, sdns can use random outbound ip address |
-| outboundips | outbound ip addresses, if you set multiple, sdns can use random outbound ip address |
 | rootservers | DNS Root servers |
 | root6servers | DNS Root IPv6 servers |
 | rootkeys | DNS Root keys for dnssec |
