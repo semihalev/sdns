@@ -377,9 +377,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		var signerFound bool
 
 		for _, rr := range resp.Ns {
-			if strings.ToLower(rr.Header().Name) != strings.ToLower(q.Name) {
-				continue
-			}
+			//no conditions because nsec3 records can be found different names
 			if sigrec, ok := rr.(*dns.RRSIG); ok {
 				signer = sigrec.SignerName
 				signerFound = true
