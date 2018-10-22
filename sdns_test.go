@@ -24,7 +24,11 @@ func TestMain(m *testing.M) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
 	Config.Maxdepth = 30
-	Config.Interval = 200
+	Config.Interval = 1000
+	Config.Timeout = 2
+	Config.Maxdepth = 30
+	Config.Expire = 600
+	Config.ConnectTimeout = 1
 	Config.Nullroute = "0.0.0.0"
 	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
 	Config.Bind = ":0"

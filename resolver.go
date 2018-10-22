@@ -109,11 +109,11 @@ func init() {
 // NewResolver return a resolver
 func NewResolver() *Resolver {
 	return &Resolver{
-		&dns.ClientConfig{},
-		NewNameServerCache(Config.Maxcount),
-		NewQueryCache(Config.Maxcount),
-		NewErrorCache(Config.Maxcount, Config.Expire),
-		NewLookupQueue(),
+		config:   &dns.ClientConfig{},
+		nsCache:  NewNameServerCache(Config.Maxcount),
+		rCache:   NewQueryCache(Config.Maxcount),
+		errCache: NewErrorCache(Config.Maxcount, Config.Expire),
+		lqueue:   NewLookupQueue(),
 	}
 }
 
