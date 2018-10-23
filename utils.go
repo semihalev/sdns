@@ -249,14 +249,15 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
 	}
 
 	types := make(map[uint16]int)
+	typesErrors := make(map[uint16]bool)
+
 	for _, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
 		types[sig.TypeCovered]++
+		typesErrors[sig.TypeCovered] = false
 	}
 
 	//TODO: check rrset covered from rrsig records
-	var errBefore bool
-
 main:
 	for i, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
@@ -288,8 +289,8 @@ main:
 		}
 		err := sig.Verify(k, rest)
 		if err != nil {
-			if !errBefore && types[sig.TypeCovered] > 1 {
-				errBefore = true
+			if !typesErrors[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
+				typesErrors[sig.TypeCovered] = true
 				continue
 			}
 			return false, err
@@ -300,7 +301,7 @@ main:
 			}
 			return false, errInvalidSignaturePeriod
 		}
-		errBefore = false
+		typesErrors[sig.TypeCovered] = false
 	}
 
 	return true, nil
