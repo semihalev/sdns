@@ -218,9 +218,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 					return nil, err
 				}
 
-				if len(dsResp.Answer) > 0 {
-					parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
-				}
+				parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
 			}
 		}
 
@@ -267,9 +265,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		if len(nsmap) == 0 {
 			if q.Qtype == dns.TypeDS {
 				//TODO: should verify nsec records
-				nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-				if len(nsecSet) > 0 {
-					err = verifyNODATA(&resp.Question[0], nsecSet)
+				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+				if len(nsec3Set) > 0 {
+					err = verifyNODATA(&resp.Question[0], nsec3Set)
 					if err != nil {
 						log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
@@ -421,9 +419,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 					return nil, err
 				}
 
-				if len(dsResp.Answer) > 0 {
-					parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
-				}
+				parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
 			}
 		}
 
