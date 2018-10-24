@@ -361,6 +361,10 @@ func checkExponent(key string) bool {
 }
 
 func equalSlice(s1, s2 []*AuthServer) bool {
+	if len(s1) != len(s2) {
+		return false
+	}
+
 	sort.Slice(s1, func(i, j int) bool { return s1[i].Host < s1[j].Host })
 	sort.Slice(s2, func(i, j int) bool { return s2[i].Host < s2[j].Host })
 
