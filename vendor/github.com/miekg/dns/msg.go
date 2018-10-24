@@ -419,9 +419,9 @@ Loop:
 		s = []byte(".")
 	} else if len(s) >= maxLen {
 		// error if the name is too long, but don't throw it away
-		return string(s), lenmsg, ErrLongDomain
+		return ByteSlice2String(s), lenmsg, ErrLongDomain
 	}
-	return string(s), off1, nil
+	return ByteSlice2String(s), off1, nil
 }
 
 func packTxt(txt []string, msg []byte, offset int, tmp []byte) (int, error) {

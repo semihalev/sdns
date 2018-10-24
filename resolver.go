@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -299,7 +298,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		nsCache, err := r.nsCache.Get(key)
 		if err == nil {
 
-			if reflect.DeepEqual(nsCache.Servers, servers) {
+			if equalSlice(nsCache.Servers, servers) {
 				return nil, errLoopDetection
 			}
 
@@ -337,7 +336,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 				if isLocalIP(addr) {
 					continue
 				}
-				nservers = append(nservers, addr+":53")
+				nservers = append(nservers, net.JoinHostPort(addr, "53"))
 			}
 		}
 
@@ -359,7 +358,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 						if isLocalIP(addr) {
 							continue
 						}
-						nservers = append(nservers, addr+":53")
+						nservers = append(nservers, net.JoinHostPort(addr, "53"))
 					} else {
 						log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", k, "error", err.Error())
 					}
