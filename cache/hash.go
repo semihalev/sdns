@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"encoding/binary"
 	"hash/fnv"
 
@@ -10,18 +11,19 @@ import (
 // Hash returns a hash for cache
 func Hash(q dns.Question) uint64 {
 	h := fnv.New64()
+	buf := bytes.NewBuffer(nil)
 
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, q.Qtype)
-	h.Write(b)
+	binary.Write(buf, binary.BigEndian, q.Qtype)
 
 	for i := range q.Name {
 		c := q.Name[i]
 		if c >= 'A' && c <= 'Z' {
 			c += 'a' - 'A'
 		}
-		h.Write([]byte{c})
+		buf.WriteByte(c)
 	}
+
+	h.Write(buf.Bytes())
 
 	return h.Sum64()
 }
