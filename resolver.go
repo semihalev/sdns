@@ -177,7 +177,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 					candidate := dns.Fqdn(strings.Join(nsplit[len(nsplit)-n-1:], "."))
 
 					dsDepth := Config.Maxdepth
-					dsResp, err := r.lookupDSRR(Net, candidate, dsDepth)
+					dsResp, err := r.lookupDS(Net, candidate, dsDepth)
 					if err != nil {
 						return nil, err
 					}
@@ -193,7 +193,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 			} else if dsname != signer {
 				//try lookup DS records
 				dsDepth := Config.Maxdepth
-				dsResp, err := r.lookupDSRR(Net, signer, dsDepth)
+				dsResp, err := r.lookupDS(Net, signer, dsDepth)
 				if err != nil {
 					return nil, err
 				}
@@ -378,7 +378,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 					candidate := dns.Fqdn(strings.Join(nsplit[len(nsplit)-n-1:], "."))
 
 					dsDepth := Config.Maxdepth
-					dsResp, err := r.lookupDSRR(Net, candidate, dsDepth)
+					dsResp, err := r.lookupDS(Net, candidate, dsDepth)
 					if err != nil {
 						return nil, err
 					}
@@ -394,7 +394,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 			} else if dsname != signer {
 				//try lookup DS records
 				dsDepth := Config.Maxdepth
-				dsResp, err := r.lookupDSRR(Net, signer, dsDepth)
+				dsResp, err := r.lookupDS(Net, signer, dsDepth)
 				if err != nil {
 					return nil, err
 				}
@@ -532,7 +532,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 		return nil, err
 	}
 
-	if resp != nil && resp.Rcode == dns.RcodeFormatError && c.Net == "udp" {
+	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags
 		req = clearOPT(req)
 		return r.exchange(server, req, c)
@@ -560,7 +560,7 @@ func (r *Resolver) searchCache(q dns.Question) (servers []*cache.AuthServer, par
 	return r.searchCache(q)
 }
 
-func (r *Resolver) lookupDSRR(Net, qname string, depth int) (msg *dns.Msg, err error) {
+func (r *Resolver) lookupDS(Net, qname string, depth int) (msg *dns.Msg, err error) {
 	log.Debug("Lookup DS record", "qname", qname)
 
 	dsReq := new(dns.Msg)
@@ -593,7 +593,7 @@ func (r *Resolver) lookupDSRR(Net, qname string, depth int) (msg *dns.Msg, err e
 
 	if dsres.Truncated && dsres.Rcode == dns.RcodeSuccess {
 		//retrying in TCP mode
-		return r.lookupDSRR("tcp", qname, depth+1)
+		return r.lookupDS("tcp", qname, depth+1)
 	}
 
 	if len(dsres.Answer) == 0 && len(dsres.Ns) == 0 {
