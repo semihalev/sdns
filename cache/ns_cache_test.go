@@ -19,10 +19,15 @@ func Test_NameServerCache(t *testing.T) {
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 	key := Hash(m.Question[0])
 
-	err := cache.Set(key, nil, 5, nil)
+	a := NewAuthServer("0.0.0.0:53")
+	_ = a.String()
+
+	servers := []*AuthServer{a}
+
+	err := cache.Set(key, nil, 5, servers)
 	assert.NoError(t, err)
 
-	err = cache.Set(Hash(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}), nil, 5, nil)
+	err = cache.Set(Hash(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}), nil, 5, servers)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "capacity full")
 

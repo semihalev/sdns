@@ -3,7 +3,6 @@ sudo: required
 language: go
 go:
   - "1.10.x"
-  - "1.11"
 
 matrix:
   fast_finish: true
@@ -17,7 +16,7 @@ git:
 go_import_path: github.com/semihalev/sdns
 
 script: 
-  - go test -v -covermode=atomic -coverprofile=coverage.out
+  - make test
  
 after_success:
   - bash <(curl -s https://codecov.io/bash)
