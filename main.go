@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/yl2chen/cidranger"
@@ -20,20 +21,31 @@ var (
 	blockCache  = &BlockCache{Backend: make(map[string]bool)}
 	localIPs    []string
 	accessList  cidranger.Ranger
+
+	// WallClock is the wall clock
+	WallClock = clockwork.NewRealClock()
+
+	// Config is the global configuration
+	Config config
+
+	// BuildVersion returns the build version of sdns, this should be incremented every new release
+	BuildVersion = "0.2.1-rc1"
+
+	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
+	ConfigVersion = "0.1.9"
 )
 
 func init() {
 	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated")
-	flag.Usage = usage
-}
 
-func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
-	fmt.Fprintln(os.Stderr, "OPTIONS:")
-	flag.PrintDefaults()
-	fmt.Fprintln(os.Stderr, "USAGE:")
-	fmt.Fprintln(os.Stderr, "./sdns -config=sdns.toml")
-	fmt.Fprintln(os.Stderr, "")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "OPTIONS:")
+		flag.PrintDefaults()
+		fmt.Fprintln(os.Stderr, "USAGE:")
+		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.toml")
+		fmt.Fprintln(os.Stderr, "")
+	}
 }
 
 func startSDNS() {

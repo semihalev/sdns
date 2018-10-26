@@ -8,15 +8,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/jonboulle/clockwork"
 	"github.com/semihalev/log"
 )
-
-// BuildVersion returns the build version of sdns, this should be incremented every new release
-var BuildVersion = "0.2.1-rc1"
-
-// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-var ConfigVersion = "0.1.9"
 
 type config struct {
 	Version         string
@@ -176,12 +169,6 @@ blocklist = []
 # manual whitelist entries
 whitelist = []
 `
-
-// WallClock is the wall clock
-var WallClock = clockwork.NewRealClock()
-
-// Config is the global configuration
-var Config config
 
 // LoadConfig loads the given config file
 func LoadConfig(path string) error {

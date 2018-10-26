@@ -44,4 +44,13 @@ func Test_NameServerCache(t *testing.T) {
 	assert.NoError(t, err)
 
 	cache.Remove(testDomain)
+	assert.Equal(t, cache.Length(), 0)
+
+	err = cache.Set(testDomain, nil, 5, nil)
+	assert.NoError(t, err)
+
+	fakeClock.Advance(10 * time.Second)
+	cache.clear()
+	assert.Equal(t, cache.Length(), 0)
+
 }
