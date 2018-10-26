@@ -27,7 +27,7 @@ func removeBlock(c *gin.Context) {
 }
 
 func setBlock(c *gin.Context) {
-	BlockList.Set(dns.Fqdn(c.Param("key")), true)
+	BlockList.Set(dns.Fqdn(c.Param("key")))
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 

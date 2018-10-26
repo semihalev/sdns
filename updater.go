@@ -30,7 +30,7 @@ func updateBlocklists(path string) error {
 	}
 
 	for _, entry := range Config.Blocklist {
-		BlockList.Set(dns.Fqdn(entry), true)
+		BlockList.Set(dns.Fqdn(entry))
 	}
 
 	fetchBlocklist(path)
@@ -142,7 +142,7 @@ func parseHostFile(file *os.File) error {
 			line = dns.Fqdn(line)
 
 			if !BlockList.Exists(line) && !whitelist[line] {
-				BlockList.Set(line, true)
+				BlockList.Set(line)
 			}
 		}
 	}

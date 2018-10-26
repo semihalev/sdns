@@ -15,7 +15,7 @@ func Test_BlockCache(t *testing.T) {
 
 	cache := NewBlockCache()
 
-	cache.Set(testDomain, true)
+	cache.Set(testDomain)
 
 	assert.Equal(t, cache.Exists(testDomain), true)
 	assert.Equal(t, cache.Exists(strings.ToUpper(testDomain)), true)

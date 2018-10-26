@@ -68,7 +68,7 @@ func Test_SDNS(t *testing.T) {
 	time.Sleep(2 * time.Second)
 }
 
-func BenchmarkResolver(b *testing.B) {
+func BenchmarkExchange(b *testing.B) {
 	s, addrstr, err := RunLocalUDPServer("127.0.0.1:0")
 	assert.NoError(b, err)
 
@@ -88,6 +88,21 @@ func BenchmarkResolver(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		c.Exchange(req, addrstr)
+	}
+}
+
+func BenchmarkResolver(b *testing.B) {
+	r := NewResolver()
+
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn("www.netdirekt.com.tr"), dns.TypeA)
+	req.RecursionDesired = true
+	req.SetEdns0(DefaultMsgSize, true)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
 	}
 }
 

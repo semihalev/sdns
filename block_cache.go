@@ -45,12 +45,12 @@ func (c *BlockCache) Remove(key string) {
 }
 
 // Set sets a value in the BlockCache
-func (c *BlockCache) Set(key string, value bool) {
+func (c *BlockCache) Set(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	key = strings.ToLower(key)
-	c.m[key] = value
+	c.m[key] = true
 }
 
 // Exists returns whether or not a key exists in the cache

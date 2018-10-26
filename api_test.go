@@ -10,7 +10,7 @@ import (
 
 func Test_AllAPICalls(t *testing.T) {
 
-	BlockList.Set("test.com", true)
+	BlockList.Set("test.com")
 
 	routes := []struct {
 		Method         string

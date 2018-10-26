@@ -96,7 +96,7 @@ func Test_handler(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
-	BlockList.Set("example.com.", true)
+	BlockList.Set("example.com.")
 
 	m.SetQuestion("example.com.", dns.TypeA)
 	r, _, err = c.Exchange(m, addrstr)
