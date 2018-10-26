@@ -77,7 +77,7 @@ func (h *DNSHandler) handleWireFormat() func(http.ResponseWriter, *http.Request)
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Server", "SDNS/"+BuildVersion)
+		w.Header().Set("Server", "SDNS/"+Version)
 		w.Header().Set("Content-Type", "application/dns-message")
 		w.Write(packed)
 	}
@@ -164,7 +164,7 @@ func (h *DNSHandler) handleJSON() func(http.ResponseWriter, *http.Request) {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Server", "SDNS/"+BuildVersion)
+		w.Header().Set("Server", "SDNS/"+Version)
 
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
 			w.Header().Set("Content-Type", "application/x-javascript")

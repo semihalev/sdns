@@ -19,8 +19,8 @@ var (
 	// Config is the global configuration
 	Config config
 
-	// BuildVersion returns the build version of sdns, this should be incremented every new release
-	BuildVersion = "0.2.1-rc1"
+	// Version returns the build version of sdns, this should be incremented every new release
+	Version = "0.2.1-rc2"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "0.1.9"
@@ -82,6 +82,10 @@ func startSDNS() {
 			}
 			rootkeys = append(rootkeys, rr)
 		}
+	}
+
+	if Config.Interval < 200 {
+		Config.Interval = 200
 	}
 
 	var err error
@@ -154,7 +158,7 @@ func main() {
 
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
 
-	log.Info("Starting sdns...", "version", BuildVersion)
+	log.Info("Starting sdns...", "version", Version)
 
 	startSDNS()
 

@@ -7,8 +7,7 @@ TESTFOLDER := $(shell $(GO) list ./... | grep -E 'sdns$$|cache$$|doh$$')
 
 all: install
 
-install: deps
-	govendor sync
+install: test
 
 .PHONY: test
 test:

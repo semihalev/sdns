@@ -142,7 +142,7 @@ accesslist = [
 "::0/0"
 ]
 
-# concurrency interval for lookups in miliseconds
+# concurrency interval for lookups in miliseconds, minumum 200ms
 interval = 200
 
 # query timeout for dns lookups in seconds
