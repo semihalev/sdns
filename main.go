@@ -39,6 +39,8 @@ var (
 )
 
 func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "OPTIONS:")
@@ -49,7 +51,27 @@ func init() {
 	}
 }
 
-func startSDNS() {
+func configSetup(test bool) {
+	if err := LoadConfig(*ConfigPath); err != nil {
+		log.Crit("Config loading failed", "error", err.Error())
+	}
+
+	if test {
+		Config.Bind = ":0"
+		Config.BindTLS = ""
+		Config.BindDOH = ""
+		Config.API = ""
+		Config.LogLevel = "crit"
+		Config.Timeout = 15
+	}
+
+	lvl, err := log.LvlFromString(Config.LogLevel)
+	if err != nil {
+		log.Crit("Log verbosity level unknown")
+	}
+
+	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
+
 	if len(Config.RootServers) > 0 {
 		rootservers = []*cache.AuthServer{}
 		for _, s := range Config.RootServers {
@@ -87,7 +109,24 @@ func startSDNS() {
 	if Config.Interval < 200 {
 		Config.Interval = 200
 	}
+}
 
+func fetchBlocklists() {
+	timer := time.NewTimer(time.Second)
+
+	select {
+	case <-timer.C:
+		if err := updateBlocklists(Config.BlockListDir); err != nil {
+			log.Error("Update blocklists failed", "error", err.Error())
+		}
+
+		if err := readBlocklists(Config.BlockListDir); err != nil {
+			log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
+		}
+	}
+}
+
+func start() {
 	var err error
 
 	LocalIPs, err = findLocalIPAddresses()
@@ -118,49 +157,24 @@ func startSDNS() {
 		wTimeout:       5 * time.Second,
 	}
 
+	api := &API{
+		host: Config.API,
+	}
+
 	server.Run()
 
-	go func() {
-		if err := runAPIServer(Config.API); err != nil {
-			log.Crit("Start API server failed", "error", err.Error())
-		}
-	}()
+	api.Run()
 
-	go func() {
-		timer := time.NewTimer(time.Second)
-
-		select {
-		case <-timer.C:
-			if err := updateBlocklists(Config.BlockListDir); err != nil {
-				log.Error("Update blocklists failed", "error", err.Error())
-			}
-
-			if err := readBlocklists(Config.BlockListDir); err != nil {
-				log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
-			}
-		}
-	}()
+	go fetchBlocklists()
 }
 
 func main() {
 	flag.Parse()
 
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	if err := LoadConfig(*ConfigPath); err != nil {
-		log.Crit("Config loading failed", "error", err.Error())
-	}
-
-	lvl, err := log.LvlFromString(Config.LogLevel)
-	if err != nil {
-		log.Crit("Log verbosity level unknown")
-	}
-
-	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
-
 	log.Info("Starting sdns...", "version", Version)
 
-	startSDNS()
+	configSetup(false)
+	start()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)

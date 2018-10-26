@@ -9,6 +9,11 @@ import (
 	"gopkg.in/gin-contrib/cors.v1"
 )
 
+// API type
+type API struct {
+	host string
+}
+
 func existsBlock(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"exists": BlockList.Exists(c.Param("key"))})
 }
@@ -31,9 +36,10 @@ func setBlock(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-func runAPIServer(addr string) error {
-	if addr == "" {
-		return nil
+// Run API server
+func (a *API) Run() {
+	if a.host == "" {
+		return
 	}
 
 	gin.SetMode(gin.ReleaseMode)
@@ -49,11 +55,11 @@ func runAPIServer(addr string) error {
 		block.GET("/set/:key", setBlock)
 	}
 
-	if err := r.Run(addr); err != nil {
-		return err
-	}
+	go func() {
+		if err := r.Run(a.host); err != nil {
+			log.Crit("Start API server failed", "error", err.Error())
+		}
+	}()
 
-	log.Info("API server listening on", "addr", addr)
-
-	return nil
+	log.Info("API server listening...", "addr", a.host)
 }

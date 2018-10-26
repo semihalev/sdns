@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_AllAPICalls(t *testing.T) {
@@ -40,54 +38,3 @@ func Test_AllAPICalls(t *testing.T) {
 		}
 	}
 }
-
-func Test_runServer(t *testing.T) {
-	err := runAPIServer(":111111")
-	assert.Error(t, err)
-}
-
-// func Test_getBlockExists(t *testing.T) {
-// 	request, err := http.NewRequest(http.MethodGet, "/api/v1/block/get/testexists.com", nil)
-
-// 	assert.NoError(t, err)
-
-// 	w := httptest.NewRecorder()
-
-// 	ginr.ServeHTTP(w, request)
-
-// 	assert.Equal(t, w.Code, http.StatusNotFound)
-// }
-
-// func Test_removeBlock(t *testing.T) {
-
-// 	ginr.GET("/api/v1/block/remove/:key", removeBlock)
-
-// 	request, err := http.NewRequest(http.MethodGet, "/api/v1/block/remove/test.com", nil)
-
-// 	assert.NoError(t, err)
-
-// 	w := httptest.NewRecorder()
-
-// 	ginr.ServeHTTP(w, request)
-
-// 	assert.Equal(t, w.Code, http.StatusOK)
-// }
-
-// func Test_existsBlock(t *testing.T) {
-
-// 	ginr.GET("/api/v1/block/exists/:key", existsBlock)
-
-// 	request, err := http.NewRequest(http.MethodGet, "/api/v1/block/exists/test.com", nil)
-
-// 	assert.NoError(t, err)
-
-// 	w := httptest.NewRecorder()
-
-// 	ginr.ServeHTTP(w, request)
-
-// 	assert.Equal(t, w.Code, http.StatusOK)
-// }
-// func Test_runServer(t *testing.T) {
-// 	err := StartAPIServer(":111111")
-// 	assert.Error(t, err)
-// }
