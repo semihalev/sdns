@@ -153,7 +153,7 @@ accesslist = [
 ]
 
 # query timeout for dns lookups in duration
-timeout = "750ms"
+timeout = "2s"
 
 # connect timeout for dns lookups in duration
 connecttimeout = "1s"
