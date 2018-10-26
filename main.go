@@ -60,7 +60,7 @@ func configSetup(test bool) {
 		Config.Bind = ":0"
 		Config.BindTLS = ""
 		Config.BindDOH = ""
-		Config.API = ""
+		Config.API = "127.0.0.1:11111"
 		Config.LogLevel = "crit"
 		Config.Timeout = 15
 	}
