@@ -43,7 +43,7 @@ func zoneToRecords(t *testing.T, z string) []dns.RR {
 	return records
 }
 
-func TestVerifyNameError(t *testing.T) {
+func Test_VerifyNameError(t *testing.T) {
 	// Valid name error
 	records := []dns.RR{
 		makeNSEC3("example.com.", "com.", true, nil),
@@ -81,7 +81,7 @@ b4um86eghhds6nea196smvmlo4ors995.example. 3600 IN NSEC3 1 1 12 aabbccdd gjeqe526
 	}
 }
 
-func TestVerifyNODATA(t *testing.T) {
+func Test_VerifyNODATA(t *testing.T) {
 	// Valid NODATA
 	records := []dns.RR{
 		makeNSEC3("example.com.", "", false, nil),
@@ -169,7 +169,7 @@ func TestVerifyNODATA(t *testing.T) {
 	}
 }
 
-func TestVerifyDelegation(t *testing.T) {
+func Test_VerifyDelegation(t *testing.T) {
 	// Valid direct delegation
 	records := []dns.RR{
 		makeNSEC3("a.b.com.", "b.b.com.", false, []uint16{dns.TypeNS}),

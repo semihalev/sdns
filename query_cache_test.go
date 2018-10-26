@@ -26,29 +26,31 @@ func Test_Cache(t *testing.T) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 
-	if err := cache.Set(testDomain, m); err != nil {
+	key := keyGen(m.Question[0])
+
+	if err := cache.Set(key, m); err != nil {
 		t.Error(err)
 	}
 
-	if _, _, err := cache.Get(testDomain); err != nil {
+	if _, _, err := cache.Get(key, m); err != nil {
 		t.Error(err)
 	}
 
-	assert.Equal(t, cache.Exists(testDomain), true)
+	assert.Equal(t, cache.Exists(key), true)
 
 	m2 := new(dns.Msg)
 	m2.SetQuestion(dns.Fqdn(test2Domain), dns.TypeA)
-	err := cache.Set(test2Domain, m2)
+	err := cache.Set(keyGen(m2.Question[0]), m2)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "capacity full")
 
-	cache.Remove(testDomain)
+	cache.Remove(key)
 
-	if _, _, err := cache.Get(testDomain); err == nil {
+	if _, _, err := cache.Get(key, m2); err == nil {
 		t.Error("cache entry still existed after remove")
 	}
 
-	assert.Equal(t, cache.Exists(testDomain), false)
+	assert.Equal(t, cache.Exists(key), false)
 }
 
 func Test_CacheTTL(t *testing.T) {
@@ -60,8 +62,13 @@ func Test_CacheTTL(t *testing.T) {
 	WallClock = fakeClock
 	cache := makeCache(0)
 
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+
+	key := keyGen(m.Question[0])
 
 	var attl uint32 = 10
 	var aaaattl uint32 = 20
@@ -98,11 +105,11 @@ func Test_CacheTTL(t *testing.T) {
 		Ns: "localhost"}
 	m.Ns = append(m.Ns, ns)
 
-	if err := cache.Set(testDomain, m); err != nil {
+	if err := cache.Set(key, m); err != nil {
 		t.Error(err)
 	}
 
-	msg, _, err := cache.Get(testDomain)
+	msg, _, err := cache.Get(key, req)
 	assert.NoError(t, err)
 
 	for _, answer := range msg.Answer {
@@ -126,7 +133,7 @@ func Test_CacheTTL(t *testing.T) {
 	}
 
 	fakeClock.Advance(5 * time.Second)
-	msg, _, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(key, req)
 	assert.NoError(t, err)
 
 	for _, answer := range msg.Answer {
@@ -150,7 +157,7 @@ func Test_CacheTTL(t *testing.T) {
 	}
 
 	fakeClock.Advance(5 * time.Second)
-	_, _, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(key, req)
 	assert.NoError(t, err)
 
 	for _, answer := range msg.Answer {
@@ -176,14 +183,14 @@ func Test_CacheTTL(t *testing.T) {
 	fakeClock.Advance(1 * time.Second)
 
 	// accessing an expired key will return KeyExpired error
-	_, _, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(key, req)
 	if err != nil && err != ErrCacheExpired {
 		t.Error(err)
 	}
 	assert.Equal(t, err.Error(), "cache expired")
 
 	// accessing an expired key will remove it from the cache
-	_, _, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(key, req)
 	if err != nil && err != ErrCacheNotFound {
 		t.Error("cache entry still existed after expiring - ", err)
 	}
@@ -199,8 +206,13 @@ func Test_CacheTTLFrequentPolling(t *testing.T) {
 	WallClock = fakeClock
 	cache := makeCache(0)
 
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+
+	key := keyGen(m.Question[0])
 
 	var attl uint32 = 10
 	var nsttl uint32 = 5
@@ -226,11 +238,11 @@ func Test_CacheTTLFrequentPolling(t *testing.T) {
 		Ns: "localhost"}
 	m.Ns = append(m.Ns, ns)
 
-	if err := cache.Set(testDomain, m); err != nil {
+	if err := cache.Set(key, m); err != nil {
 		t.Error(err)
 	}
 
-	msg, _, err := cache.Get(testDomain)
+	msg, _, err := cache.Get(key, req)
 	assert.NoError(t, err)
 
 	assert.Equal(t, attl, msg.Answer[0].Header().Ttl, "TTL should be unchanged")
@@ -240,25 +252,25 @@ func Test_CacheTTLFrequentPolling(t *testing.T) {
 	//Poll 50 times at 100ms intervals: the TTL should go down by 5s
 	for i := 0; i < 50; i++ {
 		fakeClock.Advance(100 * time.Millisecond)
-		_, _, err := cache.Get(testDomain)
+		_, _, err := cache.Get(key, req)
 		assert.NoError(t, err)
 	}
 
-	msg, _, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(key, req)
 	assert.NoError(t, err)
 
 	assert.Equal(t, attl-5, msg.Answer[0].Header().Ttl, "TTL should be decreased")
 
-	assert.Equal(t, nsttl-5, msg.Ns[0].Header().Ttl, "TTL should be unchanged")
+	assert.Equal(t, nsttl-5, msg.Ns[0].Header().Ttl, "TTL should be decreased")
 
 	fakeClock.Advance(1 * time.Second)
 
-	_, _, err = cache.Get(testDomain)
+	msg, _, err = cache.Get(key, req)
 	if err != nil && err != ErrCacheExpired {
 		t.Error(err)
 	}
 
-	if err := cache.Set(testDomain, m); err != nil {
+	if err := cache.Set(key, m); err != nil {
 		t.Error(err)
 	}
 

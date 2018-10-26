@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"sync"
 	"time"
 
@@ -23,14 +22,14 @@ type NS struct {
 type NameServerCache struct {
 	mu sync.RWMutex
 
-	m   map[string]*NS
+	m   map[uint64]*NS
 	max int
 }
 
 // NewNameServerCache return new cache
 func NewNameServerCache(maxcount int) *NameServerCache {
 	c := &NameServerCache{
-		m:   make(map[string]*NS, maxcount),
+		m:   make(map[uint64]*NS, maxcount),
 		max: maxcount,
 	}
 
@@ -40,9 +39,7 @@ func NewNameServerCache(maxcount int) *NameServerCache {
 }
 
 // Get returns the entry for a key or an error
-func (c *NameServerCache) Get(key string) (*NS, error) {
-	key = strings.ToLower(key)
-
+func (c *NameServerCache) Get(key uint64) (*NS, error) {
 	c.mu.RLock()
 	ns, ok := c.m[key]
 	c.mu.RUnlock()
@@ -52,13 +49,12 @@ func (c *NameServerCache) Get(key string) (*NS, error) {
 	}
 
 	ns.mu.Lock()
-	//Truncate time to the second, so that subsecond queries won't keep moving
-	//forward the last update time without touching the TTL
+
 	now := WallClock.Now().Truncate(time.Second)
 	elapsed := uint32(now.Sub(ns.UpdateTime).Seconds())
 	ns.UpdateTime = now
 
-	if elapsed > ns.TTL {
+	if elapsed >= ns.TTL {
 		ns.mu.Unlock()
 		c.Remove(key)
 		return nil, ErrCacheExpired
@@ -70,9 +66,7 @@ func (c *NameServerCache) Get(key string) (*NS, error) {
 }
 
 // Set sets a keys value to a NS
-func (c *NameServerCache) Set(key string, dsRR []dns.RR, ttl uint32, servers []*AuthServer) error {
-	key = strings.ToLower(key)
-
+func (c *NameServerCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers []*AuthServer) error {
 	if c.Full() && !c.Exists(key) {
 		return ErrCapacityFull
 	}
@@ -91,18 +85,14 @@ func (c *NameServerCache) Set(key string, dsRR []dns.RR, ttl uint32, servers []*
 }
 
 // Remove removes an entry from the cache
-func (c *NameServerCache) Remove(key string) {
-	key = strings.ToLower(key)
-
+func (c *NameServerCache) Remove(key uint64) {
 	c.mu.Lock()
 	delete(c.m, key)
 	c.mu.Unlock()
 }
 
 // Exists returns whether or not a key exists in the cache
-func (c *NameServerCache) Exists(key string) bool {
-	key = strings.ToLower(key)
-
+func (c *NameServerCache) Exists(key uint64) bool {
 	c.mu.RLock()
 	_, ok := c.m[key]
 	c.mu.RUnlock()
@@ -132,7 +122,7 @@ func (c *NameServerCache) clear() {
 		now := WallClock.Now().Truncate(time.Second)
 		elapsed := uint32(now.Sub(ns.UpdateTime).Seconds())
 
-		if elapsed > ns.TTL {
+		if elapsed >= ns.TTL {
 			delete(c.m, key)
 			break
 		}

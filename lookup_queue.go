@@ -9,18 +9,18 @@ import (
 type LQueue struct {
 	mu sync.RWMutex
 
-	delay map[string]chan struct{}
+	delay map[uint64]chan struct{}
 }
 
 // NewLookupQueue func
 func NewLookupQueue() *LQueue {
 	return &LQueue{
-		delay: make(map[string]chan struct{}),
+		delay: make(map[uint64]chan struct{}),
 	}
 }
 
 // Get func
-func (q *LQueue) Get(key string) <-chan struct{} {
+func (q *LQueue) Get(key uint64) <-chan struct{} {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
@@ -32,7 +32,7 @@ func (q *LQueue) Get(key string) <-chan struct{} {
 }
 
 // Wait func
-func (q *LQueue) Wait(key string) {
+func (q *LQueue) Wait(key uint64) {
 	q.mu.RLock()
 
 	if c, ok := q.delay[key]; ok {
@@ -48,7 +48,7 @@ func (q *LQueue) Wait(key string) {
 }
 
 // Add func
-func (q *LQueue) Add(key string) {
+func (q *LQueue) Add(key uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -56,7 +56,7 @@ func (q *LQueue) Add(key string) {
 }
 
 // Done func
-func (q *LQueue) Done(key string) {
+func (q *LQueue) Done(key uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 

@@ -14,8 +14,8 @@ func Test_keyGen(t *testing.T) {
 	q := dns.Question{Name: "@", Qtype: dns.TypeA, Qclass: dns.ClassANY}
 
 	asset := keyGen(q)
-
-	assert.Equal(t, asset, "b78555bf3268be8a25d31ab80a47b6e9")
+	fmt.Println(asset)
+	assert.Equal(t, asset, uint64(15658190276026904132))
 }
 
 func Benchmark_keyGen(b *testing.B) {

@@ -113,7 +113,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	h.lqueue.Wait(key)
 
-	mesg, rl, err := h.cache.Get(key)
+	mesg, rl, err := h.cache.Get(key, req)
 	if err == nil {
 		log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
 
@@ -129,7 +129,6 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 		msg.Id = req.Id
 		msg = h.additionalAnswer(resolverProto, req, msg)
-		msg.CheckingDisabled = req.CheckingDisabled
 
 		if !dsReq {
 			msg = clearDNSSEC(msg)
@@ -263,21 +262,22 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func (h *DNSHandler) additionalAnswer(proto string, req, mesg *dns.Msg) *dns.Msg {
+func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg {
 	//check cname response
 	answerFound := false
-	var cnameReq dns.Msg
 
+	cnameReq := new(dns.Msg)
 	cnameReq.SetEdns0(DefaultMsgSize, true)
+	cnameReq.RecursionDesired = true
 
-	for _, answer := range mesg.Answer {
+	for _, answer := range msg.Answer {
 		if answer.Header().Rrtype == req.Question[0].Qtype &&
 			(req.Question[0].Qtype == dns.TypeA || req.Question[0].Qtype == dns.TypeAAAA) {
 			answerFound = true
 		}
 
 		if answer.Header().Rrtype == dns.TypeCNAME {
-			cnameAnswer, _ := answer.(*dns.CNAME)
+			cnameAnswer := answer.(*dns.CNAME)
 			cnameReq.SetQuestion(cnameAnswer.Target, req.Question[0].Qtype)
 		}
 	}
@@ -287,52 +287,46 @@ func (h *DNSHandler) additionalAnswer(proto string, req, mesg *dns.Msg) *dns.Msg
 	if !answerFound && len(cnameReq.Question) > 0 {
 	lookup:
 		q := cnameReq.Question[0]
-		childCNAME := false
-
-		log.Debug("Lookup", "query", formatQuestion(q))
+		child := false
 
 		key := keyGen(q)
-		respCname, _, err := h.cache.Get(key)
+		respCname, _, err := h.cache.Get(key, cnameReq)
 		if err == nil {
-			log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
-			for _, answerCname := range respCname.Answer {
-				mesg.Answer = append(mesg.Answer, answerCname)
-				if answerCname.Header().Rrtype == dns.TypeCNAME {
-					cnameAnswer, _ := answerCname.(*dns.CNAME)
+			for _, r := range respCname.Answer {
+				msg.Answer = append(msg.Answer, dns.Copy(r))
+
+				if r.Header().Rrtype == dns.TypeCNAME {
+					cnameAnswer := r.(*dns.CNAME)
 					cnameReq.Question[0].Name = cnameAnswer.Target
-					childCNAME = true
+					child = true
 				}
 			}
 		} else {
 			depth := Config.Maxdepth
-			respCname, err := h.resolver.Resolve(proto, &cnameReq, rootservers, true, depth, 0, false, nil)
+			respCname, err := h.resolver.Resolve(proto, cnameReq, rootservers, true, depth, 0, false, nil)
 			if err == nil && len(respCname.Answer) > 0 && respCname.Rcode == dns.RcodeSuccess {
-				for _, answerCname := range respCname.Answer {
-					mesg.Answer = append(mesg.Answer, answerCname)
-					if answerCname.Header().Rrtype == dns.TypeCNAME {
-						cnameAnswer, _ := answerCname.(*dns.CNAME)
+				for _, r := range respCname.Answer {
+					msg.Answer = append(msg.Answer, dns.Copy(r))
+
+					if r.Header().Rrtype == dns.TypeCNAME {
+						cnameAnswer := r.(*dns.CNAME)
 						cnameReq.Question[0].Name = cnameAnswer.Target
-						childCNAME = true
+						child = true
 					}
 				}
 
-				err = h.cache.Set(key, respCname)
-				if err != nil {
-					log.Error("Set query cache failed", "query", formatQuestion(q), "error", err.Error())
-				} else {
-					log.Debug("Set query into cache", "query", formatQuestion(q))
-				}
+				h.cache.Set(key, respCname)
 			}
 		}
 
 		cnameDepth--
 
-		if childCNAME && cnameDepth > 0 {
+		if child && cnameDepth > 0 {
 			goto lookup
 		}
 	}
 
-	return mesg
+	return msg
 }
 
 func (h *DNSHandler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {

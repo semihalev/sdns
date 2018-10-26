@@ -611,7 +611,7 @@ func (r *Resolver) lookupDSRR(Net, qname string, depth int) (msg *dns.Msg, err e
 
 	key := keyGen(dsReq.Question[0])
 
-	dsres, _, err := r.rCache.Get(key)
+	dsres, _, err := r.rCache.Get(key, dsReq)
 	if err == nil {
 		return dsres, nil
 	}
@@ -662,7 +662,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", ns)
 	}
 
-	nsres, _, err := r.rCache.Get(key)
+	nsres, _, err := r.rCache.Get(key, nsReq)
 	if err == nil {
 		if addr, ok := searchAddr(nsres); ok {
 			return addr, nil
@@ -770,26 +770,26 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 }
 
 func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
-	req := new(dns.Msg)
-	req.SetQuestion(signer, dns.TypeDNSKEY)
-	req.SetEdns0(DefaultMsgSize, true)
-	req.RecursionDesired = true
+	keyReq := new(dns.Msg)
+	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
+	keyReq.SetEdns0(DefaultMsgSize, true)
+	keyReq.RecursionDesired = true
 
-	q := req.Question[0]
+	q := keyReq.Question[0]
 
 	cacheKey := keyGen(q)
 
-	msg, _, err := r.rCache.Get(cacheKey)
+	msg, _, err := r.rCache.Get(cacheKey, keyReq)
 	if resp.Question[0].Qtype != dns.TypeDNSKEY && msg == nil {
 		depth := Config.Maxdepth
-		msg, err = r.Resolve(Net, req, rootservers, true, depth, 0, false, nil)
+		msg, err = r.Resolve(Net, keyReq, rootservers, true, depth, 0, false, nil)
 		if err != nil {
 			return
 		}
 
 		if msg.Truncated {
 			//retrying in TCP mode
-			msg, err = r.Resolve("tcp", req, rootservers, true, depth, 0, false, nil)
+			msg, err = r.Resolve("tcp", keyReq, rootservers, true, depth, 0, false, nil)
 			if err != nil {
 				return
 			}

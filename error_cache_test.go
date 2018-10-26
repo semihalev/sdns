@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -14,39 +15,43 @@ func Test_ErrorCache(t *testing.T) {
 
 	cache := NewErrorCache(1, 5)
 
-	err := cache.Set(testDomain)
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+	key := keyGen(m.Question[0])
+
+	err := cache.Set(key)
 	assert.NoError(t, err)
 
-	err = cache.Set("test2.com")
+	err = cache.Set(keyGen(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "capacity full")
 
-	err = cache.Get(testDomain)
+	err = cache.Get(key)
 	assert.NoError(t, err)
 
-	ok := cache.Exists(testDomain)
+	ok := cache.Exists(key)
 	assert.Equal(t, ok, true)
 
-	fakeClock.Advance(5 * time.Second)
-	err = cache.Get(testDomain)
+	fakeClock.Advance(4 * time.Second)
+	err = cache.Get(key)
 	assert.NoError(t, err)
 
 	fakeClock.Advance(1 * time.Second)
-	err = cache.Get(testDomain)
+	err = cache.Get(key)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "cache expired")
 
-	err = cache.Get(testDomain)
+	err = cache.Get(key)
 	assert.Error(t, err)
 
 	cache = NewErrorCache(0, 5)
-	err = cache.Set(testDomain)
+	err = cache.Set(key)
 	assert.NoError(t, err)
 
-	cache.Remove(testDomain)
+	cache.Remove(key)
 	assert.Equal(t, cache.Length(), 0)
 
-	err = cache.Set(testDomain)
+	err = cache.Set(key)
 	assert.NoError(t, err)
 
 	fakeClock.Advance(10 * time.Second)

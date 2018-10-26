@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"sync"
 	"time"
 
@@ -13,14 +12,14 @@ type ErrorCache struct {
 	mu sync.RWMutex
 
 	ttl uint32
-	m   map[string]time.Time
+	m   map[uint64]time.Time
 	max int
 }
 
 // NewErrorCache return new cache
 func NewErrorCache(maxcount int, ttl uint32) *ErrorCache {
 	c := &ErrorCache{
-		m:   make(map[string]time.Time, maxcount),
+		m:   make(map[uint64]time.Time, maxcount),
 		max: maxcount,
 		ttl: ttl,
 	}
@@ -31,9 +30,7 @@ func NewErrorCache(maxcount int, ttl uint32) *ErrorCache {
 }
 
 // Get returns the entry for a key or an error
-func (c *ErrorCache) Get(key string) error {
-	key = strings.ToLower(key)
-
+func (c *ErrorCache) Get(key uint64) error {
 	c.mu.RLock()
 	t, ok := c.m[key]
 	c.mu.RUnlock()
@@ -43,12 +40,10 @@ func (c *ErrorCache) Get(key string) error {
 		return ErrCacheNotFound
 	}
 
-	//Truncate time to the second, so that subsecond queries won't keep moving
-	//forward the last update time without touching the TTL
 	now := WallClock.Now().Truncate(time.Second)
 	elapsed := uint32(now.Sub(t).Seconds())
 
-	if elapsed > c.ttl {
+	if elapsed >= c.ttl {
 		log.Debug("Error cache expired", "key", key)
 		c.Remove(key)
 		return ErrCacheExpired
@@ -58,9 +53,7 @@ func (c *ErrorCache) Get(key string) error {
 }
 
 // Set sets a keys value to a error cache
-func (c *ErrorCache) Set(key string) error {
-	key = strings.ToLower(key)
-
+func (c *ErrorCache) Set(key uint64) error {
 	if c.Full() && !c.Exists(key) {
 		return ErrCapacityFull
 	}
@@ -73,18 +66,14 @@ func (c *ErrorCache) Set(key string) error {
 }
 
 // Remove removes an entry from the cache
-func (c *ErrorCache) Remove(key string) {
-	key = strings.ToLower(key)
-
+func (c *ErrorCache) Remove(key uint64) {
 	c.mu.Lock()
 	delete(c.m, key)
 	c.mu.Unlock()
 }
 
 // Exists returns whether or not a key exists in the cache
-func (c *ErrorCache) Exists(key string) bool {
-	key = strings.ToLower(key)
-
+func (c *ErrorCache) Exists(key uint64) bool {
 	c.mu.RLock()
 	_, ok := c.m[key]
 	c.mu.RUnlock()
@@ -114,7 +103,7 @@ func (c *ErrorCache) clear() {
 		now := WallClock.Now().Truncate(time.Second)
 		elapsed := uint32(now.Sub(t).Seconds())
 
-		if elapsed > c.ttl {
+		if elapsed >= c.ttl {
 			delete(c.m, key)
 			break
 		}

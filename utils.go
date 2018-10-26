@@ -1,10 +1,10 @@
 package main
 
 import (
-	"crypto/md5"
 	"encoding/base64"
-	"encoding/hex"
+	"encoding/binary"
 	"errors"
+	"hash/fnv"
 	"math/rand"
 	"net"
 	"sort"
@@ -26,12 +26,22 @@ var (
 	errMissingSigned          = errors.New("signed records are missing")
 )
 
-func keyGen(q dns.Question) string {
-	h := md5.New()
-	h.Write([]byte(formatQuestion(q)))
-	x := h.Sum(nil)
+func keyGen(q dns.Question) uint64 {
+	h := fnv.New64()
 
-	return hex.EncodeToString(x)
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, q.Qtype)
+	h.Write(b)
+
+	for i := range q.Name {
+		c := q.Name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		h.Write([]byte{c})
+	}
+
+	return h.Sum64()
 }
 
 func formatQuestion(q dns.Question) string {
