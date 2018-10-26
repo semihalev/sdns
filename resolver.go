@@ -670,8 +670,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	if len(keys) == 0 {
-		log.Error("root zone keys empty")
-		return
+		panic("root zone keys empty")
 	}
 
 	dsset := []dns.RR{}
@@ -682,18 +681,15 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	if len(dsset) == 0 {
-		log.Error("root zone dsset empty")
-		return
+		panic("root zone dsset empty")
 	}
 
 	if err := verifyDS(keys, dsset); err != nil {
-		log.Error("root zone DS not verified")
-		return
+		panic("root zone DS not verified")
 	}
 
-	if ok, err := verifyRRSIG(keys, msg); err != nil {
-		log.Error("root zone keys not verified", "error", err.Error())
-		return ok
+	if _, err := verifyRRSIG(keys, msg); err != nil {
+		panic("root zone keys not verified")
 	}
 
 	return true
@@ -788,7 +784,7 @@ func (r *Resolver) checkPriming() error {
 
 	resp, err := r.Resolve("udp", req, rootservers, true, 5, 0, false, nil, true)
 	if err != nil {
-		log.Crit("root servers update failed", "error", err.Error())
+		log.Error("root servers update failed", "error", err.Error())
 
 		return err
 	}
