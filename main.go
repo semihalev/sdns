@@ -9,16 +9,13 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/jonboulle/clockwork"
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/cache"
 	"github.com/yl2chen/cidranger"
 )
 
 var (
-	// WallClock is the wall clock
-	WallClock = clockwork.NewRealClock()
-
 	// Config is the global configuration
 	Config config
 
@@ -38,7 +35,7 @@ var (
 	AccessList cidranger.Ranger
 
 	// BlockList returns BlockCache
-	BlockList = NewBlockCache()
+	BlockList = cache.NewBlockCache()
 )
 
 func init() {
@@ -54,23 +51,23 @@ func init() {
 
 func startSDNS() {
 	if len(Config.RootServers) > 0 {
-		rootservers = []*AuthServer{}
+		rootservers = []*cache.AuthServer{}
 		for _, s := range Config.RootServers {
-			rootservers = append(rootservers, NewAuthServer(s))
+			rootservers = append(rootservers, cache.NewAuthServer(s))
 		}
 	}
 
 	if len(Config.Root6Servers) > 0 {
-		root6servers = []*AuthServer{}
+		root6servers = []*cache.AuthServer{}
 		for _, s := range Config.Root6Servers {
-			root6servers = append(root6servers, NewAuthServer(s))
+			root6servers = append(root6servers, cache.NewAuthServer(s))
 		}
 	}
 
 	if len(Config.FallbackServers) > 0 {
-		fallbackservers = []*AuthServer{}
+		fallbackservers = []*cache.AuthServer{}
 		for _, s := range Config.FallbackServers {
-			fallbackservers = append(fallbackservers, NewAuthServer(s))
+			fallbackservers = append(fallbackservers, cache.NewAuthServer(s))
 		}
 	}
 

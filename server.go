@@ -4,11 +4,10 @@ import (
 	"bufio"
 	"crypto/tls"
 	"io"
+	l "log"
 	"net/http"
 	"strings"
 	"time"
-
-	l "log"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"

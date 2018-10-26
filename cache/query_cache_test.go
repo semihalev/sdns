@@ -1,4 +1,4 @@
-package main
+package cache
 
 import (
 	"net"
@@ -11,22 +11,17 @@ import (
 )
 
 func makeCache(maxcount int) *QueryCache {
-	return NewQueryCache(maxcount)
+	return NewQueryCache(maxcount, 0)
 }
 
 func Test_Cache(t *testing.T) {
-	const (
-		testDomain  = "www.google.com"
-		test2Domain = "google.com"
-	)
-
 	cache := makeCache(1)
 	WallClock = clockwork.NewFakeClock()
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 
-	key := keyGen(m.Question[0])
+	key := Hash(m.Question[0])
 
 	if err := cache.Set(key, m); err != nil {
 		t.Error(err)
@@ -39,8 +34,8 @@ func Test_Cache(t *testing.T) {
 	assert.Equal(t, cache.Exists(key), true)
 
 	m2 := new(dns.Msg)
-	m2.SetQuestion(dns.Fqdn(test2Domain), dns.TypeA)
-	err := cache.Set(keyGen(m2.Question[0]), m2)
+	m2.SetQuestion("test2.com.", dns.TypeA)
+	err := cache.Set(Hash(m2.Question[0]), m2)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "capacity full")
 
@@ -68,13 +63,14 @@ func Test_CacheTTL(t *testing.T) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 
-	key := keyGen(m.Question[0])
+	key := Hash(m.Question[0])
 
 	var attl uint32 = 10
 	var aaaattl uint32 = 20
 	var nsttl uint32 = 10
-	nullroute := net.ParseIP(Config.Nullroute)
-	nullroutev6 := net.ParseIP(Config.Nullroutev6)
+	nullroute := net.ParseIP("0.0.0.0")
+	nullroutev6 := net.ParseIP("0:0:0:0:0:0:0:0")
+
 	a := &dns.A{
 		Hdr: dns.RR_Header{
 			Name:   testDomain,
@@ -212,12 +208,12 @@ func Test_CacheTTLFrequentPolling(t *testing.T) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
 
-	key := keyGen(m.Question[0])
+	key := Hash(m.Question[0])
 
 	var attl uint32 = 10
 	var nsttl uint32 = 5
 
-	nullroute := net.ParseIP(Config.Nullroute)
+	nullroute := net.ParseIP("0.0.0.0")
 	a := &dns.A{
 		Hdr: dns.RR_Header{
 			Name:   testDomain,

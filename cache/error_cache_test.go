@@ -1,4 +1,4 @@
-package main
+package cache
 
 import (
 	"testing"
@@ -9,49 +9,53 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_NameServerCache(t *testing.T) {
+const (
+	testDomain = "www.google.com"
+)
+
+func Test_ErrorCache(t *testing.T) {
 	fakeClock := clockwork.NewFakeClock()
 	WallClock = fakeClock
 
-	cache := NewNameServerCache(1)
+	cache := NewErrorCache(1, 5)
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
-	key := keyGen(m.Question[0])
+	key := Hash(m.Question[0])
 
-	err := cache.Set(key, nil, 5, nil)
+	err := cache.Set(key)
 	assert.NoError(t, err)
 
-	err = cache.Set(keyGen(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}), nil, 5, nil)
+	err = cache.Set(Hash(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "capacity full")
 
-	_, err = cache.Get(key)
+	err = cache.Get(key)
 	assert.NoError(t, err)
 
 	ok := cache.Exists(key)
 	assert.Equal(t, ok, true)
 
 	fakeClock.Advance(4 * time.Second)
-	_, err = cache.Get(key)
+	err = cache.Get(key)
 	assert.NoError(t, err)
 
 	fakeClock.Advance(1 * time.Second)
-	_, err = cache.Get(key)
+	err = cache.Get(key)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "cache expired")
 
-	_, err = cache.Get(key)
+	err = cache.Get(key)
 	assert.Error(t, err)
 
-	cache = NewNameServerCache(0)
-	err = cache.Set(key, nil, 5, nil)
+	cache = NewErrorCache(0, 5)
+	err = cache.Set(key)
 	assert.NoError(t, err)
 
 	cache.Remove(key)
 	assert.Equal(t, cache.Length(), 0)
 
-	err = cache.Set(key, nil, 5, nil)
+	err = cache.Set(key)
 	assert.NoError(t, err)
 
 	fakeClock.Advance(10 * time.Second)

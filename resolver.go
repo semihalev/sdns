@@ -10,15 +10,16 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/cache"
 )
 
 // Resolver type
 type Resolver struct {
 	config   *dns.ClientConfig
-	nsCache  *NameServerCache
-	rCache   *QueryCache
-	errCache *ErrorCache
-	lqueue   *LQueue
+	nsCache  *cache.NameServerCache
+	rCache   *cache.QueryCache
+	errCache *cache.ErrorCache
+	lqueue   *cache.LQueue
 }
 
 var (
@@ -32,36 +33,36 @@ var (
 
 	rootzone = "."
 
-	rootservers = []*AuthServer{
-		NewAuthServer("192.5.5.241:53"),
-		NewAuthServer("198.41.0.4:53"),
-		NewAuthServer("192.228.79.201:53"),
-		NewAuthServer("192.33.4.12:53"),
-		NewAuthServer("199.7.91.13:53"),
-		NewAuthServer("192.203.230.10:53"),
-		NewAuthServer("192.112.36.4:53"),
-		NewAuthServer("128.63.2.53:53"),
-		NewAuthServer("192.36.148.17:53"),
-		NewAuthServer("192.58.128.30:53"),
-		NewAuthServer("193.0.14.129:53"),
-		NewAuthServer("199.7.83.42:53"),
-		NewAuthServer("202.12.27.33:53"),
+	rootservers = []*cache.AuthServer{
+		cache.NewAuthServer("192.5.5.241:53"),
+		cache.NewAuthServer("198.41.0.4:53"),
+		cache.NewAuthServer("192.228.79.201:53"),
+		cache.NewAuthServer("192.33.4.12:53"),
+		cache.NewAuthServer("199.7.91.13:53"),
+		cache.NewAuthServer("192.203.230.10:53"),
+		cache.NewAuthServer("192.112.36.4:53"),
+		cache.NewAuthServer("128.63.2.53:53"),
+		cache.NewAuthServer("192.36.148.17:53"),
+		cache.NewAuthServer("192.58.128.30:53"),
+		cache.NewAuthServer("193.0.14.129:53"),
+		cache.NewAuthServer("199.7.83.42:53"),
+		cache.NewAuthServer("202.12.27.33:53"),
 	}
 
-	root6servers = []*AuthServer{
-		NewAuthServer("[2001:500:2f::f]:53"),
-		NewAuthServer("[2001:503:ba3e::2:30]:53"),
-		NewAuthServer("[2001:500:200::b]:53"),
-		NewAuthServer("[2001:500:2::c]:53"),
-		NewAuthServer("[2001:500:2d::d]:53"),
-		NewAuthServer("[2001:500:a8::e]:53"),
-		NewAuthServer("[2001:500:12::d0d]:53"),
-		NewAuthServer("[2001:500:1::53]:53"),
-		NewAuthServer("[2001:7fe::53]:53"),
-		NewAuthServer("[2001:503:c27::2:30]:53"),
-		NewAuthServer("[2001:7fd::1]:53"),
-		NewAuthServer("[2001:500:9f::42]:53"),
-		NewAuthServer("[2001:dc3::35]:53"),
+	root6servers = []*cache.AuthServer{
+		cache.NewAuthServer("[2001:500:2f::f]:53"),
+		cache.NewAuthServer("[2001:503:ba3e::2:30]:53"),
+		cache.NewAuthServer("[2001:500:200::b]:53"),
+		cache.NewAuthServer("[2001:500:2::c]:53"),
+		cache.NewAuthServer("[2001:500:2d::d]:53"),
+		cache.NewAuthServer("[2001:500:a8::e]:53"),
+		cache.NewAuthServer("[2001:500:12::d0d]:53"),
+		cache.NewAuthServer("[2001:500:1::53]:53"),
+		cache.NewAuthServer("[2001:7fe::53]:53"),
+		cache.NewAuthServer("[2001:503:c27::2:30]:53"),
+		cache.NewAuthServer("[2001:7fd::1]:53"),
+		cache.NewAuthServer("[2001:500:9f::42]:53"),
+		cache.NewAuthServer("[2001:dc3::35]:53"),
 	}
 
 	initialkeys = []string{
@@ -69,31 +70,13 @@ var (
 		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
 	}
 
-	fallbackservers = []*AuthServer{
-		NewAuthServer("8.8.8.8:53"),
-		NewAuthServer("8.8.4.4:53"),
+	fallbackservers = []*cache.AuthServer{
+		cache.NewAuthServer("8.8.8.8:53"),
+		cache.NewAuthServer("8.8.4.4:53"),
 	}
 
 	rootkeys = []dns.RR{}
 )
-
-// AuthServer type
-type AuthServer struct {
-	Host string
-	RTT  time.Duration
-}
-
-// NewAuthServer return a server
-func NewAuthServer(host string) *AuthServer {
-	return &AuthServer{
-		Host: host,
-		RTT:  time.Hour, //default untrusted rtt
-	}
-}
-
-func (a *AuthServer) String() string {
-	return "host:" + a.Host + " " + "rtt:" + a.RTT.String()
-}
 
 func init() {
 	for _, k := range initialkeys {
@@ -109,17 +92,17 @@ func init() {
 func NewResolver() *Resolver {
 	return &Resolver{
 		config:   &dns.ClientConfig{},
-		nsCache:  NewNameServerCache(Config.Maxcount),
-		rCache:   NewQueryCache(Config.Maxcount),
-		errCache: NewErrorCache(Config.Maxcount, Config.Expire),
-		lqueue:   NewLookupQueue(),
+		nsCache:  cache.NewNameServerCache(Config.Maxcount),
+		rCache:   cache.NewQueryCache(Config.Maxcount, Config.RateLimit),
+		errCache: cache.NewErrorCache(Config.Maxcount, Config.Expire),
+		lqueue:   cache.NewLookupQueue(),
 	}
 }
 
 // Resolve will ask each nameserver in top-to-bottom fashion, starting a new request
 // in every interval, and return as early as possbile (have an answer).
 // It returns an error if no request has succeeded.
-func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (*dns.Msg, error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	if root && req.Question[0].Qtype != dns.TypeDS {
@@ -293,7 +276,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 
 		q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
-		key := keyGen(q)
+		key := cache.Hash(q)
 
 		nsCache, err := r.nsCache.Get(key)
 		if err == nil {
@@ -343,9 +326,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 		if len(nsmap) > len(nservers) {
 			if len(nservers) > 0 {
 				// temprorary cache before lookup
-				authservers := []*AuthServer{}
+				authservers := []*cache.AuthServer{}
 				for _, s := range nservers {
-					authservers = append(authservers, NewAuthServer(s))
+					authservers = append(authservers, cache.NewAuthServer(s))
 				}
 
 				r.nsCache.Set(key, nil, nsrr.Header().Ttl, authservers)
@@ -462,9 +445,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 			}
 		}
 
-		authservers := []*AuthServer{}
+		authservers := []*cache.AuthServer{}
 		for _, s := range nservers {
-			authservers = append(authservers, NewAuthServer(s))
+			authservers = append(authservers, cache.NewAuthServer(s))
 		}
 
 		//final cache
@@ -492,7 +475,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*AuthServer, root
 	return m, nil
 }
 
-func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer) (resp *dns.Msg, err error) {
 	c := &dns.Client{
 		Net:     Net,
 		UDPSize: dns.DefaultMsgSize,
@@ -520,7 +503,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 	resCh := make(chan *dns.Msg, len(servers))
 	errCh := make(chan error, len(servers))
 
-	L := func(server *AuthServer, last bool) {
+	L := func(server *cache.AuthServer, last bool) {
 	tryagain:
 		var resp *dns.Msg
 		var err error
@@ -582,8 +565,8 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*AuthServer) (resp
 	}
 }
 
-func (r *Resolver) searchCache(q dns.Question) (servers []*AuthServer, parentdsrr []dns.RR) {
-	key := keyGen(q)
+func (r *Resolver) searchCache(q dns.Question) (servers []*cache.AuthServer, parentdsrr []dns.RR) {
+	key := cache.Hash(q)
 
 	ns, err := r.nsCache.Get(key)
 
@@ -609,7 +592,7 @@ func (r *Resolver) lookupDSRR(Net, qname string, depth int) (msg *dns.Msg, err e
 	dsReq.SetEdns0(DefaultMsgSize, true)
 	dsReq.RecursionDesired = true
 
-	key := keyGen(dsReq.Question[0])
+	key := cache.Hash(dsReq.Question[0])
 
 	dsres, _, err := r.rCache.Get(key, dsReq)
 	if err == nil {
@@ -656,7 +639,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 
 	q := nsReq.Question[0]
 
-	key := keyGen(q)
+	key := cache.Hash(q)
 
 	if c := r.lqueue.Get(key); c != nil {
 		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", ns)
@@ -777,7 +760,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 
 	q := keyReq.Question[0]
 
-	cacheKey := keyGen(q)
+	cacheKey := cache.Hash(q)
 
 	msg, _, err := r.rCache.Get(cacheKey, keyReq)
 	if resp.Question[0].Qtype != dns.TypeDNSKEY && msg == nil {

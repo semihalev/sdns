@@ -1,10 +1,8 @@
-package main
+package cache
 
 import (
 	"sync"
 	"time"
-
-	"github.com/semihalev/log"
 )
 
 // ErrorCache type
@@ -36,7 +34,6 @@ func (c *ErrorCache) Get(key uint64) error {
 	c.mu.RUnlock()
 
 	if !ok {
-		log.Debug("Error cache miss", "key", key)
 		return ErrCacheNotFound
 	}
 
@@ -44,7 +41,6 @@ func (c *ErrorCache) Get(key uint64) error {
 	elapsed := uint32(now.Sub(t).Seconds())
 
 	if elapsed >= c.ttl {
-		log.Debug("Error cache expired", "key", key)
 		c.Remove(key)
 		return ErrCacheExpired
 	}

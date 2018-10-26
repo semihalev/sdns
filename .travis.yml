@@ -5,9 +5,19 @@ go:
   - "1.10.x"
   - "1.11"
 
+matrix:
+  fast_finish: true
+  include:
+  - go: 1.11.x
+    env: GO111MODULE=on
+
+git:
+  depth: 10
+
+go_import_path: github.com/semihalev/sdns
+
 script: 
-  - env GO111MODULE=on go test -v -covermode=atomic -coverprofile=coverage.out
-  - env GO111MODULE=on go build
-  
+  - go test -v -covermode=atomic -coverprofile=coverage.out
+ 
 after_success:
   - bash <(curl -s https://codecov.io/bash)

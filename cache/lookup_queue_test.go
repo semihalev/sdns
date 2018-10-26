@@ -1,4 +1,4 @@
-package main
+package cache
 
 import (
 	"sync"
@@ -15,14 +15,14 @@ func Test_lqueueWait(t *testing.T) {
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
-	key := keyGen(m.Question[0])
+	key := Hash(m.Question[0])
 
 	lqueue.Add(key)
 
 	ch := lqueue.Get(key)
 	assert.NotNil(t, ch)
 
-	key2 := keyGen(dns.Question{Name: "none.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+	key2 := Hash(dns.Question{Name: "none.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	none := lqueue.Get(key2)
 	assert.Nil(t, none)

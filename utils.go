@@ -2,9 +2,7 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/binary"
 	"errors"
-	"hash/fnv"
 	"math/rand"
 	"net"
 	"sort"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/cache"
 )
 
 var (
@@ -25,24 +24,6 @@ var (
 	errBadAnswer              = errors.New("response contained a non-zero RCODE")
 	errMissingSigned          = errors.New("signed records are missing")
 )
-
-func keyGen(q dns.Question) uint64 {
-	h := fnv.New64()
-
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, q.Qtype)
-	h.Write(b)
-
-	for i := range q.Name {
-		c := q.Name[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		h.Write([]byte{c})
-	}
-
-	return h.Sum64()
-}
 
 func formatQuestion(q dns.Question) string {
 	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
@@ -370,7 +351,7 @@ func checkExponent(key string) bool {
 	return true
 }
 
-func equalSlice(s1, s2 []*AuthServer) bool {
+func equalSlice(s1, s2 []*cache.AuthServer) bool {
 	if len(s1) != len(s2) {
 		return false
 	}

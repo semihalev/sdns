@@ -1,7 +1,6 @@
-package main
+package cache
 
 import (
-	"errors"
 	"sync"
 	"time"
 
@@ -32,24 +31,17 @@ type Query struct {
 type QueryCache struct {
 	mu sync.RWMutex
 
-	m   map[uint64]*Query
-	max int
+	m    map[uint64]*Query
+	max  int
+	rate int
 }
 
-var (
-	// ErrCacheNotFound error
-	ErrCacheNotFound = errors.New("cache not found")
-	// ErrCacheExpired error
-	ErrCacheExpired = errors.New("cache expired")
-	// ErrCapacityFull error
-	ErrCapacityFull = errors.New("capacity full")
-)
-
 // NewQueryCache return new cache
-func NewQueryCache(maxcount int) *QueryCache {
+func NewQueryCache(maxcount int, ratelimit int) *QueryCache {
 	c := &QueryCache{
-		m:   make(map[uint64]*Query, maxcount),
-		max: maxcount,
+		m:    make(map[uint64]*Query, maxcount),
+		max:  maxcount,
+		rate: ratelimit,
 	}
 
 	go c.run()
@@ -105,7 +97,7 @@ func (c *QueryCache) Set(key uint64, msg *dns.Msg) error {
 	c.mu.Lock()
 	c.m[key] = &Query{
 		Item:       newItem(msg),
-		RateLimit:  rl.New(Config.RateLimit, time.Second),
+		RateLimit:  rl.New(c.rate, time.Second),
 		UpdateTime: WallClock.Now().Truncate(time.Second),
 	}
 	c.mu.Unlock()
@@ -210,7 +202,6 @@ func (i *item) toMsg(m *dns.Msg) *dns.Msg {
 	for j, r := range i.Ns {
 		m1.Ns[j] = dns.Copy(r)
 	}
-	// newItem skips OPT records, so we can just use i.Extra as is.
 	for j, r := range i.Extra {
 		m1.Extra[j] = dns.Copy(r)
 	}

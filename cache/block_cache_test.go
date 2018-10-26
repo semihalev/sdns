@@ -1,4 +1,4 @@
-package main
+package cache
 
 import (
 	"fmt"
@@ -9,10 +9,6 @@ import (
 )
 
 func Test_BlockCache(t *testing.T) {
-	const (
-		testDomain = "www.google.com."
-	)
-
 	cache := NewBlockCache()
 
 	cache.Set(testDomain)

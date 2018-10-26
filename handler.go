@@ -6,6 +6,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/cache"
 )
 
 const (
@@ -16,18 +17,18 @@ const (
 // DNSHandler type
 type DNSHandler struct {
 	resolver   *Resolver
-	cache      *QueryCache
-	errorCache *ErrorCache
-	lqueue     *LQueue
+	cache      *cache.QueryCache
+	errorCache *cache.ErrorCache
+	lqueue     *cache.LQueue
 }
 
 // NewHandler returns a new DNSHandler
 func NewHandler() *DNSHandler {
 	return &DNSHandler{
 		NewResolver(),
-		NewQueryCache(Config.Maxcount),
-		NewErrorCache(Config.Maxcount, Config.Expire),
-		NewLookupQueue(),
+		cache.NewQueryCache(Config.Maxcount, Config.RateLimit),
+		cache.NewErrorCache(Config.Maxcount, Config.Expire),
+		cache.NewLookupQueue(),
 	}
 }
 
@@ -109,7 +110,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	log.Debug("Lookup", "query", formatQuestion(q), "dsreq", dsReq)
 
-	key := keyGen(q)
+	key := cache.Hash(q)
 
 	h.lqueue.Wait(key)
 
@@ -289,7 +290,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 		q := cnameReq.Question[0]
 		child := false
 
-		key := keyGen(q)
+		key := cache.Hash(q)
 		respCname, _, err := h.cache.Get(key, cnameReq)
 		if err == nil {
 			for _, r := range respCname.Answer {
