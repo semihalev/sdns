@@ -650,6 +650,10 @@ func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
 		}
 	}
 
+	if len(dsset) == 0 {
+		panic("root zone dsset empty")
+	}
+
 	return
 }
 

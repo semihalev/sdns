@@ -95,7 +95,6 @@ func configSetup(test bool) {
 
 	if len(Config.RootKeys) > 0 {
 		rootkeys = []dns.RR{}
-
 		for _, k := range Config.RootKeys {
 			rr, err := dns.NewRR(k)
 			if err != nil {
