@@ -79,7 +79,7 @@ $ go test -v
 
 * Linux/BSD/Darwin/Windows supported
 * DNS RFC compatibility
-* Concurrent DNS lookups within listed servers
+* DNS lookups within listed servers
 * DNS caching
 * DNSSEC validation
 * DNS over TLS support
@@ -101,7 +101,7 @@ $ go test -v
 - [x] Full DNSSEC support
 - [x] RTT optimization
 - [x] Access list
-- [ ] Periodic priming queries described at RFC 8109
+- [x] Periodic priming queries described at RFC 8109
 - [ ] Full IPv6 support (server<->server communication)
 - [ ] ~~Client based ratelimit~~
 

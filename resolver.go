@@ -90,17 +90,23 @@ func init() {
 
 // NewResolver return a resolver
 func NewResolver() *Resolver {
-	return &Resolver{
+	r := &Resolver{
 		config:   &dns.ClientConfig{},
 		nsCache:  cache.NewNSCache(Config.Maxcount),
 		rCache:   cache.NewQueryCache(Config.Maxcount, Config.RateLimit),
 		errCache: cache.NewErrorCache(Config.Maxcount, Config.Expire),
 		lqueue:   cache.NewLookupQueue(),
 	}
+
+	r.checkPriming()
+
+	go r.run()
+
+	return r
 }
 
 // Resolve will try find nameservers recursively
-func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (*dns.Msg, error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	if root && req.Question[0].Qtype != dns.TypeDS {
@@ -221,11 +227,14 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 		}
 
 		resp.Ns = []dns.RR{}
-		resp.Extra = []dns.RR{}
 
-		opt := req.IsEdns0()
-		if opt != nil {
-			resp.Extra = append(resp.Extra, opt)
+		if len(extra) == 0 {
+			resp.Extra = []dns.RR{}
+
+			opt := req.IsEdns0()
+			if opt != nil {
+				resp.Extra = append(resp.Extra, opt)
+			}
 		}
 
 		return resp, nil
@@ -809,4 +818,64 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	log.Debug("DNSSEC verified", "signer", signer, "signed", signed, "query", formatQuestion(resp.Question[0]))
 
 	return true, nil
+}
+
+func (r *Resolver) checkPriming() error {
+	req := new(dns.Msg)
+	req.SetQuestion(rootzone, dns.TypeNS)
+	req.SetEdns0(DefaultMsgSize, true)
+	req.RecursionDesired = true
+
+	resp, err := r.Resolve("udp", req, rootservers, true, 5, 0, false, nil, true)
+	if err != nil {
+		log.Crit("root servers update failed", "error", err.Error())
+
+		return err
+	}
+
+	if len(resp.Extra) > 0 {
+		var tmpservers, tmp6servers []*cache.AuthServer
+
+		for _, r := range resp.Extra {
+			if r.Header().Rrtype == dns.TypeA {
+				if v4, ok := r.(*dns.A); ok {
+					host := net.JoinHostPort(v4.A.String(), "53")
+					tmpservers = append(tmpservers, cache.NewAuthServer(host))
+				}
+			}
+
+			if r.Header().Rrtype == dns.TypeAAAA {
+				if v6, ok := r.(*dns.AAAA); ok {
+					host := net.JoinHostPort(v6.AAAA.String(), "53")
+					tmp6servers = append(tmp6servers, cache.NewAuthServer(host))
+				}
+			}
+		}
+
+		if len(tmpservers) > 0 {
+			rootservers = tmpservers
+		}
+
+		if len(tmp6servers) > 0 {
+			root6servers = tmp6servers
+		}
+
+		if len(tmpservers) > 0 || len(tmp6servers) > 0 {
+			log.Info("Good! root servers update successful")
+
+			return nil
+		}
+	}
+
+	log.Error("root servers update failed", "error", "no records found")
+
+	return errors.New("no records found")
+}
+
+func (r *Resolver) run() {
+	ticker := time.NewTicker(time.Hour)
+
+	for range ticker.C {
+		r.checkPriming()
+	}
 }
