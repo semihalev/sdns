@@ -43,16 +43,16 @@ $ go test -v
 
 | Key        | Desc           | 
 | ------------- |-------------| 
-| version | version this config was generated from |
-| blocklists | list of remote blocklists |
-| blocklistdir | list of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
-| loglevel | what kind of information should be logged, Log verbosity level crit,error,warn,info,debug|
-| bind | address to bind to for the DNS server. Default :53|
-| bindtls | address to bind to for the DNS-over-TLS server. Default :853|
-| binddoh | address to bind to for the DNS-over-HTTPS server. Default :8053|
-| tlscertificate | tls certificate file path|
-| tlsprivatekey | ls private key file path|
-| outboundips | outbound ip addresses, if you set multiple, sdns can use random outbound ip address |
+| version | Config version |
+| blocklists | List of remote blocklists |
+| blocklistdir | List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
+| loglevel | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug|
+| bind | Address to bind to for the DNS server. Default :53|
+| bindtls | Address to bind to for the DNS-over-TLS server. Default :853|
+| binddoh | Address to bind to for the DNS-over-HTTPS server. Default :8053|
+| tlscertificate | TLS certificate file path|
+| tlsprivatekey | TLS private key file path|
+| outboundips | Outbound ip addresses, if you set multiple, sdns can use random outbound ip address |
 | rootservers | DNS Root servers |
 | root6servers | DNS Root IPv6 servers |
 | rootkeys | DNS Root keys for dnssec |
@@ -61,10 +61,9 @@ $ go test -v
 | nullroute | IPv4 address to forward blocked queries to |
 | nullroutev6 | IPv6 address to forward blocked queries to |
 | accesslist | Which clients allowed to make queries |
-| interval | Concurrency interval for lookups in miliseconds. Default: 200 |
-| timeout | Query timeout for dns lookups in seconds. Default: 5 |
-| connecttimeout | Connect timeout for dns lookups in seconds. Default: 2 |
-| expire | Default cache entry lifespan in seconds. Default: 600 |
+| timeout | Query timeout for dns lookups in duration Default: 5s |
+| connecttimeout | Connect timeout for dns lookups in duration Default: 2s |
+| expire | Default cache TTL in seconds Default: 600 |
 | maxcount | Cache capacity, 0 for infinite. Default: 0 |
 | maxdepth | Maximum recursion depth for nameservers. Default: 30 |
 | ratelimit | Query based ratelimit per second, 0 for disable. Default: 30 |

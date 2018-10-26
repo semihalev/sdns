@@ -52,7 +52,7 @@ func (d *duration) UnmarshalText(text []byte) error {
 	return err
 }
 
-var defaultConfig = `# version this config was generated from
+var defaultConfig = `
 version = "%s"
 
 # list of remote blocklists
@@ -153,12 +153,12 @@ accesslist = [
 ]
 
 # query timeout for dns lookups in duration
-timeout = "2s"
+timeout = "5s"
 
 # connect timeout for dns lookups in duration
-connecttimeout = "1s"
+connecttimeout = "2s"
 
-# default cache entry lifespan in seconds
+# default cache TTL in seconds
 expire = 600
 
 # cache capacity, 0 for infinite

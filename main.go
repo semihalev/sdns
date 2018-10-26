@@ -104,6 +104,14 @@ func configSetup(test bool) {
 			rootkeys = append(rootkeys, rr)
 		}
 	}
+
+	if Config.Timeout.Duration < 250*time.Millisecond {
+		Config.Timeout.Duration = 250 * time.Millisecond
+	}
+
+	if Config.ConnectTimeout.Duration < 250*time.Millisecond {
+		Config.ConnectTimeout.Duration = 250 * time.Millisecond
+	}
 }
 
 func fetchBlocklists() {
