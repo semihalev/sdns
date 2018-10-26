@@ -526,13 +526,18 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 
 	resp, server.RTT, err = c.Exchange(req, server.Host)
 	if err != nil && err != dns.ErrTruncated {
+		if strings.Contains(err.Error(), "no route to host") && c.Net == "udp" {
+			c.Net = "tcp"
+			return r.exchange(server, req, c)
+		}
+
 		server.RTT = time.Hour
 		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
 
 		return nil, err
 	}
 
-	if resp != nil && resp.Rcode == dns.RcodeFormatError {
+	if resp != nil && resp.Rcode == dns.RcodeFormatError && c.Net == "udp" {
 		// try again without edns tags
 		req = clearOPT(req)
 		return r.exchange(server, req, c)
