@@ -19,7 +19,7 @@ func Test_ErrorCache(t *testing.T) {
 
 	err = cache.Set("test2.com")
 	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "cache full")
+	assert.Equal(t, err.Error(), "capacity full")
 
 	err = cache.Get(testDomain)
 	assert.NoError(t, err)
@@ -44,4 +44,13 @@ func Test_ErrorCache(t *testing.T) {
 	assert.NoError(t, err)
 
 	cache.Remove(testDomain)
+	assert.Equal(t, cache.Length(), 0)
+
+	err = cache.Set(testDomain)
+	assert.NoError(t, err)
+
+	fakeClock.Advance(10 * time.Second)
+	cache.clear()
+	assert.Equal(t, cache.Length(), 0)
+
 }

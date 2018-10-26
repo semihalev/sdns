@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestBlockCache(t *testing.T) {
+func Test_BlockCache(t *testing.T) {
 	const (
 		testDomain = "www.google.com."
 	)

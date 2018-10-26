@@ -1,64 +1,46 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
 
 	rl "github.com/bsm/ratelimit"
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 )
 
-// KeyNotFound type
-type KeyNotFound struct {
-	key string
-}
+// Query represents a cache entry
+type Query struct {
+	Msg        *dns.Msg
+	RateLimit  *rl.RateLimiter
+	UpdateTime time.Time
 
-// Error formats an error for the KeyNotFound type
-func (e KeyNotFound) Error() string {
-	return "cache miss"
-}
-
-// KeyExpired type
-type KeyExpired struct {
-	Key string
-}
-
-// Error formats an error for the KeyExpired type
-func (e KeyExpired) Error() string {
-	return "cache expired"
-}
-
-// CacheIsFull type
-type CacheIsFull struct {
-}
-
-// Error formats an error for the CacheIsFull type
-func (e CacheIsFull) Error() string {
-	return "cache full"
-}
-
-// Mesg represents a cache entry
-type Mesg struct {
-	Msg            *dns.Msg
-	RateLimit      *rl.RateLimiter
-	LastUpdateTime time.Time
+	mu sync.Mutex
 }
 
 // QueryCache type
 type QueryCache struct {
 	mu sync.RWMutex
 
-	Backend  map[string]*Mesg
-	Maxcount int
+	m   map[string]*Query
+	max int
 }
+
+var (
+	// ErrCacheNotFound error
+	ErrCacheNotFound = errors.New("cache not found")
+	// ErrCacheExpired error
+	ErrCacheExpired = errors.New("cache expired")
+	// ErrCapacityFull error
+	ErrCapacityFull = errors.New("capacity full")
+)
 
 // NewQueryCache return new cache
 func NewQueryCache(maxcount int) *QueryCache {
 	c := &QueryCache{
-		Backend:  make(map[string]*Mesg, maxcount),
-		Maxcount: maxcount,
+		m:   make(map[string]*Query, maxcount),
+		max: maxcount,
 	}
 
 	go c.run()
@@ -71,44 +53,47 @@ func (c *QueryCache) Get(key string) (*dns.Msg, *rl.RateLimiter, error) {
 	key = strings.ToLower(key)
 
 	c.mu.RLock()
-	mesg, ok := c.Backend[key]
+	query, ok := c.m[key]
 	c.mu.RUnlock()
 
 	if !ok {
-		log.Debug("Cache miss", "key", key)
-		return nil, nil, KeyNotFound{key}
+		return nil, nil, ErrCacheNotFound
 	}
 
-	if mesg.Msg == nil {
+	if query.Msg == nil {
 		c.Remove(key)
-		return nil, nil, KeyNotFound{key}
+		return nil, nil, ErrCacheNotFound
 	}
 
 	//Truncate time to the second, so that subsecond queries won't keep moving
 	//forward the last update time without touching the TTL
-	now := WallClock.Now().Truncate(time.Second)
-	elapsed := uint32(now.Sub(mesg.LastUpdateTime).Seconds())
-	mesg.LastUpdateTime = now
+	query.mu.Lock()
 
-	for _, answer := range mesg.Msg.Answer {
+	now := WallClock.Now().Truncate(time.Second)
+	elapsed := uint32(now.Sub(query.UpdateTime).Seconds())
+	query.UpdateTime = now
+
+	for _, answer := range query.Msg.Answer {
 		if elapsed > answer.Header().Ttl {
-			log.Debug("Cache expired", "key", key)
+			query.mu.Unlock()
 			c.Remove(key)
-			return nil, nil, KeyExpired{key}
+			return nil, nil, ErrCacheExpired
 		}
 		answer.Header().Ttl -= elapsed
 	}
 
-	for _, ns := range mesg.Msg.Ns {
+	for _, ns := range query.Msg.Ns {
 		if elapsed > ns.Header().Ttl {
-			log.Debug("Cache expired", "key", key)
+			query.mu.Unlock()
 			c.Remove(key)
-			return nil, nil, KeyExpired{key}
+			return nil, nil, ErrCacheExpired
 		}
 		ns.Header().Ttl -= elapsed
 	}
 
-	return mesg.Msg, mesg.RateLimit, nil
+	query.mu.Unlock()
+
+	return query.Msg, query.RateLimit, nil
 }
 
 // Set sets a keys value to a Mesg
@@ -116,12 +101,15 @@ func (c *QueryCache) Set(key string, msg *dns.Msg) error {
 	key = strings.ToLower(key)
 
 	if c.Full() && !c.Exists(key) {
-		return CacheIsFull{}
+		return ErrCapacityFull
 	}
 
-	mesg := Mesg{msg, rl.New(Config.RateLimit, time.Second), WallClock.Now().Truncate(time.Second)}
 	c.mu.Lock()
-	c.Backend[key] = &mesg
+	c.m[key] = &Query{
+		Msg:        msg,
+		RateLimit:  rl.New(Config.RateLimit, time.Second),
+		UpdateTime: WallClock.Now().Truncate(time.Second),
+	}
 	c.mu.Unlock()
 
 	return nil
@@ -132,7 +120,7 @@ func (c *QueryCache) Remove(key string) {
 	key = strings.ToLower(key)
 
 	c.mu.Lock()
-	delete(c.Backend, key)
+	delete(c.m, key)
 	c.mu.Unlock()
 }
 
@@ -141,7 +129,7 @@ func (c *QueryCache) Exists(key string) bool {
 	key = strings.ToLower(key)
 
 	c.mu.RLock()
-	_, ok := c.Backend[key]
+	_, ok := c.m[key]
 	c.mu.RUnlock()
 	return ok
 }
@@ -150,37 +138,42 @@ func (c *QueryCache) Exists(key string) bool {
 func (c *QueryCache) Length() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return len(c.Backend)
+	return len(c.m)
 }
 
 // Full returns whether or not the cache is full
 func (c *QueryCache) Full() bool {
-	if c.Maxcount == 0 {
+	if c.max == 0 {
 		return false
 	}
-	return c.Length() >= c.Maxcount
+	return c.Length() >= c.max
+}
+
+func (c *QueryCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for key, msg := range c.m {
+		if msg.Msg == nil {
+			delete(c.m, key)
+		}
+
+		now := WallClock.Now().Truncate(time.Second)
+		elapsed := uint32(now.Sub(msg.UpdateTime).Seconds())
+
+		for _, answer := range msg.Msg.Answer {
+			if elapsed > answer.Header().Ttl {
+				delete(c.m, key)
+				break
+			}
+		}
+	}
 }
 
 func (c *QueryCache) run() {
 	ticker := time.NewTicker(time.Hour)
 
 	for range ticker.C {
-		c.mu.Lock()
-		for key, mesg := range c.Backend {
-			if mesg.Msg == nil {
-				delete(c.Backend, key)
-			}
-
-			now := WallClock.Now().Truncate(time.Second)
-			elapsed := uint32(now.Sub(mesg.LastUpdateTime).Seconds())
-
-			for _, answer := range mesg.Msg.Answer {
-				if elapsed > answer.Header().Ttl {
-					delete(c.Backend, key)
-					break
-				}
-			}
-		}
-		c.mu.Unlock()
+		c.clear()
 	}
 }

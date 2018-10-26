@@ -19,7 +19,7 @@ func Test_NameServerCache(t *testing.T) {
 
 	err = cache.Set("test2.com", nil, 5, nil)
 	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "cache full")
+	assert.Equal(t, err.Error(), "capacity full")
 
 	_, err = cache.Get(testDomain)
 	assert.NoError(t, err)

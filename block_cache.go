@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"sync"
 )
@@ -21,7 +22,7 @@ func (c *BlockCache) Get(key string) (bool, error) {
 	val, ok := c.Backend[key]
 
 	if !ok {
-		return false, KeyNotFound{key}
+		return false, errors.New("block not found")
 	}
 
 	return val, nil

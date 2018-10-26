@@ -14,7 +14,7 @@ func makeCache(maxcount int) *QueryCache {
 	return NewQueryCache(maxcount)
 }
 
-func TestCache(t *testing.T) {
+func Test_Cache(t *testing.T) {
 	const (
 		testDomain  = "www.google.com"
 		test2Domain = "google.com"
@@ -40,7 +40,7 @@ func TestCache(t *testing.T) {
 	m2.SetQuestion(dns.Fqdn(test2Domain), dns.TypeA)
 	err := cache.Set(test2Domain, m2)
 	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "cache full")
+	assert.Equal(t, err.Error(), "capacity full")
 
 	cache.Remove(testDomain)
 
@@ -51,7 +51,7 @@ func TestCache(t *testing.T) {
 	assert.Equal(t, cache.Exists(testDomain), false)
 }
 
-func TestCacheTtl(t *testing.T) {
+func Test_CacheTTL(t *testing.T) {
 	const (
 		testDomain = "www.google.com"
 	)
@@ -177,20 +177,20 @@ func TestCacheTtl(t *testing.T) {
 
 	// accessing an expired key will return KeyExpired error
 	_, _, err = cache.Get(testDomain)
-	if _, ok := err.(KeyExpired); !ok {
+	if err != nil && err != ErrCacheExpired {
 		t.Error(err)
 	}
 	assert.Equal(t, err.Error(), "cache expired")
 
 	// accessing an expired key will remove it from the cache
 	_, _, err = cache.Get(testDomain)
-	if _, ok := err.(KeyNotFound); !ok {
+	if err != nil && err != ErrCacheNotFound {
 		t.Error("cache entry still existed after expiring - ", err)
 	}
-	assert.Equal(t, err.Error(), "cache miss")
+	assert.Equal(t, err.Error(), "cache not found")
 }
 
-func TestCacheTtlFrequentPolling(t *testing.T) {
+func Test_CacheTTLFrequentPolling(t *testing.T) {
 	const (
 		testDomain = "www.google.com"
 	)
@@ -254,7 +254,19 @@ func TestCacheTtlFrequentPolling(t *testing.T) {
 	fakeClock.Advance(1 * time.Second)
 
 	_, _, err = cache.Get(testDomain)
-	if _, ok := err.(KeyExpired); !ok {
+	if err != nil && err != ErrCacheExpired {
 		t.Error(err)
+	}
+
+	if err := cache.Set(testDomain, m); err != nil {
+		t.Error(err)
+	}
+
+	fakeClock.Advance(10 * time.Second)
+
+	cache.clear()
+
+	if cache.Length() != 0 {
+		t.Error("cache should be clear")
 	}
 }

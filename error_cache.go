@@ -12,17 +12,17 @@ import (
 type ErrorCache struct {
 	mu sync.RWMutex
 
-	TTL      uint32
-	Backend  map[string]time.Time
-	Maxcount int
+	ttl uint32
+	m   map[string]time.Time
+	max int
 }
 
 // NewErrorCache return new cache
 func NewErrorCache(maxcount int, ttl uint32) *ErrorCache {
 	c := &ErrorCache{
-		Backend:  make(map[string]time.Time, maxcount),
-		Maxcount: maxcount,
-		TTL:      ttl,
+		m:   make(map[string]time.Time, maxcount),
+		max: maxcount,
+		ttl: ttl,
 	}
 
 	go c.run()
@@ -35,12 +35,12 @@ func (c *ErrorCache) Get(key string) error {
 	key = strings.ToLower(key)
 
 	c.mu.RLock()
-	t, ok := c.Backend[key]
+	t, ok := c.m[key]
 	c.mu.RUnlock()
 
 	if !ok {
 		log.Debug("Error cache miss", "key", key)
-		return KeyNotFound{key}
+		return ErrCacheNotFound
 	}
 
 	//Truncate time to the second, so that subsecond queries won't keep moving
@@ -48,10 +48,10 @@ func (c *ErrorCache) Get(key string) error {
 	now := WallClock.Now().Truncate(time.Second)
 	elapsed := uint32(now.Sub(t).Seconds())
 
-	if elapsed > c.TTL {
+	if elapsed > c.ttl {
 		log.Debug("Error cache expired", "key", key)
 		c.Remove(key)
-		return KeyExpired{key}
+		return ErrCacheExpired
 	}
 
 	return nil
@@ -62,11 +62,11 @@ func (c *ErrorCache) Set(key string) error {
 	key = strings.ToLower(key)
 
 	if c.Full() && !c.Exists(key) {
-		return CacheIsFull{}
+		return ErrCapacityFull
 	}
 
 	c.mu.Lock()
-	c.Backend[key] = WallClock.Now().Truncate(time.Second)
+	c.m[key] = WallClock.Now().Truncate(time.Second)
 	c.mu.Unlock()
 
 	return nil
@@ -77,7 +77,7 @@ func (c *ErrorCache) Remove(key string) {
 	key = strings.ToLower(key)
 
 	c.mu.Lock()
-	delete(c.Backend, key)
+	delete(c.m, key)
 	c.mu.Unlock()
 }
 
@@ -86,7 +86,7 @@ func (c *ErrorCache) Exists(key string) bool {
 	key = strings.ToLower(key)
 
 	c.mu.RLock()
-	_, ok := c.Backend[key]
+	_, ok := c.m[key]
 	c.mu.RUnlock()
 	return ok
 }
@@ -95,31 +95,36 @@ func (c *ErrorCache) Exists(key string) bool {
 func (c *ErrorCache) Length() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return len(c.Backend)
+	return len(c.m)
 }
 
 // Full returns whether or not the cache is full
 func (c *ErrorCache) Full() bool {
-	if c.Maxcount == 0 {
+	if c.max == 0 {
 		return false
 	}
-	return c.Length() >= c.Maxcount
+	return c.Length() >= c.max
+}
+
+func (c *ErrorCache) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for key, t := range c.m {
+		now := WallClock.Now().Truncate(time.Second)
+		elapsed := uint32(now.Sub(t).Seconds())
+
+		if elapsed > c.ttl {
+			delete(c.m, key)
+			break
+		}
+	}
 }
 
 func (c *ErrorCache) run() {
 	ticker := time.NewTicker(time.Hour)
 
 	for range ticker.C {
-		c.mu.Lock()
-		for key, t := range c.Backend {
-			now := WallClock.Now().Truncate(time.Second)
-			elapsed := uint32(now.Sub(t).Seconds())
-
-			if elapsed > c.TTL {
-				delete(c.Backend, key)
-				break
-			}
-		}
-		c.mu.Unlock()
+		c.clear()
 	}
 }
