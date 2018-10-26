@@ -24,7 +24,6 @@ func TestMain(m *testing.M) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
 	Config.Maxdepth = 30
-	Config.Interval = 1000
 	Config.Timeout = 2
 	Config.Maxdepth = 30
 	Config.Expire = 600

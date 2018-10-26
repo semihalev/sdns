@@ -23,7 +23,7 @@ var (
 	Version = "0.2.1-rc2"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-	ConfigVersion = "0.1.9"
+	ConfigVersion = "0.2.1"
 
 	// ConfigPath returns the configuration path
 	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
@@ -104,10 +104,6 @@ func configSetup(test bool) {
 			}
 			rootkeys = append(rootkeys, rr)
 		}
-	}
-
-	if Config.Interval < 200 {
-		Config.Interval = 200
 	}
 }
 

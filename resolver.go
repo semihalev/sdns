@@ -495,11 +495,6 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer)
 		}
 	}
 
-	ticker := time.NewTicker(time.Duration(Config.Interval) * time.Millisecond)
-	defer func() {
-		ticker.Stop()
-	}()
-
 	sort.Slice(servers, func(i, j int) bool { return servers[i].RTT < servers[j].RTT })
 
 	for index, server := range servers {

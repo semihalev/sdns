@@ -145,7 +145,7 @@ func Test_resolverTimeout(t *testing.T) {
 
 func Test_resolverLoop(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("18.15.89.36.in-addr.arpa.", dns.TypePTR)
+	req.SetQuestion("43.247.250.180.in-addr.arpa.", dns.TypePTR)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	r := NewResolver()

@@ -31,7 +31,6 @@ type config struct {
 	Nullroute       string
 	Nullroutev6     string
 	OutboundIPs     []string
-	Interval        int
 	Timeout         int
 	ConnectTimeout  int
 	Expire          uint32
@@ -142,14 +141,11 @@ accesslist = [
 "::0/0"
 ]
 
-# concurrency interval for lookups in miliseconds, minumum 200ms
-interval = 200
-
 # query timeout for dns lookups in seconds
-timeout = 5
+timeout = 1
 
 # connect timeout for dns lookups in seconds
-connecttimeout = 2
+connecttimeout = 1
 
 # default cache entry lifespan in seconds
 expire = 600
