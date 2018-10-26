@@ -36,11 +36,11 @@ func TestMain(m *testing.M) {
 	Config.BindDOH = ""
 	Config.API = ""
 
-	accessList = cidranger.NewPCTrieRanger()
+	AccessList = cidranger.NewPCTrieRanger()
 	_, ipnet, _ := net.ParseCIDR("0.0.0.0/0")
-	accessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
+	AccessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
 	_, ipnet, _ = net.ParseCIDR("::0/0")
-	accessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
+	AccessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
 
 	gin.SetMode(gin.TestMode)
 	ginr = gin.New()

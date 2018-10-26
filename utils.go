@@ -124,7 +124,7 @@ func findLocalIPAddresses() ([]string, error) {
 }
 
 func isLocalIP(ip string) (ok bool) {
-	for _, lip := range localIPs {
+	for _, lip := range LocalIPs {
 		if lip == ip {
 			ok = true
 			return

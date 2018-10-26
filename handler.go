@@ -43,7 +43,7 @@ func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
 
 func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	client, _, _ := net.SplitHostPort(h.remoteAddr(w))
-	allowed, _ := accessList.Contains(net.ParseIP(client))
+	allowed, _ := AccessList.Contains(net.ParseIP(client))
 	if !allowed {
 		log.Debug("Client denied to make new query", "client", client, "net", proto)
 		return
@@ -151,7 +151,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA {
-		if blockCache.Exists(q.Name) {
+		if BlockList.Exists(q.Name) {
 			m := new(dns.Msg)
 			m.SetReply(req)
 

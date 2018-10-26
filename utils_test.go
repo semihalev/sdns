@@ -98,12 +98,12 @@ func Test_searchAddr(t *testing.T) {
 
 func Test_findLocalIPAddresses(t *testing.T) {
 	var err error
-	localIPs, err = findLocalIPAddresses()
+	LocalIPs, err = findLocalIPAddresses()
 
 	assert.NoError(t, err)
-	assert.Equal(t, len(localIPs) > 0, true)
+	assert.Equal(t, len(LocalIPs) > 0, true)
 
-	assert.Equal(t, isLocalIP(localIPs[0]), true)
+	assert.Equal(t, isLocalIP(LocalIPs[0]), true)
 
 	assert.Equal(t, isLocalIP("255.255.255.255"), false)
 }

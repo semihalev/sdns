@@ -16,12 +16,6 @@ import (
 )
 
 var (
-	configPath  string
-	forceUpdate bool
-	blockCache  = &BlockCache{Backend: make(map[string]bool)}
-	localIPs    []string
-	accessList  cidranger.Ranger
-
 	// WallClock is the wall clock
 	WallClock = clockwork.NewRealClock()
 
@@ -33,11 +27,21 @@ var (
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "0.1.9"
+
+	// ConfigPath returns the configuration path
+	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
+
+	// LocalIPs returns list of local ip addresses
+	LocalIPs []string
+
+	// AccessList returns created CIDR rangers
+	AccessList cidranger.Ranger
+
+	// BlockList returns BlockCache
+	BlockList = NewBlockCache()
 )
 
 func init() {
-	flag.StringVar(&configPath, "config", "sdns.toml", "location of the config file, if not found it will be generated")
-
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "OPTIONS:")
@@ -85,19 +89,19 @@ func startSDNS() {
 
 	var err error
 
-	localIPs, err = findLocalIPAddresses()
+	LocalIPs, err = findLocalIPAddresses()
 	if err != nil {
 		log.Crit("Local ip addresses failed", "error", err.Error())
 	}
 
-	accessList = cidranger.NewPCTrieRanger()
+	AccessList = cidranger.NewPCTrieRanger()
 	for _, cidr := range Config.AccessList {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
 			log.Crit("Access list parse cidr failed", "error", err.Error())
 		}
 
-		err = accessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
+		err = AccessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
 		if err != nil {
 			log.Crit("Access list insert cidr failed", "error", err.Error())
 		}
@@ -142,7 +146,7 @@ func main() {
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	if err := LoadConfig(configPath); err != nil {
+	if err := LoadConfig(*ConfigPath); err != nil {
 		log.Crit("Config loading failed", "error", err.Error())
 	}
 

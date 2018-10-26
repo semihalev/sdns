@@ -10,11 +10,11 @@ import (
 )
 
 func existsBlock(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"exists": blockCache.Exists(c.Param("key"))})
+	c.JSON(http.StatusOK, gin.H{"exists": BlockList.Exists(c.Param("key"))})
 }
 
 func getBlock(c *gin.Context) {
-	if ok, _ := blockCache.Get(dns.Fqdn(c.Param("key"))); !ok {
+	if ok, _ := BlockList.Get(dns.Fqdn(c.Param("key"))); !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": c.Param("key") + " not found"})
 	} else {
 		c.JSON(http.StatusOK, gin.H{"success": ok})
@@ -22,12 +22,12 @@ func getBlock(c *gin.Context) {
 }
 
 func removeBlock(c *gin.Context) {
-	blockCache.Remove(dns.Fqdn(c.Param("key")))
+	BlockList.Remove(dns.Fqdn(c.Param("key")))
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 func setBlock(c *gin.Context) {
-	blockCache.Set(dns.Fqdn(c.Param("key")), true)
+	BlockList.Set(dns.Fqdn(c.Param("key")), true)
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 

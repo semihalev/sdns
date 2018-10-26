@@ -16,7 +16,7 @@ import (
 
 func (h *DNSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client, _, _ := net.SplitHostPort(r.RemoteAddr)
-	allowed, _ := accessList.Contains(net.ParseIP(client))
+	allowed, _ := AccessList.Contains(net.ParseIP(client))
 	if !allowed {
 		log.Debug("Client denied to make new query", "client", client, "net", "https")
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)

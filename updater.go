@@ -30,7 +30,7 @@ func updateBlocklists(path string) error {
 	}
 
 	for _, entry := range Config.Blocklist {
-		blockCache.Set(dns.Fqdn(entry), true)
+		BlockList.Set(dns.Fqdn(entry), true)
 	}
 
 	fetchBlocklist(path)
@@ -118,7 +118,7 @@ func readBlocklists(dir string) error {
 		return fmt.Errorf("error walking location %s", err)
 	}
 
-	log.Info("Blocked domains loaded", "total", blockCache.Length())
+	log.Info("Blocked domains loaded", "total", BlockList.Length())
 
 	return nil
 }
@@ -141,8 +141,8 @@ func parseHostFile(file *os.File) error {
 
 			line = dns.Fqdn(line)
 
-			if !blockCache.Exists(line) && !whitelist[line] {
-				blockCache.Set(line, true)
+			if !BlockList.Exists(line) && !whitelist[line] {
+				BlockList.Set(line, true)
 			}
 		}
 	}

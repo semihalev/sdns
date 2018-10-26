@@ -13,9 +13,7 @@ func Test_BlockCache(t *testing.T) {
 		testDomain = "www.google.com."
 	)
 
-	cache := &BlockCache{
-		Backend: make(map[string]bool),
-	}
+	cache := NewBlockCache()
 
 	cache.Set(testDomain, true)
 

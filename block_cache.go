@@ -10,7 +10,14 @@ import (
 type BlockCache struct {
 	mu sync.RWMutex
 
-	Backend map[string]bool
+	m map[string]bool
+}
+
+// NewBlockCache returns a new blockcache
+func NewBlockCache() *BlockCache {
+	return &BlockCache{
+		m: make(map[string]bool),
+	}
 }
 
 // Get returns the entry for a key or an error
@@ -19,7 +26,7 @@ func (c *BlockCache) Get(key string) (bool, error) {
 	defer c.mu.RUnlock()
 
 	key = strings.ToLower(key)
-	val, ok := c.Backend[key]
+	val, ok := c.m[key]
 
 	if !ok {
 		return false, errors.New("block not found")
@@ -34,7 +41,7 @@ func (c *BlockCache) Remove(key string) {
 	defer c.mu.Unlock()
 
 	key = strings.ToLower(key)
-	delete(c.Backend, key)
+	delete(c.m, key)
 }
 
 // Set sets a value in the BlockCache
@@ -43,7 +50,7 @@ func (c *BlockCache) Set(key string, value bool) {
 	defer c.mu.Unlock()
 
 	key = strings.ToLower(key)
-	c.Backend[key] = value
+	c.m[key] = value
 }
 
 // Exists returns whether or not a key exists in the cache
@@ -52,7 +59,7 @@ func (c *BlockCache) Exists(key string) bool {
 	defer c.mu.RUnlock()
 
 	key = strings.ToLower(key)
-	_, ok := c.Backend[key]
+	_, ok := c.m[key]
 
 	return ok
 }
@@ -62,5 +69,5 @@ func (c *BlockCache) Length() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return len(c.Backend)
+	return len(c.m)
 }
