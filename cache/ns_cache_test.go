@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_NameServerCache(t *testing.T) {
+func Test_NSCache(t *testing.T) {
 	fakeClock := clockwork.NewFakeClock()
 	WallClock = fakeClock
 
-	cache := NewNameServerCache(1)
+	cache := NewNSCache(1)
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
@@ -49,7 +49,7 @@ func Test_NameServerCache(t *testing.T) {
 	_, err = cache.Get(key)
 	assert.Error(t, err)
 
-	cache = NewNameServerCache(0)
+	cache = NewNSCache(0)
 	err = cache.Set(key, nil, 5, nil)
 	assert.NoError(t, err)
 

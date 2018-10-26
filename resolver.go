@@ -16,7 +16,7 @@ import (
 // Resolver type
 type Resolver struct {
 	config   *dns.ClientConfig
-	nsCache  *cache.NameServerCache
+	nsCache  *cache.NSCache
 	rCache   *cache.QueryCache
 	errCache *cache.ErrorCache
 	lqueue   *cache.LQueue
@@ -92,16 +92,14 @@ func init() {
 func NewResolver() *Resolver {
 	return &Resolver{
 		config:   &dns.ClientConfig{},
-		nsCache:  cache.NewNameServerCache(Config.Maxcount),
+		nsCache:  cache.NewNSCache(Config.Maxcount),
 		rCache:   cache.NewQueryCache(Config.Maxcount, Config.RateLimit),
 		errCache: cache.NewErrorCache(Config.Maxcount, Config.Expire),
 		lqueue:   cache.NewLookupQueue(),
 	}
 }
 
-// Resolve will ask each nameserver in top-to-bottom fashion, starting a new request
-// in every interval, and return as early as possbile (have an answer).
-// It returns an error if no request has succeeded.
+// Resolve will try find nameservers recursively
 func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR) (*dns.Msg, error) {
 	q := req.Question[0]
 
@@ -477,8 +475,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 
 func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer) (resp *dns.Msg, err error) {
 	c := &dns.Client{
-		Net:     Net,
-		UDPSize: dns.DefaultMsgSize,
+		Net: Net,
 		Dialer: &net.Dialer{
 			DualStack:     true,
 			FallbackDelay: 100 * time.Millisecond,
@@ -498,43 +495,6 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer)
 		}
 	}
 
-	q := req.Question[0]
-
-	resCh := make(chan *dns.Msg, len(servers))
-	errCh := make(chan error, len(servers))
-
-	L := func(server *cache.AuthServer, last bool) {
-	tryagain:
-		var resp *dns.Msg
-		var err error
-
-		resp, server.RTT, err = c.Exchange(req, server.Host)
-		if err != nil && err != dns.ErrTruncated {
-			server.RTT = time.Hour
-			log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", Net, "error", err.Error())
-
-			if last {
-				errCh <- err
-			}
-			return
-		}
-
-		if resp != nil && resp.Rcode == dns.RcodeFormatError {
-			// try again without edns tags
-			req = clearOPT(req)
-			goto tryagain
-		}
-
-		if resp != nil && resp.Rcode != dns.RcodeSuccess && !last {
-			log.Debug("Failed to get valid response", "query", formatQuestion(q), "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
-			return
-		}
-
-		log.Debug("Query response", "query", formatQuestion(q), "server", server, "net", Net, "rcode", dns.RcodeToString[resp.Rcode])
-
-		resCh <- resp
-	}
-
 	ticker := time.NewTicker(time.Duration(Config.Interval) * time.Millisecond)
 	defer func() {
 		ticker.Stop()
@@ -542,27 +502,43 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer)
 
 	sort.Slice(servers, func(i, j int) bool { return servers[i].RTT < servers[j].RTT })
 
-	// Start lookup on each nameserver top-down, in interval
 	for index, server := range servers {
-		go L(server, len(servers)-1 == index)
+		resp, err := r.exchange(server, req, c)
+		if err != nil {
+			if len(servers)-1 == index {
+				return resp, err
+			}
 
-		// but exit early, if we have an answer
-		select {
-		case resp = <-resCh:
-			return resp, nil
-		case err = <-errCh:
-			return nil, err
-		case <-ticker.C:
 			continue
 		}
+
+		return resp, err
 	}
 
-	select {
-	case resp = <-resCh:
-		return resp, nil
-	case err = <-errCh:
+	return nil, errors.New("unknown error")
+}
+
+func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Client) (*dns.Msg, error) {
+	q := req.Question[0]
+
+	var resp *dns.Msg
+	var err error
+
+	resp, server.RTT, err = c.Exchange(req, server.Host)
+	if err != nil && err != dns.ErrTruncated {
+		server.RTT = time.Hour
+		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
+
 		return nil, err
 	}
+
+	if resp != nil && resp.Rcode == dns.RcodeFormatError {
+		// try again without edns tags
+		req = clearOPT(req)
+		return r.exchange(server, req, c)
+	}
+
+	return resp, nil
 }
 
 func (r *Resolver) searchCache(q dns.Question) (servers []*cache.AuthServer, parentdsrr []dns.RR) {

@@ -70,7 +70,7 @@ func (h *DNSHandler) handleWireFormat() func(http.ResponseWriter, *http.Request)
 			return
 		}
 
-		msg := h.query("http", req)
+		msg := h.query("https", req)
 
 		packed, err := msg.Pack()
 		if err != nil {
@@ -157,7 +157,7 @@ func (h *DNSHandler) handleJSON() func(http.ResponseWriter, *http.Request) {
 
 		req.Extra = append(req.Extra, opt)
 
-		msg := h.query("http", req)
+		msg := h.query("https", req)
 
 		json, err := json.Marshal(doh.NewMsg(msg))
 		if err != nil {

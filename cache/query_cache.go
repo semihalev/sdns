@@ -83,7 +83,7 @@ func (c *QueryCache) Get(key uint64, req *dns.Msg) (*dns.Msg, *rl.RateLimiter, e
 		ns.Header().Ttl -= elapsed
 	}
 
-	query.mu.Unlock()
+	defer query.mu.Unlock()
 
 	return query.Item.toMsg(req), query.RateLimit, nil
 }

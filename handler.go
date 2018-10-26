@@ -59,7 +59,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	resolverProto := proto
-	if proto == "http" {
+	if proto == "https" {
 		resolverProto = "udp"
 	}
 
@@ -209,7 +209,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	if mesg.Truncated && proto == "udp" {
 		return mesg
-	} else if mesg.Truncated && proto == "http" {
+	} else if mesg.Truncated && proto == "https" {
 		opt.SetDo(dsReq)
 
 		h.lqueue.Done(key)

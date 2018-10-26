@@ -18,17 +18,17 @@ type NS struct {
 	mu sync.Mutex
 }
 
-// NameServerCache type
-type NameServerCache struct {
+// NSCache type
+type NSCache struct {
 	mu sync.RWMutex
 
 	m   map[uint64]*NS
 	max int
 }
 
-// NewNameServerCache return new cache
-func NewNameServerCache(maxcount int) *NameServerCache {
-	c := &NameServerCache{
+// NewNSCache return new cache
+func NewNSCache(maxcount int) *NSCache {
+	c := &NSCache{
 		m:   make(map[uint64]*NS, maxcount),
 		max: maxcount,
 	}
@@ -39,7 +39,7 @@ func NewNameServerCache(maxcount int) *NameServerCache {
 }
 
 // Get returns the entry for a key or an error
-func (c *NameServerCache) Get(key uint64) (*NS, error) {
+func (c *NSCache) Get(key uint64) (*NS, error) {
 	c.mu.RLock()
 	ns, ok := c.m[key]
 	c.mu.RUnlock()
@@ -66,7 +66,7 @@ func (c *NameServerCache) Get(key uint64) (*NS, error) {
 }
 
 // Set sets a keys value to a NS
-func (c *NameServerCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers []*AuthServer) error {
+func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers []*AuthServer) error {
 	if c.Full() && !c.Exists(key) {
 		return ErrCapacityFull
 	}
@@ -85,14 +85,14 @@ func (c *NameServerCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers []*
 }
 
 // Remove removes an entry from the cache
-func (c *NameServerCache) Remove(key uint64) {
+func (c *NSCache) Remove(key uint64) {
 	c.mu.Lock()
 	delete(c.m, key)
 	c.mu.Unlock()
 }
 
 // Exists returns whether or not a key exists in the cache
-func (c *NameServerCache) Exists(key uint64) bool {
+func (c *NSCache) Exists(key uint64) bool {
 	c.mu.RLock()
 	_, ok := c.m[key]
 	c.mu.RUnlock()
@@ -100,21 +100,21 @@ func (c *NameServerCache) Exists(key uint64) bool {
 }
 
 // Length returns the caches length
-func (c *NameServerCache) Length() int {
+func (c *NSCache) Length() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.m)
 }
 
 // Full returns whether or not the cache is full
-func (c *NameServerCache) Full() bool {
+func (c *NSCache) Full() bool {
 	if c.max == 0 {
 		return false
 	}
 	return c.Length() >= c.max
 }
 
-func (c *NameServerCache) clear() {
+func (c *NSCache) clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -129,7 +129,7 @@ func (c *NameServerCache) clear() {
 	}
 }
 
-func (c *NameServerCache) run() {
+func (c *NSCache) run() {
 	ticker := time.NewTicker(time.Hour)
 
 	for range ticker.C {
