@@ -523,6 +523,8 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 	if err != nil && err != dns.ErrTruncated {
 		if strings.Contains(err.Error(), "no route to host") && c.Net == "udp" {
 			c.Net = "tcp"
+			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIPs[0])}
+
 			return r.exchange(server, req, c)
 		}
 
