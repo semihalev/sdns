@@ -31,62 +31,12 @@ var (
 	errResolver             = errors.New("resolv failed")
 	errDSRecords            = errors.New("DS records found on parent zone but no signatures")
 
-	rootzone = "."
-
-	rootservers = []*cache.AuthServer{
-		cache.NewAuthServer("192.5.5.241:53"),
-		cache.NewAuthServer("198.41.0.4:53"),
-		cache.NewAuthServer("192.228.79.201:53"),
-		cache.NewAuthServer("192.33.4.12:53"),
-		cache.NewAuthServer("199.7.91.13:53"),
-		cache.NewAuthServer("192.203.230.10:53"),
-		cache.NewAuthServer("192.112.36.4:53"),
-		cache.NewAuthServer("128.63.2.53:53"),
-		cache.NewAuthServer("192.36.148.17:53"),
-		cache.NewAuthServer("192.58.128.30:53"),
-		cache.NewAuthServer("193.0.14.129:53"),
-		cache.NewAuthServer("199.7.83.42:53"),
-		cache.NewAuthServer("202.12.27.33:53"),
-	}
-
-	root6servers = []*cache.AuthServer{
-		cache.NewAuthServer("[2001:500:2f::f]:53"),
-		cache.NewAuthServer("[2001:503:ba3e::2:30]:53"),
-		cache.NewAuthServer("[2001:500:200::b]:53"),
-		cache.NewAuthServer("[2001:500:2::c]:53"),
-		cache.NewAuthServer("[2001:500:2d::d]:53"),
-		cache.NewAuthServer("[2001:500:a8::e]:53"),
-		cache.NewAuthServer("[2001:500:12::d0d]:53"),
-		cache.NewAuthServer("[2001:500:1::53]:53"),
-		cache.NewAuthServer("[2001:7fe::53]:53"),
-		cache.NewAuthServer("[2001:503:c27::2:30]:53"),
-		cache.NewAuthServer("[2001:7fd::1]:53"),
-		cache.NewAuthServer("[2001:500:9f::42]:53"),
-		cache.NewAuthServer("[2001:dc3::35]:53"),
-	}
-
-	initialkeys = []string{
-		".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
-		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
-	}
-
-	fallbackservers = []*cache.AuthServer{
-		cache.NewAuthServer("8.8.8.8:53"),
-		cache.NewAuthServer("8.8.4.4:53"),
-	}
-
-	rootkeys = []dns.RR{}
+	rootzone        = "."
+	rootservers     = []*cache.AuthServer{}
+	root6servers    = []*cache.AuthServer{}
+	fallbackservers = []*cache.AuthServer{}
+	rootkeys        = []dns.RR{}
 )
-
-func init() {
-	for _, k := range initialkeys {
-		rr, err := dns.NewRR(k)
-		if err != nil {
-			panic(err)
-		}
-		rootkeys = append(rootkeys, rr)
-	}
-}
 
 // NewResolver return a resolver
 func NewResolver() *Resolver {
@@ -488,10 +438,10 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer)
 		Dialer: &net.Dialer{
 			DualStack:     true,
 			FallbackDelay: 100 * time.Millisecond,
-			Timeout:       time.Duration(Config.ConnectTimeout) * time.Second,
+			Timeout:       Config.ConnectTimeout.Duration,
 		},
-		ReadTimeout:  time.Duration(Config.Timeout) * time.Second,
-		WriteTimeout: time.Duration(Config.Timeout) * time.Second,
+		ReadTimeout:  Config.Timeout.Duration,
+		WriteTimeout: Config.Timeout.Duration,
 	}
 
 	if len(Config.OutboundIPs) > 0 {
@@ -655,7 +605,9 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
 	if err != nil {
 		//try fallback servers
-		nsres, err = r.lookup(Net, nsReq, fallbackservers)
+		if len(fallbackservers) > 0 {
+			nsres, err = r.lookup(Net, nsReq, fallbackservers)
+		}
 	}
 
 	if err != nil {
@@ -671,10 +623,12 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 
 	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
 		//try fallback servers
-		nsres, err = r.lookup(Net, nsReq, fallbackservers)
-		if err != nil {
-			r.errCache.Set(key)
-			return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", ns, err)
+		if len(fallbackservers) > 0 {
+			nsres, err = r.lookup(Net, nsReq, fallbackservers)
+			if err != nil {
+				r.errCache.Set(key)
+				return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", ns, err)
+			}
 		}
 	}
 

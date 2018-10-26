@@ -62,7 +62,7 @@ func configSetup(test bool) {
 		Config.BindDOH = ""
 		Config.API = "127.0.0.1:11111"
 		Config.LogLevel = "crit"
-		Config.Timeout = 15
+		Config.Timeout.Duration = time.Second
 	}
 
 	lvl, err := log.LvlFromString(Config.LogLevel)
@@ -94,10 +94,9 @@ func configSetup(test bool) {
 	}
 
 	if len(Config.RootKeys) > 0 {
-		initialkeys = Config.RootKeys
 		rootkeys = []dns.RR{}
 
-		for _, k := range initialkeys {
+		for _, k := range Config.RootKeys {
 			rr, err := dns.NewRR(k)
 			if err != nil {
 				log.Crit("Root keys invalid", "error", err.Error())

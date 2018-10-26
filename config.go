@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/semihalev/log"
@@ -31,14 +32,24 @@ type config struct {
 	Nullroute       string
 	Nullroutev6     string
 	OutboundIPs     []string
-	Timeout         int
-	ConnectTimeout  int
+	Timeout         duration
+	ConnectTimeout  duration
 	Expire          uint32
 	Maxcount        int
 	Maxdepth        int
 	RateLimit       int
 	Blocklist       []string
 	Whitelist       []string
+}
+
+type duration struct {
+	time.Duration
+}
+
+func (d *duration) UnmarshalText(text []byte) error {
+	var err error
+	d.Duration, err = time.ParseDuration(string(text))
+	return err
 }
 
 var defaultConfig = `# version this config was generated from
@@ -141,11 +152,11 @@ accesslist = [
 "::0/0"
 ]
 
-# query timeout for dns lookups in seconds
-timeout = 1
+# query timeout for dns lookups in duration
+timeout = "750ms"
 
-# connect timeout for dns lookups in seconds
-connecttimeout = 1
+# connect timeout for dns lookups in duration
+connecttimeout = "1s"
 
 # default cache entry lifespan in seconds
 expire = 600
