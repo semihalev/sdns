@@ -111,6 +111,10 @@ func configSetup(test bool) {
 	if Config.ConnectTimeout.Duration < 250*time.Millisecond {
 		Config.ConnectTimeout.Duration = 250 * time.Millisecond
 	}
+
+	if Config.Maxsize < 1024 {
+		Config.Maxsize = 1024
+	}
 }
 
 func fetchBlocklists() {

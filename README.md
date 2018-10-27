@@ -64,7 +64,7 @@ $ go test -v
 | timeout | Query timeout for dns lookups in duration Default: 5s |
 | connecttimeout | Connect timeout for dns lookups in duration Default: 2s |
 | expire | Default cache TTL in seconds Default: 600 |
-| maxcount | Cache capacity, 0 for infinite. Default: 0 |
+| cachesize | Cache size Default: 256000 |
 | maxdepth | Maximum recursion depth for nameservers. Default: 30 |
 | ratelimit | Query based ratelimit per second, 0 for disable. Default: 30 |
 | blocklist | Manual blocklist entries |

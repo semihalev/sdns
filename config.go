@@ -35,7 +35,7 @@ type config struct {
 	Timeout         duration
 	ConnectTimeout  duration
 	Expire          uint32
-	Maxcount        int
+	Maxsize         int
 	Maxdepth        int
 	RateLimit       int
 	Blocklist       []string
@@ -161,8 +161,8 @@ connecttimeout = "2s"
 # default cache TTL in seconds
 expire = 600
 
-# cache capacity, 0 for infinite
-maxcount = 0
+# cache size
+cachesize = 256000
 
 # maximum recursion depth for nameservers
 maxdepth = 30

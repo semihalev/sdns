@@ -29,32 +29,39 @@ type Query struct {
 
 // QueryCache type
 type QueryCache struct {
-	mu sync.RWMutex
-
-	m    map[uint64]*Query
-	max  int
-	rate int
+	shards [shardSize]*shard
+	rate   int
 }
 
 // NewQueryCache return new cache
-func NewQueryCache(maxcount int, ratelimit int) *QueryCache {
+func NewQueryCache(size int, ratelimit int) *QueryCache {
+	ssize := size / shardSize
+	if ssize < 4 {
+		ssize = 4
+	}
+
 	c := &QueryCache{
-		m:    make(map[uint64]*Query, maxcount),
-		max:  maxcount,
 		rate: ratelimit,
 	}
 
-	go c.run()
+	// Initialize all the shards
+	for i := 0; i < shardSize; i++ {
+		c.shards[i] = newShard(ssize)
+	}
 
 	return c
 }
 
 // Get returns the entry for a key or an error
 func (c *QueryCache) Get(key uint64, req *dns.Msg) (*dns.Msg, *rl.RateLimiter, error) {
-	c.mu.RLock()
-	query, ok := c.m[key]
-	c.mu.RUnlock()
+	shard := key & (shardSize - 1)
+	el, ok := c.shards[shard].Get(key)
 
+	if !ok {
+		return nil, nil, ErrCacheNotFound
+	}
+
+	query, ok := el.(*Query)
 	if !ok {
 		return nil, nil, ErrCacheNotFound
 	}
@@ -90,95 +97,32 @@ func (c *QueryCache) Get(key uint64, req *dns.Msg) (*dns.Msg, *rl.RateLimiter, e
 
 // Set sets a keys value to a Mesg
 func (c *QueryCache) Set(key uint64, msg *dns.Msg) error {
-	if c.Full() && !c.Exists(key) {
-		c.evict()
-	}
+	shard := key & (shardSize - 1)
 
-	c.mu.Lock()
-	c.m[key] = &Query{
+	q := &Query{
 		Item:       newItem(msg),
 		RateLimit:  rl.New(c.rate, time.Second),
 		UpdateTime: WallClock.Now().Truncate(time.Second),
 	}
-	c.mu.Unlock()
+
+	c.shards[shard].Set(key, q)
 
 	return nil
 }
 
 // Remove removes an entry from the cache
 func (c *QueryCache) Remove(key uint64) {
-	c.mu.Lock()
-	delete(c.m, key)
-	c.mu.Unlock()
+	shard := key & (shardSize - 1)
+	c.shards[shard].Remove(key)
 }
 
-// Exists returns whether or not a key exists in the cache
-func (c *QueryCache) Exists(key uint64) bool {
-	c.mu.RLock()
-	_, ok := c.m[key]
-	c.mu.RUnlock()
-	return ok
-}
-
-// Length returns the caches length
-func (c *QueryCache) Length() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.m)
-}
-
-// Full returns whether or not the cache is full
-func (c *QueryCache) Full() bool {
-	if c.max == 0 {
-		return false
+// Len returns the caches length
+func (c *QueryCache) Len() int {
+	l := 0
+	for _, s := range c.shards {
+		l += s.Len()
 	}
-
-	return c.Length() >= c.max
-}
-
-func (c *QueryCache) evict() {
-	hasKey := false
-	var key uint64
-
-	c.mu.RLock()
-	for k := range c.m {
-		key = k
-		hasKey = true
-		break
-	}
-	c.mu.RUnlock()
-
-	if !hasKey {
-		// empty cache
-		return
-	}
-
-	c.Remove(key)
-}
-
-func (c *QueryCache) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for key, msg := range c.m {
-		now := WallClock.Now().Truncate(time.Second)
-		elapsed := uint32(now.Sub(msg.UpdateTime).Seconds())
-
-		for _, answer := range msg.Item.Answer {
-			if elapsed >= answer.Header().Ttl {
-				delete(c.m, key)
-				return
-			}
-		}
-	}
-}
-
-func (c *QueryCache) run() {
-	ticker := time.NewTicker(time.Hour)
-
-	for range ticker.C {
-		c.clear()
-	}
+	return l
 }
 
 func newItem(m *dns.Msg) *item {

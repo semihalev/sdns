@@ -14,6 +14,4 @@ var (
 	ErrCacheNotFound = errors.New("cache not found")
 	// ErrCacheExpired error
 	ErrCacheExpired = errors.New("cache expired")
-	// ErrCapacityFull error
-	ErrCapacityFull = errors.New("capacity full")
 )

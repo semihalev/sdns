@@ -29,9 +29,6 @@ func Test_ErrorCache(t *testing.T) {
 	err = cache.Get(key)
 	assert.NoError(t, err)
 
-	ok := cache.Exists(key)
-	assert.Equal(t, ok, true)
-
 	fakeClock.Advance(4 * time.Second)
 	err = cache.Get(key)
 	assert.NoError(t, err)
@@ -49,23 +46,19 @@ func Test_ErrorCache(t *testing.T) {
 	assert.NoError(t, err)
 
 	cache.Remove(key)
-	assert.Equal(t, cache.Length(), 0)
+	assert.Equal(t, cache.Len(), 0)
+}
 
-	err = cache.Set(key)
-	assert.NoError(t, err)
+func Test_ErrorCacheEvict(t *testing.T) {
+	fakeClock := clockwork.NewFakeClock()
+	WallClock = fakeClock
+	cache := NewErrorCache(1024, 5)
 
-	fakeClock.Advance(10 * time.Second)
-	cache.clear()
-	assert.Equal(t, cache.Length(), 0)
+	for i := uint64(0); i < 1024; i++ {
+		cache.Set(i)
+	}
 
-	cache = NewErrorCache(1, 5)
+	cache.Set(1024)
 
-	err = cache.Set(key)
-	assert.NoError(t, err)
-
-	err = cache.Set(Hash(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}))
-	assert.NoError(t, err)
-
-	err = cache.Get(key)
-	assert.Error(t, err)
+	assert.Equal(t, 1024, cache.Len())
 }

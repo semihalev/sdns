@@ -10,12 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeCache(maxcount int) *QueryCache {
-	return NewQueryCache(maxcount, 0)
-}
-
 func Test_Cache(t *testing.T) {
-	cache := makeCache(1)
+	cache := NewQueryCache(1024, 0)
 	WallClock = clockwork.NewFakeClock()
 
 	m := new(dns.Msg)
@@ -30,8 +26,6 @@ func Test_Cache(t *testing.T) {
 	if _, _, err := cache.Get(key, m); err != nil {
 		t.Error(err)
 	}
-
-	assert.Equal(t, cache.Exists(key), true)
 
 	m2 := new(dns.Msg)
 	m2.SetQuestion("test2.com.", dns.TypeA)
@@ -49,8 +43,6 @@ func Test_Cache(t *testing.T) {
 	if _, _, err := cache.Get(Hash(m2.Question[0]), m2); err == nil {
 		t.Error("cache entry still existed after remove")
 	}
-
-	assert.Equal(t, cache.Exists(key), false)
 }
 
 func Test_CacheTTL(t *testing.T) {
@@ -60,7 +52,7 @@ func Test_CacheTTL(t *testing.T) {
 
 	fakeClock := clockwork.NewFakeClock()
 	WallClock = fakeClock
-	cache := makeCache(0)
+	cache := NewQueryCache(1024, 0)
 
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
@@ -205,7 +197,7 @@ func Test_CacheTTLFrequentPolling(t *testing.T) {
 
 	fakeClock := clockwork.NewFakeClock()
 	WallClock = fakeClock
-	cache := makeCache(0)
+	cache := NewQueryCache(1024, 0)
 
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
@@ -270,16 +262,21 @@ func Test_CacheTTLFrequentPolling(t *testing.T) {
 	if err != nil && err != ErrCacheExpired {
 		t.Error(err)
 	}
+}
 
-	if err := cache.Set(key, m); err != nil {
-		t.Error(err)
+func Test_CacheEvict(t *testing.T) {
+	fakeClock := clockwork.NewFakeClock()
+	WallClock = fakeClock
+	cache := NewQueryCache(0, 0)
+
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+
+	for i := uint64(0); i < 1024; i++ {
+		cache.Set(i, m)
 	}
 
-	fakeClock.Advance(10 * time.Second)
+	cache.Set(1024, m)
 
-	cache.clear()
-
-	if cache.Length() != 0 {
-		t.Error("cache should be clear")
-	}
+	assert.Equal(t, 1024, cache.Len())
 }

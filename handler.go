@@ -16,19 +16,13 @@ const (
 
 // DNSHandler type
 type DNSHandler struct {
-	resolver   *Resolver
-	cache      *cache.QueryCache
-	errorCache *cache.ErrorCache
-	lqueue     *cache.LQueue
+	r *Resolver
 }
 
 // NewHandler returns a new DNSHandler
 func NewHandler() *DNSHandler {
 	return &DNSHandler{
-		NewResolver(),
-		cache.NewQueryCache(Config.Maxcount, Config.RateLimit),
-		cache.NewErrorCache(Config.Maxcount, Config.Expire),
-		cache.NewLookupQueue(),
+		r: NewResolver(),
 	}
 }
 
@@ -112,9 +106,9 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	key := cache.Hash(q)
 
-	h.lqueue.Wait(key)
+	h.r.Lqueue.Wait(key)
 
-	mesg, rl, err := h.cache.Get(key, req)
+	mesg, rl, err := h.r.Qcache.Get(key, req)
 	if err == nil {
 		log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
 
@@ -143,7 +137,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		return msg
 	}
 
-	err = h.errorCache.Get(key)
+	err = h.r.Ecache.Get(key)
 	if err == nil {
 		log.Debug("Error cache hit", "key", key, "query", formatQuestion(q))
 
@@ -185,24 +179,21 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 			log.Debug("Found in blocklist", "name", q.Name)
 
-			err := h.cache.Set(key, m)
-			if err != nil {
-				log.Error("Set block cache failed", "query", formatQuestion(q), "error", err.Error())
-			}
+			h.r.Qcache.Set(key, m)
 
 			return m
 		}
 	}
 
-	h.lqueue.Add(key)
-	defer h.lqueue.Done(key)
+	h.r.Lqueue.Add(key)
+	defer h.r.Lqueue.Done(key)
 
 	depth := Config.Maxdepth
-	mesg, err = h.resolver.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)
+	mesg, err = h.r.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
-		h.errorCache.Set(key)
+		h.r.Ecache.Set(key)
 
 		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
@@ -212,7 +203,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	} else if mesg.Truncated && proto == "https" {
 		opt.SetDo(dsReq)
 
-		h.lqueue.Done(key)
+		h.r.Lqueue.Done(key)
 		return h.query("tcp", req)
 	}
 
@@ -234,7 +225,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	if mesg.Rcode != dns.RcodeSuccess &&
 		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
 
-		h.errorCache.Set(key)
+		h.r.Ecache.Set(key)
 
 		return h.handleFailed(req, mesg.Rcode, dsReq)
 	}
@@ -253,11 +244,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	opt.SetDo(dsReq)
 	msg.Extra = append(msg.Extra, opt)
 
-	err = h.cache.Set(key, mesg)
-	if err != nil {
-		log.Error("Set msg failed", "query", formatQuestion(q), "error", err.Error())
-		return msg
-	}
+	h.r.Qcache.Set(key, mesg)
 
 	log.Debug("Set msg into cache", "query", formatQuestion(q))
 	return msg
@@ -291,7 +278,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 		child := false
 
 		key := cache.Hash(q)
-		respCname, _, err := h.cache.Get(key, cnameReq)
+		respCname, _, err := h.r.Qcache.Get(key, cnameReq)
 		if err == nil {
 			for _, r := range respCname.Answer {
 				msg.Answer = append(msg.Answer, dns.Copy(r))
@@ -304,7 +291,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 			}
 		} else {
 			depth := Config.Maxdepth
-			respCname, err := h.resolver.Resolve(proto, cnameReq, rootservers, true, depth, 0, false, nil)
+			respCname, err := h.r.Resolve(proto, cnameReq, rootservers, true, depth, 0, false, nil)
 			if err == nil && len(respCname.Answer) > 0 && respCname.Rcode == dns.RcodeSuccess {
 				for _, r := range respCname.Answer {
 					msg.Answer = append(msg.Answer, dns.Copy(r))
@@ -316,7 +303,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 					}
 				}
 
-				h.cache.Set(key, respCname)
+				h.r.Qcache.Set(key, respCname)
 			}
 		}
 
