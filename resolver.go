@@ -42,7 +42,7 @@ var (
 func NewResolver() *Resolver {
 	r := &Resolver{
 		config:   &dns.ClientConfig{},
-		nsCache:  cache.NewNSCache(Config.Maxcount),
+		nsCache:  cache.NewNSCache(),
 		rCache:   cache.NewQueryCache(Config.Maxcount, Config.RateLimit),
 		errCache: cache.NewErrorCache(Config.Maxcount, Config.Expire),
 		lqueue:   cache.NewLookupQueue(),

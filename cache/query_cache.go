@@ -91,7 +91,7 @@ func (c *QueryCache) Get(key uint64, req *dns.Msg) (*dns.Msg, *rl.RateLimiter, e
 // Set sets a keys value to a Mesg
 func (c *QueryCache) Set(key uint64, msg *dns.Msg) error {
 	if c.Full() && !c.Exists(key) {
-		return ErrCapacityFull
+		c.evict()
 	}
 
 	c.mu.Lock()
@@ -132,7 +132,28 @@ func (c *QueryCache) Full() bool {
 	if c.max == 0 {
 		return false
 	}
+
 	return c.Length() >= c.max
+}
+
+func (c *QueryCache) evict() {
+	hasKey := false
+	var key uint64
+
+	c.mu.RLock()
+	for k := range c.m {
+		key = k
+		hasKey = true
+		break
+	}
+	c.mu.RUnlock()
+
+	if !hasKey {
+		// empty cache
+		return
+	}
+
+	c.Remove(key)
 }
 
 func (c *QueryCache) clear() {

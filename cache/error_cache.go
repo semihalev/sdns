@@ -51,7 +51,7 @@ func (c *ErrorCache) Get(key uint64) error {
 // Set sets a keys value to a error cache
 func (c *ErrorCache) Set(key uint64) error {
 	if c.Full() && !c.Exists(key) {
-		return ErrCapacityFull
+		c.evict()
 	}
 
 	c.mu.Lock()
@@ -89,6 +89,26 @@ func (c *ErrorCache) Full() bool {
 		return false
 	}
 	return c.Length() >= c.max
+}
+
+func (c *ErrorCache) evict() {
+	hasKey := false
+	var key uint64
+
+	c.mu.RLock()
+	for k := range c.m {
+		key = k
+		hasKey = true
+		break
+	}
+	c.mu.RUnlock()
+
+	if !hasKey {
+		// empty cache
+		return
+	}
+
+	c.Remove(key)
 }
 
 func (c *ErrorCache) clear() {

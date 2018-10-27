@@ -36,12 +36,17 @@ func Test_Cache(t *testing.T) {
 	m2 := new(dns.Msg)
 	m2.SetQuestion("test2.com.", dns.TypeA)
 	err := cache.Set(Hash(m2.Question[0]), m2)
-	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "capacity full")
+	assert.NoError(t, err)
 
 	cache.Remove(key)
 
-	if _, _, err := cache.Get(key, m2); err == nil {
+	if _, _, err := cache.Get(key, m); err == nil {
+		t.Error("cache entry still existed after remove")
+	}
+
+	cache.Remove(Hash(m2.Question[0]))
+
+	if _, _, err := cache.Get(Hash(m2.Question[0]), m2); err == nil {
 		t.Error("cache entry still existed after remove")
 	}
 

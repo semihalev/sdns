@@ -26,10 +26,6 @@ func Test_ErrorCache(t *testing.T) {
 	err := cache.Set(key)
 	assert.NoError(t, err)
 
-	err = cache.Set(Hash(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}))
-	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "capacity full")
-
 	err = cache.Get(key)
 	assert.NoError(t, err)
 
@@ -62,4 +58,14 @@ func Test_ErrorCache(t *testing.T) {
 	cache.clear()
 	assert.Equal(t, cache.Length(), 0)
 
+	cache = NewErrorCache(1, 5)
+
+	err = cache.Set(key)
+	assert.NoError(t, err)
+
+	err = cache.Set(Hash(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}))
+	assert.NoError(t, err)
+
+	err = cache.Get(key)
+	assert.Error(t, err)
 }

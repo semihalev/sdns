@@ -13,7 +13,7 @@ func Test_NSCache(t *testing.T) {
 	fakeClock := clockwork.NewFakeClock()
 	WallClock = fakeClock
 
-	cache := NewNSCache(1)
+	cache := NewNSCache()
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
@@ -26,10 +26,6 @@ func Test_NSCache(t *testing.T) {
 
 	err := cache.Set(key, nil, 5, servers)
 	assert.NoError(t, err)
-
-	err = cache.Set(Hash(dns.Question{Name: "test2.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}), nil, 5, servers)
-	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "capacity full")
 
 	_, err = cache.Get(key)
 	assert.NoError(t, err)
@@ -49,7 +45,7 @@ func Test_NSCache(t *testing.T) {
 	_, err = cache.Get(key)
 	assert.Error(t, err)
 
-	cache = NewNSCache(0)
+	cache = NewNSCache()
 	err = cache.Set(key, nil, 5, nil)
 	assert.NoError(t, err)
 

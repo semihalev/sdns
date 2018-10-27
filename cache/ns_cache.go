@@ -22,15 +22,13 @@ type NS struct {
 type NSCache struct {
 	mu sync.RWMutex
 
-	m   map[uint64]*NS
-	max int
+	m map[uint64]*NS
 }
 
 // NewNSCache return new cache
-func NewNSCache(maxcount int) *NSCache {
+func NewNSCache() *NSCache {
 	c := &NSCache{
-		m:   make(map[uint64]*NS, maxcount),
-		max: maxcount,
+		m: make(map[uint64]*NS),
 	}
 
 	go c.run()
@@ -67,10 +65,6 @@ func (c *NSCache) Get(key uint64) (*NS, error) {
 
 // Set sets a keys value to a NS
 func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers []*AuthServer) error {
-	if c.Full() && !c.Exists(key) {
-		return ErrCapacityFull
-	}
-
 	c.mu.Lock()
 	c.m[key] = &NS{
 		Servers:    servers,
@@ -108,10 +102,7 @@ func (c *NSCache) Length() int {
 
 // Full returns whether or not the cache is full
 func (c *NSCache) Full() bool {
-	if c.max == 0 {
-		return false
-	}
-	return c.Length() >= c.max
+	return false
 }
 
 func (c *NSCache) clear() {
