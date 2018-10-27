@@ -324,7 +324,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 
 		if signer == rootzone && len(parentdsrr) == 0 {
 			parentdsrr = r.dsRRFromRootKeys()
-		} else if len(parentdsrr) > 0 {
+		} else if len(parentdsrr) > 0 && req.Question[0].Qtype != dns.TypeDS {
 			dsrr := parentdsrr[0].(*dns.DS)
 			dsname := strings.ToLower(dsrr.Header().Name)
 
