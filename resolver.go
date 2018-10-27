@@ -45,8 +45,8 @@ func NewResolver() *Resolver {
 		config:  &dns.ClientConfig{},
 		nsCache: cache.NewNSCache(),
 
-		Qcache: cache.NewQueryCache(Config.Maxsize, Config.RateLimit),
-		Ecache: cache.NewErrorCache(Config.Maxsize, Config.Expire),
+		Qcache: cache.NewQueryCache(Config.CacheSize, Config.RateLimit),
+		Ecache: cache.NewErrorCache(Config.CacheSize, Config.Expire),
 		Lqueue: cache.NewLookupQueue(),
 	}
 

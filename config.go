@@ -35,7 +35,7 @@ type config struct {
 	Timeout         duration
 	ConnectTimeout  duration
 	Expire          uint32
-	Maxsize         int
+	CacheSize       int
 	Maxdepth        int
 	RateLimit       int
 	Blocklist       []string

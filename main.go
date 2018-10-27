@@ -112,8 +112,8 @@ func configSetup(test bool) {
 		Config.ConnectTimeout.Duration = 250 * time.Millisecond
 	}
 
-	if Config.Maxsize < 1024 {
-		Config.Maxsize = 1024
+	if Config.CacheSize < 1024 {
+		Config.CacheSize = 1024
 	}
 }
 
