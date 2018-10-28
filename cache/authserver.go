@@ -2,6 +2,7 @@ package cache
 
 import (
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,7 +25,7 @@ func NewAuthServer(host string) *AuthServer {
 }
 
 func (a *AuthServer) String() string {
-	return "host:" + a.Host + " " + "rtt:" + a.Rtt.String()
+	return "host:" + a.Host + " " + "rtt:" + a.Rtt.String() + "count" + strconv.Itoa(a.Count)
 }
 
 // AuthServers type
