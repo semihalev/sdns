@@ -30,10 +30,12 @@ func Test_upperName(t *testing.T) {
 }
 
 func Test_randInt(t *testing.T) {
-	val := randInt(0, 10)
-	assert.Equal(t, true, val <= 10)
+	for i := 0; i < 20; i++ {
+		val := randInt(0, 10)
+		assert.Equal(t, true, val < 10)
+	}
 
-	val = randInt(0, 0)
+	val := randInt(0, 0)
 	assert.Equal(t, 0, val)
 }
 

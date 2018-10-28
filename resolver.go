@@ -447,7 +447,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) 
 	}
 
 	if len(Config.OutboundIPs) > 0 {
-		index := randInt(0, len(Config.OutboundIPs)-1)
+		index := randInt(0, len(Config.OutboundIPs))
 
 		if Net == "tcp" {
 			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIPs[index])}

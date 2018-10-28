@@ -23,6 +23,10 @@ var (
 	errMissingSigned          = errors.New("signed records are missing")
 )
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
 func formatQuestion(q dns.Question) string {
 	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
 }
@@ -42,14 +46,11 @@ func randInt(min, max int) int {
 		return min
 	}
 
-	r := newRand()
-	return r.Intn(max-min) + min
+	return rand.Intn(max-min) + min
 }
 
 func shuffleRR(vals []dns.RR) []dns.RR {
-
-	r := newRand()
-	perm := r.Perm(len(vals))
+	perm := rand.Perm(len(vals))
 	ret := make([]dns.RR, len(vals))
 
 	for i, randIndex := range perm {
@@ -60,9 +61,7 @@ func shuffleRR(vals []dns.RR) []dns.RR {
 }
 
 func shuffleStr(vals []string) []string {
-
-	r := newRand()
-	perm := r.Perm(len(vals))
+	perm := rand.Perm(len(vals))
 	ret := make([]string, len(vals))
 
 	for i, randIndex := range perm {
@@ -70,10 +69,6 @@ func shuffleStr(vals []string) []string {
 	}
 
 	return ret
-}
-
-func newRand() *rand.Rand {
-	return rand.New(rand.NewSource(time.Now().Unix()))
 }
 
 func searchAddr(msg *dns.Msg) (addr string, found bool) {
