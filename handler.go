@@ -166,7 +166,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
 
 		if Config.RateLimit > 0 && rl.Limit() {
-			log.Warn("Query rate limited", "qname", q.Name, "qtype", dns.TypeToString[q.Qtype])
+			log.Info("Query rate limited", "query", formatQuestion(q))
 
 			return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 		}

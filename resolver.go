@@ -6,6 +6,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -410,12 +411,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 		}
 
 		//final cache
-		err = r.nsCache.Set(key, parentdsrr, nsrr.Header().Ttl, authservers)
-		if err != nil {
-			log.Error("Set nameserver cache failed", "query", formatQuestion(q), "error", err.Error())
-		} else {
-			log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
-		}
+		r.nsCache.Set(key, parentdsrr, nsrr.Header().Ttl, authservers)
+		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
 
 		if depth <= 0 {
 			return nil, errMaxDepth
@@ -489,10 +486,8 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 
 	rtt := Config.Timeout.Duration
 	defer func() {
-		server.Lock()
-		server.Rtt += rtt
-		server.Count++
-		server.Unlock()
+		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
+		atomic.AddInt64(&server.Count, 1)
 	}()
 
 	resp, rtt, err = c.Exchange(req, server.Host)

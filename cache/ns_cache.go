@@ -64,8 +64,10 @@ func (c *NSCache) Get(key uint64) (*NS, error) {
 }
 
 // Set sets a keys value to a NS
-func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers *AuthServers) error {
+func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers *AuthServers) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.m[key] = &NS{
 		Servers:    servers,
 		Network:    "v4",
@@ -73,9 +75,6 @@ func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers *AuthServer
 		TTL:        ttl,
 		UpdateTime: WallClock.Now().Truncate(time.Second),
 	}
-	c.mu.Unlock()
-
-	return nil
 }
 
 // Remove removes an entry from the cache

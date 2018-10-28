@@ -24,10 +24,9 @@ func Test_NSCache(t *testing.T) {
 
 	servers := &AuthServers{List: []*AuthServer{a}}
 
-	err := cache.Set(key, nil, 5, servers)
-	assert.NoError(t, err)
+	cache.Set(key, nil, 5, servers)
 
-	_, err = cache.Get(key)
+	_, err := cache.Get(key)
 	assert.NoError(t, err)
 
 	ok := cache.Exists(key)
@@ -46,14 +45,12 @@ func Test_NSCache(t *testing.T) {
 	assert.Error(t, err)
 
 	cache = NewNSCache()
-	err = cache.Set(key, nil, 5, nil)
-	assert.NoError(t, err)
+	cache.Set(key, nil, 5, nil)
 
 	cache.Remove(key)
 	assert.Equal(t, cache.Length(), 0)
 
-	err = cache.Set(key, nil, 5, nil)
-	assert.NoError(t, err)
+	cache.Set(key, nil, 5, nil)
 
 	fakeClock.Advance(10 * time.Second)
 	cache.clear()

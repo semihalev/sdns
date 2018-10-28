@@ -9,11 +9,9 @@ import (
 
 // AuthServer type
 type AuthServer struct {
-	sync.Mutex
-
 	Host  string
-	Rtt   time.Duration
-	Count int
+	Rtt   int64
+	Count int64
 }
 
 // NewAuthServer return a server
@@ -28,7 +26,7 @@ func (a *AuthServer) String() string {
 		a.Count = 1
 	}
 
-	return "host:" + a.Host + " rtt:" + (a.Rtt / time.Duration(a.Count)).String()
+	return "host:" + a.Host + " rtt:" + (time.Duration(a.Rtt) / time.Duration(a.Count)).Round(time.Millisecond).String()
 }
 
 // AuthServers type
@@ -48,7 +46,7 @@ func (s *AuthServers) TrySort() {
 		for _, s := range s.List {
 			if s.Count > 0 {
 				// average rtt
-				s.Rtt = s.Rtt / time.Duration(s.Count)
+				s.Rtt = s.Rtt / s.Count
 				s.Count = 1
 			}
 		}

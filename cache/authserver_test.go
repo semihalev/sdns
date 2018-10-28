@@ -2,7 +2,6 @@ package cache
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -12,9 +11,9 @@ func Test_TrySort(t *testing.T) {
 		List: []*AuthServer{NewAuthServer("0.0.0.0:53")},
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := int64(0); i < 100; i++ {
 		s.List[0].Count++
-		s.List[0].Rtt += time.Duration((i + 1) % 20)
+		s.List[0].Rtt += (i + 1) % 20
 		s.TrySort()
 	}
 
