@@ -1,7 +1,5 @@
 package dns
 
-import "unsafe"
-
 // Holds a bunch of helper functions for dealing with labels.
 
 // SplitDomainName splits a name string into it's labels.
@@ -165,11 +163,6 @@ func PrevLabel(s string, n int) (i int, start bool) {
 		return 0, true
 	}
 	return lab[len(lab)-n], false
-}
-
-// ByteSlice2String return string without copied bytes
-func ByteSlice2String(bs []byte) string {
-	return *(*string)(unsafe.Pointer(&bs))
 }
 
 // equal compares a and b while ignoring case. It returns true when equal otherwise false.

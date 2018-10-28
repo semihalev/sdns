@@ -20,6 +20,12 @@
   version = "v1.1.1"
 
 [[projects]]
+  name = "github.com/gin-contrib/pprof"
+  packages = ["."]
+  revision = "cea200e02ddddca4b843d75d32aa13c413549de9"
+  version = "v1.1"
+
+[[projects]]
   branch = "master"
   name = "github.com/gin-contrib/sse"
   packages = ["."]
@@ -103,12 +109,6 @@
   revision = "6475db4d55c621157bb6b6b6c60af9325af35efd"
 
 [[projects]]
-  name = "github.com/semihalev/sdns"
-  packages = ["doh"]
-  revision = "ccb7fcfa132e90b556bc20b0b402cdc071cc2da8"
-  version = "v0.2.0"
-
-[[projects]]
   name = "github.com/stretchr/testify"
   packages = ["assert"]
   revision = "f35b8ab0b5a2cef36673838d662e249dd9c94686"
@@ -177,6 +177,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "7e495e9f2ef1b6119936fa6ea219716d0ec95075b7282050f82671fd049807db"
+  inputs-digest = "45a30b217f7d2a137390a1f65e17fcb2e2c4aa7382ffcc3957c7b338082a4ede"
   solver-name = "gps-cdcl"
   solver-version = 1

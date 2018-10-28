@@ -2,7 +2,9 @@ package main
 
 import (
 	"net/http"
+	"os"
 
+	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -12,6 +14,12 @@ import (
 // API type
 type API struct {
 	host string
+}
+
+var debugpprof bool
+
+func init() {
+	_, debugpprof = os.LookupEnv("SDNS_PPROF")
 }
 
 func existsBlock(c *gin.Context) {
@@ -46,6 +54,10 @@ func (a *API) Run() {
 
 	r := gin.Default()
 	r.Use(cors.Default())
+
+	if debugpprof {
+		pprof.Register(r)
+	}
 
 	block := r.Group("/api/v1/block")
 	{
