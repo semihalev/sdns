@@ -12,7 +12,6 @@ type AuthServer struct {
 func NewAuthServer(host string) *AuthServer {
 	return &AuthServer{
 		Host: host,
-		RTT:  time.Hour, //default untrusted rtt
 	}
 }
 

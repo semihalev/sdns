@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"os"
 	"strconv"
 
 	"github.com/miekg/dns"
@@ -17,6 +18,12 @@ const (
 // DNSHandler type
 type DNSHandler struct {
 	r *Resolver
+}
+
+var debugns bool
+
+func init() {
+	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
 }
 
 // NewHandler returns a new DNSHandler
@@ -100,6 +107,48 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	if q.Name != rootzone && req.RecursionDesired == false {
 		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
+	}
+
+	// debug ns information
+	if debugns && q.Qtype == dns.TypeHINFO {
+		msg := new(dns.Msg)
+		msg.SetReply(req)
+
+		msg.AuthenticatedData = true
+		msg.Authoritative = false
+		msg.RecursionAvailable = true
+
+		if q.Name == rootzone {
+			rrHeader := dns.RR_Header{
+				Name:   q.Name,
+				Rrtype: dns.TypeHINFO,
+				Class:  dns.ClassINET,
+				Ttl:    0,
+			}
+
+			for _, server := range rootservers {
+				hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
+				msg.Ns = append(msg.Ns, hinfo)
+			}
+		} else {
+			nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET})
+			ns, err := h.r.nsCache.Get(nsKey)
+			if err == nil {
+				rrHeader := dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeHINFO,
+					Class:  dns.ClassINET,
+					Ttl:    ns.TTL,
+				}
+
+				for _, server := range ns.Servers {
+					hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
+					msg.Ns = append(msg.Ns, hinfo)
+				}
+			}
+		}
+
+		return msg
 	}
 
 	log.Debug("Lookup", "query", formatQuestion(q), "dsreq", dsReq)

@@ -6,6 +6,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -21,6 +22,8 @@ type Resolver struct {
 	Lqueue *cache.LQueue
 	Qcache *cache.QueryCache
 	Ecache *cache.ErrorCache
+
+	mu sync.RWMutex
 }
 
 var (
@@ -456,7 +459,9 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer)
 		}
 	}
 
+	r.mu.Lock()
 	sort.Slice(servers, func(i, j int) bool { return servers[i].RTT < servers[j].RTT })
+	r.mu.Unlock()
 
 	for index, server := range servers {
 		resp, err := r.exchange(server, req, c)
@@ -491,7 +496,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 			return r.exchange(server, req, c)
 		}
 
-		server.RTT = time.Hour
+		server.RTT = Config.Timeout.Duration
 		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
 
 		return nil, err
