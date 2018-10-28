@@ -143,3 +143,15 @@ func Test_handler(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEqual(t, r.Rcode, dns.RcodeBadVers)
 }
+
+func Test_HandlerHINFO(t *testing.T) {
+	handler := NewHandler()
+
+	m := new(dns.Msg)
+	m.SetQuestion(".", dns.TypeHINFO)
+
+	debugns = true
+	resp := handler.query("udp", m)
+
+	assert.Equal(t, true, len(resp.Ns) > 0)
+}

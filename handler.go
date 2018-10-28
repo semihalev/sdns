@@ -35,17 +35,18 @@ func NewHandler() *DNSHandler {
 
 // TCP begins a tcp query
 func (h *DNSHandler) TCP(w dns.ResponseWriter, req *dns.Msg) {
-	go h.do("tcp", w, req)
+	go h.handle("tcp", w, req)
 }
 
 // UDP begins a udp query
 func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
-	go h.do("udp", w, req)
+	go h.handle("udp", w, req)
 }
 
-func (h *DNSHandler) do(proto string, w dns.ResponseWriter, req *dns.Msg) {
+func (h *DNSHandler) handle(proto string, w dns.ResponseWriter, req *dns.Msg) {
 	client, _, _ := net.SplitHostPort(h.remoteAddr(w))
 	allowed, _ := AccessList.Contains(net.ParseIP(client))
+
 	if !allowed {
 		log.Debug("Client denied to make new query", "client", client, "net", proto)
 		return
@@ -105,10 +106,6 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		return h.handleFailed(req, dns.RcodeNotImplemented, dsReq)
 	}
 
-	if q.Name != rootzone && req.RecursionDesired == false {
-		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
-	}
-
 	// debug ns information
 	if debugns && q.Qtype == dns.TypeHINFO {
 		msg := new(dns.Msg)
@@ -153,6 +150,10 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		}
 
 		return msg
+	}
+
+	if q.Name != rootzone && req.RecursionDesired == false {
+		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
 	log.Debug("Lookup", "query", formatQuestion(q), "dsreq", dsReq)
