@@ -57,6 +57,10 @@
   name = "gopkg.in/gin-contrib/cors.v1"
   version = "1.2.0"
 
+[[constraint]]
+  branch = "master"
+  name = "github.com/gin-contrib/pprof"
+
 [prune]
   go-tests = true
   unused-packages = true

@@ -7,24 +7,39 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Options provides potential route registration configuration options
-type Options struct {
-	// RoutePrefix is an optional path prefix. If left unspecified, `/debug/pprof`
-	// is used as the default path prefix.
-	RoutePrefix string
+const (
+	// DefaultPrefix url prefix of pprof
+	DefaultPrefix = "/debug/pprof"
+)
+
+func getPrefix(prefixOptions ...string) string {
+	prefix := DefaultPrefix
+	if len(prefixOptions) > 0 {
+		prefix = prefixOptions[0]
+	}
+	return prefix
 }
 
 // Register the standard HandlerFuncs from the net/http/pprof package with
-// the provided gin.Engine. opts is a optional. If a `nil` value is passed,
-// the default path prefix is used.
-func Register(r *gin.Engine, opts *Options) {
-	prefix := routePrefix(opts)
-	r.GET(prefix+"/block", pprofHandler(pprof.Index))
-	r.GET(prefix+"/heap", pprofHandler(pprof.Index))
-	r.GET(prefix+"/profile", pprofHandler(pprof.Profile))
-	r.POST(prefix+"/symbol", pprofHandler(pprof.Symbol))
-	r.GET(prefix+"/symbol", pprofHandler(pprof.Symbol))
-	r.GET(prefix+"/trace", pprofHandler(pprof.Trace))
+// the provided gin.Engine. prefixOptions is a optional. If not prefixOptions,
+// the default path prefix is used, otherwise first prefixOptions will be path prefix.
+func Register(r *gin.Engine, prefixOptions ...string) {
+	prefix := getPrefix(prefixOptions...)
+
+	prefixRouter := r.Group(prefix)
+	{
+		prefixRouter.GET("/", pprofHandler(pprof.Index))
+		prefixRouter.GET("/cmdline", pprofHandler(pprof.Cmdline))
+		prefixRouter.GET("/profile", pprofHandler(pprof.Profile))
+		prefixRouter.POST("/symbol", pprofHandler(pprof.Symbol))
+		prefixRouter.GET("/symbol", pprofHandler(pprof.Symbol))
+		prefixRouter.GET("/trace", pprofHandler(pprof.Trace))
+		prefixRouter.GET("/block", pprofHandler(pprof.Handler("block").ServeHTTP))
+		prefixRouter.GET("/goroutine", pprofHandler(pprof.Handler("goroutine").ServeHTTP))
+		prefixRouter.GET("/heap", pprofHandler(pprof.Handler("heap").ServeHTTP))
+		prefixRouter.GET("/mutex", pprofHandler(pprof.Handler("mutex").ServeHTTP))
+		prefixRouter.GET("/threadcreate", pprofHandler(pprof.Handler("threadcreate").ServeHTTP))
+	}
 }
 
 func pprofHandler(h http.HandlerFunc) gin.HandlerFunc {
@@ -32,11 +47,4 @@ func pprofHandler(h http.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		handler.ServeHTTP(c.Writer, c.Request)
 	}
-}
-
-func routePrefix(opts *Options) string {
-	if opts == nil {
-		return "/debug/pprof"
-	}
-	return opts.RoutePrefix
 }
