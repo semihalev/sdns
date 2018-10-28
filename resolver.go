@@ -489,7 +489,10 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 
 	rtt := Config.Timeout.Duration
 	defer func() {
+		server.Lock()
 		server.Rtt += rtt
+		server.Count++
+		server.Unlock()
 	}()
 
 	resp, rtt, err = c.Exchange(req, server.Host)

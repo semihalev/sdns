@@ -3,13 +3,17 @@ package cache
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // AuthServer type
 type AuthServer struct {
-	Host string
-	Rtt  time.Duration
+	sync.Mutex
+
+	Host  string
+	Rtt   time.Duration
+	Count int
 }
 
 // NewAuthServer return a server
@@ -27,20 +31,27 @@ func (a *AuthServer) String() string {
 type AuthServers struct {
 	sync.RWMutex
 
-	used int
-	List []*AuthServer
+	called int32
+	List   []*AuthServer
 }
 
-// TrySort servers sort by Rtt if neccessary
+// TrySort if neccessary sort servers by rtt
 func (s *AuthServers) TrySort() {
-	s.Lock()
-	defer s.Unlock()
+	atomic.AddInt32(&s.called, 1)
 
-	s.used++
-	if s.used%5 == 0 {
+	if atomic.LoadInt32(&s.called)%20 == 0 {
+		s.Lock()
+		for _, s := range s.List {
+			if s.Count > 0 {
+				// average rtt
+				s.Rtt = s.Rtt / time.Duration(s.Count)
+				s.Count = 0
+			}
+		}
 		sort.Slice(s.List, func(i, j int) bool {
-			return s.List[i].Rtt/time.Duration(s.used) < s.List[j].Rtt/time.Duration(s.used)
+			return s.List[i].Rtt < s.List[j].Rtt
 		})
-		s.used = 0
+		s.Unlock()
+		atomic.StoreInt32(&s.called, 0)
 	}
 }
