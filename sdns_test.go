@@ -31,8 +31,8 @@ func TestMain(m *testing.M) {
 	}
 	Config.Maxdepth = 30
 	Config.Expire = 600
-	Config.Timeout.Duration = time.Second
-	Config.ConnectTimeout.Duration = time.Second
+	Config.Timeout.Duration = 2 * time.Second
+	Config.ConnectTimeout.Duration = 2 * time.Second
 	Config.Nullroute = "0.0.0.0"
 	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
 	Config.Bind = ":0"
@@ -81,7 +81,6 @@ func TestMain(m *testing.M) {
 func Test_start(t *testing.T) {
 	configSetup(true)
 	start()
-
 	time.Sleep(2 * time.Second)
 }
 

@@ -49,7 +49,7 @@ func (s *AuthServers) TrySort() {
 			if s.Count > 0 {
 				// average rtt
 				s.Rtt = s.Rtt / time.Duration(s.Count)
-				s.Count = 0
+				s.Count = 1
 			}
 		}
 		sort.Slice(s.List, func(i, j int) bool {
