@@ -240,7 +240,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 		nsCache, err := r.nsCache.Get(key)
 		if err == nil {
 
-			if r.equalSlice(nsCache.Servers, servers) {
+			if r.equalServers(nsCache.Servers, servers) {
 				return nil, errLoopDetection
 			}
 
@@ -458,7 +458,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) 
 
 	servers.Lock()
 	sort.Slice(servers.List, func(i, j int) bool {
-		return servers.List[i].RTT < servers.List[j].RTT
+		return servers.List[i].Rtt < servers.List[j].Rtt
 	})
 	servers.Unlock()
 
@@ -491,7 +491,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 	var resp *dns.Msg
 	var err error
 
-	resp, server.RTT, err = c.Exchange(req, server.Host)
+	resp, server.Rtt, err = c.Exchange(req, server.Host)
 	if err != nil && err != dns.ErrTruncated {
 		if strings.Contains(err.Error(), "no route to host") && c.Net == "udp" {
 			c.Net = "tcp"
@@ -502,7 +502,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 			return r.exchange(server, req, c)
 		}
 
-		server.RTT = Config.Timeout.Duration
+		server.Rtt = Config.Timeout.Duration
 		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
 
 		return nil, err
@@ -512,6 +512,10 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 		// try again without edns tags
 		req = clearOPT(req)
 		return r.exchange(server, req, c)
+	}
+
+	if resp.Rcode != dns.RcodeSuccess {
+		server.Rtt = Config.Timeout.Duration
 	}
 
 	return resp, nil
@@ -789,22 +793,30 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	return true, nil
 }
 
-func (r *Resolver) equalSlice(s1, s2 *cache.AuthServers) bool {
+func (r *Resolver) equalServers(s1, s2 *cache.AuthServers) bool {
+	var list1, list2 []string
+
 	s1.RLock()
-	defer s1.RUnlock()
+	for _, s := range s1.List {
+		list1 = append(list1, s.Host)
+	}
+	s1.RUnlock()
 
 	s2.RLock()
-	defer s2.RUnlock()
+	for _, s := range s2.List {
+		list2 = append(list2, s.Host)
+	}
+	s2.RUnlock()
 
-	if len(s1.List) != len(s2.List) {
+	if len(list1) != len(list2) {
 		return false
 	}
 
-	/*sort.Slice(s1.List, func(i, j int) bool { return s1.List[i].Host < s1.List[j].Host })
-	sort.Slice(s2.List, func(i, j int) bool { return s2.List[i].Host < s2.List[j].Host })*/
+	sort.Strings(list1)
+	sort.Strings(list2)
 
-	for i, v := range s1.List {
-		if s2.List[i].Host != v.Host {
+	for i, v := range list1 {
+		if list2[i] != v {
 			return false
 		}
 	}

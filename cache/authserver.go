@@ -8,7 +8,7 @@ import (
 // AuthServer type
 type AuthServer struct {
 	Host string
-	RTT  time.Duration
+	Rtt  time.Duration
 }
 
 // NewAuthServer return a server
@@ -19,7 +19,7 @@ func NewAuthServer(host string) *AuthServer {
 }
 
 func (a *AuthServer) String() string {
-	return "host:" + a.Host + " " + "rtt:" + a.RTT.String()
+	return "host:" + a.Host + " " + "rtt:" + a.Rtt.String()
 }
 
 // AuthServers type
