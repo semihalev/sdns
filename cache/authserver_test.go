@@ -17,5 +17,5 @@ func Test_TrySort(t *testing.T) {
 		s.TrySort()
 	}
 
-	assert.Equal(t, 1, s.List[0].Count)
+	assert.Equal(t, int64(1), s.List[0].Count)
 }

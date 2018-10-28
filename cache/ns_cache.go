@@ -80,15 +80,17 @@ func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers *AuthServer
 // Remove removes an entry from the cache
 func (c *NSCache) Remove(key uint64) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	delete(c.m, key)
-	c.mu.Unlock()
 }
 
 // Exists returns whether or not a key exists in the cache
 func (c *NSCache) Exists(key uint64) bool {
 	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	_, ok := c.m[key]
-	c.mu.RUnlock()
 	return ok
 }
 
@@ -96,6 +98,7 @@ func (c *NSCache) Exists(key uint64) bool {
 func (c *NSCache) Length() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
 	return len(c.m)
 }
 

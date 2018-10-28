@@ -16,11 +16,11 @@ import (
 
 // Resolver type
 type Resolver struct {
-	config  *dns.ClientConfig
-	nsCache *cache.NSCache
+	config *dns.ClientConfig
 
 	Lqueue *cache.LQueue
 	Qcache *cache.QueryCache
+	Ncache *cache.NSCache
 	Ecache *cache.ErrorCache
 }
 
@@ -43,9 +43,9 @@ var (
 // NewResolver return a resolver
 func NewResolver() *Resolver {
 	r := &Resolver{
-		config:  &dns.ClientConfig{},
-		nsCache: cache.NewNSCache(),
+		config: &dns.ClientConfig{},
 
+		Ncache: cache.NewNSCache(),
 		Qcache: cache.NewQueryCache(Config.CacheSize, Config.RateLimit),
 		Ecache: cache.NewErrorCache(Config.CacheSize, Config.Expire),
 		Lqueue: cache.NewLookupQueue(),
@@ -238,7 +238,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 
 		key := cache.Hash(q)
 
-		nsCache, err := r.nsCache.Get(key)
+		nsCache, err := r.Ncache.Get(key)
 		if err == nil {
 
 			if r.equalServers(nsCache.Servers, servers) {
@@ -262,7 +262,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 				name := strings.ToLower(extra.Header().Name)
 				if nsl && name == strings.ToLower(req.Question[0].Name) && extra.A.String() != "" {
 					resp.Answer = append(resp.Answer, extra)
-					log.Debug("Glue NS addr in extra response", "qname", extra.Header().Name, "A", extra.A.String())
 					return resp, nil
 				}
 
@@ -291,7 +290,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 					authservers.List = append(authservers.List, cache.NewAuthServer(s))
 				}
 
-				r.nsCache.Set(key, nil, nsrr.Header().Ttl, authservers)
+				r.Ncache.Set(key, nil, nsrr.Header().Ttl, authservers)
 			}
 			//non extra rr for some nameservers, try lookup
 			for k, addr := range nsmap {
@@ -411,7 +410,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 		}
 
 		//final cache
-		r.nsCache.Set(key, parentdsrr, nsrr.Header().Ttl, authservers)
+		r.Ncache.Set(key, parentdsrr, nsrr.Header().Ttl, authservers)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
 
 		if depth <= 0 {
@@ -518,7 +517,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 func (r *Resolver) searchCache(q dns.Question) (servers *cache.AuthServers, parentdsrr []dns.RR) {
 	key := cache.Hash(q)
 
-	ns, err := r.nsCache.Get(key)
+	ns, err := r.Ncache.Get(key)
 
 	if err == nil {
 		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))

@@ -128,7 +128,7 @@ func Test_handler(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
 
-	m.SetQuestion(".", dns.TypeSOA)
+	m.SetQuestion(".", dns.TypeNS)
 	m.RecursionDesired = false
 	r, _, err = c.Exchange(m, addrstr)
 	assert.NoError(t, err)

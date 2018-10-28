@@ -134,7 +134,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 			rootservers.RUnlock()
 		} else {
 			nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET})
-			ns, err := h.r.nsCache.Get(nsKey)
+			ns, err := h.r.Ncache.Get(nsKey)
 			if err == nil {
 				rrHeader := dns.RR_Header{
 					Name:   q.Name,
