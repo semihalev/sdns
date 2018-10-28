@@ -790,18 +790,23 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 }
 
 func (r *Resolver) equalSlice(s1, s2 *cache.AuthServers) bool {
-	s1.Lock()
-	defer s1.Unlock()
-
-	s2.Lock()
-	defer s2.Unlock()
-
 	if len(s1.List) != len(s2.List) {
 		return false
 	}
 
+	s1.Lock()
 	sort.Slice(s1.List, func(i, j int) bool { return s1.List[i].Host < s1.List[j].Host })
+	s1.Unlock()
+
+	s2.Lock()
 	sort.Slice(s2.List, func(i, j int) bool { return s2.List[i].Host < s2.List[j].Host })
+	s2.Unlock()
+
+	s1.RLock()
+	defer s1.RUnlock()
+
+	s2.RLock()
+	defer s2.RUnlock()
 
 	for i, v := range s1.List {
 		if s2.List[i].Host != v.Host {
