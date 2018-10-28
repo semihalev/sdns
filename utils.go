@@ -5,12 +5,10 @@ import (
 	"errors"
 	"math/rand"
 	"net"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/cache"
 )
 
 var (
@@ -346,23 +344,6 @@ func checkExponent(key string) bool {
 		// Exponent larger than supported by the crypto package,
 		// empty, or contains prohibited leading zero.
 		return false
-	}
-
-	return true
-}
-
-func equalSlice(s1, s2 []*cache.AuthServer) bool {
-	if len(s1) != len(s2) {
-		return false
-	}
-
-	sort.Slice(s1, func(i, j int) bool { return s1[i].Host < s1[j].Host })
-	sort.Slice(s2, func(i, j int) bool { return s2[i].Host < s2[j].Host })
-
-	for i, v := range s1 {
-		if s2[i].Host != v.Host {
-			return false
-		}
 	}
 
 	return true

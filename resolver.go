@@ -243,7 +243,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 		nsCache, err := r.nsCache.Get(key)
 		if err == nil {
 
-			if equalSlice(nsCache.Servers, servers) {
+			if r.equalSlice(nsCache.Servers, servers) {
 				return nil, errLoopDetection
 			}
 
@@ -460,8 +460,13 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer)
 	}
 
 	r.mu.Lock()
-	sort.Slice(servers, func(i, j int) bool { return servers[i].RTT < servers[j].RTT })
+	sort.Slice(servers, func(i, j int) bool {
+		return servers[i].RTT < servers[j].RTT
+	})
 	r.mu.Unlock()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	for index, server := range servers {
 		resp, err := r.exchange(server, req, c)
@@ -781,6 +786,26 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	log.Debug("DNSSEC verified", "signer", signer, "signed", signed, "query", formatQuestion(resp.Question[0]))
 
 	return true, nil
+}
+
+func (r *Resolver) equalSlice(s1, s2 []*cache.AuthServer) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(s1) != len(s2) {
+		return false
+	}
+
+	sort.Slice(s1, func(i, j int) bool { return s1[i].Host < s1[j].Host })
+	sort.Slice(s2, func(i, j int) bool { return s2[i].Host < s2[j].Host })
+
+	for i, v := range s1 {
+		if s2[i].Host != v.Host {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (r *Resolver) checkPriming() error {
