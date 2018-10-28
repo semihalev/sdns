@@ -73,23 +73,23 @@ func configSetup(test bool) {
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
 
 	if len(Config.RootServers) > 0 {
-		rootservers = []*cache.AuthServer{}
+		rootservers = &cache.AuthServers{}
 		for _, s := range Config.RootServers {
-			rootservers = append(rootservers, cache.NewAuthServer(s))
+			rootservers.List = append(rootservers.List, cache.NewAuthServer(s))
 		}
 	}
 
 	if len(Config.Root6Servers) > 0 {
-		root6servers = []*cache.AuthServer{}
+		root6servers = &cache.AuthServers{}
 		for _, s := range Config.Root6Servers {
-			root6servers = append(root6servers, cache.NewAuthServer(s))
+			root6servers.List = append(root6servers.List, cache.NewAuthServer(s))
 		}
 	}
 
 	if len(Config.FallbackServers) > 0 {
-		fallbackservers = []*cache.AuthServer{}
+		fallbackservers = &cache.AuthServers{}
 		for _, s := range Config.FallbackServers {
-			fallbackservers = append(fallbackservers, cache.NewAuthServer(s))
+			fallbackservers.List = append(fallbackservers.List, cache.NewAuthServer(s))
 		}
 	}
 

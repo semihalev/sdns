@@ -126,10 +126,12 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 				Ttl:    0,
 			}
 
-			for _, server := range rootservers {
+			rootservers.RLock()
+			for _, server := range rootservers.List {
 				hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
 				msg.Ns = append(msg.Ns, hinfo)
 			}
+			rootservers.RUnlock()
 		} else {
 			nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET})
 			ns, err := h.r.nsCache.Get(nsKey)
@@ -141,10 +143,12 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 					Ttl:    ns.TTL,
 				}
 
-				for _, server := range ns.Servers {
+				ns.Servers.RLock()
+				for _, server := range ns.Servers.List {
 					hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
 					msg.Ns = append(msg.Ns, hinfo)
 				}
+				ns.Servers.RUnlock()
 			}
 		}
 

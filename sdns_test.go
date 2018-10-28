@@ -41,9 +41,9 @@ func TestMain(m *testing.M) {
 	Config.API = ""
 
 	if len(Config.RootServers) > 0 {
-		rootservers = []*cache.AuthServer{}
+		rootservers = &cache.AuthServers{}
 		for _, s := range Config.RootServers {
-			rootservers = append(rootservers, cache.NewAuthServer(s))
+			rootservers.List = append(rootservers.List, cache.NewAuthServer(s))
 		}
 	}
 

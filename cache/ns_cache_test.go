@@ -22,7 +22,7 @@ func Test_NSCache(t *testing.T) {
 	a := NewAuthServer("0.0.0.0:53")
 	_ = a.String()
 
-	servers := []*AuthServer{a}
+	servers := &AuthServers{List: []*AuthServer{a}}
 
 	err := cache.Set(key, nil, 5, servers)
 	assert.NoError(t, err)

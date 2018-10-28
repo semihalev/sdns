@@ -1,6 +1,9 @@
 package cache
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // AuthServer type
 type AuthServer struct {
@@ -17,4 +20,11 @@ func NewAuthServer(host string) *AuthServer {
 
 func (a *AuthServer) String() string {
 	return "host:" + a.Host + " " + "rtt:" + a.RTT.String()
+}
+
+// AuthServers type
+type AuthServers struct {
+	sync.RWMutex
+
+	List []*AuthServer
 }

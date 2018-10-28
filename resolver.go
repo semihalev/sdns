@@ -6,7 +6,6 @@ import (
 	"net"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -22,8 +21,6 @@ type Resolver struct {
 	Lqueue *cache.LQueue
 	Qcache *cache.QueryCache
 	Ecache *cache.ErrorCache
-
-	mu sync.RWMutex
 }
 
 var (
@@ -36,9 +33,9 @@ var (
 	errDSRecords            = errors.New("DS records found on parent zone but no signatures")
 
 	rootzone        = "."
-	rootservers     = []*cache.AuthServer{}
-	root6servers    = []*cache.AuthServer{}
-	fallbackservers = []*cache.AuthServer{}
+	rootservers     = &cache.AuthServers{}
+	root6servers    = &cache.AuthServers{}
+	fallbackservers = &cache.AuthServers{}
 	rootkeys        = []dns.RR{}
 )
 
@@ -61,7 +58,7 @@ func NewResolver() *Resolver {
 }
 
 // Resolve will try find nameservers recursively
-func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	if root && req.Question[0].Qtype != dns.TypeDS {
@@ -288,9 +285,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 		if len(nsmap) > len(nservers) {
 			if len(nservers) > 0 {
 				// temprorary cache before lookup
-				authservers := []*cache.AuthServer{}
+				authservers := &cache.AuthServers{}
 				for _, s := range nservers {
-					authservers = append(authservers, cache.NewAuthServer(s))
+					authservers.List = append(authservers.List, cache.NewAuthServer(s))
 				}
 
 				r.nsCache.Set(key, nil, nsrr.Header().Ttl, authservers)
@@ -407,9 +404,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 			}
 		}
 
-		authservers := []*cache.AuthServer{}
+		authservers := &cache.AuthServers{}
 		for _, s := range nservers {
-			authservers = append(authservers, cache.NewAuthServer(s))
+			authservers.List = append(authservers.List, cache.NewAuthServer(s))
 		}
 
 		//final cache
@@ -437,7 +434,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers []*cache.AuthServer
 	return m, nil
 }
 
-func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) (resp *dns.Msg, err error) {
 	c := &dns.Client{
 		Net: Net,
 		Dialer: &net.Dialer{
@@ -459,22 +456,26 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers []*cache.AuthServer)
 		}
 	}
 
-	r.mu.Lock()
-	sort.Slice(servers, func(i, j int) bool {
-		return servers[i].RTT < servers[j].RTT
+	servers.Lock()
+	sort.Slice(servers.List, func(i, j int) bool {
+		return servers.List[i].RTT < servers.List[j].RTT
 	})
-	r.mu.Unlock()
+	servers.Unlock()
 
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	servers.RLock()
+	defer servers.RUnlock()
 
-	for index, server := range servers {
+	for index, server := range servers.List {
 		resp, err := r.exchange(server, req, c)
 		if err != nil {
-			if len(servers)-1 == index {
+			if len(servers.List)-1 == index {
 				return resp, err
 			}
 
+			continue
+		}
+
+		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 != index {
 			continue
 		}
 
@@ -516,7 +517,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 	return resp, nil
 }
 
-func (r *Resolver) searchCache(q dns.Question) (servers []*cache.AuthServer, parentdsrr []dns.RR) {
+func (r *Resolver) searchCache(q dns.Question) (servers *cache.AuthServers, parentdsrr []dns.RR) {
 	key := cache.Hash(q)
 
 	ns, err := r.nsCache.Get(key)
@@ -619,7 +620,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 	nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
 	if err != nil {
 		//try fallback servers
-		if len(fallbackservers) > 0 {
+		if len(fallbackservers.List) > 0 {
 			nsres, err = r.lookup(Net, nsReq, fallbackservers)
 		}
 	}
@@ -637,7 +638,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int) (addr s
 
 	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
 		//try fallback servers
-		if len(fallbackservers) > 0 {
+		if len(fallbackservers.List) > 0 {
 			nsres, err = r.lookup(Net, nsReq, fallbackservers)
 			if err != nil {
 				r.Ecache.Set(key)
@@ -788,19 +789,22 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	return true, nil
 }
 
-func (r *Resolver) equalSlice(s1, s2 []*cache.AuthServer) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Resolver) equalSlice(s1, s2 *cache.AuthServers) bool {
+	s1.Lock()
+	defer s1.Unlock()
 
-	if len(s1) != len(s2) {
+	s2.Lock()
+	defer s2.Unlock()
+
+	if len(s1.List) != len(s2.List) {
 		return false
 	}
 
-	sort.Slice(s1, func(i, j int) bool { return s1[i].Host < s1[j].Host })
-	sort.Slice(s2, func(i, j int) bool { return s2[i].Host < s2[j].Host })
+	sort.Slice(s1.List, func(i, j int) bool { return s1.List[i].Host < s1.List[j].Host })
+	sort.Slice(s2.List, func(i, j int) bool { return s2.List[i].Host < s2.List[j].Host })
 
-	for i, v := range s1 {
-		if s2[i].Host != v.Host {
+	for i, v := range s1.List {
+		if s2.List[i].Host != v.Host {
 			return false
 		}
 	}
@@ -822,33 +826,37 @@ func (r *Resolver) checkPriming() error {
 	}
 
 	if len(resp.Extra) > 0 {
-		var tmpservers, tmp6servers []*cache.AuthServer
+		var tmpservers, tmp6servers cache.AuthServers
 
 		for _, r := range resp.Extra {
 			if r.Header().Rrtype == dns.TypeA {
 				if v4, ok := r.(*dns.A); ok {
 					host := net.JoinHostPort(v4.A.String(), "53")
-					tmpservers = append(tmpservers, cache.NewAuthServer(host))
+					tmpservers.List = append(tmpservers.List, cache.NewAuthServer(host))
 				}
 			}
 
 			if r.Header().Rrtype == dns.TypeAAAA {
 				if v6, ok := r.(*dns.AAAA); ok {
 					host := net.JoinHostPort(v6.AAAA.String(), "53")
-					tmp6servers = append(tmp6servers, cache.NewAuthServer(host))
+					tmp6servers.List = append(tmp6servers.List, cache.NewAuthServer(host))
 				}
 			}
 		}
 
-		if len(tmpservers) > 0 {
-			rootservers = tmpservers
+		if len(tmpservers.List) > 0 {
+			rootservers.Lock()
+			rootservers.List = tmpservers.List
+			rootservers.Unlock()
 		}
 
-		if len(tmp6servers) > 0 {
-			root6servers = tmp6servers
+		if len(tmp6servers.List) > 0 {
+			root6servers.Lock()
+			root6servers.List = tmp6servers.List
+			root6servers.Unlock()
 		}
 
-		if len(tmpservers) > 0 || len(tmp6servers) > 0 {
+		if len(tmpservers.List) > 0 || len(tmp6servers.List) > 0 {
 			log.Info("Good! root servers update successful")
 
 			return nil

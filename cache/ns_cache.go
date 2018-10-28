@@ -9,7 +9,7 @@ import (
 
 // NS represents a cache entry
 type NS struct {
-	Servers    []*AuthServer
+	Servers    *AuthServers
 	Network    string
 	DSRR       []dns.RR
 	TTL        uint32
@@ -64,7 +64,7 @@ func (c *NSCache) Get(key uint64) (*NS, error) {
 }
 
 // Set sets a keys value to a NS
-func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers []*AuthServer) error {
+func (c *NSCache) Set(key uint64, dsRR []dns.RR, ttl uint32, servers *AuthServers) error {
 	c.mu.Lock()
 	c.m[key] = &NS{
 		Servers:    servers,
