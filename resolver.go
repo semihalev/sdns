@@ -456,11 +456,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) 
 		}
 	}
 
-	servers.Lock()
-	sort.Slice(servers.List, func(i, j int) bool {
-		return servers.List[i].Rtt < servers.List[j].Rtt
-	})
-	servers.Unlock()
+	servers.TrySort()
 
 	servers.RLock()
 	defer servers.RUnlock()
@@ -491,7 +487,12 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 	var resp *dns.Msg
 	var err error
 
-	resp, server.Rtt, err = c.Exchange(req, server.Host)
+	rtt := Config.Timeout.Duration
+	defer func() {
+		server.Rtt += rtt
+	}()
+
+	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil && err != dns.ErrTruncated {
 		if strings.Contains(err.Error(), "no route to host") && c.Net == "udp" {
 			c.Net = "tcp"
@@ -502,7 +503,6 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 			return r.exchange(server, req, c)
 		}
 
-		server.Rtt = Config.Timeout.Duration
 		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
 
 		return nil, err
@@ -512,10 +512,6 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 		// try again without edns tags
 		req = clearOPT(req)
 		return r.exchange(server, req, c)
-	}
-
-	if resp.Rcode != dns.RcodeSuccess {
-		server.Rtt = Config.Timeout.Duration
 	}
 
 	return resp, nil
