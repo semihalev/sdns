@@ -37,6 +37,15 @@ func upperName(s string) string {
 	return s
 }
 
+func randInt(min, max int) int {
+	if min == max {
+		return min
+	}
+
+	r := newRand()
+	return r.Intn(max-min) + min
+}
+
 func shuffleRR(vals []dns.RR) []dns.RR {
 
 	r := newRand()

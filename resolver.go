@@ -447,12 +447,12 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) 
 	}
 
 	if len(Config.OutboundIPs) > 0 {
-		Config.OutboundIPs = shuffleStr(Config.OutboundIPs)
+		index := randInt(0, len(Config.OutboundIPs)-1)
 
 		if Net == "tcp" {
-			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIPs[0])}
+			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIPs[index])}
 		} else if Net == "udp" {
-			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIPs[0])}
+			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIPs[index])}
 		}
 	}
 
