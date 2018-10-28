@@ -37,7 +37,7 @@ type AuthServers struct {
 	List   []*AuthServer
 }
 
-// TrySort if neccessary sort servers by rtt
+// TrySort if necessary sort servers by rtt
 func (s *AuthServers) TrySort() {
 	atomic.AddInt32(&s.called, 1)
 

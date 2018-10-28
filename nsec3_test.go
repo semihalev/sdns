@@ -247,6 +247,6 @@ func Test_VerifyDelegation(t *testing.T) {
 0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example. 3600 IN NSEC3 1 1 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS SOA NSEC3PARAM RRSIG`)
 	err = verifyDelegation("c.example.", records)
 	if err != nil {
-		t.Fatalf("verifyDelegation failed wtih opt out delegation example from RFC5155: %s", err)
+		t.Fatalf("verifyDelegation failed with opt out delegation example from RFC5155: %s", err)
 	}
 }
