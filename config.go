@@ -161,7 +161,7 @@ connecttimeout = "2s"
 # default cache TTL in seconds
 expire = 600
 
-# cache size
+# cache size (total records in cache)
 cachesize = 256000
 
 # maximum recursion depth for nameservers
