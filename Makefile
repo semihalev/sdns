@@ -4,6 +4,7 @@ PACKAGES ?= $(shell $(GO) list ./... | grep -v /vendor/)
 VETPACKAGES ?= $(shell $(GO) list ./... | grep -v /vendor/ | grep -v /examples/)
 GOFILES := $(shell find . -name "*.go" -type f -not -path "./vendor/*")
 TESTFOLDER := $(shell $(GO) list ./... | grep -E 'sdns$$|cache$$|doh$$')
+APP_NAME=sdns
 
 all: install
 
@@ -19,3 +20,8 @@ test:
 			rm profile.out; \
 		fi; \
 	done
+
+build:
+	docker build -t $(APP_NAME) .
+run:
+	docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853/tcp -p 8080/tcp sdns
