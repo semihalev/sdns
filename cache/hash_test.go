@@ -14,6 +14,10 @@ func Test_Hash(t *testing.T) {
 	asset := Hash(q)
 
 	assert.Equal(t, asset, uint64(3399771970408683746))
+
+	asset = Hash(q, true)
+
+	assert.NotEqual(t, asset, uint64(3399771970408683746))
 }
 
 func Benchmark_Hash(b *testing.B) {

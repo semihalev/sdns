@@ -9,11 +9,15 @@ import (
 )
 
 // Hash returns a hash for cache
-func Hash(q dns.Question) uint64 {
+func Hash(q dns.Question, cd ...bool) uint64 {
 	h := fnv.New64()
 	buf := bytes.NewBuffer(nil)
 
 	binary.Write(buf, binary.BigEndian, q.Qtype)
+
+	if len(cd) > 0 && cd[0] == true {
+		buf.WriteByte(1)
+	}
 
 	for i := range q.Name {
 		c := q.Name[i]

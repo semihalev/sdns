@@ -158,7 +158,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	log.Debug("Lookup", "query", formatQuestion(q), "dsreq", dsReq)
 
-	key := cache.Hash(q)
+	key := cache.Hash(q, req.CheckingDisabled)
 
 	h.r.Lqueue.Wait(key)
 
@@ -311,6 +311,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 	cnameReq := new(dns.Msg)
 	cnameReq.SetEdns0(DefaultMsgSize, true)
 	cnameReq.RecursionDesired = true
+	cnameReq.CheckingDisabled = req.CheckingDisabled
 
 	for _, answer := range msg.Answer {
 		if answer.Header().Rrtype == req.Question[0].Qtype &&
@@ -331,7 +332,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 		q := cnameReq.Question[0]
 		child := false
 
-		key := cache.Hash(q)
+		key := cache.Hash(q, cnameReq.CheckingDisabled)
 		respCname, _, err := h.r.Qcache.Get(key, cnameReq)
 		if err == nil {
 			for _, r := range respCname.Answer {
