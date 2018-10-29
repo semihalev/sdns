@@ -4,12 +4,13 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
 [![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
+[![GitHub version](https://badge.fury.io/gh/semihalev%2Fsdns.svg)](https://github.com/semihalev/sdns/releases)
 
 :dizzy: Lightweight, fast recursive dns server with dnssec support
 
 Based on [kenshinx/godns](https://github.com/kenshinx/godns), [looterz/grimd](https://github.com/looterz/grimd)
 
-<img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="350">
+<img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="300">
 
 ## Installation
 
@@ -104,6 +105,14 @@ $ make test
 * [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 * [ ] Full IPv6 support (server<->server communication)
 
+## Contributing
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+
+Please make sure to update tests as appropriate.
+
 ## Made With
 
 * [miekg/dns](https://github.com/miekg/dns) - Alternative (more granular) approach to a DNS library
+
+## License
+[MIT](https://github.com/semihalev/sdns/blob/master/LICENSE)

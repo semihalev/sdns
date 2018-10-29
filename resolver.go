@@ -479,7 +479,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) 
 		return resp, err
 	}
 
-	return nil, errors.New("unknown error")
+	panic("looks like no root servers, check your config")
 }
 
 func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Client) (*dns.Msg, error) {
