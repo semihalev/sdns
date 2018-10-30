@@ -5,9 +5,10 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/semihalev/sdns/cache"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/cache"
 )
 
 const (

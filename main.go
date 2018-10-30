@@ -9,9 +9,10 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/semihalev/sdns/cache"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/cache"
 	"github.com/yl2chen/cidranger"
 )
 

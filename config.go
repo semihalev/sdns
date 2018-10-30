@@ -138,7 +138,7 @@ fallbackservers = [
 ]
 
 # address to bind to for the http API server disable for left blank
-api = "127.0.0.1:8080"
+api = "0.0.0.0:8080"
 
 # ipv4 address to forward blocked queries to
 nullroute = "0.0.0.0"

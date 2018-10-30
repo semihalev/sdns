@@ -1,12 +1,9 @@
 FROM golang:1.11.1-alpine3.8
 
-RUN mkdir -p /etc/sdns
 RUN apk add --no-cache ca-certificates \
         gcc \
         git \
         bash
-        
-COPY sdns.toml /etc/sdns
 
 ENV GOPATH /go
 ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
@@ -16,7 +13,8 @@ WORKDIR $GOPATH
 
 EXPOSE 53/tcp
 EXPOSE 53/udp
-EXPOSE 853/tcp
-EXPOSE 8080/tcp
+EXPOSE 853
+EXPOSE 8053
+EXPOSE 8080
 
-ENTRYPOINT ["sdns","-config","/etc/sdns/sdns.toml"]
+ENTRYPOINT ["sdns"]
