@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"sdns/cache"
+	"github.com/semihalev/sdns/cache"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
