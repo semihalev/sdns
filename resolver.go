@@ -78,7 +78,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 		return resp, nil
 	}
 
-	if resp.Rcode != dns.RcodeSuccess {
+	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 {
 		if resp.Rcode == dns.RcodeNameError {
 			//TODO: should verify rrsig for nsecX records
 			if upperName(q.Name) == "" {
@@ -103,6 +103,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 		}
 
 		return resp, nil
+	}
+
+	// This is like dns server config error but we can recover
+	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) > 0 {
+		resp.Rcode = dns.RcodeSuccess
 	}
 
 	if len(resp.Answer) > 0 {

@@ -320,8 +320,8 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 		}
 
 		if answer.Header().Rrtype == dns.TypeCNAME {
-			cnameAnswer := answer.(*dns.CNAME)
-			cnameReq.SetQuestion(cnameAnswer.Target, req.Question[0].Qtype)
+			cr := answer.(*dns.CNAME)
+			cnameReq.SetQuestion(cr.Target, req.Question[0].Qtype)
 		}
 	}
 
@@ -339,21 +339,21 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 				msg.Answer = append(msg.Answer, dns.Copy(r))
 
 				if r.Header().Rrtype == dns.TypeCNAME {
-					cnameAnswer := r.(*dns.CNAME)
-					cnameReq.Question[0].Name = cnameAnswer.Target
+					cr := r.(*dns.CNAME)
+					cnameReq.Question[0].Name = cr.Target
 					child = true
 				}
 			}
 		} else {
 			depth := Config.Maxdepth
 			respCname, err := h.r.Resolve(proto, cnameReq, rootservers, true, depth, 0, false, nil)
-			if err == nil && len(respCname.Answer) > 0 && respCname.Rcode == dns.RcodeSuccess {
+			if err == nil && len(respCname.Answer) > 0 {
 				for _, r := range respCname.Answer {
 					msg.Answer = append(msg.Answer, dns.Copy(r))
 
 					if r.Header().Rrtype == dns.TypeCNAME {
-						cnameAnswer := r.(*dns.CNAME)
-						cnameReq.Question[0].Name = cnameAnswer.Target
+						cr := r.(*dns.CNAME)
+						cnameReq.Question[0].Name = cr.Target
 						child = true
 					}
 				}
