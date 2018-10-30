@@ -9,9 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sdns/cache"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/cache"
 )
 
 // Resolver type
