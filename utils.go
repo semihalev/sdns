@@ -154,6 +154,7 @@ func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
 		if !present {
 			continue
 		}
+		//TODO: miek dns lib doesn't support GOST 34.11 currently
 		ds := ksk.ToDS(parentDS.DigestType)
 		if ds == nil {
 			if i != len(parentDSSet)-1 {

@@ -525,6 +525,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 }
 
 func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *cache.AuthServers, parentdsrr []dns.RR) {
+	q.Qtype = dns.TypeNS // we should look NS type caches
 	key := cache.Hash(q, cd)
 
 	ns, err := r.Ncache.Get(key)
