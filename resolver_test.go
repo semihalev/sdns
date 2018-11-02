@@ -212,7 +212,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 
 	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
 
-	assert.Error(t, err)
+	assert.NoError(t, err)
 }
 
 func Test_resolverNSEC3nxerror(t *testing.T) {

@@ -46,7 +46,7 @@ func zoneToRecords(t *testing.T, z string) []dns.RR {
 func Test_VerifyNameError(t *testing.T) {
 	// Valid name error
 	records := []dns.RR{
-		makeNSEC3("example.com.", "com.", true, nil),
+		makeNSEC3("example.com.", "com.", false, nil),
 	}
 	err := verifyNameError(dns.Question{Name: "a.example.com.", Qtype: dns.TypeA}, records)
 	if err != nil {
@@ -72,9 +72,9 @@ func Test_VerifyNameError(t *testing.T) {
 	}
 
 	// RFC5155 Appendix B.1 example
-	records = zoneToRecords(t, `0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example. 3600 IN NSEC3 1 1 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS SOA NSEC3PARAM RRSIG
-b4um86eghhds6nea196smvmlo4ors995.example. 3600 IN NSEC3 1 1 12 aabbccdd gjeqe526plbf1g8mklp59enfd789njgi MX RRSIG
-35mthgpgcu1qg68fab165klnsnk3dpvl.example. 3600 IN NSEC3 1 1 12 aabbccdd b4um86eghhds6nea196smvmlo4ors995 NS DS RRSIG`)
+	records = zoneToRecords(t, `0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example. 3600 IN NSEC3 1 0 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS SOA NSEC3PARAM RRSIG
+b4um86eghhds6nea196smvmlo4ors995.example. 3600 IN NSEC3 1 0 12 aabbccdd gjeqe526plbf1g8mklp59enfd789njgi MX RRSIG
+35mthgpgcu1qg68fab165klnsnk3dpvl.example. 3600 IN NSEC3 1 0 12 aabbccdd b4um86eghhds6nea196smvmlo4ors995 NS DS RRSIG`)
 	err = verifyNameError(dns.Question{Name: "a.c.x.w.example.", Qtype: dns.TypeA}, records)
 	if err != nil {
 		t.Fatalf("verifyNameError failed with RFC5155 Appendix B.1 example: %s", err)
