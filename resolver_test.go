@@ -215,9 +215,9 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func Test_resolverNSEC3nxerror(t *testing.T) {
+func Test_resolverFindSigner(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("asdadasdads.eu.", dns.TypeA)
+	req.SetQuestion("labs.nic.cz.", dns.TypeA)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	r := NewResolver()
