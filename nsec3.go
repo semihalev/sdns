@@ -22,7 +22,7 @@ func typesSet(set []uint16, types ...uint16) bool {
 		tm[t] = struct{}{}
 	}
 	for _, t := range set {
-		if _, present := tm[t]; present {
+		if _, ok := tm[t]; ok {
 			return true
 		}
 	}
@@ -66,19 +66,22 @@ func findCoverer(name string, nsec []dns.RR) ([]uint16, bool, error) {
 	return nil, false, errNSECMissingCoverage
 }
 
-func verifyNameError(q *dns.Question, nsec []dns.RR) error {
+func verifyNameError(q dns.Question, nsec []dns.RR) error {
 	ce, _ := findClosestEncloser(q.Name, nsec)
 	if ce == "" {
 		return errNSECMissingCoverage
 	}
-	_, _, err := findCoverer("*."+ce, nsec)
+	_, flags, err := findCoverer("*."+ce, nsec)
 	if err != nil {
 		return err
+	}
+	if flags {
+		return errors.New("flags not cover")
 	}
 	return nil
 }
 
-func verifyNODATA(q *dns.Question, nsec []dns.RR) error {
+func verifyNODATA(q dns.Question, nsec []dns.RR) error {
 	types, err := findMatching(q.Name, nsec)
 	if err != nil {
 		if q.Qtype != dns.TypeDS {

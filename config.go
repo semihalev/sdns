@@ -53,6 +53,7 @@ func (d *duration) UnmarshalText(text []byte) error {
 }
 
 var defaultConfig = `
+# config version, config and build versions can be different.
 version = "%s"
 
 # list of remote blocklists
@@ -190,7 +191,7 @@ func LoadConfig(path string) error {
 	}
 
 	if Config.Version != ConfigVersion {
-		log.Warn("Config file sdns.toml is out of date!")
+		log.Warn("Config file is out of date, you can generate new one and check the changes.")
 	}
 
 	return nil

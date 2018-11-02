@@ -78,7 +78,7 @@ $ make test
 | expire          | Default cache TTL in seconds Default: 600                                                                                      |
 | cachesize       | Cache size (total records in cache) Default: 256000                                                                            |
 | maxdepth        | Maximum recursion depth for nameservers. Default: 30                                                                           |
-| ratelimit       | Query based ratelimit per second, 0 for disable. Default: 30                                                                   |
+| ratelimit       | Query based ratelimit per second, 0 for disable. Default: 0                                                                   |
 | blocklist       | Manual blocklist entries                                                                                                       |
 | whitelist       | Manual whitelist entries                                                                                                       |
 

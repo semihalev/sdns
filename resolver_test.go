@@ -181,7 +181,7 @@ func Test_resolverNameserverError(t *testing.T) {
 
 func Test_resolverNSEC3nodata(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("ns-lacnic.nic.mx.", dns.TypeDS)
+	req.SetQuestion("asdadadasds33sa.co.uk.", dns.TypeDS)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	r := NewResolver()
@@ -203,9 +203,21 @@ func Test_resolverNSECnodata(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func Test_resolverNSEC3nameerror(t *testing.T) {
+func Test_resolverNSEC3nodataerror(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("asdasdad3awds.eu.", dns.TypeA)
+	req.SetQuestion("asdadassd.nic.cz.", dns.TypeDS)
+	req.SetEdns0(DefaultMsgSize, true)
+
+	r := NewResolver()
+
+	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
+
+	assert.Error(t, err)
+}
+
+func Test_resolverNSEC3nxerror(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("asdadasdads.eu.", dns.TypeA)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	r := NewResolver()

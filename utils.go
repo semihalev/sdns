@@ -310,7 +310,7 @@ func fromBase64(s []byte) (buf []byte, err error) {
 	return
 }
 
-func verifyNSEC(q *dns.Question, nsecSet []dns.RR) (typeMatch bool) {
+func verifyNSEC(q dns.Question, nsecSet []dns.RR) (typeMatch bool) {
 	for _, rr := range nsecSet {
 		nsec := rr.(*dns.NSEC)
 		for _, t := range nsec.TypeBitMap {

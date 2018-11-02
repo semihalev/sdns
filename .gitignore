@@ -4,3 +4,4 @@ server.key
 sdns
 sdns.toml
 sdns_*
+coverage.out
