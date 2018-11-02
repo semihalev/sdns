@@ -23,7 +23,7 @@ func init() {
 		StderrHandler = StreamHandler(colorable.NewColorableStderr(), TerminalFormat())
 	}
 
-	root = &logger{[]interface{}{}, new(swapHandler)}
+	root = &logger{[]interface{}{}, LvlInfo, new(swapHandler)}
 	root.SetHandler(StdoutHandler)
 }
 

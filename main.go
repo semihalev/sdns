@@ -70,6 +70,7 @@ func configSetup(test bool) {
 		log.Crit("Log verbosity level unknown")
 	}
 
+	log.Root().SetLevel(lvl)
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
 
 	if len(Config.RootServers) > 0 {
