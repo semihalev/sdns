@@ -205,7 +205,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 
 func Test_resolverFindSigner(t *testing.T) {
 	req := new(dns.Msg)
-	req.SetQuestion("labs.nic.cz.", dns.TypeA)
+	req.SetQuestion("c-73-136-41-228.hsd1.tx.comcast.net.", dns.TypeA)
 	req.SetEdns0(DefaultMsgSize, true)
 
 	r := NewResolver()
