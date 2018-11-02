@@ -107,18 +107,6 @@ func Test_resolverDSDFail(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func Test_resolverNoSigner(t *testing.T) {
-	req := new(dns.Msg)
-	req.SetQuestion("b.in-addr.cn.", dns.TypeA)
-	req.SetEdns0(DefaultMsgSize, true)
-
-	r := NewResolver()
-
-	_, err := r.Resolve("udp", req, rootservers, true, 30, 0, false, nil)
-
-	assert.NoError(t, err)
-}
-
 func Test_resolverAllNS(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("sds4wdwf.", dns.TypeNS)
