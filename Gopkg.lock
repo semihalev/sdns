@@ -82,7 +82,7 @@
   branch = "master"
   name = "github.com/miekg/dns"
   packages = ["."]
-  revision = "17c1bc6792fdf1918200e9a675cdf2e3c9d585cd"
+  revision = "6ae357d393978566133a91aa1d4207b4f67da2c1"
 
 [[projects]]
   name = "github.com/modern-go/concurrent"
@@ -106,7 +106,7 @@
   branch = "master"
   name = "github.com/semihalev/log"
   packages = ["."]
-  revision = "6475db4d55c621157bb6b6b6c60af9325af35efd"
+  revision = "d34e78304e93a299f0722c5d6d4867859c86f1de"
 
 [[projects]]
   name = "github.com/stretchr/testify"
@@ -136,7 +136,7 @@
     "ed25519",
     "ed25519/internal/edwards25519"
   ]
-  revision = "e3636079e1a4c1f337f212cc5cd2aca108f6c900"
+  revision = "4d3f4d9ffa16a13f451c3b2999e9c49e9750bf06"
 
 [[projects]]
   branch = "master"
@@ -148,13 +148,13 @@
     "ipv4",
     "ipv6"
   ]
-  revision = "68fc911561ed0cb104e22deafa05515909b706ab"
+  revision = "c10e9556a7bc0e7c942242b606f0acf024ad5d6a"
 
 [[projects]]
   branch = "master"
   name = "golang.org/x/sys"
   packages = ["unix"]
-  revision = "8469e314837c2e2471561de5c47bbf8bfd0d9099"
+  revision = "9b800f95dbbc54abff0acf7ee32d88ba4e328c89"
 
 [[projects]]
   name = "gopkg.in/gin-contrib/cors.v1"

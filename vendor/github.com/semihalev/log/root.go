@@ -38,6 +38,11 @@ func Root() Logger {
 	return root
 }
 
+// SetLevel of the root logger
+func SetLevel(lvl Lvl) {
+	root.lvl = lvl
+}
+
 // The following functions bypass the exported logger methods (logger.Debug,
 // etc.) to keep the call depth the same for all paths to logger.write so
 // runtime.Caller(2) always refers to the call site in client code.
