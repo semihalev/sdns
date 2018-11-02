@@ -98,23 +98,14 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 				return nil, err
 			}
 			if !signerFound && len(parentdsrr) > 0 {
-				err = errDSRecords
-				log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
-
-				return nil, err
+				log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
+				return nil, errDSRecords
 			} else if len(parentdsrr) > 0 {
-				ok, err := r.verifyDNSSEC(Net, signer, strings.ToLower(q.Name), resp, parentdsrr)
-
+				resp.AuthenticatedData, err = r.verifyDNSSEC(Net, signer, strings.ToLower(q.Name), resp, parentdsrr)
 				if err != nil {
 					log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
-
 					return nil, err
-				} else if !ok {
-					log.Warn("DNSSEC cannot verify at the moment (answer)", "query", formatQuestion(q))
 				}
-
-				//set ad flag
-				resp.AuthenticatedData = ok
 			}
 		}
 
@@ -307,21 +298,17 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 
 				return nil, err
 			} else if len(parentdsrr) > 0 {
-				ok, err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr)
+				//TODO: some TLD cannot verify currently because of Go limitations return false from verify but we should continue
+				_, err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr)
 				if err != nil {
 					log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
 					return nil, err
 				}
 
-				if !ok {
-					log.Warn("DNSSEC cannot verify at the moment (delegation)", "query", formatQuestion(q), "signer", signer, "signed", nsrr.Header().Name)
-					ok = true
-				}
-
 				parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
 
 				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-				if ok && len(nsec3Set) > 0 {
+				if len(nsec3Set) > 0 {
 					err = verifyDelegation(nsrr.Header().Name, nsec3Set)
 					if err != nil {
 						log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
@@ -331,7 +318,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 					parentdsrr = []dns.RR{}
 				} else {
 					nsecSet := extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeNSEC)
-					if ok && len(nsecSet) > 0 {
+					if len(nsecSet) > 0 {
 						if !verifyNSEC(q, nsecSet) {
 							log.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 							return nil, fmt.Errorf("NSEC verify failed")
