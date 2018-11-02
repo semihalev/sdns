@@ -103,18 +103,23 @@ type logger struct {
 }
 
 func (l *logger) write(msg string, lvl Lvl, ctx []interface{}) {
-	l.h.Log(&Record{
+	r := &Record{
 		Time: time.Now(),
 		Lvl:  lvl,
 		Msg:  msg,
 		Ctx:  newContext(l.ctx, ctx),
-		Call: stack.Caller(2),
 		KeyNames: RecordKeyNames{
 			Time: timeKey,
 			Msg:  msgKey,
 			Lvl:  lvlKey,
 		},
-	})
+	}
+
+	if lvl == LvlDebug {
+		r.Call = stack.Caller(2)
+	}
+
+	l.h.Log(r)
 }
 
 func (l *logger) New(ctx ...interface{}) Logger {
