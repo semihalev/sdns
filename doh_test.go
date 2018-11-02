@@ -16,6 +16,8 @@ import (
 )
 
 func Test_dohJSON(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -40,6 +42,8 @@ func Test_dohJSON(t *testing.T) {
 }
 
 func Test_dohJSONerror(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -55,6 +59,8 @@ func Test_dohJSONerror(t *testing.T) {
 }
 
 func Test_dohJSONuknownType(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -70,6 +76,8 @@ func Test_dohJSONuknownType(t *testing.T) {
 }
 
 func Test_dohJSONsubnet(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -85,6 +93,8 @@ func Test_dohJSONsubnet(t *testing.T) {
 }
 
 func Test_dohJSONaccepthtml(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -102,6 +112,8 @@ func Test_dohJSONaccepthtml(t *testing.T) {
 }
 
 func Test_dohWireGET(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -137,6 +149,8 @@ func Test_dohWireGET(t *testing.T) {
 }
 
 func Test_dohWireGETerror(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -152,6 +166,8 @@ func Test_dohWireGETerror(t *testing.T) {
 }
 
 func Test_dohWireGETbadquery(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -167,6 +183,8 @@ func Test_dohWireGETbadquery(t *testing.T) {
 }
 
 func Test_dohWireHEAD(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()
@@ -182,6 +200,8 @@ func Test_dohWireHEAD(t *testing.T) {
 }
 
 func Test_dohWirePOST(t *testing.T) {
+	t.Parallel()
+
 	h := NewHandler()
 
 	w := httptest.NewRecorder()

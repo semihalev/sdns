@@ -60,6 +60,19 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	var err error
+	Config.OutboundIPs, err = findLocalIPAddresses()
+	if err != nil {
+		log.Crit("Root keys invalid", "error", err.Error())
+	}
+
+	for i, ip := range Config.OutboundIPs {
+		if ip == "127.0.0.1" {
+			Config.OutboundIPs = append(Config.OutboundIPs[:i], Config.OutboundIPs[i+1:]...)
+			break
+		}
+	}
+
 	AccessList = cidranger.NewPCTrieRanger()
 	_, ipnet, _ := net.ParseCIDR("0.0.0.0/0")
 	AccessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
