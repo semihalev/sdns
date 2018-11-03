@@ -152,7 +152,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 				} else if len(parentdsrr) > 0 {
 					ok, err := r.verifyDNSSEC(Net, signer, q.Name, resp, parentdsrr)
 					if err != nil {
-						log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
+						log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
 					}
 
