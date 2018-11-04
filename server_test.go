@@ -10,10 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func publicKey(priv interface{}) interface{} {
@@ -85,26 +82,4 @@ func generateCertificate() error {
 	keyOut.Close()
 
 	return nil
-}
-
-func Test_server(t *testing.T) {
-	err := generateCertificate()
-	assert.NoError(t, err)
-
-	s := &Server{
-		host:           ":5553",
-		dohHost:        ":8953",
-		tlsHost:        ":8853",
-		tlsCertificate: "test.cert",
-		tlsPrivateKey:  "test.key",
-		rTimeout:       5 * time.Second,
-		wTimeout:       5 * time.Second,
-	}
-
-	s.Run()
-
-	time.Sleep(2 * time.Second)
-
-	os.Remove("test.cert")
-	os.Remove("test.key")
 }

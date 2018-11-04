@@ -111,9 +111,26 @@ func Test_Blocklist(t *testing.T) {
 }
 
 func Test_start(t *testing.T) {
-	configSetup(true)
+	err := generateCertificate()
+	assert.NoError(t, err)
+
+	configSetup()
+
+	Config.TLSCertificate = "test.cert"
+	Config.TLSPrivateKey = "test.key"
+	Config.LogLevel = "crit"
+	Config.Bind = "127.0.0.1:0"
+	Config.API = "127.0.0.1:23221"
+	Config.BindTLS = "127.0.0.1:23222"
+	Config.BindDOH = "127.0.0.1:23223"
+
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
 	start()
 	time.Sleep(2 * time.Second)
+
+	os.Remove("test.cert")
+	os.Remove("test.key")
 }
 
 func BenchmarkExchange(b *testing.B) {

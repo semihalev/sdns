@@ -61,7 +61,7 @@ func NewResolver() *Resolver {
 		},
 		[]string{"qtype", "rcode"},
 	)
-	prometheus.MustRegister(r.Qmetrics)
+	prometheus.Register(r.Qmetrics)
 
 	r.checkPriming()
 

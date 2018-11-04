@@ -51,18 +51,9 @@ func init() {
 	}
 }
 
-func configSetup(test bool) {
+func configSetup() {
 	if err := LoadConfig(*ConfigPath); err != nil {
 		log.Crit("Config loading failed", "error", err.Error())
-	}
-
-	if test {
-		Config.Bind = ":0"
-		Config.BindTLS = ""
-		Config.BindDOH = ""
-		Config.API = "127.0.0.1:11111"
-		Config.LogLevel = "crit"
-		Config.Timeout.Duration = time.Second
 	}
 
 	lvl, err := log.LvlFromString(Config.LogLevel)
@@ -180,7 +171,7 @@ func main() {
 
 	log.Info("Starting sdns...", "version", Version)
 
-	configSetup(false)
+	configSetup()
 	start()
 
 	c := make(chan os.Signal, 1)
