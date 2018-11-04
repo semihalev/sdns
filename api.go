@@ -7,6 +7,7 @@ import (
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/log"
 	"gopkg.in/gin-contrib/cors.v1"
 )
@@ -66,6 +67,8 @@ func (a *API) Run() {
 		block.GET("/remove/:key", removeBlock)
 		block.GET("/set/:key", setBlock)
 	}
+
+	r.GET("/metrics", func(c *gin.Context) { promhttp.Handler().ServeHTTP(c.Writer, c.Request) })
 
 	go func() {
 		if err := r.Run(a.host); err != nil {

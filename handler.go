@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
@@ -54,7 +56,13 @@ func (h *DNSHandler) handle(proto string, w dns.ResponseWriter, req *dns.Msg) {
 
 	msg := h.query(proto, req)
 
-	h.writeReplyMsg(w, msg)
+	h.writeMsg(w, msg)
+
+	h.r.Qmetrics.With(
+		prometheus.Labels{
+			"qtype": dns.TypeToString[req.Question[0].Qtype],
+			"rcode": dns.RcodeToString[msg.Rcode],
+		}).Inc()
 }
 
 func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
@@ -65,91 +73,21 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		resolverProto = "udp"
 	}
 
-	dsReq := false
+	opt, dsReq := h.setEdns0(req)
+	if opt.Version() != 0 {
+		opt.SetVersion(0)
+		opt.SetExtendedRcode(dns.RcodeBadVers)
 
-	opt := req.IsEdns0()
-	if opt != nil {
-		opt.SetUDPSize(DefaultMsgSize)
-
-		if opt.Version() != 0 {
-			opt.SetVersion(0)
-			opt.SetExtendedRcode(dns.RcodeBadVers)
-
-			return h.handleFailed(req, dns.RcodeBadVers, dsReq)
-		}
-
-		ops := opt.Option
-
-		opt.Option = []dns.EDNS0{}
-
-		for _, option := range ops {
-			if option.Option() == dns.EDNS0SUBNET {
-				opt.Option = append(opt.Option, option)
-			}
-		}
-
-		dsReq = opt.Do()
-
-		opt.Header().Ttl = 0
-		opt.SetDo()
-	} else {
-		opt = new(dns.OPT)
-		opt.Hdr.Name = "."
-		opt.Hdr.Rrtype = dns.TypeOPT
-		opt.SetUDPSize(DefaultMsgSize)
-		opt.SetDo()
-
-		req.Extra = append(req.Extra, opt)
+		return h.handleFailed(req, dns.RcodeBadVers, dsReq)
 	}
 
 	if q.Qtype == dns.TypeANY {
 		return h.handleFailed(req, dns.RcodeNotImplemented, dsReq)
 	}
 
-	// debug ns information
+	// debug ns stats
 	if debugns && q.Qtype == dns.TypeHINFO {
-		msg := new(dns.Msg)
-		msg.SetReply(req)
-
-		msg.AuthenticatedData = true
-		msg.Authoritative = false
-		msg.RecursionAvailable = true
-
-		if q.Name == rootzone {
-			rrHeader := dns.RR_Header{
-				Name:   q.Name,
-				Rrtype: dns.TypeHINFO,
-				Class:  dns.ClassINET,
-				Ttl:    0,
-			}
-
-			rootservers.RLock()
-			for _, server := range rootservers.List {
-				hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
-				msg.Ns = append(msg.Ns, hinfo)
-			}
-			rootservers.RUnlock()
-		} else {
-			nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET})
-			ns, err := h.r.Ncache.Get(nsKey)
-			if err == nil {
-				rrHeader := dns.RR_Header{
-					Name:   q.Name,
-					Rrtype: dns.TypeHINFO,
-					Class:  dns.ClassINET,
-					Ttl:    ns.TTL,
-				}
-
-				ns.Servers.RLock()
-				for _, server := range ns.Servers.List {
-					hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
-					msg.Ns = append(msg.Ns, hinfo)
-				}
-				ns.Servers.RUnlock()
-			}
-		}
-
-		return msg
+		return h.nsStats(req)
 	}
 
 	if q.Name != rootzone && req.RecursionDesired == false {
@@ -167,24 +105,16 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
 
 		if Config.RateLimit > 0 && rl.Limit() {
-			log.Info("Query rate limited", "query", formatQuestion(q))
-
-			return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
+			return h.handleFailed(req, dns.RcodeRefused, dsReq)
 		}
 
-		// we need this copy against concurrent modification of Id
-		msg := new(dns.Msg)
-		*msg = *mesg
-
+		msg := mesg.Copy()
 		msg.Id = req.Id
 		msg = h.additionalAnswer(resolverProto, req, msg)
-
 		if !dsReq {
 			msg = clearDNSSEC(msg)
 		}
-
 		msg = clearOPT(msg)
-
 		opt.SetDo(dsReq)
 		msg.Extra = append(msg.Extra, opt)
 
@@ -200,42 +130,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 	if q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA {
 		if BlockList.Exists(q.Name) {
-			m := new(dns.Msg)
-			m.SetReply(req)
-
-			nullroute := net.ParseIP(Config.Nullroute)
-			nullroutev6 := net.ParseIP(Config.Nullroutev6)
-
-			switch q.Qtype {
-			case dns.TypeA:
-				rrHeader := dns.RR_Header{
-					Name:   q.Name,
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    Config.Expire,
-				}
-				a := &dns.A{Hdr: rrHeader, A: nullroute}
-				m.Answer = append(m.Answer, a)
-			case dns.TypeAAAA:
-				rrHeader := dns.RR_Header{
-					Name:   q.Name,
-					Rrtype: dns.TypeAAAA,
-					Class:  dns.ClassINET,
-					Ttl:    Config.Expire,
-				}
-				a := &dns.AAAA{Hdr: rrHeader, AAAA: nullroutev6}
-				m.Answer = append(m.Answer, a)
-			}
-
-			m.AuthenticatedData = true
-			m.Authoritative = false
-			m.RecursionAvailable = true
-
-			log.Debug("Found in blocklist", "name", q.Name)
-
-			h.r.Qcache.Set(key, m)
-
-			return m
+			return h.blockEntry(req, key, dsReq)
 		}
 	}
 
@@ -284,17 +179,12 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		return h.handleFailed(req, mesg.Rcode, dsReq)
 	}
 
-	msg := new(dns.Msg)
-	*msg = *mesg
-
+	msg := mesg.Copy()
 	msg = h.additionalAnswer(resolverProto, req, msg)
-
 	if !dsReq {
 		msg = clearDNSSEC(msg)
 	}
-
 	msg = clearOPT(msg)
-
 	opt.SetDo(dsReq)
 	msg.Extra = append(msg.Extra, opt)
 
@@ -385,7 +275,144 @@ func (h *DNSHandler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
 	return m
 }
 
-func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
+func (h *DNSHandler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
+	dsReq := false
+	opt := req.IsEdns0()
+
+	if opt != nil {
+		opt.SetUDPSize(DefaultMsgSize)
+		if opt.Version() != 0 {
+			return opt, false
+		}
+
+		ops := opt.Option
+
+		opt.Option = []dns.EDNS0{}
+
+		for _, option := range ops {
+			if option.Option() == dns.EDNS0SUBNET {
+				opt.Option = append(opt.Option, option)
+			}
+		}
+
+		dsReq = opt.Do()
+
+		opt.Header().Ttl = 0
+		opt.SetDo()
+	} else {
+		opt = new(dns.OPT)
+		opt.Hdr.Name = "."
+		opt.Hdr.Rrtype = dns.TypeOPT
+		opt.SetUDPSize(DefaultMsgSize)
+		opt.SetDo()
+
+		req.Extra = append(req.Extra, opt)
+	}
+
+	return opt, dsReq
+}
+
+func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
+	q := req.Question[0]
+
+	msg := new(dns.Msg)
+	msg.SetReply(req)
+
+	msg.Authoritative = false
+	msg.RecursionAvailable = true
+
+	if q.Name == rootzone {
+		rrHeader := dns.RR_Header{
+			Name:   q.Name,
+			Rrtype: dns.TypeHINFO,
+			Class:  dns.ClassINET,
+			Ttl:    0,
+		}
+
+		rootservers.RLock()
+		for _, server := range rootservers.List {
+			hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
+			msg.Ns = append(msg.Ns, hinfo)
+		}
+		rootservers.RUnlock()
+	} else {
+		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
+		ns, err := h.r.Ncache.Get(nsKey)
+		if err == nil {
+			rrHeader := dns.RR_Header{
+				Name:   q.Name,
+				Rrtype: dns.TypeHINFO,
+				Class:  dns.ClassINET,
+				Ttl:    ns.TTL,
+			}
+
+			ns.Servers.RLock()
+			for _, server := range ns.Servers.List {
+				hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
+				msg.Ns = append(msg.Ns, hinfo)
+			}
+			ns.Servers.RUnlock()
+		}
+	}
+
+	return msg
+}
+
+func (h *DNSHandler) blockEntry(req *dns.Msg, key uint64, dsf bool) *dns.Msg {
+	q := req.Question[0]
+
+	msg := new(dns.Msg)
+	msg.SetReply(req)
+	msg.Extra = req.Extra
+
+	if opt := msg.IsEdns0(); opt != nil {
+		opt.SetDo(dsf)
+	}
+
+	nullroute := net.ParseIP(Config.Nullroute)
+	nullroutev6 := net.ParseIP(Config.Nullroutev6)
+
+	switch q.Qtype {
+	case dns.TypeA:
+		rrHeader := dns.RR_Header{
+			Name:   q.Name,
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    Config.Expire,
+		}
+		a := &dns.A{Hdr: rrHeader, A: nullroute}
+		msg.Answer = append(msg.Answer, a)
+	case dns.TypeAAAA:
+		rrHeader := dns.RR_Header{
+			Name:   q.Name,
+			Rrtype: dns.TypeAAAA,
+			Class:  dns.ClassINET,
+			Ttl:    Config.Expire,
+		}
+		a := &dns.AAAA{Hdr: rrHeader, AAAA: nullroutev6}
+		msg.Answer = append(msg.Answer, a)
+	}
+
+	msg.AuthenticatedData = true
+	msg.Authoritative = false
+	msg.RecursionAvailable = true
+
+	h.r.Qcache.Set(key, msg)
+
+	return msg
+}
+
+func (h *DNSHandler) remoteAddr(w dns.ResponseWriter) string {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Recovered in remoteAddr", "recover", r)
+		}
+	}()
+
+	return w.RemoteAddr().String()
+}
+
+func (h *DNSHandler) writeMsg(w dns.ResponseWriter, msg *dns.Msg) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Recovered in WriteReplyMsg", "recover", r)
@@ -400,14 +427,4 @@ func (h *DNSHandler) writeReplyMsg(w dns.ResponseWriter, msg *dns.Msg) {
 	if err != nil {
 		log.Error("Message writing failed", "error", err.Error())
 	}
-}
-
-func (h *DNSHandler) remoteAddr(w dns.ResponseWriter) string {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("Recovered in remoteAddr", "recover", r)
-		}
-	}()
-
-	return w.RemoteAddr().String()
 }

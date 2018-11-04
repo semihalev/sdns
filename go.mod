@@ -2,6 +2,7 @@ module github.com/semihalev/sdns
 
 require (
 	github.com/BurntSushi/toml v0.3.1
+	github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973 // indirect
 	github.com/bsm/ratelimit v2.0.0+incompatible
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gin-contrib/pprof v0.0.0-20180827024024-a27513940d36
@@ -12,11 +13,16 @@ require (
 	github.com/json-iterator/go v1.1.5 // indirect
 	github.com/mattn/go-colorable v0.0.9 // indirect
 	github.com/mattn/go-isatty v0.0.4 // indirect
-	github.com/miekg/dns v1.0.15-0.20181101201639-6ae357d39397
+	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
+	github.com/miekg/dns v1.0.15
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742 // indirect
 	github.com/onsi/gomega v1.4.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/prometheus/client_golang v0.9.1
+	github.com/prometheus/client_model v0.0.0-20180712105110-5c3871d89910 // indirect
+	github.com/prometheus/common v0.0.0-20181020173914-7e9e6cabbd39 // indirect
+	github.com/prometheus/procfs v0.0.0-20181005140218-185b4288413d // indirect
 	github.com/semihalev/log v0.0.0-20181102153422-d34e78304e93
 	github.com/stretchr/testify v1.2.2
 	github.com/ugorji/go v1.1.1 // indirect

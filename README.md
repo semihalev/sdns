@@ -99,6 +99,7 @@ $ make test
 * Basic IPv6 support (client<->server)
 * Query based ratelimit
 * Access list
+* Prometheus basic query metrics
 * Black-hole internet advertisements and malware servers
 * HTTP API support
 * Outbound IP selection

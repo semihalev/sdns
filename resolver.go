@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
 )
@@ -17,6 +18,8 @@ import (
 // Resolver type
 type Resolver struct {
 	config *dns.ClientConfig
+
+	Qmetrics *prometheus.CounterVec
 
 	Lqueue *cache.LQueue
 	Qcache *cache.QueryCache
@@ -50,6 +53,15 @@ func NewResolver() *Resolver {
 		Ecache: cache.NewErrorCache(Config.CacheSize, Config.Expire),
 		Lqueue: cache.NewLookupQueue(),
 	}
+
+	r.Qmetrics = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_queries_total",
+			Help: "How many DNS queries processed",
+		},
+		[]string{"qtype", "rcode"},
+	)
+	prometheus.MustRegister(r.Qmetrics)
 
 	r.checkPriming()
 
