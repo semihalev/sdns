@@ -30,16 +30,13 @@ type Server struct {
 func (s *Server) Run() {
 	handler := NewHandler()
 
-	tcpHandler := dns.NewServeMux()
-	tcpHandler.HandleFunc(".", handler.TCP)
-
-	udpHandler := dns.NewServeMux()
-	udpHandler.HandleFunc(".", handler.UDP)
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", handler.ServeDNS)
 
 	tcpServer := &dns.Server{
 		Addr:         s.host,
 		Net:          "tcp",
-		Handler:      tcpHandler,
+		Handler:      mux,
 		ReadTimeout:  s.rTimeout,
 		WriteTimeout: s.wTimeout,
 		ReusePort:    true,
@@ -48,7 +45,7 @@ func (s *Server) Run() {
 	udpServer := &dns.Server{
 		Addr:         s.host,
 		Net:          "udp",
-		Handler:      udpHandler,
+		Handler:      mux,
 		UDPSize:      dns.DefaultMsgSize,
 		ReadTimeout:  s.rTimeout,
 		WriteTimeout: s.wTimeout,
@@ -69,7 +66,7 @@ func (s *Server) Run() {
 			Addr:         s.tlsHost,
 			Net:          "tcp-tls",
 			TLSConfig:    &tls.Config{Certificates: []tls.Certificate{cert}},
-			Handler:      tcpHandler,
+			Handler:      mux,
 			ReadTimeout:  s.rTimeout,
 			WriteTimeout: s.wTimeout,
 		}

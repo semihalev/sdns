@@ -14,7 +14,7 @@ import (
 	"github.com/semihalev/sdns/doh"
 )
 
-func (h *DNSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client, _, _ := net.SplitHostPort(r.RemoteAddr)
 	allowed, _ := AccessList.Contains(net.ParseIP(client))
 	if !allowed {
@@ -33,7 +33,7 @@ func (h *DNSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f(w, r)
 }
 
-func (h *DNSHandler) handleWireFormat() func(http.ResponseWriter, *http.Request) {
+func (h *Handler) handleWireFormat() func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var (
 			buf []byte
@@ -83,7 +83,7 @@ func (h *DNSHandler) handleWireFormat() func(http.ResponseWriter, *http.Request)
 	}
 }
 
-func (h *DNSHandler) handleJSON() func(http.ResponseWriter, *http.Request) {
+func (h *Handler) handleJSON() func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		if name == "" {

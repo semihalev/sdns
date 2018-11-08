@@ -52,7 +52,7 @@ func Test_handler(t *testing.T) {
 
 	handler := NewHandler()
 
-	dns.HandleFunc(".", handler.UDP)
+	dns.HandleFunc(".", handler.ServeDNS)
 	defer dns.HandleRemove(".")
 
 	s, addrstr, err := RunLocalUDPServer("127.0.0.1:0")

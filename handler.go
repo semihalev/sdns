@@ -17,8 +17,8 @@ const (
 	DefaultMsgSize = 1536
 )
 
-// DNSHandler type
-type DNSHandler struct {
+// Handler type
+type Handler struct {
 	r *Resolver
 }
 
@@ -28,35 +28,43 @@ func init() {
 	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
 }
 
-// NewHandler returns a new DNSHandler
-func NewHandler() *DNSHandler {
-	return &DNSHandler{
+// NewHandler returns a new Handler
+func NewHandler() *Handler {
+	return &Handler{
 		r: NewResolver(),
 	}
 }
 
-// TCP begins a tcp query
-func (h *DNSHandler) TCP(w dns.ResponseWriter, req *dns.Msg) {
-	go h.handle("tcp", w, req)
-}
+// ServeDNS serve tcp or udp query
+func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Recovered in ServeDNS", "recover", r)
+		}
+	}()
 
-// UDP begins a udp query
-func (h *DNSHandler) UDP(w dns.ResponseWriter, req *dns.Msg) {
-	go h.handle("udp", w, req)
-}
+	var Net string
+	switch w.LocalAddr().(type) {
+	case (*net.TCPAddr):
+		Net = "tcp"
+	case (*net.UDPAddr):
+		Net = "udp"
+	}
 
-func (h *DNSHandler) handle(proto string, w dns.ResponseWriter, req *dns.Msg) {
-	client, _, _ := net.SplitHostPort(h.remoteAddr(w))
+	client, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 	allowed, _ := AccessList.Contains(net.ParseIP(client))
 
 	if !allowed {
-		log.Debug("Client denied to make new query", "client", client, "net", proto)
+		log.Debug("Client denied to make new query", "client", client, "net", Net)
 		return
 	}
 
-	msg := h.query(proto, req)
+	msg := h.query(Net, req)
 
-	h.writeMsg(w, msg)
+	err := w.WriteMsg(msg)
+	if err != nil {
+		log.Error("Message writing failed", "error", err.Error())
+	}
 
 	h.r.Qmetrics.With(
 		prometheus.Labels{
@@ -65,12 +73,12 @@ func (h *DNSHandler) handle(proto string, w dns.ResponseWriter, req *dns.Msg) {
 		}).Inc()
 }
 
-func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
+func (h *Handler) query(Net string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
-	resolverProto := proto
-	if proto == "https" {
-		resolverProto = "udp"
+	resolverNet := Net
+	if Net == "https" {
+		resolverNet = "udp"
 	}
 
 	opt, dsReq := h.setEdns0(req)
@@ -110,7 +118,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 
 		msg := mesg.Copy()
 		msg.Id = req.Id
-		msg = h.additionalAnswer(resolverProto, req, msg)
+		msg = h.additionalAnswer(resolverNet, req, msg)
 		if !dsReq {
 			msg = clearDNSSEC(msg)
 		}
@@ -138,7 +146,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	defer h.r.Lqueue.Done(key)
 
 	depth := Config.Maxdepth
-	mesg, err = h.r.Resolve(resolverProto, req, rootservers, true, depth, 0, false, nil)
+	mesg, err = h.r.Resolve(resolverNet, req, rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
@@ -147,9 +155,9 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
-	if mesg.Truncated && proto == "udp" {
+	if mesg.Truncated && Net == "udp" {
 		return mesg
-	} else if mesg.Truncated && proto == "https" {
+	} else if mesg.Truncated && Net == "https" {
 		opt.SetDo(dsReq)
 
 		h.r.Lqueue.Done(key)
@@ -180,7 +188,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	}
 
 	msg := mesg.Copy()
-	msg = h.additionalAnswer(resolverProto, req, msg)
+	msg = h.additionalAnswer(resolverNet, req, msg)
 	if !dsReq {
 		msg = clearDNSSEC(msg)
 	}
@@ -194,7 +202,7 @@ func (h *DNSHandler) query(proto string, req *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg {
+func (h *Handler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 	//check cname response
 	answerFound := false
 
@@ -236,7 +244,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 			}
 		} else {
 			depth := Config.Maxdepth
-			respCname, err := h.r.Resolve(proto, cnameReq, rootservers, true, depth, 0, false, nil)
+			respCname, err := h.r.Resolve(Net, cnameReq, rootservers, true, depth, 0, false, nil)
 			if err == nil && len(respCname.Answer) > 0 {
 				for _, r := range respCname.Answer {
 					msg.Answer = append(msg.Answer, dns.Copy(r))
@@ -262,7 +270,7 @@ func (h *DNSHandler) additionalAnswer(proto string, req, msg *dns.Msg) *dns.Msg 
 	return msg
 }
 
-func (h *DNSHandler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
+func (h *Handler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
 	m := new(dns.Msg)
 	m.Extra = msg.Extra
 	m.SetRcode(msg, rcode)
@@ -275,7 +283,7 @@ func (h *DNSHandler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
 	return m
 }
 
-func (h *DNSHandler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
+func (h *Handler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
 	dsReq := false
 	opt := req.IsEdns0()
 
@@ -312,7 +320,7 @@ func (h *DNSHandler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
 	return opt, dsReq
 }
 
-func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
+func (h *Handler) nsStats(req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	msg := new(dns.Msg)
@@ -358,7 +366,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func (h *DNSHandler) blockEntry(req *dns.Msg, key uint64, dsf bool) *dns.Msg {
+func (h *Handler) blockEntry(req *dns.Msg, key uint64, dsf bool) *dns.Msg {
 	q := req.Question[0]
 
 	msg := new(dns.Msg)
@@ -400,31 +408,4 @@ func (h *DNSHandler) blockEntry(req *dns.Msg, key uint64, dsf bool) *dns.Msg {
 	h.r.Qcache.Set(key, msg)
 
 	return msg
-}
-
-func (h *DNSHandler) remoteAddr(w dns.ResponseWriter) string {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("Recovered in remoteAddr", "recover", r)
-		}
-	}()
-
-	return w.RemoteAddr().String()
-}
-
-func (h *DNSHandler) writeMsg(w dns.ResponseWriter, msg *dns.Msg) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("Recovered in WriteReplyMsg", "recover", r)
-		}
-	}()
-
-	if w == nil {
-		return
-	}
-
-	err := w.WriteMsg(msg)
-	if err != nil {
-		log.Error("Message writing failed", "error", err.Error())
-	}
 }
