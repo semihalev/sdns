@@ -12,7 +12,7 @@ install: test
 
 .PHONY: test
 test:
-	echo "mode: count" > coverage.out
+	echo "mode: atomic" > coverage.out
 	for d in $(TESTFOLDER); do \
 		$(GO) test -v -covermode=atomic -race -coverprofile=profile.out $$d; \
 		if [ -f profile.out ]; then \

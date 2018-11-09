@@ -1,4 +1,4 @@
-package resolver
+package doh
 
 import (
 	"bytes"
@@ -13,14 +13,27 @@ import (
 	"github.com/semihalev/sdns/ctx"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/doh"
 	"github.com/stretchr/testify/assert"
 )
 
+func handleTest(w http.ResponseWriter, r *http.Request) {
+	handle := func(Net string, req *dns.Msg) *dns.Msg {
+		msg, _ := dns.Exchange(req, "8.8.8.8:53")
+
+		return msg
+	}
+
+	var f func(http.ResponseWriter, *http.Request) bool
+	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
+		f = HandleJSON(handle)
+	} else {
+		f = HandleWireFormat(handle)
+	}
+
+	f(w, r)
+}
 func Test_dohJSON(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -29,16 +42,14 @@ func Test_dohJSON(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusOK)
 
 	data, err := ioutil.ReadAll(w.Body)
 	assert.NoError(t, err)
 
-	var dm doh.Msg
+	var dm Msg
 	err = json.Unmarshal(data, &dm)
 	assert.NoError(t, err)
 
@@ -48,8 +59,6 @@ func Test_dohJSON(t *testing.T) {
 func Test_dohJSONerror(t *testing.T) {
 	t.Parallel()
 
-	h := New(makeTestConfig())
-
 	w := httptest.NewRecorder()
 
 	request, err := http.NewRequest("GET", "/dns-query?name=", nil)
@@ -57,17 +66,13 @@ func Test_dohJSONerror(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusBadRequest)
 }
 
 func Test_dohJSONuknownType(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -76,17 +81,13 @@ func Test_dohJSONuknownType(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusBadRequest)
 }
 
 func Test_dohJSONsubnet(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -97,15 +98,13 @@ func Test_dohJSONsubnet(t *testing.T) {
 
 	ctx := new(ctx.Context)
 	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusBadRequest)
 }
 
 func Test_dohJSONaccepthtml(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -115,9 +114,7 @@ func Test_dohJSONaccepthtml(t *testing.T) {
 	request.RemoteAddr = "127.0.0.1:0"
 
 	request.Header.Add("Accept", "text/html")
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusOK)
 	assert.Equal(t, w.Header().Get("Content-Type"), "application/x-javascript")
@@ -125,8 +122,6 @@ func Test_dohJSONaccepthtml(t *testing.T) {
 
 func Test_dohWireGET(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -144,9 +139,7 @@ func Test_dohWireGET(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusOK)
 
@@ -165,8 +158,6 @@ func Test_dohWireGET(t *testing.T) {
 func Test_dohWireGETerror(t *testing.T) {
 	t.Parallel()
 
-	h := New(makeTestConfig())
-
 	w := httptest.NewRecorder()
 
 	request, err := http.NewRequest("GET", "/dns-query?dns=", nil)
@@ -174,17 +165,13 @@ func Test_dohWireGETerror(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusBadRequest)
 }
 
 func Test_dohWireGETbadquery(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -193,17 +180,13 @@ func Test_dohWireGETbadquery(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusBadRequest)
 }
 
 func Test_dohWireHEAD(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -212,17 +195,13 @@ func Test_dohWireHEAD(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusMethodNotAllowed)
 }
 
 func Test_dohWirePOST(t *testing.T) {
 	t.Parallel()
-
-	h := New(makeTestConfig())
 
 	w := httptest.NewRecorder()
 
@@ -239,9 +218,7 @@ func Test_dohWirePOST(t *testing.T) {
 	request.RemoteAddr = "127.0.0.1:0"
 	request.Header.Add("Content-Type", "application/dns-message")
 
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
-	h.ServeHTTP(ctx)
+	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusOK)
 
