@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -12,7 +12,8 @@ import (
 	"github.com/semihalev/log"
 )
 
-type config struct {
+// Config type
+type Config struct {
 	Version         string
 	BlockLists      []string
 	BlockListDir    string
@@ -31,6 +32,7 @@ type config struct {
 	API             string
 	Nullroute       string
 	Nullroutev6     string
+	Hostsfile       string
 	OutboundIPs     []string
 	Timeout         duration
 	ConnectTimeout  duration
@@ -55,24 +57,6 @@ func (d *duration) UnmarshalText(text []byte) error {
 var defaultConfig = `
 # config version, config and build versions can be different.
 version = "%s"
-
-# list of remote blocklists
-blocklists = [
-"http://mirror1.malwaredomains.com/files/justdomains",
-"https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-"http://sysctl.org/cameleon/hosts",
-"https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
-"https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
-"https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
-"http://hosts-file.net/ad_servers.txt",
-"https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt"
-]
-
-# list of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list)
-blocklistdir = "blocklist"
-
-# what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
-loglevel = "info"
 
 # address to bind to for the DNS server
 bind = ":53"
@@ -138,20 +122,42 @@ fallbackservers = [
 "8.8.4.4:53"
 ]
 
-# address to bind to for the http API server disable for left blank
+# address to bind to for the http API server, left blank for disabled
 api = "127.0.0.1:8080"
+
+# what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
+loglevel = "info"
+
+# list of remote blocklists
+blocklists = [
+"http://mirror1.malwaredomains.com/files/justdomains",
+"https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+"http://sysctl.org/cameleon/hosts",
+"https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
+"https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
+"https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
+"http://hosts-file.net/ad_servers.txt",
+"https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt"
+]
+
+# list of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list)
+blocklistdir = "bl"
 
 # ipv4 address to forward blocked queries to
 nullroute = "0.0.0.0"
 
 # ipv6 address to forward blocked queries to
-nullroutev6 = "0:0:0:0:0:0:0:0"
+nullroutev6 = "::0"
 
 # which clients allowed to make queries
 accesslist = [
 "0.0.0.0/0",
 "::0/0"
 ]
+
+# enables serving zone data from a hosts file, left blank for disabled
+# the form of the entries in the /etc/hosts file are based on IETF RFC 952 which was updated by IETF RFC 1123.
+hostsfile = ""
 
 # query timeout for dns lookups in duration
 timeout = "5s"
@@ -178,33 +184,35 @@ blocklist = []
 whitelist = []
 `
 
-// LoadConfig loads the given config file
-func LoadConfig(path string) error {
+// Load loads the given config file
+func Load(path, version string) (*Config, error) {
+	config := new(Config)
+
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := generateConfig(path); err != nil {
-			return err
+		if err := generateConfig(path, version); err != nil {
+			return nil, err
 		}
 	}
 
-	if _, err := toml.DecodeFile(path, &Config); err != nil {
-		return fmt.Errorf("could not load config: %s", err)
+	if _, err := toml.DecodeFile(path, config); err != nil {
+		return nil, fmt.Errorf("could not load config: %s", err)
 	}
 
-	if Config.Version != ConfigVersion {
+	if config.Version != version {
 		log.Warn("Config file is out of date, you can generate new one and check the changes.")
 	}
 
-	return nil
+	return config, nil
 }
 
-func generateConfig(path string) error {
+func generateConfig(path, version string) error {
 	output, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("could not generate config: %s", err)
 	}
 	defer output.Close()
 
-	r := strings.NewReader(fmt.Sprintf(defaultConfig, ConfigVersion))
+	r := strings.NewReader(fmt.Sprintf(defaultConfig, version))
 	if _, err := io.Copy(output, r); err != nil {
 		return fmt.Errorf("could not copy default config: %s", err)
 	}

@@ -75,10 +75,11 @@ $ make test
 | accesslist      | Which clients allowed to make queries                                                                                          |
 | timeout         | Query timeout for dns lookups in duration Default: 5s                                                                          |
 | connecttimeout  | Connect timeout for dns lookups in duration Default: 2s                                                                        |
+| hostsfile       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
 | expire          | Default cache TTL in seconds Default: 600                                                                                      |
 | cachesize       | Cache size (total records in cache) Default: 256000                                                                            |
 | maxdepth        | Maximum recursion depth for nameservers. Default: 30                                                                           |
-| ratelimit       | Query based ratelimit per second, 0 for disable. Default: 0                                                                   |
+| ratelimit       | Query based ratelimit per second, 0 for disable. Default: 0                                                                    |
 | blocklist       | Manual blocklist entries                                                                                                       |
 | whitelist       | Manual whitelist entries                                                                                                       |
 
@@ -95,6 +96,7 @@ $ make test
 * DNSSEC validation
 * DNS over TLS support
 * DNS over HTTPS support
+* Middleware Support
 * RTT priority within listed servers
 * Basic IPv6 support (client<->server)
 * Query based ratelimit

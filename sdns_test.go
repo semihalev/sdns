@@ -1,31 +1,25 @@
 package main
 
 import (
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/blocklist"
+	"github.com/semihalev/sdns/config"
 	"github.com/stretchr/testify/assert"
-	"github.com/yl2chen/cidranger"
 )
 
 const (
 	testDomain = "www.google.com"
 )
 
-var (
-	ginr *gin.Engine
-)
-
 func TestMain(m *testing.M) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
+	Config = new(config.Config)
 	Config.RootServers = []string{"192.5.5.241:53"}
 	Config.RootKeys = []string{
 		".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
@@ -42,54 +36,6 @@ func TestMain(m *testing.M) {
 	Config.BindDOH = ""
 	Config.API = ""
 
-	if len(Config.RootServers) > 0 {
-		rootservers = &cache.AuthServers{}
-		for _, s := range Config.RootServers {
-			rootservers.List = append(rootservers.List, cache.NewAuthServer(s))
-		}
-	}
-
-	if len(Config.RootKeys) > 0 {
-		rootkeys = []dns.RR{}
-		for _, k := range Config.RootKeys {
-			rr, err := dns.NewRR(k)
-			if err != nil {
-				log.Crit("Root keys invalid", "error", err.Error())
-			}
-			rootkeys = append(rootkeys, rr)
-		}
-	}
-
-	var err error
-	Config.OutboundIPs, err = findLocalIPAddresses()
-	if err != nil {
-		log.Crit("Root keys invalid", "error", err.Error())
-	}
-
-	for i, ip := range Config.OutboundIPs {
-		if ip == "127.0.0.1" {
-			Config.OutboundIPs = append(Config.OutboundIPs[:i], Config.OutboundIPs[i+1:]...)
-			break
-		}
-	}
-
-	AccessList = cidranger.NewPCTrieRanger()
-	_, ipnet, _ := net.ParseCIDR("0.0.0.0/0")
-	AccessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
-	_, ipnet, _ = net.ParseCIDR("::0/0")
-	AccessList.Insert(cidranger.NewBasicRangerEntry(*ipnet))
-
-	gin.SetMode(gin.TestMode)
-	ginr = gin.New()
-
-	block := ginr.Group("/api/v1/block")
-	{
-		block.GET("/exists/:key", existsBlock)
-		block.GET("/get/:key", getBlock)
-		block.GET("/remove/:key", removeBlock)
-		block.GET("/set/:key", setBlock)
-	}
-
 	m.Run()
 }
 
@@ -103,10 +49,12 @@ func Test_Blocklist(t *testing.T) {
 	Config.BlockLists = append(Config.BlockLists, "https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt")
 	Config.BlockLists = append(Config.BlockLists, "https://test.dev/hosts")
 
-	err := updateBlocklists(tempDir)
+	blocklist := blocklist.New(Config)
+
+	err := updateBlocklists(blocklist, tempDir)
 	assert.NoError(t, err)
 
-	err = readBlocklists(tempDir)
+	err = readBlocklists(blocklist, tempDir)
 	assert.NoError(t, err)
 }
 
@@ -126,14 +74,14 @@ func Test_start(t *testing.T) {
 
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
-	start()
+	run()
 	time.Sleep(2 * time.Second)
 
 	os.Remove("test.cert")
 	os.Remove("test.key")
 }
 
-func BenchmarkExchange(b *testing.B) {
+/*func BenchmarkExchange(b *testing.B) {
 	s, addrstr, err := RunLocalUDPServer("127.0.0.1:0")
 	assert.NoError(b, err)
 
@@ -172,7 +120,7 @@ func BenchmarkResolver(b *testing.B) {
 }
 
 func BenchmarkUDPHandler(b *testing.B) {
-	h := NewHandler()
+	h := NewDNSHandler()
 
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
@@ -191,7 +139,7 @@ func BenchmarkUDPHandler(b *testing.B) {
 }
 
 func BenchmarkTCPHandler(b *testing.B) {
-	h := NewHandler()
+	h := NewDNSHandler()
 
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
@@ -206,4 +154,4 @@ func BenchmarkTCPHandler(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		h.query("tcp", req)
 	}
-}
+}*/

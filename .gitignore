@@ -1,7 +1,7 @@
-blacklist
 server.crt
 server.key
 sdns
 sdns.toml
 sdns_*
 coverage.out
+blist_data

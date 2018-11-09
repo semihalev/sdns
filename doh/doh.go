@@ -1,7 +1,6 @@
-package main
+package doh
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io/ioutil"
@@ -10,31 +9,11 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/doh"
 )
 
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	client, _, _ := net.SplitHostPort(r.RemoteAddr)
-	allowed, _ := AccessList.Contains(net.ParseIP(client))
-	if !allowed {
-		log.Debug("Client denied to make new query", "client", client, "net", "https")
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
-
-	var f func(http.ResponseWriter, *http.Request)
-	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = h.handleJSON()
-	} else {
-		f = h.handleWireFormat()
-	}
-
-	f(w, r)
-}
-
-func (h *Handler) handleWireFormat() func(http.ResponseWriter, *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
+// HandleWireFormat handle wire format
+func HandleWireFormat(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
+	return func(w http.ResponseWriter, r *http.Request) (ok bool) {
 		var (
 			buf []byte
 			err error
@@ -70,33 +49,35 @@ func (h *Handler) handleWireFormat() func(http.ResponseWriter, *http.Request) {
 			return
 		}
 
-		msg := h.query("https", req)
+		msg := handle("https", req)
+		if msg == nil {
+			return true
+		}
 
 		packed, err := msg.Pack()
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Server", "SDNS/"+Version)
+		w.Header().Set("Server", "SDNS")
 		w.Header().Set("Content-Type", "application/dns-message")
 		w.Write(packed)
+
+		return
 	}
 }
 
-func (h *Handler) handleJSON() func(http.ResponseWriter, *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
+// HandleJSON handle json format
+func HandleJSON(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
+	return func(w http.ResponseWriter, r *http.Request) (ok bool) {
 		name := r.URL.Query().Get("name")
 		if name == "" {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 			return
 		}
-		if !strings.HasSuffix(name, ".") {
-			buf := bytes.NewBufferString(name)
-			buf.WriteString(".")
-			name = buf.String()
-		}
+		name = dns.Fqdn(name)
 
-		qtype := doh.ParseQTYPE(r.URL.Query().Get("type"))
+		qtype := ParseQTYPE(r.URL.Query().Get("type"))
 		if qtype == dns.TypeNone {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 			return
@@ -157,14 +138,17 @@ func (h *Handler) handleJSON() func(http.ResponseWriter, *http.Request) {
 
 		req.Extra = append(req.Extra, opt)
 
-		msg := h.query("https", req)
+		msg := handle("https", req)
+		if msg == nil {
+			return true
+		}
 
-		json, err := json.Marshal(doh.NewMsg(msg))
+		json, err := json.Marshal(NewMsg(msg))
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Server", "SDNS/"+Version)
+		w.Header().Set("Server", "SDNS")
 
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
 			w.Header().Set("Content-Type", "application/x-javascript")
@@ -173,5 +157,7 @@ func (h *Handler) handleJSON() func(http.ResponseWriter, *http.Request) {
 		}
 
 		w.Write(json)
+
+		return
 	}
 }

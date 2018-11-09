@@ -1,4 +1,4 @@
-package main
+package resolver
 
 import (
 	"encoding/base64"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/log"
 )
 
 var (
@@ -21,10 +22,18 @@ var (
 	errInvalidSignaturePeriod = errors.New("incorrect signature validity period")
 	errBadAnswer              = errors.New("response contained a non-zero RCODE")
 	errMissingSigned          = errors.New("signed records are missing")
+
+	localIPs []string
 )
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
+
+	var err error
+	localIPs, err = findLocalIPAddresses()
+	if err != nil {
+		log.Crit("Find local ip addresses failed", "error", err.Error())
+	}
 }
 
 func formatQuestion(q dns.Question) string {
@@ -117,7 +126,7 @@ func findLocalIPAddresses() ([]string, error) {
 }
 
 func isLocalIP(ip string) (ok bool) {
-	for _, lip := range LocalIPs {
+	for _, lip := range localIPs {
 		if lip == ip {
 			ok = true
 			return

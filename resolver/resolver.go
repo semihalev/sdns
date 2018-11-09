@@ -1,4 +1,4 @@
-package main
+package resolver
 
 import (
 	"errors"
@@ -13,18 +13,25 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/config"
 )
 
 // Resolver type
 type Resolver struct {
-	config *dns.ClientConfig
-
 	Qmetrics *prometheus.CounterVec
 
 	Lqueue *cache.LQueue
 	Qcache *cache.QueryCache
 	Ncache *cache.NSCache
 	Ecache *cache.ErrorCache
+
+	cfg *config.Config
+
+	rootservers     *cache.AuthServers
+	root6servers    *cache.AuthServers
+	fallbackservers *cache.AuthServers
+
+	rootkeys []dns.RR
 }
 
 var (
@@ -36,22 +43,54 @@ var (
 	errResolver             = errors.New("resolv failed")
 	errDSRecords            = errors.New("DS records found on parent zone but no signatures")
 
-	rootzone        = "."
-	rootservers     = &cache.AuthServers{}
-	root6servers    = &cache.AuthServers{}
-	fallbackservers = &cache.AuthServers{}
-	rootkeys        = []dns.RR{}
+	rootzone = "."
 )
 
 // NewResolver return a resolver
-func NewResolver() *Resolver {
+func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
-		config: &dns.ClientConfig{},
+		cfg: cfg,
 
 		Ncache: cache.NewNSCache(),
-		Qcache: cache.NewQueryCache(Config.CacheSize, Config.RateLimit),
-		Ecache: cache.NewErrorCache(Config.CacheSize, Config.Expire),
+		Qcache: cache.NewQueryCache(cfg.CacheSize, cfg.RateLimit),
+		Ecache: cache.NewErrorCache(cfg.CacheSize, cfg.Expire),
 		Lqueue: cache.NewLookupQueue(),
+
+		rootservers:     new(cache.AuthServers),
+		root6servers:    new(cache.AuthServers),
+		fallbackservers: new(cache.AuthServers),
+	}
+
+	if len(cfg.RootServers) > 0 {
+		r.rootservers = &cache.AuthServers{}
+		for _, s := range cfg.RootServers {
+			r.rootservers.List = append(r.rootservers.List, cache.NewAuthServer(s))
+		}
+	}
+
+	if len(cfg.Root6Servers) > 0 {
+		r.root6servers = &cache.AuthServers{}
+		for _, s := range cfg.Root6Servers {
+			r.root6servers.List = append(r.root6servers.List, cache.NewAuthServer(s))
+		}
+	}
+
+	if len(cfg.FallbackServers) > 0 {
+		r.fallbackservers = &cache.AuthServers{}
+		for _, s := range cfg.FallbackServers {
+			r.fallbackservers.List = append(r.fallbackservers.List, cache.NewAuthServer(s))
+		}
+	}
+
+	if len(cfg.RootKeys) > 0 {
+		r.rootkeys = []dns.RR{}
+		for _, k := range cfg.RootKeys {
+			rr, err := dns.NewRR(k)
+			if err != nil {
+				log.Crit("Root keys invalid", "error", err.Error())
+			}
+			r.rootkeys = append(r.rootkeys, rr)
+		}
 	}
 
 	r.Qmetrics = prometheus.NewCounterVec(
@@ -373,19 +412,19 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) 
 		Dialer: &net.Dialer{
 			DualStack:     true,
 			FallbackDelay: 100 * time.Millisecond,
-			Timeout:       Config.ConnectTimeout.Duration,
+			Timeout:       r.cfg.ConnectTimeout.Duration,
 		},
-		ReadTimeout:  Config.Timeout.Duration,
-		WriteTimeout: Config.Timeout.Duration,
+		ReadTimeout:  r.cfg.Timeout.Duration,
+		WriteTimeout: r.cfg.Timeout.Duration,
 	}
 
-	if len(Config.OutboundIPs) > 0 {
-		index := randInt(0, len(Config.OutboundIPs))
+	if len(r.cfg.OutboundIPs) > 0 {
+		index := randInt(0, len(r.cfg.OutboundIPs))
 
 		if Net == "tcp" {
-			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIPs[index])}
+			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
 		} else if Net == "udp" {
-			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(Config.OutboundIPs[index])}
+			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
 		}
 	}
 
@@ -420,7 +459,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 	var resp *dns.Msg
 	var err error
 
-	rtt := Config.Timeout.Duration
+	rtt := r.cfg.Timeout.Duration
 	defer func() {
 		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
 		atomic.AddInt64(&server.Count, 1)
@@ -430,8 +469,8 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 	if err != nil && err != dns.ErrTruncated {
 		if strings.Contains(err.Error(), "no route to host") && c.Net == "udp" {
 			c.Net = "tcp"
-			if len(Config.OutboundIPs) > 0 {
-				c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(Config.OutboundIPs[0])}
+			if len(r.cfg.OutboundIPs) > 0 {
+				c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[0])}
 			}
 
 			return r.exchange(server, req, c)
@@ -465,7 +504,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *cache.AuthServ
 	q.Name = upperName(q.Name)
 
 	if q.Name == "" {
-		return rootservers, nil
+		return r.rootservers, nil
 	}
 
 	return r.searchCache(q, cd)
@@ -502,7 +541,7 @@ func (r *Resolver) findSigner(Net string, q dns.Question, resp *dns.Msg, parentd
 			for len(nsplit)-n > 0 {
 				candidate := dns.Fqdn(strings.Join(nsplit[len(nsplit)-n-1:], "."))
 
-				dsDepth := Config.Maxdepth
+				dsDepth := r.cfg.Maxdepth
 				dsResp, err := r.lookupDS(Net, candidate, dsDepth)
 				if err != nil {
 					return nil, "", false, err
@@ -518,7 +557,7 @@ func (r *Resolver) findSigner(Net string, q dns.Question, resp *dns.Msg, parentd
 			}
 		} else if dsname != signer {
 			//try lookup DS records
-			dsDepth := Config.Maxdepth
+			dsDepth := r.cfg.Maxdepth
 			dsResp, err := r.lookupDS(Net, signer, dsDepth)
 			if err != nil {
 				return nil, "", false, err
@@ -564,7 +603,7 @@ func (r *Resolver) lookupDS(Net, qname string, depth int) (msg *dns.Msg, err err
 	}
 
 	depth--
-	dsres, err = r.Resolve(Net, dsReq, rootservers, true, depth, 0, true, nil)
+	dsres, err = r.Resolve(Net, dsReq, r.rootservers, true, depth, 0, true, nil)
 	if err != nil {
 		r.Ecache.Set(key)
 		return nil, err
@@ -622,11 +661,11 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int, cd bool
 	}
 
 	depth--
-	nsres, err = r.Resolve(Net, nsReq, rootservers, true, depth, 0, true, nil)
+	nsres, err = r.Resolve(Net, nsReq, r.rootservers, true, depth, 0, true, nil)
 	if err != nil {
 		//try fallback servers
-		if len(fallbackservers.List) > 0 {
-			nsres, err = r.lookup(Net, nsReq, fallbackservers)
+		if len(r.fallbackservers.List) > 0 {
+			nsres, err = r.lookup(Net, nsReq, r.fallbackservers)
 		}
 	}
 
@@ -643,8 +682,8 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int, cd bool
 
 	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
 		//try fallback servers
-		if len(fallbackservers.List) > 0 {
-			nsres, err = r.lookup(Net, nsReq, fallbackservers)
+		if len(r.fallbackservers.List) > 0 {
+			nsres, err = r.lookup(Net, nsReq, r.fallbackservers)
 			if err != nil {
 				r.Ecache.Set(key)
 				return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", ns, err)
@@ -662,7 +701,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int, cd bool
 }
 
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
-	for _, a := range rootkeys {
+	for _, a := range r.rootkeys {
 		if dnskey, ok := a.(*dns.DNSKEY); ok {
 			dsset = append(dsset, dnskey.ToDS(dns.RSASHA1))
 		}
@@ -692,7 +731,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	dsset := []dns.RR{}
-	for _, a := range rootkeys {
+	for _, a := range r.rootkeys {
 		if dnskey, ok := a.(*dns.DNSKEY); ok {
 			dsset = append(dsset, dnskey.ToDS(dns.RSASHA1))
 		}
@@ -725,15 +764,15 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 
 	msg, _, err := r.Qcache.Get(cacheKey, keyReq)
 	if resp.Question[0].Qtype != dns.TypeDNSKEY && msg == nil {
-		depth := Config.Maxdepth
-		msg, err = r.Resolve(Net, keyReq, rootservers, true, depth, 0, false, nil)
+		depth := r.cfg.Maxdepth
+		msg, err = r.Resolve(Net, keyReq, r.rootservers, true, depth, 0, false, nil)
 		if err != nil {
 			return
 		}
 
 		if msg.Truncated {
 			//retrying in TCP mode
-			msg, err = r.Resolve("tcp", keyReq, rootservers, true, depth, 0, false, nil)
+			msg, err = r.Resolve("tcp", keyReq, r.rootservers, true, depth, 0, false, nil)
 			if err != nil {
 				return
 			}
@@ -831,7 +870,7 @@ func (r *Resolver) checkPriming() error {
 	req.SetEdns0(DefaultMsgSize, true)
 	req.RecursionDesired = true
 
-	resp, err := r.Resolve("udp", req, rootservers, true, 5, 0, false, nil, true)
+	resp, err := r.Resolve("udp", req, r.rootservers, true, 5, 0, false, nil, true)
 	if err != nil {
 		log.Error("root servers update failed", "error", err.Error())
 
@@ -840,7 +879,7 @@ func (r *Resolver) checkPriming() error {
 
 	if resp.Truncated {
 		//retrying in TCP mode
-		resp, err = r.Resolve("tcp", req, rootservers, true, 5, 0, false, nil, true)
+		resp, err = r.Resolve("tcp", req, r.rootservers, true, 5, 0, false, nil, true)
 		if err != nil {
 			return err
 		}
@@ -866,15 +905,15 @@ func (r *Resolver) checkPriming() error {
 		}
 
 		if len(tmpservers.List) > 0 {
-			rootservers.Lock()
-			rootservers.List = tmpservers.List
-			rootservers.Unlock()
+			r.rootservers.Lock()
+			r.rootservers.List = tmpservers.List
+			r.rootservers.Unlock()
 		}
 
 		if len(tmp6servers.List) > 0 {
-			root6servers.Lock()
-			root6servers.List = tmp6servers.List
-			root6servers.Unlock()
+			r.root6servers.Lock()
+			r.root6servers.List = tmp6servers.List
+			r.root6servers.Unlock()
 		}
 
 		if len(tmpservers.List) > 0 || len(tmp6servers.List) > 0 {

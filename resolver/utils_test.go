@@ -1,4 +1,4 @@
-package main
+package resolver
 
 import (
 	"fmt"
@@ -63,6 +63,8 @@ func Test_shuffleStr(t *testing.T) {
 }
 
 func Test_searchAddr(t *testing.T) {
+	testDomain := "google.com."
+
 	m := new(dns.Msg)
 	m.SetQuestion(testDomain, dns.TypeA)
 
@@ -85,18 +87,6 @@ func Test_searchAddr(t *testing.T) {
 	addr, found := searchAddr(m)
 	assert.Equal(t, addr, "127.0.0.1")
 	assert.Equal(t, found, true)
-}
-
-func Test_findLocalIPAddresses(t *testing.T) {
-	var err error
-	LocalIPs, err = findLocalIPAddresses()
-
-	assert.NoError(t, err)
-	assert.Equal(t, len(LocalIPs) > 0, true)
-
-	assert.Equal(t, isLocalIP(LocalIPs[0]), true)
-
-	assert.Equal(t, isLocalIP("255.255.255.255"), false)
 }
 
 func Test_extractRRSet(t *testing.T) {

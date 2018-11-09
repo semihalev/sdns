@@ -1,4 +1,4 @@
-package main
+package resolver
 
 import (
 	"net"
@@ -7,8 +7,27 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/config"
 	"github.com/stretchr/testify/assert"
 )
+
+func makeTestConfig() *config.Config {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
+	cfg := new(config.Config)
+	cfg.RootServers = []string{"192.5.5.241:53"}
+	cfg.RootKeys = []string{
+		".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
+		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
+	}
+	cfg.Maxdepth = 30
+	cfg.Expire = 600
+	cfg.Timeout.Duration = 2 * time.Second
+	cfg.ConnectTimeout.Duration = 2 * time.Second
+
+	return cfg
+}
 
 func RunLocalUDPServer(laddr string) (*dns.Server, string, error) {
 	server, l, _, err := RunLocalUDPServerWithFinChan(laddr)
@@ -46,19 +65,7 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 }
 
 func Test_handler(t *testing.T) {
-	t.Parallel()
-
-	var err error
-
-	handler := NewHandler()
-
-	dns.HandleFunc(".", handler.ServeDNS)
-	defer dns.HandleRemove(".")
-
-	s, addrstr, err := RunLocalUDPServer("127.0.0.1:0")
-	assert.NoError(t, err)
-
-	defer s.Shutdown()
+	handler := New(makeTestConfig())
 
 	c := new(dns.Client)
 	c.ReadTimeout = 15 * time.Second
@@ -68,62 +75,38 @@ func Test_handler(t *testing.T) {
 	m.SetQuestion("www.google.com.", dns.TypeA)
 	m.RecursionDesired = true
 
-	r, _, err := c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r := handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	// test again for caches
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m.SetQuestion("www.apple.com.", dns.TypeA)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	// test again for caches
 	m.SetQuestion("www.apple.com.", dns.TypeA)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
-
-	BlockList.Set("example.com.")
-
-	m.SetQuestion("example.com.", dns.TypeA)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
-
-	a := r.Answer[0].(*dns.A)
-	assert.Equal(t, a.A.String(), "0.0.0.0")
-
-	m.SetQuestion("example.com.", dns.TypeAAAA)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
-
-	aaaa := r.Answer[0].(*dns.AAAA)
-	assert.Equal(t, aaaa.AAAA.String(), "::")
 
 	m.SetEdns0(DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) == 0, true)
 
 	m.SetQuestion("example.com.", dns.TypeA)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m.SetQuestion(".", dns.TypeANY)
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r = handler.handle("udp", m)
 	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
 
 	m.SetQuestion(".", dns.TypeNS)
 	m.RecursionDesired = false
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
+	r = handler.handle("udp", m)
 	assert.NotEqual(t, r.Rcode, dns.RcodeServerFailure)
 
 	m.RecursionDesired = true
@@ -131,21 +114,18 @@ func Test_handler(t *testing.T) {
 	opt := m.IsEdns0()
 	opt.SetVersion(100)
 	opt.SetDo()
-	r, _, err = c.Exchange(m, addrstr)
-	assert.NoError(t, err)
-	assert.NotEqual(t, r.Rcode, dns.RcodeBadVers)
+	r = handler.handle("udp", m)
+	assert.Equal(t, r.Rcode, dns.RcodeBadVers)
 }
 
 func Test_HandlerHINFO(t *testing.T) {
-	t.Parallel()
-
-	handler := NewHandler()
+	handler := New(makeTestConfig())
 
 	m := new(dns.Msg)
 	m.SetQuestion(".", dns.TypeHINFO)
 
 	debugns = true
-	resp := handler.query("udp", m)
+	resp := handler.handle("udp", m)
 
 	assert.Equal(t, true, len(resp.Ns) > 0)
 }

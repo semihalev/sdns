@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/semihalev/sdns/blocklist"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 )
@@ -18,7 +20,7 @@ import (
 var timesSeen = make(map[string]int)
 var whitelist = make(map[string]bool)
 
-func updateBlocklists(path string) error {
+func updateBlocklists(blocklist *blocklist.BlockList, path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if err := os.Mkdir(path, 0755); err != nil {
 			return fmt.Errorf("error creating sources directory: %s", err)
@@ -30,7 +32,7 @@ func updateBlocklists(path string) error {
 	}
 
 	for _, entry := range Config.Blocklist {
-		BlockList.Set(dns.Fqdn(entry))
+		blocklist.Set(dns.Fqdn(entry))
 	}
 
 	fetchBlocklist(path)
@@ -84,7 +86,7 @@ func fetchBlocklist(path string) {
 	wg.Wait()
 }
 
-func readBlocklists(dir string) error {
+func readBlocklists(blocklist *blocklist.BlockList, dir string) error {
 	log.Info("Loading blocked domains", "dir", dir)
 
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -99,7 +101,7 @@ func readBlocklists(dir string) error {
 				return fmt.Errorf("error opening file: %s", err)
 			}
 
-			if err = parseHostFile(file); err != nil {
+			if err = parseHostFile(blocklist, file); err != nil {
 				file.Close()
 				return fmt.Errorf("error parsing hostfile %s", err)
 			}
@@ -118,12 +120,12 @@ func readBlocklists(dir string) error {
 		return fmt.Errorf("error walking location %s", err)
 	}
 
-	log.Info("Blocked domains loaded", "total", BlockList.Length())
+	log.Info("Blocked domains loaded", "total", blocklist.Length())
 
 	return nil
 }
 
-func parseHostFile(file *os.File) error {
+func parseHostFile(blocklist *blocklist.BlockList, file *os.File) error {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -141,8 +143,8 @@ func parseHostFile(file *os.File) error {
 
 			line = dns.Fqdn(line)
 
-			if !BlockList.Exists(line) && !whitelist[line] {
-				BlockList.Set(line)
+			if !blocklist.Exists(line) && !whitelist[line] {
+				blocklist.Set(line)
 			}
 		}
 	}

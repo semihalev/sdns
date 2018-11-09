@@ -1,15 +1,19 @@
-package main
+package resolver
 
 import (
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/doh"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/ctx"
 )
 
 const (
@@ -17,9 +21,11 @@ const (
 	DefaultMsgSize = 1536
 )
 
-// Handler type
-type Handler struct {
+// DNSHandler type
+type DNSHandler struct {
 	r *Resolver
+
+	cfg *config.Config
 }
 
 var debugns bool
@@ -28,20 +34,28 @@ func init() {
 	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
 }
 
-// NewHandler returns a new Handler
-func NewHandler() *Handler {
-	return &Handler{
-		r: NewResolver(),
+// New returns a new Handler
+func New(cfg *config.Config) *DNSHandler {
+	return &DNSHandler{
+		r:   NewResolver(cfg),
+		cfg: cfg,
 	}
 }
 
-// ServeDNS serve tcp or udp query
-func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+// Name return middleware name
+func (h *DNSHandler) Name() string {
+	return "resolver"
+}
+
+// ServeDNS implements the Handle interface.
+func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("Recovered in ServeDNS", "recover", r)
 		}
 	}()
+
+	w, req := dc.DNSWriter, dc.DNSRequest
 
 	var Net string
 	switch w.LocalAddr().(type) {
@@ -51,20 +65,9 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		Net = "udp"
 	}
 
-	client, _, _ := net.SplitHostPort(w.RemoteAddr().String())
-	allowed, _ := AccessList.Contains(net.ParseIP(client))
+	msg := h.handle(Net, req)
 
-	if !allowed {
-		log.Debug("Client denied to make new query", "client", client, "net", Net)
-		return
-	}
-
-	msg := h.query(Net, req)
-
-	err := w.WriteMsg(msg)
-	if err != nil {
-		log.Error("Message writing failed", "error", err.Error())
-	}
+	w.WriteMsg(msg)
 
 	h.r.Qmetrics.With(
 		prometheus.Labels{
@@ -73,7 +76,20 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		}).Inc()
 }
 
-func (h *Handler) query(Net string, req *dns.Msg) *dns.Msg {
+func (h *DNSHandler) ServeHTTP(dc *ctx.Context) {
+	w, r := dc.HTTPWriter, dc.HTTPRequest
+
+	var f func(http.ResponseWriter, *http.Request) bool
+	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
+		f = doh.HandleJSON(h.handle)
+	} else {
+		f = doh.HandleWireFormat(h.handle)
+	}
+
+	f(w, r)
+}
+
+func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	resolverNet := Net
@@ -112,7 +128,7 @@ func (h *Handler) query(Net string, req *dns.Msg) *dns.Msg {
 	if err == nil {
 		log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
 
-		if Config.RateLimit > 0 && rl.Limit() {
+		if h.cfg.RateLimit > 0 && rl.Limit() {
 			return h.handleFailed(req, dns.RcodeRefused, dsReq)
 		}
 
@@ -136,17 +152,11 @@ func (h *Handler) query(Net string, req *dns.Msg) *dns.Msg {
 		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
 	}
 
-	if q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA {
-		if BlockList.Exists(q.Name) {
-			return h.blockEntry(req, key, dsReq)
-		}
-	}
-
 	h.r.Lqueue.Add(key)
 	defer h.r.Lqueue.Done(key)
 
-	depth := Config.Maxdepth
-	mesg, err = h.r.Resolve(resolverNet, req, rootservers, true, depth, 0, false, nil)
+	depth := h.cfg.Maxdepth
+	mesg, err = h.r.Resolve(resolverNet, req, h.r.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
@@ -161,13 +171,13 @@ func (h *Handler) query(Net string, req *dns.Msg) *dns.Msg {
 		opt.SetDo(dsReq)
 
 		h.r.Lqueue.Done(key)
-		return h.query("tcp", req)
+		return h.handle("tcp", req)
 	}
 
 	if mesg.Rcode == dns.RcodeSuccess &&
 		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
 
-		rr, _ := dns.NewRR(req.Question[0].Name + " " + strconv.Itoa(int(Config.Expire)) +
+		rr, _ := dns.NewRR(req.Question[0].Name + " " + strconv.Itoa(int(h.cfg.Expire)) +
 			" IN HINFO comment \"no answer found on authoritative server\"")
 		mesg.Ns = append(mesg.Ns, rr)
 	}
@@ -175,7 +185,7 @@ func (h *Handler) query(Net string, req *dns.Msg) *dns.Msg {
 	//ignore auths TTL for caching, replace with default expire
 	if mesg.Rcode == dns.RcodeNameError {
 		for _, rr := range mesg.Ns {
-			rr.Header().Ttl = Config.Expire
+			rr.Header().Ttl = h.cfg.Expire
 		}
 	}
 
@@ -202,7 +212,7 @@ func (h *Handler) query(Net string, req *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func (h *Handler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
+func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 	//check cname response
 	answerFound := false
 
@@ -243,8 +253,8 @@ func (h *Handler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 				}
 			}
 		} else {
-			depth := Config.Maxdepth
-			respCname, err := h.r.Resolve(Net, cnameReq, rootservers, true, depth, 0, false, nil)
+			depth := h.cfg.Maxdepth
+			respCname, err := h.r.Resolve(Net, cnameReq, h.r.rootservers, true, depth, 0, false, nil)
 			if err == nil && len(respCname.Answer) > 0 {
 				for _, r := range respCname.Answer {
 					msg.Answer = append(msg.Answer, dns.Copy(r))
@@ -270,7 +280,7 @@ func (h *Handler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-func (h *Handler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
+func (h *DNSHandler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
 	m := new(dns.Msg)
 	m.Extra = msg.Extra
 	m.SetRcode(msg, rcode)
@@ -283,7 +293,7 @@ func (h *Handler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
 	return m
 }
 
-func (h *Handler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
+func (h *DNSHandler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
 	dsReq := false
 	opt := req.IsEdns0()
 
@@ -320,7 +330,7 @@ func (h *Handler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
 	return opt, dsReq
 }
 
-func (h *Handler) nsStats(req *dns.Msg) *dns.Msg {
+func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	msg := new(dns.Msg)
@@ -337,12 +347,12 @@ func (h *Handler) nsStats(req *dns.Msg) *dns.Msg {
 			Ttl:    0,
 		}
 
-		rootservers.RLock()
-		for _, server := range rootservers.List {
+		h.r.rootservers.RLock()
+		for _, server := range h.r.rootservers.List {
 			hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
 			msg.Ns = append(msg.Ns, hinfo)
 		}
-		rootservers.RUnlock()
+		h.r.rootservers.RUnlock()
 	} else {
 		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
 		ns, err := h.r.Ncache.Get(nsKey)
@@ -362,50 +372,6 @@ func (h *Handler) nsStats(req *dns.Msg) *dns.Msg {
 			ns.Servers.RUnlock()
 		}
 	}
-
-	return msg
-}
-
-func (h *Handler) blockEntry(req *dns.Msg, key uint64, dsf bool) *dns.Msg {
-	q := req.Question[0]
-
-	msg := new(dns.Msg)
-	msg.SetReply(req)
-	msg.Extra = req.Extra
-
-	if opt := msg.IsEdns0(); opt != nil {
-		opt.SetDo(dsf)
-	}
-
-	nullroute := net.ParseIP(Config.Nullroute)
-	nullroutev6 := net.ParseIP(Config.Nullroutev6)
-
-	switch q.Qtype {
-	case dns.TypeA:
-		rrHeader := dns.RR_Header{
-			Name:   q.Name,
-			Rrtype: dns.TypeA,
-			Class:  dns.ClassINET,
-			Ttl:    Config.Expire,
-		}
-		a := &dns.A{Hdr: rrHeader, A: nullroute}
-		msg.Answer = append(msg.Answer, a)
-	case dns.TypeAAAA:
-		rrHeader := dns.RR_Header{
-			Name:   q.Name,
-			Rrtype: dns.TypeAAAA,
-			Class:  dns.ClassINET,
-			Ttl:    Config.Expire,
-		}
-		a := &dns.AAAA{Hdr: rrHeader, AAAA: nullroutev6}
-		msg.Answer = append(msg.Answer, a)
-	}
-
-	msg.AuthenticatedData = true
-	msg.Authoritative = false
-	msg.RecursionAvailable = true
-
-	h.r.Qcache.Set(key, msg)
 
 	return msg
 }
