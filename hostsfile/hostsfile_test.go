@@ -5,7 +5,11 @@
 package hostsfile
 
 import (
+	"encoding/base64"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path"
 	"reflect"
@@ -246,6 +250,10 @@ func TestHostCacheModification(t *testing.T) {
 	testStaticAddr(t, entip, h)
 }
 
+func TestServeHTTP(t *testing.T) {
+
+}
+
 func TestServeDNS(t *testing.T) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
@@ -310,6 +318,27 @@ func TestServeDNS(t *testing.T) {
 	h.ServeDNS(dc)
 	req.SetQuestion("test.com.", dns.TypePTR)
 	h.ServeDNS(dc)
+
+	request, err := http.NewRequest("GET", "/dns-query?name=thor", nil)
+	assert.NoError(t, err)
+
+	hw := httptest.NewRecorder()
+	dc.ResetHTTP(hw, request)
+	h.ServeHTTP(dc)
+	assert.Equal(t, 200, hw.Code)
+
+	data, err := req.Pack()
+	assert.NoError(t, err)
+
+	dq := base64.RawURLEncoding.EncodeToString(data)
+
+	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
+	assert.NoError(t, err)
+
+	hw = httptest.NewRecorder()
+	dc.ResetHTTP(hw, request)
+	h.ServeHTTP(dc)
+	assert.Equal(t, 200, hw.Code)
 
 	assert.Nil(t, mw.Msg())
 

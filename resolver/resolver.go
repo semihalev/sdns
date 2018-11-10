@@ -42,7 +42,9 @@ var (
 	errTimeout              = errors.New("timedout")
 	errResolver             = errors.New("resolv failed")
 	errDSRecords            = errors.New("DS records found on parent zone but no signatures")
+)
 
+const (
 	rootzone = "."
 )
 

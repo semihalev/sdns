@@ -9,8 +9,17 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/blocklist"
+	"github.com/semihalev/sdns/mock"
 )
 
 func publicKey(priv interface{}) interface{} {
@@ -82,4 +91,28 @@ func generateCertificate() error {
 	keyOut.Close()
 
 	return nil
+}
+
+func Test_Server(t *testing.T) {
+	s := NewServer(Config)
+	blocklist := blocklist.New(Config)
+	s.Register(blocklist)
+
+	blocklist.Set("test.com.")
+
+	req := new(dns.Msg)
+	req.SetQuestion("test.com.", dns.TypeA)
+
+	mw := mock.NewWriter("udp", "127.0.0.1")
+	s.ServeDNS(mw, req)
+
+	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+
+	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
+	assert.NoError(t, err)
+
+	hw := httptest.NewRecorder()
+
+	s.ServeHTTP(hw, request)
+	assert.Equal(t, 200, hw.Code)
 }

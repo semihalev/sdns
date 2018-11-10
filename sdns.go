@@ -13,7 +13,6 @@ import (
 	"github.com/semihalev/sdns/api"
 	"github.com/semihalev/sdns/blocklist"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/hostsfile"
 	"github.com/semihalev/sdns/resolver"
 )
@@ -23,19 +22,16 @@ var (
 	Config *config.Config
 
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "0.2.3-rc2"
+	Version = "0.2.3-rc3"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "0.2.3"
 
 	// ConfigPath returns the configuration path
 	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
-)
 
-func init() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	flag.Usage = func() {
+	// Usage return print usage information
+	Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "OPTIONS:")
 		flag.PrintDefaults()
@@ -43,9 +39,14 @@ func init() {
 		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.toml")
 		fmt.Fprintln(os.Stderr, "")
 	}
+)
+
+func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	flag.Usage = Usage
 }
 
-func configSetup() {
+func setup() {
 	var err error
 
 	if Config, err = config.Load(*ConfigPath, ConfigVersion); err != nil {
@@ -73,36 +74,10 @@ func configSetup() {
 	}
 }
 
-func fetchBlocklists(blocklist *blocklist.BlockList) {
-	timer := time.NewTimer(time.Second)
-
-	select {
-	case <-timer.C:
-		if err := updateBlocklists(blocklist, Config.BlockListDir); err != nil {
-			log.Error("Update blocklists failed", "error", err.Error())
-		}
-
-		if err := readBlocklists(blocklist, Config.BlockListDir); err != nil {
-			log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
-		}
-	}
-}
-
 func run() {
-	server := &Server{
-		addr:           Config.Bind,
-		tlsAddr:        Config.BindTLS,
-		dohAddr:        Config.BindDOH,
-		tlsCertificate: Config.TLSCertificate,
-		tlsPrivateKey:  Config.TLSPrivateKey,
-		rTimeout:       5 * time.Second,
-		wTimeout:       5 * time.Second,
-	}
+	server := NewServer(Config)
 
-	server.pool.New = func() interface{} {
-		return ctx.New(server.handlers)
-	}
-
+	// register middlewares
 	accesslist := accesslist.New(Config)
 	server.Register(accesslist)
 
@@ -128,8 +103,7 @@ func main() {
 
 	log.Info("Starting sdns...", "version", Version)
 
-	configSetup()
-
+	setup()
 	run()
 
 	c := make(chan os.Signal, 1)

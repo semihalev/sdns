@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/tls"
 	"io"
 	l "log"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 
 	"github.com/miekg/dns"
@@ -24,11 +24,25 @@ type Server struct {
 	tlsCertificate string
 	tlsPrivateKey  string
 
-	rTimeout time.Duration
-	wTimeout time.Duration
-
 	handlers []ctx.Handler
 	pool     sync.Pool
+}
+
+// NewServer return new server
+func NewServer(cfg *config.Config) *Server {
+	server := &Server{
+		addr:           cfg.Bind,
+		tlsAddr:        cfg.BindTLS,
+		dohAddr:        cfg.BindDOH,
+		tlsCertificate: cfg.TLSCertificate,
+		tlsPrivateKey:  cfg.TLSPrivateKey,
+	}
+
+	server.pool.New = func() interface{} {
+		return ctx.New(server.handlers)
+	}
+
+	return server
 }
 
 // Register middleware
@@ -56,91 +70,74 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.pool.Put(dc)
 }
 
-// Run starts the server
+// Run listen the services
 func (s *Server) Run() {
-	mux := dns.NewServeMux()
-	mux.Handle(".", s)
+	dns.Handle(".", s)
 
-	tcpServer := &dns.Server{
-		Addr:         s.addr,
-		Net:          "tcp",
-		Handler:      mux,
-		ReadTimeout:  s.rTimeout,
-		WriteTimeout: s.wTimeout,
-		ReusePort:    true,
-	}
+	go s.ListenAndServeDNS("udp")
+	go s.ListenAndServeDNS("tcp")
+	go s.ListenAndServeDNSTLS()
+	go s.ListenAndServeHTTPTLS()
+}
 
-	udpServer := &dns.Server{
-		Addr:         s.addr,
-		Net:          "udp",
-		Handler:      mux,
-		ReadTimeout:  s.rTimeout,
-		WriteTimeout: s.wTimeout,
-		ReusePort:    true,
-	}
+// ListenAndServeDNS Starts a server on address and network specified Invoke handler
+// for incoming queries.
+func (s *Server) ListenAndServeDNS(network string) {
+	log.Info("DNS server listening...", "net", network, "addr", s.addr)
 
-	go listenAndServe(udpServer)
-	go listenAndServe(tcpServer)
-
-	if s.tlsAddr != "" {
-		cert, err := tls.LoadX509KeyPair(s.tlsCertificate, s.tlsPrivateKey)
-		if err != nil {
-			log.Crit("TLS certificate load failed", "error", err.Error())
-			return
-		}
-
-		tlsServer := &dns.Server{
-			Addr:         s.tlsAddr,
-			Net:          "tcp-tls",
-			TLSConfig:    &tls.Config{Certificates: []tls.Certificate{cert}},
-			Handler:      mux,
-			ReadTimeout:  s.rTimeout,
-			WriteTimeout: s.wTimeout,
-		}
-
-		go listenAndServe(tlsServer)
-	}
-
-	if s.dohAddr != "" {
-		logReader, logWriter := io.Pipe()
-		go func(rd io.Reader) {
-			buf := bufio.NewReader(rd)
-			for {
-				line, err := buf.ReadBytes('\n')
-				if err != nil {
-					continue
-				}
-
-				parts := strings.SplitN(string(line[:len(line)-1]), " ", 2)
-				if len(parts) > 1 {
-					log.Warn("Client http socket failed", "net", "https", "error", parts[1])
-				}
-			}
-		}(logReader)
-
-		srv := &http.Server{
-			Addr:         s.dohAddr,
-			Handler:      s,
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
-			IdleTimeout:  30 * time.Second,
-			ErrorLog:     l.New(logWriter, "", 0),
-		}
-
-		go func() {
-			log.Info("DNS server listening...", "net", "https", "addr", s.dohAddr)
-
-			if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
-				log.Crit("DNS listener failed", "net", "https", "addr", s.dohAddr, "error", err.Error())
-			}
-		}()
+	if err := dns.ListenAndServe(s.addr, network, dns.DefaultServeMux); err != nil {
+		log.Crit("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
 	}
 }
 
-func listenAndServe(ds *dns.Server) {
-	log.Info("DNS server listening...", "net", ds.Net, "addr", ds.Addr)
+// ListenAndServeDNSTLS acts like http.ListenAndServeTLS
+func (s *Server) ListenAndServeDNSTLS() {
+	if s.tlsAddr == "" {
+		return
+	}
 
-	if err := ds.ListenAndServe(); err != nil {
-		log.Crit("DNS listener failed", "net", ds.Net, "addr", ds.Addr, "error", err.Error())
+	log.Info("DNS server listening...", "net", "tcp-tls", "addr", s.tlsAddr)
+
+	if err := dns.ListenAndServeTLS(s.tlsAddr, s.tlsCertificate, s.tlsPrivateKey, dns.DefaultServeMux); err != nil {
+		log.Crit("DNS listener failed", "net", "tcp-tls", "addr", s.tlsAddr, "error", err.Error())
+	}
+}
+
+// ListenAndServeHTTPTLS acts like http.ListenAndServeTLS
+func (s *Server) ListenAndServeHTTPTLS() {
+	if s.dohAddr == "" {
+		return
+	}
+
+	log.Info("DNS server listening...", "net", "https", "addr", s.dohAddr)
+
+	logReader, logWriter := io.Pipe()
+	go readlogs(logReader)
+
+	srv := &http.Server{
+		Addr:         s.dohAddr,
+		Handler:      s,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		ErrorLog:     l.New(logWriter, "", 0),
+	}
+
+	if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
+		log.Crit("DNSs listener failed", "net", "https", "addr", s.dohAddr, "error", err.Error())
+	}
+}
+
+func readlogs(rd io.Reader) {
+	buf := bufio.NewReader(rd)
+	for {
+		line, err := buf.ReadBytes('\n')
+		if err != nil {
+			continue
+		}
+
+		parts := strings.SplitN(string(line[:len(line)-1]), " ", 2)
+		if len(parts) > 1 {
+			log.Warn("Client http socket failed", "net", "https", "error", parts[1])
+		}
 	}
 }

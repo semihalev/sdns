@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/semihalev/sdns/blocklist"
 
@@ -19,6 +20,21 @@ import (
 
 var timesSeen = make(map[string]int)
 var whitelist = make(map[string]bool)
+
+func fetchBlocklists(blocklist *blocklist.BlockList) {
+	timer := time.NewTimer(time.Second)
+
+	select {
+	case <-timer.C:
+		if err := updateBlocklists(blocklist, Config.BlockListDir); err != nil {
+			log.Error("Update blocklists failed", "error", err.Error())
+		}
+
+		if err := readBlocklists(blocklist, Config.BlockListDir); err != nil {
+			log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
+		}
+	}
+}
 
 func updateBlocklists(blocklist *blocklist.BlockList, path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {

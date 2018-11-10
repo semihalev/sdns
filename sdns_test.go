@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,7 +63,7 @@ func Test_start(t *testing.T) {
 	err := generateCertificate()
 	assert.NoError(t, err)
 
-	configSetup()
+	setup()
 
 	Config.TLSCertificate = "test.cert"
 	Config.TLSPrivateKey = "test.key"
@@ -79,6 +80,11 @@ func Test_start(t *testing.T) {
 
 	os.Remove("test.cert")
 	os.Remove("test.key")
+
+	stderr := os.Stderr
+	os.Stderr, _ = os.Open(os.DevNull)
+	flag.Usage()
+	os.Stderr = stderr
 }
 
 /*func BenchmarkExchange(b *testing.B) {
