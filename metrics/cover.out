@@ -1,7 +1,0 @@
-mode: atomic
-github.com/semihalev/sdns/metrics/metrics.go:19.39,32.2 3 1
-github.com/semihalev/sdns/metrics/metrics.go:35.33,37.2 1 1
-github.com/semihalev/sdns/metrics/metrics.go:40.45,46.29 4 2
-github.com/semihalev/sdns/metrics/metrics.go:51.2,55.11 1 1
-github.com/semihalev/sdns/metrics/metrics.go:46.29,49.3 2 1
-github.com/semihalev/sdns/metrics/metrics.go:58.46,60.2 1 1
