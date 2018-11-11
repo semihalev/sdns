@@ -6,14 +6,13 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/doh"
-
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/doh"
 )
 
 const (
@@ -49,12 +48,6 @@ func (h *DNSHandler) Name() string {
 
 // ServeDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("Recovered in ServeDNS", "recover", r)
-		}
-	}()
-
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	var Net string

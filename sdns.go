@@ -78,6 +78,8 @@ func run() {
 	server := NewServer(Config)
 
 	// register middlewares
+	server.Register(&Recovery{})
+
 	accesslist := accesslist.New(Config)
 	server.Register(accesslist)
 
