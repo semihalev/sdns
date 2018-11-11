@@ -14,6 +14,7 @@ import (
 	"github.com/semihalev/sdns/blocklist"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/hostsfile"
+	"github.com/semihalev/sdns/metrics"
 	"github.com/semihalev/sdns/resolver"
 )
 
@@ -79,6 +80,9 @@ func run() {
 
 	// register middlewares
 	server.Register(&Recovery{})
+
+	metrics := metrics.New(Config)
+	server.Register(metrics)
 
 	accesslist := accesslist.New(Config)
 	server.Register(accesslist)

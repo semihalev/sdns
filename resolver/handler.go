@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	"github.com/miekg/dns"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
@@ -61,12 +60,6 @@ func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
 	msg := h.handle(Net, req)
 
 	w.WriteMsg(msg)
-
-	h.r.Qmetrics.With(
-		prometheus.Labels{
-			"qtype": dns.TypeToString[req.Question[0].Qtype],
-			"rcode": dns.RcodeToString[msg.Rcode],
-		}).Inc()
 }
 
 func (h *DNSHandler) ServeHTTP(dc *ctx.Context) {

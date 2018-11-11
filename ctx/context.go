@@ -16,7 +16,7 @@ type Handler interface {
 
 // Context type
 type Context struct {
-	DNSWriter  dns.ResponseWriter
+	DNSWriter  ResponseWriter
 	DNSRequest *dns.Msg
 
 	HTTPWriter  http.ResponseWriter
@@ -31,8 +31,9 @@ const abortIndex int8 = math.MaxInt8 / 2
 // New return new dnscontext
 func New(handlers []Handler) *Context {
 	return &Context{
-		handlers: handlers,
-		index:    -1,
+		DNSWriter: &responseWriter{},
+		handlers:  handlers,
+		index:     -1,
 	}
 }
 
@@ -59,7 +60,8 @@ func (dc *Context) Abort() {
 
 // ResetDNS reset dns vars
 func (dc *Context) ResetDNS(w dns.ResponseWriter, r *dns.Msg) {
-	dc.DNSRequest, dc.DNSWriter = r, w
+	dc.DNSWriter.Reset(w)
+	dc.DNSRequest = r
 
 	dc.index = -1
 }

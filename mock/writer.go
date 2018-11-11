@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/miekg/dns"
@@ -30,6 +31,15 @@ func NewWriter(Net, addr string) *Writer {
 	}
 }
 
+// Rcode return message response code
+func (w *Writer) Rcode() int {
+	if w.msg == nil {
+		return dns.RcodeServerFailure
+	}
+
+	return w.msg.Rcode
+}
+
 // Msg return current dns message
 func (w *Writer) Msg() *dns.Msg {
 	return w.msg
@@ -49,6 +59,16 @@ func (w *Writer) Write(b []byte) (int, error) {
 func (w *Writer) WriteMsg(msg *dns.Msg) error {
 	w.msg = msg
 	return nil
+}
+
+// Written func
+func (w *Writer) Written() bool {
+	return w.msg != nil
+}
+
+// Reset func
+func (w *Writer) Reset(writer dns.ResponseWriter) {
+	fmt.Println("reset called")
 }
 
 // Close func

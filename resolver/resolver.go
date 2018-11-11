@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
@@ -18,8 +17,6 @@ import (
 
 // Resolver type
 type Resolver struct {
-	Qmetrics *prometheus.CounterVec
-
 	Lqueue *cache.LQueue
 	Qcache *cache.QueryCache
 	Ncache *cache.NSCache
@@ -94,15 +91,6 @@ func NewResolver(cfg *config.Config) *Resolver {
 			r.rootkeys = append(r.rootkeys, rr)
 		}
 	}
-
-	r.Qmetrics = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "dns_queries_total",
-			Help: "How many DNS queries processed",
-		},
-		[]string{"qtype", "rcode"},
-	)
-	prometheus.Register(r.Qmetrics)
 
 	r.checkPriming()
 
@@ -788,7 +776,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 			}
 
 			r.Qcache.Set(cacheKey, resp)
-			log.Info("Good! root keys verified and set in cache")
+			log.Debug("Good! root keys verified and set in cache")
 			return true, nil
 		}
 
@@ -919,7 +907,7 @@ func (r *Resolver) checkPriming() error {
 		}
 
 		if len(tmpservers.List) > 0 || len(tmp6servers.List) > 0 {
-			log.Info("Good! root servers update successful")
+			log.Debug("Good! root servers update successful")
 
 			return nil
 		}
