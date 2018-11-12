@@ -325,39 +325,33 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.Authoritative = false
 	msg.RecursionAvailable = true
 
-	if q.Name == rootzone {
-		rrHeader := dns.RR_Header{
-			Name:   q.Name,
-			Rrtype: dns.TypeHINFO,
-			Class:  dns.ClassINET,
-			Ttl:    0,
-		}
+	servers := h.r.rootservers
+	ttl := uint32(3600)
+	name := rootzone
 
-		h.r.rootservers.RLock()
-		for _, server := range h.r.rootservers.List {
-			hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
-			msg.Ns = append(msg.Ns, hinfo)
-		}
-		h.r.rootservers.RUnlock()
-	} else {
+	if q.Name != rootzone {
 		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
 		ns, err := h.r.Ncache.Get(nsKey)
 		if err == nil {
-			rrHeader := dns.RR_Header{
-				Name:   q.Name,
-				Rrtype: dns.TypeHINFO,
-				Class:  dns.ClassINET,
-				Ttl:    ns.TTL,
-			}
-
-			ns.Servers.RLock()
-			for _, server := range ns.Servers.List {
-				hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
-				msg.Ns = append(msg.Ns, hinfo)
-			}
-			ns.Servers.RUnlock()
+			servers = ns.Servers
+			ttl = ns.TTL
+			name = q.Name
 		}
 	}
+
+	rrHeader := dns.RR_Header{
+		Name:   name,
+		Rrtype: dns.TypeHINFO,
+		Class:  dns.ClassINET,
+		Ttl:    ttl,
+	}
+
+	servers.RLock()
+	for _, server := range servers.List {
+		hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
+		msg.Ns = append(msg.Ns, hinfo)
+	}
+	servers.RUnlock()
 
 	return msg
 }
