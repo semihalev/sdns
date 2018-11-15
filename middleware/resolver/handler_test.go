@@ -73,6 +73,8 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 func Test_handler(t *testing.T) {
 	handler := New(makeTestConfig())
 
+	assert.Equal(t, "resolver", handler.Name())
+
 	c := new(dns.Client)
 	c.ReadTimeout = 15 * time.Second
 	c.WriteTimeout = 15 * time.Second

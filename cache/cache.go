@@ -9,7 +9,6 @@ import (
 var (
 	// WallClock is the wall clock
 	WallClock = clockwork.NewRealClock()
-
 	// ErrCacheNotFound error
 	ErrCacheNotFound = errors.New("cache not found")
 	// ErrCacheExpired error
