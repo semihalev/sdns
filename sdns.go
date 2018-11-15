@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/semihalev/sdns/server"
-
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/accesslist"
 	"github.com/semihalev/sdns/api"
@@ -19,6 +17,7 @@ import (
 	"github.com/semihalev/sdns/metrics"
 	"github.com/semihalev/sdns/recovery"
 	"github.com/semihalev/sdns/resolver"
+	"github.com/semihalev/sdns/server"
 )
 
 var (

@@ -91,10 +91,10 @@
   version = "v1.0.1"
 
 [[projects]]
+  branch = "master"
   name = "github.com/miekg/dns"
   packages = ["."]
-  revision = "7064f7248f5fa5fd79382a76328b4e200b79e4ae"
-  version = "v1.0.15"
+  revision = "043a4427571164ae70aacc20ba7ad85a1d51b13e"
 
 [[projects]]
   name = "github.com/modern-go/concurrent"
