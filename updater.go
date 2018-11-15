@@ -12,10 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/sdns/blocklist"
-
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/middleware/blocklist"
 )
 
 var timesSeen = make(map[string]int)

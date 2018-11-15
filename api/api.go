@@ -9,7 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/blocklist"
+	"github.com/semihalev/sdns/middleware/blocklist"
 	"gopkg.in/gin-contrib/cors.v1"
 )
 

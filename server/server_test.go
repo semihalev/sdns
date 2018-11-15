@@ -17,14 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-
-	"github.com/stretchr/testify/assert"
-
-	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/blocklist"
+	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/sdns/mock"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMain(m *testing.M) {

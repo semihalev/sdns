@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/blocklist"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/stretchr/testify/assert"
 )
 

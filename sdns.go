@@ -9,14 +9,14 @@ import (
 	"time"
 
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/accesslist"
 	"github.com/semihalev/sdns/api"
-	"github.com/semihalev/sdns/blocklist"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/hostsfile"
-	"github.com/semihalev/sdns/metrics"
-	"github.com/semihalev/sdns/recovery"
-	"github.com/semihalev/sdns/resolver"
+	"github.com/semihalev/sdns/middleware/accesslist"
+	"github.com/semihalev/sdns/middleware/blocklist"
+	"github.com/semihalev/sdns/middleware/hostsfile"
+	"github.com/semihalev/sdns/middleware/metrics"
+	"github.com/semihalev/sdns/middleware/recovery"
+	"github.com/semihalev/sdns/middleware/resolver"
 	"github.com/semihalev/sdns/server"
 )
 

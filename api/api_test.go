@@ -6,11 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/blocklist"
-	"github.com/semihalev/sdns/config"
-
 	"github.com/gin-gonic/gin"
+	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware/blocklist"
 )
 
 func Test_Run(t *testing.T) {
