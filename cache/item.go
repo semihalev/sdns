@@ -1,8 +1,6 @@
 package cache
 
 import (
-	"time"
-
 	"github.com/miekg/dns"
 )
 
@@ -14,12 +12,9 @@ type item struct {
 	Answer             []dns.RR
 	Ns                 []dns.RR
 	Extra              []dns.RR
-
-	origTTL uint32
-	stored  time.Time
 }
 
-func newItem(m *dns.Msg, now time.Time, d time.Duration) *item {
+func newItem(m *dns.Msg) *item {
 	i := new(item)
 	i.Rcode = m.Rcode
 	i.Authoritative = m.Authoritative
@@ -39,9 +34,6 @@ func newItem(m *dns.Msg, now time.Time, d time.Duration) *item {
 	for j, r := range m.Extra {
 		i.Extra[j] = dns.Copy(r)
 	}
-
-	i.origTTL = uint32(d.Seconds())
-	i.stored = now.UTC()
 
 	return i
 }
@@ -69,9 +61,4 @@ func (i *item) toMsg(m *dns.Msg) *dns.Msg {
 		m1.Extra[j] = dns.Copy(r)
 	}
 	return m1
-}
-
-func (i *item) ttl(now time.Time) int {
-	ttl := int(i.origTTL) - int(now.UTC().Sub(i.stored).Seconds())
-	return ttl
 }

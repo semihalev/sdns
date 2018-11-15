@@ -16,6 +16,7 @@ func Test_Cache(t *testing.T) {
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+	m.SetEdns0(4096, true)
 
 	key := Hash(m.Question[0])
 

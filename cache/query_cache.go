@@ -91,7 +91,7 @@ func (c *QueryCache) Set(key uint64, msg *dns.Msg) error {
 	shard := key & (shardSize - 1)
 
 	q := &Query{
-		Item:       newItem(msg, time.Now(), time.Hour),
+		Item:       newItem(msg),
 		RateLimit:  rl.New(c.rate, time.Second),
 		UpdateTime: WallClock.Now().Truncate(time.Second),
 	}
