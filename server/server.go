@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bufio"
@@ -28,8 +28,8 @@ type Server struct {
 	pool     sync.Pool
 }
 
-// NewServer return new server
-func NewServer(cfg *config.Config) *Server {
+// New return new server
+func New(cfg *config.Config) *Server {
 	server := &Server{
 		addr:           cfg.Bind,
 		tlsAddr:        cfg.BindTLS,
@@ -86,7 +86,7 @@ func (s *Server) ListenAndServeDNS(network string) {
 	log.Info("DNS server listening...", "net", network, "addr", s.addr)
 
 	if err := dns.ListenAndServe(s.addr, network, dns.DefaultServeMux); err != nil {
-		log.Crit("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
+		log.Error("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
 	}
 }
 
@@ -99,7 +99,7 @@ func (s *Server) ListenAndServeDNSTLS() {
 	log.Info("DNS server listening...", "net", "tcp-tls", "addr", s.tlsAddr)
 
 	if err := dns.ListenAndServeTLS(s.tlsAddr, s.tlsCertificate, s.tlsPrivateKey, dns.DefaultServeMux); err != nil {
-		log.Crit("DNS listener failed", "net", "tcp-tls", "addr", s.tlsAddr, "error", err.Error())
+		log.Error("DNS listener failed", "net", "tcp-tls", "addr", s.tlsAddr, "error", err.Error())
 	}
 }
 
@@ -123,7 +123,7 @@ func (s *Server) ListenAndServeHTTPTLS() {
 	}
 
 	if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
-		log.Crit("DNSs listener failed", "net", "https", "addr", s.dohAddr, "error", err.Error())
+		log.Error("DNSs listener failed", "net", "https", "addr", s.dohAddr, "error", err.Error())
 	}
 }
 

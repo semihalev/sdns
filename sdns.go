@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/semihalev/sdns/server"
+
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/accesslist"
 	"github.com/semihalev/sdns/api"
@@ -15,6 +17,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/hostsfile"
 	"github.com/semihalev/sdns/metrics"
+	"github.com/semihalev/sdns/recovery"
 	"github.com/semihalev/sdns/resolver"
 )
 
@@ -23,7 +26,7 @@ var (
 	Config *config.Config
 
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "0.2.3"
+	Version = "0.2.4-rc1"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "0.2.3"
@@ -76,10 +79,10 @@ func setup() {
 }
 
 func run() {
-	server := NewServer(Config)
+	server := server.New(Config)
 
 	// register middlewares
-	server.Register(&Recovery{})
+	server.Register(&recovery.Recovery{})
 
 	metrics := metrics.New(Config)
 	server.Register(metrics)

@@ -3,7 +3,7 @@ GOFMT ?= gofmt "-s"
 PACKAGES ?= $(shell $(GO) list ./... | grep -v /vendor/)
 VETPACKAGES ?= $(shell $(GO) list ./... | grep -v /vendor/ | grep -v /examples/)
 GOFILES := $(shell find . -name "*.go" -type f -not -path "./vendor/*")
-TESTFOLDER := $(shell $(GO) list ./... | grep -E 'ctx$$|config$$|resolver$$|sdns$$|cache$$|doh$$|blocklist$$|hostsfile$$|accesslist$$|api$$|dnsutil$$|metrics$$')
+TESTFOLDER := $(shell $(GO) list ./...)
 APP_NAME=sdns
 
 all: install

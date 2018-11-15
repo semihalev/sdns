@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"crypto/ecdsa"
@@ -8,12 +8,17 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/config"
 
 	"github.com/stretchr/testify/assert"
 
@@ -21,6 +26,11 @@ import (
 	"github.com/semihalev/sdns/blocklist"
 	"github.com/semihalev/sdns/mock"
 )
+
+func TestMain(m *testing.M) {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	m.Run()
+}
 
 func publicKey(priv interface{}) interface{} {
 	switch k := priv.(type) {
@@ -75,14 +85,14 @@ func generateCertificate() error {
 		return err
 	}
 
-	certOut, err := os.OpenFile("test.cert", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	certOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.cert"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	if err != nil {
 		return err
 	}
 	certOut.Close()
 
-	keyOut, err := os.OpenFile("test.key", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	keyOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.key"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
@@ -93,9 +103,52 @@ func generateCertificate() error {
 	return nil
 }
 
+func Test_logPipe(t *testing.T) {
+	logReader, logWriter := io.Pipe()
+	go readlogs(logReader)
+	logWriter.Write([]byte("test test test test test test\n"))
+}
+
+func Test_ServerNoBind(t *testing.T) {
+	cfg := &config.Config{}
+
+	s := New(cfg)
+	s.Run()
+}
+
+func Test_ServerBindFail(t *testing.T) {
+	cfg := &config.Config{}
+
+	cfg.TLSCertificate = "cert"
+	cfg.TLSPrivateKey = "key"
+	cfg.LogLevel = "crit"
+	cfg.Bind = "1:1"
+	cfg.BindTLS = "1:2"
+	cfg.BindDOH = "1:3"
+
+	s := New(cfg)
+	s.Run()
+}
+
 func Test_Server(t *testing.T) {
-	s := NewServer(Config)
-	blocklist := blocklist.New(Config)
+	cfg := &config.Config{}
+	err := generateCertificate()
+	assert.NoError(t, err)
+
+	cert := filepath.Join(os.TempDir(), "test.cert")
+	privkey := filepath.Join(os.TempDir(), "test.key")
+
+	cfg.TLSCertificate = cert
+	cfg.TLSPrivateKey = privkey
+	cfg.LogLevel = "crit"
+	cfg.Bind = "127.0.0.1:0"
+	cfg.BindTLS = "127.0.0.1:23222"
+	cfg.BindDOH = "127.0.0.1:23223"
+
+	s := New(cfg)
+	s.Run()
+
+	blocklist := blocklist.New(cfg)
 	s.Register(blocklist)
 
 	blocklist.Set("test.com.")
@@ -115,4 +168,9 @@ func Test_Server(t *testing.T) {
 
 	s.ServeHTTP(hw, request)
 	assert.Equal(t, 200, hw.Code)
+
+	time.Sleep(2 * time.Second)
+
+	os.Remove(cert)
+	os.Remove(privkey)
 }

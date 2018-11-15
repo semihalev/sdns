@@ -1,4 +1,4 @@
-package main
+package recovery
 
 import (
 	"net/http"
@@ -22,7 +22,7 @@ func Test_recoveryDNS(t *testing.T) {
 
 	mw := mock.NewWriter("udp", "127.0.0.1")
 	req := new(dns.Msg)
-	req.SetQuestion(testDomain, dns.TypeA)
+	req.SetQuestion("test.com.", dns.TypeA)
 
 	dc.ResetDNS(mw, req)
 
