@@ -261,9 +261,8 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
 		typesErrors[sig.TypeCovered] = false
 	}
 
-	//TODO: check rrset covered from rrsig records
 main:
-	for i, sigRR := range sigs {
+	for _, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
 		for _, k := range keys {
 			if !strings.HasSuffix(sig.Header().Name, k.Header().Name) {
@@ -278,9 +277,9 @@ main:
 		if len(rest) == 0 {
 			return false, errMissingSigned
 		}
-		k, present := keys[sig.KeyTag]
-		if !present {
-			if i != len(sigs)-1 {
+		k, ok := keys[sig.KeyTag]
+		if !ok {
+			if !typesErrors[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
 				continue
 			}
 			return false, errMissingDNSKEY
