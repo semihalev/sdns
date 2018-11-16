@@ -40,6 +40,7 @@ type Config struct {
 	CacheSize       int
 	Maxdepth        int
 	RateLimit       int
+	ClientRateLimit int
 	Blocklist       []string
 	Whitelist       []string
 }
@@ -176,6 +177,9 @@ maxdepth = 30
 
 # query based ratelimit per second, 0 for disable
 ratelimit = 0
+
+# client ip address based ratelimit per minute, 0 for disable
+clientratelimit = 0
 
 # manual blocklist entries
 blocklist = []

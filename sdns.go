@@ -15,6 +15,7 @@ import (
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/sdns/middleware/hostsfile"
 	"github.com/semihalev/sdns/middleware/metrics"
+	"github.com/semihalev/sdns/middleware/ratelimit"
 	"github.com/semihalev/sdns/middleware/recovery"
 	"github.com/semihalev/sdns/middleware/resolver"
 	"github.com/semihalev/sdns/server"
@@ -28,7 +29,7 @@ var (
 	Version = "0.2.4-rc1"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-	ConfigVersion = "0.2.3"
+	ConfigVersion = "0.2.4"
 
 	// ConfigPath returns the configuration path
 	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
@@ -88,6 +89,9 @@ func run() {
 
 	accesslist := accesslist.New(Config)
 	server.Register(accesslist)
+
+	ratelimit := ratelimit.New(Config)
+	server.Register(ratelimit)
 
 	hostsfile := hostsfile.New(Config)
 	server.Register(hostsfile)
