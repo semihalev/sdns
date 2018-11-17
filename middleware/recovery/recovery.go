@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/dnsutil"
 )
 
 // Recovery dummy type
@@ -21,7 +22,7 @@ func (r *Recovery) Name() string { return "recovery" }
 func (r *Recovery) ServeDNS(dc *ctx.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			dns.HandleFailed(dc.DNSWriter, dc.DNSRequest)
+			dc.DNSWriter.WriteMsg(dnsutil.HandleFailed(dc.DNSRequest, dns.RcodeServerFailure, false))
 
 			log.Error("Recovered in ServeDNS", "recover", r)
 

@@ -13,7 +13,7 @@ import (
 
 // HandleWireFormat handle wire format
 func HandleWireFormat(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
-	return func(w http.ResponseWriter, r *http.Request) (ok bool) {
+	return func(w http.ResponseWriter, r *http.Request) (next bool) {
 		var (
 			buf []byte
 			err error
@@ -69,7 +69,7 @@ func HandleWireFormat(handle func(string, *dns.Msg) *dns.Msg) func(http.Response
 
 // HandleJSON handle json format
 func HandleJSON(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
-	return func(w http.ResponseWriter, r *http.Request) (ok bool) {
+	return func(w http.ResponseWriter, r *http.Request) (next bool) {
 		name := r.URL.Query().Get("name")
 		if name == "" {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)

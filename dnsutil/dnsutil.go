@@ -3,6 +3,8 @@ package dnsutil
 import (
 	"net"
 	"strings"
+
+	"github.com/miekg/dns"
 )
 
 // ExtractAddressFromReverse turns a standard PTR reverse record name
@@ -73,9 +75,115 @@ func reverse6(slice []string) string {
 	return ip.String()
 }
 
+// HandleFailed returns message specified with rcode.
+func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
+	m := new(dns.Msg)
+	m.Extra = req.Extra
+	m.SetRcode(req, rcode)
+	m.RecursionAvailable = true
+
+	if opt := m.IsEdns0(); opt != nil {
+		opt.SetDo(do)
+	}
+
+	return m
+}
+
+// SetEdns0 returns replaced or new opt rr and if request has do
+func SetEdns0(req *dns.Msg) (*dns.OPT, bool) {
+	do := false
+	opt := req.IsEdns0()
+
+	if opt != nil {
+		opt.SetUDPSize(DefaultMsgSize)
+		if opt.Version() != 0 {
+			return opt, false
+		}
+
+		ops := opt.Option
+
+		opt.Option = []dns.EDNS0{}
+
+		for _, option := range ops {
+			if option.Option() == dns.EDNS0SUBNET {
+				opt.Option = append(opt.Option, option)
+			}
+		}
+
+		do = opt.Do()
+
+		opt.Header().Ttl = 0
+		opt.SetDo()
+	} else {
+		opt = new(dns.OPT)
+		opt.Hdr.Name = "."
+		opt.Hdr.Rrtype = dns.TypeOPT
+		opt.SetUDPSize(DefaultMsgSize)
+		opt.SetDo()
+
+		req.Extra = append(req.Extra, opt)
+	}
+
+	return opt, do
+}
+
+// ClearOPT returns cleared opt message
+func ClearOPT(msg *dns.Msg) *dns.Msg {
+	extra := make([]dns.RR, len(msg.Extra))
+	copy(extra, msg.Extra)
+
+	msg.Extra = []dns.RR{}
+
+	for _, rr := range extra {
+		switch rr.(type) {
+		case *dns.OPT:
+			continue
+		default:
+			msg.Extra = append(msg.Extra, rr)
+		}
+	}
+
+	return msg
+}
+
+// ClearDNSSEC returns cleared RRSIG and NSECx message
+func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
+	answer := make([]dns.RR, len(msg.Answer))
+	copy(answer, msg.Answer)
+
+	msg.Answer = []dns.RR{}
+
+	for _, rr := range answer {
+		switch rr.(type) {
+		case *dns.RRSIG, *dns.NSEC3, *dns.NSEC:
+			continue
+		default:
+			msg.Answer = append(msg.Answer, rr)
+		}
+	}
+
+	ns := make([]dns.RR, len(msg.Ns))
+	copy(ns, msg.Ns)
+
+	msg.Ns = []dns.RR{}
+
+	for _, rr := range ns {
+		switch rr.(type) {
+		case *dns.RRSIG, *dns.NSEC3, *dns.NSEC:
+			continue
+		default:
+			msg.Ns = append(msg.Ns, rr)
+		}
+	}
+
+	return msg
+}
+
 const (
 	// IP4arpa is the reverse tree suffix for v4 IP addresses.
 	IP4arpa = ".in-addr.arpa."
 	// IP6arpa is the reverse tree suffix for v6 IP addresses.
 	IP6arpa = ".ip6.arpa."
+	// DefaultMsgSize EDNS0 message size
+	DefaultMsgSize = 1536
 )

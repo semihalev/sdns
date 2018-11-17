@@ -13,14 +13,15 @@ import (
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/dnsutil"
+	mcache "github.com/semihalev/sdns/middleware/cache"
 )
 
 // Resolver type
 type Resolver struct {
-	Lqueue *cache.LQueue
-	Qcache *cache.QueryCache
 	Ncache *cache.NSCache
-	Ecache *cache.ErrorCache
+
+	cache *mcache.Cache
 
 	cfg *config.Config
 
@@ -46,14 +47,13 @@ const (
 )
 
 // NewResolver return a resolver
-func NewResolver(cfg *config.Config) *Resolver {
+func NewResolver(cfg *config.Config, mcache *mcache.Cache) *Resolver {
 	r := &Resolver{
 		cfg: cfg,
 
+		cache: mcache,
+
 		Ncache: cache.NewNSCache(),
-		Qcache: cache.NewQueryCache(cfg.CacheSize, cfg.RateLimit),
-		Ecache: cache.NewErrorCache(cfg.CacheSize, cfg.Expire),
-		Lqueue: cache.NewLookupQueue(),
 
 		rootservers:     new(cache.AuthServers),
 		root6servers:    new(cache.AuthServers),
@@ -302,7 +302,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 					authservers.List = append(authservers.List, cache.NewAuthServer(s))
 				}
 
-				r.Ncache.Set(key, nil, nsrr.Header().Ttl, authservers)
+				r.Ncache.Set(key, nil, authservers)
 			}
 			//non extra rr for some nameservers, try lookup
 			for k, addr := range nsmap {
@@ -376,7 +376,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 		}
 
 		//final cache
-		r.Ncache.Set(key, parentdsrr, nsrr.Header().Ttl, authservers)
+		r.Ncache.Set(key, parentdsrr, authservers)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
 
 		if depth <= 0 {
@@ -473,7 +473,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags
-		req = clearOPT(req)
+		req = dnsutil.ClearOPT(req)
 		return r.exchange(server, req, c)
 	}
 
@@ -566,27 +566,27 @@ func (r *Resolver) lookupDS(Net, qname string, depth int) (msg *dns.Msg, err err
 
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
-	dsReq.SetEdns0(DefaultMsgSize, true)
+	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	dsReq.RecursionDesired = true
 
 	key := cache.Hash(dsReq.Question[0])
 
-	if c := r.Lqueue.Get(key); c != nil {
+	if c := r.cache.LookupQueue.Get(key); c != nil {
 		return nil, fmt.Errorf("ds records failed (like loop?)")
 	}
 
-	dsres, _, err := r.Qcache.Get(key, dsReq)
+	dsres, _, err := r.cache.GetP(key, dsReq)
 	if err == nil {
 		return dsres, nil
 	}
 
-	err = r.Ecache.Get(key)
+	err = r.cache.GetN(key, dsReq)
 	if err == nil {
 		return nil, fmt.Errorf("ds records error occurred (cached)")
 	}
 
-	r.Lqueue.Add(key)
-	defer r.Lqueue.Done(key)
+	r.cache.LookupQueue.Add(key)
+	defer r.cache.LookupQueue.Done(key)
 
 	if depth <= 0 {
 		return nil, fmt.Errorf("ds records max depth reach")
@@ -595,13 +595,13 @@ func (r *Resolver) lookupDS(Net, qname string, depth int) (msg *dns.Msg, err err
 	depth--
 	dsres, err = r.Resolve(Net, dsReq, r.rootservers, true, depth, 0, true, nil)
 	if err != nil {
-		r.Ecache.Set(key)
+		r.cache.Set(key, dnsutil.HandleFailed(dsReq, dns.RcodeServerFailure, true))
 		return nil, err
 	}
 
 	if dsres.Truncated && dsres.Rcode == dns.RcodeSuccess {
 		//retrying in TCP mode
-		r.Lqueue.Done(key)
+		r.cache.LookupQueue.Done(key)
 		return r.lookupDS("tcp", qname, depth+1)
 	}
 
@@ -609,7 +609,7 @@ func (r *Resolver) lookupDS(Net, qname string, depth int) (msg *dns.Msg, err err
 		return nil, fmt.Errorf("no answer found")
 	}
 
-	r.Qcache.Set(key, dsres)
+	r.cache.Set(key, dsres)
 
 	return dsres, nil
 }
@@ -619,7 +619,7 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int, cd bool
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(ns, dns.TypeA)
-	nsReq.SetEdns0(DefaultMsgSize, true)
+	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
@@ -627,24 +627,24 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int, cd bool
 
 	key := cache.Hash(q, cd)
 
-	if c := r.Lqueue.Get(key); c != nil {
+	if c := r.cache.LookupQueue.Get(key); c != nil {
 		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", ns)
 	}
 
-	nsres, _, err := r.Qcache.Get(key, nsReq)
+	nsres, _, err := r.cache.GetP(key, nsReq)
 	if err == nil {
 		if addr, ok := searchAddr(nsres); ok {
 			return addr, nil
 		}
 	}
 
-	err = r.Ecache.Get(key)
+	err = r.cache.GetN(key, nsReq)
 	if err == nil {
 		return "", fmt.Errorf("nameserver address lookup failed for %s (cached)", ns)
 	}
 
-	r.Lqueue.Add(key)
-	defer r.Lqueue.Done(key)
+	r.cache.LookupQueue.Add(key)
+	defer r.cache.LookupQueue.Done(key)
 
 	if depth <= 0 {
 		return "", fmt.Errorf("nameserver address lookup failed for %s (max depth)", ns)
@@ -660,13 +660,13 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int, cd bool
 	}
 
 	if err != nil {
-		r.Ecache.Set(key)
+		r.cache.Set(key, dnsutil.HandleFailed(nsReq, dns.RcodeServerFailure, false))
 		return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", ns, err)
 	}
 
 	if nsres.Truncated && nsres.Rcode == dns.RcodeSuccess {
 		//retrying in TCP mode
-		r.Lqueue.Done(key)
+		r.cache.LookupQueue.Done(key)
 		return r.lookupNSAddr("tcp", ns, qname, depth+1, cd)
 	}
 
@@ -675,18 +675,18 @@ func (r *Resolver) lookupNSAddr(Net string, ns, qname string, depth int, cd bool
 		if len(r.fallbackservers.List) > 0 {
 			nsres, err = r.lookup(Net, nsReq, r.fallbackservers)
 			if err != nil {
-				r.Ecache.Set(key)
+				r.cache.Set(key, dnsutil.HandleFailed(nsReq, dns.RcodeServerFailure, false))
 				return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", ns, err)
 			}
 		}
 	}
 
 	if addr, ok := searchAddr(nsres); ok {
-		r.Qcache.Set(key, nsres)
+		r.cache.Set(key, nsres)
 		return addr, nil
 	}
 
-	r.Ecache.Set(key)
+	r.cache.Set(key, dnsutil.HandleFailed(nsReq, dns.RcodeServerFailure, false))
 	return addr, fmt.Errorf("nameserver address lookup failed for %s (no answer)", ns)
 }
 
@@ -745,14 +745,14 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
 	keyReq := new(dns.Msg)
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
-	keyReq.SetEdns0(DefaultMsgSize, true)
+	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	keyReq.RecursionDesired = true
 
 	q := keyReq.Question[0]
 
 	cacheKey := cache.Hash(q)
 
-	msg, _, err := r.Qcache.Get(cacheKey, keyReq)
+	msg, _, err := r.cache.GetP(cacheKey, keyReq)
 	if resp.Question[0].Qtype != dns.TypeDNSKEY && msg == nil {
 		depth := r.cfg.Maxdepth
 		msg, err = r.Resolve(Net, keyReq, r.rootservers, true, depth, 0, false, nil)
@@ -775,7 +775,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 				return false, fmt.Errorf("root zone keys not verified")
 			}
 
-			r.Qcache.Set(cacheKey, resp)
+			r.cache.Set(cacheKey, resp)
 			log.Debug("Good! root keys verified and set in cache")
 			return true, nil
 		}
@@ -812,7 +812,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 		return
 	}
 
-	r.Qcache.Set(cacheKey, msg)
+	r.cache.Set(cacheKey, msg)
 
 	if !ok {
 		return false, nil
@@ -857,7 +857,7 @@ func (r *Resolver) equalServers(s1, s2 *cache.AuthServers) bool {
 func (r *Resolver) checkPriming() error {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
-	req.SetEdns0(DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.RecursionDesired = true
 
 	resp, err := r.Resolve("udp", req, r.rootservers, true, 5, 0, false, nil, true)

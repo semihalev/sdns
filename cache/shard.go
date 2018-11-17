@@ -13,8 +13,8 @@ type shard struct {
 // newShard returns a new shard with size.
 func newShard(size int) *shard { return &shard{items: make(map[uint64]interface{}), size: size} }
 
-// Set adds element indexed by key into the cache. Any existing element is overwritten
-func (s *shard) Set(key uint64, el interface{}) {
+// Add adds element indexed by key into the cache. Any existing element is overwritten
+func (s *shard) Add(key uint64, el interface{}) {
 	l := s.Len()
 	if l+1 > s.size {
 		s.Evict()

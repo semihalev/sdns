@@ -4,25 +4,20 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/doh"
-)
-
-const (
-	// DefaultMsgSize EDNS0 message size
-	DefaultMsgSize = 1536
+	mcache "github.com/semihalev/sdns/middleware/cache"
 )
 
 // DNSHandler type
 type DNSHandler struct {
-	r *Resolver
-
+	r   *Resolver
 	cfg *config.Config
 }
 
@@ -33,9 +28,9 @@ func init() {
 }
 
 // New returns a new Handler
-func New(cfg *config.Config) *DNSHandler {
+func New(cfg *config.Config, cache *mcache.Cache) *DNSHandler {
 	return &DNSHandler{
-		r:   NewResolver(cfg),
+		r:   NewResolver(cfg, cache),
 		cfg: cfg,
 	}
 }
@@ -83,16 +78,16 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 		resolverNet = "udp"
 	}
 
-	opt, dsReq := h.setEdns0(req)
+	opt, do := dnsutil.SetEdns0(req)
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 		opt.SetExtendedRcode(dns.RcodeBadVers)
 
-		return h.handleFailed(req, dns.RcodeBadVers, dsReq)
+		return dnsutil.HandleFailed(req, dns.RcodeBadVers, do)
 	}
 
 	if q.Qtype == dns.TypeANY {
-		return h.handleFailed(req, dns.RcodeNotImplemented, dsReq)
+		return dnsutil.HandleFailed(req, dns.RcodeNotImplemented, do)
 	}
 
 	// debug ns stats
@@ -101,101 +96,65 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Name != rootzone && req.RecursionDesired == false {
-		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
+		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	log.Debug("Lookup", "query", formatQuestion(q), "dsreq", dsReq)
+	log.Debug("Lookup", "query", formatQuestion(q), "ds", do)
 
 	key := cache.Hash(q, req.CheckingDisabled)
 
-	h.r.Lqueue.Wait(key)
+	h.r.cache.LookupQueue.Wait(key)
 
-	mesg, rl, err := h.r.Qcache.Get(key, req)
+	mesg, rl, err := h.r.cache.GetP(key, req)
 	if err == nil {
-		log.Debug("Cache hit", "key", key, "query", formatQuestion(q))
-
 		if h.cfg.RateLimit > 0 && rl.Limit() {
-			return h.handleFailed(req, dns.RcodeRefused, dsReq)
+			return dnsutil.HandleFailed(req, dns.RcodeRefused, do)
 		}
 
-		msg := mesg.Copy()
-		msg.Id = req.Id
-		msg = h.additionalAnswer(resolverNet, req, msg)
-		if !dsReq {
-			msg = clearDNSSEC(msg)
+		mesg.SetReply(req)
+		mesg = h.additionalAnswer(resolverNet, req, mesg)
+		if !do {
+			mesg = dnsutil.ClearDNSSEC(mesg)
 		}
-		msg = clearOPT(msg)
-		opt.SetDo(dsReq)
-		msg.Extra = append(msg.Extra, opt)
+		mesg = dnsutil.ClearOPT(mesg)
+		opt.SetDo(do)
+		mesg.Extra = append(mesg.Extra, opt)
 
-		return msg
+		return mesg
 	}
 
-	err = h.r.Ecache.Get(key)
-	if err == nil {
-		log.Debug("Error cache hit", "key", key, "query", formatQuestion(q))
-
-		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
-	}
-
-	h.r.Lqueue.Add(key)
-	defer h.r.Lqueue.Done(key)
+	h.r.cache.LookupQueue.Add(key)
+	defer h.r.cache.LookupQueue.Done(key)
 
 	depth := h.cfg.Maxdepth
 	mesg, err = h.r.Resolve(resolverNet, req, h.r.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
-		h.r.Ecache.Set(key)
-
-		return h.handleFailed(req, dns.RcodeServerFailure, dsReq)
+		mesg = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
 	if mesg.Truncated && Net == "udp" {
 		return mesg
 	} else if mesg.Truncated && Net == "https" {
-		opt.SetDo(dsReq)
+		opt.SetDo(do)
 
-		h.r.Lqueue.Done(key)
+		h.r.cache.LookupQueue.Done(key)
 		return h.handle("tcp", req)
 	}
 
-	if mesg.Rcode == dns.RcodeSuccess &&
-		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
+	h.r.cache.Set(key, mesg)
 
-		rr, _ := dns.NewRR(req.Question[0].Name + " " + strconv.Itoa(int(h.cfg.Expire)) +
-			" IN HINFO comment \"no answer found on authoritative server\"")
-		mesg.Ns = append(mesg.Ns, rr)
+	m := mesg.Copy()
+	m = h.additionalAnswer(resolverNet, req, m)
+	if !do {
+		m = dnsutil.ClearDNSSEC(m)
 	}
+	m = dnsutil.ClearOPT(m)
+	opt.SetDo(do)
+	m.Extra = append(m.Extra, opt)
 
-	//ignore auths TTL for caching, replace with default expire
-	if mesg.Rcode == dns.RcodeNameError {
-		for _, rr := range mesg.Ns {
-			rr.Header().Ttl = h.cfg.Expire
-		}
-	}
-
-	if mesg.Rcode != dns.RcodeSuccess &&
-		len(mesg.Answer) == 0 && len(mesg.Ns) == 0 {
-
-		h.r.Ecache.Set(key)
-
-		return h.handleFailed(req, mesg.Rcode, dsReq)
-	}
-
-	msg := mesg.Copy()
-	msg = h.additionalAnswer(resolverNet, req, msg)
-	if !dsReq {
-		msg = clearDNSSEC(msg)
-	}
-	msg = clearOPT(msg)
-	opt.SetDo(dsReq)
-	msg.Extra = append(msg.Extra, opt)
-
-	h.r.Qcache.Set(key, mesg)
-
-	log.Debug("Set msg into cache", "query", formatQuestion(q))
-	return msg
+	return m
 }
 
 func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
@@ -203,7 +162,7 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 	answerFound := false
 
 	cnameReq := new(dns.Msg)
-	cnameReq.SetEdns0(DefaultMsgSize, true)
+	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	cnameReq.RecursionDesired = true
 	cnameReq.CheckingDisabled = req.CheckingDisabled
 
@@ -227,7 +186,7 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 		child := false
 
 		key := cache.Hash(q, cnameReq.CheckingDisabled)
-		respCname, _, err := h.r.Qcache.Get(key, cnameReq)
+		respCname, _, err := h.r.cache.GetP(key, cnameReq)
 		if err == nil {
 			for _, r := range respCname.Answer {
 				msg.Answer = append(msg.Answer, dns.Copy(r))
@@ -252,7 +211,7 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 					}
 				}
 
-				h.r.Qcache.Set(key, respCname)
+				h.r.cache.Set(key, respCname)
 			}
 		}
 
@@ -264,56 +223,6 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
-}
-
-func (h *DNSHandler) handleFailed(msg *dns.Msg, rcode int, dsf bool) *dns.Msg {
-	m := new(dns.Msg)
-	m.Extra = msg.Extra
-	m.SetRcode(msg, rcode)
-	m.RecursionAvailable = true
-
-	if opt := m.IsEdns0(); opt != nil {
-		opt.SetDo(dsf)
-	}
-
-	return m
-}
-
-func (h *DNSHandler) setEdns0(req *dns.Msg) (*dns.OPT, bool) {
-	dsReq := false
-	opt := req.IsEdns0()
-
-	if opt != nil {
-		opt.SetUDPSize(DefaultMsgSize)
-		if opt.Version() != 0 {
-			return opt, false
-		}
-
-		ops := opt.Option
-
-		opt.Option = []dns.EDNS0{}
-
-		for _, option := range ops {
-			if option.Option() == dns.EDNS0SUBNET {
-				opt.Option = append(opt.Option, option)
-			}
-		}
-
-		dsReq = opt.Do()
-
-		opt.Header().Ttl = 0
-		opt.SetDo()
-	} else {
-		opt = new(dns.OPT)
-		opt.Hdr.Name = "."
-		opt.Hdr.Rrtype = dns.TypeOPT
-		opt.SetUDPSize(DefaultMsgSize)
-		opt.SetDo()
-
-		req.Extra = append(req.Extra, opt)
-	}
-
-	return opt, dsReq
 }
 
 func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
@@ -334,7 +243,6 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 		ns, err := h.r.Ncache.Get(nsKey)
 		if err == nil {
 			servers = ns.Servers
-			ttl = ns.TTL
 			name = q.Name
 		}
 	}

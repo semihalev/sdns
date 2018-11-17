@@ -191,56 +191,6 @@ func isDO(req *dns.Msg) bool {
 	return false
 }
 
-func clearOPT(msg *dns.Msg) *dns.Msg {
-	extra := make([]dns.RR, len(msg.Extra))
-	copy(extra, msg.Extra)
-
-	msg.Extra = []dns.RR{}
-
-	for _, rr := range extra {
-		switch rr.(type) {
-		case *dns.OPT:
-			continue
-		default:
-			msg.Extra = append(msg.Extra, rr)
-		}
-	}
-
-	return msg
-}
-
-func clearDNSSEC(msg *dns.Msg) *dns.Msg {
-	answer := make([]dns.RR, len(msg.Answer))
-	copy(answer, msg.Answer)
-
-	msg.Answer = []dns.RR{}
-
-	for _, rr := range answer {
-		switch rr.(type) {
-		case *dns.RRSIG, *dns.NSEC3, *dns.NSEC:
-			continue
-		default:
-			msg.Answer = append(msg.Answer, rr)
-		}
-	}
-
-	ns := make([]dns.RR, len(msg.Ns))
-	copy(ns, msg.Ns)
-
-	msg.Ns = []dns.RR{}
-
-	for _, rr := range ns {
-		switch rr.(type) {
-		case *dns.RRSIG, *dns.NSEC3, *dns.NSEC:
-			continue
-		default:
-			msg.Ns = append(msg.Ns, rr)
-		}
-	}
-
-	return msg
-}
-
 func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
 	rr := msg.Answer
 	if len(rr) == 0 {

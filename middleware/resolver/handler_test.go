@@ -14,6 +14,8 @@ import (
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware/cache"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -29,6 +31,7 @@ func makeTestConfig() *config.Config {
 	}
 	cfg.Maxdepth = 30
 	cfg.Expire = 600
+	cfg.CacheSize = 1024
 	cfg.Timeout.Duration = 2 * time.Second
 	cfg.ConnectTimeout.Duration = 2 * time.Second
 
@@ -71,7 +74,9 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 }
 
 func Test_handler(t *testing.T) {
-	handler := New(makeTestConfig())
+	cfg := makeTestConfig()
+	cache := cache.New(cfg)
+	handler := New(cfg, cache)
 
 	assert.Equal(t, "resolver", handler.Name())
 
@@ -99,7 +104,7 @@ func Test_handler(t *testing.T) {
 	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
-	m.SetEdns0(DefaultMsgSize, true)
+	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
 	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) == 0, true)
@@ -118,7 +123,7 @@ func Test_handler(t *testing.T) {
 	assert.NotEqual(t, r.Rcode, dns.RcodeServerFailure)
 
 	m.RecursionDesired = true
-	m.SetEdns0(DefaultMsgSize, true)
+	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	opt := m.IsEdns0()
 	opt.SetVersion(100)
 	opt.SetDo()
@@ -127,7 +132,9 @@ func Test_handler(t *testing.T) {
 }
 
 func Test_HandlerHINFO(t *testing.T) {
-	handler := New(makeTestConfig())
+	cfg := makeTestConfig()
+	cache := cache.New(cfg)
+	handler := New(cfg, cache)
 
 	m := new(dns.Msg)
 	m.SetQuestion(".", dns.TypeHINFO)
@@ -139,7 +146,10 @@ func Test_HandlerHINFO(t *testing.T) {
 }
 
 func Test_HandlerServe(t *testing.T) {
-	h := New(makeTestConfig())
+	cfg := makeTestConfig()
+	cache := cache.New(cfg)
+	h := New(cfg, cache)
+
 	dc := ctx.New([]ctx.Handler{})
 	mw := mock.NewWriter("udp", "127.0.0.1")
 	req := new(dns.Msg)

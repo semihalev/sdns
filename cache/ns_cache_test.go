@@ -4,19 +4,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonboulle/clockwork"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_NSCache(t *testing.T) {
-	fakeClock := clockwork.NewFakeClock()
-	WallClock = fakeClock
-
 	cache := NewNSCache()
 
 	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(testDomain), dns.TypeA)
+	m.SetQuestion(dns.Fqdn("example.com."), dns.TypeA)
 	key := Hash(m.Question[0])
 
 	a := NewAuthServer("0.0.0.0:53")
@@ -24,36 +20,38 @@ func Test_NSCache(t *testing.T) {
 
 	servers := &AuthServers{List: []*AuthServer{a}}
 
-	cache.Set(key, nil, 5, servers)
-
 	_, err := cache.Get(key)
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Equal(t, err.Error(), "cache not found")
 
-	ok := cache.Exists(key)
-	assert.Equal(t, ok, true)
+	cache.Set(key, nil, servers)
 
-	fakeClock.Advance(4 * time.Second)
 	_, err = cache.Get(key)
 	assert.NoError(t, err)
 
-	fakeClock.Advance(1 * time.Second)
+	cache.now = func() time.Time {
+		return time.Now().Add(30 * time.Minute)
+	}
+	_, err = cache.Get(key)
+	assert.NoError(t, err)
+
+	cache.now = func() time.Time {
+		return time.Now().Add(2 * time.Hour)
+	}
 	_, err = cache.Get(key)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "cache expired")
 
 	_, err = cache.Get(key)
 	assert.Error(t, err)
+}
 
-	cache = NewNSCache()
-	cache.Set(key, nil, 5, nil)
+func BenchmarkNSCache(b *testing.B) {
+	b.ReportAllocs()
 
-	cache.Remove(key)
-	assert.Equal(t, cache.Length(), 0)
-
-	cache.Set(key, nil, 5, nil)
-
-	fakeClock.Advance(10 * time.Second)
-	cache.clear()
-	assert.Equal(t, cache.Length(), 0)
-
+	nc := NewNSCache()
+	for n := 0; n < b.N; n++ {
+		nc.Set(uint64(n), nil, nil)
+		nc.Get(uint64(n))
+	}
 }

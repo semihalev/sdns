@@ -13,6 +13,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware/accesslist"
 	"github.com/semihalev/sdns/middleware/blocklist"
+	"github.com/semihalev/sdns/middleware/cache"
 	"github.com/semihalev/sdns/middleware/hostsfile"
 	"github.com/semihalev/sdns/middleware/metrics"
 	"github.com/semihalev/sdns/middleware/ratelimit"
@@ -99,7 +100,10 @@ func run() {
 	blocklist := blocklist.New(Config)
 	server.Register(blocklist)
 
-	resolver := resolver.New(Config)
+	cache := cache.New(Config)
+	server.Register(cache)
+
+	resolver := resolver.New(Config, cache)
 	server.Register(resolver)
 
 	server.Run()
