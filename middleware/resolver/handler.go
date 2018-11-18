@@ -12,7 +12,6 @@ import (
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/doh"
-	mcache "github.com/semihalev/sdns/middleware/cache"
 )
 
 // DNSHandler type
@@ -28,9 +27,9 @@ func init() {
 }
 
 // New returns a new Handler
-func New(cfg *config.Config, cache *mcache.Cache) *DNSHandler {
+func New(cfg *config.Config) *DNSHandler {
 	return &DNSHandler{
-		r:   NewResolver(cfg, cache),
+		r:   NewResolver(cfg),
 		cfg: cfg,
 	}
 }
@@ -73,17 +72,15 @@ func (h *DNSHandler) ServeHTTP(dc *ctx.Context) {
 func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
+	do := false
+	opt := req.IsEdns0()
+	if opt != nil {
+		do = opt.Do()
+	}
+
 	resolverNet := Net
 	if Net == "https" {
 		resolverNet = "udp"
-	}
-
-	opt, do := dnsutil.SetEdns0(req)
-	if opt.Version() != 0 {
-		opt.SetVersion(0)
-		opt.SetExtendedRcode(dns.RcodeBadVers)
-
-		return dnsutil.HandleFailed(req, dns.RcodeBadVers, do)
 	}
 
 	if q.Qtype == dns.TypeANY {
@@ -99,35 +96,10 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	log.Debug("Lookup", "query", formatQuestion(q), "ds", do)
-
-	key := cache.Hash(q, req.CheckingDisabled)
-
-	h.r.cache.LookupQueue.Wait(key)
-
-	mesg, rl, err := h.r.cache.GetP(key, req)
-	if err == nil {
-		if h.cfg.RateLimit > 0 && rl.Limit() {
-			return dnsutil.HandleFailed(req, dns.RcodeRefused, do)
-		}
-
-		mesg.SetReply(req)
-		mesg = h.additionalAnswer(resolverNet, req, mesg)
-		if !do {
-			mesg = dnsutil.ClearDNSSEC(mesg)
-		}
-		mesg = dnsutil.ClearOPT(mesg)
-		opt.SetDo(do)
-		mesg.Extra = append(mesg.Extra, opt)
-
-		return mesg
-	}
-
-	h.r.cache.LookupQueue.Add(key)
-	defer h.r.cache.LookupQueue.Done(key)
+	log.Debug("Lookup", "net", Net, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
 
 	depth := h.cfg.Maxdepth
-	mesg, err = h.r.Resolve(resolverNet, req, h.r.rootservers, true, depth, 0, false, nil)
+	mesg, err := h.r.Resolve(resolverNet, req, h.r.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
@@ -137,39 +109,28 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	if mesg.Truncated && Net == "udp" {
 		return mesg
 	} else if mesg.Truncated && Net == "https" {
-		opt.SetDo(do)
-
-		h.r.cache.LookupQueue.Done(key)
 		return h.handle("tcp", req)
 	}
 
-	h.r.cache.Set(key, mesg)
+	mesg = h.additionalAnswer(resolverNet, req, mesg)
 
-	m := mesg.Copy()
-	m = h.additionalAnswer(resolverNet, req, m)
-	if !do {
-		m = dnsutil.ClearDNSSEC(m)
-	}
-	m = dnsutil.ClearOPT(m)
-	opt.SetDo(do)
-	m.Extra = append(m.Extra, opt)
-
-	return m
+	return mesg
 }
 
 func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
-	//check cname response
-	answerFound := false
+	if req.Question[0].Qtype != dns.TypeA &&
+		req.Question[0].Qtype != dns.TypeAAAA {
+		return msg
+	}
 
 	cnameReq := new(dns.Msg)
-	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	cnameReq.Extra = req.Extra
 	cnameReq.RecursionDesired = true
 	cnameReq.CheckingDisabled = req.CheckingDisabled
 
 	for _, answer := range msg.Answer {
-		if answer.Header().Rrtype == req.Question[0].Qtype &&
-			(req.Question[0].Qtype == dns.TypeA || req.Question[0].Qtype == dns.TypeAAAA) {
-			answerFound = true
+		if answer.Header().Rrtype == req.Question[0].Qtype {
+			return msg
 		}
 
 		if answer.Header().Rrtype == dns.TypeCNAME {
@@ -178,47 +139,14 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 		}
 	}
 
-	cnameDepth := 5
-
-	if !answerFound && len(cnameReq.Question) > 0 {
-	lookup:
-		q := cnameReq.Question[0]
-		child := false
-
-		key := cache.Hash(q, cnameReq.CheckingDisabled)
-		respCname, _, err := h.r.cache.GetP(key, cnameReq)
-		if err == nil {
+	if len(cnameReq.Question) > 0 {
+		respCname, err := dnsutil.ExchangeInternal(Net, cnameReq)
+		if err == nil && len(respCname.Answer) > 0 {
 			for _, r := range respCname.Answer {
-				msg.Answer = append(msg.Answer, dns.Copy(r))
-
-				if r.Header().Rrtype == dns.TypeCNAME {
-					cr := r.(*dns.CNAME)
-					cnameReq.Question[0].Name = cr.Target
-					child = true
-				}
-			}
-		} else {
-			depth := h.cfg.Maxdepth
-			respCname, err := h.r.Resolve(Net, cnameReq, h.r.rootservers, true, depth, 0, false, nil)
-			if err == nil && len(respCname.Answer) > 0 {
-				for _, r := range respCname.Answer {
+				if respCname.Question[0].Name == cnameReq.Question[0].Name {
 					msg.Answer = append(msg.Answer, dns.Copy(r))
-
-					if r.Header().Rrtype == dns.TypeCNAME {
-						cr := r.(*dns.CNAME)
-						cnameReq.Question[0].Name = cr.Target
-						child = true
-					}
 				}
-
-				h.r.cache.Set(key, respCname)
 			}
-		}
-
-		cnameDepth--
-
-		if child && cnameDepth > 0 {
-			goto lookup
 		}
 	}
 

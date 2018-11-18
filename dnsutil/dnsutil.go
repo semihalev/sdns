@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/mock"
 )
 
 // ExtractAddressFromReverse turns a standard PTR reverse record name
@@ -177,6 +178,18 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
+}
+
+// ExchangeInternal exchange request internal
+func ExchangeInternal(Net string, req *dns.Msg) (*dns.Msg, error) {
+	mw := mock.NewWriter(Net, "127.0.0.1")
+	dns.DefaultServeMux.ServeDNS(mw, req)
+
+	if !mw.Written() {
+		return nil, dns.ErrShortRead
+	}
+
+	return mw.Msg(), nil
 }
 
 const (

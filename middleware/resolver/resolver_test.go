@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/middleware/cache"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,8 +17,7 @@ func Test_resolver(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	resp, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -34,8 +33,7 @@ func Test_resolverDNSSEC(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	resp, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -51,8 +49,7 @@ func Test_resolverBadDNSSEC(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -67,8 +64,7 @@ func Test_resolverBadKeyDNSSEC(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -79,16 +75,15 @@ func Test_resolverExponentDNSSEC(t *testing.T) {
 	t.Parallel()
 
 	req := new(dns.Msg)
-	req.SetQuestion("sigfail.verteiltesysteme.net.", dns.TypeA)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.SetQuestion("verteiltesysteme.net.", dns.TypeNS)
+	req.SetEdns0(4096, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
-	assert.NoError(t, err)
+	assert.Error(t, err)
 }
 
 func Test_resolverDS(t *testing.T) {
@@ -99,8 +94,7 @@ func Test_resolverDS(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	resp, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -116,10 +110,9 @@ func Test_resolverDSDelegate(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
-	resp, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve("udp", req, &cache.AuthServers{List: []*cache.AuthServer{cache.NewAuthServer("202.12.31.53:53")}}, false, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -133,8 +126,7 @@ func Test_resolverDSDFail(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -149,8 +141,7 @@ func Test_resolverAllNS(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -165,8 +156,7 @@ func Test_resolverTimeout(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -181,8 +171,7 @@ func Test_resolverLoop(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -197,8 +186,7 @@ func Test_resolverRootServersDetect(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -213,8 +201,7 @@ func Test_resolverNameserverError(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -229,8 +216,7 @@ func Test_resolverNSEC3nodata(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -245,8 +231,7 @@ func Test_resolverNSECnodata(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -261,8 +246,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -277,8 +261,7 @@ func Test_resolverFindSigner(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -293,8 +276,7 @@ func Test_resolverRootKeys(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 
@@ -309,8 +291,7 @@ func Test_resolverNoAnswer(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	r := NewResolver(cfg, cache)
+	r := NewResolver(cfg)
 
 	_, err := r.Resolve("udp", req, r.rootservers, true, 30, 0, false, nil)
 

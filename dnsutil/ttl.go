@@ -47,5 +47,5 @@ const (
 	// MinimalDefaultTTL is the absolute lowest TTL.
 	MinimalDefaultTTL = 5 * time.Second
 	// MaximumDefaulTTL is the maximum TTL.
-	MaximumDefaulTTL = 6 * 24 * time.Hour
+	MaximumDefaulTTL = 24 * time.Hour
 )

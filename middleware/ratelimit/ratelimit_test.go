@@ -25,7 +25,7 @@ func Test_RateLimit(t *testing.T) {
 	dc.DNSWriter = mw
 	r.ServeDNS(dc)
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "10.0.0.1")
 	dc.DNSWriter = mw
 	r.ServeDNS(dc)
 	r.ServeDNS(dc)
@@ -36,7 +36,7 @@ func Test_RateLimit(t *testing.T) {
 
 	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
 	assert.NoError(t, err)
-	request.RemoteAddr = "127.0.0.2:1"
+	request.RemoteAddr = "10.0.0.2:1"
 
 	hw := httptest.NewRecorder()
 	dc.ResetHTTP(hw, request)
@@ -60,7 +60,7 @@ func Test_RateLimit(t *testing.T) {
 
 	r.ServeDNS(dc)
 
-	request.RemoteAddr = "127.0.0.2:1"
+	request.RemoteAddr = "10.0.0.2:1"
 	r.ServeHTTP(dc)
 	assert.Equal(t, 200, hw.Code)
 

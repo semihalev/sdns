@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/middleware/edns"
+
+	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/middleware/cache"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -73,10 +74,22 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 	return server, pc.LocalAddr().String(), fin, nil
 }
 
+func makeTestHandler(handler ctx.Handler) {
+	edns := edns.New(nil)
+
+	dns.DefaultServeMux.HandleFunc(".", func(w dns.ResponseWriter, req *dns.Msg) {
+		dc := ctx.New([]ctx.Handler{edns, handler})
+		dc.ResetDNS(w, req)
+		dc.NextDNS()
+	})
+}
+
 func Test_handler(t *testing.T) {
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	handler := New(cfg, cache)
+	handler := New(cfg)
+	makeTestHandler(handler)
+
+	time.Sleep(2 * time.Second)
 
 	assert.Equal(t, "resolver", handler.Name())
 
@@ -85,18 +98,10 @@ func Test_handler(t *testing.T) {
 	c.WriteTimeout = 15 * time.Second
 
 	m := new(dns.Msg)
-	m.SetQuestion("www.google.com.", dns.TypeA)
 	m.RecursionDesired = true
 
-	r := handler.handle("udp", m)
-	assert.Equal(t, len(r.Answer) > 0, true)
-
-	// test again for caches
-	r = handler.handle("udp", m)
-	assert.Equal(t, len(r.Answer) > 0, true)
-
 	m.SetQuestion("www.apple.com.", dns.TypeA)
-	r = handler.handle("udp", m)
+	r := handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	// test again for caches
@@ -121,20 +126,11 @@ func Test_handler(t *testing.T) {
 	m.RecursionDesired = false
 	r = handler.handle("udp", m)
 	assert.NotEqual(t, r.Rcode, dns.RcodeServerFailure)
-
-	m.RecursionDesired = true
-	m.SetEdns0(dnsutil.DefaultMsgSize, true)
-	opt := m.IsEdns0()
-	opt.SetVersion(100)
-	opt.SetDo()
-	r = handler.handle("udp", m)
-	assert.Equal(t, r.Rcode, dns.RcodeBadVers)
 }
 
 func Test_HandlerHINFO(t *testing.T) {
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	handler := New(cfg, cache)
+	handler := New(cfg)
 
 	m := new(dns.Msg)
 	m.SetQuestion(".", dns.TypeHINFO)
@@ -147,8 +143,7 @@ func Test_HandlerHINFO(t *testing.T) {
 
 func Test_HandlerServe(t *testing.T) {
 	cfg := makeTestConfig()
-	cache := cache.New(cfg)
-	h := New(cfg, cache)
+	h := New(cfg)
 
 	dc := ctx.New([]ctx.Handler{})
 	mw := mock.NewWriter("udp", "127.0.0.1")

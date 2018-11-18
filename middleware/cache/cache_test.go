@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/middleware/resolver"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -85,12 +87,6 @@ func Test_PCache(t *testing.T) {
 	c.ServeDNS(dc)
 	assert.True(t, dc.DNSWriter.Written())
 	assert.Equal(t, dns.RcodeRefused, dc.DNSWriter.Rcode())
-
-	req.IsEdns0().SetVersion(100)
-	dc.ResetDNS(mw, req)
-	c.ServeDNS(dc)
-	assert.True(t, dc.DNSWriter.Written())
-	assert.Equal(t, dns.RcodeBadVers, dc.DNSWriter.Rcode())
 
 	hw = httptest.NewRecorder()
 	dc.ResetHTTP(hw, request)
@@ -203,11 +199,74 @@ func Test_Cache_CNAME(t *testing.T) {
 	assert.Equal(t, 3, len(dc.DNSWriter.Msg().Answer))
 
 	c.now = func() time.Time {
-		return time.Now().Add(time.Minute)
+		return time.Now().Add(time.Hour)
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1")
 	dc.ResetDNS(mw, req)
 	c.ServeDNS(dc)
 	assert.False(t, dc.DNSWriter.Written())
+}
+
+func Test_Cache_ResponseWriter(t *testing.T) {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
+	cfg := &config.Config{Expire: 300, CacheSize: 10240, RateLimit: 10, Maxdepth: 30}
+	cfg.RootServers = []string{"192.5.5.241:53"}
+	cfg.RootKeys = []string{
+		".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
+		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
+	}
+
+	c := New(cfg)
+
+	handler := resolver.New(cfg)
+	dc := ctx.New([]ctx.Handler{c, handler})
+
+	req := new(dns.Msg)
+	req.SetQuestion("www.example.com.", dns.TypeA)
+	req.SetEdns0(4096, true)
+	req.CheckingDisabled = true
+	req.RecursionDesired = false
+
+	mw := mock.NewWriter("udp", "127.0.0.1")
+	dc.ResetDNS(mw, req)
+	dc.NextDNS()
+	assert.True(t, mw.Written())
+	assert.Equal(t, dns.RcodeServerFailure, dc.DNSWriter.Rcode())
+
+	req.RecursionDesired = true
+	mw = mock.NewWriter("udp", "127.0.0.1")
+	dc.ResetDNS(mw, req)
+	dc.NextDNS()
+	assert.True(t, mw.Written())
+	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
+
+	mw = mock.NewWriter("udp", "127.0.0.1")
+	req.SetQuestion("labs.example.com.", dns.TypeA)
+	dc.ResetDNS(mw, req)
+	dc.NextDNS()
+	assert.True(t, mw.Written())
+	assert.Equal(t, dns.RcodeNameError, dc.DNSWriter.Rcode())
+
+	mw = mock.NewWriter("udp", "127.0.0.1")
+	req.SetQuestion("www.apple.com.", dns.TypeA)
+	dc.ResetDNS(mw, req)
+	dc.NextDNS()
+	assert.True(t, mw.Written())
+	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
+
+	req.IsEdns0().SetUDPSize(512)
+	req.SetQuestion("org.", dns.TypeDNSKEY)
+	dc.ResetDNS(mw, req)
+	dc.NextDNS()
+	assert.True(t, mw.Written())
+	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
+
+	mw = mock.NewWriter("udp", "127.0.0.1")
+	req.SetQuestion("www.microsoft.com.", dns.TypeCNAME)
+	dc.ResetDNS(mw, req)
+	dc.NextDNS()
+	assert.True(t, mw.Written())
+	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
 }

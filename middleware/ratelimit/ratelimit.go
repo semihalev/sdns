@@ -54,6 +54,9 @@ func (r *RateLimit) ServeDNS(dc *ctx.Context) {
 	if ip := net.ParseIP(client); ip == nil {
 		dc.NextDNS()
 		return
+	} else if ip.IsLoopback() {
+		dc.NextDNS()
+		return
 	}
 
 	rl := r.getLimiter(client)
@@ -75,6 +78,9 @@ func (r *RateLimit) ServeHTTP(dc *ctx.Context) {
 
 	client, _, _ := net.SplitHostPort(dc.HTTPRequest.RemoteAddr)
 	if ip := net.ParseIP(client); ip == nil {
+		dc.NextHTTP()
+		return
+	} else if ip.IsLoopback() {
 		dc.NextHTTP()
 		return
 	}
