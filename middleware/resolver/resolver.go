@@ -682,7 +682,6 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 
 	if resp.Question[0].Qtype != dns.TypeDNSKEY {
 		msg, err = dnsutil.ExchangeInternal(Net, keyReq)
-		fmt.Println("DNSKEY:", msg)
 		if err != nil {
 			return
 		}
