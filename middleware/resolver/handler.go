@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"net"
-	"net/http"
 	"os"
 
 	"github.com/miekg/dns"
@@ -11,7 +10,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/doh"
 )
 
 // DNSHandler type
@@ -56,19 +54,6 @@ func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
 	w.WriteMsg(msg)
 }
 
-func (h *DNSHandler) ServeHTTP(dc *ctx.Context) {
-	w, r := dc.HTTPWriter, dc.HTTPRequest
-
-	var f func(http.ResponseWriter, *http.Request) bool
-	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = doh.HandleJSON(h.handle)
-	} else {
-		f = doh.HandleWireFormat(h.handle)
-	}
-
-	f(w, r)
-}
-
 func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
@@ -99,22 +84,22 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	log.Debug("Lookup", "net", Net, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
 
 	depth := h.cfg.Maxdepth
-	mesg, err := h.r.Resolve(resolverNet, req, h.r.rootservers, true, depth, 0, false, nil)
+	resp, err := h.r.Resolve(resolverNet, req, h.r.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
-		mesg = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
+		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	if mesg.Truncated && Net == "udp" {
-		return mesg
-	} else if mesg.Truncated && Net == "https" {
+	if resp.Truncated && Net == "udp" {
+		return resp
+	} else if resp.Truncated && Net == "https" {
 		return h.handle("tcp", req)
 	}
 
-	mesg = h.additionalAnswer(resolverNet, req, mesg)
+	resp = h.additionalAnswer(resolverNet, req, resp)
 
-	return mesg
+	return resp
 }
 
 func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {

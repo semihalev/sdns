@@ -3,14 +3,12 @@ package blocklist
 import (
 	"errors"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
-	"github.com/semihalev/sdns/doh"
 )
 
 // BlockList type
@@ -49,25 +47,6 @@ func (b *BlockList) ServeDNS(dc *ctx.Context) {
 	}
 
 	w.WriteMsg(msg)
-
-	dc.Abort()
-}
-
-func (b *BlockList) ServeHTTP(dc *ctx.Context) {
-	w, r := dc.HTTPWriter, dc.HTTPRequest
-
-	var f func(http.ResponseWriter, *http.Request) bool
-	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = doh.HandleJSON(b.handle)
-	} else {
-		f = doh.HandleWireFormat(b.handle)
-	}
-
-	next := f(w, r)
-	if next {
-		dc.NextHTTP()
-		return
-	}
 
 	dc.Abort()
 }

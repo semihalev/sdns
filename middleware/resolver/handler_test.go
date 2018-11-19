@@ -1,11 +1,7 @@
 package resolver
 
 import (
-	"encoding/base64"
-	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -146,7 +142,7 @@ func Test_HandlerServe(t *testing.T) {
 	h := New(cfg)
 
 	dc := ctx.New([]ctx.Handler{})
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
@@ -154,29 +150,4 @@ func Test_HandlerServe(t *testing.T) {
 
 	h.ServeDNS(dc)
 	assert.Equal(t, true, dc.DNSWriter.Written())
-
-	request, err := http.NewRequest("GET", "/dns-query?name=.&type=NS", nil)
-	assert.NoError(t, err)
-	request.RemoteAddr = "127.0.0.1:0"
-
-	hw := httptest.NewRecorder()
-
-	dc.ResetHTTP(hw, request)
-
-	h.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	data, err := req.Pack()
-	assert.NoError(t, err)
-
-	dq := base64.RawURLEncoding.EncodeToString(data)
-
-	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
-	assert.NoError(t, err)
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-
-	h.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
 }

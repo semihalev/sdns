@@ -50,10 +50,6 @@ func (e *EDNS) ServeDNS(dc *ctx.Context) {
 	dc.DNSWriter = w
 }
 
-func (e *EDNS) ServeHTTP(dc *ctx.Context) {
-	dc.NextHTTP()
-}
-
 // WriteMsg implements the ctx.ResponseWriter interface
 func (w *DNSResponseWriter) WriteMsg(m *dns.Msg) error {
 	if !w.do {

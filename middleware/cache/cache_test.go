@@ -1,10 +1,6 @@
 package cache
 
 import (
-	"encoding/base64"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -34,7 +30,7 @@ func Test_PCache(t *testing.T) {
 	req.SetQuestion("test.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
 
 	q := req.Question[0]
@@ -50,13 +46,6 @@ func Test_PCache(t *testing.T) {
 
 	c.ServeDNS(dc)
 	assert.False(t, dc.DNSWriter.Written())
-
-	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
-	assert.NoError(t, err)
-	hw := httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	c.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)
@@ -87,24 +76,6 @@ func Test_PCache(t *testing.T) {
 	c.ServeDNS(dc)
 	assert.True(t, dc.DNSWriter.Written())
 	assert.Equal(t, dns.RcodeRefused, dc.DNSWriter.Rcode())
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	c.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	data, err := req.Pack()
-	assert.NoError(t, err)
-
-	dq := base64.RawURLEncoding.EncodeToString(data)
-
-	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
-	assert.NoError(t, err)
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	c.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
 }
 
 func Test_NCache(t *testing.T) {
@@ -115,7 +86,7 @@ func Test_NCache(t *testing.T) {
 	req.SetQuestion("test.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
 
 	q := req.Question[0]
@@ -192,7 +163,7 @@ func Test_Cache_CNAME(t *testing.T) {
 	req.SetQuestion("www.example.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
 	c.ServeDNS(dc)
 	assert.True(t, dc.DNSWriter.Written())
@@ -202,7 +173,7 @@ func Test_Cache_CNAME(t *testing.T) {
 		return time.Now().Add(time.Hour)
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
 	c.ServeDNS(dc)
 	assert.False(t, dc.DNSWriter.Written())
@@ -229,27 +200,27 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	req.CheckingDisabled = true
 	req.RecursionDesired = false
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
 	dc.NextDNS()
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeServerFailure, dc.DNSWriter.Rcode())
 
 	req.RecursionDesired = true
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
 	dc.NextDNS()
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("labs.example.com.", dns.TypeA)
 	dc.ResetDNS(mw, req)
 	dc.NextDNS()
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeNameError, dc.DNSWriter.Rcode())
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("www.apple.com.", dns.TypeA)
 	dc.ResetDNS(mw, req)
 	dc.NextDNS()
@@ -263,7 +234,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("www.microsoft.com.", dns.TypeCNAME)
 	dc.ResetDNS(mw, req)
 	dc.NextDNS()

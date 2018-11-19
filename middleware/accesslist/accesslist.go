@@ -2,7 +2,6 @@ package accesslist
 
 import (
 	"net"
-	"net/http"
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
@@ -49,17 +48,4 @@ func (a *AccessList) ServeDNS(dc *ctx.Context) {
 	}
 
 	dc.NextDNS()
-}
-
-func (a *AccessList) ServeHTTP(dc *ctx.Context) {
-	client, _, _ := net.SplitHostPort(dc.HTTPRequest.RemoteAddr)
-	allowed, _ := a.ranger.Contains(net.ParseIP(client))
-
-	if !allowed {
-		http.Error(dc.HTTPWriter, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		dc.Abort()
-		return
-	}
-
-	dc.NextHTTP()
 }

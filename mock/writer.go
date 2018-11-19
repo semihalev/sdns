@@ -17,17 +17,19 @@ type Writer struct {
 
 // NewWriter return writer
 func NewWriter(Net, addr string) *Writer {
-	var naddr net.Addr
+	var raddr, laddr net.Addr
 
-	if Net == "tcp" {
-		naddr = &net.TCPAddr{IP: net.ParseIP(addr)}
+	if Net == "tcp" || Net == "https" || Net == "tcp-tls" {
+		laddr = &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
+		raddr, _ = net.ResolveTCPAddr("tcp", addr)
 	} else {
-		naddr = &net.UDPAddr{IP: net.ParseIP(addr)}
+		laddr = &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
+		raddr, _ = net.ResolveUDPAddr("udp", addr)
 	}
 
 	return &Writer{
-		localAddr:  naddr,
-		remoteAddr: naddr,
+		localAddr:  laddr,
+		remoteAddr: raddr,
 	}
 }
 

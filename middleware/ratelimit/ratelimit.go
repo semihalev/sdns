@@ -2,7 +2,6 @@ package ratelimit
 
 import (
 	"net"
-	"net/http"
 	"sync"
 	"time"
 
@@ -68,32 +67,6 @@ func (r *RateLimit) ServeDNS(dc *ctx.Context) {
 	}
 
 	dc.NextDNS()
-}
-
-func (r *RateLimit) ServeHTTP(dc *ctx.Context) {
-	if r.rate == 0 {
-		dc.NextHTTP()
-		return
-	}
-
-	client, _, _ := net.SplitHostPort(dc.HTTPRequest.RemoteAddr)
-	if ip := net.ParseIP(client); ip == nil {
-		dc.NextHTTP()
-		return
-	} else if ip.IsLoopback() {
-		dc.NextHTTP()
-		return
-	}
-
-	rl := r.getLimiter(client)
-
-	if rl.Limit() {
-		http.Error(dc.HTTPWriter, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
-		dc.Abort()
-		return
-	}
-
-	dc.NextHTTP()
 }
 
 func (r *RateLimit) getLimiter(client string) *rl.RateLimiter {

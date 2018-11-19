@@ -1,6 +1,7 @@
 package dnsutil
 
 import (
+	"errors"
 	"net"
 	"strings"
 
@@ -182,11 +183,11 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 
 // ExchangeInternal exchange request internal
 func ExchangeInternal(Net string, req *dns.Msg) (*dns.Msg, error) {
-	mw := mock.NewWriter(Net, "127.0.0.1")
+	mw := mock.NewWriter(Net, "127.0.0.1:0")
 	dns.DefaultServeMux.ServeDNS(mw, req)
 
 	if !mw.Written() {
-		return nil, dns.ErrShortRead
+		return nil, errors.New("no replied any message")
 	}
 
 	return mw.Msg(), nil

@@ -11,6 +11,8 @@ import (
 
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/doh"
+	"github.com/semihalev/sdns/mock"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -64,12 +66,27 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	dc := s.pool.Get().(*ctx.Context)
+	handle := func(Net string, req *dns.Msg) *dns.Msg {
+		mw := mock.NewWriter(Net, r.RemoteAddr)
+		s.ServeDNS(mw, req)
 
-	dc.ResetHTTP(w, r)
-	dc.NextHTTP()
+		if !mw.Written() {
+			return nil
+		}
 
-	s.pool.Put(dc)
+		return mw.Msg()
+	}
+
+	var f func(http.ResponseWriter, *http.Request) bool
+	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
+		f = doh.HandleJSON(handle)
+	} else {
+		f = doh.HandleWireFormat(handle)
+	}
+
+	if f(w, r) {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	}
 }
 
 // Run listen the services

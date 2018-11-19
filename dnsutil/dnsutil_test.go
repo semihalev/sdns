@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware/blocklist"
 )
 
 func TestExtractAddressFromReverse(t *testing.T) {
@@ -136,5 +139,39 @@ func TestClearDNSSEC(t *testing.T) {
 
 	if len(msg.Ns) != 1 {
 		t.Errorf("Test msg ns length should be 1 expected %d", len(msg.Ns))
+	}
+}
+
+func TestExchangeInternal(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+
+	blocklist := blocklist.New(cfg)
+	blocklist.Set("example.com.")
+
+	dns.DefaultServeMux.HandleFunc(".", func(w dns.ResponseWriter, req *dns.Msg) {
+		dc := ctx.New([]ctx.Handler{blocklist})
+		dc.ResetDNS(w, req)
+		dc.NextDNS()
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+
+	msg, err := ExchangeInternal("udp", req)
+	if err != nil {
+		t.Errorf("Test exchange internal should not be error")
+		return
+	}
+
+	if len(msg.Answer) != 1 {
+		t.Errorf("Test exchange internal return should be answer")
+	}
+
+	req.SetQuestion("www.example.com.", dns.TypeA)
+	_, err = ExchangeInternal("udp", req)
+	if err == nil {
+		t.Errorf("Test exchange internal should be error")
 	}
 }

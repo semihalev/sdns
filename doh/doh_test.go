@@ -10,8 +10,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/semihalev/sdns/ctx"
-
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 )
@@ -66,38 +64,6 @@ func Test_dohJSONerror(t *testing.T) {
 
 	request.RemoteAddr = "127.0.0.1:0"
 
-	handleTest(w, request)
-
-	assert.Equal(t, w.Code, http.StatusBadRequest)
-}
-
-func Test_dohJSONuknownType(t *testing.T) {
-	t.Parallel()
-
-	w := httptest.NewRecorder()
-
-	request, err := http.NewRequest("GET", "/dns-query?name=www.google.com&type=unknown", nil)
-	assert.NoError(t, err)
-
-	request.RemoteAddr = "127.0.0.1:0"
-
-	handleTest(w, request)
-
-	assert.Equal(t, w.Code, http.StatusBadRequest)
-}
-
-func Test_dohJSONsubnet(t *testing.T) {
-	t.Parallel()
-
-	w := httptest.NewRecorder()
-
-	request, err := http.NewRequest("GET", "/dns-query?name=www.google.com&edns_client_subnet=127.0.0.1", nil)
-	assert.NoError(t, err)
-
-	request.RemoteAddr = "127.0.0.1:0"
-
-	ctx := new(ctx.Context)
-	ctx.ResetHTTP(w, request)
 	handleTest(w, request)
 
 	assert.Equal(t, w.Code, http.StatusBadRequest)
@@ -232,4 +198,20 @@ func Test_dohWirePOST(t *testing.T) {
 	assert.Equal(t, msg.Rcode, dns.RcodeSuccess)
 
 	assert.Equal(t, len(msg.Answer) > 0, true)
+}
+
+func Test_dohWirePOSTError(t *testing.T) {
+	t.Parallel()
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("POST", "/dns-query", bytes.NewReader([]byte{}))
+	assert.NoError(t, err)
+
+	request.RemoteAddr = "127.0.0.1:0"
+	request.Header.Add("Content-Type", "text/html")
+
+	handleTest(w, request)
+
+	assert.Equal(t, w.Code, http.StatusUnsupportedMediaType)
 }

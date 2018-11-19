@@ -2,7 +2,6 @@ package recovery
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"runtime/debug"
 
@@ -33,20 +32,4 @@ func (r *Recovery) ServeDNS(dc *ctx.Context) {
 	}()
 
 	dc.NextDNS()
-}
-
-func (r *Recovery) ServeHTTP(dc *ctx.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			http.Error(dc.HTTPWriter, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-
-			log.Error("Recovered in ServeHTTP", "recover", r)
-
-			os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
-			debug.PrintStack()
-			dc.Abort()
-		}
-	}()
-
-	dc.NextHTTP()
 }

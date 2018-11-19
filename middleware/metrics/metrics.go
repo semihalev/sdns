@@ -47,7 +47,3 @@ func (m *Metrics) ServeDNS(dc *ctx.Context) {
 			"rcode": dns.RcodeToString[dc.DNSWriter.Rcode()],
 		}).Inc()
 }
-
-func (m *Metrics) ServeHTTP(dc *ctx.Context) {
-	dc.NextHTTP()
-}

@@ -12,7 +12,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/doh"
 	"github.com/semihalev/sdns/lqueue"
 	"github.com/semihalev/sdns/response"
 )
@@ -55,12 +54,12 @@ type HTTPResponseWriter struct {
 func New(cfg *config.Config) *Cache {
 	c := &Cache{
 		pcap:    cfg.CacheSize / 2,
-		pcache:  cache.New(cfg.CacheSize),
+		pcache:  cache.New(cfg.CacheSize / 2),
 		pttl:    maxTTL,
 		minpttl: minTTL,
 
 		ncap:    cfg.CacheSize / 2,
-		ncache:  cache.New(cfg.CacheSize),
+		ncache:  cache.New(cfg.CacheSize / 2),
 		nttl:    time.Duration(cfg.Expire) * time.Second,
 		minnttl: time.Duration(cfg.Expire) * time.Second,
 
@@ -104,25 +103,6 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	dc.DNSWriter = w
 }
 
-func (c *Cache) ServeHTTP(dc *ctx.Context) {
-	w, r := dc.HTTPWriter, dc.HTTPRequest
-
-	var f func(http.ResponseWriter, *http.Request) bool
-	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = doh.HandleJSON(c.handle)
-	} else {
-		f = doh.HandleWireFormat(c.handle)
-	}
-
-	next := f(w, r)
-	if !next {
-		dc.Abort()
-		return
-	}
-
-	dc.NextHTTP()
-}
-
 func (c *Cache) handle(Net string, req *dns.Msg) *dns.Msg {
 	now := c.now().UTC()
 
@@ -152,6 +132,10 @@ func (c *Cache) handle(Net string, req *dns.Msg) *dns.Msg {
 // WriteMsg implements the ctx.ResponseWriter interface
 func (w *DNSResponseWriter) WriteMsg(res *dns.Msg) error {
 	if res.Truncated {
+		return w.ResponseWriter.WriteMsg(res)
+	}
+
+	if len(res.Question) == 0 {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
