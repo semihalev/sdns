@@ -13,6 +13,7 @@ import (
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/doh"
+	"github.com/semihalev/sdns/lqueue"
 	"github.com/semihalev/sdns/response"
 )
 
@@ -32,7 +33,7 @@ type Cache struct {
 	rate int
 
 	// resolver queue
-	lqueue *LQueue
+	lqueue *lqueue.LQueue
 
 	// Testing.
 	now func() time.Time
@@ -65,7 +66,7 @@ func New(cfg *config.Config) *Cache {
 
 		rate: cfg.RateLimit,
 
-		lqueue: NewLookupQueue(),
+		lqueue: lqueue.New(),
 
 		now: time.Now,
 	}

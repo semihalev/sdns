@@ -42,6 +42,8 @@ func New(cfg *config.Config) *Server {
 		return ctx.New(server.handlers)
 	}
 
+	dns.Handle(".", server)
+
 	return server
 }
 
@@ -72,8 +74,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Run listen the services
 func (s *Server) Run() {
-	dns.Handle(".", s)
-
 	go s.ListenAndServeDNS("udp")
 	go s.ListenAndServeDNS("tcp")
 	go s.ListenAndServeDNSTLS()

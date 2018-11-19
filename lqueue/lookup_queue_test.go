@@ -1,4 +1,4 @@
-package cache
+package lqueue
 
 import (
 	"sync"
@@ -11,7 +11,7 @@ import (
 )
 
 func Test_lqueueWait(t *testing.T) {
-	lqueue := NewLookupQueue()
+	lqueue := New()
 	mu := sync.RWMutex{}
 
 	m := new(dns.Msg)

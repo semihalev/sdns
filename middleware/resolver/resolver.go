@@ -14,13 +14,15 @@ import (
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/lqueue"
 )
 
 // Resolver type
 type Resolver struct {
 	Ncache *cache.NSCache
 
-	cfg *config.Config
+	lqueue *lqueue.LQueue
+	cfg    *config.Config
 
 	rootservers     *cache.AuthServers
 	root6servers    *cache.AuthServers
@@ -46,7 +48,8 @@ const (
 // NewResolver return a resolver
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
-		cfg: cfg,
+		cfg:    cfg,
+		lqueue: lqueue.New(),
 
 		Ncache: cache.NewNSCache(),
 
@@ -560,6 +563,15 @@ func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
 	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	dsReq.RecursionDesired = true
 
+	key := cache.Hash(dsReq.Question[0])
+
+	if c := r.lqueue.Get(key); c != nil {
+		return nil, fmt.Errorf("ds records failed (like loop?)")
+	}
+
+	r.lqueue.Add(key)
+	defer r.lqueue.Done(key)
+
 	dsres, err := dnsutil.ExchangeInternal(Net, dsReq)
 	if err != nil {
 		return nil, err
@@ -567,6 +579,7 @@ func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
 
 	if dsres.Truncated && dsres.Rcode == dns.RcodeSuccess {
 		//retrying in TCP mode
+		r.lqueue.Done(key)
 		return r.lookupDS("tcp", qname)
 	}
 
@@ -586,6 +599,15 @@ func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string,
 	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
+	key := cache.Hash(nsReq.Question[0], cd)
+
+	if c := r.lqueue.Get(key); c != nil {
+		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", qname)
+	}
+
+	r.lqueue.Add(key)
+	defer r.lqueue.Done(key)
+
 	nsres, err := dnsutil.ExchangeInternal(Net, nsReq)
 	if err != nil {
 		//try fallback servers
@@ -600,6 +622,7 @@ func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string,
 
 	if nsres.Truncated && nsres.Rcode == dns.RcodeSuccess {
 		//retrying in TCP mode
+		r.lqueue.Done(key)
 		return r.lookupNSAddr("tcp", qname, cd)
 	}
 
@@ -839,7 +862,6 @@ func (r *Resolver) checkPriming() error {
 }
 
 func (r *Resolver) run() {
-	time.Sleep(time.Second)
 	r.checkPriming()
 
 	ticker := time.NewTicker(time.Hour)
