@@ -4,6 +4,8 @@ import (
 	"net"
 	"os"
 
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
@@ -21,6 +23,10 @@ type DNSHandler struct {
 var debugns bool
 
 func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+
 	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
 }
 
@@ -33,9 +39,7 @@ func New(cfg *config.Config) *DNSHandler {
 }
 
 // Name return middleware name
-func (h *DNSHandler) Name() string {
-	return "resolver"
-}
+func (h *DNSHandler) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
@@ -176,3 +180,5 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 
 	return msg
 }
+
+const name = "resolver"

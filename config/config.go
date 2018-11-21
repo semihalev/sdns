@@ -22,7 +22,6 @@ type Config struct {
 	RootKeys        []string
 	FallbackServers []string
 	AccessList      []string
-	Log             string
 	LogLevel        string
 	Bind            string
 	BindTLS         string

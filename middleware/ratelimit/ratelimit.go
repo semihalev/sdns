@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/semihalev/sdns/middleware"
+
 	rl "github.com/bsm/ratelimit"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
@@ -24,6 +26,12 @@ type RateLimit struct {
 	now  func() time.Time
 }
 
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+}
+
 // New return accesslist
 func New(cfg *config.Config) *RateLimit {
 	r := &RateLimit{
@@ -38,9 +46,7 @@ func New(cfg *config.Config) *RateLimit {
 }
 
 // Name return middleware name
-func (r *RateLimit) Name() string {
-	return "ratelimit"
-}
+func (r *RateLimit) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (r *RateLimit) ServeDNS(dc *ctx.Context) {
@@ -104,4 +110,7 @@ func (r *RateLimit) run() {
 	}
 }
 
-const expireTime = 5 * time.Minute
+const (
+	name       = "ratelimit"
+	expireTime = 5 * time.Minute
+)

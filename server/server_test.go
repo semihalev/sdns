@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
@@ -144,13 +146,14 @@ func Test_Server(t *testing.T) {
 	cfg.BindTLS = "127.0.0.1:23222"
 	cfg.BindDOH = "127.0.0.1:23223"
 
+	middleware.SetConfig(cfg)
+	middleware.Setup()
+
+	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
+	blocklist.Set("test.com.")
+
 	s := New(cfg)
 	s.Run()
-
-	blocklist := blocklist.New(cfg)
-	s.Register(blocklist)
-
-	blocklist.Set("test.com.")
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
@@ -158,7 +161,10 @@ func Test_Server(t *testing.T) {
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	s.ServeDNS(mw, req)
 
-	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	assert.True(t, mw.Written())
+	if assert.NotNil(t, mw.Msg()) {
+		assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	}
 
 	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
 	assert.NoError(t, err)

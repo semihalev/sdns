@@ -67,6 +67,9 @@ func (w *Writer) Written() bool {
 	return w.msg != nil
 }
 
+// Reset func
+func (w *Writer) Reset(rw dns.ResponseWriter) {}
+
 // Close func
 func (w *Writer) Close() error { return nil }
 

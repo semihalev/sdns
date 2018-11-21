@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/semihalev/sdns/middleware"
+
 	rl "github.com/bsm/ratelimit"
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -50,6 +52,12 @@ type HTTPResponseWriter struct {
 	*Cache
 }
 
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+}
+
 // New return cache
 func New(cfg *config.Config) *Cache {
 	c := &Cache{
@@ -74,9 +82,7 @@ func New(cfg *config.Config) *Cache {
 }
 
 // Name return middleware name
-func (c *Cache) Name() string {
-	return "cache"
-}
+func (c *Cache) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (c *Cache) ServeDNS(dc *ctx.Context) {
@@ -338,6 +344,8 @@ func computeTTL(msgTTL, minTTL, maxTTL time.Duration) time.Duration {
 }
 
 const (
+	name = "cache"
+
 	maxTTL  = dnsutil.MaximumDefaulTTL
 	minTTL  = dnsutil.MinimalDefaultTTL
 	maxNTTL = dnsutil.MinimalDefaultTTL * 60

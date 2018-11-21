@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/doh"
@@ -41,18 +43,12 @@ func New(cfg *config.Config) *Server {
 	}
 
 	server.pool.New = func() interface{} {
-		return ctx.New(server.handlers)
+		return ctx.New(middleware.Handlers())
 	}
 
 	dns.Handle(".", server)
 
 	return server
-}
-
-// Register middleware
-func (s *Server) Register(h ctx.Handler) {
-	s.handlers = append(s.handlers, h)
-	log.Info("Register middleware", "name", h.Name())
 }
 
 // ServeDNS implements the Handle interface.

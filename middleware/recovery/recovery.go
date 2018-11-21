@@ -5,6 +5,9 @@ import (
 	"os"
 	"runtime/debug"
 
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/ctx"
@@ -14,8 +17,19 @@ import (
 // Recovery dummy type
 type Recovery struct{}
 
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+}
+
+// New return recovery
+func New(cfg *config.Config) *Recovery {
+	return &Recovery{}
+}
+
 // Name return middleware name
-func (r *Recovery) Name() string { return "recovery" }
+func (r *Recovery) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (r *Recovery) ServeDNS(dc *ctx.Context) {
@@ -33,3 +47,5 @@ func (r *Recovery) ServeDNS(dc *ctx.Context) {
 
 	dc.NextDNS()
 }
+
+const name = "recovery"

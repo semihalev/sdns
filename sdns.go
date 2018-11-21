@@ -1,5 +1,7 @@
 package main
 
+//go:generate go run gen.go
+
 import (
 	"flag"
 	"fmt"
@@ -8,18 +10,12 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/api"
-	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/middleware/accesslist"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
-	"github.com/semihalev/sdns/middleware/cache"
-	"github.com/semihalev/sdns/middleware/edns"
-	"github.com/semihalev/sdns/middleware/hostsfile"
-	"github.com/semihalev/sdns/middleware/metrics"
-	"github.com/semihalev/sdns/middleware/ratelimit"
-	"github.com/semihalev/sdns/middleware/recovery"
-	"github.com/semihalev/sdns/middleware/resolver"
+
+	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/server"
 )
 
@@ -81,41 +77,18 @@ func setup() {
 }
 
 func run() {
+	middleware.SetConfig(Config)
+	middleware.Setup()
+
 	server := server.New(Config)
-
-	// register middlewares
-	server.Register(&recovery.Recovery{})
-
-	metrics := metrics.New(Config)
-	server.Register(metrics)
-
-	accesslist := accesslist.New(Config)
-	server.Register(accesslist)
-
-	ratelimit := ratelimit.New(Config)
-	server.Register(ratelimit)
-
-	edns := edns.New(Config)
-	server.Register(edns)
-
-	hostsfile := hostsfile.New(Config)
-	server.Register(hostsfile)
-
-	blocklist := blocklist.New(Config)
-	server.Register(blocklist)
-
-	cache := cache.New(Config)
-	server.Register(cache)
-
-	resolver := resolver.New(Config)
-	server.Register(resolver)
-
 	server.Run()
 
-	api := api.New(Config.API, blocklist)
+	b := middleware.Get("blocklist")
+
+	api := api.New(Config.API, b.(*blocklist.BlockList))
 	api.Run()
 
-	go fetchBlocklists(blocklist)
+	go fetchBlocklists(b.(*blocklist.BlockList))
 }
 
 func main() {

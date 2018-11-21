@@ -21,6 +21,7 @@ func Test_BlockList(t *testing.T) {
 	cfg.Nullroutev6 = "::0"
 
 	blocklist := New(cfg)
+
 	assert.Equal(t, "blocklist", blocklist.Name())
 	blocklist.Set(testDomain)
 

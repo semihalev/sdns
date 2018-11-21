@@ -5,10 +5,17 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // EDNS type
 type EDNS struct {
+}
+
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
 }
 
 // New return edns
@@ -17,9 +24,7 @@ func New(cfg *config.Config) *EDNS {
 }
 
 // Name return middleware name
-func (e *EDNS) Name() string {
-	return "edns"
-}
+func (e *EDNS) Name() string { return name }
 
 // DNSResponseWriter implement of ctx.ResponseWriter
 type DNSResponseWriter struct {
@@ -61,3 +66,5 @@ func (w *DNSResponseWriter) WriteMsg(m *dns.Msg) error {
 
 	return w.ResponseWriter.WriteMsg(m)
 }
+
+const name = "edns"

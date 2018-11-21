@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
@@ -21,6 +23,12 @@ type BlockList struct {
 	m map[string]bool
 }
 
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+}
+
 // New returns a new BlockList
 func New(cfg *config.Config) *BlockList {
 	return &BlockList{
@@ -32,9 +40,7 @@ func New(cfg *config.Config) *BlockList {
 }
 
 // Name return middleware name
-func (b *BlockList) Name() string {
-	return "blocklist"
-}
+func (b *BlockList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (b *BlockList) ServeDNS(dc *ctx.Context) {
@@ -137,3 +143,5 @@ func (b *BlockList) Length() int {
 
 	return len(b.m)
 }
+
+const name = "blocklist"
