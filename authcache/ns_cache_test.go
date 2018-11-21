@@ -1,48 +1,49 @@
-package cache
+package authcache
 
 import (
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/cache"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_NSCache(t *testing.T) {
-	cache := NewNSCache()
+	nscache := NewNSCache()
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn("example.com."), dns.TypeA)
-	key := Hash(m.Question[0])
+	key := cache.Hash(m.Question[0])
 
 	a := NewAuthServer("0.0.0.0:53")
 	_ = a.String()
 
 	servers := &AuthServers{List: []*AuthServer{a}}
 
-	_, err := cache.Get(key)
+	_, err := nscache.Get(key)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "cache not found")
 
-	cache.Set(key, nil, servers)
+	nscache.Set(key, nil, servers)
 
-	_, err = cache.Get(key)
+	_, err = nscache.Get(key)
 	assert.NoError(t, err)
 
-	cache.now = func() time.Time {
+	nscache.now = func() time.Time {
 		return time.Now().Add(30 * time.Minute)
 	}
-	_, err = cache.Get(key)
+	_, err = nscache.Get(key)
 	assert.NoError(t, err)
 
-	cache.now = func() time.Time {
+	nscache.now = func() time.Time {
 		return time.Now().Add(2 * time.Hour)
 	}
-	_, err = cache.Get(key)
+	_, err = nscache.Get(key)
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "cache expired")
 
-	_, err = cache.Get(key)
+	_, err = nscache.Get(key)
 	assert.Error(t, err)
 }
 

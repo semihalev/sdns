@@ -11,6 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
@@ -19,14 +20,14 @@ import (
 
 // Resolver type
 type Resolver struct {
-	Ncache *cache.NSCache
+	Ncache *authcache.NSCache
 
 	lqueue *lqueue.LQueue
 	cfg    *config.Config
 
-	rootservers     *cache.AuthServers
-	root6servers    *cache.AuthServers
-	fallbackservers *cache.AuthServers
+	rootservers     *authcache.AuthServers
+	root6servers    *authcache.AuthServers
+	fallbackservers *authcache.AuthServers
 
 	rootkeys []dns.RR
 }
@@ -51,31 +52,31 @@ func NewResolver(cfg *config.Config) *Resolver {
 		cfg:    cfg,
 		lqueue: lqueue.New(),
 
-		Ncache: cache.NewNSCache(),
+		Ncache: authcache.NewNSCache(),
 
-		rootservers:     new(cache.AuthServers),
-		root6servers:    new(cache.AuthServers),
-		fallbackservers: new(cache.AuthServers),
+		rootservers:     new(authcache.AuthServers),
+		root6servers:    new(authcache.AuthServers),
+		fallbackservers: new(authcache.AuthServers),
 	}
 
 	if len(cfg.RootServers) > 0 {
-		r.rootservers = &cache.AuthServers{}
+		r.rootservers = &authcache.AuthServers{}
 		for _, s := range cfg.RootServers {
-			r.rootservers.List = append(r.rootservers.List, cache.NewAuthServer(s))
+			r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s))
 		}
 	}
 
 	if len(cfg.Root6Servers) > 0 {
-		r.root6servers = &cache.AuthServers{}
+		r.root6servers = &authcache.AuthServers{}
 		for _, s := range cfg.Root6Servers {
-			r.root6servers.List = append(r.root6servers.List, cache.NewAuthServer(s))
+			r.root6servers.List = append(r.root6servers.List, authcache.NewAuthServer(s))
 		}
 	}
 
 	if len(cfg.FallbackServers) > 0 {
-		r.fallbackservers = &cache.AuthServers{}
+		r.fallbackservers = &authcache.AuthServers{}
 		for _, s := range cfg.FallbackServers {
-			r.fallbackservers.List = append(r.fallbackservers.List, cache.NewAuthServer(s))
+			r.fallbackservers.List = append(r.fallbackservers.List, authcache.NewAuthServer(s))
 		}
 	}
 
@@ -96,7 +97,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 }
 
 // Resolve will try find nameservers recursively
-func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	if root && req.Question[0].Qtype != dns.TypeDS {
@@ -293,9 +294,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 		if len(nsmap) > len(nservers) {
 			if len(nservers) > 0 {
 				// temprorary cache before lookup
-				authservers := &cache.AuthServers{}
+				authservers := &authcache.AuthServers{}
 				for _, s := range nservers {
-					authservers.List = append(authservers.List, cache.NewAuthServer(s))
+					authservers.List = append(authservers.List, authcache.NewAuthServer(s))
 				}
 
 				r.Ncache.Set(key, nil, authservers)
@@ -366,9 +367,9 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 			}
 		}
 
-		authservers := &cache.AuthServers{}
+		authservers := &authcache.AuthServers{}
 		for _, s := range nservers {
-			authservers.List = append(authservers.List, cache.NewAuthServer(s))
+			authservers.List = append(authservers.List, authcache.NewAuthServer(s))
 		}
 
 		//final cache
@@ -392,7 +393,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *cache.AuthServers,
 	return m, nil
 }
 
-func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	c := &dns.Client{
 		Net: Net,
 		Dialer: &net.Dialer{
@@ -439,7 +440,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *cache.AuthServers) 
 	panic("looks like no root servers, check your config")
 }
 
-func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Client) (*dns.Msg, error) {
+func (r *Resolver) exchange(server *authcache.AuthServer, req *dns.Msg, c *dns.Client) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	var resp *dns.Msg
@@ -476,7 +477,7 @@ func (r *Resolver) exchange(server *cache.AuthServer, req *dns.Msg, c *dns.Clien
 	return resp, nil
 }
 
-func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *cache.AuthServers, parentdsrr []dns.RR) {
+func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *authcache.AuthServers, parentdsrr []dns.RR) {
 	q.Qtype = dns.TypeNS // we should look NS type caches
 	key := cache.Hash(q, cd)
 
@@ -766,7 +767,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 	return true, nil
 }
 
-func (r *Resolver) equalServers(s1, s2 *cache.AuthServers) bool {
+func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 	var list1, list2 []string
 
 	s1.RLock()
@@ -819,20 +820,20 @@ func (r *Resolver) checkPriming() error {
 	}
 
 	if len(resp.Extra) > 0 {
-		var tmpservers, tmp6servers cache.AuthServers
+		var tmpservers, tmp6servers authcache.AuthServers
 
 		for _, r := range resp.Extra {
 			if r.Header().Rrtype == dns.TypeA {
 				if v4, ok := r.(*dns.A); ok {
 					host := net.JoinHostPort(v4.A.String(), "53")
-					tmpservers.List = append(tmpservers.List, cache.NewAuthServer(host))
+					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host))
 				}
 			}
 
 			if r.Header().Rrtype == dns.TypeAAAA {
 				if v6, ok := r.(*dns.AAAA); ok {
 					host := net.JoinHostPort(v6.AAAA.String(), "53")
-					tmp6servers.List = append(tmp6servers.List, cache.NewAuthServer(host))
+					tmp6servers.List = append(tmp6servers.List, authcache.NewAuthServer(host))
 				}
 			}
 		}

@@ -1,10 +1,11 @@
-package cache
+package authcache
 
 import (
 	"sync"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/cache"
 )
 
 // NS represents a cache entry
@@ -19,7 +20,7 @@ type NS struct {
 type NSCache struct {
 	mu sync.RWMutex
 
-	cache *Cache
+	cache *cache.Cache
 
 	now func() time.Time
 }
@@ -27,7 +28,7 @@ type NSCache struct {
 // NewNSCache return new cache
 func NewNSCache() *NSCache {
 	n := &NSCache{
-		cache: New(defaultCap),
+		cache: cache.New(defaultCap),
 		now:   time.Now,
 	}
 
@@ -39,13 +40,13 @@ func (n *NSCache) Get(key uint64) (*NS, error) {
 	el, ok := n.cache.Get(key)
 
 	if !ok {
-		return nil, ErrCacheNotFound
+		return nil, cache.ErrCacheNotFound
 	}
 
 	elapsed := n.now().UTC().Sub(el.(*NS).ut)
 
 	if elapsed >= maximumTTL {
-		return nil, ErrCacheExpired
+		return nil, cache.ErrCacheExpired
 	}
 
 	return el.(*NS), nil
@@ -62,5 +63,5 @@ func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers) {
 
 const (
 	maximumTTL = time.Hour
-	defaultCap = 1024 * shardSize
+	defaultCap = 1024 * 256
 )

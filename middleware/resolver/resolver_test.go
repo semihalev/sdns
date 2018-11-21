@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -112,7 +112,7 @@ func Test_resolverDSDelegate(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	resp, err := r.Resolve("udp", req, &cache.AuthServers{List: []*cache.AuthServer{cache.NewAuthServer("202.12.31.53:53")}}, false, 30, 0, false, nil)
+	resp, err := r.Resolve("udp", req, &authcache.AuthServers{List: []*authcache.AuthServer{authcache.NewAuthServer("202.12.31.53:53")}}, false, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)

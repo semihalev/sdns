@@ -1,7 +1,6 @@
 package mock
 
 import (
-	"fmt"
 	"net"
 
 	"github.com/miekg/dns"
@@ -66,11 +65,6 @@ func (w *Writer) WriteMsg(msg *dns.Msg) error {
 // Written func
 func (w *Writer) Written() bool {
 	return w.msg != nil
-}
-
-// Reset func
-func (w *Writer) Reset(writer dns.ResponseWriter) {
-	fmt.Println("reset called")
 }
 
 // Close func
