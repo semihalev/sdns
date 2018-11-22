@@ -286,6 +286,9 @@ func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
 
 		if answer.Header().Rrtype == dns.TypeCNAME {
 			cr := answer.(*dns.CNAME)
+			if cr.Target == msg.Question[0].Name {
+				return dnsutil.HandleFailed(msg, dns.RcodeServerFailure, false)
+			}
 			cnameReq.SetQuestion(cr.Target, msg.Question[0].Qtype)
 		}
 	}
@@ -299,14 +302,20 @@ func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
 
 		key := cache.Hash(q, cnameReq.CheckingDisabled)
 		respCname, _, err := c.GetP(key, cnameReq)
+		target := cnameReq.Question[0].Name
 		if err == nil {
-			cnameReq.Question[0].Name, child = searchAdditionalAnswer(msg, respCname)
+			target, child = searchAdditionalAnswer(msg, respCname)
 		} else {
 			respCname, err = dnsutil.ExchangeInternal("tcp", cnameReq)
 			if err == nil && len(respCname.Answer) > 0 {
-				cnameReq.Question[0].Name, child = searchAdditionalAnswer(msg, respCname)
+				target, child = searchAdditionalAnswer(msg, respCname)
+				if target == msg.Question[0].Name {
+					return dnsutil.HandleFailed(msg, dns.RcodeServerFailure, false)
+				}
 			}
 		}
+
+		cnameReq.Question[0].Name = target
 
 		cnameDepth--
 

@@ -124,6 +124,9 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 
 		if answer.Header().Rrtype == dns.TypeCNAME {
 			cr := answer.(*dns.CNAME)
+			if cr.Target == req.Question[0].Name {
+				return dnsutil.HandleFailed(req, dns.RcodeServerFailure, false)
+			}
 			cnameReq.SetQuestion(cr.Target, req.Question[0].Qtype)
 		}
 	}
