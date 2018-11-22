@@ -5,6 +5,9 @@ import (
 	"net"
 	"strings"
 
+	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/mock"
 )
@@ -182,15 +185,18 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 }
 
 // ExchangeInternal exchange request internal
-func ExchangeInternal(Net string, req *dns.Msg) (*dns.Msg, error) {
-	mw := mock.NewWriter(Net, "127.0.0.1:0")
-	dns.DefaultServeMux.ServeDNS(mw, req)
+func ExchangeInternal(Net string, r *dns.Msg) (*dns.Msg, error) {
+	w := mock.NewWriter(Net, "127.0.0.1:0")
 
-	if !mw.Written() {
+	dc := ctx.New(middleware.Handlers())
+	dc.ResetDNS(w, r)
+	dc.NextDNS()
+
+	if !w.Written() {
 		return nil, errors.New("no replied any message")
 	}
 
-	return mw.Msg(), nil
+	return w.Msg(), nil
 }
 
 const (
