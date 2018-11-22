@@ -25,6 +25,9 @@ func Test_Middleware(t *testing.T) {
 
 	SetConfig(cfg)
 
+	d := Get("dummy")
+	assert.Nil(t, d)
+
 	err = Setup()
 	assert.NoError(t, err)
 
@@ -34,7 +37,7 @@ func Test_Middleware(t *testing.T) {
 	assert.True(t, len(List()) == 1)
 	assert.True(t, len(Handlers()) == 1)
 
-	d := Get("dummy")
+	d = Get("dummy")
 	assert.NotNil(t, d)
 
 	d = Get("none")

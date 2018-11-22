@@ -122,7 +122,7 @@ fallbackservers = [
 "8.8.4.4:53"
 ]
 
-# address to bind to for the http API server, left blank for disabled
+# address to bind to for the http API server, leave blank to disable
 api = "127.0.0.1:8080"
 
 # what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
@@ -155,7 +155,7 @@ accesslist = [
 "::0/0"
 ]
 
-# enables serving zone data from a hosts file, left blank for disabled
+# enables serving zone data from a hosts file, leave blank to disable
 # the form of the entries in the /etc/hosts file are based on IETF RFC 952 which was updated by IETF RFC 1123.
 hostsfile = ""
 

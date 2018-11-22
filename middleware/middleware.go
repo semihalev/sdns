@@ -21,13 +21,15 @@ type handler struct {
 	new  func(*config.Config) ctx.Handler
 }
 
-var m middleware
-var ctxHandlers []ctx.Handler
-var alreadySetup bool
+var (
+	ctxHandlers []ctx.Handler
+	setup       bool
+	m           middleware
+)
 
 // Register a middleware
 func Register(name string, new func(*config.Config) ctx.Handler) {
-	log.Debug("Register middleware", "name", name)
+	log.Debug("Register middleware", "name", name, "index", len(m.handlers))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -45,7 +47,7 @@ func Setup() error {
 		return errors.New("set config first")
 	}
 
-	if alreadySetup {
+	if setup {
 		return errors.New("setup already done")
 	}
 
@@ -56,7 +58,7 @@ func Setup() error {
 		ctxHandlers = append(ctxHandlers, handler.new(m.cfg))
 	}
 
-	alreadySetup = true
+	setup = true
 
 	return nil
 }
@@ -80,6 +82,10 @@ func List() (list []string) {
 
 // Get return a handler by name
 func Get(name string) ctx.Handler {
+	if !setup {
+		return nil
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// middleware list order very important, call handlers via this order.
+// middleware list order very important, handlers call via this order.
 var middlewareList = []string{
 	"recovery",
 	"metrics",

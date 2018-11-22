@@ -306,7 +306,7 @@ func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
 		if err == nil {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		} else {
-			respCname, err = dnsutil.ExchangeInternal("tcp", cnameReq)
+			respCname, err = dnsutil.ExchangeInternal("udp", cnameReq)
 			if err == nil && len(respCname.Answer) > 0 {
 				target, child = searchAdditionalAnswer(msg, respCname)
 				if target == msg.Question[0].Name {
