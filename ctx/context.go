@@ -2,7 +2,6 @@ package ctx
 
 import (
 	"math"
-	"net/http"
 
 	"github.com/miekg/dns"
 )
@@ -17,9 +16,6 @@ type Handler interface {
 type Context struct {
 	DNSWriter  ResponseWriter
 	DNSRequest *dns.Msg
-
-	HTTPWriter  http.ResponseWriter
-	HTTPRequest *http.Request
 
 	handlers []Handler
 	index    int8

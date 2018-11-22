@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 )
 
-// handler list order very important, call handlers via this order.
-var handlerList = []string{
+// middleware list order very important, call handlers via this order.
+var middlewareList = []string{
 	"recovery",
 	"metrics",
 	"accesslist",
@@ -23,7 +23,7 @@ var handlerList = []string{
 
 func main() {
 	var pathlist []string
-	for _, name := range handlerList {
+	for _, name := range middlewareList {
 		stat, err := os.Stat(filepath.Join(middlewareDir, name))
 		if err != nil {
 			fmt.Println(err)
