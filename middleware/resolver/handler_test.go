@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/middleware/edns"
+	"github.com/semihalev/sdns/middleware"
+	_ "github.com/semihalev/sdns/middleware/edns"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -16,6 +17,15 @@ import (
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestMain(m *testing.M) {
+	cfg := makeTestConfig()
+
+	middleware.SetConfig(cfg)
+	middleware.Setup()
+
+	m.Run()
+}
 
 func makeTestConfig() *config.Config {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
@@ -70,20 +80,8 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 	return server, pc.LocalAddr().String(), fin, nil
 }
 
-func makeTestHandler(handler ctx.Handler) {
-	edns := edns.New(nil)
-
-	dns.DefaultServeMux.HandleFunc(".", func(w dns.ResponseWriter, req *dns.Msg) {
-		dc := ctx.New([]ctx.Handler{edns, handler})
-		dc.ResetDNS(w, req)
-		dc.NextDNS()
-	})
-}
-
 func Test_handler(t *testing.T) {
-	cfg := makeTestConfig()
-	handler := New(cfg)
-	makeTestHandler(handler)
+	handler := middleware.Get("resolver").(*DNSHandler)
 
 	time.Sleep(2 * time.Second)
 

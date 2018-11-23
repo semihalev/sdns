@@ -17,6 +17,7 @@ import (
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/stretchr/testify/assert"
 )
@@ -24,6 +25,30 @@ import (
 const (
 	testDomain = "www.google.com"
 )
+
+func TestMain(m *testing.M) {
+	Config = new(config.Config)
+	Config.RootServers = []string{"192.5.5.241:53"}
+	Config.RootKeys = []string{
+		".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
+		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
+	}
+	Config.Maxdepth = 30
+	Config.Expire = 600
+	Config.Timeout.Duration = 2 * time.Second
+	Config.ConnectTimeout.Duration = 2 * time.Second
+	Config.Nullroute = "0.0.0.0"
+	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
+	Config.Bind = ":0"
+	Config.BindTLS = ""
+	Config.BindDOH = ""
+	Config.API = ""
+
+	middleware.SetConfig(Config)
+	middleware.Setup()
+
+	m.Run()
+}
 
 func publicKey(priv interface{}) interface{} {
 	switch k := priv.(type) {
@@ -96,52 +121,11 @@ func generateCertificate() error {
 	return nil
 }
 
-func Test_UpdateBlocklists(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
-
-	tempDir := filepath.Join(os.TempDir(), "/sdns_temp")
-
-	Config = new(config.Config)
-	Config.Whitelist = append(Config.Whitelist, testDomain)
-	Config.Blocklist = append(Config.Blocklist, testDomain)
-
-	Config.BlockLists = []string{}
-	Config.BlockLists = append(Config.BlockLists, "https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt")
-	Config.BlockLists = append(Config.BlockLists, "https://test.dev/hosts")
-
-	blocklist := blocklist.New(Config)
-
-	err := updateBlocklists(blocklist, tempDir)
-	assert.NoError(t, err)
-
-	err = readBlocklists(blocklist, tempDir)
-	assert.NoError(t, err)
-}
-
 func Test_start(t *testing.T) {
 	err := generateCertificate()
 	assert.NoError(t, err)
 
-	Config = new(config.Config)
-	Config.RootServers = []string{"192.5.5.241:53"}
-	Config.RootKeys = []string{
-		".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
-		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
-	}
-	Config.Maxdepth = 30
-	Config.Expire = 600
-	Config.Timeout.Duration = 2 * time.Second
-	Config.ConnectTimeout.Duration = 2 * time.Second
-	Config.Nullroute = "0.0.0.0"
-	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
-	Config.Bind = ":0"
-	Config.BindTLS = ""
-	Config.BindDOH = ""
-	Config.API = ""
-
 	setup()
-
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
 	cert := filepath.Join(os.TempDir(), "test.cert")
 	privkey := filepath.Join(os.TempDir(), "test.key")
@@ -164,4 +148,26 @@ func Test_start(t *testing.T) {
 	os.Stderr, _ = os.Open(os.DevNull)
 	flag.Usage()
 	os.Stderr = stderr
+}
+
+func Test_UpdateBlocklists(t *testing.T) {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
+	tempDir := filepath.Join(os.TempDir(), "/sdns_temp")
+
+	Config = new(config.Config)
+	Config.Whitelist = append(Config.Whitelist, testDomain)
+	Config.Blocklist = append(Config.Blocklist, testDomain)
+
+	Config.BlockLists = []string{}
+	Config.BlockLists = append(Config.BlockLists, "https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt")
+	Config.BlockLists = append(Config.BlockLists, "https://test.dev/hosts")
+
+	blocklist := blocklist.New(Config)
+
+	err := updateBlocklists(blocklist, tempDir)
+	assert.NoError(t, err)
+
+	err = readBlocklists(blocklist, tempDir)
+	assert.NoError(t, err)
 }
