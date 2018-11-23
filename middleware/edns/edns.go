@@ -29,15 +29,20 @@ func (e *EDNS) Name() string { return name }
 // DNSResponseWriter implement of ctx.ResponseWriter
 type DNSResponseWriter struct {
 	ctx.ResponseWriter
-	do  bool
-	opt *dns.OPT
+	opt    *dns.OPT
+	size   int
+	do     bool
+	noedns bool
+	noad   bool
 }
 
 // ServeDNS implements the Handle interface.
 func (e *EDNS) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	opt, do := dnsutil.SetEdns0(req)
+	noedns := req.IsEdns0() == nil
+
+	opt, size, do := dnsutil.SetEdns0(req)
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 		opt.SetExtendedRcode(dns.RcodeBadVers)
@@ -48,7 +53,11 @@ func (e *EDNS) ServeDNS(dc *ctx.Context) {
 		return
 	}
 
-	dc.DNSWriter = &DNSResponseWriter{ResponseWriter: w, do: do, opt: opt}
+	if w.Proto() == "tcp" {
+		size = dns.MaxMsgSize
+	}
+
+	dc.DNSWriter = &DNSResponseWriter{ResponseWriter: w, opt: opt, size: size, do: do, noedns: noedns, noad: !req.AuthenticatedData}
 
 	dc.NextDNS()
 
@@ -61,8 +70,22 @@ func (w *DNSResponseWriter) WriteMsg(m *dns.Msg) error {
 		m = dnsutil.ClearDNSSEC(m)
 	}
 	m = dnsutil.ClearOPT(m)
-	w.opt.SetDo(w.do)
-	m.Extra = append(m.Extra, w.opt)
+
+	if !w.noedns {
+		w.opt.SetDo(w.do)
+		m.Extra = append(m.Extra, w.opt)
+	}
+
+	if w.noad {
+		m.AuthenticatedData = false
+	}
+
+	if w.Proto() == "udp" && m.Len() > w.size {
+		m.Truncated = true
+		m.Answer = []dns.RR{}
+		m.Ns = []dns.RR{}
+		m.AuthenticatedData = false
+	}
 
 	return w.ResponseWriter.WriteMsg(m)
 }

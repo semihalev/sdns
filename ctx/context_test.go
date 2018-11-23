@@ -44,9 +44,11 @@ func Test_Context(t *testing.T) {
 	err = dc.DNSWriter.WriteMsg(req)
 	assert.Equal(t, errAlreadyWritten, err)
 
-	dc.ResetDNS(mock.NewWriter("udp", "127.0.0.1:0"), req)
+	dc.ResetDNS(mock.NewWriter("tcp", "127.0.0.1:0"), req)
 	_, err = dc.DNSWriter.Write([]byte{})
 	assert.Error(t, err)
+
+	assert.Equal(t, "tcp", dc.DNSWriter.Proto())
 
 	dc.Abort()
 	assert.Equal(t, abortIndex, dc.index)

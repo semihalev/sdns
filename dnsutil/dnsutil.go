@@ -95,15 +95,18 @@ func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
 }
 
 // SetEdns0 returns replaced or new opt rr and if request has do
-func SetEdns0(req *dns.Msg) (*dns.OPT, bool) {
+func SetEdns0(req *dns.Msg) (*dns.OPT, int, bool) {
 	do := false
 	opt := req.IsEdns0()
+	size := DefaultMsgSize
 
 	if opt != nil {
-		opt.SetUDPSize(DefaultMsgSize)
-		if opt.Version() != 0 {
-			return opt, false
+		size = int(opt.UDPSize())
+		if size < dns.MinMsgSize {
+			size = dns.MinMsgSize
 		}
+
+		opt.SetUDPSize(DefaultMsgSize)
 
 		ops := opt.Option
 
@@ -113,6 +116,10 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, bool) {
 			if option.Option() == dns.EDNS0SUBNET {
 				opt.Option = append(opt.Option, option)
 			}
+		}
+
+		if opt.Version() != 0 {
+			return opt, size, false
 		}
 
 		do = opt.Do()
@@ -129,7 +136,7 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, bool) {
 		req.Extra = append(req.Extra, opt)
 	}
 
-	return opt, do
+	return opt, size, do
 }
 
 // ClearOPT returns cleared opt message

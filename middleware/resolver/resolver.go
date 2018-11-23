@@ -578,7 +578,7 @@ func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
 		return nil, err
 	}
 
-	if dsres.Truncated && dsres.Rcode == dns.RcodeSuccess {
+	if dsres.Truncated && Net == "udp" {
 		//retrying in TCP mode
 		r.lqueue.Done(key)
 		return r.lookupDS("tcp", qname)
@@ -621,7 +621,7 @@ func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string,
 		return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
 	}
 
-	if nsres.Truncated && nsres.Rcode == dns.RcodeSuccess {
+	if nsres.Truncated && Net == "udp" {
 		//retrying in TCP mode
 		r.lqueue.Done(key)
 		return r.lookupNSAddr("tcp", qname, cd)
@@ -710,7 +710,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 			return
 		}
 
-		if msg.Truncated {
+		if msg.Truncated && Net == "udp" {
 			//retrying in TCP mode
 			return r.verifyDNSSEC("tcp", signer, signed, resp, parentdsRR)
 		}

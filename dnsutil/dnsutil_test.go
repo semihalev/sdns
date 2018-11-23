@@ -3,10 +3,11 @@ package dnsutil
 import (
 	"testing"
 
+	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/blocklist"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
-	"github.com/semihalev/sdns/middleware/blocklist"
 )
 
 func TestExtractAddressFromReverse(t *testing.T) {
@@ -90,18 +91,26 @@ func TestSetEnds0(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
 
-	opt, _ := SetEdns0(req)
+	size := 0
+
+	opt, _, _ := SetEdns0(req)
 	if opt == nil {
 		t.Errorf("Test SetEdns0, got OPT nil")
 	}
 
-	opt, _ = SetEdns0(req)
+	opt, _, _ = SetEdns0(req)
 	if opt == nil {
 		t.Errorf("Test SetEdns0, got OPT nil")
+	}
+
+	opt.SetUDPSize(128)
+	opt, size, _ = SetEdns0(req)
+	if size != dns.MinMsgSize {
+		t.Errorf("Test SetEdns0 size not equal with dns minimal size")
 	}
 
 	opt.SetVersion(100)
-	opt, _ = SetEdns0(req)
+	opt, _, _ = SetEdns0(req)
 	if opt.Version() != 100 {
 		t.Errorf("Test edns version should be 100 expected %d", opt.Version())
 	}
@@ -109,7 +118,7 @@ func TestSetEnds0(t *testing.T) {
 	opt.SetVersion(0)
 	option := &dns.EDNS0_SUBNET{Code: 0, Family: 0, SourceNetmask: 0, SourceScope: 0, Address: nil}
 	opt.Option = append(opt.Option, option)
-	opt, _ = SetEdns0(req)
+	opt, _, _ = SetEdns0(req)
 	if len(opt.Option) != 1 {
 		t.Errorf("Test edns option length should be 1 expected %d", len(opt.Option))
 	}
@@ -147,14 +156,11 @@ func TestExchangeInternal(t *testing.T) {
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
 
-	blocklist := blocklist.New(cfg)
-	blocklist.Set("example.com.")
+	middleware.SetConfig(cfg)
+	middleware.Setup()
 
-	dns.DefaultServeMux.HandleFunc(".", func(w dns.ResponseWriter, req *dns.Msg) {
-		dc := ctx.New([]ctx.Handler{blocklist})
-		dc.ResetDNS(w, req)
-		dc.NextDNS()
-	})
+	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
+	blocklist.Set("example.com.")
 
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)

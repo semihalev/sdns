@@ -2,6 +2,7 @@ package ctx
 
 import (
 	"errors"
+	"net"
 
 	"github.com/miekg/dns"
 )
@@ -13,6 +14,7 @@ type ResponseWriter interface {
 	Rcode() int
 	Written() bool
 	Reset(dns.ResponseWriter)
+	Proto() string
 }
 
 type responseWriter struct {
@@ -20,6 +22,7 @@ type responseWriter struct {
 	msg   *dns.Msg
 	size  int
 	rcode int
+	proto string
 }
 
 var _ ResponseWriter = &responseWriter{}
@@ -34,6 +37,17 @@ func (w *responseWriter) Reset(writer dns.ResponseWriter) {
 	w.size = -1
 	w.msg = nil
 	w.rcode = dns.RcodeSuccess
+
+	switch writer.LocalAddr().(type) {
+	case (*net.TCPAddr):
+		w.proto = "tcp"
+	case (*net.UDPAddr):
+		w.proto = "udp"
+	}
+}
+
+func (w *responseWriter) Proto() string {
+	return w.proto
 }
 
 func (w *responseWriter) Rcode() int {

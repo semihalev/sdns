@@ -1,7 +1,6 @@
 package resolver
 
 import (
-	"net"
 	"os"
 
 	"github.com/semihalev/sdns/middleware"
@@ -45,15 +44,7 @@ func (h *DNSHandler) Name() string { return name }
 func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	var Net string
-	switch w.LocalAddr().(type) {
-	case (*net.TCPAddr):
-		Net = "tcp"
-	case (*net.UDPAddr):
-		Net = "udp"
-	}
-
-	msg := h.handle(Net, req)
+	msg := h.handle(w.Proto(), req)
 
 	w.WriteMsg(msg)
 }
