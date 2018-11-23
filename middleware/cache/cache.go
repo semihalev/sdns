@@ -90,11 +90,30 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 
 	key := cache.Hash(req.Question[0], req.CheckingDisabled)
 
+	now := c.now().UTC()
+
+	q := req.Question[0]
+
+	if q.Name != "." && req.RecursionDesired == false {
+		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
+		dc.Abort()
+		return
+	}
+
 	c.lqueue.Wait(key)
 
-	msg := c.handle("", req)
-	if msg != nil {
-		w.WriteMsg(msg)
+	i, found := c.get(key, now)
+	if i != nil && found {
+		if c.rate > 0 && i.RateLimit.Limit() {
+			//no reply to client
+			dc.Abort()
+			return
+		}
+
+		m := i.toMsg(req, now)
+		m = c.additionalAnswer(m)
+
+		w.WriteMsg(m)
 		dc.Abort()
 		return
 	}
@@ -107,32 +126,6 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	dc.NextDNS()
 
 	dc.DNSWriter = w
-}
-
-func (c *Cache) handle(Net string, req *dns.Msg) *dns.Msg {
-	now := c.now().UTC()
-
-	q := req.Question[0]
-
-	if q.Name != "." && req.RecursionDesired == false {
-		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, false)
-	}
-
-	key := cache.Hash(q, req.CheckingDisabled)
-
-	i, found := c.get(key, now)
-	if i != nil && found {
-		if c.rate > 0 && i.RateLimit.Limit() {
-			return dnsutil.HandleFailed(req, dns.RcodeRefused, false)
-		}
-
-		m := i.toMsg(req, now)
-		m = c.additionalAnswer(m)
-
-		return m
-	}
-
-	return nil
 }
 
 // WriteMsg implements the ctx.ResponseWriter interface

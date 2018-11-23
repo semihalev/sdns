@@ -74,8 +74,7 @@ func Test_PCache(t *testing.T) {
 
 	dc.ResetDNS(mw, req)
 	c.ServeDNS(dc)
-	assert.True(t, dc.DNSWriter.Written())
-	assert.Equal(t, dns.RcodeRefused, dc.DNSWriter.Rcode())
+	assert.False(t, dc.DNSWriter.Written())
 }
 
 func Test_NCache(t *testing.T) {
