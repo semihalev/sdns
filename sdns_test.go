@@ -44,8 +44,7 @@ func TestMain(m *testing.M) {
 	Config.BindDOH = ""
 	Config.API = ""
 
-	middleware.SetConfig(Config)
-	middleware.Setup()
+	middleware.Setup(Config)
 
 	m.Run()
 }

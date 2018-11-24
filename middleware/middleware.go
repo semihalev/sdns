@@ -36,20 +36,13 @@ func Register(name string, new func(*config.Config) ctx.Handler) {
 	m.handlers = append(m.handlers, handler{name: name, new: new})
 }
 
-// SetConfig set config for handlers
-func SetConfig(cfg *config.Config) {
-	m.cfg = cfg
-}
-
 // Setup handlers
-func Setup() error {
-	if m.cfg == nil {
-		return errors.New("set config first")
-	}
-
+func Setup(cfg *config.Config) error {
 	if setup {
 		return errors.New("setup already done")
 	}
+
+	m.cfg = cfg
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()

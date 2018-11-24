@@ -156,8 +156,7 @@ func TestExchangeInternal(t *testing.T) {
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
 
-	middleware.SetConfig(cfg)
-	middleware.Setup()
+	middleware.Setup(cfg)
 
 	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
 	blocklist.Set("example.com.")

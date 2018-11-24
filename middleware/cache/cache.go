@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"net/http"
 	"strings"
 	"time"
 
@@ -40,15 +39,9 @@ type Cache struct {
 	now func() time.Time
 }
 
-// DNSResponseWriter implement of ctx.ResponseWriter
-type DNSResponseWriter struct {
+// ResponseWriter implement of ctx.ResponseWriter
+type ResponseWriter struct {
 	ctx.ResponseWriter
-	*Cache
-}
-
-// HTTPResponseWriter implement of ctx.ResponseWriter
-type HTTPResponseWriter struct {
-	http.ResponseWriter
 	*Cache
 }
 
@@ -121,7 +114,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	c.lqueue.Add(key)
 	defer c.lqueue.Done(key)
 
-	dc.DNSWriter = &DNSResponseWriter{ResponseWriter: w, Cache: c}
+	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
 
 	dc.NextDNS()
 
@@ -129,7 +122,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 }
 
 // WriteMsg implements the ctx.ResponseWriter interface
-func (w *DNSResponseWriter) WriteMsg(res *dns.Msg) error {
+func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	if res.Truncated {
 		return w.ResponseWriter.WriteMsg(res)
 	}

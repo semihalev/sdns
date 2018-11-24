@@ -77,8 +77,7 @@ func setup() {
 }
 
 func run() {
-	middleware.SetConfig(Config)
-	middleware.Setup()
+	middleware.Setup(Config)
 
 	server := server.New(Config)
 	server.Run()

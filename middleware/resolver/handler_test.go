@@ -21,8 +21,7 @@ import (
 func TestMain(m *testing.M) {
 	cfg := makeTestConfig()
 
-	middleware.SetConfig(cfg)
-	middleware.Setup()
+	middleware.Setup(cfg)
 
 	m.Run()
 }

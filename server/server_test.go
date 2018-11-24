@@ -146,8 +146,7 @@ func Test_Server(t *testing.T) {
 	cfg.BindTLS = "127.0.0.1:23222"
 	cfg.BindDOH = "127.0.0.1:23223"
 
-	middleware.SetConfig(cfg)
-	middleware.Setup()
+	middleware.Setup(cfg)
 
 	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
 	blocklist.Set("test.com.")

@@ -20,18 +20,13 @@ func Test_Middleware(t *testing.T) {
 
 	cfg := &config.Config{}
 
-	err := Setup()
-	assert.Error(t, err)
-
-	SetConfig(cfg)
-
 	d := Get("dummy")
 	assert.Nil(t, d)
 
-	err = Setup()
+	err := Setup(cfg)
 	assert.NoError(t, err)
 
-	err = Setup()
+	err = Setup(cfg)
 	assert.Error(t, err)
 
 	assert.True(t, len(List()) == 1)
