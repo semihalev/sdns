@@ -2,7 +2,8 @@ package accesslist
 
 import (
 	"net"
-	"net/http"
+
+	"github.com/semihalev/sdns/middleware"
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
@@ -13,6 +14,12 @@ import (
 // AccessList type
 type AccessList struct {
 	ranger cidranger.Ranger
+}
+
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
 }
 
 // New return accesslist
@@ -33,9 +40,7 @@ func New(cfg *config.Config) *AccessList {
 }
 
 // Name return middleware name
-func (a *AccessList) Name() string {
-	return "accesslist"
-}
+func (a *AccessList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (a *AccessList) ServeDNS(dc *ctx.Context) {
@@ -51,15 +56,4 @@ func (a *AccessList) ServeDNS(dc *ctx.Context) {
 	dc.NextDNS()
 }
 
-func (a *AccessList) ServeHTTP(dc *ctx.Context) {
-	client, _, _ := net.SplitHostPort(dc.HTTPRequest.RemoteAddr)
-	allowed, _ := a.ranger.Contains(net.ParseIP(client))
-
-	if !allowed {
-		http.Error(dc.HTTPWriter, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		dc.Abort()
-		return
-	}
-
-	dc.NextHTTP()
-}
+const name = "accesslist"

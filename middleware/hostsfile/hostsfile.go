@@ -11,16 +11,16 @@ import (
 	"bytes"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/doh"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -96,6 +96,12 @@ type Hostsfile struct {
 	size  int64
 }
 
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+}
+
 // New return new hostfile, it will be hosts file also
 func New(cfg *config.Config) *Hostsfile {
 	h := &Hostsfile{
@@ -109,6 +115,9 @@ func New(cfg *config.Config) *Hostsfile {
 
 	return h
 }
+
+// Name return middleware name
+func (h *Hostsfile) Name() string { return name }
 
 func (h *Hostsfile) run() {
 	parseChan := make(chan bool)
@@ -274,11 +283,6 @@ func (h *Hostsfile) LookupStaticAddr(addr string) []string {
 	return nil
 }
 
-// Name return middleware name
-func (h *Hostsfile) Name() string {
-	return "hostsfile"
-}
-
 // ServeDNS implements the Handle interface.
 func (h *Hostsfile) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
@@ -290,25 +294,6 @@ func (h *Hostsfile) ServeDNS(dc *ctx.Context) {
 	}
 
 	w.WriteMsg(msg)
-
-	dc.Abort()
-}
-
-func (h *Hostsfile) ServeHTTP(dc *ctx.Context) {
-	w, r := dc.HTTPWriter, dc.HTTPRequest
-
-	var f func(http.ResponseWriter, *http.Request) bool
-	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = doh.HandleJSON(h.handle)
-	} else {
-		f = doh.HandleWireFormat(h.handle)
-	}
-
-	next := f(w, r)
-	if next {
-		dc.NextHTTP()
-		return
-	}
 
 	dc.Abort()
 }
@@ -407,3 +392,5 @@ func ptr(zone string, names []string) []dns.RR {
 	}
 	return answers
 }
+
+const name = "hostsfile"

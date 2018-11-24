@@ -9,8 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/semihalev/sdns/middleware"
+
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/doh"
+	"github.com/semihalev/sdns/mock"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -39,16 +43,12 @@ func New(cfg *config.Config) *Server {
 	}
 
 	server.pool.New = func() interface{} {
-		return ctx.New(server.handlers)
+		return ctx.New(middleware.Handlers())
 	}
 
-	return server
-}
+	dns.Handle(".", server)
 
-// Register middleware
-func (s *Server) Register(h ctx.Handler) {
-	s.handlers = append(s.handlers, h)
-	log.Info("Register middleware", "name", h.Name())
+	return server
 }
 
 // ServeDNS implements the Handle interface.
@@ -62,18 +62,31 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	dc := s.pool.Get().(*ctx.Context)
+	handle := func(Net string, req *dns.Msg) *dns.Msg {
+		mw := mock.NewWriter(Net, r.RemoteAddr)
+		s.ServeDNS(mw, req)
 
-	dc.ResetHTTP(w, r)
-	dc.NextHTTP()
+		if !mw.Written() {
+			return nil
+		}
 
-	s.pool.Put(dc)
+		return mw.Msg()
+	}
+
+	var f func(http.ResponseWriter, *http.Request) bool
+	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
+		f = doh.HandleJSON(handle)
+	} else {
+		f = doh.HandleWireFormat(handle)
+	}
+
+	if f(w, r) {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	}
 }
 
 // Run listen the services
 func (s *Server) Run() {
-	dns.Handle(".", s)
-
 	go s.ListenAndServeDNS("udp")
 	go s.ListenAndServeDNS("tcp")
 	go s.ListenAndServeDNSTLS()

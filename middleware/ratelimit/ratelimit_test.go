@@ -1,8 +1,6 @@
 package ratelimit
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -25,44 +23,22 @@ func Test_RateLimit(t *testing.T) {
 	dc.DNSWriter = mw
 	r.ServeDNS(dc)
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "10.0.0.1:0")
 	dc.DNSWriter = mw
 	r.ServeDNS(dc)
 	r.ServeDNS(dc)
 
-	mw = mock.NewWriter("udp", "0.0.0.0")
+	mw = mock.NewWriter("udp", "0.0.0.0:0")
 	dc.DNSWriter = mw
 	r.ServeDNS(dc)
 
-	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
-	assert.NoError(t, err)
-	request.RemoteAddr = "127.0.0.2:1"
-
-	hw := httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-
-	r.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	r.ServeHTTP(dc)
-	assert.Equal(t, 429, hw.Code)
-
-	request, err = http.NewRequest("GET", "/dns-query?name=test.com", nil)
-	assert.NoError(t, err)
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-
-	r.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	dc.DNSWriter = mw
+	r.ServeDNS(dc)
 
 	r.rate = 0
 
 	r.ServeDNS(dc)
-
-	request.RemoteAddr = "127.0.0.2:1"
-	r.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
 
 	r.now = func() time.Time {
 		return time.Now().Add(expireTime)

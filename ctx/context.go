@@ -2,7 +2,6 @@ package ctx
 
 import (
 	"math"
-	"net/http"
 
 	"github.com/miekg/dns"
 )
@@ -11,16 +10,12 @@ import (
 type Handler interface {
 	Name() string
 	ServeDNS(*Context)
-	ServeHTTP(*Context)
 }
 
 // Context type
 type Context struct {
 	DNSWriter  ResponseWriter
 	DNSRequest *dns.Msg
-
-	HTTPWriter  http.ResponseWriter
-	HTTPRequest *http.Request
 
 	handlers []Handler
 	index    int8
@@ -45,14 +40,6 @@ func (dc *Context) NextDNS() {
 	}
 }
 
-// NextHTTP call next http middleware
-func (dc *Context) NextHTTP() {
-	dc.index++
-	for s := int8(len(dc.handlers)); dc.index < s; dc.index++ {
-		dc.handlers[dc.index].ServeHTTP(dc)
-	}
-}
-
 // Abort calls
 func (dc *Context) Abort() {
 	dc.index = abortIndex
@@ -62,13 +49,6 @@ func (dc *Context) Abort() {
 func (dc *Context) ResetDNS(w dns.ResponseWriter, r *dns.Msg) {
 	dc.DNSWriter.Reset(w)
 	dc.DNSRequest = r
-
-	dc.index = -1
-}
-
-// ResetHTTP reset http vars
-func (dc *Context) ResetHTTP(w http.ResponseWriter, r *http.Request) {
-	dc.HTTPRequest, dc.HTTPWriter = r, w
 
 	dc.index = -1
 }

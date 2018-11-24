@@ -1,10 +1,7 @@
 package blocklist
 
 import (
-	"encoding/base64"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -24,6 +21,7 @@ func Test_BlockList(t *testing.T) {
 	cfg.Nullroutev6 = "::0"
 
 	blocklist := New(cfg)
+
 	assert.Equal(t, "blocklist", blocklist.Name())
 	blocklist.Set(testDomain)
 
@@ -33,7 +31,7 @@ func Test_BlockList(t *testing.T) {
 	req.SetQuestion("test.com.", dns.TypeA)
 	dc.DNSRequest = req
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 
 	blocklist.ServeDNS(dc)
@@ -45,7 +43,7 @@ func Test_BlockList(t *testing.T) {
 	blocklist.ServeDNS(dc)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("test2.com.", dns.TypeA)
 	blocklist.ServeDNS(dc)
@@ -74,33 +72,4 @@ func Test_BlockList(t *testing.T) {
 	assert.Error(t, err)
 
 	blocklist.Set(testDomain)
-
-	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
-	assert.NoError(t, err)
-
-	hw := httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	blocklist.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	request, err = http.NewRequest("GET", "/dns-query?name=notest.com", nil)
-	assert.NoError(t, err)
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	blocklist.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	data, err := req.Pack()
-	assert.NoError(t, err)
-
-	dq := base64.RawURLEncoding.EncodeToString(data)
-
-	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
-	assert.NoError(t, err)
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	blocklist.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
 }

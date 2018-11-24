@@ -16,7 +16,7 @@ func Test_Metrics(t *testing.T) {
 
 	dc := ctx.New([]ctx.Handler{})
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 
@@ -30,6 +30,4 @@ func Test_Metrics(t *testing.T) {
 
 	m.ServeDNS(dc)
 	assert.Equal(t, dns.RcodeSuccess, mw.Rcode())
-
-	m.ServeHTTP(dc)
 }

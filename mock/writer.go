@@ -1,7 +1,6 @@
 package mock
 
 import (
-	"fmt"
 	"net"
 
 	"github.com/miekg/dns"
@@ -11,24 +10,27 @@ import (
 type Writer struct {
 	msg *dns.Msg
 
+	proto string
+
 	localAddr  net.Addr
 	remoteAddr net.Addr
 }
 
 // NewWriter return writer
 func NewWriter(Net, addr string) *Writer {
-	var naddr net.Addr
+	w := &Writer{}
 
-	if Net == "tcp" {
-		naddr = &net.TCPAddr{IP: net.ParseIP(addr)}
+	if Net == "tcp" || Net == "https" || Net == "tcp-tls" {
+		w.localAddr = &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
+		w.remoteAddr, _ = net.ResolveTCPAddr("tcp", addr)
+		w.proto = "tcp"
 	} else {
-		naddr = &net.UDPAddr{IP: net.ParseIP(addr)}
+		w.localAddr = &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
+		w.remoteAddr, _ = net.ResolveUDPAddr("udp", addr)
+		w.proto = "udp"
 	}
 
-	return &Writer{
-		localAddr:  naddr,
-		remoteAddr: naddr,
-	}
+	return w
 }
 
 // Rcode return message response code
@@ -66,10 +68,11 @@ func (w *Writer) Written() bool {
 	return w.msg != nil
 }
 
+// Proto func
+func (w *Writer) Proto() string { return w.proto }
+
 // Reset func
-func (w *Writer) Reset(writer dns.ResponseWriter) {
-	fmt.Println("reset called")
-}
+func (w *Writer) Reset(rw dns.ResponseWriter) {}
 
 // Close func
 func (w *Writer) Close() error { return nil }

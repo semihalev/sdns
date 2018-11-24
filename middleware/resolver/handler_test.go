@@ -1,22 +1,30 @@
 package resolver
 
 import (
-	"encoding/base64"
-	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/middleware"
+	_ "github.com/semihalev/sdns/middleware/edns"
+
+	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestMain(m *testing.M) {
+	cfg := makeTestConfig()
+
+	middleware.Setup(cfg)
+
+	m.Run()
+}
 
 func makeTestConfig() *config.Config {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
@@ -29,6 +37,7 @@ func makeTestConfig() *config.Config {
 	}
 	cfg.Maxdepth = 30
 	cfg.Expire = 600
+	cfg.CacheSize = 1024
 	cfg.Timeout.Duration = 2 * time.Second
 	cfg.ConnectTimeout.Duration = 2 * time.Second
 
@@ -71,7 +80,9 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 }
 
 func Test_handler(t *testing.T) {
-	handler := New(makeTestConfig())
+	handler := middleware.Get("resolver").(*DNSHandler)
+
+	time.Sleep(2 * time.Second)
 
 	assert.Equal(t, "resolver", handler.Name())
 
@@ -80,26 +91,18 @@ func Test_handler(t *testing.T) {
 	c.WriteTimeout = 15 * time.Second
 
 	m := new(dns.Msg)
-	m.SetQuestion("www.google.com.", dns.TypeA)
 	m.RecursionDesired = true
 
+	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r := handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	// test again for caches
-	r = handler.handle("udp", m)
-	assert.Equal(t, len(r.Answer) > 0, true)
-
 	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
-	// test again for caches
-	m.SetQuestion("www.apple.com.", dns.TypeA)
-	r = handler.handle("udp", m)
-	assert.Equal(t, len(r.Answer) > 0, true)
-
-	m.SetEdns0(DefaultMsgSize, true)
+	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
 	r = handler.handle("udp", m)
 	assert.Equal(t, len(r.Answer) == 0, true)
@@ -116,18 +119,11 @@ func Test_handler(t *testing.T) {
 	m.RecursionDesired = false
 	r = handler.handle("udp", m)
 	assert.NotEqual(t, r.Rcode, dns.RcodeServerFailure)
-
-	m.RecursionDesired = true
-	m.SetEdns0(DefaultMsgSize, true)
-	opt := m.IsEdns0()
-	opt.SetVersion(100)
-	opt.SetDo()
-	r = handler.handle("udp", m)
-	assert.Equal(t, r.Rcode, dns.RcodeBadVers)
 }
 
 func Test_HandlerHINFO(t *testing.T) {
-	handler := New(makeTestConfig())
+	cfg := makeTestConfig()
+	handler := New(cfg)
 
 	m := new(dns.Msg)
 	m.SetQuestion(".", dns.TypeHINFO)
@@ -139,9 +135,11 @@ func Test_HandlerHINFO(t *testing.T) {
 }
 
 func Test_HandlerServe(t *testing.T) {
-	h := New(makeTestConfig())
+	cfg := makeTestConfig()
+	h := New(cfg)
+
 	dc := ctx.New([]ctx.Handler{})
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
@@ -149,29 +147,4 @@ func Test_HandlerServe(t *testing.T) {
 
 	h.ServeDNS(dc)
 	assert.Equal(t, true, dc.DNSWriter.Written())
-
-	request, err := http.NewRequest("GET", "/dns-query?name=.&type=NS", nil)
-	assert.NoError(t, err)
-	request.RemoteAddr = "127.0.0.1:0"
-
-	hw := httptest.NewRecorder()
-
-	dc.ResetHTTP(hw, request)
-
-	h.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	data, err := req.Pack()
-	assert.NoError(t, err)
-
-	dq := base64.RawURLEncoding.EncodeToString(data)
-
-	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
-	assert.NoError(t, err)
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-
-	h.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
 }

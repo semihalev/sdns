@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/semihalev/sdns/middleware"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -143,21 +146,24 @@ func Test_Server(t *testing.T) {
 	cfg.BindTLS = "127.0.0.1:23222"
 	cfg.BindDOH = "127.0.0.1:23223"
 
+	middleware.Setup(cfg)
+
+	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
+	blocklist.Set("test.com.")
+
 	s := New(cfg)
 	s.Run()
-
-	blocklist := blocklist.New(cfg)
-	s.Register(blocklist)
-
-	blocklist.Set("test.com.")
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	s.ServeDNS(mw, req)
 
-	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	assert.True(t, mw.Written())
+	if assert.NotNil(t, mw.Msg()) {
+		assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	}
 
 	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
 	assert.NoError(t, err)
@@ -166,6 +172,27 @@ func Test_Server(t *testing.T) {
 
 	s.ServeHTTP(hw, request)
 	assert.Equal(t, 200, hw.Code)
+
+	data, err := req.Pack()
+	assert.NoError(t, err)
+
+	dq := base64.RawURLEncoding.EncodeToString(data)
+
+	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
+	assert.NoError(t, err)
+
+	hw = httptest.NewRecorder()
+
+	s.ServeHTTP(hw, request)
+	assert.Equal(t, 200, hw.Code)
+
+	request, err = http.NewRequest("GET", "/dns-query?name=example.com", nil)
+	assert.NoError(t, err)
+
+	hw = httptest.NewRecorder()
+
+	s.ServeHTTP(hw, request)
+	assert.Equal(t, 400, hw.Code)
 
 	time.Sleep(2 * time.Second)
 

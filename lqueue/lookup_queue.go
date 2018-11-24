@@ -1,4 +1,4 @@
-package cache
+package lqueue
 
 import (
 	"sync"
@@ -12,8 +12,8 @@ type LQueue struct {
 	delay map[uint64]chan struct{}
 }
 
-// NewLookupQueue func
-func NewLookupQueue() *LQueue {
+// New func
+func New() *LQueue {
 	return &LQueue{
 		delay: make(map[uint64]chan struct{}),
 	}

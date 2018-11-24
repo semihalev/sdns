@@ -3,14 +3,14 @@ package blocklist
 import (
 	"errors"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/semihalev/sdns/middleware"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
-	"github.com/semihalev/sdns/doh"
 )
 
 // BlockList type
@@ -21,6 +21,12 @@ type BlockList struct {
 	null6route net.IP
 
 	m map[string]bool
+}
+
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
 }
 
 // New returns a new BlockList
@@ -34,9 +40,7 @@ func New(cfg *config.Config) *BlockList {
 }
 
 // Name return middleware name
-func (b *BlockList) Name() string {
-	return "blocklist"
-}
+func (b *BlockList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (b *BlockList) ServeDNS(dc *ctx.Context) {
@@ -49,25 +53,6 @@ func (b *BlockList) ServeDNS(dc *ctx.Context) {
 	}
 
 	w.WriteMsg(msg)
-
-	dc.Abort()
-}
-
-func (b *BlockList) ServeHTTP(dc *ctx.Context) {
-	w, r := dc.HTTPWriter, dc.HTTPRequest
-
-	var f func(http.ResponseWriter, *http.Request) bool
-	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = doh.HandleJSON(b.handle)
-	} else {
-		f = doh.HandleWireFormat(b.handle)
-	}
-
-	next := f(w, r)
-	if next {
-		dc.NextHTTP()
-		return
-	}
 
 	dc.Abort()
 }
@@ -158,3 +143,5 @@ func (b *BlockList) Length() int {
 
 	return len(b.m)
 }
+
+const name = "blocklist"

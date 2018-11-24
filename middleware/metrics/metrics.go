@@ -5,11 +5,18 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // Metrics type
 type Metrics struct {
 	queries *prometheus.CounterVec
+}
+
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
 }
 
 // New return new metrics
@@ -29,9 +36,7 @@ func New(cfg *config.Config) *Metrics {
 }
 
 // Name return middleware name
-func (m *Metrics) Name() string {
-	return "metrics"
-}
+func (m *Metrics) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (m *Metrics) ServeDNS(dc *ctx.Context) {
@@ -48,6 +53,4 @@ func (m *Metrics) ServeDNS(dc *ctx.Context) {
 		}).Inc()
 }
 
-func (m *Metrics) ServeHTTP(dc *ctx.Context) {
-	dc.NextHTTP()
-}
+const name = "metrics"

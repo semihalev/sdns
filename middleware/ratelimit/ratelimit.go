@@ -2,9 +2,10 @@ package ratelimit
 
 import (
 	"net"
-	"net/http"
 	"sync"
 	"time"
+
+	"github.com/semihalev/sdns/middleware"
 
 	rl "github.com/bsm/ratelimit"
 	"github.com/semihalev/sdns/config"
@@ -25,6 +26,12 @@ type RateLimit struct {
 	now  func() time.Time
 }
 
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+}
+
 // New return accesslist
 func New(cfg *config.Config) *RateLimit {
 	r := &RateLimit{
@@ -39,9 +46,7 @@ func New(cfg *config.Config) *RateLimit {
 }
 
 // Name return middleware name
-func (r *RateLimit) Name() string {
-	return "ratelimit"
-}
+func (r *RateLimit) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (r *RateLimit) ServeDNS(dc *ctx.Context) {
@@ -52,6 +57,9 @@ func (r *RateLimit) ServeDNS(dc *ctx.Context) {
 
 	client, _, _ := net.SplitHostPort(dc.DNSWriter.RemoteAddr().String())
 	if ip := net.ParseIP(client); ip == nil {
+		dc.NextDNS()
+		return
+	} else if ip.IsLoopback() {
 		dc.NextDNS()
 		return
 	}
@@ -65,29 +73,6 @@ func (r *RateLimit) ServeDNS(dc *ctx.Context) {
 	}
 
 	dc.NextDNS()
-}
-
-func (r *RateLimit) ServeHTTP(dc *ctx.Context) {
-	if r.rate == 0 {
-		dc.NextHTTP()
-		return
-	}
-
-	client, _, _ := net.SplitHostPort(dc.HTTPRequest.RemoteAddr)
-	if ip := net.ParseIP(client); ip == nil {
-		dc.NextHTTP()
-		return
-	}
-
-	rl := r.getLimiter(client)
-
-	if rl.Limit() {
-		http.Error(dc.HTTPWriter, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
-		dc.Abort()
-		return
-	}
-
-	dc.NextHTTP()
 }
 
 func (r *RateLimit) getLimiter(client string) *rl.RateLimiter {
@@ -125,4 +110,7 @@ func (r *RateLimit) run() {
 	}
 }
 
-const expireTime = 5 * time.Minute
+const (
+	name       = "ratelimit"
+	expireTime = 5 * time.Minute
+)

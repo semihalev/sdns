@@ -1,4 +1,4 @@
-package cache
+package authcache
 
 import (
 	"sort"
@@ -38,7 +38,7 @@ type AuthServers struct {
 }
 
 // TrySort if necessary sort servers by rtt
-func (s *AuthServers) TrySort() {
+func (s *AuthServers) TrySort() bool {
 	atomic.AddInt32(&s.called, 1)
 
 	if atomic.LoadInt32(&s.called)%20 == 0 {
@@ -55,5 +55,9 @@ func (s *AuthServers) TrySort() {
 		})
 		s.Unlock()
 		atomic.StoreInt32(&s.called, 0)
+
+		return true
 	}
+
+	return false
 }

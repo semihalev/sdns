@@ -2,26 +2,40 @@ package recovery
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"runtime/debug"
+
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/dnsutil"
 )
 
 // Recovery dummy type
 type Recovery struct{}
 
+func init() {
+	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+		return New(cfg)
+	})
+}
+
+// New return recovery
+func New(cfg *config.Config) *Recovery {
+	return &Recovery{}
+}
+
 // Name return middleware name
-func (r *Recovery) Name() string { return "recovery" }
+func (r *Recovery) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (r *Recovery) ServeDNS(dc *ctx.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			dns.HandleFailed(dc.DNSWriter, dc.DNSRequest)
+			dc.DNSWriter.WriteMsg(dnsutil.HandleFailed(dc.DNSRequest, dns.RcodeServerFailure, false))
 
 			log.Error("Recovered in ServeDNS", "recover", r)
 
@@ -34,18 +48,4 @@ func (r *Recovery) ServeDNS(dc *ctx.Context) {
 	dc.NextDNS()
 }
 
-func (r *Recovery) ServeHTTP(dc *ctx.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			http.Error(dc.HTTPWriter, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-
-			log.Error("Recovered in ServeHTTP", "recover", r)
-
-			os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
-			debug.PrintStack()
-			dc.Abort()
-		}
-	}()
-
-	dc.NextHTTP()
-}
+const name = "recovery"

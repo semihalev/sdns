@@ -5,11 +5,7 @@
 package hostsfile
 
 import (
-	"encoding/base64"
-	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path"
 	"reflect"
@@ -275,7 +271,7 @@ func TestServeDNS(t *testing.T) {
 	req.SetQuestion("thor.", dns.TypeA)
 	dc.DNSRequest = req
 
-	mw := mock.NewWriter("udp", "127.0.0.1")
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	h.ServeDNS(dc)
 	for _, r := range mw.Msg().Answer {
@@ -284,7 +280,7 @@ func TestServeDNS(t *testing.T) {
 		assert.Equal(t, "127.1.1.1", a.A.String())
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("localhost.", dns.TypeAAAA)
 	h.ServeDNS(dc)
@@ -294,7 +290,7 @@ func TestServeDNS(t *testing.T) {
 		assert.Equal(t, "fe80::1", aaaa.AAAA.String())
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("1.1.1.127.in-addr.arpa.", dns.TypePTR)
 	h.ServeDNS(dc)
@@ -304,13 +300,13 @@ func TestServeDNS(t *testing.T) {
 		assert.Equal(t, "thor.", ptr.Ptr)
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("odin.", dns.TypeA)
 	h.ServeDNS(dc)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 1)
 
-	mw = mock.NewWriter("udp", "127.0.0.1")
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("test.com.", dns.TypeA)
 	h.ServeDNS(dc)
@@ -318,31 +314,6 @@ func TestServeDNS(t *testing.T) {
 	h.ServeDNS(dc)
 	req.SetQuestion("test.com.", dns.TypePTR)
 	h.ServeDNS(dc)
-
-	request, err := http.NewRequest("GET", "/dns-query?name=thor", nil)
-	assert.NoError(t, err)
-
-	hw := httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	h.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	data, err := req.Pack()
-	assert.NoError(t, err)
-
-	dq := base64.RawURLEncoding.EncodeToString(data)
-
-	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
-	assert.NoError(t, err)
-
-	hw = httptest.NewRecorder()
-	dc.ResetHTTP(hw, request)
-	h.ServeHTTP(dc)
-	assert.Equal(t, 200, hw.Code)
-
-	assert.Nil(t, mw.Msg())
-
-	assert.Equal(t, true, h.hmap.Len() == 16)
 
 	h.initInline([]string{"127.0.0.1 localhost"})
 	assert.Equal(t, true, h.hmap.Len() == 2)
