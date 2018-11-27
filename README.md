@@ -80,7 +80,7 @@ $ make test
 | cachesize       | Cache size (total records in cache) Default: 256000                                                                            |
 | maxdepth        | Maximum recursion depth for nameservers. Default: 30                                                                           |
 | ratelimit       | Query based ratelimit per second, 0 for disable. Default: 0                                                                    |
-| clientratelimit | Client ip address based ratelimit per minute, 0 for disable. Default: 0                                                        |
+| clientratelimit | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
 | blocklist       | Manual blocklist entries                                                                                                       |
 | whitelist       | Manual whitelist entries                                                                                                       |
 
@@ -99,8 +99,10 @@ $ make test
 -   DNS over HTTPS support
 -   Middleware Support
 -   RTT priority within listed servers
+-   EDNS Cookie Support (client&lt;->server)
 -   Basic IPv6 support (client&lt;->server)
 -   Query based ratelimit
+-   IP based ratelimit
 -   Access list
 -   Prometheus basic query metrics
 -   Black-hole internet advertisements and malware servers
