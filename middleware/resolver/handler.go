@@ -58,11 +58,6 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 		do = opt.Do()
 	}
 
-	resolverNet := Net
-	if Net == "https" {
-		resolverNet = "udp"
-	}
-
 	if q.Qtype == dns.TypeANY {
 		return dnsutil.HandleFailed(req, dns.RcodeNotImplemented, do)
 	}
@@ -79,7 +74,7 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	log.Debug("Lookup", "net", Net, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
 
 	depth := h.cfg.Maxdepth
-	resp, err := h.r.Resolve(resolverNet, req, h.r.rootservers, true, depth, 0, false, nil)
+	resp, err := h.r.Resolve(Net, req, h.r.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
@@ -92,7 +87,7 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 		return h.handle("tcp", req)
 	}
 
-	resp = h.additionalAnswer(resolverNet, req, resp)
+	resp = h.additionalAnswer(Net, req, resp)
 
 	return resp
 }

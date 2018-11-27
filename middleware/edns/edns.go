@@ -10,6 +10,7 @@ import (
 
 // EDNS type
 type EDNS struct {
+	cookiesecret string
 }
 
 func init() {
@@ -20,18 +21,21 @@ func init() {
 
 // New return edns
 func New(cfg *config.Config) *EDNS {
-	return &EDNS{}
+	return &EDNS{cookiesecret: cfg.CookieSecret}
 }
 
 // Name return middleware name
 func (e *EDNS) Name() string { return name }
 
-// DNSResponseWriter implement of ctx.ResponseWriter
-type DNSResponseWriter struct {
+// ResponseWriter implement of ctx.ResponseWriter
+type ResponseWriter struct {
 	ctx.ResponseWriter
+	*EDNS
+
 	opt    *dns.OPT
 	size   int
 	do     bool
+	cookie string
 	noedns bool
 	noad   bool
 }
@@ -42,10 +46,9 @@ func (e *EDNS) ServeDNS(dc *ctx.Context) {
 
 	noedns := req.IsEdns0() == nil
 
-	opt, size, do := dnsutil.SetEdns0(req)
+	opt, size, cookie, do := dnsutil.SetEdns0(req)
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
-		opt.SetExtendedRcode(dns.RcodeBadVers)
 
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadVers, do))
 
@@ -57,7 +60,17 @@ func (e *EDNS) ServeDNS(dc *ctx.Context) {
 		size = dns.MaxMsgSize
 	}
 
-	dc.DNSWriter = &DNSResponseWriter{ResponseWriter: w, opt: opt, size: size, do: do, noedns: noedns, noad: !req.AuthenticatedData}
+	dc.DNSWriter = &ResponseWriter{
+		ResponseWriter: w,
+		EDNS:           e,
+
+		opt:    opt,
+		size:   size,
+		do:     do,
+		cookie: cookie,
+		noedns: noedns,
+		noad:   !req.AuthenticatedData,
+	}
 
 	dc.NextDNS()
 
@@ -65,7 +78,7 @@ func (e *EDNS) ServeDNS(dc *ctx.Context) {
 }
 
 // WriteMsg implements the ctx.ResponseWriter interface
-func (w *DNSResponseWriter) WriteMsg(m *dns.Msg) error {
+func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	if !w.do {
 		m = dnsutil.ClearDNSSEC(m)
 	}
@@ -73,6 +86,7 @@ func (w *DNSResponseWriter) WriteMsg(m *dns.Msg) error {
 
 	if !w.noedns {
 		w.opt.SetDo(w.do)
+		w.setCookie()
 		m.Extra = append(m.Extra, w.opt)
 	}
 
@@ -88,6 +102,17 @@ func (w *DNSResponseWriter) WriteMsg(m *dns.Msg) error {
 	}
 
 	return w.ResponseWriter.WriteMsg(m)
+}
+
+func (w *ResponseWriter) setCookie() {
+	if w.cookie == "" {
+		return
+	}
+
+	w.opt.Option = append(w.opt.Option, &dns.EDNS0_COOKIE{
+		Code:   dns.EDNS0COOKIE,
+		Cookie: dnsutil.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
+	})
 }
 
 const name = "edns"

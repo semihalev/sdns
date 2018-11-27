@@ -1,6 +1,8 @@
 package dnsutil
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"strings"
@@ -95,10 +97,11 @@ func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
 }
 
 // SetEdns0 returns replaced or new opt rr and if request has do
-func SetEdns0(req *dns.Msg) (*dns.OPT, int, bool) {
+func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
 	do := false
 	opt := req.IsEdns0()
 	size := DefaultMsgSize
+	cookie := ""
 
 	if opt != nil {
 		size = int(opt.UDPSize())
@@ -113,13 +116,18 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, bool) {
 		opt.Option = []dns.EDNS0{}
 
 		for _, option := range ops {
-			if option.Option() == dns.EDNS0SUBNET {
+			switch option.Option() {
+			case dns.EDNS0SUBNET:
 				opt.Option = append(opt.Option, option)
+			case dns.EDNS0COOKIE:
+				if len(option.String()) >= 16 {
+					cookie = option.String()[:16]
+				}
 			}
 		}
 
 		if opt.Version() != 0 {
-			return opt, size, false
+			return opt, size, cookie, false
 		}
 
 		do = opt.Do()
@@ -136,7 +144,18 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, bool) {
 		req.Extra = append(req.Extra, opt)
 	}
 
-	return opt, size, do
+	return opt, size, cookie, do
+}
+
+// GenerateServerCookie return generated edns server cookie
+func GenerateServerCookie(secret, remoteip, cookie string) string {
+	scookie := sha256.New()
+
+	scookie.Write([]byte(remoteip))
+	scookie.Write([]byte(cookie))
+	scookie.Write([]byte(secret))
+
+	return cookie + hex.EncodeToString(scookie.Sum(nil))
 }
 
 // ClearOPT returns cleared opt message

@@ -5,17 +5,17 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"runtime"
 	"time"
 
+	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/api"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
-
-	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/server"
 )
 
@@ -24,7 +24,7 @@ var (
 	Config *config.Config
 
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "0.2.4"
+	Version = "0.2.5-rc1"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "0.2.4"
@@ -73,6 +73,10 @@ func setup() {
 
 	if Config.CacheSize < 1024 {
 		Config.CacheSize = 1024
+	}
+
+	if Config.CookieSecret == "" {
+		Config.CookieSecret = fmt.Sprintf("%16x", rand.Int63())
 	}
 }
 

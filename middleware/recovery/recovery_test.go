@@ -6,6 +6,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -14,7 +15,8 @@ func Test_recoveryDNS(t *testing.T) {
 	stderr := os.Stderr
 	os.Stderr, _ = os.Open(os.DevNull)
 
-	r := &Recovery{}
+	middleware.Setup(nil)
+	r := middleware.Get("recovery").(*Recovery)
 
 	dc := ctx.New([]ctx.Handler{r, nil})
 

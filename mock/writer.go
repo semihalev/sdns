@@ -14,6 +14,8 @@ type Writer struct {
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
+
+	remoteip net.IP
 }
 
 // NewWriter return writer
@@ -23,10 +25,12 @@ func NewWriter(Net, addr string) *Writer {
 	if Net == "tcp" || Net == "https" || Net == "tcp-tls" {
 		w.localAddr = &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
 		w.remoteAddr, _ = net.ResolveTCPAddr("tcp", addr)
+		w.remoteip = w.remoteAddr.(*net.TCPAddr).IP
 		w.proto = "tcp"
 	} else {
 		w.localAddr = &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
 		w.remoteAddr, _ = net.ResolveUDPAddr("udp", addr)
+		w.remoteip = w.remoteAddr.(*net.UDPAddr).IP
 		w.proto = "udp"
 	}
 
@@ -67,6 +71,9 @@ func (w *Writer) WriteMsg(msg *dns.Msg) error {
 func (w *Writer) Written() bool {
 	return w.msg != nil
 }
+
+// RemoteIP func
+func (w *Writer) RemoteIP() net.IP { return w.remoteip }
 
 // Proto func
 func (w *Writer) Proto() string { return w.proto }

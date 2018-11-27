@@ -26,6 +26,9 @@ func Test_Writer(t *testing.T) {
 	assert.False(t, mw.Written())
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 
+	assert.Equal(t, "tcp", mw.Proto())
+	assert.Equal(t, "127.0.0.1", mw.RemoteIP().String())
+
 	_, err := mw.Write([]byte{})
 	assert.Error(t, err)
 

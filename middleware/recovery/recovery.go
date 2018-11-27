@@ -41,7 +41,6 @@ func (r *Recovery) ServeDNS(dc *ctx.Context) {
 
 			os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
 			debug.PrintStack()
-			dc.Abort()
 		}
 	}()
 

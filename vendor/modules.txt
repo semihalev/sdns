@@ -19,8 +19,6 @@ github.com/gin-gonic/gin/render
 github.com/go-stack/stack
 # github.com/golang/protobuf v1.2.0
 github.com/golang/protobuf/proto
-# github.com/jonboulle/clockwork v0.1.0
-github.com/jonboulle/clockwork
 # github.com/json-iterator/go v1.1.5
 github.com/json-iterator/go
 # github.com/mattn/go-colorable v0.0.9
@@ -29,7 +27,7 @@ github.com/mattn/go-colorable
 github.com/mattn/go-isatty
 # github.com/matttproud/golang_protobuf_extensions v1.0.1
 github.com/matttproud/golang_protobuf_extensions/pbutil
-# github.com/miekg/dns v1.0.16-0.20181113233058-043a44275711
+# github.com/miekg/dns v1.0.16-0.20181117000014-1c9c9bf4c93e
 github.com/miekg/dns
 # github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd
 github.com/modern-go/concurrent

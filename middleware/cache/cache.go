@@ -141,7 +141,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	var answer []dns.RR
 
 	for i := range res.Answer {
-		if strings.ToLower(res.Question[0].Name) == strings.ToLower(res.Answer[i].Header().Name) {
+		if strings.EqualFold(res.Question[0].Name, res.Answer[i].Header().Name) {
 			answer = append(answer, res.Answer[i])
 		}
 	}

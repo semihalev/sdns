@@ -1,6 +1,9 @@
 package cache
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestCacheAddAndGet(t *testing.T) {
 	c := New(4)
@@ -44,12 +47,60 @@ func TestCacheRemove(t *testing.T) {
 	}
 }
 
-func BenchmarkCache(b *testing.B) {
-	b.ReportAllocs()
-
-	c := New(4)
-	for n := 0; n < b.N; n++ {
-		c.Add(uint64(n), 1)
-		c.Get(uint64(n))
+func BenchmarkCacheGet(b *testing.B) {
+	const items = 1 << 16
+	c := New(12 * items)
+	v := []byte("xyza")
+	for i := 0; i < items; i++ {
+		c.Add(uint64(i), v)
 	}
+
+	b.ReportAllocs()
+	b.SetBytes(items)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			for i := 0; i < items; i++ {
+				b, _ := c.Get(uint64(i))
+				if string(b.([]byte)) != string(v) {
+					panic(fmt.Errorf("BUG: invalid value obtained; got %q; want %q", b, v))
+				}
+			}
+		}
+	})
+}
+
+func BenchmarkCacheSet(b *testing.B) {
+	const items = 1 << 16
+	c := New(12 * items)
+	b.ReportAllocs()
+	b.SetBytes(items)
+	b.RunParallel(func(pb *testing.PB) {
+		v := []byte("xyza")
+		for pb.Next() {
+			for i := 0; i < items; i++ {
+				c.Add(uint64(i), v)
+			}
+		}
+	})
+}
+
+func BenchmarkCacheSetGet(b *testing.B) {
+	const items = 1 << 16
+	c := New(12 * items)
+	b.ReportAllocs()
+	b.SetBytes(2 * items)
+	b.RunParallel(func(pb *testing.PB) {
+		v := []byte("xyza")
+		for pb.Next() {
+			for i := 0; i < items; i++ {
+				c.Add(uint64(i), v)
+			}
+			for i := 0; i < items; i++ {
+				b, _ := c.Get(uint64(i))
+				if string(b.([]byte)) != string(v) {
+					panic(fmt.Errorf("BUG: invalid value obtained; got %q; want %q", b, v))
+				}
+			}
+		}
+	})
 }

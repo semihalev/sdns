@@ -15,14 +15,16 @@ type ResponseWriter interface {
 	Written() bool
 	Reset(dns.ResponseWriter)
 	Proto() string
+	RemoteIP() net.IP
 }
 
 type responseWriter struct {
 	dns.ResponseWriter
-	msg   *dns.Msg
-	size  int
-	rcode int
-	proto string
+	msg      *dns.Msg
+	size     int
+	rcode    int
+	proto    string
+	remoteip net.IP
 }
 
 var _ ResponseWriter = &responseWriter{}
@@ -41,9 +43,15 @@ func (w *responseWriter) Reset(writer dns.ResponseWriter) {
 	switch writer.LocalAddr().(type) {
 	case (*net.TCPAddr):
 		w.proto = "tcp"
+		w.remoteip = w.RemoteAddr().(*net.TCPAddr).IP
 	case (*net.UDPAddr):
 		w.proto = "udp"
+		w.remoteip = w.RemoteAddr().(*net.UDPAddr).IP
 	}
+}
+
+func (w *responseWriter) RemoteIP() net.IP {
+	return w.remoteip
 }
 
 func (w *responseWriter) Proto() string {

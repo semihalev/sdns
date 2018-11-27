@@ -61,12 +61,6 @@
   version = "v1.2.0"
 
 [[projects]]
-  name = "github.com/jonboulle/clockwork"
-  packages = ["."]
-  revision = "2eee05ed794112d45db504eb05aa693efd2b8b09"
-  version = "v0.1.0"
-
-[[projects]]
   name = "github.com/json-iterator/go"
   packages = ["."]
   revision = "1624edc4454b8682399def8740d46db5e4362ba4"
@@ -94,7 +88,7 @@
   branch = "master"
   name = "github.com/miekg/dns"
   packages = ["."]
-  revision = "043a4427571164ae70aacc20ba7ad85a1d51b13e"
+  revision = "1c9c9bf4c93ee029810272d3e5b8a126aee5bf1f"
 
 [[projects]]
   name = "github.com/modern-go/concurrent"
@@ -226,6 +220,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "2bce7def637475a34f12784992cd7bc1a9f6c793069418e03d756b9dc1bbcfbd"
+  inputs-digest = "db466fe991ca2bc90d35216dd968096be4df67c930e2a5fbaf0fd1d361dad252"
   solver-name = "gps-cdcl"
   solver-version = 1

@@ -40,6 +40,7 @@ type Config struct {
 	Maxdepth        int
 	RateLimit       int
 	ClientRateLimit int
+	CookieSecret    string
 	Blocklist       []string
 	Whitelist       []string
 }

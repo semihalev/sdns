@@ -18,6 +18,7 @@ import (
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 )
 
@@ -263,7 +264,8 @@ func TestServeDNS(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.Hostsfile = name
 
-	h := New(cfg)
+	middleware.Setup(cfg)
+	h := middleware.Get("hostsfile").(*Hostsfile)
 
 	dc := ctx.New([]ctx.Handler{})
 

@@ -269,7 +269,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
 				name := strings.ToLower(extra.Header().Name)
-				if nsl && name == strings.ToLower(req.Question[0].Name) && extra.A.String() != "" {
+				if nsl && strings.EqualFold(name, req.Question[0].Name) && extra.A.String() != "" {
 					resp.Answer = append(resp.Answer, extra)
 					return resp, nil
 				}
@@ -408,6 +408,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServe
 	if len(r.cfg.OutboundIPs) > 0 {
 		index := randInt(0, len(r.cfg.OutboundIPs))
 
+		//TODO (semih): set port also
 		if Net == "tcp" {
 			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
 		} else if Net == "udp" {
@@ -504,7 +505,7 @@ func (r *Resolver) findSigner(Net string, q dns.Question, resp *dns.Msg, parentd
 	}
 
 	for _, rr := range rrset {
-		if inAnswer && strings.ToLower(rr.Header().Name) != strings.ToLower(q.Name) {
+		if inAnswer && !strings.EqualFold(rr.Header().Name, q.Name) {
 			continue
 		}
 		if sigrec, ok := rr.(*dns.RRSIG); ok {

@@ -46,22 +46,11 @@ func (b *BlockList) Name() string { return name }
 func (b *BlockList) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	msg := b.handle("", req)
-	if msg == nil {
-		dc.NextDNS()
-		return
-	}
-
-	w.WriteMsg(msg)
-
-	dc.Abort()
-}
-
-func (b *BlockList) handle(Net string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	if !b.Exists(strings.ToLower(q.Name)) {
-		return nil
+		dc.NextDNS()
+		return
 	}
 
 	msg := new(dns.Msg)
@@ -89,7 +78,9 @@ func (b *BlockList) handle(Net string, req *dns.Msg) *dns.Msg {
 		msg.Answer = append(msg.Answer, a)
 	}
 
-	return msg
+	w.WriteMsg(msg)
+
+	dc.Abort()
 }
 
 // Get returns the entry for a key or an error

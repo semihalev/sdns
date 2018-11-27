@@ -6,6 +6,7 @@ import (
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver"
 
 	"github.com/miekg/dns"
@@ -22,7 +23,16 @@ func makeRR(data string) dns.RR {
 }
 
 func Test_PCache(t *testing.T) {
-	c := New(&config.Config{Expire: 300, CacheSize: 10240, RateLimit: 1})
+	cfg := &config.Config{Expire: 300, CacheSize: 10240, RateLimit: 1}
+	cfg.RootServers = []string{"192.5.5.241:53"}
+	cfg.RootKeys = []string{
+		".			172800	IN	DNSKEY	257 3 8 AwEAAagAIKlVZrpC6Ia7gEzahOR+9W29euxhJhVVLOyQbSEW0O8gcCjFFVQUTf6v58fLjwBd0YI0EzrAcQqBGCzh/RStIoO8g0NfnfL2MTJRkxoXbfDaUeVPQuYEhg37NZWAJQ9VnMVDxP/VHL496M/QZxkjf5/Efucp2gaDX6RS6CXpoY68LsvPVjR0ZSwzz1apAzvN9dlzEheX7ICJBBtuA6G3LQpzW5hOA2hzCTMjJPJ8LbqF6dsV6DoBQzgul0sGIcGOYl7OyQdXfZ57relSQageu+ipAdTTJ25AsRTAoub8ONGcLmqrAmRLKBP1dfwhYB4N7knNnulqQxA+Uk1ihz0=",
+		".			172800	IN	DNSKEY	256 3 8 AwEAAdp440E6Mz7c+Vl4sPd0lTv2Qnc85dTW64j0RDD7sS/zwxWDJ3QRES2VKDO0OXLMqVJSs2YCCSDKuZXpDPuf++YfAu0j7lzYYdWTGwyNZhEaXtMQJIKYB96pW6cRkiG2Dn8S2vvo/PxW9PKQsyLbtd8PcwWglHgReBVp7kEv/Dd+3b3YMukt4jnWgDUddAySg558Zld+c9eGWkgWoOiuhg4rQRkFstMX1pRyOSHcZuH38o1WcsT4y3eT0U/SR6TOSLIB/8Ftirux/h297oS7tCcwSPt0wwry5OFNTlfMo8v7WGurogfk8hPipf7TTKHIi20LWen5RCsvYsQBkYGpF78=",
+	}
+
+	middleware.Setup(cfg)
+
+	c := New(cfg)
 	assert.Equal(t, "cache", c.Name())
 
 	dc := ctx.New([]ctx.Handler{})

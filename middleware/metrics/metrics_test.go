@@ -5,12 +5,15 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_Metrics(t *testing.T) {
-	m := New(nil)
+	middleware.Setup(nil)
+
+	m := middleware.Get("metrics").(*Metrics)
 
 	assert.Equal(t, "metrics", m.Name())
 

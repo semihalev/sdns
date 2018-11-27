@@ -29,7 +29,7 @@ var (
 
 // Register a middleware
 func Register(name string, new func(*config.Config) ctx.Handler) {
-	log.Debug("Register middleware", "name", name, "index", len(m.handlers))
+	log.Info("Register middleware", "name", name, "index", len(m.handlers))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

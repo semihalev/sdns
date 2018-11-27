@@ -8,6 +8,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 
 	"github.com/stretchr/testify/assert"
@@ -20,7 +21,9 @@ func Test_BlockList(t *testing.T) {
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
 
-	blocklist := New(cfg)
+	middleware.Setup(cfg)
+
+	blocklist := middleware.Get("blocklist").(*BlockList)
 
 	assert.Equal(t, "blocklist", blocklist.Name())
 	blocklist.Set(testDomain)

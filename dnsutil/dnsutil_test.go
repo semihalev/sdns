@@ -93,24 +93,24 @@ func TestSetEnds0(t *testing.T) {
 
 	size := 0
 
-	opt, _, _ := SetEdns0(req)
+	opt, _, _, _ := SetEdns0(req)
 	if opt == nil {
 		t.Errorf("Test SetEdns0, got OPT nil")
 	}
 
-	opt, _, _ = SetEdns0(req)
+	opt, _, _, _ = SetEdns0(req)
 	if opt == nil {
 		t.Errorf("Test SetEdns0, got OPT nil")
 	}
 
 	opt.SetUDPSize(128)
-	opt, size, _ = SetEdns0(req)
+	opt, size, _, _ = SetEdns0(req)
 	if size != dns.MinMsgSize {
 		t.Errorf("Test SetEdns0 size not equal with dns minimal size")
 	}
 
 	opt.SetVersion(100)
-	opt, _, _ = SetEdns0(req)
+	opt, _, _, _ = SetEdns0(req)
 	if opt.Version() != 100 {
 		t.Errorf("Test edns version should be 100 expected %d", opt.Version())
 	}
@@ -118,7 +118,7 @@ func TestSetEnds0(t *testing.T) {
 	opt.SetVersion(0)
 	option := &dns.EDNS0_SUBNET{Code: 0, Family: 0, SourceNetmask: 0, SourceScope: 0, Address: nil}
 	opt.Option = append(opt.Option, option)
-	opt, _, _ = SetEdns0(req)
+	opt, _, _, _ = SetEdns0(req)
 	if len(opt.Option) != 1 {
 		t.Errorf("Test edns option length should be 1 expected %d", len(opt.Option))
 	}

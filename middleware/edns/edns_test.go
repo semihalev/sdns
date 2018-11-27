@@ -7,6 +7,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -40,8 +41,9 @@ func Test_EDNS(t *testing.T) {
 	testDomain := "example.com."
 
 	cfg := new(config.Config)
+	middleware.Setup(cfg)
 
-	edns := New(cfg)
+	edns := middleware.Get("edns").(*EDNS)
 	assert.Equal(t, "edns", edns.Name())
 
 	dc := ctx.New([]ctx.Handler{edns, &dummy{}})
@@ -87,4 +89,13 @@ func Test_EDNS(t *testing.T) {
 	if assert.True(t, dc.DNSWriter.Written()) {
 		assert.True(t, dc.DNSWriter.Msg().Truncated)
 	}
+
+	opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
+		Code:   dns.EDNS0COOKIE,
+		Cookie: "testtesttesttest",
+	})
+	opt.SetUDPSize(4096)
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	dc.ResetDNS(mw, req)
+	dc.NextDNS()
 }

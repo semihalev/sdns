@@ -1,29 +1,31 @@
 package ratelimit
 
 import (
+	"hash/fnv"
 	"net"
-	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/semihalev/sdns/middleware"
-
 	rl "github.com/bsm/ratelimit"
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 )
 
 type limiter struct {
-	rl *rl.RateLimiter
-	ut time.Time
+	rl     *rl.RateLimiter
+	cookie atomic.Value
 }
 
 // RateLimit type
 type RateLimit struct {
-	mu sync.Mutex
+	cookiesecret string
 
-	m    map[string]*limiter
-	rate int
-	now  func() time.Time
+	cache *cache.Cache
+	rate  int
 }
 
 func init() {
@@ -35,12 +37,10 @@ func init() {
 // New return accesslist
 func New(cfg *config.Config) *RateLimit {
 	r := &RateLimit{
-		m:    make(map[string]*limiter),
-		rate: cfg.ClientRateLimit,
-		now:  time.Now,
+		cache:        cache.New(cacheSize),
+		cookiesecret: cfg.CookieSecret,
+		rate:         cfg.ClientRateLimit,
 	}
-
-	go r.run()
 
 	return r
 }
@@ -50,67 +50,95 @@ func (r *RateLimit) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (r *RateLimit) ServeDNS(dc *ctx.Context) {
+	w, req := dc.DNSWriter, dc.DNSRequest
+
 	if r.rate == 0 {
 		dc.NextDNS()
 		return
 	}
 
-	client, _, _ := net.SplitHostPort(dc.DNSWriter.RemoteAddr().String())
-	if ip := net.ParseIP(client); ip == nil {
+	if w.RemoteIP() == nil {
 		dc.NextDNS()
 		return
-	} else if ip.IsLoopback() {
+	} else if w.RemoteIP().IsLoopback() {
 		dc.NextDNS()
 		return
 	}
 
-	rl := r.getLimiter(client)
+	var cachedcookie, clientcookie, servercookie string
 
-	if rl.Limit() {
+	l := r.getLimiter(w.RemoteIP())
+	cachedcookie = l.cookie.Load().(string)
+
+	if opt := req.IsEdns0(); opt != nil {
+		for _, option := range opt.Option {
+			switch option.Option() {
+			case dns.EDNS0COOKIE:
+				if len(option.String()) >= cookieSize {
+					clientcookie = option.String()[:cookieSize]
+					servercookie = dnsutil.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
+
+					if cachedcookie == "" || cachedcookie == option.String() {
+						dc.NextDNS()
+
+						l.cookie.Store(servercookie)
+						return
+					}
+
+					if w.Proto() == "udp" {
+						if l.rl.Limit() {
+							dc.Abort()
+							return
+						}
+
+						l.cookie.Store(servercookie)
+						option.(*dns.EDNS0_COOKIE).Cookie = servercookie
+
+						w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadCookie, false))
+
+						dc.Abort()
+						return
+					}
+				}
+			}
+		}
+	}
+
+	if l.rl.Limit() {
 		//no reply to client
 		dc.Abort()
 		return
 	}
 
 	dc.NextDNS()
+
+	if servercookie != "" {
+		l.cookie.Store(servercookie)
+	}
 }
 
-func (r *RateLimit) getLimiter(client string) *rl.RateLimiter {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {
+	fnv64 := fnv.New64()
+	fnv64.Write(remoteip)
+	key := fnv64.Sum64()
 
-	if limiter, ok := r.m[client]; ok {
-		limiter.ut = r.now().UTC()
-		return limiter.rl
+	if v, ok := r.cache.Get(key); ok {
+		return v.(*limiter)
 	}
 
 	rl := rl.New(r.rate, time.Minute)
-	r.m[client] = &limiter{rl: rl, ut: r.now().UTC()}
 
-	return rl
-}
+	l := &limiter{rl: rl}
+	l.cookie.Store("")
 
-func (r *RateLimit) clear() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.cache.Add(key, l)
 
-	now := r.now().UTC()
-	for client, limiter := range r.m {
-		if now.Sub(limiter.ut) > expireTime {
-			delete(r.m, client)
-		}
-	}
-}
-
-func (r *RateLimit) run() {
-	ticker := time.NewTicker(time.Minute)
-
-	for range ticker.C {
-		r.clear()
-	}
+	return l
 }
 
 const (
-	name       = "ratelimit"
-	expireTime = 5 * time.Minute
+	cacheSize  = 256 * 100
+	cookieSize = 16
+
+	name = "ratelimit"
 )

@@ -49,6 +49,7 @@ func Test_Context(t *testing.T) {
 	assert.Error(t, err)
 
 	assert.Equal(t, "tcp", dc.DNSWriter.Proto())
+	assert.Equal(t, "127.0.0.1", dc.DNSWriter.RemoteIP().String())
 
 	dc.Abort()
 	assert.Equal(t, abortIndex, dc.index)
