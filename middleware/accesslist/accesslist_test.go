@@ -15,9 +15,9 @@ func Test_Accesslist(t *testing.T) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
 	cfg := new(config.Config)
-	middleware.Setup(cfg)
-
 	cfg.AccessList = []string{"127.0.0.1/32", "1"}
+
+	middleware.Setup(cfg)
 
 	a := middleware.Get("accesslist").(*AccessList)
 	assert.Equal(t, "accesslist", a.Name())
