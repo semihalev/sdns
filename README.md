@@ -5,6 +5,7 @@
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
 [![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
 [![GitHub version](https://badge.fury.io/gh/semihalev%2Fsdns.svg)](https://github.com/semihalev/sdns/releases)
+[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fsemihalev%2Fsdns.svg?type=shield)](https://app.fossa.io/projects/git%2Bgithub.com%2Fsemihalev%2Fsdns?ref=badge_shield)
 
 :dizzy: Lightweight, fast recursive dns server with dnssec support
 
@@ -135,3 +136,6 @@ Please make sure to update tests as appropriate.
 ## License
 
 [MIT](https://github.com/semihalev/sdns/blob/master/LICENSE)
+
+
+[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fsemihalev%2Fsdns.svg?type=large)](https://app.fossa.io/projects/git%2Bgithub.com%2Fsemihalev%2Fsdns?ref=badge_large)
