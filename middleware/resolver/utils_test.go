@@ -9,26 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_upperName(t *testing.T) {
-
-	qlist := []struct {
-		Asset  string
-		Expect string
-	}{
-		{"demo-domain.com.", "com."},
-		{"demo-domain.com.tr.", "com.tr."},
-		{"go.istanbul.", "istanbul."},
-		{"com.", ""},
-	}
-
-	for _, e := range qlist {
-
-		if u := upperName(e.Asset); u != e.Expect {
-			t.Errorf("unexpected value. asset: %s, expect: %s, value: %s", e.Asset, e.Expect, u)
-		}
-	}
-}
-
 func Test_randInt(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		val := randInt(0, 10)
@@ -37,18 +17,6 @@ func Test_randInt(t *testing.T) {
 
 	val := randInt(0, 0)
 	assert.Equal(t, 0, val)
-}
-
-func Test_shuffleRR(t *testing.T) {
-
-	vals := make([]dns.RR, 1)
-	vals[0] = *new(dns.RR)
-
-	rr := shuffleRR(vals)
-
-	if len(rr) != 1 {
-		t.Error("invalid array length")
-	}
 }
 
 func Test_shuffleStr(t *testing.T) {

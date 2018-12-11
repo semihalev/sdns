@@ -117,8 +117,9 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
 
 		for _, option := range ops {
 			switch option.Option() {
+			//TODO (semihalev): is this broken privacy???
 			case dns.EDNS0SUBNET:
-				opt.Option = append(opt.Option, option)
+				//opt.Option = append(opt.Option, option)
 			case dns.EDNS0COOKIE:
 				if len(option.String()) >= 16 {
 					cookie = option.String()[:16]

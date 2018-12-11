@@ -40,33 +40,12 @@ func formatQuestion(q dns.Question) string {
 	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
 }
 
-func upperName(s string) string {
-
-	idx := strings.Index(s, ".")
-	if idx != -1 {
-		return s[idx+1:]
-	}
-
-	return s
-}
-
 func randInt(min, max int) int {
 	if min == max {
 		return min
 	}
 
 	return rand.Intn(max-min) + min
-}
-
-func shuffleRR(vals []dns.RR) []dns.RR {
-	perm := rand.Perm(len(vals))
-	ret := make([]dns.RR, len(vals))
-
-	for i, randIndex := range perm {
-		ret[i] = vals[randIndex]
-	}
-
-	return ret
 }
 
 func shuffleStr(vals []string) []string {

@@ -141,7 +141,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.RecursionAvailable = true
 
 	servers := h.r.rootservers
-	ttl := uint32(3600)
+	ttl := uint32(20)
 	name := rootzone
 
 	if q.Name != rootzone {

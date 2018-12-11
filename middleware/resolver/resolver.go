@@ -479,7 +479,7 @@ func (r *Resolver) exchange(server *authcache.AuthServer, req *dns.Msg, c *dns.C
 }
 
 func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *authcache.AuthServers, parentdsrr []dns.RR) {
-	q.Qtype = dns.TypeNS // we should look NS type caches
+	q.Qtype = dns.TypeNS // we should search NS type in cache
 	key := cache.Hash(q, cd)
 
 	ns, err := r.Ncache.Get(key)
@@ -489,11 +489,13 @@ func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *authcache.Auth
 		return ns.Servers, ns.DSRR
 	}
 
-	q.Name = upperName(q.Name)
+	next, end := dns.NextLabel(q.Name, 0)
 
-	if q.Name == "" {
+	if end {
 		return r.rootservers, nil
 	}
+
+	q.Name = q.Name[next:]
 
 	return r.searchCache(q, cd)
 }

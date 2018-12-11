@@ -287,18 +287,6 @@ func (h *Hostsfile) LookupStaticAddr(addr string) []string {
 func (h *Hostsfile) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	msg := h.handle("", req)
-	if msg == nil {
-		dc.NextDNS()
-		return
-	}
-
-	w.WriteMsg(msg)
-
-	dc.Abort()
-}
-
-func (h *Hostsfile) handle(Net string, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	answers := []dns.RR{}
@@ -307,7 +295,8 @@ func (h *Hostsfile) handle(Net string, req *dns.Msg) *dns.Msg {
 	case dns.TypePTR:
 		names := h.LookupStaticAddr(dnsutil.ExtractAddressFromReverse(q.Name))
 		if len(names) == 0 {
-			return nil
+			dc.NextDNS()
+			return
 		}
 		answers = ptr(q.Name, names)
 	case dns.TypeA:
@@ -320,7 +309,8 @@ func (h *Hostsfile) handle(Net string, req *dns.Msg) *dns.Msg {
 
 	if len(answers) == 0 {
 		if !h.otherRecordsExist(q.Qtype, q.Name) {
-			return nil
+			dc.NextDNS()
+			return
 		}
 	}
 
@@ -329,7 +319,9 @@ func (h *Hostsfile) handle(Net string, req *dns.Msg) *dns.Msg {
 	m.Authoritative, m.RecursionAvailable = true, true
 	m.Answer = answers
 
-	return m
+	w.WriteMsg(m)
+
+	dc.Abort()
 }
 
 func (h *Hostsfile) otherRecordsExist(qtype uint16, qname string) bool {
