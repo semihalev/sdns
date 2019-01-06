@@ -22,6 +22,10 @@ test:
 	done
 
 build:
-	docker build -t $(APP_NAME) .
+	docker image build -t $(APP_NAME) .
+
+build-arm:
+	docker image build -t $(APP_NAME) --build-arg "image=arm32v6/golang:1.11-alpine3.8" .
+
 run:
 	docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853/tcp -p 8080/tcp sdns
