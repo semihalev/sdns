@@ -24,10 +24,10 @@ var (
 	Config *config.Config
 
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "0.2.5"
+	Version = "0.3.0-rc1"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-	ConfigVersion = "0.2.4"
+	ConfigVersion = "0.3.0"
 
 	// ConfigPath returns the configuration path
 	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
