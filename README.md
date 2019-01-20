@@ -121,6 +121,7 @@ $ make test
 -   [x] Periodic priming queries described at RFC 8109
 -   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] Full IPv6 support (server&lt;->server communication)
+-   [ ] Query name minimization to improve privacy described at RFC 7816
 
 ## Contributing
 
