@@ -85,7 +85,7 @@ func Setup(cfg *config.Config) error {
 
 // Handlers return registered handlers
 func Handlers() []ctx.Handler {
-	return ctxHandlers
+	return append(ctxHandlers)
 }
 
 // List return names of handlers
