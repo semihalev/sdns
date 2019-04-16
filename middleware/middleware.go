@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/semihalev/log"
@@ -29,12 +30,38 @@ var (
 
 // Register a middleware
 func Register(name string, new func(*config.Config) ctx.Handler) {
-	log.Info("Register middleware", "name", name, "index", len(m.handlers))
+	RegisterAt(name, new, len(m.handlers))
+}
+
+func RegisterAt(name string, new func(*config.Config) ctx.Handler, idx int) {
+	log.Info("Register middleware", "name", name, "index", idx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.handlers = append(m.handlers, handler{name: name, new: new})
+
+	m.handlers = append(m.handlers, handler{})
+	copy(m.handlers[idx+1:], m.handlers[idx:])
+	m.handlers[idx] = handler{name: name, new: new}
 }
+
+func RegisterBefore(name string, new func(*config.Config) ctx.Handler, before string) {
+	log.Info("Register middleware", "name", name, "before", before)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for idx, v := range m.handlers {
+		if v.name == before {
+			m.handlers = append(m.handlers, handler{})
+			copy(m.handlers[idx+1:], m.handlers[idx:])
+			m.handlers[idx] = handler{name: name, new: new}
+			return
+		}
+	}
+
+	panic(fmt.Sprintf("Middleware %s not found", before))
+}
+
 
 // Setup handlers
 func Setup(cfg *config.Config) error {
