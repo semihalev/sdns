@@ -33,8 +33,8 @@ type Config struct {
 	Nullroutev6     string
 	Hostsfile       string
 	OutboundIPs     []string
-	Timeout         duration
-	ConnectTimeout  duration
+	Timeout         Duration
+	ConnectTimeout  Duration
 	Expire          uint32
 	CacheSize       int
 	Maxdepth        int
@@ -45,11 +45,11 @@ type Config struct {
 	Whitelist       []string
 }
 
-type duration struct {
+type Duration struct {
 	time.Duration
 }
 
-func (d *duration) UnmarshalText(text []byte) error {
+func (d *Duration) UnmarshalText(text []byte) error {
 	var err error
 	d.Duration, err = time.ParseDuration(string(text))
 	return err
