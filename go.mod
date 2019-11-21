@@ -14,7 +14,7 @@ require (
 	github.com/mattn/go-colorable v0.0.9 // indirect
 	github.com/mattn/go-isatty v0.0.4 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
-	github.com/miekg/dns v1.0.16-0.20181117000014-1c9c9bf4c93e
+	github.com/miekg/dns v1.1.22
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742 // indirect
 	github.com/onsi/gomega v1.4.2 // indirect
@@ -27,10 +27,9 @@ require (
 	github.com/stretchr/testify v1.2.2
 	github.com/ugorji/go v1.1.1 // indirect
 	github.com/yl2chen/cidranger v0.0.0-20180214081945-928b519e5268
-	golang.org/x/crypto v0.0.0-20181030102418-4d3f4d9ffa16 // indirect
-	golang.org/x/net v0.0.0-20181102091132-c10e9556a7bc // indirect
-	golang.org/x/sys v0.0.0-20181031143558-9b800f95dbbc // indirect
 	gopkg.in/gin-contrib/cors.v1 v1.0.0-20170318125340-cf4846e6a636
 	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
 	gopkg.in/go-playground/validator.v8 v8.18.2 // indirect
 )
+
+go 1.13

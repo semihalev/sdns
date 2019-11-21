@@ -454,7 +454,7 @@ func (r *Resolver) exchange(server *authcache.AuthServer, req *dns.Msg, c *dns.C
 	}()
 
 	resp, rtt, err = c.Exchange(req, server.Host)
-	if err != nil && err != dns.ErrTruncated {
+	if err != nil {
 		if strings.Contains(err.Error(), "no route to host") && c.Net == "udp" {
 			c.Net = "tcp"
 			if len(r.cfg.OutboundIPs) > 0 {
