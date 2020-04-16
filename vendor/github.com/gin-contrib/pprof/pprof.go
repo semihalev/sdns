@@ -34,6 +34,7 @@ func Register(r *gin.Engine, prefixOptions ...string) {
 		prefixRouter.POST("/symbol", pprofHandler(pprof.Symbol))
 		prefixRouter.GET("/symbol", pprofHandler(pprof.Symbol))
 		prefixRouter.GET("/trace", pprofHandler(pprof.Trace))
+		prefixRouter.GET("/allocs", pprofHandler(pprof.Handler("allocs").ServeHTTP))
 		prefixRouter.GET("/block", pprofHandler(pprof.Handler("block").ServeHTTP))
 		prefixRouter.GET("/goroutine", pprofHandler(pprof.Handler("goroutine").ServeHTTP))
 		prefixRouter.GET("/heap", pprofHandler(pprof.Handler("heap").ServeHTTP))

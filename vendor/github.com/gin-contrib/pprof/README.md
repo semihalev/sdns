@@ -17,7 +17,7 @@ gin pprof middleware
 Download and install it:
 
 ```bash
-$ go get github.com/gin-contrib/pprof
+go get github.com/gin-contrib/pprof
 ```
 
 Import it in your code:
@@ -26,7 +26,7 @@ Import it in your code:
 import "github.com/gin-contrib/pprof"
 ```
 
-### Example:
+### Example
 
 ```go
 package main
@@ -43,7 +43,7 @@ func main() {
 }
 ```
 
-### change default path prefix:
+### change default path prefix
 
 ```go
 func main() {

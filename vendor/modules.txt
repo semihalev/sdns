@@ -1,78 +1,92 @@
 # github.com/BurntSushi/toml v0.3.1
 github.com/BurntSushi/toml
-# github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973
+# github.com/beorn7/perks v1.0.1
 github.com/beorn7/perks/quantile
 # github.com/bsm/ratelimit v2.0.0+incompatible
 github.com/bsm/ratelimit
+# github.com/cespare/xxhash/v2 v2.1.1
+github.com/cespare/xxhash/v2
 # github.com/davecgh/go-spew v1.1.1
 github.com/davecgh/go-spew/spew
-# github.com/gin-contrib/pprof v0.0.0-20180827024024-a27513940d36
+# github.com/gin-contrib/pprof v1.2.1
 github.com/gin-contrib/pprof
-# github.com/gin-contrib/sse v0.0.0-20170109093832-22d885f9ecc7
+# github.com/gin-contrib/sse v0.1.0
 github.com/gin-contrib/sse
-# github.com/gin-gonic/gin v1.3.0
+# github.com/gin-gonic/gin v1.6.2
 github.com/gin-gonic/gin
 github.com/gin-gonic/gin/binding
-github.com/gin-gonic/gin/json
+github.com/gin-gonic/gin/internal/bytesconv
+github.com/gin-gonic/gin/internal/json
 github.com/gin-gonic/gin/render
+# github.com/go-playground/locales v0.13.0
+github.com/go-playground/locales
+github.com/go-playground/locales/currency
+# github.com/go-playground/universal-translator v0.17.0
+github.com/go-playground/universal-translator
+# github.com/go-playground/validator/v10 v10.2.0
+github.com/go-playground/validator/v10
 # github.com/go-stack/stack v1.8.0
 github.com/go-stack/stack
-# github.com/golang/protobuf v1.2.0
+# github.com/golang/protobuf v1.3.3
 github.com/golang/protobuf/proto
-# github.com/json-iterator/go v1.1.5
+github.com/golang/protobuf/ptypes
+github.com/golang/protobuf/ptypes/any
+github.com/golang/protobuf/ptypes/duration
+github.com/golang/protobuf/ptypes/timestamp
+# github.com/json-iterator/go v1.1.9
 github.com/json-iterator/go
-# github.com/mattn/go-colorable v0.0.9
+# github.com/leodido/go-urn v1.2.0
+github.com/leodido/go-urn
+# github.com/mattn/go-colorable v0.1.6
 github.com/mattn/go-colorable
-# github.com/mattn/go-isatty v0.0.4
+# github.com/mattn/go-isatty v0.0.12
 github.com/mattn/go-isatty
 # github.com/matttproud/golang_protobuf_extensions v1.0.1
 github.com/matttproud/golang_protobuf_extensions/pbutil
-# github.com/miekg/dns v1.0.16-0.20181117000014-1c9c9bf4c93e
+# github.com/miekg/dns v1.1.29
 github.com/miekg/dns
 # github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd
 github.com/modern-go/concurrent
-# github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742
+# github.com/modern-go/reflect2 v1.0.1
 github.com/modern-go/reflect2
 # github.com/pmezard/go-difflib v1.0.0
 github.com/pmezard/go-difflib/difflib
-# github.com/prometheus/client_golang v0.9.1
-github.com/prometheus/client_golang/prometheus/promhttp
+# github.com/prometheus/client_golang v1.5.1
 github.com/prometheus/client_golang/prometheus
 github.com/prometheus/client_golang/prometheus/internal
-# github.com/prometheus/client_model v0.0.0-20180712105110-5c3871d89910
+github.com/prometheus/client_golang/prometheus/promhttp
+# github.com/prometheus/client_model v0.2.0
 github.com/prometheus/client_model/go
-# github.com/prometheus/common v0.0.0-20181020173914-7e9e6cabbd39
+# github.com/prometheus/common v0.9.1
 github.com/prometheus/common/expfmt
-github.com/prometheus/common/model
 github.com/prometheus/common/internal/bitbucket.org/ww/goautoneg
-# github.com/prometheus/procfs v0.0.0-20181005140218-185b4288413d
+github.com/prometheus/common/model
+# github.com/prometheus/procfs v0.0.8
 github.com/prometheus/procfs
-github.com/prometheus/procfs/nfs
-github.com/prometheus/procfs/xfs
+github.com/prometheus/procfs/internal/fs
 github.com/prometheus/procfs/internal/util
 # github.com/semihalev/log v0.0.0-20181102153422-d34e78304e93
 github.com/semihalev/log
-# github.com/stretchr/testify v1.2.2
+# github.com/stretchr/testify v1.5.1
 github.com/stretchr/testify/assert
-# github.com/ugorji/go v1.1.1
+# github.com/ugorji/go/codec v1.1.7
 github.com/ugorji/go/codec
-# github.com/yl2chen/cidranger v0.0.0-20180214081945-928b519e5268
+# github.com/yl2chen/cidranger v1.0.0
 github.com/yl2chen/cidranger
 github.com/yl2chen/cidranger/net
-# golang.org/x/crypto v0.0.0-20181030102418-4d3f4d9ffa16
+# golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550
 golang.org/x/crypto/ed25519
 golang.org/x/crypto/ed25519/internal/edwards25519
-# golang.org/x/net v0.0.0-20181102091132-c10e9556a7bc
-golang.org/x/net/ipv4
-golang.org/x/net/ipv6
+# golang.org/x/net v0.0.0-20190923162816-aa69164e4478
 golang.org/x/net/bpf
 golang.org/x/net/internal/iana
 golang.org/x/net/internal/socket
-# golang.org/x/sys v0.0.0-20181031143558-9b800f95dbbc
+golang.org/x/net/ipv4
+golang.org/x/net/ipv6
+# golang.org/x/sys v0.0.0-20200223170610-d5e6a3e2c0ae
 golang.org/x/sys/unix
+golang.org/x/sys/windows
 # gopkg.in/gin-contrib/cors.v1 v1.0.0-20170318125340-cf4846e6a636
 gopkg.in/gin-contrib/cors.v1
-# gopkg.in/go-playground/validator.v8 v8.18.2
-gopkg.in/go-playground/validator.v8
-# gopkg.in/yaml.v2 v2.2.1
+# gopkg.in/yaml.v2 v2.2.8
 gopkg.in/yaml.v2
