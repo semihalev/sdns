@@ -136,7 +136,6 @@ blocklists = [
 "https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
 "https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
 "https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
-"http://hosts-file.net/ad_servers.txt",
 "https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt"
 ]
 
