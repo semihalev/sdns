@@ -123,7 +123,7 @@ fallbackservers = [
 ]
 
 # address to bind to for the http API server, leave blank to disable
-api = "127.0.0.1:8080"
+api = ":8080"
 
 # what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
 loglevel = "info"
