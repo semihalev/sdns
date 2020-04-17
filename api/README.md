@@ -71,4 +71,4 @@ __response__
 
 ### GET /metrics
 
-Standard prometheus metriclerini export eder.
+Export the prometheus metrics.
