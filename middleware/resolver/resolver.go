@@ -612,6 +612,8 @@ func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
 
 	key := cache.Hash(dsReq.Question[0])
 
+	r.lqueue.Wait(key)
+
 	if c := r.lqueue.Get(key); c != nil {
 		return nil, fmt.Errorf("ds records failed (like loop?)")
 	}
