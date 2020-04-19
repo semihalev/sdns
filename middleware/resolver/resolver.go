@@ -101,10 +101,27 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	q := req.Question[0]
 
 	if root && req.Question[0].Qtype != dns.TypeDS {
-		servers, parentdsrr = r.searchCache(q, req.CheckingDisabled)
+		servers, parentdsrr, level = r.searchCache(q, req.CheckingDisabled, q.Name)
 	}
 
-	resp, err := r.lookup(Net, req, servers)
+	// RFC 7816 query minimization. There are some concerns in RFC.
+	minReq := req.Copy()
+	minimized := false
+
+	if level < 3 && q.Name != rootzone {
+		prev, end := dns.PrevLabel(q.Name, level+1)
+		if !end {
+			minimized = true
+			minReq.Question[0].Name = q.Name[prev:]
+			if minReq.Question[0].Name == q.Name {
+				minimized = false
+			} else {
+				minReq.Question[0].Qtype = dns.TypeNS
+			}
+		}
+	}
+
+	resp, err := r.lookup(Net, minReq, servers)
 	if err != nil {
 		return nil, err
 	}
@@ -113,11 +130,14 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	resp.Authoritative = false
 	resp.CheckingDisabled = req.CheckingDisabled
 
-	if resp.Truncated {
+	if !minimized && resp.Truncated {
 		return resp, nil
 	}
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
+		if minimized {
+			resp.Question = req.Question
+		}
 		return resp, nil
 	}
 
@@ -126,7 +146,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		resp.Rcode = dns.RcodeSuccess
 	}
 
-	if len(resp.Answer) > 0 {
+	if !minimized && len(resp.Answer) > 0 {
+
 		if !req.CheckingDisabled {
 			var signer string
 			var signerFound bool
@@ -161,12 +182,32 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		return resp, nil
 	}
 
+	if minimized && len(resp.Answer) > 0 {
+		for _, rr := range resp.Answer {
+			resp.Ns = append(resp.Ns, rr)
+		}
+	}
+
 	if len(resp.Ns) > 0 {
+		if minimized {
+			for _, rr := range resp.Ns {
+				if _, ok := rr.(*dns.SOA); ok {
+					level++
+					return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
+				}
+
+				if _, ok := rr.(*dns.CNAME); ok {
+					level++
+					return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
+				}
+			}
+		}
+
 		var nsrr *dns.NS
 
 		nsmap := make(map[string]string)
-		for _, n := range resp.Ns {
-			if nsrec, ok := n.(*dns.NS); ok {
+		for _, rr := range resp.Ns {
+			if nsrec, ok := rr.(*dns.NS); ok {
 				nsrr = nsrec
 				nsmap[strings.ToLower(nsrec.Ns)] = ""
 			}
@@ -250,7 +291,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		nsCache, err := r.Ncache.Get(key)
 		if err == nil {
 
-			if r.equalServers(nsCache.Servers, servers) {
+			if !minimized && r.equalServers(nsCache.Servers, servers) {
 				return nil, errLoopDetection
 			}
 
@@ -386,6 +427,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 
 	// no answer, no authority, create new msg safer, sometimes received broken response
 	m := new(dns.Msg)
+	m.Question = req.Question
 	m.SetRcode(req, dns.RcodeSuccess)
 	m.RecursionAvailable = true
 	m.Extra = req.Extra
@@ -478,7 +520,7 @@ func (r *Resolver) exchange(server *authcache.AuthServer, req *dns.Msg, c *dns.C
 	return resp, nil
 }
 
-func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *authcache.AuthServers, parentdsrr []dns.RR) {
+func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers *authcache.AuthServers, parentdsrr []dns.RR, level int) {
 	q.Qtype = dns.TypeNS // we should search NS type in cache
 	key := cache.Hash(q, cd)
 
@@ -486,18 +528,19 @@ func (r *Resolver) searchCache(q dns.Question, cd bool) (servers *authcache.Auth
 
 	if err == nil {
 		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
-		return ns.Servers, ns.DSRR
+		return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
 	}
 
 	next, end := dns.NextLabel(q.Name, 0)
 
 	if end {
-		return r.rootservers, nil
+		return r.rootservers, nil, 0
 	}
 
 	q.Name = q.Name[next:]
+	level++
 
-	return r.searchCache(q, cd)
+	return r.searchCache(q, cd, origin)
 }
 
 func (r *Resolver) findSigner(Net string, q dns.Question, resp *dns.Msg, parentdsrr []dns.RR, inAnswer bool) (dsset []dns.RR, signer string, signerFound bool, err error) {

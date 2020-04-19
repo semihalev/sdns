@@ -254,8 +254,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 }
 
 func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
-	if msg.Question[0].Qtype != dns.TypeA &&
-		msg.Question[0].Qtype != dns.TypeAAAA {
+	if msg.Question[0].Qtype == dns.TypeCNAME {
 		return msg
 	}
 
@@ -293,7 +292,7 @@ func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		} else {
 			respCname, err = dnsutil.ExchangeInternal("udp", cnameReq)
-			if err == nil && len(respCname.Answer) > 0 {
+			if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 				target, child = searchAdditionalAnswer(msg, respCname)
 				if target == msg.Question[0].Name {
 					return dnsutil.HandleFailed(msg, dns.RcodeServerFailure, false)
@@ -322,6 +321,10 @@ func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 			target = cr.Target
 			child = true
 		}
+	}
+
+	for _, r := range res.Ns {
+		msg.Ns = append(msg.Ns, dns.Copy(r))
 	}
 
 	return

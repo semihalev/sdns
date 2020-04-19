@@ -51,6 +51,46 @@ $ make test
 | ------ | -------------------------------------------------------------- |
 | config | Location of the config file, if not found it will be generated |
 
+## Debug Environment
+
+```shell
+$ SDNS_DEBUGNS=true && SDNS_PPROF=true ./sdns
+```
+
+DEBUGNS enviroment useful when you check authoritive servers RTT times. 
+Usage: send HINFO query for zones.
+
+Example Output:
+```shell
+$ dig hinfo .
+
+; <<>> DiG 9.10.6 <<>> hinfo .
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 23338
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 13, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1536
+;; QUESTION SECTION:
+;.				IN	HINFO
+
+;; AUTHORITY SECTION:
+.			20	IN	HINFO	"ns" "host:192.58.128.30:53 rtt:13ms"
+.			20	IN	HINFO	"ns" "host:192.5.5.241:53 rtt:14ms"
+.			20	IN	HINFO	"ns" "host:192.203.230.10:53 rtt:14ms"
+.			20	IN	HINFO	"ns" "host:199.7.83.42:53 rtt:16ms"
+.			20	IN	HINFO	"ns" "host:199.7.91.13:53 rtt:16ms"
+.			20	IN	HINFO	"ns" "host:192.33.4.12:53 rtt:36ms"
+.			20	IN	HINFO	"ns" "host:193.0.14.129:53 rtt:47ms"
+.			20	IN	HINFO	"ns" "host:198.97.190.53:53 rtt:54ms"
+.			20	IN	HINFO	"ns" "host:198.41.0.4:53 rtt:54ms"
+.			20	IN	HINFO	"ns" "host:192.36.148.17:53 rtt:59ms"
+.			20	IN	HINFO	"ns" "host:199.9.14.201:53 rtt:61ms"
+.			20	IN	HINFO	"ns" "host:202.12.27.33:53 rtt:71ms"
+.			20	IN	HINFO	"ns" "host:192.112.36.4:53 rtt:104ms"
+````
+
 ## Configs
 
 | Key             | Desc                                                                                                                           |
@@ -121,7 +161,7 @@ $ make test
 -   [x] Periodic priming queries described at RFC 8109
 -   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] Full IPv6 support (server&lt;->server communication)
--   [ ] Query name minimization to improve privacy described at RFC 7816
+-   [x] Query name minimization to improve privacy described at RFC 7816
 
 ## Contributing
 

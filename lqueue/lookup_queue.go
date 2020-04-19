@@ -39,7 +39,7 @@ func (q *LQueue) Wait(key uint64) {
 		q.mu.RUnlock()
 		select {
 		case <-c:
-		case <-time.After(10 * time.Second):
+		case <-time.After(5 * time.Second): // 5 seconds timeout
 		}
 		return
 	}

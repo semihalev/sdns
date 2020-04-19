@@ -93,8 +93,7 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 }
 
 func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
-	if req.Question[0].Qtype != dns.TypeA &&
-		req.Question[0].Qtype != dns.TypeAAAA {
+	if req.Question[0].Qtype == dns.TypeCNAME {
 		return msg
 	}
 
@@ -119,10 +118,16 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 
 	if len(cnameReq.Question) > 0 {
 		respCname, err := dnsutil.ExchangeInternal(Net, cnameReq)
-		if err == nil && len(respCname.Answer) > 0 {
-			for _, r := range respCname.Answer {
+		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Answer) > 0) {
+			for _, rr := range respCname.Answer {
 				if respCname.Question[0].Name == cnameReq.Question[0].Name {
-					msg.Answer = append(msg.Answer, dns.Copy(r))
+					msg.Answer = append(msg.Answer, dns.Copy(rr))
+				}
+			}
+
+			for _, rr := range respCname.Ns {
+				if respCname.Question[0].Name == cnameReq.Question[0].Name {
+					msg.Ns = append(msg.Ns, dns.Copy(rr))
 				}
 			}
 		}
