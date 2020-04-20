@@ -8,7 +8,6 @@ import (
 
 	rl "github.com/bsm/ratelimit"
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
@@ -201,9 +200,6 @@ func (c *Cache) set(key uint64, msg *dns.Msg, mt response.Type, duration time.Du
 	case response.NameError, response.NoData, response.OtherError:
 		i := newItem(msg, c.now(), duration, c.rate)
 		c.ncache.Add(key, i)
-
-	default:
-		log.Warn("Caching called with not cachable classification", "response", mt)
 	}
 }
 
@@ -239,18 +235,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 		duration = computeTTL(msgTTL, c.minpttl, c.pttl)
 	}
 
-	switch mt {
-	case response.NoError, response.Delegation:
-		i := newItem(msg, c.now(), duration, c.rate)
-		c.pcache.Add(key, i)
-
-	case response.NameError, response.NoData, response.OtherError:
-		i := newItem(msg, c.now(), duration, c.rate)
-		c.ncache.Add(key, i)
-
-	default:
-		log.Warn("Caching called with not cachable classification", "response", mt)
-	}
+	c.set(key, msg, mt, duration)
 }
 
 func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {

@@ -130,7 +130,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	resp.Authoritative = false
 	resp.CheckingDisabled = req.CheckingDisabled
 
-	if !minimized && resp.Truncated {
+	if resp.Truncated {
+		if minimized && Net == "udp" {
+			return r.Resolve("tcp", req, servers, false, depth, level, nsl, parentdsrr)
+		}
 		return resp, nil
 	}
 
@@ -359,6 +362,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		}
 
 		if len(nservers) == 0 {
+			if minimized && level < nlevel {
+				level++
+				return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
+			}
 			return nil, errors.New("nameservers are not reachable")
 		}
 
@@ -463,6 +470,7 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServe
 	servers.RLock()
 	defer servers.RUnlock()
 
+mainloop:
 	for index, server := range servers.List {
 		resp, err := r.exchange(server, req, c)
 		if err != nil {
@@ -475,6 +483,17 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServe
 
 		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 != index {
 			continue
+		}
+
+		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(servers.List)-1 != index {
+			for _, rr := range resp.Ns {
+				if nsrec, ok := rr.(*dns.NS); ok {
+					// looks invalid configuration, try another server
+					if nsrec.Header().Name == rootzone && resp.Question[0].Name != rootzone {
+						continue mainloop
+					}
+				}
+			}
 		}
 
 		return resp, err
@@ -611,8 +630,6 @@ func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
 	dsReq.RecursionDesired = true
 
 	key := cache.Hash(dsReq.Question[0])
-
-	r.lqueue.Wait(key)
 
 	if c := r.lqueue.Get(key); c != nil {
 		return nil, fmt.Errorf("ds records failed (like loop?)")
