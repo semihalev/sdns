@@ -283,10 +283,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			return resp, errParentDetection
 		}
 
-		if nsrr.Header().Name == rootzone {
-			return resp, errRootServersDetection
-		}
-
 		q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
 		key := cache.Hash(q, req.CheckingDisabled)
@@ -465,38 +461,63 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServe
 		}
 	}
 
+	responseError := []int{}
+
+trysort:
 	servers.TrySort()
 
 	servers.RLock()
 	defer servers.RUnlock()
 
+	fatalServers := []int{}
+
 mainloop:
 	for index, server := range servers.List {
-		resp, err := r.exchange(server, req, c)
+		resp, err = r.exchange(server, req, c)
 		if err != nil {
-			if len(servers.List)-1 == index {
-				return resp, err
-			}
+
+			fatalServers = append(fatalServers, index)
+			atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
 
 			continue
 		}
 
-		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 != index {
+		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseError) {
+			responseError = append(responseError, index)
+			err = nil
+
 			continue
 		}
 
-		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(servers.List)-1 != index {
+		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 {
 			for _, rr := range resp.Ns {
 				if nsrec, ok := rr.(*dns.NS); ok {
 					// looks invalid configuration, try another server
-					if nsrec.Header().Name == rootzone && resp.Question[0].Name != rootzone {
+					if nsrec.Header().Name == rootzone {
+
+						fatalServers = append(fatalServers, index)
+						atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
+						err = errRootServersDetection
+
 						continue mainloop
 					}
 				}
 			}
 		}
 
-		return resp, err
+		return
+	}
+
+	if len(fatalServers) == len(servers.List) {
+		return
+	}
+
+	if err != nil && len(servers.List) > len(fatalServers) {
+		goto trysort
+	}
+
+	if len(servers.List) >= len(responseError) {
+		return
 	}
 
 	panic("looks like no root servers, check your config")
