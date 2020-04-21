@@ -121,7 +121,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		}
 	}
 
-	resp, err := r.lookup(Net, minReq, servers)
+	resp, err := r.lookup(Net, minReq, servers, level)
 	if err != nil {
 		return nil, err
 	}
@@ -290,8 +290,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		nsCache, err := r.Ncache.Get(key)
 		if err == nil {
 
-			if !minimized && r.equalServers(nsCache.Servers, servers) {
-				return nil, errLoopDetection
+			if r.equalServers(nsCache.Servers, servers) {
+				return resp, errLoopDetection
 			}
 
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
@@ -304,7 +304,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			return r.Resolve(Net, req, nsCache.Servers, false, depth, nlevel, nsl, nsCache.DSRR)
 		}
 
-		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "error", err.Error())
+		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q))
 
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
@@ -438,7 +438,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	return m, nil
 }
 
-func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
 	c := &dns.Client{
 		Net: Net,
 		Dialer: &net.Dialer{
@@ -492,12 +492,18 @@ mainloop:
 		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
 			for _, rr := range resp.Ns {
 				if nsrec, ok := rr.(*dns.NS); ok {
-					// looks invalid configuration, try another server
-					if nsrec.Header().Name == rootzone {
+					check := false
 
+					zLevel := dns.CountLabel(nsrec.Header().Name)
+					if zLevel <= level {
+						check = true
+					}
+
+					// looks invalid configuration, try another server
+					if check {
 						fatalServers = append(fatalServers, index)
 						atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
-						err = errRootServersDetection
+						err = errParentDetection
 
 						continue mainloop
 					}
@@ -699,7 +705,7 @@ func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string,
 	if err != nil {
 		//try fallback servers
 		if len(r.fallbackservers.List) > 0 {
-			nsres, err = r.lookup(Net, nsReq, r.fallbackservers)
+			nsres, err = r.lookup(Net, nsReq, r.fallbackservers, 0)
 		}
 	}
 
@@ -716,7 +722,7 @@ func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string,
 	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
 		//try fallback servers
 		if len(r.fallbackservers.List) > 0 {
-			nsres, err = r.lookup(Net, nsReq, r.fallbackservers)
+			nsres, err = r.lookup(Net, nsReq, r.fallbackservers, 0)
 			if err != nil {
 				return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
 			}
