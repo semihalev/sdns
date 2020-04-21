@@ -463,12 +463,12 @@ func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServe
 
 	responseError := []int{}
 
+	servers.TrySort()
+
+	servers.RLock()
 	defer servers.RUnlock()
 
-trysort:
-	servers.TrySort()
-	servers.RLock()
-
+tryagain:
 	fatalServers := []int{}
 
 mainloop:
@@ -513,8 +513,7 @@ mainloop:
 	}
 
 	if err != nil && len(servers.List) > len(fatalServers) {
-		servers.RUnlock()
-		goto trysort
+		goto tryagain
 	}
 
 	if len(servers.List) >= len(responseError) {
