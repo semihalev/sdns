@@ -489,7 +489,7 @@ mainloop:
 			continue
 		}
 
-		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 {
+		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
 			for _, rr := range resp.Ns {
 				if nsrec, ok := rr.(*dns.NS); ok {
 					// looks invalid configuration, try another server
