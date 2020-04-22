@@ -81,6 +81,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	key := cache.Hash(req.Question[0], req.CheckingDisabled)
+	zkey := cache.HashZone(req.Question[0], req.CheckingDisabled)
 
 	now := c.now().UTC()
 
@@ -95,7 +96,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	internalReq := w.RemoteIP().String() == "127.0.0.1"
 
 	if !internalReq {
-		c.lqueue.Wait(key)
+		c.lqueue.Wait(zkey)
 	}
 
 	i, found := c.get(key, now)
@@ -115,8 +116,8 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	}
 
 	if !internalReq {
-		c.lqueue.Add(key)
-		defer c.lqueue.Done(key)
+		c.lqueue.Add(zkey)
+		defer c.lqueue.Done(zkey)
 	}
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
