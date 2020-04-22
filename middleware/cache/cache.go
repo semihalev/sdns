@@ -80,12 +80,12 @@ func (c *Cache) Name() string { return name }
 func (c *Cache) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	key := cache.Hash(req.Question[0], req.CheckingDisabled)
-	zkey := cache.HashZone(req.Question[0], req.CheckingDisabled)
-
 	now := c.now().UTC()
 
 	q := req.Question[0]
+
+	key := cache.Hash(q, req.CheckingDisabled)
+	lkey := cache.DomainHash(q, req.CheckingDisabled)
 
 	if q.Name != "." && req.RecursionDesired == false {
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
@@ -96,7 +96,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	internalReq := w.RemoteIP().String() == "127.0.0.1"
 
 	if !internalReq {
-		c.lqueue.Wait(zkey)
+		c.lqueue.Wait(lkey)
 	}
 
 	i, found := c.get(key, now)
@@ -116,8 +116,8 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	}
 
 	if !internalReq {
-		c.lqueue.Add(zkey)
-		defer c.lqueue.Done(zkey)
+		c.lqueue.Add(lkey)
+		defer c.lqueue.Done(lkey)
 	}
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}

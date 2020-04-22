@@ -282,7 +282,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		nsCache, err := r.Ncache.Get(key)
 		if err == nil {
 			if r.equalServers(nsCache.Servers, servers) {
-				return resp, errParentDetection
+				return resp, errLoopDetection
 			}
 
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))

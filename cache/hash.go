@@ -32,8 +32,8 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 	return h.Sum64()
 }
 
-// HashZone returns a hash for cache
-func HashZone(q dns.Question, cd ...bool) uint64 {
+// DomainHash returns a hash for cache
+func DomainHash(q dns.Question, cd ...bool) uint64 {
 	h := fnv.New64()
 	buf := bytes.NewBuffer(nil)
 
