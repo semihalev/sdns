@@ -2,7 +2,6 @@ package cache
 
 import (
 	"bytes"
-	"encoding/binary"
 	"hash/fnv"
 
 	"github.com/miekg/dns"
@@ -13,7 +12,7 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 	h := fnv.New64()
 	buf := bytes.NewBuffer(nil)
 
-	binary.Write(buf, binary.BigEndian, q.Qtype)
+	//binary.Write(buf, binary.BigEndian, q.Qtype)
 
 	if len(cd) > 0 && cd[0] == true {
 		buf.WriteByte(1)

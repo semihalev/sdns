@@ -92,7 +92,11 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		return
 	}
 
-	//c.lqueue.Wait(key)
+	internalReq := w.RemoteIP().String() == "127.0.0.1"
+
+	if !internalReq {
+		c.lqueue.Wait(key)
+	}
 
 	i, found := c.get(key, now)
 	if i != nil && found {
@@ -110,8 +114,10 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		return
 	}
 
-	//c.lqueue.Add(key)
-	//defer c.lqueue.Done(key)
+	if !internalReq {
+		c.lqueue.Add(key)
+		defer c.lqueue.Done(key)
+	}
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
 
@@ -263,7 +269,7 @@ func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
 		}
 	}
 
-	cnameDepth := 5
+	cnameDepth := 10
 
 	if len(cnameReq.Question) > 0 {
 	lookup:

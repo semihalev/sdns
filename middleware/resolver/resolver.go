@@ -171,16 +171,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			}
 		}
 
-		resp.Ns = []dns.RR{}
-
-		if len(extra) == 0 {
-			resp.Extra = []dns.RR{}
-
-			opt := req.IsEdns0()
-			if opt != nil {
-				resp.Extra = append(resp.Extra, opt)
-			}
-		}
+		resp = r.clearAdditional(req, resp, extra...)
 
 		return resp, nil
 	}
@@ -216,6 +207,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			}
 		}
 
+		//NXDOMAIN?
 		if len(nsmap) == 0 {
 			if !req.CheckingDisabled {
 				var signer string
@@ -289,9 +281,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 
 		nsCache, err := r.Ncache.Get(key)
 		if err == nil {
-
 			if r.equalServers(nsCache.Servers, servers) {
-				return resp, errLoopDetection
+				return resp, errParentDetection
 			}
 
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
@@ -503,7 +494,6 @@ mainloop:
 					if check {
 						fatalServers = append(fatalServers, index)
 						atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
-						err = errParentDetection
 
 						continue mainloop
 					}
@@ -518,7 +508,7 @@ mainloop:
 		return
 	}
 
-	if err != nil && len(servers.List) > len(fatalServers) {
+	if len(servers.List) > len(fatalServers) {
 		goto tryagain
 	}
 
@@ -657,6 +647,8 @@ func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
 	dsReq.RecursionDesired = true
 
 	key := cache.Hash(dsReq.Question[0])
+
+	r.lqueue.Wait(key)
 
 	if c := r.lqueue.Get(key); c != nil {
 		return nil, fmt.Errorf("ds records failed (like loop?)")
@@ -962,4 +954,19 @@ func (r *Resolver) run() {
 	for range ticker.C {
 		r.checkPriming()
 	}
+}
+
+func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
+	resp.Ns = []dns.RR{}
+
+	if len(extra) == 0 {
+		resp.Extra = []dns.RR{}
+
+		opt := req.IsEdns0()
+		if opt != nil {
+			resp.Extra = append(resp.Extra, opt)
+		}
+	}
+
+	return resp
 }
