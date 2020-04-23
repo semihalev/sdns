@@ -95,35 +95,35 @@ $ dig hinfo .
 
 | Key             | Desc                                                                                                                           |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| version         | Config version                                                                                                                 |
-| blocklists      | List of remote blocklists                                                                                                      |
-| blocklistdir    | List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
-| loglevel        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
-| accesslog       | The location of access log file, leave blank for disable. SDNS uses Common Log Format by default.                              |
-| bind            | Address to bind to for the DNS server. Default :53                                                                             |
-| bindtls         | Address to bind to for the DNS-over-TLS server. Default :853                                                                   |
-| binddoh         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
-| tlscertificate  | TLS certificate file path                                                                                                      |
-| tlsprivatekey   | TLS private key file path                                                                                                      |
-| outboundips     | Outbound ip addresses, if you set multiple, sdns can use random outbound ip address                                            |
-| rootservers     | DNS Root servers                                                                                                               |
-| root6servers    | DNS Root IPv6 servers                                                                                                          |
-| rootkeys        | DNS Root keys for dnssec                                                                                                       |
-| fallbackservers | Fallback servers IP addresses                                                                                                  |
-| api             | Address to bind to for the http API server, leave blank for disable                                                            |
-| nullroute       | IPv4 address to forward blocked queries to                                                                                     |
-| nullroutev6     | IPv6 address to forward blocked queries to                                                                                     |
-| accesslist      | Which clients allowed to make queries                                                                                          |
-| timeout         | Query timeout for dns lookups in duration Default: 5s                                                                          |
-| connecttimeout  | Connect timeout for dns lookups in duration Default: 2s                                                                        |
-| hostsfile       | Enables serving zone data from a hosts file, leave blank for disable                                                           |
-| expire          | Default cache TTL in seconds Default: 600                                                                                      |
-| cachesize       | Cache size (total records in cache) Default: 256000                                                                            |
-| maxdepth        | Maximum recursion depth for nameservers. Default: 30                                                                           |
-| ratelimit       | Query based ratelimit per second, 0 for disable. Default: 0                                                                    |
-| clientratelimit | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
-| blocklist       | Manual blocklist entries                                                                                                       |
-| whitelist       | Manual whitelist entries                                                                                                       |
+| **version**         | Config version                                                                                                                 |
+| **blocklists**      | List of remote blocklists                                                                                                      |
+| **blocklistdir**    | List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
+| **loglevel**        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
+| **accesslog**       | The location of access log file, leave blank for disable. SDNS uses Common Log Format by default.                              |
+| **bind**            | Address to bind to for the DNS server. Default :53                                                                             |
+| **bindtls**        | Address to bind to for the DNS-over-TLS server. Default :853                                                                   |
+| **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
+| **tlscertificate**  | TLS certificate file path                                                                                                      |
+| **tlsprivatekey**   | TLS private key file path                                                                                                      |
+| **outboundips**     | Outbound ip addresses, if you set multiple, sdns can use random outbound ip address                                            |
+| **rootservers**     | DNS Root servers                                                                                                               |
+| **root6servers**    | DNS Root IPv6 servers                                                                                                          |
+| **rootkeys**        | DNS Root keys for dnssec                                                                                                       |
+| **fallbackservers** | Fallback servers IP addresses                                                                                                  |
+| **api**             | Address to bind to for the http API server, leave blank for disable                                                            |
+| **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
+| **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
+| **accesslist**      | Which clients allowed to make queries                                                                                          |
+| **timeout**         | Query timeout for dns lookups in duration Default: 5s                                                                          |
+| **connecttimeout**  | Connect timeout for dns lookups in duration Default: 2s                                                                        |
+| **hostsfile**       | Enables serving zone data from a hosts file, leave blank for disable                                                           |
+| **expire**          | Default cache TTL in seconds Default: 600                                                                                      |
+| **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
+| **maxdepth**        | Maximum recursion depth for authservers. Default: 30                                                                           |
+| **ratelimit**       | Query based ratelimit per second, 0 for disable. Default: 0                                                                    |
+| **clientratelimit** | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
+| **blocklist**       | Manual blocklist entries                                                                                                       |
+| **whitelist**       | Manual whitelist entries                                                                                                       |
 
 ## Server Configuration Checklist
 
