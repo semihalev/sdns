@@ -85,6 +85,7 @@ func HandleJSON(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter
 
 		req := new(dns.Msg)
 		req.RecursionDesired = true
+		req.AuthenticatedData = true
 
 		if r.URL.Query().Get("cd") == "true" {
 			req.CheckingDisabled = true
