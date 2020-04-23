@@ -22,7 +22,7 @@ or
 
 [download](https://github.com/semihalev/sdns/releases)
 
-or run with [Docker image](https://hub.docker.com/r/c1982/sdns/)
+or run with [Docker image](https://github.com/semihalev/sdns/packages)
 
 ```shell
 docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853:853 -p 8053:8053 -p 8080:8080 sdns
