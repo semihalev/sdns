@@ -92,7 +92,7 @@ func HandleJSON(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter
 		}
 
 		req.Question = []dns.Question{
-			dns.Question{
+			{
 				Name:   name,
 				Qtype:  qtype,
 				Qclass: dns.ClassINET,

@@ -21,6 +21,8 @@ test:
 		fi; \
 	done
 
+generate:
+	go run gen.go
 build:
 	docker image build -t $(APP_NAME) .
 

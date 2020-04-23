@@ -23,6 +23,7 @@ type Config struct {
 	FallbackServers []string
 	AccessList      []string
 	LogLevel        string
+	AccessLog       string
 	Bind            string
 	BindTLS         string
 	BindDOH         string
@@ -45,10 +46,12 @@ type Config struct {
 	Whitelist       []string
 }
 
+// Duration type
 type Duration struct {
 	time.Duration
 }
 
+// UnmarshalText for duration type
 func (d *Duration) UnmarshalText(text []byte) error {
 	var err error
 	d.Duration, err = time.ParseDuration(string(text))
@@ -127,6 +130,9 @@ api = "127.0.0.1:8080"
 
 # what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
 loglevel = "info"
+
+# The location of access log file, leave blank to disable. SDNS uses Common Log Format by default.
+# accesslog = ""
 
 # list of remote blocklists
 blocklists = [

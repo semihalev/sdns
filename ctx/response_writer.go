@@ -16,6 +16,7 @@ type ResponseWriter interface {
 	Reset(dns.ResponseWriter)
 	Proto() string
 	RemoteIP() net.IP
+	Internal() bool
 }
 
 type responseWriter struct {
@@ -25,6 +26,7 @@ type responseWriter struct {
 	rcode    int
 	proto    string
 	remoteip net.IP
+	internal bool
 }
 
 var _ ResponseWriter = &responseWriter{}
@@ -48,6 +50,8 @@ func (w *responseWriter) Reset(writer dns.ResponseWriter) {
 		w.proto = "udp"
 		w.remoteip = w.RemoteAddr().(*net.UDPAddr).IP
 	}
+
+	w.internal = w.remoteip.String() == "127.0.0.255"
 }
 
 func (w *responseWriter) RemoteIP() net.IP {
@@ -94,3 +98,6 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 
 	return w.ResponseWriter.WriteMsg(m)
 }
+
+// Internal func
+func (w *responseWriter) Internal() bool { return w.internal }

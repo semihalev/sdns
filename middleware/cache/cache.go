@@ -93,9 +93,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		return
 	}
 
-	internalReq := w.RemoteIP().String() == "127.0.0.1"
-
-	if !internalReq {
+	if !w.Internal() {
 		c.lqueue.Wait(lkey)
 	}
 
@@ -115,7 +113,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		return
 	}
 
-	if !internalReq {
+	if !w.Internal() {
 		c.lqueue.Add(lkey)
 		defer c.lqueue.Done(lkey)
 	}
