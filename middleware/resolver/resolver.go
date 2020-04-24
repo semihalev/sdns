@@ -207,10 +207,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		//NXDOMAIN?
 		if len(nsmap) == 0 {
 			if !req.CheckingDisabled {
-				q := minReq.Question[0]
+				q = minReq.Question[0]
 
 				signer, signerFound := r.findRRSIG(resp, q.Name, false)
-				if !signerFound && len(parentdsrr) > 0 {
+				if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
 					err = errDSRecords
 					log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 
@@ -278,19 +278,17 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 
 		if !req.CheckingDisabled {
 			signer, signerFound := r.findRRSIG(resp, q.Name, false)
-			if !signerFound && len(parentdsrr) > 0 {
-				err = errDSRecords
-				log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
-
-				return nil, err
-			}
-
 			parentdsrr, err = r.findDS(Net, signer, q.Name, resp, parentdsrr)
 			if err != nil {
 				return nil, err
 			}
 
-			if len(parentdsrr) > 0 {
+			if !signerFound && len(parentdsrr) > 0 {
+				err = errDSRecords
+				log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+
+				return nil, err
+			} else if len(parentdsrr) > 0 {
 				//TODO: some TLD cannot verify currently because of Go limitations return false from verify but we should continue
 				_, err := r.verifyDNSSEC(Net, signer, nsrr.Header().Name, resp, parentdsrr)
 				if err != nil {
@@ -329,20 +327,24 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 
 		key := cache.Hash(q, req.CheckingDisabled)
 
-		nsCache, err := r.Ncache.Get(key)
+		nCache, err := r.Ncache.Get(key)
 		if err == nil {
-			if r.equalServers(nsCache.Servers, servers) {
+			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "loop", len(extra) == 2)
+
+			if r.equalServers(nCache.Servers, servers) {
+				if len(extra) != 2 {
+					goto resolve
+				}
 				return resp, errLoopDetection
 			}
 
-			log.Info("Nameserver cache hit", "key", key, "query", formatQuestion(q))
-
+		resolve:
 			if depth <= 0 {
 				return nil, errMaxDepth
 			}
 
 			depth--
-			return r.Resolve(Net, req, nsCache.Servers, false, depth, nlevel, nsl, nsCache.DSRR)
+			return r.Resolve(Net, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR, false, false)
 		}
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q))
@@ -969,7 +971,12 @@ func (r *Resolver) run() {
 func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
 	resp.Ns = []dns.RR{}
 
-	if len(extra) == 0 {
+	noclear := len(extra) == 0
+	if len(extra) > 0 && extra[0] == false {
+		noclear = true
+	}
+
+	if noclear {
 		resp.Extra = []dns.RR{}
 
 		opt := req.IsEdns0()
