@@ -234,18 +234,17 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 						return nil, err
 					}
 
-					ad := false
 					if ok && resp.Rcode == dns.RcodeNameError {
 						nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 						if len(nsec3Set) > 0 {
 							err = verifyNameError(q, nsec3Set)
-							if err == nil {
-								ad = true
+							if err != nil {
+								log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+								return nil, err
 							}
 						} else {
 							nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
 							if len(nsecSet) > 0 {
-								ad = true
 								//TODO: verify NSEC name error??
 							}
 						}
@@ -255,19 +254,17 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 						nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 						if len(nsec3Set) > 0 {
 							err = verifyNODATA(resp.Question[0], nsec3Set)
-							if err == nil {
-								ad = true
+							if err != nil {
+								log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+								return nil, err
 							}
 						} else {
 							nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)
 							if len(nsecSet) > 0 {
-								ad = true
 								//TODO: verify NSEC nodata??
 							}
 						}
 					}
-
-					resp.AuthenticatedData = ad
 				}
 			}
 
