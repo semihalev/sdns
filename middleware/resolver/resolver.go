@@ -665,7 +665,7 @@ func (r *Resolver) findDS(Net, signer, qname string, resp *dns.Msg, parentdsrr [
 }
 
 func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
-	log.Info("Lookup DS record", "qname", qname, "proto", Net)
+	log.Debug("Lookup DS record", "qname", qname, "proto", Net)
 
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
