@@ -127,8 +127,10 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	}
 
 	resp.RecursionAvailable = true
+	resp.RecursionDesired = true
 	resp.Authoritative = false
 	resp.CheckingDisabled = req.CheckingDisabled
+	resp.AuthenticatedData = false
 
 	if resp.Truncated {
 		if minimized && Net == "udp" {
@@ -156,6 +158,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			if err != nil {
 				return nil, err
 			}
+
 			if !signerFound && len(parentdsrr) > 0 {
 				log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
 				return nil, errDSRecords
@@ -851,6 +854,7 @@ func (r *Resolver) verifyDNSSEC(Net string, signer, signed string, resp *dns.Msg
 		return
 	}
 
+	//TODO: Golang exponent bug, we can't verify
 	if !ok {
 		return false, nil
 	}
