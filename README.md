@@ -1,4 +1,4 @@
-# :rocket: Privacy important, fast recursive dns server with dnssec support
+## :rocket: Privacy important, fast recursive dns server with dnssec support
 
 [![Travis](https://img.shields.io/travis/semihalev/sdns.svg?style=flat-square)](https://travis-ci.org/semihalev/sdns)
 [![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
