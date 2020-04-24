@@ -71,12 +71,9 @@ func verifyNameError(q dns.Question, nsec []dns.RR) error {
 	if ce == "" {
 		return errNSECMissingCoverage
 	}
-	_, flags, err := findCoverer("*."+ce, nsec)
+	_, _, err := findCoverer("*."+ce, nsec)
 	if err != nil {
 		return err
-	}
-	if flags {
-		return errors.New("flags not cover")
 	}
 	return nil
 }
