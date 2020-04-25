@@ -6,7 +6,7 @@
 [![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
 [![GitHub version](https://badge.fury.io/gh/semihalev%2Fsdns.svg)](https://github.com/semihalev/sdns/releases)
 
-Based on [kenshinx/godns](https://github.com/kenshinx/godns), [looterz/grimd](https://github.com/looterz/grimd)
+Inspired by [coredns/coredns](https://github.com/coredns/coredns), [looterz/grimd](https://github.com/looterz/grimd)
 
 <img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="300">
 
