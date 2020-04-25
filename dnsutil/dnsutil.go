@@ -232,5 +232,5 @@ const (
 	// IP6arpa is the reverse tree suffix for v6 IP addresses.
 	IP6arpa = ".ip6.arpa."
 	// DefaultMsgSize EDNS0 message size
-	DefaultMsgSize = 1536
+	DefaultMsgSize = 1400
 )
