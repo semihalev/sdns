@@ -119,19 +119,19 @@ rootkeys = [
 ".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
 ]
 
-# fallback servers
+# fallback resolver ip addresses. It uses only for fallback resolving nameservers. Leave blank for disable.
 fallbackservers = [
-"8.8.8.8:53",
-"8.8.4.4:53"
+"1.1.1.1:53",
+"1.0.0.1:53"
 ]
 
-# address to bind to for the http API server, leave blank to disable
+# address to bind to for the http API server, leave blank for disable
 api = "127.0.0.1:8080"
 
 # what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
 loglevel = "info"
 
-# The location of access log file, leave blank to disable. SDNS uses Common Log Format by default.
+# The location of access log file, leave blank for disable. SDNS uses Common Log Format by default.
 # accesslog = ""
 
 # list of remote blocklists
@@ -160,7 +160,7 @@ accesslist = [
 "::0/0"
 ]
 
-# enables serving zone data from a hosts file, leave blank to disable
+# enables serving zone data from a hosts file, leave blank for disable
 # the form of the entries in the /etc/hosts file are based on IETF RFC 952 which was updated by IETF RFC 1123.
 hostsfile = ""
 
