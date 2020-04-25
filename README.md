@@ -107,7 +107,7 @@ $ dig hinfo .
 | **rootservers**     | DNS Root servers                                                                                                               |
 | **root6servers**    | DNS Root IPv6 servers                                                                                                          |
 | **rootkeys**        | DNS Root keys for dnssec                                                                                                       |
-| **fallbackservers** | Fallback servers IP addresses                                                                                                  |
+| **fallbackservers** | Fallback resolver ip addresses. It uses only for fallback resolving nameservers. Leave blank for disable.                |
 | **api**             | Address to bind to for the http API server, leave blank for disable                                                            |
 | **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
