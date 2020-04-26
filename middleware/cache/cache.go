@@ -85,7 +85,6 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	q := req.Question[0]
 
 	key := cache.Hash(q, req.CheckingDisabled)
-	lkey := cache.DomainHash(q, req.CheckingDisabled)
 
 	if q.Name != "." && req.RecursionDesired == false {
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
@@ -94,7 +93,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	}
 
 	if !w.Internal() {
-		c.lqueue.Wait(lkey)
+		c.lqueue.Wait(key)
 	}
 
 	i, found := c.get(key, now)
@@ -114,8 +113,8 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 	}
 
 	if !w.Internal() {
-		c.lqueue.Add(lkey)
-		defer c.lqueue.Done(lkey)
+		c.lqueue.Add(key)
+		defer c.lqueue.Done(key)
 	}
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}

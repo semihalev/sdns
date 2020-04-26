@@ -12,5 +12,6 @@ import (
 	_ "github.com/semihalev/sdns/middleware/blocklist"
 	_ "github.com/semihalev/sdns/middleware/accesslog"
 	_ "github.com/semihalev/sdns/middleware/cache"
+	_ "github.com/semihalev/sdns/middleware/loop"
 	_ "github.com/semihalev/sdns/middleware/resolver"
 )

@@ -9,13 +9,13 @@ import (
 type LQueue struct {
 	mu sync.RWMutex
 
-	delay map[uint64]chan struct{}
+	queue map[uint64]chan struct{}
 }
 
 // New func
 func New() *LQueue {
 	return &LQueue{
-		delay: make(map[uint64]chan struct{}),
+		queue: make(map[uint64]chan struct{}),
 	}
 }
 
@@ -24,7 +24,7 @@ func (q *LQueue) Get(key uint64) <-chan struct{} {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	if c, ok := q.delay[key]; ok {
+	if c, ok := q.queue[key]; ok {
 		return c
 	}
 
@@ -35,11 +35,11 @@ func (q *LQueue) Get(key uint64) <-chan struct{} {
 func (q *LQueue) Wait(key uint64) {
 	q.mu.RLock()
 
-	if c, ok := q.delay[key]; ok {
+	if c, ok := q.queue[key]; ok {
 		q.mu.RUnlock()
 		select {
 		case <-c:
-		case <-time.After(5 * time.Second): // 5 seconds timeout
+		case <-time.After(10 * time.Second): // 10 seconds timeout
 		}
 		return
 	}
@@ -52,7 +52,7 @@ func (q *LQueue) Add(key uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	q.delay[key] = make(chan struct{})
+	q.queue[key] = make(chan struct{})
 }
 
 // Done func
@@ -60,9 +60,9 @@ func (q *LQueue) Done(key uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if c, ok := q.delay[key]; ok {
+	if c, ok := q.queue[key]; ok {
 		close(c)
 	}
 
-	delete(q.delay, key)
+	delete(q.queue, key)
 }

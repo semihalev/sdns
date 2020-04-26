@@ -15,15 +15,13 @@ import (
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/lqueue"
 )
 
 // Resolver type
 type Resolver struct {
 	Ncache *authcache.NSCache
 
-	lqueue *lqueue.LQueue
-	cfg    *config.Config
+	cfg *config.Config
 
 	rootservers     *authcache.AuthServers
 	root6servers    *authcache.AuthServers
@@ -33,10 +31,10 @@ type Resolver struct {
 }
 
 var (
-	errMaxDepth             = errors.New("maximum recursion depth for DNS tree queried")
-	errParentDetection      = errors.New("parent detection")
-	errRootServersDetection = errors.New("root servers detection")
-	errLoopDetection        = errors.New("loop detection")
+	errMaxDepth             = errors.New("maximum recursion depth for dns tree queried")
+	errParentDetection      = errors.New("parent nameservers detected")
+	errRootServersDetection = errors.New("root servers detected")
+	errLoopDetection        = errors.New("resolving iterate looping")
 	errTimeout              = errors.New("timedout")
 	errResolver             = errors.New("resolv failed")
 	errDSRecords            = errors.New("DS records found on parent zone but no signatures")
@@ -49,8 +47,7 @@ const (
 // NewResolver return a resolver
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
-		cfg:    cfg,
-		lqueue: lqueue.New(),
+		cfg: cfg,
 
 		Ncache: authcache.NewNSCache(),
 
@@ -104,28 +101,15 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		servers, parentdsrr, level = r.searchCache(q, req.CheckingDisabled, q.Name)
 	}
 
-	// RFC 7816 query minimization. There are some concerns in RFC.
-	minReq := req.Copy()
-	minimized := false
-
-	if level < 3 && q.Name != rootzone {
-		prev, end := dns.PrevLabel(q.Name, level+1)
-		if !end {
-			minimized = true
-			minReq.Question[0].Name = q.Name[prev:]
-			if minReq.Question[0].Name == q.Name {
-				minimized = false
-			} else {
-				minReq.Question[0].Qtype = dns.TypeNS
-			}
-		}
-	}
+	// RFC 7816 query minimization. There are some concerns in RFC, only 3 levels minimized.
+	minReq, minimized := r.minimize(req, level)
 
 	resp, err := r.lookup(Net, minReq, servers, level)
 	if err != nil {
 		return nil, err
 	}
 
+	//some responses weird, corrected here
 	resp.RecursionAvailable = true
 	resp.RecursionDesired = true
 	resp.Authoritative = false
@@ -325,30 +309,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			return resp, errParentDetection
 		}
 
-		key := cache.Hash(q, req.CheckingDisabled)
-
-		nCache, err := r.Ncache.Get(key)
-		if err == nil {
-			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "loop", len(extra) == 2)
-
-			if r.equalServers(nCache.Servers, servers) {
-				if len(extra) != 2 {
-					goto resolve
-				}
-				return resp, errLoopDetection
-			}
-
-		resolve:
-			if depth <= 0 {
-				return nil, errMaxDepth
-			}
-
-			depth--
-			return r.Resolve(Net, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR, false, false)
-		}
-
-		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q))
-
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
 				name := strings.ToLower(extra.Header().Name)
@@ -374,6 +334,8 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			}
 		}
 
+		key := cache.Hash(q, req.CheckingDisabled)
+
 		if len(nsmap) > len(nservers) {
 			if len(nservers) > 0 {
 				// temprorary cache before lookup
@@ -382,7 +344,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 					authservers.List = append(authservers.List, authcache.NewAuthServer(s))
 				}
 
-				r.Ncache.Set(key, nil, authservers)
+				r.Ncache.Set(key, parentdsrr, authservers)
 			}
 
 			cd := false
@@ -431,14 +393,38 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		return r.Resolve(Net, req, authservers, false, depth, nlevel, nsl, parentdsrr)
 	}
 
-	// no answer, no authority, create new msg safer, sometimes received broken response
+	// no answer, no authority, create new msg is save client, sometimes received broken response
 	m := new(dns.Msg)
 	m.Question = req.Question
 	m.SetRcode(req, dns.RcodeSuccess)
 	m.RecursionAvailable = true
 	m.Extra = req.Extra
 
+	log.Info("Received broken response, returning empty answer", "query", formatQuestion(req.Question[0]))
+
 	return m, nil
+}
+
+func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
+	q := req.Question[0]
+
+	minReq := req.Copy()
+	minimized := false
+
+	if level < 3 && q.Name != rootzone {
+		prev, end := dns.PrevLabel(q.Name, level+1)
+		if !end {
+			minimized = true
+			minReq.Question[0].Name = q.Name[prev:]
+			if minReq.Question[0].Name == q.Name {
+				minimized = false
+			} else {
+				minReq.Question[0].Qtype = dns.TypeNS
+			}
+		}
+	}
+
+	return minReq, minimized
 }
 
 func (r *Resolver) lookup(Net string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
@@ -698,15 +684,6 @@ func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string,
 	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
-	key := cache.Hash(nsReq.Question[0], cd)
-
-	if c := r.lqueue.Get(key); c != nil {
-		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", qname)
-	}
-
-	r.lqueue.Add(key)
-	defer r.lqueue.Done(key)
-
 	nsres, err := dnsutil.ExchangeInternal(Net, nsReq)
 	if err != nil {
 		//try fallback servers
@@ -721,7 +698,6 @@ func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string,
 
 	if nsres.Truncated && Net == "udp" {
 		//retrying in TCP mode
-		r.lqueue.Done(key)
 		return r.lookupNSAddr("tcp", qname, cd)
 	}
 
