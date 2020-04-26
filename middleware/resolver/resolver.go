@@ -28,6 +28,9 @@ type Resolver struct {
 	fallbackservers *authcache.AuthServers
 
 	rootkeys []dns.RR
+
+	//temp cache
+	cache *cache.Cache
 }
 
 var (
@@ -54,6 +57,8 @@ func NewResolver(cfg *config.Config) *Resolver {
 		rootservers:     new(authcache.AuthServers),
 		root6servers:    new(authcache.AuthServers),
 		fallbackservers: new(authcache.AuthServers),
+
+		cache: cache.New(1024 * 32),
 	}
 
 	if len(cfg.RootServers) > 0 {
@@ -95,6 +100,11 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 // Resolve will try find nameservers recursively
 func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+	resp := r.getCache(req)
+	if resp != nil {
+		return resp, nil
+	}
+
 	q := req.Question[0]
 
 	if root {
@@ -167,95 +177,34 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	}
 
 	if len(resp.Ns) > 0 {
-		if minimized {
-			for _, rr := range resp.Ns {
-				if _, ok := rr.(*dns.SOA); ok {
-					level++
-					return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
-				}
+		var nsrr *dns.NS
+		authservers := &authcache.AuthServers{}
 
-				if _, ok := rr.(*dns.CNAME); ok {
+		for _, rr := range resp.Ns {
+			if _, ok := rr.(*dns.SOA); ok {
+				if minimized {
 					level++
 					return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
 				}
 			}
-		}
 
-		var nsrr *dns.NS
+			if _, ok := rr.(*dns.CNAME); ok {
+				if minimized {
+					level++
+					return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
+				}
+			}
 
-		nsmap := make(map[string]string)
-		for _, rr := range resp.Ns {
 			if nsrec, ok := rr.(*dns.NS); ok {
 				nsrr = nsrec
-				nsmap[strings.ToLower(nsrec.Ns)] = ""
+				s := net.JoinHostPort(strings.ToLower(nsrec.Ns), "53")
+				authservers.List = append(authservers.List, authcache.NewAuthServer(s))
 			}
 		}
 
 		//NXDOMAIN?
-		if len(nsmap) == 0 {
-			if !req.CheckingDisabled {
-				q = minReq.Question[0]
-
-				signer, signerFound := r.findRRSIG(resp, q.Name, false)
-				if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
-					err = errDSRecords
-					log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-
-					return nil, err
-				}
-
-				parentdsrr, err = r.findDS(Net, signer, q.Name, resp, parentdsrr)
-				if err != nil {
-					return nil, err
-				}
-
-				if !signerFound && len(parentdsrr) > 0 {
-					err = errDSRecords
-					log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-
-					return nil, err
-				} else if len(parentdsrr) > 0 {
-					ok, err := r.verifyDNSSEC(Net, signer, q.Name, resp, parentdsrr)
-					if err != nil {
-						log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-						return nil, err
-					}
-
-					if ok && resp.Rcode == dns.RcodeNameError {
-						nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-						if len(nsec3Set) > 0 {
-							err = verifyNameError(q, nsec3Set)
-							if err != nil {
-								log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-								return nil, err
-							}
-						} else {
-							nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
-							if len(nsecSet) > 0 {
-								//TODO: verify NSEC name error??
-							}
-						}
-					}
-
-					if ok && q.Qtype == dns.TypeDS {
-						nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-						if len(nsec3Set) > 0 {
-							err = verifyNODATA(resp.Question[0], nsec3Set)
-							if err != nil {
-								log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
-								return nil, err
-							}
-						} else {
-							nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)
-							if len(nsecSet) > 0 {
-								//TODO: verify NSEC nodata??
-							}
-						}
-					}
-				}
-			}
-
-			return resp, nil
+		if len(authservers.List) == 0 {
+			return r.nxdomain(Net, req, minReq, resp, parentdsrr)
 		}
 
 		q = dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
@@ -304,84 +253,16 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			}
 		}
 
+		// temporary cache authservers A and AAAA records
+		r.setCache(resp)
+
 		nlevel := len(dns.SplitDomainName(nsrr.Header().Name))
 		if level > nlevel {
 			return resp, errParentDetection
 		}
 
-		for _, a := range resp.Extra {
-			if extra, ok := a.(*dns.A); ok {
-				name := strings.ToLower(extra.Header().Name)
-				if nsl && strings.EqualFold(name, minReq.Question[0].Name) && extra.A.String() != "" {
-					resp.Answer = append(resp.Answer, extra)
-					return resp, nil
-				}
-
-				if _, ok := nsmap[name]; ok {
-					nsmap[name] = extra.A.String()
-				}
-			}
-		}
-
-		nservers := []string{}
-
-		for _, addr := range nsmap {
-			if addr != "" {
-				if isLocalIP(addr) {
-					continue
-				}
-				nservers = append(nservers, net.JoinHostPort(addr, "53"))
-			}
-		}
-
 		key := cache.Hash(q, req.CheckingDisabled)
 
-		if len(nsmap) > len(nservers) {
-			if len(nservers) > 0 {
-				// temprorary cache before lookup
-				authservers := &authcache.AuthServers{}
-				for _, s := range nservers {
-					authservers.List = append(authservers.List, authcache.NewAuthServer(s))
-				}
-
-				r.Ncache.Set(key, parentdsrr, authservers)
-			}
-
-			cd := false
-			if req.CheckingDisabled || len(parentdsrr) == 0 {
-				cd = true
-			}
-
-			//non extra rr for some nameservers, try lookup
-			for k, addr := range nsmap {
-				if addr == "" {
-					addr, err := r.lookupNSAddr(Net, k, cd)
-					if err == nil {
-						if isLocalIP(addr) {
-							continue
-						}
-						nservers = append(nservers, net.JoinHostPort(addr, "53"))
-					} else {
-						log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", k, "error", err.Error())
-					}
-				}
-			}
-		}
-
-		if len(nservers) == 0 {
-			if minimized && level < nlevel {
-				level++
-				return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
-			}
-			return nil, errors.New("nameservers are not reachable")
-		}
-
-		authservers := &authcache.AuthServers{}
-		for _, s := range nservers {
-			authservers.List = append(authservers.List, authcache.NewAuthServer(s))
-		}
-
-		//final cache
 		r.Ncache.Set(key, parentdsrr, authservers)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
 
@@ -393,7 +274,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		return r.Resolve(Net, req, authservers, false, depth, nlevel, nsl, parentdsrr)
 	}
 
-	// no answer, no authority, create new msg is save client, sometimes received broken response
+	// no answer, no authority, create new msg is save the client, sometimes received weird response
 	m := new(dns.Msg)
 	m.Question = req.Question
 	m.SetRcode(req, dns.RcodeSuccess)
@@ -401,6 +282,133 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	m.Extra = req.Extra
 
 	return m, nil
+}
+
+func (r *Resolver) getCache(req *dns.Msg) (resp *dns.Msg) {
+	key := cache.Hash(req.Question[0], req.CheckingDisabled)
+
+	if i, ok := r.cache.Get(key); ok {
+		resp = i.(*dns.Msg)
+		resp.SetReply(req)
+		resp.Rcode = dns.RcodeSuccess
+	}
+
+	return
+}
+
+func (r *Resolver) setCache(resp *dns.Msg) {
+	rrv4 := make(map[string][]dns.RR)
+	rrv6 := make(map[string][]dns.RR)
+
+	for _, rr := range resp.Extra {
+		if a, ok := rr.(*dns.A); ok {
+			rrv4[a.Header().Name] = append(rrv4[a.Header().Name], rr)
+		}
+
+		if aaaa, ok := rr.(*dns.AAAA); ok {
+			rrv6[aaaa.Header().Name] = append(rrv6[aaaa.Header().Name], rr)
+		}
+	}
+
+	for name, rr := range rrv4 {
+		msg := new(dns.Msg)
+
+		msg.SetQuestion(name, dns.TypeA)
+		msg.Rcode = resp.Rcode
+		msg.Authoritative = false
+		msg.AuthenticatedData = resp.AuthenticatedData
+		msg.RecursionAvailable = resp.RecursionAvailable
+
+		msg.Answer = rr
+
+		key := cache.Hash(msg.Question[0], resp.CheckingDisabled)
+
+		r.cache.Add(key, msg)
+	}
+
+	for name, rr := range rrv6 {
+		msg := new(dns.Msg)
+
+		msg.SetQuestion(name, dns.TypeAAAA)
+		msg.Rcode = resp.Rcode
+		msg.Authoritative = false
+		msg.AuthenticatedData = resp.AuthenticatedData
+		msg.RecursionAvailable = resp.RecursionAvailable
+
+		msg.Answer = rr
+
+		key := cache.Hash(msg.Question[0], resp.CheckingDisabled)
+
+		r.cache.Add(key, msg)
+	}
+}
+
+func (r *Resolver) nxdomain(Net string, req, minReq *dns.Msg, resp *dns.Msg, parentdsrr []dns.RR) (*dns.Msg, error) {
+	var err error
+
+	if !req.CheckingDisabled {
+		q := minReq.Question[0]
+
+		signer, signerFound := r.findRRSIG(resp, q.Name, false)
+		if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
+			err = errDSRecords
+			log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+
+			return nil, err
+		}
+
+		parentdsrr, err = r.findDS(Net, signer, q.Name, resp, parentdsrr)
+		if err != nil {
+			return nil, err
+		}
+
+		if !signerFound && len(parentdsrr) > 0 {
+			err = errDSRecords
+			log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+
+			return nil, err
+		} else if len(parentdsrr) > 0 {
+			ok, err := r.verifyDNSSEC(Net, signer, q.Name, resp, parentdsrr)
+			if err != nil {
+				log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+				return nil, err
+			}
+
+			if ok && resp.Rcode == dns.RcodeNameError {
+				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+				if len(nsec3Set) > 0 {
+					err = verifyNameError(q, nsec3Set)
+					if err != nil {
+						log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+						return nil, err
+					}
+				} else {
+					nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
+					if len(nsecSet) > 0 {
+						//TODO: verify NSEC name error??
+					}
+				}
+			}
+
+			if ok && q.Qtype == dns.TypeDS {
+				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+				if len(nsec3Set) > 0 {
+					err = verifyNODATA(resp.Question[0], nsec3Set)
+					if err != nil {
+						log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+						return nil, err
+					}
+				} else {
+					nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)
+					if len(nsecSet) > 0 {
+						//TODO: verify NSEC nodata??
+					}
+				}
+			}
+		}
+	}
+
+	return resp, nil
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
@@ -671,49 +679,6 @@ func (r *Resolver) lookupDS(Net, qname string) (msg *dns.Msg, err error) {
 	}
 
 	return dsres, nil
-}
-
-func (r *Resolver) lookupNSAddr(Net string, qname string, cd bool) (addr string, err error) {
-	log.Debug("Lookup NS address", "qname", qname)
-
-	nsReq := new(dns.Msg)
-	nsReq.SetQuestion(qname, dns.TypeA)
-	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	nsReq.RecursionDesired = true
-	nsReq.CheckingDisabled = cd
-
-	nsres, err := dnsutil.ExchangeInternal(Net, nsReq)
-	if err != nil {
-		//try fallback servers
-		if len(r.fallbackservers.List) > 0 {
-			nsres, err = r.lookup(Net, nsReq, r.fallbackservers, 0)
-		}
-	}
-
-	if err != nil {
-		return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
-	}
-
-	if nsres.Truncated && Net == "udp" {
-		//retrying in TCP mode
-		return r.lookupNSAddr("tcp", qname, cd)
-	}
-
-	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
-		//try fallback servers
-		if len(r.fallbackservers.List) > 0 {
-			nsres, err = r.lookup(Net, nsReq, r.fallbackservers, 0)
-			if err != nil {
-				return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
-			}
-		}
-	}
-
-	if addr, ok := searchAddr(nsres); ok {
-		return addr, nil
-	}
-
-	return addr, fmt.Errorf("nameserver address lookup failed for %s (no answer)", qname)
 }
 
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {

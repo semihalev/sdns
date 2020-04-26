@@ -28,7 +28,7 @@ type NSCache struct {
 // NewNSCache return new cache
 func NewNSCache() *NSCache {
 	n := &NSCache{
-		cache: cache.New(defaultCap),
+		cache: cache.New(1024 * 256),
 		now:   time.Now,
 	}
 
@@ -63,5 +63,4 @@ func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers) {
 
 const (
 	maximumTTL = time.Hour
-	defaultCap = 1024 * 256
 )

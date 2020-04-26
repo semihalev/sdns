@@ -81,5 +81,5 @@ func formatQuestion(q dns.Question) string {
 
 const (
 	name      = "loop"
-	loopCount = 100
+	loopCount = 10
 )
