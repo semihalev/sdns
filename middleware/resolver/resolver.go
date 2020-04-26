@@ -400,8 +400,6 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 	m.RecursionAvailable = true
 	m.Extra = req.Extra
 
-	log.Info("Received broken response, returning empty answer", "query", formatQuestion(req.Question[0]))
-
 	return m, nil
 }
 
