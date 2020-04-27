@@ -36,7 +36,6 @@ var (
 	errMaxDepth             = errors.New("maximum recursion depth for DNS tree queried")
 	errParentDetection      = errors.New("parent detection")
 	errRootServersDetection = errors.New("root servers detection")
-	errLoopDetection        = errors.New("loop detection")
 	errTimeout              = errors.New("timedout")
 	errResolver             = errors.New("resolv failed")
 	errDSRecords            = errors.New("DS records found on parent zone but no signatures")
@@ -329,25 +328,20 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 
 		nCache, err := r.Ncache.Get(key)
 		if err == nil {
-			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "loop", len(extra) == 2)
+			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
 
-			if r.equalServers(nCache.Servers, servers) {
-				if len(extra) != 2 {
-					goto resolve
-				}
-				return resp, errLoopDetection
-			}
-
-		resolve:
 			if depth <= 0 {
 				return nil, errMaxDepth
 			}
 
-			depth--
-			return r.Resolve(Net, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR, false, false)
+			//it may loop, lets continue with fast depth.
+			depth = depth + 2
+			return r.Resolve(Net, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR)
 		}
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q))
+
+		nservers := []string{}
 
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
@@ -358,19 +352,18 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 				}
 
 				if _, ok := nsmap[name]; ok {
-					nsmap[name] = extra.A.String()
-				}
-			}
-		}
+					addr := extra.A.String()
 
-		nservers := []string{}
+					if isLocalIP(addr) {
+						continue
+					}
 
-		for _, addr := range nsmap {
-			if addr != "" {
-				if isLocalIP(addr) {
-					continue
+					if net.ParseIP(addr).IsLoopback() {
+						continue
+					}
+
+					nservers = append(nservers, net.JoinHostPort(addr, "53"))
 				}
-				nservers = append(nservers, net.JoinHostPort(addr, "53"))
 			}
 		}
 
@@ -382,7 +375,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 					authservers.List = append(authservers.List, authcache.NewAuthServer(s))
 				}
 
-				r.Ncache.Set(key, nil, authservers)
+				r.Ncache.Set(key, parentdsrr, authservers)
 			}
 
 			cd := false
@@ -398,6 +391,11 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 						if isLocalIP(addr) {
 							continue
 						}
+
+						if net.ParseIP(addr).IsLoopback() {
+							continue
+						}
+
 						nservers = append(nservers, net.JoinHostPort(addr, "53"))
 					} else {
 						log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", k, "error", err.Error())

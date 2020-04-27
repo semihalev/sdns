@@ -121,8 +121,6 @@ rootkeys = [
 
 # fallback resolver ip addresses. It uses only for fallback resolving nameservers. Leave blank for disable.
 fallbackservers = [
-"1.1.1.1:53",
-"1.0.0.1:53"
 ]
 
 # address to bind to for the http API server, leave blank for disable
