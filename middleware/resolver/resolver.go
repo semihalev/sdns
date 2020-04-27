@@ -329,12 +329,17 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		if err == nil {
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
 
+			if r.equalServers(nCache.Servers, servers) {
+				//it may loop, lets continue with fast depth.
+				depth = depth - 10
+			} else {
+				depth--
+			}
+
 			if depth <= 0 {
 				return nil, errMaxDepth
 			}
 
-			//it may loop, lets continue with fast depth.
-			depth = depth - 5
 			return r.Resolve(ctx, proto, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR)
 		}
 
@@ -422,11 +427,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		r.Ncache.Set(key, parentdsrr, authservers)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
 
+		depth--
+
 		if depth <= 0 {
 			return nil, errMaxDepth
 		}
 
-		depth--
 		return r.Resolve(ctx, proto, req, authservers, false, depth, nlevel, nsl, parentdsrr)
 	}
 
