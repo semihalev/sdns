@@ -1,7 +1,9 @@
 package resolver
 
 import (
+	"context"
 	"os"
+	"time"
 
 	"github.com/semihalev/sdns/middleware"
 
@@ -44,12 +46,15 @@ func (h *DNSHandler) Name() string { return name }
 func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	msg := h.handle(w.Proto(), req)
+	msg := h.handle(dc.Context, w.Proto(), req)
 
 	w.WriteMsg(msg)
 }
 
-func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
+func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dns.Msg {
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.Timeout.Duration))
+	defer cancel()
+
 	q := req.Question[0]
 
 	do := false
@@ -71,28 +76,28 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	log.Debug("Lookup", "net", Net, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
+	log.Debug("Lookup", "net", proto, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
 
 	depth := h.cfg.Maxdepth
-	resp, err := h.r.Resolve(Net, req, h.r.rootservers, true, depth, 0, false, nil)
+	resp, err := h.r.Resolve(ctx, proto, req, h.r.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
 		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	if resp.Truncated && Net == "udp" {
+	if resp.Truncated && proto == "udp" {
 		return resp
-	} else if resp.Truncated && Net == "https" {
-		return h.handle("tcp", req)
+	} else if resp.Truncated && proto == "https" {
+		return h.handle(ctx, "tcp", req)
 	}
 
-	resp = h.additionalAnswer(Net, req, resp)
+	resp = h.additionalAnswer(ctx, proto, req, resp)
 
 	return resp
 }
 
-func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
+func (h *DNSHandler) additionalAnswer(ctx context.Context, proto string, req, msg *dns.Msg) *dns.Msg {
 	if req.Question[0].Qtype == dns.TypeCNAME {
 		return msg
 	}
@@ -117,7 +122,7 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 	}
 
 	if len(cnameReq.Question) > 0 {
-		respCname, err := dnsutil.ExchangeInternal(Net, cnameReq)
+		respCname, err := dnsutil.ExchangeInternal(ctx, proto, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Answer) > 0) {
 			for _, rr := range respCname.Answer {
 				if respCname.Question[0].Name == cnameReq.Question[0].Name {

@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"context"
 	"net"
 	"sync"
 	"testing"
@@ -38,7 +39,6 @@ func makeTestConfig() *config.Config {
 	cfg.Expire = 600
 	cfg.CacheSize = 1024
 	cfg.Timeout.Duration = 2 * time.Second
-	cfg.ConnectTimeout.Duration = 2 * time.Second
 
 	return cfg
 }
@@ -79,6 +79,8 @@ func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns
 }
 
 func Test_handler(t *testing.T) {
+	ctx := context.Background()
+
 	handler := middleware.Get("resolver").(*DNSHandler)
 
 	time.Sleep(2 * time.Second)
@@ -93,34 +95,35 @@ func Test_handler(t *testing.T) {
 	m.RecursionDesired = true
 
 	m.SetQuestion("www.apple.com.", dns.TypeA)
-	r := handler.handle("udp", m)
+	r := handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	// test again for caches
 	m.SetQuestion("www.apple.com.", dns.TypeA)
-	r = handler.handle("udp", m)
+	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
-	r = handler.handle("udp", m)
+	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) == 0, true)
 
 	m.SetQuestion("example.com.", dns.TypeA)
-	r = handler.handle("udp", m)
+	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m.SetQuestion(".", dns.TypeANY)
-	r = handler.handle("udp", m)
+	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
 
 	m.SetQuestion(".", dns.TypeNS)
 	m.RecursionDesired = false
-	r = handler.handle("udp", m)
+	r = handler.handle(ctx, "udp", m)
 	assert.NotEqual(t, r.Rcode, dns.RcodeServerFailure)
 }
 
 func Test_HandlerHINFO(t *testing.T) {
+	ctx := context.Background()
 	cfg := makeTestConfig()
 	handler := New(cfg)
 
@@ -128,7 +131,7 @@ func Test_HandlerHINFO(t *testing.T) {
 	m.SetQuestion(".", dns.TypeHINFO)
 
 	debugns = true
-	resp := handler.handle("udp", m)
+	resp := handler.handle(ctx, "udp", m)
 
 	assert.Equal(t, true, len(resp.Ns) > 0)
 }

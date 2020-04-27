@@ -1,6 +1,7 @@
 package dnsutil
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -212,11 +213,14 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 }
 
 // ExchangeInternal exchange request internal
-func ExchangeInternal(Net string, r *dns.Msg) (*dns.Msg, error) {
-	w := mock.NewWriter(Net, "127.0.0.255:0")
+func ExchangeInternal(currctx context.Context, proto string, r *dns.Msg) (*dns.Msg, error) {
+	w := mock.NewWriter(proto, "127.0.0.255:0")
 
 	dc := ctx.New(middleware.Handlers())
 	dc.ResetDNS(w, r)
+
+	dc.Context = currctx
+
 	dc.NextDNS()
 
 	if !w.Written() {

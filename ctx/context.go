@@ -1,6 +1,7 @@
 package ctx
 
 import (
+	"context"
 	"math"
 
 	"github.com/miekg/dns"
@@ -16,6 +17,8 @@ type Handler interface {
 type Context struct {
 	DNSWriter  ResponseWriter
 	DNSRequest *dns.Msg
+
+	Context context.Context
 
 	handlers []Handler
 	index    int8
@@ -43,6 +46,7 @@ func (dc *Context) NextDNS() {
 // Abort calls
 func (dc *Context) Abort() {
 	dc.index = abortIndex
+	dc.Context.Done()
 }
 
 // ResetDNS reset dns vars
@@ -51,4 +55,5 @@ func (dc *Context) ResetDNS(w dns.ResponseWriter, r *dns.Msg) {
 	dc.DNSRequest = r
 
 	dc.index = -1
+	dc.Context = context.Background()
 }

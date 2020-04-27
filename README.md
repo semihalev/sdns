@@ -113,7 +113,6 @@ $ dig hinfo .
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
 | **accesslist**      | Which clients allowed to make queries                                                                                          |
 | **timeout**         | Query timeout for dns lookups in duration Default: 5s                                                                          |
-| **connecttimeout**  | Connect timeout for dns lookups in duration Default: 2s                                                                        |
 | **hostsfile**       | Enables serving zone data from a hosts file, leave blank for disable                                                           |
 | **expire**          | Default cache TTL in seconds Default: 600                                                                                      |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |

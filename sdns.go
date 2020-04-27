@@ -27,7 +27,7 @@ var (
 	Version = "0.3.3-rc1"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-	ConfigVersion = "0.3.1"
+	ConfigVersion = "0.3.3"
 
 	// ConfigPath returns the configuration path
 	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
@@ -65,10 +65,6 @@ func setup() {
 
 	if Config.Timeout.Duration < 250*time.Millisecond {
 		Config.Timeout.Duration = 250 * time.Millisecond
-	}
-
-	if Config.ConnectTimeout.Duration < 250*time.Millisecond {
-		Config.ConnectTimeout.Duration = 250 * time.Millisecond
 	}
 
 	if Config.CacheSize < 1024 {

@@ -1,6 +1,7 @@
 package dnsutil
 
 import (
+	"context"
 	"testing"
 
 	"github.com/semihalev/sdns/middleware"
@@ -164,7 +165,7 @@ func TestExchangeInternal(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
 
-	msg, err := ExchangeInternal("udp", req)
+	msg, err := ExchangeInternal(context.Background(), "udp", req)
 	if err != nil {
 		t.Errorf("Test exchange internal should not be error")
 		return
@@ -175,7 +176,7 @@ func TestExchangeInternal(t *testing.T) {
 	}
 
 	req.SetQuestion("www.example.com.", dns.TypeA)
-	_, err = ExchangeInternal("udp", req)
+	_, err = ExchangeInternal(context.Background(), "udp", req)
 	if err == nil {
 		t.Errorf("Test exchange internal should be error")
 	}
