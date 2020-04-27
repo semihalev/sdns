@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -377,25 +378,36 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			}
 
 			//non extra rr for some nameservers, try lookup
+			var wg sync.WaitGroup
+
 			for name, addr := range nsmap {
 				if addr == "" {
-					addr, err := r.lookupNSAddr(ctx, proto, name, cd)
-					if err != nil {
-						log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-						continue
-					}
+					wg.Add(1)
+					go func(name string) {
+						defer wg.Done()
 
-					if isLocalIP(addr) {
-						continue
-					}
+						addr, err := r.lookupNSAddr(ctx, proto, name, cd)
+						if err != nil {
+							log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+							return
+						}
 
-					if net.ParseIP(addr).IsLoopback() {
-						continue
-					}
+						if isLocalIP(addr) {
+							return
+						}
 
-					authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
+						if net.ParseIP(addr).IsLoopback() {
+							return
+						}
+
+						authservers.Lock()
+						authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
+						authservers.Unlock()
+					}(name)
 				}
 			}
+
+			wg.Wait()
 		}
 
 		if len(authservers.List) == 0 {

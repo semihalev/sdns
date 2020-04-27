@@ -38,7 +38,7 @@ func makeTestConfig() *config.Config {
 	cfg.Maxdepth = 30
 	cfg.Expire = 600
 	cfg.CacheSize = 1024
-	cfg.Timeout.Duration = 2 * time.Second
+	cfg.Timeout.Duration = 10 * time.Second
 
 	return cfg
 }
@@ -86,10 +86,6 @@ func Test_handler(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	assert.Equal(t, "resolver", handler.Name())
-
-	c := new(dns.Client)
-	c.ReadTimeout = 15 * time.Second
-	c.WriteTimeout = 15 * time.Second
 
 	m := new(dns.Msg)
 	m.RecursionDesired = true

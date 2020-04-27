@@ -46,7 +46,6 @@ func (dc *Context) NextDNS() {
 // Abort calls
 func (dc *Context) Abort() {
 	dc.index = abortIndex
-	dc.Context.Done()
 }
 
 // ResetDNS reset dns vars
