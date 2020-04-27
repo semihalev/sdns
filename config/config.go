@@ -35,6 +35,7 @@ type Config struct {
 	Hostsfile       string
 	OutboundIPs     []string
 	Timeout         Duration
+	ConnectTimeout  Duration
 	Expire          uint32
 	CacheSize       int
 	Maxdepth        int
@@ -164,8 +165,8 @@ hostsfile = ""
 # query timeout for dns lookups in duration
 timeout = "5s"
 
-# connect timeout for dns lookups in duration (deprecated)
-# connecttimeout = ""
+# connect timeout for dns lookups in duration
+connecttimeout = "2s"
 
 # default cache TTL in seconds
 expire = 600

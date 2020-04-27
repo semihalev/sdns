@@ -459,8 +459,10 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 		Dialer: &net.Dialer{
 			DualStack:     true,
 			FallbackDelay: 100 * time.Millisecond,
-			Timeout:       timeout,
+			Timeout:       r.cfg.ConnectTimeout.Duration,
 		},
+		WriteTimeout: timeout,
+		ReadTimeout:  timeout,
 	}
 
 	if len(r.cfg.OutboundIPs) > 0 {
