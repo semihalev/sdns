@@ -441,7 +441,21 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 }
 
 func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
-	c := &dns.Client{Net: proto}
+	var timeout time.Duration
+	if deadline, ok := ctx.Deadline(); !ok {
+		timeout = r.cfg.Timeout.Duration
+	} else {
+		timeout = time.Until(deadline)
+	}
+
+	c := &dns.Client{
+		Net: proto,
+		Dialer: &net.Dialer{
+			DualStack:     true,
+			FallbackDelay: 100 * time.Millisecond,
+			Timeout:       timeout,
+		},
+	}
 
 	if len(r.cfg.OutboundIPs) > 0 {
 		index := randInt(0, len(r.cfg.OutboundIPs))
@@ -533,7 +547,7 @@ func (r *Resolver) exchange(ctx context.Context, server *authcache.AuthServer, r
 		atomic.AddInt64(&server.Count, 1)
 	}()
 
-	resp, rtt, err = c.ExchangeContext(ctx, req, server.Host)
+	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil {
 		if strings.Contains(err.Error(), "no route to host") && c.Net == "udp" {
 			c.Net = "tcp"
@@ -891,7 +905,8 @@ func (r *Resolver) checkPriming() error {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.RecursionDesired = true
 
-	ctx := context.Background()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.cfg.Timeout.Duration))
+	defer cancel()
 
 	resp, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 5, 0, false, nil, true)
 	if err != nil {
