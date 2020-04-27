@@ -447,13 +447,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 }
 
 func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
-	var timeout time.Duration
-	if deadline, ok := ctx.Deadline(); !ok {
-		timeout = r.cfg.Timeout.Duration
-	} else {
-		timeout = time.Until(deadline)
-	}
-
 	c := &dns.Client{
 		Net: proto,
 		Dialer: &net.Dialer{
@@ -461,8 +454,9 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 			FallbackDelay: 100 * time.Millisecond,
 			Timeout:       r.cfg.ConnectTimeout.Duration,
 		},
-		WriteTimeout: timeout,
-		ReadTimeout:  timeout,
+
+		ReadTimeout:  r.cfg.Timeout.Duration,
+		WriteTimeout: r.cfg.Timeout.Duration,
 	}
 
 	if len(r.cfg.OutboundIPs) > 0 {
