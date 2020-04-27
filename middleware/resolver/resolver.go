@@ -34,8 +34,8 @@ type Resolver struct {
 
 var (
 	errMaxDepth             = errors.New("maximum recursion depth for DNS tree queried")
-	errParentDetection      = errors.New("parent detection")
-	errRootServersDetection = errors.New("root servers detection")
+	errParentDetection      = errors.New("parent servers detected")
+	errRootServersDetection = errors.New("root servers detected")
 	errTimeout              = errors.New("timedout")
 	errResolver             = errors.New("resolv failed")
 	errDSRecords            = errors.New("DS records found on parent zone but no signatures")
@@ -335,7 +335,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			}
 
 			//it may loop, lets continue with fast depth.
-			depth = depth + 2
+			depth = depth - 5
 			return r.Resolve(Net, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR)
 		}
 
