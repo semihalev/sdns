@@ -330,18 +330,23 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 		if err == nil {
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
 
+			if r.equalServers(nCache.Servers, servers) {
+				//it may loop, lets continue with fast depth.
+				depth = depth - 10
+			} else {
+				depth--
+			}
+
 			if depth <= 0 {
 				return nil, errMaxDepth
 			}
 
-			//it may loop, lets continue with fast depth.
-			depth = depth - 5
 			return r.Resolve(Net, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR)
 		}
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q))
 
-		nservers := []string{}
+		authservers := &authcache.AuthServers{}
 
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
@@ -362,19 +367,14 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 						continue
 					}
 
-					nservers = append(nservers, net.JoinHostPort(addr, "53"))
+					authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
 				}
 			}
 		}
 
-		if len(nsmap) > len(nservers) {
-			if len(nservers) > 0 {
+		if len(nsmap) > len(authservers.List) {
+			if len(authservers.List) > 0 {
 				// temprorary cache before lookup
-				authservers := &authcache.AuthServers{}
-				for _, s := range nservers {
-					authservers.List = append(authservers.List, authcache.NewAuthServer(s))
-				}
-
 				r.Ncache.Set(key, parentdsrr, authservers)
 			}
 
@@ -396,7 +396,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 							continue
 						}
 
-						nservers = append(nservers, net.JoinHostPort(addr, "53"))
+						authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
 					} else {
 						log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", k, "error", err.Error())
 					}
@@ -404,7 +404,7 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			}
 		}
 
-		if len(nservers) == 0 {
+		if len(authservers.List) == 0 {
 			if minimized && level < nlevel {
 				level++
 				return r.Resolve(Net, req, servers, false, depth, level, nsl, parentdsrr)
@@ -412,20 +412,16 @@ func (r *Resolver) Resolve(Net string, req *dns.Msg, servers *authcache.AuthServ
 			return nil, errors.New("nameservers are not reachable")
 		}
 
-		authservers := &authcache.AuthServers{}
-		for _, s := range nservers {
-			authservers.List = append(authservers.List, authcache.NewAuthServer(s))
-		}
-
 		//final cache
 		r.Ncache.Set(key, parentdsrr, authservers)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
+
+		depth--
 
 		if depth <= 0 {
 			return nil, errMaxDepth
 		}
 
-		depth--
 		return r.Resolve(Net, req, authservers, false, depth, nlevel, nsl, parentdsrr)
 	}
 
