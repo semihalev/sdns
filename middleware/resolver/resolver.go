@@ -274,46 +274,46 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		q = dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
-		if !req.CheckingDisabled {
-			signer, signerFound := r.findRRSIG(resp, q.Name, false)
-			parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
-			if err != nil {
-				return nil, err
-			}
+		signer, signerFound := r.findRRSIG(resp, q.Name, false)
+		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
+		if err != nil {
+			return nil, err
+		}
 
-			if !signerFound && len(parentdsrr) > 0 {
-				err = errDSRecords
-				log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+		if !signerFound && len(parentdsrr) > 0 {
+			err = errDSRecords
+			log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 
-				return nil, err
-			} else if len(parentdsrr) > 0 {
+			return nil, err
+		} else if len(parentdsrr) > 0 {
+			if !req.CheckingDisabled {
 				//TODO: some TLD cannot verify currently because of Go limitations return false from verify but we should continue
 				_, err := r.verifyDNSSEC(ctx, proto, signer, nsrr.Header().Name, resp, parentdsrr)
 				if err != nil {
 					log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
 					return nil, err
 				}
+			}
 
-				parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
+			parentdsrr = extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeDS)
 
-				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-				if len(nsec3Set) > 0 {
-					err = verifyDelegation(nsrr.Header().Name, nsec3Set)
-					if err != nil {
-						log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
-						return nil, err
+			nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+			if len(nsec3Set) > 0 {
+				err = verifyDelegation(nsrr.Header().Name, nsec3Set)
+				if err != nil {
+					log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+					return nil, err
+				}
+
+				parentdsrr = []dns.RR{}
+			} else {
+				nsecSet := extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeNSEC)
+				if len(nsecSet) > 0 {
+					if !verifyNSEC(q, nsecSet) {
+						log.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+						return nil, fmt.Errorf("NSEC verify failed")
 					}
-
 					parentdsrr = []dns.RR{}
-				} else {
-					nsecSet := extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeNSEC)
-					if len(nsecSet) > 0 {
-						if !verifyNSEC(q, nsecSet) {
-							log.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
-							return nil, fmt.Errorf("NSEC verify failed")
-						}
-						parentdsrr = []dns.RR{}
-					}
 				}
 			}
 		}
@@ -323,11 +323,16 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return resp, errParentDetection
 		}
 
-		key := cache.Hash(q, req.CheckingDisabled)
+		cd := req.CheckingDisabled
+		if len(parentdsrr) == 0 {
+			cd = true
+		}
+
+		key := cache.Hash(q, cd)
 
 		nCache, err := r.Ncache.Get(key)
 		if err == nil {
-			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
+			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 
 			if r.equalServers(nCache.Servers, servers) {
 				//it may loop, lets continue with fast depth.
@@ -343,17 +348,13 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return r.Resolve(ctx, proto, req, nCache.Servers, false, depth, nlevel, nsl, nCache.DSRR)
 		}
 
-		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q))
+		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
 		authservers := &authcache.AuthServers{}
 
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
 				name := strings.ToLower(extra.Header().Name)
-				if nsl && strings.EqualFold(name, minReq.Question[0].Name) && extra.A.String() != "" {
-					resp.Answer = append(resp.Answer, extra)
-					return resp, nil
-				}
 
 				if _, ok := nsmap[name]; ok {
 					addr := extra.A.String()
@@ -377,11 +378,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				r.Ncache.Set(key, parentdsrr, authservers)
 			}
 
-			cd := false
-			if req.CheckingDisabled || len(parentdsrr) == 0 {
-				cd = true
-			}
-
 			//non extra rr for some nameservers, try lookup
 			var wg sync.WaitGroup
 
@@ -391,22 +387,20 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 					go func(name string) {
 						defer wg.Done()
 
-						addr, err := r.lookupNSAddr(ctx, proto, name, cd)
+						addrs, err := r.lookupNSAddr(ctx, proto, name, cd)
 						if err != nil {
 							log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 							return
 						}
 
-						if isLocalIP(addr) {
-							return
-						}
-
-						if net.ParseIP(addr).IsLoopback() {
+						if len(addrs) == 0 {
 							return
 						}
 
 						authservers.Lock()
-						authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
+						for _, addr := range addrs {
+							authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
+						}
 						authservers.Unlock()
 					}(name)
 				}
@@ -423,9 +417,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return nil, errors.New("nameservers are not reachable")
 		}
 
-		//final cache
+		// final cache
 		r.Ncache.Set(key, parentdsrr, authservers)
-		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q))
+		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
 		depth--
 
@@ -484,7 +478,6 @@ mainloop:
 	for index, server := range servers.List {
 		resp, err = r.exchange(ctx, server, req, c)
 		if err != nil {
-
 			fatalServers = append(fatalServers, index)
 			atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
 
@@ -590,8 +583,18 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	ns, err := r.Ncache.Get(key)
 
 	if err == nil {
-		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q))
+		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 		return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
+	}
+
+	if !cd {
+		key := cache.Hash(q, true)
+		ns, err := r.Ncache.Get(key)
+
+		if err == nil && len(ns.DSRR) == 0 {
+			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
+			return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
+		}
 	}
 
 	next, end := dns.NextLabel(q.Name, 0)
@@ -695,7 +698,7 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	return dsres, nil
 }
 
-func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string, cd bool) (addr string, err error) {
+func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS address", "qname", qname)
 
 	nsReq := new(dns.Msg)
@@ -707,7 +710,7 @@ func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string,
 	key := cache.Hash(nsReq.Question[0], cd)
 
 	if c := r.lqueue.Get(key); c != nil {
-		return "", fmt.Errorf("nameserver address lookup failed for %s (like loop?)", qname)
+		return addrs, fmt.Errorf("nameserver address lookup failed for %s (like loop?)", qname)
 	}
 
 	r.lqueue.Add(key)
@@ -722,7 +725,7 @@ func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string,
 	}
 
 	if err != nil {
-		return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
+		return addrs, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
 	}
 
 	if nsres.Truncated && proto == "udp" {
@@ -736,16 +739,16 @@ func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string,
 		if len(r.fallbackservers.List) > 0 {
 			nsres, err = r.lookup(ctx, proto, nsReq, r.fallbackservers, 0)
 			if err != nil {
-				return addr, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
+				return addrs, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
 			}
 		}
 	}
 
-	if addr, ok := searchAddr(nsres); ok {
-		return addr, nil
+	if addrs, ok := searchAddrs(nsres); ok {
+		return addrs, nil
 	}
 
-	return addr, fmt.Errorf("nameserver address lookup failed for %s (no answer)", qname)
+	return addrs, fmt.Errorf("nameserver address lookup failed for %s (no answer)", qname)
 }
 
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {

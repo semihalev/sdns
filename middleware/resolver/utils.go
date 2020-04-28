@@ -59,15 +59,21 @@ func shuffleStr(vals []string) []string {
 	return ret
 }
 
-func searchAddr(msg *dns.Msg) (addr string, found bool) {
-
+func searchAddrs(msg *dns.Msg) (addrs []string, found bool) {
 	found = false
-	for _, ans := range msg.Answer {
 
+	for _, ans := range msg.Answer {
 		if arec, ok := ans.(*dns.A); ok {
-			addr = arec.A.String()
+			if isLocalIP(arec.A.String()) {
+				continue
+			}
+
+			if net.ParseIP(arec.A.String()).IsLoopback() {
+				continue
+			}
+
+			addrs = append(addrs, arec.A.String())
 			found = true
-			break
 		}
 	}
 
