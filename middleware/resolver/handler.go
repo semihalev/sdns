@@ -157,7 +157,14 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	if q.Name != rootzone {
 		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
 		ns, err := h.resolver.AuthCache().Get(nsKey)
-		if err == nil {
+		if err != nil {
+			nsKey = cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, !msg.CheckingDisabled)
+			ns, err := h.resolver.AuthCache().Get(nsKey)
+			if err == nil {
+				servers = ns.Servers
+				name = q.Name
+			}
+		} else {
 			servers = ns.Servers
 			name = q.Name
 		}
