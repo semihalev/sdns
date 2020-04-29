@@ -779,6 +779,8 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	key := cache.Hash(nsReq.Question[0], cd)
 
+	r.lqueue.Wait(key)
+
 	if c := r.lqueue.Get(key); c != nil {
 		// loop stop here
 		return addrs, nil
