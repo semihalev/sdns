@@ -1,6 +1,7 @@
 package accesslist
 
 import (
+	"context"
 	"testing"
 
 	"github.com/semihalev/log"
@@ -24,11 +25,13 @@ func Test_Accesslist(t *testing.T) {
 
 	dc := ctx.New([]ctx.Handler{})
 
+	ctxb := context.Background()
+
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
-	a.ServeDNS(dc)
+	a.ServeDNS(ctxb, dc)
 
 	mw = mock.NewWriter("udp", "0.0.0.0:0")
 	dc.DNSWriter = mw
-	a.ServeDNS(dc)
+	a.ServeDNS(ctxb, dc)
 }

@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"hash/fnv"
 	"net"
 	"sync/atomic"
@@ -49,19 +50,19 @@ func New(cfg *config.Config) *RateLimit {
 func (r *RateLimit) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (r *RateLimit) ServeDNS(dc *ctx.Context) {
+func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	if r.rate == 0 {
-		dc.NextDNS()
+		dc.NextDNS(ctx)
 		return
 	}
 
 	if w.RemoteIP() == nil {
-		dc.NextDNS()
+		dc.NextDNS(ctx)
 		return
 	} else if w.RemoteIP().IsLoopback() {
-		dc.NextDNS()
+		dc.NextDNS(ctx)
 		return
 	}
 
@@ -79,7 +80,7 @@ func (r *RateLimit) ServeDNS(dc *ctx.Context) {
 					servercookie = dnsutil.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
 
 					if cachedcookie == "" || cachedcookie == option.String() {
-						dc.NextDNS()
+						dc.NextDNS(ctx)
 
 						l.cookie.Store(servercookie)
 						return
@@ -110,7 +111,7 @@ func (r *RateLimit) ServeDNS(dc *ctx.Context) {
 		return
 	}
 
-	dc.NextDNS()
+	dc.NextDNS(ctx)
 
 	if servercookie != "" {
 		l.cookie.Store(servercookie)

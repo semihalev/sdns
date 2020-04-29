@@ -1,6 +1,7 @@
 package accesslog
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -37,18 +38,18 @@ func Test_accesslog(t *testing.T) {
 
 	dc.DNSWriter.WriteMsg(resp)
 
-	a.ServeDNS(dc)
+	a.ServeDNS(context.Background(), dc)
 
 	assert.Equal(t, dns.RcodeServerFailure, mw.Msg().Rcode)
 
 	resp.CheckingDisabled = true
-	a.ServeDNS(dc)
+	a.ServeDNS(context.Background(), dc)
 
 	assert.True(t, resp.CheckingDisabled)
 
 	assert.NoError(t, a.logFile.Close())
 
-	a.ServeDNS(dc)
+	a.ServeDNS(context.Background(), dc)
 
 	assert.NoError(t, os.Remove(cfg.AccessLog))
 }

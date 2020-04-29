@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"context"
+
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
@@ -39,8 +41,8 @@ func New(cfg *config.Config) *Metrics {
 func (m *Metrics) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (m *Metrics) ServeDNS(dc *ctx.Context) {
-	dc.NextDNS()
+func (m *Metrics) ServeDNS(ctx context.Context, dc *ctx.Context) {
+	dc.NextDNS(ctx)
 
 	if !dc.DNSWriter.Written() {
 		return

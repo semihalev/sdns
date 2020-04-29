@@ -1,6 +1,7 @@
 package blocklist
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -37,19 +38,19 @@ func Test_BlockList(t *testing.T) {
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 
-	blocklist.ServeDNS(dc)
+	blocklist.ServeDNS(context.Background(), dc)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
 
 	req.SetQuestion("test.com.", dns.TypeAAAA)
 	dc.DNSRequest = req
 
-	blocklist.ServeDNS(dc)
+	blocklist.ServeDNS(context.Background(), dc)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("test2.com.", dns.TypeA)
-	blocklist.ServeDNS(dc)
+	blocklist.ServeDNS(context.Background(), dc)
 	assert.Nil(t, mw.Msg())
 
 	assert.Equal(t, blocklist.Exists(testDomain), true)

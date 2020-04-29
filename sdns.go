@@ -32,11 +32,15 @@ var (
 	// ConfigPath returns the configuration path
 	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
 
+	// VersionFlag returns of the flag of version
+	VersionFlag = flag.Bool("v", false, "version information")
+
 	// Usage return print usage information
 	Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "OPTIONS:")
 		flag.PrintDefaults()
+		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "USAGE:")
 		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.toml")
 		fmt.Fprintln(os.Stderr, "")
@@ -67,10 +71,6 @@ func setup() {
 		Config.Timeout.Duration = 250 * time.Millisecond
 	}
 
-	if Config.ConnectTimeout.Duration < 250*time.Millisecond {
-		Config.ConnectTimeout.Duration = 250 * time.Millisecond
-	}
-
 	if Config.CacheSize < 1024 {
 		Config.CacheSize = 1024
 	}
@@ -96,6 +96,11 @@ func run() {
 
 func main() {
 	flag.Parse()
+
+	if *VersionFlag {
+		println("SDNS v" + Version)
+		os.Exit(0)
+	}
 
 	log.Info("Starting sdns...", "version", Version)
 

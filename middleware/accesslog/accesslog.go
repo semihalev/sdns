@@ -1,6 +1,7 @@
 package accesslog
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"strings"
@@ -47,8 +48,8 @@ func New(cfg *config.Config) *AccessLog {
 func (a *AccessLog) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (a *AccessLog) ServeDNS(dc *ctx.Context) {
-	dc.NextDNS()
+func (a *AccessLog) ServeDNS(ctx context.Context, dc *ctx.Context) {
+	dc.NextDNS(ctx)
 
 	w := dc.DNSWriter
 

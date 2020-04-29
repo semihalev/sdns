@@ -35,7 +35,6 @@ func TestMain(m *testing.M) {
 	Config.Maxdepth = 30
 	Config.Expire = 600
 	Config.Timeout.Duration = 2 * time.Second
-	Config.ConnectTimeout.Duration = 2 * time.Second
 	Config.Nullroute = "0.0.0.0"
 	Config.Nullroutev6 = "0:0:0:0:0:0:0:0"
 	Config.Bind = ":0"

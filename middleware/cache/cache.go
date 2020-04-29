@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -41,6 +42,9 @@ type Cache struct {
 // ResponseWriter implement of ctx.ResponseWriter
 type ResponseWriter struct {
 	ctx.ResponseWriter
+
+	ctx context.Context
+
 	*Cache
 }
 
@@ -77,7 +81,7 @@ func New(cfg *config.Config) *Cache {
 func (c *Cache) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (c *Cache) ServeDNS(dc *ctx.Context) {
+func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	now := c.now().UTC()
@@ -106,7 +110,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		}
 
 		m := i.toMsg(req, now)
-		m = c.additionalAnswer(m)
+		m = c.additionalAnswer(ctx, m)
 
 		w.WriteMsg(m)
 		dc.Abort()
@@ -118,9 +122,9 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		defer c.lqueue.Done(lkey)
 	}
 
-	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
+	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c, ctx: ctx}
 
-	dc.NextDNS()
+	dc.NextDNS(ctx)
 
 	dc.DNSWriter = w
 }
@@ -177,7 +181,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		}
 	}
 
-	res = w.additionalAnswer(res)
+	res = w.additionalAnswer(w.ctx, res)
 
 	return w.ResponseWriter.WriteMsg(res)
 }
@@ -243,7 +247,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	c.set(key, msg, mt, duration)
 }
 
-func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
+func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	if msg.Question[0].Qtype == dns.TypeCNAME {
 		return msg
 	}
@@ -281,7 +285,7 @@ func (c *Cache) additionalAnswer(msg *dns.Msg) *dns.Msg {
 		if err == nil {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		} else {
-			respCname, err = dnsutil.ExchangeInternal("udp", cnameReq)
+			respCname, err = dnsutil.ExchangeInternal(ctx, "udp", cnameReq)
 			if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 				target, child = searchAdditionalAnswer(msg, respCname)
 				if target == msg.Question[0].Name {

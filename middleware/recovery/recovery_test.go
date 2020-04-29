@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -28,13 +29,13 @@ func Test_recoveryDNS(t *testing.T) {
 
 	assert.Equal(t, "recovery", r.Name())
 
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
 
 	assert.Equal(t, dns.RcodeServerFailure, mw.Msg().Rcode)
 
 	dc = ctx.New([]ctx.Handler{r})
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
 
 	os.Stderr = stderr
 }

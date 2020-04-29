@@ -4,7 +4,6 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 )
@@ -29,8 +28,6 @@ var (
 
 // Register a middleware
 func Register(name string, new func(*config.Config) ctx.Handler) {
-	log.Info("Register middleware", "name", name, "index", len(m.handlers))
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.handlers = append(m.handlers, handler{name: name, new: new})

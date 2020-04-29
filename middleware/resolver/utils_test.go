@@ -42,7 +42,7 @@ func Test_searchAddr(t *testing.T) {
 	m.Extra = []dns.RR{}
 	assert.Equal(t, isDO(m), false)
 
-	a := &dns.A{
+	a1 := &dns.A{
 		Hdr: dns.RR_Header{
 			Name:   testDomain,
 			Rrtype: dns.TypeA,
@@ -50,10 +50,24 @@ func Test_searchAddr(t *testing.T) {
 			Ttl:    10,
 		},
 		A: net.ParseIP("127.0.0.1")}
-	m.Answer = append(m.Answer, a)
 
-	addr, found := searchAddr(m)
-	assert.Equal(t, addr, "127.0.0.1")
+	m.Answer = append(m.Answer, a1)
+
+	a2 := &dns.A{
+		Hdr: dns.RR_Header{
+			Name:   testDomain,
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    10,
+		},
+		A: net.ParseIP("192.0.2.1")}
+
+	m.Answer = append(m.Answer, a2)
+
+	addrs, found := searchAddrs(m)
+	assert.Equal(t, len(addrs), 1)
+	assert.NotEqual(t, addrs[0], "127.0.0.1")
+	assert.Equal(t, addrs[0], "192.0.2.1")
 	assert.Equal(t, found, true)
 }
 

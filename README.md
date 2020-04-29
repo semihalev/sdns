@@ -1,14 +1,12 @@
-## :rocket: Privacy important, fast recursive dns server with dnssec support
-
 [![Travis](https://img.shields.io/travis/semihalev/sdns.svg?style=flat-square)](https://travis-ci.org/semihalev/sdns)
 [![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
 [![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
 [![GitHub version](https://badge.fury.io/gh/semihalev%2Fsdns.svg)](https://github.com/semihalev/sdns/releases)
 
-Inspired by [coredns/coredns](https://github.com/coredns/coredns), [looterz/grimd](https://github.com/looterz/grimd)
+## :rocket: Privacy important, fast recursive dns resolver server with dnssec support
 
-<img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="300">
+<img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="250">
 
 ## Installation
 
@@ -52,7 +50,7 @@ $ make test
 ## Debug Environment
 
 ```shell
-$ SDNS_DEBUGNS=true && SDNS_PPROF=true ./sdns
+$ export SDNS_DEBUGNS=true && export SDNS_PPROF=true && ./sdns
 ```
 
 DEBUGNS enviroment useful when you check authoritive servers RTT times. 
@@ -161,6 +159,7 @@ $ dig hinfo .
 -   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] Full IPv6 support (server&lt;->server communication)
 -   [x] Query name minimization to improve privacy described at RFC 7816
+-   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
 
 ## Contributing
 
@@ -171,6 +170,10 @@ Please make sure to update tests as appropriate.
 ## :hearts: Made With
 
 -   [miekg/dns](https://github.com/miekg/dns) - Alternative (more granular) approach to a DNS library
+
+## Inspired by 
+-   [coredns/coredns](https://github.com/coredns/coredns)
+-   [looterz/grimd](https://github.com/looterz/grimd)
 
 ## License
 
