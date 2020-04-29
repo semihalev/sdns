@@ -17,8 +17,8 @@ import (
 
 // DNSHandler type
 type DNSHandler struct {
-	r   *Resolver
-	cfg *config.Config
+	resolver *Resolver
+	cfg      *config.Config
 }
 
 var debugns bool
@@ -34,8 +34,8 @@ func init() {
 // New returns a new Handler
 func New(cfg *config.Config) *DNSHandler {
 	return &DNSHandler{
-		r:   NewResolver(cfg),
-		cfg: cfg,
+		resolver: NewResolver(cfg),
+		cfg:      cfg,
 	}
 }
 
@@ -79,7 +79,7 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	log.Debug("Lookup", "net", proto, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
 
 	depth := h.cfg.Maxdepth
-	resp, err := h.r.Resolve(ctx, proto, req, h.r.rootservers, true, depth, 0, false, nil)
+	resp, err := h.resolver.Resolve(ctx, proto, req, h.resolver.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
@@ -150,13 +150,13 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.Authoritative = false
 	msg.RecursionAvailable = true
 
-	servers := h.r.rootservers
+	servers := h.resolver.rootservers
 	ttl := uint32(20)
 	name := rootzone
 
 	if q.Name != rootzone {
 		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
-		ns, err := h.r.Ncache.Get(nsKey)
+		ns, err := h.resolver.AuthCache().Get(nsKey)
 		if err == nil {
 			servers = ns.Servers
 			name = q.Name

@@ -22,7 +22,7 @@ import (
 
 // Resolver type
 type Resolver struct {
-	Ncache *authcache.NSCache
+	ncache *authcache.NSCache
 
 	lqueue *lqueue.LQueue
 	cfg    *config.Config
@@ -50,7 +50,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 		cfg:    cfg,
 		lqueue: lqueue.New(),
 
-		Ncache: authcache.NewNSCache(),
+		ncache: authcache.NewNSCache(),
 
 		rootservers:     new(authcache.AuthServers),
 		root6servers:    new(authcache.AuthServers),
@@ -227,7 +227,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		key := cache.Hash(q, cd)
 
-		ncache, err := r.Ncache.Get(key)
+		ncache, err := r.ncache.Get(key)
 		if err == nil {
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 
@@ -272,7 +272,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		if len(nss) > len(authservers.List) {
 			if len(authservers.List) > 0 {
 				// temprorary cache before lookup
-				r.Ncache.Set(key, parentdsrr, authservers)
+				r.ncache.Set(key, parentdsrr, authservers)
 			}
 
 			// no extra rr for some nameservers, try lookup
@@ -312,7 +312,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return nil, errors.New("nameservers are not reachable")
 		}
 
-		r.Ncache.Set(key, parentdsrr, authservers)
+		r.ncache.Set(key, parentdsrr, authservers)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
 		depth--
@@ -602,7 +602,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	q.Qtype = dns.TypeNS // we should search NS type in cache
 	key := cache.Hash(q, cd)
 
-	ns, err := r.Ncache.Get(key)
+	ns, err := r.ncache.Get(key)
 
 	if err == nil {
 		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
@@ -611,7 +611,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 
 	if !cd {
 		key := cache.Hash(q, true)
-		ns, err := r.Ncache.Get(key)
+		ns, err := r.ncache.Get(key)
 
 		if err == nil && len(ns.DSRR) == 0 {
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
@@ -1021,4 +1021,9 @@ func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
 	}
 
 	return resp
+}
+
+// AuthCache returns nscache
+func (r *Resolver) AuthCache() *authcache.NSCache {
+	return r.ncache
 }
