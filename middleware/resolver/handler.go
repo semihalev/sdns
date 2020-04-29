@@ -3,7 +3,6 @@ package resolver
 import (
 	"context"
 	"os"
-	"time"
 
 	"github.com/semihalev/sdns/middleware"
 
@@ -43,18 +42,15 @@ func New(cfg *config.Config) *DNSHandler {
 func (h *DNSHandler) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
+func (h *DNSHandler) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	msg := h.handle(dc.Context, w.Proto(), req)
+	msg := h.handle(ctx, w.Proto(), req)
 
 	w.WriteMsg(msg)
 }
 
 func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dns.Msg {
-	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.Timeout.Duration))
-	defer cancel()
-
 	q := req.Question[0]
 
 	do := false

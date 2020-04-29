@@ -65,10 +65,10 @@ func Test_searchAddr(t *testing.T) {
 	m.Answer = append(m.Answer, a2)
 
 	addrs, found := searchAddrs(m)
-	assert.Equal(t, addrs, 1)
+	assert.Equal(t, len(addrs), 1)
 	assert.NotEqual(t, addrs[0], "127.0.0.1")
-	assert.Equal(t, addrs[0], "192.0.1.")
-	assert.Equal(t, found, false)
+	assert.Equal(t, addrs[0], "192.0.2.1")
+	assert.Equal(t, found, true)
 }
 
 func Test_extractRRSet(t *testing.T) {

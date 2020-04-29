@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -35,12 +36,12 @@ func Test_RateLimit(t *testing.T) {
 
 	mw := mock.NewWriter("udp", "")
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
 
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
+	r.ServeDNS(context.Background(), dc)
 	if assert.True(t, mw.Written()) {
 		assert.Equal(t, dns.RcodeBadCookie, mw.Rcode())
 	}
@@ -53,31 +54,31 @@ func Test_RateLimit(t *testing.T) {
 
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("tcp", "10.0.0.2:0")
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
+	r.ServeDNS(context.Background(), dc)
 	assert.False(t, mw.Written())
 
 	opt.Option = nil
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
+	r.ServeDNS(context.Background(), dc)
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("udp", "0.0.0.0:0")
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
 
 	r.rate = 0
 
-	r.ServeDNS(dc)
+	r.ServeDNS(context.Background(), dc)
 }

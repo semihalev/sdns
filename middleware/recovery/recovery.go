@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -32,7 +33,7 @@ func New(cfg *config.Config) *Recovery {
 func (r *Recovery) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (r *Recovery) ServeDNS(dc *ctx.Context) {
+func (r *Recovery) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			dc.DNSWriter.WriteMsg(dnsutil.HandleFailed(dc.DNSRequest, dns.RcodeServerFailure, false))
@@ -44,7 +45,7 @@ func (r *Recovery) ServeDNS(dc *ctx.Context) {
 		}
 	}()
 
-	dc.NextDNS()
+	dc.NextDNS(ctx)
 }
 
 const name = "recovery"

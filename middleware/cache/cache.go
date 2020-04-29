@@ -81,7 +81,7 @@ func New(cfg *config.Config) *Cache {
 func (c *Cache) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (c *Cache) ServeDNS(dc *ctx.Context) {
+func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	now := c.now().UTC()
@@ -110,7 +110,7 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		}
 
 		m := i.toMsg(req, now)
-		m = c.additionalAnswer(dc.Context, m)
+		m = c.additionalAnswer(ctx, m)
 
 		w.WriteMsg(m)
 		dc.Abort()
@@ -122,9 +122,9 @@ func (c *Cache) ServeDNS(dc *ctx.Context) {
 		defer c.lqueue.Done(lkey)
 	}
 
-	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c, ctx: dc.Context}
+	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c, ctx: ctx}
 
-	dc.NextDNS()
+	dc.NextDNS(ctx)
 
 	dc.DNSWriter = w
 }

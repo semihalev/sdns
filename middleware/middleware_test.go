@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"testing"
 
 	"github.com/semihalev/sdns/config"
@@ -10,8 +11,8 @@ import (
 
 type dummy struct{}
 
-func (d *dummy) ServeDNS(dc *ctx.Context) { dc.NextDNS() }
-func (d *dummy) Name() string             { return "dummy" }
+func (d *dummy) ServeDNS(ctx context.Context, dc *ctx.Context) { dc.NextDNS(ctx) }
+func (d *dummy) Name() string                                  { return "dummy" }
 
 func Test_Middleware(t *testing.T) {
 	Register("dummy", func(*config.Config) ctx.Handler {

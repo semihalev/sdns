@@ -1,6 +1,7 @@
 package blocklist
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -43,13 +44,13 @@ func New(cfg *config.Config) *BlockList {
 func (b *BlockList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (b *BlockList) ServeDNS(dc *ctx.Context) {
+func (b *BlockList) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	q := req.Question[0]
 
 	if !b.Exists(strings.ToLower(q.Name)) {
-		dc.NextDNS()
+		dc.NextDNS(ctx)
 		return
 	}
 

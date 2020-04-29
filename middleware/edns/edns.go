@@ -1,6 +1,8 @@
 package edns
 
 import (
+	"context"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
@@ -41,7 +43,7 @@ type ResponseWriter struct {
 }
 
 // ServeDNS implements the Handle interface.
-func (e *EDNS) ServeDNS(dc *ctx.Context) {
+func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	noedns := req.IsEdns0() == nil
@@ -72,7 +74,7 @@ func (e *EDNS) ServeDNS(dc *ctx.Context) {
 		noad:   !req.AuthenticatedData,
 	}
 
-	dc.NextDNS()
+	dc.NextDNS(ctx)
 
 	dc.DNSWriter = w
 }

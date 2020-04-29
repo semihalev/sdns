@@ -143,6 +143,6 @@ func Test_HandlerServe(t *testing.T) {
 
 	dc.ResetDNS(mw, req)
 
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 	assert.Equal(t, true, dc.DNSWriter.Written())
 }

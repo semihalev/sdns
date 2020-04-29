@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -25,12 +26,12 @@ func Test_Metrics(t *testing.T) {
 
 	dc.ResetDNS(mw, req)
 
-	m.ServeDNS(dc)
+	m.ServeDNS(context.Background(), dc)
 	assert.Equal(t, dns.RcodeServerFailure, mw.Rcode())
 
 	dc.DNSWriter.WriteMsg(req)
 	assert.Equal(t, true, dc.DNSWriter.Written())
 
-	m.ServeDNS(dc)
+	m.ServeDNS(context.Background(), dc)
 	assert.Equal(t, dns.RcodeSuccess, mw.Rcode())
 }

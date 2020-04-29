@@ -10,15 +10,13 @@ import (
 // Handler interface
 type Handler interface {
 	Name() string
-	ServeDNS(*Context)
+	ServeDNS(context.Context, *Context)
 }
 
 // Context type
 type Context struct {
 	DNSWriter  ResponseWriter
 	DNSRequest *dns.Msg
-
-	Context context.Context
 
 	handlers []Handler
 	index    int8
@@ -36,10 +34,10 @@ func New(handlers []Handler) *Context {
 }
 
 // NextDNS call next dns middleware
-func (dc *Context) NextDNS() {
+func (dc *Context) NextDNS(ctx context.Context) {
 	dc.index++
 	for s := int8(len(dc.handlers)); dc.index < s; dc.index++ {
-		dc.handlers[dc.index].ServeDNS(dc)
+		dc.handlers[dc.index].ServeDNS(ctx, dc)
 	}
 }
 
@@ -54,5 +52,4 @@ func (dc *Context) ResetDNS(w dns.ResponseWriter, r *dns.Msg) {
 	dc.DNSRequest = r
 
 	dc.index = -1
-	dc.Context = context.Background()
 }

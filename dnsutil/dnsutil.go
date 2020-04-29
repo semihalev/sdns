@@ -212,16 +212,14 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// ExchangeInternal exchange request internal
-func ExchangeInternal(currctx context.Context, proto string, r *dns.Msg) (*dns.Msg, error) {
+// ExchangeInternal exchange dns request internal
+func ExchangeInternal(parentctx context.Context, proto string, r *dns.Msg) (*dns.Msg, error) {
 	w := mock.NewWriter(proto, "127.0.0.255:0")
 
 	dc := ctx.New(middleware.Handlers())
 	dc.ResetDNS(w, r)
 
-	dc.Context = currctx
-
-	dc.NextDNS()
+	dc.NextDNS(parentctx)
 
 	if !w.Written() {
 		return nil, errors.New("no replied any message")

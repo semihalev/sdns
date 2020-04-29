@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"io"
 	l "log"
 	"net/http"
@@ -56,7 +57,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	dc := s.pool.Get().(*ctx.Context)
 
 	dc.ResetDNS(w, r)
-	dc.NextDNS()
+
+	dc.NextDNS(context.Background())
 
 	s.pool.Put(dc)
 }

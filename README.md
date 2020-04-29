@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
 [![GitHub version](https://badge.fury.io/gh/semihalev%2Fsdns.svg)](https://github.com/semihalev/sdns/releases)
 
-## :rocket: Privacy important, fast recursive dns server with dnssec support
+## :rocket: Privacy important, fast recursive dns resolver server with dnssec support
 
 <img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="250">
 
