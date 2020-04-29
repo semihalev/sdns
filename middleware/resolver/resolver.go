@@ -320,7 +320,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				level++
 				return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
 			}
-			return nil, errors.New("nameservers are not reachable")
+			return nil, errors.New("nameservers are unreachable")
 		}
 
 		r.ncache.Set(key, parentdsrr, authservers)
@@ -609,10 +609,11 @@ func (r *Resolver) exchange(ctx context.Context, server *authcache.AuthServer, r
 
 	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil {
-		if strings.Contains(err.Error(), "overflow") && c.Net == "udp" {
+		if c.Net == "udp" && tryTCPWithError(err) {
 			c.Net = "tcp"
 			if len(r.cfg.OutboundIPs) > 0 {
-				c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[0])}
+				index := randInt(0, len(r.cfg.OutboundIPs))
+				c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
 			}
 
 			return r.exchange(ctx, server, req, c)
