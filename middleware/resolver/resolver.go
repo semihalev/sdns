@@ -60,8 +60,8 @@ func NewResolver(cfg *config.Config) *Resolver {
 		root6servers:    new(authcache.AuthServers),
 		fallbackservers: new(authcache.AuthServers),
 
-		ipv4cache: cache.New(1024 * 16),
-		ipv6cache: cache.New(1024 * 16),
+		ipv4cache: cache.New(1024 * 128),
+		ipv6cache: cache.New(1024 * 128),
 	}
 
 	if len(cfg.RootServers) > 0 {
@@ -277,6 +277,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			}
 		}
 
+		// add glue records to cache
 		r.addIPv4Cache(nsipv4)
 
 		if len(nss) > len(authservers.List) {
