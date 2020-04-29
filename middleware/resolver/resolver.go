@@ -31,6 +31,10 @@ type Resolver struct {
 	root6servers    *authcache.AuthServers
 	fallbackservers *authcache.AuthServers
 
+	// glue addrs cache
+	ipv4cache *cache.Cache
+	ipv6cache *cache.Cache
+
 	rootkeys []dns.RR
 }
 
@@ -55,6 +59,9 @@ func NewResolver(cfg *config.Config) *Resolver {
 		rootservers:     new(authcache.AuthServers),
 		root6servers:    new(authcache.AuthServers),
 		fallbackservers: new(authcache.AuthServers),
+
+		ipv4cache: cache.New(1024 * 16),
+		ipv6cache: cache.New(1024 * 16),
 	}
 
 	if len(cfg.RootServers) > 0 {
@@ -201,7 +208,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 					log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 					return nil, err
 				}
-
 				parentdsrr = []dns.RR{}
 			} else {
 				nsecSet := extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeNSEC)
@@ -232,7 +238,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 
 			if r.equalServers(ncache.Servers, servers) {
-				// it may loop, lets continue with fast depth.
+				// it may loop, lets continue fast.
 				depth = depth - 10
 			} else {
 				depth--
@@ -249,6 +255,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		authservers := &authcache.AuthServers{}
 
+		nsipv4 := make(map[string][]string)
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.A); ok {
 				name := strings.ToLower(extra.Header().Name)
@@ -264,10 +271,13 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 						continue
 					}
 
+					nsipv4[name] = append(nsipv4[name], addr)
 					authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
 				}
 			}
 		}
+
+		r.addIPv4Cache(nsipv4)
 
 		if len(nss) > len(authservers.List) {
 			if len(authservers.List) > 0 {
@@ -283,9 +293,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				go func(name string) {
 					defer wg.Done()
 
-					addrs, err := r.lookupNSAddr(ctx, proto, name, cd)
+					addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
 					if err != nil {
-						log.Debug("Lookup NS addr failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+						log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 						return
 					}
 
@@ -333,6 +343,38 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	m.Extra = req.Extra
 
 	return m, nil
+}
+
+func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
+	for name, addrs := range nsipv4 {
+		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA})
+		r.ipv4cache.Add(key, addrs)
+	}
+}
+
+func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
+	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA})
+	if v, ok := r.ipv4cache.Get(key); ok {
+		return v.([]string), ok
+	}
+
+	return []string{}, false
+}
+
+func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
+	for name, addrs := range nsipv6 {
+		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA})
+		r.ipv4cache.Add(key, addrs)
+	}
+}
+
+func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
+	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA})
+	if v, ok := r.ipv6cache.Get(key); ok {
+		return v.([]string), ok
+	}
+
+	return []string{}, false
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
@@ -720,8 +762,13 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	return dsres, nil
 }
 
-func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
-	log.Debug("Lookup NS address", "qname", qname)
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
+	log.Debug("Lookup NS ipv4 address", "qname", qname)
+
+	// first look glue cache
+	if addrs, ok := r.getIPv4Cache(qname); ok {
+		return addrs, nil
+	}
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
@@ -732,7 +779,8 @@ func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string,
 	key := cache.Hash(nsReq.Question[0], cd)
 
 	if c := r.lqueue.Get(key); c != nil {
-		return addrs, fmt.Errorf("nameserver address lookup failed for %s (like loop?)", qname)
+		// loop stop here
+		return addrs, nil
 	}
 
 	r.lqueue.Add(key)
@@ -747,13 +795,13 @@ func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string,
 	}
 
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
+		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
 	}
 
 	if nsres.Truncated && proto == "udp" {
 		// retrying in TCP mode
 		r.lqueue.Done(key)
-		return r.lookupNSAddr(ctx, "tcp", qname, cd)
+		return r.lookupNSAddrV4(ctx, "tcp", qname, cd)
 	}
 
 	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
@@ -761,7 +809,7 @@ func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string,
 		if len(r.fallbackservers.List) > 0 {
 			nsres, err = r.lookup(ctx, proto, nsReq, r.fallbackservers, 0)
 			if err != nil {
-				return addrs, fmt.Errorf("nameserver address lookup failed for %s (%v)", qname, err)
+				return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
 			}
 		}
 	}
@@ -770,7 +818,7 @@ func (r *Resolver) lookupNSAddr(ctx context.Context, proto string, qname string,
 		return addrs, nil
 	}
 
-	return addrs, fmt.Errorf("nameserver address lookup failed for %s (no answer)", qname)
+	return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
 }
 
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
