@@ -296,18 +296,3 @@ func checkExponent(key string) bool {
 
 	return true
 }
-
-func tryTCPWithError(err error) bool {
-	switch t := err.(type) {
-	case *net.OpError:
-		if t.Op == "read" {
-			return true
-		}
-	}
-
-	if strings.Contains(err.Error(), "overflow") {
-		return true
-	}
-
-	return false
-}

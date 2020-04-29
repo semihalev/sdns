@@ -163,7 +163,7 @@ accesslist = [
 hostsfile = ""
 
 # query timeout for dns lookups in duration
-timeout = "2s"
+timeout = "3s"
 
 # connect timeout for dns lookups in duration
 connecttimeout = "2s"

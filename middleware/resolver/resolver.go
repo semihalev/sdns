@@ -514,8 +514,9 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 			Timeout:       r.cfg.ConnectTimeout.Duration,
 		},
 
-		ReadTimeout:  r.cfg.Timeout.Duration,
-		WriteTimeout: r.cfg.Timeout.Duration,
+		// need divide to 2, because try with udp and tcp
+		ReadTimeout:  r.cfg.Timeout.Duration / 2,
+		WriteTimeout: r.cfg.Timeout.Duration / 2,
 	}
 
 	if len(r.cfg.OutboundIPs) > 0 {
@@ -609,7 +610,7 @@ func (r *Resolver) exchange(ctx context.Context, server *authcache.AuthServer, r
 
 	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil {
-		if c.Net == "udp" && tryTCPWithError(err) {
+		if c.Net == "udp" {
 			c.Net = "tcp"
 			if len(r.cfg.OutboundIPs) > 0 {
 				index := randInt(0, len(r.cfg.OutboundIPs))
