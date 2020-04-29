@@ -43,8 +43,6 @@ type Cache struct {
 type ResponseWriter struct {
 	ctx.ResponseWriter
 
-	ctx context.Context
-
 	*Cache
 }
 
@@ -122,7 +120,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		defer c.lqueue.Done(lkey)
 	}
 
-	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c, ctx: ctx}
+	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
 
 	dc.NextDNS(ctx)
 
@@ -181,7 +179,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		}
 	}
 
-	res = w.additionalAnswer(w.ctx, res)
+	res = w.additionalAnswer(context.Background(), res)
 
 	return w.ResponseWriter.WriteMsg(res)
 }
