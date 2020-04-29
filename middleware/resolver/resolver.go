@@ -782,7 +782,12 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	r.lqueue.Wait(key)
 
 	if c := r.lqueue.Get(key); c != nil {
-		// loop stop here
+		// try look cache again
+		if addrs, ok := r.getIPv4Cache(qname); ok {
+			return addrs, nil
+		}
+
+		// loop here stop
 		return addrs, nil
 	}
 
