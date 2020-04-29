@@ -159,6 +159,7 @@ $ dig hinfo .
 -   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] Full IPv6 support (server&lt;->server communication)
 -   [x] Query name minimization to improve privacy described at RFC 7816
+-   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
 
 ## Contributing
 
