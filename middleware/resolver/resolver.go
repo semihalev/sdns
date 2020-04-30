@@ -514,9 +514,8 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 			Timeout:       r.cfg.ConnectTimeout.Duration,
 		},
 
-		// need divide to 2, because try with udp and tcp
-		ReadTimeout:  r.cfg.Timeout.Duration / 2,
-		WriteTimeout: r.cfg.Timeout.Duration / 2,
+		ReadTimeout:  r.cfg.Timeout.Duration,
+		WriteTimeout: r.cfg.Timeout.Duration,
 	}
 
 	if len(r.cfg.OutboundIPs) > 0 {
