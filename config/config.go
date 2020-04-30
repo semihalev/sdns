@@ -163,10 +163,10 @@ accesslist = [
 hostsfile = ""
 
 # query timeout for dns lookups in duration
-timeout = "3s"
+timeout = "2s"
 
 # connect timeout for dns lookups in duration
-connecttimeout = "2s"
+connecttimeout = "1s"
 
 # default cache TTL in seconds
 expire = 600

@@ -506,29 +506,6 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 }
 
 func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
-	c := &dns.Client{
-		Net: proto,
-		Dialer: &net.Dialer{
-			DualStack:     true,
-			FallbackDelay: 100 * time.Millisecond,
-			Timeout:       r.cfg.ConnectTimeout.Duration,
-		},
-
-		ReadTimeout:  r.cfg.Timeout.Duration,
-		WriteTimeout: r.cfg.Timeout.Duration,
-	}
-
-	if len(r.cfg.OutboundIPs) > 0 {
-		index := randInt(0, len(r.cfg.OutboundIPs))
-
-		// port number will automatically chosen
-		if proto == "tcp" {
-			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
-		} else if proto == "udp" {
-			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
-		}
-	}
-
 	responseError := []int{}
 
 	servers.TrySort()
@@ -541,7 +518,7 @@ tryagain:
 
 mainloop:
 	for index, server := range servers.List {
-		resp, err = r.exchange(ctx, server, req, c)
+		resp, err = r.exchange(ctx, proto, server, req)
 		if err != nil {
 			fatalServers = append(fatalServers, index)
 			atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
@@ -552,6 +529,11 @@ mainloop:
 		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseError) {
 			responseError = append(responseError, index)
 			err = nil
+
+			// trusted that error
+			if len(responseError) > 2 {
+				return
+			}
 
 			continue
 		}
@@ -595,11 +577,34 @@ mainloop:
 	panic("looks like no root servers, check your config")
 }
 
-func (r *Resolver) exchange(ctx context.Context, server *authcache.AuthServer, req *dns.Msg, c *dns.Client) (*dns.Msg, error) {
+func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	var resp *dns.Msg
 	var err error
+
+	c := &dns.Client{
+		Net: proto,
+		Dialer: &net.Dialer{
+			DualStack:     true,
+			FallbackDelay: 100 * time.Millisecond,
+			Timeout:       r.cfg.ConnectTimeout.Duration,
+		},
+
+		ReadTimeout:  r.cfg.Timeout.Duration,
+		WriteTimeout: r.cfg.Timeout.Duration,
+	}
+
+	if len(r.cfg.OutboundIPs) > 0 {
+		index := randInt(0, len(r.cfg.OutboundIPs))
+
+		// port number will automatically chosen
+		if proto == "tcp" {
+			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
+		} else if proto == "udp" {
+			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
+		}
+	}
 
 	rtt := r.cfg.Timeout.Duration
 	defer func() {
@@ -609,14 +614,8 @@ func (r *Resolver) exchange(ctx context.Context, server *authcache.AuthServer, r
 
 	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil {
-		if c.Net == "udp" {
-			c.Net = "tcp"
-			if len(r.cfg.OutboundIPs) > 0 {
-				index := randInt(0, len(r.cfg.OutboundIPs))
-				c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
-			}
-
-			return r.exchange(ctx, server, req, c)
+		if proto == "udp" {
+			return r.exchange(ctx, "tcp", server, req)
 		}
 
 		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
@@ -627,7 +626,7 @@ func (r *Resolver) exchange(ctx context.Context, server *authcache.AuthServer, r
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
-		return r.exchange(ctx, server, req, c)
+		return r.exchange(ctx, proto, server, req)
 	}
 
 	return resp, nil
