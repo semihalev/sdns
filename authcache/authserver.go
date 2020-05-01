@@ -12,12 +12,36 @@ type AuthServer struct {
 	Host  string
 	Rtt   int64
 	Count int64
+	Mode  Mode
 }
 
+// Mode type
+type Mode byte
+
+const (
+	// IPv4 mode
+	IPv4 Mode = 0x1
+
+	// IPv6 mode
+	IPv6 Mode = 0x2
+)
+
 // NewAuthServer return a server
-func NewAuthServer(host string) *AuthServer {
+func NewAuthServer(host string, mode Mode) *AuthServer {
 	return &AuthServer{
 		Host: host,
+		Mode: mode,
+	}
+}
+
+func (m Mode) String() string {
+	switch m {
+	case IPv4:
+		return "IPv4"
+	case IPv6:
+		return "IPv6"
+	default:
+		return "Unknown"
 	}
 }
 
@@ -26,7 +50,16 @@ func (a *AuthServer) String() string {
 		a.Count = 1
 	}
 
-	return "host:" + a.Host + " rtt:" + (time.Duration(a.Rtt) / time.Duration(a.Count)).Round(time.Millisecond).String()
+	rtt := (time.Duration(a.Rtt) / time.Duration(a.Count)).Round(time.Millisecond)
+
+	health := "UNKNOWN"
+	if rtt >= time.Second {
+		health = "POOR"
+	} else if rtt != 0 {
+		health = "GOOD"
+	}
+
+	return "host:" + a.Host + " mode:" + a.Mode.String() + " rtt:" + rtt.String() + " health: [" + health + "]"
 }
 
 // AuthServers type

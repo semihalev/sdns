@@ -101,8 +101,9 @@ $ dig hinfo .
 | **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
 | **tlscertificate**  | TLS certificate file path                                                                                                      |
 | **tlsprivatekey**   | TLS private key file path                                                                                                      |
-| **outboundips**     | Outbound ip addresses, if you set multiple, sdns can use random outbound ip address                                            |
-| **rootservers**     | DNS Root servers                                                                                                               |
+| **outboundips**     | Outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address                                        |
+| **outboundip6s**    | Outbound ipv6 addresses, if you set multiple, sdns can use random outbound ipv6 address                                        |
+| **rootservers**     | DNS Root IPv4 servers                                                                                                          |
 | **root6servers**    | DNS Root IPv6 servers                                                                                                          |
 | **rootkeys**        | DNS Root keys for dnssec                                                                                                       |
 | **fallbackservers** | Fallback resolver ip addresses. It uses only for fallback resolving nameservers. Leave blank for disable.                |
@@ -137,7 +138,7 @@ $ dig hinfo .
 -   Middleware Support
 -   RTT priority within listed servers
 -   EDNS Cookie Support (client&lt;->server)
--   Basic IPv6 support (client&lt;->server)
+-   Full IPv6 support (client&lt;->server, server&lt;->server)
 -   Query based ratelimit
 -   IP based ratelimit
 -   Access list
@@ -156,9 +157,9 @@ $ dig hinfo .
 -   [x] RTT optimization
 -   [x] Access list
 -   [x] Periodic priming queries described at RFC 8109
--   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
--   [ ] Full IPv6 support (server&lt;->server communication)
+-   [x] Full IPv6 support (server&lt;->server communication)
 -   [x] Query name minimization to improve privacy described at RFC 7816
+-   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
 
 ## Contributing

@@ -28,8 +28,10 @@ type Resolver struct {
 	cfg    *config.Config
 
 	rootservers     *authcache.AuthServers
-	root6servers    *authcache.AuthServers
 	fallbackservers *authcache.AuthServers
+
+	outboundipv4 []net.IP
+	outboundipv6 []net.IP
 
 	// glue addrs cache
 	ipv4cache *cache.Cache
@@ -37,6 +39,8 @@ type Resolver struct {
 
 	rootkeys []dns.RR
 }
+
+type nameservers map[string]struct{}
 
 var (
 	errMaxDepth        = errors.New("maximum recursion depth for dns tree queried")
@@ -57,48 +61,84 @@ func NewResolver(cfg *config.Config) *Resolver {
 		ncache: authcache.NewNSCache(),
 
 		rootservers:     new(authcache.AuthServers),
-		root6servers:    new(authcache.AuthServers),
 		fallbackservers: new(authcache.AuthServers),
 
 		ipv4cache: cache.New(1024 * 128),
 		ipv6cache: cache.New(1024 * 128),
 	}
 
-	if len(cfg.RootServers) > 0 {
-		r.rootservers = &authcache.AuthServers{}
-		for _, s := range cfg.RootServers {
-			r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s))
-		}
-	}
+	r.parseRootServers(cfg)
+	r.parseFallbackServers(cfg)
+	r.parseOutBoundAddrs(cfg)
 
-	if len(cfg.Root6Servers) > 0 {
-		r.root6servers = &authcache.AuthServers{}
-		for _, s := range cfg.Root6Servers {
-			r.root6servers.List = append(r.root6servers.List, authcache.NewAuthServer(s))
+	r.rootkeys = []dns.RR{}
+	for _, k := range cfg.RootKeys {
+		rr, err := dns.NewRR(k)
+		if err != nil {
+			log.Crit("Root keys invalid", "error", err.Error())
 		}
-	}
-
-	if len(cfg.FallbackServers) > 0 {
-		r.fallbackservers = &authcache.AuthServers{}
-		for _, s := range cfg.FallbackServers {
-			r.fallbackservers.List = append(r.fallbackservers.List, authcache.NewAuthServer(s))
-		}
-	}
-
-	if len(cfg.RootKeys) > 0 {
-		r.rootkeys = []dns.RR{}
-		for _, k := range cfg.RootKeys {
-			rr, err := dns.NewRR(k)
-			if err != nil {
-				log.Crit("Root keys invalid", "error", err.Error())
-			}
-			r.rootkeys = append(r.rootkeys, rr)
-		}
+		r.rootkeys = append(r.rootkeys, rr)
 	}
 
 	go r.run()
 
 	return r
+}
+
+func (r *Resolver) parseRootServers(cfg *config.Config) {
+	r.rootservers = &authcache.AuthServers{}
+
+	for _, s := range cfg.RootServers {
+		host, _, _ := net.SplitHostPort(s)
+
+		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s, authcache.IPv4))
+		}
+	}
+
+	for _, s := range cfg.Root6Servers {
+		host, _, _ := net.SplitHostPort(s)
+
+		if ip := net.ParseIP(host); ip != nil && ip.To16() != nil {
+			r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s, authcache.IPv6))
+		}
+	}
+}
+
+func (r *Resolver) parseFallbackServers(cfg *config.Config) {
+	r.fallbackservers = &authcache.AuthServers{}
+
+	for _, s := range cfg.FallbackServers {
+		host, _, _ := net.SplitHostPort(s)
+
+		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			r.fallbackservers.List = append(r.fallbackservers.List, authcache.NewAuthServer(s, authcache.IPv4))
+		} else if ip != nil && ip.To16() != nil {
+			r.fallbackservers.List = append(r.fallbackservers.List, authcache.NewAuthServer(s, authcache.IPv6))
+		}
+	}
+}
+
+func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
+	for _, s := range cfg.OutboundIPs {
+		if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
+			if isLocalIP(ip.String()) {
+				r.outboundipv4 = append(r.outboundipv4, ip)
+			} else {
+				log.Crit(fmt.Sprintf("%s is not your local ipv4 address, check your config!", ip))
+			}
+		}
+	}
+
+	for _, s := range cfg.OutboundIP6s {
+		if ip := net.ParseIP(s); ip != nil && ip.To16() != nil {
+			if isLocalIP(ip.String()) {
+				r.outboundipv6 = append(r.outboundipv6, ip)
+			} else {
+				log.Crit(fmt.Sprintf("%s is not your local ipv6 address, check your config!", ip))
+			}
+		}
+	}
 }
 
 // Resolve iterate recursively over the domains
@@ -165,7 +205,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		var nsrr *dns.NS
 
-		nss := make(map[string]struct{})
+		nss := make(nameservers)
 		for _, rr := range resp.Ns {
 			if nsrec, ok := rr.(*dns.NS); ok {
 				nsrr = nsrec
@@ -253,37 +293,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		authservers := &authcache.AuthServers{}
-
-		nsipv4 := make(map[string][]string)
-		for _, a := range resp.Extra {
-			if extra, ok := a.(*dns.A); ok {
-				name := strings.ToLower(extra.Header().Name)
-
-				if _, ok := nss[name]; ok {
-					addr := extra.A.String()
-
-					if isLocalIP(addr) {
-						continue
-					}
-
-					if net.ParseIP(addr).IsLoopback() {
-						continue
-					}
-
-					nsipv4[name] = append(nsipv4[name], addr)
-					authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
-				}
-			}
-		}
-
-		// add glue records to cache
-		r.addIPv4Cache(nsipv4)
+		authservers := r.checkGlueRR(resp, nss)
 
 		if len(nss) > len(authservers.List) {
 			if len(authservers.List) > 0 {
 				// temprorary cache before lookup
-				r.ncache.Set(key, parentdsrr, authservers)
+				r.ncache.Set(key, parentdsrr, authservers, time.Minute)
 			}
 
 			// no extra rr for some nameservers, try lookup
@@ -306,7 +321,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 					authservers.Lock()
 					for _, addr := range addrs {
-						authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53")))
+						authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
 					}
 					authservers.Unlock()
 				}(name)
@@ -323,7 +338,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return nil, errors.New("nameservers are unreachable")
 		}
 
-		r.ncache.Set(key, parentdsrr, authservers)
+		r.ncache.Set(key, parentdsrr, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
 		depth--
@@ -344,6 +359,60 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	m.Extra = req.Extra
 
 	return m, nil
+}
+
+func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) *authcache.AuthServers {
+	authservers := &authcache.AuthServers{}
+
+	nsipv6 := make(map[string][]string)
+	for _, a := range resp.Extra {
+		if extra, ok := a.(*dns.AAAA); ok {
+			name := strings.ToLower(extra.Header().Name)
+
+			if _, ok := nss[name]; ok {
+				addr := extra.AAAA.String()
+
+				if isLocalIP(addr) {
+					continue
+				}
+
+				if net.ParseIP(addr).IsLoopback() {
+					continue
+				}
+
+				nsipv6[name] = append(nsipv6[name], addr)
+				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv6))
+			}
+		}
+	}
+
+	nsipv4 := make(map[string][]string)
+	for _, a := range resp.Extra {
+		if extra, ok := a.(*dns.A); ok {
+			name := strings.ToLower(extra.Header().Name)
+
+			if _, ok := nss[name]; ok {
+				addr := extra.A.String()
+
+				if isLocalIP(addr) {
+					continue
+				}
+
+				if net.ParseIP(addr).IsLoopback() {
+					continue
+				}
+
+				nsipv4[name] = append(nsipv4[name], addr)
+				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
+			}
+		}
+	}
+
+	// add glue records to cache
+	r.addIPv4Cache(nsipv4)
+	r.addIPv6Cache(nsipv6)
+
+	return authservers
 }
 
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
@@ -518,6 +587,13 @@ tryagain:
 
 mainloop:
 	for index, server := range servers.List {
+		// before trysort if received any slow server, lets pass this.
+		if server.Rtt >= time.Second.Nanoseconds() && len(servers.List)-2 > index {
+			fatalServers = append(fatalServers, index)
+
+			continue
+		}
+
 		resp, err = r.exchange(ctx, proto, server, req)
 		if err != nil {
 			fatalServers = append(fatalServers, index)
@@ -541,15 +617,10 @@ mainloop:
 		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
 			for _, rr := range resp.Ns {
 				if nsrec, ok := rr.(*dns.NS); ok {
-					check := false
-
 					zLevel := dns.CountLabel(nsrec.Header().Name)
-					if zLevel <= level {
-						check = true
-					}
 
 					// looks invalid configuration, try another server
-					if check {
+					if zLevel <= level {
 						fatalServers = append(fatalServers, index)
 						atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
 
@@ -584,26 +655,10 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	var err error
 
 	c := &dns.Client{
-		Net: proto,
-		Dialer: &net.Dialer{
-			DualStack:     true,
-			FallbackDelay: 100 * time.Millisecond,
-			Timeout:       r.cfg.ConnectTimeout.Duration,
-		},
-
+		Net:          proto,
+		Timeout:      r.cfg.ConnectTimeout.Duration,
 		ReadTimeout:  r.cfg.Timeout.Duration,
 		WriteTimeout: r.cfg.Timeout.Duration,
-	}
-
-	if len(r.cfg.OutboundIPs) > 0 {
-		index := randInt(0, len(r.cfg.OutboundIPs))
-
-		// port number will automatically chosen
-		if proto == "tcp" {
-			c.Dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
-		} else if proto == "udp" {
-			c.Dialer.LocalAddr = &net.UDPAddr{IP: net.ParseIP(r.cfg.OutboundIPs[index])}
-		}
 	}
 
 	rtt := r.cfg.Timeout.Duration
@@ -612,8 +667,11 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		atomic.AddInt64(&server.Count, 1)
 	}()
 
+	c.Dialer = r.getLocalAddr(proto, c.Dialer, server.Mode)
+
 	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil {
+		rtt = time.Second
 		if proto == "udp" {
 			return r.exchange(ctx, "tcp", server, req)
 		}
@@ -630,6 +688,38 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	}
 
 	return resp, nil
+}
+
+func (r *Resolver) getLocalAddr(proto string, d *net.Dialer, mode authcache.Mode) *net.Dialer {
+	if d == nil {
+		d = &net.Dialer{}
+	}
+
+	if mode == authcache.IPv4 {
+		if len(r.outboundipv4) > 0 {
+			index := randInt(0, len(r.outboundipv4))
+
+			// port number will automatically chosen
+			if proto == "tcp" {
+				d.LocalAddr = &net.TCPAddr{IP: r.outboundipv4[index]}
+			} else if proto == "udp" {
+				d.LocalAddr = &net.UDPAddr{IP: r.outboundipv4[index]}
+			}
+		}
+	} else if mode == authcache.IPv6 {
+		if len(r.outboundipv6) > 0 {
+			index := randInt(0, len(r.outboundipv6))
+
+			// port number will automatically chosen
+			if proto == "tcp" {
+				d.LocalAddr = &net.TCPAddr{IP: r.outboundipv6[index]}
+			} else if proto == "udp" {
+				d.LocalAddr = &net.UDPAddr{IP: r.outboundipv6[index]}
+			}
+		}
+	}
+
+	return d
 }
 
 func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers *authcache.AuthServers, parentdsrr []dns.RR, level int) {
@@ -991,6 +1081,10 @@ func (r *Resolver) checkPriming() error {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.cfg.Timeout.Duration))
 	defer cancel()
 
+	if len(r.rootservers.List) == 0 {
+		panic("root servers list empty. check your config file")
+	}
+
 	resp, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 5, 0, false, nil, true)
 	if err != nil {
 		log.Error("root servers update failed", "error", err.Error())
@@ -1007,20 +1101,23 @@ func (r *Resolver) checkPriming() error {
 	}
 
 	if len(resp.Extra) > 0 {
-		var tmpservers, tmp6servers authcache.AuthServers
+		var tmpservers authcache.AuthServers
+
+		// don't want to mixed ip address list, so first ipv6 then ipv4
+		for _, r := range resp.Extra {
+			if r.Header().Rrtype == dns.TypeAAAA {
+				if v6, ok := r.(*dns.AAAA); ok {
+					host := net.JoinHostPort(v6.AAAA.String(), "53")
+					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv6))
+				}
+			}
+		}
 
 		for _, r := range resp.Extra {
 			if r.Header().Rrtype == dns.TypeA {
 				if v4, ok := r.(*dns.A); ok {
 					host := net.JoinHostPort(v4.A.String(), "53")
-					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host))
-				}
-			}
-
-			if r.Header().Rrtype == dns.TypeAAAA {
-				if v6, ok := r.(*dns.AAAA); ok {
-					host := net.JoinHostPort(v6.AAAA.String(), "53")
-					tmp6servers.List = append(tmp6servers.List, authcache.NewAuthServer(host))
+					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv4))
 				}
 			}
 		}
@@ -1031,13 +1128,7 @@ func (r *Resolver) checkPriming() error {
 			r.rootservers.Unlock()
 		}
 
-		if len(tmp6servers.List) > 0 {
-			r.root6servers.Lock()
-			r.root6servers.List = tmp6servers.List
-			r.root6servers.Unlock()
-		}
-
-		if len(tmpservers.List) > 0 || len(tmp6servers.List) > 0 {
+		if len(tmpservers.List) > 0 {
 			log.Debug("Good! root servers update successful")
 
 			return nil

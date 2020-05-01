@@ -128,7 +128,7 @@ func Test_resolverDSDelegate(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	resp, err := r.Resolve(ctx, "udp", req, &authcache.AuthServers{List: []*authcache.AuthServer{authcache.NewAuthServer("202.12.31.53:53")}}, false, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, "udp", req, &authcache.AuthServers{List: []*authcache.AuthServer{authcache.NewAuthServer("202.12.31.53:53", authcache.IPv4)}}, false, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)

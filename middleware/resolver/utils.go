@@ -98,12 +98,7 @@ func findLocalIPAddresses() ([]string, error) {
 				continue
 			}
 
-			v4 := ipnet.IP.To4()
-			if v4 == nil {
-				continue
-			}
-
-			list = append(list, v4.String())
+			list = append(list, ipnet.IP.String())
 		}
 	}
 

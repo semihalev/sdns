@@ -34,6 +34,7 @@ type Config struct {
 	Nullroutev6     string
 	Hostsfile       string
 	OutboundIPs     []string
+	OutboundIP6s    []string
 	Timeout         Duration
 	ConnectTimeout  Duration
 	Expire          uint32
@@ -77,10 +78,15 @@ bind = ":53"
 # tls private key file
 # tlsprivatekey = "server.key"
 
-# outbound ip addresses, if you set multiple, sdns can use random outbound ip address 
-outboundips = []
+# outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address 
+outboundips = [
+]
 
-# root servers
+# outbound ipv6 addresses, if you set multiple, sdns can use random outbound ipv6 address 
+outboundip6s = [
+]
+
+# root zone ipv4 servers
 rootservers = [
 "192.5.5.241:53",
 "198.41.0.4:53",
@@ -97,7 +103,7 @@ rootservers = [
 "202.12.27.33:53"
 ]
 
-# root ipv6 servers
+# root zone ipv6 servers
 root6servers = [
 "[2001:500:2f::f]:53",
 "[2001:503:ba3e::2:30]:53",

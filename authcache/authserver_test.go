@@ -8,7 +8,7 @@ import (
 
 func Test_TrySort(t *testing.T) {
 	s := &AuthServers{
-		List: []*AuthServer{NewAuthServer("0.0.0.0:53"), NewAuthServer("0.0.0.1:53")},
+		List: []*AuthServer{NewAuthServer("0.0.0.0:53", IPv4), NewAuthServer("0.0.0.1:53", IPv4)},
 	}
 
 	for i := int64(0); i < 100; i++ {

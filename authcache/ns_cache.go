@@ -12,6 +12,7 @@ import (
 type NS struct {
 	Servers *AuthServers
 	DSRR    []dns.RR
+	TTL     time.Duration
 
 	ut time.Time
 }
@@ -43,25 +44,32 @@ func (n *NSCache) Get(key uint64) (*NS, error) {
 		return nil, cache.ErrCacheNotFound
 	}
 
-	elapsed := n.now().UTC().Sub(el.(*NS).ut)
+	ns := el.(*NS)
 
-	if elapsed >= maximumTTL {
+	elapsed := n.now().UTC().Sub(ns.ut)
+
+	if elapsed >= ns.TTL {
 		return nil, cache.ErrCacheExpired
 	}
 
-	return el.(*NS), nil
+	return ns, nil
 }
 
 // Set sets a keys value to a NS
-func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers) {
+func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers, ttl time.Duration) {
+	if ttl > maximumTTL {
+		ttl = maximumTTL
+	}
+
 	n.cache.Add(key, &NS{
 		Servers: servers,
 		DSRR:    dsRR,
+		TTL:     ttl,
 		ut:      n.now().UTC().Round(time.Second),
 	})
 }
 
 const (
-	maximumTTL = time.Hour
+	maximumTTL = 12 * time.Hour
 	defaultCap = 1024 * 256
 )
