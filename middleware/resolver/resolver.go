@@ -656,7 +656,6 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 
 	c := &dns.Client{
 		Net:          proto,
-		DialTimeout:  r.cfg.ConnectTimeout.Duration,
 		ReadTimeout:  r.cfg.Timeout.Duration,
 		WriteTimeout: r.cfg.Timeout.Duration,
 	}
@@ -692,7 +691,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 
 func (r *Resolver) getLocalAddr(proto string, d *net.Dialer, mode authcache.Mode) *net.Dialer {
 	if d == nil {
-		d = &net.Dialer{}
+		d = &net.Dialer{Timeout: r.cfg.ConnectTimeout.Duration}
 	}
 
 	if mode == authcache.IPv4 {
