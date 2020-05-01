@@ -582,33 +582,36 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 	servers.RLock()
 	defer servers.RUnlock()
 
-tryagain:
-	fatalServers := []int{}
+	responseErrors := []*dns.Msg{}
+	configErrors := []*dns.Msg{}
+	fatalErrors := []error{}
+
+	ipv6fatals := 0
 
 mainloop:
-	for index, server := range servers.List {
-		// before trysort if received any slow server, lets pass this.
-		if server.Rtt >= time.Second.Nanoseconds() && len(servers.List)-2 > index {
-			fatalServers = append(fatalServers, index)
-
+	for _, server := range servers.List {
+		// ip6 network may down
+		if server.Mode == authcache.IPv6 && ipv6fatals > 2 {
 			continue
 		}
 
 		resp, err = r.exchange(ctx, proto, server, req)
 		if err != nil {
-			fatalServers = append(fatalServers, index)
+			if server.Mode == authcache.IPv6 {
+				ipv6fatals++
+			}
+
+			fatalErrors = append(fatalErrors, err)
 			atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
 
 			continue
 		}
 
 		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseError) {
-			responseError = append(responseError, index)
-			err = nil
+			responseErrors = append(responseErrors, resp)
 
-			// trusted that error
-			if len(responseError) > 2 {
-				return
+			if len(responseErrors) > 2 {
+				break
 			}
 
 			continue
@@ -621,7 +624,7 @@ mainloop:
 
 					// looks invalid configuration, try another server
 					if zLevel <= level {
-						fatalServers = append(fatalServers, index)
+						configErrors = append(configErrors, resp)
 						atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
 
 						continue mainloop
@@ -633,16 +636,16 @@ mainloop:
 		return
 	}
 
-	if len(fatalServers) == len(servers.List) {
-		return
+	if len(responseErrors) > 0 {
+		return responseErrors[0], nil
 	}
 
-	if len(servers.List) > len(fatalServers) {
-		goto tryagain
+	if len(configErrors) > 0 {
+		return configErrors[0], nil
 	}
 
-	if len(servers.List) >= len(responseError) {
-		return
+	if len(fatalErrors) > 0 {
+		return nil, fatalErrors[0]
 	}
 
 	panic("looks like no root servers, check your config")
