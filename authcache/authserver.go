@@ -59,7 +59,7 @@ func (a *AuthServer) String() string {
 		health = "GOOD"
 	}
 
-	return "host:" + a.Host + " mode:" + a.Mode.String() + " rtt:" + rtt.String() + " health: [" + health + "]"
+	return "host:" + a.Host + " mode:" + a.Mode.String() + " rtt:" + rtt.String() + " health:[" + health + "]"
 }
 
 // AuthServers type
@@ -84,6 +84,14 @@ func (s *AuthServers) TrySort() bool {
 			}
 		}
 		sort.Slice(s.List, func(i, j int) bool {
+			if s.List[i].Rtt == 0 {
+				s.List[i].Rtt = 1e3
+			}
+
+			if s.List[j].Rtt == 0 {
+				s.List[j].Rtt = 1e3
+			}
+
 			return s.List[i].Rtt < s.List[j].Rtt
 		})
 		s.Unlock()
