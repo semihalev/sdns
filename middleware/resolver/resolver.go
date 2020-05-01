@@ -656,7 +656,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 
 	c := &dns.Client{
 		Net:          proto,
-		Timeout:      r.cfg.ConnectTimeout.Duration,
+		DialTimeout:  r.cfg.ConnectTimeout.Duration,
 		ReadTimeout:  r.cfg.Timeout.Duration,
 		WriteTimeout: r.cfg.Timeout.Duration,
 	}
