@@ -80,10 +80,6 @@ func Typify(m *dns.Msg, t time.Time) (Type, *dns.OPT) {
 		if m.Question[0].Qtype == dns.TypeAXFR || m.Question[0].Qtype == dns.TypeIXFR {
 			return Meta, opt
 		}
-
-		if m.Question[0].Qtype == dns.TypeDNSKEY && len(m.Answer) == 0 {
-			return NoCache, opt
-		}
 	}
 
 	// If our message contains any expired sigs and we care about that, we should return expired
@@ -106,6 +102,12 @@ func Typify(m *dns.Msg, t time.Time) (Type, *dns.OPT) {
 		}
 		if r.Header().Rrtype == dns.TypeNS {
 			ns++
+		}
+	}
+
+	if !soa && len(m.Question) > 0 {
+		if m.Question[0].Qtype == dns.TypeDNSKEY && len(m.Answer) == 0 {
+			return NoCache, opt
 		}
 	}
 
