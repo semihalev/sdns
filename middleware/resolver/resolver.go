@@ -293,9 +293,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		authservers := r.checkGlueRR(resp, nss)
+		authservers, found := r.checkGlueRR(resp, nss)
 
-		if len(nss) > len(authservers.List) {
+		if len(nss) > found || level > 0 {
 			if len(authservers.List) > 0 {
 				// temprorary cache before lookup
 				r.ncache.Set(key, parentdsrr, authservers, time.Minute)
@@ -361,8 +361,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	return m, nil
 }
 
-func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) *authcache.AuthServers {
+func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthServers, int) {
 	authservers := &authcache.AuthServers{}
+	found := 0
 
 	nsipv6 := make(map[string][]string)
 	for _, a := range resp.Extra {
@@ -402,6 +403,8 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) *authcache.AuthSe
 					continue
 				}
 
+				found++
+
 				nsipv4[name] = append(nsipv4[name], addr)
 				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
 			}
@@ -412,7 +415,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) *authcache.AuthSe
 	r.addIPv4Cache(nsipv4)
 	r.addIPv6Cache(nsipv6)
 
-	return authservers
+	return authservers, found
 }
 
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
@@ -434,7 +437,7 @@ func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
 func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
 	for name, addrs := range nsipv6 {
 		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA})
-		r.ipv4cache.Add(key, addrs)
+		r.ipv6cache.Add(key, addrs)
 	}
 }
 
@@ -669,7 +672,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		atomic.AddInt64(&server.Count, 1)
 	}()
 
-	c.Dialer = r.getLocalAddr(proto, c.Dialer, server.Mode)
+	c.Dialer = r.newDialer(proto, server.Mode)
 
 	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil {
@@ -692,10 +695,8 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	return resp, nil
 }
 
-func (r *Resolver) getLocalAddr(proto string, d *net.Dialer, mode authcache.Mode) *net.Dialer {
-	if d == nil {
-		d = &net.Dialer{Timeout: r.cfg.ConnectTimeout.Duration}
-	}
+func (r *Resolver) newDialer(proto string, mode authcache.Mode) (d *net.Dialer) {
+	d = &net.Dialer{Timeout: r.cfg.ConnectTimeout.Duration}
 
 	if mode == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {
@@ -858,11 +859,6 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv4 address", "qname", qname)
 
-	// first look glue cache
-	if addrs, ok := r.getIPv4Cache(qname); ok {
-		return addrs, nil
-	}
-
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -874,7 +870,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	r.lqueue.Wait(key)
 
 	if c := r.lqueue.Get(key); c != nil {
-		// try look cache again
+		// try look glue cache
 		if addrs, ok := r.getIPv4Cache(qname); ok {
 			return addrs, nil
 		}
@@ -915,6 +911,11 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {
+		return addrs, nil
+	}
+
+	// try look glue cache
+	if addrs, ok := r.getIPv4Cache(qname); ok {
 		return addrs, nil
 	}
 
