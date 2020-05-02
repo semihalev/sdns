@@ -27,6 +27,8 @@ const (
 	OtherError
 	// Expired if sigs expired: don't cache these
 	Expired
+	// NoCache indicates a no cache reply
+	NoCache
 )
 
 var toString = map[Type]string{
@@ -38,6 +40,7 @@ var toString = map[Type]string{
 	Update:     "UPDATE",
 	OtherError: "OTHERERROR",
 	Expired:    "EXPIRED",
+	NoCache:    "NOCACHE",
 }
 
 func (t Type) String() string { return toString[t] }
@@ -76,6 +79,10 @@ func Typify(m *dns.Msg, t time.Time) (Type, *dns.OPT) {
 	if len(m.Question) > 0 {
 		if m.Question[0].Qtype == dns.TypeAXFR || m.Question[0].Qtype == dns.TypeIXFR {
 			return Meta, opt
+		}
+
+		if m.Question[0].Qtype == dns.TypeDNSKEY && len(m.Answer) == 0 {
+			return NoCache, opt
 		}
 	}
 

@@ -185,6 +185,11 @@ func ClearOPT(msg *dns.Msg) *dns.Msg {
 
 // ClearDNSSEC returns cleared RRSIG and NSECx message
 func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
+	// we shouldn't clear RRSIG questions
+	if msg.Question[0].Qtype == dns.TypeRRSIG {
+		return msg
+	}
+
 	answer := make([]dns.RR, len(msg.Answer))
 	copy(answer, msg.Answer)
 

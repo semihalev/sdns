@@ -1029,6 +1029,11 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 		return
 	}
 
+	// we don't need to verify rrsig questions.
+	if resp.Question[0].Qtype == dns.TypeRRSIG {
+		return false, nil
+	}
+
 	if ok, err = verifyRRSIG(keys, resp); err != nil {
 		return
 	}
