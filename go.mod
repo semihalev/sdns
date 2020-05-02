@@ -8,7 +8,7 @@ require (
 	github.com/mattn/go-colorable v0.1.6 // indirect
 	github.com/miekg/dns v1.1.29
 	github.com/onsi/gomega v1.9.0 // indirect
-	github.com/prometheus/client_golang v1.5.1
+	github.com/prometheus/client_golang v1.6.0
 	github.com/semihalev/log v0.0.0-20181102153422-d34e78304e93
 	github.com/stretchr/testify v1.5.1
 	github.com/yl2chen/cidranger v1.0.0
