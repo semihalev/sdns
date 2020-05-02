@@ -320,8 +320,15 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 					}
 
 					authservers.Lock()
+				addrsloop:
 					for _, addr := range addrs {
-						authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
+						host := net.JoinHostPort(addr, "53")
+						for _, s := range authservers.List {
+							if s.Host == host {
+								continue addrsloop
+							}
+						}
+						authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
 					}
 					authservers.Unlock()
 				}(name)
