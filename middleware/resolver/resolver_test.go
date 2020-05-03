@@ -95,7 +95,7 @@ func Test_resolverExponentDNSSEC(t *testing.T) {
 
 	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
 
-	assert.Error(t, err)
+	assert.NoError(t, err)
 }
 
 func Test_resolverDS(t *testing.T) {
