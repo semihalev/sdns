@@ -27,8 +27,7 @@ type Resolver struct {
 	lqueue *lqueue.LQueue
 	cfg    *config.Config
 
-	rootservers     *authcache.AuthServers
-	fallbackservers *authcache.AuthServers
+	rootservers *authcache.AuthServers
 
 	outboundipv4 []net.IP
 	outboundipv6 []net.IP
@@ -60,15 +59,13 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		ncache: authcache.NewNSCache(),
 
-		rootservers:     new(authcache.AuthServers),
-		fallbackservers: new(authcache.AuthServers),
+		rootservers: new(authcache.AuthServers),
 
 		ipv4cache: cache.New(1024 * 128),
 		ipv6cache: cache.New(1024 * 128),
 	}
 
 	r.parseRootServers(cfg)
-	r.parseFallbackServers(cfg)
 	r.parseOutBoundAddrs(cfg)
 
 	r.rootkeys = []dns.RR{}
@@ -101,20 +98,6 @@ func (r *Resolver) parseRootServers(cfg *config.Config) {
 
 		if ip := net.ParseIP(host); ip != nil && ip.To16() != nil {
 			r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s, authcache.IPv6))
-		}
-	}
-}
-
-func (r *Resolver) parseFallbackServers(cfg *config.Config) {
-	r.fallbackservers = &authcache.AuthServers{}
-
-	for _, s := range cfg.FallbackServers {
-		host, _, _ := net.SplitHostPort(s)
-
-		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
-			r.fallbackservers.List = append(r.fallbackservers.List, authcache.NewAuthServer(s, authcache.IPv4))
-		} else if ip != nil && ip.To16() != nil {
-			r.fallbackservers.List = append(r.fallbackservers.List, authcache.NewAuthServer(s, authcache.IPv6))
 		}
 	}
 }
@@ -896,13 +879,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
-		// try fallback servers
-		if len(r.fallbackservers.List) > 0 {
-			nsres, err = r.lookup(ctx, proto, nsReq, r.fallbackservers, 0)
-		}
-	}
-
-	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
 	}
 
@@ -910,16 +886,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 		// retrying in TCP mode
 		r.lqueue.Done(key)
 		return r.lookupNSAddrV4(ctx, "tcp", qname, cd)
-	}
-
-	if len(nsres.Answer) == 0 && len(nsres.Ns) == 0 {
-		// try fallback servers
-		if len(r.fallbackservers.List) > 0 {
-			nsres, err = r.lookup(ctx, proto, nsReq, r.fallbackservers, 0)
-			if err != nil {
-				return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
-			}
-		}
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {

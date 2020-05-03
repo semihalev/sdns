@@ -18,6 +18,7 @@ func Test_recoveryDNS(t *testing.T) {
 
 	middleware.Setup(nil)
 	r := middleware.Get("recovery").(*Recovery)
+	assert.Equal(t, "recovery", r.Name())
 
 	dc := ctx.New([]ctx.Handler{r, nil})
 
@@ -26,8 +27,6 @@ func Test_recoveryDNS(t *testing.T) {
 	req.SetQuestion("test.com.", dns.TypeA)
 
 	dc.ResetDNS(mw, req)
-
-	assert.Equal(t, "recovery", r.Name())
 
 	r.ServeDNS(context.Background(), dc)
 

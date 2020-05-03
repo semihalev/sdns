@@ -19,6 +19,7 @@ var middlewareList = []string{
 	"blocklist",
 	"accesslog",
 	"cache",
+	"failover",
 	"resolver",
 }
 
