@@ -14,7 +14,7 @@ import (
 )
 
 func Test_Run(t *testing.T) {
-	a := New("")
+	a := New(&config.Config{})
 	a.Run()
 }
 
@@ -34,7 +34,7 @@ func Test_AllAPICalls(t *testing.T) {
 	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
 	blocklist.Set("test.com")
 
-	a := New(":11111")
+	a := New(&config.Config{API: ":11111"})
 	a.Run()
 
 	time.Sleep(time.Second)

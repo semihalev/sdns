@@ -12,6 +12,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
@@ -33,7 +34,7 @@ func init() {
 }
 
 // New return new api
-func New(host string) *API {
+func New(cfg *config.Config) *API {
 	var bl *blocklist.BlockList
 
 	b := middleware.Get("blocklist")
@@ -42,7 +43,7 @@ func New(host string) *API {
 	}
 
 	return &API{
-		host:      host,
+		host:      cfg.API,
 		blocklist: bl,
 	}
 }

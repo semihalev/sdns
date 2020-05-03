@@ -69,13 +69,13 @@ __response__
 {"success":true}
 ```
 
-### GET /api/v1/purge/domain/type?cd=(true|false)
+### GET /api/v1/purge/domain/type
 
-Purge a cached query. cd argument is checking disabled flag.
+Purge a cached query.
 
 __request__
 
-> curl http://localhost:8080/api/v1/purge/example.com/MX?cd=false
+> curl http://localhost:8080/api/v1/purge/example.com/MX
 
 __response__
 
