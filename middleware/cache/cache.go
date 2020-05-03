@@ -82,12 +82,18 @@ func (c *Cache) Name() string { return name }
 func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	now := c.now().UTC()
-
 	q := req.Question[0]
 
+	// check purge query
+	if q.Qtype == dns.TypeNULL {
+		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
+			c.purge(qname, qtype)
+			dc.NextDNS(ctx)
+			return
+		}
+	}
+
 	key := cache.Hash(q, req.CheckingDisabled)
-	lkey := cache.DomainHash(q, req.CheckingDisabled)
 
 	if q.Name != "." && req.RecursionDesired == false {
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
@@ -96,8 +102,10 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	}
 
 	if !w.Internal() {
-		c.lqueue.Wait(lkey)
+		c.lqueue.Wait(key)
 	}
+
+	now := c.now().UTC()
 
 	i, found := c.get(key, now)
 	if i != nil && found {
@@ -116,8 +124,8 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	}
 
 	if !w.Internal() {
-		c.lqueue.Add(lkey)
-		defer c.lqueue.Done(lkey)
+		c.lqueue.Add(key)
+		defer c.lqueue.Done(key)
 	}
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
@@ -182,6 +190,18 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	res = w.additionalAnswer(context.Background(), res)
 
 	return w.ResponseWriter.WriteMsg(res)
+}
+
+func (c *Cache) purge(qname string, qtype uint16) {
+	q := dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET}
+
+	key := cache.Hash(q, false)
+	c.ncache.Remove(key)
+	c.pcache.Remove(key)
+
+	key = cache.Hash(q, true)
+	c.ncache.Remove(key)
+	c.pcache.Remove(key)
 }
 
 // get returns the entry for a key or an error

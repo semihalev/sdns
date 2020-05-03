@@ -45,6 +45,8 @@ func Test_NSCache(t *testing.T) {
 
 	_, err = nscache.Get(key)
 	assert.Error(t, err)
+
+	nscache.Remove(key)
 }
 
 func BenchmarkNSCache(b *testing.B) {

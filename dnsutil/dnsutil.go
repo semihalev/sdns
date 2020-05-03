@@ -3,6 +3,7 @@ package dnsutil
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -237,6 +238,31 @@ func ExchangeInternal(parentctx context.Context, proto string, r *dns.Msg) (*dns
 	}
 
 	return w.Msg(), nil
+}
+
+// ParsePurgeQuestion can parse query for purge questions
+func ParsePurgeQuestion(req *dns.Msg) (qname string, qtype uint16, ok bool) {
+	if len(req.Question) == 0 {
+		return
+	}
+
+	bstr := strings.TrimSuffix(req.Question[0].Name, ".")
+
+	nbytes, err := base64.StdEncoding.DecodeString(bstr)
+	if err != nil {
+		return
+	}
+
+	q := strings.Split(string(nbytes), ":")
+	if len(q) != 2 {
+		return
+	}
+
+	if qtype, ok = dns.StringToType[q[0]]; !ok {
+		return
+	}
+
+	return q[1], qtype, true
 }
 
 const (

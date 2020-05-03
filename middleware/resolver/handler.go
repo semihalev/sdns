@@ -68,6 +68,22 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 		return h.nsStats(req)
 	}
 
+	// check purge query
+	if q.Qtype == dns.TypeNULL {
+		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
+			if qtype == dns.TypeNS {
+				h.purge(qname)
+			}
+
+			resp := dnsutil.HandleFailed(req, dns.RcodeSuccess, do)
+			txt, _ := dns.NewRR(q.Name + ` 20 IN TXT "cache purged"`)
+
+			resp.Extra = append(resp.Extra, txt)
+
+			return resp
+		}
+	}
+
 	if q.Name != rootzone && req.RecursionDesired == false {
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
@@ -147,15 +163,15 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.RecursionAvailable = true
 
 	servers := h.resolver.rootservers
-	ttl := uint32(20)
+	ttl := uint32(5)
 	name := rootzone
 
 	if q.Name != rootzone {
 		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
-		ns, err := h.resolver.AuthCache().Get(nsKey)
+		ns, err := h.resolver.ncache.Get(nsKey)
 		if err != nil {
 			nsKey = cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, !msg.CheckingDisabled)
-			ns, err := h.resolver.AuthCache().Get(nsKey)
+			ns, err := h.resolver.ncache.Get(nsKey)
 			if err == nil {
 				servers = ns.Servers
 				name = q.Name
@@ -181,6 +197,16 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	servers.RUnlock()
 
 	return msg
+}
+
+func (h *DNSHandler) purge(qname string) {
+	q := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+
+	key := cache.Hash(q, false)
+	h.resolver.ncache.Remove(key)
+
+	key = cache.Hash(q, true)
+	h.resolver.ncache.Remove(key)
 }
 
 const name = "resolver"

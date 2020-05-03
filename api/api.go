@@ -1,14 +1,19 @@
 package api
 
 import (
+	"context"
+	"encoding/base64"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"gopkg.in/gin-contrib/cors.v1"
 )
@@ -28,10 +33,17 @@ func init() {
 }
 
 // New return new api
-func New(host string, blocklist *blocklist.BlockList) *API {
+func New(host string) *API {
+	var bl *blocklist.BlockList
+
+	b := middleware.Get("blocklist")
+	if b != nil {
+		bl = b.(*blocklist.BlockList)
+	}
+
 	return &API{
 		host:      host,
-		blocklist: blocklist,
+		blocklist: bl,
 	}
 }
 
@@ -61,6 +73,20 @@ func (a *API) metrics(c *gin.Context) {
 	promhttp.Handler().ServeHTTP(c.Writer, c.Request)
 }
 
+func (a *API) purge(c *gin.Context) {
+	qtype := strings.ToUpper(c.Param("qtype"))
+	qname := dns.Fqdn(c.Param("qname"))
+
+	bqname := base64.StdEncoding.EncodeToString([]byte(qtype + ":" + qname))
+
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
+
+	dnsutil.ExchangeInternal(context.Background(), "udp", req)
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 // Run API server
 func (a *API) Run() {
 	if a.host == "" {
@@ -82,6 +108,7 @@ func (a *API) Run() {
 		block.GET("/set/:key", a.setBlock)
 	}
 
+	r.GET("/api/v1/purge/:qname/:qtype", a.purge)
 	r.GET("/metrics", a.metrics)
 
 	go func() {

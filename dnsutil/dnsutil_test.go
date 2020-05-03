@@ -2,10 +2,12 @@ package dnsutil
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -180,4 +182,32 @@ func TestExchangeInternal(t *testing.T) {
 	if err == nil {
 		t.Errorf("Test exchange internal should be error")
 	}
+}
+
+func TestParsePurgeQuestion(t *testing.T) {
+	req := new(dns.Msg)
+
+	_, _, ok := ParsePurgeQuestion(req)
+	assert.False(t, ok)
+
+	req.SetQuestion("test.com.", dns.TypeNULL)
+	_, _, ok = ParsePurgeQuestion(req)
+	assert.False(t, ok)
+
+	bstr := base64.StdEncoding.EncodeToString([]byte("test.com."))
+	req.SetQuestion(bstr, dns.TypeNULL)
+	_, _, ok = ParsePurgeQuestion(req)
+	assert.False(t, ok)
+
+	bstr = base64.StdEncoding.EncodeToString([]byte("ff:test.com."))
+	req.SetQuestion(bstr, dns.TypeNULL)
+	_, _, ok = ParsePurgeQuestion(req)
+	assert.False(t, ok)
+
+	bstr = base64.StdEncoding.EncodeToString([]byte("A:test.com."))
+	req.SetQuestion(bstr, dns.TypeNULL)
+	qname, qtype, ok := ParsePurgeQuestion(req)
+	assert.True(t, ok)
+	assert.Equal(t, "test.com.", qname)
+	assert.Equal(t, dns.TypeA, qtype)
 }

@@ -1,7 +1,6 @@
 package authcache
 
 import (
-	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -19,8 +18,6 @@ type NS struct {
 
 // NSCache type
 type NSCache struct {
-	mu sync.RWMutex
-
 	cache *cache.Cache
 
 	now func() time.Time
@@ -67,6 +64,11 @@ func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers, ttl time.
 		TTL:     ttl,
 		ut:      n.now().UTC().Round(time.Second),
 	})
+}
+
+// Remove remove a cache
+func (n *NSCache) Remove(key uint64) {
+	n.cache.Remove(key)
 }
 
 const (

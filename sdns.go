@@ -88,7 +88,7 @@ func run() {
 
 	b := middleware.Get("blocklist")
 
-	api := api.New(Config.API, b.(*blocklist.BlockList))
+	api := api.New(Config.API)
 	api.Run()
 
 	go fetchBlocklists(b.(*blocklist.BlockList))

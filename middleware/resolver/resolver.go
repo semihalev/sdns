@@ -1155,8 +1155,3 @@ func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
 
 	return resp
 }
-
-// AuthCache returns nscache
-func (r *Resolver) AuthCache() *authcache.NSCache {
-	return r.ncache
-}

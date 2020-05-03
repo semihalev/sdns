@@ -31,25 +31,3 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 
 	return h.Sum64()
 }
-
-// DomainHash returns a hash for cache
-func DomainHash(q dns.Question, cd ...bool) uint64 {
-	h := fnv.New64()
-	buf := bytes.NewBuffer(nil)
-
-	if len(cd) > 0 && cd[0] == true {
-		buf.WriteByte(1)
-	}
-
-	for i := range q.Name {
-		c := q.Name[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		buf.WriteByte(c)
-	}
-
-	h.Write(buf.Bytes())
-
-	return h.Sum64()
-}
