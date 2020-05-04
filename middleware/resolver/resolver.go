@@ -694,9 +694,9 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.M
 	d = &net.Dialer{}
 
 	if deadline, ok := ctx.Deadline(); ok {
-		d.Timeout = time.Until(deadline)
+		d.Deadline = deadline
 	} else {
-		d.Timeout = r.cfg.ConnectTimeout.Duration
+		d.Deadline = time.Now().Add(r.cfg.ConnectTimeout.Duration)
 	}
 
 	if mode == authcache.IPv4 {
@@ -882,9 +882,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	r.lqueue.Add(key)
 	defer r.lqueue.Done(key)
-
-	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second))
-	defer cancel()
 
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
