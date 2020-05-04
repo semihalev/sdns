@@ -7,7 +7,6 @@ import (
 	"net"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -290,39 +289,41 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			}
 
 			// no extra rr for some nameservers, try lookup
-			var wg sync.WaitGroup
+			//var wg sync.WaitGroup
 
 			for name := range nss {
-				wg.Add(1)
-				go func(name string) {
-					defer wg.Done()
+				//wg.Add(1)
+				//go func(name string) {
+				//defer wg.Done()
 
-					addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
-					if err != nil {
-						log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-						return
-					}
+				addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+				if err != nil {
+					log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+					//return
+					continue
+				}
 
-					if len(addrs) == 0 {
-						return
-					}
+				if len(addrs) == 0 {
+					//return
+					continue
+				}
 
-					authservers.Lock()
-				addrsloop:
-					for _, addr := range addrs {
-						host := net.JoinHostPort(addr, "53")
-						for _, s := range authservers.List {
-							if s.Host == host {
-								continue addrsloop
-							}
+				authservers.Lock()
+			addrsloop:
+				for _, addr := range addrs {
+					host := net.JoinHostPort(addr, "53")
+					for _, s := range authservers.List {
+						if s.Host == host {
+							continue addrsloop
 						}
-						authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
 					}
-					authservers.Unlock()
-				}(name)
+					authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
+				}
+				authservers.Unlock()
+				//}(name)
 			}
 
-			wg.Wait()
+			//wg.Wait()
 		}
 
 		if len(authservers.List) == 0 {
@@ -573,12 +574,7 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 }
 
 func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
-	responseError := []int{}
-
 	servers.TrySort()
-
-	servers.RLock()
-	defer servers.RUnlock()
 
 	responseErrors := []*dns.Msg{}
 	configErrors := []*dns.Msg{}
@@ -586,54 +582,116 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 
 	ipv6fatals := 0
 
-mainloop:
-	for _, server := range servers.List {
-		// ip6 network may down
-		if server.Mode == authcache.IPv6 && ipv6fatals > 2 {
-			continue
-		}
+	returned := make(chan struct{})
+	defer close(returned)
 
+	// modified version of golang dialParallel func
+	type exchangeResult struct {
+		resp *dns.Msg
+		error
+		server *authcache.AuthServer
+	}
+
+	results := make(chan exchangeResult)
+
+	startRacer := func(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) {
 		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(r.cfg.Timeout.Duration))
 		defer cancel()
 
-		resp, err = r.exchange(ctx, proto, server, req)
-		if err != nil {
-			if server.Mode == authcache.IPv6 {
-				ipv6fatals++
-			}
+		resp, err := r.exchange(ctx, proto, server, req)
 
-			fatalErrors = append(fatalErrors, err)
+		select {
+		case results <- exchangeResult{resp: resp, server: server, error: err}:
+		case <-returned:
+		}
+	}
 
+	servers.RLock()
+	defer servers.RUnlock()
+
+	fallbackTimeout := 250 * time.Millisecond
+
+	// Start the timer for the fallback racer.
+	fallbackTimer := time.NewTimer(fallbackTimeout)
+	defer fallbackTimer.Stop()
+
+	left := len(servers.List)
+
+mainloop:
+	for index, server := range servers.List {
+		// ip6 network may down
+		if server.Mode == authcache.IPv6 && ipv6fatals > 2 {
+			left--
 			continue
 		}
 
-		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseError) {
-			responseErrors = append(responseErrors, resp)
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go startRacer(ctx, proto, server, req)
 
-			if len(responseErrors) > 2 {
-				break
-			}
+	parentloop:
+		for left != 0 {
+			fallbackTimer.Reset(fallbackTimeout)
 
-			continue
-		}
+			select {
+			case <-fallbackTimer.C:
+				if left > 0 && len(servers.List)-1 == index {
+					continue parentloop
+				}
+				continue mainloop
+			case res := <-results:
+				left--
 
-		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
-			for _, rr := range resp.Ns {
-				if nsrec, ok := rr.(*dns.NS); ok {
-					zLevel := dns.CountLabel(nsrec.Header().Name)
+				if res.error != nil {
+					if res.server.Mode == authcache.IPv6 {
+						ipv6fatals++
+					}
 
-					// looks invalid configuration, try another server
-					if zLevel <= level {
-						configErrors = append(configErrors, resp)
-						atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
+					fatalErrors = append(fatalErrors, res.error)
 
-						continue mainloop
+					if left > 0 && len(servers.List)-1 == index {
+						continue parentloop
+					}
+					continue mainloop
+				}
+
+				resp = res.resp
+
+				if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseErrors) {
+					responseErrors = append(responseErrors, resp)
+
+					if len(responseErrors) > 2 {
+						break mainloop
+					}
+
+					if left > 0 && len(servers.List)-1 == index {
+						continue parentloop
+					}
+					continue mainloop
+				}
+
+				if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
+					for _, rr := range resp.Ns {
+						if nsrec, ok := rr.(*dns.NS); ok {
+							zLevel := dns.CountLabel(nsrec.Header().Name)
+
+							// looks invalid configuration, try another server
+							if zLevel <= level {
+								configErrors = append(configErrors, resp)
+								atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
+
+								if left > 0 && len(servers.List)-1 == index {
+									continue parentloop
+								}
+								continue mainloop
+							}
+						}
 					}
 				}
+
+				return resp, nil
 			}
 		}
-
-		return
 	}
 
 	if len(responseErrors) > 0 {
@@ -704,7 +762,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Mode) (d *net.Dialer) {
 	d = &net.Dialer{}
 
-	if deadline, ok := ctx.Deadline(); ok {
+	if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
 		d.Deadline = deadline
 	} else {
 		d.Deadline = time.Now().Add(r.cfg.ConnectTimeout.Duration)
@@ -879,7 +937,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	key := cache.Hash(nsReq.Question[0], cd)
 
-	r.lqueue.Wait(key)
+	//r.lqueue.Wait(key)
 
 	if c := r.lqueue.Get(key); c != nil {
 		// try look glue cache

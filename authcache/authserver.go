@@ -74,25 +74,20 @@ type AuthServers struct {
 func (s *AuthServers) TrySort() bool {
 	atomic.AddInt32(&s.called, 1)
 
-	if atomic.LoadInt32(&s.called)%20 == 0 {
+	if atomic.LoadInt32(&s.called)%10 == 0 {
 		s.Lock()
 		for _, s := range s.List {
-			if s.Count > 0 {
+			rtt := atomic.LoadInt64(&s.Rtt)
+			count := atomic.LoadInt64(&s.Count)
+
+			if count > 0 {
 				// average rtt
-				s.Rtt = s.Rtt / s.Count
-				s.Count = 1
+				atomic.StoreInt64(&s.Rtt, rtt/count)
+				atomic.StoreInt64(&s.Count, 1)
 			}
 		}
 		sort.Slice(s.List, func(i, j int) bool {
-			if s.List[i].Rtt == 0 {
-				s.List[i].Rtt = 1e3
-			}
-
-			if s.List[j].Rtt == 0 {
-				s.List[j].Rtt = 1e3
-			}
-
-			return s.List[i].Rtt < s.List[j].Rtt
+			return atomic.LoadInt64(&s.List[i].Rtt) < atomic.LoadInt64(&s.List[j].Rtt)
 		})
 		s.Unlock()
 		atomic.StoreInt32(&s.called, 0)
