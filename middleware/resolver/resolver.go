@@ -593,6 +593,9 @@ mainloop:
 			continue
 		}
 
+		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(r.cfg.Timeout.Duration))
+		defer cancel()
+
 		resp, err = r.exchange(ctx, proto, server, req)
 		if err != nil {
 			if server.Mode == authcache.IPv6 {
@@ -600,7 +603,6 @@ mainloop:
 			}
 
 			fatalErrors = append(fatalErrors, err)
-			atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
 
 			continue
 		}
@@ -655,23 +657,32 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	var resp *dns.Msg
 	var err error
 
-	c := &dns.Client{
-		Net:          proto,
-		ReadTimeout:  r.cfg.Timeout.Duration,
-		WriteTimeout: r.cfg.Timeout.Duration,
-	}
-
 	rtt := r.cfg.Timeout.Duration
 	defer func() {
 		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
 		atomic.AddInt64(&server.Count, 1)
 	}()
 
+	c := &dns.Client{Net: proto}
 	c.Dialer = r.newDialer(ctx, proto, server.Mode)
 
-	resp, rtt, err = c.Exchange(req, server.Host)
+	co := new(dns.Conn)
+	co.Conn, err = c.Dialer.DialContext(ctx, c.Net, server.Host)
 	if err != nil {
-		rtt = time.Second
+		return nil, err
+	}
+	defer co.Close()
+
+	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
+		// we don't want to finish whole deadline while udp reading
+		c.ReadTimeout = time.Until(d) / 2
+		c.WriteTimeout = time.Until(d) / 2
+
+		co.Conn.SetDeadline(d) // useful for tcp
+	}
+
+	resp, rtt, err = c.ExchangeWithConn(req, co)
+	if err != nil {
 		if proto == "udp" {
 			return r.exchange(ctx, "tcp", server, req)
 		}

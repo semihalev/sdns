@@ -33,12 +33,13 @@ func makeNSEC3(name, next string, optOut bool, types []uint16) *dns.NSEC3 {
 
 func zoneToRecords(t *testing.T, z string) []dns.RR {
 	records := []dns.RR{}
-	tokens := dns.ParseZone(strings.NewReader(z), "", "")
-	for x := range tokens {
-		if x.Error != nil {
-			t.Fatalf("Failed to parse test records: %s", x.Error)
+	tokens := dns.NewZoneParser(strings.NewReader(z), "", "")
+	for x, ok := tokens.Next(); ok; x, ok = tokens.Next() {
+		err := tokens.Err()
+		if err != nil {
+			t.Fatalf("Failed to parse test records: %s", err)
 		}
-		records = append(records, x.RR)
+		records = append(records, x)
 	}
 	return records
 }
