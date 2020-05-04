@@ -172,7 +172,7 @@ hostsfile = ""
 timeout = "2s"
 
 # connect timeout for dns lookups in duration
-connecttimeout = "1s"
+connecttimeout = "2s"
 
 # default cache TTL in seconds
 expire = 600

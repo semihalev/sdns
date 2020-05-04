@@ -15,7 +15,6 @@ import (
 	"github.com/semihalev/sdns/api"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/sdns/server"
 )
 
@@ -24,7 +23,7 @@ var (
 	Config *config.Config
 
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "0.3.4-rc1"
+	Version = "0.3.4"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "0.3.3"
@@ -83,15 +82,17 @@ func setup() {
 func run() {
 	middleware.Setup(Config)
 
+	for i, h := range middleware.Handlers() {
+		log.Debug("Middleware registered", "name", h.Name(), "index", i)
+	}
+
 	server := server.New(Config)
 	server.Run()
-
-	b := middleware.Get("blocklist")
 
 	api := api.New(Config)
 	api.Run()
 
-	go fetchBlocklists(b.(*blocklist.BlockList))
+	go fetchBlocklists()
 }
 
 func main() {

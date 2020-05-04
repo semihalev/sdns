@@ -667,7 +667,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		atomic.AddInt64(&server.Count, 1)
 	}()
 
-	c.Dialer = r.newDialer(proto, server.Mode)
+	c.Dialer = r.newDialer(ctx, proto, server.Mode)
 
 	resp, rtt, err = c.Exchange(req, server.Host)
 	if err != nil {
@@ -690,8 +690,14 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	return resp, nil
 }
 
-func (r *Resolver) newDialer(proto string, mode authcache.Mode) (d *net.Dialer) {
-	d = &net.Dialer{Timeout: r.cfg.ConnectTimeout.Duration}
+func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Mode) (d *net.Dialer) {
+	d = &net.Dialer{}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		d.Timeout = time.Until(deadline)
+	} else {
+		d.Timeout = r.cfg.ConnectTimeout.Duration
+	}
 
 	if mode == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {
@@ -876,6 +882,9 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	r.lqueue.Add(key)
 	defer r.lqueue.Done(key)
+
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second))
+	defer cancel()
 
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
