@@ -9,13 +9,16 @@ import (
 type LQueue struct {
 	mu sync.RWMutex
 
-	delay map[uint64]chan struct{}
+	delay    map[uint64]chan struct{}
+	duration time.Duration
 }
 
 // New func
-func New() *LQueue {
+func New(duration time.Duration) *LQueue {
 	return &LQueue{
 		delay: make(map[uint64]chan struct{}),
+
+		duration: duration,
 	}
 }
 
@@ -39,7 +42,7 @@ func (q *LQueue) Wait(key uint64) {
 		q.mu.RUnlock()
 		select {
 		case <-c:
-		case <-time.After(5 * time.Second): // 5 seconds timeout
+		case <-time.After(q.duration):
 		}
 		return
 	}

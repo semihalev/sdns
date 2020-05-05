@@ -67,7 +67,7 @@ func New(cfg *config.Config) *Cache {
 
 		rate: cfg.RateLimit,
 
-		lqueue: lqueue.New(),
+		lqueue: lqueue.New(2 * time.Second),
 
 		now: time.Now,
 	}

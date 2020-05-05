@@ -57,7 +57,7 @@ const (
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
 		cfg:    cfg,
-		lqueue: lqueue.New(),
+		lqueue: lqueue.New(100 * time.Millisecond),
 
 		ncache: authcache.NewNSCache(),
 
@@ -957,19 +957,21 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	if c := r.lqueue.Get(key); c != nil {
 		for loopCount := 20; loopCount != 0; loopCount-- {
+			r.lqueue.Wait(key)
+
 			if c := r.lqueue.Get(key); c != nil {
 				// try look glue cache
 				if addrs, ok := r.getIPv4Cache(qname); ok {
 					return addrs, nil
 				}
-
-				time.Sleep(100 * time.Millisecond)
+			} else {
+				break
 			}
 		}
 	}
 
 	if c := r.lqueue.Get(key); c != nil {
-		log.Info("Looping during nameserver lookup", "query", formatQuestion(q))
+		log.Debug("Looping during nameserver lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
 
