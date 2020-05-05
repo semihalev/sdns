@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -36,6 +37,8 @@ type Resolver struct {
 	ipv6cache *cache.Cache
 
 	rootkeys []dns.RR
+
+	group singleflight
 }
 
 type nameservers map[string]struct{}
@@ -134,7 +137,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// RFC 7816 query minimization. There are some concerns in RFC.
 	minReq, minimized := r.minimize(req, level)
 
-	resp, err := r.lookup(ctx, proto, minReq, servers, level)
+	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
 	if err != nil {
 		return nil, err
 	}
@@ -289,41 +292,39 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			}
 
 			// no extra rr for some nameservers, try lookup
-			//var wg sync.WaitGroup
+			var wg sync.WaitGroup
 
 			for name := range nss {
-				//wg.Add(1)
-				//go func(name string) {
-				//defer wg.Done()
+				wg.Add(1)
+				go func(name string) {
+					defer wg.Done()
 
-				addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
-				if err != nil {
-					log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-					//return
-					continue
-				}
-
-				if len(addrs) == 0 {
-					//return
-					continue
-				}
-
-				authservers.Lock()
-			addrsloop:
-				for _, addr := range addrs {
-					host := net.JoinHostPort(addr, "53")
-					for _, s := range authservers.List {
-						if s.Host == host {
-							continue addrsloop
-						}
+					addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+					if err != nil {
+						log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+						return
 					}
-					authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
-				}
-				authservers.Unlock()
-				//}(name)
+
+					if len(addrs) == 0 {
+						return
+					}
+
+					authservers.Lock()
+				addrsloop:
+					for _, addr := range addrs {
+						host := net.JoinHostPort(addr, "53")
+						for _, s := range authservers.List {
+							if s.Host == host {
+								continue addrsloop
+							}
+						}
+						authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
+					}
+					authservers.Unlock()
+				}(name)
 			}
 
-			//wg.Wait()
+			wg.Wait()
 		}
 
 		if len(authservers.List) == 0 {
@@ -355,6 +356,21 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	m.Extra = req.Extra
 
 	return m, nil
+}
+
+func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
+	q := req.Question[0]
+
+	key := cache.Hash(q, req.CheckingDisabled)
+	resp, shared, err := r.group.Do(key, func() (*dns.Msg, error) {
+		return r.lookup(ctx, proto, req, servers, level)
+	})
+
+	if resp != nil && shared {
+		resp = resp.Copy()
+	}
+
+	return resp, err
 }
 
 func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthServers, int) {
@@ -935,23 +951,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
-	key := cache.Hash(nsReq.Question[0], cd)
-
-	//r.lqueue.Wait(key)
-
-	if c := r.lqueue.Get(key); c != nil {
-		// try look glue cache
-		if addrs, ok := r.getIPv4Cache(qname); ok {
-			return addrs, nil
-		}
-
-		// loop here stop
-		return addrs, nil
-	}
-
-	r.lqueue.Add(key)
-	defer r.lqueue.Done(key)
-
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
@@ -959,7 +958,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	if nsres.Truncated && proto == "udp" {
 		// retrying in TCP mode
-		r.lqueue.Done(key)
 		return r.lookupNSAddrV4(ctx, "tcp", qname, cd)
 	}
 
