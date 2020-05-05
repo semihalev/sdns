@@ -163,7 +163,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 
 	msgTTL := dnsutil.MinimalTTL(res, mt)
 	var duration time.Duration
-	if mt == response.NameError || mt == response.NoData || mt == response.OtherError {
+	if mt == response.NoData || mt == response.OtherError {
 		duration = computeTTL(msgTTL, w.minnttl, w.nttl)
 	} else {
 		duration = computeTTL(msgTTL, w.minpttl, w.pttl)
@@ -220,11 +220,11 @@ func (c *Cache) get(key uint64, now time.Time) (*item, bool) {
 // set adds a new element to the cache. If the element already exists it is overwritten.
 func (c *Cache) set(key uint64, msg *dns.Msg, mt response.Type, duration time.Duration) {
 	switch mt {
-	case response.NoError, response.Delegation:
+	case response.NoError, response.Delegation, response.NameError:
 		i := newItem(msg, c.now(), duration, c.rate)
 		c.pcache.Add(key, i)
 
-	case response.NameError, response.NoData, response.OtherError:
+	case response.NoData, response.OtherError:
 		i := newItem(msg, c.now(), duration, c.rate)
 		c.ncache.Add(key, i)
 	}
@@ -256,7 +256,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 
 	msgTTL := dnsutil.MinimalTTL(msg, mt)
 	var duration time.Duration
-	if mt == response.NameError || mt == response.NoData || mt == response.OtherError {
+	if mt == response.NoData || mt == response.OtherError {
 		duration = computeTTL(msgTTL, c.minnttl, c.nttl)
 	} else {
 		duration = computeTTL(msgTTL, c.minpttl, c.pttl)
