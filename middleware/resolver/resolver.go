@@ -955,19 +955,14 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	key := cache.Hash(q, cd)
 
-	if c := r.lqueue.Get(key); c != nil {
-		for loopCount := 20; loopCount != 0; loopCount-- {
-			r.lqueue.Wait(key)
+	r.lqueue.Wait(key)
 
-			if c := r.lqueue.Get(key); c != nil {
-				// try look glue cache
-				if addrs, ok := r.getIPv4Cache(qname); ok {
-					return addrs, nil
-				}
-			} else {
-				break
-			}
+	for c, l := r.lqueue.Get(key), 20; c != nil && l != 0; c, l = r.lqueue.Get(key), l-1 {
+		if addrs, ok := r.getIPv4Cache(qname); ok {
+			return addrs, nil
 		}
+
+		r.lqueue.Wait(key)
 	}
 
 	if c := r.lqueue.Get(key); c != nil {
