@@ -295,10 +295,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			var wg sync.WaitGroup
 
 			for name := range nss {
-				//stop loop
-				if name == req.Question[0].Name {
-					continue
-				}
 				wg.Add(1)
 				go func(name string) {
 					defer wg.Done()
