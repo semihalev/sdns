@@ -20,6 +20,8 @@ type DNSHandler struct {
 	cfg      *config.Config
 }
 
+type ctxKey string
+
 var debugns bool
 
 func init() {
@@ -45,6 +47,7 @@ func (h *DNSHandler) Name() string { return name }
 func (h *DNSHandler) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
+	ctx = context.WithValue(ctx, ctxKey("query"), req.Question[0])
 	msg := h.handle(ctx, w.Proto(), req)
 
 	w.WriteMsg(msg)

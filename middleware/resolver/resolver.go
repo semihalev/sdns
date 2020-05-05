@@ -951,7 +951,13 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
-	key := cache.Hash(nsReq.Question[0], cd)
+	q := nsReq.Question[0]
+
+	if v := ctx.Value(ctxKey("query")); v != nil {
+		q = dns.Question{Name: q.Name + ":" + v.(dns.Question).Name, Qtype: dns.TypeNS}
+	}
+
+	key := cache.Hash(q, cd)
 
 	if c := r.lqueue.Get(key); c != nil {
 		// try look glue cache
