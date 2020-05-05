@@ -953,21 +953,23 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	q := nsReq.Question[0]
 
-	if v := ctx.Value(ctxKey("query")); v != nil {
-		q = dns.Question{Name: q.Name + ":" + v.(dns.Question).Name, Qtype: dns.TypeNS}
-	}
-
 	key := cache.Hash(q, cd)
 
-	r.lqueue.Wait(key)
+	if c := r.lqueue.Get(key); c != nil {
+		for loopCount := 20; loopCount != 0; loopCount-- {
+			if c := r.lqueue.Get(key); c != nil {
+				// try look glue cache
+				if addrs, ok := r.getIPv4Cache(qname); ok {
+					return addrs, nil
+				}
+
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}
 
 	if c := r.lqueue.Get(key); c != nil {
-		// try look glue cache
-		if addrs, ok := r.getIPv4Cache(qname); ok {
-			return addrs, nil
-		}
-
-		// loop here stop
+		log.Info("Looping during nameserver lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
 
