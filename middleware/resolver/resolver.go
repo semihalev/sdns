@@ -295,11 +295,15 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			var wg sync.WaitGroup
 
 			for name := range nss {
+				// stop loop
+				if req.Question[0].Name == name {
+					continue
+				}
 				wg.Add(1)
 				go func(name string) {
 					defer wg.Done()
 
-					addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+					addrs, err := r.lookupNSAddrV4(ctx, proto, req.Question[0].Name, name, cd)
 					if err != nil {
 						log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 						return
@@ -748,11 +752,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	defer co.Close()
 
 	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
-		// we don't want to finish whole deadline while udp reading
-		c.ReadTimeout = time.Until(d) / 2
-		c.WriteTimeout = time.Until(d) / 2
-
-		co.Conn.SetDeadline(d) // useful for tcp
+		co.Conn.SetDeadline(d)
 	}
 
 	resp, rtt, err = c.ExchangeWithConn(req, co)
@@ -942,7 +942,7 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	return dsres, nil
 }
 
-func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, oname, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv4 address", "qname", qname)
 
 	nsReq := new(dns.Msg)
@@ -951,9 +951,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
-	key := cache.Hash(nsReq.Question[0], cd)
-
-	//r.lqueue.Wait(key)
+	key := cache.Hash(dns.Question{Name: oname + ":" + qname, Qtype: dns.TypeNS}, cd)
 
 	if c := r.lqueue.Get(key); c != nil {
 		// try look glue cache
@@ -976,7 +974,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	if nsres.Truncated && proto == "udp" {
 		// retrying in TCP mode
 		r.lqueue.Done(key)
-		return r.lookupNSAddrV4(ctx, "tcp", qname, cd)
+		return r.lookupNSAddrV4(ctx, "tcp", oname, qname, cd)
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {
