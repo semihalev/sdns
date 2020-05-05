@@ -951,6 +951,23 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
+	key := cache.Hash(nsReq.Question[0], cd)
+
+	//r.lqueue.Wait(key)
+
+	if c := r.lqueue.Get(key); c != nil {
+		// try look glue cache
+		if addrs, ok := r.getIPv4Cache(qname); ok {
+			return addrs, nil
+		}
+
+		// loop here stop
+		return addrs, nil
+	}
+
+	r.lqueue.Add(key)
+	defer r.lqueue.Done(key)
+
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
@@ -958,6 +975,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	if nsres.Truncated && proto == "udp" {
 		// retrying in TCP mode
+		r.lqueue.Done(key)
 		return r.lookupNSAddrV4(ctx, "tcp", qname, cd)
 	}
 
