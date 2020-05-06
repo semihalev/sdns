@@ -291,7 +291,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		authservers, found := r.checkGlueRR(resp, nss)
 
-		if len(nss) > found || level > 0 {
+		if len(nss) > found {
 			if len(authservers.List) > 0 {
 				// temprorary cache before lookup
 				r.ncache.Set(key, parentdsrr, authservers, time.Minute)
