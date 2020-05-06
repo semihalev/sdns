@@ -289,9 +289,10 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		authservers, found := r.checkGlueRR(resp, nss)
+		authservers, foundv4, _ := r.checkGlueRR(resp, nss)
 
-		if len(nss) > found {
+		//TODO: aaaa lookups needed
+		if len(nss) > len(foundv4) && len(foundv4) < 2 {
 			if len(authservers.List) > 0 {
 				// temprorary cache before lookup
 				r.ncache.Set(key, parentdsrr, authservers, time.Minute)
@@ -301,6 +302,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			var wg sync.WaitGroup
 
 			for name := range nss {
+				if _, ok := foundv4[name]; ok {
+					continue
+				}
 				wg.Add(1)
 				go func(name string) {
 					defer wg.Done()
@@ -379,9 +383,11 @@ func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, 
 	return resp, err
 }
 
-func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthServers, int) {
+func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthServers, nameservers, nameservers) {
 	authservers := &authcache.AuthServers{}
-	found := 0
+
+	foundv4 := make(nameservers)
+	foundv6 := make(nameservers)
 
 	nsipv6 := make(map[string][]string)
 	for _, a := range resp.Extra {
@@ -398,6 +404,8 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 				if net.ParseIP(addr).IsLoopback() {
 					continue
 				}
+
+				foundv6[name] = struct{}{}
 
 				nsipv6[name] = append(nsipv6[name], addr)
 				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv6))
@@ -421,7 +429,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 					continue
 				}
 
-				found++
+				foundv4[name] = struct{}{}
 
 				nsipv4[name] = append(nsipv4[name], addr)
 				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
@@ -433,7 +441,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 	r.addIPv4Cache(nsipv4)
 	r.addIPv6Cache(nsipv6)
 
-	return authservers, found
+	return authservers, foundv4, foundv6
 }
 
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
