@@ -210,7 +210,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		q = dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
-		//TODO (semihalev): Look loops for inferno.demonoid.me
+		if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
+			err = errDSRecords
+			log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+
+			return nil, err
+		}
 		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
 		if err != nil {
 			return nil, err
@@ -1060,7 +1065,9 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 
 	var msg *dns.Msg
 
-	if resp.Question[0].Qtype != dns.TypeDNSKEY {
+	q := resp.Question[0]
+
+	if q.Qtype != dns.TypeDNSKEY || q.Name != signer {
 		msg, err = dnsutil.ExchangeInternal(ctx, proto, keyReq)
 		if err != nil {
 			return
@@ -1070,8 +1077,8 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 			// retrying in TCP mode
 			return r.verifyDNSSEC(ctx, "tcp", signer, signed, resp, parentdsRR)
 		}
-	} else if resp.Question[0].Qtype == dns.TypeDNSKEY {
-		if resp.Question[0].Name == rootzone {
+	} else if q.Qtype == dns.TypeDNSKEY {
+		if q.Name == rootzone {
 			if !r.verifyRootKeys(resp) {
 				return false, fmt.Errorf("root zone keys not verified")
 			}
@@ -1109,7 +1116,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 	}
 
 	// we don't need to verify rrsig questions.
-	if resp.Question[0].Qtype == dns.TypeRRSIG {
+	if q.Qtype == dns.TypeRRSIG {
 		return false, nil
 	}
 
