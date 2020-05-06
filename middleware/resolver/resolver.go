@@ -621,6 +621,10 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 		defer cancel()
 
 		resp, err := r.exchange(ctx, proto, server, req)
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			//retry one more time
+			resp, err = r.exchange(ctx, proto, server, req)
+		}
 
 		select {
 		case results <- exchangeResult{resp: resp, server: server, error: err}:
@@ -757,13 +761,15 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	defer co.Close()
 
 	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
-		c.ReadTimeout = time.Until(d)
-		c.WriteTimeout = time.Until(d)
+		// we will try tcp and udp for two times
+		c.ReadTimeout = time.Until(d) / 4
+		c.WriteTimeout = time.Until(d) / 4
 	}
 
 	resp, rtt, err = c.ExchangeWithConn(req, co)
 	if err != nil {
 		if proto == "udp" {
+			// retry with tcp
 			if d, ok := ctx.Deadline(); ok && time.Until(d).Milliseconds() > 0 {
 				return r.exchange(ctx, "tcp", server, req)
 			}
