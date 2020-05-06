@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/semihalev/sdns/middleware"
 
@@ -92,6 +93,10 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	}
 
 	log.Debug("Lookup", "net", proto, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
+
+	//TODO (semihalev): config setable after this
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
+	defer cancel()
 
 	depth := h.cfg.Maxdepth
 	resp, err := h.resolver.Resolve(ctx, proto, req, h.resolver.rootservers, true, depth, 0, false, nil)

@@ -36,7 +36,6 @@ type Config struct {
 	OutboundIPs     []string
 	OutboundIP6s    []string
 	Timeout         Duration
-	ConnectTimeout  Duration
 	Expire          uint32
 	CacheSize       int
 	Maxdepth        int
@@ -168,11 +167,11 @@ accesslist = [
 # the form of the entries in the /etc/hosts file are based on IETF RFC 952 which was updated by IETF RFC 1123.
 hostsfile = ""
 
-# query timeout for dns lookups in duration
+# query timeout for each dns lookups in duration
 timeout = "2s"
 
-# connect timeout for dns lookups in duration
-connecttimeout = "2s"
+# connect timeout for dns lookups in duration (deprecated, no longer used)
+# connecttimeout = ""
 
 # default cache TTL in seconds
 expire = 600

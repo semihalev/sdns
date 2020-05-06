@@ -651,14 +651,14 @@ mainloop:
 		defer cancel()
 		go startRacer(ctx, proto, server, req)
 
-	parentloop:
+	fallbackloop:
 		for left != 0 {
 			fallbackTimer.Reset(fallbackTimeout)
 
 			select {
 			case <-fallbackTimer.C:
 				if left > 0 && len(servers.List)-1 == index {
-					continue parentloop
+					continue fallbackloop
 				}
 				continue mainloop
 			case res := <-results:
@@ -672,7 +672,7 @@ mainloop:
 					fatalErrors = append(fatalErrors, res.error)
 
 					if left > 0 && len(servers.List)-1 == index {
-						continue parentloop
+						continue fallbackloop
 					}
 					continue mainloop
 				}
@@ -687,7 +687,7 @@ mainloop:
 					}
 
 					if left > 0 && len(servers.List)-1 == index {
-						continue parentloop
+						continue fallbackloop
 					}
 					continue mainloop
 				}
@@ -700,10 +700,13 @@ mainloop:
 							// looks invalid configuration, try another server
 							if zLevel <= level {
 								configErrors = append(configErrors, resp)
+
+								// lets move back this server in the list.
 								atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
+								atomic.AddInt64(&server.Count, 1)
 
 								if left > 0 && len(servers.List)-1 == index {
-									continue parentloop
+									continue fallbackloop
 								}
 								continue mainloop
 							}
@@ -725,7 +728,7 @@ mainloop:
 	}
 
 	if len(fatalErrors) > 0 {
-		return nil, fatalErrors[0]
+		return nil, errors.New("connection failed to upstream servers")
 	}
 
 	panic("looks like no root servers, check your config")
@@ -754,20 +757,20 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	defer co.Close()
 
 	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
-		// we don't want to finish whole deadline while udp reading
-		c.ReadTimeout = time.Until(d) / 2
-		c.WriteTimeout = time.Until(d) / 2
-
-		co.Conn.SetDeadline(d) // useful for tcp
+		c.ReadTimeout = time.Until(d)
+		c.WriteTimeout = time.Until(d)
 	}
 
 	resp, rtt, err = c.ExchangeWithConn(req, co)
 	if err != nil {
 		if proto == "udp" {
-			return r.exchange(ctx, "tcp", server, req)
+			if d, ok := ctx.Deadline(); ok && time.Until(d).Milliseconds() > 0 {
+				return r.exchange(ctx, "tcp", server, req)
+			}
 		}
 
-		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
+		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Host,
+			"net", c.Net, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error())
 
 		return nil, err
 	}
@@ -787,7 +790,7 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.M
 	if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
 		d.Deadline = deadline
 	} else {
-		d.Deadline = time.Now().Add(r.cfg.ConnectTimeout.Duration)
+		d.Deadline = time.Now().Add(r.cfg.Timeout.Duration)
 	}
 
 	if mode == authcache.IPv4 {
