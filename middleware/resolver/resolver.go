@@ -623,6 +623,8 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 		resp, err := r.exchange(ctx, proto, server, req)
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 			//retry one more time
+			ctx, cancel := context.WithDeadline(ctx, time.Now().Add(r.cfg.Timeout.Duration))
+			defer cancel()
 			resp, err = r.exchange(ctx, proto, server, req)
 		}
 
@@ -635,7 +637,7 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 	servers.RLock()
 	defer servers.RUnlock()
 
-	fallbackTimeout := 250 * time.Millisecond
+	fallbackTimeout := 150 * time.Millisecond
 
 	// Start the timer for the fallback racer.
 	fallbackTimer := time.NewTimer(fallbackTimeout)
@@ -761,9 +763,9 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	defer co.Close()
 
 	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
-		// we will try tcp and udp for two times
-		c.ReadTimeout = time.Until(d) / 4
-		c.WriteTimeout = time.Until(d) / 4
+		// we will try tcp and udp
+		c.ReadTimeout = time.Until(d) / 2
+		c.WriteTimeout = time.Until(d) / 2
 	}
 
 	resp, rtt, err = c.ExchangeWithConn(req, co)
