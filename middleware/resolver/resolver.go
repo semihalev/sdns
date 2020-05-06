@@ -210,12 +210,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		q = dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
-		if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
-			err = errDSRecords
-			log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
-
-			return nil, err
-		}
+		//TODO (semihalev): Look loops for inferno.demonoid.me
 		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
 		if err != nil {
 			return nil, err
