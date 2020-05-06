@@ -291,55 +291,51 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		authservers, foundv4, _ := r.checkGlueRR(resp, nss)
 
-		//TODO: aaaa lookups needed
-		if len(nss) > len(foundv4) && level > 0 {
-			if len(authservers.List) > 0 {
-				// temprorary cache before lookup
-				r.ncache.Set(key, parentdsrr, authservers, time.Minute)
-			}
-
-			var wg sync.WaitGroup
-
-			for name := range nss {
-				if _, ok := foundv4[name]; ok {
-					continue
-				}
-				wg.Add(1)
-				go func(name string) {
-					defer wg.Done()
-
-					addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
-					nsipv4 := make(map[string][]string)
-
-					if err != nil {
-						log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-						return
-					}
-
-					if len(addrs) == 0 {
-						return
-					}
-
-					nsipv4[name] = addrs
-
-					authservers.Lock()
-				addrsloop:
-					for _, addr := range addrs {
-						host := net.JoinHostPort(addr, "53")
-						for _, s := range authservers.List {
-							if s.Host == host {
-								continue addrsloop
-							}
-						}
-						authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
-					}
-					authservers.Unlock()
-					r.addIPv4Cache(nsipv4)
-				}(name)
-			}
-
-			wg.Wait()
+		if len(authservers.List) > 0 {
+			// temprorary cache before lookup
+			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
 		}
+
+		//TODO: aaaa lookups needed
+		var wg sync.WaitGroup
+		for name := range nss {
+			if _, ok := foundv4[name]; ok {
+				continue
+			}
+			wg.Add(1)
+			go func(name string) {
+				defer wg.Done()
+
+				addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+				nsipv4 := make(map[string][]string)
+
+				if err != nil {
+					log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+					return
+				}
+
+				if len(addrs) == 0 {
+					return
+				}
+
+				nsipv4[name] = addrs
+
+				authservers.Lock()
+			addrsloop:
+				for _, addr := range addrs {
+					host := net.JoinHostPort(addr, "53")
+					for _, s := range authservers.List {
+						if s.Host == host {
+							continue addrsloop
+						}
+					}
+					authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
+				}
+				authservers.Unlock()
+				r.addIPv4Cache(nsipv4)
+			}(name)
+		}
+		wg.Wait()
 
 		if len(authservers.List) == 0 {
 			if minimized && level < nlevel {
