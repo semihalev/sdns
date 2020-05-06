@@ -292,13 +292,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		authservers, foundv4, _ := r.checkGlueRR(resp, nss)
 
 		//TODO: aaaa lookups needed
-		if len(nss) > len(foundv4) && len(foundv4) < 2 {
+		if len(nss) > len(foundv4) && level > 0 {
 			if len(authservers.List) > 0 {
 				// temprorary cache before lookup
 				r.ncache.Set(key, parentdsrr, authservers, time.Minute)
 			}
 
-			// no extra rr for some nameservers, try lookup
 			var wg sync.WaitGroup
 
 			for name := range nss {
@@ -310,6 +309,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 					defer wg.Done()
 
 					addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+					nsipv4 := make(map[string][]string)
+
 					if err != nil {
 						log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 						return
@@ -318,6 +319,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 					if len(addrs) == 0 {
 						return
 					}
+
+					nsipv4[name] = addrs
 
 					authservers.Lock()
 				addrsloop:
@@ -331,6 +334,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 						authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
 					}
 					authservers.Unlock()
+					r.addIPv4Cache(nsipv4)
 				}(name)
 			}
 
@@ -1150,6 +1154,26 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 	return true, nil
 }
 
+func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
+	resp.Ns = []dns.RR{}
+
+	noclear := len(extra) == 0
+	if len(extra) > 0 && extra[0] == false {
+		noclear = true
+	}
+
+	if noclear {
+		resp.Extra = []dns.RR{}
+
+		opt := req.IsEdns0()
+		if opt != nil {
+			resp.Extra = append(resp.Extra, opt)
+		}
+	}
+
+	return resp
+}
+
 func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 	var list1, list2 []string
 
@@ -1257,24 +1281,4 @@ func (r *Resolver) run() {
 	for range ticker.C {
 		r.checkPriming()
 	}
-}
-
-func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
-	resp.Ns = []dns.RR{}
-
-	noclear := len(extra) == 0
-	if len(extra) > 0 && extra[0] == false {
-		noclear = true
-	}
-
-	if noclear {
-		resp.Extra = []dns.RR{}
-
-		opt := req.IsEdns0()
-		if opt != nil {
-			resp.Extra = append(resp.Extra, opt)
-		}
-	}
-
-	return resp
 }
