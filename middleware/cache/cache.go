@@ -174,6 +174,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	}
 
 	// Apply capped TTL to this reply to avoid jarring TTL experience 1799 -> 8 (e.g.)
+	// There is small data race while setting ttl but we don't care this.
 	ttl := uint32(duration.Seconds())
 	for i := range res.Answer {
 		res.Answer[i].Header().Ttl = ttl

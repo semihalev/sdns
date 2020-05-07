@@ -644,7 +644,7 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(r.cfg.Timeout.Duration))
 		defer cancel()
 
-		resp, err := r.exchange(ctx, proto, server, req)
+		resp, err := r.exchange(ctx, proto, server, req, false)
 
 		select {
 		case results <- exchangeResult{resp: resp, server: server, error: err}:
@@ -758,7 +758,7 @@ mainloop:
 	panic("looks like no root servers, check your config")
 }
 
-func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) (*dns.Msg, error) {
+func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg, retried bool) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	var resp *dns.Msg
@@ -786,15 +786,23 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		c.WriteTimeout = time.Until(d) / 2
 	}
 
+	// data race, because we have parallel queries
+	req = req.Copy()
+
 	resp, rtt, err = c.ExchangeWithConn(req, co)
 	if err != nil {
 		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Host,
 			"net", c.Net, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error())
 
-		if proto == "udp" {
-			// retry with tcp
+		if !retried {
+			if proto == "udp" {
+				proto = "tcp"
+			} else {
+				proto = "udp"
+			}
+			// retry with another protocol
 			if d, ok := ctx.Deadline(); ok && time.Until(d).Milliseconds() > 0 {
-				return r.exchange(ctx, "tcp", server, req)
+				return r.exchange(ctx, proto, server, req, true)
 			}
 		}
 
@@ -804,7 +812,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
-		return r.exchange(ctx, proto, server, req)
+		return r.exchange(ctx, proto, server, req, retried)
 	}
 
 	return resp, nil
