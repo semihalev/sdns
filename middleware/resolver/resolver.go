@@ -289,7 +289,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		authservers, foundv4, _ := r.checkGlueRR(resp, nss)
+		authservers, foundv4, _ := r.checkGlueRR(resp, nss, level)
 
 		if len(authservers.List) > 0 {
 			// temprorary cache before lookup
@@ -383,7 +383,7 @@ func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, 
 	return resp, err
 }
 
-func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthServers, nameservers, nameservers) {
+func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*authcache.AuthServers, nameservers, nameservers) {
 	authservers := &authcache.AuthServers{}
 
 	foundv4 := make(nameservers)
@@ -393,6 +393,14 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 	for _, a := range resp.Extra {
 		if extra, ok := a.(*dns.AAAA); ok {
 			name := strings.ToLower(extra.Header().Name)
+			qname := resp.Question[0].Name
+
+			i, _ := dns.PrevLabel(qname, level)
+
+			if dns.CompareDomainName(name, qname[i:]) < level {
+				// we cannot trust that glue, it doesn't cover in the origin name.
+				continue
+			}
 
 			if _, ok := nss[name]; ok {
 				addr := extra.AAAA.String()
@@ -417,6 +425,14 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 	for _, a := range resp.Extra {
 		if extra, ok := a.(*dns.A); ok {
 			name := strings.ToLower(extra.Header().Name)
+			qname := resp.Question[0].Name
+
+			i, _ := dns.PrevLabel(qname, level)
+
+			if dns.CompareDomainName(name, qname[i:]) < level {
+				// we cannot trust that glue, it doesn't cover in the origin name.
+				continue
+			}
 
 			if _, ok := nss[name]; ok {
 				addr := extra.A.String()
@@ -629,12 +645,6 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 		defer cancel()
 
 		resp, err := r.exchange(ctx, proto, server, req)
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			//retry one more time
-			ctx, cancel := context.WithDeadline(ctx, time.Now().Add(r.cfg.Timeout.Duration))
-			defer cancel()
-			resp, err = r.exchange(ctx, proto, server, req)
-		}
 
 		select {
 		case results <- exchangeResult{resp: resp, server: server, error: err}:
@@ -778,15 +788,15 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 
 	resp, rtt, err = c.ExchangeWithConn(req, co)
 	if err != nil {
+		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Host,
+			"net", c.Net, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error())
+
 		if proto == "udp" {
 			// retry with tcp
 			if d, ok := ctx.Deadline(); ok && time.Until(d).Milliseconds() > 0 {
 				return r.exchange(ctx, "tcp", server, req)
 			}
 		}
-
-		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Host,
-			"net", c.Net, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error())
 
 		return nil, err
 	}
