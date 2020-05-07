@@ -43,6 +43,8 @@ type Resolver struct {
 
 type nameservers map[string]struct{}
 
+type fatalError error
+
 var (
 	errMaxDepth        = errors.New("maximum recursion depth for dns tree queried")
 	errParentDetection = errors.New("parent servers detected")
@@ -139,6 +141,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
 	if err != nil {
+		// lets check nameservers
+		if _, ok := err.(fatalError); ok && !servers.Checked {
+			if ok := r.checkNss(ctx, proto, servers); ok {
+				return r.Resolve(ctx, proto, req, servers, root, depth, level, nsl, parentdsrr, extra...)
+			}
+		}
 		return nil, err
 	}
 
@@ -291,6 +299,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		authservers, foundv4, _ := r.checkGlueRR(resp, nss, level)
 
+		authservers.CheckingDisable = cd
+
 		if len(authservers.List) > 0 {
 			// temprorary cache before lookup
 			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
@@ -299,6 +309,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		//TODO: aaaa lookups needed
 		var wg sync.WaitGroup
 		for name := range nss {
+			authservers.Nss = append(authservers.Nss, name)
+
 			if _, ok := foundv4[name]; ok {
 				continue
 			}
@@ -323,13 +335,13 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				authservers.Lock()
 			addrsloop:
 				for _, addr := range addrs {
-					host := net.JoinHostPort(addr, "53")
+					raddr := net.JoinHostPort(addr, "53")
 					for _, s := range authservers.List {
-						if s.Host == host {
+						if s.Addr == raddr {
 							continue addrsloop
 						}
 					}
-					authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
+					authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
 				}
 				authservers.Unlock()
 				r.addIPv4Cache(nsipv4)
@@ -666,7 +678,7 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 mainloop:
 	for index, server := range servers.List {
 		// ip6 network may down
-		if server.Mode == authcache.IPv6 && ipv6fatals > 2 {
+		if server.Version == authcache.IPv6 && ipv6fatals > 2 {
 			left--
 			continue
 		}
@@ -689,7 +701,7 @@ mainloop:
 				left--
 
 				if res.error != nil {
-					if res.server.Mode == authcache.IPv6 {
+					if res.server.Version == authcache.IPv6 {
 						ipv6fatals++
 					}
 
@@ -752,7 +764,7 @@ mainloop:
 	}
 
 	if len(fatalErrors) > 0 {
-		return nil, errors.New("connection failed to upstream servers")
+		return nil, fatalError(errors.New("connection failed to upstream servers"))
 	}
 
 	panic("looks like no root servers, check your config")
@@ -771,10 +783,10 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	}()
 
 	c := &dns.Client{Net: proto}
-	c.Dialer = r.newDialer(ctx, proto, server.Mode)
+	c.Dialer = r.newDialer(ctx, proto, server.Version)
 
 	co := new(dns.Conn)
-	co.Conn, err = c.Dialer.DialContext(ctx, c.Net, server.Host)
+	co.Conn, err = c.Dialer.DialContext(ctx, c.Net, server.Addr)
 	if err != nil {
 		return nil, err
 	}
@@ -791,7 +803,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 
 	resp, rtt, err = c.ExchangeWithConn(req, co)
 	if err != nil {
-		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Host,
+		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", c.Net, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error())
 
 		if !retried {
@@ -818,7 +830,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	return resp, nil
 }
 
-func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Mode) (d *net.Dialer) {
+func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Version) (d *net.Dialer) {
 	d = &net.Dialer{}
 
 	if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
@@ -983,6 +995,38 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	}
 
 	return dsres, nil
+}
+
+func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcache.AuthServers) (ok bool) {
+	oldsize := len(servers.List)
+
+	var raddrs []string
+	for _, name := range servers.Nss {
+		addrs, err := r.lookupNSAddrV4(ctx, proto, name, servers.CheckingDisable)
+		if err != nil {
+			continue
+		}
+
+		raddrs = append(raddrs, addrs...)
+	}
+
+	servers.Lock()
+	defer servers.Unlock()
+
+addrsloop:
+	for _, addr := range raddrs {
+		raddr := net.JoinHostPort(addr, "53")
+		for _, s := range servers.List {
+			if s.Addr == raddr {
+				continue addrsloop
+			}
+		}
+		servers.List = append(servers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
+	}
+
+	servers.Checked = true
+
+	return oldsize != len(servers.List)
 }
 
 func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
@@ -1193,13 +1237,13 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 
 	s1.RLock()
 	for _, s := range s1.List {
-		list1 = append(list1, s.Host)
+		list1 = append(list1, s.Addr)
 	}
 	s1.RUnlock()
 
 	s2.RLock()
 	for _, s := range s2.List {
-		list2 = append(list2, s.Host)
+		list2 = append(list2, s.Addr)
 	}
 	s2.RUnlock()
 

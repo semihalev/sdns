@@ -9,33 +9,33 @@ import (
 
 // AuthServer type
 type AuthServer struct {
-	Host  string
-	Rtt   int64
-	Count int64
-	Mode  Mode
+	Addr    string
+	Rtt     int64
+	Count   int64
+	Version Version
 }
 
-// Mode type
-type Mode byte
+// Version type
+type Version byte
 
 const (
 	// IPv4 mode
-	IPv4 Mode = 0x1
+	IPv4 Version = 0x1
 
 	// IPv6 mode
-	IPv6 Mode = 0x2
+	IPv6 Version = 0x2
 )
 
-// NewAuthServer return a server
-func NewAuthServer(host string, mode Mode) *AuthServer {
+// NewAuthServer return a new server
+func NewAuthServer(addr string, version Version) *AuthServer {
 	return &AuthServer{
-		Host: host,
-		Mode: mode,
+		Addr:    addr,
+		Version: version,
 	}
 }
 
-func (m Mode) String() string {
-	switch m {
+func (v Version) String() string {
+	switch v {
 	case IPv4:
 		return "IPv4"
 	case IPv6:
@@ -59,7 +59,7 @@ func (a *AuthServer) String() string {
 		health = "GOOD"
 	}
 
-	return "host:" + a.Host + " mode:" + a.Mode.String() + " rtt:" + rtt.String() + " health:[" + health + "]"
+	return a.Version.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
 }
 
 // AuthServers type
@@ -68,6 +68,10 @@ type AuthServers struct {
 
 	called int32
 	List   []*AuthServer
+	Nss    []string
+
+	CheckingDisable bool
+	Checked         bool
 }
 
 // TrySort if necessary sort servers by rtt
