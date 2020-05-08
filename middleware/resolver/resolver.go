@@ -312,7 +312,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		r.lookupV4Nss(ctx, proto, q, authservers, foundv4, nss, cd)
 
 		// we don't want to wait this, if we have glue records, we will use.
-		go r.lookupV6Nss(ctx, proto, q, authservers, foundv6, nss, cd)
+		go r.lookupV6Nss(context.Background(), proto, q, authservers, foundv6, nss, cd)
 
 		if len(authservers.List) == 0 {
 			if minimized && level < nlevel {
@@ -405,6 +405,10 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
+	// it will be work in background, we need time for that lookups
+	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
+	defer cancel()
+
 	var wg sync.WaitGroup
 	for name := range nss {
 		if _, ok := foundv6[name]; ok {
@@ -414,7 +418,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 		go func(name string) {
 			defer wg.Done()
 
-			addrs, err := r.lookupNSAddrV6(ctx, proto, name, cd)
+			addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, cd)
 			nsipv6 := make(map[string][]string)
 
 			if err != nil {
