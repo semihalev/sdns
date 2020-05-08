@@ -95,7 +95,7 @@ $ dig hinfo .
 | **blocklists**      | List of remote blocklists                                                                                                      |
 | **blocklistdir**    | List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
 | **loglevel**        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
-| **accesslog**       | The location of access log file, leave blank for disable. SDNS uses Common Log Format by default.                              |
+| **accesslog**       | The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.                              |
 | **bind**            | Address to bind to for the DNS server. Default :53                                                                             |
 | **bindtls**         | Address to bind to for the DNS-over-TLS server. Default :853                                                                   |
 | **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
@@ -106,20 +106,22 @@ $ dig hinfo .
 | **rootservers**     | DNS Root IPv4 servers                                                                                                          |
 | **root6servers**    | DNS Root IPv6 servers                                                                                                          |
 | **rootkeys**        | DNS Root keys for dnssec                                                                                                       |
-| **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port. Leave blank for disable                                                    |
-| **api**             | Address to bind to for the http API server, leave blank for disable                                                            |
+| **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "1.1.1.1:53"                             |
+| **api**             | Address to bind to for the http API server, left blank for disabled                                                            |
 | **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
 | **accesslist**      | Which clients allowed to make queries                                                                                          |
 | **timeout**         | Query timeout for each dns lookups in duration Default: 2s                                                                     |
-| **hostsfile**       | Enables serving zone data from a hosts file, leave blank for disable                                                           |
+| **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
 | **expire**          | Default cache TTL in seconds Default: 600                                                                                      |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
 | **maxdepth**        | Maximum recursion depth for authservers. Default: 30                                                                           |
-| **ratelimit**       | Query based ratelimit per second, 0 for disable. Default: 0                                                                    |
+| **ratelimit**       | Query based ratelimit per second, 0 for disabled. Default: 0                                                                   |
 | **clientratelimit** | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
 | **blocklist**       | Manual blocklist entries                                                                                                       |
 | **whitelist**       | Manual whitelist entries                                                                                                       |
+| **cookiesecret**    | DNS cookie secret (RFC 7873), if no cookiesecret set, it will be generate automatically                                        |
+| **nsid**            | DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled                           |
 
 ## Server Configuration Checklist
 

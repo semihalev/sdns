@@ -42,6 +42,7 @@ type Config struct {
 	RateLimit       int
 	ClientRateLimit int
 	CookieSecret    string
+	NSID            string
 	Blocklist       []string
 	Whitelist       []string
 }
@@ -124,17 +125,17 @@ rootkeys = [
 ".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
 ]
 
-# failover resolver ipv4 or ipv6 addresses with port. Leave blank for disable.
+# failover resolver ipv4 or ipv6 addresses with port, left blank for disabled. Example: "1.1.1.1:53"
 fallbackservers = [
 ]
 
-# address to bind to for the http API server, leave blank for disable
+# address to bind to for the http API server, left blank for disabled
 api = "127.0.0.1:8080"
 
 # what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
 loglevel = "info"
 
-# The location of access log file, leave blank for disable. SDNS uses Common Log Format by default.
+# The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.
 # accesslog = ""
 
 # list of remote blocklists
@@ -163,7 +164,7 @@ accesslist = [
 "::0/0"
 ]
 
-# enables serving zone data from a hosts file, leave blank for disable
+# enables serving zone data from a hosts file, left blank for disabled
 # the form of the entries in the /etc/hosts file are based on IETF RFC 952 which was updated by IETF RFC 1123.
 hostsfile = ""
 
@@ -182,10 +183,10 @@ cachesize = 256000
 # maximum recursion depth for nameservers
 maxdepth = 30
 
-# query based ratelimit per second, 0 for disable
+# query based ratelimit per second, 0 for disabled
 ratelimit = 0
 
-# client ip address based ratelimit per minute, 0 for disable
+# client ip address based ratelimit per minute, 0 for disabled
 clientratelimit = 0
 
 # manual blocklist entries
@@ -193,6 +194,9 @@ blocklist = []
 
 # manual whitelist entries
 whitelist = []
+
+# DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled
+nsid = ""
 `
 
 // Load loads the given config file
