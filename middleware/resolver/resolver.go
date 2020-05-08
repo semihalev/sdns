@@ -139,12 +139,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// RFC 7816 query minimization. There are some concerns in RFC.
 	minReq, minimized := r.minimize(req, level)
 
-	log.Debug("Query inserted", "net", proto, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized, "checked", servers.Checked)
+	log.Debug("Query inserted", "net", proto, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
 	if err != nil {
 		// lets check nameservers
-		if _, ok := err.(fatalError); ok && !servers.Checked {
+		if _, ok := err.(fatalError); ok {
 			log.Debug("Received timeout from all servers, checking nameservers", "net", proto, "query", formatQuestion(minReq.Question[0]))
 
 			if ok := r.checkNss(ctx, proto, servers); ok {
@@ -453,6 +453,10 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcache.AuthServers) (ok bool) {
 	servers.RLock()
 	oldsize := len(servers.List)
+	if servers.Checked {
+		servers.RUnlock()
+		return false
+	}
 	servers.RUnlock()
 
 	var raddrsv4 []string
