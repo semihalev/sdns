@@ -139,10 +139,14 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// RFC 7816 query minimization. There are some concerns in RFC.
 	minReq, minimized := r.minimize(req, level)
 
+	log.Debug("Query inserted", "net", proto, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized, "checked", servers.Checked)
+
 	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
 	if err != nil {
 		// lets check nameservers
 		if _, ok := err.(fatalError); ok && !servers.Checked {
+			log.Debug("Received timeout from all servers, checking nameservers", "net", proto, "query", formatQuestion(minReq.Question[0]))
+
 			if ok := r.checkNss(ctx, proto, servers); ok {
 				return r.Resolve(ctx, proto, req, servers, root, depth, level, nsl, parentdsrr, extra...)
 			}
@@ -978,7 +982,6 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
 	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	dsReq.RecursionDesired = true
 
 	dsres, err := dnsutil.ExchangeInternal(ctx, proto, dsReq)
 	if err != nil {
@@ -1035,7 +1038,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
 	q := nsReq.Question[0]
@@ -1139,7 +1141,6 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 	keyReq := new(dns.Msg)
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
 	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	keyReq.RecursionDesired = true
 
 	var msg *dns.Msg
 
@@ -1267,7 +1268,6 @@ func (r *Resolver) checkPriming() error {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-	req.RecursionDesired = true
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.cfg.Timeout.Duration))
 	defer cancel()

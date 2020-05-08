@@ -273,7 +273,6 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 	cnameReq := new(dns.Msg)
 	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	cnameReq.RecursionDesired = true
 	cnameReq.CheckingDisabled = msg.CheckingDisabled
 
 	for _, answer := range msg.Answer {

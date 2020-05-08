@@ -92,7 +92,8 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	log.Debug("Lookup", "net", proto, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
+	// we shouldn't send rd flag to aa servers
+	req.RecursionDesired = false
 
 	//TODO (semihalev): config setable after this
 	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
@@ -124,7 +125,6 @@ func (h *DNSHandler) additionalAnswer(ctx context.Context, proto string, req, ms
 
 	cnameReq := new(dns.Msg)
 	cnameReq.Extra = req.Extra
-	cnameReq.RecursionDesired = true
 	cnameReq.CheckingDisabled = req.CheckingDisabled
 
 	for _, answer := range msg.Answer {
