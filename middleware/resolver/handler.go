@@ -92,8 +92,9 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	// we shouldn't send rd flag to aa servers
+	// we shouldn't send rd and ad flag to aa servers
 	req.RecursionDesired = false
+	req.AuthenticatedData = false
 
 	//TODO (semihalev): config setable after this
 	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
