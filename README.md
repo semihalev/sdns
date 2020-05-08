@@ -63,29 +63,42 @@ $ dig hinfo .
 ; <<>> DiG 9.10.6 <<>> hinfo .
 ;; global options: +cmd
 ;; Got answer:
-;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 23338
-;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 13, ADDITIONAL: 1
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 51539
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 26, ADDITIONAL: 1
 
 ;; OPT PSEUDOSECTION:
-; EDNS: version: 0, flags:; udp: 1536
+; EDNS: version: 0, flags:; udp: 1400
 ;; QUESTION SECTION:
 ;.				IN	HINFO
 
 ;; AUTHORITY SECTION:
-.			20	IN	HINFO	"ns" "host:192.58.128.30:53 rtt:13ms"
-.			20	IN	HINFO	"ns" "host:192.5.5.241:53 rtt:14ms"
-.			20	IN	HINFO	"ns" "host:192.203.230.10:53 rtt:14ms"
-.			20	IN	HINFO	"ns" "host:199.7.83.42:53 rtt:16ms"
-.			20	IN	HINFO	"ns" "host:199.7.91.13:53 rtt:16ms"
-.			20	IN	HINFO	"ns" "host:192.33.4.12:53 rtt:36ms"
-.			20	IN	HINFO	"ns" "host:193.0.14.129:53 rtt:47ms"
-.			20	IN	HINFO	"ns" "host:198.97.190.53:53 rtt:54ms"
-.			20	IN	HINFO	"ns" "host:198.41.0.4:53 rtt:54ms"
-.			20	IN	HINFO	"ns" "host:192.36.148.17:53 rtt:59ms"
-.			20	IN	HINFO	"ns" "host:199.9.14.201:53 rtt:61ms"
-.			20	IN	HINFO	"ns" "host:202.12.27.33:53 rtt:71ms"
-.			20	IN	HINFO	"ns" "host:192.112.36.4:53 rtt:104ms"
-````
+.			5	IN	HINFO	"ns" "IPv4:192.58.128.30:53 rtt:10ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:192.5.5.241:53 rtt:14ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:192.203.230.10:53 rtt:14ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:199.7.83.42:53 rtt:15ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:199.7.91.13:53 rtt:26ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:192.33.4.12:53 rtt:44ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:193.0.14.129:53 rtt:48ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:198.41.0.4:53 rtt:55ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:198.97.190.53:53 rtt:56ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:202.12.27.33:53 rtt:69ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:192.36.148.17:53 rtt:78ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:192.112.36.4:53 rtt:108ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv4:199.9.14.201:53 rtt:155ms health:[GOOD]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:1::53]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:dc3::35]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:7fe::53]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:503:c27::2:30]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:12::d0d]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:7fd::1]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:9f::42]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:2f::f]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:a8::e]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:2d::d]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:2::c]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:500:200::b]:53 rtt:5s health:[POOR]"
+.			5	IN	HINFO	"ns" "IPv6:[2001:503:ba3e::2:30]:53 rtt:5s health:[POOR]"
+```
 
 ## Configuration (v0.3.1)
 
@@ -139,6 +152,7 @@ $ dig hinfo .
 -   Middleware Support
 -   RTT priority within listed servers
 -   EDNS Cookie Support (client&lt;->server)
+-   EDNS NSID Support
 -   Full IPv6 support (client&lt;->server, server&lt;->server)
 -   Query based ratelimit
 -   IP based ratelimit
