@@ -107,8 +107,7 @@ func Test_NCache(t *testing.T) {
 	assert.Error(t, err)
 
 	msg := new(dns.Msg)
-	msg.SetRcode(req, dns.RcodeNameError)
-	msg.Ns = append(msg.Ns, makeRR("test.com.		1000000	IN	SOA	ns1.test.com. ns1.test.com. 118111607 10800 3600 604800 3600"))
+	msg.SetRcode(req, dns.RcodeServerFailure)
 
 	c.Set(key, msg)
 	i, found := c.get(key, now)

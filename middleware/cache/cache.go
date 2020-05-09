@@ -67,7 +67,7 @@ func New(cfg *config.Config) *Cache {
 
 		rate: cfg.RateLimit,
 
-		lqueue: lqueue.New(),
+		lqueue: lqueue.New(2 * time.Second),
 
 		now: time.Now,
 	}
@@ -85,7 +85,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	q := req.Question[0]
 
 	// check purge query
-	if q.Qtype == dns.TypeNULL {
+	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
 			c.purge(qname, qtype)
 			dc.NextDNS(ctx)
@@ -163,7 +163,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 
 	msgTTL := dnsutil.MinimalTTL(res, mt)
 	var duration time.Duration
-	if mt == response.NameError || mt == response.NoData || mt == response.OtherError {
+	if mt == response.OtherError {
 		duration = computeTTL(msgTTL, w.minnttl, w.nttl)
 	} else {
 		duration = computeTTL(msgTTL, w.minpttl, w.pttl)
@@ -174,6 +174,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	}
 
 	// Apply capped TTL to this reply to avoid jarring TTL experience 1799 -> 8 (e.g.)
+	// There is small data race while setting ttl but we don't care this.
 	ttl := uint32(duration.Seconds())
 	for i := range res.Answer {
 		res.Answer[i].Header().Ttl = ttl
@@ -220,11 +221,11 @@ func (c *Cache) get(key uint64, now time.Time) (*item, bool) {
 // set adds a new element to the cache. If the element already exists it is overwritten.
 func (c *Cache) set(key uint64, msg *dns.Msg, mt response.Type, duration time.Duration) {
 	switch mt {
-	case response.NoError, response.Delegation:
+	case response.NoError, response.Delegation, response.NameError, response.NoData:
 		i := newItem(msg, c.now(), duration, c.rate)
 		c.pcache.Add(key, i)
 
-	case response.NameError, response.NoData, response.OtherError:
+	case response.OtherError:
 		i := newItem(msg, c.now(), duration, c.rate)
 		c.ncache.Add(key, i)
 	}
@@ -256,7 +257,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 
 	msgTTL := dnsutil.MinimalTTL(msg, mt)
 	var duration time.Duration
-	if mt == response.NameError || mt == response.NoData || mt == response.OtherError {
+	if mt == response.OtherError {
 		duration = computeTTL(msgTTL, c.minnttl, c.nttl)
 	} else {
 		duration = computeTTL(msgTTL, c.minpttl, c.pttl)
@@ -272,7 +273,6 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 	cnameReq := new(dns.Msg)
 	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	cnameReq.RecursionDesired = true
 	cnameReq.CheckingDisabled = msg.CheckingDisabled
 
 	for _, answer := range msg.Answer {

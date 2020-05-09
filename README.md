@@ -53,41 +53,32 @@ $ make test
 $ export SDNS_DEBUGNS=true && export SDNS_PPROF=true && ./sdns
 ```
 
-DEBUGNS enviroment useful when you check authoritive servers RTT times. 
+SDNS_DEBUGNS enviroment useful when you want to check authoritive servers RTT times. 
 Usage: send HINFO query for zones.
 
 Example Output:
 ```shell
-$ dig hinfo .
+$ dig hinfo example.com
 
-; <<>> DiG 9.10.6 <<>> hinfo .
+; <<>> DiG 9.10.6 <<>> hinfo example.com
 ;; global options: +cmd
 ;; Got answer:
-;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 23338
-;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 13, ADDITIONAL: 1
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 45590
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 4, ADDITIONAL: 1
 
 ;; OPT PSEUDOSECTION:
-; EDNS: version: 0, flags:; udp: 1536
+; EDNS: version: 0, flags:; udp: 1400
 ;; QUESTION SECTION:
-;.				IN	HINFO
+;example.com.			IN	HINFO
 
 ;; AUTHORITY SECTION:
-.			20	IN	HINFO	"ns" "host:192.58.128.30:53 rtt:13ms"
-.			20	IN	HINFO	"ns" "host:192.5.5.241:53 rtt:14ms"
-.			20	IN	HINFO	"ns" "host:192.203.230.10:53 rtt:14ms"
-.			20	IN	HINFO	"ns" "host:199.7.83.42:53 rtt:16ms"
-.			20	IN	HINFO	"ns" "host:199.7.91.13:53 rtt:16ms"
-.			20	IN	HINFO	"ns" "host:192.33.4.12:53 rtt:36ms"
-.			20	IN	HINFO	"ns" "host:193.0.14.129:53 rtt:47ms"
-.			20	IN	HINFO	"ns" "host:198.97.190.53:53 rtt:54ms"
-.			20	IN	HINFO	"ns" "host:198.41.0.4:53 rtt:54ms"
-.			20	IN	HINFO	"ns" "host:192.36.148.17:53 rtt:59ms"
-.			20	IN	HINFO	"ns" "host:199.9.14.201:53 rtt:61ms"
-.			20	IN	HINFO	"ns" "host:202.12.27.33:53 rtt:71ms"
-.			20	IN	HINFO	"ns" "host:192.112.36.4:53 rtt:104ms"
-````
+example.com.		5	IN	HINFO	"ns" "IPv4:199.43.135.53:53 rtt:145ms health:[GOOD]"
+example.com.		5	IN	HINFO	"ns" "IPv4:199.43.133.53:53 rtt:143ms health:[GOOD]"
+example.com.		5	IN	HINFO	"ns" "IPv6:[2001:500:8d::53]:53 rtt:5s health:[POOR]"
+example.com.		5	IN	HINFO	"ns" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
+```
 
-## Configuration (v0.3.1)
+## Configuration (v1.0.0)
 
 | Key                 | Desc                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -95,7 +86,7 @@ $ dig hinfo .
 | **blocklists**      | List of remote blocklists                                                                                                      |
 | **blocklistdir**    | List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
 | **loglevel**        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
-| **accesslog**       | The location of access log file, leave blank for disable. SDNS uses Common Log Format by default.                              |
+| **accesslog**       | The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.                              |
 | **bind**            | Address to bind to for the DNS server. Default :53                                                                             |
 | **bindtls**         | Address to bind to for the DNS-over-TLS server. Default :853                                                                   |
 | **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
@@ -106,21 +97,23 @@ $ dig hinfo .
 | **rootservers**     | DNS Root IPv4 servers                                                                                                          |
 | **root6servers**    | DNS Root IPv6 servers                                                                                                          |
 | **rootkeys**        | DNS Root keys for dnssec                                                                                                       |
-| **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port. Leave blank for disable                                                    |
-| **api**             | Address to bind to for the http API server, leave blank for disable                                                            |
+| **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "1.1.1.1:53"                             |
+| **api**             | Address to bind to for the http API server, left blank for disabled                                                            |
 | **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
 | **accesslist**      | Which clients allowed to make queries                                                                                          |
-| **timeout**         | Query timeout for dns lookups in duration Default: 5s                                                                          |
-| **connecttimeout**  | Connect timeout for dns lookups in duration Default: 2s                                                                        |
-| **hostsfile**       | Enables serving zone data from a hosts file, leave blank for disable                                                           |
+| **timeout**         | Query timeout for each dns lookups in duration Default: 2s                                                                     |
+| **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
 | **expire**          | Default cache TTL in seconds Default: 600                                                                                      |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
 | **maxdepth**        | Maximum recursion depth for authservers. Default: 30                                                                           |
-| **ratelimit**       | Query based ratelimit per second, 0 for disable. Default: 0                                                                    |
+| **ratelimit**       | Query based ratelimit per second, 0 for disabled. Default: 0                                                                   |
 | **clientratelimit** | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
 | **blocklist**       | Manual blocklist entries                                                                                                       |
 | **whitelist**       | Manual whitelist entries                                                                                                       |
+| **cookiesecret**    | DNS cookie secret (RFC 7873), if no cookiesecret set, it will be generate automatically                                        |
+| **nsid**            | DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled                           |
+| **chaos**           | Enable to answer version.server, version.bind, hostname.bind and id.server chaos txt queries.                                  |
 
 ## Server Configuration Checklist
 
@@ -130,22 +123,27 @@ $ dig hinfo .
 
 -   Linux/BSD/Darwin/Windows supported
 -   DNS RFC compatibility
--   DNS lookups within listed servers
+-   DNS lookups within listed ipv4 and ipv6 auth servers
 -   DNS caching
 -   DNSSEC validation
--   DNS over TLS support
--   DNS over HTTPS support
--   Middleware Support
+-   DNS over TLS support (DoT)
+-   DNS over HTTPS support (DoH)
+-   Outbound IP selection
+-   Middleware Support, you can add, your own middleware
 -   RTT priority within listed servers
+-   Failover forwarders while returning failured responses
 -   EDNS Cookie Support (client&lt;->server)
+-   EDNS NSID Support
 -   Full IPv6 support (client&lt;->server, server&lt;->server)
 -   Query based ratelimit
 -   IP based ratelimit
 -   Access list
+-   Access log
 -   Prometheus basic query metrics
--   Black-hole internet advertisements and malware servers
+-   Black-hole for malware responses
 -   HTTP API support
--   Outbound IP selection
+-   Cache Purge API and query support
+-   Answer chaos txt queries for version.bind and hostname.bind
 
 ## TODO
 

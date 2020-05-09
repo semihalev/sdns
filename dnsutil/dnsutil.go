@@ -99,8 +99,8 @@ func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
 }
 
 // SetEdns0 returns replaced or new opt rr and if request has do
-func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
-	do := false
+func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
+	do, nsid := false, false
 	opt := req.IsEdns0()
 	size := DefaultMsgSize
 	cookie := ""
@@ -130,11 +130,13 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
 				if len(option.String()) >= 16 {
 					cookie = option.String()[:16]
 				}
+			case dns.EDNS0NSID:
+				nsid = true
 			}
 		}
 
 		if opt.Version() != 0 {
-			return opt, size, cookie, false
+			return opt, size, cookie, nsid, false
 		}
 
 		do = opt.Do()
@@ -151,7 +153,7 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
 		req.Extra = append(req.Extra, opt)
 	}
 
-	return opt, size, cookie, do
+	return opt, size, cookie, nsid, do
 }
 
 // GenerateServerCookie return generated edns server cookie

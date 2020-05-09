@@ -37,9 +37,13 @@ type Resolver struct {
 	ipv6cache *cache.Cache
 
 	rootkeys []dns.RR
+
+	group singleflight
 }
 
 type nameservers map[string]struct{}
+
+type fatalError error
 
 var (
 	errMaxDepth        = errors.New("maximum recursion depth for dns tree queried")
@@ -55,7 +59,7 @@ const (
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
 		cfg:    cfg,
-		lqueue: lqueue.New(),
+		lqueue: lqueue.New(100 * time.Millisecond),
 
 		ncache: authcache.NewNSCache(),
 
@@ -135,8 +139,18 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// RFC 7816 query minimization. There are some concerns in RFC.
 	minReq, minimized := r.minimize(req, level)
 
-	resp, err := r.lookup(ctx, proto, minReq, servers, level)
+	log.Debug("Query inserted", "net", proto, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
+
+	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
 	if err != nil {
+		// lets check nameservers
+		if _, ok := err.(fatalError); ok {
+			log.Debug("Received timeout from all servers, checking nameservers", "net", proto, "query", formatQuestion(minReq.Question[0]))
+
+			if ok := r.checkNss(ctx, proto, servers); ok {
+				return r.Resolve(ctx, proto, req, servers, root, depth, level, nsl, parentdsrr, extra...)
+			}
+		}
 		return nil, err
 	}
 
@@ -208,6 +222,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		q = dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
+		if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
+			err = errDSRecords
+			log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+
+			return nil, err
+		}
 		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
 		if err != nil {
 			return nil, err
@@ -281,49 +301,18 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		authservers, found := r.checkGlueRR(resp, nss)
+		authservers, foundv4, foundv6 := r.checkGlueRR(resp, nss, level)
+		authservers.CheckingDisable = cd
 
-		if len(nss) > found || level > 0 {
-			if len(authservers.List) > 0 {
-				// temprorary cache before lookup
-				r.ncache.Set(key, parentdsrr, authservers, time.Minute)
-			}
-
-			// no extra rr for some nameservers, try lookup
-			var wg sync.WaitGroup
-
-			for name := range nss {
-				wg.Add(1)
-				go func(name string) {
-					defer wg.Done()
-
-					addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
-					if err != nil {
-						log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-						return
-					}
-
-					if len(addrs) == 0 {
-						return
-					}
-
-					authservers.Lock()
-				addrsloop:
-					for _, addr := range addrs {
-						host := net.JoinHostPort(addr, "53")
-						for _, s := range authservers.List {
-							if s.Host == host {
-								continue addrsloop
-							}
-						}
-						authservers.List = append(authservers.List, authcache.NewAuthServer(host, authcache.IPv4))
-					}
-					authservers.Unlock()
-				}(name)
-			}
-
-			wg.Wait()
+		if len(authservers.List) > 0 {
+			// temprorary cache before lookup
+			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
 		}
+
+		r.lookupV4Nss(ctx, proto, q, authservers, foundv4, nss, cd)
+
+		// we don't want to wait this, if we have glue records, we will use.
+		go r.lookupV6Nss(context.Background(), proto, q, authservers, foundv6, nss, cd)
 
 		if len(authservers.List) == 0 {
 			if minimized && level < nlevel {
@@ -356,14 +345,201 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	return m, nil
 }
 
-func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthServers, int) {
+func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
+	q := req.Question[0]
+
+	key := cache.Hash(q, req.CheckingDisabled)
+	resp, shared, err := r.group.Do(key, func() (*dns.Msg, error) {
+		return r.lookup(ctx, proto, req, servers, level)
+	})
+
+	if resp != nil && shared {
+		resp = resp.Copy()
+	}
+
+	return resp, err
+}
+
+func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv4, nss nameservers, cd bool) {
+	var wg sync.WaitGroup
+	for name := range nss {
+		authservers.Nss = append(authservers.Nss, name)
+
+		if _, ok := foundv4[name]; ok {
+			continue
+		}
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+
+			addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+			nsipv4 := make(map[string][]string)
+
+			if err != nil {
+				log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+				return
+			}
+
+			if len(addrs) == 0 {
+				return
+			}
+
+			nsipv4[name] = addrs
+
+			authservers.Lock()
+		addrsloop:
+			for _, addr := range addrs {
+				raddr := net.JoinHostPort(addr, "53")
+				for _, s := range authservers.List {
+					if s.Addr == raddr {
+						continue addrsloop
+					}
+				}
+				authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
+			}
+			authservers.Unlock()
+			r.addIPv4Cache(nsipv4)
+		}(name)
+	}
+	wg.Wait()
+}
+
+func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
+	// it will be work in background, we need time for that lookups
+	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for name := range nss {
+		if _, ok := foundv6[name]; ok {
+			continue
+		}
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+
+			addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, cd)
+			nsipv6 := make(map[string][]string)
+
+			if err != nil {
+				log.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+				return
+			}
+
+			if len(addrs) == 0 {
+				return
+			}
+
+			nsipv6[name] = addrs
+
+			authservers.Lock()
+		addrsloop:
+			for _, addr := range addrs {
+				raddr := net.JoinHostPort(addr, "53")
+				for _, s := range authservers.List {
+					if s.Addr == raddr {
+						continue addrsloop
+					}
+				}
+				authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
+			}
+			authservers.Unlock()
+			r.addIPv6Cache(nsipv6)
+		}(name)
+	}
+	wg.Wait()
+}
+
+func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcache.AuthServers) (ok bool) {
+	servers.RLock()
+	oldsize := len(servers.List)
+	if servers.Checked {
+		servers.RUnlock()
+		return false
+	}
+	servers.RUnlock()
+
+	var raddrsv4 []string
+	var raddrsv6 []string
+
+	nsipv4 := make(map[string][]string)
+	nsipv6 := make(map[string][]string)
+
+	for _, name := range servers.Nss {
+		r.removeIPv4Cache(name)
+		addrs, err := r.lookupNSAddrV4(ctx, proto, name, servers.CheckingDisable)
+		if err != nil {
+			continue
+		}
+
+		raddrsv4 = append(raddrsv4, addrs...)
+
+		nsipv4[name] = addrs
+	}
+
+	for _, name := range servers.Nss {
+		r.removeIPv6Cache(name)
+		addrs, err := r.lookupNSAddrV6(ctx, proto, name, servers.CheckingDisable)
+		if err != nil {
+			continue
+		}
+
+		raddrsv6 = append(raddrsv6, addrs...)
+
+		nsipv6[name] = addrs
+	}
+
+	r.addIPv4Cache(nsipv4)
+	r.addIPv6Cache(nsipv6)
+
+	servers.Lock()
+	defer servers.Unlock()
+
+addrsloopv4:
+	for _, addr := range raddrsv4 {
+		raddr := net.JoinHostPort(addr, "53")
+		for _, s := range servers.List {
+			if s.Addr == raddr {
+				continue addrsloopv4
+			}
+		}
+		servers.List = append(servers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
+	}
+
+addrsloopv6:
+	for _, addr := range raddrsv6 {
+		raddr := net.JoinHostPort(addr, "53")
+		for _, s := range servers.List {
+			if s.Addr == raddr {
+				continue addrsloopv6
+			}
+		}
+		servers.List = append(servers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
+	}
+
+	servers.Checked = true
+
+	return oldsize != len(servers.List)
+}
+
+func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*authcache.AuthServers, nameservers, nameservers) {
 	authservers := &authcache.AuthServers{}
-	found := 0
+
+	foundv4 := make(nameservers)
+	foundv6 := make(nameservers)
 
 	nsipv6 := make(map[string][]string)
 	for _, a := range resp.Extra {
 		if extra, ok := a.(*dns.AAAA); ok {
 			name := strings.ToLower(extra.Header().Name)
+			qname := resp.Question[0].Name
+
+			i, _ := dns.PrevLabel(qname, level)
+
+			if dns.CompareDomainName(name, qname[i:]) < level {
+				// we cannot trust that glue, it doesn't cover in the origin name.
+				continue
+			}
 
 			if _, ok := nss[name]; ok {
 				addr := extra.AAAA.String()
@@ -376,6 +552,8 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 					continue
 				}
 
+				foundv6[name] = struct{}{}
+
 				nsipv6[name] = append(nsipv6[name], addr)
 				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv6))
 			}
@@ -386,6 +564,14 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 	for _, a := range resp.Extra {
 		if extra, ok := a.(*dns.A); ok {
 			name := strings.ToLower(extra.Header().Name)
+			qname := resp.Question[0].Name
+
+			i, _ := dns.PrevLabel(qname, level)
+
+			if dns.CompareDomainName(name, qname[i:]) < level {
+				// we cannot trust that glue, it doesn't cover in the origin name.
+				continue
+			}
 
 			if _, ok := nss[name]; ok {
 				addr := extra.A.String()
@@ -398,7 +584,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 					continue
 				}
 
-				found++
+				foundv4[name] = struct{}{}
 
 				nsipv4[name] = append(nsipv4[name], addr)
 				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
@@ -410,7 +596,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers) (*authcache.AuthS
 	r.addIPv4Cache(nsipv4)
 	r.addIPv6Cache(nsipv6)
 
-	return authservers, found
+	return authservers, foundv4, foundv6
 }
 
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
@@ -429,6 +615,10 @@ func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
 	return []string{}, false
 }
 
+func (r *Resolver) removeIPv4Cache(name string) {
+	r.ipv4cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA}))
+}
+
 func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
 	for name, addrs := range nsipv6 {
 		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA})
@@ -443,6 +633,10 @@ func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
 	}
 
 	return []string{}, false
+}
+
+func (r *Resolver) removeIPv6Cache(name string) {
+	r.ipv6cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA}))
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
@@ -573,12 +767,7 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 }
 
 func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
-	responseError := []int{}
-
 	servers.TrySort()
-
-	servers.RLock()
-	defer servers.RUnlock()
 
 	responseErrors := []*dns.Msg{}
 	configErrors := []*dns.Msg{}
@@ -586,54 +775,119 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 
 	ipv6fatals := 0
 
-mainloop:
-	for _, server := range servers.List {
-		// ip6 network may down
-		if server.Mode == authcache.IPv6 && ipv6fatals > 2 {
-			continue
-		}
+	returned := make(chan struct{})
+	defer close(returned)
 
+	// modified version of golang dialParallel func
+	type exchangeResult struct {
+		resp *dns.Msg
+		error
+		server *authcache.AuthServer
+	}
+
+	results := make(chan exchangeResult)
+
+	startRacer := func(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) {
 		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(r.cfg.Timeout.Duration))
 		defer cancel()
 
-		resp, err = r.exchange(ctx, proto, server, req)
-		if err != nil {
-			if server.Mode == authcache.IPv6 {
-				ipv6fatals++
-			}
+		resp, err := r.exchange(ctx, proto, server, req, false)
 
-			fatalErrors = append(fatalErrors, err)
+		select {
+		case results <- exchangeResult{resp: resp, server: server, error: err}:
+		case <-returned:
+		}
+	}
 
+	servers.RLock()
+	defer servers.RUnlock()
+
+	fallbackTimeout := 150 * time.Millisecond
+
+	// Start the timer for the fallback racer.
+	fallbackTimer := time.NewTimer(fallbackTimeout)
+	defer fallbackTimer.Stop()
+
+	left := len(servers.List)
+
+mainloop:
+	for index, server := range servers.List {
+		// ip6 network may down
+		if server.Version == authcache.IPv6 && ipv6fatals > 2 {
+			left--
 			continue
 		}
 
-		if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseError) {
-			responseErrors = append(responseErrors, resp)
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go startRacer(ctx, proto, server, req)
 
-			if len(responseErrors) > 2 {
-				break
-			}
+	fallbackloop:
+		for left != 0 {
+			fallbackTimer.Reset(fallbackTimeout)
 
-			continue
-		}
+			select {
+			case <-fallbackTimer.C:
+				if left > 0 && len(servers.List)-1 == index {
+					continue fallbackloop
+				}
+				continue mainloop
+			case res := <-results:
+				left--
 
-		if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
-			for _, rr := range resp.Ns {
-				if nsrec, ok := rr.(*dns.NS); ok {
-					zLevel := dns.CountLabel(nsrec.Header().Name)
+				if res.error != nil {
+					if res.server.Version == authcache.IPv6 {
+						ipv6fatals++
+					}
 
-					// looks invalid configuration, try another server
-					if zLevel <= level {
-						configErrors = append(configErrors, resp)
-						atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
+					fatalErrors = append(fatalErrors, res.error)
 
-						continue mainloop
+					if left > 0 && len(servers.List)-1 == index {
+						continue fallbackloop
+					}
+					continue mainloop
+				}
+
+				resp = res.resp
+
+				if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseErrors) {
+					responseErrors = append(responseErrors, resp)
+
+					if len(responseErrors) > 2 {
+						break mainloop
+					}
+
+					if left > 0 && len(servers.List)-1 == index {
+						continue fallbackloop
+					}
+					continue mainloop
+				}
+
+				if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
+					for _, rr := range resp.Ns {
+						if nsrec, ok := rr.(*dns.NS); ok {
+							zLevel := dns.CountLabel(nsrec.Header().Name)
+
+							// looks invalid configuration, try another server
+							if zLevel <= level {
+								configErrors = append(configErrors, resp)
+
+								// lets move back this server in the list.
+								atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
+								atomic.AddInt64(&server.Count, 1)
+
+								if left > 0 && len(servers.List)-1 == index {
+									continue fallbackloop
+								}
+								continue mainloop
+							}
+						}
 					}
 				}
+
+				return resp, nil
 			}
 		}
-
-		return
 	}
 
 	if len(responseErrors) > 0 {
@@ -645,13 +899,13 @@ mainloop:
 	}
 
 	if len(fatalErrors) > 0 {
-		return nil, fatalErrors[0]
+		return nil, fatalError(errors.New("connection failed to upstream servers"))
 	}
 
 	panic("looks like no root servers, check your config")
 }
 
-func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) (*dns.Msg, error) {
+func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg, retried bool) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	var resp *dns.Msg
@@ -664,30 +918,40 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	}()
 
 	c := &dns.Client{Net: proto}
-	c.Dialer = r.newDialer(ctx, proto, server.Mode)
+	c.Dialer = r.newDialer(ctx, proto, server.Version)
 
 	co := new(dns.Conn)
-	co.Conn, err = c.Dialer.DialContext(ctx, c.Net, server.Host)
+	co.Conn, err = c.Dialer.DialContext(ctx, c.Net, server.Addr)
 	if err != nil {
 		return nil, err
 	}
 	defer co.Close()
 
 	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
-		// we don't want to finish whole deadline while udp reading
+		// we will try tcp and udp
 		c.ReadTimeout = time.Until(d) / 2
 		c.WriteTimeout = time.Until(d) / 2
-
-		co.Conn.SetDeadline(d) // useful for tcp
 	}
+
+	// data race, because we have parallel queries
+	req = req.Copy()
 
 	resp, rtt, err = c.ExchangeWithConn(req, co)
 	if err != nil {
-		if proto == "udp" {
-			return r.exchange(ctx, "tcp", server, req)
-		}
+		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Addr,
+			"net", c.Net, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error())
 
-		log.Debug("Socket error in server communication", "query", formatQuestion(q), "server", server, "net", c.Net, "error", err.Error())
+		if !retried {
+			if proto == "udp" {
+				proto = "tcp"
+			} else {
+				proto = "udp"
+			}
+			// retry with another protocol
+			if d, ok := ctx.Deadline(); ok && time.Until(d).Milliseconds() > 0 {
+				return r.exchange(ctx, proto, server, req, true)
+			}
+		}
 
 		return nil, err
 	}
@@ -695,19 +959,19 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
-		return r.exchange(ctx, proto, server, req)
+		return r.exchange(ctx, proto, server, req, retried)
 	}
 
 	return resp, nil
 }
 
-func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Mode) (d *net.Dialer) {
+func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Version) (d *net.Dialer) {
 	d = &net.Dialer{}
 
-	if deadline, ok := ctx.Deadline(); ok {
+	if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
 		d.Deadline = deadline
 	} else {
-		d.Deadline = time.Now().Add(r.cfg.ConnectTimeout.Duration)
+		d.Deadline = time.Now().Add(r.cfg.Timeout.Duration)
 	}
 
 	if mode == authcache.IPv4 {
@@ -849,7 +1113,6 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
 	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	dsReq.RecursionDesired = true
 
 	dsres, err := dnsutil.ExchangeInternal(ctx, proto, dsReq)
 	if err != nil {
@@ -871,23 +1134,31 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv4 address", "qname", qname)
 
+	if addrs, ok := r.getIPv4Cache(qname); ok {
+		return addrs, nil
+	}
+
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	nsReq.RecursionDesired = true
 	nsReq.CheckingDisabled = cd
 
-	key := cache.Hash(nsReq.Question[0], cd)
+	q := nsReq.Question[0]
+
+	key := cache.Hash(q, cd)
 
 	r.lqueue.Wait(key)
 
-	if c := r.lqueue.Get(key); c != nil {
-		// try look glue cache
+	for c, l := r.lqueue.Get(key), 20; c != nil && l != 0; c, l = r.lqueue.Get(key), l-1 {
 		if addrs, ok := r.getIPv4Cache(qname); ok {
 			return addrs, nil
 		}
 
-		// loop here stop
+		r.lqueue.Wait(key)
+	}
+
+	if c := r.lqueue.Get(key); c != nil {
+		log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
 
@@ -915,6 +1186,63 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	}
 
 	return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
+}
+
+func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
+	log.Debug("Lookup NS ipv6 address", "qname", qname)
+
+	if addrs, ok := r.getIPv6Cache(qname); ok {
+		return addrs, nil
+	}
+
+	nsReq := new(dns.Msg)
+	nsReq.SetQuestion(qname, dns.TypeAAAA)
+	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	nsReq.CheckingDisabled = cd
+
+	q := nsReq.Question[0]
+
+	key := cache.Hash(q, cd)
+
+	r.lqueue.Wait(key)
+
+	for c, l := r.lqueue.Get(key), 20; c != nil && l != 0; c, l = r.lqueue.Get(key), l-1 {
+		if addrs, ok := r.getIPv6Cache(qname); ok {
+			return addrs, nil
+		}
+
+		r.lqueue.Wait(key)
+	}
+
+	if c := r.lqueue.Get(key); c != nil {
+		log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
+		return addrs, nil
+	}
+
+	r.lqueue.Add(key)
+	defer r.lqueue.Done(key)
+
+	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
+	if err != nil {
+		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s (%v)", qname, err)
+	}
+
+	if nsres.Truncated && proto == "udp" {
+		// retrying in TCP mode
+		r.lqueue.Done(key)
+		return r.lookupNSAddrV6(ctx, "tcp", qname, cd)
+	}
+
+	if addrs, ok := searchAddrs(nsres); ok {
+		return addrs, nil
+	}
+
+	// try look glue cache
+	if addrs, ok := r.getIPv6Cache(qname); ok {
+		return addrs, nil
+	}
+
+	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
@@ -973,11 +1301,12 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 	keyReq := new(dns.Msg)
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
 	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	keyReq.RecursionDesired = true
 
 	var msg *dns.Msg
 
-	if resp.Question[0].Qtype != dns.TypeDNSKEY {
+	q := resp.Question[0]
+
+	if q.Qtype != dns.TypeDNSKEY || q.Name != signer {
 		msg, err = dnsutil.ExchangeInternal(ctx, proto, keyReq)
 		if err != nil {
 			return
@@ -987,8 +1316,8 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 			// retrying in TCP mode
 			return r.verifyDNSSEC(ctx, "tcp", signer, signed, resp, parentdsRR)
 		}
-	} else if resp.Question[0].Qtype == dns.TypeDNSKEY {
-		if resp.Question[0].Name == rootzone {
+	} else if q.Qtype == dns.TypeDNSKEY {
+		if q.Name == rootzone {
 			if !r.verifyRootKeys(resp) {
 				return false, fmt.Errorf("root zone keys not verified")
 			}
@@ -1026,7 +1355,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 	}
 
 	// we don't need to verify rrsig questions.
-	if resp.Question[0].Qtype == dns.TypeRRSIG {
+	if q.Qtype == dns.TypeRRSIG {
 		return false, nil
 	}
 
@@ -1044,18 +1373,38 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 	return true, nil
 }
 
+func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
+	resp.Ns = []dns.RR{}
+
+	noclear := len(extra) == 0
+	if len(extra) > 0 && extra[0] == false {
+		noclear = true
+	}
+
+	if noclear {
+		resp.Extra = []dns.RR{}
+
+		opt := req.IsEdns0()
+		if opt != nil {
+			resp.Extra = append(resp.Extra, opt)
+		}
+	}
+
+	return resp
+}
+
 func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 	var list1, list2 []string
 
 	s1.RLock()
 	for _, s := range s1.List {
-		list1 = append(list1, s.Host)
+		list1 = append(list1, s.Addr)
 	}
 	s1.RUnlock()
 
 	s2.RLock()
 	for _, s := range s2.List {
-		list2 = append(list2, s.Host)
+		list2 = append(list2, s.Addr)
 	}
 	s2.RUnlock()
 
@@ -1079,7 +1428,6 @@ func (r *Resolver) checkPriming() error {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-	req.RecursionDesired = true
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.cfg.Timeout.Duration))
 	defer cancel()
@@ -1151,24 +1499,4 @@ func (r *Resolver) run() {
 	for range ticker.C {
 		r.checkPriming()
 	}
-}
-
-func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
-	resp.Ns = []dns.RR{}
-
-	noclear := len(extra) == 0
-	if len(extra) > 0 && extra[0] == false {
-		noclear = true
-	}
-
-	if noclear {
-		resp.Extra = []dns.RR{}
-
-		opt := req.IsEdns0()
-		if opt != nil {
-			resp.Extra = append(resp.Extra, opt)
-		}
-	}
-
-	return resp
 }

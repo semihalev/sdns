@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/semihalev/sdns/middleware"
 
@@ -19,6 +20,8 @@ type DNSHandler struct {
 	resolver *Resolver
 	cfg      *config.Config
 }
+
+type ctxKey string
 
 var debugns bool
 
@@ -45,6 +48,7 @@ func (h *DNSHandler) Name() string { return name }
 func (h *DNSHandler) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
+	ctx = context.WithValue(ctx, ctxKey("query"), req.Question[0])
 	msg := h.handle(ctx, w.Proto(), req)
 
 	w.WriteMsg(msg)
@@ -69,7 +73,7 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	}
 
 	// check purge query
-	if q.Qtype == dns.TypeNULL {
+	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
 			if qtype == dns.TypeNS {
 				h.purge(qname)
@@ -88,7 +92,13 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	log.Debug("Lookup", "net", proto, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
+	// we shouldn't send rd and ad flag to aa servers
+	req.RecursionDesired = false
+	req.AuthenticatedData = false
+
+	//TODO (semihalev): config setable after this
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.Timeout.Duration*4))
+	defer cancel()
 
 	depth := h.cfg.Maxdepth
 	resp, err := h.resolver.Resolve(ctx, proto, req, h.resolver.rootservers, true, depth, 0, false, nil)
@@ -116,7 +126,6 @@ func (h *DNSHandler) additionalAnswer(ctx context.Context, proto string, req, ms
 
 	cnameReq := new(dns.Msg)
 	cnameReq.Extra = req.Extra
-	cnameReq.RecursionDesired = true
 	cnameReq.CheckingDisabled = req.CheckingDisabled
 
 	for _, answer := range msg.Answer {

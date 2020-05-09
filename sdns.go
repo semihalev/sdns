@@ -23,13 +23,13 @@ var (
 	Config *config.Config
 
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "0.3.4"
+	Version = "1.0.0-rc1"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-	ConfigVersion = "0.3.3"
+	ConfigVersion = "1.0.0"
 
 	// ConfigPath returns the configuration path
-	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
+	ConfigPath = flag.String("config", "sdns.conf", "location of the config file, if not found it will be generated")
 
 	// VersionFlag returns of the flag of version
 	VersionFlag = flag.Bool("v", false, "version information")
@@ -41,7 +41,7 @@ var (
 		flag.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "USAGE:")
-		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.toml")
+		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.conf")
 		fmt.Fprintln(os.Stderr, "")
 	}
 )
@@ -54,7 +54,7 @@ func init() {
 func setup() {
 	var err error
 
-	if Config, err = config.Load(*ConfigPath, ConfigVersion); err != nil {
+	if Config, err = config.Load(*ConfigPath, ConfigVersion, Version); err != nil {
 		log.Crit("Config loading failed", "error", err.Error())
 	}
 

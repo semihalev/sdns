@@ -11,7 +11,7 @@ import (
 )
 
 func Test_lqueueWait(t *testing.T) {
-	lqueue := New()
+	lqueue := New(5 * time.Second)
 	mu := sync.RWMutex{}
 
 	m := new(dns.Msg)

@@ -38,8 +38,7 @@ func makeTestConfig() *config.Config {
 	cfg.Maxdepth = 30
 	cfg.Expire = 600
 	cfg.CacheSize = 1024
-	cfg.Timeout.Duration = 1 * time.Second
-	cfg.ConnectTimeout.Duration = 1 * time.Second
+	cfg.Timeout.Duration = 2 * time.Second
 
 	return cfg
 }

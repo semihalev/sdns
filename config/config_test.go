@@ -8,12 +8,12 @@ import (
 )
 
 func Test_config(t *testing.T) {
-	const configFile = "temp.toml"
+	const configFile = "example.conf"
 
 	err := generateConfig(configFile, "0.0.0")
 	assert.NoError(t, err)
 
-	_, err = Load(configFile, "0.0.0")
+	_, err = Load(configFile, "0.0.0", "0.0.0")
 	assert.NoError(t, err)
 
 	os.Remove(configFile)
@@ -22,6 +22,6 @@ func Test_config(t *testing.T) {
 func Test_configError(t *testing.T) {
 	const configFile = ""
 
-	_, err := Load(configFile, "0.0.0")
+	_, err := Load(configFile, "0.0.0", "0.0.0")
 	assert.Error(t, err)
 }

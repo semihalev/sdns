@@ -1,7 +1,7 @@
 server.crt
 server.key
 sdns
-sdns.toml
+sdns.conf
 sdns_*
 coverage.out
 blist_data
