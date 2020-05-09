@@ -113,6 +113,7 @@ example.com.		5	IN	HINFO	"ns" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 | **whitelist**       | Manual whitelist entries                                                                                                       |
 | **cookiesecret**    | DNS cookie secret (RFC 7873), if no cookiesecret set, it will be generate automatically                                        |
 | **nsid**            | DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled                           |
+| **chaos**           | Enable to answer version.server, version.bind, hostname.bind and id.server chaos txt queries.                                  |
 
 ## Server Configuration Checklist
 
@@ -122,23 +123,27 @@ example.com.		5	IN	HINFO	"ns" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 
 -   Linux/BSD/Darwin/Windows supported
 -   DNS RFC compatibility
--   DNS lookups within listed servers
+-   DNS lookups within listed ipv4 and ipv6 auth servers
 -   DNS caching
 -   DNSSEC validation
--   DNS over TLS support
--   DNS over HTTPS support
--   Middleware Support
+-   DNS over TLS support (DoT)
+-   DNS over HTTPS support (DoH)
+-   Outbound IP selection
+-   Middleware Support, you can add, your own middleware
 -   RTT priority within listed servers
+-   Failover forwarders while returning failured responses
 -   EDNS Cookie Support (client&lt;->server)
 -   EDNS NSID Support
 -   Full IPv6 support (client&lt;->server, server&lt;->server)
 -   Query based ratelimit
 -   IP based ratelimit
 -   Access list
+-   Access log
 -   Prometheus basic query metrics
--   Black-hole internet advertisements and malware servers
+-   Black-hole for malware responses
 -   HTTP API support
--   Outbound IP selection
+-   Cache Purge API and queru support
+-   Answered chaos txt queries for version.bind and hostname.bind
 
 ## TODO
 
