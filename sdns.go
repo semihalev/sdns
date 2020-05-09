@@ -29,7 +29,7 @@ var (
 	ConfigVersion = "1.0.0"
 
 	// ConfigPath returns the configuration path
-	ConfigPath = flag.String("config", "sdns.toml", "location of the config file, if not found it will be generated")
+	ConfigPath = flag.String("config", "sdns.conf", "location of the config file, if not found it will be generated")
 
 	// VersionFlag returns of the flag of version
 	VersionFlag = flag.Bool("v", false, "version information")
@@ -41,7 +41,7 @@ var (
 		flag.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "USAGE:")
-		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.toml")
+		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.conf")
 		fmt.Fprintln(os.Stderr, "")
 	}
 )

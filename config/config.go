@@ -215,10 +215,19 @@ func Load(path, version string, sVersion string) (*Config, error) {
 	config := new(Config)
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := generateConfig(path, version); err != nil {
-			return nil, err
+		if path == "sdns.conf" {
+			// compatibility for old default conf file
+			if _, err := os.Stat("sdns.toml"); os.IsNotExist(err) {
+				if err := generateConfig(path, version); err != nil {
+					return nil, err
+				}
+			} else {
+				path = "sdns.toml"
+			}
 		}
 	}
+
+	log.Info("Loading config file", "path", path)
 
 	if _, err := toml.DecodeFile(path, config); err != nil {
 		return nil, fmt.Errorf("could not load config: %s", err)

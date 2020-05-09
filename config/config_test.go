@@ -8,7 +8,7 @@ import (
 )
 
 func Test_config(t *testing.T) {
-	const configFile = "temp.toml"
+	const configFile = "example.conf"
 
 	err := generateConfig(configFile, "0.0.0")
 	assert.NoError(t, err)
