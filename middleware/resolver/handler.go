@@ -73,7 +73,7 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	}
 
 	// check purge query
-	if q.Qtype == dns.TypeNULL {
+	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
 			if qtype == dns.TypeNS {
 				h.purge(qname)

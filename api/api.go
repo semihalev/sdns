@@ -82,6 +82,7 @@ func (a *API) purge(c *gin.Context) {
 
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
+	req.Question[0].Qclass = dns.ClassCHAOS
 
 	dnsutil.ExchangeInternal(context.Background(), "udp", req)
 

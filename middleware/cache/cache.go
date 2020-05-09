@@ -85,7 +85,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	q := req.Question[0]
 
 	// check purge query
-	if q.Qtype == dns.TypeNULL {
+	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
 			c.purge(qname, qtype)
 			dc.NextDNS(ctx)
