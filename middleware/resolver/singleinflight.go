@@ -23,10 +23,8 @@ type call struct {
 // singleflight represents a class of work and forms a namespace in
 // which units of work can be executed with duplicate suppression.
 type singleflight struct {
-	sync.Mutex                  // protects m
-	m          map[uint64]*call // lazily initialized
-
-	dontDeleteForTesting bool // this is only to be used by TestConcurrentExchanges
+	sync.RWMutex                  // protects m
+	m            map[uint64]*call // lazily initialized
 }
 
 // Do executes and returns the results of the given function, making
@@ -53,11 +51,20 @@ func (g *singleflight) Do(key uint64, fn func() (*dns.Msg, error)) (v *dns.Msg, 
 	c.val, c.err = fn()
 	c.wg.Done()
 
-	if !g.dontDeleteForTesting {
-		g.Lock()
-		delete(g.m, key)
-		g.Unlock()
-	}
+	g.Lock()
+	delete(g.m, key)
+	g.Unlock()
 
 	return c.val, c.dups > 0, c.err
+}
+
+func (g *singleflight) Exists(key uint64) bool {
+	g.RLock()
+	defer g.RUnlock()
+
+	if _, ok := g.m[key]; ok {
+		return true
+	}
+
+	return false
 }

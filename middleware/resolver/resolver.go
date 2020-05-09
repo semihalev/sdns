@@ -462,23 +462,35 @@ func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcach
 	var raddrsv4 []string
 	var raddrsv6 []string
 
+	nsipv4 := make(map[string][]string)
+	nsipv6 := make(map[string][]string)
+
 	for _, name := range servers.Nss {
+		r.removeIPv4Cache(name)
 		addrs, err := r.lookupNSAddrV4(ctx, proto, name, servers.CheckingDisable)
 		if err != nil {
 			continue
 		}
 
 		raddrsv4 = append(raddrsv4, addrs...)
+
+		nsipv4[name] = addrs
 	}
 
 	for _, name := range servers.Nss {
+		r.removeIPv6Cache(name)
 		addrs, err := r.lookupNSAddrV6(ctx, proto, name, servers.CheckingDisable)
 		if err != nil {
 			continue
 		}
 
 		raddrsv6 = append(raddrsv6, addrs...)
+
+		nsipv6[name] = addrs
 	}
+
+	r.addIPv4Cache(nsipv4)
+	r.addIPv6Cache(nsipv6)
 
 	servers.Lock()
 	defer servers.Unlock()
@@ -603,6 +615,10 @@ func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
 	return []string{}, false
 }
 
+func (r *Resolver) removeIPv4Cache(name string) {
+	r.ipv4cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA}))
+}
+
 func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
 	for name, addrs := range nsipv6 {
 		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA})
@@ -617,6 +633,10 @@ func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
 	}
 
 	return []string{}, false
+}
+
+func (r *Resolver) removeIPv6Cache(name string) {
+	r.ipv6cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA}))
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
@@ -1114,6 +1134,10 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv4 address", "qname", qname)
 
+	if addrs, ok := r.getIPv4Cache(qname); ok {
+		return addrs, nil
+	}
+
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -1134,7 +1158,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	}
 
 	if c := r.lqueue.Get(key); c != nil {
-		log.Debug("Looping during nameserver lookup", "query", formatQuestion(q))
+		log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
 
@@ -1167,6 +1191,10 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv6 address", "qname", qname)
 
+	if addrs, ok := r.getIPv6Cache(qname); ok {
+		return addrs, nil
+	}
+
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeAAAA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -1187,7 +1215,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 	}
 
 	if c := r.lqueue.Get(key); c != nil {
-		log.Debug("Looping during nameserver lookup", "query", formatQuestion(q))
+		log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
 

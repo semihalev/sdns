@@ -9,14 +9,15 @@ import (
 type LQueue struct {
 	mu sync.RWMutex
 
-	delay    map[uint64]chan struct{}
+	l map[uint64]chan struct{}
+
 	duration time.Duration
 }
 
 // New func
 func New(duration time.Duration) *LQueue {
 	return &LQueue{
-		delay: make(map[uint64]chan struct{}),
+		l: make(map[uint64]chan struct{}),
 
 		duration: duration,
 	}
@@ -27,7 +28,7 @@ func (q *LQueue) Get(key uint64) <-chan struct{} {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	if c, ok := q.delay[key]; ok {
+	if c, ok := q.l[key]; ok {
 		return c
 	}
 
@@ -38,7 +39,7 @@ func (q *LQueue) Get(key uint64) <-chan struct{} {
 func (q *LQueue) Wait(key uint64) {
 	q.mu.RLock()
 
-	if c, ok := q.delay[key]; ok {
+	if c, ok := q.l[key]; ok {
 		q.mu.RUnlock()
 		select {
 		case <-c:
@@ -55,7 +56,7 @@ func (q *LQueue) Add(key uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	q.delay[key] = make(chan struct{})
+	q.l[key] = make(chan struct{})
 }
 
 // Done func
@@ -63,9 +64,9 @@ func (q *LQueue) Done(key uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if c, ok := q.delay[key]; ok {
+	if c, ok := q.l[key]; ok {
 		close(c)
 	}
 
-	delete(q.delay, key)
+	delete(q.l, key)
 }
