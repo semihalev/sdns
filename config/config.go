@@ -45,6 +45,14 @@ type Config struct {
 	NSID            string
 	Blocklist       []string
 	Whitelist       []string
+	Chaos           bool
+
+	sVersion string
+}
+
+// ServerVersion return current server version
+func (c *Config) ServerVersion() string {
+	return c.sVersion
 }
 
 // Duration type
@@ -197,10 +205,13 @@ whitelist = []
 
 # DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled
 nsid = ""
+
+# Enable to answer version.server, version.bind, hostname.bind, id.server chaos queries.
+chaos = true
 `
 
 // Load loads the given config file
-func Load(path, version string) (*Config, error) {
+func Load(path, version string, sVersion string) (*Config, error) {
 	config := new(Config)
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -214,8 +225,10 @@ func Load(path, version string) (*Config, error) {
 	}
 
 	if config.Version != version {
-		log.Warn("Config file is out of date, you can generate new one and check the changes.")
+		log.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
+
+	config.sVersion = sVersion
 
 	return config, nil
 }

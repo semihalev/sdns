@@ -54,7 +54,7 @@ func init() {
 func setup() {
 	var err error
 
-	if Config, err = config.Load(*ConfigPath, ConfigVersion); err != nil {
+	if Config, err = config.Load(*ConfigPath, ConfigVersion, Version); err != nil {
 		log.Crit("Config loading failed", "error", err.Error())
 	}
 
