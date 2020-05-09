@@ -142,8 +142,8 @@ example.com.		5	IN	HINFO	"ns" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 -   Prometheus basic query metrics
 -   Black-hole for malware responses
 -   HTTP API support
--   Cache Purge API and queru support
--   Answered chaos txt queries for version.bind and hostname.bind
+-   Cache Purge API and query support
+-   Answer chaos txt queries for version.bind and hostname.bind
 
 ## TODO
 
