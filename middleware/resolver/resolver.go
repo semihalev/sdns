@@ -137,6 +137,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	}
 
 	// RFC 7816 query minimization. There are some concerns in RFC.
+	// Current minimize level 3, if we go level 5, performance drops %20
 	minReq, minimized := r.minimize(req, level)
 
 	log.Debug("Query inserted", "net", proto, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
@@ -145,6 +146,11 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	if err != nil {
 		// lets check nameservers
 		if _, ok := err.(fatalError); ok {
+			// no need to check for nsaddrs lookups
+			if v := ctx.Value(ctxKey("nsl")); v != nil {
+				return nil, err
+			}
+
 			log.Debug("Received timeout from all servers, checking nameservers", "net", proto, "query", formatQuestion(minReq.Question[0]))
 
 			if ok := r.checkNss(ctx, proto, servers); ok {
@@ -296,7 +302,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				return nil, errMaxDepth
 			}
 
-			return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, nlevel, nsl, ncache.DSRR)
+			level++
+			return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, level, nsl, ncache.DSRR)
 		}
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
@@ -319,6 +326,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				level++
 				return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
 			}
+
 			return nil, errors.New("nameservers are unreachable")
 		}
 
@@ -653,7 +661,7 @@ func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
 			if minReq.Question[0].Name == q.Name {
 				minimized = false
 			} else {
-				minReq.Question[0].Qtype = dns.TypeNS
+				minReq.Question[0].Qtype = dns.TypeA
 			}
 		}
 	}
@@ -1138,6 +1146,8 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 		return addrs, nil
 	}
 
+	ctx = context.WithValue(ctx, ctxKey("nsl"), true)
+
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -1194,6 +1204,8 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 	if addrs, ok := r.getIPv6Cache(qname); ok {
 		return addrs, nil
 	}
+
+	ctx = context.WithValue(ctx, ctxKey("nsl"), true)
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeAAAA)
