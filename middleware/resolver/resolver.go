@@ -191,9 +191,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	}
 
 	if minimized && len(resp.Answer) > 0 {
-		for _, rr := range resp.Answer {
-			resp.Ns = append(resp.Ns, rr)
-		}
+		level++
+		return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
 	}
 
 	if len(resp.Ns) > 0 {
