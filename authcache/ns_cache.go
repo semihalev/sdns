@@ -56,6 +56,8 @@ func (n *NSCache) Get(key uint64) (*NS, error) {
 func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers, ttl time.Duration) {
 	if ttl > maximumTTL {
 		ttl = maximumTTL
+	} else if ttl < minimumTTL {
+		ttl = minimumTTL
 	}
 
 	n.cache.Add(key, &NS{
@@ -73,5 +75,6 @@ func (n *NSCache) Remove(key uint64) {
 
 const (
 	maximumTTL = 12 * time.Hour
+	minimumTTL = 1 * time.Hour
 	defaultCap = 1024 * 256
 )

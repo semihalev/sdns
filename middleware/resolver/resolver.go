@@ -146,7 +146,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	if err != nil {
 		// lets check nameservers
 		if _, ok := err.(fatalError); ok {
-			// no need to check for nsaddrs lookups
+			// no check for nsaddrs lookups
 			if v := ctx.Value(ctxKey("nsl")); v != nil {
 				return nil, err
 			}
@@ -185,12 +185,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		return r.answer(ctx, proto, req, resp, parentdsrr, extra...)
 	}
 
-	if minimized && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
-		level++
-		return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
-	}
-
-	if minimized && len(resp.Answer) > 0 {
+	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
 		level++
 		return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
 	}
