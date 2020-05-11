@@ -6,10 +6,12 @@ import (
 	"math/rand"
 	"net"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -301,4 +303,16 @@ func checkExponent(key string) bool {
 	}
 
 	return true
+}
+
+func reuseportControl(network, address string, c syscall.RawConn) error {
+	var opErr error
+	err := c.Control(func(fd uintptr) {
+		opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+	})
+	if err != nil {
+		return err
+	}
+
+	return opErr
 }

@@ -978,6 +978,8 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.V
 		d.Deadline = time.Now().Add(r.cfg.Timeout.Duration)
 	}
 
+	d.Control = reuseportControl
+
 	if mode == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {
 			index := randInt(0, len(r.outboundipv4))
