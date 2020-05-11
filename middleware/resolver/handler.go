@@ -68,7 +68,7 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	}
 
 	// debug ns stats
-	if debugns && q.Qtype == dns.TypeHINFO {
+	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
 		return h.nsStats(req)
 	}
 
@@ -194,13 +194,13 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	rrHeader := dns.RR_Header{
 		Name:   name,
 		Rrtype: dns.TypeHINFO,
-		Class:  dns.ClassINET,
+		Class:  dns.ClassCHAOS,
 		Ttl:    ttl,
 	}
 
 	servers.RLock()
 	for _, server := range servers.List {
-		hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
+		hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "Host", Os: server.String()}
 		msg.Ns = append(msg.Ns, hinfo)
 	}
 	servers.RUnlock()
@@ -209,7 +209,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 }
 
 func (h *DNSHandler) purge(qname string) {
-	q := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+	q := dns.Question{Name: qname, Qtype: dns.TypeNS}
 
 	key := cache.Hash(q, false)
 	h.resolver.ncache.Remove(key)

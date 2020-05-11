@@ -58,9 +58,9 @@ Usage: send HINFO query for zones.
 
 Example Output:
 ```shell
-$ dig hinfo example.com
+$ dig chaos hinfo example.com
 
-; <<>> DiG 9.10.6 <<>> hinfo example.com
+; <<>> DiG 9.10.6 <<>> chaos hinfo example.com
 ;; global options: +cmd
 ;; Got answer:
 ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 45590
@@ -69,13 +69,13 @@ $ dig hinfo example.com
 ;; OPT PSEUDOSECTION:
 ; EDNS: version: 0, flags:; udp: 1400
 ;; QUESTION SECTION:
-;example.com.			IN	HINFO
+;example.com.			CH	HINFO
 
 ;; AUTHORITY SECTION:
-example.com.		5	IN	HINFO	"ns" "IPv4:199.43.135.53:53 rtt:145ms health:[GOOD]"
-example.com.		5	IN	HINFO	"ns" "IPv4:199.43.133.53:53 rtt:143ms health:[GOOD]"
-example.com.		5	IN	HINFO	"ns" "IPv6:[2001:500:8d::53]:53 rtt:5s health:[POOR]"
-example.com.		5	IN	HINFO	"ns" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
+example.com.		5	CH	HINFO	"Host" "IPv4:199.43.135.53:53 rtt:145ms health:[GOOD]"
+example.com.		5	CH	HINFO	"Host" "IPv4:199.43.133.53:53 rtt:143ms health:[GOOD]"
+example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:5s health:[POOR]"
+example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 ```
 
 ## Configuration (v1.0.0)
