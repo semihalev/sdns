@@ -301,6 +301,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				return nil, errMaxDepth
 			}
 
+			//TODO (semihalev): need more tests
+			// original code: return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, nlevel, nsl, ncache.DSRR)
 			level++
 			return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, level, nsl, ncache.DSRR)
 		}
@@ -1155,6 +1157,10 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	q := nsReq.Question[0]
 
 	key := cache.Hash(q, cd)
+	if v := ctx.Value(ctxKey("query")); v != nil {
+		qkey := cache.Hash(v.(dns.Question))
+		key = key + qkey
+	}
 
 	r.lqueue.Wait(key)
 
@@ -1214,6 +1220,10 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 	q := nsReq.Question[0]
 
 	key := cache.Hash(q, cd)
+	if v := ctx.Value(ctxKey("query")); v != nil {
+		qkey := cache.Hash(v.(dns.Question))
+		key = key + qkey
+	}
 
 	r.lqueue.Wait(key)
 
