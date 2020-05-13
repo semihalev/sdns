@@ -182,7 +182,7 @@ timeout = "5s"
 # connect timeout for dns lookups in duration (deprecated, no longer used)
 # connecttimeout = ""
 
-# default cache TTL in seconds
+# default error cache TTL in seconds
 expire = 600
 
 # cache size (total records in cache)

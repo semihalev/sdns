@@ -6,12 +6,11 @@ import (
 	"math/rand"
 	"net"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -146,12 +145,18 @@ func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
 	return out
 }
 
-func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
+func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) (bool, error) {
+	unsupportedDigest := false
 	for i, r := range parentDSSet {
 		parentDS, ok := r.(*dns.DS)
 		if !ok {
 			continue
 		}
+
+		if parentDS.DigestType == dns.GOST94 {
+			unsupportedDigest = true
+		}
+
 		ksk, present := keyMap[parentDS.KeyTag]
 		if !present {
 			continue
@@ -162,18 +167,18 @@ func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
 			if i != len(parentDSSet)-1 {
 				continue
 			}
-			return errFailedToConvertKSK
+			return unsupportedDigest, errFailedToConvertKSK
 		}
 		if ds.Digest != parentDS.Digest {
 			if i != len(parentDSSet)-1 {
 				continue
 			}
-			return errMismatchingDS
+			return unsupportedDigest, errMismatchingDS
 		}
-		return nil
+		return unsupportedDigest, nil
 	}
 
-	return errMissingKSK
+	return unsupportedDigest, errMissingKSK
 }
 
 func isDO(req *dns.Msg) bool {
@@ -305,14 +310,59 @@ func checkExponent(key string) bool {
 	return true
 }
 
-func reuseportControl(network, address string, c syscall.RawConn) error {
-	var opErr error
-	err := c.Control(func(fd uintptr) {
-		opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-	})
-	if err != nil {
-		return err
+var reqPool sync.Pool
+
+// AcquireMsg returns an empty msg from pool
+func AcquireMsg() *dns.Msg {
+	v := reqPool.Get()
+	if v == nil {
+		return &dns.Msg{}
+	}
+	return v.(*dns.Msg)
+}
+
+// ReleaseMsg returns req to pool
+func ReleaseMsg(req *dns.Msg) {
+	req.Id = 0
+	req.Response = false
+	req.Opcode = 0
+	req.Authoritative = false
+	req.Truncated = false
+	req.RecursionDesired = false
+	req.RecursionAvailable = false
+	req.Zero = false
+	req.AuthenticatedData = false
+	req.CheckingDisabled = false
+	req.Rcode = 0
+	req.Compress = false
+	req.Question = nil
+	req.Answer = nil
+	req.Ns = nil
+	req.Extra = nil
+
+	reqPool.Put(req)
+}
+
+var connPool sync.Pool
+
+// AcquireConn returns an empty conn from pool
+func AcquireConn() *Conn {
+	v := connPool.Get()
+	if v == nil {
+		return &Conn{}
+	}
+	return v.(*Conn)
+}
+
+// ReleaseConn returns req to pool
+func ReleaseConn(co *Conn) {
+	if co.Conn != nil {
+		co.Conn.Close()
 	}
 
-	return opErr
+	co.UDPSize = 0
+	co.TsigSecret = nil
+	co.Conn = nil
+
+	connPool.Put(co)
 }

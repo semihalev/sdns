@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -46,10 +47,14 @@ type ResponseWriter struct {
 	*Cache
 }
 
+var debugns bool
+
 func init() {
 	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
 		return New(cfg)
 	})
+
+	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
 }
 
 // New return cache
@@ -91,6 +96,11 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 			dc.NextDNS(ctx)
 			return
 		}
+	}
+
+	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
+		dc.NextDNS(ctx)
+		return
 	}
 
 	key := cache.Hash(q, req.CheckingDisabled)
@@ -145,11 +155,15 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
-	mt, _ := response.Typify(res, w.now().UTC())
-
 	q := res.Question[0]
 
+	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
+		return w.ResponseWriter.WriteMsg(res)
+	}
+
 	key := cache.Hash(q, res.CheckingDisabled)
+
+	mt, _ := response.Typify(res, w.now().UTC())
 
 	// clear additional records
 	var answer []dns.RR
@@ -326,7 +340,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 	for _, r := range res.Answer {
-		msg.Answer = append(msg.Answer, dns.Copy(r))
+		msg.Answer = append(msg.Answer, r)
 
 		if r.Header().Rrtype == dns.TypeCNAME {
 			cr := r.(*dns.CNAME)
@@ -336,7 +350,7 @@ func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 	}
 
 	for _, r := range res.Ns {
-		msg.Ns = append(msg.Ns, dns.Copy(r))
+		msg.Ns = append(msg.Ns, r)
 	}
 
 	return

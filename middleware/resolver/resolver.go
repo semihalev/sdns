@@ -317,7 +317,11 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		// we don't want to wait this, if we have glue records, we will use.
 		go r.lookupV6Nss(context.Background(), proto, q, authservers, foundv6, nss, cd)
 
-		if len(authservers.List) == 0 {
+		authservers.RLock()
+		list := len(authservers.List)
+		authservers.RUnlock()
+
+		if list == 0 {
 			if minimized && level < nlevel {
 				level++
 				return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
@@ -410,6 +414,9 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
 	// it will be work in background, we need time for that lookups
+	time.Sleep(2 * time.Second) // small hack for rate limits on aa
+
+	ctx = context.WithValue(context.Background(), ctxKey("nsl"), struct{}{})
 	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
 	defer cancel()
 
@@ -681,6 +688,12 @@ func (r *Resolver) answer(ctx context.Context, proto string, req, resp *dns.Msg,
 		q := req.Question[0]
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, true)
+		if !signerFound && len(parentdsrr) > 0 && q.Qtype == dns.TypeDS {
+			err = errDSRecords
+			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
+
+			return nil, err
+		}
 		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
 		if err != nil {
 			return nil, err
@@ -915,35 +928,43 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 	var resp *dns.Msg
 	var err error
 
-	rtt := r.cfg.Timeout.Duration
+	rtt := r.cfg.Timeout.Duration / 2
 	defer func() {
 		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
 		atomic.AddInt64(&server.Count, 1)
 	}()
 
-	c := &dns.Client{Net: proto}
-	c.Dialer = r.newDialer(ctx, proto, server.Version)
+	d := r.newDialer(ctx, proto, server.Version)
 
-	co := new(dns.Conn)
-	co.Conn, err = c.Dialer.DialContext(ctx, c.Net, server.Addr)
+	co := AcquireConn()
+	defer ReleaseConn(co) // this will be close conn also
+
+	co.Conn, err = d.DialContext(ctx, proto, server.Addr)
 	if err != nil {
+		log.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
 		return nil, err
 	}
-	defer co.Close()
+
+	now := time.Now()
+	deadline := now.Add(r.cfg.Timeout.Duration / 2)
 
 	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
-		// we will try tcp and udp
-		c.ReadTimeout = time.Until(d) / 2
-		c.WriteTimeout = time.Until(d) / 2
+		left := d.Sub(now) / 2 // tcp and udp
+		deadline = now.Add(left)
+		co.SetDeadline(now.Add(left))
+	} else {
+		co.SetDeadline(deadline)
 	}
 
 	// data race, because we have parallel queries
-	req = req.Copy()
+	req = req.CopyTo(AcquireMsg())
+	defer ReleaseMsg(req)
 
-	resp, rtt, err = c.ExchangeWithConn(req, co)
+	resp, rtt, err = co.Exchange(req, deadline)
 	if err != nil {
-		log.Debug("Upstream server connection failed", "query", formatQuestion(q), "upstream", server.Addr,
-			"net", c.Net, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error())
+		log.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
 
 		if !retried {
 			if proto == "udp" {
@@ -952,9 +973,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 				proto = "udp"
 			}
 			// retry with another protocol
-			if d, ok := ctx.Deadline(); ok && time.Until(d).Milliseconds() > 0 {
-				return r.exchange(ctx, proto, server, req, true)
-			}
+			return r.exchange(ctx, proto, server, req, true)
 		}
 
 		return nil, err
@@ -972,13 +991,13 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Version) (d *net.Dialer) {
 	d = &net.Dialer{}
 
-	if deadline, ok := ctx.Deadline(); ok && !deadline.IsZero() {
-		d.Deadline = deadline
-	} else {
-		d.Deadline = time.Now().Add(r.cfg.Timeout.Duration)
-	}
+	now := time.Now()
+	d.Deadline = now.Add(r.cfg.Timeout.Duration / 2)
 
-	d.Control = reuseportControl
+	if cd, ok := ctx.Deadline(); ok && !cd.IsZero() {
+		left := cd.Sub(now) / 2 // tcp and udp
+		d.Deadline = now.Add(left)
+	}
 
 	if mode == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {
@@ -1116,7 +1135,9 @@ func (r *Resolver) findDS(ctx context.Context, proto, signer, qname string, resp
 func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.Msg, err error) {
 	log.Debug("Lookup DS record", "qname", qname, "proto", proto)
 
-	dsReq := new(dns.Msg)
+	dsReq := AcquireMsg()
+	defer ReleaseMsg(dsReq)
+
 	dsReq.SetQuestion(qname, dns.TypeDS)
 	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 
@@ -1144,9 +1165,11 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 		return addrs, nil
 	}
 
-	ctx = context.WithValue(ctx, ctxKey("nsl"), true)
+	ctx = context.WithValue(ctx, ctxKey("nsl"), struct{}{})
 
-	nsReq := new(dns.Msg)
+	nsReq := AcquireMsg()
+	defer ReleaseMsg(nsReq)
+
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
@@ -1207,9 +1230,11 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 		return addrs, nil
 	}
 
-	ctx = context.WithValue(ctx, ctxKey("nsl"), true)
+	ctx = context.WithValue(ctx, ctxKey("nsl"), struct{}{})
 
-	nsReq := new(dns.Msg)
+	nsReq := AcquireMsg()
+	defer ReleaseMsg(nsReq)
+
 	nsReq.SetQuestion(qname, dns.TypeAAAA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
@@ -1304,7 +1329,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 		panic("root zone dsset empty")
 	}
 
-	if err := verifyDS(keys, dsset); err != nil {
+	if _, err := verifyDS(keys, dsset); err != nil {
 		panic("root zone DS not verified")
 	}
 
@@ -1316,7 +1341,9 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 }
 
 func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
-	keyReq := new(dns.Msg)
+	keyReq := AcquireMsg()
+	defer ReleaseMsg(keyReq)
+
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
 	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 
@@ -1366,9 +1393,12 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 		return false, fmt.Errorf("DS RR set empty")
 	}
 
-	err = verifyDS(keys, parentdsRR)
+	unsupportedDigest, err := verifyDS(keys, parentdsRR)
 	if err != nil {
-		log.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error())
+		log.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported digest", unsupportedDigest)
+		if unsupportedDigest {
+			return false, nil
+		}
 		return
 	}
 
@@ -1443,7 +1473,9 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 }
 
 func (r *Resolver) checkPriming() error {
-	req := new(dns.Msg)
+	req := AcquireMsg()
+	defer ReleaseMsg(req)
+
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 

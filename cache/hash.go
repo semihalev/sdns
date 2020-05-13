@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"hash/fnv"
+	"sync"
 
 	"github.com/miekg/dns"
 )
@@ -11,7 +12,8 @@ import (
 // Hash returns a hash for cache
 func Hash(q dns.Question, cd ...bool) uint64 {
 	h := fnv.New64()
-	buf := bytes.NewBuffer(nil)
+	buf := AcquireBuf()
+	defer ReleaseBuf(buf)
 
 	binary.Write(buf, binary.BigEndian, q.Qtype)
 
@@ -30,4 +32,21 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 	h.Write(buf.Bytes())
 
 	return h.Sum64()
+}
+
+var bufferPool sync.Pool
+
+// AcquireBuf returns an buf from pool
+func AcquireBuf() *bytes.Buffer {
+	v := bufferPool.Get()
+	if v == nil {
+		return &bytes.Buffer{}
+	}
+	return v.(*bytes.Buffer)
+}
+
+// ReleaseBuf returns buf to pool
+func ReleaseBuf(buf *bytes.Buffer) {
+	buf.Reset()
+	bufferPool.Put(buf)
 }

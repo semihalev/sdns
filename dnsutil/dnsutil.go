@@ -195,9 +195,9 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 		}
 	}
 
-	answer := make([]dns.RR, len(msg.Answer))
-	copy(answer, msg.Answer)
+	var answer, ns []dns.RR
 
+	answer = append(answer, msg.Answer...)
 	msg.Answer = []dns.RR{}
 
 	for _, rr := range answer {
@@ -209,9 +209,7 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 		}
 	}
 
-	ns := make([]dns.RR, len(msg.Ns))
-	copy(ns, msg.Ns)
-
+	ns = append(ns, msg.Ns...)
 	msg.Ns = []dns.RR{}
 
 	for _, rr := range ns {
