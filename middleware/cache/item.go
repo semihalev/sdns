@@ -65,15 +65,22 @@ func (i *item) toMsg(m *dns.Msg, now time.Time) *dns.Msg {
 	m1.Ns = i.Ns
 	m1.Extra = i.Extra
 
+	m1.Answer = make([]dns.RR, len(i.Answer))
+	m1.Ns = make([]dns.RR, len(i.Ns))
+	m1.Extra = make([]dns.RR, len(i.Extra))
+
 	ttl := uint32(i.ttl(now))
-	for j := range i.Answer {
+	for j, r := range i.Answer {
+		m1.Answer[j] = dns.Copy(r)
 		m1.Answer[j].Header().Ttl = ttl
 	}
-	for j := range i.Ns {
+	for j, r := range i.Ns {
+		m1.Ns[j] = dns.Copy(r)
 		m1.Ns[j].Header().Ttl = ttl
 	}
 	// newItem skips OPT records, so we can just use i.Extra as is.
-	for j := range i.Extra {
+	for j, r := range i.Extra {
+		m1.Extra[j] = dns.Copy(r)
 		m1.Extra[j].Header().Ttl = ttl
 	}
 	return m1

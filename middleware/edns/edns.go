@@ -3,7 +3,6 @@ package edns
 import (
 	"context"
 	"encoding/hex"
-	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -66,18 +65,18 @@ func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		size = dns.MaxMsgSize
 	}
 
-	rw := AcquireWriter()
-	rw.ResponseWriter = w
-	rw.EDNS = e
-	rw.opt = opt
-	rw.size = size
-	rw.do = do
-	rw.cookie = cookie
-	rw.noedns = noedns
-	rw.nsid = nsid
-	rw.noad = !req.AuthenticatedData
+	dc.DNSWriter = &ResponseWriter{
+		ResponseWriter: w,
+		EDNS:           e,
 
-	dc.DNSWriter = rw
+		opt:    opt,
+		size:   size,
+		do:     do,
+		cookie: cookie,
+		noedns: noedns,
+		nsid:   nsid,
+		noad:   !req.AuthenticatedData,
+	}
 
 	dc.NextDNS(ctx)
 
@@ -86,8 +85,6 @@ func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 // WriteMsg implements the ctx.ResponseWriter interface
 func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
-	defer ReleaseWriter(w)
-
 	if !w.do {
 		m = dnsutil.ClearDNSSEC(m)
 	}
@@ -134,22 +131,6 @@ func (w *ResponseWriter) setNSID() {
 		Code: dns.EDNS0NSID,
 		Nsid: hex.EncodeToString([]byte(w.nsidstr)),
 	})
-}
-
-var writerPool sync.Pool
-
-// AcquireWriter returns an empty msg from pool
-func AcquireWriter() *ResponseWriter {
-	v := writerPool.Get()
-	if v == nil {
-		return &ResponseWriter{}
-	}
-	return v.(*ResponseWriter)
-}
-
-// ReleaseWriter returns msg to pool
-func ReleaseWriter(r *ResponseWriter) {
-	writerPool.Put(r)
 }
 
 const name = "edns"
