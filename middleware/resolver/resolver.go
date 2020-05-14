@@ -414,8 +414,6 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
 	// it will be work in background, we need time for that lookups
-	time.Sleep(2 * time.Second) // small hack for rate limits on aa
-
 	ctx = context.WithValue(context.Background(), ctxKey("nsl"), struct{}{})
 	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
 	defer cancel()
