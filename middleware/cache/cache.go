@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/semihalev/sdns/middleware"
@@ -285,7 +286,9 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		return msg
 	}
 
-	cnameReq := new(dns.Msg)
+	cnameReq := AcquireMsg()
+	defer ReleaseMsg(cnameReq)
+
 	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	cnameReq.CheckingDisabled = msg.CheckingDisabled
 
@@ -369,6 +372,39 @@ func computeTTL(msgTTL, minTTL, maxTTL time.Duration) time.Duration {
 		ttl = maxTTL
 	}
 	return ttl
+}
+
+var reqPool sync.Pool
+
+// AcquireMsg returns an empty msg from pool
+func AcquireMsg() *dns.Msg {
+	v := reqPool.Get()
+	if v == nil {
+		return &dns.Msg{}
+	}
+	return v.(*dns.Msg)
+}
+
+// ReleaseMsg returns req to pool
+func ReleaseMsg(req *dns.Msg) {
+	req.Id = 0
+	req.Response = false
+	req.Opcode = 0
+	req.Authoritative = false
+	req.Truncated = false
+	req.RecursionDesired = false
+	req.RecursionAvailable = false
+	req.Zero = false
+	req.AuthenticatedData = false
+	req.CheckingDisabled = false
+	req.Rcode = 0
+	req.Compress = false
+	req.Question = nil
+	req.Answer = nil
+	req.Ns = nil
+	req.Extra = nil
+
+	reqPool.Put(req)
 }
 
 const (
