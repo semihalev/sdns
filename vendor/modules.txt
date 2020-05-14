@@ -43,7 +43,7 @@ github.com/mattn/go-colorable
 github.com/mattn/go-isatty
 # github.com/matttproud/golang_protobuf_extensions v1.0.1
 github.com/matttproud/golang_protobuf_extensions/pbutil
-# github.com/miekg/dns v1.1.30-0.20200513192422-b28dcc1849b7
+# github.com/miekg/dns v1.1.30-0.20200514105037-b7da9d95e0ed
 github.com/miekg/dns
 # github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd
 github.com/modern-go/concurrent

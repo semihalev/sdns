@@ -6,7 +6,7 @@ require (
 	github.com/gin-contrib/pprof v1.3.0
 	github.com/gin-gonic/gin v1.6.3
 	github.com/mattn/go-colorable v0.1.6 // indirect
-	github.com/miekg/dns v1.1.30-0.20200513192422-b28dcc1849b7
+	github.com/miekg/dns v1.1.30-0.20200514105037-b7da9d95e0ed
 	github.com/onsi/gomega v1.10.0 // indirect
 	github.com/prometheus/client_golang v1.6.0
 	github.com/semihalev/log v0.0.0-20200513200305-7f20b48b19b7
