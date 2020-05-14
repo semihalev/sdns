@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -56,7 +57,11 @@ func (f *Failover) Name() string { return name }
 func (f *Failover) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w := dc.DNSWriter
 
-	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, f: f}
+	rw := AcquireWriter()
+	rw.ResponseWriter = w
+	rw.f = f
+
+	dc.DNSWriter = rw
 
 	dc.NextDNS(ctx)
 
@@ -65,6 +70,8 @@ func (f *Failover) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 // WriteMsg implements the ctx.ResponseWriter interface
 func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
+	defer ReleaseWriter(w)
+
 	if len(m.Question) == 0 || len(w.f.servers) == 0 {
 		return w.ResponseWriter.WriteMsg(m)
 	}
@@ -96,6 +103,22 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 
 func formatQuestion(q dns.Question) string {
 	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
+}
+
+var writerPool sync.Pool
+
+// AcquireWriter returns an empty msg from pool
+func AcquireWriter() *ResponseWriter {
+	v := writerPool.Get()
+	if v == nil {
+		return &ResponseWriter{}
+	}
+	return v.(*ResponseWriter)
+}
+
+// ReleaseWriter returns msg to pool
+func ReleaseWriter(r *ResponseWriter) {
+	writerPool.Put(r)
 }
 
 const name = "failover"

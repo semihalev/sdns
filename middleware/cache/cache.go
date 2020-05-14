@@ -374,37 +374,37 @@ func computeTTL(msgTTL, minTTL, maxTTL time.Duration) time.Duration {
 	return ttl
 }
 
-var reqPool sync.Pool
+var messagePool sync.Pool
 
 // AcquireMsg returns an empty msg from pool
 func AcquireMsg() *dns.Msg {
-	v := reqPool.Get()
+	v := messagePool.Get()
 	if v == nil {
 		return &dns.Msg{}
 	}
 	return v.(*dns.Msg)
 }
 
-// ReleaseMsg returns req to pool
-func ReleaseMsg(req *dns.Msg) {
-	req.Id = 0
-	req.Response = false
-	req.Opcode = 0
-	req.Authoritative = false
-	req.Truncated = false
-	req.RecursionDesired = false
-	req.RecursionAvailable = false
-	req.Zero = false
-	req.AuthenticatedData = false
-	req.CheckingDisabled = false
-	req.Rcode = 0
-	req.Compress = false
-	req.Question = nil
-	req.Answer = nil
-	req.Ns = nil
-	req.Extra = nil
+// ReleaseMsg returns msg to pool
+func ReleaseMsg(m *dns.Msg) {
+	m.Id = 0
+	m.Response = false
+	m.Opcode = 0
+	m.Authoritative = false
+	m.Truncated = false
+	m.RecursionDesired = false
+	m.RecursionAvailable = false
+	m.Zero = false
+	m.AuthenticatedData = false
+	m.CheckingDisabled = false
+	m.Rcode = 0
+	m.Compress = false
+	m.Question = nil
+	m.Answer = nil
+	m.Ns = nil
+	m.Extra = nil
 
-	reqPool.Put(req)
+	messagePool.Put(m)
 }
 
 const (
