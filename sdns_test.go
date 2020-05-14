@@ -152,7 +152,7 @@ func Test_UpdateBlocklists(t *testing.T) {
 
 	tempDir := filepath.Join(os.TempDir(), "/sdns_temp")
 
-	Config = new(config.Config)
+	Config := new(config.Config)
 	Config.Whitelist = append(Config.Whitelist, testDomain)
 	Config.Blocklist = append(Config.Blocklist, testDomain)
 

@@ -276,7 +276,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 	ctx := context.Background()
 
 	req := new(dns.Msg)
-	req.SetQuestion("asdadassd.nic.cz.", dns.TypeDS)
+	req.SetQuestion("testlabs.example.com.", dns.TypeDS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
