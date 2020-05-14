@@ -805,9 +805,6 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 	results := make(chan exchangeResult)
 
 	startRacer := func(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) {
-		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(r.cfg.Timeout.Duration))
-		defer cancel()
-
 		resp, err := r.exchange(ctx, proto, server, req, false)
 
 		select {
@@ -946,22 +943,13 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		return nil, err
 	}
 
-	now := time.Now()
-	deadline := now.Add(r.cfg.Timeout.Duration / 2)
-
-	if d, ok := ctx.Deadline(); ok && !d.IsZero() {
-		left := d.Sub(now) / 2 // tcp and udp
-		deadline = now.Add(left)
-		co.SetDeadline(now.Add(left))
-	} else {
-		co.SetDeadline(deadline)
-	}
+	co.SetDeadline(time.Now().Add(r.cfg.Timeout.Duration / 2))
 
 	// data race, because we have parallel queries
 	req = req.CopyTo(AcquireMsg())
 	defer ReleaseMsg(req)
 
-	resp, rtt, err = co.Exchange(req, deadline)
+	resp, rtt, err = co.Exchange(req)
 	if err != nil {
 		log.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
@@ -989,15 +977,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 }
 
 func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Version) (d *net.Dialer) {
-	d = &net.Dialer{}
-
-	now := time.Now()
-	d.Deadline = now.Add(r.cfg.Timeout.Duration / 2)
-
-	if cd, ok := ctx.Deadline(); ok && !cd.IsZero() {
-		left := cd.Sub(now) / 2 // tcp and udp
-		d.Deadline = now.Add(left)
-	}
+	d = &net.Dialer{Deadline: time.Now().Add(r.cfg.Timeout.Duration / 2)}
 
 	if mode == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {

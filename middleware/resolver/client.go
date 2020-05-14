@@ -27,7 +27,7 @@ type Conn struct {
 }
 
 // Exchange performs a synchronous query
-func (co *Conn) Exchange(m *dns.Msg, deadline time.Time) (r *dns.Msg, rtt time.Duration, err error) {
+func (co *Conn) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
 
 	opt := m.IsEdns0()
 	// If EDNS0 is used use that for size.
