@@ -339,6 +339,10 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 }
 
 func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
+	if msg.AuthenticatedData && !res.AuthenticatedData {
+		msg.AuthenticatedData = false
+	}
+
 	for _, r := range res.Answer {
 		msg.Answer = append(msg.Answer, r)
 
