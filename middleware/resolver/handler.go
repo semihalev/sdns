@@ -106,6 +106,14 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
 		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
+		return resp
+	}
+
+	if resp.Rcode == dns.RcodeRefused {
+		log.Info("Resolve query refused", "query", formatQuestion(q))
+
+		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
+		return resp
 	}
 
 	if resp.Truncated && proto == "udp" {
