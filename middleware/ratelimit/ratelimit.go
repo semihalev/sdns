@@ -53,6 +53,11 @@ func (r *RateLimit) Name() string { return name }
 func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
+	if w.Internal() {
+		dc.NextDNS(ctx)
+		return
+	}
+
 	if r.rate == 0 {
 		dc.NextDNS(ctx)
 		return

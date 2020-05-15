@@ -120,7 +120,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	i, found := c.get(key, now)
 	if i != nil && found {
-		if c.rate > 0 && i.RateLimit.Limit() {
+		if !w.Internal() && c.rate > 0 && i.RateLimit.Limit() {
 			//no reply to client
 			dc.Abort()
 			return

@@ -45,6 +45,11 @@ func (a *AccessList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (a *AccessList) ServeDNS(ctx context.Context, dc *ctx.Context) {
+	if dc.DNSWriter.Internal() {
+		dc.NextDNS(ctx)
+		return
+	}
+
 	allowed, _ := a.ranger.Contains(dc.DNSWriter.RemoteIP())
 
 	if !allowed {
