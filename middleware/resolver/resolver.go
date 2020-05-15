@@ -418,45 +418,39 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
 	defer cancel()
 
-	var wg sync.WaitGroup
 	for name := range nss {
 		if _, ok := foundv6[name]; ok {
 			continue
 		}
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
 
-			addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, cd)
-			nsipv6 := make(map[string][]string)
+		addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, cd)
+		nsipv6 := make(map[string][]string)
 
-			if err != nil {
-				log.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-				return
-			}
+		if err != nil {
+			log.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+			return
+		}
 
-			if len(addrs) == 0 {
-				return
-			}
+		if len(addrs) == 0 {
+			return
+		}
 
-			nsipv6[name] = addrs
+		nsipv6[name] = addrs
 
-			authservers.Lock()
-		addrsloop:
-			for _, addr := range addrs {
-				raddr := net.JoinHostPort(addr, "53")
-				for _, s := range authservers.List {
-					if s.Addr == raddr {
-						continue addrsloop
-					}
+		authservers.Lock()
+	addrsloop:
+		for _, addr := range addrs {
+			raddr := net.JoinHostPort(addr, "53")
+			for _, s := range authservers.List {
+				if s.Addr == raddr {
+					continue addrsloop
 				}
-				authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
 			}
-			authservers.Unlock()
-			r.addIPv6Cache(nsipv6)
-		}(name)
+			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
+		}
+		authservers.Unlock()
+		r.addIPv6Cache(nsipv6)
 	}
-	wg.Wait()
 }
 
 func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcache.AuthServers) (ok bool) {
