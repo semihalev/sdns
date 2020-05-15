@@ -140,7 +140,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// Current minimize level 3, if we go level 5, performance drops %20
 	minReq, minimized := r.minimize(req, level)
 
-	log.Debug("Query inserted", "net", proto, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
+	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
 	if err != nil {
@@ -163,10 +163,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	resp = r.setTags(req, resp)
 
 	if resp.Truncated {
-		if minimized && proto == "udp" {
+		if proto == "udp" {
 			return r.Resolve(ctx, "tcp", req, servers, false, depth, level, nsl, parentdsrr)
 		}
-		return resp, nil
 	}
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
@@ -356,13 +355,14 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
-	key := cache.Hash(q, req.CheckingDisabled)
+	key := cache.Hash(q, proto == "tcp")
 	resp, shared, err := r.group.Do(key, func() (*dns.Msg, error) {
 		return r.lookup(ctx, proto, req, servers, level)
 	})
 
 	if resp != nil && shared {
 		resp = resp.Copy()
+		resp.Id = req.Id
 	}
 
 	return resp, err
@@ -955,8 +955,6 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		if !retried {
 			if proto == "udp" {
 				proto = "tcp"
-			} else {
-				proto = "udp"
 			}
 			// retry with another protocol
 			return r.exchange(ctx, proto, server, req, true)

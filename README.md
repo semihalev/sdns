@@ -104,7 +104,7 @@ example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 | **accesslist**      | Which clients allowed to make queries                                                                                          |
 | **timeout**         | Query timeout for each dns lookups in duration Default: 2s                                                                     |
 | **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
-| **expire**          | Default cache TTL in seconds Default: 600                                                                                      |
+| **expire**          | Default error cache TTL for in seconds Default: 600                                                                            |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
 | **maxdepth**        | Maximum recursion depth for authservers. Default: 30                                                                           |
 | **ratelimit**       | Query based ratelimit per second, 0 for disabled. Default: 0                                                                   |

@@ -90,6 +90,7 @@ func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
 	m.Extra = req.Extra
 	m.SetRcode(req, rcode)
 	m.RecursionAvailable = true
+	m.RecursionDesired = true
 
 	if opt := m.IsEdns0(); opt != nil {
 		opt.SetDo(do)
@@ -271,5 +272,5 @@ const (
 	// IP6arpa is the reverse tree suffix for v6 IP addresses.
 	IP6arpa = ".ip6.arpa."
 	// DefaultMsgSize EDNS0 message size
-	DefaultMsgSize = 1400
+	DefaultMsgSize = 1232
 )

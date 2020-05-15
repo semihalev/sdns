@@ -46,11 +46,13 @@ func (v Version) String() string {
 }
 
 func (a *AuthServer) String() string {
-	if a.Count == 0 {
-		a.Count = 1
+	count := atomic.LoadInt64(&a.Count)
+
+	if count == 0 {
+		count = 1
 	}
 
-	rtt := (time.Duration(a.Rtt) / time.Duration(a.Count)).Round(time.Millisecond)
+	rtt := (time.Duration(a.Rtt) / time.Duration(count)).Round(time.Millisecond)
 
 	health := "UNKNOWN"
 	if rtt >= time.Second {
