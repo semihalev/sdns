@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/middleware"
 
 	"github.com/miekg/dns"
@@ -182,7 +183,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.RecursionAvailable = true
 
 	servers := h.resolver.rootservers
-	ttl := uint32(5)
+	ttl := uint32(0)
 	name := rootzone
 
 	if q.Name != rootzone {
@@ -201,6 +202,14 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 		}
 	}
 
+	var serversList []*authcache.AuthServer
+
+	servers.RLock()
+	serversList = append(serversList, servers.List...)
+	servers.RUnlock()
+
+	authcache.Sort(serversList)
+
 	rrHeader := dns.RR_Header{
 		Name:   name,
 		Rrtype: dns.TypeHINFO,
@@ -208,12 +217,10 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 		Ttl:    ttl,
 	}
 
-	servers.RLock()
-	for _, server := range servers.List {
+	for _, server := range serversList {
 		hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "Host", Os: server.String()}
 		msg.Ns = append(msg.Ns, hinfo)
 	}
-	servers.RUnlock()
 
 	return msg
 }

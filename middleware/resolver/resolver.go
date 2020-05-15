@@ -782,7 +782,13 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 }
 
 func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
-	servers.TrySort()
+	var serversList []*authcache.AuthServer
+
+	servers.RLock()
+	serversList = append(serversList, servers.List...)
+	servers.RUnlock()
+
+	authcache.Sort(serversList)
 
 	responseErrors := []*dns.Msg{}
 	configErrors := []*dns.Msg{}
@@ -811,19 +817,16 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 		}
 	}
 
-	servers.RLock()
-	defer servers.RUnlock()
-
 	fallbackTimeout := 150 * time.Millisecond
 
 	// Start the timer for the fallback racer.
 	fallbackTimer := time.NewTimer(fallbackTimeout)
 	defer fallbackTimer.Stop()
 
-	left := len(servers.List)
+	left := len(serversList)
 
 mainloop:
-	for index, server := range servers.List {
+	for index, server := range serversList {
 		// ip6 network may down
 		if server.Version == authcache.IPv6 && ipv6fatals > 2 {
 			left--
@@ -840,7 +843,7 @@ mainloop:
 
 			select {
 			case <-fallbackTimer.C:
-				if left > 0 && len(servers.List)-1 == index {
+				if left > 0 && len(serversList)-1 == index {
 					continue fallbackloop
 				}
 				continue mainloop
@@ -854,7 +857,7 @@ mainloop:
 
 					fatalErrors = append(fatalErrors, res.error)
 
-					if left > 0 && len(servers.List)-1 == index {
+					if left > 0 && len(serversList)-1 == index {
 						continue fallbackloop
 					}
 					continue mainloop
@@ -862,14 +865,14 @@ mainloop:
 
 				resp = res.resp
 
-				if resp.Rcode != dns.RcodeSuccess && len(servers.List)-1 > len(responseErrors) {
+				if resp.Rcode != dns.RcodeSuccess && len(serversList)-1 > len(responseErrors) {
 					responseErrors = append(responseErrors, resp)
 
 					if len(responseErrors) > 2 {
 						break mainloop
 					}
 
-					if left > 0 && len(servers.List)-1 == index {
+					if left > 0 && len(serversList)-1 == index {
 						continue fallbackloop
 					}
 					continue mainloop
@@ -888,7 +891,7 @@ mainloop:
 								atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
 								atomic.AddInt64(&server.Count, 1)
 
-								if left > 0 && len(servers.List)-1 == index {
+								if left > 0 && len(serversList)-1 == index {
 									continue fallbackloop
 								}
 								continue mainloop
