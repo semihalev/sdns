@@ -106,7 +106,8 @@ func Typify(m *dns.Msg, t time.Time) (Type, *dns.OPT) {
 	}
 
 	if !soa && len(m.Question) > 0 {
-		if m.Question[0].Qtype == dns.TypeDNSKEY && len(m.Answer) == 0 {
+		if len(m.Answer) == 0 &&
+			(m.Question[0].Qtype == dns.TypeDNSKEY || m.Question[0].Qtype == dns.TypeDS) {
 			return NoCache, opt
 		}
 	}
