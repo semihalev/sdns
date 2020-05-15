@@ -14,7 +14,7 @@ func Test_TrySort(t *testing.T) {
 		List: []*AuthServer{},
 	}
 
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 10; i++ {
 		s.List = append(s.List, NewAuthServer(fmt.Sprintf("0.0.0.%d:53", i), IPv4))
 		s.List = append(s.List, NewAuthServer(fmt.Sprintf("[::%d]:53", i), IPv6))
 	}
@@ -24,7 +24,7 @@ func Test_TrySort(t *testing.T) {
 		for j := range s.List {
 			s.List[j].Count++
 			s.List[j].Rtt += (time.Duration(rand.Intn(2000-0)+0) * time.Millisecond).Nanoseconds()
-			s.TrySort()
+			Sort(s.List)
 		}
 	}
 

@@ -868,7 +868,7 @@ mainloop:
 				if resp.Rcode != dns.RcodeSuccess && len(serversList)-1 > len(responseErrors) {
 					responseErrors = append(responseErrors, resp)
 
-					if len(responseErrors) > 2 {
+					if len(responseErrors) > 3 {
 						break mainloop
 					}
 
@@ -906,6 +906,12 @@ mainloop:
 	}
 
 	if len(responseErrors) > 0 {
+		for _, resp := range responseErrors {
+			// if we have other errors, we can try choose nameerror first
+			if resp.Rcode == dns.RcodeNameError {
+				return resp, nil
+			}
+		}
 		return responseErrors[0], nil
 	}
 
