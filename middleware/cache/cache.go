@@ -112,9 +112,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	if !w.Internal() {
-		c.lqueue.Wait(key)
-	}
+	c.lqueue.Wait(key)
 
 	now := c.now().UTC()
 
@@ -134,10 +132,10 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	if !w.Internal() {
-		c.lqueue.Add(key)
-		defer c.lqueue.Done(key)
-	}
+	c.lqueue.Wait(key)
+
+	c.lqueue.Add(key)
+	defer c.lqueue.Done(key)
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
 
