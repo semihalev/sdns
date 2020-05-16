@@ -854,6 +854,10 @@ mainloop:
 				if resp.Rcode != dns.RcodeSuccess {
 					responseErrors = append(responseErrors, resp)
 
+					if len(responseErrors) > 4 {
+						break mainloop
+					}
+
 					if left > 0 && len(serversList)-1 == index {
 						continue fallbackloop
 					}
