@@ -170,7 +170,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if minimized {
-			resp.Question = req.Question
+			level++
+			return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
 		}
 		return resp, nil
 	}
