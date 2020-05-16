@@ -144,14 +144,15 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
 	if err != nil {
-		// lets check nameservers
 		if _, ok := err.(fatalError); ok {
 			// no check for nsaddrs lookups
 			if v := ctx.Value(ctxKey("nsl")); v != nil {
 				return nil, err
 			}
 
-			log.Debug("Received timeout from all servers, checking nameservers", "net", proto, "query", formatQuestion(minReq.Question[0]))
+			atomic.AddUint32(&servers.ErrorCount, 1)
+
+			log.Debug("Received timeout from all servers", "net", proto, "query", formatQuestion(minReq.Question[0]))
 
 			if ok := r.checkNss(ctx, proto, servers); ok {
 				return r.Resolve(ctx, proto, req, servers, root, depth, level, nsl, parentdsrr, extra...)
@@ -1016,6 +1017,11 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	ns, err := r.ncache.Get(key)
 
 	if err == nil {
+		if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
+			// we have fatal errors from all servers, lets clear cache and try again
+			r.ncache.Remove(key)
+			return r.rootservers, nil, 0
+		}
 		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 		return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
 	}
@@ -1025,6 +1031,10 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 		ns, err := r.ncache.Get(key)
 
 		if err == nil && len(ns.DSRR) == 0 {
+			if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
+				r.ncache.Remove(key)
+				return r.rootservers, nil, 0
+			}
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
 			return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
 		}

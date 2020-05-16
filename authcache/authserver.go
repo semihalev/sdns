@@ -68,9 +68,10 @@ func (a *AuthServer) String() string {
 type AuthServers struct {
 	sync.RWMutex
 
-	called int32
-	List   []*AuthServer
-	Nss    []string
+	List []*AuthServer
+	Nss  []string
+
+	ErrorCount uint32
 
 	CheckingDisable bool
 	Checked         bool
