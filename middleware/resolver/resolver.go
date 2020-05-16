@@ -860,7 +860,7 @@ mainloop:
 
 				resp = res.resp
 
-				if resp.Rcode != dns.RcodeSuccess && len(serversList)-1 > len(responseErrors) {
+				if resp.Rcode != dns.RcodeSuccess {
 					responseErrors = append(responseErrors, resp)
 
 					if len(responseErrors) > 3 {
@@ -883,7 +883,7 @@ mainloop:
 								configErrors = append(configErrors, resp)
 
 								// lets move back this server in the list.
-								atomic.AddInt64(&server.Rtt, time.Second.Nanoseconds())
+								atomic.AddInt64(&server.Rtt, 2*time.Second.Nanoseconds())
 								atomic.AddInt64(&server.Count, 1)
 
 								if left > 0 && len(serversList)-1 == index {
