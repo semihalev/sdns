@@ -164,6 +164,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	if resp.Truncated {
 		if proto == "udp" {
+			//TODO: temprorary
+			log.Info("Response truncated!", "query", formatQuestion(q), "proto", proto)
 			return r.Resolve(ctx, "tcp", req, servers, false, depth, level, nsl, parentdsrr)
 		}
 	}
@@ -789,8 +791,6 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 	configErrors := []*dns.Msg{}
 	fatalErrors := []error{}
 
-	ipv6fatals := 0
-
 	returned := make(chan struct{})
 	defer close(returned)
 
@@ -822,12 +822,6 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 
 mainloop:
 	for index, server := range serversList {
-		// ip6 network may down
-		if server.Version == authcache.IPv6 && ipv6fatals > 2 {
-			left--
-			continue
-		}
-
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		go startRacer(ctx, proto, server, req)
@@ -846,10 +840,6 @@ mainloop:
 				left--
 
 				if res.error != nil {
-					if res.server.Version == authcache.IPv6 {
-						ipv6fatals++
-					}
-
 					fatalErrors = append(fatalErrors, res.error)
 
 					if left > 0 && len(serversList)-1 == index {
@@ -965,6 +955,10 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		}
 
 		return nil, err
+	}
+
+	if resp != nil && resp.Truncated && proto == "udp" {
+		return r.exchange(ctx, "tcp", server, req, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
