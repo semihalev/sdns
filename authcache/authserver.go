@@ -71,6 +71,8 @@ func (a *AuthServer) String() string {
 type AuthServers struct {
 	sync.RWMutex
 
+	Zone string
+
 	List []*AuthServer
 	Nss  []string
 

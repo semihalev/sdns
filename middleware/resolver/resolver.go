@@ -142,7 +142,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
-	resp, err := r.groupLookup(ctx, proto, minReq, servers, level)
+	resp, err := r.groupLookup(ctx, proto, minReq, servers)
 	if err != nil {
 		if _, ok := err.(fatalError); ok {
 			// no check for nsaddrs lookups
@@ -270,7 +270,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			}
 		}
 
-		nlevel := len(dns.SplitDomainName(nsrr.Header().Name))
+		nlevel := dns.CountLabel(q.Name)
 		if level > nlevel {
 			return resp, errParentDetection
 		}
@@ -307,6 +307,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		authservers, foundv4, foundv6 := r.checkGlueRR(resp, nss, level)
 		authservers.CheckingDisable = cd
+		authservers.Zone = q.Name
 
 		if len(authservers.List) > 0 {
 			// temprorary cache before lookup
@@ -354,12 +355,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	return m, nil
 }
 
-func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
+func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
 	key := cache.Hash(q, proto == "tcp")
 	resp, shared, err := r.group.Do(key, func() (*dns.Msg, error) {
-		return r.lookup(ctx, proto, req, servers, level)
+		return r.lookup(ctx, proto, req, servers)
 	})
 
 	if resp != nil && shared {
@@ -773,11 +774,12 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 	return resp, nil
 }
 
-func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, level int) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	var serversList []*authcache.AuthServer
 
 	servers.RLock()
 	serversList = append(serversList, servers.List...)
+	zone := servers.Zone
 	servers.RUnlock()
 
 	authcache.Sort(serversList)
@@ -861,10 +863,8 @@ mainloop:
 				if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
 					for _, rr := range resp.Ns {
 						if nsrec, ok := rr.(*dns.NS); ok {
-							zLevel := dns.CountLabel(nsrec.Header().Name)
-
 							// looks invalid configuration, try another server
-							if zLevel <= level {
+							if dns.CountLabel(nsrec.Header().Name) <= dns.CountLabel(zone) {
 								configErrors = append(configErrors, resp)
 
 								// lets move back this server in the list.
