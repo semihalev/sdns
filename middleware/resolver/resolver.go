@@ -421,8 +421,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
 	// it will be work in background, we need time for that lookups
-	ctx = context.WithValue(context.Background(), ctxKey("nsl"), struct{}{})
-	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
+	v6ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Second))
 	defer cancel()
 	var index uint64
 	for name := range nss {
@@ -1166,7 +1165,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 			log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
 			return addrs, nil
 		}
-		key = key + cache.Hash(req.Question[0])
+		key = key + uint64(req.Id)
 	}
 
 	r.lqueue.Wait(key)
@@ -1229,7 +1228,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 			log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
 			return addrs, nil
 		}
-		key = key + cache.Hash(req.Question[0])
+		key = key + uint64(req.Id)
 	}
 
 	r.lqueue.Wait(key)
