@@ -88,6 +88,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 func (r *Resolver) parseRootServers(cfg *config.Config) {
 	r.rootservers = &authcache.AuthServers{}
+	r.rootservers.Zone = rootzone
 
 	for _, s := range cfg.RootServers {
 		host, _, _ := net.SplitHostPort(s)
@@ -779,7 +780,7 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 
 	servers.RLock()
 	serversList = append(serversList, servers.List...)
-	zone := servers.Zone
+	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
 	authcache.Sort(serversList)
@@ -864,7 +865,7 @@ mainloop:
 					for _, rr := range resp.Ns {
 						if nsrec, ok := rr.(*dns.NS); ok {
 							// looks invalid configuration, try another server
-							if dns.CountLabel(nsrec.Header().Name) <= dns.CountLabel(zone) {
+							if dns.CountLabel(nsrec.Header().Name) <= level {
 								configErrors = append(configErrors, resp)
 
 								// lets move back this server in the list.
