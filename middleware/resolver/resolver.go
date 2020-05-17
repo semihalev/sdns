@@ -59,7 +59,7 @@ const (
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
 		cfg:    cfg,
-		lqueue: lqueue.New(2 * time.Second),
+		lqueue: lqueue.New(100 * time.Millisecond),
 
 		ncache: authcache.NewNSCache(),
 
@@ -316,6 +316,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		}
 
 		r.lookupV4Nss(ctx, proto, q, authservers, foundv4, nss, cd)
+
 		// we don't want to wait this, if we have glue records, we will use.
 		go r.lookupV6Nss(context.Background(), proto, q, authservers, foundv6, nss, cd)
 
@@ -375,13 +376,13 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 	var wg sync.WaitGroup
 	var index uint64
 	for name := range nss {
-		index++
-
 		authservers.Nss = append(authservers.Nss, name)
 
 		if _, ok := foundv4[name]; ok {
 			continue
 		}
+
+		index++
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
@@ -423,15 +424,13 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 	ctx = context.WithValue(context.Background(), ctxKey("nsl"), struct{}{})
 	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
 	defer cancel()
-
 	var index uint64
 	for name := range nss {
-		index++
-
 		if _, ok := foundv6[name]; ok {
 			continue
 		}
 
+		index++
 		addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, index, cd)
 		nsipv6 := make(map[string][]string)
 
@@ -1164,22 +1163,29 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	if v := ctx.Value(ctxKey("request")); v != nil {
 		req := v.(*dns.Msg)
 		if req.Question[0].Name == qname && req.Question[0].Qtype == dns.TypeA {
-			log.Debug("Looping during ns ipv4 addr lookup (1)", "query", formatQuestion(q))
+			log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
 			return addrs, nil
 		}
-		key = key + uint64(req.Id)
+		key = key + cache.Hash(req.Question[0])
 	}
 
-	count := 0
-	if count = r.lqueue.Get(key); count > 2 {
-		log.Debug("Looping during ns ipv4 addr lookup (2)", "query", formatQuestion(q))
+	r.lqueue.Wait(key)
+
+	for c, l := r.lqueue.Get(key), 20; c > 0 && l != 0; c, l = r.lqueue.Get(key), l-1 {
+		if addrs, ok := r.getIPv4Cache(qname); ok {
+			return addrs, nil
+		}
+
+		r.lqueue.Wait(key)
+	}
+
+	if c := r.lqueue.Get(key); c > 1 {
+		log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
 
-	if count == 0 {
-		r.lqueue.Add(key)
-		defer r.lqueue.Done(key)
-	}
+	r.lqueue.Add(key)
+	defer r.lqueue.Done(key)
 
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
@@ -1187,8 +1193,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {
-		key := cache.Hash(q)
-		r.ipv4cache.Add(key, addrs)
 		return addrs, nil
 	}
 
@@ -1222,22 +1226,29 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 	if v := ctx.Value(ctxKey("request")); v != nil {
 		req := v.(*dns.Msg)
 		if req.Question[0].Name == qname && req.Question[0].Qtype == dns.TypeAAAA {
-			log.Debug("Looping during ns ipv6 addr lookup (1)", "query", formatQuestion(q))
+			log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
 			return addrs, nil
 		}
-		key = key + uint64(req.Id)
+		key = key + cache.Hash(req.Question[0])
 	}
 
-	count := 0
-	if count = r.lqueue.Get(key); count > 2 {
-		log.Debug("Looping during ns ipv6 addr lookup (2)", "query", formatQuestion(q))
+	r.lqueue.Wait(key)
+
+	for c, l := r.lqueue.Get(key), 20; c > 0 && l != 0; c, l = r.lqueue.Get(key), l-1 {
+		if addrs, ok := r.getIPv6Cache(qname); ok {
+			return addrs, nil
+		}
+
+		r.lqueue.Wait(key)
+	}
+
+	if c := r.lqueue.Get(key); c > 1 {
+		log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
 
-	if count == 0 {
-		r.lqueue.Add(key)
-		defer r.lqueue.Done(key)
-	}
+	r.lqueue.Add(key)
+	defer r.lqueue.Done(key)
 
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
