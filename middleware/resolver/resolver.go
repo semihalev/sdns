@@ -384,7 +384,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 
 		index++
 		wg.Add(1)
-		go func(name string) {
+		go func(name string, index uint64) {
 			defer wg.Done()
 
 			addrs, err := r.lookupNSAddrV4(ctx, proto, name, index, cd)
@@ -414,7 +414,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			}
 			authservers.Unlock()
 			r.addIPv4Cache(nsipv4)
-		}(name)
+		}(name, index)
 	}
 	wg.Wait()
 }
