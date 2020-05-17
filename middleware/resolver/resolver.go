@@ -863,7 +863,6 @@ mainloop:
 						if nsrec, ok := rr.(*dns.NS); ok {
 							zLevel := dns.CountLabel(nsrec.Header().Name)
 
-							fmt.Println(formatQuestion(resp.Question[0]), nsrec.Header().Name, res.server, zLevel, level)
 							// looks invalid configuration, try another server
 							if zLevel <= level {
 								configErrors = append(configErrors, resp)
