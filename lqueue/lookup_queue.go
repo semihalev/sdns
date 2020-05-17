@@ -17,6 +17,7 @@ type LQueue struct {
 
 type call struct {
 	ctx    context.Context
+	dups   int
 	cancel func()
 }
 
@@ -30,15 +31,16 @@ func New(duration time.Duration) *LQueue {
 }
 
 // Get func
-func (q *LQueue) Get(key uint64) interface{} {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+func (q *LQueue) Get(key uint64) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	if c, ok := q.l[key]; ok {
-		return c
+		c.dups++
+		return c.dups
 	}
 
-	return nil
+	return 0
 }
 
 // Wait func
@@ -61,6 +63,7 @@ func (q *LQueue) Add(key uint64) {
 
 	c := new(call)
 	c.ctx, c.cancel = context.WithTimeout(context.Background(), q.duration)
+	c.dups++
 	q.l[key] = c
 }
 

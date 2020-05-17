@@ -49,7 +49,9 @@ func (h *DNSHandler) Name() string { return name }
 func (h *DNSHandler) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	ctx = context.WithValue(ctx, ctxKey("query"), req.Question[0])
+	if v := ctx.Value(ctxKey("request")); v == nil {
+		ctx = context.WithValue(ctx, ctxKey("request"), req)
+	}
 	msg := h.handle(ctx, w.Proto(), req)
 
 	w.WriteMsg(msg)
