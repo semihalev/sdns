@@ -47,19 +47,22 @@ func (v Version) String() string {
 
 func (a *AuthServer) String() string {
 	count := atomic.LoadInt64(&a.Count)
+	rn := atomic.LoadInt64(&a.Rtt)
 
 	if count == 0 {
 		count = 1
 	}
 
-	rtt := (time.Duration(a.Rtt) / time.Duration(count)).Round(time.Millisecond)
-
-	health := "UNKNOWN"
-	if rtt >= time.Second {
+	var health string
+	if rn >= int64(time.Second) {
 		health = "POOR"
-	} else if rtt != 0 {
+	} else if rn > 0 {
 		health = "GOOD"
+	} else {
+		health = "UNKNOWN"
 	}
+
+	rtt := (time.Duration(rn) / time.Duration(count)).Round(time.Millisecond)
 
 	return a.Version.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
 }

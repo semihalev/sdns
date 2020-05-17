@@ -109,7 +109,7 @@ func (r *Resolver) parseRootServers(cfg *config.Config) {
 func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 	for _, s := range cfg.OutboundIPs {
 		if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
-			if isLocalIP(ip.String()) {
+			if isLocalIP(ip) {
 				r.outboundipv4 = append(r.outboundipv4, ip)
 			} else {
 				log.Crit(fmt.Sprintf("%s is not your local ipv4 address, check your config!", ip))
@@ -119,7 +119,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 
 	for _, s := range cfg.OutboundIP6s {
 		if ip := net.ParseIP(s); ip != nil && ip.To16() != nil {
-			if isLocalIP(ip.String()) {
+			if isLocalIP(ip) {
 				r.outboundipv6 = append(r.outboundipv6, ip)
 			} else {
 				log.Crit(fmt.Sprintf("%s is not your local ipv6 address, check your config!", ip))
@@ -547,20 +547,18 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 			}
 
 			if _, ok := nss[name]; ok {
-				addr := extra.AAAA.String()
-
-				if isLocalIP(addr) {
+				if isLocalIP(extra.AAAA) {
 					continue
 				}
 
-				if net.ParseIP(addr).IsLoopback() {
+				if extra.AAAA.IsLoopback() {
 					continue
 				}
 
 				foundv6[name] = struct{}{}
 
-				nsipv6[name] = append(nsipv6[name], addr)
-				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv6))
+				nsipv6[name] = append(nsipv6[name], extra.AAAA.String())
+				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(extra.AAAA.String(), "53"), authcache.IPv6))
 			}
 		}
 	}
@@ -579,20 +577,18 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 			}
 
 			if _, ok := nss[name]; ok {
-				addr := extra.A.String()
-
-				if isLocalIP(addr) {
+				if isLocalIP(extra.A) {
 					continue
 				}
 
-				if net.ParseIP(addr).IsLoopback() {
+				if extra.A.IsLoopback() {
 					continue
 				}
 
 				foundv4[name] = struct{}{}
 
-				nsipv4[name] = append(nsipv4[name], addr)
-				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
+				nsipv4[name] = append(nsipv4[name], extra.A.String())
+				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(extra.A.String(), "53"), authcache.IPv4))
 			}
 		}
 	}
@@ -867,6 +863,7 @@ mainloop:
 						if nsrec, ok := rr.(*dns.NS); ok {
 							zLevel := dns.CountLabel(nsrec.Header().Name)
 
+							fmt.Println(formatQuestion(resp.Question[0]), nsrec.Header().Name, res.server, zLevel, level)
 							// looks invalid configuration, try another server
 							if zLevel <= level {
 								configErrors = append(configErrors, resp)

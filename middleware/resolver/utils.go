@@ -24,14 +24,14 @@ var (
 	errBadAnswer              = errors.New("response contained a non-zero RCODE")
 	errMissingSigned          = errors.New("signed records are missing")
 
-	localIPs []string
+	localIPaddrs []net.IP
 )
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
 
 	var err error
-	localIPs, err = findLocalIPAddresses()
+	localIPaddrs, err = findLocalIPAddresses()
 	if err != nil {
 		log.Crit("Find local ip addresses failed", "error", err.Error())
 	}
@@ -65,22 +65,30 @@ func searchAddrs(msg *dns.Msg) (addrs []string, found bool) {
 
 	for _, rr := range msg.Answer {
 		if r, ok := rr.(*dns.A); ok {
-			if isLocalIP(r.A.String()) {
+			if isLocalIP(r.A) {
 				continue
 			}
 
-			if net.ParseIP(r.A.String()).IsLoopback() {
+			if r.A.To4() == nil {
+				continue
+			}
+
+			if r.A.IsLoopback() {
 				continue
 			}
 
 			addrs = append(addrs, r.A.String())
 			found = true
 		} else if r, ok := rr.(*dns.AAAA); ok {
-			if isLocalIP(r.AAAA.String()) {
+			if isLocalIP(r.AAAA) {
 				continue
 			}
 
-			if net.ParseIP(r.AAAA.String()).IsLoopback() {
+			if r.AAAA.To16() == nil {
+				continue
+			}
+
+			if r.AAAA.IsLoopback() {
 				continue
 			}
 
@@ -92,8 +100,8 @@ func searchAddrs(msg *dns.Msg) (addrs []string, found bool) {
 	return
 }
 
-func findLocalIPAddresses() ([]string, error) {
-	var list []string
+func findLocalIPAddresses() ([]net.IP, error) {
+	var list []net.IP
 	tt, err := net.Interfaces()
 	if err != nil {
 		return nil, err
@@ -110,16 +118,16 @@ func findLocalIPAddresses() ([]string, error) {
 				continue
 			}
 
-			list = append(list, ipnet.IP.String())
+			list = append(list, ipnet.IP)
 		}
 	}
 
 	return list, nil
 }
 
-func isLocalIP(ip string) (ok bool) {
-	for _, lip := range localIPs {
-		if lip == ip {
+func isLocalIP(ip net.IP) (ok bool) {
+	for _, l := range localIPaddrs {
+		if ip.Equal(l) {
 			ok = true
 			return
 		}
