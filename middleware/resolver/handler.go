@@ -104,7 +104,11 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	depth := h.cfg.Maxdepth
 	resp, err := h.resolver.Resolve(ctx, proto, req, h.resolver.rootservers, true, depth, 0, false, nil)
 	if err != nil {
-		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
+		if v := ctx.Value(ctxKey("nsl")); v == nil {
+			log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
+		} else {
+			log.Debug("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
+		}
 
 		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 		return resp

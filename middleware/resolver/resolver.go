@@ -165,8 +165,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	if resp.Truncated {
 		if proto == "udp" {
-			//TODO: temprorary
-			log.Info("Response truncated!", "query", formatQuestion(q), "proto", proto)
 			return r.Resolve(ctx, "tcp", req, servers, false, depth, level, nsl, parentdsrr)
 		}
 	}
