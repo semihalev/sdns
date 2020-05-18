@@ -1018,7 +1018,8 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 		if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
 			// we have fatal errors from all servers, lets clear cache and try again
 			r.ncache.Remove(key)
-			return r.rootservers, nil, 0
+			q.Name = origin
+			return r.searchCache(q, cd, origin)
 		}
 		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 		return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
@@ -1031,7 +1032,8 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 		if err == nil && len(ns.DSRR) == 0 {
 			if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
 				r.ncache.Remove(key)
-				return r.rootservers, nil, 0
+				q.Name = origin
+				return r.searchCache(q, cd, origin)
 			}
 			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
 			return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
@@ -1178,7 +1180,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 		r.lqueue.Wait(key)
 	}
 
-	if c := r.lqueue.Get(key); c > 1 {
+	if c := r.lqueue.Get(key); c > 0 {
 		log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
@@ -1241,7 +1243,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 		r.lqueue.Wait(key)
 	}
 
-	if c := r.lqueue.Get(key); c > 1 {
+	if c := r.lqueue.Get(key); c > 0 {
 		log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
@@ -1504,6 +1506,7 @@ func (r *Resolver) checkPriming() error {
 		if len(tmpservers.List) > 0 {
 			r.rootservers.Lock()
 			r.rootservers.List = tmpservers.List
+			r.rootservers.Checked = true
 			r.rootservers.Unlock()
 		}
 
