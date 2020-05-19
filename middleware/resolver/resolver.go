@@ -59,7 +59,7 @@ const (
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
 		cfg:    cfg,
-		lqueue: lqueue.New(100 * time.Millisecond),
+		lqueue: lqueue.New(2 * time.Second),
 
 		ncache: authcache.NewNSCache(),
 
@@ -421,7 +421,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
 	// it will be work in background, we need time for that lookups
-	v6ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Second))
+	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
 	defer cancel()
 	var index uint64
 	for name := range nss {
@@ -651,7 +651,7 @@ func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
 	minReq := req.Copy()
 	minimized := false
 
-	if level < 3 && q.Name != rootzone {
+	if level < 5 && q.Name != rootzone {
 		prev, end := dns.PrevLabel(q.Name, level+1)
 		if !end {
 			minimized = true
@@ -1172,15 +1172,10 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	r.lqueue.Wait(key)
 
-	for c, l := r.lqueue.Get(key), 20; c > 0 && l != 0; c, l = r.lqueue.Get(key), l-1 {
+	if c := r.lqueue.Get(key); c > 0 {
 		if addrs, ok := r.getIPv4Cache(qname); ok {
 			return addrs, nil
 		}
-
-		r.lqueue.Wait(key)
-	}
-
-	if c := r.lqueue.Get(key); c > 0 {
 		log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}
@@ -1235,15 +1230,10 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 
 	r.lqueue.Wait(key)
 
-	for c, l := r.lqueue.Get(key), 20; c > 0 && l != 0; c, l = r.lqueue.Get(key), l-1 {
+	if c := r.lqueue.Get(key); c > 0 {
 		if addrs, ok := r.getIPv6Cache(qname); ok {
 			return addrs, nil
 		}
-
-		r.lqueue.Wait(key)
-	}
-
-	if c := r.lqueue.Get(key); c > 0 {
 		log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
 		return addrs, nil
 	}

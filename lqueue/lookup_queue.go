@@ -32,8 +32,8 @@ func New(duration time.Duration) *LQueue {
 
 // Get func
 func (q *LQueue) Get(key uint64) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.mu.RLock()
+	defer q.mu.RUnlock()
 
 	if c, ok := q.l[key]; ok {
 		return c.dups
@@ -66,6 +66,7 @@ func (q *LQueue) Add(key uint64) {
 	}
 
 	c := new(call)
+	c.dups++
 	c.ctx, c.cancel = context.WithTimeout(context.Background(), q.duration)
 	q.l[key] = c
 }
@@ -76,7 +77,7 @@ func (q *LQueue) Done(key uint64) {
 	defer q.mu.Unlock()
 
 	if c, ok := q.l[key]; ok {
-		if c.dups > 0 {
+		if c.dups > 1 {
 			c.dups--
 			return
 		}
