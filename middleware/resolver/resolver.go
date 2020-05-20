@@ -139,7 +139,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	}
 
 	// RFC 7816 query minimization. There are some concerns in RFC.
-	// Current minimize level 3, if we go level 5, performance drops %20
+	// Current default minimize level 5, if we down to level 3, performance gain 20%
 	minReq, minimized := r.minimize(req, level)
 
 	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
@@ -189,8 +189,18 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		level++
-		return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
+		found := false
+		for _, rr := range resp.Ns {
+			if _, ok := rr.(*dns.NS); ok {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			level++
+			return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
+		}
 	}
 
 	if len(resp.Ns) > 0 {
