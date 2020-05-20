@@ -189,20 +189,10 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		difference := false
-		for _, rr := range resp.Ns {
-			if ns, ok := rr.(*dns.NS); ok {
-				if ns.Header().Name != servers.Zone {
-					difference = true
-					break
-				}
-			}
-		}
-
-		if !difference {
-			level++
-			return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
-		}
+		//TODO knowns bug: dig r190-64-49-90.su-static.adinet.com.uy
+		// same ns in com.uy and adinet.com.uy and there is one more other additional ns.
+		level++
+		return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
 	}
 
 	if len(resp.Ns) > 0 {
