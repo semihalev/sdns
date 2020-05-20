@@ -381,15 +381,15 @@ func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (c
 	hash := cache.Hash(dns.Question{Name: qname, Qtype: qtype})
 
 	if v := ctx.Value(ctxHash(hash)); v != nil {
-		parentLookups := v.([]string)
+		parentZones := v.([]string)
 
-		for _, n := range parentLookups {
+		for _, n := range parentZones {
 			if n == qname {
 				return ctx, true
 			}
 		}
 
-		parentLookups = append(parentLookups, qname)
+		parentZones = append(parentZones, qname)
 	} else {
 		ctx = context.WithValue(ctx, ctxHash(hash), []string{qname})
 	}
@@ -406,7 +406,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
+		ctx, loop := r.checkLoop(ctx, q.Name, dns.TypeNULL)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
 				continue
@@ -459,7 +459,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		v6ctx, loop := r.checkLoop(v6ctx, name, dns.TypeAAAA)
+		v6ctx, loop := r.checkLoop(v6ctx, q.Name, dns.TypeNULL)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
 				continue
