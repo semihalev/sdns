@@ -3,6 +3,7 @@ package cache
 import (
 	"bytes"
 	"encoding/binary"
+	"hash"
 	"hash/fnv"
 	"sync"
 
@@ -11,7 +12,9 @@ import (
 
 // Hash returns a hash for cache
 func Hash(q dns.Question, cd ...bool) uint64 {
-	h := fnv.New64()
+	h := AcquireHash()
+	defer ReleaseHash(h)
+
 	buf := AcquireBuf()
 	defer ReleaseBuf(buf)
 
@@ -35,8 +38,24 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 }
 
 var bufferPool sync.Pool
+var hashPool sync.Pool
 
-// AcquireBuf returns an buf from pool
+// AcquireHash returns a hash from pool
+func AcquireHash() hash.Hash64 {
+	v := bufferPool.Get()
+	if v == nil {
+		return fnv.New64()
+	}
+	return v.(hash.Hash64)
+}
+
+// ReleaseHash returns hash to pool
+func ReleaseHash(h hash.Hash64) {
+	h.Reset()
+	bufferPool.Put(h)
+}
+
+// AcquireBuf returns a buf from pool
 func AcquireBuf() *bytes.Buffer {
 	v := bufferPool.Get()
 	if v == nil {

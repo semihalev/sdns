@@ -17,15 +17,13 @@ import (
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/lqueue"
 )
 
 // Resolver type
 type Resolver struct {
 	ncache *authcache.NSCache
 
-	lqueue *lqueue.LQueue
-	cfg    *config.Config
+	cfg *config.Config
 
 	rootservers *authcache.AuthServers
 
@@ -58,8 +56,7 @@ const (
 // NewResolver return a resolver
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
-		cfg:    cfg,
-		lqueue: lqueue.New(2 * time.Second),
+		cfg: cfg,
 
 		ncache: authcache.NewNSCache(),
 
@@ -141,7 +138,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// Current minimize level 3, if we go level 5, performance drops %20
 	minReq, minimized := r.minimize(req, level)
 
-	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
+	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers)
 	if err != nil {
@@ -372,9 +369,30 @@ func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, 
 	return resp, err
 }
 
+type ctxHash uint64
+
+func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (context.Context, bool) {
+	hash := cache.Hash(dns.Question{Name: qname, Qtype: qtype})
+
+	if v := ctx.Value(ctxHash(hash)); v != nil {
+		parentLookups := v.([]string)
+
+		for _, n := range parentLookups {
+			if n == qname {
+				return ctx, true
+			}
+		}
+
+		parentLookups = append(parentLookups, qname)
+	} else {
+		ctx = context.WithValue(ctx, ctxHash(hash), []string{qname})
+	}
+
+	return ctx, false
+}
+
 func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv4, nss nameservers, cd bool) {
 	var wg sync.WaitGroup
-	var index uint64
 	for name := range nss {
 		authservers.Nss = append(authservers.Nss, name)
 
@@ -382,12 +400,18 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		index++
+		ctx, loop := r.checkLoop(ctx, q.Name, dns.TypeA)
+		if loop {
+			if _, ok := r.getIPv4Cache(name); !ok {
+				continue
+			}
+		}
+
 		wg.Add(1)
-		go func(name string, index uint64) {
+		go func(name string) {
 			defer wg.Done()
 
-			addrs, err := r.lookupNSAddrV4(ctx, proto, name, index, cd)
+			addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
 			nsipv4 := make(map[string][]string)
 
 			if err != nil {
@@ -414,7 +438,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			}
 			authservers.Unlock()
 			r.addIPv4Cache(nsipv4)
-		}(name, index)
+		}(name)
 	}
 	wg.Wait()
 }
@@ -423,14 +447,20 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 	// it will be work in background, we need time for that lookups
 	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
 	defer cancel()
-	var index uint64
+
 	for name := range nss {
 		if _, ok := foundv6[name]; ok {
 			continue
 		}
 
-		index++
-		addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, index, cd)
+		v6ctx, loop := r.checkLoop(v6ctx, q.Name, dns.TypeA)
+		if loop {
+			if _, ok := r.getIPv6Cache(name); !ok {
+				continue
+			}
+		}
+
+		addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, cd)
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {
@@ -475,10 +505,10 @@ func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcach
 	nsipv4 := make(map[string][]string)
 	nsipv6 := make(map[string][]string)
 
-	for index, name := range servers.Nss {
+	for _, name := range servers.Nss {
 		r.removeIPv4Cache(name)
-		addrs, err := r.lookupNSAddrV4(ctx, proto, name, uint64(index), servers.CheckingDisable)
-		if err != nil {
+		addrs, err := r.lookupNSAddrV4(ctx, proto, name, servers.CheckingDisable)
+		if err != nil || len(addrs) == 0 {
 			continue
 		}
 
@@ -487,10 +517,10 @@ func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcach
 		nsipv4[name] = addrs
 	}
 
-	for index, name := range servers.Nss {
+	for _, name := range servers.Nss {
 		r.removeIPv6Cache(name)
-		addrs, err := r.lookupNSAddrV6(ctx, proto, name, uint64(index), servers.CheckingDisable)
-		if err != nil {
+		addrs, err := r.lookupNSAddrV6(ctx, proto, name, servers.CheckingDisable)
+		if err != nil || len(addrs) == 0 {
 			continue
 		}
 
@@ -547,7 +577,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 			i, _ := dns.PrevLabel(qname, level)
 
 			if dns.CompareDomainName(name, qname[i:]) < level {
-				// we cannot trust that glue, it doesn't cover in the origin name.
+				// we cannot trust that glue, out of bailiwick.
 				continue
 			}
 
@@ -1142,7 +1172,7 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	return dsres, nil
 }
 
-func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, index uint64, cd bool) (addrs []string, err error) {
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv4 address", "qname", qname)
 
 	if addrs, ok := r.getIPv4Cache(qname); ok {
@@ -1157,31 +1187,6 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
-
-	q := nsReq.Question[0]
-
-	key := cache.Hash(q, cd) + index
-	if v := ctx.Value(ctxKey("request")); v != nil {
-		req := v.(*dns.Msg)
-		if req.Question[0].Name == qname && req.Question[0].Qtype == dns.TypeA {
-			log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
-			return addrs, nil
-		}
-		key = key + uint64(req.Id)
-	}
-
-	r.lqueue.Wait(key)
-
-	if c := r.lqueue.Get(key); c > 0 {
-		if addrs, ok := r.getIPv4Cache(qname); ok {
-			return addrs, nil
-		}
-		log.Debug("Looping during ns ipv4 addr lookup", "query", formatQuestion(q))
-		return addrs, nil
-	}
-
-	r.lqueue.Add(key)
-	defer r.lqueue.Done(key)
 
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
@@ -1200,7 +1205,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname string, index uint64, cd bool) (addrs []string, err error) {
+func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv6 address", "qname", qname)
 
 	if addrs, ok := r.getIPv6Cache(qname); ok {
@@ -1215,31 +1220,6 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 	nsReq.SetQuestion(qname, dns.TypeAAAA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
-
-	q := nsReq.Question[0]
-
-	key := cache.Hash(q, cd) + index
-	if v := ctx.Value(ctxKey("request")); v != nil {
-		req := v.(*dns.Msg)
-		if req.Question[0].Name == qname && req.Question[0].Qtype == dns.TypeAAAA {
-			log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
-			return addrs, nil
-		}
-		key = key + uint64(req.Id)
-	}
-
-	r.lqueue.Wait(key)
-
-	if c := r.lqueue.Get(key); c > 0 {
-		if addrs, ok := r.getIPv6Cache(qname); ok {
-			return addrs, nil
-		}
-		log.Debug("Looping during ns ipv6 addr lookup", "query", formatQuestion(q))
-		return addrs, nil
-	}
-
-	r.lqueue.Add(key)
-	defer r.lqueue.Done(key)
 
 	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
 	if err != nil {
