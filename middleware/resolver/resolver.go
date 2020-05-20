@@ -189,15 +189,17 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		found := false
+		difference := false
 		for _, rr := range resp.Ns {
-			if _, ok := rr.(*dns.NS); ok {
-				found = true
-				break
+			if ns, ok := rr.(*dns.NS); ok {
+				if ns.Header().Name != servers.Zone {
+					difference = true
+					break
+				}
 			}
 		}
 
-		if !found {
+		if !difference {
 			level++
 			return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
 		}
