@@ -42,7 +42,7 @@ var hashPool sync.Pool
 
 // AcquireHash returns a hash from pool
 func AcquireHash() hash.Hash64 {
-	v := bufferPool.Get()
+	v := hashPool.Get()
 	if v == nil {
 		return fnv.New64()
 	}
@@ -52,7 +52,7 @@ func AcquireHash() hash.Hash64 {
 // ReleaseHash returns hash to pool
 func ReleaseHash(h hash.Hash64) {
 	h.Reset()
-	bufferPool.Put(h)
+	hashPool.Put(h)
 }
 
 // AcquireBuf returns a buf from pool
