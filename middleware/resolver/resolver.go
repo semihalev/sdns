@@ -36,6 +36,8 @@ type Resolver struct {
 
 	rootkeys []dns.RR
 
+	qnameMinLevel int
+
 	group singleflight
 }
 
@@ -64,6 +66,8 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		ipv4cache: cache.New(1024 * 128),
 		ipv6cache: cache.New(1024 * 128),
+
+		qnameMinLevel: cfg.QnameMinLevel,
 	}
 
 	r.parseRootServers(cfg)
@@ -400,7 +404,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, q.Name, dns.TypeA)
+		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
 				continue
@@ -453,7 +457,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		v6ctx, loop := r.checkLoop(v6ctx, q.Name, dns.TypeA)
+		v6ctx, loop := r.checkLoop(v6ctx, name, dns.TypeAAAA)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
 				continue
@@ -676,12 +680,16 @@ func (r *Resolver) removeIPv6Cache(name string) {
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
+	if r.qnameMinLevel == 0 {
+		return req, false
+	}
+
 	q := req.Question[0]
 
 	minReq := req.Copy()
 	minimized := false
 
-	if level < 5 && q.Name != rootzone {
+	if level < r.qnameMinLevel && q.Name != rootzone {
 		prev, end := dns.PrevLabel(q.Name, level+1)
 		if !end {
 			minimized = true
@@ -884,7 +892,8 @@ mainloop:
 				if resp.Rcode != dns.RcodeSuccess {
 					responseErrors = append(responseErrors, resp)
 
-					if len(responseErrors) > 4 {
+					//we don't need to look all nameservers for that response
+					if len(responseErrors) > 2 && resp.Rcode == dns.RcodeNameError {
 						break mainloop
 					}
 

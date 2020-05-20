@@ -114,6 +114,7 @@ example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 | **cookiesecret**    | DNS cookie secret (RFC 7873), if no cookiesecret set, it will be generate automatically                                        |
 | **nsid**            | DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled                           |
 | **chaos**           | Enable to answer version.server, version.bind, hostname.bind and id.server chaos txt queries.                                  |
+| **qname_min_level** | Qname minimize level.If higher, it can be more complex and impact the response performance. If set 0, qname min will be disable|
 
 ## Server Configuration Checklist
 
