@@ -143,7 +143,7 @@ func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
 		tMap[t] = struct{}{}
 	}
 	for _, r := range in {
-		if _, present := tMap[r.Header().Rrtype]; present {
+		if _, ok := tMap[r.Header().Rrtype]; ok {
 			if name != "" && !strings.EqualFold(name, r.Header().Name) {
 				continue
 			}
@@ -209,12 +209,11 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
 	}
 
 	types := make(map[uint16]int)
-	typesErrors := make(map[uint16]bool)
+	typesErrors := make(map[uint16][]struct{})
 
 	for _, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
 		types[sig.TypeCovered]++
-		typesErrors[sig.TypeCovered] = false
 	}
 
 main:
@@ -235,7 +234,7 @@ main:
 		}
 		k, ok := keys[sig.KeyTag]
 		if !ok {
-			if !typesErrors[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
+			if len(typesErrors[sig.TypeCovered]) < types[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
 				continue
 			}
 			return false, errMissingDNSKEY
@@ -248,8 +247,8 @@ main:
 		}
 		err := sig.Verify(k, rest)
 		if err != nil {
-			if !typesErrors[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
-				typesErrors[sig.TypeCovered] = true
+			if len(typesErrors[sig.TypeCovered]) < types[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
+				typesErrors[sig.TypeCovered] = append(typesErrors[sig.TypeCovered], struct{}{})
 				continue
 			}
 			return false, err
@@ -260,7 +259,6 @@ main:
 			}
 			return false, errInvalidSignaturePeriod
 		}
-		typesErrors[sig.TypeCovered] = false
 	}
 
 	return true, nil

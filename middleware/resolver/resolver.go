@@ -131,7 +131,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 }
 
 // Resolve iterate recursively over the domains
-func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nsl bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nomin bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	if root {
@@ -140,7 +140,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	// RFC 7816 query minimization. There are some concerns in RFC.
 	// Current default minimize level 5, if we down to level 3, performance gain 20%
-	minReq, minimized := r.minimize(req, level)
+	minReq, minimized := r.minimize(req, level, nomin)
 
 	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
@@ -157,7 +157,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			log.Debug("Received timeout from all servers", "net", proto, "query", formatQuestion(minReq.Question[0]))
 
 			if ok := r.checkNss(ctx, proto, servers); ok {
-				return r.Resolve(ctx, proto, req, servers, root, depth, level, nsl, parentdsrr, extra...)
+				return r.Resolve(ctx, proto, req, servers, root, depth, level, nomin, parentdsrr, extra...)
 			}
 		}
 		return nil, err
@@ -167,14 +167,14 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	if resp.Truncated {
 		if proto == "udp" {
-			return r.Resolve(ctx, "tcp", req, servers, false, depth, level, nsl, parentdsrr)
+			return r.Resolve(ctx, "tcp", req, servers, false, depth, level, nomin, parentdsrr)
 		}
 	}
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if minimized {
 			level++
-			return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
+			return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
 		}
 		return resp, nil
 	}
@@ -192,7 +192,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		//TODO knowns bug: dig r190-64-49-90.su-static.adinet.com.uy
 		// same ns in com.uy and adinet.com.uy and there is one more other additional ns.
 		level++
-		return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
+		return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
 	}
 
 	if len(resp.Ns) > 0 {
@@ -200,12 +200,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			for _, rr := range resp.Ns {
 				if _, ok := rr.(*dns.SOA); ok {
 					level++
-					return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
+					return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
 				}
 
 				if _, ok := rr.(*dns.CNAME); ok {
 					level++
-					return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
+					return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
 				}
 			}
 		}
@@ -276,6 +276,10 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		nlevel := dns.CountLabel(q.Name)
 		if level > nlevel {
+			if r.qnameMinLevel > 0 && !nomin {
+				//try without minimization
+				return r.Resolve(ctx, proto, req, r.rootservers, true, depth, 0, true, nil, extra...)
+			}
 			return resp, errParentDetection
 		}
 
@@ -302,9 +306,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			}
 
 			//TODO (semihalev): need more tests
-			// original code: return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, nlevel, nsl, ncache.DSRR)
+			// original code: return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, nlevel, nomin, ncache.DSRR)
 			level++
-			return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, level, nsl, ncache.DSRR)
+			return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, level, nomin, ncache.DSRR)
 		}
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
@@ -327,7 +331,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		if list == 0 {
 			if minimized && level < nlevel {
 				level++
-				return r.Resolve(ctx, proto, req, servers, false, depth, level, nsl, parentdsrr)
+				return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
 			}
 
 			return nil, errors.New("nameservers are unreachable")
@@ -345,7 +349,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return nil, errMaxDepth
 		}
 
-		return r.Resolve(ctx, proto, req, authservers, false, depth, nlevel, nsl, parentdsrr)
+		return r.Resolve(ctx, proto, req, authservers, false, depth, nlevel, nomin, parentdsrr)
 	}
 
 	// no answer, no authority. create new msg safer, sometimes received weird responses
@@ -681,8 +685,8 @@ func (r *Resolver) removeIPv6Cache(name string) {
 	r.ipv6cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA}))
 }
 
-func (r *Resolver) minimize(req *dns.Msg, level int) (*dns.Msg, bool) {
-	if r.qnameMinLevel == 0 {
+func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool) {
+	if r.qnameMinLevel == 0 || nomin {
 		return req, false
 	}
 
