@@ -320,9 +320,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		r.lookupV4Nss(ctx, proto, q, authservers, foundv4, nss, cd)
 
-		// we don't want to wait this, if we have glue records, we will use.
-		go r.lookupV6Nss(context.Background(), proto, q, authservers, foundv6, nss, cd)
-
 		authservers.RLock()
 		list := len(authservers.List)
 		authservers.RUnlock()
@@ -338,6 +335,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		r.ncache.Set(key, parentdsrr, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
+
+		// we don't want to wait this.
+		go r.lookupV6Nss(context.Background(), proto, q, authservers, foundv6, nss, cd)
 
 		depth--
 
@@ -377,8 +377,8 @@ func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, 
 
 type ctxHash uint64
 
-func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (context.Context, bool) {
-	hash := cache.Hash(dns.Question{Name: qname, Qtype: qtype})
+func (r *Resolver) checkLoop(ctx context.Context, qname string) (context.Context, bool) {
+	hash := cache.Hash(dns.Question{Name: qname, Qtype: dns.TypeNULL})
 
 	if v := ctx.Value(ctxHash(hash)); v != nil {
 		parentZones := v.([]string)
@@ -406,7 +406,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, q.Name, dns.TypeNULL)
+		ctx, loop := r.checkLoop(ctx, q.Name)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
 				continue
@@ -459,7 +459,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		v6ctx, loop := r.checkLoop(v6ctx, q.Name, dns.TypeNULL)
+		v6ctx, loop := r.checkLoop(v6ctx, q.Name)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
 				continue
