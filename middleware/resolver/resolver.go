@@ -336,7 +336,11 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		r.ncache.Set(key, parentdsrr, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		go r.lookupV6Nss(context.Background(), proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
+		//copy reqid
+		reqid := ctx.Value(ctxKey("reqid"))
+		v6ctx := context.WithValue(context.Background(), ctxKey("reqid"), reqid)
+
+		go r.lookupV6Nss(v6ctx, proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
 
 		depth--
 
@@ -453,9 +457,6 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv6, nss nameservers, cd bool) {
-	reqid := ctx.Value(ctxKey("reqid"))
-	ctx = context.WithValue(ctx, ctxKey("reqid"), reqid)
-
 	list := sortnss(nss, q.Name)
 
 	for _, name := range list {
