@@ -453,6 +453,12 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv6, nss nameservers, cd bool) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	reqid := ctx.Value(ctxKey("reqid"))
+	ctx = context.WithValue(ctx, ctxKey("reqid"), reqid)
+
 	list := sortnss(nss, q.Name)
 
 	for _, name := range list {
