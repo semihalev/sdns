@@ -69,33 +69,33 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 var defaultConfig = `
-# config version, config and build versions can be different.
+# Config version, config and build versions can be different.
 version = "%s"
 
-# address to bind to for the DNS server
+# Address to bind to for the DNS server
 bind = ":53"
 
-# address to bind to for the DNS-over-TLS server
+# Address to bind to for the DNS-over-TLS server
 # bindtls = ":853"
 
-# address to bind to for the DNS-over-HTTPS server
+# Address to bind to for the DNS-over-HTTPS server
 # binddoh = ":8053"
 
-# tls certificate file
+# TLS certificate file
 # tlscertificate = "server.crt"
 
-# tls private key file
+# TLS private key file
 # tlsprivatekey = "server.key"
 
-# outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address 
+# Outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address by request based
 outboundips = [
 ]
 
-# outbound ipv6 addresses, if you set multiple, sdns can use random outbound ipv6 address 
+# Outbound ipv6 addresses, if you set multiple, sdns can use random outbound ipv6 address by request based
 outboundip6s = [
 ]
 
-# root zone ipv4 servers
+# Root zone ipv4 servers
 rootservers = [
 "192.5.5.241:53",
 "198.41.0.4:53",
@@ -112,7 +112,7 @@ rootservers = [
 "202.12.27.33:53"
 ]
 
-# root zone ipv6 servers
+# Root zone ipv6 servers
 root6servers = [
 "[2001:500:2f::f]:53",
 "[2001:503:ba3e::2:30]:53",
@@ -129,76 +129,82 @@ root6servers = [
 "[2001:dc3::35]:53"
 ]
 
-# root keys for dnssec
+# Trusted anchors for dnssec
 rootkeys = [
 ".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
 ]
 
-# failover resolver ipv4 or ipv6 addresses with port, left blank for disabled. Example: "1.1.1.1:53"
+# Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled. Example: "1.1.1.1:53"
+# fallbackservers = [
+#	"8.8.8.8:53",
+#	"8.8.4.4:53"
+# ]
 fallbackservers = [
 ]
 
-# address to bind to for the http API server, left blank for disabled
+# Address to bind to for the http API server, left blank for disabled
 api = "127.0.0.1:8080"
 
-# what kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
+# What kind of information should be logged, Log verbosity level [crit,error,warn,info,debug]
 loglevel = "info"
 
 # The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.
 # accesslog = ""
 
-# list of remote blocklists
+# List of remote blocklists address list. All lists will be download to blocklist folder.
+# blocklists = [
+# "http://mirror1.malwaredomains.com/files/justdomains",
+# "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+# "http://sysctl.org/cameleon/hosts",
+# "https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
+# "https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
+# "https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
+# "https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt"
+# ]
 blocklists = [
-"http://mirror1.malwaredomains.com/files/justdomains",
-"https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-"http://sysctl.org/cameleon/hosts",
-"https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
-"https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
-"https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
-"https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt"
 ]
 
-# list of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list)
+# List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list)
 blocklistdir = "bl"
 
-# ipv4 address to forward blocked queries to
+# IPv4 address to forward blocked queries to
 nullroute = "0.0.0.0"
 
-# ipv6 address to forward blocked queries to
+# IPv6 address to forward blocked queries to
 nullroutev6 = "::0"
 
-# which clients allowed to make queries
+# Which clients allowed to make queries
 accesslist = [
 "0.0.0.0/0",
 "::0/0"
 ]
 
-# enables serving zone data from a hosts file, left blank for disabled
+# Enables serving zone data from a hosts file, left blank for disabled
 # the form of the entries in the /etc/hosts file are based on IETF RFC 952 which was updated by IETF RFC 1123.
 hostsfile = ""
 
-# network timeout for each dns lookups in duration
+# Network timeout for each dns lookups in duration
 timeout = "3s"
 
-# default error cache TTL in seconds
+# Default error cache TTL in seconds
 expire = 600
 
-# cache size (total records in cache)
+# Cache size (total records in cache)
 cachesize = 256000
 
-# maximum recursion depth for nameservers
+# Maximum iteration depth for a query
 maxdepth = 30
 
-# query based ratelimit per second, 0 for disabled
+# Query based ratelimit per second, 0 for disabled
 ratelimit = 0
 
-# client ip address based ratelimit per minute, 0 for disabled
+# Client ip address based ratelimit per minute, 0 for disabled
 clientratelimit = 0
 
-# manual blocklist entries
+# Manual blocklist entries
 blocklist = []
 
-# manual whitelist entries
+# Manual whitelist entries
 whitelist = []
 
 # DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled

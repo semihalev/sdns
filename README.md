@@ -43,9 +43,10 @@ $ make test
 
 ## Flags
 
-| Flag   | Desc                                                           |
-| ------ | -------------------------------------------------------------- |
-| config | Location of the config file, if not found it will be generated |
+| Flag   | Desc                                                                          |
+| ------ | ----------------------------------------------------------------------------- |
+| config | Location of the config file, if config file not found, a config will generate |
+| v      | Show version information                                                      |
 
 ## Debug Environment
 
@@ -60,22 +61,23 @@ Example Output:
 ```shell
 $ dig chaos hinfo example.com
 
-; <<>> DiG 9.10.6 <<>> chaos hinfo example.com
+; <<>> DiG 9.17.1 <<>> chaos hinfo example.com
 ;; global options: +cmd
 ;; Got answer:
-;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 45590
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 29636
 ;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 4, ADDITIONAL: 1
 
 ;; OPT PSEUDOSECTION:
-; EDNS: version: 0, flags:; udp: 1400
+; EDNS: version: 0, flags:; udp: 1232
+; COOKIE: f27dbb995df5ac79e4fa37c07d131b5bd03aa1c5f802047a7c02fb228a886cb281ecc319323dea81 (good)
 ;; QUESTION SECTION:
 ;example.com.			CH	HINFO
 
 ;; AUTHORITY SECTION:
-example.com.		5	CH	HINFO	"Host" "IPv4:199.43.135.53:53 rtt:145ms health:[GOOD]"
-example.com.		5	CH	HINFO	"Host" "IPv4:199.43.133.53:53 rtt:143ms health:[GOOD]"
-example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:5s health:[POOR]"
-example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
+example.com.		0	CH	HINFO	"Host" "IPv4:199.43.135.53:53 rtt:142ms health:[GOOD]"
+example.com.		0	CH	HINFO	"Host" "IPv4:199.43.133.53:53 rtt:145ms health:[GOOD]"
+example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOOD]"
+example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
 ## Configuration (v1.0.0)
@@ -83,7 +85,7 @@ example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 | Key                 | Desc                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | **version**         | Config version                                                                                                                 |
-| **blocklists**      | List of remote blocklists                                                                                                      |
+| **blocklists**      | List of remote blocklists address list. All lists will be download to blocklist folder.                                        |
 | **blocklistdir**    | List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
 | **loglevel**        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
 | **accesslog**       | The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.                              |
@@ -92,12 +94,12 @@ example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 | **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
 | **tlscertificate**  | TLS certificate file path                                                                                                      |
 | **tlsprivatekey**   | TLS private key file path                                                                                                      |
-| **outboundips**     | Outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address                                        |
-| **outboundip6s**    | Outbound ipv6 addresses, if you set multiple, sdns can use random outbound ipv6 address                                        |
+| **outboundips**     | Outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address by request based                       |
+| **outboundip6s**    | Outbound ipv6 addresses, if you set multiple, sdns can use random outbound ipv6 address by request based                       |
 | **rootservers**     | DNS Root IPv4 servers                                                                                                          |
 | **root6servers**    | DNS Root IPv6 servers                                                                                                          |
-| **rootkeys**        | DNS Root keys for dnssec                                                                                                       |
-| **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "1.1.1.1:53"                             |
+| **rootkeys**        | Trusted anchors for DNSSEC                                                                                                     |
+| **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "8.8.8.8:53"                             |
 | **api**             | Address to bind to for the http API server, left blank for disabled                                                            |
 | **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
@@ -106,7 +108,7 @@ example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 | **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
 | **expire**          | Default error cache TTL for in seconds Default: 600                                                                            |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
-| **maxdepth**        | Maximum recursion depth for authservers. Default: 30                                                                           |
+| **maxdepth**        | Maximum iteration depth for a query Default: 30                                                                                |
 | **ratelimit**       | Query based ratelimit per second, 0 for disabled. Default: 0                                                                   |
 | **clientratelimit** | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
 | **blocklist**       | Manual blocklist entries                                                                                                       |

@@ -29,19 +29,19 @@ var (
 	ConfigVersion = "1.0.0"
 
 	// ConfigPath returns the configuration path
-	ConfigPath = flag.String("config", "sdns.conf", "location of the config file, if not found it will be generated")
+	ConfigPath = flag.String("config", "sdns.conf", "location of the config file, if config file not found, a config will generate")
 
 	// VersionFlag returns of the flag of version
-	VersionFlag = flag.Bool("v", false, "version information")
+	VersionFlag = flag.Bool("v", false, "show version information")
 
 	// Usage return print usage information
 	Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "OPTIONS:")
+		fmt.Fprintln(os.Stderr, "Options:")
 		flag.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "USAGE:")
-		fmt.Fprintln(os.Stderr, "./sdns -config=sdns.conf")
+		fmt.Fprintln(os.Stderr, "Example:")
+		fmt.Fprintf(os.Stderr, "%s -config=sdns.conf\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "")
 	}
 )
