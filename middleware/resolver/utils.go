@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/rand"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -314,6 +315,20 @@ func checkExponent(key string) bool {
 	}
 
 	return true
+}
+
+func sortnss(nss nameservers, qname string) []string {
+	var list []string
+	for name := range nss {
+		list = append(list, name)
+	}
+
+	sort.Strings(list)
+	sort.Slice(list, func(i, j int) bool {
+		return dns.CompareDomainName(qname, list[i]) < dns.CompareDomainName(qname, list[j])
+	})
+
+	return list
 }
 
 var reqPool sync.Pool

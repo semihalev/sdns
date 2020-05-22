@@ -7,7 +7,6 @@ import (
 	"net"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -317,18 +316,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		authservers.CheckingDisable = cd
 		authservers.Zone = q.Name
 
-		if len(authservers.List) > 0 {
-			// temprorary cache before lookup
-			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
-		}
+		r.lookupV4Nss(ctx, proto, q, authservers, key, parentdsrr, foundv4, nss, cd)
 
-		r.lookupV4Nss(ctx, proto, q, authservers, foundv4, nss, cd)
-
-		authservers.RLock()
-		list := len(authservers.List)
-		authservers.RUnlock()
-
-		if list == 0 {
+		if len(authservers.List) == 0 {
 			if minimized && level < nlevel {
 				level++
 				return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
@@ -340,8 +330,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		r.ncache.Set(key, parentdsrr, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		// we don't want to wait this.
-		go r.lookupV6Nss(context.Background(), proto, q, authservers, foundv6, nss, cd)
+		go r.lookupV6Nss(context.Background(), proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
 
 		depth--
 
@@ -379,98 +368,99 @@ func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, 
 	return resp, err
 }
 
-type ctxHash uint64
-
 func (r *Resolver) checkLoop(ctx context.Context, qname string) (context.Context, bool) {
-	hash := cache.Hash(dns.Question{Name: qname, Qtype: dns.TypeNULL})
-
-	if v := ctx.Value(ctxHash(hash)); v != nil {
+	if v := ctx.Value(ctxKey("nslist")); v != nil {
 		parentZones := v.([]string)
 
+		loopCount := 0
 		for _, n := range parentZones {
 			if n == qname {
-				return ctx, true
+				loopCount++
+				if loopCount > 1 {
+					return ctx, true
+				}
 			}
 		}
 
 		parentZones = append(parentZones, qname)
+		ctx = context.WithValue(ctx, ctxKey("nslist"), parentZones)
 	} else {
-		ctx = context.WithValue(ctx, ctxHash(hash), []string{qname})
+		ctx = context.WithValue(ctx, ctxKey("nslist"), []string{qname})
 	}
 
 	return ctx, false
 }
 
-func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv4, nss nameservers, cd bool) {
-	var wg sync.WaitGroup
-	for name := range nss {
+func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv4, nss nameservers, cd bool) {
+	list := sortnss(nss, q.Name)
+
+	for _, name := range list {
 		authservers.Nss = append(authservers.Nss, name)
 
 		if _, ok := foundv4[name]; ok {
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, q.Name)
+		ctx, loop := r.checkLoop(ctx, name)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
+				log.Debug("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
 				continue
 			}
 		}
 
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
+		if len(authservers.List) > 0 {
+			// temprorary cache before lookup
+			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
+		}
 
-			addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
-			nsipv4 := make(map[string][]string)
+		addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+		nsipv4 := make(map[string][]string)
 
-			if err != nil {
-				log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-				return
-			}
+		if err != nil {
+			log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+			continue
+		}
 
-			if len(addrs) == 0 {
-				return
-			}
+		if len(addrs) == 0 {
+			continue
+		}
 
-			nsipv4[name] = addrs
+		nsipv4[name] = addrs
 
-			authservers.Lock()
-		addrsloop:
-			for _, addr := range addrs {
-				raddr := net.JoinHostPort(addr, "53")
-				for _, s := range authservers.List {
-					if s.Addr == raddr {
-						continue addrsloop
-					}
+		authservers.Lock()
+	addrsloop:
+		for _, addr := range addrs {
+			raddr := net.JoinHostPort(addr, "53")
+			for _, s := range authservers.List {
+				if s.Addr == raddr {
+					continue addrsloop
 				}
-				authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
 			}
-			authservers.Unlock()
-			r.addIPv4Cache(nsipv4)
-		}(name)
+			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
+		}
+		authservers.Unlock()
+		r.addIPv4Cache(nsipv4)
 	}
-	wg.Wait()
 }
 
-func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
-	// it will be work in background, we need time for that lookups
-	v6ctx, cancel := context.WithDeadline(ctx, time.Now().Add(10*time.Second))
-	defer cancel()
+func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv6, nss nameservers, cd bool) {
+	list := sortnss(nss, q.Name)
 
-	for name := range nss {
+	for _, name := range list {
 		if _, ok := foundv6[name]; ok {
 			continue
 		}
 
-		v6ctx, loop := r.checkLoop(v6ctx, q.Name)
+		ctx, loop := r.checkLoop(ctx, name)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
+				log.Debug("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
 				continue
 			}
 		}
 
-		addrs, err := r.lookupNSAddrV6(v6ctx, proto, name, cd)
+		addrs, err := r.lookupNSAddrV6(ctx, proto, name, cd)
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {

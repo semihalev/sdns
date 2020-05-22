@@ -73,7 +73,7 @@ func New(cfg *config.Config) *Cache {
 
 		rate: cfg.RateLimit,
 
-		lqueue: lqueue.New(5 * time.Second),
+		lqueue: lqueue.New(10 * time.Second),
 
 		now: time.Now,
 	}
@@ -90,6 +90,16 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	q := req.Question[0]
 
+	if _, ok := dns.ClassToString[q.Qclass]; !ok {
+		dc.Abort()
+		return
+	}
+
+	if _, ok := dns.TypeToString[q.Qtype]; !ok {
+		dc.Abort()
+		return
+	}
+
 	// check purge query
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
@@ -104,15 +114,17 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	key := cache.Hash(q, req.CheckingDisabled)
-
 	if q.Name != "." && req.RecursionDesired == false {
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
 		dc.Abort()
 		return
 	}
 
-	c.lqueue.Wait(key)
+	key := cache.Hash(q, req.CheckingDisabled)
+
+	if !w.Internal() {
+		c.lqueue.Wait(key)
+	}
 
 	now := c.now().UTC()
 
@@ -132,10 +144,12 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	c.lqueue.Wait(key)
+	if !w.Internal() {
+		c.lqueue.Wait(key)
 
-	c.lqueue.Add(key)
-	defer c.lqueue.Done(key)
+		c.lqueue.Add(key)
+		defer c.lqueue.Done(key)
+	}
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
 
@@ -205,11 +219,11 @@ func (c *Cache) purge(qname string, qtype uint16) {
 
 // get returns the entry for a key or an error
 func (c *Cache) get(key uint64, now time.Time) (*item, bool) {
-	if i, ok := c.ncache.Get(key); ok && i.(*item).ttl(now) > 0 {
+	if i, ok := c.pcache.Get(key); ok && i.(*item).ttl(now) > 0 {
 		return i.(*item), true
 	}
 
-	if i, ok := c.pcache.Get(key); ok && i.(*item).ttl(now) > 0 {
+	if i, ok := c.ncache.Get(key); ok && i.(*item).ttl(now) > 0 {
 		return i.(*item), true
 	}
 
