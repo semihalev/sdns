@@ -196,8 +196,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		//TODO knowns bug: dig r190-64-49-90.su-static.adinet.com.uy
-		// same ns in com.uy and adinet.com.uy and there is one more other additional ns.
 		level++
 		return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
 	}
@@ -338,7 +336,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		r.ncache.Set(key, parentdsrr, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		go r.lookupV6Nss(context.Background(), proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
+		go r.lookupV6Nss(ctx, proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
 
 		depth--
 
