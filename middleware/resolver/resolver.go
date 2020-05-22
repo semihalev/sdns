@@ -336,6 +336,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		r.ncache.Set(key, parentdsrr, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
+		ctx = context.WithValue(ctx, ctxKey("nslist"), nil)
 		go r.lookupV6Nss(ctx, proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
 
 		depth--
