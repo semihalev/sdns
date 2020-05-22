@@ -987,8 +987,8 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		log.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
 
-		if retried < 3 {
-			if retried == 2 && proto == "udp" {
+		if retried < 2 {
+			if retried == 1 && proto == "udp" {
 				proto = "tcp"
 			}
 			// retry
