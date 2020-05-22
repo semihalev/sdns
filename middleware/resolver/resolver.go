@@ -36,6 +36,7 @@ type Resolver struct {
 	rootkeys []dns.RR
 
 	qnameMinLevel int
+	netTimeout    time.Duration
 
 	group singleflight
 }
@@ -67,6 +68,12 @@ func NewResolver(cfg *config.Config) *Resolver {
 		ipv6cache: cache.New(1024 * 128),
 
 		qnameMinLevel: cfg.QnameMinLevel,
+
+		netTimeout: cfg.Timeout.Duration,
+	}
+
+	if r.cfg.Timeout.Duration > 0 {
+		r.netTimeout = r.cfg.Timeout.Duration
 	}
 
 	r.parseRootServers(cfg)
@@ -839,7 +846,7 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 	results := make(chan exchangeResult)
 
 	startRacer := func(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) {
-		resp, err := r.exchange(ctx, proto, server, req, false)
+		resp, err := r.exchange(ctx, proto, req, server, 0)
 
 		select {
 		case results <- exchangeResult{resp: resp, server: server, error: err}:
@@ -945,13 +952,13 @@ mainloop:
 	panic("looks like no root servers, check your config")
 }
 
-func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg, retried bool) (*dns.Msg, error) {
+func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, server *authcache.AuthServer, retried int) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	var resp *dns.Msg
 	var err error
 
-	rtt := r.cfg.Timeout.Duration / 2
+	rtt := r.netTimeout
 	defer func() {
 		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
 		atomic.AddInt64(&server.Count, 1)
@@ -969,7 +976,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		return nil, err
 	}
 
-	co.SetDeadline(time.Now().Add(r.cfg.Timeout.Duration / 2))
+	co.SetDeadline(time.Now().Add(r.netTimeout))
 
 	// data race, because we have parallel queries
 	req = req.CopyTo(AcquireMsg())
@@ -980,32 +987,33 @@ func (r *Resolver) exchange(ctx context.Context, proto string, server *authcache
 		log.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
 
-		if !retried {
-			if proto == "udp" {
+		if retried < 3 {
+			if retried == 2 && proto == "udp" {
 				proto = "tcp"
 			}
 			// retry
-			return r.exchange(ctx, proto, server, req, true)
+			retried++
+			return r.exchange(ctx, proto, req, server, retried)
 		}
 
 		return nil, err
 	}
 
 	if resp != nil && resp.Truncated && proto == "udp" {
-		return r.exchange(ctx, "tcp", server, req, retried)
+		return r.exchange(ctx, "tcp", req, server, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
-		return r.exchange(ctx, proto, server, req, retried)
+		return r.exchange(ctx, proto, req, server, retried)
 	}
 
 	return resp, nil
 }
 
 func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Version) (d *net.Dialer) {
-	d = &net.Dialer{Deadline: time.Now().Add(r.cfg.Timeout.Duration / 2)}
+	d = &net.Dialer{Deadline: time.Now().Add(r.netTimeout)}
 
 	if mode == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {
@@ -1434,7 +1442,7 @@ func (r *Resolver) checkPriming() error {
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.cfg.Timeout.Duration))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
 	defer cancel()
 
 	if len(r.rootservers.List) == 0 {
