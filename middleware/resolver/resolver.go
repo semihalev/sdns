@@ -1017,9 +1017,8 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, version authcach
 	d = &net.Dialer{Deadline: time.Now().Add(r.netTimeout)}
 
 	reqid := 0
-	if v := ctx.Value(ctxKey("request")); v != nil {
-		req := v.(*dns.Msg)
-		reqid = int(req.Id)
+	if v := ctx.Value(ctxKey("reqid")); v != nil {
+		reqid = int(v.(uint16))
 	}
 
 	if version == authcache.IPv4 {
@@ -1444,7 +1443,9 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 }
 
 func (r *Resolver) checkPriming() error {
-	req := new(dns.Msg)
+	req := AcquireMsg()
+	defer ReleaseMsg(req)
+
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
