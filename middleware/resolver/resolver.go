@@ -52,7 +52,8 @@ var (
 )
 
 const (
-	rootzone = "."
+	rootzone  = "."
+	maxUint16 = 1 << 16
 )
 
 // NewResolver return a resolver
@@ -1012,12 +1013,19 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 	return resp, nil
 }
 
-func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.Version) (d *net.Dialer) {
+func (r *Resolver) newDialer(ctx context.Context, proto string, version authcache.Version) (d *net.Dialer) {
 	d = &net.Dialer{Deadline: time.Now().Add(r.netTimeout)}
 
-	if mode == authcache.IPv4 {
+	reqid := 0
+	if v := ctx.Value(ctxKey("request")); v != nil {
+		req := v.(*dns.Msg)
+		reqid = int(req.Id)
+	}
+
+	if version == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {
-			index := randInt(0, len(r.outboundipv4))
+			//we will be select outbound ip address by request id.
+			index := len(r.outboundipv4) * reqid / maxUint16
 
 			// port number will automatically chosen
 			if proto == "tcp" {
@@ -1026,9 +1034,9 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, mode authcache.V
 				d.LocalAddr = &net.UDPAddr{IP: r.outboundipv4[index]}
 			}
 		}
-	} else if mode == authcache.IPv6 {
+	} else if version == authcache.IPv6 {
 		if len(r.outboundipv6) > 0 {
-			index := randInt(0, len(r.outboundipv6))
+			index := len(r.outboundipv6) * reqid / maxUint16
 
 			// port number will automatically chosen
 			if proto == "tcp" {
