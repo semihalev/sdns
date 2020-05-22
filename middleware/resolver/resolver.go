@@ -1444,9 +1444,7 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 }
 
 func (r *Resolver) checkPriming() error {
-	req := AcquireMsg()
-	defer ReleaseMsg(req)
-
+	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
