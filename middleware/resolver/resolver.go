@@ -69,7 +69,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		qnameMinLevel: cfg.QnameMinLevel,
 
-		netTimeout: cfg.Timeout.Duration,
+		netTimeout: 2 * time.Second,
 	}
 
 	if r.cfg.Timeout.Duration > 0 {

@@ -100,7 +100,7 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	req.AuthenticatedData = false
 
 	//TODO (semihalev): config setable after this
-	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.Timeout.Duration*5))
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(30*time.Second))
 	defer cancel()
 
 	depth := h.cfg.Maxdepth
