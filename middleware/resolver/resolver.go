@@ -336,7 +336,6 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		r.ncache.Set(key, parentdsrr, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
-		ctx = context.WithValue(ctx, ctxKey("nslist"), nil)
 		go r.lookupV6Nss(ctx, proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
 
 		depth--
@@ -375,8 +374,10 @@ func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, 
 	return resp, err
 }
 
-func (r *Resolver) checkLoop(ctx context.Context, qname string) (context.Context, bool) {
-	if v := ctx.Value(ctxKey("nslist")); v != nil {
+func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (context.Context, bool) {
+	key := ctxKey("nslist" + "_" + dns.TypeToString[qtype])
+
+	if v := ctx.Value(key); v != nil {
 		parentZones := v.([]string)
 
 		loopCount := 0
@@ -390,9 +391,9 @@ func (r *Resolver) checkLoop(ctx context.Context, qname string) (context.Context
 		}
 
 		parentZones = append(parentZones, qname)
-		ctx = context.WithValue(ctx, ctxKey("nslist"), parentZones)
+		ctx = context.WithValue(ctx, key, parentZones)
 	} else {
-		ctx = context.WithValue(ctx, ctxKey("nslist"), []string{qname})
+		ctx = context.WithValue(ctx, key, []string{qname})
 	}
 
 	return ctx, false
@@ -408,7 +409,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, name)
+		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
 				log.Debug("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
@@ -459,7 +460,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, name)
+		ctx, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
 				log.Debug("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
