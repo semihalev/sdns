@@ -102,7 +102,7 @@ example.com.		5	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:5s health:[POOR]"
 | **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
 | **accesslist**      | Which clients allowed to make queries                                                                                          |
-| **timeout**         | Query timeout for each dns lookups in duration Default: 2s                                                                     |
+| **timeout**         | Network timeout for each dns lookups in duration Default: 2s                                                                   |
 | **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
 | **expire**          | Default error cache TTL for in seconds Default: 600                                                                            |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
