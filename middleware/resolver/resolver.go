@@ -404,7 +404,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 		ctx, loop := r.checkLoop(ctx, name)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
-				log.Debug("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
+				log.Info("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
 				continue
 			}
 		}
@@ -455,7 +455,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 		ctx, loop := r.checkLoop(ctx, name)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
-				log.Debug("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
+				log.Info("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
 				continue
 			}
 		}

@@ -120,7 +120,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	key := cache.Hash(q, req.CheckingDisabled)
+	key := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNULL})
 
 	if !w.Internal() {
 		c.lqueue.Wait(key)
