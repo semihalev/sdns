@@ -184,7 +184,7 @@ accesslist = [
 hostsfile = ""
 
 # Network timeout for each dns lookups in duration
-timeout = "3s"
+timeout = "2s"
 
 # Default error cache TTL in seconds
 expire = 600

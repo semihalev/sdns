@@ -149,7 +149,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// Current default minimize level 5, if we down to level 3, performance gain 20%
 	minReq, minimized := r.minimize(req, level, nomin)
 
-	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
+	log.Warn("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers)
 	if err != nil {
@@ -159,12 +159,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				return nil, err
 			}
 
-			atomic.AddUint32(&servers.ErrorCount, 1)
+			log.Debug("Received network error from all servers", "net", proto, "query", formatQuestion(minReq.Question[0]))
 
-			log.Debug("Received timeout from all servers", "net", proto, "query", formatQuestion(minReq.Question[0]))
-
-			if ok := r.checkNss(ctx, proto, servers); ok {
-				return r.Resolve(ctx, proto, req, servers, root, depth, level, nomin, parentdsrr, extra...)
+			if atomic.AddUint32(&servers.ErrorCount, 1) == 5 {
+				if ok := r.checkNss(ctx, proto, servers); ok {
+					return r.Resolve(ctx, proto, req, servers, root, depth, level, nomin, parentdsrr, extra...)
+				}
 			}
 		}
 		return nil, err
