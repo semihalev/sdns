@@ -210,7 +210,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	serversList = append(serversList, servers.List...)
 	servers.RUnlock()
 
-	authcache.Sort(serversList, 0)
+	authcache.Sort(serversList, 1)
 
 	rrHeader := dns.RR_Header{
 		Name:   name,
