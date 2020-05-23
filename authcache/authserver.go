@@ -77,14 +77,23 @@ type AuthServers struct {
 	Nss  []string
 
 	ErrorCount uint32
+	Called     uint64
 
 	CheckingDisable bool
 	Checked         bool
 }
 
 // Sort sort servers by rtt
-func Sort(serversList []*AuthServer) {
+func Sort(serversList []*AuthServer, called uint64) {
 	for _, s := range serversList {
+		//clear stats and re-start again
+		if called%1e3 == 0 {
+			atomic.StoreInt64(&s.Rtt, 0)
+			atomic.StoreInt64(&s.Count, 0)
+
+			continue
+		}
+
 		rtt := atomic.LoadInt64(&s.Rtt)
 		count := atomic.LoadInt64(&s.Count)
 

@@ -832,7 +832,7 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
-	authcache.Sort(serversList)
+	authcache.Sort(serversList, atomic.AddUint64(&servers.Called, 1))
 
 	responseErrors := []*dns.Msg{}
 	configErrors := []*dns.Msg{}

@@ -20,11 +20,11 @@ func Test_TrySort(t *testing.T) {
 	}
 
 	rand.Seed(time.Now().UnixNano())
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 2000; i++ {
 		for j := range s.List {
 			s.List[j].Count++
 			s.List[j].Rtt += (time.Duration(rand.Intn(2000-0)+0) * time.Millisecond).Nanoseconds()
-			Sort(s.List)
+			Sort(s.List, uint64(i))
 		}
 	}
 
