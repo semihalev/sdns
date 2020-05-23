@@ -120,7 +120,14 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	key := cache.Hash(q, req.CheckingDisabled)
+	kq := dns.Question{Name: q.Name, Qtype: q.Qtype}
+
+	//should wait A and AAAA records together. we don't want to flood on auth
+	if q.Qtype == dns.TypeAAAA {
+		kq.Qtype = dns.TypeA
+	}
+
+	key := cache.Hash(kq, req.CheckingDisabled)
 
 	if !w.Internal() {
 		c.lqueue.Wait(key)
