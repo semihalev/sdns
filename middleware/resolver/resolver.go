@@ -65,8 +65,8 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		rootservers: new(authcache.AuthServers),
 
-		ipv4cache: cache.New(1024 * 128),
-		ipv6cache: cache.New(1024 * 128),
+		ipv4cache: cache.New(1024 * 256),
+		ipv6cache: cache.New(1024 * 256),
 
 		qnameMinLevel: cfg.QnameMinLevel,
 
