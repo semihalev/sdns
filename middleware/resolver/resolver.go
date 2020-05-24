@@ -149,7 +149,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// Current default minimize level 5, if we down to level 3, performance gain 20%
 	minReq, minimized := r.minimize(req, level, nomin)
 
-	log.Warn("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
+	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers)
 	if err != nil {

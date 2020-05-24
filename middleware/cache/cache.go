@@ -120,14 +120,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	kq := dns.Question{Name: q.Name, Qtype: q.Qtype}
-
-	//should wait A and AAAA records together. we don't want to flood on auth
-	if q.Qtype == dns.TypeAAAA {
-		kq.Qtype = dns.TypeA
-	}
-
-	key := cache.Hash(kq, req.CheckingDisabled)
+	key := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNULL})
 
 	if !w.Internal() {
 		c.lqueue.Wait(key)
@@ -135,7 +128,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	now := c.now().UTC()
 
-	i, found := c.get(key, now)
+	i, found := c.get(cache.Hash(q, req.CheckingDisabled), now)
 	if i != nil && found {
 		if !w.Internal() && c.rate > 0 && i.RateLimit.Limit() {
 			//no reply to client
