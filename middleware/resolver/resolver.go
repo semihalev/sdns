@@ -153,6 +153,11 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	resp, err := r.groupLookup(ctx, proto, minReq, servers)
 	if err != nil {
+		if minimized {
+			// return without minimized
+			return r.Resolve(ctx, proto, req, servers, false, depth, level, true, parentdsrr, extra...)
+		}
+
 		if _, ok := err.(fatalError); ok {
 			// no check for nsaddrs lookups
 			if v := ctx.Value(ctxKey("nsl")); v != nil {
