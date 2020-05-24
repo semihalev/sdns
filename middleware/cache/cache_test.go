@@ -224,6 +224,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeServerFailure, dc.DNSWriter.Rcode())
 
+	req = req.Copy()
 	req.RecursionDesired = true
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
@@ -231,6 +232,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
 
+	req = req.Copy()
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("labs.example.com.", dns.TypeA)
 	dc.ResetDNS(mw, req)
@@ -238,6 +240,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeNameError, dc.DNSWriter.Rcode())
 
+	req = req.Copy()
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("www.apple.com.", dns.TypeA)
 	dc.ResetDNS(mw, req)
@@ -245,6 +248,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
 
+	req = req.Copy()
 	req.IsEdns0().SetUDPSize(512)
 	req.SetQuestion("org.", dns.TypeDNSKEY)
 	dc.ResetDNS(mw, req)
@@ -252,6 +256,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
 
+	req = req.Copy()
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("www.microsoft.com.", dns.TypeCNAME)
 	dc.ResetDNS(mw, req)

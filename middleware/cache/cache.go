@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/waitgroup"
 
 	rl "github.com/bsm/ratelimit"
 	"github.com/miekg/dns"
@@ -15,7 +16,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
-	"github.com/semihalev/sdns/lqueue"
 	"github.com/semihalev/sdns/response"
 )
 
@@ -34,8 +34,8 @@ type Cache struct {
 	// ratelimit
 	rate int
 
-	// resolver queue
-	lqueue *lqueue.LQueue
+	// resolver wait group
+	wg *waitgroup.WaitGroup
 
 	// Testing.
 	now func() time.Time
@@ -73,7 +73,7 @@ func New(cfg *config.Config) *Cache {
 
 		rate: cfg.RateLimit,
 
-		lqueue: lqueue.New(15 * time.Second),
+		wg: waitgroup.New(15 * time.Second),
 
 		now: time.Now,
 	}
@@ -123,7 +123,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	key := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNULL})
 
 	if !w.Internal() {
-		c.lqueue.Wait(key)
+		c.wg.Wait(key)
 	}
 
 	now := c.now().UTC()
@@ -145,10 +145,10 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	}
 
 	if !w.Internal() {
-		c.lqueue.Wait(key)
+		c.wg.Wait(key)
 
-		c.lqueue.Add(key)
-		defer c.lqueue.Done(key)
+		c.wg.Add(key)
+		defer c.wg.Done(key)
 	}
 
 	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}

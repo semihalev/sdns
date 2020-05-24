@@ -1,4 +1,4 @@
-package lqueue
+package waitgroup
 
 import (
 	"sync"
@@ -10,25 +10,25 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_lqueueWait(t *testing.T) {
-	lqueue := New(5 * time.Second)
+func Test_WaitGroupWait(t *testing.T) {
+	wg := New(5 * time.Second)
 	mu := sync.RWMutex{}
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn("example.com."), dns.TypeA)
 	key := cache.Hash(m.Question[0])
 
-	lqueue.Add(key)
+	wg.Add(key)
 
-	ch := lqueue.Get(key)
+	ch := wg.Get(key)
 	assert.NotNil(t, ch)
 
 	key2 := cache.Hash(dns.Question{Name: "none.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
-	none := lqueue.Get(key2)
-	assert.Nil(t, none)
+	zero := wg.Get(key2)
+	assert.Equal(t, zero, 0)
 
-	lqueue.Wait(key2)
+	wg.Wait(key2)
 
 	var workers []*string
 
@@ -41,7 +41,7 @@ func Test_lqueueWait(t *testing.T) {
 			workers = append(workers, w)
 			mu.Unlock()
 
-			lqueue.Wait(key)
+			wg.Wait(key)
 
 			mu.Lock()
 			*w = "stopped"
@@ -51,7 +51,7 @@ func Test_lqueueWait(t *testing.T) {
 
 	time.Sleep(time.Second)
 
-	lqueue.Done(key)
+	wg.Done(key)
 
 	time.Sleep(100 * time.Millisecond)
 

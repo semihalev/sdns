@@ -2,8 +2,6 @@ package resolver
 
 import (
 	"context"
-	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -43,75 +41,49 @@ func makeTestConfig() *config.Config {
 	return cfg
 }
 
-func RunLocalUDPServer(laddr string) (*dns.Server, string, error) {
-	server, l, _, err := RunLocalUDPServerWithFinChan(laddr)
-
-	return server, l, err
-}
-
-func RunLocalUDPServerWithFinChan(laddr string, opts ...func(*dns.Server)) (*dns.Server, string, chan error, error) {
-	pc, err := net.ListenPacket("udp4", laddr)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	server := &dns.Server{PacketConn: pc, ReadTimeout: time.Hour, WriteTimeout: time.Hour}
-
-	waitLock := sync.Mutex{}
-	waitLock.Lock()
-	server.NotifyStartedFunc = waitLock.Unlock
-
-	// fin must be buffered so the goroutine below won't block
-	// forever if fin is never read from. This always happens
-	// in RunLocalUDPServer and can happen in TestShutdownUDP.
-	fin := make(chan error, 1)
-
-	for _, opt := range opts {
-		opt(server)
-	}
-
-	go func() {
-		fin <- server.ActivateAndServe()
-		pc.Close()
-	}()
-
-	waitLock.Lock()
-	return server, pc.LocalAddr().String(), fin, nil
-}
-
 func Test_handler(t *testing.T) {
 	ctx := context.Background()
 
 	handler := middleware.Get("resolver").(*DNSHandler)
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	assert.Equal(t, "resolver", handler.Name())
 
 	m := new(dns.Msg)
 	m.RecursionDesired = true
-
 	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r := handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
+	m = new(dns.Msg)
+	m.RecursionDesired = true
 	// test again for caches
 	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
+	m = new(dns.Msg)
+	m.RecursionDesired = true
 	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
 	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) == 0, true)
 
+	m = new(dns.Msg)
+	m.RecursionDesired = true
 	m.SetQuestion("example.com.", dns.TypeA)
 	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
+	m = new(dns.Msg)
+	m.RecursionDesired = true
 	m.SetQuestion(".", dns.TypeANY)
 	r = handler.handle(ctx, "udp", m)
 	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
 
+	m = new(dns.Msg)
+	m.RecursionDesired = true
 	m.SetQuestion(".", dns.TypeNS)
 	m.RecursionDesired = false
 	r = handler.handle(ctx, "udp", m)
@@ -138,6 +110,7 @@ func Test_HandlerServe(t *testing.T) {
 
 	dc := ctx.New([]ctx.Handler{})
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
+
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
