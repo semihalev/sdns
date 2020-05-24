@@ -52,8 +52,10 @@ var (
 )
 
 const (
-	rootzone  = "."
-	maxUint16 = 1 << 16
+	rootzone         = "."
+	maxUint16        = 1 << 16
+	defaultCacheSize = 1024 * 256
+	defaultTimeout   = 2 * time.Second
 )
 
 // NewResolver return a resolver
@@ -65,12 +67,11 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		rootservers: new(authcache.AuthServers),
 
-		ipv4cache: cache.New(1024 * 256),
-		ipv6cache: cache.New(1024 * 256),
+		ipv4cache: cache.New(defaultCacheSize),
+		ipv6cache: cache.New(defaultCacheSize),
 
 		qnameMinLevel: cfg.QnameMinLevel,
-
-		netTimeout: 2 * time.Second,
+		netTimeout:    defaultTimeout,
 	}
 
 	if r.cfg.Timeout.Duration > 0 {
@@ -462,6 +463,9 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv6, nss nameservers, cd bool) {
+	//we can give sometimes for that lookups because of rate limiting on auth servers
+	time.Sleep(defaultTimeout)
+
 	list := sortnss(nss, q.Name)
 
 	for _, name := range list {
