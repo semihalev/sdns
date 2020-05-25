@@ -339,6 +339,7 @@ func AcquireMsg() *dns.Msg {
 	if v == nil {
 		return &dns.Msg{}
 	}
+
 	return v.(*dns.Msg)
 }
 

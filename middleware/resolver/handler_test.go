@@ -46,7 +46,7 @@ func Test_handler(t *testing.T) {
 
 	handler := middleware.Get("resolver").(*DNSHandler)
 
-	time.Sleep(10 * time.Second)
+	time.Sleep(2 * time.Second)
 
 	assert.Equal(t, "resolver", handler.Name())
 

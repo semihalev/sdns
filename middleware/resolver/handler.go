@@ -135,9 +135,7 @@ func (h *DNSHandler) additionalAnswer(ctx context.Context, proto string, req, ms
 		return msg
 	}
 
-	cnameReq := AcquireMsg()
-	defer ReleaseMsg(cnameReq)
-
+	cnameReq := new(dns.Msg)
 	cnameReq.Extra = req.Extra
 	cnameReq.CheckingDisabled = req.CheckingDisabled
 

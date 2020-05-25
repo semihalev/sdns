@@ -223,8 +223,13 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		var nsrr *dns.NS
 
+		soa := false
 		nss := make(nameservers)
 		for _, rr := range resp.Ns {
+			if _, ok := rr.(*dns.SOA); ok {
+				soa = true
+			}
+
 			if nsrec, ok := rr.(*dns.NS); ok {
 				nsrr = nsrec
 				nss[strings.ToLower(nsrec.Ns)] = struct{}{}
@@ -232,6 +237,19 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		}
 
 		if len(nss) == 0 {
+			return r.authority(ctx, proto, minReq, resp, parentdsrr, q.Qtype)
+		}
+
+		if soa {
+			var authrrs []dns.RR
+			authrrs = append(authrrs, resp.Ns...)
+			resp.Ns = []dns.RR{}
+			for _, rr := range authrrs {
+				switch rr.(type) {
+				case *dns.SOA, *dns.NSEC, *dns.NSEC3, *dns.RRSIG:
+					resp.Ns = append(resp.Ns, rr)
+				}
+			}
 			return r.authority(ctx, proto, minReq, resp, parentdsrr, q.Qtype)
 		}
 
@@ -859,8 +877,9 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 
 	results := make(chan exchangeResult)
 
-	startRacer := func(ctx context.Context, proto string, server *authcache.AuthServer, req *dns.Msg) {
+	startRacer := func(ctx context.Context, proto string, req *dns.Msg, server *authcache.AuthServer) {
 		resp, err := r.exchange(ctx, proto, req, server, 0)
+		defer ReleaseMsg(req)
 
 		select {
 		case results <- exchangeResult{resp: resp, server: server, error: err}:
@@ -880,7 +899,8 @@ mainloop:
 	for index, server := range serversList {
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		go startRacer(ctx, proto, server, req)
+
+		go startRacer(ctx, proto, req.CopyTo(AcquireMsg()), server)
 
 	fallbackloop:
 		for left != 0 {
@@ -991,10 +1011,6 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 	}
 
 	co.SetDeadline(time.Now().Add(r.netTimeout))
-
-	// data race, because we have parallel queries
-	req = req.CopyTo(AcquireMsg())
-	defer ReleaseMsg(req)
 
 	resp, rtt, err = co.Exchange(req)
 	if err != nil {
@@ -1182,9 +1198,7 @@ func (r *Resolver) findDS(ctx context.Context, proto, signer, qname string, resp
 func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.Msg, err error) {
 	log.Debug("Lookup DS record", "qname", qname, "proto", proto)
 
-	dsReq := AcquireMsg()
-	defer ReleaseMsg(dsReq)
-
+	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
 	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 
@@ -1214,9 +1228,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 
 	ctx = context.WithValue(ctx, ctxKey("nsl"), struct{}{})
 
-	nsReq := AcquireMsg()
-	defer ReleaseMsg(nsReq)
-
+	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
@@ -1247,9 +1259,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 
 	ctx = context.WithValue(ctx, ctxKey("nsl"), struct{}{})
 
-	nsReq := AcquireMsg()
-	defer ReleaseMsg(nsReq)
-
+	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeAAAA)
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
@@ -1324,9 +1334,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 }
 
 func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
-	keyReq := AcquireMsg()
-	defer ReleaseMsg(keyReq)
-
+	keyReq := new(dns.Msg)
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
 	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 
@@ -1456,9 +1464,7 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 }
 
 func (r *Resolver) checkPriming() error {
-	req := AcquireMsg()
-	defer ReleaseMsg(req)
-
+	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
