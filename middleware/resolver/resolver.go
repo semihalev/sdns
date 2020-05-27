@@ -403,13 +403,13 @@ func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, 
 }
 
 func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (context.Context, bool) {
-	key := ctxKey("nslist" + "_" + dns.TypeToString[qtype])
+	key := ctxKey("nslist:" + dns.TypeToString[qtype])
 
 	if v := ctx.Value(key); v != nil {
-		parentZones := v.([]string)
+		list := v.([]string)
 
 		loopCount := 0
-		for _, n := range parentZones {
+		for _, n := range list {
 			if n == qname {
 				loopCount++
 				if loopCount > 1 {
@@ -418,8 +418,8 @@ func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (c
 			}
 		}
 
-		parentZones = append(parentZones, qname)
-		ctx = context.WithValue(ctx, key, parentZones)
+		list = append(list, qname)
+		ctx = context.WithValue(ctx, key, list)
 	} else {
 		ctx = context.WithValue(ctx, key, []string{qname})
 	}

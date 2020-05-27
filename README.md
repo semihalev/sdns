@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
 [![GitHub version](https://badge.fury.io/gh/semihalev%2Fsdns.svg)](https://github.com/semihalev/sdns/releases)
 
-## :rocket: Privacy important, fast, iterative dns resolver server with dnssec support
+## :rocket: Privacy important, fast, recursive dns resolver server with dnssec support
 
 <img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="250">
 
@@ -163,6 +163,16 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 -   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] DNAME Redirection in the DNS described at RFC 6672
 -   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
+
+## Who Used
+
+_CubeDNS_ public open resolver project using sdns on multi location. The project supported both UDP and TCP also DoT and DoH.
+
+| Proto  | Servers                                  |
+| ------ | ---------------------------------------- |
+| IPv4   | 195.244.44.44, 195.244.44.45             |
+| IPv6   | 2a0a:be80::cbe:4444, 2a0a:be80::cbe:4445 |
+| DoH    | https://cubedns.com/dns-query            |
 
 ## Contributing
 
