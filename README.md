@@ -168,6 +168,14 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 
 These benchmarks were run on a server with Intel Xeon E5-2609 v4 cpu and 32GB memory on localhost. DNS-OARC dnsperf (https://www.dns-oarc.net/tools/dnsperf) tool used with 50.000 sample query data.
 
+| Resolver | RESPONSE | NOERROR | SERVFAIL | NXDOMAIN | RUN TIME  |  QPS  |
+| ------   | -------- | ------- | -------- | -------- | --------- | ----- |
+| SDNS     | %99,88   | %73,60  | %1,36    | %25,04   | 101s480ms | 492/s |
+| PowerDNS | %99,59   | %72,76  | %1,40    | %25,84   | 123s930ms | 402/s |
+| Bind     | %99,40   | %72,98  | %1,09    | %25,94   | 115s150ms | 431/s |
+| Unbound  | %99,14   | %73,19  | %0,90    | %25,90   | 178s80ms  | 278/s |
+
+##
 <img src="https://github.com/semihalev/sdns/blob/master/benchmarks.png?raw=true">
 
 ## Who Used
