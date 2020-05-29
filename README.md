@@ -164,6 +164,12 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 -   [ ] DNAME Redirection in the DNS described at RFC 6672
 -   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
 
+## Performance
+
+These benchmarks were run on a server with Intel Xeon E5-2609 v4 cpu and 32GB memory on localhost. DNS-OARC dnsperf (https://www.dns-oarc.net/tools/dnsperf) tool used with 50.000 sample query data.
+
+<img src="https://github.com/semihalev/sdns/blob/master/benchmarks.png?raw=true">
+
 ## Who Used
 
 _CubeDNS_ public open resolver project using sdns on multi location. The project supported both UDP and TCP also DoT and DoH.
