@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// WaitGroup type
+// WaitGroup waits for other same processes based key with timeout.
 type WaitGroup struct {
 	mu sync.RWMutex
 
@@ -21,7 +21,7 @@ type call struct {
 	cancel func()
 }
 
-// New func
+// New return a new WaitGroup with timeout.
 func New(timeout time.Duration) *WaitGroup {
 	return &WaitGroup{
 		groups: make(map[uint64]*call),
@@ -30,7 +30,7 @@ func New(timeout time.Duration) *WaitGroup {
 	}
 }
 
-// Get func
+// Get return count of dups with key.
 func (wg *WaitGroup) Get(key uint64) int {
 	wg.mu.RLock()
 	defer wg.mu.RUnlock()
@@ -42,7 +42,7 @@ func (wg *WaitGroup) Get(key uint64) int {
 	return 0
 }
 
-// Wait func
+// Wait blocks until WaitGroup context cancelled or timedout with key.
 func (wg *WaitGroup) Wait(key uint64) {
 	wg.mu.RLock()
 
@@ -55,7 +55,7 @@ func (wg *WaitGroup) Wait(key uint64) {
 	wg.mu.RUnlock()
 }
 
-// Add func
+// Add adds a new caller or if the caller exists increment dups with key.
 func (wg *WaitGroup) Add(key uint64) {
 	wg.mu.Lock()
 	defer wg.mu.Unlock()
@@ -71,7 +71,7 @@ func (wg *WaitGroup) Add(key uint64) {
 	wg.groups[key] = c
 }
 
-// Done func
+// Done cancels the group context or if the caller dups more then zero, decrements the dups with key.
 func (wg *WaitGroup) Done(key uint64) {
 	wg.mu.Lock()
 	defer wg.mu.Unlock()
