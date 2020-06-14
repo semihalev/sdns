@@ -2,6 +2,7 @@ package as112
 
 import (
 	"context"
+	"strings"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -63,6 +64,8 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		dc.NextDNS(ctx)
 		return
 	}
+
+	q.Name = strings.ToLower(q.Name)
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)

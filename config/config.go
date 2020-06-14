@@ -214,7 +214,8 @@ nsid = ""
 # Enable to answer version.server, version.bind, hostname.bind, id.server chaos queries.
 chaos = true
 
-# Qname minimization level. If higher, it can be more complex and impact the response performance. If set 0, qname minimization will be disable
+# Qname minimization level. If higher, it can be more complex and impact the response performance. 
+# If set 0, qname minimization will be disable
 qname_min_level = 5
 
 # Empty zones return answer for RFC 1918 zones. Please see http://as112.net/
