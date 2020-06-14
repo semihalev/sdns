@@ -23,7 +23,7 @@ func init() {
 	})
 }
 
-// New return accesslist
+// New return a new middleware
 func New(cfg *config.Config) *AS112 {
 	a := &AS112{zones: defaultZones}
 
@@ -133,12 +133,17 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 func (a *AS112) Match(name string, qtype uint16) string {
 	name = dns.CanonicalName(name)
 
+	if qtype == dns.TypeDS {
+		off, end := dns.NextLabel(name, 0)
+
+		name = name[off:]
+		if end {
+			return rootzone
+		}
+	}
+
 	for off, end := 0, false; !end; off, end = dns.NextLabel(name, off) {
 		if _, ok := a.zones[name[off:]]; ok {
-			if qtype == dns.TypeDS {
-				continue
-			}
-
 			return name[off:]
 		}
 	}
