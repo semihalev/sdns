@@ -65,7 +65,7 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		return
 	}
 
-	q.Name = strings.ToLower(q.Name)
+	qname := strings.ToLower(q.Name)
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)
@@ -90,7 +90,7 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	switch q.Qtype {
 	case dns.TypeNS:
-		if zone == q.Name {
+		if zone == qname {
 			nsHeader := dns.RR_Header{
 				Name:   q.Name,
 				Rrtype: dns.TypeNS,
@@ -106,7 +106,7 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 			msg.Ns = append(msg.Ns, soa)
 		}
 	case dns.TypeSOA:
-		if zone == q.Name {
+		if zone == qname {
 			msg.Answer = append(msg.Answer, soa)
 		} else {
 			msg.Ns = append(msg.Ns, soa)
