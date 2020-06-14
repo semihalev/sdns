@@ -80,7 +80,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.0.0)
+## Configuration (v1.0.1)
 
 | Key                 | Desc                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -117,6 +117,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **nsid**            | DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled                           |
 | **chaos**           | Enable to answer version.server, version.bind, hostname.bind and id.server chaos txt queries.                                  |
 | **qname_min_level** | Qname minimize level.If higher, it can be more complex and impact the response performance. If set 0, qname min will be disable|
+| **emptyzones**      | Empty zones return answer for RFC 1918 zones. Please see http://as112.net/ for details.                                        |
 
 ## Server Configuration Checklist
 
@@ -147,6 +148,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 -   HTTP API support
 -   Cache Purge API and query support
 -   Answer chaos txt queries for version.bind and hostname.bind
+-   Empty zones support described at RFC 1918
 
 ## TODO
 

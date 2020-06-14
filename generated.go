@@ -12,6 +12,7 @@ import (
 	_ "github.com/semihalev/sdns/middleware/chaos"
 	_ "github.com/semihalev/sdns/middleware/hostsfile"
 	_ "github.com/semihalev/sdns/middleware/blocklist"
+	_ "github.com/semihalev/sdns/middleware/as112"
 	_ "github.com/semihalev/sdns/middleware/cache"
 	_ "github.com/semihalev/sdns/middleware/failover"
 	_ "github.com/semihalev/sdns/middleware/resolver"

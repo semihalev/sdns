@@ -19,6 +19,7 @@ var middlewareList = []string{
 	"chaos",
 	"hostsfile",
 	"blocklist",
+	"as112",
 	"cache",
 	"failover",
 	"resolver",

@@ -47,6 +47,7 @@ type Config struct {
 	Whitelist       []string
 	Chaos           bool
 	QnameMinLevel   int `toml:"qname_min_level"`
+	EmptyZones      []string
 
 	sVersion string
 }
@@ -215,6 +216,14 @@ chaos = true
 
 # Qname minimization level. If higher, it can be more complex and impact the response performance. If set 0, qname minimization will be disable
 qname_min_level = 5
+
+# Empty zones return answer for RFC 1918 zones. Please see http://as112.net/
+# for details of the problems you are causing and the counter measures that have had to be deployed.
+# If the list empty, SDNS will be use default zones described at RFC.
+# emptyzones [
+#	"10.in-addr.arpa."
+# ]
+emptyzones = []
 `
 
 // Load loads the given config file

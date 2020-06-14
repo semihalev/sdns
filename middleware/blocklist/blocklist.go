@@ -49,7 +49,7 @@ func (b *BlockList) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	q := req.Question[0]
 
-	if !b.Exists(strings.ToLower(q.Name)) {
+	if !b.Exists(q.Name) {
 		dc.NextDNS(ctx)
 		return
 	}
