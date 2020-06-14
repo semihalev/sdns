@@ -115,7 +115,7 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		msg.Ns = append(msg.Ns, soa)
 	}
 
-	if zone != q.Name {
+	if zone != qname {
 		msg.Rcode = dns.RcodeNameError
 	}
 
