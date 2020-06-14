@@ -68,6 +68,13 @@ func Test_AS112(t *testing.T) {
 	a.ServeDNS(context.Background(), dc)
 	assert.False(t, mw.Written())
 
+	req.SetQuestion("example.com.", dns.TypeNS)
+
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	dc.DNSWriter = mw
+	a.ServeDNS(context.Background(), dc)
+	assert.False(t, mw.Written())
+
 	req.SetQuestion("10.10.in-addr.arpa.", dns.TypeSOA)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")

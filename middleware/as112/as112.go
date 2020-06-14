@@ -58,6 +58,11 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	q := req.Question[0]
 
+	if dns.CompareDomainName(q.Name, "arpa.") == 0 {
+		dc.NextDNS(ctx)
+		return
+	}
+
 	zone := a.Match(q.Name, q.Qtype)
 
 	if zone == rootzone {
