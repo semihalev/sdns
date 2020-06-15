@@ -1,3 +1,4 @@
+
 [![Travis](https://img.shields.io/travis/semihalev/sdns.svg?style=flat-square)](https://travis-ci.org/semihalev/sdns)
 [![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
@@ -6,7 +7,7 @@
 
 ## :rocket: Privacy important, fast, recursive dns resolver server with dnssec support
 
-<img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="250">
+<img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="200">
 
 ## Installation
 
@@ -19,6 +20,7 @@ or
 [download](https://github.com/semihalev/sdns/releases)
 
 or run with [Docker image](https://github.com/semihalev/sdns/packages)
+or alternative from [Docker hub](https://hub.docker.com/r/c1982/sdns)
 
 ```shell
 docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853:853 -p 8053:8053 -p 8080:8080 sdns
