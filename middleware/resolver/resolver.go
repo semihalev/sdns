@@ -194,8 +194,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	if !minimized && len(resp.Answer) > 0 {
 		// this is like auth server external cname error but this can be recover.
-		if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) > 0 {
+		if resp.Rcode == dns.RcodeServerFailure && len(resp.Answer) > 0 {
 			resp.Rcode = dns.RcodeSuccess
+		}
+
+		if resp.Rcode == dns.RcodeNameError {
+			return r.authority(ctx, proto, req, resp, parentdsrr, req.Question[0].Qtype)
 		}
 
 		return r.answer(ctx, proto, req, resp, parentdsrr, extra...)
@@ -752,7 +756,7 @@ func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
 func (r *Resolver) checkDname(ctx context.Context, proto string, resp *dns.Msg) (*dns.Msg, bool) {
 	q := resp.Question[0]
 
-	if q.Qtype == dns.TypeCNAME || q.Qtype == dns.TypeDNAME {
+	if q.Qtype == dns.TypeCNAME {
 		return nil, false
 	}
 
@@ -1172,7 +1176,7 @@ func (r *Resolver) findRRSIG(resp *dns.Msg, qname string, inAnswer bool) (signer
 
 		if sig, ok := r.(*dns.RRSIG); ok {
 			sigrec = sig
-			if sigrec.TypeCovered != dns.TypeDNAME {
+			if sigrec.TypeCovered == dns.TypeDNAME {
 				dnameCover = true
 			}
 		}
