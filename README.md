@@ -162,8 +162,8 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 -   [x] Periodic priming queries described at RFC 8109
 -   [x] Full IPv6 support (server&lt;->server communication)
 -   [x] Query name minimization to improve privacy described at RFC 7816
+-   [x] DNAME Redirection in the DNS described at RFC 6672
 -   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
--   [ ] DNAME Redirection in the DNS described at RFC 6672
 -   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
 
 ## Performance

@@ -131,7 +131,7 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 }
 
 func (h *DNSHandler) additionalAnswer(ctx context.Context, proto string, req, msg *dns.Msg) *dns.Msg {
-	if req.Question[0].Qtype == dns.TypeCNAME {
+	if req.Question[0].Qtype == dns.TypeCNAME || req.Question[0].Qtype == dns.TypeDS {
 		return msg
 	}
 

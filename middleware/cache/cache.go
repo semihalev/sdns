@@ -182,8 +182,17 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	var answer []dns.RR
 
 	for i := range res.Answer {
-		if strings.EqualFold(res.Question[0].Name, res.Answer[i].Header().Name) {
-			answer = append(answer, res.Answer[i])
+		r := res.Answer[i]
+
+		if r.Header().Rrtype == dns.TypeDNAME ||
+			strings.EqualFold(res.Question[0].Name, r.Header().Name) {
+			answer = append(answer, r)
+		}
+
+		if rrsig, ok := r.(*dns.RRSIG); ok {
+			if rrsig.TypeCovered == dns.TypeDNAME {
+				answer = append(answer, r)
+			}
 		}
 	}
 	res.Answer = answer
@@ -279,7 +288,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 }
 
 func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
-	if msg.Question[0].Qtype == dns.TypeCNAME {
+	if msg.Question[0].Qtype == dns.TypeCNAME || msg.Question[0].Qtype == dns.TypeDS {
 		return msg
 	}
 
@@ -353,8 +362,18 @@ func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 		}
 	}
 
-	for _, r := range res.Ns {
-		msg.Ns = append(msg.Ns, r)
+	for _, r1 := range res.Ns {
+		dup := false
+		for _, r2 := range msg.Ns {
+			if dns.IsDuplicate(r1, r2) {
+				dup = true
+				break
+			}
+		}
+
+		if !dup {
+			msg.Ns = append(msg.Ns, r1)
+		}
 	}
 
 	return

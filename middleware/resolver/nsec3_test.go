@@ -49,7 +49,10 @@ func Test_VerifyNameError(t *testing.T) {
 	records := []dns.RR{
 		makeNSEC3("example.com.", "com.", false, nil),
 	}
-	err := verifyNameError(dns.Question{Name: "a.example.com.", Qtype: dns.TypeA}, records)
+
+	msg := new(dns.Msg)
+
+	err := verifyNameError(msg.SetQuestion("a.example.com.", dns.TypeA), records)
 	if err != nil {
 		t.Fatalf("verifyNameError failed for valid name error response: %s", err)
 	}
@@ -58,7 +61,7 @@ func Test_VerifyNameError(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("org.", "", false, nil),
 	}
-	err = verifyNameError(dns.Question{Name: "a.example.com.", Qtype: dns.TypeA}, records)
+	err = verifyNameError(msg.SetQuestion("a.example.com.", dns.TypeA), records)
 	if err == nil {
 		t.Fatalf("verifyNameError didn't fail for invalid name error response without CE")
 	}
@@ -67,7 +70,7 @@ func Test_VerifyNameError(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("com.", "", false, nil),
 	}
-	err = verifyNameError(dns.Question{Name: "a.example.com.", Qtype: dns.TypeA}, records)
+	err = verifyNameError(msg.SetQuestion("a.example.com.", dns.TypeA), records)
 	if err == nil {
 		t.Fatalf("verifyNameError didn't fail for invalid name error response without source of synthesis coverer")
 	}
@@ -76,7 +79,7 @@ func Test_VerifyNameError(t *testing.T) {
 	records = zoneToRecords(t, `0p9mhaveqvm6t7vbl5lop2u3t2rp3tom.example. 3600 IN NSEC3 1 0 12 aabbccdd 2t7b4g4vsa5smi47k61mv5bv1a22bojr MX DNSKEY NS SOA NSEC3PARAM RRSIG
 b4um86eghhds6nea196smvmlo4ors995.example. 3600 IN NSEC3 1 0 12 aabbccdd gjeqe526plbf1g8mklp59enfd789njgi MX RRSIG
 35mthgpgcu1qg68fab165klnsnk3dpvl.example. 3600 IN NSEC3 1 0 12 aabbccdd b4um86eghhds6nea196smvmlo4ors995 NS DS RRSIG`)
-	err = verifyNameError(dns.Question{Name: "a.c.x.w.example.", Qtype: dns.TypeA}, records)
+	err = verifyNameError(msg.SetQuestion("a.c.x.w.example.", dns.TypeA), records)
 	if err != nil {
 		t.Fatalf("verifyNameError failed with RFC5155 Appendix B.1 example: %s", err)
 	}
@@ -87,7 +90,10 @@ func Test_VerifyNODATA(t *testing.T) {
 	records := []dns.RR{
 		makeNSEC3("example.com.", "", false, nil),
 	}
-	err := verifyNODATA(dns.Question{Name: "example.com.", Qtype: dns.TypeA}, records)
+
+	msg := new(dns.Msg)
+
+	err := verifyNODATA(msg.SetQuestion("example.com.", dns.TypeA), records)
 	if err != nil {
 		t.Fatalf("verifyNODATA failed for valid NODATA: %s", err)
 	}
@@ -96,7 +102,7 @@ func Test_VerifyNODATA(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("example.com.", "", false, []uint16{dns.TypeA}),
 	}
-	err = verifyNODATA(dns.Question{Name: "example.com.", Qtype: dns.TypeA}, records)
+	err = verifyNODATA(msg.SetQuestion("example.com.", dns.TypeA), records)
 	if err == nil {
 		t.Fatal("verifyNODATA didn't fail for invalid NODATA with question type bit set")
 	}
@@ -105,7 +111,7 @@ func Test_VerifyNODATA(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("example.com.", "", false, []uint16{dns.TypeCNAME}),
 	}
-	err = verifyNODATA(dns.Question{Name: "example.com.", Qtype: dns.TypeA}, records)
+	err = verifyNODATA(msg.SetQuestion("example.com.", dns.TypeA), records)
 	if err == nil {
 		t.Fatal("verifyNODATA didn't fail for invalid NODATA with CNAME bit set")
 	}
@@ -123,7 +129,7 @@ func Test_VerifyNODATA(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("example.com.", "", false, nil),
 	}
-	err = verifyNODATA(dns.Question{Name: "a.example.com.", Qtype: dns.TypeA}, records)
+	err = verifyNODATA(msg.SetQuestion("a.example.com.", dns.TypeA), records)
 	if err == nil {
 		t.Fatalf("verifyNODATA didn't fail for invalid NODATA with covered NC with non-DS question type")
 	}
@@ -132,7 +138,7 @@ func Test_VerifyNODATA(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("com.", "", false, nil),
 	}
-	err = verifyNODATA(dns.Question{Name: "a.example.com.", Qtype: dns.TypeDS}, records)
+	err = verifyNODATA(msg.SetQuestion("a.example.com.", dns.TypeDS), records)
 	if err == nil {
 		t.Fatalf("verifyNODATA didn't fail for invalid NODATA without covered NC")
 	}
@@ -141,7 +147,7 @@ func Test_VerifyNODATA(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("org.", "", false, nil),
 	}
-	err = verifyNODATA(dns.Question{Name: "example.com.", Qtype: dns.TypeDS}, records)
+	err = verifyNODATA(msg.SetQuestion("example.com.", dns.TypeDS), records)
 	if err == nil {
 		t.Fatalf("verifyNODATA didn't fail for invalid NODATA without CE")
 	}
@@ -150,21 +156,21 @@ func Test_VerifyNODATA(t *testing.T) {
 	records = []dns.RR{
 		makeNSEC3("example.com.", "", false, nil),
 	}
-	err = verifyNODATA(dns.Question{Name: "a.example.com.", Qtype: dns.TypeDS}, records)
+	err = verifyNODATA(msg.SetQuestion("a.example.com.", dns.TypeDS), records)
 	if err == nil {
 		t.Fatalf("verifyNODATA didn't fail for invalid NODATA with covered NC without opt-out set")
 	}
 
 	// RFC5155 Appendix B.2 example
 	records = zoneToRecords(t, `2t7b4g4vsa5smi47k61mv5bv1a22bojr.example. 3600 IN NSEC3 1 1 12 aabbccdd 2vptu5timamqttgl4luu9kg21e0aor3s A RRSIG`)
-	err = verifyNODATA(dns.Question{Name: "ns1.example.", Qtype: dns.TypeMX}, records)
+	err = verifyNODATA(msg.SetQuestion("ns1.example.", dns.TypeMX), records)
 	if err != nil {
 		t.Fatalf("verifyNODATA failed with RFC5155 Appendix B.2 example: %s", err)
 	}
 
 	// RFC5155 Appendix B.2.1 example
 	records = zoneToRecords(t, `ji6neoaepv8b5o6k4ev33abha8ht9fgc.example. 3600 IN NSEC3 1 1 12 aabbccdd k8udemvp1j2f7eg6jebps17vp3n8i58h`)
-	err = verifyNODATA(dns.Question{Name: "y.w.example.", Qtype: dns.TypeA}, records)
+	err = verifyNODATA(msg.SetQuestion("y.w.example.", dns.TypeA), records)
 	if err != nil {
 		t.Fatalf("verifyNODATA failed with RFC5155 Appendix B.2.1 example: %s", err)
 	}

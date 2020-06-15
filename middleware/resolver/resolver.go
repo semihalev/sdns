@@ -257,10 +257,9 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
 		if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
-			err = errDSRecords
-			log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+			log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
 
-			return nil, err
+			return nil, errDSRecords
 		}
 		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
 		if err != nil {
@@ -750,17 +749,48 @@ func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
 	return resp
 }
 
+func (r *Resolver) checkDname(ctx context.Context, proto string, resp *dns.Msg) (*dns.Msg, bool) {
+	q := resp.Question[0]
+
+	if q.Qtype == dns.TypeCNAME {
+		return nil, false
+	}
+
+	target := getDnameTarget(resp)
+	if target != "" {
+		req := new(dns.Msg)
+		req.SetQuestion(target, q.Qtype)
+		req.SetEdns0(dnsutil.DefaultMsgSize, true)
+
+		msg, err := dnsutil.ExchangeInternal(ctx, proto, req)
+		if err != nil {
+			return nil, false
+		}
+
+		return msg, true
+	}
+
+	return nil, false
+}
+
 func (r *Resolver) answer(ctx context.Context, proto string, req, resp *dns.Msg, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+	if msg, ok := r.checkDname(ctx, proto, resp); ok {
+		resp.Answer = append(resp.Answer, msg.Answer...)
+		resp.Rcode = msg.Rcode
+
+		if len(msg.Answer) == 0 {
+			return r.authority(ctx, proto, req, resp, parentdsrr, req.Question[0].Qtype)
+		}
+	}
+
 	if !req.CheckingDisabled {
 		var err error
 		q := req.Question[0]
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, true)
 		if !signerFound && len(parentdsrr) > 0 && q.Qtype == dns.TypeDS {
-			err = errDSRecords
-			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
-
-			return nil, err
+			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
+			return nil, errDSRecords
 		}
 		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
 		if err != nil {
@@ -791,10 +821,9 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
 		if !signerFound && len(parentdsrr) > 0 && otype == dns.TypeDS {
-			err = errDSRecords
-			log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+			log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", errDSRecords.Error())
 
-			return nil, err
+			return nil, errDSRecords
 		}
 
 		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
@@ -817,7 +846,7 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 			if ok && resp.Rcode == dns.RcodeNameError {
 				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 				if len(nsec3Set) > 0 {
-					err = verifyNameError(q, nsec3Set)
+					err = verifyNameError(resp, nsec3Set)
 					if err != nil {
 						log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
@@ -833,7 +862,7 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 			if ok && q.Qtype == dns.TypeDS {
 				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 				if len(nsec3Set) > 0 {
-					err = verifyNODATA(resp.Question[0], nsec3Set)
+					err = verifyNODATA(resp, nsec3Set)
 					if err != nil {
 						log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
@@ -1137,11 +1166,22 @@ func (r *Resolver) findRRSIG(resp *dns.Msg, qname string, inAnswer bool) (signer
 		rrset = resp.Answer
 	}
 
-	for _, rr := range rrset {
-		if inAnswer && !strings.EqualFold(rr.Header().Name, qname) {
+	for _, r := range rrset {
+		var sigrec *dns.RRSIG
+		var dnameCover bool
+
+		if sig, ok := r.(*dns.RRSIG); ok {
+			sigrec = sig
+			if sigrec.TypeCovered != dns.TypeDNAME {
+				dnameCover = true
+			}
+		}
+
+		if inAnswer && !strings.EqualFold(r.Header().Name, qname) && !dnameCover {
 			continue
 		}
-		if sigrec, ok := rr.(*dns.RRSIG); ok {
+
+		if sigrec != nil {
 			signer = sigrec.SignerName
 			signerFound = true
 			break

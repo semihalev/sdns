@@ -331,6 +331,31 @@ func sortnss(nss nameservers, qname string) []string {
 	return list
 }
 
+func getDnameTarget(msg *dns.Msg) string {
+	var target string
+
+	q := msg.Question[0]
+
+	for _, r := range msg.Answer {
+		if dname, ok := r.(*dns.DNAME); ok {
+			if n := dns.CompareDomainName(dname.Header().Name, q.Name); n > 0 {
+				labels := dns.CountLabel(q.Name)
+
+				if n == labels {
+					target = dname.Target
+				} else {
+					prev, _ := dns.PrevLabel(q.Name, n)
+					target = q.Name[:prev] + dname.Target
+				}
+			}
+
+			return target
+		}
+	}
+
+	return target
+}
+
 var reqPool sync.Pool
 
 // AcquireMsg returns an empty msg from pool
