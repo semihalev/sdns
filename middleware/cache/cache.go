@@ -190,7 +190,8 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		}
 
 		if rrsig, ok := r.(*dns.RRSIG); ok {
-			if rrsig.TypeCovered == dns.TypeDNAME {
+			if rrsig.TypeCovered == dns.TypeDNAME &&
+				!strings.EqualFold(res.Question[0].Name, r.Header().Name) {
 				answer = append(answer, r)
 			}
 		}
@@ -288,7 +289,8 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 }
 
 func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
-	if msg.Question[0].Qtype == dns.TypeCNAME || msg.Question[0].Qtype == dns.TypeDS {
+	if msg.Question[0].Qtype == dns.TypeCNAME ||
+		msg.Question[0].Qtype == dns.TypeDS {
 		return msg
 	}
 

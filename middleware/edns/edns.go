@@ -85,6 +85,8 @@ func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 // WriteMsg implements the ctx.ResponseWriter interface
 func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
+	m.Compress = true
+
 	if !w.do {
 		m = dnsutil.ClearDNSSEC(m)
 	}
