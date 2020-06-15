@@ -49,6 +49,13 @@ type ResponseWriter struct {
 func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
+	if req.Opcode > 0 {
+		dnsutil.NotSupported(w, req)
+
+		dc.Abort()
+		return
+	}
+
 	noedns := req.IsEdns0() == nil
 
 	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req)

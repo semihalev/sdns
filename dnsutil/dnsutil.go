@@ -266,6 +266,20 @@ func ParsePurgeQuestion(req *dns.Msg) (qname string, qtype uint16, ok bool) {
 	return q[1], qtype, true
 }
 
+// NotSupported response to writer a empty notimplemented message
+func NotSupported(w dns.ResponseWriter, req *dns.Msg) error {
+	return w.WriteMsg(&dns.Msg{
+		MsgHdr: dns.MsgHdr{
+			Rcode:             dns.RcodeNotImplemented,
+			Id:                req.Id,
+			Opcode:            req.Opcode,
+			Response:          true,
+			RecursionDesired:  true,
+			AuthenticatedData: true,
+		},
+	})
+}
+
 const (
 	// IP4arpa is the reverse tree suffix for v4 IP addresses.
 	IP4arpa = ".in-addr.arpa."
