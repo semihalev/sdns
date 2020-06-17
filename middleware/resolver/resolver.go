@@ -139,7 +139,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 }
 
 // Resolve iterate recursively over the domains
-func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nomin bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nomin bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
 	q := req.Question[0]
 
 	if root {
@@ -150,13 +150,13 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	// Current default minimize level 5, if we down to level 3, performance gain 20%
 	minReq, minimized := r.minimize(req, level, nomin)
 
-	log.Debug("Query inserted", "net", proto, "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
+	log.Debug("Query inserted", "reqid", minReq.Id, "zone", servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", req.CheckingDisabled, "qname-minimize", minimized)
 
-	resp, err := r.groupLookup(ctx, proto, minReq, servers)
+	resp, err := r.groupLookup(ctx, minReq, servers)
 	if err != nil {
 		if minimized {
 			// return without minimized
-			return r.Resolve(ctx, proto, req, servers, false, depth, level, true, parentdsrr, extra...)
+			return r.Resolve(ctx, req, servers, false, depth, level, true, parentdsrr, extra...)
 		}
 
 		if _, ok := err.(fatalError); ok {
@@ -165,11 +165,11 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				return nil, err
 			}
 
-			log.Debug("Received network error from all servers", "net", proto, "query", formatQuestion(minReq.Question[0]))
+			log.Debug("Received network error from all servers", "query", formatQuestion(minReq.Question[0]))
 
 			if atomic.AddUint32(&servers.ErrorCount, 1) == 5 {
-				if ok := r.checkNss(ctx, proto, servers); ok {
-					return r.Resolve(ctx, proto, req, servers, root, depth, level, nomin, parentdsrr, extra...)
+				if ok := r.checkNss(ctx, servers); ok {
+					return r.Resolve(ctx, req, servers, root, depth, level, nomin, parentdsrr, extra...)
 				}
 			}
 		}
@@ -178,16 +178,10 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 	resp = r.setTags(req, resp)
 
-	if resp.Truncated {
-		if proto == "udp" {
-			return r.Resolve(ctx, "tcp", req, servers, false, depth, level, nomin, parentdsrr)
-		}
-	}
-
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if minimized {
 			level++
-			return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
+			return r.Resolve(ctx, req, servers, false, depth, level, nomin, parentdsrr)
 		}
 		return resp, nil
 	}
@@ -199,15 +193,15 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		}
 
 		if resp.Rcode == dns.RcodeNameError {
-			return r.authority(ctx, proto, req, resp, parentdsrr, req.Question[0].Qtype)
+			return r.authority(ctx, req, resp, parentdsrr, req.Question[0].Qtype)
 		}
 
-		return r.answer(ctx, proto, req, resp, parentdsrr, extra...)
+		return r.answer(ctx, req, resp, parentdsrr, extra...)
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
 		level++
-		return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
+		return r.Resolve(ctx, req, servers, false, depth, level, nomin, parentdsrr)
 	}
 
 	if len(resp.Ns) > 0 {
@@ -215,12 +209,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			for _, rr := range resp.Ns {
 				if _, ok := rr.(*dns.SOA); ok {
 					level++
-					return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
+					return r.Resolve(ctx, req, servers, false, depth, level, nomin, parentdsrr)
 				}
 
 				if _, ok := rr.(*dns.CNAME); ok {
 					level++
-					return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
+					return r.Resolve(ctx, req, servers, false, depth, level, nomin, parentdsrr)
 				}
 			}
 		}
@@ -241,7 +235,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		}
 
 		if len(nss) == 0 {
-			return r.authority(ctx, proto, minReq, resp, parentdsrr, q.Qtype)
+			return r.authority(ctx, minReq, resp, parentdsrr, q.Qtype)
 		}
 
 		if soa {
@@ -254,7 +248,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 					resp.Ns = append(resp.Ns, rr)
 				}
 			}
-			return r.authority(ctx, proto, minReq, resp, parentdsrr, q.Qtype)
+			return r.authority(ctx, minReq, resp, parentdsrr, q.Qtype)
 		}
 
 		q = dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
@@ -265,7 +259,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 
 			return nil, errDSRecords
 		}
-		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
+		parentdsrr, err = r.findDS(ctx, signer, q.Name, resp, parentdsrr)
 		if err != nil {
 			return nil, err
 		}
@@ -277,7 +271,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return nil, err
 		} else if len(parentdsrr) > 0 {
 			if !req.CheckingDisabled {
-				_, err := r.verifyDNSSEC(ctx, proto, signer, nsrr.Header().Name, resp, parentdsrr)
+				_, err := r.verifyDNSSEC(ctx, signer, nsrr.Header().Name, resp, parentdsrr)
 				if err != nil {
 					log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "signer", signer, "signed", nsrr.Header().Name, "error", err.Error())
 					return nil, err
@@ -310,7 +304,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		if level > nlevel {
 			if r.qnameMinLevel > 0 && !nomin {
 				//try without minimization
-				return r.Resolve(ctx, proto, req, r.rootservers, true, depth, 0, true, nil, extra...)
+				return r.Resolve(ctx, req, r.rootservers, true, depth, 0, true, nil, extra...)
 			}
 			return resp, errParentDetection
 		}
@@ -337,10 +331,8 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 				return nil, errMaxDepth
 			}
 
-			//TODO (semihalev): need more tests
-			// original code: return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, nlevel, nomin, ncache.DSRR)
 			level++
-			return r.Resolve(ctx, proto, req, ncache.Servers, false, depth, level, nomin, ncache.DSRR)
+			return r.Resolve(ctx, req, ncache.Servers, false, depth, level, nomin, ncache.DSRR)
 		}
 
 		log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
@@ -349,12 +341,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		authservers.CheckingDisable = cd
 		authservers.Zone = q.Name
 
-		r.lookupV4Nss(ctx, proto, q, authservers, key, parentdsrr, foundv4, nss, cd)
+		r.lookupV4Nss(ctx, q, authservers, key, parentdsrr, foundv4, nss, cd)
 
 		if len(authservers.List) == 0 {
 			if minimized && level < nlevel {
 				level++
-				return r.Resolve(ctx, proto, req, servers, false, depth, level, nomin, parentdsrr)
+				return r.Resolve(ctx, req, servers, false, depth, level, nomin, parentdsrr)
 			}
 
 			return nil, errors.New("nameservers are unreachable")
@@ -367,7 +359,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 		reqid := ctx.Value(ctxKey("reqid"))
 		v6ctx := context.WithValue(context.Background(), ctxKey("reqid"), reqid)
 
-		go r.lookupV6Nss(v6ctx, proto, q, authservers, key, parentdsrr, foundv6, nss, cd)
+		go r.lookupV6Nss(v6ctx, q, authservers, key, parentdsrr, foundv6, nss, cd)
 
 		depth--
 
@@ -375,7 +367,7 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 			return nil, errMaxDepth
 		}
 
-		return r.Resolve(ctx, proto, req, authservers, false, depth, nlevel, nomin, parentdsrr)
+		return r.Resolve(ctx, req, authservers, false, depth, nlevel, nomin, parentdsrr)
 	}
 
 	// no answer, no authority. create new msg safer, sometimes received weird responses
@@ -389,12 +381,12 @@ func (r *Resolver) Resolve(ctx context.Context, proto string, req *dns.Msg, serv
 	return m, nil
 }
 
-func (r *Resolver) groupLookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
+func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
-	key := cache.Hash(q, proto == "tcp")
+	key := cache.Hash(q)
 	resp, shared, err := r.group.Do(key, func() (*dns.Msg, error) {
-		return r.lookup(ctx, proto, req, servers)
+		return r.lookup(ctx, req, servers)
 	})
 
 	if resp != nil && shared {
@@ -430,7 +422,7 @@ func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (c
 	return ctx, false
 }
 
-func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv4, nss nameservers, cd bool) {
+func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv4, nss nameservers, cd bool) {
 	list := sortnss(nss, q.Name)
 
 	for _, name := range list {
@@ -453,7 +445,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
 		}
 
-		addrs, err := r.lookupNSAddrV4(ctx, proto, name, cd)
+		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
 		nsipv4 := make(map[string][]string)
 
 		if err != nil {
@@ -483,7 +475,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, proto string, q dns.Question
 	}
 }
 
-func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv6, nss nameservers, cd bool) {
+func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv6, nss nameservers, cd bool) {
 	//we can give sometimes for that lookups because of rate limiting on auth servers
 	time.Sleep(defaultTimeout)
 
@@ -502,7 +494,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 			}
 		}
 
-		addrs, err := r.lookupNSAddrV6(ctx, proto, name, cd)
+		addrs, err := r.lookupNSAddrV6(ctx, name, cd)
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {
@@ -532,7 +524,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, proto string, q dns.Question
 	}
 }
 
-func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcache.AuthServers) (ok bool) {
+func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers) (ok bool) {
 	servers.RLock()
 	oldsize := len(servers.List)
 	if servers.Checked || dns.CountLabel(servers.Zone) < 2 {
@@ -549,7 +541,7 @@ func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcach
 
 	for _, name := range servers.Nss {
 		r.removeIPv4Cache(name)
-		addrs, err := r.lookupNSAddrV4(ctx, proto, name, servers.CheckingDisable)
+		addrs, err := r.lookupNSAddrV4(ctx, name, servers.CheckingDisable)
 		if err != nil || len(addrs) == 0 {
 			continue
 		}
@@ -561,7 +553,7 @@ func (r *Resolver) checkNss(ctx context.Context, proto string, servers *authcach
 
 	for _, name := range servers.Nss {
 		r.removeIPv6Cache(name)
-		addrs, err := r.lookupNSAddrV6(ctx, proto, name, servers.CheckingDisable)
+		addrs, err := r.lookupNSAddrV6(ctx, name, servers.CheckingDisable)
 		if err != nil || len(addrs) == 0 {
 			continue
 		}
@@ -753,7 +745,7 @@ func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
 	return resp
 }
 
-func (r *Resolver) checkDname(ctx context.Context, proto string, resp *dns.Msg) (*dns.Msg, bool) {
+func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, bool) {
 	q := resp.Question[0]
 
 	if q.Qtype == dns.TypeCNAME {
@@ -766,7 +758,7 @@ func (r *Resolver) checkDname(ctx context.Context, proto string, resp *dns.Msg) 
 		req.SetQuestion(target, q.Qtype)
 		req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
-		msg, err := dnsutil.ExchangeInternal(ctx, proto, req)
+		msg, err := dnsutil.ExchangeInternal(ctx, req)
 		if err != nil {
 			return nil, false
 		}
@@ -777,13 +769,13 @@ func (r *Resolver) checkDname(ctx context.Context, proto string, resp *dns.Msg) 
 	return nil, false
 }
 
-func (r *Resolver) answer(ctx context.Context, proto string, req, resp *dns.Msg, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
-	if msg, ok := r.checkDname(ctx, proto, resp); ok {
+func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+	if msg, ok := r.checkDname(ctx, resp); ok {
 		resp.Answer = append(resp.Answer, msg.Answer...)
 		resp.Rcode = msg.Rcode
 
 		if len(msg.Answer) == 0 {
-			return r.authority(ctx, proto, req, resp, parentdsrr, req.Question[0].Qtype)
+			return r.authority(ctx, req, resp, parentdsrr, req.Question[0].Qtype)
 		}
 	}
 
@@ -796,7 +788,7 @@ func (r *Resolver) answer(ctx context.Context, proto string, req, resp *dns.Msg,
 			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
 			return nil, errDSRecords
 		}
-		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
+		parentdsrr, err = r.findDS(ctx, signer, q.Name, resp, parentdsrr)
 		if err != nil {
 			return nil, err
 		}
@@ -805,7 +797,7 @@ func (r *Resolver) answer(ctx context.Context, proto string, req, resp *dns.Msg,
 			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
 			return nil, errDSRecords
 		} else if len(parentdsrr) > 0 {
-			resp.AuthenticatedData, err = r.verifyDNSSEC(ctx, proto, signer, strings.ToLower(q.Name), resp, parentdsrr)
+			resp.AuthenticatedData, err = r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, parentdsrr)
 			if err != nil {
 				log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
@@ -818,7 +810,7 @@ func (r *Resolver) answer(ctx context.Context, proto string, req, resp *dns.Msg,
 	return resp, nil
 }
 
-func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.Msg, parentdsrr []dns.RR, otype uint16) (*dns.Msg, error) {
+func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, otype uint16) (*dns.Msg, error) {
 	if !req.CheckingDisabled {
 		var err error
 		q := req.Question[0]
@@ -830,7 +822,7 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 			return nil, errDSRecords
 		}
 
-		parentdsrr, err = r.findDS(ctx, proto, signer, q.Name, resp, parentdsrr)
+		parentdsrr, err = r.findDS(ctx, signer, q.Name, resp, parentdsrr)
 		if err != nil {
 			return nil, err
 		}
@@ -841,7 +833,7 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 
 			return nil, err
 		} else if len(parentdsrr) > 0 {
-			ok, err := r.verifyDNSSEC(ctx, proto, signer, q.Name, resp, parentdsrr)
+			ok, err := r.verifyDNSSEC(ctx, signer, q.Name, resp, parentdsrr)
 			if err != nil {
 				log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
@@ -884,7 +876,7 @@ func (r *Resolver) authority(ctx context.Context, proto string, req, resp *dns.M
 	return resp, nil
 }
 
-func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	var serversList []*authcache.AuthServer
 
 	servers.RLock()
@@ -910,8 +902,8 @@ func (r *Resolver) lookup(ctx context.Context, proto string, req *dns.Msg, serve
 
 	results := make(chan exchangeResult)
 
-	startRacer := func(ctx context.Context, proto string, req *dns.Msg, server *authcache.AuthServer) {
-		resp, err := r.exchange(ctx, proto, req, server, 0)
+	startRacer := func(ctx context.Context, req *dns.Msg, server *authcache.AuthServer) {
+		resp, err := r.exchange(ctx, "udp", req, server, 0)
 		defer ReleaseMsg(req)
 
 		select {
@@ -933,7 +925,7 @@ mainloop:
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		go startRacer(ctx, proto, req.CopyTo(AcquireMsg()), server)
+		go startRacer(ctx, req.CopyTo(AcquireMsg()), server)
 
 	fallbackloop:
 		for left != 0 {
@@ -1195,7 +1187,7 @@ func (r *Resolver) findRRSIG(resp *dns.Msg, qname string, inAnswer bool) (signer
 	return
 }
 
-func (r *Resolver) findDS(ctx context.Context, proto, signer, qname string, resp *dns.Msg, parentdsrr []dns.RR) (dsset []dns.RR, err error) {
+func (r *Resolver) findDS(ctx context.Context, signer, qname string, resp *dns.Msg, parentdsrr []dns.RR) (dsset []dns.RR, err error) {
 	if signer == rootzone && len(parentdsrr) == 0 {
 		parentdsrr = r.dsRRFromRootKeys()
 	} else if len(parentdsrr) > 0 {
@@ -1210,7 +1202,7 @@ func (r *Resolver) findDS(ctx context.Context, proto, signer, qname string, resp
 			for len(nsplit)-n > 0 {
 				candidate := dns.Fqdn(strings.Join(nsplit[len(nsplit)-n-1:], "."))
 
-				dsResp, err := r.lookupDS(ctx, proto, candidate)
+				dsResp, err := r.lookupDS(ctx, candidate)
 				if err != nil {
 					return nil, err
 				}
@@ -1225,7 +1217,7 @@ func (r *Resolver) findDS(ctx context.Context, proto, signer, qname string, resp
 
 		} else if dsname != signer {
 			// try lookup DS records
-			dsResp, err := r.lookupDS(ctx, proto, signer)
+			dsResp, err := r.lookupDS(ctx, signer)
 			if err != nil {
 				return nil, err
 			}
@@ -1239,21 +1231,16 @@ func (r *Resolver) findDS(ctx context.Context, proto, signer, qname string, resp
 	return
 }
 
-func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.Msg, err error) {
-	log.Debug("Lookup DS record", "qname", qname, "proto", proto)
+func (r *Resolver) lookupDS(ctx context.Context, qname string) (msg *dns.Msg, err error) {
+	log.Debug("Lookup DS record", "qname", qname)
 
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
 	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 
-	dsres, err := dnsutil.ExchangeInternal(ctx, proto, dsReq)
+	dsres, err := dnsutil.ExchangeInternal(ctx, dsReq)
 	if err != nil {
 		return nil, err
-	}
-
-	if dsres.Truncated && proto == "udp" {
-		// retrying in TCP mode
-		return r.lookupDS(ctx, "tcp", qname)
 	}
 
 	if len(dsres.Answer) == 0 && len(dsres.Ns) == 0 {
@@ -1263,7 +1250,7 @@ func (r *Resolver) lookupDS(ctx context.Context, proto, qname string) (msg *dns.
 	return dsres, nil
 }
 
-func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv4 address", "qname", qname)
 
 	if addrs, ok := r.getIPv4Cache(qname); ok {
@@ -1277,7 +1264,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
+	nsres, err := dnsutil.ExchangeInternal(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
 	}
@@ -1294,7 +1281,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, proto string, qname strin
 	return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname string, cd bool) (addrs []string, err error) {
+func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
 	log.Debug("Lookup NS ipv6 address", "qname", qname)
 
 	if addrs, ok := r.getIPv6Cache(qname); ok {
@@ -1308,7 +1295,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, proto string, qname strin
 	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := dnsutil.ExchangeInternal(ctx, proto, nsReq)
+	nsres, err := dnsutil.ExchangeInternal(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s (%v)", qname, err)
 	}
@@ -1377,7 +1364,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	return true
 }
 
-func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
+func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
 	keyReq := new(dns.Msg)
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
 	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -1387,14 +1374,9 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, proto string, signer, signe
 	q := resp.Question[0]
 
 	if q.Qtype != dns.TypeDNSKEY || q.Name != signer {
-		msg, err = dnsutil.ExchangeInternal(ctx, proto, keyReq)
+		msg, err = dnsutil.ExchangeInternal(ctx, keyReq)
 		if err != nil {
 			return
-		}
-
-		if msg.Truncated && proto == "udp" {
-			// retrying in TCP mode
-			return r.verifyDNSSEC(ctx, "tcp", signer, signed, resp, parentdsRR)
 		}
 	} else if q.Qtype == dns.TypeDNSKEY {
 		if q.Name == rootzone {
@@ -1519,19 +1501,11 @@ func (r *Resolver) checkPriming() error {
 		panic("root servers list empty. check your config file")
 	}
 
-	resp, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 5, 0, false, nil, true)
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 5, 0, false, nil, true)
 	if err != nil {
 		log.Error("root servers update failed", "error", err.Error())
 
 		return err
-	}
-
-	if resp.Truncated {
-		//retrying in TCP mode
-		resp, err = r.Resolve(ctx, "tcp", req, r.rootservers, true, 5, 0, false, nil, true)
-		if err != nil {
-			return err
-		}
 	}
 
 	if len(resp.Extra) > 0 {

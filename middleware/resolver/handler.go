@@ -52,12 +52,12 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	if v := ctx.Value(ctxKey("reqid")); v == nil {
 		ctx = context.WithValue(ctx, ctxKey("reqid"), req.Id)
 	}
-	msg := h.handle(ctx, w.Proto(), req)
+	msg := h.handle(ctx, req)
 
 	w.WriteMsg(msg)
 }
 
-func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dns.Msg {
+func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	do := false
@@ -104,7 +104,7 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 	defer cancel()
 
 	depth := h.cfg.Maxdepth
-	resp, err := h.resolver.Resolve(ctx, proto, req, h.resolver.rootservers, true, depth, 0, false, nil)
+	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil)
 	if err != nil {
 		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
@@ -119,18 +119,12 @@ func (h *DNSHandler) handle(ctx context.Context, proto string, req *dns.Msg) *dn
 		return resp
 	}
 
-	if resp.Truncated && proto == "udp" {
-		return resp
-	} else if resp.Truncated && proto == "https" {
-		return h.handle(ctx, "tcp", req)
-	}
-
-	resp = h.additionalAnswer(ctx, proto, req, resp)
+	resp = h.additionalAnswer(ctx, req, resp)
 
 	return resp
 }
 
-func (h *DNSHandler) additionalAnswer(ctx context.Context, proto string, req, msg *dns.Msg) *dns.Msg {
+func (h *DNSHandler) additionalAnswer(ctx context.Context, req, msg *dns.Msg) *dns.Msg {
 	if req.Question[0].Qtype == dns.TypeCNAME ||
 		req.Question[0].Qtype == dns.TypeDS {
 		return msg
@@ -155,7 +149,7 @@ func (h *DNSHandler) additionalAnswer(ctx context.Context, proto string, req, ms
 	}
 
 	if len(cnameReq.Question) > 0 {
-		respCname, err := dnsutil.ExchangeInternal(ctx, proto, cnameReq)
+		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Answer) > 0) {
 			for _, rr := range respCname.Answer {
 				if respCname.Question[0].Name == cnameReq.Question[0].Name {

@@ -100,7 +100,13 @@ func (s *Server) Run() {
 func (s *Server) ListenAndServeDNS(network string) {
 	log.Info("DNS server listening...", "net", network, "addr", s.addr)
 
-	server := &dns.Server{Addr: s.addr, Net: network, Handler: dns.DefaultServeMux, ReusePort: true}
+	server := &dns.Server{
+		Addr:          s.addr,
+		Net:           network,
+		Handler:       dns.DefaultServeMux,
+		MaxTCPQueries: 2048,
+		ReusePort:     true,
+	}
 
 	if err := server.ListenAndServe(); err != nil {
 		log.Error("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())

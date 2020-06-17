@@ -23,7 +23,7 @@ func Test_resolver(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	resp, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -41,7 +41,7 @@ func Test_resolverDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	resp, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -59,7 +59,7 @@ func Test_resolverBadDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -76,7 +76,7 @@ func Test_resolverBadKeyDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -93,7 +93,7 @@ func Test_resolverExponentDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -110,7 +110,7 @@ func Test_resolverDS(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	resp, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -128,7 +128,7 @@ func Test_resolverDSDelegate(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	resp, err := r.Resolve(ctx, "udp", req, &authcache.AuthServers{List: []*authcache.AuthServer{authcache.NewAuthServer("202.12.31.53:53", authcache.IPv4)}}, false, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, &authcache.AuthServers{List: []*authcache.AuthServer{authcache.NewAuthServer("202.12.31.53:53", authcache.IPv4)}}, false, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -146,7 +146,7 @@ func Test_resolverDSDFail(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -163,7 +163,7 @@ func Test_resolverAllNS(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -180,7 +180,7 @@ func Test_resolverTimeout(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -197,7 +197,7 @@ func Test_resolverLoop(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -214,7 +214,7 @@ func Test_resolverRootServersDetect(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -231,7 +231,7 @@ func Test_resolverNameserverError(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -248,7 +248,7 @@ func Test_resolverNSEC3nodata(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -265,7 +265,7 @@ func Test_resolverNSECnodata(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -282,7 +282,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -299,7 +299,7 @@ func Test_resolverFindSigner(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -316,7 +316,7 @@ func Test_resolverRootKeys(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -333,7 +333,7 @@ func Test_resolverNoAnswer(t *testing.T) {
 	cfg := makeTestConfig()
 	r := NewResolver(cfg)
 
-	_, err := r.Resolve(ctx, "udp", req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
