@@ -57,7 +57,6 @@ type Config struct {
 // Plugin type
 type Plugin struct {
 	Path   string
-	Order  int
 	Config map[string]interface{}
 }
 
@@ -236,12 +235,12 @@ qname_min_level = 5
 emptyzones = []
 
 # You can add your own plugins to sdns. The plugin order is very important. 
+# Plugins can be load before cache middleware.
 # Config keys should be string and values can be anything.
-# There is an example plugin at https://github.com/semihalev/sdns_example_plugin
+# There is an example plugin at https://github.com/semihalev/sdnsexampleplugin
 # [plugins]
 #     [plugins.example]
 #     path = "exampleplugin.so"
-#     order = 0
 #     config = {key_1 = "value_1", key_2 = 2, key_3 = true}	
 `
 

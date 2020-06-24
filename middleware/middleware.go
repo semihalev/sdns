@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"fmt"
+	"plugin"
 	"sync"
 
 	"github.com/semihalev/log"
@@ -72,6 +73,8 @@ func Setup(cfg *config.Config) error {
 
 	m.cfg = cfg
 
+	LoadExternalPlugins()
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -82,6 +85,33 @@ func Setup(cfg *config.Config) error {
 	setup = true
 
 	return nil
+}
+
+// LoadExternalPlugins load external plugins into chain
+func LoadExternalPlugins() {
+	for name, pcfg := range m.cfg.Plugins {
+		pl, err := plugin.Open(pcfg.Path)
+		if err != nil {
+			log.Error("Plugin open failed", "plugin", name, "error", err.Error())
+			continue
+		}
+
+		newFuncSym, err := pl.Lookup("New")
+		if err != nil {
+			log.Error("Plugin new function lookup failed", "plugin", name, "error", err.Error())
+			continue
+		}
+
+		newFn, ok := newFuncSym.(func(cfg *config.Config) ctx.Handler)
+
+		if !ok {
+			log.Error("Plugin new function assert failed", "plugin", name)
+			continue
+		}
+
+		RegisterBefore(name, newFn, "cache")
+		log.Info("Plugin successfully loaded", "plugin", name, "path", pcfg.Path)
+	}
 }
 
 // Handlers return registered handlers
