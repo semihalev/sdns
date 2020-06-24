@@ -1,6 +1,7 @@
 package accesslist
 
 import (
+	"context"
 	"net"
 
 	"github.com/semihalev/sdns/middleware"
@@ -43,7 +44,12 @@ func New(cfg *config.Config) *AccessList {
 func (a *AccessList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (a *AccessList) ServeDNS(dc *ctx.Context) {
+func (a *AccessList) ServeDNS(ctx context.Context, dc *ctx.Context) {
+	if dc.DNSWriter.Internal() {
+		dc.NextDNS(ctx)
+		return
+	}
+
 	allowed, _ := a.ranger.Contains(dc.DNSWriter.RemoteIP())
 
 	if !allowed {
@@ -52,7 +58,7 @@ func (a *AccessList) ServeDNS(dc *ctx.Context) {
 		return
 	}
 
-	dc.NextDNS()
+	dc.NextDNS(ctx)
 }
 
 const name = "accesslist"

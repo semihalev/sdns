@@ -1,4 +1,4 @@
-ARG image=golang:1.11-alpine3.8
+ARG image=golang:1.14.2-alpine3.11
 
 FROM $image AS builder
 

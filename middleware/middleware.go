@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 )

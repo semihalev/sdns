@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"io"
 	l "log"
 	"net/http"
@@ -56,7 +57,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	dc := s.pool.Get().(*ctx.Context)
 
 	dc.ResetDNS(w, r)
-	dc.NextDNS()
+
+	dc.NextDNS(context.Background())
 
 	s.pool.Put(dc)
 }
@@ -98,7 +100,15 @@ func (s *Server) Run() {
 func (s *Server) ListenAndServeDNS(network string) {
 	log.Info("DNS server listening...", "net", network, "addr", s.addr)
 
-	if err := dns.ListenAndServe(s.addr, network, dns.DefaultServeMux); err != nil {
+	server := &dns.Server{
+		Addr:          s.addr,
+		Net:           network,
+		Handler:       dns.DefaultServeMux,
+		MaxTCPQueries: 2048,
+		ReusePort:     true,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
 		log.Error("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
 	}
 }

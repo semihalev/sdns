@@ -5,6 +5,7 @@
 package hostsfile
 
 import (
+	"context"
 	"net"
 	"os"
 	"path"
@@ -275,7 +276,7 @@ func TestServeDNS(t *testing.T) {
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 	for _, r := range mw.Msg().Answer {
 		assert.Equal(t, dns.TypeA, r.Header().Rrtype)
 		a := r.(*dns.A)
@@ -285,7 +286,7 @@ func TestServeDNS(t *testing.T) {
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("localhost.", dns.TypeAAAA)
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 	for _, r := range mw.Msg().Answer {
 		assert.Equal(t, dns.TypeAAAA, r.Header().Rrtype)
 		aaaa := r.(*dns.AAAA)
@@ -295,7 +296,7 @@ func TestServeDNS(t *testing.T) {
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("1.1.1.127.in-addr.arpa.", dns.TypePTR)
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 	for _, r := range mw.Msg().Answer {
 		assert.Equal(t, dns.TypePTR, r.Header().Rrtype)
 		ptr := r.(*dns.PTR)
@@ -305,17 +306,17 @@ func TestServeDNS(t *testing.T) {
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("odin.", dns.TypeA)
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 1)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.DNSWriter = mw
 	req.SetQuestion("test.com.", dns.TypeA)
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 	req.SetQuestion("test.com.", dns.TypeAAAA)
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 	req.SetQuestion("test.com.", dns.TypePTR)
-	h.ServeDNS(dc)
+	h.ServeDNS(context.Background(), dc)
 
 	h.initInline([]string{"127.0.0.1 localhost"})
 	assert.Equal(t, true, h.hmap.Len() == 2)

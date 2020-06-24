@@ -9,6 +9,7 @@ package hostsfile
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"os"
@@ -284,7 +285,7 @@ func (h *Hostsfile) LookupStaticAddr(addr string) []string {
 }
 
 // ServeDNS implements the Handle interface.
-func (h *Hostsfile) ServeDNS(dc *ctx.Context) {
+func (h *Hostsfile) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	q := req.Question[0]
@@ -295,7 +296,7 @@ func (h *Hostsfile) ServeDNS(dc *ctx.Context) {
 	case dns.TypePTR:
 		names := h.LookupStaticAddr(dnsutil.ExtractAddressFromReverse(q.Name))
 		if len(names) == 0 {
-			dc.NextDNS()
+			dc.NextDNS(ctx)
 			return
 		}
 		answers = ptr(q.Name, names)
@@ -309,7 +310,7 @@ func (h *Hostsfile) ServeDNS(dc *ctx.Context) {
 
 	if len(answers) == 0 {
 		if !h.otherRecordsExist(q.Qtype, q.Name) {
-			dc.NextDNS()
+			dc.NextDNS(ctx)
 			return
 		}
 	}

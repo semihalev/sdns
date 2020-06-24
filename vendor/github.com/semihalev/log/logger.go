@@ -107,6 +107,10 @@ type logger struct {
 }
 
 func (l *logger) write(msg string, lvl Lvl, ctx []interface{}) {
+	if l.lvl < lvl {
+		return
+	}
+
 	r := &Record{
 		Time: time.Now(),
 		Lvl:  lvl,

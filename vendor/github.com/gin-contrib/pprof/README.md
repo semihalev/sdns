@@ -17,7 +17,7 @@ gin pprof middleware
 Download and install it:
 
 ```bash
-$ go get github.com/gin-contrib/pprof
+go get github.com/gin-contrib/pprof
 ```
 
 Import it in your code:
@@ -26,7 +26,7 @@ Import it in your code:
 import "github.com/gin-contrib/pprof"
 ```
 
-### Example:
+### Example
 
 ```go
 package main
@@ -43,7 +43,7 @@ func main() {
 }
 ```
 
-### change default path prefix:
+### change default path prefix
 
 ```go
 func main() {
@@ -52,6 +52,34 @@ func main() {
 	pprof.Register(router, "dev/pprof")
 	router.Run(":8080")
 }
+```
+
+### custom router group
+
+```go
+package main
+
+import (
+	"net/http"
+
+	"github.com/gin-contrib/pprof"
+	"github.com/gin-gonic/gin"
+)
+
+func main() {
+	router := gin.Default()
+	pprof.Register(router)
+	adminGroup := r.Group("/admin", func(c *gin.Context) {
+		if c.Request.Header.Get("Authorization") != "foobar" {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		c.Next()
+	})
+	pprof.RouteRegister(adminGroup, "pprof")
+	router.Run(":8080")
+}
+
 ```
 
 ### Use the pprof tool

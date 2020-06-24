@@ -1,0 +1,25 @@
+[Unit]
+Description=SDNS - Fast DNS Resolver
+ConditionPathExists=/var/lib/sdns
+Wants=network.target
+After=network.target
+
+[Service]
+Type=simple
+User=sdns
+Group=sdns
+LimitNOFILE=131072
+Restart=on-failure
+RestartSec=10
+Environment="SDNS_DEBUGNS=true"
+Environment="SDNS_PPROF=true"
+WorkingDirectory=/var/lib/sdns
+ExecStart=/usr/bin/sdns --config=/etc/sdns.conf
+PermissionsStartOnly=true
+StandardOutput=syslog
+StandardError=journal
+SyslogIdentifier=sdns
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

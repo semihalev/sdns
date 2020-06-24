@@ -66,38 +66,46 @@ func findCoverer(name string, nsec []dns.RR) ([]uint16, bool, error) {
 	return nil, false, errNSECMissingCoverage
 }
 
-func verifyNameError(q dns.Question, nsec []dns.RR) error {
-	ce, _ := findClosestEncloser(q.Name, nsec)
+func verifyNameError(msg *dns.Msg, nsec []dns.RR) error {
+	q := msg.Question[0]
+	qname := q.Name
+
+	if dname := getDnameTarget(msg); dname != "" {
+		qname = dname
+	}
+
+	ce, _ := findClosestEncloser(qname, nsec)
 	if ce == "" {
 		return errNSECMissingCoverage
 	}
-	_, flags, err := findCoverer("*."+ce, nsec)
+	_, _, err := findCoverer("*."+ce, nsec)
 	if err != nil {
 		return err
-	}
-	if flags {
-		return errors.New("flags not cover")
 	}
 	return nil
 }
 
-func verifyNODATA(q dns.Question, nsec []dns.RR) error {
-	types, err := findMatching(q.Name, nsec)
+func verifyNODATA(msg *dns.Msg, nsec []dns.RR) error {
+	q := msg.Question[0]
+	qname := q.Name
+
+	if dname := getDnameTarget(msg); dname != "" {
+		qname = dname
+	}
+
+	types, err := findMatching(qname, nsec)
 	if err != nil {
 		if q.Qtype != dns.TypeDS {
 			return err
 		}
 
-		ce, nc := findClosestEncloser(q.Name, nsec)
+		ce, nc := findClosestEncloser(qname, nsec)
 		if ce == "" {
 			return errNSECMissingCoverage
 		}
-		_, optOut, err := findCoverer(nc, nsec)
+		_, _, err := findCoverer(nc, nsec)
 		if err != nil {
 			return err
-		}
-		if !optOut {
-			return errNSECOptOut
 		}
 		return nil
 	}

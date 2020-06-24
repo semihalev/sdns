@@ -9,11 +9,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
 )
 
 func Test_Run(t *testing.T) {
-	a := New("", nil)
+	a := New(&config.Config{})
 	a.Run()
 }
 
@@ -28,10 +29,12 @@ func Test_AllAPICalls(t *testing.T) {
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
 
-	blocklist := blocklist.New(cfg)
+	middleware.Setup(cfg)
+
+	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
 	blocklist.Set("test.com")
 
-	a := New(":11111", blocklist)
+	a := New(&config.Config{API: ":11111"})
 	a.Run()
 
 	time.Sleep(time.Second)
@@ -58,6 +61,7 @@ func Test_AllAPICalls(t *testing.T) {
 		{"GET", "/api/v1/block/get/test2.com", http.StatusOK},
 		{"GET", "/api/v1/block/exists/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/remove/test.com", http.StatusOK},
+		{"GET", "/api/v1/purge/test.com/A", http.StatusOK},
 		{"GET", "/metrics", http.StatusOK},
 	}
 

@@ -15,9 +15,13 @@ var middlewareList = []string{
 	"accesslist",
 	"ratelimit",
 	"edns",
+	"accesslog",
+	"chaos",
 	"hostsfile",
 	"blocklist",
+	"as112",
 	"cache",
+	"failover",
 	"resolver",
 }
 

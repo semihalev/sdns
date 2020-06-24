@@ -1,6 +1,7 @@
 package edns
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -14,7 +15,7 @@ import (
 
 type dummy struct{}
 
-func (d *dummy) ServeDNS(dc *ctx.Context) {
+func (d *dummy) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
 	m := new(dns.Msg)
@@ -53,7 +54,7 @@ func Test_EDNS(t *testing.T) {
 
 	mw := mock.NewWriter("tcp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	dc.NextDNS()
+	dc.NextDNS(context.Background())
 
 	assert.True(t, dc.DNSWriter.Written())
 	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
@@ -65,7 +66,7 @@ func Test_EDNS(t *testing.T) {
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	dc.NextDNS()
+	dc.NextDNS(context.Background())
 
 	assert.True(t, dc.DNSWriter.Written())
 	assert.Equal(t, dns.RcodeBadVers, dc.DNSWriter.Rcode())
@@ -76,7 +77,7 @@ func Test_EDNS(t *testing.T) {
 
 	mw = mock.NewWriter("tcp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	dc.NextDNS()
+	dc.NextDNS(context.Background())
 
 	if assert.True(t, dc.DNSWriter.Written()) {
 		assert.False(t, dc.DNSWriter.Msg().Truncated)
@@ -84,7 +85,7 @@ func Test_EDNS(t *testing.T) {
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	dc.NextDNS()
+	dc.NextDNS(context.Background())
 
 	if assert.True(t, dc.DNSWriter.Written()) {
 		assert.True(t, dc.DNSWriter.Msg().Truncated)
@@ -97,5 +98,5 @@ func Test_EDNS(t *testing.T) {
 	opt.SetUDPSize(4096)
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	dc.ResetDNS(mw, req)
-	dc.NextDNS()
+	dc.NextDNS(context.Background())
 }

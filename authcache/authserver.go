@@ -9,55 +9,101 @@ import (
 
 // AuthServer type
 type AuthServer struct {
-	Host  string
-	Rtt   int64
-	Count int64
+	Addr    string
+	Rtt     int64
+	Count   int64
+	Version Version
 }
 
-// NewAuthServer return a server
-func NewAuthServer(host string) *AuthServer {
+// Version type
+type Version byte
+
+const (
+	// IPv4 mode
+	IPv4 Version = 0x1
+
+	// IPv6 mode
+	IPv6 Version = 0x2
+)
+
+// NewAuthServer return a new server
+func NewAuthServer(addr string, version Version) *AuthServer {
 	return &AuthServer{
-		Host: host,
+		Addr:    addr,
+		Version: version,
+	}
+}
+
+func (v Version) String() string {
+	switch v {
+	case IPv4:
+		return "IPv4"
+	case IPv6:
+		return "IPv6"
+	default:
+		return "Unknown"
 	}
 }
 
 func (a *AuthServer) String() string {
-	if a.Count == 0 {
-		a.Count = 1
+	count := atomic.LoadInt64(&a.Count)
+	rn := atomic.LoadInt64(&a.Rtt)
+
+	if count == 0 {
+		count = 1
 	}
 
-	return "host:" + a.Host + " rtt:" + (time.Duration(a.Rtt) / time.Duration(a.Count)).Round(time.Millisecond).String()
+	var health string
+	if rn >= int64(time.Second) {
+		health = "POOR"
+	} else if rn > 0 {
+		health = "GOOD"
+	} else {
+		health = "UNKNOWN"
+	}
+
+	rtt := (time.Duration(rn) / time.Duration(count)).Round(time.Millisecond)
+
+	return a.Version.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
 }
 
 // AuthServers type
 type AuthServers struct {
 	sync.RWMutex
 
-	called int32
-	List   []*AuthServer
+	Zone string
+
+	List []*AuthServer
+	Nss  []string
+
+	ErrorCount uint32
+	Called     uint64
+
+	CheckingDisable bool
+	Checked         bool
 }
 
-// TrySort if necessary sort servers by rtt
-func (s *AuthServers) TrySort() bool {
-	atomic.AddInt32(&s.called, 1)
+// Sort sort servers by rtt
+func Sort(serversList []*AuthServer, called uint64) {
+	for _, s := range serversList {
+		//clear stats and re-start again
+		if called%1e3 == 0 {
+			atomic.StoreInt64(&s.Rtt, 0)
+			atomic.StoreInt64(&s.Count, 0)
 
-	if atomic.LoadInt32(&s.called)%20 == 0 {
-		s.Lock()
-		for _, s := range s.List {
-			if s.Count > 0 {
-				// average rtt
-				s.Rtt = s.Rtt / s.Count
-				s.Count = 1
-			}
+			continue
 		}
-		sort.Slice(s.List, func(i, j int) bool {
-			return s.List[i].Rtt < s.List[j].Rtt
-		})
-		s.Unlock()
-		atomic.StoreInt32(&s.called, 0)
 
-		return true
+		rtt := atomic.LoadInt64(&s.Rtt)
+		count := atomic.LoadInt64(&s.Count)
+
+		if count > 0 {
+			// average rtt
+			atomic.StoreInt64(&s.Rtt, rtt/count)
+			atomic.StoreInt64(&s.Count, 1)
+		}
 	}
-
-	return false
+	sort.Slice(serversList, func(i, j int) bool {
+		return atomic.LoadInt64(&serversList[i].Rtt) < atomic.LoadInt64(&serversList[j].Rtt)
+	})
 }

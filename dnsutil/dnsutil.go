@@ -1,7 +1,9 @@
 package dnsutil
 
 import (
+	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -88,6 +90,7 @@ func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
 	m.Extra = req.Extra
 	m.SetRcode(req, rcode)
 	m.RecursionAvailable = true
+	m.RecursionDesired = true
 
 	if opt := m.IsEdns0(); opt != nil {
 		opt.SetDo(do)
@@ -97,8 +100,8 @@ func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
 }
 
 // SetEdns0 returns replaced or new opt rr and if request has do
-func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
-	do := false
+func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
+	do, nsid := false, false
 	opt := req.IsEdns0()
 	size := DefaultMsgSize
 	cookie := ""
@@ -107,6 +110,10 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
 		size = int(opt.UDPSize())
 		if size < dns.MinMsgSize {
 			size = dns.MinMsgSize
+		}
+
+		if size > DefaultMsgSize {
+			size = DefaultMsgSize
 		}
 
 		opt.SetUDPSize(DefaultMsgSize)
@@ -124,11 +131,13 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
 				if len(option.String()) >= 16 {
 					cookie = option.String()[:16]
 				}
+			case dns.EDNS0NSID:
+				nsid = true
 			}
 		}
 
 		if opt.Version() != 0 {
-			return opt, size, cookie, false
+			return opt, size, cookie, nsid, false
 		}
 
 		do = opt.Do()
@@ -145,7 +154,7 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool) {
 		req.Extra = append(req.Extra, opt)
 	}
 
-	return opt, size, cookie, do
+	return opt, size, cookie, nsid, do
 }
 
 // GenerateServerCookie return generated edns server cookie
@@ -180,9 +189,16 @@ func ClearOPT(msg *dns.Msg) *dns.Msg {
 
 // ClearDNSSEC returns cleared RRSIG and NSECx message
 func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
-	answer := make([]dns.RR, len(msg.Answer))
-	copy(answer, msg.Answer)
+	// we shouldn't clear RRSIG questions
+	if len(msg.Question) > 0 {
+		if msg.Question[0].Qtype == dns.TypeRRSIG {
+			return msg
+		}
+	}
 
+	var answer, ns []dns.RR
+
+	answer = append(answer, msg.Answer...)
 	msg.Answer = []dns.RR{}
 
 	for _, rr := range answer {
@@ -194,9 +210,7 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 		}
 	}
 
-	ns := make([]dns.RR, len(msg.Ns))
-	copy(ns, msg.Ns)
-
+	ns = append(ns, msg.Ns...)
 	msg.Ns = []dns.RR{}
 
 	for _, rr := range ns {
@@ -211,13 +225,14 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// ExchangeInternal exchange request internal
-func ExchangeInternal(Net string, r *dns.Msg) (*dns.Msg, error) {
-	w := mock.NewWriter(Net, "127.0.0.1:0")
+// ExchangeInternal exchange dns request internal
+func ExchangeInternal(parentCtx context.Context, r *dns.Msg) (*dns.Msg, error) {
+	w := mock.NewWriter("tcp", "127.0.0.255:0")
 
 	dc := ctx.New(middleware.Handlers())
 	dc.ResetDNS(w, r)
-	dc.NextDNS()
+
+	dc.NextDNS(parentCtx)
 
 	if !w.Written() {
 		return nil, errors.New("no replied any message")
@@ -226,11 +241,50 @@ func ExchangeInternal(Net string, r *dns.Msg) (*dns.Msg, error) {
 	return w.Msg(), nil
 }
 
+// ParsePurgeQuestion can parse query for purge questions
+func ParsePurgeQuestion(req *dns.Msg) (qname string, qtype uint16, ok bool) {
+	if len(req.Question) == 0 {
+		return
+	}
+
+	bstr := strings.TrimSuffix(req.Question[0].Name, ".")
+
+	nbytes, err := base64.StdEncoding.DecodeString(bstr)
+	if err != nil {
+		return
+	}
+
+	q := strings.Split(string(nbytes), ":")
+	if len(q) != 2 {
+		return
+	}
+
+	if qtype, ok = dns.StringToType[q[0]]; !ok {
+		return
+	}
+
+	return q[1], qtype, true
+}
+
+// NotSupported response to writer a empty notimplemented message
+func NotSupported(w dns.ResponseWriter, req *dns.Msg) error {
+	return w.WriteMsg(&dns.Msg{
+		MsgHdr: dns.MsgHdr{
+			Rcode:             dns.RcodeNotImplemented,
+			Id:                req.Id,
+			Opcode:            req.Opcode,
+			Response:          true,
+			RecursionDesired:  true,
+			AuthenticatedData: true,
+		},
+	})
+}
+
 const (
 	// IP4arpa is the reverse tree suffix for v4 IP addresses.
 	IP4arpa = ".in-addr.arpa."
 	// IP6arpa is the reverse tree suffix for v6 IP addresses.
 	IP6arpa = ".ip6.arpa."
 	// DefaultMsgSize EDNS0 message size
-	DefaultMsgSize = 1536
+	DefaultMsgSize = 1232
 )

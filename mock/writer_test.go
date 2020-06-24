@@ -37,4 +37,5 @@ func Test_Writer(t *testing.T) {
 	mw.Write(data)
 	assert.True(t, mw.Written())
 	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
+	assert.True(t, mw.Internal())
 }

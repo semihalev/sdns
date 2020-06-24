@@ -14,13 +14,20 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
 )
 
 var timesSeen = make(map[string]int)
 var whitelist = make(map[string]bool)
 
-func fetchBlocklists(blocklist *blocklist.BlockList) {
+func fetchBlocklists() {
+	b := middleware.Get("blocklist")
+	if b == nil {
+		return
+	}
+
+	blocklist := b.(*blocklist.BlockList)
 	timer := time.NewTimer(time.Second)
 
 	select {

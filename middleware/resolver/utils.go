@@ -5,7 +5,9 @@ import (
 	"errors"
 	"math/rand"
 	"net"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -23,14 +25,14 @@ var (
 	errBadAnswer              = errors.New("response contained a non-zero RCODE")
 	errMissingSigned          = errors.New("signed records are missing")
 
-	localIPs []string
+	localIPaddrs []net.IP
 )
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
 
 	var err error
-	localIPs, err = findLocalIPAddresses()
+	localIPaddrs, err = findLocalIPAddresses()
 	if err != nil {
 		log.Crit("Find local ip addresses failed", "error", err.Error())
 	}
@@ -59,23 +61,48 @@ func shuffleStr(vals []string) []string {
 	return ret
 }
 
-func searchAddr(msg *dns.Msg) (addr string, found bool) {
-
+func searchAddrs(msg *dns.Msg) (addrs []string, found bool) {
 	found = false
-	for _, ans := range msg.Answer {
 
-		if arec, ok := ans.(*dns.A); ok {
-			addr = arec.A.String()
+	for _, rr := range msg.Answer {
+		if r, ok := rr.(*dns.A); ok {
+			if isLocalIP(r.A) {
+				continue
+			}
+
+			if r.A.To4() == nil {
+				continue
+			}
+
+			if r.A.IsLoopback() {
+				continue
+			}
+
+			addrs = append(addrs, r.A.String())
 			found = true
-			break
+		} else if r, ok := rr.(*dns.AAAA); ok {
+			if isLocalIP(r.AAAA) {
+				continue
+			}
+
+			if r.AAAA.To16() == nil {
+				continue
+			}
+
+			if r.AAAA.IsLoopback() {
+				continue
+			}
+
+			addrs = append(addrs, r.AAAA.String())
+			found = true
 		}
 	}
 
 	return
 }
 
-func findLocalIPAddresses() ([]string, error) {
-	var list []string
+func findLocalIPAddresses() ([]net.IP, error) {
+	var list []net.IP
 	tt, err := net.Interfaces()
 	if err != nil {
 		return nil, err
@@ -92,21 +119,16 @@ func findLocalIPAddresses() ([]string, error) {
 				continue
 			}
 
-			v4 := ipnet.IP.To4()
-			if v4 == nil {
-				continue
-			}
-
-			list = append(list, v4.String())
+			list = append(list, ipnet.IP)
 		}
 	}
 
 	return list, nil
 }
 
-func isLocalIP(ip string) (ok bool) {
-	for _, lip := range localIPs {
-		if lip == ip {
+func isLocalIP(ip net.IP) (ok bool) {
+	for _, l := range localIPaddrs {
+		if ip.Equal(l) {
 			ok = true
 			return
 		}
@@ -122,7 +144,7 @@ func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
 		tMap[t] = struct{}{}
 	}
 	for _, r := range in {
-		if _, present := tMap[r.Header().Rrtype]; present {
+		if _, ok := tMap[r.Header().Rrtype]; ok {
 			if name != "" && !strings.EqualFold(name, r.Header().Name) {
 				continue
 			}
@@ -132,12 +154,18 @@ func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
 	return out
 }
 
-func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
+func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) (bool, error) {
+	unsupportedDigest := false
 	for i, r := range parentDSSet {
 		parentDS, ok := r.(*dns.DS)
 		if !ok {
 			continue
 		}
+
+		if parentDS.DigestType == dns.GOST94 {
+			unsupportedDigest = true
+		}
+
 		ksk, present := keyMap[parentDS.KeyTag]
 		if !present {
 			continue
@@ -148,18 +176,18 @@ func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) error {
 			if i != len(parentDSSet)-1 {
 				continue
 			}
-			return errFailedToConvertKSK
+			return unsupportedDigest, errFailedToConvertKSK
 		}
 		if ds.Digest != parentDS.Digest {
 			if i != len(parentDSSet)-1 {
 				continue
 			}
-			return errMismatchingDS
+			return unsupportedDigest, errMismatchingDS
 		}
-		return nil
+		return unsupportedDigest, nil
 	}
 
-	return errMissingKSK
+	return unsupportedDigest, errMissingKSK
 }
 
 func isDO(req *dns.Msg) bool {
@@ -182,12 +210,11 @@ func verifyRRSIG(keys map[uint16]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
 	}
 
 	types := make(map[uint16]int)
-	typesErrors := make(map[uint16]bool)
+	typesErrors := make(map[uint16][]struct{})
 
 	for _, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
 		types[sig.TypeCovered]++
-		typesErrors[sig.TypeCovered] = false
 	}
 
 main:
@@ -208,7 +235,7 @@ main:
 		}
 		k, ok := keys[sig.KeyTag]
 		if !ok {
-			if !typesErrors[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
+			if len(typesErrors[sig.TypeCovered]) < types[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
 				continue
 			}
 			return false, errMissingDNSKEY
@@ -221,8 +248,8 @@ main:
 		}
 		err := sig.Verify(k, rest)
 		if err != nil {
-			if !typesErrors[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
-				typesErrors[sig.TypeCovered] = true
+			if len(typesErrors[sig.TypeCovered]) < types[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
+				typesErrors[sig.TypeCovered] = append(typesErrors[sig.TypeCovered], struct{}{})
 				continue
 			}
 			return false, err
@@ -233,7 +260,6 @@ main:
 			}
 			return false, errInvalidSignaturePeriod
 		}
-		typesErrors[sig.TypeCovered] = false
 	}
 
 	return true, nil
@@ -289,4 +315,101 @@ func checkExponent(key string) bool {
 	}
 
 	return true
+}
+
+func sortnss(nss nameservers, qname string) []string {
+	var list []string
+	for name := range nss {
+		list = append(list, name)
+	}
+
+	sort.Strings(list)
+	sort.Slice(list, func(i, j int) bool {
+		return dns.CompareDomainName(qname, list[i]) < dns.CompareDomainName(qname, list[j])
+	})
+
+	return list
+}
+
+func getDnameTarget(msg *dns.Msg) string {
+	var target string
+
+	q := msg.Question[0]
+
+	for _, r := range msg.Answer {
+		if dname, ok := r.(*dns.DNAME); ok {
+			if n := dns.CompareDomainName(dname.Header().Name, q.Name); n > 0 {
+				labels := dns.CountLabel(q.Name)
+
+				if n == labels {
+					target = dname.Target
+				} else {
+					prev, _ := dns.PrevLabel(q.Name, n)
+					target = q.Name[:prev] + dname.Target
+				}
+			}
+
+			return target
+		}
+	}
+
+	return target
+}
+
+var reqPool sync.Pool
+
+// AcquireMsg returns an empty msg from pool
+func AcquireMsg() *dns.Msg {
+	v := reqPool.Get()
+	if v == nil {
+		return &dns.Msg{}
+	}
+
+	return v.(*dns.Msg)
+}
+
+// ReleaseMsg returns req to pool
+func ReleaseMsg(req *dns.Msg) {
+	req.Id = 0
+	req.Response = false
+	req.Opcode = 0
+	req.Authoritative = false
+	req.Truncated = false
+	req.RecursionDesired = false
+	req.RecursionAvailable = false
+	req.Zero = false
+	req.AuthenticatedData = false
+	req.CheckingDisabled = false
+	req.Rcode = 0
+	req.Compress = false
+	req.Question = nil
+	req.Answer = nil
+	req.Ns = nil
+	req.Extra = nil
+
+	reqPool.Put(req)
+}
+
+var connPool sync.Pool
+
+// AcquireConn returns an empty conn from pool
+func AcquireConn() *Conn {
+	v := connPool.Get()
+	if v == nil {
+		return &Conn{}
+	}
+	return v.(*Conn)
+}
+
+// ReleaseConn returns req to pool
+func ReleaseConn(co *Conn) {
+	if co.Conn != nil {
+		co.Conn.Close()
+	}
+
+	co.UDPSize = 0
+	co.TsigSecret = nil
+	co.Conn = nil
+
+	connPool.Put(co)
 }

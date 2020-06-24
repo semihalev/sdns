@@ -1,8 +1,11 @@
 package resolver
 
 import (
+	"context"
 	"os"
+	"time"
 
+	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/middleware"
 
 	"github.com/miekg/dns"
@@ -15,9 +18,11 @@ import (
 
 // DNSHandler type
 type DNSHandler struct {
-	r   *Resolver
-	cfg *config.Config
+	resolver *Resolver
+	cfg      *config.Config
 }
+
+type ctxKey string
 
 var debugns bool
 
@@ -32,8 +37,8 @@ func init() {
 // New returns a new Handler
 func New(cfg *config.Config) *DNSHandler {
 	return &DNSHandler{
-		r:   NewResolver(cfg),
-		cfg: cfg,
+		resolver: NewResolver(cfg),
+		cfg:      cfg,
 	}
 }
 
@@ -41,15 +46,18 @@ func New(cfg *config.Config) *DNSHandler {
 func (h *DNSHandler) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (h *DNSHandler) ServeDNS(dc *ctx.Context) {
+func (h *DNSHandler) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	msg := h.handle(w.Proto(), req)
+	if v := ctx.Value(ctxKey("reqid")); v == nil {
+		ctx = context.WithValue(ctx, ctxKey("reqid"), req.Id)
+	}
+	msg := h.handle(ctx, req)
 
 	w.WriteMsg(msg)
 }
 
-func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
+func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 
 	do := false
@@ -63,44 +71,67 @@ func (h *DNSHandler) handle(Net string, req *dns.Msg) *dns.Msg {
 	}
 
 	// debug ns stats
-	if debugns && q.Qtype == dns.TypeHINFO {
+	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
 		return h.nsStats(req)
+	}
+
+	// check purge query
+	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
+		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
+			if qtype == dns.TypeNS {
+				h.purge(qname)
+			}
+
+			resp := dnsutil.HandleFailed(req, dns.RcodeSuccess, do)
+			txt, _ := dns.NewRR(q.Name + ` 20 IN TXT "cache purged"`)
+
+			resp.Extra = append(resp.Extra, txt)
+
+			return resp
+		}
 	}
 
 	if q.Name != rootzone && req.RecursionDesired == false {
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
-	log.Debug("Lookup", "net", Net, "query", formatQuestion(q), "do", do, "cd", req.CheckingDisabled)
+	// we shouldn't send rd and ad flag to aa servers
+	req.RecursionDesired = false
+	req.AuthenticatedData = false
+
+	//TODO (semihalev): config setable after this
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(30*time.Second))
+	defer cancel()
 
 	depth := h.cfg.Maxdepth
-	resp, err := h.r.Resolve(Net, req, h.r.rootservers, true, depth, 0, false, nil)
+	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil)
 	if err != nil {
-		log.Warn("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
+		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
 		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
-	}
-
-	if resp.Truncated && Net == "udp" {
 		return resp
-	} else if resp.Truncated && Net == "https" {
-		return h.handle("tcp", req)
 	}
 
-	resp = h.additionalAnswer(Net, req, resp)
+	if resp.Rcode == dns.RcodeRefused {
+		log.Info("Resolve query refused", "query", formatQuestion(q))
+
+		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
+		return resp
+	}
+
+	resp = h.additionalAnswer(ctx, req, resp)
 
 	return resp
 }
 
-func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
-	if req.Question[0].Qtype != dns.TypeA &&
-		req.Question[0].Qtype != dns.TypeAAAA {
+func (h *DNSHandler) additionalAnswer(ctx context.Context, req, msg *dns.Msg) *dns.Msg {
+	if req.Question[0].Qtype == dns.TypeCNAME ||
+		req.Question[0].Qtype == dns.TypeDS {
 		return msg
 	}
 
 	cnameReq := new(dns.Msg)
 	cnameReq.Extra = req.Extra
-	cnameReq.RecursionDesired = true
 	cnameReq.CheckingDisabled = req.CheckingDisabled
 
 	for _, answer := range msg.Answer {
@@ -118,11 +149,17 @@ func (h *DNSHandler) additionalAnswer(Net string, req, msg *dns.Msg) *dns.Msg {
 	}
 
 	if len(cnameReq.Question) > 0 {
-		respCname, err := dnsutil.ExchangeInternal(Net, cnameReq)
-		if err == nil && len(respCname.Answer) > 0 {
-			for _, r := range respCname.Answer {
+		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
+		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Answer) > 0) {
+			for _, rr := range respCname.Answer {
 				if respCname.Question[0].Name == cnameReq.Question[0].Name {
-					msg.Answer = append(msg.Answer, dns.Copy(r))
+					msg.Answer = append(msg.Answer, dns.Copy(rr))
+				}
+			}
+
+			for _, rr := range respCname.Ns {
+				if respCname.Question[0].Name == cnameReq.Question[0].Name {
+					msg.Ns = append(msg.Ns, dns.Copy(rr))
 				}
 			}
 		}
@@ -140,34 +177,57 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.Authoritative = false
 	msg.RecursionAvailable = true
 
-	servers := h.r.rootservers
-	ttl := uint32(20)
+	servers := h.resolver.rootservers
+	ttl := uint32(0)
 	name := rootzone
 
 	if q.Name != rootzone {
 		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
-		ns, err := h.r.Ncache.Get(nsKey)
-		if err == nil {
+		ns, err := h.resolver.ncache.Get(nsKey)
+		if err != nil {
+			nsKey = cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, !msg.CheckingDisabled)
+			ns, err := h.resolver.ncache.Get(nsKey)
+			if err == nil {
+				servers = ns.Servers
+				name = q.Name
+			}
+		} else {
 			servers = ns.Servers
 			name = q.Name
 		}
 	}
 
+	var serversList []*authcache.AuthServer
+
+	servers.RLock()
+	serversList = append(serversList, servers.List...)
+	servers.RUnlock()
+
+	authcache.Sort(serversList, 1)
+
 	rrHeader := dns.RR_Header{
 		Name:   name,
 		Rrtype: dns.TypeHINFO,
-		Class:  dns.ClassINET,
+		Class:  dns.ClassCHAOS,
 		Ttl:    ttl,
 	}
 
-	servers.RLock()
-	for _, server := range servers.List {
-		hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "ns", Os: server.String()}
+	for _, server := range serversList {
+		hinfo := &dns.HINFO{Hdr: rrHeader, Cpu: "Host", Os: server.String()}
 		msg.Ns = append(msg.Ns, hinfo)
 	}
-	servers.RUnlock()
 
 	return msg
+}
+
+func (h *DNSHandler) purge(qname string) {
+	q := dns.Question{Name: qname, Qtype: dns.TypeNS}
+
+	key := cache.Hash(q, false)
+	h.resolver.ncache.Remove(key)
+
+	key = cache.Hash(q, true)
+	h.resolver.ncache.Remove(key)
 }
 
 const name = "resolver"

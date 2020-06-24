@@ -6,7 +6,7 @@ Fast IP to CIDR block(s) lookup using trie in Golang, inspired by [IPv4 route lo
 [![Coverage Status](https://img.shields.io/coveralls/yl2chen/cidranger.svg?branch=master&style=flat-square)](https://coveralls.io/github/yl2chen/cidranger?branch=master)
 [![Go Report Card](https://goreportcard.com/badge/github.com/yl2chen/cidranger?&style=flat-square)](https://goreportcard.com/report/github.com/yl2chen/cidranger)
 
-This is visualization of a trie storing CIDR blocks `128.0.0.0/2` `192.0.0.0/2` `200.0.0.5` without path compression, the 0/1 number on the path indicates the bit value of the IP address at specified bit position, hence the path from root node to a child node represents a CIDR block that contains all IP ranges of its children, and children's children.
+This is visualization of a trie storing CIDR blocks `128.0.0.0/2` `192.0.0.0/2` `200.0.0.0/5` without path compression, the 0/1 number on the path indicates the bit value of the IP address at specified bit position, hence the path from root node to a child node represents a CIDR block that contains all IP ranges of its children, and children's children.
 <p align="left"><img src="http://i.imgur.com/vSKTEBb.png" width="600" /></p>
 
 Visualization of trie storing same CIDR blocks with path compression, improving both lookup speed and memory footprint.

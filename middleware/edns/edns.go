@@ -1,6 +1,9 @@
 package edns
 
 import (
+	"context"
+	"encoding/hex"
+
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
@@ -11,6 +14,7 @@ import (
 // EDNS type
 type EDNS struct {
 	cookiesecret string
+	nsidstr      string
 }
 
 func init() {
@@ -21,7 +25,7 @@ func init() {
 
 // New return edns
 func New(cfg *config.Config) *EDNS {
-	return &EDNS{cookiesecret: cfg.CookieSecret}
+	return &EDNS{cookiesecret: cfg.CookieSecret, nsidstr: cfg.NSID}
 }
 
 // Name return middleware name
@@ -36,17 +40,25 @@ type ResponseWriter struct {
 	size   int
 	do     bool
 	cookie string
+	nsid   bool
 	noedns bool
 	noad   bool
 }
 
 // ServeDNS implements the Handle interface.
-func (e *EDNS) ServeDNS(dc *ctx.Context) {
+func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
+
+	if req.Opcode > 0 {
+		dnsutil.NotSupported(w, req)
+
+		dc.Abort()
+		return
+	}
 
 	noedns := req.IsEdns0() == nil
 
-	opt, size, cookie, do := dnsutil.SetEdns0(req)
+	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req)
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 
@@ -69,16 +81,19 @@ func (e *EDNS) ServeDNS(dc *ctx.Context) {
 		do:     do,
 		cookie: cookie,
 		noedns: noedns,
+		nsid:   nsid,
 		noad:   !req.AuthenticatedData,
 	}
 
-	dc.NextDNS()
+	dc.NextDNS(ctx)
 
 	dc.DNSWriter = w
 }
 
 // WriteMsg implements the ctx.ResponseWriter interface
 func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
+	m.Compress = true
+
 	if !w.do {
 		m = dnsutil.ClearDNSSEC(m)
 	}
@@ -87,6 +102,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	if !w.noedns {
 		w.opt.SetDo(w.do)
 		w.setCookie()
+		w.setNSID()
 		m.Extra = append(m.Extra, w.opt)
 	}
 
@@ -112,6 +128,17 @@ func (w *ResponseWriter) setCookie() {
 	w.opt.Option = append(w.opt.Option, &dns.EDNS0_COOKIE{
 		Code:   dns.EDNS0COOKIE,
 		Cookie: dnsutil.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
+	})
+}
+
+func (w *ResponseWriter) setNSID() {
+	if w.nsidstr == "" || !w.nsid {
+		return
+	}
+
+	w.opt.Option = append(w.opt.Option, &dns.EDNS0_NSID{
+		Code: dns.EDNS0NSID,
+		Nsid: hex.EncodeToString([]byte(w.nsidstr)),
 	})
 }
 

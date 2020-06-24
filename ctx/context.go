@@ -1,6 +1,7 @@
 package ctx
 
 import (
+	"context"
 	"math"
 
 	"github.com/miekg/dns"
@@ -9,7 +10,7 @@ import (
 // Handler interface
 type Handler interface {
 	Name() string
-	ServeDNS(*Context)
+	ServeDNS(context.Context, *Context)
 }
 
 // Context type
@@ -33,10 +34,10 @@ func New(handlers []Handler) *Context {
 }
 
 // NextDNS call next dns middleware
-func (dc *Context) NextDNS() {
+func (dc *Context) NextDNS(ctx context.Context) {
 	dc.index++
 	for s := int8(len(dc.handlers)); dc.index < s; dc.index++ {
-		dc.handlers[dc.index].ServeDNS(dc)
+		dc.handlers[dc.index].ServeDNS(ctx, dc)
 	}
 }
 

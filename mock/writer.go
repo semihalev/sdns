@@ -98,3 +98,6 @@ func (w *Writer) TsigStatus() error { return nil }
 
 // TsigTimersOnly func
 func (w *Writer) TsigTimersOnly(ok bool) {}
+
+// Internal func
+func (w *Writer) Internal() bool { return true }

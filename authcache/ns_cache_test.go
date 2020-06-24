@@ -16,7 +16,7 @@ func Test_NSCache(t *testing.T) {
 	m.SetQuestion(dns.Fqdn("example.com."), dns.TypeA)
 	key := cache.Hash(m.Question[0])
 
-	a := NewAuthServer("0.0.0.0:53")
+	a := NewAuthServer("0.0.0.0:53", IPv4)
 	_ = a.String()
 
 	servers := &AuthServers{List: []*AuthServer{a}}
@@ -25,7 +25,7 @@ func Test_NSCache(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, err.Error(), "cache not found")
 
-	nscache.Set(key, nil, servers)
+	nscache.Set(key, nil, servers, time.Hour)
 
 	_, err = nscache.Get(key)
 	assert.NoError(t, err)
@@ -45,6 +45,8 @@ func Test_NSCache(t *testing.T) {
 
 	_, err = nscache.Get(key)
 	assert.Error(t, err)
+
+	nscache.Remove(key)
 }
 
 func BenchmarkNSCache(b *testing.B) {
@@ -52,7 +54,7 @@ func BenchmarkNSCache(b *testing.B) {
 
 	nc := NewNSCache()
 	for n := 0; n < b.N; n++ {
-		nc.Set(uint64(n), nil, nil)
+		nc.Set(uint64(n), nil, nil, time.Minute)
 		nc.Get(uint64(n))
 	}
 }

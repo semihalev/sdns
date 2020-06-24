@@ -61,6 +61,10 @@ func (i *item) toMsg(m *dns.Msg, now time.Time) *dns.Msg {
 	m1.RecursionAvailable = i.RecursionAvailable
 	m1.Rcode = i.Rcode
 
+	m1.Answer = i.Answer
+	m1.Ns = i.Ns
+	m1.Extra = i.Extra
+
 	m1.Answer = make([]dns.RR, len(i.Answer))
 	m1.Ns = make([]dns.RR, len(i.Ns))
 	m1.Extra = make([]dns.RR, len(i.Extra))

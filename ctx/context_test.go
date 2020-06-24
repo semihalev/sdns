@@ -1,6 +1,7 @@
 package ctx
 
 import (
+	"context"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -10,8 +11,8 @@ import (
 
 type dummy struct{}
 
-func (d *dummy) ServeDNS(dc *Context) { dc.NextDNS() }
-func (d *dummy) Name() string         { return "dummy" }
+func (d *dummy) ServeDNS(ctx context.Context, dc *Context) { dc.NextDNS(ctx) }
+func (d *dummy) Name() string                              { return "dummy" }
 
 func Test_Context(t *testing.T) {
 	w := mock.NewWriter("udp", "127.0.0.1:0")
@@ -21,7 +22,7 @@ func Test_Context(t *testing.T) {
 
 	dc.ResetDNS(w, req)
 
-	dc.NextDNS()
+	dc.NextDNS(context.Background())
 
 	req.Rcode = dns.RcodeSuccess
 	dc.DNSWriter.WriteMsg(req)
