@@ -49,7 +49,16 @@ type Config struct {
 	QnameMinLevel   int `toml:"qname_min_level"`
 	EmptyZones      []string
 
+	Plugins map[string]Plugin
+
 	sVersion string
+}
+
+// Plugin type
+type Plugin struct {
+	Path   string
+	Order  int
+	Config map[string]interface{}
 }
 
 // ServerVersion return current server version
@@ -225,6 +234,15 @@ qname_min_level = 5
 #	"10.in-addr.arpa."
 # ]
 emptyzones = []
+
+# You can add your own plugins to sdns. The plugin order is very important. 
+# Config keys should be string and values can be anything.
+# There is an example plugin at https://github.com/semihalev/sdns_example_plugin
+# [plugins]
+#     [plugins.example]
+#     path = "exampleplugin.so"
+#     order = 0
+#     config = {key_1 = "value_1", key_2 = 2, key_3 = true}	
 `
 
 // Load loads the given config file

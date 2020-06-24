@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 )
@@ -32,7 +33,7 @@ func Register(name string, new func(*config.Config) ctx.Handler) {
 	RegisterAt(name, new, len(m.handlers))
 }
 
-// Register a middleware at an index
+// RegisterAt a middleware at an index
 func RegisterAt(name string, new func(*config.Config) ctx.Handler, idx int) {
 	log.Debug("Register middleware", "name", name, "index", idx)
 
@@ -44,7 +45,7 @@ func RegisterAt(name string, new func(*config.Config) ctx.Handler, idx int) {
 	m.handlers[idx] = handler{name: name, new: new}
 }
 
-// Register a middleware before another middleware
+// RegisterBefore a middleware before another middleware
 func RegisterBefore(name string, new func(*config.Config) ctx.Handler, before string) {
 	log.Debug("Register middleware", "name", name, "before", before)
 
@@ -62,7 +63,6 @@ func RegisterBefore(name string, new func(*config.Config) ctx.Handler, before st
 
 	panic(fmt.Sprintf("Middleware %s not found", before))
 }
-
 
 // Setup handlers
 func Setup(cfg *config.Config) error {
