@@ -33,8 +33,9 @@ func Register(name string, new func(*config.Config) ctx.Handler) {
 	RegisterAt(name, new, len(m.handlers))
 }
 
+// Register a middleware at an index
 func RegisterAt(name string, new func(*config.Config) ctx.Handler, idx int) {
-	log.Info("Register middleware", "name", name, "index", idx)
+	log.Debug("Register middleware", "name", name, "index", idx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -44,8 +45,9 @@ func RegisterAt(name string, new func(*config.Config) ctx.Handler, idx int) {
 	m.handlers[idx] = handler{name: name, new: new}
 }
 
+// Register a middleware before another middleware
 func RegisterBefore(name string, new func(*config.Config) ctx.Handler, before string) {
-	log.Info("Register middleware", "name", name, "before", before)
+	log.Debug("Register middleware", "name", name, "before", before)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
