@@ -62,7 +62,6 @@ func Test_RegisterAt(t *testing.T) {
 	}, "dummy")
 	assert.True(t, len(m.handlers) == 3)
 	assert.True(t, m.handlers[0].name == "dummy2")
-	assert.True(t, m.handlers[0].name == "dummy2")
 	assert.True(t, m.handlers[1].name == "dummy3")
 	assert.True(t, m.handlers[2].name == "dummy")
 
