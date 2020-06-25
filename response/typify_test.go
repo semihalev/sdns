@@ -1,3 +1,6 @@
+// Copyright 2016-2020 The CoreDNS authors and contributors
+// Adapted for SDNS usage by Semih Alev.
+
 package response
 
 import (
