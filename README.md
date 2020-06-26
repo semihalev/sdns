@@ -23,7 +23,7 @@ or run with [Docker image](https://github.com/semihalev/sdns/packages)
 or alternative from [Docker hub](https://hub.docker.com/r/c1982/sdns)
 
 ```shell
-docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853:853 -p 8053:8053 -p 8080:8080 sdns
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853:853 -p 8053:8053 -p 8080:8080 sdns
 ```
 
 -   Port 53 DNS server
@@ -196,7 +196,6 @@ These benchmarks were run on a server with Intel Xeon E5-2609 v4 cpu and 32GB me
 | Bind     | %99,40   | %72,98  | %1,09    | %25,94   | 115s150ms | 431/s |
 | Unbound  | %99,14   | %73,19  | %0,90    | %25,90   | 178s80ms  | 278/s |
 
-##
 <img src="https://github.com/semihalev/sdns/blob/master/benchmarks.png?raw=true">
 
 ## Who Used
