@@ -121,6 +121,22 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **qname_min_level** | Qname minimize level.If higher, it can be more complex and impact the response performance. If set 0, qname min will be disable|
 | **emptyzones**      | Empty zones return answer for RFC 1918 zones. Please see http://as112.net/ for details.                                        |
 
+## Plugins Configuration
+
+You can add your own plugins to sdns. The plugin order is very important. The orders of plugins and middlewares will effect each other. Config keys should be string and values can be anything. The plugins will load before cache middleware with their orders.
+
+Plugin interface is very simple. For more information, you can look the [example plugin](https://github.com/semihalev/sdns_example_plugin)
+
+### Example Config
+```text
+[plugins]
+     [plugins.example]
+     path = "/myplugindir/exampleplugin.so"
+     config = {key_1 = "value_1", intkey = 2, boolkey = true, keyN = "nnn"}
+     [plugins.another]
+     path = "/myplugindir/anotherplugin.so"
+```
+
 ## Server Configuration Checklist
 
 -   Increase file descriptor on your server
@@ -151,6 +167,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 -   Cache Purge API and query support
 -   Answer chaos txt queries for version.bind and hostname.bind
 -   Empty zones support described at RFC 1918
+-   External plugins supported
 
 ## TODO
 
