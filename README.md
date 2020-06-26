@@ -125,7 +125,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 
 You can add your own plugins to sdns. The plugin order is very important. The orders of plugins and middlewares will effect each other. Config keys should be string and values can be anything. The plugins will load before cache middleware with their orders.
 
-Plugin interface is very simple. For more information, you can look the [example plugin](https://github.com/semihalev/sdns_example_plugin)
+Plugin interface is very simple. For more information, you can look the [example plugin](https://github.com/semihalev/sdnsexampleplugin)
 
 ### Example Config
 ```toml
