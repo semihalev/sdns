@@ -128,7 +128,7 @@ You can add your own plugins to sdns. The plugin order is very important. The or
 Plugin interface is very simple. For more information, you can look the [example plugin](https://github.com/semihalev/sdns_example_plugin)
 
 ### Example Config
-```text
+```toml
 [plugins]
      [plugins.example]
      path = "/myplugindir/exampleplugin.so"
