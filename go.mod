@@ -3,7 +3,6 @@ module github.com/semihalev/sdns
 require (
 	github.com/BurntSushi/toml v0.3.1
 	github.com/bsm/ratelimit v2.0.0+incompatible
-	github.com/felixge/fgprof v0.9.0
 	github.com/gin-contrib/pprof v1.3.0
 	github.com/gin-gonic/gin v1.6.3
 	github.com/mattn/go-colorable v0.1.6 // indirect

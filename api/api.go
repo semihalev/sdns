@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/felixge/fgprof"
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 	"github.com/miekg/dns"
@@ -101,8 +100,6 @@ func (a *API) Run() {
 
 	if debugpprof {
 		pprof.Register(r)
-
-		r.GET("/debug/fgprof", fgrofHandler(fgprof.Handler().ServeHTTP))
 	}
 
 	block := r.Group("/api/v1/block")
@@ -123,11 +120,4 @@ func (a *API) Run() {
 	}()
 
 	log.Info("API server listening...", "addr", a.host)
-}
-
-func fgrofHandler(h http.HandlerFunc) gin.HandlerFunc {
-	handler := http.HandlerFunc(h)
-	return func(c *gin.Context) {
-		handler.ServeHTTP(c.Writer, c.Request)
-	}
 }

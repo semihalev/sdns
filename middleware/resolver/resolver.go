@@ -1553,7 +1553,6 @@ func (r *Resolver) checkPriming() error {
 func (r *Resolver) run() {
 	for !middleware.Ready() {
 		//wait middleware setup
-
 		time.Sleep(50 * time.Millisecond)
 	}
 

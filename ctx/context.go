@@ -2,7 +2,6 @@ package ctx
 
 import (
 	"context"
-	"math"
 
 	"github.com/miekg/dns"
 )
@@ -53,4 +52,4 @@ func (dc *Context) Reset(w dns.ResponseWriter, r *dns.Msg) {
 	dc.next = -1
 }
 
-const cancel int8 = math.MaxInt8 / 2
+const cancel int8 = 1<<6 - 1
