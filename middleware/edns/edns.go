@@ -52,7 +52,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	if req.Opcode > 0 {
 		dnsutil.NotSupported(w, req)
 
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 
@@ -64,7 +64,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadVers, do))
 
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 

@@ -26,14 +26,14 @@ func Test_Chaos(t *testing.T) {
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	req := new(dns.Msg)
 	req.SetQuestion("version.bind.", dns.TypeTXT)
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	c.ServeDNS(context.Background(), dc)
 
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.Question[0].Qclass = dns.ClassCHAOS
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	c.ServeDNS(context.Background(), dc)
 
 	assert.True(t, mw.Written())
@@ -41,7 +41,7 @@ func Test_Chaos(t *testing.T) {
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.Question[0].Name = "hostname.bind."
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	c.ServeDNS(context.Background(), dc)
 
 	assert.True(t, mw.Written())
@@ -49,7 +49,7 @@ func Test_Chaos(t *testing.T) {
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.Question[0].Name = "unknown.bind."
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	c.ServeDNS(context.Background(), dc)
 
 	assert.False(t, mw.Written())

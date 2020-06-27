@@ -114,7 +114,7 @@ func Test_HandlerServe(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 
 	h.ServeDNS(context.Background(), dc)
 	assert.Equal(t, true, dc.DNSWriter.Written())

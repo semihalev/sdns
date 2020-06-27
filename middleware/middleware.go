@@ -151,3 +151,8 @@ func Get(name string) ctx.Handler {
 
 	return nil
 }
+
+// Ready return true if middleware setup was done
+func Ready() bool {
+	return setup
+}

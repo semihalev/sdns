@@ -30,7 +30,7 @@ func Test_accesslog(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 
 	resp := new(dns.Msg)
 	resp.SetRcode(req, dns.RcodeServerFailure)

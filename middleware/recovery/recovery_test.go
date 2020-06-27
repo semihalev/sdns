@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
@@ -16,7 +17,7 @@ func Test_recoveryDNS(t *testing.T) {
 	stderr := os.Stderr
 	os.Stderr, _ = os.Open(os.DevNull)
 
-	middleware.Setup(nil)
+	middleware.Setup(&config.Config{})
 	r := middleware.Get("recovery").(*Recovery)
 	assert.Equal(t, "recovery", r.Name())
 
@@ -26,14 +27,14 @@ func Test_recoveryDNS(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 
 	r.ServeDNS(context.Background(), dc)
 
 	assert.Equal(t, dns.RcodeServerFailure, mw.Msg().Rcode)
 
 	dc = ctx.New([]ctx.Handler{r})
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 
 	os.Stderr = stderr

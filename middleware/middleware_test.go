@@ -27,6 +27,8 @@ func Test_Middleware(t *testing.T) {
 	err := Setup(cfg)
 	assert.NoError(t, err)
 
+	assert.True(t, Ready())
+
 	err = Setup(cfg)
 	assert.Error(t, err)
 

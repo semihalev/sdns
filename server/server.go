@@ -56,7 +56,7 @@ func New(cfg *config.Config) *Server {
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	dc := s.pool.Get().(*ctx.Context)
 
-	dc.ResetDNS(w, r)
+	dc.Reset(w, r)
 
 	dc.NextDNS(context.Background())
 

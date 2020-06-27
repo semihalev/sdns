@@ -53,7 +53,7 @@ func Test_EDNS(t *testing.T) {
 	req.SetQuestion(testDomain, dns.TypeA)
 
 	mw := mock.NewWriter("tcp", "127.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(context.Background())
 
 	assert.True(t, dc.DNSWriter.Written())
@@ -65,7 +65,7 @@ func Test_EDNS(t *testing.T) {
 	opt.SetVersion(100)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(context.Background())
 
 	assert.True(t, dc.DNSWriter.Written())
@@ -76,7 +76,7 @@ func Test_EDNS(t *testing.T) {
 	opt.SetUDPSize(512)
 
 	mw = mock.NewWriter("tcp", "127.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(context.Background())
 
 	if assert.True(t, dc.DNSWriter.Written()) {
@@ -84,7 +84,7 @@ func Test_EDNS(t *testing.T) {
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(context.Background())
 
 	if assert.True(t, dc.DNSWriter.Written()) {
@@ -97,6 +97,6 @@ func Test_EDNS(t *testing.T) {
 	})
 	opt.SetUDPSize(4096)
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(context.Background())
 }

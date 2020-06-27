@@ -54,7 +54,7 @@ func (a *AccessList) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	if !allowed {
 		//no reply to client
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 

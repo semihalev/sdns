@@ -322,7 +322,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	w.WriteMsg(m)
 
-	dc.Abort()
+	dc.Cancel()
 }
 
 func (h *Hostsfile) otherRecordsExist(qtype uint16, qname string) bool {

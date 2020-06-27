@@ -93,7 +93,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 					if w.Proto() == "udp" {
 						if l.rl.Limit() {
-							dc.Abort()
+							dc.Cancel()
 							return
 						}
 
@@ -102,7 +102,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 						w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadCookie, false))
 
-						dc.Abort()
+						dc.Cancel()
 						return
 					}
 				}
@@ -112,7 +112,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	if l.rl.Limit() {
 		//no reply to client
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 

@@ -7,7 +7,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +17,7 @@ type dummy struct{}
 func (d *dummy) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	w, req := dc.DNSWriter, dc.DNSRequest
 
-	w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, true))
+	dns.HandleFailed(w, req)
 }
 
 func (d *dummy) Name() string { return "dummy" }
@@ -44,28 +43,28 @@ func Test_Failover(t *testing.T) {
 	dc.DNSWriter = mw
 	dc.DNSRequest = req
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(ctxb)
 
-	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
+	assert.Equal(t, dns.RcodeServerFailure, mw.Rcode())
 
 	req.RecursionDesired = true
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(ctxb)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
 
 	f.servers = []string{}
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(ctxb)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 
 	f.servers = []string{"[::255]:53"}
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	dc.NextDNS(ctxb)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)

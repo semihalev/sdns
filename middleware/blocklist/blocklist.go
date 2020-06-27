@@ -81,7 +81,7 @@ func (b *BlockList) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	w.WriteMsg(msg)
 
-	dc.Abort()
+	dc.Cancel()
 }
 
 // Get returns the entry for a key or an error

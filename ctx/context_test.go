@@ -20,7 +20,7 @@ func Test_Context(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 
-	dc.ResetDNS(w, req)
+	dc.Reset(w, req)
 
 	dc.NextDNS(context.Background())
 
@@ -36,7 +36,7 @@ func Test_Context(t *testing.T) {
 	_, err = dc.DNSWriter.Write(data)
 	assert.Equal(t, errAlreadyWritten, err)
 
-	dc.ResetDNS(mock.NewWriter("udp", "127.0.0.1:0"), req)
+	dc.Reset(mock.NewWriter("udp", "127.0.0.1:0"), req)
 	size, err := dc.DNSWriter.Write(data)
 	assert.NoError(t, err)
 	assert.Equal(t, len(data), size)
@@ -45,13 +45,13 @@ func Test_Context(t *testing.T) {
 	err = dc.DNSWriter.WriteMsg(req)
 	assert.Equal(t, errAlreadyWritten, err)
 
-	dc.ResetDNS(mock.NewWriter("tcp", "127.0.0.1:0"), req)
+	dc.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), req)
 	_, err = dc.DNSWriter.Write([]byte{})
 	assert.Error(t, err)
 
 	assert.Equal(t, "tcp", dc.DNSWriter.Proto())
 	assert.Equal(t, "127.0.0.1", dc.DNSWriter.RemoteIP().String())
 
-	dc.Abort()
-	assert.Equal(t, abortIndex, dc.index)
+	dc.Cancel()
+	assert.Equal(t, cancel, dc.next)
 }

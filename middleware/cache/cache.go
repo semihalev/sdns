@@ -94,12 +94,12 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	q := req.Question[0]
 
 	if _, ok := dns.ClassToString[q.Qclass]; !ok {
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 
 	if _, ok := dns.TypeToString[q.Qtype]; !ok {
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 
@@ -119,7 +119,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	if q.Name != "." && req.RecursionDesired == false {
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 
@@ -135,7 +135,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	if i != nil && found {
 		if !w.Internal() && c.rate > 0 && i.RateLimit.Limit() {
 			//no reply to client
-			dc.Abort()
+			dc.Cancel()
 			return
 		}
 
@@ -143,7 +143,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		m = c.additionalAnswer(ctx, m)
 
 		w.WriteMsg(m)
-		dc.Abort()
+		dc.Cancel()
 		return
 	}
 

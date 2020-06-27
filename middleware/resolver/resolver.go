@@ -16,6 +16,7 @@ import (
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // Resolver type
@@ -1550,6 +1551,12 @@ func (r *Resolver) checkPriming() error {
 }
 
 func (r *Resolver) run() {
+	for !middleware.Ready() {
+		//wait middleware setup
+
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	r.checkPriming()
 
 	ticker := time.NewTicker(time.Hour)

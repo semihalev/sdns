@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
@@ -12,7 +13,7 @@ import (
 )
 
 func Test_Metrics(t *testing.T) {
-	middleware.Setup(nil)
+	middleware.Setup(&config.Config{})
 
 	m := middleware.Get("metrics").(*Metrics)
 
@@ -24,7 +25,7 @@ func Test_Metrics(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 
 	m.ServeDNS(context.Background(), dc)
 	assert.Equal(t, dns.RcodeServerFailure, mw.Rcode())

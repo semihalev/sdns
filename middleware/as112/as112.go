@@ -126,7 +126,7 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	w.WriteMsg(msg)
 
-	dc.Abort()
+	dc.Cancel()
 }
 
 // Match returns whether or not a name contains in the zones

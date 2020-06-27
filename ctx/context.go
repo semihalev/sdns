@@ -19,37 +19,38 @@ type Context struct {
 	DNSRequest *dns.Msg
 
 	handlers []Handler
-	index    int8
+	next     int8
 }
-
-const abortIndex int8 = math.MaxInt8 / 2
 
 // New return new dnscontext
 func New(handlers []Handler) *Context {
 	return &Context{
 		DNSWriter: &responseWriter{},
 		handlers:  handlers,
-		index:     -1,
+		next:      -1,
 	}
 }
 
-// NextDNS call next dns middleware
+// NextDNS call next dns handler in chain
 func (dc *Context) NextDNS(ctx context.Context) {
-	dc.index++
-	for s := int8(len(dc.handlers)); dc.index < s; dc.index++ {
-		dc.handlers[dc.index].ServeDNS(ctx, dc)
+	dc.next++
+
+	for cnt := int8(len(dc.handlers)); dc.next < cnt; dc.next++ {
+		dc.handlers[dc.next].ServeDNS(ctx, dc)
 	}
 }
 
-// Abort calls
-func (dc *Context) Abort() {
-	dc.index = abortIndex
+// Cancel next calls
+func (dc *Context) Cancel() {
+	dc.next = cancel
 }
 
-// ResetDNS reset dns vars
-func (dc *Context) ResetDNS(w dns.ResponseWriter, r *dns.Msg) {
+// Reset the context variables
+func (dc *Context) Reset(w dns.ResponseWriter, r *dns.Msg) {
 	dc.DNSWriter.Reset(w)
 	dc.DNSRequest = r
 
-	dc.index = -1
+	dc.next = -1
 }
+
+const cancel int8 = math.MaxInt8 / 2

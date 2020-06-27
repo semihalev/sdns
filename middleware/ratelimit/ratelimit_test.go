@@ -35,11 +35,11 @@ func Test_RateLimit(t *testing.T) {
 	})
 
 	mw := mock.NewWriter("udp", "")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 	r.ServeDNS(context.Background(), dc)
 	if assert.True(t, mw.Written()) {
@@ -53,29 +53,29 @@ func Test_RateLimit(t *testing.T) {
 	})
 
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("tcp", "10.0.0.2:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 	r.ServeDNS(context.Background(), dc)
 	assert.False(t, mw.Written())
 
 	opt.Option = nil
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 	r.ServeDNS(context.Background(), dc)
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("udp", "0.0.0.0:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.ResetDNS(mw, req)
+	dc.Reset(mw, req)
 	r.ServeDNS(context.Background(), dc)
 
 	r.rate = 0

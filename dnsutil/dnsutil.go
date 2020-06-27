@@ -233,7 +233,7 @@ func ExchangeInternal(parentCtx context.Context, r *dns.Msg) (*dns.Msg, error) {
 	w := mock.NewWriter("tcp", "127.0.0.255:0")
 
 	dc := ctx.New(middleware.Handlers())
-	dc.ResetDNS(w, r)
+	dc.Reset(w, r)
 
 	dc.NextDNS(parentCtx)
 

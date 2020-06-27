@@ -80,7 +80,7 @@ func (c *Chaos) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	}
 
 	w.WriteMsg(resp)
-	dc.Abort()
+	dc.Cancel()
 }
 
 func limitTXTLength(s string) string {
