@@ -21,14 +21,14 @@ func handleTest(w http.ResponseWriter, r *http.Request) {
 		return msg
 	}
 
-	var f func(http.ResponseWriter, *http.Request) bool
+	var handleFn func(http.ResponseWriter, *http.Request)
 	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = HandleJSON(handle)
+		handleFn = HandleJSON(handle)
 	} else {
-		f = HandleWireFormat(handle)
+		handleFn = HandleWireFormat(handle)
 	}
 
-	f(w, r)
+	handleFn(w, r)
 }
 func Test_dohJSON(t *testing.T) {
 	t.Parallel()

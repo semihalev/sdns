@@ -75,16 +75,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return mw.Msg()
 	}
 
-	var f func(http.ResponseWriter, *http.Request) bool
+	var handlerFn func(http.ResponseWriter, *http.Request)
 	if r.Method == http.MethodGet && r.URL.Query().Get("dns") == "" {
-		f = doh.HandleJSON(handle)
+		handlerFn = doh.HandleJSON(handle)
 	} else {
-		f = doh.HandleWireFormat(handle)
+		handlerFn = doh.HandleWireFormat(handle)
 	}
 
-	if f(w, r) {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-	}
+	handlerFn(w, r)
 }
 
 // Run listen the services

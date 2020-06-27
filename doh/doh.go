@@ -12,8 +12,8 @@ import (
 )
 
 // HandleWireFormat handle wire format
-func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
-	return func(w http.ResponseWriter, r *http.Request) (next bool) {
+func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		var (
 			buf []byte
 			err error
@@ -49,9 +49,13 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 			return
 		}
 
+		req.RecursionDesired = false
+		req.AuthenticatedData = false
+
 		msg := handle(req)
 		if msg == nil {
-			return true
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			return
 		}
 
 		packed, err := msg.Pack()
@@ -59,17 +63,17 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
+
 		w.Header().Set("Server", "SDNS")
 		w.Header().Set("Content-Type", "application/dns-message")
-		w.Write(packed)
 
-		return
+		w.Write(packed)
 	}
 }
 
 // HandleJSON handle json format
-func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
-	return func(w http.ResponseWriter, r *http.Request) (next bool) {
+func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		if name == "" {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
@@ -84,8 +88,8 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 		}
 
 		req := new(dns.Msg)
-		req.RecursionDesired = true
-		req.AuthenticatedData = true
+		req.RecursionDesired = false
+		req.AuthenticatedData = false
 
 		if r.URL.Query().Get("cd") == "true" {
 			req.CheckingDisabled = true
@@ -141,7 +145,8 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 
 		msg := handle(req)
 		if msg == nil {
-			return true
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			return
 		}
 
 		json, err := json.Marshal(NewMsg(msg))
@@ -149,6 +154,7 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
+
 		w.Header().Set("Server", "SDNS")
 
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
@@ -158,7 +164,5 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 		}
 
 		w.Write(json)
-
-		return
 	}
 }
