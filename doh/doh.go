@@ -12,7 +12,7 @@ import (
 )
 
 // HandleWireFormat handle wire format
-func HandleWireFormat(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
+func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
 	return func(w http.ResponseWriter, r *http.Request) (next bool) {
 		var (
 			buf []byte
@@ -49,7 +49,7 @@ func HandleWireFormat(handle func(string, *dns.Msg) *dns.Msg) func(http.Response
 			return
 		}
 
-		msg := handle("https", req)
+		msg := handle(req)
 		if msg == nil {
 			return true
 		}
@@ -68,7 +68,7 @@ func HandleWireFormat(handle func(string, *dns.Msg) *dns.Msg) func(http.Response
 }
 
 // HandleJSON handle json format
-func HandleJSON(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
+func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) bool {
 	return func(w http.ResponseWriter, r *http.Request) (next bool) {
 		name := r.URL.Query().Get("name")
 		if name == "" {
@@ -139,7 +139,7 @@ func HandleJSON(handle func(string, *dns.Msg) *dns.Msg) func(http.ResponseWriter
 
 		req.Extra = append(req.Extra, opt)
 
-		msg := handle("https", req)
+		msg := handle(req)
 		if msg == nil {
 			return true
 		}

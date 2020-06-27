@@ -15,7 +15,7 @@ import (
 )
 
 func handleTest(w http.ResponseWriter, r *http.Request) {
-	handle := func(Net string, req *dns.Msg) *dns.Msg {
+	handle := func(req *dns.Msg) *dns.Msg {
 		msg, _ := dns.Exchange(req, "8.8.8.8:53")
 
 		return msg

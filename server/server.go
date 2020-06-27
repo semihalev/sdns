@@ -64,8 +64,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	handle := func(Net string, req *dns.Msg) *dns.Msg {
-		mw := mock.NewWriter(Net, r.RemoteAddr)
+	handle := func(req *dns.Msg) *dns.Msg {
+		mw := mock.NewWriter("tcp", r.RemoteAddr)
 		s.ServeDNS(mw, req)
 
 		if !mw.Written() {

@@ -22,7 +22,7 @@ type Writer struct {
 func NewWriter(Net, addr string) *Writer {
 	w := &Writer{}
 
-	if Net == "tcp" || Net == "https" || Net == "tcp-tls" {
+	if Net == "tcp" || Net == "tcp-tls" {
 		w.localAddr = &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
 		w.remoteAddr, _ = net.ResolveTCPAddr("tcp", addr)
 		w.remoteip = w.remoteAddr.(*net.TCPAddr).IP
