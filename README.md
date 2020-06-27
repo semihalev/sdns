@@ -17,19 +17,14 @@ go get github.com/semihalev/sdns
 
 or
 
-[download](https://github.com/semihalev/sdns/releases)
+[download latest release](https://github.com/semihalev/sdns/releases)
 
-or run with [Docker image](https://github.com/semihalev/sdns/packages)
+or run package [Docker image](https://github.com/semihalev/sdns/packages)
 or alternative from [Docker hub](https://hub.docker.com/r/c1982/sdns)
 
 ```shell
-$ docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853:853 -p 8053:8053 -p 8080:8080 sdns
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
 ```
-
--   Port 53 DNS server
--   Port 853 DNS-over-TLS server
--   Port 8053 DNS-over-HTTPS server
--   Port 8080 HTTP API
 
 ## Building
 
@@ -132,7 +127,7 @@ Plugin interface is very simple. For more information, you can look the [example
 [plugins]
      [plugins.example]
      path = "/myplugindir/exampleplugin.so"
-     config = {key_1 = "value_1", intkey = 2, boolkey = true, keyN = "nnn"}
+     config = {key_1 = "value_1",intkey = 2,boolkey = true,keyN = "nnn"}
      [plugins.another]
      path = "/myplugindir/anotherplugin.so"
 ```
