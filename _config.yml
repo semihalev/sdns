@@ -1,3 +1,5 @@
 theme: jekyll-theme-dinky
+title: SDNS
+show_downloads: true
 plugins:
   - jemoji
