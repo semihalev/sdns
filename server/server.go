@@ -28,7 +28,7 @@ type Server struct {
 	tlsCertificate string
 	tlsPrivateKey  string
 
-	pool sync.Pool
+	chainPool sync.Pool
 }
 
 // New return new server
@@ -41,7 +41,7 @@ func New(cfg *config.Config) *Server {
 		tlsPrivateKey:  cfg.TLSPrivateKey,
 	}
 
-	server.pool.New = func() interface{} {
+	server.chainPool.New = func() interface{} {
 		return middleware.NewChain(middleware.Handlers())
 	}
 
@@ -52,13 +52,13 @@ func New(cfg *config.Config) *Server {
 
 // ServeDNS implements the Handle interface.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	ch := s.pool.Get().(*middleware.Chain)
+	ch := s.chainPool.Get().(*middleware.Chain)
 
 	ch.Reset(w, r)
 
 	ch.Next(context.Background())
 
-	s.pool.Put(ch)
+	s.chainPool.Put(ch)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
