@@ -11,7 +11,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -30,7 +29,7 @@ type RateLimit struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -50,24 +49,24 @@ func New(cfg *config.Config) *RateLimit {
 func (r *RateLimit) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	if w.Internal() {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
 	if r.rate == 0 {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
 	if w.RemoteIP() == nil {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	} else if w.RemoteIP().IsLoopback() {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
@@ -85,7 +84,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 					servercookie = dnsutil.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
 
 					if cachedcookie == "" || cachedcookie == option.String() {
-						dc.NextDNS(ctx)
+						ch.Next(ctx)
 
 						l.cookie.Store(servercookie)
 						return
@@ -93,7 +92,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 					if w.Proto() == "udp" {
 						if l.rl.Limit() {
-							dc.Cancel()
+							ch.Cancel()
 							return
 						}
 
@@ -102,7 +101,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 						w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadCookie, false))
 
-						dc.Cancel()
+						ch.Cancel()
 						return
 					}
 				}
@@ -112,11 +111,11 @@ func (r *RateLimit) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	if l.rl.Limit() {
 		//no reply to client
-		dc.Cancel()
+		ch.Cancel()
 		return
 	}
 
-	dc.NextDNS(ctx)
+	ch.Next(ctx)
 
 	if servercookie != "" {
 		l.cookie.Store(servercookie)

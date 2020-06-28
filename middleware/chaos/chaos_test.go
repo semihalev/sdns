@@ -6,7 +6,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
@@ -21,36 +20,36 @@ func Test_Chaos(t *testing.T) {
 	c := middleware.Get("chaos").(*Chaos)
 	assert.Equal(t, "chaos", c.Name())
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	req := new(dns.Msg)
 	req.SetQuestion("version.bind.", dns.TypeTXT)
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
 
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.Question[0].Qclass = dns.ClassCHAOS
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
 
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, mw.Rcode())
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.Question[0].Name = "hostname.bind."
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
 
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, mw.Rcode())
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.Question[0].Name = "unknown.bind."
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
 
 	assert.False(t, mw.Written())
 }

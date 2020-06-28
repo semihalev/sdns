@@ -6,7 +6,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
@@ -22,7 +21,7 @@ func Test_RateLimit(t *testing.T) {
 
 	assert.Equal(t, "ratelimit", r.Name())
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
@@ -35,13 +34,13 @@ func Test_RateLimit(t *testing.T) {
 	})
 
 	mw := mock.NewWriter("udp", "")
-	dc.Reset(mw, req)
-	r.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	r.ServeDNS(context.Background(), ch)
 
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	dc.Reset(mw, req)
-	r.ServeDNS(context.Background(), dc)
-	r.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	r.ServeDNS(context.Background(), ch)
+	r.ServeDNS(context.Background(), ch)
 	if assert.True(t, mw.Written()) {
 		assert.Equal(t, dns.RcodeBadCookie, mw.Rcode())
 	}
@@ -53,32 +52,32 @@ func Test_RateLimit(t *testing.T) {
 	})
 
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	dc.Reset(mw, req)
-	r.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	r.ServeDNS(context.Background(), ch)
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("tcp", "10.0.0.2:0")
-	dc.Reset(mw, req)
-	r.ServeDNS(context.Background(), dc)
-	r.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	r.ServeDNS(context.Background(), ch)
+	r.ServeDNS(context.Background(), ch)
 	assert.False(t, mw.Written())
 
 	opt.Option = nil
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	dc.Reset(mw, req)
-	r.ServeDNS(context.Background(), dc)
-	r.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	r.ServeDNS(context.Background(), ch)
+	r.ServeDNS(context.Background(), ch)
 	assert.False(t, mw.Written())
 
 	mw = mock.NewWriter("udp", "0.0.0.0:0")
-	dc.Reset(mw, req)
-	r.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	r.ServeDNS(context.Background(), ch)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	r.ServeDNS(context.Background(), dc)
+	ch.Reset(mw, req)
+	r.ServeDNS(context.Background(), ch)
 
 	r.rate = 0
 
-	r.ServeDNS(context.Background(), dc)
+	r.ServeDNS(context.Background(), ch)
 }

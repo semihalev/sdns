@@ -5,14 +5,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	_ "github.com/semihalev/sdns/middleware/edns"
-
-	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -108,14 +106,14 @@ func Test_HandlerServe(t *testing.T) {
 	cfg := makeTestConfig()
 	h := New(cfg)
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 	mw := mock.NewWriter("tcp", "127.0.0.1:0")
 
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
-	dc.Reset(mw, req)
+	ch.Reset(mw, req)
 
-	h.ServeDNS(context.Background(), dc)
-	assert.Equal(t, true, dc.DNSWriter.Written())
+	h.ServeDNS(context.Background(), ch)
+	assert.Equal(t, true, ch.Writer.Written())
 }

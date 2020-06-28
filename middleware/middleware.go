@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"plugin"
@@ -8,8 +9,13 @@ import (
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 )
+
+// Handler interface
+type Handler interface {
+	Name() string
+	ServeDNS(context.Context, *Chain)
+}
 
 type middleware struct {
 	mu sync.RWMutex
@@ -20,22 +26,22 @@ type middleware struct {
 
 type handler struct {
 	name string
-	new  func(*config.Config) ctx.Handler
+	new  func(*config.Config) Handler
 }
 
 var (
-	ctxHandlers []ctx.Handler
-	setup       bool
-	m           middleware
+	chainHandlers []Handler
+	setup         bool
+	m             middleware
 )
 
 // Register a middleware
-func Register(name string, new func(*config.Config) ctx.Handler) {
+func Register(name string, new func(*config.Config) Handler) {
 	RegisterAt(name, new, len(m.handlers))
 }
 
 // RegisterAt a middleware at an index
-func RegisterAt(name string, new func(*config.Config) ctx.Handler, idx int) {
+func RegisterAt(name string, new func(*config.Config) Handler, idx int) {
 	log.Debug("Register middleware", "name", name, "index", idx)
 
 	m.mu.Lock()
@@ -47,7 +53,7 @@ func RegisterAt(name string, new func(*config.Config) ctx.Handler, idx int) {
 }
 
 // RegisterBefore a middleware before another middleware
-func RegisterBefore(name string, new func(*config.Config) ctx.Handler, before string) {
+func RegisterBefore(name string, new func(*config.Config) Handler, before string) {
 	log.Debug("Register middleware", "name", name, "before", before)
 
 	m.mu.Lock()
@@ -79,7 +85,7 @@ func Setup(cfg *config.Config) error {
 	defer m.mu.RUnlock()
 
 	for _, handler := range m.handlers {
-		ctxHandlers = append(ctxHandlers, handler.new(m.cfg))
+		chainHandlers = append(chainHandlers, handler.new(m.cfg))
 	}
 
 	setup = true
@@ -102,7 +108,7 @@ func LoadExternalPlugins() {
 			continue
 		}
 
-		newFn, ok := newFuncSym.(func(cfg *config.Config) ctx.Handler)
+		newFn, ok := newFuncSym.(func(cfg *config.Config) Handler)
 
 		if !ok {
 			log.Error("Plugin new function assert failed", "plugin", name)
@@ -115,8 +121,8 @@ func LoadExternalPlugins() {
 }
 
 // Handlers return registered handlers
-func Handlers() []ctx.Handler {
-	return append(ctxHandlers)
+func Handlers() []Handler {
+	return append(chainHandlers)
 }
 
 // List return names of handlers
@@ -132,7 +138,7 @@ func List() (list []string) {
 }
 
 // Get return a handler by name
-func Get(name string) ctx.Handler {
+func Get(name string) Handler {
 	if !setup {
 		return nil
 	}
@@ -142,10 +148,10 @@ func Get(name string) ctx.Handler {
 
 	for i, handler := range m.handlers {
 		if handler.name == name {
-			if len(ctxHandlers) <= i {
+			if len(chainHandlers) <= i {
 				return nil
 			}
-			return ctxHandlers[i]
+			return chainHandlers[i]
 		}
 	}
 

@@ -7,11 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // BlockList type
@@ -25,7 +23,7 @@ type BlockList struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -44,13 +42,13 @@ func New(cfg *config.Config) *BlockList {
 func (b *BlockList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (b *BlockList) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	q := req.Question[0]
 
 	if !b.Exists(q.Name) {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
@@ -81,7 +79,7 @@ func (b *BlockList) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	w.WriteMsg(msg)
 
-	dc.Cancel()
+	ch.Cancel()
 }
 
 // Get returns the entry for a key or an error

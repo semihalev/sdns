@@ -10,7 +10,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -21,7 +20,7 @@ type AccessLog struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -48,12 +47,12 @@ func New(cfg *config.Config) *AccessLog {
 func (a *AccessLog) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (a *AccessLog) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	dc.NextDNS(ctx)
+func (a *AccessLog) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	ch.Next(ctx)
 
-	w := dc.DNSWriter
+	w := ch.Writer
 
-	if a.logFile != nil && dc.DNSWriter.Written() && !w.Internal() {
+	if a.logFile != nil && ch.Writer.Written() && !w.Internal() {
 		resp := w.Msg()
 
 		cd := "-cd"

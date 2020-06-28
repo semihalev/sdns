@@ -5,10 +5,8 @@ import (
 	"os"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // Chaos type
@@ -18,7 +16,7 @@ type Chaos struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -35,13 +33,13 @@ func New(cfg *config.Config) *Chaos {
 func (c *Chaos) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (c *Chaos) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (c *Chaos) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	q := req.Question[0]
 
 	if q.Qclass != dns.ClassCHAOS || q.Qtype != dns.TypeTXT || !c.chaos {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
@@ -75,12 +73,12 @@ func (c *Chaos) ServeDNS(ctx context.Context, dc *ctx.Context) {
 				Txt: []string{limitTXTLength(hostname)},
 			}}
 	default:
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
 	w.WriteMsg(resp)
-	dc.Cancel()
+	ch.Cancel()
 }
 
 func limitTXTLength(s string) string {

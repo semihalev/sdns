@@ -7,7 +7,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
@@ -15,8 +14,8 @@ import (
 
 type dummy struct{}
 
-func (d *dummy) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (d *dummy) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	m := new(dns.Msg)
 	m.SetReply(req)
@@ -47,48 +46,48 @@ func Test_EDNS(t *testing.T) {
 	edns := middleware.Get("edns").(*EDNS)
 	assert.Equal(t, "edns", edns.Name())
 
-	dc := ctx.New([]ctx.Handler{edns, &dummy{}})
+	ch := middleware.NewChain([]middleware.Handler{edns, &dummy{}})
 
 	req := new(dns.Msg)
 	req.SetQuestion(testDomain, dns.TypeA)
 
 	mw := mock.NewWriter("tcp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	dc.NextDNS(context.Background())
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
 
-	assert.True(t, dc.DNSWriter.Written())
-	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
-	assert.Nil(t, dc.DNSWriter.Msg().IsEdns0())
+	assert.True(t, ch.Writer.Written())
+	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
+	assert.Nil(t, ch.Writer.Msg().IsEdns0())
 
 	req.SetEdns0(4096, true)
 	opt := req.IsEdns0()
 	opt.SetVersion(100)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	dc.NextDNS(context.Background())
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
 
-	assert.True(t, dc.DNSWriter.Written())
-	assert.Equal(t, dns.RcodeBadVers, dc.DNSWriter.Rcode())
+	assert.True(t, ch.Writer.Written())
+	assert.Equal(t, dns.RcodeBadVers, ch.Writer.Rcode())
 
 	opt = req.IsEdns0()
 	opt.SetVersion(0)
 	opt.SetUDPSize(512)
 
 	mw = mock.NewWriter("tcp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	dc.NextDNS(context.Background())
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
 
-	if assert.True(t, dc.DNSWriter.Written()) {
-		assert.False(t, dc.DNSWriter.Msg().Truncated)
+	if assert.True(t, ch.Writer.Written()) {
+		assert.False(t, ch.Writer.Msg().Truncated)
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	dc.NextDNS(context.Background())
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
 
-	if assert.True(t, dc.DNSWriter.Written()) {
-		assert.True(t, dc.DNSWriter.Msg().Truncated)
+	if assert.True(t, ch.Writer.Written()) {
+		assert.True(t, ch.Writer.Msg().Truncated)
 	}
 
 	opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
@@ -97,6 +96,6 @@ func Test_EDNS(t *testing.T) {
 	})
 	opt.SetUDPSize(4096)
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	dc.NextDNS(context.Background())
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
 }

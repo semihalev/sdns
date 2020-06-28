@@ -6,7 +6,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
@@ -14,8 +13,8 @@ import (
 
 type dummy struct{}
 
-func (d *dummy) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (d *dummy) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	dns.HandleFailed(w, req)
 }
@@ -31,41 +30,41 @@ func Test_Failover(t *testing.T) {
 	f := middleware.Get("failover").(*Failover)
 	assert.Equal(t, "failover", f.Name())
 
-	dc := ctx.New([]ctx.Handler{f, &dummy{}})
+	ch := middleware.NewChain([]middleware.Handler{f, &dummy{}})
 
-	ctxb := context.Background()
+	ctx := context.Background()
 
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
 	req.RecursionDesired = false
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
-	dc.DNSRequest = req
+	ch.Writer = mw
+	ch.Request = req
 
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxb)
+	ch.Reset(mw, req)
+	ch.Next(ctx)
 
 	assert.Equal(t, dns.RcodeServerFailure, mw.Rcode())
 
 	req.RecursionDesired = true
 
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxb)
+	ch.Reset(mw, req)
+	ch.Next(ctx)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
 
 	f.servers = []string{}
 
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxb)
+	ch.Reset(mw, req)
+	ch.Next(ctx)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 
 	f.servers = []string{"[::255]:53"}
 
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxb)
+	ch.Reset(mw, req)
+	ch.Next(ctx)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 }

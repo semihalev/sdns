@@ -4,11 +4,9 @@ import (
 	"context"
 	"net"
 
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/yl2chen/cidranger"
 )
 
@@ -18,7 +16,7 @@ type AccessList struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -44,21 +42,21 @@ func New(cfg *config.Config) *AccessList {
 func (a *AccessList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (a *AccessList) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	if dc.DNSWriter.Internal() {
-		dc.NextDNS(ctx)
+func (a *AccessList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	if ch.Writer.Internal() {
+		ch.Next(ctx)
 		return
 	}
 
-	allowed, _ := a.ranger.Contains(dc.DNSWriter.RemoteIP())
+	allowed, _ := a.ranger.Contains(ch.Writer.RemoteIP())
 
 	if !allowed {
 		//no reply to client
-		dc.Cancel()
+		ch.Cancel()
 		return
 	}
 
-	dc.NextDNS(ctx)
+	ch.Next(ctx)
 }
 
 const name = "accesslist"

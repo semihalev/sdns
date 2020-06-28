@@ -6,20 +6,18 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // Recovery dummy type
 type Recovery struct{}
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -33,10 +31,10 @@ func New(cfg *config.Config) *Recovery {
 func (r *Recovery) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (r *Recovery) ServeDNS(ctx context.Context, dc *ctx.Context) {
+func (r *Recovery) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() {
 		if r := recover(); r != nil {
-			dc.DNSWriter.WriteMsg(dnsutil.HandleFailed(dc.DNSRequest, dns.RcodeServerFailure, false))
+			ch.Writer.WriteMsg(dnsutil.HandleFailed(ch.Request, dns.RcodeServerFailure, false))
 
 			log.Error("Recovered in ServeDNS", "recover", r)
 
@@ -45,7 +43,7 @@ func (r *Recovery) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		}
 	}()
 
-	dc.NextDNS(ctx)
+	ch.Next(ctx)
 }
 
 const name = "recovery"

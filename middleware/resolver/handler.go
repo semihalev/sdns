@@ -5,15 +5,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/semihalev/sdns/authcache"
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // DNSHandler type
@@ -27,7 +25,7 @@ type ctxKey string
 var debugns bool
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 
@@ -46,8 +44,8 @@ func New(cfg *config.Config) *DNSHandler {
 func (h *DNSHandler) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (h *DNSHandler) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	if v := ctx.Value(ctxKey("reqid")); v == nil {
 		ctx = context.WithValue(ctx, ctxKey("reqid"), req.Id)

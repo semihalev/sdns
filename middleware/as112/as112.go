@@ -6,10 +6,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // AS112 type
@@ -18,7 +16,7 @@ type AS112 struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -53,20 +51,20 @@ func New(cfg *config.Config) *AS112 {
 func (a *AS112) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	q := req.Question[0]
 
 	if dns.CompareDomainName(q.Name, "arpa.") == 0 {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
 	zone := a.Match(q.Name, q.Qtype)
 
 	if zone == rootzone {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
@@ -126,7 +124,7 @@ func (a *AS112) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	w.WriteMsg(msg)
 
-	dc.Cancel()
+	ch.Cancel()
 }
 
 // Match returns whether or not a name contains in the zones

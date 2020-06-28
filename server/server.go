@@ -13,7 +13,6 @@ import (
 	"github.com/semihalev/sdns/middleware"
 
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/doh"
 	"github.com/semihalev/sdns/mock"
 
@@ -29,8 +28,7 @@ type Server struct {
 	tlsCertificate string
 	tlsPrivateKey  string
 
-	handlers []ctx.Handler
-	pool     sync.Pool
+	pool sync.Pool
 }
 
 // New return new server
@@ -44,7 +42,7 @@ func New(cfg *config.Config) *Server {
 	}
 
 	server.pool.New = func() interface{} {
-		return ctx.New(middleware.Handlers())
+		return middleware.NewChain(middleware.Handlers())
 	}
 
 	dns.Handle(".", server)
@@ -54,13 +52,13 @@ func New(cfg *config.Config) *Server {
 
 // ServeDNS implements the Handle interface.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	dc := s.pool.Get().(*ctx.Context)
+	ch := s.pool.Get().(*middleware.Chain)
 
-	dc.Reset(w, r)
+	ch.Reset(w, r)
 
-	dc.NextDNS(context.Background())
+	ch.Next(context.Background())
 
-	s.pool.Put(dc)
+	s.pool.Put(ch)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -8,7 +8,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -20,18 +19,18 @@ type Failover struct {
 
 // ResponseWriter implement of ctx.ResponseWriter
 type ResponseWriter struct {
-	ctx.ResponseWriter
+	middleware.ResponseWriter
 
 	f *Failover
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
 
-// New return accesslist
+// New return failover
 func New(cfg *config.Config) *Failover {
 	fallbackservers := []string{}
 	for _, s := range cfg.FallbackServers {
@@ -53,14 +52,14 @@ func New(cfg *config.Config) *Failover {
 func (f *Failover) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (f *Failover) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w := dc.DNSWriter
+func (f *Failover) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w := ch.Writer
 
-	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, f: f}
+	ch.Writer = &ResponseWriter{ResponseWriter: w, f: f}
 
-	dc.NextDNS(ctx)
+	ch.Next(ctx)
 
-	dc.DNSWriter = w
+	ch.Writer = w
 }
 
 // WriteMsg implements the ctx.ResponseWriter interface

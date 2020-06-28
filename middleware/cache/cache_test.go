@@ -8,14 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver"
-
-	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -37,13 +35,13 @@ func Test_PCache(t *testing.T) {
 	c := New(cfg)
 	assert.Equal(t, "cache", c.Name())
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
+	ch.Reset(mw, req)
 
 	q := req.Question[0]
 
@@ -56,8 +54,8 @@ func Test_PCache(t *testing.T) {
 	_, _, err := c.GetP(key, req)
 	assert.Error(t, err)
 
-	c.ServeDNS(context.Background(), dc)
-	assert.False(t, dc.DNSWriter.Written())
+	c.ServeDNS(context.Background(), ch)
+	assert.False(t, ch.Writer.Written())
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)
@@ -80,25 +78,25 @@ func Test_PCache(t *testing.T) {
 	_, _, err = c.GetP(key, req)
 	assert.NoError(t, err)
 
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
-	assert.True(t, dc.DNSWriter.Written())
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
+	assert.True(t, ch.Writer.Written())
 
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
-	assert.False(t, dc.DNSWriter.Written())
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
+	assert.False(t, ch.Writer.Written())
 }
 
 func Test_NCache(t *testing.T) {
 	c := New(&config.Config{Expire: 300, CacheSize: 10240, RateLimit: 1})
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
+	ch.Reset(mw, req)
 
 	q := req.Question[0]
 
@@ -174,25 +172,25 @@ func Test_Cache_CNAME(t *testing.T) {
 	m3.Answer = append(m3.Answer, makeRR("e6858.dsce9.example.net. 10	IN	A	0.0.0.0"))
 	c.Set(cache.Hash(m3.Question[0]), m3)
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
 	req.SetQuestion("www.example.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
-	assert.True(t, dc.DNSWriter.Written())
-	assert.Equal(t, 3, len(dc.DNSWriter.Msg().Answer))
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
+	assert.True(t, ch.Writer.Written())
+	assert.Equal(t, 3, len(ch.Writer.Msg().Answer))
 
 	c.now = func() time.Time {
 		return time.Now().Add(time.Hour)
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	c.ServeDNS(context.Background(), dc)
-	assert.False(t, dc.DNSWriter.Written())
+	ch.Reset(mw, req)
+	c.ServeDNS(context.Background(), ch)
+	assert.False(t, ch.Writer.Written())
 }
 
 func Test_Cache_ResponseWriter(t *testing.T) {
@@ -211,7 +209,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	middleware.Setup(cfg)
 
 	handler := resolver.New(cfg)
-	dc := ctx.New([]ctx.Handler{c, handler})
+	ch := middleware.NewChain([]middleware.Handler{c, handler})
 
 	ctxtest := context.Background()
 
@@ -222,48 +220,48 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	req.RecursionDesired = false
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxtest)
+	ch.Reset(mw, req)
+	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeServerFailure, dc.DNSWriter.Rcode())
+	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
 
 	req = req.Copy()
 	req.RecursionDesired = true
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxtest)
+	ch.Reset(mw, req)
+	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
+	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 
 	req = req.Copy()
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("labs.example.com.", dns.TypeA)
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxtest)
+	ch.Reset(mw, req)
+	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeNameError, dc.DNSWriter.Rcode())
+	assert.Equal(t, dns.RcodeNameError, ch.Writer.Rcode())
 
 	req = req.Copy()
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("www.apple.com.", dns.TypeA)
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxtest)
+	ch.Reset(mw, req)
+	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
+	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 
 	req = req.Copy()
 	req.IsEdns0().SetUDPSize(512)
 	req.SetQuestion("org.", dns.TypeDNSKEY)
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxtest)
+	ch.Reset(mw, req)
+	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
+	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 
 	req = req.Copy()
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	req.SetQuestion("www.microsoft.com.", dns.TypeCNAME)
-	dc.Reset(mw, req)
-	dc.NextDNS(ctxtest)
+	ch.Reset(mw, req)
+	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, dc.DNSWriter.Rcode())
+	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 }

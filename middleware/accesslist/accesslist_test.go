@@ -6,7 +6,6 @@ import (
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
@@ -23,15 +22,15 @@ func Test_Accesslist(t *testing.T) {
 	a := middleware.Get("accesslist").(*AccessList)
 	assert.Equal(t, "accesslist", a.Name())
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 
-	ctxb := context.Background()
+	ctx := context.Background()
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
-	a.ServeDNS(ctxb, dc)
+	ch.Writer = mw
+	a.ServeDNS(ctx, ch)
 
 	mw = mock.NewWriter("udp", "0.0.0.0:0")
-	dc.DNSWriter = mw
-	a.ServeDNS(ctxb, dc)
+	ch.Writer = mw
+	a.ServeDNS(ctx, ch)
 }

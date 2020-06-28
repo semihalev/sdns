@@ -7,7 +7,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -17,7 +16,7 @@ type Metrics struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -42,18 +41,18 @@ func New(cfg *config.Config) *Metrics {
 func (m *Metrics) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (m *Metrics) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	dc.NextDNS(ctx)
+func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	ch.Next(ctx)
 
-	if !dc.DNSWriter.Written() {
+	if !ch.Writer.Written() {
 		return
 	}
 
 	labels := AcquireLabels()
 	defer ReleaseLabels(labels)
 
-	labels["qtype"] = dns.TypeToString[dc.DNSRequest.Question[0].Qtype]
-	labels["rcode"] = dns.RcodeToString[dc.DNSWriter.Rcode()]
+	labels["qtype"] = dns.TypeToString[ch.Request.Question[0].Qtype]
+	labels["rcode"] = dns.RcodeToString[ch.Writer.Rcode()]
 
 	m.queries.With(labels).Inc()
 }

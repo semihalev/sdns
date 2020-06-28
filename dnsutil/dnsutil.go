@@ -12,10 +12,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/semihalev/sdns/ctx"
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 )
 
@@ -229,13 +227,13 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 }
 
 // ExchangeInternal exchange dns request internal
-func ExchangeInternal(parentCtx context.Context, r *dns.Msg) (*dns.Msg, error) {
+func ExchangeInternal(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
 	w := mock.NewWriter("tcp", "127.0.0.255:0")
 
-	dc := ctx.New(middleware.Handlers())
-	dc.Reset(w, r)
+	ch := middleware.NewChain(middleware.Handlers())
+	ch.Reset(w, r)
 
-	dc.NextDNS(parentCtx)
+	ch.Next(ctx)
 
 	if !w.Written() {
 		return nil, errors.New("no replied any message")

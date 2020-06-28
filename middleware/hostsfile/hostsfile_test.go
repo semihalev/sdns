@@ -14,13 +14,11 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
-
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
+	"github.com/stretchr/testify/assert"
 )
 
 func testHostsfile(file string) *Hostsfile {
@@ -268,15 +266,15 @@ func TestServeDNS(t *testing.T) {
 	middleware.Setup(cfg)
 	h := middleware.Get("hostsfile").(*Hostsfile)
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 
 	req := new(dns.Msg)
 	req.SetQuestion("thor.", dns.TypeA)
-	dc.DNSRequest = req
+	ch.Request = req
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
-	h.ServeDNS(context.Background(), dc)
+	ch.Writer = mw
+	h.ServeDNS(context.Background(), ch)
 	for _, r := range mw.Msg().Answer {
 		assert.Equal(t, dns.TypeA, r.Header().Rrtype)
 		a := r.(*dns.A)
@@ -284,9 +282,9 @@ func TestServeDNS(t *testing.T) {
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
+	ch.Writer = mw
 	req.SetQuestion("localhost.", dns.TypeAAAA)
-	h.ServeDNS(context.Background(), dc)
+	h.ServeDNS(context.Background(), ch)
 	for _, r := range mw.Msg().Answer {
 		assert.Equal(t, dns.TypeAAAA, r.Header().Rrtype)
 		aaaa := r.(*dns.AAAA)
@@ -294,9 +292,9 @@ func TestServeDNS(t *testing.T) {
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
+	ch.Writer = mw
 	req.SetQuestion("1.1.1.127.in-addr.arpa.", dns.TypePTR)
-	h.ServeDNS(context.Background(), dc)
+	h.ServeDNS(context.Background(), ch)
 	for _, r := range mw.Msg().Answer {
 		assert.Equal(t, dns.TypePTR, r.Header().Rrtype)
 		ptr := r.(*dns.PTR)
@@ -304,19 +302,19 @@ func TestServeDNS(t *testing.T) {
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
+	ch.Writer = mw
 	req.SetQuestion("odin.", dns.TypeA)
-	h.ServeDNS(context.Background(), dc)
+	h.ServeDNS(context.Background(), ch)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 1)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
+	ch.Writer = mw
 	req.SetQuestion("test.com.", dns.TypeA)
-	h.ServeDNS(context.Background(), dc)
+	h.ServeDNS(context.Background(), ch)
 	req.SetQuestion("test.com.", dns.TypeAAAA)
-	h.ServeDNS(context.Background(), dc)
+	h.ServeDNS(context.Background(), ch)
 	req.SetQuestion("test.com.", dns.TypePTR)
-	h.ServeDNS(context.Background(), dc)
+	h.ServeDNS(context.Background(), ch)
 
 	h.initInline([]string{"127.0.0.1 localhost"})
 	assert.Equal(t, true, h.hmap.Len() == 2)

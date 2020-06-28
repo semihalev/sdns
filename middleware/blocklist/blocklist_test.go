@@ -8,10 +8,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
-
 	"github.com/stretchr/testify/assert"
 )
 
@@ -29,28 +27,28 @@ func Test_BlockList(t *testing.T) {
 	assert.Equal(t, "blocklist", blocklist.Name())
 	blocklist.Set(testDomain)
 
-	dc := ctx.New([]ctx.Handler{})
+	ch := middleware.NewChain([]middleware.Handler{})
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
-	dc.DNSRequest = req
+	ch.Request = req
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
+	ch.Writer = mw
 
-	blocklist.ServeDNS(context.Background(), dc)
+	blocklist.ServeDNS(context.Background(), ch)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
 
 	req.SetQuestion("test.com.", dns.TypeAAAA)
-	dc.DNSRequest = req
+	ch.Request = req
 
-	blocklist.ServeDNS(context.Background(), dc)
+	blocklist.ServeDNS(context.Background(), ch)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	dc.DNSWriter = mw
+	ch.Writer = mw
 	req.SetQuestion("test2.com.", dns.TypeA)
-	blocklist.ServeDNS(context.Background(), dc)
+	blocklist.ServeDNS(context.Background(), ch)
 	assert.Nil(t, mw.Msg())
 
 	assert.Equal(t, blocklist.Exists(testDomain), true)

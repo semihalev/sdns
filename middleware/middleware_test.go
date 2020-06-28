@@ -5,17 +5,16 @@ import (
 	"testing"
 
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/stretchr/testify/assert"
 )
 
 type dummy struct{}
 
-func (d *dummy) ServeDNS(ctx context.Context, dc *ctx.Context) { dc.NextDNS(ctx) }
-func (d *dummy) Name() string                                  { return "dummy" }
+func (d *dummy) ServeDNS(ctx context.Context, ch *Chain) { ch.Next(ctx) }
+func (d *dummy) Name() string                            { return "dummy" }
 
 func Test_Middleware(t *testing.T) {
-	Register("dummy", func(*config.Config) ctx.Handler {
+	Register("dummy", func(*config.Config) Handler {
 		return &dummy{}
 	})
 
@@ -41,7 +40,7 @@ func Test_Middleware(t *testing.T) {
 	d = Get("none")
 	assert.Nil(t, d)
 
-	ctxHandlers = []ctx.Handler{}
+	chainHandlers = []Handler{}
 	d = Get("dummy")
 	assert.Nil(t, d)
 }
@@ -49,10 +48,10 @@ func Test_Middleware(t *testing.T) {
 func Test_RegisterAt(t *testing.T) {
 	m.handlers = []handler{}
 
-	Register("dummy", func(*config.Config) ctx.Handler {
+	Register("dummy", func(*config.Config) Handler {
 		return &dummy{}
 	})
-	RegisterAt("dummy2", func(*config.Config) ctx.Handler {
+	RegisterAt("dummy2", func(*config.Config) Handler {
 		return &dummy{}
 	}, 0)
 
@@ -60,7 +59,7 @@ func Test_RegisterAt(t *testing.T) {
 	assert.True(t, m.handlers[0].name == "dummy2")
 	assert.True(t, m.handlers[1].name == "dummy")
 
-	RegisterBefore("dummy3", func(*config.Config) ctx.Handler {
+	RegisterBefore("dummy3", func(*config.Config) Handler {
 		return &dummy{}
 	}, "dummy")
 	assert.True(t, len(m.handlers) == 3)
@@ -69,17 +68,17 @@ func Test_RegisterAt(t *testing.T) {
 	assert.True(t, m.handlers[2].name == "dummy")
 
 	assert.Panics(t, func() {
-		RegisterAt("dummy4", func(*config.Config) ctx.Handler {
+		RegisterAt("dummy4", func(*config.Config) Handler {
 			return &dummy{}
 		}, 4)
 	})
 	assert.Panics(t, func() {
-		RegisterAt("dummy5", func(*config.Config) ctx.Handler {
+		RegisterAt("dummy5", func(*config.Config) Handler {
 			return &dummy{}
 		}, -1)
 	})
 	assert.Panics(t, func() {
-		RegisterBefore("dummy6", func(*config.Config) ctx.Handler {
+		RegisterBefore("dummy6", func(*config.Config) Handler {
 			return &dummy{}
 		}, "noexist")
 	})

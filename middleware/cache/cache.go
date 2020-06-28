@@ -17,7 +17,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/response"
 )
@@ -46,7 +45,7 @@ type Cache struct {
 
 // ResponseWriter implement of ctx.ResponseWriter
 type ResponseWriter struct {
-	ctx.ResponseWriter
+	middleware.ResponseWriter
 
 	*Cache
 }
@@ -54,7 +53,7 @@ type ResponseWriter struct {
 var debugns bool
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 
@@ -88,18 +87,18 @@ func New(cfg *config.Config) *Cache {
 func (c *Cache) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
-func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	q := req.Question[0]
 
 	if _, ok := dns.ClassToString[q.Qclass]; !ok {
-		dc.Cancel()
+		ch.Cancel()
 		return
 	}
 
 	if _, ok := dns.TypeToString[q.Qtype]; !ok {
-		dc.Cancel()
+		ch.Cancel()
 		return
 	}
 
@@ -107,19 +106,19 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
 			c.purge(qname, qtype)
-			dc.NextDNS(ctx)
+			ch.Next(ctx)
 			return
 		}
 	}
 
 	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
-		dc.NextDNS(ctx)
+		ch.Next(ctx)
 		return
 	}
 
 	if q.Name != "." && req.RecursionDesired == false {
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
-		dc.Cancel()
+		ch.Cancel()
 		return
 	}
 
@@ -135,7 +134,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	if i != nil && found {
 		if !w.Internal() && c.rate > 0 && i.RateLimit.Limit() {
 			//no reply to client
-			dc.Cancel()
+			ch.Cancel()
 			return
 		}
 
@@ -143,7 +142,7 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		m = c.additionalAnswer(ctx, m)
 
 		w.WriteMsg(m)
-		dc.Cancel()
+		ch.Cancel()
 		return
 	}
 
@@ -154,11 +153,11 @@ func (c *Cache) ServeDNS(ctx context.Context, dc *ctx.Context) {
 		defer c.wg.Done(key)
 	}
 
-	dc.DNSWriter = &ResponseWriter{ResponseWriter: w, Cache: c}
+	ch.Writer = &ResponseWriter{ResponseWriter: w, Cache: c}
 
-	dc.NextDNS(ctx)
+	ch.Next(ctx)
 
-	dc.DNSWriter = w
+	ch.Writer = w
 }
 
 // WriteMsg implements the ctx.ResponseWriter interface

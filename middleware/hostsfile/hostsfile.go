@@ -17,14 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/sdns/middleware"
-
-	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/ctx"
-	"github.com/semihalev/sdns/dnsutil"
-
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 )
 
 func parseLiteralIP(addr string) net.IP {
@@ -98,7 +95,7 @@ type Hostsfile struct {
 }
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) ctx.Handler {
+	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
 		return New(cfg)
 	})
 }
@@ -285,8 +282,8 @@ func (h *Hostsfile) LookupStaticAddr(addr string) []string {
 }
 
 // ServeDNS implements the Handle interface.
-func (h *Hostsfile) ServeDNS(ctx context.Context, dc *ctx.Context) {
-	w, req := dc.DNSWriter, dc.DNSRequest
+func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w, req := ch.Writer, ch.Request
 
 	q := req.Question[0]
 
@@ -296,7 +293,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, dc *ctx.Context) {
 	case dns.TypePTR:
 		names := h.LookupStaticAddr(dnsutil.ExtractAddressFromReverse(q.Name))
 		if len(names) == 0 {
-			dc.NextDNS(ctx)
+			ch.Next(ctx)
 			return
 		}
 		answers = ptr(q.Name, names)
@@ -310,7 +307,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	if len(answers) == 0 {
 		if !h.otherRecordsExist(q.Qtype, q.Name) {
-			dc.NextDNS(ctx)
+			ch.Next(ctx)
 			return
 		}
 	}
@@ -322,7 +319,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, dc *ctx.Context) {
 
 	w.WriteMsg(m)
 
-	dc.Cancel()
+	ch.Cancel()
 }
 
 func (h *Hostsfile) otherRecordsExist(qtype uint16, qname string) bool {
