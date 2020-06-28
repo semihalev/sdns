@@ -92,14 +92,12 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	q := req.Question[0]
 
-	switch q.Qclass {
-	case dns.ClassCHAOS, dns.ClassCSNET, dns.ClassHESIOD, dns.ClassINET, dns.ClassNONE, dns.ClassANY:
-	default:
+	if v := dns.ClassToString[q.Qclass]; v == "" {
 		ch.Cancel()
 		return
 	}
 
-	if _, ok := dns.TypeToString[q.Qtype]; !ok {
+	if v := dns.TypeToString[q.Qtype]; v == "" {
 		ch.Cancel()
 		return
 	}
