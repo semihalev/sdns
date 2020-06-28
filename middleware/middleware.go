@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"plugin"
 	"sync"
@@ -72,25 +71,23 @@ func RegisterBefore(name string, new func(*config.Config) Handler, before string
 }
 
 // Setup handlers
-func Setup(cfg *config.Config) error {
+func Setup(cfg *config.Config) {
 	if setup {
-		return errors.New("setup already done")
+		panic("middleware setup already done")
 	}
 
 	m.cfg = cfg
 
 	LoadExternalPlugins()
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	for _, handler := range m.handlers {
 		chainHandlers = append(chainHandlers, handler.new(m.cfg))
 	}
 
 	setup = true
-
-	return nil
 }
 
 // LoadExternalPlugins load external plugins into chain
@@ -160,5 +157,8 @@ func Get(name string) Handler {
 
 // Ready return true if middleware setup was done
 func Ready() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	return setup
 }

@@ -23,14 +23,15 @@ func Test_Middleware(t *testing.T) {
 	d := Get("dummy")
 	assert.Nil(t, d)
 
-	err := Setup(cfg)
-	assert.NoError(t, err)
+	assert.NotPanics(t, func() {
+		Setup(cfg)
+	})
 
 	assert.True(t, Ready())
 
-	err = Setup(cfg)
-	assert.Error(t, err)
-
+	assert.Panics(t, func() {
+		Setup(cfg)
+	})
 	assert.True(t, len(List()) == 1)
 	assert.True(t, len(Handlers()) == 1)
 

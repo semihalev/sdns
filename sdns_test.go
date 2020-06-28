@@ -17,7 +17,6 @@ import (
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/stretchr/testify/assert"
 )
@@ -41,8 +40,6 @@ func TestMain(m *testing.M) {
 	Config.BindTLS = ""
 	Config.BindDOH = ""
 	Config.API = ""
-
-	middleware.Setup(Config)
 
 	m.Run()
 }
