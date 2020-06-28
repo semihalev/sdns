@@ -56,7 +56,7 @@ func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	q := req.Question[0]
 
-	if dns.CompareDomainName(q.Name, "arpa.") == 0 {
+	if !strings.HasSuffix(q.Name, "arpa.") {
 		ch.Next(ctx)
 		return
 	}
