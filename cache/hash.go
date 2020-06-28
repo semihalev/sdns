@@ -5,11 +5,10 @@ package cache
 
 import (
 	"bytes"
-	"encoding/binary"
 	"hash"
-	"hash/fnv"
 	"sync"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/miekg/dns"
 )
 
@@ -21,7 +20,7 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 	buf := AcquireBuf()
 	defer ReleaseBuf(buf)
 
-	binary.Write(buf, binary.BigEndian, q.Qtype)
+	buf.Write([]byte{uint8(q.Qtype >> 8), uint8(q.Qtype & 0xff)})
 
 	if len(cd) > 0 && cd[0] == true {
 		buf.WriteByte(1)
@@ -47,7 +46,7 @@ var hashPool sync.Pool
 func AcquireHash() hash.Hash64 {
 	v := hashPool.Get()
 	if v == nil {
-		return fnv.New64()
+		return xxhash.New()
 	}
 	return v.(hash.Hash64)
 }
