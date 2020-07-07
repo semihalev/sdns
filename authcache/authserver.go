@@ -9,9 +9,10 @@ import (
 
 // AuthServer type
 type AuthServer struct {
-	Addr    string
+	// place atomic members at the start to fix alignment for ARM32
 	Rtt     int64
 	Count   int64
+	Addr    string
 	Version Version
 }
 
@@ -70,14 +71,14 @@ func (a *AuthServer) String() string {
 // AuthServers type
 type AuthServers struct {
 	sync.RWMutex
-
+	// place atomic members at the start to fix alignment for ARM32
+	Called     uint64
+	ErrorCount uint32
+	
 	Zone string
 
 	List []*AuthServer
 	Nss  []string
-
-	ErrorCount uint32
-	Called     uint64
 
 	CheckingDisable bool
 	Checked         bool
