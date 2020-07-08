@@ -23,7 +23,7 @@ var (
 	Config *config.Config
 
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "1.1.0-rc2"
+	Version = "1.1.0"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "1.1.0"
