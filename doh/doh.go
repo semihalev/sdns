@@ -86,6 +86,7 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 
 		req := new(dns.Msg)
 		req.SetQuestion(name, qtype)
+		req.AuthenticatedData = true
 
 		if r.URL.Query().Get("cd") == "true" {
 			req.CheckingDisabled = true
