@@ -49,9 +49,6 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 			return
 		}
 
-		req.RecursionDesired = false
-		req.AuthenticatedData = false
-
 		msg := handle(req)
 		if msg == nil {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
@@ -88,19 +85,10 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 		}
 
 		req := new(dns.Msg)
-		req.RecursionDesired = false
-		req.AuthenticatedData = false
+		req.SetQuestion(name, qtype)
 
 		if r.URL.Query().Get("cd") == "true" {
 			req.CheckingDisabled = true
-		}
-
-		req.Question = []dns.Question{
-			{
-				Name:   name,
-				Qtype:  qtype,
-				Qclass: dns.ClassINET,
-			},
 		}
 
 		opt := &dns.OPT{

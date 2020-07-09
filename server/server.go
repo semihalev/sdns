@@ -10,14 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/sdns/middleware"
+	"github.com/miekg/dns"
 
+	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/doh"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
-
-	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 )
 
 // Server type
@@ -44,8 +43,6 @@ func New(cfg *config.Config) *Server {
 	server.chainPool.New = func() interface{} {
 		return middleware.NewChain(middleware.Handlers())
 	}
-
-	dns.Handle(".", server)
 
 	return server
 }
@@ -99,7 +96,7 @@ func (s *Server) ListenAndServeDNS(network string) {
 	server := &dns.Server{
 		Addr:          s.addr,
 		Net:           network,
-		Handler:       dns.DefaultServeMux,
+		Handler:       s,
 		MaxTCPQueries: 2048,
 		ReusePort:     true,
 	}
@@ -117,7 +114,7 @@ func (s *Server) ListenAndServeDNSTLS() {
 
 	log.Info("DNS server listening...", "net", "tcp-tls", "addr", s.tlsAddr)
 
-	if err := dns.ListenAndServeTLS(s.tlsAddr, s.tlsCertificate, s.tlsPrivateKey, dns.DefaultServeMux); err != nil {
+	if err := dns.ListenAndServeTLS(s.tlsAddr, s.tlsCertificate, s.tlsPrivateKey, s); err != nil {
 		log.Error("DNS listener failed", "net", "tcp-tls", "addr", s.tlsAddr, "error", err.Error())
 	}
 }
