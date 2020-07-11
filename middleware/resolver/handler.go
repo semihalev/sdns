@@ -34,6 +34,10 @@ func init() {
 
 // New returns a new Handler
 func New(cfg *config.Config) *DNSHandler {
+	if cfg.Maxdepth == 0 {
+		cfg.Maxdepth = 30
+	}
+
 	return &DNSHandler{
 		resolver: NewResolver(cfg),
 		cfg:      cfg,

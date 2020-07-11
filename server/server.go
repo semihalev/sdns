@@ -32,6 +32,10 @@ type Server struct {
 
 // New return new server
 func New(cfg *config.Config) *Server {
+	if cfg.Bind == "" {
+		cfg.Bind = ":53"
+	}
+
 	server := &Server{
 		addr:           cfg.Bind,
 		tlsAddr:        cfg.BindTLS,

@@ -22,6 +22,10 @@ var whitelist = make(map[string]bool)
 func (b *BlockList) fetchBlocklists() {
 	timer := time.NewTimer(time.Second)
 
+	if b.cfg.BlockListDir == "" {
+		b.cfg.BlockListDir = "."
+	}
+
 	select {
 	case <-timer.C:
 		if err := b.updateBlocklists(); err != nil {

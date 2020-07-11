@@ -23,6 +23,11 @@ func init() {
 
 // New return accesslist
 func New(cfg *config.Config) *AccessList {
+	if len(cfg.AccessList) == 0 {
+		cfg.AccessList = append(cfg.AccessList, "0.0.0.0/0")
+		cfg.AccessList = append(cfg.AccessList, "::0/0")
+	}
+
 	a := new(AccessList)
 	a.ranger = cidranger.NewPCTrieRanger()
 	for _, cidr := range cfg.AccessList {

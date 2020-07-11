@@ -62,6 +62,10 @@ func init() {
 
 // New return cache
 func New(cfg *config.Config) *Cache {
+	if cfg.CacheSize < 1024 {
+		cfg.CacheSize = 1024
+	}
+
 	c := &Cache{
 		pcap:    cfg.CacheSize / 2,
 		pcache:  cache.New(cfg.CacheSize / 2),

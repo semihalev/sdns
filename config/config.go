@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,6 +273,10 @@ func Load(path, version string, sVersion string) (*Config, error) {
 	}
 
 	config.sVersion = sVersion
+
+	if config.CookieSecret == "" {
+		config.CookieSecret = fmt.Sprintf("%16x", rand.Int63())
+	}
 
 	return config, nil
 }

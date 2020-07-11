@@ -5,11 +5,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"math/rand"
 	"os"
 	"os/signal"
 	"runtime"
-	"time"
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/api"
@@ -55,6 +53,10 @@ func setup() {
 		log.Crit("Config loading failed", "error", err.Error())
 	}
 
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "info"
+	}
+
 	lvl, err := log.LvlFromString(cfg.LogLevel)
 	if err != nil {
 		log.Crit("Log verbosity level unknown")
@@ -62,18 +64,6 @@ func setup() {
 
 	log.Root().SetLevel(lvl)
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
-
-	if cfg.Timeout.Duration < 250*time.Millisecond {
-		cfg.Timeout.Duration = 250 * time.Millisecond
-	}
-
-	if cfg.CacheSize < 1024 {
-		cfg.CacheSize = 1024
-	}
-
-	if cfg.CookieSecret == "" {
-		cfg.CookieSecret = fmt.Sprintf("%16x", rand.Int63())
-	}
 
 	middleware.Setup(cfg)
 }
