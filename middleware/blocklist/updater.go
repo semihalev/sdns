@@ -1,4 +1,4 @@
-package main
+package blocklist
 
 import (
 	"bufio"
@@ -14,56 +14,48 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/middleware/blocklist"
 )
 
 var timesSeen = make(map[string]int)
 var whitelist = make(map[string]bool)
 
-func fetchBlocklists() {
-	b := middleware.Get("blocklist")
-	if b == nil {
-		return
-	}
-
-	blocklist := b.(*blocklist.BlockList)
+func (b *BlockList) fetchBlocklists() {
 	timer := time.NewTimer(time.Second)
 
 	select {
 	case <-timer.C:
-		if err := updateBlocklists(blocklist, Config.BlockListDir); err != nil {
+		if err := b.updateBlocklists(); err != nil {
 			log.Error("Update blocklists failed", "error", err.Error())
 		}
 
-		if err := readBlocklists(blocklist, Config.BlockListDir); err != nil {
-			log.Error("Read blocklists failed", "dir", Config.BlockListDir, "error", err.Error())
+		if err := b.readBlocklists(); err != nil {
+			log.Error("Read blocklists failed", "dir", b.cfg.BlockListDir, "error", err.Error())
 		}
 	}
 }
 
-func updateBlocklists(blocklist *blocklist.BlockList, path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.Mkdir(path, 0755); err != nil {
+func (b *BlockList) updateBlocklists() error {
+	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
+		if err := os.Mkdir(b.cfg.BlockListDir, 0755); err != nil {
 			return fmt.Errorf("error creating sources directory: %s", err)
 		}
 	}
 
-	for _, entry := range Config.Whitelist {
+	for _, entry := range b.cfg.Whitelist {
 		whitelist[dns.Fqdn(entry)] = true
 	}
 
-	for _, entry := range Config.Blocklist {
-		blocklist.Set(dns.Fqdn(entry))
+	for _, entry := range b.cfg.Blocklist {
+		b.Set(dns.Fqdn(entry))
 	}
 
-	fetchBlocklist(path)
+	b.fetchBlocklist()
 
 	return nil
 }
 
-func downloadBlocklist(uri, path, name string) error {
-	filePath := filepath.FromSlash(fmt.Sprintf("%s/%s", path, name))
+func (b *BlockList) downloadBlocklist(uri, name string) error {
+	filePath := filepath.FromSlash(fmt.Sprintf("%s/%s", b.cfg.BlockListDir, name))
 
 	output, err := os.Create(filePath)
 	if err != nil {
@@ -84,10 +76,10 @@ func downloadBlocklist(uri, path, name string) error {
 	return nil
 }
 
-func fetchBlocklist(path string) {
+func (b *BlockList) fetchBlocklist() {
 	var wg sync.WaitGroup
 
-	for _, uri := range Config.BlockLists {
+	for _, uri := range b.cfg.BlockLists {
 		wg.Add(1)
 
 		u, _ := url.Parse(uri)
@@ -97,7 +89,7 @@ func fetchBlocklist(path string) {
 
 		go func(uri string, name string) {
 			log.Info("Fetching blacklist", "uri", uri)
-			if err := downloadBlocklist(uri, path, name); err != nil {
+			if err := b.downloadBlocklist(uri, name); err != nil {
 				log.Error("Fetching blacklist", "uri", uri, "error", err.Error())
 			}
 
@@ -108,22 +100,22 @@ func fetchBlocklist(path string) {
 	wg.Wait()
 }
 
-func readBlocklists(blocklist *blocklist.BlockList, dir string) error {
-	log.Info("Loading blocked domains", "dir", dir)
+func (b *BlockList) readBlocklists() error {
+	log.Info("Loading blocked domains", "path", b.cfg.BlockListDir)
 
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		log.Warn("Path not found, skipping...", "path", dir)
+	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
+		log.Warn("Path not found, skipping...", "path", b.cfg.BlockListDir)
 		return nil
 	}
 
-	err := filepath.Walk(dir, func(path string, f os.FileInfo, _ error) error {
+	err := filepath.Walk(b.cfg.BlockListDir, func(path string, f os.FileInfo, _ error) error {
 		if !f.IsDir() {
 			file, err := os.Open(filepath.FromSlash(path))
 			if err != nil {
 				return fmt.Errorf("error opening file: %s", err)
 			}
 
-			if err = parseHostFile(blocklist, file); err != nil {
+			if err = b.parseHostFile(file); err != nil {
 				file.Close()
 				return fmt.Errorf("error parsing hostfile %s", err)
 			}
@@ -142,12 +134,12 @@ func readBlocklists(blocklist *blocklist.BlockList, dir string) error {
 		return fmt.Errorf("error walking location %s", err)
 	}
 
-	log.Info("Blocked domains loaded", "total", blocklist.Length())
+	log.Info("Blocked domains loaded", "total", b.Length())
 
 	return nil
 }
 
-func parseHostFile(blocklist *blocklist.BlockList, file *os.File) error {
+func (b *BlockList) parseHostFile(file *os.File) error {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -165,8 +157,8 @@ func parseHostFile(blocklist *blocklist.BlockList, file *os.File) error {
 
 			line = dns.Fqdn(line)
 
-			if !blocklist.Exists(line) && !whitelist[line] {
-				blocklist.Set(line)
+			if !b.Exists(line) && !whitelist[line] {
+				b.Set(line)
 			}
 		}
 	}

@@ -19,11 +19,8 @@ import (
 )
 
 var (
-	// Config is the global configuration
-	Config *config.Config
-
 	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "1.1.1"
+	Version = "1.1.2"
 
 	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
 	ConfigVersion = "1.1.0"
@@ -54,11 +51,11 @@ func init() {
 func setup() {
 	var err error
 
-	if Config, err = config.Load(*ConfigPath, ConfigVersion, Version); err != nil {
+	if cfg, err = config.Load(*ConfigPath, ConfigVersion, Version); err != nil {
 		log.Crit("Config loading failed", "error", err.Error())
 	}
 
-	lvl, err := log.LvlFromString(Config.LogLevel)
+	lvl, err := log.LvlFromString(cfg.LogLevel)
 	if err != nil {
 		log.Crit("Log verbosity level unknown")
 	}
@@ -66,33 +63,27 @@ func setup() {
 	log.Root().SetLevel(lvl)
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
 
-	if Config.Timeout.Duration < 250*time.Millisecond {
-		Config.Timeout.Duration = 250 * time.Millisecond
+	if cfg.Timeout.Duration < 250*time.Millisecond {
+		cfg.Timeout.Duration = 250 * time.Millisecond
 	}
 
-	if Config.CacheSize < 1024 {
-		Config.CacheSize = 1024
+	if cfg.CacheSize < 1024 {
+		cfg.CacheSize = 1024
 	}
 
-	if Config.CookieSecret == "" {
-		Config.CookieSecret = fmt.Sprintf("%16x", rand.Int63())
+	if cfg.CookieSecret == "" {
+		cfg.CookieSecret = fmt.Sprintf("%16x", rand.Int63())
 	}
+
+	middleware.Setup(cfg)
 }
 
 func run() {
-	middleware.Setup(Config)
-
-	for i, h := range middleware.Handlers() {
-		log.Debug("Middleware registered", "name", h.Name(), "index", i)
-	}
-
-	server := server.New(Config)
+	server := server.New(cfg)
 	server.Run()
 
-	api := api.New(Config)
+	api := api.New(cfg)
 	api.Run()
-
-	go fetchBlocklists()
 }
 
 func main() {
@@ -115,3 +106,5 @@ func main() {
 
 	log.Info("Stopping sdns...")
 }
+
+var cfg *config.Config

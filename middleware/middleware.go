@@ -83,8 +83,11 @@ func Setup(cfg *config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, handler := range m.handlers {
-		chainHandlers = append(chainHandlers, handler.new(m.cfg))
+	for i, handler := range m.handlers {
+		h := handler.new(m.cfg)
+		chainHandlers = append(chainHandlers, h)
+
+		log.Debug("Middleware registered", "name", h.Name(), "index", i)
 	}
 
 	setup = true

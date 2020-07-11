@@ -52,7 +52,7 @@ func (a *AccessLog) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	w := ch.Writer
 
-	if a.logFile != nil && ch.Writer.Written() && !w.Internal() {
+	if a.logFile != nil && w.Written() && !w.Internal() {
 		resp := w.Msg()
 
 		cd := "-cd"

@@ -20,6 +20,8 @@ type BlockList struct {
 	null6route net.IP
 
 	m map[string]bool
+
+	cfg *config.Config
 }
 
 func init() {
@@ -30,12 +32,18 @@ func init() {
 
 // New returns a new BlockList
 func New(cfg *config.Config) *BlockList {
-	return &BlockList{
+	b := &BlockList{
 		nullroute:  net.ParseIP(cfg.Nullroute),
 		null6route: net.ParseIP(cfg.Nullroutev6),
 
 		m: make(map[string]bool),
+
+		cfg: cfg,
 	}
+
+	go b.fetchBlocklists()
+
+	return b
 }
 
 // Name return middleware name
