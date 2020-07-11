@@ -22,12 +22,8 @@ test:
 	done
 
 generate:
-	go run gen.go
+	go generate
+
 build:
-	docker image build -t $(APP_NAME) .
-
-build-arm:
-	docker image build -t $(APP_NAME) --build-arg "image=arm32v6/golang:1.11-alpine3.8" .
-
-run:
-	docker run -d --name sdns -p 53:53 -p 53:53/udp -p 853/tcp -p 8080/tcp sdns
+	go get -v github.com/mitchellh/gox
+	${HOME}/go/bin/gox -osarch="linux/amd64 linux/arm linux/arm64 openbsd/amd64 netbsd/amd64 darwin/amd64 freebsd/amd64 windows/amd64" -output="sdns_{{.OS}}_{{.Arch}}" -ldflags="-s -w"
