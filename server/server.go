@@ -14,9 +14,9 @@ import (
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/doh"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/sdns/server/doh"
 )
 
 // Server type
