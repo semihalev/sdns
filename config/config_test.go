@@ -10,7 +10,7 @@ import (
 func Test_config(t *testing.T) {
 	const configFile = "example.conf"
 
-	err := generateConfig(configFile, "0.0.0")
+	err := generateConfig(configFile)
 	assert.NoError(t, err)
 
 	_, err = Load(configFile, "0.0.0")

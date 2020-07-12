@@ -255,7 +255,7 @@ func Load(path, version string) (*Config, error) {
 		if path == "sdns.conf" {
 			// compatibility for old default conf file
 			if _, err := os.Stat("sdns.toml"); os.IsNotExist(err) {
-				if err := generateConfig(path, configver); err != nil {
+				if err := generateConfig(path); err != nil {
 					return nil, err
 				}
 			} else {
@@ -283,14 +283,14 @@ func Load(path, version string) (*Config, error) {
 	return config, nil
 }
 
-func generateConfig(path, version string) error {
+func generateConfig(path string) error {
 	output, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("could not generate config: %s", err)
 	}
 	defer output.Close()
 
-	r := strings.NewReader(fmt.Sprintf(defaultConfig, version))
+	r := strings.NewReader(fmt.Sprintf(defaultConfig, configver))
 	if _, err := io.Copy(output, r); err != nil {
 		return fmt.Errorf("could not copy default config: %s", err)
 	}
