@@ -2,17 +2,16 @@ module github.com/semihalev/sdns
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/bsm/ratelimit v2.0.0+incompatible
 	github.com/cespare/xxhash/v2 v2.1.1
 	github.com/gin-contrib/cors v1.3.1
 	github.com/gin-contrib/pprof v1.3.0
 	github.com/gin-gonic/gin v1.6.3
 	github.com/miekg/dns v1.1.30
-	github.com/onsi/ginkgo v1.14.0 // indirect
 	github.com/prometheus/client_golang v1.7.1
 	github.com/semihalev/log v0.1.1
 	github.com/stretchr/testify v1.6.1
 	github.com/yl2chen/cidranger v1.0.0
+	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e
 )
 
 go 1.13

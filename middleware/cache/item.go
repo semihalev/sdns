@@ -6,8 +6,8 @@ package cache
 import (
 	"time"
 
-	rl "github.com/bsm/ratelimit"
 	"github.com/miekg/dns"
+	"golang.org/x/time/rate"
 )
 
 type item struct {
@@ -19,13 +19,13 @@ type item struct {
 	Ns                 []dns.RR
 	Extra              []dns.RR
 
-	RateLimit *rl.RateLimiter
+	Limiter *rate.Limiter
 
 	origTTL uint32
 	stored  time.Time
 }
 
-func newItem(m *dns.Msg, now time.Time, d time.Duration, rate int) *item {
+func newItem(m *dns.Msg, now time.Time, d time.Duration, queryRate int) *item {
 	i := new(item)
 	i.Rcode = m.Rcode
 	i.Authoritative = m.Authoritative
@@ -48,7 +48,12 @@ func newItem(m *dns.Msg, now time.Time, d time.Duration, rate int) *item {
 	i.origTTL = uint32(d.Seconds())
 	i.stored = now.UTC()
 
-	i.RateLimit = rl.New(rate, time.Second)
+	limit := rate.Limit(0)
+	if queryRate > 0 {
+		limit = rate.Every(time.Second / time.Duration(queryRate))
+	}
+
+	i.Limiter = rate.NewLimiter(limit, queryRate)
 
 	return i
 }

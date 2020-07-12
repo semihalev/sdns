@@ -12,8 +12,8 @@ import (
 
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/waitgroup"
+	"golang.org/x/time/rate"
 
-	rl "github.com/bsm/ratelimit"
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
@@ -136,7 +136,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	i, found := c.get(cache.Hash(q, req.CheckingDisabled), now)
 	if i != nil && found {
-		if !w.Internal() && c.rate > 0 && i.RateLimit.Limit() {
+		if !w.Internal() && c.rate > 0 && !i.Limiter.Allow() {
 			//no reply to client
 			ch.Cancel()
 			return
@@ -260,23 +260,24 @@ func (c *Cache) set(key uint64, msg *dns.Msg, mt response.Type, duration time.Du
 }
 
 // GetP returns positive entry for a key
-func (c *Cache) GetP(key uint64, req *dns.Msg) (*dns.Msg, *rl.RateLimiter, error) {
+func (c *Cache) GetP(key uint64, req *dns.Msg) (*dns.Msg, *rate.Limiter, error) {
 	if i, ok := c.pcache.Get(key); ok && i.(*item).ttl(c.now()) > 0 {
 		it := i.(*item)
 		msg := it.toMsg(req, c.now())
-		return msg, it.RateLimit, nil
+		return msg, it.Limiter, nil
 	}
 
 	return nil, nil, cache.ErrCacheNotFound
 }
 
 // GetN returns negative entry for a key
-func (c *Cache) GetN(key uint64, req *dns.Msg) error {
+func (c *Cache) GetN(key uint64, req *dns.Msg) (*rate.Limiter, error) {
 	if i, ok := c.ncache.Get(key); ok && i.(*item).ttl(c.now()) > 0 {
-		return nil
+		it := i.(*item)
+		return it.Limiter, nil
 	}
 
-	return cache.ErrCacheNotFound
+	return nil, cache.ErrCacheNotFound
 }
 
 // Set adds a new element to the cache. If the element already exists it is overwritten.

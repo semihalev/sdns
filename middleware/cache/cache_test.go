@@ -104,7 +104,7 @@ func Test_NCache(t *testing.T) {
 
 	key := cache.Hash(q)
 
-	err := c.GetN(key, req)
+	_, err := c.GetN(key, req)
 	assert.Error(t, err)
 
 	msg := new(dns.Msg)
@@ -115,7 +115,7 @@ func Test_NCache(t *testing.T) {
 	assert.True(t, found)
 	assert.NotNil(t, i)
 
-	err = c.GetN(key, req)
+	_, err = c.GetN(key, req)
 	assert.NoError(t, err)
 }
 

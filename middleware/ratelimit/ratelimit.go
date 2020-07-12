@@ -2,21 +2,21 @@ package ratelimit
 
 import (
 	"context"
-	"hash/fnv"
 	"net"
 	"sync/atomic"
 	"time"
 
-	rl "github.com/bsm/ratelimit"
+	"github.com/cespare/xxhash/v2"
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"golang.org/x/time/rate"
 )
 
 type limiter struct {
-	rl     *rl.RateLimiter
+	rl     *rate.Limiter
 	cookie atomic.Value
 }
 
@@ -91,7 +91,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 					}
 
 					if w.Proto() == "udp" {
-						if l.rl.Limit() {
+						if !l.rl.Allow() {
 							ch.Cancel()
 							return
 						}
@@ -109,7 +109,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		}
 	}
 
-	if l.rl.Limit() {
+	if !l.rl.Allow() {
 		//no reply to client
 		ch.Cancel()
 		return
@@ -123,15 +123,20 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 }
 
 func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {
-	fnv64 := fnv.New64()
-	fnv64.Write(remoteip)
-	key := fnv64.Sum64()
+	xxhash := xxhash.New()
+	xxhash.Write(remoteip)
+	key := xxhash.Sum64()
 
 	if v, ok := r.cache.Get(key); ok {
 		return v.(*limiter)
 	}
 
-	rl := rl.New(r.rate, time.Minute)
+	limit := rate.Limit(0)
+	if r.rate > 0 {
+		limit = rate.Every(time.Minute / time.Duration(r.rate))
+	}
+
+	rl := rate.NewLimiter(limit, r.rate)
 
 	l := &limiter{rl: rl}
 	l.cookie.Store("")
