@@ -16,21 +16,19 @@ import (
 	"github.com/semihalev/sdns/server"
 )
 
+const version = "1.1.2"
+
 var (
-	// Version returns the build version of sdns, this should be incremented every new release
-	Version = "1.1.2"
+	flagcfgpath  = flag.String("config", "sdns.conf", "location of the config file, if config file not found, a config will generate")
+	flagprintver = flag.Bool("v", false, "show version information")
 
-	// ConfigVersion returns the version of sdns, this should be incremented every time the config changes so sdns presents a warning
-	ConfigVersion = "1.1.0"
+	cfg *config.Config
+)
 
-	// ConfigPath returns the configuration path
-	ConfigPath = flag.String("config", "sdns.conf", "location of the config file, if config file not found, a config will generate")
+func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	// VersionFlag returns of the flag of version
-	VersionFlag = flag.Bool("v", false, "show version information")
-
-	// Usage return print usage information
-	Usage = func() {
+	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "Options:")
 		flag.PrintDefaults()
@@ -39,17 +37,12 @@ var (
 		fmt.Fprintf(os.Stderr, "%s -config=sdns.conf\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "")
 	}
-)
-
-func init() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	flag.Usage = Usage
 }
 
 func setup() {
 	var err error
 
-	if cfg, err = config.Load(*ConfigPath, ConfigVersion, Version); err != nil {
+	if cfg, err = config.Load(*flagcfgpath, version); err != nil {
 		log.Crit("Config loading failed", "error", err.Error())
 	}
 
@@ -79,12 +72,12 @@ func run() {
 func main() {
 	flag.Parse()
 
-	if *VersionFlag {
-		println("SDNS v" + Version)
+	if *flagprintver {
+		println("SDNS v" + version)
 		os.Exit(0)
 	}
 
-	log.Info("Starting sdns...", "version", Version)
+	log.Info("Starting sdns...", "version", version)
 
 	setup()
 	run()
@@ -96,5 +89,3 @@ func main() {
 
 	log.Info("Stopping sdns...")
 }
-
-var cfg *config.Config

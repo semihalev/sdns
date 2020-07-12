@@ -15,32 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/sdns/config"
 	"github.com/stretchr/testify/assert"
 )
 
 const (
 	testDomain = "www.google.com"
 )
-
-func TestMain(m *testing.M) {
-	cfg := new(config.Config)
-	cfg.RootServers = []string{"192.5.5.241:53"}
-	cfg.RootKeys = []string{
-		".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU=",
-	}
-	cfg.Maxdepth = 30
-	cfg.Expire = 600
-	cfg.Timeout.Duration = 2 * time.Second
-	cfg.Nullroute = "0.0.0.0"
-	cfg.Nullroutev6 = "0:0:0:0:0:0:0:0"
-	cfg.Bind = ":0"
-	cfg.BindTLS = ""
-	cfg.BindDOH = ""
-	cfg.API = ""
-
-	m.Run()
-}
 
 func publicKey(priv interface{}) interface{} {
 	switch k := priv.(type) {

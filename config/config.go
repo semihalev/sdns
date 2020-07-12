@@ -13,6 +13,8 @@ import (
 	"github.com/semihalev/log"
 )
 
+const configver = "1.1.0"
+
 // Config type
 type Config struct {
 	Version         string
@@ -246,14 +248,14 @@ emptyzones = []
 `
 
 // Load loads the given config file
-func Load(path, version string, sVersion string) (*Config, error) {
+func Load(path, version string) (*Config, error) {
 	config := new(Config)
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if path == "sdns.conf" {
 			// compatibility for old default conf file
 			if _, err := os.Stat("sdns.toml"); os.IsNotExist(err) {
-				if err := generateConfig(path, version); err != nil {
+				if err := generateConfig(path, configver); err != nil {
 					return nil, err
 				}
 			} else {
@@ -268,11 +270,11 @@ func Load(path, version string, sVersion string) (*Config, error) {
 		return nil, fmt.Errorf("could not load config: %s", err)
 	}
 
-	if config.Version != version {
+	if config.Version != configver {
 		log.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
 
-	config.sVersion = sVersion
+	config.sVersion = version
 
 	if config.CookieSecret == "" {
 		config.CookieSecret = fmt.Sprintf("%16x", rand.Int63())
