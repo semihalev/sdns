@@ -31,6 +31,8 @@ import (
 func TestMain(m *testing.M) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 	m.Run()
+
+	os.Exit(0)
 }
 
 func publicKey(priv interface{}) interface{} {

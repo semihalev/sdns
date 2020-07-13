@@ -26,15 +26,14 @@ func (b *BlockList) fetchBlocklists() {
 		b.cfg.BlockListDir = "."
 	}
 
-	select {
-	case <-timer.C:
-		if err := b.updateBlocklists(); err != nil {
-			log.Error("Update blocklists failed", "error", err.Error())
-		}
+	<-timer.C
 
-		if err := b.readBlocklists(); err != nil {
-			log.Error("Read blocklists failed", "dir", b.cfg.BlockListDir, "error", err.Error())
-		}
+	if err := b.updateBlocklists(); err != nil {
+		log.Error("Update blocklists failed", "error", err.Error())
+	}
+
+	if err := b.readBlocklists(); err != nil {
+		log.Error("Read blocklists failed", "dir", b.cfg.BlockListDir, "error", err.Error())
 	}
 }
 

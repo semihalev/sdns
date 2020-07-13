@@ -191,7 +191,7 @@ func AcquireBuf(size uint16) []byte {
 	if x == nil {
 		return make([]byte, size)
 	}
-	buf := x.([]byte)
+	buf := *(x.(*[]byte))
 	if cap(buf) < int(size) {
 		return make([]byte, size)
 	}
@@ -200,5 +200,5 @@ func AcquireBuf(size uint16) []byte {
 
 // ReleaseBuf returns buf to pool
 func ReleaseBuf(buf []byte) {
-	bufferPool.Put(buf)
+	bufferPool.Put(&buf)
 }

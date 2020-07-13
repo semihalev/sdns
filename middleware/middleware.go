@@ -122,7 +122,8 @@ func LoadExternalPlugins() {
 
 // Handlers return registered handlers
 func Handlers() []Handler {
-	return append(chainHandlers)
+	handlers := chainHandlers
+	return handlers
 }
 
 // List return names of handlers

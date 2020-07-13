@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -21,6 +22,8 @@ func TestMain(m *testing.M) {
 	middleware.Setup(cfg)
 
 	m.Run()
+
+	os.Exit(0)
 }
 
 func makeTestConfig() *config.Config {

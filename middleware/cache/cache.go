@@ -120,7 +120,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	if q.Name != "." && req.RecursionDesired == false {
+	if q.Name != "." && !req.RecursionDesired {
 		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
 		ch.Cancel()
 		return
@@ -435,8 +435,6 @@ func ReleaseMsg(m *dns.Msg) {
 const (
 	name = "cache"
 
-	maxTTL  = dnsutil.MaximumDefaulTTL
-	minTTL  = dnsutil.MinimalDefaultTTL
-	maxNTTL = dnsutil.MinimalDefaultTTL * 60
-	minNTTL = dnsutil.MinimalDefaultTTL
+	maxTTL = dnsutil.MaximumDefaulTTL
+	minTTL = dnsutil.MinimalDefaultTTL
 )

@@ -22,7 +22,7 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 
 	buf.Write([]byte{uint8(q.Qtype >> 8), uint8(q.Qtype & 0xff)})
 
-	if len(cd) > 0 && cd[0] == true {
+	if len(cd) > 0 && cd[0] {
 		buf.WriteByte(1)
 	}
 

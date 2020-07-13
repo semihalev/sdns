@@ -848,11 +848,14 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 						log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
 					}
-				} else {
+
+					//TODO: verify NSEC name error??
+					/*} else {
+
 					nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
 					if len(nsecSet) > 0 {
-						//TODO: verify NSEC name error??
-					}
+
+					}*/
 				}
 			}
 
@@ -864,11 +867,14 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 						log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
 					}
-				} else {
+
+					//TODO: verify NSEC nodata??
+					/*} else {
+
 					nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)
 					if len(nsecSet) > 0 {
-						//TODO: verify NSEC nodata??
-					}
+
+					}*/
 				}
 			}
 		}
@@ -1443,7 +1449,7 @@ func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
 	resp.Ns = []dns.RR{}
 
 	noclear := len(extra) == 0
-	if len(extra) > 0 && extra[0] == false {
+	if len(extra) > 0 && !extra[0] {
 		noclear = true
 	}
 

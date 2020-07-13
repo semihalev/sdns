@@ -93,7 +93,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		}
 	}
 
-	if q.Name != rootzone && req.RecursionDesired == false {
+	if q.Name != rootzone && !req.RecursionDesired {
 		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
 	}
 
@@ -152,7 +152,7 @@ func (h *DNSHandler) additionalAnswer(ctx context.Context, req, msg *dns.Msg) *d
 
 	if len(cnameReq.Question) > 0 {
 		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
-		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Answer) > 0) {
+		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			for _, rr := range respCname.Answer {
 				if respCname.Question[0].Name == cnameReq.Question[0].Name {
 					msg.Answer = append(msg.Answer, dns.Copy(rr))
