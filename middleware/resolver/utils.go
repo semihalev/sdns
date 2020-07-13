@@ -22,7 +22,6 @@ var (
 	errNoSignatures           = errors.New("no RRSIG records for zone that should be signed")
 	errMissingDNSKEY          = errors.New("no matching DNSKEY found for RRSIG records")
 	errInvalidSignaturePeriod = errors.New("incorrect signature validity period")
-	errBadAnswer              = errors.New("response contained a non-zero RCODE")
 	errMissingSigned          = errors.New("signed records are missing")
 
 	localIPaddrs []net.IP

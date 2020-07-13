@@ -20,7 +20,8 @@ func Test_Chain(t *testing.T) {
 	ch.Next(context.Background())
 
 	req.Rcode = dns.RcodeSuccess
-	ch.Writer.WriteMsg(req)
+	err := ch.Writer.WriteMsg(req)
+	assert.NoError(t, err)
 
 	data, err := req.Pack()
 	assert.NoError(t, err)

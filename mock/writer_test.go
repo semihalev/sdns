@@ -12,8 +12,9 @@ func Test_Writer(t *testing.T) {
 
 	m := new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeA)
-	mw.WriteMsg(m)
+	err := mw.WriteMsg(m)
 
+	assert.NoError(t, err)
 	assert.True(t, mw.Written())
 	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
 	assert.NotNil(t, mw.Msg())
@@ -29,12 +30,13 @@ func Test_Writer(t *testing.T) {
 	assert.Equal(t, "tcp", mw.Proto())
 	assert.Equal(t, "127.0.0.1", mw.RemoteIP().String())
 
-	_, err := mw.Write([]byte{})
+	_, err = mw.Write([]byte{})
 	assert.Error(t, err)
 
 	data, err := m.Pack()
 	assert.NoError(t, err)
-	mw.Write(data)
+	_, err = mw.Write(data)
+	assert.NoError(t, err)
 	assert.True(t, mw.Written())
 	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
 	assert.True(t, mw.Internal())

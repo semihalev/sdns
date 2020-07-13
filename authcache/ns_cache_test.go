@@ -48,13 +48,3 @@ func Test_NSCache(t *testing.T) {
 
 	nscache.Remove(key)
 }
-
-func BenchmarkNSCache(b *testing.B) {
-	b.ReportAllocs()
-
-	nc := NewNSCache()
-	for n := 0; n < b.N; n++ {
-		nc.Set(uint64(n), nil, nil, time.Minute)
-		nc.Get(uint64(n))
-	}
-}

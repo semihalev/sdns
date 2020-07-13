@@ -439,6 +439,4 @@ const (
 	minTTL  = dnsutil.MinimalDefaultTTL
 	maxNTTL = dnsutil.MinimalDefaultTTL * 60
 	minNTTL = dnsutil.MinimalDefaultTTL
-
-	defaultCap = 256 * 50 // default capacity of the cache.
 )

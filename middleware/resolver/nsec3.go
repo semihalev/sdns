@@ -7,13 +7,11 @@ import (
 )
 
 var (
-	errNSECMismatch         = errors.New("NSEC3 record doesn't match question")
-	errNSECTypeExists       = errors.New("NSEC3 record shows question type exists")
-	errNSECMultipleCoverage = errors.New("Multiple NSEC3 records cover next closer/source of synthesis")
-	errNSECMissingCoverage  = errors.New("NSEC3 record missing for expected encloser")
-	errNSECBadDelegation    = errors.New("DS or SOA bit set in NSEC3 type map")
-	errNSECNSMissing        = errors.New("NS bit not set in NSEC3 type map")
-	errNSECOptOut           = errors.New("Opt-Out bit not set for NSEC3 record covering next closer")
+	errNSECTypeExists      = errors.New("NSEC3 record shows question type exists")
+	errNSECMissingCoverage = errors.New("NSEC3 record missing for expected encloser")
+	errNSECBadDelegation   = errors.New("DS or SOA bit set in NSEC3 type map")
+	errNSECNSMissing       = errors.New("NS bit not set in NSEC3 type map")
+	errNSECOptOut          = errors.New("Opt-Out bit not set for NSEC3 record covering next closer")
 )
 
 func typesSet(set []uint16, types ...uint16) bool {
