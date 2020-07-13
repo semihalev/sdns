@@ -15,7 +15,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           # Must fetch at least the immediate parents so that if this is
           # a pull request then we can checkout the head of the pull request.
           # Only include this option if you are running this workflow on pull requests.
