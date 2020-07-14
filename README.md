@@ -1,5 +1,5 @@
 
-[![Travis](https://img.shields.io/travis/semihalev/sdns.svg?style=flat-square)](https://travis-ci.org/semihalev/sdns)
+![Go](https://github.com/semihalev/sdns/workflows/Go/badge.svg)
 [![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
 [![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
@@ -52,7 +52,7 @@ $ export SDNS_DEBUGNS=true && export SDNS_PPROF=true && ./sdns
 ```
 
 SDNS_DEBUGNS enviroment useful when you want to check authoritive servers RTT times. 
-Usage: send HINFO query for zones.
+Usage: send HINFO query for zones with chaos class.
 
 Example Output:
 ```shell
