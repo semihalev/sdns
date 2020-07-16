@@ -74,7 +74,7 @@ type AuthServers struct {
 	// place atomic members at the start to fix alignment for ARM32
 	Called     uint64
 	ErrorCount uint32
-	
+
 	Zone string
 
 	List []*AuthServer
