@@ -6,9 +6,7 @@ GOFILES := $(shell find . -name "*.go" -type f -not -path "./vendor/*")
 TESTFOLDER := $(shell $(GO) list ./...)
 APP_NAME=sdns
 
-all: install
-
-install: test
+all: generate test build
 
 .PHONY: test
 test:
@@ -22,8 +20,8 @@ test:
 	done
 
 generate:
-	go generate
+	$(GO) generate
 
 build:
-	go get -v github.com/mitchellh/gox
-	${HOME}/go/bin/gox -osarch="linux/amd64 linux/arm linux/arm64 openbsd/amd64 netbsd/amd64 darwin/amd64 freebsd/amd64 windows/amd64" -output="sdns_{{.OS}}_{{.Arch}}" -ldflags="-s -w"
+	$(GO) get -v github.com/mitchellh/gox
+	${HOME}/go/bin/gox -osarch="linux/amd64 linux/arm linux/arm64 openbsd/amd64 netbsd/amd64 darwin/amd64 freebsd/amd64 windows/amd64" -output="${APP_NAME}_{{.OS}}_{{.Arch}}" -ldflags="-s -w"
