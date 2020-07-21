@@ -1,16 +1,13 @@
 name: "Go Mod Tidier"
 
 on:
-  push:
   schedule:
     - cron: "30 9 * * 2" # Weekly build
 
 jobs:
-  go-mod-tidy:
-    name: go-mod-tidy
-
+  run:
     runs-on: ubuntu-latest
-
+    
     steps:
       - uses: actions/checkout@v2
 
