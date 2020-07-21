@@ -42,8 +42,37 @@ archives:
       - LICENSE
 
 checksum:
-  name_template: '{{ .ProjectName }}_{{ .Version }}_sha256sums.txt'
+  name_template: '{{ .ProjectName }}-{{ .Version }}_sha256sums.txt'
   algorithm: sha256
 
 changelog:
   skip: true
+
+nfpms:
+  - file_name_template: '{{ .ProjectName }}-{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    homepage:  https://sdns.dev
+    description: Fast DNS Resolver
+    maintainer: Yasar Alev <semihalev@gmail.com>
+    license: MIT
+    bindir: /usr/bin
+    meta: true
+    empty_folders:
+      - /var/lib/sdns
+    files:
+      "contrib/linux/sdns.service": "/lib/systemd/system/sdns.service"      
+    config_files:
+      "contrib/linux/sdns.conf": "/etc/sdns.conf"
+    scripts:
+      postinstall: "contrib/linux/adduser.sh"  
+    formats:
+    - deb
+    - rpm
+    overrides:
+      deb:
+        dependencies:
+          - systemctl
+      rpm:
+        replacements:
+          amd64: x86_64
+        dependencies:
+          - systemd
