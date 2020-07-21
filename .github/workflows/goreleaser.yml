@@ -3,7 +3,7 @@ name: Releaser
 on:
   push:
     tags:
-    - 'v*'
+    - 'v[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
   goreleaser:
@@ -23,7 +23,7 @@ jobs:
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v2
         with:
-          version: ${{ github.ref }}
+          version: latest
           args: release --rm-dist
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
