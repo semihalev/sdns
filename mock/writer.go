@@ -19,16 +19,18 @@ type Writer struct {
 }
 
 // NewWriter return writer
-func NewWriter(Net, addr string) *Writer {
+func NewWriter(proto, addr string) *Writer {
 	w := &Writer{}
 
-	if Net == "tcp" || Net == "tcp-tls" {
-		w.localAddr = &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
+	switch proto {
+	case "tcp", "tcp-tls":
+		w.localAddr = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
 		w.remoteAddr, _ = net.ResolveTCPAddr("tcp", addr)
 		w.remoteip = w.remoteAddr.(*net.TCPAddr).IP
 		w.proto = "tcp"
-	} else {
-		w.localAddr = &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}
+
+	case "udp":
+		w.localAddr = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
 		w.remoteAddr, _ = net.ResolveUDPAddr("udp", addr)
 		w.remoteip = w.remoteAddr.(*net.UDPAddr).IP
 		w.proto = "udp"

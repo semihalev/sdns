@@ -102,12 +102,14 @@ func (a *API) Run() {
 		pprof.Register(r)
 	}
 
-	block := r.Group("/api/v1/block")
-	{
-		block.GET("/exists/:key", a.existsBlock)
-		block.GET("/get/:key", a.getBlock)
-		block.GET("/remove/:key", a.removeBlock)
-		block.GET("/set/:key", a.setBlock)
+	if a.blocklist != nil {
+		block := r.Group("/api/v1/block")
+		{
+			block.GET("/exists/:key", a.existsBlock)
+			block.GET("/get/:key", a.getBlock)
+			block.GET("/remove/:key", a.removeBlock)
+			block.GET("/set/:key", a.setBlock)
+		}
 	}
 
 	r.GET("/api/v1/purge/:qname/:qtype", a.purge)
