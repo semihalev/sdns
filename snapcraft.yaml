@@ -1,0 +1,29 @@
+name: sdns
+version: "1.0.0"
+summary: A DNS Resolver Server.
+description: |
+  SDNS is resolving DNS queries recursively fast and secure.
+
+architectures:
+  - build-on: armhf
+  - build-on: arm64
+  - build-on: amd64
+
+grade: stable
+confinement: strict
+base: core18
+
+parts:
+  sdns:
+    plugin: go
+    source: https://github.com/semihalev/sdns.git
+    source-tag: v1.1.3
+    go-importpath: github.com/semihalev/sdns
+    source-type: git
+    stage:
+     - bin/sdns
+apps:
+  sdns:
+    command: sdns
+    plugs: [network-bind]
+    daemon: simple
