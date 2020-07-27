@@ -15,22 +15,41 @@ builds:
       - darwin_amd64
       - windows_amd64
       - freebsd_amd64
-      - freebsd_arm
-      - linux_arm64
-      - linux_arm
       - openbsd_amd64
       - netbsd_amd64
     flags:
       - -trimpath
     ldflags:
       - -s -w
-  - id: nf
-    targets:
-      - linux_amd64
+  - id: linux
+    goos:
+      - linux
+    goarch:
+      - arm
+      - arm64
+      - mips
+      - mipsle
+      - mips64
+      - mips64le
+    goarm:
+      - 5
+      - 6
+      - 7
+    gomips:
+      - softfloat
     flags:
       - -trimpath
     ldflags:
-    - -s -w
+      - -s -w
+  - id: nf
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
 
 release:
   github:
@@ -41,7 +60,7 @@ release:
 
 archives:
   - 
-    name_template: "{{ .ProjectName }}-{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}-{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}{{ if .Mips }}_{{ .Mips }}{{ end }}"
     format_overrides:
       - goos: windows
         format: zip
@@ -66,7 +85,6 @@ nfpms:
     maintainer: Yasar Alev <semihalev@gmail.com>
     license: MIT
     bindir: /usr/bin
-    meta: true
     empty_folders:
       - /var/lib/sdns
     files:
