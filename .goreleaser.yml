@@ -100,7 +100,7 @@ nfpms:
     overrides:
       deb:
         dependencies:
-          - systemctl
+          - systemd-sysv
       rpm:
         replacements:
           amd64: x86_64
