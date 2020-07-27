@@ -288,7 +288,6 @@ func Load(path, version string) (*Config, error) {
 		config.CookieSecret = fmt.Sprintf("%16x", v)
 	}
 
-	fmt.Println(config.CookieSecret)
 	return config, nil
 }
 
