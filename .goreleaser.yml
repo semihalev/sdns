@@ -71,11 +71,11 @@ nfpms:
       - /var/lib/sdns
     files:
       "contrib/linux/sdns.service": "/lib/systemd/system/sdns.service"
-      "sdns": /usr/bin/sdns"
     config_files:
       "contrib/linux/sdns.conf": "/etc/sdns.conf"
     scripts:
-      postinstall: "contrib/linux/adduser.sh"  
+      postinstall: "contrib/linux/adduser.sh"
+    release: 1
     formats:
     - deb
     - rpm

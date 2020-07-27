@@ -1,5 +1,6 @@
 GO ?= go
 TESTFOLDER := $(shell $(GO) list ./...)
+BIN = sdns
 
 all: generate test build tidy
 
@@ -32,3 +33,8 @@ build:
 .PHONY: tidy
 tidy:
 	$(GO) mod tidy
+
+.PHONY: clean
+clean:
+	rm -rf $(BIN)
+	rm -rf generated.go
