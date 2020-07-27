@@ -82,6 +82,8 @@ func Test_PCache(t *testing.T) {
 	c.ServeDNS(context.Background(), ch)
 	assert.True(t, ch.Writer.Written())
 
+	i.stored = time.Now().Add(-5 * time.Second)
+
 	ch.Reset(mw, req)
 	c.ServeDNS(context.Background(), ch)
 	assert.False(t, ch.Writer.Written())
