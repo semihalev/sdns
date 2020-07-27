@@ -29,7 +29,7 @@ func Test_Metrics(t *testing.T) {
 	m.ServeDNS(context.Background(), ch)
 	assert.Equal(t, dns.RcodeServerFailure, mw.Rcode())
 
-	ch.Writer.WriteMsg(req)
+	_ = ch.Writer.WriteMsg(req)
 	assert.Equal(t, true, ch.Writer.Written())
 
 	m.ServeDNS(context.Background(), ch)

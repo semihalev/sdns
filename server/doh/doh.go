@@ -64,7 +64,7 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 		w.Header().Set("Server", "SDNS")
 		w.Header().Set("Content-Type", "application/dns-message")
 
-		w.Write(packed)
+		_, _ = w.Write(packed)
 	}
 }
 
@@ -152,6 +152,6 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 			w.Header().Set("Content-Type", "application/dns-json")
 		}
 
-		w.Write(json)
+		_, _ = w.Write(json)
 	}
 }

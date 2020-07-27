@@ -121,7 +121,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	if q.Name != "." && !req.RecursionDesired {
-		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
+		_ = w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
 		ch.Cancel()
 		return
 	}
@@ -145,7 +145,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		m := i.toMsg(req, now)
 		m = c.additionalAnswer(ctx, m)
 
-		w.WriteMsg(m)
+		_ = w.WriteMsg(m)
 		ch.Cancel()
 		return
 	}

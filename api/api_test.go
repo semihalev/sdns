@@ -49,6 +49,7 @@ func Test_AllAPICalls(t *testing.T) {
 		block.GET("/set/:key", a.setBlock)
 	}
 
+	ginr.GET("/api/v1/purge/test.com/A", a.purge)
 	ginr.GET("/metrics", a.metrics)
 
 	routes := []struct {

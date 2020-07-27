@@ -162,9 +162,9 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
 func GenerateServerCookie(secret, remoteip, cookie string) string {
 	scookie := sha256.New()
 
-	scookie.Write([]byte(remoteip))
-	scookie.Write([]byte(cookie))
-	scookie.Write([]byte(secret))
+	_, _ = scookie.Write([]byte(remoteip))
+	_, _ = scookie.Write([]byte(cookie))
+	_, _ = scookie.Write([]byte(secret))
 
 	return cookie + hex.EncodeToString(scookie.Sum(nil))
 }

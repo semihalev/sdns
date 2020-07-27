@@ -9,16 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_randInt(t *testing.T) {
-	for i := 0; i < 20; i++ {
-		val := randInt(0, 10)
-		assert.Equal(t, true, val < 10)
-	}
-
-	val := randInt(0, 0)
-	assert.Equal(t, 0, val)
-}
-
 func Test_shuffleStr(t *testing.T) {
 
 	vals := make([]string, 1)

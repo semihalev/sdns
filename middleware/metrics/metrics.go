@@ -32,7 +32,7 @@ func New(cfg *config.Config) *Metrics {
 			[]string{"qtype", "rcode"},
 		),
 	}
-	prometheus.Register(m.queries)
+	_ = prometheus.Register(m.queries)
 
 	return m
 }

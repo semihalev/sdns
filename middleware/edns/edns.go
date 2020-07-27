@@ -49,7 +49,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
 	if req.Opcode > 0 {
-		dnsutil.NotSupported(w, req)
+		_ = dnsutil.NotSupported(w, req)
 
 		ch.Cancel()
 		return
@@ -61,7 +61,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 
-		w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadVers, do))
+		_ = w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadVers, do))
 
 		ch.Cancel()
 		return

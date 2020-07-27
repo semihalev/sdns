@@ -1042,7 +1042,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		return nil, err
 	}
 
-	co.SetDeadline(time.Now().Add(r.netTimeout))
+	_ = co.SetDeadline(time.Now().Add(r.netTimeout))
 
 	resp, rtt, err = co.Exchange(req)
 	if err != nil {
@@ -1496,7 +1496,7 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 	return true
 }
 
-func (r *Resolver) checkPriming() error {
+func (r *Resolver) checkPriming() {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -1512,7 +1512,7 @@ func (r *Resolver) checkPriming() error {
 	if err != nil {
 		log.Error("root servers update failed", "error", err.Error())
 
-		return err
+		return
 	}
 
 	if len(resp.Extra) > 0 {
@@ -1547,13 +1547,11 @@ func (r *Resolver) checkPriming() error {
 		if len(tmpservers.List) > 0 {
 			log.Debug("Good! root servers update successful")
 
-			return nil
+			return
 		}
 	}
 
 	log.Error("root servers update failed", "error", "no records found")
-
-	return errors.New("no records found")
 }
 
 func (r *Resolver) run() {

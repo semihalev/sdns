@@ -84,7 +84,7 @@ func (a *API) purge(c *gin.Context) {
 	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
 	req.Question[0].Qclass = dns.ClassCHAOS
 
-	dnsutil.ExchangeInternal(context.Background(), req)
+	_, _ = dnsutil.ExchangeInternal(context.Background(), req)
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

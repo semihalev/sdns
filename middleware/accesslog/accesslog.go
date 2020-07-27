@@ -31,7 +31,7 @@ func New(cfg *config.Config) *AccessLog {
 	var err error
 
 	if cfg.AccessLog != "" {
-		logFile, err = os.OpenFile(cfg.AccessLog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		logFile, err = os.OpenFile(cfg.AccessLog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 		if err != nil {
 			log.Error("Access log file open failed", "error", strings.Trim(err.Error(), "\n"))
 		}

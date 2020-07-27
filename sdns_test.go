@@ -72,10 +72,15 @@ func generateCertificate() error {
 	}
 
 	certOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.cert"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	if err != nil {
 		return err
 	}
+
+	err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	if err != nil {
+		return err
+	}
+
 	certOut.Close()
 
 	keyOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.key"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
@@ -83,7 +88,11 @@ func generateCertificate() error {
 		return err
 	}
 
-	pem.Encode(keyOut, pemBlockForKey(priv))
+	err = pem.Encode(keyOut, pemBlockForKey(priv))
+	if err != nil {
+		return err
+	}
+
 	keyOut.Close()
 
 	return nil

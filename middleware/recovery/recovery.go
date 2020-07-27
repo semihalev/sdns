@@ -34,11 +34,11 @@ func (r *Recovery) Name() string { return name }
 func (r *Recovery) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() {
 		if r := recover(); r != nil {
-			ch.Writer.WriteMsg(dnsutil.HandleFailed(ch.Request, dns.RcodeServerFailure, false))
+			_ = ch.Writer.WriteMsg(dnsutil.HandleFailed(ch.Request, dns.RcodeServerFailure, false))
 
 			log.Error("Recovered in ServeDNS", "recover", r)
 
-			os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
+			_, _ = os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
 			debug.PrintStack()
 		}
 	}()

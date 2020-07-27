@@ -85,7 +85,7 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		msg.Answer = append(msg.Answer, a)
 	}
 
-	w.WriteMsg(msg)
+	_ = w.WriteMsg(msg)
 
 	ch.Cancel()
 }

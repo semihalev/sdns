@@ -89,10 +89,15 @@ func generateCertificate() error {
 	}
 
 	certOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.cert"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	if err != nil {
 		return err
 	}
+
+	err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	if err != nil {
+		return err
+	}
+
 	certOut.Close()
 
 	keyOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.key"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
@@ -100,16 +105,18 @@ func generateCertificate() error {
 		return err
 	}
 
-	pem.Encode(keyOut, pemBlockForKey(priv))
-	keyOut.Close()
+	err = pem.Encode(keyOut, pemBlockForKey(priv))
+	if err != nil {
+		return err
+	}
 
-	return nil
+	return keyOut.Close()
 }
 
 func Test_logPipe(t *testing.T) {
 	logReader, logWriter := io.Pipe()
 	go readlogs(logReader)
-	logWriter.Write([]byte("test test test test test test\n"))
+	_, _ = logWriter.Write([]byte("test test test test test test\n"))
 }
 
 func Test_ServerNoBind(t *testing.T) {

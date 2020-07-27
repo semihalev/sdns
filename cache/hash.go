@@ -34,7 +34,7 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 		buf.WriteByte(c)
 	}
 
-	h.Write(buf.Bytes())
+	_, _ = h.Write(buf.Bytes())
 
 	return h.Sum64()
 }

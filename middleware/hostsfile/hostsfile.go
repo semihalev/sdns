@@ -139,7 +139,13 @@ func (h *Hostsfile) readHosts() {
 		// We already log a warning if the file doesn't exist or can't be opened on setup. No need to return the error here.
 		return
 	}
-	defer file.Close()
+
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			log.Warn("Hosts file close failed", "error", err.Error())
+		}
+	}()
 
 	stat, err := file.Stat()
 	if err == nil && h.mtime.Equal(stat.ModTime()) && h.size == stat.Size() {
@@ -317,7 +323,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	m.Authoritative, m.RecursionAvailable = true, true
 	m.Answer = answers
 
-	w.WriteMsg(m)
+	_ = w.WriteMsg(m)
 
 	ch.Cancel()
 }

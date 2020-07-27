@@ -56,7 +56,7 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	msg := h.handle(ctx, req)
 
-	w.WriteMsg(msg)
+	_ = w.WriteMsg(msg)
 }
 
 func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {

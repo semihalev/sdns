@@ -41,14 +41,6 @@ func formatQuestion(q dns.Question) string {
 	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
 }
 
-func randInt(min, max int) int {
-	if min == max {
-		return min
-	}
-
-	return rand.Intn(max-min) + min
-}
-
 func shuffleStr(vals []string) []string {
 	perm := rand.Perm(len(vals))
 	ret := make([]string, len(vals))
@@ -403,7 +395,7 @@ func AcquireConn() *Conn {
 // ReleaseConn returns req to pool
 func ReleaseConn(co *Conn) {
 	if co.Conn != nil {
-		co.Conn.Close()
+		_ = co.Conn.Close()
 	}
 
 	co.UDPSize = 0

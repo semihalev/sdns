@@ -1,9 +1,10 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,9 +278,17 @@ func Load(path, version string) (*Config, error) {
 	config.sVersion = version
 
 	if config.CookieSecret == "" {
-		config.CookieSecret = fmt.Sprintf("%16x", rand.Int63())
+		var v uint64
+
+		err := binary.Read(rand.Reader, binary.BigEndian, &v)
+		if err != nil {
+			return nil, err
+		}
+
+		config.CookieSecret = fmt.Sprintf("%16x", v)
 	}
 
+	fmt.Println(config.CookieSecret)
 	return config, nil
 }
 
@@ -288,7 +297,13 @@ func generateConfig(path string) error {
 	if err != nil {
 		return fmt.Errorf("could not generate config: %s", err)
 	}
-	defer output.Close()
+
+	defer func() {
+		err := output.Close()
+		if err != nil {
+			log.Warn("Config generation failed while file closing", "error", err.Error())
+		}
+	}()
 
 	r := strings.NewReader(fmt.Sprintf(defaultConfig, configver))
 	if _, err := io.Copy(output, r); err != nil {

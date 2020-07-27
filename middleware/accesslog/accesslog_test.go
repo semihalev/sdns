@@ -35,7 +35,7 @@ func Test_accesslog(t *testing.T) {
 	resp.SetRcode(req, dns.RcodeServerFailure)
 	resp.Question = req.Copy().Question
 
-	ch.Writer.WriteMsg(resp)
+	_ = ch.Writer.WriteMsg(resp)
 
 	a.ServeDNS(context.Background(), ch)
 

@@ -39,7 +39,7 @@ func (b *BlockList) fetchBlocklists() {
 
 func (b *BlockList) updateBlocklists() error {
 	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
-		if err := os.Mkdir(b.cfg.BlockListDir, 0755); err != nil {
+		if err := os.Mkdir(b.cfg.BlockListDir, 0750); err != nil {
 			return fmt.Errorf("error creating sources directory: %s", err)
 		}
 	}
@@ -64,9 +64,15 @@ func (b *BlockList) downloadBlocklist(uri, name string) error {
 	if err != nil {
 		return fmt.Errorf("error creating file: %s", err)
 	}
-	defer output.Close()
 
-	response, err := http.Get(uri)
+	defer func() {
+		err := output.Close()
+		if err != nil {
+			log.Warn("Blocklist file close failed", "name", name, "error", err.Error())
+		}
+	}()
+
+	response, err := http.Get(url.QueryEscape(uri))
 	if err != nil {
 		return fmt.Errorf("error downloading source: %s", err)
 	}
@@ -119,14 +125,14 @@ func (b *BlockList) readBlocklists() error {
 			}
 
 			if err = b.parseHostFile(file); err != nil {
-				file.Close()
+				_ = file.Close()
 				return fmt.Errorf("error parsing hostfile %s", err)
 			}
 
-			file.Close()
+			_ = file.Close()
 
 			if filepath.Ext(path) == ".tmp" {
-				os.Remove(filepath.FromSlash(path))
+				_ = os.Remove(filepath.FromSlash(path))
 			}
 		}
 

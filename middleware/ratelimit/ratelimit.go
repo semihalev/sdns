@@ -99,7 +99,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 						l.cookie.Store(servercookie)
 						option.(*dns.EDNS0_COOKIE).Cookie = servercookie
 
-						w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadCookie, false))
+						_ = w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadCookie, false))
 
 						ch.Cancel()
 						return
@@ -124,7 +124,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {
 	xxhash := xxhash.New()
-	xxhash.Write(remoteip)
+	_, _ = xxhash.Write(remoteip)
 	key := xxhash.Sum64()
 
 	if v, ok := r.cache.Get(key); ok {

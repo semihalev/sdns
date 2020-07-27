@@ -32,7 +32,7 @@ func (d *dummy) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		m.Answer = append(m.Answer, a)
 	}
 
-	w.WriteMsg(m)
+	_ = w.WriteMsg(m)
 }
 
 func (d *dummy) Name() string { return "dummy" }

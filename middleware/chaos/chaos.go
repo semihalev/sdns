@@ -77,7 +77,7 @@ func (c *Chaos) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	w.WriteMsg(resp)
+	_ = w.WriteMsg(resp)
 	ch.Cancel()
 }
 
