@@ -145,7 +145,7 @@ brews:
           <key>StandardOutPath</key>
           <string>#{var}/log/sdns.log</string>
           <key>WorkingDirectory</key>
-          <string>#{HOMEBREW_PREFIX}</string>
+          <string>#{opt_prefix}</string>
         </dict>
       </plist>
     test: |
