@@ -121,8 +121,6 @@ brews:
     commit_author:
       name: semihalev
       email: semihalev@gmail.com
-    custom_block: |
-      head "https://github.com/semihalev/sdns.git"
     plist: |
       <?xml version="1.0" encoding="UTF-8"?>
       <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
