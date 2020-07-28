@@ -81,7 +81,7 @@ nfpms:
     builds:
       - nf
     homepage:  https://sdns.dev
-    description: SDNS is resolving DNS queries recursively fast and secure
+    description: Privacy important, fast, recursive dns resolver server with dnssec support
     maintainer: Yasar Alev <semihalev@gmail.com>
     license: MIT
     bindir: /usr/bin
@@ -114,7 +114,7 @@ brews:
       name: homebrew-tap
     folder: Formula
     homepage:  https://sdns.dev
-    description: SDNS is resolving DNS queries recursively fast and secure
+    description: Privacy important, fast, recursive dns resolver server with dnssec support
     dependencies:
       - name: go
         type: build

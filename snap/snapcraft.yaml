@@ -2,7 +2,7 @@ name: sdns
 adopt-info: sdns
 summary: A DNS Resolver Server.
 description: |
-  SDNS is resolving DNS queries recursively fast and secure.
+  Privacy important, fast, recursive dns resolver server with dnssec support
 
 architectures:
   - build-on: armhf

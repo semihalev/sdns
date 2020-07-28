@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -249,25 +250,25 @@ emptyzones = []
 `
 
 // Load loads the given config file
-func Load(path, version string) (*Config, error) {
+func Load(cfgfile, version string) (*Config, error) {
 	config := new(Config)
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if path == "sdns.conf" {
+	if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
+		if path.Base(cfgfile) == "sdns.conf" {
 			// compatibility for old default conf file
 			if _, err := os.Stat("sdns.toml"); os.IsNotExist(err) {
-				if err := generateConfig(path); err != nil {
+				if err := generateConfig(cfgfile); err != nil {
 					return nil, err
 				}
 			} else {
-				path = "sdns.toml"
+				cfgfile = "sdns.toml"
 			}
 		}
 	}
 
-	log.Info("Loading config file", "path", path)
+	log.Info("Loading config file", "path", cfgfile)
 
-	if _, err := toml.DecodeFile(path, config); err != nil {
+	if _, err := toml.DecodeFile(cfgfile, config); err != nil {
 		return nil, fmt.Errorf("could not load config: %s", err)
 	}
 
