@@ -149,4 +149,8 @@ brews:
         </dict>
       </plist>
     test: |
-      system "#{bin}/sdns -v"
+      fork do
+        exec bin/"sdns", "-config", testpath/"sdns.conf"
+      end
+      sleep(2)
+      assert_predicate testpath/"sdns.conf", :exist?
