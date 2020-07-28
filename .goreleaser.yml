@@ -81,7 +81,7 @@ nfpms:
     builds:
       - nf
     homepage:  https://sdns.dev
-    description: Fast DNS Resolver
+    description: SDNS is resolving DNS queries recursively fast and secure
     maintainer: Yasar Alev <semihalev@gmail.com>
     license: MIT
     bindir: /usr/bin
@@ -106,3 +106,47 @@ nfpms:
           amd64: x86_64
         dependencies:
           - systemd
+
+brews:
+  -
+    tap:
+      owner: semihalev
+      name: homebrew-tap
+    folder: Formula
+    homepage:  https://sdns.dev
+    description: SDNS is resolving DNS queries recursively fast and secure
+    dependencies:
+      - name: go
+        type: build
+    commit_author:
+      name: semihalev
+      email: semihalev@gmail.com
+    custom_block: |
+      head "https://github.com/semihalev/sdns.git"
+    plist: |
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+        <dict>
+          <key>Label</key>
+          <string>#{plist_name}</string>
+          <key>ProgramArguments</key>
+          <array>
+            <string>#{opt_bin}/sdns</string>
+            <string>-conf</string>
+            <string>#{etc}/sdns.conf</string>
+          </array>
+          <key>RunAtLoad</key>
+          <true/>
+          <key>KeepAlive</key>
+          <true/>
+          <key>StandardErrorPath</key>
+          <string>#{var}/log/sdns.log</string>
+          <key>StandardOutPath</key>
+          <string>#{var}/log/sdns.log</string>
+          <key>WorkingDirectory</key>
+          <string>#{HOMEBREW_PREFIX}</string>
+        </dict>
+      </plist>
+    test: |
+      system "#{bin}/sdns -v"
