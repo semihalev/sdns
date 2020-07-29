@@ -28,7 +28,7 @@ $ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
 
 or
 
-Homebrew for macOS
+### Homebrew for macOS
 
 ```shell
 $ brew install sdns
