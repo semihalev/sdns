@@ -26,6 +26,21 @@ or alternative from [Docker hub](https://hub.docker.com/r/c1982/sdns)
 $ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
 ```
 
+or
+
+Homebrew for macOS
+
+```shell
+$ brew install sdns
+$ brew install semihalev/tap/sdns (alternative)
+```
+
+Run as service
+
+```shell
+$ brew services start sdns
+```
+
 ## Building
 
 ```shell
