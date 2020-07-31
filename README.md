@@ -15,24 +15,24 @@
 go get github.com/semihalev/sdns
 ```
 
-or
+#### Pre-build Binaries
 
-[download latest release](https://github.com/semihalev/sdns/releases)
+Download the latest release from [Github Repo](https://github.com/semihalev/sdns/releases/latest)
 
-or run package [Docker image](https://github.com/semihalev/sdns/packages)
-or alternative from [Docker hub](https://hub.docker.com/r/c1982/sdns)
+#### Docker Image
+
+1. [Docker Package](https://github.com/semihalev/sdns/packages/188181) (update every release)
+2. [Docker Hub](https://hub.docker.com/r/c1982/sdns) (alternative)
 
 ```shell
 $ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
 ```
 
-or
-
-### Homebrew for macOS
+#### Homebrew for macOS
 
 ```shell
 $ brew install sdns
-$ brew install semihalev/tap/sdns (alternative)
+$ brew install semihalev/tap/sdns (update every release)
 ```
 
 Run as service
@@ -40,6 +40,14 @@ Run as service
 ```shell
 $ brew services start sdns
 ```
+
+#### Snapcraft
+
+```shell
+$ snap install sdns
+```
+
+> **Tip:** Pre-build binaries, docker package, brew tap and snap automatically create by Github [workflows](https://github.com/semihalev/sdns/actions)
 
 ## Building
 
