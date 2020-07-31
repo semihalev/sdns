@@ -72,7 +72,7 @@ func (b *BlockList) downloadBlocklist(uri, name string) error {
 		}
 	}()
 
-	response, err := http.Get(url.QueryEscape(uri))
+	response, err := http.Get(uri)
 	if err != nil {
 		return fmt.Errorf("error downloading source: %s", err)
 	}
