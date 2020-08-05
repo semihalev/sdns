@@ -399,7 +399,6 @@ func ReleaseConn(co *Conn) {
 	}
 
 	co.UDPSize = 0
-	co.TsigSecret = nil
 	co.Conn = nil
 
 	connPool.Put(co)

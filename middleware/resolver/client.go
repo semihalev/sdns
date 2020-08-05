@@ -20,10 +20,8 @@ const (
 
 // A Conn represents a connection to a DNS server.
 type Conn struct {
-	net.Conn                         // a net.Conn holding the connection
-	UDPSize        uint16            // minimum receive buffer for UDP messages
-	TsigSecret     map[string]string // secret(s) for Tsig map[<zonename>]<base64 secret>, zonename must be in canonical form (lowercase, fqdn, see RFC 4034 Section 6.2)
-	tsigRequestMAC string
+	net.Conn        // a net.Conn holding the connection
+	UDPSize  uint16 // minimum receive buffer for UDP messages
 }
 
 // Exchange performs a synchronous query
@@ -61,34 +59,6 @@ func (co *Conn) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) 
 // error is returned there are no guarantees that the returned message is a
 // valid representation of the packet read.
 func (co *Conn) ReadMsg() (*dns.Msg, error) {
-	p, err := co.ReadMsgHeader()
-	if err != nil {
-		return nil, err
-	}
-
-	defer ReleaseBuf(p)
-
-	m := new(dns.Msg)
-	if err := m.Unpack(p); err != nil {
-		// If an error was returned, we still want to allow the user to use
-		// the message, but naively they can just check err if they don't want
-		// to use an erroneous message
-		return m, err
-	}
-	if t := m.IsTsig(); t != nil {
-		if _, ok := co.TsigSecret[t.Hdr.Name]; !ok {
-			return m, dns.ErrSecret
-		}
-		// Need to work on the original message p, as that was used to calculate the tsig.
-		err = dns.TsigVerify(p, co.TsigSecret[t.Hdr.Name], co.tsigRequestMAC, false)
-	}
-	return m, err
-}
-
-// ReadMsgHeader reads a DNS message, parses and populates hdr (when hdr is not nil).
-// Returns message as a byte slice to be parsed with Msg.Unpack later on.
-// Note that error handling on the message body is not possible as only the header is parsed.
-func (co *Conn) ReadMsgHeader() ([]byte, error) {
 	var (
 		p   []byte
 		n   int
@@ -114,7 +84,16 @@ func (co *Conn) ReadMsgHeader() ([]byte, error) {
 		return nil, dns.ErrShortRead
 	}
 
-	return p[:n], err
+	defer ReleaseBuf(p)
+
+	m := new(dns.Msg)
+	if err := m.Unpack(p); err != nil {
+		// If an error was returned, we still want to allow the user to use
+		// the message, but naively they can just check err if they don't want
+		// to use an erroneous message
+		return m, err
+	}
+	return m, err
 }
 
 // Read implements the net.Conn read method.
@@ -148,17 +127,7 @@ func (co *Conn) WriteMsg(m *dns.Msg) (err error) {
 	out := AcquireBuf(size)
 	defer ReleaseBuf(out)
 
-	if t := m.IsTsig(); t != nil {
-		mac := ""
-		if _, ok := co.TsigSecret[t.Hdr.Name]; !ok {
-			return dns.ErrSecret
-		}
-		out, mac, err = dns.TsigGenerate(m, co.TsigSecret[t.Hdr.Name], co.tsigRequestMAC, false)
-		// Set for the next read, although only used in zone transfers
-		co.tsigRequestMAC = mac
-	} else {
-		out, err = m.PackBuffer(out)
-	}
+	out, err = m.PackBuffer(out)
 	if err != nil {
 		return err
 	}
