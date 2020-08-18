@@ -82,12 +82,12 @@ func TestIsReverse(t *testing.T) {
 	}
 }
 
-func TestHandleFailed(t *testing.T) {
+func TestSetRcode(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
 	req.SetEdns0(4096, true)
 
-	m := HandleFailed(req, dns.RcodeServerFailure, true)
+	m := SetRcode(req, dns.RcodeServerFailure, true)
 	if m.Rcode != dns.RcodeServerFailure {
 		t.Errorf("Test HandleFailed, got %d, expected %d", m.Rcode, dns.RcodeServerFailure)
 	}

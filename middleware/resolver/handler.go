@@ -69,7 +69,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Qtype == dns.TypeANY {
-		return dnsutil.HandleFailed(req, dns.RcodeNotImplemented, do)
+		return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
 	}
 
 	// debug ns stats
@@ -84,7 +84,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 				h.purge(qname)
 			}
 
-			resp := dnsutil.HandleFailed(req, dns.RcodeSuccess, do)
+			resp := dnsutil.SetRcode(req, dns.RcodeSuccess, do)
 			txt, _ := dns.NewRR(q.Name + ` 20 IN TXT "cache purged"`)
 
 			resp.Extra = append(resp.Extra, txt)
@@ -94,7 +94,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Name != rootzone && !req.RecursionDesired {
-		return dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
+		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
 	// we shouldn't send rd and ad flag to aa servers
@@ -110,15 +110,13 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	if err != nil {
 		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
-		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
-		return resp
+		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
 	if resp.Rcode == dns.RcodeRefused {
 		log.Info("Resolve query refused", "query", formatQuestion(q))
 
-		resp = dnsutil.HandleFailed(req, dns.RcodeServerFailure, do)
-		return resp
+		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
 	resp = h.additionalAnswer(ctx, req, resp)
@@ -144,7 +142,7 @@ func (h *DNSHandler) additionalAnswer(ctx context.Context, req, msg *dns.Msg) *d
 		if answer.Header().Rrtype == dns.TypeCNAME {
 			cr := answer.(*dns.CNAME)
 			if cr.Target == req.Question[0].Name {
-				return dnsutil.HandleFailed(req, dns.RcodeServerFailure, false)
+				return dnsutil.SetRcode(req, dns.RcodeServerFailure, false)
 			}
 			cnameReq.SetQuestion(cr.Target, req.Question[0].Qtype)
 		}

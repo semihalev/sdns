@@ -99,9 +99,8 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 						l.cookie.Store(servercookie)
 						option.(*dns.EDNS0_COOKIE).Cookie = servercookie
 
-						_ = w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadCookie, false))
+						ch.CancelWithRcode(dns.RcodeBadCookie, false)
 
-						ch.Cancel()
 						return
 					}
 				}

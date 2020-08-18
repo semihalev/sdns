@@ -85,8 +85,8 @@ func reverse6(slice []string) string {
 	return ip.String()
 }
 
-// HandleFailed returns message specified with rcode.
-func HandleFailed(req *dns.Msg, rcode int, do bool) *dns.Msg {
+// SetRcode returns message specified with rcode.
+func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
 	m := new(dns.Msg)
 	m.Extra = req.Extra
 	m.SetRcode(req, rcode)

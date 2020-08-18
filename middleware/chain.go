@@ -45,6 +45,24 @@ func (ch *Chain) Cancel() {
 	ch.count = 0
 }
 
+// CancelWithRcode next calls with rcode
+func (ch *Chain) CancelWithRcode(rcode int, do bool) {
+	m := new(dns.Msg)
+	m.Extra = ch.Request.Extra
+	m.SetRcode(ch.Request, rcode)
+
+	m.RecursionAvailable = true
+	m.RecursionDesired = true
+
+	if opt := m.IsEdns0(); opt != nil {
+		opt.SetDo(do)
+	}
+
+	_ = ch.Writer.WriteMsg(m)
+
+	ch.count = 0
+}
+
 // Reset the chain variables
 func (ch *Chain) Reset(w dns.ResponseWriter, r *dns.Msg) {
 	ch.Writer.Reset(w)

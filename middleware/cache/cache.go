@@ -121,8 +121,8 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	if q.Name != "." && !req.RecursionDesired {
-		_ = w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeServerFailure, false))
-		ch.Cancel()
+		ch.CancelWithRcode(dns.RcodeServerFailure, false)
+
 		return
 	}
 
@@ -316,7 +316,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		if answer.Header().Rrtype == dns.TypeCNAME {
 			cr := answer.(*dns.CNAME)
 			if cr.Target == msg.Question[0].Name {
-				return dnsutil.HandleFailed(msg, dns.RcodeServerFailure, false)
+				return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 			}
 			cnameReq.SetQuestion(cr.Target, msg.Question[0].Qtype)
 		}
@@ -339,7 +339,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 				target, child = searchAdditionalAnswer(msg, respCname)
 				if target == msg.Question[0].Name {
-					return dnsutil.HandleFailed(msg, dns.RcodeServerFailure, false)
+					return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 				}
 			}
 		}
