@@ -16,7 +16,10 @@ type dummy struct{}
 func (d *dummy) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
-	dns.HandleFailed(w, req)
+	m := new(dns.Msg)
+	m.SetRcode(req, dns.RcodeServerFailure)
+
+	_ = w.WriteMsg(m)
 }
 
 func (d *dummy) Name() string { return "dummy" }

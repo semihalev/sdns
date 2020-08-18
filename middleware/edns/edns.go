@@ -61,9 +61,8 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 
-		_ = w.WriteMsg(dnsutil.HandleFailed(req, dns.RcodeBadVers, do))
+		ch.CancelWithRcode(dns.RcodeBadVers, do)
 
-		ch.Cancel()
 		return
 	}
 

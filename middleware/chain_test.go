@@ -14,7 +14,7 @@ func Test_Chain(t *testing.T) {
 	ch := NewChain([]Handler{&dummy{}})
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
-
+	req.SetEdns0(512, true)
 	ch.Reset(w, req)
 
 	ch.Next(context.Background())
@@ -49,5 +49,12 @@ func Test_Chain(t *testing.T) {
 	assert.Equal(t, "127.0.0.1", ch.Writer.RemoteIP().String())
 
 	ch.Cancel()
+	assert.Equal(t, 0, ch.count)
+
+	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), req)
+
+	ch.CancelWithRcode(dns.RcodeServerFailure, true)
+	assert.True(t, ch.Writer.Written())
+	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
 	assert.Equal(t, 0, ch.count)
 }

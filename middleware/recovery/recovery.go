@@ -9,7 +9,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -34,7 +33,7 @@ func (r *Recovery) Name() string { return name }
 func (r *Recovery) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() {
 		if r := recover(); r != nil {
-			_ = ch.Writer.WriteMsg(dnsutil.HandleFailed(ch.Request, dns.RcodeServerFailure, false))
+			ch.CancelWithRcode(dns.RcodeServerFailure, false)
 
 			log.Error("Recovered in ServeDNS", "recover", r)
 
