@@ -2,7 +2,7 @@ name: "Tidier"
 
 on:
   schedule:
-    - cron: "30 9 * * 2" # Weekly build
+    - cron: "30 9 * * 8" # Weekly build
 
 jobs:
   run:
