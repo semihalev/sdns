@@ -14,7 +14,7 @@ jobs:
       - name: Run go-mod-tidy
         uses: sue445/go-mod-tidy-pr@master
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GH_API_TOKEN }}
           git_user_name: tidybot
           git_user_email: tidybot@github.com
           reviewer: semihalev
