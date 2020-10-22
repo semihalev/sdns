@@ -95,7 +95,7 @@ func ParseQTYPE(s string) uint16 {
 		return dns.TypeA
 	}
 
-	if v, err := strconv.Atoi(s); err == nil {
+	if v, err := strconv.ParseUint(s, 10, 16); err == nil {
 		return uint16(v)
 	}
 
