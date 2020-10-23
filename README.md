@@ -47,6 +47,12 @@ $ brew services start sdns
 $ snap install sdns
 ```
 
+#### AUR for ArchLinux
+
+```shell
+$ yay -S sdns-git
+```
+
 > **Tip:** Pre-build binaries, docker package, brew tap and snap automatically create by Github [workflows](https://github.com/semihalev/sdns/actions)
 
 ## Building
