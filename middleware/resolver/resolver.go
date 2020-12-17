@@ -747,6 +747,10 @@ func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
 }
 
 func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, bool) {
+	if len(resp.Question) == 0 {
+		return nil, false
+	}
+
 	q := resp.Question[0]
 
 	if q.Qtype == dns.TypeCNAME {
