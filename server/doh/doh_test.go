@@ -35,7 +35,7 @@ func Test_dohJSON(t *testing.T) {
 
 	w := httptest.NewRecorder()
 
-	request, err := http.NewRequest("GET", "/dns-query?name=www.google.com&type=a&do=true&cd=true&edns_client_subnet=127.0.0.1/32", nil)
+	request, err := http.NewRequest("GET", "/dns-query?name=www.google.com&type=a&do=true&cd=true", nil)
 	assert.NoError(t, err)
 
 	request.RemoteAddr = "127.0.0.1:0"
