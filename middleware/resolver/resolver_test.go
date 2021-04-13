@@ -185,23 +185,6 @@ func Test_resolverTimeout(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func Test_resolverLoop(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	req := new(dns.Msg)
-	req.SetQuestion("43.247.250.180.in-addr.arpa.", dns.TypePTR)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-
-	cfg := makeTestConfig()
-	r := NewResolver(cfg)
-
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
-
-	assert.Error(t, err)
-}
-
 func Test_resolverRootServersDetect(t *testing.T) {
 	t.Parallel()
 
