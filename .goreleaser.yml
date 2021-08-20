@@ -13,6 +13,7 @@ builds:
   - id: nonf
     targets:
       - darwin_amd64
+      - darwin_arm64
       - windows_amd64
       - freebsd_amd64
       - openbsd_amd64
@@ -87,10 +88,11 @@ nfpms:
     bindir: /usr/bin
     empty_folders:
       - /var/lib/sdns
-    files:
-      "contrib/linux/sdns.service": "/lib/systemd/system/sdns.service"
-    config_files:
-      "contrib/linux/sdns.conf": "/etc/sdns.conf"
+    contents:
+      - src: "./contrib/linux/sdns.service"
+        dst: "/lib/systemd/system/sdns.service"
+      - src: "./contrib/linux/sdns.conf"
+        dst: "/etc/sdns.conf"
     scripts:
       postinstall: "contrib/linux/adduser.sh"
     release: 1
