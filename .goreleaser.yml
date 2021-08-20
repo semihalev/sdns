@@ -93,6 +93,7 @@ nfpms:
         dst: "/lib/systemd/system/sdns.service"
       - src: "./contrib/linux/sdns.conf"
         dst: "/etc/sdns.conf"
+        type: config
     scripts:
       postinstall: "contrib/linux/adduser.sh"
     release: 1
