@@ -54,10 +54,10 @@ var (
 
 	# internet address and host name
 	127.0.0.1	localhost	# inline comment separated by tab
-	127.000.000.002	localhost       # inline comment separated by space
+	127.0.0.2	localhost       # inline comment separated by space
 
 	# internet address, host name and aliases
-	127.000.000.003	localhost	localhost.localdomain`
+	127.0.0.3	localhost	localhost.localdomain`
 	ipv6hosts = `# See https://tools.ietf.org/html/rfc5952, https://tools.ietf.org/html/rfc4007.
 
 	# internet address and host name
@@ -244,10 +244,6 @@ func TestHostCacheModification(t *testing.T) {
 		hosts[i] += "junk"
 	}
 	testStaticAddr(t, entip, h)
-}
-
-func TestServeHTTP(t *testing.T) {
-
 }
 
 func TestServeDNS(t *testing.T) {
