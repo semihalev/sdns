@@ -67,7 +67,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		resp.Id = req.Id
 
-		w.WriteMsg(resp)
+		_ = w.WriteMsg(resp)
 		return
 	}
 
