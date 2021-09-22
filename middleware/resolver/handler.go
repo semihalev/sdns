@@ -49,6 +49,11 @@ func (h *DNSHandler) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	if len(h.cfg.ForwarderServers) > 0 {
+		ch.Next(ctx)
+		return
+	}
+
 	w, req := ch.Writer, ch.Request
 
 	if v := ctx.Value(ctxKey("reqid")); v == nil {

@@ -16,4 +16,5 @@ import (
 	_ "github.com/semihalev/sdns/middleware/cache"
 	_ "github.com/semihalev/sdns/middleware/failover"
 	_ "github.com/semihalev/sdns/middleware/resolver"
+	_ "github.com/semihalev/sdns/middleware/forwarder"
 )

@@ -15,44 +15,45 @@ import (
 	"github.com/semihalev/log"
 )
 
-const configver = "1.1.0"
+const configver = "1.2.0"
 
 // Config type
 type Config struct {
-	Version         string
-	BlockLists      []string
-	BlockListDir    string
-	RootServers     []string
-	Root6Servers    []string
-	RootKeys        []string
-	FallbackServers []string
-	AccessList      []string
-	LogLevel        string
-	AccessLog       string
-	Bind            string
-	BindTLS         string
-	BindDOH         string
-	TLSCertificate  string
-	TLSPrivateKey   string
-	API             string
-	Nullroute       string
-	Nullroutev6     string
-	Hostsfile       string
-	OutboundIPs     []string
-	OutboundIP6s    []string
-	Timeout         Duration
-	Expire          uint32
-	CacheSize       int
-	Maxdepth        int
-	RateLimit       int
-	ClientRateLimit int
-	CookieSecret    string
-	NSID            string
-	Blocklist       []string
-	Whitelist       []string
-	Chaos           bool
-	QnameMinLevel   int `toml:"qname_min_level"`
-	EmptyZones      []string
+	Version          string
+	BlockLists       []string
+	BlockListDir     string
+	RootServers      []string
+	Root6Servers     []string
+	RootKeys         []string
+	FallbackServers  []string
+	ForwarderServers []string
+	AccessList       []string
+	LogLevel         string
+	AccessLog        string
+	Bind             string
+	BindTLS          string
+	BindDOH          string
+	TLSCertificate   string
+	TLSPrivateKey    string
+	API              string
+	Nullroute        string
+	Nullroutev6      string
+	Hostsfile        string
+	OutboundIPs      []string
+	OutboundIP6s     []string
+	Timeout          Duration
+	Expire           uint32
+	CacheSize        int
+	Maxdepth         int
+	RateLimit        int
+	ClientRateLimit  int
+	CookieSecret     string
+	NSID             string
+	Blocklist        []string
+	Whitelist        []string
+	Chaos            bool
+	QnameMinLevel    int `toml:"qname_min_level"`
+	EmptyZones       []string
 
 	Plugins map[string]Plugin
 
@@ -148,12 +149,20 @@ rootkeys = [
 ".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
 ]
 
-# Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled. Example: "1.1.1.1:53"
+# Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled"
 # fallbackservers = [
 #	"8.8.8.8:53",
 #	"8.8.4.4:53"
 # ]
 fallbackservers = [
+]
+
+# Forwarder resolver ipv4 or ipv6 addresses with port, left blank for disabled"
+# forwarderservers = [
+#	"8.8.8.8:53",
+#	"8.8.4.4:53"
+# ]
+forwarderservers = [
 ]
 
 # Address to bind to for the http API server, left blank for disabled

@@ -126,6 +126,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **root6servers**    | DNS Root IPv6 servers                                                                                                          |
 | **rootkeys**        | Trusted anchors for DNSSEC                                                                                                     |
 | **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "8.8.8.8:53"                             |
+| **forwarderservers**| Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "8.8.8.8:53"                             |
 | **api**             | Address to bind to for the http API server, left blank for disabled                                                            |
 | **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |

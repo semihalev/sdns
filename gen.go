@@ -1,4 +1,4 @@
-//+build ignore
+//go:build ignore
 
 package main
 
@@ -23,6 +23,7 @@ var middlewareList = []string{
 	"cache",
 	"failover",
 	"resolver",
+	"forwarder",
 }
 
 func main() {
