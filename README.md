@@ -179,6 +179,7 @@ Plugin interface is very simple. For more information, you can look the [example
 -   Middleware Support, you can add, your own middleware
 -   RTT priority within listed servers
 -   Failover forwarders while returning failured responses
+-   Forwarder support
 -   EDNS Cookie Support (client&lt;->server)
 -   EDNS NSID Support
 -   Full IPv6 support (client&lt;->server, server&lt;->server)
