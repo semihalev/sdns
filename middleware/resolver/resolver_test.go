@@ -115,23 +115,6 @@ func Test_resolverDS(t *testing.T) {
 	assert.Equal(t, len(resp.Answer) > 0, true)
 }
 
-func Test_resolverDSDFail(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	req := new(dns.Msg)
-	req.SetQuestion("dnssec.fail.", dns.TypeA)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-
-	cfg := makeTestConfig()
-	r := NewResolver(cfg)
-
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
-
-	assert.Error(t, err)
-}
-
 func Test_resolverAllNS(t *testing.T) {
 	t.Parallel()
 
