@@ -6,7 +6,6 @@ import (
 	"context"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -111,24 +110,6 @@ func Test_resolverDS(t *testing.T) {
 	r := NewResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
-
-	assert.NoError(t, err)
-	assert.Equal(t, len(resp.Answer) > 0, true)
-}
-
-func Test_resolverDSDelegate(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	req := new(dns.Msg)
-	req.SetQuestion("nic.co.id.", dns.TypeNS)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-
-	cfg := makeTestConfig()
-	r := NewResolver(cfg)
-
-	resp, err := r.Resolve(ctx, req, &authcache.AuthServers{List: []*authcache.AuthServer{authcache.NewAuthServer("202.12.31.53:53", authcache.IPv4)}}, false, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
