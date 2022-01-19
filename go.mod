@@ -7,11 +7,10 @@ require (
 	github.com/gin-contrib/pprof v1.3.0
 	github.com/gin-gonic/gin v1.7.7
 	github.com/miekg/dns v1.1.34
-	github.com/prometheus/client_golang v1.11.0
+	github.com/prometheus/client_golang v1.12.0
 	github.com/semihalev/log v0.1.1
 	github.com/stretchr/testify v1.7.0
 	github.com/yl2chen/cidranger v1.0.2
-	golang.org/x/sys v0.0.0-20210819135213-f52c844e1c1c // indirect
 	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e
 )
 
