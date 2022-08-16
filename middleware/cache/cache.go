@@ -48,6 +48,7 @@ type ResponseWriter struct {
 	middleware.ResponseWriter
 
 	*Cache
+	ctx context.Context
 }
 
 var debugns bool
@@ -157,7 +158,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		defer c.wg.Done(key)
 	}
 
-	ch.Writer = &ResponseWriter{ResponseWriter: w, Cache: c}
+	ch.Writer = &ResponseWriter{ResponseWriter: w, Cache: c, ctx: ctx}
 
 	ch.Next(ctx)
 
@@ -216,7 +217,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		w.set(key, res, mt, duration)
 	}
 
-	res = w.additionalAnswer(context.Background(), res)
+	res = w.additionalAnswer(w.ctx, res)
 
 	return w.ResponseWriter.WriteMsg(res)
 }
