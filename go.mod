@@ -7,7 +7,7 @@ require (
 	github.com/gin-contrib/pprof v1.3.0
 	github.com/gin-gonic/gin v1.7.7
 	github.com/miekg/dns v1.1.34
-	github.com/prometheus/client_golang v1.12.1
+	github.com/prometheus/client_golang v1.14.0
 	github.com/semihalev/log v0.1.1
 	github.com/stretchr/testify v1.7.0
 	github.com/yl2chen/cidranger v1.0.2
