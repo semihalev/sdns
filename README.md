@@ -28,6 +28,20 @@ Download the latest release from [Github Repo](https://github.com/semihalev/sdns
 $ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
 ```
 
+#### Docker Compose
+
+Install docker-compose by running the following:
+
+```shell
+$ sudo apt install docker-compose
+```
+
+After that, run the following from the root directory:
+
+```shell
+$ docker-compose up -d
+```
+
 #### Homebrew for macOS
 
 ```shell
