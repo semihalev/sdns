@@ -1,7 +1,7 @@
 module github.com/semihalev/sdns
 
 require (
-	github.com/BurntSushi/toml v1.0.0
+	github.com/BurntSushi/toml v1.2.1
 	github.com/cespare/xxhash/v2 v2.1.2
 	github.com/gin-contrib/cors v1.3.1
 	github.com/gin-contrib/pprof v1.3.0
