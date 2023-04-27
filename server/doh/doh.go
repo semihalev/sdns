@@ -3,7 +3,7 @@ package doh
 import (
 	"encoding/base64"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -32,7 +32,7 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 				return
 			}
 
-			buf, err = ioutil.ReadAll(r.Body)
+			buf, err = io.ReadAll(r.Body)
 			if err != nil {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return

@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,7 +44,7 @@ func Test_dohJSON(t *testing.T) {
 
 	assert.Equal(t, w.Code, http.StatusOK)
 
-	data, err := ioutil.ReadAll(w.Body)
+	data, err := io.ReadAll(w.Body)
 	assert.NoError(t, err)
 
 	var dm Msg
@@ -109,7 +109,7 @@ func Test_dohWireGET(t *testing.T) {
 
 	assert.Equal(t, w.Code, http.StatusOK)
 
-	data, err = ioutil.ReadAll(w.Body)
+	data, err = io.ReadAll(w.Body)
 	assert.NoError(t, err)
 
 	msg := new(dns.Msg)
@@ -188,7 +188,7 @@ func Test_dohWirePOST(t *testing.T) {
 
 	assert.Equal(t, w.Code, http.StatusOK)
 
-	data, err = ioutil.ReadAll(w.Body)
+	data, err = io.ReadAll(w.Body)
 	assert.NoError(t, err)
 
 	msg := new(dns.Msg)
