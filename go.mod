@@ -6,7 +6,7 @@ require (
 	github.com/gin-contrib/cors v1.3.1
 	github.com/gin-contrib/pprof v1.3.0
 	github.com/gin-gonic/gin v1.9.0
-	github.com/miekg/dns v1.1.52
+	github.com/miekg/dns v1.1.53
 	github.com/prometheus/client_golang v1.15.0
 	github.com/semihalev/log v0.1.1
 	github.com/stretchr/testify v1.8.2
