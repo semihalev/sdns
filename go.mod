@@ -11,7 +11,7 @@ require (
 	github.com/semihalev/log v0.1.1
 	github.com/stretchr/testify v1.8.2
 	github.com/yl2chen/cidranger v1.0.2
-	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e
+	golang.org/x/time v0.3.0
 )
 
 require (
