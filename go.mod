@@ -4,7 +4,7 @@ require (
 	github.com/BurntSushi/toml v1.2.1
 	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/gin-contrib/cors v1.3.1
-	github.com/gin-contrib/pprof v1.3.0
+	github.com/gin-contrib/pprof v1.4.0
 	github.com/gin-gonic/gin v1.9.0
 	github.com/miekg/dns v1.1.53
 	github.com/prometheus/client_golang v1.15.0
