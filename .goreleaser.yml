@@ -78,7 +78,7 @@ changelog:
   skip: true
 
 nfpms:
-  - file_name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Arch }}'
+  - file_name_template: '{{ .ProjectName }}_{{ .Version }}_{{- if eq .Arch "amd64" }}x86_64{{- else }}{{ .Arch }}{{ end }}'
     builds:
       - nf
     homepage:  https://sdns.dev
@@ -105,8 +105,6 @@ nfpms:
         dependencies:
           - systemd-sysv
       rpm:
-        replacements:
-          amd64: x86_64
         dependencies:
           - systemd
 
