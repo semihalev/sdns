@@ -87,13 +87,13 @@ nfpms:
     license: MIT
     bindir: /usr/bin
     contents:
-      - dst: /var/lib/sdns
-       type: dir
       - src: "./contrib/linux/sdns.service"
         dst: "/lib/systemd/system/sdns.service"
       - src: "./contrib/linux/sdns.conf"
         dst: "/etc/sdns.conf"
         type: config
+      - dst: "/var/lib/sdns"
+        type: dir
     scripts:
       postinstall: "contrib/linux/adduser.sh"
     release: 1
