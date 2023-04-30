@@ -86,9 +86,9 @@ nfpms:
     maintainer: Yasar Alev <semihalev@gmail.com>
     license: MIT
     bindir: /usr/bin
-    empty_folders:
-      - /var/lib/sdns
     contents:
+      - dst: /var/lib/sdns
+       type: dir
       - src: "./contrib/linux/sdns.service"
         dst: "/lib/systemd/system/sdns.service"
       - src: "./contrib/linux/sdns.conf"

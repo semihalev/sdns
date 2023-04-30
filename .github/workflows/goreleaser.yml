@@ -18,12 +18,12 @@ jobs:
         name: Set up Go 1.x
         uses: actions/setup-go@v4
         with:
-          go-version: ^1.13
+          go-version: ^1.19
       -
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v4.2.0
         with:
           version: latest
-          args: release --rm-dist
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_API_TOKEN }}
