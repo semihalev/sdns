@@ -338,10 +338,11 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			respCname, err = dnsutil.ExchangeInternal(ctx, cnameReq)
 			if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 				target, child = searchAdditionalAnswer(msg, respCname)
-				if target == msg.Question[0].Name {
-					return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
-				}
 			}
+		}
+
+		if target == msg.Question[0].Name {
+			return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
 
 		cnameReq.Question[0].Name = target

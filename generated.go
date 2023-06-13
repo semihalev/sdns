@@ -4,6 +4,7 @@ package main
 
 import (
 	_ "github.com/semihalev/sdns/middleware/recovery"
+	_ "github.com/semihalev/sdns/middleware/loop"
 	_ "github.com/semihalev/sdns/middleware/metrics"
 	_ "github.com/semihalev/sdns/middleware/accesslist"
 	_ "github.com/semihalev/sdns/middleware/ratelimit"

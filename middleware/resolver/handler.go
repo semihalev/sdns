@@ -157,14 +157,20 @@ func (h *DNSHandler) additionalAnswer(ctx context.Context, req, msg *dns.Msg) *d
 		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			for _, rr := range respCname.Answer {
+				if rr.Header().Rrtype == dns.TypeCNAME {
+					cr := rr.(*dns.CNAME)
+					if cr.Target == req.Question[0].Name {
+						return dnsutil.SetRcode(req, dns.RcodeServerFailure, false)
+					}
+				}
 				if respCname.Question[0].Name == cnameReq.Question[0].Name {
-					msg.Answer = append(msg.Answer, dns.Copy(rr))
+					msg.Answer = append(msg.Answer, rr)
 				}
 			}
 
 			for _, rr := range respCname.Ns {
 				if respCname.Question[0].Name == cnameReq.Question[0].Name {
-					msg.Ns = append(msg.Ns, dns.Copy(rr))
+					msg.Ns = append(msg.Ns, rr)
 				}
 			}
 		}

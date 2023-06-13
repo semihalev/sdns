@@ -16,7 +16,7 @@ import (
 	"github.com/semihalev/sdns/server"
 )
 
-const version = "1.2.4"
+const version = "1.3.0-rc1"
 
 var (
 	flagcfgpath  = flag.String("config", "sdns.conf", "location of the config file, if config file not found, a config will generate")

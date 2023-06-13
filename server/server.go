@@ -54,12 +54,11 @@ func New(cfg *config.Config) *Server {
 // ServeDNS implements the Handle interface.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	ch := s.chainPool.Get().(*middleware.Chain)
+	defer s.chainPool.Put(ch)
 
 	ch.Reset(w, r)
 
 	ch.Next(context.Background())
-
-	s.chainPool.Put(ch)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

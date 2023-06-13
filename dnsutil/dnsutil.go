@@ -11,11 +11,20 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 )
+
+var chainPool sync.Pool
+
+func init() {
+	chainPool.New = func() interface{} {
+		return middleware.NewChain(middleware.Handlers())
+	}
+}
 
 // ExtractAddressFromReverse turns a standard PTR reverse record name
 // into an IP address. This works for ipv4 or ipv6.
@@ -230,7 +239,9 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 func ExchangeInternal(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
 	w := mock.NewWriter("tcp", "127.0.0.255:0")
 
-	ch := middleware.NewChain(middleware.Handlers())
+	ch := chainPool.Get().(*middleware.Chain)
+	defer chainPool.Put(ch)
+
 	ch.Reset(w, r)
 
 	ch.Next(ctx)
