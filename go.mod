@@ -9,7 +9,7 @@ require (
 	github.com/miekg/dns v1.1.53
 	github.com/prometheus/client_golang v1.15.1
 	github.com/semihalev/log v0.1.1
-	github.com/stretchr/testify v1.8.2
+	github.com/stretchr/testify v1.8.4
 	github.com/yl2chen/cidranger v1.0.2
 	golang.org/x/time v0.3.0
 )
