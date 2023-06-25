@@ -6,7 +6,7 @@ COPY . /go/src/github.com/semihalev/sdns/
 
 WORKDIR /go/src/github.com/semihalev/sdns
 
-RUN apk --update --no-cache add \
+RUN apk --no-cache add \
 	ca-certificates \
 	gcc \
 	git \
