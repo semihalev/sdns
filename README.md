@@ -224,16 +224,6 @@ These benchmarks were run on a server with Intel Xeon E5-2609 v4 cpu and 32GB me
 
 <img src="https://github.com/semihalev/sdns/blob/master/benchmarks.png?raw=true">
 
-## Who Used
-
-_CubeDNS_ public open resolver project using sdns on multi location. The project supported both UDP and TCP also DoT and DoH.
-
-| Proto  | Servers                                  |
-| ------ | ---------------------------------------- |
-| IPv4   | 195.244.44.44, 195.244.44.45             |
-| IPv6   | 2a0a:be80::cbe:4444, 2a0a:be80::cbe:4445 |
-| DoH    | https://cubedns.com/dns-query            |
-
 ## Contributing
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
