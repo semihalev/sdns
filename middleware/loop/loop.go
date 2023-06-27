@@ -36,23 +36,18 @@ func (l *Loop) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	key := ctxKey("loopcheck:" + qKey)
 
 	if v := ctx.Value(key); v != nil {
-		list := v.([]string)
+		count := v.(uint64)
 
-		loopCount := 0
-		for _, n := range list {
-			if n == qKey {
-				loopCount++
-				if loopCount > 10 {
-					log.Warn("Loop detected", "query", qKey)
-					ch.CancelWithRcode(dns.RcodeServerFailure, false)
-				}
-			}
+		if count > 10 {
+			log.Warn("Loop detected", "query", qKey)
+			ch.CancelWithRcode(dns.RcodeServerFailure, false)
+			return
 		}
 
-		list = append(list, qKey)
-		ctx = context.WithValue(ctx, key, list)
+		count++
+		ctx = context.WithValue(ctx, key, count)
 	} else {
-		ctx = context.WithValue(ctx, key, []string{qKey})
+		ctx = context.WithValue(ctx, key, uint64(1))
 	}
 
 	ch.Next(ctx)

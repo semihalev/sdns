@@ -50,6 +50,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	if len(req.Question) == 0 || len(f.servers) == 0 {
 		ch.CancelWithRcode(dns.RcodeServerFailure, true)
+		return
 	}
 
 	fReq := new(dns.Msg)
