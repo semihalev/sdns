@@ -118,9 +118,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
-	if resp.Rcode == dns.RcodeRefused {
-		log.Info("Resolve query refused", "query", formatQuestion(q))
-
+	if resp.Rcode == dns.RcodeRefused || resp.Rcode == dns.RcodeNotZone {
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
