@@ -51,7 +51,7 @@ func (w *responseWriter) Reset(writer dns.ResponseWriter) {
 		w.remoteip = w.RemoteAddr().(*net.UDPAddr).IP
 	}
 
-	w.internal = w.remoteip.IsLoopback()
+	w.internal = w.RemoteAddr().String() == "127.0.0.255:0"
 }
 
 func (w *responseWriter) RemoteIP() net.IP {

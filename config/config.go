@@ -15,7 +15,7 @@ import (
 	"github.com/semihalev/log"
 )
 
-const configver = "1.2.0"
+const configver = "1.3.0"
 
 // Config type
 type Config struct {
@@ -44,6 +44,7 @@ type Config struct {
 	Timeout          Duration
 	Expire           uint32
 	CacheSize        int
+	Prefetch         uint32
 	Maxdepth         int
 	RateLimit        int
 	ClientRateLimit  int
@@ -214,6 +215,10 @@ expire = 600
 
 # Cache size (total records in cache)
 cachesize = 256000
+
+# Cache prefetch before expire. Default threshold is 10%%, 0 for disabled. 
+# The threshold percent should be between 10%% ~ 90%%  
+prefetch = 10
 
 # Maximum iteration depth for a query
 maxdepth = 30

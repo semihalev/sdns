@@ -51,9 +51,6 @@ func Test_PCache(t *testing.T) {
 	_, found := c.get(key, now)
 	assert.False(t, found)
 
-	_, _, err := c.GetP(key, req)
-	assert.Error(t, err)
-
 	c.ServeDNS(context.Background(), ch)
 	assert.False(t, ch.Writer.Written())
 
@@ -74,9 +71,6 @@ func Test_PCache(t *testing.T) {
 	i, found := c.get(key, now)
 	assert.True(t, found)
 	assert.NotNil(t, i)
-
-	_, _, err = c.GetP(key, req)
-	assert.NoError(t, err)
 
 	ch.Reset(mw, req)
 	c.ServeDNS(context.Background(), ch)
@@ -106,9 +100,6 @@ func Test_NCache(t *testing.T) {
 
 	key := cache.Hash(q)
 
-	_, err := c.GetN(key, req)
-	assert.Error(t, err)
-
 	msg := new(dns.Msg)
 	msg.SetRcode(req, dns.RcodeServerFailure)
 
@@ -116,9 +107,6 @@ func Test_NCache(t *testing.T) {
 	i, found := c.get(key, now)
 	assert.True(t, found)
 	assert.NotNil(t, i)
-
-	_, err = c.GetN(key, req)
-	assert.NoError(t, err)
 }
 
 func Test_Cache_RRSIG(t *testing.T) {
@@ -159,20 +147,9 @@ func Test_Cache_CNAME(t *testing.T) {
 	m1 := new(dns.Msg)
 	m1.SetQuestion("www.example.com.", dns.TypeA)
 	m1.SetEdns0(4096, true)
+	m1.Rcode = dns.RcodeSuccess
 	m1.Answer = append(m1.Answer, makeRR("www.example.com.		1800	IN	CNAME	www.example.com.example.net."))
 	c.Set(cache.Hash(m1.Question[0]), m1)
-
-	m2 := new(dns.Msg)
-	m2.SetQuestion("www.example.com.example.net.", dns.TypeA)
-	m2.SetEdns0(4096, true)
-	m2.Answer = append(m2.Answer, makeRR("www.example.com.example.net.		1800	IN	CNAME	e6858.dsce9.example.net."))
-	c.Set(cache.Hash(m2.Question[0]), m2)
-
-	m3 := new(dns.Msg)
-	m3.SetQuestion("e6858.dsce9.example.net.", dns.TypeA)
-	m3.SetEdns0(4096, true)
-	m3.Answer = append(m3.Answer, makeRR("e6858.dsce9.example.net. 10	IN	A	0.0.0.0"))
-	c.Set(cache.Hash(m3.Question[0]), m3)
 
 	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
@@ -183,7 +160,7 @@ func Test_Cache_CNAME(t *testing.T) {
 	ch.Reset(mw, req)
 	c.ServeDNS(context.Background(), ch)
 	assert.True(t, ch.Writer.Written())
-	assert.Equal(t, 3, len(ch.Writer.Msg().Answer))
+	assert.Equal(t, 1, len(ch.Writer.Msg().Answer))
 
 	c.now = func() time.Time {
 		return time.Now().Add(time.Hour)

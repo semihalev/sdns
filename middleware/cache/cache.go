@@ -5,6 +5,7 @@ package cache
 
 import (
 	"context"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/waitgroup"
-	"golang.org/x/time/rate"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/cache"
@@ -32,6 +32,8 @@ type Cache struct {
 	pcap    int
 	pttl    time.Duration
 	minpttl time.Duration
+
+	prefetch uint32
 
 	// ratelimit
 	rate int
@@ -66,6 +68,12 @@ func New(cfg *config.Config) *Cache {
 		cfg.CacheSize = 1024
 	}
 
+	if cfg.Prefetch < 10 && cfg.Prefetch > 1 {
+		cfg.Prefetch = 10
+	} else if cfg.Prefetch > 90 {
+		cfg.Prefetch = 90
+	}
+
 	c := &Cache{
 		pcap:    cfg.CacheSize / 2,
 		pcache:  cache.New(cfg.CacheSize / 2),
@@ -76,6 +84,8 @@ func New(cfg *config.Config) *Cache {
 		ncache:  cache.New(cfg.CacheSize / 2),
 		nttl:    time.Duration(cfg.Expire) * time.Second,
 		minnttl: time.Duration(cfg.Expire) * time.Second,
+
+		prefetch: cfg.Prefetch,
 
 		rate: cfg.RateLimit,
 
@@ -134,12 +144,28 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	now := c.now().UTC()
 
-	i, found := c.get(cache.Hash(q, req.CheckingDisabled), now)
+	key = cache.Hash(q, req.CheckingDisabled)
+	i, found := c.get(key, now)
 	if i != nil && found {
+		if w.Internal() && i.prefetching {
+			goto next
+		}
+
 		if !w.Internal() && c.rate > 0 && !i.Limiter.Allow() {
 			//no reply to client
 			ch.Cancel()
 			return
+		}
+
+		if !i.prefetching && c.prefetch > 0 && i.Rcode == dns.RcodeSuccess {
+			threshold := math.Ceil(float64(c.prefetch) / 100 * float64(i.origTTL))
+
+			if i.ttl(now) <= int(threshold) {
+				i.prefetching = true
+				c.pcache.Add(key, i)
+				pr := req.Copy()
+				go dnsutil.ExchangeInternal(ctx, pr)
+			}
 		}
 
 		m := i.toMsg(req, now)
@@ -147,6 +173,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		_ = w.WriteMsg(m)
 		ch.Cancel()
+
 		return
 	}
 
@@ -157,6 +184,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		defer c.wg.Done(key)
 	}
 
+next:
 	ch.Writer = &ResponseWriter{ResponseWriter: w, Cache: c}
 
 	ch.Next(ctx)
@@ -259,27 +287,6 @@ func (c *Cache) set(key uint64, msg *dns.Msg, mt response.Type, duration time.Du
 	}
 }
 
-// GetP returns positive entry for a key
-func (c *Cache) GetP(key uint64, req *dns.Msg) (*dns.Msg, *rate.Limiter, error) {
-	if i, ok := c.pcache.Get(key); ok && i.(*item).ttl(c.now()) > 0 {
-		it := i.(*item)
-		msg := it.toMsg(req, c.now())
-		return msg, it.Limiter, nil
-	}
-
-	return nil, nil, cache.ErrCacheNotFound
-}
-
-// GetN returns negative entry for a key
-func (c *Cache) GetN(key uint64, req *dns.Msg) (*rate.Limiter, error) {
-	if i, ok := c.ncache.Get(key); ok && i.(*item).ttl(c.now()) > 0 {
-		it := i.(*item)
-		return it.Limiter, nil
-	}
-
-	return nil, cache.ErrCacheNotFound
-}
-
 // Set adds a new element to the cache. If the element already exists it is overwritten.
 func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	mt, _ := response.Typify(msg, c.now().UTC())
@@ -326,19 +333,12 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 	if len(cnameReq.Question) > 0 {
 	lookup:
-		q := cnameReq.Question[0]
 		child := false
-
-		key := cache.Hash(q, cnameReq.CheckingDisabled)
-		respCname, _, err := c.GetP(key, cnameReq)
 		target := cnameReq.Question[0].Name
-		if err == nil {
+
+		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
+		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
-		} else {
-			respCname, err = dnsutil.ExchangeInternal(ctx, cnameReq)
-			if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
-				target, child = searchAdditionalAnswer(msg, respCname)
-			}
 		}
 
 		if target == msg.Question[0].Name {

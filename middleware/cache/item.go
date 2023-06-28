@@ -23,6 +23,8 @@ type item struct {
 
 	origTTL uint32
 	stored  time.Time
+
+	prefetching bool
 }
 
 func newItem(m *dns.Msg, now time.Time, d time.Duration, queryRate int) *item {
