@@ -336,11 +336,20 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 	cnameDepth := 10
 
+	targets := []string{}
 	if len(cnameReq.Question) > 0 {
 	lookup:
 		child := false
 		target := cnameReq.Question[0].Name
 		cnameReq.RecursionDesired = true
+
+		for _, t := range targets {
+			if t == target {
+				return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
+			}
+		}
+
+		targets = append(targets, target)
 
 		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
