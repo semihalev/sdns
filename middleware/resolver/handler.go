@@ -124,59 +124,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
-	resp = h.additionalAnswer(ctx, req, resp)
-
 	return resp
-}
-
-func (h *DNSHandler) additionalAnswer(ctx context.Context, req, msg *dns.Msg) *dns.Msg {
-	if req.Question[0].Qtype == dns.TypeCNAME ||
-		req.Question[0].Qtype == dns.TypeDS {
-		return msg
-	}
-
-	cnameReq := new(dns.Msg)
-	cnameReq.Extra = req.Extra
-	cnameReq.CheckingDisabled = req.CheckingDisabled
-
-	for _, answer := range msg.Answer {
-		if answer.Header().Rrtype == req.Question[0].Qtype {
-			return msg
-		}
-
-		if answer.Header().Rrtype == dns.TypeCNAME {
-			cr := answer.(*dns.CNAME)
-			if cr.Target == req.Question[0].Name {
-				return dnsutil.SetRcode(req, dns.RcodeServerFailure, false)
-			}
-			cnameReq.SetQuestion(cr.Target, req.Question[0].Qtype)
-		}
-	}
-
-	if len(cnameReq.Question) > 0 {
-		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
-		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
-			for _, rr := range respCname.Answer {
-				if rr.Header().Rrtype == dns.TypeCNAME {
-					cr := rr.(*dns.CNAME)
-					if cr.Target == req.Question[0].Name {
-						return dnsutil.SetRcode(req, dns.RcodeServerFailure, false)
-					}
-				}
-				if respCname.Question[0].Name == cnameReq.Question[0].Name {
-					msg.Answer = append(msg.Answer, rr)
-				}
-			}
-
-			for _, rr := range respCname.Ns {
-				if respCname.Question[0].Name == cnameReq.Question[0].Name {
-					msg.Ns = append(msg.Ns, rr)
-				}
-			}
-		}
-	}
-
-	return msg
 }
 
 func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {

@@ -169,7 +169,10 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		}
 
 		m := i.toMsg(req, now)
-		m = c.additionalAnswer(ctx, m)
+
+		if !w.Internal() {
+			m = c.additionalAnswer(ctx, m)
+		}
 
 		_ = w.WriteMsg(m)
 		ch.Cancel()
@@ -244,7 +247,9 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		w.set(key, res, mt, duration)
 	}
 
-	res = w.additionalAnswer(context.Background(), res)
+	if !w.Internal() {
+		res = w.additionalAnswer(context.Background(), res)
+	}
 
 	return w.ResponseWriter.WriteMsg(res)
 }
@@ -335,6 +340,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	lookup:
 		child := false
 		target := cnameReq.Question[0].Name
+		cnameReq.RecursionDesired = true
 
 		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
@@ -364,7 +370,6 @@ func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 
 	for _, r := range res.Answer {
 		msg.Answer = append(msg.Answer, r)
-
 		if r.Header().Rrtype == dns.TypeCNAME {
 			cr := r.(*dns.CNAME)
 			target = cr.Target
