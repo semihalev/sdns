@@ -106,7 +106,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.2.0)
+## Configuration (v1.3.0)
 
 | Key                 | Desc                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -135,6 +135,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
 | **expire**          | Default error cache TTL for in seconds Default: 600                                                                            |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
+| **prefetch**        | Cache prefetch before expire. Default threshold is 10%, 0 for disabled. The threshold percent should be between 10% ~ 90%      |
 | **maxdepth**        | Maximum iteration depth for a query Default: 30                                                                                |
 | **ratelimit**       | Query based ratelimit per second, 0 for disabled. Default: 0                                                                   |
 | **clientratelimit** | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
