@@ -175,7 +175,7 @@ func Test_Cache_CNAME(t *testing.T) {
 func Test_Cache_ResponseWriter(t *testing.T) {
 	log.Root().SetHandler(log.LvlFilterHandler(3, log.StdoutHandler))
 
-	cfg := &config.Config{Expire: 300, CacheSize: 10240, RateLimit: 10, Maxdepth: 30}
+	cfg := &config.Config{Expire: 300, CacheSize: 10240, Prefetch: 0, RateLimit: 10, Maxdepth: 30}
 	cfg.RootServers = []string{"192.5.5.241:53", "192.203.230.10:53"}
 	cfg.RootKeys = []string{
 		".			172800	IN	DNSKEY	256 3 8 AwEAAc4qsciJ5MdMUIu4n/pSTsSiU9OCyAanPTe5TcMX4v1hxhpFwiTGQUv3BXT6IAO4litrZKTUaj4vitqHW1+RQsHn3k/gSvt7FwyQwpy0mEnShBgr6RQiGtlBODNY67sTl+W8M/b6SLTAaaDri3BO5u6wrDs149rMELJAdoVBjmXW+zRH3kZzh3lwyTZsYtk7L+3DYbTiiHq+sRB4F9XoBPAz5Psv4q4EiPq07nW3acbW84zTz3CyQUmQkJT9VB1oUKHz6sNoyccqzcMX4q1GHAYpQ7FAXlKMxidoN1Ay5DWANgTmgJXzKhcI2nIZoq1x3yq4814O1LQd9QP68gI37+0=",
@@ -198,7 +198,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	req.CheckingDisabled = true
 	req.RecursionDesired = false
 
-	mw := mock.NewWriter("udp", "127.0.0.1:0")
+	mw := mock.NewWriter("udp", "127.0.0.255:0")
 	ch.Reset(mw, req)
 	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
@@ -206,14 +206,14 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 
 	req = req.Copy()
 	req.RecursionDesired = true
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	mw = mock.NewWriter("udp", "127.0.0.255:0")
 	ch.Reset(mw, req)
 	ch.Next(ctxtest)
 	assert.True(t, mw.Written())
 	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 
 	req = req.Copy()
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	mw = mock.NewWriter("udp", "127.0.0.255:0")
 	req.SetQuestion("labs.example.com.", dns.TypeA)
 	ch.Reset(mw, req)
 	ch.Next(ctxtest)
@@ -221,7 +221,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.Equal(t, dns.RcodeNameError, ch.Writer.Rcode())
 
 	req = req.Copy()
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	mw = mock.NewWriter("udp", "127.0.0.255:0")
 	req.SetQuestion("www.apple.com.", dns.TypeA)
 	ch.Reset(mw, req)
 	ch.Next(ctxtest)
@@ -237,7 +237,7 @@ func Test_Cache_ResponseWriter(t *testing.T) {
 	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 
 	req = req.Copy()
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	mw = mock.NewWriter("udp", "127.0.0.255:0")
 	req.SetQuestion("www.microsoft.com.", dns.TypeCNAME)
 	ch.Reset(mw, req)
 	ch.Next(ctxtest)
