@@ -367,6 +367,10 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		if child && cnameDepth > 0 {
 			goto lookup
 		}
+
+		if respCname.Rcode == dns.RcodeNameError {
+			msg.Rcode = dns.RcodeNameError
+		}
 	}
 
 	return msg
