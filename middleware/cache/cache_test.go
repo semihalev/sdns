@@ -155,8 +155,9 @@ func Test_Cache_CNAME(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("www.example.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
+	req.RecursionDesired = true
 
-	mw := mock.NewWriter("udp", "127.0.0.1:0")
+	mw := mock.NewWriter("udp", "127.0.0.255:0")
 	ch.Reset(mw, req)
 	c.ServeDNS(context.Background(), ch)
 	assert.True(t, ch.Writer.Written())
@@ -166,7 +167,7 @@ func Test_Cache_CNAME(t *testing.T) {
 		return time.Now().Add(time.Hour)
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	mw = mock.NewWriter("udp", "127.0.0.255:0")
 	ch.Reset(mw, req)
 	c.ServeDNS(context.Background(), ch)
 	assert.False(t, ch.Writer.Written())
