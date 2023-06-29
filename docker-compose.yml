@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  sdns:
+    image: c1982/sdns
+    container_name: sdns
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:53:53
+      - 127.0.0.1:53:53/udp
+    read_only: true
