@@ -32,7 +32,7 @@ jobs:
           echo ::set-output name=VERSION::$VERSION
           
       - name: Build image
-        run: docker build --build-arg="BUILDPLATFORM=linux/amd64" --build-arg="TARGETPLATFORM=linux/amd64" -t docker.pkg.github.com/${{ github.repository }}/sdns:${{ steps.get_version.outputs.VERSION }} .
+        run: docker build -t docker.pkg.github.com/${{ github.repository }}/sdns:${{ steps.get_version.outputs.VERSION }} .
 
       - name: Log into registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com -u ${{ github.actor }} --password-stdin
