@@ -38,3 +38,11 @@ tidy:
 clean:
 	rm -rf $(BIN)
 	rm -rf generated.go
+
+.PHONY: docker-build-amd64
+docker-build-amd64:
+	docker build --build-arg="BUILDPLATFORM=linux/amd64" --build-arg="TARGETPLATFORM=linux/amd64" -t c1982/sdns:$(VERSION)-linux-amd64 .
+
+.PHONY: docker-build-arm64
+docker-build-arm64:
+	docker build --build-arg="BUILDPLATFORM=linux/amd64" --build-arg="TARGETPLATFORM=linux/arm64" -t c1982/sdns:$(VERSION)-linux-arm64 .

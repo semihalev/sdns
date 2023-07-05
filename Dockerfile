@@ -1,6 +1,8 @@
 ARG image=golang:1.20.3-alpine3.17
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
 
-FROM $image AS builder
+FROM --platform=$BUILDPLATFORM $image AS builder
 
 COPY . /go/src/github.com/semihalev/sdns/
 
@@ -12,11 +14,10 @@ RUN apk --no-cache add \
 	git \
 	musl-dev
 
-RUN go build -ldflags "-linkmode external -extldflags -static -s -w" -o /tmp/sdns \
+RUN GOARCH=$TARGETPLATFORM go build -ldflags "-linkmode external -extldflags -static -s -w" -o /tmp/sdns \
 	&& strip --strip-all /tmp/sdns
 
-
-FROM scratch
+FROM --platform=$TARGETPLATFORM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /tmp/sdns /sdns
