@@ -45,4 +45,4 @@ docker-build-amd64:
 
 .PHONY: docker-build-arm64
 docker-build-arm64:
-	docker build --build-arg="BUILDPLATFORM=linux/amd64" --build-arg="TARGETPLATFORM=linux/arm64" -t c1982/sdns:$(VERSION)-linux-arm64 .
+	docker build --build-arg="BUILDPLATFORM=linux/arm64" --build-arg="TARGETPLATFORM=linux/arm64" -t c1982/sdns:$(VERSION)-linux-arm64 .
