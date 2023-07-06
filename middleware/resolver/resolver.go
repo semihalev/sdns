@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/panjf2000/ants/v2"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
@@ -937,11 +936,7 @@ mainloop:
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		f := func() {
-			startRacer(ctx, req.CopyTo(AcquireMsg()), server)
-		}
-
-		ants.Submit(f)
+		go startRacer(ctx, req.CopyTo(AcquireMsg()), server)
 
 	fallbackloop:
 		for left != 0 {
