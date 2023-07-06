@@ -931,11 +931,11 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 
 	left := len(serversList)
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 mainloop:
 	for index, server := range serversList {
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
 		go startRacer(ctx, req.CopyTo(AcquireMsg()), server)
 
 	fallbackloop:
