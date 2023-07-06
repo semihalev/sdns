@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/panjf2000/ants/v2"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
@@ -936,7 +937,11 @@ mainloop:
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		go startRacer(ctx, req.CopyTo(AcquireMsg()), server)
+		f := func() {
+			startRacer(ctx, req.CopyTo(AcquireMsg()), server)
+		}
+
+		ants.Submit(f)
 
 	fallbackloop:
 		for left != 0 {
@@ -1023,6 +1028,10 @@ mainloop:
 }
 
 func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, server *authcache.AuthServer, retried int) (*dns.Msg, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	q := req.Question[0]
 
 	var resp *dns.Msg
