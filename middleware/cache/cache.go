@@ -164,7 +164,9 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 				i.prefetching = true
 				c.pcache.Add(key, i)
 				pr := req.Copy()
-				go dnsutil.ExchangeInternal(ctx, pr)
+				go func() {
+					_, _ = dnsutil.ExchangeInternal(ctx, pr)
+				}()
 			}
 		}
 

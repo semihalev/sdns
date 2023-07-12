@@ -1166,7 +1166,6 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	}
 
 	q.Name = q.Name[next:]
-	level++
 
 	return r.searchCache(q, cd, origin)
 }
