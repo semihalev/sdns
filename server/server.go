@@ -24,6 +24,8 @@ import (
 
 // Server type
 type Server struct {
+	sync.RWMutex
+
 	addr           string
 	tlsAddr        string
 	dohAddr        string
@@ -73,11 +75,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Server", "sdns")
 
+	s.RLock()
 	if s.srvhttp3 != nil {
 		if r.ProtoMajor < 3 {
 			s.srvhttp3.SetQuicHeaders(w.Header())
 		}
 	}
+	s.RUnlock()
 
 	handle := func(req *dns.Msg) *dns.Msg {
 		mw := mock.NewWriter("tcp", r.RemoteAddr)
@@ -160,7 +164,9 @@ func (s *Server) ListenAndServeHTTPTLS() {
 		ErrorLog:     l.New(logWriter, "", 0),
 	}
 
+	s.Lock()
 	s.srvhttp = srv
+	s.Unlock()
 
 	if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
 		log.Error("DNSs listener failed", "net", "doh", "addr", s.dohAddr, "error", err.Error())
@@ -183,7 +189,9 @@ func (s *Server) ListenAndServeH3() {
 		},
 	}
 
+	s.Lock()
 	s.srvhttp3 = srv
+	s.Unlock()
 
 	if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
 		log.Error("DNSs listener failed", "net", "h3", "addr", s.dohAddr, "error", err.Error())
