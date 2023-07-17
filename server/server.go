@@ -76,10 +76,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", "sdns")
 
 	s.RLock()
-	if s.srvhttp3 != nil {
-		if r.ProtoMajor < 3 {
-			s.srvhttp3.SetQuicHeaders(w.Header())
-		}
+	if s.srvhttp3 != nil && r.ProtoMajor < 3 {
+		s.srvhttp3.SetQuicHeaders(w.Header())
 	}
 	s.RUnlock()
 

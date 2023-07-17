@@ -1,38 +1,43 @@
-package server
+package doq
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/semihalev/sdns/middleware"
-
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/middleware/blocklist"
-	"github.com/semihalev/sdns/mock"
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMain(m *testing.M) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
-	m.Run()
+type dummyHandler struct {
+	dns.Handler
+}
 
-	os.Exit(0)
+func makeRR(data string) dns.RR {
+	r, _ := dns.NewRR(data)
+
+	return r
+}
+
+func (h *dummyHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	msg := new(dns.Msg)
+	msg.SetReply(r)
+	msg.Answer = append(msg.Answer, makeRR("example.com.		1800	IN	A	0.0.0.0"))
+
+	_ = w.WriteMsg(msg)
 }
 
 func publicKey(priv interface{}) interface{} {
@@ -113,100 +118,55 @@ func generateCertificate() error {
 	return keyOut.Close()
 }
 
-func Test_logPipe(t *testing.T) {
-	logReader, logWriter := io.Pipe()
-	go readlogs(logReader)
-	_, _ = logWriter.Write([]byte("test test test test test test\n"))
-}
-
-func Test_ServerNoBind(t *testing.T) {
-	cfg := &config.Config{}
-
-	s := New(cfg)
-	s.Run()
-}
-
-func Test_ServerBindFail(t *testing.T) {
-	cfg := &config.Config{}
-
-	cfg.TLSCertificate = "cert"
-	cfg.TLSPrivateKey = "key"
-	cfg.LogLevel = "crit"
-	cfg.Bind = "1:1"
-	cfg.BindTLS = "1:2"
-	cfg.BindDOH = "1:3"
-	cfg.BindDOQ = "1:4"
-
-	s := New(cfg)
-	s.Run()
-}
-
-func Test_Server(t *testing.T) {
-	cfg := &config.Config{}
+func Test_doq(t *testing.T) {
 	err := generateCertificate()
 	assert.NoError(t, err)
 
 	cert := filepath.Join(os.TempDir(), "test.cert")
 	privkey := filepath.Join(os.TempDir(), "test.key")
 
-	cfg.TLSCertificate = cert
-	cfg.TLSPrivateKey = privkey
-	cfg.LogLevel = "crit"
-	cfg.Bind = "127.0.0.1:0"
-	cfg.BindTLS = "127.0.0.1:23222"
-	cfg.BindDOH = "127.0.0.1:23223"
-	cfg.BindDOQ = "127.0.0.1:23224"
+	h := &dummyHandler{}
 
-	middleware.Setup(cfg)
-
-	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
-	blocklist.Set("test.com.")
-
-	s := New(cfg)
-	s.Run()
-
-	req := new(dns.Msg)
-	req.SetQuestion("test.com.", dns.TypeA)
-
-	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	s.ServeDNS(mw, req)
-
-	assert.True(t, mw.Written())
-	if assert.NotNil(t, mw.Msg()) {
-		assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	s := &Server{
+		Addr:    "127.0.0.1:45853",
+		Handler: h,
 	}
 
-	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
+	go func() {
+		err := s.ListenAndServeQUIC(cert, privkey)
+		assert.NoError(t, err)
+	}()
+
+	time.Sleep(time.Second)
+
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"doq"},
+	}
+	conn, err := quic.DialAddr(context.Background(), s.Addr, tlsConf, nil)
 	assert.NoError(t, err)
 
-	hw := httptest.NewRecorder()
-
-	s.ServeHTTP(hw, request)
-	assert.Equal(t, 200, hw.Code)
-
-	data, err := req.Pack()
+	stream, err := conn.OpenStreamSync(context.Background())
 	assert.NoError(t, err)
 
-	dq := base64.RawURLEncoding.EncodeToString(data)
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.Id = 0
 
-	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
+	buf, err := req.Pack()
 	assert.NoError(t, err)
 
-	hw = httptest.NewRecorder()
+	n, err := stream.Write(addPrefixLen(buf))
+	assert.NoError(t, err)
+	assert.Greater(t, n, 17)
 
-	s.ServeHTTP(hw, request)
-	assert.Equal(t, 200, hw.Code)
-
-	request, err = http.NewRequest("GET", "/dns-query?name=example.com", nil)
+	err = stream.Close()
 	assert.NoError(t, err)
 
-	hw = httptest.NewRecorder()
+	data, err := io.ReadAll(stream)
+	assert.NoError(t, err)
 
-	s.ServeHTTP(hw, request)
-	assert.Equal(t, 400, hw.Code)
-
-	time.Sleep(2 * time.Second)
-
-	os.Remove(cert)
-	os.Remove(privkey)
+	msg := new(dns.Msg)
+	err = msg.Unpack(data[2:])
+	assert.NoError(t, err)
 }
