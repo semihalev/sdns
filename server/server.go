@@ -70,6 +70,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Server", "sdns")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if r.ProtoMajor < 3 {
 		_, port, _ := net.SplitHostPort(s.dohAddr)

@@ -43,13 +43,11 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
 			log.Error("DNS listener failed", "net", "doq", "error", err.Error())
-			break
+			return err
 		}
 
 		go s.handleConnection(conn)
 	}
-
-	return nil
 }
 
 func (s *Server) handleConnection(conn quic.Connection) {
