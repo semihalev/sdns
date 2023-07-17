@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -62,6 +63,7 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 			return
 		}
 
+		w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
 		w.Header().Set("Content-Type", "application/dns-message")
 		w.Header().Set("Content-Length", strconv.Itoa(len(packed)))
 
@@ -144,6 +146,8 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
+
+		w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
 
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
 			w.Header().Set("Content-Type", "application/x-javascript")
