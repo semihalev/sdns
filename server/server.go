@@ -47,7 +47,7 @@ func New(cfg *config.Config) *Server {
 		addr:           cfg.Bind,
 		tlsAddr:        cfg.BindTLS,
 		dohAddr:        cfg.BindDOH,
-		doqAddr:        ":853",
+		doqAddr:        cfg.BindDOQ,
 		tlsCertificate: cfg.TLSCertificate,
 		tlsPrivateKey:  cfg.TLSPrivateKey,
 	}
