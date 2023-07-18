@@ -13,6 +13,8 @@ import (
 
 var doqProtos = []string{"doq", "doq-i02", "dq", "doq-i00", "doq-i01", "doq-i11"}
 
+const minMsgHeaderSize = 14 // fixed msg header size 12 + quic prefix size 2
+
 type Server struct {
 	Addr    string
 	Handler dns.Handler
@@ -68,6 +70,10 @@ func (s *Server) handleConnection(conn quic.Connection) {
 	buf, err = io.ReadAll(stream)
 	if err != nil {
 		_ = conn.CloseWithError(0x1, err.Error())
+		return
+	}
+
+	if len(buf) < minMsgHeaderSize {
 		return
 	}
 
