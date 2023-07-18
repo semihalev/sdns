@@ -169,4 +169,46 @@ func Test_doq(t *testing.T) {
 	msg := new(dns.Msg)
 	err = msg.Unpack(data[2:])
 	assert.NoError(t, err)
+
+	stream, err = conn.OpenStreamSync(context.Background())
+	assert.NoError(t, err)
+
+	time.Sleep(6 * time.Second)
+
+	_, err = stream.Write([]byte{0, 0})
+	assert.Error(t, err)
+
+	conn, err = quic.DialAddr(context.Background(), s.Addr, tlsConf, nil)
+	assert.NoError(t, err)
+
+	stream, err = conn.OpenStreamSync(context.Background())
+	assert.NoError(t, err)
+
+	_, err = stream.Write([]byte{0, 0})
+	assert.NoError(t, err)
+
+	err = stream.Close()
+	assert.NoError(t, err)
+
+	_, err = io.ReadAll(stream)
+	assert.Error(t, err)
+
+	conn, err = quic.DialAddr(context.Background(), s.Addr, tlsConf, nil)
+	assert.NoError(t, err)
+
+	stream, err = conn.OpenStreamSync(context.Background())
+	assert.NoError(t, err)
+
+	msg = new(dns.Msg)
+	msg.SetEdns0(512, true)
+	buf, _ = msg.Pack()
+
+	_, err = stream.Write(buf)
+	assert.NoError(t, err)
+
+	err = stream.Close()
+	assert.NoError(t, err)
+
+	_, err = io.ReadAll(stream)
+	assert.Error(t, err)
 }

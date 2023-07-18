@@ -13,7 +13,11 @@ import (
 
 var doqProtos = []string{"doq", "doq-i02", "dq", "doq-i00", "doq-i01", "doq-i11"}
 
-const minMsgHeaderSize = 14 // fixed msg header size 12 + quic prefix size 2
+const (
+	minMsgHeaderSize = 14 // fixed msg header size 12 + quic prefix size 2
+	ProtocolError    = 0x2
+	NoError          = 0x0
+)
 
 type Server struct {
 	Addr    string
@@ -59,32 +63,37 @@ func (s *Server) handleConnection(conn quic.Connection) {
 		err    error
 	)
 
-	stream, err = conn.AcceptStream(context.Background())
-	if err != nil {
-		_ = conn.CloseWithError(0x1, err.Error())
-		return
+	for {
+		stream, err = conn.AcceptStream(context.Background())
+		if err != nil {
+			_ = conn.CloseWithError(NoError, "")
+			return
+		}
+
+		go func() {
+			defer stream.Close()
+
+			buf, err = io.ReadAll(stream)
+			if err != nil {
+				_ = conn.CloseWithError(ProtocolError, err.Error())
+				return
+			}
+
+			if len(buf) < minMsgHeaderSize {
+				_ = conn.CloseWithError(ProtocolError, "dns msg size too small")
+				return
+			}
+
+			req := new(dns.Msg)
+			if err := req.Unpack(buf[2:]); err != nil {
+				_ = conn.CloseWithError(ProtocolError, err.Error())
+				return
+			}
+			req.Id = dns.Id()
+
+			w := &ResponseWriter{Conn: conn, Stream: stream}
+
+			s.Handler.ServeDNS(w, req)
+		}()
 	}
-
-	defer stream.Close()
-
-	buf, err = io.ReadAll(stream)
-	if err != nil {
-		_ = conn.CloseWithError(0x1, err.Error())
-		return
-	}
-
-	if len(buf) < minMsgHeaderSize {
-		return
-	}
-
-	req := new(dns.Msg)
-	if err := req.Unpack(buf[2:]); err != nil {
-		_ = conn.CloseWithError(0x1, err.Error())
-		return
-	}
-	req.Id = dns.Id()
-
-	w := &ResponseWriter{Conn: conn, Stream: stream}
-
-	s.Handler.ServeDNS(w, req)
 }
