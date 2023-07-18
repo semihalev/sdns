@@ -78,7 +78,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	handle := func(req *dns.Msg) *dns.Msg {
-		mw := mock.NewWriter("tcp", r.RemoteAddr)
+		mw := mock.NewWriter("doh", r.RemoteAddr)
 		s.ServeDNS(mw, req)
 
 		if !mw.Written() {
@@ -132,10 +132,10 @@ func (s *Server) ListenAndServeDNSTLS() {
 		return
 	}
 
-	log.Info("DNS server listening...", "net", "tcp-tls", "addr", s.tlsAddr)
+	log.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
 
 	if err := dns.ListenAndServeTLS(s.tlsAddr, s.tlsCertificate, s.tlsPrivateKey, s); err != nil {
-		log.Error("DNS listener failed", "net", "tcp-tls", "addr", s.tlsAddr, "error", err.Error())
+		log.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 	}
 }
 
