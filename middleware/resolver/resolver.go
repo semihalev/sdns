@@ -672,13 +672,13 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
 	for name, addrs := range nsipv4 {
-		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA})
+		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
 		r.ipv4cache.Add(key, addrs)
 	}
 }
 
 func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
-	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA})
+	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
 	if v, ok := r.ipv4cache.Get(key); ok {
 		return v.([]string), ok
 	}
@@ -687,18 +687,18 @@ func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
 }
 
 func (r *Resolver) removeIPv4Cache(name string) {
-	r.ipv4cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA}))
+	r.ipv4cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
 	for name, addrs := range nsipv6 {
-		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA})
+		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
 		r.ipv6cache.Add(key, addrs)
 	}
 }
 
 func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
-	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA})
+	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
 	if v, ok := r.ipv6cache.Get(key); ok {
 		return v.([]string), ok
 	}
@@ -707,7 +707,7 @@ func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
 }
 
 func (r *Resolver) removeIPv6Cache(name string) {
-	r.ipv6cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA}))
+	r.ipv6cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool) {

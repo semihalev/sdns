@@ -169,7 +169,7 @@ func (s *Server) ListenAndServeH3() {
 		return
 	}
 
-	log.Info("DNS server listening...", "net", "h3", "addr", s.dohAddr)
+	log.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
 
 	srv := &http3.Server{
 		Addr:    s.dohAddr,
@@ -180,7 +180,7 @@ func (s *Server) ListenAndServeH3() {
 	}
 
 	if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
-		log.Error("DNSs listener failed", "net", "h3", "addr", s.dohAddr, "error", err.Error())
+		log.Error("DNSs listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
 	}
 }
 

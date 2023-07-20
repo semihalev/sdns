@@ -136,7 +136,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	key := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNULL})
+	key := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNULL, Qclass: dns.ClassINET})
 
 	if !w.Internal() {
 		c.wg.Wait(key)
