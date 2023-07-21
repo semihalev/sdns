@@ -120,7 +120,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.3.0)
+## Configuration (v1.3.2)
 
 | Key                 | Desc                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -132,6 +132,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **bind**            | Address to bind to for the DNS server. Default :53                                                                             |
 | **bindtls**         | Address to bind to for the DNS-over-TLS server. Default :853                                                                   |
 | **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
+| **binddoq**         | Address to bind to for the DNS-over-QUIC server. Default :853                                                                  |
 | **tlscertificate**  | TLS certificate file path                                                                                                      |
 | **tlsprivatekey**   | TLS private key file path                                                                                                      |
 | **outboundips**     | Outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address by request based                       |
@@ -186,10 +187,11 @@ Plugin interface is very simple. For more information, you can look the [example
 -   Linux/BSD/Darwin/Windows supported
 -   DNS RFC compatibility
 -   DNS lookups within listed ipv4 and ipv6 auth servers
--   DNS caching
+-   DNS caching with prefetch support
 -   DNSSEC validation
 -   DNS over TLS support (DoT)
--   DNS over HTTPS support (DoH)
+-   DNS over HTTPS support (DoH) with HTTP/3 support
+-   DNS over QUIC support (DoQ)
 -   Outbound IP selection
 -   Middleware Support, you can add, your own middleware
 -   RTT priority within listed servers
@@ -225,7 +227,7 @@ Plugin interface is very simple. For more information, you can look the [example
 -   [x] DNAME Redirection in the DNS described at RFC 6672
 -   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
--   [ ] DNS over QUIC support described at RFC 9250
+-   [x] DNS over QUIC support described at RFC 9250
 
 ## Performance
 

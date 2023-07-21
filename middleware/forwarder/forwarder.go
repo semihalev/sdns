@@ -55,6 +55,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	fReq := new(dns.Msg)
 	fReq.SetQuestion(req.Question[0].Name, req.Question[0].Qtype)
+	fReq.Question[0].Qclass = req.Question[0].Qclass
 	fReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	fReq.RecursionDesired = true
 	fReq.CheckingDisabled = req.CheckingDisabled

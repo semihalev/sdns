@@ -5,6 +5,8 @@ import (
 	"net"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/sdns/server/doq"
 )
 
 // ResponseWriter implement of dns.ResponseWriter
@@ -36,19 +38,26 @@ func (w *responseWriter) Msg() *dns.Msg {
 	return w.msg
 }
 
-func (w *responseWriter) Reset(writer dns.ResponseWriter) {
-	w.ResponseWriter = writer
+func (w *responseWriter) Reset(rw dns.ResponseWriter) {
+	w.ResponseWriter = rw
 	w.size = -1
 	w.msg = nil
 	w.rcode = dns.RcodeSuccess
 
-	switch writer.LocalAddr().(type) {
+	switch rw.LocalAddr().(type) {
 	case (*net.TCPAddr):
 		w.proto = "tcp"
 		w.remoteip = w.RemoteAddr().(*net.TCPAddr).IP
 	case (*net.UDPAddr):
 		w.proto = "udp"
 		w.remoteip = w.RemoteAddr().(*net.UDPAddr).IP
+	}
+
+	switch writer := rw.(type) {
+	case (*mock.Writer):
+		w.proto = writer.Proto()
+	case (*doq.ResponseWriter):
+		w.proto = "doq"
 	}
 
 	w.internal = w.RemoteAddr().String() == "127.0.0.255:0"

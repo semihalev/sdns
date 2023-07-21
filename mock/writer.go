@@ -23,18 +23,18 @@ func NewWriter(proto, addr string) *Writer {
 	w := &Writer{}
 
 	switch proto {
-	case "tcp", "tcp-tls":
+	case "tcp", "doh":
 		w.localAddr = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
 		w.remoteAddr, _ = net.ResolveTCPAddr("tcp", addr)
 		w.remoteip = w.remoteAddr.(*net.TCPAddr).IP
-		w.proto = "tcp"
 
 	case "udp":
 		w.localAddr = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
 		w.remoteAddr, _ = net.ResolveUDPAddr("udp", addr)
 		w.remoteip = w.remoteAddr.(*net.UDPAddr).IP
-		w.proto = "udp"
 	}
+
+	w.proto = proto
 
 	return w
 }

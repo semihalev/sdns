@@ -12,15 +12,15 @@ import (
 
 func Test_Hash(t *testing.T) {
 
-	q := dns.Question{Name: "goOgle.com.", Qtype: dns.TypeA, Qclass: dns.ClassANY}
+	q := dns.Question{Name: "goOgle.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 
 	asset := Hash(q)
 
-	assert.Equal(t, asset, uint64(9436806681948056182))
+	assert.Equal(t, uint64(13726664550454464700), asset)
 
 	asset = Hash(q, true)
 
-	assert.NotEqual(t, asset, uint64(9436806681948056182))
+	assert.Equal(t, uint64(8882204296994448420), asset)
 }
 
 func Benchmark_Hash(b *testing.B) {

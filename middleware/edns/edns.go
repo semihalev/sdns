@@ -66,7 +66,8 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	if w.Proto() == "tcp" {
+	switch w.Proto() {
+	case "tcp", "doq", "doh":
 		size = dns.MaxMsgSize
 	}
 

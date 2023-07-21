@@ -20,6 +20,7 @@ func Hash(q dns.Question, cd ...bool) uint64 {
 	buf := AcquireBuf()
 	defer ReleaseBuf(buf)
 
+	buf.Write([]byte{uint8(q.Qclass >> 8), uint8(q.Qclass & 0xff)})
 	buf.Write([]byte{uint8(q.Qtype >> 8), uint8(q.Qtype & 0xff)})
 
 	if len(cd) > 0 && cd[0] {

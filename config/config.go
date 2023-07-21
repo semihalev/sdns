@@ -15,7 +15,7 @@ import (
 	"github.com/semihalev/log"
 )
 
-const configver = "1.3.0"
+const configver = "1.3.2"
 
 // Config type
 type Config struct {
@@ -33,6 +33,7 @@ type Config struct {
 	Bind             string
 	BindTLS          string
 	BindDOH          string
+	BindDOQ          string
 	TLSCertificate   string
 	TLSPrivateKey    string
 	API              string
@@ -96,6 +97,9 @@ bind = ":53"
 
 # Address to bind to for the DNS-over-HTTPS server
 # binddoh = ":8053"
+
+# Address to bind to for the DNS-over-QUIC server
+# binddoq = ":853"
 
 # TLS certificate file
 # tlscertificate = "server.crt"

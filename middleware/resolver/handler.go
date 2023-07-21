@@ -178,7 +178,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 }
 
 func (h *DNSHandler) purge(qname string) {
-	q := dns.Question{Name: qname, Qtype: dns.TypeNS}
+	q := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 
 	key := cache.Hash(q, false)
 	h.resolver.ncache.Remove(key)

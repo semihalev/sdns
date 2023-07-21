@@ -5,18 +5,22 @@ import (
 	"context"
 	"io"
 	l "log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/semihalev/sdns/server/doh"
+	"github.com/semihalev/sdns/server/doq"
 )
 
 // Server type
@@ -24,6 +28,7 @@ type Server struct {
 	addr           string
 	tlsAddr        string
 	dohAddr        string
+	doqAddr        string
 	tlsCertificate string
 	tlsPrivateKey  string
 
@@ -40,6 +45,7 @@ func New(cfg *config.Config) *Server {
 		addr:           cfg.Bind,
 		tlsAddr:        cfg.BindTLS,
 		dohAddr:        cfg.BindDOH,
+		doqAddr:        cfg.BindDOQ,
 		tlsCertificate: cfg.TLSCertificate,
 		tlsPrivateKey:  cfg.TLSPrivateKey,
 	}
@@ -62,8 +68,17 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	w.Header().Set("Server", "sdns")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.ProtoMajor < 3 {
+		_, port, _ := net.SplitHostPort(s.dohAddr)
+		w.Header().Set("Alt-Svc", `h3=":`+port+`"; ma=2592000`)
+	}
+
 	handle := func(req *dns.Msg) *dns.Msg {
-		mw := mock.NewWriter("tcp", r.RemoteAddr)
+		mw := mock.NewWriter("doh", r.RemoteAddr)
 		s.ServeDNS(mw, req)
 
 		if !mw.Written() {
@@ -89,6 +104,8 @@ func (s *Server) Run() {
 	go s.ListenAndServeDNS("tcp")
 	go s.ListenAndServeDNSTLS()
 	go s.ListenAndServeHTTPTLS()
+	go s.ListenAndServeH3()
+	go s.ListenAndServeQUIC()
 }
 
 // ListenAndServeDNS Starts a server on address and network specified Invoke handler
@@ -115,10 +132,10 @@ func (s *Server) ListenAndServeDNSTLS() {
 		return
 	}
 
-	log.Info("DNS server listening...", "net", "tcp-tls", "addr", s.tlsAddr)
+	log.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
 
 	if err := dns.ListenAndServeTLS(s.tlsAddr, s.tlsCertificate, s.tlsPrivateKey, s); err != nil {
-		log.Error("DNS listener failed", "net", "tcp-tls", "addr", s.tlsAddr, "error", err.Error())
+		log.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 	}
 }
 
@@ -128,7 +145,7 @@ func (s *Server) ListenAndServeHTTPTLS() {
 		return
 	}
 
-	log.Info("DNS server listening...", "net", "https", "addr", s.dohAddr)
+	log.Info("DNS server listening...", "net", "doh", "addr", s.dohAddr)
 
 	logReader, logWriter := io.Pipe()
 	go readlogs(logReader)
@@ -142,7 +159,46 @@ func (s *Server) ListenAndServeHTTPTLS() {
 	}
 
 	if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
-		log.Error("DNSs listener failed", "net", "https", "addr", s.dohAddr, "error", err.Error())
+		log.Error("DNSs listener failed", "net", "doh", "addr", s.dohAddr, "error", err.Error())
+	}
+}
+
+// ListenAndServeH3
+func (s *Server) ListenAndServeH3() {
+	if s.dohAddr == "" {
+		return
+	}
+
+	log.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
+
+	srv := &http3.Server{
+		Addr:    s.dohAddr,
+		Handler: s,
+		QuicConfig: &quic.Config{
+			Allow0RTT: true,
+		},
+	}
+
+	if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil {
+		log.Error("DNSs listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
+	}
+}
+
+// ListenAndServeQUIC
+func (s *Server) ListenAndServeQUIC() {
+	if s.doqAddr == "" {
+		return
+	}
+
+	srv := &doq.Server{
+		Addr:    s.doqAddr,
+		Handler: s,
+	}
+
+	log.Info("DNS server listening...", "net", "doq", "addr", s.doqAddr)
+
+	if err := srv.ListenAndServeQUIC(s.tlsCertificate, s.tlsPrivateKey); err != nil {
+		log.Error("DNSs listener failed", "net", "doq", "addr", s.doqAddr, "error", err.Error())
 	}
 }
 
