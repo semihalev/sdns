@@ -8,7 +8,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
-	"github.com/semihalev/log"
 )
 
 var doqProtos = []string{"doq", "doq-i02", "dq", "doq-i00", "doq-i01", "doq-i11"}
@@ -22,6 +21,8 @@ const (
 type Server struct {
 	Addr    string
 	Handler dns.Handler
+
+	ln *quic.Listener
 }
 
 func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
@@ -45,15 +46,30 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 		return err
 	}
 
+	s.ln = listener
+
 	for {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
-			log.Error("DNS listener failed", "net", "doq", "error", err.Error())
 			return err
 		}
 
 		go s.handleConnection(conn)
 	}
+}
+
+func (s *Server) Shutdown() error {
+	if s.ln == nil {
+		return nil
+	}
+
+	err := s.ln.Close()
+
+	if err == quic.ErrServerClosed {
+		return nil
+	}
+
+	return err
 }
 
 func (s *Server) handleConnection(conn quic.Connection) {

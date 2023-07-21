@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
@@ -123,7 +124,7 @@ func Test_ServerNoBind(t *testing.T) {
 	cfg := &config.Config{}
 
 	s := New(cfg)
-	s.Run()
+	s.Run(context.Background())
 }
 
 func Test_ServerBindFail(t *testing.T) {
@@ -138,7 +139,7 @@ func Test_ServerBindFail(t *testing.T) {
 	cfg.BindDOQ = "1:4"
 
 	s := New(cfg)
-	s.Run()
+	s.Run(context.Background())
 }
 
 func Test_Server(t *testing.T) {
@@ -163,7 +164,7 @@ func Test_Server(t *testing.T) {
 	blocklist.Set("test.com.")
 
 	s := New(cfg)
-	s.Run()
+	s.Run(context.Background())
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
