@@ -3,6 +3,8 @@ package blocklist
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,6 +21,7 @@ func Test_BlockList(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 
 	middleware.Setup(cfg)
 

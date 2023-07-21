@@ -17,7 +17,7 @@ const (
 func Test_UpdateBlocklists(t *testing.T) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 
-	tempDir := filepath.Join(os.TempDir(), "/sdns_temp")
+	tempDir := filepath.Join(os.TempDir(), "sdns_temp")
 
 	cfg := new(config.Config)
 	cfg.BlockListDir = tempDir

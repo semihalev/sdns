@@ -43,9 +43,11 @@ func (b *BlockList) updateBlocklists() error {
 		}
 	}
 
+	b.mu.Lock()
 	for _, entry := range b.cfg.Whitelist {
 		b.w[dns.CanonicalName(entry)] = true
 	}
+	b.mu.Unlock()
 
 	for _, entry := range b.cfg.Blocklist {
 		b.Set(entry)
@@ -165,7 +167,7 @@ func (b *BlockList) parseHostFile(file *os.File) error {
 
 			line = dns.CanonicalName(line)
 
-			if !b.Exists(line) && !b.w[line] {
+			if !b.Exists(line) {
 				b.Set(line)
 			}
 		}
