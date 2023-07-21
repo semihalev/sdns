@@ -157,6 +157,7 @@ func Test_Server(t *testing.T) {
 	cfg.BindTLS = "127.0.0.1:23222"
 	cfg.BindDOH = "127.0.0.1:23223"
 	cfg.BindDOQ = "127.0.0.1:23224"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 
 	middleware.Setup(cfg)
 
