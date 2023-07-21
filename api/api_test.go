@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ func Test_AllAPICalls(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 
 	middleware.Setup(cfg)
 
