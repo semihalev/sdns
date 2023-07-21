@@ -8,7 +8,7 @@ require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/miekg/dns v1.1.55
 	github.com/prometheus/client_golang v1.16.0
-	github.com/quic-go/quic-go v0.36.2
+	github.com/quic-go/quic-go v0.37.0
 	github.com/semihalev/log v0.1.1
 	github.com/stretchr/testify v1.8.4
 	github.com/yl2chen/cidranger v1.0.2
@@ -46,8 +46,7 @@ require (
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.10.1 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
-	github.com/quic-go/qtls-go1-19 v0.3.2 // indirect
-	github.com/quic-go/qtls-go1-20 v0.2.2 // indirect
+	github.com/quic-go/qtls-go1-20 v0.3.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.11 // indirect
 	golang.org/x/arch v0.3.0 // indirect
