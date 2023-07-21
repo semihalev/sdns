@@ -6,6 +6,8 @@ package dnsutil
 import (
 	"context"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/semihalev/sdns/middleware"
@@ -161,6 +163,7 @@ func TestExchangeInternal(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 
 	middleware.Setup(cfg)
 
