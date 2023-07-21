@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,7 @@ import (
 
 func Test_Run(t *testing.T) {
 	a := New(&config.Config{})
-	a.Run()
+	a.Run(context.Background())
 }
 
 func Test_AllAPICalls(t *testing.T) {
@@ -35,11 +36,11 @@ func Test_AllAPICalls(t *testing.T) {
 	blocklist.Set("test.com")
 
 	a := New(&config.Config{API: ":11111"})
-	a.Run()
+	a.Run(context.Background())
 
 	time.Sleep(time.Second)
 
-	a.Run()
+	a.Run(context.Background())
 
 	block := ginr.Group("/api/v1/block")
 	{

@@ -3,11 +3,14 @@ package main
 //go:generate go run gen.go
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
+	"syscall"
+	"time"
 
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/api"
@@ -61,12 +64,14 @@ func setup() {
 	middleware.Setup(cfg)
 }
 
-func run() {
-	server := server.New(cfg)
-	server.Run()
+func run(ctx context.Context) *server.Server {
+	srv := server.New(cfg)
+	srv.Run(ctx)
 
 	api := api.New(cfg)
-	api.Run()
+	api.Run(ctx)
+
+	return srv
 }
 
 func main() {
@@ -80,12 +85,25 @@ func main() {
 	log.Info("Starting sdns...", "version", version)
 
 	setup()
-	run()
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	srv := run(ctx)
 
-	<-c
+	<-ctx.Done()
 
 	log.Info("Stopping sdns...")
+
+	stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for !srv.Stopped() {
+		select {
+		case <-time.After(100 * time.Millisecond):
+			continue
+		case <-ctx.Done():
+			return
+		}
+	}
 }

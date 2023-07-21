@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/pprof"
@@ -90,7 +91,7 @@ func (a *API) purge(c *gin.Context) {
 }
 
 // Run API server
-func (a *API) Run() {
+func (a *API) Run(ctx context.Context) {
 	if a.host == "" {
 		return
 	}
@@ -115,11 +116,29 @@ func (a *API) Run() {
 	r.GET("/api/v1/purge/:qname/:qtype", a.purge)
 	r.GET("/metrics", a.metrics)
 
+	srv := &http.Server{
+		Addr:    a.host,
+		Handler: r,
+	}
+
 	go func() {
-		if err := r.Run(a.host); err != nil {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("Start API server failed", "error", err.Error())
 		}
 	}()
 
 	log.Info("API server listening...", "addr", a.host)
+
+	go func() {
+		<-ctx.Done()
+
+		log.Info("API server stopping...", "addr", a.host)
+
+		apiCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := srv.Shutdown(apiCtx); err != nil {
+			log.Error("Shutdown API server failed:", "error", err.Error())
+		}
+	}()
 }
