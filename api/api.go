@@ -54,7 +54,7 @@ func (a *API) existsBlock(c *gin.Context) {
 }
 
 func (a *API) getBlock(c *gin.Context) {
-	if ok, _ := a.blocklist.Get(dns.Fqdn(c.Param("key"))); !ok {
+	if ok, _ := a.blocklist.Get(c.Param("key")); !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": c.Param("key") + " not found"})
 	} else {
 		c.JSON(http.StatusOK, gin.H{"success": ok})
@@ -62,13 +62,13 @@ func (a *API) getBlock(c *gin.Context) {
 }
 
 func (a *API) removeBlock(c *gin.Context) {
-	a.blocklist.Remove(dns.Fqdn(c.Param("key")))
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	status := a.blocklist.Remove(c.Param("key"))
+	c.JSON(http.StatusOK, gin.H{"success": status})
 }
 
 func (a *API) setBlock(c *gin.Context) {
-	a.blocklist.Set(dns.Fqdn(c.Param("key")))
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	status := a.blocklist.Set(c.Param("key"))
+	c.JSON(http.StatusOK, gin.H{"success": status})
 }
 
 func (a *API) metrics(c *gin.Context) {

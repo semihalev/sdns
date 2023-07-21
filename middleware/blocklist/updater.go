@@ -17,7 +17,6 @@ import (
 )
 
 var timesSeen = make(map[string]int)
-var whitelist = make(map[string]bool)
 
 func (b *BlockList) fetchBlocklists() {
 	timer := time.NewTimer(time.Second)
@@ -45,11 +44,11 @@ func (b *BlockList) updateBlocklists() error {
 	}
 
 	for _, entry := range b.cfg.Whitelist {
-		whitelist[dns.Fqdn(entry)] = true
+		b.w[dns.CanonicalName(entry)] = true
 	}
 
 	for _, entry := range b.cfg.Blocklist {
-		b.Set(dns.Fqdn(entry))
+		b.Set(entry)
 	}
 
 	b.fetchBlocklist()
@@ -164,9 +163,9 @@ func (b *BlockList) parseHostFile(file *os.File) error {
 				line = fields[0]
 			}
 
-			line = dns.Fqdn(line)
+			line = dns.CanonicalName(line)
 
-			if !b.Exists(line) && !whitelist[line] {
+			if !b.Exists(line) && !b.w[line] {
 				b.Set(line)
 			}
 		}
