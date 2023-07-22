@@ -19,11 +19,11 @@ func Test_TrySort(t *testing.T) {
 		s.List = append(s.List, NewAuthServer(fmt.Sprintf("[::%d]:53", i), IPv6))
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < 2000; i++ {
 		for j := range s.List {
 			s.List[j].Count++
-			s.List[j].Rtt += (time.Duration(rand.Intn(2000-0)+0) * time.Millisecond).Nanoseconds()
+			s.List[j].Rtt += (time.Duration(r.Intn(2000-0)+0) * time.Millisecond).Nanoseconds()
 			Sort(s.List, uint64(i))
 		}
 	}

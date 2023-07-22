@@ -28,8 +28,6 @@ var (
 )
 
 func init() {
-	rand.Seed(time.Now().UnixNano())
-
 	var err error
 	localIPaddrs, err = findLocalIPAddresses()
 	if err != nil {
@@ -42,7 +40,8 @@ func formatQuestion(q dns.Question) string {
 }
 
 func shuffleStr(vals []string) []string {
-	perm := rand.Perm(len(vals))
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	perm := r.Perm(len(vals))
 	ret := make([]string, len(vals))
 
 	for i, randIndex := range perm {
