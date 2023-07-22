@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
@@ -25,9 +24,6 @@ func Test_AllAPICalls(t *testing.T) {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
 	debugpprof = true
 
-	gin.SetMode(gin.TestMode)
-	ginr := gin.New()
-
 	cfg := new(config.Config)
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
@@ -39,22 +35,25 @@ func Test_AllAPICalls(t *testing.T) {
 	blocklist.Set("test.com")
 
 	a := New(&config.Config{API: ":11111"})
-	a.Run(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	a.Run(ctx)
+	cancel()
 
 	time.Sleep(time.Second)
 
-	a.Run(context.Background())
+	a = New(&config.Config{})
 
-	block := ginr.Group("/api/v1/block")
+	block := a.Group("/api/v1/block")
 	{
 		block.GET("/exists/:key", a.existsBlock)
 		block.GET("/get/:key", a.getBlock)
 		block.GET("/remove/:key", a.removeBlock)
 		block.GET("/set/:key", a.setBlock)
+		block.POST("/set/:key", a.setBlock)
 	}
 
-	ginr.GET("/api/v1/purge/test.com/A", a.purge)
-	ginr.GET("/metrics", a.metrics)
+	a.GET("/api/v1/purge/:qname/:qtype", a.purge)
+	a.GET("/metrics", a.metrics)
 
 	routes := []struct {
 		Method         string
@@ -62,27 +61,35 @@ func Test_AllAPICalls(t *testing.T) {
 		ExpectedStatus int
 	}{
 		{"GET", "/api/v1/block/set/test.com", http.StatusOK},
+		{"POST", "/api/v1/block/set/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/get/test.com", http.StatusOK},
-		{"GET", "/api/v1/block/get/test2.com", http.StatusOK},
+		{"GET", "/api/v1/block/get/test2.com", http.StatusNotFound},
 		{"GET", "/api/v1/block/exists/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/remove/test.com", http.StatusOK},
 		{"GET", "/api/v1/purge/test.com/A", http.StatusOK},
 		{"GET", "/metrics", http.StatusOK},
+		{"GET", "/notfound", http.StatusNotFound},
 	}
 
 	w := httptest.NewRecorder()
 
+	a.ServeHTTP(w, nil)
+	if w.Code != 500 {
+		t.Fatalf("not expected status code: %d", w.Code)
+	}
+
 	for _, r := range routes {
+		w = httptest.NewRecorder()
 		request, err := http.NewRequest(r.Method, r.ReqURL, nil)
 
 		if err != nil {
 			t.Fatalf("couldn't create request: %v\n", err)
 		}
 
-		ginr.ServeHTTP(w, request)
+		a.ServeHTTP(w, request)
 
 		if w.Code != r.ExpectedStatus {
-			t.Fatalf("not expected status code: %d", w.Code)
+			t.Fatalf("%s uri not expected status code: %d", r.ReqURL, w.Code)
 		}
 	}
 }
