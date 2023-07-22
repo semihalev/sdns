@@ -141,6 +141,10 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.ServeHTTP(w, r)
 }
 
+func (a *API) Handle(method, path string, handle http.HandlerFunc) {
+	a.rt.Add(method, path, handle)
+}
+
 func (a *API) GET(path string, handle http.HandlerFunc) {
 	a.rt.Add(http.MethodGet, path, handle)
 }
