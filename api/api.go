@@ -10,10 +10,10 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/nahojer/routes"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
@@ -23,26 +23,54 @@ import (
 )
 
 // API type
-type API struct {
-	addr      string
-	blocklist *blocklist.BlockList
+type (
+	API struct {
+		addr      string
+		blocklist *blocklist.BlockList
 
-	rt *routes.Trie[http.Handler]
-}
+		get     Tree
+		post    Tree
+		delete  Tree
+		put     Tree
+		patch   Tree
+		head    Tree
+		connect Tree
+		trace   Tree
+		options Tree
 
-type J map[string]any
+		paramsPool sync.Pool
+	}
 
-type ctxKey string
+	Group struct {
+		parent *API
+		path   string
+	}
 
-var extraHeaders = map[string]string{
-	"Server":                       "sdns",
-	"Access-Control-Allow-Origin":  "*",
-	"Access-Control-Allow-Methods": "GET,POST",
-	"Cache-Control":                "no-cache, no-store, no-transform, must-revalidate, private, max-age=0",
-	"Pragma":                       "no-cache",
-}
+	Param struct {
+		Key   string
+		Value string
+	}
 
-var debugpprof bool
+	Params []Param
+
+	ctxKey struct{}
+
+	J map[string]any
+)
+
+var (
+	extraHeaders = map[string]string{
+		"Server":                       "sdns",
+		"Access-Control-Allow-Origin":  "*",
+		"Access-Control-Allow-Methods": "GET,POST",
+		"Cache-Control":                "no-cache, no-store, no-transform, must-revalidate, private, max-age=0",
+		"Pragma":                       "no-cache",
+	}
+
+	debugpprof bool
+
+	CtxKey ctxKey
+)
 
 func init() {
 	_, debugpprof = os.LookupEnv("SDNS_PPROF")
@@ -57,11 +85,53 @@ func New(cfg *config.Config) *API {
 		bl = b.(*blocklist.BlockList)
 	}
 
-	return &API{
+	a := &API{
 		addr:      cfg.API,
 		blocklist: bl,
+	}
 
-		rt: routes.NewTrie[http.Handler](),
+	a.paramsPool.New = func() interface{} {
+		params := make(Params, 0, 20)
+		return &params
+	}
+
+	return a
+}
+
+func (a *API) getParams() *Params {
+	ps, _ := a.paramsPool.Get().(*Params)
+	*ps = (*ps)[0:0]
+	return ps
+}
+
+func (a *API) putParams(params *Params) {
+	if params != nil {
+		a.paramsPool.Put(params)
+	}
+}
+
+func (a *API) selectTree(method string) *Tree {
+	switch method {
+	case http.MethodGet:
+		return &a.get
+	case http.MethodPost:
+		return &a.post
+	case http.MethodDelete:
+		return &a.delete
+	case http.MethodPut:
+		return &a.put
+	case http.MethodPatch:
+		return &a.patch
+	case http.MethodHead:
+		return &a.head
+	case http.MethodConnect:
+		return &a.connect
+	case http.MethodTrace:
+		return &a.trace
+	case http.MethodOptions:
+		return &a.options
+	default:
+		return nil
 	}
 }
 
@@ -132,65 +202,70 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(k, v)
 	}
 
-	r, h := a.Match(r)
+	h, params := a.Match(r)
+
 	if h == nil {
 		http.NotFound(w, r)
 		return
 	}
 
+	if params != nil {
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, CtxKey, *params)
+		r = r.WithContext(ctx)
+
+		a.putParams(params)
+	}
+
 	h.ServeHTTP(w, r)
+
 }
 
 func (a *API) Handle(method, path string, handle http.HandlerFunc) {
-	a.rt.Add(method, path, handle)
+	tree := a.selectTree(method)
+	tree.Add(path, handle)
 }
 
 func (a *API) GET(path string, handle http.HandlerFunc) {
-	a.rt.Add(http.MethodGet, path, handle)
+	a.get.Add(path, handle)
 }
 
 func (a *API) POST(path string, handle http.HandlerFunc) {
-	a.rt.Add(http.MethodPost, path, handle)
+	a.post.Add(path, handle)
 }
 
-func (a *API) Match(r *http.Request) (*http.Request, http.Handler) {
-	h, params, ok := a.rt.Lookup(r)
-
-	if !ok {
-		return r, nil
+func (a *API) Match(r *http.Request) (http.Handler, *Params) {
+	if r.Method[0] == 'G' {
+		return a.get.Lookup(r.URL.Path, a.getParams)
 	}
 
-	for k, v := range params {
-		ctx := context.WithValue(r.Context(), ctxKey(k), v)
-		r = r.WithContext(ctx)
+	tree := a.selectTree(r.Method)
+	h, params := tree.Lookup(r.URL.Path, a.getParams)
+
+	if h == nil {
+		if params != nil {
+			a.putParams(params)
+		}
+		return nil, nil
 	}
 
-	return r, h
+	return h, params
 }
 
 func (a *API) Param(r *http.Request, key string) string {
-	if v, ok := r.Context().Value(ctxKey(key)).(string); ok {
-		return v
+	if params, ok := r.Context().Value(CtxKey).(Params); ok {
+		for _, p := range params {
+			if p.Key == key {
+				return p.Value
+			}
+		}
 	}
 
 	return ""
 }
 
-func (a *API) Group(rp string) *group {
-	return &group{parent: a, path: rp}
-}
-
-type group struct {
-	parent *API
-	path   string
-}
-
-func (g *group) GET(path string, handle http.HandlerFunc) {
-	g.parent.GET(g.path+path, handle)
-}
-
-func (g *group) POST(path string, handle http.HandlerFunc) {
-	g.parent.POST(g.path+path, handle)
+func (a *API) Group(rp string) *Group {
+	return &Group{parent: a, path: rp}
 }
 
 // Run API server
@@ -205,7 +280,7 @@ func (a *API) Run(ctx context.Context) {
 			profiler.GET("/", func(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, profiler.path+"/pprof/", http.StatusMovedPermanently)
 			})
-			profiler.GET("/pprof/...", pprof.Index)
+			profiler.GET("/pprof/", pprof.Index)
 			profiler.GET("/pprof/cmdline", pprof.Cmdline)
 			profiler.GET("/pprof/profile", pprof.Profile)
 			profiler.GET("/pprof/symbol", pprof.Symbol)
@@ -259,4 +334,21 @@ func (a *API) Run(ctx context.Context) {
 			log.Error("Shutdown API server failed:", "error", err.Error())
 		}
 	}()
+}
+
+func (g *Group) GET(path string, handle http.HandlerFunc) {
+	g.parent.GET(g.path+path, handle)
+}
+
+func (g *Group) POST(path string, handle http.HandlerFunc) {
+	g.parent.POST(g.path+path, handle)
+}
+
+func (params *Params) addParameter(key, value string) {
+	i := len(*params)
+	*params = (*params)[:i+1]
+	(*params)[i] = Param{
+		Key:   key,
+		Value: value,
+	}
 }

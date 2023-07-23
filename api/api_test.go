@@ -43,8 +43,53 @@ func Test_AllAPICalls(t *testing.T) {
 
 	a = New(&config.Config{})
 
+	a.GET("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodGet, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodPost, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodDelete, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodPut, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodPatch, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodConnect, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodTrace, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodOptions, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.Handle(http.MethodHead, "/files", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
+	a.GET("/files/*file", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+
 	block := a.Group("/api/v1/block")
 	{
+		block.GET("/exists/:key", a.existsBlock)
 		block.GET("/exists/:key", a.existsBlock)
 		block.GET("/get/:key", a.getBlock)
 		block.GET("/remove/:key", a.removeBlock)
@@ -60,6 +105,9 @@ func Test_AllAPICalls(t *testing.T) {
 		ReqURL         string
 		ExpectedStatus int
 	}{
+		{"GET", "/", http.StatusOK},
+		{"GET", "/files", http.StatusOK},
+		{"GET", "/files/file.tar.gz", http.StatusOK},
 		{"GET", "/api/v1/block/set/test.com", http.StatusOK},
 		{"POST", "/api/v1/block/set/test.com", http.StatusOK},
 		{"GET", "/api/v1/block/get/test.com", http.StatusOK},
@@ -72,7 +120,6 @@ func Test_AllAPICalls(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-
 	a.ServeHTTP(w, nil)
 	if w.Code != 500 {
 		t.Fatalf("not expected status code: %d", w.Code)
