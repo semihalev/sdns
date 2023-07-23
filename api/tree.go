@@ -2,7 +2,6 @@
 package api
 
 import (
-	"net/http"
 	"strings"
 )
 
@@ -16,6 +15,7 @@ const (
 	controlNext  controlFlow = 2
 )
 
+// node types
 const (
 	separator = '/'
 	parameter = ':'
@@ -23,9 +23,9 @@ const (
 )
 
 // dataType specifies which type of data we are going to save for each node.
-type dataType = http.Handler
+type dataType = Handler
 
-// tree represents a radix tree.
+// Tree represents a radix tree.
 type Tree struct {
 	root        treeNode
 	static      map[string]dataType
@@ -124,13 +124,16 @@ func (tree *Tree) Add(path string, data dataType) {
 	}
 }
 
-// Lookup finds the data for the given path and assigns it to ctx.handler, if available.
-func (tree *Tree) Lookup(path string, pf func() *Params) (http.Handler, *Params) {
+// Lookup finds the data for the request path and assigns it to ctx.Handler, if available.
+func (tree *Tree) Lookup(ctx *Context) {
+	path := ctx.Request.URL.Path
+
 	if tree.canBeStatic[len(path)] {
 		handler, found := tree.static[path]
 
 		if found {
-			return handler, nil
+			ctx.Handler = handler
+			return
 		}
 	}
 
@@ -142,8 +145,6 @@ func (tree *Tree) Lookup(path string, pf func() *Params) (http.Handler, *Params)
 		node               = &tree.root
 	)
 
-	params := pf()
-
 begin:
 	// Search tree for equal parts until we can no longer proceed
 	for {
@@ -152,12 +153,14 @@ begin:
 			// node: /blog|
 			// path: /blog|
 			if i-offset == uint(len(node.prefix)) {
-				return node.data, params
+				ctx.Handler = node.data
+				return
 			}
 
 			// node: /blog|feed
 			// path: /blog|
-			return nil, nil
+			ctx.Handler = nil
+			return
 		}
 
 		// The node we just checked is entirely included in our path.
@@ -192,14 +195,15 @@ begin:
 				for {
 					// We reached the end.
 					if i == uint(len(path)) {
-						params.addParameter(node.prefix, path[offset:i])
-						return node.data, params
+						ctx.addParameter(node.prefix, path[offset:i])
+						ctx.Handler = node.data
+						return
 					}
 
 					// node: /:id|/posts
 					// path: /123|/posts
 					if path[i] == separator {
-						params.addParameter(node.prefix, path[offset:i])
+						ctx.addParameter(node.prefix, path[offset:i])
 						index := node.indices[separator-node.startIndex]
 						node = node.children[index]
 						offset = i
@@ -214,11 +218,13 @@ begin:
 			// node: /|*any
 			// path: /|image.png
 			if node.wildcard != nil {
-				params.addParameter(node.wildcard.prefix, path[i:])
-				return node.wildcard.data, params
+				ctx.addParameter(node.wildcard.prefix, path[i:])
+				ctx.Handler = node.wildcard.data
+				return
 			}
 
-			return nil, nil
+			ctx.Handler = nil
+			return
 		}
 
 		// We got a conflict.
@@ -226,11 +232,13 @@ begin:
 		// path: /b|riefcase
 		if path[i] != node.prefix[i-offset] {
 			if lastWildcard != nil {
-				params.addParameter(lastWildcard.prefix, path[lastWildcardOffset:])
-				return lastWildcard.data, params
+				ctx.addParameter(lastWildcard.prefix, path[lastWildcardOffset:])
+				ctx.Handler = lastWildcard.data
+				return
 			}
 
-			return nil, nil
+			ctx.Handler = nil
+			return
 		}
 
 		i++

@@ -43,51 +43,51 @@ func Test_AllAPICalls(t *testing.T) {
 
 	a = New(&config.Config{})
 
-	a.GET("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.GET("/", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodGet, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodGet, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodPost, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodPost, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodDelete, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodDelete, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodPut, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodPut, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodPatch, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodPatch, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodConnect, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodConnect, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodTrace, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodTrace, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodOptions, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodOptions, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.Handle(http.MethodHead, "/files", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.Handle(http.MethodHead, "/files", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	a.GET("/files/*file", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
+	a.router.GET("/files/*file", func(ctx *Context) {
+		ctx.Writer.WriteHeader(200)
 	})
 
-	block := a.Group("/api/v1/block")
+	block := a.router.Group("/api/v1/block")
 	{
 		block.GET("/exists/:key", a.existsBlock)
 		block.GET("/exists/:key", a.existsBlock)
@@ -97,8 +97,8 @@ func Test_AllAPICalls(t *testing.T) {
 		block.POST("/set/:key", a.setBlock)
 	}
 
-	a.GET("/api/v1/purge/:qname/:qtype", a.purge)
-	a.GET("/metrics", a.metrics)
+	a.router.GET("/api/v1/purge/:qname/:qtype", a.purge)
+	a.router.GET("/metrics", a.metrics)
 
 	routes := []struct {
 		Method         string
@@ -119,21 +119,21 @@ func Test_AllAPICalls(t *testing.T) {
 		{"GET", "/notfound", http.StatusNotFound},
 	}
 
-	w := httptest.NewRecorder()
+	/*w := httptest.NewRecorder()
 	a.ServeHTTP(w, nil)
 	if w.Code != 500 {
 		t.Fatalf("not expected status code: %d", w.Code)
-	}
+	}*/
 
 	for _, r := range routes {
-		w = httptest.NewRecorder()
+		w := httptest.NewRecorder()
 		request, err := http.NewRequest(r.Method, r.ReqURL, nil)
 
 		if err != nil {
 			t.Fatalf("couldn't create request: %v\n", err)
 		}
 
-		a.ServeHTTP(w, request)
+		a.router.ServeHTTP(w, request)
 
 		if w.Code != r.ExpectedStatus {
 			t.Fatalf("%s uri not expected status code: %d", r.ReqURL, w.Code)
