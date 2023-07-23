@@ -6,7 +6,7 @@ type Group struct {
 }
 
 func (g *Group) Handle(method, path string, handle Handler) {
-	g.parent.Handle(g.path+method, path, handle)
+	g.parent.Handle(method, g.path+path, handle)
 }
 
 func (g *Group) GET(path string, handle Handler) {
