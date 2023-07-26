@@ -3,8 +3,7 @@
 *.key
 sdns
 sdns.conf
-sdns_*
 coverage.out
-blist_data
+bl
 access.log
 vendor

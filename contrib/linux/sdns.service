@@ -11,8 +11,8 @@ Group=sdns
 LimitNOFILE=131072
 Restart=on-failure
 RestartSec=10
-Environment="SDNS_DEBUGNS=true"
-Environment="SDNS_PPROF=true"
+Environment="SDNS_DEBUGNS=false"
+Environment="SDNS_PPROF=false"
 WorkingDirectory=/var/lib/sdns
 ExecStart=/usr/bin/sdns --config=/etc/sdns.conf
 PermissionsStartOnly=true
