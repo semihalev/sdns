@@ -59,7 +59,6 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := rt.getContext(w, r)
-	defer rt.putContext(ctx)
 
 	if r.Method[0] == 'G' {
 		rt.get.Lookup(ctx)
@@ -70,10 +69,13 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if ctx.Handler == nil {
 		http.NotFound(w, r)
+		rt.putContext(ctx)
 		return
 	}
 
 	ctx.Handler(ctx)
+
+	rt.putContext(ctx)
 }
 
 func (rt *Router) Handle(method, path string, handle Handler) {

@@ -159,6 +159,21 @@ func (b *BlockList) Set(key string) bool {
 	return true
 }
 
+func (b *BlockList) set(key string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	key = dns.CanonicalName(key)
+
+	if b.w[key] {
+		return false
+	}
+
+	b.m[key] = true
+
+	return true
+}
+
 // Exists returns whether or not a key exists in the cache
 func (b *BlockList) Exists(key string) bool {
 	b.mu.RLock()

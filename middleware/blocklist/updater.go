@@ -19,13 +19,11 @@ import (
 var timesSeen = make(map[string]int)
 
 func (b *BlockList) fetchBlocklists() {
-	timer := time.NewTimer(time.Second)
-
 	if b.cfg.BlockListDir == "" {
 		b.cfg.BlockListDir = "."
 	}
 
-	<-timer.C
+	<-time.After(time.Second)
 
 	if err := b.updateBlocklists(); err != nil {
 		log.Error("Update blocklists failed", "error", err.Error())
@@ -39,7 +37,7 @@ func (b *BlockList) fetchBlocklists() {
 func (b *BlockList) updateBlocklists() error {
 	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
 		if err := os.Mkdir(b.cfg.BlockListDir, 0750); err != nil {
-			return fmt.Errorf("error creating sources directory: %s", err)
+			return fmt.Errorf("error creating blacklist directory: %s", err)
 		}
 	}
 
@@ -50,7 +48,7 @@ func (b *BlockList) updateBlocklists() error {
 	b.mu.Unlock()
 
 	for _, entry := range b.cfg.Blocklist {
-		b.Set(entry)
+		b.set(entry)
 	}
 
 	b.fetchBlocklist()
@@ -168,7 +166,7 @@ func (b *BlockList) parseHostFile(file *os.File) error {
 			line = dns.CanonicalName(line)
 
 			if !b.Exists(line) {
-				b.Set(line)
+				b.set(line)
 			}
 		}
 	}
