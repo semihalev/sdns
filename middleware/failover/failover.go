@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
@@ -79,8 +80,12 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.RecursionDesired = true
 	req.CheckingDisabled = m.CheckingDisabled
 
+	ctx := context.Background()
+
 	for _, server := range w.f.servers {
-		resp, err := dns.Exchange(req, server)
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		resp, err := dnsutil.Exchange(ctx, req, server, "udp")
 		if err != nil {
 			log.Warn("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue

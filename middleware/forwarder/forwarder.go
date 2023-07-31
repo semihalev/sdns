@@ -61,7 +61,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	fReq.CheckingDisabled = req.CheckingDisabled
 
 	for _, server := range f.servers {
-		resp, err := dns.Exchange(req, server)
+		resp, err := dnsutil.Exchange(ctx, req, server, "udp")
 		if err != nil {
 			log.Warn("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue

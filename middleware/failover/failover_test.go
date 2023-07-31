@@ -26,7 +26,7 @@ func (d *dummy) Name() string { return "dummy" }
 
 func Test_Failover(t *testing.T) {
 	cfg := new(config.Config)
-	cfg.FallbackServers = []string{"[::255]:53", "1.1.1.1:53", "1"}
+	cfg.FallbackServers = []string{"[::255]:53", "8.8.8.8:53", "1"}
 
 	middleware.Setup(cfg)
 

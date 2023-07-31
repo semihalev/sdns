@@ -235,6 +235,18 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
+// Exchange exchange dns request with TCP failover
+func Exchange(ctx context.Context, req *dns.Msg, addr string, net string) (*dns.Msg, error) {
+	client := dns.Client{Net: net}
+	resp, _, err := client.ExchangeContext(ctx, req, addr)
+
+	if err == nil && resp.Truncated && net == "udp" {
+		return Exchange(ctx, req, addr, "tcp")
+	}
+
+	return resp, err
+}
+
 // ExchangeInternal exchange dns request internal
 func ExchangeInternal(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
 	w := mock.NewWriter("tcp", "127.0.0.255:0")
