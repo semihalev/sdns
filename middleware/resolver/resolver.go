@@ -1504,6 +1504,8 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 }
 
 func (r *Resolver) checkPriming() {
+	r.AutoTA()
+
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -1550,8 +1552,6 @@ func (r *Resolver) checkPriming() {
 			r.rootservers.Checked = true
 			r.rootservers.Unlock()
 		}
-
-		r.AutoTA()
 
 		if len(tmpservers.List) > 0 {
 			log.Debug("Good! root servers update successful")
