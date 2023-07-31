@@ -235,7 +235,7 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// Exchange exchange dns request with TCP failover
+// Exchange exchange dns request with TCP fallback
 func Exchange(ctx context.Context, req *dns.Msg, addr string, net string) (*dns.Msg, error) {
 	client := dns.Client{Net: net}
 	resp, _, err := client.ExchangeContext(ctx, req, addr)

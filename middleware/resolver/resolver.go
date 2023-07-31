@@ -1551,6 +1551,8 @@ func (r *Resolver) checkPriming() {
 			r.rootservers.Unlock()
 		}
 
+		r.AutoTA()
+
 		if len(tmpservers.List) > 0 {
 			log.Debug("Good! root servers update successful")
 
@@ -1569,7 +1571,7 @@ func (r *Resolver) run() {
 
 	r.checkPriming()
 
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(12 * time.Hour)
 
 	for range ticker.C {
 		r.checkPriming()

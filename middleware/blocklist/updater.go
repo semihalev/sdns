@@ -20,7 +20,7 @@ var timesSeen = make(map[string]int)
 
 func (b *BlockList) fetchBlocklists() {
 	if b.cfg.BlockListDir == "" {
-		b.cfg.BlockListDir = "."
+		b.cfg.BlockListDir = filepath.Join(b.cfg.Directory, "blacklists")
 	}
 
 	<-time.After(time.Second)
