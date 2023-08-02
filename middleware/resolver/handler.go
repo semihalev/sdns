@@ -111,7 +111,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	defer cancel()
 
 	depth := h.cfg.Maxdepth
-	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil)
+	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil, q.Name == rootzone)
 	if err != nil {
 		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
