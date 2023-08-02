@@ -83,10 +83,11 @@ $ make test
 
 ## Flags
 
-| Flag   | Desc                                                                          |
-| ------ | ----------------------------------------------------------------------------- |
-| config | Location of the config file, if config file not found, a config will generate |
-| v      | Show version information                                                      |
+| Flag              | Desc                                                                           |
+| ----------------- | ------------------------------------------------------------------------------ |
+| -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated. |
+| -v, --version     | Show the version of the sdns.                                                  |
+| -h, --help        | Show this message and exit.
 
 ## Debug Environment
 
