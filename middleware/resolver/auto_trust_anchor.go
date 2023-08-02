@@ -33,10 +33,9 @@ const (
 )
 
 type TrustAnchor struct {
-	DNSKey      *dns.DNSKEY
-	State       State
-	FirstSeen   time.Time
-	NextRefresh time.Time
+	DNSKey    *dns.DNSKEY
+	State     State
+	FirstSeen time.Time
 }
 
 type TrustAnchors map[uint16]*TrustAnchor
@@ -74,10 +73,9 @@ func (r *Resolver) AutoTA() {
 				if dnskey.Flags&DNSKEYFlagKSK != 0 {
 					keyTag := dnskey.KeyTag()
 					ta := &TrustAnchor{
-						DNSKey:      dnskey,
-						State:       StateValid,
-						FirstSeen:   time.Now(),
-						NextRefresh: time.Now().Add(12 * time.Hour),
+						DNSKey:    dnskey,
+						State:     StateValid,
+						FirstSeen: time.Now(),
 					}
 
 					if dnskey.Flags&DNSKEYFlagRevoke != 0 {
@@ -94,6 +92,20 @@ func (r *Resolver) AutoTA() {
 	for _, ta := range kskCurrent {
 		if ta.State == StateValid {
 			rootkeys = append(rootkeys, ta.DNSKey)
+		}
+	}
+
+	for _, k := range rootkeys {
+		validTag := k.(*dns.DNSKEY).KeyTag()
+		ok := false
+		for _, kv := range r.rootkeys {
+			currTag := kv.(*dns.DNSKEY).KeyTag()
+			if currTag == validTag {
+				ok = true
+			}
+		}
+		if !ok {
+			log.Warn("Please update missing rootkeys in config", "keytag", validTag)
 		}
 	}
 
@@ -140,7 +152,7 @@ func (r *Resolver) AutoTA() {
 				oldTag := tag - DNSKEYFlagRevoke
 				if kskCurrent[oldTag] != nil && kskCurrent[oldTag].State == StateValid {
 					//revoked ksk
-					log.Crit("Trust anchor revoked!", "keytag", tag)
+					log.Warn("Trust anchor revoked!", "keytag", tag)
 					ta.State = StateRevoked
 					ta.FirstSeen = time.Now()
 					kskCurrent[tag] = ta
@@ -152,7 +164,7 @@ func (r *Resolver) AutoTA() {
 			}
 
 			//found new ksk
-			log.Crit("New trust anchor found! Pending for hold-down", "keytag", tag, "hold-down", "30d")
+			log.Warn("New trust anchor found! Pending for hold-down", "keytag", tag, "hold-down", "30d")
 			kskCurrent[tag] = ta
 			ta.State = StateAddPend
 			ta.FirstSeen = time.Now()
@@ -162,19 +174,19 @@ func (r *Resolver) AutoTA() {
 	for tag, ta := range kskCurrent {
 		if kskFetched[tag] == nil {
 			if ta.State == StateRevoked {
-				log.Crit("Trust anchor removed! Pending for hold-down", "keytag", tag, "hold-down", "90d")
+				log.Warn("Trust anchor removed! Pending for hold-down", "keytag", tag, "hold-down", "90d")
 				ta.State = StateRemoved
 				ta.FirstSeen = time.Now()
 				//ta removed, no refresh anymore
 			} else if ta.State != StateRemoved && ta.State != StateMissing {
-				log.Crit("Trust anchor missing! Please check it manually", "keytag", tag, "hold-down", "90d")
+				log.Warn("Trust anchor missing! Please check it manually", "keytag", tag, "hold-down", "90d")
 				ta.State = StateMissing
 				ta.FirstSeen = time.Now()
 			}
 
 			if (ta.State == StateRemoved || ta.State == StateMissing) && time.Since(ta.FirstSeen) > 2160*time.Hour { //hold-down 90 days
 				// we can delete this safely now
-				log.Crit("Trust anchor deleted!", "keytag", tag)
+				log.Warn("Trust anchor deleted!", "keytag", tag)
 				delete(kskCurrent, tag)
 			}
 			continue
@@ -182,24 +194,21 @@ func (r *Resolver) AutoTA() {
 
 		if ta.State == StateAddPend && time.Since(ta.FirstSeen) > 720*time.Hour { //hold-down 30days
 			// now valid
-			log.Crit("Trust anchor now valid!", "keytag", tag)
+			log.Warn("Trust anchor now valid!", "keytag", tag)
 			ta.State = StateValid
 		}
-
-		ta.NextRefresh = time.Now().Add(12 * time.Hour)
 	}
 
 	err = writeToTAFile(filename, kskCurrent)
 	if err != nil {
 		log.Error("Refresh trust anchors failed", "error", err.Error())
-		return
 	}
 
 	for tag, ta := range kskCurrent {
 		log.Info("Trust anchor status", "keytag", tag, "state", ta.State.String(), "firstseen", ta.FirstSeen.UTC().Format(time.UnixDate))
 	}
 
-	log.Info("Trust anchors refreshed successfuly", "path", filename)
+	log.Info("Trust anchors refreshed", "path", filename, "nextrefresh", time.Now().Add(12*time.Hour).UTC().Format(time.UnixDate))
 }
 
 func verifyFetchedKeys(rootkeys []dns.RR, rrs []dns.RR) (ok bool, err error) {

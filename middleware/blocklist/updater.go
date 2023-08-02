@@ -109,7 +109,7 @@ func (b *BlockList) fetchBlocklist() {
 }
 
 func (b *BlockList) readBlocklists() error {
-	log.Info("Loading blocked domains", "path", b.cfg.BlockListDir)
+	log.Info("Loading blocked domains...", "path", b.cfg.BlockListDir)
 
 	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
 		log.Warn("Path not found, skipping...", "path", b.cfg.BlockListDir)

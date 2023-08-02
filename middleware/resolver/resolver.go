@@ -1514,12 +1514,12 @@ func (r *Resolver) checkPriming() {
 	defer cancel()
 
 	if len(r.rootservers.List) == 0 {
-		panic("root servers list empty. check your config file")
+		log.Crit("Root servers list empty. Check your config file.")
 	}
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 5, 0, false, nil, true)
 	if err != nil {
-		log.Error("root servers update failed", "error", err.Error())
+		log.Error("Root servers update failed", "error", err.Error())
 
 		return
 	}
@@ -1560,7 +1560,7 @@ func (r *Resolver) checkPriming() {
 		}
 	}
 
-	log.Error("root servers update failed", "error", "no records found")
+	log.Error("Root servers update failed", "error", "no records found")
 }
 
 func (r *Resolver) run() {

@@ -87,7 +87,7 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 var defaultConfig = `
-# Config version, config, and build versions can be different.
+# Config version, config and build versions can be different.
 version = "%s"
 
 # Sets the sdns working directory. The directory must have write access for sdns's user.
@@ -112,10 +112,12 @@ bind = ":53"
 # tlsprivatekey = "server.key"
 
 # Outbound IPv4 addresses, if you set multiple, sdns can use a random outbound IPv4 address by request based.
-outboundips = []
+outboundips = [
+]
 
 # Outbound IPv6 addresses, if you set multiple, sdns can use a random outbound IPv6 address by request based.
-outboundip6s = []
+outboundip6s = [
+]
 
 # Root zone IPv4 servers
 rootservers = [
@@ -161,14 +163,16 @@ rootkeys = [
 #	"8.8.8.8:53",
 #	"8.8.4.4:53"
 # ]
-fallbackservers = []
+fallbackservers = [
+]
 
 # Forwarder resolver IPv4 or IPv6 addresses with port, left blank for disabled.
 # forwarderservers = [
 #	"8.8.8.8:53",
 #	"8.8.4.4:53"
 # ]
-forwarderservers = []
+forwarderservers = [
+]
 
 # Address to bind to for the HTTP API server, left blank for disabled.
 api = "127.0.0.1:8080"
@@ -181,15 +185,13 @@ loglevel = "info"
 
 # List of remote blocklists address list. All lists will be downloaded to the blocklist folder.
 # blocklists = [
-# "http://mirror1.malwaredomains.com/files/justdomains",
 # "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
 # "http://sysctl.org/cameleon/hosts",
-# "https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist",
 # "https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
-# "https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt",
-# "https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt"
+# "https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt"
 # ]
-blocklists = []
+blocklists = [
+]
 
 # [DEPRECATED] This will be ignored. The directory will be created under the working directory automatically.
 blocklistdir = ""
@@ -233,10 +235,20 @@ ratelimit = 0
 clientratelimit = 0
 
 # Manual blocklist entries.
-blocklist = []
+# blocklist = [
+#	"example.com",
+#	"example.net"
+# ]
+blocklist = [
+]
 
-# Manual whitelist entries.
-whitelist = []
+# Whitelist entries.
+# whitelist = [
+#	"example.com",
+#	"example.net"
+# ]
+whitelist = [
+]
 
 # DNS server identifier (RFC 5001), it's useful while operating multiple sdns. Left blank for disabled.
 nsid = ""
@@ -251,10 +263,11 @@ qname_min_level = 5
 # Empty zones return an answer for RFC 1918 zones. Please see http://as112.net/
 # for details of the problems you are causing and the countermeasures that have had to be deployed.
 # If the list is empty, SDNS will use default zones described at RFC.
-# emptyzones [
+# emptyzones = [
 #	"10.in-addr.arpa."
 # ]
-emptyzones = []
+emptyzones = [
+]
 
 # You can add your own plugins to sdns. The plugin order is very important. 
 # Plugins can be loaded before the cache middleware.
@@ -283,7 +296,7 @@ func Load(cfgfile, version string) (*Config, error) {
 		}
 	}
 
-	log.Info("Loading config file", "path", cfgfile)
+	log.Info("Loading config file...", "path", cfgfile)
 
 	if _, err := toml.DecodeFile(cfgfile, config); err != nil {
 		return nil, fmt.Errorf("could not load config: %s", err)
