@@ -17,6 +17,7 @@ func Test_config(t *testing.T) {
 	assert.NoError(t, err)
 
 	os.Remove(configFile)
+	os.Remove("db")
 }
 
 func Test_configError(t *testing.T) {
@@ -24,4 +25,6 @@ func Test_configError(t *testing.T) {
 
 	_, err := Load(configFile, "0.0.0")
 	assert.Error(t, err)
+
+	os.Remove("db")
 }

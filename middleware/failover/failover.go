@@ -77,7 +77,6 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetQuestion(m.Question[0].Name, m.Question[0].Qtype)
 	req.Question[0].Qclass = m.Question[0].Qclass
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-	req.RecursionDesired = true
 	req.CheckingDisabled = m.CheckingDisabled
 
 	ctx := context.Background()

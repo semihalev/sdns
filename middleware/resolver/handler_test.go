@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,6 +39,8 @@ func makeTestConfig() *config.Config {
 	cfg.Expire = 600
 	cfg.CacheSize = 1024
 	cfg.Timeout.Duration = 2 * time.Second
+	cfg.Directory = filepath.Join(os.TempDir(), "sdns_temp")
+	cfg.IPv6Access = true
 
 	return cfg
 }
@@ -52,39 +55,33 @@ func Test_handler(t *testing.T) {
 	assert.Equal(t, "resolver", handler.Name())
 
 	m := new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r := handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	// test again for caches
 	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) == 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion("example.com.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion(".", dns.TypeANY)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion(".", dns.TypeNS)
 	m.RecursionDesired = false
 	r = handler.handle(ctx, m)

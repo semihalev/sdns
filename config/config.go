@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 )
 
@@ -50,7 +52,6 @@ type Config struct {
 	Maxdepth         int
 	RateLimit        int
 	ClientRateLimit  int
-	CookieSecret     string
 	NSID             string
 	Blocklist        []string
 	Whitelist        []string
@@ -59,6 +60,9 @@ type Config struct {
 	EmptyZones       []string
 
 	Plugins map[string]Plugin
+
+	CookieSecret string
+	IPv6Access   bool
 
 	sVersion string
 }
@@ -327,6 +331,13 @@ func Load(cfgfile, version string) (*Config, error) {
 		config.CookieSecret = fmt.Sprintf("%16x", v)
 	}
 
+	if !config.IPv6Access {
+		err := testIPv6Network()
+		if err == nil {
+			config.IPv6Access = true
+		}
+	}
+
 	return config, nil
 }
 
@@ -350,6 +361,21 @@ func generateConfig(path string) error {
 
 	if abs, err := filepath.Abs(path); err == nil {
 		log.Info("Default config file generated", "config", abs)
+	}
+
+	return nil
+}
+
+func testIPv6Network() error {
+	client := &dns.Client{Net: "udp"}
+
+	req := new(dns.Msg)
+	req.SetQuestion(".", dns.TypeNS)
+
+	//root server
+	_, _, err := client.Exchange(req, net.JoinHostPort("2001:500:2::c", "53"))
+	if err != nil {
+		return err
 	}
 
 	return nil
