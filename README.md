@@ -120,15 +120,12 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.3.2)
+## Configuration (v1.3.3)
 
 | Key                 | Desc                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | **version**         | Config version                                                                                                                 |
-| **blocklists**      | List of remote blocklists address list. All lists will be download to blocklist folder.                                        |
-| **blocklistdir**    | List of locations to recursively read blocklists from (warning, every file found is assumed to be a hosts-file or domain list) |
-| **loglevel**        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
-| **accesslog**       | The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.                              |
+| **directory**       | Sets the sdns working directory. The directory must have write access for sdns's user.                                         |
 | **bind**            | Address to bind to for the DNS server. Default :53                                                                             |
 | **bindtls**         | Address to bind to for the DNS-over-TLS server. Default :853                                                                   |
 | **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
@@ -143,6 +140,10 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "8.8.8.8:53"                             |
 | **forwarderservers**| Forwarder resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "8.8.8.8:53"                            |
 | **api**             | Address to bind to for the http API server, left blank for disabled                                                            |
+| **blocklists**      | List of remote blocklists address list. All lists will be download to blocklist folder.                                        |
+| **blocklistdir**    | [DEPRECATED] This will be ignored. The directory will be created under the working directory automatically.                    |
+| **loglevel**        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
+| **accesslog**       | The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.                              |
 | **nullroute**       | IPv4 address to forward blocked queries to                                                                                     |
 | **nullroutev6**     | IPv6 address to forward blocked queries to                                                                                     |
 | **accesslist**      | Which clients allowed to make queries                                                                                          |
@@ -150,7 +151,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
 | **expire**          | Default error cache TTL for in seconds Default: 600                                                                            |
 | **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
-| **prefetch**        | Cache prefetch before expire. Default threshold is 10%, 0 for disabled. The threshold percent should be between 10% ~ 90%      |
+| **prefetch**        | Cache prefetch before expire. Default threshold is 10%, 0 for disabled. The threshold percent should be between 10% ~ 90%     |
 | **maxdepth**        | Maximum iteration depth for a query Default: 30                                                                                |
 | **ratelimit**       | Query based ratelimit per second, 0 for disabled. Default: 0                                                                   |
 | **clientratelimit** | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
@@ -225,7 +226,7 @@ Plugin interface is very simple. For more information, you can look the [example
 -   [x] Full IPv6 support (server&lt;->server communication)
 -   [x] Query name minimization to improve privacy described at RFC 7816
 -   [x] DNAME Redirection in the DNS described at RFC 6672
--   [ ] Automated Updates DNSSEC Trust Anchors described at RFC 5011
+-   [x] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 -   [ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
 -   [x] DNS over QUIC support described at RFC 9250
 
