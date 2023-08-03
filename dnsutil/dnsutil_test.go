@@ -12,6 +12,7 @@ import (
 
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
+	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/miekg/dns"
@@ -157,6 +158,27 @@ func TestClearDNSSEC(t *testing.T) {
 	if len(msg.Ns) != 1 {
 		t.Errorf("Test msg ns length should be 1 expected %d", len(msg.Ns))
 	}
+}
+
+func TestExchange(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion(".", dns.TypeNS)
+	req.SetEdns0(512, true)
+
+	_, err := Exchange(context.Background(), req, "8.8.8.8:53", "udp")
+	assert.NoError(t, err)
+}
+
+func TestNoSupported(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeNS)
+
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+
+	err := NotSupported(mw, req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, dns.RcodeNotImplemented, mw.Msg().Rcode)
 }
 
 func TestExchangeInternal(t *testing.T) {

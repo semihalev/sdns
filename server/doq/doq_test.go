@@ -134,6 +134,9 @@ func Test_doq(t *testing.T) {
 
 	go func() {
 		err := s.ListenAndServeQUIC(cert, privkey)
+		if err == quic.ErrServerClosed {
+			return
+		}
 		assert.NoError(t, err)
 	}()
 
@@ -211,4 +214,7 @@ func Test_doq(t *testing.T) {
 
 	_, err = io.ReadAll(stream)
 	assert.Error(t, err)
+
+	err = s.Shutdown()
+	assert.NoError(t, err)
 }

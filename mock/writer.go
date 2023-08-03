@@ -16,6 +16,8 @@ type Writer struct {
 	remoteAddr net.Addr
 
 	remoteip net.IP
+
+	internal bool
 }
 
 // NewWriter return writer
@@ -33,6 +35,8 @@ func NewWriter(proto, addr string) *Writer {
 		w.remoteAddr, _ = net.ResolveUDPAddr("udp", addr)
 		w.remoteip = w.remoteAddr.(*net.UDPAddr).IP
 	}
+
+	w.internal = w.RemoteAddr().String() == "127.0.0.255:0"
 
 	w.proto = proto
 
@@ -102,4 +106,4 @@ func (w *Writer) TsigStatus() error { return nil }
 func (w *Writer) TsigTimersOnly(ok bool) {}
 
 // Internal func
-func (w *Writer) Internal() bool { return true }
+func (w *Writer) Internal() bool { return w.internal }

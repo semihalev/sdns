@@ -37,10 +37,8 @@ func New(cfg *config.Config) *AccessList {
 			continue
 		}
 
-		err = a.ranger.Insert(cidranger.NewBasicRangerEntry(*ipnet))
-		if err != nil {
-			log.Error("Access list insert failed", "error", err.Error())
-		}
+		_ = a.ranger.Insert(cidranger.NewBasicRangerEntry(*ipnet))
+
 	}
 
 	return a

@@ -23,12 +23,12 @@ func Test_Writer(t *testing.T) {
 	assert.Nil(t, mw.Close())
 	assert.Nil(t, mw.TsigStatus())
 
-	mw = NewWriter("tcp", "127.0.0.1:0")
+	mw = NewWriter("tcp", "127.0.0.255:0")
 	assert.False(t, mw.Written())
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 
 	assert.Equal(t, "tcp", mw.Proto())
-	assert.Equal(t, "127.0.0.1", mw.RemoteIP().String())
+	assert.Equal(t, "127.0.0.255", mw.RemoteIP().String())
 
 	_, err = mw.Write([]byte{})
 	assert.Error(t, err)
