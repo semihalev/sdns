@@ -1,11 +1,13 @@
 package resolver
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"context"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -20,6 +22,37 @@ func Test_resolver(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
+	r := NewResolver(cfg)
+
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+
+	assert.NoError(t, err)
+	assert.Equal(t, len(resp.Answer) > 0, true)
+
+	servers, _, _ := r.searchCache(req.Question[0], req.CheckingDisabled, "google.com.")
+	assert.Equal(t, true, len(servers.List) > 0)
+	atomic.AddUint32(&servers.ErrorCount, 4)
+
+	servers.List = []*authcache.AuthServer{authcache.NewAuthServer("0.0.0.0:0", authcache.IPv4)}
+
+	resp, err = r.Resolve(ctx, req, servers, false, 30, 0, false, nil)
+
+	assert.NoError(t, err)
+	assert.Equal(t, len(resp.Answer) > 0, true)
+}
+
+func Test_resolverMinimize(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	req := new(dns.Msg)
+	req.SetQuestion("www.apple.com.", dns.TypeA)
+	req.CheckingDisabled = true
+
+	cfg := makeTestConfig()
+	cfg.QnameMinLevel = 5
+
 	r := NewResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
@@ -283,4 +316,26 @@ func Test_resolverNoAnswer(t *testing.T) {
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
+}
+
+func Test_EqualServers(t *testing.T) {
+	r := NewResolver(makeTestConfig())
+	assert.Equal(t, true, r.equalServers(r.rootservers, r.rootservers))
+}
+
+func Test_OutboundIPs(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.OutboundIPs = []string{"127.0.0.1", "1"}
+	cfg.OutboundIP6s = []string{"::1", "1"}
+
+	r := NewResolver(cfg)
+	assert.Len(t, r.outboundipv4, 1)
+	assert.Len(t, r.outboundipv6, 1)
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.CheckingDisabled = true
+
+	_, err := r.lookup(context.Background(), req, r.rootservers)
+	assert.Error(t, err)
 }
