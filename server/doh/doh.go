@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -110,32 +109,6 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 
 		if r.URL.Query().Get("do") == "true" {
 			opt.SetDo()
-		}
-
-		if ecs := r.URL.Query().Get("edns_client_subnet"); ecs != "" {
-			_, subnet, err := net.ParseCIDR(ecs)
-			if err != nil {
-				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-				return
-			}
-
-			mask, bits := subnet.Mask.Size()
-			var af uint16
-			if bits == 32 {
-				af = 1
-			} else {
-				af = 2
-			}
-
-			opt.Option = []dns.EDNS0{
-				&dns.EDNS0_SUBNET{
-					Code:          dns.EDNS0SUBNET,
-					Family:        af,
-					SourceNetmask: uint8(mask),
-					SourceScope:   0,
-					Address:       subnet.IP,
-				},
-			}
 		}
 
 		req.Extra = append(req.Extra, opt)

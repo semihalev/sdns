@@ -233,6 +233,10 @@ main:
 		switch k.Algorithm {
 		case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512, dns.RSAMD5:
 			if !checkExponent(k.PublicKey) {
+				if len(typesErrors[sig.TypeCovered]) < types[sig.TypeCovered] && types[sig.TypeCovered] > 1 {
+					typesErrors[sig.TypeCovered] = append(typesErrors[sig.TypeCovered], struct{}{})
+					continue
+				}
 				return false, nil
 			}
 		}

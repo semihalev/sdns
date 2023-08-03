@@ -2,7 +2,9 @@ package resolver
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,6 +40,8 @@ func makeTestConfig() *config.Config {
 	cfg.Expire = 600
 	cfg.CacheSize = 1024
 	cfg.Timeout.Duration = 2 * time.Second
+	cfg.Directory = filepath.Join(os.TempDir(), "sdns_temp")
+	cfg.IPv6Access = true
 
 	return cfg
 }
@@ -52,39 +56,33 @@ func Test_handler(t *testing.T) {
 	assert.Equal(t, "resolver", handler.Name())
 
 	m := new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r := handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	// test again for caches
 	m.SetQuestion("www.apple.com.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) == 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion("example.com.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion(".", dns.TypeANY)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
 
 	m = new(dns.Msg)
-	m.RecursionDesired = true
 	m.SetQuestion(".", dns.TypeNS)
 	m.RecursionDesired = false
 	r = handler.handle(ctx, m)
@@ -98,11 +96,28 @@ func Test_HandlerHINFO(t *testing.T) {
 
 	m := new(dns.Msg)
 	m.SetQuestion(".", dns.TypeHINFO)
+	m.Question[0].Qclass = dns.ClassCHAOS
 
 	debugns = true
 	resp := handler.handle(ctx, m)
 
 	assert.Equal(t, true, len(resp.Ns) > 0)
+}
+
+func Test_HandlerPurge(t *testing.T) {
+	ctx := context.Background()
+	cfg := makeTestConfig()
+	handler := New(cfg)
+
+	bqname := base64.StdEncoding.EncodeToString([]byte("NS:."))
+
+	req := new(dns.Msg)
+	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
+	req.Question[0].Qclass = dns.ClassCHAOS
+
+	resp := handler.handle(ctx, req)
+
+	assert.Equal(t, true, len(resp.Extra) > 0)
 }
 
 func Test_HandlerServe(t *testing.T) {

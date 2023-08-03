@@ -93,7 +93,6 @@ func Test_dohWireGET(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("www.google.com.", dns.TypeA)
-	req.RecursionDesired = true
 
 	data, err := req.Pack()
 	assert.NoError(t, err)
@@ -173,7 +172,6 @@ func Test_dohWirePOST(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("www.google.com.", dns.TypeA)
-	req.RecursionDesired = true
 
 	data, err := req.Pack()
 	assert.NoError(t, err)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 
 // Resolver type
 type Resolver struct {
+	sync.RWMutex
+
 	ncache *authcache.NSCache
 
 	cfg *config.Config
@@ -69,10 +72,13 @@ func NewResolver(cfg *config.Config) *Resolver {
 		rootservers: new(authcache.AuthServers),
 
 		ipv4cache: cache.New(defaultCacheSize),
-		ipv6cache: cache.New(defaultCacheSize),
 
 		qnameMinLevel: cfg.QnameMinLevel,
 		netTimeout:    defaultTimeout,
+	}
+
+	if r.cfg.IPv6Access {
+		r.ipv6cache = cache.New(defaultCacheSize)
 	}
 
 	if r.cfg.Timeout.Duration > 0 {
@@ -108,11 +114,13 @@ func (r *Resolver) parseRootServers(cfg *config.Config) {
 		}
 	}
 
-	for _, s := range cfg.Root6Servers {
-		host, _, _ := net.SplitHostPort(s)
+	if cfg.IPv6Access {
+		for _, s := range cfg.Root6Servers {
+			host, _, _ := net.SplitHostPort(s)
 
-		if ip := net.ParseIP(host); ip != nil && ip.To16() != nil {
-			r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s, authcache.IPv6))
+			if ip := net.ParseIP(host); ip != nil && ip.To16() != nil {
+				r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s, authcache.IPv6))
+			}
 		}
 	}
 }
@@ -128,12 +136,14 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 		}
 	}
 
-	for _, s := range cfg.OutboundIP6s {
-		if ip := net.ParseIP(s); ip != nil && ip.To16() != nil {
-			if isLocalIP(ip) {
-				r.outboundipv6 = append(r.outboundipv6, ip)
-			} else {
-				log.Crit(fmt.Sprintf("%s is not your local ipv6 address, check your config!", ip))
+	if cfg.IPv6Access {
+		for _, s := range cfg.OutboundIP6s {
+			if ip := net.ParseIP(s); ip != nil && ip.To16() != nil {
+				if isLocalIP(ip) {
+					r.outboundipv6 = append(r.outboundipv6, ip)
+				} else {
+					log.Crit(fmt.Sprintf("%s is not your local ipv6 address, check your config!", ip))
+				}
 			}
 		}
 	}
@@ -360,7 +370,9 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 		reqid := ctx.Value(ctxKey("reqid"))
 		v6ctx := context.WithValue(context.Background(), ctxKey("reqid"), reqid)
 
-		go r.lookupV6Nss(v6ctx, q, authservers, key, parentdsrr, foundv6, nss, cd)
+		if r.cfg.IPv6Access {
+			go r.lookupV6Nss(v6ctx, q, authservers, key, parentdsrr, foundv6, nss, cd)
+		}
 
 		depth--
 
@@ -538,8 +550,6 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 	var raddrsv6 []string
 
 	nsipv4 := make(map[string][]string)
-	nsipv6 := make(map[string][]string)
-
 	for _, name := range servers.Nss {
 		r.removeIPv4Cache(name)
 		addrs, err := r.lookupNSAddrV4(ctx, name, servers.CheckingDisable)
@@ -551,21 +561,23 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 
 		nsipv4[name] = addrs
 	}
-
-	for _, name := range servers.Nss {
-		r.removeIPv6Cache(name)
-		addrs, err := r.lookupNSAddrV6(ctx, name, servers.CheckingDisable)
-		if err != nil || len(addrs) == 0 {
-			continue
-		}
-
-		raddrsv6 = append(raddrsv6, addrs...)
-
-		nsipv6[name] = addrs
-	}
-
 	r.addIPv4Cache(nsipv4)
-	r.addIPv6Cache(nsipv6)
+
+	if r.cfg.IPv6Access {
+		nsipv6 := make(map[string][]string)
+		for _, name := range servers.Nss {
+			r.removeIPv6Cache(name)
+			addrs, err := r.lookupNSAddrV6(ctx, name, servers.CheckingDisable)
+			if err != nil || len(addrs) == 0 {
+				continue
+			}
+
+			raddrsv6 = append(raddrsv6, addrs...)
+
+			nsipv6[name] = addrs
+		}
+		r.addIPv6Cache(nsipv6)
+	}
 
 	servers.Lock()
 	defer servers.Unlock()
@@ -581,15 +593,17 @@ addrsloopv4:
 		servers.List = append(servers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
 	}
 
-addrsloopv6:
-	for _, addr := range raddrsv6 {
-		raddr := net.JoinHostPort(addr, "53")
-		for _, s := range servers.List {
-			if s.Addr == raddr {
-				continue addrsloopv6
+	if r.cfg.IPv6Access {
+	addrsloopv6:
+		for _, addr := range raddrsv6 {
+			raddr := net.JoinHostPort(addr, "53")
+			for _, s := range servers.List {
+				if s.Addr == raddr {
+					continue addrsloopv6
+				}
 			}
+			servers.List = append(servers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
 		}
-		servers.List = append(servers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
 	}
 
 	servers.Checked = true
@@ -603,34 +617,37 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 	foundv4 := make(nameservers)
 	foundv6 := make(nameservers)
 
-	nsipv6 := make(map[string][]string)
-	for _, a := range resp.Extra {
-		if extra, ok := a.(*dns.AAAA); ok {
-			name := strings.ToLower(extra.Header().Name)
-			qname := resp.Question[0].Name
+	if r.cfg.IPv6Access {
+		nsipv6 := make(map[string][]string)
+		for _, a := range resp.Extra {
+			if extra, ok := a.(*dns.AAAA); ok {
+				name := strings.ToLower(extra.Header().Name)
+				qname := resp.Question[0].Name
 
-			i, _ := dns.PrevLabel(qname, level)
+				i, _ := dns.PrevLabel(qname, level)
 
-			if dns.CompareDomainName(name, qname[i:]) < level {
-				// we cannot trust that glue, out of bailiwick.
-				continue
-			}
-
-			if _, ok := nss[name]; ok {
-				if isLocalIP(extra.AAAA) {
+				if dns.CompareDomainName(name, qname[i:]) < level {
+					// we cannot trust that glue, out of bailiwick.
 					continue
 				}
 
-				if extra.AAAA.IsLoopback() {
-					continue
+				if _, ok := nss[name]; ok {
+					if isLocalIP(extra.AAAA) {
+						continue
+					}
+
+					if extra.AAAA.IsLoopback() {
+						continue
+					}
+
+					foundv6[name] = struct{}{}
+
+					nsipv6[name] = append(nsipv6[name], extra.AAAA.String())
+					authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(extra.AAAA.String(), "53"), authcache.IPv6))
 				}
-
-				foundv6[name] = struct{}{}
-
-				nsipv6[name] = append(nsipv6[name], extra.AAAA.String())
-				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(extra.AAAA.String(), "53"), authcache.IPv6))
 			}
 		}
+		r.addIPv6Cache(nsipv6)
 	}
 
 	nsipv4 := make(map[string][]string)
@@ -662,10 +679,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 			}
 		}
 	}
-
-	// add glue records to cache
 	r.addIPv4Cache(nsipv4)
-	r.addIPv6Cache(nsipv6)
 
 	return authservers, foundv4, foundv6
 }
@@ -1019,7 +1033,9 @@ mainloop:
 		return nil, fatalError(errors.New("connection failed to upstream servers"))
 	}
 
-	panic("looks like no root servers, check your config")
+	log.Crit("Looks like no root servers, check your config")
+
+	return nil, fatalError(errors.New("looks like no root servers, check your config"))
 }
 
 func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, server *authcache.AuthServer, retried int) (*dns.Msg, error) {
@@ -1327,52 +1343,56 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 }
 
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
+	r.RLock()
+	defer r.RUnlock()
+
 	for _, rr := range r.rootkeys {
 		if dnskey, ok := rr.(*dns.DNSKEY); ok {
-			dsset = append(dsset, dnskey.ToDS(dns.RSASHA1))
+			dsset = append(dsset, dnskey.ToDS(dns.DH))
 		}
 	}
 
 	if len(dsset) == 0 {
-		panic("root zone dsset empty")
+		log.Crit("Root zone dsset empty")
 	}
 
 	return
 }
 
 func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
+	r.RLock()
+	defer r.RUnlock()
+
 	keys := make(map[uint16]*dns.DNSKEY)
-	for _, a := range msg.Answer {
-		if a.Header().Rrtype == dns.TypeDNSKEY {
-			dnskey := a.(*dns.DNSKEY)
-			tag := dnskey.KeyTag()
-			if dnskey.Flags == 256 || dnskey.Flags == 257 {
-				keys[tag] = dnskey
-			}
+	for _, rr := range r.rootkeys {
+		dnskey := rr.(*dns.DNSKEY)
+		tag := dnskey.KeyTag()
+		if dnskey.Flags == 257 {
+			keys[tag] = dnskey
 		}
 	}
 
 	if len(keys) == 0 {
-		panic("root zone keys empty")
+		log.Crit("Root zone keys empty")
 	}
 
 	dsset := []dns.RR{}
-	for _, a := range r.rootkeys {
-		if dnskey, ok := a.(*dns.DNSKEY); ok {
-			dsset = append(dsset, dnskey.ToDS(dns.RSASHA1))
+	for _, rr := range r.rootkeys {
+		if dnskey, ok := rr.(*dns.DNSKEY); ok {
+			dsset = append(dsset, dnskey.ToDS(dns.DH))
 		}
 	}
 
 	if len(dsset) == 0 {
-		panic("root zone dsset empty")
+		log.Crit("Root zone dsset empty")
 	}
 
 	if _, err := verifyDS(keys, dsset); err != nil {
-		panic("root zone DS not verified")
+		log.Crit("Root zone DS not verified")
 	}
 
 	if _, err := verifyRRSIG(keys, msg); err != nil {
-		panic("root zone keys not verified")
+		log.Crit("Root zone keys not verified")
 	}
 
 	return true
@@ -1397,8 +1417,6 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 			if !r.verifyRootKeys(resp) {
 				return false, fmt.Errorf("root zone keys not verified")
 			}
-
-			log.Debug("Good! root keys verified and set in cache")
 			return true, nil
 		}
 
@@ -1503,75 +1521,17 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 	return true
 }
 
-func (r *Resolver) checkPriming() {
-	req := new(dns.Msg)
-	req.SetQuestion(rootzone, dns.TypeNS)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
-	defer cancel()
-
-	if len(r.rootservers.List) == 0 {
-		panic("root servers list empty. check your config file")
-	}
-
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 5, 0, false, nil, true)
-	if err != nil {
-		log.Error("root servers update failed", "error", err.Error())
-
-		return
-	}
-
-	if len(resp.Extra) > 0 {
-		var tmpservers authcache.AuthServers
-
-		// don't want to mixed ip address list, so first ipv6 then ipv4
-		for _, r := range resp.Extra {
-			if r.Header().Rrtype == dns.TypeAAAA {
-				if v6, ok := r.(*dns.AAAA); ok {
-					host := net.JoinHostPort(v6.AAAA.String(), "53")
-					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv6))
-				}
-			}
-		}
-
-		for _, r := range resp.Extra {
-			if r.Header().Rrtype == dns.TypeA {
-				if v4, ok := r.(*dns.A); ok {
-					host := net.JoinHostPort(v4.A.String(), "53")
-					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv4))
-				}
-			}
-		}
-
-		if len(tmpservers.List) > 0 {
-			r.rootservers.Lock()
-			r.rootservers.List = tmpservers.List
-			r.rootservers.Checked = true
-			r.rootservers.Unlock()
-		}
-
-		if len(tmpservers.List) > 0 {
-			log.Debug("Good! root servers update successful")
-
-			return
-		}
-	}
-
-	log.Error("root servers update failed", "error", "no records found")
-}
-
 func (r *Resolver) run() {
 	for !middleware.Ready() {
 		//wait middleware setup
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	r.checkPriming()
+	r.AutoTA()
 
-	ticker := time.NewTicker(time.Hour)
+	ticker := time.NewTicker(12 * time.Hour)
 
 	for range ticker.C {
-		r.checkPriming()
+		r.AutoTA()
 	}
 }

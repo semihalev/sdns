@@ -57,14 +57,3 @@ func (g *singleflight) Do(key uint64, fn func() (*dns.Msg, error)) (v *dns.Msg, 
 
 	return c.val, c.dups > 0, c.err
 }
-
-func (g *singleflight) Exists(key uint64) bool {
-	g.RLock()
-	defer g.RUnlock()
-
-	if _, ok := g.m[key]; ok {
-		return true
-	}
-
-	return false
-}
