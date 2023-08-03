@@ -109,8 +109,9 @@ func (r *Resolver) AutoTA() {
 		}
 	}
 
-	//TODO: check datarace
+	r.Lock()
 	r.rootkeys = rootkeys
+	r.Unlock()
 
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeDNSKEY)
@@ -196,6 +197,13 @@ func (r *Resolver) AutoTA() {
 			// now valid
 			log.Warn("Trust anchor now valid!", "keytag", tag)
 			ta.State = StateValid
+		}
+
+		if ta.State == StateMissing {
+			// we found the missing ta again. But no trust.
+			log.Warn("Found missing trust anchor again! Pending for hold-down", "keytag", tag, "hold-down", "30d")
+			ta.State = StateAddPend
+			ta.FirstSeen = time.Now()
 		}
 	}
 

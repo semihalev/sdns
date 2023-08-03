@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 
 // Resolver type
 type Resolver struct {
+	sync.RWMutex
+
 	ncache *authcache.NSCache
 
 	cfg *config.Config
@@ -1340,9 +1343,12 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 }
 
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
+	r.RLock()
+	defer r.RUnlock()
+
 	for _, rr := range r.rootkeys {
 		if dnskey, ok := rr.(*dns.DNSKEY); ok {
-			dsset = append(dsset, dnskey.ToDS(dns.RSASHA1))
+			dsset = append(dsset, dnskey.ToDS(dns.DH))
 		}
 	}
 
@@ -1354,6 +1360,9 @@ func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
 }
 
 func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
+	r.RLock()
+	defer r.RUnlock()
+
 	keys := make(map[uint16]*dns.DNSKEY)
 	for _, rr := range r.rootkeys {
 		dnskey := rr.(*dns.DNSKEY)
