@@ -1512,79 +1512,17 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 	return true
 }
 
-func (r *Resolver) checkPriming() {
-	r.AutoTA()
-
-	req := new(dns.Msg)
-	req.SetQuestion(rootzone, dns.TypeNS)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
-
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
-	defer cancel()
-
-	if len(r.rootservers.List) == 0 {
-		log.Crit("Root servers list empty. Check your config file.")
-	}
-
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 5, 0, false, nil, true)
-	if err != nil {
-		log.Error("Root servers update failed", "error", err.Error())
-
-		return
-	}
-
-	if len(resp.Extra) > 0 {
-		var tmpservers authcache.AuthServers
-
-		// don't want to mixed ip address list, so first ipv6 then ipv4
-		if r.cfg.IPv6Access {
-			for _, r := range resp.Extra {
-				if r.Header().Rrtype == dns.TypeAAAA {
-					if v6, ok := r.(*dns.AAAA); ok {
-						host := net.JoinHostPort(v6.AAAA.String(), "53")
-						tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv6))
-					}
-				}
-			}
-		}
-
-		for _, r := range resp.Extra {
-			if r.Header().Rrtype == dns.TypeA {
-				if v4, ok := r.(*dns.A); ok {
-					host := net.JoinHostPort(v4.A.String(), "53")
-					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv4))
-				}
-			}
-		}
-
-		if len(tmpservers.List) > 0 {
-			r.rootservers.Lock()
-			r.rootservers.List = tmpservers.List
-			r.rootservers.Checked = true
-			r.rootservers.Unlock()
-		}
-
-		if len(tmpservers.List) > 0 {
-			log.Debug("Good! root servers update successful")
-
-			return
-		}
-	}
-
-	log.Error("Root servers update failed", "error", "no records found")
-}
-
 func (r *Resolver) run() {
 	for !middleware.Ready() {
 		//wait middleware setup
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	r.checkPriming()
+	r.AutoTA()
 
 	ticker := time.NewTicker(12 * time.Hour)
 
 	for range ticker.C {
-		r.checkPriming()
+		r.AutoTA()
 	}
 }
