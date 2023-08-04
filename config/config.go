@@ -46,6 +46,7 @@ type Config struct {
 	OutboundIPs      []string
 	OutboundIP6s     []string
 	Timeout          Duration
+	QueryTimeout     Duration
 	Expire           uint32
 	CacheSize        int
 	Prefetch         uint32
@@ -216,8 +217,11 @@ accesslist = [
 # The form of the entries in the /etc/hosts file is based on IETF RFC 952, which was updated by IETF RFC 1123.
 hostsfile = ""
 
-# Network timeout for each DNS lookup in duration.
-timeout = "3s"
+# Specifies the network timeout duration for each DNS lookup.
+timeout = "2s"
+
+# Defines the maximum duration to wait for each DNS query to respond.
+querytimeout = "10s"
 
 # Default error cache TTL in seconds.
 expire = 600
