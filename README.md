@@ -1,15 +1,36 @@
+<p align="center">
+  <img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="200">
+</p>
 
-[![Go](https://github.com/semihalev/sdns/workflows/Go/badge.svg)](https://github.com/semihalev/sdns/actions)
-[![Go Report Card](https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square)](https://goreportcard.com/report/github.com/semihalev/sdns)
-[![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square)](http://godoc.org/github.com/semihalev/sdns)
-[![codecov](https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg)](https://codecov.io/gh/semihalev/sdns)
-[![GitHub version](https://badgen.net/github/release/semihalev/sdns)](https://github.com/semihalev/sdns/releases)
+<h1 align="center">sdns :rocket:</h1>
 
-## :rocket: Privacy important, fast, recursive dns resolver server with dnssec support
+<p align="center">
+  A privacy-focused, high-performance, recursive DNS resolver server with DNSSEC support.
+</p>
 
-<img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="200">
+<p align="center">
+  <a href="https://github.com/semihalev/sdns/actions">
+    <img src="https://github.com/semihalev/sdns/workflows/Go/badge.svg">
+  </a>
+  <a href="https://goreportcard.com/report/github.com/semihalev/sdns">
+    <img src="https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square">
+  </a>
+  <a href="http://godoc.org/github.com/semihalev/sdns">
+    <img src="https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square">
+  </a>
+  <a href="https://codecov.io/gh/semihalev/sdns">
+    <img src="https://codecov.io/gh/semihalev/sdns/branch/master/graph/badge.svg">
+  </a>
+  <a href="https://github.com/semihalev/sdns/releases">
+    <img src="https://badgen.net/github/release/semihalev/sdns">
+  </a>
+</p>
+
+---
 
 ## Installation
+
+Use the `go get` command to install `sdns`:
 
 ```shell
 go get github.com/semihalev/sdns
@@ -17,12 +38,12 @@ go get github.com/semihalev/sdns
 
 #### Pre-build Binaries
 
-Download the latest release from [Github Repo](https://github.com/semihalev/sdns/releases/latest)
+You can download the latest release from the [Github Repo](https://github.com/semihalev/sdns/releases/latest).
 
-#### Docker Image
+#### Docker
 
-1. [Docker Package](https://github.com/semihalev/sdns/packages/188181) (update every release)
-2. [Docker Hub](https://hub.docker.com/r/c1982/sdns) (alternative)
+- [Docker Package](https://github.com/semihalev/sdns/packages/188181) (updated every release)
+- [Docker Hub](https://hub.docker.com/r/c1982/sdns) (alternative)
 
 ```shell
 $ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
@@ -30,28 +51,20 @@ $ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
 
 #### Docker Compose
 
-Install docker-compose by running the following:
+Install `docker-compose` and run from the root directory:
 
 ```shell
 $ sudo apt install docker-compose
-```
-
-After that, run the following from the root directory:
-
-```shell
 $ docker-compose up -d
 ```
 
 #### Homebrew for macOS
 
+Install and run as a service:
+
 ```shell
 $ brew install sdns
-$ brew install semihalev/tap/sdns (update every release)
-```
-
-Run as service
-
-```shell
+$ brew install semihalev/tap/sdns (updated every release)
 $ brew services start sdns
 ```
 
@@ -67,9 +80,9 @@ $ snap install sdns
 $ yay -S sdns-git
 ```
 
-> **Tip:** Pre-build binaries, docker package, brew tap and snap automatically create by Github [workflows](https://github.com/semihalev/sdns/actions)
+> **Note:** Pre-built binaries, Docker packages, brew taps, and snaps are automatically created by Github [workflows](https://github.com/semihalev/sdns/actions).
 
-## Building
+## Building from Source
 
 ```shell
 $ go build
@@ -89,16 +102,18 @@ $ make test
 | -v, --version     | Show the version of the sdns.                                                  |
 | -h, --help        | Show this message and exit.
 
-## Debug Environment
+## Debugging Environment
+
+To debug your environment, execute the following command:
 
 ```shell
 $ export SDNS_DEBUGNS=true && export SDNS_PPROF=true && ./sdns
 ```
 
-SDNS_DEBUGNS enviroment useful when you want to check authoritive servers RTT times. 
-Usage: send HINFO query for zones with chaos class.
+The `SDNS_DEBUGNS` environment variable is beneficial for verifying the RTT (Round Trip Time) of authoritative servers. To use it, send an HINFO query for zones with chaos class.
 
-Example Output:
+Here's an example of the output you might receive:
+
 ```shell
 $ dig chaos hinfo example.com
 
@@ -123,68 +138,68 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 
 ## Configuration (v1.3.3)
 
-| Key                 | Desc                                                                                                                           |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **version**         | Config version                                                                                                                 |
-| **directory**       | Sets the sdns working directory. The directory must have write access for sdns's user.                                         |
-| **bind**            | Address to bind to for the DNS server. Default :53                                                                             |
-| **bindtls**         | Address to bind to for the DNS-over-TLS server. Default :853                                                                   |
-| **binddoh**         | Address to bind to for the DNS-over-HTTPS server. Default :8053                                                                |
-| **binddoq**         | Address to bind to for the DNS-over-QUIC server. Default :853                                                                  |
-| **tlscertificate**  | TLS certificate file path                                                                                                      |
-| **tlsprivatekey**   | TLS private key file path                                                                                                      |
-| **outboundips**     | Outbound ipv4 addresses, if you set multiple, sdns can use random outbound ipv4 address by request based                       |
-| **outboundip6s**    | Outbound ipv6 addresses, if you set multiple, sdns can use random outbound ipv6 address by request based                       |
-| **rootservers**     | DNS Root IPv4 servers                                                                                                          |
-| **root6servers**    | DNS Root IPv6 servers                                                                                                          |
-| **rootkeys**        | Trusted anchors for DNSSEC                                                                                                     |
-| **fallbackservers** | Failover resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "8.8.8.8:53"                             |
-| **forwarderservers**| Forwarder resolver ipv4 or ipv6 addresses with port, left blank for disabled: Example: "8.8.8.8:53"                            |
-| **api**             | Address to bind to for the http API server, left blank for disabled                                                            |
-| **blocklists**      | List of remote blocklists address list. All lists will be download to blocklist folder.                                        |
-| **blocklistdir**    | [DEPRECATED] This will be ignored. The directory will be created under the working directory automatically.                    |
-| **loglevel**        | What kind of information should be logged, Log verbosity level crit,error,warn,info,debug                                      |
-| **accesslog**       | The location of access log file, left blank for disabled. SDNS uses Common Log Format by default.                              |
-| **nullroute**       | IPv4 address to forward blocked queries to.                                                                                    |
-| **nullroutev6**     | IPv6 address to forward blocked queries to.                                                                                    |
-| **accesslist**      | Which clients allowed to make queries.                                                                                         |
-| **querytimeout**    | Defines the maximum duration to wait for each DNS query to respond. Default: 10s                                               |
-| **timeout**         | Specifies the network timeout duration for each DNS lookup. Default: 2s                                                        |
-| **hostsfile**       | Enables serving zone data from a hosts file, left blank for disabled                                                           |
-| **expire**          | Default error cache TTL for in seconds Default: 600                                                                            |
-| **cachesize**       | Cache size (total records in cache) Default: 256000                                                                            |
-| **prefetch**        | Cache prefetch before expire. Default threshold is 10%, 0 for disabled. The threshold percent should be between 10% ~ 90%      |
-| **maxdepth**        | Maximum iteration depth for a query Default: 30                                                                                |
-| **ratelimit**       | Query based ratelimit per second, 0 for disabled. Default: 0                                                                   |
-| **clientratelimit** | Client ip address based ratelimit per minute, 0 for disable. if client support edns cookie no limit. Default: 0                |
-| **blocklist**       | Manual blocklist entries                                                                                                       |
-| **whitelist**       | Manual whitelist entries                                                                                                       |
-| **cookiesecret**    | DNS cookie secret (RFC 7873), if no cookiesecret set, it will be generate automatically                                        |
-| **nsid**            | DNS server identifier (RFC 5001), it's useful while operating multiple sdns. left blank for disabled                           |
-| **chaos**           | Enable to answer version.server, version.bind, hostname.bind and id.server chaos txt queries.                                  |
-| **qname_min_level** | Qname minimize level.If higher, it can be more complex and impact the response performance. If set 0, qname min will be disable|
-| **emptyzones**      | Empty zones return answer for RFC 1918 zones. Please see http://as112.net/ for details.                                        |
+| Key                  | Description                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **version**          | Configuration version                                                                                               |
+| **directory**        | sdns working directory (must grant write access to sdns user)                                                       |
+| **bind**             | DNS server binding address. Default: :53                                                                            |
+| **bindtls**          | DNS-over-TLS server binding address. Default: :853                                                                  |
+| **binddoh**          | DNS-over-HTTPS server binding address. Default: :8053                                                               |
+| **binddoq**          | DNS-over-QUIC server binding address. Default: :853                                                                 |
+| **tlscertificate**   | Path to the TLS certificate file                                                                                    |
+| **tlsprivatekey**    | Path to the TLS private key file                                                                                    |
+| **outboundips**      | Outbound IPv4 addresses (randomly chosen if multiple entries provided)                                              |
+| **outboundip6s**     | Outbound IPv6 addresses (randomly chosen if multiple entries provided)                                              |
+| **rootservers**      | DNS Root IPv4 servers                                                                                               |
+| **root6servers**     | DNS Root IPv6 servers                                                                                               |
+| **rootkeys**         | Trusted DNSSEC anchors                                                                                              |
+| **fallbackservers**  | Failover resolver IPv4 or IPv6 addresses with port (leave blank to disable). Example: "8.8.8.8:53"                  |
+| **forwarderservers** | Forwarder resolver IPv4 or IPv6 addresses with port (leave blank to disable). Example: "8.8.8.8:53"                 |
+| **api**              | HTTP API server binding address (leave blank to disable)                                                            |
+| **blocklists**       | Remote blocklist address list (downloaded to the blocklist folder)                                                  |
+| **blocklistdir**     | [DEPRECATED] Directory creation is automated in the working directory                                               |
+| **loglevel**         | Log verbosity level (crit, error, warn, info, debug)                                                                |
+| **accesslog**        | Location of the access log file (leave blank to disable). Default: Common Log Format                                 |
+| **nullroute**        | IPv4 address for forwarding blocked queries                                                                         |
+| **nullroutev6**      | IPv6 address for forwarding blocked queries                                                                         |
+| **accesslist**       | Client whitelist for query permissions                                                                              |
+| **querytimeout**     | Maximum wait duration for DNS query response. Default: 10s                                                          |
+| **timeout**          | Network timeout duration for each DNS lookup. Default: 2s                                                           |
+| **hostsfile**        | Enable serving zone data from a hosts file (leave blank to disable)                                                 |
+| **expire**           | Default error cache TTL (in seconds). Default: 600                                                                  |
+| **cachesize**        | Cache size (total records in cache). Default: 256000                                                                |
+| **prefetch**         | Cache prefetch before expiry (threshold: 10%-90%, 0 to disable)                                                     |
+| **maxdepth**         | Maximum iteration depth per query. Default: 30                                                                      |
+| **ratelimit**        | Query-based rate limit per second (0 to disable). Default: 0                                                        |
+| **clientratelimit**  | Client IP address-based rate limit per minute (no limit if client supports EDNS cookie). Default: 0                 |
+| **blocklist**        | Manual blocklist entries                                                                                            |
+| **whitelist**        | Manual whitelist entries                                                                                            |
+| **cookiesecret**     | DNS cookie secret (RFC 7873) - auto-generated if not set                                                            |
+| **nsid**             | DNS server identifier (RFC 5001) - useful for operating multiple sdns instances (leave blank to disable)            |
+| **chaos**            | Enable responses to version.server, version.bind, hostname.bind and id.server chaos txt queries                     |
+| **qname_min_level**  | Qname minimize level (0 to disable - higher values increase complexity and impact response performance)             |
+| **emptyzones**       | Enable response to RFC 1918 zone queries. For details, see http://as112.net/                                        |
 
-## Plugins Configuration
+## Plugin Configuration
 
-You can add your own plugins to sdns. The plugin order is very important. The orders of plugins and middlewares will effect each other. Config keys should be string and values can be anything. The plugins will load before cache middleware with their orders.
+In sdns, you have the ability to add custom plugins. The sequence of the plugins and the middlewares has a mutual impact on their execution. Config keys must be strings, and values can be of any type. Plugins are loaded before the cache middleware in the specified order.
 
-Plugin interface is very simple. For more information, you can look the [example plugin](https://github.com/semihalev/sdnsexampleplugin)
+The plugin interface is straightforward. For additional information, please refer to the [example plugin](https://github.com/semihalev/sdnsexampleplugin).
 
-### Example Config
+### Example Configuration
 ```toml
 [plugins]
      [plugins.example]
-     path = "/myplugindir/exampleplugin.so"
-     config = {key_1 = "value_1",intkey = 2,boolkey = true,keyN = "nnn"}
+     path = "/path/to/exampleplugin.so"
+     config = {key_1 = "value_1", intkey = 2, boolkey = true, keyN = "nnn"}
      [plugins.another]
-     path = "/myplugindir/anotherplugin.so"
+     path = "/path/to/anotherplugin.so"
 ```
 
 ## Server Configuration Checklist
 
--   Increase file descriptor on your server
-
+- Increase the file descriptor limit on your server
+  
 ## Features
 
 -   Linux/BSD/Darwin/Windows supported
@@ -234,22 +249,36 @@ Plugin interface is very simple. For more information, you can look the [example
 
 ## Performance
 
-These benchmarks were run on a server with Intel Xeon E5-2609 v4 cpu and 32GB memory on localhost. DNS-OARC dnsperf (https://www.dns-oarc.net/tools/dnsperf) tool used with 50.000 sample query data.
+### Benchmark Environment
 
-| Resolver | RESPONSE | NOERROR | SERVFAIL | NXDOMAIN | RUN TIME  |  QPS  |
-| ------   | -------- | ------- | -------- | -------- | --------- | ----- |
-| SDNS     | %99,88   | %73,60  | %1,36    | %25,04   | 101s480ms | 492/s |
-| PowerDNS | %99,59   | %72,76  | %1,40    | %25,84   | 123s930ms | 402/s |
-| Bind     | %99,40   | %72,98  | %1,09    | %25,94   | 115s150ms | 431/s |
-| Unbound  | %99,14   | %73,19  | %0,90    | %25,90   | 178s80ms  | 278/s |
+- **Server Specifications:**
+    - Processor: Intel Xeon E5-2609 v4 CPU
+    - Memory: 32GB
 
-<img src="https://github.com/semihalev/sdns/blob/master/benchmarks.png?raw=true">
+### Benchmarking Tool
+
+- **Tool Name:** [DNS-OARC dnsperf](https://www.dns-oarc.net/tools/dnsperf)
+- **Benchmark Configuration:**
+    - Query Data Volume: 50,000 sample queries
+
+### Benchmark Comparisons
+Benchmarks were performed on the following DNS resolvers: sdns-1.3.3, pdns-recursor-4.8.4, bind-9.19.12, unbound-1.17.1.
+
+### Benchmark Results
+
+| Resolver | RESPONSE | LOST | NOERROR | SERVFAIL | NXDOMAIN | Run Time  | QPS   |
+| -------- | -------- | ---- | ------- | -------- | -------- | --------- | ----- |
+| SDNS     | 100%     | 1    | 35,164  | 866      | 13,969   | 87s47ms   | 571/s |
+| PowerDNS | 99.99%   | 6    | 35,140  | 893      | 13,961   | 88s83ms   | 563/s |
+| Bind     | 99.74%   | 132  | 35,024  | 885      | 13,959   | 127s64ms  | 390/s |
+| Unbound  | 99.49%   | 253  | 35,152  | 624      | 13,971   | 174s64ms  | 284/s |
+
 
 ## Contributing
 
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+We welcome pull requests. If you're considering significant changes, please start a discussion by opening an issue first.
 
-Please make sure to update tests as appropriate.
+Ensure that your changes are accompanied by corresponding tests.
 
 ## :hearts: Made With
 
