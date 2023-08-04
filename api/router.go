@@ -58,13 +58,20 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(k, v)
 	}
 
+	if len(r.URL.Path) > 2048 {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
 	ctx := rt.getContext(w, r)
 
 	if r.Method[0] == 'G' {
 		rt.get.Lookup(ctx)
 	} else {
 		tree := rt.selectTree(r.Method)
-		tree.Lookup(ctx)
+		if tree != nil {
+			tree.Lookup(ctx)
+		}
 	}
 
 	if ctx.Handler == nil {

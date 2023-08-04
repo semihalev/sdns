@@ -125,41 +125,41 @@ outboundip6s = [
 
 # Root zone IPv4 servers
 rootservers = [
-    "192.5.5.241:53",
-    "198.41.0.4:53",
-    "192.228.79.201:53",
-    "192.33.4.12:53",
-    "199.7.91.13:53",
-    "192.203.230.10:53",
-    "192.112.36.4:53",
-    "128.63.2.53:53",
-    "192.36.148.17:53",
-    "192.58.128.30:53",
-    "193.0.14.129:53",
-    "199.7.83.42:53",
-    "202.12.27.33:53"
+	"198.41.0.4:53",
+	"199.9.14.201:53",
+	"192.33.4.12:53",
+	"199.7.91.13:53",
+	"192.203.230.10:53",
+	"192.5.5.241:53",
+	"192.112.36.4:53",
+	"198.97.190.53:53",
+	"192.36.148.17:53",
+	"192.58.128.30:53",
+	"193.0.14.129:53",
+	"199.7.83.42:53",
+	"202.12.27.33:53"
 ]
 
 # Root zone IPv6 servers
 root6servers = [
-    "[2001:500:2f::f]:53",
-    "[2001:503:ba3e::2:30]:53",
-    "[2001:500:200::b]:53",
-    "[2001:500:2::c]:53",
-    "[2001:500:2d::d]:53",
-    "[2001:500:a8::e]:53",
-    "[2001:500:12::d0d]:53",
-    "[2001:500:1::53]:53",
-    "[2001:7fe::53]:53",
-    "[2001:503:c27::2:30]:53",
-    "[2001:7fd::1]:53",
-    "[2001:500:9f::42]:53",
-    "[2001:dc3::35]:53"
+	"[2001:503:ba3e::2:30]:53",
+	"[2001:500:200::b]:53",
+	"[2001:500:2::c]:53",
+	"[2001:500:2d::d]:53",
+	"[2001:500:a8::e]:53",
+	"[2001:500:2f::f]:53",
+	"[2001:500:12::d0d]:53",
+	"[2001:500:1::53]:53",
+	"[2001:7fe::53]:53",
+	"[2001:503:c27::2:30]:53",
+	"[2001:7fd::1]:53",
+	"[2001:500:9f::42]:53",
+	"[2001:dc3::35]:53"
 ]
 
 # Trusted anchors for DNSSEC
 rootkeys = [
-    ".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
+	".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
 ]
 
 # Failover resolver IPv4 or IPv6 addresses with port, left blank for disabled.
@@ -208,7 +208,7 @@ nullroutev6 = "::0"
 
 # Which clients are allowed to make queries.
 accesslist = [
-    "0.0.0.0/0",
+	"0.0.0.0/0",
     "::0/0"
 ]
 
