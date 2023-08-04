@@ -199,7 +199,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 
 	if !minimized && len(resp.Answer) > 0 {
 		// this is like auth server external cname error but this can be recover.
-		if resp.Rcode == dns.RcodeServerFailure && len(resp.Answer) > 0 {
+		if len(resp.Answer) > 0 && (resp.Rcode == dns.RcodeServerFailure || resp.Rcode == dns.RcodeNameError) {
 			resp.Rcode = dns.RcodeSuccess
 		}
 
