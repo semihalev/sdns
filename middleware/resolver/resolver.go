@@ -1521,17 +1521,94 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 	return true
 }
 
+func (r *Resolver) checkPriming() {
+	req := new(dns.Msg)
+	req.SetQuestion(rootzone, dns.TypeNS)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
+	defer cancel()
+
+	if len(r.rootservers.List) == 0 {
+		log.Crit("Root servers list empty. check your config file")
+	}
+
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 5, 0, false, nil, true)
+	if err != nil {
+		log.Error("Root servers update failed", "error", err.Error())
+		return
+	}
+
+	if !resp.AuthenticatedData {
+		log.Error("Root servers update failed", "error", "not authenticated")
+		return
+	}
+
+	nsCount := 0
+	for _, r := range resp.Answer {
+		if r.Header().Rrtype == dns.TypeNS {
+			nsCount++
+		}
+	}
+
+	var tmpservers authcache.AuthServers
+
+	if r.cfg.IPv6Access {
+		ipv6Count := 0
+		for _, r := range resp.Extra {
+			if r.Header().Rrtype == dns.TypeAAAA {
+				if v6, ok := r.(*dns.AAAA); ok {
+					ipv6Count++
+					host := net.JoinHostPort(v6.AAAA.String(), "53")
+					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv6))
+				}
+			}
+		}
+		if ipv6Count != nsCount {
+			log.Error("Root servers update failed", "error", "AAAA record count mismatch")
+			return
+		}
+	}
+
+	ipv4Count := 0
+	for _, r := range resp.Extra {
+		if r.Header().Rrtype == dns.TypeA {
+			if v4, ok := r.(*dns.A); ok {
+				ipv4Count++
+				host := net.JoinHostPort(v4.A.String(), "53")
+				tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv4))
+			}
+		}
+	}
+	if ipv4Count != nsCount {
+		log.Error("Root servers update failed", "error", "A record count mismatch")
+		return
+	}
+
+	if len(tmpservers.List) >= len(r.rootservers.List) {
+		r.rootservers.Lock()
+		r.rootservers.List = tmpservers.List
+		r.rootservers.Checked = true
+		r.rootservers.Unlock()
+		return
+	}
+
+	log.Error("Root servers update failed", "error", "missing A/AAAA records")
+}
+
 func (r *Resolver) run() {
 	for !middleware.Ready() {
 		//wait middleware setup
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	r.checkPriming()
 	r.AutoTA()
 
 	ticker := time.NewTicker(12 * time.Hour)
 
 	for range ticker.C {
+		r.checkPriming()
 		r.AutoTA()
 	}
 }
