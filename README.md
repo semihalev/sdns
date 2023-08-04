@@ -2,10 +2,10 @@
   <img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="200">
 </p>
 
-<h1 align="center">sdns :rocket:</h1>
+<h1 align="center">SDNS :rocket:</h1>
 
 <p align="center">
-  A privacy-focused, high-performance, recursive DNS resolver server with DNSSEC support.
+  A high-performance, recursive DNS resolver server with DNSSEC support, focused on preserving privacy.
 </p>
 
 <p align="center">
