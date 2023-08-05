@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
@@ -12,8 +13,10 @@ import (
 )
 
 func Test_Forwarder(t *testing.T) {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
 	cfg := new(config.Config)
-	cfg.ForwarderServers = []string{"[::255]:53", "8.8.8.8:53", "1"}
+	cfg.ForwarderServers = []string{"[::255]:53", "8.8.8.8:53", "1", "tls://8.8.8.8:853"}
 
 	middleware.Setup(cfg)
 
@@ -44,17 +47,26 @@ func Test_Forwarder(t *testing.T) {
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
 
-	f.servers = []string{}
+	f.servers = []*server{}
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 
-	f.servers = []string{"[::255]:53"}
+	srv := &server{Addr: "[::255]:53", Proto: "udp"}
+	f.servers = []*server{srv}
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
+
+	srv = &server{Addr: "8.8.8.8:853", Proto: "tcp-tls"}
+	f.servers = []*server{srv}
+
+	ch.Reset(mw, req)
+	ch.Next(ctx)
+
+	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
 }

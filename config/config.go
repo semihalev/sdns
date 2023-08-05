@@ -166,7 +166,7 @@ rootkeys = [
 # Failover resolver IPv4 or IPv6 addresses with port, left blank for disabled.
 # fallbackservers = [
 #   "8.8.8.8:53",
-#   "8.8.4.4:53"
+#   "[2001:4860:4860::8888]:53"
 # ]
 fallbackservers = [
 ]
@@ -174,7 +174,8 @@ fallbackservers = [
 # Forwarder resolver IPv4 or IPv6 addresses with port, left blank for disabled.
 # forwarderservers = [
 #   "8.8.8.8:53",
-#   "8.8.4.4:53"
+#   "[2001:4860:4860::8888]:53",
+#   "tls://8.8.8.8:853"
 # ]
 forwarderservers = [
 ]

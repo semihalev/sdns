@@ -28,9 +28,5 @@ func Test_TrySort(t *testing.T) {
 		}
 	}
 
-	for _, as := range s.List {
-		t.Logf("%s\n", as)
-	}
-
 	assert.Equal(t, int64(1), s.List[0].Count)
 }

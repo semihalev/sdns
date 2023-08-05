@@ -12,9 +12,14 @@ import (
 	"github.com/semihalev/sdns/middleware"
 )
 
+type server struct {
+	Addr  string
+	Proto string
+}
+
 // Forwarder type
 type Forwarder struct {
-	servers []string
+	servers []*server
 }
 
 func init() {
@@ -25,14 +30,23 @@ func init() {
 
 // New return forwarder
 func New(cfg *config.Config) *Forwarder {
-	forwarderservers := []string{}
+	forwarderservers := []*server{}
 	for _, s := range cfg.ForwarderServers {
+		srv := &server{Proto: "udp"}
+
+		if strings.HasPrefix(s, "tls://") {
+			s = strings.TrimPrefix(s, "tls://")
+			srv.Proto = "tcp-tls"
+		}
+
 		host, _, _ := net.SplitHostPort(s)
 
 		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
-			forwarderservers = append(forwarderservers, s)
+			srv.Addr = s
+			forwarderservers = append(forwarderservers, srv)
 		} else if ip != nil && ip.To16() != nil {
-			forwarderservers = append(forwarderservers, s)
+			srv.Addr = s
+			forwarderservers = append(forwarderservers, srv)
 		} else {
 			log.Error("Forwarder server is not correct. Check your config.", "server", s)
 		}
@@ -60,7 +74,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	fReq.CheckingDisabled = req.CheckingDisabled
 
 	for _, server := range f.servers {
-		resp, err := dnsutil.Exchange(ctx, req, server, "udp")
+		resp, err := dnsutil.Exchange(ctx, req, server.Addr, server.Proto)
 		if err != nil {
 			log.Warn("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
