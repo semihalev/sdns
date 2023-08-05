@@ -4,10 +4,13 @@ import (
 	"os"
 	"testing"
 
+	"github.com/semihalev/log"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_config(t *testing.T) {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
 	const configFile = "example.conf"
 
 	err := generateConfig(configFile)
@@ -21,6 +24,8 @@ func Test_config(t *testing.T) {
 }
 
 func Test_configError(t *testing.T) {
+	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+
 	const configFile = ""
 
 	_, err := Load(configFile, "0.0.0")
