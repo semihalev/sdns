@@ -19,7 +19,7 @@ import (
 	"github.com/semihalev/sdns/server"
 )
 
-const version = "1.3.2"
+const version = "1.3.3"
 
 var (
 	flagcfgpath  string
@@ -32,15 +32,15 @@ func init() {
 	flag.StringVar(&flagcfgpath, "config", "sdns.conf", "Location of the config file. If it doesn't exist, a new one will be generated.")
 	flag.StringVar(&flagcfgpath, "c", "sdns.conf", "Location of the config file. If it doesn't exist, a new one will be generated.")
 
-	flag.BoolVar(&flagprintver, "version", false, "Show the version of the program.")
-	flag.BoolVar(&flagprintver, "v", false, "Show the version of the program.")
+	flag.BoolVar(&flagprintver, "version", false, "Show the version of the sdns.")
+	flag.BoolVar(&flagprintver, "v", false, "Show the version of the sdns.")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage:\n  sdns [OPTIONS]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		fmt.Fprintf(os.Stderr, "  -c, --config PATH\tLocation of the config file. If it doesn't exist, a new one will be generated.\n")
-		fmt.Fprintf(os.Stderr, "  -v, --version\t\tShow the version of the program.\n")
-		fmt.Fprintf(os.Stderr, "  -h, --help\t\tShow this message and exit.\n\n")
+		fmt.Fprintf(os.Stderr, "  -v, --version\t\tShow the version of the sdns and exit.\n")
+		fmt.Fprintf(os.Stderr, "  -h, --help\t\tShow this help and exit.\n\n")
 		fmt.Fprintf(os.Stderr, "Example:\n")
 		fmt.Fprintf(os.Stderr, "  sdns -c sdns.conf\n\n")
 	}
@@ -78,13 +78,25 @@ func run(ctx context.Context) *server.Server {
 	return srv
 }
 
+func printver() {
+	buildInfo, _ := debug.ReadBuildInfo()
+
+	settings := make(map[string]string)
+	for _, s := range buildInfo.Settings {
+		settings[s.Key] = s.Value
+	}
+
+	fmt.Fprintf(os.Stderr, "sdns v%s rev %.7s\nbuilt by %s (%s %s)\n", version,
+		settings["vcs.revision"], buildInfo.GoVersion, settings["GOOS"], settings["GOARCH"])
+
+	os.Exit(0)
+}
+
 func main() {
 	flag.Parse()
 
 	if flagprintver {
-		buildInfo, _ := debug.ReadBuildInfo()
-		fmt.Fprintf(os.Stderr, "SDNS v%s built with %s\n", version, buildInfo.GoVersion)
-		os.Exit(0)
+		printver()
 	}
 
 	log.Info("Starting sdns...", "version", version)
