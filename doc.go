@@ -1,4 +1,5 @@
 /*
-Privacy important, fast recursive dns resolver server with dnssec support. https://sdns.dev for more information.
+A high-performance, recursive DNS resolver server with DNSSEC support, focused on preserving privacy.
+https://sdns.dev for more information.
 */
 package main // import "github.com/semihalev/sdns"
