@@ -110,7 +110,7 @@ nfpms:
 
 brews:
   -
-    tap:
+    repository:
       owner: semihalev
       name: homebrew-tap
     folder: Formula
@@ -122,31 +122,13 @@ brews:
     commit_author:
       name: semihalev
       email: semihalev@gmail.com
-    plist: |
-      <?xml version="1.0" encoding="UTF-8"?>
-      <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-      <plist version="1.0">
-        <dict>
-          <key>Label</key>
-          <string>#{plist_name}</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>#{opt_bin}/sdns</string>
-            <string>-config</string>
-            <string>#{etc}/sdns.conf</string>
-          </array>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>KeepAlive</key>
-          <true/>
-          <key>StandardErrorPath</key>
-          <string>#{var}/log/sdns.log</string>
-          <key>StandardOutPath</key>
-          <string>#{var}/log/sdns.log</string>
-          <key>WorkingDirectory</key>
-          <string>#{opt_prefix}</string>
-        </dict>
-      </plist>
+    service: |
+      run [opt_bin/"sdns", "-config", etc/"sdns.conf"]
+      keep_alive true
+      require_root true
+      error_log_path var/"log/sdns.log"
+      log_path var/"log/sdns.log"
+      working_dir opt_prefix
     test: |
       fork do
         exec bin/"sdns", "-config", testpath/"sdns.conf"

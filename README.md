@@ -100,7 +100,7 @@ $ make test
 | ----------------- | ------------------------------------------------------------------------------ |
 | -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated. |
 | -v, --version     | Show the version of the sdns.                                                  |
-| -h, --help        | Show this message and exit.
+| -h, --help        | Show this help and exit.                                                       |
 
 ## Debugging Environment
 
@@ -142,10 +142,10 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **version**          | Configuration version                                                                                               |
 | **directory**        | sdns working directory (must grant write access to sdns user)                                                       |
-| **bind**             | DNS server binding address. Default: :53                                                                            |
-| **bindtls**          | DNS-over-TLS server binding address. Default: :853                                                                  |
-| **binddoh**          | DNS-over-HTTPS server binding address. Default: :8053                                                               |
-| **binddoq**          | DNS-over-QUIC server binding address. Default: :853                                                                 |
+| **bind**             | DNS server binding address Default: :53                                                                             |
+| **bindtls**          | DNS-over-TLS server binding address Default: :853                                                                   |
+| **binddoh**          | DNS-over-HTTPS server binding address Default: :8053                                                                |
+| **binddoq**          | DNS-over-QUIC server binding address Default: :853                                                                  |
 | **tlscertificate**   | Path to the TLS certificate file                                                                                    |
 | **tlsprivatekey**    | Path to the TLS private key file                                                                                    |
 | **outboundips**      | Outbound IPv4 addresses (randomly chosen if multiple entries provided)                                              |
@@ -153,25 +153,25 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **rootservers**      | DNS Root IPv4 servers                                                                                               |
 | **root6servers**     | DNS Root IPv6 servers                                                                                               |
 | **rootkeys**         | Trusted DNSSEC anchors                                                                                              |
-| **fallbackservers**  | Failover resolver IPv4 or IPv6 addresses with port (leave blank to disable). Example: "8.8.8.8:53"                  |
-| **forwarderservers** | Forwarder resolver IPv4 or IPv6 addresses with port (leave blank to disable). Example: "8.8.8.8:53"                 |
+| **fallbackservers**  | Failover resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                   |
+| **forwarderservers** | Forwarder resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                  |
 | **api**              | HTTP API server binding address (leave blank to disable)                                                            |
 | **blocklists**       | Remote blocklist address list (downloaded to the blocklist folder)                                                  |
 | **blocklistdir**     | [DEPRECATED] Directory creation is automated in the working directory                                               |
 | **loglevel**         | Log verbosity level (crit, error, warn, info, debug)                                                                |
-| **accesslog**        | Location of the access log file (leave blank to disable). Default: Common Log Format                                 |
+| **accesslog**        | Location of the access log file (leave blank to disable) Default: Common Log Format                                 |
 | **nullroute**        | IPv4 address for forwarding blocked queries                                                                         |
 | **nullroutev6**      | IPv6 address for forwarding blocked queries                                                                         |
 | **accesslist**       | Client whitelist for query permissions                                                                              |
-| **querytimeout**     | Maximum wait duration for DNS query response. Default: 10s                                                          |
-| **timeout**          | Network timeout duration for each DNS lookup. Default: 2s                                                           |
+| **querytimeout**     | Maximum wait duration for DNS query response Default: 10s                                                           |
+| **timeout**          | Network timeout duration for each DNS lookup Default: 2s                                                            |
 | **hostsfile**        | Enable serving zone data from a hosts file (leave blank to disable)                                                 |
-| **expire**           | Default error cache TTL (in seconds). Default: 600                                                                  |
-| **cachesize**        | Cache size (total records in cache). Default: 256000                                                                |
+| **expire**           | Default error cache TTL (in seconds) Default: 600                                                                   |
+| **cachesize**        | Cache size (total records in cache) Default: 256000                                                                 |
 | **prefetch**         | Cache prefetch before expiry (threshold: 10%-90%, 0 to disable)                                                     |
-| **maxdepth**         | Maximum iteration depth per query. Default: 30                                                                      |
-| **ratelimit**        | Query-based rate limit per second (0 to disable). Default: 0                                                        |
-| **clientratelimit**  | Client IP address-based rate limit per minute (no limit if client supports EDNS cookie). Default: 0                 |
+| **maxdepth**         | Maximum iteration depth per query Default: 30                                                                       |
+| **ratelimit**        | Query-based rate limit per second (0 to disable) Default: 0                                                         |
+| **clientratelimit**  | Client IP address-based rate limit per minute (no limit if client supports EDNS cookie) Default: 0                  |
 | **blocklist**        | Manual blocklist entries                                                                                            |
 | **whitelist**        | Manual whitelist entries                                                                                            |
 | **cookiesecret**     | DNS cookie secret (RFC 7873) - auto-generated if not set                                                            |

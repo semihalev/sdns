@@ -1,15 +1,14 @@
-ARG image=golang:1.20.5-alpine3.18
+ARG IMAGE=golang:alpine3.18
 
-FROM $image AS builder
+FROM ${IMAGE} AS builder
 
 COPY . /go/src/github.com/semihalev/sdns/
 
 WORKDIR /go/src/github.com/semihalev/sdns
-
 RUN apk --no-cache add \
 	ca-certificates \
 	gcc \
-        binutils-gold \
+	binutils-gold \
 	git \
 	musl-dev
 
