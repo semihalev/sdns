@@ -2,7 +2,7 @@ name: sdns
 adopt-info: sdns
 summary: A DNS Resolver Server.
 description: |
-  Privacy important, fast, recursive dns resolver server with dnssec support
+  A high-performance, recursive DNS resolver server with DNSSEC support, focused on preserving privacy.
 
 architectures:
   - build-on: armhf
@@ -23,12 +23,13 @@ parts:
       snapcraftctl pull
       last_committed_tag="$(git describe --tags --abbrev=0)"
       last_committed_tag_ver="$(echo ${last_committed_tag} | sed 's/v//')"
-      last_released_tag="$(snap info sdns | awk '$1 == "latest/beta:" { print $2 }')"
+      last_released_tag="$(snap info sdns | awk '$1 == "latest/stable:" { print $2 }')"
       if [ "${last_committed_tag_ver}" != "${last_released_tag}" ]; then
         git fetch
         git checkout "${last_committed_tag}"
       fi
       snapcraftctl set-version "$(git describe --tags | sed 's/v//')"
+      snapcraftctl set-grade stable
     stage:
      - bin/sdns
 apps:
