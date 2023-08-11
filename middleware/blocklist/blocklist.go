@@ -26,12 +26,6 @@ type BlockList struct {
 	cfg *config.Config
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New returns a new BlockList
 func New(cfg *config.Config) *BlockList {
 	b := &BlockList{

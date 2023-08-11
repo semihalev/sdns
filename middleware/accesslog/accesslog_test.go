@@ -20,6 +20,7 @@ func Test_accesslog(t *testing.T) {
 		AccessLog: "access_test.log",
 	}
 
+	middleware.Register("accesslog", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 	a := middleware.Get("accesslog").(*AccessLog)
 

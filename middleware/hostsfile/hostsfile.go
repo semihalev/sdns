@@ -94,12 +94,6 @@ type Hostsfile struct {
 	size  int64
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New return new hostfile, it will be hosts file also
 func New(cfg *config.Config) *Hostsfile {
 	h := &Hostsfile{

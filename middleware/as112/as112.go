@@ -15,12 +15,6 @@ type AS112 struct {
 	zones map[string]bool
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New return a new middleware
 func New(cfg *config.Config) *AS112 {
 	a := &AS112{zones: defaultZones}

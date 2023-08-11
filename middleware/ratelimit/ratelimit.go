@@ -28,12 +28,6 @@ type RateLimit struct {
 	rate  int
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New return accesslist
 func New(cfg *config.Config) *RateLimit {
 	r := &RateLimit{

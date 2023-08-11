@@ -55,10 +55,6 @@ type ResponseWriter struct {
 var debugns bool
 
 func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-
 	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
 }
 
