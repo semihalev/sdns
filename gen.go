@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // middleware list order very important, handlers call via this order.
@@ -55,6 +56,8 @@ func main() {
 	file.WriteString("\npackage main\n\nimport (\n")
 	file.WriteString("\t\"github.com/semihalev/sdns/config\"\n")
 	file.WriteString("\t\"github.com/semihalev/sdns/middleware\"\n")
+
+	sort.StringSlice(pathlist).Sort()
 
 	for _, path := range pathlist {
 		file.WriteString("\t\"" + path + "\"\n")
