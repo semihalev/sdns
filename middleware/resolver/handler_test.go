@@ -13,20 +13,10 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	_ "github.com/semihalev/sdns/middleware/edns"
+	"github.com/semihalev/sdns/middleware/edns"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
 )
-
-func TestMain(m *testing.M) {
-	cfg := makeTestConfig()
-
-	middleware.Setup(cfg)
-
-	m.Run()
-
-	os.Exit(0)
-}
 
 func makeTestConfig() *config.Config {
 	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
@@ -44,10 +34,18 @@ func makeTestConfig() *config.Config {
 	cfg.Directory = filepath.Join(os.TempDir(), "sdns_temp")
 	cfg.IPv6Access = true
 
+	if !middleware.Ready() {
+		middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })
+		middleware.Register("resolver", func(cfg *config.Config) middleware.Handler { return New(cfg) })
+		middleware.Setup(cfg)
+	}
+
 	return cfg
 }
 
 func Test_handler(t *testing.T) {
+	makeTestConfig()
+
 	ctx := context.Background()
 
 	handler := middleware.Get("resolver").(*DNSHandler)

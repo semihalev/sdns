@@ -12,6 +12,7 @@ import (
 )
 
 func Test_Metrics(t *testing.T) {
+	middleware.Register("metrics", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(&config.Config{})
 
 	m := middleware.Get("metrics").(*Metrics)

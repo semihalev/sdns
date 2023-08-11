@@ -15,6 +15,7 @@ func Test_RateLimit(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.ClientRateLimit = 1
 
+	middleware.Register("ratelimit", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
 	r := middleware.Get("ratelimit").(*RateLimit)

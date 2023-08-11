@@ -31,6 +31,7 @@ func Test_Failover(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.FallbackServers = []string{"[::255]:53", "8.8.8.8:53", "1"}
 
+	middleware.Register("failover", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
 	f := middleware.Get("failover").(*Failover)

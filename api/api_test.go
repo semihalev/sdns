@@ -29,6 +29,7 @@ func Test_AllAPICalls(t *testing.T) {
 	cfg.Nullroutev6 = "::0"
 	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 
+	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
 	middleware.Setup(cfg)
 
 	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)

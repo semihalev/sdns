@@ -19,12 +19,6 @@ type AccessLog struct {
 	logFile *os.File
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New returns a new AccessLog
 func New(cfg *config.Config) *AccessLog {
 	var logFile *os.File

@@ -19,8 +19,11 @@ func Test_loop(t *testing.T) {
 	stderr := os.Stderr
 	os.Stderr, _ = os.Open(os.DevNull)
 
+	middleware.Register("loop", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(&config.Config{})
+
 	l := middleware.Get("loop").(*Loop)
+
 	assert.Equal(t, "loop", l.Name())
 
 	ch := middleware.NewChain([]middleware.Handler{l, l, l, l, l, l, l, l, l, l, l})

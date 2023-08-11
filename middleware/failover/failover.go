@@ -25,12 +25,6 @@ type ResponseWriter struct {
 	f *Failover
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New return failover
 func New(cfg *config.Config) *Failover {
 	fallbackservers := []string{}

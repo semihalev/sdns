@@ -18,6 +18,7 @@ func Test_Forwarder(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.ForwarderServers = []string{"[::255]:53", "8.8.8.8:53", "1", "tls://8.8.8.8:853"}
 
+	middleware.Register("forwarder", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
 	f := middleware.Get("forwarder").(*Forwarder)

@@ -159,6 +159,7 @@ func Test_Server(t *testing.T) {
 	cfg.BindDOQ = "127.0.0.1:23224"
 	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 
+	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
 	middleware.Setup(cfg)
 
 	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)

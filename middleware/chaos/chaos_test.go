@@ -15,6 +15,7 @@ func Test_Chaos(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.Chaos = true
 
+	middleware.Register("chaos", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
 	c := middleware.Get("chaos").(*Chaos)

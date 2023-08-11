@@ -15,12 +15,6 @@ type Metrics struct {
 	queries *prometheus.CounterVec
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New return new metrics
 func New(cfg *config.Config) *Metrics {
 	m := &Metrics{

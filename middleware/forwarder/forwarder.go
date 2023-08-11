@@ -22,12 +22,6 @@ type Forwarder struct {
 	servers []*server
 }
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New return forwarder
 func New(cfg *config.Config) *Forwarder {
 	forwarderservers := []*server{}

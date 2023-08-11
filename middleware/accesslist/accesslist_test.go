@@ -32,6 +32,7 @@ func Test_Accesslist(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.AccessList = []string{"127.0.0.1/32", "1"}
 
+	middleware.Register("accesslist", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
 	a := middleware.Get("accesslist").(*AccessList)

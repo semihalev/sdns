@@ -41,6 +41,8 @@ func Test_EDNS(t *testing.T) {
 	testDomain := "example.com."
 
 	cfg := new(config.Config)
+
+	middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
 	edns := middleware.Get("edns").(*EDNS)

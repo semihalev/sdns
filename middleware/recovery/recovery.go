@@ -15,12 +15,6 @@ import (
 // Recovery dummy type
 type Recovery struct{}
 
-func init() {
-	middleware.Register(name, func(cfg *config.Config) middleware.Handler {
-		return New(cfg)
-	})
-}
-
 // New return recovery
 func New(cfg *config.Config) *Recovery {
 	return &Recovery{}

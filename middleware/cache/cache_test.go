@@ -39,6 +39,8 @@ func makeTestConfig() *config.Config {
 	cfg.Prefetch = 90
 
 	if !middleware.Ready() {
+		middleware.Register("cache", func(cfg *config.Config) middleware.Handler { return New(cfg) })
+		middleware.Register("resolver", func(cfg *config.Config) middleware.Handler { return resolver.New(cfg) })
 		middleware.Setup(cfg)
 	}
 
