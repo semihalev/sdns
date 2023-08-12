@@ -9,12 +9,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/semihalev/sdns/actions"><img src="https://img.shields.io/github/actions/workflow/status/semihalev/sdns/go.yml?style=for-the-badge"></a>
-  <a href="https://goreportcard.com/report/github.com/semihalev/sdns"><img src="https://goreportcard.com/badge/github.com/semihalev/sdns?style=for-the-badge"></a>
-  <a href="http://godoc.org/github.com/semihalev/sdns"><img src="https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge"></a>
-  <a href="https://codecov.io/gh/semihalev/sdns"><img src="https://img.shields.io/codecov/c/github/semihalev/sdns?style=for-the-badge"></a>
-  <a href="https://github.com/semihalev/sdns/releases"><img src="https://img.shields.io/github/v/release/semihalev/sdns?style=for-the-badge"></a>
-  <a href="https://github.com/semihalev/sdns/blob/master/LICENSE"><img src="https://img.shields.io/github/license/semihalev/sdns?style=for-the-badge"></a>
+  <a href="https://github.com/semihalev/sdns/actions"><img src="https://img.shields.io/github/actions/workflow/status/semihalev/sdns/go.yml?style=flat-square"></a>
+  <a href="https://goreportcard.com/report/github.com/semihalev/sdns"><img src="https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square"></a>
+  <a href="http://godoc.org/github.com/semihalev/sdns"><img src="https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square"></a>
+  <a href="https://codecov.io/gh/semihalev/sdns"><img src="https://img.shields.io/codecov/c/github/semihalev/sdns?style=flat-square"></a>
+  <a href="https://github.com/semihalev/sdns/releases"><img src="https://img.shields.io/github/v/release/semihalev/sdns?style=flat-square"></a>
+  <a href="https://github.com/semihalev/sdns/blob/master/LICENSE"><img src="https://img.shields.io/github/license/semihalev/sdns?style=flat-square"></a>
 </p>
 
 ---
@@ -264,12 +264,11 @@ Benchmarks were performed on the following DNS resolvers: sdns-1.3.3, pdns-recur
 | Bind     | 99.74%   | 132  | 35,024  | 885      | 13,959   | 127s64ms  | 390/s |
 | Unbound  | 99.49%   | 253  | 35,152  | 624      | 13,971   | 174s64ms  | 284/s |
 
-
 ## Contributing
 
 We welcome pull requests. If you're considering significant changes, please start a discussion by opening an issue first.
 
-Ensure that your changes are accompanied by corresponding tests.
+Before submitting patches, please review our [CONTRIBUTING](https://github.com/semihalev/sdns/blob/master/CONTRIBUTING.md) guidelines.
 
 ## :hearts: Made With
 
