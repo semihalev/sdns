@@ -1,6 +1,4 @@
-ARG IMAGE=golang:alpine3.18
-
-FROM ${IMAGE} AS builder
+FROM golang:alpine AS builder
 
 COPY . /go/src/github.com/semihalev/sdns/
 
