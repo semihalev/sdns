@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+- name: Feature Request
+  url: https://github.com/avelino/awesome-go/discussions/new?category=ideas
+  about: Discuss a new feture for SDNS
+- name: Report a security vulnerability
+  url: https://github.com/semihalev/sdns/security/advisories/new
+  about: If you discover a security vulnerability in this project, you can report from here
