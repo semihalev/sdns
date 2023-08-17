@@ -7,6 +7,10 @@ labels: [
 assignees:
   - semihalev
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for dedicating time to report this issue. We appreciate your effort. Kindly complete the form below.
   - type: textarea
     id: description
     attributes:
@@ -32,20 +36,10 @@ body:
     id: sdns-version
     attributes:
       label: sdns version
-      description: "`sdns --version` output"
+      description: "`sdns --version` show the version information"
       render: bash
     validations:
       required: true
-  - type: textarea
-    id: screenshot
-    attributes:
-      label: "Screenshots"
-      description: If applicable, add screenshots to help explain your problem.
-      value: |
-        ![DESCRIPTION](LINK.png)
-      render: bash
-    validations:
-      required: false
   - type: textarea
     id: logs
     attributes:
