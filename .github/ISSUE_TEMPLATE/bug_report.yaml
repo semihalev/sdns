@@ -1,0 +1,66 @@
+name: "Bug Report"
+description: Create a new issue for a bug.
+title: "[BUG] - <title>"
+labels: [
+  "bug"
+]
+assignees:
+  - semihalev
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for dedicating time to report this issue. We appreciate your effort. Kindly complete the form below.
+  - type: textarea
+    id: description
+    attributes:
+      label: "Description"
+      description: Please enter an explicit description of your issue
+      placeholder: Short and explicit description of your incident...
+    validations:
+      required: true
+  - type: textarea
+    id: reprod
+    attributes:
+      label: "Reproduction steps"
+      description: Please enter an explicit description of your issue
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: sdns-version
+    attributes:
+      label: sdns version
+      description: "`sdns --version` show the version information"
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Logs"
+      description: Please copy and paste any relevant log output. This will be automatically formatted into code, so no need for backticks.
+      render: bash
+    validations:
+      required: false
+  - type: dropdown
+    id: os
+    attributes:
+      label: "OS"
+      description: What is the impacted environment ?
+      multiple: true
+      options:
+        - Windows
+        - Linux
+        - MacOS
+        - FreeBSD
+        - Other
+  - type: textarea
+    id: ctx
+    attributes:
+      label: Additional context
+      description: Anything else you would like to add
+    validations:
+      required: false
+    validations:
+      required: false
