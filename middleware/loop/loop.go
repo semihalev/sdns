@@ -25,6 +25,12 @@ func (l *Loop) Name() string { return name }
 // ServeDNS implements the Handle interface.
 func (l *Loop) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	req := ch.Request
+
+	if len(req.Question) == 0 {
+		ch.Cancel()
+		return
+	}
+
 	qKey := req.Question[0].Name + ":" + dns.TypeToString[req.Question[0].Qtype]
 
 	key := ctxKey("loopcheck:" + qKey)
