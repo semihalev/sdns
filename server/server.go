@@ -30,6 +30,7 @@ type Server struct {
 	tlsAddr        string
 	dohAddr        string
 	doqAddr        string
+	bindhttp       string
 	tlsCertificate string
 	tlsPrivateKey  string
 
@@ -39,6 +40,7 @@ type Server struct {
 	dohStarted  bool
 	doh3Started bool
 	doqStarted  bool
+	httpStarted bool
 
 	chainPool sync.Pool
 }
@@ -54,6 +56,7 @@ func New(cfg *config.Config) *Server {
 		tlsAddr:        cfg.BindTLS,
 		dohAddr:        cfg.BindDOH,
 		doqAddr:        cfg.BindDOQ,
+		bindhttp:       cfg.BindHTTP,
 		tlsCertificate: cfg.TLSCertificate,
 		tlsPrivateKey:  cfg.TLSPrivateKey,
 	}
@@ -112,6 +115,7 @@ func (s *Server) Run(ctx context.Context) {
 	go s.ListenAndServeDNS(ctx, "tcp")
 	go s.ListenAndServeDNSTLS(ctx)
 	go s.ListenAndServeHTTPTLS(ctx)
+	go s.ListenAndServeHTTP(ctx)
 	go s.ListenAndServeH3(ctx)
 	go s.ListenAndServeQUIC(ctx)
 }
@@ -324,6 +328,51 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) {
 
 	s.doqStarted = false
 }
+
+// ListenAndServeHTTP acts like http.ListenAndServe
+func (s *Server) ListenAndServeHTTP(ctx context.Context) {
+	if s.bindhttp == "" {
+		return
+	}
+
+	log.Info("HTTP server listening...", "net", "http", "addr", s.bindhttp)
+
+	logReader, logWriter := io.Pipe()
+	go readlogs(logReader)
+
+	srv := &http.Server{
+		Addr:         s.bindhttp,
+		Handler:      s,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		ErrorLog:     l.New(logWriter, "", 0),
+	}
+
+	s.httpStarted = true
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.httpStarted = false
+			log.Error("HTTP listener failed", "net", "http", "addr", s.bindhttp, "error", err.Error())
+		}
+	}()
+
+	<-ctx.Done()
+
+	log.Info("HTTP server stopping...", "net", "http", "addr", s.bindhttp)
+
+	httpCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(httpCtx); err != nil {
+		log.Error("Shutdown HTTP server failed:", "net", "http", "addr", s.bindhttp, "error", err.Error())
+	}
+
+	s.httpStarted = false
+}
+
+
+
 
 func (s *Server) Stopped() bool {
 	if s.udpStarted || s.tcpStarted || s.tlsStarted || s.dohStarted || s.doh3Started || s.doqStarted {

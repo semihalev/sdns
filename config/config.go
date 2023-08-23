@@ -37,6 +37,7 @@ type Config struct {
 	BindTLS          string
 	BindDOH          string
 	BindDOQ          string
+	BindHTTP         string
 	TLSCertificate   string
 	TLSPrivateKey    string
 	API              string
