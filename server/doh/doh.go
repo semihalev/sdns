@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -69,7 +68,6 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 		}
 
 		w.Header().Set("Content-Type", "application/dns-message")
-		w.Header().Set("Content-Length", strconv.Itoa(len(packed)))
 
 		_, _ = w.Write(packed)
 	}
@@ -130,8 +128,6 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 		} else {
 			w.Header().Set("Content-Type", "application/dns-json")
 		}
-
-		w.Header().Set("Content-Length", strconv.Itoa(len(json)))
 
 		_, _ = w.Write(json)
 	}
