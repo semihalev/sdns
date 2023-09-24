@@ -928,7 +928,15 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 	results := make(chan exchangeResult)
 
 	startRacer := func(ctx context.Context, req *dns.Msg, server *authcache.AuthServer) {
+		// anti-spoofing protection
+		orgId := req.Id
+		req.Id = dns.Id()
+
 		resp, err := r.exchange(ctx, "udp", req, server, 0)
+		if resp != nil {
+			resp.Id = orgId
+		}
+
 		defer ReleaseMsg(req)
 
 		select {
