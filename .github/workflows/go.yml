@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
 
   build:
@@ -16,14 +19,19 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@1b05615854632b887b69ae1be8cbefe72d3ae423 # v2.6.0
+      with:
+        egress-policy: audit
+
     - name: Set up Go 1.x
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
       with:
         go-version: ^1.20
       id: go
 
     - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
+      uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
 
     - name: Get dependencies
       run: |

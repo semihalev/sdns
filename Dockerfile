@@ -1,4 +1,4 @@
-FROM golang:alpine AS builder
+FROM golang:alpine@sha256:a76f153cff6a59112777c071b0cde1b6e4691ddc7f172be424228da1bfb7bbda AS builder
 
 COPY . /go/src/github.com/semihalev/sdns/
 

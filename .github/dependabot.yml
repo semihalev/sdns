@@ -14,3 +14,8 @@ updates:
       time: "15:30"
     labels:
       - "dependencies"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: daily
