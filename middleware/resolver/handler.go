@@ -106,7 +106,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	req.RecursionDesired = false
 	req.AuthenticatedData = false
 	if !req.CheckingDisabled {
-		req.CheckingDisabled = !h.cfg.DNSSEC
+		req.CheckingDisabled = !h.resolver.dnssec
 	}
 
 	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.QueryTimeout.Duration))

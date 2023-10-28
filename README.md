@@ -143,13 +143,13 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **outboundip6s**     | Outbound IPv6 addresses (randomly chosen if multiple entries provided)                                              |
 | **rootservers**      | DNS Root IPv4 servers                                                                                               |
 | **root6servers**     | DNS Root IPv6 servers                                                                                               |
-| **dnssec**           | DNSSEC validation on signed zones.                                                                                  |
+| **dnssec**           | DNSSEC validation on signed zones, off for disabled.                                                                |
 | **rootkeys**         | Trusted DNSSEC anchors                                                                                              |
 | **fallbackservers**  | Failover resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                   |
 | **forwarderservers** | Forwarder resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                  |
 | **api**              | HTTP API server binding address (leave blank to disable)                                                            |
 | **blocklists**       | Remote blocklist address list (downloaded to the blocklist folder)                                                  |
-| **blocklistdir**     | \[DEPRECATED] Directory creation is automated in the working directory                                               |
+| **blocklistdir**     | \[DEPRECATED] Directory creation is automated in the working directory                                              |
 | **loglevel**         | Log verbosity level (crit, error, warn, info, debug)                                                                |
 | **accesslog**        | Location of the access log file (leave blank to disable) Default: Common Log Format                                 |
 | **nullroute**        | IPv4 address for forwarding blocked queries                                                                         |
@@ -169,7 +169,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **cookiesecret**     | DNS cookie secret (RFC 7873) - auto-generated if not set                                                            |
 | **nsid**             | DNS server identifier (RFC 5001) - useful for operating multiple sdns instances (leave blank to disable)            |
 | **chaos**            | Enable responses to version.server, version.bind, hostname.bind and id.server chaos txt queries                     |
-| **qname\_min\_level**  | Qname minimize level (0 to disable - higher values increase complexity and impact response performance)             |
+| **qname\_min\_level**  | Qname minimize level (0 to disable - higher values increase complexity and impact response performance)           |
 | **emptyzones**       | Enable response to RFC 1918 zone queries. For details, see http://as112.net/                                        |
 
 ## Plugin Configuration

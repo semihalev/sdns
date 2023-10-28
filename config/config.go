@@ -27,7 +27,7 @@ type Config struct {
 	BlockListDir     string
 	RootServers      []string
 	Root6Servers     []string
-	DNSSEC           bool
+	DNSSEC           string
 	RootKeys         []string
 	FallbackServers  []string
 	ForwarderServers []string
@@ -159,8 +159,8 @@ root6servers = [
     "[2001:dc3::35]:53"
 ]
 
-# DNSSEC validation on signed zones.
-dnssec = true
+# DNSSEC validation on signed zones, off for disabled.
+dnssec = "on"
 
 # Trusted anchors for DNSSEC.
 rootkeys = [
@@ -328,6 +328,10 @@ func Load(cfgfile, version string) (*Config, error) {
 	log.Info("Working directory", "path", config.Directory)
 
 	config.sVersion = version
+
+	if config.DNSSEC == "" || config.DNSSEC != "off" {
+		config.DNSSEC = "on"
+	}
 
 	if config.CookieSecret == "" {
 		var v uint64
