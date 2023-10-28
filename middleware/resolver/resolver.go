@@ -1533,6 +1533,7 @@ func (r *Resolver) checkPriming() {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.CheckingDisabled = !r.cfg.DNSSEC
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
 	defer cancel()
@@ -1547,7 +1548,7 @@ func (r *Resolver) checkPriming() {
 		return
 	}
 
-	if !resp.AuthenticatedData {
+	if r.cfg.DNSSEC && !resp.AuthenticatedData {
 		log.Error("Root servers update failed", "error", "not authenticated")
 		return
 	}
@@ -1611,12 +1612,16 @@ func (r *Resolver) run() {
 	}
 
 	r.checkPriming()
-	r.AutoTA()
+	if r.cfg.DNSSEC {
+		r.AutoTA()
+	}
 
 	ticker := time.NewTicker(12 * time.Hour)
 
 	for range ticker.C {
 		r.checkPriming()
-		r.AutoTA()
+		if r.cfg.DNSSEC {
+			r.AutoTA()
+		}
 	}
 }

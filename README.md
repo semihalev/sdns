@@ -127,7 +127,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.3.3)
+## Configuration (v1.3.6)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -143,6 +143,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **outboundip6s**     | Outbound IPv6 addresses (randomly chosen if multiple entries provided)                                              |
 | **rootservers**      | DNS Root IPv4 servers                                                                                               |
 | **root6servers**     | DNS Root IPv6 servers                                                                                               |
+| **dnssec**           | DNSSEC validation on signed zones.                                                                                  |
 | **rootkeys**         | Trusted DNSSEC anchors                                                                                              |
 | **fallbackservers**  | Failover resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                   |
 | **forwarderservers** | Forwarder resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                  |

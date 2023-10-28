@@ -105,6 +105,9 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	// we shouldn't send rd and ad flag to aa servers
 	req.RecursionDesired = false
 	req.AuthenticatedData = false
+	if !req.CheckingDisabled {
+		req.CheckingDisabled = !h.cfg.DNSSEC
+	}
 
 	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.QueryTimeout.Duration))
 	defer cancel()
