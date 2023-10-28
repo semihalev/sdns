@@ -80,7 +80,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		defer cancel()
 		resp, err := dnsutil.Exchange(ctx, req, server, "udp")
 		if err != nil {
-			log.Warn("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
+			log.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
 		}
 

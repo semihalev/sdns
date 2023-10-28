@@ -33,6 +33,7 @@ func makeTestConfig() *config.Config {
 	cfg.Timeout.Duration = 2 * time.Second
 	cfg.Directory = filepath.Join(os.TempDir(), "sdns_temp")
 	cfg.IPv6Access = true
+	cfg.DNSSEC = "on"
 
 	if !middleware.Ready() {
 		middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })

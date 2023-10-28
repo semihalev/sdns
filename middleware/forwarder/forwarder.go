@@ -20,6 +20,7 @@ type server struct {
 // Forwarder type
 type Forwarder struct {
 	servers []*server
+	dnssec  bool
 }
 
 // New return forwarder
@@ -46,7 +47,7 @@ func New(cfg *config.Config) *Forwarder {
 		}
 	}
 
-	return &Forwarder{servers: forwarderservers}
+	return &Forwarder{servers: forwarderservers, dnssec: cfg.DNSSEC == "on"}
 }
 
 // Name return middleware name
@@ -61,16 +62,14 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	fReq := new(dns.Msg)
-	fReq.SetQuestion(req.Question[0].Name, req.Question[0].Qtype)
-	fReq.Question[0].Qclass = req.Question[0].Qclass
-	fReq.SetEdns0(dnsutil.DefaultMsgSize, true)
-	fReq.CheckingDisabled = req.CheckingDisabled
+	if !req.CheckingDisabled {
+		req.CheckingDisabled = !f.dnssec
+	}
 
 	for _, server := range f.servers {
 		resp, err := dnsutil.Exchange(ctx, req, server.Addr, server.Proto)
 		if err != nil {
-			log.Warn("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
+			log.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
 		}
 
