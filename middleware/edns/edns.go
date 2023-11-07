@@ -65,6 +65,10 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		size = dns.MaxMsgSize
 	}
 
+	if noedns {
+		size = dns.MinMsgSize
+	}
+
 	ch.Writer = &ResponseWriter{
 		ResponseWriter: w,
 		EDNS:           e,

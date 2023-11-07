@@ -105,6 +105,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	// we shouldn't send rd and ad flag to aa servers
 	req.RecursionDesired = false
 	req.AuthenticatedData = false
+
 	if !req.CheckingDisabled {
 		req.CheckingDisabled = !h.resolver.dnssec
 	}
@@ -114,6 +115,14 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 
 	depth := h.cfg.Maxdepth
 	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil, q.Name == rootzone)
+
+	if !h.resolver.dnssec {
+		req.CheckingDisabled = false
+		if resp != nil {
+			resp.CheckingDisabled = false
+		}
+	}
+
 	if err != nil {
 		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
