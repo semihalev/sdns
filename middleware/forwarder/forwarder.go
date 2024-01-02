@@ -74,6 +74,9 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		}
 
 		resp.Id = req.Id
+		if !f.dnssec {
+			resp.CheckingDisabled = false
+		}
 
 		_ = w.WriteMsg(resp)
 		return
