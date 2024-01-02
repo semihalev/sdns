@@ -37,6 +37,7 @@ type Resolver struct {
 	ipv4cache *cache.Cache
 	ipv6cache *cache.Cache
 
+	dnssec   bool
 	rootkeys []dns.RR
 
 	qnameMinLevel int
@@ -72,6 +73,8 @@ func NewResolver(cfg *config.Config) *Resolver {
 		rootservers: new(authcache.AuthServers),
 
 		ipv4cache: cache.New(defaultCacheSize),
+
+		dnssec: cfg.DNSSEC == "on",
 
 		qnameMinLevel: cfg.QnameMinLevel,
 		netTimeout:    defaultTimeout,
@@ -1533,6 +1536,7 @@ func (r *Resolver) checkPriming() {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.CheckingDisabled = !r.dnssec
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
 	defer cancel()
@@ -1547,7 +1551,7 @@ func (r *Resolver) checkPriming() {
 		return
 	}
 
-	if !resp.AuthenticatedData {
+	if r.dnssec && !resp.AuthenticatedData {
 		log.Error("Root servers update failed", "error", "not authenticated")
 		return
 	}
@@ -1611,12 +1615,16 @@ func (r *Resolver) run() {
 	}
 
 	r.checkPriming()
-	r.AutoTA()
+	if r.dnssec {
+		r.AutoTA()
+	}
 
 	ticker := time.NewTicker(12 * time.Hour)
 
 	for range ticker.C {
 		r.checkPriming()
-		r.AutoTA()
+		if r.dnssec {
+			r.AutoTA()
+		}
 	}
 }

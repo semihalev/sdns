@@ -106,11 +106,23 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	req.RecursionDesired = false
 	req.AuthenticatedData = false
 
+	if !req.CheckingDisabled {
+		req.CheckingDisabled = !h.resolver.dnssec
+	}
+
 	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.QueryTimeout.Duration))
 	defer cancel()
 
 	depth := h.cfg.Maxdepth
 	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil, q.Name == rootzone)
+
+	if !h.resolver.dnssec {
+		req.CheckingDisabled = false
+		if resp != nil {
+			resp.CheckingDisabled = false
+		}
+	}
+
 	if err != nil {
 		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
