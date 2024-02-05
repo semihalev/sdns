@@ -12,17 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
+        with:
+          cache: false
+          go-version: '>=1.21'
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v3.7.0
         with:
           # Required: the version of golangci-lint is required and must be specified without patch version: we always use the latest patch version.
-          version: v1.52.2
+          version: v1.55.2
           
           # Optional: working directory, useful for monorepos
           # working-directory: somedir
 
           # Optional: golangci-lint command line arguments.
-          # args: --disable ineffassign,errcheck
+          # args: --disable typecheck
 
           # Optional: show only new issues if it's a pull request. The default value is `false`.
           # only-new-issues: true
