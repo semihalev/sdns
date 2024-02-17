@@ -990,8 +990,9 @@ mainloop:
 				if resp.Rcode != dns.RcodeSuccess {
 					responseErrors = append(responseErrors, resp)
 
-					//we don't need to look all nameservers for that response
-					if len(responseErrors) > 2 && resp.Rcode == dns.RcodeNameError {
+					// we don't need to look all nameservers for that response
+					// we trust name errors if return from root servers
+					if (len(responseErrors) > 2 || level < 2) && resp.Rcode == dns.RcodeNameError {
 						break mainloop
 					}
 
