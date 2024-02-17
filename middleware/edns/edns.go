@@ -79,7 +79,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		cookie: cookie,
 		noedns: noedns,
 		nsid:   nsid,
-		noad:   !req.AuthenticatedData,
+		noad:   !req.AuthenticatedData && !do,
 	}
 
 	ch.Next(ctx)
