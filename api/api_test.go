@@ -106,6 +106,7 @@ func Test_AllAPICalls(t *testing.T) {
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
 	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
+	cfg.BearerToken = "secret_token"
 
 	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
 	middleware.Setup(cfg)

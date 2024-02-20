@@ -186,6 +186,9 @@ func (a *API) Run(ctx context.Context) {
 	}()
 
 	log.Info("API server listening...", "addr", a.addr)
+	if a.bearerToken != "" {
+		log.Info("API authorization bearer token", "token", a.bearerToken)
+	}
 
 	go func() {
 		<-ctx.Done()
