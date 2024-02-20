@@ -1,4 +1,4 @@
-# SDNS HTTP API
+# HTTP API
 
 You can manage all blocks with basic HTTP API functions.
 
