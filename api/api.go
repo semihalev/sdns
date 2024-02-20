@@ -20,9 +20,10 @@ import (
 
 // API type
 type API struct {
-	addr      string
-	router    *Router
-	blocklist *blocklist.BlockList
+	addr        string
+	bearerToken string
+	router      *Router
+	blocklist   *blocklist.BlockList
 }
 
 var debugpprof bool
@@ -41,19 +42,53 @@ func New(cfg *config.Config) *API {
 	}
 
 	a := &API{
-		addr:      cfg.API,
-		blocklist: bl,
-		router:    NewRouter(),
+		addr:        cfg.API,
+		blocklist:   bl,
+		router:      NewRouter(),
+		bearerToken: cfg.BearerToken,
 	}
 
 	return a
 }
 
+func (a *API) checkToken(ctx *Context) bool {
+	if a.bearerToken == "" {
+		return true
+	}
+
+	authHeader := ctx.Request.Header.Get("Authorization")
+	if authHeader == "" {
+		ctx.JSON(http.StatusUnauthorized, Json{"error": "Unauthorized"})
+		return false
+	}
+
+	tokenSplit := strings.Split(authHeader, " ")
+	if len(tokenSplit) != 2 {
+		ctx.JSON(http.StatusUnauthorized, Json{"error": "Unauthorized"})
+		return false
+	}
+
+	if a.bearerToken == tokenSplit[1] {
+		return true
+	}
+
+	ctx.JSON(http.StatusUnauthorized, Json{"error": "Unauthorized"})
+	return false
+}
+
 func (a *API) existsBlock(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+
 	ctx.JSON(http.StatusOK, Json{"exists": a.blocklist.Exists(ctx.Param("key"))})
 }
 
 func (a *API) getBlock(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+
 	if ok, _ := a.blocklist.Get(ctx.Param("key")); !ok {
 		ctx.JSON(http.StatusNotFound, Json{"error": ctx.Param("key") + " not found"})
 	} else {
@@ -62,18 +97,34 @@ func (a *API) getBlock(ctx *Context) {
 }
 
 func (a *API) removeBlock(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+
 	ctx.JSON(http.StatusOK, Json{"success": a.blocklist.Remove(ctx.Param("key"))})
 }
 
 func (a *API) setBlock(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+
 	ctx.JSON(http.StatusOK, Json{"success": a.blocklist.Set(ctx.Param("key"))})
 }
 
 func (a *API) metrics(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+
 	promhttp.Handler().ServeHTTP(ctx.Writer, ctx.Request)
 }
 
 func (a *API) purge(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+
 	qtype := strings.ToUpper(ctx.Param("qtype"))
 	qname := dns.Fqdn(ctx.Param("qname"))
 

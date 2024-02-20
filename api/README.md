@@ -4,7 +4,9 @@ You can manage all blocks with basic HTTP API functions.
 
 ## Authentication
 
-WARNING: Currently, there is no authentication mechanism for API functions.
+API bearer token can be set on sdns config. If the token set, Authorization header should be send on API requests.
+### Example Header
+`Authorization: Bearer my_very_long_token`
 
 ## Actions
 

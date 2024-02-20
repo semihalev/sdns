@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,83 @@ import (
 func Test_Run(t *testing.T) {
 	a := New(&config.Config{})
 	a.Run(context.Background())
+}
+
+func Test_Authorization(t *testing.T) {
+	routes := []struct {
+		Method         string
+		ReqURL         string
+		ExpectedStatus int
+	}{
+		{"GET", "/api/v1/block/set/test.com", http.StatusUnauthorized},
+		{"GET", "/api/v1/block/get/test.com", http.StatusUnauthorized},
+		{"GET", "/api/v1/block/exists/test.com", http.StatusUnauthorized},
+		{"GET", "/api/v1/block/remove/test.com", http.StatusUnauthorized},
+		{"GET", "/api/v1/purge/test.com/A", http.StatusUnauthorized},
+		{"GET", "/metrics", http.StatusUnauthorized},
+	}
+
+	bearerToken := "secret_token"
+
+	a := New(&config.Config{BearerToken: bearerToken})
+
+	block := a.router.Group("/api/v1/block")
+	{
+		block.GET("/exists/:key", a.existsBlock)
+		block.GET("/exists/:key", a.existsBlock)
+		block.GET("/get/:key", a.getBlock)
+		block.GET("/remove/:key", a.removeBlock)
+		block.GET("/set/:key", a.setBlock)
+		block.POST("/set/:key", a.setBlock)
+	}
+
+	a.router.GET("/api/v1/purge/:qname/:qtype", a.purge)
+	a.router.GET("/metrics", a.metrics)
+
+	w := httptest.NewRecorder()
+	request, err := http.NewRequest("GET", "/metrics", nil)
+	if err != nil {
+		t.Fatalf("couldn't create request: %v\n", err)
+	}
+
+	a.router.ServeHTTP(w, request)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("Authorization not expected status code: %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	request.Header.Set("Authorization", "sometoken")
+	a.router.ServeHTTP(w, request)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("Authorization not expected status code: %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.bearerToken))
+	a.router.ServeHTTP(w, request)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Authorization not expected status code: %d", w.Code)
+	}
+
+	for _, r := range routes {
+		w := httptest.NewRecorder()
+		request, err := http.NewRequest(r.Method, r.ReqURL, nil)
+
+		if err != nil {
+			t.Fatalf("couldn't create request: %v\n", err)
+		}
+
+		request.Header.Set("Authorization", "Bearer some_token")
+
+		a.router.ServeHTTP(w, request)
+
+		if w.Code != r.ExpectedStatus {
+			t.Fatalf("%s uri not expected status code: %d", r.ReqURL, w.Code)
+		}
+	}
 }
 
 func Test_AllAPICalls(t *testing.T) {

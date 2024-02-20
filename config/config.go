@@ -17,7 +17,7 @@ import (
 	"github.com/semihalev/log"
 )
 
-const configver = "1.3.6"
+const configver = "1.3.7"
 
 // Config type
 type Config struct {
@@ -41,6 +41,7 @@ type Config struct {
 	TLSCertificate   string
 	TLSPrivateKey    string
 	API              string
+	BearerToken      string
 	Nullroute        string
 	Nullroutev6      string
 	Hostsfile        string
@@ -186,6 +187,10 @@ forwarderservers = [
 
 # Address to bind to for the HTTP API server, left blank for disabled.
 api = "127.0.0.1:8080"
+
+# API bearer token for authorization. If the token set, Authorization header should be send on API requests.
+# Header: Authorization: Bearer %%bearertoken%%
+# bearertoken = ""
 
 # What kind of information should be logged, Log verbosity level [crit, error, warn, info, debug].
 loglevel = "info"

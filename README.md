@@ -127,7 +127,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.3.6)
+## Configuration (v1.3.7)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -148,6 +148,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **fallbackservers**  | Failover resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                   |
 | **forwarderservers** | Forwarder resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                  |
 | **api**              | HTTP API server binding address (leave blank to disable)                                                            |
+| **bearertoken**      | API bearer token for authorization. If the token set, Authorization header should be send on API requests           |
 | **blocklists**       | Remote blocklist address list (downloaded to the blocklist folder)                                                  |
 | **blocklistdir**     | \[DEPRECATED] Directory creation is automated in the working directory                                              |
 | **loglevel**         | Log verbosity level (crit, error, warn, info, debug)                                                                |
