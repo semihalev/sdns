@@ -58,21 +58,21 @@ func (a *API) checkToken(ctx *Context) bool {
 
 	authHeader := ctx.Request.Header.Get("Authorization")
 	if authHeader == "" {
-		ctx.JSON(http.StatusUnauthorized, Json{"error": "Unauthorized"})
+		ctx.JSON(http.StatusUnauthorized, Json{"error": "unauthorized"})
 		return false
 	}
 
 	tokenSplit := strings.Split(authHeader, " ")
 	if len(tokenSplit) != 2 {
-		ctx.JSON(http.StatusUnauthorized, Json{"error": "Unauthorized"})
+		ctx.JSON(http.StatusUnauthorized, Json{"error": "unauthorized"})
 		return false
 	}
 
-	if a.bearerToken == tokenSplit[1] {
+	if tokenSplit[0] == "Bearer" && a.bearerToken == tokenSplit[1] {
 		return true
 	}
 
-	ctx.JSON(http.StatusUnauthorized, Json{"error": "Unauthorized"})
+	ctx.JSON(http.StatusUnauthorized, Json{"error": "unauthorized"})
 	return false
 }
 
