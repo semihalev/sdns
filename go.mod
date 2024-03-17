@@ -7,7 +7,7 @@ require (
 	github.com/prometheus/client_golang v1.19.0
 	github.com/quic-go/quic-go v0.41.0
 	github.com/semihalev/log v0.1.1
-	github.com/stretchr/testify v1.8.4
+	github.com/stretchr/testify v1.9.0
 	github.com/yl2chen/cidranger v1.0.2
 	golang.org/x/time v0.5.0
 )
