@@ -5,7 +5,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/miekg/dns v1.1.58
 	github.com/prometheus/client_golang v1.19.0
-	github.com/quic-go/quic-go v0.42.0
+	github.com/quic-go/quic-go v0.43.1
 	github.com/semihalev/log v0.1.1
 	github.com/stretchr/testify v1.9.0
 	github.com/yl2chen/cidranger v1.0.2
