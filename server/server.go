@@ -267,7 +267,7 @@ func (s *Server) ListenAndServeH3(ctx context.Context) {
 	srv := &http3.Server{
 		Addr:    s.dohAddr,
 		Handler: s,
-		QuicConfig: &quic.Config{
+		QUICConfig: &quic.Config{
 			Allow0RTT: true,
 		},
 	}
