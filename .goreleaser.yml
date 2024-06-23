@@ -1,3 +1,5 @@
+version: 2
+
 env_files:
   github_token: ~/.GH_TOKEN.txt
 
@@ -75,14 +77,14 @@ checksum:
   algorithm: sha256
 
 changelog:
-  skip: true
+  disable: true
 
 nfpms:
   - file_name_template: '{{ .ProjectName }}_{{ .Version }}_{{- if eq .Arch "amd64" }}x86_64{{- else }}{{ .Arch }}{{ end }}'
     builds:
       - nf
     homepage:  https://sdns.dev
-    description: Privacy important, fast, recursive dns resolver server with dnssec support
+    description: A high-performance, recursive DNS resolver server with DNSSEC support, focused on preserving privacy
     maintainer: Yasar Alev <semihalev@gmail.com>
     license: MIT
     bindir: /usr/bin
@@ -113,9 +115,9 @@ brews:
     repository:
       owner: semihalev
       name: homebrew-tap
-    folder: Formula
+    directory: Formula
     homepage:  https://sdns.dev
-    description: Privacy important, fast, recursive dns resolver server with dnssec support
+    description: A high-performance, recursive DNS resolver server with DNSSEC support, focused on preserving privacy
     dependencies:
       - name: go
         type: build
