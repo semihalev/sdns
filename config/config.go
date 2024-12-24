@@ -17,7 +17,7 @@ import (
 	"github.com/semihalev/log"
 )
 
-const configver = "1.3.7"
+const configver = "1.4.0"
 
 // Config type
 type Config struct {
@@ -165,7 +165,30 @@ dnssec = "on"
 
 # Trusted anchors for DNSSEC.
 rootkeys = [
-    ".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
+	"""\
+	. 172800 IN DNSKEY 257 3 8 ( \
+	AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTO \
+	iW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN \
+	7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5 \
+	LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8 \
+	efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7 \
+	pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLY \
+	A4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws \
+	9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU= \
+	) ; KSK; alg = RSASHA256 ; key id = 20326 \
+	""",
+	"""\
+	. 172800 IN DNSKEY 257 3 8 ( \
+	AwEAAa96jeuknZlaeSrvyAJj6ZHv28hhOKkx3rLGXVaC \
+	6rXTsDc449/cidltpkyGwCJNnOAlFNKF2jBosZBU5eeH \
+	spaQWOmOElZsjICMQMC3aeHbGiShvZsx4wMYSjH8e7Vr \
+	hbu6irwCzVBApESjbUdpWWmEnhathWu1jo+siFUiRAAx \
+	m9qyJNg/wOZqqzL/dL/q8PkcRU5oUKEpUge71M3ej2/7 \
+	CPqpdVwuMoTvoB+ZOT4YeGyxMvHmbrxlFzGOHOijtzN+ \
+	u1TQNatX2XBuzZNQ1K+s2CXkPIZo7s6JgZyvaBevYtxP \
+	vYLw4z9mR7K2vaF18UYH9Z9GNUUeayffKC73PYc= \
+	) ; KSK; alg = RSASHA256 ; key id = 38696 \
+	"""
 ]
 
 # Failover resolver IPv4 or IPv6 addresses with port, left blank for disabled.

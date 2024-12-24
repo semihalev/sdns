@@ -7,9 +7,9 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/quic-go/quic-go v0.48.2
 	github.com/semihalev/log v0.1.1
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	github.com/yl2chen/cidranger v1.0.2
-	golang.org/x/time v0.7.0
+	golang.org/x/time v0.8.0
 )
 
 require (
@@ -42,5 +42,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-go 1.21
+go 1.22
+
 toolchain go1.22.5

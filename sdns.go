@@ -19,7 +19,7 @@ import (
 	"github.com/semihalev/sdns/server"
 )
 
-const version = "1.3.7"
+const version = "1.4.0"
 
 var (
 	flagcfgpath  string

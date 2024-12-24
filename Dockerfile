@@ -10,8 +10,7 @@ RUN apk --no-cache add \
 	git \
 	musl-dev
 
-RUN go build -ldflags "-linkmode external -extldflags -static -s -w" -o /tmp/sdns \
-	&& strip --strip-all /tmp/sdns
+RUN go build -trimpath -ldflags "-s" -o /tmp/sdns
 
 FROM scratch
 
