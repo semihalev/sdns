@@ -177,7 +177,7 @@ rootkeys = [
 	9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU= \
 	) ; KSK; alg = RSASHA256 ; key id = 20326 \
 	""",
-    """\
+	"""\
 	. 172800 IN DNSKEY 257 3 8 ( \
 	AwEAAa96jeuknZlaeSrvyAJj6ZHv28hhOKkx3rLGXVaC \
 	6rXTsDc449/cidltpkyGwCJNnOAlFNKF2jBosZBU5eeH \
