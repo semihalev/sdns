@@ -166,7 +166,7 @@ dnssec = "on"
 # Trusted anchors for DNSSEC.
 rootkeys = [
 	"""\
-    . 172800 IN DNSKEY 257 3 8 ( \
+	. 172800 IN DNSKEY 257 3 8 ( \
 	AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTO \
 	iW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN \
 	7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5 \
