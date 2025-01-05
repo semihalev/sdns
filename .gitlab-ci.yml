@@ -2,9 +2,10 @@ stages:
   - build
 
 variables:
-  IMAGE_NAME: "sdns-test-gitlab"  # Ganti nama image sesuai permintaan
-  DOCKER_REGISTRY: "$CI_REGISTRY"
+  IMAGE_NAME: "sdns-test-gitlab"
+  DOCKER_REGISTRY: "registry.gitlab.com"
   DOCKER_TAG_LATEST: "latest"
+  DOCKER_IMAGE: "$DOCKER_REGISTRY/ivannajwan22/test1/$IMAGE_NAME"
 
 build_and_push:
   image: docker:24.0.5
@@ -34,7 +35,15 @@ build_and_push:
     - ls -la
     # Tentukan versi image berdasarkan branch/tag
     - echo "Determining version..."
-    - VERSION=$DOCKER_TAG_LATEST  # Karena hanya ada master, kita langsung set ke latest
+    - |
+      if [ "$CI_COMMIT_REF_NAME" == "master" ]; then
+        VERSION=$DOCKER_TAG_LATEST
+      elif [[ "$CI_COMMIT_TAG" =~ ^v ]]; then
+        VERSION=$CI_COMMIT_TAG
+      else
+        echo "Unsupported ref: $CI_COMMIT_REF_NAME"
+        exit 1
+      fi
     - echo "Building image for version $VERSION..."
     # Siapkan QEMU untuk build multi-arch
     - echo "Setting up QEMU for multi-arch builds..."
@@ -49,6 +58,6 @@ build_and_push:
       docker buildx build \
         --platform linux/arm64,linux/amd64 \
         --push \
-        --tag $DOCKER_REGISTRY/$CI_PROJECT_NAMESPACE/$IMAGE_NAME:$VERSION \
-        --tag $DOCKER_REGISTRY/$CI_PROJECT_NAMESPACE/$IMAGE_NAME:$DOCKER_TAG_LATEST \
+        --tag $DOCKER_IMAGE:$VERSION \
+        --tag $DOCKER_IMAGE:$DOCKER_TAG_LATEST \
         . || { echo "Docker build or push failed"; exit 1; }
