@@ -6,12 +6,13 @@ variables:
   DOCKER_REGISTRY: "registry.gitlab.com"
   DOCKER_TAG_LATEST: "latest"
   DOCKER_IMAGE: "$DOCKER_REGISTRY/ivannajwan22/test1/$IMAGE_NAME"
+  DOCKER_BUILDKIT: 1  # Mengaktifkan Docker BuildKit
 
 build_and_push:
-  image: docker:24.0.5
+  image: docker:stable  # Menggunakan docker:stable
   stage: build
   services:
-    - docker:24.0.5-dind
+    - docker:stable-dind  # Menggunakan docker:stable-dind
   before_script:
     # Install git untuk menangani peringatan buildx
     - apk add --no-cache git
@@ -19,7 +20,7 @@ build_and_push:
     - git --version
     # Login ke GitLab Container Registry
     - echo "Logging into GitLab Container Registry..."
-    - echo $CI_REGISTRY_PASSWORD | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - echo $CI_REGISTRY_PASSWORD | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin --quiet
     - |
       if [ $? -ne 0 ]; then
         echo "Login failed, exiting pipeline."
@@ -35,22 +36,24 @@ build_and_push:
     - ls -la
     # Tentukan versi image berdasarkan branch/tag
     - echo "Determining version..."
+    - VERSION=""
     - |
       if [ "$CI_COMMIT_REF_NAME" == "master" ]; then
         VERSION=$DOCKER_TAG_LATEST
       elif [[ "$CI_COMMIT_TAG" =~ ^v ]]; then
         VERSION=$CI_COMMIT_TAG
-      else
-        echo "Unsupported ref: $CI_COMMIT_REF_NAME"
+      fi
+    - if [ -z "$VERSION" ]; then
+        echo "Unsupported branch/tag: $CI_COMMIT_REF_NAME"
         exit 1
       fi
     - echo "Building image for version $VERSION..."
-    # Siapkan QEMU untuk build multi-arch
-    - echo "Setting up QEMU for multi-arch builds..."
-    - docker run --rm --privileged docker/binfmt:a7996909642ee92942dcd6cff44b9b95f08dad64
+    # Siapkan QEMU untuk build multi-arch jika belum tersedia
+    - echo "Checking if QEMU is already set up..."
+    - docker buildx ls || docker run --rm --privileged docker/binfmt:a7996909642ee92942dcd6cff44b9b95f08dad64
     # Konfigurasi Docker Buildx
     - echo "Configuring Docker Buildx..."
-    - docker buildx create --use
+    - docker buildx use || docker buildx create --use
     - docker buildx inspect --bootstrap
     # Build dan push multi-arch Docker image
     - echo "Starting multi-arch build and push..."
