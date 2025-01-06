@@ -57,8 +57,7 @@ build_and_push:
     - docker buildx inspect --bootstrap
     # Build dan push multi-arch Docker image
     - echo "Starting multi-arch build and push..."
-    - |
-      docker buildx build \
+    - docker buildx build \
         --platform linux/arm64,linux/amd64 \
         --push \
         --tag $DOCKER_IMAGE:$VERSION \
