@@ -9,12 +9,16 @@ RUN apk add --no-cache \
     musl-dev \
     upx \
     curl \
-    binutils-gold && \
-    # Define architecture as a build argument
-    ARG TARGETARCH
-    ENV GO_ARCH=${TARGETARCH} && \
-    # Download and install Go sesuai arsitektur
-    curl -sSL https://golang.org/dl/go1.23.4.linux-${GO_ARCH}.tar.gz | tar -C /usr/local -xz && \
+    binutils-gold
+
+# Define architecture as a build argument
+ARG TARGETARCH
+
+# Set environment variable GO_ARCH based on TARGETARCH
+ENV GO_ARCH=${TARGETARCH}
+
+# Download and install Go sesuai arsitektur
+RUN curl -sSL https://golang.org/dl/go1.23.4.linux-${GO_ARCH}.tar.gz | tar -C /usr/local -xz && \
     ln -s /usr/local/go/bin/go /usr/bin/go && \
     mkdir -p /src && \
     # Clean up apk cache to reduce image size
