@@ -1,57 +1,51 @@
-# Stage 1: Build Stage using Alpine 3.19.4
+# Stage 1: Build Stage
 FROM alpine:latest AS builder
 
-# Install build dependencies, including the latest version of Go and other tools for optimization
+# Build dependencies
 RUN apk add --no-cache \
     ca-certificates \
     gcc \
     git \
     musl-dev \
     upx \
-    curl \
-    binutils-gold && \
-    # Download and install the latest version of Go
-    curl -sSL https://golang.org/dl/go1.23.4.linux-arm64.tar.gz | tar -C /usr/local -xz && \
-    ln -s /usr/local/go/bin/go /usr/bin/go && \
-    mkdir -p /src && \
-    # Clean up apk cache to reduce image size
-    rm -rf /var/cache/apk/*
+    curl
+
+# Define architecture as a build argument
+ARG TARGETARCH
+ENV GO_ARCH=${TARGETARCH}
+
+# Install Go sesuai arsitektur
+RUN curl -sSL https://golang.org/dl/go1.23.4.linux-${GO_ARCH}.tar.gz | tar -C /usr/local -xz && \
+    ln -s /usr/local/go/bin/go /usr/bin/go
 
 # Set working directory
 WORKDIR /src
 
-# Copy Go module files and download dependencies
+# Copy module files dan download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
+# Copy semua kode sumber
 COPY . .
 
-# Use ARG to support multi-arch builds
-ARG TARGETARCH
+# Build binary
+RUN CGO_ENABLED=0 GOARCH=${GO_ARCH} go build -trimpath -ldflags="-s -w" -o /tmp/sdns && \
+    strip /tmp/sdns && \
+    upx --ultra-brute /tmp/sdns
 
-# Build the sdns binary with static linking
-RUN CGO_ENABLED=0 GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /sdns && \
-    # Strip debug information from the binary
-    strip /sdns && \
-    # Compress the binary using UPX with maximum compression
-    upx --ultra-brute /sdns && \
-    # Clean up the source directory to reduce image size
-    rm -rf /src
-
-# Stage 2: Runtime Stage using scratch
+# Stage 2: Runtime Stage
 FROM scratch
 
-# Copy necessary files for runtime
+# Copy binary dan SSL certificates
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /sdns /sdns
+COPY --from=builder /tmp/sdns /sdns
 
-# Expose necessary ports
+# Expose port
 EXPOSE 53/tcp
 EXPOSE 53/udp
 EXPOSE 853
 EXPOSE 8053
 EXPOSE 8080
 
-# Set the entrypoint to run the binary
+# Jalankan aplikasi
 ENTRYPOINT ["/sdns"]
