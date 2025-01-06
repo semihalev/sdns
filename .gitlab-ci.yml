@@ -20,7 +20,7 @@ build_and_push:
     - git --version
     # Login ke GitLab Container Registry
     - echo "Logging into GitLab Container Registry..."
-    - echo $CI_REGISTRY_PASSWORD | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin --quiet
+    - echo $CI_REGISTRY_PASSWORD | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
     - |
       if [ $? -ne 0 ]; then
         echo "Login failed, exiting pipeline."
