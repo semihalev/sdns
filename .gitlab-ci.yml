@@ -9,10 +9,10 @@ variables:
   DOCKER_BUILDKIT: 1  # Mengaktifkan Docker BuildKit
 
 build_and_push:
-  image: docker:stable  # Menggunakan docker:stable
+  image: docker:latest  # Menggunakan docker:latest
   stage: build
   services:
-    - docker:stable-dind  # Menggunakan docker:stable-dind
+    - docker:latest-dind  # Menggunakan docker:latest-dind
   before_script:
     # Install git untuk menangani peringatan buildx
     - apk add --no-cache git
