@@ -29,14 +29,16 @@ build_and_push:
       fi
 
   script:
+    - echo "Tentukan versi image dengan format waktu yang lebih mudah dibaca"
     - BUILD_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S')
     - VERSION="build-$BUILD_TIMESTAMP"
     - echo "Building Docker image version: $VERSION"
-
+    - echo "Siapkan QEMU untuk build multi-arch jika belum tersedia"
     - docker buildx ls || docker run --rm --privileged tonistiigi/binfmt:latest --install all
+    - echo "Konfigurasi Docker Buildx"
     - docker buildx use || docker buildx create --use
     - docker buildx inspect --bootstrap
-
+    - echo "Build dan push multi-arch image"
     - docker buildx build \
         --platform $DOCKER_PLATFORM \
         --push \
