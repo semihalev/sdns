@@ -12,7 +12,7 @@ build_and_push:
   image: docker:latest  # Menggunakan docker:latest
   stage: build
   services:
-    - docker:latest-dind  # Menggunakan docker:latest-dind
+    - docker:dind  # Menggunakan docker:dind
   before_script:
     # Install git untuk menangani peringatan buildx
     - apk add --no-cache git
