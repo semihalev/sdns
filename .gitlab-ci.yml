@@ -28,15 +28,15 @@ build_and_push:
         exit 1
       fi
 
-script:
-  - BUILD_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S') && VERSION="build-$BUILD_TIMESTAMP" && echo "Building Docker image version: ${VERSION}" && \
-    docker buildx ls || docker run --rm --privileged tonistiigi/binfmt:latest --install all && \
-    docker buildx use || docker buildx create --use && \
-    docker buildx inspect --bootstrap && \
-    docker buildx build \
-      --platform $DOCKER_PLATFORM \
-      --push \
-      --no-cache \
-      --tag $DOCKER_IMAGE:$VERSION \
-      --tag $DOCKER_IMAGE:$DOCKER_TAG_LATEST \
-      . || { echo "Docker build or push failed"; exit 1; }
+  script:
+    - BUILD_TIMESTAMP=$(date +'%Y-%m-%d_%H-%M-%S') && VERSION="build-$BUILD_TIMESTAMP" && echo "Building Docker image version: ${VERSION}" && \
+      docker buildx ls || docker run --rm --privileged tonistiigi/binfmt:latest --install all && \
+      docker buildx use || docker buildx create --use && \
+      docker buildx inspect --bootstrap && \
+      docker buildx build \
+        --platform $DOCKER_PLATFORM \
+        --push \
+        --no-cache \
+        --tag $DOCKER_IMAGE:$VERSION \
+        --tag $DOCKER_IMAGE:$DOCKER_TAG_LATEST \
+        . || { echo "Docker build or push failed"; exit 1; }
