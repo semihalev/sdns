@@ -7,17 +7,19 @@ variables:
   DOCKER_TAG_LATEST: "latest"
   DOCKER_IMAGE: "$DOCKER_REGISTRY/ivannajwan22/test1/$IMAGE_NAME"
   DOCKER_BUILDKIT: 1  # Mengaktifkan Docker BuildKit
+  DOCKER_CLI_EXPERIMENTAL: "enabled"  # Mengaktifkan fitur eksperimen Docker CLI
+  DOCKER_PLATFORM: "linux/arm64,linux/amd64"  # Platform yang digunakan untuk build multi-arch
 
 build_and_push:
-  image: docker:latest  # Menggunakan docker:latest
+  image: docker:27.4.1  # Menggunakan docker:27.4.1
   stage: build
   services:
-    - docker:dind  # Menggunakan docker:dind
+    - name: docker:27.4.1-dind  # Menggunakan docker:27.4.1-dind
+      command: ["--experimental", "--storage-driver=overlay2"]  # Mengaktifkan mode eksperimen dan storage-driver overlay2
   before_script:
-    # Install git untuk menangani peringatan buildx
+    # Install git dan dependensi lainnya jika belum ada
     - apk add --no-cache git
-    # Debug untuk memastikan `git` tersedia
-    - git --version
+    - git --version  # Debug untuk memastikan git tersedia
     # Login ke GitLab Container Registry
     - echo "Logging into GitLab Container Registry..."
     - echo $CI_REGISTRY_PASSWORD | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
@@ -26,14 +28,7 @@ build_and_push:
         echo "Login failed, exiting pipeline."
         exit 1
       fi
-  variables:
-    DOCKER_CLI_EXPERIMENTAL: "enabled"
   script:
-    # Debug untuk memastikan context
-    - echo "Checking current directory..."
-    - pwd
-    - echo "Listing contents of current directory..."
-    - ls -la
     # Tentukan versi image berdasarkan branch/tag
     - echo "Determining version..."
     - VERSION=""
@@ -51,17 +46,18 @@ build_and_push:
     - echo "Building image for version $VERSION..."
     # Siapkan QEMU untuk build multi-arch jika belum tersedia
     - echo "Checking if QEMU is already set up..."
-    - docker buildx ls || docker run --rm --privileged docker/binfmt:a7996909642ee92942dcd6cff44b9b95f08dad64
+    - docker buildx ls || docker run --rm --privileged tonistiigi/binfmt:latest --install all
     # Konfigurasi Docker Buildx
     - echo "Configuring Docker Buildx..."
     - docker buildx use || docker buildx create --use
     - docker buildx inspect --bootstrap
-    # Build dan push multi-arch Docker image
-    - echo "Starting multi-arch build and push..."
+    # Build tanpa menggunakan cache
+    - echo "Starting fresh build without cache..."
     - |
       docker buildx build \
-        --platform linux/arm64,linux/amd64 \
+        --platform $DOCKER_PLATFORM \
         --push \
+        --no-cache \
         --tag $DOCKER_IMAGE:$VERSION \
         --tag $DOCKER_IMAGE:$DOCKER_TAG_LATEST \
         . || { echo "Docker build or push failed"; exit 1; }
