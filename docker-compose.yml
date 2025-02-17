@@ -8,4 +8,4 @@ services:
     ports:
       - 127.0.0.1:53:53
       - 127.0.0.1:53:53/udp
-    read_only: true
+    read_only: false
