@@ -15,14 +15,6 @@ RUN apk add --no-cache \
 ARG TARGETARCH
 ENV GO_ARCH=${TARGETARCH}
 
-# Download and install Go sesuai arsitektur
-RUN curl -sSL https://golang.org/dl/go1.23.4.linux-${GO_ARCH}.tar.gz | \
-    tar -C /usr/local -xz && \
-    ln -s /usr/local/go/bin/go /usr/bin/go && \
-    mkdir -p /src && \
-    # Clean up apk cache to reduce image size
-    rm -rf /var/cache/apk/*
-
 # Set working directory
 WORKDIR /src
 
