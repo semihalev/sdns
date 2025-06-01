@@ -306,7 +306,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 				nsecSet := extractRRSet(resp.Ns, nsrr.Header().Name, dns.TypeNSEC)
 				if len(nsecSet) > 0 {
 					if !verifyNSEC(q, nsecSet) {
-						log.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+						log.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", "NSEC verify failed")
 						return nil, fmt.Errorf("NSEC verify failed")
 					}
 					parentdsrr = []dns.RR{}
@@ -441,14 +441,31 @@ func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (c
 func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv4, nss nameservers, cd bool) {
 	list := sortnss(nss, q.Name)
 
-	for _, name := range list {
-		authservers.Nss = append(authservers.Nss, name)
+	// Collect all nameservers first
+	authservers.Nss = append(authservers.Nss, list...)
 
+	// Prepare for parallel lookups
+	type lookupResult struct {
+		name  string
+		addrs []string
+		err   error
+	}
+
+	// Limit concurrent lookups to avoid overwhelming DNS servers
+	const maxConcurrent = 5
+	sem := make(chan struct{}, maxConcurrent)
+	results := make(chan lookupResult, len(list))
+
+	var wg sync.WaitGroup
+	lookupCount := 0
+
+	// Start parallel lookups
+	for _, name := range list {
 		if _, ok := foundv4[name]; ok {
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
+		ctxCopy, loop := r.checkLoop(ctx, name, dns.TypeA)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
 				log.Debug("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
@@ -456,28 +473,53 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			}
 		}
 
-		if len(authservers.List) > 0 {
-			// temprorary cache before lookup
-			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
-		}
+		lookupCount++
+		wg.Add(1)
+		go func(n string, lookupCtx context.Context) {
+			defer wg.Done()
 
-		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
-		nsipv4 := make(map[string][]string)
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-lookupCtx.Done():
+				results <- lookupResult{name: n, err: lookupCtx.Err()}
+				return
+			}
 
-		if err != nil {
-			log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+			addrs, err := r.lookupNSAddrV4(lookupCtx, n, cd)
+			results <- lookupResult{name: n, addrs: addrs, err: err}
+		}(name, ctxCopy)
+	}
+
+	// Close results channel when all lookups complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results and update authservers
+	nsipv4 := make(map[string][]string)
+	resultCount := 0
+
+	for result := range results {
+		resultCount++
+
+		if result.err != nil {
+			log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", result.name, "error", result.err.Error())
 			continue
 		}
 
-		if len(addrs) == 0 {
+		if len(result.addrs) == 0 {
 			continue
 		}
 
-		nsipv4[name] = addrs
+		nsipv4[result.name] = result.addrs
 
+		// Update authservers with new addresses
 		authservers.Lock()
 	addrsloop:
-		for _, addr := range addrs {
+		for _, addr := range result.addrs {
 			raddr := net.JoinHostPort(addr, "53")
 			for _, s := range authservers.List {
 				if s.Addr == raddr {
@@ -487,6 +529,15 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
 		}
 		authservers.Unlock()
+
+		// Update temporary cache after each successful lookup
+		if len(authservers.List) > 0 && resultCount == 1 {
+			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
+		}
+	}
+
+	// Batch update the cache
+	if len(nsipv4) > 0 {
 		r.addIPv4Cache(nsipv4)
 	}
 }
@@ -497,12 +548,28 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 
 	list := sortnss(nss, q.Name)
 
+	// Prepare for parallel lookups
+	type lookupResult struct {
+		name  string
+		addrs []string
+		err   error
+	}
+
+	// Limit concurrent lookups to avoid overwhelming DNS servers
+	const maxConcurrent = 3 // Lower limit for IPv6 due to rate limiting concerns
+	sem := make(chan struct{}, maxConcurrent)
+	results := make(chan lookupResult, len(list))
+
+	var wg sync.WaitGroup
+	lookupCount := 0
+
+	// Start parallel lookups
 	for _, name := range list {
 		if _, ok := foundv6[name]; ok {
 			continue
 		}
 
-		ctx, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
+		ctxCopy, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
 				log.Debug("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
@@ -510,23 +577,55 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 			}
 		}
 
-		addrs, err := r.lookupNSAddrV6(ctx, name, cd)
-		nsipv6 := make(map[string][]string)
+		lookupCount++
+		wg.Add(1)
+		go func(n string, lookupCtx context.Context) {
+			defer wg.Done()
 
-		if err != nil {
-			log.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-			return
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-lookupCtx.Done():
+				results <- lookupResult{name: n, err: lookupCtx.Err()}
+				return
+			}
+
+			addrs, err := r.lookupNSAddrV6(lookupCtx, n, cd)
+			results <- lookupResult{name: n, addrs: addrs, err: err}
+		}(name, ctxCopy)
+	}
+
+	// Early return if no lookups were started
+	if lookupCount == 0 {
+		return
+	}
+
+	// Close results channel when all lookups complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results and update authservers
+	nsipv6 := make(map[string][]string)
+
+	for result := range results {
+		if result.err != nil {
+			log.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", result.name, "error", result.err.Error())
+			continue
 		}
 
-		if len(addrs) == 0 {
-			return
+		if len(result.addrs) == 0 {
+			continue
 		}
 
-		nsipv6[name] = addrs
+		nsipv6[result.name] = result.addrs
 
+		// Update authservers with new addresses
 		authservers.Lock()
 	addrsloop:
-		for _, addr := range addrs {
+		for _, addr := range result.addrs {
 			raddr := net.JoinHostPort(addr, "53")
 			for _, s := range authservers.List {
 				if s.Addr == raddr {
@@ -536,6 +635,10 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
 		}
 		authservers.Unlock()
+	}
+
+	// Batch update the cache
+	if len(nsipv6) > 0 {
 		r.addIPv6Cache(nsipv6)
 	}
 }
@@ -549,39 +652,90 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 	}
 	servers.RUnlock()
 
-	var raddrsv4 []string
-	var raddrsv6 []string
+	type lookupResult struct {
+		name   string
+		addrs  []string
+		isIPv6 bool
+	}
 
-	nsipv4 := make(map[string][]string)
+	// Prepare parallel lookups
+	const maxConcurrent = 10
+	sem := make(chan struct{}, maxConcurrent)
+	results := make(chan lookupResult, len(servers.Nss)*2) // IPv4 + IPv6
+
+	var wg sync.WaitGroup
+
+	// Clear caches and start IPv4 lookups
 	for _, name := range servers.Nss {
 		r.removeIPv4Cache(name)
-		addrs, err := r.lookupNSAddrV4(ctx, name, servers.CheckingDisable)
-		if err != nil || len(addrs) == 0 {
-			continue
-		}
 
-		raddrsv4 = append(raddrsv4, addrs...)
+		wg.Add(1)
+		go func(n string) {
+			defer wg.Done()
 
-		nsipv4[name] = addrs
+			// Acquire semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			addrs, err := r.lookupNSAddrV4(ctx, n, servers.CheckingDisable)
+			if err == nil && len(addrs) > 0 {
+				results <- lookupResult{name: n, addrs: addrs, isIPv6: false}
+			}
+		}(name)
 	}
-	r.addIPv4Cache(nsipv4)
 
+	// Start IPv6 lookups if enabled
 	if r.cfg.IPv6Access {
-		nsipv6 := make(map[string][]string)
 		for _, name := range servers.Nss {
 			r.removeIPv6Cache(name)
-			addrs, err := r.lookupNSAddrV6(ctx, name, servers.CheckingDisable)
-			if err != nil || len(addrs) == 0 {
-				continue
-			}
 
-			raddrsv6 = append(raddrsv6, addrs...)
+			wg.Add(1)
+			go func(n string) {
+				defer wg.Done()
 
-			nsipv6[name] = addrs
+				// Acquire semaphore
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				addrs, err := r.lookupNSAddrV6(ctx, n, servers.CheckingDisable)
+				if err == nil && len(addrs) > 0 {
+					results <- lookupResult{name: n, addrs: addrs, isIPv6: true}
+				}
+			}(name)
 		}
+	}
+
+	// Close results channel when all lookups complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	var raddrsv4 []string
+	var raddrsv6 []string
+	nsipv4 := make(map[string][]string)
+	nsipv6 := make(map[string][]string)
+
+	for result := range results {
+		if result.isIPv6 {
+			raddrsv6 = append(raddrsv6, result.addrs...)
+			nsipv6[result.name] = result.addrs
+		} else {
+			raddrsv4 = append(raddrsv4, result.addrs...)
+			nsipv4[result.name] = result.addrs
+		}
+	}
+
+	// Update caches
+	if len(nsipv4) > 0 {
+		r.addIPv4Cache(nsipv4)
+	}
+	if len(nsipv6) > 0 {
 		r.addIPv6Cache(nsipv6)
 	}
 
+	// Update server list
 	servers.Lock()
 	defer servers.Unlock()
 
@@ -948,10 +1102,25 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 		}
 	}
 
-	fallbackTimeout := 150 * time.Millisecond
+	// Calculate adaptive timeout based on server RTT
+	calculateTimeout := func(server *authcache.AuthServer) time.Duration {
+		rtt := time.Duration(atomic.LoadInt64(&server.Rtt))
+		if rtt <= 0 {
+			// Unknown RTT, use conservative default
+			return 100 * time.Millisecond
+		}
+		// Give server 2x its average RTT before trying next
+		timeout := rtt * 2
+		if timeout < 25*time.Millisecond {
+			timeout = 25 * time.Millisecond // Minimum 25ms
+		} else if timeout > 300*time.Millisecond {
+			timeout = 300 * time.Millisecond // Maximum 300ms
+		}
+		return timeout
+	}
 
 	// Start the timer for the fallback racer.
-	fallbackTimer := time.NewTimer(fallbackTimeout)
+	fallbackTimer := time.NewTimer(150 * time.Millisecond)
 	defer fallbackTimer.Stop()
 
 	left := len(serversList)
@@ -959,9 +1128,23 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Start queries to top 2 servers immediately for faster response
+	parallelStart := 2
+	if len(serversList) < parallelStart {
+		parallelStart = len(serversList)
+	}
+
 mainloop:
 	for index, server := range serversList {
 		go startRacer(ctx, req.CopyTo(AcquireMsg()), server)
+
+		// For the first few servers, don't wait - query them in parallel
+		if index < parallelStart-1 {
+			continue
+		}
+
+		// Use adaptive timeout for subsequent servers
+		fallbackTimeout := calculateTimeout(server)
 
 	fallbackloop:
 		for left != 0 {

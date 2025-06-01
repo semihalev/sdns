@@ -16,48 +16,123 @@ var (
 
 // Cache is cache.
 type Cache struct {
-	shards [shardSize]*shard
+	data     *SyncUInt64Map[any]
+	maxSize  int
+	evictBuf []uint64 // Pre-allocated buffer for eviction
 }
 
 // New returns a new cache.
 func New(size int) *Cache {
-	ssize := size / shardSize
-	if ssize < 4 {
-		ssize = 4
+	if size < 1 {
+		size = 1
 	}
 
-	c := &Cache{}
-
-	// Initialize all the shards
-	for i := 0; i < shardSize; i++ {
-		c.shards[i] = newShard(ssize)
+	// Calculate optimal bucket count based on cache size
+	// For DNS cache, we want good distribution with minimal overhead
+	var power uint
+	switch {
+	case size <= 1024:
+		power = 8 // 256 buckets for tiny caches
+	case size <= 10000:
+		power = 10 // 1K buckets for small caches
+	case size <= 100000:
+		power = 12 // 4K buckets for medium caches
+	case size <= 500000:
+		power = 14 // 16K buckets for large caches (default SDNS size)
+	default:
+		power = 16 // 64K buckets for very large caches
 	}
-	return c
+
+	// Pre-allocate eviction buffer (10% of max size or at least 100)
+	evictBufSize := size / 10
+	if evictBufSize < 100 {
+		evictBufSize = 100
+	}
+	if evictBufSize > 10000 {
+		evictBufSize = 10000 // Cap at 10K to avoid huge allocations
+	}
+
+	return &Cache{
+		data:     NewSyncUInt64Map[any](power),
+		maxSize:  size,
+		evictBuf: make([]uint64, 0, evictBufSize),
+	}
 }
 
 // Get looks up element index under key.
-func (c *Cache) Get(key uint64) (interface{}, bool) {
-	shard := key & (shardSize - 1)
-	return c.shards[shard].Get(key)
+func (c *Cache) Get(key uint64) (any, bool) {
+	return c.data.Get(key)
 }
 
 // Add adds a new element to the cache. If the element already exists it is overwritten.
-func (c *Cache) Add(key uint64, el interface{}) {
-	shard := key & (shardSize - 1)
-	c.shards[shard].Add(key, el)
+func (c *Cache) Add(key uint64, el any) {
+	// Set the value first
+	c.data.Set(key, el)
+
+	// Check if we exceeded the limit after adding
+	currentSize := c.data.Len()
+	if currentSize > int64(c.maxSize) {
+		// Need to evict some entries
+		c.evict()
+	}
 }
 
 // Remove removes the element indexed with key.
 func (c *Cache) Remove(key uint64) {
-	shard := key & (shardSize - 1)
-	c.shards[shard].Remove(key)
+	c.data.Del(key)
 }
 
 // Len returns the number of elements in the cache.
 func (c *Cache) Len() int {
-	l := 0
-	for _, s := range c.shards {
-		l += s.Len()
+	return int(c.data.Len())
+}
+
+// evict removes entries when cache is full
+// Uses sampled eviction - randomly samples entries and removes some of them
+func (c *Cache) evict() {
+	// Run eviction in a loop until we're under the limit
+	// This handles cases where items are being added concurrently
+	for {
+		currentSize := c.data.Len()
+		if currentSize <= int64(c.maxSize) {
+			return // We're under the limit
+		}
+
+		// Calculate how many entries to evict
+		overhead := int(currentSize - int64(c.maxSize))
+		evictBatch := overhead
+		if evictBatch < c.maxSize/20 { // At least 5%
+			evictBatch = c.maxSize / 20
+		}
+		if evictBatch < 1 {
+			evictBatch = 1
+		}
+
+		// Collect keys to evict
+		c.evictBuf = c.evictBuf[:0]
+		collected := 0
+		c.data.ForEach(func(key uint64, _ any) bool {
+			if collected >= evictBatch {
+				return false
+			}
+			c.evictBuf = append(c.evictBuf, key)
+			collected++
+			return true
+		})
+
+		// If we couldn't collect any keys, break to avoid infinite loop
+		if len(c.evictBuf) == 0 {
+			break
+		}
+
+		// Delete the collected keys
+		for _, key := range c.evictBuf {
+			c.data.Del(key)
+		}
+
+		// For small caches, one iteration is enough
+		if c.maxSize < 100 {
+			break
+		}
 	}
-	return l
 }

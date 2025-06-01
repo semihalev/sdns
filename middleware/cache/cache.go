@@ -416,19 +416,22 @@ func computeTTL(msgTTL, minTTL, maxTTL time.Duration) time.Duration {
 	return ttl
 }
 
-var messagePool sync.Pool
-
-// AcquireMsg returns an empty msg from pool
-func AcquireMsg() *dns.Msg {
-	v := messagePool.Get()
-	if v == nil {
-		return &dns.Msg{}
-	}
-	return v.(*dns.Msg)
+var messagePool = sync.Pool{
+	New: func() interface{} {
+		return &dns.Msg{
+			// Pre-allocate slices with typical sizes to avoid allocations
+			Question: make([]dns.Question, 0, 1), // Most queries have 1 question
+			Answer:   make([]dns.RR, 0, 10),      // Pre-allocate for typical responses
+			Ns:       make([]dns.RR, 0, 5),       // Authority section
+			Extra:    make([]dns.RR, 0, 2),       // Additional section (often OPT record)
+		}
+	},
 }
 
-// ReleaseMsg returns msg to pool
-func ReleaseMsg(m *dns.Msg) {
+// AcquireMsg returns an empty msg from pool with pre-allocated slices
+func AcquireMsg() *dns.Msg {
+	m := messagePool.Get().(*dns.Msg)
+	// Reset the message but keep the allocated slices
 	m.Id = 0
 	m.Response = false
 	m.Opcode = 0
@@ -441,12 +444,35 @@ func ReleaseMsg(m *dns.Msg) {
 	m.CheckingDisabled = false
 	m.Rcode = 0
 	m.Compress = false
-	m.Question = nil
-	m.Answer = nil
-	m.Ns = nil
-	m.Extra = nil
+	// Reset slices but keep capacity
+	m.Question = m.Question[:0]
+	m.Answer = m.Answer[:0]
+	m.Ns = m.Ns[:0]
+	m.Extra = m.Extra[:0]
+	return m
+}
 
-	messagePool.Put(m)
+// ReleaseMsg returns msg to pool
+func ReleaseMsg(m *dns.Msg) {
+	// Clear the slices to release references but keep capacity
+	for i := range m.Question {
+		m.Question[i] = dns.Question{}
+	}
+	for i := range m.Answer {
+		m.Answer[i] = nil
+	}
+	for i := range m.Ns {
+		m.Ns[i] = nil
+	}
+	for i := range m.Extra {
+		m.Extra[i] = nil
+	}
+
+	// Only put back if slices haven't grown too large
+	if cap(m.Answer) <= 100 && cap(m.Ns) <= 50 && cap(m.Extra) <= 20 {
+		messagePool.Put(m)
+	}
+	// Otherwise let GC handle it to avoid memory bloat
 }
 
 const (

@@ -152,22 +152,50 @@ func (co *Conn) Write(p []byte) (int, error) {
 	return int(n), err
 }
 
-var bufferPool sync.Pool
+// Size-bucketed buffer pools for efficient memory usage
+var bufferPools = [4]sync.Pool{
+	{New: func() interface{} { b := make([]byte, 512); return &b }},   // 0-512 bytes (most DNS over UDP)
+	{New: func() interface{} { b := make([]byte, 1232); return &b }},  // 513-1232 bytes (EDNS0 UDP)
+	{New: func() interface{} { b := make([]byte, 4096); return &b }},  // 1233-4096 bytes (typical TCP)
+	{New: func() interface{} { b := make([]byte, 65535); return &b }}, // 4097-65535 bytes (max DNS)
+}
 
-// AcquireBuf returns an buf from pool
+// AcquireBuf returns a buffer from the appropriate pool
 func AcquireBuf(size uint16) []byte {
-	x := bufferPool.Get()
-	if x == nil {
-		return make([]byte, size)
+	var poolIdx int
+	switch {
+	case size <= 512:
+		poolIdx = 0
+	case size <= 1232:
+		poolIdx = 1
+	case size <= 4096:
+		poolIdx = 2
+	default:
+		poolIdx = 3
 	}
+
+	x := bufferPools[poolIdx].Get()
 	buf := *(x.(*[]byte))
-	if cap(buf) < int(size) {
-		return make([]byte, size)
-	}
 	return buf[:size]
 }
 
-// ReleaseBuf returns buf to pool
+// ReleaseBuf returns buf to the appropriate pool
 func ReleaseBuf(buf []byte) {
-	bufferPool.Put(&buf)
+	c := cap(buf)
+	var poolIdx int
+	switch {
+	case c <= 512:
+		poolIdx = 0
+	case c <= 1232:
+		poolIdx = 1
+	case c <= 4096:
+		poolIdx = 2
+	case c <= 65535:
+		poolIdx = 3
+	default:
+		// Buffer too large, let GC handle it
+		return
+	}
+
+	bufferPools[poolIdx].Put(&buf)
 }
