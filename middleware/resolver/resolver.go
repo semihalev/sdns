@@ -355,7 +355,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 		authservers.CheckingDisable = cd
 		authservers.Zone = q.Name
 
-		r.lookupV4Nss(ctx, q, authservers, key, parentdsrr, foundv4, nss, cd)
+		r.parallelLookupV4Nss(ctx, q, authservers, key, parentdsrr, foundv4, nss, cd)
 
 		if len(authservers.List) == 0 {
 			if minimized && level < nlevel {
@@ -374,7 +374,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 		v6ctx := context.WithValue(context.Background(), ctxKey("reqid"), reqid)
 
 		if r.cfg.IPv6Access {
-			go r.lookupV6Nss(v6ctx, q, authservers, key, parentdsrr, foundv6, nss, cd)
+			go r.parallelLookupV6Nss(v6ctx, q, authservers, key, parentdsrr, foundv6, nss, cd)
 		}
 
 		depth--

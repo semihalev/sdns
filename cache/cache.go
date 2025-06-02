@@ -16,9 +16,8 @@ var (
 
 // Cache is cache.
 type Cache struct {
-	data     *SyncUInt64Map[any]
-	maxSize  int
-	evictBuf []uint64 // Pre-allocated buffer for eviction
+	data    *SyncUInt64Map[any]
+	maxSize int
 }
 
 // New returns a new cache.
@@ -43,19 +42,9 @@ func New(size int) *Cache {
 		power = 16 // 64K buckets for very large caches
 	}
 
-	// Pre-allocate eviction buffer (10% of max size or at least 100)
-	evictBufSize := size / 10
-	if evictBufSize < 100 {
-		evictBufSize = 100
-	}
-	if evictBufSize > 10000 {
-		evictBufSize = 10000 // Cap at 10K to avoid huge allocations
-	}
-
 	return &Cache{
-		data:     NewSyncUInt64Map[any](power),
-		maxSize:  size,
-		evictBuf: make([]uint64, 0, evictBufSize),
+		data:    NewSyncUInt64Map[any](power),
+		maxSize: size,
 	}
 }
 
@@ -109,24 +98,25 @@ func (c *Cache) evict() {
 		}
 
 		// Collect keys to evict
-		c.evictBuf = c.evictBuf[:0]
+		// Use a local buffer to avoid race conditions
+		evictBuf := make([]uint64, 0, evictBatch)
 		collected := 0
 		c.data.ForEach(func(key uint64, _ any) bool {
 			if collected >= evictBatch {
 				return false
 			}
-			c.evictBuf = append(c.evictBuf, key)
+			evictBuf = append(evictBuf, key)
 			collected++
 			return true
 		})
 
 		// If we couldn't collect any keys, break to avoid infinite loop
-		if len(c.evictBuf) == 0 {
+		if len(evictBuf) == 0 {
 			break
 		}
 
 		// Delete the collected keys
-		for _, key := range c.evictBuf {
+		for _, key := range evictBuf {
 			c.data.Del(key)
 		}
 
