@@ -21,10 +21,14 @@ func (r *Resolver) parallelLookupV4Nss(ctx context.Context, q dns.Question, auth
 	authservers.Nss = append(authservers.Nss, list...)
 
 	// Filter out already found nameservers
-	var toLookup []string
+	type lookupItem struct {
+		name string
+		ctx  context.Context
+	}
+	var toLookup []lookupItem
 	for _, name := range list {
 		if _, ok := foundv4[name]; !ok {
-			// Check for loops
+			// Check for loops with a fresh context copy for each nameserver
 			ctxCopy, loop := r.checkLoop(ctx, name, dns.TypeA)
 			if loop {
 				if _, ok := r.getIPv4Cache(name); !ok {
@@ -32,9 +36,7 @@ func (r *Resolver) parallelLookupV4Nss(ctx context.Context, q dns.Question, auth
 					continue
 				}
 			}
-			toLookup = append(toLookup, name)
-			// Store context for later use
-			ctx = ctxCopy
+			toLookup = append(toLookup, lookupItem{name: name, ctx: ctxCopy})
 		}
 	}
 
@@ -55,20 +57,20 @@ func (r *Resolver) parallelLookupV4Nss(ctx context.Context, q dns.Question, auth
 	resultsChan := make(chan lookupResult, len(toLookup))
 
 	// Launch parallel lookups
-	for _, name := range toLookup {
-		name := name // Capture loop variable
+	for _, item := range toLookup {
+		item := item // Capture loop variable
 		g.Go(func() error {
-			addrs, err := r.lookupNSAddrV4(ctx, name, cd)
+			addrs, err := r.lookupNSAddrV4(item.ctx, item.name, cd)
 			if err != nil {
 				log.Debug("Lookup NS ipv4 address failed",
 					"query", formatQuestion(q),
-					"ns", name,
+					"ns", item.name,
 					"error", err.Error())
 				return nil // Don't fail the group
 			}
 
 			if len(addrs) > 0 {
-				resultsChan <- lookupResult{name: name, addrs: addrs}
+				resultsChan <- lookupResult{name: item.name, addrs: addrs}
 			}
 			return nil
 		})
@@ -122,10 +124,14 @@ func (r *Resolver) parallelLookupV6Nss(ctx context.Context, q dns.Question, auth
 	list := sortnss(nss, q.Name)
 
 	// Filter out already found nameservers
-	var toLookup []string
+	type lookupItem struct {
+		name string
+		ctx  context.Context
+	}
+	var toLookup []lookupItem
 	for _, name := range list {
 		if _, ok := foundv6[name]; !ok {
-			// Check for loops
+			// Check for loops with a fresh context copy for each nameserver
 			ctxCopy, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
 			if loop {
 				if _, ok := r.getIPv6Cache(name); !ok {
@@ -133,8 +139,7 @@ func (r *Resolver) parallelLookupV6Nss(ctx context.Context, q dns.Question, auth
 					continue
 				}
 			}
-			toLookup = append(toLookup, name)
-			ctx = ctxCopy
+			toLookup = append(toLookup, lookupItem{name: name, ctx: ctxCopy})
 		}
 	}
 
@@ -155,20 +160,20 @@ func (r *Resolver) parallelLookupV6Nss(ctx context.Context, q dns.Question, auth
 	resultsChan := make(chan lookupResult, len(toLookup))
 
 	// Launch parallel lookups
-	for _, name := range toLookup {
-		name := name // Capture loop variable
+	for _, item := range toLookup {
+		item := item // Capture loop variable
 		g.Go(func() error {
-			addrs, err := r.lookupNSAddrV6(ctx, name, cd)
+			addrs, err := r.lookupNSAddrV6(item.ctx, item.name, cd)
 			if err != nil {
 				log.Debug("Lookup NS ipv6 address failed",
 					"query", formatQuestion(q),
-					"ns", name,
+					"ns", item.name,
 					"error", err.Error())
 				return nil // Don't fail the group
 			}
 
 			if len(addrs) > 0 {
-				resultsChan <- lookupResult{name: name, addrs: addrs}
+				resultsChan <- lookupResult{name: item.name, addrs: addrs}
 			}
 			return nil
 		})
