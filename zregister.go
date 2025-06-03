@@ -5,12 +5,14 @@ package main
 import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
+
 	"github.com/semihalev/sdns/middleware/accesslist"
 	"github.com/semihalev/sdns/middleware/accesslog"
 	"github.com/semihalev/sdns/middleware/as112"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/sdns/middleware/cache"
 	"github.com/semihalev/sdns/middleware/chaos"
+	"github.com/semihalev/sdns/middleware/dnstap"
 	"github.com/semihalev/sdns/middleware/edns"
 	"github.com/semihalev/sdns/middleware/failover"
 	"github.com/semihalev/sdns/middleware/forwarder"
@@ -26,6 +28,7 @@ func init() {
 	middleware.Register("recovery", func(cfg *config.Config) middleware.Handler { return recovery.New(cfg) })
 	middleware.Register("loop", func(cfg *config.Config) middleware.Handler { return loop.New(cfg) })
 	middleware.Register("metrics", func(cfg *config.Config) middleware.Handler { return metrics.New(cfg) })
+	middleware.Register("dnstap", func(cfg *config.Config) middleware.Handler { return dnstap.New(cfg) })
 	middleware.Register("accesslist", func(cfg *config.Config) middleware.Handler { return accesslist.New(cfg) })
 	middleware.Register("ratelimit", func(cfg *config.Config) middleware.Handler { return ratelimit.New(cfg) })
 	middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })

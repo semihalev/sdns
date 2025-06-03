@@ -16,6 +16,15 @@ type Handler interface {
 	ServeDNS(context.Context, *Chain)
 }
 
+// HandlerFunc type adapter to allow the use of ordinary functions as handlers
+type HandlerFunc func(context.Context, *Chain)
+
+// Name returns the handler name
+func (f HandlerFunc) Name() string { return "HandlerFunc" }
+
+// ServeDNS calls f(ctx, ch)
+func (f HandlerFunc) ServeDNS(ctx context.Context, ch *Chain) { f(ctx, ch) }
+
 type middleware struct {
 	mu sync.RWMutex
 

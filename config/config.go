@@ -62,6 +62,14 @@ type Config struct {
 	QnameMinLevel    int `toml:"qname_min_level"`
 	EmptyZones       []string
 
+	// Dnstap configuration
+	DnstapSocket        string
+	DnstapIdentity      string
+	DnstapVersion       string
+	DnstapLogQueries    bool
+	DnstapLogResponses  bool
+	DnstapFlushInterval int
+
 	Plugins map[string]Plugin
 
 	CookieSecret string
@@ -94,77 +102,107 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 var defaultConfig = `
-# Config version, config and build versions can be different.
+# Configuration file version (not SDNS version)
 version = "%s"
 
-# Sets the sdns working directory. The directory must have write access for sdns's user.
+# ============================
+# Basic Server Configuration
+# ============================
+
+# Working directory for SDNS database and cache files
+# This directory must have write permissions for the SDNS user
 directory = "db"
 
-# Address to bind to for the DNS server.
+# DNS server bind address and port
 bind = ":53"
 
-# Address to bind to for the DNS-over-TLS server.
+# DNS-over-TLS (DoT) server bind address and port
+# Requires TLS certificate and key to be configured
 # bindtls = ":853"
 
-# Address to bind to for the DNS-over-HTTPS server.
+# DNS-over-HTTPS (DoH) server bind address and port
+# Requires TLS certificate and key to be configured
 # binddoh = ":443"
 
-# Address to bind to for the DNS-over-QUIC server.
+# DNS-over-QUIC (DoQ) server bind address and port
+# Requires TLS certificate and key to be configured
 # binddoq = ":853"
 
-# TLS certificate file.
+# TLS certificate file path (PEM format)
+# Required for DoT, DoH, and DoQ servers
 # tlscertificate = "server.crt"
 
-# TLS private key file.
+# TLS private key file path (PEM format)
+# Required for DoT, DoH, and DoQ servers
 # tlsprivatekey = "server.key"
 
-# Outbound IPv4 addresses, if you set multiple, sdns can use a random outbound IPv4 address by request based.
+# ============================
+# Network Configuration
+# ============================
+
+# Outbound IPv4 addresses for DNS queries
+# Multiple addresses enable random source IP selection per request
 outboundips = [
 ]
 
-# Outbound IPv6 addresses, if you set multiple, sdns can use a random outbound IPv6 address by request based.
+# Outbound IPv6 addresses for DNS queries
+# Multiple addresses enable random source IP selection per request
 outboundip6s = [
 ]
 
-# Root zone IPv4 servers
+# ============================
+# Root DNS Servers
+# ============================
+
+# Root DNS servers (IPv4)
+# These are the authoritative name servers for the DNS root zone
 rootservers = [
-    "198.41.0.4:53",
-    "199.9.14.201:53",
-    "192.33.4.12:53",
-    "199.7.91.13:53",
-    "192.203.230.10:53",
-    "192.5.5.241:53",
-    "192.112.36.4:53",
-    "198.97.190.53:53",
-    "192.36.148.17:53",
-    "192.58.128.30:53",
-    "193.0.14.129:53",
-    "199.7.83.42:53",
-    "202.12.27.33:53"
+    "198.41.0.4:53",      # a.root-servers.net
+    "199.9.14.201:53",    # b.root-servers.net
+    "192.33.4.12:53",     # c.root-servers.net
+    "199.7.91.13:53",     # d.root-servers.net
+    "192.203.230.10:53",  # e.root-servers.net
+    "192.5.5.241:53",     # f.root-servers.net
+    "192.112.36.4:53",    # g.root-servers.net
+    "198.97.190.53:53",   # h.root-servers.net
+    "192.36.148.17:53",   # i.root-servers.net
+    "192.58.128.30:53",   # j.root-servers.net
+    "193.0.14.129:53",    # k.root-servers.net
+    "199.7.83.42:53",     # l.root-servers.net
+    "202.12.27.33:53"     # m.root-servers.net
 ]
 
-# Root zone IPv6 servers
+# Root DNS servers (IPv6)
+# These are the authoritative name servers for the DNS root zone
 root6servers = [
-    "[2001:503:ba3e::2:30]:53",
-    "[2001:500:200::b]:53",
-    "[2001:500:2::c]:53",
-    "[2001:500:2d::d]:53",
-    "[2001:500:a8::e]:53",
-    "[2001:500:2f::f]:53",
-    "[2001:500:12::d0d]:53",
-    "[2001:500:1::53]:53",
-    "[2001:7fe::53]:53",
-    "[2001:503:c27::2:30]:53",
-    "[2001:7fd::1]:53",
-    "[2001:500:9f::42]:53",
-    "[2001:dc3::35]:53"
+    "[2001:503:ba3e::2:30]:53",  # a.root-servers.net
+    "[2001:500:200::b]:53",      # b.root-servers.net
+    "[2001:500:2::c]:53",        # c.root-servers.net
+    "[2001:500:2d::d]:53",       # d.root-servers.net
+    "[2001:500:a8::e]:53",       # e.root-servers.net
+    "[2001:500:2f::f]:53",       # f.root-servers.net
+    "[2001:500:12::d0d]:53",     # g.root-servers.net
+    "[2001:500:1::53]:53",       # h.root-servers.net
+    "[2001:7fe::53]:53",         # i.root-servers.net
+    "[2001:503:c27::2:30]:53",   # j.root-servers.net
+    "[2001:7fd::1]:53",          # k.root-servers.net
+    "[2001:500:9f::42]:53",      # l.root-servers.net
+    "[2001:dc3::35]:53"          # m.root-servers.net
 ]
 
-# DNSSEC validation on signed zones, off for disabled.
+# ============================
+# DNSSEC Configuration
+# ============================
+
+# DNSSEC validation mode
+# "on" = validate DNSSEC for signed zones
+# "off" = disable DNSSEC validation
 dnssec = "on"
 
-# Trusted anchors for DNSSEC.
+# DNSSEC root trust anchors
+# These are the public keys used to verify the DNS root zone
 rootkeys = [
+	# Key ID 20326 - Active since 2017
 	"""\
 	. 172800 IN DNSKEY 257 3 8 ( \
 	AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTO \
@@ -177,6 +215,7 @@ rootkeys = [
 	9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU= \
 	) ; KSK; alg = RSASHA256 ; key id = 20326 \
 	""",
+	# Key ID 38696 - Active since 2024
 	"""\
 	. 172800 IN DNSKEY 257 3 8 ( \
 	AwEAAa96jeuknZlaeSrvyAJj6ZHv28hhOKkx3rLGXVaC \
@@ -191,129 +230,207 @@ rootkeys = [
 	"""
 ]
 
-# Failover resolver IPv4 or IPv6 addresses with port, left blank for disabled.
-# fallbackservers = [
-#   "8.8.8.8:53",
-#   "[2001:4860:4860::8888]:53"
-# ]
+# ============================
+# Upstream Servers
+# ============================
+
+# Fallback DNS servers
+# Used when root servers are unreachable or for specific failures
+# Supports standard DNS (port 53)
 fallbackservers = [
+    # Examples:
+    # "8.8.8.8:53",              # Google Public DNS
+    # "[2001:4860:4860::8888]:53" # Google Public DNS IPv6
 ]
 
-# Forwarder resolver IPv4 or IPv6 addresses with port, left blank for disabled.
-# forwarderservers = [
-#   "8.8.8.8:53",
-#   "[2001:4860:4860::8888]:53",
-#   "tls://8.8.8.8:853"
-# ]
+# Forwarder DNS servers
+# When configured, SDNS acts as a forwarding resolver instead of recursive
+# Supports DNS (port 53) and DNS-over-TLS (tls:// prefix)
 forwarderservers = [
+    # Examples:
+    # "8.8.8.8:53",              # Standard DNS
+    # "[2001:4860:4860::8888]:53", # Standard DNS IPv6
+    # "tls://8.8.8.8:853"        # DNS-over-TLS
 ]
 
-# Address to bind to for the HTTP API server, left blank for disabled.
+# ============================
+# API and Logging
+# ============================
+
+# HTTP API server configuration
+# Provides REST API for statistics and management
+# Set to empty string to disable
 api = "127.0.0.1:8080"
 
-# API bearer token for authorization. If the token set, Authorization header should be send on API requests.
-# Header: Authorization: Bearer %%bearertoken%%
+# API authentication token
+# When set, requests must include: Authorization: Bearer <token>
 # bearertoken = ""
 
-# What kind of information should be logged, Log verbosity level [crit, error, warn, info, debug].
+# Log verbosity level
+# Options: crit, error, warn, info, debug
 loglevel = "info"
 
-# The location of the access log file, left blank for disabled. SDNS uses Common Log Format by default.
+# Query access log file path
+# Uses Common Log Format (CLF)
+# Leave empty to disable access logging
 # accesslog = ""
 
-# List of remote blocklists address list. All lists will be downloaded to the blocklist folder.
-# blocklists = [
-#    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
-#    "http://sysctl.org/cameleon/hosts",
-#    "https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
-#    "https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt"
-# ]
+# ============================
+# Filtering and Blocking
+# ============================
+
+# Remote blocklist sources
+# These URLs are periodically downloaded and updated
 blocklists = [
+    # Popular blocklist examples:
+    # "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+    # "http://sysctl.org/cameleon/hosts",
+    # "https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt",
+    # "https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt"
 ]
 
-# [DEPRECATED] This will be ignored. The directory will be created under the working directory automatically.
+# [DEPRECATED] Blocklist directory - automatically created under working directory
 blocklistdir = ""
 
-# IPv4 address to forward blocked queries to.
+# Response IP for blocked A queries (IPv4)
 nullroute = "0.0.0.0"
 
-# IPv6 address to forward blocked queries to.
+# Response IP for blocked AAAA queries (IPv6)
 nullroutev6 = "::0"
 
-# Which clients are allowed to make queries.
+# ============================
+# Access Control
+# ============================
+
+# Client access control list (ACL)
+# CIDR notation for allowed client IP ranges
 accesslist = [
-    "0.0.0.0/0",
-    "::0/0"
+    "0.0.0.0/0",    # Allow all IPv4
+    "::0/0"         # Allow all IPv6
 ]
 
-# Enables serving zone data from a hosts file, left blank for disabled.
-# The form of the entries in the /etc/hosts file is based on IETF RFC 952, which was updated by IETF RFC 1123.
+# Local hosts file path
+# Serves entries from hosts file (RFC 952/1123 format)
+# Leave empty to disable
 hostsfile = ""
 
-# Specifies the network timeout duration for each DNS lookup.
+# ============================
+# Performance and Limits
+# ============================
+
+# Network timeout for upstream DNS queries
 timeout = "2s"
 
-# Defines the maximum duration to wait for each DNS query to respond.
+# Maximum time to wait for any DNS query to complete
 querytimeout = "10s"
 
-# Default error cache TTL in seconds.
+# Cache TTL for error responses (seconds)
 expire = 600
 
-# Cache size (total records in cache).
+# Maximum number of cached DNS records
 cachesize = 256000
 
-# Cache prefetch before expire. The default threshold is 10%%, 0 for disabled. 
-# The threshold percent should be between 10%% ~ 90%%.
+# Prefetch threshold percentage (10-90)
+# Refreshes popular cache entries before expiration
+# Set to 0 to disable prefetching
 prefetch = 10
 
-# Maximum iteration depth for a query.
+# Maximum recursion depth for queries
+# Prevents infinite loops in resolution
 maxdepth = 30
 
-# Query-based ratelimit per second, 0 for disabled.
+# ============================
+# Rate Limiting
+# ============================
+
+# Global query rate limit (queries per second)
+# 0 = disabled
 ratelimit = 0
 
-# Client IP address-based ratelimit per minute, 0 for disabled.
+# Per-client rate limit (queries per minute)
+# 0 = disabled
 clientratelimit = 0
 
-# Manual blocklist entries.
-# blocklist = [
-#   "example.com",
-#   "example.net"
-# ]
+# ============================
+# Custom Lists
+# ============================
+
+# Manual domain blocklist
+# Domains listed here will be blocked
 blocklist = [
+    # Examples:
+    # "ads.example.com",
+    # "tracker.example.net"
 ]
 
-# Whitelist entries.
-# whitelist = [
-#   "example.com",
-#   "example.net"
-# ]
+# Domain whitelist
+# Domains listed here bypass all blocking
 whitelist = [
+    # Examples:
+    # "important.example.com",
+    # "trusted.example.net"
 ]
 
-# DNS server identifier (RFC 5001), it's useful while operating multiple sdns. Left blank for disabled.
+# ============================
+# Advanced Features
+# ============================
+
+# DNS server identifier (RFC 5001)
+# Useful for identifying specific servers in multi-server deployments
+# Leave empty to disable
 nsid = ""
 
-# Enable to answer version.server, version.bind, hostname.bind, id.server chaos queries.
+# CHAOS query responses
+# Responds to: version.bind, version.server, hostname.bind, id.server
 chaos = true
 
-# Qname minimization level. If higher, it can be more complex and impact the response performance. 
-# If set to 0, qname minimization will be disabled.
+# QNAME minimization level (RFC 7816)
+# Higher values increase privacy but may impact performance
+# 0 = disabled, 5 = recommended
 qname_min_level = 5
 
-# Empty zones return an answer for RFC 1918 zones. Please see http://as112.net/
-# for details of the problems you are causing and the countermeasures that have had to be deployed.
-# If the list is empty, SDNS will use default zones described at RFC.
-# emptyzones = [
-#   "10.in-addr.arpa."
-# ]
+# Empty zones (AS112 - RFC 7534)
+# Prevents queries for private IP reverse zones from leaking
+# Default list used if empty
 emptyzones = [
+    # Example: "10.in-addr.arpa."
 ]
 
-# You can add your own plugins to sdns. The plugin order is very important. 
-# Plugins can be loaded before the cache middleware.
-# Config keys should be strings, and values can be anything.
-# There is an example plugin at https://github.com/semihalev/sdnsexampleplugin
+# ============================
+# Dnstap Binary Logging
+# ============================
+
+# Dnstap socket path
+# Unix domain socket for binary DNS logging
+# Leave empty to disable
+# dnstapsocket = "/var/run/sdns/dnstap.sock"
+
+# Dnstap server identity
+# Identifies this server in dnstap logs
+# dnstapidentity = "sdns"
+
+# Dnstap version string
+# Version identifier for dnstap logs
+# dnstapversion = "1.0"
+
+# Log DNS queries via dnstap
+# dnstaplogqueries = true
+
+# Log DNS responses via dnstap
+# dnstaplogresponses = true
+
+# Dnstap buffer flush interval (seconds)
+# dnstapflushinterval = 5
+
+# ============================
+# Plugins
+# ============================
+
+# External plugin configuration
+# Plugins extend SDNS functionality
+# Load order affects processing sequence
+# Example: https://github.com/semihalev/sdnsexampleplugin
+
 # [plugins]
 #     [plugins.example]
 #     path = "exampleplugin.so"

@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -17,40 +16,40 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/server"
+	"github.com/spf13/cobra"
 )
 
 const version = "1.4.0"
 
 var (
-	flagcfgpath  string
-	flagprintver bool
+	cfgPath string
+	cfg     *config.Config
 
-	cfg *config.Config
+	rootCmd = &cobra.Command{
+		Use:   "sdns",
+		Short: "A high-performance DNS resolver with DNSSEC support",
+		Long: `SDNS is a high-performance, recursive DNS resolver server with DNSSEC support,
+focused on preserving privacy. For more information, visit https://sdns.dev`,
+		RunE: runServer,
+	}
+
+	versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Print the version information",
+		Run:   printVersion,
+	}
 )
 
 func init() {
-	flag.StringVar(&flagcfgpath, "config", "sdns.conf", "Location of the config file. If it doesn't exist, a new one will be generated.")
-	flag.StringVar(&flagcfgpath, "c", "sdns.conf", "Location of the config file. If it doesn't exist, a new one will be generated.")
-
-	flag.BoolVar(&flagprintver, "version", false, "Show the version of the sdns.")
-	flag.BoolVar(&flagprintver, "v", false, "Show the version of the sdns.")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage:\n  sdns [OPTIONS]\n\n")
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		fmt.Fprintf(os.Stderr, "  -c, --config PATH\tLocation of the config file. If it doesn't exist, a new one will be generated.\n")
-		fmt.Fprintf(os.Stderr, "  -v, --version\t\tShow the version of the sdns and exit.\n")
-		fmt.Fprintf(os.Stderr, "  -h, --help\t\tShow this help and exit.\n\n")
-		fmt.Fprintf(os.Stderr, "Example:\n")
-		fmt.Fprintf(os.Stderr, "  sdns -c sdns.conf\n\n")
-	}
+	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "sdns.conf", "Location of the config file. If it doesn't exist, a new one will be generated.")
+	rootCmd.AddCommand(versionCmd)
 }
 
-func setup() {
+func setup() error {
 	var err error
 
-	if cfg, err = config.Load(flagcfgpath, version); err != nil {
-		log.Crit("Config loading failed", "error", err.Error())
+	if cfg, err = config.Load(cfgPath, version); err != nil {
+		return fmt.Errorf("config loading failed: %w", err)
 	}
 
 	if cfg.LogLevel == "" {
@@ -59,26 +58,59 @@ func setup() {
 
 	lvl, err := log.LvlFromString(cfg.LogLevel)
 	if err != nil {
-		log.Crit("Log verbosity level unknown")
+		return fmt.Errorf("log verbosity level unknown: %w", err)
 	}
 
 	log.Root().SetLevel(lvl)
 	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
 
 	middleware.Setup(cfg)
+	return nil
 }
 
-func run(ctx context.Context) *server.Server {
+func runServer(cmd *cobra.Command, args []string) error {
+	log.Info("Starting sdns...", "version", version)
+
+	if err := setup(); err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	srv := server.New(cfg)
 	srv.Run(ctx)
 
 	api := api.New(cfg)
 	api.Run(ctx)
 
-	return srv
+	<-ctx.Done()
+
+	log.Info("Stopping sdns...")
+
+	// Graceful shutdown with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		for !srv.Stopped() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		log.Info("Server stopped gracefully")
+	case <-shutdownCtx.Done():
+		log.Warn("Server shutdown timeout exceeded")
+	}
+
+	return nil
 }
 
-func printver() {
+func printVersion(cmd *cobra.Command, args []string) {
 	buildInfo, _ := debug.ReadBuildInfo()
 
 	settings := make(map[string]string)
@@ -86,41 +118,22 @@ func printver() {
 		settings[s.Key] = s.Value
 	}
 
-	fmt.Fprintf(os.Stderr, "sdns v%s rev %.7s\nbuilt by %s (%s %s)\n", version,
-		settings["vcs.revision"], buildInfo.GoVersion, settings["GOOS"], settings["GOARCH"])
+	revision := settings["vcs.revision"]
+	if len(revision) > 7 {
+		revision = revision[:7]
+	}
 
-	os.Exit(0)
+	fmt.Printf("sdns v%s\n", version)
+	if revision != "" {
+		fmt.Printf("git revision: %s\n", revision)
+	}
+	fmt.Printf("go version: %s\n", buildInfo.GoVersion)
+	fmt.Printf("platform: %s/%s\n", settings["GOOS"], settings["GOARCH"])
 }
 
 func main() {
-	flag.Parse()
-
-	if flagprintver {
-		printver()
-	}
-
-	log.Info("Starting sdns...", "version", version)
-
-	setup()
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	srv := run(ctx)
-
-	<-ctx.Done()
-
-	log.Info("Stopping sdns...")
-
-	stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	for !srv.Stopped() {
-		select {
-		case <-time.After(100 * time.Millisecond):
-			continue
-		case <-ctx.Done():
-			return
-		}
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }

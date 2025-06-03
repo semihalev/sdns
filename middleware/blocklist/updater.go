@@ -16,7 +16,7 @@ import (
 	"github.com/semihalev/log"
 )
 
-var timesSeen = make(map[string]int)
+var timesSeen sync.Map
 
 func (b *BlockList) fetchBlocklists() {
 	if b.cfg.BlockListDir == "" {
@@ -92,8 +92,15 @@ func (b *BlockList) fetchBlocklist() {
 
 		u, _ := url.Parse(uri)
 		host := u.Host
-		timesSeen[host] = timesSeen[host] + 1
-		fileName := fmt.Sprintf("%s.%d.tmp", host, timesSeen[host])
+
+		// Atomically increment the counter
+		count := 1
+		if val, ok := timesSeen.Load(host); ok {
+			count = val.(int) + 1
+		}
+		timesSeen.Store(host, count)
+
+		fileName := fmt.Sprintf("%s.%d.tmp", host, count)
 
 		go func(uri string, name string) {
 			log.Info("Fetching blacklist", "uri", uri)

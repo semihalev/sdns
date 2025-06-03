@@ -723,14 +723,20 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 	results := make(chan result)
 
 	// Start a DNS query to a server
+	originalId := req.Id // Capture ID before goroutines start
 	queryServer := func(ctx context.Context, req *dns.Msg, server *authcache.AuthServer) {
+		// Check context first
+		if ctx.Err() != nil {
+			return
+		}
+
 		// Anti-spoofing: use random ID
 		reqCopy := req.CopyTo(AcquireMsg())
 		reqCopy.Id = dns.Id()
 
 		resp, err := r.exchange(ctx, "udp", reqCopy, server, 0)
 		if resp != nil {
-			resp.Id = req.Id // Restore original ID
+			resp.Id = originalId // Restore original ID using captured value
 		}
 
 		ReleaseMsg(reqCopy)
