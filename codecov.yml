@@ -1,0 +1,111 @@
+# Codecov configuration file
+# https://docs.codecov.io/docs/codecov-yaml
+
+# Validation
+# Run: curl -X POST --data-binary @codecov.yml https://codecov.io/validate
+
+codecov:
+  # Require the CI to upload coverage reports
+  require_ci_to_pass: true
+  
+  # Wait for all CI builds before posting status
+  notify:
+    wait_for_ci: true
+
+coverage:
+  # Overall project coverage standards
+  status:
+    # Overall project coverage
+    project:
+      default:
+        # Coverage can drop by 1% and still be considered passing
+        threshold: 1%
+        # Minimum coverage required
+        target: 80%
+        # Compare against base branch
+        base: auto
+        # Only show project coverage status after all builds are in
+        if_ci_failed: error
+        
+    # Coverage for changed files (patch coverage)
+    patch:
+      default:
+        # Patch must have at least 80% coverage
+        target: 80%
+        # Allow 1% drop in patch coverage
+        threshold: 1%
+        # Compare against base
+        base: auto
+        
+  # Round coverage to 2 decimal places
+  precision: 2
+  
+  # Coverage range for color coding
+  # red: 0-60%, yellow: 60-80%, green: 80-100%
+  range: "60...100"
+
+# Parser configuration
+parsers:
+  go:
+    partials_as_hits: true
+
+# Files to ignore in coverage reports
+ignore:
+  # Main entry points and generated files
+  - "sdns.go"              # Main application entry point
+  - "doc.go"               # Package documentation
+  - "zregister.go"         # Generated middleware registration
+  - "gen.go"               # Code generator
+  
+  # Test files
+  - "**/*_test.go"         # All test files
+  - "**/mock/**"           # Mock implementations
+  - "**/testdata/**"       # Test data files
+  
+  # Vendor dependencies (if any)
+  - "vendor/**"            # Vendored dependencies
+  
+  # Protocol buffer generated files (if any)
+  - "**/*.pb.go"           # Protocol buffer generated code
+  
+  # Example and demo code
+  - "examples/**"          # Example code
+  - "_examples/**"         # Alternative example directory
+
+# Comment configuration
+comment:
+  # Always post comment on PR
+  behavior: default
+  
+  # Require changes to be made before posting comment
+  require_changes: false
+  
+  # Require base to be found before posting comment
+  require_base: true
+  
+  # Require head to be found before posting comment
+  require_head: true
+  
+  # Layout of the comment
+  layout: "reach,diff,flags,files"
+  
+  # Show coverage trends
+  show_carryforward_flags: true
+
+# Flag configuration (for different test types if needed)
+flags:
+  # Unit tests
+  unit:
+    paths:
+      - "!**/*_integration_test.go"
+    carryforward: true
+    
+  # Integration tests (if separated)
+  integration:
+    paths:
+      - "**/*_integration_test.go"
+    carryforward: true
+
+# GitHub integration
+github_checks:
+  annotations: true
