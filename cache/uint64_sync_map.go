@@ -104,7 +104,10 @@ func (m *SyncUInt64Map[V]) Set(key uint64, value V) {
 					return
 				}
 				// If CAS failed, another thread modified it, retry
-				atomic.CompareAndSwapUint32(&current.deleted, 0, 0) // Memory barrier
+				// Use a no-op CAS as a memory barrier to ensure we see all updates
+				// made by other threads before continuing. This prevents stale reads
+				// of the bucket's head pointer and ensures sequential consistency.
+				atomic.CompareAndSwapUint32(&current.deleted, 0, 0)
 				current = (*fnode[V])(atomic.LoadPointer(&bucket.head))
 				predecessor = nil
 				continue

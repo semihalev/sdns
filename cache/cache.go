@@ -88,9 +88,14 @@ func (c *Cache) evict() {
 		}
 
 		// Calculate how many entries to evict
+		// We evict at least the overhead to get back under maxSize, but to avoid
+		// frequent evictions, we evict a minimum of 5% of maxSize. This batching
+		// reduces the frequency of eviction operations, improving performance by
+		// amortizing the cost over more entries. The 5% threshold was chosen as
+		// a balance between memory efficiency and eviction overhead.
 		overhead := int(currentSize - int64(c.maxSize))
 		evictBatch := overhead
-		if evictBatch < c.maxSize/20 { // At least 5%
+		if evictBatch < c.maxSize/20 { // Minimum 5% of maxSize
 			evictBatch = c.maxSize / 20
 		}
 		if evictBatch < 1 {
