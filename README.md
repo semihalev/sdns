@@ -257,27 +257,36 @@ For implementation details, see the [example plugin](https://github.com/semihale
 ### Benchmark Environment
 
 *   **Server Specifications:**
-    *   Processor: Intel Xeon E5-2609 v4
-    *   Memory: 32GB
+    *   Processor: Apple M1 Pro
+    *   Memory: 16GB
 
 ### Benchmarking Tool
 
 *   **Tool:** [DNS-OARC dnsperf](https://www.dns-oarc.net/tools/dnsperf)
 *   **Configuration:**
     *   Query volume: 50,000 sample queries
+    *   Test date: January 2025
 
 ### Benchmark Comparisons
 
-Tests were performed on the following DNS resolvers: SDNS 1.3.3, PowerDNS Recursor 4.8.4, BIND 9.19.12, and Unbound 1.17.1.
+Tests were performed on the following DNS resolvers: SDNS 1.5.0, PowerDNS Recursor 5.0.2, BIND 9.19.12, and Unbound 1.17.1.
 
 ### Benchmark Results
 
-| Resolver | Response Rate | Lost Queries | NOERROR | SERVFAIL | NXDOMAIN | Runtime    | QPS    |
-| -------- | ------------ | ------------ | ------- | -------- | -------- | ---------- | ------ |
-| SDNS     | 100%         | 1            | 35,164  | 866      | 13,969   | 87.47s     | 571/s  |
-| PowerDNS | 99.99%       | 6            | 35,140  | 893      | 13,961   | 88.83s     | 563/s  |
-| BIND     | 99.74%       | 132          | 35,024  | 885      | 13,959   | 127.64s    | 390/s  |
-| Unbound  | 99.49%       | 253          | 35,152  | 624      | 13,971   | 174.64s    | 284/s  |
+| Resolver | Version | QPS    | Avg Latency | Lost Queries | Runtime  | Response Codes                                      |
+| -------- | ------- | ------ | ----------- | ------------ | -------- | --------------------------------------------------- |
+| SDNS     | 1.5.0   | 694/s  | 140ms       | 1 (0.002%)   | 72.0s    | NOERROR: 67.84%, SERVFAIL: 1.71%, NXDOMAIN: 30.45% |
+| PowerDNS | 5.0.2   | 578/s  | 156ms       | 20 (0.04%)   | 86.5s    | NOERROR: 67.64%, SERVFAIL: 1.92%, NXDOMAIN: 30.43% |
+| BIND     | 9.19.12 | 405/s  | 200ms       | 156 (0.31%)  | 123.0s   | NOERROR: 67.84%, SERVFAIL: 1.62%, NXDOMAIN: 30.54% |
+| Unbound  | 1.17.1  | 338/s  | 237ms       | 263 (0.53%)  | 147.0s   | NOERROR: 68.20%, SERVFAIL: 1.20%, NXDOMAIN: 30.60% |
+
+### Performance Summary
+
+SDNS demonstrates superior performance across all key metrics:
+- **Highest throughput**: 694 queries per second (20% faster than PowerDNS, 71% faster than BIND, 105% faster than Unbound)
+- **Lowest latency**: 140ms average (10-41% lower than competitors)
+- **Best reliability**: Only 1 lost query out of 50,000 (99.998% success rate)
+- **Fastest completion**: 72 seconds total runtime
 
 ## Contributing
 
