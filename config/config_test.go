@@ -142,6 +142,11 @@ func TestLoad(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Skip permission test on Windows before calling setupFunc
+			if strings.Contains(tt.name, "permission error") && (runtime.GOOS == "windows" || os.Getuid() == 0) {
+				t.Skip("Permission test not applicable")
+			}
+
 			cfgFile, cleanup := tt.setupFunc()
 			defer cleanup()
 
@@ -297,7 +302,7 @@ func TestGenerateConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Skip permission test on Windows before calling setupFunc
 			if strings.Contains(tt.name, "permission error") && (runtime.GOOS == "windows" || os.Getuid() == 0) {
-				t.Skip("Permission tests not applicable")
+				t.Skip("Permission test not applicable")
 			}
 
 			cfgFile, cleanup := tt.setupFunc()
