@@ -72,7 +72,9 @@ func TestLoad(t *testing.T) {
 				cfgFile := filepath.Join(tmpDir, "test.conf")
 				workDir := filepath.Join(tmpDir, "testdb")
 
-				config := strings.ReplaceAll(defaultConfig, `directory = "db"`, fmt.Sprintf(`directory = "%s"`, workDir))
+				// Escape backslashes for TOML on Windows
+				escapedWorkDir := strings.ReplaceAll(workDir, `\`, `\\`)
+				config := strings.ReplaceAll(defaultConfig, `directory = "db"`, fmt.Sprintf(`directory = "%s"`, escapedWorkDir))
 				config = fmt.Sprintf(config, configver)
 
 				if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil {
@@ -101,7 +103,9 @@ func TestLoad(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				config := strings.ReplaceAll(defaultConfig, `directory = "db"`, fmt.Sprintf(`directory = "%s"`, workDir))
+				// Escape backslashes for TOML on Windows
+				escapedWorkDir := strings.ReplaceAll(workDir, `\`, `\\`)
+				config := strings.ReplaceAll(defaultConfig, `directory = "db"`, fmt.Sprintf(`directory = "%s"`, escapedWorkDir))
 				config = fmt.Sprintf(config, configver)
 
 				if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil {
