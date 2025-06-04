@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +91,10 @@ func TestLoad(t *testing.T) {
 		{
 			name: "working directory permission error",
 			setupFunc: func() (string, func()) {
-				if os.Getuid() == 0 {
+				if runtime.GOOS == "windows" {
+					t.Skip("Permission test not applicable on Windows")
+				}
+				if runtime.GOOS != "windows" && os.Getuid() == 0 {
 					t.Skip("Cannot test permission errors as root")
 				}
 
@@ -269,7 +273,10 @@ func TestGenerateConfig(t *testing.T) {
 		{
 			name: "permission error",
 			setupFunc: func() (string, func()) {
-				if os.Getuid() == 0 {
+				if runtime.GOOS == "windows" {
+					t.Skip("Permission test not applicable on Windows")
+				}
+				if runtime.GOOS != "windows" && os.Getuid() == 0 {
 					t.Skip("Cannot test permission errors as root")
 				}
 
