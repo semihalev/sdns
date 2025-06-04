@@ -78,6 +78,7 @@ func (m *SyncUInt64Map[V]) Set(key uint64, value V) {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
 
+retry:
 	// First check if the key already exists
 	var predecessor *fnode[V]
 	var current *fnode[V]
@@ -100,11 +101,8 @@ func (m *SyncUInt64Map[V]) Set(key uint64, value V) {
 					m.count.Add(1)
 					return
 				}
-				// CAS memory barrier: ensures visibility of concurrent updates
-				atomic.CompareAndSwapUint32(&current.deleted, 0, 0)
-				current = (*fnode[V])(atomic.LoadPointer(&bucket.head))
-				predecessor = nil
-				continue
+				// Failed to resurrect, retry from the beginning
+				goto retry
 			}
 		}
 
@@ -129,8 +127,15 @@ func (m *SyncUInt64Map[V]) Set(key uint64, value V) {
 
 			// Try to set the new node as the new head
 			if atomic.CompareAndSwapPointer(&bucket.head, unsafe.Pointer(currentHead), unsafe.Pointer(newNode)) {
-				break
+				// Successfully inserted, increment counter
+				m.count.Add(1)
+				return
 			}
+
+			// CAS failed, retry from beginning to check if key was inserted
+			// by another thread. We must restart from the beginning to ensure
+			// we don't miss any concurrent insertions.
+			goto retry
 		}
 	} else {
 		// Insert after predecessor
@@ -143,37 +148,43 @@ func (m *SyncUInt64Map[V]) Set(key uint64, value V) {
 
 			// Try to set predecessor's next to the new node
 			if atomic.CompareAndSwapPointer(&predecessor.next, unsafe.Pointer(next), unsafe.Pointer(newNode)) {
-				break
+				// Successfully inserted, increment counter
+				m.count.Add(1)
+				return
 			}
 
-			// If CAS failed, retry the entire operation
+			// CAS failed, check if the key was inserted by another thread
+			// or if the predecessor is still valid
 			current = (*fnode[V])(atomic.LoadPointer(&bucket.head))
-			predecessor = nil
-
-			for current != nil && current.key != key {
-				predecessor = current
+			var found bool
+			for current != nil {
+				if current == predecessor {
+					found = true
+					// Predecessor still exists, check its next nodes
+					current = (*fnode[V])(atomic.LoadPointer(&current.next))
+					for current != nil {
+						if current.key == key {
+							if atomic.LoadUint32(&current.deleted) == 0 {
+								current.value.Store(&value)
+								return
+							}
+							// Key exists but is deleted, retry from beginning
+							goto retry
+						}
+						current = (*fnode[V])(atomic.LoadPointer(&current.next))
+					}
+					// Key not found after predecessor, continue trying to insert
+					break
+				}
 				current = (*fnode[V])(atomic.LoadPointer(&current.next))
 			}
 
-			if current != nil && current.key == key {
-				// Key exists, update instead of insert
-				if atomic.LoadUint32(&current.deleted) == 0 {
-					current.value.Store(&value)
-					return
-				} else if atomic.CompareAndSwapUint32(&current.deleted, 1, 0) {
-					current.value.Store(&value)
-					m.count.Add(1)
-					return
-				}
-				// If we reached here, break out of this loop
-				// The outer loop will retry the insertion
-				break
+			if !found {
+				// Predecessor no longer in the list, retry from beginning
+				goto retry
 			}
 		}
 	}
-
-	// Increment counter
-	m.count.Add(1)
 }
 
 // Del removes a key from the map

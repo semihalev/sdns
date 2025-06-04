@@ -174,6 +174,10 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **chaos**            | Enable responses to version.bind and hostname.bind chaos queries. Default: true                                     |
 | **qname_min_level**  | QNAME minimization level (RFC 7816). 0 disables. Higher values increase privacy but may impact performance         |
 | **emptyzones**       | Enable local authoritative responses for RFC 1918 zones. See http://as112.net/ for details                         |
+| **tcpkeepalive**     | Enable TCP connection pooling for root and TLD servers. Improves performance by reusing connections. Default: false |
+| **roottcptimeout**   | TCP idle timeout for root server connections. Default: "5s"                                                          |
+| **tldtcptimeout**    | TCP idle timeout for TLD server connections (com, net, org, etc.). Default: "10s"                                   |
+| **tcpmaxconnections**| Maximum number of pooled TCP connections. 0 uses default. Default: 100                                               |
 | **dnstapsocket**     | Unix domain socket path for dnstap binary DNS logging. Leave empty to disable                                       |
 | **dnstapidentity**   | Server identity string for dnstap messages. Defaults to hostname                                                    |
 | **dnstapversion**    | Server version string for dnstap messages. Default: "sdns"                                                          |

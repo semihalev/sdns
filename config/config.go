@@ -79,6 +79,12 @@ type Config struct {
 	CookieSecret string
 	IPv6Access   bool
 
+	// TCP connection pooling configuration
+	TCPKeepalive      bool
+	RootTCPTimeout    Duration // Timeout for root server TCP connections
+	TLDTCPTimeout     Duration // Timeout for TLD server TCP connections
+	TCPMaxConnections int      // Maximum number of TCP connections to pool
+
 	sVersion string
 }
 
@@ -414,6 +420,26 @@ emptyzones = [
 ]
 
 # ============================
+# TCP Connection Pooling
+# ============================
+
+# Enable TCP connection pooling for root and TLD servers
+# Keeps TCP connections alive to improve performance
+tcpkeepalive = false
+
+# TCP idle timeout for root server connections
+# Connections idle longer than this are closed
+roottcptimeout = "5s"
+
+# TCP idle timeout for TLD server connections (com, net, org, etc.)
+# Connections idle longer than this are closed
+tldtcptimeout = "10s"
+
+# Maximum number of pooled TCP connections
+# 0 = use default (100)
+tcpmaxconnections = 100
+
+# ============================
 # Dnstap Binary Logging
 # ============================
 
@@ -511,6 +537,17 @@ func Load(cfgfile, version string) (*Config, error) {
 		if err == nil {
 			config.IPv6Access = true
 		}
+	}
+
+	// Set TCP keepalive defaults
+	if config.RootTCPTimeout.Duration == 0 {
+		config.RootTCPTimeout.Duration = 5 * time.Second
+	}
+	if config.TLDTCPTimeout.Duration == 0 {
+		config.TLDTCPTimeout.Duration = 10 * time.Second
+	}
+	if config.TCPMaxConnections == 0 {
+		config.TCPMaxConnections = 100
 	}
 
 	return config, nil

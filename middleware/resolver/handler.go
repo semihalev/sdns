@@ -220,4 +220,11 @@ func (h *DNSHandler) purge(qname string) {
 	h.resolver.ncache.Remove(cache.Hash(nsQuestion, true))
 }
 
+// Stop gracefully shuts down the resolver
+func (h *DNSHandler) Stop() {
+	if h.resolver.tcpPool != nil {
+		h.resolver.tcpPool.Close()
+	}
+}
+
 const name = "resolver"

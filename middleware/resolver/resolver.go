@@ -46,6 +46,9 @@ type Resolver struct {
 	netTimeout    time.Duration
 
 	group singleflight.Group
+
+	// TCP connection pool for persistent connections
+	tcpPool *TCPConnPool
 }
 
 // resolveContext holds the state for a DNS resolution operation
@@ -112,6 +115,15 @@ func NewResolver(cfg *config.Config) *Resolver {
 			log.Crit("Root keys invalid", "error", err.Error())
 		}
 		r.rootkeys = append(r.rootkeys, rr)
+	}
+
+	// Initialize TCP connection pool if enabled
+	if cfg.TCPKeepalive {
+		r.tcpPool = NewTCPConnPool(
+			cfg.RootTCPTimeout.Duration,
+			cfg.TLDTCPTimeout.Duration,
+			cfg.TCPMaxConnections,
+		)
 	}
 
 	go r.run()
@@ -901,16 +913,47 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		atomic.AddInt64(&server.Count, 1)
 	}()
 
+	// Check if we should use TCP connection pooling
+	var pooledConn *dns.Conn
+	var isRoot, isTLD bool
+
+	if proto == "tcp" && r.tcpPool != nil && r.cfg.TCPKeepalive {
+		// Check if this is a root or TLD server
+		isRoot = isRootServer(server.Addr)
+		if !isRoot && len(req.Question) > 0 {
+			isTLD = isTLDServer(req.Question[0].Name)
+		}
+
+		// Try to get a pooled connection
+		if isRoot || isTLD {
+			pooledConn = r.tcpPool.Get(server.Addr, isRoot, isTLD)
+			if pooledConn != nil {
+				log.Debug("Using pooled TCP connection", "server", server.Addr, "isRoot", isRoot, "isTLD", isTLD)
+			}
+		}
+	}
+
 	d := r.newDialer(ctx, proto, server.Version)
 
 	co := AcquireConn()
-	defer ReleaseConn(co) // this will be close conn also
 
-	co.Conn, err = d.DialContext(ctx, proto, server.Addr)
-	if err != nil {
-		log.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
-			"net", proto, "error", err.Error(), "retried", retried)
-		return nil, err
+	if pooledConn != nil {
+		// Use the pooled connection
+		co.Conn = pooledConn.Conn
+	} else {
+		// Create new connection
+		co.Conn, err = d.DialContext(ctx, proto, server.Addr)
+		if err != nil {
+			log.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+				"net", proto, "error", err.Error(), "retried", retried)
+			ReleaseConn(co)
+			return nil, err
+		}
+	}
+
+	// Add EDNS-Keepalive option if using TCP pooling
+	if proto == "tcp" && r.tcpPool != nil && r.cfg.TCPKeepalive && (isRoot || isTLD) {
+		SetEDNSKeepalive(req, 0) // Request keepalive with no specific timeout
 	}
 
 	_ = co.SetDeadline(time.Now().Add(r.netTimeout))
@@ -919,6 +962,9 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 	if err != nil {
 		log.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
+
+		// Don't return connection to pool on error
+		ReleaseConn(co)
 
 		if retried < 2 {
 			if retried == 1 && proto == "udp" {
@@ -931,6 +977,17 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 
 		return nil, err
 	}
+
+	// Handle connection pooling
+	if proto == "tcp" && r.tcpPool != nil && r.cfg.TCPKeepalive && (isRoot || isTLD) {
+		// Return connection to pool
+		dnsConn := &dns.Conn{Conn: co.Conn, UDPSize: co.UDPSize}
+		r.tcpPool.Put(dnsConn, server.Addr, isRoot, isTLD, resp)
+		// Don't close the connection since it's pooled
+		co.Conn = nil
+	}
+
+	ReleaseConn(co)
 
 	if resp != nil && resp.Truncated && proto == "udp" {
 		return r.exchange(ctx, "tcp", req, server, retried)
