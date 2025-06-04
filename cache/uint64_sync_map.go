@@ -285,12 +285,20 @@ func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
 		bucketsToSample = numBuckets
 	}
 
-	// Random permutation prevents bias from sequential bucket access
-	perm := rand.Perm(numBuckets)
-
-	// Sample buckets until we have enough keys or run out of buckets
-	for i := 0; i < bucketsToSample && len(result) < maxSample; i++ {
-		bucketIdx := perm[i]
+	// Use map to track sampled buckets and avoid duplicates
+	sampledBuckets := make(map[int]struct{}, bucketsToSample)
+	
+	// Sample random buckets until we have enough keys or sampled enough buckets
+	for len(sampledBuckets) < bucketsToSample && len(result) < maxSample {
+		// Pick a random bucket
+		bucketIdx := rand.IntN(numBuckets)
+		
+		// Skip if already sampled
+		if _, exists := sampledBuckets[bucketIdx]; exists {
+			continue
+		}
+		sampledBuckets[bucketIdx] = struct{}{}
+		
 		bucket := &m.buckets[bucketIdx]
 
 		// Collect keys from this bucket
