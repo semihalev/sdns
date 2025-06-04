@@ -469,7 +469,7 @@ func ReleaseMsg(m *dns.Msg) {
 	}
 
 	// Only put back if slices haven't grown too large
-	if cap(m.Answer) <= 100 && cap(m.Ns) <= 50 && cap(m.Extra) <= 20 {
+	if cap(m.Question) <= 10 && cap(m.Answer) <= 100 && cap(m.Ns) <= 50 && cap(m.Extra) <= 20 {
 		messagePool.Put(m)
 	}
 	// Otherwise let GC handle it to avoid memory bloat
