@@ -217,4 +217,3 @@ func (r *Resolver) parallelLookupV6Nss(ctx context.Context, q dns.Question, auth
 		r.addIPv6Cache(nsipv6)
 	}
 }
-
