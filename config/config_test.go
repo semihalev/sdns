@@ -91,13 +91,6 @@ func TestLoad(t *testing.T) {
 		{
 			name: "working directory permission error",
 			setupFunc: func() (string, func()) {
-				if runtime.GOOS == "windows" {
-					t.Skip("Permission test not applicable on Windows")
-				}
-				if runtime.GOOS != "windows" && os.Getuid() == 0 {
-					t.Skip("Cannot test permission errors as root")
-				}
-
 				tmpDir := t.TempDir()
 				cfgFile := filepath.Join(tmpDir, "test.conf")
 				workDir := filepath.Join(tmpDir, "noperm", "testdb")
@@ -273,13 +266,6 @@ func TestGenerateConfig(t *testing.T) {
 		{
 			name: "permission error",
 			setupFunc: func() (string, func()) {
-				if runtime.GOOS == "windows" {
-					t.Skip("Permission test not applicable on Windows")
-				}
-				if runtime.GOOS != "windows" && os.Getuid() == 0 {
-					t.Skip("Cannot test permission errors as root")
-				}
-
 				tmpDir := t.TempDir()
 				// Remove write permission
 				os.Chmod(tmpDir, 0555)
@@ -309,6 +295,11 @@ func TestGenerateConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Skip permission test on Windows before calling setupFunc
+			if strings.Contains(tt.name, "permission error") && (runtime.GOOS == "windows" || os.Getuid() == 0) {
+				t.Skip("Permission tests not applicable")
+			}
+
 			cfgFile, cleanup := tt.setupFunc()
 			defer cleanup()
 
