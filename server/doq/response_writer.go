@@ -8,6 +8,7 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+// ResponseWriter implements dns.ResponseWriter for DNS-over-QUIC
 type ResponseWriter struct {
 	dns.ResponseWriter
 

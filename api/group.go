@@ -1,5 +1,6 @@
 package api
 
+// Group represents a group of routes with a common prefix
 type Group struct {
 	parent *Router
 	path   string

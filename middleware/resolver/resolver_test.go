@@ -183,6 +183,7 @@ func Test_resolverTimeout(t *testing.T) {
 }
 
 func Test_resolverRootServersDetect(t *testing.T) {
+	t.Skip("Skipping test for root server detection, no detect anymore.")
 	t.Parallel()
 
 	ctx := context.Background()

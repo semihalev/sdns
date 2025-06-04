@@ -1,0 +1,126 @@
+package cache
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/log"
+	"github.com/semihalev/sdns/dnsutil"
+)
+
+// PrefetchRequest represents a DNS query to be prefetched
+type PrefetchRequest struct {
+	Request *dns.Msg
+	Key     uint64
+	Cache   *Cache // Reference to the cache to store prefetched results
+}
+
+// PrefetchQueue manages prefetch requests with worker pool
+type PrefetchQueue struct {
+	items   chan PrefetchRequest
+	workers int
+	wg      sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
+	metrics *CacheMetrics
+}
+
+// NewPrefetchQueue creates a new prefetch queue
+func NewPrefetchQueue(workers, queueSize int, metrics *CacheMetrics) *PrefetchQueue {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	pq := &PrefetchQueue{
+		items:   make(chan PrefetchRequest, queueSize),
+		workers: workers,
+		ctx:     ctx,
+		cancel:  cancel,
+		metrics: metrics,
+	}
+
+	// Start workers
+	for i := 0; i < workers; i++ {
+		pq.wg.Add(1)
+		go pq.worker()
+	}
+
+	return pq
+}
+
+// Add queues a prefetch request
+func (pq *PrefetchQueue) Add(req PrefetchRequest) bool {
+	select {
+	case pq.items <- req:
+		return true
+	default:
+		// Queue is full, drop the request
+		log.Debug("Prefetch queue full, dropping request", "query", formatQuestion(req.Request.Question[0]))
+		return false
+	}
+}
+
+// Stop gracefully shuts down the prefetch queue
+func (pq *PrefetchQueue) Stop() {
+	pq.cancel()
+	close(pq.items)
+	pq.wg.Wait()
+}
+
+// worker processes prefetch requests
+func (pq *PrefetchQueue) worker() {
+	defer pq.wg.Done()
+
+	for {
+		select {
+		case <-pq.ctx.Done():
+			return
+		case req, ok := <-pq.items:
+			if !ok {
+				return
+			}
+			pq.processPrefetch(req)
+		}
+	}
+}
+
+// processPrefetch executes a prefetch request
+func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
+	ctx, cancel := context.WithTimeout(pq.ctx, 5*time.Second)
+	defer cancel()
+
+	log.Debug("Processing prefetch", "query", formatQuestion(req.Request.Question[0]))
+
+	// Make a copy for internal query
+	prefetchReq := req.Request.Copy()
+
+	// Execute the prefetch query
+	resp, err := dnsutil.ExchangeInternal(ctx, prefetchReq)
+	if err != nil {
+		log.Debug("Prefetch failed", "query", formatQuestion(req.Request.Question[0]), "error", err.Error())
+		return
+	}
+
+	// Store the response in cache if we have a cache reference
+	if req.Cache != nil && resp != nil && len(resp.Answer) > 0 {
+		// Log TTL information for debugging
+		minTTL := uint32(0)
+		for _, rr := range resp.Answer {
+			if minTTL == 0 || rr.Header().Ttl < minTTL {
+				minTTL = rr.Header().Ttl
+			}
+		}
+
+		// Use the key that was passed in the request
+		req.Cache.Set(req.Key, resp)
+		log.Debug("Prefetch stored in cache", "query", formatQuestion(req.Request.Question[0]), "answers", len(resp.Answer), "minTTL", minTTL)
+	}
+
+	pq.metrics.Prefetch()
+	log.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]))
+}
+
+// formatQuestion formats a DNS question for logging
+func formatQuestion(q dns.Question) string {
+	return q.Name + " " + dns.TypeToString[q.Qtype] + " " + dns.ClassToString[q.Qclass]
+}

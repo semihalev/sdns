@@ -1,56 +1,20 @@
-// Copyright 2016-2020 The CoreDNS authors and contributors
-// Adapted for SDNS usage by Semih Alev.
-
 package cache
 
 import (
 	"context"
-	"math"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/waitgroup"
-
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/response"
+	"github.com/semihalev/sdns/waitgroup"
 )
-
-// Cache type
-type Cache struct {
-	ncache  *cache.Cache
-	ncap    int
-	nttl    time.Duration
-	minnttl time.Duration
-
-	pcache  *cache.Cache
-	pcap    int
-	pttl    time.Duration
-	minpttl time.Duration
-
-	prefetch uint32
-
-	// ratelimit
-	rate int
-
-	// resolver wait group
-	wg *waitgroup.WaitGroup
-
-	// Testing.
-	now func() time.Time
-}
-
-// ResponseWriter implement of ctx.ResponseWriter
-type ResponseWriter struct {
-	middleware.ResponseWriter
-
-	*Cache
-}
 
 var debugns bool
 
@@ -58,172 +22,399 @@ func init() {
 	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
 }
 
-// New return cache
+const (
+	name   = "cache"
+	maxTTL = dnsutil.MaximumDefaulTTL
+	minTTL = dnsutil.MinimalDefaultTTL
+)
+
+// Cache is the cache implementation
+type Cache struct {
+	positive *PositiveCache
+	negative *NegativeCache
+
+	prefetchQueue *PrefetchQueue
+
+	config  CacheConfig
+	metrics *CacheMetrics
+
+	// Request deduplication
+	wg *waitgroup.WaitGroup
+
+	// Response writer pool
+	writerPool sync.Pool
+
+	// Compatibility fields for tests that might access these
+	pcache interface{ Len() int }
+	ncache interface{ Len() int }
+}
+
+// New creates a new cache
 func New(cfg *config.Config) *Cache {
-	if cfg.CacheSize < 1024 {
-		cfg.CacheSize = 1024
+	// Build cache configuration
+	cacheConfig := CacheConfig{
+		Size:        cfg.CacheSize,
+		Prefetch:    int(cfg.Prefetch),
+		PositiveTTL: maxTTL,
+		NegativeTTL: time.Duration(cfg.Expire) * time.Second,
+		MinTTL:      minTTL,
+		MaxTTL:      maxTTL,
+		RateLimit:   cfg.RateLimit,
 	}
 
-	if cfg.Prefetch < 10 && cfg.Prefetch > 1 {
-		cfg.Prefetch = 10
-	} else if cfg.Prefetch > 90 {
-		cfg.Prefetch = 90
+	// Validate configuration
+	if err := cacheConfig.Validate(); err != nil {
+		// Log error but continue with defaults
+		log.Warn("Cache configuration validation failed, using defaults", "error", err.Error())
 	}
+
+	// Adjust prefetch percentage
+	if cacheConfig.Prefetch > 0 && cacheConfig.Prefetch < 10 {
+		cacheConfig.Prefetch = 10
+	}
+
+	metrics := &CacheMetrics{}
 
 	c := &Cache{
-		pcap:    cfg.CacheSize / 2,
-		pcache:  cache.New(cfg.CacheSize / 2),
-		pttl:    maxTTL,
-		minpttl: minTTL,
+		positive: NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics),
+		negative: NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics),
 
-		ncap:    cfg.CacheSize / 2,
-		ncache:  cache.New(cfg.CacheSize / 2),
-		nttl:    time.Duration(cfg.Expire) * time.Second,
-		minnttl: time.Duration(cfg.Expire) * time.Second,
-
-		prefetch: cfg.Prefetch,
-
-		rate: cfg.RateLimit,
+		config:  cacheConfig,
+		metrics: metrics,
 
 		wg: waitgroup.New(15 * time.Second),
 
-		now: time.Now,
+		writerPool: sync.Pool{
+			New: func() interface{} {
+				return &ResponseWriter{}
+			},
+		},
 	}
+
+	// Initialize prefetch queue if enabled
+	if cacheConfig.Prefetch > 0 {
+		workers := 4
+		queueSize := 1000
+		c.prefetchQueue = NewPrefetchQueue(workers, queueSize, metrics)
+	}
+
+	// Set compatibility fields
+	c.pcache = c.positive
+	c.ncache = c.negative
 
 	return c
 }
 
-// Name return middleware name
+// Name returns middleware name
 func (c *Cache) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// ServeDNS implements the middleware.Handler interface
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
+	if len(req.Question) == 0 {
+		ch.Cancel()
+		return
+	}
+
 	q := req.Question[0]
 
-	if v := dns.ClassToString[q.Qclass]; v == "" {
+	// Validate query class and type
+	if !c.isValidQuery(q) {
 		ch.Cancel()
 		return
 	}
 
-	if v := dns.TypeToString[q.Qtype]; v == "" {
-		ch.Cancel()
+	// Handle special queries
+	if c.handleSpecialQuery(ctx, ch, q) {
 		return
 	}
 
-	// check purge query
-	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
-			c.purge(qname, qtype)
-			ch.Next(ctx)
-			return
-		}
-	}
-
-	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
-		ch.Next(ctx)
-		return
-	}
-
+	// Check recursion desired
 	if q.Name != "." && !req.RecursionDesired {
 		ch.CancelWithRcode(dns.RcodeServerFailure, false)
-
 		return
 	}
 
-	key := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNULL, Qclass: dns.ClassINET})
+	// Generate deduplication key (matches V1 behavior: uses TypeNULL)
+	dedupKey := CacheKey{Question: dns.Question{Name: q.Name, Qtype: dns.TypeNULL, Qclass: dns.ClassINET}, CD: false}.Hash()
 
+	// Deduplicate concurrent requests for the same query name
 	if !w.Internal() {
-		c.wg.Wait(key)
+		c.wg.Wait(dedupKey)
 	}
 
-	now := c.now().UTC()
+	// Generate cache lookup key with actual question type and CD flag
+	cacheKey := CacheKey{Question: q, CD: req.CheckingDisabled}.Hash()
 
-	key = cache.Hash(q, req.CheckingDisabled)
-	i, found := c.get(key, now)
-	if i != nil && found {
-		if w.Internal() && i.prefetching {
-			goto next
-		}
-
-		if !w.Internal() && c.rate > 0 && !i.Limiter.Allow() {
-			//no reply to client
-			ch.Cancel()
+	// Check cache
+	if entry := c.checkCache(cacheKey); entry != nil {
+		// Skip cache for internal prefetch queries (like old implementation)
+		if w.Internal() && entry.prefetch.Load() {
+			// This is a prefetch query, skip cache and go to resolver
+		} else if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 			return
 		}
-
-		if !i.prefetching && c.prefetch > 0 && i.Rcode == dns.RcodeSuccess {
-			threshold := math.Ceil(float64(c.prefetch) / 100 * float64(i.origTTL))
-
-			if i.ttl(now) <= int(threshold) {
-				i.prefetching = true
-				c.pcache.Add(key, i)
-				pr := req.Copy()
-				go func() {
-					_, _ = dnsutil.ExchangeInternal(ctx, pr)
-				}()
-			}
-		}
-
-		m := i.toMsg(req, now)
-
-		if !w.Internal() {
-			m = c.additionalAnswer(ctx, m)
-		}
-
-		_ = w.WriteMsg(m)
-		ch.Cancel()
-
-		return
 	}
 
+	// Cache miss - proceed with resolution
 	if !w.Internal() {
-		c.wg.Wait(key)
-
-		c.wg.Add(key)
-		defer c.wg.Done(key)
+		c.wg.Add(dedupKey)
+		defer c.wg.Done(dedupKey)
 	}
 
-next:
-	ch.Writer = &ResponseWriter{ResponseWriter: w, Cache: c}
+	// Use pooled response writer
+	rw := c.writerPool.Get().(*ResponseWriter)
+	rw.ResponseWriter = w
+	rw.cache = c
+	ch.Writer = rw
 
 	ch.Next(ctx)
 
+	// Return writer to pool
 	ch.Writer = w
+	c.writerPool.Put(rw)
 }
 
-// WriteMsg implements the ctx.ResponseWriter interface
-func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
-	if res.Truncated {
-		return w.ResponseWriter.WriteMsg(res)
+// checkCache checks both positive and negative caches
+func (c *Cache) checkCache(key uint64) *CacheEntry {
+	// Check positive cache first
+	if entry, ok := c.positive.Get(key); ok {
+		return entry
 	}
 
-	if len(res.Question) == 0 {
+	// Check negative cache
+	if entry, ok := c.negative.Get(key); ok {
+		return entry
+	}
+
+	return nil
+}
+
+// handleCacheHit processes a cache hit
+func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry *CacheEntry, key uint64) bool {
+	w := ch.Writer
+	req := ch.Request
+
+	// Check rate limiting
+	if !w.Internal() && entry.limiter != nil && !entry.limiter.Allow() {
+		ch.Cancel()
+		return true
+	}
+
+	// Check if prefetch is needed
+	if c.prefetchQueue != nil && entry.ShouldPrefetch(c.config.Prefetch) {
+		if entry.prefetch.CompareAndSwap(false, true) {
+			c.prefetchQueue.Add(PrefetchRequest{
+				Request: req.Copy(),
+				Key:     key,
+				Cache:   c,
+			})
+		}
+	}
+
+	// Build response from cache
+	msg := entry.ToMsg(req)
+	if msg == nil {
+		// Entry expired between check and use
+		return false
+	}
+
+	// Resolve CNAME chains if needed (matching V1 behavior)
+	if !w.Internal() {
+		msg = c.additionalAnswer(ctx, msg)
+	}
+
+	_ = w.WriteMsg(msg)
+	ch.Cancel()
+	return true
+}
+
+// isValidQuery checks if the query is valid
+func (c *Cache) isValidQuery(q dns.Question) bool {
+	if v := dns.ClassToString[q.Qclass]; v == "" {
+		return false
+	}
+	if v := dns.TypeToString[q.Qtype]; v == "" {
+		return false
+	}
+	return true
+}
+
+// handleSpecialQuery handles CHAOS and other special queries
+func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q dns.Question) bool {
+	// Handle cache purge
+	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
+		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(ch.Request); ok {
+			c.purge(qname, qtype)
+			ch.Next(ctx)
+			return true
+		}
+	}
+
+	// Handle debug queries
+	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
+		ch.Next(ctx)
+		return true
+	}
+
+	return false
+}
+
+// purge removes entries from cache
+func (c *Cache) purge(qname string, qtype uint16) {
+	q := dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET}
+
+	// Purge both CD and non-CD versions
+	for _, cd := range []bool{false, true} {
+		key := CacheKey{Question: q, CD: cd}.Hash()
+		c.positive.Remove(key)
+		c.negative.Remove(key)
+	}
+}
+
+// Stop gracefully shuts down the cache
+func (c *Cache) Stop() {
+	if c.prefetchQueue != nil {
+		c.prefetchQueue.Stop()
+	}
+}
+
+// Set adds a new element to the cache. Provided for API compatibility.
+func (c *Cache) Set(key uint64, msg *dns.Msg) {
+	if len(msg.Question) == 0 {
+		return
+	}
+
+	// Filter the message like ResponseWriter does
+	rw := &ResponseWriter{cache: c}
+	filtered := rw.filterAnswerSection(msg)
+
+	mt, _ := response.Typify(filtered, time.Now().UTC())
+
+	msgTTL := dnsutil.MinimalTTL(filtered, mt)
+	var ttl time.Duration
+	if mt == response.OtherError {
+		ttl = c.negative.ttl.Calculate(msgTTL)
+	} else {
+		ttl = c.positive.ttl.Calculate(msgTTL)
+	}
+
+	// Create entry with proper original TTL for prefetch calculation
+	entry := NewCacheEntry(filtered, ttl, c.config.RateLimit)
+	// Ensure origTTL reflects the actual TTL from the response for prefetch calculations
+	if ttl > 0 {
+		entry.origTTL = uint32(ttl.Seconds())
+	}
+
+	switch mt {
+	case response.NoError, response.Delegation:
+		c.positive.Set(key, entry)
+	case response.NameError, response.NoData:
+		// NXDOMAIN and NODATA go to positive cache with normal TTL handling
+		c.positive.Set(key, entry)
+	case response.OtherError:
+		// Server failures and other errors go to negative cache with expire limit
+		c.negative.Set(key, entry)
+	}
+}
+
+// Stats returns cache statistics
+func (c *Cache) Stats() map[string]interface{} {
+	hits, misses, evictions, prefetches := c.metrics.Stats()
+
+	return map[string]interface{}{
+		"hits":          hits,
+		"misses":        misses,
+		"evictions":     evictions,
+		"prefetches":    prefetches,
+		"positive_size": c.positive.Len(),
+		"negative_size": c.negative.Len(),
+		"hit_rate": func() float64 {
+			total := float64(hits + misses)
+			if total == 0 {
+				return 0
+			}
+			return float64(hits) / total * 100
+		}(),
+	}
+}
+
+// ResponseWriter is the response writer for cache
+type ResponseWriter struct {
+	middleware.ResponseWriter
+	cache *Cache
+}
+
+// WriteMsg implements the ResponseWriter interface
+func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
+	if res.Truncated || len(res.Question) == 0 {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
 	q := res.Question[0]
 
-	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
+	// Skip special queries
+	if (debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO) ||
+		(q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL) {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
-	key := cache.Hash(q, res.CheckingDisabled)
+	// Determine cache type and TTL
+	mt, _ := response.Typify(res, time.Now().UTC())
+	key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
 
-	mt, _ := response.Typify(res, w.now().UTC())
+	// Filter answer section to only keep relevant records (matching V1 behavior)
+	filtered := w.filterAnswerSection(res)
 
-	// clear additional records
+	// Calculate TTL
+	msgTTL := dnsutil.MinimalTTL(filtered, mt)
+	var ttl time.Duration
+
+	switch mt {
+	case response.NoError, response.Delegation:
+		ttl = w.cache.positive.ttl.Calculate(msgTTL)
+		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
+		w.cache.positive.Set(key, entry)
+
+	case response.NameError, response.NoData:
+		ttl = w.cache.positive.ttl.Calculate(msgTTL)
+		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
+		w.cache.positive.Set(key, entry)
+
+	case response.OtherError:
+		ttl = w.cache.negative.ttl.Calculate(msgTTL)
+		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
+		w.cache.negative.Set(key, entry)
+	}
+
+	// Resolve CNAME chains before sending to client (matching V1 behavior)
+	if !w.Internal() {
+		res = w.cache.additionalAnswer(context.Background(), res)
+	}
+
+	return w.ResponseWriter.WriteMsg(res)
+}
+
+// filterAnswerSection filters the answer section to only keep relevant records
+// This matches the V1 behavior of only caching records that are directly relevant
+func (w *ResponseWriter) filterAnswerSection(res *dns.Msg) *dns.Msg {
+	if len(res.Answer) == 0 {
+		return res
+	}
+
+	// Create a copy to avoid modifying the original
+	filtered := res.Copy()
 	var answer []dns.RR
 
-	for i := range res.Answer {
-		r := res.Answer[i]
-
+	for _, r := range filtered.Answer {
+		// Keep DNAME records or records matching the query name
 		if r.Header().Rrtype == dns.TypeDNAME ||
 			strings.EqualFold(res.Question[0].Name, r.Header().Name) {
 			answer = append(answer, r)
 		}
 
+		// Keep RRSIG records for DNAME that don't match the query name
 		if rrsig, ok := r.(*dns.RRSIG); ok {
 			if rrsig.TypeCovered == dns.TypeDNAME &&
 				!strings.EqualFold(res.Question[0].Name, r.Header().Name) {
@@ -231,83 +422,81 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 			}
 		}
 	}
-	res.Answer = answer
 
-	msgTTL := dnsutil.MinimalTTL(res, mt)
-	var duration time.Duration
-	if mt == response.OtherError {
-		duration = computeTTL(msgTTL, w.minnttl, w.nttl)
-	} else {
-		duration = computeTTL(msgTTL, w.minpttl, w.pttl)
-	}
-
-	if duration > 0 {
-		w.set(key, res, mt, duration)
-	}
-
-	if !w.Internal() {
-		res = w.additionalAnswer(context.Background(), res)
-	}
-
-	return w.ResponseWriter.WriteMsg(res)
+	filtered.Answer = answer
+	return filtered
 }
 
-func (c *Cache) purge(qname string, qtype uint16) {
-	q := dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET}
-
-	key := cache.Hash(q, false)
-	c.ncache.Remove(key)
-	c.pcache.Remove(key)
-
-	key = cache.Hash(q, true)
-	c.ncache.Remove(key)
-	c.pcache.Remove(key)
+// messagePool reduces allocations by reusing dns.Msg structs
+var messagePool = sync.Pool{
+	New: func() interface{} {
+		return &dns.Msg{
+			// Pre-allocate slices with typical sizes to avoid allocations
+			Question: make([]dns.Question, 0, 1), // Most queries have 1 question
+			Answer:   make([]dns.RR, 0, 10),      // Pre-allocate for typical responses
+			Ns:       make([]dns.RR, 0, 5),       // Authority section
+			Extra:    make([]dns.RR, 0, 2),       // Additional section (often OPT record)
+		}
+	},
 }
 
-// get returns the entry for a key or an error
-func (c *Cache) get(key uint64, now time.Time) (*item, bool) {
-	if i, ok := c.pcache.Get(key); ok && i.(*item).ttl(now) > 0 {
-		return i.(*item), true
-	}
-
-	if i, ok := c.ncache.Get(key); ok && i.(*item).ttl(now) > 0 {
-		return i.(*item), true
-	}
-
-	return nil, false
+// AcquireMsg returns an empty msg from pool with pre-allocated slices
+func AcquireMsg() *dns.Msg {
+	m := messagePool.Get().(*dns.Msg)
+	// Reset the message but keep the allocated slices
+	m.Id = 0
+	m.Response = false
+	m.Opcode = 0
+	m.Authoritative = false
+	m.Truncated = false
+	m.RecursionDesired = false
+	m.RecursionAvailable = false
+	m.Zero = false
+	m.AuthenticatedData = false
+	m.CheckingDisabled = false
+	m.Rcode = 0
+	m.Compress = false
+	// Reset slices but keep capacity
+	m.Question = m.Question[:0]
+	m.Answer = m.Answer[:0]
+	m.Ns = m.Ns[:0]
+	m.Extra = m.Extra[:0]
+	return m
 }
 
-// set adds a new element to the cache. If the element already exists it is overwritten.
-func (c *Cache) set(key uint64, msg *dns.Msg, mt response.Type, duration time.Duration) {
-	switch mt {
-	case response.NoError, response.Delegation, response.NameError, response.NoData:
-		i := newItem(msg, c.now(), duration, c.rate)
-		c.pcache.Add(key, i)
-
-	case response.OtherError:
-		i := newItem(msg, c.now(), duration, c.rate)
-		c.ncache.Add(key, i)
+// ReleaseMsg returns msg to pool
+func ReleaseMsg(m *dns.Msg) {
+	// Clear the slices to release references but keep capacity
+	for i := range m.Question {
+		m.Question[i] = dns.Question{}
 	}
-}
-
-// Set adds a new element to the cache. If the element already exists it is overwritten.
-func (c *Cache) Set(key uint64, msg *dns.Msg) {
-	mt, _ := response.Typify(msg, c.now().UTC())
-
-	msgTTL := dnsutil.MinimalTTL(msg, mt)
-	var duration time.Duration
-	if mt == response.OtherError {
-		duration = computeTTL(msgTTL, c.minnttl, c.nttl)
-	} else {
-		duration = computeTTL(msgTTL, c.minpttl, c.pttl)
+	for i := range m.Answer {
+		m.Answer[i] = nil
+	}
+	for i := range m.Ns {
+		m.Ns[i] = nil
+	}
+	for i := range m.Extra {
+		m.Extra[i] = nil
 	}
 
-	c.set(key, msg, mt, duration)
+	// Prevent memory bloat by limiting pool message size
+	if cap(m.Question) <= 10 && cap(m.Answer) <= 100 && cap(m.Ns) <= 50 && cap(m.Extra) <= 20 {
+		messagePool.Put(m)
+	}
+	// Otherwise let GC handle it to avoid memory bloat
 }
 
+// additionalAnswer implements the v1 CNAME resolution logic
 func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
-	if msg.Question[0].Qtype == dns.TypeCNAME ||
-		msg.Question[0].Qtype == dns.TypeDS {
+	if len(msg.Question) == 0 {
+		return msg
+	}
+
+	q := msg.Question[0]
+
+	// Skip CNAME and DS queries
+	if q.Qtype == dns.TypeCNAME || q.Qtype == dns.TypeDS {
 		return msg
 	}
 
@@ -317,30 +506,32 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	cnameReq.CheckingDisabled = msg.CheckingDisabled
 
+	// Check if we already have the answer we're looking for
 	for _, answer := range msg.Answer {
-		if answer.Header().Rrtype == msg.Question[0].Qtype {
-			//answer found
+		if answer.Header().Rrtype == q.Qtype {
+			// Answer found
 			return msg
 		}
 
 		if answer.Header().Rrtype == dns.TypeCNAME {
 			cr := answer.(*dns.CNAME)
-			if cr.Target == msg.Question[0].Name {
+			if cr.Target == q.Name {
 				return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 			}
-			cnameReq.SetQuestion(cr.Target, msg.Question[0].Qtype)
+			cnameReq.SetQuestion(cr.Target, q.Qtype)
 		}
 	}
 
 	cnameDepth := 10
-
 	targets := []string{}
+
 	if len(cnameReq.Question) > 0 {
 	lookup:
 		child := false
 		target := cnameReq.Question[0].Name
 		cnameReq.RecursionDesired = true
 
+		// Check for loops
 		for _, t := range targets {
 			if t == target {
 				return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
@@ -354,7 +545,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		}
 
-		if target == msg.Question[0].Name {
+		if target == q.Name {
 			return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
 
@@ -366,7 +557,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			goto lookup
 		}
 
-		if respCname.Rcode == dns.RcodeNameError {
+		if respCname != nil && respCname.Rcode == dns.RcodeNameError {
 			msg.Rcode = dns.RcodeNameError
 		}
 	}
@@ -374,6 +565,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
+// searchAdditionalAnswer merges the CNAME response into the original message
 func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 	if msg.AuthenticatedData && !res.AuthenticatedData {
 		msg.AuthenticatedData = false
@@ -404,54 +596,3 @@ func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 
 	return
 }
-
-func computeTTL(msgTTL, minTTL, maxTTL time.Duration) time.Duration {
-	ttl := msgTTL
-	if ttl < minTTL {
-		ttl = minTTL
-	}
-	if ttl > maxTTL {
-		ttl = maxTTL
-	}
-	return ttl
-}
-
-var messagePool sync.Pool
-
-// AcquireMsg returns an empty msg from pool
-func AcquireMsg() *dns.Msg {
-	v := messagePool.Get()
-	if v == nil {
-		return &dns.Msg{}
-	}
-	return v.(*dns.Msg)
-}
-
-// ReleaseMsg returns msg to pool
-func ReleaseMsg(m *dns.Msg) {
-	m.Id = 0
-	m.Response = false
-	m.Opcode = 0
-	m.Authoritative = false
-	m.Truncated = false
-	m.RecursionDesired = false
-	m.RecursionAvailable = false
-	m.Zero = false
-	m.AuthenticatedData = false
-	m.CheckingDisabled = false
-	m.Rcode = 0
-	m.Compress = false
-	m.Question = nil
-	m.Answer = nil
-	m.Ns = nil
-	m.Extra = nil
-
-	messagePool.Put(m)
-}
-
-const (
-	name = "cache"
-
-	maxTTL = dnsutil.MaximumDefaulTTL
-	minTTL = dnsutil.MinimalDefaultTTL
-)

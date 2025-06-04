@@ -9,19 +9,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v4
       
     - name: Set up Go 1.x
       uses: actions/setup-go@v5
       with:
-        go-version: ^1.22
+        go-version: ^1.24
       
     - name: Generate coverage report
       run: make test
       
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5.3.1
+      uses: codecov/codecov-action@v5
       with:
         fail_ci_if_error: true
         token: ${{ secrets.CODECOV_TOKEN }}
-        file: ./coverage.out

@@ -34,7 +34,7 @@ func parseLiteralIP(addr string) net.IP {
 }
 
 func absDomainName(b string) string {
-	return strings.ToLower(dns.Fqdn(string(b)))
+	return strings.ToLower(dns.Fqdn(b))
 }
 
 type hostsMap struct {

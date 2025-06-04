@@ -20,13 +20,20 @@ type DNSHandler struct {
 	cfg      *config.Config
 }
 
-type ctxKey string
+// contextKey is a type-safe key for context values (Go 1.21+ pattern)
+type contextKey int
 
-var debugns bool
+const (
+	contextKeyRequestID contextKey = iota
+	contextKeyNSL                  // nameserver lookup marker
+	contextKeyNSList               // nameserver list prefix
+)
 
-func init() {
-	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
-}
+// debugns is initialized once at startup
+var debugns = func() bool {
+	_, ok := os.LookupEnv("SDNS_DEBUGNS")
+	return ok
+}()
 
 // New returns a new Handler
 func New(cfg *config.Config) *DNSHandler {
@@ -49,6 +56,7 @@ func (h *DNSHandler) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	// Skip resolver if forwarders are configured
 	if len(h.cfg.ForwarderServers) > 0 {
 		ch.Next(ctx)
 		return
@@ -56,8 +64,9 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	w, req := ch.Writer, ch.Request
 
-	if v := ctx.Value(ctxKey("reqid")); v == nil {
-		ctx = context.WithValue(ctx, ctxKey("reqid"), req.Id)
+	// Ensure request ID is in context for tracking
+	if ctx.Value(contextKeyRequestID) == nil {
+		ctx = context.WithValue(ctx, contextKeyRequestID, req.Id)
 	}
 	msg := h.handle(ctx, req)
 
@@ -65,11 +74,15 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 }
 
 func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
+	if len(req.Question) == 0 {
+		return dnsutil.SetRcode(req, dns.RcodeFormatError, false)
+	}
+
 	q := req.Question[0]
 
+	// Extract DNSSEC OK bit from EDNS0
 	do := false
-	opt := req.IsEdns0()
-	if opt != nil {
+	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
 	}
 
@@ -77,12 +90,12 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
 	}
 
-	// debug ns stats
+	// CHAOS queries: debug nameserver stats (HINFO) or cache purge (NULL)
 	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
 		return h.nsStats(req)
 	}
 
-	// check purge query
+	// CHAOS NULL queries trigger cache purge for specific domains
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
 			if qtype == dns.TypeNS {
@@ -102,24 +115,32 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
-	// we shouldn't send rd and ad flag to aa servers
+	// Prepare request for authoritative servers
+	// Clear RD and AD flags as we're querying authoritative servers
 	req.RecursionDesired = false
 	req.AuthenticatedData = false
 
+	// Set CD flag based on DNSSEC support
+	originalCD := req.CheckingDisabled
 	if !req.CheckingDisabled {
 		req.CheckingDisabled = !h.resolver.dnssec
 	}
 
-	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(h.cfg.QueryTimeout.Duration))
+	// Set query timeout
+	deadline := time.Now().Add(h.cfg.QueryTimeout.Duration)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
+	// Start recursive resolution from root servers
 	depth := h.cfg.Maxdepth
-	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil, q.Name == rootzone)
+	isRootQuery := q.Name == rootzone
+	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil, isRootQuery)
 
+	// Restore original CD flag if DNSSEC is not supported
 	if !h.resolver.dnssec {
-		req.CheckingDisabled = false
+		req.CheckingDisabled = originalCD
 		if resp != nil {
-			resp.CheckingDisabled = false
+			resp.CheckingDisabled = originalCD
 		}
 	}
 
@@ -129,7 +150,9 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
-	if resp.Rcode == dns.RcodeRefused || resp.Rcode == dns.RcodeNotZone {
+	// Convert certain response codes to SERVFAIL
+	switch resp.Rcode {
+	case dns.RcodeRefused, dns.RcodeNotZone:
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
@@ -145,30 +168,30 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.Authoritative = false
 	msg.RecursionAvailable = true
 
+	// Default to root servers
 	servers := h.resolver.rootservers
-	ttl := uint32(0)
+	const ttl = uint32(0)
 	name := rootzone
 
+	// Try to get cached nameservers for the query name
 	if q.Name != rootzone {
-		nsKey := cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, msg.CheckingDisabled)
-		ns, err := h.resolver.ncache.Get(nsKey)
-		if err != nil {
-			nsKey = cache.Hash(dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, !msg.CheckingDisabled)
-			ns, err := h.resolver.ncache.Get(nsKey)
-			if err == nil {
-				servers = ns.Servers
-				name = q.Name
-			}
-		} else {
+		nsQuestion := dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+
+		// Try with current CD flag first
+		if ns, err := h.resolver.ncache.Get(cache.Hash(nsQuestion, msg.CheckingDisabled)); err == nil {
+			servers = ns.Servers
+			name = q.Name
+		} else if ns, err := h.resolver.ncache.Get(cache.Hash(nsQuestion, !msg.CheckingDisabled)); err == nil {
+			// Try with opposite CD flag
 			servers = ns.Servers
 			name = q.Name
 		}
 	}
 
-	var serversList []*authcache.AuthServer
-
+	// Copy server list under read lock
 	servers.RLock()
-	serversList = append(serversList, servers.List...)
+	serversList := make([]*authcache.AuthServer, len(servers.List))
+	copy(serversList, servers.List)
 	servers.RUnlock()
 
 	authcache.Sort(serversList, 1)
@@ -188,14 +211,20 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	return msg
 }
 
+// purge removes nameserver cache entries for the given domain name
 func (h *DNSHandler) purge(qname string) {
-	q := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+	nsQuestion := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 
-	key := cache.Hash(q, false)
-	h.resolver.ncache.Remove(key)
+	// Remove entries for both CD flag states
+	h.resolver.ncache.Remove(cache.Hash(nsQuestion, false))
+	h.resolver.ncache.Remove(cache.Hash(nsQuestion, true))
+}
 
-	key = cache.Hash(q, true)
-	h.resolver.ncache.Remove(key)
+// Stop gracefully shuts down the resolver
+func (h *DNSHandler) Stop() {
+	if h.resolver.tcpPool != nil {
+		h.resolver.tcpPool.Close()
+	}
 }
 
 const name = "resolver"

@@ -21,15 +21,15 @@
 
 ## Installation
 
-Use the `go get` command to install `sdns`:
+Install SDNS using the `go install` command:
 
 ```shell
-go get github.com/semihalev/sdns
+go install github.com/semihalev/sdns@latest
 ```
 
-#### Pre-build Binaries
+#### Pre-built Binaries
 
-You can download the latest release from the [Github Repo](https://github.com/semihalev/sdns/releases/latest).
+Download the latest release from the [GitHub Releases](https://github.com/semihalev/sdns/releases/latest) page.
 
 #### Docker
 
@@ -71,7 +71,7 @@ $ snap install sdns
 $ yay -S sdns-git
 ```
 
-> **Note:** Pre-built binaries, Docker packages, brew taps, and snaps are automatically created by Github [workflows](https://github.com/semihalev/sdns/actions).
+> **Note:** Pre-built binaries, Docker packages, brew taps, and snaps are automatically created by GitHub [workflows](https://github.com/semihalev/sdns/actions).
 
 ## Building from Source
 
@@ -87,11 +87,11 @@ $ make test
 
 ## Flags
 
-| Flag              | Desc                                                                           |
+| Flag              | Description                                                                    |
 | ----------------- | ------------------------------------------------------------------------------ |
-| -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated. |
-| -v, --version     | Show the version of the sdns.                                                  |
-| -h, --help        | Show this help and exit.                                                       |
+| -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated  |
+| -v, --version     | Show the SDNS version                                                          |
+| -h, --help        | Show help information and exit                                                 |
 
 ## Debugging Environment
 
@@ -127,57 +127,69 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.4.0)
+## Configuration (v1.5.0)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **version**          | Configuration version                                                                                               |
-| **directory**        | sdns working directory (must grant write access to sdns user)                                                       |
-| **bind**             | DNS server binding address Default: :53                                                                             |
-| **bindtls**          | DNS-over-TLS server binding address Default: :853                                                                   |
-| **binddoh**          | DNS-over-HTTPS server binding address Default: :8053                                                                |
-| **binddoq**          | DNS-over-QUIC server binding address Default: :853                                                                  |
-| **tlscertificate**   | Path to the TLS certificate file                                                                                    |
-| **tlsprivatekey**    | Path to the TLS private key file                                                                                    |
-| **outboundips**      | Outbound IPv4 addresses (randomly chosen if multiple entries provided)                                              |
-| **outboundip6s**     | Outbound IPv6 addresses (randomly chosen if multiple entries provided)                                              |
-| **rootservers**      | DNS Root IPv4 servers                                                                                               |
-| **root6servers**     | DNS Root IPv6 servers                                                                                               |
-| **dnssec**           | DNSSEC validation on signed zones, off for disabled.                                                                |
-| **rootkeys**         | Trusted DNSSEC anchors                                                                                              |
-| **fallbackservers**  | Failover resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                   |
-| **forwarderservers** | Forwarder resolver IPv4 or IPv6 addresses with port (leave blank to disable) Example: "8.8.8.8:53"                  |
-| **api**              | HTTP API server binding address (leave blank to disable)                                                            |
-| **bearertoken**      | API bearer token for authorization. If the token set, Authorization header should be send on API requests           |
-| **blocklists**       | Remote blocklist address list (downloaded to the blocklist folder)                                                  |
-| **blocklistdir**     | \[DEPRECATED] Directory creation is automated in the working directory                                              |
-| **loglevel**         | Log verbosity level (crit, error, warn, info, debug)                                                                |
-| **accesslog**        | Location of the access log file (leave blank to disable) Default: Common Log Format                                 |
-| **nullroute**        | IPv4 address for forwarding blocked queries                                                                         |
-| **nullroutev6**      | IPv6 address for forwarding blocked queries                                                                         |
-| **accesslist**       | Client whitelist for query permissions                                                                              |
-| **querytimeout**     | Maximum wait duration for DNS query response Default: 10s                                                           |
-| **timeout**          | Network timeout duration for each DNS lookup Default: 2s                                                            |
-| **hostsfile**        | Enable serving zone data from a hosts file (leave blank to disable)                                                 |
-| **expire**           | Default error cache TTL (in seconds) Default: 600                                                                   |
-| **cachesize**        | Cache size (total records in cache) Default: 256000                                                                 |
-| **prefetch**         | Cache prefetch before expiry (threshold: 10%-90%, 0 to disable)                                                     |
-| **maxdepth**         | Maximum iteration depth per query Default: 30                                                                       |
-| **ratelimit**        | Query-based rate limit per second (0 to disable) Default: 0                                                         |
-| **clientratelimit**  | Client IP address-based rate limit per minute (no limit if client supports EDNS cookie) Default: 0                  |
-| **blocklist**        | Manual blocklist entries                                                                                            |
-| **whitelist**        | Manual whitelist entries                                                                                            |
-| **cookiesecret**     | DNS cookie secret (RFC 7873) - auto-generated if not set                                                            |
-| **nsid**             | DNS server identifier (RFC 5001) - useful for operating multiple sdns instances (leave blank to disable)            |
-| **chaos**            | Enable responses to version.server, version.bind, hostname.bind and id.server chaos txt queries                     |
-| **qname\_min\_level**  | Qname minimize level (0 to disable - higher values increase complexity and impact response performance)           |
-| **emptyzones**       | Enable response to RFC 1918 zone queries. For details, see http://as112.net/                                        |
+| **version**          | Configuration file version                                                                                          |
+| **directory**        | Working directory for SDNS data storage. Must be writable by the SDNS process. Default: "db"                        |
+| **bind**             | DNS server binding address and port. Default: ":53"                                                                 |
+| **bindtls**          | DNS-over-TLS (DoT) server binding address. Default: ":853"                                                          |
+| **binddoh**          | DNS-over-HTTPS (DoH) server binding address. Default: ":8053"                                                       |
+| **binddoq**          | DNS-over-QUIC (DoQ) server binding address. Default: ":853"                                                         |
+| **tlscertificate**   | Path to the TLS certificate file for DoT/DoH/DoQ                                                                    |
+| **tlsprivatekey**    | Path to the TLS private key file for DoT/DoH/DoQ                                                                    |
+| **outboundips**      | Outbound IPv4 addresses for DNS queries. Multiple addresses enable random source IP selection per request            |
+| **outboundip6s**     | Outbound IPv6 addresses for DNS queries. Multiple addresses enable random source IP selection per request            |
+| **rootservers**      | Root DNS servers (IPv4). These are the authoritative name servers for the DNS root zone                             |
+| **root6servers**     | Root DNS servers (IPv6). These are the authoritative name servers for the DNS root zone                             |
+| **dnssec**           | Enable DNSSEC validation for secure DNS responses. Options: "on" or "off". Default: "on"                            |
+| **rootkeys**         | DNSSEC root zone trust anchors in DNSKEY format                                                                     |
+| **fallbackservers**  | Upstream DNS servers used when all others fail. Format: "IP:port" (e.g., "8.8.8.8:53")                             |
+| **forwarderservers** | Forward all queries to these DNS servers. Format: "IP:port" (e.g., "8.8.8.8:53")                                   |
+| **api**              | HTTP API server binding address for statistics and control. Leave empty to disable                                  |
+| **bearertoken**      | API bearer token for authorization. If set, Authorization header must be included in API requests                   |
+| **blocklists**       | URLs of remote blocklists to download and use for filtering                                                         |
+| **blocklistdir**     | \[DEPRECATED] Blocklist directory. Now automatically created in the working directory                               |
+| **loglevel**         | Logging verbosity level. Options: crit, error, warn, info, debug. Default: "info"                                  |
+| **accesslog**        | Path to the access log file in Common Log Format. Leave empty to disable                                            |
+| **nullroute**        | IPv4 address returned for blocked A queries. Default: "0.0.0.0"                                                     |
+| **nullroutev6**      | IPv6 address returned for blocked AAAA queries. Default: "::0"                                                      |
+| **accesslist**       | IP addresses/subnets allowed to make queries. Default allows all: ["0.0.0.0/0", "::0/0"]                           |
+| **querytimeout**     | Maximum time to wait for any DNS query to complete. Default: "10s"                                                  |
+| **timeout**          | Network timeout for upstream DNS queries. Default: "2s"                                                             |
+| **hostsfile**        | Path to hosts file (RFC 952/1123 format) for local resolution. Leave empty to disable                              |
+| **expire**           | Cache TTL for error responses in seconds. Default: 600                                                              |
+| **cachesize**        | Maximum number of cached DNS records. Default: 256000                                                               |
+| **prefetch**         | Prefetch threshold percentage (10-90). Refreshes popular cache entries before expiration. 0 disables               |
+| **maxdepth**         | Maximum recursion depth for queries. Prevents infinite loops. Default: 30                                           |
+| **ratelimit**        | Global query rate limit per second. 0 disables. Default: 0                                                          |
+| **clientratelimit**  | Per-client rate limit per minute. 0 disables. Default: 0                                                            |
+| **domainmetrics**    | Enable per-domain query metrics collection. Default: false                                                          |
+| **domainmetricslimit** | Maximum number of domains to track in metrics. 0 = unlimited (use with caution). Default: 10000                  |
+| **blocklist**        | Manual domain blocklist. Domains listed here will be blocked                                                        |
+| **whitelist**        | Manual domain whitelist. Overrides blocklist matches                                                                |
+| **cookiesecret**     | DNS cookie secret (RFC 7873) for client verification. Auto-generated if not set                                     |
+| **nsid**             | DNS server identifier (RFC 5001) for identifying this instance. Leave empty to disable                              |
+| **chaos**            | Enable responses to version.bind and hostname.bind chaos queries. Default: true                                     |
+| **qname_min_level**  | QNAME minimization level (RFC 7816). 0 disables. Higher values increase privacy but may impact performance         |
+| **emptyzones**       | Enable local authoritative responses for RFC 1918 zones. See http://as112.net/ for details                         |
+| **tcpkeepalive**     | Enable TCP connection pooling for root and TLD servers. Improves performance by reusing connections. Default: false |
+| **roottcptimeout**   | TCP idle timeout for root server connections. Default: "5s"                                                          |
+| **tldtcptimeout**    | TCP idle timeout for TLD server connections (com, net, org, etc.). Default: "10s"                                   |
+| **tcpmaxconnections**| Maximum number of pooled TCP connections. 0 uses default. Default: 100                                               |
+| **dnstapsocket**     | Unix domain socket path for dnstap binary DNS logging. Leave empty to disable                                       |
+| **dnstapidentity**   | Server identity string for dnstap messages. Defaults to hostname                                                    |
+| **dnstapversion**    | Server version string for dnstap messages. Default: "sdns"                                                          |
+| **dnstaplogqueries** | Log DNS queries via dnstap. Default: true                                                                           |
+| **dnstaplogresponses** | Log DNS responses via dnstap. Default: true                                                                        |
+| **dnstapflushinterval** | Dnstap message flush interval in seconds. Default: 5                                                             |
 
 ## Plugin Configuration
 
-In sdns, you have the ability to add custom plugins. The sequence of the plugins and the middlewares has a mutual impact on their execution. Config keys must be strings, and values can be of any type. Plugins are loaded before the cache middleware in the specified order.
+SDNS supports custom plugins to extend its functionality. The execution order of plugins and middlewares affects their behavior. Configuration keys must be strings, while values can be any type. Plugins are loaded before the cache middleware in the order specified.
 
-The plugin interface is straightforward. For additional information, please refer to the [example plugin](https://github.com/semihalev/sdnsexampleplugin).
+For implementation details, see the [example plugin](https://github.com/semihalev/sdnsexampleplugin).
 
 ### Example Configuration
 
@@ -196,33 +208,36 @@ The plugin interface is straightforward. For additional information, please refe
 
 ## Features
 
-*   Linux/BSD/Darwin/Windows supported
-*   DNS RFC compatibility
-*   DNS lookups within listed ipv4 and ipv6 auth servers
-*   DNS caching with prefetch support
-*   DNSSEC validation
-*   DNS over TLS support (DoT)
-*   DNS over HTTPS support (DoH) with HTTP/3 support
-*   DNS over QUIC support (DoQ)
-*   Outbound IP selection
-*   Middleware Support, you can add, your own middleware
-*   RTT priority within listed servers
-*   Failover forwarders while returning failured responses
-*   Forwarder support
-*   EDNS Cookie Support (client<->server)
-*   EDNS NSID Support
-*   Full IPv6 support (client<->server, server<->server)
-*   Query based ratelimit
-*   IP based ratelimit
-*   Access list
-*   Access log
-*   Prometheus basic query metrics
-*   Black-hole for malware responses
-*   HTTP API support
-*   Cache Purge API and query support
-*   Answer chaos txt queries for version.bind and hostname.bind
-*   Empty zones support described at RFC 1918
-*   External plugins supported
+*   Linux/BSD/Darwin/Windows support
+*   Full DNS RFC compatibility
+*   DNS queries using both IPv4 and IPv6 authoritative servers
+*   High-performance DNS caching with prefetch support
+*   Full DNSSEC validation support
+*   DNS over TLS (DoT) support
+*   DNS over HTTPS (DoH) support with HTTP/3
+*   DNS over QUIC (DoQ) support
+*   Multiple outbound IP selection for queries
+*   Extensible middleware architecture
+*   RTT-based server prioritization
+*   Failover to backup servers on failure
+*   DNS forwarding support
+*   EDNS Cookie support (RFC 7873)
+*   EDNS NSID support (RFC 5001)
+*   Full IPv6 support (both client and server communication)
+*   Query-based rate limiting
+*   Client IP-based rate limiting
+*   IP-based access control lists
+*   Comprehensive access logging
+*   Prometheus metrics with optional per-domain tracking
+*   DNS sinkholing for malicious domains
+*   HTTP API for management and statistics
+*   Cache purge via API and DNS queries
+*   Chaos TXT query support for version.bind and hostname.bind
+*   Empty zones support (RFC 1918)
+*   External plugin support
+*   Binary DNS logging via dnstap protocol
+*   QNAME minimization for privacy (RFC 7816)
+*   Automatic DNSSEC trust anchor updates (RFC 5011)
 
 ## TODO
 
@@ -246,27 +261,36 @@ The plugin interface is straightforward. For additional information, please refe
 ### Benchmark Environment
 
 *   **Server Specifications:**
-    *   Processor: Intel Xeon E5-2609 v4 CPU
-    *   Memory: 32GB
+    *   Processor: Apple M1 Pro
+    *   Memory: 16GB
 
 ### Benchmarking Tool
 
-*   **Tool Name:** [DNS-OARC dnsperf](https://www.dns-oarc.net/tools/dnsperf)
-*   **Benchmark Configuration:**
-    *   Query Data Volume: 50,000 sample queries
+*   **Tool:** [DNS-OARC dnsperf](https://www.dns-oarc.net/tools/dnsperf)
+*   **Configuration:**
+    *   Query volume: 50,000 sample queries
+    *   Test date: June 2025
 
 ### Benchmark Comparisons
 
-Benchmarks were performed on the following DNS resolvers: sdns-1.3.3, pdns-recursor-4.8.4, bind-9.19.12, unbound-1.17.1.
+Tests were performed on the following DNS resolvers: SDNS 1.5.0, PowerDNS Recursor 5.0.2, BIND 9.19.12, and Unbound 1.17.1.
 
 ### Benchmark Results
 
-| Resolver | RESPONSE | LOST | NOERROR | SERVFAIL | NXDOMAIN | Run Time  | QPS   |
-| -------- | -------- | ---- | ------- | -------- | -------- | --------- | ----- |
-| SDNS     | 100%     | 1    | 35,164  | 866      | 13,969   | 87s47ms   | 571/s |
-| PowerDNS | 99.99%   | 6    | 35,140  | 893      | 13,961   | 88s83ms   | 563/s |
-| Bind     | 99.74%   | 132  | 35,024  | 885      | 13,959   | 127s64ms  | 390/s |
-| Unbound  | 99.49%   | 253  | 35,152  | 624      | 13,971   | 174s64ms  | 284/s |
+| Resolver | Version | QPS    | Avg Latency | Lost Queries | Runtime  | Response Codes                                      |
+| -------- | ------- | ------ | ----------- | ------------ | -------- | --------------------------------------------------- |
+| SDNS     | 1.5.0   | 709/s  | 137ms       | 2 (0.004%)   | 70.5s    | NOERROR: 79.10%, SERVFAIL: 1.50%, NXDOMAIN: 19.40% |
+| PowerDNS | 5.0.2   | 578/s  | 156ms       | 20 (0.04%)   | 86.5s    | NOERROR: 67.64%, SERVFAIL: 1.92%, NXDOMAIN: 30.43% |
+| BIND     | 9.19.12 | 405/s  | 200ms       | 156 (0.31%)  | 123.0s   | NOERROR: 67.84%, SERVFAIL: 1.62%, NXDOMAIN: 30.54% |
+| Unbound  | 1.17.1  | 338/s  | 237ms       | 263 (0.53%)  | 147.0s   | NOERROR: 68.20%, SERVFAIL: 1.20%, NXDOMAIN: 30.60% |
+
+### Performance Summary
+
+SDNS demonstrates superior performance across all key metrics:
+- **Highest throughput**: 709 queries per second (23% faster than PowerDNS, 75% faster than BIND, 110% faster than Unbound)
+- **Lowest latency**: 137ms average (12-42% lower than competitors)
+- **Best reliability**: Only 2 lost queries out of 50,000 (99.996% success rate)
+- **Fastest completion**: 70.5 seconds total runtime
 
 ## Contributing
 

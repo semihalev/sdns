@@ -10,6 +10,7 @@ import (
 	"github.com/semihalev/log"
 )
 
+// Router is a high-performance HTTP request router
 type Router struct {
 	get     Tree
 	post    Tree

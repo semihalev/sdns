@@ -18,6 +18,7 @@ const (
 	NoError          = 0x0
 )
 
+// Server implements DNS-over-QUIC server
 type Server struct {
 	Addr    string
 	Handler dns.Handler
