@@ -269,7 +269,7 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 }
 
 func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (context.Context, bool) {
-	key := contextKey(contextKeyNSList + contextKey(qtype))
+	key := contextKeyNSList + contextKey(qtype)
 
 	if v := ctx.Value(key); v != nil {
 		list := v.([]string)

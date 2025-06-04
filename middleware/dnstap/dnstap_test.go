@@ -777,7 +777,7 @@ func decodeMessage(data []byte) *DnstapMessage {
 		return nil
 	}
 	msg.Version = data[pos : pos+versionLen]
-	pos += versionLen
+	// pos += versionLen // Position would be updated if we were reading more data
 
 	// Continue decoding other fields as needed...
 

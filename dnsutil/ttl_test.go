@@ -28,7 +28,7 @@ func TestMinimalTTL(t *testing.T) {
 	}
 
 	dur := MinimalTTL(nil, mt) // minTTL on msg is 3600 (neg. ttl on SOA)
-	if dur != time.Duration(MinimalDefaultTTL) {
+	if dur != MinimalDefaultTTL {
 		t.Fatalf("Expected minttl duration to be %d, got %d", 1800, dur)
 	}
 
@@ -41,7 +41,7 @@ func TestMinimalTTL(t *testing.T) {
 		t.Fatalf("Expected type to be response.NoData, got %s", mt)
 	}
 	dur = MinimalTTL(m, mt) // minTTL on msg is 3600 (neg. ttl on SOA)
-	if dur != time.Duration(MinimalDefaultTTL) {
+	if dur != MinimalDefaultTTL {
 		t.Fatalf("Expected minttl duration to be %d, got %d", 1800, dur)
 	}
 
@@ -55,7 +55,7 @@ func TestMinimalTTL(t *testing.T) {
 	}
 
 	dur = MinimalTTL(m, mt) // minTTL on msg is 3600 (neg. ttl on SOA)
-	if dur != time.Duration(1800*time.Second) {
+	if dur != 1800*time.Second {
 		t.Fatalf("Expected minttl duration to be %d, got %d", 1800, dur)
 	}
 
@@ -69,7 +69,7 @@ func TestMinimalTTL(t *testing.T) {
 		t.Fatalf("Expected type to be response.NameError, got %s", mt)
 	}
 	dur = MinimalTTL(m, mt) // minTTL on msg is 3600 (neg. ttl on SOA)
-	if dur != time.Duration(1200*time.Second) {
+	if dur != 1200*time.Second {
 		t.Fatalf("Expected minttl duration to be %d, got %d", 1800, dur)
 	}
 
@@ -77,7 +77,7 @@ func TestMinimalTTL(t *testing.T) {
 		makeRR("z.alm.im.	600	IN	A	127.0.0.1"),
 	}
 	dur = MinimalTTL(m, mt) // minTTL on msg is 3600 (neg. ttl on SOA)
-	if dur != time.Duration(600*time.Second) {
+	if dur != 600*time.Second {
 		t.Fatalf("Expected minttl duration to be %d, got %d", 1800, dur)
 	}
 }

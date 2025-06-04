@@ -2,9 +2,7 @@ package resolver
 
 import (
 	"context"
-	"errors"
 	"net"
-	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -45,7 +43,7 @@ func (r *Resolver) parallelLookupV4Nss(ctx context.Context, q dns.Question, auth
 	}
 
 	// Use errgroup for parallel lookups with concurrency limit
-	g, ctx := errgroup.WithContext(ctx)
+	g, _ := errgroup.WithContext(ctx)
 	g.SetLimit(5) // Maximum 5 concurrent lookups
 
 	// Results storage
@@ -148,7 +146,7 @@ func (r *Resolver) parallelLookupV6Nss(ctx context.Context, q dns.Question, auth
 	}
 
 	// Use errgroup for parallel lookups with concurrency limit
-	g, ctx := errgroup.WithContext(ctx)
+	g, _ := errgroup.WithContext(ctx)
 	g.SetLimit(3) // Fewer concurrent IPv6 lookups as they may be slower
 
 	// Results storage
@@ -220,190 +218,3 @@ func (r *Resolver) parallelLookupV6Nss(ctx context.Context, q dns.Question, auth
 	}
 }
 
-// modernLookup performs parallel DNS queries to multiple servers with adaptive timeouts
-func (r *Resolver) modernLookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (*dns.Msg, error) {
-	servers.RLock()
-	serversList := make([]*authcache.AuthServer, len(servers.List))
-	copy(serversList, servers.List)
-	servers.RUnlock()
-
-	if len(serversList) == 0 {
-		return nil, errors.New("no servers available")
-	}
-
-	// Sort servers by performance
-	authcache.Sort(serversList, atomic.AddUint64(&servers.Called, 1))
-
-	// Use context with timeout
-	ctx, cancel := context.WithTimeout(ctx, r.netTimeout)
-	defer cancel()
-
-	// Result channel
-	type result struct {
-		resp   *dns.Msg
-		err    error
-		server *authcache.AuthServer
-	}
-
-	resultChan := make(chan result, len(serversList))
-
-	// Launch queries with adaptive concurrency
-	g, ctx := errgroup.WithContext(ctx)
-
-	// Start first batch immediately (fast start)
-	fastStart := 2
-	if len(serversList) < fastStart {
-		fastStart = len(serversList)
-	}
-
-	// Launch fast start queries
-	for i := 0; i < fastStart; i++ {
-		server := serversList[i]
-		g.Go(func() error {
-			resp, err := r.exchangeWithTimeout(ctx, req, server)
-			select {
-			case resultChan <- result{resp: resp, err: err, server: server}:
-			case <-ctx.Done():
-			}
-			return nil
-		})
-	}
-
-	// Launch remaining queries with delays based on RTT
-	for i := fastStart; i < len(serversList); i++ {
-		server := serversList[i]
-		delay := r.calculateDelay(server, i-fastStart)
-
-		g.Go(func() error {
-			select {
-			case <-time.After(delay):
-				resp, err := r.exchangeWithTimeout(ctx, req, server)
-				select {
-				case resultChan <- result{resp: resp, err: err, server: server}:
-				case <-ctx.Done():
-				}
-			case <-ctx.Done():
-			}
-			return nil
-		})
-	}
-
-	// Collect results
-	go func() {
-		_ = g.Wait()
-		close(resultChan)
-	}()
-
-	// Process results
-	var lastError error
-	responseErrors := []*dns.Msg{}
-
-	for res := range resultChan {
-		if res.err != nil {
-			lastError = res.err
-			// Update server error count
-			atomic.AddUint32(&servers.ErrorCount, 1)
-			continue
-		}
-
-		if res.resp == nil {
-			continue
-		}
-
-		// Check response validity
-		if res.resp.Rcode == dns.RcodeSuccess || res.resp.Rcode == dns.RcodeNameError {
-			// Update RTT for successful query
-			if res.server != nil {
-				// RTT calculation would go here
-			}
-			return res.resp, nil
-		}
-
-		// Collect error responses
-		if res.resp.Rcode == dns.RcodeServerFailure || res.resp.Rcode == dns.RcodeRefused {
-			responseErrors = append(responseErrors, res.resp)
-		}
-	}
-
-	// Return best error response or last error
-	if len(responseErrors) > 0 {
-		return responseErrors[0], nil
-	}
-
-	if lastError != nil {
-		return nil, lastError
-	}
-
-	return nil, errors.New("all servers failed")
-}
-
-// exchangeWithTimeout performs a DNS exchange with server-specific timeout
-func (r *Resolver) exchangeWithTimeout(ctx context.Context, req *dns.Msg, server *authcache.AuthServer) (*dns.Msg, error) {
-	// Anti-spoofing: use random ID
-	orgID := req.Id
-	req = req.Copy()
-	req.Id = dns.Id()
-
-	defer func() {
-		if req != nil {
-			req.Id = orgID
-		}
-	}()
-
-	// Use server-specific timeout
-	timeout := r.calculateTimeout(server)
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	resp, err := r.exchange(ctx, "udp", req, server, 0)
-	if resp != nil {
-		resp.Id = orgID
-	}
-
-	return resp, err
-}
-
-// calculateDelay returns delay before querying a server based on its position and RTT
-func (r *Resolver) calculateDelay(server *authcache.AuthServer, position int) time.Duration {
-	baseDelay := 50 * time.Millisecond
-
-	// Add delay based on position
-	delay := time.Duration(position) * baseDelay
-
-	// Adjust based on server RTT if known
-	if rtt := atomic.LoadInt64(&server.Rtt); rtt > 0 {
-		serverDelay := time.Duration(rtt) / 2
-		if serverDelay > delay {
-			delay = serverDelay
-		}
-	}
-
-	// Cap maximum delay
-	if delay > 300*time.Millisecond {
-		delay = 300 * time.Millisecond
-	}
-
-	return delay
-}
-
-// calculateTimeout returns timeout for a specific server based on its RTT
-func (r *Resolver) calculateTimeout(server *authcache.AuthServer) time.Duration {
-	// Get server RTT
-	rtt := time.Duration(atomic.LoadInt64(&server.Rtt))
-
-	if rtt <= 0 {
-		// Unknown RTT, use default
-		return 2 * time.Second
-	}
-
-	// Use 3x RTT with bounds
-	timeout := rtt * 3
-
-	if timeout < 100*time.Millisecond {
-		timeout = 100 * time.Millisecond
-	} else if timeout > 5*time.Second {
-		timeout = 5 * time.Second
-	}
-
-	return timeout
-}
