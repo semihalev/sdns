@@ -77,7 +77,7 @@ func (c *Cache) Len() int {
 }
 
 // evict removes entries when cache is full
-// Uses sampled eviction - randomly samples entries and removes some of them
+// Uses random bucket sampling for efficient eviction without full iteration
 func (c *Cache) evict() {
 	// Run eviction in a loop until we're under the limit
 	// This handles cases where items are being added concurrently
@@ -102,27 +102,20 @@ func (c *Cache) evict() {
 			evictBatch = 1
 		}
 
-		// Collect keys to evict
-		// Use a local buffer to avoid race conditions
-		evictBuf := make([]uint64, 0, evictBatch)
-		collected := 0
-		c.data.ForEach(func(key uint64, _ any) bool {
-			if collected >= evictBatch {
-				return false
+		// For very small caches, use simple iteration
+		// Random sampling doesn't work well for tiny caches
+		if c.maxSize < 100 || evictBatch < 10 {
+			evicted := c.evictSimple(evictBatch)
+			if evicted == 0 {
+				break
 			}
-			evictBuf = append(evictBuf, key)
-			collected++
-			return true
-		})
-
-		// If we couldn't collect any keys, break to avoid infinite loop
-		if len(evictBuf) == 0 {
-			break
-		}
-
-		// Delete the collected keys
-		for _, key := range evictBuf {
-			c.data.Del(key)
+		} else {
+			// Use random bucket sampling for larger caches
+			// This is much more efficient for large caches
+			evicted := c.evictRandomSample(evictBatch)
+			if evicted == 0 {
+				break
+			}
 		}
 
 		// For small caches, one iteration is enough
@@ -130,4 +123,47 @@ func (c *Cache) evict() {
 			break
 		}
 	}
+}
+
+// evictSimple uses simple iteration for small caches
+// Returns the number of entries actually evicted
+func (c *Cache) evictSimple(targetEvictions int) int {
+	evictBuf := make([]uint64, 0, targetEvictions)
+	collected := 0
+
+	c.data.ForEach(func(key uint64, _ any) bool {
+		if collected >= targetEvictions {
+			return false
+		}
+		evictBuf = append(evictBuf, key)
+		collected++
+		return true
+	})
+
+	// Delete the collected keys
+	evicted := 0
+	for _, key := range evictBuf {
+		if c.data.Del(key) {
+			evicted++
+		}
+	}
+
+	return evicted
+}
+
+// evictRandomSample efficiently evicts a random sample of entries
+// Returns the number of entries actually evicted
+func (c *Cache) evictRandomSample(targetEvictions int) int {
+	// Get a random sample of keys to evict
+	keys := c.data.RandomSample(targetEvictions)
+
+	// Delete the sampled keys
+	evicted := 0
+	for _, key := range keys {
+		if c.data.Del(key) {
+			evicted++
+		}
+	}
+
+	return evicted
 }

@@ -3,6 +3,7 @@ package cache
 import (
 	"iter"
 	"math/bits"
+	"math/rand/v2"
 	"sync/atomic"
 	"unsafe"
 )
@@ -258,4 +259,51 @@ func (m *SyncUInt64Map[V]) Has(key uint64) bool {
 	}
 
 	return false
+}
+
+// RandomSample collects a random sample of keys from the map
+// This is optimized for cache eviction by randomly sampling buckets
+// Returns up to maxSample keys without iterating through the entire map
+func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
+	if maxSample <= 0 {
+		return nil
+	}
+
+	numBuckets := len(m.buckets)
+	if numBuckets == 0 {
+		return nil
+	}
+
+	// Pre-allocate result slice
+	result := make([]uint64, 0, maxSample)
+
+	// Calculate how many buckets to sample
+	// Sample more buckets to increase chance of finding enough items
+	bucketsToSample := maxSample * 2
+	if bucketsToSample > numBuckets {
+		bucketsToSample = numBuckets
+	}
+
+	// Create a random permutation of bucket indices
+	// This ensures we don't sample the same bucket twice
+	perm := rand.Perm(numBuckets)
+
+	// Sample buckets until we have enough keys or run out of buckets
+	for i := 0; i < bucketsToSample && len(result) < maxSample; i++ {
+		bucketIdx := perm[i]
+		bucket := &m.buckets[bucketIdx]
+
+		// Collect keys from this bucket
+		for node := (*fnode[V])(atomic.LoadPointer(&bucket.head)); node != nil && len(result) < maxSample; node = (*fnode[V])(atomic.LoadPointer(&node.next)) {
+			// Skip deleted nodes
+			if atomic.LoadUint32(&node.deleted) != 0 {
+				continue
+			}
+
+			// Add key to result
+			result = append(result, node.key)
+		}
+	}
+
+	return result
 }
