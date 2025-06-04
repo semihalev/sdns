@@ -341,25 +341,3 @@ func TestCache_CNAMEChain(t *testing.T) {
 		t.Error("expected CNAME record first")
 	}
 }
-
-// mockDNSCache for testing
-type mockDNSCache struct {
-	entries map[uint64]*CacheEntry
-}
-
-func (m *mockDNSCache) Get(key uint64) (*CacheEntry, bool) {
-	entry, ok := m.entries[key]
-	return entry, ok
-}
-
-func (m *mockDNSCache) Set(key uint64, entry *CacheEntry) {
-	m.entries[key] = entry
-}
-
-func (m *mockDNSCache) Remove(key uint64) {
-	delete(m.entries, key)
-}
-
-func (m *mockDNSCache) Len() int {
-	return len(m.entries)
-}
