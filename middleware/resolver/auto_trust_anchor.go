@@ -12,6 +12,7 @@ import (
 	"github.com/semihalev/sdns/dnsutil"
 )
 
+// State represents the state of a trust anchor in RFC 5011 lifecycle
 type State int
 
 const (
@@ -32,12 +33,14 @@ const (
 	stateFile = "trust-anchor.db"
 )
 
+// TrustAnchor holds a DNSSEC trust anchor with its state and metadata
 type TrustAnchor struct {
 	DNSKey    *dns.DNSKEY
 	State     State
 	FirstSeen time.Time
 }
 
+// TrustAnchors maps key tags to their trust anchor data
 type TrustAnchors map[uint16]*TrustAnchor
 
 func (s State) String() string {

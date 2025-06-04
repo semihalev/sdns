@@ -218,7 +218,7 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 		}
 
 		if resp.Rcode == dns.RcodeNameError {
-			return r.authority(ctx, rc.req, resp, rc.parentDSRR, rc.req.Question[0].Qtype)
+			return r.authority(ctx, rc.req, resp, rc.parentDSRR, rc.req.Question[0].Qtype) // handle NXDOMAIN with DNSSEC proof
 		}
 
 		return r.answer(ctx, rc.req, resp, rc.parentDSRR, rc.extra...)
@@ -231,11 +231,11 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 	}
 
 	if len(resp.Ns) > 0 {
-		return r.processAuthoritySection(ctx, rc, minReq, resp, minimized)
+		return r.processAuthoritySection(ctx, rc, minReq, resp, minimized) // handle delegation or authority data
 	}
 
 	// no answer, no authority. create new msg safer, sometimes received weird responses
-	m := new(dns.Msg)
+	m := new(dns.Msg) // return clean empty response instead of malformed data
 
 	m.Question = rc.req.Question
 	m.SetRcode(rc.req, dns.RcodeSuccess)
@@ -279,7 +279,7 @@ func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (c
 			if n == qname {
 				loopCount++
 				if loopCount > 1 {
-					return ctx, true
+					return ctx, true // detected NS lookup loop, prevent infinite recursion
 				}
 			}
 		}
@@ -585,6 +585,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, boo
 
 func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
 	if msg, ok := r.checkDname(ctx, resp); ok {
+		// DNAME synthesis: resolve target and append answers
 		resp.Answer = append(resp.Answer, msg.Answer...)
 		resp.Rcode = msg.Rcode
 
@@ -594,6 +595,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 	}
 
 	if !req.CheckingDisabled {
+		// Validate DNSSEC signatures when CD bit is not set
 		var err error
 		q := req.Question[0]
 
@@ -611,6 +613,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
 			return nil, errDSRecords
 		} else if len(parentdsrr) > 0 {
+			// Verify entire DNSSEC chain from parent DS to answer
 			resp.AuthenticatedData, err = r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, parentdsrr)
 			if err != nil {
 				log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
@@ -656,7 +659,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 			if ok && resp.Rcode == dns.RcodeNameError {
 				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
 				if len(nsec3Set) > 0 {
-					err = verifyNameError(resp, nsec3Set)
+					err = verifyNameError(resp, nsec3Set) // prove non-existence via NSEC3
 					if err != nil {
 						log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
@@ -704,7 +707,7 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
-	authcache.Sort(serversList, atomic.AddUint64(&servers.Called, 1))
+	authcache.Sort(serversList, atomic.AddUint64(&servers.Called, 1)) // sort by RTT and failure rate
 
 	responseErrors := []*dns.Msg{}
 	configErrors := []*dns.Msg{}
@@ -980,6 +983,7 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, version authcach
 
 func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers *authcache.AuthServers, parentdsrr []dns.RR, level int) {
 	if q.Qtype == dns.TypeDS {
+		// DS queries are answered by parent zone, move up one label
 		next, end := dns.NextLabel(q.Name, 0)
 
 		q.Name = q.Name[next:]
@@ -1022,12 +1026,12 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	next, end := dns.NextLabel(q.Name, 0)
 
 	if end {
-		return r.rootservers, nil, 0
+		return r.rootservers, nil, 0 // reached root zone, use root servers
 	}
 
 	q.Name = q.Name[next:]
 
-	return r.searchCache(q, cd, origin)
+	return r.searchCache(q, cd, origin) // recursive walk up DNS tree
 }
 
 func (r *Resolver) findRRSIG(resp *dns.Msg, qname string, inAnswer bool) (signer string, signerFound bool) {
@@ -1206,7 +1210,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 
 		if len(authservers.List) > 0 {
 			// temprorary cache before lookup
-			r.ncache.Set(key, parentdsrr, authservers, time.Minute)
+			r.ncache.Set(key, parentdsrr, authservers, time.Minute) // cache partial results during NS lookups
 		}
 
 		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
@@ -1239,7 +1243,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 	}
 }
 
-func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv6, nss nameservers, cd bool) {
+func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
 	//we can give sometimes for that lookups because of rate limiting on auth servers
 	time.Sleep(defaultTimeout)
 
@@ -1562,9 +1566,9 @@ func (r *Resolver) run() {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	r.checkPriming()
+	r.checkPriming() // update root server list from priming query
 	if r.dnssec {
-		r.AutoTA()
+		r.AutoTA() // RFC 5011 automated trust anchor updates
 	}
 
 	ticker := time.NewTicker(12 * time.Hour)
@@ -1740,7 +1744,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 	if r.cfg.IPv6Access {
 		reqid := ctx.Value(contextKeyRequestID)
 		v6ctx := context.WithValue(context.Background(), contextKeyRequestID, reqid)
-		go r.lookupV6Nss(v6ctx, q, authservers, key, rc.parentDSRR, foundv6, nsInfo.nameservers, cd)
+		go r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.nameservers, cd)
 	}
 
 	rc.depth--

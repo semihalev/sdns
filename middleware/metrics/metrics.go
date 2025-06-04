@@ -19,12 +19,12 @@ import (
 type Metrics struct {
 	queries *prometheus.CounterVec
 
-	// Domain metrics
+	// Domain metrics with concurrent access tracking
 	domainMetricsEnabled bool
-	domainMetricsLimit   int
+	domainMetricsLimit   int // Max domains to track (memory limit)
 	domainQueries        *prometheus.CounterVec
-	domainTracker        sync.Map
-	domainCount          int32
+	domainTracker        sync.Map // Concurrent map of tracked domains
+	domainCount          int32    // Atomic counter for domain count
 	domainCleanupMu      sync.Mutex
 	lastCleanup          time.Time
 }
@@ -89,8 +89,7 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 // recordDomainQuery records a query for a specific domain
 func (m *Metrics) recordDomainQuery(qname string) {
-	// Skip domains with less than 2 labels (e.g., "com.", "localhost.")
-	// We require at least 2 labels (e.g., "example.com.")
+	// Filter: skip TLDs and single-label domains
 	if dns.CountLabel(qname) < 2 {
 		return
 	}
@@ -98,7 +97,7 @@ func (m *Metrics) recordDomainQuery(qname string) {
 	// Normalize domain name (lowercase and remove trailing dot)
 	domain := strings.ToLower(strings.TrimSuffix(qname, "."))
 
-	// Check if domain is already being tracked
+	// Fast path: increment if already tracking
 	if _, exists := m.domainTracker.Load(domain); exists {
 		// Domain already tracked, just increment
 		m.domainQueries.WithLabelValues(domain).Inc()
@@ -123,7 +122,7 @@ func (m *Metrics) recordDomainQuery(qname string) {
 		}
 	}
 
-	// Add the new domain
+	// Add the new domain (atomic operation)
 	if _, loaded := m.domainTracker.LoadOrStore(domain, true); !loaded {
 		// Successfully added new domain
 		atomic.AddInt32(&m.domainCount, 1)
@@ -142,14 +141,13 @@ func (m *Metrics) recordDomainQuery(qname string) {
 
 // maybeCleanupDomains removes domains with lowest query counts if needed
 func (m *Metrics) maybeCleanupDomains() {
-	// Use mutex to prevent concurrent cleanups
+	// Prevent concurrent cleanups
 	if !m.domainCleanupMu.TryLock() {
 		return
 	}
 	defer m.domainCleanupMu.Unlock()
 
-	// Check if enough time has passed since last cleanup (avoid too frequent cleanups)
-	// But always allow cleanup if we're over limit
+	// Rate limit cleanups (5 min) unless over limit
 	currentCount := atomic.LoadInt32(&m.domainCount)
 	if int(currentCount) <= m.domainMetricsLimit && time.Since(m.lastCleanup) < 5*time.Minute {
 		return
@@ -186,7 +184,7 @@ func (m *Metrics) maybeCleanupDomains() {
 		return domains[i].count > domains[j].count
 	})
 
-	// Keep only top domains up to limit
+	// Evict least queried domains to stay within limit
 	for i := m.domainMetricsLimit; i < len(domains); i++ {
 		domain := domains[i].domain
 		m.domainTracker.Delete(domain)

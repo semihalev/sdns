@@ -56,6 +56,7 @@ func (h *DNSHandler) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	// Skip resolver if forwarders are configured
 	if len(h.cfg.ForwarderServers) > 0 {
 		ch.Next(ctx)
 		return
@@ -63,6 +64,7 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	w, req := ch.Writer, ch.Request
 
+	// Ensure request ID is in context for tracking
 	if ctx.Value(contextKeyRequestID) == nil {
 		ctx = context.WithValue(ctx, contextKeyRequestID, req.Id)
 	}
@@ -88,12 +90,12 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
 	}
 
-	// debug ns stats
+	// CHAOS queries: debug nameserver stats (HINFO) or cache purge (NULL)
 	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
 		return h.nsStats(req)
 	}
 
-	// check purge query
+	// CHAOS NULL queries trigger cache purge for specific domains
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
 		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
 			if qtype == dns.TypeNS {
@@ -129,7 +131,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	// Perform recursive resolution
+	// Start recursive resolution from root servers
 	depth := h.cfg.Maxdepth
 	isRootQuery := q.Name == rootzone
 	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil, isRootQuery)

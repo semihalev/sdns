@@ -8,8 +8,7 @@ import (
 	"unsafe"
 )
 
-// SyncUInt64Map is a highly optimized map for uint64 keys
-// This is the production version incorporating all performance optimizations
+// SyncUInt64Map: lock-free hash map using CAS operations on linked lists
 type SyncUInt64Map[V any] struct {
 	buckets []bucket[V]
 	mask    uint64
@@ -45,11 +44,8 @@ func NewSyncUInt64Map[V any](sizePower uint) *SyncUInt64Map[V] {
 	}
 }
 
-// hashFast is an optimized hash function for uint64 keys
-// that combines speed and excellent distribution
+// hashFast: avalanche mixing spreads bits for uniform bucket distribution
 func hashFast(key uint64) uint64 {
-	// Fast avalanche function - spreads bits quickly
-	// Optimized for modern CPU pipelines
 	key = key * 0xd6e8feb86659fd93
 	key = bits.RotateLeft64(key, 32) ^ key
 
@@ -104,10 +100,7 @@ func (m *SyncUInt64Map[V]) Set(key uint64, value V) {
 					m.count.Add(1)
 					return
 				}
-				// If CAS failed, another thread modified it, retry
-				// Use a no-op CAS as a memory barrier to ensure we see all updates
-				// made by other threads before continuing. This prevents stale reads
-				// of the bucket's head pointer and ensures sequential consistency.
+				// CAS memory barrier: ensures visibility of concurrent updates
 				atomic.CompareAndSwapUint32(&current.deleted, 0, 0)
 				current = (*fnode[V])(atomic.LoadPointer(&bucket.head))
 				predecessor = nil
@@ -261,9 +254,7 @@ func (m *SyncUInt64Map[V]) Has(key uint64) bool {
 	return false
 }
 
-// RandomSample collects a random sample of keys from the map
-// This is optimized for cache eviction by randomly sampling buckets
-// Returns up to maxSample keys without iterating through the entire map
+// RandomSample: O(sample) complexity by sampling random buckets, not full scan
 func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
 	if maxSample <= 0 {
 		return nil
@@ -277,15 +268,13 @@ func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
 	// Pre-allocate result slice
 	result := make([]uint64, 0, maxSample)
 
-	// Calculate how many buckets to sample
-	// Sample more buckets to increase chance of finding enough items
+	// Sample 2x buckets to account for sparse/uneven distribution
 	bucketsToSample := maxSample * 2
 	if bucketsToSample > numBuckets {
 		bucketsToSample = numBuckets
 	}
 
-	// Create a random permutation of bucket indices
-	// This ensures we don't sample the same bucket twice
+	// Random permutation prevents bias from sequential bucket access
 	perm := rand.Perm(numBuckets)
 
 	// Sample buckets until we have enough keys or run out of buckets

@@ -26,8 +26,7 @@ func New(size int) *Cache {
 		size = 1
 	}
 
-	// Calculate optimal bucket count based on cache size
-	// For DNS cache, we want good distribution with minimal overhead
+	// Bucket sizing: more buckets = less contention, better concurrency
 	var power uint
 	switch {
 	case size <= 1024:
@@ -76,8 +75,7 @@ func (c *Cache) Len() int {
 	return int(c.data.Len())
 }
 
-// evict removes entries when cache is full
-// Uses random bucket sampling for efficient eviction without full iteration
+// evict: random sampling strategy avoids full scan, O(evictions) not O(size)
 func (c *Cache) evict() {
 	// Run eviction in a loop until we're under the limit
 	// This handles cases where items are being added concurrently
@@ -87,12 +85,7 @@ func (c *Cache) evict() {
 			return // We're under the limit
 		}
 
-		// Calculate how many entries to evict
-		// We evict at least the overhead to get back under maxSize, but to avoid
-		// frequent evictions, we evict a minimum of 5% of maxSize. This batching
-		// reduces the frequency of eviction operations, improving performance by
-		// amortizing the cost over more entries. The 5% threshold was chosen as
-		// a balance between memory efficiency and eviction overhead.
+		// Batch eviction: 5% minimum reduces eviction frequency, amortizes cost
 		overhead := int(currentSize - int64(c.maxSize))
 		evictBatch := overhead
 		if evictBatch < c.maxSize/20 { // Minimum 5% of maxSize
@@ -102,16 +95,14 @@ func (c *Cache) evict() {
 			evictBatch = 1
 		}
 
-		// For very small caches, use simple iteration
-		// Random sampling doesn't work well for tiny caches
+		// Small caches: iteration beats random sampling overhead
 		if c.maxSize < 100 || evictBatch < 10 {
 			evicted := c.evictSimple(evictBatch)
 			if evicted == 0 {
 				break
 			}
 		} else {
-			// Use random bucket sampling for larger caches
-			// This is much more efficient for large caches
+			// Large caches: random sampling scales better than iteration
 			evicted := c.evictRandomSample(evictBatch)
 			if evicted == 0 {
 				break
