@@ -287,18 +287,18 @@ func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
 
 	// Use map to track sampled buckets and avoid duplicates
 	sampledBuckets := make(map[int]struct{}, bucketsToSample)
-	
+
 	// Sample random buckets until we have enough keys or sampled enough buckets
 	for len(sampledBuckets) < bucketsToSample && len(result) < maxSample {
 		// Pick a random bucket
 		bucketIdx := rand.IntN(numBuckets)
-		
+
 		// Skip if already sampled
 		if _, exists := sampledBuckets[bucketIdx]; exists {
 			continue
 		}
 		sampledBuckets[bucketIdx] = struct{}{}
-		
+
 		bucket := &m.buckets[bucketIdx]
 
 		// Collect keys from this bucket
