@@ -10,13 +10,58 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 )
 
-var timesSeen sync.Map
+// hostCounter tracks download counts for each host in a type-safe way
+type hostCounter struct {
+	mu     sync.RWMutex
+	counts map[string]*atomic.Int64
+}
+
+func newHostCounter() *hostCounter {
+	return &hostCounter{
+		counts: make(map[string]*atomic.Int64),
+	}
+}
+
+func (h *hostCounter) increment(host string) int64 {
+	h.mu.RLock()
+	counter, exists := h.counts[host]
+	h.mu.RUnlock()
+
+	if exists {
+		return counter.Add(1)
+	}
+
+	// Need to create new counter
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if counter, exists := h.counts[host]; exists {
+		return counter.Add(1)
+	}
+
+	// Create new counter starting at 1
+	counter = &atomic.Int64{}
+	counter.Store(1)
+	h.counts[host] = counter
+	return 1
+}
+
+var (
+	timesSeen = newHostCounter()
+
+	// httpClient is a shared HTTP client with reasonable timeout
+	httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+	}
+)
 
 func (b *BlockList) fetchBlocklists() {
 	if b.cfg.BlockListDir == "" {
@@ -37,7 +82,7 @@ func (b *BlockList) fetchBlocklists() {
 func (b *BlockList) updateBlocklists() error {
 	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
 		if err := os.Mkdir(b.cfg.BlockListDir, 0750); err != nil {
-			return fmt.Errorf("error creating blacklist directory: %s", err)
+			return fmt.Errorf("error creating blacklist directory: %w", err)
 		}
 	}
 
@@ -57,11 +102,11 @@ func (b *BlockList) updateBlocklists() error {
 }
 
 func (b *BlockList) downloadBlocklist(uri, name string) error {
-	filePath := filepath.FromSlash(fmt.Sprintf("%s/%s", b.cfg.BlockListDir, name))
+	filePath := filepath.Join(b.cfg.BlockListDir, name)
 
 	output, err := os.Create(filePath)
 	if err != nil {
-		return fmt.Errorf("error creating file: %s", err)
+		return fmt.Errorf("error creating file: %w", err)
 	}
 
 	defer func() {
@@ -71,14 +116,19 @@ func (b *BlockList) downloadBlocklist(uri, name string) error {
 		}
 	}()
 
-	response, err := http.Get(uri)
+	response, err := httpClient.Get(uri)
 	if err != nil {
-		return fmt.Errorf("error downloading source: %s", err)
+		return fmt.Errorf("error downloading source: %w", err)
 	}
 	defer response.Body.Close()
 
+	// Check response status
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", response.StatusCode)
+	}
+
 	if _, err := io.Copy(output, response.Body); err != nil {
-		return fmt.Errorf("error copying output: %s", err)
+		return fmt.Errorf("error copying output: %w", err)
 	}
 
 	return nil
@@ -88,27 +138,30 @@ func (b *BlockList) fetchBlocklist() {
 	var wg sync.WaitGroup
 
 	for _, uri := range b.cfg.BlockLists {
-		wg.Add(1)
-
-		u, _ := url.Parse(uri)
-		host := u.Host
-
-		// Atomically increment the counter
-		count := 1
-		if val, ok := timesSeen.Load(host); ok {
-			count = val.(int) + 1
+		u, err := url.Parse(uri)
+		if err != nil {
+			log.Error("Invalid blocklist URL", "uri", uri, "error", err.Error())
+			continue
 		}
-		timesSeen.Store(host, count)
 
+		host := u.Host
+		if host == "" {
+			log.Error("Invalid blocklist URL: missing host", "uri", uri)
+			continue
+		}
+
+		// Atomically increment the counter using our type-safe counter
+		count := timesSeen.increment(host)
 		fileName := fmt.Sprintf("%s.%d.tmp", host, count)
 
+		wg.Add(1)
 		go func(uri string, name string) {
+			defer wg.Done()
+
 			log.Info("Fetching blacklist", "uri", uri)
 			if err := b.downloadBlocklist(uri, name); err != nil {
 				log.Error("Fetching blacklist", "uri", uri, "error", err.Error())
 			}
-
-			wg.Done()
 		}(uri, fileName)
 	}
 
@@ -125,20 +178,20 @@ func (b *BlockList) readBlocklists() error {
 
 	err := filepath.Walk(b.cfg.BlockListDir, func(path string, f os.FileInfo, _ error) error {
 		if !f.IsDir() {
-			file, err := os.Open(filepath.FromSlash(path))
+			file, err := os.Open(path)
 			if err != nil {
-				return fmt.Errorf("error opening file: %s", err)
+				return fmt.Errorf("error opening file: %w", err)
 			}
 
 			if err = b.parseHostFile(file); err != nil {
 				_ = file.Close()
-				return fmt.Errorf("error parsing hostfile %s", err)
+				return fmt.Errorf("error parsing hostfile: %w", err)
 			}
 
 			_ = file.Close()
 
 			if filepath.Ext(path) == ".tmp" {
-				_ = os.Remove(filepath.FromSlash(path))
+				_ = os.Remove(path)
 			}
 		}
 
@@ -146,7 +199,7 @@ func (b *BlockList) readBlocklists() error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("error walking location %s", err)
+		return fmt.Errorf("error walking location: %w", err)
 	}
 
 	log.Info("Blocked domains loaded", "total", b.Length())
@@ -159,27 +212,44 @@ func (b *BlockList) parseHostFile(file *os.File) error {
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = strings.TrimSpace(line)
-		isComment := strings.HasPrefix(line, "#")
 
-		if !isComment && line != "" {
-			fields := strings.Fields(line)
+		// Skip comments and empty lines
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
 
-			if len(fields) > 1 && !strings.HasPrefix(fields[1], "#") {
-				line = fields[1]
-			} else {
+		// Handle inline comments using strings.Cut
+		if domain, _, found := strings.Cut(line, "#"); found {
+			line = strings.TrimSpace(domain)
+		}
+
+		// Parse hosts file format (IP domain)
+		fields := strings.Fields(line)
+		switch len(fields) {
+		case 0:
+			continue
+		case 1:
+			// Just a domain
+			line = fields[0]
+		default:
+			// IP address followed by domain(s)
+			// Skip if second field is a comment
+			if strings.HasPrefix(fields[1], "#") {
 				line = fields[0]
+			} else {
+				line = fields[1]
 			}
+		}
 
-			line = dns.CanonicalName(line)
-
-			if !b.Exists(line) {
-				b.set(line)
-			}
+		// Canonicalize and add if not exists
+		line = dns.CanonicalName(line)
+		if !b.Exists(line) {
+			b.set(line)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error scanning hostfile: %s", err)
+		return fmt.Errorf("error scanning hostfile: %w", err)
 	}
 
 	return nil

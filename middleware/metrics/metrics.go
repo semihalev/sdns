@@ -2,10 +2,15 @@ package metrics
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -13,6 +18,15 @@ import (
 // Metrics type
 type Metrics struct {
 	queries *prometheus.CounterVec
+
+	// Domain metrics
+	domainMetricsEnabled bool
+	domainMetricsLimit   int
+	domainQueries        *prometheus.CounterVec
+	domainTracker        sync.Map
+	domainCount          int32
+	domainCleanupMu      sync.Mutex
+	lastCleanup          time.Time
 }
 
 // New return new metrics
@@ -25,8 +39,22 @@ func New(cfg *config.Config) *Metrics {
 			},
 			[]string{"qtype", "rcode"},
 		),
+		domainMetricsEnabled: cfg.DomainMetrics,
+		domainMetricsLimit:   cfg.DomainMetricsLimit,
 	}
 	_ = prometheus.Register(m.queries)
+
+	// Initialize domain metrics if enabled
+	if m.domainMetricsEnabled {
+		m.domainQueries = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "dns_domain_queries_total",
+				Help: "How many DNS queries processed per domain",
+			},
+			[]string{"domain"},
+		)
+		_ = prometheus.Register(m.domainQueries)
+	}
 
 	return m
 }
@@ -42,13 +70,130 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	question := ch.Request.Question[0]
+
+	// Update general metrics
 	labels := AcquireLabels()
 	defer ReleaseLabels(labels)
 
-	labels["qtype"] = dns.TypeToString[ch.Request.Question[0].Qtype]
+	labels["qtype"] = dns.TypeToString[question.Qtype]
 	labels["rcode"] = dns.RcodeToString[ch.Writer.Rcode()]
 
 	m.queries.With(labels).Inc()
+
+	// Update domain metrics if enabled
+	if m.domainMetricsEnabled {
+		m.recordDomainQuery(question.Name)
+	}
+}
+
+// recordDomainQuery records a query for a specific domain
+func (m *Metrics) recordDomainQuery(qname string) {
+	// Skip domains with less than 2 labels (e.g., "com.", "localhost.")
+	// We require at least 2 labels (e.g., "example.com.")
+	if dns.CountLabel(qname) < 2 {
+		return
+	}
+
+	// Normalize domain name (lowercase and remove trailing dot)
+	domain := strings.ToLower(strings.TrimSuffix(qname, "."))
+
+	// Check if domain is already being tracked
+	if _, exists := m.domainTracker.Load(domain); exists {
+		// Domain already tracked, just increment
+		m.domainQueries.WithLabelValues(domain).Inc()
+		return
+	}
+
+	// New domain - check if we're at limit
+	if m.domainMetricsLimit > 0 {
+		currentCount := atomic.LoadInt32(&m.domainCount)
+		if int(currentCount) >= m.domainMetricsLimit {
+			// At limit - check if we should run cleanup
+			m.maybeCleanupDomains()
+
+			// After cleanup, check count again
+			currentCount = atomic.LoadInt32(&m.domainCount)
+			if int(currentCount) >= m.domainMetricsLimit {
+				// Still at limit after cleanup
+				// Don't track this domain for now, it will be picked up
+				// in the next cleanup cycle if it becomes popular
+				return
+			}
+		}
+	}
+
+	// Add the new domain
+	if _, loaded := m.domainTracker.LoadOrStore(domain, true); !loaded {
+		// Successfully added new domain
+		atomic.AddInt32(&m.domainCount, 1)
+		// Increment the counter for this domain
+		m.domainQueries.WithLabelValues(domain).Inc()
+
+		// Check if we need cleanup after adding
+		if m.domainMetricsLimit > 0 {
+			currentCount := atomic.LoadInt32(&m.domainCount)
+			if int(currentCount) > m.domainMetricsLimit {
+				m.maybeCleanupDomains()
+			}
+		}
+	}
+}
+
+// maybeCleanupDomains removes domains with lowest query counts if needed
+func (m *Metrics) maybeCleanupDomains() {
+	// Use mutex to prevent concurrent cleanups
+	if !m.domainCleanupMu.TryLock() {
+		return
+	}
+	defer m.domainCleanupMu.Unlock()
+
+	// Check if enough time has passed since last cleanup (avoid too frequent cleanups)
+	// But always allow cleanup if we're over limit
+	currentCount := atomic.LoadInt32(&m.domainCount)
+	if int(currentCount) <= m.domainMetricsLimit && time.Since(m.lastCleanup) < 5*time.Minute {
+		return
+	}
+	m.lastCleanup = time.Now()
+
+	// Collect all domains and their counts
+	type domainCount struct {
+		domain string
+		count  float64
+	}
+	var domains []domainCount
+
+	m.domainTracker.Range(func(key, _ interface{}) bool {
+		domain := key.(string)
+		// Get current count from Prometheus
+		metric := &dto.Metric{}
+		if m.domainQueries.WithLabelValues(domain).Write(metric) == nil {
+			if metric.Counter != nil && metric.Counter.Value != nil {
+				count := *metric.Counter.Value
+				domains = append(domains, domainCount{domain: domain, count: count})
+			}
+		}
+		return true
+	})
+
+	// If we're not over limit, no need to clean
+	if len(domains) <= m.domainMetricsLimit {
+		return
+	}
+
+	// Sort by count (descending) to keep top domains
+	sort.Slice(domains, func(i, j int) bool {
+		return domains[i].count > domains[j].count
+	})
+
+	// Keep only top domains up to limit
+	for i := m.domainMetricsLimit; i < len(domains); i++ {
+		domain := domains[i].domain
+		m.domainTracker.Delete(domain)
+		atomic.AddInt32(&m.domainCount, -1)
+		// Remove from Prometheus
+		m.domainQueries.DeleteLabelValues(domain)
+	}
 }
 
 var labelsPool sync.Pool

@@ -17,7 +17,7 @@ import (
 	"github.com/semihalev/log"
 )
 
-const configver = "1.4.0"
+const configver = "1.5.0"
 
 // Config type
 type Config struct {
@@ -69,6 +69,10 @@ type Config struct {
 	DnstapLogQueries    bool
 	DnstapLogResponses  bool
 	DnstapFlushInterval int
+
+	// Domain metrics configuration
+	DomainMetrics      bool
+	DomainMetricsLimit int
 
 	Plugins map[string]Plugin
 
@@ -350,6 +354,19 @@ ratelimit = 0
 # Per-client rate limit (queries per minute)
 # 0 = disabled
 clientratelimit = 0
+
+# ============================
+# Domain Metrics
+# ============================
+
+# Enable per-domain query metrics
+# Tracks query counts for individual domains
+domainmetrics = false
+
+# Maximum number of domains to track in metrics
+# 0 = unlimited (use with caution - may consume memory)
+# Recommended: 10000-100000 for production
+domainmetricslimit = 10000
 
 # ============================
 # Custom Lists

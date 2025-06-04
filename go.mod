@@ -7,6 +7,7 @@ require (
 	github.com/prometheus/client_golang v1.22.0
 	github.com/quic-go/quic-go v0.52.0
 	github.com/semihalev/log v0.1.2
+	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.10.0
 	github.com/yl2chen/cidranger v1.0.2
 	golang.org/x/sync v0.14.0
@@ -16,8 +17,6 @@ require (
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/dnstap/golang-dnstap v0.4.0 // indirect
-	github.com/farsightsec/golang-framestream v0.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/pprof v0.0.0-20250501235452-c0086092b71a // indirect
@@ -29,7 +28,6 @@ require (
 	github.com/prometheus/common v0.64.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
-	github.com/spf13/cobra v1.9.1 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	go.uber.org/automaxprocs v1.6.0 // indirect
 	go.uber.org/mock v0.5.2 // indirect

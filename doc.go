@@ -20,7 +20,7 @@ in a chain. The middleware order is important and defined as:
 
  1. Recovery - Panic recovery and error handling
  2. Loop - Detection and prevention of query loops
- 3. Metrics - Prometheus metrics collection
+ 3. Metrics - Prometheus metrics collection with optional per-domain tracking
  4. Dnstap - Binary DNS message logging (dnstap format)
  5. AccessList - IP-based access control
  6. RateLimit - Query rate limiting per client
