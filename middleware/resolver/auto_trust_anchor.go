@@ -9,7 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/util"
 )
 
 // State represents the state of a trust anchor in RFC 5011 lifecycle
@@ -118,7 +118,7 @@ func (r *Resolver) AutoTA() {
 
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeDNSKEY)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.SetEdns0(util.DefaultMsgSize, true)
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
 	defer cancel()

@@ -75,7 +75,9 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	}
 
 	resp := e.msg.Copy()
+	originalRcode := resp.Rcode // Save the original Rcode
 	resp.SetReply(req)
+	resp.Rcode = originalRcode // Restore the original Rcode
 	resp.Id = req.Id
 
 	// Set Authoritative to false since this is from cache (matching V1 behavior)
@@ -133,7 +135,7 @@ type CacheKey struct {
 
 // Hash returns the cache key hash
 func (k CacheKey) Hash() uint64 {
-	return cache.Hash(k.Question, k.CD)
+	return cache.Key(k.Question, k.CD)
 }
 
 // CacheConfig holds cache configuration with validation

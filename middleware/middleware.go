@@ -94,6 +94,10 @@ func Setup(cfg *config.Config) {
 
 	for i, handler := range m.handlers {
 		h := handler.new(m.cfg)
+		if h == nil {
+			log.Debug("Middleware not enabled", "name", handler.name, "index", i)
+			continue
+		}
 		chainHandlers = append(chainHandlers, h)
 
 		log.Debug("Middleware registered", "name", h.Name(), "index", i)

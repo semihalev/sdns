@@ -44,7 +44,7 @@ type Config struct {
 	BearerToken      string
 	Nullroute        string
 	Nullroutev6      string
-	Hostsfile        string
+	HostsFile        string
 	OutboundIPs      []string
 	OutboundIP6s     []string
 	Timeout          Duration

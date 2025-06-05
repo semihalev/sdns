@@ -11,10 +11,10 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
 	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -67,7 +67,7 @@ func Test_handler(t *testing.T) {
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.SetEdns0(dnsutil.DefaultMsgSize, true)
+	m.SetEdns0(util.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) == 0, true)

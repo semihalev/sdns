@@ -16,8 +16,8 @@ import (
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/util"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
@@ -261,7 +261,7 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 	q := req.Question[0]
 
 	// Convert uint64 key to string for singleflight
-	key := fmt.Sprintf("%d", cache.Hash(q))
+	key := fmt.Sprintf("%d", cache.Key(q))
 
 	result, err, shared := r.group.Do(key, func() (interface{}, error) {
 		return r.lookup(ctx, req, servers)
@@ -493,13 +493,13 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
 	for name, addrs := range nsipv4 {
-		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
+		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
 		r.ipv4cache.Add(key, addrs)
 	}
 }
 
 func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
-	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
+	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
 	if v, ok := r.ipv4cache.Get(key); ok {
 		return v.([]string), ok
 	}
@@ -508,18 +508,18 @@ func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
 }
 
 func (r *Resolver) removeIPv4Cache(name string) {
-	r.ipv4cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
+	r.ipv4cache.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
 	for name, addrs := range nsipv6 {
-		key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
+		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
 		r.ipv6cache.Add(key, addrs)
 	}
 }
 
 func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
-	key := cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
+	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
 	if v, ok := r.ipv6cache.Get(key); ok {
 		return v.([]string), ok
 	}
@@ -528,7 +528,7 @@ func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
 }
 
 func (r *Resolver) removeIPv6Cache(name string) {
-	r.ipv6cache.Remove(cache.Hash(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
+	r.ipv6cache.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool) {
@@ -582,9 +582,9 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, boo
 	if target != "" {
 		req := new(dns.Msg)
 		req.SetQuestion(target, q.Qtype)
-		req.SetEdns0(dnsutil.DefaultMsgSize, true)
+		req.SetEdns0(util.DefaultMsgSize, true)
 
-		msg, err := dnsutil.ExchangeInternal(ctx, req)
+		msg, err := util.ExchangeInternal(ctx, req)
 		if err != nil {
 			return nil, false
 		}
@@ -995,7 +995,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
-		req = dnsutil.ClearOPT(req)
+		req = util.ClearOPT(req)
 		return r.exchange(ctx, proto, req, server, retried)
 	}
 
@@ -1050,7 +1050,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	}
 
 	q.Qtype = dns.TypeNS // we should search NS type in cache
-	key := cache.Hash(q, cd)
+	key := cache.Key(q, cd)
 
 	ns, err := r.ncache.Get(key)
 
@@ -1066,7 +1066,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	}
 
 	if !cd {
-		key := cache.Hash(q, true)
+		key := cache.Key(q, true)
 		ns, err := r.ncache.Get(key)
 
 		if err == nil && len(ns.DSRR) == 0 {
@@ -1171,9 +1171,9 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string) (msg *dns.Msg, er
 
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
-	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	dsReq.SetEdns0(util.DefaultMsgSize, true)
 
-	dsres, err := dnsutil.ExchangeInternal(ctx, dsReq)
+	dsres, err := util.ExchangeInternal(ctx, dsReq)
 	if err != nil {
 		return nil, err
 	}
@@ -1196,10 +1196,10 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
-	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	nsReq.SetEdns0(util.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := dnsutil.ExchangeInternal(ctx, nsReq)
+	nsres, err := util.ExchangeInternal(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
 	}
@@ -1227,10 +1227,10 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeAAAA)
-	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	nsReq.SetEdns0(util.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := dnsutil.ExchangeInternal(ctx, nsReq)
+	nsres, err := util.ExchangeInternal(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s (%v)", qname, err)
 	}
@@ -1408,14 +1408,14 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
 	keyReq := new(dns.Msg)
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
-	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	keyReq.SetEdns0(util.DefaultMsgSize, true)
 
 	var msg *dns.Msg
 
 	q := resp.Question[0]
 
 	if q.Qtype != dns.TypeDNSKEY || q.Name != signer {
-		msg, err = dnsutil.ExchangeInternal(ctx, keyReq)
+		msg, err = util.ExchangeInternal(ctx, keyReq)
 		if err != nil {
 			return
 		}
@@ -1530,7 +1530,7 @@ func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
 func (r *Resolver) checkPriming() {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.SetEdns0(util.DefaultMsgSize, true)
 	req.CheckingDisabled = !r.dnssec
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
@@ -1770,7 +1770,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 	cd := rc.req.CheckingDisabled || len(rc.parentDSRR) == 0
 
 	// Try nameserver cache
-	key := cache.Hash(q, cd)
+	key := cache.Key(q, cd)
 	if ncache, err := r.ncache.Get(key); err == nil {
 		return r.resolveWithCachedNameservers(ctx, rc, ncache, key, q, cd)
 	}

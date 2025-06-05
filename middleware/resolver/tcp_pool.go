@@ -168,9 +168,12 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 
 // getPoolMap returns the appropriate pool map
 func (p *TCPConnPool) getPoolMap(isRoot, isTLD bool) map[string]*pooledConn {
+	_ = isTLD // Avoid unused variable warning
+
 	if isRoot {
 		return p.rootConns
 	}
+
 	return p.tldConns
 }
 

@@ -13,9 +13,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
+	"github.com/semihalev/sdns/util"
 )
 
 // API type
@@ -134,7 +134,7 @@ func (a *API) purge(ctx *Context) {
 	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
 	req.Question[0].Qclass = dns.ClassCHAOS
 
-	_, _ = dnsutil.ExchangeInternal(context.Background(), req)
+	_, _ = util.ExchangeInternal(context.Background(), req)
 
 	ctx.JSON(http.StatusOK, Json{"success": true})
 }

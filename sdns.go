@@ -61,8 +61,12 @@ func setup() error {
 		return fmt.Errorf("log verbosity level unknown: %w", err)
 	}
 
+	// Use zero-allocation handler for better performance
+	// This is safe because we're using synchronous logging to stdout
+	handler := log.ZeroAllocHandler(log.StdoutHandler)
+
 	log.Root().SetLevel(lvl)
-	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
+	log.Root().SetHandler(log.LvlFilterHandler(lvl, handler))
 
 	middleware.Setup(cfg)
 	return nil

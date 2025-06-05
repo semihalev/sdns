@@ -8,8 +8,8 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/util"
 )
 
 type server struct {
@@ -67,7 +67,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	for _, server := range f.servers {
-		resp, err := dnsutil.Exchange(ctx, req, server.Addr, server.Proto)
+		resp, err := util.Exchange(ctx, req, server.Addr, server.Proto)
 		if err != nil {
 			log.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue

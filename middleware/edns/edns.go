@@ -6,8 +6,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/util"
 )
 
 // EDNS type
@@ -43,7 +43,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
 	if req.Opcode > 0 {
-		_ = dnsutil.NotSupported(w, req)
+		_ = util.NotSupported(w, req)
 
 		ch.Cancel()
 		return
@@ -51,7 +51,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	noedns := req.IsEdns0() == nil
 
-	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req)
+	opt, size, cookie, nsid, do := util.SetEdns0(req)
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 
@@ -92,9 +92,9 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	m.Compress = true
 
 	if !w.do {
-		m = dnsutil.ClearDNSSEC(m)
+		m = util.ClearDNSSEC(m)
 	}
-	m = dnsutil.ClearOPT(m)
+	m = util.ClearOPT(m)
 
 	if !w.noedns {
 		w.opt.SetDo(w.do)
@@ -124,7 +124,7 @@ func (w *ResponseWriter) setCookie() {
 
 	w.opt.Option = append(w.opt.Option, &dns.EDNS0_COOKIE{
 		Code:   dns.EDNS0COOKIE,
-		Cookie: dnsutil.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
+		Cookie: util.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
 	})
 }
 

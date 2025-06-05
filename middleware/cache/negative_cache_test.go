@@ -6,7 +6,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/response"
+	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,8 +36,8 @@ func TestNegativeCacheExpiry(t *testing.T) {
 	assert.NotNil(t, entry, "Entry should be in cache immediately after setting")
 
 	// Check response type
-	mt, _ := response.Typify(msg, time.Now().UTC())
-	assert.Equal(t, response.OtherError, mt, "SERVFAIL should be OtherError type")
+	mt, _ := util.ClassifyResponse(msg, time.Now().UTC())
+	assert.Equal(t, util.TypeServerFailure, mt, "SERVFAIL should be OtherError type")
 
 	// Entry should be in negative cache
 	negEntry, found := c.negative.Get(key)

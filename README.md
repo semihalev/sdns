@@ -304,7 +304,6 @@ Before submitting patches, please review our [CONTRIBUTING](https://github.com/s
 
 ## Inspired by
 
-*   [coredns/coredns](https://github.com/coredns/coredns)
 *   [looterz/grimd](https://github.com/looterz/grimd)
 
 ## License

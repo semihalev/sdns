@@ -7,7 +7,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
-	"github.com/semihalev/sdns/dnsutil"
+	"github.com/semihalev/sdns/util"
 )
 
 // PrefetchRequest represents a DNS query to be prefetched
@@ -95,7 +95,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	prefetchReq := req.Request.Copy()
 
 	// Execute the prefetch query
-	resp, err := dnsutil.ExchangeInternal(ctx, prefetchReq)
+	resp, err := util.ExchangeInternal(ctx, prefetchReq)
 	if err != nil {
 		log.Debug("Prefetch failed", "query", formatQuestion(req.Request.Question[0]), "error", err.Error())
 		return

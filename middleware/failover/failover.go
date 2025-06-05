@@ -9,8 +9,8 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/util"
 )
 
 // Failover type
@@ -70,7 +70,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req := new(dns.Msg)
 	req.SetQuestion(m.Question[0].Name, m.Question[0].Qtype)
 	req.Question[0].Qclass = m.Question[0].Qclass
-	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.SetEdns0(util.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
 	ctx := context.Background()
@@ -78,7 +78,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	for _, server := range w.f.servers {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		resp, err := dnsutil.Exchange(ctx, req, server, "udp")
+		resp, err := util.Exchange(ctx, req, server, "udp")
 		if err != nil {
 			log.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
