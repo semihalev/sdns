@@ -16,6 +16,7 @@ const (
 
 // CalculateCacheTTL determines the appropriate cache duration for a DNS response.
 // It scans all resource records and returns the minimum TTL found, with bounds checking.
+// For DNSSEC-signed responses, it also considers RRSIG expiration times.
 func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// Only cache successful responses and negative responses (NXDOMAIN/NODATA)
 	switch respType {
@@ -33,11 +34,18 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 
 	// Find minimum TTL across all sections
 	minTTL := MaxCacheTTL
+	now := time.Now()
 
 	// Check Answer section
 	for _, rr := range msg.Answer {
 		if ttl := getTTL(rr); ttl < minTTL {
 			minTTL = ttl
+		}
+		// Check RRSIG expiration
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			if ttl := getRRSIGTTL(sig, now); ttl < minTTL {
+				minTTL = ttl
+			}
 		}
 	}
 
@@ -45,6 +53,12 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	for _, rr := range msg.Ns {
 		if ttl := getTTL(rr); ttl < minTTL {
 			minTTL = ttl
+		}
+		// Check RRSIG expiration
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			if ttl := getRRSIGTTL(sig, now); ttl < minTTL {
+				minTTL = ttl
+			}
 		}
 	}
 
@@ -56,6 +70,12 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 		}
 		if ttl := getTTL(rr); ttl < minTTL {
 			minTTL = ttl
+		}
+		// Check RRSIG expiration
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			if ttl := getRRSIGTTL(sig, now); ttl < minTTL {
+				minTTL = ttl
+			}
 		}
 	}
 
@@ -89,4 +109,26 @@ func hasRecords(msg *dns.Msg) bool {
 // getTTL extracts TTL from a resource record as a duration
 func getTTL(rr dns.RR) time.Duration {
 	return time.Duration(rr.Header().Ttl) * time.Second
+}
+
+// getRRSIGTTL calculates the effective TTL for an RRSIG record based on its expiration time.
+// The cache TTL should not exceed the time until the signature expires.
+func getRRSIGTTL(sig *dns.RRSIG, now time.Time) time.Duration {
+	// Get the regular TTL from the record
+	recordTTL := time.Duration(sig.Header().Ttl) * time.Second
+
+	// Calculate time until expiration
+	expireTime := time.Unix(int64(sig.Expiration), 0)
+	timeUntilExpire := expireTime.Sub(now)
+
+	// If signature has already expired, return minimum TTL
+	if timeUntilExpire <= 0 {
+		return MinCacheTTL
+	}
+
+	// Return the minimum of record TTL and time until expiration
+	if timeUntilExpire < recordTTL {
+		return timeUntilExpire
+	}
+	return recordTTL
 }

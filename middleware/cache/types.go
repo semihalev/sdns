@@ -84,6 +84,11 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	resp.Authoritative = false
 	// RecursionAvailable is already preserved from the original message via MsgHdr copy
 
+	// RFC 4035: Never set AD bit when CD bit is set in the request
+	if req.CheckingDisabled {
+		resp.AuthenticatedData = false
+	}
+
 	// Update TTLs
 	ttl := uint32(remainingTTL.Seconds())
 	for _, rr := range resp.Answer {

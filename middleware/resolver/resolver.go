@@ -677,13 +677,16 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 						return nil, err
 					}
 
-					//TODO: verify NSEC name error??
-					/*} else {
-
+				} else {
+					// Try regular NSEC verification
 					nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
 					if len(nsecSet) > 0 {
-
-					}*/
+						err = verifyNameErrorNSEC(resp, nsecSet)
+						if err != nil {
+							log.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+							return nil, err
+						}
+					}
 				}
 			}
 
@@ -696,13 +699,16 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 						return nil, err
 					}
 
-					//TODO: verify NSEC nodata??
-					/*} else {
-
-					nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC)
+				} else {
+					// Try regular NSEC verification for NODATA
+					nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
 					if len(nsecSet) > 0 {
-
-					}*/
+						err = verifyNODATANSEC(resp, nsecSet)
+						if err != nil {
+							log.Warn("NSEC verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+							return nil, err
+						}
+					}
 				}
 			}
 		}
