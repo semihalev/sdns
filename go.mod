@@ -12,7 +12,7 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/yl2chen/cidranger v1.0.2
 	golang.org/x/sync v0.15.0
-	golang.org/x/time v0.11.0
+	golang.org/x/time v0.12.0
 )
 
 require (
