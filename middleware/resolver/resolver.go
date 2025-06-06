@@ -713,6 +713,11 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 					}
 				}
 			}
+
+			// If DNSSEC verification passed and NSEC/NSEC3 verification passed, set AD flag
+			if ok && !req.CheckingDisabled {
+				resp.AuthenticatedData = true
+			}
 		}
 	}
 

@@ -2,15 +2,16 @@ package resolver
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/miekg/dns"
 )
 
 var (
-	errNSECTypeExists      = errors.New("NSEC3 record shows question type exists")
-	errNSECMissingCoverage = errors.New("NSEC3 record missing for expected encloser")
-	errNSECBadDelegation   = errors.New("DS or SOA bit set in NSEC3 type map")
-	errNSECNSMissing       = errors.New("NS bit not set in NSEC3 type map")
+	errNSECTypeExists      = errors.New("NSEC/NSEC3 record shows question type exists")
+	errNSECMissingCoverage = errors.New("NSEC/NSEC3 record missing for non-existence proof")
+	errNSECBadDelegation   = errors.New("DS or SOA bit set in NSEC/NSEC3 type map")
+	errNSECNSMissing       = errors.New("NS bit not set in NSEC/NSEC3 type map")
 	errNSECOptOut          = errors.New("Opt-Out bit not set for NSEC3 record covering next closer")
 )
 
@@ -191,29 +192,40 @@ func verifyNameErrorNSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 		qname = dname
 	}
 
-	// We need to prove:
-	// 1. The queried name does not exist
-	// 2. No wildcard exists that could match the queried name
+	// We need to prove the queried name does not exist
+	// This might require proving that an ancestor doesn't exist
 
-	// First, find an NSEC that covers the queried name
-	foundCover := false
-	for _, rr := range nsecSet {
-		nsec := rr.(*dns.NSEC)
+	labels := dns.SplitDomainName(qname)
 
-		// Check if this NSEC covers the queried name
-		if nsecCovers(nsec.Header().Name, nsec.NextDomain, qname) {
-			foundCover = true
-			break
+	// Try to find NSEC coverage starting from the full name and working up
+	for i := 0; i < len(labels); i++ {
+		// Construct the name to check
+		var checkName string
+		if i == 0 {
+			checkName = qname
+		} else {
+			checkName = dns.Fqdn(strings.Join(labels[i:], "."))
+		}
+
+		// Check if any NSEC covers this name
+		for _, rr := range nsecSet {
+			nsec := rr.(*dns.NSEC)
+
+			if nsecCovers(nsec.Header().Name, nsec.NextDomain, checkName) {
+				// Found coverage - name proven not to exist
+				// Now verify wildcards don't exist
+				goto checkWildcards
+			}
 		}
 	}
 
-	if !foundCover {
-		return errNSECMissingCoverage
-	}
+	// No NSEC found that proves non-existence
+	return errNSECMissingCoverage
+
+checkWildcards:
 
 	// Now verify no wildcard exists
 	// We need to find the closest encloser and prove *.closest_encloser doesn't exist
-	labels := dns.SplitDomainName(qname)
 	for i := 1; i < len(labels); i++ {
 		possibleWildcard := "*." + dns.Fqdn(labels[i])
 
