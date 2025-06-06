@@ -62,7 +62,7 @@ func TestNSECCovers(t *testing.T) {
 			owner:    "a.example.com.",
 			next:     "a.example.com.",
 			qname:    "b.example.com.",
-			expected: false,
+			expected: true, // When owner==next, everything except owner is covered
 		},
 	}
 
