@@ -295,9 +295,11 @@ func nsecCovers(owner, next, name string) bool {
 	next = dns.CanonicalName(next)
 	name = dns.CanonicalName(name)
 
-	// If owner equals next, this NSEC covers the entire zone (last NSEC)
+	// Special case: owner equals next means this NSEC covers everything except owner
+	// This happens in zones with only one name (e.g., net.com. NSEC net.com.)
 	if owner == next {
-		return false
+		// The name is covered if it's not the owner itself
+		return name != owner
 	}
 
 	// Check if name falls between owner and next in canonical order
