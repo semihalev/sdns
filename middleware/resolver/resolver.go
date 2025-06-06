@@ -19,7 +19,6 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/singleflight"
 )
 
 // Resolver type
@@ -45,7 +44,7 @@ type Resolver struct {
 	qnameMinLevel int
 	netTimeout    time.Duration
 
-	group singleflight.Group
+	sfGroup *SingleflightWrapper
 
 	// TCP connection pool for persistent connections
 	tcpPool *TCPConnPool
@@ -95,6 +94,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		qnameMinLevel: cfg.QnameMinLevel,
 		netTimeout:    defaultTimeout,
+		sfGroup:       NewSingleflightWrapper(),
 	}
 
 	if r.cfg.IPv6Access {
@@ -263,7 +263,8 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 	// Convert uint64 key to string for singleflight
 	key := fmt.Sprintf("%d", cache.Key(q))
 
-	result, err, shared := r.group.Do(key, func() (interface{}, error) {
+	// Use TimedDoChan for automatic timeout handling
+	result, err := r.sfGroup.TimedDoChan(ctx, key, func() (interface{}, error) {
 		return r.lookup(ctx, req, servers)
 	})
 
@@ -272,7 +273,8 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 	}
 
 	resp = result.(*dns.Msg)
-	if resp != nil && shared {
+	if resp != nil {
+		// Always copy for concurrent safety when result is shared
 		resp = resp.Copy()
 		resp.Id = req.Id
 	}
@@ -962,7 +964,12 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		SetEDNSKeepalive(req, 0) // Request keepalive with no specific timeout
 	}
 
-	_ = co.SetDeadline(time.Now().Add(r.netTimeout))
+	// Set deadline respecting both network timeout and context deadline
+	deadline := time.Now().Add(r.netTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = co.SetDeadline(deadline)
 
 	resp, rtt, err = co.Exchange(req)
 	if err != nil {
@@ -1009,7 +1016,13 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 }
 
 func (r *Resolver) newDialer(ctx context.Context, proto string, version authcache.Version) (d *net.Dialer) {
-	d = &net.Dialer{Deadline: time.Now().Add(r.netTimeout)}
+	// Calculate deadline respecting both network timeout and context deadline
+	deadline := time.Now().Add(r.netTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+
+	d = &net.Dialer{Deadline: deadline}
 
 	reqid := 0
 	if v := ctx.Value(contextKeyRequestID); v != nil {
