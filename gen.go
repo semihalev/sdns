@@ -53,7 +53,7 @@ func init() {
 
 func main() {
 	if err := generate(); err != nil {
-		zlog.Fatal(err)
+		zlog.Fatal("Generation failed", "error", err.Error())
 	}
 }
 

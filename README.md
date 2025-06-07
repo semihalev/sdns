@@ -127,7 +127,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.5.0)
+## Configuration (v1.5.1)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -273,13 +273,13 @@ For implementation details, see the [example plugin](https://github.com/semihale
 
 ### Benchmark Comparisons
 
-Tests were performed on the following DNS resolvers: SDNS 1.5.0, PowerDNS Recursor 5.0.2, BIND 9.19.12, and Unbound 1.17.1.
+Tests were performed on the following DNS resolvers: SDNS 1.5.1, PowerDNS Recursor 5.0.2, BIND 9.19.12, and Unbound 1.17.1.
 
 ### Benchmark Results
 
 | Resolver | Version | QPS    | Avg Latency | Lost Queries | Runtime  | Response Codes                                      |
 | -------- | ------- | ------ | ----------- | ------------ | -------- | --------------------------------------------------- |
-| SDNS     | 1.5.0   | 712/s  | 136ms       | 2 (0.004%)   | 70.2s    | NOERROR: 67.82%, SERVFAIL: 1.64%, NXDOMAIN: 30.55% |
+| SDNS     | 1.5.1   | 712/s  | 136ms       | 2 (0.004%)   | 70.2s    | NOERROR: 67.82%, SERVFAIL: 1.64%, NXDOMAIN: 30.55% |
 | PowerDNS | 5.0.2   | 578/s  | 156ms       | 20 (0.04%)   | 86.5s    | NOERROR: 67.64%, SERVFAIL: 1.92%, NXDOMAIN: 30.43% |
 | BIND     | 9.19.12 | 405/s  | 200ms       | 156 (0.31%)  | 123.0s   | NOERROR: 67.84%, SERVFAIL: 1.62%, NXDOMAIN: 30.54% |
 | Unbound  | 1.17.1  | 338/s  | 237ms       | 263 (0.53%)  | 147.0s   | NOERROR: 68.20%, SERVFAIL: 1.20%, NXDOMAIN: 30.60% |
