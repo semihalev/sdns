@@ -275,8 +275,15 @@ checkWildcards:
 
 	// Now verify no wildcard exists
 	// We need to find the closest encloser and prove *.closest_encloser doesn't exist
-	for i := 1; i < len(labels); i++ {
-		possibleWildcard := "*." + dns.Fqdn(labels[i])
+	for i := 1; i <= len(labels); i++ {
+		var possibleWildcard string
+		if i < len(labels) {
+			possibleWildcard = "*." + dns.Fqdn(strings.Join(labels[i:], "."))
+		} else {
+			// Special case: wildcards are not allowed at the root zone
+			// per RFC 4592 section 4.2, so we don't need to check for *.
+			return nil
+		}
 
 		for _, rr := range nsecSet {
 			nsec := rr.(*dns.NSEC)
