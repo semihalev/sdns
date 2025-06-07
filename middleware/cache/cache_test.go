@@ -445,17 +445,3 @@ func TestCacheEDNS(t *testing.T) {
 	assert.Len(t, resp.Answer, 1)
 	assert.Equal(t, "edns.com.", resp.Answer[0].Header().Name)
 }
-
-// Helper function to clean up test directories
-func cleanupTestDirs(t *testing.T) {
-	pattern := filepath.Join(os.TempDir(), "sdns_test_*")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		t.Logf("Failed to glob test directories: %v", err)
-		return
-	}
-
-	for _, dir := range matches {
-		os.RemoveAll(dir)
-	}
-}
