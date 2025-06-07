@@ -55,8 +55,8 @@ github.com/quic-go/quic-go v0.52.0/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP
 github.com/rogpeppe/go-internal v1.10.0 h1:TMyTOH3F/DB16zRVcYyreMH6GnZZrwQVAoYjRBZyWFQ=
 github.com/rogpeppe/go-internal v1.10.0/go.mod h1:UQnix2H7Ngw/k4C5ijL5+65zddjncjaFoBhdsK/akog=
 github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
-github.com/semihalev/zlog v1.2.2 h1:6XQS7Ox/hCq0tErb9C9P4McXVp+NKgajPUbCZjeLnzQ=
-github.com/semihalev/zlog v1.2.2/go.mod h1:fGUEd8jmgGShdT+NU4nBXPShBI4XwhjQYkRr4ixwuU0=
+github.com/semihalev/zlog v1.2.3 h1:yONCixuudTmpxdJ/bq4zutBndf6FvahK9Hm9z7o+9Vc=
+github.com/semihalev/zlog v1.2.3/go.mod h1:fGUEd8jmgGShdT+NU4nBXPShBI4XwhjQYkRr4ixwuU0=
 github.com/spf13/cobra v1.9.1 h1:CXSaggrXdbHK9CF+8ywj8Amf7PBRmPCOJugH954Nnlo=
 github.com/spf13/cobra v1.9.1/go.mod h1:nDyEzZ8ogv936Cinf6g1RU9MRY64Ir93oCnqb9wxYW0=
 github.com/spf13/pflag v1.0.6 h1:jFzHGLGAlb3ruxLB8MhbI6A8+AQX/2eW4qeyNZXNp2o=

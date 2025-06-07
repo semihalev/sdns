@@ -58,7 +58,6 @@ func setup() error {
 
 	// Create structured logger with zero allocations
 	logger := zlog.NewStructured()
-	logger.SetWriter(zlog.StdoutTerminal())
 
 	// Set log level based on config
 	var lvl zlog.Level
