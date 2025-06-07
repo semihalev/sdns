@@ -14,7 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
+	"github.com/semihalev/zlog"
 )
 
 const configver = "1.5.0"
@@ -497,14 +497,14 @@ func Load(cfgfile, version string) (*Config, error) {
 		}
 	}
 
-	log.Info("Loading config file...", "path", cfgfile)
+	zlog.Info("Loading config file...", zlog.String("path", cfgfile))
 
 	if _, err := toml.DecodeFile(cfgfile, config); err != nil {
 		return nil, fmt.Errorf("could not load config: %s", err)
 	}
 
 	if config.Version != configver {
-		log.Warn("Config file is out of version, you can generate new one and check the changes.")
+		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {
@@ -513,7 +513,7 @@ func Load(cfgfile, version string) (*Config, error) {
 		}
 	}
 
-	log.Info("Working directory", "path", config.Directory)
+	zlog.Info("Working directory", zlog.String("path", config.Directory))
 
 	config.sVersion = version
 
@@ -562,7 +562,7 @@ func generateConfig(path string) error {
 	defer func() {
 		err := output.Close()
 		if err != nil {
-			log.Warn("Config generation failed while file closing", "error", err.Error())
+			zlog.Warn("Config generation failed while file closing", zlog.String("error", err.Error()))
 		}
 	}()
 
@@ -572,7 +572,7 @@ func generateConfig(path string) error {
 	}
 
 	if abs, err := filepath.Abs(path); err == nil {
-		log.Info("Default config file generated", "config", abs)
+		zlog.Info("Default config file generated", "config", abs)
 	}
 
 	return nil

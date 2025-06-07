@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/zlog"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,7 +15,10 @@ const (
 )
 
 func Test_UpdateBlocklists(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 
 	tempDir := filepath.Join(os.TempDir(), "sdns_temp")
 

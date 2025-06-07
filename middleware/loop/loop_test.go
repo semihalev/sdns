@@ -5,15 +5,18 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/zlog"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_loop(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 
 	middleware.Register("loop", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(&config.Config{})

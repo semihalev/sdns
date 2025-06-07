@@ -9,17 +9,20 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
 	"github.com/semihalev/sdns/mock"
 	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 	"github.com/stretchr/testify/assert"
 )
 
 func makeTestConfig() *config.Config {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 
 	cfg := new(config.Config)
 	cfg.RootServers = []string{"192.5.5.241:53"}

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 )
 
 // PrefetchRequest represents a DNS query to be prefetched
@@ -55,7 +55,7 @@ func (pq *PrefetchQueue) Add(req PrefetchRequest) bool {
 		return true
 	default:
 		// Queue is full, drop the request
-		log.Debug("Prefetch queue full, dropping request", "query", formatQuestion(req.Request.Question[0]))
+		zlog.Debug("Prefetch queue full, dropping request", "query", formatQuestion(req.Request.Question[0]))
 		return false
 	}
 }
@@ -89,7 +89,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	ctx, cancel := context.WithTimeout(pq.ctx, 5*time.Second)
 	defer cancel()
 
-	log.Debug("Processing prefetch", "query", formatQuestion(req.Request.Question[0]))
+	zlog.Debug("Processing prefetch", "query", formatQuestion(req.Request.Question[0]))
 
 	// Make a copy for internal query
 	prefetchReq := req.Request.Copy()
@@ -97,7 +97,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// Execute the prefetch query
 	resp, err := util.ExchangeInternal(ctx, prefetchReq)
 	if err != nil {
-		log.Debug("Prefetch failed", "query", formatQuestion(req.Request.Question[0]), "error", err.Error())
+		zlog.Debug("Prefetch failed", "query", formatQuestion(req.Request.Question[0]), "error", err.Error())
 		return
 	}
 
@@ -113,11 +113,11 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 
 		// Use the key that was passed in the request
 		req.Cache.Set(req.Key, resp)
-		log.Debug("Prefetch stored in cache", "query", formatQuestion(req.Request.Question[0]), "answers", len(resp.Answer), "minTTL", minTTL)
+		zlog.Debug("Prefetch stored in cache", "query", formatQuestion(req.Request.Question[0]), "answers", len(resp.Answer), "minTTL", minTTL)
 	}
 
 	pq.metrics.Prefetch()
-	log.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]))
+	zlog.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]))
 }
 
 // formatQuestion formats a DNS question for logging

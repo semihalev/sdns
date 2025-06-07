@@ -22,15 +22,18 @@ import (
 	"github.com/semihalev/sdns/middleware"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/zlog"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestMain(m *testing.M) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 	m.Run()
 
 	os.Exit(0)

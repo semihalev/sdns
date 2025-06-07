@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
+	"github.com/semihalev/zlog"
 )
 
 func Test_Run(t *testing.T) {
@@ -99,7 +99,10 @@ func Test_Authorization(t *testing.T) {
 }
 
 func Test_AllAPICalls(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 	debugpprof = true
 
 	cfg := new(config.Config)

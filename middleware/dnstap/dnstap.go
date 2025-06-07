@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/zlog"
 )
 
 // MessageType represents dnstap message types
@@ -161,7 +161,7 @@ func (d *Dnstap) connect() {
 
 		conn, err := net.Dial("unix", d.socketPath)
 		if err != nil {
-			log.Error("Failed to connect to dnstap socket", "error", err, "path", d.socketPath)
+			zlog.Error("Failed to connect to dnstap socket", "error", err, "path", d.socketPath)
 			time.Sleep(d.reconnectDelay)
 			continue
 		}
@@ -170,7 +170,7 @@ func (d *Dnstap) connect() {
 		d.conn = conn
 		d.mu.Unlock()
 
-		log.Info("Connected to dnstap socket", "path", d.socketPath)
+		zlog.Info("Connected to dnstap socket", "path", d.socketPath)
 		break
 	}
 }
@@ -203,7 +203,7 @@ func (d *Dnstap) writeMessage(msg *DnstapMessage) {
 	data := d.encodeMessage(msg)
 
 	if err := d.writeFrame(conn, data); err != nil {
-		log.Error("Failed to write dnstap message", "error", err)
+		zlog.Error("Failed to write dnstap message", "error", err)
 		d.reconnect()
 	}
 }
@@ -324,7 +324,7 @@ func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Ms
 	select {
 	case d.messageQueue <- msg:
 	default:
-		log.Warn("Dnstap message queue full, dropping message")
+		zlog.Warn("Dnstap message queue full, dropping message")
 	}
 }
 

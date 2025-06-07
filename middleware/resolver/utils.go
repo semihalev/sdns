@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
+	"github.com/semihalev/zlog"
 )
 
 var (
@@ -31,7 +31,7 @@ func init() {
 	var err error
 	localIPaddrs, err = findLocalIPAddresses()
 	if err != nil {
-		log.Crit("Find local ip addresses failed", "error", err.Error())
+		zlog.Fatal("Find local ip addresses failed", zlog.String("error", err.Error()))
 	}
 }
 

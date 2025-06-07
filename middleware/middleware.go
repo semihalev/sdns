@@ -6,8 +6,8 @@ import (
 	"plugin"
 	"sync"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/zlog"
 )
 
 // Handler interface
@@ -50,7 +50,7 @@ func Register(name string, new func(*config.Config) Handler) {
 
 // RegisterAt a middleware at an index
 func RegisterAt(name string, new func(*config.Config) Handler, idx int) {
-	log.Debug("Register middleware", "name", name, "index", idx)
+	zlog.Debug("Register middleware", "name", name, "index", idx)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -62,7 +62,7 @@ func RegisterAt(name string, new func(*config.Config) Handler, idx int) {
 
 // RegisterBefore a middleware before another middleware
 func RegisterBefore(name string, new func(*config.Config) Handler, before string) {
-	log.Debug("Register middleware", "name", name, "before", before)
+	zlog.Debug("Register middleware", "name", name, "before", before)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -95,12 +95,12 @@ func Setup(cfg *config.Config) {
 	for i, handler := range m.handlers {
 		h := handler.new(m.cfg)
 		if h == nil {
-			log.Debug("Middleware not enabled", "name", handler.name, "index", i)
+			zlog.Debug("Middleware not enabled", "name", handler.name, "index", i)
 			continue
 		}
 		chainHandlers = append(chainHandlers, h)
 
-		log.Debug("Middleware registered", "name", h.Name(), "index", i)
+		zlog.Debug("Middleware registered", "name", h.Name(), "index", i)
 	}
 
 	setup = true
@@ -111,25 +111,25 @@ func LoadExternalPlugins() {
 	for name, pcfg := range m.cfg.Plugins {
 		pl, err := plugin.Open(pcfg.Path)
 		if err != nil {
-			log.Error("Plugin open failed", "plugin", name, "error", err.Error())
+			zlog.Error("Plugin open failed", "plugin", name, "error", err.Error())
 			continue
 		}
 
 		newFuncSym, err := pl.Lookup("New")
 		if err != nil {
-			log.Error("Plugin new function lookup failed", "plugin", name, "error", err.Error())
+			zlog.Error("Plugin new function lookup failed", "plugin", name, "error", err.Error())
 			continue
 		}
 
 		newFn, ok := newFuncSym.(func(cfg *config.Config) Handler)
 
 		if !ok {
-			log.Error("Plugin new function assert failed", "plugin", name)
+			zlog.Error("Plugin new function assert failed", "plugin", name)
 			continue
 		}
 
 		RegisterBefore(name, newFn, "cache")
-		log.Info("Plugin successfully loaded", "plugin", name, "path", pcfg.Path)
+		zlog.Info("Plugin successfully loaded", "plugin", name, "path", pcfg.Path)
 	}
 }
 

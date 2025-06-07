@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 )
 
 // Failover type
@@ -36,7 +36,7 @@ func New(cfg *config.Config) *Failover {
 		} else if ip != nil && ip.To16() != nil {
 			fallbackservers = append(fallbackservers, s)
 		} else {
-			log.Error("Fallback server is not correct. Check your config.", "server", s)
+			zlog.Error("Fallback server is not correct. Check your config.", "server", s)
 		}
 	}
 
@@ -80,7 +80,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		defer cancel()
 		resp, err := util.Exchange(ctx, req, server, "udp")
 		if err != nil {
-			log.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
+			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
 		}
 

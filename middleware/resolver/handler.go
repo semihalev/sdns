@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 )
 
 // DNSHandler type
@@ -145,7 +145,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if err != nil {
-		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
+		zlog.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
 		return util.SetRcode(req, dns.RcodeServerFailure, do)
 	}

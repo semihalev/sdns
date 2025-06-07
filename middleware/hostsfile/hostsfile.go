@@ -15,10 +15,10 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 )
 
 // HostsDB is an in-memory database for hosts entries
@@ -86,13 +86,13 @@ func New(cfg *config.Config) *Hostsfile {
 
 	// Initial load
 	if err := h.load(); err != nil {
-		log.Error("Failed to load hosts file", "path", h.path, "error", err)
+		zlog.Error("Failed to load hosts file", "path", h.path, "error", err)
 		return nil
 	}
 
 	// Setup file watcher
 	if err := h.setupWatcher(); err != nil {
-		log.Warn("Failed to setup hosts file watcher", "error", err)
+		zlog.Warn("Failed to setup hosts file watcher", "error", err)
 	}
 
 	return h
@@ -453,7 +453,7 @@ func (h *Hostsfile) load() error {
 	h.db.Store(db)
 	h.reloadTime = time.Now()
 
-	log.Info("Loaded hosts file",
+	zlog.Info("Loaded hosts file",
 		"path", h.path,
 		"entries", atomic.LoadInt64(&db.stats.entries),
 		"wildcards", atomic.LoadInt64(&db.stats.wildcards),
@@ -509,7 +509,7 @@ func (h *Hostsfile) watchLoop() {
 
 			debounceTimer = time.AfterFunc(100*time.Millisecond, func() {
 				if err := h.load(); err != nil {
-					log.Error("Failed to reload hosts file", "error", err)
+					zlog.Error("Failed to reload hosts file", "error", err)
 				}
 			})
 
@@ -517,7 +517,7 @@ func (h *Hostsfile) watchLoop() {
 			if !ok {
 				return
 			}
-			log.Error("Hosts file watcher error", "error", err)
+			zlog.Error("Hosts file watcher error", "error", err)
 		}
 	}
 }

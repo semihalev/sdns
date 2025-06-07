@@ -12,7 +12,6 @@ import (
 type SingleflightWrapper struct {
 	group    singleflight.Group
 	tracking sync.Map // key -> startTime
-	mu       sync.Mutex
 }
 
 // NewSingleflightWrapper creates a new wrapper with periodic cleanup

@@ -4,15 +4,18 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/zlog"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_AccesslistDefaults(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 
 	cfg := new(config.Config)
 	cfg.AccessList = []string{}
@@ -27,7 +30,10 @@ func Test_AccesslistDefaults(t *testing.T) {
 }
 
 func Test_Accesslist(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 
 	cfg := new(config.Config)
 	cfg.AccessList = []string{"127.0.0.1/32", "1"}

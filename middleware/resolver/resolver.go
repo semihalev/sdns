@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -112,7 +112,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 	for _, k := range cfg.RootKeys {
 		rr, err := dns.NewRR(k)
 		if err != nil {
-			log.Crit("Root keys invalid", "error", err.Error())
+			zlog.Fatal("Root keys invalid", zlog.String("error", err.Error()))
 		}
 		r.rootkeys = append(r.rootkeys, rr)
 	}
@@ -160,7 +160,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 			if isLocalIP(ip) {
 				r.outboundipv4 = append(r.outboundipv4, ip)
 			} else {
-				log.Crit(fmt.Sprintf("%s is not your local ipv4 address, check your config!", ip))
+				zlog.Fatal("Invalid local IPv4 address in config", zlog.String("ip", ip.String()))
 			}
 		}
 	}
@@ -171,7 +171,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 				if isLocalIP(ip) {
 					r.outboundipv6 = append(r.outboundipv6, ip)
 				} else {
-					log.Crit(fmt.Sprintf("%s is not your local ipv6 address, check your config!", ip))
+					zlog.Fatal("Invalid local IPv6 address in config", zlog.String("ip", ip.String()))
 				}
 			}
 		}
@@ -205,7 +205,7 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 	// Current default minimize level 5, if we down to level 3, performance gain 20%
 	minReq, minimized := r.minimize(rc.req, rc.level, rc.nomin)
 
-	log.Debug("Query inserted", "reqid", minReq.Id, "zone", rc.servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", rc.req.CheckingDisabled, "qname-minimize", minimized)
+	zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rc.servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", rc.req.CheckingDisabled, "qname-minimize", minimized)
 
 	resp, err := r.groupLookup(ctx, minReq, rc.servers)
 	if err != nil {
@@ -615,7 +615,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, true)
 		if !signerFound && len(parentdsrr) > 0 && q.Qtype == dns.TypeDS {
-			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
+			zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
 			return nil, errDSRecords
 		}
 		parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
@@ -624,13 +624,13 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 		}
 
 		if !signerFound && len(parentdsrr) > 0 {
-			log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
+			zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
 			return nil, errDSRecords
 		} else if len(parentdsrr) > 0 {
 			// Verify entire DNSSEC chain from parent DS to answer
 			resp.AuthenticatedData, err = r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, parentdsrr)
 			if err != nil {
-				log.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
+				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
 			}
 		}
@@ -648,7 +648,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
 		if !signerFound && len(parentdsrr) > 0 && otype == dns.TypeDS {
-			log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", errDSRecords.Error())
+			zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", errDSRecords.Error())
 
 			return nil, errDSRecords
 		}
@@ -660,13 +660,13 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 
 		if !signerFound && len(parentdsrr) > 0 {
 			err = errDSRecords
-			log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+			zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 
 			return nil, err
 		} else if len(parentdsrr) > 0 {
 			ok, err := r.verifyDNSSEC(ctx, signer, q.Name, resp, parentdsrr)
 			if err != nil {
-				log.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
 			}
 
@@ -675,7 +675,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 				if len(nsec3Set) > 0 {
 					err = verifyNameError(resp, nsec3Set) // prove non-existence via NSEC3
 					if err != nil {
-						log.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+						zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
 					}
 
@@ -685,7 +685,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 					if len(nsecSet) > 0 {
 						err = verifyNameErrorNSEC(resp, nsecSet)
 						if err != nil {
-							log.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+							zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 							return nil, err
 						}
 					}
@@ -697,7 +697,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 				if len(nsec3Set) > 0 {
 					err = verifyNODATA(resp, nsec3Set)
 					if err != nil {
-						log.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+						zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 						return nil, err
 					}
 
@@ -707,7 +707,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 					if len(nsecSet) > 0 {
 						err = verifyNODATANSEC(resp, nsecSet)
 						if err != nil {
-							log.Warn("NSEC verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+							zlog.Warn("NSEC verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 							return nil, err
 						}
 					}
@@ -904,7 +904,7 @@ mainloop:
 		return nil, fatalError(errors.New("connection failed to upstream servers"))
 	}
 
-	log.Crit("Looks like no root servers, check your config")
+	zlog.Fatal("Looks like no root servers, check your config")
 
 	return nil, fatalError(errors.New("looks like no root servers, check your config"))
 }
@@ -941,7 +941,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		if isRoot || isTLD {
 			pooledConn = r.tcpPool.Get(server.Addr, isRoot, isTLD)
 			if pooledConn != nil {
-				log.Debug("Using pooled TCP connection", "server", server.Addr, "isRoot", isRoot, "isTLD", isTLD)
+				zlog.Debug("Using pooled TCP connection", "server", server.Addr, "isRoot", isRoot, "isTLD", isTLD)
 			}
 		}
 	}
@@ -957,7 +957,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		// Create new connection
 		co.Conn, err = d.DialContext(ctx, proto, server.Addr)
 		if err != nil {
-			log.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+			zlog.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 				"net", proto, "error", err.Error(), "retried", retried)
 			ReleaseConn(co)
 			return nil, err
@@ -978,7 +978,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 
 	resp, rtt, err = co.Exchange(req)
 	if err != nil {
-		log.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+		zlog.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
 
 		// Don't return connection to pool on error
@@ -1085,7 +1085,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 			q.Name = origin
 			return r.searchCache(q, cd, origin)
 		}
-		log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
+		zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 		return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
 	}
 
@@ -1099,7 +1099,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 				q.Name = origin
 				return r.searchCache(q, cd, origin)
 			}
-			log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
+			zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
 			return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
 		}
 	}
@@ -1191,7 +1191,7 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 }
 
 func (r *Resolver) lookupDS(ctx context.Context, qname string) (msg *dns.Msg, err error) {
-	log.Debug("Lookup DS record", "qname", qname)
+	zlog.Debug("Lookup DS record", "qname", qname)
 
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
@@ -1210,7 +1210,7 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string) (msg *dns.Msg, er
 }
 
 func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
-	log.Debug("Lookup NS ipv4 address", "qname", qname)
+	zlog.Debug("Lookup NS ipv4 address", "qname", qname)
 
 	if addrs, ok := r.getIPv4Cache(qname); ok {
 		return addrs, nil
@@ -1241,7 +1241,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 }
 
 func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
-	log.Debug("Lookup NS ipv6 address", "qname", qname)
+	zlog.Debug("Lookup NS ipv6 address", "qname", qname)
 
 	if addrs, ok := r.getIPv6Cache(qname); ok {
 		return addrs, nil
@@ -1284,7 +1284,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
-				log.Debug("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
+				zlog.Debug("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
 				continue
 			}
 		}
@@ -1298,7 +1298,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv4 := make(map[string][]string)
 
 		if err != nil {
-			log.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+			zlog.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 			continue
 		}
 
@@ -1338,7 +1338,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		ctx, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
-				log.Debug("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
+				zlog.Debug("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
 				continue
 			}
 		}
@@ -1347,7 +1347,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {
-			log.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+			zlog.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 			return
 		}
 
@@ -1384,7 +1384,7 @@ func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
 	}
 
 	if len(dsset) == 0 {
-		log.Crit("Root zone dsset empty")
+		zlog.Fatal("Root zone dsset empty")
 	}
 
 	return
@@ -1404,7 +1404,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	if len(keys) == 0 {
-		log.Crit("Root zone keys empty")
+		zlog.Fatal("Root zone keys empty")
 	}
 
 	dsset := []dns.RR{}
@@ -1415,15 +1415,15 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	if len(dsset) == 0 {
-		log.Crit("Root zone dsset empty")
+		zlog.Fatal("Root zone dsset empty")
 	}
 
 	if _, err := verifyDS(keys, dsset); err != nil {
-		log.Crit("Root zone DS not verified")
+		zlog.Fatal("Root zone DS not verified")
 	}
 
 	if _, err := verifyRRSIG(keys, msg); err != nil {
-		log.Crit("Root zone keys not verified")
+		zlog.Fatal("Root zone keys not verified")
 	}
 
 	return true
@@ -1475,7 +1475,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 
 	unsupportedDigest, err := verifyDS(keys, parentdsRR)
 	if err != nil {
-		log.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported digest", unsupportedDigest)
+		zlog.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported digest", unsupportedDigest)
 		if unsupportedDigest {
 			return false, nil
 		}
@@ -1496,7 +1496,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, nil
 	}
 
-	log.Debug("DNSSEC verified", "signer", signer, "signed", signed, "query", formatQuestion(resp.Question[0]))
+	zlog.Debug("DNSSEC verified", "signer", signer, "signed", signed, "query", formatQuestion(resp.Question[0]))
 
 	return true, nil
 }
@@ -1561,17 +1561,17 @@ func (r *Resolver) checkPriming() {
 	defer cancel()
 
 	if len(r.rootservers.List) == 0 {
-		log.Crit("Root servers list empty. check your config file")
+		zlog.Fatal("Root servers list empty. check your config file")
 	}
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 5, 0, false, nil, true)
 	if err != nil {
-		log.Error("Root servers update failed", "error", err.Error())
+		zlog.Error("Root servers update failed", "error", err.Error())
 		return
 	}
 
 	if r.dnssec && !resp.AuthenticatedData {
-		log.Error("Root servers update failed", "error", "not authenticated")
+		zlog.Error("Root servers update failed", "error", "not authenticated")
 		return
 	}
 
@@ -1584,11 +1584,11 @@ func (r *Resolver) checkPriming() {
 	}
 
 	if len(nsServers) == 0 {
-		log.Error("Root servers update failed", "error", "no NS records in response")
+		zlog.Error("Root servers update failed", "error", "no NS records in response")
 		return
 	}
 
-	log.Debug("Root priming response", "ns_count", len(nsServers), "answer", len(resp.Answer), "extra", len(resp.Extra))
+	zlog.Debug("Root priming response", "ns_count", len(nsServers), "answer", len(resp.Answer), "extra", len(resp.Extra))
 
 	var tmpservers authcache.AuthServers
 	foundServers := make(map[string]bool)
@@ -1621,13 +1621,13 @@ func (r *Resolver) checkPriming() {
 
 	// Verify we got addresses for at least some nameservers
 	if len(foundServers) == 0 {
-		log.Error("Root servers update failed", "error", "no A/AAAA records found for NS records")
+		zlog.Error("Root servers update failed", "error", "no A/AAAA records found for NS records")
 		return
 	}
 
 	// Log a warning if we didn't get addresses for all nameservers (but continue)
 	if len(foundServers) < len(nsServers) {
-		log.Debug("Some root servers missing addresses", "ns_count", len(nsServers), "found", len(foundServers))
+		zlog.Debug("Some root servers missing addresses", "ns_count", len(nsServers), "found", len(foundServers))
 	}
 
 	if len(tmpservers.List) >= len(r.rootservers.List) {
@@ -1638,7 +1638,7 @@ func (r *Resolver) checkPriming() {
 		return
 	}
 
-	log.Error("Root servers update failed", "error", "missing A/AAAA records")
+	zlog.Error("Root servers update failed", "error", "missing A/AAAA records")
 }
 
 func (r *Resolver) run() {
@@ -1677,7 +1677,7 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rc *resolve
 			return nil, err
 		}
 
-		log.Debug("Received network error from all servers", "query", formatQuestion(minReq.Question[0]))
+		zlog.Debug("Received network error from all servers", "query", formatQuestion(minReq.Question[0]))
 
 		if atomic.AddUint32(&rc.servers.ErrorCount, 1) == 5 {
 			if ok := r.checkNss(ctx, rc.servers); ok {
@@ -1799,7 +1799,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 		return r.resolveWithCachedNameservers(ctx, rc, ncache, key, q, cd)
 	}
 
-	log.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
+	zlog.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
 	// Check glue records and perform lookups
 	authservers, foundv4, foundv6 := r.checkGlueRR(resp, nsInfo.nameservers, rc.level)
@@ -1819,7 +1819,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 
 	// Cache nameservers
 	r.ncache.Set(key, rc.parentDSRR, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
-	log.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
+	zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
 	// Start IPv6 lookups in background
 	if r.cfg.IPv6Access {
@@ -1845,7 +1845,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	signer, signerFound := r.findRRSIG(resp, q.Name, false)
 
 	if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
-		log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
+		zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
 		return nil, errDSRecords
 	}
 
@@ -1856,13 +1856,13 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	}
 
 	if !signerFound && len(parentdsrr) > 0 {
-		log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
+		zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
 		return nil, errDSRecords
 	}
 
 	if len(parentdsrr) > 0 && !req.CheckingDisabled {
 		if _, err := r.verifyDNSSEC(ctx, signer, q.Name, resp, parentdsrr); err != nil {
-			log.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "signer", signer, "signed", q.Name, "error", err.Error())
+			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "signer", signer, "signed", q.Name, "error", err.Error())
 			return nil, err
 		}
 
@@ -1871,7 +1871,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		// Check NSEC3
 		if nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3); len(nsec3Set) > 0 {
 			if err := verifyDelegation(q.Name, nsec3Set); err != nil {
-				log.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+				zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
 			}
 			return []dns.RR{}, nil
@@ -1880,7 +1880,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		// Check NSEC
 		if nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC); len(nsecSet) > 0 {
 			if !verifyNSEC(q, nsecSet) {
-				log.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", "NSEC verify failed")
+				zlog.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", "NSEC verify failed")
 				return nil, fmt.Errorf("NSEC verify failed")
 			}
 			return []dns.RR{}, nil
@@ -1892,7 +1892,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 
 // resolveWithCachedNameservers handles resolution with cached nameservers
 func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rc *resolveContext, ncache *authcache.NS, key uint64, q dns.Question, cd bool) (*dns.Msg, error) {
-	log.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
+	zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 
 	if r.equalServers(ncache.Servers, rc.servers) {
 		// Potential loop, decrease depth faster

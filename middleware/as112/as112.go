@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/zlog"
 )
 
 // AS112 type
@@ -24,7 +24,7 @@ func New(cfg *config.Config) *AS112 {
 
 		for _, zone := range cfg.EmptyZones {
 			if a.Match(zone, dns.TypeSOA) == rootzone {
-				log.Error("Empty zone doesn't match in default empty zones, check your config!", "zone", zone)
+				zlog.Error("Empty zone doesn't match in default empty zones, check your config!", "zone", zone)
 				continue
 			}
 
@@ -36,7 +36,7 @@ func New(cfg *config.Config) *AS112 {
 		}
 	}
 
-	log.Info("Empty zones loaded", "zones", len(a.zones))
+	zlog.Info("Empty zones loaded", "zones", len(a.zones))
 
 	return a
 }

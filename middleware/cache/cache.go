@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/sdns/waitgroup"
+	"github.com/semihalev/zlog"
 )
 
 var debugns bool
@@ -64,7 +64,7 @@ func New(cfg *config.Config) *Cache {
 	// Validate configuration
 	if err := cacheConfig.Validate(); err != nil {
 		// Log error but continue with defaults
-		log.Warn("Cache configuration validation failed, using defaults", "error", err.Error())
+		zlog.Warn("Cache configuration validation failed, using defaults", "error", err.Error())
 	}
 
 	// Adjust prefetch percentage

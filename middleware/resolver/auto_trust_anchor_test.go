@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware/resolver"
+	"github.com/semihalev/zlog"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -40,7 +40,10 @@ func (d *dummyHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 func makeRootKeysConfig() *config.Config {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 
 	cfg := new(config.Config)
 	cfg.RootServers = []string{"127.0.0.1:44302"}
