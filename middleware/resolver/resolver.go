@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -897,12 +896,12 @@ mainloop:
 	}
 
 	if len(fatalErrors) > 0 {
-		return nil, fatalError(errors.New("connection failed to upstream servers"))
+		return nil, fatalError(errConnectionFailed)
 	}
 
 	zlog.Fatal("Looks like no root servers, check your config")
 
-	return nil, fatalError(errors.New("looks like no root servers, check your config"))
+	return nil, fatalError(errNoRootServers)
 }
 
 func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, server *authcache.AuthServer, retried int) (*dns.Msg, error) {
@@ -1810,7 +1809,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 			rc.isRoot = false
 			return r.resolve(ctx, rc)
 		}
-		return nil, errors.New("nameservers are unreachable")
+		return nil, errNoReachableAuth
 	}
 
 	// Cache nameservers

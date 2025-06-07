@@ -93,7 +93,7 @@ var (
 	}
 )
 
-// Network errors
+// Network and authority errors
 var (
 	errMaxDepth = &ValidationError{
 		Code:    dns.ExtendedErrorCodeOther,
@@ -102,6 +102,18 @@ var (
 	errParentDetection = &ValidationError{
 		Code:    dns.ExtendedErrorCodeOther,
 		Message: "Delegation loop detected",
+	}
+	errNoReachableAuth = &ValidationError{
+		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
+		Message: "No reachable authoritative servers",
+	}
+	errConnectionFailed = &ValidationError{
+		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
+		Message: "All authoritative servers failed",
+	}
+	errNoRootServers = &ValidationError{
+		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
+		Message: "Unable to reach root servers",
 	}
 )
 
@@ -119,6 +131,14 @@ func NewNoReachableAuthorityError(message string) *ValidationError {
 	return &ValidationError{
 		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
 		Message: message,
+	}
+}
+
+// NoReachableAuthAtZone creates an error with zone context
+func NoReachableAuthAtZone(zone string) *ValidationError {
+	return &ValidationError{
+		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
+		Message: fmt.Sprintf("at delegation %s", zone),
 	}
 }
 
