@@ -22,6 +22,11 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	switch respType {
 	case TypeSuccess, TypeNXDomain, TypeNoRecords:
 		// Continue with TTL calculation
+	case TypeServerFailure:
+		// SERVFAIL responses should be cached for a reasonable time to avoid
+		// hammering broken servers, but not too long in case it's temporary
+		// Default to 30 seconds, but this will be capped by the negative cache max TTL
+		return 30 * time.Second
 	default:
 		// Other response types get minimal cache time
 		return MinCacheTTL
