@@ -212,17 +212,19 @@ For implementation details, see the [example plugin](https://github.com/semihale
 *   Full DNS RFC compatibility
 *   DNS queries using both IPv4 and IPv6 authoritative servers
 *   High-performance DNS caching with prefetch support
-*   Full DNSSEC validation support
+*   Full DNSSEC validation support with RFC 8914 Extended DNS Errors (EDE)
 *   DNS over TLS (DoT) support
 *   DNS over HTTPS (DoH) support with HTTP/3
 *   DNS over QUIC (DoQ) support
 *   Multiple outbound IP selection for queries
 *   Extensible middleware architecture
-*   RTT-based server prioritization
+*   RTT-based server prioritization with adaptive timeouts
+*   Parallel DNS lookups for improved performance
 *   Failover to backup servers on failure
 *   DNS forwarding support
 *   EDNS Cookie support (RFC 7873)
 *   EDNS NSID support (RFC 5001)
+*   Extended DNS Errors (EDE) support (RFC 8914)
 *   Full IPv6 support (both client and server communication)
 *   Query-based rate limiting
 *   Client IP-based rate limiting
@@ -235,9 +237,11 @@ For implementation details, see the [example plugin](https://github.com/semihale
 *   Chaos TXT query support for version.bind and hostname.bind
 *   Empty zones support (RFC 1918)
 *   External plugin support
-*   Binary DNS logging via dnstap protocol
+*   Binary DNS logging via dnstap protocol (RFC 6742)
 *   QNAME minimization for privacy (RFC 7816)
 *   Automatic DNSSEC trust anchor updates (RFC 5011)
+*   Zero-allocation cache operations for improved performance
+*   TCP connection pooling for persistent connections
 
 ## TODO
 
