@@ -7,9 +7,9 @@ import (
 	"runtime/debug"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/zlog"
 )
 
 // Recovery dummy type
@@ -29,7 +29,7 @@ func (r *Recovery) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if r := recover(); r != nil {
 			ch.CancelWithRcode(dns.RcodeServerFailure, false)
 
-			log.Error("Recovered in ServeDNS", "recover", r)
+			zlog.Error("Recovered in ServeDNS", "recover", r)
 
 			_, _ = os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
 			debug.PrintStack()

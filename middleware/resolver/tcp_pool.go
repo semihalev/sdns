@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
+	"github.com/semihalev/zlog"
 )
 
 // TCPConnPool manages persistent TCP connections to DNS servers
@@ -162,15 +162,18 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 	poolMap[server] = pooled
 	p.active++
 
-	log.Debug("TCP connection pooled", "server", server, "idle_timeout", pooled.idleTime,
+	zlog.Debug("TCP connection pooled", "server", server, "idle_timeout", pooled.idleTime,
 		"supports_keepalive", pooled.supportsKA, "active_conns", p.active)
 }
 
 // getPoolMap returns the appropriate pool map
 func (p *TCPConnPool) getPoolMap(isRoot, isTLD bool) map[string]*pooledConn {
+	_ = isTLD // Avoid unused variable warning
+
 	if isRoot {
 		return p.rootConns
 	}
+
 	return p.tldConns
 }
 
@@ -197,7 +200,7 @@ func (p *TCPConnPool) cleanup() {
 			conn.Close()
 			delete(p.rootConns, server)
 			p.active--
-			log.Debug("Cleaned up idle root connection", "server", server)
+			zlog.Debug("Cleaned up idle root connection", "server", server)
 		}
 	}
 
@@ -207,7 +210,7 @@ func (p *TCPConnPool) cleanup() {
 			conn.Close()
 			delete(p.tldConns, server)
 			p.active--
-			log.Debug("Cleaned up idle TLD connection", "server", server)
+			zlog.Debug("Cleaned up idle TLD connection", "server", server)
 		}
 	}
 }

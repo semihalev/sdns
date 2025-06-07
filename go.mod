@@ -3,11 +3,12 @@ module github.com/semihalev/sdns
 require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/miekg/dns v1.1.66
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.2
 	github.com/quic-go/quic-go v0.52.0
-	github.com/semihalev/log v0.1.4
+	github.com/semihalev/zlog v1.2.3
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.10.0
 	github.com/yl2chen/cidranger v1.0.2

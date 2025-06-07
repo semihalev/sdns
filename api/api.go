@@ -11,11 +11,11 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
+	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 )
 
 // API type
@@ -134,7 +134,7 @@ func (a *API) purge(ctx *Context) {
 	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
 	req.Question[0].Qclass = dns.ClassCHAOS
 
-	_, _ = dnsutil.ExchangeInternal(context.Background(), req)
+	_, _ = util.ExchangeInternal(context.Background(), req)
 
 	ctx.JSON(http.StatusOK, Json{"success": true})
 }
@@ -181,25 +181,25 @@ func (a *API) Run(ctx context.Context) {
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("Start API server failed", "error", err.Error())
+			zlog.Error("Start API server failed", "error", err.Error())
 		}
 	}()
 
-	log.Info("API server listening...", "addr", a.addr)
+	zlog.Info("API server listening...", "addr", a.addr)
 	if a.bearerToken != "" {
-		log.Info("API authorization bearer token", "token", a.bearerToken)
+		zlog.Info("API authorization bearer token", "token", a.bearerToken)
 	}
 
 	go func() {
 		<-ctx.Done()
 
-		log.Info("API server stopping...", "addr", a.addr)
+		zlog.Info("API server stopping...", "addr", a.addr)
 
 		apiCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if err := srv.Shutdown(apiCtx); err != nil {
-			log.Error("Shutdown API server failed:", "error", err.Error())
+			zlog.Error("Shutdown API server failed:", "error", err.Error())
 		}
 	}()
 }

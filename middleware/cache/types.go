@@ -75,12 +75,19 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	}
 
 	resp := e.msg.Copy()
+	originalRcode := resp.Rcode // Save the original Rcode
 	resp.SetReply(req)
+	resp.Rcode = originalRcode // Restore the original Rcode
 	resp.Id = req.Id
 
 	// Set Authoritative to false since this is from cache (matching V1 behavior)
 	resp.Authoritative = false
 	// RecursionAvailable is already preserved from the original message via MsgHdr copy
+
+	// RFC 4035: Never set AD bit when CD bit is set in the request
+	if req.CheckingDisabled {
+		resp.AuthenticatedData = false
+	}
 
 	// Update TTLs
 	ttl := uint32(remainingTTL.Seconds())
@@ -133,7 +140,7 @@ type CacheKey struct {
 
 // Hash returns the cache key hash
 func (k CacheKey) Hash() uint64 {
-	return cache.Hash(k.Question, k.CD)
+	return cache.Key(k.Question, k.CD)
 }
 
 // CacheConfig holds cache configuration with validation

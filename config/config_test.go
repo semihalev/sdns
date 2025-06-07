@@ -9,11 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/log"
+	"github.com/semihalev/zlog"
 )
 
 func TestMain(m *testing.M) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
+
 	code := m.Run()
 	os.Exit(code)
 }

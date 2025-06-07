@@ -279,7 +279,7 @@ Tests were performed on the following DNS resolvers: SDNS 1.5.0, PowerDNS Recurs
 
 | Resolver | Version | QPS    | Avg Latency | Lost Queries | Runtime  | Response Codes                                      |
 | -------- | ------- | ------ | ----------- | ------------ | -------- | --------------------------------------------------- |
-| SDNS     | 1.5.0   | 709/s  | 137ms       | 2 (0.004%)   | 70.5s    | NOERROR: 79.10%, SERVFAIL: 1.50%, NXDOMAIN: 19.40% |
+| SDNS     | 1.5.0   | 712/s  | 136ms       | 2 (0.004%)   | 70.2s    | NOERROR: 67.82%, SERVFAIL: 1.64%, NXDOMAIN: 30.55% |
 | PowerDNS | 5.0.2   | 578/s  | 156ms       | 20 (0.04%)   | 86.5s    | NOERROR: 67.64%, SERVFAIL: 1.92%, NXDOMAIN: 30.43% |
 | BIND     | 9.19.12 | 405/s  | 200ms       | 156 (0.31%)  | 123.0s   | NOERROR: 67.84%, SERVFAIL: 1.62%, NXDOMAIN: 30.54% |
 | Unbound  | 1.17.1  | 338/s  | 237ms       | 263 (0.53%)  | 147.0s   | NOERROR: 68.20%, SERVFAIL: 1.20%, NXDOMAIN: 30.60% |
@@ -287,10 +287,10 @@ Tests were performed on the following DNS resolvers: SDNS 1.5.0, PowerDNS Recurs
 ### Performance Summary
 
 SDNS demonstrates superior performance across all key metrics:
-- **Highest throughput**: 709 queries per second (23% faster than PowerDNS, 75% faster than BIND, 110% faster than Unbound)
-- **Lowest latency**: 137ms average (12-42% lower than competitors)
+- **Highest throughput**: 712 queries per second (23% faster than PowerDNS, 76% faster than BIND, 111% faster than Unbound)
+- **Lowest latency**: 136ms average (13-43% lower than competitors)
 - **Best reliability**: Only 2 lost queries out of 50,000 (99.996% success rate)
-- **Fastest completion**: 70.5 seconds total runtime
+- **Fastest completion**: 70.2 seconds total runtime
 
 ## Contributing
 
@@ -304,7 +304,6 @@ Before submitting patches, please review our [CONTRIBUTING](https://github.com/s
 
 ## Inspired by
 
-*   [coredns/coredns](https://github.com/coredns/coredns)
 *   [looterz/grimd](https://github.com/looterz/grimd)
 
 ## License

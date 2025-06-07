@@ -8,12 +8,11 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/response"
+	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/sdns/waitgroup"
+	"github.com/semihalev/zlog"
 )
 
 var debugns bool
@@ -24,8 +23,8 @@ func init() {
 
 const (
 	name   = "cache"
-	maxTTL = dnsutil.MaximumDefaulTTL
-	minTTL = dnsutil.MinimalDefaultTTL
+	maxTTL = util.MaxCacheTTL
+	minTTL = util.MinCacheTTL
 )
 
 // Cache is the cache implementation
@@ -65,7 +64,7 @@ func New(cfg *config.Config) *Cache {
 	// Validate configuration
 	if err := cacheConfig.Validate(); err != nil {
 		// Log error but continue with defaults
-		log.Warn("Cache configuration validation failed, using defaults", "error", err.Error())
+		zlog.Warn("Cache configuration validation failed, using defaults", "error", err.Error())
 	}
 
 	// Adjust prefetch percentage
@@ -245,7 +244,7 @@ func (c *Cache) isValidQuery(q dns.Question) bool {
 func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q dns.Question) bool {
 	// Handle cache purge
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(ch.Request); ok {
+		if qname, qtype, ok := util.ParsePurgeQuestion(ch.Request); ok {
 			c.purge(qname, qtype)
 			ch.Next(ctx)
 			return true
@@ -290,11 +289,11 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	rw := &ResponseWriter{cache: c}
 	filtered := rw.filterAnswerSection(msg)
 
-	mt, _ := response.Typify(filtered, time.Now().UTC())
+	mt, _ := util.ClassifyResponse(filtered, time.Now().UTC())
 
-	msgTTL := dnsutil.MinimalTTL(filtered, mt)
+	msgTTL := util.CalculateCacheTTL(filtered, mt)
 	var ttl time.Duration
-	if mt == response.OtherError {
+	if mt == util.TypeServerFailure {
 		ttl = c.negative.ttl.Calculate(msgTTL)
 	} else {
 		ttl = c.positive.ttl.Calculate(msgTTL)
@@ -308,12 +307,12 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	}
 
 	switch mt {
-	case response.NoError, response.Delegation:
+	case util.TypeSuccess, util.TypeReferral:
 		c.positive.Set(key, entry)
-	case response.NameError, response.NoData:
+	case util.TypeNXDomain, util.TypeNoRecords:
 		// NXDOMAIN and NODATA go to positive cache with normal TTL handling
 		c.positive.Set(key, entry)
-	case response.OtherError:
+	case util.TypeServerFailure:
 		// Server failures and other errors go to negative cache with expire limit
 		c.negative.Set(key, entry)
 	}
@@ -361,28 +360,28 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	}
 
 	// Determine cache type and TTL
-	mt, _ := response.Typify(res, time.Now().UTC())
+	mt, _ := util.ClassifyResponse(res, time.Now().UTC())
 	key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
 
 	// Filter answer section to only keep relevant records (matching V1 behavior)
 	filtered := w.filterAnswerSection(res)
 
 	// Calculate TTL
-	msgTTL := dnsutil.MinimalTTL(filtered, mt)
+	msgTTL := util.CalculateCacheTTL(filtered, mt)
 	var ttl time.Duration
 
 	switch mt {
-	case response.NoError, response.Delegation:
+	case util.TypeSuccess, util.TypeReferral:
 		ttl = w.cache.positive.ttl.Calculate(msgTTL)
 		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
 		w.cache.positive.Set(key, entry)
 
-	case response.NameError, response.NoData:
+	case util.TypeNXDomain, util.TypeNoRecords:
 		ttl = w.cache.positive.ttl.Calculate(msgTTL)
 		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
 		w.cache.positive.Set(key, entry)
 
-	case response.OtherError:
+	case util.TypeServerFailure:
 		ttl = w.cache.negative.ttl.Calculate(msgTTL)
 		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
 		w.cache.negative.Set(key, entry)
@@ -503,7 +502,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	cnameReq := AcquireMsg()
 	defer ReleaseMsg(cnameReq)
 
-	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	cnameReq.SetEdns0(util.DefaultMsgSize, true)
 	cnameReq.CheckingDisabled = msg.CheckingDisabled
 
 	// Check if we already have the answer we're looking for
@@ -516,7 +515,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		if answer.Header().Rrtype == dns.TypeCNAME {
 			cr := answer.(*dns.CNAME)
 			if cr.Target == q.Name {
-				return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
+				return util.SetRcode(msg, dns.RcodeServerFailure, false)
 			}
 			cnameReq.SetQuestion(cr.Target, q.Qtype)
 		}
@@ -534,19 +533,19 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		// Check for loops
 		for _, t := range targets {
 			if t == target {
-				return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
+				return util.SetRcode(msg, dns.RcodeServerFailure, false)
 			}
 		}
 
 		targets = append(targets, target)
 
-		respCname, err := dnsutil.ExchangeInternal(ctx, cnameReq)
+		respCname, err := util.ExchangeInternal(ctx, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		}
 
 		if target == q.Name {
-			return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
+			return util.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
 
 		cnameReq.Question[0].Name = target

@@ -1,386 +1,584 @@
-// Copyright 2009 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
-// This file is a modified version of net/hosts.go from the golang repo
-
+// Package hostsfile implements a high-performance hosts file resolver
+// with advanced features like wildcard support and automatic reloading
 package hostsfile
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 )
 
-func parseLiteralIP(addr string) net.IP {
-	if i := strings.Index(addr, "%"); i >= 0 {
-		// discard ipv6 zone
-		addr = addr[0:i]
-	}
+// HostsDB is an in-memory database for hosts entries
+// Unlike traditional implementations, we support wildcards and aliases
+type HostsDB struct {
+	// Read-write lock for concurrent access
+	mu sync.RWMutex
 
-	return net.ParseIP(addr)
-}
+	// Forward lookups: hostname -> IPs
+	hosts map[string]*HostEntry
 
-func absDomainName(b string) string {
-	return strings.ToLower(dns.Fqdn(b))
-}
+	// Reverse lookups: IP -> hostnames
+	reverse map[string][]string
 
-type hostsMap struct {
-	// Key for the list of literal IP addresses must be a host
-	// name. It would be part of DNS labels, a FQDN or an absolute
-	// FQDN.
-	// For now the key is converted to lower case for convenience.
-	byNameV4 map[string][]net.IP
-	byNameV6 map[string][]net.IP
+	// Wildcard entries for pattern matching
+	wildcards []*WildcardEntry
 
-	// Key for the list of host names must be a literal IP address
-	// including IPv6 address with zone identifier.
-	// We don't support old-classful IP address notation.
-	byAddr map[string][]string
-}
-
-func newHostsMap() *hostsMap {
-	return &hostsMap{
-		byNameV4: make(map[string][]net.IP),
-		byNameV6: make(map[string][]net.IP),
-		byAddr:   make(map[string][]string),
+	// Statistics
+	stats struct {
+		entries   int64
+		wildcards int64
+		lookups   uint64
+		hits      uint64
 	}
 }
 
-// Len returns the total number of addresses in the hostmap, this includes
-// V4/V6 and any reverse addresses.
-func (h *hostsMap) Len() int {
-	l := 0
-	for _, v4 := range h.byNameV4 {
-		l += len(v4)
-	}
-	for _, v6 := range h.byNameV6 {
-		l += len(v6)
-	}
-	for _, a := range h.byAddr {
-		l += len(a)
-	}
-	return l
+// HostEntry represents a single host with multiple IPs and metadata
+type HostEntry struct {
+	Name      string
+	IPv4      []net.IP
+	IPv6      []net.IP
+	Aliases   []string
+	Comment   string
+	LineNo    int
+	Timestamp time.Time
 }
 
-// Hostsfile contains known host entries.
+// WildcardEntry represents a wildcard pattern
+type WildcardEntry struct {
+	Pattern   string
+	IPv4      []net.IP
+	IPv6      []net.IP
+	Timestamp time.Time
+}
+
+// Hostsfile middleware provides local name resolution
 type Hostsfile struct {
-	sync.RWMutex
-
-	// hosts maps for lookups
-	hmap *hostsMap
-
-	// inline saves the hosts file that is inlined in a Corefile.
-	// We need a copy here as we want to use it to initialize the maps for parse.
-	inline *hostsMap
-
-	// path to the hosts file
-	path string
-
-	// mtime and size are only read and modified by a single goroutine
-	mtime time.Time
-	size  int64
+	path       string
+	db         atomic.Value // *HostsDB
+	watcher    *fsnotify.Watcher
+	reloadTime time.Time
+	ttl        uint32
 }
 
-// New return new hostfile, it will be hosts file also
+// New creates a new Hostsfile middleware
 func New(cfg *config.Config) *Hostsfile {
-	h := &Hostsfile{
-		path: cfg.Hostsfile,
-		hmap: newHostsMap(),
+	if cfg.HostsFile == "" {
+		return nil
 	}
 
-	h.readHosts()
+	h := &Hostsfile{
+		path: cfg.HostsFile,
+		ttl:  600, // 10 minutes default TTL
+	}
 
-	go h.run()
+	// Initial load
+	if err := h.load(); err != nil {
+		zlog.Error("Failed to load hosts file", "path", h.path, "error", err)
+		return nil
+	}
+
+	// Setup file watcher
+	if err := h.setupWatcher(); err != nil {
+		zlog.Warn("Failed to setup hosts file watcher", "error", err)
+	}
 
 	return h
 }
 
-// Name return middleware name
-func (h *Hostsfile) Name() string { return name }
-
-func (h *Hostsfile) run() {
-	parseChan := make(chan bool)
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		for {
-			select {
-			case <-parseChan:
-				return
-			case <-ticker.C:
-				h.readHosts()
-			}
-		}
-	}()
+// Name returns the middleware name
+func (h *Hostsfile) Name() string {
+	return name
 }
 
-// readHosts determines if the cached data needs to be updated based on the size and modification time of the hostsfile.
-func (h *Hostsfile) readHosts() {
-	file, err := os.Open(h.path)
-	if err != nil {
-		// We already log a warning if the file doesn't exist or can't be opened on setup. No need to return the error here.
-		return
-	}
-
-	defer func() {
-		err := file.Close()
-		if err != nil {
-			log.Warn("Hosts file close failed", "error", err.Error())
-		}
-	}()
-
-	stat, err := file.Stat()
-	if err == nil && h.mtime.Equal(stat.ModTime()) && h.size == stat.Size() {
-		return
-	}
-
-	newMap := h.parse(file, h.inline)
-	log.Debug("Parsed hosts file into", "entries", newMap.Len())
-
-	h.Lock()
-
-	h.hmap = newMap
-	// Update the data cache.
-	h.mtime = stat.ModTime()
-	h.size = stat.Size()
-
-	h.Unlock()
-}
-
-func (h *Hostsfile) initInline(inline []string) {
-	if len(inline) == 0 {
-		return
-	}
-
-	hmap := newHostsMap()
-	h.inline = h.parse(strings.NewReader(strings.Join(inline, "\n")), hmap)
-	*h.hmap = *h.inline
-}
-
-func (h *Hostsfile) parseReader(r io.Reader) { h.hmap = h.parse(r, h.inline) }
-
-// Parse reads the hostsfile and populates the byName and byAddr maps.
-func (h *Hostsfile) parse(r io.Reader, override *hostsMap) *hostsMap {
-	hmap := newHostsMap()
-
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if i := bytes.Index(line, []byte{'#'}); i >= 0 {
-			// Discard comments.
-			line = line[0:i]
-		}
-		f := bytes.Fields(line)
-		if len(f) < 2 {
-			continue
-		}
-		addr := parseLiteralIP(string(f[0]))
-		if addr == nil {
-			continue
-		}
-		ver := ipVersion(string(f[0]))
-		for i := 1; i < len(f); i++ {
-			name := absDomainName(string(f[i]))
-			switch ver {
-			case 4:
-				hmap.byNameV4[name] = append(hmap.byNameV4[name], addr)
-			case 6:
-				hmap.byNameV6[name] = append(hmap.byNameV6[name], addr)
-			default:
-				continue
-			}
-			hmap.byAddr[addr.String()] = append(hmap.byAddr[addr.String()], name)
-		}
-	}
-
-	if override == nil {
-		return hmap
-	}
-
-	for name := range override.byNameV4 {
-		hmap.byNameV4[name] = append(hmap.byNameV4[name], override.byNameV4[name]...)
-	}
-	for name := range override.byNameV4 {
-		hmap.byNameV6[name] = append(hmap.byNameV6[name], override.byNameV6[name]...)
-	}
-	for addr := range override.byAddr {
-		hmap.byAddr[addr] = append(hmap.byAddr[addr], override.byAddr[addr]...)
-	}
-
-	return hmap
-}
-
-// ipVersion returns what IP version was used textually
-func ipVersion(s string) int {
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '.':
-			return 4
-		case ':':
-			return 6
-		}
-	}
-	return 0
-}
-
-// LookupStaticHostV4 looks up the IPv4 addresses for the given host from the hosts file.
-func (h *Hostsfile) LookupStaticHostV4(host string) []net.IP {
-	h.RLock()
-	defer h.RUnlock()
-	if len(h.hmap.byNameV4) != 0 {
-		if ips, ok := h.hmap.byNameV4[absDomainName(host)]; ok {
-			ipsCp := make([]net.IP, len(ips))
-			copy(ipsCp, ips)
-			return ipsCp
-		}
-	}
-	return nil
-}
-
-// LookupStaticHostV6 looks up the IPv6 addresses for the given host from the hosts file.
-func (h *Hostsfile) LookupStaticHostV6(host string) []net.IP {
-	h.RLock()
-	defer h.RUnlock()
-	if len(h.hmap.byNameV6) != 0 {
-		if ips, ok := h.hmap.byNameV6[absDomainName(host)]; ok {
-			ipsCp := make([]net.IP, len(ips))
-			copy(ipsCp, ips)
-			return ipsCp
-		}
-	}
-	return nil
-}
-
-// LookupStaticAddr looks up the hosts for the given address from the hosts file.
-func (h *Hostsfile) LookupStaticAddr(addr string) []string {
-	h.RLock()
-	defer h.RUnlock()
-	addr = parseLiteralIP(addr).String()
-	if addr == "" {
-		return nil
-	}
-	if len(h.hmap.byAddr) != 0 {
-		if hosts, ok := h.hmap.byAddr[addr]; ok {
-			hostsCp := make([]string, len(hosts))
-			copy(hostsCp, hosts)
-			return hostsCp
-		}
-	}
-	return nil
-}
-
-// ServeDNS implements the Handle interface.
+// ServeDNS handles DNS queries using the hosts database
 func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	// Safety check for nil receiver
+	if h == nil {
+		ch.Next(ctx)
+		return
+	}
+
 	w, req := ch.Writer, ch.Request
 
-	q := req.Question[0]
+	if len(req.Question) == 0 {
+		ch.Next(ctx)
+		return
+	}
 
-	answers := []dns.RR{}
+	q := req.Question[0]
+	db := h.getDB()
+
+	// Increment lookup counter
+	atomic.AddUint64(&db.stats.lookups, 1)
+
+	// Handle different query types
+	var answer []dns.RR
+	var found bool
 
 	switch q.Qtype {
-	case dns.TypePTR:
-		names := h.LookupStaticAddr(dnsutil.ExtractAddressFromReverse(q.Name))
-		if len(names) == 0 {
-			ch.Next(ctx)
-			return
-		}
-		answers = ptr(q.Name, names)
 	case dns.TypeA:
-		ips := h.LookupStaticHostV4(q.Name)
-		answers = a(q.Name, ips)
+		answer, found = h.lookupA(db, q.Name)
 	case dns.TypeAAAA:
-		ips := h.LookupStaticHostV6(q.Name)
-		answers = aaaa(q.Name, ips)
-	}
-
-	if len(answers) == 0 {
-		if !h.otherRecordsExist(q.Qtype, q.Name) {
-			ch.Next(ctx)
-			return
+		answer, found = h.lookupAAAA(db, q.Name)
+	case dns.TypePTR:
+		answer, found = h.lookupPTR(db, q.Name)
+	case dns.TypeCNAME:
+		answer, found = h.lookupCNAME(db, q.Name)
+	default:
+		// For other types, check if host exists to return NODATA
+		if h.hostExists(db, q.Name) {
+			found = true
 		}
 	}
 
-	m := new(dns.Msg)
-	m.SetReply(req)
-	m.Authoritative, m.RecursionAvailable = true, true
-	m.Answer = answers
+	if !found {
+		ch.Next(ctx)
+		return
+	}
 
-	_ = w.WriteMsg(m)
+	// Increment hit counter
+	atomic.AddUint64(&db.stats.hits, 1)
 
+	// Build response
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Authoritative = true
+	resp.RecursionAvailable = true
+	resp.Answer = answer
+
+	_ = w.WriteMsg(resp)
 	ch.Cancel()
 }
 
-func (h *Hostsfile) otherRecordsExist(qtype uint16, qname string) bool {
-	switch qtype {
-	case dns.TypeA:
-		if len(h.LookupStaticHostV6(qname)) > 0 {
-			return true
+// lookupA finds A records for a hostname
+func (h *Hostsfile) lookupA(db *HostsDB, name string) ([]dns.RR, bool) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+
+	// Direct lookup
+	if entry, ok := db.hosts[name]; ok && len(entry.IPv4) > 0 {
+		answer := make([]dns.RR, 0, len(entry.IPv4))
+		for _, ip := range entry.IPv4 {
+			answer = append(answer, &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   name + ".",
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    h.ttl,
+				},
+				A: ip,
+			})
 		}
-	case dns.TypeAAAA:
-		if len(h.LookupStaticHostV4(qname)) > 0 {
-			return true
+		return answer, true
+	}
+
+	// Check wildcards
+	for _, wc := range db.wildcards {
+		if matchWildcard(wc.Pattern, name) && len(wc.IPv4) > 0 {
+			answer := make([]dns.RR, 0, len(wc.IPv4))
+			for _, ip := range wc.IPv4 {
+				answer = append(answer, &dns.A{
+					Hdr: dns.RR_Header{
+						Name:   name + ".",
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    h.ttl,
+					},
+					A: ip,
+				})
+			}
+			return answer, true
 		}
-	default:
-		if len(h.LookupStaticHostV4(qname)) > 0 {
-			return true
+	}
+
+	return nil, false
+}
+
+// lookupAAAA finds AAAA records for a hostname
+func (h *Hostsfile) lookupAAAA(db *HostsDB, name string) ([]dns.RR, bool) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+
+	// Direct lookup
+	if entry, ok := db.hosts[name]; ok && len(entry.IPv6) > 0 {
+		answer := make([]dns.RR, 0, len(entry.IPv6))
+		for _, ip := range entry.IPv6 {
+			answer = append(answer, &dns.AAAA{
+				Hdr: dns.RR_Header{
+					Name:   name + ".",
+					Rrtype: dns.TypeAAAA,
+					Class:  dns.ClassINET,
+					Ttl:    h.ttl,
+				},
+				AAAA: ip,
+			})
 		}
-		if len(h.LookupStaticHostV6(qname)) > 0 {
+		return answer, true
+	}
+
+	// Check wildcards
+	for _, wc := range db.wildcards {
+		if matchWildcard(wc.Pattern, name) && len(wc.IPv6) > 0 {
+			answer := make([]dns.RR, 0, len(wc.IPv6))
+			for _, ip := range wc.IPv6 {
+				answer = append(answer, &dns.AAAA{
+					Hdr: dns.RR_Header{
+						Name:   name + ".",
+						Rrtype: dns.TypeAAAA,
+						Class:  dns.ClassINET,
+						Ttl:    h.ttl,
+					},
+					AAAA: ip,
+				})
+			}
+			return answer, true
+		}
+	}
+
+	return nil, false
+}
+
+// lookupPTR finds PTR records for an IP address
+func (h *Hostsfile) lookupPTR(db *HostsDB, name string) ([]dns.RR, bool) {
+	ip := util.IPFromReverseName(name)
+	if ip == "" {
+		return nil, false
+	}
+
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if names, ok := db.reverse[ip]; ok && len(names) > 0 {
+		answer := make([]dns.RR, 0, len(names))
+		for _, hostname := range names {
+			answer = append(answer, &dns.PTR{
+				Hdr: dns.RR_Header{
+					Name:   name,
+					Rrtype: dns.TypePTR,
+					Class:  dns.ClassINET,
+					Ttl:    h.ttl,
+				},
+				Ptr: hostname + ".",
+			})
+		}
+		return answer, true
+	}
+
+	return nil, false
+}
+
+// lookupCNAME finds CNAME records (aliases)
+func (h *Hostsfile) lookupCNAME(db *HostsDB, name string) ([]dns.RR, bool) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+
+	// Check if this is an alias
+	for _, entry := range db.hosts {
+		for _, alias := range entry.Aliases {
+			if alias == name {
+				return []dns.RR{&dns.CNAME{
+					Hdr: dns.RR_Header{
+						Name:   name + ".",
+						Rrtype: dns.TypeCNAME,
+						Class:  dns.ClassINET,
+						Ttl:    h.ttl,
+					},
+					Target: entry.Name + ".",
+				}}, true
+			}
+		}
+	}
+
+	return nil, false
+}
+
+// hostExists checks if a hostname exists in the database
+func (h *Hostsfile) hostExists(db *HostsDB, name string) bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	name = strings.ToLower(strings.TrimSuffix(name, "."))
+
+	// Check direct entries
+	if _, ok := db.hosts[name]; ok {
+		return true
+	}
+
+	// Check aliases
+	for _, entry := range db.hosts {
+		for _, alias := range entry.Aliases {
+			if alias == name {
+				return true
+			}
+		}
+	}
+
+	// Check wildcards
+	for _, wc := range db.wildcards {
+		if matchWildcard(wc.Pattern, name) {
 			return true
 		}
 	}
+
 	return false
-
 }
 
-// a takes a slice of net.IPs and returns a slice of A RRs.
-func a(zone string, ips []net.IP) []dns.RR {
-	answers := []dns.RR{}
-	for _, ip := range ips {
-		r := new(dns.A)
-		r.Hdr = dns.RR_Header{Name: zone, Rrtype: dns.TypeA,
-			Class: dns.ClassINET, Ttl: 3600}
-		r.A = ip
-		answers = append(answers, r)
+// load reads and parses the hosts file
+func (h *Hostsfile) load() error {
+	file, err := os.Open(h.path)
+	if err != nil {
+		return err
 	}
-	return answers
+	defer file.Close()
+
+	db := &HostsDB{
+		hosts:   make(map[string]*HostEntry),
+		reverse: make(map[string][]string),
+	}
+
+	scanner := bufio.NewScanner(file)
+	lineNo := 0
+
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+
+		// Parse the line
+		ip, hostnames, comment := parseLine(line)
+		if ip == nil || len(hostnames) == 0 {
+			continue
+		}
+
+		// Check all hostnames for wildcards
+		hasWildcard := false
+		wildcardHostname := ""
+		for _, h := range hostnames {
+			if strings.Contains(h, "*") {
+				hasWildcard = true
+				wildcardHostname = h
+				break
+			}
+		}
+
+		// Handle wildcard entries
+		if hasWildcard {
+			wc := &WildcardEntry{
+				Pattern:   wildcardHostname,
+				Timestamp: time.Now(),
+			}
+
+			if ip.To4() != nil {
+				wc.IPv4 = []net.IP{ip}
+			} else {
+				wc.IPv6 = []net.IP{ip}
+			}
+
+			db.wildcards = append(db.wildcards, wc)
+			atomic.AddInt64(&db.stats.wildcards, 1)
+			continue
+		}
+
+		// Regular entries
+		primaryName := strings.ToLower(hostnames[0])
+
+		entry, exists := db.hosts[primaryName]
+		if !exists {
+			entry = &HostEntry{
+				Name:      primaryName,
+				LineNo:    lineNo,
+				Comment:   comment,
+				Timestamp: time.Now(),
+			}
+			db.hosts[primaryName] = entry
+			atomic.AddInt64(&db.stats.entries, 1)
+		}
+
+		// Add IP
+		if ip.To4() != nil {
+			entry.IPv4 = append(entry.IPv4, ip)
+		} else {
+			entry.IPv6 = append(entry.IPv6, ip)
+		}
+
+		// Add reverse mapping
+		ipStr := ip.String()
+		db.reverse[ipStr] = append(db.reverse[ipStr], primaryName)
+
+		// Process aliases
+		for i := 1; i < len(hostnames); i++ {
+			alias := strings.ToLower(hostnames[i])
+			entry.Aliases = append(entry.Aliases, alias)
+
+			// Also create direct entries for aliases
+			aliasEntry := &HostEntry{
+				Name:      alias,
+				LineNo:    lineNo,
+				Timestamp: time.Now(),
+			}
+
+			if ip.To4() != nil {
+				aliasEntry.IPv4 = []net.IP{ip}
+			} else {
+				aliasEntry.IPv6 = []net.IP{ip}
+			}
+
+			db.hosts[alias] = aliasEntry
+			atomic.AddInt64(&db.stats.entries, 1)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	h.db.Store(db)
+	h.reloadTime = time.Now()
+
+	zlog.Info("Loaded hosts file",
+		"path", h.path,
+		"entries", atomic.LoadInt64(&db.stats.entries),
+		"wildcards", atomic.LoadInt64(&db.stats.wildcards),
+	)
+
+	return nil
 }
 
-// aaaa takes a slice of net.IPs and returns a slice of AAAA RRs.
-func aaaa(zone string, ips []net.IP) []dns.RR {
-	answers := []dns.RR{}
-	for _, ip := range ips {
-		r := new(dns.AAAA)
-		r.Hdr = dns.RR_Header{Name: zone, Rrtype: dns.TypeAAAA,
-			Class: dns.ClassINET, Ttl: 3600}
-		r.AAAA = ip
-		answers = append(answers, r)
+// setupWatcher creates a file watcher for auto-reload
+func (h *Hostsfile) setupWatcher() error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
 	}
-	return answers
+
+	h.watcher = watcher
+
+	// Watch the directory, not the file (handles editors that replace files)
+	dir := filepath.Dir(h.path)
+	if err := watcher.Add(dir); err != nil {
+		watcher.Close()
+		return err
+	}
+
+	go h.watchLoop()
+
+	return nil
 }
 
-// ptr takes a slice of host names and filters out the ones that aren't in Origins, if specified, and returns a slice of PTR RRs.
-func ptr(zone string, names []string) []dns.RR {
-	answers := []dns.RR{}
-	for _, n := range names {
-		r := new(dns.PTR)
-		r.Hdr = dns.RR_Header{Name: zone, Rrtype: dns.TypePTR,
-			Class: dns.ClassINET, Ttl: 3600}
-		r.Ptr = dns.Fqdn(n)
-		answers = append(answers, r)
+// watchLoop handles file change events
+func (h *Hostsfile) watchLoop() {
+	defer h.watcher.Close()
+
+	// Debounce timer to avoid multiple reloads
+	var debounceTimer *time.Timer
+
+	for {
+		select {
+		case event, ok := <-h.watcher.Events:
+			if !ok {
+				return
+			}
+
+			// Check if it's our file
+			if filepath.Base(event.Name) != filepath.Base(h.path) {
+				continue
+			}
+
+			// Debounce events
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+
+			debounceTimer = time.AfterFunc(100*time.Millisecond, func() {
+				if err := h.load(); err != nil {
+					zlog.Error("Failed to reload hosts file", "error", err)
+				}
+			})
+
+		case err, ok := <-h.watcher.Errors:
+			if !ok {
+				return
+			}
+			zlog.Error("Hosts file watcher error", "error", err)
+		}
 	}
-	return answers
+}
+
+// getDB returns the current hosts database
+func (h *Hostsfile) getDB() *HostsDB {
+	return h.db.Load().(*HostsDB)
+}
+
+// Stats returns usage statistics
+func (h *Hostsfile) Stats() map[string]interface{} {
+	db := h.getDB()
+
+	return map[string]interface{}{
+		"entries":     atomic.LoadInt64(&db.stats.entries),
+		"wildcards":   atomic.LoadInt64(&db.stats.wildcards),
+		"lookups":     atomic.LoadUint64(&db.stats.lookups),
+		"hits":        atomic.LoadUint64(&db.stats.hits),
+		"reload_time": h.reloadTime.Format(time.RFC3339),
+	}
+}
+
+// parseLine parses a single hosts file line
+func parseLine(line string) (net.IP, []string, string) {
+	// Remove comments
+	comment := ""
+	if idx := strings.Index(line, "#"); idx >= 0 {
+		comment = strings.TrimSpace(line[idx+1:])
+		line = line[:idx]
+	}
+
+	// Split fields
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return nil, nil, ""
+	}
+
+	// Parse IP - handle IPv6 zone identifiers
+	ipStr := fields[0]
+	if i := strings.Index(ipStr, "%"); i >= 0 {
+		ipStr = ipStr[:i]
+	}
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return nil, nil, ""
+	}
+
+	return ip, fields[1:], comment
+}
+
+// matchWildcard checks if a name matches a wildcard pattern
+func matchWildcard(pattern, name string) bool {
+	// Simple wildcard matching (e.g., *.example.com)
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := pattern[2:]
+		return strings.HasSuffix(name, suffix) || name == suffix[1:]
+	}
+
+	// TODO: Implement more complex wildcard patterns if needed
+	return false
 }
 
 const name = "hostsfile"

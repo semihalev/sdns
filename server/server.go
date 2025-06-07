@@ -16,12 +16,12 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/semihalev/sdns/server/doh"
 	"github.com/semihalev/sdns/server/doq"
+	"github.com/semihalev/zlog"
 )
 
 // Server type
@@ -119,7 +119,7 @@ func (s *Server) Run(ctx context.Context) {
 // ListenAndServeDNS Starts a server on address and network specified Invoke handler
 // for incoming queries.
 func (s *Server) ListenAndServeDNS(ctx context.Context, network string) {
-	log.Info("DNS server listening...", "net", network, "addr", s.addr)
+	zlog.Info("DNS server listening...", "net", network, "addr", s.addr)
 
 	srv := &dns.Server{
 		Addr:          s.addr,
@@ -142,19 +142,19 @@ func (s *Server) ListenAndServeDNS(ctx context.Context, network string) {
 			} else {
 				s.udpStarted = false
 			}
-			log.Error("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
+			zlog.Error("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
 		}
 	}()
 
 	<-ctx.Done()
 
-	log.Info("DNS server stopping...", "net", network, "addr", s.addr)
+	zlog.Info("DNS server stopping...", "net", network, "addr", s.addr)
 
 	dnsCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := srv.ShutdownContext(dnsCtx); err != nil {
-		log.Error("Shutdown dns server failed:", "net", network, "addr", s.addr, "error", err.Error())
+		zlog.Error("Shutdown dns server failed:", "net", network, "addr", s.addr, "error", err.Error())
 	}
 
 	if network == "tcp" {
@@ -170,11 +170,11 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) {
 		return
 	}
 
-	log.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
+	zlog.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
 
 	cert, err := tls.LoadX509KeyPair(s.tlsCertificate, s.tlsPrivateKey)
 	if err != nil {
-		log.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
+		zlog.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 		return
 	}
 
@@ -196,19 +196,19 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) {
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
 			s.tlsStarted = false
-			log.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
+			zlog.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 		}
 	}()
 
 	<-ctx.Done()
 
-	log.Info("DNS server stopping...", "net", "tls", "addr", s.tlsAddr)
+	zlog.Info("DNS server stopping...", "net", "tls", "addr", s.tlsAddr)
 
 	dnsCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := srv.ShutdownContext(dnsCtx); err != nil {
-		log.Error("Shutdown dns server failed:", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
+		zlog.Error("Shutdown dns server failed:", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 	}
 
 	s.tlsStarted = false
@@ -220,7 +220,7 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) {
 		return
 	}
 
-	log.Info("DNS server listening...", "net", "doh", "addr", s.dohAddr)
+	zlog.Info("DNS server listening...", "net", "doh", "addr", s.dohAddr)
 
 	logReader, logWriter := io.Pipe()
 	go readlogs(logReader)
@@ -238,19 +238,19 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) {
 	go func() {
 		if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil && err != http.ErrServerClosed {
 			s.dohStarted = false
-			log.Error("DNS listener failed", "net", "doh", "addr", s.dohAddr, "error", err.Error())
+			zlog.Error("DNS listener failed", "net", "doh", "addr", s.dohAddr, "error", err.Error())
 		}
 	}()
 
 	<-ctx.Done()
 
-	log.Info("DNS server stopping...", "net", "doh", "addr", s.dohAddr)
+	zlog.Info("DNS server stopping...", "net", "doh", "addr", s.dohAddr)
 
 	dohCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(dohCtx); err != nil {
-		log.Error("Shutdown dns server failed:", "net", "doh", "addr", s.dohAddr, "error", err.Error())
+		zlog.Error("Shutdown dns server failed:", "net", "doh", "addr", s.dohAddr, "error", err.Error())
 	}
 
 	s.dohStarted = false
@@ -262,7 +262,7 @@ func (s *Server) ListenAndServeH3(ctx context.Context) {
 		return
 	}
 
-	log.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
+	zlog.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
 
 	srv := &http3.Server{
 		Addr:    s.dohAddr,
@@ -277,16 +277,16 @@ func (s *Server) ListenAndServeH3(ctx context.Context) {
 	go func() {
 		if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil && err != http.ErrServerClosed {
 			s.doh3Started = false
-			log.Error("DNS listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
+			zlog.Error("DNS listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
 		}
 	}()
 
 	<-ctx.Done()
 
-	log.Info("DNS server stopping...", "net", "doh-h3", "addr", s.dohAddr)
+	zlog.Info("DNS server stopping...", "net", "doh-h3", "addr", s.dohAddr)
 
 	if err := srv.Close(); err != nil {
-		log.Error("Shutdown dns server failed:", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
+		zlog.Error("Shutdown dns server failed:", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
 	}
 
 	s.doh3Started = false
@@ -303,23 +303,23 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) {
 		Handler: s,
 	}
 
-	log.Info("DNS server listening...", "net", "doq", "addr", s.doqAddr)
+	zlog.Info("DNS server listening...", "net", "doq", "addr", s.doqAddr)
 
 	s.doqStarted = true
 
 	go func() {
 		if err := srv.ListenAndServeQUIC(s.tlsCertificate, s.tlsPrivateKey); err != nil && err != quic.ErrServerClosed {
 			s.doqStarted = false
-			log.Error("DNS listener failed", "net", "doq", "addr", s.doqAddr, "error", err.Error())
+			zlog.Error("DNS listener failed", "net", "doq", "addr", s.doqAddr, "error", err.Error())
 		}
 	}()
 
 	<-ctx.Done()
 
-	log.Info("DNS server stopping...", "net", "doq", "addr", s.doqAddr)
+	zlog.Info("DNS server stopping...", "net", "doq", "addr", s.doqAddr)
 
 	if err := srv.Shutdown(); err != nil {
-		log.Error("Shutdown dns server failed:", "net", "doq", "addr", s.doqAddr, "error", err.Error())
+		zlog.Error("Shutdown dns server failed:", "net", "doq", "addr", s.doqAddr, "error", err.Error())
 	}
 
 	s.doqStarted = false
@@ -343,7 +343,7 @@ func readlogs(rd io.Reader) {
 
 		parts := strings.SplitN(string(line[:len(line)-1]), " ", 2)
 		if len(parts) > 1 {
-			log.Warn("Client http socket failed", "net", "https", "error", parts[1])
+			zlog.Warn("Client http socket failed", "net", "https", "error", parts[1])
 		}
 	}
 }

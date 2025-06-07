@@ -16,14 +16,14 @@ func Test_WaitGroupWait(t *testing.T) {
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn("example.com."), dns.TypeA)
-	key := cache.Hash(m.Question[0])
+	key := cache.Key(m.Question[0])
 
 	wg.Add(key)
 
 	count := wg.Get(key)
 	assert.Equal(t, 1, count)
 
-	key2 := cache.Hash(dns.Question{Name: "none.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+	key2 := cache.Key(dns.Question{Name: "none.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	count = wg.Get(key2)
 	assert.Equal(t, 0, count)

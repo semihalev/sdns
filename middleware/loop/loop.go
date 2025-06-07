@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/zlog"
 )
 
 // Loop dummy type
@@ -39,7 +39,7 @@ func (l *Loop) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		count := v.(uint64)
 
 		if count > 10 {
-			log.Warn("Loop detected", "query", qKey)
+			zlog.Warn("Loop detected", "query", qKey)
 			ch.CancelWithRcode(dns.RcodeServerFailure, false)
 			return
 		}

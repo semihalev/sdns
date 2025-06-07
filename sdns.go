@@ -11,15 +11,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/api"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/server"
+	"github.com/semihalev/zlog"
 	"github.com/spf13/cobra"
 )
 
-const version = "1.5.0"
+const version = "1.5.1"
 
 var (
 	cfgPath string
@@ -56,20 +56,35 @@ func setup() error {
 		cfg.LogLevel = "info"
 	}
 
-	lvl, err := log.LvlFromString(cfg.LogLevel)
-	if err != nil {
-		return fmt.Errorf("log verbosity level unknown: %w", err)
+	// Create structured logger with zero allocations
+	logger := zlog.NewStructured()
+
+	// Set log level based on config
+	var lvl zlog.Level
+	switch cfg.LogLevel {
+	case "debug":
+		lvl = zlog.LevelDebug
+	case "info":
+		lvl = zlog.LevelInfo
+	case "warn":
+		lvl = zlog.LevelWarn
+	case "error":
+		lvl = zlog.LevelError
+	default:
+		return fmt.Errorf("log verbosity level unknown: %s", cfg.LogLevel)
 	}
 
-	log.Root().SetLevel(lvl)
-	log.Root().SetHandler(log.LvlFilterHandler(lvl, log.StdoutHandler))
+	logger.SetLevel(lvl)
+
+	// Set as default logger for global log calls
+	zlog.SetDefault(logger)
 
 	middleware.Setup(cfg)
 	return nil
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
-	log.Info("Starting sdns...", "version", version)
+	zlog.Info("Starting sdns...", "version", version)
 
 	if err := setup(); err != nil {
 		return err
@@ -86,7 +101,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	<-ctx.Done()
 
-	log.Info("Stopping sdns...")
+	zlog.Info("Stopping sdns...")
 
 	// Graceful shutdown with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -102,9 +117,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	select {
 	case <-shutdownDone:
-		log.Info("Server stopped gracefully")
+		zlog.Info("Server stopped gracefully")
 	case <-shutdownCtx.Done():
-		log.Warn("Server shutdown timeout exceeded")
+		zlog.Warn("Server shutdown timeout exceeded")
 	}
 
 	return nil

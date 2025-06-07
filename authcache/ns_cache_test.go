@@ -14,7 +14,7 @@ func Test_NSCache(t *testing.T) {
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn("example.com."), dns.TypeA)
-	key := cache.Hash(m.Question[0])
+	key := cache.Key(m.Question[0])
 
 	a := NewAuthServer("0.0.0.0:53", IPv4)
 	_ = a.String()

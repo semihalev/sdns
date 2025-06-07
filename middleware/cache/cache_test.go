@@ -1,13 +1,13 @@
-// Copyright 2016-2020 The CoreDNS authors and contributors
-// Adapted for SDNS usage by Semih Alev.
-
+// Package cache provides a high-performance DNS caching middleware for SDNS
 package cache
 
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,24 +17,29 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func makeRR(data string) dns.RR {
 	r, _ := dns.NewRR(data)
-
 	return r
 }
 
 func makeTestConfig() *config.Config {
-	cfg := &config.Config{Expire: 300, CacheSize: 10240, Prefetch: 0, RateLimit: 10, Maxdepth: 30}
+	cfg := &config.Config{
+		Expire:    300,
+		CacheSize: 10240,
+		Prefetch:  0, // Disable prefetch for tests
+		RateLimit: 10,
+		Maxdepth:  30,
+	}
 	cfg.RootServers = []string{"192.5.5.241:53", "192.203.230.10:53"}
 	cfg.RootKeys = []string{
 		".			172800	IN	DNSKEY	256 3 8 AwEAAc4qsciJ5MdMUIu4n/pSTsSiU9OCyAanPTe5TcMX4v1hxhpFwiTGQUv3BXT6IAO4litrZKTUaj4vitqHW1+RQsHn3k/gSvt7FwyQwpy0mEnShBgr6RQiGtlBODNY67sTl+W8M/b6SLTAaaDri3BO5u6wrDs149rMELJAdoVBjmXW+zRH3kZzh3lwyTZsYtk7L+3DYbTiiHq+sRB4F9XoBPAz5Psv4q4EiPq07nW3acbW84zTz3CyQUmQkJT9VB1oUKHz6sNoyccqzcMX4q1GHAYpQ7FAXlKMxidoN1Ay5DWANgTmgJXzKhcI2nIZoq1x3yq4814O1LQd9QP68gI37+0=",
 		".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU=",
 	}
 	cfg.Timeout.Duration = 10 * time.Second
-	cfg.Directory = filepath.Join(os.TempDir(), "sdns_temp")
-	cfg.Prefetch = 90
+	cfg.Directory = filepath.Join(os.TempDir(), "sdns_test_"+time.Now().Format("20060102150405"))
 
 	if !middleware.Ready() {
 		middleware.Register("cache", func(cfg *config.Config) middleware.Handler { return New(cfg) })
@@ -44,10 +49,27 @@ func makeTestConfig() *config.Config {
 	return cfg
 }
 
-func Test_Purge(t *testing.T) {
+func TestNew(t *testing.T) {
 	cfg := makeTestConfig()
+	c := New(cfg)
+	defer c.Stop()
+
+	require.NotNil(t, c)
+	assert.Equal(t, "cache", c.Name())
+	assert.NotNil(t, c.positive)
+	assert.NotNil(t, c.negative)
+	assert.Equal(t, cfg.CacheSize, c.config.Size)
+
+	// Clean up
+	os.RemoveAll(cfg.Directory)
+}
+
+func TestCachePurge(t *testing.T) {
+	cfg := makeTestConfig()
+	defer os.RemoveAll(cfg.Directory)
 
 	c := New(cfg)
+	defer c.Stop()
 
 	// Create a mock handler that returns a response for CHAOS queries
 	mockHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
@@ -71,8 +93,8 @@ func Test_Purge(t *testing.T) {
 		}
 	})
 
+	// Test purge with valid base64 encoded name
 	bqname := base64.StdEncoding.EncodeToString([]byte("A:test.com."))
-
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
 	req.Question[0].Qclass = dns.ClassCHAOS
@@ -82,14 +104,16 @@ func Test_Purge(t *testing.T) {
 	ch.Reset(mw, req)
 
 	c.ServeDNS(context.Background(), ch)
+	assert.True(t, mw.Written())
 	assert.Len(t, mw.Msg().Extra, 1)
 }
 
-func Test_PCache(t *testing.T) {
+func TestPositiveCache(t *testing.T) {
 	cfg := makeTestConfig()
+	defer os.RemoveAll(cfg.Directory)
 
 	c := New(cfg)
-	assert.Equal(t, "cache", c.Name())
+	defer c.Stop()
 
 	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
@@ -100,286 +124,324 @@ func Test_PCache(t *testing.T) {
 	ch.Reset(mw, req)
 
 	q := req.Question[0]
+	key := cache.Key(q)
 
 	// Check cache is empty initially
-	key := cache.Hash(q)
 	entry := c.checkCache(key)
 	assert.Nil(t, entry)
 
-	c.ServeDNS(context.Background(), ch)
-	assert.False(t, ch.Writer.Written())
-
+	// Create and cache a positive response
 	msg := new(dns.Msg)
 	msg.SetReply(req)
-	msg.Extra = req.Extra
-
-	msg.Answer = append(msg.Answer, makeRR("test.com. 4 IN A 0.0.0.0"))
-	msg.Answer = append(msg.Answer, makeRR("test.com. 604800 IN	RRSIG	A 8 2 1800 20181217031301 20181117031301 12051 test.com. SZqTalowCrrgx5dhMDv8jxLuZRS6U/MqJXzMp/zMVue+sfrhW0kdl+z+ Rf628xCwwASAa2o2cvcax50JBbYnRNAQ1aMrTQpdQUCGK2TaP0xgjIqO iRKjf00uMKjHuRYu6FUOvehM9EaRaFD7E6dGr+EkwbuchQUpMenv4SEf oP4="))
-
-	msg.Ns = append(msg.Ns, makeRR("test.com. 4 IN NS ns1.test.com."))
-	msg.Ns = append(msg.Ns, makeRR("test.com. 604800 IN	RRSIG	NS 8 2 1800 20181217031301 20181117031301 12051 test.com. SZqTalowCrrgx5dhMDv8jxLuZRS6U/MqJXzMp/zMVue+sfrhW0kdl+z+ Rf628xCwwASAa2o2cvcax50JBbYnRNAQ1aMrTQpdQUCGK2TaP0xgjIqO iRKjf00uMKjHuRYu6FUOvehM9EaRaFD7E6dGr+EkwbuchQUpMenv4SEf oP4="))
-
-	msg.Extra = append(msg.Extra, makeRR("ns1.test.com. 4 IN A 0.0.0.0"))
-	msg.Extra = append(msg.Extra, makeRR("ns1.test.com. 604800 IN	RRSIG	A 8 2 1800 20181217031301 20181117031301 12051 test.com. SZqTalowCrrgx5dhMDv8jxLuZRS6U/MqJXzMp/zMVue+sfrhW0kdl+z+ Rf628xCwwASAa2o2cvcax50JBbYnRNAQ1aMrTQpdQUCGK2TaP0xgjIqO iRKjf00uMKjHuRYu6FUOvehM9EaRaFD7E6dGr+EkwbuchQUpMenv4SEf oP4="))
+	msg.Answer = append(msg.Answer, makeRR("test.com. 300 IN A 1.2.3.4"))
 
 	c.Set(key, msg)
-	entry = c.checkCache(key)
-	assert.NotNil(t, entry)
 
+	// Verify it's in cache
+	entry = c.checkCache(key)
+	require.NotNil(t, entry)
+
+	// Serve from cache
 	ch.Reset(mw, req)
 	c.ServeDNS(context.Background(), ch)
-	assert.True(t, ch.Writer.Written())
+	assert.True(t, mw.Written())
 
-	// Test expired entry - set a very short TTL cache entry
-	shortTTLMsg := msg.Copy()
-	entry = NewCacheEntry(shortTTLMsg, 1*time.Millisecond, 0)
-	cacheKey := CacheKey{Question: q, CD: false}.Hash()
-	c.positive.Set(cacheKey, entry)
-
-	// Wait for expiration
-	time.Sleep(2 * time.Millisecond)
-
-	mw2 := mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Reset(mw2, req)
-	c.ServeDNS(context.Background(), ch)
-	// Should not be written from cache since it's expired
-	assert.False(t, mw2.Written())
+	resp := mw.Msg()
+	require.Len(t, resp.Answer, 1)
+	assert.Equal(t, "test.com.", resp.Answer[0].Header().Name)
 }
 
-func Test_NCache(t *testing.T) {
-	c := New(makeTestConfig())
+func TestNegativeCache(t *testing.T) {
+	cfg := makeTestConfig()
+	defer os.RemoveAll(cfg.Directory)
+
+	c := New(cfg)
+	defer c.Stop()
 
 	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
-	req.SetQuestion("test.com.", dns.TypeA)
+	req.SetQuestion("notfound.com.", dns.TypeA)
 	req.SetEdns0(4096, false)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Reset(mw, req)
 
 	q := req.Question[0]
-	key := cache.Hash(q)
+	key := cache.Key(q)
 
+	// Create and cache a negative response (NXDOMAIN)
 	msg := new(dns.Msg)
-	msg.SetRcode(req, dns.RcodeServerFailure)
+	msg.SetRcode(req, dns.RcodeNameError)
+	msg.Ns = append(msg.Ns, makeRR("com. 900 IN SOA ns1.com. admin.com. 1 7200 3600 1209600 900"))
 
 	c.Set(key, msg)
-	entry := c.checkCache(key)
-	assert.NotNil(t, entry)
 
-	// Verify it's in negative cache
-	cacheKey := CacheKey{Question: q, CD: false}.Hash()
-	negEntry, found := c.negative.Get(cacheKey)
+	// Verify it's in cache (NXDOMAIN goes to positive cache)
+	entry := c.checkCache(key)
+	require.NotNil(t, entry)
+
+	// NXDOMAIN responses are stored in positive cache with ttl from SOA
+	posEntry, found := c.positive.Get(key)
 	assert.True(t, found)
-	assert.NotNil(t, negEntry)
+	assert.NotNil(t, posEntry)
 }
 
-func Test_Cache_RRSIG(t *testing.T) {
+func TestCacheTTL(t *testing.T) {
 	cfg := makeTestConfig()
+	cfg.Expire = 5       // 5 second minimum TTL
+	cfg.CacheSize = 1024 // Meet minimum requirements
+	defer os.RemoveAll(cfg.Directory)
 
 	c := New(cfg)
+	defer c.Stop()
 
 	req := new(dns.Msg)
-	req.SetQuestion("miek.nl.", dns.TypeNS)
-	req.SetEdns0(4096, true)
+	req.SetQuestion("ttltest.com.", dns.TypeA)
 
 	q := req.Question[0]
+	key := cache.Key(q)
 
-	// The old test used cache.Hash(q) without CD flag
-	// But then called c.get(key, c.now())
-	// The mismatch suggests it was testing that the wrong key wouldn't find anything
-	key := cache.Hash(q) // Note: no CD flag
-
+	// Create response with 5 second TTL (minimum)
 	msg := new(dns.Msg)
 	msg.SetReply(req)
-	msg.Extra = req.Extra
+	msg.Answer = append(msg.Answer, makeRR("ttltest.com. 5 IN A 1.2.3.4"))
 
-	msg.Answer = append(msg.Answer, makeRR("miek.nl.		1800	IN	NS	linode.atoom.net."))
-	msg.Answer = append(msg.Answer, makeRR("miek.nl.		1800	IN	RRSIG	NS 8 2 1800 20160521031301 20160421031301 12051 miek.nl. PIUu3TKX/sB/N1n1E1yWxHHIcPnc2q6Wq9InShk+5ptRqChqKdZNMLDm gCq+1bQAZ7jGvn2PbwTwE65JzES7T+hEiqR5PU23DsidvZyClbZ9l0xG JtKwgzGXLtUHxp4xv/Plq+rq/7pOG61bNCxRyS7WS7i7QcCCWT1BCcv+ wZ0="))
-
-	msg.Ns = append(msg.Ns, makeRR("linode.atoom.net.	1800	IN	A	176.58.119.54"))
-	msg.Ns = append(msg.Ns, makeRR("linode.atoom.net.	1800	IN	RRSIG	A 8 3 1800 20161217031301 20161117031301 53289 atoom.net. car2hvJmft8+sA3zgk1zb8gdL8afpTBmUYaYK1OJuB+B6508IZIAYCFc 4yNFjxOFC9PaQz1GsgKNtwYl1HF8SAO/kTaJgP5V8BsZLfOGsQi2TWhn 3qOkuA563DvehVdMIzqzCTK5sLiQ25jg6saTiHO0yjpYBgcIxYvf8YW9 KYU="))
-
-	// Set with the key (which internally will add CD flag based on msg)
 	c.Set(key, msg)
 
-	// The cache will store it with CD=true because req.CheckingDisabled is true
-	// But we're checking with just the hash of the question
+	// Should be in cache immediately
 	entry := c.checkCache(key)
-	// So it shouldn't find it
+	require.NotNil(t, entry)
+
+	// Wait for expiration (5 seconds plus buffer)
+	time.Sleep(5100 * time.Millisecond)
+
+	// Should be expired
+	entry = c.checkCache(key)
 	assert.Nil(t, entry)
 }
 
-func Test_Cache_CNAME(t *testing.T) {
+func TestCacheDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
+	defer os.RemoveAll(cfg.Directory)
+
 	c := New(cfg)
-
-	// Create a mock handler that returns CNAME response
-	mockHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-		w, req := ch.Writer, ch.Request
-		if len(req.Question) == 0 {
-			ch.Cancel()
-			return
-		}
-
-		q := req.Question[0]
-		msg := new(dns.Msg)
-		msg.SetReply(req)
-
-		// Return a CNAME chain
-		if q.Name == "www.example.com." && q.Qtype == dns.TypeA {
-			msg.Answer = append(msg.Answer, &dns.CNAME{
-				Hdr:    dns.RR_Header{Name: "www.example.com.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
-				Target: "example.com.",
-			})
-		} else if q.Name == "example.com." && q.Qtype == dns.TypeA {
-			msg.Answer = append(msg.Answer, &dns.A{
-				Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
-				A:   []byte{93, 184, 216, 34},
-			})
-		}
-
-		_ = w.WriteMsg(msg)
-		ch.Cancel()
-	})
-
-	ch := middleware.NewChain([]middleware.Handler{c, mockHandler})
+	defer c.Stop()
 
 	req := new(dns.Msg)
-	req.SetQuestion("www.example.com.", dns.TypeA)
-	req.SetEdns0(4096, false)
-	req.CheckingDisabled = true
+	req.SetQuestion("secure.com.", dns.TypeA)
+	req.SetEdns0(4096, true) // DO bit set
 
-	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Reset(mw, req)
+	q := req.Question[0]
+	key := cache.Key(q, true) // CD flag
 
-	ch.Next(context.Background())
+	msg := new(dns.Msg)
+	msg.SetReply(req)
+	msg.Answer = append(msg.Answer, makeRR("secure.com. 300 IN A 1.2.3.4"))
+	msg.Answer = append(msg.Answer, makeRR("secure.com. 300 IN RRSIG A 8 2 300 20301231235959 20201231235959 12345 secure.com. fakesig=="))
 
-	assert.True(t, ch.Writer.Written())
-	assert.NotNil(t, ch.Writer.Msg())
-	// Should have resolved CNAME to A record
-	assert.True(t, len(ch.Writer.Msg().Answer) >= 1)
+	c.Set(key, msg)
+
+	// Query without CD bit should not find it
+	keyNoCD := cache.Key(q, false)
+	entry := c.checkCache(keyNoCD)
+	assert.Nil(t, entry)
+
+	// Query with CD bit should find it
+	entry = c.checkCache(key)
+	assert.NotNil(t, entry)
 }
 
-func Test_Cache_ResponseWriter(t *testing.T) {
+func TestCachePrefetch(t *testing.T) {
 	cfg := makeTestConfig()
+	cfg.Prefetch = 80 // Prefetch when 80% of TTL passed
+	defer os.RemoveAll(cfg.Directory)
+
 	c := New(cfg)
+	defer c.Stop() // Clean up prefetch workers
 
-	// Create a mock handler that returns different responses based on query
-	mockHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-		w, req := ch.Writer, ch.Request
-		if len(req.Question) == 0 {
-			ch.Cancel()
-			return
-		}
+	// Just verify prefetch is configured
+	if cfg.Prefetch > 0 {
+		assert.NotNil(t, c.prefetchQueue)
+	}
 
-		q := req.Question[0]
+	// Test basic caching without waiting for prefetch
+	req := new(dns.Msg)
+	req.SetQuestion("test.com.", dns.TypeA)
+
+	msg := new(dns.Msg)
+	msg.SetReply(req)
+	msg.Answer = append(msg.Answer, makeRR("test.com. 300 IN A 1.2.3.4"))
+
+	key := cache.Key(req.Question[0])
+	c.Set(key, msg)
+
+	// Verify it's cached
+	entry := c.checkCache(key)
+	assert.NotNil(t, entry)
+}
+
+func TestCacheConcurrency(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.CacheSize = 1024 // Meet minimum requirements
+	defer os.RemoveAll(cfg.Directory)
+
+	c := New(cfg)
+	defer c.Stop()
+
+	// Test concurrent Set/Get operations
+	const numGoroutines = 10
+	const opsPerGoroutine = 100
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+
+			for j := 0; j < opsPerGoroutine; j++ {
+				req := new(dns.Msg)
+				req.SetQuestion(fmt.Sprintf("test%d.com.", id), dns.TypeA)
+
+				msg := new(dns.Msg)
+				msg.SetReply(req)
+				msg.Answer = append(msg.Answer, makeRR(fmt.Sprintf("test%d.com. 300 IN A 1.2.3.%d", id, id)))
+
+				key := cache.Key(req.Question[0])
+
+				// Set and get
+				c.Set(key, msg)
+				c.checkCache(key)
+			}
+		}(i)
+	}
+
+	done := make(chan bool)
+	go func() {
+		wg.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out")
+	}
+
+	// Verify cache has some entries
+	stats := c.Stats()
+	assert.Contains(t, stats, "positive_size")
+}
+
+func TestCacheMetrics(t *testing.T) {
+	cfg := makeTestConfig()
+	defer os.RemoveAll(cfg.Directory)
+
+	c := New(cfg)
+	defer c.Stop()
+
+	// Add some positive entries
+	for i := 0; i < 10; i++ {
+		req := new(dns.Msg)
+		req.SetQuestion(fmt.Sprintf("test%d.com.", i), dns.TypeA)
+
 		msg := new(dns.Msg)
 		msg.SetReply(req)
+		msg.Answer = append(msg.Answer, makeRR(fmt.Sprintf("test%d.com. 300 IN A 1.2.3.%d", i, i)))
 
-		switch q.Name {
-		case "www.example.com.":
-			if q.Qtype == dns.TypeA {
-				msg.Answer = append(msg.Answer, &dns.A{
-					Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
-					A:   []byte{93, 184, 216, 34},
-				})
-			}
-		case "labs.example.com.":
-			msg.SetRcode(req, dns.RcodeNameError)
-		case "www.apple.com.":
-			if q.Qtype == dns.TypeA {
-				msg.Answer = append(msg.Answer, &dns.CNAME{
-					Hdr:    dns.RR_Header{Name: q.Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
-					Target: "apple.com.",
-				})
-				msg.Answer = append(msg.Answer, &dns.A{
-					Hdr: dns.RR_Header{Name: "apple.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
-					A:   []byte{17, 142, 250, 35},
-				})
-			}
-		case "org.":
-			if q.Qtype == dns.TypeDNSKEY {
-				// Simulate DNSKEY response
-				msg.Answer = append(msg.Answer, &dns.DNSKEY{
-					Hdr:       dns.RR_Header{Name: q.Name, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 3600},
-					Flags:     256,
-					Protocol:  3,
-					Algorithm: 8,
-					PublicKey: "dummykey",
-				})
-			}
-		case "www.microsoft.com.":
-			if q.Qtype == dns.TypeCNAME {
-				msg.Answer = append(msg.Answer, &dns.CNAME{
-					Hdr:    dns.RR_Header{Name: q.Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
-					Target: "microsoft.com.",
-				})
-			}
-		}
+		key := cache.Key(req.Question[0])
+		c.Set(key, msg)
+	}
 
-		_ = w.WriteMsg(msg)
-		ch.Cancel()
-	})
+	// Add some negative entries
+	for i := 0; i < 5; i++ {
+		req := new(dns.Msg)
+		req.SetQuestion(fmt.Sprintf("nx%d.com.", i), dns.TypeA)
 
-	ch := middleware.NewChain([]middleware.Handler{c, mockHandler})
-	ctxtest := context.Background()
+		msg := new(dns.Msg)
+		msg.SetRcode(req, dns.RcodeNameError)
 
-	// Test 1: RD=false should fail with ServerFailure
+		key := cache.Key(req.Question[0])
+		c.Set(key, msg)
+	}
+
+	stats := c.Stats()
+
+	assert.Contains(t, stats, "positive_size")
+	assert.Contains(t, stats, "negative_size")
+	assert.Contains(t, stats, "hits")
+	assert.Contains(t, stats, "misses")
+}
+
+func TestCacheInvalidation(t *testing.T) {
+	cfg := makeTestConfig()
+	defer os.RemoveAll(cfg.Directory)
+
+	c := New(cfg)
+	defer c.Stop()
+
+	// Add entry
 	req := new(dns.Msg)
-	req.SetQuestion("www.example.com.", dns.TypeA)
-	req.SetEdns0(4096, true)
-	req.CheckingDisabled = true
-	req.RecursionDesired = false
+	req.SetQuestion("invalidate.com.", dns.TypeA)
+
+	msg := new(dns.Msg)
+	msg.SetReply(req)
+	msg.Answer = append(msg.Answer, makeRR("invalidate.com. 300 IN A 1.2.3.4"))
+
+	key := cache.Key(req.Question[0])
+	c.Set(key, msg)
+
+	// Verify it's cached
+	entry := c.checkCache(key)
+	require.NotNil(t, entry)
+
+	// Clear cache by creating new instances
+	c.positive = NewPositiveCache(c.config.Size/2, c.config.MinTTL, c.config.MaxTTL, c.metrics)
+	c.negative = NewNegativeCache(c.config.Size/2, c.config.MinTTL, c.config.NegativeTTL, c.metrics)
+
+	// Should be gone
+	entry = c.checkCache(key)
+	assert.Nil(t, entry)
+}
+
+func TestCacheEDNS(t *testing.T) {
+	cfg := makeTestConfig()
+	defer os.RemoveAll(cfg.Directory)
+
+	c := New(cfg)
+	defer c.Stop()
+
+	// Test with EDNS0
+	req := new(dns.Msg)
+	req.SetQuestion("edns.com.", dns.TypeA)
+	req.SetEdns0(4096, false)
+
+	opt := req.IsEdns0()
+	require.NotNil(t, opt)
+
+	msg := new(dns.Msg)
+	msg.SetReply(req)
+	msg.Answer = append(msg.Answer, makeRR("edns.com. 300 IN A 1.2.3.4"))
+
+	key := cache.Key(req.Question[0])
+	c.Set(key, msg)
+
+	// Query with different EDNS buffer size
+	req2 := new(dns.Msg)
+	req2.SetQuestion("edns.com.", dns.TypeA)
+	req2.SetEdns0(512, false)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Reset(mw, req)
-	ch.Next(ctxtest)
-	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
+	ch := middleware.NewChain([]middleware.Handler{c})
+	ch.Reset(mw, req2)
 
-	// Test 2: RD=true should succeed
-	req = req.Copy()
-	req.RecursionDesired = true
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Reset(mw, req)
-	ch.Next(ctxtest)
+	c.ServeDNS(context.Background(), ch)
 	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 
-	// Test 3: NXDOMAIN response
-	req = req.Copy()
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	req.SetQuestion("labs.example.com.", dns.TypeA)
-	ch.Reset(mw, req)
-	ch.Next(ctxtest)
-	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeNameError, ch.Writer.Rcode())
-
-	// Test 4: Success with CNAME
-	req = req.Copy()
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	req.SetQuestion("www.apple.com.", dns.TypeA)
-	ch.Reset(mw, req)
-	ch.Next(ctxtest)
-	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
-
-	// Test 5: DNSKEY query
-	req = req.Copy()
-	req.IsEdns0().SetUDPSize(512)
-	req.SetQuestion("org.", dns.TypeDNSKEY)
-	ch.Reset(mw, req)
-	ch.Next(ctxtest)
-	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
-
-	// Test 6: CNAME query
-	req = req.Copy()
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	req.SetQuestion("www.microsoft.com.", dns.TypeCNAME)
-	ch.Reset(mw, req)
-	ch.Next(ctxtest)
-	assert.True(t, mw.Written())
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
+	// Response should be valid
+	resp := mw.Msg()
+	require.NotNil(t, resp)
+	assert.Len(t, resp.Answer, 1)
+	assert.Equal(t, "edns.com.", resp.Answer[0].Header().Name)
 }

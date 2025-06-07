@@ -6,10 +6,11 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
-	"log"
 	"os"
 	"path/filepath"
 	"text/template"
+
+	"github.com/semihalev/zlog"
 )
 
 // middleware list order very important, handlers call via this order.
@@ -52,7 +53,7 @@ func init() {
 
 func main() {
 	if err := generate(); err != nil {
-		log.Fatal(err)
+		zlog.Fatal(err)
 	}
 }
 

@@ -5,15 +5,18 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/zlog"
 	"github.com/stretchr/testify/assert"
 )
 
 func Test_Forwarder(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
+	logger := zlog.NewStructured()
+	logger.SetWriter(zlog.StdoutTerminal())
+	logger.SetLevel(zlog.LevelDebug)
+	zlog.SetDefault(logger)
 
 	cfg := new(config.Config)
 	cfg.ForwarderServers = []string{"[::255]:53", "8.8.8.8:53", "1", "tls://8.8.8.8:853"}

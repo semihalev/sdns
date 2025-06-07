@@ -1,324 +1,541 @@
-// Copyright 2009 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package hostsfile
 
 import (
 	"context"
-	"net"
+	"fmt"
 	"os"
-	"path"
-	"reflect"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func testHostsfile(file string) *Hostsfile {
-	h := &Hostsfile{}
-	h.parseReader(strings.NewReader(file))
-	return h
+func TestNew(t *testing.T) {
+	// Test with empty config
+	cfg := &config.Config{}
+	h := New(cfg)
+	assert.Nil(t, h)
+
+	// Test with non-existent file
+	cfg.HostsFile = "/non/existent/file"
+	h = New(cfg)
+	assert.Nil(t, h)
+
+	// Test with valid file
+	tmpFile := createTempHostsFile(t, "127.0.0.1 localhost")
+	defer os.Remove(tmpFile)
+
+	cfg.HostsFile = tmpFile
+	h = New(cfg)
+	require.NotNil(t, h)
+	assert.Equal(t, tmpFile, h.path)
+	assert.Equal(t, uint32(600), h.ttl)
+	assert.Equal(t, "hostsfile", h.Name())
 }
 
-type staticHostEntry struct {
-	in string
-	v4 []string
-	v6 []string
-}
+func TestServeDNS_Basic(t *testing.T) {
+	content := `
+127.0.0.1 localhost
+::1 localhost
+192.168.1.1 router.local router
+10.0.0.1 server.example.com server
+# Comment line
+192.168.1.100 *.wildcard.local
+`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
 
-var (
-	hosts = `255.255.255.255	broadcasthost
-	127.0.0.2	odin
-	127.0.0.3	odin  # inline comment
-	::2             odin
-	127.1.1.1	thor
-	# aliases
-	127.1.1.2	ullr ullrhost
-	fe80::1%lo0	localhost
-	# Bogus entries that must be ignored.
-	123.123.123	loki
-	321.321.321.321`
-	singlelinehosts = `127.0.0.2  odin`
-	ipv4hosts       = `# See https://tools.ietf.org/html/rfc1123.
-	#
-	# The literal IPv4 address parser in the net package is a relaxed
-	# one. It may accept a literal IPv4 address in dotted-decimal notation
-	# with leading zeros such as "001.2.003.4".
-
-	# internet address and host name
-	127.0.0.1	localhost	# inline comment separated by tab
-	127.0.0.2	localhost       # inline comment separated by space
-
-	# internet address, host name and aliases
-	127.0.0.3	localhost	localhost.localdomain`
-	ipv6hosts = `# See https://tools.ietf.org/html/rfc5952, https://tools.ietf.org/html/rfc4007.
-
-	# internet address and host name
-	::1						localhost	# inline comment separated by tab
-	fe80:0000:0000:0000:0000:0000:0000:0001		localhost       # inline comment separated by space
-
-	# internet address with zone identifier and host name
-	fe80:0000:0000:0000:0000:0000:0000:0002%lo0	localhost
-
-	# internet address, host name and aliases
-	fe80::3%lo0					localhost	localhost.localdomain`
-	casehosts = `127.0.0.1	PreserveMe	PreserveMe.local
-		::1		PreserveMe	PreserveMe.local`
-)
-
-var lookupStaticHostTests = []struct {
-	file string
-	ents []staticHostEntry
-}{
-	{
-		hosts,
-		[]staticHostEntry{
-			{"odin", []string{"127.0.0.2", "127.0.0.3"}, []string{"::2"}},
-			{"thor", []string{"127.1.1.1"}, []string{}},
-			{"ullr", []string{"127.1.1.2"}, []string{}},
-			{"ullrhost", []string{"127.1.1.2"}, []string{}},
-			{"localhost", []string{}, []string{"fe80::1"}},
-		},
-	},
-	{
-		singlelinehosts, // see golang.org/issue/6646
-		[]staticHostEntry{
-			{"odin", []string{"127.0.0.2"}, []string{}},
-		},
-	},
-	{
-		ipv4hosts,
-		[]staticHostEntry{
-			{"localhost", []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}, []string{}},
-			{"localhost.localdomain", []string{"127.0.0.3"}, []string{}},
-		},
-	},
-	{
-		ipv6hosts,
-		[]staticHostEntry{
-			{"localhost", []string{}, []string{"::1", "fe80::1", "fe80::2", "fe80::3"}},
-			{"localhost.localdomain", []string{}, []string{"fe80::3"}},
-		},
-	},
-	{
-		casehosts,
-		[]staticHostEntry{
-			{"PreserveMe", []string{"127.0.0.1"}, []string{"::1"}},
-			{"PreserveMe.local", []string{"127.0.0.1"}, []string{"::1"}},
-		},
-	},
-}
-
-func TestLookupStaticHost(t *testing.T) {
-	for _, tt := range lookupStaticHostTests {
-		h := testHostsfile(tt.file)
-		for _, ent := range tt.ents {
-			testStaticHost(t, ent, h)
-		}
+	h := &Hostsfile{
+		path: tmpFile,
+		ttl:  300,
 	}
-}
+	require.NoError(t, h.load())
 
-func testStaticHost(t *testing.T, ent staticHostEntry, h *Hostsfile) {
-	ins := []string{ent.in, absDomainName(ent.in), strings.ToLower(ent.in), strings.ToUpper(ent.in)}
-	for k, in := range ins {
-		addrsV4 := h.LookupStaticHostV4(in)
-		if len(addrsV4) != len(ent.v4) {
-			t.Fatalf("%d, lookupStaticHostV4(%s) = %v; want %v", k, in, addrsV4, ent.v4)
-		}
-		for i, v4 := range addrsV4 {
-			if v4.String() != ent.v4[i] {
-				t.Fatalf("%d, lookupStaticHostV4(%s) = %v; want %v", k, in, addrsV4, ent.v4)
+	tests := []struct {
+		name     string
+		qname    string
+		qtype    uint16
+		expected int
+		found    bool
+	}{
+		{"A record for localhost", "localhost.", dns.TypeA, 1, true},
+		{"AAAA record for localhost", "localhost.", dns.TypeAAAA, 1, true},
+		{"A record for router alias", "router.", dns.TypeA, 1, true},
+		{"A record for server", "server.example.com.", dns.TypeA, 1, true},
+		{"Non-existent host", "notfound.local.", dns.TypeA, 0, false},
+		{"PTR for 127.0.0.1", "1.0.0.127.in-addr.arpa.", dns.TypePTR, 1, true},
+		{"Wildcard match", "test.wildcard.local.", dns.TypeA, 1, true},
+		{"MX query for existing host", "localhost.", dns.TypeMX, 0, true}, // NODATA
+		{"TXT query for non-existent", "notfound.", dns.TypeTXT, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := new(dns.Msg)
+			req.SetQuestion(tt.qname, tt.qtype)
+
+			w := mock.NewWriter("tcp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{h})
+			ch.Reset(w, req)
+
+			h.ServeDNS(context.Background(), ch)
+
+			if tt.found {
+				require.True(t, w.Written())
+				resp := w.Msg()
+				assert.Equal(t, tt.expected, len(resp.Answer))
+				if tt.expected > 0 {
+					assert.True(t, resp.Authoritative)
+					assert.True(t, resp.RecursionAvailable)
+				}
+			} else {
+				// Should pass through
+				assert.False(t, w.Written())
 			}
-		}
-		addrsV6 := h.LookupStaticHostV6(in)
-		if len(addrsV6) != len(ent.v6) {
-			t.Fatalf("%d, lookupStaticHostV6(%s) = %v; want %v", k, in, addrsV6, ent.v6)
-		}
-		for i, v6 := range addrsV6 {
-			if v6.String() != ent.v6[i] {
-				t.Fatalf("%d, lookupStaticHostV6(%s) = %v; want %v", k, in, addrsV6, ent.v6)
-			}
-		}
+		})
 	}
 }
 
-type staticIPEntry struct {
-	in  string
-	out []string
-}
+func TestServeDNS_EdgeCases(t *testing.T) {
+	content := `127.0.0.1 localhost`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
 
-var lookupStaticAddrTests = []struct {
-	file string
-	ents []staticIPEntry
-}{
-	{
-		hosts,
-		[]staticIPEntry{
-			{"255.255.255.255", []string{"broadcasthost"}},
-			{"127.0.0.2", []string{"odin"}},
-			{"127.0.0.3", []string{"odin"}},
-			{"::2", []string{"odin"}},
-			{"127.1.1.1", []string{"thor"}},
-			{"127.1.1.2", []string{"ullr", "ullrhost"}},
-			{"fe80::1", []string{"localhost"}},
-		},
-	},
-	{
-		singlelinehosts, // see golang.org/issue/6646
-		[]staticIPEntry{
-			{"127.0.0.2", []string{"odin"}},
-		},
-	},
-	{
-		ipv4hosts, // see golang.org/issue/8996
-		[]staticIPEntry{
-			{"127.0.0.1", []string{"localhost"}},
-			{"127.0.0.2", []string{"localhost"}},
-			{"127.0.0.3", []string{"localhost", "localhost.localdomain"}},
-		},
-	},
-	{
-		ipv6hosts, // see golang.org/issue/8996
-		[]staticIPEntry{
-			{"::1", []string{"localhost"}},
-			{"fe80::1", []string{"localhost"}},
-			{"fe80::2", []string{"localhost"}},
-			{"fe80::3", []string{"localhost", "localhost.localdomain"}},
-		},
-	},
-	{
-		casehosts, // see golang.org/issue/12806
-		[]staticIPEntry{
-			{"127.0.0.1", []string{"PreserveMe", "PreserveMe.local"}},
-			{"::1", []string{"PreserveMe", "PreserveMe.local"}},
-		},
-	},
-}
-
-func TestLookupStaticAddr(t *testing.T) {
-	for _, tt := range lookupStaticAddrTests {
-		h := testHostsfile(tt.file)
-		for _, ent := range tt.ents {
-			testStaticAddr(t, ent, h)
-		}
+	h := &Hostsfile{
+		path: tmpFile,
+		ttl:  300,
 	}
-}
+	require.NoError(t, h.load())
 
-func testStaticAddr(t *testing.T, ent staticIPEntry, h *Hostsfile) {
-	hosts := h.LookupStaticAddr(ent.in)
-	for i := range ent.out {
-		ent.out[i] = absDomainName(ent.out[i])
-	}
-	if !reflect.DeepEqual(hosts, ent.out) {
-		t.Errorf("%s, lookupStaticAddr(%s) = %v; want %v", h.path, ent.in, hosts, h)
-	}
-}
-
-func TestHostCacheModification(t *testing.T) {
-	// Ensure that programs can't modify the internals of the host cache.
-	// See https://github.com/golang/go/issues/14212.
-
-	h := testHostsfile(ipv4hosts)
-	ent := staticHostEntry{"localhost", []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}, []string{}}
-	testStaticHost(t, ent, h)
-	// Modify the addresses return by lookupStaticHost.
-	addrs := h.LookupStaticHostV6(ent.in)
-	for i := range addrs {
-		addrs[i] = net.IPv4zero
-	}
-	testStaticHost(t, ent, h)
-
-	h = testHostsfile(ipv6hosts)
-	entip := staticIPEntry{"::1", []string{"localhost"}}
-	testStaticAddr(t, entip, h)
-	// Modify the hosts return by lookupStaticAddr.
-	hosts := h.LookupStaticAddr(entip.in)
-	for i := range hosts {
-		hosts[i] += "junk"
-	}
-	testStaticAddr(t, entip, h)
-}
-
-func TestServeDNS(t *testing.T) {
-	log.Root().SetHandler(log.LvlFilterHandler(0, log.StdoutHandler))
-
-	name := path.Join(os.TempDir(), "hosts")
-	f, err := os.Create(name)
-	assert.NoError(t, err)
-	_, err = f.WriteString(hosts)
-	assert.NoError(t, err)
-	f.Close()
-
-	cfg := new(config.Config)
-	cfg.Hostsfile = name
-
-	middleware.Register("hostsfile", func(cfg *config.Config) middleware.Handler { return New(cfg) })
-	middleware.Setup(cfg)
-
-	h := middleware.Get("hostsfile").(*Hostsfile)
-
-	ch := middleware.NewChain([]middleware.Handler{})
-
+	// Test with empty question
 	req := new(dns.Msg)
-	req.SetQuestion("thor.", dns.TypeA)
-	ch.Request = req
+	w := mock.NewWriter("tcp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{h})
+	ch.Reset(w, req)
 
-	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Writer = mw
 	h.ServeDNS(context.Background(), ch)
-	for _, r := range mw.Msg().Answer {
-		assert.Equal(t, dns.TypeA, r.Header().Rrtype)
-		a := r.(*dns.A)
-		assert.Equal(t, "127.1.1.1", a.A.String())
+	assert.False(t, w.Written())
+}
+
+func TestLookupFunctions(t *testing.T) {
+	content := `
+127.0.0.1 localhost local
+::1 localhost
+192.168.1.1 host1.local
+192.168.1.2 host2.local alias2
+10.0.0.1 *.wildcard.com
+2001:db8::1 ipv6.host.com
+`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
+
+	h := &Hostsfile{
+		path: tmpFile,
+		ttl:  300,
+	}
+	require.NoError(t, h.load())
+	db := h.getDB()
+
+	// Test lookupA
+	t.Run("lookupA", func(t *testing.T) {
+		// Direct lookup
+		rrs, found := h.lookupA(db, "localhost")
+		assert.True(t, found)
+		assert.Len(t, rrs, 1)
+		assert.Equal(t, "127.0.0.1", rrs[0].(*dns.A).A.String())
+
+		// Wildcard lookup
+		rrs, found = h.lookupA(db, "test.wildcard.com")
+		assert.True(t, found)
+		assert.Len(t, rrs, 1)
+		assert.Equal(t, "10.0.0.1", rrs[0].(*dns.A).A.String())
+
+		// Not found
+		rrs, found = h.lookupA(db, "notfound.local")
+		assert.False(t, found)
+		assert.Nil(t, rrs)
+	})
+
+	// Test lookupAAAA
+	t.Run("lookupAAAA", func(t *testing.T) {
+		rrs, found := h.lookupAAAA(db, "localhost")
+		assert.True(t, found)
+		assert.Len(t, rrs, 1)
+		assert.Equal(t, "::1", rrs[0].(*dns.AAAA).AAAA.String())
+
+		rrs, found = h.lookupAAAA(db, "ipv6.host.com")
+		assert.True(t, found)
+		assert.Len(t, rrs, 1)
+	})
+
+	// Test lookupPTR
+	t.Run("lookupPTR", func(t *testing.T) {
+		rrs, found := h.lookupPTR(db, "1.0.0.127.in-addr.arpa.")
+		assert.True(t, found)
+		assert.Len(t, rrs, 1)
+		assert.Equal(t, "localhost.", rrs[0].(*dns.PTR).Ptr)
+
+		// Invalid PTR
+		rrs, found = h.lookupPTR(db, "invalid.ptr")
+		assert.False(t, found)
+		assert.Nil(t, rrs)
+	})
+
+	// Test lookupCNAME
+	t.Run("lookupCNAME", func(t *testing.T) {
+		rrs, found := h.lookupCNAME(db, "local")
+		assert.True(t, found)
+		assert.Len(t, rrs, 1)
+		assert.Equal(t, "localhost.", rrs[0].(*dns.CNAME).Target)
+
+		rrs, found = h.lookupCNAME(db, "alias2")
+		assert.True(t, found)
+		assert.Len(t, rrs, 1)
+		assert.Equal(t, "host2.local.", rrs[0].(*dns.CNAME).Target)
+	})
+
+	// Test hostExists
+	t.Run("hostExists", func(t *testing.T) {
+		assert.True(t, h.hostExists(db, "localhost"))
+		assert.True(t, h.hostExists(db, "local"))             // alias
+		assert.True(t, h.hostExists(db, "test.wildcard.com")) // wildcard
+		assert.False(t, h.hostExists(db, "notfound.com"))
+	})
+}
+
+func TestParseLine(t *testing.T) {
+	tests := []struct {
+		line            string
+		expectedIP      string
+		expectedHosts   []string
+		expectedComment string
+		shouldParse     bool
+	}{
+		{
+			"127.0.0.1 localhost",
+			"127.0.0.1",
+			[]string{"localhost"},
+			"",
+			true,
+		},
+		{
+			"192.168.1.1    host1   host2  # This is a comment",
+			"192.168.1.1",
+			[]string{"host1", "host2"},
+			"This is a comment",
+			true,
+		},
+		{
+			"::1 ipv6host",
+			"::1",
+			[]string{"ipv6host"},
+			"",
+			true,
+		},
+		{
+			"# Comment only line",
+			"",
+			nil,
+			"",
+			false,
+		},
+		{
+			"invalid.ip.address host",
+			"",
+			nil,
+			"",
+			false,
+		},
+		{
+			"127.0.0.1", // No hostname
+			"",
+			nil,
+			"",
+			false,
+		},
+		{
+			"", // Empty line
+			"",
+			nil,
+			"",
+			false,
+		},
+		{
+			"fe80::1%eth0 ipv6-with-zone",
+			"fe80::1",
+			[]string{"ipv6-with-zone"},
+			"",
+			true,
+		},
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Writer = mw
-	req.SetQuestion("localhost.", dns.TypeAAAA)
-	h.ServeDNS(context.Background(), ch)
-	for _, r := range mw.Msg().Answer {
-		assert.Equal(t, dns.TypeAAAA, r.Header().Rrtype)
-		aaaa := r.(*dns.AAAA)
-		assert.Equal(t, "fe80::1", aaaa.AAAA.String())
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			ip, hosts, comment := parseLine(tt.line)
+
+			if tt.shouldParse {
+				require.NotNil(t, ip)
+				assert.Equal(t, tt.expectedIP, ip.String())
+				assert.Equal(t, tt.expectedHosts, hosts)
+				assert.Equal(t, tt.expectedComment, comment)
+			} else {
+				assert.Nil(t, ip)
+				assert.Nil(t, hosts)
+			}
+		})
+	}
+}
+
+func TestMatchWildcard(t *testing.T) {
+	tests := []struct {
+		pattern string
+		name    string
+		match   bool
+	}{
+		{"*.example.com", "test.example.com", true},
+		{"*.example.com", "example.com", true},
+		{"*.example.com", "sub.test.example.com", true},
+		{"*.example.com", "example.org", false},
+		{"*.example.com", "com", false},
+		{"test.com", "test.com", false}, // Not a wildcard
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Writer = mw
-	req.SetQuestion("1.1.1.127.in-addr.arpa.", dns.TypePTR)
-	h.ServeDNS(context.Background(), ch)
-	for _, r := range mw.Msg().Answer {
-		assert.Equal(t, dns.TypePTR, r.Header().Rrtype)
-		ptr := r.(*dns.PTR)
-		assert.Equal(t, "thor.", ptr.Ptr)
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s matches %s", tt.pattern, tt.name), func(t *testing.T) {
+			assert.Equal(t, tt.match, matchWildcard(tt.pattern, tt.name))
+		})
+	}
+}
+
+func TestLoad(t *testing.T) {
+	content := `
+127.0.0.1 localhost
+192.168.1.1 host1 alias1 alias2
+10.0.0.1 *.wildcard.local
+::1 localhost
+invalid line
+300.300.300.300 invalid-ip
+`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
+
+	h := &Hostsfile{
+		path: tmpFile,
+		ttl:  300,
 	}
 
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Writer = mw
-	req.SetQuestion("odin.", dns.TypeA)
-	h.ServeDNS(context.Background(), ch)
-	assert.Equal(t, true, len(mw.Msg().Answer) > 1)
+	err := h.load()
+	require.NoError(t, err)
 
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Writer = mw
-	req.SetQuestion("test.com.", dns.TypeA)
-	h.ServeDNS(context.Background(), ch)
-	req.SetQuestion("test.com.", dns.TypeAAAA)
-	h.ServeDNS(context.Background(), ch)
-	req.SetQuestion("test.com.", dns.TypePTR)
-	h.ServeDNS(context.Background(), ch)
+	db := h.getDB()
+	assert.Equal(t, int64(4), atomic.LoadInt64(&db.stats.entries)) // localhost, host1, alias1, alias2
+	assert.Equal(t, int64(1), atomic.LoadInt64(&db.stats.wildcards))
 
-	h.initInline([]string{"127.0.0.1 localhost"})
-	assert.Equal(t, true, h.hmap.Len() == 2)
+	// Check reverse mappings
+	assert.Contains(t, db.reverse["127.0.0.1"], "localhost")
+	assert.Contains(t, db.reverse["192.168.1.1"], "host1")
 
-	h.parseReader(strings.NewReader(hosts))
-	assert.Equal(t, true, h.hmap.Len() == 18)
+	// Check aliases
+	entry := db.hosts["host1"]
+	assert.Contains(t, entry.Aliases, "alias1")
+	assert.Contains(t, entry.Aliases, "alias2")
+}
 
-	assert.NoError(t, os.Remove(name))
+func TestFileWatcher(t *testing.T) {
+	// Skip on CI/short tests as file watching can be flaky
+	if testing.Short() {
+		t.Skip("Skipping file watcher test in short mode")
+	}
+
+	content := `127.0.0.1 localhost`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
+
+	cfg := &config.Config{HostsFile: tmpFile}
+	h := New(cfg)
+	require.NotNil(t, h)
+	require.NotNil(t, h.watcher)
+
+	// Initial state
+	db := h.getDB()
+	assert.Equal(t, int64(1), atomic.LoadInt64(&db.stats.entries))
+
+	// Update file
+	newContent := `
+127.0.0.1 localhost
+192.168.1.1 newhost
+`
+	err := os.WriteFile(tmpFile, []byte(newContent), 0644)
+	require.NoError(t, err)
+
+	// Wait for reload with timeout
+	timeout := time.After(2 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			t.Fatal("Timeout waiting for file reload")
+		case <-ticker.C:
+			db = h.getDB()
+			if atomic.LoadInt64(&db.stats.entries) == 2 {
+				// Success!
+				return
+			}
+		}
+	}
+}
+
+func TestStats(t *testing.T) {
+	content := `
+127.0.0.1 localhost
+192.168.1.1 host1
+10.0.0.1 *.wildcard.com
+`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
+
+	h := &Hostsfile{
+		path: tmpFile,
+		ttl:  300,
+	}
+	require.NoError(t, h.load())
+
+	// Simulate some lookups
+	db := h.getDB()
+	atomic.AddUint64(&db.stats.lookups, 100)
+	atomic.AddUint64(&db.stats.hits, 75)
+
+	stats := h.Stats()
+	assert.Equal(t, int64(2), stats["entries"])
+	assert.Equal(t, int64(1), stats["wildcards"])
+	assert.Equal(t, uint64(100), stats["lookups"])
+	assert.Equal(t, uint64(75), stats["hits"])
+	assert.NotEmpty(t, stats["reload_time"])
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	content := `
+127.0.0.1 localhost
+192.168.1.1 host1
+`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
+
+	h := &Hostsfile{
+		path: tmpFile,
+		ttl:  300,
+	}
+	require.NoError(t, h.load())
+
+	// Concurrent lookups
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+
+			req := new(dns.Msg)
+			if i%2 == 0 {
+				req.SetQuestion("localhost.", dns.TypeA)
+			} else {
+				req.SetQuestion("host1.", dns.TypeA)
+			}
+
+			w := mock.NewWriter("tcp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{h})
+			ch.Reset(w, req)
+
+			h.ServeDNS(context.Background(), ch)
+			assert.True(t, w.Written())
+		}(i)
+	}
+
+	// Concurrent reload
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			err := h.load()
+			assert.NoError(t, err)
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+
+	// Verify stats - get final DB after all reloads
+	db := h.getDB()
+	// Since we do concurrent reloads, the DB might have been replaced
+	// Just verify we have the expected number of entries
+	assert.Equal(t, int64(2), atomic.LoadInt64(&db.stats.entries))
+}
+
+func TestMultipleIPs(t *testing.T) {
+	content := `
+127.0.0.1 multi.local
+127.0.0.2 multi.local
+::1 multi.local
+::2 multi.local
+`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
+
+	h := &Hostsfile{
+		path: tmpFile,
+		ttl:  300,
+	}
+	require.NoError(t, h.load())
+
+	// Test A records
+	req := new(dns.Msg)
+	req.SetQuestion("multi.local.", dns.TypeA)
+
+	w := mock.NewWriter("tcp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{h})
+	ch.Reset(w, req)
+
+	h.ServeDNS(context.Background(), ch)
+	require.True(t, w.Written())
+
+	resp := w.Msg()
+	assert.Len(t, resp.Answer, 2)
+
+	// Test AAAA records
+	req.SetQuestion("multi.local.", dns.TypeAAAA)
+	w = mock.NewWriter("tcp", "127.0.0.1:0")
+	ch.Reset(w, req)
+
+	h.ServeDNS(context.Background(), ch)
+	require.True(t, w.Written())
+
+	resp = w.Msg()
+	assert.Len(t, resp.Answer, 2)
+}
+
+// Helper function to create temporary hosts file
+func createTempHostsFile(t *testing.T, content string) string {
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "hosts")
+
+	// Normalize line endings for Windows
+	if runtime.GOOS == "windows" {
+		content = strings.ReplaceAll(content, "\n", "\r\n")
+	}
+
+	err := os.WriteFile(tmpFile, []byte(content), 0644)
+	require.NoError(t, err)
+
+	return tmpFile
 }

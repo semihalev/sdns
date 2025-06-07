@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog"
 )
 
 // DNSHandler type
@@ -75,7 +75,7 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	if len(req.Question) == 0 {
-		return dnsutil.SetRcode(req, dns.RcodeFormatError, false)
+		return util.SetRcode(req, dns.RcodeFormatError, false)
 	}
 
 	q := req.Question[0]
@@ -87,7 +87,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Qtype == dns.TypeANY {
-		return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+		return util.SetRcode(req, dns.RcodeNotImplemented, do)
 	}
 
 	// CHAOS queries: debug nameserver stats (HINFO) or cache purge (NULL)
@@ -97,12 +97,12 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 
 	// CHAOS NULL queries trigger cache purge for specific domains
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := dnsutil.ParsePurgeQuestion(req); ok {
+		if qname, qtype, ok := util.ParsePurgeQuestion(req); ok {
 			if qtype == dns.TypeNS {
 				h.purge(qname)
 			}
 
-			resp := dnsutil.SetRcode(req, dns.RcodeSuccess, do)
+			resp := util.SetRcode(req, dns.RcodeSuccess, do)
 			txt, _ := dns.NewRR(q.Name + ` 20 IN TXT "cache purged"`)
 
 			resp.Extra = append(resp.Extra, txt)
@@ -112,7 +112,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Name != rootzone && !req.RecursionDesired {
-		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
+		return util.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
 	// Prepare request for authoritative servers
@@ -145,15 +145,17 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if err != nil {
-		log.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
+		zlog.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
-		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
+		// Add Extended DNS Error information for recursor validation failures
+		edeCode, edeText := util.ErrorToEDE(err)
+		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
 	}
 
 	// Convert certain response codes to SERVFAIL
 	switch resp.Rcode {
 	case dns.RcodeRefused, dns.RcodeNotZone:
-		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
+		return util.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
 	return resp
@@ -178,10 +180,10 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 		nsQuestion := dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 
 		// Try with current CD flag first
-		if ns, err := h.resolver.ncache.Get(cache.Hash(nsQuestion, msg.CheckingDisabled)); err == nil {
+		if ns, err := h.resolver.ncache.Get(cache.Key(nsQuestion, msg.CheckingDisabled)); err == nil {
 			servers = ns.Servers
 			name = q.Name
-		} else if ns, err := h.resolver.ncache.Get(cache.Hash(nsQuestion, !msg.CheckingDisabled)); err == nil {
+		} else if ns, err := h.resolver.ncache.Get(cache.Key(nsQuestion, !msg.CheckingDisabled)); err == nil {
 			// Try with opposite CD flag
 			servers = ns.Servers
 			name = q.Name
@@ -216,8 +218,8 @@ func (h *DNSHandler) purge(qname string) {
 	nsQuestion := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 
 	// Remove entries for both CD flag states
-	h.resolver.ncache.Remove(cache.Hash(nsQuestion, false))
-	h.resolver.ncache.Remove(cache.Hash(nsQuestion, true))
+	h.resolver.ncache.Remove(cache.Key(nsQuestion, false))
+	h.resolver.ncache.Remove(cache.Key(nsQuestion, true))
 }
 
 // Stop gracefully shuts down the resolver

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
+	"github.com/semihalev/zlog"
 )
 
 // hostCounter tracks download counts for each host in a type-safe way
@@ -71,11 +71,11 @@ func (b *BlockList) fetchBlocklists() {
 	<-time.After(time.Second)
 
 	if err := b.updateBlocklists(); err != nil {
-		log.Error("Update blocklists failed", "error", err.Error())
+		zlog.Error("Update blocklists failed", "error", err.Error())
 	}
 
 	if err := b.readBlocklists(); err != nil {
-		log.Error("Read blocklists failed", "dir", b.cfg.BlockListDir, "error", err.Error())
+		zlog.Error("Read blocklists failed", "dir", b.cfg.BlockListDir, "error", err.Error())
 	}
 }
 
@@ -112,7 +112,7 @@ func (b *BlockList) downloadBlocklist(uri, name string) error {
 	defer func() {
 		err := output.Close()
 		if err != nil {
-			log.Warn("Blocklist file close failed", "name", name, "error", err.Error())
+			zlog.Warn("Blocklist file close failed", "name", name, "error", err.Error())
 		}
 	}()
 
@@ -140,13 +140,13 @@ func (b *BlockList) fetchBlocklist() {
 	for _, uri := range b.cfg.BlockLists {
 		u, err := url.Parse(uri)
 		if err != nil {
-			log.Error("Invalid blocklist URL", "uri", uri, "error", err.Error())
+			zlog.Error("Invalid blocklist URL", "uri", uri, "error", err.Error())
 			continue
 		}
 
 		host := u.Host
 		if host == "" {
-			log.Error("Invalid blocklist URL: missing host", "uri", uri)
+			zlog.Error("Invalid blocklist URL: missing host", "uri", uri)
 			continue
 		}
 
@@ -158,9 +158,9 @@ func (b *BlockList) fetchBlocklist() {
 		go func(uri string, name string) {
 			defer wg.Done()
 
-			log.Info("Fetching blacklist", "uri", uri)
+			zlog.Info("Fetching blacklist", "uri", uri)
 			if err := b.downloadBlocklist(uri, name); err != nil {
-				log.Error("Fetching blacklist", "uri", uri, "error", err.Error())
+				zlog.Error("Fetching blacklist", "uri", uri, "error", err.Error())
 			}
 		}(uri, fileName)
 	}
@@ -169,10 +169,10 @@ func (b *BlockList) fetchBlocklist() {
 }
 
 func (b *BlockList) readBlocklists() error {
-	log.Info("Loading blocked domains...", "path", b.cfg.BlockListDir)
+	zlog.Info("Loading blocked domains...", "path", b.cfg.BlockListDir)
 
 	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
-		log.Warn("Path not found, skipping...", "path", b.cfg.BlockListDir)
+		zlog.Warn("Path not found, skipping...", "path", b.cfg.BlockListDir)
 		return nil
 	}
 
@@ -202,7 +202,7 @@ func (b *BlockList) readBlocklists() error {
 		return fmt.Errorf("error walking location: %w", err)
 	}
 
-	log.Info("Blocked domains loaded", "total", b.Length())
+	zlog.Info("Blocked domains loaded", "total", b.Length())
 
 	return nil
 }

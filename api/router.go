@@ -7,7 +7,7 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/semihalev/log"
+	"github.com/semihalev/zlog"
 )
 
 // Router is a high-performance HTTP request router
@@ -48,7 +48,7 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if r := recover(); r != nil {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			log.Error("Recovered in API", "recover", r)
+			zlog.Error("Recovered in API", "recover", r)
 
 			_, _ = os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
 			debug.PrintStack()

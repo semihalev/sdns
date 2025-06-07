@@ -4,9 +4,9 @@ import (
 	"context"
 	"net"
 
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/zlog"
 	"github.com/yl2chen/cidranger"
 )
 
@@ -27,7 +27,7 @@ func New(cfg *config.Config) *AccessList {
 	for _, cidr := range cfg.AccessList {
 		_, ipnet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			log.Error("Access list parse cidr failed", "error", err.Error())
+			zlog.Error("Access list parse cidr failed", "error", err.Error())
 			continue
 		}
 

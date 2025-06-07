@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/log"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/zlog"
 )
 
 // AccessLog type
@@ -27,7 +27,7 @@ func New(cfg *config.Config) *AccessLog {
 	if cfg.AccessLog != "" {
 		logFile, err = os.OpenFile(cfg.AccessLog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 		if err != nil {
-			log.Error("Access log file open failed", "error", strings.Trim(err.Error(), "\n"))
+			zlog.Error("Access log file open failed", "error", strings.Trim(err.Error(), "\n"))
 		}
 	}
 
@@ -66,7 +66,7 @@ func (a *AccessLog) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		_, err := a.logFile.WriteString(strings.Join(record, " ") + "\n")
 		if err != nil {
-			log.Error("Access log write failed", "error", strings.Trim(err.Error(), "\n"))
+			zlog.Error("Access log write failed", "error", strings.Trim(err.Error(), "\n"))
 		}
 	}
 }
