@@ -66,11 +66,7 @@ type nameservers map[string]struct{}
 
 type fatalError error
 
-var (
-	errMaxDepth        = errors.New("maximum recursion depth for dns tree queried")
-	errParentDetection = errors.New("parent servers detected")
-	errDSRecords       = errors.New("DS records found on parent zone but no signatures")
-)
+// Error variables are defined in errors.go
 
 const (
 	rootzone         = "."

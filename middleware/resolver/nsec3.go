@@ -1,18 +1,9 @@
 package resolver
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/miekg/dns"
-)
-
-var (
-	errNSECTypeExists      = errors.New("NSEC/NSEC3 record shows question type exists")
-	errNSECMissingCoverage = errors.New("NSEC/NSEC3 record missing for non-existence proof")
-	errNSECBadDelegation   = errors.New("DS or SOA bit set in NSEC/NSEC3 type map")
-	errNSECNSMissing       = errors.New("NS bit not set in NSEC/NSEC3 type map")
-	errNSECOptOut          = errors.New("Opt-Out bit not set for NSEC3 record covering next closer")
 )
 
 const (

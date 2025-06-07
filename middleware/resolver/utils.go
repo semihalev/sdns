@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"encoding/base64"
-	"errors"
 	"math/rand"
 	"net"
 	"sort"
@@ -15,15 +14,6 @@ import (
 )
 
 var (
-	errNoDNSKEY               = errors.New("no DNSKEY records found")
-	errMissingKSK             = errors.New("no KSK DNSKEY found for DS records")
-	errFailedToConvertKSK     = errors.New("failed to convert KSK DNSKEY record to DS record")
-	errMismatchingDS          = errors.New("KSK DNSKEY record does not match DS record from parent zone")
-	errNoSignatures           = errors.New("no RRSIG records for zone that should be signed")
-	errMissingDNSKEY          = errors.New("no matching DNSKEY found for RRSIG records")
-	errInvalidSignaturePeriod = errors.New("incorrect signature validity period")
-	errMissingSigned          = errors.New("signed records are missing")
-
 	localIPaddrs []net.IP
 )
 

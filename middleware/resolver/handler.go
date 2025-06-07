@@ -147,7 +147,9 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	if err != nil {
 		zlog.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
-		return util.SetRcode(req, dns.RcodeServerFailure, do)
+		// Add Extended DNS Error information for recursor validation failures
+		edeCode, edeText := util.ErrorToEDE(err)
+		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
 	}
 
 	// Convert certain response codes to SERVFAIL
