@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/semihalev/sdns/blob/master/logo.png?raw=true" width="200">
+  <img src="https://github.com/semihalev/sdns/blob/main/logo.png?raw=true" width="200">
 </p>
 
 <h1 align="center">SDNS :rocket:</h1>
@@ -14,7 +14,7 @@
   <a href="http://godoc.org/github.com/semihalev/sdns"><img src="https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square"></a>
   <a href="https://codecov.io/gh/semihalev/sdns"><img src="https://img.shields.io/codecov/c/github/semihalev/sdns?style=flat-square"></a>
   <a href="https://github.com/semihalev/sdns/releases"><img src="https://img.shields.io/github/v/release/semihalev/sdns?style=flat-square"></a>
-  <a href="https://github.com/semihalev/sdns/blob/master/LICENSE"><img src="https://img.shields.io/github/license/semihalev/sdns?style=flat-square"></a>
+  <a href="https://github.com/semihalev/sdns/blob/main/LICENSE"><img src="https://img.shields.io/github/license/semihalev/sdns?style=flat-square"></a>
 </p>
 
 ***
@@ -300,7 +300,7 @@ SDNS demonstrates superior performance across all key metrics:
 
 We welcome pull requests. If you're considering significant changes, please start a discussion by opening an issue first.
 
-Before submitting patches, please review our [CONTRIBUTING](https://github.com/semihalev/sdns/blob/master/CONTRIBUTING.md) guidelines.
+Before submitting patches, please review our [CONTRIBUTING](https://github.com/semihalev/sdns/blob/main/CONTRIBUTING.md) guidelines.
 
 ## :hearts: Made With
 
@@ -312,4 +312,4 @@ Before submitting patches, please review our [CONTRIBUTING](https://github.com/s
 
 ## License
 
-[MIT](https://github.com/semihalev/sdns/blob/master/LICENSE)
+[MIT](https://github.com/semihalev/sdns/blob/main/LICENSE)
