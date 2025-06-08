@@ -41,6 +41,8 @@ parts:
     source-type: git
     # Automatically use the latest tag
     source-tag: latest
+    build-snaps:
+      - go/latest/stable
     build-packages:
       - git
       - ca-certificates
@@ -111,8 +113,3 @@ hooks:
     plugs: [network]
   post-refresh:
     plugs: [network]
-
-plugs:
-  network:
-  network-bind:
-  network-observe:
