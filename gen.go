@@ -107,7 +107,7 @@ func generate() error {
 }
 
 const (
-	filename      = "zregister.go"
+	filename      = "registry.go"
 	prefixDir     = "github.com/semihalev/sdns"
 	middlewareDir = "middleware"
 )
