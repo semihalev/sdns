@@ -48,27 +48,6 @@ parts:
       - gcc
     stage-packages:
       - ca-certificates
-    override-build: |
-      # Install Go 1.23.4
-      case "${CRAFT_ARCH_BUILD_FOR}" in
-        amd64) GOARCH="amd64" ;;
-        arm64) GOARCH="arm64" ;;
-        armhf) GOARCH="armv6l" ;;
-        *) echo "Unsupported architecture: ${CRAFT_ARCH_BUILD_FOR}"; exit 1 ;;
-      esac
-      
-      wget -q "https://go.dev/dl/go1.23.4.linux-${GOARCH}.tar.gz"
-      tar -C /usr/local -xzf "go1.23.4.linux-${GOARCH}.tar.gz"
-      rm "go1.23.4.linux-${GOARCH}.tar.gz"
-      
-      export PATH=/usr/local/go/bin:$PATH
-      export GOROOT=/usr/local/go
-      
-      # Generate code
-      go generate
-      
-      # Build sdns
-      go build -o $CRAFT_PART_INSTALL/bin/sdns
     override-pull: |
       snapcraftctl pull
       # Fetch all tags and branches
@@ -97,9 +76,26 @@ parts:
       snapcraftctl set-version "$version"
       snapcraftctl set-grade stable
     override-build: |
-      # Generate code before building
+      # Install Go 1.23.4
+      case "${CRAFT_ARCH_BUILD_FOR}" in
+        amd64) GOARCH="amd64" ;;
+        arm64) GOARCH="arm64" ;;
+        armhf) GOARCH="armv6l" ;;
+        *) echo "Unsupported architecture: ${CRAFT_ARCH_BUILD_FOR}"; exit 1 ;;
+      esac
+      
+      wget -q "https://go.dev/dl/go1.23.4.linux-${GOARCH}.tar.gz"
+      tar -C /usr/local -xzf "go1.23.4.linux-${GOARCH}.tar.gz"
+      rm "go1.23.4.linux-${GOARCH}.tar.gz"
+      
+      export PATH=/usr/local/go/bin:$PATH
+      export GOROOT=/usr/local/go
+      
+      # Generate code
       go generate
-      snapcraftctl build
+      
+      # Build sdns
+      go build -o $CRAFT_PART_INSTALL/bin/sdns
     prime:
       - bin/sdns
       - etc/ssl/certs/*
