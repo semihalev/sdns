@@ -44,6 +44,18 @@ func acquireMsg() *dns.Msg {
 }
 
 func releaseMsg(m *dns.Msg) {
+	// Clear all fields to ensure clean state for reuse
+	m.Id = 0
+	m.Response = false
+	m.Opcode = 0
+	m.Authoritative = false
+	m.Truncated = false
+	m.RecursionDesired = false
+	m.RecursionAvailable = false
+	m.Zero = false
+	m.AuthenticatedData = false
+	m.CheckingDisabled = false
+	m.Rcode = 0
 	m.Question = nil
 	m.Answer = nil
 	m.Ns = nil

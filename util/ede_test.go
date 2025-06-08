@@ -41,7 +41,7 @@ func TestSetRcodeWithEDE(t *testing.T) {
 				assert.Len(t, opt.Option, 1)
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				assert.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeDNSSECIndeterminate), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeDNSSECIndeterminate, ede.InfoCode)
 				assert.Equal(t, "DNSSEC validation failure", ede.ExtraText)
 			},
 		},
@@ -105,7 +105,7 @@ func TestSetRcodeWithEDE(t *testing.T) {
 				assert.Len(t, opt.Option, 1)
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				assert.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeOther), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeOther, ede.InfoCode)
 				assert.Equal(t, "", ede.ExtraText)
 			},
 		},
@@ -197,13 +197,6 @@ func TestErrorToEDE(t *testing.T) {
 		})
 	}
 }
-
-// Helper type for testing network timeout errors
-type netTimeoutError struct{}
-
-func (e *netTimeoutError) Error() string   { return "timeout" }
-func (e *netTimeoutError) Timeout() bool   { return true }
-func (e *netTimeoutError) Temporary() bool { return true }
 
 // Mock error type with EDE support
 type mockEDEError struct {

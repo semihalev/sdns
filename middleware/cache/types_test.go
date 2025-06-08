@@ -50,7 +50,7 @@ func TestEDEPreservation(t *testing.T) {
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				require.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeNetworkError), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeNetworkError, ede.InfoCode)
 				assert.Equal(t, "Network unreachable", ede.ExtraText)
 			},
 		},
@@ -88,7 +88,7 @@ func TestEDEPreservation(t *testing.T) {
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				require.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeStaleNXDOMAINAnswer), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeStaleNXDOMAINAnswer, ede.InfoCode)
 				assert.Equal(t, "Stale NXDOMAIN response", ede.ExtraText)
 			},
 		},
@@ -138,7 +138,7 @@ func TestEDEPreservation(t *testing.T) {
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				require.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeStaleAnswer), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeStaleAnswer, ede.InfoCode)
 				assert.Equal(t, "Stale data served", ede.ExtraText)
 			},
 		},
@@ -183,7 +183,7 @@ func TestEDEPreservation(t *testing.T) {
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				require.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeDNSSECIndeterminate), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeDNSSECIndeterminate, ede.InfoCode)
 			},
 		},
 		{
@@ -251,7 +251,7 @@ func TestEDEPreservation(t *testing.T) {
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				require.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeOther), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeOther, ede.InfoCode)
 				assert.Equal(t, "", ede.ExtraText)
 			},
 		},
@@ -300,7 +300,7 @@ func TestEDEPreservation(t *testing.T) {
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
 				require.True(t, ok)
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeNetworkError), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeNetworkError, ede.InfoCode)
 			},
 		},
 	}
