@@ -18,7 +18,7 @@ func TestSingleflightWrapperCleanup(t *testing.T) {
 	wrapper.tracking.Store(key, oldStartTime)
 
 	// Also start a real query to verify it affects singleflight
-	wrapper.group.DoChan(key, func() (interface{}, error) {
+	wrapper.group.DoChan(key, func() (any, error) {
 		time.Sleep(30 * time.Second) // This will be forgotten
 		return "should-not-complete", nil
 	})
@@ -46,7 +46,7 @@ func TestTimedDoChan(t *testing.T) {
 	// Test successful execution
 	t.Run("Success", func(t *testing.T) {
 		ctx := context.Background()
-		result, err := wrapper.TimedDoChan(ctx, "test-success", func() (interface{}, error) {
+		result, err := wrapper.TimedDoChan(ctx, "test-success", func() (any, error) {
 			return "success", nil
 		})
 
@@ -66,7 +66,7 @@ func TestTimedDoChan(t *testing.T) {
 		// Start a slow query
 		done := make(chan struct{})
 		go func() {
-			_, err := wrapper.TimedDoChan(ctx, "test-cancel", func() (interface{}, error) {
+			_, err := wrapper.TimedDoChan(ctx, "test-cancel", func() (any, error) {
 				time.Sleep(5 * time.Second)
 				return "should-not-complete", nil
 			})
@@ -104,7 +104,7 @@ func TestTimedDoChan(t *testing.T) {
 				defer wg.Done()
 
 				ctx := context.Background()
-				_, err := wrapper.TimedDoChan(ctx, "test-dedup", func() (interface{}, error) {
+				_, err := wrapper.TimedDoChan(ctx, "test-dedup", func() (any, error) {
 					atomic.AddInt32(&callCount, 1)
 					time.Sleep(100 * time.Millisecond)
 					return "result", nil
@@ -142,7 +142,7 @@ func TestCleanupLoop(t *testing.T) {
 
 	// Verify all were cleaned up
 	count := 0
-	wrapper.tracking.Range(func(key, value interface{}) bool {
+	wrapper.tracking.Range(func(key, value any) bool {
 		count++
 		return true
 	})

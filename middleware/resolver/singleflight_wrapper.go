@@ -25,12 +25,12 @@ func NewSingleflightWrapper() *SingleflightWrapper {
 }
 
 // DoChan wraps singleflight.DoChan with timeout tracking
-func (w *SingleflightWrapper) DoChan(key string, fn func() (interface{}, error)) <-chan singleflight.Result {
+func (w *SingleflightWrapper) DoChan(key string, fn func() (any, error)) <-chan singleflight.Result {
 	// Track when this key started
 	w.tracking.Store(key, time.Now())
 
 	// Call the underlying DoChan
-	ch := w.group.DoChan(key, func() (interface{}, error) {
+	ch := w.group.DoChan(key, func() (any, error) {
 		// Clean up tracking when done
 		defer w.tracking.Delete(key)
 		return fn()
@@ -63,7 +63,7 @@ func (w *SingleflightWrapper) cleanupStuckQueries() {
 	var stuckKeys []string
 
 	// Find stuck queries
-	w.tracking.Range(func(key, value interface{}) bool {
+	w.tracking.Range(func(key, value any) bool {
 		startTime, ok := value.(time.Time)
 		if !ok {
 			return true // Skip invalid entries
@@ -82,7 +82,7 @@ func (w *SingleflightWrapper) cleanupStuckQueries() {
 }
 
 // TimedDoChan executes a function with built-in timeout handling
-func (w *SingleflightWrapper) TimedDoChan(ctx context.Context, key string, fn func() (interface{}, error)) (interface{}, error) {
+func (w *SingleflightWrapper) TimedDoChan(ctx context.Context, key string, fn func() (any, error)) (any, error) {
 	ch := w.DoChan(key, fn)
 
 	select {

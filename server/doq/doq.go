@@ -3,11 +3,15 @@ package doq
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
+	"errors"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
+	"github.com/semihalev/zlog"
 )
 
 var doqProtos = []string{"doq", "doq-i02", "dq", "doq-i00", "doq-i01", "doq-i11"}
@@ -16,6 +20,8 @@ const (
 	minMsgHeaderSize = 14 // fixed msg header size 12 + quic prefix size 2
 	ProtocolError    = 0x2
 	NoError          = 0x0
+	maxMsgSize       = 65535            // Maximum DNS message size
+	tlsMinVersion    = tls.VersionTLS13 // DoQ requires TLS 1.3+
 )
 
 // Server implements DNS-over-QUIC server
@@ -24,6 +30,37 @@ type Server struct {
 	Handler dns.Handler
 
 	ln *quic.Listener
+}
+
+// Message pool for better memory management
+var msgPool = sync.Pool{
+	New: func() any {
+		return new(dns.Msg)
+	},
+}
+
+func acquireMsg() *dns.Msg {
+	return msgPool.Get().(*dns.Msg)
+}
+
+func releaseMsg(m *dns.Msg) {
+	// Clear all fields to ensure clean state for reuse
+	m.Id = 0
+	m.Response = false
+	m.Opcode = 0
+	m.Authoritative = false
+	m.Truncated = false
+	m.RecursionDesired = false
+	m.RecursionAvailable = false
+	m.Zero = false
+	m.AuthenticatedData = false
+	m.CheckingDisabled = false
+	m.Rcode = 0
+	m.Question = nil
+	m.Answer = nil
+	m.Ns = nil
+	m.Extra = nil
+	msgPool.Put(m)
 }
 
 func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
@@ -35,11 +72,12 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   doqProtos,
+		MinVersion:   tlsMinVersion,
 	}
 
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:         5 * time.Second,
-		MaxStreamReceiveWindow: dns.MaxMsgSize,
+		MaxStreamReceiveWindow: maxMsgSize,
 	}
 
 	listener, err := quic.ListenAddr(s.Addr, tlsConfig, quicConfig)
@@ -66,51 +104,64 @@ func (s *Server) Shutdown() error {
 
 	err := s.ln.Close()
 
-	if err == quic.ErrServerClosed {
-		return nil
+	// quic.ErrServerClosed is expected when closing
+	if err != nil && !errors.Is(err, quic.ErrServerClosed) {
+		return err
 	}
 
-	return err
+	return nil
 }
 
 func (s *Server) handleConnection(conn quic.Connection) {
-	var (
-		stream quic.Stream
-		buf    []byte
-		err    error
-	)
-
 	for {
-		stream, err = conn.AcceptStream(context.Background())
+		stream, err := conn.AcceptStream(context.Background())
 		if err != nil {
+			if errors.Is(err, quic.ErrServerClosed) {
+				return
+			}
+			zlog.Debug("Failed to accept stream", "error", err)
 			_ = conn.CloseWithError(NoError, "")
 			return
 		}
 
-		go func() {
-			defer stream.Close()
-
-			buf, err = io.ReadAll(stream)
-			if err != nil {
-				_ = conn.CloseWithError(ProtocolError, err.Error())
-				return
-			}
-
-			if len(buf) < minMsgHeaderSize {
-				_ = conn.CloseWithError(ProtocolError, "dns msg size too small")
-				return
-			}
-
-			req := new(dns.Msg)
-			if err := req.Unpack(buf[2:]); err != nil {
-				_ = conn.CloseWithError(ProtocolError, err.Error())
-				return
-			}
-			req.Id = dns.Id()
-
-			w := &ResponseWriter{Conn: conn, Stream: stream}
-
-			s.Handler.ServeDNS(w, req)
-		}()
+		go s.handleStream(conn, stream)
 	}
+}
+
+func (s *Server) handleStream(conn quic.Connection, stream quic.Stream) {
+	defer stream.Close()
+
+	// Limit read size to prevent DoS
+	limitedReader := io.LimitReader(stream, maxMsgSize)
+	buf, err := io.ReadAll(limitedReader)
+	if err != nil {
+		_ = conn.CloseWithError(ProtocolError, err.Error())
+		return
+	}
+
+	if len(buf) < minMsgHeaderSize {
+		_ = conn.CloseWithError(ProtocolError, "dns msg size too small")
+		return
+	}
+
+	// Extract message length prefix
+	msgLen := binary.BigEndian.Uint16(buf[:2])
+	if int(msgLen) != len(buf)-2 {
+		_ = conn.CloseWithError(ProtocolError, "message length mismatch")
+		return
+	}
+
+	req := acquireMsg()
+	defer releaseMsg(req)
+
+	if err := req.Unpack(buf[2:]); err != nil {
+		_ = conn.CloseWithError(ProtocolError, err.Error())
+		return
+	}
+
+	// Generate new ID for security
+	req.Id = dns.Id()
+
+	w := &ResponseWriter{Conn: conn, Stream: stream}
+	s.Handler.ServeDNS(w, req)
 }

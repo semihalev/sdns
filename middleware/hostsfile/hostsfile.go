@@ -528,10 +528,10 @@ func (h *Hostsfile) getDB() *HostsDB {
 }
 
 // Stats returns usage statistics
-func (h *Hostsfile) Stats() map[string]interface{} {
+func (h *Hostsfile) Stats() map[string]any {
 	db := h.getDB()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"entries":     atomic.LoadInt64(&db.stats.entries),
 		"wildcards":   atomic.LoadInt64(&db.stats.wildcards),
 		"lookups":     atomic.LoadUint64(&db.stats.lookups),

@@ -154,10 +154,10 @@ func (co *Conn) Write(p []byte) (int, error) {
 
 // Size-bucketed buffer pools for efficient memory usage
 var bufferPools = [4]sync.Pool{
-	{New: func() interface{} { b := make([]byte, 512); return &b }},   // 0-512 bytes (most DNS over UDP)
-	{New: func() interface{} { b := make([]byte, 1232); return &b }},  // 513-1232 bytes (EDNS0 UDP)
-	{New: func() interface{} { b := make([]byte, 4096); return &b }},  // 1233-4096 bytes (typical TCP)
-	{New: func() interface{} { b := make([]byte, 65535); return &b }}, // 4097-65535 bytes (max DNS)
+	{New: func() any { b := make([]byte, 512); return &b }},   // 0-512 bytes (most DNS over UDP)
+	{New: func() any { b := make([]byte, 1232); return &b }},  // 513-1232 bytes (EDNS0 UDP)
+	{New: func() any { b := make([]byte, 4096); return &b }},  // 1233-4096 bytes (typical TCP)
+	{New: func() any { b := make([]byte, 65535); return &b }}, // 4097-65535 bytes (max DNS)
 }
 
 // AcquireBuf returns a buffer from the appropriate pool

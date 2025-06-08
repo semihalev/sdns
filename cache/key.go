@@ -15,7 +15,7 @@ type keyBuffer struct {
 
 // Pool for key buffers
 var keyBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(keyBuffer)
 	},
 }

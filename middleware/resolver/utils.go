@@ -2,9 +2,9 @@ package resolver
 
 import (
 	"encoding/base64"
-	"math/rand"
+	"math/rand/v2"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -26,18 +26,20 @@ func init() {
 }
 
 func formatQuestion(q dns.Question) string {
-	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
+	var sb strings.Builder
+	sb.WriteString(strings.ToLower(q.Name))
+	sb.WriteByte(' ')
+	sb.WriteString(dns.ClassToString[q.Qclass])
+	sb.WriteByte(' ')
+	sb.WriteString(dns.TypeToString[q.Qtype])
+	return sb.String()
 }
 
 func shuffleStr(vals []string) []string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	perm := r.Perm(len(vals))
-	ret := make([]string, len(vals))
-
-	for i, randIndex := range perm {
-		ret[i] = vals[randIndex]
-	}
-
+	ret := slices.Clone(vals)
+	rand.Shuffle(len(ret), func(i, j int) {
+		ret[i], ret[j] = ret[j], ret[i]
+	})
 	return ret
 }
 
@@ -118,13 +120,34 @@ func isLocalIP(ip net.IP) (ok bool) {
 }
 
 func extractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
-	out := []dns.RR{}
-	tMap := make(map[uint16]struct{}, len(t))
-	for _, t := range t {
-		tMap[t] = struct{}{}
+	if len(in) == 0 {
+		return nil
+	}
+
+	// Pre-allocate with reasonable capacity
+	out := make([]dns.RR, 0, min(len(in)/2, 10))
+
+	// Optimize for common single-type queries
+	if len(t) == 1 {
+		targetType := t[0]
+		for _, r := range in {
+			if r.Header().Rrtype == targetType {
+				if name != "" && !strings.EqualFold(name, r.Header().Name) {
+					continue
+				}
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	// For multiple types, use map
+	template := make(map[uint16]struct{}, len(t))
+	for _, typ := range t {
+		template[typ] = struct{}{}
 	}
 	for _, r := range in {
-		if _, ok := tMap[r.Header().Rrtype]; ok {
+		if _, ok := template[r.Header().Rrtype]; ok {
 			if name != "" && !strings.EqualFold(name, r.Header().Name) {
 				continue
 			}
@@ -307,9 +330,9 @@ func sortnss(nss nameservers, qname string) []string {
 		list = append(list, name)
 	}
 
-	sort.Strings(list)
-	sort.Slice(list, func(i, j int) bool {
-		return dns.CompareDomainName(qname, list[i]) < dns.CompareDomainName(qname, list[j])
+	slices.Sort(list)
+	slices.SortFunc(list, func(a, b string) int {
+		return dns.CompareDomainName(qname, b) - dns.CompareDomainName(qname, a)
 	})
 
 	return list
@@ -344,12 +367,12 @@ var reqPool sync.Pool
 
 // AcquireMsg returns an empty msg from pool
 func AcquireMsg() *dns.Msg {
-	v := reqPool.Get()
+	v, _ := reqPool.Get().(*dns.Msg)
 	if v == nil {
 		return &dns.Msg{}
 	}
 
-	return v.(*dns.Msg)
+	return v
 }
 
 // ReleaseMsg returns req to pool
@@ -366,6 +389,10 @@ func ReleaseMsg(req *dns.Msg) {
 	req.CheckingDisabled = false
 	req.Rcode = 0
 	req.Compress = false
+	clear(req.Question)
+	clear(req.Answer)
+	clear(req.Ns)
+	clear(req.Extra)
 	req.Question = nil
 	req.Answer = nil
 	req.Ns = nil
@@ -378,11 +405,11 @@ var connPool sync.Pool
 
 // AcquireConn returns an empty conn from pool
 func AcquireConn() *Conn {
-	v := connPool.Get()
+	v, _ := connPool.Get().(*Conn)
 	if v == nil {
 		return &Conn{}
 	}
-	return v.(*Conn)
+	return v
 }
 
 // ReleaseConn returns req to pool

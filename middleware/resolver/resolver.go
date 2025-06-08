@@ -259,7 +259,7 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 	key := fmt.Sprintf("%d", cache.Key(q))
 
 	// Use TimedDoChan for automatic timeout handling
-	result, err := r.sfGroup.TimedDoChan(ctx, key, func() (interface{}, error) {
+	result, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
 		return r.lookup(ctx, req, servers)
 	})
 
@@ -822,6 +822,8 @@ mainloop:
 			fallbackTimer.Reset(fallbackTimeout)
 
 			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			case <-fallbackTimer.C:
 				if left > 0 && len(serversList)-1 == index {
 					continue fallbackloop

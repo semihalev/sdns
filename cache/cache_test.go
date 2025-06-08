@@ -292,7 +292,7 @@ func TestCacheMemoryUsage(t *testing.T) {
 func TestCacheTTL(t *testing.T) {
 	// This test demonstrates how TTL could work with cache
 	type timedValue struct {
-		value  interface{}
+		value  any
 		expiry time.Time
 	}
 

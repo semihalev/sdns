@@ -94,13 +94,34 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	if !w.do {
 		m = util.ClearDNSSEC(m)
 	}
-	m = util.ClearOPT(m)
 
 	if !w.noedns {
-		w.opt.SetDo(w.do)
+		// Get or create OPT record
+		opt := m.IsEdns0()
+		if opt == nil {
+			// No OPT in response, use ours
+			opt = w.opt
+			m.Extra = append(m.Extra, opt)
+		}
+
+		// Set common OPT parameters
+		opt.SetDo(w.do)
+		opt.SetUDPSize(w.opt.UDPSize())
+
+		// Add server options if not already present
 		w.setCookie()
 		w.setNSID()
-		m.Extra = append(m.Extra, w.opt)
+
+		// Only add our options if they're not already in the response OPT
+		if opt == w.opt {
+			// This is our OPT, options already added by setCookie/setNSID
+		} else {
+			// This is response OPT, need to merge our options
+			opt.Option = append(opt.Option, w.opt.Option...)
+		}
+	} else {
+		// EDNS disabled, remove all OPT records
+		m = util.ClearOPT(m)
 	}
 
 	if w.noad {

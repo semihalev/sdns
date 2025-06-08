@@ -143,7 +143,7 @@ func NoReachableAuthAtZone(zone string) *ValidationError {
 }
 
 // WithContext creates a new ValidationError with additional context
-func (e *ValidationError) WithContext(format string, args ...interface{}) *ValidationError {
+func (e *ValidationError) WithContext(format string, args ...any) *ValidationError {
 	return &ValidationError{
 		Code:    e.Code,
 		Message: fmt.Sprintf(e.Message+" - "+format, args...),
