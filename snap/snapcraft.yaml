@@ -39,8 +39,6 @@ parts:
     plugin: nil
     source: https://github.com/semihalev/sdns.git
     source-type: git
-    # Automatically use the latest tag
-    source-tag: latest
     build-packages:
       - git
       - ca-certificates
@@ -49,8 +47,9 @@ parts:
     stage-packages:
       - ca-certificates
     override-pull: |
-      snapcraftctl pull
+      craftctl default
       # Fetch all tags and branches
+      cd $CRAFT_PART_SRC
       git fetch --all --tags --prune
       
       # Get the latest tag (excluding pre-releases if they contain '-')
@@ -73,8 +72,8 @@ parts:
         version="$(echo $latest_tag | sed 's/^v//')"
       fi
       
-      snapcraftctl set-version "$version"
-      snapcraftctl set-grade stable
+      craftctl set version="$version"
+      craftctl set grade="stable"
     override-build: |
       # Install Go 1.23.4
       case "${CRAFT_ARCH_BUILD_FOR}" in
@@ -91,10 +90,14 @@ parts:
       export PATH=/usr/local/go/bin:$PATH
       export GOROOT=/usr/local/go
       
+      # Change to source directory
+      cd $CRAFT_PART_SRC
+      
       # Generate code
       go generate
       
       # Build sdns
+      mkdir -p $CRAFT_PART_INSTALL/bin
       go build -o $CRAFT_PART_INSTALL/bin/sdns
     prime:
       - bin/sdns
