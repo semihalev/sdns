@@ -35,14 +35,21 @@ layout:
     bind: $SNAP_DATA/etc
 
 parts:
-  go:
+  sdns:
     plugin: nil
-    source-type: tar
+    source: https://github.com/semihalev/sdns.git
+    source-type: git
+    # Automatically use the latest tag
+    source-tag: latest
     build-packages:
+      - git
+      - ca-certificates
       - wget
       - gcc
-    override-pull: |
-      # Map Snapcraft architectures to Go architectures
+    stage-packages:
+      - ca-certificates
+    override-build: |
+      # Install Go 1.23.4
       case "${CRAFT_ARCH_BUILD_FOR}" in
         amd64) GOARCH="amd64" ;;
         arm64) GOARCH="arm64" ;;
@@ -51,29 +58,17 @@ parts:
       esac
       
       wget -q "https://go.dev/dl/go1.23.4.linux-${GOARCH}.tar.gz"
-      tar -xzf "go1.23.4.linux-${GOARCH}.tar.gz"
+      tar -C /usr/local -xzf "go1.23.4.linux-${GOARCH}.tar.gz"
       rm "go1.23.4.linux-${GOARCH}.tar.gz"
-    override-build: |
-      rm -rf $CRAFT_PART_INSTALL/go
-      cp -r go $CRAFT_PART_INSTALL/
-    prime:
-      - -*
-
-  sdns:
-    after: [go]
-    plugin: go
-    source: https://github.com/semihalev/sdns.git
-    source-type: git
-    # Automatically use the latest tag
-    source-tag: latest
-    build-packages:
-      - git
-      - ca-certificates
-    stage-packages:
-      - ca-certificates
-    build-environment:
-      - GOROOT: $CRAFT_STAGE/go
-      - PATH: $CRAFT_STAGE/go/bin:$PATH
+      
+      export PATH=/usr/local/go/bin:$PATH
+      export GOROOT=/usr/local/go
+      
+      # Generate code
+      go generate
+      
+      # Build sdns
+      go build -o $CRAFT_PART_INSTALL/bin/sdns
     override-pull: |
       snapcraftctl pull
       # Fetch all tags and branches
