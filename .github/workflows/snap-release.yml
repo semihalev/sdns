@@ -12,7 +12,7 @@ on:
         type: string
 
 jobs:
-  snap-release:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -27,15 +27,30 @@ jobs:
         run: |
           git fetch --tags
           git checkout ${{ github.event.inputs.tag }} -- sdns.go
+      
+      - name: Install LXD
+        run: |
+          sudo snap install lxd --channel=latest/stable
+          sudo lxd init --auto
+          sudo usermod -a -G lxd $USER
           
-      - name: Build snap
-        uses: snapcore/action-build@v1
-        id: build
-
-      - name: Publish snap
-        uses: snapcore/action-publish@v1
+      - name: Install snapcraft
+        run: |
+          sudo snap install snapcraft --classic
+          
+      - name: Build snaps for all architectures
+        run: |
+          # Build for each architecture
+          sg lxd -c "snapcraft --use-lxd"
+          
+      - name: Upload and release snaps
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_TOKEN }}
-        with:
-          snap: ${{ steps.build.outputs.snap }}
-          release: stable
+        run: |
+          # Snapcraft should have built for all architectures defined in snapcraft.yaml
+          for snap in *.snap; do
+            if [ -f "$snap" ]; then
+              echo "Uploading $snap"
+              snapcraft upload "$snap" --release=stable
+            fi
+          done
