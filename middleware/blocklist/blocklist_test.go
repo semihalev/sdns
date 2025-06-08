@@ -85,3 +85,63 @@ func Test_BlockList(t *testing.T) {
 
 	blocklist.Set(testDomain)
 }
+
+func Test_BlockList_Wildcard(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_wildcard")
+
+	blocklist := New(cfg)
+
+	// Test wildcard blocking
+	blocklist.Set("*.blocked.com.")
+
+	// These should all be blocked
+	assert.True(t, blocklist.Exists("subdomain.blocked.com."))
+	assert.True(t, blocklist.Exists("deep.subdomain.blocked.com."))
+	assert.True(t, blocklist.Exists("very.deep.subdomain.blocked.com."))
+
+	// The base domain should not be blocked (only subdomains)
+	assert.False(t, blocklist.Exists("blocked.com."))
+
+	// Other domains should not be blocked
+	assert.False(t, blocklist.Exists("notblocked.com."))
+	assert.False(t, blocklist.Exists("subdomain.notblocked.com."))
+
+	// Test exact domain blocking
+	blocklist.Set("exact.com.")
+	assert.True(t, blocklist.Exists("exact.com."))
+	assert.False(t, blocklist.Exists("subdomain.exact.com."))
+
+	// Test multiple wildcard levels
+	blocklist.Set("*.subdomain.multi.com.")
+	assert.True(t, blocklist.Exists("test.subdomain.multi.com."))
+	assert.True(t, blocklist.Exists("deep.test.subdomain.multi.com."))
+	assert.False(t, blocklist.Exists("subdomain.multi.com."))
+	assert.False(t, blocklist.Exists("multi.com."))
+
+	// Test with ServeDNS
+	ch := middleware.NewChain([]middleware.Handler{})
+	req := new(dns.Msg)
+	req.SetQuestion("test.blocked.com.", dns.TypeA)
+	ch.Request = req
+
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+	ch.Writer = mw
+
+	blocklist.ServeDNS(context.Background(), ch)
+	assert.NotNil(t, mw.Msg())
+	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+
+	// Test non-blocked domain
+	mw = mock.NewWriter("udp", "127.0.0.1:0")
+	ch.Writer = mw
+	req.SetQuestion("allowed.com.", dns.TypeA)
+	blocklist.ServeDNS(context.Background(), ch)
+	assert.Nil(t, mw.Msg())
+
+	// Test case insensitivity
+	assert.True(t, blocklist.Exists("TEST.BLOCKED.COM."))
+	assert.True(t, blocklist.Exists("Test.Blocked.Com."))
+}
