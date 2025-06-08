@@ -152,10 +152,14 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
 	}
 
-	// Convert certain response codes to SERVFAIL
+	// Convert certain response codes to SERVFAIL with appropriate EDE
 	switch resp.Rcode {
-	case dns.RcodeRefused, dns.RcodeNotZone:
-		return util.SetRcode(req, dns.RcodeServerFailure, do)
+	case dns.RcodeRefused:
+		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
+			dns.ExtendedErrorCodeBlocked, "Upstream server refused the query")
+	case dns.RcodeNotZone:
+		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
+			dns.ExtendedErrorCodeNotAuthoritative, "Upstream server is not authoritative for zone")
 	}
 
 	return resp
