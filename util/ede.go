@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"errors"
 
 	"github.com/miekg/dns"
@@ -75,7 +76,14 @@ func ErrorToEDE(err error) (uint16, string) {
 		return ve.EDECode(), ve.Error()
 	}
 
-	// For remaining untyped errors, just return generic
-	// All important errors should be using ValidationError type
-	return dns.ExtendedErrorCodeOther, ""
+	// Handle common Go errors
+	if errors.Is(err, context.DeadlineExceeded) {
+		return dns.ExtendedErrorCodeNoReachableAuthority, "Query timeout exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return dns.ExtendedErrorCodeOther, "Query was cancelled"
+	}
+
+	// For remaining untyped errors, return generic with the error message
+	return dns.ExtendedErrorCodeOther, err.Error()
 }
