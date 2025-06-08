@@ -24,12 +24,6 @@ const (
 	tlsMinVersion    = tls.VersionTLS13 // DoQ requires TLS 1.3+
 )
 
-var (
-	errServerClosed = errors.New("doq server closed")
-	errMsgTooSmall  = errors.New("dns message too small")
-	errInvalidMsg   = errors.New("invalid dns message")
-)
-
 // Server implements DNS-over-QUIC server
 type Server struct {
 	Addr    string
