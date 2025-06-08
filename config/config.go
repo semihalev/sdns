@@ -91,7 +91,7 @@ type Config struct {
 // Plugin type
 type Plugin struct {
 	Path   string
-	Config map[string]interface{}
+	Config map[string]any
 }
 
 // ServerVersion return current server version

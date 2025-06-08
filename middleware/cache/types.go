@@ -26,6 +26,7 @@ type CacheEntry struct {
 	origTTL  uint32 // Original TTL in seconds for prefetch calculation
 	prefetch atomic.Bool
 	limiter  *rate.Limiter
+	ede      *dns.EDNS0_EDE // Preserved EDE information
 }
 
 // NewCacheEntry creates a new cache entry from a DNS message
@@ -38,11 +39,21 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 	msgCopy.Answer = msg.Answer
 	msgCopy.Ns = msg.Ns
 
-	// Filter Extra section to remove OPT records
+	var ede *dns.EDNS0_EDE
+
+	// Filter Extra section to remove OPT records but preserve EDE
 	if len(msg.Extra) > 0 {
 		extra := make([]dns.RR, 0, len(msg.Extra))
 		for _, rr := range msg.Extra {
-			if rr.Header().Rrtype != dns.TypeOPT {
+			if opt, ok := rr.(*dns.OPT); ok {
+				// Extract EDE from OPT record if present
+				for _, option := range opt.Option {
+					if e, ok := option.(*dns.EDNS0_EDE); ok {
+						ede = e
+						break
+					}
+				}
+			} else {
 				extra = append(extra, rr)
 			}
 		}
@@ -54,6 +65,7 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 		stored:  time.Now().UTC(),
 		ttl:     ttl,
 		origTTL: uint32(ttl.Seconds()),
+		ede:     ede,
 	}
 
 	if rateLimit > 0 {
@@ -76,8 +88,10 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 
 	resp := e.msg.Copy()
 	originalRcode := resp.Rcode // Save the original Rcode
+	originalExtra := resp.Extra // Save the original Extra section
 	resp.SetReply(req)
 	resp.Rcode = originalRcode // Restore the original Rcode
+	resp.Extra = originalExtra // Restore the original Extra section
 	resp.Id = req.Id
 
 	// Set Authoritative to false since this is from cache (matching V1 behavior)
@@ -100,6 +114,38 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	for _, rr := range resp.Extra {
 		if rr.Header().Rrtype != dns.TypeOPT {
 			rr.Header().Ttl = ttl
+		}
+	}
+
+	// Restore EDE if it was present in the original response
+	if e.ede != nil && resp.Rcode == dns.RcodeServerFailure {
+		opt := resp.IsEdns0()
+		if opt == nil && req.IsEdns0() != nil {
+			// Request has EDNS0, so add it to response
+			reqOpt := req.IsEdns0()
+			opt = &dns.OPT{
+				Hdr: dns.RR_Header{
+					Name:   ".",
+					Rrtype: dns.TypeOPT,
+					Class:  reqOpt.UDPSize(),
+				},
+			}
+			resp.Extra = append(resp.Extra, opt)
+		}
+
+		if opt != nil {
+			// Check if EDE already exists
+			hasEDE := false
+			for _, option := range opt.Option {
+				if _, ok := option.(*dns.EDNS0_EDE); ok {
+					hasEDE = true
+					break
+				}
+			}
+			// Add EDE if not already present
+			if !hasEDE {
+				opt.Option = append(opt.Option, e.ede)
+			}
 		}
 	}
 

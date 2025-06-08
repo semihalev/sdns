@@ -161,7 +161,7 @@ func (m *Metrics) maybeCleanupDomains() {
 	}
 	var domains []domainCount
 
-	m.domainTracker.Range(func(key, _ interface{}) bool {
+	m.domainTracker.Range(func(key, _ any) bool {
 		domain := key.(string)
 		// Get current count from Prometheus
 		metric := &dto.Metric{}

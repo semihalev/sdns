@@ -76,8 +76,8 @@ func BenchmarkHighConcurrency(b *testing.B) {
 }
 
 type cacheOps interface {
-	Get(uint64) (interface{}, bool)
-	Add(uint64, interface{})
+	Get(uint64) (any, bool)
+	Add(uint64, any)
 	Remove(uint64)
 	Len() int
 }

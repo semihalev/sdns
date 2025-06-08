@@ -84,7 +84,7 @@ func New(cfg *config.Config) *Cache {
 		wg: waitgroup.New(15 * time.Second),
 
 		writerPool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return &ResponseWriter{}
 			},
 		},
@@ -319,10 +319,10 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 }
 
 // Stats returns cache statistics
-func (c *Cache) Stats() map[string]interface{} {
+func (c *Cache) Stats() map[string]any {
 	hits, misses, evictions, prefetches := c.metrics.Stats()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"hits":          hits,
 		"misses":        misses,
 		"evictions":     evictions,
@@ -428,7 +428,7 @@ func (w *ResponseWriter) filterAnswerSection(res *dns.Msg) *dns.Msg {
 
 // messagePool reduces allocations by reusing dns.Msg structs
 var messagePool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &dns.Msg{
 			// Pre-allocate slices with typical sizes to avoid allocations
 			Question: make([]dns.Question, 0, 1), // Most queries have 1 question

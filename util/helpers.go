@@ -18,7 +18,7 @@ import (
 var chainPool sync.Pool
 
 func init() {
-	chainPool.New = func() interface{} {
+	chainPool.New = func() any {
 		return middleware.NewChain(middleware.Handlers())
 	}
 }
