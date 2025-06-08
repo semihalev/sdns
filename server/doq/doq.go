@@ -66,7 +66,6 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:         5 * time.Second,
 		MaxStreamReceiveWindow: maxMsgSize,
-		KeepAlivePeriod:        30 * time.Second,
 	}
 
 	listener, err := quic.ListenAddr(s.Addr, tlsConfig, quicConfig)
@@ -124,19 +123,19 @@ func (s *Server) handleStream(conn quic.Connection, stream quic.Stream) {
 	limitedReader := io.LimitReader(stream, maxMsgSize)
 	buf, err := io.ReadAll(limitedReader)
 	if err != nil {
-		zlog.Debug("Failed to read stream", "error", err)
+		_ = conn.CloseWithError(ProtocolError, err.Error())
 		return
 	}
 
 	if len(buf) < minMsgHeaderSize {
-		zlog.Debug("Message too small", "size", len(buf))
+		_ = conn.CloseWithError(ProtocolError, "dns msg size too small")
 		return
 	}
 
 	// Extract message length prefix
 	msgLen := binary.BigEndian.Uint16(buf[:2])
 	if int(msgLen) != len(buf)-2 {
-		zlog.Debug("Message length mismatch", "expected", msgLen, "actual", len(buf)-2)
+		_ = conn.CloseWithError(ProtocolError, "message length mismatch")
 		return
 	}
 
@@ -144,7 +143,7 @@ func (s *Server) handleStream(conn quic.Connection, stream quic.Stream) {
 	defer releaseMsg(req)
 
 	if err := req.Unpack(buf[2:]); err != nil {
-		zlog.Debug("Failed to unpack DNS message", "error", err)
+		_ = conn.CloseWithError(ProtocolError, err.Error())
 		return
 	}
 
