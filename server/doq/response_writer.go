@@ -28,31 +28,32 @@ func (w *ResponseWriter) Close() error {
 	return w.Stream.Close()
 }
 
+// Hijack implements dns.ResponseWriter.Hijack
+func (w *ResponseWriter) Hijack() {
+	// No-op for QUIC as connection management is handled differently
+}
+
 func (w *ResponseWriter) Write(m []byte) (int, error) {
 	return w.Stream.Write(addPrefixLen(m))
 }
 
 func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
+	// DoQ spec requires ID to be 0
 	m.Id = 0
 
 	packed, err := m.Pack()
 	if err != nil {
-		_ = w.Conn.CloseWithError(0x1, err.Error())
 		return err
 	}
 
-	_, err = w.Stream.Write(addPrefixLen(packed))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	_, err = w.Write(packed)
+	return err
 }
 
-func addPrefixLen(msg []byte) (buf []byte) {
-	buf = make([]byte, 2+len(msg))
+func addPrefixLen(msg []byte) []byte {
+	// Pre-allocate exact size needed
+	buf := make([]byte, 2+len(msg))
 	binary.BigEndian.PutUint16(buf, uint16(len(msg)))
 	copy(buf[2:], msg)
-
 	return buf
 }

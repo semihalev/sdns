@@ -10,10 +10,16 @@ import (
 	"github.com/miekg/dns"
 )
 
-const minMsgHeaderSize = 12
+const (
+	minMsgHeaderSize = 12
+	maxMsgSize       = 65535 // Maximum DNS message size
+	contentTypeDNS   = "application/dns-message"
+	contentTypeJSON  = "application/dns-json"
+	contentTypeJS    = "application/x-javascript"
+)
 
 // HandleWireFormat handle wire format
-func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) {
+func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var (
 			buf []byte
@@ -28,17 +34,20 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 				return
 			}
 		case http.MethodPost:
-			if r.Header.Get("Content-Type") != "application/dns-message" {
+			if r.Header.Get("Content-Type") != contentTypeDNS {
 				http.Error(w, http.StatusText(http.StatusUnsupportedMediaType), http.StatusUnsupportedMediaType)
 				return
 			}
 
-			buf, err = io.ReadAll(r.Body)
+			// Limit request body size to prevent DoS
+			limitedReader := io.LimitReader(r.Body, maxMsgSize)
+			defer r.Body.Close()
+
+			buf, err = io.ReadAll(limitedReader)
 			if err != nil {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return
 			}
-			defer r.Body.Close()
 		default:
 			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 			return
@@ -67,23 +76,31 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, 
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/dns-message")
+		w.Header().Set("Content-Type", contentTypeDNS)
+		w.Header().Set("Cache-Control", "no-cache, no-store")
 
 		_, _ = w.Write(packed)
 	}
 }
 
 // HandleJSON handle json format
-func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.Request) {
+func HandleJSON(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		name := r.URL.Query().Get("name")
+		// Only allow GET for JSON API
+		if r.Method != http.MethodGet {
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+
+		query := r.URL.Query()
+		name := query.Get("name")
 		if name == "" {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 			return
 		}
 		name = dns.Fqdn(name)
 
-		qtype := ParseQTYPE(r.URL.Query().Get("type"))
+		qtype := ParseQTYPE(query.Get("type"))
 		if qtype == dns.TypeNone {
 			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 			return
@@ -93,23 +110,13 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 		req.SetQuestion(name, qtype)
 		req.AuthenticatedData = true
 
-		if r.URL.Query().Get("cd") == "true" {
+		// Parse boolean parameters
+		if query.Get("cd") == "true" {
 			req.CheckingDisabled = true
 		}
 
-		opt := &dns.OPT{
-			Hdr: dns.RR_Header{
-				Name:   ".",
-				Class:  dns.DefaultMsgSize,
-				Rrtype: dns.TypeOPT,
-			},
-		}
-
-		if r.URL.Query().Get("do") == "true" {
-			opt.SetDo()
-		}
-
-		req.Extra = append(req.Extra, opt)
+		// Use SetEdns0 helper for cleaner code
+		req.SetEdns0(dns.DefaultMsgSize, query.Get("do") == "true")
 
 		msg := handle(req)
 		if msg == nil {
@@ -117,18 +124,19 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) func(http.ResponseWriter, *http.
 			return
 		}
 
-		json, err := json.Marshal(NewMsg(msg))
+		jsonData, err := json.Marshal(NewMsg(msg))
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
 
 		if strings.Contains(r.Header.Get("Accept"), "text/html") {
-			w.Header().Set("Content-Type", "application/x-javascript")
+			w.Header().Set("Content-Type", contentTypeJS)
 		} else {
-			w.Header().Set("Content-Type", "application/dns-json")
+			w.Header().Set("Content-Type", contentTypeJSON)
 		}
+		w.Header().Set("Cache-Control", "no-cache, no-store")
 
-		_, _ = w.Write(json)
+		_, _ = w.Write(jsonData)
 	}
 }
