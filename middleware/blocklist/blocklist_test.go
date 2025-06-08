@@ -145,3 +145,31 @@ func Test_BlockList_Wildcard(t *testing.T) {
 	assert.True(t, blocklist.Exists("TEST.BLOCKED.COM."))
 	assert.True(t, blocklist.Exists("Test.Blocked.Com."))
 }
+
+func Test_BlockList_FastPath(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_fastpath")
+
+	blocklist := New(cfg)
+
+	// Test with empty blocklist - should use fast path
+	ch := middleware.NewChain([]middleware.Handler{})
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ch.Request = req
+	
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+	ch.Writer = mw
+	
+	// With empty blocklist, ServeDNS should call Next and not write any response
+	blocklist.ServeDNS(context.Background(), ch)
+	assert.Nil(t, mw.Msg(), "No response should be written for empty blocklist")
+	
+	// Now add an entry and verify it blocks
+	blocklist.Set("blocked.com.")
+	req.SetQuestion("blocked.com.", dns.TypeA)
+	blocklist.ServeDNS(context.Background(), ch)
+	assert.NotNil(t, mw.Msg(), "Response should be written for blocked domain")
+}

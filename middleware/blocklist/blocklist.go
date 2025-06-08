@@ -52,6 +52,16 @@ func (b *BlockList) Name() string { return name }
 
 // ServeDNS implements the Handle interface.
 func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	// Fast path: skip if no blocklist entries
+	b.mu.RLock()
+	hasEntries := len(b.m) > 0 || len(b.wild) > 0
+	b.mu.RUnlock()
+
+	if !hasEntries {
+		ch.Next(ctx)
+		return
+	}
+
 	w, req := ch.Writer, ch.Request
 
 	q := req.Question[0]
