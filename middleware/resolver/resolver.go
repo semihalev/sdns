@@ -822,6 +822,8 @@ mainloop:
 			fallbackTimer.Reset(fallbackTimeout)
 
 			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			case <-fallbackTimer.C:
 				if left > 0 && len(serversList)-1 == index {
 					continue fallbackloop
