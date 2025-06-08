@@ -1,39 +1,118 @@
 name: sdns
 adopt-info: sdns
-summary: A DNS Resolver Server.
+summary: A high-performance DNS resolver with DNSSEC support
 description: |
-  A high-performance, recursive DNS resolver server with DNSSEC support, focused on preserving privacy.
-
-architectures:
-  - build-on: armhf
-  - build-on: arm64
-  - build-on: amd64
+  SDNS is a high-performance, recursive DNS resolver server with DNSSEC support,
+  focused on preserving privacy. It supports DNS-over-TLS, DNS-over-HTTPS,
+  DNS-over-QUIC, and includes features like caching, rate limiting, and blocklists.
+  
+  Features:
+  - DNSSEC validation
+  - DNS-over-HTTPS (DoH)
+  - DNS-over-TLS (DoT)
+  - DNS-over-QUIC (DoQ)
+  - Built-in cache with prefetching
+  - Blocklist support with auto-updates
+  - Rate limiting
+  - Access control lists
+  - Prometheus metrics
+  - Extended DNS Errors (EDE) support
 
 grade: stable
 confinement: strict
-base: core18
+base: core22
+
+architectures:
+  - build-on: [amd64]
+    build-for: [amd64]
+  - build-on: [arm64]
+    build-for: [arm64]
+  - build-on: [armhf]
+    build-for: [armhf]
+
+layout:
+  /etc/sdns:
+    bind: $SNAP_DATA/etc
 
 parts:
   sdns:
     plugin: go
     source: https://github.com/semihalev/sdns.git
-    go-importpath: github.com/semihalev/sdns
     source-type: git
+    # Automatically use the latest tag
+    source-tag: latest
+    build-packages:
+      - git
+      - ca-certificates
+    stage-packages:
+      - ca-certificates
     override-pull: |
       snapcraftctl pull
-      last_committed_tag="$(git describe --tags --abbrev=0)"
-      last_committed_tag_ver="$(echo ${last_committed_tag} | sed 's/v//')"
-      last_released_tag="$(snap info sdns | awk '$1 == "latest/stable:" { print $2 }')"
-      if [ "${last_committed_tag_ver}" != "${last_released_tag}" ]; then
-        git fetch
-        git checkout "${last_committed_tag}"
+      # Fetch all tags and branches
+      git fetch --all --tags --prune
+      
+      # Get the latest tag (excluding pre-releases if they contain '-')
+      latest_tag=$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+      
+      if [ -z "$latest_tag" ]; then
+        echo "No valid release tag found, using latest commit"
+        latest_tag="HEAD"
+      else
+        echo "Building from tag: $latest_tag"
+        git checkout "$latest_tag"
       fi
-      snapcraftctl set-version "$(git describe --tags | sed 's/v//')"
+      
+      # Set version
+      if [ "$latest_tag" = "HEAD" ]; then
+        # For HEAD, use commit date and short hash
+        version="$(git log -1 --format=%cd --date=format:%Y%m%d)+git$(git rev-parse --short HEAD)"
+      else
+        # For tags, remove 'v' prefix if present
+        version="$(echo $latest_tag | sed 's/^v//')"
+      fi
+      
+      snapcraftctl set-version "$version"
       snapcraftctl set-grade stable
-    stage:
-     - bin/sdns
+    override-build: |
+      # Generate code before building
+      go generate
+      snapcraftctl build
+    prime:
+      - bin/sdns
+      - etc/ssl/certs/*
+      - usr/share/ca-certificates/*
+
 apps:
   sdns:
-    command: sdns
-    plugs: [network-bind]
+    command: bin/sdns -c $SNAP_DATA/sdns.conf
     daemon: simple
+    restart-condition: on-failure
+    restart-delay: 5s
+    stop-timeout: 30s
+    plugs:
+      - network
+      - network-bind
+      - network-observe
+    environment:
+      HOME: $SNAP_DATA
+      
+  sdns-cli:
+    command: bin/sdns -c $SNAP_DATA/sdns.conf
+    plugs:
+      - network
+      - network-bind
+    environment:
+      HOME: $SNAP_DATA
+
+hooks:
+  install:
+    plugs: [network]
+  configure:
+    plugs: [network]
+  post-refresh:
+    plugs: [network]
+
+plugs:
+  network:
+  network-bind:
+  network-observe:

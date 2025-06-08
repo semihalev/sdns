@@ -1,0 +1,46 @@
+#!/bin/sh
+set -e
+
+# This hook runs when the snap is first installed
+
+# Create necessary directories
+mkdir -p "$SNAP_DATA/etc"
+mkdir -p "$SNAP_DATA/log"
+mkdir -p "$SNAP_DATA/db"
+mkdir -p "$SNAP_DATA/db/blocklists"
+
+# Set default configuration values that users can override
+snapctl set port=53
+snapctl set bind="0.0.0.0"
+snapctl set dnssec=true
+snapctl set log.level="info"
+snapctl set cache.size=100000
+snapctl set ratelimit=0
+
+echo "SDNS snap installed successfully!"
+echo ""
+echo "Quick start:"
+echo "  - The service will start automatically"
+echo "  - Default DNS port: 53"
+echo "  - Default bind: 0.0.0.0 (all interfaces)"
+echo "  - DNSSEC validation: enabled"
+echo ""
+echo "Configuration examples:"
+echo "  snap set sdns port=5353"
+echo "  snap set sdns bind=\"127.0.0.1\""
+echo "  snap set sdns dnssec=false"
+echo "  snap set sdns doh=true"
+echo "  snap set sdns dot=true"
+echo "  snap set sdns log.level=debug"
+echo "  snap set sdns cache.size=50000"
+echo "  snap set sdns ratelimit=100"
+echo ""
+echo "For DNS-over-HTTPS/TLS, provide certificates:"
+echo "  snap set sdns tls.certificate=/path/to/cert.pem"
+echo "  snap set sdns tls.key=/path/to/key.pem"
+echo ""
+echo "View logs:"
+echo "  sudo journalctl -u snap.sdns.sdns"
+echo ""
+echo "Configuration file location:"
+echo "  /var/snap/sdns/current/sdns.conf"
