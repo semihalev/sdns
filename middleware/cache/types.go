@@ -118,7 +118,8 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	}
 
 	// Restore EDE if it was present in the original response
-	if e.ede != nil && resp.Rcode == dns.RcodeServerFailure {
+	// EDE can be present with any response code, not just SERVFAIL
+	if e.ede != nil {
 		opt := resp.IsEdns0()
 		if opt == nil && req.IsEdns0() != nil {
 			// Request has EDNS0, so add it to response

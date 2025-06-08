@@ -111,7 +111,7 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			Expire:  604800,
 			Minttl:  86400,
 		}
-		msg.Extra = append(msg.Answer, soa)
+		msg.Ns = append(msg.Ns, soa)
 	}
 
 	_ = w.WriteMsg(msg)

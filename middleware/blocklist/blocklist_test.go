@@ -159,14 +159,14 @@ func Test_BlockList_FastPath(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
 	ch.Request = req
-	
+
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
-	
+
 	// With empty blocklist, ServeDNS should call Next and not write any response
 	blocklist.ServeDNS(context.Background(), ch)
 	assert.Nil(t, mw.Msg(), "No response should be written for empty blocklist")
-	
+
 	// Now add an entry and verify it blocks
 	blocklist.Set("blocked.com.")
 	req.SetQuestion("blocked.com.", dns.TypeA)
