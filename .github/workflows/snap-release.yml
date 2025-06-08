@@ -19,8 +19,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # For manual dispatch, use main branch but checkout the tag for version
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
 
+      - name: Set version from tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git fetch --tags
+          git checkout ${{ github.event.inputs.tag }} -- sdns.go
+          
       - name: Build snap
         uses: snapcore/action-build@v1
         id: build
