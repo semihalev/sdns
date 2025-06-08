@@ -53,7 +53,7 @@ func Test_BlockList(t *testing.T) {
 	ch.Request = req
 
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.Equal(t, true, len(mw.Msg().Extra) > 0)
+	assert.Equal(t, true, len(mw.Msg().Ns) > 0)
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
