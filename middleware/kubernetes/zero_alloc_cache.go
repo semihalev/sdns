@@ -38,8 +38,8 @@ func NewZeroAllocCache() *ZeroAllocCache {
 	c := &ZeroAllocCache{
 		bufferPool: sync.Pool{
 			New: func() interface{} {
-				// Pre-allocate 512 byte buffers (typical DNS response size)
-				return make([]byte, 512)
+				// Pre-allocate buffers (typical DNS response size)
+				return make([]byte, DefaultBufferSize)
 			},
 		},
 		entryPool: sync.Pool{
@@ -53,6 +53,29 @@ func NewZeroAllocCache() *ZeroAllocCache {
 	go c.cleanupLoop()
 
 	return c
+}
+
+// GetEntry retrieves the raw cached wire format without modification
+// This enables true zero-allocation by returning the cached buffer directly
+func (c *ZeroAllocCache) GetEntry(qname string, qtype uint16) []byte {
+	key := makeKey(qname, qtype)
+
+	if val, ok := c.wireCache.Load(key); ok {
+		entry := val.(*wireEntry)
+
+		// Check expiry
+		if time.Now().Unix() > entry.expiry {
+			c.wireCache.Delete(key)
+			atomic.AddUint64(&c.evictions, 1)
+			return nil
+		}
+
+		atomic.AddUint64(&c.hits, 1)
+		return entry.wire // Direct return - ZERO ALLOCATIONS!
+	}
+
+	atomic.AddUint64(&c.misses, 1)
+	return nil
 }
 
 // Get retrieves pre-computed response (ZERO ALLOCATIONS!)
@@ -106,6 +129,17 @@ func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID uint16) []byte {
 
 // Store pre-computes and caches DNS response
 func (c *ZeroAllocCache) Store(qname string, qtype uint16, msg *dns.Msg) {
+	// Extract TTL from the answer section
+	ttl := DefaultCacheTTL
+	if len(msg.Answer) > 0 {
+		if answerTTL := msg.Answer[0].Header().Ttl; answerTTL > 0 {
+			ttl = time.Duration(answerTTL) * time.Second
+		} else {
+			// Don't cache entries with 0 TTL
+			return
+		}
+	}
+
 	// Get buffer from pool
 	buf := c.bufferPool.Get().([]byte)
 
@@ -120,7 +154,7 @@ func (c *ZeroAllocCache) Store(qname string, qtype uint16, msg *dns.Msg) {
 	entry := c.entryPool.Get().(*wireEntry)
 	entry.qname = qname
 	entry.qtype = qtype
-	entry.expiry = time.Now().Unix() + 30 // 30 second TTL
+	entry.expiry = time.Now().Unix() + int64(ttl.Seconds())
 
 	// Store wire format (reuse buffer if possible)
 	if len(wire) <= len(buf) {
@@ -152,9 +186,9 @@ func (c *ZeroAllocCache) cleanupLoop() {
 				c.wireCache.Delete(key)
 
 				// Return wire buffer to pool if it's standard size
-				if cap(entry.wire) == 512 {
-					buf := entry.wire[:512]
-					c.bufferPool.Put(&buf)
+				if cap(entry.wire) == DefaultBufferSize {
+					buf := entry.wire[:DefaultBufferSize]
+					c.bufferPool.Put(buf)
 				}
 
 				// Return entry to pool
@@ -256,9 +290,9 @@ func (c *ZeroAllocCache) Clear() {
 		entry := value.(*wireEntry)
 
 		// Return buffers to pool
-		if cap(entry.wire) == 512 {
-			buf := entry.wire[:512]
-			c.bufferPool.Put(&buf)
+		if cap(entry.wire) == DefaultBufferSize {
+			buf := entry.wire[:DefaultBufferSize]
+			c.bufferPool.Put(buf)
 		}
 
 		// Return entry to pool

@@ -3,6 +3,7 @@ package kubernetes
 
 import (
 	"net"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -13,6 +14,25 @@ const (
 	DefaultPodTTL     = 30
 	DefaultSRVTTL     = 30
 	DefaultPTRTTL     = 30
+)
+
+// Performance tuning constants
+const (
+	// Sharding constants
+	ServiceShardCount = 16
+	PodShardCount     = 256
+
+	// Buffer sizes
+	DefaultBufferSize = 512
+	MaxBufferSize     = 4096
+
+	// Cache settings
+	CacheCleanupInterval = 10 * time.Second
+	DefaultCacheTTL      = 30 * time.Second
+
+	// Predictor settings
+	PredictorBufferSize = 1024
+	MaxPredictions      = 3
 )
 
 // Service represents a Kubernetes service

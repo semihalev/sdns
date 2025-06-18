@@ -42,7 +42,7 @@ func TestKillerMode(t *testing.T) {
 		qtype uint16
 	}{
 		{"Service A", "kubernetes.default.svc.cluster.local.", dns.TypeA},
-		{"Service AAAA", "kube-dns.kube-system.svc.cluster.local.", dns.TypeAAAA},
+		{"Service AAAA", "dual-stack.default.svc.cluster.local.", dns.TypeAAAA},
 		{"App Service", "app-1.production.svc.cluster.local.", dns.TypeA},
 		{"Pod query", "10-244-1-10.default.pod.cluster.local.", dns.TypeA},
 		{"SRV query", "_https._tcp.kubernetes.default.svc.cluster.local.", dns.TypeSRV},

@@ -78,11 +78,12 @@ func New(cfg *config.Config) *Kubernetes {
 		}
 
 		// Pre-warm cache for common services
-		cache.Prewarm(
-			[]string{"kube-dns", "kubernetes", "metrics-server", "coredns"},
-			[]string{"kube-system", "default"},
-			clusterDomain,
-		)
+		// Skip prewarm for now - it interferes with actual registry data
+		// cache.Prewarm(
+		//	[]string{"kube-dns", "kubernetes", "metrics-server", "coredns"},
+		//	[]string{"kube-system", "default"},
+		//	clusterDomain,
+		// )
 
 		// Start ML prediction loop
 		go k.predictionLoop()
@@ -150,11 +151,23 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	if k.killerMode {
 		// KILLER MODE: Try zero-alloc cache first
-		if wire := k.cache.Get(qname, q.Qtype, req.Id); wire != nil {
+		cached := k.cache.GetEntry(qname, q.Qtype)
+		if cached != nil {
 			atomic.AddUint64(&k.cacheHits, 1)
 
-			// Direct wire format write - ZERO ALLOCATIONS!
-			w.Write(wire)
+			// Update message ID directly in the cached response
+			// DNS message ID is first 2 bytes
+			if len(cached) >= 2 {
+				// Create a temporary buffer for the modified header
+				var header [12]byte
+				copy(header[:], cached[:12])
+				header[0] = byte(req.Id >> 8)
+				header[1] = byte(req.Id)
+
+				// Write header and body separately - ZERO ALLOCATIONS!
+				w.Write(header[:])
+				w.Write(cached[12:]) // Write everything after header
+			}
 
 			// Record for ML prediction
 			k.predictor.Record(qname, q.Qtype)
@@ -256,6 +269,14 @@ func (k *Kubernetes) populateDemoData() {
 			Namespace:  "default",
 			ClusterIPs: [][]byte{{10, 96, 2, 1}},
 			IPFamilies: []string{"IPv4"},
+		})
+
+		// Add a dual-stack service for testing
+		k.registry.AddService(&Service{
+			Name:       "dual-stack",
+			Namespace:  "default",
+			ClusterIPs: [][]byte{{10, 96, 3, 1}, {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}},
+			IPFamilies: []string{"IPv4", "IPv6"},
 		})
 
 		k.registry.AddService(&Service{
@@ -398,7 +419,7 @@ func (k *Kubernetes) prefetchPredicted(current string) {
 	predictions := k.predictor.Predict(current)
 	for _, predicted := range predictions {
 		// Check if already cached
-		if wire := k.cache.Get(predicted, dns.TypeA, 0); wire != nil {
+		if cached := k.cache.GetEntry(predicted, dns.TypeA); cached != nil {
 			continue
 		}
 
