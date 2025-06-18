@@ -61,6 +61,11 @@ func (c *Cache) Set(qname string, qtype uint16, msg *dns.Msg) {
 		}
 	}
 
+	// Don't cache if TTL is 0
+	if ttl == 0 {
+		return
+	}
+
 	c.entries[key] = &cacheEntry{
 		msg:    msg.Copy(),
 		expiry: time.Now().Add(time.Duration(ttl) * time.Second),
