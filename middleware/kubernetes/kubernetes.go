@@ -48,6 +48,11 @@ func New(cfg *config.Config) *Kubernetes {
 		clusterDomain = "cluster.local"
 	}
 
+	// Validate cluster domain format
+	if !strings.HasSuffix(clusterDomain, ".local") && !strings.HasSuffix(clusterDomain, ".cluster") {
+		zlog.Warn("Non-standard cluster domain", zlog.String("domain", clusterDomain))
+	}
+
 	killerMode := cfg.Kubernetes.KillerMode
 
 	var k *Kubernetes

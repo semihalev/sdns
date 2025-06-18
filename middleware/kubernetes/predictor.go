@@ -4,7 +4,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 // LockFreePredictor - ML-based DNS query prediction using Markov chains
@@ -27,19 +26,19 @@ type LockFreePredictor struct {
 
 // atomicString - Lock-free string storage
 type atomicString struct {
-	ptr unsafe.Pointer
+	value atomic.Value
 }
 
 func (as *atomicString) Store(s string) {
-	atomic.StorePointer(&as.ptr, unsafe.Pointer(&s))
+	as.value.Store(s)
 }
 
 func (as *atomicString) Load() string {
-	p := atomic.LoadPointer(&as.ptr)
-	if p == nil {
+	v := as.value.Load()
+	if v == nil {
 		return ""
 	}
-	return *(*string)(p)
+	return v.(string)
 }
 
 // NewLockFreePredictor creates the ML predictor

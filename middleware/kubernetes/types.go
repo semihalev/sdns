@@ -7,6 +7,14 @@ import (
 	"github.com/miekg/dns"
 )
 
+// DNS TTL values (configurable)
+const (
+	DefaultServiceTTL = 30
+	DefaultPodTTL     = 30
+	DefaultSRVTTL     = 30
+	DefaultPTRTTL     = 30
+)
+
 // Service represents a Kubernetes service
 type Service struct {
 	Name         string

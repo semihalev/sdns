@@ -24,6 +24,7 @@ import (
 type Client struct {
 	clientset kubernetes.Interface
 	registry  *Registry
+	stopCh    chan struct{}
 }
 
 // NewClient creates a new Kubernetes client.
@@ -49,6 +50,7 @@ func NewClient(kubeconfig string) (*Client, error) {
 	return &Client{
 		clientset: clientset,
 		registry:  NewRegistry(),
+		stopCh:    make(chan struct{}),
 	}, nil
 }
 
@@ -123,7 +125,15 @@ func (c *Client) Run(ctx context.Context) error {
 	zlog.Info("Kubernetes caches synced")
 
 	<-ctx.Done()
+	close(c.stopCh)
 	return nil
+}
+
+// Stop stops the client
+func (c *Client) Stop() {
+	if c.stopCh != nil {
+		close(c.stopCh)
+	}
 }
 
 // Service handlers

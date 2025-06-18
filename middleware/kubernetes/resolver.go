@@ -172,7 +172,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 					Name:   qname,
 					Rrtype: dns.TypeCNAME,
 					Class:  dns.ClassINET,
-					Ttl:    30,
+					Ttl:    DefaultServiceTTL,
 				},
 				Target: dns.Fqdn(svc.ExternalName),
 			})
@@ -199,7 +199,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 									Name:   qname,
 									Rrtype: dns.TypeA,
 									Class:  dns.ClassINET,
-									Ttl:    30,
+									Ttl:    DefaultServiceTTL,
 								},
 								A: ip.To4(),
 							})
@@ -216,7 +216,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 									Name:   qname,
 									Rrtype: dns.TypeAAAA,
 									Class:  dns.ClassINET,
-									Ttl:    30,
+									Ttl:    DefaultServiceTTL,
 								},
 								AAAA: ip,
 							})
@@ -233,7 +233,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 							Name:   qname,
 							Rrtype: dns.TypeA,
 							Class:  dns.ClassINET,
-							Ttl:    30,
+							Ttl:    DefaultServiceTTL,
 						},
 						A: net.IP(ipv4),
 					})
@@ -247,7 +247,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 							Name:   qname,
 							Rrtype: dns.TypeAAAA,
 							Class:  dns.ClassINET,
-							Ttl:    30,
+							Ttl:    DefaultServiceTTL,
 						},
 						AAAA: net.IP(ipv6),
 					})
@@ -278,7 +278,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeA,
 							Class:  dns.ClassINET,
-							Ttl:    30,
+							Ttl:    DefaultServiceTTL,
 						},
 						A: ip.To4(),
 					})
@@ -294,7 +294,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeAAAA,
 							Class:  dns.ClassINET,
-							Ttl:    30,
+							Ttl:    DefaultServiceTTL,
 						},
 						AAAA: ip,
 					})
@@ -320,7 +320,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 									Name:   qname,
 									Rrtype: dns.TypeA,
 									Class:  dns.ClassINET,
-									Ttl:    30,
+									Ttl:    DefaultServiceTTL,
 								},
 								A: ip.To4(),
 							})
@@ -336,7 +336,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 									Name:   qname,
 									Rrtype: dns.TypeAAAA,
 									Class:  dns.ClassINET,
-									Ttl:    30,
+									Ttl:    DefaultServiceTTL,
 								},
 								AAAA: ip,
 							})
@@ -361,7 +361,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeA,
 							Class:  dns.ClassINET,
-							Ttl:    30,
+							Ttl:    DefaultServiceTTL,
 						},
 						A: ip.To4(),
 					})
@@ -377,7 +377,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeAAAA,
 							Class:  dns.ClassINET,
-							Ttl:    30,
+							Ttl:    DefaultServiceTTL,
 						},
 						AAAA: ip,
 					})
@@ -425,7 +425,7 @@ func (r *Resolver) resolveSRV(parts *queryParts, qname string, qtype uint16) *Re
 			Name:   qname,
 			Rrtype: dns.TypeSRV,
 			Class:  dns.ClassINET,
-			Ttl:    30,
+			Ttl:    DefaultServiceTTL,
 		},
 		Priority: 0,
 		Weight:   1,
@@ -441,7 +441,7 @@ func (r *Resolver) resolveSRV(parts *queryParts, qname string, qtype uint16) *Re
 					Name:   target,
 					Rrtype: dns.TypeA,
 					Class:  dns.ClassINET,
-					Ttl:    30,
+					Ttl:    DefaultServiceTTL,
 				},
 				A: net.IP(ipv4),
 			})
@@ -471,7 +471,7 @@ func (r *Resolver) resolvePTR(parts *queryParts, qname string, qtype uint16) *Re
 				Name:   qname,
 				Rrtype: dns.TypePTR,
 				Class:  dns.ClassINET,
-				Ttl:    30,
+				Ttl:    DefaultServiceTTL,
 			},
 			Ptr: target,
 		})
@@ -489,7 +489,7 @@ func (r *Resolver) resolvePTR(parts *queryParts, qname string, qtype uint16) *Re
 				Name:   qname,
 				Rrtype: dns.TypePTR,
 				Class:  dns.ClassINET,
-				Ttl:    30,
+				Ttl:    DefaultServiceTTL,
 			},
 			Ptr: target,
 		})

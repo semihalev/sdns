@@ -39,8 +39,7 @@ func NewZeroAllocCache() *ZeroAllocCache {
 		bufferPool: sync.Pool{
 			New: func() interface{} {
 				// Pre-allocate 512 byte buffers (typical DNS response size)
-				buf := make([]byte, 512)
-				return &buf
+				return make([]byte, 512)
 			},
 		},
 		entryPool: sync.Pool{
@@ -72,19 +71,33 @@ func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID uint16) []byte {
 
 		atomic.AddUint64(&c.hits, 1)
 
-		// Create a copy of the wire data to avoid race conditions
-		// when multiple goroutines access the same entry
-		wire := make([]byte, len(entry.wire))
-		copy(wire, entry.wire)
-
-		// Update message ID in the copy
-		if len(wire) >= 2 {
-			// DNS message ID is first 2 bytes
-			wire[0] = byte(msgID >> 8)
-			wire[1] = byte(msgID)
+		// Get buffer from pool to avoid allocation
+		bufInterface := c.bufferPool.Get()
+		buf, ok := bufInterface.([]byte)
+		if !ok {
+			// Pool returned something else, allocate new
+			buf = make([]byte, len(entry.wire))
 		}
 
-		return wire
+		// Resize buffer if needed
+		if cap(buf) < len(entry.wire) {
+			c.bufferPool.Put(buf)
+			buf = make([]byte, len(entry.wire))
+		} else {
+			buf = buf[:len(entry.wire)]
+		}
+
+		// Copy wire data
+		copy(buf, entry.wire)
+
+		// Update message ID in the copy
+		if len(buf) >= 2 {
+			// DNS message ID is first 2 bytes
+			buf[0] = byte(msgID >> 8)
+			buf[1] = byte(msgID)
+		}
+
+		return buf
 	}
 
 	atomic.AddUint64(&c.misses, 1)
@@ -94,13 +107,12 @@ func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID uint16) []byte {
 // Store pre-computes and caches DNS response
 func (c *ZeroAllocCache) Store(qname string, qtype uint16, msg *dns.Msg) {
 	// Get buffer from pool
-	bufPtr := c.bufferPool.Get().(*[]byte)
-	buf := *bufPtr
+	buf := c.bufferPool.Get().([]byte)
 
 	// Pack message to wire format
 	wire, err := msg.PackBuffer(buf)
 	if err != nil {
-		c.bufferPool.Put(bufPtr)
+		c.bufferPool.Put(buf)
 		return
 	}
 
@@ -117,7 +129,7 @@ func (c *ZeroAllocCache) Store(qname string, qtype uint16, msg *dns.Msg) {
 		// Need bigger buffer
 		entry.wire = make([]byte, len(wire))
 		copy(entry.wire, wire)
-		c.bufferPool.Put(bufPtr)
+		c.bufferPool.Put(buf)
 	}
 
 	// Store in cache

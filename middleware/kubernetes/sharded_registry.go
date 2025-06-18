@@ -92,49 +92,53 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 		// Try to find the pod
 		for i := 0; i < 256; i++ {
 			r.podShards[i].mu.RLock()
+			var foundPod *Pod
 			for _, pod := range r.podShards[i].pods {
 				if pod.Name == podName && pod.Namespace == namespace && pod.Subdomain == serviceName {
-					r.podShards[i].mu.RUnlock()
-
-					qname := strings.Join(labels, ".") + "."
-					var answers []dns.RR
-
-					if qtype == dns.TypeA || qtype == dns.TypeANY {
-						if ipv4Str := pod.GetIPv4(); ipv4Str != "" {
-							if ip := net.ParseIP(ipv4Str); ip != nil {
-								answers = append(answers, &dns.A{
-									Hdr: dns.RR_Header{
-										Name:   qname,
-										Rrtype: dns.TypeA,
-										Class:  dns.ClassINET,
-										Ttl:    30,
-									},
-									A: ip.To4(),
-								})
-							}
-						}
-					}
-
-					if qtype == dns.TypeAAAA || qtype == dns.TypeANY {
-						if ipv6Str := pod.GetIPv6(); ipv6Str != "" {
-							if ip := net.ParseIP(ipv6Str); ip != nil {
-								answers = append(answers, &dns.AAAA{
-									Hdr: dns.RR_Header{
-										Name:   qname,
-										Rrtype: dns.TypeAAAA,
-										Class:  dns.ClassINET,
-										Ttl:    30,
-									},
-									AAAA: ip,
-								})
-							}
-						}
-					}
-
-					return answers, len(answers) > 0
+					foundPod = pod
+					break
 				}
 			}
 			r.podShards[i].mu.RUnlock()
+
+			if foundPod != nil {
+				qname := strings.Join(labels, ".") + "."
+				var answers []dns.RR
+
+				if qtype == dns.TypeA || qtype == dns.TypeANY {
+					if ipv4Str := foundPod.GetIPv4(); ipv4Str != "" {
+						if ip := net.ParseIP(ipv4Str); ip != nil {
+							answers = append(answers, &dns.A{
+								Hdr: dns.RR_Header{
+									Name:   qname,
+									Rrtype: dns.TypeA,
+									Class:  dns.ClassINET,
+									Ttl:    30,
+								},
+								A: ip.To4(),
+							})
+						}
+					}
+				}
+
+				if qtype == dns.TypeAAAA || qtype == dns.TypeANY {
+					if ipv6Str := foundPod.GetIPv6(); ipv6Str != "" {
+						if ip := net.ParseIP(ipv6Str); ip != nil {
+							answers = append(answers, &dns.AAAA{
+								Hdr: dns.RR_Header{
+									Name:   qname,
+									Rrtype: dns.TypeAAAA,
+									Class:  dns.ClassINET,
+									Ttl:    30,
+								},
+								AAAA: ip,
+							})
+						}
+					}
+				}
+
+				return answers, len(answers) > 0
+			}
 		}
 	}
 
