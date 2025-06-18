@@ -107,10 +107,16 @@ func (c *ZeroAllocCache) GetEntry(qname string, qtype uint16) []byte {
 
 // allocateEntry gets the next entry using ring buffer (LRU)
 func (c *ZeroAllocCache) allocateEntry() int32 {
-	// Simple ring buffer allocation
-	head := atomic.LoadInt32(&c.ringHead)
-	next := (head + 1) % int32(maxEntries)
-	atomic.StoreInt32(&c.ringHead, next)
+	// Atomically increment and get the next position
+	// Use CompareAndSwap loop to handle wraparound properly
+	var head int32
+	for {
+		head = atomic.LoadInt32(&c.ringHead)
+		next := (head + 1) % int32(maxEntries)
+		if atomic.CompareAndSwapInt32(&c.ringHead, head, next) {
+			break
+		}
+	}
 
 	idx := c.ring[head]
 
