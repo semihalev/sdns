@@ -13,19 +13,19 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// Failover type
+// Failover type.
 type Failover struct {
 	servers []string
 }
 
-// ResponseWriter implement of ctx.ResponseWriter
+// ResponseWriter implement of ctx.ResponseWriter.
 type ResponseWriter struct {
 	middleware.ResponseWriter
 
 	f *Failover
 }
 
-// New return failover
+// New return failover.
 func New(cfg *config.Config) *Failover {
 	fallbackservers := []string{}
 	for _, s := range cfg.FallbackServers {
@@ -43,10 +43,10 @@ func New(cfg *config.Config) *Failover {
 	return &Failover{servers: fallbackservers}
 }
 
-// Name return middleware name
+// (*Failover).Name name return middleware name.
 func (f *Failover) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*Failover).ServeDNS serveDNS implements the Handle interface.
 func (f *Failover) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w := ch.Writer
 
@@ -57,7 +57,7 @@ func (f *Failover) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Writer = w
 }
 
-// WriteMsg implements the ctx.ResponseWriter interface
+// (*ResponseWriter).WriteMsg writeMsg implements the ctx.ResponseWriter interface.
 func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	if len(m.Question) == 0 || len(w.f.servers) == 0 {
 		return w.ResponseWriter.WriteMsg(m)

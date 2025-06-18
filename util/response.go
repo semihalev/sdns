@@ -11,23 +11,23 @@ import (
 type ResponseType int
 
 const (
-	// TypeSuccess indicates a positive response with answers
+	// TypeSuccess indicates a positive response with answers.
 	TypeSuccess ResponseType = iota
-	// TypeNXDomain indicates the queried domain does not exist (NXDOMAIN)
+	// TypeNXDomain indicates the queried domain does not exist (NXDOMAIN).
 	TypeNXDomain
-	// TypeNoRecords indicates the domain exists but has no records of the requested type (NODATA)
+	// TypeNoRecords indicates the domain exists but has no records of the requested type (NODATA).
 	TypeNoRecords
-	// TypeReferral indicates a delegation to another nameserver
+	// TypeReferral indicates a delegation to another nameserver.
 	TypeReferral
-	// TypeMetaQuery indicates zone transfer or notification queries
+	// TypeMetaQuery indicates zone transfer or notification queries.
 	TypeMetaQuery
-	// TypeDynamicUpdate indicates a dynamic DNS update message
+	// TypeDynamicUpdate indicates a dynamic DNS update message.
 	TypeDynamicUpdate
-	// TypeServerFailure indicates a server error occurred
+	// TypeServerFailure indicates a server error occurred.
 	TypeServerFailure
-	// TypeNotCacheable indicates responses that should not be cached
+	// TypeNotCacheable indicates responses that should not be cached.
 	TypeNotCacheable
-	// TypeExpiredSignature indicates DNSSEC signatures have expired
+	// TypeExpiredSignature indicates DNSSEC signatures have expired.
 	TypeExpiredSignature
 )
 
@@ -103,7 +103,7 @@ func ClassifyResponse(msg *dns.Msg, now time.Time) (ResponseType, *dns.OPT) {
 	}
 }
 
-// isDelegation checks if the response is a referral to another nameserver
+// isDelegation checks if the response is a referral to another nameserver.
 func isDelegation(msg *dns.Msg) bool {
 	if len(msg.Question) == 0 || len(msg.Ns) == 0 {
 		return false
@@ -122,7 +122,7 @@ func isDelegation(msg *dns.Msg) bool {
 	return false
 }
 
-// hasSOA checks if the response contains an SOA record in the authority section
+// hasSOA checks if the response contains a SOA record in the authority section.
 func hasSOA(msg *dns.Msg) bool {
 	for _, rr := range msg.Ns {
 		if _, ok := rr.(*dns.SOA); ok {
@@ -132,7 +132,7 @@ func hasSOA(msg *dns.Msg) bool {
 	return false
 }
 
-// hasExpiredSignatures checks if any RRSIG records have expired
+// hasExpiredSignatures checks if any RRSIG records have expired.
 func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 	nowUnix := uint32(now.Unix())
 
@@ -165,7 +165,7 @@ func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 	return false
 }
 
-// shouldCache determines if a query type should be cached when empty
+// shouldCache determines if a query type should be cached when empty.
 func shouldCache(msg *dns.Msg) bool {
 	if len(msg.Question) == 0 {
 		return false

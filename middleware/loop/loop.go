@@ -9,20 +9,20 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// Loop dummy type
+// Loop dummy type.
 type Loop struct{}
 
 type ctxKey string
 
-// New return loop
+// New return loop.
 func New(cfg *config.Config) *Loop {
 	return &Loop{}
 }
 
-// Name return middleware name
+// (*Loop).Name name return middleware name.
 func (l *Loop) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*Loop).ServeDNS serveDNS implements the Handle interface.
 func (l *Loop) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	req := ch.Request
 

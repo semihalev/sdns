@@ -17,7 +17,7 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// hostCounter tracks download counts for each host in a type-safe way
+// hostCounter tracks download counts for each host in a type-safe way.
 type hostCounter struct {
 	mu     sync.RWMutex
 	counts map[string]*atomic.Int64
@@ -57,7 +57,7 @@ func (h *hostCounter) increment(host string) int64 {
 var (
 	timesSeen = newHostCounter()
 
-	// httpClient is a shared HTTP client with reasonable timeout
+	// httpClient is a shared HTTP client with reasonable timeout.
 	httpClient = &http.Client{
 		Timeout: 30 * time.Second,
 	}

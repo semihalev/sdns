@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Test_Prefetch_Stores_Response tests that prefetch actually stores responses in cache
+// Test_Prefetch_Stores_Response tests that prefetch actually stores responses in cache.
 func Test_Prefetch_Stores_Response(t *testing.T) {
 	// This test verifies the structure is correct
 	// In production, the prefetch will call dnsutil.ExchangeInternal which will

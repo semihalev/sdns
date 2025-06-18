@@ -18,7 +18,7 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// API type
+// API type.
 type API struct {
 	addr        string
 	bearerToken string
@@ -32,7 +32,7 @@ func init() {
 	_, debugpprof = os.LookupEnv("SDNS_PPROF")
 }
 
-// New return new api
+// New return new api.
 func New(cfg *config.Config) *API {
 	var bl *blocklist.BlockList
 
@@ -139,7 +139,7 @@ func (a *API) purge(ctx *Context) {
 	ctx.JSON(http.StatusOK, Json{"success": true})
 }
 
-// Run API server
+// (*API).Run run API server.
 func (a *API) Run(ctx context.Context) {
 	if a.addr == "" {
 		return

@@ -15,7 +15,7 @@ import (
 	"github.com/semihalev/sdns/middleware"
 )
 
-// Metrics type
+// Metrics type.
 type Metrics struct {
 	queries *prometheus.CounterVec
 
@@ -29,7 +29,7 @@ type Metrics struct {
 	lastCleanup          time.Time
 }
 
-// New return new metrics
+// New return new metrics.
 func New(cfg *config.Config) *Metrics {
 	m := &Metrics{
 		queries: prometheus.NewCounterVec(
@@ -59,10 +59,10 @@ func New(cfg *config.Config) *Metrics {
 	return m
 }
 
-// Name return middleware name
+// (*Metrics).Name name return middleware name.
 func (m *Metrics) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*Metrics).ServeDNS serveDNS implements the Handle interface.
 func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)
 
@@ -87,7 +87,7 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 }
 
-// recordDomainQuery records a query for a specific domain
+// recordDomainQuery records a query for a specific domain.
 func (m *Metrics) recordDomainQuery(qname string) {
 	// Filter: skip TLDs and single-label domains
 	if dns.CountLabel(qname) < 2 {
@@ -139,7 +139,7 @@ func (m *Metrics) recordDomainQuery(qname string) {
 	}
 }
 
-// maybeCleanupDomains removes domains with lowest query counts if needed
+// maybeCleanupDomains removes domains with lowest query counts if needed.
 func (m *Metrics) maybeCleanupDomains() {
 	// Prevent concurrent cleanups
 	if !m.domainCleanupMu.TryLock() {
@@ -196,7 +196,7 @@ func (m *Metrics) maybeCleanupDomains() {
 
 var labelsPool sync.Pool
 
-// AcquireLabels returns a label from pool
+// AcquireLabels returns a label from pool.
 func AcquireLabels() prometheus.Labels {
 	x := labelsPool.Get()
 	if x == nil {
@@ -206,7 +206,7 @@ func AcquireLabels() prometheus.Labels {
 	return x.(prometheus.Labels)
 }
 
-// ReleaseLabels returns labels to pool
+// ReleaseLabels returns labels to pool.
 func ReleaseLabels(labels prometheus.Labels) {
 	labelsPool.Put(labels)
 }

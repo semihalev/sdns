@@ -22,7 +22,7 @@ import (
 )
 
 // HostsDB is an in-memory database for hosts entries
-// Unlike traditional implementations, we support wildcards and aliases
+// Unlike traditional implementations, we support wildcards and aliases.
 type HostsDB struct {
 	// Read-write lock for concurrent access
 	mu sync.RWMutex
@@ -45,7 +45,7 @@ type HostsDB struct {
 	}
 }
 
-// HostEntry represents a single host with multiple IPs and metadata
+// HostEntry represents a single host with multiple IPs and metadata.
 type HostEntry struct {
 	Name      string
 	IPv4      []net.IP
@@ -56,7 +56,7 @@ type HostEntry struct {
 	Timestamp time.Time
 }
 
-// WildcardEntry represents a wildcard pattern
+// WildcardEntry represents a wildcard pattern.
 type WildcardEntry struct {
 	Pattern   string
 	IPv4      []net.IP
@@ -64,7 +64,7 @@ type WildcardEntry struct {
 	Timestamp time.Time
 }
 
-// Hostsfile middleware provides local name resolution
+// Hostsfile middleware provides local name resolution.
 type Hostsfile struct {
 	path       string
 	db         atomic.Value // *HostsDB
@@ -73,7 +73,7 @@ type Hostsfile struct {
 	ttl        uint32
 }
 
-// New creates a new Hostsfile middleware
+// New creates a new Hostsfile middleware.
 func New(cfg *config.Config) *Hostsfile {
 	if cfg.HostsFile == "" {
 		return nil
@@ -98,12 +98,12 @@ func New(cfg *config.Config) *Hostsfile {
 	return h
 }
 
-// Name returns the middleware name
+// (*Hostsfile).Name name returns the middleware name.
 func (h *Hostsfile) Name() string {
 	return name
 }
 
-// ServeDNS handles DNS queries using the hosts database
+// (*Hostsfile).ServeDNS serveDNS handles DNS queries using the hosts database.
 func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// Safety check for nil receiver
 	if h == nil {
@@ -163,7 +163,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Cancel()
 }
 
-// lookupA finds A records for a hostname
+// lookupA finds A records for a hostname.
 func (h *Hostsfile) lookupA(db *HostsDB, name string) ([]dns.RR, bool) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -209,7 +209,7 @@ func (h *Hostsfile) lookupA(db *HostsDB, name string) ([]dns.RR, bool) {
 	return nil, false
 }
 
-// lookupAAAA finds AAAA records for a hostname
+// lookupAAAA finds AAAA records for a hostname.
 func (h *Hostsfile) lookupAAAA(db *HostsDB, name string) ([]dns.RR, bool) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -255,7 +255,7 @@ func (h *Hostsfile) lookupAAAA(db *HostsDB, name string) ([]dns.RR, bool) {
 	return nil, false
 }
 
-// lookupPTR finds PTR records for an IP address
+// lookupPTR finds PTR records for an IP address.
 func (h *Hostsfile) lookupPTR(db *HostsDB, name string) ([]dns.RR, bool) {
 	ip := util.IPFromReverseName(name)
 	if ip == "" {
@@ -284,7 +284,7 @@ func (h *Hostsfile) lookupPTR(db *HostsDB, name string) ([]dns.RR, bool) {
 	return nil, false
 }
 
-// lookupCNAME finds CNAME records (aliases)
+// lookupCNAME finds CNAME records (aliases).
 func (h *Hostsfile) lookupCNAME(db *HostsDB, name string) ([]dns.RR, bool) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -311,7 +311,7 @@ func (h *Hostsfile) lookupCNAME(db *HostsDB, name string) ([]dns.RR, bool) {
 	return nil, false
 }
 
-// hostExists checks if a hostname exists in the database
+// hostExists checks if a hostname exists in the database.
 func (h *Hostsfile) hostExists(db *HostsDB, name string) bool {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -342,7 +342,7 @@ func (h *Hostsfile) hostExists(db *HostsDB, name string) bool {
 	return false
 }
 
-// load reads and parses the hosts file
+// load reads and parses the hosts file.
 func (h *Hostsfile) load() error {
 	file, err := os.Open(h.path)
 	if err != nil {
@@ -462,7 +462,7 @@ func (h *Hostsfile) load() error {
 	return nil
 }
 
-// setupWatcher creates a file watcher for auto-reload
+// setupWatcher creates a file watcher for auto-reload.
 func (h *Hostsfile) setupWatcher() error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -483,7 +483,7 @@ func (h *Hostsfile) setupWatcher() error {
 	return nil
 }
 
-// watchLoop handles file change events
+// watchLoop handles file change events.
 func (h *Hostsfile) watchLoop() {
 	defer h.watcher.Close()
 
@@ -522,12 +522,12 @@ func (h *Hostsfile) watchLoop() {
 	}
 }
 
-// getDB returns the current hosts database
+// getDB returns the current hosts database.
 func (h *Hostsfile) getDB() *HostsDB {
 	return h.db.Load().(*HostsDB)
 }
 
-// Stats returns usage statistics
+// (*Hostsfile).Stats stats returns usage statistics.
 func (h *Hostsfile) Stats() map[string]any {
 	db := h.getDB()
 
@@ -540,7 +540,7 @@ func (h *Hostsfile) Stats() map[string]any {
 	}
 }
 
-// parseLine parses a single hosts file line
+// parseLine parses a single hosts file line.
 func parseLine(line string) (net.IP, []string, string) {
 	// Remove comments
 	comment := ""
@@ -569,7 +569,7 @@ func parseLine(line string) (net.IP, []string, string) {
 	return ip, fields[1:], comment
 }
 
-// matchWildcard checks if a name matches a wildcard pattern
+// matchWildcard checks if a name matches a wildcard pattern.
 func matchWildcard(pattern, name string) bool {
 	// Simple wildcard matching (e.g., *.example.com)
 	if strings.HasPrefix(pattern, "*.") {

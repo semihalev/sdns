@@ -10,14 +10,14 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// PrefetchRequest represents a DNS query to be prefetched
+// PrefetchRequest represents a DNS query to be prefetched.
 type PrefetchRequest struct {
 	Request *dns.Msg
 	Key     uint64
 	Cache   *Cache // Reference to the cache to store prefetched results
 }
 
-// PrefetchQueue manages prefetch requests with worker pool
+// PrefetchQueue manages prefetch requests with worker pool.
 type PrefetchQueue struct {
 	items   chan PrefetchRequest
 	workers int
@@ -27,7 +27,7 @@ type PrefetchQueue struct {
 	metrics *CacheMetrics
 }
 
-// NewPrefetchQueue creates a new prefetch queue
+// NewPrefetchQueue creates a new prefetch queue.
 func NewPrefetchQueue(workers, queueSize int, metrics *CacheMetrics) *PrefetchQueue {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -48,7 +48,7 @@ func NewPrefetchQueue(workers, queueSize int, metrics *CacheMetrics) *PrefetchQu
 	return pq
 }
 
-// Add queues a prefetch request
+// (*PrefetchQueue).Add add queues a prefetch request.
 func (pq *PrefetchQueue) Add(req PrefetchRequest) bool {
 	select {
 	case pq.items <- req:
@@ -60,14 +60,14 @@ func (pq *PrefetchQueue) Add(req PrefetchRequest) bool {
 	}
 }
 
-// Stop gracefully shuts down the prefetch queue
+// (*PrefetchQueue).Stop stop gracefully shuts down the prefetch queue.
 func (pq *PrefetchQueue) Stop() {
 	pq.cancel()
 	close(pq.items)
 	pq.wg.Wait()
 }
 
-// worker processes prefetch requests
+// worker processes prefetch requests.
 func (pq *PrefetchQueue) worker() {
 	defer pq.wg.Done()
 
@@ -84,7 +84,7 @@ func (pq *PrefetchQueue) worker() {
 	}
 }
 
-// processPrefetch executes a prefetch request
+// processPrefetch executes a prefetch request.
 func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	ctx, cancel := context.WithTimeout(pq.ctx, 5*time.Second)
 	defer cancel()
@@ -120,7 +120,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	zlog.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]))
 }
 
-// formatQuestion formats a DNS question for logging
+// formatQuestion formats a DNS question for logging.
 func formatQuestion(q dns.Question) string {
 	return q.Name + " " + dns.TypeToString[q.Qtype] + " " + dns.ClassToString[q.Qclass]
 }

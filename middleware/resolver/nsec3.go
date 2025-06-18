@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	// specialCharsWhiteLies contains characters commonly used in NSEC White Lies implementations
+	// specialCharsWhiteLies contains characters commonly used in NSEC White Lies implementations.
 	specialCharsWhiteLies = "~!@#$%^&*()_+-=[]{}|;:,<>?"
 )
 
@@ -174,7 +174,7 @@ func verifyDelegation(delegation string, nsec []dns.RR) error {
 
 // NSEC (non-hashed) verification functions
 
-// verifyNameErrorNSEC verifies NXDOMAIN using NSEC records (RFC 4035 Section 3.1.3.2)
+// verifyNameErrorNSEC verifies NXDOMAIN using NSEC records (RFC 4035 Section 3.1.3.2).
 func verifyNameErrorNSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 	if len(nsecSet) == 0 {
 		return errNSECMissingCoverage
@@ -303,7 +303,7 @@ checkWildcards:
 	return errNSECMissingCoverage
 }
 
-// verifyNODATANSEC verifies NODATA using NSEC records (RFC 4035 Section 3.1.3.1)
+// verifyNODATANSEC verifies NODATA using NSEC records (RFC 4035 Section 3.1.3.1).
 func verifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 	if len(nsecSet) == 0 {
 		return errNSECMissingCoverage
@@ -317,7 +317,7 @@ func verifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 		qname = dname
 	}
 
-	// For NODATA, we need an NSEC record for the exact name
+	// For NODATA, we need a NSEC record for the exact name
 	// showing that the queried type doesn't exist
 	for _, rr := range nsecSet {
 		nsec := rr.(*dns.NSEC)
@@ -349,9 +349,9 @@ func verifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 	return errNSECMissingCoverage
 }
 
-// nsecCovers checks if an NSEC record covers a given name
+// nsecCovers checks if a NSEC record covers a given name
 // Uses canonical DNS name ordering (RFC 4034 Section 6.1)
-// Performance note: owner and next are assumed to be already canonical (from DNS wire format)
+// Performance note: owner and next are assumed to be already canonical (from DNS wire format).
 func nsecCovers(owner, next, name string) bool {
 	// Fast path: if name is already lowercase (common case), avoid canonicalization
 	needsCanon := false

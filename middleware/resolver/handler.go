@@ -14,13 +14,13 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// DNSHandler type
+// DNSHandler type.
 type DNSHandler struct {
 	resolver *Resolver
 	cfg      *config.Config
 }
 
-// contextKey is a type-safe key for context values (Go 1.21+ pattern)
+// contextKey is a type-safe key for context values (Go 1.21+ pattern).
 type contextKey int
 
 const (
@@ -29,13 +29,13 @@ const (
 	contextKeyNSList               // nameserver list prefix
 )
 
-// debugns is initialized once at startup
+// debugns is initialized once at startup.
 var debugns = func() bool {
 	_, ok := os.LookupEnv("SDNS_DEBUGNS")
 	return ok
 }()
 
-// New returns a new Handler
+// New returns a new Handler.
 func New(cfg *config.Config) *DNSHandler {
 	if cfg.Maxdepth == 0 {
 		cfg.Maxdepth = 30
@@ -51,10 +51,10 @@ func New(cfg *config.Config) *DNSHandler {
 	}
 }
 
-// Name return middleware name
+// (*DNSHandler).Name name return middleware name.
 func (h *DNSHandler) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*DNSHandler).ServeDNS serveDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// Skip resolver if forwarders are configured
 	if len(h.cfg.ForwarderServers) > 0 {
@@ -217,7 +217,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// purge removes nameserver cache entries for the given domain name
+// purge removes nameserver cache entries for the given domain name.
 func (h *DNSHandler) purge(qname string) {
 	nsQuestion := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 
@@ -226,7 +226,7 @@ func (h *DNSHandler) purge(qname string) {
 	h.resolver.ncache.Remove(cache.Key(nsQuestion, true))
 }
 
-// Stop gracefully shuts down the resolver
+// (*DNSHandler).Stop stop gracefully shuts down the resolver.
 func (h *DNSHandler) Stop() {
 	if h.resolver.tcpPool != nil {
 		h.resolver.tcpPool.Close()

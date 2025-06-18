@@ -6,14 +6,14 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Question struct
+// Question struct.
 type Question struct {
 	Name   string `json:"name"`
 	Qtype  uint16 `json:"type"`
 	Qclass uint16 `json:"-"`
 }
 
-// RR struct
+// RR struct.
 type RR struct {
 	Name string `json:"name"`
 	Type uint16 `json:"type"`
@@ -21,7 +21,7 @@ type RR struct {
 	Data string `json:"data"`
 }
 
-// Msg struct
+// Msg struct.
 type Msg struct {
 	Status    int
 	TC        bool
@@ -34,7 +34,7 @@ type Msg struct {
 	Authority []RR `json:",omitempty"`
 }
 
-// NewMsg function
+// NewMsg function.
 func NewMsg(m *dns.Msg) *Msg {
 	if m == nil {
 		return nil

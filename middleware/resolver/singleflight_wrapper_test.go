@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestSingleflightWrapperCleanup verifies the cleanup mechanism works
+// TestSingleflightWrapperCleanup verifies the cleanup mechanism works.
 func TestSingleflightWrapperCleanup(t *testing.T) {
 	wrapper := NewSingleflightWrapper()
 
@@ -39,7 +39,7 @@ func TestSingleflightWrapperCleanup(t *testing.T) {
 	}
 }
 
-// TestTimedDoChan verifies the TimedDoChan method works correctly
+// TestTimedDoChan verifies the TimedDoChan method works correctly.
 func TestTimedDoChan(t *testing.T) {
 	wrapper := NewSingleflightWrapper()
 
@@ -125,7 +125,7 @@ func TestTimedDoChan(t *testing.T) {
 	})
 }
 
-// TestCleanupLoop verifies that stuck queries are cleaned up periodically
+// TestCleanupLoop verifies that stuck queries are cleaned up periodically.
 func TestCleanupLoop(t *testing.T) {
 	// This test would normally take 30+ seconds due to the cleanup ticker
 	// For unit tests, we'll just verify the mechanism works by calling it directly

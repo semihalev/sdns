@@ -27,6 +27,7 @@ var middlewareList = []string{
 	"hostsfile",
 	"blocklist",
 	"as112",
+	"kubernetes",
 	"cache",
 	"failover",
 	"resolver",

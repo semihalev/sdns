@@ -6,7 +6,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Writer type
+// Writer type.
 type Writer struct {
 	msg *dns.Msg
 
@@ -20,7 +20,7 @@ type Writer struct {
 	internal bool
 }
 
-// NewWriter return writer
+// NewWriter return writer.
 func NewWriter(proto, addr string) *Writer {
 	w := &Writer{}
 
@@ -43,7 +43,7 @@ func NewWriter(proto, addr string) *Writer {
 	return w
 }
 
-// Rcode return message response code
+// (*Writer).Rcode rcode return message response code.
 func (w *Writer) Rcode() int {
 	if w.msg == nil {
 		return dns.RcodeServerFailure
@@ -52,12 +52,12 @@ func (w *Writer) Rcode() int {
 	return w.msg.Rcode
 }
 
-// Msg return current dns message
+// (*Writer).Msg msg return current dns message.
 func (w *Writer) Msg() *dns.Msg {
 	return w.msg
 }
 
-// Write func
+// (*Writer).Write write func.
 func (w *Writer) Write(b []byte) (int, error) {
 	w.msg = new(dns.Msg)
 	err := w.msg.Unpack(b)
@@ -67,43 +67,43 @@ func (w *Writer) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// WriteMsg func
+// (*Writer).WriteMsg writeMsg func.
 func (w *Writer) WriteMsg(msg *dns.Msg) error {
 	w.msg = msg
 	return nil
 }
 
-// Written func
+// (*Writer).Written written func.
 func (w *Writer) Written() bool {
 	return w.msg != nil
 }
 
-// RemoteIP func
+// (*Writer).RemoteIP remoteIP func.
 func (w *Writer) RemoteIP() net.IP { return w.remoteip }
 
-// Proto func
+// (*Writer).Proto proto func.
 func (w *Writer) Proto() string { return w.proto }
 
-// Reset func
+// (*Writer).Reset reset func.
 func (w *Writer) Reset(rw dns.ResponseWriter) {}
 
-// Close func
+// (*Writer).Close close func.
 func (w *Writer) Close() error { return nil }
 
-// Hijack func
+// (*Writer).Hijack hijack func.
 func (w *Writer) Hijack() {}
 
-// LocalAddr func
+// (*Writer).LocalAddr localAddr func.
 func (w *Writer) LocalAddr() net.Addr { return w.localAddr }
 
-// RemoteAddr func
+// (*Writer).RemoteAddr remoteAddr func.
 func (w *Writer) RemoteAddr() net.Addr { return w.remoteAddr }
 
-// TsigStatus func
+// (*Writer).TsigStatus tsigStatus func.
 func (w *Writer) TsigStatus() error { return nil }
 
-// TsigTimersOnly func
+// (*Writer).TsigTimersOnly tsigTimersOnly func.
 func (w *Writer) TsigTimersOnly(ok bool) {}
 
-// Internal func
+// (*Writer).Internal internal func.
 func (w *Writer) Internal() bool { return w.internal }

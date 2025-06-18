@@ -6,14 +6,14 @@ import (
 	"github.com/semihalev/sdns/cache"
 )
 
-// PositiveCache handles successful DNS responses
+// PositiveCache handles successful DNS responses.
 type PositiveCache struct {
 	cache   *cache.Cache
 	ttl     TTLManager
 	metrics *CacheMetrics
 }
 
-// NewPositiveCache creates a new positive cache
+// NewPositiveCache creates a new positive cache.
 func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetrics) *PositiveCache {
 	return &PositiveCache{
 		cache:   cache.New(size),
@@ -22,7 +22,7 @@ func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetr
 	}
 }
 
-// Get retrieves an entry from the positive cache
+// (*PositiveCache).Get get retrieves an entry from the positive cache.
 func (pc *PositiveCache) Get(key uint64) (*CacheEntry, bool) {
 	v, ok := pc.cache.Get(key)
 	if !ok {
@@ -41,17 +41,17 @@ func (pc *PositiveCache) Get(key uint64) (*CacheEntry, bool) {
 	return entry, true
 }
 
-// Set stores an entry in the positive cache
+// (*PositiveCache).Set set stores an entry in the positive cache.
 func (pc *PositiveCache) Set(key uint64, entry *CacheEntry) {
 	pc.cache.Add(key, entry)
 }
 
-// Remove deletes an entry from the positive cache
+// (*PositiveCache).Remove remove deletes an entry from the positive cache.
 func (pc *PositiveCache) Remove(key uint64) {
 	pc.cache.Remove(key)
 }
 
-// Len returns the number of entries in the cache
+// (*PositiveCache).Len len returns the number of entries in the cache.
 func (pc *PositiveCache) Len() int {
 	return pc.cache.Len()
 }

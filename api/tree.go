@@ -15,7 +15,7 @@ const (
 	controlNext  controlFlow = 2
 )
 
-// node types
+// node types.
 const (
 	separator = '/'
 	parameter = ':'
@@ -32,7 +32,7 @@ type Tree struct {
 	canBeStatic [2048]bool
 }
 
-// Add adds a new element to the tree.
+// (*Tree).Add add adds a new element to the tree.
 func (tree *Tree) Add(path string, data dataType) {
 	if !strings.Contains(path, ":") && !strings.Contains(path, "*") {
 		if tree.static == nil {
@@ -124,7 +124,7 @@ func (tree *Tree) Add(path string, data dataType) {
 	}
 }
 
-// Lookup finds the data for the request path and assigns it to ctx.Handler, if available.
+// (*Tree).Lookup lookup finds the data for the request path and assigns it to ctx.Handler, if available.
 func (tree *Tree) Lookup(ctx *Context) {
 	path := ctx.Request.URL.Path
 

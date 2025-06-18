@@ -14,7 +14,7 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// MessageType represents dnstap message types
+// MessageType represents dnstap message types.
 type MessageType uint32
 
 const (
@@ -22,7 +22,7 @@ const (
 	MessageTypeResponse MessageType = 2
 )
 
-// DnstapMessage represents a simplified dnstap message
+// DnstapMessage represents a simplified dnstap message.
 type DnstapMessage struct {
 	Type         MessageType
 	Identity     []byte
@@ -36,7 +36,7 @@ type DnstapMessage struct {
 	ResponseMsg  []byte
 }
 
-// Dnstap middleware for binary DNS logging
+// Dnstap middleware for binary DNS logging.
 type Dnstap struct {
 	identity      []byte
 	version       []byte
@@ -52,7 +52,7 @@ type Dnstap struct {
 	messageQueue   chan *DnstapMessage
 }
 
-// New creates a new dnstap middleware
+// New creates a new dnstap middleware.
 func New(cfg *config.Config) middleware.Handler {
 	flushInterval := time.Duration(cfg.DnstapFlushInterval) * time.Second
 	if flushInterval <= 0 {
@@ -89,12 +89,12 @@ func New(cfg *config.Config) middleware.Handler {
 	return d
 }
 
-// Name returns the name of the middleware
+// (*Dnstap).Name name returns the name of the middleware.
 func (d *Dnstap) Name() string {
 	return "dnstap"
 }
 
-// ServeDNS logs DNS messages in dnstap format
+// (*Dnstap).ServeDNS serveDNS logs DNS messages in dnstap format.
 func (d *Dnstap) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
@@ -328,7 +328,7 @@ func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Ms
 	}
 }
 
-// Close stops the dnstap middleware
+// (*Dnstap).Close close stops the dnstap middleware.
 func (d *Dnstap) Close() error {
 	close(d.done)
 	close(d.messageQueue)

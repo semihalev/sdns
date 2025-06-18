@@ -24,7 +24,7 @@ const (
 	tlsMinVersion    = tls.VersionTLS13 // DoQ requires TLS 1.3+
 )
 
-// Server implements DNS-over-QUIC server
+// Server implements DNS-over-QUIC server.
 type Server struct {
 	Addr    string
 	Handler dns.Handler
@@ -32,7 +32,7 @@ type Server struct {
 	ln *quic.Listener
 }
 
-// Message pool for better memory management
+// Message pool for better memory management.
 var msgPool = sync.Pool{
 	New: func() any {
 		return new(dns.Msg)

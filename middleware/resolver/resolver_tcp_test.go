@@ -196,7 +196,7 @@ func TestResolverTCPPoolWithEDNSKeepalive(t *testing.T) {
 	assert.Equal(t, 1, active)
 }
 
-// testDNSServer is a mock DNS server for testing
+// testDNSServer is a mock DNS server for testing.
 type testDNSServer struct {
 	mu               sync.Mutex
 	responses        map[string]*dns.Msg

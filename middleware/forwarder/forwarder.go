@@ -17,13 +17,13 @@ type server struct {
 	Proto string
 }
 
-// Forwarder type
+// Forwarder type.
 type Forwarder struct {
 	servers []*server
 	dnssec  bool
 }
 
-// New return forwarder
+// New return forwarder.
 func New(cfg *config.Config) *Forwarder {
 	forwarderservers := []*server{}
 	for _, s := range cfg.ForwarderServers {
@@ -50,10 +50,10 @@ func New(cfg *config.Config) *Forwarder {
 	return &Forwarder{servers: forwarderservers, dnssec: cfg.DNSSEC == "on"}
 }
 
-// Name return middleware name
+// (*Forwarder).Name name return middleware name.
 func (f *Forwarder) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*Forwarder).ServeDNS serveDNS implements the Handle interface.
 func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 

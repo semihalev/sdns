@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Test_Cache_Stats tests the Stats method
+// Test_Cache_Stats tests the Stats method.
 func Test_Cache_Stats(t *testing.T) {
 	cfg := &config.Config{
 		CacheSize: 1024,
@@ -67,7 +67,7 @@ func Test_Cache_Stats(t *testing.T) {
 	assert.Equal(t, 1, stats["positive_size"])
 }
 
-// Test_Cache_Metrics_All tests all metric methods
+// Test_Cache_Metrics_All tests all metric methods.
 func Test_Cache_Metrics_All(t *testing.T) {
 	m := &CacheMetrics{}
 
@@ -88,7 +88,7 @@ func Test_Cache_Metrics_All(t *testing.T) {
 	assert.Equal(t, int64(1), prefetches)
 }
 
-// Test_Cache_Len tests Len methods
+// Test_Cache_Len tests Len methods.
 func Test_Cache_Len(t *testing.T) {
 	metrics := &CacheMetrics{}
 
@@ -112,7 +112,7 @@ func Test_Cache_Len(t *testing.T) {
 	assert.Equal(t, 1, nc.Len())
 }
 
-// Test_Cache_InvalidQueries tests handling of invalid queries
+// Test_Cache_InvalidQueries tests handling of invalid queries.
 func Test_Cache_InvalidQueries(t *testing.T) {
 	cfg := &config.Config{CacheSize: 1024, Expire: 600}
 	c := New(cfg)
@@ -147,7 +147,7 @@ func Test_Cache_InvalidQueries(t *testing.T) {
 	assert.False(t, mw2.Written())
 }
 
-// Test_TTL_Manager tests TTL calculation edge cases
+// Test_TTL_Manager tests TTL calculation edge cases.
 func Test_TTL_Manager(t *testing.T) {
 	ttl := NewTTLManager(time.Minute, time.Hour)
 
@@ -161,7 +161,7 @@ func Test_TTL_Manager(t *testing.T) {
 	assert.Equal(t, 30*time.Minute, ttl.Calculate(30*time.Minute))
 }
 
-// Test_Cache_Entry_Edge_Cases tests CacheEntry edge cases
+// Test_Cache_Entry_Edge_Cases tests CacheEntry edge cases.
 func Test_Cache_Entry_Edge_Cases(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
@@ -183,7 +183,7 @@ func Test_Cache_Entry_Edge_Cases(t *testing.T) {
 	assert.False(t, entry2.ShouldPrefetch(50))
 }
 
-// Test_Prefetch_Queue_Full tests prefetch queue when full
+// Test_Prefetch_Queue_Full tests prefetch queue when full.
 func Test_Prefetch_Queue_Full(t *testing.T) {
 	metrics := &CacheMetrics{}
 	// Create a queue with size 1 but 0 workers to prevent processing
@@ -207,7 +207,7 @@ func Test_Prefetch_Queue_Full(t *testing.T) {
 	assert.False(t, added)
 }
 
-// Test_Release_Msg_Large tests ReleaseMsg with large message
+// Test_Release_Msg_Large tests ReleaseMsg with large message.
 func Test_Release_Msg_Large(t *testing.T) {
 	m := AcquireMsg()
 
@@ -223,7 +223,7 @@ func Test_Release_Msg_Large(t *testing.T) {
 	ReleaseMsg(m)
 }
 
-// Test_Handle_Special_Query_DebugNS tests debug query handling
+// Test_Handle_Special_Query_DebugNS tests debug query handling.
 func Test_Handle_Special_Query_DebugNS(t *testing.T) {
 	// Temporarily enable debugns
 	oldDebugns := debugns
@@ -254,7 +254,7 @@ func Test_Handle_Special_Query_DebugNS(t *testing.T) {
 	assert.True(t, called)
 }
 
-// Test_WriteMsg_Truncated tests WriteMsg with truncated response
+// Test_WriteMsg_Truncated tests WriteMsg with truncated response.
 func Test_WriteMsg_Truncated(t *testing.T) {
 	cfg := &config.Config{CacheSize: 1024, Expire: 600}
 	c := New(cfg)
@@ -282,7 +282,7 @@ func Test_WriteMsg_Truncated(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// Test_Negative_Cache_Eviction tests negative cache with eviction
+// Test_Negative_Cache_Eviction tests negative cache with eviction.
 func Test_Negative_Cache_Eviction(t *testing.T) {
 	metrics := &CacheMetrics{}
 	nc := NewNegativeCache(10, time.Minute, time.Hour, metrics)
@@ -300,7 +300,7 @@ func Test_Negative_Cache_Eviction(t *testing.T) {
 	assert.LessOrEqual(t, nc.Len(), 10)
 }
 
-// Test_Config_Edge_Cases tests configuration edge cases
+// Test_Config_Edge_Cases tests configuration edge cases.
 func Test_Config_Edge_Cases(t *testing.T) {
 	// Test with very small cache size - should be adjusted
 	cfg := &config.Config{

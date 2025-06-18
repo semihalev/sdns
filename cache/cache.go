@@ -5,9 +5,9 @@ import (
 )
 
 var (
-	// ErrCacheNotFound error
+	// ErrCacheNotFound error.
 	ErrCacheNotFound = errors.New("cache not found")
-	// ErrCacheExpired error
+	// ErrCacheExpired error.
 	ErrCacheExpired = errors.New("cache expired")
 )
 
@@ -44,12 +44,12 @@ func New(size int) *Cache {
 	}
 }
 
-// Get looks up element index under key.
+// (*Cache).Get get looks up element index under key.
 func (c *Cache) Get(key uint64) (any, bool) {
 	return c.data.Get(key)
 }
 
-// Add adds a new element to the cache. If the element already exists it is overwritten.
+// (*Cache).Add add adds a new element to the cache. If the element already exists it is overwritten.
 func (c *Cache) Add(key uint64, el any) {
 	// Set the value first
 	c.data.Set(key, el)
@@ -62,12 +62,12 @@ func (c *Cache) Add(key uint64, el any) {
 	}
 }
 
-// Remove removes the element indexed with key.
+// (*Cache).Remove remove removes the element indexed with key.
 func (c *Cache) Remove(key uint64) {
 	c.data.Del(key)
 }
 
-// Len returns the number of elements in the cache.
+// (*Cache).Len len returns the number of elements in the cache.
 func (c *Cache) Len() int {
 	return int(c.data.Len())
 }
@@ -114,7 +114,7 @@ func (c *Cache) evict() {
 }
 
 // evictSimple uses simple iteration for small caches
-// Returns the number of entries actually evicted
+// Returns the number of entries actually evicted.
 func (c *Cache) evictSimple(targetEvictions int) int {
 	evictBuf := make([]uint64, 0, targetEvictions)
 	collected := 0
@@ -140,7 +140,7 @@ func (c *Cache) evictSimple(targetEvictions int) int {
 }
 
 // evictRandomSample efficiently evicts a random sample of entries
-// Returns the number of entries actually evicted
+// Returns the number of entries actually evicted.
 func (c *Cache) evictRandomSample(targetEvictions int) int {
 	// Get a random sample of keys to evict
 	keys := c.data.RandomSample(targetEvictions)

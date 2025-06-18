@@ -12,18 +12,18 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// Recovery dummy type
+// Recovery dummy type.
 type Recovery struct{}
 
-// New return recovery
+// New return recovery.
 func New(cfg *config.Config) *Recovery {
 	return &Recovery{}
 }
 
-// Name return middleware name
+// (*Recovery).Name name return middleware name.
 func (r *Recovery) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*Recovery).ServeDNS serveDNS implements the Handle interface.
 func (r *Recovery) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() {
 		if r := recover(); r != nil {

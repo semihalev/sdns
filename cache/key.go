@@ -8,12 +8,12 @@ import (
 	"github.com/miekg/dns"
 )
 
-// keyBuffer holds a reusable buffer for key generation
+// keyBuffer holds a reusable buffer for key generation.
 type keyBuffer struct {
 	buf [256]byte // Stack-allocated array to avoid heap allocations
 }
 
-// Pool for key buffers
+// Pool for key buffers.
 var keyBufferPool = sync.Pool{
 	New: func() any {
 		return new(keyBuffer)

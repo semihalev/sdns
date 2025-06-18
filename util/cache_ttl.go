@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	// MinCacheTTL is the minimum time to cache any response
+	// MinCacheTTL is the minimum time to cache any response.
 	MinCacheTTL = 5 * time.Second
-	// MaxCacheTTL is the maximum time to cache any response
+	// MaxCacheTTL is the maximum time to cache any response.
 	MaxCacheTTL = 24 * time.Hour
 )
 
@@ -95,7 +95,7 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	return minTTL
 }
 
-// hasRecords checks if the message contains any cacheable records
+// hasRecords checks if the message contains any cacheable records.
 func hasRecords(msg *dns.Msg) bool {
 	// Check if we have any records besides OPT
 	totalRecords := len(msg.Answer) + len(msg.Ns)
@@ -111,12 +111,12 @@ func hasRecords(msg *dns.Msg) bool {
 	return totalRecords+extraRecords > 0
 }
 
-// getTTL extracts TTL from a resource record as a duration
+// getTTL extracts TTL from a resource record as a duration.
 func getTTL(rr dns.RR) time.Duration {
 	return time.Duration(rr.Header().Ttl) * time.Second
 }
 
-// getRRSIGTTL calculates the effective TTL for an RRSIG record based on its expiration time.
+// getRRSIGTTL calculates the effective TTL for a RRSIG record based on its expiration time.
 // The cache TTL should not exceed the time until the signature expires.
 func getRRSIGTTL(sig *dns.RRSIG, now time.Time) time.Duration {
 	// Get the regular TTL from the record

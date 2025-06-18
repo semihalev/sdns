@@ -18,13 +18,13 @@ const (
 	headerSize = 12
 )
 
-// A Conn represents a connection to a DNS server.
+// Conn A Conn represents a connection to a DNS server.
 type Conn struct {
 	net.Conn        // a net.Conn holding the connection
 	UDPSize  uint16 // minimum receive buffer for UDP messages
 }
 
-// Exchange performs a synchronous query
+// (*Conn).Exchange exchange performs a synchronous query.
 func (co *Conn) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
 
 	opt := m.IsEdns0()
@@ -53,7 +53,7 @@ func (co *Conn) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) 
 	return r, rtt, err
 }
 
-// ReadMsg reads a message from the connection co.
+// (*Conn).ReadMsg readMsg reads a message from the connection co.
 // If the received message contains a TSIG record the transaction signature
 // is verified. This method always tries to return the message, however if an
 // error is returned there are no guarantees that the returned message is a
@@ -96,7 +96,7 @@ func (co *Conn) ReadMsg() (*dns.Msg, error) {
 	return m, err
 }
 
-// Read implements the net.Conn read method.
+// (*Conn).Read read implements the net.Conn read method.
 func (co *Conn) Read(p []byte) (n int, err error) {
 	if co.Conn == nil {
 		return 0, dns.ErrConnEmpty
@@ -118,7 +118,7 @@ func (co *Conn) Read(p []byte) (n int, err error) {
 	return io.ReadFull(co.Conn, p[:length])
 }
 
-// WriteMsg sends a message through the connection co.
+// (*Conn).WriteMsg writeMsg sends a message through the connection co.
 // If the message m contains a TSIG record the transaction
 // signature is calculated.
 func (co *Conn) WriteMsg(m *dns.Msg) (err error) {
@@ -135,7 +135,7 @@ func (co *Conn) WriteMsg(m *dns.Msg) (err error) {
 	return err
 }
 
-// Write implements the net.Conn Write method.
+// (*Conn).Write write implements the net.Conn Write method.
 func (co *Conn) Write(p []byte) (int, error) {
 	if len(p) > dns.MaxMsgSize {
 		return 0, errors.New("message too large")
@@ -152,7 +152,7 @@ func (co *Conn) Write(p []byte) (int, error) {
 	return int(n), err
 }
 
-// Size-bucketed buffer pools for efficient memory usage
+// Size-bucketed buffer pools for efficient memory usage.
 var bufferPools = [4]sync.Pool{
 	{New: func() any { b := make([]byte, 512); return &b }},   // 0-512 bytes (most DNS over UDP)
 	{New: func() any { b := make([]byte, 1232); return &b }},  // 513-1232 bytes (EDNS0 UDP)
@@ -160,7 +160,7 @@ var bufferPools = [4]sync.Pool{
 	{New: func() any { b := make([]byte, 65535); return &b }}, // 4097-65535 bytes (max DNS)
 }
 
-// AcquireBuf returns a buffer from the appropriate pool
+// AcquireBuf returns a buffer from the appropriate pool.
 func AcquireBuf(size uint16) []byte {
 	var poolIdx int
 	switch {
@@ -179,7 +179,7 @@ func AcquireBuf(size uint16) []byte {
 	return buf[:size]
 }
 
-// ReleaseBuf returns buf to the appropriate pool
+// ReleaseBuf returns buf to the appropriate pool.
 func ReleaseBuf(buf []byte) {
 	c := cap(buf)
 	var poolIdx int

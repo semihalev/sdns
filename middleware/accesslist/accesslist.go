@@ -10,12 +10,12 @@ import (
 	"github.com/yl2chen/cidranger"
 )
 
-// AccessList type
+// AccessList type.
 type AccessList struct {
 	ranger cidranger.Ranger
 }
 
-// New return accesslist
+// New return accesslist.
 func New(cfg *config.Config) *AccessList {
 	if len(cfg.AccessList) == 0 {
 		cfg.AccessList = append(cfg.AccessList, "0.0.0.0/0")
@@ -38,10 +38,10 @@ func New(cfg *config.Config) *AccessList {
 	return a
 }
 
-// Name return middleware name
+// (*AccessList).Name name return middleware name.
 func (a *AccessList) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*AccessList).ServeDNS serveDNS implements the Handle interface.
 func (a *AccessList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if ch.Writer.Internal() {
 		ch.Next(ctx)
@@ -51,7 +51,7 @@ func (a *AccessList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	allowed, _ := a.ranger.Contains(ch.Writer.RemoteIP())
 
 	if !allowed {
-		//no reply to client
+		// no reply to client
 		ch.Cancel()
 		return
 	}

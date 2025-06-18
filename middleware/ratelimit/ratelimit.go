@@ -20,7 +20,7 @@ type limiter struct {
 	cookie atomic.Value
 }
 
-// RateLimit type
+// RateLimit type.
 type RateLimit struct {
 	cookiesecret string
 
@@ -28,7 +28,7 @@ type RateLimit struct {
 	rate  int
 }
 
-// New return accesslist
+// New return accesslist.
 func New(cfg *config.Config) *RateLimit {
 	r := &RateLimit{
 		cache:        cache.New(cacheSize),
@@ -39,10 +39,10 @@ func New(cfg *config.Config) *RateLimit {
 	return r
 }
 
-// Name return middleware name
+// (*RateLimit).Name name return middleware name.
 func (r *RateLimit) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*RateLimit).ServeDNS serveDNS implements the Handle interface.
 func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
@@ -71,8 +71,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	if opt := req.IsEdns0(); opt != nil {
 		for _, option := range opt.Option {
-			switch option.Option() {
-			case dns.EDNS0COOKIE:
+			if option.Option() == dns.EDNS0COOKIE {
 				if len(option.String()) >= cookieSize {
 					clientcookie = option.String()[:cookieSize]
 					servercookie = util.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
@@ -103,7 +102,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	if !l.rl.Allow() {
-		//no reply to client
+		// no reply to client
 		ch.Cancel()
 		return
 	}

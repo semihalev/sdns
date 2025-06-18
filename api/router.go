@@ -10,7 +10,7 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// Router is a high-performance HTTP request router
+// Router is a high-performance HTTP request router.
 type Router struct {
 	get     Tree
 	post    Tree
