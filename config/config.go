@@ -80,7 +80,7 @@ type Config struct {
 	Plugins map[string]Plugin
 
 	CookieSecret string
-	IPv6Access   bool
+	IPv6Access   bool `toml:"ipv6access"`
 
 	// TCP connection pooling configuration
 	TCPKeepalive      bool

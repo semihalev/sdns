@@ -476,7 +476,8 @@ func TestConfigWithIPv6Access(t *testing.T) {
 	cfgFile := filepath.Join(tmpDir, "ipv6.conf")
 
 	// Create config with IPv6 access enabled
-	config := defaultConfig + "\nipv6access = true"
+	// Insert ipv6access before the kubernetes section
+	config := strings.Replace(defaultConfig, "[kubernetes]", "ipv6access = true\n\n[kubernetes]", 1)
 	config = fmt.Sprintf(config, configver)
 
 	if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil {
