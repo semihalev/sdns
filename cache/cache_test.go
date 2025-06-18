@@ -211,7 +211,7 @@ func TestCacheCapacity(t *testing.T) {
 	assert.LessOrEqual(t, c.Len(), 100, "Cache should not exceed capacity")
 }
 
-// Benchmarks
+// Benchmarks.
 func BenchmarkCacheGet(b *testing.B) {
 	c := New(10000)
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Resolver type
+// Resolver type.
 type Resolver struct {
 	sync.RWMutex
 
@@ -49,7 +50,7 @@ type Resolver struct {
 	tcpPool *TCPConnPool
 }
 
-// resolveContext holds the state for a DNS resolution operation
+// resolveContext holds the state for a DNS resolution operation.
 type resolveContext struct {
 	req        *dns.Msg
 	servers    *authcache.AuthServers
@@ -74,7 +75,7 @@ const (
 	defaultTimeout   = 2 * time.Second
 )
 
-// NewResolver return a resolver
+// NewResolver return a resolver.
 func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
 		cfg: cfg,
@@ -173,7 +174,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 	}
 }
 
-// Resolve starts a DNS resolution - public interface with old signature for compatibility
+// (*Resolver).Resolve resolve starts a DNS resolution - public interface with old signature for compatibility.
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nomin bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
 	rc := &resolveContext{
 		req:        req,
@@ -188,7 +189,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 	return r.resolve(ctx, rc)
 }
 
-// resolve performs the actual DNS resolution with cleaner parameters
+// resolve performs the actual DNS resolution with cleaner parameters.
 func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, error) {
 	q := rc.req.Question[0]
 
@@ -256,7 +257,7 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 	q := req.Question[0]
 
 	// Convert uint64 key to string for singleflight
-	key := fmt.Sprintf("%d", cache.Key(q))
+	key := strconv.FormatUint(cache.Key(q), 10)
 
 	// Use TimedDoChan for automatic timeout handling
 	result, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
@@ -809,7 +810,7 @@ mainloop:
 	for index, server := range serversList {
 		go queryServer(ctx, req, server)
 
-		// For the first few servers, don't wait - query them in parallel
+		// For the first 3 servers, don't wait - query them in parallel
 		if index < parallelStart-1 {
 			continue
 		}
@@ -1033,7 +1034,7 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, version authcach
 
 	if version == authcache.IPv4 {
 		if len(r.outboundipv4) > 0 {
-			//we will be select outbound ip address by request id.
+			// we will be select outbound ip address by request id.
 			index := len(r.outboundipv4) * reqid / maxUint16
 
 			// port number will automatically chosen
@@ -1322,7 +1323,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
-	//we can give sometimes for that lookups because of rate limiting on auth servers
+	// we can give sometimes for that lookups because of rate limiting on auth servers
 	time.Sleep(defaultTimeout)
 
 	list := sortnss(nss, q.Name)
@@ -1488,7 +1489,8 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return
 	}
 
-	//TODO (semih): there is exponent problem in golang lib, we can't verify this.
+	// Cannot verify DNSSEC keys with RSA exponents > 2^31-1 due to Go crypto/rsa limitation
+	// See https://github.com/golang/go/issues/3161
 	if !ok {
 		return false, nil
 	}
@@ -1640,7 +1642,7 @@ func (r *Resolver) checkPriming() {
 
 func (r *Resolver) run() {
 	for !middleware.Ready() {
-		//wait middleware setup
+		// wait middleware setup
 		time.Sleep(50 * time.Millisecond)
 	}
 
@@ -1659,7 +1661,7 @@ func (r *Resolver) run() {
 	}
 }
 
-// handleLookupError processes errors from groupLookup
+// handleLookupError processes errors from groupLookup.
 func (r *Resolver) handleLookupError(ctx context.Context, err error, rc *resolveContext, minReq *dns.Msg, minimized bool) (*dns.Msg, error) {
 	if minimized {
 		// retry without minimization
@@ -1685,7 +1687,7 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rc *resolve
 	return nil, err
 }
 
-// processAuthoritySection handles the authority section of the response
+// processAuthoritySection handles the authority section of the response.
 func (r *Resolver) processAuthoritySection(ctx context.Context, rc *resolveContext, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
 	q := rc.req.Question[0]
 
@@ -1717,14 +1719,14 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rc *resolveConte
 	return r.processDelegation(ctx, rc, resp, nsInfo, minimized)
 }
 
-// nameserverInfo holds extracted nameserver information
+// nameserverInfo holds extracted nameserver information.
 type nameserverInfo struct {
 	nameservers map[string]struct{}
 	nsRecord    *dns.NS
 	hasSOA      bool
 }
 
-// extractNameserverInfo extracts nameserver information from response
+// extractNameserverInfo extracts nameserver information from response.
 func (r *Resolver) extractNameserverInfo(resp *dns.Msg) nameserverInfo {
 	info := nameserverInfo{
 		nameservers: make(map[string]struct{}),
@@ -1743,7 +1745,7 @@ func (r *Resolver) extractNameserverInfo(resp *dns.Msg) nameserverInfo {
 	return info
 }
 
-// filterAuthorityRecords filters authority records for SOA responses
+// filterAuthorityRecords filters authority records for SOA responses.
 func (r *Resolver) filterAuthorityRecords(nsRecords []dns.RR) []dns.RR {
 	filtered := []dns.RR{}
 	for _, rr := range nsRecords {
@@ -1755,7 +1757,7 @@ func (r *Resolver) filterAuthorityRecords(nsRecords []dns.RR) []dns.RR {
 	return filtered
 }
 
-// processDelegation handles delegation processing
+// processDelegation handles delegation processing.
 func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, resp *dns.Msg, nsInfo nameserverInfo, minimized bool) (*dns.Msg, error) {
 	nsrr := nsInfo.nsRecord
 	q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
@@ -1837,7 +1839,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 	return r.resolve(ctx, rc)
 }
 
-// validateDelegation performs DNSSEC validation for delegation
+// validateDelegation performs DNSSEC validation for delegation.
 func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q dns.Question, parentdsrr []dns.RR) ([]dns.RR, error) {
 	signer, signerFound := r.findRRSIG(resp, q.Name, false)
 
@@ -1887,13 +1889,13 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	return parentdsrr, nil
 }
 
-// resolveWithCachedNameservers handles resolution with cached nameservers
+// resolveWithCachedNameservers handles resolution with cached nameservers.
 func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rc *resolveContext, ncache *authcache.NS, key uint64, q dns.Question, cd bool) (*dns.Msg, error) {
 	zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 
 	if r.equalServers(ncache.Servers, rc.servers) {
 		// Potential loop, decrease depth faster
-		rc.depth = rc.depth - 10
+		rc.depth -= 10
 	} else {
 		rc.depth--
 	}

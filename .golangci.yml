@@ -17,3 +17,4 @@ linters:
     - unused
     - misspell
     - unconvert
+    - gocritic

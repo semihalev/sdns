@@ -9,7 +9,7 @@ import (
 	"github.com/semihalev/sdns/server/doq"
 )
 
-// ResponseWriter implement of dns.ResponseWriter
+// ResponseWriter implement of dns.ResponseWriter.
 type ResponseWriter interface {
 	dns.ResponseWriter
 	Msg() *dns.Msg
@@ -108,5 +108,5 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	return w.ResponseWriter.WriteMsg(m)
 }
 
-// Internal func
+// (*responseWriter).Internal internal func.
 func (w *responseWriter) Internal() bool { return w.internal }

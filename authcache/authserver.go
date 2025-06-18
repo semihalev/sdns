@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// AuthServer type
+// AuthServer type.
 type AuthServer struct {
 	// place atomic members at the start to fix alignment for ARM32
 	Rtt     int64
@@ -16,18 +16,18 @@ type AuthServer struct {
 	Version Version
 }
 
-// Version type
+// Version type.
 type Version byte
 
 const (
-	// IPv4 mode
+	// IPv4 mode.
 	IPv4 Version = 0x1
 
-	// IPv6 mode
+	// IPv6 mode.
 	IPv6 Version = 0x2
 )
 
-// NewAuthServer return a new server
+// NewAuthServer return a new server.
 func NewAuthServer(addr string, version Version) *AuthServer {
 	return &AuthServer{
 		Addr:    addr,
@@ -55,11 +55,12 @@ func (a *AuthServer) String() string {
 	}
 
 	var health string
-	if rn >= int64(time.Second) {
+	switch {
+	case rn >= int64(time.Second):
 		health = "POOR"
-	} else if rn > 0 {
+	case rn > 0:
 		health = "GOOD"
-	} else {
+	default:
 		health = "UNKNOWN"
 	}
 
@@ -68,7 +69,7 @@ func (a *AuthServer) String() string {
 	return a.Version.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
 }
 
-// AuthServers type
+// AuthServers type.
 type AuthServers struct {
 	sync.RWMutex
 	// place atomic members at the start to fix alignment for ARM32
@@ -84,10 +85,10 @@ type AuthServers struct {
 	Checked         bool
 }
 
-// Sort sort servers by rtt
+// Sort sort servers by rtt.
 func Sort(serversList []*AuthServer, called uint64) {
 	for _, s := range serversList {
-		//clear stats and re-start again
+		// clear stats and re-start again
 		if called%1e3 == 0 {
 			atomic.StoreInt64(&s.Rtt, 0)
 			atomic.StoreInt64(&s.Count, 0)

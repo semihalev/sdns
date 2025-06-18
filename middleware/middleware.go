@@ -10,19 +10,19 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// Handler interface
+// Handler interface.
 type Handler interface {
 	Name() string
 	ServeDNS(context.Context, *Chain)
 }
 
-// HandlerFunc type adapter to allow the use of ordinary functions as handlers
+// HandlerFunc type adapter to allow the use of ordinary functions as handlers.
 type HandlerFunc func(context.Context, *Chain)
 
-// Name returns the handler name
+// (HandlerFunc).Name name returns the handler name.
 func (f HandlerFunc) Name() string { return "HandlerFunc" }
 
-// ServeDNS calls f(ctx, ch)
+// (HandlerFunc).ServeDNS serveDNS calls f(ctx, ch).
 func (f HandlerFunc) ServeDNS(ctx context.Context, ch *Chain) { f(ctx, ch) }
 
 type middleware struct {
@@ -43,12 +43,12 @@ var (
 	m             middleware
 )
 
-// Register a middleware
+// Register a middleware.
 func Register(name string, new func(*config.Config) Handler) {
 	RegisterAt(name, new, len(m.handlers))
 }
 
-// RegisterAt a middleware at an index
+// RegisterAt a middleware at an index.
 func RegisterAt(name string, new func(*config.Config) Handler, idx int) {
 	zlog.Debug("Register middleware", "name", name, "index", idx)
 
@@ -60,7 +60,7 @@ func RegisterAt(name string, new func(*config.Config) Handler, idx int) {
 	m.handlers[idx] = handler{name: name, new: new}
 }
 
-// RegisterBefore a middleware before another middleware
+// RegisterBefore a middleware before another middleware.
 func RegisterBefore(name string, new func(*config.Config) Handler, before string) {
 	zlog.Debug("Register middleware", "name", name, "before", before)
 
@@ -79,7 +79,7 @@ func RegisterBefore(name string, new func(*config.Config) Handler, before string
 	panic(fmt.Sprintf("Middleware %s not found", before))
 }
 
-// Setup handlers
+// Setup handlers.
 func Setup(cfg *config.Config) {
 	if setup {
 		panic("middleware setup already done")
@@ -106,7 +106,7 @@ func Setup(cfg *config.Config) {
 	setup = true
 }
 
-// LoadExternalPlugins load external plugins into chain
+// LoadExternalPlugins load external plugins into chain.
 func LoadExternalPlugins() {
 	for name, pcfg := range m.cfg.Plugins {
 		pl, err := plugin.Open(pcfg.Path)
@@ -133,13 +133,13 @@ func LoadExternalPlugins() {
 	}
 }
 
-// Handlers return registered handlers
+// Handlers return registered handlers.
 func Handlers() []Handler {
 	handlers := chainHandlers
 	return handlers
 }
 
-// List return names of handlers
+// List return names of handlers.
 func List() (list []string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -151,7 +151,7 @@ func List() (list []string) {
 	return list
 }
 
-// Get return a handler by name
+// Get return a handler by name.
 func Get(name string) Handler {
 	if !setup {
 		return nil
@@ -172,7 +172,7 @@ func Get(name string) Handler {
 	return nil
 }
 
-// Ready return true if middleware setup was done
+// Ready return true if middleware setup was done.
 func Ready() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

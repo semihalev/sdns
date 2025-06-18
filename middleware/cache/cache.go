@@ -27,7 +27,7 @@ const (
 	minTTL = util.MinCacheTTL
 )
 
-// Cache is the cache implementation
+// Cache is the cache implementation.
 type Cache struct {
 	positive *PositiveCache
 	negative *NegativeCache
@@ -48,7 +48,7 @@ type Cache struct {
 	ncache interface{ Len() int }
 }
 
-// New creates a new cache
+// New creates a new cache.
 func New(cfg *config.Config) *Cache {
 	// Build cache configuration
 	cacheConfig := CacheConfig{
@@ -104,10 +104,10 @@ func New(cfg *config.Config) *Cache {
 	return c
 }
 
-// Name returns middleware name
+// (*Cache).Name name returns middleware name.
 func (c *Cache) Name() string { return name }
 
-// ServeDNS implements the middleware.Handler interface
+// (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
@@ -175,7 +175,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	c.writerPool.Put(rw)
 }
 
-// checkCache checks both positive and negative caches
+// checkCache checks both positive and negative caches.
 func (c *Cache) checkCache(key uint64) *CacheEntry {
 	// Check positive cache first
 	if entry, ok := c.positive.Get(key); ok {
@@ -190,7 +190,7 @@ func (c *Cache) checkCache(key uint64) *CacheEntry {
 	return nil
 }
 
-// handleCacheHit processes a cache hit
+// handleCacheHit processes a cache hit.
 func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry *CacheEntry, key uint64) bool {
 	w := ch.Writer
 	req := ch.Request
@@ -229,7 +229,7 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	return true
 }
 
-// isValidQuery checks if the query is valid
+// isValidQuery checks if the query is valid.
 func (c *Cache) isValidQuery(q dns.Question) bool {
 	if v := dns.ClassToString[q.Qclass]; v == "" {
 		return false
@@ -240,7 +240,7 @@ func (c *Cache) isValidQuery(q dns.Question) bool {
 	return true
 }
 
-// handleSpecialQuery handles CHAOS and other special queries
+// handleSpecialQuery handles CHAOS and other special queries.
 func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q dns.Question) bool {
 	// Handle cache purge
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
@@ -260,7 +260,7 @@ func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q 
 	return false
 }
 
-// purge removes entries from cache
+// purge removes entries from cache.
 func (c *Cache) purge(qname string, qtype uint16) {
 	q := dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET}
 
@@ -272,14 +272,14 @@ func (c *Cache) purge(qname string, qtype uint16) {
 	}
 }
 
-// Stop gracefully shuts down the cache
+// (*Cache).Stop stop gracefully shuts down the cache.
 func (c *Cache) Stop() {
 	if c.prefetchQueue != nil {
 		c.prefetchQueue.Stop()
 	}
 }
 
-// Set adds a new element to the cache. Provided for API compatibility.
+// (*Cache).Set set adds a new element to the cache. Provided for API compatibility.
 func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	if len(msg.Question) == 0 {
 		return
@@ -318,7 +318,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	}
 }
 
-// Stats returns cache statistics
+// (*Cache).Stats stats returns cache statistics.
 func (c *Cache) Stats() map[string]any {
 	hits, misses, evictions, prefetches := c.metrics.Stats()
 
@@ -339,13 +339,13 @@ func (c *Cache) Stats() map[string]any {
 	}
 }
 
-// ResponseWriter is the response writer for cache
+// ResponseWriter is the response writer for cache.
 type ResponseWriter struct {
 	middleware.ResponseWriter
 	cache *Cache
 }
 
-// WriteMsg implements the ResponseWriter interface
+// (*ResponseWriter).WriteMsg writeMsg implements the ResponseWriter interface.
 func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	if res.Truncated || len(res.Question) == 0 {
 		return w.ResponseWriter.WriteMsg(res)
@@ -396,7 +396,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 }
 
 // filterAnswerSection filters the answer section to only keep relevant records
-// This matches the V1 behavior of only caching records that are directly relevant
+// This matches the V1 behavior of only caching records that are directly relevant.
 func (w *ResponseWriter) filterAnswerSection(res *dns.Msg) *dns.Msg {
 	if len(res.Answer) == 0 {
 		return res
@@ -426,7 +426,7 @@ func (w *ResponseWriter) filterAnswerSection(res *dns.Msg) *dns.Msg {
 	return filtered
 }
 
-// messagePool reduces allocations by reusing dns.Msg structs
+// messagePool reduces allocations by reusing dns.Msg structs.
 var messagePool = sync.Pool{
 	New: func() any {
 		return &dns.Msg{
@@ -439,7 +439,7 @@ var messagePool = sync.Pool{
 	},
 }
 
-// AcquireMsg returns an empty msg from pool with pre-allocated slices
+// AcquireMsg returns an empty msg from pool with pre-allocated slices.
 func AcquireMsg() *dns.Msg {
 	m := messagePool.Get().(*dns.Msg)
 	// Reset the message but keep the allocated slices
@@ -463,7 +463,7 @@ func AcquireMsg() *dns.Msg {
 	return m
 }
 
-// ReleaseMsg returns msg to pool
+// ReleaseMsg returns msg to pool.
 func ReleaseMsg(m *dns.Msg) {
 	// Clear the slices to release references but keep capacity
 	for i := range m.Question {
@@ -486,7 +486,7 @@ func ReleaseMsg(m *dns.Msg) {
 	// Otherwise let GC handle it to avoid memory bloat
 }
 
-// additionalAnswer implements the v1 CNAME resolution logic
+// additionalAnswer implements the v1 CNAME resolution logic.
 func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	if len(msg.Question) == 0 {
 		return msg
@@ -564,7 +564,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// searchAdditionalAnswer merges the CNAME response into the original message
+// searchAdditionalAnswer merges the CNAME response into the original message.
 func searchAdditionalAnswer(msg, res *dns.Msg) (target string, child bool) {
 	if msg.AuthenticatedData && !res.AuthenticatedData {
 		msg.AuthenticatedData = false

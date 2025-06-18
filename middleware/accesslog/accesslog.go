@@ -13,13 +13,13 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// AccessLog type
+// AccessLog type.
 type AccessLog struct {
 	cfg     *config.Config
 	logFile *os.File
 }
 
-// New returns a new AccessLog
+// New returns a new AccessLog.
 func New(cfg *config.Config) *AccessLog {
 	var logFile *os.File
 	var err error
@@ -37,10 +37,10 @@ func New(cfg *config.Config) *AccessLog {
 	}
 }
 
-// Name return middleware name
+// (*AccessLog).Name name return middleware name.
 func (a *AccessLog) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*AccessLog).ServeDNS serveDNS implements the Handle interface.
 func (a *AccessLog) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)
 

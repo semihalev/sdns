@@ -743,7 +743,7 @@ func TestRun(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// Helper function to decode messages for testing
+// Helper function to decode messages for testing.
 func decodeMessage(data []byte) *DnstapMessage {
 	if len(data) < 1 {
 		return nil

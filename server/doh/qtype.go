@@ -96,7 +96,7 @@ var qtype = map[string]uint16{
 	"ZONEMD":     dns.TypeZONEMD,
 }
 
-// ParseQTYPE function
+// ParseQTYPE function.
 func ParseQTYPE(s string) uint16 {
 	if s == "" {
 		return dns.TypeA

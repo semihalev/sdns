@@ -30,7 +30,7 @@ func New(timeout time.Duration) *WaitGroup {
 	}
 }
 
-// Get return count of dups with key.
+// (*WaitGroup).Get get return count of dups with key.
 func (wg *WaitGroup) Get(key uint64) int {
 	wg.mu.RLock()
 	defer wg.mu.RUnlock()
@@ -42,7 +42,7 @@ func (wg *WaitGroup) Get(key uint64) int {
 	return 0
 }
 
-// Wait blocks until WaitGroup context cancelled or timedout with key.
+// (*WaitGroup).Wait wait blocks until WaitGroup context cancelled or timedout with key.
 func (wg *WaitGroup) Wait(key uint64) {
 	wg.mu.RLock()
 
@@ -55,7 +55,7 @@ func (wg *WaitGroup) Wait(key uint64) {
 	wg.mu.RUnlock()
 }
 
-// Add adds a new caller or if the caller exists increment dups with key.
+// (*WaitGroup).Add add adds a new caller or if the caller exists increment dups with key.
 func (wg *WaitGroup) Add(key uint64) {
 	wg.mu.Lock()
 	defer wg.mu.Unlock()
@@ -71,7 +71,7 @@ func (wg *WaitGroup) Add(key uint64) {
 	wg.groups[key] = c
 }
 
-// Done cancels the group context or if the caller dups more then zero, decrements the dups with key.
+// (*WaitGroup).Done done cancels the group context or if the caller dups more then zero, decrements the dups with key.
 func (wg *WaitGroup) Done(key uint64) {
 	wg.mu.Lock()
 	defer wg.mu.Unlock()

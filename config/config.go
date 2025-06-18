@@ -17,9 +17,9 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-const configver = "1.5.2"
+const configver = "1.6.0"
 
-// Config type
+// Config type.
 type Config struct {
 	Version          string
 	Directory        string
@@ -74,10 +74,13 @@ type Config struct {
 	DomainMetrics      bool
 	DomainMetricsLimit int
 
+	// Kubernetes middleware configuration as a section
+	Kubernetes KubernetesConfig `toml:"kubernetes"`
+
 	Plugins map[string]Plugin
 
 	CookieSecret string
-	IPv6Access   bool
+	IPv6Access   bool `toml:"ipv6access"`
 
 	// TCP connection pooling configuration
 	TCPKeepalive      bool
@@ -88,23 +91,40 @@ type Config struct {
 	sVersion string
 }
 
-// Plugin type
+// KubernetesConfig holds Kubernetes middleware configuration
+type KubernetesConfig struct {
+	Enabled       bool                `toml:"enabled"`
+	ClusterDomain string              `toml:"cluster_domain"`
+	KillerMode    bool                `toml:"killer_mode"`
+	Kubeconfig    string              `toml:"kubeconfig"`
+	TTL           KubernetesTTLConfig `toml:"ttl"`
+}
+
+// KubernetesTTLConfig holds TTL settings for different record types
+type KubernetesTTLConfig struct {
+	Service uint32 `toml:"service"`
+	Pod     uint32 `toml:"pod"`
+	SRV     uint32 `toml:"srv"`
+	PTR     uint32 `toml:"ptr"`
+}
+
+// Plugin type.
 type Plugin struct {
 	Path   string
 	Config map[string]any
 }
 
-// ServerVersion return current server version
+// (*Config).ServerVersion serverVersion return current server version.
 func (c *Config) ServerVersion() string {
 	return c.sVersion
 }
 
-// Duration type
+// Duration type.
 type Duration struct {
 	time.Duration
 }
 
-// UnmarshalText for duration type
+// (*Duration).UnmarshalText unmarshalText for duration type.
 func (d *Duration) UnmarshalText(text []byte) error {
 	var err error
 	d.Duration, err = time.ParseDuration(string(text))
@@ -260,7 +280,7 @@ forwarderservers = [
     # Examples:
     # "8.8.8.8:53",              # Standard DNS
     # "[2001:4860:4860::8888]:53", # Standard DNS IPv6
-    # "tls://8.8.8.8:853"        # DNS-over-TLS
+    # "tls://8.8.8.8:853" # DNS-over-TLS
 ]
 
 # ============================
@@ -409,8 +429,8 @@ chaos = true
 
 # QNAME minimization level (RFC 7816)
 # Higher values increase privacy but may impact performance
-# 0 = disabled, 5 = recommended
-qname_min_level = 5
+# 0 = disabled, 3 = recommended
+qname_min_level = 3
 
 # Empty zones (AS112 - RFC 7534)
 # Prevents queries for private IP reverse zones from leaking
@@ -466,6 +486,41 @@ tcpmaxconnections = 100
 # dnstapflushinterval = 5
 
 # ============================
+# Kubernetes Integration
+# ============================
+
+[kubernetes]
+# Enable Kubernetes DNS middleware
+# Provides DNS resolution for Kubernetes services and pods
+enabled = false
+
+# Kubernetes cluster domain suffix
+# Default domain for Kubernetes DNS queries
+cluster_domain = "cluster.local"
+
+# Enable Kubernetes killer mode
+# High-performance mode with ML-based prediction and zero-allocation caching
+killer_mode = false
+
+# Path to kubeconfig file
+# Leave empty to use in-cluster config or ~/.kube/config
+# kubeconfig = ""
+
+# TTL configuration for different record types
+[kubernetes.ttl]
+# TTL for service A/AAAA records (seconds)
+service = 30
+
+# TTL for pod A/AAAA records (seconds)
+pod = 30
+
+# TTL for SRV records (seconds)
+srv = 30
+
+# TTL for PTR records (seconds)
+ptr = 30
+
+# ============================
 # Plugins
 # ============================
 
@@ -480,7 +535,7 @@ tcpmaxconnections = 100
 #     config = {key_1 = "value_1", key_2 = 2, key_3 = true}
 `
 
-// Load loads the given config file
+// Load loads the given config file.
 func Load(cfgfile, version string) (*Config, error) {
 	config := new(Config)
 
@@ -550,6 +605,20 @@ func Load(cfgfile, version string) (*Config, error) {
 		config.TCPMaxConnections = 100
 	}
 
+	// Set Kubernetes TTL defaults
+	if config.Kubernetes.TTL.Service == 0 {
+		config.Kubernetes.TTL.Service = 30
+	}
+	if config.Kubernetes.TTL.Pod == 0 {
+		config.Kubernetes.TTL.Pod = 30
+	}
+	if config.Kubernetes.TTL.SRV == 0 {
+		config.Kubernetes.TTL.SRV = 30
+	}
+	if config.Kubernetes.TTL.PTR == 0 {
+		config.Kubernetes.TTL.PTR = 30
+	}
+
 	return config, nil
 }
 
@@ -584,7 +653,7 @@ func testIPv6Network() error {
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
-	//root server
+	// root server
 	_, _, err := client.Exchange(req, net.JoinHostPort("2001:500:2::c", "53"))
 	if err != nil {
 		return err

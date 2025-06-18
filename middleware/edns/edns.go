@@ -10,21 +10,21 @@ import (
 	"github.com/semihalev/sdns/util"
 )
 
-// EDNS type
+// EDNS type.
 type EDNS struct {
 	cookiesecret string
 	nsidstr      string
 }
 
-// New return edns
+// New return edns.
 func New(cfg *config.Config) *EDNS {
 	return &EDNS{cookiesecret: cfg.CookieSecret, nsidstr: cfg.NSID}
 }
 
-// Name return middleware name
+// (*EDNS).Name name return middleware name.
 func (e *EDNS) Name() string { return name }
 
-// ResponseWriter implement of ctx.ResponseWriter
+// ResponseWriter implement of ctx.ResponseWriter.
 type ResponseWriter struct {
 	middleware.ResponseWriter
 	*EDNS
@@ -38,7 +38,7 @@ type ResponseWriter struct {
 	noad   bool
 }
 
-// ServeDNS implements the Handle interface.
+// (*EDNS).ServeDNS serveDNS implements the Handle interface.
 func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
@@ -87,7 +87,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Writer = w
 }
 
-// WriteMsg implements the ctx.ResponseWriter interface
+// (*ResponseWriter).WriteMsg writeMsg implements the ctx.ResponseWriter interface.
 func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	m.Compress = true
 

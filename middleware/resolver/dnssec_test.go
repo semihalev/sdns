@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestADBitWithCDFlag verifies that AD bit is not set when CD flag is set
+// TestADBitWithCDFlag verifies that AD bit is not set when CD flag is set.
 func TestADBitWithCDFlag(t *testing.T) {
 	// Test case 1: CD=0, successful DNSSEC validation should set AD=1
 	req := new(dns.Msg)
@@ -63,7 +63,7 @@ func TestADBitWithCDFlag(t *testing.T) {
 	assert.False(t, resp2.AuthenticatedData, "AD bit should not be set when CD=1")
 }
 
-// TestCDFlagPreservation verifies that CD flag is properly preserved in responses
+// TestCDFlagPreservation verifies that CD flag is properly preserved in responses.
 func TestCDFlagPreservation(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -98,7 +98,7 @@ func TestCDFlagPreservation(t *testing.T) {
 	}
 }
 
-// TestDNSSECValidationSkippedWithCD verifies that DNSSEC validation is skipped when CD=1
+// TestDNSSECValidationSkippedWithCD verifies that DNSSEC validation is skipped when CD=1.
 func TestDNSSECValidationSkippedWithCD(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)

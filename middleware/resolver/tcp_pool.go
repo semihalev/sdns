@@ -9,7 +9,7 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// TCPConnPool manages persistent TCP connections to DNS servers
+// TCPConnPool manages persistent TCP connections to DNS servers.
 type TCPConnPool struct {
 	mu sync.RWMutex
 
@@ -28,7 +28,7 @@ type TCPConnPool struct {
 	active int
 }
 
-// pooledConn wraps a DNS connection with metadata
+// pooledConn wraps a DNS connection with metadata.
 type pooledConn struct {
 	*dns.Conn
 	server     string
@@ -38,7 +38,7 @@ type pooledConn struct {
 	kaTimeout  uint16
 }
 
-// NewTCPConnPool creates a new TCP connection pool
+// NewTCPConnPool creates a new TCP connection pool.
 func NewTCPConnPool(rootTimeout, tldTimeout time.Duration, maxConns int) *TCPConnPool {
 	if rootTimeout == 0 {
 		rootTimeout = 5 * time.Second
@@ -64,7 +64,7 @@ func NewTCPConnPool(rootTimeout, tldTimeout time.Duration, maxConns int) *TCPCon
 	return pool
 }
 
-// Get retrieves a connection for the given server
+// (*TCPConnPool).Get get retrieves a connection for the given server.
 func (p *TCPConnPool) Get(server string, isRoot, isTLD bool) *dns.Conn {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -72,11 +72,12 @@ func (p *TCPConnPool) Get(server string, isRoot, isTLD bool) *dns.Conn {
 	var conn *pooledConn
 	var exists bool
 
-	if isRoot {
+	switch {
+	case isRoot:
 		conn, exists = p.rootConns[server]
-	} else if isTLD {
+	case isTLD:
 		conn, exists = p.tldConns[server]
-	} else {
+	default:
 		// Don't pool connections for other servers
 		return nil
 	}
@@ -108,7 +109,7 @@ func (p *TCPConnPool) Get(server string, isRoot, isTLD bool) *dns.Conn {
 	return nil
 }
 
-// Put returns a connection to the pool
+// (*TCPConnPool).Put put returns a connection to the pool.
 func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg *dns.Msg) {
 	if conn == nil || (!isRoot && !isTLD) {
 		// Don't pool non-infrastructure connections
@@ -166,7 +167,7 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 		"supports_keepalive", pooled.supportsKA, "active_conns", p.active)
 }
 
-// getPoolMap returns the appropriate pool map
+// getPoolMap returns the appropriate pool map.
 func (p *TCPConnPool) getPoolMap(isRoot, isTLD bool) map[string]*pooledConn {
 	_ = isTLD // Avoid unused variable warning
 
@@ -177,7 +178,7 @@ func (p *TCPConnPool) getPoolMap(isRoot, isTLD bool) map[string]*pooledConn {
 	return p.tldConns
 }
 
-// cleanupLoop periodically removes expired connections
+// cleanupLoop periodically removes expired connections.
 func (p *TCPConnPool) cleanupLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -187,7 +188,7 @@ func (p *TCPConnPool) cleanupLoop() {
 	}
 }
 
-// cleanup removes expired connections
+// cleanup removes expired connections.
 func (p *TCPConnPool) cleanup() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -215,14 +216,14 @@ func (p *TCPConnPool) cleanup() {
 	}
 }
 
-// Stats returns pool statistics
+// (*TCPConnPool).Stats stats returns pool statistics.
 func (p *TCPConnPool) Stats() (hits, misses int64, active int) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.hits, p.misses, p.active
 }
 
-// Close closes all connections in the pool
+// (*TCPConnPool).Close close closes all connections in the pool.
 func (p *TCPConnPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -239,7 +240,7 @@ func (p *TCPConnPool) Close() {
 	p.active = 0
 }
 
-// SetEDNSKeepalive adds EDNS-Keepalive option to a message
+// SetEDNSKeepalive adds EDNS-Keepalive option to a message.
 func SetEDNSKeepalive(msg *dns.Msg, timeout uint16) {
 	if msg.IsEdns0() == nil {
 		msg.SetEdns0(4096, false)
@@ -260,7 +261,7 @@ func SetEDNSKeepalive(msg *dns.Msg, timeout uint16) {
 	msg.IsEdns0().Option = append(msg.IsEdns0().Option, ka)
 }
 
-// isRootServer checks if the server is a root server
+// isRootServer checks if the server is a root server.
 func isRootServer(server string) bool {
 	// Root servers are typically at addresses like 192.5.5.241:53
 	// This is a simplified check - in production, compare against known root server IPs
@@ -302,7 +303,7 @@ func isRootServer(server string) bool {
 	return false
 }
 
-// isTLDServer checks if this query is going to a TLD server
+// isTLDServer checks if this query is going to a TLD server.
 func isTLDServer(qname string) bool {
 	// Check if query is for a second-level domain
 	labels := dns.CountLabel(qname)

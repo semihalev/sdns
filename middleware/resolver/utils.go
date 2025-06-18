@@ -173,7 +173,9 @@ func verifyDS(keyMap map[uint16]*dns.DNSKEY, parentDSSet []dns.RR) (bool, error)
 		if !present {
 			continue
 		}
-		//TODO: miek dns lib doesn't support GOST 34.11 currently
+		// GOST R 34.11-94 (digest type 3) not supported by miekg/dns library
+		// RFC 8624: MUST NOT use for new DS records, deprecated since 2012
+		// Usage: <119 keys worldwide (~0.01% of DNSSEC deployments)
 		ds := ksk.ToDS(parentDS.DigestType)
 		if ds == nil {
 			if i != len(parentDSSet)-1 {
@@ -365,7 +367,7 @@ func getDnameTarget(msg *dns.Msg) string {
 
 var reqPool sync.Pool
 
-// AcquireMsg returns an empty msg from pool
+// AcquireMsg returns an empty msg from pool.
 func AcquireMsg() *dns.Msg {
 	v, _ := reqPool.Get().(*dns.Msg)
 	if v == nil {
@@ -375,7 +377,7 @@ func AcquireMsg() *dns.Msg {
 	return v
 }
 
-// ReleaseMsg returns req to pool
+// ReleaseMsg returns req to pool.
 func ReleaseMsg(req *dns.Msg) {
 	req.Id = 0
 	req.Response = false
@@ -403,7 +405,7 @@ func ReleaseMsg(req *dns.Msg) {
 
 var connPool sync.Pool
 
-// AcquireConn returns an empty conn from pool
+// AcquireConn returns an empty conn from pool.
 func AcquireConn() *Conn {
 	v, _ := connPool.Get().(*Conn)
 	if v == nil {
@@ -412,7 +414,7 @@ func AcquireConn() *Conn {
 	return v
 }
 
-// ReleaseConn returns req to pool
+// ReleaseConn returns req to pool.
 func ReleaseConn(co *Conn) {
 	if co.Conn != nil {
 		_ = co.Conn.Close()

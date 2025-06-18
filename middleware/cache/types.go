@@ -10,7 +10,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// DNSCache defines the interface for DNS cache implementations
+// DNSCache defines the interface for DNS cache implementations.
 type DNSCache interface {
 	Get(key uint64) (*CacheEntry, bool)
 	Set(key uint64, entry *CacheEntry)
@@ -18,7 +18,7 @@ type DNSCache interface {
 	Len() int
 }
 
-// CacheEntry represents an immutable cache entry
+// CacheEntry represents an immutable cache entry.
 type CacheEntry struct {
 	msg      *dns.Msg
 	stored   time.Time
@@ -29,7 +29,7 @@ type CacheEntry struct {
 	ede      *dns.EDNS0_EDE // Preserved EDE information
 }
 
-// NewCacheEntry creates a new cache entry from a DNS message
+// NewCacheEntry creates a new cache entry from a DNS message.
 func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 	// Create a copy and filter out OPT records (matching V1 behavior)
 	msgCopy := new(dns.Msg)
@@ -76,7 +76,7 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 	return entry
 }
 
-// ToMsg creates a response message with updated TTLs
+// (*CacheEntry).ToMsg toMsg creates a response message with updated TTLs.
 func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	now := time.Now().UTC()
 	elapsed := now.Sub(e.stored)
@@ -153,12 +153,12 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	return resp
 }
 
-// IsExpired checks if the cache entry has expired
+// (*CacheEntry).IsExpired isExpired checks if the cache entry has expired.
 func (e *CacheEntry) IsExpired() bool {
 	return time.Since(e.stored) >= e.ttl
 }
 
-// TTL returns the remaining TTL in seconds
+// (*CacheEntry).TTL TTL returns the remaining TTL in seconds.
 func (e *CacheEntry) TTL() int {
 	remaining := e.ttl - time.Since(e.stored)
 	if remaining <= 0 {
@@ -167,7 +167,7 @@ func (e *CacheEntry) TTL() int {
 	return int(remaining.Seconds())
 }
 
-// ShouldPrefetch checks if this entry should be prefetched
+// (*CacheEntry).ShouldPrefetch shouldPrefetch checks if this entry should be prefetched.
 func (e *CacheEntry) ShouldPrefetch(threshold int) bool {
 	if threshold <= 0 || e.prefetch.Load() {
 		return false
@@ -179,18 +179,18 @@ func (e *CacheEntry) ShouldPrefetch(threshold int) bool {
 	return remainingTTL <= thresholdSeconds
 }
 
-// CacheKey represents a structured cache key
+// CacheKey represents a structured cache key.
 type CacheKey struct {
 	Question dns.Question
 	CD       bool
 }
 
-// Hash returns the cache key hash
+// (CacheKey).Hash hash returns the cache key hash.
 func (k CacheKey) Hash() uint64 {
 	return cache.Key(k.Question, k.CD)
 }
 
-// CacheConfig holds cache configuration with validation
+// CacheConfig holds cache configuration with validation.
 type CacheConfig struct {
 	Size        int
 	Prefetch    int
@@ -201,7 +201,7 @@ type CacheConfig struct {
 	RateLimit   int
 }
 
-// Validate checks if the configuration is valid
+// (CacheConfig).Validate validate checks if the configuration is valid.
 func (cc CacheConfig) Validate() error {
 	if cc.Size < 1024 {
 		return errors.New("cache size must be at least 1024")
@@ -218,17 +218,17 @@ func (cc CacheConfig) Validate() error {
 	return nil
 }
 
-// TTLManager manages TTL calculations
+// TTLManager manages TTL calculations.
 type TTLManager struct {
 	min, max time.Duration
 }
 
-// NewTTLManager creates a new TTL manager
+// NewTTLManager creates a new TTL manager.
 func NewTTLManager(min, max time.Duration) TTLManager {
 	return TTLManager{min: min, max: max}
 }
 
-// Calculate returns the effective TTL within configured bounds
+// (TTLManager).Calculate calculate returns the effective TTL within configured bounds.
 func (tm TTLManager) Calculate(msgTTL time.Duration) time.Duration {
 	if msgTTL < tm.min {
 		return tm.min
@@ -239,7 +239,7 @@ func (tm TTLManager) Calculate(msgTTL time.Duration) time.Duration {
 	return msgTTL
 }
 
-// CacheMetrics tracks cache performance metrics
+// CacheMetrics tracks cache performance metrics.
 type CacheMetrics struct {
 	hits       atomic.Int64
 	misses     atomic.Int64
@@ -247,27 +247,27 @@ type CacheMetrics struct {
 	prefetches atomic.Int64
 }
 
-// Hit records a cache hit
+// (*CacheMetrics).Hit hit records a cache hit.
 func (m *CacheMetrics) Hit() {
 	m.hits.Add(1)
 }
 
-// Miss records a cache miss
+// (*CacheMetrics).Miss miss records a cache miss.
 func (m *CacheMetrics) Miss() {
 	m.misses.Add(1)
 }
 
-// Eviction records a cache eviction
+// (*CacheMetrics).Eviction eviction records a cache eviction.
 func (m *CacheMetrics) Eviction() {
 	m.evictions.Add(1)
 }
 
-// Prefetch records a prefetch operation
+// (*CacheMetrics).Prefetch prefetch records a prefetch operation.
 func (m *CacheMetrics) Prefetch() {
 	m.prefetches.Add(1)
 }
 
-// Stats returns current metrics
+// (*CacheMetrics).Stats stats returns current metrics.
 func (m *CacheMetrics) Stats() (hits, misses, evictions, prefetches int64) {
 	return m.hits.Load(), m.misses.Load(), m.evictions.Load(), m.prefetches.Load()
 }

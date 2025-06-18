@@ -16,7 +16,7 @@ import (
 )
 
 // Chaos provides system information via CHAOS class queries
-// Unlike traditional implementations, we provide extended telemetry
+// Unlike traditional implementations, we provide extended telemetry.
 type Chaos struct {
 	mu sync.RWMutex
 
@@ -32,7 +32,7 @@ type Chaos struct {
 	fingerprint string
 }
 
-// New creates a new Chaos middleware with extended telemetry
+// New creates a new Chaos middleware with extended telemetry.
 func New(cfg *config.Config) *Chaos {
 	hostname, _ := os.Hostname()
 	if hostname == "" {
@@ -56,10 +56,10 @@ func New(cfg *config.Config) *Chaos {
 	}
 }
 
-// Name returns the middleware name
+// (*Chaos).Name name returns the middleware name.
 func (c *Chaos) Name() string { return name }
 
-// ServeDNS handles CHAOS class queries with extended information
+// (*Chaos).ServeDNS serveDNS handles CHAOS class queries with extended information.
 func (c *Chaos) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if !c.enabled {
 		ch.Next(ctx)
@@ -122,7 +122,7 @@ func (c *Chaos) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Cancel()
 }
 
-// makeVersion creates version response
+// makeVersion creates version response.
 func (c *Chaos) makeVersion(name string) *dns.TXT {
 	return &dns.TXT{
 		Hdr: dns.RR_Header{
@@ -135,7 +135,7 @@ func (c *Chaos) makeVersion(name string) *dns.TXT {
 	}
 }
 
-// makeIdentity creates hostname/identity response
+// makeIdentity creates hostname/identity response.
 func (c *Chaos) makeIdentity(name string) *dns.TXT {
 	return &dns.TXT{
 		Hdr: dns.RR_Header{
@@ -148,7 +148,7 @@ func (c *Chaos) makeIdentity(name string) *dns.TXT {
 	}
 }
 
-// makeUptime creates uptime response
+// makeUptime creates uptime response.
 func (c *Chaos) makeUptime(name string) *dns.TXT {
 	uptime := time.Since(c.startTime)
 	uptimeStr := fmt.Sprintf("%dd%dh%dm%ds",
@@ -169,7 +169,7 @@ func (c *Chaos) makeUptime(name string) *dns.TXT {
 	}
 }
 
-// makePlatform creates platform information response
+// makePlatform creates platform information response.
 func (c *Chaos) makePlatform(name string) *dns.TXT {
 	return &dns.TXT{
 		Hdr: dns.RR_Header{
@@ -182,7 +182,7 @@ func (c *Chaos) makePlatform(name string) *dns.TXT {
 	}
 }
 
-// makeFingerprint creates unique server fingerprint response
+// makeFingerprint creates unique server fingerprint response.
 func (c *Chaos) makeFingerprint(name string) *dns.TXT {
 	return &dns.TXT{
 		Hdr: dns.RR_Header{
@@ -195,7 +195,7 @@ func (c *Chaos) makeFingerprint(name string) *dns.TXT {
 	}
 }
 
-// makeStats creates statistics response
+// makeStats creates statistics response.
 func (c *Chaos) makeStats(name string) *dns.TXT {
 	c.mu.RLock()
 	count := c.queryCount

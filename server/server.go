@@ -25,7 +25,7 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// Server type
+// Server type.
 type Server struct {
 	addr           string
 	tlsAddr        string
@@ -45,7 +45,7 @@ type Server struct {
 	cfg       *config.Config
 }
 
-// New return new server
+// New return new server.
 func New(cfg *config.Config) *Server {
 	if cfg.Bind == "" {
 		cfg.Bind = ":53"
@@ -68,7 +68,7 @@ func New(cfg *config.Config) *Server {
 	return server
 }
 
-// ServeDNS implements the Handle interface.
+// (*Server).ServeDNS serveDNS implements the Handle interface.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	ch := s.chainPool.Get().(*middleware.Chain)
 	defer s.chainPool.Put(ch)
@@ -109,7 +109,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handlerFn(w, r)
 }
 
-// Run listen the services
+// (*Server).Run run listen the services.
 func (s *Server) Run(ctx context.Context) {
 	go s.ListenAndServeDNS(ctx, "udp")
 	go s.ListenAndServeDNS(ctx, "tcp")
@@ -119,7 +119,7 @@ func (s *Server) Run(ctx context.Context) {
 	go s.ListenAndServeQUIC(ctx)
 }
 
-// ListenAndServeDNS Starts a server on address and network specified Invoke handler
+// (*Server).ListenAndServeDNS listenAndServeDNS Starts a server on address and network specified Invoke handler
 // for incoming queries.
 func (s *Server) ListenAndServeDNS(ctx context.Context, network string) error {
 	zlog.Info("DNS server listening...", "net", network, "addr", s.addr)
@@ -169,7 +169,7 @@ func (s *Server) ListenAndServeDNS(ctx context.Context, network string) error {
 	return nil
 }
 
-// ListenAndServeDNSTLS acts like http.ListenAndServeTLS
+// (*Server).ListenAndServeDNSTLS listenAndServeDNSTLS acts like http.ListenAndServeTLS.
 func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 	if s.tlsAddr == "" {
 		return nil
@@ -222,7 +222,7 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 	return nil
 }
 
-// ListenAndServeHTTPTLS acts like http.ListenAndServeTLS
+// (*Server).ListenAndServeHTTPTLS listenAndServeHTTPTLS acts like http.ListenAndServeTLS.
 func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 	if s.dohAddr == "" {
 		return nil
@@ -266,7 +266,7 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 	return nil
 }
 
-// ListenAndServeH3
+// (*Server).ListenAndServeH3 listenAndServeH3.
 func (s *Server) ListenAndServeH3(ctx context.Context) error {
 	if s.dohAddr == "" {
 		return nil
@@ -304,7 +304,7 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 	return nil
 }
 
-// ListenAndServeQUIC
+// (*Server).ListenAndServeQUIC listenAndServeQUIC.
 func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 	if s.doqAddr == "" {
 		return nil

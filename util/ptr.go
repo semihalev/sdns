@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	// ReverseDomainV4 is the reverse DNS domain for IPv4 addresses
+	// ReverseDomainV4 is the reverse DNS domain for IPv4 addresses.
 	ReverseDomainV4 = ".in-addr.arpa."
-	// ReverseDomainV6 is the reverse DNS domain for IPv6 addresses
+	// ReverseDomainV6 is the reverse DNS domain for IPv6 addresses.
 	ReverseDomainV6 = ".ip6.arpa."
 )
 
@@ -45,7 +45,7 @@ func CheckReverseName(name string) int {
 	}
 }
 
-// parseIPv4PTR converts IPv4 PTR name to IP address
+// parseIPv4PTR converts IPv4 PTR name to IP address.
 func parseIPv4PTR(name string) string {
 	// Remove the suffix
 	parts := strings.TrimSuffix(name, ReverseDomainV4)
@@ -67,7 +67,7 @@ func parseIPv4PTR(name string) string {
 	return ip.String()
 }
 
-// parseIPv6PTR converts IPv6 PTR name to IP address
+// parseIPv6PTR converts IPv6 PTR name to IP address.
 func parseIPv6PTR(name string) string {
 	// Remove the suffix
 	parts := strings.TrimSuffix(name, ReverseDomainV6)

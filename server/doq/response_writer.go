@@ -8,7 +8,7 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// ResponseWriter implements dns.ResponseWriter for DNS-over-QUIC
+// ResponseWriter implements dns.ResponseWriter for DNS-over-QUIC.
 type ResponseWriter struct {
 	dns.ResponseWriter
 
@@ -28,7 +28,7 @@ func (w *ResponseWriter) Close() error {
 	return w.Stream.Close()
 }
 
-// Hijack implements dns.ResponseWriter.Hijack
+// (*ResponseWriter).Hijack hijack implements dns.ResponseWriter.Hijack.
 func (w *ResponseWriter) Hijack() {
 	// No-op for QUIC as connection management is handled differently
 }

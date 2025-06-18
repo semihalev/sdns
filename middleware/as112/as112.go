@@ -10,12 +10,12 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// AS112 type
+// AS112 type.
 type AS112 struct {
 	zones map[string]bool
 }
 
-// New return a new middleware
+// New return a new middleware.
 func New(cfg *config.Config) *AS112 {
 	a := &AS112{zones: defaultZones}
 
@@ -41,10 +41,10 @@ func New(cfg *config.Config) *AS112 {
 	return a
 }
 
-// Name return middleware name
+// (*AS112).Name name return middleware name.
 func (a *AS112) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*AS112).ServeDNS serveDNS implements the Handle interface.
 func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
@@ -121,7 +121,7 @@ func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Cancel()
 }
 
-// Match returns whether or not a name contains in the zones
+// (*AS112).Match match returns whether or not a name contains in the zones.
 func (a *AS112) Match(name string, qtype uint16) string {
 	name = dns.CanonicalName(name)
 

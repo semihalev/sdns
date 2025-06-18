@@ -227,7 +227,7 @@ func TestSetEDNSKeepalive(t *testing.T) {
 	assert.Equal(t, 1, len(msg2.IsEdns0().Option))
 }
 
-// mockNetConn is a mock implementation of net.Conn for testing
+// mockNetConn is a mock implementation of net.Conn for testing.
 type mockNetConn struct {
 	remoteAddr string
 	closed     bool

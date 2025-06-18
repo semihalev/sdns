@@ -7,7 +7,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-// SetEDE adds an Extended DNS Error to the response
+// SetEDE adds an Extended DNS Error to the response.
 func SetEDE(msg *dns.Msg, code uint16, extraText string) {
 	opt := msg.IsEdns0()
 	if opt == nil {
@@ -22,7 +22,7 @@ func SetEDE(msg *dns.Msg, code uint16, extraText string) {
 	opt.Option = append(opt.Option, ede)
 }
 
-// GetEDE extracts Extended DNS Error from a message if present
+// GetEDE extracts Extended DNS Error from a message if present.
 func GetEDE(msg *dns.Msg) *dns.EDNS0_EDE {
 	opt := msg.IsEdns0()
 	if opt == nil {
@@ -37,7 +37,7 @@ func GetEDE(msg *dns.Msg) *dns.EDNS0_EDE {
 	return nil
 }
 
-// SetRcodeWithEDE returns message with specified rcode and Extended DNS Error
+// SetRcodeWithEDE returns message with specified rcode and Extended DNS Error.
 func SetRcodeWithEDE(req *dns.Msg, rcode int, do bool, edeCode uint16, extraText string) *dns.Msg {
 	m := SetRcode(req, rcode, do)
 	if rcode == dns.RcodeServerFailure {
@@ -46,7 +46,7 @@ func SetRcodeWithEDE(req *dns.Msg, rcode int, do bool, edeCode uint16, extraText
 	return m
 }
 
-// ErrorToEDE maps errors to Extended DNS Error codes efficiently
+// ErrorToEDE maps errors to Extended DNS Error codes efficiently.
 func ErrorToEDE(err error) (uint16, string) {
 	if err == nil {
 		return dns.ExtendedErrorCodeOther, ""

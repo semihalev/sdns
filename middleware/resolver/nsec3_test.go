@@ -11,7 +11,7 @@ func makeNSEC3(name, next string, optOut bool, types []uint16) *dns.NSEC3 {
 	salt := ""
 	flags := uint8(0)
 	if optOut {
-		flags = flags | 0x01
+		flags |= 0x01
 	}
 	return &dns.NSEC3{
 		Hdr: dns.RR_Header{

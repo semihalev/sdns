@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testConfig creates a config with the given version for testing
+// testConfig creates a config with the given version for testing.
 func testConfig(chaos bool, version string) *config.Config {
 	cfg := &config.Config{
 		Chaos: chaos,

@@ -17,6 +17,7 @@ import (
 	"github.com/semihalev/sdns/middleware/failover"
 	"github.com/semihalev/sdns/middleware/forwarder"
 	"github.com/semihalev/sdns/middleware/hostsfile"
+	"github.com/semihalev/sdns/middleware/kubernetes"
 	"github.com/semihalev/sdns/middleware/loop"
 	"github.com/semihalev/sdns/middleware/metrics"
 	"github.com/semihalev/sdns/middleware/ratelimit"
@@ -37,6 +38,7 @@ func init() {
 	middleware.Register("hostsfile", func(cfg *config.Config) middleware.Handler { return hostsfile.New(cfg) })
 	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
 	middleware.Register("as112", func(cfg *config.Config) middleware.Handler { return as112.New(cfg) })
+	middleware.Register("kubernetes", func(cfg *config.Config) middleware.Handler { return kubernetes.New(cfg) })
 	middleware.Register("cache", func(cfg *config.Config) middleware.Handler { return cache.New(cfg) })
 	middleware.Register("failover", func(cfg *config.Config) middleware.Handler { return failover.New(cfg) })
 	middleware.Register("resolver", func(cfg *config.Config) middleware.Handler { return resolver.New(cfg) })

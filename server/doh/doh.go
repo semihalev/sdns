@@ -18,7 +18,7 @@ const (
 	contentTypeJS    = "application/x-javascript"
 )
 
-// HandleWireFormat handle wire format
+// HandleWireFormat handle wire format.
 func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var (
@@ -83,7 +83,7 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 	}
 }
 
-// HandleJSON handle json format
+// HandleJSON handle json format.
 func HandleJSON(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Only allow GET for JSON API

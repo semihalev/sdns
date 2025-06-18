@@ -8,7 +8,7 @@ import (
 	"unsafe"
 )
 
-// SyncUInt64Map: lock-free hash map using CAS operations on linked lists
+// SyncUInt64Map syncUInt64Map: lock-free hash map using CAS operations on linked lists.
 type SyncUInt64Map[V any] struct {
 	buckets []bucket[V]
 	mask    uint64
@@ -26,7 +26,7 @@ type fnode[V any] struct {
 	deleted uint32
 }
 
-// NewSyncUInt64Map creates a new optimized map for uint64 keys
+// NewSyncUInt64Map creates a new optimized map for uint64 keys.
 func NewSyncUInt64Map[V any](sizePower uint) *SyncUInt64Map[V] {
 	if sizePower < 2 {
 		sizePower = 2 // Minimum 4 buckets
@@ -44,15 +44,15 @@ func NewSyncUInt64Map[V any](sizePower uint) *SyncUInt64Map[V] {
 	}
 }
 
-// hashFast: avalanche mixing spreads bits for uniform bucket distribution
+// hashFast: avalanche mixing spreads bits for uniform bucket distribution.
 func hashFast(key uint64) uint64 {
-	key = key * 0xd6e8feb86659fd93
+	key *= 0xd6e8feb86659fd93
 	key = bits.RotateLeft64(key, 32) ^ key
 
 	return key
 }
 
-// Get retrieves a value by key
+// ().Get get retrieves a value by key.
 func (m *SyncUInt64Map[V]) Get(key uint64) (V, bool) {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
@@ -73,7 +73,7 @@ func (m *SyncUInt64Map[V]) Get(key uint64) (V, bool) {
 	return zero, false
 }
 
-// Set adds or updates a key-value pair
+// ().Set set adds or updates a key-value pair.
 func (m *SyncUInt64Map[V]) Set(key uint64, value V) {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
@@ -187,7 +187,7 @@ retry:
 	}
 }
 
-// Del removes a key from the map
+// ().Del del removes a key from the map.
 func (m *SyncUInt64Map[V]) Del(key uint64) bool {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
@@ -211,7 +211,7 @@ func (m *SyncUInt64Map[V]) Del(key uint64) bool {
 	return false
 }
 
-// Len returns the number of elements in the map
+// ().Len len returns the number of elements in the map.
 func (m *SyncUInt64Map[V]) Len() int64 {
 	return m.count.Load()
 }
@@ -220,7 +220,7 @@ func (m *SyncUInt64Map[V]) All() iter.Seq2[uint64, V] {
 	return m.ForEach
 }
 
-// ForEach iterates through all key-value pairs
+// ().ForEach forEach iterates through all key-value pairs.
 func (m *SyncUInt64Map[V]) ForEach(f func(uint64, V) bool) {
 	// For each bucket
 	for i := range m.buckets {
@@ -249,7 +249,7 @@ func (m *SyncUInt64Map[V]) ForEach(f func(uint64, V) bool) {
 	}
 }
 
-// Has checks if a key exists in the map without retrieving its value
+// ().Has has checks if a key exists in the map without retrieving its value.
 func (m *SyncUInt64Map[V]) Has(key uint64) bool {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
@@ -265,7 +265,7 @@ func (m *SyncUInt64Map[V]) Has(key uint64) bool {
 	return false
 }
 
-// RandomSample: O(sample) complexity by sampling random buckets, not full scan
+// ().RandomSample randomSample: O(sample) complexity by sampling random buckets, not full scan.
 func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
 	if maxSample <= 0 {
 		return nil

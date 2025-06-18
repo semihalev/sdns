@@ -198,7 +198,7 @@ func TestErrorToEDE(t *testing.T) {
 	}
 }
 
-// Mock error type with EDE support
+// Mock error type with EDE support.
 type mockEDEError struct {
 	code uint16
 	text string

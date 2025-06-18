@@ -12,7 +12,7 @@ import (
 	"github.com/semihalev/zlog"
 )
 
-// State represents the state of a trust anchor in RFC 5011 lifecycle
+// State represents the state of a trust anchor in RFC 5011 lifecycle.
 type State int
 
 const (
@@ -33,14 +33,14 @@ const (
 	stateFile = "trust-anchor.db"
 )
 
-// TrustAnchor holds a DNSSEC trust anchor with its state and metadata
+// TrustAnchor holds a DNSSEC trust anchor with its state and metadata.
 type TrustAnchor struct {
 	DNSKey    *dns.DNSKEY
 	State     State
 	FirstSeen time.Time
 }
 
-// TrustAnchors maps key tags to their trust anchor data
+// TrustAnchors maps key tags to their trust anchor data.
 type TrustAnchors map[uint16]*TrustAnchor
 
 func (s State) String() string {
@@ -155,7 +155,7 @@ func (r *Resolver) AutoTA() {
 			if ta.DNSKey.Flags&DNSKEYFlagRevoke != 0 {
 				oldTag := tag - DNSKEYFlagRevoke
 				if kskCurrent[oldTag] != nil && kskCurrent[oldTag].State == StateValid {
-					//revoked ksk
+					// revoked ksk
 					zlog.Warn("Trust anchor revoked!", "keytag", tag)
 					ta.State = StateRevoked
 					ta.FirstSeen = time.Now()
@@ -167,7 +167,7 @@ func (r *Resolver) AutoTA() {
 				continue
 			}
 
-			//found new ksk
+			// found new ksk
 			zlog.Warn("New trust anchor found! Pending for hold-down", "keytag", tag, "hold-down", "30d")
 			kskCurrent[tag] = ta
 			ta.State = StateAddPend
@@ -181,14 +181,14 @@ func (r *Resolver) AutoTA() {
 				zlog.Warn("Trust anchor removed! Pending for hold-down", "keytag", tag, "hold-down", "90d")
 				ta.State = StateRemoved
 				ta.FirstSeen = time.Now()
-				//ta removed, no refresh anymore
+				// ta removed, no refresh anymore
 			} else if ta.State != StateRemoved && ta.State != StateMissing {
 				zlog.Warn("Trust anchor missing! Please check it manually", "keytag", tag, "hold-down", "90d")
 				ta.State = StateMissing
 				ta.FirstSeen = time.Now()
 			}
 
-			if (ta.State == StateRemoved || ta.State == StateMissing) && time.Since(ta.FirstSeen) > 2160*time.Hour { //hold-down 90 days
+			if (ta.State == StateRemoved || ta.State == StateMissing) && time.Since(ta.FirstSeen) > 2160*time.Hour { // hold-down 90 days
 				// we can delete this safely now
 				zlog.Warn("Trust anchor deleted!", "keytag", tag)
 				delete(kskCurrent, tag)
@@ -196,7 +196,7 @@ func (r *Resolver) AutoTA() {
 			continue
 		}
 
-		if ta.State == StateAddPend && time.Since(ta.FirstSeen) > 720*time.Hour { //hold-down 30days
+		if ta.State == StateAddPend && time.Since(ta.FirstSeen) > 720*time.Hour { // hold-down 30days
 			// now valid
 			zlog.Warn("Trust anchor now valid!", "keytag", tag)
 			ta.State = StateValid

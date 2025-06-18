@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// BenchmarkCachePerformance benchmarks the new cache implementation
+// BenchmarkCachePerformance benchmarks the new cache implementation.
 func BenchmarkCachePerformance(b *testing.B) {
 	sizes := []int{10000, 100000, 256000, 500000}
 	readRatios := []float64{0.95, 0.90, 0.80} // DNS caches are read-heavy
@@ -41,11 +41,12 @@ func benchmarkCachePerf(b *testing.B, size int, readRatio float64) {
 			key := keys[rng.Intn(size)]
 			r := rng.Float64()
 
-			if r < readRatio {
+			switch {
+			case r < readRatio:
 				c.Get(key)
-			} else if r < readRatio+(1-readRatio)/2 {
+			case r < readRatio+(1-readRatio)/2:
 				c.Add(key, key)
-			} else {
+			default:
 				c.Remove(key)
 			}
 		}
@@ -61,7 +62,7 @@ func generateTestKeys(n int) []uint64 {
 	return keys
 }
 
-// BenchmarkHighConcurrency tests under extreme concurrency (simulating busy DNS server)
+// BenchmarkHighConcurrency tests under extreme concurrency (simulating busy DNS server).
 func BenchmarkHighConcurrency(b *testing.B) {
 	const size = 256000 // Standard SDNS cache size
 	numCPU := runtime.NumCPU()

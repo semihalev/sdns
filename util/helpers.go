@@ -38,7 +38,7 @@ func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
 	return m
 }
 
-// SetEdns0 returns replaced or new opt rr and if request has do
+// SetEdns0 returns replaced or new opt rr and if request has do.
 func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
 	do, nsid := false, false
 	opt := req.IsEdns0()
@@ -63,9 +63,11 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
 
 		for _, option := range ops {
 			switch option.Option() {
-			//TODO (semihalev): is this broken privacy???
+			// RFC 7871: EDNS Client Subnet - intentionally stripped for privacy
+			// ECS reveals client location to authoritative servers and transit networks
+			// RFC recommends "disabled by default" - we follow privacy-first approach
 			case dns.EDNS0SUBNET:
-				//opt.Option = append(opt.Option, option)
+				// Stripped - do not forward client subnet information
 			case dns.EDNS0COOKIE:
 				if len(option.String()) >= 16 {
 					cookie = option.String()[:16]
@@ -96,7 +98,7 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
 	return opt, size, cookie, nsid, do
 }
 
-// GenerateServerCookie return generated edns server cookie
+// GenerateServerCookie return generated edns server cookie.
 func GenerateServerCookie(secret, remoteip, cookie string) string {
 	scookie := sha256.New()
 
@@ -107,7 +109,7 @@ func GenerateServerCookie(secret, remoteip, cookie string) string {
 	return cookie + hex.EncodeToString(scookie.Sum(nil))
 }
 
-// ClearOPT returns cleared opt message
+// ClearOPT returns cleared opt message.
 func ClearOPT(msg *dns.Msg) *dns.Msg {
 	extra := make([]dns.RR, len(msg.Extra))
 	copy(extra, msg.Extra)
@@ -126,7 +128,7 @@ func ClearOPT(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// ClearDNSSEC returns cleared RRSIG and NSECx message
+// ClearDNSSEC returns cleared RRSIG and NSECx message.
 func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	// we shouldn't clear RRSIG questions
 	if len(msg.Question) > 0 {
@@ -164,7 +166,7 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// Exchange exchange dns request with TCP fallback
+// Exchange exchange dns request with TCP fallback.
 func Exchange(ctx context.Context, req *dns.Msg, addr string, net string) (*dns.Msg, error) {
 	client := dns.Client{Net: net}
 	resp, _, err := client.ExchangeContext(ctx, req, addr)
@@ -176,7 +178,7 @@ func Exchange(ctx context.Context, req *dns.Msg, addr string, net string) (*dns.
 	return resp, err
 }
 
-// ExchangeInternal exchange dns request internal
+// ExchangeInternal exchange dns request internal.
 func ExchangeInternal(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
 	w := mock.NewWriter("tcp", "127.0.0.255:0")
 
@@ -194,7 +196,7 @@ func ExchangeInternal(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
 	return w.Msg(), nil
 }
 
-// ParsePurgeQuestion can parse query for purge questions
+// ParsePurgeQuestion can parse query for purge questions.
 func ParsePurgeQuestion(req *dns.Msg) (qname string, qtype uint16, ok bool) {
 	if len(req.Question) == 0 {
 		return
@@ -219,7 +221,7 @@ func ParsePurgeQuestion(req *dns.Msg) (qname string, qtype uint16, ok bool) {
 	return q[1], qtype, true
 }
 
-// NotSupported response to writer a empty notimplemented message
+// NotSupported response to writer an empty notimplemented message.
 func NotSupported(w dns.ResponseWriter, req *dns.Msg) error {
 	return w.WriteMsg(&dns.Msg{
 		MsgHdr: dns.MsgHdr{
@@ -234,6 +236,6 @@ func NotSupported(w dns.ResponseWriter, req *dns.Msg) error {
 }
 
 const (
-	// DefaultMsgSize EDNS0 message size
+	// DefaultMsgSize EDNS0 message size.
 	DefaultMsgSize = 1232
 )

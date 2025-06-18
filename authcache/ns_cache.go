@@ -7,7 +7,7 @@ import (
 	"github.com/semihalev/sdns/cache"
 )
 
-// NS represents a cache entry
+// NS represents a cache entry.
 type NS struct {
 	Servers *AuthServers
 	DSRR    []dns.RR
@@ -16,14 +16,14 @@ type NS struct {
 	ut time.Time
 }
 
-// NSCache type
+// NSCache type.
 type NSCache struct {
 	cache *cache.Cache
 
 	now func() time.Time
 }
 
-// NewNSCache return new cache
+// NewNSCache return new cache.
 func NewNSCache() *NSCache {
 	n := &NSCache{
 		cache: cache.New(defaultCap),
@@ -33,7 +33,7 @@ func NewNSCache() *NSCache {
 	return n
 }
 
-// Get returns the entry for a key or an error
+// (*NSCache).Get get returns the entry for a key or an error.
 func (n *NSCache) Get(key uint64) (*NS, error) {
 	el, ok := n.cache.Get(key)
 
@@ -52,7 +52,7 @@ func (n *NSCache) Get(key uint64) (*NS, error) {
 	return ns, nil
 }
 
-// Set sets a keys value to a NS
+// (*NSCache).Set set sets a keys value to a NS.
 func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers, ttl time.Duration) {
 	if ttl > maximumTTL {
 		ttl = maximumTTL
@@ -68,7 +68,7 @@ func (n *NSCache) Set(key uint64, dsRR []dns.RR, servers *AuthServers, ttl time.
 	})
 }
 
-// Remove remove a cache
+// (*NSCache).Remove remove remove a cache.
 func (n *NSCache) Remove(key uint64) {
 	n.cache.Remove(key)
 }

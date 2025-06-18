@@ -15,7 +15,7 @@ import (
 )
 
 // BlockList type
-// Supports wildcard domains like "*.example.com" to block all subdomains
+// Supports wildcard domains like "*.example.com" to block all subdomains.
 type BlockList struct {
 	mu sync.RWMutex
 
@@ -29,7 +29,7 @@ type BlockList struct {
 	cfg *config.Config
 }
 
-// New returns a new BlockList
+// New returns a new BlockList.
 func New(cfg *config.Config) *BlockList {
 	b := &BlockList{
 		nullroute:  net.ParseIP(cfg.Nullroute),
@@ -47,10 +47,10 @@ func New(cfg *config.Config) *BlockList {
 	return b
 }
 
-// Name return middleware name
+// (*BlockList).Name name return middleware name.
 func (b *BlockList) Name() string { return name }
 
-// ServeDNS implements the Handle interface.
+// (*BlockList).ServeDNS serveDNS implements the Handle interface.
 func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// Fast path: skip if no blocklist entries
 	b.mu.RLock()
@@ -119,7 +119,7 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Cancel()
 }
 
-// Get returns the entry for a key or an error
+// (*BlockList).Get get returns the entry for a key or an error.
 func (b *BlockList) Get(key string) (bool, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -134,7 +134,7 @@ func (b *BlockList) Get(key string) (bool, error) {
 	return val, nil
 }
 
-// Remove removes an entry from the cache
+// (*BlockList).Remove remove removes an entry from the cache.
 func (b *BlockList) Remove(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -161,7 +161,7 @@ func (b *BlockList) Remove(key string) bool {
 	return false
 }
 
-// Set sets a value in the BlockList
+// (*BlockList).Set set sets a value in the BlockList.
 func (b *BlockList) Set(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -203,7 +203,7 @@ func (b *BlockList) set(key string) bool {
 	return true
 }
 
-// Exists returns whether or not a key exists in the cache
+// (*BlockList).Exists exists returns whether or not a key exists in the cache.
 func (b *BlockList) Exists(key string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -241,7 +241,7 @@ func (b *BlockList) Exists(key string) bool {
 	return false
 }
 
-// Length returns the caches length
+// (*BlockList).Length length returns the caches length.
 func (b *BlockList) Length() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

@@ -524,7 +524,7 @@ func TestMultipleIPs(t *testing.T) {
 	assert.Len(t, resp.Answer, 2)
 }
 
-// Helper function to create temporary hosts file
+// Helper function to create temporary hosts file.
 func createTempHostsFile(t *testing.T, content string) string {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "hosts")

@@ -221,7 +221,7 @@ func BenchmarkKeyParallel(b *testing.B) {
 	})
 }
 
-// Benchmark to compare with non-pooled version
+// Benchmark to compare with non-pooled version.
 func BenchmarkKeyNoPool(b *testing.B) {
 	q := dns.Question{
 		Name:   "example.com.",

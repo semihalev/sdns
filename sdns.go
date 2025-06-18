@@ -19,7 +19,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "1.5.3"
+const version = "1.6.0"
 
 var (
 	cfgPath string

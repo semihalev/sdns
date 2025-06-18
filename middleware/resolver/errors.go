@@ -6,7 +6,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-// ValidationError represents a DNS validation error with EDE information
+// ValidationError represents a DNS validation error with EDE information.
 type ValidationError struct {
 	Code    uint16
 	Message string
@@ -24,12 +24,12 @@ func (e *ValidationError) Unwrap() error {
 	return e.Err
 }
 
-// EDECode returns the EDE code for this error
+// (*ValidationError).EDECode EDECode returns the EDE code for this error.
 func (e *ValidationError) EDECode() uint16 {
 	return e.Code
 }
 
-// Common validation errors with EDE codes
+// Common validation errors with EDE codes.
 var (
 	errNoDNSKEY = &ValidationError{
 		Code:    dns.ExtendedErrorCodeDNSKEYMissing,
@@ -69,7 +69,7 @@ var (
 	}
 )
 
-// NSEC validation errors
+// NSEC validation errors.
 var (
 	errNSECTypeExists = &ValidationError{
 		Code:    dns.ExtendedErrorCodeDNSBogus,
@@ -93,7 +93,7 @@ var (
 	}
 )
 
-// Network and authority errors
+// Network and authority errors.
 var (
 	errMaxDepth = &ValidationError{
 		Code:    dns.ExtendedErrorCodeOther,
@@ -117,7 +117,7 @@ var (
 	}
 )
 
-// NewNetworkError creates a network error with EDE information
+// NewNetworkError creates a network error with EDE information.
 func NewNetworkError(err error) *ValidationError {
 	return &ValidationError{
 		Code:    dns.ExtendedErrorCodeNetworkError,
@@ -126,7 +126,7 @@ func NewNetworkError(err error) *ValidationError {
 	}
 }
 
-// NewNoReachableAuthorityError creates an error for unreachable servers
+// NewNoReachableAuthorityError creates an error for unreachable servers.
 func NewNoReachableAuthorityError(message string) *ValidationError {
 	return &ValidationError{
 		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
@@ -134,7 +134,7 @@ func NewNoReachableAuthorityError(message string) *ValidationError {
 	}
 }
 
-// NoReachableAuthAtZone creates an error with zone context
+// NoReachableAuthAtZone creates an error with zone context.
 func NoReachableAuthAtZone(zone string) *ValidationError {
 	return &ValidationError{
 		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
@@ -142,7 +142,7 @@ func NoReachableAuthAtZone(zone string) *ValidationError {
 	}
 }
 
-// WithContext creates a new ValidationError with additional context
+// (*ValidationError).WithContext withContext creates a new ValidationError with additional context.
 func (e *ValidationError) WithContext(format string, args ...any) *ValidationError {
 	return &ValidationError{
 		Code:    e.Code,
@@ -151,7 +151,7 @@ func (e *ValidationError) WithContext(format string, args ...any) *ValidationErr
 	}
 }
 
-// Common error creation helpers
+// DNSKEYMissingForZone common error creation helpers.
 func DNSKEYMissingForZone(zone string) *ValidationError {
 	return &ValidationError{
 		Code:    dns.ExtendedErrorCodeDNSKEYMissing,

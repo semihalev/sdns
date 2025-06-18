@@ -8,13 +8,13 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// SingleflightWrapper wraps singleflight.Group with timeout tracking
+// SingleflightWrapper wraps singleflight.Group with timeout tracking.
 type SingleflightWrapper struct {
 	group    singleflight.Group
 	tracking sync.Map // key -> startTime
 }
 
-// NewSingleflightWrapper creates a new wrapper with periodic cleanup
+// NewSingleflightWrapper creates a new wrapper with periodic cleanup.
 func NewSingleflightWrapper() *SingleflightWrapper {
 	w := &SingleflightWrapper{}
 
@@ -24,7 +24,7 @@ func NewSingleflightWrapper() *SingleflightWrapper {
 	return w
 }
 
-// DoChan wraps singleflight.DoChan with timeout tracking
+// (*SingleflightWrapper).DoChan doChan wraps singleflight.DoChan with timeout tracking.
 func (w *SingleflightWrapper) DoChan(key string, fn func() (any, error)) <-chan singleflight.Result {
 	// Track when this key started
 	w.tracking.Store(key, time.Now())
@@ -39,13 +39,13 @@ func (w *SingleflightWrapper) DoChan(key string, fn func() (any, error)) <-chan 
 	return ch
 }
 
-// Forget wraps singleflight.Forget and cleans up tracking
+// (*SingleflightWrapper).Forget forget wraps singleflight.Forget and cleans up tracking.
 func (w *SingleflightWrapper) Forget(key string) {
 	w.group.Forget(key)
 	w.tracking.Delete(key)
 }
 
-// cleanupLoop periodically cleans up stuck queries
+// cleanupLoop periodically cleans up stuck queries.
 func (w *SingleflightWrapper) cleanupLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -55,7 +55,7 @@ func (w *SingleflightWrapper) cleanupLoop() {
 	}
 }
 
-// cleanupStuckQueries removes queries that have been running too long
+// cleanupStuckQueries removes queries that have been running too long.
 func (w *SingleflightWrapper) cleanupStuckQueries() {
 	now := time.Now()
 	maxDuration := 15 * time.Second // Maximum time before considering a query stuck
@@ -81,7 +81,7 @@ func (w *SingleflightWrapper) cleanupStuckQueries() {
 	}
 }
 
-// TimedDoChan executes a function with built-in timeout handling
+// (*SingleflightWrapper).TimedDoChan timedDoChan executes a function with built-in timeout handling.
 func (w *SingleflightWrapper) TimedDoChan(ctx context.Context, key string, fn func() (any, error)) (any, error) {
 	ch := w.DoChan(key, fn)
 
