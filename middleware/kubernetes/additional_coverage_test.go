@@ -188,8 +188,8 @@ func TestParseIPv6PodEdgeCases(t *testing.T) {
 	}
 }
 
-// TestZeroAllocCacheCleanupLoop tests cleanup loop
-func TestZeroAllocCacheCleanupLoop(t *testing.T) {
+// TestHighPerformanceCacheCleanupLoop tests cleanup loop
+func TestHighPerformanceCacheCleanupLoop(t *testing.T) {
 	cache := NewZeroAllocCache()
 
 	// Add entries with varying TTLs
@@ -310,7 +310,7 @@ func TestServiceGetIPNoFamily(t *testing.T) {
 
 // TestResolverResolvePodByHostname tests pod resolution by hostname
 func TestResolverResolvePodByHostname(t *testing.T) {
-	r := NewResolver("cluster.local", NewCache())
+	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add pod with hostname and subdomain
 	r.registry.AddPod(&Pod{

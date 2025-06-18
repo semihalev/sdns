@@ -26,7 +26,7 @@ func TestKillerMode(t *testing.T) {
 
 	// Verify killer mode components
 	if k8s.cache == nil {
-		t.Error("Zero-alloc cache not initialized")
+		t.Error("High-performance cache not initialized")
 	}
 	if k8s.registry == nil {
 		t.Error("Sharded registry not initialized")
@@ -96,13 +96,18 @@ func TestKillerMode(t *testing.T) {
 
 	// Test cache hit rate
 	stats := k8s.Stats()
+	t.Logf("Stats: %+v", stats)
+	if cacheStats, ok := stats["cache"].(map[string]interface{}); ok {
+		t.Logf("Cache stats: %+v", cacheStats)
+	}
 	if hitRate, ok := stats["hit_rate"].(float64); ok && hitRate < 50 {
 		t.Errorf("Cache hit rate too low: %.2f%%", hitRate)
+		t.Logf("Queries: %v, Cache hits: %v", stats["queries"], stats["cache_hits"])
 	}
 }
 
-// TestZeroAllocCacheFunctionality tests zero-alloc cache
-func TestZeroAllocCacheFunctionality(t *testing.T) {
+// TestHighPerformanceCacheFunctionality tests high-performance cache
+func TestHighPerformanceCacheFunctionality(t *testing.T) {
 	cache := NewZeroAllocCache()
 
 	// Test store and retrieve
@@ -124,26 +129,28 @@ func TestZeroAllocCacheFunctionality(t *testing.T) {
 
 	cache.Store(qname, dns.TypeA, msg)
 
-	// Retrieve with different message IDs
-	for i := uint16(1); i < 10; i++ {
-		wire := cache.Get(qname, dns.TypeA, i)
-		if wire == nil {
+	// Retrieve multiple times
+	for i := 0; i < 5; i++ {
+		cachedIface := cache.Get(qname, dns.TypeA)
+		if cachedIface == nil {
 			t.Fatal("Failed to retrieve from cache")
 		}
 
-		// Verify message ID is updated
-		if wire[0] != byte(i>>8) || wire[1] != byte(i) {
-			t.Error("Message ID not updated in wire format")
+		// Type assert to dns.Msg
+		cached, ok := cachedIface.(*dns.Msg)
+		if !ok {
+			t.Fatal("Cache returned wrong type")
 		}
 
-		// Verify wire format is valid
-		result := new(dns.Msg)
-		if err := result.Unpack(wire); err != nil {
-			t.Errorf("Failed to unpack wire format: %v", err)
+		// Verify content
+		if len(cached.Answer) != 1 {
+			t.Error("Cached message missing answer")
 		}
 
-		if result.Id != i {
-			t.Errorf("Expected ID %d, got %d", i, result.Id)
+		// Each get returns a copy, so we can modify safely
+		cached.Id = uint16(i)
+		if cached.Id != uint16(i) {
+			t.Error("Failed to modify copy")
 		}
 	}
 

@@ -123,7 +123,7 @@ func TestRegistryOperations(t *testing.T) {
 
 // TestResolverPatterns tests various DNS patterns
 func TestResolverPatterns(t *testing.T) {
-	resolver := NewResolver("cluster.local", NewCache())
+	resolver := NewResolver(nil, "cluster.local", NewCache())
 	registry := resolver.registry
 
 	// Add test data

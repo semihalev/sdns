@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
 )
 
 // Resolver handles DNS resolution for Kubernetes resources
@@ -15,14 +16,42 @@ type Resolver struct {
 	clusterDomain string
 	registry      *Registry
 	cache         *Cache
+	ttlService    uint32
+	ttlPod        uint32
+	ttlSRV        uint32
+	ttlPTR        uint32
 }
 
 // NewResolver creates a new resolver
-func NewResolver(clusterDomain string, cache *Cache) *Resolver {
+func NewResolver(cfg *config.Config, clusterDomain string, cache *Cache) *Resolver {
+	ttlService := DefaultServiceTTL
+	ttlPod := DefaultPodTTL
+	ttlSRV := DefaultSRVTTL
+	ttlPTR := DefaultPTRTTL
+
+	if cfg != nil {
+		if cfg.Kubernetes.TTL.Service > 0 {
+			ttlService = cfg.Kubernetes.TTL.Service
+		}
+		if cfg.Kubernetes.TTL.Pod > 0 {
+			ttlPod = cfg.Kubernetes.TTL.Pod
+		}
+		if cfg.Kubernetes.TTL.SRV > 0 {
+			ttlSRV = cfg.Kubernetes.TTL.SRV
+		}
+		if cfg.Kubernetes.TTL.PTR > 0 {
+			ttlPTR = cfg.Kubernetes.TTL.PTR
+		}
+	}
+
 	return &Resolver{
 		clusterDomain: clusterDomain,
 		registry:      NewRegistry(),
 		cache:         cache,
+		ttlService:    ttlService,
+		ttlPod:        ttlPod,
+		ttlSRV:        ttlSRV,
+		ttlPTR:        ttlPTR,
 	}
 }
 
@@ -172,7 +201,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 					Name:   qname,
 					Rrtype: dns.TypeCNAME,
 					Class:  dns.ClassINET,
-					Ttl:    DefaultServiceTTL,
+					Ttl:    r.ttlService,
 				},
 				Target: dns.Fqdn(svc.ExternalName),
 			})
@@ -199,7 +228,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 									Name:   qname,
 									Rrtype: dns.TypeA,
 									Class:  dns.ClassINET,
-									Ttl:    DefaultServiceTTL,
+									Ttl:    r.ttlService,
 								},
 								A: ip.To4(),
 							})
@@ -216,7 +245,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 									Name:   qname,
 									Rrtype: dns.TypeAAAA,
 									Class:  dns.ClassINET,
-									Ttl:    DefaultServiceTTL,
+									Ttl:    r.ttlService,
 								},
 								AAAA: ip,
 							})
@@ -233,7 +262,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 							Name:   qname,
 							Rrtype: dns.TypeA,
 							Class:  dns.ClassINET,
-							Ttl:    DefaultServiceTTL,
+							Ttl:    r.ttlService,
 						},
 						A: net.IP(ipv4),
 					})
@@ -247,7 +276,7 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 							Name:   qname,
 							Rrtype: dns.TypeAAAA,
 							Class:  dns.ClassINET,
-							Ttl:    DefaultServiceTTL,
+							Ttl:    r.ttlService,
 						},
 						AAAA: net.IP(ipv6),
 					})
@@ -278,7 +307,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeA,
 							Class:  dns.ClassINET,
-							Ttl:    DefaultServiceTTL,
+							Ttl:    r.ttlService,
 						},
 						A: ip.To4(),
 					})
@@ -294,7 +323,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeAAAA,
 							Class:  dns.ClassINET,
-							Ttl:    DefaultServiceTTL,
+							Ttl:    r.ttlService,
 						},
 						AAAA: ip,
 					})
@@ -320,7 +349,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 									Name:   qname,
 									Rrtype: dns.TypeA,
 									Class:  dns.ClassINET,
-									Ttl:    DefaultServiceTTL,
+									Ttl:    r.ttlService,
 								},
 								A: ip.To4(),
 							})
@@ -336,7 +365,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 									Name:   qname,
 									Rrtype: dns.TypeAAAA,
 									Class:  dns.ClassINET,
-									Ttl:    DefaultServiceTTL,
+									Ttl:    r.ttlService,
 								},
 								AAAA: ip,
 							})
@@ -361,7 +390,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeA,
 							Class:  dns.ClassINET,
-							Ttl:    DefaultServiceTTL,
+							Ttl:    r.ttlService,
 						},
 						A: ip.To4(),
 					})
@@ -377,7 +406,7 @@ func (r *Resolver) resolvePod(parts *queryParts, qname string, qtype uint16) *Re
 							Name:   qname,
 							Rrtype: dns.TypeAAAA,
 							Class:  dns.ClassINET,
-							Ttl:    DefaultServiceTTL,
+							Ttl:    r.ttlService,
 						},
 						AAAA: ip,
 					})
@@ -441,7 +470,7 @@ func (r *Resolver) resolveSRV(parts *queryParts, qname string, qtype uint16) *Re
 					Name:   target,
 					Rrtype: dns.TypeA,
 					Class:  dns.ClassINET,
-					Ttl:    DefaultServiceTTL,
+					Ttl:    r.ttlService,
 				},
 				A: net.IP(ipv4),
 			})

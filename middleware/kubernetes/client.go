@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/semihalev/zlog"
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +26,8 @@ type Client struct {
 	clientset kubernetes.Interface
 	registry  *Registry
 	stopCh    chan struct{}
+	cancel    context.CancelFunc
+	stopped   chan struct{}
 }
 
 // NewClient creates a new Kubernetes client.
@@ -51,11 +54,16 @@ func NewClient(kubeconfig string) (*Client, error) {
 		clientset: clientset,
 		registry:  NewRegistry(),
 		stopCh:    make(chan struct{}),
+		stopped:   make(chan struct{}),
 	}, nil
 }
 
 // Run starts watching Kubernetes resources.
 func (c *Client) Run(ctx context.Context) error {
+	// Create cancellable context
+	ctx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
+	defer close(c.stopped)
 	// Create informers
 	serviceInformer := cache.NewSharedInformer(
 		cache.NewListWatchFromClient(
@@ -124,15 +132,42 @@ func (c *Client) Run(ctx context.Context) error {
 
 	zlog.Info("Kubernetes caches synced")
 
-	<-ctx.Done()
-	close(c.stopCh)
+	// Wait for context cancellation or stop signal
+	select {
+	case <-ctx.Done():
+	case <-c.stopCh:
+	}
+
+	// Cancel context to stop informers
+	if c.cancel != nil {
+		c.cancel()
+	}
+
 	return nil
 }
 
-// Stop stops the client
+// Stop stops the client and waits for cleanup
 func (c *Client) Stop() {
-	if c.stopCh != nil {
+	// Signal stop
+	select {
+	case <-c.stopCh:
+		// Already stopped
+		return
+	default:
 		close(c.stopCh)
+	}
+
+	// Cancel context if available
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	// Wait for Run to complete
+	select {
+	case <-c.stopped:
+	case <-time.After(5 * time.Second):
+		// Timeout after 5 seconds
+		zlog.Warn("Client stop timeout after 5 seconds")
 	}
 }
 

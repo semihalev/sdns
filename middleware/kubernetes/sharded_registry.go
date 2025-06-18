@@ -20,6 +20,12 @@ type ShardedRegistry struct {
 	// Stats
 	queries uint64
 	hits    uint64
+
+	// TTL configuration
+	ttlService uint32
+	ttlPod     uint32
+	ttlSRV     uint32
+	ttlPTR     uint32
 }
 
 // serviceShard holds services for one shard
@@ -36,7 +42,13 @@ type podShard struct {
 
 // NewShardedRegistry creates the beast
 func NewShardedRegistry() *ShardedRegistry {
-	r := &ShardedRegistry{}
+	r := &ShardedRegistry{
+		// Default TTLs
+		ttlService: DefaultServiceTTL,
+		ttlPod:     DefaultPodTTL,
+		ttlSRV:     DefaultSRVTTL,
+		ttlPTR:     DefaultPTRTTL,
+	}
 
 	// Initialize all shards
 	for i := 0; i < 256; i++ {
@@ -49,6 +61,23 @@ func NewShardedRegistry() *ShardedRegistry {
 	}
 
 	return r
+}
+
+// SetTTLs sets custom TTL values
+func (r *ShardedRegistry) SetTTLs(service, pod, srv, ptr uint32) {
+	// Use defaults if 0 is provided
+	if service > 0 {
+		r.ttlService = service
+	}
+	if pod > 0 {
+		r.ttlPod = pod
+	}
+	if srv > 0 {
+		r.ttlSRV = srv
+	}
+	if ptr > 0 {
+		r.ttlPTR = ptr
+	}
 }
 
 // ResolveQuery resolves DNS query with minimal locking
@@ -89,56 +118,65 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 		serviceName := labels[1]
 		namespace := labels[2]
 
-		// Try to find the pod
-		for i := 0; i < 256; i++ {
-			r.podShards[i].mu.RLock()
-			var foundPod *Pod
-			for _, pod := range r.podShards[i].pods {
-				if pod.Name == podName && pod.Namespace == namespace && pod.Subdomain == serviceName {
-					foundPod = pod
+		// Try to find the pod - check most likely shards first
+		// StatefulSet pods are often numbered, so hash based on name
+		hash := uint32(0)
+		for i := 0; i < len(podName); i++ {
+			hash = hash*31 + uint32(podName[i])
+		}
+		startShard := int(hash % 256)
+
+		var foundPod *Pod
+		// Check likely shard first
+		if foundPod = r.findPodInShard(startShard, podName, namespace, serviceName); foundPod == nil {
+			// Fall back to checking all shards
+			for i := 0; i < 256; i++ {
+				if i == startShard {
+					continue // Already checked
+				}
+				if foundPod = r.findPodInShard(i, podName, namespace, serviceName); foundPod != nil {
 					break
 				}
 			}
-			r.podShards[i].mu.RUnlock()
+		}
 
-			if foundPod != nil {
-				qname := strings.Join(labels, ".") + "."
-				var answers []dns.RR
+		if foundPod != nil {
+			qname := strings.Join(labels, ".") + "."
+			var answers []dns.RR
 
-				if qtype == dns.TypeA || qtype == dns.TypeANY {
-					if ipv4Str := foundPod.GetIPv4(); ipv4Str != "" {
-						if ip := net.ParseIP(ipv4Str); ip != nil {
-							answers = append(answers, &dns.A{
-								Hdr: dns.RR_Header{
-									Name:   qname,
-									Rrtype: dns.TypeA,
-									Class:  dns.ClassINET,
-									Ttl:    30,
-								},
-								A: ip.To4(),
-							})
-						}
+			if qtype == dns.TypeA || qtype == dns.TypeANY {
+				if ipv4Str := foundPod.GetIPv4(); ipv4Str != "" {
+					if ip := net.ParseIP(ipv4Str); ip != nil {
+						answers = append(answers, &dns.A{
+							Hdr: dns.RR_Header{
+								Name:   qname,
+								Rrtype: dns.TypeA,
+								Class:  dns.ClassINET,
+								Ttl:    r.ttlPod,
+							},
+							A: ip.To4(),
+						})
 					}
 				}
-
-				if qtype == dns.TypeAAAA || qtype == dns.TypeANY {
-					if ipv6Str := foundPod.GetIPv6(); ipv6Str != "" {
-						if ip := net.ParseIP(ipv6Str); ip != nil {
-							answers = append(answers, &dns.AAAA{
-								Hdr: dns.RR_Header{
-									Name:   qname,
-									Rrtype: dns.TypeAAAA,
-									Class:  dns.ClassINET,
-									Ttl:    30,
-								},
-								AAAA: ip,
-							})
-						}
-					}
-				}
-
-				return answers, len(answers) > 0
 			}
+
+			if qtype == dns.TypeAAAA || qtype == dns.TypeANY {
+				if ipv6Str := foundPod.GetIPv6(); ipv6Str != "" {
+					if ip := net.ParseIP(ipv6Str); ip != nil {
+						answers = append(answers, &dns.AAAA{
+							Hdr: dns.RR_Header{
+								Name:   qname,
+								Rrtype: dns.TypeAAAA,
+								Class:  dns.ClassINET,
+								Ttl:    r.ttlPod,
+							},
+							AAAA: ip,
+						})
+					}
+				}
+			}
+
+			return answers, len(answers) > 0
 		}
 	}
 
@@ -184,7 +222,7 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 					Name:   qname,
 					Rrtype: dns.TypeA,
 					Class:  dns.ClassINET,
-					Ttl:    30,
+					Ttl:    r.ttlService,
 				},
 				A: net.IP(ipv4),
 			})
@@ -197,7 +235,7 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 					Name:   qname,
 					Rrtype: dns.TypeAAAA,
 					Class:  dns.ClassINET,
-					Ttl:    30,
+					Ttl:    r.ttlService,
 				},
 				AAAA: net.IP(ipv6),
 			})
@@ -210,7 +248,7 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 					Name:   qname,
 					Rrtype: dns.TypeCNAME,
 					Class:  dns.ClassINET,
-					Ttl:    30,
+					Ttl:    r.ttlPod,
 				},
 				Target: svc.ExternalName,
 			})
@@ -258,7 +296,7 @@ func (r *ShardedRegistry) resolvePod(labels []string, qtype uint16) ([]dns.RR, b
 						Name:   qname,
 						Rrtype: dns.TypeA,
 						Class:  dns.ClassINET,
-						Ttl:    30,
+						Ttl:    r.ttlPod,
 					},
 					A: ip.To4(),
 				})
@@ -273,7 +311,7 @@ func (r *ShardedRegistry) resolvePod(labels []string, qtype uint16) ([]dns.RR, b
 						Name:   qname,
 						Rrtype: dns.TypeAAAA,
 						Class:  dns.ClassINET,
-						Ttl:    30,
+						Ttl:    r.ttlPod,
 					},
 					AAAA: ip,
 				})
@@ -319,7 +357,7 @@ func (r *ShardedRegistry) resolveSRV(labels []string) ([]dns.RR, bool) {
 						Name:   qname,
 						Rrtype: dns.TypeSRV,
 						Class:  dns.ClassINET,
-						Ttl:    30,
+						Ttl:    r.ttlPod,
 					},
 					Priority: 0,
 					Weight:   100,
@@ -358,7 +396,7 @@ func (r *ShardedRegistry) resolveReverse(labels []string) ([]dns.RR, bool) {
 					Name:   qname,
 					Rrtype: dns.TypePTR,
 					Class:  dns.ClassINET,
-					Ttl:    30,
+					Ttl:    r.ttlPod,
 				},
 				Ptr: target,
 			},
@@ -381,7 +419,7 @@ func (r *ShardedRegistry) resolveReverse(labels []string) ([]dns.RR, bool) {
 								Name:   qname,
 								Rrtype: dns.TypePTR,
 								Class:  dns.ClassINET,
-								Ttl:    30,
+								Ttl:    r.ttlPod,
 							},
 							Ptr: target,
 						},
@@ -450,6 +488,20 @@ func (r *ShardedRegistry) getPodShardByIP(ip string) *podShard {
 	}
 
 	return r.podShards[0]
+}
+
+// findPodInShard looks for a pod in a specific shard
+func (r *ShardedRegistry) findPodInShard(shardIdx int, podName, namespace, serviceName string) *Pod {
+	shard := r.podShards[shardIdx]
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	for _, pod := range shard.pods {
+		if pod.Name == podName && pod.Namespace == namespace && pod.Subdomain == serviceName {
+			return pod
+		}
+	}
+	return nil
 }
 
 // GetStats returns registry statistics

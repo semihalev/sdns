@@ -10,10 +10,10 @@ import (
 
 // DNS TTL values (configurable)
 const (
-	DefaultServiceTTL = 30
-	DefaultPodTTL     = 30
-	DefaultSRVTTL     = 30
-	DefaultPTRTTL     = 30
+	DefaultServiceTTL = uint32(30)
+	DefaultPodTTL     = uint32(30)
+	DefaultSRVTTL     = uint32(30)
+	DefaultPTRTTL     = uint32(30)
 )
 
 // Performance tuning constants

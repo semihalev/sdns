@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -8,223 +9,353 @@ import (
 	"github.com/miekg/dns"
 )
 
-// ZeroAllocCache - Truly zero-allocation DNS cache with pre-computed wire format
+// ZeroAllocCache - TRUE zero-allocation DNS cache
+// This implementation achieves zero allocations by:
+// 1. Pre-allocating all memory at initialization
+// 2. Storing DNS messages in wire format only
+// 3. Using fixed-size buffers and entries
+// 4. Returning direct references to cached data
 type ZeroAllocCache struct {
-	// Pre-allocated response buffers
-	bufferPool sync.Pool
+	// Pre-allocated entries
+	entries []zeroAllocEntry
 
-	// Wire format cache (domain+qtype -> pre-serialized DNS response)
-	wireCache sync.Map
+	// Index for fast lookup (hash -> entry index)
+	// We use a fixed-size array to avoid map allocations
+	index [16384]int32 // Power of 2 for fast modulo
+
+	// Ring buffer for LRU eviction
+	ring     []int32
+	ringHead int32
+	ringTail int32
+
+	// Locks for each index bucket (striped locking)
+	locks [256]sync.RWMutex
 
 	// Stats
-	hits      uint64
-	misses    uint64
-	evictions uint64
-
-	// Pre-allocated entries pool
-	entryPool sync.Pool
+	hits   uint64
+	misses uint64
+	stores uint64
 }
 
-// wireEntry holds pre-computed DNS response in wire format
-type wireEntry struct {
-	wire   []byte // Pre-serialized DNS response
-	expiry int64  // Unix timestamp
-	qname  string // For stats only
-	qtype  uint16 // For stats only
+// Fixed-size cache entry
+type zeroAllocEntry struct {
+	keyHash  uint64     // Hash of domain + qtype
+	wire     [4096]byte // Wire format DNS message (4096 bytes for EDNS0 support)
+	wireLen  uint16     // Actual length of wire data
+	expiry   int64      // Unix timestamp
+	occupied int32      // Atomic flag: 0=empty, 1=occupied
 }
 
-// NewZeroAllocCache creates the performance beast
+const (
+	maxEntries = 10000 // Total cache entries
+	indexSize  = 16384 // Must be power of 2
+	lockStripe = 256   // Number of lock stripes
+)
+
+// NewZeroAllocCache creates a truly zero-allocation cache
+// All memory is allocated upfront
 func NewZeroAllocCache() *ZeroAllocCache {
 	c := &ZeroAllocCache{
-		bufferPool: sync.Pool{
-			New: func() interface{} {
-				// Pre-allocate buffers (typical DNS response size)
-				return make([]byte, DefaultBufferSize)
-			},
-		},
-		entryPool: sync.Pool{
-			New: func() interface{} {
-				return &wireEntry{}
-			},
-		},
+		entries: make([]zeroAllocEntry, maxEntries),
+		ring:    make([]int32, maxEntries),
 	}
 
-	// Start background cleanup
-	go c.cleanupLoop()
+	// Initialize index with -1 (no entry)
+	for i := range c.index {
+		c.index[i] = -1
+	}
+
+	// Initialize ring buffer
+	for i := range c.ring {
+		c.ring[i] = int32(i)
+	}
+	c.ringTail = int32(maxEntries - 1)
+
+	// Start expiry checker
+	go c.expiryLoop()
 
 	return c
 }
 
-// GetEntry retrieves the raw cached wire format without modification
-// This enables true zero-allocation by returning the cached buffer directly
+// GetEntry returns a direct pointer to the wire format data
+// This achieves TRUE zero allocation by returning the actual buffer
+// IMPORTANT: Caller MUST NOT modify the returned data!
 func (c *ZeroAllocCache) GetEntry(qname string, qtype uint16) []byte {
-	key := makeKey(qname, qtype)
+	hash := hashKey(qname, qtype)
+	idx := c.findEntry(hash)
 
-	if val, ok := c.wireCache.Load(key); ok {
-		entry := val.(*wireEntry)
-
-		// Check expiry
-		if time.Now().Unix() > entry.expiry {
-			c.wireCache.Delete(key)
-			atomic.AddUint64(&c.evictions, 1)
-			return nil
-		}
-
-		atomic.AddUint64(&c.hits, 1)
-		return entry.wire // Direct return - ZERO ALLOCATIONS!
+	if idx < 0 {
+		atomic.AddUint64(&c.misses, 1)
+		return nil
 	}
 
-	atomic.AddUint64(&c.misses, 1)
-	return nil
-}
+	entry := &c.entries[idx]
 
-// Get retrieves pre-computed response (ZERO ALLOCATIONS!)
-func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID uint16) []byte {
-	key := makeKey(qname, qtype)
-
-	if val, ok := c.wireCache.Load(key); ok {
-		entry := val.(*wireEntry)
-
-		// Check expiry
-		if time.Now().Unix() > entry.expiry {
-			c.wireCache.Delete(key)
-			atomic.AddUint64(&c.evictions, 1)
-			return nil
-		}
-
-		atomic.AddUint64(&c.hits, 1)
-
-		// Get buffer from pool to avoid allocation
-		bufInterface := c.bufferPool.Get()
-		buf, ok := bufInterface.([]byte)
-		if !ok {
-			// Pool returned something else, allocate new
-			buf = make([]byte, len(entry.wire))
-		}
-
-		// Resize buffer if needed
-		if cap(buf) < len(entry.wire) {
-			c.bufferPool.Put(buf)
-			buf = make([]byte, len(entry.wire))
-		} else {
-			buf = buf[:len(entry.wire)]
-		}
-
-		// Copy wire data
-		copy(buf, entry.wire)
-
-		// Update message ID in the copy
-		if len(buf) >= 2 {
-			// DNS message ID is first 2 bytes
-			buf[0] = byte(msgID >> 8)
-			buf[1] = byte(msgID)
-		}
-
-		return buf
+	// Check expiry
+	if time.Now().Unix() > entry.expiry {
+		atomic.StoreInt32(&entry.occupied, 0)
+		atomic.AddUint64(&c.misses, 1)
+		return nil
 	}
 
-	atomic.AddUint64(&c.misses, 1)
-	return nil
+	atomic.AddUint64(&c.hits, 1)
+
+	// Return slice pointing to the actual buffer - ZERO ALLOCATIONS!
+	// This is safe because we never modify cached entries
+	return entry.wire[:entry.wireLen]
 }
 
-// Store pre-computes and caches DNS response
-func (c *ZeroAllocCache) Store(qname string, qtype uint16, msg *dns.Msg) {
-	// Extract TTL from the answer section
-	ttl := DefaultCacheTTL
-	if len(msg.Answer) > 0 {
-		if answerTTL := msg.Answer[0].Header().Ttl; answerTTL > 0 {
-			ttl = time.Duration(answerTTL) * time.Second
-		} else {
-			// Don't cache entries with 0 TTL
+// allocateEntry gets the next entry using ring buffer (LRU)
+func (c *ZeroAllocCache) allocateEntry() int32 {
+	// Simple ring buffer allocation
+	head := atomic.LoadInt32(&c.ringHead)
+	next := (head + 1) % int32(maxEntries)
+	atomic.StoreInt32(&c.ringHead, next)
+
+	idx := c.ring[head]
+
+	// Clear old entry if occupied
+	oldEntry := &c.entries[idx]
+	if atomic.LoadInt32(&oldEntry.occupied) == 1 {
+		// Remove from index
+		c.removeFromIndex(oldEntry.keyHash)
+		atomic.StoreInt32(&oldEntry.occupied, 0)
+	}
+
+	return idx
+}
+
+// findEntry looks up entry by hash
+func (c *ZeroAllocCache) findEntry(hash uint64) int32 {
+	bucket := hash & (indexSize - 1)
+	lockIdx := bucket & (lockStripe - 1)
+
+	c.locks[lockIdx].RLock()
+	idx := c.index[bucket]
+	c.locks[lockIdx].RUnlock()
+
+	if idx < 0 {
+		return -1
+	}
+
+	// Verify hash matches (collision handling)
+	entry := &c.entries[idx]
+	if atomic.LoadInt32(&entry.occupied) == 1 && entry.keyHash == hash {
+		return idx
+	}
+
+	// Linear probe for collisions
+	for i := 1; i < 16; i++ {
+		bucket = (bucket + 1) & (indexSize - 1)
+
+		lockIdx = bucket & (lockStripe - 1)
+		c.locks[lockIdx].RLock()
+		idx = c.index[bucket]
+		c.locks[lockIdx].RUnlock()
+
+		if idx < 0 {
+			break
+		}
+
+		entry = &c.entries[idx]
+		if atomic.LoadInt32(&entry.occupied) == 1 && entry.keyHash == hash {
+			return idx
+		}
+	}
+
+	return -1
+}
+
+// updateIndex updates the hash index
+func (c *ZeroAllocCache) updateIndex(hash uint64, entryIdx int32) {
+	bucket := hash & (indexSize - 1)
+
+	// Linear probe to find empty slot
+	for i := 0; i < 16; i++ {
+		testBucket := (bucket + uint64(i)) & (indexSize - 1)
+		lockIdx := testBucket & (lockStripe - 1)
+
+		c.locks[lockIdx].Lock()
+		if c.index[testBucket] < 0 {
+			c.index[testBucket] = entryIdx
+			c.locks[lockIdx].Unlock()
 			return
 		}
+		c.locks[lockIdx].Unlock()
 	}
-
-	// Get buffer from pool
-	buf := c.bufferPool.Get().([]byte)
-
-	// Pack message to wire format
-	wire, err := msg.PackBuffer(buf)
-	if err != nil {
-		c.bufferPool.Put(buf)
-		return
-	}
-
-	// Get entry from pool
-	entry := c.entryPool.Get().(*wireEntry)
-	entry.qname = qname
-	entry.qtype = qtype
-	entry.expiry = time.Now().Unix() + int64(ttl.Seconds())
-
-	// Store wire format (reuse buffer if possible)
-	if len(wire) <= len(buf) {
-		entry.wire = buf[:len(wire)]
-	} else {
-		// Need bigger buffer
-		entry.wire = make([]byte, len(wire))
-		copy(entry.wire, wire)
-		c.bufferPool.Put(buf)
-	}
-
-	// Store in cache
-	key := makeKey(qname, qtype)
-	c.wireCache.Store(key, entry)
 }
 
-// cleanupLoop removes expired entries
-func (c *ZeroAllocCache) cleanupLoop() {
-	ticker := time.NewTicker(60 * time.Second)
+// removeFromIndex removes entry from index
+func (c *ZeroAllocCache) removeFromIndex(hash uint64) {
+	bucket := hash & (indexSize - 1)
+
+	for i := 0; i < 16; i++ {
+		testBucket := (bucket + uint64(i)) & (indexSize - 1)
+		lockIdx := testBucket & (lockStripe - 1)
+
+		c.locks[lockIdx].Lock()
+		idx := c.index[testBucket]
+		if idx >= 0 {
+			entry := &c.entries[idx]
+			if entry.keyHash == hash {
+				c.index[testBucket] = -1
+				c.locks[lockIdx].Unlock()
+				return
+			}
+		}
+		c.locks[lockIdx].Unlock()
+	}
+}
+
+// expiryLoop runs periodically to mark expired entries
+func (c *ZeroAllocCache) expiryLoop() {
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		now := time.Now().Unix()
-		expired := 0
-
-		c.wireCache.Range(func(key, value interface{}) bool {
-			entry := value.(*wireEntry)
-			if now > entry.expiry {
-				c.wireCache.Delete(key)
-
-				// Return wire buffer to pool if it's standard size
-				if cap(entry.wire) == DefaultBufferSize {
-					buf := entry.wire[:DefaultBufferSize]
-					c.bufferPool.Put(buf)
-				}
-
-				// Return entry to pool
-				entry.wire = nil
-				c.entryPool.Put(entry)
-
-				expired++
+		for i := range c.entries {
+			entry := &c.entries[i]
+			if atomic.LoadInt32(&entry.occupied) == 1 && now > entry.expiry {
+				c.removeFromIndex(entry.keyHash)
+				atomic.StoreInt32(&entry.occupied, 0)
 			}
-			return true
-		})
-
-		atomic.AddUint64(&c.evictions, uint64(expired))
+		}
 	}
 }
 
-// makeKey creates cache key without allocation
-func makeKey(qname string, qtype uint16) uint64 {
-	// Fast hash combining domain and qtype
-	hash := uint64(5381)
+// hashKey creates a hash from domain name and query type
+// This is a very simple hash - in production you might want xxhash or similar
+func hashKey(qname string, qtype uint16) uint64 {
+	// FNV-1a hash
+	hash := uint64(14695981039346656037)
 
-	// Hash domain
+	// Hash qname bytes
 	for i := 0; i < len(qname); i++ {
-		hash = ((hash << 5) + hash) + uint64(qname[i])
+		hash ^= uint64(qname[i])
+		hash *= 1099511628211
 	}
 
 	// Mix in qtype
-	hash ^= uint64(qtype) << 32
+	hash ^= uint64(qtype)
+	hash *= 1099511628211
 
 	return hash
+}
+
+// Get returns the cached DNS message (compatibility method for tests)
+// This method DOES allocate as it needs to unpack the wire format
+func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID ...uint16) interface{} {
+	wire := c.GetEntry(qname, qtype)
+	if wire == nil {
+		return nil
+	}
+
+	// If msgID provided, we're expected to return wire format with updated ID
+	if len(msgID) > 0 {
+		// Create a copy with updated message ID
+		respWire := make([]byte, len(wire))
+		copy(respWire, wire)
+		UpdateMessageID(respWire, msgID[0])
+		return respWire
+	}
+
+	// Otherwise unpack and return dns.Msg
+	msg := new(dns.Msg)
+	if err := msg.Unpack(wire); err != nil {
+		return nil
+	}
+	return msg
+}
+
+// Store stores both dns.Msg and wire format (compatibility wrapper)
+func (c *ZeroAllocCache) Store(qname string, qtype uint16, data interface{}, ttl ...uint32) {
+	var wire []byte
+	var ttlVal uint32 = 30 // default
+
+	switch v := data.(type) {
+	case *dns.Msg:
+		// Pack the message
+		var err error
+		wire, err = v.Pack()
+		if err != nil {
+			return
+		}
+		// Get TTL from message if not provided
+		if len(ttl) == 0 && len(v.Answer) > 0 {
+			ttlVal = v.Answer[0].Header().Ttl
+		}
+	case []byte:
+		// Already wire format
+		wire = v
+	default:
+		return
+	}
+
+	// Use provided TTL if given
+	if len(ttl) > 0 {
+		ttlVal = ttl[0]
+	}
+
+	c.StoreWire(qname, qtype, wire, ttlVal)
+}
+
+// StoreWire is the actual zero-alloc store method
+func (c *ZeroAllocCache) StoreWire(qname string, qtype uint16, wire []byte, ttl uint32) {
+	// Don't store if too large for our buffer
+	if len(wire) > 4096 {
+		return
+	}
+
+	// Don't cache 0 TTL
+	if ttl == 0 {
+		return
+	}
+
+	hash := hashKey(qname, qtype)
+
+	// Get next entry from ring buffer
+	idx := c.allocateEntry()
+	entry := &c.entries[idx]
+
+	// Store data
+	entry.keyHash = hash
+	copy(entry.wire[:], wire) // Copy into pre-allocated buffer
+	entry.wireLen = uint16(len(wire))
+	entry.expiry = time.Now().Unix() + int64(ttl)
+
+	// Mark as occupied BEFORE updating index so findEntry can see it
+	atomic.StoreInt32(&entry.occupied, 1)
+
+	// Update index
+	c.updateIndex(hash, idx)
+
+	atomic.AddUint64(&c.stores, 1)
+}
+
+// Clear clears the cache (for tests)
+func (c *ZeroAllocCache) Clear() {
+	// Mark all entries as unoccupied
+	for i := range c.entries {
+		atomic.StoreInt32(&c.entries[i].occupied, 0)
+	}
+
+	// Clear index
+	for i := range c.index {
+		c.index[i] = -1
+	}
+
+	// Reset stats
+	atomic.StoreUint64(&c.hits, 0)
+	atomic.StoreUint64(&c.misses, 0)
+	atomic.StoreUint64(&c.stores, 0)
 }
 
 // Stats returns cache statistics
 func (c *ZeroAllocCache) Stats() map[string]interface{} {
 	hits := atomic.LoadUint64(&c.hits)
 	misses := atomic.LoadUint64(&c.misses)
-	evictions := atomic.LoadUint64(&c.evictions)
+	stores := atomic.LoadUint64(&c.stores)
 
 	total := hits + misses
 	hitRate := float64(0)
@@ -232,74 +363,37 @@ func (c *ZeroAllocCache) Stats() map[string]interface{} {
 		hitRate = float64(hits) / float64(total) * 100
 	}
 
-	size := 0
-	c.wireCache.Range(func(_, _ interface{}) bool {
-		size++
-		return true
-	})
+	// Count occupied entries
+	occupied := 0
+	for i := range c.entries {
+		if atomic.LoadInt32(&c.entries[i].occupied) == 1 {
+			occupied++
+		}
+	}
 
 	return map[string]interface{}{
 		"hits":       hits,
 		"misses":     misses,
-		"evictions":  evictions,
+		"stores":     stores,
 		"hit_rate":   hitRate,
-		"size":       size,
+		"size":       occupied,
+		"capacity":   maxEntries,
 		"zero_alloc": true,
 	}
 }
 
-// Prewarm loads common queries into cache
-func (c *ZeroAllocCache) Prewarm(services []string, namespaces []string, clusterDomain string) {
-	// Common query types
-	qtypes := []uint16{dns.TypeA, dns.TypeAAAA}
-
-	for _, ns := range namespaces {
-		for _, svc := range services {
-			qname := svc + "." + ns + ".svc." + clusterDomain + "."
-
-			for _, qtype := range qtypes {
-				// Create synthetic response
-				msg := &dns.Msg{}
-				msg.SetQuestion(qname, qtype)
-				msg.Response = true
-				msg.Authoritative = true
-				msg.RecursionAvailable = true
-
-				// Add answer (using 10.96.0.x for demo)
-				if qtype == dns.TypeA {
-					msg.Answer = append(msg.Answer, &dns.A{
-						Hdr: dns.RR_Header{
-							Name:   qname,
-							Rrtype: dns.TypeA,
-							Class:  dns.ClassINET,
-							Ttl:    30,
-						},
-						A: []byte{10, 96, 0, 1},
-					})
-				}
-
-				c.Store(qname, qtype, msg)
-			}
-		}
+// UpdateMessageID updates the message ID in wire format data
+// This modifies the data in-place with zero allocations
+func UpdateMessageID(wire []byte, msgID uint16) {
+	if len(wire) >= 2 {
+		binary.BigEndian.PutUint16(wire, msgID)
 	}
 }
 
-// Clear empties the cache
-func (c *ZeroAllocCache) Clear() {
-	c.wireCache.Range(func(key, value interface{}) bool {
-		entry := value.(*wireEntry)
-
-		// Return buffers to pool
-		if cap(entry.wire) == DefaultBufferSize {
-			buf := entry.wire[:DefaultBufferSize]
-			c.bufferPool.Put(buf)
-		}
-
-		// Return entry to pool
-		entry.wire = nil
-		c.entryPool.Put(entry)
-
-		c.wireCache.Delete(key)
-		return true
-	})
+// GetMessageID extracts message ID from wire format
+func GetMessageID(wire []byte) uint16 {
+	if len(wire) >= 2 {
+		return binary.BigEndian.Uint16(wire)
+	}
+	return 0
 }

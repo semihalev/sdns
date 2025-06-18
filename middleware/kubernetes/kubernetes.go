@@ -22,17 +22,19 @@ type Kubernetes struct {
 	k8sClient *Client
 
 	// KILLER PERFORMANCE COMPONENTS
-	cache     *ZeroAllocCache    // Zero-allocation cache
+	cache     *ZeroAllocCache    // TRUE zero-allocation cache
 	registry  *ShardedRegistry   // Lock-free sharded registry
 	predictor *LockFreePredictor // ML-based predictor
 
 	// Configuration
 	killerMode    bool
 	clusterDomain string
+	ttlConfig     config.KubernetesTTLConfig
 
 	// Stats
 	queries   uint64
 	cacheHits uint64
+	errors    uint64
 }
 
 // New creates a new Kubernetes DNS middleware
@@ -58,8 +60,9 @@ func New(cfg *config.Config) *Kubernetes {
 	var k *Kubernetes
 
 	if killerMode {
-		// KILLER MODE: Maximum performance
+		// KILLER MODE: Maximum performance with TRUE zero allocations
 		registry := NewShardedRegistry()
+		registry.SetTTLs(cfg.Kubernetes.TTL.Service, cfg.Kubernetes.TTL.Pod, cfg.Kubernetes.TTL.SRV, cfg.Kubernetes.TTL.PTR)
 		cache := NewZeroAllocCache()
 		predictor := NewLockFreePredictor()
 
@@ -69,13 +72,11 @@ func New(cfg *config.Config) *Kubernetes {
 			predictor:     predictor,
 			killerMode:    true,
 			clusterDomain: clusterDomain,
+			ttlConfig:     cfg.Kubernetes.TTL,
 		}
 
 		// Create resolver (just for demo data population)
-		k.resolver = &Resolver{
-			clusterDomain: clusterDomain,
-			registry:      NewRegistry(),
-		}
+		k.resolver = NewResolver(cfg, clusterDomain, nil)
 
 		// Pre-warm cache for common services
 		// Skip prewarm for now - it interferes with actual registry data
@@ -92,21 +93,30 @@ func New(cfg *config.Config) *Kubernetes {
 		standardCache := NewCache()
 		k = &Kubernetes{
 			clusterDomain: clusterDomain,
+			ttlConfig:     cfg.Kubernetes.TTL,
 		}
 
 		// Create standard resolver
-		k.resolver = NewResolver(clusterDomain, standardCache)
+		k.resolver = NewResolver(cfg, clusterDomain, standardCache)
 	}
 
 	// Try to connect to Kubernetes if enabled
 	if cfg.Kubernetes.Enabled && cfg.Kubernetes.Kubeconfig != "" {
 		client, err := NewClient(cfg.Kubernetes.Kubeconfig)
 		if err != nil {
-			zlog.Warn("Failed to connect to Kubernetes, using demo mode", zlog.String("error", err.Error()))
+			zlog.Error("Failed to connect to Kubernetes API",
+				zlog.String("error", err.Error()),
+				zlog.String("kubeconfig", cfg.Kubernetes.Kubeconfig))
+			zlog.Warn("Falling back to demo mode without Kubernetes integration")
 			// Continue without K8s - useful for testing
 		} else {
 			k.k8sClient = client
-			go client.Run(context.Background())
+			// Run client in background with error handling
+			go func() {
+				if err := client.Run(context.Background()); err != nil {
+					zlog.Error("Kubernetes client stopped with error", zlog.String("error", err.Error()))
+				}
+			}()
 		}
 	}
 
@@ -150,24 +160,20 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	if k.killerMode {
-		// KILLER MODE: Try zero-alloc cache first
-		cached := k.cache.GetEntry(qname, q.Qtype)
-		if cached != nil {
+		// KILLER MODE: Try TRUE zero-alloc cache first
+		cachedWire := k.cache.GetEntry(qname, q.Qtype)
+		if cachedWire != nil {
 			atomic.AddUint64(&k.cacheHits, 1)
 
-			// Update message ID directly in the cached response
-			// DNS message ID is first 2 bytes
-			if len(cached) >= 2 {
-				// Create a temporary buffer for the modified header
-				var header [12]byte
-				copy(header[:], cached[:12])
-				header[0] = byte(req.Id >> 8)
-				header[1] = byte(req.Id)
+			// Create a copy for response (we must copy to update message ID)
+			respWire := make([]byte, len(cachedWire))
+			copy(respWire, cachedWire)
 
-				// Write header and body separately - ZERO ALLOCATIONS!
-				w.Write(header[:])
-				w.Write(cached[12:]) // Write everything after header
-			}
+			// Update message ID in the copy
+			UpdateMessageID(respWire, req.Id)
+
+			// Write raw wire format - this is the fastest way
+			w.Write(respWire)
 
 			// Record for ML prediction
 			k.predictor.Record(qname, q.Qtype)
@@ -197,10 +203,23 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			msg.SetRcode(req, dns.RcodeNameError)
 		}
 
-		w.WriteMsg(msg)
+		// Pack to wire format for response
+		wire, err := msg.Pack()
+		if err == nil {
+			w.Write(wire)
 
-		// Cache in wire format
-		k.cache.Store(qname, q.Qtype, msg)
+			// Store in cache with appropriate TTL
+			ttl := uint32(30) // Default TTL
+			if len(answers) > 0 {
+				if h := answers[0].Header(); h != nil {
+					ttl = h.Ttl
+				}
+			}
+			k.cache.StoreWire(qname, q.Qtype, wire, ttl)
+		} else {
+			// Fallback to standard write
+			w.WriteMsg(msg)
+		}
 
 		// Record for ML
 		k.predictor.Record(qname, q.Qtype)
@@ -385,11 +404,14 @@ func (k *Kubernetes) Stats() map[string]interface{} {
 		hitRate = float64(hits) / float64(queries) * 100
 	}
 
+	errors := atomic.LoadUint64(&k.errors)
+
 	stats := map[string]interface{}{
 		"queries":      queries,
 		"cache_hits":   hits,
 		"cache_misses": queries - hits,
 		"hit_rate":     hitRate,
+		"errors":       errors,
 		"killer_mode":  k.killerMode,
 	}
 
@@ -431,7 +453,14 @@ func (k *Kubernetes) prefetchPredicted(current string) {
 			msg.Authoritative = true
 			msg.Answer = answers
 
-			k.cache.Store(predicted, dns.TypeA, msg)
+			// Pack and store
+			if wire, err := msg.Pack(); err == nil {
+				ttl := uint32(30)
+				if len(msg.Answer) > 0 {
+					ttl = msg.Answer[0].Header().Ttl
+				}
+				k.cache.StoreWire(predicted, dns.TypeA, wire, ttl)
+			}
 		}
 	}
 }

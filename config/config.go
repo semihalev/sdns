@@ -93,10 +93,19 @@ type Config struct {
 
 // KubernetesConfig holds Kubernetes middleware configuration
 type KubernetesConfig struct {
-	Enabled       bool   `toml:"enabled"`
-	ClusterDomain string `toml:"cluster_domain"`
-	KillerMode    bool   `toml:"killer_mode"`
-	Kubeconfig    string `toml:"kubeconfig"`
+	Enabled       bool                `toml:"enabled"`
+	ClusterDomain string              `toml:"cluster_domain"`
+	KillerMode    bool                `toml:"killer_mode"`
+	Kubeconfig    string              `toml:"kubeconfig"`
+	TTL           KubernetesTTLConfig `toml:"ttl"`
+}
+
+// KubernetesTTLConfig holds TTL settings for different record types
+type KubernetesTTLConfig struct {
+	Service uint32 `toml:"service"`
+	Pod     uint32 `toml:"pod"`
+	SRV     uint32 `toml:"srv"`
+	PTR     uint32 `toml:"ptr"`
 }
 
 // Plugin type.
@@ -497,6 +506,20 @@ killer_mode = false
 # Leave empty to use in-cluster config or ~/.kube/config
 # kubeconfig = ""
 
+# TTL configuration for different record types
+[kubernetes.ttl]
+# TTL for service A/AAAA records (seconds)
+service = 30
+
+# TTL for pod A/AAAA records (seconds)
+pod = 30
+
+# TTL for SRV records (seconds)
+srv = 30
+
+# TTL for PTR records (seconds)
+ptr = 30
+
 # ============================
 # Plugins
 # ============================
@@ -580,6 +603,20 @@ func Load(cfgfile, version string) (*Config, error) {
 	}
 	if config.TCPMaxConnections == 0 {
 		config.TCPMaxConnections = 100
+	}
+
+	// Set Kubernetes TTL defaults
+	if config.Kubernetes.TTL.Service == 0 {
+		config.Kubernetes.TTL.Service = 30
+	}
+	if config.Kubernetes.TTL.Pod == 0 {
+		config.Kubernetes.TTL.Pod = 30
+	}
+	if config.Kubernetes.TTL.SRV == 0 {
+		config.Kubernetes.TTL.SRV = 30
+	}
+	if config.Kubernetes.TTL.PTR == 0 {
+		config.Kubernetes.TTL.PTR = 30
 	}
 
 	return config, nil

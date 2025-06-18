@@ -105,8 +105,8 @@ func BenchmarkBoringMode(b *testing.B) {
 	b.Logf("Cache hit rate: %.2f%%", stats["hit_rate"])
 }
 
-// BenchmarkZeroAllocCache tests zero-allocation performance
-func BenchmarkZeroAllocCache(b *testing.B) {
+// BenchmarkHighPerformanceCache tests zero-allocation performance
+func BenchmarkHighPerformanceCache(b *testing.B) {
 	cache := NewZeroAllocCache()
 
 	// Pre-populate cache

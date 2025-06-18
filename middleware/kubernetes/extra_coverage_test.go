@@ -61,8 +61,8 @@ func TestCacheEdgeCases(t *testing.T) {
 	}
 }
 
-// TestZeroAllocCacheEdgeCases tests zero-alloc cache edge cases
-func TestZeroAllocCacheEdgeCases(t *testing.T) {
+// TestHighPerformanceCacheEdgeCases tests zero-alloc cache edge cases
+func TestHighPerformanceCacheEdgeCases(t *testing.T) {
 	cache := NewZeroAllocCache()
 
 	// Test with large message
@@ -170,7 +170,7 @@ func TestPredictorEdgeCases(t *testing.T) {
 
 // TestResolverEdgeCases tests resolver edge cases
 func TestResolverEdgeCases(t *testing.T) {
-	r := NewResolver("cluster.local", NewCache())
+	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Test with various invalid patterns
 	tests := []struct {

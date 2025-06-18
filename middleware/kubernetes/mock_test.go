@@ -365,7 +365,7 @@ func TestIPv6SupportMethods(t *testing.T) {
 
 // TestResolverCacheIntegration tests resolver cache integration
 func TestResolverCacheIntegration(t *testing.T) {
-	r := NewResolver("cluster.local", NewCache())
+	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add a service
 	r.registry.AddService(&Service{
@@ -424,8 +424,8 @@ func TestCacheWithTTL(t *testing.T) {
 	}
 }
 
-// TestZeroAllocCacheCleanup tests cleanup functionality
-func TestZeroAllocCacheCleanup(t *testing.T) {
+// TestHighPerformanceCacheCleanup tests cleanup functionality
+func TestHighPerformanceCacheCleanup(t *testing.T) {
 	cache := NewZeroAllocCache()
 
 	// Store some entries

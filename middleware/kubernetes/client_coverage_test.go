@@ -46,7 +46,7 @@ func TestBuildConfigEdgeCases(t *testing.T) {
 
 // TestResolverResolvePod tests pod resolution
 func TestResolverResolvePod(t *testing.T) {
-	r := NewResolver("cluster.local", NewCache())
+	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add pod by IP format
 	r.registry.AddPod(&Pod{
@@ -86,7 +86,7 @@ func TestKubernetesServeDNSEdgeCases(t *testing.T) {
 // TestPrefetchPredicted tests prefetch functionality
 func TestPrefetchPredicted(t *testing.T) {
 	k := &Kubernetes{
-		resolver:   NewResolver("cluster.local", NewCache()),
+		resolver:   NewResolver(nil, "cluster.local", NewCache()),
 		killerMode: true,
 		predictor:  NewLockFreePredictor(),
 	}
@@ -115,8 +115,8 @@ func TestPredictionLoopStop(t *testing.T) {
 	t.Skip("Requires internal implementation details")
 }
 
-// TestZeroAllocCacheMoreEdgeCases tests more zero alloc cache edge cases
-func TestZeroAllocCacheMoreEdgeCases(t *testing.T) {
+// TestHighPerformanceCacheMoreEdgeCases tests more zero alloc cache edge cases
+func TestHighPerformanceCacheMoreEdgeCases(t *testing.T) {
 	cache := NewZeroAllocCache()
 
 	// Test Get with nil entry
@@ -289,7 +289,7 @@ func TestShardedRegistryEdgeCases2(t *testing.T) {
 
 // TestResolverSRVEdgeCases tests SRV resolution edge cases
 func TestResolverSRVEdgeCases(t *testing.T) {
-	r := NewResolver("cluster.local", NewCache())
+	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add service with no ports
 	r.registry.AddService(&Service{

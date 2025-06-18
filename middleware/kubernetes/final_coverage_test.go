@@ -94,7 +94,7 @@ func TestRegistryMethods(t *testing.T) {
 
 // TestResolverHelpers tests resolver helper methods
 func TestResolverHelpers(t *testing.T) {
-	r := NewResolver("cluster.local", NewCache())
+	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add test data
 	r.registry.AddService(&Service{
