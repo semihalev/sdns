@@ -2,14 +2,14 @@ package kubernetes
 
 import (
 	"fmt"
-	"testing"
 	"github.com/miekg/dns"
+	"testing"
 )
 
 // BenchmarkZeroAllocCacheGet benchmarks cache retrieval (should be zero allocs)
 func BenchmarkZeroAllocCacheGet(b *testing.B) {
 	cache := NewZeroAllocCache()
-	
+
 	// Pre-populate cache with test data
 	for i := 0; i < 100; i++ {
 		qname := fmt.Sprintf("service-%d.default.svc.cluster.local.", i)
@@ -27,14 +27,14 @@ func BenchmarkZeroAllocCacheGet(b *testing.B) {
 				A: []byte{10, 96, 0, byte(i)},
 			},
 		}
-		
+
 		wire, _ := msg.Pack()
 		cache.StoreWire(qname, dns.TypeA, wire, 300)
 	}
-	
+
 	// Reset timer to exclude setup
 	b.ResetTimer()
-	
+
 	// Benchmark the GetEntry method
 	b.Run("GetEntry", func(b *testing.B) {
 		b.ReportAllocs()
@@ -52,7 +52,7 @@ func BenchmarkZeroAllocCacheGet(b *testing.B) {
 // BenchmarkZeroAllocCacheStore benchmarks cache storage
 func BenchmarkZeroAllocCacheStore(b *testing.B) {
 	cache := NewZeroAllocCache()
-	
+
 	// Pre-create wire format messages
 	wires := make([][]byte, 100)
 	qnames := make([]string, 100)
@@ -76,10 +76,10 @@ func BenchmarkZeroAllocCacheStore(b *testing.B) {
 		wire, _ := msg.Pack()
 		wires[i] = wire
 	}
-	
+
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	for i := 0; i < b.N; i++ {
 		idx := i % 100
 		cache.StoreWire(qnames[idx], dns.TypeA, wires[idx], 60)
@@ -90,7 +90,7 @@ func BenchmarkZeroAllocCacheStore(b *testing.B) {
 func BenchmarkStandardCacheComparison(b *testing.B) {
 	// Standard cache for comparison
 	stdCache := NewCache()
-	
+
 	// Pre-populate
 	for i := 0; i < 100; i++ {
 		qname := fmt.Sprintf("service-%d.default.svc.cluster.local.", i)
@@ -110,7 +110,7 @@ func BenchmarkStandardCacheComparison(b *testing.B) {
 		}
 		stdCache.Set(qname, dns.TypeA, msg)
 	}
-	
+
 	b.Run("StandardCache_Get", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
@@ -126,7 +126,7 @@ func BenchmarkStandardCacheComparison(b *testing.B) {
 // BenchmarkZeroAllocCacheParallel tests concurrent access
 func BenchmarkZeroAllocCacheParallel(b *testing.B) {
 	cache := NewZeroAllocCache()
-	
+
 	// Pre-populate
 	for i := 0; i < 1000; i++ {
 		qname := fmt.Sprintf("parallel-%d.test.local.", i)
@@ -147,10 +147,10 @@ func BenchmarkZeroAllocCacheParallel(b *testing.B) {
 		wire, _ := msg.Pack()
 		cache.StoreWire(qname, dns.TypeA, wire, 300)
 	}
-	
+
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {

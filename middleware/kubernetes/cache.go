@@ -54,7 +54,7 @@ func (c *Cache) Set(qname string, qtype uint16, msg *dns.Msg) {
 	key := cacheKey(qname, qtype)
 
 	// Determine TTL from response
-	ttl := uint32(30) // Default 30 seconds
+	ttl := uint32(CacheDefaultTTL) // Default CacheDefaultTTL seconds
 	for _, rr := range msg.Answer {
 		if rr.Header().Ttl < ttl {
 			ttl = rr.Header().Ttl
@@ -74,7 +74,7 @@ func (c *Cache) Set(qname string, qtype uint16, msg *dns.Msg) {
 
 // cleanup removes expired entries.
 func (c *Cache) cleanup() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(CacheCleanupInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {

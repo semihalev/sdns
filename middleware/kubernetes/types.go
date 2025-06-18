@@ -3,7 +3,6 @@ package kubernetes
 
 import (
 	"net"
-	"time"
 
 	"github.com/miekg/dns"
 )
@@ -14,25 +13,6 @@ const (
 	DefaultPodTTL     = uint32(30)
 	DefaultSRVTTL     = uint32(30)
 	DefaultPTRTTL     = uint32(30)
-)
-
-// Performance tuning constants
-const (
-	// Sharding constants
-	ServiceShardCount = 16
-	PodShardCount     = 256
-
-	// Buffer sizes
-	DefaultBufferSize = 512
-	MaxBufferSize     = 4096
-
-	// Cache settings
-	CacheCleanupInterval = 10 * time.Second
-	DefaultCacheTTL      = 30 * time.Second
-
-	// Predictor settings
-	PredictorBufferSize = 1024
-	MaxPredictions      = 3
 )
 
 // Service represents a Kubernetes service
@@ -98,7 +78,7 @@ func (s *Service) GetIPv4() []byte {
 		} else {
 			// No IPFamilies, check by IP size
 			for _, ip := range s.ClusterIPs {
-				if len(ip) == 4 {
+				if len(ip) == IPv4AddressSize {
 					return ip
 				}
 			}
@@ -120,7 +100,7 @@ func (s *Service) GetIPv6() []byte {
 		} else {
 			// No IPFamilies, check by IP size
 			for _, ip := range s.ClusterIPs {
-				if len(ip) == 16 {
+				if len(ip) == IPv6AddressSize {
 					return ip
 				}
 			}

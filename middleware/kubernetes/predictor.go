@@ -10,7 +10,7 @@ import (
 // Zero allocations, lock-free operations, and scary-fast predictions
 type LockFreePredictor struct {
 	// Lock-free circular buffer for recent queries
-	recentQueries [1024]atomicString
+	recentQueries [PredictorBufferSize]atomicString
 	queryIndex    uint64
 
 	// Markov chain transitions (domain -> next likely domains)
@@ -47,7 +47,7 @@ func NewLockFreePredictor() *LockFreePredictor {
 		predictionPool: sync.Pool{
 			New: func() interface{} {
 				// Pre-allocate slice for predictions
-				s := make([]string, 0, 10)
+				s := make([]string, 0, PredictorMaxPredictions)
 				return &s
 			},
 		},
@@ -62,12 +62,12 @@ func NewLockFreePredictor() *LockFreePredictor {
 // Record adds a query to the model (lock-free)
 func (p *LockFreePredictor) Record(domain string, qtype uint16) {
 	// Only track A/AAAA queries for now
-	if qtype != 1 && qtype != 28 {
+	if qtype != DNSTypeA && qtype != DNSTypeAAAA {
 		return
 	}
 
 	// Lock-free circular buffer update
-	idx := atomic.AddUint64(&p.queryIndex, 1) % 1024
+	idx := atomic.AddUint64(&p.queryIndex, 1) % PredictorBufferSize
 	p.recentQueries[idx].Store(domain)
 
 	// Update transitions (currently using sync.Map, will optimize later)
@@ -112,7 +112,7 @@ func (p *LockFreePredictor) updateTransition(from, to string) {
 
 // trainLoop continuously improves the model
 func (p *LockFreePredictor) trainLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(PredictorTrainInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -151,7 +151,7 @@ func (p *LockFreePredictor) Stats() map[string]interface{} {
 
 	accuracy := float64(0)
 	if predictions > 0 {
-		accuracy = float64(hits) / float64(predictions) * 100
+		accuracy = float64(hits) / float64(predictions) * PercentageMultiplier
 	}
 
 	return map[string]interface{}{
@@ -174,7 +174,7 @@ func (p *LockFreePredictor) modelSize() int {
 
 func (p *LockFreePredictor) recentQueriesCount() int {
 	count := 0
-	for i := 0; i < 1024; i++ {
+	for i := 0; i < PredictorBufferSize; i++ {
 		if p.recentQueries[i].Load() != "" {
 			count++
 		}
@@ -210,13 +210,13 @@ func (dt *domainTransitions) getTopPredictions(buf []string) []string {
 	}
 
 	// Simple approach: return domains with >10% probability
-	threshold := dt.total / 10
+	threshold := dt.total / PredictorThresholdDiv
 
 	for domain, count := range dt.counts {
 		if count >= threshold && len(buf) < cap(buf) {
 			buf = append(buf, domain)
 		}
-		if len(buf) >= 5 { // Max 5 predictions
+		if len(buf) >= PredictorMaxResults { // Max PredictorMaxResults predictions
 			break
 		}
 	}

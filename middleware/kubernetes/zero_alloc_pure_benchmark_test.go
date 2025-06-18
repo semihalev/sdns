@@ -1,14 +1,14 @@
 package kubernetes
 
 import (
-	"testing"
 	"github.com/miekg/dns"
+	"testing"
 )
 
 // BenchmarkPureZeroAllocCache tests the true zero-allocation behavior
 func BenchmarkPureZeroAllocCache(b *testing.B) {
 	cache := NewZeroAllocCache()
-	
+
 	// Pre-populate with fixed queries
 	queries := []string{
 		"svc1.default.svc.cluster.local.",
@@ -22,7 +22,7 @@ func BenchmarkPureZeroAllocCache(b *testing.B) {
 		"svc9.default.svc.cluster.local.",
 		"svc10.default.svc.cluster.local.",
 	}
-	
+
 	for i, qname := range queries {
 		msg := &dns.Msg{}
 		msg.SetQuestion(qname, dns.TypeA)
@@ -38,21 +38,21 @@ func BenchmarkPureZeroAllocCache(b *testing.B) {
 				A: []byte{10, 96, 0, byte(i)},
 			},
 		}
-		
+
 		wire, _ := msg.Pack()
 		cache.StoreWire(qname, dns.TypeA, wire, 300)
 	}
-	
+
 	// Verify all entries are cached
 	for _, qname := range queries {
 		if cache.GetEntry(qname, dns.TypeA) == nil {
 			b.Fatalf("Failed to cache %s", qname)
 		}
 	}
-	
+
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	// Benchmark with pre-allocated query rotation
 	for i := 0; i < b.N; i++ {
 		qname := queries[i%len(queries)]
@@ -70,7 +70,7 @@ func BenchmarkPureZeroAllocCache(b *testing.B) {
 // BenchmarkZeroAllocWithMessageID shows the cost of updating message ID
 func BenchmarkZeroAllocWithMessageID(b *testing.B) {
 	cache := NewZeroAllocCache()
-	
+
 	// Pre-populate
 	qname := "test.svc.cluster.local."
 	msg := &dns.Msg{}
@@ -87,22 +87,22 @@ func BenchmarkZeroAllocWithMessageID(b *testing.B) {
 			A: []byte{10, 96, 0, 1},
 		},
 	}
-	
+
 	wire, _ := msg.Pack()
 	cache.StoreWire(qname, dns.TypeA, wire, 300)
-	
+
 	// Pre-allocate a response buffer to reuse
 	respBuf := make([]byte, 4096)
-	
+
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	for i := 0; i < b.N; i++ {
 		wire := cache.GetEntry(qname, dns.TypeA)
 		if wire == nil {
 			b.Fatal("Cache miss")
 		}
-		
+
 		// Copy to response buffer and update message ID
 		// This simulates what happens in ServeDNS
 		n := copy(respBuf, wire)
@@ -119,10 +119,10 @@ func BenchmarkHashFunction(b *testing.B) {
 		"app-service.production.svc.cluster.local.",
 		"database.production.svc.cluster.local.",
 	}
-	
+
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	for i := 0; i < b.N; i++ {
 		qname := queries[i%len(queries)]
 		_ = hashKey(qname, dns.TypeA)

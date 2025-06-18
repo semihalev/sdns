@@ -2,11 +2,13 @@ package kubernetes
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/zlog"
 )
 
 // ZeroAllocCache - TRUE zero-allocation DNS cache
@@ -21,7 +23,7 @@ type ZeroAllocCache struct {
 
 	// Index for fast lookup (hash -> entry index)
 	// We use a fixed-size array to avoid map allocations
-	index [16384]int32 // Power of 2 for fast modulo
+	index [CacheIndexSize]int32 // Power of 2 for fast modulo
 
 	// Ring buffer for LRU eviction
 	ring     []int32
@@ -29,7 +31,7 @@ type ZeroAllocCache struct {
 	ringTail int32
 
 	// Locks for each index bucket (striped locking)
-	locks [256]sync.RWMutex
+	locks [CacheLockStripes]sync.RWMutex
 
 	// Stats
 	hits   uint64
@@ -39,17 +41,17 @@ type ZeroAllocCache struct {
 
 // Fixed-size cache entry
 type zeroAllocEntry struct {
-	keyHash  uint64     // Hash of domain + qtype
-	wire     [4096]byte // Wire format DNS message (4096 bytes for EDNS0 support)
-	wireLen  uint16     // Actual length of wire data
-	expiry   int64      // Unix timestamp
-	occupied int32      // Atomic flag: 0=empty, 1=occupied
+	keyHash  uint64                 // Hash of domain + qtype
+	wire     [CacheMaxWireSize]byte // Wire format DNS message (CacheMaxWireSize bytes for EDNS0 support)
+	wireLen  uint16                 // Actual length of wire data
+	expiry   int64                  // Unix timestamp
+	occupied int32                  // Atomic flag: 0=empty, 1=occupied
 }
 
 const (
-	maxEntries = 10000 // Total cache entries
-	indexSize  = 16384 // Must be power of 2
-	lockStripe = 256   // Number of lock stripes
+	maxEntries = CacheMaxEntries  // Total cache entries
+	indexSize  = CacheIndexSize   // Must be power of 2
+	lockStripe = CacheLockStripes // Number of lock stripes
 )
 
 // NewZeroAllocCache creates a truly zero-allocation cache
@@ -151,7 +153,7 @@ func (c *ZeroAllocCache) findEntry(hash uint64) int32 {
 	}
 
 	// Linear probe for collisions
-	for i := 1; i < 16; i++ {
+	for i := 1; i < CacheLinearProbeSize; i++ {
 		bucket = (bucket + 1) & (indexSize - 1)
 
 		lockIdx = bucket & (lockStripe - 1)
@@ -177,7 +179,7 @@ func (c *ZeroAllocCache) updateIndex(hash uint64, entryIdx int32) {
 	bucket := hash & (indexSize - 1)
 
 	// Linear probe to find empty slot
-	for i := 0; i < 16; i++ {
+	for i := 0; i < CacheLinearProbeSize; i++ {
 		testBucket := (bucket + uint64(i)) & (indexSize - 1)
 		lockIdx := testBucket & (lockStripe - 1)
 
@@ -195,7 +197,7 @@ func (c *ZeroAllocCache) updateIndex(hash uint64, entryIdx int32) {
 func (c *ZeroAllocCache) removeFromIndex(hash uint64) {
 	bucket := hash & (indexSize - 1)
 
-	for i := 0; i < 16; i++ {
+	for i := 0; i < CacheLinearProbeSize; i++ {
 		testBucket := (bucket + uint64(i)) & (indexSize - 1)
 		lockIdx := testBucket & (lockStripe - 1)
 
@@ -215,7 +217,7 @@ func (c *ZeroAllocCache) removeFromIndex(hash uint64) {
 
 // expiryLoop runs periodically to mark expired entries
 func (c *ZeroAllocCache) expiryLoop() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(CacheCleanupInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -234,17 +236,17 @@ func (c *ZeroAllocCache) expiryLoop() {
 // This is a very simple hash - in production you might want xxhash or similar
 func hashKey(qname string, qtype uint16) uint64 {
 	// FNV-1a hash
-	hash := uint64(14695981039346656037)
+	hash := uint64(FNVOffsetBasis)
 
 	// Hash qname bytes
 	for i := 0; i < len(qname); i++ {
 		hash ^= uint64(qname[i])
-		hash *= 1099511628211
+		hash *= FNVPrime
 	}
 
 	// Mix in qtype
 	hash ^= uint64(qtype)
-	hash *= 1099511628211
+	hash *= FNVPrime
 
 	return hash
 }
@@ -269,6 +271,10 @@ func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID ...uint16) interf
 	// Otherwise unpack and return dns.Msg
 	msg := new(dns.Msg)
 	if err := msg.Unpack(wire); err != nil {
+		zlog.Debug("Failed to unpack cached DNS message",
+			zlog.String("query", qname),
+			zlog.Int("qtype", int(qtype)),
+			zlog.String("error", err.Error()))
 		return nil
 	}
 	return msg
@@ -277,7 +283,7 @@ func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID ...uint16) interf
 // Store stores both dns.Msg and wire format (compatibility wrapper)
 func (c *ZeroAllocCache) Store(qname string, qtype uint16, data interface{}, ttl ...uint32) {
 	var wire []byte
-	var ttlVal uint32 = 30 // default
+	var ttlVal uint32 = CacheDefaultTTL // default
 
 	switch v := data.(type) {
 	case *dns.Msg:
@@ -285,6 +291,10 @@ func (c *ZeroAllocCache) Store(qname string, qtype uint16, data interface{}, ttl
 		var err error
 		wire, err = v.Pack()
 		if err != nil {
+			zlog.Debug("Failed to pack DNS message for cache storage",
+				zlog.String("query", qname),
+				zlog.Int("qtype", int(qtype)),
+				zlog.String("error", err.Error()))
 			return
 		}
 		// Get TTL from message if not provided
@@ -295,6 +305,10 @@ func (c *ZeroAllocCache) Store(qname string, qtype uint16, data interface{}, ttl
 		// Already wire format
 		wire = v
 	default:
+		zlog.Debug("Invalid data type for cache storage",
+			zlog.String("query", qname),
+			zlog.Int("qtype", int(qtype)),
+			zlog.String("type", fmt.Sprintf("%T", data)))
 		return
 	}
 
@@ -309,7 +323,12 @@ func (c *ZeroAllocCache) Store(qname string, qtype uint16, data interface{}, ttl
 // StoreWire is the actual zero-alloc store method
 func (c *ZeroAllocCache) StoreWire(qname string, qtype uint16, wire []byte, ttl uint32) {
 	// Don't store if too large for our buffer
-	if len(wire) > 4096 {
+	if len(wire) > CacheMaxWireSize {
+		zlog.Debug("Wire format too large for cache",
+			zlog.String("query", qname),
+			zlog.Int("qtype", int(qtype)),
+			zlog.Int("size", len(wire)),
+			zlog.Int("max_size", CacheMaxWireSize))
 		return
 	}
 
@@ -366,7 +385,7 @@ func (c *ZeroAllocCache) Stats() map[string]interface{} {
 	total := hits + misses
 	hitRate := float64(0)
 	if total > 0 {
-		hitRate = float64(hits) / float64(total) * 100
+		hitRate = float64(hits) / float64(total) * PercentageMultiplier
 	}
 
 	// Count occupied entries
@@ -391,15 +410,19 @@ func (c *ZeroAllocCache) Stats() map[string]interface{} {
 // UpdateMessageID updates the message ID in wire format data
 // This modifies the data in-place with zero allocations
 func UpdateMessageID(wire []byte, msgID uint16) {
-	if len(wire) >= 2 {
-		binary.BigEndian.PutUint16(wire, msgID)
+	if len(wire) >= WireMessageIDSize {
+		binary.BigEndian.PutUint16(wire[WireMessageIDOffset:], msgID)
+	} else {
+		zlog.Debug("Wire format too small to update message ID",
+			zlog.Int("size", len(wire)),
+			zlog.Int("required", WireMessageIDSize))
 	}
 }
 
 // GetMessageID extracts message ID from wire format
 func GetMessageID(wire []byte) uint16 {
-	if len(wire) >= 2 {
-		return binary.BigEndian.Uint16(wire)
+	if len(wire) >= WireMessageIDSize {
+		return binary.BigEndian.Uint16(wire[WireMessageIDOffset:])
 	}
 	return 0
 }

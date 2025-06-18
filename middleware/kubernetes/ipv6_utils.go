@@ -23,7 +23,7 @@ func ParsePodIP(podPart string) net.IP {
 // parseIPv4Pod parses IPv4 pod format: 10-244-1-1
 func parseIPv4Pod(s string) net.IP {
 	parts := strings.Split(s, "-")
-	if len(parts) != 4 {
+	if len(parts) != IPv4AddressSize {
 		return nil
 	}
 
@@ -39,7 +39,7 @@ func parseIPv4Pod(s string) net.IP {
 func parseIPv6Pod(s string) net.IP {
 	// Format 1: Full format with all groups
 	// 2001-0db8-0000-0000-0000-0000-0000-0001
-	if strings.Count(s, "-") == 7 {
+	if strings.Count(s, "-") == 7 { // IPv6 has 8 groups, so 7 separators
 		ipStr := strings.ReplaceAll(s, "-", ":")
 		return net.ParseIP(ipStr)
 	}
@@ -109,13 +109,13 @@ func ParseReverseIP(labels []string) (net.IP, bool) {
 
 // parseReverseIPv4 parses IPv4 reverse: d.c.b.a.in-addr.arpa -> a.b.c.d
 func parseReverseIPv4(labels []string) (net.IP, bool) {
-	if len(labels) != 6 { // d.c.b.a.in-addr.arpa
+	if len(labels) != 6 { // d.c.b.a.in-addr.arpa = 4 octets + 2 suffix parts
 		return nil, false
 	}
 
 	// Reverse the octets
-	octets := make([]string, 4)
-	for i := 0; i < 4; i++ {
+	octets := make([]string, IPv4AddressSize)
+	for i := 0; i < IPv4AddressSize; i++ {
 		octets[i] = labels[3-i]
 	}
 
@@ -129,19 +129,19 @@ func parseReverseIPv4(labels []string) (net.IP, bool) {
 // Result: 2001:db8::1
 func parseReverseIPv6(labels []string) (net.IP, bool) {
 	// IPv6 reverse has 32 nibbles + ip6.arpa = 34 labels
-	if len(labels) != 34 {
+	if len(labels) != 34 { // 32 nibbles + 2 suffix parts
 		return nil, false
 	}
 
 	// Collect nibbles in reverse order
-	nibbles := make([]string, 32)
+	nibbles := make([]string, 32) // IPv6 has 128 bits = 32 nibbles
 	for i := 0; i < 32; i++ {
 		nibbles[i] = labels[31-i]
 	}
 
 	// Group into 16-bit segments
 	var segments []string
-	for i := 0; i < 32; i += 4 {
+	for i := 0; i < 32; i += 4 { // 4 nibbles = 16 bits = 1 segment
 		segment := nibbles[i] + nibbles[i+1] + nibbles[i+2] + nibbles[i+3]
 		// Skip leading zeros in segment
 		segment = strings.TrimLeft(segment, "0")
@@ -192,7 +192,7 @@ func compressIPv6(ipStr string) string {
 	}
 
 	// Compress if we found a run of 2+ zeros
-	if maxLen >= 2 {
+	if maxLen >= 2 { // Only compress runs of 2 or more zeros
 		before := segments[:maxStart]
 		after := segments[maxStart+maxLen:]
 
@@ -218,7 +218,7 @@ func FormatReverseIP(ip net.IP) string {
 	if ip4 := ip.To4(); ip4 != nil {
 		// IPv4 reverse
 		parts := strings.Split(ip4.String(), ".")
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 2; i++ { // Swap first 2 with last 2 octets
 			parts[i], parts[3-i] = parts[3-i], parts[i]
 		}
 		return strings.Join(parts, ".") + ".in-addr.arpa."
@@ -233,8 +233,8 @@ func FormatReverseIP(ip net.IP) string {
 	// Convert to nibbles
 	var nibbles []string
 	for i := len(ip6) - 1; i >= 0; i-- {
-		nibbles = append(nibbles, string("0123456789abcdef"[ip6[i]&0xF]))
-		nibbles = append(nibbles, string("0123456789abcdef"[ip6[i]>>4]))
+		nibbles = append(nibbles, string("0123456789abcdef"[ip6[i]&0xF])) // Low nibble
+		nibbles = append(nibbles, string("0123456789abcdef"[ip6[i]>>4]))  // High nibble
 	}
 
 	return strings.Join(nibbles, ".") + ".ip6.arpa."

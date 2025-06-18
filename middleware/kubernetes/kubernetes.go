@@ -35,6 +35,10 @@ type Kubernetes struct {
 	queries   uint64
 	cacheHits uint64
 	errors    uint64
+	
+	// Error metrics by type
+	packErrors  uint64  // DNS message packing errors
+	writeErrors uint64  // Response write errors
 }
 
 // New creates a new Kubernetes DNS middleware
@@ -173,7 +177,14 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			UpdateMessageID(respWire, req.Id)
 
 			// Write raw wire format - this is the fastest way
-			w.Write(respWire)
+			if _, err := w.Write(respWire); err != nil {
+				atomic.AddUint64(&k.errors, 1)
+				atomic.AddUint64(&k.writeErrors, 1)
+				zlog.Error("Failed to write cached DNS response",
+					zlog.String("query", qname),
+					zlog.Int("qtype", int(q.Qtype)),
+					zlog.String("error", err.Error()))
+			}
 
 			// Record for ML prediction
 			k.predictor.Record(qname, q.Qtype)
@@ -206,10 +217,18 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// Pack to wire format for response
 		wire, err := msg.Pack()
 		if err == nil {
-			w.Write(wire)
+			if _, err := w.Write(wire); err != nil {
+				atomic.AddUint64(&k.errors, 1)
+				atomic.AddUint64(&k.writeErrors, 1)
+				zlog.Error("Failed to write DNS response",
+					zlog.String("query", qname),
+					zlog.Int("qtype", int(q.Qtype)),
+					zlog.String("error", err.Error()))
+				return
+			}
 
 			// Store in cache with appropriate TTL
-			ttl := uint32(30) // Default TTL
+			ttl := uint32(CacheDefaultTTL) // Default TTL
 			if len(answers) > 0 {
 				if h := answers[0].Header(); h != nil {
 					ttl = h.Ttl
@@ -217,8 +236,20 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			}
 			k.cache.StoreWire(qname, q.Qtype, wire, ttl)
 		} else {
+			// DNS message packing failed
+			atomic.AddUint64(&k.errors, 1)
+			atomic.AddUint64(&k.packErrors, 1)
+			zlog.Error("Failed to pack DNS message",
+				zlog.String("query", qname),
+				zlog.Int("qtype", int(q.Qtype)),
+				zlog.String("error", err.Error()))
 			// Fallback to standard write
-			w.WriteMsg(msg)
+			if err := w.WriteMsg(msg); err != nil {
+				atomic.AddUint64(&k.writeErrors, 1)
+				zlog.Error("Failed to write DNS message via fallback",
+					zlog.String("query", qname),
+					zlog.String("error", err.Error()))
+			}
 		}
 
 		// Record for ML
@@ -243,7 +274,14 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			msg.SetRcode(req, resp.Rcode)
 		}
 
-		w.WriteMsg(msg)
+		if err := w.WriteMsg(msg); err != nil {
+			atomic.AddUint64(&k.errors, 1)
+			atomic.AddUint64(&k.writeErrors, 1)
+			zlog.Error("Failed to write DNS response in standard mode",
+				zlog.String("query", qname),
+				zlog.Int("qtype", int(q.Qtype)),
+				zlog.String("error", err.Error()))
+		}
 	}
 }
 
@@ -254,30 +292,30 @@ func (k *Kubernetes) populateDemoData() {
 		k.registry.AddService(&Service{
 			Name:       "kubernetes",
 			Namespace:  "default",
-			ClusterIPs: [][]byte{{10, 96, 0, 1}},
+			ClusterIPs: [][]byte{{NetworkOctet10, NetworkOctet96, 0, 1}},
 			IPFamilies: []string{"IPv4"},
 			Ports: []Port{
-				{Name: "https", Port: 443, Protocol: "tcp"},
+				{Name: "https", Port: PortHTTPS, Protocol: "tcp"},
 			},
 		})
 
 		k.registry.AddService(&Service{
 			Name:       "kube-dns",
 			Namespace:  "kube-system",
-			ClusterIPs: [][]byte{{10, 96, 0, 10}},
+			ClusterIPs: [][]byte{{NetworkOctet10, NetworkOctet96, 0, 10}},
 			IPFamilies: []string{"IPv4"},
 			Ports: []Port{
-				{Name: "dns", Port: 53, Protocol: "udp"},
-				{Name: "dns-tcp", Port: 53, Protocol: "tcp"},
+				{Name: "dns", Port: PortDNS, Protocol: "udp"},
+				{Name: "dns-tcp", Port: PortDNS, Protocol: "tcp"},
 			},
 		})
 
 		// Add more services for killer benchmarks
-		for i := 1; i <= 10; i++ {
+		for i := BenchmarkServiceStart; i <= DemoServiceCount; i++ {
 			k.registry.AddService(&Service{
 				Name:       fmt.Sprintf("app-%d", i),
 				Namespace:  "production",
-				ClusterIPs: [][]byte{{10, 96, 1, byte(i)}},
+				ClusterIPs: [][]byte{{NetworkOctet10, NetworkOctet96, 1, byte(i)}},
 				IPFamilies: []string{"IPv4"},
 			})
 		}
@@ -286,7 +324,7 @@ func (k *Kubernetes) populateDemoData() {
 		k.registry.AddService(&Service{
 			Name:       "app",
 			Namespace:  "default",
-			ClusterIPs: [][]byte{{10, 96, 2, 1}},
+			ClusterIPs: [][]byte{{NetworkOctet10, NetworkOctet96, 2, 1}},
 			IPFamilies: []string{"IPv4"},
 		})
 
@@ -294,21 +332,21 @@ func (k *Kubernetes) populateDemoData() {
 		k.registry.AddService(&Service{
 			Name:       "dual-stack",
 			Namespace:  "default",
-			ClusterIPs: [][]byte{{10, 96, 3, 1}, {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}},
+			ClusterIPs: [][]byte{{NetworkOctet10, NetworkOctet96, 3, 1}, {byte(IPv6TestPrefix >> 8), byte(IPv6TestPrefix & 0xFF), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}},
 			IPFamilies: []string{"IPv4", "IPv6"},
 		})
 
 		k.registry.AddService(&Service{
 			Name:       "db",
 			Namespace:  "default",
-			ClusterIPs: [][]byte{{10, 96, 2, 2}},
+			ClusterIPs: [][]byte{{NetworkOctet10, NetworkOctet96, 2, 2}},
 			IPFamilies: []string{"IPv4"},
 		})
 
 		k.registry.AddService(&Service{
 			Name:       "cache",
 			Namespace:  "default",
-			ClusterIPs: [][]byte{{10, 96, 2, 3}},
+			ClusterIPs: [][]byte{{NetworkOctet10, NetworkOctet96, 2, 3}},
 			IPFamilies: []string{"IPv4"},
 		})
 
@@ -350,7 +388,7 @@ func (k *Kubernetes) populateDemoData() {
 			ClusterIPs: [][]byte{net.ParseIP("10.96.0.1").To4()},
 			IPFamilies: []string{"IPv4"},
 			Ports: []Port{
-				{Name: "https", Port: 443, Protocol: "TCP"},
+				{Name: "https", Port: PortHTTPS, Protocol: "TCP"},
 			},
 		})
 
@@ -360,8 +398,8 @@ func (k *Kubernetes) populateDemoData() {
 			ClusterIPs: [][]byte{net.ParseIP("10.96.0.10").To4()},
 			IPFamilies: []string{"IPv4"},
 			Ports: []Port{
-				{Name: "dns", Port: 53, Protocol: "UDP"},
-				{Name: "dns-tcp", Port: 53, Protocol: "TCP"},
+				{Name: "dns", Port: PortDNS, Protocol: "UDP"},
+				{Name: "dns-tcp", Port: PortDNS, Protocol: "TCP"},
 			},
 		})
 
@@ -401,10 +439,12 @@ func (k *Kubernetes) Stats() map[string]interface{} {
 
 	hitRate := float64(0)
 	if queries > 0 {
-		hitRate = float64(hits) / float64(queries) * 100
+		hitRate = float64(hits) / float64(queries) * PercentageMultiplier
 	}
 
 	errors := atomic.LoadUint64(&k.errors)
+	packErrors := atomic.LoadUint64(&k.packErrors)
+	writeErrors := atomic.LoadUint64(&k.writeErrors)
 
 	stats := map[string]interface{}{
 		"queries":      queries,
@@ -412,6 +452,8 @@ func (k *Kubernetes) Stats() map[string]interface{} {
 		"cache_misses": queries - hits,
 		"hit_rate":     hitRate,
 		"errors":       errors,
+		"pack_errors":  packErrors,
+		"write_errors": writeErrors,
 		"killer_mode":  k.killerMode,
 	}
 
@@ -455,11 +497,15 @@ func (k *Kubernetes) prefetchPredicted(current string) {
 
 			// Pack and store
 			if wire, err := msg.Pack(); err == nil {
-				ttl := uint32(30)
+				ttl := uint32(CacheDefaultTTL)
 				if len(msg.Answer) > 0 {
 					ttl = msg.Answer[0].Header().Ttl
 				}
 				k.cache.StoreWire(predicted, dns.TypeA, wire, ttl)
+			} else {
+				zlog.Debug("Failed to pack DNS message for prefetch",
+					zlog.String("query", predicted),
+					zlog.String("error", err.Error()))
 			}
 		}
 	}
@@ -467,7 +513,7 @@ func (k *Kubernetes) prefetchPredicted(current string) {
 
 // predictionLoop runs periodic prediction optimization
 func (k *Kubernetes) predictionLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(StatsLogInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {

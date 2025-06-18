@@ -2,6 +2,7 @@
 package kubernetes
 
 import (
+	"fmt"
 	"net"
 	"sync"
 )
@@ -27,12 +28,20 @@ func NewRegistry() *Registry {
 }
 
 // AddService adds or updates a service
-func (r *Registry) AddService(svc *Service) {
+func (r *Registry) AddService(svc *Service) error {
+	if svc == nil {
+		return fmt.Errorf("service is nil")
+	}
+	if svc.Name == "" || svc.Namespace == "" {
+		return fmt.Errorf("service name or namespace is empty")
+	}
+	
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	key := svc.Namespace + "/" + svc.Name
 	r.services[key] = svc
+	return nil
 }
 
 // GetService retrieves a service
@@ -64,7 +73,11 @@ func (r *Registry) GetServiceByIP(ip []byte) *Service {
 }
 
 // SetEndpoints sets endpoints for a service
-func (r *Registry) SetEndpoints(service, namespace string, endpoints []Endpoint) {
+func (r *Registry) SetEndpoints(service, namespace string, endpoints []Endpoint) error {
+	if service == "" || namespace == "" {
+		return fmt.Errorf("service name or namespace is empty")
+	}
+	
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -74,6 +87,7 @@ func (r *Registry) SetEndpoints(service, namespace string, endpoints []Endpoint)
 	} else {
 		r.endpoints[key] = endpoints
 	}
+	return nil
 }
 
 // GetEndpoints retrieves endpoints for a service
@@ -86,7 +100,17 @@ func (r *Registry) GetEndpoints(service, namespace string) []Endpoint {
 }
 
 // AddPod adds or updates a pod
-func (r *Registry) AddPod(pod *Pod) {
+func (r *Registry) AddPod(pod *Pod) error {
+	if pod == nil {
+		return fmt.Errorf("pod is nil")
+	}
+	if pod.Name == "" || pod.Namespace == "" {
+		return fmt.Errorf("pod name or namespace is empty")
+	}
+	if len(pod.IPs) == 0 {
+		return fmt.Errorf("pod has no IPs")
+	}
+	
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -99,6 +123,7 @@ func (r *Registry) AddPod(pod *Pod) {
 			r.podsByIP[ip] = pod
 		}
 	}
+	return nil
 }
 
 // GetPodByName retrieves a pod by name
@@ -119,17 +144,26 @@ func (r *Registry) GetPodByIP(ip string) *Pod {
 }
 
 // DeleteService removes a service
-func (r *Registry) DeleteService(name, namespace string) {
+func (r *Registry) DeleteService(name, namespace string) error {
+	if name == "" || namespace == "" {
+		return fmt.Errorf("service name or namespace is empty")
+	}
+	
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	key := namespace + "/" + name
 	delete(r.services, key)
 	delete(r.endpoints, key)
+	return nil
 }
 
 // DeletePod removes a pod
-func (r *Registry) DeletePod(name, namespace string) {
+func (r *Registry) DeletePod(name, namespace string) error {
+	if name == "" || namespace == "" {
+		return fmt.Errorf("pod name or namespace is empty")
+	}
+	
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -144,6 +178,7 @@ func (r *Registry) DeletePod(name, namespace string) {
 			}
 		}
 	}
+	return nil
 }
 
 // Stats returns registry statistics

@@ -456,8 +456,8 @@ func (r *Resolver) resolveSRV(parts *queryParts, qname string, qtype uint16) *Re
 			Class:  dns.ClassINET,
 			Ttl:    DefaultServiceTTL,
 		},
-		Priority: 0,
-		Weight:   1,
+		Priority: SRVPriority,
+		Weight:   SRVWeight1,
 		Port:     uint16(port.Port),
 		Target:   target,
 	})
@@ -500,7 +500,7 @@ func (r *Resolver) resolvePTR(parts *queryParts, qname string, qtype uint16) *Re
 				Name:   qname,
 				Rrtype: dns.TypePTR,
 				Class:  dns.ClassINET,
-				Ttl:    DefaultServiceTTL,
+				Ttl:    DefaultPTRTTL,
 			},
 			Ptr: target,
 		})
@@ -518,7 +518,7 @@ func (r *Resolver) resolvePTR(parts *queryParts, qname string, qtype uint16) *Re
 				Name:   qname,
 				Rrtype: dns.TypePTR,
 				Class:  dns.ClassINET,
-				Ttl:    DefaultServiceTTL,
+				Ttl:    DefaultPTRTTL,
 			},
 			Ptr: target,
 		})

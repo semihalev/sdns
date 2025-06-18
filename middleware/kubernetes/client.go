@@ -64,6 +64,16 @@ func (c *Client) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	defer close(c.stopped)
+	
+	// Recover from any panics in informers
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Kubernetes client panicked",
+				zlog.Any("panic", r),
+				zlog.String("component", "informer"))
+		}
+	}()
+	
 	// Create informers
 	serviceInformer := cache.NewSharedInformer(
 		cache.NewListWatchFromClient(
@@ -98,23 +108,23 @@ func (c *Client) Run(ctx context.Context) error {
 		0,
 	)
 
-	// Add event handlers
+	// Add event handlers with error recovery
 	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.onServiceAdd,
-		UpdateFunc: c.onServiceUpdate,
-		DeleteFunc: c.onServiceDelete,
+		AddFunc:    c.safeServiceAdd,
+		UpdateFunc: c.safeServiceUpdate,
+		DeleteFunc: c.safeServiceDelete,
 	})
 
 	endpointSliceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.onEndpointSliceAdd,
-		UpdateFunc: c.onEndpointSliceUpdate,
-		DeleteFunc: c.onEndpointSliceDelete,
+		AddFunc:    c.safeEndpointSliceAdd,
+		UpdateFunc: c.safeEndpointSliceUpdate,
+		DeleteFunc: c.safeEndpointSliceDelete,
 	})
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.onPodAdd,
-		UpdateFunc: c.onPodUpdate,
-		DeleteFunc: c.onPodDelete,
+		AddFunc:    c.safePodAdd,
+		UpdateFunc: c.safePodUpdate,
+		DeleteFunc: c.safePodDelete,
 	})
 
 	// Start informers
@@ -165,81 +175,273 @@ func (c *Client) Stop() {
 	// Wait for Run to complete
 	select {
 	case <-c.stopped:
-	case <-time.After(5 * time.Second):
-		// Timeout after 5 seconds
-		zlog.Warn("Client stop timeout after 5 seconds")
+	case <-time.After(ClientStopTimeout):
+		// Timeout after ClientStopTimeout
+		zlog.Warn("Client stop timeout after", zlog.String("timeout", ClientStopTimeout.String()))
 	}
+}
+
+// Safe wrappers for event handlers
+func (c *Client) safeServiceAdd(obj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in service add handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", obj))
+		}
+	}()
+	c.onServiceAdd(obj)
+}
+
+func (c *Client) safeServiceUpdate(oldObj, newObj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in service update handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", newObj))
+		}
+	}()
+	c.onServiceUpdate(oldObj, newObj)
+}
+
+func (c *Client) safeServiceDelete(obj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in service delete handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", obj))
+		}
+	}()
+	c.onServiceDelete(obj)
 }
 
 // Service handlers
 func (c *Client) onServiceAdd(obj interface{}) {
-	svc := obj.(*corev1.Service)
+	svc, ok := obj.(*corev1.Service)
+	if !ok {
+		zlog.Error("Invalid service object type",
+			zlog.String("type", fmt.Sprintf("%T", obj)))
+		return
+	}
 	service := c.convertService(svc)
-	c.registry.AddService(service)
+	if err := c.registry.AddService(service); err != nil {
+		zlog.Error("Failed to add service to registry",
+			zlog.String("service", svc.Name),
+			zlog.String("namespace", svc.Namespace),
+			zlog.String("error", err.Error()))
+	}
 }
 
 func (c *Client) onServiceUpdate(oldObj, newObj interface{}) {
-	svc := newObj.(*corev1.Service)
+	svc, ok := newObj.(*corev1.Service)
+	if !ok {
+		zlog.Error("Invalid service object type in update",
+			zlog.String("type", fmt.Sprintf("%T", newObj)))
+		return
+	}
 	service := c.convertService(svc)
-	c.registry.AddService(service)
+	if err := c.registry.AddService(service); err != nil {
+		zlog.Error("Failed to update service in registry",
+			zlog.String("service", svc.Name),
+			zlog.String("namespace", svc.Namespace),
+			zlog.String("error", err.Error()))
+	}
 }
 
 func (c *Client) onServiceDelete(obj interface{}) {
-	svc := obj.(*corev1.Service)
-	c.registry.DeleteService(svc.Name, svc.Namespace)
+	svc, ok := obj.(*corev1.Service)
+	if !ok {
+		zlog.Error("Invalid service object type in delete",
+			zlog.String("type", fmt.Sprintf("%T", obj)))
+		return
+	}
+	if err := c.registry.DeleteService(svc.Name, svc.Namespace); err != nil {
+		zlog.Error("Failed to delete service from registry",
+			zlog.String("service", svc.Name),
+			zlog.String("namespace", svc.Namespace),
+			zlog.String("error", err.Error()))
+	}
+}
+
+// Safe wrappers for EndpointSlice handlers
+func (c *Client) safeEndpointSliceAdd(obj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in endpoint slice add handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", obj))
+		}
+	}()
+	c.onEndpointSliceAdd(obj)
+}
+
+func (c *Client) safeEndpointSliceUpdate(oldObj, newObj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in endpoint slice update handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", newObj))
+		}
+	}()
+	c.onEndpointSliceUpdate(oldObj, newObj)
+}
+
+func (c *Client) safeEndpointSliceDelete(obj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in endpoint slice delete handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", obj))
+		}
+	}()
+	c.onEndpointSliceDelete(obj)
 }
 
 // EndpointSlice handlers
 // Note: A service can have multiple EndpointSlices, so we need to aggregate them
 func (c *Client) onEndpointSliceAdd(obj interface{}) {
-	eps := obj.(*discoveryv1.EndpointSlice)
+	eps, ok := obj.(*discoveryv1.EndpointSlice)
+	if !ok {
+		zlog.Error("Invalid endpoint slice object type",
+			zlog.String("type", fmt.Sprintf("%T", obj)))
+		return
+	}
 	serviceName := eps.Labels["kubernetes.io/service-name"]
 	if serviceName != "" {
 		// For simplicity, we're treating each slice independently
 		// In production, you'd want to aggregate all slices for a service
 		endpoints := c.convertEndpointSlice(eps)
-		c.registry.SetEndpoints(serviceName, eps.Namespace, endpoints)
+		if err := c.registry.SetEndpoints(serviceName, eps.Namespace, endpoints); err != nil {
+			zlog.Error("Failed to add endpoints to registry",
+				zlog.String("service", serviceName),
+				zlog.String("namespace", eps.Namespace),
+				zlog.String("error", err.Error()))
+		}
 	}
 }
 
 func (c *Client) onEndpointSliceUpdate(oldObj, newObj interface{}) {
-	eps := newObj.(*discoveryv1.EndpointSlice)
+	eps, ok := newObj.(*discoveryv1.EndpointSlice)
+	if !ok {
+		zlog.Error("Invalid endpoint slice object type in update",
+			zlog.String("type", fmt.Sprintf("%T", newObj)))
+		return
+	}
 	serviceName := eps.Labels["kubernetes.io/service-name"]
 	if serviceName != "" {
 		endpoints := c.convertEndpointSlice(eps)
-		c.registry.SetEndpoints(serviceName, eps.Namespace, endpoints)
+		if err := c.registry.SetEndpoints(serviceName, eps.Namespace, endpoints); err != nil {
+			zlog.Error("Failed to update endpoints in registry",
+				zlog.String("service", serviceName),
+				zlog.String("namespace", eps.Namespace),
+				zlog.String("error", err.Error()))
+		}
 	}
 }
 
 func (c *Client) onEndpointSliceDelete(obj interface{}) {
-	eps := obj.(*discoveryv1.EndpointSlice)
+	eps, ok := obj.(*discoveryv1.EndpointSlice)
+	if !ok {
+		zlog.Error("Invalid endpoint slice object type in delete",
+			zlog.String("type", fmt.Sprintf("%T", obj)))
+		return
+	}
 	serviceName := eps.Labels["kubernetes.io/service-name"]
 	if serviceName != "" {
 		// TODO: This should aggregate remaining slices, not just clear
-		c.registry.SetEndpoints(serviceName, eps.Namespace, nil)
+		if err := c.registry.SetEndpoints(serviceName, eps.Namespace, nil); err != nil {
+			zlog.Error("Failed to delete endpoints from registry",
+				zlog.String("service", serviceName),
+				zlog.String("namespace", eps.Namespace),
+				zlog.String("error", err.Error()))
+		}
 	}
+}
+
+// Safe wrappers for Pod handlers
+func (c *Client) safePodAdd(obj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in pod add handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", obj))
+		}
+	}()
+	c.onPodAdd(obj)
+}
+
+func (c *Client) safePodUpdate(oldObj, newObj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in pod update handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", newObj))
+		}
+	}()
+	c.onPodUpdate(oldObj, newObj)
+}
+
+func (c *Client) safePodDelete(obj interface{}) {
+	defer func() {
+		if r := recover(); r != nil {
+			zlog.Error("Panic in pod delete handler",
+				zlog.Any("panic", r),
+				zlog.Any("object", obj))
+		}
+	}()
+	c.onPodDelete(obj)
 }
 
 // Pod handlers
 func (c *Client) onPodAdd(obj interface{}) {
-	p := obj.(*corev1.Pod)
+	p, ok := obj.(*corev1.Pod)
+	if !ok {
+		zlog.Error("Invalid pod object type",
+			zlog.String("type", fmt.Sprintf("%T", obj)))
+		return
+	}
 	pod := c.convertPod(p)
 	if pod != nil {
-		c.registry.AddPod(pod)
+		if err := c.registry.AddPod(pod); err != nil {
+			zlog.Error("Failed to add pod to registry",
+				zlog.String("pod", p.Name),
+				zlog.String("namespace", p.Namespace),
+				zlog.String("error", err.Error()))
+		}
 	}
 }
 
 func (c *Client) onPodUpdate(oldObj, newObj interface{}) {
-	p := newObj.(*corev1.Pod)
+	p, ok := newObj.(*corev1.Pod)
+	if !ok {
+		zlog.Error("Invalid pod object type in update",
+			zlog.String("type", fmt.Sprintf("%T", newObj)))
+		return
+	}
 	pod := c.convertPod(p)
 	if pod != nil {
-		c.registry.AddPod(pod)
+		if err := c.registry.AddPod(pod); err != nil {
+			zlog.Error("Failed to update pod in registry",
+				zlog.String("pod", p.Name),
+				zlog.String("namespace", p.Namespace),
+				zlog.String("error", err.Error()))
+		}
 	}
 }
 
 func (c *Client) onPodDelete(obj interface{}) {
-	p := obj.(*corev1.Pod)
-	c.registry.DeletePod(p.Name, p.Namespace)
+	p, ok := obj.(*corev1.Pod)
+	if !ok {
+		zlog.Error("Invalid pod object type in delete",
+			zlog.String("type", fmt.Sprintf("%T", obj)))
+		return
+	}
+	if err := c.registry.DeletePod(p.Name, p.Namespace); err != nil {
+		zlog.Error("Failed to delete pod from registry",
+			zlog.String("pod", p.Name),
+			zlog.String("namespace", p.Namespace),
+			zlog.String("error", err.Error()))
+	}
 }
 
 // Converters

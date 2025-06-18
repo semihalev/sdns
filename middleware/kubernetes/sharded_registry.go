@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/zlog"
 )
 
 // ShardedRegistry - Lock-free sharded registry for massive concurrency
@@ -108,6 +109,9 @@ func (r *ShardedRegistry) ResolveQuery(qname string, qtype uint16) ([]dns.RR, bo
 // resolveService handles service queries
 func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.RR, bool) {
 	if len(labels) < 5 {
+		zlog.Debug("Invalid service query format",
+			zlog.String("query", strings.Join(labels, ".")),
+			zlog.Int("label_count", len(labels)))
 		return nil, false
 	}
 
@@ -217,28 +221,40 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 	switch qtype {
 	case dns.TypeA:
 		if ipv4 := svc.GetIPv4(); ipv4 != nil {
-			answers = append(answers, &dns.A{
-				Hdr: dns.RR_Header{
-					Name:   qname,
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    r.ttlService,
-				},
-				A: net.IP(ipv4),
-			})
+			if ip := net.IP(ipv4); ip != nil {
+				answers = append(answers, &dns.A{
+					Hdr: dns.RR_Header{
+						Name:   qname,
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    r.ttlService,
+					},
+					A: ip,
+				})
+			} else {
+				zlog.Debug("Invalid IPv4 address for service",
+					zlog.String("service", service),
+					zlog.String("namespace", namespace))
+			}
 		}
 
 	case dns.TypeAAAA:
 		if ipv6 := svc.GetIPv6(); ipv6 != nil {
-			answers = append(answers, &dns.AAAA{
-				Hdr: dns.RR_Header{
-					Name:   qname,
-					Rrtype: dns.TypeAAAA,
-					Class:  dns.ClassINET,
-					Ttl:    r.ttlService,
-				},
-				AAAA: net.IP(ipv6),
-			})
+			if ip := net.IP(ipv6); ip != nil {
+				answers = append(answers, &dns.AAAA{
+					Hdr: dns.RR_Header{
+						Name:   qname,
+						Rrtype: dns.TypeAAAA,
+						Class:  dns.ClassINET,
+						Ttl:    r.ttlService,
+					},
+					AAAA: ip,
+				})
+			} else {
+				zlog.Debug("Invalid IPv6 address for service",
+					zlog.String("service", service),
+					zlog.String("namespace", namespace))
+			}
 		}
 
 	case dns.TypeCNAME:
@@ -267,6 +283,8 @@ func (r *ShardedRegistry) resolvePod(labels []string, qtype uint16) ([]dns.RR, b
 	// Parse pod IP (supports both IPv4 and IPv6)
 	podIP := ParsePodIP(labels[0])
 	if podIP == nil {
+		zlog.Debug("Invalid pod IP in query",
+			zlog.String("ip_label", labels[0]))
 		return nil, false
 	}
 	podIPStr := podIP.String()
@@ -376,6 +394,8 @@ func (r *ShardedRegistry) resolveReverse(labels []string) ([]dns.RR, bool) {
 	// Parse reverse IP (handles both IPv4 and IPv6)
 	ip, ok := ParseReverseIP(labels)
 	if !ok || ip == nil {
+		zlog.Debug("Invalid reverse IP query",
+			zlog.Any("labels", labels))
 		return nil, false
 	}
 
@@ -435,6 +455,17 @@ func (r *ShardedRegistry) resolveReverse(labels []string) ([]dns.RR, bool) {
 
 // AddService adds or updates a service
 func (r *ShardedRegistry) AddService(svc *Service) {
+	if svc == nil {
+		zlog.Error("Attempted to add nil service to sharded registry")
+		return
+	}
+	if svc.Name == "" || svc.Namespace == "" {
+		zlog.Error("Attempted to add service with empty name or namespace",
+			zlog.String("name", svc.Name),
+			zlog.String("namespace", svc.Namespace))
+		return
+	}
+	
 	key := svc.Namespace + "/" + svc.Name
 	shard := r.getServiceShard(key)
 
@@ -445,6 +476,23 @@ func (r *ShardedRegistry) AddService(svc *Service) {
 
 // AddPod adds or updates a pod
 func (r *ShardedRegistry) AddPod(pod *Pod) {
+	if pod == nil {
+		zlog.Error("Attempted to add nil pod to sharded registry")
+		return
+	}
+	if pod.Name == "" || pod.Namespace == "" {
+		zlog.Error("Attempted to add pod with empty name or namespace",
+			zlog.String("name", pod.Name),
+			zlog.String("namespace", pod.Namespace))
+		return
+	}
+	if len(pod.IPs) == 0 {
+		zlog.Debug("Pod has no IPs",
+			zlog.String("pod", pod.Name),
+			zlog.String("namespace", pod.Namespace))
+		return
+	}
+	
 	// Add pod by all its IPs
 	for _, ip := range pod.IPs {
 		if ip == "" {
