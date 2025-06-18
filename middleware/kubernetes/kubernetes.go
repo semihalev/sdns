@@ -35,17 +35,19 @@ type Kubernetes struct {
 	queries   uint64
 	cacheHits uint64
 	errors    uint64
-	
+
 	// Error metrics by type
-	packErrors  uint64  // DNS message packing errors
-	writeErrors uint64  // Response write errors
+	packErrors  uint64 // DNS message packing errors
+	writeErrors uint64 // Response write errors
 }
 
 // New creates a new Kubernetes DNS middleware
 func New(cfg *config.Config) *Kubernetes {
-	// If Kubernetes is not enabled, return nil
+	// If Kubernetes is not enabled, return a minimal pass-through middleware
 	if !cfg.Kubernetes.Enabled {
-		return nil
+		return &Kubernetes{
+			clusterDomain: "cluster.local", // Set a default to avoid any issues
+		}
 	}
 
 	// Use configuration from config file

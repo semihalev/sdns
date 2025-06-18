@@ -35,7 +35,7 @@ func (r *Registry) AddService(svc *Service) error {
 	if svc.Name == "" || svc.Namespace == "" {
 		return fmt.Errorf("service name or namespace is empty")
 	}
-	
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -77,7 +77,7 @@ func (r *Registry) SetEndpoints(service, namespace string, endpoints []Endpoint)
 	if service == "" || namespace == "" {
 		return fmt.Errorf("service name or namespace is empty")
 	}
-	
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -110,7 +110,7 @@ func (r *Registry) AddPod(pod *Pod) error {
 	if len(pod.IPs) == 0 {
 		return fmt.Errorf("pod has no IPs")
 	}
-	
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -148,7 +148,7 @@ func (r *Registry) DeleteService(name, namespace string) error {
 	if name == "" || namespace == "" {
 		return fmt.Errorf("service name or namespace is empty")
 	}
-	
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -163,7 +163,7 @@ func (r *Registry) DeletePod(name, namespace string) error {
 	if name == "" || namespace == "" {
 		return fmt.Errorf("pod name or namespace is empty")
 	}
-	
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

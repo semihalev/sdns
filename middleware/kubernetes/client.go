@@ -64,7 +64,7 @@ func (c *Client) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	defer close(c.stopped)
-	
+
 	// Recover from any panics in informers
 	defer func() {
 		if r := recover(); r != nil {
@@ -73,7 +73,7 @@ func (c *Client) Run(ctx context.Context) error {
 				zlog.String("component", "informer"))
 		}
 	}()
-	
+
 	// Create informers
 	serviceInformer := cache.NewSharedInformer(
 		cache.NewListWatchFromClient(

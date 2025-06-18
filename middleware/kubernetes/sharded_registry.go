@@ -465,7 +465,7 @@ func (r *ShardedRegistry) AddService(svc *Service) {
 			zlog.String("namespace", svc.Namespace))
 		return
 	}
-	
+
 	key := svc.Namespace + "/" + svc.Name
 	shard := r.getServiceShard(key)
 
@@ -492,7 +492,7 @@ func (r *ShardedRegistry) AddPod(pod *Pod) {
 			zlog.String("namespace", pod.Namespace))
 		return
 	}
-	
+
 	// Add pod by all its IPs
 	for _, ip := range pod.IPs {
 		if ip == "" {
