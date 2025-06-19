@@ -148,6 +148,12 @@ func (k *Kubernetes) Name() string {
 func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
+	// If resolver is nil, we're disabled - pass through
+	if k.resolver == nil && k.registry == nil {
+		ch.Next(ctx)
+		return
+	}
+
 	atomic.AddUint64(&k.queries, 1)
 
 	if len(req.Question) == 0 {
