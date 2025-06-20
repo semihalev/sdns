@@ -255,7 +255,7 @@ func TestStats(t *testing.T) {
 
 // TestPredictorTraining tests ML predictor training
 func TestPredictorTraining(t *testing.T) {
-	predictor := NewLockFreePredictor()
+	predictor := NewSmartPredictor()
 
 	// Simulate query patterns
 	pattern := []string{
@@ -268,7 +268,7 @@ func TestPredictorTraining(t *testing.T) {
 	// Train pattern
 	for i := 0; i < 100; i++ {
 		for _, q := range pattern {
-			predictor.Record(q, dns.TypeA)
+			predictor.Record("10.0.0.1", q, dns.TypeA)
 		}
 	}
 
@@ -276,12 +276,12 @@ func TestPredictorTraining(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Test predictions
-	predictions := predictor.Predict("app.prod.svc.cluster.local.")
+	predictions := predictor.Predict("10.0.0.1", "app.prod.svc.cluster.local.")
 
 	// Should predict db or cache next
 	found := false
 	for _, p := range predictions {
-		if p == "db.prod.svc.cluster.local." || p == "cache.prod.svc.cluster.local." {
+		if p.Service == "db.prod.svc.cluster.local." || p.Service == "cache.prod.svc.cluster.local." {
 			found = true
 			break
 		}

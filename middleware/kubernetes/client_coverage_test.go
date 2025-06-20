@@ -88,7 +88,7 @@ func TestPrefetchPredicted(t *testing.T) {
 	k := &Kubernetes{
 		resolver:   NewResolver(nil, "cluster.local", NewCache()),
 		killerMode: true,
-		predictor:  NewLockFreePredictor(),
+		predictor:  NewSmartPredictor(),
 	}
 
 	// Add some services
@@ -99,8 +99,8 @@ func TestPrefetchPredicted(t *testing.T) {
 		IPFamilies: []string{"IPv4"},
 	})
 
-	// Test prefetch
-	k.prefetchPredicted("predicted-svc.default.svc.cluster.local.")
+	// Test prefetch with new method
+	k.prefetchPredictedWithClient("10.0.0.1", "predicted-svc.default.svc.cluster.local.", dns.TypeA)
 
 	// Check if cached
 	cached := k.resolver.cache.Get("predicted-svc.default.svc.cluster.local.", dns.TypeA)
@@ -161,23 +161,23 @@ func TestHighPerformanceCacheMoreEdgeCases(t *testing.T) {
 
 // TestGetTopPredictionsEdgeCases tests prediction edge cases
 func TestGetTopPredictionsEdgeCases(t *testing.T) {
-	p := NewLockFreePredictor()
+	p := NewSmartPredictor()
 
 	// Test with empty predictor
-	predictions := p.Predict("test")
+	predictions := p.Predict("10.0.0.1", "test")
 	if len(predictions) != 0 {
 		t.Log("New predictor may have no predictions initially")
 	}
 
 	// Train the predictor
 	for i := 0; i < 100; i++ {
-		p.Record("query1", dns.TypeA)
-		p.Record("query2", dns.TypeA)
-		p.Record("query3", dns.TypeA)
+		p.Record("10.0.0.1", "query1", dns.TypeA)
+		p.Record("10.0.0.1", "query2", dns.TypeA)
+		p.Record("10.0.0.1", "query3", dns.TypeA)
 	}
 
 	// Test predictions after training
-	predictions = p.Predict("query1")
+	predictions = p.Predict("10.0.0.1", "query1")
 	t.Logf("Got %d predictions", len(predictions))
 }
 

@@ -22,9 +22,10 @@ type Kubernetes struct {
 	k8sClient *Client
 
 	// KILLER PERFORMANCE COMPONENTS
-	cache     *ZeroAllocCache    // TRUE zero-allocation cache
-	registry  *ShardedRegistry   // Lock-free sharded registry
-	predictor *LockFreePredictor // ML-based predictor
+	cache            *ZeroAllocCache   // TRUE zero-allocation cache
+	registry         *ShardedRegistry  // Lock-free sharded registry
+	predictor        *SmartPredictor   // Intelligent ML-based predictor
+	prefetchStrategy *PrefetchStrategy // Smart prefetch patterns
 
 	// Configuration
 	killerMode    bool
@@ -32,9 +33,10 @@ type Kubernetes struct {
 	ttlConfig     config.KubernetesTTLConfig
 
 	// Stats
-	queries   uint64
-	cacheHits uint64
-	errors    uint64
+	queries    uint64
+	cacheHits  uint64
+	errors     uint64
+	prefetches uint64
 
 	// Error metrics by type
 	packErrors  uint64 // DNS message packing errors
@@ -70,15 +72,16 @@ func New(cfg *config.Config) *Kubernetes {
 		registry := NewShardedRegistry()
 		registry.SetTTLs(cfg.Kubernetes.TTL.Service, cfg.Kubernetes.TTL.Pod, cfg.Kubernetes.TTL.SRV, cfg.Kubernetes.TTL.PTR)
 		cache := NewZeroAllocCache()
-		predictor := NewLockFreePredictor()
+		predictor := NewSmartPredictor()
 
 		k = &Kubernetes{
-			cache:         cache,
-			registry:      registry,
-			predictor:     predictor,
-			killerMode:    true,
-			clusterDomain: clusterDomain,
-			ttlConfig:     cfg.Kubernetes.TTL,
+			cache:            cache,
+			registry:         registry,
+			predictor:        predictor,
+			prefetchStrategy: NewPrefetchStrategy(),
+			killerMode:       true,
+			clusterDomain:    clusterDomain,
+			ttlConfig:        cfg.Kubernetes.TTL,
 		}
 
 		// Create resolver (just for demo data population)
@@ -194,11 +197,12 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 					zlog.String("error", err.Error()))
 			}
 
-			// Record for ML prediction
-			k.predictor.Record(qname, q.Qtype)
+			// Record for ML prediction with client IP
+			clientIP := extractClientIP(w)
+			k.predictor.Record(clientIP, qname, q.Qtype)
 
-			// Trigger predictive prefetch
-			go k.prefetchPredicted(qname)
+			// Trigger predictive prefetch with client context
+			go k.prefetchPredictedWithClient(clientIP, qname, q.Qtype)
 
 			return
 		}
@@ -260,8 +264,12 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			}
 		}
 
-		// Record for ML
-		k.predictor.Record(qname, q.Qtype)
+		// Record for ML with client IP
+		clientIP := extractClientIP(w)
+		k.predictor.Record(clientIP, qname, q.Qtype)
+
+		// Trigger predictive prefetch after registry hit
+		go k.prefetchPredictedWithClient(clientIP, qname, q.Qtype)
 	} else {
 		// Boring mode - use resolver which has its own cache
 		resp, found := k.resolver.Resolve(qname, q.Qtype)
@@ -388,6 +396,17 @@ func (k *Kubernetes) populateDemoData() {
 			Hostname:  "web-0",
 			Subdomain: "nginx",
 		})
+
+		// Add endpoints for headless service
+		k.registry.SetEndpoints("headless", "default", []Endpoint{
+			{Addresses: []string{"10.244.1.10"}, Ready: true},
+			{Addresses: []string{"10.244.1.11"}, Ready: true},
+		})
+
+		// Add endpoints for nginx service
+		k.registry.SetEndpoints("nginx", "default", []Endpoint{
+			{Addresses: []string{"10.244.1.10"}, Hostname: "web-0", Ready: true},
+		})
 	} else {
 		// Boring mode - use standard registry
 		k.resolver.registry.AddService(&Service{
@@ -459,6 +478,7 @@ func (k *Kubernetes) Stats() map[string]interface{} {
 		"cache_hits":   hits,
 		"cache_misses": queries - hits,
 		"hit_rate":     hitRate,
+		"prefetches":   atomic.LoadUint64(&k.prefetches),
 		"errors":       errors,
 		"pack_errors":  packErrors,
 		"write_errors": writeErrors,
@@ -482,38 +502,75 @@ func (k *Kubernetes) Stats() map[string]interface{} {
 	return stats
 }
 
-// prefetchPredicted pre-fetches queries based on ML predictions
-func (k *Kubernetes) prefetchPredicted(current string) {
+// prefetchPredictedWithClient pre-fetches queries based on ML predictions with client context
+func (k *Kubernetes) prefetchPredictedWithClient(clientIP, current string, currentQtype uint16) {
 	if !k.killerMode {
 		return
 	}
 
-	predictions := k.predictor.Predict(current)
-	for _, predicted := range predictions {
-		// Check if already cached
-		if cached := k.cache.GetEntry(predicted, dns.TypeA); cached != nil {
+	// Use client-specific predictions
+	predictions := k.predictor.Predict(clientIP, current)
+
+	for _, pred := range predictions {
+		// Calculate priority based on confidence and service importance
+		priority := k.prefetchStrategy.GetPrefetchPriority(pred.Service, pred.Confidence)
+
+		// Only prefetch if priority is high enough
+		if priority < 0.3 {
 			continue
 		}
 
-		// Resolve and cache
-		if answers, found := k.registry.ResolveQuery(predicted, dns.TypeA); found && len(answers) > 0 {
-			msg := new(dns.Msg)
-			msg.SetQuestion(predicted, dns.TypeA)
-			msg.Response = true
-			msg.Authoritative = true
-			msg.Answer = answers
+		// Determine which record types to prefetch based on current query
+		var qtypes []uint16
+		switch currentQtype {
+		case dns.TypeA:
+			// If querying A, might also need AAAA
+			qtypes = []uint16{dns.TypeA, dns.TypeAAAA}
+		case dns.TypeAAAA:
+			// If querying AAAA, might also need A
+			qtypes = []uint16{dns.TypeAAAA, dns.TypeA}
+		case dns.TypeSRV:
+			// SRV queries often followed by A/AAAA
+			qtypes = []uint16{dns.TypeA, dns.TypeAAAA}
+		default:
+			// Default to A and AAAA
+			qtypes = []uint16{dns.TypeA, dns.TypeAAAA}
+		}
 
-			// Pack and store
-			if wire, err := msg.Pack(); err == nil {
-				ttl := uint32(CacheDefaultTTL)
-				if len(msg.Answer) > 0 {
-					ttl = msg.Answer[0].Header().Ttl
+		for _, qtype := range qtypes {
+			// Check if already cached
+			if cached := k.cache.GetEntry(pred.Service, qtype); cached != nil {
+				continue
+			}
+
+			// Resolve and cache
+			if answers, found := k.registry.ResolveQuery(pred.Service, qtype); found && len(answers) > 0 {
+				msg := new(dns.Msg)
+				msg.SetQuestion(pred.Service, qtype)
+				msg.Response = true
+				msg.Authoritative = true
+				msg.Answer = answers
+
+				// Pack and store
+				if wire, err := msg.Pack(); err == nil {
+					ttl := uint32(CacheDefaultTTL)
+					if len(msg.Answer) > 0 {
+						ttl = msg.Answer[0].Header().Ttl
+					}
+					k.cache.StoreWire(pred.Service, qtype, wire, ttl)
+					atomic.AddUint64(&k.prefetches, 1)
+
+					zlog.Debug("Prefetched service based on prediction",
+						zlog.String("client", clientIP),
+						zlog.String("service", pred.Service),
+						zlog.String("type", dns.TypeToString[qtype]),
+						zlog.Float64("confidence", pred.Confidence))
+				} else {
+					zlog.Debug("Failed to pack DNS message for prefetch",
+						zlog.String("query", pred.Service),
+						zlog.String("type", dns.TypeToString[qtype]),
+						zlog.String("error", err.Error()))
 				}
-				k.cache.StoreWire(predicted, dns.TypeA, wire, ttl)
-			} else {
-				zlog.Debug("Failed to pack DNS message for prefetch",
-					zlog.String("query", predicted),
-					zlog.String("error", err.Error()))
 			}
 		}
 	}
@@ -531,4 +588,12 @@ func (k *Kubernetes) predictionLoop() {
 			zlog.String("mode", "KILLER"),
 		)
 	}
+}
+
+// extractClientIP extracts the client IP from the ResponseWriter
+func extractClientIP(w middleware.ResponseWriter) string {
+	if w.RemoteIP() != nil {
+		return w.RemoteIP().String()
+	}
+	return ""
 }

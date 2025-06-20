@@ -216,7 +216,7 @@ func TestShardedRegistryFunctionality(t *testing.T) {
 
 // TestMLPredictor tests the ML predictor
 func TestMLPredictor(t *testing.T) {
-	predictor := NewLockFreePredictor()
+	predictor := NewSmartPredictor()
 
 	// Train with pattern
 	queries := []string{
@@ -228,12 +228,12 @@ func TestMLPredictor(t *testing.T) {
 	// Record pattern multiple times
 	for i := 0; i < 10; i++ {
 		for _, q := range queries {
-			predictor.Record(q, dns.TypeA)
+			predictor.Record("10.0.0.1", q, dns.TypeA)
 		}
 	}
 
 	// Test predictions
-	predictions := predictor.Predict("app.default.svc.cluster.local.")
+	predictions := predictor.Predict("10.0.0.1", "app.default.svc.cluster.local.")
 	if len(predictions) == 0 {
 		t.Error("No predictions generated")
 	}
