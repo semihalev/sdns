@@ -44,8 +44,8 @@ func TestPredictionLoop(t *testing.T) {
 		}
 	}
 
-	// Test prefetch
-	k.prefetchPredicted("app.default.svc.cluster.local.")
+	// Test prefetch with new method
+	k.prefetchPredictedWithClient("10.0.0.1", "app.default.svc.cluster.local.", dns.TypeA)
 
 	// Check stats to ensure prediction is working
 	stats := k.Stats()

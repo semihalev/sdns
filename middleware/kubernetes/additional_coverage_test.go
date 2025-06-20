@@ -227,7 +227,7 @@ func TestHighPerformanceCacheCleanupLoop(t *testing.T) {
 
 // TestPredictorTrainLoop tests predictor training loop
 func TestPredictorTrainLoop(t *testing.T) {
-	p := NewLockFreePredictor()
+	p := NewSmartPredictor()
 
 	// Record patterns
 	queries := []string{
@@ -239,7 +239,7 @@ func TestPredictorTrainLoop(t *testing.T) {
 	// Train with pattern
 	for i := 0; i < 200; i++ {
 		for _, q := range queries {
-			p.Record(q, dns.TypeA)
+			p.Record("", q, dns.TypeA)
 		}
 	}
 
@@ -247,7 +247,7 @@ func TestPredictorTrainLoop(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Test predictions
-	predictions := p.Predict("app.default.svc.cluster.local.")
+	predictions := p.Predict("", "app.default.svc.cluster.local.")
 	t.Logf("Got %d predictions after training", len(predictions))
 }
 

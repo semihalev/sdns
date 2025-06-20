@@ -18,6 +18,9 @@ type ShardedRegistry struct {
 	// Pod shards - distributed by IP
 	podShards [256]*podShard
 
+	// Endpoint shards - distributed by service key hash
+	endpointShards [256]*endpointShard
+
 	// Stats
 	queries uint64
 	hits    uint64
@@ -41,6 +44,12 @@ type podShard struct {
 	pods map[string]*Pod // ip -> pod
 }
 
+// endpointShard holds endpoints for one shard
+type endpointShard struct {
+	mu        sync.RWMutex
+	endpoints map[string][]Endpoint // namespace/service -> endpoints
+}
+
 // NewShardedRegistry creates the beast
 func NewShardedRegistry() *ShardedRegistry {
 	r := &ShardedRegistry{
@@ -58,6 +67,9 @@ func NewShardedRegistry() *ShardedRegistry {
 		}
 		r.podShards[i] = &podShard{
 			pods: make(map[string]*Pod),
+		}
+		r.endpointShards[i] = &endpointShard{
+			endpoints: make(map[string][]Endpoint),
 		}
 	}
 
@@ -212,10 +224,9 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 	qname := strings.Join(labels, ".") + "."
 	var answers []dns.RR
 
-	// For headless services, return true even with no answers
+	// For headless services, resolve to endpoint IPs
 	if svc.Headless {
-		// TODO: Should resolve to endpoint IPs
-		return answers, true
+		return r.resolveHeadlessService(key, qname, qtype)
 	}
 
 	switch qtype {
@@ -552,10 +563,108 @@ func (r *ShardedRegistry) findPodInShard(shardIdx int, podName, namespace, servi
 	return nil
 }
 
+// resolveHeadlessService resolves headless service to endpoint IPs
+func (r *ShardedRegistry) resolveHeadlessService(key, qname string, qtype uint16) ([]dns.RR, bool) {
+	// Get endpoints for this service
+	shard := r.getEndpointShard(key)
+
+	shard.mu.RLock()
+	endpoints, ok := shard.endpoints[key]
+	shard.mu.RUnlock()
+
+	if !ok || len(endpoints) == 0 {
+		// No endpoints, return empty answer
+		return []dns.RR{}, true
+	}
+
+	atomic.AddUint64(&r.hits, 1)
+
+	var answers []dns.RR
+
+	for _, ep := range endpoints {
+		if !ep.Ready {
+			continue // Skip not-ready endpoints
+		}
+
+		for _, addr := range ep.Addresses {
+			ip := net.ParseIP(addr)
+			if ip == nil {
+				continue
+			}
+
+			switch qtype {
+			case dns.TypeA:
+				if ip4 := ip.To4(); ip4 != nil {
+					answers = append(answers, &dns.A{
+						Hdr: dns.RR_Header{
+							Name:   qname,
+							Rrtype: dns.TypeA,
+							Class:  dns.ClassINET,
+							Ttl:    r.ttlService,
+						},
+						A: ip4,
+					})
+				}
+
+			case dns.TypeAAAA:
+				if ip6 := ip.To16(); ip6 != nil && ip.To4() == nil {
+					answers = append(answers, &dns.AAAA{
+						Hdr: dns.RR_Header{
+							Name:   qname,
+							Rrtype: dns.TypeAAAA,
+							Class:  dns.ClassINET,
+							Ttl:    r.ttlService,
+						},
+						AAAA: ip6,
+					})
+				}
+			}
+		}
+	}
+
+	return answers, len(answers) > 0
+}
+
+// SetEndpoints sets endpoints for a service
+func (r *ShardedRegistry) SetEndpoints(service, namespace string, endpoints []Endpoint) {
+	key := namespace + "/" + service
+	shard := r.getEndpointShard(key)
+
+	shard.mu.Lock()
+	if len(endpoints) == 0 {
+		delete(shard.endpoints, key)
+	} else {
+		shard.endpoints[key] = endpoints
+	}
+	shard.mu.Unlock()
+}
+
+// GetEndpoints gets endpoints for a service
+func (r *ShardedRegistry) GetEndpoints(service, namespace string) []Endpoint {
+	key := namespace + "/" + service
+	shard := r.getEndpointShard(key)
+
+	shard.mu.RLock()
+	endpoints, _ := shard.endpoints[key]
+	shard.mu.RUnlock()
+
+	return endpoints
+}
+
+// getEndpointShard returns shard for endpoints
+func (r *ShardedRegistry) getEndpointShard(key string) *endpointShard {
+	hash := uint32(0)
+	for i := 0; i < len(key); i++ {
+		hash = hash*31 + uint32(key[i])
+	}
+	return r.endpointShards[hash%256]
+}
+
 // GetStats returns registry statistics
 func (r *ShardedRegistry) GetStats() map[string]int64 {
 	services := int64(0)
 	pods := int64(0)
+	endpointSets := int64(0)
 
 	// Count across all shards
 	for i := 0; i < 256; i++ {
@@ -566,17 +675,22 @@ func (r *ShardedRegistry) GetStats() map[string]int64 {
 		r.podShards[i].mu.RLock()
 		pods += int64(len(r.podShards[i].pods))
 		r.podShards[i].mu.RUnlock()
+
+		r.endpointShards[i].mu.RLock()
+		endpointSets += int64(len(r.endpointShards[i].endpoints))
+		r.endpointShards[i].mu.RUnlock()
 	}
 
 	queries := atomic.LoadUint64(&r.queries)
 	hits := atomic.LoadUint64(&r.hits)
 
 	return map[string]int64{
-		"services":     services,
-		"pods":         pods,
-		"queries":      int64(queries),
-		"hits":         int64(hits),
-		"shards":       256,
-		"hit_rate_pct": int64(float64(hits) / float64(queries) * 100),
+		"services":      services,
+		"pods":          pods,
+		"endpoint_sets": endpointSets,
+		"queries":       int64(queries),
+		"hits":          int64(hits),
+		"shards":        256,
+		"hit_rate_pct":  int64(float64(hits) / float64(queries) * 100),
 	}
 }
