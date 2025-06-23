@@ -89,7 +89,7 @@ $ make test
 
 | Flag              | Description                                                                    |
 | ----------------- | ------------------------------------------------------------------------------ |
-| -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated  |
+| -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated. Default: /sdns.conf  |
 | -v, --version     | Show the SDNS version                                                          |
 | -h, --help        | Show help information and exit                                                 |
 
@@ -132,8 +132,8 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **version**          | Configuration file version                                                                                          |
-| **directory**        | Working directory for SDNS data storage. Must be writable by the SDNS process. Default: "db"                        |
-| **bind**             | DNS server binding address and port. Default: ":53"                                                                 |
+| **directory**        | Working directory for SDNS data storage. Must be writable by the SDNS process. Default: "/db"                        |
+| **bind**             | DNS server binding address and port. Default: ":53" (0.0.0.0:53 and [::]:53)                                                                 |
 | **bindtls**          | DNS-over-TLS (DoT) server binding address. Default: ":853"                                                          |
 | **binddoh**          | DNS-over-HTTPS (DoH) server binding address. Default: ":8053"                                                       |
 | **binddoq**          | DNS-over-QUIC (DoQ) server binding address. Default: ":853"                                                         |
@@ -158,7 +158,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **accesslist**       | IP addresses/subnets allowed to make queries. Default allows all: ["0.0.0.0/0", "::0/0"]                           |
 | **querytimeout**     | Maximum time to wait for any DNS query to complete. Default: "10s"                                                  |
 | **timeout**          | Network timeout for upstream DNS queries. Default: "2s"                                                             |
-| **hostsfile**        | Path to hosts file (RFC 952/1123 format) for local resolution. Leave empty to disable                              |
+| **hostsfile**        | Path to hosts file (RFC 952/1123 format) for local resolution. Auto reloads with fs watch. (The directory of the file is being watched, not the file. Best practice is to deploy the file in an individual directory.) Leave empty to disable |
 | **expire**           | Cache TTL for error responses in seconds. Default: 600                                                              |
 | **cachesize**        | Maximum number of cached DNS records. Default: 256000                                                               |
 | **prefetch**         | Prefetch threshold percentage (10-90). Refreshes popular cache entries before expiration. 0 disables               |
