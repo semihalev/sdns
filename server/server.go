@@ -180,8 +180,9 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 	// Get or create certificate manager
 	cm, err := s.getOrCreateCertManager()
 	if err != nil {
-		zlog.Error("Failed to get certificate manager", "error", err.Error())
-		return err
+		zlog.Error("DNS-over-TLS disabled due to certificate error", "addr", s.tlsAddr, "error", err.Error())
+		// Don't fail the entire server, just skip this service
+		return nil
 	}
 
 	zlog.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
@@ -229,8 +230,9 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 	// Get or create certificate manager
 	cm, err := s.getOrCreateCertManager()
 	if err != nil {
-		zlog.Error("Failed to get certificate manager", "error", err.Error())
-		return err
+		zlog.Error("DNS-over-HTTPS disabled due to certificate error", "addr", s.dohAddr, "error", err.Error())
+		// Don't fail the entire server, just skip this service
+		return nil
 	}
 
 	zlog.Info("DNS server listening...", "net", "doh", "addr", s.dohAddr)
@@ -282,8 +284,9 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 	// Get or create certificate manager
 	cm, err := s.getOrCreateCertManager()
 	if err != nil {
-		zlog.Error("Failed to get certificate manager", "error", err.Error())
-		return err
+		zlog.Error("DNS-over-HTTPS/3 disabled due to certificate error", "addr", s.dohAddr, "error", err.Error())
+		// Don't fail the entire server, just skip this service
+		return nil
 	}
 
 	zlog.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
@@ -329,8 +332,9 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 	// Get or create certificate manager
 	cm, err := s.getOrCreateCertManager()
 	if err != nil {
-		zlog.Error("Failed to get certificate manager", "error", err.Error())
-		return err
+		zlog.Error("DNS-over-QUIC disabled due to certificate error", "addr", s.doqAddr, "error", err.Error())
+		// Don't fail the entire server, just skip this service
+		return nil
 	}
 
 	srv := &doq.Server{
