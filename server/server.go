@@ -3,8 +3,8 @@ package server
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	l "log"
 	"net"
@@ -41,8 +41,9 @@ type Server struct {
 	doh3Started bool
 	doqStarted  bool
 
-	chainPool sync.Pool
-	cfg       *config.Config
+	chainPool   sync.Pool
+	cfg         *config.Config
+	certManager *CertManager
 }
 
 // New return new server.
@@ -175,18 +176,22 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 		return nil
 	}
 
+	// Initialize certificate manager if not already done
+	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
+		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
+		if err != nil {
+			zlog.Error("Failed to create certificate manager", "error", err.Error())
+			return err
+		}
+		s.certManager = cm
+	}
+
+	if s.certManager == nil {
+		zlog.Error("No TLS certificate configured")
+		return fmt.Errorf("no TLS certificate configured")
+	}
+
 	zlog.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
-
-	cert, err := tls.LoadX509KeyPair(s.tlsCertificate, s.tlsPrivateKey)
-	if err != nil {
-		zlog.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
-		return err
-	}
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS13,
-	}
 
 	srv := &dns.Server{
 		Addr:          s.tlsAddr,
@@ -194,7 +199,7 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 		Handler:       s,
 		MaxTCPQueries: 2048,
 		ReusePort:     true,
-		TLSConfig:     tlsConfig,
+		TLSConfig:     s.certManager.GetTLSConfig(),
 	}
 
 	s.tlsStarted = true
@@ -228,6 +233,21 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 		return nil
 	}
 
+	// Initialize certificate manager if not already done
+	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
+		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
+		if err != nil {
+			zlog.Error("Failed to create certificate manager", "error", err.Error())
+			return err
+		}
+		s.certManager = cm
+	}
+
+	if s.certManager == nil {
+		zlog.Error("No TLS certificate configured")
+		return fmt.Errorf("no TLS certificate configured")
+	}
+
 	zlog.Info("DNS server listening...", "net", "doh", "addr", s.dohAddr)
 
 	logReader, logWriter := io.Pipe()
@@ -239,12 +259,14 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		ErrorLog:     l.New(logWriter, "", 0),
+		TLSConfig:    s.certManager.GetTLSConfig(),
 	}
 
 	s.dohStarted = true
 
 	go func() {
-		if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// Use ListenAndServeTLS with empty cert/key paths since TLSConfig has GetCertificate
+		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.dohStarted = false
 			zlog.Error("DNS listener failed", "net", "doh", "addr", s.dohAddr, "error", err.Error())
 		}
@@ -272,11 +294,27 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 		return nil
 	}
 
+	// Initialize certificate manager if not already done
+	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
+		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
+		if err != nil {
+			zlog.Error("Failed to create certificate manager", "error", err.Error())
+			return err
+		}
+		s.certManager = cm
+	}
+
+	if s.certManager == nil {
+		zlog.Error("No TLS certificate configured")
+		return fmt.Errorf("no TLS certificate configured")
+	}
+
 	zlog.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
 
 	srv := &http3.Server{
-		Addr:    s.dohAddr,
-		Handler: s,
+		Addr:      s.dohAddr,
+		Handler:   s,
+		TLSConfig: s.certManager.GetTLSConfig(),
 		QUICConfig: &quic.Config{
 			Allow0RTT: true,
 		},
@@ -285,7 +323,8 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 	s.doh3Started = true
 
 	go func() {
-		if err := srv.ListenAndServeTLS(s.tlsCertificate, s.tlsPrivateKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// Empty cert paths since TLSConfig has GetCertificate
+		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.doh3Started = false
 			zlog.Error("DNS listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
 		}
@@ -310,6 +349,21 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 		return nil
 	}
 
+	// Initialize certificate manager if not already done
+	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
+		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
+		if err != nil {
+			zlog.Error("Failed to create certificate manager", "error", err.Error())
+			return err
+		}
+		s.certManager = cm
+	}
+
+	if s.certManager == nil {
+		zlog.Error("No TLS certificate configured")
+		return fmt.Errorf("no TLS certificate configured")
+	}
+
 	srv := &doq.Server{
 		Addr:    s.doqAddr,
 		Handler: s,
@@ -320,7 +374,8 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 	s.doqStarted = true
 
 	go func() {
-		if err := srv.ListenAndServeQUIC(s.tlsCertificate, s.tlsPrivateKey); err != nil && !errors.Is(err, quic.ErrServerClosed) {
+		tlsConfig := s.certManager.GetTLSConfig()
+		if err := srv.ListenAndServeQUICWithConfig(tlsConfig); err != nil && !errors.Is(err, quic.ErrServerClosed) {
 			s.doqStarted = false
 			zlog.Error("DNS listener failed", "net", "doq", "addr", s.doqAddr, "error", err.Error())
 		}
@@ -345,6 +400,23 @@ func (s *Server) Stopped() bool {
 	}
 
 	return true
+}
+
+// Stop cleans up server resources
+func (s *Server) Stop() {
+	if s.certManager != nil {
+		s.certManager.Stop()
+	}
+}
+
+// ReloadCertificate forces a certificate reload on all TLS servers
+func (s *Server) ReloadCertificate() error {
+	if s.certManager == nil {
+		return fmt.Errorf("no certificate manager configured")
+	}
+
+	zlog.Info("Reloading TLS certificate")
+	return s.certManager.Reload()
 }
 
 func readlogs(rd io.Reader) {

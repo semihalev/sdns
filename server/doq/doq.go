@@ -75,6 +75,17 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 		MinVersion:   tlsMinVersion,
 	}
 
+	return s.ListenAndServeQUICWithConfig(tlsConfig)
+}
+
+// ListenAndServeQUICWithConfig serves with a custom TLS config
+func (s *Server) ListenAndServeQUICWithConfig(tlsConfig *tls.Config) error {
+	// Ensure DOQ protocols are set
+	if tlsConfig.NextProtos == nil {
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.NextProtos = doqProtos
+	}
+
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:         5 * time.Second,
 		MaxStreamReceiveWindow: maxMsgSize,

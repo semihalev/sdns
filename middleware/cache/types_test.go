@@ -337,7 +337,7 @@ func TestCacheEntryWithoutEDE(t *testing.T) {
 
 	entry := NewCacheEntry(msg, 300*time.Second, 0)
 	require.NotNil(t, entry)
-	assert.Nil(t, entry.ede)
+	assert.False(t, entry.HasEDE())
 
 	// Restore with EDNS request
 	req := new(dns.Msg)

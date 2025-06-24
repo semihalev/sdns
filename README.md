@@ -137,8 +137,8 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **bindtls**          | DNS-over-TLS (DoT) server binding address. Default: ":853"                                                          |
 | **binddoh**          | DNS-over-HTTPS (DoH) server binding address. Default: ":8053"                                                       |
 | **binddoq**          | DNS-over-QUIC (DoQ) server binding address. Default: ":853"                                                         |
-| **tlscertificate**   | Path to the TLS certificate file for DoT/DoH/DoQ                                                                    |
-| **tlsprivatekey**    | Path to the TLS private key file for DoT/DoH/DoQ                                                                    |
+| **tlscertificate**   | Path to the TLS certificate file for DoT/DoH/DoQ. Automatically reloaded on changes                                 |
+| **tlsprivatekey**    | Path to the TLS private key file for DoT/DoH/DoQ. Automatically reloaded on changes                                 |
 | **outboundips**      | Outbound IPv4 addresses for DNS queries. Multiple addresses enable random source IP selection per request            |
 | **outboundip6s**     | Outbound IPv6 addresses for DNS queries. Multiple addresses enable random source IP selection per request            |
 | **rootservers**      | Root DNS servers (IPv4). These are the authoritative name servers for the DNS root zone                             |
@@ -239,6 +239,37 @@ For implementation details, see the [example plugin](https://github.com/semihale
      path = "/path/to/anotherplugin.so"
 ```
 
+## TLS Certificate Management
+
+SDNS automatically monitors and reloads TLS certificates when they change on disk, making it compatible with automatic certificate renewal systems like Let's Encrypt.
+
+### Automatic Certificate Reloading
+
+*   Certificate files are monitored for changes using filesystem notifications
+*   When a certificate is updated, SDNS automatically reloads it without dropping connections
+*   Works seamlessly with Let's Encrypt and other ACME clients
+*   Certificate changes are detected within seconds
+
+### Manual Certificate Reload
+
+You can also trigger a certificate reload manually by sending a SIGHUP signal:
+
+```shell
+$ kill -HUP $(pidof sdns)
+```
+
+This is useful when:
+*   Filesystem notifications are not reliable on your system
+*   You want to reload certificates on demand
+*   You're using a certificate deployment system that doesn't modify files in-place
+
+### Certificate Requirements
+
+*   Certificate and key files must be readable by the SDNS process
+*   Supports standard PEM-encoded X.509 certificates
+*   Works with wildcard certificates
+*   Compatible with both RSA and ECDSA certificates
+
 ## Server Configuration Checklist
 
 *   Increase the file descriptor limit on your server
@@ -280,6 +311,7 @@ For implementation details, see the [example plugin](https://github.com/semihale
 *   Zero-allocation cache operations for improved performance
 *   TCP connection pooling for persistent connections
 *   **Kubernetes DNS integration with killer mode performance**
+*   **Automatic TLS certificate reloading without downtime**
 
 ## TODO
 
