@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -34,12 +35,12 @@ type Server struct {
 	tlsCertificate string
 	tlsPrivateKey  string
 
-	udpStarted  bool
-	tcpStarted  bool
-	tlsStarted  bool
-	dohStarted  bool
-	doh3Started bool
-	doqStarted  bool
+	udpStarted  atomic.Bool
+	tcpStarted  atomic.Bool
+	tlsStarted  atomic.Bool
+	dohStarted  atomic.Bool
+	doh3Started atomic.Bool
+	doqStarted  atomic.Bool
 
 	chainPool   sync.Pool
 	cfg         *config.Config
@@ -135,17 +136,17 @@ func (s *Server) ListenAndServeDNS(ctx context.Context, network string) error {
 	}
 
 	if network == "tcp" {
-		s.tcpStarted = true
+		s.tcpStarted.Store(true)
 	} else {
-		s.udpStarted = true
+		s.udpStarted.Store(true)
 	}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
 			if network == "tcp" {
-				s.tcpStarted = false
+				s.tcpStarted.Store(false)
 			} else {
-				s.udpStarted = false
+				s.udpStarted.Store(false)
 			}
 			zlog.Error("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
 		}
@@ -163,9 +164,9 @@ func (s *Server) ListenAndServeDNS(ctx context.Context, network string) error {
 	}
 
 	if network == "tcp" {
-		s.tcpStarted = false
+		s.tcpStarted.Store(false)
 	} else {
-		s.udpStarted = false
+		s.udpStarted.Store(false)
 	}
 
 	return nil
@@ -196,11 +197,11 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 		TLSConfig:     cm.GetTLSConfig(),
 	}
 
-	s.tlsStarted = true
+	s.tlsStarted.Store(true)
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
-			s.tlsStarted = false
+			s.tlsStarted.Store(false)
 			zlog.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 		}
 	}()
@@ -216,7 +217,7 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 		zlog.Error("Shutdown dns server failed:", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 	}
 
-	s.tlsStarted = false
+	s.tlsStarted.Store(false)
 
 	return nil
 }
@@ -249,12 +250,12 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 		TLSConfig:    cm.GetTLSConfig(),
 	}
 
-	s.dohStarted = true
+	s.dohStarted.Store(true)
 
 	go func() {
 		// Use ListenAndServeTLS with empty cert/key paths since TLSConfig has GetCertificate
 		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.dohStarted = false
+			s.dohStarted.Store(false)
 			zlog.Error("DNS listener failed", "net", "doh", "addr", s.dohAddr, "error", err.Error())
 		}
 	}()
@@ -270,7 +271,7 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 		zlog.Error("Shutdown dns server failed:", "net", "doh", "addr", s.dohAddr, "error", err.Error())
 	}
 
-	s.dohStarted = false
+	s.dohStarted.Store(false)
 
 	return nil
 }
@@ -300,12 +301,12 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 		},
 	}
 
-	s.doh3Started = true
+	s.doh3Started.Store(true)
 
 	go func() {
 		// Empty cert paths since TLSConfig has GetCertificate
 		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.doh3Started = false
+			s.doh3Started.Store(false)
 			zlog.Error("DNS listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
 		}
 	}()
@@ -318,7 +319,7 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 		zlog.Error("Shutdown dns server failed:", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
 	}
 
-	s.doh3Started = false
+	s.doh3Started.Store(false)
 
 	return nil
 }
@@ -344,12 +345,12 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 
 	zlog.Info("DNS server listening...", "net", "doq", "addr", s.doqAddr)
 
-	s.doqStarted = true
+	s.doqStarted.Store(true)
 
 	go func() {
 		tlsConfig := cm.GetTLSConfig()
 		if err := srv.ListenAndServeQUICWithConfig(tlsConfig); err != nil && !errors.Is(err, quic.ErrServerClosed) {
-			s.doqStarted = false
+			s.doqStarted.Store(false)
 			zlog.Error("DNS listener failed", "net", "doq", "addr", s.doqAddr, "error", err.Error())
 		}
 	}()
@@ -362,13 +363,13 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 		zlog.Error("Shutdown dns server failed:", "net", "doq", "addr", s.doqAddr, "error", err.Error())
 	}
 
-	s.doqStarted = false
+	s.doqStarted.Store(false)
 
 	return nil
 }
 
 func (s *Server) Stopped() bool {
-	if s.udpStarted || s.tcpStarted || s.tlsStarted || s.dohStarted || s.doh3Started || s.doqStarted {
+	if s.udpStarted.Load() || s.tcpStarted.Load() || s.tlsStarted.Load() || s.dohStarted.Load() || s.doh3Started.Load() || s.doqStarted.Load() {
 		return false
 	}
 

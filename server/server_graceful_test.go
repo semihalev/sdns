@@ -35,14 +35,14 @@ func TestServerGracefulDegradation(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Plain DNS services should still be running
-	assert.True(t, s.udpStarted, "UDP service should be running")
-	assert.True(t, s.tcpStarted, "TCP service should be running")
+	assert.True(t, s.udpStarted.Load(), "UDP service should be running")
+	assert.True(t, s.tcpStarted.Load(), "TCP service should be running")
 
 	// TLS services should not be running due to certificate error
-	assert.False(t, s.tlsStarted, "TLS service should not be running")
-	assert.False(t, s.dohStarted, "DoH service should not be running")
-	assert.False(t, s.doh3Started, "DoH3 service should not be running")
-	assert.False(t, s.doqStarted, "DoQ service should not be running")
+	assert.False(t, s.tlsStarted.Load(), "TLS service should not be running")
+	assert.False(t, s.dohStarted.Load(), "DoH service should not be running")
+	assert.False(t, s.doh3Started.Load(), "DoH3 service should not be running")
+	assert.False(t, s.doqStarted.Load(), "DoQ service should not be running")
 
 	// Cancel context to stop services
 	cancel()
@@ -85,13 +85,13 @@ func TestServerWithValidCertificate(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// All services should be running (or attempted to start)
-	assert.True(t, s.udpStarted, "UDP service should be running")
-	assert.True(t, s.tcpStarted, "TCP service should be running")
-	assert.True(t, s.tlsStarted, "TLS service should be running")
-	assert.True(t, s.dohStarted, "DoH service should be running")
+	assert.True(t, s.udpStarted.Load(), "UDP service should be running")
+	assert.True(t, s.tcpStarted.Load(), "TCP service should be running")
+	assert.True(t, s.tlsStarted.Load(), "TLS service should be running")
+	assert.True(t, s.dohStarted.Load(), "DoH service should be running")
 	// Note: DoH3 might fail on some systems due to QUIC requirements
 	// Just check that DoQ is running as it uses the same certificate
-	assert.True(t, s.doqStarted, "DoQ service should be running")
+	assert.True(t, s.doqStarted.Load(), "DoQ service should be running")
 
 	// Stop the server
 	cancel()
