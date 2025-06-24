@@ -44,6 +44,7 @@ type Server struct {
 	chainPool   sync.Pool
 	cfg         *config.Config
 	certManager *CertManager
+	certMu      sync.Mutex
 }
 
 // New return new server.
@@ -176,19 +177,11 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 		return nil
 	}
 
-	// Initialize certificate manager if not already done
-	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
-		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
-		if err != nil {
-			zlog.Error("Failed to create certificate manager", "error", err.Error())
-			return err
-		}
-		s.certManager = cm
-	}
-
-	if s.certManager == nil {
-		zlog.Error("No TLS certificate configured")
-		return fmt.Errorf("no TLS certificate configured")
+	// Get or create certificate manager
+	cm, err := s.getOrCreateCertManager()
+	if err != nil {
+		zlog.Error("Failed to get certificate manager", "error", err.Error())
+		return err
 	}
 
 	zlog.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
@@ -199,7 +192,7 @@ func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
 		Handler:       s,
 		MaxTCPQueries: 2048,
 		ReusePort:     true,
-		TLSConfig:     s.certManager.GetTLSConfig(),
+		TLSConfig:     cm.GetTLSConfig(),
 	}
 
 	s.tlsStarted = true
@@ -233,19 +226,11 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 		return nil
 	}
 
-	// Initialize certificate manager if not already done
-	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
-		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
-		if err != nil {
-			zlog.Error("Failed to create certificate manager", "error", err.Error())
-			return err
-		}
-		s.certManager = cm
-	}
-
-	if s.certManager == nil {
-		zlog.Error("No TLS certificate configured")
-		return fmt.Errorf("no TLS certificate configured")
+	// Get or create certificate manager
+	cm, err := s.getOrCreateCertManager()
+	if err != nil {
+		zlog.Error("Failed to get certificate manager", "error", err.Error())
+		return err
 	}
 
 	zlog.Info("DNS server listening...", "net", "doh", "addr", s.dohAddr)
@@ -259,7 +244,7 @@ func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		ErrorLog:     l.New(logWriter, "", 0),
-		TLSConfig:    s.certManager.GetTLSConfig(),
+		TLSConfig:    cm.GetTLSConfig(),
 	}
 
 	s.dohStarted = true
@@ -294,19 +279,11 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 		return nil
 	}
 
-	// Initialize certificate manager if not already done
-	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
-		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
-		if err != nil {
-			zlog.Error("Failed to create certificate manager", "error", err.Error())
-			return err
-		}
-		s.certManager = cm
-	}
-
-	if s.certManager == nil {
-		zlog.Error("No TLS certificate configured")
-		return fmt.Errorf("no TLS certificate configured")
+	// Get or create certificate manager
+	cm, err := s.getOrCreateCertManager()
+	if err != nil {
+		zlog.Error("Failed to get certificate manager", "error", err.Error())
+		return err
 	}
 
 	zlog.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
@@ -314,7 +291,7 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 	srv := &http3.Server{
 		Addr:      s.dohAddr,
 		Handler:   s,
-		TLSConfig: s.certManager.GetTLSConfig(),
+		TLSConfig: cm.GetTLSConfig(),
 		QUICConfig: &quic.Config{
 			Allow0RTT: true,
 		},
@@ -349,19 +326,11 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 		return nil
 	}
 
-	// Initialize certificate manager if not already done
-	if s.certManager == nil && s.tlsCertificate != "" && s.tlsPrivateKey != "" {
-		cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
-		if err != nil {
-			zlog.Error("Failed to create certificate manager", "error", err.Error())
-			return err
-		}
-		s.certManager = cm
-	}
-
-	if s.certManager == nil {
-		zlog.Error("No TLS certificate configured")
-		return fmt.Errorf("no TLS certificate configured")
+	// Get or create certificate manager
+	cm, err := s.getOrCreateCertManager()
+	if err != nil {
+		zlog.Error("Failed to get certificate manager", "error", err.Error())
+		return err
 	}
 
 	srv := &doq.Server{
@@ -374,7 +343,7 @@ func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
 	s.doqStarted = true
 
 	go func() {
-		tlsConfig := s.certManager.GetTLSConfig()
+		tlsConfig := cm.GetTLSConfig()
 		if err := srv.ListenAndServeQUICWithConfig(tlsConfig); err != nil && !errors.Is(err, quic.ErrServerClosed) {
 			s.doqStarted = false
 			zlog.Error("DNS listener failed", "net", "doq", "addr", s.doqAddr, "error", err.Error())
@@ -402,15 +371,44 @@ func (s *Server) Stopped() bool {
 	return true
 }
 
+// getOrCreateCertManager safely gets or creates the certificate manager
+func (s *Server) getOrCreateCertManager() (*CertManager, error) {
+	s.certMu.Lock()
+	defer s.certMu.Unlock()
+
+	if s.certManager != nil {
+		return s.certManager, nil
+	}
+
+	if s.tlsCertificate == "" || s.tlsPrivateKey == "" {
+		return nil, fmt.Errorf("no TLS certificate configured")
+	}
+
+	cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create certificate manager: %w", err)
+	}
+
+	s.certManager = cm
+	return cm, nil
+}
+
 // Stop cleans up server resources
 func (s *Server) Stop() {
+	s.certMu.Lock()
+	defer s.certMu.Unlock()
+
 	if s.certManager != nil {
 		s.certManager.Stop()
+		s.certManager = nil
 	}
 }
 
 // ReloadCertificate forces a certificate reload on all TLS servers
 func (s *Server) ReloadCertificate() error {
+	s.certMu.Lock()
+	defer s.certMu.Unlock()
+
 	if s.certManager == nil {
 		return fmt.Errorf("no certificate manager configured")
 	}

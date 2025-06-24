@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -24,9 +23,6 @@ type CertManager struct {
 
 	watcher *fsnotify.Watcher
 	stopCh  chan struct{}
-
-	// For GetCertificate callback
-	tlsConfig atomic.Value // *tls.Config
 }
 
 // NewCertManager creates a new certificate manager
@@ -89,13 +85,6 @@ func (cm *CertManager) loadCertificate() error {
 	cm.lastModTime = certInfo.ModTime()
 	cm.mu.Unlock()
 
-	// Update TLS config
-	tlsConfig := &tls.Config{
-		GetCertificate: cm.GetCertificate,
-		MinVersion:     tls.VersionTLS12,
-	}
-	cm.tlsConfig.Store(tlsConfig)
-
 	zlog.Info("TLS certificate loaded", "cert", cm.certPath, "modTime", certInfo.ModTime())
 
 	return nil
@@ -114,12 +103,8 @@ func (cm *CertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 }
 
 // GetTLSConfig returns a TLS config that uses dynamic certificate loading
+// Each call returns a fresh config to avoid race conditions
 func (cm *CertManager) GetTLSConfig() *tls.Config {
-	if cfg := cm.tlsConfig.Load(); cfg != nil {
-		return cfg.(*tls.Config)
-	}
-
-	// Fallback config
 	return &tls.Config{
 		GetCertificate: cm.GetCertificate,
 		MinVersion:     tls.VersionTLS12,

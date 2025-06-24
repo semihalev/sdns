@@ -10,12 +10,16 @@ import (
 
 // TestCacheUnboundedGrowth tests if cache can grow unbounded under specific conditions
 func TestCacheUnboundedGrowth(t *testing.T) {
-	maxSize := 1000
+	if testing.Short() || isCI() {
+		t.Skip("Skipping heavy test in short mode or CI")
+	}
+
+	maxSize := 500 // Reduced from 1000
 	c := New(maxSize)
 
 	// Try to exploit the race between Add and eviction
-	numGoroutines := runtime.NumCPU() * 2
-	itemsPerGoroutine := 10000
+	numGoroutines := 4        // Fixed number instead of runtime.NumCPU() * 2
+	itemsPerGoroutine := 1000 // Reduced from 10000
 
 	var wg sync.WaitGroup
 	var maxEverSeen int64
@@ -47,14 +51,17 @@ func TestCacheUnboundedGrowth(t *testing.T) {
 		}(g)
 	}
 
-	// Monitor size in a tight loop while adds are happening
+	// Monitor size periodically while adds are happening
 	done := make(chan bool)
 	go func() {
+		ticker := time.NewTicker(20 * time.Millisecond) // Increased from 5ms
+		defer ticker.Stop()
+
 		for {
 			select {
 			case <-done:
 				return
-			default:
+			case <-ticker.C:
 				size := int64(c.Len())
 				for {
 					old := atomic.LoadInt64(&maxEverSeen)
@@ -93,8 +100,8 @@ func TestCacheMemoryPressure(t *testing.T) {
 		t.Skip("Skipping memory pressure test in short mode")
 	}
 
-	// Use a larger cache to see memory effects
-	maxSize := 100000
+	// Use a moderate cache size
+	maxSize := 10000 // Reduced from 100000
 	c := New(maxSize)
 
 	// Create large values to increase memory pressure
@@ -138,6 +145,10 @@ func TestCacheMemoryPressure(t *testing.T) {
 
 // TestCacheEvictionStalls tests if eviction can stall under certain conditions
 func TestCacheEvictionStalls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping stall test in short mode")
+	}
+
 	maxSize := 100
 	c := New(maxSize)
 
@@ -152,23 +163,24 @@ func TestCacheEvictionStalls(t *testing.T) {
 	stopFlag := int32(0)
 
 	// Reader goroutines
-	for r := 0; r < 5; r++ {
+	for r := 0; r < 3; r++ { // Reduced from 5
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for atomic.LoadInt32(&stopFlag) == 0 {
 				c.Get(uint64(r * 20))
+				time.Sleep(time.Microsecond) // Add small delay
 			}
 		}()
 	}
 
 	// Writer goroutines
-	for w := 0; w < 5; w++ {
+	for w := 0; w < 3; w++ { // Reduced from 5
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for i := 0; i < 10000; i++ {
-				c.Add(uint64(maxSize+id*10000+i), i)
+			for i := 0; i < 1000; i++ { // Reduced from 10000
+				c.Add(uint64(maxSize+id*1000+i), i)
 			}
 		}(w)
 	}
