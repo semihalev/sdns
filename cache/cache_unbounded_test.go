@@ -78,19 +78,20 @@ func TestCacheUnboundedGrowth(t *testing.T) {
 
 	totalAdds := atomic.LoadInt64(&addsDone)
 	finalSize := c.Len()
+	maxSeen := atomic.LoadInt64(&maxEverSeen)
 
 	t.Logf("Total adds: %d", totalAdds)
-	t.Logf("Max size ever seen: %d (limit: %d)", maxEverSeen, maxSize)
+	t.Logf("Max size ever seen: %d (limit: %d)", maxSeen, maxSize)
 	t.Logf("Final size: %d", finalSize)
-	t.Logf("Max overshoot: %d (%.1f%% of limit)", maxEverSeen-int64(maxSize),
-		float64(maxEverSeen-int64(maxSize))/float64(maxSize)*100)
+	t.Logf("Max overshoot: %d (%.1f%% of limit)", maxSeen-int64(maxSize),
+		float64(maxSeen-int64(maxSize))/float64(maxSize)*100)
 
 	// Check if growth was bounded
 	// Allow some overshoot but not unbounded growth
 	maxAllowedOvershoot := int64(maxSize) // 100% overshoot is concerning
-	if maxEverSeen > int64(maxSize)+maxAllowedOvershoot {
+	if maxSeen > int64(maxSize)+maxAllowedOvershoot {
 		t.Errorf("Cache grew to %d, which is more than 2x the limit %d",
-			maxEverSeen, maxSize)
+			maxSeen, maxSize)
 	}
 }
 

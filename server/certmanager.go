@@ -24,6 +24,7 @@ type CertManager struct {
 
 	watcher *fsnotify.Watcher
 	stopCh  chan struct{}
+	doneCh  chan struct{}
 }
 
 // NewCertManager creates a new certificate manager
@@ -32,6 +33,7 @@ func NewCertManager(certPath, keyPath string) (*CertManager, error) {
 		certPath: certPath,
 		keyPath:  keyPath,
 		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
 	}
 
 	// Load initial certificate
@@ -153,6 +155,7 @@ func (cm *CertManager) GetTLSConfig() *tls.Config {
 
 // watch monitors for certificate changes
 func (cm *CertManager) watch() {
+	defer close(cm.doneCh)
 	defer cm.watcher.Close()
 
 	// Also check periodically in case fsnotify misses events
@@ -251,7 +254,9 @@ func (cm *CertManager) Reload() error {
 	return cm.loadCertificate()
 }
 
-// Stop stops the certificate manager
+// Stop stops the certificate manager and waits for cleanup
 func (cm *CertManager) Stop() {
 	close(cm.stopCh)
+	// Wait for the watcher goroutine to finish
+	<-cm.doneCh
 }
