@@ -34,8 +34,9 @@ func TestEDEPreservationInCache(t *testing.T) {
 	entry := NewCacheEntry(msg, 30*time.Second, 0)
 
 	// Verify EDE was preserved
-	assert.True(t, entry.HasEDE())
-	assert.Equal(t, dns.ExtendedErrorCodeDNSBogus, entry.GetEDECode())
+	assert.NotNil(t, entry.ede)
+	assert.Equal(t, dns.ExtendedErrorCodeDNSBogus, entry.ede.InfoCode)
+	assert.Equal(t, "DNSSEC validation failed", entry.ede.ExtraText)
 
 	// Create a request
 	req := new(dns.Msg)
@@ -85,7 +86,7 @@ func TestEDENotAddedForSuccessResponses(t *testing.T) {
 	entry := NewCacheEntry(msg, 30*time.Second, 0)
 
 	// Verify no EDE was preserved (success responses don't have EDE)
-	assert.False(t, entry.HasEDE())
+	assert.Nil(t, entry.ede)
 
 	// Create a request
 	req := new(dns.Msg)

@@ -2,8 +2,6 @@ package cache
 
 import (
 	"errors"
-	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,136 +20,24 @@ type DNSCache interface {
 
 // CacheEntry represents an immutable cache entry.
 type CacheEntry struct {
-	wire     []byte // Pre-packed DNS message in wire format
-	stored   int64  // Unix timestamp (more memory efficient)
-	ttl      uint32 // TTL in seconds
-	origTTL  uint32 // Original TTL in seconds for prefetch calculation
-	prefetch atomic.Bool
-	rateKey  int    // Key for shared rate limiter lookup (0 = no limit)
-	hasEDE   bool   // Whether EDE is present
-	edeCode  uint16 // EDE code if present
-	edeText  string // EDE extra text (empty if no text)
-}
-
-// rateLimiterEntry holds a rate limiter with last access time
-type rateLimiterEntry struct {
-	limiter    *rate.Limiter
-	lastAccess time.Time
-}
-
-// rateLimiterCache provides shared rate limiters to avoid creating one per entry
-var rateLimiterCache = struct {
-	sync.RWMutex
-	limiters    map[int]*rateLimiterEntry
-	maxSize     int
-	cleanupTime time.Duration
-}{
-	limiters:    make(map[int]*rateLimiterEntry),
-	maxSize:     1000,             // Maximum number of different rate limiters to cache
-	cleanupTime: 30 * time.Minute, // Remove limiters not accessed for 30 minutes
-}
-
-var rateLimiterCleanupStarted atomic.Bool
-
-func startRateLimiterCleanup() {
-	if rateLimiterCleanupStarted.CompareAndSwap(false, true) {
-		// Start periodic cleanup goroutine
-		go rateLimiterCacheMaintenance()
-	}
-}
-
-// rateLimiterCacheMaintenance periodically cleans up old rate limiters
-func rateLimiterCacheMaintenance() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		cleanupRateLimiters()
-	}
-}
-
-// cleanupRateLimiters removes expired rate limiters
-func cleanupRateLimiters() {
-	rateLimiterCache.Lock()
-	defer rateLimiterCache.Unlock()
-
-	now := time.Now()
-	for key, entry := range rateLimiterCache.limiters {
-		if now.Sub(entry.lastAccess) > rateLimiterCache.cleanupTime {
-			delete(rateLimiterCache.limiters, key)
-		}
-	}
-
-	// If still too many, remove oldest entries
-	if len(rateLimiterCache.limiters) > rateLimiterCache.maxSize {
-		// Convert to slice for sorting
-		type kv struct {
-			key   int
-			entry *rateLimiterEntry
-		}
-		items := make([]kv, 0, len(rateLimiterCache.limiters))
-		for k, v := range rateLimiterCache.limiters {
-			items = append(items, kv{k, v})
-		}
-
-		// Sort by last access time (oldest first)
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].entry.lastAccess.Before(items[j].entry.lastAccess)
-		})
-
-		// Remove oldest entries
-		toRemove := len(items) - rateLimiterCache.maxSize
-		for i := 0; i < toRemove; i++ {
-			delete(rateLimiterCache.limiters, items[i].key)
-		}
-	}
-}
-
-func getSharedRateLimiter(rateLimit int) *rate.Limiter {
-	if rateLimit <= 0 {
-		return nil
-	}
-
-	now := time.Now()
-
-	// Try to get existing limiter
-	rateLimiterCache.RLock()
-	entry, exists := rateLimiterCache.limiters[rateLimit]
-	rateLimiterCache.RUnlock()
-
-	if exists {
-		// Update last access time
-		rateLimiterCache.Lock()
-		entry.lastAccess = now
-		rateLimiterCache.Unlock()
-		return entry.limiter
-	}
-
-	// Create new limiter
-	rateLimiterCache.Lock()
-	defer rateLimiterCache.Unlock()
-
-	// Double-check after acquiring write lock
-	if entry, exists := rateLimiterCache.limiters[rateLimit]; exists {
-		entry.lastAccess = now
-		return entry.limiter
-	}
-
-	// Create new shared limiter
-	limit := rate.Every(time.Second / time.Duration(rateLimit))
-	limiter := rate.NewLimiter(limit, rateLimit)
-
-	rateLimiterCache.limiters[rateLimit] = &rateLimiterEntry{
-		limiter:    limiter,
-		lastAccess: now,
-	}
-
-	return limiter
+	msg        *dns.Msg
+	stored     time.Time
+	ttl        time.Duration
+	origTTL    uint32 // Original TTL in seconds for prefetch calculation
+	prefetch   atomic.Bool
+	rateLimit  int            // Rate limit value (0 = no limit)
+	rateLimKey uint64         // Key for shared rate limiter lookup
+	ede        *dns.EDNS0_EDE // Preserved EDE information
 }
 
 // NewCacheEntry creates a new cache entry from a DNS message.
 func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
-	// Create a filtered copy to remove OPT records but preserve structure
+	return NewCacheEntryWithKey(msg, ttl, rateLimit, 0)
+}
+
+// NewCacheEntryWithKey creates a new cache entry with a specific key for rate limiting
+func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
+	// Create a copy and filter out OPT records (matching V1 behavior)
 	msgCopy := new(dns.Msg)
 	msgCopy.MsgHdr = msg.MsgHdr
 	msgCopy.Compress = msg.Compress
@@ -159,21 +45,17 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 	msgCopy.Answer = msg.Answer
 	msgCopy.Ns = msg.Ns
 
-	var edeCode uint16
-	var edeText string
-	var hasEDE bool
+	var ede *dns.EDNS0_EDE
 
 	// Filter Extra section to remove OPT records but preserve EDE
 	if len(msg.Extra) > 0 {
 		extra := make([]dns.RR, 0, len(msg.Extra))
 		for _, rr := range msg.Extra {
 			if opt, ok := rr.(*dns.OPT); ok {
-				// Extract EDE if present
+				// Extract EDE from OPT record if present
 				for _, option := range opt.Option {
 					if e, ok := option.(*dns.EDNS0_EDE); ok {
-						edeCode = e.InfoCode
-						edeText = e.ExtraText
-						hasEDE = true
+						ede = e
 						break
 					}
 				}
@@ -184,24 +66,14 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 		msgCopy.Extra = extra
 	}
 
-	// Pack the filtered message into wire format
-	wire, err := msgCopy.Pack()
-	if err != nil {
-		// If packing fails, return nil to avoid caching invalid data
-		// This can happen with malformed DNS messages or messages that exceed size limits
-		// The caller should handle nil returns gracefully
-		return nil
-	}
-
 	entry := &CacheEntry{
-		wire:    wire,
-		stored:  time.Now().Unix(),
-		ttl:     uint32(ttl.Seconds()),
-		origTTL: uint32(ttl.Seconds()),
-		rateKey: rateLimit,
-		hasEDE:  hasEDE,
-		edeCode: edeCode,
-		edeText: edeText,
+		msg:        msgCopy,
+		stored:     time.Now().UTC(),
+		ttl:        ttl,
+		origTTL:    uint32(ttl.Seconds()),
+		rateLimit:  rateLimit,
+		rateLimKey: key,
+		ede:        ede,
 	}
 
 	return entry
@@ -209,30 +81,20 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 
 // (*CacheEntry).ToMsg toMsg creates a response message with updated TTLs.
 func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
-	now := time.Now().Unix()
-	elapsed := now - e.stored
-	remainingTTL := int64(e.ttl) - elapsed
+	now := time.Now().UTC()
+	elapsed := now.Sub(e.stored)
+	remainingTTL := e.ttl - elapsed
 
 	if remainingTTL <= 0 {
 		return nil
 	}
 
-	// Unpack the wire format
-	resp := new(dns.Msg)
-	if err := resp.Unpack(e.wire); err != nil {
-		return nil
-	}
-
-	// Save original values before SetReply
-	originalRcode := resp.Rcode
-	originalExtra := resp.Extra
-	originalAnswer := resp.Answer
-	originalNs := resp.Ns
+	resp := e.msg.Copy()
+	originalRcode := resp.Rcode // Save the original Rcode
+	originalExtra := resp.Extra // Save the original Extra section
 	resp.SetReply(req)
-	resp.Rcode = originalRcode   // Restore the original Rcode
-	resp.Answer = originalAnswer // Restore the original Answer section
-	resp.Ns = originalNs         // Restore the original Ns section
-	resp.Extra = originalExtra   // Restore the original Extra section
+	resp.Rcode = originalRcode // Restore the original Rcode
+	resp.Extra = originalExtra // Restore the original Extra section
 	resp.Id = req.Id
 
 	// Set Authoritative to false since this is from cache (matching V1 behavior)
@@ -245,7 +107,7 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	}
 
 	// Update TTLs
-	ttl := uint32(remainingTTL)
+	ttl := uint32(remainingTTL.Seconds())
 	for _, rr := range resp.Answer {
 		rr.Header().Ttl = ttl
 	}
@@ -260,11 +122,10 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 
 	// Restore EDE if it was present in the original response
 	// EDE can be present with any response code, not just SERVFAIL
-	if e.hasEDE && req.IsEdns0() != nil {
-		// Request has EDNS0, so we can add EDE to response
+	if e.ede != nil {
 		opt := resp.IsEdns0()
-		if opt == nil {
-			// No OPT record in response, create one based on request
+		if opt == nil && req.IsEdns0() != nil {
+			// Request has EDNS0, so add it to response
 			reqOpt := req.IsEdns0()
 			opt = &dns.OPT{
 				Hdr: dns.RR_Header{
@@ -276,12 +137,20 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 			resp.Extra = append(resp.Extra, opt)
 		}
 
-		// Add EDE to the OPT record
-		ede := &dns.EDNS0_EDE{
-			InfoCode:  e.edeCode,
-			ExtraText: e.edeText,
+		if opt != nil {
+			// Check if EDE already exists
+			hasEDE := false
+			for _, option := range opt.Option {
+				if _, ok := option.(*dns.EDNS0_EDE); ok {
+					hasEDE = true
+					break
+				}
+			}
+			// Add EDE if not already present
+			if !hasEDE {
+				opt.Option = append(opt.Option, e.ede)
+			}
 		}
-		opt.Option = append(opt.Option, ede)
 	}
 
 	return resp
@@ -289,16 +158,16 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 
 // (*CacheEntry).IsExpired isExpired checks if the cache entry has expired.
 func (e *CacheEntry) IsExpired() bool {
-	return time.Now().Unix()-e.stored >= int64(e.ttl)
+	return time.Since(e.stored) >= e.ttl
 }
 
 // (*CacheEntry).TTL TTL returns the remaining TTL in seconds.
 func (e *CacheEntry) TTL() int {
-	remaining := int64(e.ttl) - (time.Now().Unix() - e.stored)
+	remaining := e.ttl - time.Since(e.stored)
 	if remaining <= 0 {
 		return 0
 	}
-	return int(remaining)
+	return int(remaining.Seconds())
 }
 
 // (*CacheEntry).ShouldPrefetch shouldPrefetch checks if this entry should be prefetched.
@@ -313,14 +182,12 @@ func (e *CacheEntry) ShouldPrefetch(threshold int) bool {
 	return remainingTTL <= thresholdSeconds
 }
 
-// HasEDE returns true if this entry has EDE information
-func (e *CacheEntry) HasEDE() bool {
-	return e.hasEDE
-}
-
-// GetEDECode returns the EDE code if present
-func (e *CacheEntry) GetEDECode() uint16 {
-	return e.edeCode
+// (*CacheEntry).GetRateLimiter returns the shared rate limiter for this entry
+func (e *CacheEntry) GetRateLimiter() *rate.Limiter {
+	if e.rateLimit <= 0 {
+		return nil
+	}
+	return getSharedRateLimiter(e.rateLimit, e.rateLimKey)
 }
 
 // CacheKey represents a structured cache key.

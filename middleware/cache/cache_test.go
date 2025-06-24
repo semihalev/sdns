@@ -237,8 +237,7 @@ func TestCacheDNSSEC(t *testing.T) {
 	msg := new(dns.Msg)
 	msg.SetReply(req)
 	msg.Answer = append(msg.Answer, makeRR("secure.com. 300 IN A 1.2.3.4"))
-	// Use a valid base64 encoded signature
-	msg.Answer = append(msg.Answer, makeRR("secure.com. 300 IN RRSIG A 8 2 300 20301231235959 20201231235959 12345 secure.com. ZmFrZXNpZ25hdHVyZQ=="))
+	msg.Answer = append(msg.Answer, makeRR("secure.com. 300 IN RRSIG A 8 2 300 20301231235959 20201231235959 12345 secure.com. fakesig=="))
 
 	c.Set(key, msg)
 
