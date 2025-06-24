@@ -51,9 +51,13 @@ var rateLimiterCache = struct {
 	cleanupTime: 30 * time.Minute, // Remove limiters not accessed for 30 minutes
 }
 
-func init() {
-	// Start periodic cleanup goroutine
-	go rateLimiterCacheMaintenance()
+var rateLimiterCleanupStarted atomic.Bool
+
+func startRateLimiterCleanup() {
+	if rateLimiterCleanupStarted.CompareAndSwap(false, true) {
+		// Start periodic cleanup goroutine
+		go rateLimiterCacheMaintenance()
+	}
 }
 
 // rateLimiterCacheMaintenance periodically cleans up old rate limiters

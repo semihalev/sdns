@@ -74,6 +74,9 @@ func New(cfg *config.Config) *Cache {
 
 	metrics := &CacheMetrics{}
 
+	// Start rate limiter cleanup if needed
+	startRateLimiterCleanup()
+
 	c := &Cache{
 		positive: NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics),
 		negative: NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics),

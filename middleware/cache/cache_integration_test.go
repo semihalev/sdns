@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func TestCache_Integration_Basic(t *testing.T) {
 					Class:  dns.ClassINET,
 					Ttl:    300,
 				},
-				A: []byte{192, 0, 2, 1},
+				A: net.IPv4(192, 0, 2, 1),
 			})
 			// Important: Write the response through the cache's ResponseWriter
 			// This ensures the response is cached
@@ -223,12 +224,15 @@ func TestCache_Prefetch(t *testing.T) {
 			Class:  dns.ClassINET,
 			Ttl:    2,
 		},
-		A: []byte{192, 0, 2, 1},
+		A: net.IPv4(192, 0, 2, 1),
 	})
 
 	// Create cache entry with 2 second TTL
 	key := CacheKey{Question: req.Question[0], CD: false}.Hash()
 	entry := NewCacheEntry(resp, 2*time.Second, 0)
+	if entry == nil {
+		t.Fatal("failed to create cache entry")
+	}
 	cache.positive.Set(key, entry)
 
 	// Wait until we're in prefetch window (>50% of TTL elapsed)
@@ -311,7 +315,7 @@ func TestCache_CNAMEChain(t *testing.T) {
 				Class:  dns.ClassINET,
 				Ttl:    300,
 			},
-			A: []byte{192, 0, 2, 1},
+			A: net.IPv4(192, 0, 2, 1),
 		})
 		ch.Writer.WriteMsg(resp)
 		ch.Cancel()
