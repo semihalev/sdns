@@ -29,6 +29,7 @@ type Server struct {
 	Addr    string
 	Handler dns.Handler
 
+	mu sync.RWMutex
 	ln *quic.Listener
 }
 
@@ -75,6 +76,17 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 		MinVersion:   tlsMinVersion,
 	}
 
+	return s.ListenAndServeQUICWithConfig(tlsConfig)
+}
+
+// ListenAndServeQUICWithConfig serves with a custom TLS config
+func (s *Server) ListenAndServeQUICWithConfig(tlsConfig *tls.Config) error {
+	// Ensure DOQ protocols are set
+	if tlsConfig.NextProtos == nil {
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.NextProtos = doqProtos
+	}
+
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:         5 * time.Second,
 		MaxStreamReceiveWindow: maxMsgSize,
@@ -85,7 +97,9 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 		return err
 	}
 
+	s.mu.Lock()
 	s.ln = listener
+	s.mu.Unlock()
 
 	for {
 		conn, err := listener.Accept(context.Background())
@@ -98,11 +112,15 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 }
 
 func (s *Server) Shutdown() error {
-	if s.ln == nil {
+	s.mu.RLock()
+	ln := s.ln
+	s.mu.RUnlock()
+
+	if ln == nil {
 		return nil
 	}
 
-	err := s.ln.Close()
+	err := ln.Close()
 
 	// quic.ErrServerClosed is expected when closing
 	if err != nil && !errors.Is(err, quic.ErrServerClosed) {

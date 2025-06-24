@@ -99,9 +99,31 @@ func runServer(cmd *cobra.Command, args []string) error {
 	api := api.New(cfg)
 	api.Run(ctx)
 
+	// Set up SIGHUP handler for certificate reload
+	sigHup := make(chan os.Signal, 1)
+	signal.Notify(sigHup, syscall.SIGHUP)
+	defer signal.Stop(sigHup)
+
+	go func() {
+		for {
+			select {
+			case <-sigHup:
+				zlog.Info("Received SIGHUP, reloading TLS certificate")
+				if err := srv.ReloadCertificate(); err != nil {
+					zlog.Error("Failed to reload certificate", "error", err.Error())
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	<-ctx.Done()
 
 	zlog.Info("Stopping sdns...")
+
+	// Clean up server resources
+	srv.Stop()
 
 	// Graceful shutdown with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

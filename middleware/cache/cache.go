@@ -74,6 +74,9 @@ func New(cfg *config.Config) *Cache {
 
 	metrics := &CacheMetrics{}
 
+	// Start rate limiter cleanup if needed
+	startRateLimiterCleanup()
+
 	c := &Cache{
 		positive: NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics),
 		negative: NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics),
@@ -196,9 +199,12 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	req := ch.Request
 
 	// Check rate limiting
-	if !w.Internal() && entry.limiter != nil && !entry.limiter.Allow() {
-		ch.Cancel()
-		return true
+	if !w.Internal() && entry.rateKey > 0 {
+		limiter := getSharedRateLimiter(entry.rateKey)
+		if limiter != nil && !limiter.Allow() {
+			ch.Cancel()
+			return true
+		}
 	}
 
 	// Check if prefetch is needed
@@ -301,6 +307,10 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 
 	// Create entry with proper original TTL for prefetch calculation
 	entry := NewCacheEntry(filtered, ttl, c.config.RateLimit)
+	if entry == nil {
+		// Failed to create cache entry (packing error)
+		return
+	}
 	// Ensure origTTL reflects the actual TTL from the response for prefetch calculations
 	if ttl > 0 {
 		entry.origTTL = uint32(ttl.Seconds())
@@ -374,17 +384,23 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	case util.TypeSuccess, util.TypeReferral:
 		ttl = w.cache.positive.ttl.Calculate(msgTTL)
 		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
-		w.cache.positive.Set(key, entry)
+		if entry != nil {
+			w.cache.positive.Set(key, entry)
+		}
 
 	case util.TypeNXDomain, util.TypeNoRecords:
 		ttl = w.cache.positive.ttl.Calculate(msgTTL)
 		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
-		w.cache.positive.Set(key, entry)
+		if entry != nil {
+			w.cache.positive.Set(key, entry)
+		}
 
 	case util.TypeServerFailure:
 		ttl = w.cache.negative.ttl.Calculate(msgTTL)
 		entry := NewCacheEntry(filtered, ttl, w.cache.config.RateLimit)
-		w.cache.negative.Set(key, entry)
+		if entry != nil {
+			w.cache.negative.Set(key, entry)
+		}
 	}
 
 	// Resolve CNAME chains before sending to client (matching V1 behavior)
