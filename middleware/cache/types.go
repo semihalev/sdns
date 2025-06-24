@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,12 +33,74 @@ type CacheEntry struct {
 	edeText  string // EDE extra text (empty if no text)
 }
 
+// rateLimiterEntry holds a rate limiter with last access time
+type rateLimiterEntry struct {
+	limiter    *rate.Limiter
+	lastAccess time.Time
+}
+
 // rateLimiterCache provides shared rate limiters to avoid creating one per entry
 var rateLimiterCache = struct {
 	sync.RWMutex
-	limiters map[int]*rate.Limiter
+	limiters    map[int]*rateLimiterEntry
+	maxSize     int
+	cleanupTime time.Duration
 }{
-	limiters: make(map[int]*rate.Limiter),
+	limiters:    make(map[int]*rateLimiterEntry),
+	maxSize:     1000,             // Maximum number of different rate limiters to cache
+	cleanupTime: 30 * time.Minute, // Remove limiters not accessed for 30 minutes
+}
+
+func init() {
+	// Start periodic cleanup goroutine
+	go rateLimiterCacheMaintenance()
+}
+
+// rateLimiterCacheMaintenance periodically cleans up old rate limiters
+func rateLimiterCacheMaintenance() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		cleanupRateLimiters()
+	}
+}
+
+// cleanupRateLimiters removes expired rate limiters
+func cleanupRateLimiters() {
+	rateLimiterCache.Lock()
+	defer rateLimiterCache.Unlock()
+
+	now := time.Now()
+	for key, entry := range rateLimiterCache.limiters {
+		if now.Sub(entry.lastAccess) > rateLimiterCache.cleanupTime {
+			delete(rateLimiterCache.limiters, key)
+		}
+	}
+
+	// If still too many, remove oldest entries
+	if len(rateLimiterCache.limiters) > rateLimiterCache.maxSize {
+		// Convert to slice for sorting
+		type kv struct {
+			key   int
+			entry *rateLimiterEntry
+		}
+		items := make([]kv, 0, len(rateLimiterCache.limiters))
+		for k, v := range rateLimiterCache.limiters {
+			items = append(items, kv{k, v})
+		}
+
+		// Sort by last access time (oldest first)
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].entry.lastAccess.Before(items[j].entry.lastAccess)
+		})
+
+		// Remove oldest entries
+		toRemove := len(items) - rateLimiterCache.maxSize
+		for i := 0; i < toRemove; i++ {
+			delete(rateLimiterCache.limiters, items[i].key)
+		}
+	}
 }
 
 func getSharedRateLimiter(rateLimit int) *rate.Limiter {
@@ -45,26 +108,39 @@ func getSharedRateLimiter(rateLimit int) *rate.Limiter {
 		return nil
 	}
 
+	now := time.Now()
+
+	// Try to get existing limiter
 	rateLimiterCache.RLock()
-	limiter, exists := rateLimiterCache.limiters[rateLimit]
+	entry, exists := rateLimiterCache.limiters[rateLimit]
 	rateLimiterCache.RUnlock()
 
 	if exists {
-		return limiter
+		// Update last access time
+		rateLimiterCache.Lock()
+		entry.lastAccess = now
+		rateLimiterCache.Unlock()
+		return entry.limiter
 	}
 
+	// Create new limiter
 	rateLimiterCache.Lock()
 	defer rateLimiterCache.Unlock()
 
 	// Double-check after acquiring write lock
-	if limiter, exists := rateLimiterCache.limiters[rateLimit]; exists {
-		return limiter
+	if entry, exists := rateLimiterCache.limiters[rateLimit]; exists {
+		entry.lastAccess = now
+		return entry.limiter
 	}
 
 	// Create new shared limiter
 	limit := rate.Every(time.Second / time.Duration(rateLimit))
-	limiter = rate.NewLimiter(limit, rateLimit)
-	rateLimiterCache.limiters[rateLimit] = limiter
+	limiter := rate.NewLimiter(limit, rateLimit)
+
+	rateLimiterCache.limiters[rateLimit] = &rateLimiterEntry{
+		limiter:    limiter,
+		lastAccess: now,
+	}
 
 	return limiter
 }
@@ -108,6 +184,8 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 	wire, err := msgCopy.Pack()
 	if err != nil {
 		// If packing fails, return nil to avoid caching invalid data
+		// This can happen with malformed DNS messages or messages that exceed size limits
+		// The caller should handle nil returns gracefully
 		return nil
 	}
 

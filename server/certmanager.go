@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +44,6 @@ func NewCertManager(certPath, keyPath string) (*CertManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watcher: %w", err)
 	}
-	cm.watcher = watcher
 
 	// Watch certificate directory (not the files directly, as they might be symlinks)
 	certDir := filepath.Dir(certPath)
@@ -56,10 +56,15 @@ func NewCertManager(certPath, keyPath string) (*CertManager, error) {
 
 	if certDir != keyDir {
 		if err := watcher.Add(keyDir); err != nil {
+			// Remove the first directory watch before closing
+			watcher.Remove(certDir)
 			watcher.Close()
 			return nil, fmt.Errorf("failed to watch key directory: %w", err)
 		}
 	}
+
+	// Only assign watcher after all directories are successfully watched
+	cm.watcher = watcher
 
 	// Start watching
 	go cm.watch()
@@ -74,6 +79,11 @@ func (cm *CertManager) loadCertificate() error {
 		return err
 	}
 
+	// Validate certificate
+	if err := cm.validateCertificate(&cert); err != nil {
+		return fmt.Errorf("certificate validation failed: %w", err)
+	}
+
 	// Get modification time for change detection
 	certInfo, err := os.Stat(cm.certPath)
 	if err != nil {
@@ -86,6 +96,36 @@ func (cm *CertManager) loadCertificate() error {
 	cm.mu.Unlock()
 
 	zlog.Info("TLS certificate loaded", "cert", cm.certPath, "modTime", certInfo.ModTime())
+
+	return nil
+}
+
+// validateCertificate validates the certificate chain and expiration
+func (cm *CertManager) validateCertificate(cert *tls.Certificate) error {
+	if cert == nil || len(cert.Certificate) == 0 {
+		return fmt.Errorf("empty certificate chain")
+	}
+
+	// Parse the leaf certificate
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("failed to parse certificate: %w", err)
+	}
+
+	// Check if certificate is expired
+	now := time.Now()
+	if now.Before(x509Cert.NotBefore) {
+		return fmt.Errorf("certificate not yet valid (not before: %v)", x509Cert.NotBefore)
+	}
+	if now.After(x509Cert.NotAfter) {
+		return fmt.Errorf("certificate expired (not after: %v)", x509Cert.NotAfter)
+	}
+
+	// Warn if certificate expires soon (within 7 days)
+	daysUntilExpiry := x509Cert.NotAfter.Sub(now).Hours() / 24
+	if daysUntilExpiry < 7 {
+		zlog.Warn("Certificate expires soon", "days", int(daysUntilExpiry), "expiry", x509Cert.NotAfter)
+	}
 
 	return nil
 }
@@ -170,16 +210,40 @@ func (cm *CertManager) checkAndReload() {
 		return
 	}
 
-	cm.mu.RLock()
-	lastMod := cm.lastModTime
-	cm.mu.RUnlock()
+	// Use a single lock to prevent race between check and reload
+	cm.mu.Lock()
+	shouldReload := certInfo.ModTime().After(cm.lastModTime)
+	cm.mu.Unlock()
 
-	if certInfo.ModTime().After(lastMod) {
+	if shouldReload {
 		zlog.Info("Certificate file changed, reloading", "path", cm.certPath)
-		if err := cm.Reload(); err != nil {
-			zlog.Error("Failed to reload certificate", "error", err.Error())
+		if err := cm.reloadWithRetry(); err != nil {
+			zlog.Error("Failed to reload certificate after retries", "error", err.Error())
 		}
 	}
+}
+
+// reloadWithRetry attempts to reload the certificate with retry logic
+func (cm *CertManager) reloadWithRetry() error {
+	const maxRetries = 3
+	const retryDelay = time.Second
+
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			zlog.Warn("Retrying certificate reload", "attempt", i+1, "max", maxRetries)
+			time.Sleep(retryDelay)
+		}
+
+		if err := cm.Reload(); err != nil {
+			lastErr = err
+			continue
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 // Reload forces a certificate reload
