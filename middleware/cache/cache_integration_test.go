@@ -222,25 +222,47 @@ func TestCache_Prefetch(t *testing.T) {
 			Name:   "prefetch-test.com.",
 			Rrtype: dns.TypeA,
 			Class:  dns.ClassINET,
-			Ttl:    2,
+			Ttl:    5,
 		},
 		A: net.IPv4(192, 0, 2, 1),
 	})
 
-	// Create cache entry with 2 second TTL
-	key := CacheKey{Question: req.Question[0], CD: false}.Hash()
-	entry := NewCacheEntry(resp, 2*time.Second, 0)
+	// Create cache entry with 5 second TTL
+	// Make sure to use the exact same question format as in the request
+	question := req.Question[0]
+	key := CacheKey{Question: question, CD: false}.Hash()
+	entry := NewCacheEntry(resp, 5*time.Second, 0)
 	if entry == nil {
 		t.Fatal("failed to create cache entry")
 	}
 	cache.positive.Set(key, entry)
 
+	// Verify entry was set
+	testEntry, ok := cache.positive.Get(key)
+	if !ok {
+		t.Fatal("entry was not set in cache")
+	}
+	if testEntry == nil {
+		t.Fatal("cache returned nil entry")
+	}
+
 	// Wait until we're in prefetch window (>50% of TTL elapsed)
-	time.Sleep(1100 * time.Millisecond)
+	// With 5s TTL and 50% threshold, prefetch happens when TTL <= 2.5s
+	// So we need to wait at least 2.5s - wait 3s to be safe
+	time.Sleep(3 * time.Second)
 
 	// This request should trigger prefetch
 	w := mock.NewWriter("udp", "127.0.0.1:0")
-	ch := middleware.NewChain([]middleware.Handler{cache})
+
+	// Add a handler that will be called if cache miss occurs
+	nextHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+		// Return empty response for cache miss
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request)
+		ch.Writer.WriteMsg(resp)
+	})
+
+	ch := middleware.NewChain([]middleware.Handler{cache, nextHandler})
 	ch.Reset(w, req)
 	ch.Next(context.Background())
 
@@ -251,9 +273,11 @@ func TestCache_Prefetch(t *testing.T) {
 	// Check if the entry was marked for prefetch
 	updatedEntry, ok := cache.positive.Get(key)
 	if !ok {
-		t.Error("entry not found in cache")
+		t.Error("entry not found in cache after request")
 	} else if !updatedEntry.prefetch.Load() {
-		t.Error("entry should be marked for prefetch")
+		// Add debug info when prefetch is not marked
+		t.Errorf("entry should be marked for prefetch (TTL: %d, origTTL: %d, threshold: %d)",
+			updatedEntry.TTL(), updatedEntry.origTTL, cfg.Prefetch)
 	}
 
 	// Note: We can't test actual prefetch execution in unit tests
