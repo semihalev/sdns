@@ -130,7 +130,7 @@ func (s *Server) Shutdown() error {
 	return nil
 }
 
-func (s *Server) handleConnection(conn quic.Connection) {
+func (s *Server) handleConnection(conn *quic.Conn) {
 	for {
 		stream, err := conn.AcceptStream(context.Background())
 		if err != nil {
@@ -146,7 +146,7 @@ func (s *Server) handleConnection(conn quic.Connection) {
 	}
 }
 
-func (s *Server) handleStream(conn quic.Connection, stream quic.Stream) {
+func (s *Server) handleStream(conn *quic.Conn, stream *quic.Stream) {
 	defer stream.Close()
 
 	// Limit read size to prevent DoS

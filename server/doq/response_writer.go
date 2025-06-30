@@ -12,8 +12,8 @@ import (
 type ResponseWriter struct {
 	dns.ResponseWriter
 
-	Conn   quic.Connection
-	Stream quic.Stream
+	Conn   *quic.Conn
+	Stream *quic.Stream
 }
 
 func (w *ResponseWriter) LocalAddr() net.Addr {
