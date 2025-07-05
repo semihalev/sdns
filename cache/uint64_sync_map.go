@@ -86,24 +86,19 @@ retry:
 	// Load the head of the list
 	head := (*fnode[V])(atomic.LoadPointer(&bucket.head))
 
-	// Check if the key exists or find insertion point
+	// Check if the key exists
 	for current = head; current != nil; {
 		if current.key == key {
-			// Key exists, update its value
-			if atomic.LoadUint32(&current.deleted) == 0 {
-				// Node is not deleted, update value
-				current.value.Store(&value)
-				return
-			} else {
-				// Node is deleted, try to resurrect it
+			// Key exists, just update value
+			current.value.Store(&value)
+
+			// If it was deleted, resurrect it
+			if atomic.LoadUint32(&current.deleted) == 1 {
 				if atomic.CompareAndSwapUint32(&current.deleted, 1, 0) {
-					current.value.Store(&value)
 					m.count.Add(1)
-					return
 				}
-				// Failed to resurrect, retry from the beginning
-				goto retry
 			}
+			return
 		}
 
 		predecessor = current
@@ -209,6 +204,61 @@ func (m *SyncUInt64Map[V]) Del(key uint64) bool {
 
 	// Key not found or already deleted
 	return false
+}
+
+// CompactBucket rebuilds a bucket, removing deleted nodes.
+// This helps prevent memory leaks from deleted nodes.
+func (m *SyncUInt64Map[V]) CompactBucket(bucketIdx int) int {
+	if bucketIdx < 0 || bucketIdx >= len(m.buckets) {
+		return 0
+	}
+
+	bucket := &m.buckets[bucketIdx]
+	cleaned := 0
+
+	// Build new chain with only non-deleted nodes
+	var newHead *fnode[V]
+	var newTail *fnode[V]
+
+	// Traverse the existing chain
+	for node := (*fnode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fnode[V])(atomic.LoadPointer(&node.next)) {
+		if atomic.LoadUint32(&node.deleted) == 0 {
+			// Node is active, add to new chain
+			newNode := &fnode[V]{
+				key: node.key,
+			}
+			value := node.value.Load()
+			newNode.value.Store(value)
+
+			if newHead == nil {
+				newHead = newNode
+				newTail = newNode
+			} else {
+				newTail.next = unsafe.Pointer(newNode)
+				newTail = newNode
+			}
+		} else {
+			cleaned++
+		}
+	}
+
+	// Atomically replace the bucket head
+	atomic.StorePointer(&bucket.head, unsafe.Pointer(newHead))
+
+	return cleaned
+}
+
+// Compact removes all deleted nodes from the map.
+// This should be called periodically to prevent memory leaks.
+func (m *SyncUInt64Map[V]) Compact() int {
+	totalCleaned := 0
+
+	// Compact each bucket
+	for i := range m.buckets {
+		totalCleaned += m.CompactBucket(i)
+	}
+
+	return totalCleaned
 }
 
 // ().Len len returns the number of elements in the map.
