@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"time"
 )
 
 var (
@@ -13,8 +14,9 @@ var (
 
 // Cache is cache.
 type Cache struct {
-	data    *SyncUInt64Map[any]
-	maxSize int
+	data           *SyncUInt64Map[any]
+	maxSize        int
+	stopCompaction chan struct{}
 }
 
 // New returns a new cache.
@@ -38,10 +40,16 @@ func New(size int) *Cache {
 		power = 16 // 64K buckets for very large caches
 	}
 
-	return &Cache{
-		data:    NewSyncUInt64Map[any](power),
-		maxSize: size,
+	c := &Cache{
+		data:           NewSyncUInt64Map[any](power),
+		maxSize:        size,
+		stopCompaction: make(chan struct{}),
 	}
+
+	// Start periodic compaction
+	c.startCompaction()
+
+	return c
 }
 
 // (*Cache).Get get looks up element index under key.
@@ -139,19 +147,56 @@ func (c *Cache) evictSimple(targetEvictions int) int {
 	return evicted
 }
 
-// evictRandomSample efficiently evicts a random sample of entries
-// Returns the number of entries actually evicted.
+// evictRandomSample uses random sampling for large caches
+// Efficiently evicts entries without iterating the entire map.
 func (c *Cache) evictRandomSample(targetEvictions int) int {
-	// Get a random sample of keys to evict
-	keys := c.data.RandomSample(targetEvictions)
+	sampleSize := targetEvictions * 3 // 3x oversampling for better coverage
+	if sampleSize > c.maxSize/10 {
+		sampleSize = c.maxSize / 10 // Cap at 10% of cache size
+	}
 
-	// Delete the sampled keys
+	keys := c.data.RandomSample(sampleSize)
+
+	// Delete the sampled keys (up to targetEvictions)
 	evicted := 0
-	for _, key := range keys {
+	for i, key := range keys {
+		if i >= targetEvictions {
+			break
+		}
 		if c.data.Del(key) {
 			evicted++
 		}
 	}
 
 	return evicted
+}
+
+// startCompaction starts periodic compaction to clean up deleted nodes
+func (c *Cache) startCompaction() {
+	go func() {
+		// Compact every 5 minutes
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				// Compact the map to remove deleted nodes
+				cleaned := c.data.Compact()
+				if cleaned > 0 {
+					// Could add logging here if needed
+					_ = cleaned
+				}
+			case <-c.stopCompaction:
+				return
+			}
+		}
+	}()
+}
+
+// Stop stops the periodic compaction
+func (c *Cache) Stop() {
+	if c.stopCompaction != nil {
+		close(c.stopCompaction)
+	}
 }
