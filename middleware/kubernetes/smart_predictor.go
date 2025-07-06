@@ -495,7 +495,7 @@ func (sp *SmartPredictor) cleanupOldData() {
 	sp.serviceDeps.mu.Unlock()
 
 	// Clean up old client profiles
-	sp.clientProfiles.profiles.Range(func(key, value interface{}) bool {
+	sp.clientProfiles.profiles.Range(func(key, value any) bool {
 		profile := value.(*ClientProfile)
 		if now-profile.lastSeen > 3600 { // 1 hour
 			sp.clientProfiles.profiles.Delete(key)
@@ -525,7 +525,7 @@ func (sp *SmartPredictor) updateConfidenceScores() {
 }
 
 // Stats returns predictor statistics
-func (sp *SmartPredictor) Stats() map[string]interface{} {
+func (sp *SmartPredictor) Stats() map[string]any {
 	sp.serviceDeps.mu.RLock()
 	serviceCount := len(sp.serviceDeps.edges)
 	edgeCount := 0
@@ -535,7 +535,7 @@ func (sp *SmartPredictor) Stats() map[string]interface{} {
 	sp.serviceDeps.mu.RUnlock()
 
 	clientCount := 0
-	sp.clientProfiles.profiles.Range(func(_, _ interface{}) bool {
+	sp.clientProfiles.profiles.Range(func(_, _ any) bool {
 		clientCount++
 		return true
 	})
@@ -548,7 +548,7 @@ func (sp *SmartPredictor) Stats() map[string]interface{} {
 		accuracy = float64(hits) / float64(predictions) * 100
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"services":    serviceCount,
 		"edges":       edgeCount,
 		"clients":     clientCount,
@@ -578,7 +578,7 @@ func extractServiceName(service string) string {
 	return service
 }
 
-func (sp *SmartPredictor) updateServiceWeight(pattern interface{}, service string) {
+func (sp *SmartPredictor) updateServiceWeight(pattern any, service string) {
 	// Update or add service weight
 	// This is simplified - in production, use a more sophisticated algorithm
 	switch p := pattern.(type) {

@@ -460,7 +460,7 @@ func (k *Kubernetes) populateDemoData() {
 }
 
 // Stats returns statistics
-func (k *Kubernetes) Stats() map[string]interface{} {
+func (k *Kubernetes) Stats() map[string]any {
 	queries := atomic.LoadUint64(&k.queries)
 	hits := atomic.LoadUint64(&k.cacheHits)
 
@@ -473,7 +473,7 @@ func (k *Kubernetes) Stats() map[string]interface{} {
 	packErrors := atomic.LoadUint64(&k.packErrors)
 	writeErrors := atomic.LoadUint64(&k.writeErrors)
 
-	stats := map[string]interface{}{
+	stats := map[string]any{
 		"queries":      queries,
 		"cache_hits":   hits,
 		"cache_misses": queries - hits,

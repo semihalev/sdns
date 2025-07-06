@@ -253,7 +253,7 @@ func hashKey(qname string, qtype uint16) uint64 {
 
 // Get returns the cached DNS message (compatibility method for tests)
 // This method DOES allocate as it needs to unpack the wire format
-func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID ...uint16) interface{} {
+func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID ...uint16) any {
 	wire := c.GetEntry(qname, qtype)
 	if wire == nil {
 		return nil
@@ -281,7 +281,7 @@ func (c *ZeroAllocCache) Get(qname string, qtype uint16, msgID ...uint16) interf
 }
 
 // Store stores both dns.Msg and wire format (compatibility wrapper)
-func (c *ZeroAllocCache) Store(qname string, qtype uint16, data interface{}, ttl ...uint32) {
+func (c *ZeroAllocCache) Store(qname string, qtype uint16, data any, ttl ...uint32) {
 	var wire []byte
 	var ttlVal uint32 = CacheDefaultTTL // default
 
@@ -377,7 +377,7 @@ func (c *ZeroAllocCache) Clear() {
 }
 
 // Stats returns cache statistics
-func (c *ZeroAllocCache) Stats() map[string]interface{} {
+func (c *ZeroAllocCache) Stats() map[string]any {
 	hits := atomic.LoadUint64(&c.hits)
 	misses := atomic.LoadUint64(&c.misses)
 	stores := atomic.LoadUint64(&c.stores)
@@ -396,7 +396,7 @@ func (c *ZeroAllocCache) Stats() map[string]interface{} {
 		}
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"hits":       hits,
 		"misses":     misses,
 		"stores":     stores,

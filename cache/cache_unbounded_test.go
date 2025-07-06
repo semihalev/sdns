@@ -187,12 +187,13 @@ func TestCacheEvictionStalls(t *testing.T) {
 	}
 
 	// Monitor max size
-	maxSeen := 0
+	var maxSeen int32
 	go func() {
 		for atomic.LoadInt32(&stopFlag) == 0 {
 			size := c.Len()
-			if size > maxSeen {
-				maxSeen = size
+			currentMax := atomic.LoadInt32(&maxSeen)
+			if int32(size) > currentMax {
+				atomic.StoreInt32(&maxSeen, int32(size))
 			}
 			time.Sleep(1 * time.Millisecond)
 		}
@@ -203,12 +204,13 @@ func TestCacheEvictionStalls(t *testing.T) {
 	atomic.StoreInt32(&stopFlag, 1)
 	wg.Wait()
 
-	t.Logf("Max size seen during concurrent read/write: %d (limit: %d)", maxSeen, maxSize)
+	t.Logf("Max size seen during concurrent read/write: %d (limit: %d)", atomic.LoadInt32(&maxSeen), maxSize)
 	t.Logf("Final size: %d", c.Len())
 
-	if maxSeen > maxSize*3 {
+	finalMaxSeen := atomic.LoadInt32(&maxSeen)
+	if int(finalMaxSeen) > maxSize*3 {
 		t.Errorf("Cache grew to %d during concurrent operations, >3x limit %d",
-			maxSeen, maxSize)
+			finalMaxSeen, maxSize)
 	}
 }
 

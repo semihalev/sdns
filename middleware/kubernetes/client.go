@@ -182,7 +182,7 @@ func (c *Client) Stop() {
 }
 
 // Safe wrappers for event handlers
-func (c *Client) safeServiceAdd(obj interface{}) {
+func (c *Client) safeServiceAdd(obj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in service add handler",
@@ -193,7 +193,7 @@ func (c *Client) safeServiceAdd(obj interface{}) {
 	c.onServiceAdd(obj)
 }
 
-func (c *Client) safeServiceUpdate(oldObj, newObj interface{}) {
+func (c *Client) safeServiceUpdate(oldObj, newObj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in service update handler",
@@ -204,7 +204,7 @@ func (c *Client) safeServiceUpdate(oldObj, newObj interface{}) {
 	c.onServiceUpdate(oldObj, newObj)
 }
 
-func (c *Client) safeServiceDelete(obj interface{}) {
+func (c *Client) safeServiceDelete(obj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in service delete handler",
@@ -216,7 +216,7 @@ func (c *Client) safeServiceDelete(obj interface{}) {
 }
 
 // Service handlers
-func (c *Client) onServiceAdd(obj interface{}) {
+func (c *Client) onServiceAdd(obj any) {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
 		zlog.Error("Invalid service object type",
@@ -232,7 +232,7 @@ func (c *Client) onServiceAdd(obj interface{}) {
 	}
 }
 
-func (c *Client) onServiceUpdate(oldObj, newObj interface{}) {
+func (c *Client) onServiceUpdate(oldObj, newObj any) {
 	svc, ok := newObj.(*corev1.Service)
 	if !ok {
 		zlog.Error("Invalid service object type in update",
@@ -248,7 +248,7 @@ func (c *Client) onServiceUpdate(oldObj, newObj interface{}) {
 	}
 }
 
-func (c *Client) onServiceDelete(obj interface{}) {
+func (c *Client) onServiceDelete(obj any) {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
 		zlog.Error("Invalid service object type in delete",
@@ -264,7 +264,7 @@ func (c *Client) onServiceDelete(obj interface{}) {
 }
 
 // Safe wrappers for EndpointSlice handlers
-func (c *Client) safeEndpointSliceAdd(obj interface{}) {
+func (c *Client) safeEndpointSliceAdd(obj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in endpoint slice add handler",
@@ -275,7 +275,7 @@ func (c *Client) safeEndpointSliceAdd(obj interface{}) {
 	c.onEndpointSliceAdd(obj)
 }
 
-func (c *Client) safeEndpointSliceUpdate(oldObj, newObj interface{}) {
+func (c *Client) safeEndpointSliceUpdate(oldObj, newObj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in endpoint slice update handler",
@@ -286,7 +286,7 @@ func (c *Client) safeEndpointSliceUpdate(oldObj, newObj interface{}) {
 	c.onEndpointSliceUpdate(oldObj, newObj)
 }
 
-func (c *Client) safeEndpointSliceDelete(obj interface{}) {
+func (c *Client) safeEndpointSliceDelete(obj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in endpoint slice delete handler",
@@ -299,7 +299,7 @@ func (c *Client) safeEndpointSliceDelete(obj interface{}) {
 
 // EndpointSlice handlers
 // Note: A service can have multiple EndpointSlices, so we need to aggregate them
-func (c *Client) onEndpointSliceAdd(obj interface{}) {
+func (c *Client) onEndpointSliceAdd(obj any) {
 	eps, ok := obj.(*discoveryv1.EndpointSlice)
 	if !ok {
 		zlog.Error("Invalid endpoint slice object type",
@@ -320,7 +320,7 @@ func (c *Client) onEndpointSliceAdd(obj interface{}) {
 	}
 }
 
-func (c *Client) onEndpointSliceUpdate(oldObj, newObj interface{}) {
+func (c *Client) onEndpointSliceUpdate(oldObj, newObj any) {
 	eps, ok := newObj.(*discoveryv1.EndpointSlice)
 	if !ok {
 		zlog.Error("Invalid endpoint slice object type in update",
@@ -339,7 +339,7 @@ func (c *Client) onEndpointSliceUpdate(oldObj, newObj interface{}) {
 	}
 }
 
-func (c *Client) onEndpointSliceDelete(obj interface{}) {
+func (c *Client) onEndpointSliceDelete(obj any) {
 	eps, ok := obj.(*discoveryv1.EndpointSlice)
 	if !ok {
 		zlog.Error("Invalid endpoint slice object type in delete",
@@ -359,7 +359,7 @@ func (c *Client) onEndpointSliceDelete(obj interface{}) {
 }
 
 // Safe wrappers for Pod handlers
-func (c *Client) safePodAdd(obj interface{}) {
+func (c *Client) safePodAdd(obj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in pod add handler",
@@ -370,7 +370,7 @@ func (c *Client) safePodAdd(obj interface{}) {
 	c.onPodAdd(obj)
 }
 
-func (c *Client) safePodUpdate(oldObj, newObj interface{}) {
+func (c *Client) safePodUpdate(oldObj, newObj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in pod update handler",
@@ -381,7 +381,7 @@ func (c *Client) safePodUpdate(oldObj, newObj interface{}) {
 	c.onPodUpdate(oldObj, newObj)
 }
 
-func (c *Client) safePodDelete(obj interface{}) {
+func (c *Client) safePodDelete(obj any) {
 	defer func() {
 		if r := recover(); r != nil {
 			zlog.Error("Panic in pod delete handler",
@@ -393,7 +393,7 @@ func (c *Client) safePodDelete(obj interface{}) {
 }
 
 // Pod handlers
-func (c *Client) onPodAdd(obj interface{}) {
+func (c *Client) onPodAdd(obj any) {
 	p, ok := obj.(*corev1.Pod)
 	if !ok {
 		zlog.Error("Invalid pod object type",
@@ -411,7 +411,7 @@ func (c *Client) onPodAdd(obj interface{}) {
 	}
 }
 
-func (c *Client) onPodUpdate(oldObj, newObj interface{}) {
+func (c *Client) onPodUpdate(oldObj, newObj any) {
 	p, ok := newObj.(*corev1.Pod)
 	if !ok {
 		zlog.Error("Invalid pod object type in update",
@@ -429,7 +429,7 @@ func (c *Client) onPodUpdate(oldObj, newObj interface{}) {
 	}
 }
 
-func (c *Client) onPodDelete(obj interface{}) {
+func (c *Client) onPodDelete(obj any) {
 	p, ok := obj.(*corev1.Pod)
 	if !ok {
 		zlog.Error("Invalid pod object type in delete",
