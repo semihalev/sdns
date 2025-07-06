@@ -97,7 +97,7 @@ func TestKillerMode(t *testing.T) {
 	// Test cache hit rate
 	stats := k8s.Stats()
 	t.Logf("Stats: %+v", stats)
-	if cacheStats, ok := stats["cache"].(map[string]interface{}); ok {
+	if cacheStats, ok := stats["cache"].(map[string]any); ok {
 		t.Logf("Cache stats: %+v", cacheStats)
 	}
 	if hitRate, ok := stats["hit_rate"].(float64); ok && hitRate < 50 {

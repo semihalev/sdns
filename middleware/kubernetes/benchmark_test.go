@@ -14,7 +14,7 @@ func BenchmarkKillerMode(b *testing.B) {
 	cfg := &config.Config{
 		Plugins: map[string]config.Plugin{
 			"kubernetes": {
-				Config: map[string]interface{}{
+				Config: map[string]any{
 					"killer_mode": true,
 				},
 			},
@@ -54,10 +54,10 @@ func BenchmarkKillerMode(b *testing.B) {
 
 	stats := k.Stats()
 	b.Logf("Cache hit rate: %.2f%%", stats["hit_rate"])
-	if predictor, ok := stats["predictor"].(map[string]interface{}); ok {
+	if predictor, ok := stats["predictor"].(map[string]any); ok {
 		b.Logf("ML predictions: %v", predictor["predictions"])
 	}
-	if cache, ok := stats["cache"].(map[string]interface{}); ok {
+	if cache, ok := stats["cache"].(map[string]any); ok {
 		b.Logf("Zero-alloc cache stats: %+v", cache)
 	}
 }
@@ -67,7 +67,7 @@ func BenchmarkBoringMode(b *testing.B) {
 	cfg := &config.Config{
 		Plugins: map[string]config.Plugin{
 			"kubernetes": {
-				Config: map[string]interface{}{
+				Config: map[string]any{
 					"killer_mode": false,
 				},
 			},

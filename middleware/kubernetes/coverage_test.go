@@ -246,7 +246,7 @@ func TestStats(t *testing.T) {
 	}
 
 	// Check component stats
-	if cacheStats, ok := stats["cache"].(map[string]interface{}); ok {
+	if cacheStats, ok := stats["cache"].(map[string]any); ok {
 		if cacheStats["zero_alloc"] != true {
 			t.Error("Cache not zero-alloc")
 		}

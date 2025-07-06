@@ -49,7 +49,7 @@ func TestPredictionLoop(t *testing.T) {
 
 	// Check stats to ensure prediction is working
 	stats := k.Stats()
-	if predictor, ok := stats["predictor"].(map[string]interface{}); ok {
+	if predictor, ok := stats["predictor"].(map[string]any); ok {
 		if predictions, ok := predictor["predictions"].(uint64); ok && predictions == 0 {
 			t.Error("Predictor not generating predictions")
 		}

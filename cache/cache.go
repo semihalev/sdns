@@ -2,7 +2,6 @@ package cache
 
 import (
 	"errors"
-	"time"
 )
 
 var (
@@ -46,8 +45,7 @@ func New(size int) *Cache {
 		stopCompaction: make(chan struct{}),
 	}
 
-	// Start periodic compaction
-	c.startCompaction()
+	// No need for periodic compaction - the new map handles it internally
 
 	return c
 }
@@ -59,10 +57,18 @@ func (c *Cache) Get(key uint64) (any, bool) {
 
 // (*Cache).Add add adds a new element to the cache. If the element already exists it is overwritten.
 func (c *Cache) Add(key uint64, el any) {
-	// Set the value first
+	// For small caches, check size before adding to prevent overshoot
+	if c.maxSize < 10000 {
+		currentSize := c.data.Len()
+		if currentSize >= int64(c.maxSize) {
+			c.evict()
+		}
+	}
+
+	// Set the value
 	c.data.Set(key, el)
 
-	// Check if we exceeded the limit after adding
+	// Always check if we exceeded the limit after adding
 	currentSize := c.data.Len()
 	if currentSize > int64(c.maxSize) {
 		// Need to evict some entries
@@ -84,18 +90,21 @@ func (c *Cache) Len() int {
 func (c *Cache) evict() {
 	// Run eviction in a loop until we're under the limit
 	// This handles cases where items are being added concurrently
-	for {
+	maxAttempts := 10 // Prevent infinite loop
+	attempts := 0
+
+	for attempts < maxAttempts {
 		currentSize := c.data.Len()
 		if currentSize <= int64(c.maxSize) {
 			return // We're under the limit
 		}
 
-		// Batch eviction: 5% minimum reduces eviction frequency, amortizes cost
+		// Calculate eviction batch with more aggressive approach
 		overhead := int(currentSize - int64(c.maxSize))
-		evictBatch := overhead
-		if evictBatch < c.maxSize/20 { // Minimum 5% of maxSize
-			evictBatch = c.maxSize / 20
-		}
+
+		// For concurrent scenarios, evict more aggressively
+		// Minimum 20% to create headroom for concurrent adds
+		evictBatch := overhead + (c.maxSize / 5)
 		if evictBatch < 1 {
 			evictBatch = 1
 		}
@@ -113,6 +122,8 @@ func (c *Cache) evict() {
 				break
 			}
 		}
+
+		attempts++
 
 		// For small caches, one iteration is enough
 		if c.maxSize < 100 {
@@ -150,17 +161,21 @@ func (c *Cache) evictSimple(targetEvictions int) int {
 // evictRandomSample uses random sampling for large caches
 // Efficiently evicts entries without iterating the entire map.
 func (c *Cache) evictRandomSample(targetEvictions int) int {
-	sampleSize := targetEvictions * 3 // 3x oversampling for better coverage
-	if sampleSize > c.maxSize/10 {
-		sampleSize = c.maxSize / 10 // Cap at 10% of cache size
+	// For better hit rate, sample more keys than we need to evict
+	sampleSize := targetEvictions * 5 // 5x oversampling for better coverage
+	if sampleSize > c.maxSize/5 {
+		sampleSize = c.maxSize / 5 // Cap at 20% of cache size
+	}
+	if sampleSize < targetEvictions {
+		sampleSize = targetEvictions
 	}
 
 	keys := c.data.RandomSample(sampleSize)
 
-	// Delete the sampled keys (up to targetEvictions)
+	// Delete keys until we've evicted enough
 	evicted := 0
-	for i, key := range keys {
-		if i >= targetEvictions {
+	for _, key := range keys {
+		if evicted >= targetEvictions {
 			break
 		}
 		if c.data.Del(key) {
@@ -171,32 +186,12 @@ func (c *Cache) evictRandomSample(targetEvictions int) int {
 	return evicted
 }
 
-// startCompaction starts periodic compaction to clean up deleted nodes
-func (c *Cache) startCompaction() {
-	go func() {
-		// Compact every 5 minutes
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				// Compact the map to remove deleted nodes
-				cleaned := c.data.Compact()
-				if cleaned > 0 {
-					// Could add logging here if needed
-					_ = cleaned
-				}
-			case <-c.stopCompaction:
-				return
-			}
-		}
-	}()
-}
-
 // Stop stops the periodic compaction
 func (c *Cache) Stop() {
 	if c.stopCompaction != nil {
 		close(c.stopCompaction)
+	}
+	if c.data != nil {
+		c.data.Stop()
 	}
 }

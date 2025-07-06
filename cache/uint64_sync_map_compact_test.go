@@ -27,24 +27,14 @@ func TestSyncUInt64MapWithCompaction(t *testing.T) {
 	runtime.GC()
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
-	beforeCompact := m2.Alloc - initialAlloc
+	beforeCompact := int64(m2.Alloc) - int64(initialAlloc)
 
-	// Count nodes before compaction
-	totalNodesBefore := 0
-	deletedNodesBefore := 0
-	for i := range m.buckets {
-		node := (*fnode[string])(m.buckets[i].head)
-		for node != nil {
-			totalNodesBefore++
-			if node.deleted == 1 {
-				deletedNodesBefore++
-			}
-			node = (*fnode[string])(node.next)
-		}
-	}
+	// With the new implementation, we can't directly count deleted entries
+	// but we can check the map size
+	mapSize := m.Len()
 
-	// Run compaction
-	cleaned := m.Compact()
+	// Run compaction (no-op in new implementation)
+	_ = m.Compact()
 
 	// After compaction
 	runtime.GC()
@@ -53,46 +43,30 @@ func TestSyncUInt64MapWithCompaction(t *testing.T) {
 
 	var m3 runtime.MemStats
 	runtime.ReadMemStats(&m3)
-	afterCompact := m3.Alloc - initialAlloc
+	afterCompact := int64(m3.Alloc) - int64(initialAlloc)
 
-	// Count nodes after compaction
-	totalNodesAfter := 0
-	deletedNodesAfter := 0
-	for i := range m.buckets {
-		node := (*fnode[string])(m.buckets[i].head)
-		for node != nil {
-			totalNodesAfter++
-			if node.deleted == 1 {
-				deletedNodesAfter++
-			}
-			node = (*fnode[string])(node.next)
-		}
+	// After compaction, size should still be 0
+	mapSizeAfter := m.Len()
+
+	t.Logf("Iterations: %d", iterations)
+	t.Logf("Map size: %d", mapSize)
+	t.Logf("Map size after compact: %d", mapSizeAfter)
+	t.Logf("Memory before compact: %+.2f MB", float64(beforeCompact)/(1024*1024))
+	t.Logf("Memory after compact: %+.2f MB", float64(afterCompact)/(1024*1024))
+
+	// The new implementation doesn't have a compaction mechanism
+	// as it uses backward shift deletion which maintains compactness
+	if mapSize != 0 {
+		t.Errorf("Expected map size to be 0 after deleting all entries, got %d", mapSize)
 	}
 
-	t.Logf("Before compaction:")
-	t.Logf("  Memory: %.2f MB", float64(beforeCompact)/(1024*1024))
-	t.Logf("  Total nodes: %d", totalNodesBefore)
-	t.Logf("  Deleted nodes: %d", deletedNodesBefore)
-
-	t.Logf("\nAfter compaction:")
-	t.Logf("  Memory: %.2f MB", float64(afterCompact)/(1024*1024))
-	t.Logf("  Total nodes: %d", totalNodesAfter)
-	t.Logf("  Deleted nodes: %d", deletedNodesAfter)
-	t.Logf("  Nodes cleaned: %d", cleaned)
-
-	// Verify compaction worked
-	if totalNodesAfter != 0 {
-		t.Errorf("Expected 0 nodes after compaction, got %d", totalNodesAfter)
-	}
-
-	if cleaned != iterations {
-		t.Errorf("Expected to clean %d nodes, cleaned %d", iterations, cleaned)
+	if mapSizeAfter != 0 {
+		t.Errorf("Expected map size to remain 0 after compact, got %d", mapSizeAfter)
 	}
 }
 
 func TestCacheWithAutomaticCompaction(t *testing.T) {
-	// Create cache with automatic compaction
-	cache := New(1000)
+	cache := New(10000)
 	defer cache.Stop()
 
 	runtime.GC()
@@ -118,8 +92,8 @@ func TestCacheWithAutomaticCompaction(t *testing.T) {
 		var m2 runtime.MemStats
 		runtime.ReadMemStats(&m2)
 
-		allocDiff := m2.Alloc - initialAlloc
-		t.Logf("Cycle %d: Memory +%.2f MB, Cache len=%d",
+		allocDiff := int64(m2.Alloc) - int64(initialAlloc)
+		t.Logf("Cycle %d: Memory %+.2f MB, Cache len=%d",
 			cycle+1, float64(allocDiff)/(1024*1024), cache.Len())
 	}
 
@@ -132,11 +106,11 @@ func TestCacheWithAutomaticCompaction(t *testing.T) {
 
 	var mFinal runtime.MemStats
 	runtime.ReadMemStats(&mFinal)
-	finalAllocDiff := mFinal.Alloc - initialAlloc
+	finalAllocDiff := int64(mFinal.Alloc) - int64(initialAlloc)
 
 	t.Logf("\nAfter manual compaction:")
 	t.Logf("  Cleaned %d nodes", cleaned)
-	t.Logf("  Final memory: +%.2f MB", float64(finalAllocDiff)/(1024*1024))
+	t.Logf("  Final memory: %+.2f MB", float64(finalAllocDiff)/(1024*1024))
 
 	// Memory should be minimal after compaction
 	if finalAllocDiff > 1024*1024 { // 1MB threshold
