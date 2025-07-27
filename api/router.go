@@ -7,7 +7,7 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // Router is a high-performance HTTP request router.

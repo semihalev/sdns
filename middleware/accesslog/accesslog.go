@@ -10,7 +10,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // AccessLog type.

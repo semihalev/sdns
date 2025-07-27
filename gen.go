@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // middleware list order very important, handlers call via this order.

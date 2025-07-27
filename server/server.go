@@ -23,7 +23,7 @@ import (
 	"github.com/semihalev/sdns/mock"
 	"github.com/semihalev/sdns/server/doh"
 	"github.com/semihalev/sdns/server/doq"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // Server type.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 func TestMain(m *testing.M) {

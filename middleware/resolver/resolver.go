@@ -17,7 +17,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 	"golang.org/x/sync/errgroup"
 )
 

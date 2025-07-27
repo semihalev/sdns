@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // hostCounter tracks download counts for each host in a type-safe way.

@@ -12,7 +12,7 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/sdns/waitgroup"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 var debugns bool

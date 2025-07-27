@@ -14,7 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/miekg/dns"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 const configver = "1.6.0"

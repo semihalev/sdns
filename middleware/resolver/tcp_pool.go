@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // TCPConnPool manages persistent TCP connections to DNS servers.

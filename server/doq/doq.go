@@ -11,7 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 var doqProtos = []string{"doq", "doq-i02", "dq", "doq-i00", "doq-i01", "doq-i11"}

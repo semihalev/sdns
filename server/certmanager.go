@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // CertManager manages TLS certificates with automatic reloading

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // ShardedRegistry - Lock-free sharded registry for massive concurrency

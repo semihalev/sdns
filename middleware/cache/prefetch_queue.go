@@ -7,7 +7,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/util"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // PrefetchRequest represents a DNS query to be prefetched.

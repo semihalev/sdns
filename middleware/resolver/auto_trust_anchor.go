@@ -9,7 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/util"
-	"github.com/semihalev/zlog"
+	"github.com/semihalev/zlog/v2"
 )
 
 // State represents the state of a trust anchor in RFC 5011 lifecycle.
