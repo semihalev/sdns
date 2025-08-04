@@ -1009,6 +1009,13 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		return r.exchange(ctx, "tcp", req, server, retried)
 	}
 
+	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > util.DefaultMsgSize {
+		// If response is too large, switch to TCP
+		zlog.Debug("Response too large, switching to TCP", "query", formatQuestion(q), "upstream", server.Addr,
+			"size", resp.Len(), "maxSize", util.DefaultMsgSize, "retried", retried)
+		return r.exchange(ctx, "tcp", req, server, retried)
+	}
+
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = util.ClearOPT(req)
