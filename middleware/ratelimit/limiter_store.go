@@ -91,9 +91,7 @@ func (s *LimiterStore) evictOne() {
 		if !first && len(s.limiters) > 1000 {
 			// For large maps, just sample the first 100 entries
 			// This avoids iterating the entire map
-			if first == false {
-				break
-			}
+			break
 		}
 	}
 
