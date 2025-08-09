@@ -8,7 +8,6 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
@@ -24,17 +23,26 @@ type limiter struct {
 type RateLimit struct {
 	cookiesecret string
 
-	cache *cache.Cache
+	store *LimiterStore
 	rate  int
 }
 
 // New return accesslist.
 func New(cfg *config.Config) *RateLimit {
 	r := &RateLimit{
-		cache:        cache.New(cacheSize),
+		store:        NewLimiterStore(cacheSize, cfg.ClientRateLimit),
 		cookiesecret: cfg.CookieSecret,
 		rate:         cfg.ClientRateLimit,
 	}
+
+	// Periodic cleanup of old limiters (every 5 minutes)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			r.store.Cleanup(10 * time.Minute)
+		}
+	}()
 
 	return r
 }
@@ -119,23 +127,7 @@ func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {
 	_, _ = xxhash.Write(remoteip)
 	key := xxhash.Sum64()
 
-	if v, ok := r.cache.Get(key); ok {
-		return v.(*limiter)
-	}
-
-	limit := rate.Limit(0)
-	if r.rate > 0 {
-		limit = rate.Every(time.Minute / time.Duration(r.rate))
-	}
-
-	rl := rate.NewLimiter(limit, r.rate)
-
-	l := &limiter{rl: rl}
-	l.cookie.Store("")
-
-	r.cache.Add(key, l)
-
-	return l
+	return r.store.Get(key)
 }
 
 const (

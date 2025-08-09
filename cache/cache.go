@@ -99,24 +99,33 @@ func (c *Cache) evict() {
 			return // We're under the limit
 		}
 
-		// Calculate eviction batch with more aggressive approach
+		// Calculate eviction batch
 		overhead := int(currentSize - int64(c.maxSize))
 
-		// For concurrent scenarios, evict more aggressively
-		// Minimum 20% to create headroom for concurrent adds
-		evictBatch := overhead + (c.maxSize / 5)
+		// Evict just what we need plus a small buffer
+		evictBatch := overhead + 10
 		if evictBatch < 1 {
 			evictBatch = 1
 		}
 
-		// Small caches: iteration beats random sampling overhead
-		if c.maxSize < 100 || evictBatch < 10 {
+		// For rate limiter caches under attack, use smaller batches
+		if c.maxSize >= 10000 && c.maxSize <= 30000 {
+			// This is likely the rate limiter cache (25,600 entries)
+			// Use much smaller eviction batch to avoid CPU spikes
+			evictBatch = overhead + 1
+			if evictBatch > 100 {
+				evictBatch = 100
+			}
+		}
+
+		// Use simple eviction for smaller batches
+		if evictBatch < 100 {
 			evicted := c.evictSimple(evictBatch)
 			if evicted == 0 {
 				break
 			}
 		} else {
-			// Large caches: random sampling scales better than iteration
+			// Only use random sampling for large batches
 			evicted := c.evictRandomSample(evictBatch)
 			if evicted == 0 {
 				break
@@ -161,10 +170,10 @@ func (c *Cache) evictSimple(targetEvictions int) int {
 // evictRandomSample uses random sampling for large caches
 // Efficiently evicts entries without iterating the entire map.
 func (c *Cache) evictRandomSample(targetEvictions int) int {
-	// For better hit rate, sample more keys than we need to evict
-	sampleSize := targetEvictions * 5 // 5x oversampling for better coverage
-	if sampleSize > c.maxSize/5 {
-		sampleSize = c.maxSize / 5 // Cap at 20% of cache size
+	// Reduced oversampling to minimize CPU usage
+	sampleSize := targetEvictions * 2 // 2x oversampling instead of 5x
+	if sampleSize > 10000 {
+		sampleSize = 10000 // Hard cap to prevent CPU spikes
 	}
 	if sampleSize < targetEvictions {
 		sampleSize = targetEvictions
