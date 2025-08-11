@@ -98,31 +98,29 @@ func (c *Cache) radicalEvict() {
 		return
 	}
 
-	// Calculate how much we need to evict
-	toEvict := currentSize - c.maxSize
-
 	// More aggressive eviction to prevent overshoot
 	// We want to get well below maxSize to avoid constant eviction
 	targetSize := c.maxSize * 8 / 10 // Target 80% of max size
-	toEvict = currentSize - targetSize
+	toEvict := currentSize - targetSize
 
 	// Calculate percentage to evict
 	percentToEvict := float64(toEvict) / float64(currentSize)
 
 	// Evict based on percentage needed
-	if percentToEvict > 0.5 {
+	switch {
+	case percentToEvict > 0.5:
 		// Clear 60% for heavy eviction
 		c.clearSegments(60)
-	} else if percentToEvict > 0.3 {
+	case percentToEvict > 0.3:
 		// Clear 40% of segments
 		c.clearSegments(40)
-	} else if percentToEvict > 0.2 {
+	case percentToEvict > 0.2:
 		// Clear 25% of segments
 		c.clearSegments(25)
-	} else if percentToEvict > 0.1 {
+	case percentToEvict > 0.1:
 		// Clear 15% of segments
 		c.clearSegments(15)
-	} else {
+	default:
 		// Clear 10% minimum
 		c.clearSegments(10)
 	}
