@@ -199,3 +199,32 @@ func (m *SegmentUInt64Map[V]) Clear() {
 	// Reset count
 	m.count.Store(0)
 }
+
+// ClearSegment clears a specific segment - for radical eviction
+func (m *SegmentUInt64Map[V]) ClearSegment(index int) {
+	if index < 0 || index >= len(m.segments) {
+		return
+	}
+
+	segment := m.segments[index]
+	segment.rwlock.Lock()
+
+	// Count items before clearing to update total count
+	itemsCleared := int64(segment.data.Len())
+	segment.data.Clear()
+
+	segment.rwlock.Unlock()
+
+	// Update total count
+	m.count.Add(-itemsCleared)
+}
+
+// SegmentCount returns the number of segments
+func (m *SegmentUInt64Map[V]) SegmentCount() int {
+	return len(m.segments)
+}
+
+// Stop is a no-op for compatibility
+func (m *SegmentUInt64Map[V]) Stop() {
+	// Nothing to stop
+}

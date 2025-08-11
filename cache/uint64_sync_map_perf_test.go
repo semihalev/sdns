@@ -8,33 +8,6 @@ import (
 	"time"
 )
 
-// BenchmarkCacheWithHighChurn tests performance under high churn conditions
-func BenchmarkCacheWithHighChurn(b *testing.B) {
-	cache := New(500000) // SDNS default size
-	defer cache.Stop()
-
-	b.Run("HighChurn", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			key := uint64(i)
-			cache.Add(key, "test value")
-			cache.Remove(key)
-		}
-	})
-
-	// Force compaction
-	cache.data.Compact()
-
-	b.Run("AfterCompact", func(b *testing.B) {
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			key := uint64(i % 1000) // Reuse keys
-			cache.Add(key, "test value")
-			_, _ = cache.Get(key)
-		}
-	})
-}
-
 func TestHighChurnMemoryLeak(t *testing.T) {
 	m := NewSyncUInt64Map[string](10)
 

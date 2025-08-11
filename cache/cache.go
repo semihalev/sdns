@@ -2,6 +2,8 @@ package cache
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -11,196 +13,150 @@ var (
 	ErrCacheExpired = errors.New("cache expired")
 )
 
-// Cache is cache.
+// Cache uses SyncUInt64Map with radical eviction strategy
+// Instead of evicting one by one, we evict entire segments at once!
 type Cache struct {
-	data           *SyncUInt64Map[any]
-	maxSize        int
-	stopCompaction chan struct{}
+	data          *SyncUInt64Map[any]
+	maxSize       int64
+	evictMu       sync.Mutex    // Serialize evictions
+	evictionCount atomic.Uint64 // Track evictions to rotate which segment to clear
 }
 
-// New returns a new cache.
+// NewCache creates a cache with radical eviction
 func New(size int) *Cache {
 	if size < 1 {
 		size = 1
 	}
 
-	// Bucket sizing: more buckets = less contention, better concurrency
+	// Use optimal bucket sizing for SyncUInt64Map
 	var power uint
 	switch {
 	case size <= 1024:
-		power = 8 // 256 buckets for tiny caches
+		power = 8 // 256 buckets
 	case size <= 10000:
-		power = 10 // 1K buckets for small caches
+		power = 10 // 1K buckets
 	case size <= 100000:
-		power = 12 // 4K buckets for medium caches
+		power = 12 // 4K buckets
 	case size <= 500000:
-		power = 14 // 16K buckets for large caches (default SDNS size)
+		power = 14 // 16K buckets
 	default:
-		power = 16 // 64K buckets for very large caches
+		power = 16 // 64K buckets for 1M+ entries
 	}
 
-	c := &Cache{
-		data:           NewSyncUInt64Map[any](power),
-		maxSize:        size,
-		stopCompaction: make(chan struct{}),
+	return &Cache{
+		data:    NewSyncUInt64Map[any](power),
+		maxSize: int64(size),
 	}
-
-	// No need for periodic compaction - the new map handles it internally
-
-	return c
 }
 
-// (*Cache).Get get looks up element index under key.
+// Get retrieves a value - uses SyncUInt64Map's excellent performance
 func (c *Cache) Get(key uint64) (any, bool) {
 	return c.data.Get(key)
 }
 
-// (*Cache).Add add adds a new element to the cache. If the element already exists it is overwritten.
-func (c *Cache) Add(key uint64, el any) {
-	// For small caches, check size before adding to prevent overshoot
-	if c.maxSize < 10000 {
-		currentSize := c.data.Len()
-		if currentSize >= int64(c.maxSize) {
-			c.evict()
-		}
+// Add adds an item with radical eviction if needed
+func (c *Cache) Add(key uint64, value any) {
+	// Check if we need to make room first
+	currentSize := c.data.Len()
+	if currentSize >= c.maxSize {
+		// Preemptively evict if at capacity
+		c.radicalEvict()
 	}
 
-	// Set the value
-	c.data.Set(key, el)
+	// Add the item
+	c.data.Set(key, value)
 
-	// Always check if we exceeded the limit after adding
-	currentSize := c.data.Len()
-	if currentSize > int64(c.maxSize) {
-		// Need to evict some entries
-		c.evict()
+	// Double-check size after adding in case of race
+	newSize := c.data.Len()
+	if newSize > c.maxSize {
+		c.radicalEvict()
 	}
 }
 
-// (*Cache).Remove remove removes the element indexed with key.
+// radicalEvict - the RADICAL approach: clear entire segments!
+func (c *Cache) radicalEvict() {
+	// Use mutex to serialize evictions
+	c.evictMu.Lock()
+	defer c.evictMu.Unlock()
+
+	// Re-check size after acquiring lock
+	currentSize := c.data.Len()
+	if currentSize <= c.maxSize {
+		return
+	}
+
+	// For small caches, use targeted eviction
+	if c.maxSize < 100 {
+		toEvict := int(currentSize - c.maxSize + 10) // Add small buffer
+		keys := c.data.RandomSample(toEvict * 2)
+		for i, key := range keys {
+			if i >= toEvict {
+				break
+			}
+			c.data.Del(key)
+		}
+		return
+	}
+
+	// Calculate how much we need to evict
+	toEvict := currentSize - c.maxSize
+
+	// More aggressive eviction to prevent overshoot
+	// We want to get well below maxSize to avoid constant eviction
+	targetSize := c.maxSize * 8 / 10 // Target 80% of max size
+	toEvict = currentSize - targetSize
+
+	// Calculate percentage to evict
+	percentToEvict := float64(toEvict) / float64(currentSize)
+
+	// Evict based on percentage needed
+	if percentToEvict > 0.5 {
+		// Clear 60% for heavy eviction
+		c.clearSegments(60)
+	} else if percentToEvict > 0.3 {
+		// Clear 40% of segments
+		c.clearSegments(40)
+	} else if percentToEvict > 0.2 {
+		// Clear 25% of segments
+		c.clearSegments(25)
+	} else if percentToEvict > 0.1 {
+		// Clear 15% of segments
+		c.clearSegments(15)
+	} else {
+		// Clear 10% minimum
+		c.clearSegments(10)
+	}
+}
+
+// clearSegments clears a percentage of segments
+func (c *Cache) clearSegments(percent int) {
+	// Get segments to clear based on rotation
+	segmentCount := c.data.SegmentCount()
+	segmentsToClear := (segmentCount * percent) / 100
+	if segmentsToClear < 1 {
+		segmentsToClear = 1
+	}
+
+	// Rotate which segments we clear to be fair
+	startSegment := c.evictionCount.Add(1) % uint64(segmentCount)
+
+	for i := 0; i < segmentsToClear; i++ {
+		segmentIndex := (startSegment + uint64(i)) % uint64(segmentCount)
+		c.data.ClearSegment(int(segmentIndex))
+	}
+}
+
+// Remove removes an item
 func (c *Cache) Remove(key uint64) {
 	c.data.Del(key)
 }
 
-// (*Cache).Len len returns the number of elements in the cache.
+// Len returns current size
 func (c *Cache) Len() int {
 	return int(c.data.Len())
 }
 
-// evict: random sampling strategy avoids full scan, O(evictions) not O(size)
-func (c *Cache) evict() {
-	// Run eviction in a loop until we're under the limit
-	// This handles cases where items are being added concurrently
-	maxAttempts := 10 // Prevent infinite loop
-	attempts := 0
-
-	for attempts < maxAttempts {
-		currentSize := c.data.Len()
-		if currentSize <= int64(c.maxSize) {
-			return // We're under the limit
-		}
-
-		// Calculate eviction batch
-		overhead := int(currentSize - int64(c.maxSize))
-
-		// Evict just what we need plus a small buffer
-		evictBatch := overhead + 10
-		if evictBatch < 1 {
-			evictBatch = 1
-		}
-
-		// For rate limiter caches under attack, use smaller batches
-		if c.maxSize >= 10000 && c.maxSize <= 30000 {
-			// This is likely the rate limiter cache (25,600 entries)
-			// Use much smaller eviction batch to avoid CPU spikes
-			evictBatch = overhead + 1
-			if evictBatch > 100 {
-				evictBatch = 100
-			}
-		}
-
-		// Use simple eviction for smaller batches
-		if evictBatch < 100 {
-			evicted := c.evictSimple(evictBatch)
-			if evicted == 0 {
-				break
-			}
-		} else {
-			// Only use random sampling for large batches
-			evicted := c.evictRandomSample(evictBatch)
-			if evicted == 0 {
-				break
-			}
-		}
-
-		attempts++
-
-		// For small caches, one iteration is enough
-		if c.maxSize < 100 {
-			break
-		}
-	}
-}
-
-// evictSimple uses simple iteration for small caches
-// Returns the number of entries actually evicted.
-func (c *Cache) evictSimple(targetEvictions int) int {
-	evictBuf := make([]uint64, 0, targetEvictions)
-	collected := 0
-
-	c.data.ForEach(func(key uint64, _ any) bool {
-		if collected >= targetEvictions {
-			return false
-		}
-		evictBuf = append(evictBuf, key)
-		collected++
-		return true
-	})
-
-	// Delete the collected keys
-	evicted := 0
-	for _, key := range evictBuf {
-		if c.data.Del(key) {
-			evicted++
-		}
-	}
-
-	return evicted
-}
-
-// evictRandomSample uses random sampling for large caches
-// Efficiently evicts entries without iterating the entire map.
-func (c *Cache) evictRandomSample(targetEvictions int) int {
-	// Reduced oversampling to minimize CPU usage
-	sampleSize := targetEvictions * 2 // 2x oversampling instead of 5x
-	if sampleSize > 10000 {
-		sampleSize = 10000 // Hard cap to prevent CPU spikes
-	}
-	if sampleSize < targetEvictions {
-		sampleSize = targetEvictions
-	}
-
-	keys := c.data.RandomSample(sampleSize)
-
-	// Delete keys until we've evicted enough
-	evicted := 0
-	for _, key := range keys {
-		if evicted >= targetEvictions {
-			break
-		}
-		if c.data.Del(key) {
-			evicted++
-		}
-	}
-
-	return evicted
-}
-
-// Stop stops the periodic compaction
+// Stop cleanup
 func (c *Cache) Stop() {
-	if c.stopCompaction != nil {
-		close(c.stopCompaction)
-	}
-	if c.data != nil {
-		c.data.Stop()
-	}
+	c.data.Stop()
 }

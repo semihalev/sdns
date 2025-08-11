@@ -110,3 +110,18 @@ func (m *SyncUInt64Map[V]) Compact() int {
 func (m *SyncUInt64Map[V]) Stop() {
 	// Nothing to stop
 }
+
+// Clear removes all entries - FAST!
+func (m *SyncUInt64Map[V]) Clear() {
+	m.data.Clear()
+}
+
+// ClearSegment clears a specific segment - for radical eviction
+func (m *SyncUInt64Map[V]) ClearSegment(index int) {
+	m.data.ClearSegment(index)
+}
+
+// SegmentCount returns the number of segments
+func (m *SyncUInt64Map[V]) SegmentCount() int {
+	return m.data.SegmentCount()
+}
