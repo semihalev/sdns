@@ -48,6 +48,10 @@ type Resolver struct {
 
 	// TCP connection pool for persistent connections
 	tcpPool *TCPConnPool
+
+	// Circuit breaker and goroutine limiter
+	circuitBreaker *circuitBreaker
+	maxConcurrent  chan struct{} // Semaphore for limiting concurrent queries
 }
 
 // resolveContext holds the state for a DNS resolution operation.
@@ -88,9 +92,11 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		dnssec: cfg.DNSSEC == "on",
 
-		qnameMinLevel: cfg.QnameMinLevel,
-		netTimeout:    defaultTimeout,
-		sfGroup:       NewSingleflightWrapper(),
+		qnameMinLevel:  cfg.QnameMinLevel,
+		netTimeout:     defaultTimeout,
+		sfGroup:        NewSingleflightWrapper(),
+		circuitBreaker: newCircuitBreaker(),
+		maxConcurrent:  make(chan struct{}, cfg.MaxConcurrentQueries),
 	}
 
 	if r.cfg.IPv6Access {
@@ -748,14 +754,26 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 
 	// Start a DNS query to a server
 	originalId := req.Id // Capture ID before goroutines start
-	queryServer := func(ctx context.Context, req *dns.Msg, server *authcache.AuthServer) {
+	queryServer := func(ctx context.Context, reqCopy *dns.Msg, server *authcache.AuthServer) {
+		// Ensure we release the slot when done
+		defer func() { <-r.maxConcurrent }()
+		defer ReleaseMsg(reqCopy)
+
+		// Check circuit breaker
+		if !r.circuitBreaker.canQuery(server.Addr) {
+			select {
+			case results <- result{err: fatalError(errConnectionFailed), server: server}:
+			case <-returned:
+			}
+			return
+		}
+
 		// Check context first
 		if ctx.Err() != nil {
 			return
 		}
 
 		// Anti-spoofing: use random ID
-		reqCopy := req.CopyTo(AcquireMsg())
 		reqCopy.Id = dns.Id()
 
 		resp, err := r.exchange(ctx, "udp", reqCopy, server, 0)
@@ -763,7 +781,12 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 			resp.Id = originalId // Restore original ID using captured value
 		}
 
-		ReleaseMsg(reqCopy)
+		// Record success or failure in circuit breaker
+		if err != nil {
+			r.circuitBreaker.recordFailure(server.Addr)
+		} else if resp != nil && resp.Rcode == dns.RcodeSuccess {
+			r.circuitBreaker.recordSuccess(server.Addr)
+		}
 
 		select {
 		case results <- result{resp: resp, err: err, server: server}:
@@ -808,7 +831,28 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 
 mainloop:
 	for index, server := range serversList {
-		go queryServer(ctx, req, server)
+		// Check if we're approaching the limit and log a warning
+		activeQueries := len(r.maxConcurrent)
+		maxQueries := cap(r.maxConcurrent)
+		if activeQueries > maxQueries*9/10 { // Over 90% capacity
+			zlog.Warn("Approaching max concurrent DNS queries limit",
+				"active", activeQueries, "max", maxQueries,
+				"query", formatQuestion(req.Question[0]))
+		}
+
+		// Make a copy for this server before launching goroutine
+		// We do this serially to avoid concurrent CopyTo() which is not thread-safe
+		serverReq := req.CopyTo(AcquireMsg())
+
+		// Acquire semaphore slot before starting goroutine
+		select {
+		case r.maxConcurrent <- struct{}{}:
+			// Got a slot, start the query
+			go queryServer(ctx, serverReq, server)
+		case <-ctx.Done():
+			// Context cancelled while waiting for slot
+			return nil, ctx.Err()
+		}
 
 		// For the first 3 servers, don't wait - query them in parallel
 		if index < parallelStart-1 {
