@@ -134,7 +134,7 @@ func BenchmarkHighPerformanceCache(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		qname := "service" + string(rune('0'+i%100)) + ".default.svc.cluster.local."
-		cache.Get(qname, dns.TypeA, uint16(i))
+		cache.Get(qname, dns.TypeA, uint16(i)) //nolint:gosec // G115 - benchmark iteration
 	}
 
 	stats := cache.Stats()

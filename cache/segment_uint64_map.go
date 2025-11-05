@@ -64,7 +64,7 @@ func (m *SegmentUInt64Map[V]) getSegment(key uint64) *segment[V] {
 	// This distributes sequential keys across different segments
 	// and reduces contention for clustered keys
 	h := uint(key * 0x9E3779B9)
-	segmentIndex := (h >> 16) & uint(m.segmentMask)
+	segmentIndex := (h >> 16) & uint(m.segmentMask) //nolint:gosec // G115 - segmentMask ensures valid range
 	return m.segments[segmentIndex]
 }
 

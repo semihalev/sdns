@@ -293,7 +293,7 @@ func verifyFetchedKeys(rootkeys []dns.RR, rrs []dns.RR) (ok bool, err error) {
 }
 
 func readFromTAFile(filename string) (TrustAnchors, error) {
-	f, err := os.Open(filename)
+	f, err := os.Open(filename) //nolint:gosec // G304 - filename from config, admin controlled
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +312,7 @@ func readFromTAFile(filename string) (TrustAnchors, error) {
 }
 
 func writeToTAFile(filename string, kskCurrent TrustAnchors) error {
-	f, err := os.Create(filename)
+	f, err := os.Create(filename) //nolint:gosec // G304 - filename from config, admin controlled
 	if err != nil {
 		return err
 	}

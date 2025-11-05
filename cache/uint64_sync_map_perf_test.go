@@ -20,14 +20,14 @@ func TestHighChurnMemoryLeak(t *testing.T) {
 
 	// Create high churn
 	for i := 0; i < 100000; i++ {
-		m.Set(uint64(i), "test value")
-		m.Del(uint64(i))
+		m.Set(uint64(i), "test value") //nolint:gosec // G115 - test loop
+		m.Del(uint64(i))               //nolint:gosec // G115 - test loop
 	}
 
 	runtime.GC()
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
-	afterChurn := int64(m2.Alloc) - int64(initialAlloc)
+	afterChurn := int64(m2.Alloc) - int64(initialAlloc) //nolint:gosec // G115 - memory stats conversion
 
 	t.Logf("After churn:")
 	t.Logf("  Memory usage: %+.2f MB", float64(afterChurn)/(1024*1024))
@@ -42,7 +42,7 @@ func TestHighChurnMemoryLeak(t *testing.T) {
 
 	var m3 runtime.MemStats
 	runtime.ReadMemStats(&m3)
-	afterCompact := int64(m3.Alloc) - int64(initialAlloc)
+	afterCompact := int64(m3.Alloc) - int64(initialAlloc) //nolint:gosec // G115 - memory stats conversion
 
 	t.Logf("After compact:")
 	t.Logf("  Cleaned: %d entries", cleaned)
@@ -62,27 +62,27 @@ func BenchmarkMapOperations(b *testing.B) {
 
 		// Pre-populate
 		for i := 0; i < size; i++ {
-			m.Set(uint64(i), "test-value")
+			m.Set(uint64(i), "test-value") //nolint:gosec // G115 - test loop
 		}
 
 		b.Run(fmt.Sprintf("Get-%d", size), func(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = m.Get(uint64(i % size))
+				_, _ = m.Get(uint64(i % size)) //nolint:gosec // G115 - benchmark test
 			}
 		})
 
 		b.Run(fmt.Sprintf("Set-%d", size), func(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				m.Set(uint64(size+i), "new-value")
+				m.Set(uint64(size+i), "new-value") //nolint:gosec // G115 - benchmark test
 			}
 		})
 
 		b.Run(fmt.Sprintf("Del-%d", size), func(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				m.Del(uint64(i % size))
+				m.Del(uint64(i % size)) //nolint:gosec // G115 - benchmark test
 			}
 		})
 	}
@@ -94,13 +94,13 @@ func BenchmarkConcurrentAccess(b *testing.B) {
 
 	// Pre-populate
 	for i := 0; i < 100000; i++ {
-		m.Set(uint64(i), "test-value")
+		m.Set(uint64(i), "test-value") //nolint:gosec // G115 - benchmark test
 	}
 
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			key := uint64(i % 100000)
+			key := uint64(i % 100000) //nolint:gosec // G115 - benchmark test
 			switch i % 3 {
 			case 0:
 				m.Get(key)
@@ -120,7 +120,7 @@ func TestCompactionEffectiveness(t *testing.T) {
 
 	// Phase 1: Fill the map
 	for i := 0; i < 10000; i++ {
-		m.Set(uint64(i), "test-value")
+		m.Set(uint64(i), "test-value") //nolint:gosec // G115 - test loop
 	}
 
 	initialSize := m.Len()
@@ -128,7 +128,7 @@ func TestCompactionEffectiveness(t *testing.T) {
 
 	// Phase 2: Delete 90% of entries
 	for i := 0; i < 9000; i++ {
-		m.Del(uint64(i))
+		m.Del(uint64(i)) //nolint:gosec // G115 - test loop
 	}
 
 	afterDeleteSize := m.Len()
@@ -141,7 +141,7 @@ func TestCompactionEffectiveness(t *testing.T) {
 	// Phase 4: Add new entries - should be fast
 	start := time.Now()
 	for i := 10000; i < 11000; i++ {
-		m.Set(uint64(i), "new-value")
+		m.Set(uint64(i), "new-value") //nolint:gosec // G115 - test loop
 	}
 	elapsed := time.Since(start)
 	t.Logf("Time to add 1000 entries after deletions: %v", elapsed)
@@ -165,9 +165,9 @@ func TestConcurrentChurn(t *testing.T) {
 		go func(goroutineID int) {
 			defer wg.Done()
 
-			base := uint64(goroutineID * opsPerGoroutine)
+			base := uint64(goroutineID * opsPerGoroutine) //nolint:gosec // G115 - test calculation
 			for i := 0; i < opsPerGoroutine; i++ {
-				key := base + uint64(i)
+				key := base + uint64(i) //nolint:gosec // G115 - test calculation
 
 				// Add
 				m.Set(key, "test-value")

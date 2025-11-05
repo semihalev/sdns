@@ -134,7 +134,7 @@ func hasSOA(msg *dns.Msg) bool {
 
 // hasExpiredSignatures checks if any RRSIG records have expired.
 func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
-	nowUnix := uint32(now.Unix())
+	nowUnix := uint32(now.Unix()) //nolint:gosec // G115 - time conversion for DNS record
 
 	checkRRSIG := func(rr dns.RR) bool {
 		if sig, ok := rr.(*dns.RRSIG); ok {

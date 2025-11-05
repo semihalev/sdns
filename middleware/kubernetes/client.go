@@ -109,19 +109,19 @@ func (c *Client) Run(ctx context.Context) error {
 	)
 
 	// Add event handlers with error recovery
-	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{ //nolint:gosec // G104 - event handler registration
 		AddFunc:    c.safeServiceAdd,
 		UpdateFunc: c.safeServiceUpdate,
 		DeleteFunc: c.safeServiceDelete,
 	})
 
-	endpointSliceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	endpointSliceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{ //nolint:gosec // G104 - event handler registration
 		AddFunc:    c.safeEndpointSliceAdd,
 		UpdateFunc: c.safeEndpointSliceUpdate,
 		DeleteFunc: c.safeEndpointSliceDelete,
 	})
 
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{ //nolint:gosec // G104 - event handler registration
 		AddFunc:    c.safePodAdd,
 		UpdateFunc: c.safePodUpdate,
 		DeleteFunc: c.safePodDelete,

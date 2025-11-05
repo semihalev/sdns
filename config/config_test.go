@@ -39,7 +39,7 @@ func TestLoad(t *testing.T) {
 					t.Fatal(err)
 				}
 				return cfgFile, func() {
-					os.RemoveAll(tmpDir)
+					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			version: "1.4.0",
@@ -59,11 +59,11 @@ func TestLoad(t *testing.T) {
 			setupFunc: func() (string, func()) {
 				tmpDir := t.TempDir()
 				cfgFile := filepath.Join(tmpDir, "invalid.conf")
-				if err := os.WriteFile(cfgFile, []byte("invalid = toml content ["), 0644); err != nil {
+				if err := os.WriteFile(cfgFile, []byte("invalid = toml content ["), 0644); err != nil { //nolint:gosec // G306 - test file
 					t.Fatal(err)
 				}
 				return cfgFile, func() {
-					os.RemoveAll(tmpDir)
+					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			version:     "1.4.0",
@@ -82,11 +82,11 @@ func TestLoad(t *testing.T) {
 				config := strings.ReplaceAll(defaultConfig, `directory = "db"`, fmt.Sprintf(`directory = "%s"`, escapedWorkDir))
 				config = fmt.Sprintf(config, configver)
 
-				if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil {
+				if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil { //nolint:gosec // G306 - test file //nolint:gosec // G306 - test file
 					t.Fatal(err)
 				}
 				return cfgFile, func() {
-					os.RemoveAll(tmpDir)
+					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			version: "1.4.0",
@@ -100,7 +100,7 @@ func TestLoad(t *testing.T) {
 				workDir := filepath.Join(tmpDir, "noperm", "testdb")
 
 				// Create parent directory without write permission
-				if err := os.Mkdir(filepath.Join(tmpDir, "noperm"), 0555); err != nil {
+				if err := os.Mkdir(filepath.Join(tmpDir, "noperm"), 0555); err != nil { //nolint:gosec // G301 - test file needs non-writable dir
 					t.Fatal(err)
 				}
 
@@ -109,12 +109,12 @@ func TestLoad(t *testing.T) {
 				config := strings.ReplaceAll(defaultConfig, `directory = "db"`, fmt.Sprintf(`directory = "%s"`, escapedWorkDir))
 				config = fmt.Sprintf(config, configver)
 
-				if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil {
+				if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil { //nolint:gosec // G306 - test file //nolint:gosec // G306 - test file
 					t.Fatal(err)
 				}
 				return cfgFile, func() {
-					os.Chmod(filepath.Join(tmpDir, "noperm"), 0755)
-					os.RemoveAll(tmpDir)
+					os.Chmod(filepath.Join(tmpDir, "noperm"), 0755) //nolint:gosec // G104 - test cleanup
+					os.RemoveAll(tmpDir)                            //nolint:gosec // G104 - test cleanup
 				}
 			},
 			version:     "1.4.0",
@@ -126,17 +126,17 @@ func TestLoad(t *testing.T) {
 			setupFunc: func() (string, func()) {
 				tmpDir := t.TempDir()
 				oldPwd, _ := os.Getwd()
-				os.Chdir(tmpDir)
+				os.Chdir(tmpDir) //nolint:gosec // G104 - test chdir
 
 				// Create sdns.toml
 				tomlConfig := fmt.Sprintf(defaultConfig, configver)
-				if err := os.WriteFile("sdns.toml", []byte(tomlConfig), 0644); err != nil {
+				if err := os.WriteFile("sdns.toml", []byte(tomlConfig), 0644); err != nil { //nolint:gosec // G306 - test file
 					t.Fatal(err)
 				}
 
 				return "sdns.conf", func() {
-					os.Chdir(oldPwd)
-					os.RemoveAll(tmpDir)
+					os.Chdir(oldPwd)     //nolint:gosec // G104 - test cleanup
+					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			version: "1.4.0",
@@ -255,7 +255,7 @@ func TestGenerateConfig(t *testing.T) {
 				tmpDir := t.TempDir()
 				cfgFile := filepath.Join(tmpDir, "new.conf")
 				return cfgFile, func() {
-					os.RemoveAll(tmpDir)
+					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			wantErr: false,
@@ -266,7 +266,7 @@ func TestGenerateConfig(t *testing.T) {
 				tmpDir := t.TempDir()
 				cfgFile := filepath.Join(tmpDir, "subdir", "new.conf")
 				return cfgFile, func() {
-					os.RemoveAll(tmpDir)
+					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			wantErr:     true,
@@ -277,12 +277,12 @@ func TestGenerateConfig(t *testing.T) {
 			setupFunc: func() (string, func()) {
 				tmpDir := t.TempDir()
 				// Remove write permission
-				os.Chmod(tmpDir, 0555)
+				os.Chmod(tmpDir, 0555) //nolint:gosec // G104 - test setup
 				cfgFile := filepath.Join(tmpDir, "readonly.conf")
 
 				return cfgFile, func() {
-					os.Chmod(tmpDir, 0755)
-					os.RemoveAll(tmpDir)
+					os.Chmod(tmpDir, 0755) //nolint:gosec // G104 - test cleanup
+					os.RemoveAll(tmpDir)   //nolint:gosec // G104 - test cleanup
 				}
 			},
 			wantErr:     true,
@@ -293,9 +293,9 @@ func TestGenerateConfig(t *testing.T) {
 			setupFunc: func() (string, func()) {
 				tmpDir := t.TempDir()
 				cfgFile := filepath.Join(tmpDir, "existing.conf")
-				os.WriteFile(cfgFile, []byte("existing"), 0644)
+				os.WriteFile(cfgFile, []byte("existing"), 0644) //nolint:gosec // G104,G306 - test setup
 				return cfgFile, func() {
-					os.RemoveAll(tmpDir)
+					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			wantErr: false, // Should overwrite
@@ -328,7 +328,7 @@ func TestGenerateConfig(t *testing.T) {
 				if _, err := os.Stat(cfgFile); err != nil {
 					t.Errorf("Config file not created: %v", err)
 				}
-				content, err := os.ReadFile(cfgFile)
+				content, err := os.ReadFile(cfgFile) //nolint:gosec // G304 - test file read
 				if err != nil {
 					t.Errorf("Failed to read config file: %v", err)
 				}
@@ -430,7 +430,7 @@ qname_min_level = 5
 emptyzones = []
 `
 
-	if err := os.WriteFile(cfgFile, []byte(minimalConfig), 0644); err != nil {
+	if err := os.WriteFile(cfgFile, []byte(minimalConfig), 0644); err != nil { //nolint:gosec // G306 - test file
 		t.Fatal(err)
 	}
 
@@ -444,7 +444,7 @@ emptyzones = []
 	}
 
 	// Clean up
-	os.RemoveAll(tmpDir)
+	os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 }
 
 func TestConfigWithDNSSECOff(t *testing.T) {
@@ -455,7 +455,7 @@ func TestConfigWithDNSSECOff(t *testing.T) {
 	config := strings.ReplaceAll(defaultConfig, `dnssec = "on"`, `dnssec = "off"`)
 	config = fmt.Sprintf(config, configver)
 
-	if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil {
+	if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil { //nolint:gosec // G306 - test file
 		t.Fatal(err)
 	}
 
@@ -468,7 +468,7 @@ func TestConfigWithDNSSECOff(t *testing.T) {
 	}
 
 	// Clean up
-	os.RemoveAll(tmpDir)
+	os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 }
 
 func TestConfigWithIPv6Access(t *testing.T) {
@@ -480,7 +480,7 @@ func TestConfigWithIPv6Access(t *testing.T) {
 	config := strings.Replace(defaultConfig, "[kubernetes]", "ipv6access = true\n\n[kubernetes]", 1)
 	config = fmt.Sprintf(config, configver)
 
-	if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil {
+	if err := os.WriteFile(cfgFile, []byte(config), 0644); err != nil { //nolint:gosec // G306 - test file
 		t.Fatal(err)
 	}
 
@@ -493,5 +493,5 @@ func TestConfigWithIPv6Access(t *testing.T) {
 	}
 
 	// Clean up
-	os.RemoveAll(tmpDir)
+	os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 }

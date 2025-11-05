@@ -106,7 +106,7 @@ func BenchmarkZeroAllocWithMessageID(b *testing.B) {
 		// Copy to response buffer and update message ID
 		// This simulates what happens in ServeDNS
 		n := copy(respBuf, wire)
-		UpdateMessageID(respBuf[:n], uint16(i))
+		UpdateMessageID(respBuf[:n], uint16(i)) //nolint:gosec // G115 - benchmark iteration
 	}
 }
 

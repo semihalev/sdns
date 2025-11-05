@@ -409,7 +409,7 @@ func (k *Kubernetes) populateDemoData() {
 		})
 	} else {
 		// Boring mode - use standard registry
-		k.resolver.registry.AddService(&Service{
+		k.resolver.registry.AddService(&Service{ //nolint:gosec // G104 - service registration
 			Name:       "kubernetes",
 			Namespace:  "default",
 			ClusterIPs: [][]byte{net.ParseIP("10.96.0.1").To4()},
@@ -419,7 +419,7 @@ func (k *Kubernetes) populateDemoData() {
 			},
 		})
 
-		k.resolver.registry.AddService(&Service{
+		k.resolver.registry.AddService(&Service{ //nolint:gosec // G104 - service registration
 			Name:       "kube-dns",
 			Namespace:  "kube-system",
 			ClusterIPs: [][]byte{net.ParseIP("10.96.0.10").To4()},
@@ -430,26 +430,26 @@ func (k *Kubernetes) populateDemoData() {
 			},
 		})
 
-		k.resolver.registry.AddService(&Service{
+		k.resolver.registry.AddService(&Service{ //nolint:gosec // G104 - service registration
 			Name:      "headless",
 			Namespace: "default",
 			Type:      "ClusterIP",
 			Headless:  true,
 		})
 
-		k.resolver.registry.SetEndpoints("headless", "default", []Endpoint{
+		k.resolver.registry.SetEndpoints("headless", "default", []Endpoint{ //nolint:gosec // G104 - service registration
 			{Addresses: []string{"10.244.1.10"}, Ready: true},
 			{Addresses: []string{"10.244.1.11"}, Ready: true},
 		})
 
-		k.resolver.registry.AddService(&Service{
+		k.resolver.registry.AddService(&Service{ //nolint:gosec // G104 - service registration
 			Name:         "external",
 			Namespace:    "default",
 			Type:         "ExternalName",
 			ExternalName: "example.com",
 		})
 
-		k.resolver.registry.AddPod(&Pod{
+		k.resolver.registry.AddPod(&Pod{ //nolint:gosec // G104 - service registration
 			Name:      "web-0",
 			Namespace: "default",
 			IPs:       []string{"10.244.1.10"},

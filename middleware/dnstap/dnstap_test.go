@@ -192,7 +192,7 @@ func TestServeDNS(t *testing.T) {
 	ch := middleware.NewChain([]middleware.Handler{
 		middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			rw := ch.Writer.(*responseWriter)
-			rw.WriteMsg(res)
+			rw.WriteMsg(res) //nolint:gosec // G104 - test mock
 		}),
 	})
 	ch.Reset(w, req)
@@ -535,7 +535,7 @@ func TestWriteFrame(t *testing.T) {
 		t.Fatalf("Failed to read length: %v", err)
 	}
 
-	if length != uint32(len(testData)) {
+	if length != uint32(len(testData)) { //nolint:gosec // G115 - test data length is small
 		t.Errorf("Frame length = %d, want %d", length, len(testData))
 	}
 
@@ -562,8 +562,8 @@ func TestWriteFrame(t *testing.T) {
 func TestWriteFrame_Error(t *testing.T) {
 	// Create a pipe and close the write end immediately
 	r, w := net.Pipe()
-	r.Close()
-	w.Close()
+	r.Close() //nolint:gosec // G104 - test cleanup
+	w.Close() //nolint:gosec // G104 - test cleanup
 
 	d := &Dnstap{}
 	testData := []byte("test frame data")
@@ -597,7 +597,7 @@ func TestWriteMessage_Error(t *testing.T) {
 
 	// Create a pipe and close it to simulate write error
 	r, w := net.Pipe()
-	r.Close()
+	r.Close() //nolint:gosec // G104 - test cleanup
 
 	d := &Dnstap{
 		socketPath:     socketPath,
@@ -626,7 +626,7 @@ func TestWriteMessage_Error(t *testing.T) {
 	close(d.done)
 
 	// Clean up
-	w.Close()
+	w.Close() //nolint:gosec // G104 - test cleanup
 
 	// Give time for goroutine to stop
 	time.Sleep(20 * time.Millisecond)
@@ -651,7 +651,7 @@ func TestConnect(t *testing.T) {
 			if err != nil {
 				return
 			}
-			conn.Close()
+			conn.Close() //nolint:gosec // G104 - test mock
 		}
 	}()
 
@@ -701,7 +701,7 @@ func TestRun(t *testing.T) {
 				for {
 					_, err := c.Read(buf)
 					if err != nil {
-						c.Close()
+						c.Close() //nolint:gosec // G104 - test cleanup
 						return
 					}
 				}

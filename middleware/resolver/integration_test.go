@@ -105,7 +105,7 @@ func TestGoroutineLimitUnderLoad(t *testing.T) {
 			}
 
 			// This will be limited by maxConcurrent
-			r.lookup(ctx, req, servers)
+			_, _ = r.lookup(ctx, req, servers)
 		}(i)
 	}
 
@@ -202,7 +202,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.lookup(ctx, req, servers)
+			_, _ = r.lookup(ctx, req, servers)
 		}()
 	}
 
@@ -302,7 +302,7 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	// Track goroutine growth
 	startGoroutines := runtime.NumGoroutine()
 	maxGoroutines := atomic.Int32{}
-	maxGoroutines.Store(int32(startGoroutines))
+	maxGoroutines.Store(int32(startGoroutines)) //nolint:gosec // G115 - goroutine count conversion
 
 	// Monitor goroutines
 	stopMonitor := make(chan struct{})
@@ -312,7 +312,7 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 		for {
 			select {
 			case <-ticker.C:
-				current := int32(runtime.NumGoroutine())
+				current := int32(runtime.NumGoroutine()) //nolint:gosec // G115 - goroutine count conversion
 				for {
 					max := maxGoroutines.Load()
 					if current <= max || maxGoroutines.CompareAndSwap(max, current) {
@@ -347,7 +347,7 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 					go func() {
 						ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 						defer cancel()
-						r.lookup(ctx, req, googleServers)
+						r.lookup(ctx, req, googleServers) //nolint:gosec // G104 - background load test
 					}()
 
 				case <-stopLoad:
@@ -415,7 +415,8 @@ func TestConcurrentCircuitBreakerOperations(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		wg.Add(3)
 
-		server := servers[i%len(servers)]
+		serverIndex := i % len(servers)
+		server := servers[serverIndex] //nolint:gosec // G602
 
 		// Concurrent failures
 		go func(s string) {

@@ -629,7 +629,7 @@ func Load(cfgfile, version string) (*Config, error) {
 }
 
 func generateConfig(path string) error {
-	output, err := os.Create(path)
+	output, err := os.Create(path) //nolint:gosec // G304 - path from command line flag, admin controlled
 	if err != nil {
 		return fmt.Errorf("could not generate config: %s", err)
 	}

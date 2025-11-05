@@ -400,7 +400,7 @@ func (m *UInt64Map[V]) Len() int {
 func (m *UInt64Map[V]) primaryIndex(key uint64) int {
 	// Primary hash function optimized for integer keys
 	h := key * uint64(0x9E3779B9)
-	return int(h^(h>>16)) & m.mask
+	return int(h^(h>>16)) & m.mask //nolint:gosec // G115 - mask ensures valid range
 }
 
 // grow increases the size of the map and rehashes all entries

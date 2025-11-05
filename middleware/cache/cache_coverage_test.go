@@ -37,7 +37,7 @@ func Test_Cache_Stats(t *testing.T) {
 			Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
 			A:   []byte{8, 8, 8, 8},
 		})
-		ch.Writer.WriteMsg(msg)
+		ch.Writer.WriteMsg(msg) //nolint:gosec // G104 - test mock
 		ch.Cancel()
 	})
 
@@ -292,7 +292,7 @@ func Test_Negative_Cache_Eviction(t *testing.T) {
 		req := new(dns.Msg)
 		req.SetQuestion(fmt.Sprintf("test%d.com.", i), dns.TypeA)
 		entry := NewCacheEntry(req, time.Hour, 0)
-		nc.Set(uint64(i), entry)
+		nc.Set(uint64(i), entry) //nolint:gosec // G115 - test value
 	}
 
 	// Some entries should have been evicted

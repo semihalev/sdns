@@ -147,7 +147,7 @@ func generateTestCert(t *testing.T, commonName string) ([]byte, []byte) {
 }
 
 func writeCertAndKey(t *testing.T, certPath, keyPath string, cert, key []byte) {
-	err := os.WriteFile(certPath, cert, 0644)
+	err := os.WriteFile(certPath, cert, 0644) //nolint:gosec // G306 - test file
 	require.NoError(t, err)
 
 	err = os.WriteFile(keyPath, key, 0600)
@@ -170,7 +170,7 @@ func TestCertManagerErrors(t *testing.T) {
 		keyPath := filepath.Join(tmpDir, "invalid.key")
 
 		// Write invalid certificate data
-		err = os.WriteFile(certPath, []byte("invalid cert data"), 0644)
+		err = os.WriteFile(certPath, []byte("invalid cert data"), 0644) //nolint:gosec // G306 - test file
 		require.NoError(t, err)
 		err = os.WriteFile(keyPath, []byte("invalid key data"), 0600)
 		require.NoError(t, err)
@@ -294,7 +294,7 @@ func TestCertManagerWatcherErrors(t *testing.T) {
 	defer cm.Stop()
 
 	// Remove the directory to cause stat errors
-	os.RemoveAll(tmpDir)
+	os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
 
 	// Trigger checkAndReload - should handle error gracefully
 	cm.checkAndReload()
@@ -406,7 +406,7 @@ func TestReloadWithRetry(t *testing.T) {
 	defer cm.Stop()
 
 	// Remove certificate to cause reload failure
-	os.Remove(certPath)
+	os.Remove(certPath) //nolint:gosec // G104 - test cleanup
 
 	// This should fail after retries
 	err = cm.reloadWithRetry()

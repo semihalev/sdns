@@ -66,7 +66,7 @@ func TestRegistryMethods(t *testing.T) {
 		Namespace:  "default",
 		ClusterIPs: [][]byte{{10, 96, 0, 50}},
 	}
-	r.AddService(svc)
+	r.AddService(svc) //nolint:gosec // G104 - test setup
 
 	found := r.GetServiceByIP([]byte{10, 96, 0, 50})
 	if found == nil || found.Name != "test-ip" {
@@ -97,7 +97,7 @@ func TestResolverHelpers(t *testing.T) {
 	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add test data
-	r.registry.AddService(&Service{
+	r.registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 		Name:       "stateful",
 		Namespace:  "default",
 		ClusterIPs: [][]byte{{10, 96, 0, 60}},
@@ -105,7 +105,7 @@ func TestResolverHelpers(t *testing.T) {
 		Headless:   true,
 	})
 
-	r.registry.SetEndpoints("stateful", "default", []Endpoint{
+	r.registry.SetEndpoints("stateful", "default", []Endpoint{ //nolint:gosec // G104 - test setup
 		{Addresses: []string{"10.1.1.1"}, Hostname: "stateful-0", Ready: true},
 		{Addresses: []string{"10.1.1.2"}, Hostname: "stateful-1", Ready: true},
 	})

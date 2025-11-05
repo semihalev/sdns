@@ -55,7 +55,7 @@ func TestCache_Integration_Basic(t *testing.T) {
 			})
 			// Important: Write the response through the cache's ResponseWriter
 			// This ensures the response is cached
-			ch.Writer.WriteMsg(resp)
+			ch.Writer.WriteMsg(resp) //nolint:gosec // G104 - test mock
 			ch.Cancel()
 		})
 
@@ -149,7 +149,7 @@ func TestCache_Metrics(t *testing.T) {
 				},
 				A: []byte{192, 0, 2, byte(i)},
 			})
-			ch.Writer.WriteMsg(resp)
+			ch.Writer.WriteMsg(resp) //nolint:gosec // G104 - test mock
 			ch.Cancel()
 		})
 
@@ -287,7 +287,7 @@ func TestCache_CNAMEChain(t *testing.T) {
 			Target: "example.com.",
 		})
 
-		ch.Writer.WriteMsg(resp)
+		ch.Writer.WriteMsg(resp) //nolint:gosec // G104 - test mock
 		ch.Cancel()
 	})
 
@@ -313,7 +313,7 @@ func TestCache_CNAMEChain(t *testing.T) {
 			},
 			A: []byte{192, 0, 2, 1},
 		})
-		ch.Writer.WriteMsg(resp)
+		ch.Writer.WriteMsg(resp) //nolint:gosec // G104 - test mock
 		ch.Cancel()
 	})
 

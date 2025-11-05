@@ -262,7 +262,7 @@ func TestConcurrentCacheAccess(t *testing.T) {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
 				qname := "svc" + string(rune('0'+id)) + ".default.svc.cluster.local."
-				cache.Get(qname, dns.TypeA, uint16(j))
+				cache.Get(qname, dns.TypeA, uint16(j)) //nolint:gosec // G115 - test loop iteration
 
 				// Also store new entries
 				if j%10 == 0 {

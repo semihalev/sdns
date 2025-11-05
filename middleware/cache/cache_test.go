@@ -61,7 +61,7 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, cfg.CacheSize, c.config.Size)
 
 	// Clean up
-	os.RemoveAll(cfg.Directory)
+	os.RemoveAll(cfg.Directory) //nolint:gosec // G104 - test cleanup
 }
 
 func TestCachePurge(t *testing.T) {

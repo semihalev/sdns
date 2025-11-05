@@ -474,7 +474,7 @@ func (h *Hostsfile) setupWatcher() error {
 	// Watch the directory, not the file (handles editors that replace files)
 	dir := filepath.Dir(h.path)
 	if err := watcher.Add(dir); err != nil {
-		watcher.Close()
+		_ = watcher.Close() //nolint:gosec // G104 - closing on error path
 		return err
 	}
 

@@ -38,8 +38,8 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Ttl:    3600, // 1 hour
 						},
 						TypeCovered: dns.TypeA,
-						Expiration:  uint32(now.Add(10 * time.Minute).Unix()), // Expires in 10 minutes
-						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),
+						Expiration:  uint32(now.Add(10 * time.Minute).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),   //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 					},
 				},
 			},
@@ -67,8 +67,8 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Ttl:    300, // 5 minutes
 						},
 						TypeCovered: dns.TypeA,
-						Expiration:  uint32(now.Add(2 * time.Hour).Unix()), // Expires in 2 hours
-						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),
+						Expiration:  uint32(now.Add(2 * time.Hour).Unix()),  //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+						Inception:   uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 					},
 				},
 			},
@@ -96,8 +96,8 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Ttl:    3600,
 						},
 						TypeCovered: dns.TypeA,
-						Expiration:  uint32(now.Add(-1 * time.Hour).Unix()), // Already expired
-						Inception:   uint32(now.Add(-2 * time.Hour).Unix()),
+						Expiration:  uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+						Inception:   uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 					},
 				},
 			},
@@ -126,8 +126,8 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 						},
 						TypeCovered: dns.TypeA,
 						Algorithm:   dns.RSASHA256,
-						Expiration:  uint32(now.Add(30 * time.Minute).Unix()),
-						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),
+						Expiration:  uint32(now.Add(30 * time.Minute).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),   //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 					},
 					&dns.RRSIG{
 						Hdr: dns.RR_Header{
@@ -138,8 +138,8 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 						},
 						TypeCovered: dns.TypeA,
 						Algorithm:   dns.ECDSAP256SHA256,
-						Expiration:  uint32(now.Add(15 * time.Minute).Unix()), // Expires sooner
-						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),
+						Expiration:  uint32(now.Add(15 * time.Minute).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),   //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 					},
 				},
 			},
@@ -174,7 +174,7 @@ func TestGetRRSIGTTL(t *testing.T) {
 				Hdr: dns.RR_Header{
 					Ttl: 7200, // 2 hours
 				},
-				Expiration: uint32(now.Add(1 * time.Hour).Unix()),
+				Expiration: uint32(now.Add(1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 			},
 			expectedTTL: 1 * time.Hour,
 		},
@@ -184,7 +184,7 @@ func TestGetRRSIGTTL(t *testing.T) {
 				Hdr: dns.RR_Header{
 					Ttl: 3600, // 1 hour
 				},
-				Expiration: uint32(now.Add(2 * time.Hour).Unix()),
+				Expiration: uint32(now.Add(2 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp
 			},
 			expectedTTL: 1 * time.Hour,
 		},
@@ -194,7 +194,7 @@ func TestGetRRSIGTTL(t *testing.T) {
 				Hdr: dns.RR_Header{
 					Ttl: 3600,
 				},
-				Expiration: uint32(now.Add(-1 * time.Hour).Unix()),
+				Expiration: uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp
 			},
 			expectedTTL: MinCacheTTL,
 		},

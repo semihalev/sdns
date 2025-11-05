@@ -962,7 +962,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 	var err error
 
 	// Track RTT for adaptive timeouts
-	var rtt time.Duration = r.netTimeout
+	var rtt = r.netTimeout
 	defer func() {
 		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
 		atomic.AddInt64(&server.Count, 1)
@@ -1083,26 +1083,29 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, version authcach
 		reqid = int(v.(uint16))
 	}
 
-	if version == authcache.IPv4 {
+	switch version {
+	case authcache.IPv4:
 		if len(r.outboundipv4) > 0 {
 			// we will be select outbound ip address by request id.
 			index := len(r.outboundipv4) * reqid / maxUint16
 
 			// port number will automatically chosen
-			if proto == "tcp" {
+			switch proto {
+			case "tcp":
 				d.LocalAddr = &net.TCPAddr{IP: r.outboundipv4[index]}
-			} else if proto == "udp" {
+			case "udp":
 				d.LocalAddr = &net.UDPAddr{IP: r.outboundipv4[index]}
 			}
 		}
-	} else if version == authcache.IPv6 {
+	case authcache.IPv6:
 		if len(r.outboundipv6) > 0 {
 			index := len(r.outboundipv6) * reqid / maxUint16
 
 			// port number will automatically chosen
-			if proto == "tcp" {
+			switch proto {
+			case "tcp":
 				d.LocalAddr = &net.TCPAddr{IP: r.outboundipv6[index]}
-			} else if proto == "udp" {
+			case "udp":
 				d.LocalAddr = &net.UDPAddr{IP: r.outboundipv6[index]}
 			}
 		}

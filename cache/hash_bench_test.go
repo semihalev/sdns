@@ -27,7 +27,7 @@ func BenchmarkHashFunctions(b *testing.B) {
 	b.Run("Original", func(b *testing.B) {
 		var sum uint64
 		for i := 0; i < b.N; i++ {
-			sum += hashOriginal(uint64(i))
+			sum += hashOriginal(uint64(i)) //nolint:gosec // G115 - benchmark test
 		}
 		_ = sum
 	})
@@ -35,7 +35,7 @@ func BenchmarkHashFunctions(b *testing.B) {
 	b.Run("FNV1a", func(b *testing.B) {
 		var sum uint64
 		for i := 0; i < b.N; i++ {
-			sum += hashFNV1a(uint64(i))
+			sum += hashFNV1a(uint64(i)) //nolint:gosec // G115 - benchmark test
 		}
 		_ = sum
 	})
@@ -69,7 +69,7 @@ func TestHashDistribution(t *testing.T) {
 		// Sequential keys
 		for i := uint64(0); i < samples; i++ {
 			bucket := tc.hash(i) % buckets
-			distribution[bucket]++
+			distribution[bucket]++ //nolint:gosec // G602 - benchmark distribution test
 		}
 
 		// Calculate standard deviation

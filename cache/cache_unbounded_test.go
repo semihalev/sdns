@@ -33,7 +33,7 @@ func TestCacheUnboundedGrowth(t *testing.T) {
 
 			for i := 0; i < itemsPerGoroutine; i++ {
 				// Use unique keys to force new entries
-				key := uint64(id)*uint64(itemsPerGoroutine) + uint64(i)
+				key := uint64(id)*uint64(itemsPerGoroutine) + uint64(i) //nolint:gosec // G115 - test calculation
 				c.Add(key, i)
 				atomic.AddInt64(&addsDone, 1)
 
@@ -115,7 +115,7 @@ func TestCacheMemoryPressure(t *testing.T) {
 
 	// Fill cache multiple times over
 	for i := 0; i < maxSize*5; i++ {
-		c.Add(uint64(i), largeValue)
+		c.Add(uint64(i), largeValue) //nolint:gosec // G115 - test loop
 
 		if i%10000 == 0 && i > 0 {
 			currentSize := c.Len()
@@ -137,8 +137,8 @@ func TestCacheMemoryPressure(t *testing.T) {
 	t.Logf("Estimated memory per entry: %.2f KB", float64(memoryUsed)/float64(finalSize)/1024)
 
 	// Memory usage should be roughly proportional to cache size, not total adds
-	expectedMaxMemory := int64(maxSize) * 2048 // 2KB per entry (value + overhead)
-	if memoryUsed > uint64(expectedMaxMemory)*2 {
+	expectedMaxMemory := int64(maxSize) * 2048    // 2KB per entry (value + overhead)
+	if memoryUsed > uint64(expectedMaxMemory)*2 { //nolint:gosec // G115 - expectedMaxMemory is always positive
 		t.Errorf("Memory usage %.2f MB seems too high for %d entries",
 			float64(memoryUsed)/1024/1024, finalSize)
 	}
@@ -155,7 +155,7 @@ func TestCacheEvictionStalls(t *testing.T) {
 
 	// Fill cache
 	for i := 0; i < maxSize; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	// Now hammer it with adds from multiple goroutines
@@ -169,7 +169,7 @@ func TestCacheEvictionStalls(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for atomic.LoadInt32(&stopFlag) == 0 {
-				c.Get(uint64(r * 20))
+				c.Get(uint64(r * 20))        //nolint:gosec // G115 - test loop
 				time.Sleep(time.Microsecond) // Add small delay
 			}
 		}()
@@ -181,7 +181,7 @@ func TestCacheEvictionStalls(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for i := 0; i < 1000; i++ { // Reduced from 10000
-				c.Add(uint64(maxSize+id*1000+i), i)
+				c.Add(uint64(maxSize+id*1000+i), i) //nolint:gosec // G115 - test loop
 			}
 		}(w)
 	}
@@ -192,8 +192,8 @@ func TestCacheEvictionStalls(t *testing.T) {
 		for atomic.LoadInt32(&stopFlag) == 0 {
 			size := c.Len()
 			currentMax := atomic.LoadInt32(&maxSeen)
-			if int32(size) > currentMax {
-				atomic.StoreInt32(&maxSeen, int32(size))
+			if int32(size) > currentMax { //nolint:gosec // G115 - size is controlled by test
+				atomic.StoreInt32(&maxSeen, int32(size)) //nolint:gosec // G115 - size is controlled by test
 			}
 			time.Sleep(1 * time.Millisecond)
 		}
@@ -221,7 +221,7 @@ func TestCacheWithZeroSize(t *testing.T) {
 
 	// Add items
 	for i := 0; i < 100; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 
 		size := c.Len()
 		if size > 2 { // Allow size 1 + potential race to 2
@@ -232,7 +232,7 @@ func TestCacheWithZeroSize(t *testing.T) {
 	// Test with negative size (should become 1)
 	c2 := New(-10)
 	for i := 0; i < 100; i++ {
-		c2.Add(uint64(i), i)
+		c2.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 
 		size := c2.Len()
 		if size > 2 {

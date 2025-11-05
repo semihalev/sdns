@@ -82,7 +82,7 @@ func TestRegistryOperations(t *testing.T) {
 		Subdomain: "web",
 	}
 
-	r.AddPod(pod)
+	r.AddPod(pod) //nolint:gosec // G104 - test setup
 
 	// Test get pod by IP
 	p := r.GetPodByIP("10.244.1.1")
@@ -97,7 +97,7 @@ func TestRegistryOperations(t *testing.T) {
 	}
 
 	// Test endpoints
-	r.SetEndpoints("test", "default", []Endpoint{
+	r.SetEndpoints("test", "default", []Endpoint{ //nolint:gosec // G104 - test setup
 		{Addresses: []string{"10.1.1.1"}, Ready: true},
 		{Addresses: []string{"10.1.1.2"}, Ready: false},
 	})
@@ -114,7 +114,7 @@ func TestRegistryOperations(t *testing.T) {
 	}
 
 	// Test delete pod
-	r.DeletePod("test-pod", "default")
+	r.DeletePod("test-pod", "default") //nolint:gosec // G104 - test cleanup
 
 	if r.GetPodByIP("10.244.1.1") != nil {
 		t.Error("Pod not deleted")
@@ -127,7 +127,7 @@ func TestResolverPatterns(t *testing.T) {
 	registry := resolver.registry
 
 	// Add test data
-	registry.AddService(&Service{
+	registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 		Name:       "test",
 		Namespace:  "default",
 		ClusterIPs: [][]byte{{10, 96, 0, 100}},
@@ -139,19 +139,19 @@ func TestResolverPatterns(t *testing.T) {
 	})
 
 	// Add headless service
-	registry.AddService(&Service{
+	registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 		Name:      "headless",
 		Namespace: "default",
 		Headless:  true,
 	})
 
-	registry.SetEndpoints("headless", "default", []Endpoint{
+	registry.SetEndpoints("headless", "default", []Endpoint{ //nolint:gosec // G104 - test setup
 		{Addresses: []string{"10.1.1.1"}, Ready: true},
 		{Addresses: []string{"10.1.1.2"}, Ready: true},
 	})
 
 	// Add pod
-	registry.AddPod(&Pod{
+	registry.AddPod(&Pod{ //nolint:gosec // G104 - test setup
 		Name:      "test-pod",
 		Namespace: "default",
 		IPs:       []string{"10.244.1.1"},
@@ -316,7 +316,7 @@ func TestZeroAllocPerformance(t *testing.T) {
 
 	// Warm up
 	for i := 0; i < 100; i++ {
-		cache.Get("test.cluster.local.", dns.TypeA, uint16(i))
+		cache.Get("test.cluster.local.", dns.TypeA, uint16(i)) //nolint:gosec // G115 - test loop iteration
 	}
 
 	// TODO: Use testing.AllocsPerRun to verify zero allocations

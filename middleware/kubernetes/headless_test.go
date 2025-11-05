@@ -111,14 +111,14 @@ func TestHeadlessServiceEndpoints(t *testing.T) {
 		k := New(cfg)
 
 		// Add a headless service
-		k.resolver.registry.AddService(&Service{
+		k.resolver.registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 			Name:      "myapp",
 			Namespace: "default",
 			Headless:  true,
 		})
 
 		// Add endpoints
-		k.resolver.registry.SetEndpoints("myapp", "default", []Endpoint{
+		k.resolver.registry.SetEndpoints("myapp", "default", []Endpoint{ //nolint:gosec // G104 - test setup
 			{Addresses: []string{"10.2.2.1"}, Ready: true},
 			{Addresses: []string{"10.2.2.2"}, Ready: true},
 		})

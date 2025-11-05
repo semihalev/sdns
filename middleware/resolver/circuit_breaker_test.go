@@ -201,9 +201,11 @@ func TestResolverGoroutineLimiting(t *testing.T) {
 			// Successfully acquired
 		default:
 			// Already full, stop trying
-			break
+			goto cleanup
 		}
 	}
+
+cleanup:
 
 	// Verify we can still acquire and release
 	select {
@@ -218,9 +220,11 @@ func TestResolverGoroutineLimiting(t *testing.T) {
 		select {
 		case <-r.maxConcurrent:
 		default:
-			break
+			goto done
 		}
 	}
+
+done:
 
 	// Just verify the semaphore mechanism works
 	assert.True(t, cap(r.maxConcurrent) == 50, "Semaphore should have correct capacity")
