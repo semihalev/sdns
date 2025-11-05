@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -11,6 +12,11 @@ import (
 	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
+
+// isCI returns true if running in CI environment
+func isCI() bool {
+	return os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true"
+}
 
 func Test_resolver(t *testing.T) {
 	t.Parallel()
@@ -325,6 +331,10 @@ func Test_EqualServers(t *testing.T) {
 }
 
 func Test_OutboundIPs(t *testing.T) {
+	if testing.Short() || isCI() {
+		t.Skip("Skipping test that requires network access")
+	}
+
 	cfg := makeTestConfig()
 	cfg.OutboundIPs = []string{"127.0.0.1", "1"}
 	cfg.OutboundIP6s = []string{"::1", "1"}
@@ -337,6 +347,10 @@ func Test_OutboundIPs(t *testing.T) {
 	req.SetQuestion("example.com.", dns.TypeA)
 	req.CheckingDisabled = true
 
-	_, err := r.lookup(context.Background(), req, r.rootservers)
+	// Use a timeout context to prevent hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := r.lookup(ctx, req, r.rootservers)
 	assert.Error(t, err)
 }
