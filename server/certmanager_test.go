@@ -58,7 +58,6 @@ func TestCertManager(t *testing.T) {
 	writeCertAndKey(t, certPath, keyPath, cert2, key2)
 
 	// Wait for watcher to detect change and reload with retry
-	var x509Cert *x509.Certificate
 	maxRetries := 20
 	for i := 0; i < maxRetries; i++ {
 		time.Sleep(100 * time.Millisecond)
