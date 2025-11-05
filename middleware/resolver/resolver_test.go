@@ -1,22 +1,16 @@
 package resolver
 
 import (
-	"os"
+	"context"
 	"sync/atomic"
 	"testing"
-
-	"context"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/authcache"
 	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
-
-// isCI returns true if running in CI environment
-func isCI() bool {
-	return os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true"
-}
 
 func Test_resolver(t *testing.T) {
 	t.Parallel()
