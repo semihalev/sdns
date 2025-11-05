@@ -57,16 +57,28 @@ func TestCertManager(t *testing.T) {
 	// Replace certificate files
 	writeCertAndKey(t, certPath, keyPath, cert2, key2)
 
-	// Wait for watcher to detect change
-	time.Sleep(100 * time.Millisecond)
+	// Wait for watcher to detect change and reload with retry
+	var x509Cert *x509.Certificate
+	maxRetries := 20
+	for i := 0; i < maxRetries; i++ {
+		time.Sleep(100 * time.Millisecond)
 
-	// Verify certificate was reloaded
-	cert, err = cm.GetCertificate(&tls.ClientHelloInfo{})
-	require.NoError(t, err)
-	require.NotNil(t, cert)
+		cert, err = cm.GetCertificate(&tls.ClientHelloInfo{})
+		require.NoError(t, err)
+		require.NotNil(t, cert)
 
-	x509Cert, err = x509.ParseCertificate(cert.Certificate[0])
-	require.NoError(t, err)
+		x509Cert, err = x509.ParseCertificate(cert.Certificate[0])
+		require.NoError(t, err)
+
+		if x509Cert.Subject.CommonName == "test2.example.com" {
+			break
+		}
+
+		if i == maxRetries-1 {
+			t.Fatalf("Certificate not reloaded after %d attempts, still shows: %s", maxRetries, x509Cert.Subject.CommonName)
+		}
+	}
+
 	assert.Equal(t, "test2.example.com", x509Cert.Subject.CommonName)
 }
 
