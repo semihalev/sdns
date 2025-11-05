@@ -178,6 +178,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **roottcptimeout**   | TCP idle timeout for root server connections. Default: "5s"                                                          |
 | **tldtcptimeout**    | TCP idle timeout for TLD server connections (com, net, org, etc.). Default: "10s"                                   |
 | **tcpmaxconnections**| Maximum number of pooled TCP connections. 0 uses default. Default: 100                                               |
+| **maxconcurrentqueries** | Maximum number of concurrent DNS queries allowed. Limits resource usage under heavy load. Default: 10000         |
 | **dnstapsocket**     | Unix domain socket path for dnstap binary DNS logging. Leave empty to disable                                       |
 | **dnstapidentity**   | Server identity string for dnstap messages. Defaults to hostname                                                    |
 | **dnstapversion**    | Server version string for dnstap messages. Default: "sdns"                                                          |
