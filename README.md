@@ -127,7 +127,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.6.0)
+## Configuration (v1.6.1)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
