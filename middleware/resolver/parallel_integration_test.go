@@ -2,12 +2,18 @@ package resolver
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 )
+
+// isCI returns true if running in CI environment
+func isCI() bool {
+	return os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true"
+}
 
 func TestParallelLookupIntegration(t *testing.T) {
 	// This test verifies that the new parallel lookup methods work correctly
