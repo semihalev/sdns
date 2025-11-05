@@ -96,8 +96,14 @@ func NewResolver(cfg *config.Config) *Resolver {
 		netTimeout:     defaultTimeout,
 		sfGroup:        NewSingleflightWrapper(),
 		circuitBreaker: newCircuitBreaker(),
-		maxConcurrent:  make(chan struct{}, cfg.MaxConcurrentQueries),
 	}
+
+	// Set default for MaxConcurrentQueries if not configured
+	maxConcurrent := cfg.MaxConcurrentQueries
+	if maxConcurrent == 0 {
+		maxConcurrent = 1000 // Default to 1000 concurrent queries
+	}
+	r.maxConcurrent = make(chan struct{}, maxConcurrent)
 
 	if r.cfg.IPv6Access {
 		r.ipv6cache = cache.New(defaultCacheSize)

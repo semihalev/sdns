@@ -325,8 +325,8 @@ func Test_EqualServers(t *testing.T) {
 }
 
 func Test_OutboundIPs(t *testing.T) {
-	if testing.Short() || isCI() {
-		t.Skip("Skipping test that requires network access")
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
 	}
 
 	cfg := makeTestConfig()
