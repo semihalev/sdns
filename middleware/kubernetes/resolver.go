@@ -458,7 +458,7 @@ func (r *Resolver) resolveSRV(parts *queryParts, qname string, qtype uint16) *Re
 		},
 		Priority: SRVPriority,
 		Weight:   SRVWeight1,
-		Port:     uint16(port.Port),
+		Port:     uint16(port.Port), //nolint:gosec // G115 - Kubernetes port is 0-65535
 		Target:   target,
 	})
 

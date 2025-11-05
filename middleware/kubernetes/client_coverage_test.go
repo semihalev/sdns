@@ -25,10 +25,10 @@ func TestBuildConfigEdgeCases(t *testing.T) {
 
 	// Set a test HOME
 	testHome := "/tmp/test-kube-home"
-	os.Setenv("HOME", testHome)
+	os.Setenv("HOME", testHome) //nolint:gosec // G104 - test setup
 
 	// Create test kubeconfig directory
-	os.MkdirAll(testHome+"/.kube", 0755)
+	os.MkdirAll(testHome+"/.kube", 0755) //nolint:gosec // G104,G301 - test setup
 
 	// Try to build config (will fail but covers the HOME path)
 	_, err := buildConfig("")
@@ -37,7 +37,7 @@ func TestBuildConfigEdgeCases(t *testing.T) {
 	}
 
 	// Test with KUBECONFIG env var
-	os.Setenv("KUBECONFIG", "/tmp/nonexistent-kubeconfig")
+	os.Setenv("KUBECONFIG", "/tmp/nonexistent-kubeconfig") //nolint:gosec // G104 - test setup
 	_, err = buildConfig("")
 	if err == nil {
 		t.Error("Should fail with nonexistent KUBECONFIG")
@@ -49,7 +49,7 @@ func TestResolverResolvePod(t *testing.T) {
 	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add pod by IP format
-	r.registry.AddPod(&Pod{
+	r.registry.AddPod(&Pod{ //nolint:gosec // G104 - test setup
 		Name:      "test-pod",
 		Namespace: "default",
 		IPs:       []string{"10.244.1.1"},
@@ -92,7 +92,7 @@ func TestPrefetchPredicted(t *testing.T) {
 	}
 
 	// Add some services
-	k.resolver.registry.AddService(&Service{
+	k.resolver.registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 		Name:       "predicted-svc",
 		Namespace:  "default",
 		ClusterIPs: [][]byte{{10, 96, 0, 50}},
@@ -152,7 +152,7 @@ func TestHighPerformanceCacheMoreEdgeCases(t *testing.T) {
 			msg.SetQuestion(qname, dns.TypeA)
 			msg.Response = true
 			cache.Store(qname, dns.TypeA, msg)
-			cache.Get(qname, dns.TypeA, uint16(i))
+			cache.Get(qname, dns.TypeA, uint16(i)) //nolint:gosec // G115 - test loop iteration
 		}(i)
 	}
 
@@ -184,7 +184,7 @@ func TestGetTopPredictionsEdgeCases(t *testing.T) {
 // TestKubernetesNewWithClient tests New with real client attempt
 func TestKubernetesNewWithClient(t *testing.T) {
 	// Set invalid kubeconfig path
-	os.Setenv("KUBECONFIG", "/tmp/nonexistent-kubeconfig-test")
+	os.Setenv("KUBECONFIG", "/tmp/nonexistent-kubeconfig-test") //nolint:gosec // G104 - test setup
 	defer os.Unsetenv("KUBECONFIG")
 
 	cfg := &config.Config{
@@ -292,7 +292,7 @@ func TestResolverSRVEdgeCases(t *testing.T) {
 	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add service with no ports
-	r.registry.AddService(&Service{
+	r.registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 		Name:       "no-ports",
 		Namespace:  "default",
 		ClusterIPs: [][]byte{{10, 96, 0, 100}},
@@ -310,7 +310,7 @@ func TestResolverSRVEdgeCases(t *testing.T) {
 	}
 
 	// Add external service
-	r.registry.AddService(&Service{
+	r.registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 		Name:         "external",
 		Namespace:    "default",
 		ExternalName: "example.com",

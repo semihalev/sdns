@@ -349,7 +349,7 @@ func Test_DomainMetrics_SingleLabelFiltering(t *testing.T) {
 	}
 
 	// All multi-label domains should be tracked
-	assert.Equal(t, int32(len(multiLabelDomains)), atomic.LoadInt32(&m.domainCount))
+	assert.Equal(t, int32(len(multiLabelDomains)), atomic.LoadInt32(&m.domainCount)) //nolint:gosec // G115 - test value
 
 	// Verify each multi-label domain is tracked
 	for _, domain := range multiLabelDomains {

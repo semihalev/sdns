@@ -13,12 +13,18 @@ func TestParallelLookupIntegration(t *testing.T) {
 	// This test verifies that the new parallel lookup methods work correctly
 	// with real DNS resolution
 
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
 	cfg := makeTestConfig()
 	cfg.QnameMinLevel = 0 // Disable minimization for simpler testing
 
 	r := NewResolver(cfg)
 
-	ctx := context.Background()
+	// Use a timeout context to prevent hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Test a domain that requires NS lookups
 	req := new(dns.Msg)
@@ -47,12 +53,18 @@ func TestParallelLookupIntegration(t *testing.T) {
 }
 
 func TestParallelLookupIPv6(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
 	cfg := makeTestConfig()
 	cfg.IPv6Access = true
 
 	r := NewResolver(cfg)
 
-	ctx := context.Background()
+	// Use a timeout context to prevent hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Test IPv6 lookup
 	req := new(dns.Msg)

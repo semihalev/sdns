@@ -175,8 +175,9 @@ func (a *API) Run(ctx context.Context) {
 	a.router.GET("/metrics", a.metrics)
 
 	srv := &http.Server{
-		Addr:    a.addr,
-		Handler: a.router,
+		Addr:              a.addr,
+		Handler:           a.router,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {

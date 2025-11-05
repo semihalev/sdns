@@ -53,7 +53,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 func addPrefixLen(msg []byte) []byte {
 	// Pre-allocate exact size needed
 	buf := make([]byte, 2+len(msg))
-	binary.BigEndian.PutUint16(buf, uint16(len(msg)))
+	binary.BigEndian.PutUint16(buf, uint16(len(msg))) //nolint:gosec // G115 - DNS message size is bounded
 	copy(buf[2:], msg)
 	return buf
 }

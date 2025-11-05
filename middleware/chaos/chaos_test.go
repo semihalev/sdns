@@ -359,7 +359,7 @@ func TestQueryCounting(t *testing.T) {
 	count := c.queryCount
 	c.mu.RUnlock()
 
-	assert.Equal(t, uint64(queries), count)
+	assert.Equal(t, uint64(queries), count) //nolint:gosec // G115 - test value, queries is small
 }
 
 func TestUptimeFormatting(t *testing.T) {

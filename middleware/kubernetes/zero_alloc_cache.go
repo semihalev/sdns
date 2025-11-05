@@ -69,7 +69,7 @@ func NewZeroAllocCache() *ZeroAllocCache {
 
 	// Initialize ring buffer
 	for i := range c.ring {
-		c.ring[i] = int32(i)
+		c.ring[i] = int32(i) //nolint:gosec // G115 - i is bounded by ring size
 	}
 	c.ringTail = int32(maxEntries - 1)
 
@@ -180,7 +180,7 @@ func (c *ZeroAllocCache) updateIndex(hash uint64, entryIdx int32) {
 
 	// Linear probe to find empty slot
 	for i := 0; i < CacheLinearProbeSize; i++ {
-		testBucket := (bucket + uint64(i)) & (indexSize - 1)
+		testBucket := (bucket + uint64(i)) & (indexSize - 1) //nolint:gosec // G115 - i is bounded by probe size
 		lockIdx := testBucket & (lockStripe - 1)
 
 		c.locks[lockIdx].Lock()
@@ -198,7 +198,7 @@ func (c *ZeroAllocCache) removeFromIndex(hash uint64) {
 	bucket := hash & (indexSize - 1)
 
 	for i := 0; i < CacheLinearProbeSize; i++ {
-		testBucket := (bucket + uint64(i)) & (indexSize - 1)
+		testBucket := (bucket + uint64(i)) & (indexSize - 1) //nolint:gosec // G115 - i is bounded by probe size
 		lockIdx := testBucket & (lockStripe - 1)
 
 		c.locks[lockIdx].Lock()
@@ -345,9 +345,9 @@ func (c *ZeroAllocCache) StoreWire(qname string, qtype uint16, wire []byte, ttl 
 
 	// Store data
 	entry.keyHash = hash
-	copy(entry.wire[:], wire) // Copy into pre-allocated buffer
-	entry.wireLen = uint16(len(wire))
-	entry.expiry = time.Now().Unix() + int64(ttl)
+	copy(entry.wire[:], wire)                     // Copy into pre-allocated buffer
+	entry.wireLen = uint16(len(wire))             //nolint:gosec // G115 - wire length is bounded by DNS message size
+	entry.expiry = time.Now().Unix() + int64(ttl) //nolint:gosec // G115 - TTL is uint32, fits in int64
 
 	// Mark as occupied BEFORE updating index so findEntry can see it
 	atomic.StoreInt32(&entry.occupied, 1)

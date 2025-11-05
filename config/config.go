@@ -88,6 +88,9 @@ type Config struct {
 	TLDTCPTimeout     Duration // Timeout for TLD server TCP connections
 	TCPMaxConnections int      // Maximum number of TCP connections to pool
 
+	// Resolver concurrency limits
+	MaxConcurrentQueries int // Maximum concurrent DNS queries (default 10000)
+
 	sVersion string
 }
 
@@ -604,6 +607,9 @@ func Load(cfgfile, version string) (*Config, error) {
 	if config.TCPMaxConnections == 0 {
 		config.TCPMaxConnections = 100
 	}
+	if config.MaxConcurrentQueries == 0 {
+		config.MaxConcurrentQueries = 10000
+	}
 
 	// Set Kubernetes TTL defaults
 	if config.Kubernetes.TTL.Service == 0 {
@@ -623,7 +629,7 @@ func Load(cfgfile, version string) (*Config, error) {
 }
 
 func generateConfig(path string) error {
-	output, err := os.Create(path)
+	output, err := os.Create(path) //nolint:gosec // G304 - path from command line flag, admin controlled
 	if err != nil {
 		return fmt.Errorf("could not generate config: %s", err)
 	}

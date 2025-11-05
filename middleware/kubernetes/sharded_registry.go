@@ -390,7 +390,7 @@ func (r *ShardedRegistry) resolveSRV(labels []string) ([]dns.RR, bool) {
 					},
 					Priority: 0,
 					Weight:   100,
-					Port:     uint16(p.Port),
+					Port:     uint16(p.Port), //nolint:gosec // G115 - Kubernetes port is 0-65535
 					Target:   target,
 				},
 			}, true
@@ -645,7 +645,7 @@ func (r *ShardedRegistry) GetEndpoints(service, namespace string) []Endpoint {
 	shard := r.getEndpointShard(key)
 
 	shard.mu.RLock()
-	endpoints, _ := shard.endpoints[key]
+	endpoints := shard.endpoints[key]
 	shard.mu.RUnlock()
 
 	return endpoints
@@ -688,8 +688,8 @@ func (r *ShardedRegistry) GetStats() map[string]int64 {
 		"services":      services,
 		"pods":          pods,
 		"endpoint_sets": endpointSets,
-		"queries":       int64(queries),
-		"hits":          int64(hits),
+		"queries":       int64(queries), //nolint:gosec // G115 - counter conversion
+		"hits":          int64(hits),    //nolint:gosec // G115 - counter conversion
 		"shards":        256,
 		"hit_rate_pct":  int64(float64(hits) / float64(queries) * 100),
 	}

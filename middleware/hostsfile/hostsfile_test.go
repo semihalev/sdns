@@ -375,7 +375,7 @@ func TestFileWatcher(t *testing.T) {
 127.0.0.1 localhost
 192.168.1.1 newhost
 `
-	err := os.WriteFile(tmpFile, []byte(newContent), 0644)
+	err := os.WriteFile(tmpFile, []byte(newContent), 0644) //nolint:gosec // G306 - test file
 	require.NoError(t, err)
 
 	// Wait for reload with timeout
@@ -534,7 +534,7 @@ func createTempHostsFile(t *testing.T, content string) string {
 		content = strings.ReplaceAll(content, "\n", "\r\n")
 	}
 
-	err := os.WriteFile(tmpFile, []byte(content), 0644)
+	err := os.WriteFile(tmpFile, []byte(content), 0644) //nolint:gosec // G306 - test file
 	require.NoError(t, err)
 
 	return tmpFile

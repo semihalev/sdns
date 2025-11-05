@@ -43,7 +43,7 @@ func New(cfg *config.Config) *Chaos {
 	h := sha256.New()
 	h.Write([]byte(hostname))
 	h.Write([]byte(cfg.ServerVersion()))
-	h.Write([]byte(fmt.Sprintf("%d", os.Getpid())))
+	fmt.Fprintf(h, "%d", os.Getpid())
 	fingerprint := hex.EncodeToString(h.Sum(nil))[:16]
 
 	return &Chaos{

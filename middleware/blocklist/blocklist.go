@@ -252,7 +252,7 @@ func (b *BlockList) Length() int {
 func (b *BlockList) save() {
 	path := filepath.Join(b.cfg.BlockListDir, "local")
 
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644) //nolint:gosec // G304 G302 - path from config, not user input
 	if err != nil {
 		return
 	}

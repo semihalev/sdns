@@ -8,9 +8,6 @@ run:
 linters:
   disable:
     - errcheck
-    - staticcheck
-    - goconst
-    - gosec
   enable:
     - govet
     - ineffassign
@@ -18,3 +15,5 @@ linters:
     - misspell
     - unconvert
     - gocritic
+    - gosec
+    - staticcheck

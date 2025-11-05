@@ -36,9 +36,9 @@ func benchmarkCachePerf(b *testing.B, size int, readRatio float64) {
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		rng := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // G404 - benchmark test
 		for pb.Next() {
-			key := keys[rng.Intn(size)]
+			key := keys[rng.Intn(size)] //nolint:gosec // G115 - bounded by size
 			r := rng.Float64()
 
 			switch {
@@ -57,7 +57,7 @@ func generateTestKeys(n int) []uint64 {
 	keys := make([]uint64, n)
 	for i := 0; i < n; i++ {
 		// Simulate DNS cache keys (spread out)
-		keys[i] = uint64(i) * 0x9E3779B9
+		keys[i] = uint64(i) * 0x9E3779B9 //nolint:gosec // G115 - test key generation
 	}
 	return keys
 }
@@ -103,7 +103,7 @@ func benchmarkConcurrent(b *testing.B, c cacheOps, numGoroutines int) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id))) //nolint:gosec // G404 - test random
 
 			for j := 0; j < opsPerGoroutine; j++ {
 				key := keys[rng.Intn(len(keys))]

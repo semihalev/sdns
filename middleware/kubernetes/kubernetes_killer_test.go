@@ -148,8 +148,8 @@ func TestHighPerformanceCacheFunctionality(t *testing.T) {
 		}
 
 		// Each get returns a copy, so we can modify safely
-		cached.Id = uint16(i)
-		if cached.Id != uint16(i) {
+		cached.Id = uint16(i)       //nolint:gosec // G115 - test loop iteration
+		if cached.Id != uint16(i) { //nolint:gosec // G115 - test loop iteration
 			t.Error("Failed to modify copy")
 		}
 	}

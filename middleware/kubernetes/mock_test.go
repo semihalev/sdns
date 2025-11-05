@@ -368,7 +368,7 @@ func TestResolverCacheIntegration(t *testing.T) {
 	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add a service
-	r.registry.AddService(&Service{
+	r.registry.AddService(&Service{ //nolint:gosec // G104 - test setup
 		Name:       "cached-svc",
 		Namespace:  "default",
 		ClusterIPs: [][]byte{{10, 96, 0, 50}},

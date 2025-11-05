@@ -148,7 +148,7 @@ func TestRegistry(t *testing.T) {
 		IPFamilies: []string{"IPv4"},
 	}
 
-	r.AddService(svc)
+	r.AddService(svc) //nolint:gosec // G104 - test setup
 
 	retrieved := r.GetService("test", "default")
 	if retrieved == nil {
@@ -165,7 +165,7 @@ func TestRegistry(t *testing.T) {
 		{Addresses: []string{"10.1.1.2"}, Ready: true},
 	}
 
-	r.SetEndpoints("test", "default", endpoints)
+	r.SetEndpoints("test", "default", endpoints) //nolint:gosec // G104 - test setup
 
 	eps := r.GetEndpoints("test", "default")
 	if len(eps) != 2 {
@@ -179,7 +179,7 @@ func TestRegistry(t *testing.T) {
 		IPs:       []string{"10.244.1.10"},
 	}
 
-	r.AddPod(pod)
+	r.AddPod(pod) //nolint:gosec // G104 - test setup
 
 	byName := r.GetPodByName("test-pod", "default")
 	if byName == nil {

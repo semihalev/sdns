@@ -180,7 +180,7 @@ func (d *Dnstap) disconnect() {
 	defer d.mu.Unlock()
 
 	if d.conn != nil {
-		d.conn.Close()
+		_ = d.conn.Close() //nolint:gosec // G104 - closing best effort
 		d.conn = nil
 	}
 }
@@ -210,7 +210,7 @@ func (d *Dnstap) writeMessage(msg *DnstapMessage) {
 
 func (d *Dnstap) writeFrame(conn net.Conn, data []byte) error {
 	// Write frame length
-	length := uint32(len(data))
+	length := uint32(len(data)) //nolint:gosec // G115 - DNS message size is bounded
 	if err := binary.Write(conn, binary.BigEndian, length); err != nil {
 		return err
 	}
@@ -261,23 +261,23 @@ func (d *Dnstap) encodeMessage(msg *DnstapMessage) []byte {
 
 	// Query time
 	queryTimeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(queryTimeBytes, uint64(msg.QueryTime.UnixNano()))
+	binary.BigEndian.PutUint64(queryTimeBytes, uint64(msg.QueryTime.UnixNano())) //nolint:gosec // G115 - time conversion
 	buf = append(buf, queryTimeBytes...)
 
 	// Query message
 	queryLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(queryLen, uint32(len(msg.QueryMessage)))
+	binary.BigEndian.PutUint32(queryLen, uint32(len(msg.QueryMessage))) //nolint:gosec // G115 - DNS message size is bounded
 	buf = append(buf, queryLen...)
 	buf = append(buf, msg.QueryMessage...)
 
 	// Response time
 	respTimeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(respTimeBytes, uint64(msg.ResponseTime.UnixNano()))
+	binary.BigEndian.PutUint64(respTimeBytes, uint64(msg.ResponseTime.UnixNano())) //nolint:gosec // G115 - time conversion
 	buf = append(buf, respTimeBytes...)
 
 	// Response message
 	respLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(respLen, uint32(len(msg.ResponseMsg)))
+	binary.BigEndian.PutUint32(respLen, uint32(len(msg.ResponseMsg))) //nolint:gosec // G115 - DNS message size is bounded
 	buf = append(buf, respLen...)
 	buf = append(buf, msg.ResponseMsg...)
 
@@ -302,11 +302,11 @@ func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Ms
 	// Set addresses
 	if addr, ok := w.RemoteAddr().(*net.UDPAddr); ok {
 		msg.QueryAddress = addr.IP
-		msg.QueryPort = uint16(addr.Port)
+		msg.QueryPort = uint16(addr.Port) //nolint:gosec // G115 - port is 0-65535
 		msg.Protocol = "UDP"
 	} else if addr, ok := w.RemoteAddr().(*net.TCPAddr); ok {
 		msg.QueryAddress = addr.IP
-		msg.QueryPort = uint16(addr.Port)
+		msg.QueryPort = uint16(addr.Port) //nolint:gosec // G115 - port is 0-65535
 		msg.Protocol = "TCP"
 	}
 

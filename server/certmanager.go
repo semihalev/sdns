@@ -52,15 +52,15 @@ func NewCertManager(certPath, keyPath string) (*CertManager, error) {
 	keyDir := filepath.Dir(keyPath)
 
 	if err := watcher.Add(certDir); err != nil {
-		watcher.Close()
+		watcher.Close() //nolint:gosec // G104 - cleanup on error path
 		return nil, fmt.Errorf("failed to watch certificate directory: %w", err)
 	}
 
 	if certDir != keyDir {
 		if err := watcher.Add(keyDir); err != nil {
 			// Remove the first directory watch before closing
-			watcher.Remove(certDir)
-			watcher.Close()
+			watcher.Remove(certDir) //nolint:gosec // G104 - cleanup on error path
+			watcher.Close()         //nolint:gosec // G104 - cleanup on error path
 			return nil, fmt.Errorf("failed to watch key directory: %w", err)
 		}
 	}

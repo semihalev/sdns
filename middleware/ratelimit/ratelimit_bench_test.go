@@ -53,7 +53,7 @@ func BenchmarkRateLimitRandomIPAttack(b *testing.B) {
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // G404 - benchmark, not used for crypto
 		for pb.Next() {
 			// Generate random IP
 			ip := net.IPv4(
@@ -86,7 +86,7 @@ func BenchmarkRateLimitMixedTraffic(b *testing.B) {
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // G404 - benchmark, not used for crypto
 		i := 0
 		for pb.Next() {
 			var ip net.IP
@@ -249,7 +249,7 @@ func BenchmarkRateLimitServeDNS(b *testing.B) {
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // G404 - benchmark, not used for crypto
 		for pb.Next() {
 			// Random IP to simulate attack
 			ip := net.IPv4(
@@ -323,17 +323,17 @@ func BenchmarkComparison(b *testing.B) {
 		{
 			name: "100UniqueIPs",
 			ips: func() net.IP {
-				return net.IPv4(192, 168, 1, byte(rand.Intn(100)))
+				return net.IPv4(192, 168, 1, byte(rand.Intn(100))) //nolint:gosec // G404 - benchmark test
 			},
 		},
 		{
 			name: "RandomIPs",
 			ips: func() net.IP {
 				return net.IPv4(
-					byte(rand.Intn(256)),
-					byte(rand.Intn(256)),
-					byte(rand.Intn(256)),
-					byte(rand.Intn(256)),
+					byte(rand.Intn(256)), //nolint:gosec // G404 - benchmark test
+					byte(rand.Intn(256)), //nolint:gosec // G404 - benchmark test
+					byte(rand.Intn(256)), //nolint:gosec // G404 - benchmark test
+					byte(rand.Intn(256)), //nolint:gosec // G404 - benchmark test
 				)
 			},
 		},

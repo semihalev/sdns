@@ -1,10 +1,10 @@
 package resolver
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
-
-	"context"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/authcache"
@@ -325,6 +325,10 @@ func Test_EqualServers(t *testing.T) {
 }
 
 func Test_OutboundIPs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode")
+	}
+
 	cfg := makeTestConfig()
 	cfg.OutboundIPs = []string{"127.0.0.1", "1"}
 	cfg.OutboundIP6s = []string{"::1", "1"}
@@ -337,6 +341,10 @@ func Test_OutboundIPs(t *testing.T) {
 	req.SetQuestion("example.com.", dns.TypeA)
 	req.CheckingDisabled = true
 
-	_, err := r.lookup(context.Background(), req, r.rootservers)
+	// Use a timeout context to prevent hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := r.lookup(ctx, req, r.rootservers)
 	assert.Error(t, err)
 }

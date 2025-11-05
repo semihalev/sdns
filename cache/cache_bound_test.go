@@ -24,7 +24,7 @@ func TestCacheBoundStrict(t *testing.T) {
 
 	// Add items continuously and check size
 	for i := 0; i < maxSize*10; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - i is bounded by loop
 
 		currentSize := int64(c.Len())
 		for {
@@ -93,7 +93,7 @@ func TestCacheBoundUnderHeavyConcurrency(t *testing.T) {
 			defer wg.Done()
 
 			for i := 0; i < itemsPerGoroutine; i++ {
-				key := uint64(goroutineID*itemsPerGoroutine + i)
+				key := uint64(goroutineID*itemsPerGoroutine + i) //nolint:gosec // G115 - bounded by test parameters
 				c.Add(key, fmt.Sprintf("value-%d-%d", goroutineID, i))
 
 				// Occasionally check size
@@ -132,7 +132,7 @@ func TestCacheEvictionEffectiveness(t *testing.T) {
 
 	// Fill cache completely
 	for i := 0; i < maxSize; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - i is bounded by maxSize
 	}
 
 	initialSize := c.Len()
@@ -142,13 +142,13 @@ func TestCacheEvictionEffectiveness(t *testing.T) {
 
 	// Add more items to trigger eviction
 	for i := maxSize; i < maxSize*2; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - i is bounded by maxSize*2
 	}
 
 	// Count how many of the original items remain
 	originalRemaining := 0
 	for i := 0; i < maxSize; i++ {
-		if _, found := c.Get(uint64(i)); found {
+		if _, found := c.Get(uint64(i)); found { //nolint:gosec // G115 - i is bounded by maxSize
 			originalRemaining++
 		}
 	}
@@ -156,7 +156,7 @@ func TestCacheEvictionEffectiveness(t *testing.T) {
 	// Count how many new items were added
 	newItems := 0
 	for i := maxSize; i < maxSize*2; i++ {
-		if _, found := c.Get(uint64(i)); found {
+		if _, found := c.Get(uint64(i)); found { //nolint:gosec // G115 - i is bounded by maxSize*2
 			newItems++
 		}
 	}
@@ -211,12 +211,12 @@ func TestCacheSizeMonitoring(t *testing.T) {
 	start := time.Now()
 	i := 0
 	for time.Since(start) < 500*time.Millisecond {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - i is loop counter
 		i++
 
 		// Add some reads to simulate real usage
 		if i%10 == 0 {
-			c.Get(uint64(i / 2))
+			c.Get(uint64(i / 2)) //nolint:gosec // G115 - i is loop counter
 		}
 	}
 
@@ -268,7 +268,7 @@ func TestCacheEvictionDeadlock(t *testing.T) {
 	go func() {
 		// Continuously add items
 		for i := 0; i < 10000; i++ {
-			c.Add(uint64(i), i)
+			c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 		}
 		done <- true
 	}()
@@ -291,7 +291,7 @@ func TestCacheEvictionWithLargeItems(t *testing.T) {
 		// Create values of different sizes
 		size := (i % 100) + 1
 		value := make([]byte, size*100) // Simulate different memory usage
-		c.Add(uint64(i), value)
+		c.Add(uint64(i), value)         //nolint:gosec // G115 - test loop
 
 		if i%100 == 0 {
 			currentSize := c.Len()
@@ -316,7 +316,7 @@ func BenchmarkCacheBoundChecking(b *testing.B) {
 
 			// Pre-fill to 80% capacity
 			for i := 0; i < size*8/10; i++ {
-				c.Add(uint64(i), i)
+				c.Add(uint64(i), i) //nolint:gosec // G115 - benchmark loop
 			}
 
 			b.ResetTimer()
@@ -324,7 +324,7 @@ func BenchmarkCacheBoundChecking(b *testing.B) {
 				i := 0
 				for pb.Next() {
 					// This will trigger eviction checking
-					c.Add(uint64(i), i)
+					c.Add(uint64(i), i) //nolint:gosec // G115 - benchmark loop
 					i++
 				}
 			})

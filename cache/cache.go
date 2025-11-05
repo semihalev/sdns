@@ -136,11 +136,11 @@ func (c *Cache) clearSegments(percent int) {
 	}
 
 	// Rotate which segments we clear to be fair
-	startSegment := c.evictionCount.Add(1) % uint64(segmentCount)
+	startSegment := c.evictionCount.Add(1) % uint64(segmentCount) //nolint:gosec // G115 - segmentCount is a constant
 
 	for i := 0; i < segmentsToClear; i++ {
-		segmentIndex := (startSegment + uint64(i)) % uint64(segmentCount)
-		c.data.ClearSegment(int(segmentIndex))
+		segmentIndex := (startSegment + uint64(i)) % uint64(segmentCount) //nolint:gosec // G115 - i is small and bounded
+		c.data.ClearSegment(int(segmentIndex))                            //nolint:gosec // G115 - segmentIndex is always < segmentCount
 	}
 }
 

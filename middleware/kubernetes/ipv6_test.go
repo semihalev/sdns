@@ -252,7 +252,7 @@ func TestFullIPv6Compatibility(t *testing.T) {
 		},
 		IPFamilies: []string{"IPv4", "IPv6"},
 	}
-	r.AddService(svc)
+	r.AddService(svc) //nolint:gosec // G104 - test setup
 
 	// Find by IPv4
 	found := r.GetServiceByIP([]byte{10, 96, 0, 1})
@@ -272,7 +272,7 @@ func TestFullIPv6Compatibility(t *testing.T) {
 		Namespace: "default",
 		IPs:       []string{"10.244.1.1", "fd00::1", "2001:db8::100"},
 	}
-	r.AddPod(pod)
+	r.AddPod(pod) //nolint:gosec // G104 - test setup
 
 	// Find by any IP
 	for _, ip := range pod.IPs {

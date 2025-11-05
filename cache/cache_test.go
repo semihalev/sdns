@@ -96,12 +96,12 @@ func TestCacheConcurrency(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < opsPerGoroutine; j++ {
-				key := uint64(id*opsPerGoroutine + j)
+				key := uint64(id*opsPerGoroutine + j) //nolint:gosec // G115 - test loop
 				c.Add(key, fmt.Sprintf("value-%d-%d", id, j))
 
 				// Randomly access some values
 				if j%10 == 0 {
-					randomKey := uint64((id + j) % (numGoroutines * opsPerGoroutine))
+					randomKey := uint64((id + j) % (numGoroutines * opsPerGoroutine)) //nolint:gosec // G115 - test calculation
 					c.Get(randomKey)
 				}
 			}
@@ -122,7 +122,7 @@ func TestCacheRemoveConcurrency(t *testing.T) {
 
 	// Pre-populate cache
 	for i := 0; i < numGoroutines*keysPerGoroutine; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop //nolint:gosec // G115 - test loop
 	}
 
 	var wg sync.WaitGroup
@@ -133,7 +133,7 @@ func TestCacheRemoveConcurrency(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < keysPerGoroutine; j++ {
-				key := uint64(id*keysPerGoroutine + j)
+				key := uint64(id*keysPerGoroutine + j) //nolint:gosec // G115 - test loop
 				c.Remove(key)
 			}
 		}(i)
@@ -178,7 +178,7 @@ func TestCacheCapacity(t *testing.T) {
 
 	// Add some items
 	for i := 0; i < 50; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	// Verify size
@@ -186,14 +186,14 @@ func TestCacheCapacity(t *testing.T) {
 
 	// Add more items up to capacity
 	for i := 50; i < 100; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	assert.Equal(t, 100, c.Len())
 
 	// Adding more should maintain capacity
 	for i := 100; i < 150; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	assert.LessOrEqual(t, c.Len(), 100, "Cache should not exceed capacity")
@@ -205,14 +205,14 @@ func BenchmarkCacheGet(b *testing.B) {
 
 	// Pre-populate
 	for i := 0; i < 10000; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			c.Get(uint64(i % 10000))
+			c.Get(uint64(i % 10000)) //nolint:gosec // G115 - test loop
 			i++
 		}
 	})
@@ -225,7 +225,7 @@ func BenchmarkCacheAdd(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			c.Add(uint64(i), i)
+			c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 			i++
 		}
 	})
@@ -236,7 +236,7 @@ func BenchmarkCacheMixed(b *testing.B) {
 
 	// Pre-populate
 	for i := 0; i < 5000; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	b.ResetTimer()
@@ -244,9 +244,9 @@ func BenchmarkCacheMixed(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			if i%2 == 0 {
-				c.Get(uint64(i % 10000))
+				c.Get(uint64(i % 10000)) //nolint:gosec // G115 - test loop //nolint:gosec // G115 - test loop
 			} else {
-				c.Add(uint64(i), i)
+				c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 			}
 			i++
 		}
@@ -262,13 +262,13 @@ func TestCacheMemoryUsage(t *testing.T) {
 
 	// Add items
 	for i := 0; i < 10000; i++ {
-		c.Add(uint64(i), fmt.Sprintf("value-%d", i))
+		c.Add(uint64(i), fmt.Sprintf("value-%d", i)) //nolint:gosec // G115 - test loop
 	}
 
 	// Just verify the cache is working
 	found := 0
 	for i := 0; i < 100; i++ {
-		if _, ok := c.Get(uint64(i)); ok {
+		if _, ok := c.Get(uint64(i)); ok { //nolint:gosec // G115 - test loop
 			found++
 		}
 	}

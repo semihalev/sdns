@@ -104,7 +104,7 @@ func (b *BlockList) updateBlocklists() error {
 func (b *BlockList) downloadBlocklist(uri, name string) error {
 	filePath := filepath.Join(b.cfg.BlockListDir, name)
 
-	output, err := os.Create(filePath)
+	output, err := os.Create(filePath) //nolint:gosec // G304 - path from config, not user input
 	if err != nil {
 		return fmt.Errorf("error creating file: %w", err)
 	}
@@ -178,7 +178,7 @@ func (b *BlockList) readBlocklists() error {
 
 	err := filepath.Walk(b.cfg.BlockListDir, func(path string, f os.FileInfo, _ error) error {
 		if !f.IsDir() {
-			file, err := os.Open(path)
+			file, err := os.Open(path) //nolint:gosec // G304 - path from walk, not user input
 			if err != nil {
 				return fmt.Errorf("error opening file: %w", err)
 			}

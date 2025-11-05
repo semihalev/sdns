@@ -60,7 +60,7 @@ func makeRootKeysConfig() *config.Config {
 	cfg.Directory = filepath.Join(os.TempDir(), "sdns_temp_autota")
 	cfg.IPv6Access = false
 
-	_ = os.Mkdir(cfg.Directory, 0777)
+	_ = os.Mkdir(cfg.Directory, 0750) // Secure directory permissions
 
 	return cfg
 }
@@ -106,8 +106,8 @@ func runTestServer() {
 		Algorithm:   8,
 		SignerName:  ".",
 		KeyTag:      dnskey1.KeyTag(),
-		Inception:   uint32(time.Now().UTC().Unix()),
-		Expiration:  uint32(time.Now().UTC().Add(15 * 24 * time.Hour).Unix()),
+		Inception:   uint32(time.Now().UTC().Unix()),                          //nolint:gosec // G115 - time conversion for test
+		Expiration:  uint32(time.Now().UTC().Add(15 * 24 * time.Hour).Unix()), //nolint:gosec // G115 - time conversion for test
 		OrigTtl:     3600,
 	}
 
@@ -167,5 +167,5 @@ func Test_autota(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, resp.Answer, 4)
 
-	os.Remove(filepath.Join(cfg.Directory, "trust-anchor.db"))
+	_ = os.Remove(filepath.Join(cfg.Directory, "trust-anchor.db")) //nolint:gosec // G104 - cleanup best effort
 }

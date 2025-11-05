@@ -103,9 +103,9 @@ func generateCertificate() error {
 		return err
 	}
 
-	certOut.Close()
+	_ = certOut.Close() //nolint:gosec // G104 - test file cleanup
 
-	keyOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.key"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	keyOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.key"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) //nolint:gosec // G302 - secure permissions for private key
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func Test_doq(t *testing.T) {
 	time.Sleep(time.Second)
 
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, //nolint:gosec // G402 - test client connecting to test server
 		NextProtos:         []string{"doq"},
 	}
 	conn, err := quic.DialAddr(context.Background(), s.Addr, tlsConf, nil)

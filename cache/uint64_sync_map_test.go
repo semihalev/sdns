@@ -176,7 +176,7 @@ func TestSyncUInt64Map_Concurrent(t *testing.T) {
 			defer wg.Done()
 
 			for j := 0; j < numOps; j++ {
-				key := uint64(j % 100)
+				key := uint64(j % 100) //nolint:gosec // G115 - test loop
 
 				switch j % 3 {
 				case 0:
@@ -313,7 +313,7 @@ func TestSyncUInt64Map_ConcurrentDeleteSet(t *testing.T) {
 			defer wg.Done()
 
 			for j := 0; j < numIterations; j++ {
-				key := uint64(j % keyRange)
+				key := uint64(j % keyRange) //nolint:gosec // G115 - test loop
 
 				if id%2 == 0 {
 					// Even goroutines: Set then Del
@@ -363,14 +363,14 @@ func TestSyncUInt64Map_StressTest(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id))) //nolint:gosec // G404 - test random
 
 			for {
 				select {
 				case <-stop:
 					return
 				default:
-					key := uint64(rng.Intn(10000))
+					key := uint64(rng.Intn(10000)) //nolint:gosec // G115 - test random
 
 					switch rng.Intn(10) {
 					case 0, 1: // 20% delete
@@ -426,7 +426,7 @@ func TestSyncUInt64Map_MinimumSize(t *testing.T) {
 	// Verify all values
 	for i := uint64(1); i <= 4; i++ {
 		v, ok := m.Get(i)
-		if !ok || v != int(i*100) {
+		if !ok || v != int(i*100) { //nolint:gosec // G115 - test value, i is small
 			t.Errorf("Expected Get(%d) = (%d, true), got (%d, %v)", i, i*100, v, ok)
 		}
 	}
@@ -511,7 +511,7 @@ func TestSyncUInt64Map_ConcurrentSetCollisions(t *testing.T) {
 
 			for j := 0; j < 100; j++ {
 				// Keys designed to collide
-				key := uint64(j % numKeys * 4)
+				key := uint64(j % numKeys * 4) //nolint:gosec // G115 - test calculation
 				m.Set(key, id*1000+j)
 
 				// Also try to update existing keys
@@ -546,7 +546,7 @@ func TestSyncUInt64Map_ConcurrentIteration(t *testing.T) {
 
 	// Pre-populate
 	for i := 0; i < 100; i++ {
-		m.Set(uint64(i), i)
+		m.Set(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	var wg sync.WaitGroup
@@ -568,7 +568,7 @@ func TestSyncUInt64Map_ConcurrentIteration(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 100; i < 200; i++ {
-			m.Set(uint64(i), i)
+			m.Set(uint64(i), i) //nolint:gosec // G115 - test loop
 			time.Sleep(time.Microsecond)
 		}
 	}()
@@ -577,7 +577,7 @@ func TestSyncUInt64Map_ConcurrentIteration(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 50; i++ {
-			m.Del(uint64(i))
+			m.Del(uint64(i)) //nolint:gosec // G115 - test loop
 			time.Sleep(time.Microsecond)
 		}
 	}()
@@ -617,7 +617,7 @@ func TestSyncUInt64Map_SetEdgeCases(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			// All trying to insert keys that will collide
-			key := uint64(13 + id*4) // 13, 17, 21, 25...
+			key := uint64(13 + id*4) //nolint:gosec // G115 - test calculation // 13, 17, 21, 25...
 			m.Set(key, id)
 		}(i)
 	}
@@ -627,7 +627,7 @@ func TestSyncUInt64Map_SetEdgeCases(t *testing.T) {
 	// Verify all inserts succeeded
 	successCount := 0
 	for i := 0; i < numGoroutines; i++ {
-		key := uint64(13 + i*4)
+		key := uint64(13 + i*4) //nolint:gosec // G115 - test calculation
 		if m.Has(key) {
 			successCount++
 		}
@@ -697,7 +697,7 @@ func TestSyncUInt64Map_CASRetryPaths(t *testing.T) {
 
 			for j := 0; j < 10; j++ {
 				// Keys that will collide: 13, 17, 21...
-				key := uint64(13 + (id-numGoroutines/2)*4)
+				key := uint64(13 + (id-numGoroutines/2)*4) //nolint:gosec // G115 - test calculation
 				m.Set(key, id*1000+j)
 
 				// Also update existing keys to force chain modifications

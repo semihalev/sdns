@@ -203,7 +203,7 @@ func TestHighPerformanceCacheCleanupLoop(t *testing.T) {
 					Name:   fmt.Sprintf("test%d.local.", i),
 					Rrtype: dns.TypeA,
 					Class:  dns.ClassINET,
-					Ttl:    uint32(i%10 + 1),
+					Ttl:    uint32(i%10 + 1), //nolint:gosec // G115 - test value
 				},
 				A: []byte{10, 0, 0, byte(i)},
 			},
@@ -313,7 +313,7 @@ func TestResolverResolvePodByHostname(t *testing.T) {
 	r := NewResolver(nil, "cluster.local", NewCache())
 
 	// Add pod with hostname and subdomain
-	r.registry.AddPod(&Pod{
+	r.registry.AddPod(&Pod{ //nolint:gosec // G104 - test setup
 		Name:      "web-0",
 		Namespace: "default",
 		IPs:       []string{"10.244.1.1"},
@@ -322,7 +322,7 @@ func TestResolverResolvePodByHostname(t *testing.T) {
 	})
 
 	// Also add a pod without subdomain
-	r.registry.AddPod(&Pod{
+	r.registry.AddPod(&Pod{ //nolint:gosec // G104 - test setup
 		Name:      "standalone",
 		Namespace: "default",
 		IPs:       []string{"10.244.1.2"},

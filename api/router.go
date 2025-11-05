@@ -50,7 +50,7 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			zlog.Error("Recovered in API", "recover", r)
 
-			_, _ = os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
+			_, _ = fmt.Fprintf(os.Stderr, "panic: %v\n\n", r)
 			debug.PrintStack()
 		}
 	}()

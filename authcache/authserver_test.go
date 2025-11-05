@@ -19,7 +19,7 @@ func Test_TrySort(t *testing.T) {
 		s.List = append(s.List, NewAuthServer(fmt.Sprintf("[::%d]:53", i), IPv6))
 	}
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // G404 - test file, not used for crypto
 	for i := 0; i < 2000; i++ {
 		for j := range s.List {
 			s.List[j].Count++

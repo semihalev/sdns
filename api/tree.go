@@ -323,28 +323,28 @@ func (node *treeNode) addChild(child *treeNode) {
 	case node.startIndex == 0:
 		node.startIndex = firstChar
 		node.indices = []uint8{0}
-		node.endIndex = node.startIndex + uint8(len(node.indices))
+		node.endIndex = node.startIndex + uint8(len(node.indices)) //nolint:gosec // G115 - slice length is controlled
 
 	case firstChar < node.startIndex:
 		diff := node.startIndex - firstChar
-		newIndices := make([]uint8, diff+uint8(len(node.indices)))
+		newIndices := make([]uint8, diff+uint8(len(node.indices))) //nolint:gosec // G115 - slice length is controlled
 		copy(newIndices[diff:], node.indices)
 		node.startIndex = firstChar
 		node.indices = newIndices
-		node.endIndex = node.startIndex + uint8(len(node.indices))
+		node.endIndex = node.startIndex + uint8(len(node.indices)) //nolint:gosec // G115 - slice length is controlled
 
 	case firstChar >= node.endIndex:
 		diff := firstChar - node.endIndex + 1
-		newIndices := make([]uint8, diff+uint8(len(node.indices)))
+		newIndices := make([]uint8, diff+uint8(len(node.indices))) //nolint:gosec // G115 - slice length is controlled
 		copy(newIndices, node.indices)
 		node.indices = newIndices
-		node.endIndex = node.startIndex + uint8(len(node.indices))
+		node.endIndex = node.startIndex + uint8(len(node.indices)) //nolint:gosec // G115 - slice length is controlled
 	}
 
 	index := node.indices[firstChar-node.startIndex]
 
 	if index == 0 {
-		node.indices[firstChar-node.startIndex] = uint8(len(node.children))
+		node.indices[firstChar-node.startIndex] = uint8(len(node.children)) //nolint:gosec // G115 - children length is controlled
 		node.children = append(node.children, child)
 		return
 	}

@@ -70,7 +70,7 @@ func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
 	numSegments := len(segments)
 
 	// Start from a random segment
-	startIdx := int(uint64(uintptr(unsafe.Pointer(&result))) % uint64(numSegments))
+	startIdx := int(uint64(uintptr(unsafe.Pointer(&result))) % uint64(numSegments)) //nolint:gosec // G103 G115 - using pointer address for randomization
 
 	// Sample across segments round-robin
 	for i := 0; i < numSegments && len(result) < maxSample; i++ {

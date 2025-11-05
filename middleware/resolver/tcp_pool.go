@@ -86,7 +86,7 @@ func (p *TCPConnPool) Get(server string, isRoot, isTLD bool) *dns.Conn {
 		// Check if connection is still valid
 		if time.Since(conn.lastUsed) > conn.idleTime {
 			// Connection expired
-			conn.Close()
+			conn.Close() //nolint:gosec // G104 - connection cleanup
 			delete(p.getPoolMap(isRoot, isTLD), server)
 			p.active--
 			return nil
@@ -114,7 +114,7 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 	if conn == nil || (!isRoot && !isTLD) {
 		// Don't pool non-infrastructure connections
 		if conn != nil {
-			conn.Close()
+			conn.Close() //nolint:gosec // G104 - connection cleanup
 		}
 		return
 	}
@@ -125,7 +125,7 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 	// Check connection limit
 	if p.active >= p.maxConns {
 		// Pool is full, close the connection
-		conn.Close()
+		conn.Close() //nolint:gosec // G104 - connection cleanup
 		return
 	}
 
@@ -198,7 +198,7 @@ func (p *TCPConnPool) cleanup() {
 	// Clean root connections
 	for server, conn := range p.rootConns {
 		if now.Sub(conn.lastUsed) > conn.idleTime {
-			conn.Close()
+			conn.Close() //nolint:gosec // G104 - connection cleanup
 			delete(p.rootConns, server)
 			p.active--
 			zlog.Debug("Cleaned up idle root connection", "server", server)
@@ -208,7 +208,7 @@ func (p *TCPConnPool) cleanup() {
 	// Clean TLD connections
 	for server, conn := range p.tldConns {
 		if now.Sub(conn.lastUsed) > conn.idleTime {
-			conn.Close()
+			conn.Close() //nolint:gosec // G104 - connection cleanup
 			delete(p.tldConns, server)
 			p.active--
 			zlog.Debug("Cleaned up idle TLD connection", "server", server)
@@ -229,10 +229,10 @@ func (p *TCPConnPool) Close() {
 	defer p.mu.Unlock()
 
 	for _, conn := range p.rootConns {
-		conn.Close()
+		conn.Close() //nolint:gosec // G104 - connection cleanup
 	}
 	for _, conn := range p.tldConns {
-		conn.Close()
+		conn.Close() //nolint:gosec // G104 - connection cleanup
 	}
 
 	p.rootConns = make(map[string]*pooledConn)

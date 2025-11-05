@@ -102,9 +102,9 @@ func generateCertificate() error {
 		return err
 	}
 
-	certOut.Close()
+	certOut.Close() //nolint:gosec // G104 - test file close
 
-	keyOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.key"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	keyOut, err := os.OpenFile(filepath.Join(os.TempDir(), "test.key"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600) //nolint:gosec // G302 - secure permissions for private key
 	if err != nil {
 		return err
 	}
@@ -213,6 +213,6 @@ func Test_Server(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	os.Remove(cert)
-	os.Remove(privkey)
+	os.Remove(cert)    //nolint:gosec // G104 - test cleanup
+	os.Remove(privkey) //nolint:gosec // G104 - test cleanup
 }

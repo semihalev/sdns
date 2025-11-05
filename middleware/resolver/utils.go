@@ -417,7 +417,7 @@ func AcquireConn() *Conn {
 // ReleaseConn returns req to pool.
 func ReleaseConn(co *Conn) {
 	if co.Conn != nil {
-		_ = co.Conn.Close()
+		_ = co.Close()
 	}
 
 	co.UDPSize = 0

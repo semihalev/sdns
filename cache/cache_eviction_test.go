@@ -11,7 +11,7 @@ func TestCacheEviction(t *testing.T) {
 
 	// Fill the cache to capacity
 	for i := 0; i < cacheSize; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	if c.Len() != cacheSize {
@@ -20,7 +20,7 @@ func TestCacheEviction(t *testing.T) {
 
 	// Add more items to trigger eviction
 	for i := cacheSize; i < cacheSize+50; i++ {
-		c.Add(uint64(i), i)
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 
 		// Check size after each batch of additions
 		if i%10 == 0 {
@@ -42,7 +42,7 @@ func TestCacheEviction(t *testing.T) {
 	// Just verify that some items are still retrievable
 	found := 0
 	for i := 0; i < cacheSize+50; i++ {
-		if _, ok := c.Get(uint64(i)); ok {
+		if _, ok := c.Get(uint64(i)); ok { //nolint:gosec // G115 - test loop
 			found++
 		}
 	}
@@ -82,7 +82,7 @@ func TestCacheEvictionConcurrent(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(start int) {
 			for j := 0; j < 200; j++ {
-				c.Add(uint64(start*1000+j), j)
+				c.Add(uint64(start*1000+j), j) //nolint:gosec // G115 - test loop
 			}
 			done <- true
 		}(i)
@@ -107,7 +107,7 @@ func BenchmarkCacheWithEviction(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			// This will trigger eviction periodically
-			c.Add(uint64(i), i)
+			c.Add(uint64(i), i) //nolint:gosec // G115 - benchmark loop
 			i++
 		}
 	})

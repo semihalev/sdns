@@ -121,7 +121,7 @@ func TestResolverTCPPoolConcurrent(t *testing.T) {
 
 			req := new(dns.Msg)
 			req.SetQuestion(".", dns.TypeNS)
-			req.Id = uint16(id)
+			req.Id = uint16(id) //nolint:gosec // G115 - test ID
 
 			_, err := r.exchange(context.Background(), "tcp", req, authServer, 0)
 			if err != nil {

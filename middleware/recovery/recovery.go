@@ -31,7 +31,7 @@ func (r *Recovery) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 			zlog.Error("Recovered in ServeDNS", "recover", r)
 
-			_, _ = os.Stderr.WriteString(fmt.Sprintf("panic: %v\n\n", r))
+			_, _ = fmt.Fprintf(os.Stderr, "panic: %v\n\n", r)
 			debug.PrintStack()
 		}
 	}()

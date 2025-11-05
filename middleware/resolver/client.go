@@ -122,7 +122,7 @@ func (co *Conn) Read(p []byte) (n int, err error) {
 // If the message m contains a TSIG record the transaction
 // signature is calculated.
 func (co *Conn) WriteMsg(m *dns.Msg) (err error) {
-	size := uint16(m.Len()) + 1
+	size := uint16(m.Len()) + 1 //nolint:gosec // G115 - DNS message size is bounded
 
 	out := AcquireBuf(size)
 	defer ReleaseBuf(out)
@@ -146,7 +146,7 @@ func (co *Conn) Write(p []byte) (int, error) {
 	}
 
 	l := make([]byte, 2)
-	binary.BigEndian.PutUint16(l, uint16(len(p)))
+	binary.BigEndian.PutUint16(l, uint16(len(p))) //nolint:gosec // G115 - DNS message size is bounded
 
 	n, err := (&net.Buffers{l, p}).WriteTo(co.Conn)
 	return int(n), err
