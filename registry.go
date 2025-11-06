@@ -20,6 +20,7 @@ import (
 	"github.com/semihalev/sdns/middleware/kubernetes"
 	"github.com/semihalev/sdns/middleware/loop"
 	"github.com/semihalev/sdns/middleware/metrics"
+	"github.com/semihalev/sdns/middleware/mldefense"
 	"github.com/semihalev/sdns/middleware/ratelimit"
 	"github.com/semihalev/sdns/middleware/recovery"
 	"github.com/semihalev/sdns/middleware/resolver"
@@ -32,6 +33,7 @@ func init() {
 	middleware.Register("dnstap", func(cfg *config.Config) middleware.Handler { return dnstap.New(cfg) })
 	middleware.Register("accesslist", func(cfg *config.Config) middleware.Handler { return accesslist.New(cfg) })
 	middleware.Register("ratelimit", func(cfg *config.Config) middleware.Handler { return ratelimit.New(cfg) })
+	middleware.Register("mldefense", func(cfg *config.Config) middleware.Handler { return mldefense.New(cfg) })
 	middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })
 	middleware.Register("accesslog", func(cfg *config.Config) middleware.Handler { return accesslog.New(cfg) })
 	middleware.Register("chaos", func(cfg *config.Config) middleware.Handler { return chaos.New(cfg) })

@@ -21,6 +21,7 @@ var middlewareList = []string{
 	"dnstap",
 	"accesslist",
 	"ratelimit",
+	"mldefense",
 	"edns",
 	"accesslog",
 	"chaos",

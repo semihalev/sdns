@@ -91,6 +91,15 @@ type Config struct {
 	// Resolver concurrency limits
 	MaxConcurrentQueries int // Maximum concurrent DNS queries (default 10000)
 
+	// ML-based DNS attack defense configuration
+	MLDefenseEnabled           bool    // Enable ML-based attack detection
+	MLDefenseBlockMode         bool    // If false, only log but don't block
+	MLDefenseLearningMode      bool    // If true, collect data but don't block
+	MLDefenseQueryThreshold    float64 // Threshold for single query anomaly score (default: 60.0)
+	MLDefenseProfileThreshold  float64 // Threshold for IP profile score (default: 70.0)
+	MLDefenseCombinedThreshold float64 // Threshold for combined score (default: 80.0)
+	MLDefenseLogSuspicious     bool    // Log suspicious but not blocked queries
+
 	sVersion string
 }
 
@@ -461,6 +470,39 @@ tldtcptimeout = "10s"
 # Maximum number of pooled TCP connections
 # 0 = use default (100)
 tcpmaxconnections = 100
+
+# ============================
+# ML-Based DNS Attack Defense
+# ============================
+
+# Enable ML-based DNS amplification/reflection attack prevention
+# Uses machine learning to detect and block suspicious patterns
+mldefenseenabled = false
+
+# Enable blocking mode (if false, only logs suspicious queries)
+# Set to false for testing before enabling full blocking
+mldefenseblockmode = true
+
+# Enable learning mode (collect data but don't block)
+# Useful for training and tuning thresholds
+mldefenselearningmode = false
+
+# Query anomaly score threshold (0-100)
+# Blocks queries with anomaly score above this value
+# Higher values = less aggressive blocking
+# mldefensequerythreshold = 60.0
+
+# IP profile risk score threshold (0-100)
+# Blocks IPs with behavioral risk score above this value
+# mldefenseprofilethreshold = 70.0
+
+# Combined score threshold (0-100)
+# Blocks when weighted combination of query and profile scores exceeds this
+# mldefensecombinedthreshold = 80.0
+
+# Log suspicious queries that don't meet blocking threshold
+# Useful for monitoring and threshold tuning
+mldefenselogsuspicious = false
 
 # ============================
 # Dnstap Binary Logging
