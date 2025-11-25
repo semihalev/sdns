@@ -261,21 +261,25 @@ type CacheMetrics struct {
 // (*CacheMetrics).Hit hit records a cache hit.
 func (m *CacheMetrics) Hit() {
 	m.hits.Add(1)
+	cacheHits.Inc()
 }
 
 // (*CacheMetrics).Miss miss records a cache miss.
 func (m *CacheMetrics) Miss() {
 	m.misses.Add(1)
+	cacheMisses.Inc()
 }
 
 // (*CacheMetrics).Eviction eviction records a cache eviction.
 func (m *CacheMetrics) Eviction() {
 	m.evictions.Add(1)
+	cacheEvictions.Inc()
 }
 
 // (*CacheMetrics).Prefetch prefetch records a prefetch operation.
 func (m *CacheMetrics) Prefetch() {
 	m.prefetches.Add(1)
+	cachePrefetches.Inc()
 }
 
 // (*CacheMetrics).Stats stats returns current metrics.

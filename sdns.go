@@ -22,8 +22,9 @@ import (
 const version = "1.6.1"
 
 var (
-	cfgPath string
-	cfg     *config.Config
+	cfgPath    string
+	testConfig bool
+	cfg        *config.Config
 
 	rootCmd = &cobra.Command{
 		Use:   "sdns",
@@ -42,6 +43,7 @@ focused on preserving privacy. For more information, visit https://sdns.dev`,
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "sdns.conf", "Location of the config file. If it doesn't exist, a new one will be generated.")
+	rootCmd.PersistentFlags().BoolVarP(&testConfig, "test", "t", false, "Test configuration file and exit. Returns exit code 0 if valid, 1 if invalid.")
 	rootCmd.AddCommand(versionCmd)
 }
 
@@ -86,6 +88,11 @@ func setup() error {
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
+	// Handle config test mode
+	if testConfig {
+		return validateConfiguration()
+	}
+
 	zlog.Info("Starting sdns...", "version", version)
 
 	if err := setup(); err != nil {
@@ -146,6 +153,28 @@ func runServer(cmd *cobra.Command, args []string) error {
 		zlog.Warn("Server shutdown timeout exceeded")
 	}
 
+	return nil
+}
+
+func validateConfiguration() error {
+	var err error
+
+	if cfg, err = config.Load(cfgPath, version); err != nil {
+		fmt.Fprintf(os.Stderr, "Configuration test failed: %v\n", err)
+		return err
+	}
+
+	// Validate log level
+	switch cfg.LogLevel {
+	case "", "debug", "info", "warn", "error":
+		// Valid log levels
+	default:
+		err := fmt.Errorf("log verbosity level unknown: %s", cfg.LogLevel)
+		fmt.Fprintf(os.Stderr, "Configuration test failed: %v\n", err)
+		return err
+	}
+
+	fmt.Printf("Configuration file %s test successful\n", cfgPath)
 	return nil
 }
 
