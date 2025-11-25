@@ -212,11 +212,20 @@ func (t *IPTracker) calculateScore(e *IPEntry) float64 {
 	return score
 }
 
-// evictOne removes one random entry (called with lock held).
+// evictOne removes the oldest entry (called with lock held).
 func (t *IPTracker) evictOne() {
-	for ip := range t.entries {
-		delete(t.entries, ip)
-		return
+	var oldestIP string
+	var oldestTime time.Time
+
+	for ip, e := range t.entries {
+		if oldestIP == "" || e.LastSeen.Before(oldestTime) {
+			oldestIP = ip
+			oldestTime = e.LastSeen
+		}
+	}
+
+	if oldestIP != "" {
+		delete(t.entries, oldestIP)
 	}
 }
 

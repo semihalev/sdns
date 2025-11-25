@@ -132,14 +132,17 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Wrap response writer to track response size
-	rw := &responseWriter{
-		ResponseWriter: w,
-		request:        req,
-		tracker:        r.tracker,
-		ip:             ip,
+	// Only wrap response writer for high-amp queries to track amplification
+	// Normal queries (ampFactor <= 1.0) skip wrapping for better performance
+	if ampFactor > 1.0 {
+		rw := &responseWriter{
+			ResponseWriter: w,
+			request:        req,
+			tracker:        r.tracker,
+			ip:             ip,
+		}
+		ch.Writer = rw
 	}
-	ch.Writer = rw
 
 	ch.Next(ctx)
 }
