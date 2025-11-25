@@ -179,6 +179,10 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **tldtcptimeout**    | TCP idle timeout for TLD server connections (com, net, org, etc.). Default: "10s"                                   |
 | **tcpmaxconnections**| Maximum number of pooled TCP connections. 0 uses default. Default: 100                                               |
 | **maxconcurrentqueries** | Maximum number of concurrent DNS queries allowed. Limits resource usage under heavy load. Default: 10000         |
+| **reflexenabled**    | Enable DNS amplification/reflection attack detection. Default: false                                                |
+| **reflexblockmode**  | Block detected attacks (if false, only logs). Default: true                                                         |
+| **reflexlearningmode** | Log detections without blocking for threshold tuning. Default: false                                              |
+| **reflexthreshold**  | Suspicion score threshold (0.0-1.0). Lower = more aggressive. Default: 0.7                                          |
 | **dnstapsocket**     | Unix domain socket path for dnstap binary DNS logging. Leave empty to disable                                       |
 | **dnstapidentity**   | Server identity string for dnstap messages. Defaults to hostname                                                    |
 | **dnstapversion**    | Server version string for dnstap messages. Default: "sdns"                                                          |
@@ -223,6 +227,36 @@ When `killer_mode` is enabled:
 - 50,000+ QPS on single core
 
 For detailed information, see the [Kubernetes middleware documentation](middleware/kubernetes/README.md).
+
+#### Reflex: DNS Amplification Attack Detection
+
+The Reflex middleware detects and blocks DNS amplification/reflection attacks by analyzing IP behavior patterns.
+
+**How It Works:**
+- Tracks query patterns per source IP (rate, types, amplification ratio)
+- Identifies spoofed IPs used in reflection attacks
+- TCP connections prove real IP ownership (clears suspicion)
+- Bounded memory usage with automatic cleanup
+
+**Detection Factors:**
+- High query rate from single IP
+- High-amplification query types only (DNSKEY, TXT, etc.)
+- Lack of normal queries (A, AAAA)
+- Actual response/request amplification ratio
+- Low query type diversity
+
+**Configuration:**
+```toml
+reflexenabled = false       # Enable detection
+reflexblockmode = true      # Block attacks (false = log only)
+reflexlearningmode = false  # Log without blocking for tuning
+# reflexthreshold = 0.7     # Score threshold (0.0-1.0)
+```
+
+**Prometheus Metrics:**
+- `reflex_detections_total` - Suspected attacks by query type
+- `reflex_blocked_total` - Blocked queries
+- `reflex_tracked_ips` - Currently tracked IPs
 
 ### External Plugins
 
@@ -313,6 +347,7 @@ This is useful when:
 *   TCP connection pooling for persistent connections
 *   **Kubernetes DNS integration with killer mode performance**
 *   **Automatic TLS certificate reloading without downtime**
+*   **DNS amplification/reflection attack detection (Reflex)**
 
 ## TODO
 
