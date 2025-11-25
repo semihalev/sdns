@@ -190,6 +190,81 @@ func TestPopcount16(t *testing.T) {
 	assert.Equal(t, 16, popcount16(0xFFFF))
 }
 
+func TestQtypeToBit(t *testing.T) {
+	// Test all mapped query types
+	tests := []struct {
+		qtype    uint16
+		expected int
+	}{
+		{1, 0},    // A
+		{2, 1},    // NS
+		{5, 2},    // CNAME
+		{6, 3},    // SOA
+		{12, 4},   // PTR
+		{15, 5},   // MX
+		{16, 6},   // TXT
+		{28, 7},   // AAAA
+		{33, 8},   // SRV
+		{43, 9},   // DS
+		{46, 10},  // RRSIG
+		{47, 11},  // NSEC
+		{48, 12},  // DNSKEY
+		{50, 13},  // NSEC3
+		{52, 14},  // TLSA
+		{255, 15}, // Unknown (ANY)
+		{99, 15},  // Unknown type
+	}
+
+	for _, tt := range tests {
+		assert.Equal(t, tt.expected, qtypeToBit(tt.qtype), "qtype %d", tt.qtype)
+	}
+}
+
+func TestCalculateScore_EdgeCases(t *testing.T) {
+	tracker := NewIPTracker(100)
+
+	t.Run("very high rate with high amp", func(t *testing.T) {
+		ip := "10.0.0.1"
+		// Simulate high rate attack (>30 QPS)
+		for i := 0; i < 100; i++ {
+			tracker.RecordQuery(ip, dns.TypeDNSKEY, 20.0, 50)
+			tracker.RecordResponse(ip, 50, 2500) // 50x amplification
+		}
+
+		entry := tracker.GetEntry(ip)
+		score := tracker.calculateScore(entry)
+		t.Logf("High rate attack score: %.2f", score)
+		assert.GreaterOrEqual(t, score, 0.7, "high rate attack should have high score")
+	})
+
+	t.Run("moderate rate only high amp", func(t *testing.T) {
+		tracker2 := NewIPTracker(100)
+		ip := "10.0.0.2"
+		// Simulate moderate rate with only high amp queries (>15 QPS)
+		for i := 0; i < 50; i++ {
+			tracker2.RecordQuery(ip, dns.TypeDNSKEY, 20.0, 50)
+		}
+
+		entry := tracker2.GetEntry(ip)
+		score := tracker2.calculateScore(entry)
+		t.Logf("Moderate rate high-amp score: %.2f", score)
+	})
+
+	t.Run("high volume response tracking", func(t *testing.T) {
+		tracker3 := NewIPTracker(100)
+		ip := "10.0.0.3"
+		// High volume with moderate amplification
+		for i := 0; i < 100; i++ {
+			tracker3.RecordQuery(ip, dns.TypeTXT, 10.0, 50)
+			tracker3.RecordResponse(ip, 50, 1500) // 30x amp, >100KB total
+		}
+
+		entry := tracker3.GetEntry(ip)
+		score := tracker3.calculateScore(entry)
+		t.Logf("High volume moderate amp score: %.2f", score)
+	})
+}
+
 func BenchmarkIPTracker_RecordQuery(b *testing.B) {
 	tracker := NewIPTracker(100_000)
 

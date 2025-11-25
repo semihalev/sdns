@@ -27,9 +27,9 @@ type IPEntry struct {
 	TotalResponseBytes uint64
 
 	// Reputation signals
-	HasTCP      bool // Has made TCP connection (proves real IP)
-	HasNormalQ  bool // Has made normal queries (A, AAAA)
-	QueryTypes  uint16 // Bitmap of query types seen (first 16 types)
+	HasTCP     bool   // Has made TCP connection (proves real IP)
+	HasNormalQ bool   // Has made normal queries (A, AAAA)
+	QueryTypes uint16 // Bitmap of query types seen (first 16 types)
 }
 
 // NewIPTracker creates a new tracker.

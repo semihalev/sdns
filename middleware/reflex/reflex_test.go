@@ -265,6 +265,121 @@ func TestClose(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestServeDNS_CustomThreshold(t *testing.T) {
+	cfg := &config.Config{
+		ReflexEnabled:   true,
+		ReflexBlockMode: true,
+		ReflexThreshold: 0.5, // Lower threshold = more aggressive
+	}
+	r := New(cfg)
+	defer func() { _ = r.Close() }()
+
+	assert.Equal(t, 0.5, r.threshold())
+}
+
+func TestServeDNS_MonitorMode(t *testing.T) {
+	// Neither block mode nor learning mode = monitor mode
+	cfg := &config.Config{
+		ReflexEnabled:   true,
+		ReflexBlockMode: false,
+	}
+	r := New(cfg)
+	defer func() { _ = r.Close() }()
+
+	assert.Equal(t, "monitor", r.mode())
+
+	ip := "203.0.113.103"
+
+	// Simulate attack - should NOT block in monitor mode
+	blocked := 0
+	for i := 0; i < 50; i++ {
+		ch := middleware.NewChain([]middleware.Handler{})
+		req := new(dns.Msg)
+		req.SetQuestion("example.com.", dns.TypeDNSKEY)
+		mw := mock.NewWriter("udp", ip+":12345")
+		ch.Reset(mw, req)
+
+		r.ServeDNS(context.Background(), ch)
+		if mw.Written() && mw.Rcode() == dns.RcodeRefused {
+			blocked++
+		}
+	}
+
+	assert.Equal(t, 0, blocked, "monitor mode should not block")
+}
+
+func TestServeDNS_EmptyQuestion(t *testing.T) {
+	cfg := &config.Config{ReflexEnabled: true, ReflexBlockMode: true}
+	r := New(cfg)
+	defer func() { _ = r.Close() }()
+
+	ch := middleware.NewChain([]middleware.Handler{})
+	req := new(dns.Msg) // No question set
+	mw := mock.NewWriter("udp", "192.168.1.50:12345")
+	ch.Reset(mw, req)
+
+	r.ServeDNS(context.Background(), ch)
+	assert.False(t, mw.Written())
+}
+
+func TestResponseWriter(t *testing.T) {
+	tracker := NewIPTracker(100)
+	ip := "192.168.1.1"
+
+	// Record a query first
+	tracker.RecordQuery(ip, dns.TypeDNSKEY, 20.0, 50)
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeDNSKEY)
+
+	mw := mock.NewWriter("udp", ip+":12345")
+	rw := &responseWriter{
+		ResponseWriter: mw,
+		request:        req,
+		tracker:        tracker,
+		ip:             ip,
+	}
+
+	// Create response
+	res := new(dns.Msg)
+	res.SetReply(req)
+	res.Answer = append(res.Answer, &dns.DNSKEY{
+		Hdr:       dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 300},
+		Algorithm: dns.RSASHA256,
+		PublicKey: "testkey",
+	})
+
+	err := rw.WriteMsg(res)
+	assert.NoError(t, err)
+
+	// Check response was tracked
+	entry := tracker.GetEntry(ip)
+	assert.NotNil(t, entry)
+	assert.Greater(t, entry.TotalResponseBytes, uint64(0))
+}
+
+func TestResponseWriter_NilResponse(t *testing.T) {
+	tracker := NewIPTracker(100)
+	ip := "192.168.1.2"
+
+	tracker.RecordQuery(ip, dns.TypeA, 1.0, 50)
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+
+	mw := mock.NewWriter("udp", ip+":12345")
+	rw := &responseWriter{
+		ResponseWriter: mw,
+		request:        req,
+		tracker:        tracker,
+		ip:             ip,
+	}
+
+	// Write nil response - should not panic
+	err := rw.WriteMsg(nil)
+	assert.NoError(t, err)
+}
+
 func BenchmarkServeDNS_NormalQuery(b *testing.B) {
 	cfg := &config.Config{ReflexEnabled: true, ReflexBlockMode: true}
 	r := New(cfg)
