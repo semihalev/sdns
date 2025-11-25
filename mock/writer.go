@@ -28,15 +28,21 @@ func NewWriter(proto, addr string) *Writer {
 	case "tcp", "doh":
 		w.localAddr = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
 		w.remoteAddr, _ = net.ResolveTCPAddr("tcp", addr)
-		w.remoteip = w.remoteAddr.(*net.TCPAddr).IP
+		if w.remoteAddr != nil {
+			w.remoteip = w.remoteAddr.(*net.TCPAddr).IP
+		}
 
 	case "udp":
 		w.localAddr = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
 		w.remoteAddr, _ = net.ResolveUDPAddr("udp", addr)
-		w.remoteip = w.remoteAddr.(*net.UDPAddr).IP
+		if w.remoteAddr != nil {
+			w.remoteip = w.remoteAddr.(*net.UDPAddr).IP
+		}
 	}
 
-	w.internal = w.RemoteAddr().String() == "127.0.0.255:0"
+	if w.remoteAddr != nil {
+		w.internal = w.RemoteAddr().String() == "127.0.0.255:0"
+	}
 
 	w.proto = proto
 
