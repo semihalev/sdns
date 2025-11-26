@@ -91,6 +91,12 @@ type Config struct {
 	// Resolver concurrency limits
 	MaxConcurrentQueries int // Maximum concurrent DNS queries (default 10000)
 
+	// Reflex: DNS amplification/reflection attack detection
+	ReflexEnabled      bool    // Enable amplification attack detection
+	ReflexBlockMode    bool    // If false, only log but don't block
+	ReflexLearningMode bool    // If true, log detections but don't block
+	ReflexThreshold    float64 // Suspicion threshold (0.0-1.0, default: 0.7)
+
 	sVersion string
 }
 
@@ -461,6 +467,27 @@ tldtcptimeout = "10s"
 # Maximum number of pooled TCP connections
 # 0 = use default (100)
 tcpmaxconnections = 100
+
+# ============================
+# DNS Amplification Attack Detection (Reflex)
+# ============================
+
+# Enable DNS amplification/reflection attack detection
+# Tracks IP behavior to identify spoofed source IPs
+reflexenabled = false
+
+# Enable blocking mode (if false, only logs suspicious queries)
+# Set to false for testing before enabling full blocking
+reflexblockmode = true
+
+# Enable learning mode (log detections but don't block)
+# Useful for tuning detection thresholds
+reflexlearningmode = false
+
+# Suspicion threshold (0.0-1.0, default: 0.7)
+# IPs exceeding this score are blocked/logged
+# Lower values = more aggressive, higher values = fewer false positives
+# reflexthreshold = 0.7
 
 # ============================
 # Dnstap Binary Logging
