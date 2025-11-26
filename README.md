@@ -90,6 +90,7 @@ $ make test
 | Flag              | Description                                                                    |
 | ----------------- | ------------------------------------------------------------------------------ |
 | -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated. Default: /sdns.conf  |
+| -t, --test        | Test configuration file and exit. Returns exit code 0 if valid, 1 if invalid  |
 | -v, --version     | Show the SDNS version                                                          |
 | -h, --help        | Show help information and exit                                                 |
 
@@ -257,6 +258,32 @@ reflexlearningmode = false  # Log without blocking for tuning
 - `reflex_detections_total` - Suspected attacks by query type
 - `reflex_blocked_total` - Blocked queries
 - `reflex_tracked_ips` - Currently tracked IPs
+#### Cache Metrics
+
+SDNS exports comprehensive cache metrics via the Prometheus `/metrics` endpoint for monitoring cache performance.
+
+**Prometheus Metrics:**
+- `dns_cache_hits_total` - Total number of cache hits
+- `dns_cache_misses_total` - Total number of cache misses
+- `dns_cache_evictions_total` - Total number of cache evictions
+- `dns_cache_prefetches_total` - Total number of prefetch operations
+- `dns_cache_size{type="positive|negative"}` - Current number of entries in the cache
+- `dns_cache_hit_rate` - Cache hit rate percentage
+
+**Example Prometheus Queries:**
+```promql
+# Cache hit rate
+dns_cache_hit_rate
+
+# Cache hit ratio (alternative calculation)
+rate(dns_cache_hits_total[5m]) / (rate(dns_cache_hits_total[5m]) + rate(dns_cache_misses_total[5m]))
+
+# Total cache size
+sum(dns_cache_size)
+
+# Cache operations per second
+rate(dns_cache_hits_total[1m]) + rate(dns_cache_misses_total[1m])
+```
 
 ### External Plugins
 

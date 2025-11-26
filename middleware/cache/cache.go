@@ -101,6 +101,10 @@ func New(cfg *config.Config) *Cache {
 	c.pcache = c.positive
 	c.ncache = c.negative
 
+	// Register metrics instance for Prometheus hit rate calculation
+	SetMetricsInstance(c.metrics)
+	SetCacheSizeFuncs(c.positive.Len, c.negative.Len)
+
 	return c
 }
 
