@@ -213,3 +213,77 @@ func Test_dohWirePOSTError(t *testing.T) {
 
 	assert.Equal(t, w.Code, http.StatusUnsupportedMediaType)
 }
+
+func Test_dohWireHandlerReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	nilHandle := func(req *dns.Msg) *dns.Msg {
+		return nil
+	}
+
+	w := httptest.NewRecorder()
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	data, err := req.Pack()
+	assert.NoError(t, err)
+
+	request, err := http.NewRequest("POST", "/dns-query", bytes.NewReader(data))
+	assert.NoError(t, err)
+	request.Header.Add("Content-Type", "application/dns-message")
+
+	HandleWireFormat(nilHandle)(w, request)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func Test_dohJSONHandlerReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	nilHandle := func(req *dns.Msg) *dns.Msg {
+		return nil
+	}
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?name=example.com&type=A", nil)
+	assert.NoError(t, err)
+
+	HandleJSON(nilHandle)(w, request)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func Test_dohJSONInvalidType(t *testing.T) {
+	t.Parallel()
+
+	handle := func(req *dns.Msg) *dns.Msg {
+		return req
+	}
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("GET", "/dns-query?name=example.com&type=INVALID", nil)
+	assert.NoError(t, err)
+
+	HandleJSON(handle)(w, request)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func Test_dohJSONMethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	handle := func(req *dns.Msg) *dns.Msg {
+		return req
+	}
+
+	w := httptest.NewRecorder()
+
+	request, err := http.NewRequest("POST", "/dns-query?name=example.com&type=A", nil)
+	assert.NoError(t, err)
+
+	HandleJSON(handle)(w, request)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
