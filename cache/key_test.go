@@ -234,3 +234,127 @@ func BenchmarkKeyNoPool(b *testing.B) {
 		_ = KeySimple(q)
 	}
 }
+
+func TestKeyString(t *testing.T) {
+	tests := []struct {
+		name   string
+		qname  string
+		qtype  uint16
+		qclass uint16
+		cd     bool
+	}{
+		{
+			name:   "simple A query",
+			qname:  "example.com.",
+			qtype:  dns.TypeA,
+			qclass: dns.ClassINET,
+			cd:     false,
+		},
+		{
+			name:   "AAAA query with CD",
+			qname:  "example.com.",
+			qtype:  dns.TypeAAAA,
+			qclass: dns.ClassINET,
+			cd:     true,
+		},
+		{
+			name:   "case insensitive",
+			qname:  "EXAMPLE.COM.",
+			qtype:  dns.TypeA,
+			qclass: dns.ClassINET,
+			cd:     false,
+		},
+		{
+			name:   "long domain name",
+			qname:  "very-long-subdomain-name-that-exceeds-buffer-size.example.com.",
+			qtype:  dns.TypeA,
+			qclass: dns.ClassINET,
+			cd:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// KeyString should produce consistent results
+			key1 := KeyString(tt.qname, tt.qtype, tt.qclass, tt.cd)
+			key2 := KeyString(tt.qname, tt.qtype, tt.qclass, tt.cd)
+			assert.Equal(t, key1, key2, "KeyString should be consistent")
+
+			// KeyString should match Key for equivalent queries
+			q := dns.Question{
+				Name:   tt.qname,
+				Qtype:  tt.qtype,
+				Qclass: tt.qclass,
+			}
+			keyFromQuestion := Key(q, tt.cd)
+			assert.Equal(t, keyFromQuestion, key1, "KeyString should match Key")
+		})
+	}
+}
+
+func TestKeySimple(t *testing.T) {
+	tests := []struct {
+		name     string
+		question dns.Question
+		cd       []bool
+	}{
+		{
+			name: "simple query",
+			question: dns.Question{
+				Name:   "example.com.",
+				Qtype:  dns.TypeA,
+				Qclass: dns.ClassINET,
+			},
+		},
+		{
+			name: "with CD flag",
+			question: dns.Question{
+				Name:   "example.com.",
+				Qtype:  dns.TypeA,
+				Qclass: dns.ClassINET,
+			},
+			cd: []bool{true},
+		},
+		{
+			name: "uppercase domain",
+			question: dns.Question{
+				Name:   "EXAMPLE.COM.",
+				Qtype:  dns.TypeA,
+				Qclass: dns.ClassINET,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// KeySimple should produce same result as Key
+			keySimple := KeySimple(tt.question, tt.cd...)
+			keyPooled := Key(tt.question, tt.cd...)
+			assert.Equal(t, keyPooled, keySimple, "KeySimple should match Key")
+		})
+	}
+}
+
+func TestKeyVeryLongDomainName(t *testing.T) {
+	// Create a domain name longer than 256 bytes to trigger heap allocation
+	longLabel := "abcdefghijklmnopqrstuvwxyz0123456789"
+	longName := ""
+	for i := 0; i < 10; i++ {
+		longName += longLabel + "."
+	}
+
+	q := dns.Question{
+		Name:   longName,
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	}
+
+	// Should not panic and should be consistent
+	key1 := Key(q)
+	key2 := Key(q)
+	assert.Equal(t, key1, key2)
+
+	// KeyString should also handle it
+	key3 := KeyString(longName, dns.TypeA, dns.ClassINET, false)
+	assert.Equal(t, key1, key3)
+}
