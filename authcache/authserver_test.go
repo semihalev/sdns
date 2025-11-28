@@ -30,3 +30,31 @@ func Test_TrySort(t *testing.T) {
 
 	assert.Equal(t, int64(1), s.List[0].Count)
 }
+
+func Test_VersionString(t *testing.T) {
+	assert.Equal(t, "IPv4", IPv4.String())
+	assert.Equal(t, "IPv6", IPv6.String())
+	assert.Equal(t, "Unknown", Version(0).String())
+	assert.Equal(t, "Unknown", Version(99).String())
+}
+
+func Test_AuthServerString(t *testing.T) {
+	// Test UNKNOWN health (Rtt <= 0)
+	s := NewAuthServer("1.2.3.4:53", IPv4)
+	str := s.String()
+	assert.Contains(t, str, "IPv4")
+	assert.Contains(t, str, "1.2.3.4:53")
+	assert.Contains(t, str, "UNKNOWN")
+
+	// Test GOOD health (0 < Rtt < 1 second)
+	s.Rtt = int64(100 * time.Millisecond)
+	s.Count = 1
+	str = s.String()
+	assert.Contains(t, str, "GOOD")
+
+	// Test POOR health (Rtt >= 1 second)
+	s.Rtt = int64(2 * time.Second)
+	s.Count = 1
+	str = s.String()
+	assert.Contains(t, str, "POOR")
+}
