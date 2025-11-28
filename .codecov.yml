@@ -6,3 +6,9 @@ coverage:
         threshold: null
     patch: false
     changes: false
+
+ignore:
+  - "sdns.go"
+  - "registry.go"
+  - "gen.go"
+  - "doc.go"
