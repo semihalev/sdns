@@ -9,6 +9,9 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestClientRunError tests client Run method error handling
@@ -285,6 +288,269 @@ func TestShardedRegistryEdgeCases2(t *testing.T) {
 	if stats["services"] < 10 {
 		t.Error("Should have at least 10 services")
 	}
+}
+
+// TestClientConverters tests the conversion functions
+func TestClientConverters(t *testing.T) {
+	c := &Client{
+		registry: NewRegistry(),
+	}
+
+	// Test convertService with ClusterIP
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-svc",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: "10.96.0.1",
+			Ports: []corev1.ServicePort{
+				{Name: "http", Port: 80, Protocol: corev1.ProtocolTCP},
+				{Name: "https", Port: 443, Protocol: corev1.ProtocolTCP},
+			},
+		},
+	}
+	service := c.convertService(svc)
+	if service.Name != "test-svc" {
+		t.Errorf("Expected name test-svc, got %s", service.Name)
+	}
+	if len(service.Ports) != 2 {
+		t.Errorf("Expected 2 ports, got %d", len(service.Ports))
+	}
+
+	// Test convertService with headless service
+	headlessSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "headless-svc",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: "None",
+		},
+	}
+	headlessService := c.convertService(headlessSvc)
+	if !headlessService.Headless {
+		t.Error("Expected headless service")
+	}
+
+	// Test convertService with ExternalName
+	externalSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "external-svc",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Type:         corev1.ServiceTypeExternalName,
+			ExternalName: "example.com",
+		},
+	}
+	externalService := c.convertService(externalSvc)
+	if externalService.ExternalName != "example.com" {
+		t.Errorf("Expected external name example.com, got %s", externalService.ExternalName)
+	}
+
+	// Test convertPod with no IP
+	podNoIP := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-no-ip",
+			Namespace: "default",
+		},
+	}
+	if c.convertPod(podNoIP) != nil {
+		t.Error("Pod with no IP should return nil")
+	}
+
+	// Test convertPod with IP and hostname
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Hostname:  "my-hostname",
+			Subdomain: "my-subdomain",
+		},
+		Status: corev1.PodStatus{
+			PodIP: "10.244.1.1",
+			PodIPs: []corev1.PodIP{
+				{IP: "10.244.1.1"},
+				{IP: "fd00::1"},
+			},
+		},
+	}
+	convertedPod := c.convertPod(pod)
+	if convertedPod == nil {
+		t.Fatal("Pod should be converted")
+	}
+	if convertedPod.Hostname != "my-hostname" {
+		t.Errorf("Expected hostname my-hostname, got %s", convertedPod.Hostname)
+	}
+	if len(convertedPod.IPs) != 2 {
+		t.Errorf("Expected 2 IPs, got %d", len(convertedPod.IPs))
+	}
+
+	// Test convertEndpointSlice
+	ready := true
+	hostname := "ep-hostname"
+	eps := &discoveryv1.EndpointSlice{
+		Endpoints: []discoveryv1.Endpoint{
+			{
+				Addresses:  []string{"10.244.1.1"},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+				Hostname:   &hostname,
+				TargetRef: &corev1.ObjectReference{
+					Kind:      "Pod",
+					Name:      "test-pod",
+					Namespace: "default",
+				},
+			},
+			{
+				Addresses: []string{}, // Empty addresses - should be skipped
+			},
+		},
+	}
+	endpoints := c.convertEndpointSlice(eps)
+	if len(endpoints) != 1 {
+		t.Errorf("Expected 1 endpoint, got %d", len(endpoints))
+	}
+	if endpoints[0].Hostname != "ep-hostname" {
+		t.Errorf("Expected hostname ep-hostname, got %s", endpoints[0].Hostname)
+	}
+}
+
+// TestClientEventHandlers tests the event handler functions
+func TestClientEventHandlers(t *testing.T) {
+	c := &Client{
+		registry: NewRegistry(),
+	}
+
+	// Test onServiceAdd with valid service
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-svc",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: "10.96.0.1",
+		},
+	}
+	c.onServiceAdd(svc)
+	if c.registry.GetService("test-svc", "default") == nil {
+		t.Error("Service should be added")
+	}
+
+	// Test onServiceAdd with invalid type
+	c.onServiceAdd("invalid")
+
+	// Test onServiceUpdate
+	c.onServiceUpdate(nil, svc)
+	c.onServiceUpdate(nil, "invalid")
+
+	// Test onServiceDelete
+	c.onServiceDelete(svc)
+	c.onServiceDelete("invalid")
+
+	// Test onEndpointSliceAdd with valid slice
+	eps := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-slice",
+			Namespace: "default",
+			Labels:    map[string]string{"kubernetes.io/service-name": "test-svc"},
+		},
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"10.244.1.1"}},
+		},
+	}
+	c.registry.AddService(&Service{Name: "test-svc", Namespace: "default"}) //nolint:gosec // G104 - test setup
+	c.onEndpointSliceAdd(eps)
+	c.onEndpointSliceAdd("invalid")
+
+	// Test with no service name label
+	epsNoLabel := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-label",
+			Namespace: "default",
+		},
+	}
+	c.onEndpointSliceAdd(epsNoLabel)
+
+	// Test onEndpointSliceUpdate
+	c.onEndpointSliceUpdate(nil, eps)
+	c.onEndpointSliceUpdate(nil, "invalid")
+	c.onEndpointSliceUpdate(nil, epsNoLabel)
+
+	// Test onEndpointSliceDelete
+	c.onEndpointSliceDelete(eps)
+	c.onEndpointSliceDelete("invalid")
+	c.onEndpointSliceDelete(epsNoLabel)
+
+	// Test onPodAdd with valid pod
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+		},
+		Status: corev1.PodStatus{
+			PodIP: "10.244.1.1",
+		},
+	}
+	c.onPodAdd(pod)
+	c.onPodAdd("invalid")
+
+	// Test onPodAdd with pod without IP
+	podNoIP := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-ip-pod",
+			Namespace: "default",
+		},
+	}
+	c.onPodAdd(podNoIP)
+
+	// Test onPodUpdate
+	c.onPodUpdate(nil, pod)
+	c.onPodUpdate(nil, "invalid")
+
+	// Test onPodDelete
+	c.onPodDelete(pod)
+	c.onPodDelete("invalid")
+}
+
+// TestClientSafeHandlers tests the safe wrapper handlers
+func TestClientSafeHandlers(t *testing.T) {
+	c := &Client{
+		registry: NewRegistry(),
+	}
+
+	// These should not panic even with invalid input
+	c.safeServiceAdd(nil)
+	c.safeServiceUpdate(nil, nil)
+	c.safeServiceDelete(nil)
+	c.safeEndpointSliceAdd(nil)
+	c.safeEndpointSliceUpdate(nil, nil)
+	c.safeEndpointSliceDelete(nil)
+	c.safePodAdd(nil)
+	c.safePodUpdate(nil, nil)
+	c.safePodDelete(nil)
+}
+
+// TestClientStop tests the Stop function
+func TestClientStop(t *testing.T) {
+	c := &Client{
+		registry: NewRegistry(),
+		stopCh:   make(chan struct{}),
+		stopped:  make(chan struct{}),
+	}
+
+	// Close stopped channel to simulate Run completion
+	close(c.stopped)
+
+	// First stop
+	c.Stop()
+
+	// Second stop should not panic (already stopped)
+	c.Stop()
 }
 
 // TestResolverSRVEdgeCases tests SRV resolution edge cases
