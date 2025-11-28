@@ -770,3 +770,51 @@ func TestSyncUInt64Map_ForEachEdgeCases(t *testing.T) {
 		t.Errorf("Expected 1 non-nil value in ForEach, got %d", count)
 	}
 }
+
+func TestSyncUInt64Map_Stop(t *testing.T) {
+	m := NewSyncUInt64Map[int](4)
+
+	m.Set(1, 100)
+	m.Set(2, 200)
+
+	// Stop is a no-op, should not panic
+	m.Stop()
+
+	// Map should still work after Stop
+	val, found := m.Get(1)
+	if !found || val != 100 {
+		t.Errorf("Expected Get(1) to return (100, true) after Stop, got (%v, %v)", val, found)
+	}
+}
+
+func TestSyncUInt64Map_Clear(t *testing.T) {
+	m := NewSyncUInt64Map[int](4)
+
+	// Add some values
+	m.Set(1, 100)
+	m.Set(2, 200)
+	m.Set(3, 300)
+
+	if m.Len() != 3 {
+		t.Errorf("Expected length 3 before Clear, got %d", m.Len())
+	}
+
+	// Clear the map
+	m.Clear()
+
+	if m.Len() != 0 {
+		t.Errorf("Expected length 0 after Clear, got %d", m.Len())
+	}
+
+	// Verify keys are gone
+	if m.Has(1) || m.Has(2) || m.Has(3) {
+		t.Error("Expected all keys to be removed after Clear")
+	}
+
+	// Map should still work after Clear
+	m.Set(4, 400)
+	val, found := m.Get(4)
+	if !found || val != 400 {
+		t.Errorf("Expected Get(4) to return (400, true) after Clear, got (%v, %v)", val, found)
+	}
+}

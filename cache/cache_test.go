@@ -309,3 +309,47 @@ func TestCacheTTL(t *testing.T) {
 	tv = val.(timedValue)
 	assert.True(t, time.Now().After(tv.expiry), "Item should be expired")
 }
+
+func TestCacheStop(t *testing.T) {
+	c := New(100)
+
+	c.Add(1, "one")
+	c.Add(2, "two")
+
+	// Stop should not panic
+	c.Stop()
+
+	// Cache should still work after Stop (no-op)
+	val, found := c.Get(1)
+	assert.True(t, found)
+	assert.Equal(t, "one", val)
+}
+
+func TestCacheNewSizeBranches(t *testing.T) {
+	// Test all size branches in New()
+	tests := []struct {
+		name string
+		size int
+	}{
+		{"tiny", 100},
+		{"small", 1024},
+		{"medium", 10000},
+		{"large", 100000},
+		{"huge", 500000},
+		{"massive", 1000001},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New(tt.size)
+			assert.NotNil(t, c)
+
+			// Add and verify
+			c.Add(1, "test")
+			val, found := c.Get(1)
+			assert.True(t, found)
+			assert.Equal(t, "test", val)
+		})
+	}
+}
+
