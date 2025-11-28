@@ -173,3 +173,24 @@ func Test_BlockList_FastPath(t *testing.T) {
 	blocklist.ServeDNS(context.Background(), ch)
 	assert.NotNil(t, mw.Msg(), "Response should be written for blocked domain")
 }
+
+func Test_BlockList_Remove(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_remove")
+
+	blocklist := New(cfg)
+
+	// Test removing a wildcard entry
+	blocklist.Set("*.wildcard.com.")
+	assert.True(t, blocklist.Exists("sub.wildcard.com."))
+	assert.True(t, blocklist.Remove("*.wildcard.com."))
+	assert.False(t, blocklist.Exists("sub.wildcard.com."))
+
+	// Test removing a non-existent entry
+	assert.False(t, blocklist.Remove("nonexistent.com."))
+
+	// Test removing a non-existent wildcard
+	assert.False(t, blocklist.Remove("*.nonexistent.com."))
+}
