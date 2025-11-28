@@ -198,6 +198,152 @@ func TestErrorToEDE(t *testing.T) {
 	}
 }
 
+func TestGetEDE(t *testing.T) {
+	tests := []struct {
+		name         string
+		msg          *dns.Msg
+		expectedCode uint16
+		expectedText string
+		expectNil    bool
+	}{
+		{
+			name: "Message with EDE",
+			msg: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("example.com.", dns.TypeA)
+				m.SetEdns0(4096, false)
+				opt := m.IsEdns0()
+				ede := &dns.EDNS0_EDE{
+					InfoCode:  dns.ExtendedErrorCodeDNSSECIndeterminate,
+					ExtraText: "DNSSEC validation failed",
+				}
+				opt.Option = append(opt.Option, ede)
+				return m
+			}(),
+			expectedCode: dns.ExtendedErrorCodeDNSSECIndeterminate,
+			expectedText: "DNSSEC validation failed",
+			expectNil:    false,
+		},
+		{
+			name: "Message without EDNS0",
+			msg: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("example.com.", dns.TypeA)
+				return m
+			}(),
+			expectNil: true,
+		},
+		{
+			name: "Message with EDNS0 but no EDE",
+			msg: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("example.com.", dns.TypeA)
+				m.SetEdns0(4096, false)
+				return m
+			}(),
+			expectNil: true,
+		},
+		{
+			name: "Message with EDNS0 and other options but no EDE",
+			msg: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("example.com.", dns.TypeA)
+				m.SetEdns0(4096, false)
+				opt := m.IsEdns0()
+				nsid := &dns.EDNS0_NSID{Code: dns.EDNS0NSID}
+				opt.Option = append(opt.Option, nsid)
+				return m
+			}(),
+			expectNil: true,
+		},
+		{
+			name: "Message with multiple EDE options - returns first",
+			msg: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("example.com.", dns.TypeA)
+				m.SetEdns0(4096, false)
+				opt := m.IsEdns0()
+				ede1 := &dns.EDNS0_EDE{
+					InfoCode:  dns.ExtendedErrorCodeNetworkError,
+					ExtraText: "First EDE",
+				}
+				ede2 := &dns.EDNS0_EDE{
+					InfoCode:  dns.ExtendedErrorCodeNoReachableAuthority,
+					ExtraText: "Second EDE",
+				}
+				opt.Option = append(opt.Option, ede1, ede2)
+				return m
+			}(),
+			expectedCode: dns.ExtendedErrorCodeNetworkError,
+			expectedText: "First EDE",
+			expectNil:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ede := GetEDE(tt.msg)
+
+			if tt.expectNil {
+				assert.Nil(t, ede)
+			} else {
+				assert.NotNil(t, ede)
+				assert.Equal(t, tt.expectedCode, ede.InfoCode)
+				assert.Equal(t, tt.expectedText, ede.ExtraText)
+			}
+		})
+	}
+}
+
+func TestSetEDE(t *testing.T) {
+	tests := []struct {
+		name      string
+		msg       *dns.Msg
+		code      uint16
+		text      string
+		expectEDE bool
+	}{
+		{
+			name: "Add EDE to message with EDNS0",
+			msg: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("example.com.", dns.TypeA)
+				m.SetEdns0(4096, false)
+				return m
+			}(),
+			code:      dns.ExtendedErrorCodeDNSSECIndeterminate,
+			text:      "Test error",
+			expectEDE: true,
+		},
+		{
+			name: "No EDE added without EDNS0",
+			msg: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("example.com.", dns.TypeA)
+				return m
+			}(),
+			code:      dns.ExtendedErrorCodeOther,
+			text:      "Test error",
+			expectEDE: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			SetEDE(tt.msg, tt.code, tt.text)
+
+			ede := GetEDE(tt.msg)
+			if tt.expectEDE {
+				assert.NotNil(t, ede)
+				assert.Equal(t, tt.code, ede.InfoCode)
+				assert.Equal(t, tt.text, ede.ExtraText)
+			} else {
+				assert.Nil(t, ede)
+			}
+		})
+	}
+}
+
 // Mock error type with EDE support.
 type mockEDEError struct {
 	code uint16
