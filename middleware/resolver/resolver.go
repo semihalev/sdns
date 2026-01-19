@@ -622,24 +622,26 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 		q := req.Question[0]
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, true)
-		if !signerFound && len(parentdsrr) > 0 && q.Qtype == dns.TypeDS {
-			zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
-			return nil, errDSRecords
-		}
-		parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
-		if err != nil {
-			return nil, err
-		}
-
-		if !signerFound && len(parentdsrr) > 0 {
-			zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errDSRecords.Error())
-			return nil, errDSRecords
-		} else if len(parentdsrr) > 0 {
-			// Verify entire DNSSEC chain from parent DS to answer
-			resp.AuthenticatedData, err = r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, parentdsrr)
+		if !signerFound {
+			// Fail closed when we already have a secure delegation but the response
+			// lacks the required RRSIGs.
+			if len(parentdsrr) > 0 {
+				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errNoSignatures.Error())
+				return nil, errNoSignatures
+			}
+		} else {
+			parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
 			if err != nil {
-				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
+			}
+
+			if len(parentdsrr) > 0 {
+				// Verify entire DNSSEC chain from parent DS to answer
+				resp.AuthenticatedData, err = r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, parentdsrr)
+				if err != nil {
+					zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
+					return nil, err
+				}
 			}
 		}
 	}
@@ -655,76 +657,73 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 		q := req.Question[0]
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
-		if !signerFound && len(parentdsrr) > 0 && otype == dns.TypeDS {
-			zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", errDSRecords.Error())
-
-			return nil, errDSRecords
-		}
-
-		parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
-		if err != nil {
-			return nil, err
-		}
-
-		if !signerFound && len(parentdsrr) > 0 {
-			err = errDSRecords
-			zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-
-			return nil, err
-		} else if len(parentdsrr) > 0 {
-			ok, err := r.verifyDNSSEC(ctx, signer, q.Name, resp, parentdsrr)
-			if err != nil {
+		if !signerFound {
+			if len(parentdsrr) > 0 {
+				err = errNoSignatures
 				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
 			}
+		} else {
+			parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
+			if err != nil {
+				return nil, err
+			}
 
-			if ok && resp.Rcode == dns.RcodeNameError {
-				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-				if len(nsec3Set) > 0 {
-					err = verifyNameError(resp, nsec3Set) // prove non-existence via NSEC3
-					if err != nil {
-						zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-						return nil, err
-					}
+			if len(parentdsrr) > 0 {
+				ok, err := r.verifyDNSSEC(ctx, signer, q.Name, resp, parentdsrr)
+				if err != nil {
+					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+					return nil, err
+				}
 
-				} else {
-					// Try regular NSEC verification
-					nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
-					if len(nsecSet) > 0 {
-						err = verifyNameErrorNSEC(resp, nsecSet)
+				if ok && resp.Rcode == dns.RcodeNameError {
+					nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+					if len(nsec3Set) > 0 {
+						err = verifyNameError(resp, nsec3Set) // prove non-existence via NSEC3
 						if err != nil {
-							zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+							zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 							return nil, err
+						}
+
+					} else {
+						// Try regular NSEC verification
+						nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
+						if len(nsecSet) > 0 {
+							err = verifyNameErrorNSEC(resp, nsecSet)
+							if err != nil {
+								zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+								return nil, err
+							}
 						}
 					}
 				}
-			}
 
-			if ok && q.Qtype == dns.TypeDS {
-				nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-				if len(nsec3Set) > 0 {
-					err = verifyNODATA(resp, nsec3Set)
-					if err != nil {
-						zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
-						return nil, err
-					}
-
-				} else {
-					// Try regular NSEC verification for NODATA
-					nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
-					if len(nsecSet) > 0 {
-						err = verifyNODATANSEC(resp, nsecSet)
+				if ok && q.Qtype == dns.TypeDS {
+					nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
+					if len(nsec3Set) > 0 {
+						err = verifyNODATA(resp, nsec3Set)
 						if err != nil {
-							zlog.Warn("NSEC verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+							zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 							return nil, err
+						}
+
+					} else {
+						// Try regular NSEC verification for NODATA
+						nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
+						if len(nsecSet) > 0 {
+							err = verifyNODATANSEC(resp, nsecSet)
+							if err != nil {
+								zlog.Warn("NSEC verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+								return nil, err
+							}
 						}
 					}
 				}
-			}
 
-			// If DNSSEC verification passed and NSEC/NSEC3 verification passed, set AD flag
-			if ok && !req.CheckingDisabled {
-				resp.AuthenticatedData = true
+				// If DNSSEC verification passed and NSEC/NSEC3 verification passed, set AD flag
+				if ok && !req.CheckingDisabled {
+					resp.AuthenticatedData = true
+				}
 			}
 		}
 	}
