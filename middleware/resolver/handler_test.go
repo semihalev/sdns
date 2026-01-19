@@ -75,6 +75,30 @@ func Test_handler(t *testing.T) {
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) == 0, true)
 
+	// dnscheck.tools "nosig" test: signed zone but missing/bogus signatures.
+	m = new(dns.Msg)
+	m.SetEdns0(util.DefaultMsgSize, true)
+	m.SetQuestion("nosig-e5ecc382.test-alg15.dnscheck.tools.", dns.TypeA)
+	r = handler.handle(ctx, m)
+	t.Logf("nosig handler rcode=%s ad=%v answers=%d ns=%d extra=%d", dns.RcodeToString[r.Rcode], r.AuthenticatedData, len(r.Answer), len(r.Ns), len(r.Extra))
+	// Expected behavior: missing signatures under a signed zone should fail closed.
+	assert.NotNil(t, r)
+	assert.Equal(t, dns.RcodeServerFailure, r.Rcode)
+	assert.False(t, r.AuthenticatedData)
+	assert.Equal(t, 0, len(r.Answer))
+	opt := r.IsEdns0()
+	if assert.NotNil(t, opt) {
+		foundEDE := false
+		for _, o := range opt.Option {
+			if ede, ok := o.(*dns.EDNS0_EDE); ok {
+				foundEDE = true
+				assert.Equal(t, uint16(dns.ExtendedErrorCodeRRSIGsMissing), ede.InfoCode)
+				break
+			}
+		}
+		assert.True(t, foundEDE, "expected EDE option in response")
+	}
+
 	m = new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeA)
 	r = handler.handle(ctx, m)

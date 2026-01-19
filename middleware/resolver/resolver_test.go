@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,6 +95,39 @@ func Test_resolverBadDNSSEC(t *testing.T) {
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
+}
+
+func Test_resolverNoSigDNSSEC(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	// This name is intentionally constructed under a signed zone but returns
+	// responses missing signatures ("nosig"), used by dnscheck.tools.
+	qname := "nosig-e5ecc382.test-alg15.dnscheck.tools."
+
+	req := new(dns.Msg)
+	req.SetQuestion(qname, dns.TypeA)
+	// Ask for DNSSEC records (DO=1) so we can observe how the resolver handles
+	// missing/bogus signatures under a signed zone.
+	req.SetEdns0(util.DefaultMsgSize, true)
+
+	cfg := makeTestConfig()
+	r := NewResolver(cfg)
+
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	if err != nil {
+		t.Logf("nosig resolve error: %v", err)
+	}
+	if resp != nil {
+		t.Logf("nosig resolve rcode=%s ad=%v answers=%d ns=%d extra=%d", dns.RcodeToString[resp.Rcode], resp.AuthenticatedData, len(resp.Answer), len(resp.Ns), len(resp.Extra))
+	}
+
+	// Expected behavior: signed zone missing required signatures should be treated
+	// as bogus and fail closed.
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, errNoSignatures), "expected errNoSignatures, got %v", err)
+	assert.Nil(t, resp)
 }
 
 func Test_resolverBadKeyDNSSEC(t *testing.T) {
