@@ -623,11 +623,28 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, true)
 		if !signerFound {
-			// Fail closed when we already have a secure delegation but the response
-			// lacks the required RRSIGs.
+			// We have no signer (no RRSIGs). Before failing closed, refresh DS state
+			// for this qname: a non-empty parentdsrr may refer to an ancestor zone
+			// even if the current delegation is insecure (no DS).
 			if len(parentdsrr) > 0 {
-				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errNoSignatures.Error())
-				return nil, errNoSignatures
+				// DS records only exist at delegation points (zone cuts), not at
+				// arbitrary owner names. Probe the parent name to avoid clearing DS
+				// when the qname is simply a host inside a signed zone.
+				probeName := q.Name
+				if labels := dns.SplitDomainName(q.Name); len(labels) > 1 {
+					probeName = dns.Fqdn(strings.Join(labels[1:], "."))
+				}
+
+				parentdsrr, err = r.findDS(ctx, "", probeName, parentdsrr)
+				if err != nil {
+					return nil, err
+				}
+
+				// Fail closed only when the current delegation is known secure.
+				if len(parentdsrr) > 0 {
+					zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errNoSignatures.Error())
+					return nil, errNoSignatures
+				}
 			}
 		} else {
 			parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
@@ -659,9 +676,22 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
 		if !signerFound {
 			if len(parentdsrr) > 0 {
-				err = errNoSignatures
-				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-				return nil, err
+				// Same as in answer(): refresh DS state for this qname before deciding
+				// whether missing signatures are fatal.
+				probeName := q.Name
+				if labels := dns.SplitDomainName(q.Name); len(labels) > 1 {
+					probeName = dns.Fqdn(strings.Join(labels[1:], "."))
+				}
+
+				parentdsrr, err = r.findDS(ctx, "", probeName, parentdsrr)
+				if err != nil {
+					return nil, err
+				}
+				if len(parentdsrr) > 0 {
+					err = errNoSignatures
+					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+					return nil, err
+				}
 			}
 		} else {
 			parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
