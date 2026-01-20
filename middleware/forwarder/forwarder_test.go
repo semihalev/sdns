@@ -83,7 +83,10 @@ func startTestDNSServer(t *testing.T, network string) (addr string, stop func())
 		}
 
 		cert := tls.Certificate{Certificate: [][]byte{derBytes}, PrivateKey: privKey}
-		tlsLn := tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{cert}})
+		tlsLn := tls.NewListener(ln, &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		})
 		s.Listener = tlsLn
 		go func() { _ = s.ActivateAndServe() }()
 		stop = func() { _ = s.Shutdown() }

@@ -92,7 +92,7 @@ func Test_handler(t *testing.T) {
 		for _, o := range opt.Option {
 			if ede, ok := o.(*dns.EDNS0_EDE); ok {
 				foundEDE = true
-				assert.Equal(t, uint16(dns.ExtendedErrorCodeRRSIGsMissing), ede.InfoCode)
+				assert.Equal(t, dns.ExtendedErrorCodeRRSIGsMissing, ede.InfoCode)
 				break
 			}
 		}
