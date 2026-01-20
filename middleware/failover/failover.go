@@ -78,7 +78,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	for _, server := range w.f.servers {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		resp, err := util.Exchange(ctx, req, server, "udp")
+		resp, err := util.Exchange(ctx, req, server, "udp", nil)
 		if err != nil {
 			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
