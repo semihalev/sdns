@@ -305,7 +305,7 @@ func (s *Server) ListenAndServeH3(ctx context.Context) error {
 
 	go func() {
 		// Empty cert paths since TLSConfig has GetCertificate
-		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			s.doh3Started.Store(false)
 			zlog.Error("DNS listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
 		}
