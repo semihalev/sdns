@@ -167,12 +167,18 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 }
 
 // Exchange exchange dns request with TCP fallback.
-func Exchange(ctx context.Context, req *dns.Msg, addr string, net string) (*dns.Msg, error) {
-	client := dns.Client{Net: net}
-	resp, _, err := client.ExchangeContext(ctx, req, addr)
+func Exchange(ctx context.Context, req *dns.Msg, addr string, net string, client *dns.Client) (*dns.Msg, error) {
+	localClient := dns.Client{Net: net}
+	if client != nil {
+		// Copy to avoid mutating the caller's client (e.g. when we retry over TCP).
+		localClient = *client
+		localClient.Net = net
+	}
+
+	resp, _, err := localClient.ExchangeContext(ctx, req, addr)
 
 	if err == nil && resp.Truncated && net == "udp" {
-		return Exchange(ctx, req, addr, "tcp")
+		return Exchange(ctx, req, addr, "tcp", client)
 	}
 
 	return resp, err

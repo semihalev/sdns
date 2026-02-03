@@ -2,6 +2,7 @@ package forwarder
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"strings"
 
@@ -19,8 +20,9 @@ type server struct {
 
 // Forwarder type.
 type Forwarder struct {
-	servers []*server
-	dnssec  bool
+	servers   []*server
+	dnssec    bool
+	tlsConfig *tls.Config
 }
 
 // New return forwarder.
@@ -67,7 +69,12 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	for _, server := range f.servers {
-		resp, err := util.Exchange(ctx, req, server.Addr, server.Proto)
+		reqClient := &dns.Client{Net: server.Proto}
+		if server.Proto == "tcp-tls" {
+			reqClient.TLSConfig = f.tlsConfig
+		}
+
+		resp, err := util.Exchange(ctx, req, server.Addr, server.Proto, reqClient)
 		if err != nil {
 			zlog.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
