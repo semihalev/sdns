@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"context"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -146,4 +147,184 @@ func TestDNSSECValidationSkippedWithCD(t *testing.T) {
 	// The response should still be valid (not SERVFAIL) because validation was skipped
 	assert.Equal(t, dns.RcodeSuccess, resp.Rcode,
 		"Response should be successful when CD=1 even with invalid signatures")
+}
+
+// makeDS creates a DS record for the given owner name.
+func makeDS(name string) *dns.DS {
+	return &dns.DS{
+		Hdr: dns.RR_Header{
+			Name:   name,
+			Rrtype: dns.TypeDS,
+			Class:  dns.ClassINET,
+			Ttl:    3600,
+		},
+		KeyTag:     12345,
+		Algorithm:  dns.RSASHA256,
+		DigestType: dns.SHA256,
+		Digest:     "aabbccdd",
+	}
+}
+
+func Test_isZoneSecure(t *testing.T) {
+	tests := []struct {
+		name        string
+		qname       string
+		parentdsrr  []dns.RR
+		zone        string
+		expected    bool
+	}{
+		{
+			name:       "nil parentdsrr returns false",
+			qname:      "example.com.",
+			parentdsrr: nil,
+			zone:       "example.com.",
+			expected:   false,
+		},
+		{
+			name:       "empty parentdsrr slice returns false",
+			qname:      "example.com.",
+			parentdsrr: []dns.RR{},
+			zone:       "example.com.",
+			expected:   false,
+		},
+		{
+			name:       "DS matches zone exactly",
+			qname:      "www.example.com.",
+			parentdsrr: []dns.RR{makeDS("example.com.")},
+			zone:       "example.com.",
+			expected:   true,
+		},
+		{
+			name:       "DS matches zone case insensitive upper DS",
+			qname:      "www.example.com.",
+			parentdsrr: []dns.RR{makeDS("EXAMPLE.COM.")},
+			zone:       "example.com.",
+			expected:   true,
+		},
+		{
+			name:       "DS matches zone case insensitive upper zone",
+			qname:      "www.example.com.",
+			parentdsrr: []dns.RR{makeDS("example.com.")},
+			zone:       "EXAMPLE.COM.",
+			expected:   true,
+		},
+		{
+			name:       "root DS matches root zone",
+			qname:      "com.",
+			parentdsrr: []dns.RR{makeDS(".")},
+			zone:       ".",
+			expected:   true,
+		},
+		{
+			name:       "multiple DS records first one checked",
+			qname:      "www.example.com.",
+			parentdsrr: []dns.RR{makeDS("example.com."), makeDS("other.com.")},
+			zone:       "example.com.",
+			expected:   true,
+		},
+		{
+			// Zone is empty so the fast path is skipped. findDS will fail
+			// because the middleware chain is not initialised → fail closed.
+			name:       "empty zone falls to findDS error path",
+			qname:      "www.example.com.",
+			parentdsrr: []dns.RR{makeDS("com.")},
+			zone:       "",
+			expected:   true,
+		},
+		{
+			// DS is for "com." but zone is "example.com." — mismatch, so the
+			// fast path is skipped. findDS errors without middleware → fail closed.
+			name:       "ancestor DS mismatches zone falls to findDS error path",
+			qname:      "www.example.com.",
+			parentdsrr: []dns.RR{makeDS("com.")},
+			zone:       "example.com.",
+			expected:   true,
+		},
+		{
+			// Single-label qname: SplitDomainName("com.") = ["com"], len == 1,
+			// so probeName stays "com." (no label to strip). DS "." != zone "com."
+			// so fast path is skipped. findDS errors → fail closed.
+			name:       "single label qname no label stripping",
+			qname:      "com.",
+			parentdsrr: []dns.RR{makeDS(".")},
+			zone:       "com.",
+			expected:   true,
+		},
+	}
+
+	ctx := context.Background()
+	r := &Resolver{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := r.isZoneSecure(ctx, tt.qname, tt.parentdsrr, tt.zone)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func Test_isZoneSecureIntegration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		qname     string
+		expectErr bool
+		expectNil bool
+	}{
+		{
+			// Signed zone that omits RRSIGs — exercises answer() → isZoneSecure()
+			// returning true → errNoSignatures.
+			name:      "signed zone missing RRSIG returns error",
+			qname:     "nosig-e5ecc382.test-alg15.dnscheck.tools.",
+			expectErr: true,
+			expectNil: true,
+		},
+		{
+			// Insecure delegation: parent (com.) is signed but child has no DS.
+			// Unsigned responses must not trigger errNoSignatures.
+			name:      "insecure delegation resolves successfully",
+			qname:     "example.com.",
+			expectErr: false,
+			expectNil: false,
+		},
+		{
+			// Nonexistent name under a signed zone — exercises authority() →
+			// isZoneSecure() path. The resolver should validate the NSEC/RRSIG
+			// proofs and not return errNoSignatures.
+			name:      "NXDOMAIN under signed zone validates",
+			qname:     "thisdoesnotexist.ietf.org.",
+			expectErr: false,
+			expectNil: false,
+		},
+	}
+
+	cfg := makeTestConfig()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			r := NewResolver(cfg)
+
+			req := new(dns.Msg)
+			req.SetQuestion(tt.qname, dns.TypeA)
+			req.SetEdns0(4096, true)
+
+			resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+
+			if tt.expectErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			if tt.expectNil {
+				assert.Nil(t, resp)
+			} else {
+				assert.NotNil(t, resp)
+			}
+		})
+	}
 }
