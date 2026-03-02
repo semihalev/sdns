@@ -11,7 +11,7 @@ func (c *Cache) ForEachEntry(fn func(positive bool, key uint64, entry *CacheEntr
 		cache.ForEach(func(key uint64, value any) bool {
 			if keepGoing {
 				if entry, ok := value.(*CacheEntry); ok && entry != nil {
-					keepGoing = fn(true, key, entry)
+					keepGoing = fn(cache == c.positive.cache, key, entry)
 				}
 			}
 			return keepGoing
