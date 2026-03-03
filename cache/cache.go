@@ -158,3 +158,9 @@ func (c *Cache) Len() int {
 func (c *Cache) Stop() {
 	c.data.Stop()
 }
+
+// ForEach iterates over all cache entries.
+// Iteration is not atomic with concurrent updates.
+func (c *Cache) ForEach(f func(key uint64, value any) bool) {
+	c.data.ForEach(f)
+}
