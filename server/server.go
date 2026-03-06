@@ -114,10 +114,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // (*Server).Run run listen the services.
 func (s *Server) Run(ctx context.Context) {
-	go s.ListenAndServeDNS(ctx, "udp")
-	go s.ListenAndServeDNS(ctx, "tcp")
-	go s.ListenAndServeDNSTLS(ctx)
-	go s.ListenAndServeHTTPTLS(ctx)
+	go s.ListenAndServeDNS(ctx, "udp") //nolint:gosec // G118 - ctx is the server lifecycle context, not request-scoped
+	go s.ListenAndServeDNS(ctx, "tcp") //nolint:gosec // G118
+	go s.ListenAndServeDNSTLS(ctx)     //nolint:gosec // G118
+	go s.ListenAndServeHTTPTLS(ctx)    //nolint:gosec // G118
 	go s.ListenAndServeH3(ctx)
 	go s.ListenAndServeQUIC(ctx)
 }

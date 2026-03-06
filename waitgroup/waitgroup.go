@@ -67,7 +67,7 @@ func (wg *WaitGroup) Add(key uint64) {
 
 	c := new(call)
 	c.dups++
-	c.ctx, c.cancel = context.WithTimeout(context.Background(), wg.timeout)
+	c.ctx, c.cancel = context.WithTimeout(context.Background(), wg.timeout) //nolint:gosec // G118 - cancel is stored in c.cancel and called in Done()
 	wg.groups[key] = c
 }
 

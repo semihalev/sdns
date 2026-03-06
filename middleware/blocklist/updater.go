@@ -191,7 +191,7 @@ func (b *BlockList) readBlocklists() error {
 			_ = file.Close()
 
 			if filepath.Ext(path) == ".tmp" {
-				_ = os.Remove(path)
+				_ = os.Remove(path) //nolint:gosec // G122 - trusted local temp files, not user-controlled symlinks
 			}
 		}
 
