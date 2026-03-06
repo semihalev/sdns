@@ -41,7 +41,7 @@ type Config struct {
 	TLSCertificate   string
 	TLSPrivateKey    string
 	API              string
-	BearerToken      string
+	BearerToken      string //nolint:gosec // G117 - not a hardcoded credential, loaded from config file
 	Nullroute        string
 	Nullroutev6      string
 	HostsFile        string

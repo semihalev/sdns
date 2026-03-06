@@ -57,10 +57,10 @@ func BenchmarkRateLimitRandomIPAttack(b *testing.B) {
 		for pb.Next() {
 			// Generate random IP
 			ip := net.IPv4(
-				byte(r.Intn(256)),
-				byte(r.Intn(256)),
-				byte(r.Intn(256)),
-				byte(r.Intn(256)),
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
 			)
 
 			l := rl.getLimiter(ip)
@@ -95,10 +95,10 @@ func BenchmarkRateLimitMixedTraffic(b *testing.B) {
 				i++
 			} else { // 10% random IPs
 				ip = net.IPv4(
-					byte(r.Intn(256)),
-					byte(r.Intn(256)),
-					byte(r.Intn(256)),
-					byte(r.Intn(256)),
+					byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+					byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+					byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+					byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
 				)
 			}
 
@@ -124,7 +124,7 @@ func TestRateLimitEvictionPerformance(t *testing.T) {
 			byte(i>>24),
 			byte(i>>16),
 			byte(i>>8),
-			byte(i),
+			byte(i&0xFF), //nolint:gosec // intentional byte extraction
 		)
 		_ = rl.getLimiter(ip)
 	}
@@ -196,7 +196,7 @@ func TestRateLimitConcurrentAccess(t *testing.T) {
 			}()
 
 			for j := 0; j < 1000; j++ {
-				ip := net.IPv4(192, 168, byte(id), byte(j%256))
+				ip := net.IPv4(192, 168, byte(id&0xFF), byte(j%256)) //nolint:gosec // id is 0-9
 				l := rl.getLimiter(ip)
 				_ = l.rl.Allow()
 			}
@@ -253,10 +253,10 @@ func BenchmarkRateLimitServeDNS(b *testing.B) {
 		for pb.Next() {
 			// Random IP to simulate attack
 			ip := net.IPv4(
-				byte(r.Intn(256)),
-				byte(r.Intn(256)),
-				byte(r.Intn(256)),
-				byte(r.Intn(256)),
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
+				byte(r.Intn(256)&0xFF), //nolint:gosec // result is always 0-255
 			)
 
 			w := mock.NewWriter("udp", ip.String()+":53")
@@ -289,7 +289,7 @@ func TestRateLimitMemoryUsage(t *testing.T) {
 			byte(i>>24),
 			byte(i>>16),
 			byte(i>>8),
-			byte(i),
+			byte(i&0xFF), //nolint:gosec // intentional byte extraction
 		)
 		_ = rl.getLimiter(ip)
 	}

@@ -141,8 +141,8 @@ func parseReverseIPv6(labels []string) (net.IP, bool) {
 
 	// Group into 16-bit segments
 	var segments []string
-	for i := 0; i < 32; i += 4 { // 4 nibbles = 16 bits = 1 segment
-		segment := nibbles[i] + nibbles[i+1] + nibbles[i+2] + nibbles[i+3]
+	for i := 0; i <= 28; i += 4 { // 4 nibbles = 16 bits = 1 segment
+		segment := nibbles[i] + nibbles[i+1] + nibbles[i+2] + nibbles[i+3] //nolint:gosec // bounds guaranteed: 32 nibbles, max i=28
 		// Skip leading zeros in segment
 		segment = strings.TrimLeft(segment, "0")
 		if segment == "" {

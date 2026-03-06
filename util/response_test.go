@@ -402,7 +402,7 @@ func TestHasExpiredSignatures(t *testing.T) {
 					&dns.RRSIG{
 						Hdr:         dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
 						TypeCovered: dns.TypeA,
-						Expiration:  uint32(now.Add(1 * time.Hour).Unix()), //nolint:gosec
+						Expiration:  uint32(now.Add(1 * time.Hour).Unix()),  //nolint:gosec
 						Inception:   uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec
 					},
 				}

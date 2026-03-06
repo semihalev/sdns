@@ -147,7 +147,7 @@ func TestCache_Metrics(t *testing.T) {
 					Class:  dns.ClassINET,
 					Ttl:    300,
 				},
-				A: []byte{192, 0, 2, byte(i)},
+				A: []byte{192, 0, 2, byte(i & 0xFF)}, //nolint:gosec // intentional byte extraction in test
 			})
 			ch.Writer.WriteMsg(resp) //nolint:gosec // G104 - test mock
 			ch.Cancel()

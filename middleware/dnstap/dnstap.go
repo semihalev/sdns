@@ -235,14 +235,14 @@ func (d *Dnstap) encodeMessage(msg *DnstapMessage) []byte {
 	buf := make([]byte, 0, size)
 
 	// Type
-	buf = append(buf, byte(msg.Type))
+	buf = append(buf, byte(msg.Type&0xFF)) //nolint:gosec // intentional truncation to byte
 
 	// Identity
-	buf = append(buf, byte(len(msg.Identity)>>8), byte(len(msg.Identity)))
+	buf = append(buf, byte(len(msg.Identity)>>8), byte(len(msg.Identity)&0xFF)) //nolint:gosec // intentional big-endian encoding
 	buf = append(buf, msg.Identity...)
 
 	// Version
-	buf = append(buf, byte(len(msg.Version)>>8), byte(len(msg.Version)))
+	buf = append(buf, byte(len(msg.Version)>>8), byte(len(msg.Version)&0xFF)) //nolint:gosec // intentional big-endian encoding
 	buf = append(buf, msg.Version...)
 
 	// IP address (16 bytes, padded if IPv4)
@@ -253,10 +253,10 @@ func (d *Dnstap) encodeMessage(msg *DnstapMessage) []byte {
 	buf = append(buf, ipBytes...)
 
 	// Port
-	buf = append(buf, byte(msg.QueryPort>>8), byte(msg.QueryPort))
+	buf = append(buf, byte(msg.QueryPort>>8), byte(msg.QueryPort&0xFF)) //nolint:gosec // intentional uint16 byte extraction
 
 	// Protocol
-	buf = append(buf, byte(len(msg.Protocol)))
+	buf = append(buf, byte(len(msg.Protocol)&0xFF)) //nolint:gosec // intentional truncation to byte
 	buf = append(buf, []byte(msg.Protocol)...)
 
 	// Query time

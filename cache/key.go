@@ -32,10 +32,10 @@ func Key(q dns.Question, cd ...bool) uint64 {
 	// Format: [qclass:2][qtype:2][dnssec:1][qname:variable]
 
 	// Add query class (2 bytes, big-endian)
-	buf = append(buf, byte(q.Qclass>>8), byte(q.Qclass))
+	buf = append(buf, byte(q.Qclass>>8), byte(q.Qclass&0xFF)) //nolint:gosec // intentional uint16 byte extraction
 
 	// Add query type (2 bytes, big-endian)
-	buf = append(buf, byte(q.Qtype>>8), byte(q.Qtype))
+	buf = append(buf, byte(q.Qtype>>8), byte(q.Qtype&0xFF)) //nolint:gosec // intentional uint16 byte extraction
 
 	// Add CD flag if specified
 	if len(cd) > 0 && cd[0] {
@@ -81,10 +81,10 @@ func KeyString(qname string, qtype, qclass uint16, cd bool) uint64 {
 	buf := kb.buf[:0]
 
 	// Add query class (2 bytes, big-endian)
-	buf = append(buf, byte(qclass>>8), byte(qclass))
+	buf = append(buf, byte(qclass>>8), byte(qclass&0xFF)) //nolint:gosec // intentional uint16 byte extraction
 
 	// Add query type (2 bytes, big-endian)
-	buf = append(buf, byte(qtype>>8), byte(qtype))
+	buf = append(buf, byte(qtype>>8), byte(qtype&0xFF)) //nolint:gosec // intentional uint16 byte extraction
 
 	// Add CD flag
 	if cd {
@@ -126,8 +126,8 @@ func KeySimple(q dns.Question, cd ...bool) uint64 {
 	bufSize := 2 + 2 + 1 + len(q.Name)
 	buf := make([]byte, 0, bufSize)
 
-	buf = append(buf, byte(q.Qclass>>8), byte(q.Qclass))
-	buf = append(buf, byte(q.Qtype>>8), byte(q.Qtype))
+	buf = append(buf, byte(q.Qclass>>8), byte(q.Qclass&0xFF)) //nolint:gosec // intentional uint16 byte extraction
+	buf = append(buf, byte(q.Qtype>>8), byte(q.Qtype&0xFF))   //nolint:gosec // intentional uint16 byte extraction
 
 	if len(cd) > 0 && cd[0] {
 		buf = append(buf, 1)

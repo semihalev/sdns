@@ -189,7 +189,7 @@ func TestShardedRegistryFunctionality(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
-				svc := "service" + string(rune('0'+id))
+				svc := "service" + string(rune('0'+id)) //nolint:gosec // test code, id is 0-9
 				ns := "ns0"
 				qname := svc + "." + ns + ".svc.cluster.local."
 

@@ -55,8 +55,8 @@ func getSharedRateLimiter(rateLimit int, key uint64) *rate.Limiter {
 
 	// Use FNV-1a hash for better distribution
 	h := fnv.New64a()
-	h.Write([]byte{byte(key), byte(key >> 8), byte(key >> 16), byte(key >> 24), //nolint:gosec // G104 - hash always succeeds
-		byte(key >> 32), byte(key >> 40), byte(key >> 48), byte(key >> 56)})
+	h.Write([]byte{byte(key), byte(key >> 8), byte(key >> 16), byte(key >> 24), //nolint:gosec // hash always succeeds, intentional byte extraction
+		byte(key >> 32), byte(key >> 40), byte(key >> 48), byte(key >> 56)}) //nolint:gosec // intentional uint64 byte extraction
 	index := h.Sum64() % uint64(pool.size) //nolint:gosec // G115 - pool.size is a controlled constant
 
 	return pool.limiters[index]

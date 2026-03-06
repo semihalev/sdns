@@ -16,7 +16,7 @@ func BenchmarkBufferPool(b *testing.B) {
 					buf := AcquireBuf(size)
 					// Simulate some work
 					for i := 0; i < int(size); i += 100 {
-						buf[i] = byte(i)
+						buf[i] = byte(i & 0xFF) //nolint:gosec // intentional truncation in benchmark
 					}
 					ReleaseBuf(buf)
 				}

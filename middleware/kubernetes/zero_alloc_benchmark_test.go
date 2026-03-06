@@ -141,7 +141,7 @@ func BenchmarkZeroAllocCacheParallel(b *testing.B) {
 					Class:  dns.ClassINET,
 					Ttl:    300,
 				},
-				A: []byte{10, 0, byte(i >> 8), byte(i)},
+				A: []byte{10, 0, byte(i >> 8), byte(i & 0xFF)}, //nolint:gosec // intentional byte extraction
 			},
 		}
 		wire, _ := msg.Pack()

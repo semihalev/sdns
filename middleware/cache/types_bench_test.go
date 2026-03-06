@@ -88,7 +88,7 @@ func BenchmarkCacheMemoryUsage(b *testing.B) {
 					Class:  dns.ClassINET,
 					Ttl:    300,
 				},
-				A: []byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i)},
+				A: []byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i & 0xFF)}, //nolint:gosec // intentional byte extraction
 			})
 		case 1:
 			// NXDOMAIN

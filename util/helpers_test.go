@@ -11,12 +11,12 @@ import (
 
 func TestSetEdns0(t *testing.T) {
 	tests := []struct {
-		name             string
-		req              *dns.Msg
-		expectedSize     int
-		expectedCookie   string
-		expectedNsid     bool
-		expectedOrigDo   bool // Original DO bit from request
+		name           string
+		req            *dns.Msg
+		expectedSize   int
+		expectedCookie string
+		expectedNsid   bool
+		expectedOrigDo bool // Original DO bit from request
 	}{
 		{
 			name: "Request without EDNS0",
