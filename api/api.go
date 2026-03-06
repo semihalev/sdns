@@ -191,7 +191,7 @@ func (a *API) Run(ctx context.Context) {
 		zlog.Info("API authorization bearer token", "token", a.bearerToken)
 	}
 
-	go func() {
+	go func() { //nolint:gosec // G118 - intentionally using Background() for shutdown grace period after parent ctx is cancelled
 		<-ctx.Done()
 
 		zlog.Info("API server stopping...", "addr", a.addr)
