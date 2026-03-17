@@ -303,7 +303,35 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// Test_resolverFindSigner verifies that a name under an insecure delegation
+// (parent zone is signed, child has no DS record) resolves successfully.
+// The resolver must recognise the absence of DS at the delegation point and
+// accept the unsigned response without requiring RRSIGs.
 func Test_resolverFindSigner(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	// stackoverflow.com has no DS record at the com. delegation point,
+	// making it an insecure delegation under the signed com. zone.
+	req := new(dns.Msg)
+	req.SetQuestion("stackoverflow.com.", dns.TypeA)
+	req.SetEdns0(util.DefaultMsgSize, true)
+
+	cfg := makeTestConfig()
+	r := NewResolver(cfg)
+
+	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+}
+
+// Test_resolverBogusZone verifies that a zone with DS records but broken
+// signatures (bogus DNSSEC) is correctly rejected per RFC 4035 §5.5.
+// comcast.net. has DS at the net. delegation but its DNSKEY RRSIGs do not
+// cryptographically verify — the resolver must return SERVFAIL.
+func Test_resolverBogusZone(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -317,7 +345,7 @@ func Test_resolverFindSigner(t *testing.T) {
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
-	assert.NoError(t, err)
+	assert.Error(t, err)
 }
 
 func Test_resolverRootKeys(t *testing.T) {

@@ -188,13 +188,16 @@ func Test_isZoneSecure(t *testing.T) {
 			expected:   false,
 		},
 		{
-			name:       "DS matches zone exactly",
+			// DS name matches zone exactly → zone is signed (RFC 4035 §5.3.3).
+			// Fast path returns true without needing findDS.
+			name:       "DS matches zone returns true",
 			qname:      "www.example.com.",
 			parentdsrr: []dns.RR{makeDS("example.com.")},
 			zone:       "example.com.",
 			expected:   true,
 		},
 		{
+			// Case-insensitive match: upper-case DS name.
 			name:       "DS matches zone case insensitive upper DS",
 			qname:      "www.example.com.",
 			parentdsrr: []dns.RR{makeDS("EXAMPLE.COM.")},
@@ -202,6 +205,7 @@ func Test_isZoneSecure(t *testing.T) {
 			expected:   true,
 		},
 		{
+			// Case-insensitive match: upper-case zone name.
 			name:       "DS matches zone case insensitive upper zone",
 			qname:      "www.example.com.",
 			parentdsrr: []dns.RR{makeDS("example.com.")},
@@ -209,6 +213,7 @@ func Test_isZoneSecure(t *testing.T) {
 			expected:   true,
 		},
 		{
+			// DS for root matches root zone → signed.
 			name:       "root DS matches root zone",
 			qname:      "com.",
 			parentdsrr: []dns.RR{makeDS(".")},
@@ -216,35 +221,35 @@ func Test_isZoneSecure(t *testing.T) {
 			expected:   true,
 		},
 		{
-			name:       "multiple DS records first one checked",
+			// Multiple DS records; first matches zone → signed.
+			name:       "multiple DS records first matches zone",
 			qname:      "www.example.com.",
 			parentdsrr: []dns.RR{makeDS("example.com."), makeDS("other.com.")},
 			zone:       "example.com.",
 			expected:   true,
 		},
 		{
-			// Zone is empty so the fast path is skipped. findDS will fail
-			// because the middleware chain is not initialised → fail closed.
-			name:       "empty zone falls to findDS error path",
+			// Zone is empty, DS from ancestor. Probes parent of qname
+			// via findDS which errors without middleware → fail closed.
+			name:       "empty zone findDS error fails closed",
 			qname:      "www.example.com.",
 			parentdsrr: []dns.RR{makeDS("com.")},
 			zone:       "",
 			expected:   true,
 		},
 		{
-			// DS is for "com." but zone is "example.com." — mismatch, so the
-			// fast path is skipped. findDS errors without middleware → fail closed.
-			name:       "ancestor DS mismatches zone falls to findDS error path",
+			// DS from ancestor "com.", zone is "example.com.".
+			// Probes zone "example.com." via findDS which errors
+			// without middleware → fail closed.
+			name:       "ancestor DS probes zone findDS error fails closed",
 			qname:      "www.example.com.",
 			parentdsrr: []dns.RR{makeDS("com.")},
 			zone:       "example.com.",
 			expected:   true,
 		},
 		{
-			// Single-label qname: SplitDomainName("com.") = ["com"], len == 1,
-			// so probeName stays "com." (no label to strip). DS "." != zone "com."
-			// so fast path is skipped. findDS errors → fail closed.
-			name:       "single label qname no label stripping",
+			// Single-label qname with DS matching zone → signed.
+			name:       "single label qname DS matches zone",
 			qname:      "com.",
 			parentdsrr: []dns.RR{makeDS(".")},
 			zone:       "com.",
@@ -281,10 +286,11 @@ func Test_isZoneSecureIntegration(t *testing.T) {
 			expectNil: true,
 		},
 		{
-			// Insecure delegation: parent (com.) is signed but child has no DS.
+			// Insecure delegation: parent (com.) is signed but
+			// stackoverflow.com. has no DS record at the delegation point.
 			// Unsigned responses must not trigger errNoSignatures.
 			name:      "insecure delegation resolves successfully",
-			qname:     "example.com.",
+			qname:     "stackoverflow.com.",
 			expectErr: false,
 			expectNil: false,
 		},

@@ -1256,11 +1256,17 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 // be signed (i.e. has a DS record in the chain), meaning the absence of RRSIGs
 // is a validation failure.
 //
-// The zone parameter is the zone of the authoritative servers that produced the
-// response (rc.servers.Zone from the delegation chain). If the DS in parentdsrr
-// covers that zone, the zone is directly signed and we fail closed. Otherwise,
-// the DS may be from an ancestor zone and we walk the chain to check whether an
-// insecure delegation exists between the ancestor and qname.
+// Per RFC 4035 §5.2 and §5.3.3, if a DS record exists at a delegation point
+// the child zone is expected to be signed and all answer RRsets MUST have
+// RRSIGs. DS records only exist at zone cuts (RFC 4034 §5), so the presence
+// of DS for a zone proves it is signed regardless of whether individual names
+// inside the zone are delegation points themselves.
+//
+// When the zone parameter identifies the authoritative zone that produced the
+// response, we check whether the DS in parentdsrr covers that zone directly.
+// If not, we probe the zone's own delegation point (not internal names) to
+// determine whether an insecure delegation exists between the ancestor and
+// the zone.
 func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentdsrr []dns.RR, zone string) bool {
 	if len(parentdsrr) == 0 {
 		return false
@@ -1269,21 +1275,24 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentdsrr []
 	dsrr := parentdsrr[0].(*dns.DS)
 	dsname := strings.ToLower(dsrr.Header().Name)
 
-	// If the DS record covers the zone that served the response, the zone is
-	// signed and the missing RRSIG is a real failure.
+	// If the DS record directly covers the zone that served the response,
+	// the zone is signed and the missing RRSIG is a real failure
+	// (RFC 4035 §5.3.3).
 	if zone != "" && strings.EqualFold(dsname, zone) {
 		return true
 	}
 
-	// The DS is from an ancestor zone. Walk the chain from the ancestor
-	// toward qname: if every intermediate delegation has a DS, the zone is
-	// signed; if any step lacks a DS, the delegation is insecure.
-	// DS records only exist at delegation points (zone cuts), not at
-	// arbitrary owner names. Strip one label so that findDS probes
-	// delegation points rather than host names inside a zone.
-	probeName := qname
-	if labels := dns.SplitDomainName(qname); len(labels) > 1 {
-		probeName = dns.Fqdn(strings.Join(labels[1:], "."))
+	// The DS is from an ancestor zone. Probe the zone's own delegation
+	// point to check whether it has a DS record. If zone is known, probe
+	// it directly rather than walking into internal names that are not
+	// zone cuts (RFC 4034 §5 — DS only exists at delegation points).
+	probeName := zone
+	if probeName == "" {
+		// No zone info available; fall back to probing the parent of qname.
+		probeName = qname
+		if labels := dns.SplitDomainName(qname); len(labels) > 1 {
+			probeName = dns.Fqdn(strings.Join(labels[1:], "."))
+		}
 	}
 
 	parentdsrr, err := r.findDS(ctx, "", probeName, parentdsrr)
