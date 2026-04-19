@@ -238,10 +238,10 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 		}
 
 		if resp.Rcode == dns.RcodeNameError {
-			return r.authority(ctx, rc.req, resp, rc.parentDSRR, rc.req.Question[0].Qtype) // handle NXDOMAIN with DNSSEC proof
+			return r.authority(ctx, rc.req, resp, rc.parentDSRR, rc.req.Question[0].Qtype, rc.servers.Zone) // handle NXDOMAIN with DNSSEC proof
 		}
 
-		return r.answer(ctx, rc.req, resp, rc.parentDSRR, rc.extra...)
+		return r.answer(ctx, rc.req, resp, rc.parentDSRR, rc.servers.Zone, rc.extra...)
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
@@ -605,14 +605,14 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, boo
 	return nil, false
 }
 
-func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, zone string, extra ...bool) (*dns.Msg, error) {
 	if msg, ok := r.checkDname(ctx, resp); ok {
 		// DNAME synthesis: resolve target and append answers
 		resp.Answer = append(resp.Answer, msg.Answer...)
 		resp.Rcode = msg.Rcode
 
 		if len(msg.Answer) == 0 {
-			return r.authority(ctx, req, resp, parentdsrr, req.Question[0].Qtype)
+			return r.authority(ctx, req, resp, parentdsrr, req.Question[0].Qtype, zone)
 		}
 	}
 
@@ -623,25 +623,10 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 
 		signer, signerFound := r.findRRSIG(resp, q.Name, true)
 		if !signerFound {
-			// We have no signer (no RRSIGs). Before failing closed, refresh DS state
-			// for this qname: a non-empty parentdsrr may refer to an ancestor zone
-			// even if the current delegation is insecure (no DS).
+			// No RRSIGs in the response. Determine whether missing signatures
+			// are acceptable (insecure delegation) or a DNSSEC failure (signed zone).
 			if len(parentdsrr) > 0 {
-				// DS records only exist at delegation points (zone cuts), not at
-				// arbitrary owner names. Probe the parent name to avoid clearing DS
-				// when the qname is simply a host inside a signed zone.
-				probeName := q.Name
-				if labels := dns.SplitDomainName(q.Name); len(labels) > 1 {
-					probeName = dns.Fqdn(strings.Join(labels[1:], "."))
-				}
-
-				parentdsrr, err = r.findDS(ctx, "", probeName, parentdsrr)
-				if err != nil {
-					return nil, err
-				}
-
-				// Fail closed only when the current delegation is known secure.
-				if len(parentdsrr) > 0 {
+				if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
 					zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errNoSignatures.Error())
 					return nil, errNoSignatures
 				}
@@ -668,7 +653,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 	return resp, nil
 }
 
-func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, otype uint16) (*dns.Msg, error) {
+func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, otype uint16, zone string) (*dns.Msg, error) {
 	if !req.CheckingDisabled {
 		var err error
 		q := req.Question[0]
@@ -676,18 +661,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 		signer, signerFound := r.findRRSIG(resp, q.Name, false)
 		if !signerFound {
 			if len(parentdsrr) > 0 {
-				// Same as in answer(): refresh DS state for this qname before deciding
-				// whether missing signatures are fatal.
-				probeName := q.Name
-				if labels := dns.SplitDomainName(q.Name); len(labels) > 1 {
-					probeName = dns.Fqdn(strings.Join(labels[1:], "."))
-				}
-
-				parentdsrr, err = r.findDS(ctx, "", probeName, parentdsrr)
-				if err != nil {
-					return nil, err
-				}
-				if len(parentdsrr) > 0 {
+				if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
 					err = errNoSignatures
 					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 					return nil, err
@@ -1277,6 +1251,60 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 	return
 }
 
+// isZoneSecure determines whether a missing RRSIG for qname should be treated
+// as a DNSSEC failure. It returns true when the zone serving qname is known to
+// be signed (i.e. has a DS record in the chain), meaning the absence of RRSIGs
+// is a validation failure.
+//
+// Per RFC 4035 §5.2 and §5.3.3, if a DS record exists at a delegation point
+// the child zone is expected to be signed and all answer RRsets MUST have
+// RRSIGs. DS records only exist at zone cuts (RFC 4034 §5), so the presence
+// of DS for a zone proves it is signed regardless of whether individual names
+// inside the zone are delegation points themselves.
+//
+// When the zone parameter identifies the authoritative zone that produced the
+// response, we check whether the DS in parentdsrr covers that zone directly.
+// If not, we probe the zone's own delegation point (not internal names) to
+// determine whether an insecure delegation exists between the ancestor and
+// the zone.
+func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentdsrr []dns.RR, zone string) bool {
+	if len(parentdsrr) == 0 {
+		return false
+	}
+
+	dsrr := parentdsrr[0].(*dns.DS)
+	dsname := strings.ToLower(dsrr.Header().Name)
+
+	// If the DS record directly covers the zone that served the response,
+	// the zone is signed and the missing RRSIG is a real failure
+	// (RFC 4035 §5.3.3).
+	if zone != "" && strings.EqualFold(dsname, zone) {
+		return true
+	}
+
+	// The DS is from an ancestor zone. Probe the zone's own delegation
+	// point to check whether it has a DS record. If zone is known, probe
+	// it directly rather than walking into internal names that are not
+	// zone cuts (RFC 4034 §5 — DS only exists at delegation points).
+	probeName := zone
+	if probeName == "" {
+		// No zone info available; fall back to probing the parent of qname.
+		probeName = qname
+		if labels := dns.SplitDomainName(qname); len(labels) > 1 {
+			probeName = dns.Fqdn(strings.Join(labels[1:], "."))
+		}
+	}
+
+	parentdsrr, err := r.findDS(ctx, "", probeName, parentdsrr)
+	if err != nil {
+		// On lookup error, fail closed (assume signed) for safety.
+		zlog.Debug("DS lookup failed during isZoneSecure, failing closed", "qname", qname, "error", err.Error())
+		return true
+	}
+
+	return len(parentdsrr) > 0
+}
+
 func (r *Resolver) lookupDS(ctx context.Context, qname string) (msg *dns.Msg, err error) {
 	zlog.Debug("Lookup DS record", "qname", qname)
 
@@ -1795,13 +1823,13 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rc *resolveConte
 	// Extract nameserver information
 	nsInfo := r.extractNameserverInfo(resp)
 	if len(nsInfo.nameservers) == 0 {
-		return r.authority(ctx, minReq, resp, rc.parentDSRR, q.Qtype)
+		return r.authority(ctx, minReq, resp, rc.parentDSRR, q.Qtype, rc.servers.Zone)
 	}
 
 	// Handle SOA records
 	if nsInfo.hasSOA {
 		resp.Ns = r.filterAuthorityRecords(resp.Ns)
-		return r.authority(ctx, minReq, resp, rc.parentDSRR, q.Qtype)
+		return r.authority(ctx, minReq, resp, rc.parentDSRR, q.Qtype, rc.servers.Zone)
 	}
 
 	// Process delegation
