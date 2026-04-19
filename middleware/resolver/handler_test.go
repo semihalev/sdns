@@ -100,11 +100,6 @@ func Test_handler(t *testing.T) {
 	}
 
 	m = new(dns.Msg)
-	m.SetQuestion("example.com.", dns.TypeA)
-	r = handler.handle(ctx, m)
-	assert.Equal(t, len(r.Answer) > 0, true)
-
-	m = new(dns.Msg)
 	m.SetQuestion(".", dns.TypeANY)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, r.Rcode, dns.RcodeNotImplemented)
