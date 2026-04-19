@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"plugin"
+	"reflect"
 	"sync"
 
 	"github.com/semihalev/sdns/config"
@@ -79,6 +80,26 @@ func RegisterBefore(name string, new func(*config.Config) Handler, before string
 	panic(fmt.Sprintf("Middleware %s not found", before))
 }
 
+// isNilHandler reports whether the constructor result represents an unused
+// middleware. A middleware New() that returns a typed nil pointer (e.g.
+// `func New(cfg *config.Config) *Reflex { if !cfg.ReflexEnabled { return nil } }`)
+// produces a non-nil Handler interface whose underlying value is a nil pointer,
+// so a plain `h == nil` check misses it and the disabled middleware ends up in
+// the chain. The first request then panics with a nil-pointer dereference
+// inside ServeDNS. Detect both the untyped-nil and typed-nil cases here so any
+// middleware can keep its existing "return nil when disabled" pattern.
+func isNilHandler(h Handler) bool {
+	if h == nil {
+		return true
+	}
+	v := reflect.ValueOf(h)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Map, reflect.Slice, reflect.Func:
+		return v.IsNil()
+	}
+	return false
+}
+
 // Setup handlers.
 func Setup(cfg *config.Config) {
 	if setup {
@@ -94,7 +115,7 @@ func Setup(cfg *config.Config) {
 
 	for i, handler := range m.handlers {
 		h := handler.new(m.cfg)
-		if h == nil {
+		if isNilHandler(h) {
 			zlog.Debug("Middleware not enabled", "name", handler.name, "index", i)
 			continue
 		}
