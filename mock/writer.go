@@ -6,6 +6,11 @@ import (
 	"github.com/miekg/dns"
 )
 
+// internalIP is the sentinel loopback address used to tag synthesised
+// internal queries. Kept as a parsed net.IP so equality checks don't
+// allocate.
+var internalIP = net.IPv4(127, 0, 0, 255)
+
 // Writer type.
 type Writer struct {
 	msg *dns.Msg
@@ -40,8 +45,11 @@ func NewWriter(proto, addr string) *Writer {
 		}
 	}
 
-	if w.remoteAddr != nil {
-		w.internal = w.RemoteAddr().String() == "127.0.0.255:0"
+	switch a := w.remoteAddr.(type) {
+	case *net.UDPAddr:
+		w.internal = a.Port == 0 && a.IP.Equal(internalIP)
+	case *net.TCPAddr:
+		w.internal = a.Port == 0 && a.IP.Equal(internalIP)
 	}
 
 	w.proto = proto

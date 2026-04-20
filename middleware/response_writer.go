@@ -34,10 +34,13 @@ type responseWriter struct {
 var _ ResponseWriter = &responseWriter{}
 var errAlreadyWritten = errors.New("msg already written")
 
-// internalAddr is the loopback address that marks a synthesised internal
-// query (e.g. a recursion kicked off by the resolver itself rather than
-// arriving from a real client). See mock.NewWriter.
-const internalAddr = "127.0.0.255:0"
+// internalIP is the sentinel loopback address that marks a synthesised
+// internal query (e.g. a recursion kicked off by the resolver itself
+// rather than arriving from a real client). We compare against it by
+// IP+port rather than formatting to "127.0.0.255:0" on every chain
+// Reset — RemoteAddr().String() goes through net.JoinHostPort +
+// net.IP.String and allocates ~32 bytes per query.
+var internalIP = net.IPv4(127, 0, 0, 255)
 
 func (w *responseWriter) Msg() *dns.Msg {
 	return w.msg
@@ -48,24 +51,27 @@ func (w *responseWriter) Reset(rw dns.ResponseWriter) {
 	w.size = -1
 	w.msg = nil
 	w.rcode = dns.RcodeSuccess
+	w.proto = ""
+	w.remoteip = nil
+	w.internal = false
 
-	switch rw.LocalAddr().(type) {
-	case (*net.TCPAddr):
-		w.proto = "tcp"
-		w.remoteip = w.RemoteAddr().(*net.TCPAddr).IP
-	case (*net.UDPAddr):
+	switch a := rw.RemoteAddr().(type) {
+	case *net.UDPAddr:
 		w.proto = "udp"
-		w.remoteip = w.RemoteAddr().(*net.UDPAddr).IP
+		w.remoteip = a.IP
+		w.internal = a.Port == 0 && a.IP.Equal(internalIP)
+	case *net.TCPAddr:
+		w.proto = "tcp"
+		w.remoteip = a.IP
+		w.internal = a.Port == 0 && a.IP.Equal(internalIP)
 	}
 
 	switch writer := rw.(type) {
-	case (*mock.Writer):
+	case *mock.Writer:
 		w.proto = writer.Proto()
-	case (*doq.ResponseWriter):
+	case *doq.ResponseWriter:
 		w.proto = "doq"
 	}
-
-	w.internal = w.RemoteAddr().String() == internalAddr
 }
 
 func (w *responseWriter) RemoteIP() net.IP {
