@@ -6,19 +6,21 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Chain type.
+// Chain carries per-request state through the middleware pipeline.
+// Instances are reused via a sync.Pool: NewChain allocates the fixed
+// pipeline reference, Reset rebinds the per-request writer + message.
 type Chain struct {
 	Writer  ResponseWriter
 	Request *dns.Msg
 
 	handlers []Handler
-
-	head  int
-	tail  int
-	count int
+	pos      int // index of the next handler to run
+	count    int // handlers remaining; goes to 0 on Cancel
 }
 
-// NewChain return new fresh chain.
+// NewChain returns a Chain bound to the given handler pipeline. The slice
+// is captured by reference and must not be mutated by the caller after
+// this call.
 func NewChain(handlers []Handler) *Chain {
 	return &Chain{
 		Writer:   &responseWriter{},
@@ -27,30 +29,30 @@ func NewChain(handlers []Handler) *Chain {
 	}
 }
 
-// (*Chain).Next next call next dns handler in the chain.
+// Next invokes the next handler in the chain. Each handler is responsible
+// for calling Next to continue, or Cancel/CancelWithRcode to stop.
 func (ch *Chain) Next(ctx context.Context) {
 	if ch.count == 0 {
 		return
 	}
-
-	handler := ch.handlers[ch.head]
-	ch.head = (ch.head + 1) % len(ch.handlers)
+	h := ch.handlers[ch.pos]
+	ch.pos++
 	ch.count--
-
-	handler.ServeDNS(ctx, ch)
+	h.ServeDNS(ctx, ch)
 }
 
-// (*Chain).Cancel cancel next calls.
+// Cancel stops the chain without writing a response. Subsequent Next
+// calls become no-ops.
 func (ch *Chain) Cancel() {
 	ch.count = 0
 }
 
-// (*Chain).CancelWithRcode cancelWithRcode next calls with rcode.
+// CancelWithRcode writes a reply with the given rcode and stops the
+// chain. do controls the DO bit in the response's OPT record.
 func (ch *Chain) CancelWithRcode(rcode int, do bool) {
 	m := new(dns.Msg)
 	m.Extra = ch.Request.Extra
 	m.SetRcode(ch.Request, rcode)
-
 	m.RecursionAvailable = true
 	m.RecursionDesired = true
 
@@ -59,14 +61,13 @@ func (ch *Chain) CancelWithRcode(rcode int, do bool) {
 	}
 
 	_ = ch.Writer.WriteMsg(m)
-
 	ch.count = 0
 }
 
-// (*Chain).Reset reset the chain variables.
+// Reset rebinds the chain to a fresh writer + request for pool reuse.
 func (ch *Chain) Reset(w dns.ResponseWriter, r *dns.Msg) {
 	ch.Writer.Reset(w)
 	ch.Request = r
+	ch.pos = 0
 	ch.count = len(ch.handlers)
-	ch.head, ch.tail = 0, 0
 }

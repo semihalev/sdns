@@ -167,11 +167,11 @@ func makeDS(name string) *dns.DS {
 
 func Test_isZoneSecure(t *testing.T) {
 	tests := []struct {
-		name        string
-		qname       string
-		parentdsrr  []dns.RR
-		zone        string
-		expected    bool
+		name       string
+		qname      string
+		parentdsrr []dns.RR
+		zone       string
+		expected   bool
 	}{
 		{
 			name:       "nil parentdsrr returns false",

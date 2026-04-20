@@ -34,6 +34,11 @@ type responseWriter struct {
 var _ ResponseWriter = &responseWriter{}
 var errAlreadyWritten = errors.New("msg already written")
 
+// internalAddr is the loopback address that marks a synthesised internal
+// query (e.g. a recursion kicked off by the resolver itself rather than
+// arriving from a real client). See mock.NewWriter.
+const internalAddr = "127.0.0.255:0"
+
 func (w *responseWriter) Msg() *dns.Msg {
 	return w.msg
 }
@@ -60,7 +65,7 @@ func (w *responseWriter) Reset(rw dns.ResponseWriter) {
 		w.proto = "doq"
 	}
 
-	w.internal = w.RemoteAddr().String() == "127.0.0.255:0"
+	w.internal = w.RemoteAddr().String() == internalAddr
 }
 
 func (w *responseWriter) RemoteIP() net.IP {
