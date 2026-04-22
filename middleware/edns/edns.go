@@ -3,12 +3,20 @@ package edns
 import (
 	"context"
 	"encoding/hex"
+	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
 )
+
+// responseWriterPool reuses per-query ResponseWriter wrappers. A wrapper
+// is alive exactly for the duration of ch.Next in ServeDNS, so the pool
+// bounds to the in-flight query count.
+var responseWriterPool = sync.Pool{
+	New: func() any { return &ResponseWriter{} },
+}
 
 // EDNS type.
 type EDNS struct {
@@ -69,22 +77,26 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		size = dns.MinMsgSize
 	}
 
-	ch.Writer = &ResponseWriter{
-		ResponseWriter: w,
-		EDNS:           e,
+	rw := responseWriterPool.Get().(*ResponseWriter)
+	rw.ResponseWriter = w
+	rw.EDNS = e
+	rw.opt = opt
+	rw.size = size
+	rw.do = do
+	rw.cookie = cookie
+	rw.noedns = noedns
+	rw.nsid = nsid
+	rw.noad = !req.AuthenticatedData && !do
 
-		opt:    opt,
-		size:   size,
-		do:     do,
-		cookie: cookie,
-		noedns: noedns,
-		nsid:   nsid,
-		noad:   !req.AuthenticatedData && !do,
-	}
-
+	ch.Writer = rw
 	ch.Next(ctx)
-
 	ch.Writer = w
+
+	// Drop references before returning to the pool so downstream
+	// state (the wrapped writer, the request OPT, cookie text) can
+	// be collected with the current query.
+	*rw = ResponseWriter{}
+	responseWriterPool.Put(rw)
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ctx.ResponseWriter interface.
@@ -128,7 +140,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		m.AuthenticatedData = false
 	}
 
-	if w.Proto() == "udp" && m.Len() > w.size {
+	if w.Proto() == "udp" && udpOverflow(m, w.size) {
 		m.Truncated = true
 		m.Answer = []dns.RR{}
 		m.Ns = []dns.RR{}
@@ -161,3 +173,24 @@ func (w *ResponseWriter) setNSID() {
 }
 
 const name = "edns"
+
+// estMaxRRBytes is a realistic upper bound on the wire size of a
+// typical RR after name compression. A/AAAA/MX/NS/SOA/CNAME/TXT(small)
+// all fit comfortably; DNSKEY (~400) and RRSIG (~250) can exceed it, so
+// the heuristic falls back to m.Len() for those edge cases.
+const estMaxRRBytes = 200
+
+// udpOverflow reports whether a UDP response would exceed limit bytes
+// and therefore needs TC handling. It uses a cheap upper-bound check on
+// the RR count first so that small responses (hostsfile/cache hits,
+// NXDOMAIN/NODATA, single-A answers) never pay the cost of Msg.Len(),
+// which packs the whole message with a compression map just to measure.
+func udpOverflow(m *dns.Msg, limit int) bool {
+	rrCount := len(m.Answer) + len(m.Ns) + len(m.Extra)
+	// 12 header + rrCount * worst-case RR size. If that fits, the
+	// actual packed size fits for sure.
+	if 12+rrCount*estMaxRRBytes <= limit {
+		return false
+	}
+	return m.Len() > limit
+}
