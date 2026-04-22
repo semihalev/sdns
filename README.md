@@ -33,11 +33,19 @@ Download the latest release from the [GitHub Releases](https://github.com/semiha
 
 #### Docker
 
-*   [Docker Package](https://github.com/semihalev/sdns/packages/188181) (updated every release)
-*   [Docker Hub](https://hub.docker.com/r/c1982/sdns) (alternative)
+Multi-arch images (linux/amd64, linux/arm64) are published on every tagged release to both registries:
+
+*   [GitHub Container Registry](https://github.com/semihalev/sdns/pkgs/container/sdns): `ghcr.io/semihalev/sdns`
+*   [Docker Hub](https://hub.docker.com/r/c1982/sdns): `c1982/sdns`
 
 ```shell
-$ docker run -d --name sdns -p 53:53 -p 53:53/udp sdns
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:latest
+```
+
+Pin to a specific version (recommended for production):
+
+```shell
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.6.3
 ```
 
 #### Docker Compose
