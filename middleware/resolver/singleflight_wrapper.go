@@ -81,16 +81,22 @@ func (w *SingleflightWrapper) cleanupStuckQueries() {
 	}
 }
 
-// (*SingleflightWrapper).TimedDoChan timedDoChan executes a function with built-in timeout handling.
-func (w *SingleflightWrapper) TimedDoChan(ctx context.Context, key string, fn func() (any, error)) (any, error) {
+// (*SingleflightWrapper).TimedDoChan timedDoChan executes a function
+// with built-in timeout handling. The shared return reflects
+// singleflight.Result.Shared — true when the caller received a value
+// that was computed by another goroutine and may therefore be
+// concurrently observed. Callers that mutate or rewrite the value
+// (e.g. set a new message ID) should defensive-copy only when shared
+// is true; uncontended callers can return the value directly.
+func (w *SingleflightWrapper) TimedDoChan(ctx context.Context, key string, fn func() (any, error)) (val any, shared bool, err error) {
 	ch := w.DoChan(key, fn)
 
 	select {
 	case result := <-ch:
-		return result.Val, result.Err
+		return result.Val, result.Shared, result.Err
 	case <-ctx.Done():
 		// Context cancelled/timed out - forget the key
 		w.Forget(key)
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 }

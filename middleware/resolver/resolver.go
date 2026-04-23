@@ -286,11 +286,16 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
-	// Convert uint64 key to string for singleflight
-	key := strconv.FormatUint(cache.Key(q), 10)
+	// Key by question AND the authority set the caller is about to
+	// query. Two lookups for the same qname/qtype at different
+	// recursion stages (e.g. an unminimised root-side retry vs. a
+	// warm child-zone lookup) target different delegations, and
+	// collapsing them would silently cross-wire a referral/answer
+	// into the wrong request's cache tree.
+	key := strconv.FormatUint(cache.Key(q), 10) + "|" + servers.Zone
 
 	// Use TimedDoChan for automatic timeout handling
-	result, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
+	result, shared, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
 		return r.lookup(ctx, req, servers)
 	})
 
@@ -300,8 +305,12 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 
 	resp = result.(*dns.Msg)
 	if resp != nil {
-		// Always copy for concurrent safety when result is shared
-		resp = resp.Copy()
+		// Only copy when the response is actually shared with another
+		// goroutine. In the uncontended hot path we own the only
+		// reference and can mutate the ID in place.
+		if shared {
+			resp = resp.Copy()
+		}
 		resp.Id = req.Id
 	}
 
@@ -783,41 +792,61 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 	// Start a DNS query to a server
 	originalId := req.Id // Capture ID before goroutines start
 	queryServer := func(ctx context.Context, reqCopy *dns.Msg, server *authcache.AuthServer) {
-		// Ensure we release the slot when done
-		defer func() { <-r.maxConcurrent }()
 		defer ReleaseMsg(reqCopy)
 
-		// Check circuit breaker
-		if !r.circuitBreaker.canQuery(server.Addr) {
-			select {
-			case results <- result{err: fatalError(errConnectionFailed), server: server}:
-			case <-ctx.Done():
+		// releaseSlot frees the semaphore slot acquired by the main
+		// loop before this goroutine was launched. We must release
+		// before a blocking send on results (or before returning
+		// without a send), otherwise a small MaxConcurrentQueries
+		// setting deadlocks the lookup: the main loop blocks trying
+		// to acquire a slot for the next server while this worker
+		// holds its own slot blocked on a send the main loop never
+		// reaches.
+		slotReleased := false
+		releaseSlot := func() {
+			if !slotReleased {
+				<-r.maxConcurrent
+				slotReleased = true
 			}
+		}
+		defer releaseSlot()
+
+		var res result
+		res.server = server
+
+		switch {
+		case !r.circuitBreaker.canQuery(server.Addr):
+			res.err = fatalError(errConnectionFailed)
+		case ctx.Err() != nil:
 			return
+		default:
+			reqCopy.Id = dns.Id() // anti-spoofing
+			resp, err := r.exchange(ctx, "udp", reqCopy, server, 0)
+			if resp != nil {
+				resp.Id = originalId
+			}
+			switch {
+			case err != nil:
+				r.circuitBreaker.recordFailure(server.Addr)
+			case resp != nil:
+				// Any response from the authority — NOERROR,
+				// NXDOMAIN, NODATA — proves the server is
+				// reachable and answering, so reset the failure
+				// streak. Scoping recovery to RcodeSuccess only
+				// leaves healthy servers tripped when they keep
+				// (correctly) returning negative answers
+				// interleaved with transient timeouts.
+				r.circuitBreaker.recordSuccess(server.Addr)
+			}
+			res.resp = resp
+			res.err = err
 		}
 
-		// Check context first
-		if ctx.Err() != nil {
-			return
-		}
-
-		// Anti-spoofing: use random ID
-		reqCopy.Id = dns.Id()
-
-		resp, err := r.exchange(ctx, "udp", reqCopy, server, 0)
-		if resp != nil {
-			resp.Id = originalId // Restore original ID using captured value
-		}
-
-		// Record success or failure in circuit breaker
-		if err != nil {
-			r.circuitBreaker.recordFailure(server.Addr)
-		} else if resp != nil && resp.Rcode == dns.RcodeSuccess {
-			r.circuitBreaker.recordSuccess(server.Addr)
-		}
-
+		// Release before the send so the main loop can keep
+		// launching workers while we queue the result.
+		releaseSlot()
 		select {
-		case results <- result{resp: resp, err: err, server: server}:
+		case results <- res:
 		case <-ctx.Done():
 		}
 	}
@@ -1562,12 +1591,16 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {
+			// Keep going: one nameserver without an AAAA (or rate
+			// limited) must not prevent subsequent NSs in the
+			// delegation from contributing IPv6 addresses. The IPv4
+			// path in lookupV4Nss uses the same continue semantic.
 			zlog.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
-			return
+			continue
 		}
 
 		if len(addrs) == 0 {
-			return
+			continue
 		}
 
 		nsipv6[name] = addrs

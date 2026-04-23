@@ -46,7 +46,7 @@ func TestTimedDoChan(t *testing.T) {
 	// Test successful execution
 	t.Run("Success", func(t *testing.T) {
 		ctx := context.Background()
-		result, err := wrapper.TimedDoChan(ctx, "test-success", func() (any, error) {
+		result, _, err := wrapper.TimedDoChan(ctx, "test-success", func() (any, error) {
 			return "success", nil
 		})
 
@@ -66,7 +66,7 @@ func TestTimedDoChan(t *testing.T) {
 		// Start a slow query
 		done := make(chan struct{})
 		go func() {
-			_, err := wrapper.TimedDoChan(ctx, "test-cancel", func() (any, error) {
+			_, _, err := wrapper.TimedDoChan(ctx, "test-cancel", func() (any, error) {
 				time.Sleep(5 * time.Second)
 				return "should-not-complete", nil
 			})
@@ -104,7 +104,7 @@ func TestTimedDoChan(t *testing.T) {
 				defer wg.Done()
 
 				ctx := context.Background()
-				_, err := wrapper.TimedDoChan(ctx, "test-dedup", func() (any, error) {
+				_, _, err := wrapper.TimedDoChan(ctx, "test-dedup", func() (any, error) {
 					atomic.AddInt32(&callCount, 1)
 					time.Sleep(100 * time.Millisecond)
 					return "result", nil
