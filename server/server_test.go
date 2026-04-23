@@ -119,7 +119,7 @@ func generateCertificate() error {
 
 func Test_logPipe(t *testing.T) {
 	logReader, logWriter := io.Pipe()
-	go readlogs(logReader)
+	go readHTTPServerLogs(logReader)
 	_, _ = logWriter.Write([]byte("test test test test test test\n"))
 }
 
@@ -127,7 +127,7 @@ func Test_ServerNoBind(t *testing.T) {
 	cfg := &config.Config{}
 
 	s := New(cfg)
-	s.Run(context.Background())
+	_ = s.Run(context.Background())
 }
 
 func Test_ServerBindFail(t *testing.T) {
@@ -142,7 +142,7 @@ func Test_ServerBindFail(t *testing.T) {
 	cfg.BindDOQ = "1:4"
 
 	s := New(cfg)
-	s.Run(context.Background())
+	_ = s.Run(context.Background())
 }
 
 func Test_Server(t *testing.T) {
@@ -169,7 +169,7 @@ func Test_Server(t *testing.T) {
 	blocklist.Set("test.com.")
 
 	s := New(cfg)
-	s.Run(context.Background())
+	_ = s.Run(context.Background())
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)

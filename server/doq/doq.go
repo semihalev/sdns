@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -79,24 +80,29 @@ func (s *Server) ListenAndServeQUIC(tlsCert, tlsKey string) error {
 	return s.ListenAndServeQUICWithConfig(tlsConfig)
 }
 
-// ListenAndServeQUICWithConfig serves with a custom TLS config
+// ListenAndServeQUICWithConfig serves with a custom TLS config, binding
+// a new UDP socket at s.Addr. Prefer Serve when the caller already holds
+// a pre-bound socket (e.g. for SO_REUSEPORT or synchronous bind-error
+// reporting).
 func (s *Server) ListenAndServeQUICWithConfig(tlsConfig *tls.Config) error {
-	// Ensure DOQ protocols are set
-	if tlsConfig.NextProtos == nil {
-		tlsConfig = tlsConfig.Clone()
-		tlsConfig.NextProtos = doqProtos
-	}
-
-	quicConfig := &quic.Config{
-		MaxIdleTimeout:         5 * time.Second,
-		MaxStreamReceiveWindow: maxMsgSize,
-	}
-
-	listener, err := quic.ListenAddr(s.Addr, tlsConfig, quicConfig)
+	listener, err := quic.ListenAddr(s.Addr, doqTLSConfig(tlsConfig), doqQUICConfig())
 	if err != nil {
 		return err
 	}
+	return s.serveListener(listener)
+}
 
+// Serve accepts DoQ connections on a pre-bound UDP PacketConn. It is the
+// preferred entry point when the caller controls the socket lifecycle.
+func (s *Server) Serve(pc net.PacketConn, tlsConfig *tls.Config) error {
+	listener, err := quic.Listen(pc, doqTLSConfig(tlsConfig), doqQUICConfig())
+	if err != nil {
+		return err
+	}
+	return s.serveListener(listener)
+}
+
+func (s *Server) serveListener(listener *quic.Listener) error {
 	s.mu.Lock()
 	s.ln = listener
 	s.mu.Unlock()
@@ -106,8 +112,23 @@ func (s *Server) ListenAndServeQUICWithConfig(tlsConfig *tls.Config) error {
 		if err != nil {
 			return err
 		}
-
 		go s.handleConnection(conn)
+	}
+}
+
+func doqTLSConfig(in *tls.Config) *tls.Config {
+	if in.NextProtos == nil {
+		cloned := in.Clone()
+		cloned.NextProtos = doqProtos
+		return cloned
+	}
+	return in
+}
+
+func doqQUICConfig() *quic.Config {
+	return &quic.Config{
+		MaxIdleTimeout:         5 * time.Second,
+		MaxStreamReceiveWindow: maxMsgSize,
 	}
 }
 

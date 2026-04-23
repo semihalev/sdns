@@ -106,6 +106,53 @@ func TestServeDNS_Basic(t *testing.T) {
 	}
 }
 
+// TestServeDNS_PreservesHeaderBits guards the manual response
+// construction that bypasses miekg/dns SetReply. CheckingDisabled
+// and RecursionDesired are wire-visible header bits, and CD in
+// particular is used as part of the cache key elsewhere in sdns —
+// a clean-bit regression would silently poison cache lookups.
+func TestServeDNS_PreservesHeaderBits(t *testing.T) {
+	content := `127.0.0.1 localhost`
+	tmpFile := createTempHostsFile(t, content)
+	defer os.Remove(tmpFile)
+
+	h := &Hostsfile{path: tmpFile, ttl: 300}
+	require.NoError(t, h.load())
+
+	cases := []struct {
+		name string
+		cd   bool
+		rd   bool
+	}{
+		{"CD off / RD off", false, false},
+		{"CD off / RD on", false, true},
+		{"CD on  / RD on", true, true},
+		{"CD on  / RD off", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := new(dns.Msg)
+			req.SetQuestion("localhost.", dns.TypeA)
+			req.CheckingDisabled = tc.cd
+			req.RecursionDesired = tc.rd
+
+			w := mock.NewWriter("tcp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{h})
+			ch.Reset(w, req)
+			h.ServeDNS(context.Background(), ch)
+
+			require.True(t, w.Written())
+			resp := w.Msg()
+			require.NotNil(t, resp)
+
+			assert.Equal(t, tc.cd, resp.CheckingDisabled, "CheckingDisabled bit must round-trip")
+			assert.Equal(t, tc.rd, resp.RecursionDesired, "RecursionDesired bit must round-trip")
+			assert.True(t, resp.Response, "Response bit must be set")
+			assert.Equal(t, req.Id, resp.Id)
+		})
+	}
+}
+
 func TestServeDNS_EdgeCases(t *testing.T) {
 	content := `127.0.0.1 localhost`
 	tmpFile := createTempHostsFile(t, content)

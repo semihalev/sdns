@@ -1,6 +1,7 @@
 package authcache
 
 import (
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,13 @@ type AuthServer struct {
 	Count   int64
 	Addr    string
 	Version Version
+
+	// UDPAddr is Addr pre-parsed as *net.UDPAddr so the upstream
+	// exchange path can use net.DialUDP directly instead of going
+	// through Dialer.DialContext's string-parsing + dialParallel
+	// machinery. Nil only if Addr failed to parse — callers fall
+	// back to the string path in that case.
+	UDPAddr *net.UDPAddr
 }
 
 // Version type.
@@ -27,12 +35,18 @@ const (
 	IPv6 Version = 0x2
 )
 
-// NewAuthServer return a new server.
+// NewAuthServer return a new server. addr is expected to be an
+// "IP:port" pair — the IP is parsed once here so upstream exchanges
+// can skip Go's DialContext address-resolution path.
 func NewAuthServer(addr string, version Version) *AuthServer {
-	return &AuthServer{
+	s := &AuthServer{
 		Addr:    addr,
 		Version: version,
 	}
+	if ua, err := net.ResolveUDPAddr("udp", addr); err == nil {
+		s.UDPAddr = ua
+	}
+	return s
 }
 
 func (v Version) String() string {

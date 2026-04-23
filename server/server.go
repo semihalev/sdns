@@ -1,51 +1,37 @@
 package server
 
 import (
-	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
-	"fmt"
-	"io"
-	l "log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/mock"
 	"github.com/semihalev/sdns/server/doh"
-	"github.com/semihalev/sdns/server/doq"
 	"github.com/semihalev/zlog/v2"
 )
 
 // Server type.
 type Server struct {
-	addr           string
-	tlsAddr        string
-	dohAddr        string
-	doqAddr        string
-	tlsCertificate string
-	tlsPrivateKey  string
-
-	udpStarted  atomic.Bool
-	tcpStarted  atomic.Bool
-	tlsStarted  atomic.Bool
-	dohStarted  atomic.Bool
-	doh3Started atomic.Bool
-	doqStarted  atomic.Bool
+	cfg *config.Config
 
 	chainPool   sync.Pool
-	cfg         *config.Config
 	certManager *CertManager
 	certMu      sync.Mutex
+
+	listenersMu sync.Mutex
+	listeners   []Listener
+	active      []Listener
+
+	running atomic.Int32
 }
 
 // New return new server.
@@ -54,21 +40,30 @@ func New(cfg *config.Config) *Server {
 		cfg.Bind = ":53"
 	}
 
-	server := &Server{
-		addr:           cfg.Bind,
-		tlsAddr:        cfg.BindTLS,
-		dohAddr:        cfg.BindDOH,
-		doqAddr:        cfg.BindDOQ,
-		tlsCertificate: cfg.TLSCertificate,
-		tlsPrivateKey:  cfg.TLSPrivateKey,
-		cfg:            cfg,
-	}
-
-	server.chainPool.New = func() any {
+	s := &Server{cfg: cfg}
+	s.chainPool.New = func() any {
 		return middleware.NewChain(middleware.Handlers())
 	}
 
-	return server
+	timeout := cfg.QueryTimeout.Duration
+	s.listeners = []Listener{
+		newUDPListener(cfg.Bind, s, timeout),
+		newTCPListener(cfg.Bind, s, timeout),
+	}
+	if cfg.BindTLS != "" {
+		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, s, s, timeout))
+	}
+	if cfg.BindDOH != "" {
+		s.listeners = append(s.listeners,
+			newDOHListener(cfg.BindDOH, s, s, timeout),
+			newDOH3Listener(cfg.BindDOH, s, s),
+		)
+	}
+	if cfg.BindDOQ != "" {
+		s.listeners = append(s.listeners, newDOQListener(cfg.BindDOQ, s, s))
+	}
+
+	return s
 }
 
 // (*Server).ServeDNS serveDNS implements the Handle interface.
@@ -81,24 +76,22 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	ch.Next(context.Background())
 }
 
+// ServeHTTP implements http.Handler (DoH + DoH3).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-
 	w.Header().Set("Server", "sdns")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if r.ProtoMajor < 3 {
-		_, port, _ := net.SplitHostPort(s.dohAddr)
+		_, port, _ := net.SplitHostPort(s.cfg.BindDOH)
 		w.Header().Set("Alt-Svc", `h3=":`+port+`"; ma=2592000`)
 	}
 
 	handle := func(req *dns.Msg) *dns.Msg {
 		mw := mock.NewWriter("doh", r.RemoteAddr)
 		s.ServeDNS(mw, req)
-
 		if !mw.Written() {
 			return nil
 		}
-
 		return mw.Msg()
 	}
 
@@ -108,331 +101,133 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		handlerFn = doh.HandleWireFormat(handle)
 	}
-
 	handlerFn(w, r)
 }
 
-// (*Server).Run run listen the services.
-func (s *Server) Run(ctx context.Context) {
-	go s.ListenAndServeDNS(ctx, "udp") //nolint:gosec // G118 - ctx is the server lifecycle context, not request-scoped
-	go s.ListenAndServeDNS(ctx, "tcp") //nolint:gosec // G118
-	go s.ListenAndServeDNSTLS(ctx)     //nolint:gosec // G118
-	go s.ListenAndServeHTTPTLS(ctx)    //nolint:gosec // G118
-	go s.ListenAndServeH3(ctx)
-	go s.ListenAndServeQUIC(ctx)
-}
+// Run binds every configured listener synchronously, returns a non-nil
+// error if a critical listener (plain DNS UDP/TCP) could not bind, and
+// otherwise spawns Serve goroutines that run until ctx is cancelled.
+// Run itself is non-blocking — main waits on ctx and polls Stopped
+// for graceful shutdown.
+func (s *Server) Run(ctx context.Context) error {
+	s.listenersMu.Lock()
+	listeners := append([]Listener(nil), s.listeners...)
+	s.listenersMu.Unlock()
 
-// (*Server).ListenAndServeDNS listenAndServeDNS Starts a server on address and network specified Invoke handler
-// for incoming queries.
-func (s *Server) ListenAndServeDNS(ctx context.Context, network string) error {
-	zlog.Info("DNS server listening...", "net", network, "addr", s.addr)
-
-	srv := &dns.Server{
-		Addr:          s.addr,
-		Net:           network,
-		Handler:       s,
-		MaxTCPQueries: 2048,
-		ReusePort:     true,
+	active, err := bindAll(ctx, listeners)
+	if err != nil {
+		// An optional TLS / DoH / DoQ bind may have run to completion
+		// before the critical failure, which lazily spins up the
+		// shared CertManager (fsnotify watcher goroutine + cert
+		// reload state). Release it here so the process doesn't leak
+		// the watcher after Run returns non-nil.
+		s.Stop()
+		return err
 	}
 
-	if network == "tcp" {
-		s.tcpStarted.Store(true)
-	} else {
-		s.udpStarted.Store(true)
-	}
+	s.listenersMu.Lock()
+	s.active = active
+	s.listenersMu.Unlock()
 
-	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			if network == "tcp" {
-				s.tcpStarted.Store(false)
-			} else {
-				s.udpStarted.Store(false)
+	for _, l := range active {
+		s.running.Add(1)
+		go func(l Listener) {
+			defer s.running.Add(-1)
+			if err := l.Serve(ctx); err != nil {
+				zlog.Error("listener stopped with error",
+					"proto", l.Proto(), "addr", l.Addr(), "error", err.Error())
 			}
-			zlog.Error("DNS listener failed", "net", network, "addr", s.addr, "error", err.Error())
-		}
-	}()
+		}(l)
+	}
 
+	// Supervisor: on ctx cancellation, shut every active listener down.
+	go s.superviseShutdown(ctx, active)
+	return nil
+}
+
+func (s *Server) superviseShutdown(ctx context.Context, active []Listener) {
 	<-ctx.Done()
 
-	zlog.Info("DNS server stopping...", "net", network, "addr", s.addr)
-
-	dnsCtx, cancel := context.WithTimeout(context.Background(), s.cfg.QueryTimeout.Duration)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout())
 	defer cancel()
-
-	if err := srv.ShutdownContext(dnsCtx); err != nil {
-		zlog.Error("Shutdown dns server failed:", "net", network, "addr", s.addr, "error", err.Error())
-	}
-
-	if network == "tcp" {
-		s.tcpStarted.Store(false)
-	} else {
-		s.udpStarted.Store(false)
-	}
-
-	return nil
-}
-
-// (*Server).ListenAndServeDNSTLS listenAndServeDNSTLS acts like http.ListenAndServeTLS.
-func (s *Server) ListenAndServeDNSTLS(ctx context.Context) error {
-	if s.tlsAddr == "" {
-		return nil
-	}
-
-	// Get or create certificate manager
-	cm, err := s.getOrCreateCertManager()
-	if err != nil {
-		zlog.Error("DNS-over-TLS disabled due to certificate error", "addr", s.tlsAddr, "error", err.Error())
-		// Don't fail the entire server, just skip this service
-		return nil
-	}
-
-	zlog.Info("DNS server listening...", "net", "tls", "addr", s.tlsAddr)
-
-	srv := &dns.Server{
-		Addr:          s.tlsAddr,
-		Net:           "tcp-tls",
-		Handler:       s,
-		MaxTCPQueries: 2048,
-		ReusePort:     true,
-		TLSConfig:     cm.GetTLSConfig(),
-	}
-
-	s.tlsStarted.Store(true)
-
-	go func() {
-		if err := srv.ListenAndServe(); err != nil {
-			s.tlsStarted.Store(false)
-			zlog.Error("DNS listener failed", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
+	for _, l := range active {
+		if err := l.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+			zlog.Error("listener shutdown failed",
+				"proto", l.Proto(), "addr", l.Addr(), "error", err.Error())
 		}
-	}()
-
-	<-ctx.Done()
-
-	zlog.Info("DNS server stopping...", "net", "tls", "addr", s.tlsAddr)
-
-	dnsCtx, cancel := context.WithTimeout(context.Background(), s.cfg.QueryTimeout.Duration)
-	defer cancel()
-
-	if err := srv.ShutdownContext(dnsCtx); err != nil {
-		zlog.Error("Shutdown dns server failed:", "net", "tls", "addr", s.tlsAddr, "error", err.Error())
 	}
-
-	s.tlsStarted.Store(false)
-
-	return nil
 }
 
-// (*Server).ListenAndServeHTTPTLS listenAndServeHTTPTLS acts like http.ListenAndServeTLS.
-func (s *Server) ListenAndServeHTTPTLS(ctx context.Context) error {
-	if s.dohAddr == "" {
-		return nil
+func (s *Server) shutdownTimeout() time.Duration {
+	if t := s.cfg.QueryTimeout.Duration; t > 0 {
+		return t
 	}
+	return 10 * time.Second
+}
 
-	// Get or create certificate manager
-	cm, err := s.getOrCreateCertManager()
-	if err != nil {
-		zlog.Error("DNS-over-HTTPS disabled due to certificate error", "addr", s.dohAddr, "error", err.Error())
-		// Don't fail the entire server, just skip this service
-		return nil
-	}
-
-	zlog.Info("DNS server listening...", "net", "doh", "addr", s.dohAddr)
-
-	logReader, logWriter := io.Pipe()
-	go readlogs(logReader)
-
-	srv := &http.Server{
-		Addr:         s.dohAddr,
-		Handler:      s,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		ErrorLog:     l.New(logWriter, "", 0),
-		TLSConfig:    cm.GetTLSConfig(),
-	}
-
-	s.dohStarted.Store(true)
-
-	go func() {
-		// Use ListenAndServeTLS with empty cert/key paths since TLSConfig has GetCertificate
-		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.dohStarted.Store(false)
-			zlog.Error("DNS listener failed", "net", "doh", "addr", s.dohAddr, "error", err.Error())
+// HasListener reports whether a listener with the given proto tag is
+// actually serving right now — stricter than "Bind succeeded". DoH3
+// and DoQ do their real QUIC bring-up inside Serve, so checking only
+// membership in s.active can report success even when the transport
+// never started. Asking the listener via Serving() gives the truth.
+func (s *Server) HasListener(proto string) bool {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	for _, l := range s.active {
+		if l.Proto() == proto && l.Serving() {
+			return true
 		}
-	}()
-
-	<-ctx.Done()
-
-	zlog.Info("DNS server stopping...", "net", "doh", "addr", s.dohAddr)
-
-	dohCtx, cancel := context.WithTimeout(context.Background(), s.cfg.QueryTimeout.Duration)
-	defer cancel()
-
-	if err := srv.Shutdown(dohCtx); err != nil {
-		zlog.Error("Shutdown dns server failed:", "net", "doh", "addr", s.dohAddr, "error", err.Error())
 	}
-
-	s.dohStarted.Store(false)
-
-	return nil
+	return false
 }
 
-// (*Server).ListenAndServeH3 listenAndServeH3.
-func (s *Server) ListenAndServeH3(ctx context.Context) error {
-	if s.dohAddr == "" {
-		return nil
-	}
-
-	// Get or create certificate manager
-	cm, err := s.getOrCreateCertManager()
-	if err != nil {
-		zlog.Error("DNS-over-HTTPS/3 disabled due to certificate error", "addr", s.dohAddr, "error", err.Error())
-		// Don't fail the entire server, just skip this service
-		return nil
-	}
-
-	zlog.Info("DNS server listening...", "net", "doh-h3", "addr", s.dohAddr)
-
-	srv := &http3.Server{
-		Addr:      s.dohAddr,
-		Handler:   s,
-		TLSConfig: cm.GetTLSConfig(),
-		QUICConfig: &quic.Config{
-			Allow0RTT: true,
-		},
-	}
-
-	s.doh3Started.Store(true)
-
-	go func() {
-		// Empty cert paths since TLSConfig has GetCertificate
-		if err := srv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.doh3Started.Store(false)
-			zlog.Error("DNS listener failed", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
-		}
-	}()
-
-	<-ctx.Done()
-
-	zlog.Info("DNS server stopping...", "net", "doh-h3", "addr", s.dohAddr)
-
-	if err := srv.Close(); err != nil {
-		zlog.Error("Shutdown dns server failed:", "net", "doh-h3", "addr", s.dohAddr, "error", err.Error())
-	}
-
-	s.doh3Started.Store(false)
-
-	return nil
-}
-
-// (*Server).ListenAndServeQUIC listenAndServeQUIC.
-func (s *Server) ListenAndServeQUIC(ctx context.Context) error {
-	if s.doqAddr == "" {
-		return nil
-	}
-
-	// Get or create certificate manager
-	cm, err := s.getOrCreateCertManager()
-	if err != nil {
-		zlog.Error("DNS-over-QUIC disabled due to certificate error", "addr", s.doqAddr, "error", err.Error())
-		// Don't fail the entire server, just skip this service
-		return nil
-	}
-
-	srv := &doq.Server{
-		Addr:    s.doqAddr,
-		Handler: s,
-	}
-
-	zlog.Info("DNS server listening...", "net", "doq", "addr", s.doqAddr)
-
-	s.doqStarted.Store(true)
-
-	go func() {
-		tlsConfig := cm.GetTLSConfig()
-		if err := srv.ListenAndServeQUICWithConfig(tlsConfig); err != nil && !errors.Is(err, quic.ErrServerClosed) {
-			s.doqStarted.Store(false)
-			zlog.Error("DNS listener failed", "net", "doq", "addr", s.doqAddr, "error", err.Error())
-		}
-	}()
-
-	<-ctx.Done()
-
-	zlog.Info("DNS server stopping...", "net", "doq", "addr", s.doqAddr)
-
-	if err := srv.Shutdown(); err != nil {
-		zlog.Error("Shutdown dns server failed:", "net", "doq", "addr", s.doqAddr, "error", err.Error())
-	}
-
-	s.doqStarted.Store(false)
-
-	return nil
-}
-
-func (s *Server) Stopped() bool {
-	if s.udpStarted.Load() || s.tcpStarted.Load() || s.tlsStarted.Load() || s.dohStarted.Load() || s.doh3Started.Load() || s.doqStarted.Load() {
-		return false
-	}
-
-	return true
-}
-
-// getOrCreateCertManager safely gets or creates the certificate manager
-func (s *Server) getOrCreateCertManager() (*CertManager, error) {
+// GetTLSConfig satisfies certProvider. It lazily materialises the shared
+// CertManager on first TLS listener Bind and hands out its live TLS
+// config (with rotation hooks) to each listener that asks.
+func (s *Server) GetTLSConfig() *tls.Config {
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
 
 	if s.certManager != nil {
-		return s.certManager, nil
+		return s.certManager.GetTLSConfig()
 	}
 
-	if s.tlsCertificate == "" || s.tlsPrivateKey == "" {
-		return nil, fmt.Errorf("no TLS certificate configured")
+	if s.cfg.TLSCertificate == "" || s.cfg.TLSPrivateKey == "" {
+		return nil
 	}
 
-	cm, err := NewCertManager(s.tlsCertificate, s.tlsPrivateKey)
+	cm, err := NewCertManager(s.cfg.TLSCertificate, s.cfg.TLSPrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create certificate manager: %w", err)
+		zlog.Error("certificate manager init failed", "error", err.Error())
+		return nil
 	}
-
 	s.certManager = cm
-	return cm, nil
+	return cm.GetTLSConfig()
 }
 
-// Stop cleans up server resources
+// Stopped reports whether every Serve goroutine has exited.
+// Used by sdns.go for graceful-shutdown polling.
+func (s *Server) Stopped() bool {
+	return s.running.Load() == 0
+}
+
+// Stop releases long-lived resources (currently just the cert manager).
 func (s *Server) Stop() {
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
-
 	if s.certManager != nil {
 		s.certManager.Stop()
 		s.certManager = nil
 	}
 }
 
-// ReloadCertificate forces a certificate reload on all TLS servers
+// ReloadCertificate forces a certificate reload on all TLS listeners.
 func (s *Server) ReloadCertificate() error {
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
-
 	if s.certManager == nil {
-		return fmt.Errorf("no certificate manager configured")
+		return errors.New("no certificate manager configured")
 	}
-
 	zlog.Info("Reloading TLS certificate")
 	return s.certManager.Reload()
-}
-
-func readlogs(rd io.Reader) {
-	buf := bufio.NewReader(rd)
-	for {
-		line, err := buf.ReadBytes('\n')
-		if err != nil {
-			continue
-		}
-
-		parts := strings.SplitN(string(line[:len(line)-1]), " ", 2)
-		if len(parts) > 1 {
-			zlog.Warn("Client http socket failed", "net", "https", "error", parts[1])
-		}
-	}
 }
