@@ -15,7 +15,8 @@ func TestHeadlessServiceEndpoints(t *testing.T) {
 	t.Run("killer_mode", func(t *testing.T) {
 		cfg := &config.Config{
 			Kubernetes: config.KubernetesConfig{
-				Enabled:    true,
+				Enabled:    false,
+				Demo:       true,
 				KillerMode: true,
 			},
 		}
@@ -103,7 +104,8 @@ func TestHeadlessServiceEndpoints(t *testing.T) {
 	t.Run("boring_mode", func(t *testing.T) {
 		cfg := &config.Config{
 			Kubernetes: config.KubernetesConfig{
-				Enabled:    true,
+				Enabled:    false,
+				Demo:       true,
 				KillerMode: false,
 			},
 		}
@@ -147,7 +149,8 @@ func TestHeadlessServiceEndpoints(t *testing.T) {
 func TestHeadlessServiceNoEndpoints(t *testing.T) {
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:    true,
+			Enabled:    false,
+			Demo:       true,
 			KillerMode: true,
 		},
 	}

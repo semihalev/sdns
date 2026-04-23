@@ -12,11 +12,28 @@ type PrefetchStrategy struct {
 
 	// Namespace-aware patterns
 	namespacePatterns map[string][]string
+
+	// clusterDomain drives the FQDNs this strategy constructs
+	// for prefetch hints. Defaults to "cluster.local"; the
+	// Kubernetes middleware calls SetClusterDomain to honour
+	// a custom cfg.Kubernetes.ClusterDomain.
+	clusterDomain string
+	svcSuffix     string // ".svc." + domain + "."
+}
+
+// SetClusterDomain configures the cluster suffix used when
+// building predicted service FQDNs.
+func (ps *PrefetchStrategy) SetClusterDomain(domain string) {
+	if domain == "" {
+		domain = "cluster.local"
+	}
+	ps.clusterDomain = domain
+	ps.svcSuffix = ".svc." + domain + "."
 }
 
 // NewPrefetchStrategy creates a new prefetch strategy with common patterns
 func NewPrefetchStrategy() *PrefetchStrategy {
-	return &PrefetchStrategy{
+	p := &PrefetchStrategy{
 		servicePatterns: map[string][]string{
 			// Web services often need their backends
 			"frontend": {"backend", "api", "auth"},
@@ -56,6 +73,8 @@ func NewPrefetchStrategy() *PrefetchStrategy {
 			"istio-system": {"istio-pilot", "istio-citadel", "istio-galley"},
 		},
 	}
+	p.SetClusterDomain("cluster.local")
+	return p
 }
 
 // GetRelatedServices returns services likely to be queried together
@@ -64,12 +83,12 @@ func (ps *PrefetchStrategy) GetRelatedServices(service, namespace string) []stri
 	seen := make(map[string]bool)
 
 	// Extract base service name (remove common suffixes)
-	baseName := extractBaseName(service)
+	baseName := extractBaseName(service, ps.clusterDomain)
 
 	// Check exact matches
 	if patterns, ok := ps.servicePatterns[baseName]; ok {
 		for _, pattern := range patterns {
-			fullName := pattern + "." + namespace + ".svc.cluster.local."
+			fullName := pattern + "." + namespace + ps.svcSuffix
 			if !seen[fullName] {
 				related = append(related, fullName)
 				seen[fullName] = true
@@ -82,7 +101,7 @@ func (ps *PrefetchStrategy) GetRelatedServices(service, namespace string) []stri
 		if strings.HasSuffix(baseName, suffix) {
 			prefix := strings.TrimSuffix(baseName, suffix)
 			for _, pattern := range patterns {
-				fullName := prefix + pattern + "." + namespace + ".svc.cluster.local."
+				fullName := prefix + pattern + "." + namespace + ps.svcSuffix
 				if !seen[fullName] {
 					related = append(related, fullName)
 					seen[fullName] = true
@@ -94,7 +113,7 @@ func (ps *PrefetchStrategy) GetRelatedServices(service, namespace string) []stri
 	// Check namespace patterns
 	if patterns, ok := ps.namespacePatterns[namespace]; ok {
 		for _, pattern := range patterns {
-			fullName := pattern + "." + namespace + ".svc.cluster.local."
+			fullName := pattern + "." + namespace + ps.svcSuffix
 			if !seen[fullName] && !strings.Contains(service, pattern) {
 				related = append(related, fullName)
 				seen[fullName] = true
@@ -105,8 +124,8 @@ func (ps *PrefetchStrategy) GetRelatedServices(service, namespace string) []stri
 	// Add common infrastructure services from kube-system
 	if namespace != "kube-system" {
 		commonServices := []string{
-			"kube-dns.kube-system.svc.cluster.local.",
-			"metrics-server.kube-system.svc.cluster.local.",
+			"kube-dns.kube-system" + ps.svcSuffix,
+			"metrics-server.kube-system" + ps.svcSuffix,
 		}
 		for _, svc := range commonServices {
 			if !seen[svc] {
@@ -132,11 +151,14 @@ func (ps *PrefetchStrategy) ShouldPrefetchType(currentType uint16, service strin
 	return types
 }
 
-// extractBaseName removes common domain suffixes to get base service name
-func extractBaseName(service string) string {
+// extractBaseName removes common domain suffixes to get base service name.
+func extractBaseName(service, clusterDomain string) string {
+	if clusterDomain == "" {
+		clusterDomain = "cluster.local"
+	}
 	// Remove FQDN suffix
-	name := strings.TrimSuffix(service, ".svc.cluster.local.")
-	name = strings.TrimSuffix(name, ".cluster.local.")
+	name := strings.TrimSuffix(service, ".svc."+clusterDomain+".")
+	name = strings.TrimSuffix(name, "."+clusterDomain+".")
 
 	// Get just the service name (not namespace)
 	parts := strings.Split(name, ".")
@@ -157,7 +179,7 @@ func (ps *PrefetchStrategy) GetPrefetchPriority(service string, confidence float
 		"ingress", "istio", "linkerd", "database", "cache",
 	}
 
-	baseName := extractBaseName(service)
+	baseName := extractBaseName(service, ps.clusterDomain)
 	for _, critical := range criticalServices {
 		if strings.Contains(baseName, critical) {
 			priority *= 1.5 // 50% boost

@@ -14,7 +14,8 @@ import (
 type PrefetchRequest struct {
 	Request *dns.Msg
 	Key     uint64
-	Cache   *Cache // Reference to the cache to store prefetched results
+	Cache   *Cache      // Reference to the cache to store prefetched results
+	Entry   *CacheEntry // Entry that claimed the prefetch; used to release the claim on failure/drop
 }
 
 // PrefetchQueue manages prefetch requests with worker pool.
@@ -84,7 +85,11 @@ func (pq *PrefetchQueue) worker() {
 	}
 }
 
-// processPrefetch executes a prefetch request.
+// processPrefetch executes a prefetch request. The claim on
+// req.Entry is released on any path that doesn't produce a
+// fresh replacement entry — otherwise a failed or empty
+// prefetch would leave prefetch=true on the hot entry and
+// ShouldPrefetch would stay false until unrelated expiry.
 func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	ctx, cancel := context.WithTimeout(pq.ctx, 5*time.Second)
 	defer cancel()
@@ -98,10 +103,14 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	resp, err := util.ExchangeInternal(ctx, prefetchReq)
 	if err != nil {
 		zlog.Debug("Prefetch failed", "query", formatQuestion(req.Request.Question[0]), "error", err.Error())
+		releasePrefetchClaim(req.Entry)
 		return
 	}
 
-	// Store the response in cache if we have a cache reference
+	// Store the response in cache if we have a cache reference.
+	// Cache.Set replaces the entry (new entry's prefetch flag
+	// defaults to false), so we only need to release the claim
+	// explicitly on the no-answer path.
 	if req.Cache != nil && resp != nil && len(resp.Answer) > 0 {
 		// Log TTL information for debugging
 		minTTL := uint32(0)
@@ -114,10 +123,21 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 		// Use the key that was passed in the request
 		req.Cache.Set(req.Key, resp)
 		zlog.Debug("Prefetch stored in cache", "query", formatQuestion(req.Request.Question[0]), "answers", len(resp.Answer), "minTTL", minTTL)
+	} else {
+		releasePrefetchClaim(req.Entry)
 	}
 
 	pq.metrics.Prefetch()
 	zlog.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]))
+}
+
+// releasePrefetchClaim clears the prefetch flag so future
+// cache hits can attempt another prefetch. Called from the
+// drop path and from failure/no-answer paths in the worker.
+func releasePrefetchClaim(entry *CacheEntry) {
+	if entry != nil {
+		entry.prefetch.Store(false)
+	}
 }
 
 // formatQuestion formats a DNS question for logging.

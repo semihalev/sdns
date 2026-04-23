@@ -22,6 +22,10 @@ func Test_BlockList(t *testing.T) {
 	cfg.Nullroute = "0.0.0.0"
 	cfg.Nullroutev6 = "::0"
 	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
+	// loadInitial now reads local files synchronously; drop any
+	// state a previous run persisted so Length assertions below
+	// aren't polluted.
+	_ = os.RemoveAll(cfg.BlockListDir)
 
 	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)

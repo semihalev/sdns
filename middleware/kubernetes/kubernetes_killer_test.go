@@ -13,7 +13,8 @@ import (
 func TestKillerMode(t *testing.T) {
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:       true,
+			Enabled:       false,
+			Demo:          true,
 			ClusterDomain: "cluster.local",
 			KillerMode:    true,
 		},
@@ -162,8 +163,8 @@ func TestHighPerformanceCacheFunctionality(t *testing.T) {
 
 	// Check stats
 	stats := cache.Stats()
-	if stats["zero_alloc"] != true {
-		t.Error("Cache not reporting zero-alloc")
+	if _, has := stats["zero_alloc"]; !has {
+		t.Error("cache stats missing zero_alloc")
 	}
 }
 

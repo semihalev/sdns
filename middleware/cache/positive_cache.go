@@ -23,21 +23,22 @@ func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetr
 }
 
 // (*PositiveCache).Get get retrieves an entry from the positive cache.
+// Hit/Miss metrics are NOT recorded here — checkCache consults both
+// positive and negative caches per request and records the aggregate
+// result once, so pushing metrics in here would double-count both
+// sides of a single miss.
 func (pc *PositiveCache) Get(key uint64) (*CacheEntry, bool) {
 	v, ok := pc.cache.Get(key)
 	if !ok {
-		pc.metrics.Miss()
 		return nil, false
 	}
 
 	entry := v.(*CacheEntry)
 	if entry.IsExpired() {
 		pc.cache.Remove(key)
-		pc.metrics.Miss()
 		return nil, false
 	}
 
-	pc.metrics.Hit()
 	return entry, true
 }
 

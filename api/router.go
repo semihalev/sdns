@@ -59,7 +59,10 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(k, v)
 	}
 
-	if len(r.URL.Path) > 2048 {
+	// Tree.canBeStatic is sized [2048], so the longest valid index
+	// is 2047. A path of exactly 2048 bytes would index out of
+	// range and panic; reject it as Bad Request instead.
+	if len(r.URL.Path) >= 2048 {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}

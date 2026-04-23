@@ -61,10 +61,26 @@ func New(cfg *config.Config) *Cache {
 		RateLimit:   cfg.RateLimit,
 	}
 
-	// Validate configuration
+	// Validate configuration and actually apply defaults when
+	// validation fails. Previously the log claimed fallback
+	// behaviour that never happened — an omitted cachesize
+	// passed Size=0 straight into NewPositiveCache/NewNegativeCache
+	// (each got 0/2 = 0 entries), reducing the cache to one
+	// entry and causing severe churn.
 	if err := cacheConfig.Validate(); err != nil {
-		// Log error but continue with defaults
 		zlog.Warn("Cache configuration validation failed, using defaults", "error", err.Error())
+		if cacheConfig.Size < 1024 {
+			cacheConfig.Size = 1024
+		}
+		if cacheConfig.Prefetch < 0 || cacheConfig.Prefetch > 90 {
+			cacheConfig.Prefetch = 0
+		}
+		if cacheConfig.MinTTL < 0 {
+			cacheConfig.MinTTL = minTTL
+		}
+		if cacheConfig.MaxTTL < cacheConfig.MinTTL {
+			cacheConfig.MaxTTL = maxTTL
+		}
 	}
 
 	// Adjust prefetch percentage
@@ -139,58 +155,79 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Generate deduplication key (matches V1 behavior: uses TypeNULL)
-	dedupKey := CacheKey{Question: dns.Question{Name: q.Name, Qtype: dns.TypeNULL, Qclass: dns.ClassINET}, CD: false}.Hash()
-
-	// Deduplicate concurrent requests for the same query name
-	if !w.Internal() {
-		c.wg.Wait(dedupKey)
-	}
-
-	// Generate cache lookup key with actual question type and CD flag
+	// Cache key uses (name, qtype, class, CD) — same granularity
+	// as the dedup key so followers release into a lookup that
+	// matches what the leader wrote.
 	cacheKey := CacheKey{Question: q, CD: req.CheckingDisabled}.Hash()
 
-	// Check cache
+	// Hot path: cache check before dedup. Concurrent cache hits
+	// used to take the waitgroup lock and allocate a Join
+	// context/timer even when the entry was already live.
 	if entry := c.checkCache(cacheKey); entry != nil {
-		// Skip cache for internal prefetch queries (like old implementation)
 		if w.Internal() && entry.prefetch.Load() {
-			// This is a prefetch query, skip cache and go to resolver
+			// Prefetch path: fall through to the resolver.
 		} else if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 			return
 		}
 	}
 
-	// Cache miss - proceed with resolution
+	// Miss. Dedup upstream work: followers wait for the leader
+	// to finish, then re-check the cache — the leader may have
+	// just filled it. Followers that still see a miss (leader
+	// failed, or wrote a response that didn't cache) proceed
+	// to run the upstream chain themselves.
+	//
+	// Followers do NOT call Done: they never registered as a
+	// participant (Join only bumps the dup counter for the
+	// leader). Calling Done from a follower would either
+	// over-decrement the counter or cancel the leader's
+	// context out from under them.
 	if !w.Internal() {
-		c.wg.Add(dedupKey)
-		defer c.wg.Done(dedupKey)
+		if wait := c.wg.Join(cacheKey); wait != nil {
+			<-wait
+			if entry := c.checkCache(cacheKey); entry != nil {
+				if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+					return
+				}
+			}
+		} else {
+			defer c.wg.Done(cacheKey)
+		}
 	}
 
-	// Use pooled response writer
+	// Use pooled response writer. Restore via defer so a
+	// downstream panic that gets recovered upstream still
+	// unwraps this chain before it returns to the pool; a
+	// non-deferred restore would leave the pooled Chain with
+	// a stale cache wrapper pointed at freed state.
 	rw := c.writerPool.Get().(*ResponseWriter)
 	rw.ResponseWriter = w
 	rw.cache = c
 	ch.Writer = rw
+	defer func() {
+		ch.Writer = w
+		c.writerPool.Put(rw)
+	}()
 
 	ch.Next(ctx)
-
-	// Return writer to pool
-	ch.Writer = w
-	c.writerPool.Put(rw)
 }
 
-// checkCache checks both positive and negative caches.
+// checkCache checks both positive and negative caches and records
+// a single Hit/Miss metric per call. Sub-cache Get no longer
+// records its own metrics, so a miss in the positive cache that
+// then hits the negative cache (or vice versa) counts once.
 func (c *Cache) checkCache(key uint64) *CacheEntry {
-	// Check positive cache first
 	if entry, ok := c.positive.Get(key); ok {
+		c.metrics.Hit()
 		return entry
 	}
 
-	// Check negative cache
 	if entry, ok := c.negative.Get(key); ok {
+		c.metrics.Hit()
 		return entry
 	}
 
+	c.metrics.Miss()
 	return nil
 }
 
@@ -206,14 +243,22 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		return true
 	}
 
-	// Check if prefetch is needed
+	// Check if prefetch is needed. The prefetch claim (CAS on
+	// entry.prefetch) must be released if Add drops the
+	// request, otherwise the hot entry stays with
+	// prefetch=true and ShouldPrefetch returns false until an
+	// unrelated expiry or replacement clears it — prefetch
+	// would silently disable itself for that key.
 	if c.prefetchQueue != nil && entry.ShouldPrefetch(c.config.Prefetch) {
 		if entry.prefetch.CompareAndSwap(false, true) {
-			c.prefetchQueue.Add(PrefetchRequest{
+			if !c.prefetchQueue.Add(PrefetchRequest{
 				Request: req.Copy(),
 				Key:     key,
 				Cache:   c,
-			})
+				Entry:   entry,
+			}) {
+				entry.prefetch.Store(false)
+			}
 		}
 	}
 

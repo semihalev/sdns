@@ -39,19 +39,35 @@ type ZeroAllocCache struct {
 	stores uint64
 }
 
-// Fixed-size cache entry
+// Fixed-size cache entry. Payload access (keyHash, wire,
+// wireLen, expiry, occupied) is synchronised through mu:
+// readers take RLock, writers take Lock. The earlier seqlock
+// design still read the payload with ordinary loads while a
+// writer held an odd seq, which is a data race under the Go
+// memory model even if the retry logic discarded the snapshot.
 type zeroAllocEntry struct {
+	mu       sync.RWMutex
 	keyHash  uint64                 // Hash of domain + qtype
 	wire     [CacheMaxWireSize]byte // Wire format DNS message (CacheMaxWireSize bytes for EDNS0 support)
 	wireLen  uint16                 // Actual length of wire data
 	expiry   int64                  // Unix timestamp
-	occupied int32                  // Atomic flag: 0=empty, 1=occupied
+	occupied int32                  // 0=empty, 1=occupied (guarded by mu)
 }
 
 const (
 	maxEntries = CacheMaxEntries  // Total cache entries
 	indexSize  = CacheIndexSize   // Must be power of 2
 	lockStripe = CacheLockStripes // Number of lock stripes
+
+	// Linear-probing sentinels. An index slot is either:
+	//   indexEmpty     (-1): never used — probes stop here
+	//   indexTombstone (-2): deleted — probes must keep going
+	//   >= 0                : entry index
+	// Tombstones are required because a plain -1 in the middle
+	// of a probe cluster would hide later entries that hashed
+	// to the same initial bucket.
+	indexEmpty     int32 = -1
+	indexTombstone int32 = -2
 )
 
 // NewZeroAllocCache creates a truly zero-allocation cache
@@ -62,9 +78,9 @@ func NewZeroAllocCache() *ZeroAllocCache {
 		ring:    make([]int32, maxEntries),
 	}
 
-	// Initialize index with -1 (no entry)
+	// Initialize index as empty
 	for i := range c.index {
-		c.index[i] = -1
+		c.index[i] = indexEmpty
 	}
 
 	// Initialize ring buffer
@@ -79,32 +95,74 @@ func NewZeroAllocCache() *ZeroAllocCache {
 	return c
 }
 
-// GetEntry returns a direct pointer to the wire format data
-// This achieves TRUE zero allocation by returning the actual buffer
-// IMPORTANT: Caller MUST NOT modify the returned data!
+// GetEntry returns a copy of the cached wire format data.
+//
+// Walks the probe cluster directly: the stripe lock guards
+// the index read, then the entry's own RWMutex guards payload
+// validation and the wire copy. Lock ordering is strict —
+// stripe lock is released before taking an entry lock, so the
+// inverse path (entry lock then stripe lock in
+// removeFromIndex) cannot deadlock.
 func (c *ZeroAllocCache) GetEntry(qname string, qtype uint16) []byte {
 	hash := hashKey(qname, qtype)
-	idx := c.findEntry(hash)
+	bucket := hash & (indexSize - 1)
 
-	if idx < 0 {
-		atomic.AddUint64(&c.misses, 1)
-		return nil
+	for i := 0; i < CacheLinearProbeSize; i++ {
+		testBucket := (bucket + uint64(i)) & (indexSize - 1) //nolint:gosec // G115 - i bounded
+		lockIdx := testBucket & (lockStripe - 1)
+
+		c.locks[lockIdx].RLock()
+		idx := c.index[testBucket]
+		c.locks[lockIdx].RUnlock()
+
+		if idx == indexEmpty {
+			break
+		}
+		if idx == indexTombstone {
+			continue
+		}
+
+		entry := &c.entries[idx]
+		entry.mu.RLock()
+		if entry.occupied != 1 || entry.keyHash != hash {
+			entry.mu.RUnlock()
+			continue
+		}
+
+		now := time.Now().Unix()
+		if now > entry.expiry {
+			entry.mu.RUnlock()
+			// Upgrade to exclusive and recheck: another
+			// writer may have reused the slot in the gap.
+			// Only remove the index slot if we were the ones
+			// that actually marked this entry expired —
+			// otherwise a concurrent refresh that replaced
+			// this entry for the same hash would lose its
+			// fresh index.
+			entry.mu.Lock()
+			cleared := false
+			if entry.occupied == 1 && entry.keyHash == hash && time.Now().Unix() > entry.expiry {
+				entry.occupied = 0
+				cleared = true
+			}
+			entry.mu.Unlock()
+			if cleared {
+				c.removeFromIndex(hash, idx)
+			}
+			atomic.AddUint64(&c.misses, 1)
+			return nil
+		}
+
+		out := make([]byte, entry.wireLen)
+		copy(out, entry.wire[:entry.wireLen])
+		entry.mu.RUnlock()
+
+		atomic.AddUint64(&c.hits, 1)
+		return out
 	}
 
-	entry := &c.entries[idx]
-
-	// Check expiry
-	if time.Now().Unix() > entry.expiry {
-		atomic.StoreInt32(&entry.occupied, 0)
-		atomic.AddUint64(&c.misses, 1)
-		return nil
-	}
-
-	atomic.AddUint64(&c.hits, 1)
-
-	// Return slice pointing to the actual buffer - ZERO ALLOCATIONS!
-	// This is safe because we never modify cached entries
-	return entry.wire[:entry.wireLen]
+	atomic.AddUint64(&c.misses, 1)
+	return nil
 }
 
 // allocateEntry gets the next entry using ring buffer (LRU)
@@ -122,79 +180,99 @@ func (c *ZeroAllocCache) allocateEntry() int32 {
 
 	idx := c.ring[head]
 
-	// Clear old entry if occupied
+	// Clear the old entry under its write lock so a concurrent
+	// reader holding the RLock either sees the still-live
+	// payload or waits until we've cleared occupied.
 	oldEntry := &c.entries[idx]
-	if atomic.LoadInt32(&oldEntry.occupied) == 1 {
-		// Remove from index
-		c.removeFromIndex(oldEntry.keyHash)
-		atomic.StoreInt32(&oldEntry.occupied, 0)
+	oldEntry.mu.Lock()
+	stale := oldEntry.occupied == 1
+	staleHash := oldEntry.keyHash
+	if stale {
+		oldEntry.occupied = 0
+	}
+	oldEntry.mu.Unlock()
+	if stale {
+		c.removeFromIndex(staleHash, idx)
 	}
 
 	return idx
 }
 
-// findEntry looks up entry by hash
-func (c *ZeroAllocCache) findEntry(hash uint64) int32 {
-	bucket := hash & (indexSize - 1)
-	lockIdx := bucket & (lockStripe - 1)
-
-	c.locks[lockIdx].RLock()
-	idx := c.index[bucket]
-	c.locks[lockIdx].RUnlock()
-
-	if idx < 0 {
-		return -1
-	}
-
-	// Verify hash matches (collision handling)
-	entry := &c.entries[idx]
-	if atomic.LoadInt32(&entry.occupied) == 1 && entry.keyHash == hash {
-		return idx
-	}
-
-	// Linear probe for collisions
-	for i := 1; i < CacheLinearProbeSize; i++ {
-		bucket = (bucket + 1) & (indexSize - 1)
-
-		lockIdx = bucket & (lockStripe - 1)
-		c.locks[lockIdx].RLock()
-		idx = c.index[bucket]
-		c.locks[lockIdx].RUnlock()
-
-		if idx < 0 {
-			break
-		}
-
-		entry = &c.entries[idx]
-		if atomic.LoadInt32(&entry.occupied) == 1 && entry.keyHash == hash {
-			return idx
-		}
-	}
-
-	return -1
-}
-
-// updateIndex updates the hash index
+// updateIndex updates the hash index.
+//
+// An update for an already-indexed hash must replace the
+// existing slot, not append to the probe chain. The previous
+// implementation inserted at the first empty slot, so a
+// repeated store for the same key left the stale index ahead
+// of the new one; once the stale entry's occupied flag flipped
+// (expiry / ring eviction) findEntry hit a -1 bucket and
+// stopped before reaching the fresh duplicate — hot keys
+// effectively turned refresh-ineffective until unrelated ring
+// pressure cleared them.
 func (c *ZeroAllocCache) updateIndex(hash uint64, entryIdx int32) {
 	bucket := hash & (indexSize - 1)
 
-	// Linear probe to find empty slot
+	// Walk the full probe cluster first to see if this hash is
+	// already indexed — replacing in place avoids duplicate
+	// slots for the same key. Also remember the first
+	// empty-or-tombstoned slot; either is safe to reuse if no
+	// existing slot is found.
+	firstFree := int64(-1)
 	for i := 0; i < CacheLinearProbeSize; i++ {
 		testBucket := (bucket + uint64(i)) & (indexSize - 1) //nolint:gosec // G115 - i is bounded by probe size
 		lockIdx := testBucket & (lockStripe - 1)
 
 		c.locks[lockIdx].Lock()
-		if c.index[testBucket] < 0 {
+		idx := c.index[testBucket]
+		if idx == indexEmpty || idx == indexTombstone {
+			if firstFree < 0 {
+				firstFree = int64(testBucket)
+			}
+			c.locks[lockIdx].Unlock()
+			// indexEmpty ends the cluster; no need to probe further
+			// for an existing match because hash-equal entries
+			// would have been placed before this empty slot.
+			if idx == indexEmpty {
+				break
+			}
+			continue
+		}
+		// keyHash is payload data guarded by entry.mu, not the
+		// stripe lock held here. Compare under RLock so we
+		// don't race a concurrent StoreWire that's mid-write
+		// on the same entry.
+		entry := &c.entries[idx]
+		entry.mu.RLock()
+		match := entry.keyHash == hash
+		entry.mu.RUnlock()
+		if match {
 			c.index[testBucket] = entryIdx
 			c.locks[lockIdx].Unlock()
 			return
 		}
 		c.locks[lockIdx].Unlock()
 	}
+
+	if firstFree < 0 {
+		return
+	}
+	lockIdx := uint64(firstFree) & (lockStripe - 1) //nolint:gosec // G115 - firstFree < indexSize
+	c.locks[lockIdx].Lock()
+	if cur := c.index[firstFree]; cur == indexEmpty || cur == indexTombstone {
+		c.index[firstFree] = entryIdx
+	}
+	c.locks[lockIdx].Unlock()
 }
 
-// removeFromIndex removes entry from index
-func (c *ZeroAllocCache) removeFromIndex(hash uint64) {
+// removeFromIndex clears the index slot that points at
+// entryIdx. Matching on entry index (not just hash) is
+// critical: after updateIndex replaces the slot for a hash
+// with a newer entry, the displaced old entry still carries
+// that keyHash. Later expiry/eviction of the old entry must
+// not walk the probe chain, spot the fresh slot (same hash),
+// and wipe it — removal targets the specific entry being
+// cleaned up.
+func (c *ZeroAllocCache) removeFromIndex(hash uint64, entryIdx int32) {
 	bucket := hash & (indexSize - 1)
 
 	for i := 0; i < CacheLinearProbeSize; i++ {
@@ -203,13 +281,17 @@ func (c *ZeroAllocCache) removeFromIndex(hash uint64) {
 
 		c.locks[lockIdx].Lock()
 		idx := c.index[testBucket]
-		if idx >= 0 {
-			entry := &c.entries[idx]
-			if entry.keyHash == hash {
-				c.index[testBucket] = -1
-				c.locks[lockIdx].Unlock()
-				return
-			}
+		if idx == indexEmpty {
+			// Walked off the cluster — target isn't indexed.
+			c.locks[lockIdx].Unlock()
+			return
+		}
+		if idx == entryIdx {
+			// Tombstone, not empty: a later probe for a
+			// colliding key must keep walking past this slot.
+			c.index[testBucket] = indexTombstone
+			c.locks[lockIdx].Unlock()
+			return
 		}
 		c.locks[lockIdx].Unlock()
 	}
@@ -224,9 +306,16 @@ func (c *ZeroAllocCache) expiryLoop() {
 		now := time.Now().Unix()
 		for i := range c.entries {
 			entry := &c.entries[i]
-			if atomic.LoadInt32(&entry.occupied) == 1 && now > entry.expiry {
-				c.removeFromIndex(entry.keyHash)
-				atomic.StoreInt32(&entry.occupied, 0)
+			entry.mu.Lock()
+			expiredHash := uint64(0)
+			expired := entry.occupied == 1 && now > entry.expiry
+			if expired {
+				expiredHash = entry.keyHash
+				entry.occupied = 0
+			}
+			entry.mu.Unlock()
+			if expired {
+				c.removeFromIndex(expiredHash, int32(i)) //nolint:gosec // G115 - i < maxEntries, fits in int32
 			}
 		}
 	}
@@ -343,16 +432,19 @@ func (c *ZeroAllocCache) StoreWire(qname string, qtype uint16, wire []byte, ttl 
 	idx := c.allocateEntry()
 	entry := &c.entries[idx]
 
-	// Store data
+	// Publish under the entry's write lock. Readers holding
+	// RLock on this entry will wait until we unlock; from
+	// their perspective the entry transitions atomically from
+	// "old state" to "fully-formed new state".
+	entry.mu.Lock()
 	entry.keyHash = hash
 	copy(entry.wire[:], wire)                     // Copy into pre-allocated buffer
 	entry.wireLen = uint16(len(wire))             //nolint:gosec // G115 - wire length is bounded by DNS message size
 	entry.expiry = time.Now().Unix() + int64(ttl) //nolint:gosec // G115 - TTL is uint32, fits in int64
+	entry.occupied = 1
+	entry.mu.Unlock()
 
-	// Mark as occupied BEFORE updating index so findEntry can see it
-	atomic.StoreInt32(&entry.occupied, 1)
-
-	// Update index
+	// Update index after the entry is fully published.
 	c.updateIndex(hash, idx)
 
 	atomic.AddUint64(&c.stores, 1)
@@ -360,14 +452,15 @@ func (c *ZeroAllocCache) StoreWire(qname string, qtype uint16, wire []byte, ttl 
 
 // Clear clears the cache (for tests)
 func (c *ZeroAllocCache) Clear() {
-	// Mark all entries as unoccupied
 	for i := range c.entries {
-		atomic.StoreInt32(&c.entries[i].occupied, 0)
+		c.entries[i].mu.Lock()
+		c.entries[i].occupied = 0
+		c.entries[i].mu.Unlock()
 	}
 
 	// Clear index
 	for i := range c.index {
-		c.index[i] = -1
+		c.index[i] = indexEmpty
 	}
 
 	// Reset stats
@@ -391,11 +484,18 @@ func (c *ZeroAllocCache) Stats() map[string]any {
 	// Count occupied entries
 	occupied := 0
 	for i := range c.entries {
-		if atomic.LoadInt32(&c.entries[i].occupied) == 1 {
+		c.entries[i].mu.RLock()
+		if c.entries[i].occupied == 1 {
 			occupied++
 		}
+		c.entries[i].mu.RUnlock()
 	}
 
+	// GetEntry returns a heap copy of the wire bytes so the
+	// caller can safely Unpack/WriteMsg without racing the
+	// ring allocator. That means cache hits are no longer
+	// strictly zero-allocation — report this honestly instead
+	// of claiming zero_alloc=true and hiding a regression.
 	return map[string]any{
 		"hits":       hits,
 		"misses":     misses,
@@ -403,7 +503,7 @@ func (c *ZeroAllocCache) Stats() map[string]any {
 		"hit_rate":   hitRate,
 		"size":       occupied,
 		"capacity":   maxEntries,
-		"zero_alloc": true,
+		"zero_alloc": false,
 	}
 }
 

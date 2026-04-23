@@ -30,6 +30,14 @@ type ShardedRegistry struct {
 	ttlPod     uint32
 	ttlSRV     uint32
 	ttlPTR     uint32
+
+	// Cluster domain suffixes, derived once in SetClusterDomain
+	// so ResolveQuery / resolveSRV / resolveReverse can honour a
+	// custom cfg.Kubernetes.ClusterDomain instead of the
+	// previously hardcoded "cluster.local".
+	clusterDomain string
+	svcSuffix     string // ".svc." + domain + "."
+	podSuffix     string // ".pod." + domain + "."
 }
 
 // serviceShard holds services for one shard
@@ -59,6 +67,7 @@ func NewShardedRegistry() *ShardedRegistry {
 		ttlSRV:     DefaultSRVTTL,
 		ttlPTR:     DefaultPTRTTL,
 	}
+	r.SetClusterDomain("cluster.local")
 
 	// Initialize all shards
 	for i := 0; i < 256; i++ {
@@ -74,6 +83,20 @@ func NewShardedRegistry() *ShardedRegistry {
 	}
 
 	return r
+}
+
+// SetClusterDomain configures the cluster suffix used for
+// suffix matching and PTR/SRV target construction. Must be
+// called before the registry starts answering queries; the
+// Kubernetes middleware calls it from New once it knows
+// cfg.Kubernetes.ClusterDomain.
+func (r *ShardedRegistry) SetClusterDomain(domain string) {
+	if domain == "" {
+		domain = "cluster.local"
+	}
+	r.clusterDomain = domain
+	r.svcSuffix = ".svc." + domain + "."
+	r.podSuffix = ".pod." + domain + "."
 }
 
 // SetTTLs sets custom TTL values
@@ -105,10 +128,10 @@ func (r *ShardedRegistry) ResolveQuery(qname string, qtype uint16) ([]dns.RR, bo
 
 	// Check query pattern
 	switch {
-	case strings.HasSuffix(qname, ".svc.cluster.local."):
+	case strings.HasSuffix(qname, r.svcSuffix):
 		return r.resolveService(labels, qtype)
 
-	case strings.HasSuffix(qname, ".pod.cluster.local."):
+	case strings.HasSuffix(qname, r.podSuffix):
 		return r.resolvePod(labels, qtype)
 
 	case strings.HasSuffix(qname, ".in-addr.arpa."), strings.HasSuffix(qname, ".ip6.arpa."):
@@ -192,7 +215,10 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 				}
 			}
 
-			return answers, len(answers) > 0
+			// Pod exists — return authoritative NOERROR (NODATA
+			// when the family isn't registered) instead of
+			// falling through to the recursive resolver.
+			return answers, true
 		}
 	}
 
@@ -227,6 +253,24 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 	// For headless services, resolve to endpoint IPs
 	if svc.Headless {
 		return r.resolveHeadlessService(key, qname, qtype)
+	}
+
+	// ExternalName services are aliases; return the CNAME for
+	// any qtype so the recursive resolver chases it. Only
+	// emitting the CNAME for TypeCNAME/ANY (as the earlier
+	// code did for A/AAAA) made normal K8s clients see an
+	// empty NOERROR and fail to resolve the target.
+	if svc.ExternalName != "" {
+		answers = append(answers, &dns.CNAME{
+			Hdr: dns.RR_Header{
+				Name:   qname,
+				Rrtype: dns.TypeCNAME,
+				Class:  dns.ClassINET,
+				Ttl:    r.ttlPod,
+			},
+			Target: dns.Fqdn(svc.ExternalName),
+		})
+		return answers, true
 	}
 
 	switch qtype {
@@ -268,21 +312,12 @@ func (r *ShardedRegistry) resolveService(labels []string, qtype uint16) ([]dns.R
 			}
 		}
 
-	case dns.TypeCNAME:
-		if svc.ExternalName != "" {
-			answers = append(answers, &dns.CNAME{
-				Hdr: dns.RR_Header{
-					Name:   qname,
-					Rrtype: dns.TypeCNAME,
-					Class:  dns.ClassINET,
-					Ttl:    r.ttlPod,
-				},
-				Target: svc.ExternalName,
-			})
-		}
 	}
 
-	return answers, len(answers) > 0
+	// Service exists — return authoritative NOERROR/NODATA
+	// when the requested family isn't registered, instead of
+	// letting the middleware leak the query upstream.
+	return answers, true
 }
 
 // resolvePod handles pod queries
@@ -348,7 +383,9 @@ func (r *ShardedRegistry) resolvePod(labels []string, qtype uint16) ([]dns.RR, b
 		}
 	}
 
-	return answers, len(answers) > 0
+	// Pod exists — authoritative NOERROR/NODATA for unsupported
+	// families rather than fallthrough.
+	return answers, true
 }
 
 // resolveSRV handles SRV queries
@@ -378,7 +415,7 @@ func (r *ShardedRegistry) resolveSRV(labels []string) ([]dns.RR, bool) {
 	for _, p := range svc.Ports {
 		if p.Name == port && strings.EqualFold(p.Protocol, protocol) {
 			qname := strings.Join(labels, ".") + "."
-			target := service + "." + namespace + ".svc.cluster.local."
+			target := service + "." + namespace + r.svcSuffix
 
 			return []dns.RR{
 				&dns.SRV{
@@ -419,7 +456,7 @@ func (r *ShardedRegistry) resolveReverse(labels []string) ([]dns.RR, bool) {
 	if ok {
 		qname := strings.Join(labels, ".") + "."
 		// Format pod IP for DNS (handles both IPv4 and IPv6)
-		target := FormatPodIP(ip) + "." + pod.Namespace + ".pod.cluster.local."
+		target := FormatPodIP(ip) + "." + pod.Namespace + r.podSuffix
 
 		return []dns.RR{
 			&dns.PTR{
@@ -442,7 +479,7 @@ func (r *ShardedRegistry) resolveReverse(labels []string) ([]dns.RR, bool) {
 				if net.IP(clusterIP).Equal(ip) {
 					r.serviceShards[i].mu.RUnlock()
 					qname := strings.Join(labels, ".") + "."
-					target := svc.Name + "." + svc.Namespace + ".svc.cluster.local."
+					target := svc.Name + "." + svc.Namespace + r.svcSuffix
 
 					return []dns.RR{
 						&dns.PTR{
@@ -485,6 +522,16 @@ func (r *ShardedRegistry) AddService(svc *Service) {
 	shard.mu.Unlock()
 }
 
+// DeleteService removes a service from the registry.
+func (r *ShardedRegistry) DeleteService(name, namespace string) {
+	key := namespace + "/" + name
+	shard := r.getServiceShard(key)
+
+	shard.mu.Lock()
+	delete(shard.services, key)
+	shard.mu.Unlock()
+}
+
 // AddPod adds or updates a pod
 func (r *ShardedRegistry) AddPod(pod *Pod) {
 	if pod == nil {
@@ -515,6 +562,22 @@ func (r *ShardedRegistry) AddPod(pod *Pod) {
 
 		shard.mu.Lock()
 		shard.pods[key] = pod
+		shard.mu.Unlock()
+	}
+}
+
+// DeletePod removes a pod from all shards where its IPs were
+// indexed. Pods are keyed by IP, so deletion scans every shard
+// looking for matching (name, namespace). This is O(shards) and
+// only fires on pod-delete informer events.
+func (r *ShardedRegistry) DeletePod(name, namespace string) {
+	for _, shard := range r.podShards {
+		shard.mu.Lock()
+		for ip, pod := range shard.pods {
+			if pod.Name == name && pod.Namespace == namespace {
+				delete(shard.pods, ip)
+			}
+		}
 		shard.mu.Unlock()
 	}
 }
@@ -622,7 +685,11 @@ func (r *ShardedRegistry) resolveHeadlessService(key, qname string, qtype uint16
 		}
 	}
 
-	return answers, len(answers) > 0
+	// Service exists — return authoritative NOERROR (NODATA
+	// when the requested family isn't present among endpoints)
+	// rather than letting the middleware fall through to the
+	// recursive resolver.
+	return answers, true
 }
 
 // SetEndpoints sets endpoints for a service
@@ -684,6 +751,13 @@ func (r *ShardedRegistry) GetStats() map[string]int64 {
 	queries := atomic.LoadUint64(&r.queries)
 	hits := atomic.LoadUint64(&r.hits)
 
+	// Guard before any traffic — dividing by zero here produced
+	// NaN, and the subsequent int64(NaN) conversion is undefined.
+	var hitRate int64
+	if queries > 0 {
+		hitRate = int64(float64(hits) / float64(queries) * 100)
+	}
+
 	return map[string]int64{
 		"services":      services,
 		"pods":          pods,
@@ -691,6 +765,6 @@ func (r *ShardedRegistry) GetStats() map[string]int64 {
 		"queries":       int64(queries), //nolint:gosec // G115 - counter conversion
 		"hits":          int64(hits),    //nolint:gosec // G115 - counter conversion
 		"shards":        256,
-		"hit_rate_pct":  int64(float64(hits) / float64(queries) * 100),
+		"hit_rate_pct":  hitRate,
 	}
 }

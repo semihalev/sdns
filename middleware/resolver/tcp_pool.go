@@ -158,8 +158,18 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 		}
 	}
 
-	// Store in appropriate pool
+	// Store in appropriate pool. If another goroutine already
+	// returned an idle connection for this server, keep the existing
+	// one (it's at least as warm) and close this one — otherwise
+	// the overwrite would leak the displaced FD and make p.active
+	// drift from the number of open sockets.
 	poolMap := p.getPoolMap(isRoot, isTLD)
+	if existing, ok := poolMap[server]; ok {
+		existing.lastUsed = time.Now()
+		conn.Close() //nolint:gosec // G104 - connection cleanup
+		zlog.Debug("TCP connection pool already warm for server, closing duplicate", "server", server)
+		return
+	}
 	poolMap[server] = pooled
 	p.active++
 

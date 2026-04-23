@@ -63,27 +63,12 @@ var (
 	}
 )
 
-func (b *BlockList) fetchBlocklists() {
+// loadInitial applies configured whitelist/blocklist entries and
+// reads any existing local blocklist files. Runs synchronously
+// from New so filtering is active before the first query.
+func (b *BlockList) loadInitial() {
 	if b.cfg.BlockListDir == "" {
 		b.cfg.BlockListDir = filepath.Join(b.cfg.Directory, "blacklists")
-	}
-
-	<-time.After(time.Second)
-
-	if err := b.updateBlocklists(); err != nil {
-		zlog.Error("Update blocklists failed", "error", err.Error())
-	}
-
-	if err := b.readBlocklists(); err != nil {
-		zlog.Error("Read blocklists failed", "dir", b.cfg.BlockListDir, "error", err.Error())
-	}
-}
-
-func (b *BlockList) updateBlocklists() error {
-	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
-		if err := os.Mkdir(b.cfg.BlockListDir, 0750); err != nil {
-			return fmt.Errorf("error creating blacklist directory: %w", err)
-		}
 	}
 
 	b.mu.Lock()
@@ -96,9 +81,31 @@ func (b *BlockList) updateBlocklists() error {
 		b.set(entry)
 	}
 
+	if _, err := os.Stat(b.cfg.BlockListDir); err == nil {
+		if err := b.readBlocklists(); err != nil {
+			zlog.Warn("Read local blocklists failed", "dir", b.cfg.BlockListDir, "error", err.Error())
+		}
+	}
+}
+
+// refreshRemote downloads remote blocklists and re-reads the
+// directory to merge the refreshed entries. Runs as a goroutine
+// so New can return once local state is loaded.
+func (b *BlockList) refreshRemote() {
+	<-time.After(time.Second)
+
+	if _, err := os.Stat(b.cfg.BlockListDir); os.IsNotExist(err) {
+		if err := os.Mkdir(b.cfg.BlockListDir, 0750); err != nil {
+			zlog.Error("Create blocklist directory failed", "error", err.Error())
+			return
+		}
+	}
+
 	b.fetchBlocklist()
 
-	return nil
+	if err := b.readBlocklists(); err != nil {
+		zlog.Error("Read blocklists after refresh failed", "dir", b.cfg.BlockListDir, "error", err.Error())
+	}
 }
 
 func (b *BlockList) downloadBlocklist(uri, name string) error {
@@ -176,7 +183,18 @@ func (b *BlockList) readBlocklists() error {
 		return nil
 	}
 
-	err := filepath.Walk(b.cfg.BlockListDir, func(path string, f os.FileInfo, _ error) error {
+	err := filepath.Walk(b.cfg.BlockListDir, func(path string, f os.FileInfo, walkErr error) error {
+		// When Walk reports an error (unreadable dir, concurrent
+		// removal, permission flip), f may be nil. Log and skip
+		// that entry instead of dereferencing nil and panicking
+		// the background updater.
+		if walkErr != nil {
+			zlog.Warn("Skipping blocklist path", "path", path, "error", walkErr.Error())
+			return nil
+		}
+		if f == nil {
+			return nil
+		}
 		if !f.IsDir() {
 			file, err := os.Open(path) //nolint:gosec // G304 - path from walk, not user input
 			if err != nil {
@@ -225,26 +243,27 @@ func (b *BlockList) parseHostFile(file *os.File) error {
 
 		// Parse hosts file format (IP domain)
 		fields := strings.Fields(line)
-		switch len(fields) {
-		case 0:
+		if len(fields) == 0 {
 			continue
-		case 1:
-			// Just a domain
-			line = fields[0]
-		default:
-			// IP address followed by domain(s)
-			// Skip if second field is a comment
-			if strings.HasPrefix(fields[1], "#") {
-				line = fields[0]
-			} else {
-				line = fields[1]
-			}
 		}
-
-		// Canonicalize and add if not exists
-		line = dns.CanonicalName(line)
-		if !b.Exists(line) {
-			b.set(line)
+		// hosts-style "<ip> <name> [name...]" lines can list
+		// multiple aliases; take every name field. For a bare
+		// domain line, fields[0] is itself the name. An inline
+		// "#" starts a trailing comment.
+		var names []string
+		if len(fields) == 1 {
+			names = fields
+		} else {
+			names = fields[1:]
+		}
+		for _, n := range names {
+			if strings.HasPrefix(n, "#") {
+				break
+			}
+			canonical := dns.CanonicalName(n)
+			if !b.Exists(canonical) {
+				b.set(canonical)
+			}
 		}
 	}
 

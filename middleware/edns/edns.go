@@ -89,14 +89,16 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.noad = !req.AuthenticatedData && !do
 
 	ch.Writer = rw
+	// Restore via defer so a downstream panic that a higher-up
+	// recovery swallows still unwraps this chain before it
+	// returns to the pool — otherwise the next request picks
+	// up a stale EDNS wrapper.
+	defer func() {
+		ch.Writer = w
+		*rw = ResponseWriter{}
+		responseWriterPool.Put(rw)
+	}()
 	ch.Next(ctx)
-	ch.Writer = w
-
-	// Drop references before returning to the pool so downstream
-	// state (the wrapped writer, the request OPT, cookie text) can
-	// be collected with the current query.
-	*rw = ResponseWriter{}
-	responseWriterPool.Put(rw)
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ctx.ResponseWriter interface.

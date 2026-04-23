@@ -171,9 +171,10 @@ func TestCache_Metrics(t *testing.T) {
 		t.Errorf("expected 10 hits, got %d", hits)
 	}
 
-	// Each cache miss checks both positive and negative caches, so we get 2 misses per request
-	if misses != 20 {
-		t.Errorf("expected 20 misses (2 per request), got %d", misses)
+	// checkCache records one aggregate miss per request across
+	// both positive and negative subcaches.
+	if misses != 10 {
+		t.Errorf("expected 10 misses, got %d", misses)
 	}
 
 	// Test cache stats
@@ -183,16 +184,16 @@ func TestCache_Metrics(t *testing.T) {
 		t.Errorf("expected stats hits=10, got %v", stats["hits"])
 	}
 
-	if stats["misses"] != int64(20) {
-		t.Errorf("expected stats misses=20, got %v", stats["misses"])
+	if stats["misses"] != int64(10) {
+		t.Errorf("expected stats misses=10, got %v", stats["misses"])
 	}
 
 	hitRate, ok := stats["hit_rate"].(float64)
 	if !ok {
 		t.Error("hit_rate not found in stats")
 	} else {
-		// With 10 hits and 20 misses, hit rate should be 10/30 = 33.33%
-		expectedRate := (10.0 / 30.0) * 100
+		// With 10 hits and 10 misses, hit rate should be 10/20 = 50%
+		expectedRate := (10.0 / 20.0) * 100
 		if math.Abs(hitRate-expectedRate) > 0.01 {
 			t.Errorf("expected hit rate %.2f%%, got %.2f%%", expectedRate, hitRate)
 		}

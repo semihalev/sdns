@@ -111,7 +111,20 @@ func (r *Resolver) isClusterQuery(qname string) bool {
 		strings.HasSuffix(qname, ".ip6.arpa.")
 }
 
-// parseQuery parses a DNS query
+// parseQuery parses a DNS query.
+//
+// Shapes after the cluster-domain suffix is stripped:
+//
+//	<service>.<namespace>.svc                      (3 labels) — plain service
+//	<pod>.<service>.<namespace>.svc                (4 labels) — StatefulSet pod
+//	_<port>._<proto>.<service>.<namespace>.svc     (5+ labels) — SRV
+//	<pod-ip>.<namespace>.pod                       (3 labels) — pod by IP
+//
+// The old parser classified every ".svc" name as a service and
+// only matched StatefulSet pods by looking for untrimmed "svc",
+// "cluster", "local" labels — which never appear once the
+// cluster domain has been stripped, so StatefulSet pod FQDNs
+// always resolved as services and returned NXDOMAIN.
 func (r *Resolver) parseQuery(qname string) *queryParts {
 	// Handle PTR queries (both IPv4 and IPv6)
 	if strings.HasSuffix(qname, ".in-addr.arpa.") || strings.HasSuffix(qname, ".ip6.arpa.") {
@@ -124,9 +137,8 @@ func (r *Resolver) parseQuery(qname string) *queryParts {
 
 	labels := strings.Split(name, ".")
 
-	// Service: name.namespace.svc
 	if len(labels) >= 3 && labels[len(labels)-1] == "svc" {
-		// Check for SRV: _port._protocol.name.namespace.svc
+		// SRV: _port._protocol.service.namespace.svc
 		if len(labels) >= 5 && strings.HasPrefix(labels[0], "_") {
 			return &queryParts{
 				queryType: qtypeSRV,
@@ -137,10 +149,23 @@ func (r *Resolver) parseQuery(qname string) *queryParts {
 			}
 		}
 
-		return &queryParts{
-			queryType: qtypeService,
-			service:   strings.Join(labels[0:len(labels)-2], "."),
-			namespace: labels[len(labels)-2],
+		// StatefulSet pod: pod.service.namespace.svc
+		if len(labels) == 4 {
+			return &queryParts{
+				queryType: qtypePod,
+				pod:       labels[0],
+				service:   labels[1],
+				namespace: labels[2],
+			}
+		}
+
+		// Plain service: service.namespace.svc
+		if len(labels) == 3 {
+			return &queryParts{
+				queryType: qtypeService,
+				service:   labels[0],
+				namespace: labels[1],
+			}
 		}
 	}
 
@@ -152,17 +177,6 @@ func (r *Resolver) parseQuery(qname string) *queryParts {
 				namespace: labels[len(labels)-2],
 				ip:        ip,
 			}
-		}
-	}
-
-	// StatefulSet pod: pod-name.service.namespace.svc.cluster.local
-	if len(labels) >= 6 && labels[len(labels)-3] == "svc" &&
-		labels[len(labels)-2] == "cluster" && labels[len(labels)-1] == "local" {
-		return &queryParts{
-			queryType: qtypePod,
-			pod:       labels[0],
-			service:   strings.Join(labels[1:len(labels)-4], "."),
-			namespace: labels[len(labels)-4],
 		}
 	}
 
@@ -193,19 +207,23 @@ func (r *Resolver) resolveService(parts *queryParts, qname string, qtype uint16)
 
 	resp := &Response{Rcode: dns.RcodeSuccess}
 
-	// Handle ExternalName
+	// Handle ExternalName. Normal Kubernetes clients resolve
+	// ExternalName services with A or AAAA queries and expect
+	// the alias CNAME in the answer so the recursive resolver
+	// follows it. Restricting the CNAME to TypeCNAME/ANY broke
+	// that usual flow. Emit the CNAME for any qtype — the
+	// resolver chains to the target and asks for the desired
+	// record type there.
 	if svc.Type == "ExternalName" && svc.ExternalName != "" {
-		if qtype == dns.TypeCNAME || qtype == dns.TypeANY {
-			resp.Answer = append(resp.Answer, &dns.CNAME{
-				Hdr: dns.RR_Header{
-					Name:   qname,
-					Rrtype: dns.TypeCNAME,
-					Class:  dns.ClassINET,
-					Ttl:    r.ttlService,
-				},
-				Target: dns.Fqdn(svc.ExternalName),
-			})
-		}
+		resp.Answer = append(resp.Answer, &dns.CNAME{
+			Hdr: dns.RR_Header{
+				Name:   qname,
+				Rrtype: dns.TypeCNAME,
+				Class:  dns.ClassINET,
+				Ttl:    r.ttlService,
+			},
+			Target: dns.Fqdn(svc.ExternalName),
+		})
 		return resp
 	}
 

@@ -192,7 +192,8 @@ func TestKubernetesNewWithClient(t *testing.T) {
 
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:    true,
+			Enabled:    false,
+			Demo:       true,
 			KillerMode: true,
 		},
 	}
@@ -422,8 +423,9 @@ func TestClientConverters(t *testing.T) {
 
 // TestClientEventHandlers tests the event handler functions
 func TestClientEventHandlers(t *testing.T) {
+	reg := NewRegistry()
 	c := &Client{
-		registry: NewRegistry(),
+		registry: reg,
 	}
 
 	// Test onServiceAdd with valid service
@@ -437,7 +439,7 @@ func TestClientEventHandlers(t *testing.T) {
 		},
 	}
 	c.onServiceAdd(svc)
-	if c.registry.GetService("test-svc", "default") == nil {
+	if reg.GetService("test-svc", "default") == nil {
 		t.Error("Service should be added")
 	}
 
@@ -463,7 +465,7 @@ func TestClientEventHandlers(t *testing.T) {
 			{Addresses: []string{"10.244.1.1"}},
 		},
 	}
-	c.registry.AddService(&Service{Name: "test-svc", Namespace: "default"}) //nolint:gosec // G104 - test setup
+	reg.AddService(&Service{Name: "test-svc", Namespace: "default"}) //nolint:gosec // G104 - test setup
 	c.onEndpointSliceAdd(eps)
 	c.onEndpointSliceAdd("invalid")
 

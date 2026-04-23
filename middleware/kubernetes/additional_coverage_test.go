@@ -255,7 +255,8 @@ func TestPredictorTrainLoop(t *testing.T) {
 func TestKubernetesName(t *testing.T) {
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:    true,
+			Enabled:    false,
+			Demo:       true,
 			KillerMode: true,
 		},
 	}
@@ -336,8 +337,8 @@ func TestResolverResolvePodByHostname(t *testing.T) {
 		rcode int
 		count int
 	}{
-		// Pod with subdomain - not supported by resolver
-		{"web-0.webapp.default.svc.cluster.local.", true, dns.RcodeNameError, 0},
+		// StatefulSet pod FQDN: pod.service.namespace.svc.<cluster-domain>.
+		{"web-0.webapp.default.svc.cluster.local.", true, dns.RcodeSuccess, 1},
 		// Pod without subdomain (shouldn't match service pattern)
 		{"standalone.default.svc.cluster.local.", true, dns.RcodeNameError, 0},
 		// Non-existent

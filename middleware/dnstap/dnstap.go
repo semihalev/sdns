@@ -111,15 +111,20 @@ func (d *Dnstap) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		d.logMessage(w, req, nil, queryTime, true)
 	}
 
-	// Create response writer wrapper to capture response
+	// Create response writer wrapper to capture response.
+	// Chains are pooled and reused across requests, so the wrapper
+	// must be removed before returning — otherwise a later request
+	// picks up a stale dnstap wrapper and duplicates response logs
+	// for a query it never observed.
 	if d.logResponses {
-		rw := &responseWriter{
+		orig := ch.Writer
+		ch.Writer = &responseWriter{
 			ResponseWriter: w,
 			query:          req,
 			queryTime:      queryTime,
 			dnstap:         d,
 		}
-		ch.Writer = rw
+		defer func() { ch.Writer = orig }()
 	}
 
 	ch.Next(ctx)

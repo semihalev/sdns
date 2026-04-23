@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"sort"
 	"strconv"
@@ -283,16 +284,45 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 	return m, nil
 }
 
+// authFingerprint hashes the sorted authority-server addresses
+// so singleflight can distinguish two delegations that share a
+// zone name but target different servers (e.g. after lookupV6Nss
+// appends AAAA-resolved servers).
+func authFingerprint(servers *authcache.AuthServers) uint64 {
+	servers.RLock()
+	addrs := make([]string, 0, len(servers.List))
+	for _, s := range servers.List {
+		addrs = append(addrs, s.Addr)
+	}
+	servers.RUnlock()
+	sort.Strings(addrs)
+	h := fnv.New64a()
+	for _, a := range addrs {
+		_, _ = h.Write([]byte(a))
+		_, _ = h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
 func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
-	// Key by question AND the authority set the caller is about to
-	// query. Two lookups for the same qname/qtype at different
-	// recursion stages (e.g. an unminimised root-side retry vs. a
-	// warm child-zone lookup) target different delegations, and
-	// collapsing them would silently cross-wire a referral/answer
-	// into the wrong request's cache tree.
-	key := strconv.FormatUint(cache.Key(q), 10) + "|" + servers.Zone
+	// Key by question, CD flag, AND a fingerprint of the
+	// authority set. Two lookups for the same qname/qtype at
+	// different recursion stages (e.g. unminimised root-side
+	// retry vs. warm child-zone lookup) target different
+	// delegations, and the same zone name can be backed by a
+	// different set of servers after an IPv6-NS discovery
+	// append or a re-delegation. Collapsing those into one
+	// singleflight call would return a response produced
+	// against an unrelated delegation path. CD also has to
+	// participate because the validator result differs.
+	cd := byte('0')
+	if req.CheckingDisabled {
+		cd = '1'
+	}
+	key := strconv.FormatUint(cache.Key(q), 10) + "|" + servers.Zone +
+		"|" + string(cd) + "|" + strconv.FormatUint(authFingerprint(servers), 10)
 
 	// Use TimedDoChan for automatic timeout handling
 	result, shared, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
@@ -907,7 +937,11 @@ mainloop:
 			// Got a slot, start the query
 			go queryServer(ctx, serverReq, server)
 		case <-ctx.Done():
-			// Context cancelled while waiting for slot
+			// Context cancelled while waiting for slot —
+			// return the pre-copied pooled message before
+			// exiting so overload/timeout paths don't leak
+			// pooled dns.Msg buffers.
+			ReleaseMsg(serverReq)
 			return nil, ctx.Err()
 		}
 
@@ -967,9 +1001,12 @@ mainloop:
 							if dns.CountLabel(nsrec.Header().Name) <= level {
 								configErrors = append(configErrors, resp)
 
-								// lets move back this server in the list.
-								atomic.AddInt64(&server.Rtt, 2*time.Second.Nanoseconds())
-								atomic.AddInt64(&server.Count, 1)
+								// Penalise the server that actually produced this
+								// bogus delegation, not the current loop index —
+								// results arrive out of order from parallel
+								// goroutines, so `server` can be a later peer.
+								atomic.AddInt64(&res.server.Rtt, 2*time.Second.Nanoseconds())
+								atomic.AddInt64(&res.server.Count, 1)
 
 								if left > 0 && len(serversList)-1 == index {
 									continue fallbackloop
@@ -1519,7 +1556,14 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 	list := sortnss(nss, q.Name)
 
 	for _, name := range list {
+		// Nss is copied by readers (checkNss) under RLock once
+		// the AuthServers pointer is published via ncache.Set
+		// below, so this append must take the same Lock —
+		// otherwise cold delegation bursts race on the slice
+		// header/backing array.
+		authservers.Lock()
 		authservers.Nss = append(authservers.Nss, name)
+		authservers.Unlock()
 
 		if _, ok := foundv4[name]; ok {
 			continue
@@ -2070,11 +2114,21 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 	r.ncache.Set(key, rc.parentDSRR, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 	zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
-	// Start IPv6 lookups in background
+	// Start IPv6 lookups in background, bounded by a fixed
+	// deadline. The goroutine sleeps defaultTimeout then walks
+	// the NS list, so a small-but-finite budget keeps backlogs
+	// from building under cold-cache bursts when the request
+	// context is gone — an unbounded context.Background here
+	// used to leak goroutines and mutate authservers long
+	// after the query returned.
 	if r.cfg.IPv6Access {
 		reqid := ctx.Value(contextKeyRequestID)
-		v6ctx := context.WithValue(context.Background(), contextKeyRequestID, reqid)
-		go r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.nameservers, cd)
+		go func() { //nolint:gosec // G118 - IPv6 NS lookup intentionally outlives the request but is bounded by WithTimeout below
+			v6ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
+			r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.nameservers, cd)
+		}()
 	}
 
 	rc.depth--

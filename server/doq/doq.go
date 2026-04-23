@@ -170,8 +170,15 @@ func (s *Server) handleConnection(conn *quic.Conn) {
 func (s *Server) handleStream(conn *quic.Conn, stream *quic.Stream) {
 	defer stream.Close()
 
-	// Limit read size to prevent DoS
-	limitedReader := io.LimitReader(stream, maxMsgSize)
+	// DoQ frames a DNS message as a 2-byte length prefix plus
+	// the message payload, so the stream can legitimately
+	// carry maxMsgSize bytes of DNS plus the 2-byte prefix.
+	// Capping the read at maxMsgSize dropped the final two
+	// bytes of a maximum-size payload and the length check
+	// below then rejected it as a mismatch. One extra byte is
+	// pulled in so oversize writes are detected here rather
+	// than masquerading as valid frames.
+	limitedReader := io.LimitReader(stream, maxMsgSize+3)
 	buf, err := io.ReadAll(limitedReader)
 	if err != nil {
 		_ = conn.CloseWithError(ProtocolError, err.Error())
@@ -180,6 +187,11 @@ func (s *Server) handleStream(conn *quic.Conn, stream *quic.Stream) {
 
 	if len(buf) < minMsgHeaderSize {
 		_ = conn.CloseWithError(ProtocolError, "dns msg size too small")
+		return
+	}
+
+	if len(buf) > maxMsgSize+2 {
+		_ = conn.CloseWithError(ProtocolError, "dns msg too large")
 		return
 	}
 

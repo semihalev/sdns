@@ -102,11 +102,17 @@ type Config struct {
 
 // KubernetesConfig holds Kubernetes middleware configuration
 type KubernetesConfig struct {
-	Enabled       bool                `toml:"enabled"`
-	ClusterDomain string              `toml:"cluster_domain"`
-	KillerMode    bool                `toml:"killer_mode"`
-	Kubeconfig    string              `toml:"kubeconfig"`
-	TTL           KubernetesTTLConfig `toml:"ttl"`
+	Enabled       bool   `toml:"enabled"`
+	ClusterDomain string `toml:"cluster_domain"`
+	KillerMode    bool   `toml:"killer_mode"`
+	Kubeconfig    string `toml:"kubeconfig"`
+	// Demo populates the registry with synthetic services so the
+	// middleware can be exercised without a real cluster
+	// (development / tests). It is NEVER safe to enable in
+	// production: the middleware will answer synthesised names
+	// that look real. Independent from Enabled.
+	Demo bool                `toml:"demo"`
+	TTL  KubernetesTTLConfig `toml:"ttl"`
 }
 
 // KubernetesTTLConfig holds TTL settings for different record types

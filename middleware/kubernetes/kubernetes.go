@@ -41,12 +41,52 @@ type Kubernetes struct {
 	// Error metrics by type
 	packErrors  uint64 // DNS message packing errors
 	writeErrors uint64 // Response write errors
+
+	// demoLoaded is true when populateDemoData ran. In demo
+	// mode the registry is ready synchronously and we can
+	// answer authoritatively right away, regardless of the
+	// live client's connection/sync state.
+	demoLoaded bool
+
+	// Bounded prefetch worker queue. Each cache/registry hit
+	// used to `go prefetchPredictedWithClient(...)` unbounded,
+	// so high QPS spawned one goroutine per query — prediction
+	// takes locks, allocates, and sorts, so the backlog turned
+	// the optimisation into a throughput bottleneck.
+	prefetchCh      chan prefetchJob
+	prefetchDropped uint64 // saturated-queue drops (stat)
 }
+
+// ready reports whether the middleware has data to answer
+// authoritatively from. Demo mode seeds the registry up front;
+// live mode must wait for informers to populate it. A live
+// client whose NewClient failed leaves k.k8sClient == nil and
+// demoLoaded == false — ready() returns false so ServeDNS
+// passes the query through to downstream middleware instead
+// of synthesising NXDOMAIN from an empty registry.
+func (k *Kubernetes) ready() bool {
+	if k.demoLoaded {
+		return true
+	}
+	return k.k8sClient != nil && k.k8sClient.Synced()
+}
+
+type prefetchJob struct {
+	clientIP string
+	qname    string
+	qtype    uint16
+}
+
+const (
+	prefetchQueueSize = 1024
+	prefetchWorkers   = 4
+)
 
 // New creates a new Kubernetes DNS middleware
 func New(cfg *config.Config) *Kubernetes {
-	// If Kubernetes is not enabled, return a minimal pass-through middleware
-	if !cfg.Kubernetes.Enabled {
+	// If Kubernetes integration is off and demo data isn't
+	// requested, return a minimal pass-through middleware.
+	if !cfg.Kubernetes.Enabled && !cfg.Kubernetes.Demo {
 		return &Kubernetes{
 			clusterDomain: "cluster.local", // Set a default to avoid any issues
 		}
@@ -71,17 +111,26 @@ func New(cfg *config.Config) *Kubernetes {
 		// KILLER MODE: Maximum performance with TRUE zero allocations
 		registry := NewShardedRegistry()
 		registry.SetTTLs(cfg.Kubernetes.TTL.Service, cfg.Kubernetes.TTL.Pod, cfg.Kubernetes.TTL.SRV, cfg.Kubernetes.TTL.PTR)
+		registry.SetClusterDomain(clusterDomain)
 		cache := NewZeroAllocCache()
 		predictor := NewSmartPredictor()
+		predictor.SetClusterDomain(clusterDomain)
+		prefetchStrategy := NewPrefetchStrategy()
+		prefetchStrategy.SetClusterDomain(clusterDomain)
 
 		k = &Kubernetes{
 			cache:            cache,
 			registry:         registry,
 			predictor:        predictor,
-			prefetchStrategy: NewPrefetchStrategy(),
+			prefetchStrategy: prefetchStrategy,
 			killerMode:       true,
 			clusterDomain:    clusterDomain,
 			ttlConfig:        cfg.Kubernetes.TTL,
+			prefetchCh:       make(chan prefetchJob, prefetchQueueSize),
+		}
+
+		for range prefetchWorkers {
+			go k.prefetchWorker()
 		}
 
 		// Create resolver (just for demo data population)
@@ -109,15 +158,34 @@ func New(cfg *config.Config) *Kubernetes {
 		k.resolver = NewResolver(cfg, clusterDomain, standardCache)
 	}
 
-	// Try to connect to Kubernetes if enabled
-	if cfg.Kubernetes.Enabled && cfg.Kubernetes.Kubeconfig != "" {
-		client, err := NewClient(cfg.Kubernetes.Kubeconfig)
+	// Try to connect to Kubernetes if enabled. An empty Kubeconfig
+	// still works — NewClient / buildConfig falls through to
+	// rest.InClusterConfig, so a pod with a service-account
+	// kubeconfig (the in-cluster deployment case) picks up creds
+	// automatically. Gating this on Kubeconfig != "" used to mean
+	// an enabled+in-cluster deployment silently landed in the
+	// demo-data path.
+	if cfg.Kubernetes.Enabled {
+		// Hand the client the registry ServeDNS reads from.
+		// Killer mode uses the sharded registry; boring mode
+		// uses the resolver's *Registry (which satisfies the
+		// writer interface directly).
+		var writer registryWriter
+		if killerMode {
+			writer = &shardedWriter{r: k.registry}
+		} else {
+			writer = k.resolver.registry
+		}
+		client, err := NewClient(cfg.Kubernetes.Kubeconfig, writer)
 		if err != nil {
 			zlog.Error("Failed to connect to Kubernetes API",
 				zlog.String("error", err.Error()),
 				zlog.String("kubeconfig", cfg.Kubernetes.Kubeconfig))
-			zlog.Warn("Falling back to demo mode without Kubernetes integration")
-			// Continue without K8s - useful for testing
+			// Don't fall back to demo data in this path: the
+			// operator asked for live cluster integration, so
+			// serving synthetic answers would look real and hide
+			// the misconfiguration. The middleware effectively
+			// no-ops until the client comes up.
 		} else {
 			k.k8sClient = client
 			// Run client in background with error handling
@@ -129,9 +197,14 @@ func New(cfg *config.Config) *Kubernetes {
 		}
 	}
 
-	// If no K8s client, populate demo data
-	if k.k8sClient == nil {
+	// Populate demo data only when the operator explicitly asked
+	// for it via cfg.Kubernetes.Demo. An enabled-but-failed client
+	// connection deliberately does NOT fall through to demo data:
+	// serving synthesised answers would hide the misconfiguration
+	// behind plausible-looking results.
+	if cfg.Kubernetes.Demo {
 		k.populateDemoData()
+		k.demoLoaded = true
 	}
 
 	zlog.Info("Kubernetes DNS middleware initialized",
@@ -174,24 +247,42 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// Even for cluster-domain queries, don't answer while the
+	// registry is unpopulated — a failed live client or an
+	// informer still warming up would otherwise turn into
+	// authoritative NXDOMAIN for real cluster names.
+	if !k.ready() {
+		ch.Next(ctx)
+		return
+	}
+
 	if k.killerMode {
-		// KILLER MODE: Try TRUE zero-alloc cache first
+		// KILLER MODE: Try TRUE zero-alloc cache first.
+		//
+		// Responses must go out through WriteMsg, not the raw
+		// wire path. Upstream middleware (EDNS shaping, dnstap
+		// response logging, reflex accounting, metrics) only
+		// hooks WriteMsg — raw w.Write skipped all of them,
+		// so killer-mode answers went out un-shaped and
+		// un-observed.
 		cachedWire := k.cache.GetEntry(qname, q.Qtype)
 		if cachedWire != nil {
 			atomic.AddUint64(&k.cacheHits, 1)
 
-			// Create a copy for response (we must copy to update message ID)
-			respWire := make([]byte, len(cachedWire))
-			copy(respWire, cachedWire)
-
-			// Update message ID in the copy
-			UpdateMessageID(respWire, req.Id)
-
-			// Write raw wire format - this is the fastest way
-			if _, err := w.Write(respWire); err != nil {
+			cachedMsg := new(dns.Msg)
+			if err := cachedMsg.Unpack(cachedWire); err == nil {
+				cachedMsg.Id = req.Id
+				if err := w.WriteMsg(cachedMsg); err != nil {
+					atomic.AddUint64(&k.errors, 1)
+					atomic.AddUint64(&k.writeErrors, 1)
+					zlog.Error("Failed to write cached DNS response",
+						zlog.String("query", qname),
+						zlog.Int("qtype", int(q.Qtype)),
+						zlog.String("error", err.Error()))
+				}
+			} else {
 				atomic.AddUint64(&k.errors, 1)
-				atomic.AddUint64(&k.writeErrors, 1)
-				zlog.Error("Failed to write cached DNS response",
+				zlog.Error("Failed to unpack cached DNS response",
 					zlog.String("query", qname),
 					zlog.Int("qtype", int(q.Qtype)),
 					zlog.String("error", err.Error()))
@@ -201,8 +292,8 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			clientIP := extractClientIP(w)
 			k.predictor.Record(clientIP, qname, q.Qtype)
 
-			// Trigger predictive prefetch with client context
-			go k.prefetchPredictedWithClient(clientIP, qname, q.Qtype)
+			// Trigger predictive prefetch via bounded queue.
+			k.enqueuePrefetch(clientIP, qname, q.Qtype)
 
 			return
 		}
@@ -214,32 +305,30 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			return
 		}
 
-		// Build response
+		// Build response. An empty answers slice means the name
+		// exists but has no records of the requested type —
+		// that's authoritative NOERROR/NODATA, not NXDOMAIN, so
+		// leave the rcode at the SetReply default.
 		msg := new(dns.Msg)
 		msg.SetReply(req)
 		msg.Authoritative = true
 		msg.RecursionAvailable = true
+		msg.Answer = answers
 
-		if len(answers) > 0 {
-			msg.Answer = answers
-		} else {
-			msg.SetRcode(req, dns.RcodeNameError)
+		if err := w.WriteMsg(msg); err != nil {
+			atomic.AddUint64(&k.errors, 1)
+			atomic.AddUint64(&k.writeErrors, 1)
+			zlog.Error("Failed to write DNS response",
+				zlog.String("query", qname),
+				zlog.Int("qtype", int(q.Qtype)),
+				zlog.String("error", err.Error()))
+			return
 		}
 
-		// Pack to wire format for response
-		wire, err := msg.Pack()
-		if err == nil {
-			if _, err := w.Write(wire); err != nil {
-				atomic.AddUint64(&k.errors, 1)
-				atomic.AddUint64(&k.writeErrors, 1)
-				zlog.Error("Failed to write DNS response",
-					zlog.String("query", qname),
-					zlog.Int("qtype", int(q.Qtype)),
-					zlog.String("error", err.Error()))
-				return
-			}
-
-			// Store in cache with appropriate TTL
+		// Store packed wire in cache with appropriate TTL. If
+		// packing fails we just skip caching — the response
+		// already went out above.
+		if wire, err := msg.Pack(); err == nil {
 			ttl := uint32(CacheDefaultTTL) // Default TTL
 			if len(answers) > 0 {
 				if h := answers[0].Header(); h != nil {
@@ -248,28 +337,20 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			}
 			k.cache.StoreWire(qname, q.Qtype, wire, ttl)
 		} else {
-			// DNS message packing failed
 			atomic.AddUint64(&k.errors, 1)
 			atomic.AddUint64(&k.packErrors, 1)
-			zlog.Error("Failed to pack DNS message",
+			zlog.Error("Failed to pack DNS message for cache",
 				zlog.String("query", qname),
 				zlog.Int("qtype", int(q.Qtype)),
 				zlog.String("error", err.Error()))
-			// Fallback to standard write
-			if err := w.WriteMsg(msg); err != nil {
-				atomic.AddUint64(&k.writeErrors, 1)
-				zlog.Error("Failed to write DNS message via fallback",
-					zlog.String("query", qname),
-					zlog.String("error", err.Error()))
-			}
 		}
 
 		// Record for ML with client IP
 		clientIP := extractClientIP(w)
 		k.predictor.Record(clientIP, qname, q.Qtype)
 
-		// Trigger predictive prefetch after registry hit
-		go k.prefetchPredictedWithClient(clientIP, qname, q.Qtype)
+		// Trigger predictive prefetch via bounded queue.
+		k.enqueuePrefetch(clientIP, qname, q.Qtype)
 	} else {
 		// Boring mode - use resolver which has its own cache
 		resp, found := k.resolver.Resolve(qname, q.Qtype)
@@ -500,6 +581,29 @@ func (k *Kubernetes) Stats() map[string]any {
 	}
 
 	return stats
+}
+
+// enqueuePrefetch offers a prefetch job to the bounded worker
+// pool via a non-blocking send. If the queue is full we drop
+// the job and bump a counter rather than spawning yet another
+// goroutine or blocking the serving path — prefetch is a
+// best-effort optimisation.
+func (k *Kubernetes) enqueuePrefetch(clientIP, qname string, qtype uint16) {
+	if k.prefetchCh == nil {
+		return
+	}
+	select {
+	case k.prefetchCh <- prefetchJob{clientIP: clientIP, qname: qname, qtype: qtype}:
+	default:
+		atomic.AddUint64(&k.prefetchDropped, 1)
+	}
+}
+
+// prefetchWorker drains the prefetch queue.
+func (k *Kubernetes) prefetchWorker() {
+	for job := range k.prefetchCh {
+		k.prefetchPredictedWithClient(job.clientIP, job.qname, job.qtype)
+	}
 }
 
 // prefetchPredictedWithClient pre-fetches queries based on ML predictions with client context

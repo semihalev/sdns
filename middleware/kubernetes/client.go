@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/semihalev/zlog/v2"
@@ -21,17 +23,92 @@ import (
 	"k8s.io/client-go/util/homedir"
 )
 
+// registryWriter is the subset of registry operations the
+// informer callbacks use to populate a live cluster registry.
+// Kubernetes.New passes in the registry that ServeDNS actually
+// reads from — boring mode wires in the resolver's *Registry,
+// killer mode wires in a *ShardedRegistry via shardedWriter.
+// Previously the client kept its own private *Registry that
+// nothing ever read, so a connected cluster answered with an
+// empty dataset.
+type registryWriter interface {
+	AddService(*Service) error
+	DeleteService(name, namespace string) error
+	AddPod(*Pod) error
+	DeletePod(name, namespace string) error
+	SetEndpoints(service, namespace string, endpoints []Endpoint) error
+}
+
+// shardedWriter adapts *ShardedRegistry to registryWriter.
+// ShardedRegistry's mutators don't return errors, so the adapter
+// swallows nil and always reports success.
+type shardedWriter struct {
+	r *ShardedRegistry
+}
+
+func (w *shardedWriter) AddService(s *Service) error {
+	w.r.AddService(s)
+	return nil
+}
+
+func (w *shardedWriter) DeleteService(name, namespace string) error {
+	w.r.DeleteService(name, namespace)
+	return nil
+}
+
+func (w *shardedWriter) AddPod(p *Pod) error {
+	w.r.AddPod(p)
+	return nil
+}
+
+func (w *shardedWriter) DeletePod(name, namespace string) error {
+	w.r.DeletePod(name, namespace)
+	return nil
+}
+
+func (w *shardedWriter) SetEndpoints(service, namespace string, endpoints []Endpoint) error {
+	w.r.SetEndpoints(service, namespace, endpoints)
+	return nil
+}
+
 // Client connects to Kubernetes API.
 type Client struct {
 	clientset kubernetes.Interface
-	registry  *Registry
+	registry  registryWriter
 	stopCh    chan struct{}
 	cancel    context.CancelFunc
 	stopped   chan struct{}
+
+	// synced flips to true once informers have populated the
+	// registry. ServeDNS gates authoritative answers on this
+	// so a still-warming-up or disconnected client doesn't
+	// return NXDOMAIN against an empty registry for real
+	// cluster names.
+	synced atomic.Bool
+
+	// slicesByService aggregates EndpointSlice contents per
+	// service. A single service can have many slices; the
+	// registry stores one endpoint list per service, so every
+	// slice event must recompute the union.
+	slicesMu        sync.Mutex
+	slicesByService map[string]map[string][]Endpoint
 }
 
-// NewClient creates a new Kubernetes client.
-func NewClient(kubeconfig string) (*Client, error) {
+// Synced reports whether the informer caches have populated
+// the registry at least once.
+func (c *Client) Synced() bool {
+	return c.synced.Load()
+}
+
+// NewClient creates a new Kubernetes client. The registry
+// parameter is the sink informer callbacks populate; passing the
+// ServeDNS-facing registry wires live cluster state into query
+// answers. A nil registry is rejected — nothing would be wired
+// up, and silent no-ops hide config bugs.
+func NewClient(kubeconfig string, registry registryWriter) (*Client, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("kubernetes client: registry is nil")
+	}
 	// Build config - will use provided kubeconfig, in-cluster config, or ~/.kube/config
 	cfg, err := buildConfig(kubeconfig)
 	if err != nil {
@@ -52,7 +129,7 @@ func NewClient(kubeconfig string) (*Client, error) {
 
 	return &Client{
 		clientset: clientset,
-		registry:  NewRegistry(),
+		registry:  registry,
 		stopCh:    make(chan struct{}),
 		stopped:   make(chan struct{}),
 	}, nil
@@ -140,6 +217,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to sync caches")
 	}
 
+	c.synced.Store(true)
 	zlog.Info("Kubernetes caches synced")
 
 	// Wait for context cancellation or stop signal
@@ -251,9 +329,18 @@ func (c *Client) onServiceUpdate(oldObj, newObj any) {
 func (c *Client) onServiceDelete(obj any) {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
-		zlog.Error("Invalid service object type in delete",
-			zlog.String("type", fmt.Sprintf("%T", obj)))
-		return
+		// DeleteFunc can deliver a tombstone when the final
+		// object was missed by the informer — unwrap it so the
+		// registry still sees the delete instead of keeping a
+		// stale DNS record.
+		if tombstone, tok := obj.(cache.DeletedFinalStateUnknown); tok {
+			svc, ok = tombstone.Obj.(*corev1.Service)
+		}
+		if !ok {
+			zlog.Error("Invalid service object type in delete",
+				zlog.String("type", fmt.Sprintf("%T", obj)))
+			return
+		}
 	}
 	if err := c.registry.DeleteService(svc.Name, svc.Namespace); err != nil {
 		zlog.Error("Failed to delete service from registry",
@@ -297,8 +384,52 @@ func (c *Client) safeEndpointSliceDelete(obj any) {
 	c.onEndpointSliceDelete(obj)
 }
 
-// EndpointSlice handlers
-// Note: A service can have multiple EndpointSlices, so we need to aggregate them
+// EndpointSlice handlers. A Kubernetes service can back its
+// endpoints with many slices; every slice event must recompute
+// the union across all slices for that service, otherwise
+// slice-2's add would erase slice-1's endpoints and a delete
+// would wipe the whole service.
+
+// applyEndpointSlice updates the cached slice contents for a
+// service and writes the aggregated endpoint set to the registry.
+// Passing deleted=true removes the slice's contribution. The
+// aggregation uses slice.Name as identity so repeated
+// add/update events for the same slice replace — not append —
+// that slice's endpoints.
+func (c *Client) applyEndpointSlice(eps *discoveryv1.EndpointSlice, serviceName string, deleted bool) error {
+	key := eps.Namespace + "/" + serviceName
+
+	c.slicesMu.Lock()
+	if c.slicesByService == nil {
+		c.slicesByService = make(map[string]map[string][]Endpoint)
+	}
+	slices, ok := c.slicesByService[key]
+	if !ok {
+		if deleted {
+			c.slicesMu.Unlock()
+			return nil
+		}
+		slices = make(map[string][]Endpoint)
+		c.slicesByService[key] = slices
+	}
+	if deleted {
+		delete(slices, eps.Name)
+	} else {
+		slices[eps.Name] = c.convertEndpointSlice(eps)
+	}
+
+	var agg []Endpoint
+	for _, s := range slices {
+		agg = append(agg, s...)
+	}
+	if len(slices) == 0 {
+		delete(c.slicesByService, key)
+	}
+	c.slicesMu.Unlock()
+
+	return c.registry.SetEndpoints(serviceName, eps.Namespace, agg)
+}
+
 func (c *Client) onEndpointSliceAdd(obj any) {
 	eps, ok := obj.(*discoveryv1.EndpointSlice)
 	if !ok {
@@ -307,16 +438,14 @@ func (c *Client) onEndpointSliceAdd(obj any) {
 		return
 	}
 	serviceName := eps.Labels["kubernetes.io/service-name"]
-	if serviceName != "" {
-		// For simplicity, we're treating each slice independently
-		// In production, you'd want to aggregate all slices for a service
-		endpoints := c.convertEndpointSlice(eps)
-		if err := c.registry.SetEndpoints(serviceName, eps.Namespace, endpoints); err != nil {
-			zlog.Error("Failed to add endpoints to registry",
-				zlog.String("service", serviceName),
-				zlog.String("namespace", eps.Namespace),
-				zlog.String("error", err.Error()))
-		}
+	if serviceName == "" {
+		return
+	}
+	if err := c.applyEndpointSlice(eps, serviceName, false); err != nil {
+		zlog.Error("Failed to add endpoints to registry",
+			zlog.String("service", serviceName),
+			zlog.String("namespace", eps.Namespace),
+			zlog.String("error", err.Error()))
 	}
 }
 
@@ -328,33 +457,38 @@ func (c *Client) onEndpointSliceUpdate(oldObj, newObj any) {
 		return
 	}
 	serviceName := eps.Labels["kubernetes.io/service-name"]
-	if serviceName != "" {
-		endpoints := c.convertEndpointSlice(eps)
-		if err := c.registry.SetEndpoints(serviceName, eps.Namespace, endpoints); err != nil {
-			zlog.Error("Failed to update endpoints in registry",
-				zlog.String("service", serviceName),
-				zlog.String("namespace", eps.Namespace),
-				zlog.String("error", err.Error()))
-		}
+	if serviceName == "" {
+		return
+	}
+	if err := c.applyEndpointSlice(eps, serviceName, false); err != nil {
+		zlog.Error("Failed to update endpoints in registry",
+			zlog.String("service", serviceName),
+			zlog.String("namespace", eps.Namespace),
+			zlog.String("error", err.Error()))
 	}
 }
 
 func (c *Client) onEndpointSliceDelete(obj any) {
 	eps, ok := obj.(*discoveryv1.EndpointSlice)
 	if !ok {
-		zlog.Error("Invalid endpoint slice object type in delete",
-			zlog.String("type", fmt.Sprintf("%T", obj)))
-		return
+		if tombstone, tok := obj.(cache.DeletedFinalStateUnknown); tok {
+			eps, ok = tombstone.Obj.(*discoveryv1.EndpointSlice)
+		}
+		if !ok {
+			zlog.Error("Invalid endpoint slice object type in delete",
+				zlog.String("type", fmt.Sprintf("%T", obj)))
+			return
+		}
 	}
 	serviceName := eps.Labels["kubernetes.io/service-name"]
-	if serviceName != "" {
-		// TODO: This should aggregate remaining slices, not just clear
-		if err := c.registry.SetEndpoints(serviceName, eps.Namespace, nil); err != nil {
-			zlog.Error("Failed to delete endpoints from registry",
-				zlog.String("service", serviceName),
-				zlog.String("namespace", eps.Namespace),
-				zlog.String("error", err.Error()))
-		}
+	if serviceName == "" {
+		return
+	}
+	if err := c.applyEndpointSlice(eps, serviceName, true); err != nil {
+		zlog.Error("Failed to delete endpoints from registry",
+			zlog.String("service", serviceName),
+			zlog.String("namespace", eps.Namespace),
+			zlog.String("error", err.Error()))
 	}
 }
 
@@ -418,6 +552,19 @@ func (c *Client) onPodUpdate(oldObj, newObj any) {
 			zlog.String("type", fmt.Sprintf("%T", newObj)))
 		return
 	}
+
+	// Both registries index pods by IP. If the pod moved to a
+	// new address, AddPod on its own would write the new IP and
+	// leave the old IP still pointing at this pod, so reverse
+	// and pod-IP queries kept answering for the old IP. Remove
+	// the prior indexes before inserting the new state.
+	if err := c.registry.DeletePod(p.Name, p.Namespace); err != nil {
+		zlog.Debug("Failed to clear prior pod indexes on update",
+			zlog.String("pod", p.Name),
+			zlog.String("namespace", p.Namespace),
+			zlog.String("error", err.Error()))
+	}
+
 	pod := c.convertPod(p)
 	if pod != nil {
 		if err := c.registry.AddPod(pod); err != nil {
@@ -432,9 +579,14 @@ func (c *Client) onPodUpdate(oldObj, newObj any) {
 func (c *Client) onPodDelete(obj any) {
 	p, ok := obj.(*corev1.Pod)
 	if !ok {
-		zlog.Error("Invalid pod object type in delete",
-			zlog.String("type", fmt.Sprintf("%T", obj)))
-		return
+		if tombstone, tok := obj.(cache.DeletedFinalStateUnknown); tok {
+			p, ok = tombstone.Obj.(*corev1.Pod)
+		}
+		if !ok {
+			zlog.Error("Invalid pod object type in delete",
+				zlog.String("type", fmt.Sprintf("%T", obj)))
+			return
+		}
 	}
 	if err := c.registry.DeletePod(p.Name, p.Namespace); err != nil {
 		zlog.Error("Failed to delete pod from registry",
@@ -453,18 +605,37 @@ func (c *Client) convertService(svc *corev1.Service) *Service {
 		Type:      string(svc.Spec.Type),
 	}
 
-	// Handle ClusterIP
-	if svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
-		if ip := net.ParseIP(svc.Spec.ClusterIP); ip != nil {
-			service.ClusterIPs = append(service.ClusterIPs, ip.To4())
-			if service.IPFamilies == nil {
-				service.IPFamilies = []string{"IPv4"}
-			}
-		}
-	}
-
+	// Handle ClusterIPs. Read the plural field so dual-stack
+	// services contribute both IPv4 and IPv6 ClusterIPs; fall back
+	// to the singular field for older API objects. Previously this
+	// only read ClusterIP, hardcoded IPv4, and called ip.To4 — so
+	// IPv6-primary services stored nil and dual-stack secondary
+	// addresses were silently dropped.
 	if svc.Spec.ClusterIP == "None" {
 		service.Headless = true
+	} else {
+		clusterIPs := svc.Spec.ClusterIPs
+		if len(clusterIPs) == 0 && svc.Spec.ClusterIP != "" {
+			clusterIPs = []string{svc.Spec.ClusterIP}
+		}
+		for _, s := range clusterIPs {
+			if s == "" || s == "None" {
+				continue
+			}
+			ip := net.ParseIP(s)
+			if ip == nil {
+				continue
+			}
+			if ip4 := ip.To4(); ip4 != nil {
+				service.ClusterIPs = append(service.ClusterIPs, ip4)
+				service.IPFamilies = append(service.IPFamilies, "IPv4")
+				continue
+			}
+			if ip6 := ip.To16(); ip6 != nil {
+				service.ClusterIPs = append(service.ClusterIPs, ip6)
+				service.IPFamilies = append(service.IPFamilies, "IPv6")
+			}
+		}
 	}
 
 	// Handle ExternalName
@@ -492,9 +663,13 @@ func (c *Client) convertEndpointSlice(eps *discoveryv1.EndpointSlice) []Endpoint
 			continue
 		}
 
+		// discovery/v1 documents Ready==nil as "ready/true" —
+		// controllers and custom producers often omit the
+		// field. Treating nil as not-ready filtered those
+		// endpoints out of headless-service answers.
 		endpoint := Endpoint{
 			Addresses: ep.Addresses,
-			Ready:     ep.Conditions.Ready != nil && *ep.Conditions.Ready,
+			Ready:     ep.Conditions.Ready == nil || *ep.Conditions.Ready,
 		}
 
 		if ep.Hostname != nil {

@@ -195,13 +195,13 @@ func TestResolverPatterns(t *testing.T) {
 // TestClientIntegration tests client functionality
 func TestClientIntegration(t *testing.T) {
 	// Test client creation with default kubeconfig
-	_, err := NewClient("")
+	_, err := NewClient("", NewRegistry())
 	if err == nil {
 		t.Skip("Kubernetes available, skipping mock test")
 	}
 
 	// Test with explicit kubeconfig
-	_, err = NewClient("/nonexistent/path")
+	_, err = NewClient("/nonexistent/path", NewRegistry())
 	if err == nil {
 		t.Error("Should fail with nonexistent kubeconfig")
 	}
@@ -211,7 +211,8 @@ func TestClientIntegration(t *testing.T) {
 func TestStats(t *testing.T) {
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:    true,
+			Enabled:    false,
+			Demo:       true,
 			KillerMode: true,
 		},
 	}
@@ -245,10 +246,12 @@ func TestStats(t *testing.T) {
 		t.Error("Not in killer mode")
 	}
 
-	// Check component stats
+	// Check component stats. zero_alloc is now reported as
+	// false because GetEntry copies the wire bytes (so callers
+	// can safely Unpack without racing the ring allocator).
 	if cacheStats, ok := stats["cache"].(map[string]any); ok {
-		if cacheStats["zero_alloc"] != true {
-			t.Error("Cache not zero-alloc")
+		if _, has := cacheStats["zero_alloc"]; !has {
+			t.Error("cache stats missing zero_alloc")
 		}
 	}
 }

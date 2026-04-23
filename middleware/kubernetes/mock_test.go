@@ -220,8 +220,9 @@ func TestConvertPodMock(t *testing.T) {
 
 // TestClientEventHandlersMock tests event handlers
 func TestClientEventHandlersMock(t *testing.T) {
+	reg := NewRegistry()
 	c := &Client{
-		registry: NewRegistry(),
+		registry: reg,
 	}
 
 	// Test service handlers
@@ -236,17 +237,17 @@ func TestClientEventHandlersMock(t *testing.T) {
 	}
 
 	c.onServiceAdd(svc)
-	if s := c.registry.GetService("test-svc", "default"); s == nil {
+	if s := reg.GetService("test-svc", "default"); s == nil {
 		t.Error("Service not added")
 	}
 
 	c.onServiceUpdate(nil, svc)
-	if s := c.registry.GetService("test-svc", "default"); s == nil {
+	if s := reg.GetService("test-svc", "default"); s == nil {
 		t.Error("Service not updated")
 	}
 
 	c.onServiceDelete(svc)
-	if s := c.registry.GetService("test-svc", "default"); s != nil {
+	if s := reg.GetService("test-svc", "default"); s != nil {
 		t.Error("Service not deleted")
 	}
 
@@ -267,19 +268,19 @@ func TestClientEventHandlersMock(t *testing.T) {
 	}
 
 	c.onEndpointSliceAdd(eps)
-	endpoints := c.registry.GetEndpoints("test-svc", "default")
+	endpoints := reg.GetEndpoints("test-svc", "default")
 	if len(endpoints) != 1 {
 		t.Error("EndpointSlice not added")
 	}
 
 	c.onEndpointSliceUpdate(nil, eps)
-	endpoints = c.registry.GetEndpoints("test-svc", "default")
+	endpoints = reg.GetEndpoints("test-svc", "default")
 	if len(endpoints) != 1 {
 		t.Error("EndpointSlice not updated")
 	}
 
 	c.onEndpointSliceDelete(eps)
-	endpoints = c.registry.GetEndpoints("test-svc", "default")
+	endpoints = reg.GetEndpoints("test-svc", "default")
 	if endpoints != nil {
 		t.Error("EndpointSlice not deleted")
 	}
@@ -296,19 +297,19 @@ func TestClientEventHandlersMock(t *testing.T) {
 	}
 
 	c.onPodAdd(pod)
-	if p := c.registry.GetPodByIP("10.244.1.1"); p == nil {
+	if p := reg.GetPodByIP("10.244.1.1"); p == nil {
 		t.Error("Pod not added")
 	}
 
 	// Update pod IP
 	pod.Status.PodIP = "10.244.1.2"
 	c.onPodUpdate(nil, pod)
-	if p := c.registry.GetPodByIP("10.244.1.2"); p == nil {
+	if p := reg.GetPodByIP("10.244.1.2"); p == nil {
 		t.Error("Pod not updated")
 	}
 
 	c.onPodDelete(pod)
-	if p := c.registry.GetPodByName("test-pod", "default"); p != nil {
+	if p := reg.GetPodByName("test-pod", "default"); p != nil {
 		t.Error("Pod not deleted")
 	}
 
@@ -320,7 +321,7 @@ func TestClientEventHandlersMock(t *testing.T) {
 		},
 	}
 	c.onPodAdd(podNoIP)
-	if p := c.registry.GetPodByName("no-ip", "default"); p != nil {
+	if p := reg.GetPodByName("no-ip", "default"); p != nil {
 		t.Error("Pod without IP should not be added")
 	}
 }

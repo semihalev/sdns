@@ -13,7 +13,8 @@ import (
 func TestPredictionLoop(t *testing.T) {
 	cfg := &config.Config{
 		Kubernetes: config.KubernetesConfig{
-			Enabled:    true,
+			Enabled:    false,
+			Demo:       true,
 			KillerMode: true,
 		},
 	}

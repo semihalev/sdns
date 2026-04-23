@@ -30,6 +30,13 @@ type BlockList struct {
 }
 
 // New returns a new BlockList.
+//
+// Configured whitelist/blocklist entries and existing local
+// blocklist files are loaded synchronously so filtering is
+// active as soon as New returns. Remote blocklist refresh
+// runs asynchronously — a slow or unreachable source used to
+// leave ServeDNS with empty maps for the entire HTTP timeout
+// window even when local files were available.
 func New(cfg *config.Config) *BlockList {
 	b := &BlockList{
 		nullroute:  net.ParseIP(cfg.Nullroute),
@@ -42,7 +49,8 @@ func New(cfg *config.Config) *BlockList {
 		cfg: cfg,
 	}
 
-	go b.fetchBlocklists()
+	b.loadInitial()
+	go b.refreshRemote()
 
 	return b
 }
@@ -209,6 +217,15 @@ func (b *BlockList) Exists(key string) bool {
 	defer b.mu.RUnlock()
 
 	key = dns.CanonicalName(key)
+
+	// Whitelisted names bypass both exact and wildcard block
+	// matches — the Set paths already refuse to *add* a block
+	// for a whitelisted name, but older lists or wildcard
+	// entries like "*.example.com." would otherwise still match
+	// an explicit whitelist of "important.example.com.".
+	if b.w[key] {
+		return false
+	}
 
 	// Direct match - fastest path
 	if _, ok := b.m[key]; ok {

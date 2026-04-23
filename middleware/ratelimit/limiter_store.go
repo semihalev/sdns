@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -17,8 +18,18 @@ type LimiterStore struct {
 }
 
 type timestampedLimiter struct {
-	limiter  *limiter
-	lastSeen time.Time
+	limiter *limiter
+	// lastSeen is read from Cleanup / evictOne under the store's
+	// exclusive lock and written by Get on every hit. Using an
+	// atomic avoids upgrading the hot-path Get to an exclusive
+	// lock just to stamp a timestamp, while still letting
+	// concurrent writers/readers see a consistent value.
+	lastSeen atomic.Int64 // unix nanoseconds
+}
+
+func (tl *timestampedLimiter) touch() { tl.lastSeen.Store(time.Now().UnixNano()) }
+func (tl *timestampedLimiter) seen() time.Time {
+	return time.Unix(0, tl.lastSeen.Load())
 }
 
 // NewLimiterStore creates a new limiter store
@@ -34,7 +45,7 @@ func NewLimiterStore(maxSize, rateLimit int) *LimiterStore {
 func (s *LimiterStore) Get(key uint64) *limiter {
 	s.mu.RLock()
 	if tl, ok := s.limiters[key]; ok {
-		tl.lastSeen = time.Now()
+		tl.touch() // atomic store — safe under RLock
 		s.mu.RUnlock()
 		return tl.limiter
 	}
@@ -46,7 +57,7 @@ func (s *LimiterStore) Get(key uint64) *limiter {
 
 	// Double-check after acquiring write lock
 	if tl, ok := s.limiters[key]; ok {
-		tl.lastSeen = time.Now()
+		tl.touch()
 		return tl.limiter
 	}
 
@@ -65,10 +76,9 @@ func (s *LimiterStore) Get(key uint64) *limiter {
 	l := &limiter{rl: rl}
 	l.cookie.Store("")
 
-	s.limiters[key] = &timestampedLimiter{
-		limiter:  l,
-		lastSeen: time.Now(),
-	}
+	tl := &timestampedLimiter{limiter: l}
+	tl.touch()
+	s.limiters[key] = tl
 
 	return l
 }
@@ -81,9 +91,10 @@ func (s *LimiterStore) evictOne() {
 
 	// Find the oldest entry
 	for k, v := range s.limiters {
-		if first || v.lastSeen.Before(oldestTime) {
+		seen := v.seen()
+		if first || seen.Before(oldestTime) {
 			oldestKey = k
-			oldestTime = v.lastSeen
+			oldestTime = seen
 			first = false
 		}
 
@@ -107,7 +118,7 @@ func (s *LimiterStore) Cleanup(olderThan time.Duration) {
 
 	cutoff := time.Now().Add(-olderThan)
 	for k, v := range s.limiters {
-		if v.lastSeen.Before(cutoff) {
+		if v.seen().Before(cutoff) {
 			delete(s.limiters, k)
 		}
 	}

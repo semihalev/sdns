@@ -51,10 +51,12 @@ func (f *Failover) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w := ch.Writer
 
 	ch.Writer = &ResponseWriter{ResponseWriter: w, f: f}
+	// Restore via defer so a panicked downstream handler,
+	// recovered higher up, still unwraps the chain before it
+	// returns to the pool.
+	defer func() { ch.Writer = w }()
 
 	ch.Next(ctx)
-
-	ch.Writer = w
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ctx.ResponseWriter interface.
@@ -73,12 +75,10 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetEdns0(util.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
-	ctx := context.Background()
-
 	for _, server := range w.f.servers {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		resp, err := util.Exchange(ctx, req, server, "udp", nil)
+		cancel()
 		if err != nil {
 			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue

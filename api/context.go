@@ -32,8 +32,11 @@ func (ctx *Context) JSON(code int, data any) {
 		return
 	}
 
-	ctx.Writer.WriteHeader(code)
+	// net/http commits headers on WriteHeader, so Content-Type
+	// must be set first — otherwise the client sees whatever
+	// default type net/http picks from the first bytes written.
 	ctx.Writer.Header().Set("Content-Type", "application/json")
+	ctx.Writer.WriteHeader(code)
 
 	_, _ = ctx.Writer.Write(buf)
 }

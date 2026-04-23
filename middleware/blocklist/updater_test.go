@@ -33,9 +33,6 @@ func Test_UpdateBlocklists(t *testing.T) {
 
 	b := New(cfg)
 
-	err := b.updateBlocklists()
-	assert.NoError(t, err)
-
-	err = b.readBlocklists()
+	err := b.readBlocklists()
 	assert.NoError(t, err)
 }

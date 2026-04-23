@@ -103,9 +103,13 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Only analyze UDP - TCP can't be spoofed
-	if w.Proto() == "tcp" {
-		// TCP connection proves IP is real - improve reputation
+	// Only analyze UDP — other transports have an established
+	// peer and aren't spoofing vectors. DoH/DoQ came in as
+	// "doh"/"doq" and were still scored as if they were
+	// spoofed UDP, so high-amplification DoH/DoQ clients
+	// could be refused for no good reason.
+	switch w.Proto() {
+	case "tcp", "doh", "doq":
 		r.tracker.RecordTCP(w.RemoteIP().String())
 		ch.Next(ctx)
 		return
@@ -132,16 +136,20 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Only wrap response writer for high-amp queries to track amplification
-	// Normal queries (ampFactor <= 1.0) skip wrapping for better performance
+	// Only wrap response writer for high-amp queries to track amplification.
+	// Normal queries (ampFactor <= 1.0) skip wrapping for better performance.
+	// Chains come from a sync.Pool, so the wrapper must be removed before
+	// returning — otherwise a later request starts with a stale reflex
+	// wrapper that tracks responses against an unrelated source IP.
 	if ampFactor > 1.0 {
-		rw := &responseWriter{
+		orig := ch.Writer
+		ch.Writer = &responseWriter{
 			ResponseWriter: w,
 			request:        req,
 			tracker:        r.tracker,
 			ip:             ip,
 		}
-		ch.Writer = rw
+		defer func() { ch.Writer = orig }()
 	}
 
 	ch.Next(ctx)

@@ -23,7 +23,13 @@ func TestKubernetesMiddleware(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			cfg := &config.Config{
 				Kubernetes: config.KubernetesConfig{
-					Enabled:       true,
+					// Demo=true opts the middleware into its
+					// synthetic service registry so tests
+					// don't need a live cluster. Enabled
+					// stays false — an enabled+failed
+					// deployment must not silently fall back
+					// to demo data in production.
+					Demo:          true,
 					ClusterDomain: "cluster.local",
 					KillerMode:    mode.killerMode,
 				},

@@ -19,9 +19,12 @@ const (
 // For DNSSEC-signed responses, it also considers RRSIG expiration times.
 func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// Only cache successful responses and negative responses (NXDOMAIN/NODATA)
+	isNegative := false
 	switch respType {
-	case TypeSuccess, TypeNXDomain, TypeNoRecords:
+	case TypeSuccess:
 		// Continue with TTL calculation
+	case TypeNXDomain, TypeNoRecords:
+		isNegative = true
 	case TypeServerFailure:
 		// SERVFAIL responses should be cached for a reasonable time to avoid
 		// hammering broken servers, but not too long in case it's temporary
@@ -54,10 +57,20 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 		}
 	}
 
-	// Check Authority section
+	// Check Authority section. For negative responses, RFC 2308
+	// caps the cache TTL at min(SOA header TTL, SOA.Minttl) — a
+	// response with SOA header TTL 86400 and Minttl 300 must not
+	// be cached for a day.
 	for _, rr := range msg.Ns {
 		if ttl := getTTL(rr); ttl < minTTL {
 			minTTL = ttl
+		}
+		if isNegative {
+			if soa, ok := rr.(*dns.SOA); ok {
+				if ttl := time.Duration(soa.Minttl) * time.Second; ttl < minTTL {
+					minTTL = ttl
+				}
+			}
 		}
 		// Check RRSIG expiration
 		if sig, ok := rr.(*dns.RRSIG); ok {

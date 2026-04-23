@@ -529,11 +529,19 @@ func parseLine(line string) (net.IP, []string, string) {
 }
 
 // matchWildcard checks if a name matches a wildcard pattern.
+//
+// For "*.example.com" this must match the apex "example.com"
+// and any subdomain like "foo.example.com" — but NOT a sibling
+// like "badexample.com". The earlier HasSuffix(name, suffix)
+// check would accept the sibling because the dot boundary
+// wasn't enforced.
 func matchWildcard(pattern, name string) bool {
-	// Simple wildcard matching (e.g., *.example.com)
 	if strings.HasPrefix(pattern, "*.") {
 		suffix := pattern[2:]
-		return strings.HasSuffix(name, suffix) || name == suffix[1:]
+		if name == suffix {
+			return true
+		}
+		return strings.HasSuffix(name, "."+suffix)
 	}
 
 	// TODO: Implement more complex wildcard patterns if needed

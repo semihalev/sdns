@@ -27,6 +27,23 @@ type SmartPredictor struct {
 	// Performance metrics
 	predictions uint64
 	hits        uint64
+
+	// clusterDomain drives the FQDN this predictor emits when
+	// suggesting services to prefetch. Defaults to
+	// "cluster.local"; SetClusterDomain honours a custom
+	// cfg.Kubernetes.ClusterDomain.
+	clusterDomain string
+	svcSuffix     string // ".svc." + domain + "."
+}
+
+// SetClusterDomain configures the cluster suffix used when
+// emitting predicted service FQDNs.
+func (sp *SmartPredictor) SetClusterDomain(domain string) {
+	if domain == "" {
+		domain = "cluster.local"
+	}
+	sp.clusterDomain = domain
+	sp.svcSuffix = ".svc." + domain + "."
 }
 
 // ServiceDependencyGraph tracks which services are queried together
@@ -119,6 +136,7 @@ func NewSmartPredictor() *SmartPredictor {
 			correlations: make(map[string]*NamespaceInfo),
 		},
 	}
+	sp.SetClusterDomain("cluster.local")
 
 	// Initialize time patterns
 	for i := 0; i < 24; i++ {
@@ -395,7 +413,7 @@ func (sp *SmartPredictor) addNamespaceCorrelationPredictions(currentService stri
 		// Check if services are related
 		if count, exists := relatedServices[baseService]; exists {
 			weight := math.Min(float64(count)/100.0, 1.0) // Normalize
-			fullServiceName := service + "." + namespace + ".svc.cluster.local."
+			fullServiceName := service + "." + namespace + sp.svcSuffix
 			predictions[fullServiceName] += weight * 0.1 // 10% weight
 		}
 	}
@@ -494,10 +512,13 @@ func (sp *SmartPredictor) cleanupOldData() {
 	}
 	sp.serviceDeps.mu.Unlock()
 
-	// Clean up old client profiles
+	// Clean up old client profiles. updateClientProfile writes
+	// profile.lastSeen with atomic.StoreInt64 from the request
+	// path, so this background scan must atomically Load to
+	// avoid a data race with concurrent Record calls.
 	sp.clientProfiles.profiles.Range(func(key, value any) bool {
 		profile := value.(*ClientProfile)
-		if now-profile.lastSeen > 3600 { // 1 hour
+		if now-atomic.LoadInt64(&profile.lastSeen) > 3600 { // 1 hour
 			sp.clientProfiles.profiles.Delete(key)
 		}
 		return true

@@ -188,7 +188,10 @@ func (a *API) Run(ctx context.Context) {
 
 	zlog.Info("API server listening...", "addr", a.addr)
 	if a.bearerToken != "" {
-		zlog.Info("API authorization bearer token", "token", a.bearerToken)
+		// Never log the token itself — anyone who can read process
+		// or aggregated logs would be able to call the protected
+		// endpoints (cache purge, blocklist mutation, metrics).
+		zlog.Info("API bearer-token authorization enabled")
 	}
 
 	go func() { //nolint:gosec // G118 - intentionally using Background() for shutdown grace period after parent ctx is cancelled

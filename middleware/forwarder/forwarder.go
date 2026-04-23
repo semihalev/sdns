@@ -64,9 +64,17 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	if !req.CheckingDisabled {
-		req.CheckingDisabled = !f.dnssec
+	// Preserve the client's CD bit. We may set CD=1 on the
+	// upstream query when this server isn't doing DNSSEC, but
+	// the response written back to the client must reflect
+	// what the client asked for — otherwise the cache dedup
+	// key (CD=client) and the stored entry's CD diverge, and
+	// CD=1 clients re-miss every lookup in forwarder mode.
+	clientCD := req.CheckingDisabled
+	if !clientCD && !f.dnssec {
+		req.CheckingDisabled = true
 	}
+	defer func() { req.CheckingDisabled = clientCD }()
 
 	for _, server := range f.servers {
 		reqClient := &dns.Client{Net: server.Proto}
@@ -81,14 +89,21 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		}
 
 		resp.Id = req.Id
-		if !f.dnssec {
-			resp.CheckingDisabled = false
-		}
+		resp.CheckingDisabled = clientCD
 
 		_ = w.WriteMsg(resp)
 		return
 	}
 
+	// Restore the client's CD before synthesising the
+	// all-upstreams-failed SERVFAIL. CancelWithRcode calls
+	// SetReply under the hood, which copies
+	// req.CheckingDisabled into the response; leaving the
+	// overridden CD in place would hand the cache a SERVFAIL
+	// stored under CD=true while the lookup keyed on CD=false.
+	// The deferred restore above still covers the early
+	// return on success.
+	req.CheckingDisabled = clientCD
 	ch.CancelWithRcode(dns.RcodeServerFailure, true)
 }
 

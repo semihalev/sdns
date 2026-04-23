@@ -78,13 +78,16 @@ func (co *Conn) ReadMsg() (*dns.Msg, error) {
 		n, err = io.ReadFull(co.Conn, p)
 	}
 
+	// Return the buffer to the pool regardless of outcome — UDP
+	// timeouts and truncated TCP reads are common and used to leak
+	// the buffer on every failed upstream read.
+	defer ReleaseBuf(p)
+
 	if err != nil {
 		return nil, err
 	} else if n < headerSize {
 		return nil, dns.ErrShortRead
 	}
-
-	defer ReleaseBuf(p)
 
 	m := new(dns.Msg)
 	if err := m.Unpack(p); err != nil {
