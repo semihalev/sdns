@@ -34,6 +34,12 @@ type Resolver struct {
 	outboundipv4 []net.IP
 	outboundipv6 []net.IP
 
+	// Pre-built *net.UDPAddr forms of the outbound IPs above, so the
+	// UDP fast-path in exchange can skip the per-call allocation of
+	// `&net.UDPAddr{IP: …}`. Indices align with outboundipv4/ipv6.
+	outboundUDPv4 []*net.UDPAddr
+	outboundUDPv6 []*net.UDPAddr
+
 	// glue addrs cache
 	ipv4cache *cache.Cache
 	ipv6cache *cache.Cache
@@ -183,6 +189,18 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 				}
 			}
 		}
+	}
+
+	// Pre-build UDPAddr forms so the UDP hot path doesn't allocate
+	// one per exchange. Port=0 means "kernel picks" — the ephemeral
+	// port is bound at socket creation, just like the Dialer path.
+	r.outboundUDPv4 = make([]*net.UDPAddr, len(r.outboundipv4))
+	for i, ip := range r.outboundipv4 {
+		r.outboundUDPv4[i] = &net.UDPAddr{IP: ip}
+	}
+	r.outboundUDPv6 = make([]*net.UDPAddr, len(r.outboundipv6))
+	for i, ip := range r.outboundipv6 {
+		r.outboundUDPv6[i] = &net.UDPAddr{IP: ip}
 	}
 }
 
@@ -749,9 +767,6 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 	configErrors := []*dns.Msg{}
 	fatalErrors := []error{}
 
-	returned := make(chan struct{})
-	defer close(returned)
-
 	// Result type for parallel queries
 	type result struct {
 		resp   *dns.Msg
@@ -759,6 +774,10 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 		server *authcache.AuthServer
 	}
 
+	// Single unbuffered channel. Stragglers whose result arrives after
+	// lookup has picked a winner drop their send via ctx.Done() — the
+	// WithCancel ctx below is the cancellation signal, so we don't
+	// need a separate "returned" channel.
 	results := make(chan result)
 
 	// Start a DNS query to a server
@@ -772,7 +791,7 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 		if !r.circuitBreaker.canQuery(server.Addr) {
 			select {
 			case results <- result{err: fatalError(errConnectionFailed), server: server}:
-			case <-returned:
+			case <-ctx.Done():
 			}
 			return
 		}
@@ -799,7 +818,7 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 
 		select {
 		case results <- result{resp: resp, err: err, server: server}:
-		case <-returned:
+		case <-ctx.Done():
 		}
 	}
 
@@ -997,16 +1016,28 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		}
 	}
 
-	d := r.newDialer(ctx, proto, server.Version)
-
 	co := AcquireConn()
 
 	if pooledConn != nil {
-		// Use the pooled connection
+		// Use the pooled TCP connection
 		co.Conn = pooledConn.Conn
+	} else if proto == "udp" && server.UDPAddr != nil {
+		// Fast UDP path: net.DialUDP with pre-parsed addresses skips
+		// DialContext's resolveAddrList + dialParallel + internal
+		// context.WithDeadline, which together account for most of
+		// the allocation noise on every upstream query.
+		co.Conn, err = r.dialUDP(server)
+		if err != nil {
+			zlog.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+				"net", proto, "error", err.Error(), "retried", retried)
+			ReleaseConn(co)
+			return nil, err
+		}
 	} else {
-		// Create new connection
+		// TCP / fallback path: use the full Dialer machinery.
+		d := r.newDialer(ctx, proto, server.Version)
 		co.Conn, err = d.DialContext(ctx, proto, server.Addr)
+		releaseDialer(d)
 		if err != nil {
 			zlog.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 				"net", proto, "error", err.Error(), "retried", retried)
@@ -1078,6 +1109,71 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 	return resp, nil
 }
 
+// dialerPool recycles net.Dialer structs across upstream queries. The
+// struct is small (~176 bytes) but allocated on every single upstream
+// query — with ~17 MB/60s of allocation observed at typical cold-cache
+// load, reuse is worth the pool.
+var dialerPool = sync.Pool{New: func() any { return new(net.Dialer) }}
+
+// dialUDP opens a connected UDP socket to server.UDPAddr. It is the
+// hot-path alternative to Dialer.DialContext: DialUDP takes pre-parsed
+// *UDPAddr values and skips resolveAddrList / dialParallel / internal
+// context wiring, none of which applies for numeric IP:port targets.
+// DialUDP is non-blocking so no dial timeout is required; the caller
+// still calls SetDeadline on the returned conn for read/write
+// timeouts.
+//
+// The explicit error check below matters: a direct return of
+// DialUDP's typed *net.UDPConn wraps a nil pointer in a non-nil
+// net.Conn interface, and downstream code assumes `Conn != nil`
+// means the conn is usable.
+func (r *Resolver) dialUDP(server *authcache.AuthServer) (net.Conn, error) {
+	laddr := r.localUDPAddrFor(server.Version)
+	conn, err := net.DialUDP("udp", laddr, server.UDPAddr)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// localUDPAddrFor returns the pre-built *net.UDPAddr to use as the
+// local address on the outgoing socket, honouring the same round-robin
+// selection newDialer does based on NumCPU rotation; nil means "let
+// the kernel pick an ephemeral local endpoint".
+func (r *Resolver) localUDPAddrFor(version authcache.Version) *net.UDPAddr {
+	switch version {
+	case authcache.IPv4:
+		if n := len(r.outboundUDPv4); n > 0 {
+			return r.outboundUDPv4[localAddrIndex(n)]
+		}
+	case authcache.IPv6:
+		if n := len(r.outboundUDPv6); n > 0 {
+			return r.outboundUDPv6[localAddrIndex(n)]
+		}
+	}
+	return nil
+}
+
+// localAddrIndex rotates through the configured outbound IPs using a
+// per-resolver atomic counter. The original newDialer path selects by
+// request id; the UDP path can't easily read the id without a ctx, and
+// a round-robin counter gives the same spread without the ctx lookup.
+func localAddrIndex(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	return int(localAddrCounter.Add(1) % uint64(n))
+}
+
+var localAddrCounter atomic.Uint64
+
+// releaseDialer returns d to the pool after dialing is complete.
+// Callers must not hold a reference to d after calling.
+func releaseDialer(d *net.Dialer) {
+	*d = net.Dialer{}
+	dialerPool.Put(d)
+}
+
 func (r *Resolver) newDialer(ctx context.Context, proto string, version authcache.Version) (d *net.Dialer) {
 	// Calculate deadline respecting both network timeout and context deadline
 	deadline := time.Now().Add(r.netTimeout)
@@ -1085,7 +1181,8 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, version authcach
 		deadline = ctxDeadline
 	}
 
-	d = &net.Dialer{Deadline: deadline}
+	d = dialerPool.Get().(*net.Dialer)
+	d.Deadline = deadline
 
 	reqid := 0
 	if v := ctx.Value(contextKeyRequestID); v != nil {
