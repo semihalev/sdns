@@ -103,7 +103,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	srv := server.New(cfg)
-	srv.Run(ctx)
+	if err := srv.Run(ctx); err != nil {
+		return fmt.Errorf("server startup failed: %w", err)
+	}
 
 	api := api.New(cfg)
 	api.Run(ctx)
