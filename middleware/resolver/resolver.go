@@ -1018,10 +1018,11 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 
 	co := AcquireConn()
 
-	if pooledConn != nil {
-		// Use the pooled TCP connection
+	switch {
+	case pooledConn != nil:
+		// Use the pooled TCP connection.
 		co.Conn = pooledConn.Conn
-	} else if proto == "udp" && server.UDPAddr != nil {
+	case proto == "udp" && server.UDPAddr != nil:
 		// Fast UDP path: net.DialUDP with pre-parsed addresses skips
 		// DialContext's resolveAddrList + dialParallel + internal
 		// context.WithDeadline, which together account for most of
@@ -1033,7 +1034,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 			ReleaseConn(co)
 			return nil, err
 		}
-	} else {
+	default:
 		// TCP / fallback path: use the full Dialer machinery.
 		d := r.newDialer(ctx, proto, server.Version)
 		co.Conn, err = d.DialContext(ctx, proto, server.Addr)
@@ -1162,7 +1163,9 @@ func localAddrIndex(n int) int {
 	if n <= 1 {
 		return 0
 	}
-	return int(localAddrCounter.Add(1) % uint64(n))
+	// The modulo result is in [0, n) and n is a small positive int,
+	// so the uint64 -> int conversion is always safe.
+	return int(localAddrCounter.Add(1) % uint64(n)) //nolint:gosec // G115 — result < n, fits in int
 }
 
 var localAddrCounter atomic.Uint64

@@ -141,7 +141,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Supervisor: on ctx cancellation, shut every active listener down.
-	go s.superviseShutdown(ctx, active)
+	go s.superviseShutdown(ctx, active) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
 	return nil
 }
 
