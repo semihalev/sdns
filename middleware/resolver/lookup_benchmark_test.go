@@ -42,7 +42,7 @@ func BenchmarkLookupPerformance(b *testing.B) {
 	ctx := context.Background()
 	for i := 0; i < b.N; i++ {
 		// This will use our optimized lookup with parallel queries and adaptive timeout
-		_, _ = r.groupLookup(ctx, req, servers)
+		_, _ = r.groupLookup(ctx, &resolveState{requestID: req.Id}, req, servers)
 	}
 }
 

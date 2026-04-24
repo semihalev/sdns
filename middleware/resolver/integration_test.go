@@ -40,7 +40,7 @@ func TestCircuitBreakerIntegration(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			_, err := r.lookup(ctx, req, servers)
+			_, err := r.lookup(ctx, &resolveState{requestID: req.Id}, req, servers)
 			assert.Error(t, err, "Query %d should fail", n)
 		}(i)
 		time.Sleep(10 * time.Millisecond) // Small delay between queries
@@ -105,7 +105,7 @@ func TestGoroutineLimitUnderLoad(t *testing.T) {
 			}
 
 			// This will be limited by maxConcurrent
-			_, _ = r.lookup(ctx, req, servers)
+			_, _ = r.lookup(ctx, &resolveState{requestID: req.Id}, req, servers)
 		}(i)
 	}
 
@@ -202,7 +202,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = r.lookup(ctx, req, servers)
+			_, _ = r.lookup(ctx, &resolveState{requestID: req.Id}, req, servers)
 		}()
 	}
 
@@ -254,7 +254,7 @@ func TestCircuitBreakerWithMixedServers(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := r.lookup(ctx, req, servers)
+			_, err := r.lookup(ctx, &resolveState{requestID: req.Id}, req, servers)
 			if err == nil {
 				successes.Add(1)
 			} else {
@@ -347,7 +347,7 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 					go func() {
 						ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 						defer cancel()
-						r.lookup(ctx, req, googleServers) //nolint:gosec // G104 - background load test
+						r.lookup(ctx, &resolveState{requestID: req.Id}, req, googleServers) //nolint:gosec // G104 - background load test
 					}()
 
 				case <-stopLoad:

@@ -408,6 +408,6 @@ func Test_OutboundIPs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := r.lookup(ctx, req, r.rootservers)
+	_, err := r.lookup(ctx, &resolveState{requestID: req.Id}, req, r.rootservers)
 	assert.Error(t, err)
 }
