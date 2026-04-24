@@ -236,6 +236,18 @@ func (h *DNSHandler) purge(qname string) {
 	h.resolver.ncache.Remove(cache.Key(nsQuestion, true))
 }
 
+// (*DNSHandler).Purge removes the nameserver cache entry for q when
+// q is a TypeNS question. Other qtypes are a no-op because the
+// resolver handler only keeps an NS cache; purging A/AAAA or other
+// record types is the cache middleware's concern. Implements
+// middleware.Purger so the api purge endpoint reaches both.
+func (h *DNSHandler) Purge(q dns.Question) {
+	if q.Qtype != dns.TypeNS {
+		return
+	}
+	h.purge(q.Name)
+}
+
 // (*DNSHandler).Stop stop gracefully shuts down the resolver.
 func (h *DNSHandler) Stop() {
 	if h.resolver.tcpPool != nil {

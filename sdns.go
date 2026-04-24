@@ -13,6 +13,7 @@ import (
 
 	"github.com/semihalev/sdns/api"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/queryer"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/server"
 	"github.com/semihalev/zlog/v2"
@@ -84,7 +85,53 @@ func setup() error {
 	zlog.SetDefault(logger)
 
 	middleware.Setup(cfg)
+	wireQueryers()
 	return nil
+}
+
+// clientGuardMiddlewares are skipped when building the internal
+// sub-pipeline — they exist to serve real client traffic
+// (observability, rate limiting, access control, loop detection)
+// and either add noise or actively hurt when an internal sub-query
+// traverses them.
+var clientGuardMiddlewares = []string{
+	"loop", "metrics", "dnstap", "accesslist",
+	"ratelimit", "reflex", "accesslog",
+}
+
+// queryerTarget is the subset of *cache.Cache that sdns.go needs to
+// wire queryers; defined locally so sdns.go doesn't grow a direct
+// dependency on the cache package.
+type queryerTarget interface {
+	SetQueryer(queryer.Queryer)
+	SetPrefetchQueryer(queryer.Queryer)
+}
+
+// wireQueryers constructs the internal sub-pipelines and installs
+// them on the cache middleware. Called once after middleware.Setup.
+//
+// The standard queryerSub drives CNAME chase and (in later phases)
+// DNAME / CNAME-target-style lookups, so it keeps cache plus every
+// local-answer middleware — hostsfile, blocklist, kubernetes, as112,
+// failover, resolver/forwarder — to match today's ExchangeInternal
+// behaviour minus the observer noise.
+//
+// prefetchSub additionally excludes cache so a prefetch refresh
+// bypasses its own about-to-expire entry and reaches the upstream.
+func wireQueryers() {
+	pipe := middleware.GlobalPipeline()
+	if pipe == nil {
+		return
+	}
+	target, ok := pipe.Get("cache").(queryerTarget)
+	if !ok {
+		return
+	}
+	queryerSub := pipe.SubPipeline(clientGuardMiddlewares...)
+	prefetchSub := pipe.SubPipeline(append(clientGuardMiddlewares, "cache")...)
+
+	target.SetQueryer(queryer.NewPipelineQueryer(queryerSub))
+	target.SetPrefetchQueryer(queryer.NewPipelineQueryer(prefetchSub))
 }
 
 func runServer(cmd *cobra.Command, args []string) error {

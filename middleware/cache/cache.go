@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/queryer"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/sdns/waitgroup"
@@ -41,6 +42,16 @@ type Cache struct {
 	store *Store
 
 	prefetchQueue *PrefetchQueue
+
+	// queryer routes CNAME chase and (eventually) client-shaped
+	// internal work through the sub-pipeline. Wired by sdns.go at
+	// startup; nil-safe call sites guard for tests that construct
+	// Cache without full startup.
+	queryer queryer.Queryer
+	// prefetchQueryer routes prefetch refreshes through a
+	// cache-less sub-pipeline so the refresh hits the upstream
+	// resolver / forwarder rather than its own stale entry.
+	prefetchQueryer queryer.Queryer
 
 	config  CacheConfig
 	metrics *CacheMetrics
@@ -144,6 +155,26 @@ func (c *Cache) Name() string { return name }
 // wiring (queryer, resolver sub-queries, api purge) that needs to
 // read or write cache entries without going through ServeDNS.
 func (c *Cache) Store() *Store { return c.store }
+
+// (*Cache).Purge removes positive and negative cache entries for q
+// under both CD=true and CD=false. Implements middleware.Purger so
+// the api purge endpoint can invalidate cache state without
+// synthesising a CHAOS-NULL request.
+func (c *Cache) Purge(q dns.Question) {
+	c.store.Purge(q)
+}
+
+// (*Cache).SetQueryer installs the Queryer used for internal
+// client-shaped work (CNAME chase on cache writeback, future DNAME
+// target lookup from the resolver). Called once from sdns.go
+// startup.
+func (c *Cache) SetQueryer(q queryer.Queryer) { c.queryer = q }
+
+// (*Cache).SetPrefetchQueryer installs the Queryer used by the
+// prefetch worker. The prefetch sub-pipeline excludes the cache
+// middleware so a refresh reaches the upstream resolver / forwarder
+// instead of returning its own about-to-expire entry.
+func (c *Cache) SetPrefetchQueryer(q queryer.Queryer) { c.prefetchQueryer = q }
 
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {

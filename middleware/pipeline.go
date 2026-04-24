@@ -44,6 +44,66 @@ func (p *Pipeline) List() []string {
 	return out
 }
 
+// SubPipeline returns a new Pipeline containing the same handlers in
+// the same order, minus any whose Name() is listed in skip. Used to
+// build the internal sub-pipeline for queryer.Queryer: client-only
+// guards (metrics, dnstap, accesslist, ratelimit, reflex, accesslog,
+// loop) are dropped so internal sub-queries don't pollute
+// observability or double-count against rate limits, but local-answer
+// middlewares (hostsfile, blocklist, kubernetes, as112), cache,
+// failover, and resolver/forwarder stay.
+//
+// The returned Pipeline is independent of the receiver — it has its
+// own byName index and handler slice. The names list carries forward
+// the full registered list for diagnostics.
+func (p *Pipeline) SubPipeline(skip ...string) *Pipeline {
+	if p == nil {
+		return nil
+	}
+	skipSet := make(map[string]struct{}, len(skip))
+	for _, n := range skip {
+		skipSet[n] = struct{}{}
+	}
+	handlers := make([]Handler, 0, len(p.handlers))
+	byName := make(map[string]Handler, len(p.handlers))
+	for _, h := range p.handlers {
+		if _, drop := skipSet[h.Name()]; drop {
+			continue
+		}
+		handlers = append(handlers, h)
+		byName[h.Name()] = h
+	}
+	return &Pipeline{handlers: handlers, byName: byName, names: p.names}
+}
+
+// NewChain returns a fresh Chain bound to this pipeline's handlers.
+// Used by queryer.Queryer to dispatch an internal request through
+// the sub-pipeline without pulling from the production chainPool
+// (which is tied to the full pipeline).
+func (p *Pipeline) NewChain() *Chain {
+	if p == nil {
+		return nil
+	}
+	return NewChain(p.handlers)
+}
+
+// Purgers returns every enabled handler that implements Purger, in
+// pipeline order. The api purge endpoint iterates this to invalidate
+// both the cache middleware's entries and the resolver handler's
+// nameserver cache.
+func (p *Pipeline) Purgers() []Purger {
+	if p == nil {
+		return nil
+	}
+	out := make([]Purger, 0, len(p.handlers))
+	for _, h := range p.handlers {
+		if pr, ok := h.(Purger); ok {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
 // globalPipeline holds the active Pipeline. Reads on the hot path are
 // atomic and lock-free; writes happen only once, from Setup.
 var (
@@ -65,6 +125,13 @@ func Setup(cfg *config.Config) {
 // Ready reports whether Setup has completed.
 func Ready() bool {
 	return globalPipeline.Load() != nil
+}
+
+// GlobalPipeline returns the active pipeline snapshot, or nil before
+// Setup. Startup wiring (queryer construction, api purge hooks) reads
+// this once to derive sub-pipelines and enumerate purgers.
+func GlobalPipeline() *Pipeline {
+	return globalPipeline.Load()
 }
 
 // Handlers returns the enabled handlers from the global Pipeline. Returns

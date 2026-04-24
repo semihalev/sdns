@@ -72,6 +72,18 @@ func (w *responseWriter) Reset(rw dns.ResponseWriter) {
 	case *doq.ResponseWriter:
 		w.proto = "doq"
 	}
+
+	// Propagate an Internal() signal from any writer that exposes it.
+	// Today that's the mock.Writer-with-sentinel path plus the
+	// queryer.BufferWriter used by the internal sub-pipeline. The
+	// sentinel comparison above stays as fallback for plugin compat;
+	// this interface check is the supported channel for new code.
+	if w.internal {
+		return
+	}
+	if i, ok := rw.(interface{ Internal() bool }); ok {
+		w.internal = i.Internal()
+	}
 }
 
 func (w *responseWriter) RemoteIP() net.IP {
