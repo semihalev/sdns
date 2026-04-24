@@ -285,9 +285,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// must skip the Join to avoid deadlock: if an outer client
 	// request is the K1 leader and its chase needs K2 which lands
 	// back on K1, the internal chase must not block waiting for
-	// itself. middleware.IsInternal tags the ctx inside Queryer.Query;
-	// replaces the pre-Phase-4 writer-based Internal() check.
-	if !middleware.IsInternal(ctx) {
+	// itself. BufferWriter.Internal() propagates through the
+	// responseWriter wrapper; checking the writer flag here is a
+	// field load instead of a ctx.Value walk on every external
+	// client miss. middleware.IsInternal(ctx) remains the
+	// ctx-based successor for code paths without a writer in
+	// scope.
+	if !w.Internal() {
 		if wait := c.wg.Join(cacheKey); wait != nil {
 			<-wait
 			if entry := c.checkCache(cacheKey); entry != nil {
@@ -344,12 +348,15 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 
 	// Rate limiting applies to external client queries only.
 	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
-	// inherit the ctx marker from Queryer.Query; cancelling a
-	// rate-limited cache hit mid-chase would leave the outer
-	// client with a partial CNAME answer. middleware.IsInternal
-	// replaces the pre-Phase-4 writer-based Internal() check.
+	// carry BufferWriter.Internal()==true via the responseWriter
+	// propagation; cancelling a rate-limited cache hit mid-chase
+	// would leave the outer client with a partial CNAME answer.
+	// Writer-flag check is a field load vs middleware.IsInternal's
+	// ctx.Value walk, kept on the hot path for throughput;
+	// middleware.IsInternal(ctx) remains available for code paths
+	// without a writer in scope.
 	limiter := entry.GetRateLimiter()
-	if !middleware.IsInternal(ctx) && limiter != nil && !limiter.Allow() {
+	if !w.Internal() && limiter != nil && !limiter.Allow() {
 		ch.Cancel()
 		return true
 	}

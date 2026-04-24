@@ -25,7 +25,7 @@ func TestMarkAndIsInternal(t *testing.T) {
 }
 
 func TestBufferWriterPresentsAsTCP(t *testing.T) {
-	w := newBufferWriter()
+	w := getBufferWriter()
 	if got := w.Proto(); got != "tcp" {
 		t.Fatalf("Proto = %q, want \"tcp\" (edns uses this for buffer cap)", got)
 	}
@@ -41,7 +41,7 @@ func TestBufferWriterPresentsAsTCP(t *testing.T) {
 }
 
 func TestBufferWriterCapturesMsg(t *testing.T) {
-	w := newBufferWriter()
+	w := getBufferWriter()
 	msg := new(dns.Msg)
 	msg.SetQuestion("example.com.", dns.TypeA)
 	msg.Rcode = dns.RcodeServerFailure
@@ -141,4 +141,30 @@ func TestQueryerReturnsErrOnNoResponse(t *testing.T) {
 	if !errors.Is(err, ErrNoResponse) {
 		t.Fatalf("err = %v, want ErrNoResponse", err)
 	}
+}
+
+func BenchmarkPipelineQueryerQuery(b *testing.B) {
+	rec := &recordingHandler{name: "rec", rcode: dns.RcodeSuccess}
+	pipe := buildBenchPipeline(b, rec)
+	q := NewPipelineQueryer(pipe)
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = q.Query(ctx, req)
+	}
+}
+
+func buildBenchPipeline(b *testing.B, handlers ...Handler) *Pipeline {
+	b.Helper()
+	Reset()
+	b.Cleanup(Reset)
+	for _, h := range handlers {
+		DefaultRegistry.Register(h.Name(), func(_ *config.Config) Handler { return h })
+	}
+	Setup(&config.Config{})
+	return GlobalPipeline()
 }

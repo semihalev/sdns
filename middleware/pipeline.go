@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"github.com/semihalev/sdns/config"
@@ -8,12 +9,28 @@ import (
 )
 
 // Pipeline is the compiled, immutable middleware chain produced by
-// Registry.Build. All fields are set at construction time and never
-// mutated, so every read is safe without synchronization.
+// Registry.Build. Handler fields are set at construction time and
+// never mutated, so every read is safe without synchronization.
+// chainPool is internally mutable (sync.Pool's contract) but serves
+// the same Pipeline across all callers — pooling *Chain is the
+// per-internal-query alloc-saver that the pre-retirement
+// util.ExchangeInternal provided.
 type Pipeline struct {
-	handlers []Handler
-	byName   map[string]Handler
-	names    []string // full registered name list, including disabled
+	handlers  []Handler
+	byName    map[string]Handler
+	names     []string // full registered name list, including disabled
+	chainPool sync.Pool
+}
+
+// newPipeline constructs a Pipeline and initialises its chain pool.
+// Used by Registry.Build and Pipeline.SubPipeline so every pipeline
+// (full and sub) gets its own pool bound to its own handler list.
+func newPipeline(handlers []Handler, byName map[string]Handler, names []string) *Pipeline {
+	p := &Pipeline{handlers: handlers, byName: byName, names: names}
+	p.chainPool.New = func() any {
+		return NewChain(p.handlers)
+	}
+	return p
 }
 
 // Handlers returns the enabled handlers in chain order. The returned slice
@@ -74,18 +91,32 @@ func (p *Pipeline) SubPipeline(skip ...string) *Pipeline {
 		handlers = append(handlers, h)
 		byName[h.Name()] = h
 	}
-	return &Pipeline{handlers: handlers, byName: byName, names: p.names}
+	return newPipeline(handlers, byName, p.names)
 }
 
-// NewChain returns a fresh Chain bound to this pipeline's handlers.
-// Used by queryer.Queryer to dispatch an internal request through
-// the sub-pipeline without pulling from the production chainPool
-// (which is tied to the full pipeline).
+// NewChain returns a Chain bound to this pipeline's handlers,
+// pulled from the pipeline's own sync.Pool. Callers that dispatch
+// internal sub-queries (queryer.Queryer) should return the chain
+// via PutChain after use to keep per-sub-query allocations off the
+// hot path. Callers that build a chain for long-lived use don't
+// need to return it.
 func (p *Pipeline) NewChain() *Chain {
 	if p == nil {
 		return nil
 	}
-	return NewChain(p.handlers)
+	return p.chainPool.Get().(*Chain)
+}
+
+// PutChain returns ch to the pipeline's pool. Safe to call with a
+// chain from any pipeline — the sync.Pool is per-pipeline so cross
+// put/get only causes a pool mismatch (never a correctness bug),
+// but callers should pair PutChain with NewChain from the same
+// Pipeline to keep the pool warm.
+func (p *Pipeline) PutChain(ch *Chain) {
+	if p == nil || ch == nil {
+		return
+	}
+	p.chainPool.Put(ch)
 }
 
 // Purgers returns every enabled handler that implements Purger, in

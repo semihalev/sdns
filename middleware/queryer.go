@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 
 	"github.com/miekg/dns"
 )
@@ -71,14 +72,25 @@ type pipelineQueryer struct {
 
 func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	ctx = MarkInternal(ctx)
-	w := newBufferWriter()
+	w := getBufferWriter()
 	ch := q.sub.NewChain()
 	ch.Reset(w, req)
 	ch.Next(ctx)
-	if !w.Written() {
+
+	// Capture the reply before returning the writer to the pool.
+	// BufferWriter.Msg returns the *dns.Msg pointer held on the
+	// writer; after putBufferWriter clears w.msg, the pointer is
+	// still valid because the dns.Msg it points to is heap-
+	// allocated and the caller now owns the reference.
+	written := w.Written()
+	msg := w.Msg()
+	putBufferWriter(w)
+	q.sub.PutChain(ch)
+
+	if !written {
 		return nil, ErrNoResponse
 	}
-	return w.Msg(), nil
+	return msg, nil
 }
 
 // BufferWriter is the dns.ResponseWriter used inside Queryer.Query.
@@ -104,8 +116,23 @@ var (
 	bufferRemoteAddr = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 255), Port: 0}
 )
 
-func newBufferWriter() *BufferWriter {
-	return &BufferWriter{local: bufferLocalAddr, remote: bufferRemoteAddr}
+// bufferWriterPool avoids a per-internal-query *BufferWriter alloc
+// on the hot path. The zero-init constructor sets the shared
+// package-level addrs; putBufferWriter clears the captured msg so
+// the next user starts clean.
+var bufferWriterPool = sync.Pool{
+	New: func() any {
+		return &BufferWriter{local: bufferLocalAddr, remote: bufferRemoteAddr}
+	},
+}
+
+func getBufferWriter() *BufferWriter {
+	return bufferWriterPool.Get().(*BufferWriter)
+}
+
+func putBufferWriter(w *BufferWriter) {
+	w.msg = nil
+	bufferWriterPool.Put(w)
 }
 
 // LocalAddr satisfies dns.ResponseWriter.
