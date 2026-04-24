@@ -41,6 +41,12 @@ func New(cfg *config.Config) *AccessList {
 // (*AccessList).Name name return middleware name.
 func (a *AccessList) Name() string { return name }
 
+// (*AccessList).ClientOnly marks access-list enforcement as
+// client-traffic-only; middleware.Setup excludes it from internal
+// sub-pipelines so an internal sub-query isn't denied by a
+// source-IP rule that doesn't apply to internal traffic.
+func (a *AccessList) ClientOnly() bool { return true }
+
 // (*AccessList).ServeDNS serveDNS implements the Handle interface.
 func (a *AccessList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if ch.Writer.Internal() {

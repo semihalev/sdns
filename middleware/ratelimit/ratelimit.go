@@ -50,6 +50,12 @@ func New(cfg *config.Config) *RateLimit {
 // (*RateLimit).Name name return middleware name.
 func (r *RateLimit) Name() string { return name }
 
+// (*RateLimit).ClientOnly marks the per-client limiter as
+// client-traffic-only; middleware.Setup excludes it from internal
+// sub-pipelines so an internal sub-query doesn't count against the
+// limiter bucket attributed to its outer client.
+func (r *RateLimit) ClientOnly() bool { return true }
+
 // (*RateLimit).ServeDNS serveDNS implements the Handle interface.
 func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request

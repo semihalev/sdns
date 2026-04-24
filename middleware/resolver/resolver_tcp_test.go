@@ -47,7 +47,7 @@ func TestResolverTCPPoolIntegration(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
-	resp, err := r.exchange(context.Background(), "tcp", req, r.rootservers.List[0], 0)
+	resp, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, r.rootservers.List[0], 0)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -61,7 +61,7 @@ func TestResolverTCPPoolIntegration(t *testing.T) {
 	assert.Equal(t, 1, active)        // Connection should be pooled
 
 	// Test 2: Second query should reuse connection
-	resp2, err := r.exchange(context.Background(), "tcp", req, r.rootservers.List[0], 0)
+	resp2, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, r.rootservers.List[0], 0)
 	require.NoError(t, err)
 	require.NotNil(t, resp2)
 
@@ -123,7 +123,7 @@ func TestResolverTCPPoolConcurrent(t *testing.T) {
 			req.SetQuestion(".", dns.TypeNS)
 			req.Id = uint16(id) //nolint:gosec // G115 - test ID
 
-			_, err := r.exchange(context.Background(), "tcp", req, authServer, 0)
+			_, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, authServer, 0)
 			if err != nil {
 				errors <- err
 			}
@@ -173,7 +173,7 @@ func TestResolverTCPPoolWithEDNSKeepalive(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
-	resp, err := r.exchange(context.Background(), "tcp", req, authServer, 0)
+	resp, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, authServer, 0)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 

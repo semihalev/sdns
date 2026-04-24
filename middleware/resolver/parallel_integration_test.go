@@ -20,7 +20,7 @@ func TestParallelLookupIntegration(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.QnameMinLevel = 0 // Disable minimization for simpler testing
 
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Use a timeout context to prevent hanging
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -60,7 +60,7 @@ func TestParallelLookupIPv6(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.IPv6Access = true
 
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Use a timeout context to prevent hanging
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -83,7 +83,7 @@ func TestParallelLookupIPv6(t *testing.T) {
 
 func BenchmarkParallelLookupReal(b *testing.B) {
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	ctx := context.Background()
 

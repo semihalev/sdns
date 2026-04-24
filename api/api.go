@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -125,16 +123,25 @@ func (a *API) purge(ctx *Context) {
 		return
 	}
 
-	qtype := strings.ToUpper(ctx.Param("qtype"))
-	qname := dns.Fqdn(ctx.Param("qname"))
+	qtypeName := strings.ToUpper(ctx.Param("qtype"))
+	qtype, ok := dns.StringToType[qtypeName]
+	if !ok {
+		ctx.JSON(http.StatusBadRequest, Json{"error": "unknown qtype: " + qtypeName})
+		return
+	}
+	q := dns.Question{
+		Name:   dns.Fqdn(ctx.Param("qname")),
+		Qtype:  qtype,
+		Qclass: dns.ClassINET,
+	}
 
-	bqname := base64.StdEncoding.EncodeToString([]byte(qtype + ":" + qname))
-
-	req := new(dns.Msg)
-	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
-	req.Question[0].Qclass = dns.ClassCHAOS
-
-	_, _ = util.ExchangeInternal(context.Background(), req)
+	// Invalidate every purger the pipeline exposes — today that's
+	// the cache middleware (positive + negative entries) and the
+	// resolver handler (NS cache, TypeNS only). No synthesised
+	// CHAOS-NULL query, no base64 encoding; just a direct call.
+	for _, p := range middleware.GlobalPipeline().Purgers() {
+		p.Purge(q)
+	}
 
 	ctx.JSON(http.StatusOK, Json{"success": true})
 }

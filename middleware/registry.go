@@ -108,7 +108,7 @@ func (r *Registry) Build(cfg *config.Config) *Pipeline {
 		zlog.Debug("Middleware registered", "name", h.Name(), "index", i)
 	}
 
-	return &Pipeline{handlers: handlers, byName: byName, names: order}
+	return newPipeline(handlers, byName, order)
 }
 
 // loadPlugins walks cfg.Plugins, opens each as a Go plugin and registers

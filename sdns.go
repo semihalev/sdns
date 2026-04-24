@@ -84,6 +84,7 @@ func setup() error {
 	zlog.SetDefault(logger)
 
 	middleware.Setup(cfg)
+
 	return nil
 }
 

@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -124,22 +123,6 @@ func Test_HandlerHINFO(t *testing.T) {
 	resp := handler.handle(ctx, m)
 
 	assert.Equal(t, true, len(resp.Ns) > 0)
-}
-
-func Test_HandlerPurge(t *testing.T) {
-	ctx := context.Background()
-	cfg := makeTestConfig()
-	handler := New(cfg)
-
-	bqname := base64.StdEncoding.EncodeToString([]byte("NS:."))
-
-	req := new(dns.Msg)
-	req.SetQuestion(dns.Fqdn(bqname), dns.TypeNULL)
-	req.Question[0].Qclass = dns.ClassCHAOS
-
-	resp := handler.handle(ctx, req)
-
-	assert.Equal(t, true, len(resp.Extra) > 0)
 }
 
 func Test_HandlerServe(t *testing.T) {

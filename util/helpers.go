@@ -4,24 +4,10 @@ package util
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"errors"
-	"strings"
-	"sync"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/mock"
 )
-
-var chainPool sync.Pool
-
-func init() {
-	chainPool.New = func() any {
-		return middleware.NewChain(middleware.Handlers())
-	}
-}
 
 // SetRcode returns message specified with rcode.
 func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
@@ -194,49 +180,6 @@ func Exchange(ctx context.Context, req *dns.Msg, addr string, net string, client
 	}
 
 	return resp, err
-}
-
-// ExchangeInternal exchange dns request internal.
-func ExchangeInternal(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
-	w := mock.NewWriter("tcp", "127.0.0.255:0")
-
-	ch := chainPool.Get().(*middleware.Chain)
-	defer chainPool.Put(ch)
-
-	ch.Reset(w, r)
-
-	ch.Next(ctx)
-
-	if !w.Written() {
-		return nil, errors.New("no replied any message")
-	}
-
-	return w.Msg(), nil
-}
-
-// ParsePurgeQuestion can parse query for purge questions.
-func ParsePurgeQuestion(req *dns.Msg) (qname string, qtype uint16, ok bool) {
-	if len(req.Question) == 0 {
-		return
-	}
-
-	bstr := strings.TrimSuffix(req.Question[0].Name, ".")
-
-	nbytes, err := base64.StdEncoding.DecodeString(bstr)
-	if err != nil {
-		return
-	}
-
-	q := strings.Split(string(nbytes), ":")
-	if len(q) != 2 {
-		return
-	}
-
-	if qtype, ok = dns.StringToType[q[0]]; !ok {
-		return
-	}
-
-	return q[1], qtype, true
 }
 
 // NotSupported response to writer an empty notimplemented message.

@@ -18,7 +18,6 @@ import (
 	"github.com/semihalev/sdns/middleware/forwarder"
 	"github.com/semihalev/sdns/middleware/hostsfile"
 	"github.com/semihalev/sdns/middleware/kubernetes"
-	"github.com/semihalev/sdns/middleware/loop"
 	"github.com/semihalev/sdns/middleware/metrics"
 	"github.com/semihalev/sdns/middleware/ratelimit"
 	"github.com/semihalev/sdns/middleware/recovery"
@@ -28,7 +27,6 @@ import (
 
 func init() {
 	middleware.Register("recovery", func(cfg *config.Config) middleware.Handler { return recovery.New(cfg) })
-	middleware.Register("loop", func(cfg *config.Config) middleware.Handler { return loop.New(cfg) })
 	middleware.Register("metrics", func(cfg *config.Config) middleware.Handler { return metrics.New(cfg) })
 	middleware.Register("dnstap", func(cfg *config.Config) middleware.Handler { return dnstap.New(cfg) })
 	middleware.Register("accesslist", func(cfg *config.Config) middleware.Handler { return accesslist.New(cfg) })

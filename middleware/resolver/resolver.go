@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -58,10 +59,37 @@ type Resolver struct {
 	// Circuit breaker and goroutine limiter
 	circuitBreaker *circuitBreaker
 	maxConcurrent  chan struct{} // Semaphore for limiting concurrent queries
+
+	// store is the cache facade used by subQuery for resolver-private
+	// DNSSEC record lookups (DS, DNSKEY). Auto-wired during
+	// middleware.Setup via StoreSetter; nil-safe for tests that
+	// construct a Resolver directly.
+	//
+	// atomic.Pointer because r.run() starts a background goroutine
+	// from NewResolver that issues priming sub-queries the instant
+	// middleware.Ready() returns true — and the auto-wire write
+	// happens after NewResolver returns. Production sequences the
+	// autoWire() call before globalPipeline.Store, but tests
+	// construct fresh Resolvers outside that flow and need the
+	// atomic barrier for correctness under -race.
+	store atomic.Pointer[middleware.Store]
+
+	// queryer drives policy-aware internal lookups (NS A/AAAA, DNAME
+	// target) through the sub-pipeline so operator overrides
+	// (hostsfile, blocklist, kubernetes, as112) and failover still
+	// apply. Auto-wired via QueryerSetter. Same atomic.Pointer
+	// reasoning as store.
+	queryer atomic.Pointer[middleware.Queryer]
 }
 
-// resolveContext holds the state for a DNS resolution operation.
-type resolveContext struct {
+// resolveState holds the state for a DNS resolution operation.
+//
+// requestID is the outer client request's dns.Msg.Id, used by newDialer to
+// pick a stable outbound IP per query. It is sourced from
+// contextKeyRequestID when present (so Queryer-dispatched sub-queries
+// inherit the outer client's spread through the shared ctx), with req.Id
+// as a fallback for direct callers.
+type resolveState struct {
 	req        *dns.Msg
 	servers    *authcache.AuthServers
 	depth      int
@@ -70,6 +98,7 @@ type resolveContext struct {
 	parentDSRR []dns.RR
 	isRoot     bool
 	extra      []bool
+	requestID  uint16
 }
 
 type nameservers map[string]struct{}
@@ -206,7 +235,13 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 
 // (*Resolver).Resolve resolve starts a DNS resolution - public interface with old signature for compatibility.
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nomin bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
-	rc := &resolveContext{
+	reqid := req.Id
+	if v := ctx.Value(contextKeyRequestID); v != nil {
+		if id, ok := v.(uint16); ok {
+			reqid = id
+		}
+	}
+	rs := &resolveState{
 		req:        req,
 		servers:    servers,
 		depth:      depth,
@@ -215,36 +250,37 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 		parentDSRR: parentdsrr,
 		isRoot:     root,
 		extra:      extra,
+		requestID:  reqid,
 	}
-	return r.resolve(ctx, rc)
+	return r.resolve(ctx, rs)
 }
 
 // resolve performs the actual DNS resolution with cleaner parameters.
-func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, error) {
-	q := rc.req.Question[0]
+func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, error) {
+	q := rs.req.Question[0]
 
-	if rc.isRoot {
-		rc.servers, rc.parentDSRR, rc.level = r.searchCache(q, rc.req.CheckingDisabled, q.Name)
+	if rs.isRoot {
+		rs.servers, rs.parentDSRR, rs.level = r.searchCache(q, rs.req.CheckingDisabled, q.Name)
 	}
 
 	// RFC 7816 query minimization. There are some concerns in RFC.
 	// Current default minimize level 5, if we down to level 3, performance gain 20%
-	minReq, minimized := r.minimize(rc.req, rc.level, rc.nomin)
+	minReq, minimized := r.minimize(rs.req, rs.level, rs.nomin)
 
-	zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rc.servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", rc.req.CheckingDisabled, "qname-minimize", minimized)
+	zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rs.servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", rs.req.CheckingDisabled, "qname-minimize", minimized)
 
-	resp, err := r.groupLookup(ctx, minReq, rc.servers)
+	resp, err := r.groupLookup(ctx, rs, minReq, rs.servers)
 	if err != nil {
-		return r.handleLookupError(ctx, err, rc, minReq, minimized)
+		return r.handleLookupError(ctx, err, rs, minReq, minimized)
 	}
 
-	resp = r.setTags(rc.req, resp)
+	resp = r.setTags(rs.req, resp)
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if minimized {
-			rc.level++
-			rc.isRoot = false
-			return r.resolve(ctx, rc)
+			rs.level++
+			rs.isRoot = false
+			return r.resolve(ctx, rs)
 		}
 		return resp, nil
 	}
@@ -256,34 +292,34 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 		}
 
 		if resp.Rcode == dns.RcodeNameError {
-			return r.authority(ctx, rc.req, resp, rc.parentDSRR, rc.req.Question[0].Qtype, rc.servers.Zone) // handle NXDOMAIN with DNSSEC proof
+			return r.authority(ctx, rs.req, resp, rs.parentDSRR, rs.req.Question[0].Qtype, rs.servers.Zone) // handle NXDOMAIN with DNSSEC proof
 		}
 
-		return r.answer(ctx, rc.req, resp, rc.parentDSRR, rc.servers.Zone, rc.extra...)
+		return r.answer(ctx, rs.req, resp, rs.parentDSRR, rs.servers.Zone, rs.extra...)
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		rc.level++
-		rc.isRoot = false
-		return r.resolve(ctx, rc)
+		rs.level++
+		rs.isRoot = false
+		return r.resolve(ctx, rs)
 	}
 
 	if len(resp.Ns) > 0 {
-		return r.processAuthoritySection(ctx, rc, minReq, resp, minimized) // handle delegation or authority data
+		return r.processAuthoritySection(ctx, rs, minReq, resp, minimized) // handle delegation or authority data
 	}
 
 	// no answer, no authority. create new msg safer, sometimes received weird responses
 	m := new(dns.Msg) // return clean empty response instead of malformed data
 
-	m.Question = rc.req.Question
-	m.SetRcode(rc.req, dns.RcodeSuccess)
+	m.Question = rs.req.Question
+	m.SetRcode(rs.req, dns.RcodeSuccess)
 	m.RecursionAvailable = true
-	m.Extra = rc.req.Extra
+	m.Extra = rs.req.Extra
 
 	return m, nil
 }
 
-func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
+func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
 	// Key by question, CD flag, AND a fingerprint of the
@@ -312,7 +348,7 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 
 	// Use TimedDoChan for automatic timeout handling
 	result, shared, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
-		return r.lookup(ctx, req, servers)
+		return r.lookup(ctx, rs, req, servers)
 	})
 
 	if err != nil {
@@ -648,7 +684,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 	}
 
 	// Cap the DNAME alias chain. Each follow-up goes through
-	// ExchangeInternal which spawns a fresh resolveContext and
+	// Queryer.Query which spawns a fresh resolveState and
 	// resets the per-resolve depth counter, so without a
 	// ctx-carried counter two zones that cross-DNAME each other
 	// loop until the request deadline fires.
@@ -670,7 +706,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 	// setTags() so it's the authoritative source here.
 	req.CheckingDisabled = resp.CheckingDisabled
 
-	msg, err := util.ExchangeInternal(ctx, req)
+	msg, err := r.internalExchange(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -896,7 +932,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 	return resp, nil
 }
 
-func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
+func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	var serversList []*authcache.AuthServer
 
 	servers.RLock()
@@ -955,7 +991,7 @@ func (r *Resolver) lookup(ctx context.Context, req *dns.Msg, servers *authcache.
 			return
 		default:
 			reqCopy.Id = dns.Id() // anti-spoofing
-			resp, err := r.exchange(ctx, "udp", reqCopy, server, 0)
+			resp, err := r.exchange(ctx, rs, "udp", reqCopy, server, 0)
 			if resp != nil {
 				resp.Id = originalId
 			}
@@ -1149,7 +1185,7 @@ mainloop:
 	return nil, fatalError(errNoRootServers)
 }
 
-func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, server *authcache.AuthServer, retried int) (*dns.Msg, error) {
+func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string, req *dns.Msg, server *authcache.AuthServer, retried int) (*dns.Msg, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -1206,7 +1242,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 		}
 	default:
 		// TCP / fallback path: use the full Dialer machinery.
-		d := r.newDialer(ctx, proto, server.Version)
+		d := r.newDialer(ctx, rs, proto, server.Version)
 		co.Conn, err = d.DialContext(ctx, proto, server.Addr)
 		releaseDialer(d)
 		if err != nil {
@@ -1243,7 +1279,7 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 			}
 			// retry
 			retried++
-			return r.exchange(ctx, proto, req, server, retried)
+			return r.exchange(ctx, rs, proto, req, server, retried)
 		}
 
 		return nil, err
@@ -1261,20 +1297,20 @@ func (r *Resolver) exchange(ctx context.Context, proto string, req *dns.Msg, ser
 	ReleaseConn(co)
 
 	if resp != nil && resp.Truncated && proto == "udp" {
-		return r.exchange(ctx, "tcp", req, server, retried)
+		return r.exchange(ctx, rs, "tcp", req, server, retried)
 	}
 
 	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > util.DefaultMsgSize {
 		// If response is too large, switch to TCP
 		zlog.Debug("Response too large, switching to TCP", "query", formatQuestion(q), "upstream", server.Addr,
 			"size", resp.Len(), "maxSize", util.DefaultMsgSize, "retried", retried)
-		return r.exchange(ctx, "tcp", req, server, retried)
+		return r.exchange(ctx, rs, "tcp", req, server, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = util.ClearOPT(req)
-		return r.exchange(ctx, proto, req, server, retried)
+		return r.exchange(ctx, rs, proto, req, server, retried)
 	}
 
 	return resp, nil
@@ -1347,7 +1383,7 @@ func releaseDialer(d *net.Dialer) {
 	dialerPool.Put(d)
 }
 
-func (r *Resolver) newDialer(ctx context.Context, proto string, version authcache.Version) (d *net.Dialer) {
+func (r *Resolver) newDialer(ctx context.Context, rs *resolveState, proto string, version authcache.Version) (d *net.Dialer) {
 	// Calculate deadline respecting both network timeout and context deadline
 	deadline := time.Now().Add(r.netTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
@@ -1357,10 +1393,14 @@ func (r *Resolver) newDialer(ctx context.Context, proto string, version authcach
 	d = dialerPool.Get().(*net.Dialer)
 	d.Deadline = deadline
 
-	reqid := 0
-	if v := ctx.Value(contextKeyRequestID); v != nil {
-		reqid = int(v.(uint16))
-	}
+	// Outbound IP selection uses the outer client's request ID so all
+	// upstream queries for one client query land on the same configured
+	// IP. The id rides on resolveState; for sub-queries dispatched via
+	// Queryer.Query the outer id is propagated through
+	// contextKeyRequestID (set by DNSHandler.ServeDNS and preserved
+	// across sub-pipeline re-entry) and re-read in Resolve when
+	// building the child resolveState.
+	reqid := int(rs.requestID)
 
 	switch version {
 	case authcache.IPv4:
@@ -1639,7 +1679,7 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 	// its internal DS chain walk SERVFAIL on bogus parent-side DS data.
 	dsReq.CheckingDisabled = cd
 
-	dsres, err := util.ExchangeInternal(ctx, dsReq)
+	dsres, err := r.subQuery(ctx, dsReq)
 	if err != nil {
 		return nil, err
 	}
@@ -1649,6 +1689,116 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 	}
 
 	return dsres, nil
+}
+
+// errQueryerNotWired is returned when an internal client-shaped
+// lookup fires before sdns.go wiring has installed a Queryer.
+// Production never sees this path; it exists so tests that build a
+// partially wired Resolver get a clear error instead of a nil deref.
+var errQueryerNotWired = errors.New("resolver: queryer not wired")
+
+// internalExchange routes a resolver-constructed client-shaped
+// lookup (NS A/AAAA, DNAME target) through the installed Queryer.
+//
+// This is distinct from subQuery: the latter bypasses the chain
+// entirely for DNSSEC records where policy overrides would
+// compromise the chain of trust. internalExchange goes through the
+// sub-pipeline so hostsfile, blocklist, kubernetes, as112, and
+// failover all still apply.
+func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	q := r.queryer.Load()
+	if q == nil {
+		return nil, errQueryerNotWired
+	}
+	return (*q).Query(ctx, req)
+}
+
+// subQuery answers a resolver-constructed DNSSEC record lookup (DS
+// or DNSKEY) via cache-first direct resolution. It deliberately
+// bypasses the middleware chain — no failover, no local-answer
+// middleware (hostsfile, blocklist, kubernetes, as112) — because
+// the DNSSEC chain of trust must not be polluted by operator
+// overrides or configured forwarders substituting for authoritative
+// signer-zone records.
+//
+// NS A/AAAA, DNAME target, and CNAME chase go through queryer.Queryer
+// instead; those resolutions are legitimately subject to operator
+// policy and do not participate in signature validation.
+//
+// requestID is read from ctx (contextKeyRequestID, populated by the
+// outer DNSHandler.ServeDNS) so newDialer inherits the outer
+// client's outbound-IP spread for sub-query traffic. Threading rs
+// through every DNSSEC helper would require touching findDS /
+// answer / authority / isZoneSecure / validateDelegation signatures;
+// ctx is already plumbed everywhere and carries the same value that
+// Resolve() would read when building a state struct.
+//
+// subQuery is nil-safe for a nil store — tests and forwarder-only
+// deployments construct a Resolver without one. In that case only
+// the direct-upstream path runs; nothing is cached or read.
+func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	store := r.store.Load()
+	if store != nil {
+		if msg, ok := (*store).Get(req); ok {
+			return msg, nil
+		}
+	}
+
+	// Clear RD/AD before hitting authoritative servers.
+	// DNSHandler.handle does this at handler.go:134-135 for chain-
+	// dispatched queries; subQuery bypasses the handler entirely,
+	// so resolver-constructed DS/DNSKEY requests (all built via
+	// dns.Msg.SetQuestion, which defaults RD=true) would otherwise
+	// ask authorities for recursion and trip REFUSED on stricter
+	// ones. req is always constructed by the immediate caller
+	// (lookupDS, verifyDNSSEC) and not shared, so a plain mutate
+	// is safe; no save/restore needed.
+	req.RecursionDesired = false
+	req.AuthenticatedData = false
+
+	reqid := req.Id
+	if v := ctx.Value(contextKeyRequestID); v != nil {
+		if id, ok := v.(uint16); ok {
+			reqid = id
+		}
+	}
+
+	// Depth budget mirrors handler.go's Maxdepth handling: the cfg
+	// default set in New() is 30, but some tests construct a Resolver
+	// directly with cfg == nil and rely on internal lookups failing
+	// closed rather than panicking.
+	depth := 30
+	if r.cfg != nil && r.cfg.Maxdepth > 0 {
+		depth = r.cfg.Maxdepth
+	}
+
+	// Fail closed when root servers aren't configured. Production
+	// startup always populates rootservers; tests that construct
+	// Resolver{} directly rely on this fail-closed path rather than
+	// a panic deep in resolve().
+	if r.rootservers == nil {
+		return nil, errNoRootServers
+	}
+
+	child := &resolveState{
+		req:        req,
+		servers:    r.rootservers,
+		depth:      depth,
+		level:      0,
+		nomin:      false,
+		parentDSRR: nil,
+		isRoot:     true,
+		extra:      nil,
+		requestID:  reqid,
+	}
+	resp, err := r.resolve(ctx, child)
+	if err != nil {
+		return nil, err
+	}
+	if store != nil && resp != nil {
+		(*store).SetFromResponse(resp, req.CheckingDisabled)
+	}
+	return resp, nil
 }
 
 func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
@@ -1665,7 +1815,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 	nsReq.SetEdns0(util.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := util.ExchangeInternal(ctx, nsReq)
+	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
 	}
@@ -1696,7 +1846,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	nsReq.SetEdns0(util.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := util.ExchangeInternal(ctx, nsReq)
+	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s (%v)", qname, err)
 	}
@@ -1917,7 +2067,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 	q := resp.Question[0]
 
 	if q.Qtype != dns.TypeDNSKEY || q.Name != signer {
-		msg, err = util.ExchangeInternal(ctx, keyReq)
+		msg, err = r.subQuery(ctx, keyReq)
 		if err != nil {
 			return
 		}
@@ -2138,12 +2288,12 @@ func (r *Resolver) run() {
 }
 
 // handleLookupError processes errors from groupLookup.
-func (r *Resolver) handleLookupError(ctx context.Context, err error, rc *resolveContext, minReq *dns.Msg, minimized bool) (*dns.Msg, error) {
+func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolveState, minReq *dns.Msg, minimized bool) (*dns.Msg, error) {
 	if minimized {
 		// retry without minimization
-		rc.nomin = true
-		rc.isRoot = false
-		return r.resolve(ctx, rc)
+		rs.nomin = true
+		rs.isRoot = false
+		return r.resolve(ctx, rs)
 	}
 
 	if _, ok := err.(fatalError); ok {
@@ -2154,9 +2304,9 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rc *resolve
 
 		zlog.Debug("Received network error from all servers", "query", formatQuestion(minReq.Question[0]))
 
-		if atomic.AddUint32(&rc.servers.ErrorCount, 1) == 5 {
-			if ok := r.checkNss(ctx, rc.servers); ok {
-				return r.resolve(ctx, rc)
+		if atomic.AddUint32(&rs.servers.ErrorCount, 1) == 5 {
+			if ok := r.checkNss(ctx, rs.servers); ok {
+				return r.resolve(ctx, rs)
 			}
 		}
 	}
@@ -2164,17 +2314,17 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rc *resolve
 }
 
 // processAuthoritySection handles the authority section of the response.
-func (r *Resolver) processAuthoritySection(ctx context.Context, rc *resolveContext, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
-	q := rc.req.Question[0]
+func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
+	q := rs.req.Question[0]
 
 	if minimized {
 		// Check if we need to continue with minimization
 		for _, rr := range resp.Ns {
 			switch rr.(type) {
 			case *dns.SOA, *dns.CNAME:
-				rc.level++
-				rc.isRoot = false
-				return r.resolve(ctx, rc)
+				rs.level++
+				rs.isRoot = false
+				return r.resolve(ctx, rs)
 			}
 		}
 	}
@@ -2182,17 +2332,17 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rc *resolveConte
 	// Extract nameserver information
 	nsInfo := r.extractNameserverInfo(resp)
 	if len(nsInfo.nameservers) == 0 {
-		return r.authority(ctx, minReq, resp, rc.parentDSRR, q.Qtype, rc.servers.Zone)
+		return r.authority(ctx, minReq, resp, rs.parentDSRR, q.Qtype, rs.servers.Zone)
 	}
 
 	// Handle SOA records
 	if nsInfo.hasSOA {
 		resp.Ns = r.filterAuthorityRecords(resp.Ns)
-		return r.authority(ctx, minReq, resp, rc.parentDSRR, q.Qtype, rc.servers.Zone)
+		return r.authority(ctx, minReq, resp, rs.parentDSRR, q.Qtype, rs.servers.Zone)
 	}
 
 	// Process delegation
-	return r.processDelegation(ctx, rc, resp, nsInfo, minimized)
+	return r.processDelegation(ctx, rs, resp, nsInfo, minimized)
 }
 
 // nameserverInfo holds extracted nameserver information.
@@ -2234,66 +2384,67 @@ func (r *Resolver) filterAuthorityRecords(nsRecords []dns.RR) []dns.RR {
 }
 
 // processDelegation handles delegation processing.
-func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, resp *dns.Msg, nsInfo nameserverInfo, minimized bool) (*dns.Msg, error) {
+func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp *dns.Msg, nsInfo nameserverInfo, minimized bool) (*dns.Msg, error) {
 	nsrr := nsInfo.nsRecord
 	q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
 	// DNSSEC validation for delegation
-	newParentDS, err := r.validateDelegation(ctx, rc.req, resp, q, rc.parentDSRR)
+	newParentDS, err := r.validateDelegation(ctx, rs.req, resp, q, rs.parentDSRR)
 	if err != nil {
 		return nil, err
 	}
-	rc.parentDSRR = newParentDS
+	rs.parentDSRR = newParentDS
 
 	// Check for parent detection
 	nlevel := dns.CountLabel(q.Name)
-	if rc.level > nlevel {
-		if r.qnameMinLevel > 0 && !rc.nomin {
+	if rs.level > nlevel {
+		if r.qnameMinLevel > 0 && !rs.nomin {
 			// Try without minimization
-			newRC := &resolveContext{
-				req:        rc.req,
+			newRS := &resolveState{
+				req:        rs.req,
 				servers:    r.rootservers,
-				depth:      rc.depth,
+				depth:      rs.depth,
 				level:      0,
 				nomin:      true,
 				parentDSRR: nil,
 				isRoot:     true,
-				extra:      rc.extra,
+				extra:      rs.extra,
+				requestID:  rs.requestID,
 			}
-			return r.resolve(ctx, newRC)
+			return r.resolve(ctx, newRS)
 		}
 		return resp, errParentDetection
 	}
 
 	// Determine checking disabled state
-	cd := rc.req.CheckingDisabled || len(rc.parentDSRR) == 0
+	cd := rs.req.CheckingDisabled || len(rs.parentDSRR) == 0
 
 	// Try nameserver cache
 	key := cache.Key(q, cd)
 	if ncache, err := r.ncache.Get(key); err == nil {
-		return r.resolveWithCachedNameservers(ctx, rc, ncache, key, q, cd)
+		return r.resolveWithCachedNameservers(ctx, rs, ncache, key, q, cd)
 	}
 
 	zlog.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
 	// Check glue records and perform lookups
-	authservers, foundv4, foundv6 := r.checkGlueRR(resp, nsInfo.nameservers, rc.level)
+	authservers, foundv4, foundv6 := r.checkGlueRR(resp, nsInfo.nameservers, rs.level)
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	r.lookupV4Nss(ctx, q, authservers, key, rc.parentDSRR, foundv4, nsInfo.nameservers, cd)
+	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDSRR, foundv4, nsInfo.nameservers, cd)
 
 	if len(authservers.List) == 0 {
-		if minimized && rc.level < nlevel {
-			rc.level++
-			rc.isRoot = false
-			return r.resolve(ctx, rc)
+		if minimized && rs.level < nlevel {
+			rs.level++
+			rs.isRoot = false
+			return r.resolve(ctx, rs)
 		}
 		return nil, errNoReachableAuth
 	}
 
 	// Cache nameservers
-	r.ncache.Set(key, rc.parentDSRR, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
+	r.ncache.Set(key, rs.parentDSRR, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 	zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 
 	// Start IPv6 lookups in background, bounded by a fixed
@@ -2313,16 +2464,16 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 		}()
 	}
 
-	rc.depth--
-	if rc.depth <= 0 {
+	rs.depth--
+	if rs.depth <= 0 {
 		return nil, errMaxDepth
 	}
 
 	// Continue resolution with new servers
-	rc.servers = authservers
-	rc.level = nlevel
-	rc.isRoot = false
-	return r.resolve(ctx, rc)
+	rs.servers = authservers
+	rs.level = nlevel
+	rs.isRoot = false
+	return r.resolve(ctx, rs)
 }
 
 // validateDelegation performs DNSSEC validation for delegation.
@@ -2476,23 +2627,23 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 }
 
 // resolveWithCachedNameservers handles resolution with cached nameservers.
-func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rc *resolveContext, ncache *authcache.NS, key uint64, q dns.Question, cd bool) (*dns.Msg, error) {
+func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rs *resolveState, ncache *authcache.NS, key uint64, q dns.Question, cd bool) (*dns.Msg, error) {
 	zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 
-	if r.equalServers(ncache.Servers, rc.servers) {
+	if r.equalServers(ncache.Servers, rs.servers) {
 		// Potential loop, decrease depth faster
-		rc.depth -= 10
+		rs.depth -= 10
 	} else {
-		rc.depth--
+		rs.depth--
 	}
 
-	if rc.depth <= 0 {
+	if rs.depth <= 0 {
 		return nil, errMaxDepth
 	}
 
-	rc.level++
-	rc.servers = ncache.Servers
-	rc.parentDSRR = ncache.DSRR
-	rc.isRoot = false
-	return r.resolve(ctx, rc)
+	rs.level++
+	rs.servers = ncache.Servers
+	rs.parentDSRR = ncache.DSRR
+	rs.isRoot = false
+	return r.resolve(ctx, rs)
 }

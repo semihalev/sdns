@@ -2,7 +2,9 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,14 +27,58 @@ const (
 	name   = "cache"
 	maxTTL = util.MaxCacheTTL
 	minTTL = util.MinCacheTTL
+
+	// maxCnameChaseDepth bounds how many nested CNAME-chase
+	// invocations may happen for a single client query. The
+	// additionalAnswer helper itself walks a chain of up to 10
+	// hops per invocation; this counter bounds the number of
+	// recursive invocations (one per nested Queryer.Query that
+	// happens to return a CNAME whose target is also chased).
+	// Replaces the previous !w.Internal() guard, which allowed
+	// at most one level of chasing.
+	maxCnameChaseDepth = 10
 )
+
+// cnameChaseDepthKeyType tags ctx with the current CNAME-chase
+// depth. Sentinel pointer type so interface boxing doesn't allocate
+// on each context.Value lookup.
+type cnameChaseDepthKeyType struct{}
+
+var cnameChaseDepthKey = &cnameChaseDepthKeyType{}
+
+func cnameChaseDepth(ctx context.Context) int {
+	v, _ := ctx.Value(cnameChaseDepthKey).(int)
+	return v
+}
+
+func withCnameChaseDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, cnameChaseDepthKey, depth)
+}
 
 // Cache is the cache implementation.
 type Cache struct {
 	positive *PositiveCache
 	negative *NegativeCache
 
+	// store is the public-facing storage facade backed by the same
+	// positive/negative sub-caches. External callers (resolver
+	// sub-queries, queryer-driven prefetch, future API purge wiring)
+	// route through Store; the middleware itself uses both views —
+	// Store for the new API surface, direct sub-cache access for
+	// the few existing hot paths that already have a key in hand.
+	store *Store
+
 	prefetchQueue *PrefetchQueue
+
+	// queryer routes CNAME chase and (eventually) client-shaped
+	// internal work through the sub-pipeline. Wired by sdns.go at
+	// startup; nil-safe call sites guard for tests that construct
+	// Cache without full startup.
+	queryer middleware.Queryer
+	// prefetchQueryer routes prefetch refreshes through a
+	// cache-less sub-pipeline so the refresh hits the upstream
+	// resolver / forwarder rather than its own stale entry.
+	prefetchQueryer middleware.Queryer
 
 	config  CacheConfig
 	metrics *CacheMetrics
@@ -90,9 +136,14 @@ func New(cfg *config.Config) *Cache {
 
 	metrics := &CacheMetrics{}
 
+	positive := NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics)
+	negative := NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics)
+
 	c := &Cache{
-		positive: NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics),
-		negative: NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics),
+		positive: positive,
+		negative: negative,
+
+		store: NewStore(positive, negative, cacheConfig),
 
 		config:  cacheConfig,
 		metrics: metrics,
@@ -126,6 +177,56 @@ func New(cfg *config.Config) *Cache {
 
 // (*Cache).Name name returns middleware name.
 func (c *Cache) Name() string { return name }
+
+// (*Cache).Store returns the storage facade, typed as
+// middleware.Store so Cache satisfies middleware.StoreProvider for
+// auto-wiring in middleware.Setup. External callers that need the
+// full *Store surface can type-assert.
+func (c *Cache) Store() middleware.Store { return c.store }
+
+// (*Cache).Purge removes positive and negative cache entries for q
+// under both CD=true and CD=false. Implements middleware.Purger so
+// the api purge endpoint can invalidate cache state without
+// synthesising a CHAOS-NULL request.
+func (c *Cache) Purge(q dns.Question) {
+	c.store.Purge(q)
+}
+
+// (*Cache).SetQueryer installs the Queryer used for internal
+// client-shaped work (CNAME chase on cache writeback, future DNAME
+// target lookup from the resolver). Called once from sdns.go
+// startup.
+func (c *Cache) SetQueryer(q middleware.Queryer) { c.queryer = q }
+
+// (*Cache).SetPrefetchQueryer installs the Queryer used by the
+// prefetch worker. The prefetch sub-pipeline excludes the cache
+// middleware so a refresh reaches the upstream resolver / forwarder
+// instead of returning its own about-to-expire entry.
+func (c *Cache) SetPrefetchQueryer(q middleware.Queryer) { c.prefetchQueryer = q }
+
+// errQueryerNotWired is returned when an internal Cache lookup fires
+// before sdns.go wiring has installed a Queryer. Production never
+// sees this path; it exists so tests that construct a partially
+// wired Cache fail with a clear error instead of a nil deref.
+var errQueryerNotWired = errors.New("cache: queryer not wired")
+
+// internalExchange routes CNAME-chase sub-queries through the
+// installed Queryer.
+func (c *Cache) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	if c.queryer == nil {
+		return nil, errQueryerNotWired
+	}
+	return c.queryer.Query(ctx, req)
+}
+
+// prefetchExchange routes prefetch refresh traffic through the
+// prefetch sub-pipeline (cache excluded).
+func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	if c.prefetchQueryer == nil {
+		return nil, errQueryerNotWired
+	}
+	return c.prefetchQueryer.Query(ctx, req)
+}
 
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
@@ -164,9 +265,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// used to take the waitgroup lock and allocate a Join
 	// context/timer even when the entry was already live.
 	if entry := c.checkCache(cacheKey); entry != nil {
-		if w.Internal() && entry.prefetch.Load() {
-			// Prefetch path: fall through to the resolver.
-		} else if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 			return
 		}
 	}
@@ -182,6 +281,17 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// leader). Calling Done from a follower would either
 	// over-decrement the counter or cancel the leader's
 	// context out from under them.
+	//
+	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
+	// must skip the Join to avoid deadlock: if an outer client
+	// request is the K1 leader and its chase needs K2 which lands
+	// back on K1, the internal chase must not block waiting for
+	// itself. BufferWriter.Internal() propagates through the
+	// responseWriter wrapper; checking the writer flag here is a
+	// field load instead of a ctx.Value walk on every external
+	// client miss. middleware.IsInternal(ctx) remains the
+	// ctx-based successor for code paths without a writer in
+	// scope.
 	if !w.Internal() {
 		if wait := c.wg.Join(cacheKey); wait != nil {
 			<-wait
@@ -203,9 +313,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw := c.writerPool.Get().(*ResponseWriter)
 	rw.ResponseWriter = w
 	rw.cache = c
+	// Stash the active ctx so WriteMsg can read the CNAME-chase
+	// depth counter and thread it into additionalAnswer's
+	// sub-query. The field is cleared on release so a pooled
+	// writer doesn't leak a ctx reference between uses.
+	rw.ctx = ctx
 	ch.Writer = rw
 	defer func() {
 		ch.Writer = w
+		rw.ctx = nil
 		c.writerPool.Put(rw)
 	}()
 
@@ -217,12 +333,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 // records its own metrics, so a miss in the positive cache that
 // then hits the negative cache (or vice versa) counts once.
 func (c *Cache) checkCache(key uint64) *CacheEntry {
-	if entry, ok := c.positive.Get(key); ok {
-		c.metrics.Hit()
-		return entry
-	}
-
-	if entry, ok := c.negative.Get(key); ok {
+	if entry, ok := c.store.LookupByKey(key); ok {
 		c.metrics.Hit()
 		return entry
 	}
@@ -236,7 +347,15 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	w := ch.Writer
 	req := ch.Request
 
-	// Check rate limiting
+	// Rate limiting applies to external client queries only.
+	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
+	// carry BufferWriter.Internal()==true via the responseWriter
+	// propagation; cancelling a rate-limited cache hit mid-chase
+	// would leave the outer client with a partial CNAME answer.
+	// Writer-flag check is a field load vs middleware.IsInternal's
+	// ctx.Value walk, kept on the hot path for throughput;
+	// middleware.IsInternal(ctx) remains available for code paths
+	// without a writer in scope.
 	limiter := entry.GetRateLimiter()
 	if !w.Internal() && limiter != nil && !limiter.Allow() {
 		ch.Cancel()
@@ -269,9 +388,14 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		return false
 	}
 
-	// Resolve CNAME chains if needed (matching V1 behavior)
-	if !w.Internal() {
-		msg = c.additionalAnswer(ctx, msg)
+	// Resolve CNAME chains if needed (matching V1 behavior).
+	// The depth counter bounds nested chases across the Queryer
+	// boundary: each additionalAnswer invocation increments the
+	// counter so an inner cache hit on a further CNAME stops
+	// chasing once the chain passes maxCnameChaseDepth. Replaces
+	// the pre-Phase-3d !w.Internal() guard.
+	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
+		msg = c.additionalAnswer(withCnameChaseDepth(ctx, depth+1), msg)
 	}
 
 	_ = w.WriteMsg(msg)
@@ -291,35 +415,18 @@ func (c *Cache) isValidQuery(q dns.Question) bool {
 }
 
 // handleSpecialQuery handles CHAOS and other special queries.
+// Cache invalidation previously flowed through here via a
+// base64-encoded CHAOS NULL request dispatched by
+// util.ExchangeInternal; that path retired alongside
+// ExchangeInternal itself — api/api.go now calls Cache.Purge
+// directly via middleware.Pipeline.Purgers(). Only the debug-ns
+// HINFO pass-through remains.
 func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q dns.Question) bool {
-	// Handle cache purge
-	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := util.ParsePurgeQuestion(ch.Request); ok {
-			c.purge(qname, qtype)
-			ch.Next(ctx)
-			return true
-		}
-	}
-
-	// Handle debug queries
 	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
 		ch.Next(ctx)
 		return true
 	}
-
 	return false
-}
-
-// purge removes entries from cache.
-func (c *Cache) purge(qname string, qtype uint16) {
-	q := dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET}
-
-	// Purge both CD and non-CD versions
-	for _, cd := range []bool{false, true} {
-		key := CacheKey{Question: q, CD: cd}.Hash()
-		c.positive.Remove(key)
-		c.negative.Remove(key)
-	}
 }
 
 // (*Cache).Stop stop gracefully shuts down the cache.
@@ -329,19 +436,20 @@ func (c *Cache) Stop() {
 	}
 }
 
-// (*Cache).Set set adds a new element to the cache. Provided for API compatibility.
+// (*Cache).Set set adds a new element to the cache. Provided for API
+// compatibility (prefetch worker, plugin callers). Internally goes
+// through Store; the entry is constructed with origTTL adjusted to
+// the real upstream TTL so subsequent prefetch decisions don't
+// miscalculate from the post-Calculate (clamped) value.
 func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	if len(msg.Question) == 0 {
 		return
 	}
 
-	// Filter the message like ResponseWriter does
-	rw := &ResponseWriter{cache: c}
-	filtered := rw.filterAnswerSection(msg)
-
+	filtered := filterCacheableAnswer(msg)
 	mt, _ := util.ClassifyResponse(filtered, time.Now().UTC())
-
 	msgTTL := util.CalculateCacheTTL(filtered, mt)
+
 	var ttl time.Duration
 	if mt == util.TypeServerFailure {
 		ttl = c.negative.ttl.Calculate(msgTTL)
@@ -349,23 +457,12 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 		ttl = c.positive.ttl.Calculate(msgTTL)
 	}
 
-	// Create entry with proper original TTL for prefetch calculation
 	entry := NewCacheEntryWithKey(filtered, ttl, c.config.RateLimit, key)
-	// Ensure origTTL reflects the actual TTL from the response for prefetch calculations
 	if ttl > 0 {
 		entry.origTTL = uint32(ttl.Seconds())
 	}
 
-	switch mt {
-	case util.TypeSuccess, util.TypeReferral:
-		c.positive.Set(key, entry)
-	case util.TypeNXDomain, util.TypeNoRecords:
-		// NXDOMAIN and NODATA go to positive cache with normal TTL handling
-		c.positive.Set(key, entry)
-	case util.TypeServerFailure:
-		// Server failures and other errors go to negative cache with expire limit
-		c.negative.Set(key, entry)
-	}
+	c.store.SetEntryWithKey(key, entry, mt)
 }
 
 // (*Cache).Stats stats returns cache statistics.
@@ -377,8 +474,8 @@ func (c *Cache) Stats() map[string]any {
 		"misses":        misses,
 		"evictions":     evictions,
 		"prefetches":    prefetches,
-		"positive_size": c.positive.Len(),
-		"negative_size": c.negative.Len(),
+		"positive_size": c.store.PositiveLen(),
+		"negative_size": c.store.NegativeLen(),
 		"hit_rate": func() float64 {
 			total := float64(hits + misses)
 			if total == 0 {
@@ -393,6 +490,11 @@ func (c *Cache) Stats() map[string]any {
 type ResponseWriter struct {
 	middleware.ResponseWriter
 	cache *Cache
+	// ctx carries the active request context so WriteMsg can read
+	// the CNAME-chase depth counter and thread it into
+	// additionalAnswer's sub-query. Set by Cache.ServeDNS when the
+	// writer is pulled from the pool; cleared on defer.
+	ctx context.Context
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ResponseWriter interface.
@@ -409,64 +511,52 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
-	// Determine cache type and TTL
-	mt, _ := util.ClassifyResponse(res, time.Now().UTC())
+	// Classify, filter, and store via Store. Key is derived from
+	// the response's CD bit — today's behaviour and the contract
+	// the cache dedup leader and follower agree on.
 	key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
+	w.cache.store.SetFromResponseWithKey(key, res)
 
-	// Filter answer section to only keep relevant records (matching V1 behavior)
-	filtered := w.filterAnswerSection(res)
-
-	// Calculate TTL
-	msgTTL := util.CalculateCacheTTL(filtered, mt)
-	var ttl time.Duration
-
-	switch mt {
-	case util.TypeSuccess, util.TypeReferral:
-		ttl = w.cache.positive.ttl.Calculate(msgTTL)
-		entry := NewCacheEntryWithKey(filtered, ttl, w.cache.config.RateLimit, key)
-		w.cache.positive.Set(key, entry)
-
-	case util.TypeNXDomain, util.TypeNoRecords:
-		ttl = w.cache.positive.ttl.Calculate(msgTTL)
-		entry := NewCacheEntryWithKey(filtered, ttl, w.cache.config.RateLimit, key)
-		w.cache.positive.Set(key, entry)
-
-	case util.TypeServerFailure:
-		ttl = w.cache.negative.ttl.Calculate(msgTTL)
-		entry := NewCacheEntryWithKey(filtered, ttl, w.cache.config.RateLimit, key)
-		w.cache.negative.Set(key, entry)
+	// Resolve CNAME chains before sending to client (matching V1
+	// behavior). Depth counter replaces the pre-Phase-3d
+	// !w.Internal() guard; the active request ctx was stashed on
+	// this writer by Cache.ServeDNS so WriteMsg can read it
+	// without the caller plumbing ctx through the
+	// dns.ResponseWriter interface.
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	// Resolve CNAME chains before sending to client (matching V1 behavior)
-	if !w.Internal() {
-		res = w.cache.additionalAnswer(context.Background(), res)
+	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
+		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
 	}
 
 	return w.ResponseWriter.WriteMsg(res)
 }
 
-// filterAnswerSection filters the answer section to only keep relevant records
-// This matches the V1 behavior of only caching records that are directly relevant.
-func (w *ResponseWriter) filterAnswerSection(res *dns.Msg) *dns.Msg {
+// filterCacheableAnswer keeps only the records directly relevant to
+// the query: ones whose owner name matches Question[0].Name, plus
+// DNAME records and their RRSIGs (which legitimately have a
+// non-matching owner). Matches the V1 behaviour of keeping the
+// cache compact and avoiding accidental retention of unrelated
+// glue / additional data.
+func filterCacheableAnswer(res *dns.Msg) *dns.Msg {
 	if len(res.Answer) == 0 {
 		return res
 	}
 
-	// Create a copy to avoid modifying the original
 	filtered := res.Copy()
 	var answer []dns.RR
 
 	for _, r := range filtered.Answer {
-		// Keep DNAME records or records matching the query name
 		if r.Header().Rrtype == dns.TypeDNAME ||
 			strings.EqualFold(res.Question[0].Name, r.Header().Name) {
 			answer = append(answer, r)
+			continue
 		}
 
-		// Keep RRSIG records for DNAME that don't match the query name
 		if rrsig, ok := r.(*dns.RRSIG); ok {
-			if rrsig.TypeCovered == dns.TypeDNAME &&
-				!strings.EqualFold(res.Question[0].Name, r.Header().Name) {
+			if rrsig.TypeCovered == dns.TypeDNAME {
 				answer = append(answer, r)
 			}
 		}
@@ -581,15 +671,13 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		cnameReq.RecursionDesired = true
 
 		// Check for loops
-		for _, t := range targets {
-			if t == target {
-				return util.SetRcode(msg, dns.RcodeServerFailure, false)
-			}
+		if slices.Contains(targets, target) {
+			return util.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
 
 		targets = append(targets, target)
 
-		respCname, err := util.ExchangeInternal(ctx, cnameReq)
+		respCname, err := c.internalExchange(ctx, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		}
@@ -602,7 +690,15 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		cnameDepth--
 
-		if child && cnameDepth > 0 {
+		// If the chased response already supplied the final
+		// answer alongside the CNAME, stop. Otherwise the next
+		// goto would re-query the CNAME's target and
+		// searchAdditionalAnswer would append the same final
+		// record a second time — reachable now that inner
+		// cache hits also run additionalAnswer (Phase 3d) and
+		// short-circuit by returning the full cached chain
+		// (CNAME + final A/AAAA) in one response.
+		if child && cnameDepth > 0 && !respCnameHasType(respCname, q.Qtype) {
 			goto lookup
 		}
 
@@ -612,6 +708,25 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
+}
+
+// respCnameHasType reports whether the CNAME-chase response
+// already contains a record of the final qtype. Used to short-
+// circuit the outer chase loop when the inner hop supplied both
+// the CNAME and its target's final answer in one message —
+// without this check, the outer loop would ask for the CNAME's
+// target again and searchAdditionalAnswer would append the same
+// final record a second time.
+func respCnameHasType(res *dns.Msg, qtype uint16) bool {
+	if res == nil {
+		return false
+	}
+	for _, r := range res.Answer {
+		if r.Header().Rrtype == qtype {
+			return true
+		}
+	}
+	return false
 }
 
 // searchAdditionalAnswer merges the CNAME response into the original message.

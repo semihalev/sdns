@@ -11,9 +11,10 @@ import (
 
 // Test_Prefetch_Stores_Response tests that prefetch actually stores responses in cache.
 func Test_Prefetch_Stores_Response(t *testing.T) {
-	// This test verifies the structure is correct
-	// In production, the prefetch will call dnsutil.ExchangeInternal which will
-	// execute the query and the response will be stored via req.Cache.Set(req.Key, resp)
+	// This test verifies the structure is correct. In production,
+	// processPrefetch dispatches through the prefetchQueryer
+	// sub-pipeline and persists the response via
+	// cache.Store.SetFromResponseWithKey.
 
 	cfg := &config.Config{
 		CacheSize: 1024,
@@ -60,9 +61,12 @@ func Test_Prefetch_Stores_Response(t *testing.T) {
 		assert.NotNil(t, req.Cache)
 		assert.Equal(t, c, req.Cache)
 
-		// In real execution, processPrefetch will:
-		// 1. Call dnsutil.ExchangeInternal(ctx, req.Request)
-		// 2. If successful, call req.Cache.Set(req.Key, resp)
-		// This ensures the prefetched response is stored back in the cache
+		// In real execution, processPrefetch:
+		//   1. Calls req.Cache.prefetchExchange(ctx, req.Request)
+		//      which dispatches through the prefetch sub-pipeline.
+		//   2. On any non-nil resp calls
+		//      req.Cache.store.SetFromResponseWithKey(req.Key, resp)
+		//      which classifies the rcode and writes to the
+		//      positive or negative cache.
 	}
 }

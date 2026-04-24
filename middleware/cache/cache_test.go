@@ -396,9 +396,12 @@ func TestCacheInvalidation(t *testing.T) {
 	entry := c.checkCache(key)
 	require.NotNil(t, entry)
 
-	// Clear cache by creating new instances
+	// Clear cache by creating new instances. checkCache reads through
+	// c.store, so the swap has to update both the direct fields and
+	// the store facade — they share pointers and must stay in sync.
 	c.positive = NewPositiveCache(c.config.Size/2, c.config.MinTTL, c.config.MaxTTL, c.metrics)
 	c.negative = NewNegativeCache(c.config.Size/2, c.config.MinTTL, c.config.NegativeTTL, c.metrics)
+	c.store = NewStore(c.positive, c.negative, c.config)
 
 	// Should be gone
 	entry = c.checkCache(key)

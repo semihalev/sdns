@@ -1,18 +1,35 @@
 package middleware
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/zlog/v2"
 )
 
 // Pipeline is the compiled, immutable middleware chain produced by
-// Registry.Build. All fields are set at construction time and never
-// mutated, so every read is safe without synchronization.
+// Registry.Build. Handler fields are set at construction time and
+// never mutated, so every read is safe without synchronization.
+// chainPool is internally mutable (sync.Pool's contract) but serves
+// the same Pipeline across all callers — pooling *Chain keeps
+// per-internal-query allocations off the hot path for Queryer.
 type Pipeline struct {
-	handlers []Handler
-	byName   map[string]Handler
-	names    []string // full registered name list, including disabled
+	handlers  []Handler
+	byName    map[string]Handler
+	names     []string // full registered name list, including disabled
+	chainPool sync.Pool
+}
+
+// newPipeline constructs a Pipeline and initialises its chain pool.
+// Used by Registry.Build and Pipeline.SubPipeline so every pipeline
+// (full and sub) gets its own pool bound to its own handler list.
+func newPipeline(handlers []Handler, byName map[string]Handler, names []string) *Pipeline {
+	p := &Pipeline{handlers: handlers, byName: byName, names: names}
+	p.chainPool.New = func() any {
+		return NewChain(p.handlers)
+	}
+	return p
 }
 
 // Handlers returns the enabled handlers in chain order. The returned slice
@@ -44,6 +61,80 @@ func (p *Pipeline) List() []string {
 	return out
 }
 
+// SubPipeline returns a new Pipeline containing the same handlers in
+// the same order, minus any whose Name() is listed in skip. Used to
+// build the internal sub-pipeline for queryer.Queryer: client-only
+// guards (metrics, dnstap, accesslist, ratelimit, reflex, accesslog,
+// loop) are dropped so internal sub-queries don't pollute
+// observability or double-count against rate limits, but local-answer
+// middlewares (hostsfile, blocklist, kubernetes, as112), cache,
+// failover, and resolver/forwarder stay.
+//
+// The returned Pipeline is independent of the receiver — it has its
+// own byName index and handler slice. The names list carries forward
+// the full registered list for diagnostics.
+func (p *Pipeline) SubPipeline(skip ...string) *Pipeline {
+	if p == nil {
+		return nil
+	}
+	skipSet := make(map[string]struct{}, len(skip))
+	for _, n := range skip {
+		skipSet[n] = struct{}{}
+	}
+	handlers := make([]Handler, 0, len(p.handlers))
+	byName := make(map[string]Handler, len(p.handlers))
+	for _, h := range p.handlers {
+		if _, drop := skipSet[h.Name()]; drop {
+			continue
+		}
+		handlers = append(handlers, h)
+		byName[h.Name()] = h
+	}
+	return newPipeline(handlers, byName, p.names)
+}
+
+// NewChain returns a Chain bound to this pipeline's handlers,
+// pulled from the pipeline's own sync.Pool. Callers that dispatch
+// internal sub-queries (queryer.Queryer) should return the chain
+// via PutChain after use to keep per-sub-query allocations off the
+// hot path. Callers that build a chain for long-lived use don't
+// need to return it.
+func (p *Pipeline) NewChain() *Chain {
+	if p == nil {
+		return nil
+	}
+	return p.chainPool.Get().(*Chain)
+}
+
+// PutChain returns ch to the pipeline's pool. Safe to call with a
+// chain from any pipeline — the sync.Pool is per-pipeline so cross
+// put/get only causes a pool mismatch (never a correctness bug),
+// but callers should pair PutChain with NewChain from the same
+// Pipeline to keep the pool warm.
+func (p *Pipeline) PutChain(ch *Chain) {
+	if p == nil || ch == nil {
+		return
+	}
+	p.chainPool.Put(ch)
+}
+
+// Purgers returns every enabled handler that implements Purger, in
+// pipeline order. The api purge endpoint iterates this to invalidate
+// both the cache middleware's entries and the resolver handler's
+// nameserver cache.
+func (p *Pipeline) Purgers() []Purger {
+	if p == nil {
+		return nil
+	}
+	out := make([]Purger, 0, len(p.handlers))
+	for _, h := range p.handlers {
+		if pr, ok := h.(Purger); ok {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
 // globalPipeline holds the active Pipeline. Reads on the hot path are
 // atomic and lock-free; writes happen only once, from Setup.
 var (
@@ -52,19 +143,133 @@ var (
 )
 
 // Setup builds the DefaultRegistry against cfg, loads external plugins,
-// and publishes the resulting Pipeline globally. It panics if called more
-// than once without an intervening Reset.
+// publishes the resulting Pipeline globally, and auto-wires
+// sub-pipeline Queryers and shared Stores into every handler that
+// implements the corresponding *Setter interface. It panics if
+// called more than once without an intervening Reset.
+//
+// Wiring sequence (after Build):
+//  1. Build queryerSub by filtering handlers that report
+//     ClientOnly()==true.
+//  2. Build prefetchSub as queryerSub without the cache handler
+//     (named "cache") — prefetch must reach the upstream resolver
+//     / forwarder instead of returning its own about-to-expire
+//     entry.
+//  3. Construct a PipelineQueryer for each sub-pipeline.
+//  4. Walk enabled handlers and call SetQueryer / SetPrefetchQueryer
+//     / SetStore on anything that implements them, sourcing the
+//     Store from whichever handler implements StoreProvider.
+//
+// This keeps the main package free of wiring logic — every
+// middleware declares its participation in the internal chain
+// (ClientOnly), and every consumer declares what it needs
+// (QueryerSetter, StoreSetter, etc.).
 func Setup(cfg *config.Config) {
 	if !setupDone.CompareAndSwap(false, true) {
 		panic("middleware: Setup already called")
 	}
 	DefaultRegistry.loadPlugins(cfg)
-	globalPipeline.Store(DefaultRegistry.Build(cfg))
+	p := DefaultRegistry.Build(cfg)
+	// Auto-wire BEFORE publishing the pipeline. The resolver's
+	// background priming goroutine spins on middleware.Ready() and
+	// starts issuing sub-queries the instant it returns true; if
+	// we published before wiring, the goroutine would race the
+	// queryer/store field writes here. Publishing after wiring
+	// means the atomic.Pointer.Store also acts as a happens-before
+	// barrier for every field the goroutine subsequently reads.
+	p.autoWire()
+	globalPipeline.Store(p)
+}
+
+// cacheHandlerName is the registered name of the cache middleware,
+// special-cased in prefetchSub construction — the prefetch
+// sub-pipeline drops the cache middleware's ServeDNS/WriteMsg
+// path so a refresh reaches upstream instead of returning its
+// own about-to-expire entry. The cache STORE is still shared:
+// resolver.subQuery reads and writes through the injected
+// middleware.Store even when it runs inside the prefetch
+// sub-pipeline, which is intentional — DNSSEC records warmed by
+// a prefetch are immediately available to subsequent client
+// queries.
+const cacheHandlerName = "cache"
+
+// autoWire builds queryerSub and prefetchSub from the current
+// pipeline, then injects them into every handler that implements
+// the corresponding *Setter interface. Stores are sourced from
+// whichever handler implements StoreProvider (first-wins if
+// multiple are registered; a warning is logged in that case).
+func (p *Pipeline) autoWire() {
+	if p == nil {
+		return
+	}
+
+	skip := make([]string, 0, len(p.handlers))
+	for _, h := range p.handlers {
+		if co, ok := h.(ClientOnly); ok && co.ClientOnly() {
+			skip = append(skip, h.Name())
+		}
+	}
+	queryerSub := p.SubPipeline(skip...)
+	prefetchSub := p.SubPipeline(append(skip, cacheHandlerName)...)
+
+	q := NewPipelineQueryer(queryerSub)
+	pq := NewPipelineQueryer(prefetchSub)
+
+	// Collect every StoreProvider so we can warn on multiple
+	// registrations (first wins — stable order matches pipeline
+	// order, which matches registry order). Track StoreSetter
+	// presence separately so we can warn if setters exist with
+	// no provider — sub-queries in that deployment silently run
+	// uncached.
+	var (
+		store     Store
+		providers []string
+		hasSetter bool
+	)
+	for _, h := range p.handlers {
+		if sp, ok := h.(StoreProvider); ok {
+			providers = append(providers, h.Name())
+			if store == nil {
+				store = sp.Store()
+			}
+		}
+		if _, ok := h.(StoreSetter); ok {
+			hasSetter = true
+		}
+	}
+	if len(providers) > 1 {
+		zlog.Warn("Multiple StoreProviders registered; first wins",
+			"first", providers[0], "others", providers[1:])
+	}
+	if store == nil && hasSetter {
+		zlog.Warn("StoreSetter handler(s) present but no StoreProvider registered; internal sub-queries will run without cache")
+	}
+
+	for _, h := range p.handlers {
+		if s, ok := h.(QueryerSetter); ok {
+			s.SetQueryer(q)
+		}
+		if s, ok := h.(PrefetchQueryerSetter); ok {
+			s.SetPrefetchQueryer(pq)
+		}
+		if store != nil {
+			if s, ok := h.(StoreSetter); ok {
+				s.SetStore(store)
+			}
+		}
+	}
 }
 
 // Ready reports whether Setup has completed.
 func Ready() bool {
 	return globalPipeline.Load() != nil
+}
+
+// GlobalPipeline returns the active pipeline snapshot, or nil before
+// Setup. Startup wiring (queryer construction, api purge hooks) reads
+// this once to derive sub-pipelines and enumerate purgers.
+func GlobalPipeline() *Pipeline {
+	return globalPipeline.Load()
 }
 
 // Handlers returns the enabled handlers from the global Pipeline. Returns
