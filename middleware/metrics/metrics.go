@@ -62,6 +62,11 @@ func New(cfg *config.Config) *Metrics {
 // (*Metrics).Name name return middleware name.
 func (m *Metrics) Name() string { return name }
 
+// (*Metrics).ClientOnly marks metrics as a client-traffic
+// observer; the middleware.Setup sub-pipeline excludes it so
+// internal sub-queries don't inflate per-query counters.
+func (m *Metrics) ClientOnly() bool { return true }
+
 // (*Metrics).ServeDNS serveDNS implements the Handle interface.
 func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)

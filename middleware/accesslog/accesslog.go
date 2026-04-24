@@ -40,6 +40,11 @@ func New(cfg *config.Config) *AccessLog {
 // (*AccessLog).Name name return middleware name.
 func (a *AccessLog) Name() string { return name }
 
+// (*AccessLog).ClientOnly marks accesslog as a client-traffic
+// observer; middleware.Setup excludes it from internal
+// sub-pipelines so access logs reflect real client queries only.
+func (a *AccessLog) ClientOnly() bool { return true }
+
 // (*AccessLog).ServeDNS serveDNS implements the Handle interface.
 func (a *AccessLog) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)

@@ -168,7 +168,7 @@ func TestResolverWithCircuitBreaker(t *testing.T) {
 	// Test that resolver properly uses circuit breaker
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 100
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Verify circuit breaker is initialized
 	require.NotNil(t, r.circuitBreaker)
@@ -180,7 +180,7 @@ func TestResolverWithCircuitBreaker(t *testing.T) {
 func TestResolverGoroutineLimiting(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 50 // Higher limit to avoid conflict with background tasks
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Wait a bit for any initial background queries to complete
 	time.Sleep(100 * time.Millisecond)
@@ -233,7 +233,7 @@ done:
 func TestResolverConcurrentQueryLimit(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 10
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Track active queries
 	var activeQueries atomic.Int32

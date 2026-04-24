@@ -312,7 +312,7 @@ func Test_isZoneSecureIntegration(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			r := NewResolver(cfg)
+			r := newWiredTestResolver(cfg)
 
 			req := new(dns.Msg)
 			req.SetQuestion(tt.qname, dns.TypeA)

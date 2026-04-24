@@ -1,4 +1,4 @@
-package queryer
+package middleware
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/middleware"
 )
 
 func TestMarkAndIsInternal(t *testing.T) {
@@ -73,7 +72,7 @@ type recordingHandler struct {
 }
 
 func (h *recordingHandler) Name() string { return h.name }
-func (h *recordingHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+func (h *recordingHandler) ServeDNS(ctx context.Context, ch *Chain) {
 	h.sawCtx = ctx
 	reply := new(dns.Msg)
 	reply.SetReply(ch.Request)
@@ -81,24 +80,24 @@ func (h *recordingHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	_ = ch.Writer.WriteMsg(reply)
 }
 
-// silentHandler satisfies middleware.Handler but never writes. Used
+// silentHandler satisfies Handler but never writes. Used
 // to exercise the Queryer "no response" path.
 type silentHandler struct{ name string }
 
-func (h *silentHandler) Name() string                                     { return h.name }
-func (h *silentHandler) ServeDNS(_ context.Context, ch *middleware.Chain) { ch.Cancel() }
+func (h *silentHandler) Name() string                          { return h.name }
+func (h *silentHandler) ServeDNS(_ context.Context, ch *Chain) { ch.Cancel() }
 
-func buildPipeline(t *testing.T, handlers ...middleware.Handler) *middleware.Pipeline {
+func buildPipeline(t *testing.T, handlers ...Handler) *Pipeline {
 	t.Helper()
-	middleware.Reset()
-	t.Cleanup(middleware.Reset)
+	Reset()
+	t.Cleanup(Reset)
 	for _, h := range handlers {
-		middleware.DefaultRegistry.Register(h.Name(), func(_ *config.Config) middleware.Handler { return h })
+		DefaultRegistry.Register(h.Name(), func(_ *config.Config) Handler { return h })
 	}
 	// Build requires a *config.Config but none of these handlers
 	// consume it — a zero-value pointer is safe.
-	middleware.Setup(&config.Config{})
-	return middleware.GlobalPipeline()
+	Setup(&config.Config{})
+	return GlobalPipeline()
 }
 
 func TestQueryerReturnsServfailAsMsg(t *testing.T) {

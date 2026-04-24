@@ -94,6 +94,11 @@ func (d *Dnstap) Name() string {
 	return "dnstap"
 }
 
+// (*Dnstap).ClientOnly marks dnstap as a client-traffic observer;
+// middleware.Setup excludes it from internal sub-pipelines so
+// dnstap streams reflect real client queries only.
+func (d *Dnstap) ClientOnly() bool { return true }
+
 // (*Dnstap).ServeDNS serveDNS logs DNS messages in dnstap format.
 func (d *Dnstap) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request

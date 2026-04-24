@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/util"
 )
 
 // Pipeline is the compiled, immutable middleware chain produced by
@@ -112,14 +113,97 @@ var (
 )
 
 // Setup builds the DefaultRegistry against cfg, loads external plugins,
-// and publishes the resulting Pipeline globally. It panics if called more
-// than once without an intervening Reset.
+// publishes the resulting Pipeline globally, and auto-wires
+// sub-pipeline Queryers and shared Stores into every handler that
+// implements the corresponding *Setter interface. It panics if
+// called more than once without an intervening Reset.
+//
+// Wiring sequence (after Build):
+//  1. Build queryerSub by filtering handlers that report
+//     ClientOnly()==true.
+//  2. Build prefetchSub as queryerSub without the cache handler
+//     (named "cache") — prefetch must reach the upstream resolver
+//     / forwarder instead of returning its own about-to-expire
+//     entry.
+//  3. Construct a PipelineQueryer for each sub-pipeline.
+//  4. Walk enabled handlers and call SetQueryer / SetPrefetchQueryer
+//     / SetStore on anything that implements them, sourcing the
+//     Store from whichever handler implements StoreProvider.
+//
+// This keeps the main package free of wiring logic — every
+// middleware declares its participation in the internal chain
+// (ClientOnly), and every consumer declares what it needs
+// (QueryerSetter, StoreSetter, etc.).
 func Setup(cfg *config.Config) {
 	if !setupDone.CompareAndSwap(false, true) {
 		panic("middleware: Setup already called")
 	}
 	DefaultRegistry.loadPlugins(cfg)
-	globalPipeline.Store(DefaultRegistry.Build(cfg))
+	p := DefaultRegistry.Build(cfg)
+	// Auto-wire BEFORE publishing the pipeline. The resolver's
+	// background priming goroutine spins on middleware.Ready() and
+	// starts issuing sub-queries the instant it returns true; if
+	// we published before wiring, the goroutine would race the
+	// queryer/store field writes here. Publishing after wiring
+	// means the atomic.Pointer.Store also acts as a happens-before
+	// barrier for every field the goroutine subsequently reads.
+	p.autoWire()
+	globalPipeline.Store(p)
+}
+
+// cacheHandlerName is the registered name of the cache middleware,
+// special-cased in prefetchSub construction — prefetch must refresh
+// the upstream, not return its own entry.
+const cacheHandlerName = "cache"
+
+// autoWire builds queryerSub and prefetchSub from the current
+// pipeline, then injects them into every handler that implements
+// the corresponding *Setter interface. Stores are sourced from
+// whichever handler implements StoreProvider.
+func (p *Pipeline) autoWire() {
+	if p == nil {
+		return
+	}
+
+	skip := make([]string, 0, len(p.handlers))
+	for _, h := range p.handlers {
+		if co, ok := h.(ClientOnly); ok && co.ClientOnly() {
+			skip = append(skip, h.Name())
+		}
+	}
+	queryerSub := p.SubPipeline(skip...)
+	prefetchSub := p.SubPipeline(append(skip, cacheHandlerName)...)
+
+	q := NewPipelineQueryer(queryerSub)
+	pq := NewPipelineQueryer(prefetchSub)
+
+	var store Store
+	for _, h := range p.handlers {
+		if sp, ok := h.(StoreProvider); ok {
+			store = sp.Store()
+			break
+		}
+	}
+
+	for _, h := range p.handlers {
+		if s, ok := h.(QueryerSetter); ok {
+			s.SetQueryer(q)
+		}
+		if s, ok := h.(PrefetchQueryerSetter); ok {
+			s.SetPrefetchQueryer(pq)
+		}
+		if store != nil {
+			if s, ok := h.(StoreSetter); ok {
+				s.SetStore(store)
+			}
+		}
+	}
+
+	// Back the deprecated util.ExchangeInternal with the same
+	// queryer. Plugins that still call the old API transparently
+	// pick up the sub-pipeline semantics; the wrapper is flagged
+	// for next-major removal.
+	util.SetInternalExchanger(q.Query)
 }
 
 // Ready reports whether Setup has completed.

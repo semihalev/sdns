@@ -19,7 +19,7 @@ func BenchmarkLookupPerformance(b *testing.B) {
 		Timeout:      config.Duration{Duration: 2 * time.Second},
 	}
 
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Create test request
 	req := new(dns.Msg)
@@ -52,7 +52,7 @@ func TestAdaptiveTimeout(t *testing.T) {
 		Timeout:     config.Duration{Duration: 2 * time.Second},
 	}
 
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Test adaptive timeout calculation
 	testCases := []struct {

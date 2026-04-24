@@ -23,7 +23,7 @@ func Test_resolver(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -54,7 +54,7 @@ func Test_resolverMinimize(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.QnameMinLevel = 5
 
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -72,7 +72,7 @@ func Test_resolverDNSSEC(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -90,7 +90,7 @@ func Test_resolverBadDNSSEC(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -113,7 +113,7 @@ func Test_resolverNoSigDNSSEC(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 	if err != nil {
@@ -140,7 +140,7 @@ func Test_resolverBadKeyDNSSEC(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -157,7 +157,7 @@ func Test_resolverExponentDNSSEC(t *testing.T) {
 	req.SetEdns0(4096, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -174,7 +174,7 @@ func Test_resolverDS(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -192,7 +192,7 @@ func Test_resolverAllNS(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -209,7 +209,7 @@ func Test_resolverTimeout(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -227,7 +227,7 @@ func Test_resolverRootServersDetect(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -244,7 +244,7 @@ func Test_resolverNameserverError(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -261,7 +261,7 @@ func Test_resolverNSEC3nodata(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -278,7 +278,7 @@ func Test_resolverNSECnodata(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -296,7 +296,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -319,7 +319,7 @@ func Test_resolverFindSigner(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -341,7 +341,7 @@ func Test_resolverBogusZone(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -358,7 +358,7 @@ func Test_resolverRootKeys(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -375,7 +375,7 @@ func Test_resolverNoAnswer(t *testing.T) {
 	req.SetEdns0(util.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
 
@@ -383,7 +383,7 @@ func Test_resolverNoAnswer(t *testing.T) {
 }
 
 func Test_EqualServers(t *testing.T) {
-	r := NewResolver(makeTestConfig())
+	r := newWiredTestResolver(makeTestConfig())
 	assert.Equal(t, true, r.equalServers(r.rootservers, r.rootservers))
 }
 
@@ -396,7 +396,7 @@ func Test_OutboundIPs(t *testing.T) {
 	cfg.OutboundIPs = []string{"127.0.0.1", "1"}
 	cfg.OutboundIP6s = []string{"::1", "1"}
 
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 	assert.Len(t, r.outboundipv4, 1)
 	assert.Len(t, r.outboundipv6, 1)
 

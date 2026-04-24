@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -60,33 +61,25 @@ type Resolver struct {
 	maxConcurrent  chan struct{} // Semaphore for limiting concurrent queries
 
 	// store is the cache facade used by subQuery for resolver-private
-	// DNSSEC record lookups (DS, DNSKEY). Wired at startup by sdns.go.
-	// nil-safe: tests and forwarder-only deployments construct a
-	// Resolver without ever populating it.
-	store CacheStore
+	// DNSSEC record lookups (DS, DNSKEY). Auto-wired during
+	// middleware.Setup via StoreSetter; nil-safe for tests that
+	// construct a Resolver directly.
+	//
+	// atomic.Pointer because r.run() starts a background goroutine
+	// from NewResolver that issues priming sub-queries the instant
+	// middleware.Ready() returns true — and the auto-wire write
+	// happens after NewResolver returns. Production sequences the
+	// autoWire() call before globalPipeline.Store, but tests
+	// construct fresh Resolvers outside that flow and need the
+	// atomic barrier for correctness under -race.
+	store atomic.Pointer[middleware.Store]
 
 	// queryer drives policy-aware internal lookups (NS A/AAAA, DNAME
 	// target) through the sub-pipeline so operator overrides
 	// (hostsfile, blocklist, kubernetes, as112) and failover still
-	// apply. nil-safe: when unset, sites fall back to
-	// util.ExchangeInternal so tests and partial setups keep working
-	// through the transition. The fallback is removed when
-	// ExchangeInternal itself retires.
-	queryer Queryer
-}
-
-// CacheStore is the minimum surface subQuery needs from the cache
-// middleware's Store. Defined here so middleware/resolver does not
-// import middleware/cache.
-type CacheStore interface {
-	Get(req *dns.Msg) (*dns.Msg, bool)
-	SetFromResponse(resp *dns.Msg, keyCD bool)
-}
-
-// Queryer is the minimum surface the resolver needs from the internal
-// sub-pipeline runner. Satisfied structurally by queryer.Queryer.
-type Queryer interface {
-	Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
+	// apply. Auto-wired via QueryerSetter. Same atomic.Pointer
+	// reasoning as store.
+	queryer atomic.Pointer[middleware.Queryer]
 }
 
 // resolveState holds the state for a DNS resolution operation.
@@ -1698,11 +1691,14 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 	return dsres, nil
 }
 
+// errQueryerNotWired is returned when an internal client-shaped
+// lookup fires before sdns.go wiring has installed a Queryer.
+// Production never sees this path; it exists so tests that build a
+// partially wired Resolver get a clear error instead of a nil deref.
+var errQueryerNotWired = errors.New("resolver: queryer not wired")
+
 // internalExchange routes a resolver-constructed client-shaped
-// lookup (NS A/AAAA, DNAME target) through the installed Queryer,
-// falling back to util.ExchangeInternal when the queryer isn't
-// wired so tests and partial setups keep working. The fallback
-// disappears when ExchangeInternal retires in Phase 5.
+// lookup (NS A/AAAA, DNAME target) through the installed Queryer.
 //
 // This is distinct from subQuery: the latter bypasses the chain
 // entirely for DNSSEC records where policy overrides would
@@ -1710,10 +1706,11 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 // sub-pipeline so hostsfile, blocklist, kubernetes, as112, and
 // failover all still apply.
 func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
-	if r.queryer != nil {
-		return r.queryer.Query(ctx, req)
+	q := r.queryer.Load()
+	if q == nil {
+		return nil, errQueryerNotWired
 	}
-	return util.ExchangeInternal(ctx, req)
+	return (*q).Query(ctx, req)
 }
 
 // subQuery answers a resolver-constructed DNSSEC record lookup (DS
@@ -1740,8 +1737,9 @@ func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg
 // deployments construct a Resolver without one. In that case only
 // the direct-upstream path runs; nothing is cached or read.
 func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
-	if r.store != nil {
-		if msg, ok := r.store.Get(req); ok {
+	store := r.store.Load()
+	if store != nil {
+		if msg, ok := (*store).Get(req); ok {
 			return msg, nil
 		}
 	}
@@ -1785,8 +1783,8 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	if err != nil {
 		return nil, err
 	}
-	if r.store != nil && resp != nil {
-		r.store.SetFromResponse(resp, req.CheckingDisabled)
+	if store != nil && resp != nil {
+		(*store).SetFromResponse(resp, req.CheckingDisabled)
 	}
 	return resp, nil
 }

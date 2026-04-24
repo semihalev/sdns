@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/internal/queryer"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/sdns/waitgroup"
@@ -73,11 +73,11 @@ type Cache struct {
 	// internal work through the sub-pipeline. Wired by sdns.go at
 	// startup; nil-safe call sites guard for tests that construct
 	// Cache without full startup.
-	queryer queryer.Queryer
+	queryer middleware.Queryer
 	// prefetchQueryer routes prefetch refreshes through a
 	// cache-less sub-pipeline so the refresh hits the upstream
 	// resolver / forwarder rather than its own stale entry.
-	prefetchQueryer queryer.Queryer
+	prefetchQueryer middleware.Queryer
 
 	config  CacheConfig
 	metrics *CacheMetrics
@@ -177,10 +177,11 @@ func New(cfg *config.Config) *Cache {
 // (*Cache).Name name returns middleware name.
 func (c *Cache) Name() string { return name }
 
-// (*Cache).Store returns the storage facade. Exposed for future
-// wiring (queryer, resolver sub-queries, api purge) that needs to
-// read or write cache entries without going through ServeDNS.
-func (c *Cache) Store() *Store { return c.store }
+// (*Cache).Store returns the storage facade, typed as
+// middleware.Store so Cache satisfies middleware.StoreProvider for
+// auto-wiring in middleware.Setup. External callers that need the
+// full *Store surface can type-assert.
+func (c *Cache) Store() middleware.Store { return c.store }
 
 // (*Cache).Purge removes positive and negative cache entries for q
 // under both CD=true and CD=false. Implements middleware.Purger so
@@ -194,34 +195,36 @@ func (c *Cache) Purge(q dns.Question) {
 // client-shaped work (CNAME chase on cache writeback, future DNAME
 // target lookup from the resolver). Called once from sdns.go
 // startup.
-func (c *Cache) SetQueryer(q queryer.Queryer) { c.queryer = q }
+func (c *Cache) SetQueryer(q middleware.Queryer) { c.queryer = q }
 
 // (*Cache).SetPrefetchQueryer installs the Queryer used by the
 // prefetch worker. The prefetch sub-pipeline excludes the cache
 // middleware so a refresh reaches the upstream resolver / forwarder
 // instead of returning its own about-to-expire entry.
-func (c *Cache) SetPrefetchQueryer(q queryer.Queryer) { c.prefetchQueryer = q }
+func (c *Cache) SetPrefetchQueryer(q middleware.Queryer) { c.prefetchQueryer = q }
+
+// errQueryerNotWired is returned when an internal Cache lookup fires
+// before sdns.go wiring has installed a Queryer. Production never
+// sees this path; it exists so tests that construct a partially
+// wired Cache fail with a clear error instead of a nil deref.
+var errQueryerNotWired = errors.New("cache: queryer not wired")
 
 // internalExchange routes CNAME-chase sub-queries through the
-// installed queryer, falling back to util.ExchangeInternal for
-// test setups that construct a Cache without wiring one. The
-// fallback is removed when ExchangeInternal retires in Phase 5.
+// installed Queryer.
 func (c *Cache) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
-	if c.queryer != nil {
-		return c.queryer.Query(ctx, req)
+	if c.queryer == nil {
+		return nil, errQueryerNotWired
 	}
-	return util.ExchangeInternal(ctx, req)
+	return c.queryer.Query(ctx, req)
 }
 
 // prefetchExchange routes prefetch refresh traffic through the
-// prefetch sub-pipeline (cache excluded), falling back to
-// util.ExchangeInternal when no prefetch queryer is wired. Same
-// fallback semantics as internalExchange; removed with Phase 5.
+// prefetch sub-pipeline (cache excluded).
 func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
-	if c.prefetchQueryer != nil {
-		return c.prefetchQueryer.Query(ctx, req)
+	if c.prefetchQueryer == nil {
+		return nil, errQueryerNotWired
 	}
-	return util.ExchangeInternal(ctx, req)
+	return c.prefetchQueryer.Query(ctx, req)
 }
 
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
@@ -282,9 +285,9 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// must skip the Join to avoid deadlock: if an outer client
 	// request is the K1 leader and its chase needs K2 which lands
 	// back on K1, the internal chase must not block waiting for
-	// itself. queryer.IsInternal tags the ctx inside Queryer.Query;
+	// itself. middleware.IsInternal tags the ctx inside Queryer.Query;
 	// replaces the pre-Phase-4 writer-based Internal() check.
-	if !queryer.IsInternal(ctx) {
+	if !middleware.IsInternal(ctx) {
 		if wait := c.wg.Join(cacheKey); wait != nil {
 			<-wait
 			if entry := c.checkCache(cacheKey); entry != nil {
@@ -343,10 +346,10 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
 	// inherit the ctx marker from Queryer.Query; cancelling a
 	// rate-limited cache hit mid-chase would leave the outer
-	// client with a partial CNAME answer. queryer.IsInternal
+	// client with a partial CNAME answer. middleware.IsInternal
 	// replaces the pre-Phase-4 writer-based Internal() check.
 	limiter := entry.GetRateLimiter()
-	if !queryer.IsInternal(ctx) && limiter != nil && !limiter.Allow() {
+	if !middleware.IsInternal(ctx) && limiter != nil && !limiter.Allow() {
 		ch.Cancel()
 		return true
 	}
@@ -405,9 +408,13 @@ func (c *Cache) isValidQuery(q dns.Question) bool {
 
 // handleSpecialQuery handles CHAOS and other special queries.
 func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q dns.Question) bool {
-	// Handle cache purge
+	// Handle cache purge. sdns's own api endpoint switched to the
+	// Purger interface in Phase 5; this path stays for plugins
+	// that still drive purges via the deprecated ExchangeInternal +
+	// base64 CHAOS-NULL question. Removed in next major alongside
+	// util.ParsePurgeQuestion.
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := util.ParsePurgeQuestion(ch.Request); ok {
+		if qname, qtype, ok := util.ParsePurgeQuestion(ch.Request); ok { //nolint:staticcheck // deprecated plugin API
 			c.purge(qname, qtype)
 			ch.Next(ctx)
 			return true

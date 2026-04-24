@@ -93,6 +93,12 @@ func (r *Reflex) Name() string {
 	return "reflex"
 }
 
+// ClientOnly marks reflex as client-traffic-only; amplification
+// detection is a property of client query patterns, and
+// middleware.Setup excludes it from internal sub-pipelines so
+// internal sub-queries don't trip detection heuristics.
+func (r *Reflex) ClientOnly() bool { return true }
+
 // ServeDNS processes queries for amplification attack detection.
 func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request

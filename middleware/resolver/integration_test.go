@@ -20,7 +20,7 @@ func TestCircuitBreakerIntegration(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 100
 	cfg.Timeout.Duration = 500 * time.Millisecond // Short timeout for faster test
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Create a list with a non-existent server that will timeout
 	badServer := authcache.NewAuthServer("192.0.2.1:53", authcache.IPv4) // TEST-NET-1, guaranteed unreachable
@@ -64,7 +64,7 @@ func TestGoroutineLimitUnderLoad(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 20 // Low limit for testing
 	cfg.Timeout.Duration = 100 * time.Millisecond
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Create slow/failing servers to simulate timeouts
 	servers := &authcache.AuthServers{
@@ -140,7 +140,7 @@ func TestCircuitBreakerRecovery(t *testing.T) {
 	}
 
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	server := "10.0.0.1:53"
 
@@ -179,7 +179,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 50
 	cfg.Timeout.Duration = 100 * time.Millisecond
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -228,7 +228,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
 func TestCircuitBreakerWithMixedServers(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 50
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Mix of servers - some good, some bad
 	servers := &authcache.AuthServers{
@@ -283,7 +283,7 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 100
 	cfg.Timeout.Duration = 2 * time.Second // Realistic timeout
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	// Simulate Google servers failing
 	googleServers := &authcache.AuthServers{
@@ -400,7 +400,7 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 // TestConcurrentCircuitBreakerOperations tests thread safety
 func TestConcurrentCircuitBreakerOperations(t *testing.T) {
 	cfg := makeTestConfig()
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	servers := []string{
 		"192.168.1.1:53",
@@ -454,7 +454,7 @@ func TestConcurrentCircuitBreakerOperations(t *testing.T) {
 func BenchmarkCircuitBreakerUnderLoad(b *testing.B) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 1000
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	servers := make([]string, 100)
 	for i := range servers {
@@ -485,7 +485,7 @@ func BenchmarkCircuitBreakerUnderLoad(b *testing.B) {
 func BenchmarkSemaphoreAcquisition(b *testing.B) {
 	cfg := makeTestConfig()
 	cfg.MaxConcurrentQueries = 100
-	r := NewResolver(cfg)
+	r := newWiredTestResolver(cfg)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

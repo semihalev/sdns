@@ -1,14 +1,16 @@
-// Package queryer runs a DNS request through an internal sub-pipeline
-// — typically every middleware from the "answer surface" inward
-// (hostsfile, blocklist, as112, kubernetes, cache, failover, and the
-// resolver or forwarder) with client-only guards filtered out
-// (metrics, dnstap, accesslist, ratelimit, reflex, accesslog, loop).
+package middleware
+
+// queryer.go runs a DNS request through an internal sub-pipeline —
+// typically every middleware from the "answer surface" inward
+// (hostsfile, blocklist, as112, kubernetes, cache, failover, and
+// the resolver or forwarder) with client-only guards filtered out
+// (metrics, dnstap, accesslist, ratelimit, reflex, accesslog).
 //
 // It replaces the top-of-chain re-entry behaviour of
 // util.ExchangeInternal with a deliberately narrower sub-pipeline,
 // driven by a BufferWriter rather than a sentinel-address mock.
-// The sub-pipeline is constructed once at startup by sdns.go; a
-// single BufferWriter per Query() captures the downstream reply.
+// The sub-pipelines are constructed in Setup and installed on
+// middlewares via QueryerSetter / PrefetchQueryerSetter.
 //
 // DNS-layer outcomes (SERVFAIL, REFUSED, NXDOMAIN, etc.) come back
 // as a *dns.Msg. ErrNoResponse is returned only when the
@@ -16,7 +18,6 @@
 // mirroring util.ExchangeInternal's "no replied any message" so
 // existing callers can distinguish wire-level failures from
 // executor failures.
-package queryer
 
 import (
 	"context"
@@ -24,7 +25,6 @@ import (
 	"net"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/middleware"
 )
 
 // Queryer answers a client-shaped DNS query through the internal
@@ -59,14 +59,14 @@ func IsInternal(ctx context.Context) bool {
 
 // NewPipelineQueryer returns a Queryer that dispatches requests
 // through sub. sub is expected to be the result of
-// middleware.Pipeline.SubPipeline with client-only guards filtered
-// out; this function does not validate its shape.
-func NewPipelineQueryer(sub *middleware.Pipeline) Queryer {
+// Pipeline.SubPipeline with client-only guards filtered out; this
+// function does not validate its shape.
+func NewPipelineQueryer(sub *Pipeline) Queryer {
 	return &pipelineQueryer{sub: sub}
 }
 
 type pipelineQueryer struct {
-	sub *middleware.Pipeline
+	sub *Pipeline
 }
 
 func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {

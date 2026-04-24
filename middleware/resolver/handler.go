@@ -105,9 +105,13 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return h.nsStats(req)
 	}
 
-	// CHAOS NULL queries trigger cache purge for specific domains
+	// CHAOS NULL queries trigger cache purge for specific domains.
+	// Back-compat path for plugins that drive purges via the
+	// deprecated ExchangeInternal + base64 CHAOS-NULL question;
+	// sdns's own api endpoint switched to the Purger interface in
+	// Phase 5. Removed in next major alongside util.ParsePurgeQuestion.
 	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := util.ParsePurgeQuestion(req); ok {
+		if qname, qtype, ok := util.ParsePurgeQuestion(req); ok { //nolint:staticcheck // deprecated plugin API
 			if qtype == dns.TypeNS {
 				h.purge(qname)
 			}
@@ -249,15 +253,14 @@ func (h *DNSHandler) Purge(q dns.Question) {
 }
 
 // (*DNSHandler).SetStore installs the cache store used by subQuery
-// for internal DNSSEC record lookups. Called once from sdns.go
-// startup; delegates to the underlying Resolver.
-func (h *DNSHandler) SetStore(s CacheStore) { h.resolver.store = s }
+// for internal DNSSEC record lookups. Auto-wired during
+// middleware.Setup via middleware.StoreSetter.
+func (h *DNSHandler) SetStore(s middleware.Store) { h.resolver.store.Store(&s) }
 
 // (*DNSHandler).SetQueryer installs the sub-pipeline runner used
 // for policy-aware internal lookups (NS A/AAAA, DNAME target).
-// Called once from sdns.go startup; delegates to the underlying
-// Resolver.
-func (h *DNSHandler) SetQueryer(q Queryer) { h.resolver.queryer = q }
+// Auto-wired during middleware.Setup via middleware.QueryerSetter.
+func (h *DNSHandler) SetQueryer(q middleware.Queryer) { h.resolver.queryer.Store(&q) }
 
 // (*DNSHandler).Stop stop gracefully shuts down the resolver.
 func (h *DNSHandler) Stop() {

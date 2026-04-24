@@ -8,20 +8,32 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/mock"
 )
 
-var chainPool sync.Pool
+// internalExchanger holds the function backing ExchangeInternal. It
+// is Stored once at startup by sdns.SetInternalExchanger and read on
+// every ExchangeInternal call; atomic.Value pins the stored type at
+// first Store so a wrong-typed follow-up Store panics loudly rather
+// than silently breaking the deprecated compat path.
+var internalExchanger atomic.Value
 
-func init() {
-	chainPool.New = func() any {
-		return middleware.NewChain(middleware.Handlers())
-	}
+// SetInternalExchanger registers the implementation backing the
+// deprecated ExchangeInternal wrapper. Called once from sdns.go
+// startup after the queryer has been constructed. Without this
+// registration ExchangeInternal returns ErrInternalExchangerNotSet.
+func SetInternalExchanger(fn func(context.Context, *dns.Msg) (*dns.Msg, error)) {
+	internalExchanger.Store(fn)
 }
+
+// ErrInternalExchangerNotSet is returned by ExchangeInternal when
+// called before SetInternalExchanger has been invoked. Production
+// code never sees this path; it exists so library consumers (tests,
+// plugins using the deprecated API before startup completes) get a
+// clear error rather than a nil-deref.
+var ErrInternalExchangerNotSet = errors.New("util: internal exchanger not initialized")
 
 // SetRcode returns message specified with rcode.
 func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
@@ -196,25 +208,33 @@ func Exchange(ctx context.Context, req *dns.Msg, addr string, net string, client
 	return resp, err
 }
 
-// ExchangeInternal exchange dns request internal.
+// ExchangeInternal dispatches req through the internal sub-pipeline
+// registered via SetInternalExchanger.
+//
+// Deprecated: ExchangeInternal previously re-entered the full
+// middleware chain with a sentinel-address mock.Writer. It now
+// routes through the sub-pipeline (chaos/hostsfile/blocklist/as112/
+// kubernetes/cache/failover/resolver/forwarder), skipping
+// client-only guards (metrics, dnstap, accesslist, ratelimit,
+// reflex, accesslog) that are meaningless for internal traffic.
+// The loop-detection safety net has been removed — plugins that
+// called ExchangeInternal from inside ServeDNS should migrate to
+// the internal queryer package and bound their own recursion.
+// Will be removed in the next major version.
 func ExchangeInternal(ctx context.Context, r *dns.Msg) (*dns.Msg, error) {
-	w := mock.NewWriter("tcp", "127.0.0.255:0")
-
-	ch := chainPool.Get().(*middleware.Chain)
-	defer chainPool.Put(ch)
-
-	ch.Reset(w, r)
-
-	ch.Next(ctx)
-
-	if !w.Written() {
-		return nil, errors.New("no replied any message")
+	fn, ok := internalExchanger.Load().(func(context.Context, *dns.Msg) (*dns.Msg, error))
+	if !ok {
+		return nil, ErrInternalExchangerNotSet
 	}
-
-	return w.Msg(), nil
+	return fn(ctx, r)
 }
 
 // ParsePurgeQuestion can parse query for purge questions.
+//
+// Deprecated: the base64-encoded CHAOS-NULL purge question is no
+// longer produced by sdns's api endpoint (the Purger interface and
+// Pipeline.Purgers() replace it). Kept for plugin API compat;
+// removed in the next major version alongside ExchangeInternal.
 func ParsePurgeQuestion(req *dns.Msg) (qname string, qtype uint16, ok bool) {
 	if len(req.Question) == 0 {
 		return

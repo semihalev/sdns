@@ -13,10 +13,7 @@ import (
 
 	"github.com/semihalev/sdns/api"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/internal/queryer"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/middleware/cache"
-	"github.com/semihalev/sdns/middleware/resolver"
 	"github.com/semihalev/sdns/server"
 	"github.com/semihalev/zlog/v2"
 	"github.com/spf13/cobra"
@@ -87,55 +84,8 @@ func setup() error {
 	zlog.SetDefault(logger)
 
 	middleware.Setup(cfg)
-	wireQueryers()
+
 	return nil
-}
-
-// clientGuardMiddlewares are skipped when building the internal
-// sub-pipeline — they exist to serve real client traffic
-// (observability, rate limiting, access control) and either add
-// noise or actively hurt when an internal sub-query traverses
-// them.
-var clientGuardMiddlewares = []string{
-	"metrics", "dnstap", "accesslist",
-	"ratelimit", "reflex", "accesslog",
-}
-
-// wireQueryers constructs the internal sub-pipelines and installs
-// them on the cache middleware. Called once after middleware.Setup.
-//
-// The standard queryerSub drives CNAME chase and (in later phases)
-// DNAME / CNAME-target-style lookups, so it keeps cache plus every
-// local-answer middleware — hostsfile, blocklist, kubernetes, as112,
-// failover, resolver/forwarder — to match today's ExchangeInternal
-// behaviour minus the observer noise.
-//
-// prefetchSub additionally excludes cache so a prefetch refresh
-// bypasses its own about-to-expire entry and reaches the upstream.
-//
-// The resolver handler also gets a reference to the cache store so
-// its subQuery helper can answer DS and DNSKEY lookups cache-first
-// without going through the middleware chain.
-func wireQueryers() {
-	pipe := middleware.GlobalPipeline()
-	if pipe == nil {
-		return
-	}
-	cacheMW, ok := pipe.Get("cache").(*cache.Cache)
-	if !ok {
-		return
-	}
-	queryerSub := pipe.SubPipeline(clientGuardMiddlewares...)
-	prefetchSub := pipe.SubPipeline(append(clientGuardMiddlewares, "cache")...)
-
-	q := queryer.NewPipelineQueryer(queryerSub)
-	cacheMW.SetQueryer(q)
-	cacheMW.SetPrefetchQueryer(queryer.NewPipelineQueryer(prefetchSub))
-
-	if res, ok := pipe.Get("resolver").(*resolver.DNSHandler); ok {
-		res.SetStore(cacheMW.Store())
-		res.SetQueryer(q)
-	}
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
