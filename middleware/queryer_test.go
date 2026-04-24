@@ -61,6 +61,68 @@ func TestBufferWriterCapturesMsg(t *testing.T) {
 	}
 }
 
+// TestBufferWriterWriteUnpacks covers the Write([]byte) path —
+// used when a middleware calls Write with packed DNS bytes instead
+// of WriteMsg (uncommon in-tree, supported for
+// dns.ResponseWriter-interface completeness).
+func TestBufferWriterWriteUnpacks(t *testing.T) {
+	src := new(dns.Msg)
+	src.SetQuestion("example.com.", dns.TypeA)
+	src.Rcode = dns.RcodeSuccess
+	packed, err := src.Pack()
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+
+	w := getBufferWriter()
+	n, err := w.Write(packed)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len(packed) {
+		t.Fatalf("Write returned %d, want %d", n, len(packed))
+	}
+	if !w.Written() || w.Msg() == nil {
+		t.Fatal("BufferWriter should hold captured msg after Write")
+	}
+
+	// Malformed bytes must surface as an unpack error without
+	// mutating writer state.
+	w = getBufferWriter()
+	if _, err := w.Write([]byte{0xff, 0xff}); err == nil {
+		t.Fatal("Write of garbage bytes should error")
+	}
+	if w.Written() {
+		t.Fatal("failed Write must not flip Written")
+	}
+}
+
+// TestBufferWriterInterfaceMethods covers the remaining
+// dns.ResponseWriter satisfiers (LocalAddr, Close, TsigStatus,
+// TsigTimersOnly, Hijack). They are no-ops/stubs in our
+// in-memory writer; exercising them ensures the interface is
+// actually satisfied and guards against accidental signature
+// drift.
+func TestBufferWriterInterfaceMethods(t *testing.T) {
+	w := getBufferWriter()
+
+	if w.LocalAddr() == nil {
+		t.Fatal("LocalAddr must be non-nil for dns.ResponseWriter consumers")
+	}
+	if _, ok := w.LocalAddr().(*net.TCPAddr); !ok {
+		t.Fatalf("LocalAddr type = %T, want *net.TCPAddr", w.LocalAddr())
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close returned %v, want nil (no-op on in-memory writer)", err)
+	}
+	if err := w.TsigStatus(); err != nil {
+		t.Fatalf("TsigStatus returned %v, want nil", err)
+	}
+	// TsigTimersOnly + Hijack return nothing; just confirm no panic.
+	w.TsigTimersOnly(true)
+	w.Hijack()
+}
+
 // recordingHandler captures the ctx it was invoked with and writes a
 // SERVFAIL reply. Used to verify that Queryer runs its sub-pipeline
 // under a ctx marked IsInternal and that DNS-layer failures surface

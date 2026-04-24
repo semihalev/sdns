@@ -9,3 +9,4 @@ access.log
 vendor
 CLAUDE.md
 log/*
+.claude/
