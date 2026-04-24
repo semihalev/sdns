@@ -117,7 +117,12 @@ func TestQueryerReturnsServfailAsMsg(t *testing.T) {
 	}
 }
 
-func TestQueryerMarksCtxInternal(t *testing.T) {
+// TestQueryerUsesWriterFlagNotCtx pins the Phase-6-perf behaviour
+// that Query does NOT call MarkInternal on the ctx: the internal
+// signal is the BufferWriter's Internal() method, which every
+// in-tree consumer reads. MarkInternal / IsInternal remain a
+// public ctx-based API for plugin code that prefers a ctx signal.
+func TestQueryerUsesWriterFlagNotCtx(t *testing.T) {
 	rec := &recordingHandler{name: "rec", rcode: dns.RcodeSuccess}
 	pipe := buildPipeline(t, rec)
 
@@ -127,8 +132,8 @@ func TestQueryerMarksCtxInternal(t *testing.T) {
 	if _, err := q.Query(context.Background(), req); err != nil {
 		t.Fatalf("Query: %v", err)
 	}
-	if !IsInternal(rec.sawCtx) {
-		t.Fatal("handler observed ctx without IsInternal tag")
+	if IsInternal(rec.sawCtx) {
+		t.Fatal("Query should not mark ctx; consumers should read the writer flag")
 	}
 }
 

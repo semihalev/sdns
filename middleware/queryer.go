@@ -38,22 +38,32 @@ type Queryer interface {
 // middleware writing a response.
 var ErrNoResponse = errors.New("queryer: no response written")
 
-// internalCtxKey tags contexts originating inside a Queryer.Query
-// invocation. Sentinel value so lookups avoid allocation from
-// context.WithValue boxing an interface.
+// internalCtxKey tags contexts manually marked via MarkInternal.
+// Sentinel value so lookups avoid allocation from context.WithValue
+// boxing an interface.
 type internalCtxKey struct{}
 
 var internalKeyVal = &internalCtxKey{}
 
 // MarkInternal returns a derived ctx tagged as originating from an
-// internal sub-pipeline run. Middleware that skips client-only
-// guards (cache-hit rate limit, dedup join) consults IsInternal
-// instead of the deprecated ResponseWriter.Internal() flag.
+// internal sub-pipeline run. Provided as public API for plugin
+// middleware that wants to signal internal-ness without relying on
+// the BufferWriter's Internal() flag (e.g. when a plugin spawns
+// its own internal work without going through Queryer.Query).
+//
+// sdns's own Queryer.Query does NOT call MarkInternal — the
+// BufferWriter it installs already reports Internal()==true, and
+// every in-tree consumer (cache.ServeDNS dedup guard, cache-hit
+// rate limiter) reads the writer flag. Skipping MarkInternal on
+// the hot path saves one context.valueCtx allocation per internal
+// sub-query.
 func MarkInternal(ctx context.Context) context.Context {
 	return context.WithValue(ctx, internalKeyVal, struct{}{})
 }
 
 // IsInternal reports whether ctx was tagged by MarkInternal.
+// Intended for plugin middleware that wants a ctx-based internal
+// signal; sdns's own middlewares read the writer flag instead.
 func IsInternal(ctx context.Context) bool {
 	return ctx.Value(internalKeyVal) != nil
 }
@@ -71,26 +81,32 @@ type pipelineQueryer struct {
 }
 
 func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
-	ctx = MarkInternal(ctx)
+	// The BufferWriter is propagated as internal via its
+	// Internal() method (picked up by middleware.responseWriter's
+	// Reset interface check), which is what every in-tree
+	// consumer reads. MarkInternal/IsInternal remain a public
+	// ctx-based API for plugin code that wants to tag internal
+	// traffic without a writer in scope — not called here
+	// because it would add a context.WithValue alloc per
+	// sub-query on the hot path for no in-tree benefit.
 	w := getBufferWriter()
+	defer putBufferWriter(w)
 	ch := q.sub.NewChain()
+	defer q.sub.PutChain(ch)
+
 	ch.Reset(w, req)
 	ch.Next(ctx)
 
-	// Capture the reply before returning the writer to the pool.
-	// BufferWriter.Msg returns the *dns.Msg pointer held on the
-	// writer; after putBufferWriter clears w.msg, the pointer is
-	// still valid because the dns.Msg it points to is heap-
-	// allocated and the caller now owns the reference.
-	written := w.Written()
-	msg := w.Msg()
-	putBufferWriter(w)
-	q.sub.PutChain(ch)
-
-	if !written {
+	// w.Msg() is evaluated for the return value before the
+	// deferred putBufferWriter clears w.msg, and the *dns.Msg it
+	// returns remains valid afterwards because the message is
+	// heap-allocated and the caller now owns the reference. On
+	// panic mid-chain, the defers still run and the pool stays
+	// clean.
+	if !w.Written() {
 		return nil, ErrNoResponse
 	}
-	return msg, nil
+	return w.Msg(), nil
 }
 
 // BufferWriter is the dns.ResponseWriter used inside Queryer.Query.

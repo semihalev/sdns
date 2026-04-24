@@ -6,6 +6,7 @@ import (
 
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/zlog/v2"
 )
 
 // Pipeline is the compiled, immutable middleware chain produced by
@@ -183,14 +184,22 @@ func Setup(cfg *config.Config) {
 }
 
 // cacheHandlerName is the registered name of the cache middleware,
-// special-cased in prefetchSub construction — prefetch must refresh
-// the upstream, not return its own entry.
+// special-cased in prefetchSub construction — the prefetch
+// sub-pipeline drops the cache middleware's ServeDNS/WriteMsg
+// path so a refresh reaches upstream instead of returning its
+// own about-to-expire entry. The cache STORE is still shared:
+// resolver.subQuery reads and writes through the injected
+// middleware.Store even when it runs inside the prefetch
+// sub-pipeline, which is intentional — DNSSEC records warmed by
+// a prefetch are immediately available to subsequent client
+// queries.
 const cacheHandlerName = "cache"
 
 // autoWire builds queryerSub and prefetchSub from the current
 // pipeline, then injects them into every handler that implements
 // the corresponding *Setter interface. Stores are sourced from
-// whichever handler implements StoreProvider.
+// whichever handler implements StoreProvider (first-wins if
+// multiple are registered; a warning is logged in that case).
 func (p *Pipeline) autoWire() {
 	if p == nil {
 		return
@@ -208,12 +217,34 @@ func (p *Pipeline) autoWire() {
 	q := NewPipelineQueryer(queryerSub)
 	pq := NewPipelineQueryer(prefetchSub)
 
-	var store Store
+	// Collect every StoreProvider so we can warn on multiple
+	// registrations (first wins — stable order matches pipeline
+	// order, which matches registry order). Track StoreSetter
+	// presence separately so we can warn if setters exist with
+	// no provider — sub-queries in that deployment silently run
+	// uncached.
+	var (
+		store     Store
+		providers []string
+		hasSetter bool
+	)
 	for _, h := range p.handlers {
 		if sp, ok := h.(StoreProvider); ok {
-			store = sp.Store()
-			break
+			providers = append(providers, h.Name())
+			if store == nil {
+				store = sp.Store()
+			}
 		}
+		if _, ok := h.(StoreSetter); ok {
+			hasSetter = true
+		}
+	}
+	if len(providers) > 1 {
+		zlog.Warn("Multiple StoreProviders registered; first wins",
+			"first", providers[0], "others", providers[1:])
+	}
+	if store == nil && hasSetter {
+		zlog.Warn("StoreSetter handler(s) present but no StoreProvider registered; internal sub-queries will run without cache")
 	}
 
 	for _, h := range p.handlers {
