@@ -16,7 +16,6 @@ import (
 // middleware list order very important, handlers call via this order.
 var middlewareList = []string{
 	"recovery",
-	"loop",
 	"metrics",
 	"dnstap",
 	"accesslist",

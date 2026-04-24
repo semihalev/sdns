@@ -93,11 +93,11 @@ func setup() error {
 
 // clientGuardMiddlewares are skipped when building the internal
 // sub-pipeline — they exist to serve real client traffic
-// (observability, rate limiting, access control, loop detection)
-// and either add noise or actively hurt when an internal sub-query
-// traverses them.
+// (observability, rate limiting, access control) and either add
+// noise or actively hurt when an internal sub-query traverses
+// them.
 var clientGuardMiddlewares = []string{
-	"loop", "metrics", "dnstap", "accesslist",
+	"metrics", "dnstap", "accesslist",
 	"ratelimit", "reflex", "accesslog",
 }
 

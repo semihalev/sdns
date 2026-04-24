@@ -261,9 +261,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// used to take the waitgroup lock and allocate a Join
 	// context/timer even when the entry was already live.
 	if entry := c.checkCache(cacheKey); entry != nil {
-		if w.Internal() && entry.prefetch.Load() {
-			// Prefetch path: fall through to the resolver.
-		} else if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 			return
 		}
 	}
@@ -279,7 +277,14 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// leader). Calling Done from a follower would either
 	// over-decrement the counter or cancel the leader's
 	// context out from under them.
-	if !w.Internal() {
+	//
+	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
+	// must skip the Join to avoid deadlock: if an outer client
+	// request is the K1 leader and its chase needs K2 which lands
+	// back on K1, the internal chase must not block waiting for
+	// itself. queryer.IsInternal tags the ctx inside Queryer.Query;
+	// replaces the pre-Phase-4 writer-based Internal() check.
+	if !queryer.IsInternal(ctx) {
 		if wait := c.wg.Join(cacheKey); wait != nil {
 			<-wait
 			if entry := c.checkCache(cacheKey); entry != nil {
@@ -334,9 +339,14 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	w := ch.Writer
 	req := ch.Request
 
-	// Check rate limiting
+	// Rate limiting applies to external client queries only.
+	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
+	// inherit the ctx marker from Queryer.Query; cancelling a
+	// rate-limited cache hit mid-chase would leave the outer
+	// client with a partial CNAME answer. queryer.IsInternal
+	// replaces the pre-Phase-4 writer-based Internal() check.
 	limiter := entry.GetRateLimiter()
-	if !w.Internal() && limiter != nil && !limiter.Allow() {
+	if !queryer.IsInternal(ctx) && limiter != nil && !limiter.Allow() {
 		ch.Cancel()
 		return true
 	}
