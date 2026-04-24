@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -86,49 +85,56 @@ func (pq *PrefetchQueue) worker() {
 }
 
 // processPrefetch executes a prefetch request. The claim on
-// req.Entry is released on any path that doesn't produce a
-// fresh replacement entry — otherwise a failed or empty
-// prefetch would leave prefetch=true on the hot entry and
-// ShouldPrefetch would stay false until unrelated expiry.
+// req.Entry is released on every exit path — SetFromResponse
+// classifies and stores (or skips, for rcodes it doesn't cache)
+// a fresh entry under the same key; the hot entry's prefetch
+// flag has to be cleared whether the new write happened or not,
+// otherwise ShouldPrefetch would stay false until unrelated expiry.
 func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	ctx, cancel := context.WithTimeout(pq.ctx, 5*time.Second)
 	defer cancel()
+	defer releasePrefetchClaim(req.Entry)
 
 	zlog.Debug("Processing prefetch", "query", formatQuestion(req.Request.Question[0]))
 
-	// Make a copy for internal query
+	// Copy the original client request so upstream mutations
+	// (CD bit, EDNS options) don't bleed into the shared Request
+	// held by other callers or into the stored entry's question.
 	prefetchReq := req.Request.Copy()
 
-	// Execute the prefetch query
-	resp, err := util.ExchangeInternal(ctx, prefetchReq)
+	// Route through the cache-less prefetch sub-pipeline so the
+	// refresh reaches the upstream resolver/forwarder instead of
+	// its own about-to-expire entry. Local-answer middleware
+	// (hostsfile, blocklist, kubernetes, as112) and failover still
+	// apply; metrics/dnstap/accesslog do not.
+	resp, err := req.Cache.prefetchExchange(ctx, prefetchReq)
 	if err != nil {
 		zlog.Debug("Prefetch failed", "query", formatQuestion(req.Request.Question[0]), "error", err.Error())
-		releasePrefetchClaim(req.Entry)
+		return
+	}
+	if resp == nil {
 		return
 	}
 
-	// Store the response in cache if we have a cache reference.
-	// Cache.Set replaces the entry (new entry's prefetch flag
-	// defaults to false), so we only need to release the claim
-	// explicitly on the no-answer path.
-	if req.Cache != nil && resp != nil && len(resp.Answer) > 0 {
-		// Log TTL information for debugging
+	// Key off the client request's CD bit — the same keying rule
+	// as the external chain writeback. prefetchReq may have been
+	// mutated by upstream middleware; using req.Request.CD
+	// preserves the dedup invariant that CD=1 and CD=0 entries
+	// stay separate.
+	req.Cache.store.SetFromResponseWithKey(req.Key, resp)
+	pq.metrics.Prefetch()
+
+	if len(resp.Answer) > 0 {
 		minTTL := uint32(0)
 		for _, rr := range resp.Answer {
 			if minTTL == 0 || rr.Header().Ttl < minTTL {
 				minTTL = rr.Header().Ttl
 			}
 		}
-
-		// Use the key that was passed in the request
-		req.Cache.Set(req.Key, resp)
 		zlog.Debug("Prefetch stored in cache", "query", formatQuestion(req.Request.Question[0]), "answers", len(resp.Answer), "minTTL", minTTL)
 	} else {
-		releasePrefetchClaim(req.Entry)
+		zlog.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]), "rcode", dns.RcodeToString[resp.Rcode])
 	}
-
-	pq.metrics.Prefetch()
-	zlog.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]))
 }
 
 // releasePrefetchClaim clears the prefetch flag so future

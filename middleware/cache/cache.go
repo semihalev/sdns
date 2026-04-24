@@ -187,6 +187,17 @@ func (c *Cache) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 	return util.ExchangeInternal(ctx, req)
 }
 
+// prefetchExchange routes prefetch refresh traffic through the
+// prefetch sub-pipeline (cache excluded), falling back to
+// util.ExchangeInternal when no prefetch queryer is wired. Same
+// fallback semantics as internalExchange; removed with Phase 5.
+func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	if c.prefetchQueryer != nil {
+		return c.prefetchQueryer.Query(ctx, req)
+	}
+	return util.ExchangeInternal(ctx, req)
+}
+
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
