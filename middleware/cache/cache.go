@@ -176,6 +176,17 @@ func (c *Cache) SetQueryer(q queryer.Queryer) { c.queryer = q }
 // instead of returning its own about-to-expire entry.
 func (c *Cache) SetPrefetchQueryer(q queryer.Queryer) { c.prefetchQueryer = q }
 
+// internalExchange routes CNAME-chase sub-queries through the
+// installed queryer, falling back to util.ExchangeInternal for
+// test setups that construct a Cache without wiring one. The
+// fallback is removed when ExchangeInternal retires in Phase 5.
+func (c *Cache) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	if c.queryer != nil {
+		return c.queryer.Query(ctx, req)
+	}
+	return util.ExchangeInternal(ctx, req)
+}
+
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
@@ -595,7 +606,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		targets = append(targets, target)
 
-		respCname, err := util.ExchangeInternal(ctx, cnameReq)
+		respCname, err := c.internalExchange(ctx, cnameReq)
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		}

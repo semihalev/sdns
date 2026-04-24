@@ -128,11 +128,13 @@ func wireQueryers() {
 	queryerSub := pipe.SubPipeline(clientGuardMiddlewares...)
 	prefetchSub := pipe.SubPipeline(append(clientGuardMiddlewares, "cache")...)
 
-	cacheMW.SetQueryer(queryer.NewPipelineQueryer(queryerSub))
+	q := queryer.NewPipelineQueryer(queryerSub)
+	cacheMW.SetQueryer(q)
 	cacheMW.SetPrefetchQueryer(queryer.NewPipelineQueryer(prefetchSub))
 
 	if res, ok := pipe.Get("resolver").(*resolver.DNSHandler); ok {
 		res.SetStore(cacheMW.Store())
+		res.SetQueryer(q)
 	}
 }
 

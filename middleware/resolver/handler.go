@@ -253,6 +253,12 @@ func (h *DNSHandler) Purge(q dns.Question) {
 // startup; delegates to the underlying Resolver.
 func (h *DNSHandler) SetStore(s CacheStore) { h.resolver.store = s }
 
+// (*DNSHandler).SetQueryer installs the sub-pipeline runner used
+// for policy-aware internal lookups (NS A/AAAA, DNAME target).
+// Called once from sdns.go startup; delegates to the underlying
+// Resolver.
+func (h *DNSHandler) SetQueryer(q Queryer) { h.resolver.queryer = q }
+
 // (*DNSHandler).Stop stop gracefully shuts down the resolver.
 func (h *DNSHandler) Stop() {
 	if h.resolver.tcpPool != nil {

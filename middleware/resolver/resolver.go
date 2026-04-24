@@ -64,6 +64,15 @@ type Resolver struct {
 	// nil-safe: tests and forwarder-only deployments construct a
 	// Resolver without ever populating it.
 	store CacheStore
+
+	// queryer drives policy-aware internal lookups (NS A/AAAA, DNAME
+	// target) through the sub-pipeline so operator overrides
+	// (hostsfile, blocklist, kubernetes, as112) and failover still
+	// apply. nil-safe: when unset, sites fall back to
+	// util.ExchangeInternal so tests and partial setups keep working
+	// through the transition. The fallback is removed when
+	// ExchangeInternal itself retires.
+	queryer Queryer
 }
 
 // CacheStore is the minimum surface subQuery needs from the cache
@@ -72,6 +81,12 @@ type Resolver struct {
 type CacheStore interface {
 	Get(req *dns.Msg) (*dns.Msg, bool)
 	SetFromResponse(resp *dns.Msg, keyCD bool)
+}
+
+// Queryer is the minimum surface the resolver needs from the internal
+// sub-pipeline runner. Satisfied structurally by queryer.Queryer.
+type Queryer interface {
+	Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 }
 
 // resolveState holds the state for a DNS resolution operation.
@@ -699,7 +714,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 	// setTags() so it's the authoritative source here.
 	req.CheckingDisabled = resp.CheckingDisabled
 
-	msg, err := util.ExchangeInternal(ctx, req)
+	msg, err := r.internalExchange(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1683,6 +1698,24 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 	return dsres, nil
 }
 
+// internalExchange routes a resolver-constructed client-shaped
+// lookup (NS A/AAAA, DNAME target) through the installed Queryer,
+// falling back to util.ExchangeInternal when the queryer isn't
+// wired so tests and partial setups keep working. The fallback
+// disappears when ExchangeInternal retires in Phase 5.
+//
+// This is distinct from subQuery: the latter bypasses the chain
+// entirely for DNSSEC records where policy overrides would
+// compromise the chain of trust. internalExchange goes through the
+// sub-pipeline so hostsfile, blocklist, kubernetes, as112, and
+// failover all still apply.
+func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	if r.queryer != nil {
+		return r.queryer.Query(ctx, req)
+	}
+	return util.ExchangeInternal(ctx, req)
+}
+
 // subQuery answers a resolver-constructed DNSSEC record lookup (DS
 // or DNSKEY) via cache-first direct resolution. It deliberately
 // bypasses the middleware chain — no failover, no local-answer
@@ -1772,7 +1805,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 	nsReq.SetEdns0(util.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := util.ExchangeInternal(ctx, nsReq)
+	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
 	}
@@ -1803,7 +1836,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	nsReq.SetEdns0(util.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
-	nsres, err := util.ExchangeInternal(ctx, nsReq)
+	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
 		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s (%v)", qname, err)
 	}
