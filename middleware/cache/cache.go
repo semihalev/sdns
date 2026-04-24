@@ -32,6 +32,14 @@ type Cache struct {
 	positive *PositiveCache
 	negative *NegativeCache
 
+	// store is the public-facing storage facade backed by the same
+	// positive/negative sub-caches. External callers (resolver
+	// sub-queries, queryer-driven prefetch, future API purge wiring)
+	// route through Store; the middleware itself uses both views —
+	// Store for the new API surface, direct sub-cache access for
+	// the few existing hot paths that already have a key in hand.
+	store *Store
+
 	prefetchQueue *PrefetchQueue
 
 	config  CacheConfig
@@ -90,9 +98,14 @@ func New(cfg *config.Config) *Cache {
 
 	metrics := &CacheMetrics{}
 
+	positive := NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics)
+	negative := NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics)
+
 	c := &Cache{
-		positive: NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics),
-		negative: NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics),
+		positive: positive,
+		negative: negative,
+
+		store: NewStore(positive, negative, cacheConfig),
 
 		config:  cacheConfig,
 		metrics: metrics,
@@ -126,6 +139,11 @@ func New(cfg *config.Config) *Cache {
 
 // (*Cache).Name name returns middleware name.
 func (c *Cache) Name() string { return name }
+
+// (*Cache).Store returns the storage facade. Exposed for future
+// wiring (queryer, resolver sub-queries, api purge) that needs to
+// read or write cache entries without going through ServeDNS.
+func (c *Cache) Store() *Store { return c.store }
 
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
@@ -217,12 +235,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 // records its own metrics, so a miss in the positive cache that
 // then hits the negative cache (or vice versa) counts once.
 func (c *Cache) checkCache(key uint64) *CacheEntry {
-	if entry, ok := c.positive.Get(key); ok {
-		c.metrics.Hit()
-		return entry
-	}
-
-	if entry, ok := c.negative.Get(key); ok {
+	if entry, ok := c.store.LookupByKey(key); ok {
 		c.metrics.Hit()
 		return entry
 	}
@@ -312,14 +325,7 @@ func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q 
 
 // purge removes entries from cache.
 func (c *Cache) purge(qname string, qtype uint16) {
-	q := dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET}
-
-	// Purge both CD and non-CD versions
-	for _, cd := range []bool{false, true} {
-		key := CacheKey{Question: q, CD: cd}.Hash()
-		c.positive.Remove(key)
-		c.negative.Remove(key)
-	}
+	c.store.Purge(dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET})
 }
 
 // (*Cache).Stop stop gracefully shuts down the cache.
@@ -329,19 +335,20 @@ func (c *Cache) Stop() {
 	}
 }
 
-// (*Cache).Set set adds a new element to the cache. Provided for API compatibility.
+// (*Cache).Set set adds a new element to the cache. Provided for API
+// compatibility (prefetch worker, plugin callers). Internally goes
+// through Store; the entry is constructed with origTTL adjusted to
+// the real upstream TTL so subsequent prefetch decisions don't
+// miscalculate from the post-Calculate (clamped) value.
 func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	if len(msg.Question) == 0 {
 		return
 	}
 
-	// Filter the message like ResponseWriter does
-	rw := &ResponseWriter{cache: c}
-	filtered := rw.filterAnswerSection(msg)
-
+	filtered := filterCacheableAnswer(msg)
 	mt, _ := util.ClassifyResponse(filtered, time.Now().UTC())
-
 	msgTTL := util.CalculateCacheTTL(filtered, mt)
+
 	var ttl time.Duration
 	if mt == util.TypeServerFailure {
 		ttl = c.negative.ttl.Calculate(msgTTL)
@@ -349,23 +356,12 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 		ttl = c.positive.ttl.Calculate(msgTTL)
 	}
 
-	// Create entry with proper original TTL for prefetch calculation
 	entry := NewCacheEntryWithKey(filtered, ttl, c.config.RateLimit, key)
-	// Ensure origTTL reflects the actual TTL from the response for prefetch calculations
 	if ttl > 0 {
 		entry.origTTL = uint32(ttl.Seconds())
 	}
 
-	switch mt {
-	case util.TypeSuccess, util.TypeReferral:
-		c.positive.Set(key, entry)
-	case util.TypeNXDomain, util.TypeNoRecords:
-		// NXDOMAIN and NODATA go to positive cache with normal TTL handling
-		c.positive.Set(key, entry)
-	case util.TypeServerFailure:
-		// Server failures and other errors go to negative cache with expire limit
-		c.negative.Set(key, entry)
-	}
+	c.store.SetEntryWithKey(key, entry, mt)
 }
 
 // (*Cache).Stats stats returns cache statistics.
@@ -377,8 +373,8 @@ func (c *Cache) Stats() map[string]any {
 		"misses":        misses,
 		"evictions":     evictions,
 		"prefetches":    prefetches,
-		"positive_size": c.positive.Len(),
-		"negative_size": c.negative.Len(),
+		"positive_size": c.store.PositiveLen(),
+		"negative_size": c.store.NegativeLen(),
 		"hit_rate": func() float64 {
 			total := float64(hits + misses)
 			if total == 0 {
@@ -409,33 +405,11 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
-	// Determine cache type and TTL
-	mt, _ := util.ClassifyResponse(res, time.Now().UTC())
+	// Classify, filter, and store via Store. Key is derived from
+	// the response's CD bit — today's behaviour and the contract
+	// the cache dedup leader and follower agree on.
 	key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
-
-	// Filter answer section to only keep relevant records (matching V1 behavior)
-	filtered := w.filterAnswerSection(res)
-
-	// Calculate TTL
-	msgTTL := util.CalculateCacheTTL(filtered, mt)
-	var ttl time.Duration
-
-	switch mt {
-	case util.TypeSuccess, util.TypeReferral:
-		ttl = w.cache.positive.ttl.Calculate(msgTTL)
-		entry := NewCacheEntryWithKey(filtered, ttl, w.cache.config.RateLimit, key)
-		w.cache.positive.Set(key, entry)
-
-	case util.TypeNXDomain, util.TypeNoRecords:
-		ttl = w.cache.positive.ttl.Calculate(msgTTL)
-		entry := NewCacheEntryWithKey(filtered, ttl, w.cache.config.RateLimit, key)
-		w.cache.positive.Set(key, entry)
-
-	case util.TypeServerFailure:
-		ttl = w.cache.negative.ttl.Calculate(msgTTL)
-		entry := NewCacheEntryWithKey(filtered, ttl, w.cache.config.RateLimit, key)
-		w.cache.negative.Set(key, entry)
-	}
+	w.cache.store.SetFromResponseWithKey(key, res)
 
 	// Resolve CNAME chains before sending to client (matching V1 behavior)
 	if !w.Internal() {
@@ -445,28 +419,29 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	return w.ResponseWriter.WriteMsg(res)
 }
 
-// filterAnswerSection filters the answer section to only keep relevant records
-// This matches the V1 behavior of only caching records that are directly relevant.
-func (w *ResponseWriter) filterAnswerSection(res *dns.Msg) *dns.Msg {
+// filterCacheableAnswer keeps only the records directly relevant to
+// the query: ones whose owner name matches Question[0].Name, plus
+// DNAME records and their RRSIGs (which legitimately have a
+// non-matching owner). Matches the V1 behaviour of keeping the
+// cache compact and avoiding accidental retention of unrelated
+// glue / additional data.
+func filterCacheableAnswer(res *dns.Msg) *dns.Msg {
 	if len(res.Answer) == 0 {
 		return res
 	}
 
-	// Create a copy to avoid modifying the original
 	filtered := res.Copy()
 	var answer []dns.RR
 
 	for _, r := range filtered.Answer {
-		// Keep DNAME records or records matching the query name
 		if r.Header().Rrtype == dns.TypeDNAME ||
 			strings.EqualFold(res.Question[0].Name, r.Header().Name) {
 			answer = append(answer, r)
+			continue
 		}
 
-		// Keep RRSIG records for DNAME that don't match the query name
 		if rrsig, ok := r.(*dns.RRSIG); ok {
-			if rrsig.TypeCovered == dns.TypeDNAME &&
-				!strings.EqualFold(res.Question[0].Name, r.Header().Name) {
+			if rrsig.TypeCovered == dns.TypeDNAME {
 				answer = append(answer, r)
 			}
 		}
