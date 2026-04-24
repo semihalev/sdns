@@ -6,11 +6,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-const (
-	// specialCharsWhiteLies contains characters commonly used in NSEC White Lies implementations.
-	specialCharsWhiteLies = "~!@#$%^&*()_+-=[]{}|;:,<>?"
-)
-
 func typesSet(set []uint16, types ...uint16) bool {
 	tm := make(map[uint16]struct{}, len(types))
 	for _, t := range types {
@@ -83,36 +78,22 @@ func verifyNameError(msg *dns.Msg, nsec []dns.RR) error {
 		return errNSECMissingCoverage
 	}
 
-	// RFC 5155: We need to verify three things:
-	// 1. Closest encloser exists (already verified by findClosestEncloser)
-	// 2. Next closer name is covered (proving QNAME doesn't exist)
-	// 3. Wildcard at closest encloser is covered (proving *.ce doesn't exist)
-
-	// Note: Some implementations may send incomplete NSEC3 sets in certain cases.
-	// We verify what we can while maintaining compatibility.
-
-	// Verify next closer is covered
-	_, _, ncErr := findCoverer(nc, nsec)
-
-	// Verify wildcard is covered
-	_, _, wcErr := findCoverer("*."+ce, nsec)
-
-	// If we have both coverages, we're fully RFC compliant
-	if ncErr == nil && wcErr == nil {
-		return nil
+	// RFC 5155 §8.4 requires a full NSEC3 NXDOMAIN proof:
+	//   1. Closest encloser exists (established above).
+	//   2. An NSEC3 covers the next closer name (proving QNAME is
+	//      absent below the closest encloser).
+	//   3. An NSEC3 covers the wildcard at the closest encloser
+	//      (proving *.closest-encloser cannot synthesize QNAME).
+	// Accepting a wildcard-only proof lets a signed zone claim any
+	// name is absent as long as some wildcard slot is unallocated —
+	// that is not a real name-error proof, so require all three.
+	if _, _, err := findCoverer(nc, nsec); err != nil {
+		return err
 	}
-
-	// For backward compatibility, accept if at least wildcard is covered
-	// (this was the original behavior)
-	if wcErr == nil {
-		return nil
+	if _, _, err := findCoverer("*."+ce, nsec); err != nil {
+		return err
 	}
-
-	// Return the most relevant error
-	if ncErr != nil {
-		return ncErr
-	}
-	return wcErr
+	return nil
 }
 
 func verifyNODATA(msg *dns.Msg, nsec []dns.RR) error {
@@ -123,28 +104,86 @@ func verifyNODATA(msg *dns.Msg, nsec []dns.RR) error {
 		qname = dname
 	}
 
-	types, err := findMatching(qname, nsec)
-	if err != nil {
-		if q.Qtype != dns.TypeDS {
-			return err
+	if types, err := findMatching(qname, nsec); err == nil {
+		// Exact-owner NODATA (RFC 5155 §8.5).
+		if typesSet(types, q.Qtype, dns.TypeCNAME) {
+			return errNSECTypeExists
 		}
-
-		ce, nc := findClosestEncloser(qname, nsec)
-		if ce == "" {
-			return errNSECMissingCoverage
-		}
-		_, _, err := findCoverer(nc, nsec)
-		if err != nil {
-			return err
+		// DS queries are only authoritative in the parent zone. An
+		// exact-match NSEC3 whose bitmap contains SOA is the child-
+		// zone apex and cannot prove DS non-existence at the
+		// delegation point; mirrors the same SOA rejection
+		// verifyNODATANSEC performs so a child-signed denial can't
+		// masquerade as a parent-side proof.
+		if q.Qtype == dns.TypeDS && typesSet(types, dns.TypeSOA) {
+			return errNSECBadDelegation
 		}
 		return nil
 	}
 
-	if typesSet(types, q.Qtype, dns.TypeCNAME) {
-		return errNSECTypeExists
+	// No exact match — two valid cases remain.
+	ce, nc := findClosestEncloser(qname, nsec)
+	if ce == "" {
+		return errNSECMissingCoverage
 	}
 
+	if q.Qtype == dns.TypeDS {
+		// RFC 5155 §8.6: DS NODATA without exact match requires an
+		// NSEC3 covering the next closer name with the Opt-Out bit
+		// set. Without that bit the proof cannot distinguish "DS
+		// absent" from "DS unsigned because this delegation was
+		// opted out" — accepting a non-opt-out cover would let a
+		// signed child be silently demoted to insecure during
+		// findDS chain walks.
+		_, optOut, err := findCoverer(nc, nsec)
+		if err != nil {
+			return err
+		}
+		if !optOut {
+			return errNSECOptOut
+		}
+		return nil
+	}
+
+	// RFC 5155 §8.7: wildcard NODATA proof —
+	//   1. An NSEC3 covers the next closer name (qname has no
+	//      direct match below the closest encloser).
+	//   2. An NSEC3 matches the wildcard at the closest encloser
+	//      and its type bitmap does not contain qtype or CNAME.
+	if _, _, err := findCoverer(nc, nsec); err != nil {
+		return err
+	}
+	wildcardTypes, err := findMatching("*."+ce, nsec)
+	if err != nil {
+		return err
+	}
+	if typesSet(wildcardTypes, q.Qtype, dns.TypeCNAME) {
+		return errNSECTypeExists
+	}
 	return nil
+}
+
+// verifyDelegationNSEC verifies an insecure-delegation claim using NSEC
+// records (RFC 4035 §5.2). It must find an NSEC whose owner equals the
+// delegation name and whose type bitmap contains NS but neither DS nor
+// SOA. Anything looser would let a malicious parent strip the DS from a
+// signed child and have the resolver treat the child as insecure.
+func verifyDelegationNSEC(delegation string, nsecSet []dns.RR) error {
+	delegation = strings.ToLower(dns.Fqdn(delegation))
+	for _, rr := range nsecSet {
+		nsec := rr.(*dns.NSEC)
+		if strings.ToLower(dns.Fqdn(nsec.Header().Name)) != delegation {
+			continue
+		}
+		if !typesSet(nsec.TypeBitMap, dns.TypeNS) {
+			return errNSECNSMissing
+		}
+		if typesSet(nsec.TypeBitMap, dns.TypeDS, dns.TypeSOA) {
+			return errNSECBadDelegation
+		}
+		return nil
+	}
+	return errNSECMissingCoverage
 }
 
 func verifyDelegation(delegation string, nsec []dns.RR) error {
@@ -174,7 +213,13 @@ func verifyDelegation(delegation string, nsec []dns.RR) error {
 
 // NSEC (non-hashed) verification functions
 
-// verifyNameErrorNSEC verifies NXDOMAIN using NSEC records (RFC 4035 Section 3.1.3.2).
+// verifyNameErrorNSEC verifies NXDOMAIN using NSEC records (RFC 4035 §3.1.3.2).
+// The proof requires two NSEC records: one that covers QNAME (proving
+// QNAME does not exist) and one that covers the wildcard at the closest
+// encloser of QNAME (proving no wildcard match could synthesize the
+// answer). Accepting wildcard coverage from an arbitrary ancestor lets a
+// mismatched proof pass, so the wildcard is derived from the covering
+// NSEC's owner/next labels, not from any ancestor of QNAME.
 func verifyNameErrorNSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 	if len(nsecSet) == 0 {
 		return errNSECMissingCoverage
@@ -182,125 +227,80 @@ func verifyNameErrorNSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 
 	q := msg.Question[0]
 	qname := q.Name
-
-	// Check if DNAME redirection applies
 	if dname := getDnameTarget(msg); dname != "" {
 		qname = dname
 	}
 
-	// We need to prove the queried name does not exist
-	// This might require proving that an ancestor doesn't exist
-
-	labels := dns.SplitDomainName(qname)
-
-	// Try to find NSEC coverage starting from the full name and working up
-	for i := 0; i < len(labels); i++ {
-		// Construct the name to check
-		var checkName string
-		if i == 0 {
-			checkName = qname
-		} else {
-			checkName = dns.Fqdn(strings.Join(labels[i:], "."))
-		}
-
-		// Check if any NSEC covers this name
-		for _, rr := range nsecSet {
-			nsec := rr.(*dns.NSEC)
-
-			if nsecCovers(nsec.Header().Name, nsec.NextDomain, checkName) {
-				// Found coverage - name proven not to exist
-				// Now verify wildcards don't exist
-				goto checkWildcards
-			}
-		}
-	}
-
-	// No NSEC found that proves non-existence
-
-	// Check if this might be NSEC White Lies (RFC 4470) with incorrect bounds
-	// Some implementations generate NSEC records that don't properly cover the query
-	// due to character ordering mistakes (e.g., using '!' thinking it comes after '.')
-	if len(nsecSet) >= 2 {
-		// Look for signs of NSEC White Lies:
-		// 1. Narrow ranges with special characters
-		// 2. Owner names very similar to query name
-		whiteLies := 0
-
-		// Pre-compute qname prefix once
-		qnamePrefix := qname
-		if idx := strings.IndexByte(qname, '.'); idx > 0 && idx < len(qname)-1 {
-			qnamePrefix = strings.ToLower(qname[:idx]) // Just the first label, lowercase
-		}
-
-		for _, rr := range nsecSet {
-			nsec := rr.(*dns.NSEC)
-			owner := nsec.Header().Name
-			next := nsec.NextDomain
-
-			// Check for special characters often used in White Lies
-			// No need to lowercase - special chars are case-insensitive
-			if strings.ContainsAny(owner, specialCharsWhiteLies) ||
-				strings.ContainsAny(next, specialCharsWhiteLies) {
-				whiteLies++
-			}
-
-			// Check if owner or next contains query prefix (case-insensitive)
-			// Only do the expensive ToLower if we have a prefix to check
-			if len(qnamePrefix) > 0 &&
-				(strings.Contains(strings.ToLower(owner), qnamePrefix) ||
-					strings.Contains(strings.ToLower(next), qnamePrefix)) {
-				whiteLies++
-			}
-		}
-
-		// If we have strong indicators of White Lies, continue with wildcard check
-		// rather than failing immediately
-		if whiteLies >= 2 {
-			goto checkWildcards
-		}
-	}
-
-	return errNSECMissingCoverage
-
-checkWildcards:
-
-	// Now verify no wildcard exists
-	// We need to find the closest encloser and prove *.closest_encloser doesn't exist
-	for i := 1; i <= len(labels); i++ {
-		var possibleWildcard string
-		if i < len(labels) {
-			possibleWildcard = "*." + dns.Fqdn(strings.Join(labels[i:], "."))
-		} else {
-			// Special case: wildcards are not allowed at the root zone
-			// per RFC 4592 section 4.2, so we don't need to check for *.
-			return nil
-		}
-
-		for _, rr := range nsecSet {
-			nsec := rr.(*dns.NSEC)
-			if nsecCovers(nsec.Header().Name, nsec.NextDomain, possibleWildcard) {
-				// Found NSEC proving this wildcard doesn't exist
-				return nil
-			}
-		}
-	}
-
-	// If we're in the wildcard check section but didn't find coverage,
-	// check if we have White Lies indicators
-	const specialChars = "~!@#$%^&*()_+-=[]{}|;:,<>?"
+	var covering *dns.NSEC
 	for _, rr := range nsecSet {
 		nsec := rr.(*dns.NSEC)
-		// If we see White Lies patterns, be more lenient
-		// No need to lowercase - special chars are case-insensitive
-		if strings.ContainsAny(nsec.Header().Name, specialChars) ||
-			strings.ContainsAny(nsec.NextDomain, specialChars) {
-			// Accept incomplete White Lies NSEC proofs
+		if nsecCovers(nsec.Header().Name, nsec.NextDomain, qname) {
+			covering = nsec
+			break
+		}
+	}
+	if covering == nil {
+		return errNSECMissingCoverage
+	}
+
+	ce := closestEncloserFromNSEC(qname, covering)
+	if ce == "" {
+		return errNSECMissingCoverage
+	}
+
+	// RFC 4592 §4.2: wildcards are not defined at the root zone, so if
+	// the closest encloser is the root, there is no wildcard proof to
+	// require.
+	if ce == "." {
+		return nil
+	}
+
+	wildcard := "*." + ce
+	for _, rr := range nsecSet {
+		nsec := rr.(*dns.NSEC)
+		if nsecCovers(nsec.Header().Name, nsec.NextDomain, wildcard) {
 			return nil
 		}
 	}
-
-	// Strict validation: we need to prove wildcard doesn't exist
 	return errNSECMissingCoverage
+}
+
+// closestEncloserFromNSEC derives the closest encloser of qname from the
+// NSEC that covers it. The closest encloser is the longest ancestor of
+// qname shared (by trailing labels) with the NSEC owner or its next
+// name, since both of those names exist in the zone. Per RFC 4035
+// §3.1.3.2, the result must be a proper ancestor of qname.
+func closestEncloserFromNSEC(qname string, nsec *dns.NSEC) string {
+	qn := strings.ToLower(dns.Fqdn(qname))
+	qLabels := dns.SplitDomainName(qn)
+
+	shared := func(other string) int {
+		ol := dns.SplitDomainName(strings.ToLower(dns.Fqdn(other)))
+		count := 0
+		for i, j := len(qLabels)-1, len(ol)-1; i >= 0 && j >= 0; i, j = i-1, j-1 {
+			if qLabels[i] != ol[j] {
+				break
+			}
+			count++
+		}
+		return count
+	}
+
+	n := shared(nsec.Header().Name)
+	if s := shared(nsec.NextDomain); s > n {
+		n = s
+	}
+	// The closest encloser is a proper ancestor of qname, so cap at
+	// len(qLabels)-1 even if owner or next happens to share all labels
+	// (which would only occur for a malformed NSEC covering its own
+	// name).
+	if n >= len(qLabels) {
+		n = len(qLabels) - 1
+	}
+	if n <= 0 {
+		return "."
+	}
+	return dns.Fqdn(strings.Join(qLabels[len(qLabels)-n:], "."))
 }
 
 // verifyNODATANSEC verifies NODATA using NSEC records (RFC 4035 Section 3.1.3.1).
@@ -324,62 +324,119 @@ func verifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 
 		// Check if this NSEC is for the queried name
 		if dns.CanonicalName(nsec.Header().Name) == dns.CanonicalName(qname) {
-			// Check if the queried type is in the type bitmap
-			if typesSet(nsec.TypeBitMap, q.Qtype) {
+			// Reject the queried type or CNAME: a CNAME bit at the
+			// exact owner means the name aliases elsewhere, so the
+			// server is lying by returning NODATA instead of
+			// following the alias. The NSEC3 path already rejects
+			// both and the NSEC path must match for consistency.
+			if typesSet(nsec.TypeBitMap, q.Qtype, dns.TypeCNAME) {
 				return errNSECTypeExists
 			}
 
-			// Special handling for DS queries at delegation points
-			if q.Qtype == dns.TypeDS {
-				// At a delegation point, we should see NS but not SOA
-				if !typesSet(nsec.TypeBitMap, dns.TypeNS) {
-					return errNSECNSMissing
-				}
-				if typesSet(nsec.TypeBitMap, dns.TypeSOA) {
-					return errNSECBadDelegation
-				}
+			// DS queries are only authoritative in the parent zone.
+			// Reject an NSEC whose bitmap contains SOA — that NSEC
+			// belongs to the child-zone apex and cannot prove DS
+			// non-existence at the delegation point. The NS bit is
+			// not required: findDS() may probe ordinary non-
+			// delegation names while walking the chain, and their
+			// legitimate NSECs will list whatever types the name
+			// actually has (typically no NS, no SOA, no DS), which
+			// is a perfectly valid DS NODATA proof.
+			if q.Qtype == dns.TypeDS && typesSet(nsec.TypeBitMap, dns.TypeSOA) {
+				return errNSECBadDelegation
 			}
 
 			return nil
 		}
 	}
 
-	// If we didn't find an exact match NSEC, this might be a wildcard NODATA
-	// In this case, we need to prove the wildcard exists but doesn't have the type
-	return errNSECMissingCoverage
-}
-
-// nsecCovers checks if a NSEC record covers a given name
-// Uses canonical DNS name ordering (RFC 4034 Section 6.1)
-// Performance note: owner and next are assumed to be already canonical (from DNS wire format).
-func nsecCovers(owner, next, name string) bool {
-	// Fast path: if name is already lowercase (common case), avoid canonicalization
-	needsCanon := false
-	for i := 0; i < len(name); i++ {
-		if name[i] >= 'A' && name[i] <= 'Z' {
-			needsCanon = true
+	// Wildcard NODATA (RFC 4035 §3.1.3.4): when qname has no exact
+	// NSEC owner, the proof is
+	//   1. An NSEC covering qname — proves qname doesn't exist
+	//      directly.
+	//   2. An NSEC whose owner is *.<closest-encloser> whose type
+	//      bitmap does not contain qtype or CNAME — proves the
+	//      wildcard synthesis that would otherwise answer qname
+	//      doesn't carry the queried type.
+	var covering *dns.NSEC
+	for _, rr := range nsecSet {
+		nsec := rr.(*dns.NSEC)
+		if nsecCovers(nsec.Header().Name, nsec.NextDomain, qname) {
+			covering = nsec
 			break
 		}
 	}
+	if covering == nil {
+		return errNSECMissingCoverage
+	}
+	ce := closestEncloserFromNSEC(qname, covering)
+	if ce == "" {
+		return errNSECMissingCoverage
+	}
+	wildcard := strings.ToLower(dns.Fqdn("*." + ce))
+	for _, rr := range nsecSet {
+		nsec := rr.(*dns.NSEC)
+		if strings.ToLower(dns.Fqdn(nsec.Header().Name)) != wildcard {
+			continue
+		}
+		if typesSet(nsec.TypeBitMap, q.Qtype, dns.TypeCNAME) {
+			return errNSECTypeExists
+		}
+		if q.Qtype == dns.TypeDS && typesSet(nsec.TypeBitMap, dns.TypeSOA) {
+			return errNSECBadDelegation
+		}
+		return nil
+	}
+	return errNSECMissingCoverage
+}
 
-	if needsCanon {
-		name = dns.CanonicalName(name)
+// canonicalNameCompare returns -1, 0, or 1 ordering a and b per RFC 4034
+// §6.1 (canonical DNS name order): labels are compared right-to-left using
+// lowercase byte-wise comparison, with shorter names sorting before longer
+// ones when one is a strict suffix of the other. Plain string comparison
+// disagrees with this order for names like "example.com." vs
+// "a.example.com.", so any proof built on byte-wise compares produces
+// both false positives and false negatives.
+func canonicalNameCompare(a, b string) int {
+	aLabels := dns.SplitDomainName(strings.ToLower(dns.Fqdn(a)))
+	bLabels := dns.SplitDomainName(strings.ToLower(dns.Fqdn(b)))
+	i, j := len(aLabels)-1, len(bLabels)-1
+	for i >= 0 && j >= 0 {
+		if c := strings.Compare(aLabels[i], bLabels[j]); c != 0 {
+			return c
+		}
+		i--
+		j--
+	}
+	switch {
+	case len(aLabels) < len(bLabels):
+		return -1
+	case len(aLabels) > len(bLabels):
+		return 1
+	}
+	return 0
+}
+
+// nsecCovers reports whether an NSEC whose owner is `owner` and whose
+// NextDomain is `next` proves the non-existence of `name`. It uses
+// canonical DNS name ordering (RFC 4034 §6.1).
+func nsecCovers(owner, next, name string) bool {
+	cmpON := canonicalNameCompare(owner, next)
+	cmpNameOwner := canonicalNameCompare(name, owner)
+	cmpNameNext := canonicalNameCompare(name, next)
+
+	// Single-name zone sentinel: owner == next means the NSEC covers
+	// every name except the owner itself.
+	if cmpON == 0 {
+		return cmpNameOwner != 0
 	}
 
-	// Special case: owner equals next means this NSEC covers everything except owner
-	// This happens in zones with only one name (e.g., net.com. NSEC net.com.)
-	if owner == next {
-		// The name is covered if it's not the owner itself
-		return name != owner
+	if cmpON < 0 {
+		// Normal interval: owner < next.
+		return cmpNameOwner > 0 && cmpNameNext < 0
 	}
 
-	// Check if name falls between owner and next in canonical order
-	// Based on PowerDNS implementation, we need to check all wrap cases
-	// Most common case first (no wrap)
-	if owner < name && name < next {
-		return true
-	}
-	// Wrap cases
-	return (name < next && next < owner) || // Wrap case 1: name < next < owner
-		(next < owner && owner < name) // Wrap case 2: next < owner < name
+	// Wrap around the zone apex: owner > next, so the NSEC covers names
+	// greater than owner or less than next.
+	return cmpNameOwner > 0 || cmpNameNext < 0
 }

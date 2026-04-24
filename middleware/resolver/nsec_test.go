@@ -167,3 +167,36 @@ func TestVerifyNameErrorNSEC(t *testing.T) {
 	err = verifyNameErrorNSEC(msg, []dns.RR{})
 	assert.Equal(t, errNSECMissingCoverage, err, "Should fail with no NSEC records")
 }
+
+// TestVerifyNODATANSEC_Wildcard locks in the RFC 4035 §3.1.3.4 wildcard
+// NODATA shape: qname does not exist directly, but a wildcard owner
+// *.closest-encloser exists with a bitmap that omits the queried type.
+func TestVerifyNODATANSEC_Wildcard(t *testing.T) {
+	msg := new(dns.Msg)
+	msg.SetQuestion("a.z.w.example.", dns.TypeAAAA)
+
+	// NSEC covering a.z.w.example. (no direct owner).
+	covering := &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "a.w.example.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+		NextDomain: "zz.w.example.",
+		TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
+	}
+	// Wildcard NSEC at *.w.example. — type bitmap has A but not AAAA.
+	wildcard := &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "*.w.example.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+		NextDomain: "a.w.example.",
+		TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
+	}
+	err := verifyNODATANSEC(msg, []dns.RR{covering, wildcard})
+	assert.NoError(t, err, "Wildcard NODATA proof should verify")
+
+	// Same shape but wildcard bitmap *does* include the queried type —
+	// must be rejected because the wildcard could synthesize an answer.
+	wildcardWithType := &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "*.w.example.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+		NextDomain: "a.w.example.",
+		TypeBitMap: []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeRRSIG, dns.TypeNSEC},
+	}
+	err = verifyNODATANSEC(msg, []dns.RR{covering, wildcardWithType})
+	assert.Equal(t, errNSECTypeExists, err)
+}

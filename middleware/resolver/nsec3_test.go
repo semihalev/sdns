@@ -45,16 +45,16 @@ func zoneToRecords(t *testing.T, z string) []dns.RR {
 }
 
 func Test_VerifyNameError(t *testing.T) {
-	// Valid name error
+	msg := new(dns.Msg)
+
+	// Invalid name error: closest encloser only, no next-closer or
+	// wildcard coverage (RFC 5155 §8.4 requires both).
 	records := []dns.RR{
 		makeNSEC3("example.com.", "com.", false, nil),
 	}
-
-	msg := new(dns.Msg)
-
 	err := verifyNameError(msg.SetQuestion("a.example.com.", dns.TypeA), records)
-	if err != nil {
-		t.Fatalf("verifyNameError failed for valid name error response: %s", err)
+	if err == nil {
+		t.Fatalf("verifyNameError accepted an NXDOMAIN proof with no next-closer or wildcard coverage")
 	}
 
 	// Invalid name error, no CE
@@ -173,6 +173,17 @@ func Test_VerifyNODATA(t *testing.T) {
 	err = verifyNODATA(msg.SetQuestion("y.w.example.", dns.TypeA), records)
 	if err != nil {
 		t.Fatalf("verifyNODATA failed with RFC5155 Appendix B.2.1 example: %s", err)
+	}
+
+	// RFC5155 Appendix B.5: wildcard NODATA for a.z.w.example. IN MX
+	// needs the closest-encloser NSEC3, the next-closer cover, and
+	// the wildcard NSEC3 whose bitmap omits MX.
+	records = zoneToRecords(t, `k8udemvp1j2f7eg6jebps17vp3n8i58h.example. 3600 IN NSEC3 1 1 12 aabbccdd kohar7mbb8dc2ce8a9qvl8hon4k53uhi
+q04jkcevqvmu85r014c7dkba38o0ji5r.example. 3600 IN NSEC3 1 1 12 aabbccdd r53bq7cc2uvmubfu5ocmm6pers9tk9en A RRSIG
+r53bq7cc2uvmubfu5ocmm6pers9tk9en.example. 3600 IN NSEC3 1 1 12 aabbccdd t644ebqk9bibcna874givr6joj62mlhv`)
+	err = verifyNODATA(msg.SetQuestion("a.z.w.example.", dns.TypeMX), records)
+	if err != nil {
+		t.Fatalf("verifyNODATA rejected RFC5155 Appendix B.5 wildcard NODATA: %s", err)
 	}
 }
 

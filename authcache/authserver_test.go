@@ -38,6 +38,58 @@ func Test_VersionString(t *testing.T) {
 	assert.Equal(t, "Unknown", Version(99).String())
 }
 
+// Test_AuthServers_FingerprintInvalidation pins the contract that
+// callers must invalidate the cached fingerprint before releasing the
+// write lock: reading Fingerprint() after the mutation but before
+// InvalidateFingerprint() returned a stale hash in the old shape.
+func Test_AuthServers_FingerprintInvalidation(t *testing.T) {
+	s := &AuthServers{}
+	s.List = append(s.List, NewAuthServer("1.1.1.1:53", IPv4))
+	first := s.Fingerprint()
+	assert.NotZero(t, first)
+
+	// Same state → same fingerprint.
+	assert.Equal(t, first, s.Fingerprint())
+
+	// Mutate and invalidate; new fingerprint must differ.
+	s.Lock()
+	s.List = append(s.List, NewAuthServer("2.2.2.2:53", IPv4))
+	s.InvalidateFingerprint()
+	s.Unlock()
+	second := s.Fingerprint()
+	assert.NotEqual(t, first, second)
+}
+
+// Test_AuthServers_FingerprintMutationRace simulates the interleaving
+// where a mutator invalidates between a reader's snapshot and its
+// cache-store. With the generation-counter protection the reader
+// refuses to publish the outdated hash, so the next call returns the
+// fresh state instead of the revived stale one.
+func Test_AuthServers_FingerprintMutationRace(t *testing.T) {
+	s := &AuthServers{}
+	s.List = append(s.List, NewAuthServer("1.1.1.1:53", IPv4))
+
+	// Manually reproduce the race sequence: snapshot the gen the
+	// reader would observe, mutate List and bump the generation as a
+	// writer would, and then attempt to store the "stale" pair. The
+	// store must be refused because gen no longer matches.
+	gen := s.gen.Load()
+	staleFP := uint64(0xdeadbeef) // a value the genuine hash cannot equal here
+
+	s.Lock()
+	s.List = append(s.List, NewAuthServer("2.2.2.2:53", IPv4))
+	s.InvalidateFingerprint()
+	s.Unlock()
+
+	// Simulate the reader's late publish attempt.
+	if s.gen.Load() == gen {
+		s.fpCache.Store(&fpEntry{gen: gen, fp: staleFP})
+	}
+
+	got := s.Fingerprint()
+	assert.NotEqual(t, staleFP, got, "stale fingerprint must not be served after mutation")
+}
+
 func Test_AuthServerString(t *testing.T) {
 	// Test UNKNOWN health (Rtt <= 0)
 	s := NewAuthServer("1.2.3.4:53", IPv4)

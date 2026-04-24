@@ -125,7 +125,8 @@ func Test_getDnameTarget(t *testing.T) {
 	target := getDnameTarget(msg)
 	assert.Empty(t, target)
 
-	// Add DNAME record for exact match
+	// Exact-owner match: RFC 6672 §2.3 — the DNAME owner itself is
+	// *not* redirected, so no target is returned.
 	dname := &dns.DNAME{
 		Hdr: dns.RR_Header{
 			Name:   "sub.example.com.",
@@ -137,7 +138,7 @@ func Test_getDnameTarget(t *testing.T) {
 	}
 	msg.Answer = []dns.RR{dname}
 	target = getDnameTarget(msg)
-	assert.Equal(t, "target.com.", target)
+	assert.Empty(t, target, "DNAME owner must not be redirected")
 
 	// Test with subdomain
 	msg.Question = []dns.Question{{Name: "deep.sub.example.com.", Qtype: dns.TypeA}}
@@ -153,6 +154,58 @@ func Test_getDnameTarget(t *testing.T) {
 	msg.Answer = []dns.RR{dname2}
 	target = getDnameTarget(msg)
 	assert.Equal(t, "deep.newtarget.com.", target)
+
+	// Cousin name: qname shares a suffix with the DNAME owner but is
+	// not a descendant. dns.CompareDomainName reports the shared
+	// trailing labels regardless of ancestry, so without the explicit
+	// ancestor check the helper would rewrite unrelated names.
+	msg.Question = []dns.Question{{Name: "other.example.com.", Qtype: dns.TypeA}}
+	msg.Answer = []dns.RR{dname2} // DNAME owner is sub.example.com.
+	target = getDnameTarget(msg)
+	assert.Empty(t, target, "cousin of DNAME owner must not be redirected")
+}
+
+// Test_verifyRRSIG_RejectsForeignPiggyback pins the defense that
+// foreign unsigned RRsets next to signed in-zone data fail the
+// validator. Without this, an attacker could piggyback junk foreign
+// records on an otherwise-valid response and still get AD=true, in
+// violation of RFC 4035 §3.2.3. Signature content is irrelevant — the
+// check fires during record collection, before any crypto work.
+func Test_verifyRRSIG_RejectsForeignPiggyback(t *testing.T) {
+	key := &dns.DNSKEY{
+		Hdr: dns.RR_Header{
+			Name:   "example.com.",
+			Rrtype: dns.TypeDNSKEY,
+			Class:  dns.ClassINET,
+			Ttl:    3600,
+		},
+		Flags:     257,
+		Protocol:  3,
+		Algorithm: dns.ECDSAP256SHA256,
+		PublicKey: "irrelevant-test-value",
+	}
+	keys := map[uint16][]*dns.DNSKEY{key.KeyTag(): {key}}
+
+	a := &dns.A{
+		Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+		A:   net.ParseIP("1.2.3.4"),
+	}
+	sig := &dns.RRSIG{
+		Hdr:         dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+		TypeCovered: dns.TypeA,
+		Algorithm:   key.Algorithm,
+		SignerName:  "example.com.",
+		KeyTag:      key.KeyTag(),
+	}
+	evil := &dns.TXT{
+		Hdr: dns.RR_Header{Name: "evil.net.", Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 3600},
+		Txt: []string{"gotcha"},
+	}
+	msg := &dns.Msg{Answer: []dns.RR{a, sig, evil}}
+
+	ok, err := verifyRRSIG("example.com.", keys, msg)
+	assert.False(t, ok)
+	assert.Equal(t, errMissingSigned, err, "foreign RRset must make the whole response bogus")
 }
 
 func Test_checkExponent(t *testing.T) {
@@ -163,4 +216,38 @@ func Test_checkExponent(t *testing.T) {
 	// Test with too short key
 	result = checkExponent("AQAB") // Very short
 	assert.True(t, result)
+}
+
+// Test_isSupportedDNSKEYAlgorithm_RSAMD5 locks in the RFC 8624 /
+// miekg/dns reality that RSAMD5 is not verifiable: if the DS-level
+// filter ever classifies it as supported again, an RSAMD5-only DS set
+// would be treated as usable and then bogus at RRSIG.Verify time
+// instead of downgraded to insecure.
+func Test_isSupportedDNSKEYAlgorithm_RSAMD5(t *testing.T) {
+	assert.False(t, isSupportedDNSKEYAlgorithm(dns.RSAMD5),
+		"RSAMD5 must be treated as unsupported — miekg/dns RRSIG.Verify returns ErrAlg for it")
+	assert.True(t, isSupportedDNSKEYAlgorithm(dns.RSASHA256))
+	assert.True(t, isSupportedDNSKEYAlgorithm(dns.ECDSAP256SHA256))
+	assert.True(t, isSupportedDNSKEYAlgorithm(dns.ED25519))
+}
+
+// Test_filterToZone_NSECNextDomain pins the defense against the
+// "in-zone owner with out-of-zone NextDomain" forgery: an attacker
+// should not be able to satisfy the NSEC coverage check with an NSEC
+// whose owner is inside the validated zone but whose NextDomain
+// straddles a sibling zone, because a legitimate NSEC's NextDomain is
+// always another owner in the same zone.
+func Test_filterToZone_NSECNextDomain(t *testing.T) {
+	crossZone := &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "a.example.com.", Rrtype: dns.TypeNSEC},
+		NextDomain: "z.com.",
+	}
+	inZone := &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "!.example.com.", Rrtype: dns.TypeNSEC},
+		NextDomain: "zz.example.com.",
+	}
+
+	got := filterToZone([]dns.RR{crossZone, inZone}, "example.com.")
+	assert.Len(t, got, 1, "NSEC with cross-zone NextDomain must be filtered out")
+	assert.Equal(t, "!.example.com.", got[0].Header().Name)
 }

@@ -3,7 +3,6 @@ package resolver
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"net"
 	"sort"
 	"strconv"
@@ -284,26 +283,6 @@ func (r *Resolver) resolve(ctx context.Context, rc *resolveContext) (*dns.Msg, e
 	return m, nil
 }
 
-// authFingerprint hashes the sorted authority-server addresses
-// so singleflight can distinguish two delegations that share a
-// zone name but target different servers (e.g. after lookupV6Nss
-// appends AAAA-resolved servers).
-func authFingerprint(servers *authcache.AuthServers) uint64 {
-	servers.RLock()
-	addrs := make([]string, 0, len(servers.List))
-	for _, s := range servers.List {
-		addrs = append(addrs, s.Addr)
-	}
-	servers.RUnlock()
-	sort.Strings(addrs)
-	h := fnv.New64a()
-	for _, a := range addrs {
-		_, _ = h.Write([]byte(a))
-		_, _ = h.Write([]byte{0})
-	}
-	return h.Sum64()
-}
-
 func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
@@ -322,7 +301,7 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 		cd = '1'
 	}
 	key := strconv.FormatUint(cache.Key(q), 10) + "|" + servers.Zone +
-		"|" + string(cd) + "|" + strconv.FormatUint(authFingerprint(servers), 10)
+		"|" + string(cd) + "|" + strconv.FormatUint(servers.Fingerprint(), 10)
 
 	// Use TimedDoChan for automatic timeout handling
 	result, shared, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
@@ -482,7 +461,11 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 	}
 
 	servers.Checked = true
-	return oldsize != len(servers.List)
+	if oldsize != len(servers.List) {
+		servers.InvalidateFingerprint()
+		return true
+	}
+	return false
 }
 
 func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*authcache.AuthServers, nameservers, nameservers) {
@@ -650,6 +633,13 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, boo
 		req := new(dns.Msg)
 		req.SetQuestion(target, q.Qtype)
 		req.SetEdns0(util.DefaultMsgSize, true)
+		// Mirror the outer request's CD bit onto the follow-up. Without
+		// this, a CD=1 client query can still have the DNAME target
+		// leg re-validated and turned into SERVFAIL on bogus target
+		// data — the opposite of what the client asked for. resp.
+		// CheckingDisabled is set from req.CheckingDisabled in
+		// setTags() so it's the authoritative source here.
+		req.CheckingDisabled = resp.CheckingDisabled
 
 		msg, err := util.ExchangeInternal(ctx, req)
 		if err != nil {
@@ -663,45 +653,95 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, boo
 }
 
 func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, zone string, extra ...bool) (*dns.Msg, error) {
+	// The internal recursion's target response is held back until
+	// after the outer DNSSEC check. Merging target records into resp
+	// before verifyRRSIG() would force the validator to tolerate
+	// arbitrary out-of-zone names, which an attacker could abuse by
+	// piggybacking unsigned foreign RRsets onto a signed DNAME
+	// answer. By validating the outer response alone and merging the
+	// target data afterward, verifyRRSIG sees only the signer zone's
+	// records and the combined AD still reflects both sides.
+	var targetMsg *dns.Msg
 	if msg, ok := r.checkDname(ctx, resp); ok {
-		// DNAME synthesis: resolve target and append answers
-		resp.Answer = append(resp.Answer, msg.Answer...)
-		resp.Rcode = msg.Rcode
-
-		if len(msg.Answer) == 0 {
-			return r.authority(ctx, req, resp, parentdsrr, req.Question[0].Qtype, zone)
-		}
+		targetMsg = msg
 	}
 
 	if !req.CheckingDisabled {
-		// Validate DNSSEC signatures when CD bit is not set
-		var err error
 		q := req.Question[0]
 
-		signer, signerFound := r.findRRSIG(resp, q.Name, true)
-		if !signerFound {
-			// No RRSIGs in the response. Determine whether missing signatures
-			// are acceptable (insecure delegation) or a DNSSEC failure (signed zone).
-			if len(parentdsrr) > 0 {
-				if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
-					zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errNoSignatures.Error())
-					return nil, errNoSignatures
-				}
+		signers := r.findRRSIGSigners(resp, q.Name, true)
+		if len(signers) == 0 {
+			// No RRSIGs in the response. Determine whether missing
+			// signatures are acceptable (insecure delegation) or a
+			// real DNSSEC failure (signed zone).
+			if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
+				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errNoSignatures.Error())
+				return nil, errNoSignatures
 			}
 		} else {
-			parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
-			if err != nil {
-				return nil, err
-			}
-
-			if len(parentdsrr) > 0 {
-				// Verify entire DNSSEC chain from parent DS to answer
-				resp.AuthenticatedData, err = r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, parentdsrr)
-				if err != nil {
-					zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", err.Error())
-					return nil, err
+			origDSRR := parentdsrr
+			var lastErr error
+			settled := false
+			for _, signer := range signers {
+				if err := validateSigner(signer, q.Name); err != nil {
+					lastErr = err
+					continue
 				}
+				candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if len(candidateDSRR) == 0 {
+					if r.isZoneSecure(ctx, q.Name, origDSRR, zone) {
+						lastErr = errDSRecords
+						continue
+					}
+					// Genuinely insecure for this candidate; accept
+					// without AD and stop trying alternates.
+					settled = true
+					break
+				}
+				ok, verr := r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, candidateDSRR)
+				if verr != nil {
+					lastErr = verr
+					continue
+				}
+				resp.AuthenticatedData = ok
+				settled = true
+				break
 			}
+			if !settled {
+				if lastErr == nil {
+					lastErr = errNoSignatures
+				}
+				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", lastErr.Error())
+				return nil, lastErr
+			}
+		}
+	}
+
+	if targetMsg != nil {
+		// Splice the target response into resp *after* DNSSEC check.
+		// The internal recursion already validated the target zone
+		// and set msg.AuthenticatedData accordingly; AND it into the
+		// outer AD so the combined response is authentic only if
+		// both sides are.
+		resp.Answer = append(resp.Answer, targetMsg.Answer...)
+		resp.Rcode = targetMsg.Rcode
+		if len(targetMsg.Answer) == 0 {
+			// RFC 6672 §5.3.4: carry the target zone's SOA and
+			// NSEC/NSEC3 proof so the client sees the denial
+			// records the internal recursion already validated.
+			resp.Ns = append(resp.Ns, targetMsg.Ns...)
+		}
+		if !req.CheckingDisabled {
+			resp.AuthenticatedData = resp.AuthenticatedData && targetMsg.AuthenticatedData
+		}
+		if len(targetMsg.Answer) == 0 {
+			// Preserve Ns for the denial proof; clearAdditional
+			// would wipe it.
+			return resp, nil
 		}
 	}
 
@@ -712,77 +752,111 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 
 func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, otype uint16, zone string) (*dns.Msg, error) {
 	if !req.CheckingDisabled {
-		var err error
 		q := req.Question[0]
 
-		signer, signerFound := r.findRRSIG(resp, q.Name, false)
-		if !signerFound {
-			if len(parentdsrr) > 0 {
-				if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
-					err = errNoSignatures
-					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-					return nil, err
-				}
-			}
-		} else {
-			parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
-			if err != nil {
+		signers := r.findRRSIGSigners(resp, q.Name, false)
+		if len(signers) == 0 {
+			if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
+				err := errNoSignatures
+				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
 			}
-
-			if len(parentdsrr) > 0 {
-				ok, err := r.verifyDNSSEC(ctx, signer, q.Name, resp, parentdsrr)
-				if err != nil {
-					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-					return nil, err
+		} else {
+			origDSRR := parentdsrr
+			var (
+				lastErr      error
+				settled      bool
+				verified     bool
+				chosenSigner string
+			)
+			for _, signer := range signers {
+				if err := validateSigner(signer, q.Name); err != nil {
+					lastErr = err
+					continue
 				}
+				candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if len(candidateDSRR) == 0 {
+					if r.isZoneSecure(ctx, q.Name, origDSRR, zone) {
+						lastErr = errDSRecords
+						continue
+					}
+					// Insecure — accept without AD, stop trying alternates.
+					settled = true
+					break
+				}
+				ok, verr := r.verifyDNSSEC(ctx, signer, q.Name, resp, candidateDSRR)
+				if verr != nil {
+					lastErr = verr
+					continue
+				}
+				verified = ok
+				chosenSigner = signer
+				settled = true
+				break
+			}
+			if !settled {
+				if lastErr == nil {
+					lastErr = errNoSignatures
+				}
+				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", lastErr.Error())
+				return nil, lastErr
+			}
 
-				if ok && resp.Rcode == dns.RcodeNameError {
-					nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-					if len(nsec3Set) > 0 {
-						err = verifyNameError(resp, nsec3Set) // prove non-existence via NSEC3
-						if err != nil {
-							zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-							return nil, err
-						}
+			if verified {
+				// Require denial-of-existence proof for every
+				// negative response under a signed zone. Without
+				// it, a forged SOA+RRSIG would be enough to set
+				// the AD bit, since verifyDNSSEC only proves the
+				// authority section is signed — not that the
+				// queried name/type really doesn't exist.
+				//
+				// Filter NSEC/NSEC3 records to the validated signer
+				// zone: verifyRRSIG only checked signatures for in-
+				// zone records, so out-of-zone NSECs could otherwise
+				// satisfy canonical-coverage checks here without
+				// having been cryptographically authenticated.
+				nsec3Set := filterToZone(extractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner)
+				nsecSet := filterToZone(extractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner)
+				isNegative := resp.Rcode == dns.RcodeNameError ||
+					(resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0)
 
-					} else {
-						// Try regular NSEC verification
-						nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
-						if len(nsecSet) > 0 {
-							err = verifyNameErrorNSEC(resp, nsecSet)
-							if err != nil {
-								zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+				if isNegative {
+					switch {
+					case len(nsec3Set) > 0:
+						if resp.Rcode == dns.RcodeNameError {
+							if err := verifyNameError(resp, nsec3Set); err != nil {
+								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+								return nil, err
+							}
+						} else {
+							if err := verifyNODATA(resp, nsec3Set); err != nil {
+								zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 								return nil, err
 							}
 						}
-					}
-				}
-
-				if ok && q.Qtype == dns.TypeDS {
-					nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3)
-					if len(nsec3Set) > 0 {
-						err = verifyNODATA(resp, nsec3Set)
-						if err != nil {
-							zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
-							return nil, err
-						}
-
-					} else {
-						// Try regular NSEC verification for NODATA
-						nsecSet := extractRRSet(resp.Ns, "", dns.TypeNSEC)
-						if len(nsecSet) > 0 {
-							err = verifyNODATANSEC(resp, nsecSet)
-							if err != nil {
+					case len(nsecSet) > 0:
+						if resp.Rcode == dns.RcodeNameError {
+							if err := verifyNameErrorNSEC(resp, nsecSet); err != nil {
+								zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+								return nil, err
+							}
+						} else {
+							if err := verifyNODATANSEC(resp, nsecSet); err != nil {
 								zlog.Warn("NSEC verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 								return nil, err
 							}
 						}
+					default:
+						zlog.Warn("Negative answer missing NSEC/NSEC3 denial proof", "query", formatQuestion(q), "rcode", dns.RcodeToString[resp.Rcode])
+						return nil, errNSECMissingCoverage
 					}
 				}
 
-				// If DNSSEC verification passed and NSEC/NSEC3 verification passed, set AD flag
-				if ok && !req.CheckingDisabled {
+				if !req.CheckingDisabled {
 					resp.AuthenticatedData = true
 				}
 			}
@@ -1342,38 +1416,67 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	return r.searchCache(q, cd, origin) // recursive walk up DNS tree
 }
 
-func (r *Resolver) findRRSIG(resp *dns.Msg, qname string, inAnswer bool) (signer string, signerFound bool) {
+// findRRSIGSigners returns the distinct SignerName values from RRSIGs
+// in the chosen section that cover an RRset actually present in that
+// section. Returning all candidates (ordered by label count, most
+// specific first) lets callers retry validation with each signer — RFC
+// 6840 §5.11 says extra signatures from unknown keys must be
+// disregarded, and an attacker may insert a garbage RRSIG with a
+// plausible ancestor SignerName ahead of the legitimate one. Picking
+// only the first signer would let that injected signature steer
+// findDS() to the wrong zone and collapse a valid response into bogus.
+func (r *Resolver) findRRSIGSigners(resp *dns.Msg, qname string, inAnswer bool) []string {
 	rrset := resp.Ns
 	if inAnswer {
 		rrset = resp.Answer
 	}
 
-	for _, r := range rrset {
-		var sigrec *dns.RRSIG
-		var dnameCover bool
-
-		if sig, ok := r.(*dns.RRSIG); ok {
-			sigrec = sig
-			if sigrec.TypeCovered == dns.TypeDNAME {
-				dnameCover = true
-			}
-		}
-
-		if inAnswer && !strings.EqualFold(r.Header().Name, qname) && !dnameCover {
+	type rrKey struct {
+		name  string
+		rtype uint16
+	}
+	have := make(map[rrKey]bool)
+	for _, rr := range rrset {
+		if rr.Header().Rrtype == dns.TypeRRSIG {
 			continue
 		}
-
-		if sigrec != nil {
-			signer = sigrec.SignerName
-			signerFound = true
-			break
-		}
+		have[rrKey{strings.ToLower(rr.Header().Name), rr.Header().Rrtype}] = true
 	}
 
-	return
+	seen := make(map[string]bool)
+	var signers []string
+	for _, rr := range rrset {
+		sig, ok := rr.(*dns.RRSIG)
+		if !ok {
+			continue
+		}
+		// Drop RRSIGs that don't correspond to any record in the
+		// section: a lone "garbage" RRSIG carries no useful signer.
+		if !have[rrKey{strings.ToLower(sig.Header().Name), sig.TypeCovered}] {
+			continue
+		}
+		dnameCover := sig.TypeCovered == dns.TypeDNAME
+		if inAnswer && !strings.EqualFold(sig.Header().Name, qname) && !dnameCover {
+			continue
+		}
+		key := strings.ToLower(dns.Fqdn(sig.SignerName))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		signers = append(signers, sig.SignerName)
+	}
+
+	// Prefer the most specific (longest-labeled) signer first so the
+	// legitimate zone apex is tried ahead of any shallower ancestor an
+	// attacker might have injected.
+	sort.Slice(signers, func(i, j int) bool {
+		return dns.CountLabel(signers[i]) > dns.CountLabel(signers[j])
+	})
+	return signers
 }
 
-func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr []dns.RR) (dsset []dns.RR, err error) {
+func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr []dns.RR, cd bool) (dsset []dns.RR, err error) {
 	if signer == rootzone && len(parentdsrr) == 0 {
 		parentdsrr = r.dsRRFromRootKeys()
 	} else if len(parentdsrr) > 0 {
@@ -1388,7 +1491,7 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 			for len(nsplit)-n > 0 {
 				candidate := dns.Fqdn(strings.Join(nsplit[len(nsplit)-n-1:], "."))
 
-				dsResp, err := r.lookupDS(ctx, candidate)
+				dsResp, err := r.lookupDS(ctx, candidate, cd)
 				if err != nil {
 					return nil, err
 				}
@@ -1403,7 +1506,7 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 
 		} else if dsname != signer {
 			// try lookup DS records
-			dsResp, err := r.lookupDS(ctx, signer)
+			dsResp, err := r.lookupDS(ctx, signer, cd)
 			if err != nil {
 				return nil, err
 			}
@@ -1434,7 +1537,10 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 // determine whether an insecure delegation exists between the ancestor and
 // the zone.
 func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentdsrr []dns.RR, zone string) bool {
-	if len(parentdsrr) == 0 {
+	if !hasSupportedDS(parentdsrr) {
+		// Either no DS records, or every DS uses a digest type this
+		// validator cannot verify. RFC 6840 §5.2 treats such zones as
+		// if DNSSEC were absent, so missing RRSIGs are acceptable.
 		return false
 	}
 
@@ -1461,22 +1567,42 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentdsrr []
 		}
 	}
 
-	parentdsrr, err := r.findDS(ctx, "", probeName, parentdsrr)
+	// isZoneSecure is only reached from CD=0 validation paths, so
+	// propagate cd=false into the internal DS walk here.
+	parentdsrr, err := r.findDS(ctx, "", probeName, parentdsrr, false)
 	if err != nil {
 		// On lookup error, fail closed (assume signed) for safety.
 		zlog.Debug("DS lookup failed during isZoneSecure, failing closed", "qname", qname, "error", err.Error())
 		return true
 	}
 
-	return len(parentdsrr) > 0
+	return hasSupportedDS(parentdsrr)
 }
 
-func (r *Resolver) lookupDS(ctx context.Context, qname string) (msg *dns.Msg, err error) {
+// hasSupportedDS reports whether dsset contains at least one DS record
+// that this validator can actually use — both its digest type and the
+// DNSKEY algorithm it advertises must be supported. An unsupported-only
+// DS set (GOST digest, ECCGOST algorithm, etc.) is treated as "no
+// usable DS" per RFC 6840 §5.2, so missing RRSIGs for the child zone
+// are tolerated as insecure data rather than flagged bogus.
+func hasSupportedDS(dsset []dns.RR) bool {
+	for _, rr := range dsset {
+		if ds, ok := rr.(*dns.DS); ok && isSupportedDS(ds) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dns.Msg, err error) {
 	zlog.Debug("Lookup DS record", "qname", qname)
 
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
 	dsReq.SetEdns0(util.DefaultMsgSize, true)
+	// Inherit the outer client's CD bit so a CD=1 query doesn't have
+	// its internal DS chain walk SERVFAIL on bogus parent-side DS data.
+	dsReq.CheckingDisabled = cd
 
 	dsres, err := util.ExchangeInternal(ctx, dsReq)
 	if err != nil {
@@ -1597,6 +1723,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv4[name] = addrs
 
 		authservers.Lock()
+		before := len(authservers.List)
 	addrsloop:
 		for _, addr := range addrs {
 			raddr := net.JoinHostPort(addr, "53")
@@ -1606,6 +1733,12 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 				}
 			}
 			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
+		}
+		if len(authservers.List) != before {
+			// Invalidate *before* releasing the write lock: after
+			// Unlock() a reader could observe the mutated List with
+			// fpValid still true and get a stale cached hash.
+			authservers.InvalidateFingerprint()
 		}
 		authservers.Unlock()
 		r.addIPv4Cache(nsipv4)
@@ -1650,6 +1783,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv6[name] = addrs
 
 		authservers.Lock()
+		before := len(authservers.List)
 	addrsloop:
 		for _, addr := range addrs {
 			raddr := net.JoinHostPort(addr, "53")
@@ -1659,6 +1793,9 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 				}
 			}
 			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
+		}
+		if len(authservers.List) != before {
+			authservers.InvalidateFingerprint()
 		}
 		authservers.Unlock()
 		r.addIPv6Cache(nsipv6)
@@ -1686,12 +1823,12 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	r.RLock()
 	defer r.RUnlock()
 
-	keys := make(map[uint16]*dns.DNSKEY)
+	keys := make(map[uint16][]*dns.DNSKEY)
 	for _, rr := range r.rootkeys {
 		dnskey := rr.(*dns.DNSKEY)
-		tag := dnskey.KeyTag()
 		if dnskey.Flags == 257 {
-			keys[tag] = dnskey
+			tag := dnskey.KeyTag()
+			keys[tag] = append(keys[tag], dnskey)
 		}
 	}
 
@@ -1714,7 +1851,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 		zlog.Fatal("Root zone DS not verified")
 	}
 
-	if _, err := verifyRRSIG(keys, msg); err != nil {
+	if _, err := verifyRRSIG(rootzone, keys, msg); err != nil {
 		zlog.Fatal("Root zone keys not verified")
 	}
 
@@ -1746,13 +1883,27 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		msg = resp
 	}
 
-	keys := make(map[uint16]*dns.DNSKEY)
+	// RFC 4034 Appendix B.1: key tags are *not* unique. A colliding tag
+	// would silently overwrite a matching key in a single-valued map
+	// and turn a valid DS/RRSIG chain into a bogus result. Keep every
+	// DNSKEY whose tag matches and let verify paths try them all.
+	//
+	// Only keep DNSKEYs whose owner matches the signer zone: an
+	// attacker can append a same-tag clone with a different owner to
+	// the DNSKEY response and, if it sorted first in map iteration,
+	// the old signer-zone derivation treated its owner as the signer
+	// zone and rejected legitimate in-zone RRsets as foreign.
+	keys := make(map[uint16][]*dns.DNSKEY)
+	signerLower := strings.ToLower(dns.Fqdn(signer))
 	for _, a := range msg.Answer {
 		if a.Header().Rrtype == dns.TypeDNSKEY {
 			dnskey := a.(*dns.DNSKEY)
-			tag := dnskey.KeyTag()
+			if !strings.EqualFold(dnskey.Header().Name, signerLower) {
+				continue
+			}
 			if dnskey.Flags == 256 || dnskey.Flags == 257 {
-				keys[tag] = dnskey
+				tag := dnskey.KeyTag()
+				keys[tag] = append(keys[tag], dnskey)
 			}
 		}
 	}
@@ -1765,10 +1916,13 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, fmt.Errorf("DS RR set empty")
 	}
 
-	unsupportedDigest, err := verifyDS(keys, parentdsRR)
+	unsupportedOnly, err := verifyDS(keys, parentdsRR)
 	if err != nil {
-		zlog.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported digest", unsupportedDigest)
-		if unsupportedDigest {
+		zlog.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported only", unsupportedOnly)
+		if unsupportedOnly {
+			// Every DS digest was unsupported — RFC 6840 §5.2
+			// requires treating the zone as if DNSSEC were absent
+			// (insecure), not bogus.
 			return false, nil
 		}
 		return
@@ -1779,7 +1933,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, nil
 	}
 
-	if ok, err = verifyRRSIG(keys, resp); err != nil {
+	if ok, err = verifyRRSIG(signer, keys, resp); err != nil {
 		return
 	}
 
@@ -1814,34 +1968,12 @@ func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
 }
 
 func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
-	var list1, list2 []string
-
-	s1.RLock()
-	for _, s := range s1.List {
-		list1 = append(list1, s.Addr)
-	}
-	s1.RUnlock()
-
-	s2.RLock()
-	for _, s := range s2.List {
-		list2 = append(list2, s.Addr)
-	}
-	s2.RUnlock()
-
-	if len(list1) != len(list2) {
-		return false
-	}
-
-	sort.Strings(list1)
-	sort.Strings(list2)
-
-	for i, v := range list1 {
-		if list2[i] != v {
-			return false
-		}
-	}
-
-	return true
+	// Cheap probable-equality check: identical cached fingerprints
+	// imply identical sorted address sets. False positives are
+	// statistically negligible for 64-bit FNV over a handful of
+	// addresses, and equalServers is only used for loop detection,
+	// not a correctness invariant.
+	return s1.Fingerprint() == s2.Fingerprint()
 }
 
 func (r *Resolver) checkPriming() {
@@ -1927,6 +2059,7 @@ func (r *Resolver) checkPriming() {
 		r.rootservers.Lock()
 		r.rootservers.List = tmpservers.List
 		r.rootservers.Checked = true
+		r.rootservers.InvalidateFingerprint()
 		r.rootservers.Unlock()
 		return
 	}
@@ -2145,52 +2278,152 @@ func (r *Resolver) processDelegation(ctx context.Context, rc *resolveContext, re
 
 // validateDelegation performs DNSSEC validation for delegation.
 func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q dns.Question, parentdsrr []dns.RR) ([]dns.RR, error) {
-	signer, signerFound := r.findRRSIG(resp, q.Name, false)
-
-	if !signerFound && len(parentdsrr) > 0 && req.Question[0].Qtype == dns.TypeDS {
-		zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
-		return nil, errDSRecords
-	}
-
-	var err error
-	parentdsrr, err = r.findDS(ctx, signer, q.Name, parentdsrr)
-	if err != nil {
-		return nil, err
-	}
-
-	if !signerFound && len(parentdsrr) > 0 {
-		zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
-		return nil, errDSRecords
-	}
-
-	if len(parentdsrr) > 0 && !req.CheckingDisabled {
-		if _, err := r.verifyDNSSEC(ctx, signer, q.Name, resp, parentdsrr); err != nil {
-			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "signer", signer, "signed", q.Name, "error", err.Error())
+	if req.CheckingDisabled {
+		// CD=1: the client has opted out of DNSSEC validation.
+		// answer() and authority() already wrap their enforcement in
+		// this same guard — delegation handling must match, otherwise
+		// a CD=1 DS query under a signed parent SERVFAILs instead of
+		// simply resolving. Still walk the DS chain so downstream
+		// resolution has the child's DS available if validation is
+		// later requested (e.g. by a different request on a shared
+		// cache). Propagate CD into the internal DS lookups as well
+		// so the chain walk itself inherits the opt-out.
+		newDSRR, err := r.findDS(ctx, "", q.Name, parentdsrr, true)
+		if err != nil {
 			return nil, err
 		}
-
-		parentdsrr = extractRRSet(resp.Ns, q.Name, dns.TypeDS)
-
-		// Check NSEC3
-		if nsec3Set := extractRRSet(resp.Ns, "", dns.TypeNSEC3); len(nsec3Set) > 0 {
-			if err := verifyDelegation(q.Name, nsec3Set); err != nil {
-				zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
-				return nil, err
-			}
-			return []dns.RR{}, nil
-		}
-
-		// Check NSEC
-		if nsecSet := extractRRSet(resp.Ns, q.Name, dns.TypeNSEC); len(nsecSet) > 0 {
-			if !verifyNSEC(q, nsecSet) {
-				zlog.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", "NSEC verify failed")
-				return nil, fmt.Errorf("NSEC verify failed")
-			}
-			return []dns.RR{}, nil
-		}
+		return newDSRR, nil
 	}
 
-	return parentdsrr, nil
+	signers := r.findRRSIGSigners(resp, q.Name, false)
+	signerFound := len(signers) > 0
+
+	if !signerFound && hasSupportedDS(parentdsrr) && req.Question[0].Qtype == dns.TypeDS {
+		// A DS query under a signed parent must come back signed.
+		// Guard with hasSupportedDS so parent chains of only
+		// unsupported DS records (unknown digest or DNSKEY algorithm)
+		// fall through to the insecure treatment below instead of
+		// SERVFAIL-ing on data the validator can't use anyway.
+		zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
+		return nil, errDSRecords
+	}
+
+	origDSRR := parentdsrr
+	if !signerFound {
+		// No RRSIGs in the referral. Fall through the DS-lookup path
+		// with an empty signer so findDS still attempts to walk the
+		// parent chain; this matches the pre-refactor behaviour.
+		newDSRR, err := r.findDS(ctx, "", q.Name, parentdsrr, false)
+		if err != nil {
+			return nil, err
+		}
+		parentdsrr = newDSRR
+		if hasSupportedDS(parentdsrr) {
+			// Parent chain declares the child is signed with usable DS
+			// but no RRSIG is present — bogus. Every DS unsupported is
+			// insecure per RFC 6840 §5.2 and falls through below.
+			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
+			return nil, errDSRecords
+		}
+		return parentdsrr, nil
+	}
+
+	// Try each candidate signer (most specific first) until one
+	// validates, matching the answer()/authority() pattern. This
+	// prevents an injected RRSIG with a plausible ancestor SignerName
+	// from steering the DS lookup to the wrong zone.
+	var (
+		lastErr      error
+		settled      bool
+		childDS      []dns.RR
+		verified     bool
+		finalDS      []dns.RR
+		chosenSigner string
+	)
+	for _, signer := range signers {
+		if err := validateSigner(signer, q.Name); err != nil {
+			lastErr = err
+			continue
+		}
+		candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(candidateDSRR) == 0 {
+			if r.isZoneSecure(ctx, q.Name, origDSRR, "") {
+				lastErr = errDSRecords
+				continue
+			}
+			// Insecure for this candidate.
+			finalDS = candidateDSRR
+			settled = true
+			break
+		}
+		if !hasSupportedDS(candidateDSRR) {
+			// Nothing the validator can verify — treat as insecure.
+			finalDS = candidateDSRR
+			settled = true
+			break
+		}
+		ok, verr := r.verifyDNSSEC(ctx, signer, q.Name, resp, candidateDSRR)
+		if verr != nil {
+			lastErr = verr
+			continue
+		}
+		if !ok {
+			// Every DS in the chain used an unsupported digest — RFC
+			// 6840 §5.2 says treat the child as insecure.
+			finalDS = []dns.RR{}
+			settled = true
+			break
+		}
+		childDS = extractRRSet(resp.Ns, q.Name, dns.TypeDS)
+		finalDS = candidateDSRR
+		chosenSigner = signer
+		verified = true
+		settled = true
+		break
+	}
+	if !settled {
+		if lastErr == nil {
+			lastErr = errDSRecords
+		}
+		return nil, lastErr
+	}
+	if !verified {
+		return finalDS, nil
+	}
+
+	// A referral must carry either a signed DS set for the child
+	// (secure delegation) or a signed NSEC/NSEC3 record proving the DS
+	// does not exist (insecure delegation). Neither present under a
+	// signed parent is a downgrade attempt and must fail closed.
+	if len(childDS) > 0 {
+		return childDS, nil
+	}
+
+	// Zone-filter the denial proofs to the validated signer so an
+	// attacker-injected NSEC/NSEC3 from an unrelated sibling zone
+	// cannot structurally satisfy the delegation check.
+	if nsec3Set := filterToZone(extractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner); len(nsec3Set) > 0 {
+		if err := verifyDelegation(q.Name, nsec3Set); err != nil {
+			zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+			return nil, err
+		}
+		return []dns.RR{}, nil
+	}
+
+	if nsecSet := filterToZone(extractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner); len(nsecSet) > 0 {
+		if err := verifyDelegationNSEC(q.Name, nsecSet); err != nil {
+			zlog.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+			return nil, err
+		}
+		return []dns.RR{}, nil
+	}
+
+	zlog.Warn("Delegation missing DS and NSEC/NSEC3 proof", "query", formatQuestion(q))
+	return nil, errNSECMissingCoverage
 }
 
 // resolveWithCachedNameservers handles resolution with cached nameservers.
