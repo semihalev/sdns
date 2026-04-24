@@ -26,7 +26,33 @@ const (
 	name   = "cache"
 	maxTTL = util.MaxCacheTTL
 	minTTL = util.MinCacheTTL
+
+	// maxCnameChaseDepth bounds how many nested CNAME-chase
+	// invocations may happen for a single client query. The
+	// additionalAnswer helper itself walks a chain of up to 10
+	// hops per invocation; this counter bounds the number of
+	// recursive invocations (one per nested Queryer.Query that
+	// happens to return a CNAME whose target is also chased).
+	// Replaces the previous !w.Internal() guard, which allowed
+	// at most one level of chasing.
+	maxCnameChaseDepth = 10
 )
+
+// cnameChaseDepthKeyType tags ctx with the current CNAME-chase
+// depth. Sentinel pointer type so interface boxing doesn't allocate
+// on each context.Value lookup.
+type cnameChaseDepthKeyType struct{}
+
+var cnameChaseDepthKey = &cnameChaseDepthKeyType{}
+
+func cnameChaseDepth(ctx context.Context) int {
+	v, _ := ctx.Value(cnameChaseDepthKey).(int)
+	return v
+}
+
+func withCnameChaseDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, cnameChaseDepthKey, depth)
+}
 
 // Cache is the cache implementation.
 type Cache struct {
@@ -274,9 +300,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw := c.writerPool.Get().(*ResponseWriter)
 	rw.ResponseWriter = w
 	rw.cache = c
+	// Stash the active ctx so WriteMsg can read the CNAME-chase
+	// depth counter and thread it into additionalAnswer's
+	// sub-query. The field is cleared on release so a pooled
+	// writer doesn't leak a ctx reference between uses.
+	rw.ctx = ctx
 	ch.Writer = rw
 	defer func() {
 		ch.Writer = w
+		rw.ctx = nil
 		c.writerPool.Put(rw)
 	}()
 
@@ -335,9 +367,14 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		return false
 	}
 
-	// Resolve CNAME chains if needed (matching V1 behavior)
-	if !w.Internal() {
-		msg = c.additionalAnswer(ctx, msg)
+	// Resolve CNAME chains if needed (matching V1 behavior).
+	// The depth counter bounds nested chases across the Queryer
+	// boundary: each additionalAnswer invocation increments the
+	// counter so an inner cache hit on a further CNAME stops
+	// chasing once the chain passes maxCnameChaseDepth. Replaces
+	// the pre-Phase-3d !w.Internal() guard.
+	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
+		msg = c.additionalAnswer(withCnameChaseDepth(ctx, depth+1), msg)
 	}
 
 	_ = w.WriteMsg(msg)
@@ -442,6 +479,11 @@ func (c *Cache) Stats() map[string]any {
 type ResponseWriter struct {
 	middleware.ResponseWriter
 	cache *Cache
+	// ctx carries the active request context so WriteMsg can read
+	// the CNAME-chase depth counter and thread it into
+	// additionalAnswer's sub-query. Set by Cache.ServeDNS when the
+	// writer is pulled from the pool; cleared on defer.
+	ctx context.Context
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ResponseWriter interface.
@@ -464,9 +506,18 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
 	w.cache.store.SetFromResponseWithKey(key, res)
 
-	// Resolve CNAME chains before sending to client (matching V1 behavior)
-	if !w.Internal() {
-		res = w.cache.additionalAnswer(context.Background(), res)
+	// Resolve CNAME chains before sending to client (matching V1
+	// behavior). Depth counter replaces the pre-Phase-3d
+	// !w.Internal() guard; the active request ctx was stashed on
+	// this writer by Cache.ServeDNS so WriteMsg can read it
+	// without the caller plumbing ctx through the
+	// dns.ResponseWriter interface.
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
+		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
 	}
 
 	return w.ResponseWriter.WriteMsg(res)
