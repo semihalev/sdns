@@ -86,10 +86,9 @@ type Resolver struct {
 //
 // requestID is the outer client request's dns.Msg.Id, used by newDialer to
 // pick a stable outbound IP per query. It is sourced from
-// contextKeyRequestID when present (so ExchangeInternal sub-queries inherit
-// the outer client's spread), with req.Id as a fallback for direct callers.
-// The contextKeyRequestID channel goes away when Queryer replaces
-// ExchangeInternal; at that point requestID becomes the sole source.
+// contextKeyRequestID when present (so Queryer-dispatched sub-queries
+// inherit the outer client's spread through the shared ctx), with req.Id
+// as a fallback for direct callers.
 type resolveState struct {
 	req        *dns.Msg
 	servers    *authcache.AuthServers
@@ -685,7 +684,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 	}
 
 	// Cap the DNAME alias chain. Each follow-up goes through
-	// ExchangeInternal which spawns a fresh resolveState and
+	// Queryer.Query which spawns a fresh resolveState and
 	// resets the per-resolve depth counter, so without a
 	// ctx-carried counter two zones that cross-DNAME each other
 	// loop until the request deadline fires.
@@ -1397,9 +1396,10 @@ func (r *Resolver) newDialer(ctx context.Context, rs *resolveState, proto string
 	// Outbound IP selection uses the outer client's request ID so all
 	// upstream queries for one client query land on the same configured
 	// IP. The id rides on resolveState; for sub-queries dispatched via
-	// ExchangeInternal the outer id is propagated through
-	// contextKeyRequestID and re-read in Resolve when building the
-	// child resolveState.
+	// Queryer.Query the outer id is propagated through
+	// contextKeyRequestID (set by DNSHandler.ServeDNS and preserved
+	// across sub-pipeline re-entry) and re-read in Resolve when
+	// building the child resolveState.
 	reqid := int(rs.requestID)
 
 	switch version {

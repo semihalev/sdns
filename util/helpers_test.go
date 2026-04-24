@@ -1,7 +1,6 @@
 package util
 
 import (
-	"encoding/base64"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -364,98 +363,6 @@ func TestClearDNSSEC(t *testing.T) {
 
 			assert.Equal(t, tt.expectedAnswer, len(result.Answer))
 			assert.Equal(t, tt.expectedNs, len(result.Ns))
-		})
-	}
-}
-
-func TestParsePurgeQuestion(t *testing.T) {
-	tests := []struct {
-		name          string
-		req           *dns.Msg
-		expectedQname string
-		expectedQtype uint16
-		expectedOk    bool
-	}{
-		{
-			name: "Valid A record purge",
-			req: func() *dns.Msg {
-				m := new(dns.Msg)
-				encoded := base64.StdEncoding.EncodeToString([]byte("A:example.com"))
-				m.SetQuestion(encoded+".", dns.TypeNULL)
-				return m
-			}(),
-			expectedQname: "example.com",
-			expectedQtype: dns.TypeA,
-			expectedOk:    true,
-		},
-		{
-			name: "Valid AAAA record purge",
-			req: func() *dns.Msg {
-				m := new(dns.Msg)
-				encoded := base64.StdEncoding.EncodeToString([]byte("AAAA:example.com"))
-				m.SetQuestion(encoded+".", dns.TypeNULL)
-				return m
-			}(),
-			expectedQname: "example.com",
-			expectedQtype: dns.TypeAAAA,
-			expectedOk:    true,
-		},
-		{
-			name: "Invalid base64",
-			req: func() *dns.Msg {
-				m := new(dns.Msg)
-				m.SetQuestion("!!!invalid!!!.", dns.TypeNULL)
-				return m
-			}(),
-			expectedQname: "",
-			expectedQtype: 0,
-			expectedOk:    false,
-		},
-		{
-			name: "Invalid format (no colon)",
-			req: func() *dns.Msg {
-				m := new(dns.Msg)
-				encoded := base64.StdEncoding.EncodeToString([]byte("Aexample.com"))
-				m.SetQuestion(encoded+".", dns.TypeNULL)
-				return m
-			}(),
-			expectedQname: "",
-			expectedQtype: 0,
-			expectedOk:    false,
-		},
-		{
-			name: "Invalid record type",
-			req: func() *dns.Msg {
-				m := new(dns.Msg)
-				encoded := base64.StdEncoding.EncodeToString([]byte("INVALID:example.com"))
-				m.SetQuestion(encoded+".", dns.TypeNULL)
-				return m
-			}(),
-			expectedQname: "",
-			expectedQtype: 0,
-			expectedOk:    false,
-		},
-		{
-			name: "Empty question",
-			req: func() *dns.Msg {
-				m := new(dns.Msg)
-				return m
-			}(),
-			expectedQname: "",
-			expectedQtype: 0,
-			expectedOk:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			qname, qtype, ok := ParsePurgeQuestion(tt.req)
-
-			assert.Equal(t, tt.expectedOk, ok)
-			if ok {
-				assert.Equal(t, tt.expectedQname, qname)
-				assert.Equal(t, tt.expectedQtype, qtype)
-			}
 		})
 	}
 }

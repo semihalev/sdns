@@ -6,18 +6,17 @@ package middleware
 // the resolver or forwarder) with client-only guards filtered out
 // (metrics, dnstap, accesslist, ratelimit, reflex, accesslog).
 //
-// It replaces the top-of-chain re-entry behaviour of
-// util.ExchangeInternal with a deliberately narrower sub-pipeline,
-// driven by a BufferWriter rather than a sentinel-address mock.
-// The sub-pipelines are constructed in Setup and installed on
-// middlewares via QueryerSetter / PrefetchQueryerSetter.
+// Sub-pipelines are constructed in Setup and installed on
+// middlewares via QueryerSetter / PrefetchQueryerSetter. A
+// BufferWriter captures the downstream reply in memory — it
+// presents as TCP so edns.ServeDNS picks the MaxMsgSize buffer
+// instead of truncating internal replies at 512 bytes.
 //
 // DNS-layer outcomes (SERVFAIL, REFUSED, NXDOMAIN, etc.) come back
 // as a *dns.Msg. ErrNoResponse is returned only when the
-// sub-pipeline completes without any middleware calling WriteMsg —
-// mirroring util.ExchangeInternal's "no replied any message" so
-// existing callers can distinguish wire-level failures from
-// executor failures.
+// sub-pipeline completes without any middleware calling WriteMsg,
+// letting callers distinguish wire-level failures from executor
+// failures.
 
 import (
 	"context"
@@ -39,13 +38,10 @@ type Queryer interface {
 var ErrNoResponse = errors.New("queryer: no response written")
 
 // ErrMaxRecursion signals that a Queryer.Query call nested past
-// the recursion bound. The old middleware/loop package counted
-// per-(qname, qtype) re-entries through util.ExchangeInternal and
-// returned SERVFAIL after maxLoops. With loop retired and
-// ExchangeInternal routed through the sub-pipeline, built-in
-// paths (CNAME/DNAME/resolver-depth) still have their own caps,
-// but a plugin middleware that calls util.ExchangeInternal from
-// its own ServeDNS has no other generic bound.
+// the recursion bound. Built-in paths (CNAME/DNAME/resolver
+// depth) have their own caps; this is the generic safety net for
+// plugin middleware that dispatches the queryer from inside its
+// own ServeDNS and could otherwise loop forever.
 var ErrMaxRecursion = errors.New("queryer: max recursion depth exceeded")
 
 // maxQueryerRecursion bounds the number of nested Queryer.Query

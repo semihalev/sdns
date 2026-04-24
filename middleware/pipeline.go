@@ -5,7 +5,6 @@ import (
 	"sync/atomic"
 
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -13,9 +12,8 @@ import (
 // Registry.Build. Handler fields are set at construction time and
 // never mutated, so every read is safe without synchronization.
 // chainPool is internally mutable (sync.Pool's contract) but serves
-// the same Pipeline across all callers — pooling *Chain is the
-// per-internal-query alloc-saver that the pre-retirement
-// util.ExchangeInternal provided.
+// the same Pipeline across all callers — pooling *Chain keeps
+// per-internal-query allocations off the hot path for Queryer.
 type Pipeline struct {
 	handlers  []Handler
 	byName    map[string]Handler
@@ -260,12 +258,6 @@ func (p *Pipeline) autoWire() {
 			}
 		}
 	}
-
-	// Back the deprecated util.ExchangeInternal with the same
-	// queryer. Plugins that still call the old API transparently
-	// pick up the sub-pipeline semantics; the wrapper is flagged
-	// for next-major removal.
-	util.SetInternalExchanger(q.Query)
 }
 
 // Ready reports whether Setup has completed.

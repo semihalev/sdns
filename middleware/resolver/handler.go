@@ -105,26 +105,6 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return h.nsStats(req)
 	}
 
-	// CHAOS NULL queries trigger cache purge for specific domains.
-	// Back-compat path for plugins that drive purges via the
-	// deprecated ExchangeInternal + base64 CHAOS-NULL question;
-	// sdns's own api endpoint switched to the Purger interface in
-	// Phase 5. Removed in next major alongside util.ParsePurgeQuestion.
-	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := util.ParsePurgeQuestion(req); ok { //nolint:staticcheck // deprecated plugin API
-			if qtype == dns.TypeNS {
-				h.purge(qname)
-			}
-
-			resp := util.SetRcode(req, dns.RcodeSuccess, do)
-			txt, _ := dns.NewRR(q.Name + ` 20 IN TXT "cache purged"`)
-
-			resp.Extra = append(resp.Extra, txt)
-
-			return resp
-		}
-	}
-
 	if q.Name != rootzone && !req.RecursionDesired {
 		return util.SetRcode(req, dns.RcodeServerFailure, do)
 	}
@@ -231,25 +211,18 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// purge removes nameserver cache entries for the given domain name.
-func (h *DNSHandler) purge(qname string) {
-	nsQuestion := dns.Question{Name: qname, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
-
-	// Remove entries for both CD flag states
-	h.resolver.ncache.Remove(cache.Key(nsQuestion, false))
-	h.resolver.ncache.Remove(cache.Key(nsQuestion, true))
-}
-
-// (*DNSHandler).Purge removes the nameserver cache entry for q when
-// q is a TypeNS question. Other qtypes are a no-op because the
-// resolver handler only keeps an NS cache; purging A/AAAA or other
-// record types is the cache middleware's concern. Implements
-// middleware.Purger so the api purge endpoint reaches both.
+// (*DNSHandler).Purge removes the nameserver cache entry for q
+// under both CD=true and CD=false. Only TypeNS is acted on —
+// purging A/AAAA or other record types is the cache middleware's
+// concern, not the resolver's NS cache. Implements
+// middleware.Purger so the api purge endpoint reaches both stores.
 func (h *DNSHandler) Purge(q dns.Question) {
 	if q.Qtype != dns.TypeNS {
 		return
 	}
-	h.purge(q.Name)
+	nsQuestion := dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+	h.resolver.ncache.Remove(cache.Key(nsQuestion, false))
+	h.resolver.ncache.Remove(cache.Key(nsQuestion, true))
 }
 
 // (*DNSHandler).SetStore installs the cache store used by subQuery

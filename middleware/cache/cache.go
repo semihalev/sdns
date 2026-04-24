@@ -414,32 +414,18 @@ func (c *Cache) isValidQuery(q dns.Question) bool {
 }
 
 // handleSpecialQuery handles CHAOS and other special queries.
+// Cache invalidation previously flowed through here via a
+// base64-encoded CHAOS NULL request dispatched by
+// util.ExchangeInternal; that path retired alongside
+// ExchangeInternal itself — api/api.go now calls Cache.Purge
+// directly via middleware.Pipeline.Purgers(). Only the debug-ns
+// HINFO pass-through remains.
 func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q dns.Question) bool {
-	// Handle cache purge. sdns's own api endpoint switched to the
-	// Purger interface in Phase 5; this path stays for plugins
-	// that still drive purges via the deprecated ExchangeInternal +
-	// base64 CHAOS-NULL question. Removed in next major alongside
-	// util.ParsePurgeQuestion.
-	if q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL {
-		if qname, qtype, ok := util.ParsePurgeQuestion(ch.Request); ok { //nolint:staticcheck // deprecated plugin API
-			c.purge(qname, qtype)
-			ch.Next(ctx)
-			return true
-		}
-	}
-
-	// Handle debug queries
 	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
 		ch.Next(ctx)
 		return true
 	}
-
 	return false
-}
-
-// purge removes entries from cache.
-func (c *Cache) purge(qname string, qtype uint16) {
-	c.store.Purge(dns.Question{Name: qname, Qtype: qtype, Qclass: dns.ClassINET})
 }
 
 // (*Cache).Stop stop gracefully shuts down the cache.

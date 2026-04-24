@@ -253,9 +253,10 @@ func TestCache_Prefetch(t *testing.T) {
 		t.Error("entry should be marked for prefetch")
 	}
 
-	// Note: We can't test actual prefetch execution in unit tests
-	// because it requires dnsutil.ExchangeInternal which needs a full resolver chain
-	// The actual prefetch functionality is tested in integration/e2e tests
+	// Note: actual prefetch execution isn't exercised here because
+	// it requires a wired prefetchQueryer (middleware.Setup's
+	// auto-wiring) and a full resolver/forwarder chain. End-to-end
+	// tests cover the live path.
 }
 
 func TestCache_CNAMEChain(t *testing.T) {

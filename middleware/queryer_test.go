@@ -149,13 +149,13 @@ func TestQueryerReturnsErrOnNoResponse(t *testing.T) {
 }
 
 // reentrantHandler calls the injected queryer from its own
-// ServeDNS, simulating a plugin middleware that invokes
-// util.ExchangeInternal (→ Queryer.Query) inside its handler.
-// Without a generic recursion bound this would loop forever;
-// the maxQueryerRecursion gate must fail the nested call with
-// ErrMaxRecursion. sawMaxErr is sticky so ErrMaxRecursion at
-// any depth is observable from the outermost test, regardless
-// of how subsequent unwinding handlers behave.
+// ServeDNS, simulating a plugin middleware that dispatches an
+// internal sub-query from inside its handler. Without a generic
+// recursion bound this would loop forever; the
+// maxQueryerRecursion gate must fail the nested call with
+// ErrMaxRecursion. sawMaxErr is sticky so ErrMaxRecursion at any
+// depth is observable from the outermost test, regardless of
+// how subsequent unwinding handlers behave.
 type reentrantHandler struct {
 	name      string
 	q         Queryer
