@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -670,10 +671,8 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		cnameReq.RecursionDesired = true
 
 		// Check for loops
-		for _, t := range targets {
-			if t == target {
-				return util.SetRcode(msg, dns.RcodeServerFailure, false)
-			}
+		if slices.Contains(targets, target) {
+			return util.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
 
 		targets = append(targets, target)
@@ -691,7 +690,15 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		cnameDepth--
 
-		if child && cnameDepth > 0 {
+		// If the chased response already supplied the final
+		// answer alongside the CNAME, stop. Otherwise the next
+		// goto would re-query the CNAME's target and
+		// searchAdditionalAnswer would append the same final
+		// record a second time — reachable now that inner
+		// cache hits also run additionalAnswer (Phase 3d) and
+		// short-circuit by returning the full cached chain
+		// (CNAME + final A/AAAA) in one response.
+		if child && cnameDepth > 0 && !respCnameHasType(respCname, q.Qtype) {
 			goto lookup
 		}
 
@@ -701,6 +708,25 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
+}
+
+// respCnameHasType reports whether the CNAME-chase response
+// already contains a record of the final qtype. Used to short-
+// circuit the outer chase loop when the inner hop supplied both
+// the CNAME and its target's final answer in one message —
+// without this check, the outer loop would ask for the CNAME's
+// target again and searchAdditionalAnswer would append the same
+// final record a second time.
+func respCnameHasType(res *dns.Msg, qtype uint16) bool {
+	if res == nil {
+		return false
+	}
+	for _, r := range res.Answer {
+		if r.Header().Rrtype == qtype {
+			return true
+		}
+	}
+	return false
 }
 
 // searchAdditionalAnswer merges the CNAME response into the original message.
