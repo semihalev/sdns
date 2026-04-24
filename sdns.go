@@ -15,6 +15,8 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/queryer"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/cache"
+	"github.com/semihalev/sdns/middleware/resolver"
 	"github.com/semihalev/sdns/server"
 	"github.com/semihalev/zlog/v2"
 	"github.com/spf13/cobra"
@@ -99,14 +101,6 @@ var clientGuardMiddlewares = []string{
 	"ratelimit", "reflex", "accesslog",
 }
 
-// queryerTarget is the subset of *cache.Cache that sdns.go needs to
-// wire queryers; defined locally so sdns.go doesn't grow a direct
-// dependency on the cache package.
-type queryerTarget interface {
-	SetQueryer(queryer.Queryer)
-	SetPrefetchQueryer(queryer.Queryer)
-}
-
 // wireQueryers constructs the internal sub-pipelines and installs
 // them on the cache middleware. Called once after middleware.Setup.
 //
@@ -118,20 +112,28 @@ type queryerTarget interface {
 //
 // prefetchSub additionally excludes cache so a prefetch refresh
 // bypasses its own about-to-expire entry and reaches the upstream.
+//
+// The resolver handler also gets a reference to the cache store so
+// its subQuery helper can answer DS and DNSKEY lookups cache-first
+// without going through the middleware chain.
 func wireQueryers() {
 	pipe := middleware.GlobalPipeline()
 	if pipe == nil {
 		return
 	}
-	target, ok := pipe.Get("cache").(queryerTarget)
+	cacheMW, ok := pipe.Get("cache").(*cache.Cache)
 	if !ok {
 		return
 	}
 	queryerSub := pipe.SubPipeline(clientGuardMiddlewares...)
 	prefetchSub := pipe.SubPipeline(append(clientGuardMiddlewares, "cache")...)
 
-	target.SetQueryer(queryer.NewPipelineQueryer(queryerSub))
-	target.SetPrefetchQueryer(queryer.NewPipelineQueryer(prefetchSub))
+	cacheMW.SetQueryer(queryer.NewPipelineQueryer(queryerSub))
+	cacheMW.SetPrefetchQueryer(queryer.NewPipelineQueryer(prefetchSub))
+
+	if res, ok := pipe.Get("resolver").(*resolver.DNSHandler); ok {
+		res.SetStore(cacheMW.Store())
+	}
 }
 
 func runServer(cmd *cobra.Command, args []string) error {

@@ -248,6 +248,11 @@ func (h *DNSHandler) Purge(q dns.Question) {
 	h.purge(q.Name)
 }
 
+// (*DNSHandler).SetStore installs the cache store used by subQuery
+// for internal DNSSEC record lookups. Called once from sdns.go
+// startup; delegates to the underlying Resolver.
+func (h *DNSHandler) SetStore(s CacheStore) { h.resolver.store = s }
+
 // (*DNSHandler).Stop stop gracefully shuts down the resolver.
 func (h *DNSHandler) Stop() {
 	if h.resolver.tcpPool != nil {

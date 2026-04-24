@@ -58,6 +58,20 @@ type Resolver struct {
 	// Circuit breaker and goroutine limiter
 	circuitBreaker *circuitBreaker
 	maxConcurrent  chan struct{} // Semaphore for limiting concurrent queries
+
+	// store is the cache facade used by subQuery for resolver-private
+	// DNSSEC record lookups (DS, DNSKEY). Wired at startup by sdns.go.
+	// nil-safe: tests and forwarder-only deployments construct a
+	// Resolver without ever populating it.
+	store CacheStore
+}
+
+// CacheStore is the minimum surface subQuery needs from the cache
+// middleware's Store. Defined here so middleware/resolver does not
+// import middleware/cache.
+type CacheStore interface {
+	Get(req *dns.Msg) (*dns.Msg, bool)
+	SetFromResponse(resp *dns.Msg, keyCD bool)
 }
 
 // resolveState holds the state for a DNS resolution operation.
@@ -1657,7 +1671,7 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 	// its internal DS chain walk SERVFAIL on bogus parent-side DS data.
 	dsReq.CheckingDisabled = cd
 
-	dsres, err := util.ExchangeInternal(ctx, dsReq)
+	dsres, err := r.subQuery(ctx, dsReq)
 	if err != nil {
 		return nil, err
 	}
@@ -1667,6 +1681,81 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 	}
 
 	return dsres, nil
+}
+
+// subQuery answers a resolver-constructed DNSSEC record lookup (DS
+// or DNSKEY) via cache-first direct resolution. It deliberately
+// bypasses the middleware chain — no failover, no local-answer
+// middleware (hostsfile, blocklist, kubernetes, as112) — because
+// the DNSSEC chain of trust must not be polluted by operator
+// overrides or configured forwarders substituting for authoritative
+// signer-zone records.
+//
+// NS A/AAAA, DNAME target, and CNAME chase go through queryer.Queryer
+// instead; those resolutions are legitimately subject to operator
+// policy and do not participate in signature validation.
+//
+// requestID is read from ctx (contextKeyRequestID, populated by the
+// outer DNSHandler.ServeDNS) so newDialer inherits the outer
+// client's outbound-IP spread for sub-query traffic. Threading rs
+// through every DNSSEC helper would require touching findDS /
+// answer / authority / isZoneSecure / validateDelegation signatures;
+// ctx is already plumbed everywhere and carries the same value that
+// Resolve() would read when building a state struct.
+//
+// subQuery is nil-safe for a nil store — tests and forwarder-only
+// deployments construct a Resolver without one. In that case only
+// the direct-upstream path runs; nothing is cached or read.
+func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	if r.store != nil {
+		if msg, ok := r.store.Get(req); ok {
+			return msg, nil
+		}
+	}
+
+	reqid := req.Id
+	if v := ctx.Value(contextKeyRequestID); v != nil {
+		if id, ok := v.(uint16); ok {
+			reqid = id
+		}
+	}
+
+	// Depth budget mirrors handler.go's Maxdepth handling: the cfg
+	// default set in New() is 30, but some tests construct a Resolver
+	// directly with cfg == nil and rely on internal lookups failing
+	// closed rather than panicking.
+	depth := 30
+	if r.cfg != nil && r.cfg.Maxdepth > 0 {
+		depth = r.cfg.Maxdepth
+	}
+
+	// Fail closed when root servers aren't configured. Production
+	// startup always populates rootservers; tests that construct
+	// Resolver{} directly rely on this fail-closed path rather than
+	// a panic deep in resolve().
+	if r.rootservers == nil {
+		return nil, errNoRootServers
+	}
+
+	child := &resolveState{
+		req:        req,
+		servers:    r.rootservers,
+		depth:      depth,
+		level:      0,
+		nomin:      false,
+		parentDSRR: nil,
+		isRoot:     true,
+		extra:      nil,
+		requestID:  reqid,
+	}
+	resp, err := r.resolve(ctx, child)
+	if err != nil {
+		return nil, err
+	}
+	if r.store != nil && resp != nil {
+		r.store.SetFromResponse(resp, req.CheckingDisabled)
+	}
+	return resp, nil
 }
 
 func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
@@ -1935,7 +2024,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 	q := resp.Question[0]
 
 	if q.Qtype != dns.TypeDNSKEY || q.Name != signer {
-		msg, err = util.ExchangeInternal(ctx, keyReq)
+		msg, err = r.subQuery(ctx, keyReq)
 		if err != nil {
 			return
 		}
