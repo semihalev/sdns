@@ -1744,6 +1744,18 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 		}
 	}
 
+	// Clear RD/AD before hitting authoritative servers.
+	// DNSHandler.handle does this at handler.go:134-135 for chain-
+	// dispatched queries; subQuery bypasses the handler entirely,
+	// so resolver-constructed DS/DNSKEY requests (all built via
+	// dns.Msg.SetQuestion, which defaults RD=true) would otherwise
+	// ask authorities for recursion and trip REFUSED on stricter
+	// ones. req is always constructed by the immediate caller
+	// (lookupDS, verifyDNSSEC) and not shared, so a plain mutate
+	// is safe; no save/restore needed.
+	req.RecursionDesired = false
+	req.AuthenticatedData = false
+
 	reqid := req.Id
 	if v := ctx.Value(contextKeyRequestID); v != nil {
 		if id, ok := v.(uint16); ok {

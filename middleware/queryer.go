@@ -38,6 +38,33 @@ type Queryer interface {
 // middleware writing a response.
 var ErrNoResponse = errors.New("queryer: no response written")
 
+// ErrMaxRecursion signals that a Queryer.Query call nested past
+// the recursion bound. The old middleware/loop package counted
+// per-(qname, qtype) re-entries through util.ExchangeInternal and
+// returned SERVFAIL after maxLoops. With loop retired and
+// ExchangeInternal routed through the sub-pipeline, built-in
+// paths (CNAME/DNAME/resolver-depth) still have their own caps,
+// but a plugin middleware that calls util.ExchangeInternal from
+// its own ServeDNS has no other generic bound.
+var ErrMaxRecursion = errors.New("queryer: max recursion depth exceeded")
+
+// maxQueryerRecursion bounds the number of nested Queryer.Query
+// calls in a single client request tree. Chosen loose enough to
+// accommodate legitimate deep resolution (DS chain walk + CNAME
+// chase + DNAME target combined; worst-case ~20-30 in
+// pathological but valid cases) while still catching plugin-
+// driven infinite recursion quickly. The resolver's own
+// cfg.Maxdepth (default 30) bounds total resolution depth per
+// Resolve; this counter bounds the count of distinct sub-pipeline
+// invocations nested together.
+const maxQueryerRecursion = 32
+
+// queryerDepthKeyType tags ctx with the current Queryer recursion
+// depth. Sentinel pointer keeps ctx.Value alloc-free.
+type queryerDepthKeyType struct{}
+
+var queryerDepthKey = &queryerDepthKeyType{}
+
 // internalCtxKey tags contexts manually marked via MarkInternal.
 // Sentinel value so lookups avoid allocation from context.WithValue
 // boxing an interface.
@@ -81,6 +108,17 @@ type pipelineQueryer struct {
 }
 
 func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	// Generic recursion bound — see ErrMaxRecursion doc for the
+	// motivation. A plugin middleware that dispatches an internal
+	// sub-query from inside its own ServeDNS and ends up back in
+	// itself (directly or via another handler) will hit this gate
+	// instead of blowing the stack.
+	depth, _ := ctx.Value(queryerDepthKey).(int)
+	if depth >= maxQueryerRecursion {
+		return nil, ErrMaxRecursion
+	}
+	ctx = context.WithValue(ctx, queryerDepthKey, depth+1)
+
 	// The BufferWriter is propagated as internal via its
 	// Internal() method (picked up by middleware.responseWriter's
 	// Reset interface check), which is what every in-tree

@@ -148,6 +148,57 @@ func TestQueryerReturnsErrOnNoResponse(t *testing.T) {
 	}
 }
 
+// reentrantHandler calls the injected queryer from its own
+// ServeDNS, simulating a plugin middleware that invokes
+// util.ExchangeInternal (→ Queryer.Query) inside its handler.
+// Without a generic recursion bound this would loop forever;
+// the maxQueryerRecursion gate must fail the nested call with
+// ErrMaxRecursion. sawMaxErr is sticky so ErrMaxRecursion at
+// any depth is observable from the outermost test, regardless
+// of how subsequent unwinding handlers behave.
+type reentrantHandler struct {
+	name      string
+	q         Queryer
+	sawMaxErr bool
+	depth     int
+}
+
+func (h *reentrantHandler) Name() string { return h.name }
+func (h *reentrantHandler) ServeDNS(ctx context.Context, ch *Chain) {
+	h.depth++
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	_, err := h.q.Query(ctx, req)
+	if errors.Is(err, ErrMaxRecursion) {
+		h.sawMaxErr = true
+	}
+	// Write a trivial reply so the outer Query unwinds with a
+	// response instead of ErrNoResponse — the point of the test
+	// is the inner cap fires, not the outer one.
+	reply := new(dns.Msg)
+	reply.SetReply(ch.Request)
+	_ = ch.Writer.WriteMsg(reply)
+}
+
+func TestQueryerRecursionBoundCatchesReentry(t *testing.T) {
+	h := &reentrantHandler{name: "reentrant"}
+	pipe := buildPipeline(t, h)
+	h.q = NewPipelineQueryer(pipe)
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	_, err := h.q.Query(context.Background(), req)
+	if err != nil {
+		t.Fatalf("outer Query returned err; expected unwind via inner depth-cap failure: %v", err)
+	}
+	if !h.sawMaxErr {
+		t.Fatal("inner recursion never observed ErrMaxRecursion; depth bound did not fire")
+	}
+	if h.depth > maxQueryerRecursion+1 {
+		t.Fatalf("handler invoked %d times; want at most %d (bound + 1 outer)", h.depth, maxQueryerRecursion+1)
+	}
+}
+
 func BenchmarkPipelineQueryerQuery(b *testing.B) {
 	rec := &recordingHandler{name: "rec", rcode: dns.RcodeSuccess}
 	pipe := buildBenchPipeline(b, rec)
