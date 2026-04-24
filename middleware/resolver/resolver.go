@@ -296,6 +296,13 @@ func (r *Resolver) groupLookup(ctx context.Context, req *dns.Msg, servers *authc
 	// singleflight call would return a response produced
 	// against an unrelated delegation path. CD also has to
 	// participate because the validator result differs.
+	//
+	// The parent-DS chain is deliberately *not* in the key: the
+	// singleflight leader only does the upstream wire lookup
+	// (r.lookup), which doesn't consume parentDSRR. DNSSEC
+	// validation runs per-caller on the copied response with each
+	// caller's own DS chain, so mixing parentDSRR into the key
+	// would fragment dedup without affecting correctness.
 	cd := byte('0')
 	if req.CheckingDisabled {
 		cd = '1'
@@ -617,39 +624,57 @@ func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
 	return resp
 }
 
-func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, bool) {
+// checkDname returns the target-side response for a DNAME redirect, or
+// (nil, nil) when no DNAME applies. An error is returned when a DNAME
+// *does* apply but the follow-up cannot be completed — in particular
+// when the alias-chain depth cap is reached, since silently dropping
+// the redirect would let an overlong or cyclic chain degrade into a
+// NOERROR response containing only the outer DNAME and leave the
+// client with an unresolved reference.
+func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, error) {
 	if len(resp.Question) == 0 {
-		return nil, false
+		return nil, nil
 	}
 
 	q := resp.Question[0]
 
 	if q.Qtype == dns.TypeCNAME {
-		return nil, false
+		return nil, nil
 	}
 
 	target := getDnameTarget(resp)
-	if target != "" {
-		req := new(dns.Msg)
-		req.SetQuestion(target, q.Qtype)
-		req.SetEdns0(util.DefaultMsgSize, true)
-		// Mirror the outer request's CD bit onto the follow-up. Without
-		// this, a CD=1 client query can still have the DNAME target
-		// leg re-validated and turned into SERVFAIL on bogus target
-		// data — the opposite of what the client asked for. resp.
-		// CheckingDisabled is set from req.CheckingDisabled in
-		// setTags() so it's the authoritative source here.
-		req.CheckingDisabled = resp.CheckingDisabled
-
-		msg, err := util.ExchangeInternal(ctx, req)
-		if err != nil {
-			return nil, false
-		}
-
-		return msg, true
+	if target == "" {
+		return nil, nil
 	}
 
-	return nil, false
+	// Cap the DNAME alias chain. Each follow-up goes through
+	// ExchangeInternal which spawns a fresh resolveContext and
+	// resets the per-resolve depth counter, so without a
+	// ctx-carried counter two zones that cross-DNAME each other
+	// loop until the request deadline fires.
+	depth, _ := ctx.Value(contextKeyDnameDepth).(int)
+	if depth >= maxDnameDepth {
+		zlog.Warn("DNAME alias chain too long", "qname", q.Name, "target", target, "depth", depth)
+		return nil, errMaxDepth
+	}
+	ctx = context.WithValue(ctx, contextKeyDnameDepth, depth+1)
+
+	req := new(dns.Msg)
+	req.SetQuestion(target, q.Qtype)
+	req.SetEdns0(util.DefaultMsgSize, true)
+	// Mirror the outer request's CD bit onto the follow-up. Without
+	// this, a CD=1 client query can still have the DNAME target
+	// leg re-validated and turned into SERVFAIL on bogus target
+	// data — the opposite of what the client asked for. resp.
+	// CheckingDisabled is set from req.CheckingDisabled in
+	// setTags() so it's the authoritative source here.
+	req.CheckingDisabled = resp.CheckingDisabled
+
+	msg, err := util.ExchangeInternal(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
 }
 
 func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, zone string, extra ...bool) (*dns.Msg, error) {
@@ -661,9 +686,14 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 	// answer. By validating the outer response alone and merging the
 	// target data afterward, verifyRRSIG sees only the signer zone's
 	// records and the combined AD still reflects both sides.
-	var targetMsg *dns.Msg
-	if msg, ok := r.checkDname(ctx, resp); ok {
-		targetMsg = msg
+	targetMsg, err := r.checkDname(ctx, resp)
+	if err != nil {
+		// Depth cap or internal-exchange failure on the DNAME leg.
+		// Surfacing the error prevents a cyclic/overlong DNAME chain
+		// from being silently reported back as a NOERROR answer that
+		// contains only the outer DNAME — the client would follow
+		// that partial chain forever, so fail loud instead.
+		return nil, err
 	}
 
 	if !req.CheckingDisabled {
@@ -1469,7 +1499,12 @@ func (r *Resolver) findRRSIGSigners(resp *dns.Msg, qname string, inAnswer bool) 
 
 	// Prefer the most specific (longest-labeled) signer first so the
 	// legitimate zone apex is tried ahead of any shallower ancestor an
-	// attacker might have injected.
+	// attacker might have injected. validateSigner will reject any
+	// candidate that isn't an ancestor of qname, so the candidate set
+	// is naturally bounded by the number of ancestor zones of qname;
+	// truncating the slice would only let an attacker pad with bogus
+	// more-specific signers and push the real signer out of the retry
+	// set, producing false SERVFAILs on deep qnames.
 	sort.Slice(signers, func(i, j int) bool {
 		return dns.CountLabel(signers[i]) > dns.CountLabel(signers[j])
 	})
@@ -1703,7 +1738,10 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			}
 		}
 
-		if len(authservers.List) > 0 {
+		authservers.RLock()
+		hasList := len(authservers.List) > 0
+		authservers.RUnlock()
+		if hasList {
 			// temprorary cache before lookup
 			r.ncache.Set(key, parentdsrr, authservers, time.Minute) // cache partial results during NS lookups
 		}
@@ -1746,8 +1784,19 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
-	// we can give sometimes for that lookups because of rate limiting on auth servers
-	time.Sleep(defaultTimeout)
+	// Let the main (IPv4) path drain its auth-server rate-limit budget
+	// before we pile on IPv6 probes, but don't spend the full delay
+	// sleeping when ctx (e.g. the 30s v6-lookup budget upstream) has
+	// already fired. time.NewTimer + defer Stop releases the timer if
+	// ctx wins; time.After would leave it pending until defaultTimeout
+	// elapses.
+	t := time.NewTimer(defaultTimeout)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+		return
+	}
 
 	list := sortnss(nss, q.Name)
 

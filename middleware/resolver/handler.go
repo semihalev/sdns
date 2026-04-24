@@ -24,10 +24,20 @@ type DNSHandler struct {
 type contextKey int
 
 const (
-	contextKeyRequestID contextKey = iota
-	contextKeyNSL                  // nameserver lookup marker
-	contextKeyNSList               // nameserver list prefix
+	contextKeyRequestID  contextKey = iota
+	contextKeyNSL                   // nameserver lookup marker
+	contextKeyNSList                // nameserver list prefix
+	contextKeyDnameDepth            // DNAME alias chain depth
 )
+
+// maxDnameDepth caps the number of DNAME redirections a single client
+// query may trigger. Each DNAME follow-up is a fresh internal exchange,
+// which resets the per-resolve depth counter, so without an explicit
+// chain-depth guard two zones that cross-DNAME each other produce a
+// validated ping-pong bounded only by netTimeout. BIND uses 16 for
+// CNAME/DNAME chains; 10 is stricter without impacting real-world use
+// (legitimate DNAME chains are nearly always length 1).
+const maxDnameDepth = 10
 
 // debugns is initialized once at startup.
 var debugns = func() bool {

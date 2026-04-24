@@ -129,6 +129,15 @@ func doqQUICConfig() *quic.Config {
 	return &quic.Config{
 		MaxIdleTimeout:         5 * time.Second,
 		MaxStreamReceiveWindow: maxMsgSize,
+		// Cap per-connection concurrent streams so a single client
+		// can't open every stream quic-go's default (100 bidi / 100
+		// uni) allows and park them, pinning server memory. DoQ is
+		// one-query-per-stream, so 32 concurrent queries per client
+		// is more than enough for real traffic patterns. Uni streams
+		// aren't used by DoQ at all — allow a handful only for
+		// protocol extensions.
+		MaxIncomingStreams:    32,
+		MaxIncomingUniStreams: 4,
 	}
 }
 

@@ -6,6 +6,27 @@ import (
 	"github.com/miekg/dns"
 )
 
+// maxNSEC3Iterations caps the hash-iteration count this validator is
+// willing to process. Per RFC 9276 §3.2 any value above 100 SHOULD be
+// treated as insecure; modern DNSSEC guidance recommends iterations=0.
+// An NSEC3 advertising e.g. 65535 iterations costs O(iterations ×
+// labels) SHA-1 rounds per name tested, and every validation walks the
+// full ancestor chain and every NSEC3 in the response — exactly the
+// asymmetric work an attacker-authored zone needs to force DoS work on
+// a recursive resolver. NSEC3 records above the cap are skipped (the
+// proof then fails via errNSECMissingCoverage), which matches
+// conservative validator behaviour on the bogus side of the RFC 9276
+// "insecure vs bogus" tradeoff.
+const maxNSEC3Iterations = 150
+
+// nsec3Safe reports whether an NSEC3 RR is within the iteration cap and
+// therefore safe to hash against. Keeping the check at the RR level
+// (rather than rejecting the whole RRset) lets a zone that mixes safe
+// and unsafe iteration counts still validate through the safe ones.
+func nsec3Safe(n *dns.NSEC3) bool {
+	return n.Iterations <= maxNSEC3Iterations
+}
+
 func typesSet(set []uint16, types ...uint16) bool {
 	tm := make(map[uint16]struct{}, len(types))
 	for _, t := range types {
@@ -48,6 +69,9 @@ func findClosestEncloser(name string, nsec []dns.RR) (string, string) {
 func findMatching(name string, nsec []dns.RR) ([]uint16, error) {
 	for _, rr := range nsec {
 		n := rr.(*dns.NSEC3)
+		if !nsec3Safe(n) {
+			continue
+		}
 		if n.Match(name) {
 			return n.TypeBitMap, nil
 		}
@@ -58,6 +82,9 @@ func findMatching(name string, nsec []dns.RR) ([]uint16, error) {
 func findCoverer(name string, nsec []dns.RR) ([]uint16, bool, error) {
 	for _, rr := range nsec {
 		n := rr.(*dns.NSEC3)
+		if !nsec3Safe(n) {
+			continue
+		}
 		if n.Cover(name) {
 			return n.TypeBitMap, (n.Flags & 1) == 1, nil
 		}

@@ -63,6 +63,12 @@ var (
 	}
 )
 
+// maxBlocklistBytes caps the size of a single downloaded blocklist.
+// 200 MiB is well above the largest real-world aggregated blocklists
+// (Steven Black ~5 MiB, OISD ~15 MiB, URLhaus full ~30 MiB) while
+// stopping a runaway or hostile remote from filling disk.
+const maxBlocklistBytes = 200 << 20
+
 // loadInitial applies configured whitelist/blocklist entries and
 // reads any existing local blocklist files. Runs synchronously
 // from New so filtering is active before the first query.
@@ -108,7 +114,7 @@ func (b *BlockList) refreshRemote() {
 	}
 }
 
-func (b *BlockList) downloadBlocklist(uri, name string) error {
+func (b *BlockList) downloadBlocklist(uri, name string) (err error) {
 	filePath := filepath.Join(b.cfg.BlockListDir, name)
 
 	output, err := os.Create(filePath) //nolint:gosec // G304 - path from config, not user input
@@ -116,10 +122,20 @@ func (b *BlockList) downloadBlocklist(uri, name string) error {
 		return fmt.Errorf("error creating file: %w", err)
 	}
 
+	// If this function returns an error, drop the partial file — it
+	// otherwise lingers in the blocklist directory until the next
+	// successful download of the same (host, count) and, critically,
+	// is parsed by readBlocklists() in the meantime so truncated or
+	// oversize content would still feed into the active blocklist.
 	defer func() {
-		err := output.Close()
+		closeErr := output.Close()
+		if closeErr != nil {
+			zlog.Warn("Blocklist file close failed", "name", name, "error", closeErr.Error())
+		}
 		if err != nil {
-			zlog.Warn("Blocklist file close failed", "name", name, "error", err.Error())
+			if rmErr := os.Remove(filePath); rmErr != nil && !os.IsNotExist(rmErr) {
+				zlog.Warn("Partial blocklist cleanup failed", "path", filePath, "error", rmErr.Error())
+			}
 		}
 	}()
 
@@ -134,8 +150,16 @@ func (b *BlockList) downloadBlocklist(uri, name string) error {
 		return fmt.Errorf("unexpected status code: %d", response.StatusCode)
 	}
 
-	if _, err := io.Copy(output, response.Body); err != nil {
+	// Cap the download so a runaway or malicious remote can't fill
+	// disk. Reading one byte past the cap distinguishes "exactly at
+	// the cap" from "oversize" so we can fail loudly instead of
+	// silently truncating.
+	n, err := io.Copy(output, io.LimitReader(response.Body, maxBlocklistBytes+1))
+	if err != nil {
 		return fmt.Errorf("error copying output: %w", err)
+	}
+	if n > maxBlocklistBytes {
+		return fmt.Errorf("blocklist exceeds %d bytes", maxBlocklistBytes)
 	}
 
 	return nil

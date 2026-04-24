@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -60,6 +61,18 @@ func (d *doh3Listener) Bind(ctx context.Context) error {
 		TLSConfig: tlsConfig,
 		QUICConfig: &quic.Config{
 			Allow0RTT: true,
+			// Cap per-connection streams so a single client can't
+			// monopolise the server by opening every stream the
+			// default (100) allows and parking them. DoH3 is a
+			// request/response protocol — 32 concurrent queries per
+			// connection is plenty for any real client and leaves
+			// ample headroom for normal pipelining.
+			MaxIncomingStreams:    32,
+			MaxIncomingUniStreams: 8,
+			// 5m idle covers keep-alive patterns for real DoH3
+			// clients (Firefox, Chrome) without letting dead
+			// connections squat indefinitely.
+			MaxIdleTimeout: 5 * time.Minute,
 		},
 	}
 	return nil
@@ -83,7 +96,7 @@ func (d *doh3Listener) Serve(_ context.Context) error {
 	return nil
 }
 
-func (d *doh3Listener) Shutdown(_ context.Context) error {
+func (d *doh3Listener) Shutdown(ctx context.Context) error {
 	d.mu.Lock()
 	srv := d.srv
 	pc := d.pc
@@ -93,13 +106,20 @@ func (d *doh3Listener) Shutdown(_ context.Context) error {
 	}
 
 	zlog.Info("DNS server stopping", "net", "doh-h3", "addr", d.addr)
-	// http3.Server.Close stops accepting new streams but does not
-	// close the caller-provided PacketConn (verified against
-	// quic-go v0.59 http3/server.go and server.go). Close the
-	// socket ourselves so the UDP port is actually released and
-	// graceful restart / repeated start-stop cycles don't leak the
-	// bind.
-	err := srv.Close()
+	// Shutdown sends a GOAWAY and waits for in-flight requests to
+	// complete within ctx, rather than aborting them mid-stream the
+	// way Close would. If ctx fires before drain completes, Shutdown
+	// returns its error and we fall through to Close to kill the
+	// remaining handlers so the port still releases promptly.
+	err := srv.Shutdown(ctx)
+	if err != nil {
+		_ = srv.Close()
+	}
+	// http3.Server.Shutdown / Close stop accepting new streams but do
+	// not close the caller-provided PacketConn (verified against
+	// quic-go v0.59 http3/server.go and server.go). Close the socket
+	// ourselves so the UDP port is actually released and graceful
+	// restart / repeated start-stop cycles don't leak the bind.
 	if pc != nil {
 		if cerr := pc.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) && err == nil {
 			err = cerr

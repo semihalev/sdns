@@ -67,11 +67,23 @@ func (d *dohListener) Bind(ctx context.Context) error {
 	d.ln = ln
 	d.logCloser = logReader
 	d.srv = &http.Server{
-		Handler:      d.handler,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		ErrorLog:     stdlog.New(logWriter, "", 0),
-		TLSConfig:    tlsConfig,
+		Handler: d.handler,
+		// ReadHeaderTimeout bounds slow-loris style attacks that
+		// trickle request headers. DoH headers are small — anything
+		// legitimate arrives well under 5s.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		// Bound per-connection keep-alive dwell time so stale DoH
+		// connections don't hoard file descriptors.
+		IdleTimeout: 2 * time.Minute,
+		// DoH request headers are tiny; Go's default 1 MiB cap is
+		// absurd for the shape of traffic we expect. 16 KiB fits
+		// every reasonable DoH GET/POST header and stops header-
+		// bomb probes.
+		MaxHeaderBytes: 16 << 10,
+		ErrorLog:       stdlog.New(logWriter, "", 0),
+		TLSConfig:      tlsConfig,
 	}
 	return nil
 }

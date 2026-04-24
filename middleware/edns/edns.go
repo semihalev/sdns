@@ -176,23 +176,19 @@ func (w *ResponseWriter) setNSID() {
 
 const name = "edns"
 
-// estMaxRRBytes is a realistic upper bound on the wire size of a
-// typical RR after name compression. A/AAAA/MX/NS/SOA/CNAME/TXT(small)
-// all fit comfortably; DNSKEY (~400) and RRSIG (~250) can exceed it, so
-// the heuristic falls back to m.Len() for those edge cases.
-const estMaxRRBytes = 200
-
 // udpOverflow reports whether a UDP response would exceed limit bytes
-// and therefore needs TC handling. It uses a cheap upper-bound check on
-// the RR count first so that small responses (hostsfile/cache hits,
-// NXDOMAIN/NODATA, single-A answers) never pay the cost of Msg.Len(),
-// which packs the whole message with a compression map just to measure.
+// and therefore needs TC handling.
+//
+// Earlier iterations of this function used a count-based heuristic
+// over a small set of "fixed-size" RR types to skip the Msg.Len()
+// call, but no RR type actually has a wire-size upper bound that's
+// both tight and useful: owner names can be up to 255 bytes when
+// compression doesn't apply, OPT options are open-ended, and names
+// inside rdata (CNAME/NS/PTR/MX/DNAME/SRV target) lift even the
+// "small" types past any reasonable constant. An under-estimate
+// there would let an oversize reply slip out on UDP without TC=1,
+// so we just call Msg.Len() — correctness first, and the cost is
+// bounded by response size.
 func udpOverflow(m *dns.Msg, limit int) bool {
-	rrCount := len(m.Answer) + len(m.Ns) + len(m.Extra)
-	// 12 header + rrCount * worst-case RR size. If that fits, the
-	// actual packed size fits for sure.
-	if 12+rrCount*estMaxRRBytes <= limit {
-		return false
-	}
 	return m.Len() > limit
 }
