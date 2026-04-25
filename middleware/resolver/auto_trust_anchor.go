@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,14 @@ import (
 	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
+
+// errCorruptTombstones is returned by readTombstones when the file
+// exists, was successfully opened, but its bytes don't decode as a
+// gob-encoded Tombstones map. Distinct from open errors (e.g. a
+// Windows sharing violation while a concurrent writer is mid-
+// rename), which are transient and should not be treated as
+// corruption.
+var errCorruptTombstones = errors.New("trust anchor tombstones file corrupt")
 
 // State represents the state of a trust anchor in RFC 5011 lifecycle.
 type State int
@@ -141,21 +150,24 @@ func (r *Resolver) AutoTA() {
 
 	tombstones, err := readTombstones(tombstonePath)
 	if err != nil {
-		// Fail closed: a corrupt tombstones file means we can't
-		// prove revocation permanence. Also clear r.rootKeys —
-		// NewResolver seeded it from cfg.RootKeys, which might
-		// still carry a revoked key; returning without clearing
-		// would leave that key active in memory for up to 12 hours
-		// while we wait for the next refresh. An empty r.rootKeys
-		// causes the DNSSEC validation path to fail closed as well.
-		// Operator must repair the tombstones file (delete if
-		// acceptable, or restore from backup) before the resolver
-		// can validate.
-		zlog.Error("Trust anchor tombstones file corrupted — clearing in-memory trust set and aborting refresh", "path", tombstonePath, "error", err.Error())
-		r.Lock()
-		r.rootKeys = nil
-		r.Unlock()
-		return
+		// Distinguish "transient inability to read" from "actual
+		// corruption". A sharing violation on Windows (concurrent
+		// writer renaming over the file) or a permission hiccup is
+		// not the same as a malformed gob payload. We only fail
+		// closed when we successfully read bytes that don't decode
+		// — readTombstones surfaces that as errCorruptTombstones.
+		// Other open errors leave us with an empty in-memory map
+		// and the next AutoTA tick (or a process restart in the
+		// non-transient case) can re-load.
+		if errors.Is(err, errCorruptTombstones) {
+			zlog.Error("Trust anchor tombstones file corrupted — clearing in-memory trust set and aborting refresh", "path", tombstonePath, "error", err.Error())
+			r.Lock()
+			r.rootKeys = nil
+			r.Unlock()
+			return
+		}
+		zlog.Warn("Trust anchor tombstones file unreadable — proceeding with empty in-memory tombstones", "path", tombstonePath, "error", err.Error())
+		tombstones = make(Tombstones)
 	}
 
 	// Copy legacy Revoked/Removed entries into the material-keyed
@@ -744,7 +756,11 @@ func readTombstones(filename string) (Tombstones, error) {
 
 	t := make(Tombstones)
 	if err := gob.NewDecoder(f).Decode(&t); err != nil {
-		return nil, err
+		// Wrap so AutoTA can distinguish "I read bytes that don't
+		// parse" (real corruption — fail closed) from "I couldn't
+		// open the file at all" (transient, e.g. Windows sharing
+		// violation during a concurrent rename).
+		return nil, fmt.Errorf("%w: %v", errCorruptTombstones, err)
 	}
 	return t, nil
 }
@@ -796,17 +812,9 @@ func atomicGobWrite(filename string, v interface{}) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	// Fsync the parent directory so the rename's directory-entry
-	// update is durable, not just the file contents. Open as
-	// read-only — directory fsync only requires the inode to be
-	// open, not write access.
-	df, err := os.Open(dir) //nolint:gosec // G304 - directory derived from filename, admin controlled
-	if err != nil {
-		return err
-	}
-	if err := df.Sync(); err != nil {
-		_ = df.Close()
-		return err
-	}
-	return df.Close()
+	// Best-effort durability for the rename's directory-entry
+	// update. On POSIX this is an fsync of the parent directory;
+	// on Windows it's a no-op (the OS doesn't expose directory
+	// fsync, NTFS journals metadata).
+	return syncDir(dir)
 }
