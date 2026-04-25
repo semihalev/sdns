@@ -32,7 +32,7 @@ func TestParallelLookupIntegration(t *testing.T) {
 	req.SetEdns0(4096, true)
 
 	start := time.Now()
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 	duration := time.Since(start)
 
 	assert.NoError(t, err)
@@ -71,7 +71,7 @@ func TestParallelLookupIPv6(t *testing.T) {
 	req.SetQuestion("www.google.com.", dns.TypeAAAA)
 	req.SetEdns0(4096, true)
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	if err != nil {
 		t.Logf("IPv6 lookup error (may be expected): %v", err)
@@ -94,6 +94,6 @@ func BenchmarkParallelLookupReal(b *testing.B) {
 		req.SetQuestion("example.com.", dns.TypeA)
 		req.SetEdns0(4096, true)
 
-		_, _ = r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+		_, _ = r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 	}
 }

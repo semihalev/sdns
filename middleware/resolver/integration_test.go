@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
@@ -23,10 +23,10 @@ func TestCircuitBreakerIntegration(t *testing.T) {
 	r := newWiredTestResolver(cfg)
 
 	// Create a list with a non-existent server that will timeout
-	badServer := authcache.NewAuthServer("192.0.2.1:53", authcache.IPv4) // TEST-NET-1, guaranteed unreachable
-	servers := &authcache.AuthServers{
+	badServer := authority.NewServer("192.0.2.1:53", authority.IPv4) // TEST-NET-1, guaranteed unreachable
+	servers := &authority.Servers{
 		Zone: "example.com.",
-		List: []*authcache.AuthServer{badServer},
+		List: []*authority.Server{badServer},
 	}
 
 	ctx := context.Background()
@@ -67,11 +67,11 @@ func TestGoroutineLimitUnderLoad(t *testing.T) {
 	r := newWiredTestResolver(cfg)
 
 	// Create slow/failing servers to simulate timeouts
-	servers := &authcache.AuthServers{
+	servers := &authority.Servers{
 		Zone: "test.com.",
-		List: []*authcache.AuthServer{
-			authcache.NewAuthServer("192.0.2.1:53", authcache.IPv4), // Will timeout
-			authcache.NewAuthServer("192.0.2.2:53", authcache.IPv4), // Will timeout
+		List: []*authority.Server{
+			authority.NewServer("192.0.2.1:53", authority.IPv4), // Will timeout
+			authority.NewServer("192.0.2.2:53", authority.IPv4), // Will timeout
 		},
 	}
 
@@ -186,10 +186,10 @@ func TestNoGoroutineLeaks(t *testing.T) {
 	defer cancel()
 
 	// Bad servers that will timeout
-	servers := &authcache.AuthServers{
+	servers := &authority.Servers{
 		Zone: "leak.test.",
-		List: []*authcache.AuthServer{
-			authcache.NewAuthServer("192.0.2.1:53", authcache.IPv4),
+		List: []*authority.Server{
+			authority.NewServer("192.0.2.1:53", authority.IPv4),
 		},
 	}
 
@@ -231,12 +231,12 @@ func TestCircuitBreakerWithMixedServers(t *testing.T) {
 	r := newWiredTestResolver(cfg)
 
 	// Mix of servers - some good, some bad
-	servers := &authcache.AuthServers{
+	servers := &authority.Servers{
 		Zone: ".",
-		List: []*authcache.AuthServer{
-			authcache.NewAuthServer("192.0.2.1:53", authcache.IPv4),   // Bad - will timeout
-			authcache.NewAuthServer("192.5.5.241:53", authcache.IPv4), // Good - root server
-			authcache.NewAuthServer("192.0.2.2:53", authcache.IPv4),   // Bad - will timeout
+		List: []*authority.Server{
+			authority.NewServer("192.0.2.1:53", authority.IPv4),   // Bad - will timeout
+			authority.NewServer("192.5.5.241:53", authority.IPv4), // Good - root server
+			authority.NewServer("192.0.2.2:53", authority.IPv4),   // Bad - will timeout
 		},
 	}
 
@@ -286,13 +286,13 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	r := newWiredTestResolver(cfg)
 
 	// Simulate Google servers failing
-	googleServers := &authcache.AuthServers{
+	googleServers := &authority.Servers{
 		Zone: "google.com.",
-		List: []*authcache.AuthServer{
-			authcache.NewAuthServer("192.0.2.10:53", authcache.IPv4), // Simulated failing Google NS
-			authcache.NewAuthServer("192.0.2.11:53", authcache.IPv4), // Simulated failing Google NS
-			authcache.NewAuthServer("192.0.2.12:53", authcache.IPv4), // Simulated failing Google NS
-			authcache.NewAuthServer("192.0.2.13:53", authcache.IPv4), // Simulated failing Google NS
+		List: []*authority.Server{
+			authority.NewServer("192.0.2.10:53", authority.IPv4), // Simulated failing Google NS
+			authority.NewServer("192.0.2.11:53", authority.IPv4), // Simulated failing Google NS
+			authority.NewServer("192.0.2.12:53", authority.IPv4), // Simulated failing Google NS
+			authority.NewServer("192.0.2.13:53", authority.IPv4), // Simulated failing Google NS
 		},
 	}
 

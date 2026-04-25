@@ -10,8 +10,8 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// DNSCache defines the interface for DNS cache implementations.
-type DNSCache interface {
+// DCache defines the interface for DNS cache implementations.
+type DCache interface {
 	Get(key uint64) (*CacheEntry, bool)
 	Set(key uint64, entry *CacheEntry)
 	Remove(key uint64)

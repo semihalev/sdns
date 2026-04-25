@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -38,29 +38,29 @@ func TestDNSHandlerSetStore(t *testing.T) {
 
 // TestDNSHandlerPurge pins the middleware.Purger adapter: only
 // TypeNS questions touch the resolver's NS cache; other qtypes are
-// no-ops. Uses a bare Resolver{} populated with only the ncache to
+// no-ops. Uses a bare Resolver{} populated with only the delegations cache to
 // skip NewResolver's background priming.
 func TestDNSHandlerPurge(t *testing.T) {
-	h := &DNSHandler{resolver: &Resolver{ncache: authcache.NewNSCache()}}
+	h := &DNSHandler{resolver: &Resolver{delegations: authority.NewCache()}}
 
 	nsQuestion := dns.Question{Name: "example.com.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
-	servers := new(authcache.AuthServers)
+	servers := new(authority.Servers)
 	servers.Zone = "example.com."
-	h.resolver.ncache.Set(cache.Key(nsQuestion, false), nil, servers, 60*time.Second)
-	h.resolver.ncache.Set(cache.Key(nsQuestion, true), nil, servers, 60*time.Second)
+	h.resolver.delegations.Set(cache.Key(nsQuestion, false), nil, servers, 60*time.Second)
+	h.resolver.delegations.Set(cache.Key(nsQuestion, true), nil, servers, 60*time.Second)
 
 	// Non-NS qtype: must be a no-op.
 	h.Purge(dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
-	if _, err := h.resolver.ncache.Get(cache.Key(nsQuestion, false)); err != nil {
+	if _, err := h.resolver.delegations.Get(cache.Key(nsQuestion, false)); err != nil {
 		t.Fatal("Purge on TypeA must not evict NS cache entry")
 	}
 
 	// NS qtype: clears both CD variants.
 	h.Purge(nsQuestion)
-	if _, err := h.resolver.ncache.Get(cache.Key(nsQuestion, false)); err == nil {
+	if _, err := h.resolver.delegations.Get(cache.Key(nsQuestion, false)); err == nil {
 		t.Fatal("Purge on TypeNS must evict CD=false entry")
 	}
-	if _, err := h.resolver.ncache.Get(cache.Key(nsQuestion, true)); err == nil {
+	if _, err := h.resolver.delegations.Get(cache.Key(nsQuestion, true)); err == nil {
 		t.Fatal("Purge on TypeNS must evict CD=true entry")
 	}
 }

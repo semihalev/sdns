@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,9 +37,9 @@ func TestResolverTCPPoolIntegration(t *testing.T) {
 	r := &Resolver{
 		cfg:         cfg,
 		netTimeout:  2 * time.Second,
-		rootservers: &authcache.AuthServers{},
+		rootServers: &authority.Servers{},
 	}
-	r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(addr, authcache.IPv4))
+	r.rootServers.List = append(r.rootServers.List, authority.NewServer(addr, authority.IPv4))
 	r.tcpPool = NewTCPConnPool(cfg.RootTCPTimeout.Duration, cfg.TLDTCPTimeout.Duration, cfg.TCPMaxConnections)
 	defer r.tcpPool.Close()
 
@@ -47,7 +47,7 @@ func TestResolverTCPPoolIntegration(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
-	resp, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, r.rootservers.List[0], 0)
+	resp, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, r.rootServers.List[0], 0)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
@@ -61,7 +61,7 @@ func TestResolverTCPPoolIntegration(t *testing.T) {
 	assert.Equal(t, 1, active)        // Connection should be pooled
 
 	// Test 2: Second query should reuse connection
-	resp2, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, r.rootservers.List[0], 0)
+	resp2, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, "tcp", req, r.rootServers.List[0], 0)
 	require.NoError(t, err)
 	require.NotNil(t, resp2)
 
@@ -108,7 +108,7 @@ func TestResolverTCPPoolConcurrent(t *testing.T) {
 	addr, cleanup := startTestDNSServer(t, server)
 	defer cleanup()
 
-	authServer := authcache.NewAuthServer(addr, authcache.IPv4)
+	authServer := authority.NewServer(addr, authority.IPv4)
 
 	// Run concurrent queries
 	var wg sync.WaitGroup
@@ -167,7 +167,7 @@ func TestResolverTCPPoolWithEDNSKeepalive(t *testing.T) {
 	}
 	defer r.tcpPool.Close()
 
-	authServer := authcache.NewAuthServer(addr, authcache.IPv4)
+	authServer := authority.NewServer(addr, authority.IPv4)
 
 	// Make query
 	req := new(dns.Msg)

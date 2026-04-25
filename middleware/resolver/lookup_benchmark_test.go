@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/config"
 )
 
@@ -27,9 +27,9 @@ func BenchmarkLookupPerformance(b *testing.B) {
 	req.RecursionDesired = true
 
 	// Create mock servers with different RTTs
-	servers := &authcache.AuthServers{
+	servers := &authority.Servers{
 		Zone: "com.",
-		List: []*authcache.AuthServer{
+		List: []*authority.Server{
 			{Addr: "192.0.2.1:53", Rtt: int64(20 * time.Millisecond)},  // Fast server
 			{Addr: "192.0.2.2:53", Rtt: int64(100 * time.Millisecond)}, // Medium server
 			{Addr: "192.0.2.3:53", Rtt: int64(200 * time.Millisecond)}, // Slow server
@@ -69,7 +69,7 @@ func TestAdaptiveTimeout(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// server := &authcache.AuthServer{Rtt: tc.rtt}
+			// server := &authority.Server{Rtt: tc.rtt}
 
 			// We can't directly test the function since it's inside lookup()
 			// but we can verify the behavior through the resolver

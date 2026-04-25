@@ -15,7 +15,7 @@ import (
 // this clear had the resolver ask authorities for recursion,
 // tripping REFUSED on stricter implementations.
 //
-// A Resolver{} with no rootservers fails closed in subQuery before
+// A Resolver{} with no root servers fails closed in subQuery before
 // r.resolve runs, which is exactly after the RD/AD clear lands —
 // letting us assert the mutation happened without a real upstream.
 func TestSubQueryClearsRDAD(t *testing.T) {

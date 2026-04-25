@@ -167,93 +167,93 @@ func makeDS(name string) *dns.DS {
 
 func Test_isZoneSecure(t *testing.T) {
 	tests := []struct {
-		name       string
-		qname      string
-		parentdsrr []dns.RR
-		zone       string
-		expected   bool
+		name     string
+		qname    string
+		parentDS []dns.RR
+		zone     string
+		expected bool
 	}{
 		{
-			name:       "nil parentdsrr returns false",
-			qname:      "example.com.",
-			parentdsrr: nil,
-			zone:       "example.com.",
-			expected:   false,
+			name:     "nil parentDS returns false",
+			qname:    "example.com.",
+			parentDS: nil,
+			zone:     "example.com.",
+			expected: false,
 		},
 		{
-			name:       "empty parentdsrr slice returns false",
-			qname:      "example.com.",
-			parentdsrr: []dns.RR{},
-			zone:       "example.com.",
-			expected:   false,
+			name:     "empty parentDS slice returns false",
+			qname:    "example.com.",
+			parentDS: []dns.RR{},
+			zone:     "example.com.",
+			expected: false,
 		},
 		{
 			// DS name matches zone exactly → zone is signed (RFC 4035 §5.3.3).
 			// Fast path returns true without needing findDS.
-			name:       "DS matches zone returns true",
-			qname:      "www.example.com.",
-			parentdsrr: []dns.RR{makeDS("example.com.")},
-			zone:       "example.com.",
-			expected:   true,
+			name:     "DS matches zone returns true",
+			qname:    "www.example.com.",
+			parentDS: []dns.RR{makeDS("example.com.")},
+			zone:     "example.com.",
+			expected: true,
 		},
 		{
 			// Case-insensitive match: upper-case DS name.
-			name:       "DS matches zone case insensitive upper DS",
-			qname:      "www.example.com.",
-			parentdsrr: []dns.RR{makeDS("EXAMPLE.COM.")},
-			zone:       "example.com.",
-			expected:   true,
+			name:     "DS matches zone case insensitive upper DS",
+			qname:    "www.example.com.",
+			parentDS: []dns.RR{makeDS("EXAMPLE.COM.")},
+			zone:     "example.com.",
+			expected: true,
 		},
 		{
 			// Case-insensitive match: upper-case zone name.
-			name:       "DS matches zone case insensitive upper zone",
-			qname:      "www.example.com.",
-			parentdsrr: []dns.RR{makeDS("example.com.")},
-			zone:       "EXAMPLE.COM.",
-			expected:   true,
+			name:     "DS matches zone case insensitive upper zone",
+			qname:    "www.example.com.",
+			parentDS: []dns.RR{makeDS("example.com.")},
+			zone:     "EXAMPLE.COM.",
+			expected: true,
 		},
 		{
 			// DS for root matches root zone → signed.
-			name:       "root DS matches root zone",
-			qname:      "com.",
-			parentdsrr: []dns.RR{makeDS(".")},
-			zone:       ".",
-			expected:   true,
+			name:     "root DS matches root zone",
+			qname:    "com.",
+			parentDS: []dns.RR{makeDS(".")},
+			zone:     ".",
+			expected: true,
 		},
 		{
 			// Multiple DS records; first matches zone → signed.
-			name:       "multiple DS records first matches zone",
-			qname:      "www.example.com.",
-			parentdsrr: []dns.RR{makeDS("example.com."), makeDS("other.com.")},
-			zone:       "example.com.",
-			expected:   true,
+			name:     "multiple DS records first matches zone",
+			qname:    "www.example.com.",
+			parentDS: []dns.RR{makeDS("example.com."), makeDS("other.com.")},
+			zone:     "example.com.",
+			expected: true,
 		},
 		{
 			// Zone is empty, DS from ancestor. Probes parent of qname
 			// via findDS which errors without middleware → fail closed.
-			name:       "empty zone findDS error fails closed",
-			qname:      "www.example.com.",
-			parentdsrr: []dns.RR{makeDS("com.")},
-			zone:       "",
-			expected:   true,
+			name:     "empty zone findDS error fails closed",
+			qname:    "www.example.com.",
+			parentDS: []dns.RR{makeDS("com.")},
+			zone:     "",
+			expected: true,
 		},
 		{
 			// DS from ancestor "com.", zone is "example.com.".
 			// Probes zone "example.com." via findDS which errors
 			// without middleware → fail closed.
-			name:       "ancestor DS probes zone findDS error fails closed",
-			qname:      "www.example.com.",
-			parentdsrr: []dns.RR{makeDS("com.")},
-			zone:       "example.com.",
-			expected:   true,
+			name:     "ancestor DS probes zone findDS error fails closed",
+			qname:    "www.example.com.",
+			parentDS: []dns.RR{makeDS("com.")},
+			zone:     "example.com.",
+			expected: true,
 		},
 		{
 			// Single-label qname with DS matching zone → signed.
-			name:       "single label qname DS matches zone",
-			qname:      "com.",
-			parentdsrr: []dns.RR{makeDS(".")},
-			zone:       "com.",
-			expected:   true,
+			name:     "single label qname DS matches zone",
+			qname:    "com.",
+			parentDS: []dns.RR{makeDS(".")},
+			zone:     "com.",
+			expected: true,
 		},
 	}
 
@@ -262,7 +262,7 @@ func Test_isZoneSecure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := r.isZoneSecure(ctx, tt.qname, tt.parentdsrr, tt.zone)
+			result := r.isZoneSecure(ctx, tt.qname, tt.parentDS, tt.zone)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -318,7 +318,7 @@ func Test_isZoneSecureIntegration(t *testing.T) {
 			req.SetQuestion(tt.qname, dns.TypeA)
 			req.SetEdns0(4096, true)
 
-			resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+			resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 			if tt.expectErr {
 				assert.Error(t, err)

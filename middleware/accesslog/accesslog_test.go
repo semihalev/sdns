@@ -25,7 +25,7 @@ func Test_accesslog(t *testing.T) {
 
 	middleware.Register("accesslog", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
-	a := middleware.Get("accesslog").(*AccessLog)
+	a := middleware.Get("accesslog").(*Log)
 
 	assert.Equal(t, "accesslog", a.Name())
 	assert.NotNil(t, a.logFile)

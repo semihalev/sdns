@@ -34,6 +34,7 @@ func makeTestConfig() *config.Config {
 	cfg.CacheSize = 1024
 	cfg.Timeout.Duration = 2 * time.Second
 	cfg.Directory = filepath.Join(os.TempDir(), "sdns_temp")
+	_ = os.MkdirAll(cfg.Directory, 0750)
 	cfg.IPv6Access = true
 	cfg.DNSSEC = "on"
 

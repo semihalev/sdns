@@ -13,14 +13,14 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-// AccessLog type.
-type AccessLog struct {
+// Log type.
+type Log struct {
 	cfg     *config.Config
 	logFile *os.File
 }
 
-// New returns a new AccessLog.
-func New(cfg *config.Config) *AccessLog {
+// New returns a new access log middleware.
+func New(cfg *config.Config) *Log {
 	var logFile *os.File
 	var err error
 
@@ -31,22 +31,22 @@ func New(cfg *config.Config) *AccessLog {
 		}
 	}
 
-	return &AccessLog{
+	return &Log{
 		cfg:     cfg,
 		logFile: logFile,
 	}
 }
 
-// (*AccessLog).Name name return middleware name.
-func (a *AccessLog) Name() string { return name }
+// (*Log).Name returns the middleware name.
+func (a *Log) Name() string { return name }
 
-// (*AccessLog).ClientOnly marks accesslog as a client-traffic
+// (*Log).ClientOnly marks accesslog as a client-traffic
 // observer; middleware.Setup excludes it from internal
 // sub-pipelines so access logs reflect real client queries only.
-func (a *AccessLog) ClientOnly() bool { return true }
+func (a *Log) ClientOnly() bool { return true }
 
-// (*AccessLog).ServeDNS serveDNS implements the Handle interface.
-func (a *AccessLog) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+// (*Log).ServeDNS implements the Handle interface.
+func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)
 
 	w := ch.Writer

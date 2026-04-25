@@ -267,15 +267,15 @@ func FuzzSortnss(f *testing.F) {
 	f.Add(".")
 
 	f.Fuzz(func(t *testing.T, qname string) {
-		nss := nameservers{
+		hosts := hostSet{
 			"ns1.example.com.": struct{}{},
 			"ns2.example.com.": struct{}{},
 			"ns1.test.com.":    struct{}{},
 		}
 
 		// This should not panic regardless of input
-		_ = sortnss(nss, qname)
-		_ = sortnss(nil, qname)
-		_ = sortnss(nameservers{}, qname)
+		_ = sortHosts(hosts, qname)
+		_ = sortHosts(nil, qname)
+		_ = sortHosts(hostSet{}, qname)
 	})
 }

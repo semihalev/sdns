@@ -41,7 +41,7 @@ func Test_Accesslist(t *testing.T) {
 	middleware.Register("accesslist", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
-	a := middleware.Get("accesslist").(*AccessList)
+	a := middleware.Get("accesslist").(*List)
 	assert.Equal(t, "accesslist", a.Name())
 
 	ch := middleware.NewChain([]middleware.Handler{})

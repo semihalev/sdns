@@ -67,6 +67,10 @@ var (
 		Code:    dns.ExtendedErrorCodeDNSBogus,
 		Message: "Parent has DS records but zone appears unsigned",
 	}
+	errTrustAnchorsUnavailable = &ValidationError{
+		Code:    dns.ExtendedErrorCodeOther,
+		Message: "Trust anchors unavailable — refusing to validate",
+	}
 )
 
 // NSEC validation errors.

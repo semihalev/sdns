@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware/resolver"
 	"github.com/semihalev/zlog/v2"
@@ -151,17 +151,17 @@ func Test_autota(t *testing.T) {
 	req.SetQuestion(".", dns.TypeDNSKEY)
 	req.SetEdns0(1400, true)
 
-	rootservers := &authcache.AuthServers{}
-	rootservers.Zone = "."
+	rootServers := &authority.Servers{}
+	rootServers.Zone = "."
 
 	for _, s := range cfg.RootServers {
 		host, _, _ := net.SplitHostPort(s)
 		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
-			rootservers.List = append(rootservers.List, authcache.NewAuthServer(s, authcache.IPv4))
+			rootServers.List = append(rootServers.List, authority.NewServer(s, authority.IPv4))
 		}
 	}
 
-	resp, err := r.Resolve(context.Background(), req, rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(context.Background(), req, rootServers, true, 30, 0, false, nil)
 
 	assert.True(t, resp.AuthenticatedData)
 	assert.NoError(t, err)

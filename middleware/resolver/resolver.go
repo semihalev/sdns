@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +14,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
@@ -26,27 +27,34 @@ import (
 type Resolver struct {
 	sync.RWMutex
 
-	ncache *authcache.NSCache
+	delegations *authority.Cache
 
 	cfg *config.Config
 
-	rootservers *authcache.AuthServers
+	rootServers *authority.Servers
 
-	outboundipv4 []net.IP
-	outboundipv6 []net.IP
+	outboundIPv4 []net.IP
+	outboundIPv6 []net.IP
 
 	// Pre-built *net.UDPAddr forms of the outbound IPs above, so the
 	// UDP fast-path in exchange can skip the per-call allocation of
-	// `&net.UDPAddr{IP: …}`. Indices align with outboundipv4/ipv6.
+	// `&net.UDPAddr{IP: …}`. Indices align with outboundIPv4/IPv6.
 	outboundUDPv4 []*net.UDPAddr
 	outboundUDPv6 []*net.UDPAddr
 
 	// glue addrs cache
-	ipv4cache *cache.Cache
-	ipv6cache *cache.Cache
+	glueV4 *cache.Cache
+	glueV6 *cache.Cache
 
 	dnssec   bool
-	rootkeys []dns.RR
+	rootKeys []dns.RR
+	// configuredRootKeys is the immutable snapshot of cfg.RootKeys
+	// parsed at startup. rootKeys above is the *current* trust set
+	// and is rewritten by AutoTA on every refresh; the merge path in
+	// AutoTA needs the original admin-configured anchors so that a
+	// key which has aged out of the RFC 5011 lifecycle can't be
+	// resurrected from the mutable copy on the next refresh.
+	configuredRootKeys []dns.RR
 
 	qnameMinLevel int
 	netTimeout    time.Duration
@@ -90,18 +98,18 @@ type Resolver struct {
 // inherit the outer client's spread through the shared ctx), with req.Id
 // as a fallback for direct callers.
 type resolveState struct {
-	req        *dns.Msg
-	servers    *authcache.AuthServers
-	depth      int
-	level      int
-	nomin      bool
-	parentDSRR []dns.RR
-	isRoot     bool
-	extra      []bool
-	requestID  uint16
+	req       *dns.Msg
+	servers   *authority.Servers
+	depth     int
+	level     int
+	nomin     bool
+	parentDS  []dns.RR
+	isRoot    bool
+	extra     []bool
+	requestID uint16
 }
 
-type nameservers map[string]struct{}
+type hostSet map[string]struct{}
 
 type fatalError error
 
@@ -119,11 +127,11 @@ func NewResolver(cfg *config.Config) *Resolver {
 	r := &Resolver{
 		cfg: cfg,
 
-		ncache: authcache.NewNSCache(),
+		delegations: authority.NewCache(),
 
-		rootservers: new(authcache.AuthServers),
+		rootServers: new(authority.Servers),
 
-		ipv4cache: cache.New(defaultCacheSize),
+		glueV4: cache.New(defaultCacheSize),
 
 		dnssec: cfg.DNSSEC == "on",
 
@@ -141,7 +149,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 	r.maxConcurrent = make(chan struct{}, maxConcurrent)
 
 	if r.cfg.IPv6Access {
-		r.ipv6cache = cache.New(defaultCacheSize)
+		r.glueV6 = cache.New(defaultCacheSize)
 	}
 
 	if r.cfg.Timeout.Duration > 0 {
@@ -151,14 +159,15 @@ func NewResolver(cfg *config.Config) *Resolver {
 	r.parseRootServers(cfg)
 	r.parseOutBoundAddrs(cfg)
 
-	r.rootkeys = []dns.RR{}
+	r.rootKeys = []dns.RR{}
 	for _, k := range cfg.RootKeys {
 		rr, err := dns.NewRR(k)
 		if err != nil {
 			zlog.Fatal("Root keys invalid", zlog.String("error", err.Error()))
 		}
-		r.rootkeys = append(r.rootkeys, rr)
+		r.rootKeys = append(r.rootKeys, rr)
 	}
+	r.configuredRootKeys = slices.Clone(r.rootKeys)
 
 	// Initialize TCP connection pool if enabled
 	if cfg.TCPKeepalive {
@@ -175,14 +184,14 @@ func NewResolver(cfg *config.Config) *Resolver {
 }
 
 func (r *Resolver) parseRootServers(cfg *config.Config) {
-	r.rootservers = &authcache.AuthServers{}
-	r.rootservers.Zone = rootzone
+	r.rootServers = &authority.Servers{}
+	r.rootServers.Zone = rootzone
 
 	for _, s := range cfg.RootServers {
 		host, _, _ := net.SplitHostPort(s)
 
 		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
-			r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s, authcache.IPv4))
+			r.rootServers.List = append(r.rootServers.List, authority.NewServer(s, authority.IPv4))
 		}
 	}
 
@@ -191,7 +200,7 @@ func (r *Resolver) parseRootServers(cfg *config.Config) {
 			host, _, _ := net.SplitHostPort(s)
 
 			if ip := net.ParseIP(host); ip != nil && ip.To16() != nil {
-				r.rootservers.List = append(r.rootservers.List, authcache.NewAuthServer(s, authcache.IPv6))
+				r.rootServers.List = append(r.rootServers.List, authority.NewServer(s, authority.IPv6))
 			}
 		}
 	}
@@ -201,7 +210,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 	for _, s := range cfg.OutboundIPs {
 		if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
 			if isLocalIP(ip) {
-				r.outboundipv4 = append(r.outboundipv4, ip)
+				r.outboundIPv4 = append(r.outboundIPv4, ip)
 			} else {
 				zlog.Fatal("Invalid local IPv4 address in config", zlog.String("ip", ip.String()))
 			}
@@ -212,7 +221,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 		for _, s := range cfg.OutboundIP6s {
 			if ip := net.ParseIP(s); ip != nil && ip.To16() != nil {
 				if isLocalIP(ip) {
-					r.outboundipv6 = append(r.outboundipv6, ip)
+					r.outboundIPv6 = append(r.outboundIPv6, ip)
 				} else {
 					zlog.Fatal("Invalid local IPv6 address in config", zlog.String("ip", ip.String()))
 				}
@@ -223,18 +232,18 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 	// Pre-build UDPAddr forms so the UDP hot path doesn't allocate
 	// one per exchange. Port=0 means "kernel picks" — the ephemeral
 	// port is bound at socket creation, just like the Dialer path.
-	r.outboundUDPv4 = make([]*net.UDPAddr, len(r.outboundipv4))
-	for i, ip := range r.outboundipv4 {
+	r.outboundUDPv4 = make([]*net.UDPAddr, len(r.outboundIPv4))
+	for i, ip := range r.outboundIPv4 {
 		r.outboundUDPv4[i] = &net.UDPAddr{IP: ip}
 	}
-	r.outboundUDPv6 = make([]*net.UDPAddr, len(r.outboundipv6))
-	for i, ip := range r.outboundipv6 {
+	r.outboundUDPv6 = make([]*net.UDPAddr, len(r.outboundIPv6))
+	for i, ip := range r.outboundIPv6 {
 		r.outboundUDPv6[i] = &net.UDPAddr{IP: ip}
 	}
 }
 
 // (*Resolver).Resolve resolve starts a DNS resolution - public interface with old signature for compatibility.
-func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache.AuthServers, root bool, depth int, level int, nomin bool, parentdsrr []dns.RR, extra ...bool) (*dns.Msg, error) {
+func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority.Servers, root bool, depth int, level int, nomin bool, parentDS []dns.RR, extra ...bool) (*dns.Msg, error) {
 	reqid := req.Id
 	if v := ctx.Value(contextKeyRequestID); v != nil {
 		if id, ok := v.(uint16); ok {
@@ -242,15 +251,15 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authcache
 		}
 	}
 	rs := &resolveState{
-		req:        req,
-		servers:    servers,
-		depth:      depth,
-		level:      level,
-		nomin:      nomin,
-		parentDSRR: parentdsrr,
-		isRoot:     root,
-		extra:      extra,
-		requestID:  reqid,
+		req:       req,
+		servers:   servers,
+		depth:     depth,
+		level:     level,
+		nomin:     nomin,
+		parentDS:  parentDS,
+		isRoot:    root,
+		extra:     extra,
+		requestID: reqid,
 	}
 	return r.resolve(ctx, rs)
 }
@@ -260,7 +269,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	q := rs.req.Question[0]
 
 	if rs.isRoot {
-		rs.servers, rs.parentDSRR, rs.level = r.searchCache(q, rs.req.CheckingDisabled, q.Name)
+		rs.servers, rs.parentDS, rs.level = r.searchCache(q, rs.req.CheckingDisabled, q.Name)
 	}
 
 	// RFC 7816 query minimization. There are some concerns in RFC.
@@ -292,10 +301,10 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		}
 
 		if resp.Rcode == dns.RcodeNameError {
-			return r.authority(ctx, rs.req, resp, rs.parentDSRR, rs.req.Question[0].Qtype, rs.servers.Zone) // handle NXDOMAIN with DNSSEC proof
+			return r.authority(ctx, rs.req, resp, rs.parentDS, rs.servers.Zone) // handle NXDOMAIN with DNSSEC proof
 		}
 
-		return r.answer(ctx, rs.req, resp, rs.parentDSRR, rs.servers.Zone, rs.extra...)
+		return r.answer(ctx, rs.req, resp, rs.parentDS, rs.servers.Zone, rs.extra...)
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
@@ -319,7 +328,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	return m, nil
 }
 
-func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
+func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authority.Servers) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
 	// Key by question, CD flag, AND a fingerprint of the
@@ -335,9 +344,9 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	//
 	// The parent-DS chain is deliberately *not* in the key: the
 	// singleflight leader only does the upstream wire lookup
-	// (r.lookup), which doesn't consume parentDSRR. DNSSEC
+	// (r.lookup), which doesn't consume parentDS. DNSSEC
 	// validation runs per-caller on the copied response with each
-	// caller's own DS chain, so mixing parentDSRR into the key
+	// caller's own DS chain, so mixing parentDS into the key
 	// would fragment dedup without affecting correctness.
 	cd := byte('0')
 	if req.CheckingDisabled {
@@ -394,7 +403,7 @@ func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (c
 	return ctx, false
 }
 
-func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers) (ok bool) {
+func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (ok bool) {
 	// Quick check under read lock
 	servers.RLock()
 	oldsize := len(servers.List)
@@ -402,8 +411,8 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 		servers.RUnlock()
 		return false
 	}
-	nssToCheck := make([]string, len(servers.Nss))
-	copy(nssToCheck, servers.Nss)
+	hostsToCheck := make([]string, len(servers.Hosts))
+	copy(hostsToCheck, servers.Hosts)
 	cd := servers.CheckingDisable
 	servers.RUnlock()
 
@@ -416,10 +425,10 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 		addrs  []string
 		isIPv6 bool
 	}
-	results := make(chan lookupResult, len(nssToCheck)*2)
+	results := make(chan lookupResult, len(hostsToCheck)*2)
 
 	// Clear caches and start IPv4 lookups
-	for _, name := range nssToCheck {
+	for _, name := range hostsToCheck {
 		name := name // Capture loop variable
 		r.removeIPv4Cache(name)
 
@@ -437,7 +446,7 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 
 	// Start IPv6 lookups if enabled
 	if r.cfg.IPv6Access {
-		for _, name := range nssToCheck {
+		for _, name := range hostsToCheck {
 			name := name // Capture loop variable
 			r.removeIPv6Cache(name)
 
@@ -463,18 +472,18 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 	// Collect results
 	nsipv4 := make(map[string][]string)
 	nsipv6 := make(map[string][]string)
-	var newServers []*authcache.AuthServer
+	var newServers []*authority.Server
 
 	for result := range results {
 		if result.isIPv6 {
 			nsipv6[result.name] = result.addrs
 			for _, addr := range result.addrs {
-				newServers = append(newServers, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv6))
+				newServers = append(newServers, authority.NewServer(net.JoinHostPort(addr, "53"), authority.IPv6))
 			}
 		} else {
 			nsipv4[result.name] = result.addrs
 			for _, addr := range result.addrs {
-				newServers = append(newServers, authcache.NewAuthServer(net.JoinHostPort(addr, "53"), authcache.IPv4))
+				newServers = append(newServers, authority.NewServer(net.JoinHostPort(addr, "53"), authority.IPv4))
 			}
 		}
 	}
@@ -511,11 +520,11 @@ func (r *Resolver) checkNss(ctx context.Context, servers *authcache.AuthServers)
 	return false
 }
 
-func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*authcache.AuthServers, nameservers, nameservers) {
-	authservers := &authcache.AuthServers{}
+func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*authority.Servers, hostSet, hostSet) {
+	authservers := &authority.Servers{}
 
-	foundv4 := make(nameservers)
-	foundv6 := make(nameservers)
+	foundv4 := make(hostSet)
+	foundv6 := make(hostSet)
 
 	if r.cfg.IPv6Access {
 		nsipv6 := make(map[string][]string)
@@ -531,7 +540,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 					continue
 				}
 
-				if _, ok := nss[name]; ok {
+				if _, ok := hosts[name]; ok {
 					if isLocalIP(extra.AAAA) {
 						continue
 					}
@@ -543,7 +552,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 					foundv6[name] = struct{}{}
 
 					nsipv6[name] = append(nsipv6[name], extra.AAAA.String())
-					authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(extra.AAAA.String(), "53"), authcache.IPv6))
+					authservers.List = append(authservers.List, authority.NewServer(net.JoinHostPort(extra.AAAA.String(), "53"), authority.IPv6))
 				}
 			}
 		}
@@ -563,7 +572,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 				continue
 			}
 
-			if _, ok := nss[name]; ok {
+			if _, ok := hosts[name]; ok {
 				if isLocalIP(extra.A) {
 					continue
 				}
@@ -575,7 +584,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 				foundv4[name] = struct{}{}
 
 				nsipv4[name] = append(nsipv4[name], extra.A.String())
-				authservers.List = append(authservers.List, authcache.NewAuthServer(net.JoinHostPort(extra.A.String(), "53"), authcache.IPv4))
+				authservers.List = append(authservers.List, authority.NewServer(net.JoinHostPort(extra.A.String(), "53"), authority.IPv4))
 			}
 		}
 	}
@@ -587,13 +596,13 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, nss nameservers, level int) (*auth
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
 	for name, addrs := range nsipv4 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-		r.ipv4cache.Add(key, addrs)
+		r.glueV4.Add(key, addrs)
 	}
 }
 
 func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
 	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-	if v, ok := r.ipv4cache.Get(key); ok {
+	if v, ok := r.glueV4.Get(key); ok {
 		return v.([]string), ok
 	}
 
@@ -601,19 +610,19 @@ func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
 }
 
 func (r *Resolver) removeIPv4Cache(name string) {
-	r.ipv4cache.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
+	r.glueV4.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
 	for name, addrs := range nsipv6 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-		r.ipv6cache.Add(key, addrs)
+		r.glueV6.Add(key, addrs)
 	}
 }
 
 func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
 	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-	if v, ok := r.ipv6cache.Get(key); ok {
+	if v, ok := r.glueV6.Get(key); ok {
 		return v.([]string), ok
 	}
 
@@ -621,7 +630,7 @@ func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
 }
 
 func (r *Resolver) removeIPv6Cache(name string) {
-	r.ipv6cache.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
+	r.glueV6.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool) {
@@ -713,7 +722,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 	return msg, nil
 }
 
-func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, zone string, extra ...bool) (*dns.Msg, error) {
+func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dns.RR, zone string, extra ...bool) (*dns.Msg, error) {
 	// The internal recursion's target response is held back until
 	// after the outer DNSSEC check. Merging target records into resp
 	// before verifyRRSIG() would force the validator to tolerate
@@ -733,6 +742,15 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 	}
 
 	if !req.CheckingDisabled {
+		// Fail closed when trust anchors are unavailable. AutoTA
+		// clears r.rootKeys on unrecoverable errors (e.g. corrupt
+		// tombstone store); without a starting anchor no chain can
+		// be validated, and letting the query proceed would silently
+		// fall into the "unsigned delegation" path and accept
+		// unauthenticated data.
+		if r.dnssec && !r.hasTrustAnchors() {
+			return nil, errTrustAnchorsUnavailable
+		}
 		q := req.Question[0]
 
 		signers := r.findRRSIGSigners(resp, q.Name, true)
@@ -740,12 +758,12 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 			// No RRSIGs in the response. Determine whether missing
 			// signatures are acceptable (insecure delegation) or a
 			// real DNSSEC failure (signed zone).
-			if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
+			if r.isZoneSecure(ctx, q.Name, parentDS, zone) {
 				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", errNoSignatures.Error())
 				return nil, errNoSignatures
 			}
 		} else {
-			origDSRR := parentdsrr
+			origDSRR := parentDS
 			var lastErr error
 			settled := false
 			for _, signer := range signers {
@@ -816,19 +834,22 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentdsrr []
 	return resp, nil
 }
 
-func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr []dns.RR, otype uint16, zone string) (*dns.Msg, error) {
+func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS []dns.RR, zone string) (*dns.Msg, error) {
 	if !req.CheckingDisabled {
+		if r.dnssec && !r.hasTrustAnchors() {
+			return nil, errTrustAnchorsUnavailable
+		}
 		q := req.Question[0]
 
 		signers := r.findRRSIGSigners(resp, q.Name, false)
 		if len(signers) == 0 {
-			if r.isZoneSecure(ctx, q.Name, parentdsrr, zone) {
+			if r.isZoneSecure(ctx, q.Name, parentDS, zone) {
 				err := errNoSignatures
 				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 				return nil, err
 			}
 		} else {
-			origDSRR := parentdsrr
+			origDSRR := parentDS
 			var (
 				lastErr      error
 				settled      bool
@@ -932,15 +953,15 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentdsrr
 	return resp, nil
 }
 
-func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authcache.AuthServers) (resp *dns.Msg, err error) {
-	var serversList []*authcache.AuthServer
+func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authority.Servers) (resp *dns.Msg, err error) {
+	var serversList []*authority.Server
 
 	servers.RLock()
 	serversList = append(serversList, servers.List...)
 	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
-	authcache.Sort(serversList, atomic.AddUint64(&servers.Called, 1)) // sort by RTT and failure rate
+	authority.Sort(serversList, atomic.AddUint64(&servers.Called, 1)) // sort by RTT and failure rate
 
 	responseErrors := []*dns.Msg{}
 	configErrors := []*dns.Msg{}
@@ -950,7 +971,7 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	type result struct {
 		resp   *dns.Msg
 		err    error
-		server *authcache.AuthServer
+		server *authority.Server
 	}
 
 	// Single unbuffered channel. Stragglers whose result arrives after
@@ -961,7 +982,7 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 
 	// Start a DNS query to a server
 	originalId := req.Id // Capture ID before goroutines start
-	queryServer := func(ctx context.Context, reqCopy *dns.Msg, server *authcache.AuthServer) {
+	queryServer := func(ctx context.Context, reqCopy *dns.Msg, server *authority.Server) {
 		defer ReleaseMsg(reqCopy)
 
 		// releaseSlot frees the semaphore slot acquired by the main
@@ -1022,7 +1043,7 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	}
 
 	// calculateTimeout returns adaptive timeout based on server RTT
-	calculateTimeout := func(server *authcache.AuthServer) time.Duration {
+	calculateTimeout := func(server *authority.Server) time.Duration {
 		rtt := time.Duration(atomic.LoadInt64(&server.Rtt))
 		if rtt <= 0 {
 			// Unknown RTT, use conservative default
@@ -1185,7 +1206,7 @@ mainloop:
 	return nil, fatalError(errNoRootServers)
 }
 
-func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string, req *dns.Msg, server *authcache.AuthServer, retried int) (*dns.Msg, error) {
+func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string, req *dns.Msg, server *authority.Server, retried int) (*dns.Msg, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -1242,7 +1263,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		}
 	default:
 		// TCP / fallback path: use the full Dialer machinery.
-		d := r.newDialer(ctx, rs, proto, server.Version)
+		d := r.newDialer(ctx, rs, proto, server.IPVersion)
 		co.Conn, err = d.DialContext(ctx, proto, server.Addr)
 		releaseDialer(d)
 		if err != nil {
@@ -1334,8 +1355,8 @@ var dialerPool = sync.Pool{New: func() any { return new(net.Dialer) }}
 // DialUDP's typed *net.UDPConn wraps a nil pointer in a non-nil
 // net.Conn interface, and downstream code assumes `Conn != nil`
 // means the conn is usable.
-func (r *Resolver) dialUDP(server *authcache.AuthServer) (net.Conn, error) {
-	laddr := r.localUDPAddrFor(server.Version)
+func (r *Resolver) dialUDP(server *authority.Server) (net.Conn, error) {
+	laddr := r.localUDPAddrFor(server.IPVersion)
 	conn, err := net.DialUDP("udp", laddr, server.UDPAddr)
 	if err != nil {
 		return nil, err
@@ -1347,13 +1368,13 @@ func (r *Resolver) dialUDP(server *authcache.AuthServer) (net.Conn, error) {
 // local address on the outgoing socket, honouring the same round-robin
 // selection newDialer does based on NumCPU rotation; nil means "let
 // the kernel pick an ephemeral local endpoint".
-func (r *Resolver) localUDPAddrFor(version authcache.Version) *net.UDPAddr {
+func (r *Resolver) localUDPAddrFor(version authority.IPVersion) *net.UDPAddr {
 	switch version {
-	case authcache.IPv4:
+	case authority.IPv4:
 		if n := len(r.outboundUDPv4); n > 0 {
 			return r.outboundUDPv4[localAddrIndex(n)]
 		}
-	case authcache.IPv6:
+	case authority.IPv6:
 		if n := len(r.outboundUDPv6); n > 0 {
 			return r.outboundUDPv6[localAddrIndex(n)]
 		}
@@ -1383,7 +1404,7 @@ func releaseDialer(d *net.Dialer) {
 	dialerPool.Put(d)
 }
 
-func (r *Resolver) newDialer(ctx context.Context, rs *resolveState, proto string, version authcache.Version) (d *net.Dialer) {
+func (r *Resolver) newDialer(ctx context.Context, rs *resolveState, proto string, version authority.IPVersion) (d *net.Dialer) {
 	// Calculate deadline respecting both network timeout and context deadline
 	deadline := time.Now().Add(r.netTimeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
@@ -1403,29 +1424,29 @@ func (r *Resolver) newDialer(ctx context.Context, rs *resolveState, proto string
 	reqid := int(rs.requestID)
 
 	switch version {
-	case authcache.IPv4:
-		if len(r.outboundipv4) > 0 {
+	case authority.IPv4:
+		if len(r.outboundIPv4) > 0 {
 			// we will be select outbound ip address by request id.
-			index := len(r.outboundipv4) * reqid / maxUint16
+			index := len(r.outboundIPv4) * reqid / maxUint16
 
 			// port number will automatically chosen
 			switch proto {
 			case "tcp":
-				d.LocalAddr = &net.TCPAddr{IP: r.outboundipv4[index]}
+				d.LocalAddr = &net.TCPAddr{IP: r.outboundIPv4[index]}
 			case "udp":
-				d.LocalAddr = &net.UDPAddr{IP: r.outboundipv4[index]}
+				d.LocalAddr = &net.UDPAddr{IP: r.outboundIPv4[index]}
 			}
 		}
-	case authcache.IPv6:
-		if len(r.outboundipv6) > 0 {
-			index := len(r.outboundipv6) * reqid / maxUint16
+	case authority.IPv6:
+		if len(r.outboundIPv6) > 0 {
+			index := len(r.outboundIPv6) * reqid / maxUint16
 
 			// port number will automatically chosen
 			switch proto {
 			case "tcp":
-				d.LocalAddr = &net.TCPAddr{IP: r.outboundipv6[index]}
+				d.LocalAddr = &net.TCPAddr{IP: r.outboundIPv6[index]}
 			case "udp":
-				d.LocalAddr = &net.UDPAddr{IP: r.outboundipv6[index]}
+				d.LocalAddr = &net.UDPAddr{IP: r.outboundIPv6[index]}
 			}
 		}
 	}
@@ -1433,7 +1454,7 @@ func (r *Resolver) newDialer(ctx context.Context, rs *resolveState, proto string
 	return d
 }
 
-func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers *authcache.AuthServers, parentdsrr []dns.RR, level int) {
+func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers *authority.Servers, parentDS []dns.RR, level int) {
 	if q.Qtype == dns.TypeDS {
 		// DS queries are answered by parent zone, move up one label
 		next, end := dns.NextLabel(q.Name, 0)
@@ -1447,38 +1468,38 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	q.Qtype = dns.TypeNS // we should search NS type in cache
 	key := cache.Key(q, cd)
 
-	ns, err := r.ncache.Get(key)
+	ns, err := r.delegations.Get(key)
 
 	if err == nil {
 		if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
 			// we have fatal errors from all servers, lets clear cache and try again
-			r.ncache.Remove(key)
+			r.delegations.Remove(key)
 			q.Name = origin
 			return r.searchCache(q, cd, origin)
 		}
 		zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
-		return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
+		return ns.Servers, ns.DSSet, dns.CompareDomainName(origin, q.Name)
 	}
 
 	if !cd {
 		key := cache.Key(q, true)
-		ns, err := r.ncache.Get(key)
+		ns, err := r.delegations.Get(key)
 
-		if err == nil && len(ns.DSRR) == 0 {
+		if err == nil && len(ns.DSSet) == 0 {
 			if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
-				r.ncache.Remove(key)
+				r.delegations.Remove(key)
 				q.Name = origin
 				return r.searchCache(q, cd, origin)
 			}
 			zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
-			return ns.Servers, ns.DSRR, dns.CompareDomainName(origin, q.Name)
+			return ns.Servers, ns.DSSet, dns.CompareDomainName(origin, q.Name)
 		}
 	}
 
 	next, end := dns.NextLabel(q.Name, 0)
 
 	if end {
-		return r.rootservers, nil, 0 // reached root zone, use root servers
+		return r.rootServers, nil, 0 // reached root zone, use root servers
 	}
 
 	q.Name = q.Name[next:]
@@ -1551,11 +1572,11 @@ func (r *Resolver) findRRSIGSigners(resp *dns.Msg, qname string, inAnswer bool) 
 	return signers
 }
 
-func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr []dns.RR, cd bool) (dsset []dns.RR, err error) {
-	if signer == rootzone && len(parentdsrr) == 0 {
-		parentdsrr = r.dsRRFromRootKeys()
-	} else if len(parentdsrr) > 0 {
-		dsrr := parentdsrr[0].(*dns.DS)
+func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []dns.RR, cd bool) (dsset []dns.RR, err error) {
+	if signer == rootzone && len(parentDS) == 0 {
+		parentDS = r.dsRRFromRootKeys()
+	} else if len(parentDS) > 0 {
+		dsrr := parentDS[0].(*dns.DS)
 		dsname := strings.ToLower(dsrr.Header().Name)
 
 		if signer == "" {
@@ -1571,8 +1592,8 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 					return nil, err
 				}
 
-				parentdsrr = extractRRSet(dsResp.Answer, candidate, dns.TypeDS)
-				if len(parentdsrr) == 0 {
+				parentDS = extractRRSet(dsResp.Answer, candidate, dns.TypeDS)
+				if len(parentDS) == 0 {
 					break
 				}
 
@@ -1586,11 +1607,11 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 				return nil, err
 			}
 
-			parentdsrr = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
+			parentDS = extractRRSet(dsResp.Answer, signer, dns.TypeDS)
 		}
 	}
 
-	dsset = parentdsrr
+	dsset = parentDS
 
 	return
 }
@@ -1607,19 +1628,19 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentdsrr 
 // inside the zone are delegation points themselves.
 //
 // When the zone parameter identifies the authoritative zone that produced the
-// response, we check whether the DS in parentdsrr covers that zone directly.
+// response, we check whether the DS in parentDS covers that zone directly.
 // If not, we probe the zone's own delegation point (not internal names) to
 // determine whether an insecure delegation exists between the ancestor and
 // the zone.
-func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentdsrr []dns.RR, zone string) bool {
-	if !hasSupportedDS(parentdsrr) {
+func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentDS []dns.RR, zone string) bool {
+	if !hasSupportedDS(parentDS) {
 		// Either no DS records, or every DS uses a digest type this
 		// validator cannot verify. RFC 6840 §5.2 treats such zones as
 		// if DNSSEC were absent, so missing RRSIGs are acceptable.
 		return false
 	}
 
-	dsrr := parentdsrr[0].(*dns.DS)
+	dsrr := parentDS[0].(*dns.DS)
 	dsname := strings.ToLower(dsrr.Header().Name)
 
 	// If the DS record directly covers the zone that served the response,
@@ -1644,14 +1665,14 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentdsrr []
 
 	// isZoneSecure is only reached from CD=0 validation paths, so
 	// propagate cd=false into the internal DS walk here.
-	parentdsrr, err := r.findDS(ctx, "", probeName, parentdsrr, false)
+	parentDS, err := r.findDS(ctx, "", probeName, parentDS, false)
 	if err != nil {
 		// On lookup error, fail closed (assume signed) for safety.
 		zlog.Debug("DS lookup failed during isZoneSecure, failing closed", "qname", qname, "error", err.Error())
 		return true
 	}
 
-	return hasSupportedDS(parentdsrr)
+	return hasSupportedDS(parentDS)
 }
 
 // hasSupportedDS reports whether dsset contains at least one DS record
@@ -1773,23 +1794,23 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	}
 
 	// Fail closed when root servers aren't configured. Production
-	// startup always populates rootservers; tests that construct
+	// startup always populates root servers; tests that construct
 	// Resolver{} directly rely on this fail-closed path rather than
 	// a panic deep in resolve().
-	if r.rootservers == nil {
+	if r.rootServers == nil {
 		return nil, errNoRootServers
 	}
 
 	child := &resolveState{
-		req:        req,
-		servers:    r.rootservers,
-		depth:      depth,
-		level:      0,
-		nomin:      false,
-		parentDSRR: nil,
-		isRoot:     true,
-		extra:      nil,
-		requestID:  reqid,
+		req:       req,
+		servers:   r.rootServers,
+		depth:     depth,
+		level:     0,
+		nomin:     false,
+		parentDS:  nil,
+		isRoot:    true,
+		extra:     nil,
+		requestID: reqid,
 	}
 	resp, err := r.resolve(ctx, child)
 	if err != nil {
@@ -1863,17 +1884,17 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, key uint64, parentdsrr []dns.RR, foundv4, nss nameservers, cd bool) {
-	list := sortnss(nss, q.Name)
+func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool) {
+	list := sortHosts(hosts, q.Name)
 
 	for _, name := range list {
-		// Nss is copied by readers (checkNss) under RLock once
-		// the AuthServers pointer is published via ncache.Set
+		// Hosts is copied by readers (checkHosts) under RLock once
+		// the Servers pointer is published via delegations.Set
 		// below, so this append must take the same Lock —
 		// otherwise cold delegation bursts race on the slice
 		// header/backing array.
 		authservers.Lock()
-		authservers.Nss = append(authservers.Nss, name)
+		authservers.Hosts = append(authservers.Hosts, name)
 		authservers.Unlock()
 
 		if _, ok := foundv4[name]; ok {
@@ -1891,9 +1912,13 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		authservers.RLock()
 		hasList := len(authservers.List) > 0
 		authservers.RUnlock()
-		if hasList {
-			// temprorary cache before lookup
-			r.ncache.Set(key, parentdsrr, authservers, time.Minute) // cache partial results during NS lookups
+		if hasList && (!r.dnssec || r.hasTrustAnchors()) {
+			// Temporary cache before lookup. Skip when trust anchors
+			// are unavailable: the DS set could be empty because the
+			// DNSSEC chain was short-circuited, and caching that
+			// would poison CD=false lookups after recovery (CD=false
+			// searchCache falls back to CD=true empty-DS entries).
+			r.delegations.Set(key, parentDS, authservers, time.Minute)
 		}
 
 		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
@@ -1920,7 +1945,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 					continue addrsloop
 				}
 			}
-			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv4))
+			authservers.List = append(authservers.List, authority.NewServer(raddr, authority.IPv4))
 		}
 		if len(authservers.List) != before {
 			// Invalidate *before* releasing the write lock: after
@@ -1933,7 +1958,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 	}
 }
 
-func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authcache.AuthServers, foundv6, nss nameservers, cd bool) {
+func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, foundv6, hosts hostSet, cd bool) {
 	// Let the main (IPv4) path drain its auth-server rate-limit budget
 	// before we pile on IPv6 probes, but don't spend the full delay
 	// sleeping when ctx (e.g. the 30s v6-lookup budget upstream) has
@@ -1948,7 +1973,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		return
 	}
 
-	list := sortnss(nss, q.Name)
+	list := sortHosts(hosts, q.Name)
 
 	for _, name := range list {
 		if _, ok := foundv6[name]; ok {
@@ -1991,7 +2016,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 					continue addrsloop
 				}
 			}
-			authservers.List = append(authservers.List, authcache.NewAuthServer(raddr, authcache.IPv6))
+			authservers.List = append(authservers.List, authority.NewServer(raddr, authority.IPv6))
 		}
 		if len(authservers.List) != before {
 			authservers.InvalidateFingerprint()
@@ -2001,11 +2026,22 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 	}
 }
 
+// hasTrustAnchors reports whether at least one root trust anchor is
+// currently usable for DNSSEC validation. AutoTA clears r.rootKeys
+// when it can't prove revocation permanence (corrupt tombstone store,
+// etc.); validation paths call this to fail closed instead of
+// slipping into the "unsigned delegation" branch with no anchor.
+func (r *Resolver) hasTrustAnchors() bool {
+	r.RLock()
+	defer r.RUnlock()
+	return len(r.rootKeys) > 0
+}
+
 func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
 	r.RLock()
 	defer r.RUnlock()
 
-	for _, rr := range r.rootkeys {
+	for _, rr := range r.rootKeys {
 		if dnskey, ok := rr.(*dns.DNSKEY); ok {
 			dsset = append(dsset, dnskey.ToDS(dns.DH))
 		}
@@ -2023,7 +2059,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	defer r.RUnlock()
 
 	keys := make(map[uint16][]*dns.DNSKEY)
-	for _, rr := range r.rootkeys {
+	for _, rr := range r.rootKeys {
 		dnskey := rr.(*dns.DNSKEY)
 		if dnskey.Flags == 257 {
 			tag := dnskey.KeyTag()
@@ -2036,7 +2072,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	dsset := []dns.RR{}
-	for _, rr := range r.rootkeys {
+	for _, rr := range r.rootKeys {
 		if dnskey, ok := rr.(*dns.DNSKEY); ok {
 			dsset = append(dsset, dnskey.ToDS(dns.DH))
 		}
@@ -2166,7 +2202,7 @@ func (r *Resolver) clearAdditional(req, resp *dns.Msg, extra ...bool) *dns.Msg {
 	return resp
 }
 
-func (r *Resolver) equalServers(s1, s2 *authcache.AuthServers) bool {
+func (r *Resolver) equalServers(s1, s2 *authority.Servers) bool {
 	// Cheap probable-equality check: identical cached fingerprints
 	// imply identical sorted address sets. False positives are
 	// statistically negligible for 64-bit FNV over a handful of
@@ -2184,11 +2220,11 @@ func (r *Resolver) checkPriming() {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
 	defer cancel()
 
-	if len(r.rootservers.List) == 0 {
+	if len(r.rootServers.List) == 0 {
 		zlog.Fatal("Root servers list empty. check your config file")
 	}
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 5, 0, false, nil, true)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 5, 0, false, nil, true)
 	if err != nil {
 		zlog.Error("Root servers update failed", "error", err.Error())
 		return
@@ -2214,7 +2250,7 @@ func (r *Resolver) checkPriming() {
 
 	zlog.Debug("Root priming response", "ns_count", len(nsServers), "answer", len(resp.Answer), "extra", len(resp.Extra))
 
-	var tmpservers authcache.AuthServers
+	var tmpservers authority.Servers
 	foundServers := make(map[string]bool)
 
 	// Process IPv6 addresses if enabled
@@ -2225,7 +2261,7 @@ func (r *Resolver) checkPriming() {
 				if nsServers[serverName] {
 					foundServers[serverName] = true
 					host := net.JoinHostPort(v6.AAAA.String(), "53")
-					tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv6))
+					tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv6))
 				}
 			}
 		}
@@ -2238,7 +2274,7 @@ func (r *Resolver) checkPriming() {
 			if nsServers[serverName] {
 				foundServers[serverName] = true
 				host := net.JoinHostPort(v4.A.String(), "53")
-				tmpservers.List = append(tmpservers.List, authcache.NewAuthServer(host, authcache.IPv4))
+				tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv4))
 			}
 		}
 	}
@@ -2254,12 +2290,12 @@ func (r *Resolver) checkPriming() {
 		zlog.Debug("Some root servers missing addresses", "ns_count", len(nsServers), "found", len(foundServers))
 	}
 
-	if len(tmpservers.List) >= len(r.rootservers.List) {
-		r.rootservers.Lock()
-		r.rootservers.List = tmpservers.List
-		r.rootservers.Checked = true
-		r.rootservers.InvalidateFingerprint()
-		r.rootservers.Unlock()
+	if len(tmpservers.List) >= len(r.rootServers.List) {
+		r.rootServers.Lock()
+		r.rootServers.List = tmpservers.List
+		r.rootServers.Checked = true
+		r.rootServers.InvalidateFingerprint()
+		r.rootServers.Unlock()
 		return
 	}
 
@@ -2305,7 +2341,7 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolve
 		zlog.Debug("Received network error from all servers", "query", formatQuestion(minReq.Question[0]))
 
 		if atomic.AddUint32(&rs.servers.ErrorCount, 1) == 5 {
-			if ok := r.checkNss(ctx, rs.servers); ok {
+			if ok := r.checkHosts(ctx, rs.servers); ok {
 				return r.resolve(ctx, rs)
 			}
 		}
@@ -2315,8 +2351,6 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolve
 
 // processAuthoritySection handles the authority section of the response.
 func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
-	q := rs.req.Question[0]
-
 	if minimized {
 		// Check if we need to continue with minimization
 		for _, rr := range resp.Ns {
@@ -2330,32 +2364,32 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 	}
 
 	// Extract nameserver information
-	nsInfo := r.extractNameserverInfo(resp)
-	if len(nsInfo.nameservers) == 0 {
-		return r.authority(ctx, minReq, resp, rs.parentDSRR, q.Qtype, rs.servers.Zone)
+	nsInfo := r.extractDelegationInfo(resp)
+	if len(nsInfo.hosts) == 0 {
+		return r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
 	}
 
 	// Handle SOA records
 	if nsInfo.hasSOA {
 		resp.Ns = r.filterAuthorityRecords(resp.Ns)
-		return r.authority(ctx, minReq, resp, rs.parentDSRR, q.Qtype, rs.servers.Zone)
+		return r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
 	}
 
 	// Process delegation
 	return r.processDelegation(ctx, rs, resp, nsInfo, minimized)
 }
 
-// nameserverInfo holds extracted nameserver information.
-type nameserverInfo struct {
-	nameservers map[string]struct{}
-	nsRecord    *dns.NS
-	hasSOA      bool
+// delegationInfo holds extracted nameserver information.
+type delegationInfo struct {
+	hosts    hostSet
+	nsRecord *dns.NS
+	hasSOA   bool
 }
 
-// extractNameserverInfo extracts nameserver information from response.
-func (r *Resolver) extractNameserverInfo(resp *dns.Msg) nameserverInfo {
-	info := nameserverInfo{
-		nameservers: make(map[string]struct{}),
+// extractDelegationInfo extracts nameserver information from response.
+func (r *Resolver) extractDelegationInfo(resp *dns.Msg) delegationInfo {
+	info := delegationInfo{
+		hosts: make(hostSet),
 	}
 
 	for _, rr := range resp.Ns {
@@ -2364,7 +2398,7 @@ func (r *Resolver) extractNameserverInfo(resp *dns.Msg) nameserverInfo {
 			info.hasSOA = true
 		case *dns.NS:
 			info.nsRecord = v
-			info.nameservers[strings.ToLower(v.Ns)] = struct{}{}
+			info.hosts[strings.ToLower(v.Ns)] = struct{}{}
 		}
 	}
 
@@ -2384,16 +2418,16 @@ func (r *Resolver) filterAuthorityRecords(nsRecords []dns.RR) []dns.RR {
 }
 
 // processDelegation handles delegation processing.
-func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp *dns.Msg, nsInfo nameserverInfo, minimized bool) (*dns.Msg, error) {
+func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp *dns.Msg, nsInfo delegationInfo, minimized bool) (*dns.Msg, error) {
 	nsrr := nsInfo.nsRecord
 	q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
 	// DNSSEC validation for delegation
-	newParentDS, err := r.validateDelegation(ctx, rs.req, resp, q, rs.parentDSRR)
+	newParentDS, err := r.validateDelegation(ctx, rs.req, resp, q, rs.parentDS)
 	if err != nil {
 		return nil, err
 	}
-	rs.parentDSRR = newParentDS
+	rs.parentDS = newParentDS
 
 	// Check for parent detection
 	nlevel := dns.CountLabel(q.Name)
@@ -2401,15 +2435,15 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		if r.qnameMinLevel > 0 && !rs.nomin {
 			// Try without minimization
 			newRS := &resolveState{
-				req:        rs.req,
-				servers:    r.rootservers,
-				depth:      rs.depth,
-				level:      0,
-				nomin:      true,
-				parentDSRR: nil,
-				isRoot:     true,
-				extra:      rs.extra,
-				requestID:  rs.requestID,
+				req:       rs.req,
+				servers:   r.rootServers,
+				depth:     rs.depth,
+				level:     0,
+				nomin:     true,
+				parentDS:  nil,
+				isRoot:    true,
+				extra:     rs.extra,
+				requestID: rs.requestID,
 			}
 			return r.resolve(ctx, newRS)
 		}
@@ -2417,22 +2451,22 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	}
 
 	// Determine checking disabled state
-	cd := rs.req.CheckingDisabled || len(rs.parentDSRR) == 0
+	cd := rs.req.CheckingDisabled || len(rs.parentDS) == 0
 
 	// Try nameserver cache
 	key := cache.Key(q, cd)
-	if ncache, err := r.ncache.Get(key); err == nil {
-		return r.resolveWithCachedNameservers(ctx, rs, ncache, key, q, cd)
+	if cached, err := r.delegations.Get(key); err == nil {
+		return r.resolveWithCachedNameservers(ctx, rs, cached, key, q, cd)
 	}
 
 	zlog.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
 
 	// Check glue records and perform lookups
-	authservers, foundv4, foundv6 := r.checkGlueRR(resp, nsInfo.nameservers, rs.level)
+	authservers, foundv4, foundv6 := r.checkGlueRR(resp, nsInfo.hosts, rs.level)
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDSRR, foundv4, nsInfo.nameservers, cd)
+	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd)
 
 	if len(authservers.List) == 0 {
 		if minimized && rs.level < nlevel {
@@ -2443,9 +2477,14 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		return nil, errNoReachableAuth
 	}
 
-	// Cache nameservers
-	r.ncache.Set(key, rs.parentDSRR, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
-	zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
+	// Cache delegations. Skip when trust anchors are unavailable so
+	// a CD=true lookup during the outage cannot land an empty-DS
+	// entry that CD=false queries would reuse via searchCache after
+	// recovery (see searchCache CD=false → CD=true empty-DS reuse).
+	if !r.dnssec || r.hasTrustAnchors() {
+		r.delegations.Set(key, rs.parentDS, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
+		zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
+	}
 
 	// Start IPv6 lookups in background, bounded by a fixed
 	// deadline. The goroutine sleeps defaultTimeout then walks
@@ -2460,7 +2499,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 			v6ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
-			r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.nameservers, cd)
+			r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.hosts, cd)
 		}()
 	}
 
@@ -2477,7 +2516,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 }
 
 // validateDelegation performs DNSSEC validation for delegation.
-func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q dns.Question, parentdsrr []dns.RR) ([]dns.RR, error) {
+func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q dns.Question, parentDS []dns.RR) ([]dns.RR, error) {
 	if req.CheckingDisabled {
 		// CD=1: the client has opted out of DNSSEC validation.
 		// answer() and authority() already wrap their enforcement in
@@ -2488,17 +2527,27 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		// later requested (e.g. by a different request on a shared
 		// cache). Propagate CD into the internal DS lookups as well
 		// so the chain walk itself inherits the opt-out.
-		newDSRR, err := r.findDS(ctx, "", q.Name, parentdsrr, true)
+		newDSRR, err := r.findDS(ctx, "", q.Name, parentDS, true)
 		if err != nil {
 			return nil, err
 		}
 		return newDSRR, nil
 	}
 
+	// Fail closed when trust anchors are unavailable. Without a
+	// starting anchor, findDS below would happily return an empty
+	// DS set for any signer that isn't the root — processDelegation
+	// would then cache that empty-DSSet delegation, and once AutoTA
+	// recovers the cached entry would still make signed zones look
+	// insecure to later CD=false lookups via searchCache.
+	if r.dnssec && !r.hasTrustAnchors() {
+		return nil, errTrustAnchorsUnavailable
+	}
+
 	signers := r.findRRSIGSigners(resp, q.Name, false)
 	signerFound := len(signers) > 0
 
-	if !signerFound && hasSupportedDS(parentdsrr) && req.Question[0].Qtype == dns.TypeDS {
+	if !signerFound && hasSupportedDS(parentDS) && req.Question[0].Qtype == dns.TypeDS {
 		// A DS query under a signed parent must come back signed.
 		// Guard with hasSupportedDS so parent chains of only
 		// unsupported DS records (unknown digest or DNSKEY algorithm)
@@ -2508,24 +2557,24 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		return nil, errDSRecords
 	}
 
-	origDSRR := parentdsrr
+	origDSRR := parentDS
 	if !signerFound {
 		// No RRSIGs in the referral. Fall through the DS-lookup path
 		// with an empty signer so findDS still attempts to walk the
 		// parent chain; this matches the pre-refactor behaviour.
-		newDSRR, err := r.findDS(ctx, "", q.Name, parentdsrr, false)
+		newDSRR, err := r.findDS(ctx, "", q.Name, parentDS, false)
 		if err != nil {
 			return nil, err
 		}
-		parentdsrr = newDSRR
-		if hasSupportedDS(parentdsrr) {
+		parentDS = newDSRR
+		if hasSupportedDS(parentDS) {
 			// Parent chain declares the child is signed with usable DS
 			// but no RRSIG is present — bogus. Every DS unsupported is
 			// insecure per RFC 6840 §5.2 and falls through below.
 			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", errDSRecords.Error())
 			return nil, errDSRecords
 		}
-		return parentdsrr, nil
+		return parentDS, nil
 	}
 
 	// Try each candidate signer (most specific first) until one
@@ -2627,10 +2676,10 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 }
 
 // resolveWithCachedNameservers handles resolution with cached nameservers.
-func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rs *resolveState, ncache *authcache.NS, key uint64, q dns.Question, cd bool) (*dns.Msg, error) {
+func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rs *resolveState, cached *authority.Delegation, key uint64, q dns.Question, cd bool) (*dns.Msg, error) {
 	zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
 
-	if r.equalServers(ncache.Servers, rs.servers) {
+	if r.equalServers(cached.Servers, rs.servers) {
 		// Potential loop, decrease depth faster
 		rs.depth -= 10
 	} else {
@@ -2642,8 +2691,8 @@ func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rs *resolve
 	}
 
 	rs.level++
-	rs.servers = ncache.Servers
-	rs.parentDSRR = ncache.DSRR
+	rs.servers = cached.Servers
+	rs.parentDS = cached.DSSet
 	rs.isRoot = false
 	return r.resolve(ctx, rs)
 }

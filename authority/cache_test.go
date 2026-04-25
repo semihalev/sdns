@@ -1,4 +1,4 @@
-package authcache
+package authority
 
 import (
 	"testing"
@@ -9,17 +9,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func Test_NSCache(t *testing.T) {
-	nscache := NewNSCache()
+func Test_Cache(t *testing.T) {
+	nscache := NewCache()
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn("example.com."), dns.TypeA)
 	key := cache.Key(m.Question[0])
 
-	a := NewAuthServer("0.0.0.0:53", IPv4)
+	a := NewServer("0.0.0.0:53", IPv4)
 	_ = a.String()
 
-	servers := &AuthServers{List: []*AuthServer{a}}
+	servers := &Servers{List: []*Server{a}}
 
 	_, err := nscache.Get(key)
 	assert.Error(t, err)
@@ -49,14 +49,14 @@ func Test_NSCache(t *testing.T) {
 	nscache.Remove(key)
 }
 
-func Test_NSCacheSetTTLClamping(t *testing.T) {
-	nscache := NewNSCache()
+func Test_CacheSetTTLClamping(t *testing.T) {
+	nscache := NewCache()
 
 	key1 := uint64(1)
 	key2 := uint64(2)
 	key3 := uint64(3)
 
-	servers := &AuthServers{List: []*AuthServer{NewAuthServer("1.2.3.4:53", IPv4)}}
+	servers := &Servers{List: []*Server{NewServer("1.2.3.4:53", IPv4)}}
 
 	// Test TTL above maximum (should be clamped to 12h)
 	nscache.Set(key1, nil, servers, 24*time.Hour)

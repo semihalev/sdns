@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
@@ -128,7 +128,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	// Start recursive resolution from root servers
 	depth := h.cfg.Maxdepth
 	isRootQuery := q.Name == rootzone
-	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootservers, true, depth, 0, false, nil, isRootQuery)
+	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootServers, true, depth, 0, false, nil, isRootQuery)
 
 	// Restore original CD flag if DNSSEC is not supported
 	if !h.resolver.dnssec {
@@ -169,7 +169,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	msg.RecursionAvailable = true
 
 	// Default to root servers
-	servers := h.resolver.rootservers
+	servers := h.resolver.rootServers
 	const ttl = uint32(0)
 	name := rootzone
 
@@ -178,10 +178,10 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 		nsQuestion := dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 
 		// Try with current CD flag first
-		if ns, err := h.resolver.ncache.Get(cache.Key(nsQuestion, msg.CheckingDisabled)); err == nil {
+		if ns, err := h.resolver.delegations.Get(cache.Key(nsQuestion, msg.CheckingDisabled)); err == nil {
 			servers = ns.Servers
 			name = q.Name
-		} else if ns, err := h.resolver.ncache.Get(cache.Key(nsQuestion, !msg.CheckingDisabled)); err == nil {
+		} else if ns, err := h.resolver.delegations.Get(cache.Key(nsQuestion, !msg.CheckingDisabled)); err == nil {
 			// Try with opposite CD flag
 			servers = ns.Servers
 			name = q.Name
@@ -190,11 +190,11 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 
 	// Copy server list under read lock
 	servers.RLock()
-	serversList := make([]*authcache.AuthServer, len(servers.List))
+	serversList := make([]*authority.Server, len(servers.List))
 	copy(serversList, servers.List)
 	servers.RUnlock()
 
-	authcache.Sort(serversList, 1)
+	authority.Sort(serversList, 1)
 
 	rrHeader := dns.RR_Header{
 		Name:   name,
@@ -221,8 +221,8 @@ func (h *DNSHandler) Purge(q dns.Question) {
 		return
 	}
 	nsQuestion := dns.Question{Name: q.Name, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
-	h.resolver.ncache.Remove(cache.Key(nsQuestion, false))
-	h.resolver.ncache.Remove(cache.Key(nsQuestion, true))
+	h.resolver.delegations.Remove(cache.Key(nsQuestion, false))
+	h.resolver.delegations.Remove(cache.Key(nsQuestion, true))
 }
 
 // (*DNSHandler).SetStore installs the cache store used by subQuery

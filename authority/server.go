@@ -1,4 +1,4 @@
-package authcache
+package authority
 
 import (
 	"hash/fnv"
@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-// AuthServer type.
-type AuthServer struct {
+// Server type.
+type Server struct {
 	// place atomic members at the start to fix alignment for ARM32
-	Rtt     int64
-	Count   int64
-	Addr    string
-	Version Version
+	Rtt       int64
+	Count     int64
+	Addr      string
+	IPVersion IPVersion
 
 	// UDPAddr is Addr pre-parsed as *net.UDPAddr so the upstream
 	// exchange path can use net.DialUDP directly instead of going
@@ -25,24 +25,24 @@ type AuthServer struct {
 	UDPAddr *net.UDPAddr
 }
 
-// Version type.
-type Version byte
+// IPVersion type.
+type IPVersion byte
 
 const (
 	// IPv4 mode.
-	IPv4 Version = 0x1
+	IPv4 IPVersion = 0x1
 
 	// IPv6 mode.
-	IPv6 Version = 0x2
+	IPv6 IPVersion = 0x2
 )
 
-// NewAuthServer return a new server. addr is expected to be an
+// NewServer return a new server. addr is expected to be an
 // "IP:port" pair — the IP is parsed once here so upstream exchanges
 // can skip Go's DialContext address-resolution path.
-func NewAuthServer(addr string, version Version) *AuthServer {
-	s := &AuthServer{
-		Addr:    addr,
-		Version: version,
+func NewServer(addr string, ipVersion IPVersion) *Server {
+	s := &Server{
+		Addr:      addr,
+		IPVersion: ipVersion,
 	}
 	if ua, err := net.ResolveUDPAddr("udp", addr); err == nil {
 		s.UDPAddr = ua
@@ -50,7 +50,7 @@ func NewAuthServer(addr string, version Version) *AuthServer {
 	return s
 }
 
-func (v Version) String() string {
+func (v IPVersion) String() string {
 	switch v {
 	case IPv4:
 		return "IPv4"
@@ -61,7 +61,7 @@ func (v Version) String() string {
 	}
 }
 
-func (a *AuthServer) String() string {
+func (a *Server) String() string {
 	count := atomic.LoadInt64(&a.Count)
 	rn := atomic.LoadInt64(&a.Rtt)
 
@@ -81,7 +81,7 @@ func (a *AuthServer) String() string {
 
 	rtt := (time.Duration(rn) / time.Duration(count)).Round(time.Millisecond)
 
-	return a.Version.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
+	return a.IPVersion.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
 }
 
 // fpEntry caches a Fingerprint() result along with the generation
@@ -95,8 +95,8 @@ type fpEntry struct {
 	fp  uint64
 }
 
-// AuthServers type.
-type AuthServers struct {
+// Servers type.
+type Servers struct {
 	sync.RWMutex
 	// place atomic members at the start to fix alignment for ARM32
 	Called     uint64
@@ -113,16 +113,16 @@ type AuthServers struct {
 
 	Zone string
 
-	List []*AuthServer
-	Nss  []string
+	List  []*Server
+	Hosts []string
 
 	CheckingDisable bool
 	Checked         bool
 }
 
 // Fingerprint returns a stable identifier for the current List.Addr
-// set. Callers must not hold the AuthServers lock.
-func (a *AuthServers) Fingerprint() uint64 {
+// set. Callers must not hold the Servers lock.
+func (a *Servers) Fingerprint() uint64 {
 	// Fast path: cached entry whose generation matches the current
 	// mutation counter.
 	gen := a.gen.Load()
@@ -157,16 +157,16 @@ func (a *AuthServers) Fingerprint() uint64 {
 }
 
 // InvalidateFingerprint must be called whenever List is mutated. It has
-// to run *before* the mutator releases the AuthServers write lock so
+// to run *before* the mutator releases the Servers write lock so
 // readers can't observe the mutated List with a still-valid cached
 // hash. A single atomic increment is cheap enough to keep inside the
 // critical section.
-func (a *AuthServers) InvalidateFingerprint() {
+func (a *Servers) InvalidateFingerprint() {
 	a.gen.Add(1)
 }
 
 // Sort sort servers by rtt.
-func Sort(serversList []*AuthServer, called uint64) {
+func Sort(serversList []*Server, called uint64) {
 	for _, s := range serversList {
 		// clear stats and re-start again
 		if called%1e3 == 0 {

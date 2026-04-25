@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authcache"
+	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
@@ -25,7 +25,7 @@ func Test_resolver(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -34,7 +34,7 @@ func Test_resolver(t *testing.T) {
 	assert.Equal(t, true, len(servers.List) > 0)
 	atomic.AddUint32(&servers.ErrorCount, 4)
 
-	servers.List = []*authcache.AuthServer{authcache.NewAuthServer("0.0.0.0:0", authcache.IPv4)}
+	servers.List = []*authority.Server{authority.NewServer("0.0.0.0:0", authority.IPv4)}
 
 	resp, err = r.Resolve(ctx, req, servers, false, 30, 0, false, nil)
 
@@ -56,7 +56,7 @@ func Test_resolverMinimize(t *testing.T) {
 
 	r := newWiredTestResolver(cfg)
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -74,7 +74,7 @@ func Test_resolverDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -92,7 +92,7 @@ func Test_resolverBadDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -115,7 +115,7 @@ func Test_resolverNoSigDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 	if err != nil {
 		t.Logf("nosig resolve error: %v", err)
 	}
@@ -142,7 +142,7 @@ func Test_resolverBadKeyDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -159,7 +159,7 @@ func Test_resolverExponentDNSSEC(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -176,7 +176,7 @@ func Test_resolverDS(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
@@ -194,7 +194,7 @@ func Test_resolverAllNS(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -211,7 +211,7 @@ func Test_resolverTimeout(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -229,7 +229,7 @@ func Test_resolverRootServersDetect(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -246,7 +246,7 @@ func Test_resolverNameserverError(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -263,7 +263,7 @@ func Test_resolverNSEC3nodata(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -280,7 +280,7 @@ func Test_resolverNSECnodata(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -298,7 +298,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -321,7 +321,7 @@ func Test_resolverFindSigner(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	resp, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
@@ -343,7 +343,7 @@ func Test_resolverBogusZone(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.Error(t, err)
 }
@@ -360,7 +360,7 @@ func Test_resolverRootKeys(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
@@ -377,14 +377,14 @@ func Test_resolverNoAnswer(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootservers, true, 30, 0, false, nil)
+	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
 	assert.NoError(t, err)
 }
 
 func Test_EqualServers(t *testing.T) {
 	r := newWiredTestResolver(makeTestConfig())
-	assert.Equal(t, true, r.equalServers(r.rootservers, r.rootservers))
+	assert.Equal(t, true, r.equalServers(r.rootServers, r.rootServers))
 }
 
 func Test_OutboundIPs(t *testing.T) {
@@ -397,8 +397,8 @@ func Test_OutboundIPs(t *testing.T) {
 	cfg.OutboundIP6s = []string{"::1", "1"}
 
 	r := newWiredTestResolver(cfg)
-	assert.Len(t, r.outboundipv4, 1)
-	assert.Len(t, r.outboundipv6, 1)
+	assert.Len(t, r.outboundIPv4, 1)
+	assert.Len(t, r.outboundIPv6, 1)
 
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
@@ -408,6 +408,6 @@ func Test_OutboundIPs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := r.lookup(ctx, &resolveState{requestID: req.Id}, req, r.rootservers)
+	_, err := r.lookup(ctx, &resolveState{requestID: req.Id}, req, r.rootServers)
 	assert.Error(t, err)
 }

@@ -596,9 +596,9 @@ func checkExponent(key string) bool {
 	return true
 }
 
-func sortnss(nss nameservers, qname string) []string {
+func sortHosts(hosts hostSet, qname string) []string {
 	var list []string
-	for name := range nss {
+	for name := range hosts {
 		list = append(list, name)
 	}
 

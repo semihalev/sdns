@@ -10,19 +10,19 @@ import (
 	"github.com/yl2chen/cidranger"
 )
 
-// AccessList type.
-type AccessList struct {
+// List type.
+type List struct {
 	ranger cidranger.Ranger
 }
 
 // New return accesslist.
-func New(cfg *config.Config) *AccessList {
+func New(cfg *config.Config) *List {
 	if len(cfg.AccessList) == 0 {
 		cfg.AccessList = append(cfg.AccessList, "0.0.0.0/0")
 		cfg.AccessList = append(cfg.AccessList, "::0/0")
 	}
 
-	a := new(AccessList)
+	a := new(List)
 	a.ranger = cidranger.NewPCTrieRanger()
 	for _, cidr := range cfg.AccessList {
 		_, ipnet, err := net.ParseCIDR(cidr)
@@ -38,17 +38,17 @@ func New(cfg *config.Config) *AccessList {
 	return a
 }
 
-// (*AccessList).Name name return middleware name.
-func (a *AccessList) Name() string { return name }
+// (*List).Name name return middleware name.
+func (a *List) Name() string { return name }
 
-// (*AccessList).ClientOnly marks access-list enforcement as
+// (*List).ClientOnly marks access-list enforcement as
 // client-traffic-only; middleware.Setup excludes it from internal
 // sub-pipelines so an internal sub-query isn't denied by a
 // source-IP rule that doesn't apply to internal traffic.
-func (a *AccessList) ClientOnly() bool { return true }
+func (a *List) ClientOnly() bool { return true }
 
-// (*AccessList).ServeDNS serveDNS implements the Handle interface.
-func (a *AccessList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+// (*List).ServeDNS serveDNS implements the Handle interface.
+func (a *List) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if ch.Writer.Internal() {
 		ch.Next(ctx)
 		return
