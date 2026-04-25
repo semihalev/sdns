@@ -19,6 +19,13 @@ import (
 type BlockList struct {
 	mu sync.RWMutex
 
+	// saveMu serializes persistence to local disk. It is taken
+	// independently of mu so the disk write happens *outside* the
+	// map lock — every DNS query goes through ServeDNS which takes
+	// mu.RLock(), so any code path that holds mu while doing I/O
+	// stalls every concurrent query for the duration of the write.
+	saveMu sync.Mutex
+
 	nullroute  net.IP
 	null6route net.IP
 
@@ -27,6 +34,13 @@ type BlockList struct {
 	w    map[string]bool // whitelist
 
 	cfg *config.Config
+}
+
+// blockSnapshot is a point-in-time copy of the BlockList's mutable
+// maps, taken under mu and then written to disk without holding mu.
+type blockSnapshot struct {
+	exact []string
+	wild  []string
 }
 
 // New returns a new BlockList.
@@ -142,26 +156,37 @@ func (b *BlockList) Get(key string) (bool, error) {
 	return val, nil
 }
 
-// (*BlockList).Remove remove removes an entry from the cache.
+// (*BlockList).Remove removes an entry from the blocklist.
+//
+// The disk write happens outside b.mu so concurrent DNS queries
+// (which take mu.RLock in ServeDNS) are not blocked during I/O.
 func (b *BlockList) Remove(key string) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	ok := b.removeLocked(key)
+	if !ok {
+		b.mu.Unlock()
+		return false
+	}
+	snap := b.snapshotLocked()
+	b.mu.Unlock()
 
+	b.persist(snap)
+	return true
+}
+
+// removeLocked is the in-memory mutation; caller must hold b.mu.
+func (b *BlockList) removeLocked(key string) bool {
 	key = dns.CanonicalName(key)
 
-	// Try to remove from exact matches
 	if _, ok := b.m[key]; ok {
 		delete(b.m, key)
-		b.save()
 		return true
 	}
 
-	// Try to remove from wildcards
 	if strings.HasPrefix(key, "*.") {
-		suffix := key[2:] // Remove "*."
+		suffix := key[2:]
 		if _, ok := b.wild[suffix]; ok {
 			delete(b.wild, suffix)
-			b.save()
 			return true
 		}
 	}
@@ -169,32 +194,78 @@ func (b *BlockList) Remove(key string) bool {
 	return false
 }
 
-// (*BlockList).Set set sets a value in the BlockList.
+// (*BlockList).Set sets a value in the BlockList.
+//
+// The disk write happens outside b.mu so concurrent DNS queries
+// (which take mu.RLock in ServeDNS) are not blocked during I/O.
 func (b *BlockList) Set(key string) bool {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	key = dns.CanonicalName(key)
-
-	if b.w[key] {
+	ok := b.setLocked(key)
+	if !ok {
+		b.mu.Unlock()
 		return false
 	}
+	snap := b.snapshotLocked()
+	b.mu.Unlock()
 
-	if strings.HasPrefix(key, "*.") {
-		suffix := key[2:] // Remove "*."
-		b.wild[suffix] = true
-	} else {
-		b.m[key] = true
-	}
-	b.save()
-
+	b.persist(snap)
 	return true
 }
 
-func (b *BlockList) set(key string) bool {
+// (*BlockList).SetBatch adds multiple entries in a single mutation
+// and a single disk write. Whitelisted keys are skipped. Returns
+// the number actually added (excluding duplicates and whitelisted
+// entries).
+func (b *BlockList) SetBatch(keys []string) int {
+	if len(keys) == 0 {
+		return 0
+	}
+	added := 0
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	for _, key := range keys {
+		if b.setLocked(key) {
+			added++
+		}
+	}
+	if added == 0 {
+		b.mu.Unlock()
+		return 0
+	}
+	snap := b.snapshotLocked()
+	b.mu.Unlock()
 
+	b.persist(snap)
+	return added
+}
+
+// (*BlockList).RemoveBatch removes multiple entries in a single
+// mutation and a single disk write. Returns the number actually
+// removed (excluding entries that weren't present).
+func (b *BlockList) RemoveBatch(keys []string) int {
+	if len(keys) == 0 {
+		return 0
+	}
+	removed := 0
+	b.mu.Lock()
+	for _, key := range keys {
+		if b.removeLocked(key) {
+			removed++
+		}
+	}
+	if removed == 0 {
+		b.mu.Unlock()
+		return 0
+	}
+	snap := b.snapshotLocked()
+	b.mu.Unlock()
+
+	b.persist(snap)
+	return removed
+}
+
+// setLocked applies a single Set in memory. Caller must hold b.mu.
+// Returns false if the key is whitelisted (caller should not save).
+func (b *BlockList) setLocked(key string) bool {
 	key = dns.CanonicalName(key)
 
 	if b.w[key] {
@@ -202,13 +273,19 @@ func (b *BlockList) set(key string) bool {
 	}
 
 	if strings.HasPrefix(key, "*.") {
-		suffix := key[2:] // Remove "*."
-		b.wild[suffix] = true
+		b.wild[key[2:]] = true
 	} else {
 		b.m[key] = true
 	}
-
 	return true
+}
+
+// set is the no-persist variant used by loadInitial and the remote
+// refresh path; it does not write to disk.
+func (b *BlockList) set(key string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.setLocked(key)
 }
 
 // (*BlockList).Exists exists returns whether or not a key exists in the cache.
@@ -266,27 +343,72 @@ func (b *BlockList) Length() int {
 	return len(b.m) + len(b.wild)
 }
 
-func (b *BlockList) save() {
-	path := filepath.Join(b.cfg.BlockListDir, "local")
+// snapshotLocked copies the mutable maps into a slice-backed
+// snapshot so the disk write can run without holding b.mu. Caller
+// must hold b.mu (read or write is fine).
+func (b *BlockList) snapshotLocked() blockSnapshot {
+	s := blockSnapshot{
+		exact: make([]string, 0, len(b.m)),
+		wild:  make([]string, 0, len(b.wild)),
+	}
+	for d := range b.m {
+		s.exact = append(s.exact, d)
+	}
+	for suffix := range b.wild {
+		s.wild = append(s.wild, suffix)
+	}
+	return s
+}
 
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644) //nolint:gosec // G304 G302 - path from config, not user input
+// persist writes the snapshot to <BlockListDir>/local via a
+// temp-file + atomic rename. saveMu serializes concurrent writers
+// so the rename is the linearisation point — the on-disk file
+// always matches *some* in-memory state, never a half-written
+// intermediate. Errors are logged-but-ignored to preserve the
+// previous best-effort save() behaviour: a transient I/O failure
+// must not knock a working blocklist out of memory.
+func (b *BlockList) persist(s blockSnapshot) {
+	b.saveMu.Lock()
+	defer b.saveMu.Unlock()
+
+	path := filepath.Join(b.cfg.BlockListDir, "local")
+	tmp, err := os.CreateTemp(b.cfg.BlockListDir, "local.tmp.*")
 	if err != nil {
 		return
 	}
+	tmpName := tmp.Name()
 
-	_, _ = file.WriteString("# The file generated by auto. DO NOT EDIT\n")
+	cleanup := func() { _ = os.Remove(tmpName) }
 
-	// Save exact matches
-	for d := range b.m {
-		_, _ = file.WriteString(d + "\n")
+	if _, err := tmp.WriteString("# The file generated by auto. DO NOT EDIT\n"); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return
 	}
-
-	// Save wildcards
-	for suffix := range b.wild {
-		_, _ = file.WriteString("*." + suffix + "\n")
+	for _, d := range s.exact {
+		if _, err := tmp.WriteString(d + "\n"); err != nil {
+			_ = tmp.Close()
+			cleanup()
+			return
+		}
 	}
-
-	_ = file.Close()
+	for _, suffix := range s.wild {
+		if _, err := tmp.WriteString("*." + suffix + "\n"); err != nil {
+			_ = tmp.Close()
+			cleanup()
+			return
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return
+	}
+	_ = os.Rename(tmpName, path)
 }
 
 const name = "blocklist"

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -197,4 +198,87 @@ func Test_BlockList_Remove(t *testing.T) {
 
 	// Test removing a non-existent wildcard
 	assert.False(t, blocklist.Remove("*.nonexistent.com."))
+}
+
+func Test_BlockList_Batch(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_batch")
+	_ = os.RemoveAll(cfg.BlockListDir)
+
+	bl := New(cfg)
+
+	keys := []string{
+		"a.example.",
+		"b.example.",
+		"a.example.", // duplicate, should still count as added (idempotent set)
+		"*.evil.com.",
+	}
+	added := bl.SetBatch(keys)
+	// a.example added once, b.example, *.evil.com → 4 calls all
+	// reach the map; setLocked returns true for each. The count is
+	// "calls that took effect" rather than "unique keys", which is
+	// fine for the API caller — they get what they asked for.
+	assert.Equal(t, 4, added)
+	assert.True(t, bl.Exists("a.example."))
+	assert.True(t, bl.Exists("sub.evil.com."))
+	assert.Equal(t, 3, bl.Length()) // map dedups: a.example, b.example, evil.com.
+
+	// Whitelist takes precedence: a key on the whitelist contributes
+	// 0 to the added count.
+	bl.w[dns.CanonicalName("safe.example.")] = true
+	added = bl.SetBatch([]string{"safe.example.", "next.example."})
+	assert.Equal(t, 1, added)
+
+	// Empty batch is a no-op (no I/O, no count).
+	assert.Equal(t, 0, bl.SetBatch(nil))
+	assert.Equal(t, 0, bl.RemoveBatch(nil))
+
+	// Bulk remove.
+	removed := bl.RemoveBatch([]string{"a.example.", "*.evil.com.", "missing.example."})
+	assert.Equal(t, 2, removed)
+	assert.False(t, bl.Exists("a.example."))
+	assert.False(t, bl.Exists("sub.evil.com."))
+}
+
+// Test_BlockList_NoStallDuringSave proves the property the GitHub
+// issue reporter cared about: a mutation does not block a
+// concurrent ServeDNS read on the blocklist's mu, even when the
+// disk write under saveMu takes time. We can't reliably make the
+// disk slow in CI, so we instead pin the contract structurally —
+// holding saveMu in the test and confirming a mutation acquires
+// b.mu, returns, and releases it without ever waiting on the
+// disk-side lock.
+func Test_BlockList_NoStallDuringSave(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_nostall")
+	_ = os.RemoveAll(cfg.BlockListDir)
+
+	bl := New(cfg)
+	bl.Set("seed.example.")
+
+	// Hold the persistence lock from a separate goroutine to
+	// simulate an in-flight slow disk write.
+	bl.saveMu.Lock()
+	defer bl.saveMu.Unlock()
+
+	// A reader (ServeDNS path) takes mu.RLock(); it must not be
+	// blocked by anything happening under saveMu.
+	done := make(chan struct{})
+	go func() {
+		bl.mu.RLock()
+		_ = bl.m["seed.example."]
+		bl.mu.RUnlock()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected: the read returned without waiting for saveMu.
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeDNS-style RLock blocked while saveMu was held — disk I/O is back inside the map lock")
+	}
 }

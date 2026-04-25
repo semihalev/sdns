@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -15,6 +16,16 @@ import (
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/zlog/v2"
 )
+
+// maxBlockBatchBody caps the JSON body for bulk block APIs so a
+// hostile or accidental client can't pin the API server with an
+// unbounded request.
+const maxBlockBatchBody = 8 << 20 // 8 MiB
+
+// blockBatchRequest is the wire format for POST /api/v1/block/{set,remove}/batch.
+type blockBatchRequest struct {
+	Keys []string `json:"keys"`
+}
 
 // API type.
 type API struct {
@@ -110,6 +121,58 @@ func (a *API) setBlock(ctx *Context) {
 	ctx.JSON(http.StatusOK, Json{"success": a.blocklist.Set(ctx.Param("key"))})
 }
 
+// readBatchKeys decodes a {"keys":[...]} JSON body, capped at
+// maxBlockBatchBody. Returns the parsed keys or writes the
+// appropriate 4xx response and returns nil.
+func (a *API) readBatchKeys(ctx *Context) []string {
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, maxBlockBatchBody)
+	dec := json.NewDecoder(ctx.Request.Body)
+	dec.DisallowUnknownFields()
+
+	var req blockBatchRequest
+	if err := dec.Decode(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, Json{"error": "invalid request body: " + err.Error()})
+		return nil
+	}
+	if len(req.Keys) == 0 {
+		ctx.JSON(http.StatusBadRequest, Json{"error": "keys is required and must be non-empty"})
+		return nil
+	}
+	return req.Keys
+}
+
+func (a *API) setBlockBatch(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+	keys := a.readBatchKeys(ctx)
+	if keys == nil {
+		return
+	}
+	added := a.blocklist.SetBatch(keys)
+	ctx.JSON(http.StatusOK, Json{
+		"requested": len(keys),
+		"added":     added,
+		"skipped":   len(keys) - added,
+	})
+}
+
+func (a *API) removeBlockBatch(ctx *Context) {
+	if !a.checkToken(ctx) {
+		return
+	}
+	keys := a.readBatchKeys(ctx)
+	if keys == nil {
+		return
+	}
+	removed := a.blocklist.RemoveBatch(keys)
+	ctx.JSON(http.StatusOK, Json{
+		"requested": len(keys),
+		"removed":   removed,
+		"missing":   len(keys) - removed,
+	})
+}
+
 func (a *API) metrics(ctx *Context) {
 	if !a.checkToken(ctx) {
 		return
@@ -174,6 +237,8 @@ func (a *API) Run(ctx context.Context) {
 			block.GET("/get/:key", a.getBlock)
 			block.GET("/remove/:key", a.removeBlock)
 			block.GET("/set/:key", a.setBlock)
+			block.POST("/set/batch", a.setBlockBatch)
+			block.POST("/remove/batch", a.removeBlockBatch)
 		}
 	}
 
