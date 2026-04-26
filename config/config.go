@@ -62,6 +62,13 @@ type Config struct {
 	QnameMinLevel    int `toml:"qname_min_level"`
 	EmptyZones       []string
 
+	// Views are per-client static answers, evaluated in order. A
+	// query whose source IP falls in a view's Sources gets that
+	// view's Records as the response; non-matching queries fall
+	// through to the rest of the middleware chain (blocklist,
+	// resolver, etc.).
+	Views []ViewConfig
+
 	// Dnstap configuration
 	DnstapSocket        string
 	DnstapIdentity      string
@@ -98,6 +105,19 @@ type Config struct {
 	ReflexThreshold    float64 // Suspicion threshold (0.0-1.0, default: 0.7)
 
 	sVersion string
+}
+
+// ViewConfig describes a single per-client static-answer view.
+// Zone is a free-form label that names the view in logs and
+// errors. Networks are CIDR strings; a query is dispatched to
+// this view if its source IP is contained in any of them. Answers
+// are DNS resource records in standard zone-file format; wildcard
+// owners (e.g. "*.example.lan.") match any name strictly more
+// specific than the suffix per RFC 4592.
+type ViewConfig struct {
+	Zone     string
+	Networks []string
+	Answers  []string
 }
 
 // KubernetesConfig holds Kubernetes middleware configuration
@@ -359,6 +379,7 @@ accesslist = [
 # Leave empty to disable
 hostsfile = ""
 
+
 # ============================
 # Performance and Limits
 # ============================
@@ -520,6 +541,35 @@ reflexlearningmode = false
 
 # Dnstap buffer flush interval (seconds)
 # dnstapflushinterval = 5
+
+# ============================
+# Per-client Views
+# ============================
+
+# Serve different DNS answers to different clients based on the
+# client's source IP. Each view lists CIDR networks and zone-file
+# answers; a query from a client whose IP is in one of the
+# networks gets the view's matching answer, and any non-matching
+# query falls through to normal resolution.
+#
+# Wildcards (*.example.lan.) are supported. Exact owners override
+# a covering wildcard. Views are evaluated in declaration order.
+#
+# Examples:
+# [[views]]
+# zone = "lannet"
+# networks = ["192.168.1.0/24"]
+# answers = [
+#     "*.example.lan. 60 IN A 192.168.1.3",
+#     "*.example.lan. 60 IN AAAA fd00::3",
+# ]
+#
+# [[views]]
+# zone = "vpnnet"
+# networks = ["100.64.0.0/24"]
+# answers = [
+#     "*.example.lan. 60 IN A 100.64.0.2",
+# ]
 
 # ============================
 # Kubernetes Integration

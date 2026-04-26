@@ -25,6 +25,7 @@ var middlewareList = []string{
 	"accesslog",
 	"chaos",
 	"hostsfile",
+	"views",
 	"blocklist",
 	"as112",
 	"kubernetes",

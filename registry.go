@@ -23,6 +23,7 @@ import (
 	"github.com/semihalev/sdns/middleware/recovery"
 	"github.com/semihalev/sdns/middleware/reflex"
 	"github.com/semihalev/sdns/middleware/resolver"
+	"github.com/semihalev/sdns/middleware/views"
 )
 
 func init() {
@@ -36,6 +37,7 @@ func init() {
 	middleware.Register("accesslog", func(cfg *config.Config) middleware.Handler { return accesslog.New(cfg) })
 	middleware.Register("chaos", func(cfg *config.Config) middleware.Handler { return chaos.New(cfg) })
 	middleware.Register("hostsfile", func(cfg *config.Config) middleware.Handler { return hostsfile.New(cfg) })
+	middleware.Register("views", func(cfg *config.Config) middleware.Handler { return views.New(cfg) })
 	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
 	middleware.Register("as112", func(cfg *config.Config) middleware.Handler { return as112.New(cfg) })
 	middleware.Register("kubernetes", func(cfg *config.Config) middleware.Handler { return kubernetes.New(cfg) })

@@ -198,6 +198,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **dnstaplogqueries** | Log DNS queries via dnstap. Default: true                                                                           |
 | **dnstaplogresponses** | Log DNS responses via dnstap. Default: true                                                                        |
 | **dnstapflushinterval** | Dnstap message flush interval in seconds. Default: 5                                                             |
+| **views**            | Per-client static-answer rules. Each entry has `zone` (label), `networks` (CIDRs), and `answers` (zone-file RRs). See the Views middleware section below for shape and examples |
 
 ## Middleware Configuration
 
@@ -266,6 +267,38 @@ reflexlearningmode = false  # Log without blocking for tuning
 - `reflex_detections_total` - Suspected attacks by query type
 - `reflex_blocked_total` - Blocked queries
 - `reflex_tracked_ips` - Currently tracked IPs
+
+#### Views: Per-Client Static Answers
+
+The Views middleware serves different DNS answers based on the client's source IP — a split-horizon resolver where a name like `*.example.lan.` can resolve to one address for LAN clients and a different address for VPN clients, all without disturbing recursion for everyone else.
+
+**How It Works:**
+- Each view declares a list of CIDR `networks` and a list of zone-file `answers`.
+- A query whose source IP falls in one of a view's networks is matched against that view's answers (by name and qtype, with `*.zone.` wildcard support per RFC 4592).
+- A matching answer is synthesised with the query name as owner and short-circuits the chain.
+- A query that matches the view's networks but has no matching answer (or comes from a client outside every view's networks) falls through to the rest of the chain — blocklist, cache, resolver, etc.
+- Internal sub-queries skip the views middleware entirely (no real client IP).
+
+**Configuration:**
+```toml
+[[views]]
+zone = "lannet"
+networks = ["192.168.1.0/24"]
+answers = [
+    "*.example.lan. 60 IN A 192.168.1.3",
+    "*.example.lan. 60 IN AAAA fd00::3",
+]
+
+[[views]]
+zone = "vpnnet"
+networks = ["100.64.0.0/24"]
+answers = [
+    "*.example.lan. 60 IN A 100.64.0.2",
+]
+```
+
+Views are evaluated in declaration order; the first whose `networks` contains the client IP wins. `zone` is a free-form label used in error logs — it doesn't have to be a DNS zone name.
+
 #### Cache Metrics
 
 SDNS exports comprehensive cache metrics via the Prometheus `/metrics` endpoint for monitoring cache performance.
