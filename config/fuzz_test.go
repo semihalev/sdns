@@ -55,7 +55,7 @@ cluster_domain = "cluster.local"
 
 	f.Add(`rootservers = [
     "198.41.0.4:53",
-    "199.9.14.201:53"
+    "170.247.170.2:53"
 ]`)
 
 	f.Add(`blocklist = ["example.com", "test.com"]
