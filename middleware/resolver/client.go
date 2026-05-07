@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,12 @@ import (
 const (
 	headerSize = 12
 )
+
+// ErrQuestion is returned by Conn.Exchange when the response's question
+// section does not match the outstanding request. Accepting a mismatched
+// question lets a malicious upstream plant a cache entry under an unrelated
+// name (issue #469).
+var ErrQuestion = errors.New("dns: response question did not match request")
 
 // Conn A Conn represents a connection to a DNS server.
 type Conn struct {
@@ -47,10 +54,24 @@ func (co *Conn) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) 
 	if err == nil && r.Id != m.Id {
 		err = dns.ErrId
 	}
+	if err == nil && len(m.Question) > 0 && !questionMatches(m.Question[0], r.Question) {
+		err = ErrQuestion
+	}
 
 	rtt = time.Since(t)
 
 	return r, rtt, err
+}
+
+// questionMatches reports whether the response's question section answers the
+// outstanding request question. DNS names are compared case-insensitively
+// because they are not case-sensitive on the wire.
+func questionMatches(req dns.Question, resp []dns.Question) bool {
+	if len(resp) != 1 {
+		return false
+	}
+	r := resp[0]
+	return r.Qtype == req.Qtype && r.Qclass == req.Qclass && strings.EqualFold(r.Name, req.Name)
 }
 
 // (*Conn).ReadMsg readMsg reads a message from the connection co.
