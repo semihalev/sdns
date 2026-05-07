@@ -88,6 +88,16 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			continue
 		}
 
+		// Reject responses whose question section does not match the
+		// outstanding query. A malicious or misbehaving upstream that
+		// returns a different name/type/class would otherwise be cached
+		// under that question, poisoning lookups for unrelated names.
+		if !questionMatches(req.Question[0], resp.Question) {
+			zlog.Info("forwarder dropped response with mismatched question",
+				"query", formatQuestion(req.Question[0]))
+			continue
+		}
+
 		resp.Id = req.Id
 		resp.CheckingDisabled = clientCD
 
@@ -109,6 +119,17 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 func formatQuestion(q dns.Question) string {
 	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
+}
+
+// questionMatches reports whether the response's question section answers the
+// outstanding request question. The name comparison is case-insensitive
+// because DNS names are not case-sensitive on the wire.
+func questionMatches(req dns.Question, resp []dns.Question) bool {
+	if len(resp) != 1 {
+		return false
+	}
+	r := resp[0]
+	return r.Qtype == req.Qtype && r.Qclass == req.Qclass && strings.EqualFold(r.Name, req.Name)
 }
 
 const name = "forwarder"

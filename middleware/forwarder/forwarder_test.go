@@ -170,3 +170,50 @@ func Test_Forwarder(t *testing.T) {
 
 	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
 }
+
+// startMismatchedQuestionServer returns a UDP server that always replies with
+// a fixed question section (victim.test. A) regardless of the client's query.
+// It models a malicious or misbehaving upstream attempting cache poisoning.
+func startMismatchedQuestionServer(t *testing.T) (addr string, stop func()) {
+	t.Helper()
+
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Question = []dns.Question{{Name: "victim.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET}}
+		if rr, err := dns.NewRR("victim.test. 60 IN A 6.6.6.6"); err == nil {
+			m.Answer = []dns.RR{rr}
+		}
+		_ = w.WriteMsg(m)
+	})
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	s := &dns.Server{Net: "udp", Handler: mux, PacketConn: pc}
+	go func() { _ = s.ActivateAndServe() }()
+	return pc.LocalAddr().String(), func() { _ = s.Shutdown() }
+}
+
+func Test_Forwarder_RejectsMismatchedQuestion(t *testing.T) {
+	addr, stop := startMismatchedQuestionServer(t)
+	defer stop()
+
+	f := &Forwarder{servers: []*server{{Addr: addr, Proto: "udp"}}}
+
+	ch := middleware.NewChain([]middleware.Handler{f})
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+
+	req := new(dns.Msg)
+	req.SetQuestion("attacker.test.", dns.TypeA)
+
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
+
+	// Every upstream returns a mismatched question, so the forwarder must
+	// drop the response and report SERVFAIL rather than letting an unrelated
+	// answer through to the client (and the cache).
+	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
+}
