@@ -1,138 +1,105 @@
 # HTTP API
 
-You can manage all blocks with basic HTTP API functions.
-
-All blocklist mutations (single and bulk) take effect immediately
-and persist asynchronously: the in-memory state is updated under a
-short-held lock, and the on-disk `local` blocklist file is rewritten
-outside the lock via a temp-file + atomic rename. DNS queries are
-not paused while a write lands, even during a multi-thousand-entry
-bulk import.
+SDNS exposes an optional HTTP API for managing the blocklist, purging cached answers, scraping Prometheus metrics, and — with `SDNS_PPROF=1` — serving Go pprof profiles. It listens on whatever address you put in `api` in `sdns.conf` (default `127.0.0.1:8080`); set `api = ""` to turn it off entirely.
 
 ## Authentication
 
-API bearer token can be set on sdns config. If the token set, Authorization header should be send on API requests.
-### Example Header
-`Authorization: Bearer my_very_long_token`
+Set `bearertoken` in `sdns.conf` to require this header on every request:
 
-## Actions
+```
+Authorization: Bearer <token>
+```
 
-### GET /api/v1/block/set/:key
+Missing, malformed, or mismatched headers get `401 {"error":"unauthorized"}`. The token is never logged.
 
-It is used to create a new block.
+`/debug/pprof/*` is the one exception — pprof tooling doesn't send `Authorization` headers, so those routes stay open even when a token is set. If you enable pprof, keep the API listener on loopback or behind an authenticating proxy.
 
-__request__
+## Endpoints
 
-> curl http://localhost:8080/api/v1/block/set/domain.com
+| Method | Path                          | Purpose                              |
+| ------ | ----------------------------- | ------------------------------------ |
+| GET    | `/api/v1/block/set/:key`      | Add a single block entry             |
+| GET    | `/api/v1/block/get/:key`      | Look up a block entry                |
+| GET    | `/api/v1/block/exists/:key`   | Membership probe                     |
+| GET    | `/api/v1/block/remove/:key`   | Delete a block entry                 |
+| POST   | `/api/v1/block/set/batch`     | Bulk-add (JSON body)                 |
+| POST   | `/api/v1/block/remove/batch`  | Bulk-remove (JSON body)              |
+| GET    | `/api/v1/purge/:qname/:qtype` | Drop cached answer for one question  |
+| GET    | `/metrics`                    | Prometheus exposition                |
+| GET    | `/debug/pprof/*`              | pprof (only with `SDNS_PPROF=1`)     |
 
-__response__
+The `block/*` routes are only registered when the blocklist middleware is enabled — without it they return `404`.
 
-```json
+## Blocklist
+
+`:key` is a domain name (`domain.com`) or wildcard (`*.evil.example`). Wildcards are canonicalised to `*.example.com.` form on disk, same as a manual entry in the local blocklist file.
+
+```sh
+$ curl http://localhost:8080/api/v1/block/set/domain.com
+{"success":true}
+
+$ curl http://localhost:8080/api/v1/block/exists/domain.com
+{"exists":true}
+
+$ curl -i http://localhost:8080/api/v1/block/get/missing.example
+HTTP/1.1 404 Not Found
+{"error":"missing.example not found"}
+
+$ curl http://localhost:8080/api/v1/block/remove/domain.com
 {"success":true}
 ```
 
-### GET /api/v1/block/get/:key
+`set` returns `success:false` when the key was already present or sits on the whitelist; `remove` returns `success:false` when the key wasn't there to begin with. `exists` is the only single-key endpoint that uses an `exists:` payload — the rest all return `success:`.
 
-Used to request an existing block
+### Bulk operations
 
-__request__
-
-> curl http://localhost:8080/api/v1/block/get/domain.com
-
-__response__
+Both batch endpoints take the same body shape:
 
 ```json
-{"success":true}
-```
-or
-
-```json
-{"error":"domain.com not found"}
+{"keys": ["domain.com", "*.evil.example", "tracker.test"]}
 ```
 
-### GET /api/v1/block/exists/:key
+The body is capped at 8 MiB and unknown fields are rejected. The whole batch lands as a single map mutation and a single disk write, so DNS queries aren't paused while a multi-thousand-entry import is running.
 
-It queries whether it has a block.
-
-__request__
-
-> curl http://localhost:8080/api/v1/block/exists/domain.com
-
-__response__
-
-```json
-{"success":true}
-```
-
-### GET /api/v1/block/remove/:key
-
-Deletes the block.
-
-__request__
-
-> curl http://localhost:8080/api/v1/block/remove/domain.com
-
-__response__
-
-```json
-{"success":true}
-```
-
-### POST /api/v1/block/set/batch
-
-Bulk-add multiple block entries in a single call. The whole batch
-is applied as one map mutation and one disk write, so DNS queries
-are not paused while a large import lands. Wildcard entries are
-written as `*.example.com` (canonical FQDN), exactly like the
-single-key form.
-
-The request body is JSON, capped at 8 MiB. Unknown fields are
-rejected. Whitelisted keys count toward `skipped`, not `added`.
-
-__request__
-
-> curl -X POST http://localhost:8080/api/v1/block/set/batch \
->      -H 'Content-Type: application/json' \
->      -d '{"keys":["domain.com","*.evil.example","tracker.test"]}'
-
-__response__
-
-```json
+```sh
+$ curl -X POST http://localhost:8080/api/v1/block/set/batch \
+       -H 'Content-Type: application/json' \
+       -d '{"keys":["domain.com","*.evil.example","tracker.test"]}'
 {"requested":3,"added":3,"skipped":0}
+
+$ curl -X POST http://localhost:8080/api/v1/block/remove/batch \
+       -H 'Content-Type: application/json' \
+       -d '{"keys":["domain.com","never-existed.test"]}'
+{"requested":2,"removed":1,"missing":1}
 ```
 
-### POST /api/v1/block/remove/batch
+`added` excludes duplicates and whitelisted keys; `removed` excludes keys that weren't present. So `requested = added + skipped` and `requested = removed + missing`.
 
-Bulk-remove multiple block entries in a single call. Same one-lock
-/ one-write semantics as the set batch above. Entries that aren't
-present count toward `missing`, not `removed`.
+A `200` response means in-memory state changed. The on-disk blocklist file is rewritten asynchronously via temp-file + atomic rename, so a crash or restart never sees a half-written file. Bad bodies (decoder error, unknown field, oversized payload) come back as `400` with the decoder's message; an empty or missing `keys` field returns `400 {"error":"keys is required and must be non-empty"}`.
 
-__request__
+## Cache purge
 
-> curl -X POST http://localhost:8080/api/v1/block/remove/batch \
->      -H 'Content-Type: application/json' \
->      -d '{"keys":["domain.com","*.evil.example","never-existed.test"]}'
-
-__response__
-
-```json
-{"requested":3,"removed":2,"missing":1}
-```
-
-### GET /api/v1/purge/domain/type
-
-Purge a cached query.
-
-__request__
-
-> curl http://localhost:8080/api/v1/purge/example.com/MX
-
-__response__
-
-```json
+```sh
+$ curl http://localhost:8080/api/v1/purge/example.com/MX
 {"success":true}
 ```
 
-### GET /metrics
+The handler walks every middleware that exposes a `Purger` and drops cached entries for that question. Today that's the cache middleware (positive + negative entries for both `CD=0` and `CD=1`) and the resolver's nameserver cache (only for `qtype=NS`). `:qtype` is case-insensitive; unknown types are rejected before any cache is touched:
 
-Export the prometheus metrics.
+```sh
+$ curl -i http://localhost:8080/api/v1/purge/example.com/FOO
+HTTP/1.1 400 Bad Request
+{"error":"unknown qtype: FOO"}
+```
+
+## Metrics
+
+`GET /metrics` returns the Prometheus exposition for every metric the running middlewares register via `promauto` — cache, reflex, dns64, plugins, the lot. Auth-gated like everything else when a token is set.
+
+## pprof
+
+`SDNS_PPROF=1` in the sdns environment enables the standard `net/http/pprof` routes under `/debug/pprof/` (heap, goroutine, allocs, profile, symbol, trace). These bypass the bearer-token check; see Authentication.
+
+## Server limits
+
+`ReadHeaderTimeout` is 10 s. Batch bodies are bounded by `MaxBytesReader` at 8 MiB. Graceful shutdown waits up to 10 s for in-flight requests when the parent context is cancelled.
