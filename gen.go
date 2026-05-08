@@ -29,6 +29,7 @@ var middlewareList = []string{
 	"blocklist",
 	"as112",
 	"kubernetes",
+	"dns64",
 	"cache",
 	"failover",
 	"resolver",

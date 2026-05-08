@@ -84,6 +84,11 @@ type Config struct {
 	// Kubernetes middleware configuration as a section
 	Kubernetes KubernetesConfig `toml:"kubernetes"`
 
+	// DNS64 middleware configuration (RFC 6147). Translates A
+	// records into AAAA records embedded in a configured IPv6
+	// prefix, so an IPv6-only client can reach IPv4-only services.
+	DNS64 DNS64Config `toml:"dns64"`
+
 	Plugins map[string]Plugin
 
 	CookieSecret string
@@ -144,6 +149,55 @@ type KubernetesTTLConfig struct {
 	Pod     uint32 `toml:"pod"`
 	SRV     uint32 `toml:"srv"`
 	PTR     uint32 `toml:"ptr"`
+}
+
+// DNS64Config holds DNS64 middleware configuration (RFC 6147).
+//
+// Prefixes lists Pref64::/n IPv6 prefixes used to embed IPv4
+// addresses in synthesised AAAA records. Each prefix length must
+// be one of /32, /40, /48, /56, /64, /96 per RFC 6052 §2.2. Per
+// RFC 6147 §5.2 every configured prefix synthesises in parallel:
+// each upstream A record produces one AAAA per prefix, so a
+// client receives every reachable Pref64 path in a single reply.
+// When DNS64 is enabled but no usable prefix is configured the
+// well-known 64:ff9b::/96 is the runtime default.
+//
+// ClientNetworks restricts synthesis to clients whose source IP
+// falls in one of the listed CIDRs. An empty list synthesises for
+// every client; "::/0" plus "0.0.0.0/0" achieves the same and is
+// the recommended explicit form.
+//
+// ExcludeZones is a list of fully-qualified domain names whose
+// AAAA responses are never synthesised (their original NODATA /
+// NXDOMAIN flows through unchanged). Useful for opting out
+// specific zones when some other middleware is expected to handle
+// IPv6.
+//
+// ExcludeANetworks is the RFC 6147 §5.1.4 / RFC 6052 §3.1
+// "do not translate" set. IPv4 addresses inside any listed CIDR
+// are dropped from synthesis when the well-known prefix
+// 64:ff9b::/96 is in use. Operator-chosen network-specific
+// prefixes ignore this list — they picked the prefix knowing the
+// network's reachability. When the field is omitted entirely
+// (nil) and the well-known prefix is active, a runtime default
+// list mirroring the IANA Special-Purpose Address Registry is
+// applied; declaring an explicit empty list opts out.
+//
+// ExcludeAAAANetworks lists IPv6 prefixes whose AAAA records in the
+// upstream response must be filtered before deciding pass-through
+// vs synthesis (RFC 6147 §5.1.4). The default ::ffff:0:0/96 (IPv4-
+// mapped IPv6) keeps misconfigured upstreams from leaking
+// non-routable addresses into the client. When every AAAA in the
+// upstream answer is excluded, the response is treated as if no
+// AAAA records were returned and synthesis proceeds. Declaring
+// an explicit empty list opts out of filtering.
+type DNS64Config struct {
+	Enabled             bool     `toml:"enabled"`
+	Prefixes            []string `toml:"prefixes"`
+	ClientNetworks      []string `toml:"client_networks"`
+	ExcludeZones        []string `toml:"exclude_zones"`
+	ExcludeANetworks    []string `toml:"exclude_a_networks"`
+	ExcludeAAAANetworks []string `toml:"exclude_aaaa_networks"`
 }
 
 // Plugin type.
@@ -604,6 +658,76 @@ srv = 30
 
 # TTL for PTR records (seconds)
 ptr = 30
+
+# ============================
+# DNS64 (RFC 6147)
+# ============================
+
+# Synthesise AAAA records from A records for IPv6-only clients
+# reaching IPv4-only services. When a client AAAA query returns
+# NOERROR-NODATA (or any nonzero RCODE other than NXDOMAIN, e.g.
+# SERVFAIL without a DNSSEC EDE), the resolver issues an A query
+# for the same name and synthesises AAAA records by embedding
+# each IPv4 inside one of the configured Pref64::/n prefixes
+# (RFC 6052). NXDOMAIN passes through unchanged; SERVFAIL with a
+# DNSSEC-failure Extended DNS Error also passes through so DNS64
+# can never mask a validation failure (RFC 6147 §5.5). Clients
+# that set RD=0 or CD=1 bypass DNS64 entirely.
+
+[dns64]
+# Enable DNS64 synthesis.
+enabled = false
+
+# IPv6 prefixes used to embed IPv4 addresses. Lengths must be one
+# of /32, /40, /48, /56, /64, /96. List multiple prefixes to
+# synthesise one AAAA per (A record, prefix) pair so the client
+# sees every reachable Pref64 path in a single reply. The IANA-
+# reserved Well-Known Prefix 64:ff9b::/96 is the typical choice
+# for general-purpose DNS64; if the field is omitted entirely
+# while DNS64 is enabled, that prefix is the runtime default
+# (RFC 6147 §5.2).
+prefixes = ["64:ff9b::/96"]
+
+# CIDR ranges of clients eligible for synthesis. Empty list means
+# all clients are eligible. Restrict to your IPv6-only subnets to
+# keep dual-stack clients on their original answers.
+client_networks = []
+
+# Fully-qualified domain names whose AAAA responses must not be
+# synthesised. Suffix match: "example.com." matches the zone and
+# every name under it.
+exclude_zones = []
+
+# IPv6 prefixes whose AAAA records must be filtered out of the
+# upstream response before deciding pass-through vs synthesis
+# (RFC 6147 §5.1.4). The IPv4-mapped IPv6 range ::ffff:0:0/96 is
+# the standard default; misconfigured upstreams that return
+# IPv4-mapped AAAAs are treated as if they returned no AAAA, so
+# DNS64 synthesises a routable address from the corresponding A.
+exclude_aaaa_networks = ["::ffff:0:0/96"]
+
+# IPv4 networks excluded from synthesis when the Well-Known Prefix
+# 64:ff9b::/96 is the active prefix (RFC 6147 §5.1.4). Operator-
+# chosen network-specific prefixes ignore this list. Defaults
+# below mirror the IANA Special-Purpose Address Registry.
+exclude_a_networks = [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.88.99.0/24",
+    "192.168.0.0/16",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    "255.255.255.255/32",
+]
 
 # ============================
 # Plugins

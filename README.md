@@ -294,6 +294,50 @@ answers = [
 
 Views are evaluated in declaration order; the first whose `networks` contains the client IP wins. `zone` is a free-form label used in error logs — it doesn't have to be a DNS zone name.
 
+#### DNS64 (RFC 6147)
+
+The DNS64 middleware lets IPv6-only clients reach IPv4-only services. When a client AAAA query has no usable answer, the middleware issues a secondary A-record lookup and synthesises AAAA records by embedding each IPv4 address into a configured Pref64::/n IPv6 prefix (RFC 6052). The client receives addresses in a NAT64-routable subnet and can connect to the IPv4-only target through a paired NAT64 gateway.
+
+**How It Works:**
+
+- The middleware sits between the `kubernetes` and `cache` middlewares. The cache stores the original AAAA response — synthesis runs per client query against that cached response. The secondary A lookup itself is cached, so repeat synthesis is bounded to a memcpy plus a cache hit. This preserves per-client correctness when `client_networks` restricts who gets synthesis.
+- **RCODE handling** follows RFC 6147 §5.1.2 / §5.1.3 / §5.5:
+  - `NOERROR` with at least one usable AAAA → pass through (after AAAA exclusion filtering, see below).
+  - `NXDOMAIN` → pass through unchanged. The name doesn't exist, so it has no A either.
+  - `SERVFAIL` carrying a DNSSEC-failure Extended DNS Error (codes 1/2/5–12/27 — Unsupported DNSKEY Algorithm, Unsupported DS Digest Type, DNSSEC Indeterminate, DNSSEC Bogus, Signature Expired/Not Yet Valid, DNSKEY/RRSIGs/NSEC Missing, No Zone Key Bit Set, Unsupported NSEC3 Iterations Value) → pass through unchanged. Synthesising over a validation failure would let an attacker bypass DNSSEC.
+  - `NOERROR` with no usable AAAA, or any other nonzero RCODE (`SERVFAIL` without a DNSSEC EDE, `REFUSED`, etc.) → treated as "no answer" and the secondary A lookup is attempted. When the A query yields empty/error too, that response (rcode + Authority + any CNAME/DNAME chain) becomes the basis for the client reply per §5.1.6.
+- **Recursion bit:** `RD=0` queries skip DNS64 entirely. Synthesis requires a recursive secondary lookup, so honouring the client's non-recursive intent means stepping aside.
+- **AAAA exclusion (RFC 6147 §5.1.4):** AAAA records returned by the upstream are filtered against `exclude_aaaa_networks` (default `::ffff:0:0/96` IPv4-mapped) before deciding pass-through vs synthesis. If every AAAA is excluded, the response is treated as if no AAAA were returned and synthesis proceeds. Excluded AAAAs are stripped from the Answer section even on the pass-through path so they never reach the client.
+- **A side filtering (RFC 6147 §5.1.4):** when the active prefix is the IANA Well-Known `64:ff9b::/96`, IPv4 addresses inside `exclude_a_networks` are dropped from synthesis. Operator-chosen prefixes ignore that list — you picked the prefix knowing the network's reachability.
+- **CNAME / DNAME chains (RFC 6147 §5.1.5)** are carried through into the synthesised answer. Synthesised AAAAs adopt the A record's owner — the terminal name after the chain has resolved.
+- **TTL (RFC 6147 §5.1.7):** the synthesised AAAA TTL is `min(A record TTL, AAAA negative-cache TTL)`. When the original AAAA carried no SOA, the synth TTL caps at 600 s. No artificial floor.
+- **Multi-prefix synthesis (RFC 6147 §5.2):** every configured prefix produces its own synthesised AAAA per A record, so a client receives every reachable Pref64 path in a single response. Per-prefix RFC 6147 §5.1.4 filtering still applies — a private IPv4 may be excluded under `64:ff9b::/96` but synthesised under an operator prefix listed alongside it.
+- **PTR translation (RFC 6147 §5.3.1):** `ip6.arpa` PTR queries whose embedded IPv4 falls under any configured Pref64 are answered with a CNAME pointing at the corresponding `in-addr.arpa` name; if the chase succeeds, the resolved PTR records are appended. Names that decode to addresses outside every Pref64 (or whose IPv4 hits the §5.1.4 exclusion under the well-known prefix) flow through normal recursion so real reverse zones still answer.
+- **DNSSEC (RFC 6147 §5.5):** when the original NODATA was `AD=1`, the synthesised reply clears AD and attaches Extended DNS Error 4 ("Forged Answer"). Clients that set `CD=1` are validating themselves and bypass synthesis (both AAAA and PTR paths).
+- **Internal sub-queries** (resolver NS chase, cache CNAME chase) skip DNS64 entirely — synthesis is a client-facing concern, not part of resolution semantics.
+
+**Configuration:**
+```toml
+[dns64]
+enabled = true
+prefixes = ["64:ff9b::/96"]         # IANA Well-Known Prefix; or your own /32, /40, /48, /56, /64, /96. List multiple to synthesise one AAAA per prefix per A.
+client_networks = []                # Empty = all clients eligible; restrict to your IPv6-only subnets to scope synthesis
+exclude_zones = []                  # FQDNs (suffix match) whose AAAA must never be synthesised
+exclude_aaaa_networks = ["::ffff:0:0/96"]  # IPv6 prefixes whose AAAA records are filtered out of upstream replies (RFC 6147 §5.1.4)
+exclude_a_networks = [              # IPv4 ranges skipped under the well-known prefix only (RFC 6147 §5.1.4)
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+    # …plus the rest of the IANA Special-Purpose Address Registry; defaults documented in sdns.conf
+]
+```
+
+`exclude_aaaa_networks` defaults to `["::ffff:0:0/96"]` when the field is unset. Pass `[]` (declared empty) to opt out of AAAA filtering entirely. `exclude_a_networks` is consulted only when `64:ff9b::/96` is among the active prefixes.
+
+**Prometheus Metrics:**
+- `dns64_synthesised_total` — AAAA queries answered with synthesised records
+- `dns64_ptr_translated_total` — `ip6.arpa` PTR queries redirected to `in-addr.arpa`
+- `dns64_passthrough_total{reason}` — AAAA queries left untouched, labelled by reason: `aaaa_present`, `nxdomain`, `dnssec_fail`, `no_rd`, `client_excluded`, `zone_excluded`, `cd_bit`, `internal`, `a_excluded`
+- `dns64_a_lookup_failures_total{reason}` — failures of the secondary A lookup, labelled by reason
+
 #### Cache Metrics
 
 SDNS exports comprehensive cache metrics via the Prometheus `/metrics` endpoint for monitoring cache performance.
@@ -411,6 +455,7 @@ This is useful when:
 *   **Kubernetes DNS integration with a 256-way sharded registry and zero-allocation lookups**
 *   **Automatic TLS certificate reloading without downtime**
 *   **DNS amplification/reflection attack detection (Reflex)**
+*   **DNS64 synthesis for IPv6-only clients (RFC 6147)**
 
 ## TODO
 
@@ -426,7 +471,7 @@ This is useful when:
 *   \[x] Query name minimization to improve privacy described at RFC 7816
 *   \[x] DNAME Redirection in the DNS described at RFC 6672
 *   \[x] Automated Updates DNSSEC Trust Anchors described at RFC 5011
-*   \[ ] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
+*   \[x] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
 *   \[x] DNS over QUIC support described at RFC 9250
 *   \[x] Kubernetes DNS integration
 
