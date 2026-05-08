@@ -9,10 +9,10 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
-	"github.com/semihalev/sdns/mock"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 	"github.com/stretchr/testify/assert"
 )
@@ -70,14 +70,14 @@ func Test_handler(t *testing.T) {
 	assert.Equal(t, len(r.Answer) > 0, true)
 
 	m = new(dns.Msg)
-	m.SetEdns0(util.DefaultMsgSize, true)
+	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("dnssec-failed.org.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	assert.Equal(t, len(r.Answer) == 0, true)
 
 	// dnscheck.tools "nosig" test: signed zone but missing/bogus signatures.
 	m = new(dns.Msg)
-	m.SetEdns0(util.DefaultMsgSize, true)
+	m.SetEdns0(dnsutil.DefaultMsgSize, true)
 	m.SetQuestion("nosig-e5ecc382.test-alg15.dnscheck.tools.", dns.TypeA)
 	r = handler.handle(ctx, m)
 	t.Logf("nosig handler rcode=%s ad=%v answers=%d ns=%d extra=%d", dns.RcodeToString[r.Rcode], r.AuthenticatedData, len(r.Answer), len(r.Ns), len(r.Extra))

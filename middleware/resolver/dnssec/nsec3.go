@@ -2,7 +2,7 @@ package dnssec
 
 import (
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
 // maxNSEC3Iterations caps the hash-iteration count this validator is
@@ -98,7 +98,7 @@ func VerifyNameError(msg *dns.Msg, nsec []dns.RR) error {
 	q := msg.Question[0]
 	qname := q.Name
 
-	if dname := util.DnameTarget(msg); dname != "" {
+	if dname := dnsutil.DnameTarget(msg); dname != "" {
 		qname = dname
 	}
 
@@ -131,7 +131,7 @@ func VerifyNODATA(msg *dns.Msg, nsec []dns.RR) error {
 	q := msg.Question[0]
 	qname := q.Name
 
-	if dname := util.DnameTarget(msg); dname != "" {
+	if dname := dnsutil.DnameTarget(msg); dname != "" {
 		qname = dname
 	}
 

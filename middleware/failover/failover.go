@@ -8,8 +8,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -72,12 +72,12 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req := new(dns.Msg)
 	req.SetQuestion(m.Question[0].Name, m.Question[0].Qtype)
 	req.Question[0].Qclass = m.Question[0].Qclass
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
 	for _, server := range w.f.servers {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		resp, err := util.Exchange(ctx, req, server, "udp", nil)
+		resp, err := dnsutil.Exchange(ctx, req, server, "udp", nil)
 		cancel()
 		if err != nil {
 			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())

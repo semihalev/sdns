@@ -8,7 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/sdns/internal/mock"
 )
 
 // noopHandler is a handler that just forwards. This isolates the

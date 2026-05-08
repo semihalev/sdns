@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authority"
-	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -85,7 +85,7 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	if len(req.Question) == 0 {
-		return util.SetRcode(req, dns.RcodeFormatError, false)
+		return dnsutil.SetRcode(req, dns.RcodeFormatError, false)
 	}
 
 	q := req.Question[0]
@@ -97,7 +97,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Qtype == dns.TypeANY {
-		return util.SetRcode(req, dns.RcodeNotImplemented, do)
+		return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
 	}
 
 	// CHAOS queries: debug nameserver stats (HINFO) or cache purge (NULL)
@@ -106,7 +106,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Name != rootzone && !req.RecursionDesired {
-		return util.SetRcode(req, dns.RcodeServerFailure, do)
+		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
 	// Prepare request for authoritative servers
@@ -142,17 +142,17 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		zlog.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
 		// Add Extended DNS Error information for recursor validation failures
-		edeCode, edeText := util.ErrorToEDE(err)
-		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
+		edeCode, edeText := dnsutil.ErrorToEDE(err)
+		return dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
 	}
 
 	// Convert certain response codes to SERVFAIL with appropriate EDE
 	switch resp.Rcode {
 	case dns.RcodeRefused:
-		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
+		return dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
 			dns.ExtendedErrorCodeBlocked, "Upstream server refused the query")
 	case dns.RcodeNotZone:
-		return util.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
+		return dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
 			dns.ExtendedErrorCodeNotAuthoritative, "Upstream server is not authoritative for zone")
 	}
 

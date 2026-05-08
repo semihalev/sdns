@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
 // VerifyDelegationNSEC verifies an insecure-delegation claim using NSEC
@@ -44,7 +44,7 @@ func VerifyNameErrorNSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 
 	q := msg.Question[0]
 	qname := q.Name
-	if dname := util.DnameTarget(msg); dname != "" {
+	if dname := dnsutil.DnameTarget(msg); dname != "" {
 		qname = dname
 	}
 
@@ -130,7 +130,7 @@ func VerifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 	qname := q.Name
 
 	// Check if DNAME redirection applies
-	if dname := util.DnameTarget(msg); dname != "" {
+	if dname := dnsutil.DnameTarget(msg); dname != "" {
 		qname = dname
 	}
 

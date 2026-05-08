@@ -3,7 +3,7 @@ package cache
 import (
 	"time"
 
-	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/internal/cache"
 )
 
 // NegativeCache handles error DNS responses.

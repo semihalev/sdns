@@ -62,8 +62,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -387,7 +387,7 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 				// via EDE 4 so a curious client can see why.
 				filtered.AuthenticatedData = false
 				if m.AuthenticatedData {
-					util.SetEDE(filtered, dns.ExtendedErrorCodeForgedAnswer, "DNS64 filtered IPv4-mapped AAAA")
+					dnsutil.SetEDE(filtered, dns.ExtendedErrorCodeForgedAnswer, "DNS64 filtered IPv4-mapped AAAA")
 				}
 			}
 			return w.ResponseWriter.WriteMsg(filtered)
@@ -580,7 +580,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	// curious client sees the reason.
 	out.AuthenticatedData = false
 	if orig.AuthenticatedData {
-		util.SetEDE(out, dns.ExtendedErrorCodeForgedAnswer, "DNS64 synthesis")
+		dnsutil.SetEDE(out, dns.ExtendedErrorCodeForgedAnswer, "DNS64 synthesis")
 	}
 	return out
 }
@@ -625,7 +625,7 @@ func (w *responseWriter) buildAResponseAsBasis(orig, aResp *dns.Msg) *dns.Msg {
 	// can see why we changed our mind.
 	out.AuthenticatedData = false
 	if orig.AuthenticatedData {
-		util.SetEDE(out, dns.ExtendedErrorCodeForgedAnswer, "DNS64 used A response as basis")
+		dnsutil.SetEDE(out, dns.ExtendedErrorCodeForgedAnswer, "DNS64 used A response as basis")
 	}
 	return out
 }

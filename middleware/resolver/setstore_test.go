@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authority"
-	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/middleware"
 )
 

@@ -1,5 +1,5 @@
-// Package util provides DNS protocol utilities for SDNS.
-package util
+// Package dnsutil provides DNS protocol utilities for SDNS.
+package dnsutil
 
 import (
 	"context"

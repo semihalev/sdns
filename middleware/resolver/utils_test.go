@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
-	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -70,7 +70,7 @@ func Test_extractRRSet(t *testing.T) {
 		rr = append(rr, a)
 	}
 
-	rre := util.ExtractRRSet(rr, "test.com.", dns.TypeA)
+	rre := dnsutil.ExtractRRSet(rr, "test.com.", dns.TypeA)
 	assert.Len(t, rre, 3)
 }
 
@@ -82,15 +82,15 @@ func Test_extractRRSetMultipleTypes(t *testing.T) {
 	rr = append(rr, a, aaaa, mx)
 
 	// Test with multiple types
-	rre := util.ExtractRRSet(rr, "test.com.", dns.TypeA, dns.TypeAAAA)
+	rre := dnsutil.ExtractRRSet(rr, "test.com.", dns.TypeA, dns.TypeAAAA)
 	assert.Len(t, rre, 2)
 
 	// Test with empty input
-	rre = util.ExtractRRSet(nil, "", dns.TypeA)
+	rre = dnsutil.ExtractRRSet(nil, "", dns.TypeA)
 	assert.Nil(t, rre)
 
 	// Test with name filter mismatch
-	rre = util.ExtractRRSet(rr, "other.com.", dns.TypeA)
+	rre = dnsutil.ExtractRRSet(rr, "other.com.", dns.TypeA)
 	assert.Len(t, rre, 0)
 }
 
@@ -124,7 +124,7 @@ func Test_getDnameTarget(t *testing.T) {
 	msg.Question = []dns.Question{{Name: "sub.example.com.", Qtype: dns.TypeA}}
 
 	// No DNAME record
-	target := util.DnameTarget(msg)
+	target := dnsutil.DnameTarget(msg)
 	assert.Empty(t, target)
 
 	// Exact-owner match: RFC 6672 §2.3 — the DNAME owner itself is
@@ -139,7 +139,7 @@ func Test_getDnameTarget(t *testing.T) {
 		Target: "target.com.",
 	}
 	msg.Answer = []dns.RR{dname}
-	target = util.DnameTarget(msg)
+	target = dnsutil.DnameTarget(msg)
 	assert.Empty(t, target, "DNAME owner must not be redirected")
 
 	// Test with subdomain
@@ -154,7 +154,7 @@ func Test_getDnameTarget(t *testing.T) {
 		Target: "newtarget.com.",
 	}
 	msg.Answer = []dns.RR{dname2}
-	target = util.DnameTarget(msg)
+	target = dnsutil.DnameTarget(msg)
 	assert.Equal(t, "deep.newtarget.com.", target)
 
 	// Cousin name: qname shares a suffix with the DNAME owner but is
@@ -163,7 +163,7 @@ func Test_getDnameTarget(t *testing.T) {
 	// ancestor check the helper would rewrite unrelated names.
 	msg.Question = []dns.Question{{Name: "other.example.com.", Qtype: dns.TypeA}}
 	msg.Answer = []dns.RR{dname2} // DNAME owner is sub.example.com.
-	target = util.DnameTarget(msg)
+	target = dnsutil.DnameTarget(msg)
 	assert.Empty(t, target, "cousin of DNAME owner must not be redirected")
 }
 
@@ -239,7 +239,7 @@ func Test_filterToZone_NSECNextDomain(t *testing.T) {
 		NextDomain: "zz.example.com.",
 	}
 
-	got := util.FilterRRsToZone([]dns.RR{crossZone, inZone}, "example.com.")
+	got := dnsutil.FilterRRsToZone([]dns.RR{crossZone, inZone}, "example.com.")
 	assert.Len(t, got, 1, "NSEC with cross-zone NextDomain must be filtered out")
 	assert.Equal(t, "!.example.com.", got[0].Header().Name)
 }

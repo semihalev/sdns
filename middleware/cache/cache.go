@@ -11,9 +11,9 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/waitgroup"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
-	"github.com/semihalev/sdns/waitgroup"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -25,8 +25,8 @@ func init() {
 
 const (
 	name   = "cache"
-	maxTTL = util.MaxCacheTTL
-	minTTL = util.MinCacheTTL
+	maxTTL = dnsutil.MaxCacheTTL
+	minTTL = dnsutil.MinCacheTTL
 
 	// maxCnameChaseDepth bounds how many nested CNAME-chase
 	// invocations may happen for a single client query. The
@@ -417,7 +417,7 @@ func (c *Cache) isValidQuery(q dns.Question) bool {
 // handleSpecialQuery handles CHAOS and other special queries.
 // Cache invalidation previously flowed through here via a
 // base64-encoded CHAOS NULL request dispatched by
-// util.ExchangeInternal; that path retired alongside
+// dnsutil.ExchangeInternal; that path retired alongside
 // ExchangeInternal itself — api/api.go now calls Cache.Purge
 // directly via middleware.Pipeline.Purgers(). Only the debug-ns
 // HINFO pass-through remains.
@@ -447,11 +447,11 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	}
 
 	filtered := filterCacheableAnswer(msg)
-	mt, _ := util.ClassifyResponse(filtered, time.Now().UTC())
-	msgTTL := util.CalculateCacheTTL(filtered, mt)
+	mt, _ := dnsutil.ClassifyResponse(filtered, time.Now().UTC())
+	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
 	var ttl time.Duration
-	if mt == util.TypeServerFailure {
+	if mt == dnsutil.TypeServerFailure {
 		ttl = c.negative.ttl.Calculate(msgTTL)
 	} else {
 		ttl = c.positive.ttl.Calculate(msgTTL)
@@ -642,7 +642,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	cnameReq := AcquireMsg()
 	defer ReleaseMsg(cnameReq)
 
-	cnameReq.SetEdns0(util.DefaultMsgSize, true)
+	cnameReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	cnameReq.CheckingDisabled = msg.CheckingDisabled
 
 	// Check if we already have the answer we're looking for
@@ -655,7 +655,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		if answer.Header().Rrtype == dns.TypeCNAME {
 			cr := answer.(*dns.CNAME)
 			if cr.Target == q.Name {
-				return util.SetRcode(msg, dns.RcodeServerFailure, false)
+				return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 			}
 			cnameReq.SetQuestion(cr.Target, q.Qtype)
 		}
@@ -672,7 +672,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		// Check for loops
 		if slices.Contains(targets, target) {
-			return util.SetRcode(msg, dns.RcodeServerFailure, false)
+			return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
 
 		targets = append(targets, target)
@@ -683,7 +683,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		}
 
 		if target == q.Name {
-			return util.SetRcode(msg, dns.RcodeServerFailure, false)
+			return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
 
 		cnameReq.Question[0].Name = target

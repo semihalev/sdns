@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/mock"
+	"github.com/semihalev/sdns/internal/mock"
 	"github.com/stretchr/testify/assert"
 )
 

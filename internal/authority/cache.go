@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/internal/cache"
 )
 
 // Delegation represents a cache entry holding the authoritative
