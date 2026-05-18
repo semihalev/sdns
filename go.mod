@@ -7,7 +7,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
-	github.com/quic-go/quic-go v0.59.0
+	github.com/quic-go/quic-go v0.59.1
 	github.com/semihalev/zlog/v2 v2.0.8
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
