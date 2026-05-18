@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authority"
-	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -32,7 +32,7 @@ func TestCircuitBreakerIntegration(t *testing.T) {
 	ctx := context.Background()
 	req := new(dns.Msg)
 	req.SetQuestion("test.example.com.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	// First 5 queries should fail and trip the circuit breaker
 	var wg sync.WaitGroup
@@ -80,7 +80,7 @@ func TestGoroutineLimitUnderLoad(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("load.test.com.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	// Track max concurrent queries
 	var maxConcurrent atomic.Int32
@@ -243,7 +243,7 @@ func TestCircuitBreakerWithMixedServers(t *testing.T) {
 	ctx := context.Background()
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	// Run multiple queries
 	var successes atomic.Int32

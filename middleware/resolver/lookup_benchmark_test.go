@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/authority"
 )
 
 func BenchmarkLookupPerformance(b *testing.B) {

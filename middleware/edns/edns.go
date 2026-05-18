@@ -7,8 +7,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
 )
 
 // responseWriterPool reuses per-query ResponseWriter wrappers. A wrapper
@@ -51,7 +51,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
 	if req.Opcode > 0 {
-		_ = util.NotSupported(w, req)
+		_ = dnsutil.NotSupported(w, req)
 
 		ch.Cancel()
 		return
@@ -59,7 +59,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	noedns := req.IsEdns0() == nil
 
-	opt, size, cookie, nsid, do := util.SetEdns0(req)
+	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req)
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 
@@ -106,7 +106,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	m.Compress = true
 
 	if !w.do {
-		m = util.ClearDNSSEC(m)
+		m = dnsutil.ClearDNSSEC(m)
 	}
 
 	if !w.noedns {
@@ -135,7 +135,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		}
 	} else {
 		// EDNS disabled, remove all OPT records
-		m = util.ClearOPT(m)
+		m = dnsutil.ClearOPT(m)
 	}
 
 	if w.noad {
@@ -159,7 +159,7 @@ func (w *ResponseWriter) setCookie() {
 
 	w.opt.Option = append(w.opt.Option, &dns.EDNS0_COOKIE{
 		Code:   dns.EDNS0COOKIE,
-		Cookie: util.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
+		Cookie: dnsutil.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
 	})
 }
 

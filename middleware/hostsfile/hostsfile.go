@@ -16,8 +16,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -34,7 +34,7 @@ type HostsDB struct {
 	reverse map[string][]string
 
 	// Pre-built PTR answers keyed by the canonical reverse IP returned
-	// by util.IPFromReverseName. Share-safe across queries: the RRs are
+	// by dnsutil.IPFromReverseName. Share-safe across queries: the RRs are
 	// read-only after load.
 	ptrs map[string][]dns.RR
 
@@ -236,7 +236,7 @@ func (h *Hostsfile) lookupAAAA(db *HostsDB, name string) ([]dns.RR, bool) {
 
 // lookupPTR finds PTR records for an IP address.
 func (h *Hostsfile) lookupPTR(db *HostsDB, name string) ([]dns.RR, bool) {
-	ip := util.IPFromReverseName(name)
+	ip := dnsutil.IPFromReverseName(name)
 	if ip == "" {
 		return nil, false
 	}
@@ -586,7 +586,7 @@ func buildAAAARRs(name string, ips []net.IP, ttl uint32) []dns.RR {
 }
 
 // buildPTRs pre-builds PTR answers keyed by reverse-IP. Note that the
-// owner name in each RR is the reverse-name form; util.IPFromReverseName
+// owner name in each RR is the reverse-name form; dnsutil.IPFromReverseName
 // does not tell us what the original reverse name looked like, so we
 // reconstruct it from the IP via a canonical form.
 func buildPTRs(ip string, names []string, ttl uint32) []dns.RR {

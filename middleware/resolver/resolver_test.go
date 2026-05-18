@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authority"
+	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
-	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -21,7 +21,7 @@ func Test_resolver(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("google.com.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -70,7 +70,7 @@ func Test_resolverDNSSEC(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("good.dnssec-or-not.com.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -88,7 +88,7 @@ func Test_resolverBadDNSSEC(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("dnssec-failed.org.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -111,7 +111,7 @@ func Test_resolverNoSigDNSSEC(t *testing.T) {
 	req.SetQuestion(qname, dns.TypeA)
 	// Ask for DNSSEC records (DO=1) so we can observe how the resolver handles
 	// missing/bogus signatures under a signed zone.
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -138,7 +138,7 @@ func Test_resolverBadKeyDNSSEC(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("bad.dnssec-or-not.com.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -172,7 +172,7 @@ func Test_resolverDS(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("nic.cz.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -190,7 +190,7 @@ func Test_resolverAllNS(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("sds4wdwf.", dns.TypeNS)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -207,7 +207,7 @@ func Test_resolverTimeout(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("baddns.com.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -225,7 +225,7 @@ func Test_resolverRootServersDetect(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("12.137.53.1.in-addr.arpa.", dns.TypePTR)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -242,7 +242,7 @@ func Test_resolverNameserverError(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("33.38.244.195.in-addr.arpa.", dns.TypePTR)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -259,7 +259,7 @@ func Test_resolverNSEC3nodata(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("asdadadasds33sa.co.uk.", dns.TypeDS)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -276,7 +276,7 @@ func Test_resolverNSECnodata(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("tr.", dns.TypeDS)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -294,7 +294,7 @@ func Test_resolverNSEC3nodataerror(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("testlabs.example.com.", dns.TypeDS)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -317,7 +317,7 @@ func Test_resolverFindSigner(t *testing.T) {
 	// making it an insecure delegation under the signed com. zone.
 	req := new(dns.Msg)
 	req.SetQuestion("stackoverflow.com.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -339,7 +339,7 @@ func Test_resolverBogusZone(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("c-73-136-41-228.hsd1.tx.comcast.net.", dns.TypeA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -356,7 +356,7 @@ func Test_resolverRootKeys(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeDNSKEY)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
@@ -373,7 +373,7 @@ func Test_resolverNoAnswer(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("www.sozcu.com.tr.", dns.TypeAAAA)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)

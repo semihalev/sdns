@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -290,7 +290,7 @@ func (r *Resolver) AutoTA() {
 
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeDNSKEY)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	// CD=true on AutoTA's own DNSKEY query: we validate the response
 	// explicitly against `candidate` below, so the recursive
 	// resolver's validator must not gate on r.rootKeys (which may
@@ -579,11 +579,11 @@ func sameKeyExceptRevoke(currentKey, revokedKey *dns.DNSKEY) bool {
 // fetched in, produced by revokedKey itself. Per RFC 5011 §2.1 this
 // self-signature is a precondition for accepting a revocation.
 func revocationIsSelfSigned(rrs []dns.RR, revokedKey *dns.DNSKEY) bool {
-	dnskeys := util.ExtractRRSet(rrs, "", dns.TypeDNSKEY)
+	dnskeys := dnsutil.ExtractRRSet(rrs, "", dns.TypeDNSKEY)
 	if len(dnskeys) == 0 {
 		return false
 	}
-	rrsigs := util.ExtractRRSet(rrs, "", dns.TypeRRSIG)
+	rrsigs := dnsutil.ExtractRRSet(rrs, "", dns.TypeRRSIG)
 	revokedTag := revokedKey.KeyTag()
 	for _, rr := range rrsigs {
 		rrsig := rr.(*dns.RRSIG)
@@ -624,7 +624,7 @@ func revocationIsSelfSigned(rrs []dns.RR, revokedKey *dns.DNSKEY) bool {
 // drive any other state transition (AddPend seeding, Missing
 // marking, etc.) from it.
 func verifyFetchedKeys(rootKeys []dns.RR, rrs []dns.RR) (ok bool, revocationOnly bool, err error) {
-	fetchedkeys := util.ExtractRRSet(rrs, "", dns.TypeDNSKEY)
+	fetchedkeys := dnsutil.ExtractRRSet(rrs, "", dns.TypeDNSKEY)
 	if len(fetchedkeys) == 0 {
 		return false, false, dnssec.ErrNoDNSKEY
 	}
@@ -660,7 +660,7 @@ func verifyFetchedKeys(rootKeys []dns.RR, rrs []dns.RR) (ok bool, revocationOnly
 		}
 	}
 
-	rrsigs := util.ExtractRRSet(rrs, "", dns.TypeRRSIG)
+	rrsigs := dnsutil.ExtractRRSet(rrs, "", dns.TypeRRSIG)
 	if len(rrsigs) == 0 {
 		return false, false, dnssec.ErrNoSignatures
 	}
@@ -706,7 +706,7 @@ func verifyOneRRSIG(rrsig *dns.RRSIG, k *dns.DNSKEY, fetchedkeys []dns.RR, lastE
 		*lastErr = dnssec.ErrMissingSigned
 		return false
 	}
-	rest := util.ExtractRRSet(fetchedkeys, rrsig.Header().Name, rrsig.TypeCovered)
+	rest := dnsutil.ExtractRRSet(fetchedkeys, rrsig.Header().Name, rrsig.TypeCovered)
 	if len(rest) == 0 {
 		*lastErr = dnssec.ErrMissingSigned
 		return false

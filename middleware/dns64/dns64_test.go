@@ -8,9 +8,9 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/mock"
-	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -363,7 +363,7 @@ func TestSynthesise_AD_AddsEDE(t *testing.T) {
 	resp := mw.Msg()
 	assert.False(t, resp.AuthenticatedData, "synthesised reply must clear AD")
 
-	ede := util.GetEDE(resp)
+	ede := dnsutil.GetEDE(resp)
 	if assert.NotNil(t, ede, "EDE 4 should be attached when original was AD=1") {
 		assert.Equal(t, dns.ExtendedErrorCodeForgedAnswer, ede.InfoCode)
 	}
@@ -376,7 +376,7 @@ func TestSynthesise_NoAD_NoEDE(t *testing.T) {
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noDataMsg("foo.example.org.", 300)}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
 	resp := mw.Msg()
-	assert.Nil(t, util.GetEDE(resp), "EDE must NOT be attached when original was AD=0")
+	assert.Nil(t, dnsutil.GetEDE(resp), "EDE must NOT be attached when original was AD=0")
 }
 
 func TestSynthesise_PrivateA_WellKnownPrefix_AllExcluded(t *testing.T) {
@@ -504,7 +504,7 @@ func TestSynthesise_MultipleAs_AllSynthesised(t *testing.T) {
 }
 
 // TestSynthesise_RetainsOPT pins the behaviour that lets EDE
-// attachment work — without OPT in Extra, util.SetEDE is a no-op
+// attachment work — without OPT in Extra, dnsutil.SetEDE is a no-op
 // so the AD-bit downgrade would silently drop its rationale.
 func TestSynthesise_RetainsOPT(t *testing.T) {
 	d := New(baseConfig())
@@ -688,7 +688,7 @@ func TestDNSSECFailure_PassesThrough(t *testing.T) {
 			servfail.Response = true
 			servfail.Rcode = dns.RcodeServerFailure
 			servfail.SetEdns0(4096, true)
-			util.SetEDE(servfail, code, "")
+			dnsutil.SetEDE(servfail, code, "")
 
 			ch, mw := makeChain(t, d, &stubAnswerer{msg: servfail}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 			d.ServeDNS(context.Background(), ch)
@@ -698,7 +698,7 @@ func TestDNSSECFailure_PassesThrough(t *testing.T) {
 			if q.last != nil {
 				t.Fatalf("DNSSEC failure must not trigger an A lookup; queryer was called")
 			}
-			ede := util.GetEDE(resp)
+			ede := dnsutil.GetEDE(resp)
 			if assert.NotNil(t, ede, "EDE must reach the client") {
 				assert.Equal(t, code, ede.InfoCode)
 			}
@@ -890,7 +890,7 @@ func TestPassThrough_FilteredAAAAClearsAD(t *testing.T) {
 
 	resp := mw.Msg()
 	assert.False(t, resp.AuthenticatedData, "AD must clear after RRset modification")
-	if ede := util.GetEDE(resp); assert.NotNil(t, ede, "EDE 4 should be attached when AD was set on the upstream") {
+	if ede := dnsutil.GetEDE(resp); assert.NotNil(t, ede, "EDE 4 should be attached when AD was set on the upstream") {
 		assert.Equal(t, dns.ExtendedErrorCodeForgedAnswer, ede.InfoCode)
 	}
 }

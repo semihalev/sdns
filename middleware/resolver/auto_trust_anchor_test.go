@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authority"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/middleware/resolver"
 	"github.com/semihalev/zlog/v2"
 	"github.com/stretchr/testify/assert"

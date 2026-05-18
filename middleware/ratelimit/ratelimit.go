@@ -9,8 +9,8 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
 	"golang.org/x/time/rate"
 )
 
@@ -88,7 +88,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			if option.Option() == dns.EDNS0COOKIE {
 				if len(option.String()) >= cookieSize {
 					clientcookie = option.String()[:cookieSize]
-					servercookie = util.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
+					servercookie = dnsutil.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
 
 					if cachedcookie == "" || cachedcookie == option.String() {
 						ch.Next(ctx)

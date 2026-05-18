@@ -4,8 +4,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/cache"
-	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
 // Store is the cache backing for the cache middleware. It owns nothing
@@ -91,15 +91,15 @@ func (s *Store) SetFromResponse(resp *dns.Msg, keyCD bool) {
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
 func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg) {
-	mt, _ := util.ClassifyResponse(resp, time.Now().UTC())
+	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
 	filtered := filterCacheableAnswer(resp)
-	msgTTL := util.CalculateCacheTTL(filtered, mt)
+	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
 	switch mt {
-	case util.TypeSuccess, util.TypeReferral, util.TypeNXDomain, util.TypeNoRecords:
+	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		ttl := s.positive.ttl.Calculate(msgTTL)
 		s.positive.Set(key, NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
-	case util.TypeServerFailure:
+	case dnsutil.TypeServerFailure:
 		ttl := s.negative.ttl.Calculate(msgTTL)
 		s.negative.Set(key, NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
 	}
@@ -109,11 +109,11 @@ func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg) {
 // Cache.Set's compatibility path where a caller already constructed
 // the CacheEntry (e.g. prefetch worker writing back a response with
 // adjusted origTTL).
-func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt util.ResponseType) {
+func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.ResponseType) {
 	switch mt {
-	case util.TypeSuccess, util.TypeReferral, util.TypeNXDomain, util.TypeNoRecords:
+	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		s.positive.Set(key, entry)
-	case util.TypeServerFailure:
+	case dnsutil.TypeServerFailure:
 		s.negative.Set(key, entry)
 	}
 }

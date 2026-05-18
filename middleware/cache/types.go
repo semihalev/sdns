@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/cache"
+	"github.com/semihalev/sdns/internal/cache"
 	"golang.org/x/time/rate"
 )
 

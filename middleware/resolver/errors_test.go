@@ -5,15 +5,15 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
-	"github.com/semihalev/sdns/util"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestEDEError(t *testing.T) {
 	// Test Error() with wrapped error
 	wrapped := errors.New("wrapped error")
-	err := &util.EDEError{
+	err := &dnsutil.EDEError{
 		Code:    dns.ExtendedErrorCodeNetworkError,
 		Message: "network failed",
 		Err:     wrapped,
@@ -22,7 +22,7 @@ func TestEDEError(t *testing.T) {
 	assert.Contains(t, err.Error(), "wrapped error")
 
 	// Test Error() without wrapped error
-	errNoWrap := &util.EDEError{
+	errNoWrap := &dnsutil.EDEError{
 		Code:    dns.ExtendedErrorCodeDNSBogus,
 		Message: "bogus response",
 	}
@@ -63,7 +63,7 @@ func TestNoReachableAuthAtZone(t *testing.T) {
 }
 
 func TestEDEErrorWithContext(t *testing.T) {
-	original := &util.EDEError{
+	original := &dnsutil.EDEError{
 		Code:    dns.ExtendedErrorCodeDNSBogus,
 		Message: "validation failed",
 	}
@@ -96,7 +96,7 @@ func TestPredefinedEDEErrors(t *testing.T) {
 	// Test that predefined errors have correct codes
 	tests := []struct {
 		name string
-		err  *util.EDEError
+		err  *dnsutil.EDEError
 		code uint16
 	}{
 		{"dnssec.ErrNoDNSKEY", dnssec.ErrNoDNSKEY, dns.ExtendedErrorCodeDNSKEYMissing},

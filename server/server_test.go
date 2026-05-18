@@ -23,8 +23,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware/blocklist"
-	"github.com/semihalev/sdns/mock"
 	"github.com/semihalev/zlog/v2"
 	"github.com/stretchr/testify/assert"
 )

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
 // FuzzExtractRRSet fuzzes the RR extraction function.
@@ -30,10 +30,10 @@ func FuzzExtractRRSet(f *testing.F) {
 			},
 		}
 
-		_ = util.ExtractRRSet(rrs, name, type1, type2)
-		_ = util.ExtractRRSet(rrs, name, type1)
-		_ = util.ExtractRRSet(rrs, name)
-		_ = util.ExtractRRSet(nil, name, type1)
+		_ = dnsutil.ExtractRRSet(rrs, name, type1, type2)
+		_ = dnsutil.ExtractRRSet(rrs, name, type1)
+		_ = dnsutil.ExtractRRSet(rrs, name)
+		_ = dnsutil.ExtractRRSet(nil, name, type1)
 	})
 }
 
@@ -75,7 +75,7 @@ func FuzzGetDnameTarget(f *testing.F) {
 			}
 		}
 
-		_ = util.DnameTarget(msg)
+		_ = dnsutil.DnameTarget(msg)
 	})
 }
 

@@ -9,8 +9,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/mock"
 )
 
 func TestCache_Integration_Basic(t *testing.T) {

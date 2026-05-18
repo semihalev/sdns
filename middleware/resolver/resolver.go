@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/authority"
-	"github.com/semihalev/sdns/cache"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 	"golang.org/x/sync/errgroup"
 )
@@ -688,7 +688,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 		return nil, nil
 	}
 
-	target := util.DnameTarget(resp)
+	target := dnsutil.DnameTarget(resp)
 	if target == "" {
 		return nil, nil
 	}
@@ -707,7 +707,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 
 	req := new(dns.Msg)
 	req.SetQuestion(target, q.Qtype)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	// Mirror the outer request's CD bit onto the follow-up. Without
 	// this, a CD=1 client query can still have the DNAME target
 	// leg re-validated and turned into SERVFAIL on bogus target
@@ -907,8 +907,8 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				// zone records, so out-of-zone NSECs could otherwise
 				// satisfy canonical-coverage checks here without
 				// having been cryptographically authenticated.
-				nsec3Set := util.FilterRRsToZone(util.ExtractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner)
-				nsecSet := util.FilterRRsToZone(util.ExtractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner)
+				nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner)
+				nsecSet := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner)
 				isNegative := resp.Rcode == dns.RcodeNameError ||
 					(resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0)
 
@@ -1331,16 +1331,16 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		return r.exchange(ctx, rs, "tcp", req, server, retried)
 	}
 
-	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > util.DefaultMsgSize {
+	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > dnsutil.DefaultMsgSize {
 		// If response is too large, switch to TCP
 		zlog.Debug("Response too large, switching to TCP", "query", formatQuestion(q), "upstream", server.Addr,
-			"size", resp.Len(), "maxSize", util.DefaultMsgSize, "retried", retried)
+			"size", resp.Len(), "maxSize", dnsutil.DefaultMsgSize, "retried", retried)
 		return r.exchange(ctx, rs, "tcp", req, server, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
-		req = util.ClearOPT(req)
+		req = dnsutil.ClearOPT(req)
 		return r.exchange(ctx, rs, proto, req, server, retried)
 	}
 
@@ -1602,7 +1602,7 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []
 					return nil, err
 				}
 
-				parentDS = util.ExtractRRSet(dsResp.Answer, candidate, dns.TypeDS)
+				parentDS = dnsutil.ExtractRRSet(dsResp.Answer, candidate, dns.TypeDS)
 				if len(parentDS) == 0 {
 					break
 				}
@@ -1617,7 +1617,7 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []
 				return nil, err
 			}
 
-			parentDS = util.ExtractRRSet(dsResp.Answer, signer, dns.TypeDS)
+			parentDS = dnsutil.ExtractRRSet(dsResp.Answer, signer, dns.TypeDS)
 		}
 	}
 
@@ -1705,7 +1705,7 @@ func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dn
 
 	dsReq := new(dns.Msg)
 	dsReq.SetQuestion(qname, dns.TypeDS)
-	dsReq.SetEdns0(util.DefaultMsgSize, true)
+	dsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	// Inherit the outer client's CD bit so a CD=1 query doesn't have
 	// its internal DS chain walk SERVFAIL on bogus parent-side DS data.
 	dsReq.CheckingDisabled = cd
@@ -1843,7 +1843,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeA)
-	nsReq.SetEdns0(util.DefaultMsgSize, true)
+	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
 	nsres, err := r.internalExchange(ctx, nsReq)
@@ -1874,7 +1874,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 
 	nsReq := new(dns.Msg)
 	nsReq.SetQuestion(qname, dns.TypeAAAA)
-	nsReq.SetEdns0(util.DefaultMsgSize, true)
+	nsReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	nsReq.CheckingDisabled = cd
 
 	nsres, err := r.internalExchange(ctx, nsReq)
@@ -2106,7 +2106,7 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
 	keyReq := new(dns.Msg)
 	keyReq.SetQuestion(signer, dns.TypeDNSKEY)
-	keyReq.SetEdns0(util.DefaultMsgSize, true)
+	keyReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	var msg *dns.Msg
 
@@ -2224,7 +2224,7 @@ func (r *Resolver) equalServers(s1, s2 *authority.Servers) bool {
 func (r *Resolver) checkPriming() {
 	req := new(dns.Msg)
 	req.SetQuestion(rootzone, dns.TypeNS)
-	req.SetEdns0(util.DefaultMsgSize, true)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = !r.dnssec
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
@@ -2637,7 +2637,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			settled = true
 			break
 		}
-		childDS = util.ExtractRRSet(resp.Ns, q.Name, dns.TypeDS)
+		childDS = dnsutil.ExtractRRSet(resp.Ns, q.Name, dns.TypeDS)
 		finalDS = candidateDSRR
 		chosenSigner = signer
 		verified = true
@@ -2665,7 +2665,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	// Zone-filter the denial proofs to the validated signer so an
 	// attacker-injected NSEC/NSEC3 from an unrelated sibling zone
 	// cannot structurally satisfy the delegation check.
-	if nsec3Set := util.FilterRRsToZone(util.ExtractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner); len(nsec3Set) > 0 {
+	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner); len(nsec3Set) > 0 {
 		if err := dnssec.VerifyDelegation(q.Name, nsec3Set); err != nil {
 			zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err
@@ -2673,7 +2673,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		return []dns.RR{}, nil
 	}
 
-	if nsecSet := util.FilterRRsToZone(util.ExtractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner); len(nsecSet) > 0 {
+	if nsecSet := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner); len(nsecSet) > 0 {
 		if err := dnssec.VerifyDelegationNSEC(q.Name, nsecSet); err != nil {
 			zlog.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err

@@ -8,8 +8,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/util"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -82,7 +82,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			reqClient.TLSConfig = f.tlsConfig
 		}
 
-		resp, err := util.Exchange(ctx, req, server.Addr, server.Proto, reqClient)
+		resp, err := dnsutil.Exchange(ctx, req, server.Addr, server.Proto, reqClient)
 		if err != nil {
 			zlog.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue

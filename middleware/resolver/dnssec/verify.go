@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/util"
+	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
 // IsSupportedDSDigest reports whether the given DS digest type is
@@ -161,7 +161,7 @@ func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bo
 	for _, section := range [][]dns.RR{msg.Answer, msg.Ns} {
 		for _, r := range section {
 			if d, ok := r.(*dns.DNAME); ok {
-				if util.NameInZone(strings.ToLower(d.Header().Name), signerZone) {
+				if dnsutil.NameInZone(strings.ToLower(d.Header().Name), signerZone) {
 					dnames = append(dnames, d)
 				}
 			}
@@ -199,7 +199,7 @@ func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bo
 				}
 			}
 			name := strings.ToLower(r.Header().Name)
-			if !util.NameInZone(name, signerZone) {
+			if !dnsutil.NameInZone(name, signerZone) {
 				if collectErr == nil {
 					collectErr = ErrMissingSigned
 				}
@@ -225,8 +225,8 @@ func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bo
 	}
 
 	sigs := append(
-		util.ExtractRRSet(msg.Answer, "", dns.TypeRRSIG),
-		util.ExtractRRSet(msg.Ns, "", dns.TypeRRSIG)...,
+		dnsutil.ExtractRRSet(msg.Answer, "", dns.TypeRRSIG),
+		dnsutil.ExtractRRSet(msg.Ns, "", dns.TypeRRSIG)...,
 	)
 	if len(sigs) == 0 {
 		return false, ErrNoSignatures
@@ -236,7 +236,7 @@ func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bo
 	for _, sigRR := range sigs {
 		sig := sigRR.(*dns.RRSIG)
 		name := strings.ToLower(sig.Header().Name)
-		if !util.NameInZone(name, signerZone) {
+		if !dnsutil.NameInZone(name, signerZone) {
 			continue
 		}
 		k := rrsetKey{name: name, rtype: sig.TypeCovered}
@@ -348,7 +348,7 @@ func ValidateSigner(signer, qname string) error {
 	if signer == "" {
 		return ErrDSRecords
 	}
-	if !util.NameInZone(strings.ToLower(dns.Fqdn(qname)), strings.ToLower(dns.Fqdn(signer))) {
+	if !dnsutil.NameInZone(strings.ToLower(dns.Fqdn(qname)), strings.ToLower(dns.Fqdn(signer))) {
 		return ErrDSRecords
 	}
 	return nil
