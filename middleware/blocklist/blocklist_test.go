@@ -114,10 +114,12 @@ func Test_BlockList_Wildcard(t *testing.T) {
 	assert.False(t, blocklist.Exists("notblocked.com."))
 	assert.False(t, blocklist.Exists("subdomain.notblocked.com."))
 
-	// Test exact domain blocking
+	// A bare domain blocks the name itself and every subdomain
+	// (matches Pi-hole/AdGuard/dnsmasq; see issue #478).
 	blocklist.Set("exact.com.")
 	assert.True(t, blocklist.Exists("exact.com."))
-	assert.False(t, blocklist.Exists("subdomain.exact.com."))
+	assert.True(t, blocklist.Exists("subdomain.exact.com."))
+	assert.True(t, blocklist.Exists("deep.subdomain.exact.com."))
 
 	// Test multiple wildcard levels
 	blocklist.Set("*.subdomain.multi.com.")
@@ -149,6 +151,40 @@ func Test_BlockList_Wildcard(t *testing.T) {
 	// Test case insensitivity
 	assert.True(t, blocklist.Exists("TEST.BLOCKED.COM."))
 	assert.True(t, blocklist.Exists("Test.Blocked.Com."))
+}
+
+// Test_BlockList_Issue478 loads a plain-domain list (hagezi
+// "*-onlydomains.txt" style: bare domains, no "*." prefix) through the
+// on-disk blocklist path and verifies that subdomains — what devices
+// actually query — are blocked, not just the apex.
+func Test_BlockList_Issue478(t *testing.T) {
+	dir := filepath.Join(os.TempDir(), "sdns_temp_issue478")
+	assert.NoError(t, os.RemoveAll(dir))
+	assert.NoError(t, os.MkdirAll(dir, 0750))
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	onlyDomains := "# Syntax: Domains (without subdomains)\nmiui.net\nkuyun.com\n"
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, "xiaomi-onlydomains.txt"), []byte(onlyDomains), 0600))
+
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = dir
+
+	blocklist := New(cfg)
+
+	// Apex names are blocked.
+	assert.True(t, blocklist.Exists("miui.net."))
+	assert.True(t, blocklist.Exists("kuyun.com."))
+
+	// Subdomains are blocked too — the actual fix for #478.
+	assert.True(t, blocklist.Exists("tracking.miui.net."))
+	assert.True(t, blocklist.Exists("api.kuyun.com."))
+	assert.True(t, blocklist.Exists("a.b.kuyun.com."))
+
+	// Unrelated names and sibling apexes stay unblocked.
+	assert.False(t, blocklist.Exists("notblocked.com."))
+	assert.False(t, blocklist.Exists("miui.net.evil.com."))
 }
 
 func Test_BlockList_FastPath(t *testing.T) {
