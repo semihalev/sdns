@@ -15,7 +15,14 @@ import (
 )
 
 // BlockList type
-// Supports wildcard domains like "*.example.com" to block all subdomains.
+//
+// Matching semantics:
+//   - A bare domain (e.g. "example.com") blocks that exact name AND every
+//     subdomain ("sub.example.com", "a.b.example.com", ...). This mirrors
+//     how Pi-hole/AdGuard/dnsmasq treat a blocked domain and makes the
+//     popular plain-domain lists (e.g. hagezi *-onlydomains) work as users
+//     expect.
+//   - A "*.example.com" wildcard blocks subdomains only, not the apex.
 type BlockList struct {
 	mu sync.RWMutex
 
@@ -29,8 +36,8 @@ type BlockList struct {
 	nullroute  net.IP
 	null6route net.IP
 
-	m    map[string]bool // blocked domains (exact matches)
-	wild map[string]bool // wildcard domains suffix -> true (e.g., "example.com." from "*.example.com.")
+	m    map[string]bool // blocked domains; match the name itself and any subdomain
+	wild map[string]bool // wildcard domains suffix -> true (e.g., "example.com." from "*.example.com."); subdomains only
 	w    map[string]bool // whitelist
 
 	cfg *config.Config
@@ -304,18 +311,20 @@ func (b *BlockList) Exists(key string) bool {
 		return false
 	}
 
-	// Direct match - fastest path
+	// Direct match - fastest path (exact name)
 	if _, ok := b.m[key]; ok {
 		return true
 	}
 
-	// No wildcards to check
-	if len(b.wild) == 0 {
+	// Nothing that could match as a parent suffix.
+	if len(b.m) == 0 && len(b.wild) == 0 {
 		return false
 	}
 
-	// Check wildcard matches by walking up the domain hierarchy
-	// For "sub.example.com." check "example.com." and "com."
+	// Walk up the domain hierarchy. For "sub.example.com." check
+	// "example.com." then "com." against both maps: a bare domain in
+	// b.m covers all its subdomains, and a "*.domain" entry in b.wild
+	// covers subdomains only.
 	offset := 0
 	for {
 		idx := strings.IndexByte(key[offset:], '.')
@@ -326,6 +335,9 @@ func (b *BlockList) Exists(key string) bool {
 
 		if offset < len(key) {
 			suffix := key[offset:]
+			if _, ok := b.m[suffix]; ok {
+				return true
+			}
 			if _, ok := b.wild[suffix]; ok {
 				return true
 			}
