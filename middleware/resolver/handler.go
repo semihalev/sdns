@@ -26,9 +26,18 @@ type contextKey int
 const (
 	contextKeyRequestID  contextKey = iota
 	contextKeyNSL                   // nameserver lookup marker
-	contextKeyNSList                // nameserver list prefix
 	contextKeyDnameDepth            // DNAME alias chain depth
 )
+
+// contextKeyNSList is the base for the per-qtype nameserver-list keys.
+// checkLoop derives a key as contextKeyNSList + contextKey(qtype), so the
+// base must sit far enough above the fixed keys above that adding a 16-bit
+// qtype can never collide with them. Keeping it as a separate const with an
+// explicit offset (rather than another iota line) makes that invariant
+// independent of the order/number of fixed keys: e.g. an A query (qtype 1)
+// used to land on contextKeyDnameDepth and read an int as a []string, which
+// panicked in checkLoop.
+const contextKeyNSList contextKey = 1 << 16
 
 // maxDnameDepth caps the number of DNAME redirections a single client
 // query may trigger. Each DNAME follow-up is a fresh internal exchange,
