@@ -226,38 +226,18 @@ type CacheKey struct {
 	Scope    netip.Prefix
 }
 
-// (CacheKey).Hash returns the cache key hash. Falls back to the
-// unscoped Key() — bit-identical to pre-Stage-2 — when Scope is
-// the zero value, so old cache entries keep hitting after upgrade.
+// (CacheKey).Hash returns the cache key hash. Routes to
+// cache.KeyWithPrefix when Scope is valid (family + bit-length +
+// address are all folded in so /22 and /24 of the same address
+// don't alias), and to the legacy cache.Key — bit-identical to
+// pre-Stage-2 — when Scope is the zero value, so old entries keep
+// hitting after upgrade. A /0 scope collapses to the unscoped key
+// because a /0 answer is semantically "global", same as no scope.
 func (k CacheKey) Hash() uint64 {
-	if !k.Scope.IsValid() {
+	if !k.Scope.IsValid() || k.Scope.Bits() == 0 {
 		return cache.Key(k.Question, k.CD)
 	}
-	return cache.KeyWithScope(k.Question, k.CD, scopeBytes(k.Scope))
-}
-
-// scopeBytes returns the address portion of p truncated to the
-// number of bytes the prefix actually covers (rounded up). This is
-// what we fold into the hash — it captures the scope's identity
-// without leaking the address-family bytes outside the prefix.
-func scopeBytes(p netip.Prefix) []byte {
-	if !p.IsValid() {
-		return nil
-	}
-	bits := p.Bits()
-	if bits == 0 {
-		// A /0 scope is a degenerate "global" hint — treat as no
-		// scope to keep collision behaviour with the unscoped path.
-		return nil
-	}
-	n := (bits + 7) / 8
-	addr := p.Addr().AsSlice()
-	if n > len(addr) {
-		n = len(addr)
-	}
-	out := make([]byte, n)
-	copy(out, addr[:n])
-	return out
+	return cache.KeyWithPrefix(k.Question, k.CD, k.Scope)
 }
 
 // CacheConfig holds cache configuration with validation.
@@ -269,6 +249,14 @@ type CacheConfig struct {
 	MinTTL      time.Duration
 	MaxTTL      time.Duration
 	RateLimit   int
+
+	// ECSMaxTTL caps the lifetime of cache entries keyed under an
+	// ECS scope. Geo-routed answers tend to go stale faster than
+	// the resolver's general MaxTTL would suggest — a CDN
+	// re-pointing a /24 between PoPs is normal traffic. Zero
+	// disables the cap (scoped entries live as long as their
+	// upstream TTL allowed). Populated from cfg.ECS.CacheLimitTTL.
+	ECSMaxTTL time.Duration
 }
 
 // (CacheConfig).Validate validate checks if the configuration is valid.

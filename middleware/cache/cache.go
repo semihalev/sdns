@@ -113,6 +113,7 @@ func New(cfg *config.Config) *Cache {
 		MinTTL:      minTTL,
 		MaxTTL:      maxTTL,
 		RateLimit:   cfg.RateLimit,
+		ECSMaxTTL:   cfg.ECS.CacheLimitTTL.Duration,
 	}
 
 	// Validate configuration and actually apply defaults when

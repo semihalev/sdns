@@ -2,6 +2,7 @@
 package cache
 
 import (
+	"net/netip"
 	"sync"
 
 	"github.com/cespare/xxhash/v2"
@@ -120,27 +121,34 @@ func KeyString(qname string, qtype, qclass uint16, cd bool) uint64 {
 	return hash
 }
 
-// KeyWithScope is an ECS-aware variant of Key. When scope is the
-// empty slice (the canonical "no scope" value) the returned hash is
-// bit-identical to Key(q, cd), so cache entries written before this
-// function existed still resolve on lookup — no flush needed on
-// upgrade.
+// KeyWithPrefix is an ECS-aware variant of Key. An invalid prefix
+// (the canonical "no scope" value) collapses to Key(q, cd) so cache
+// entries written before this function existed still resolve on
+// lookup — no flush needed on upgrade.
 //
-// When scope is non-empty the bytes are folded into the hash
-// preimage with a single-byte length prefix so a /24 keyed entry
-// can't collide with a /20 of the same address. Callers should pass
-// scope as `prefix.Addr().AsSlice()[:prefixLenBytes]` rounded up
-// to the nearest byte; the helper does no normalisation.
-func KeyWithScope(q dns.Question, cd bool, scope []byte) uint64 {
-	if len(scope) == 0 {
+// When prefix is valid, family + bit-length + the address bytes
+// rounded up to a byte are folded into the hash preimage. The
+// distinct family byte means an IPv4 /24 of [a, b, c] cannot
+// collide with an IPv6 /24 whose first three bytes happen to be
+// [a, b, c]. The distinct bit-length byte means /22 and /24 of
+// 203.0.112.0 hash differently even though their byte-rounded
+// addresses are both [203, 0, 112] — the earlier scope-bytes-only
+// encoding aliased here and would serve a wider supernet's answer
+// to a narrower-subnet query.
+func KeyWithPrefix(q dns.Question, cd bool, prefix netip.Prefix) uint64 {
+	if !prefix.IsValid() {
 		return Key(q, cd)
 	}
+
+	bits := prefix.Bits()
+	addrBytes := prefix.Addr().AsSlice()
+	addrLen := min((bits+7)/8, len(addrBytes))
 
 	kb := keyBufferPool.Get().(*keyBuffer)
 	buf := kb.buf[:0]
 
-	// Same prefix as Key so a scoped key with len(scope)==0 (handled
-	// above) and an unscoped Key collide deliberately.
+	// Same prefix as Key so a KeyWithPrefix call with an invalid
+	// prefix (handled above) and an unscoped Key collide deliberately.
 	buf = append(buf, byte(q.Qclass>>8), byte(q.Qclass&0xFF)) //nolint:gosec // intentional uint16 byte extraction
 	buf = append(buf, byte(q.Qtype>>8), byte(q.Qtype&0xFF))   //nolint:gosec // intentional uint16 byte extraction
 
@@ -151,10 +159,10 @@ func KeyWithScope(q dns.Question, cd bool, scope []byte) uint64 {
 	}
 
 	nameLen := len(q.Name)
-	if len(buf)+nameLen+1+len(scope) > len(kb.buf) {
-		// Extremely long qnames or future scope widening could push
-		// past the on-stack buffer; fall through to heap. Rare.
-		newBuf := make([]byte, len(buf), len(buf)+nameLen+1+len(scope))
+	// Reserve space for qname + family byte + bits byte + scope bytes.
+	required := len(buf) + nameLen + 2 + addrLen
+	if required > len(kb.buf) {
+		newBuf := make([]byte, len(buf), required)
 		copy(newBuf, buf)
 		buf = newBuf
 	}
@@ -167,13 +175,19 @@ func KeyWithScope(q dns.Question, cd bool, scope []byte) uint64 {
 		buf = append(buf, c)
 	}
 
-	// Scope length first so a /24 prefix can't be confused with a
-	// /20 truncation of the same address. Callers (CacheKey.Hash)
-	// always supply at most 16 bytes (full IPv6 address), so this
-	// truncating cast can't lose information in practice.
-	scopeLen := min(len(scope), 255)
-	buf = append(buf, byte(scopeLen)) //nolint:gosec // bounded above
-	buf = append(buf, scope[:scopeLen]...)
+	// Family: 4 for IPv4, 6 for IPv6 (mirrors the human-meaningful
+	// shorthand, not the wire-format Family field which uses 1/2).
+	// Distinct values prevent a v4 scope from colliding with a v6
+	// scope whose first bytes happen to match.
+	if prefix.Addr().Is4() {
+		buf = append(buf, 4)
+	} else {
+		buf = append(buf, 6)
+	}
+	// Bit-length so /22 and /24 of the same byte-rounded address
+	// hash differently. Bits is at most 128, fits a single byte.
+	buf = append(buf, byte(bits)) //nolint:gosec // 0 ≤ bits ≤ 128
+	buf = append(buf, addrBytes[:addrLen]...)
 
 	hash := xxhash.Sum64(buf)
 	keyBufferPool.Put(kb)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -134,12 +135,19 @@ func answerA(m *dns.Msg) string {
 
 // sendAndExpect runs `req` through `c` + `h`, returning the message
 // the client would have received.
+//
+// Drives the chain with ch.Next so the chain index advances through
+// the handlers normally. Calling c.ServeDNS directly would dispatch
+// the cache at chain index 0 — then the cache's own ch.Next would
+// re-dispatch index 0 (itself) instead of advancing to h, causing
+// recursive entry on the same dedup key. The follower path would
+// then wait 15 s for the leader to release.
 func sendAndExpect(t *testing.T, c *Cache, h middleware.Handler, req *dns.Msg, clientIP string) *dns.Msg {
 	t.Helper()
 	mw := mock.NewWriter("udp", clientIP+":0")
 	ch := middleware.NewChain([]middleware.Handler{c, h})
 	ch.Reset(mw, req)
-	c.ServeDNS(context.Background(), ch)
+	ch.Next(context.Background())
 	require.True(t, mw.Written(), "writer was not written")
 	return mw.Msg()
 }
@@ -299,5 +307,96 @@ func TestECSCache_ScopedEntryNotPrefetched(t *testing.T) {
 	unscoped := NewCacheEntry(new(dns.Msg), 60_000_000_000, 0)
 	if !unscoped.PrefetchEligible() {
 		t.Errorf("unscoped entry must be prefetch-eligible")
+	}
+}
+
+// TestECSCache_PurgeRemovesScopedEntries pins the ultrareview P2
+// fix: Store.Purge must also remove ECS-keyed entries, not just
+// the two unscoped CD keys. Otherwise an API-triggered purge
+// reports success while stale geo-tailored answers continue to
+// be served until their TTL expires.
+func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
+	cfg := makeECSTestConfig(t)
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	req := new(dns.Msg)
+	req.SetQuestion("purge.example.", dns.TypeA)
+
+	// Seed two scoped entries and one unscoped (shared-key) entry
+	// for the same qname/qtype/qclass.
+	for _, addr := range []string{"203.0.113.0/24", "198.51.100.0/24"} {
+		scope := netip.MustParsePrefix(addr)
+		key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
+		c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24))
+		if _, ok := c.store.LookupByKey(key); !ok {
+			t.Fatalf("scoped seed for %s did not land in cache", addr)
+		}
+	}
+	sharedKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
+	c.store.SetFromResponseWithKey(sharedKey, reply(req, "10.0.0.99", 0))
+
+	c.store.Purge(req.Question[0])
+
+	if _, ok := c.store.LookupByKey(sharedKey); ok {
+		t.Errorf("shared-key entry survived Purge")
+	}
+	for _, addr := range []string{"203.0.113.0/24", "198.51.100.0/24"} {
+		scope := netip.MustParsePrefix(addr)
+		key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
+		if _, ok := c.store.LookupByKey(key); ok {
+			t.Errorf("scoped entry %s survived Purge", addr)
+		}
+	}
+}
+
+// TestECSCache_CacheLimitTTLCapsScopedWrites pins the ultrareview
+// P2 fix: cache_limit_ttl must clamp the TTL of scoped entries so
+// a misbehaving upstream sending a multi-hour TTL on a /24 answer
+// can't pin that audience to a stale CDN node.
+func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
+	cfg := makeECSTestConfig(t)
+	cfg.ECS.CacheLimitTTL.Duration = 30 * time.Second
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	// Build a response with a 1-hour TTL — well over the 30 s cap.
+	req := new(dns.Msg)
+	req.SetQuestion("ttlcap.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Answer = []dns.RR{makeRR("ttlcap.example. 3600 IN A 10.0.0.1")}
+	o := new(dns.OPT)
+	o.Hdr.Name = "."
+	o.Hdr.Rrtype = dns.TypeOPT
+	o.Option = []dns.EDNS0{&dns.EDNS0_SUBNET{
+		Code: dns.EDNS0SUBNET, Family: 1,
+		SourceNetmask: 24, SourceScope: 24,
+		Address: net.ParseIP("203.0.113.0").To4(),
+	}}
+	resp.Extra = []dns.RR{o}
+
+	scope := netip.MustParsePrefix("203.0.113.0/24")
+	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
+	c.store.SetFromResponseScoped(key, resp)
+
+	entry, ok := c.store.LookupByKey(key)
+	require.True(t, ok, "scoped seed did not land in cache")
+	if entry.ttl > cfg.ECS.CacheLimitTTL.Duration {
+		t.Errorf("scoped TTL %s exceeded cache_limit_ttl cap %s",
+			entry.ttl, cfg.ECS.CacheLimitTTL.Duration)
+	}
+
+	// Unscoped writes must NOT be capped — the cap is per
+	// CacheConfig.ECSMaxTTL gated by `scoped == true`.
+	plainKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
+	c.store.SetFromResponseWithKey(plainKey, resp)
+	plain, ok := c.store.LookupByKey(plainKey)
+	require.True(t, ok)
+	if plain.ttl <= cfg.ECS.CacheLimitTTL.Duration {
+		t.Errorf("unscoped TTL %s was capped at %s (should not be)",
+			plain.ttl, cfg.ECS.CacheLimitTTL.Duration)
 	}
 }

@@ -108,6 +108,19 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool) {
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
+	// Scoped (ECS) entries get an additional cap: geo answers go
+	// stale faster than the resolver's normal MaxTTL would allow,
+	// and a misconfigured upstream sending a huge TTL on a /24
+	// answer shouldn't pin that audience-specific entry for hours.
+	// Zero ECSMaxTTL leaves scoped writes uncapped (operator opted
+	// in to long-lived scoped entries).
+	capTTL := func(ttl time.Duration) time.Duration {
+		if scoped && s.cfg.ECSMaxTTL > 0 && ttl > s.cfg.ECSMaxTTL {
+			return s.cfg.ECSMaxTTL
+		}
+		return ttl
+	}
+
 	newEntry := func(msg *dns.Msg, ttl time.Duration) *CacheEntry {
 		if scoped {
 			e := NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit)
@@ -119,10 +132,10 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool) {
 
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
-		ttl := s.positive.ttl.Calculate(msgTTL)
+		ttl := capTTL(s.positive.ttl.Calculate(msgTTL))
 		s.positive.Set(key, newEntry(filtered, ttl))
 	case dnsutil.TypeServerFailure:
-		ttl := s.negative.ttl.Calculate(msgTTL)
+		ttl := capTTL(s.negative.ttl.Calculate(msgTTL))
 		s.negative.Set(key, newEntry(filtered, ttl))
 	}
 }
@@ -141,12 +154,46 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 }
 
 // Purge removes both CD=true and CD=false entries for q from
-// positive and negative caches.
+// positive and negative caches, including ECS-scoped entries.
+//
+// Scoped entries don't have a deterministic key the caller could
+// reproduce without enumerating every (qname, scope) the cache
+// has ever seen — there's no per-qname index. We sweep them with
+// ForEach: collect matching keys in one pass (snapshotting the
+// per-segment locks individually), then Remove outside the
+// iteration to avoid mutate-during-iterate hazards.
+//
+// O(n) on the cache size; Purge is rare (explicit operator API
+// call) so the linear scan is acceptable. If purge becomes
+// hot, a per-qname index would lift this back to O(matches).
 func (s *Store) Purge(q dns.Question) {
 	for _, cd := range []bool{false, true} {
 		key := CacheKey{Question: q, CD: cd}.Hash()
 		s.positive.Remove(key)
 		s.negative.Remove(key)
+	}
+
+	type located struct {
+		positive bool
+		key      uint64
+	}
+	var hits []located
+	s.ForEach(func(positive bool, key uint64, e *CacheEntry) bool {
+		if e == nil || !e.scoped || e.msg == nil || len(e.msg.Question) == 0 {
+			return true
+		}
+		eq := e.msg.Question[0]
+		if eq.Name == q.Name && eq.Qtype == q.Qtype && eq.Qclass == q.Qclass {
+			hits = append(hits, located{positive: positive, key: key})
+		}
+		return true
+	})
+	for _, h := range hits {
+		if h.positive {
+			s.positive.Remove(h.key)
+		} else {
+			s.negative.Remove(h.key)
+		}
 	}
 }
 
