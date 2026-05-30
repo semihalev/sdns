@@ -11,6 +11,7 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/zlog/v2"
 )
 
 // responseWriterPool reuses per-query ResponseWriter wrappers. A wrapper
@@ -43,37 +44,73 @@ func New(cfg *config.Config) *EDNS {
 
 // buildECSPolicy translates the operator's [ecs] config block into a
 // reusable *ecs.Policy. Returns nil when the feature is disabled so
-// SetEdns0 takes the cheap nil-policy fast path. CIDR strings that
-// fail to parse are dropped with no log — config validation is the
-// loader's job, and a malformed entry shouldn't make the resolver
-// fall back to "forward everything" silently.
+// SetEdns0 takes the cheap nil-policy fast path.
+//
+// Validation is fail-closed: any malformed input (bad CIDR in
+// client_networks, source ceiling outside [1, 32]/[1, 128], etc.)
+// disables the policy entirely and logs the reason. The earlier
+// implementation silently dropped bad CIDRs which, if every entry
+// failed to parse, collapsed a restrictive `client_networks` list
+// into "no list specified = allow everyone" — a quiet fail-open.
+// Forwarding off is always a safer fallback than forwarding too much.
 func buildECSPolicy(cfg *config.Config) *ecs.Policy {
 	c := cfg.ECS
 	if !c.Enabled {
 		return nil
 	}
+
 	v4 := c.ForwardV4Max
 	if v4 == 0 {
 		v4 = 24
+	}
+	if v4 > 32 {
+		zlog.Error("ECS: forward_v4 out of range; forwarding disabled",
+			zlog.Int("value", int(v4)), zlog.Int("max", 32))
+		return nil
 	}
 	v6 := c.ForwardV6Max
 	if v6 == 0 {
 		v6 = 56
 	}
+	if v6 > 128 {
+		zlog.Error("ECS: forward_v6 out of range; forwarding disabled",
+			zlog.Int("value", int(v6)), zlog.Int("max", 128))
+		return nil
+	}
 	mv4 := c.MinScopeV4
 	if mv4 == 0 {
 		mv4 = v4
+	}
+	if mv4 > 32 {
+		zlog.Error("ECS: min_scope_v4 out of range; forwarding disabled",
+			zlog.Int("value", int(mv4)), zlog.Int("max", 32))
+		return nil
 	}
 	mv6 := c.MinScopeV6
 	if mv6 == 0 {
 		mv6 = v6
 	}
+	if mv6 > 128 {
+		zlog.Error("ECS: min_scope_v6 out of range; forwarding disabled",
+			zlog.Int("value", int(mv6)), zlog.Int("max", 128))
+		return nil
+	}
+
 	nets := make([]netip.Prefix, 0, len(c.ClientNetworks))
 	for _, s := range c.ClientNetworks {
-		if p, err := netip.ParsePrefix(s); err == nil {
-			nets = append(nets, p)
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			// Fail-closed: a typo'd CIDR (`10.0.0.0/33`) must not
+			// collapse the allow-list to empty and re-open the
+			// feature to every client. Disable the policy entirely
+			// so the operator sees the loud log and fixes the typo.
+			zlog.Error("ECS: invalid client_networks CIDR; forwarding disabled",
+				zlog.String("entry", s), zlog.String("error", err.Error()))
+			return nil
 		}
+		nets = append(nets, p)
 	}
+
 	return &ecs.Policy{
 		Enabled:        true,
 		ForwardV4Max:   v4,
@@ -196,6 +233,21 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 			// This is response OPT, need to merge our options
 			opt.Option = append(opt.Option, w.opt.Option...)
 		}
+
+		// Strip every EDNS0_SUBNET from the client-facing response.
+		// Two leak paths feed into here:
+		//   (a) the resolver re-attaches the request OPT (which we
+		//       may have mutated to forward ECS upstream) onto the
+		//       response, and
+		//   (b) the merge above copies w.opt.Option — which contains
+		//       our forwarded ECS — onto the response OPT.
+		// Either way, the clamped query ECS would otherwise appear
+		// in the client's reply (with SourceScope=0, or duplicated
+		// alongside any ECS the upstream itself returned). Stripping
+		// here is the simplest closure; the cache middleware sits
+		// below edns in the writer chain so it still reads the
+		// upstream's response ECS before this strip happens.
+		opt.Option = stripECS(opt.Option)
 	} else {
 		// EDNS disabled, remove all OPT records
 		m = dnsutil.ClearOPT(m)
@@ -213,6 +265,20 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	}
 
 	return w.ResponseWriter.WriteMsg(m)
+}
+
+// stripECS returns opts with every EDNS0_SUBNET entry removed.
+// Done in place when the result is the same length (common case:
+// nothing to strip) so the typical OPT write doesn't allocate.
+func stripECS(opts []dns.EDNS0) []dns.EDNS0 {
+	keep := opts[:0]
+	for _, o := range opts {
+		if _, isECS := o.(*dns.EDNS0_SUBNET); isECS {
+			continue
+		}
+		keep = append(keep, o)
+	}
+	return keep
 }
 
 func (w *ResponseWriter) setCookie() {
