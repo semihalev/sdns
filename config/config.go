@@ -17,7 +17,7 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-const configver = "1.6.7"
+const configver = "1.7.0"
 
 // Config type.
 type Config struct {
@@ -88,6 +88,15 @@ type Config struct {
 	// records into AAAA records embedded in a configured IPv6
 	// prefix, so an IPv6-only client can reach IPv4-only services.
 	DNS64 DNS64Config `toml:"dns64"`
+
+	// ECS (EDNS Client Subnet, RFC 7871) policy. Default-disabled
+	// per §11 privacy guidance: the resolver strips client ECS on
+	// the way out unless the operator opts in via [ecs].enabled.
+	// Stage 1 of the feature uses Enabled / ForwardV4Max /
+	// ForwardV6Max / ClientNetworks for upstream forwarding; the
+	// remaining fields ride along for the Stage 2 cache changes
+	// so the on-disk schema only bumps once.
+	ECS ECSConfig `toml:"ecs"`
 
 	Plugins map[string]Plugin
 
@@ -198,6 +207,34 @@ type DNS64Config struct {
 	ExcludeZones        []string `toml:"exclude_zones"`
 	ExcludeANetworks    []string `toml:"exclude_a_networks"`
 	ExcludeAAAANetworks []string `toml:"exclude_aaaa_networks"`
+}
+
+// ECSConfig holds the EDNS Client Subnet middleware configuration
+// (RFC 7871). Strictly opt-in: when Enabled is false, the resolver
+// strips every client-supplied ECS option before forwarding upstream,
+// matching the §11 privacy stance and SDNS's historical behaviour.
+//
+// When Enabled is true, ForwardV4Max and ForwardV6Max cap the
+// source-prefix length we'll forward — narrower (more specific)
+// client prefixes get clamped down. Defaults are /24 and /56,
+// matching common operator practice.
+//
+// ClientNetworks restricts forwarding to known clients (corporate
+// networks, internal load balancers, CDN edges); empty means every
+// eligible client.
+//
+// CacheLimitTTL, MinScopeV4, and MinScopeV6 control how scoped
+// answers are stored (Stage 2). They live here so the on-disk
+// schema only bumps once across the rollout, even though Stage 1
+// doesn't consume them yet.
+type ECSConfig struct {
+	Enabled        bool     `toml:"enabled"`
+	ForwardV4Max   uint8    `toml:"forward_v4"`
+	ForwardV6Max   uint8    `toml:"forward_v6"`
+	ClientNetworks []string `toml:"client_networks"`
+	CacheLimitTTL  Duration `toml:"cache_limit_ttl"`
+	MinScopeV4     uint8    `toml:"min_scope_v4"`
+	MinScopeV6     uint8    `toml:"min_scope_v6"`
 }
 
 // Plugin type.
@@ -728,6 +765,57 @@ exclude_a_networks = [
     "240.0.0.0/4",
     "255.255.255.255/32",
 ]
+
+# ============================
+# EDNS Client Subnet (RFC 7871)
+# ============================
+
+# ECS lets a recursive resolver pass a slice of the client's IP to
+# the authoritative server so geo-aware services (CDN, load
+# balancers) can return locality-appropriate answers. SDNS strips
+# ECS by default per RFC 7871 §11 privacy guidance; this section is
+# strictly opt-in.
+#
+# Stage 1 of the feature (this release) ships upstream forwarding.
+# Stage 2 (subsequent release) will partition the cache so a
+# geo-tailored answer for one client subnet isn't served to a
+# client in a different subnet (cache pollution). The cache_limit
+# and min_scope knobs below already live in the schema so the
+# Stage 2 upgrade doesn't bump configver again.
+[ecs]
+
+# Master switch. When false (default) every option below is ignored
+# and SDNS strips client ECS before forwarding. Leave off unless
+# downstream geo-routing actually benefits from per-subnet answers.
+enabled = false
+
+# Maximum source-prefix length forwarded upstream. Clients that
+# send narrower (more specific) prefixes get clamped to this value
+# so the resolver doesn't leak more locality than the operator
+# intended. /24 for IPv4 and /56 for IPv6 match common practice.
+forward_v4 = 24
+forward_v6 = 56
+
+# CIDRs eligible for ECS forwarding. Empty (the default) means
+# every client whose query reaches this resolver. Populate to scope
+# forwarding to known internal sources (load balancers, CDN edges,
+# corporate networks) and strip ECS for the open internet.
+client_networks = []
+
+# Stage 2 (cache) knobs — declared here so the config schema only
+# bumps once. They are no-ops in this release.
+
+# Ceiling on the TTL of any scoped (per-subnet) cache entry. Geo
+# answers tend to go stale faster than the resolver's general TTL
+# would suggest; "5m" is a defensible default.
+cache_limit_ttl = "5m"
+
+# Refuse to key the cache on scopes narrower than these. Caps
+# worst-case cardinality so a busy resolver with diverse clients
+# can't blow up the cache budget on per-client entries. Defaults
+# match the forwarding ceilings.
+min_scope_v4 = 24
+min_scope_v6 = 56
 
 # ============================
 # Plugins

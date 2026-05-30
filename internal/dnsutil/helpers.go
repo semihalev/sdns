@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/netip"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/ecs"
 )
 
 // SetRcode returns message specified with rcode.
@@ -27,12 +29,19 @@ func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
 // SetEdns0 returns replaced or new opt rr and if request has do.
 //
 // The function inspects the client's OPT record to harvest NSID / COOKIE
-// signalling, strips every option before forwarding (ECS in particular,
-// per RFC 7871 privacy guidance), and normalises the UDP size. Inspection
-// uses typed pointer assertions so we avoid the allocating option.String()
-// path, and the stripping reuses opt.Option's backing storage via opt.Option = nil
-// rather than allocating an empty slice.
-func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
+// signalling, strips every option before forwarding (RFC 7871 §11 privacy
+// guidance is the default), and normalises the UDP size. Inspection uses
+// typed pointer assertions so we avoid the allocating option.String()
+// path, and the stripping reuses opt.Option's backing storage via
+// opt.Option = nil rather than allocating an empty slice.
+//
+// When `policy` is non-nil, enabled, and allows the supplied client, the
+// client's EDNS Client Subnet option (RFC 7871) is preserved on the
+// outgoing OPT instead of stripped — clamped to the policy's source-
+// prefix ceiling. Every other client-supplied option is still dropped.
+// A nil policy or an empty client address means strip everything, which
+// matches SDNS's historical behaviour and the privacy-first default.
+func SetEdns0(req *dns.Msg, policy *ecs.Policy, client netip.Addr) (*dns.OPT, int, string, bool, bool) {
 	do, nsid := false, false
 	opt := req.IsEdns0()
 	size := DefaultMsgSize
@@ -48,6 +57,7 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
 		}
 		opt.SetUDPSize(DefaultMsgSize)
 
+		var clientSubnet *dns.EDNS0_SUBNET
 		for _, option := range opt.Option {
 			switch v := option.(type) {
 			case *dns.EDNS0_COOKIE:
@@ -57,8 +67,11 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
 				}
 			case *dns.EDNS0_NSID:
 				nsid = true
-				// RFC 7871 EDNS Client Subnet is intentionally stripped
-				// for privacy; any other unknown options are also dropped.
+			case *dns.EDNS0_SUBNET:
+				// Capture for possible forwarding after the loop;
+				// dropped along with every other option if policy
+				// is nil / disabled / doesn't allow this client.
+				clientSubnet = v
 			}
 		}
 
@@ -66,6 +79,17 @@ func SetEdns0(req *dns.Msg) (*dns.OPT, int, string, bool, bool) {
 		// Nil-ing is cheaper than allocating a new empty slice and lets
 		// the old backing array be GC'd with the request.
 		opt.Option = nil
+
+		// If the policy allows ECS forwarding for this client, put a
+		// clamped copy of the client's option back on. Clamp() handles
+		// source-prefix ceiling, address truncation, and family sanity;
+		// a nil return means the option was unusable and we keep the
+		// strip.
+		if policy.Allows(client) && clientSubnet != nil {
+			if forwarded := policy.Clamp(clientSubnet); forwarded != nil {
+				opt.Option = append(opt.Option, forwarded)
+			}
+		}
 
 		if opt.Version() != 0 {
 			return opt, size, cookie, nsid, false

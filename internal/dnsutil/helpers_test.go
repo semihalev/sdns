@@ -1,9 +1,12 @@
 package dnsutil
 
 import (
+	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/stretchr/testify/assert"
 )
@@ -147,7 +150,9 @@ func TestSetEdns0(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			opt, size, cookie, nsid, origDo := SetEdns0(tt.req)
+			// Nil policy + zero addr exercises the default-strip path,
+			// matching the pre-7871 contract this test was written for.
+			opt, size, cookie, nsid, origDo := SetEdns0(tt.req, nil, netip.Addr{})
 
 			assert.NotNil(t, opt)
 			assert.Equal(t, tt.expectedSize, size)
@@ -159,6 +164,112 @@ func TestSetEdns0(t *testing.T) {
 			reqOpt := tt.req.IsEdns0()
 			assert.NotNil(t, reqOpt)
 		})
+	}
+}
+
+// reqWithECS builds a query whose OPT carries one EDNS0_SUBNET.
+func reqWithECS(family uint16, src uint8, addr string) *dns.Msg {
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(4096)
+	parsed := net.ParseIP(addr)
+	if family == 1 {
+		parsed = parsed.To4()
+	}
+	opt.Option = []dns.EDNS0{&dns.EDNS0_SUBNET{
+		Code: dns.EDNS0SUBNET, Family: family,
+		SourceNetmask: src, SourceScope: 0,
+		Address: parsed,
+	}}
+	req.Extra = []dns.RR{opt}
+	return req
+}
+
+// findECS returns the first EDNS0_SUBNET option on opt, or nil.
+func findECS(opt *dns.OPT) *dns.EDNS0_SUBNET {
+	for _, o := range opt.Option {
+		if v, ok := o.(*dns.EDNS0_SUBNET); ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func TestSetEdns0_StripsECSByDefault(t *testing.T) {
+	// Regression: the historical contract (RFC 7871 §11) is to strip
+	// every option. Nil policy must keep that behaviour.
+	req := reqWithECS(1, 32, "203.0.113.5")
+	opt, _, _, _, _ := SetEdns0(req, nil, netip.Addr{})
+	if got := findECS(opt); got != nil {
+		t.Errorf("nil policy should strip ECS, got %+v", got)
+	}
+}
+
+func TestSetEdns0_StripsECSWhenPolicyDisabled(t *testing.T) {
+	req := reqWithECS(1, 24, "203.0.113.0")
+	policy := &ecs.Policy{Enabled: false, ForwardV4Max: 24}
+	client := netip.MustParseAddr("203.0.113.5")
+	opt, _, _, _, _ := SetEdns0(req, policy, client)
+	if got := findECS(opt); got != nil {
+		t.Errorf("disabled policy should strip ECS, got %+v", got)
+	}
+}
+
+func TestSetEdns0_ForwardsECSClampedToCeiling(t *testing.T) {
+	// Client sent /28 (too narrow); policy ceiling is /24. The
+	// outgoing OPT must carry a /24 with the host bits zeroed.
+	req := reqWithECS(1, 28, "203.0.113.42")
+	policy := &ecs.Policy{Enabled: true, ForwardV4Max: 24}
+	client := netip.MustParseAddr("203.0.113.42")
+	opt, _, _, _, _ := SetEdns0(req, policy, client)
+	got := findECS(opt)
+	if got == nil {
+		t.Fatal("expected ECS to be forwarded")
+	}
+	if got.SourceNetmask != 24 {
+		t.Errorf("source netmask = %d, want 24", got.SourceNetmask)
+	}
+	if got.Address.String() != "203.0.113.0" {
+		t.Errorf("address = %s, want 203.0.113.0 (truncated)", got.Address)
+	}
+	if got.SourceScope != 0 {
+		t.Errorf("outgoing scope must be 0, got %d", got.SourceScope)
+	}
+}
+
+func TestSetEdns0_DropsECSWhenClientNotInAllowList(t *testing.T) {
+	req := reqWithECS(1, 24, "203.0.113.0")
+	policy := &ecs.Policy{
+		Enabled:        true,
+		ForwardV4Max:   24,
+		ClientNetworks: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+	}
+	client := netip.MustParseAddr("203.0.113.5") // outside the allow-list
+	opt, _, _, _, _ := SetEdns0(req, policy, client)
+	if got := findECS(opt); got != nil {
+		t.Errorf("client outside allow-list should not get ECS forwarded, got %+v", got)
+	}
+}
+
+func TestSetEdns0_NoECSInRequestNoForwarding(t *testing.T) {
+	// Client didn't send ECS at all — Stage 1 is forward-only,
+	// not synthesise, so the outgoing OPT must have no ECS option.
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(4096)
+	req.Extra = []dns.RR{opt}
+
+	policy := &ecs.Policy{Enabled: true, ForwardV4Max: 24}
+	client := netip.MustParseAddr("203.0.113.5")
+	out, _, _, _, _ := SetEdns0(req, policy, client)
+	if got := findECS(out); got != nil {
+		t.Errorf("no client ECS should mean no forwarded ECS, got %+v", got)
 	}
 }
 

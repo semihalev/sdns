@@ -3,11 +3,13 @@ package edns
 import (
 	"context"
 	"encoding/hex"
+	"net/netip"
 	"sync"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -22,11 +24,64 @@ var responseWriterPool = sync.Pool{
 type EDNS struct {
 	cookiesecret string
 	nsidstr      string
+
+	// ecsPolicy is built once from cfg.ECS and read every request.
+	// nil is a valid value: it means the historical strip-everything
+	// behaviour, which is also what `[ecs] enabled = false` (the
+	// default) collapses to.
+	ecsPolicy *ecs.Policy
 }
 
 // New return edns.
 func New(cfg *config.Config) *EDNS {
-	return &EDNS{cookiesecret: cfg.CookieSecret, nsidstr: cfg.NSID}
+	return &EDNS{
+		cookiesecret: cfg.CookieSecret,
+		nsidstr:      cfg.NSID,
+		ecsPolicy:    buildECSPolicy(cfg),
+	}
+}
+
+// buildECSPolicy translates the operator's [ecs] config block into a
+// reusable *ecs.Policy. Returns nil when the feature is disabled so
+// SetEdns0 takes the cheap nil-policy fast path. CIDR strings that
+// fail to parse are dropped with no log — config validation is the
+// loader's job, and a malformed entry shouldn't make the resolver
+// fall back to "forward everything" silently.
+func buildECSPolicy(cfg *config.Config) *ecs.Policy {
+	c := cfg.ECS
+	if !c.Enabled {
+		return nil
+	}
+	v4 := c.ForwardV4Max
+	if v4 == 0 {
+		v4 = 24
+	}
+	v6 := c.ForwardV6Max
+	if v6 == 0 {
+		v6 = 56
+	}
+	mv4 := c.MinScopeV4
+	if mv4 == 0 {
+		mv4 = v4
+	}
+	mv6 := c.MinScopeV6
+	if mv6 == 0 {
+		mv6 = v6
+	}
+	nets := make([]netip.Prefix, 0, len(c.ClientNetworks))
+	for _, s := range c.ClientNetworks {
+		if p, err := netip.ParsePrefix(s); err == nil {
+			nets = append(nets, p)
+		}
+	}
+	return &ecs.Policy{
+		Enabled:        true,
+		ForwardV4Max:   v4,
+		ForwardV6Max:   v6,
+		ClientNetworks: nets,
+		MinScopeV4:     mv4,
+		MinScopeV6:     mv6,
+	}
 }
 
 // (*EDNS).Name name return middleware name.
@@ -59,7 +114,15 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	noedns := req.IsEdns0() == nil
 
-	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req)
+	// Convert the writer's net.IP to a netip.Addr for the ECS policy
+	// check. AddrFromSlice handles v4 vs v6 by length; an unusable
+	// address falls through as a zero netip.Addr, which Policy.Allows
+	// safely refuses.
+	clientAddr, _ := netip.AddrFromSlice(w.RemoteIP())
+	if clientAddr.Is4In6() {
+		clientAddr = clientAddr.Unmap()
+	}
+	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req, e.ecsPolicy, clientAddr)
 	if opt.Version() != 0 {
 		opt.SetVersion(0)
 
