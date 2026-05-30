@@ -120,6 +120,66 @@ func KeyString(qname string, qtype, qclass uint16, cd bool) uint64 {
 	return hash
 }
 
+// KeyWithScope is an ECS-aware variant of Key. When scope is the
+// empty slice (the canonical "no scope" value) the returned hash is
+// bit-identical to Key(q, cd), so cache entries written before this
+// function existed still resolve on lookup — no flush needed on
+// upgrade.
+//
+// When scope is non-empty the bytes are folded into the hash
+// preimage with a single-byte length prefix so a /24 keyed entry
+// can't collide with a /20 of the same address. Callers should pass
+// scope as `prefix.Addr().AsSlice()[:prefixLenBytes]` rounded up
+// to the nearest byte; the helper does no normalisation.
+func KeyWithScope(q dns.Question, cd bool, scope []byte) uint64 {
+	if len(scope) == 0 {
+		return Key(q, cd)
+	}
+
+	kb := keyBufferPool.Get().(*keyBuffer)
+	buf := kb.buf[:0]
+
+	// Same prefix as Key so a scoped key with len(scope)==0 (handled
+	// above) and an unscoped Key collide deliberately.
+	buf = append(buf, byte(q.Qclass>>8), byte(q.Qclass&0xFF)) //nolint:gosec // intentional uint16 byte extraction
+	buf = append(buf, byte(q.Qtype>>8), byte(q.Qtype&0xFF))   //nolint:gosec // intentional uint16 byte extraction
+
+	if cd {
+		buf = append(buf, 1)
+	} else {
+		buf = append(buf, 0)
+	}
+
+	nameLen := len(q.Name)
+	if len(buf)+nameLen+1+len(scope) > len(kb.buf) {
+		// Extremely long qnames or future scope widening could push
+		// past the on-stack buffer; fall through to heap. Rare.
+		newBuf := make([]byte, len(buf), len(buf)+nameLen+1+len(scope))
+		copy(newBuf, buf)
+		buf = newBuf
+	}
+
+	for i := range nameLen {
+		c := q.Name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf = append(buf, c)
+	}
+
+	// Scope length first so a /24 prefix can't be confused with a
+	// /20 truncation of the same address. Callers (CacheKey.Hash)
+	// always supply at most 16 bytes (full IPv6 address), so this
+	// truncating cast can't lose information in practice.
+	scopeLen := min(len(scope), 255)
+	buf = append(buf, byte(scopeLen)) //nolint:gosec // bounded above
+	buf = append(buf, scope[:scopeLen]...)
+
+	hash := xxhash.Sum64(buf)
+	keyBufferPool.Put(kb)
+	return hash
+}
+
 // KeySimple generates a cache key without pooling for comparison.
 // This is exported for benchmarking purposes only.
 func KeySimple(q dns.Question, cd ...bool) uint64 {

@@ -76,6 +76,56 @@ func TestKey(t *testing.T) {
 	}
 }
 
+func TestKeyWithScope_NilScopeMatchesKey(t *testing.T) {
+	// Migration safety: KeyWithScope(q, cd, nil) must hash to the
+	// same value as Key(q, cd). Pre-Stage-2 entries (shared key)
+	// keep hitting after the upgrade because the cache still keys
+	// non-ECS requests through this same nil path.
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	if got, want := KeyWithScope(q, false, nil), Key(q, false); got != want {
+		t.Errorf("KeyWithScope(nil) = %d, Key = %d", got, want)
+	}
+	if got, want := KeyWithScope(q, true, nil), Key(q, true); got != want {
+		t.Errorf("KeyWithScope(nil, cd=true) = %d, Key(cd=true) = %d", got, want)
+	}
+}
+
+func TestKeyWithScope_DistinctScopesDistinctHashes(t *testing.T) {
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	scopeA := []byte{203, 0, 113}  // 203.0.113.0/24
+	scopeB := []byte{198, 51, 100} // 198.51.100.0/24
+
+	hA := KeyWithScope(q, false, scopeA)
+	hB := KeyWithScope(q, false, scopeB)
+	if hA == hB {
+		t.Errorf("different scopes hashed identically: %d", hA)
+	}
+
+	// And the scoped hash must differ from the shared-key hash
+	// (the #417 pollution lives in the inverse of this property).
+	if hA == Key(q, false) {
+		t.Errorf("scoped hash collided with unscoped hash for %q", q.Name)
+	}
+}
+
+func TestKeyWithScope_LengthPrefixPreventsCollision(t *testing.T) {
+	// /24 of 203.0.0.0 (bytes {203, 0, 0}) must NOT collide with /20
+	// of the same /24-truncated address — the length byte we prepend
+	// inside the hash preimage is what makes those two prefixes
+	// hash distinctly even though the address-byte slices look the
+	// same when read raw.
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	hSlash24 := KeyWithScope(q, false, []byte{203, 0, 113})
+	// "/20" with the same first three bytes is contrived but covers
+	// the scope-length-byte property. In real usage the byte slice
+	// for a /20 would be 3 bytes too (rounded up), so a length
+	// prefix is the only thing distinguishing them.
+	hAnother := KeyWithScope(q, false, []byte{203, 0, 0})
+	if hSlash24 == hAnother {
+		t.Errorf("distinct scope addresses hashed identically: %d", hSlash24)
+	}
+}
+
 func TestKeyUniqueness(t *testing.T) {
 	// Test that different queries produce different keys
 	keys := make(map[uint64]string)

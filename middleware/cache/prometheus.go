@@ -35,6 +35,18 @@ var (
 		Name: "dns_cache_hit_rate",
 		Help: "DNS cache hit rate percentage",
 	}, calculateHitRate)
+
+	// ECS-specific counters (RFC 7871). Tracks how much of the cache
+	// traffic the ECS-aware path is handling vs the shared-key
+	// fallback. outcome labels:
+	//   - hit_scoped:     scoped lookup found the entry
+	//   - hit_shared:     scoped lookup missed, shared-key hit (SCOPE=0 or pre-Stage-2 entry)
+	//   - miss:           neither path found an entry
+	//   - non_ecs:        request had no ECS or policy didn't apply; shared-key path only
+	ecsLookups = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "dns_cache_ecs_lookups_total",
+		Help: "ECS-aware cache lookups, partitioned by outcome",
+	}, []string{"outcome"})
 )
 
 // cacheInstance holds references to cache components for metrics
@@ -51,6 +63,7 @@ func init() {
 	prometheus.MustRegister(cachePrefetches)
 	prometheus.MustRegister(cacheSize)
 	prometheus.MustRegister(cacheHitRate)
+	prometheus.MustRegister(ecsLookups)
 }
 
 // SetMetricsInstance sets the metrics instance for hit rate calculation

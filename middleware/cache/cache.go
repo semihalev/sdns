@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/waitgroup"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -83,6 +85,12 @@ type Cache struct {
 	config  CacheConfig
 	metrics *CacheMetrics
 
+	// ecsPolicy mirrors middleware/edns's policy: nil when ECS
+	// forwarding is off (cache keys stay shared, today's behaviour),
+	// non-nil when on (lookup probes scoped keys, insert keys by
+	// the authority's SCOPE). Built once at New().
+	ecsPolicy *ecs.Policy
+
 	// Request deduplication
 	wg *waitgroup.WaitGroup
 
@@ -145,8 +153,9 @@ func New(cfg *config.Config) *Cache {
 
 		store: NewStore(positive, negative, cacheConfig),
 
-		config:  cacheConfig,
-		metrics: metrics,
+		config:    cacheConfig,
+		metrics:   metrics,
+		ecsPolicy: buildCacheECSPolicy(cfg),
 
 		wg: waitgroup.New(15 * time.Second),
 
@@ -177,6 +186,28 @@ func New(cfg *config.Config) *Cache {
 
 // (*Cache).Name name returns middleware name.
 func (c *Cache) Name() string { return name }
+
+// buildCacheECSPolicy parses [ecs] config the same way
+// middleware/edns does, so the cache and the forwarder agree on
+// who is in the allow-list, what the source-prefix ceiling is, and
+// what min-scope cap to apply when keying. Invalid configuration
+// disables ECS-aware caching (cache falls back to shared keys for
+// the affected requests); a startup log line surfaces the reason.
+func buildCacheECSPolicy(cfg *config.Config) *ecs.Policy {
+	c := cfg.ECS
+	p, err := ecs.Build(
+		c.Enabled,
+		c.ForwardV4Max, c.ForwardV6Max,
+		c.MinScopeV4, c.MinScopeV6,
+		c.ClientNetworks,
+	)
+	if err != nil {
+		zlog.Error("ECS-aware caching disabled: invalid [ecs] configuration",
+			"error", err.Error())
+		return nil
+	}
+	return p
+}
 
 // (*Cache).Store returns the storage facade, typed as
 // middleware.Store so Cache satisfies middleware.StoreProvider for
@@ -256,18 +287,60 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// Derive the client's ECS source prefix once and reuse it for
+	// scoped lookup, dedup, and insert. Zero prefix means ECS-aware
+	// caching doesn't apply (policy off, client not in allow-list,
+	// or no ECS option) and the request takes today's shared-key
+	// path bit-for-bit.
+	clientAddr, _ := netip.AddrFromSlice(w.RemoteIP())
+	if clientAddr.Is4In6() {
+		clientAddr = clientAddr.Unmap()
+	}
+	clientScope := c.requestScope(req, clientAddr)
+
 	// Cache key uses (name, qtype, class, CD) — same granularity
 	// as the dedup key so followers release into a lookup that
 	// matches what the leader wrote.
 	cacheKey := CacheKey{Question: q, CD: req.CheckingDisabled}.Hash()
+	dedupKey := cacheKey
+	if clientScope.IsValid() {
+		// Dedup at the client's source prefix so two clients in
+		// different ECS scopes don't share an upstream query (their
+		// answers would lose the scope distinction).
+		dedupKey = CacheKey{Question: q, CD: req.CheckingDisabled, Scope: clientScope}.Hash()
+	}
 
 	// Hot path: cache check before dedup. Concurrent cache hits
 	// used to take the waitgroup lock and allocate a Join
 	// context/timer even when the entry was already live.
+	//
+	// When the request carries ECS, probe scoped keys first
+	// (longest-prefix-match), then fall through to the shared key
+	// so SCOPE=0 / pre-Stage-2 entries still hit. checkCache
+	// records the metric on the shared-key path; scopedLookup
+	// records its own Hit on the scoped path so we don't
+	// double-count or under-count. ecsLookups breaks the same
+	// outcome down by ECS-vs-shared so operators can see how much
+	// the scoped path is actually carrying.
+	if clientScope.IsValid() {
+		if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
+			ecsLookups.WithLabelValues("hit_scoped").Inc()
+			if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+				return
+			}
+		}
+	}
 	if entry := c.checkCache(cacheKey); entry != nil {
+		if clientScope.IsValid() {
+			ecsLookups.WithLabelValues("hit_shared").Inc()
+		} else {
+			ecsLookups.WithLabelValues("non_ecs").Inc()
+		}
 		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 			return
 		}
+	} else if clientScope.IsValid() {
+		ecsLookups.WithLabelValues("miss").Inc()
 	}
 
 	// Miss. Dedup upstream work: followers wait for the leader
@@ -293,15 +366,26 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// ctx-based successor for code paths without a writer in
 	// scope.
 	if !w.Internal() {
-		if wait := c.wg.Join(cacheKey); wait != nil {
+		if wait := c.wg.Join(dedupKey); wait != nil {
 			<-wait
+			// Re-check both paths after a follower wakes up: the
+			// leader may have just stored a scoped entry (a
+			// shared-key check would miss it), or a SCOPE=0
+			// shared entry (a scoped check alone would miss it).
+			if clientScope.IsValid() {
+				if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
+					if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+						return
+					}
+				}
+			}
 			if entry := c.checkCache(cacheKey); entry != nil {
 				if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 					return
 				}
 			}
 		} else {
-			defer c.wg.Done(cacheKey)
+			defer c.wg.Done(dedupKey)
 		}
 	}
 
@@ -318,10 +402,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// sub-query. The field is cleared on release so a pooled
 	// writer doesn't leak a ctx reference between uses.
 	rw.ctx = ctx
+	// Stash the client's request scope so WriteMsg can derive
+	// the insert key without re-reading the OPT (which by then
+	// may have been mutated by the edns wrapper on the response).
+	rw.clientScope = clientScope
 	ch.Writer = rw
 	defer func() {
 		ch.Writer = w
 		rw.ctx = nil
+		rw.clientScope = netip.Prefix{}
 		c.writerPool.Put(rw)
 	}()
 
@@ -340,6 +429,78 @@ func (c *Cache) checkCache(key uint64) *CacheEntry {
 
 	c.metrics.Miss()
 	return nil
+}
+
+// requestScope derives the client's ECS source prefix for cache
+// keying, returning the zero prefix when ECS-aware caching shouldn't
+// apply to this request (policy off, client not in allow-list, no
+// ECS option, malformed option). Uses the (already-clamped) ECS
+// source the edns middleware preserved on req.Extra rather than
+// re-clamping from the writer's RemoteIP — keeps lookup and insert
+// keying agreed on a single derivation.
+func (c *Cache) requestScope(req *dns.Msg, client netip.Addr) netip.Prefix {
+	if c.ecsPolicy == nil || !c.ecsPolicy.Allows(client) {
+		return netip.Prefix{}
+	}
+	opt := req.IsEdns0()
+	if opt == nil {
+		return netip.Prefix{}
+	}
+	for _, o := range opt.Option {
+		sub, ok := o.(*dns.EDNS0_SUBNET)
+		if !ok {
+			continue
+		}
+		addr, ok := netip.AddrFromSlice(sub.Address)
+		if !ok {
+			return netip.Prefix{}
+		}
+		if addr.Is4In6() {
+			addr = addr.Unmap()
+		}
+		p, err := addr.Prefix(int(sub.SourceNetmask))
+		if err != nil {
+			return netip.Prefix{}
+		}
+		return p
+	}
+	return netip.Prefix{}
+}
+
+// scopedLookup probes the cache for the longest scope match that
+// covers `clientPrefix`. Returns the entry + the key it was found
+// under, or (nil, 0) on miss. The shared-key fallback is the
+// caller's responsibility — a scoped probe that misses should still
+// try the unscoped key in case the authority returned SCOPE=0
+// (cached shared) or the entry predates Stage 2.
+//
+// Iteration runs from the client's source prefix down to the
+// policy's min_scope ceiling — at most 33 probes for IPv4 or 129
+// for IPv6, but in practice ≤ 8 because forward_v4/v6 caps the
+// upper bound. Each probe is one hash compute + one map lookup,
+// well below the cost of an upstream resolution.
+func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64) {
+	if !clientPrefix.IsValid() {
+		return nil, 0
+	}
+	var minBits int
+	if clientPrefix.Addr().Is4() {
+		minBits = int(c.ecsPolicy.MinScopeV4)
+	} else {
+		minBits = int(c.ecsPolicy.MinScopeV6)
+	}
+	for bits := clientPrefix.Bits(); bits >= minBits; bits-- {
+		scope, err := clientPrefix.Addr().Prefix(bits)
+		if err != nil {
+			continue
+		}
+		key := CacheKey{Question: q, CD: cd, Scope: scope}.Hash()
+		if entry, ok := c.store.LookupByKey(key); ok {
+			c.metrics.Hit()
+			return entry, key
+		}
+	}
+	return nil, 0
 }
 
 // handleCacheHit processes a cache hit.
@@ -368,7 +529,12 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	// prefetch=true and ShouldPrefetch returns false until an
 	// unrelated expiry or replacement clears it — prefetch
 	// would silently disable itself for that key.
-	if c.prefetchQueue != nil && entry.ShouldPrefetch(c.config.Prefetch) {
+	//
+	// PrefetchEligible() gates scoped entries out: the prefetch
+	// worker has no client IP, so a refresh would forward without
+	// ECS and create a shared-key entry under the scoped key —
+	// wrong audience, wrong answer. Scoped entries just expire.
+	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
 		if entry.prefetch.CompareAndSwap(false, true) {
 			if !c.prefetchQueue.Add(PrefetchRequest{
 				Request: req.Copy(),
@@ -495,6 +661,13 @@ type ResponseWriter struct {
 	// additionalAnswer's sub-query. Set by Cache.ServeDNS when the
 	// writer is pulled from the pool; cleared on defer.
 	ctx context.Context
+	// clientScope is the prefix derived from the request's ECS
+	// option (already clamped by the edns middleware to the policy
+	// ceiling). Zero value when ECS doesn't apply, in which case
+	// WriteMsg falls back to the unscoped insert path bit-for-bit
+	// — that's how pre-Stage-2 traffic and SCOPE=0 responses keep
+	// the same cache shape they had before.
+	clientScope netip.Prefix
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ResponseWriter interface.
@@ -514,8 +687,29 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// Classify, filter, and store via Store. Key is derived from
 	// the response's CD bit — today's behaviour and the contract
 	// the cache dedup leader and follower agree on.
-	key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
-	w.cache.store.SetFromResponseWithKey(key, res)
+	//
+	// When the request carried an ECS scope this writer was set up
+	// to understand, read the authority's SCOPE off the response.
+	// SCOPE=0 ("global") means the authority's answer is suitable
+	// for everyone — fall back to the shared key so any later
+	// client (with or without ECS) hits the same entry. SCOPE>0
+	// means the answer is geo-tailored and gets a scoped key,
+	// clamped to the policy ceiling so cardinality stays bounded.
+	if w.clientScope.IsValid() {
+		if respScope, ok := ecs.ReadResponseScope(res); ok {
+			clamped := w.cache.ecsPolicy.ClampScope(respScope, w.clientScope)
+			scopedKey := CacheKey{Question: q, CD: res.CheckingDisabled, Scope: clamped}.Hash()
+			w.cache.store.SetFromResponseScoped(scopedKey, res)
+		} else {
+			// No SCOPE in response (or SCOPE=0): authority says
+			// "global"; cache shared so future non-ECS clients hit.
+			key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
+			w.cache.store.SetFromResponseWithKey(key, res)
+		}
+	} else {
+		key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
+		w.cache.store.SetFromResponseWithKey(key, res)
+	}
 
 	// Resolve CNAME chains before sending to client (matching V1
 	// behavior). Depth counter replaces the pre-Phase-3d

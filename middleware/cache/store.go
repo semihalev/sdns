@@ -91,17 +91,39 @@ func (s *Store) SetFromResponse(resp *dns.Msg, keyCD bool) {
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
 func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg) {
+	s.setFromResponseWithKey(key, resp, false)
+}
+
+// SetFromResponseScoped is SetFromResponseWithKey for entries that
+// were keyed under an ECS scope (RFC 7871 §7.1.2). The entry's
+// PrefetchEligible is false — the prefetch worker has no client IP
+// to derive ECS from, so refreshing a scoped entry would lose its
+// scope and store the wrong-audience answer.
+func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg) {
+	s.setFromResponseWithKey(key, resp, true)
+}
+
+func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool) {
 	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
+	newEntry := func(msg *dns.Msg, ttl time.Duration) *CacheEntry {
+		if scoped {
+			e := NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit)
+			e.rateLimKey = key
+			return e
+		}
+		return NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
+	}
+
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		ttl := s.positive.ttl.Calculate(msgTTL)
-		s.positive.Set(key, NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
+		s.positive.Set(key, newEntry(filtered, ttl))
 	case dnsutil.TypeServerFailure:
 		ttl := s.negative.ttl.Calculate(msgTTL)
-		s.negative.Set(key, NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
+		s.negative.Set(key, newEntry(filtered, ttl))
 	}
 }
 
