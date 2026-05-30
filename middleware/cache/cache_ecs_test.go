@@ -351,6 +351,44 @@ func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
 	}
 }
 
+// TestECSCache_PurgeIsCaseInsensitive pins the third-round
+// ultrareview P2 fix: the scoped purge sweep compares names
+// directly, but cache keys lowercase the name during hashing.
+// An entry whose stored Question carries upper-case characters
+// (because the upstream response echoed the client's case) must
+// still be removed by a purge of the lowercase form.
+func TestECSCache_PurgeIsCaseInsensitive(t *testing.T) {
+	cfg := makeECSTestConfig(t)
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	// Seed under the stored Question with mixed case — that's what
+	// the cache would record if the client (or upstream response)
+	// used mixed case. The hash key itself is case-insensitive
+	// (Key + KeyWithPrefix both lowercase during hashing), so the
+	// stored question Name diverges from the lowercase form the
+	// operator-facing purge API will use.
+	req := new(dns.Msg)
+	req.SetQuestion("Mixed.Example.", dns.TypeA)
+	scope := netip.MustParsePrefix("203.0.113.0/24")
+	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
+	c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24))
+	require.Truef(t, func() bool { _, ok := c.store.LookupByKey(key); return ok }(),
+		"seed did not land in cache")
+
+	// Operator purges via the canonical lowercase FQDN.
+	c.store.Purge(dns.Question{
+		Name:   "mixed.example.",
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	})
+
+	if _, ok := c.store.LookupByKey(key); ok {
+		t.Errorf("scoped entry stored under mixed-case Question survived a lowercase purge")
+	}
+}
+
 // TestECSCache_CacheLimitTTLCapsScopedWrites pins the ultrareview
 // P2 fix: cache_limit_ttl must clamp the TTL of scoped entries so
 // a misbehaving upstream sending a multi-hour TTL on a /24 answer

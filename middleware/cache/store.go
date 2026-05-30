@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -183,7 +184,14 @@ func (s *Store) Purge(q dns.Question) {
 			return true
 		}
 		eq := e.msg.Question[0]
-		if eq.Name == q.Name && eq.Qtype == q.Qtype && eq.Qclass == q.Qclass {
+		// DNS names compare case-insensitively (RFC 4343). The
+		// unscoped purge path is already case-insensitive — its
+		// key derives from internal/cache.Key which lowercases the
+		// name during hashing. The scoped sweep enumerates raw
+		// stored Questions, so the comparison has to match the
+		// hash's semantics or an entry cached for EXAMPLE.COM.
+		// would survive a purge of example.com.
+		if eq.Qtype == q.Qtype && eq.Qclass == q.Qclass && strings.EqualFold(eq.Name, q.Name) {
 			hits = append(hits, located{positive: positive, key: key})
 		}
 		return true
