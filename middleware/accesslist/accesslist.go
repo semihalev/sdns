@@ -4,11 +4,21 @@ import (
 	"context"
 	"net"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
 	"github.com/yl2chen/cidranger"
 )
+
+// accessDenied counts queries dropped because the client IP isn't in
+// the configured access list. Security-relevant — a spike indicates
+// scanning or a misconfigured client trying repeatedly.
+var accessDenied = metric.NewCounter(nil, prometheus.CounterOpts{
+	Name: "dns_accesslist_denied_total",
+	Help: "Total DNS queries denied by the accesslist middleware",
+})
 
 // List type.
 type List struct {
@@ -57,6 +67,7 @@ func (a *List) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	allowed, _ := a.ranger.Contains(ch.Writer.RemoteIP())
 
 	if !allowed {
+		accessDenied.Inc()
 		// no reply to client
 		ch.Cancel()
 		return

@@ -2,25 +2,33 @@ package cache
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/semihalev/sdns/internal/metric"
 )
 
+// Counters use the internal/metric package (sharded + background
+// flush) — they're on the per-query hot path and benefit ~20x from
+// avoiding the direct prometheus.Counter atomic.
+//
+// Gauges (cacheSize, cacheHitRate) stay on direct Prometheus —
+// internal/metric is scalar-counter only, and these are scraped
+// once per Prometheus pull, not on every request.
 var (
-	cacheHits = prometheus.NewCounter(prometheus.CounterOpts{
+	cacheHits = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "dns_cache_hits_total",
 		Help: "Total number of DNS cache hits",
 	})
 
-	cacheMisses = prometheus.NewCounter(prometheus.CounterOpts{
+	cacheMisses = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "dns_cache_misses_total",
 		Help: "Total number of DNS cache misses",
 	})
 
-	cacheEvictions = prometheus.NewCounter(prometheus.CounterOpts{
+	cacheEvictions = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "dns_cache_evictions_total",
 		Help: "Total number of DNS cache evictions",
 	})
 
-	cachePrefetches = prometheus.NewCounter(prometheus.CounterOpts{
+	cachePrefetches = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "dns_cache_prefetches_total",
 		Help: "Total number of DNS cache prefetches",
 	})
@@ -45,10 +53,16 @@ var (
 	//   - hit_shared: scoped lookup missed, shared-key hit (SCOPE=0
 	//                 authority answer or pre-Stage-2 entry)
 	//   - miss:       both scoped probe and shared-key check missed
-	ecsLookups = prometheus.NewCounterVec(prometheus.CounterOpts{
+	ecsLookups = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_cache_ecs_lookups_total",
 		Help: "ECS-aware cache lookups, partitioned by outcome",
 	}, []string{"outcome"})
+
+	// Pre-resolved ECS outcome handles to skip the per-call map
+	// lookup. Closed set: any new outcome must be added here too.
+	ecsLookupHitScoped = ecsLookups.Register("hit_scoped")
+	ecsLookupHitShared = ecsLookups.Register("hit_shared")
+	ecsLookupMiss      = ecsLookups.Register("miss")
 )
 
 // cacheInstance holds references to cache components for metrics
@@ -59,13 +73,8 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(cacheHits)
-	prometheus.MustRegister(cacheMisses)
-	prometheus.MustRegister(cacheEvictions)
-	prometheus.MustRegister(cachePrefetches)
 	prometheus.MustRegister(cacheSize)
 	prometheus.MustRegister(cacheHitRate)
-	prometheus.MustRegister(ecsLookups)
 }
 
 // SetMetricsInstance sets the metrics instance for hit rate calculation

@@ -10,9 +10,19 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 )
+
+// blocklistHits counts queries that matched a blocklist entry and
+// were synthesised away from the resolver chain. Operators use this
+// to monitor block effectiveness vs the legitimate query rate.
+var blocklistHits = metric.NewCounter(nil, prometheus.CounterOpts{
+	Name: "dns_blocklist_hits_total",
+	Help: "Total DNS queries blocked by the blocklist middleware",
+})
 
 // BlockList type
 //
@@ -99,6 +109,8 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Next(ctx)
 		return
 	}
+
+	blocklistHits.Inc()
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)

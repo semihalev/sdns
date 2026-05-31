@@ -5,10 +5,51 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/semihalev/sdns/internal/metric"
 )
+
+// httpErrors counts DoH responses sent with a 4xx or 5xx status.
+// Labelled by status code (closed set: 400/405/415/500) so operators
+// can distinguish bad-request floods from server-side decode
+// failures. The 200-path is not counted here — that's what
+// dns_queries_total already measures.
+var (
+	httpErrors = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_doh_http_errors_total",
+		Help: "DoH responses returned with a 4xx or 5xx HTTP status, by code",
+	}, []string{"code"})
+
+	httpErr400 = httpErrors.Register("400")
+	httpErr405 = httpErrors.Register("405")
+	httpErr415 = httpErrors.Register("415")
+	httpErr500 = httpErrors.Register("500")
+)
+
+// writeHTTPError replaces http.Error + manual metric increments so
+// every error response goes through one bookkeeping site. Unknown
+// status codes fall through to the cold WithLabelValues path so the
+// metric stays correct without forcing every caller to update this
+// switch.
+func writeHTTPError(w http.ResponseWriter, code int) {
+	switch code {
+	case http.StatusBadRequest:
+		httpErr400.Inc()
+	case http.StatusMethodNotAllowed:
+		httpErr405.Inc()
+	case http.StatusUnsupportedMediaType:
+		httpErr415.Inc()
+	case http.StatusInternalServerError:
+		httpErr500.Inc()
+	default:
+		httpErrors.WithLabelValues(strconv.Itoa(code)).Inc()
+	}
+	http.Error(w, http.StatusText(code), code)
+}
 
 const (
 	minMsgHeaderSize = 12
@@ -30,12 +71,12 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 		case http.MethodGet:
 			buf, err = base64.RawURLEncoding.DecodeString(r.URL.Query().Get("dns"))
 			if len(buf) == 0 || err != nil {
-				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+				writeHTTPError(w, http.StatusBadRequest)
 				return
 			}
 		case http.MethodPost:
 			if r.Header.Get("Content-Type") != contentTypeDNS {
-				http.Error(w, http.StatusText(http.StatusUnsupportedMediaType), http.StatusUnsupportedMediaType)
+				writeHTTPError(w, http.StatusUnsupportedMediaType)
 				return
 			}
 
@@ -45,34 +86,34 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 
 			buf, err = io.ReadAll(limitedReader)
 			if err != nil {
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				writeHTTPError(w, http.StatusInternalServerError)
 				return
 			}
 		default:
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			writeHTTPError(w, http.StatusMethodNotAllowed)
 			return
 		}
 
 		if len(buf) < minMsgHeaderSize {
-			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
 
 		req := new(dns.Msg)
 		if err := req.Unpack(buf); err != nil {
-			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
 
 		msg := handle(req)
 		if msg == nil {
-			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
 
 		packed, err := msg.Pack()
 		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			writeHTTPError(w, http.StatusInternalServerError)
 			return
 		}
 
@@ -88,21 +129,21 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Only allow GET for JSON API
 		if r.Method != http.MethodGet {
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			writeHTTPError(w, http.StatusMethodNotAllowed)
 			return
 		}
 
 		query := r.URL.Query()
 		name := query.Get("name")
 		if name == "" {
-			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
 		name = dns.Fqdn(name)
 
 		qtype := ParseQTYPE(query.Get("type"))
 		if qtype == dns.TypeNone {
-			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
 
@@ -120,13 +161,13 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 
 		msg := handle(req)
 		if msg == nil {
-			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
 
 		jsonData, err := json.Marshal(NewMsg(msg))
 		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			writeHTTPError(w, http.StatusInternalServerError)
 			return
 		}
 

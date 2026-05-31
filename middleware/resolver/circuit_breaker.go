@@ -46,7 +46,9 @@ func (cb *circuitBreaker) canQuery(server string) bool {
 		lastFailure := time.Unix(sf.lastFailure.Load(), 0)
 		if time.Since(lastFailure) > 30*time.Second {
 			// Reset after 30 seconds
-			sf.disabled.Store(false)
+			if sf.disabled.CompareAndSwap(true, false) {
+				circuitBreakerResets.Inc()
+			}
 			sf.count.Store(0)
 			return true
 		}
@@ -70,8 +72,8 @@ func (cb *circuitBreaker) recordFailure(server string) {
 	sf.lastFailure.Store(time.Now().Unix())
 
 	// Disable server after 5 consecutive failures
-	if count >= 5 && !sf.disabled.Load() {
-		sf.disabled.Store(true)
+	if count >= 5 && sf.disabled.CompareAndSwap(false, true) {
+		circuitBreakerTrips.Inc()
 		zlog.Warn("Circuit breaker tripped for DNS server", "server", server, "failures", count)
 	}
 }
@@ -87,6 +89,7 @@ func (cb *circuitBreaker) recordSuccess(server string) {
 		wasDisabled := sf.disabled.Swap(false)
 
 		if wasDisabled && oldCount > 0 {
+			circuitBreakerResets.Inc()
 			zlog.Info("Circuit breaker reset for DNS server", "server", server)
 		}
 	}

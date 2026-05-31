@@ -7,10 +7,35 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
+)
+
+var (
+	// forwarderFailures counts upstream exchanges that returned an
+	// error (timeout, connection refused, TLS handshake failure,
+	// etc). Bumped per upstream tried, so an SDNS configured with
+	// two forwarders that both fail increments by 2 for one client
+	// query. That matches "operator wants to know upstream health"
+	// better than a per-client increment would.
+	forwarderFailures = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "dns_forwarder_failures_total",
+		Help: "Total upstream forwarder exchange failures",
+	})
+
+	// forwarderResponseMismatch counts responses whose question
+	// section did not match the outstanding query. A non-zero rate
+	// is a security signal — a real upstream never returns a
+	// mismatched question, so persistent counts here suggest a
+	// poisoning attempt or a broken upstream.
+	forwarderResponseMismatch = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "dns_forwarder_response_mismatch_total",
+		Help: "Total upstream responses dropped due to question-section mismatch (potential poisoning signal)",
+	})
 )
 
 type server struct {
@@ -84,6 +109,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		resp, err := dnsutil.Exchange(ctx, req, server.Addr, server.Proto, reqClient)
 		if err != nil {
+			forwarderFailures.Inc()
 			zlog.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
 		}
@@ -93,6 +119,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// returns a different name/type/class would otherwise be cached
 		// under that question, poisoning lookups for unrelated names.
 		if !questionMatches(req.Question[0], resp.Question) {
+			forwarderResponseMismatch.Inc()
 			zlog.Info("forwarder dropped response with mismatched question",
 				"query", formatQuestion(req.Question[0]))
 			continue

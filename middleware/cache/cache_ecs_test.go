@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/mock"
@@ -495,19 +494,12 @@ func TestECSCache_LookupsMetricCountsOnlyECSPaths(t *testing.T) {
 	}
 }
 
-// metricValue reads the current counter value for an ecsLookups
-// outcome. Returns 0 if the label has never been observed.
+// metricValue reads the live counter value for an ecsLookups
+// outcome via metric.Counter.Value (cross-shard sum). No flush
+// needed because Value reads the shards directly, not Prometheus.
 func metricValue(t *testing.T, outcome string) float64 {
 	t.Helper()
-	m, err := ecsLookups.GetMetricWithLabelValues(outcome)
-	if err != nil {
-		t.Fatalf("get metric: %v", err)
-	}
-	var pb dto.Metric
-	if err := m.Write(&pb); err != nil {
-		t.Fatalf("write metric: %v", err)
-	}
-	return pb.GetCounter().GetValue()
+	return float64(ecsLookups.WithLabelValues(outcome).Value())
 }
 
 // TestECSCache_BuildPolicyFailClosed covers the error path of

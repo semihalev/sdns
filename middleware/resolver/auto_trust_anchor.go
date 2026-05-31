@@ -372,6 +372,7 @@ func (r *Resolver) AutoTA() {
 					zlog.Warn("Trust anchor REVOKE bit present but no valid self-signed RRSIG — ignoring revocation", "keytag", tag)
 					continue
 				}
+				taRevoked.Inc()
 				zlog.Warn("Trust anchor revoked!", "keytag", tag)
 				tombstones[dnskeyMaterialFP(ta.DNSKey)] = &Tombstone{DNSKey: ta.DNSKey, FirstSeen: time.Now()}
 				newRevocation = true
@@ -408,6 +409,7 @@ func (r *Resolver) AutoTA() {
 		}
 
 		// found new ksk
+		taNewPending.Inc()
 		zlog.Warn("New trust anchor found! Pending for hold-down", "keytag", tag, "hold-down", "30d")
 		ta.State = StateAddPend
 		ta.FirstSeen = time.Now()
@@ -439,6 +441,7 @@ func (r *Resolver) AutoTA() {
 					// Previously-valid key disappeared. Enter Missing;
 					// per §4.2 the key remains a valid trust anchor
 					// until the remove hold-down expires.
+					taMissing.Inc()
 					zlog.Warn("Trust anchor missing! Please check it manually", "keytag", tag, "hold-down", "90d")
 					ta.State = StateMissing
 					ta.FirstSeen = time.Now()
@@ -454,6 +457,7 @@ func (r *Resolver) AutoTA() {
 				// reintroduced and should be allowed back through
 				// AddPend if the root republishes it.
 				if ta.State == StateMissing && time.Since(ta.FirstSeen) > 2160*time.Hour { // hold-down 90 days
+					taDeleted.Inc()
 					zlog.Warn("Trust anchor deleted after hold-down", "keytag", tag)
 					delete(kskCurrent, tag)
 				}
@@ -462,6 +466,7 @@ func (r *Resolver) AutoTA() {
 
 			if ta.State == StateAddPend && time.Since(ta.FirstSeen) > 720*time.Hour { // hold-down 30days
 				// now valid
+				taBecameValid.Inc()
 				zlog.Warn("Trust anchor now valid!", "keytag", tag)
 				ta.State = StateValid
 			}
@@ -473,6 +478,7 @@ func (r *Resolver) AutoTA() {
 				// — the absence was transient, and forcing another
 				// AddPend hold-down would strip trust for 30 days even
 				// though nothing about the key's authority changed.
+				taReappeared.Inc()
 				zlog.Info("Missing trust anchor reappeared — restored to Valid", "keytag", tag)
 				ta.State = StateValid
 			}

@@ -327,7 +327,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// dns_cache_hits_total / dns_cache_misses_total).
 	if clientScope.IsValid() {
 		if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
-			ecsLookups.WithLabelValues("hit_scoped").Inc()
+			ecsLookupHitScoped.Inc()
 			if c.handleCacheHit(ctx, ch, entry, scopedKey) {
 				return
 			}
@@ -335,13 +335,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	if entry := c.checkCache(cacheKey); entry != nil {
 		if clientScope.IsValid() {
-			ecsLookups.WithLabelValues("hit_shared").Inc()
+			ecsLookupHitShared.Inc()
 		}
 		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 			return
 		}
 	} else if clientScope.IsValid() {
-		ecsLookups.WithLabelValues("miss").Inc()
+		ecsLookupMiss.Inc()
 	}
 
 	// Miss. Dedup upstream work: followers wait for the leader

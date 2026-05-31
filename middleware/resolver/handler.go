@@ -148,6 +148,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if err != nil {
+		classifyResolverErr(err)
 		zlog.Info("Resolve query failed", "query", formatQuestion(q), "error", err.Error())
 
 		// Add Extended DNS Error information for recursor validation failures

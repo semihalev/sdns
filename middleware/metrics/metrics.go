@@ -12,14 +12,31 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 )
 
+// queries is the multi-label per-query counter. Closed cardinality
+// (qtypes ~30, rcodes ~24) so internal/metric is a fit; the hot path
+// is ~12 ns/op vs ~120 ns/op for the prior With(pooled-labels) call.
+//
+// Package-level rather than per-Metrics-instance because:
+//   - prometheus.MustRegister panics on duplicates, so re-creation
+//     wouldn't work anyway
+//   - metric.NewCounterVec auto-starts the flusher; doing it once
+//     at init keeps lifecycle simple
+//   - middleware.Setup wires exactly one instance in production
+var queries = metric.NewCounterVec(nil, prometheus.CounterOpts{
+	Name: "dns_queries_total",
+	Help: "How many DNS queries processed",
+}, []string{"qtype", "rcode"})
+
 // Metrics type.
 type Metrics struct {
-	queries *prometheus.CounterVec
-
-	// Domain metrics with concurrent access tracking
+	// Domain metrics with concurrent access tracking. Stays on
+	// direct prometheus.CounterVec because the label cardinality
+	// (per-domain) is unbounded — internal/metric is for closed
+	// label sets only.
 	domainMetricsEnabled bool
 	domainMetricsLimit   int // Max domains to track (memory limit)
 	domainQueries        *prometheus.CounterVec
@@ -32,17 +49,9 @@ type Metrics struct {
 // New return new metrics.
 func New(cfg *config.Config) *Metrics {
 	m := &Metrics{
-		queries: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "dns_queries_total",
-				Help: "How many DNS queries processed",
-			},
-			[]string{"qtype", "rcode"},
-		),
 		domainMetricsEnabled: cfg.DomainMetrics,
 		domainMetricsLimit:   cfg.DomainMetricsLimit,
 	}
-	_ = prometheus.Register(m.queries)
 
 	// Initialize domain metrics if enabled
 	if m.domainMetricsEnabled {
@@ -77,14 +86,12 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	question := ch.Request.Question[0]
 
-	// Update general metrics
-	labels := AcquireLabels()
-	defer ReleaseLabels(labels)
-
-	labels["qtype"] = dns.TypeToString[question.Qtype]
-	labels["rcode"] = dns.RcodeToString[ch.Writer.Rcode()]
-
-	m.queries.With(labels).Inc()
+	// Hot path: single WithLabelValues lookup against the COW map,
+	// per-CPU sharded atomic add. ~12 ns/op under 8-core contention.
+	queries.WithLabelValues(
+		dns.TypeToString[question.Qtype],
+		dns.RcodeToString[ch.Writer.Rcode()],
+	).Inc()
 
 	// Update domain metrics if enabled
 	if m.domainMetricsEnabled {
@@ -197,23 +204,6 @@ func (m *Metrics) maybeCleanupDomains() {
 		// Remove from Prometheus
 		m.domainQueries.DeleteLabelValues(domain)
 	}
-}
-
-var labelsPool sync.Pool
-
-// AcquireLabels returns a label from pool.
-func AcquireLabels() prometheus.Labels {
-	x := labelsPool.Get()
-	if x == nil {
-		return prometheus.Labels{"qtype": "", "rcode": ""}
-	}
-
-	return x.(prometheus.Labels)
-}
-
-// ReleaseLabels returns labels to pool.
-func ReleaseLabels(labels prometheus.Labels) {
-	labelsPool.Put(labels)
 }
 
 const name = "metrics"

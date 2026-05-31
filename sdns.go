@@ -13,6 +13,7 @@ import (
 
 	"github.com/semihalev/sdns/api"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/server"
 	"github.com/semihalev/zlog/v2"
@@ -155,6 +156,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	case <-shutdownCtx.Done():
 		zlog.Warn("Server shutdown timeout exceeded")
 	}
+
+	// Drain the metric package's final flush so the last interval
+	// of counts reaches Prometheus before the process exits.
+	metric.Stop()
 
 	return nil
 }
