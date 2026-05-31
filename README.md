@@ -136,7 +136,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.6.7)
+## Configuration (v1.7.0)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -337,6 +337,36 @@ exclude_a_networks = [              # IPv4 ranges skipped under the well-known p
 - `dns64_ptr_translated_total` — `ip6.arpa` PTR queries redirected to `in-addr.arpa`
 - `dns64_passthrough_total{reason}` — AAAA queries left untouched, labelled by reason: `aaaa_present`, `nxdomain`, `dnssec_fail`, `no_rd`, `client_excluded`, `zone_excluded`, `cd_bit`, `internal`, `a_excluded`
 - `dns64_a_lookup_failures_total{reason}` — failures of the secondary A lookup, labelled by reason
+
+#### EDNS Client Subnet (RFC 7871)
+
+ECS lets a recursive resolver pass a slice of the client's IP to the authoritative server so geo-aware services (CDNs, global load balancers) can return locality-appropriate answers. SDNS supports ECS in two halves, both **opt-in** — by default the resolver strips client-supplied ECS per RFC 7871 §11 privacy guidance.
+
+**Forwarding.** When `[ecs] enabled = true`, the EDNS middleware preserves the client's `EDNS0_SUBNET` option on the outgoing query, clamped down to `forward_v4` / `forward_v6` source-prefix bits so a privacy-leaky client (e.g. one sending its full /32) can't widen the leak beyond the operator's ceiling. The clamped option is stripped from the response before it reaches the client — the wire form only carries it upstream.
+
+**ECS-aware cache.** The cache keys entries by the authority's response SCOPE so a geo-tailored answer for one client subnet isn't served to a client in a different subnet ("cache pollution"). Each `(qname, qtype, qclass, CD)` tuple can hold one shared-key entry (the historical behaviour, used when `SCOPE = 0` or for non-ECS traffic) plus any number of scoped entries. Lookup does longest-prefix-match from the client's source prefix down to `/1`, falling back to the shared key on a scoped miss so SCOPE=0 / pre-1.7.0 entries still hit. Dedup is scope-aware too — two clients in different subnets get separate upstream queries instead of sharing one.
+
+**Configuration:**
+```toml
+[ecs]
+enabled         = false        # default off (RFC 7871 §11)
+forward_v4      = 24           # source-prefix ceiling for IPv4
+forward_v6      = 56           # source-prefix ceiling for IPv6
+client_networks = []           # CIDRs eligible for forwarding; [] = all clients
+cache_limit_ttl = "5m"         # max lifetime for scoped cache entries (0 = uncapped)
+min_scope_v4    = 24           # refuse to store scopes narrower than this (cardinality cap)
+min_scope_v6    = 56
+```
+
+`client_networks` is fail-closed: a malformed CIDR or out-of-range knob disables the entire policy (logged at startup) so a typo can't silently re-open forwarding to every client.
+
+**Prometheus Metrics:**
+- `dns_cache_ecs_lookups_total{outcome}` — requests that went through the ECS-aware lookup path. `outcome` ∈ `hit_scoped` (scoped probe found the entry), `hit_shared` (scoped missed, shared-key hit — SCOPE=0 or pre-1.7.0 entry), `miss` (both missed). Non-ECS lookups stay on `dns_cache_hits_total` / `dns_cache_misses_total`.
+
+**Operator notes:**
+- Scoped entries are never prefetched (the worker has no client IP to derive ECS from). They expire normally; busy scoped names cost an upstream query per TTL window.
+- `Purge` (the `/api/v1/purge` endpoint) removes both the shared-key entry and every scoped entry for the qname.
+- The full request → upstream → response → cache path is exercised end-to-end by `middleware/cache/cache_ecs_test.go` if you need a usage reference.
 
 #### Cache Metrics
 
