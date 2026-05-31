@@ -351,6 +351,59 @@ func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
 	}
 }
 
+// TestECSCache_BroaderScopeOnNormalClientHits pins the fifth-round
+// ultrareview P2 fix: when an authority returns a broader-than-min
+// SCOPE for a normal client (the common case — a /24 source with a
+// /20 SCOPE response, meaning "this answer covers the whole /20"),
+// the inserted /20 entry must be reachable by the same /24 client
+// on its next query. The earlier loop capped probes at min_scope_v4
+// = 24, so a /24 client only probed /24 and never found the /20
+// entry it had just caused to be stored.
+//
+// Distinct from BroaderThanMinClientScopeHits: that test exercises
+// a /20 *client* source. This one exercises the much more common
+// /24 *client* source with a broader *response* SCOPE.
+func TestECSCache_BroaderScopeOnNormalClientHits(t *testing.T) {
+	cfg := makeECSTestConfig(t) // defaults: ForwardV4Max=24, MinScopeV4=24
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	// Authority claims the answer is valid for the whole /20 around
+	// the client, even though the client itself sent a /24 source.
+	// RFC 7871 allows SCOPE wider than SOURCE (it's the authority
+	// saying "I'd give the same answer to a broader audience"); only
+	// SCOPE > SOURCE is the RFC violation that ClampScope clamps.
+	h := &echoHandler{aRecord: "10.1.2.3", scopeBits: 20}
+
+	// First /24 query inserts the /20 entry.
+	respA := sendAndExpect(t, c, h,
+		reqWithECS("broad-scope.example.", 1, 24, "203.0.112.0"),
+		"203.0.112.5")
+	assert.Equal(t, "10.1.2.3", answerA(respA))
+	require.Equal(t, 1, h.Calls())
+
+	// Second /24 query from the same client must HIT — same source
+	// prefix, the stored /20 entry covers it.
+	h.aRecord = "should-not-be-used"
+	respB := sendAndExpect(t, c, h,
+		reqWithECS("broad-scope.example.", 1, 24, "203.0.112.0"),
+		"203.0.112.5")
+	assert.Equal(t, "10.1.2.3", answerA(respB),
+		"second /24 query missed the /20 entry the first query inserted")
+	assert.Equal(t, 1, h.Calls(),
+		"second /24 query went upstream instead of hitting the broader cached entry")
+
+	// A different /24 *within* the same /20 must also hit — that's
+	// the whole point of caching at a broader SCOPE.
+	respC := sendAndExpect(t, c, h,
+		reqWithECS("broad-scope.example.", 1, 24, "203.0.113.0"),
+		"203.0.113.42")
+	assert.Equal(t, "10.1.2.3", answerA(respC),
+		"sibling /24 within the same /20 missed the broader entry")
+	assert.Equal(t, 1, h.Calls(), "sibling /24 went upstream needlessly")
+}
+
 // TestECSCache_BroaderThanMinClientScopeHits pins the fourth-round
 // ultrareview P2 fix: a client whose source prefix is broader than
 // the policy's min_scope (e.g. /20 with min_scope_v4=24) must still
@@ -358,8 +411,9 @@ func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
 // scopedLookup loop's `bits >= minBits` bound did zero probes when
 // the client's own bits fell below min_scope, even though Policy.Clamp
 // passed the /20 source through unchanged and the insert path
-// happily stored a /20 entry. The fix clamps the loop's lower bound
-// to never exceed the client prefix itself.
+// happily stored a /20 entry. After the fifth-round fix lookup
+// probes down to /1 unconditionally, so this is implicitly covered;
+// kept as a focused regression for the broader-client axis.
 func TestECSCache_BroaderThanMinClientScopeHits(t *testing.T) {
 	cfg := makeECSTestConfig(t) // defaults: ForwardV4Max=24, MinScopeV4=24
 	cfg.ECS.ForwardV4Max = 20   // allow /20 sources through

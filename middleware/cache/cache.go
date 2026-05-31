@@ -475,37 +475,26 @@ func (c *Cache) requestScope(req *dns.Msg, client netip.Addr) netip.Prefix {
 // try the unscoped key in case the authority returned SCOPE=0
 // (cached shared) or the entry predates Stage 2.
 //
-// Iteration runs from the client's source prefix down to the
-// policy's min_scope ceiling, clamped to never exceed the client
-// prefix itself: when a client sends a source broader than
-// min_scope (e.g. /20 with min_scope_v4=24) Policy.Clamp passes
-// the /20 through unchanged and ClampScope stores answers at /20,
-// so the lookup must also reach /20 or the inserted entry can
-// never be hit again. Probing wider than the client prefix
-// would walk past what the client itself sent — that range would
-// never match an entry derived from this client's source.
+// Iteration runs from the client's source bits down to /1. The
+// upper bound is the client's own prefix because a stored prefix
+// narrower than the client's address could never contain it. The
+// lower bound is /1 because ClampScope allows arbitrarily-broad
+// response scopes (min_scope is a *storage* floor — refuse to
+// store anything narrower — not a *lookup* floor): a /24 source
+// with a /20 SCOPE response stores an entry at /20, and a later
+// /24 query from the same client has to probe /20 to find it.
+// Probing the unscoped /0 key would duplicate the shared-key
+// check the caller does after this returns; we stop at /1.
 //
-// Worst case is ~9 probes for IPv4 (forward_v4 down to min_scope_v4)
-// and ~9 for IPv6 (forward_v6 down to min_scope_v6); each probe is
-// one hash compute + one map lookup, well below the cost of an
-// upstream resolution.
+// Worst case ~32 probes for IPv4 (one per bit-length 1..32) and
+// ~128 for IPv6. Each probe is one hash compute + one map lookup
+// — ~100 ns total — well below the cost of an upstream lookup
+// or a single GC sweep.
 func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64) {
 	if !clientPrefix.IsValid() {
 		return nil, 0
 	}
-	var minBits int
-	if clientPrefix.Addr().Is4() {
-		minBits = int(c.ecsPolicy.MinScopeV4)
-	} else {
-		minBits = int(c.ecsPolicy.MinScopeV6)
-	}
-	// Clamp the lower bound to never exceed the client's own prefix —
-	// otherwise a broader-than-min client (/20 with min_scope_v4=24)
-	// would do zero probes even though insert can store at /20.
-	if clientPrefix.Bits() < minBits {
-		minBits = clientPrefix.Bits()
-	}
-	for bits := clientPrefix.Bits(); bits >= minBits; bits-- {
+	for bits := clientPrefix.Bits(); bits >= 1; bits-- {
 		scope, err := clientPrefix.Addr().Prefix(bits)
 		if err != nil {
 			continue
