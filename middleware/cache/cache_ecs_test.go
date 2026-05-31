@@ -351,6 +351,40 @@ func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
 	}
 }
 
+// TestECSCache_BroaderThanMinClientScopeHits pins the fourth-round
+// ultrareview P2 fix: a client whose source prefix is broader than
+// the policy's min_scope (e.g. /20 with min_scope_v4=24) must still
+// be able to look up an entry it just inserted. The earlier
+// scopedLookup loop's `bits >= minBits` bound did zero probes when
+// the client's own bits fell below min_scope, even though Policy.Clamp
+// passed the /20 source through unchanged and the insert path
+// happily stored a /20 entry. The fix clamps the loop's lower bound
+// to never exceed the client prefix itself.
+func TestECSCache_BroaderThanMinClientScopeHits(t *testing.T) {
+	cfg := makeECSTestConfig(t) // defaults: ForwardV4Max=24, MinScopeV4=24
+	cfg.ECS.ForwardV4Max = 20   // allow /20 sources through
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	// echoHandler returns SCOPE=20 to match the client's /20 source —
+	// RFC 7871 §7.1.2 forbids SCOPE > SOURCE, so /20 is the strictest
+	// scope this authority can claim for this audience.
+	h := &echoHandler{aRecord: "10.20.30.40", scopeBits: 20}
+
+	// First request inserts the /20 entry.
+	req := reqWithECS("broad.example.", 1, 20, "203.0.96.0")
+	respA := sendAndExpect(t, c, h, req, "203.0.96.5")
+	assert.Equal(t, "10.20.30.40", answerA(respA))
+	require.Equal(t, 1, h.Calls())
+
+	// Second request from the same /20 must HIT the cache.
+	h.aRecord = "should-not-be-used"
+	respB := sendAndExpect(t, c, h, reqWithECS("broad.example.", 1, 20, "203.0.96.0"), "203.0.96.5")
+	assert.Equal(t, "10.20.30.40", answerA(respB), "second /20 query missed the /20 entry just inserted")
+	assert.Equal(t, 1, h.Calls(), "second /20 query went upstream instead of hitting the cache")
+}
+
 // TestECSCache_PurgeIsCaseInsensitive pins the third-round
 // ultrareview P2 fix: the scoped purge sweep compares names
 // directly, but cache keys lowercase the name during hashing.

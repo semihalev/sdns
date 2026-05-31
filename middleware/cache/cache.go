@@ -476,10 +476,19 @@ func (c *Cache) requestScope(req *dns.Msg, client netip.Addr) netip.Prefix {
 // (cached shared) or the entry predates Stage 2.
 //
 // Iteration runs from the client's source prefix down to the
-// policy's min_scope ceiling — at most 33 probes for IPv4 or 129
-// for IPv6, but in practice ≤ 8 because forward_v4/v6 caps the
-// upper bound. Each probe is one hash compute + one map lookup,
-// well below the cost of an upstream resolution.
+// policy's min_scope ceiling, clamped to never exceed the client
+// prefix itself: when a client sends a source broader than
+// min_scope (e.g. /20 with min_scope_v4=24) Policy.Clamp passes
+// the /20 through unchanged and ClampScope stores answers at /20,
+// so the lookup must also reach /20 or the inserted entry can
+// never be hit again. Probing wider than the client prefix
+// would walk past what the client itself sent — that range would
+// never match an entry derived from this client's source.
+//
+// Worst case is ~9 probes for IPv4 (forward_v4 down to min_scope_v4)
+// and ~9 for IPv6 (forward_v6 down to min_scope_v6); each probe is
+// one hash compute + one map lookup, well below the cost of an
+// upstream resolution.
 func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64) {
 	if !clientPrefix.IsValid() {
 		return nil, 0
@@ -489,6 +498,12 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 		minBits = int(c.ecsPolicy.MinScopeV4)
 	} else {
 		minBits = int(c.ecsPolicy.MinScopeV6)
+	}
+	// Clamp the lower bound to never exceed the client's own prefix —
+	// otherwise a broader-than-min client (/20 with min_scope_v4=24)
+	// would do zero probes even though insert can store at /20.
+	if clientPrefix.Bits() < minBits {
+		minBits = clientPrefix.Bits()
 	}
 	for bits := clientPrefix.Bits(); bits >= minBits; bits-- {
 		scope, err := clientPrefix.Addr().Prefix(bits)
