@@ -2,6 +2,7 @@ package cache
 
 import (
 	"fmt"
+	"net/netip"
 	"sync"
 	"testing"
 
@@ -73,6 +74,66 @@ func TestKey(t *testing.T) {
 			got2 := Key(tt.question, tt.cd...)
 			assert.Equal(t, got, got2, "Key should be consistent")
 		})
+	}
+}
+
+func TestKeyWithPrefix_InvalidScopeMatchesKey(t *testing.T) {
+	// Migration safety: KeyWithPrefix(q, cd, invalid) must hash to
+	// the same value as Key(q, cd). Pre-Stage-2 entries (shared
+	// key) keep hitting after the upgrade because the cache routes
+	// non-ECS requests through this fallback.
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	if got, want := KeyWithPrefix(q, false, netip.Prefix{}), Key(q, false); got != want {
+		t.Errorf("KeyWithPrefix(invalid) = %d, Key = %d", got, want)
+	}
+	if got, want := KeyWithPrefix(q, true, netip.Prefix{}), Key(q, true); got != want {
+		t.Errorf("KeyWithPrefix(invalid, cd=true) = %d, Key(cd=true) = %d", got, want)
+	}
+}
+
+func TestKeyWithPrefix_DistinctScopesDistinctHashes(t *testing.T) {
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	scopeA := netip.MustParsePrefix("203.0.113.0/24")
+	scopeB := netip.MustParsePrefix("198.51.100.0/24")
+
+	hA := KeyWithPrefix(q, false, scopeA)
+	hB := KeyWithPrefix(q, false, scopeB)
+	if hA == hB {
+		t.Errorf("different scopes hashed identically: %d", hA)
+	}
+
+	// Scoped hash must differ from the unscoped (#417 lives in the
+	// inverse of this property).
+	if hA == Key(q, false) {
+		t.Errorf("scoped hash collided with unscoped hash for %q", q.Name)
+	}
+}
+
+func TestKeyWithPrefix_BitLengthDistinguishesAliasedAddresses(t *testing.T) {
+	// 203.0.112.0/22 and 203.0.112.0/24 both round to the same
+	// three address bytes [203, 0, 112], so an encoder that
+	// folded only the address bytes (with a byte-length prefix
+	// that's also identical) aliased them — and supernet probes
+	// served narrower subnets the wider answer. The explicit
+	// bit-length byte in the hash preimage makes them distinct.
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	h22 := KeyWithPrefix(q, false, netip.MustParsePrefix("203.0.112.0/22"))
+	h24 := KeyWithPrefix(q, false, netip.MustParsePrefix("203.0.112.0/24"))
+	if h22 == h24 {
+		t.Errorf("/22 and /24 with the same byte-rounded address aliased: %d", h22)
+	}
+}
+
+func TestKeyWithPrefix_FamilyDistinguishesAliasedAddresses(t *testing.T) {
+	// Contrived but the property is real: an IPv4 /24 of [203, 0, 112]
+	// and an IPv6 /24 whose first three bytes happen to be the same
+	// must hash distinctly. The family byte in the preimage carries
+	// the distinction.
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	v4 := KeyWithPrefix(q, false, netip.MustParsePrefix("203.0.112.0/24"))
+	v6 := KeyWithPrefix(q, false, netip.MustParsePrefix("cb00:7000::/24"))
+	if v4 == v6 {
+		t.Errorf("v4 and v6 scopes with same leading bytes aliased: %d", v4)
 	}
 }
 

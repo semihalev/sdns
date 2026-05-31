@@ -43,82 +43,23 @@ func New(cfg *config.Config) *EDNS {
 }
 
 // buildECSPolicy translates the operator's [ecs] config block into a
-// reusable *ecs.Policy. Returns nil when the feature is disabled so
-// SetEdns0 takes the cheap nil-policy fast path.
-//
-// Validation is fail-closed: any malformed input (bad CIDR in
-// client_networks, source ceiling outside [1, 32]/[1, 128], etc.)
-// disables the policy entirely and logs the reason. The earlier
-// implementation silently dropped bad CIDRs which, if every entry
-// failed to parse, collapsed a restrictive `client_networks` list
-// into "no list specified = allow everyone" — a quiet fail-open.
-// Forwarding off is always a safer fallback than forwarding too much.
+// reusable *ecs.Policy. Returns nil when the feature is disabled or
+// when the config is invalid (fail-closed). Logs the reason in the
+// invalid case so the operator sees the typo on the next start.
 func buildECSPolicy(cfg *config.Config) *ecs.Policy {
 	c := cfg.ECS
-	if !c.Enabled {
+	p, err := ecs.Build(
+		c.Enabled,
+		c.ForwardV4Max, c.ForwardV6Max,
+		c.MinScopeV4, c.MinScopeV6,
+		c.ClientNetworks,
+	)
+	if err != nil {
+		zlog.Error("ECS: invalid configuration; forwarding disabled",
+			zlog.String("error", err.Error()))
 		return nil
 	}
-
-	v4 := c.ForwardV4Max
-	if v4 == 0 {
-		v4 = 24
-	}
-	if v4 > 32 {
-		zlog.Error("ECS: forward_v4 out of range; forwarding disabled",
-			zlog.Int("value", int(v4)), zlog.Int("max", 32))
-		return nil
-	}
-	v6 := c.ForwardV6Max
-	if v6 == 0 {
-		v6 = 56
-	}
-	if v6 > 128 {
-		zlog.Error("ECS: forward_v6 out of range; forwarding disabled",
-			zlog.Int("value", int(v6)), zlog.Int("max", 128))
-		return nil
-	}
-	mv4 := c.MinScopeV4
-	if mv4 == 0 {
-		mv4 = v4
-	}
-	if mv4 > 32 {
-		zlog.Error("ECS: min_scope_v4 out of range; forwarding disabled",
-			zlog.Int("value", int(mv4)), zlog.Int("max", 32))
-		return nil
-	}
-	mv6 := c.MinScopeV6
-	if mv6 == 0 {
-		mv6 = v6
-	}
-	if mv6 > 128 {
-		zlog.Error("ECS: min_scope_v6 out of range; forwarding disabled",
-			zlog.Int("value", int(mv6)), zlog.Int("max", 128))
-		return nil
-	}
-
-	nets := make([]netip.Prefix, 0, len(c.ClientNetworks))
-	for _, s := range c.ClientNetworks {
-		p, err := netip.ParsePrefix(s)
-		if err != nil {
-			// Fail-closed: a typo'd CIDR (`10.0.0.0/33`) must not
-			// collapse the allow-list to empty and re-open the
-			// feature to every client. Disable the policy entirely
-			// so the operator sees the loud log and fixes the typo.
-			zlog.Error("ECS: invalid client_networks CIDR; forwarding disabled",
-				zlog.String("entry", s), zlog.String("error", err.Error()))
-			return nil
-		}
-		nets = append(nets, p)
-	}
-
-	return &ecs.Policy{
-		Enabled:        true,
-		ForwardV4Max:   v4,
-		ForwardV6Max:   v6,
-		ClientNetworks: nets,
-		MinScopeV4:     mv4,
-		MinScopeV6:     mv6,
-	}
+	return p
 }
 
 // (*EDNS).Name name return middleware name.

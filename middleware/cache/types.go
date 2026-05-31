@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"net/netip"
 	"sync/atomic"
 	"time"
 
@@ -28,12 +29,34 @@ type CacheEntry struct {
 	rateLimit  int            // Rate limit value (0 = no limit)
 	rateLimKey uint64         // Key for shared rate limiter lookup
 	ede        *dns.EDNS0_EDE // Preserved EDE information
+
+	// scoped is true when this entry was keyed under an ECS scope
+	// rather than the shared key. The prefetch worker can't
+	// resynthesise the client IP a scoped query implied, so scoped
+	// entries are not eligible for background refresh — they just
+	// expire normally. PrefetchEligible() reflects this.
+	scoped bool
 }
 
 // NewCacheEntry creates a new cache entry from a DNS message.
 func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 	return NewCacheEntryWithKey(msg, ttl, rateLimit, 0)
 }
+
+// NewScopedCacheEntry creates a cache entry that's been keyed under
+// an ECS scope. The flag suppresses prefetch (the worker has no
+// client IP to derive the scope from on refresh).
+func NewScopedCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
+	e := NewCacheEntryWithKey(msg, ttl, rateLimit, 0)
+	e.scoped = true
+	return e
+}
+
+// PrefetchEligible reports whether the prefetch worker may refresh
+// this entry. Scoped entries are skipped because the worker has no
+// client IP, so a refresh would lose the ECS scope and create a
+// shared-key entry instead — wrong answer for the wrong audience.
+func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped }
 
 // NewCacheEntryWithKey creates a new cache entry with a specific key for rate limiting
 func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
@@ -191,14 +214,30 @@ func (e *CacheEntry) GetRateLimiter() *rate.Limiter {
 }
 
 // CacheKey represents a structured cache key.
+//
+// Scope is the ECS prefix (RFC 7871) the authority claimed its
+// answer is scoped to. The zero value means "shared" — an entry
+// keyed with no scope is reachable by any client, which is the
+// pre-Stage-2 default and how non-ECS traffic and SCOPE=0
+// authority answers continue to behave after the upgrade.
 type CacheKey struct {
 	Question dns.Question
 	CD       bool
+	Scope    netip.Prefix
 }
 
-// (CacheKey).Hash hash returns the cache key hash.
+// (CacheKey).Hash returns the cache key hash. Routes to
+// cache.KeyWithPrefix when Scope is valid (family + bit-length +
+// address are all folded in so /22 and /24 of the same address
+// don't alias), and to the legacy cache.Key — bit-identical to
+// pre-Stage-2 — when Scope is the zero value, so old entries keep
+// hitting after upgrade. A /0 scope collapses to the unscoped key
+// because a /0 answer is semantically "global", same as no scope.
 func (k CacheKey) Hash() uint64 {
-	return cache.Key(k.Question, k.CD)
+	if !k.Scope.IsValid() || k.Scope.Bits() == 0 {
+		return cache.Key(k.Question, k.CD)
+	}
+	return cache.KeyWithPrefix(k.Question, k.CD, k.Scope)
 }
 
 // CacheConfig holds cache configuration with validation.
@@ -210,6 +249,14 @@ type CacheConfig struct {
 	MinTTL      time.Duration
 	MaxTTL      time.Duration
 	RateLimit   int
+
+	// ECSMaxTTL caps the lifetime of cache entries keyed under an
+	// ECS scope. Geo-routed answers tend to go stale faster than
+	// the resolver's general MaxTTL would suggest — a CDN
+	// re-pointing a /24 between PoPs is normal traffic. Zero
+	// disables the cap (scoped entries live as long as their
+	// upstream TTL allowed). Populated from cfg.ECS.CacheLimitTTL.
+	ECSMaxTTL time.Duration
 }
 
 // (CacheConfig).Validate validate checks if the configuration is valid.

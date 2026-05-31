@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -91,17 +92,52 @@ func (s *Store) SetFromResponse(resp *dns.Msg, keyCD bool) {
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
 func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg) {
+	s.setFromResponseWithKey(key, resp, false)
+}
+
+// SetFromResponseScoped is SetFromResponseWithKey for entries that
+// were keyed under an ECS scope (RFC 7871 §7.1.2). The entry's
+// PrefetchEligible is false — the prefetch worker has no client IP
+// to derive ECS from, so refreshing a scoped entry would lose its
+// scope and store the wrong-audience answer.
+func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg) {
+	s.setFromResponseWithKey(key, resp, true)
+}
+
+func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool) {
 	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
+	// Scoped (ECS) entries get an additional cap: geo answers go
+	// stale faster than the resolver's normal MaxTTL would allow,
+	// and a misconfigured upstream sending a huge TTL on a /24
+	// answer shouldn't pin that audience-specific entry for hours.
+	// Zero ECSMaxTTL leaves scoped writes uncapped (operator opted
+	// in to long-lived scoped entries).
+	capTTL := func(ttl time.Duration) time.Duration {
+		if scoped && s.cfg.ECSMaxTTL > 0 && ttl > s.cfg.ECSMaxTTL {
+			return s.cfg.ECSMaxTTL
+		}
+		return ttl
+	}
+
+	newEntry := func(msg *dns.Msg, ttl time.Duration) *CacheEntry {
+		if scoped {
+			e := NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit)
+			e.rateLimKey = key
+			return e
+		}
+		return NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
+	}
+
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
-		ttl := s.positive.ttl.Calculate(msgTTL)
-		s.positive.Set(key, NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
+		ttl := capTTL(s.positive.ttl.Calculate(msgTTL))
+		s.positive.Set(key, newEntry(filtered, ttl))
 	case dnsutil.TypeServerFailure:
-		ttl := s.negative.ttl.Calculate(msgTTL)
-		s.negative.Set(key, NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
+		ttl := capTTL(s.negative.ttl.Calculate(msgTTL))
+		s.negative.Set(key, newEntry(filtered, ttl))
 	}
 }
 
@@ -119,12 +155,53 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 }
 
 // Purge removes both CD=true and CD=false entries for q from
-// positive and negative caches.
+// positive and negative caches, including ECS-scoped entries.
+//
+// Scoped entries don't have a deterministic key the caller could
+// reproduce without enumerating every (qname, scope) the cache
+// has ever seen — there's no per-qname index. We sweep them with
+// ForEach: collect matching keys in one pass (snapshotting the
+// per-segment locks individually), then Remove outside the
+// iteration to avoid mutate-during-iterate hazards.
+//
+// O(n) on the cache size; Purge is rare (explicit operator API
+// call) so the linear scan is acceptable. If purge becomes
+// hot, a per-qname index would lift this back to O(matches).
 func (s *Store) Purge(q dns.Question) {
 	for _, cd := range []bool{false, true} {
 		key := CacheKey{Question: q, CD: cd}.Hash()
 		s.positive.Remove(key)
 		s.negative.Remove(key)
+	}
+
+	type located struct {
+		positive bool
+		key      uint64
+	}
+	var hits []located
+	s.ForEach(func(positive bool, key uint64, e *CacheEntry) bool {
+		if e == nil || !e.scoped || e.msg == nil || len(e.msg.Question) == 0 {
+			return true
+		}
+		eq := e.msg.Question[0]
+		// DNS names compare case-insensitively (RFC 4343). The
+		// unscoped purge path is already case-insensitive — its
+		// key derives from internal/cache.Key which lowercases the
+		// name during hashing. The scoped sweep enumerates raw
+		// stored Questions, so the comparison has to match the
+		// hash's semantics or an entry cached for EXAMPLE.COM.
+		// would survive a purge of example.com.
+		if eq.Qtype == q.Qtype && eq.Qclass == q.Qclass && strings.EqualFold(eq.Name, q.Name) {
+			hits = append(hits, located{positive: positive, key: key})
+		}
+		return true
+	})
+	for _, h := range hits {
+		if h.positive {
+			s.positive.Remove(h.key)
+		} else {
+			s.negative.Remove(h.key)
+		}
 	}
 }
 

@@ -53,6 +53,94 @@ type Policy struct {
 	MinScopeV6 uint8
 }
 
+// Build constructs a Policy from raw config primitives, returning
+// (nil, nil) when the feature is disabled and (nil, error) on any
+// malformed input. Callers (middleware/edns, middleware/cache) log
+// the error context themselves. Keeping the constructor here keeps
+// internal/ecs at the bottom of the dependency graph — no config
+// import — while preventing two middleware from drifting on what
+// "enabled" means.
+//
+// Bad input is fail-closed: a single typo'd CIDR or out-of-range
+// source ceiling disables the entire policy. Forwarding off is
+// always safer than forwarding too much.
+func Build(
+	enabled bool,
+	forwardV4, forwardV6 uint8,
+	minScopeV4, minScopeV6 uint8,
+	clientNetworks []string,
+) (*Policy, error) {
+	if !enabled {
+		return nil, nil
+	}
+	if forwardV4 == 0 {
+		forwardV4 = 24
+	}
+	if forwardV4 > 32 {
+		return nil, &policyError{field: "forward_v4", value: int(forwardV4), maxv: 32}
+	}
+	if forwardV6 == 0 {
+		forwardV6 = 56
+	}
+	if forwardV6 > 128 {
+		return nil, &policyError{field: "forward_v6", value: int(forwardV6), maxv: 128}
+	}
+	if minScopeV4 == 0 {
+		minScopeV4 = forwardV4
+	}
+	if minScopeV4 > 32 {
+		return nil, &policyError{field: "min_scope_v4", value: int(minScopeV4), maxv: 32}
+	}
+	if minScopeV6 == 0 {
+		minScopeV6 = forwardV6
+	}
+	if minScopeV6 > 128 {
+		return nil, &policyError{field: "min_scope_v6", value: int(minScopeV6), maxv: 128}
+	}
+	nets := make([]netip.Prefix, 0, len(clientNetworks))
+	for _, s := range clientNetworks {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, &policyError{field: "client_networks", entry: s, cause: err}
+		}
+		nets = append(nets, p)
+	}
+	return &Policy{
+		Enabled:        true,
+		ForwardV4Max:   forwardV4,
+		ForwardV6Max:   forwardV6,
+		ClientNetworks: nets,
+		MinScopeV4:     minScopeV4,
+		MinScopeV6:     minScopeV6,
+	}, nil
+}
+
+// policyError carries enough context for callers to log a
+// human-meaningful "ECS disabled: <reason>" line without parsing
+// the message back out.
+type policyError struct {
+	field string
+	value int    // for numeric range failures
+	maxv  int    // for numeric range failures
+	entry string // for client_networks parse failures
+	cause error  // underlying parse error, if any
+}
+
+func (e *policyError) Error() string {
+	if e.cause != nil {
+		return e.field + " entry " + e.entry + ": " + e.cause.Error()
+	}
+	return e.field + " out of range"
+}
+
+// Field, Value, Max, Entry, Cause expose the parts for structured
+// logging without resorting to error message regex.
+func (e *policyError) Field() string { return e.field }
+func (e *policyError) Value() int    { return e.value }
+func (e *policyError) Max() int      { return e.maxv }
+func (e *policyError) Entry() string { return e.entry }
+func (e *policyError) Cause() error  { return e.cause }
+
 // Allows reports whether `client` is eligible for ECS forwarding
 // under this policy. A nil or disabled policy never allows; otherwise
 // an empty ClientNetworks means everyone, and a populated list means
