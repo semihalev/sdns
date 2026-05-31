@@ -7,10 +7,30 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
+)
+
+var (
+	// failoverAttempts counts every time WriteMsg was about to write
+	// a SERVFAIL and instead started trying fallback servers. One
+	// increment per primary failure (not per fallback server tried).
+	failoverAttempts = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "dns_failover_attempts_total",
+		Help: "Total times failover engaged after a SERVFAIL from primary resolution",
+	})
+
+	// failoverSuccess counts attempts that ended with a usable
+	// answer from a fallback server. The ratio failoverSuccess /
+	// failoverAttempts is the fallback-pool health signal.
+	failoverSuccess = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "dns_failover_success_total",
+		Help: "Total queries answered by a fallback server after primary SERVFAIL",
+	})
 )
 
 // Failover type.
@@ -69,6 +89,8 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(m)
 	}
 
+	failoverAttempts.Inc()
+
 	req := new(dns.Msg)
 	req.SetQuestion(m.Question[0].Name, m.Question[0].Qtype)
 	req.Question[0].Qclass = m.Question[0].Qclass
@@ -86,6 +108,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 
 		resp.Id = m.Id
 
+		failoverSuccess.Inc()
 		return w.ResponseWriter.WriteMsg(resp)
 	}
 

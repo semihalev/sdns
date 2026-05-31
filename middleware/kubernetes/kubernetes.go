@@ -119,6 +119,7 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	atomic.AddUint64(&k.queries, 1)
+	kubernetesQueries.Inc()
 
 	if len(req.Question) == 0 {
 		ch.Next(ctx)
@@ -150,12 +151,15 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if err := w.WriteMsg(msg); err != nil {
 			atomic.AddUint64(&k.errors, 1)
 			atomic.AddUint64(&k.writeErrors, 1)
+			kubernetesErrors.Inc()
+			kubernetesWriteErrors.Inc()
 			zlog.Error("Failed to write SERVFAIL for unsynced cluster query",
 				zlog.String("query", qname),
 				zlog.String("error", err.Error()))
 			return
 		}
 		atomic.AddUint64(&k.answered, 1)
+		kubernetesAnswered.Inc()
 		return
 	}
 
@@ -176,6 +180,8 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if err := w.WriteMsg(msg); err != nil {
 			atomic.AddUint64(&k.errors, 1)
 			atomic.AddUint64(&k.writeErrors, 1)
+			kubernetesErrors.Inc()
+			kubernetesWriteErrors.Inc()
 			zlog.Error("Failed to write DNS response",
 				zlog.String("query", qname),
 				zlog.Int("qtype", int(q.Qtype)),
@@ -183,6 +189,7 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			return
 		}
 		atomic.AddUint64(&k.answered, 1)
+		kubernetesAnswered.Inc()
 		return
 	}
 
@@ -197,6 +204,8 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if err := w.WriteMsg(msg); err != nil {
 		atomic.AddUint64(&k.errors, 1)
 		atomic.AddUint64(&k.writeErrors, 1)
+		kubernetesErrors.Inc()
+		kubernetesWriteErrors.Inc()
 		zlog.Error("Failed to write DNS response",
 			zlog.String("query", qname),
 			zlog.Int("qtype", int(q.Qtype)),
@@ -204,6 +213,7 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 	atomic.AddUint64(&k.answered, 1)
+	kubernetesAnswered.Inc()
 }
 
 // populateDemoData seeds representative services / pods for the

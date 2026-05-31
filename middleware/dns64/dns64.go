@@ -148,7 +148,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 	if w.Internal() {
-		Passthrough.WithLabelValues("internal").Inc()
+		passthroughInternal.Inc()
 		ch.Next(ctx)
 		return
 	}
@@ -161,7 +161,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// DNS64 would interpret that SERVFAIL as "no AAAA",
 		// firing a recursive A query that bypasses the
 		// non-recursion intent.
-		Passthrough.WithLabelValues("no_rd").Inc()
+		passthroughNoRD.Inc()
 		ch.Next(ctx)
 		return
 	}
@@ -170,12 +170,12 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// itself; do not synthesise. Symmetric for PTR: the
 		// CNAME we'd synthesise points at an unsigned name we
 		// fabricated, so respect the bit.
-		Passthrough.WithLabelValues("cd_bit").Inc()
+		passthroughCDBit.Inc()
 		ch.Next(ctx)
 		return
 	}
 	if !d.cfg.clientEligible(w.RemoteIP()) {
-		Passthrough.WithLabelValues("client_excluded").Inc()
+		passthroughClientExcluded.Inc()
 		ch.Next(ctx)
 		return
 	}
@@ -201,7 +201,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 	if d.cfg.zoneExcluded(qname) {
-		Passthrough.WithLabelValues("zone_excluded").Inc()
+		passthroughZoneExcluded.Inc()
 		ch.Next(ctx)
 		return
 	}
@@ -352,7 +352,7 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(m)
 	}
 	if m.Rcode == dns.RcodeNameError {
-		Passthrough.WithLabelValues("nxdomain").Inc()
+		passthroughNXDomain.Inc()
 		return w.ResponseWriter.WriteMsg(m)
 	}
 	// RFC 6147 §5.5: a validating DNS64 must not paper over a
@@ -365,7 +365,7 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	// Pass the SERVFAIL through so the client sees the validation
 	// failure verbatim.
 	if isDNSSECFailure(m) {
-		Passthrough.WithLabelValues("dnssec_fail").Inc()
+		passthroughDNSSECFail.Inc()
 		return w.ResponseWriter.WriteMsg(m)
 	}
 
@@ -378,7 +378,7 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	if m.Rcode == dns.RcodeSuccess {
 		filtered, hadAAAA, kept, stripped := w.filterUpstreamAAAA(m)
 		if hadAAAA && kept > 0 {
-			Passthrough.WithLabelValues("aaaa_present").Inc()
+			passthroughAAAAPresent.Inc()
 			if stripped > 0 {
 				// We modified the RRset, so any AD bit the
 				// validator set no longer covers what the client
@@ -460,7 +460,7 @@ func (w *responseWriter) filterUpstreamAAAA(m *dns.Msg) (*dns.Msg, bool, int, in
 // non-nil empty/error response addressed to the AAAA question.
 func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	if w.d.queryer == nil {
-		ALookupFailures.WithLabelValues("queryer_error").Inc()
+		aLookupQueryerError.Inc()
 		return nil
 	}
 
@@ -479,17 +479,17 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 		return nil
 	}
 	if aResp == nil {
-		ALookupFailures.WithLabelValues("nil_response").Inc()
+		aLookupNilResponse.Inc()
 		return nil
 	}
 	if aResp.Rcode != dns.RcodeSuccess {
 		switch aResp.Rcode {
 		case dns.RcodeServerFailure:
-			ALookupFailures.WithLabelValues("servfail").Inc()
+			aLookupServfail.Inc()
 		case dns.RcodeNameError:
-			ALookupFailures.WithLabelValues("nxdomain").Inc()
+			aLookupNXDomain.Inc()
 		default:
-			ALookupFailures.WithLabelValues("other_rcode").Inc()
+			aLookupOtherRcode.Inc()
 		}
 		return w.buildAResponseAsBasis(orig, aResp)
 	}
@@ -499,7 +499,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 		// NOERROR with no A records — RFC 6147 §5.1.6 still
 		// applies: the empty A response is the basis for the
 		// client reply.
-		ALookupFailures.WithLabelValues("no_a").Inc()
+		aLookupNoA.Inc()
 		return w.buildAResponseAsBasis(orig, aResp)
 	}
 
@@ -552,7 +552,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	// 6147 §5.1.4 — we treat the response as if no A records
 	// existed. Fall back to the original NODATA.
 	if !hasAAAAInList(answers) {
-		Passthrough.WithLabelValues("a_excluded").Inc()
+		passthroughAExcluded.Inc()
 		return nil
 	}
 

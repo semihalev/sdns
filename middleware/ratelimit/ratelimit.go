@@ -8,11 +8,22 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"golang.org/x/time/rate"
 )
+
+// rateLimitExceeded counts queries rejected by the per-client
+// rate-limiter. Both the UDP-cookie-mismatch path and the plain-
+// limiter-Allow path contribute. Operators alert on a sustained
+// non-zero rate.
+var rateLimitExceeded = metric.NewCounter(nil, prometheus.CounterOpts{
+	Name: "dns_ratelimit_exceeded_total",
+	Help: "Total DNS queries rejected by the ratelimit middleware",
+})
 
 type limiter struct {
 	rl     *rate.Limiter
@@ -99,6 +110,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 					if w.Proto() == "udp" {
 						if !l.rl.Allow() {
+							rateLimitExceeded.Inc()
 							ch.Cancel()
 							return
 						}
@@ -116,6 +128,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	if !l.rl.Allow() {
+		rateLimitExceeded.Inc()
 		// no reply to client
 		ch.Cancel()
 		return

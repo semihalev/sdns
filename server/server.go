@@ -134,6 +134,7 @@ func (s *Server) Run(ctx context.Context) error {
 		go func(l Listener) {
 			defer s.running.Add(-1)
 			if err := l.Serve(ctx); err != nil {
+				recordListenerErr(l.Proto())
 				zlog.Error("listener stopped with error",
 					"proto", l.Proto(), "addr", l.Addr(), "error", err.Error())
 			}

@@ -137,6 +137,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Increment lookup counter
 	atomic.AddUint64(&db.stats.lookups, 1)
+	hostsfileLookups.Inc()
 
 	// Handle different query types
 	var answer []dns.RR
@@ -165,6 +166,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Increment hit counter
 	atomic.AddUint64(&db.stats.hits, 1)
+	hostsfileHits.Inc()
 
 	// Build response. Bypass SetReply so we don't allocate a new
 	// Question slice: miekg/dns's SetReply copies req.Question; ours

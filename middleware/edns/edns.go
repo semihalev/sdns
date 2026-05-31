@@ -7,11 +7,26 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
+)
+
+// ednsErrors counts EDNS protocol-level rejections — queries the
+// middleware short-circuits before they reach the resolver chain.
+// Closed-set "reason" labels keep the cardinality bounded.
+var (
+	ednsErrors = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_edns_errors_total",
+		Help: "EDNS protocol errors that caused the query to be rejected, by reason",
+	}, []string{"reason"})
+
+	ednsErrorOpcodeUnsupp = ednsErrors.Register("opcode_unsupported")
+	ednsErrorBadVersion   = ednsErrors.Register("bad_version")
 )
 
 // responseWriterPool reuses per-query ResponseWriter wrappers. A wrapper
@@ -84,6 +99,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
 	if req.Opcode > 0 {
+		ednsErrorOpcodeUnsupp.Inc()
 		_ = dnsutil.NotSupported(w, req)
 
 		ch.Cancel()
@@ -102,6 +118,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req, e.ecsPolicy, clientAddr)
 	if opt.Version() != 0 {
+		ednsErrorBadVersion.Inc()
 		opt.SetVersion(0)
 
 		ch.CancelWithRcode(dns.RcodeBadVers, do)
