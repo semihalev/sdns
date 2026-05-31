@@ -318,11 +318,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// When the request carries ECS, probe scoped keys first
 	// (longest-prefix-match), then fall through to the shared key
 	// so SCOPE=0 / pre-Stage-2 entries still hit. checkCache
-	// records the metric on the shared-key path; scopedLookup
-	// records its own Hit on the scoped path so we don't
-	// double-count or under-count. ecsLookups breaks the same
-	// outcome down by ECS-vs-shared so operators can see how much
-	// the scoped path is actually carrying.
+	// records the generic Hit/Miss metric on the shared-key path;
+	// scopedLookup records its own Hit on the scoped path so we
+	// don't double-count or under-count. ecsLookups breaks ECS
+	// requests down by which path served them — operators read it
+	// to see how much of the ECS-aware code path is actually
+	// carrying traffic (non-ECS lookups are already counted by
+	// dns_cache_hits_total / dns_cache_misses_total).
 	if clientScope.IsValid() {
 		if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 			ecsLookups.WithLabelValues("hit_scoped").Inc()
@@ -334,8 +336,6 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if entry := c.checkCache(cacheKey); entry != nil {
 		if clientScope.IsValid() {
 			ecsLookups.WithLabelValues("hit_shared").Inc()
-		} else {
-			ecsLookups.WithLabelValues("non_ecs").Inc()
 		}
 		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 			return

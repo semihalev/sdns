@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/mock"
@@ -437,6 +438,76 @@ func TestECSCache_BroaderThanMinClientScopeHits(t *testing.T) {
 	respB := sendAndExpect(t, c, h, reqWithECS("broad.example.", 1, 20, "203.0.96.0"), "203.0.96.5")
 	assert.Equal(t, "10.20.30.40", answerA(respB), "second /20 query missed the /20 entry just inserted")
 	assert.Equal(t, 1, h.Calls(), "second /20 query went upstream instead of hitting the cache")
+}
+
+// TestECSCache_LookupsMetricCountsOnlyECSPaths pins the sixth-round
+// ultrareview P3 fix: dns_cache_ecs_lookups_total{outcome=...} must
+// count every request that went through the ECS-aware lookup path
+// exactly once (no skipped misses). Non-ECS lookups stay on the
+// existing dns_cache_hits_total / dns_cache_misses_total counters
+// — we don't duplicate them here.
+func TestECSCache_LookupsMetricCountsOnlyECSPaths(t *testing.T) {
+	cfg := makeECSTestConfig(t)
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	// Counter is package-global; snapshot before / after so we
+	// don't depend on whatever previous tests left behind.
+	hitScopedBefore := metricValue(t, "hit_scoped")
+	hitSharedBefore := metricValue(t, "hit_shared")
+	missBefore := metricValue(t, "miss")
+
+	h := &echoHandler{aRecord: "10.20.30.40", scopeBits: 24}
+
+	// (1) ECS request, cache empty → miss, then store.
+	_ = sendAndExpect(t, c, h,
+		reqWithECS("metric.example.", 1, 24, "203.0.113.0"),
+		"203.0.113.5")
+
+	// (2) Same ECS request → hit_scoped.
+	_ = sendAndExpect(t, c, h,
+		reqWithECS("metric.example.", 1, 24, "203.0.113.0"),
+		"203.0.113.5")
+
+	// (3) Non-ECS request — must NOT touch the ECS metric at all.
+	plain := new(dns.Msg)
+	plain.SetQuestion("metric.example.", dns.TypeA)
+	_ = sendAndExpect(t, c, h, plain, "10.0.0.7")
+
+	// (4) Another non-ECS that misses (different qname so no hit).
+	plainMiss := new(dns.Msg)
+	plainMiss.SetQuestion("absent.example.", dns.TypeA)
+	_ = sendAndExpect(t, c, h, plainMiss, "10.0.0.8")
+
+	gotMiss := metricValue(t, "miss") - missBefore
+	gotHitScoped := metricValue(t, "hit_scoped") - hitScopedBefore
+	gotHitShared := metricValue(t, "hit_shared") - hitSharedBefore
+
+	if gotMiss != 1 {
+		t.Errorf("miss delta = %v, want 1", gotMiss)
+	}
+	if gotHitScoped != 1 {
+		t.Errorf("hit_scoped delta = %v, want 1", gotHitScoped)
+	}
+	if gotHitShared != 0 {
+		t.Errorf("hit_shared delta = %v, want 0", gotHitShared)
+	}
+}
+
+// metricValue reads the current counter value for an ecsLookups
+// outcome. Returns 0 if the label has never been observed.
+func metricValue(t *testing.T, outcome string) float64 {
+	t.Helper()
+	m, err := ecsLookups.GetMetricWithLabelValues(outcome)
+	if err != nil {
+		t.Fatalf("get metric: %v", err)
+	}
+	var pb dto.Metric
+	if err := m.Write(&pb); err != nil {
+		t.Fatalf("write metric: %v", err)
+	}
+	return pb.GetCounter().GetValue()
 }
 
 // TestECSCache_PurgeIsCaseInsensitive pins the third-round
