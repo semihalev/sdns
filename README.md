@@ -155,7 +155,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **dnssec**           | Enable DNSSEC validation for secure DNS responses. Options: "on" or "off". Default: "on"                            |
 | **rootkeys**         | DNSSEC root zone trust anchors in DNSKEY format                                                                     |
 | **fallbackservers**  | Upstream DNS servers used when all others fail. Format: "IP:port" (e.g., "8.8.8.8:53")                             |
-| **forwarderservers** | Forward all queries to these DNS servers. Format: "IP:port" (e.g., "8.8.8.8:53")                                   |
+| **forwarderservers** | Forward all queries to these DNS servers. Accepts `IP:port` (plain UDP/TCP), `tls://IP:port` (DoT, RFC 7858), or `https://host/dns-query` (DoH, RFC 8484; hostname or IP literal). See [Forwarder upstreams](#forwarder-upstreams) for details. |
 | **api**              | HTTP API server binding address for statistics and control. Leave empty to disable                                  |
 | **bearertoken**      | API bearer token for authorization. If set, Authorization header must be included in API requests                   |
 | **blocklists**       | URLs of remote blocklists to download and use for filtering                                                         |
@@ -394,6 +394,27 @@ sum(dns_cache_size)
 # Cache operations per second
 rate(dns_cache_hits_total[1m]) + rate(dns_cache_misses_total[1m])
 ```
+
+#### Forwarder upstreams
+
+`forwarderservers` accepts three formats, mix-and-match per entry:
+
+```toml
+forwarderservers = [
+    "1.1.1.1:53",                          # plain UDP (TCP fallback on TC)
+    "tls://1.1.1.1:853",                   # DoT (RFC 7858) — TCP+TLS, IP literal required
+    "https://1.1.1.1/dns-query",           # DoH (RFC 8484) — IP literal
+    "https://cloudflare-dns.com/dns-query", # DoH — hostname (bootstrapped via system resolver at startup)
+]
+```
+
+DoH notes:
+
+*   Hostnames are resolved **once at startup** through the system resolver (`/etc/resolv.conf` on Unix). The resolved IPs are pinned for the process lifetime, so there is no per-query DNS dependency. If the upstream changes IPs, restart picks them up.
+*   IP-literal DoH URLs skip the bootstrap entirely — safest for hardened deployments that can't depend on the system resolver.
+*   POST + `application/dns-message` per RFC 8484, HTTP/2 with connection reuse. The TLS `ServerName` is set to the URL hostname so cert validation works correctly when dialing IPs.
+*   Bootstrap failure (NXDOMAIN, timeout, no addresses) is logged and the entry is skipped — startup continues with whatever upstreams remain usable.
+*   Timeouts come from the existing top-level config: `querytimeout` caps the **total time** the forwarder spends across every configured upstream (default 10s — applies to UDP, DoT, and DoH alike so three slow upstreams can't take 3 × per-call timeout), `timeout` bounds each per-IP TCP dial inside one DoH attempt (default 2s) so a blackholed pinned address bypasses to the next one without consuming the request budget. Consecutive dial attempts rotate the starting IP so a single bad address can't pin the rotation. Response TXIDs are validated (echo of the request ID or 0 per RFC 8484 §4.1). The existing `dns_forwarder_failures_total` and `dns_forwarder_response_mismatch_total` metrics cover DoH paths too.
 
 ### External Plugins
 

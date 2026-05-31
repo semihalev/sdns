@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
@@ -40,7 +42,12 @@ var (
 
 type server struct {
 	Addr  string
-	Proto string
+	Proto string // "udp" | "tcp-tls" | "doh"
+
+	// DoH-only fields. Populated by newDoHServer when Proto=="doh";
+	// nil for plain UDP and DoT entries.
+	DoHURL    string
+	DoHClient *http.Client
 }
 
 // Forwarder type.
@@ -48,33 +55,87 @@ type Forwarder struct {
 	servers   []*server
 	dnssec    bool
 	tlsConfig *tls.Config
+
+	// queryTimeout caps the total time ServeDNS spends across every
+	// configured upstream — mirroring how the resolver handler
+	// enforces cfg.QueryTimeout. Without it, three slow upstreams
+	// could take ~3 * per-upstream-timeout, which contradicts the
+	// README description of querytimeout as the maximum time for
+	// any one client-facing query.
+	queryTimeout time.Duration
 }
 
 // New return forwarder.
+//
+// Accepted forwarder_servers formats:
+//   - "1.1.1.1:53"                         — plain UDP (TCP fallback on TC)
+//   - "tls://1.1.1.1:853"                  — DoT (RFC 7858) over TCP-TLS
+//   - "https://1.1.1.1/dns-query"          — DoH (RFC 8484) with IP literal
+//   - "https://dns.example.com/dns-query"  — DoH with hostname (bootstrapped
+//     via the system resolver once at startup; resolved IPs are pinned for
+//     the process lifetime, no per-query DNS dependency)
+//
+// DoH servers honour cfg.Timeout (per-IP dial budget) and
+// cfg.QueryTimeout (full request budget) — operators tune both via
+// the existing top-level config keys, no DoH-specific knob.
+//
+// Each entry is parsed independently; a malformed or unreachable
+// entry is logged and skipped so one bad upstream does not abort
+// startup if others are usable.
 func New(cfg *config.Config) *Forwarder {
+	dialTimeout := cfg.Timeout.Duration
+	if dialTimeout <= 0 {
+		dialTimeout = 2 * time.Second
+	}
+	requestTimeout := cfg.QueryTimeout.Duration
+	if requestTimeout <= 0 {
+		requestTimeout = 10 * time.Second
+	}
+
 	forwarderservers := []*server{}
 	for _, s := range cfg.ForwarderServers {
-		srv := &server{Proto: "udp"}
-
-		if strings.HasPrefix(s, "tls://") {
-			s = strings.TrimPrefix(s, "tls://")
-			srv.Proto = "tcp-tls"
-		}
-
-		host, _, _ := net.SplitHostPort(s)
-
-		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
-			srv.Addr = s
+		switch {
+		case strings.HasPrefix(s, "https://"):
+			srv, err := newDoHServer(s, dialTimeout, requestTimeout)
+			if err != nil {
+				zlog.Error("Forwarder DoH server not usable", "server", s, "error", err.Error())
+				continue
+			}
 			forwarderservers = append(forwarderservers, srv)
-		} else if ip != nil && ip.To16() != nil {
-			srv.Addr = s
-			forwarderservers = append(forwarderservers, srv)
-		} else {
-			zlog.Error("Forwarder server is not correct. Check your config.", "server", s)
+
+		case strings.HasPrefix(s, "tls://"):
+			addr := strings.TrimPrefix(s, "tls://")
+			if !validForwarderAddr(addr) {
+				zlog.Error("Forwarder server is not correct. Check your config.", "server", s)
+				continue
+			}
+			forwarderservers = append(forwarderservers, &server{Addr: addr, Proto: "tcp-tls"})
+
+		default:
+			if !validForwarderAddr(s) {
+				zlog.Error("Forwarder server is not correct. Check your config.", "server", s)
+				continue
+			}
+			forwarderservers = append(forwarderservers, &server{Addr: s, Proto: "udp"})
 		}
 	}
 
-	return &Forwarder{servers: forwarderservers, dnssec: cfg.DNSSEC == "on"}
+	return &Forwarder{
+		servers:      forwarderservers,
+		dnssec:       cfg.DNSSEC == "on",
+		queryTimeout: requestTimeout,
+	}
+}
+
+// validForwarderAddr reports whether addr is a host:port string with
+// an IPv4 or IPv6 host literal. Preserves the pre-DoH validation
+// (which only accepted IP literals for UDP / DoT).
+func validForwarderAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	return net.ParseIP(host) != nil
 }
 
 // (*Forwarder).Name name return middleware name.
@@ -87,6 +148,23 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if len(req.Question) == 0 || len(f.servers) == 0 {
 		ch.CancelWithRcode(dns.RcodeServerFailure, true)
 		return
+	}
+
+	// Wrap ctx with the shared per-query budget so the dispatch
+	// loop below cannot exceed cfg.QueryTimeout regardless of how
+	// many upstreams are configured. Each individual call still
+	// respects its own per-upstream timeout (dns.Client default for
+	// UDP/DoT, http.Client.Timeout for DoH); ctx cancellation
+	// short-circuits the loop when the overall budget is gone.
+	//
+	// Guard against zero queryTimeout — that would create an
+	// already-expired context. Production goes through New() which
+	// always sets a positive value; this branch keeps the package
+	// robust if a Forwarder is constructed directly (mostly tests).
+	if f.queryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, f.queryTimeout)
+		defer cancel()
 	}
 
 	// Preserve the client's CD bit. We may set CD=1 on the
@@ -102,12 +180,19 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() { req.CheckingDisabled = clientCD }()
 
 	for _, server := range f.servers {
-		reqClient := &dns.Client{Net: server.Proto}
-		if server.Proto == "tcp-tls" {
-			reqClient.TLSConfig = f.tlsConfig
+		var (
+			resp *dns.Msg
+			err  error
+		)
+		if server.Proto == "doh" {
+			resp, err = dohExchange(ctx, server, req)
+		} else {
+			reqClient := &dns.Client{Net: server.Proto}
+			if server.Proto == "tcp-tls" {
+				reqClient.TLSConfig = f.tlsConfig
+			}
+			resp, err = dnsutil.Exchange(ctx, req, server.Addr, server.Proto, reqClient)
 		}
-
-		resp, err := dnsutil.Exchange(ctx, req, server.Addr, server.Proto, reqClient)
 		if err != nil {
 			forwarderFailures.Inc()
 			zlog.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
