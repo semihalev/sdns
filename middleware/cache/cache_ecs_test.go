@@ -510,6 +510,104 @@ func metricValue(t *testing.T, outcome string) float64 {
 	return pb.GetCounter().GetValue()
 }
 
+// TestECSCache_BuildPolicyFailClosed covers the error path of
+// buildCacheECSPolicy: a malformed [ecs] config (bad CIDR in
+// client_networks, out-of-range forward ceiling, etc.) disables
+// ECS-aware caching with a single log line. The cache continues
+// to operate, just on the unscoped key path — matching what
+// the edns middleware does on the forwarding side.
+func TestECSCache_BuildPolicyFailClosed(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.ECS = config.ECSConfig{
+		Enabled:        true,
+		ForwardV4Max:   24,
+		ClientNetworks: []string{"10.0.0.0/33"}, // intentional typo
+	}
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	if c.ecsPolicy != nil {
+		t.Fatal("invalid client_networks must disable ECS-aware caching")
+	}
+
+	// Non-ECS traffic still works (the path the cache falls back to).
+	h := &echoHandler{aRecord: "10.0.0.1", scopeBits: 0}
+	plain := new(dns.Msg)
+	plain.SetQuestion("disabled-policy.example.", dns.TypeA)
+	resp := sendAndExpect(t, c, h, plain, "10.0.0.7")
+	assert.Equal(t, "10.0.0.1", answerA(resp))
+
+	// And an ECS-bearing request goes through the shared-key path
+	// because requestScope short-circuits on c.ecsPolicy == nil.
+	ecs := reqWithECS("disabled-policy.example.", 1, 24, "203.0.113.0")
+	resp2 := sendAndExpect(t, c, h, ecs, "203.0.113.5")
+	assert.Equal(t, "10.0.0.1", answerA(resp2),
+		"ECS request with disabled policy must hit the shared-key entry")
+}
+
+// TestECSCache_RequestScopeMalformedReturnsZero covers the
+// defensive branches of requestScope: a client whose ECS option
+// has an unparseable address, or an OPT carrying no ECS, must
+// fall through to the unscoped (shared-key) lookup path rather
+// than panicking or building a bogus prefix.
+func TestECSCache_RequestScopeMalformedReturnsZero(t *testing.T) {
+	cfg := makeECSTestConfig(t)
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	client := netip.MustParseAddr("203.0.113.5")
+
+	t.Run("nil OPT", func(t *testing.T) {
+		req := new(dns.Msg)
+		req.SetQuestion("noopt.example.", dns.TypeA)
+		if got := c.requestScope(req, client); got.IsValid() {
+			t.Errorf("expected zero prefix, got %s", got)
+		}
+	})
+
+	t.Run("OPT without ECS option", func(t *testing.T) {
+		req := new(dns.Msg)
+		req.SetQuestion("nosubnet.example.", dns.TypeA)
+		req.SetEdns0(4096, false)
+		req.IsEdns0().Option = append(req.IsEdns0().Option, &dns.EDNS0_COOKIE{
+			Code: dns.EDNS0COOKIE, Cookie: "deadbeefcafefade",
+		})
+		if got := c.requestScope(req, client); got.IsValid() {
+			t.Errorf("expected zero prefix, got %s", got)
+		}
+	})
+
+	t.Run("ECS option with empty Address", func(t *testing.T) {
+		req := new(dns.Msg)
+		req.SetQuestion("emptyaddr.example.", dns.TypeA)
+		req.SetEdns0(4096, false)
+		req.IsEdns0().Option = append(req.IsEdns0().Option, &dns.EDNS0_SUBNET{
+			Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24,
+			// Address intentionally nil — AddrFromSlice should fail
+			// and requestScope returns the zero prefix.
+		})
+		if got := c.requestScope(req, client); got.IsValid() {
+			t.Errorf("expected zero prefix, got %s", got)
+		}
+	})
+
+	t.Run("ECS option with absurd SourceNetmask", func(t *testing.T) {
+		req := new(dns.Msg)
+		req.SetQuestion("badmask.example.", dns.TypeA)
+		req.SetEdns0(4096, false)
+		req.IsEdns0().Option = append(req.IsEdns0().Option, &dns.EDNS0_SUBNET{
+			Code: dns.EDNS0SUBNET, Family: 1,
+			SourceNetmask: 200, // > 32, Addr.Prefix returns an error
+			Address:       net.ParseIP("203.0.113.0").To4(),
+		})
+		if got := c.requestScope(req, client); got.IsValid() {
+			t.Errorf("expected zero prefix, got %s", got)
+		}
+	})
+}
+
 // TestECSCache_PurgeIsCaseInsensitive pins the third-round
 // ultrareview P2 fix: the scoped purge sweep compares names
 // directly, but cache keys lowercase the name during hashing.
