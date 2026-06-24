@@ -40,7 +40,9 @@ jobs:
         uses: codecov/codecov-action@v7
         with:
           files: coverage.out
-          fail_ci_if_error: true
+          # Coverage upload is informational; a Codecov outage or a
+          # missing token (e.g. on fork PRs) must not fail the build.
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
   lint:
