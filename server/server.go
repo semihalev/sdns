@@ -68,6 +68,20 @@ func New(cfg *config.Config) *Server {
 
 // (*Server).ServeDNS serveDNS implements the Handle interface.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	// A standard query carries exactly one question. Reject a malformed
+	// QDCOUNT here — at the single entry shared by every transport — with
+	// FORMERR, so downstream middlewares can index req.Question[0] without
+	// guarding. A 0-question packet would otherwise hit an unguarded
+	// req.Question[0] in several handlers and force a panic/recover/log
+	// cycle per packet (a cheap amplification vector that also pollutes
+	// the panic metric).
+	if len(r.Question) != 1 {
+		formerr := new(dns.Msg)
+		formerr.SetRcode(r, dns.RcodeFormatError)
+		_ = w.WriteMsg(formerr)
+		return
+	}
+
 	ch := s.chainPool.Get().(*middleware.Chain)
 	defer s.chainPool.Put(ch)
 

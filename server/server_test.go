@@ -216,3 +216,20 @@ func Test_Server(t *testing.T) {
 	os.Remove(cert)    //nolint:gosec // G104 - test cleanup
 	os.Remove(privkey) //nolint:gosec // G104 - test cleanup
 }
+
+// Test_ServerEmptyQuestion verifies a malformed QDCOUNT (0 questions) is
+// answered with FORMERR at the entry point and never reaches — and panics —
+// a downstream handler that indexes req.Question[0].
+func Test_ServerEmptyQuestion(t *testing.T) {
+	s := New(&config.Config{})
+
+	req := new(dns.Msg) // no question
+	req.Id = dns.Id()
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+
+	assert.NotPanics(t, func() { s.ServeDNS(mw, req) })
+	assert.True(t, mw.Written())
+	if assert.NotNil(t, mw.Msg()) {
+		assert.Equal(t, dns.RcodeFormatError, mw.Msg().Rcode)
+	}
+}
