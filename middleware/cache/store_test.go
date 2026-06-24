@@ -180,3 +180,21 @@ func TestCachePurgePublicAPI(t *testing.T) {
 		t.Fatal("entry should be purged")
 	}
 }
+
+// TestEqualNameASCIIFold verifies the cache-key verification folds ASCII
+// case only — matching internal/cache.Key — and does NOT do Unicode folding
+// (which strings.EqualFold would), so it can't accept names the key hash
+// treats as distinct.
+func TestEqualNameASCIIFold(t *testing.T) {
+	if !equalNameASCIIFold("a.Example.COM.", "A.example.com.") {
+		t.Fatal("ASCII case must fold equal")
+	}
+	if equalNameASCIIFold("a.example.com.", "b.example.com.") {
+		t.Fatal("different names must not be equal")
+	}
+	// U+017F (ſ, 2 bytes UTF-8) Unicode-folds to 's', but must NOT fold
+	// here — different byte length, and the key hash treats it as distinct.
+	if equalNameASCIIFold("ſ.example.", "s.example.") {
+		t.Fatal("must not Unicode-fold (would diverge from the key hash)")
+	}
+}

@@ -85,7 +85,32 @@ func entryMatchesQuestion(entry *CacheEntry, q dns.Question) bool {
 		return false
 	}
 	eq := entry.msg.Question[0]
-	return eq.Qtype == q.Qtype && eq.Qclass == q.Qclass && strings.EqualFold(eq.Name, q.Name)
+	return eq.Qtype == q.Qtype && eq.Qclass == q.Qclass && equalNameASCIIFold(eq.Name, q.Name)
+}
+
+// equalNameASCIIFold reports whether two DNS names are equal under
+// ASCII-only case folding — exactly the normalization the cache key uses
+// (internal/cache.Key lowercases A–Z and nothing else). strings.EqualFold
+// would be broader (full Unicode case folding), so two names the key hash
+// treats as distinct could compare equal here and weaken the collision
+// check; matching the hash's folding keeps the verification exact.
+func equalNameASCIIFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // Get returns a materialised cached response for req. Reply
