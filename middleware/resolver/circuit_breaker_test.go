@@ -338,3 +338,32 @@ func BenchmarkCircuitBreaker_RecordSuccess(b *testing.B) {
 		}
 	})
 }
+
+// TestCircuitBreaker_CleanupEvictsIdleWithFailures locks in the leak fix:
+// an entry that failed (count>0) but never recovered and went idle must be
+// evicted. The old cleanup gated on count==0 and would have leaked it.
+func TestCircuitBreaker_CleanupEvictsIdleWithFailures(t *testing.T) {
+	cb := newCircuitBreaker()
+	const server = "192.0.2.1:53"
+	cb.recordFailure(server) // count=1, below the 5-failure trip threshold
+
+	// Backdate the last failure beyond the 5-minute idle window.
+	cb.mu.RLock()
+	cb.failures[server].lastFailure.Store(time.Now().Unix() - 600)
+	cb.mu.RUnlock()
+
+	cb.cleanupOnce(time.Now().Unix())
+
+	cb.mu.RLock()
+	_, exists := cb.failures[server]
+	cb.mu.RUnlock()
+	assert.False(t, exists, "idle entry with count>0 must be evicted")
+
+	// A recently-failed entry must survive.
+	cb.recordFailure(server)
+	cb.cleanupOnce(time.Now().Unix())
+	cb.mu.RLock()
+	_, exists = cb.failures[server]
+	cb.mu.RUnlock()
+	assert.True(t, exists, "recently-failed entry must be kept")
+}
