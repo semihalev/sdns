@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -494,4 +495,23 @@ func TestConfigWithIPv6Access(t *testing.T) {
 
 	// Clean up
 	os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
+}
+
+// TestCookieSecretGenerated verifies the auto-generated DNS Cookie secret is
+// full-width hex (no space padding from the old fmt.Sprintf("%16x", ...)).
+func TestCookieSecretGenerated(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "sdns.conf")
+	cfg, err := Load(cfgFile, "1.0.0")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.CookieSecret) != 32 {
+		t.Fatalf("CookieSecret length = %d, want 32", len(cfg.CookieSecret))
+	}
+	if strings.ContainsRune(cfg.CookieSecret, ' ') {
+		t.Fatalf("CookieSecret contains space padding: %q", cfg.CookieSecret)
+	}
+	if _, err := hex.DecodeString(cfg.CookieSecret); err != nil {
+		t.Fatalf("CookieSecret is not valid hex: %v", err)
+	}
 }

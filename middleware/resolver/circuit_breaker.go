@@ -95,21 +95,32 @@ func (cb *circuitBreaker) recordSuccess(server string) {
 	}
 }
 
-// cleanup removes old failure records periodically
+// cleanup removes old failure records periodically.
 func (cb *circuitBreaker) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		cb.mu.Lock()
-		now := time.Now().Unix()
-		for server, sf := range cb.failures {
-			// Remove entries older than 5 minutes with no recent failures
-			lastFailure := sf.lastFailure.Load()
-			if sf.count.Load() == 0 && now-lastFailure > 300 {
-				delete(cb.failures, server)
-			}
+		cb.cleanupOnce(time.Now().Unix())
+	}
+}
+
+// cleanupOnce evicts every entry with no failure in the last 5 minutes.
+//
+// Eviction must NOT be gated on count==0: count only returns to zero on a
+// recordSuccess, so a server that failed a few times (below the 5-failure
+// trip threshold) and was then never queried again would keep count>0 and
+// leak its map entry forever. A recursive resolver contacts an unbounded
+// set of authoritative IPs, so that is an unbounded-growth vector under
+// ordinary (and adversarial) traffic. Idle time alone is the correct
+// signal: any disable expires after 30s, so a 5-minute-idle entry is stale
+// regardless of its counter.
+func (cb *circuitBreaker) cleanupOnce(now int64) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	for server, sf := range cb.failures {
+		if now-sf.lastFailure.Load() > 300 {
+			delete(cb.failures, server)
 		}
-		cb.mu.Unlock()
 	}
 }
