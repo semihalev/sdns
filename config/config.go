@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -843,7 +842,7 @@ func Load(cfgfile, version string) (*Config, error) {
 	config := new(Config)
 
 	if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
-		if path.Base(cfgfile) == "sdns.conf" {
+		if filepath.Base(cfgfile) == "sdns.conf" {
 			// compatibility for old default conf file
 			if _, err := os.Stat("sdns.toml"); os.IsNotExist(err) {
 				if err := generateConfig(cfgfile); err != nil {
