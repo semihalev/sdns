@@ -43,11 +43,17 @@ func (s *Store) Lookup(req *dns.Msg) (*CacheEntry, bool) {
 	if len(req.Question) == 0 {
 		return nil, false
 	}
-	return s.LookupByKey(CacheKey{Question: req.Question[0], CD: req.CheckingDisabled}.Hash())
+	q := req.Question[0]
+	return s.LookupByKeyVerified(CacheKey{Question: q, CD: req.CheckingDisabled}.Hash(), q)
 }
 
 // LookupByKey is the pre-keyed form of Lookup, used by hot paths
 // inside the cache middleware that already computed the key.
+//
+// Callers MUST verify the returned entry's question against the request
+// (use LookupByKeyVerified, or compare via entryMatchesQuestion): the map
+// key is a non-cryptographic 64-bit xxhash of the key preimage, so a hash
+// collision would otherwise serve one query's answer to another.
 func (s *Store) LookupByKey(key uint64) (*CacheEntry, bool) {
 	if entry, ok := s.positive.Get(key); ok {
 		return entry, true
@@ -56,6 +62,55 @@ func (s *Store) LookupByKey(key uint64) (*CacheEntry, bool) {
 		return entry, true
 	}
 	return nil, false
+}
+
+// LookupByKeyVerified is LookupByKey plus a full-key check: it confirms the
+// stored entry's question matches q before returning it. Without this, two
+// distinct questions whose preimages collide under xxhash64 would silently
+// serve each other's answers — and because qnames are attacker-chosen, a
+// collision can be searched for offline and used to poison the cache.
+func (s *Store) LookupByKeyVerified(key uint64, q dns.Question) (*CacheEntry, bool) {
+	entry, ok := s.LookupByKey(key)
+	if !ok || !entryMatchesQuestion(entry, q) {
+		return nil, false
+	}
+	return entry, true
+}
+
+// entryMatchesQuestion reports whether entry's stored question equals q:
+// type and class exactly, name case-insensitively (RFC 4343 — matching the
+// key hash, which lowercases the name in its preimage).
+func entryMatchesQuestion(entry *CacheEntry, q dns.Question) bool {
+	if entry == nil || entry.msg == nil || len(entry.msg.Question) == 0 {
+		return false
+	}
+	eq := entry.msg.Question[0]
+	return eq.Qtype == q.Qtype && eq.Qclass == q.Qclass && equalNameASCIIFold(eq.Name, q.Name)
+}
+
+// equalNameASCIIFold reports whether two DNS names are equal under
+// ASCII-only case folding — exactly the normalization the cache key uses
+// (internal/cache.Key lowercases A–Z and nothing else). strings.EqualFold
+// would be broader (full Unicode case folding), so two names the key hash
+// treats as distinct could compare equal here and weaken the collision
+// check; matching the hash's folding keeps the verification exact.
+func equalNameASCIIFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // Get returns a materialised cached response for req. Reply

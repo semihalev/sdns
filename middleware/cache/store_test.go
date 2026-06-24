@@ -35,6 +35,43 @@ func newTestSuccessResp(name string) *dns.Msg {
 	return resp
 }
 
+// TestLookupByKeyVerifiedRejectsCollision plants two distinct questions
+// under the SAME key — deterministically simulating an xxhash64 collision —
+// and confirms full-key verification serves only the matching question.
+// Without it, an attacker who searches a colliding qname could poison the
+// cache (the cache previously returned an entry on a bare hash match).
+func TestLookupByKeyVerifiedRejectsCollision(t *testing.T) {
+	s := newTestStore(t)
+
+	const collidingKey = uint64(0xC0FFEE)
+	respA := newTestSuccessResp("a.example.")
+	s.positive.Set(collidingKey, NewCacheEntryWithKey(respA, time.Minute, 0, collidingKey))
+
+	qA := dns.Question{Name: "a.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	qB := dns.Question{Name: "b.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+
+	if _, ok := s.LookupByKeyVerified(collidingKey, qB); ok {
+		t.Fatal("collision: mismatched question must be a miss")
+	}
+	if _, ok := s.LookupByKeyVerified(collidingKey, qA); !ok {
+		t.Fatal("matching question must hit")
+	}
+	// Name comparison is case-insensitive (RFC 4343), matching the key hash.
+	qAUpper := dns.Question{Name: "A.EXAMPLE.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	if _, ok := s.LookupByKeyVerified(collidingKey, qAUpper); !ok {
+		t.Fatal("name match must be case-insensitive")
+	}
+	// Type and class must match exactly.
+	for _, q := range []dns.Question{
+		{Name: "a.example.", Qtype: dns.TypeAAAA, Qclass: dns.ClassINET},
+		{Name: "a.example.", Qtype: dns.TypeA, Qclass: dns.ClassCHAOS},
+	} {
+		if _, ok := s.LookupByKeyVerified(collidingKey, q); ok {
+			t.Fatalf("mismatched %v must be a miss", q)
+		}
+	}
+}
+
 // TestStoreGetLookupRoundTrip covers Store.Lookup and Store.Get via
 // SetFromResponse — the three public facade methods every caller
 // outside the middleware goes through.
@@ -141,5 +178,23 @@ func TestCachePurgePublicAPI(t *testing.T) {
 
 	if _, ok := c.store.Lookup(req); ok {
 		t.Fatal("entry should be purged")
+	}
+}
+
+// TestEqualNameASCIIFold verifies the cache-key verification folds ASCII
+// case only — matching internal/cache.Key — and does NOT do Unicode folding
+// (which strings.EqualFold would), so it can't accept names the key hash
+// treats as distinct.
+func TestEqualNameASCIIFold(t *testing.T) {
+	if !equalNameASCIIFold("a.Example.COM.", "A.example.com.") {
+		t.Fatal("ASCII case must fold equal")
+	}
+	if equalNameASCIIFold("a.example.com.", "b.example.com.") {
+		t.Fatal("different names must not be equal")
+	}
+	// U+017F (ſ, 2 bytes UTF-8) Unicode-folds to 's', but must NOT fold
+	// here — different byte length, and the key hash treats it as distinct.
+	if equalNameASCIIFold("ſ.example.", "s.example.") {
+		t.Fatal("must not Unicode-fold (would diverge from the key hash)")
 	}
 }

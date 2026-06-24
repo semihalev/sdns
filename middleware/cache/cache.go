@@ -513,6 +513,16 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	w := ch.Writer
 	req := ch.Request
 
+	// Full-key verification (defends against xxhash64 key collisions).
+	// The cache key is a non-cryptographic 64-bit hash of the query
+	// preimage, so a collision — accidental, or attacker-searched on a
+	// chosen qname — would otherwise serve one query's answer to another.
+	// Returning false treats it as a miss so the chain resolves normally.
+	// This is the single chokepoint for every hit (scoped and shared).
+	if len(req.Question) == 0 || !entryMatchesQuestion(entry, req.Question[0]) {
+		return false
+	}
+
 	// Rate limiting applies to external client queries only.
 	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
 	// carry BufferWriter.Internal()==true via the responseWriter
