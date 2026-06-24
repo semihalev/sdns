@@ -2,7 +2,7 @@ package config
 
 import (
 	"crypto/rand"
-	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -880,14 +880,16 @@ func Load(cfgfile, version string) (*Config, error) {
 	}
 
 	if config.CookieSecret == "" {
-		var v uint64
-
-		err := binary.Read(rand.Reader, binary.BigEndian, &v)
-		if err != nil {
+		// 16 random bytes (128-bit) hex-encoded to a 32-char secret.
+		// The previous fmt.Sprintf("%16x", uint64) was *space*-padded,
+		// not zero-padded, so small random values produced low-entropy
+		// secrets like "              2a" — weakening DNS Cookie
+		// (RFC 7873) anti-spoofing.
+		secret := make([]byte, 16)
+		if _, err := rand.Read(secret); err != nil {
 			return nil, err
 		}
-
-		config.CookieSecret = fmt.Sprintf("%16x", v)
+		config.CookieSecret = hex.EncodeToString(secret)
 	}
 
 	if !config.IPv6Access {
