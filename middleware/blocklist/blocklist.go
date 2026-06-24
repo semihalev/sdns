@@ -314,17 +314,20 @@ func (b *BlockList) Exists(key string) bool {
 
 	key = dns.CanonicalName(key)
 
-	// Whitelisted names bypass both exact and wildcard block
-	// matches — the Set paths already refuse to *add* a block
-	// for a whitelisted name, but older lists or wildcard
-	// entries like "*.example.com." would otherwise still match
-	// an explicit whitelist of "important.example.com.".
-	if b.w[key] {
+	// Whitelist overrides every block (exact, parent, or wildcard). It is
+	// matched across the full hierarchy — exact name plus every parent —
+	// so it stays symmetric with the block walk below: just as blocking
+	// "example.com." covers "sub.example.com.", whitelisting "example.com."
+	// now exempts "sub.example.com." too. (Previously the whitelist matched
+	// the exact name only, so a parent whitelist silently failed to protect
+	// its subdomains from a parent/wildcard block.) This only ever exempts,
+	// so it can never introduce a new block that breaks resolution.
+	if matchHierarchy(key, b.w) {
 		return false
 	}
 
 	// Direct match - fastest path (exact name)
-	if _, ok := b.m[key]; ok {
+	if b.m[key] {
 		return true
 	}
 
@@ -347,16 +350,35 @@ func (b *BlockList) Exists(key string) bool {
 
 		if offset < len(key) {
 			suffix := key[offset:]
-			if _, ok := b.m[suffix]; ok {
-				return true
-			}
-			if _, ok := b.wild[suffix]; ok {
+			if b.m[suffix] || b.wild[suffix] {
 				return true
 			}
 		}
 	}
 
 	return false
+}
+
+// matchHierarchy reports whether name or any of its parent suffixes is a
+// key in m. Names are expected in canonical (lowercase, trailing-dot) form.
+func matchHierarchy(name string, m map[string]bool) bool {
+	if len(m) == 0 {
+		return false
+	}
+	if m[name] {
+		return true
+	}
+	offset := 0
+	for {
+		idx := strings.IndexByte(name[offset:], '.')
+		if idx == -1 {
+			return false
+		}
+		offset += idx + 1
+		if offset < len(name) && m[name[offset:]] {
+			return true
+		}
+	}
 }
 
 // (*BlockList).Length length returns the caches length.

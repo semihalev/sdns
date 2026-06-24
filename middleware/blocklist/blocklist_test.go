@@ -318,3 +318,27 @@ func Test_BlockList_NoStallDuringSave(t *testing.T) {
 		t.Fatal("ServeDNS-style RLock blocked while saveMu was held — disk I/O is back inside the map lock")
 	}
 }
+
+// Test_BlockList_WhitelistHierarchy verifies the whitelist is matched across
+// the domain hierarchy (symmetric with the block walk): whitelisting a parent
+// exempts its subdomains, and only ever exempts.
+func Test_BlockList_WhitelistHierarchy(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_wl")
+	b := New(cfg)
+
+	b.Set("*.example.com.")
+	assert.True(t, b.Exists("sub.example.com."), "subdomain blocked before whitelist")
+
+	// Whitelist the parent — subtree is now exempt.
+	b.w[dns.CanonicalName("example.com.")] = true
+	assert.False(t, b.Exists("sub.example.com."), "parent whitelist must exempt subdomain")
+	assert.False(t, b.Exists("deep.sub.example.com."), "parent whitelist must exempt deep subdomain")
+	assert.False(t, b.Exists("example.com."), "whitelisted name itself exempt")
+
+	// A different blocked subtree is unaffected by the whitelist.
+	b.Set("*.other.com.")
+	assert.True(t, b.Exists("x.other.com."), "unrelated subtree still blocked")
+}
