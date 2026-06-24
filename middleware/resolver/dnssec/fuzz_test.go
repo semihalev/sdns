@@ -23,17 +23,22 @@ func FuzzNsecCovers(f *testing.F) {
 	})
 }
 
-// FuzzCheckExponent fuzzes the RSA public key exponent validation.
-func FuzzCheckExponent(f *testing.F) {
+// FuzzRSAPublicKey fuzzes the RFC 3110 RSA public key parsing that feeds
+// the wide-exponent verification path.
+func FuzzRSAPublicKey(f *testing.F) {
 	f.Add("AQAB") // Common RSA exponent 65537
 	f.Add("Aw==") // Exponent 3
 	f.Add("")
 	f.Add("!!!invalid-base64!!!")
 	f.Add("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==")
 	f.Add("AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3")
+	f.Add("BQEAAAABwcvTaaZokGcz2HFSgv+ixKiuypnYzA3z") // 5-byte exponent
 
 	f.Fuzz(func(t *testing.T, key string) {
-		_ = checkExponent(key)
+		_ = rsaExponentExceedsStdlib(key)
+		if n, e, ok := parseRSAPublicKey(key); ok {
+			_ = usableRSAKey(n, e)
+		}
 	})
 }
 

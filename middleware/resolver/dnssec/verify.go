@@ -286,16 +286,7 @@ func verifyOneSig(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sig *dns.RRSIG) e
 			lastErr = ErrMissingDNSKEY
 			continue
 		}
-		switch k.Algorithm {
-		case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512, dns.RSAMD5:
-			if !checkExponent(k.PublicKey) {
-				// RSA exponent unsupported by Go crypto; treat as
-				// no-valid-key rather than a silent pass.
-				lastErr = ErrMissingDNSKEY
-				continue
-			}
-		}
-		if err := sig.Verify(k, set); err != nil {
+		if err := cryptoVerify(k, sig, set); err != nil {
 			lastErr = err
 			continue
 		}
@@ -306,6 +297,21 @@ func verifyOneSig(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sig *dns.RRSIG) e
 		return nil
 	}
 	return lastErr
+}
+
+// cryptoVerify runs the cryptographic RRSIG check for a single candidate
+// key. RSA keys whose public exponent exceeds crypto/rsa's ceiling (e.g.
+// mailbox.org's alg-7/alg-10 ZSKs, exponent 2^32+1) are verified by the
+// raw modexp path so they validate instead of bogusing out; every other
+// key takes miekg/dns' sig.Verify, which rejects malformed keys itself.
+func cryptoVerify(k *dns.DNSKEY, sig *dns.RRSIG, set []dns.RR) error {
+	switch k.Algorithm {
+	case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512:
+		if rsaExponentExceedsStdlib(k.PublicKey) {
+			return verifyRSAWideExponent(k, sig, set)
+		}
+	}
+	return sig.Verify(k, set)
 }
 
 // isSynthesizedCNAME reports whether cname is the CNAME a resolver
@@ -370,36 +376,6 @@ func VerifyNSEC(q dns.Question, nsecSet []dns.RR) (typeMatch bool) {
 		}
 	}
 	return
-}
-
-func checkExponent(key string) bool {
-	keybuf, err := fromBase64([]byte(key))
-	if err != nil {
-		return true
-	}
-
-	if len(keybuf) < 1+1+64 {
-		// Exponent must be at least 1 byte and modulus at least 64
-		return true
-	}
-
-	// RFC 2537/3110, section 2. RSA Public KEY Resource Records
-	// Length is in the 0th byte, unless its zero, then it
-	// it in bytes 1 and 2 and its a 16 bit number
-	explen := uint16(keybuf[0])
-	keyoff := 1
-	if explen == 0 {
-		explen = uint16(keybuf[1])<<8 | uint16(keybuf[2])
-		keyoff = 3
-	}
-
-	if explen > 4 || explen == 0 || keybuf[keyoff] == 0 {
-		// Exponent larger than supported by the crypto package,
-		// empty, or contains prohibited leading zero.
-		return false
-	}
-
-	return true
 }
 
 func fromBase64(s []byte) (buf []byte, err error) {
