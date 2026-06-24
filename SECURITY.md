@@ -2,19 +2,27 @@
 
 ## Supported Versions
 
-Only the following version is currently being supported with security updates:
+Only the latest minor release line receives security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.6.x   | :white\_check\_mark: |
-| < 1.6   | :x:                |
+| 1.7.x   | :white_check_mark: |
+| < 1.7   | :x:                |
 
 ## Reporting a Vulnerability
 
-We take security issues seriously. If you discover a security vulnerability in this project, please follow these steps:
+Please report security vulnerabilities **privately**. Do not open a public
+issue, pull request, or discussion for a vulnerability — that discloses the
+problem to attackers before a fix is available.
 
-1.  **Open an Issue**: Once you've made sure you're on the latest version and the vulnerability still exists, open an issue on our GitHub repository. Describe the vulnerability in detail, including the steps to reproduce if possible.
-2.  **Discussion**: After you report the vulnerability, we'll engage in a discussion with you on the issue to understand it better and evaluate its impact.
-3.  **Resolution**: We will address the security issue and release a new version with the necessary patches as soon as possible.
+1.  **Report privately**: Use GitHub's private vulnerability reporting —
+    ["Report a vulnerability"](https://github.com/semihalev/sdns/security/advisories/new)
+    under the repository's **Security** tab. Include a description, the
+    affected version(s), impact, and reproduction steps if possible.
+2.  **Discussion**: We'll work with you on the private advisory to confirm the
+    issue and assess its impact.
+3.  **Resolution**: We'll prepare a fix, release a patched version, and
+    coordinate public disclosure. Reporters are credited unless they ask to
+    remain anonymous.
 
-Your efforts to responsibly disclose your findings are sincerely appreciated and will be acknowledged.
+Your efforts to responsibly disclose your findings are sincerely appreciated.
