@@ -341,4 +341,10 @@ func Test_BlockList_WhitelistHierarchy(t *testing.T) {
 	// A different blocked subtree is unaffected by the whitelist.
 	b.Set("*.other.com.")
 	assert.True(t, b.Exists("x.other.com."), "unrelated subtree still blocked")
+
+	// Set must refuse a block the whitelist hierarchically shadows, rather
+	// than persist a block that can never take effect (Exists exempts it
+	// anyway). Symmetric with the hierarchical Exists whitelist match.
+	assert.False(t, b.Set("sub.example.com."), "Set must refuse a hierarchically-whitelisted name")
+	assert.False(t, b.Exists("sub.example.com."), "shadowed name stays exempt")
 }

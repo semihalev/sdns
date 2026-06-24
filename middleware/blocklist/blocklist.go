@@ -287,7 +287,11 @@ func (b *BlockList) RemoveBatch(keys []string) int {
 func (b *BlockList) setLocked(key string) bool {
 	key = dns.CanonicalName(key)
 
-	if b.w[key] {
+	// Refuse to add a block the whitelist would shadow. Exists matches the
+	// whitelist across the hierarchy, so this must too — otherwise adding
+	// sub.example.com. while example.com. is whitelisted would report
+	// success and persist a block that can never take effect.
+	if matchHierarchy(key, b.w) {
 		return false
 	}
 
