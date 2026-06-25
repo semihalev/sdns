@@ -328,11 +328,12 @@ func Test_resolverFindSigner(t *testing.T) {
 	assert.NotNil(t, resp)
 }
 
-// Test_resolverBogusZone verifies that a zone with DS records but broken
-// signatures (bogus DNSSEC) is correctly rejected per RFC 4035 §5.5.
-// comcast.net. has DS at the net. delegation but its DNSKEY RRSIGs do not
-// cryptographically verify — the resolver must return SERVFAIL.
-func Test_resolverBogusZone(t *testing.T) {
+// Test_resolverSharedAuthorityUnsignedChild verifies a signed parent that is
+// served by the same authorities as an unsigned delegated child. comcast.net.
+// is signed, while tx.comcast.net. has an authenticated NSEC at the parent
+// side with NS present and DS/SOA absent; the child data is legitimately
+// unsigned even though no referral is crossed on the wire.
+func Test_resolverSharedAuthorityUnsignedChild(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -344,9 +345,11 @@ func Test_resolverBogusZone(t *testing.T) {
 	cfg := makeTestConfig()
 	r := newWiredTestResolver(cfg)
 
-	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
+	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 
-	assert.Error(t, err)
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.AuthenticatedData)
 }
 
 func Test_resolverRootKeys(t *testing.T) {
