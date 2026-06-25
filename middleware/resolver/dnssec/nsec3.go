@@ -214,6 +214,24 @@ func VerifyDelegation(delegation string, nsec []dns.RR) error {
 		}
 		return nil
 	}
+	return verifyDelegationTypes(types)
+}
+
+// VerifyDelegationExact verifies an insecure-delegation claim using only an
+// exact-match NSEC3 owner. It deliberately rejects opt-out coverage: an
+// opt-out span says an unsigned delegation may exist, but it does not prove
+// that this exact name is a delegation. Callers that already have a referral
+// NS RRset can use VerifyDelegation; no-referral downgrade checks need this
+// stricter form.
+func VerifyDelegationExact(delegation string, nsec []dns.RR) error {
+	types, err := findMatching(delegation, nsec)
+	if err != nil {
+		return err
+	}
+	return verifyDelegationTypes(types)
+}
+
+func verifyDelegationTypes(types []uint16) error {
 	if !typesSet(types, dns.TypeNS) {
 		return ErrNSECNSMissing
 	}

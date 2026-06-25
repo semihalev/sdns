@@ -760,8 +760,15 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 			// signatures are acceptable (insecure delegation) or a
 			// real DNSSEC failure (signed zone).
 			if r.isZoneSecure(ctx, q.Name, parentDS, zone) {
-				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", dnssec.ErrNoSignatures.Error())
-				return nil, dnssec.ErrNoSignatures
+				// The zone we queried is signed, but qname may live in an
+				// unsigned child delegated below it that this same server
+				// answered authoritatively (no referral crossed). Accept
+				// the unsigned data only if an insecure delegation between
+				// zone and qname is cryptographically proven.
+				if !r.provenInsecureDelegation(ctx, zone, q.Name, parentDS) {
+					zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", dnssec.ErrNoSignatures.Error())
+					return nil, dnssec.ErrNoSignatures
+				}
 			}
 		} else {
 			origDSRR := parentDS
@@ -845,9 +852,15 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 		signers := r.findRRSIGSigners(resp, q.Name, false)
 		if len(signers) == 0 {
 			if r.isZoneSecure(ctx, q.Name, parentDS, zone) {
-				err := dnssec.ErrNoSignatures
-				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-				return nil, err
+				// As in answer(): a negative response with no proof is
+				// only acceptable when qname sits under a proven insecure
+				// delegation below the signed zone we queried (the same
+				// shared-authority, no-referral case).
+				if !r.provenInsecureDelegation(ctx, zone, q.Name, parentDS) {
+					err := dnssec.ErrNoSignatures
+					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+					return nil, err
+				}
 			}
 		} else {
 			origDSRR := parentDS
@@ -1685,6 +1698,112 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentDS []dn
 	return hasSupportedDS(parentDS)
 }
 
+// provenInsecureDelegation reports whether qname falls under a
+// cryptographically proven insecure delegation lying strictly below
+// `zone` — the deepest zone whose DS chain `parentDS` establishes.
+//
+// It exists for the case where one server is authoritative for both a
+// signed parent and an unsigned child delegated from it, and answers a
+// name in the child authoritatively — so the resolver crosses no referral
+// and answer()/authority() never run validateDelegation's proof. Without
+// this, the child's legitimately-unsigned records are misread as a signed
+// zone missing its RRSIGs and bogused out (SERVFAIL).
+//
+// It walks each zone-cut candidate from just below `zone` toward qname.
+// At a cut with a usable, validated DS it descends (secure). At the first
+// cut with no DS it returns true ONLY when a signed NSEC/NSEC3 proves an
+// insecure delegation (NS bit, no DS, no SOA) — exactly
+// dnssec.VerifyDelegation. A name that merely lacks a DS without that
+// delegation proof (an attacker stripping signatures off ordinary data in
+// the signed parent) yields false and stays bogus, so this can never be
+// used to downgrade. Any lookup/validation error also fails closed.
+func (r *Resolver) provenInsecureDelegation(ctx context.Context, zone, qname string, parentDS []dns.RR) bool {
+	zone = strings.ToLower(dns.Fqdn(zone))
+	qname = strings.ToLower(dns.Fqdn(qname))
+	if zone == "" || strings.EqualFold(qname, zone) || !dnsutil.NameInZone(qname, zone) {
+		return false
+	}
+
+	labels := dns.SplitDomainName(qname)
+	zoneCount := dns.CountLabel(zone)
+	curDS := parentDS
+	curSigner := zone
+
+	// Candidates from just below `zone` (least specific) toward qname.
+	for n := zoneCount + 1; n <= len(labels); n++ {
+		candidate := dns.Fqdn(strings.Join(labels[len(labels)-n:], "."))
+
+		dsset, insecure, err := r.authenticatedDelegationDS(ctx, curSigner, candidate, curDS, false)
+		if err != nil {
+			return false
+		}
+		if insecure {
+			return true
+		}
+		if len(dsset) > 0 {
+			// Secure delegation — descend and keep checking.
+			curDS = dsset
+			curSigner = candidate
+			continue
+		}
+		return false
+	}
+	return false
+}
+
+// authenticatedDelegationDS returns the authenticated DS RRset for child, or
+// insecure=true when the authenticated parent proof says child is an insecure
+// delegation. The DS lookup itself runs with CD=1 because this helper performs
+// the validation explicitly; using the normal CD=0 path here can re-enter the
+// same missing-signature fallback and loop on the very proof being requested.
+//
+// allowOptOut is only safe for real referral handling where the response
+// already carried an NS RRset for child. No-referral checks must reject NSEC3
+// opt-out because opt-out proves a delegation may exist, not that this exact
+// owner is one.
+func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child string, parentDS []dns.RR, allowOptOut bool) (dsset []dns.RR, insecure bool, err error) {
+	dsResp, err := r.lookupDS(ctx, child, true)
+	if err != nil {
+		return nil, false, err
+	}
+
+	ok, verr := r.verifyDNSSEC(ctx, signer, child, dsResp, parentDS)
+	if verr != nil {
+		return nil, false, verr
+	}
+	if !ok {
+		return nil, false, dnssec.ErrDSRecords
+	}
+
+	dsset = dnsutil.ExtractRRSet(dsResp.Answer, child, dns.TypeDS)
+	if len(dsset) > 0 {
+		if !hasSupportedDS(dsset) {
+			return dsset, true, nil
+		}
+		return dsset, false, nil
+	}
+
+	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(dsResp.Ns, "", dns.TypeNSEC3), signer); len(nsec3Set) > 0 {
+		if allowOptOut {
+			err = dnssec.VerifyDelegation(child, nsec3Set)
+		} else {
+			err = dnssec.VerifyDelegationExact(child, nsec3Set)
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		return nil, true, nil
+	}
+	if nsecSet := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(dsResp.Ns, "", dns.TypeNSEC), signer); len(nsecSet) > 0 {
+		if err := dnssec.VerifyDelegationNSEC(child, nsecSet); err != nil {
+			return nil, false, err
+		}
+		return nil, true, nil
+	}
+
+	return nil, false, dnssec.ErrNSECMissingCoverage
+}
+
 // hasSupportedDS reports whether dsset contains at least one DS record
 // that this validator can actually use — both its digest type and the
 // DNSKEY algorithm it advertises must be supported. An unsupported-only
@@ -2433,7 +2552,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
 	// DNSSEC validation for delegation
-	newParentDS, err := r.validateDelegation(ctx, rs.req, resp, q, rs.parentDS)
+	newParentDS, err := r.validateDelegation(ctx, rs.req, resp, q, rs.parentDS, rs.servers.Zone)
 	if err != nil {
 		return nil, err
 	}
@@ -2526,7 +2645,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 }
 
 // validateDelegation performs DNSSEC validation for delegation.
-func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q dns.Question, parentDS []dns.RR) ([]dns.RR, error) {
+func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q dns.Question, parentDS []dns.RR, zone string) ([]dns.RR, error) {
 	if req.CheckingDisabled {
 		// CD=1: the client has opted out of DNSSEC validation.
 		// answer() and authority() already wrap their enforcement in
@@ -2554,37 +2673,31 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		return nil, dnssec.ErrTrustAnchorsUnavailable
 	}
 
+	effectiveParentDS := parentDS
+	parentSigner := strings.ToLower(dns.Fqdn(zone))
+	if parentSigner == "" {
+		parentSigner = rootzone
+	}
+	if parentSigner == rootzone && len(effectiveParentDS) == 0 {
+		effectiveParentDS = r.dsRRFromRootKeys()
+	}
+
 	signers := r.findRRSIGSigners(resp, q.Name, false)
 	signerFound := len(signers) > 0
 
-	if !signerFound && hasSupportedDS(parentDS) && req.Question[0].Qtype == dns.TypeDS {
-		// A DS query under a signed parent must come back signed.
-		// Guard with hasSupportedDS so parent chains of only
-		// unsupported DS records (unknown digest or DNSKEY algorithm)
-		// fall through to the insecure treatment below instead of
-		// SERVFAIL-ing on data the validator can't use anyway.
-		zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", dnssec.ErrDSRecords.Error())
-		return nil, dnssec.ErrDSRecords
-	}
-
-	origDSRR := parentDS
+	origDSRR := effectiveParentDS
 	if !signerFound {
-		// No RRSIGs in the referral. Fall through the DS-lookup path
-		// with an empty signer so findDS still attempts to walk the
-		// parent chain; this matches the pre-refactor behaviour.
-		newDSRR, err := r.findDS(ctx, "", q.Name, parentDS, false)
+		if !hasSupportedDS(effectiveParentDS) {
+			// Parent is insecure (or only has unsupported DS material),
+			// so no authenticated delegation proof is possible or needed.
+			return parentDS, nil
+		}
+		newDSRR, _, err := r.authenticatedDelegationDS(ctx, parentSigner, q.Name, effectiveParentDS, true)
 		if err != nil {
+			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err
 		}
-		parentDS = newDSRR
-		if hasSupportedDS(parentDS) {
-			// Parent chain declares the child is signed with usable DS
-			// but no RRSIG is present — bogus. Every DS unsupported is
-			// insecure per RFC 6840 §5.2 and falls through below.
-			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", dnssec.ErrDSRecords.Error())
-			return nil, dnssec.ErrDSRecords
-		}
-		return parentDS, nil
+		return newDSRR, nil
 	}
 
 	// Try each candidate signer (most specific first) until one
@@ -2610,7 +2723,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			continue
 		}
 		if len(candidateDSRR) == 0 {
-			if r.isZoneSecure(ctx, q.Name, origDSRR, "") {
+			if r.isZoneSecure(ctx, q.Name, origDSRR, zone) {
 				lastErr = dnssec.ErrDSRecords
 				continue
 			}
