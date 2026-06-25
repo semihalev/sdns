@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsclient"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -955,16 +957,14 @@ func generateConfig(path string) error {
 }
 
 func testIPv6Network() error {
-	client := &dns.Client{Net: "udp"}
-
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 
-	// root server
-	_, _, err := client.Exchange(req, net.JoinHostPort("2001:500:2::c", "53"))
-	if err != nil {
-		return err
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	return nil
+	// root server
+	client := dnsclient.Client{Proto: "udp", Timeout: 2 * time.Second}
+	_, _, err := client.Exchange(ctx, req, net.JoinHostPort("2001:500:2::c", "53"))
+	return err
 }

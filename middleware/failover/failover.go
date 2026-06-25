@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsclient"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
@@ -97,9 +98,10 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
+	client := dnsclient.Client{Proto: "udp"}
 	for _, server := range w.f.servers {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		resp, err := dnsutil.Exchange(ctx, req, server, "udp", nil)
+		resp, _, err := client.Exchange(ctx, req, server)
 		cancel()
 		if err != nil {
 			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())

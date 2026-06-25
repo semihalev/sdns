@@ -3,6 +3,7 @@ package forwarder
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/dnsclient"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -63,6 +64,13 @@ type Forwarder struct {
 	// README description of querytimeout as the maximum time for
 	// any one client-facing query.
 	queryTimeout time.Duration
+
+	// dialTimeout is the per-upstream dial+read budget for UDP/DoT
+	// exchanges, sourced from cfg.Timeout. It mirrors the historical
+	// per-query timeout that the stock dns.Client default imposed, so
+	// one slow upstream cannot eat the whole queryTimeout budget. DoH
+	// upstreams carry their own timeout on the reused http.Client.
+	dialTimeout time.Duration
 }
 
 // New return forwarder.
@@ -124,6 +132,7 @@ func New(cfg *config.Config) *Forwarder {
 		servers:      forwarderservers,
 		dnssec:       cfg.DNSSEC == "on",
 		queryTimeout: requestTimeout,
+		dialTimeout:  dialTimeout,
 	}
 }
 
@@ -180,33 +189,34 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() { req.CheckingDisabled = clientCD }()
 
 	for _, server := range f.servers {
-		var (
-			resp *dns.Msg
-			err  error
-		)
-		if server.Proto == "doh" {
-			resp, err = dohExchange(ctx, server, req)
-		} else {
-			reqClient := &dns.Client{Net: server.Proto}
-			if server.Proto == "tcp-tls" {
-				reqClient.TLSConfig = f.tlsConfig
-			}
-			resp, err = dnsutil.Exchange(ctx, req, server.Addr, server.Proto, reqClient)
-		}
-		if err != nil {
-			forwarderFailures.Inc()
-			zlog.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
-			continue
+		// Build a lightweight client per upstream. For DoH this
+		// references the reused, pinned-IP http.Client created at
+		// startup (never per query); for DoT it picks up the
+		// forwarder's TLS config dynamically. The question-section
+		// guard and ID match live inside Exchange.
+		client := dnsclient.Client{Proto: server.Proto, Timeout: f.dialTimeout}
+		switch server.Proto {
+		case "doh":
+			client.DoHURL = server.DoHURL
+			client.DoHClient = server.DoHClient
+		case "tcp-tls":
+			client.TLSConfig = f.tlsConfig
 		}
 
-		// Reject responses whose question section does not match the
-		// outstanding query. A malicious or misbehaving upstream that
-		// returns a different name/type/class would otherwise be cached
-		// under that question, poisoning lookups for unrelated names.
-		if !questionMatches(req.Question[0], resp.Question) {
-			forwarderResponseMismatch.Inc()
-			zlog.Info("forwarder dropped response with mismatched question",
-				"query", formatQuestion(req.Question[0]))
+		resp, _, err := client.Exchange(ctx, req, server.Addr)
+		if err != nil {
+			// A mismatched question section is a security signal
+			// (potential cache poisoning), not a generic upstream
+			// failure — count it separately. Every other error is a
+			// plain forwarder failure.
+			if errors.Is(err, dnsclient.ErrQuestion) {
+				forwarderResponseMismatch.Inc()
+				zlog.Info("forwarder dropped response with mismatched question",
+					"query", formatQuestion(req.Question[0]))
+			} else {
+				forwarderFailures.Inc()
+				zlog.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
+			}
 			continue
 		}
 
@@ -231,17 +241,6 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 func formatQuestion(q dns.Question) string {
 	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
-}
-
-// questionMatches reports whether the response's question section answers the
-// outstanding request question. The name comparison is case-insensitive
-// because DNS names are not case-sensitive on the wire.
-func questionMatches(req dns.Question, resp []dns.Question) bool {
-	if len(resp) != 1 {
-		return false
-	}
-	r := resp[0]
-	return r.Qtype == req.Qtype && r.Qclass == req.Qclass && strings.EqualFold(r.Name, req.Name)
 }
 
 const name = "forwarder"
