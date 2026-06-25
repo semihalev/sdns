@@ -1,21 +1,15 @@
 package forwarder
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/miekg/dns"
 )
 
 // dohMaxResponseSize bounds the response body read so a misbehaving
@@ -169,77 +163,4 @@ func newDoHServer(rawURL string, dialTimeout, requestTimeout time.Duration) (*se
 		DoHURL:    rawURL,
 		DoHClient: &http.Client{Transport: tr, Timeout: requestTimeout},
 	}, nil
-}
-
-// dohExchange POSTs req to the DoH endpoint and decodes the wire-
-// format response. Mirrors the (msg, error) contract of
-// dnsutil.Exchange so the dispatch site in ServeDNS can treat DoH
-// identically to UDP / DoT.
-func dohExchange(ctx context.Context, srv *server, req *dns.Msg) (*dns.Msg, error) {
-	body, err := req.Pack()
-	if err != nil {
-		return nil, fmt.Errorf("pack: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.DoHURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", contentTypeDNS)
-	httpReq.Header.Set("Accept", contentTypeDNS)
-
-	httpResp, err := srv.DoHClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("doh exchange: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode != http.StatusOK {
-		// Drain a small amount of the body so the connection can
-		// be reused (Go's http.Transport requires the body be read
-		// before the conn returns to the pool).
-		_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, 1024))
-		return nil, fmt.Errorf("doh status %d", httpResp.StatusCode)
-	}
-
-	// RFC 7231 §3.1.1.1: media types are case-insensitive and may
-	// carry parameters (charset=, boundary=, ...). mime.ParseMediaType
-	// strips parameters and lowercases the type for us.
-	rawCT := httpResp.Header.Get("Content-Type")
-	mediaType, _, err := mime.ParseMediaType(rawCT)
-	if err != nil || !strings.EqualFold(mediaType, contentTypeDNS) {
-		_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, 1024))
-		return nil, fmt.Errorf("doh unexpected content-type %q", rawCT)
-	}
-
-	// Read one byte past the size cap so we can distinguish "body
-	// fits within limit" from "body exceeded limit and was
-	// truncated". Without this dns.Msg.Unpack would happily decode
-	// the parseable prefix of an oversized response and silently
-	// ignore the rest.
-	respBody, err := io.ReadAll(io.LimitReader(httpResp.Body, dohMaxResponseSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
-	}
-	if len(respBody) > dohMaxResponseSize {
-		return nil, fmt.Errorf("doh response exceeds %d bytes", dohMaxResponseSize)
-	}
-
-	resp := new(dns.Msg)
-	if err := resp.Unpack(respBody); err != nil {
-		return nil, fmt.Errorf("unpack: %w", err)
-	}
-
-	// Validate the response transaction ID. miekg/dns's
-	// Client.ExchangeContext does this for UDP/DoT; on the DoH
-	// path we have to do it ourselves before the caller rewrites
-	// resp.Id = req.Id. RFC 8484 §4.1 says DoH clients SHOULD use
-	// DNS ID 0 for cache friendliness, and several compliant
-	// servers normalise the response ID to 0 regardless of what
-	// the request carried — so accept either an exact echo or a
-	// zero. Anything else is a buggy or hostile upstream.
-	if resp.Id != req.Id && resp.Id != 0 {
-		return nil, fmt.Errorf("doh response ID mismatch: got %d, want %d or 0", resp.Id, req.Id)
-	}
-	return resp, nil
 }
