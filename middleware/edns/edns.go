@@ -144,7 +144,12 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.cookie = cookie
 	rw.noedns = noedns
 	rw.nsid = nsid
-	rw.noad = !req.AuthenticatedData && !do
+	// Clear AD unless the client signalled it wants validation state (DO
+	// or AD bit set) AND did not set CD. RFC 4035 §3.2.3 / RFC 6840 §5.7:
+	// a CD=1 client opted out of trusting our validation, so AD must
+	// never be asserted to it — this is also the last-line backstop for
+	// the forwarder, which passes an upstream's AD bit through.
+	rw.noad = req.CheckingDisabled || (!req.AuthenticatedData && !do)
 
 	ch.Writer = rw
 	// Restore via defer so a downstream panic that a higher-up
