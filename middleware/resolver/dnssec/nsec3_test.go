@@ -268,3 +268,30 @@ func Test_VerifyDelegation(t *testing.T) {
 		t.Fatalf("VerifyDelegation failed with opt out delegation example from RFC5155: %s", err)
 	}
 }
+
+func Test_VerifyDelegationExact(t *testing.T) {
+	records := []dns.RR{
+		makeNSEC3("a.b.com.", "b.b.com.", false, []uint16{dns.TypeNS}),
+	}
+	if err := VerifyDelegationExact("a.b.com.", records); err != nil {
+		t.Fatalf("VerifyDelegationExact failed for exact insecure delegation: %s", err)
+	}
+
+	records = []dns.RR{
+		makeNSEC3("a.b.com.", "b.b.com.", false, []uint16{dns.TypeNS, dns.TypeDS}),
+	}
+	if err := VerifyDelegationExact("a.b.com.", records); err == nil {
+		t.Fatal("VerifyDelegationExact accepted exact NSEC3 with DS bit set")
+	}
+
+	records = []dns.RR{
+		makeNSEC3("com.", "a.com.", false, []uint16{dns.TypeNS}),
+		makeNSEC3("a.com.", "e.com.", true, []uint16{dns.TypeNS}),
+	}
+	if err := VerifyDelegation("b.com.", records); err != nil {
+		t.Fatalf("test premise invalid: opt-out delegation should pass normal referral verifier: %s", err)
+	}
+	if err := VerifyDelegationExact("b.com.", records); err == nil {
+		t.Fatal("VerifyDelegationExact accepted NSEC3 opt-out without an exact delegation owner")
+	}
+}

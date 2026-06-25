@@ -301,3 +301,44 @@ func TestEDNS_ForwardsECSGatedByClientNetworks(t *testing.T) {
 		t.Errorf("client outside allow-list should not see ECS forwarded, got %+v", got)
 	}
 }
+
+// adSetter replies with AuthenticatedData=true, simulating a validated
+// answer (or an upstream/forwarder response carrying AD).
+type adSetter struct{}
+
+func (a *adSetter) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	m := new(dns.Msg)
+	m.SetReply(ch.Request)
+	m.AuthenticatedData = true
+	_ = ch.Writer.WriteMsg(m)
+}
+func (a *adSetter) Name() string { return "ad-setter" }
+
+// TestEDNS_ClearsADForCheckingDisabled pins the RFC 4035 §3.2.3 / RFC 6840
+// §5.7 rule: a CD=1 client opted out of trusting our validation, so the AD
+// bit must never be asserted to it — even if a downstream handler (e.g. the
+// forwarder passing an upstream's bit through) set it.
+func TestEDNS_ClearsADForCheckingDisabled(t *testing.T) {
+	e := New(new(config.Config))
+	ch := middleware.NewChain([]middleware.Handler{e, &adSetter{}})
+
+	// CD=1 client (also DO=1) must receive AD=0.
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	req.SetEdns0(4096, true) // DO=1
+	req.CheckingDisabled = true
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
+	assert.True(t, mw.Written())
+	assert.False(t, mw.Msg().AuthenticatedData, "AD must be cleared for a CD=1 client")
+
+	// Control: DO=1, CD=0 client keeps the validated AD bit.
+	req2 := new(dns.Msg)
+	req2.SetQuestion("example.com.", dns.TypeA)
+	req2.SetEdns0(4096, true) // DO=1
+	mw2 := mock.NewWriter("udp", "127.0.0.1:0")
+	ch.Reset(mw2, req2)
+	ch.Next(context.Background())
+	assert.True(t, mw2.Msg().AuthenticatedData, "AD must survive for a DO=1, CD=0 client")
+}
