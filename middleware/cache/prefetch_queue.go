@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -101,6 +102,21 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// (CD bit, EDNS options) don't bleed into the shared Request
 	// held by other callers or into the stored entry's question.
 	prefetchReq := req.Request.Copy()
+
+	// Force DO=1 on the refresh. The cache stores the COMPLETE answer
+	// (RRSIGs + AD) and is keyed on CD, not DO — DNSSEC is stripped
+	// per-client at serve time by edns. On the external path the cache
+	// sits below edns and stores the full answer; the prefetch sub-
+	// pipeline runs edns, so copying a DO=0 trigger's bit would let edns
+	// strip the refresh and overwrite the entry with an AD-less answer
+	// that downgrades every later DO=1 client. Mirror the internal
+	// NS/DS lookups, which always query with DO set. CD is preserved
+	// from the copy (it is the cache key and the validation opt-out).
+	if opt := prefetchReq.IsEdns0(); opt != nil {
+		opt.SetDo(true)
+	} else {
+		prefetchReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+	}
 
 	// Route through the cache-less prefetch sub-pipeline so the
 	// refresh reaches the upstream resolver/forwarder instead of
