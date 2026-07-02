@@ -1504,20 +1504,13 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 		return ns.Servers, ns.DSSet, dns.CompareDomainName(origin, q.Name)
 	}
 
-	if !cd {
-		key := cache.Key(q, true)
-		ns, err := r.delegations.Get(key)
-
-		if err == nil && len(ns.DSSet) == 0 {
-			if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
-				r.delegations.Remove(key)
-				q.Name = origin
-				return r.searchCache(q, cd, origin)
-			}
-			zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", true)
-			return ns.Servers, ns.DSSet, dns.CompareDomainName(origin, q.Name)
-		}
-	}
+	// A CD=0 query must NEVER borrow a CD=1 delegation. Delegations are
+	// keyed on the client's CD bit (see processDelegation), so a
+	// proven-insecure CD=0 delegation already lives in this same CD=0
+	// bucket and was returned above. The CD=1 bucket holds only
+	// unvalidated results (CD=1 clients and internal NS/DS lookups);
+	// serving one of those here would strip AD from a signed zone whose
+	// DS lookup transiently returned empty.
 
 	next, end := dns.NextLabel(q.Name, 0)
 
@@ -2044,9 +2037,8 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		if hasList && (!r.dnssec || r.hasTrustAnchors()) {
 			// Temporary cache before lookup. Skip when trust anchors
 			// are unavailable: the DS set could be empty because the
-			// DNSSEC chain was short-circuited, and caching that
-			// would poison CD=false lookups after recovery (CD=false
-			// searchCache falls back to CD=true empty-DS entries).
+			// DNSSEC chain was short-circuited, and caching that empty-DS
+			// entry would make a signed zone look insecure after recovery.
 			r.delegations.Set(key, parentDS, authservers, time.Minute)
 		}
 
@@ -2579,11 +2571,20 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		return resp, errParentDetection
 	}
 
-	// Determine checking disabled state
+	// Determine checking disabled state for the downstream NS-address /
+	// DS sub-lookups (an insecure delegation must not fail them closed).
 	cd := rs.req.CheckingDisabled || len(rs.parentDS) == 0
 
-	// Try nameserver cache
-	key := cache.Key(q, cd)
+	// Key the delegation cache on the CLIENT's CD bit only — never on the
+	// delegation's own insecure-ness. searchCache always looks up with
+	// rs.req.CheckingDisabled (see the resolve() seed), so a proven-insecure
+	// delegation reached by a CD=0 query belongs in the CD=0 bucket where
+	// that lookup finds it. Folding len(parentDS)==0 into the key would file
+	// it under CD=1 instead — and a transient/unvalidated CD=1 delegation
+	// (client or internal NS/DS lookup) could then be served to CD=0 queries,
+	// silently stripping AD from a genuinely signed zone.
+	keyCD := rs.req.CheckingDisabled
+	key := cache.Key(q, keyCD)
 	if cached, err := r.delegations.Get(key); err == nil {
 		return r.resolveWithCachedNameservers(ctx, rs, cached, key, q, cd)
 	}
@@ -2606,10 +2607,9 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		return nil, errNoReachableAuth
 	}
 
-	// Cache delegations. Skip when trust anchors are unavailable so
-	// a CD=true lookup during the outage cannot land an empty-DS
-	// entry that CD=false queries would reuse via searchCache after
-	// recovery (see searchCache CD=false → CD=true empty-DS reuse).
+	// Cache delegations. Skip when trust anchors are unavailable so a
+	// lookup during the outage cannot land an empty-DS entry that later
+	// queries would treat as a proven-insecure delegation after recovery.
 	if !r.dnssec || r.hasTrustAnchors() {
 		r.delegations.Set(key, rs.parentDS, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
 		zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
