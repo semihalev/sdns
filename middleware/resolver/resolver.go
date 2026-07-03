@@ -799,6 +799,16 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					lastErr = verr
 					continue
 				}
+				if ok {
+					// VerifyRRSIG tolerates out-of-zone authority
+					// records (referral remnants for a CNAME target)
+					// by excluding them from validation. Drop them
+					// here so the AD bit never covers unvalidated
+					// data (RFC 4035 §3.2.3); the CNAME chase
+					// re-resolves the target through its own
+					// validated recursion anyway.
+					resp.Ns = dnsutil.FilterRRsToZone(resp.Ns, signer)
+				}
 				resp.AuthenticatedData = ok
 				settled = true
 				break
@@ -1726,7 +1736,7 @@ func (r *Resolver) provenInsecureDelegation(ctx context.Context, zone, qname str
 	for n := zoneCount + 1; n <= len(labels); n++ {
 		candidate := dns.Fqdn(strings.Join(labels[len(labels)-n:], "."))
 
-		dsset, insecure, err := r.authenticatedDelegationDS(ctx, curSigner, candidate, curDS, false)
+		dsset, insecure, err := r.authenticatedDelegationDS(ctx, curSigner, candidate, curDS)
 		if err != nil {
 			return false
 		}
@@ -1750,11 +1760,17 @@ func (r *Resolver) provenInsecureDelegation(ctx context.Context, zone, qname str
 // the validation explicitly; using the normal CD=0 path here can re-enter the
 // same missing-signature fallback and loop on the very proof being requested.
 //
-// allowOptOut is only safe for real referral handling where the response
-// already carried an NS RRset for child. No-referral checks must reject NSEC3
-// opt-out because opt-out proves a delegation may exist, not that this exact
-// owner is one.
-func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child string, parentDS []dns.RR, allowOptOut bool) (dsset []dns.RR, insecure bool, err error) {
+// NSEC3 opt-out coverage is accepted as the DS-denial proof, matching the
+// referral path and other validators (RFC 5155 §6): in an opt-out zone an
+// unsigned delegation has no exact-match NSEC3 by definition, so demanding
+// one turns every legitimate name under the span into a false SERVFAIL
+// (issue #506). This cannot be abused to downgrade signed data: a name that
+// exists in the parent has an exact-match NSEC3 even in opt-out zones, and
+// dnssec.VerifyDelegation tries the exact match first — signature stripping
+// then fails on the missing NS bit. Forged names inside an opt-out span are
+// accepted as insecure, which is the documented opt-out tradeoff every
+// validator shares (RFC 5155 §12.2).
+func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child string, parentDS []dns.RR) (dsset []dns.RR, insecure bool, err error) {
 	dsResp, err := r.lookupDS(ctx, child, true)
 	if err != nil {
 		return nil, false, err
@@ -1777,12 +1793,7 @@ func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child 
 	}
 
 	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(dsResp.Ns, "", dns.TypeNSEC3), signer); len(nsec3Set) > 0 {
-		if allowOptOut {
-			err = dnssec.VerifyDelegation(child, nsec3Set)
-		} else {
-			err = dnssec.VerifyDelegationExact(child, nsec3Set)
-		}
-		if err != nil {
+		if err := dnssec.VerifyDelegation(child, nsec3Set); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -2692,7 +2703,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			// so no authenticated delegation proof is possible or needed.
 			return parentDS, nil
 		}
-		newDSRR, _, err := r.authenticatedDelegationDS(ctx, parentSigner, q.Name, effectiveParentDS, true)
+		newDSRR, _, err := r.authenticatedDelegationDS(ctx, parentSigner, q.Name, effectiveParentDS)
 		if err != nil {
 			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err

@@ -200,6 +200,20 @@ func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bo
 			}
 			name := strings.ToLower(r.Header().Name)
 			if !dnsutil.NameInZone(name, signerZone) {
+				if fromAuthority {
+					// Referral remnant: an upstream that also hosts
+					// ancestors of a CNAME target may append the
+					// target's zone-cut NS and DS-denial records —
+					// owned outside the signer zone — to a positive
+					// answer (issue #506). They are advisory (RFC
+					// 2181 §5.4.1 ranks authority data below answer
+					// data) and the caller re-resolves the target
+					// through its own validated recursion, so they
+					// are excluded from this signer's validation
+					// rather than failing it. Out-of-zone records in
+					// the ANSWER section stay fatal below.
+					continue
+				}
 				if collectErr == nil {
 					collectErr = ErrMissingSigned
 				}
