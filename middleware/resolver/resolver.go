@@ -808,6 +808,18 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					// re-resolves the target through its own
 					// validated recursion anyway.
 					resp.Ns = dnsutil.FilterRRsToZone(resp.Ns, signer)
+
+					// RFC 4035 §5.3.4: a wildcard-expanded answer is only
+					// authentic if the response also proves the owner name
+					// has no closer match than the wildcard. Otherwise a
+					// zone's legitimately-signed wildcard RRSIG can be
+					// replayed over a concrete name that really exists and
+					// returned with AD=1. The NSEC/NSEC3 proof consulted
+					// here was validated by verifyDNSSEC above.
+					if werr := dnssec.VerifyWildcardAnswer(resp); werr != nil {
+						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", formatQuestion(q), "error", werr.Error())
+						return nil, werr
+					}
 				}
 				resp.AuthenticatedData = ok
 				settled = true

@@ -73,6 +73,10 @@ var (
 		Code:    dns.ExtendedErrorCodeDNSBogus,
 		Message: "NSEC3 opt-out validation failed",
 	}
+	ErrWildcardNoDenial = &dnsutil.EDEError{
+		Code:    dns.ExtendedErrorCodeDNSBogus,
+		Message: "Wildcard-expanded answer lacks NSEC/NSEC3 proof of no closer match",
+	}
 )
 
 // DNSKEYMissingForZone returns a DNSKEY-missing error tagged with zone.
