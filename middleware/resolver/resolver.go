@@ -2029,7 +2029,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool) {
+func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, leaseDeadline time.Time) {
 	list := sortHosts(hosts, q.Name)
 
 	for _, name := range list {
@@ -2062,7 +2062,14 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			// are unavailable: the DS set could be empty because the
 			// DNSSEC chain was short-circuited, and caching that empty-DS
 			// entry would make a signed zone look insecure after recovery.
-			r.delegations.Set(key, parentDS, authservers, time.Minute)
+			//
+			// Bound this provisional entry by the parent's remaining lease
+			// (absolute deadline), not a fresh duration: a flat one-minute
+			// route — or a restarted lease across several NS lookups — would
+			// outlive a 1-4s parent referral and keep a withdrawn child
+			// reachable (GHSA-mqfw-f48p-2vc8). A non-positive remainder is
+			// not cached (authority.Cache.Set skips it).
+			r.delegations.Set(key, parentDS, authservers, min(time.Until(leaseDeadline), time.Minute))
 		}
 
 		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
@@ -2527,6 +2534,7 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 type delegationInfo struct {
 	hosts    hostSet
 	nsRecord *dns.NS
+	nsTTL    uint32
 	hasSOA   bool
 }
 
@@ -2541,12 +2549,60 @@ func (r *Resolver) extractDelegationInfo(resp *dns.Msg) delegationInfo {
 		case *dns.SOA:
 			info.hasSOA = true
 		case *dns.NS:
-			info.nsRecord = v
+			h := v.Header()
+			if info.nsRecord == nil {
+				// First NS anchors the referral RRset (owner + class).
+				info.nsRecord = v
+				info.nsTTL = h.Ttl
+				info.hosts[strings.ToLower(v.Ns)] = struct{}{}
+				continue
+			}
+			// A single delegation is one coherent NS RRset: same owner,
+			// same class. Ignore records from a different owner/class
+			// rather than blending their targets and TTLs into one
+			// delegation — a mixed-owner Authority section is not a valid
+			// referral and must not widen the cached nameserver set.
+			if !strings.EqualFold(h.Name, info.nsRecord.Header().Name) || h.Class != info.nsRecord.Header().Class {
+				continue
+			}
+			// Lease for the MINIMUM TTL across the RRset, not the last
+			// record's TTL.
+			if h.Ttl < info.nsTTL {
+				info.nsTTL = h.Ttl
+			}
 			info.hosts[strings.ToLower(v.Ns)] = struct{}{}
 		}
 	}
 
 	return info
+}
+
+// minRRSetTTL returns the smallest TTL among rrs, or 0 when rrs is empty.
+func minRRSetTTL(rrs []dns.RR) uint32 {
+	var m uint32
+	for i, rr := range rrs {
+		if t := rr.Header().Ttl; i == 0 || t < m {
+			m = t
+		}
+	}
+	return m
+}
+
+// progressingReferral reports whether a referral delegating `referral`,
+// received while querying the servers for `authZone` in service of `qname`,
+// legitimately moves resolution forward. It must be a STRICT descendant of
+// the zone we asked (in bailiwick) and an ancestor of the name we are
+// resolving. An equal/shallower self-referral or an unrelated deeper name is
+// rejected, so a former child cannot reinsert its own delegation and an
+// off-path server cannot inject one (GHSA-mqfw-f48p-2vc8).
+func progressingReferral(referral, authZone, qname string) bool {
+	if !dns.IsSubDomain(authZone, referral) {
+		return false // out of bailiwick
+	}
+	if strings.EqualFold(dns.CanonicalName(referral), dns.CanonicalName(authZone)) {
+		return false // same zone — not strictly below the authority
+	}
+	return dns.IsSubDomain(referral, qname) // must be on the path to qname
 }
 
 // filterAuthorityRecords filters authority records for SOA responses.
@@ -2566,12 +2622,42 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	nsrr := nsInfo.nsRecord
 	q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 
+	// Ghost-domain guard (GHSA-mqfw-f48p-2vc8): a referral MUST progress
+	// strictly below the zone we queried. A former child that returns its
+	// own same-depth (or shallower) delegation — e.g. after the parent has
+	// withdrawn it — would otherwise reinsert that delegation and resurrect
+	// the domain. The main lookup loop routes such non-progressing referrals
+	// to configErrors, but pickFallbackResponse can still surface one, so
+	// reject it here before it can reach the delegation cache. The referral
+	// must be a strict descendant of the queried zone AND an ancestor of the
+	// name we are resolving.
+	if !progressingReferral(q.Name, rs.servers.Zone, rs.req.Question[0].Name) {
+		zlog.Debug("Rejecting non-progressing delegation", "zone", rs.servers.Zone, "referral", q.Name, "qname", rs.req.Question[0].Name)
+		return nil, errParentDetection
+	}
+
+	// Capture the parent-granted NS lease as an ABSOLUTE deadline BEFORE
+	// validation. DNSSEC validation and the NS-address lookups below take
+	// time and each cache insertion must expire at this fixed point — using
+	// a fresh duration at every insertion would restart the lease and let a
+	// 4s referral live far longer than 4s (GHSA-mqfw-f48p-2vc8).
+	leaseDeadline := time.Now().Add(time.Duration(nsInfo.nsTTL) * time.Second)
+
 	// DNSSEC validation for delegation
 	newParentDS, err := r.validateDelegation(ctx, rs.req, resp, q, rs.parentDS, rs.servers.Zone)
 	if err != nil {
 		return nil, err
 	}
 	rs.parentDS = newParentDS
+
+	// Bound the lease by the retained DS lifetime. "Has a DS" is separate
+	// from "its TTL": a retained DS with TTL 0 legitimately drives the lease
+	// to zero, so check the length, not whether minRRSetTTL is positive.
+	if len(rs.parentDS) > 0 {
+		if dsDeadline := time.Now().Add(time.Duration(minRRSetTTL(rs.parentDS)) * time.Second); dsDeadline.Before(leaseDeadline) {
+			leaseDeadline = dsDeadline
+		}
+	}
 
 	// Check for parent detection
 	nlevel := dns.CountLabel(q.Name)
@@ -2619,7 +2705,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd)
+	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, leaseDeadline)
 
 	if len(authservers.List) == 0 {
 		if minimized && rs.level < nlevel {
@@ -2634,7 +2720,10 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// lookup during the outage cannot land an empty-DS entry that later
 	// queries would treat as a proven-insecure delegation after recovery.
 	if !r.dnssec || r.hasTrustAnchors() {
-		r.delegations.Set(key, rs.parentDS, authservers, time.Duration(nsrr.Header().Ttl)*time.Second)
+		// time.Until(leaseDeadline): the REMAINING lease, so time spent in
+		// validation and NS-address lookups counts against it instead of
+		// restarting it. A non-positive remainder is not cached.
+		r.delegations.Set(key, rs.parentDS, authservers, time.Until(leaseDeadline))
 		zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 	}
 
