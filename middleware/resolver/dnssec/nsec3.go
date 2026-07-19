@@ -26,6 +26,14 @@ func nsec3Safe(n *dns.NSEC3) bool {
 	return n.Iterations <= maxNSEC3Iterations
 }
 
+// nsec3Covers reports strict NSEC3 interval coverage. An exact owner match
+// proves that the name exists and therefore must never be accepted as a
+// denial-of-existence cover, even if the DNS library's Cover method includes
+// the owner boundary for an ordinary interval.
+func nsec3Covers(n *dns.NSEC3, name string) bool {
+	return !n.Match(name) && n.Cover(name)
+}
+
 func typesSet(set []uint16, types ...uint16) bool {
 	tm := make(map[uint16]struct{}, len(types))
 	for _, t := range types {
@@ -84,7 +92,7 @@ func findCoverer(name string, nsec []dns.RR) ([]uint16, bool, error) {
 		if !nsec3Safe(n) {
 			continue
 		}
-		if n.Cover(name) {
+		if nsec3Covers(n, name) {
 			return n.TypeBitMap, (n.Flags & 1) == 1, nil
 		}
 	}
