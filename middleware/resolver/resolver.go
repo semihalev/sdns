@@ -391,9 +391,18 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	key := strconv.FormatUint(cache.Key(q), 10) + "|" + servers.Zone +
 		"|" + string(cd) + "|" + strconv.FormatUint(servers.Fingerprint(), 10)
 
+	// The leader closure can outlive this caller: TimedDoChan returns on
+	// ctx timeout/cancel and Forgets the key while the closure keeps
+	// running. After we return, req resumes its lifecycle upstack — the
+	// response re-attaches the request OPT and the edns writer mutates it
+	// in place — so an abandoned leader copying req (lookup's per-server
+	// CopyTo) would race on caller-owned memory. Hand the closure its own
+	// private copy, made here while we still exclusively own req.
+	leaderReq := req.Copy()
+
 	// Use TimedDoChan for automatic timeout handling
 	result, shared, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
-		return r.lookup(ctx, rs, req, servers)
+		return r.lookup(ctx, rs, leaderReq, servers)
 	})
 
 	if err != nil {
