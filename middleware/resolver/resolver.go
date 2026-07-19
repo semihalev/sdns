@@ -43,6 +43,15 @@ type Resolver struct {
 	outboundUDPv4 []*net.UDPAddr
 	outboundUDPv6 []*net.UDPAddr
 
+	// resolveTarget, when set, remaps an upstream server address to a dial
+	// target just before exchange dials it. Production leaves it nil (the
+	// UDP fast path is untouched); hermetic tests Store a mapper to redirect
+	// TEST-NET-1 (192.0.2.0/24) glue to loopback listeners so a real
+	// root->parent->child->sub referral chain can be driven in-process. It
+	// is atomic because the background priming goroutine dials concurrently
+	// with a test setting the mapper — a plain field would race.
+	resolveTarget atomic.Pointer[func(addr string) string]
+
 	// glue addrs cache
 	glueV4 *cache.Cache
 	glueV6 *cache.Cache
@@ -108,6 +117,28 @@ type resolveState struct {
 	isRoot    bool
 	extra     []bool
 	requestID uint16
+
+	// cutDeadline is the absolute expiry of the shallowest delegation on
+	// the path descended so far (zero = unbounded, at/above root). A newly
+	// established delegation inherits it via min, so a deep sub-delegation
+	// can never outlive an ancestor cut — the Phoenix downward-delegation
+	// (T2) protection (GHSA-mqfw-f48p-2vc8).
+	cutDeadline time.Time
+}
+
+// minNonZero returns the earlier of two deadlines, treating a zero time as
+// "unbounded" (so it never wins). Zero for both returns zero.
+func minNonZero(a, b time.Time) time.Time {
+	switch {
+	case a.IsZero():
+		return b
+	case b.IsZero():
+		return a
+	case a.Before(b):
+		return a
+	default:
+		return b
+	}
 }
 
 type hostSet map[string]struct{}
@@ -270,7 +301,11 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	q := rs.req.Question[0]
 
 	if rs.isRoot {
-		rs.servers, rs.parentDS, rs.level = r.searchCache(q, rs.req.CheckingDisabled, q.Name)
+		m := r.searchCache(q, rs.req.CheckingDisabled, q.Name)
+		rs.servers, rs.parentDS, rs.level = m.servers, m.parentDS, m.level
+		// Seed the cut deadline from the deepest cached delegation so any
+		// delegation established below it inherits this bound.
+		rs.cutDeadline = minNonZero(rs.cutDeadline, m.deadline)
 	}
 
 	// RFC 7816 query minimization. There are some concerns in RFC.
@@ -1290,11 +1325,21 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 
 	co := AcquireConn()
 
+	// Dial target. In production resolveTarget is nil, so dialAddr == the
+	// server's own address and the UDP fast path below is unchanged. A test
+	// mapper can redirect an advertised address (e.g. TEST-NET-1 glue) to a
+	// loopback listener; when it remaps, we take the string-dial path so the
+	// remapped address is honoured instead of the pre-parsed UDPAddr.
+	dialAddr := server.Addr
+	if m := r.resolveTarget.Load(); m != nil {
+		dialAddr = (*m)(server.Addr)
+	}
+
 	switch {
 	case pooledConn != nil:
 		// Use the pooled TCP connection.
 		co.Conn = pooledConn.Conn
-	case proto == "udp" && server.UDPAddr != nil:
+	case proto == "udp" && server.UDPAddr != nil && dialAddr == server.Addr:
 		// Fast UDP path: net.DialUDP with pre-parsed addresses skips
 		// DialContext's resolveAddrList + dialParallel + internal
 		// context.WithDeadline, which together account for most of
@@ -1309,7 +1354,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	default:
 		// TCP / fallback path: use the full Dialer machinery.
 		d := r.newDialer(ctx, rs, proto, server.IPVersion)
-		co.Conn, err = d.DialContext(ctx, proto, server.Addr)
+		co.Conn, err = d.DialContext(ctx, proto, dialAddr)
 		releaseDialer(d)
 		if err != nil {
 			zlog.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
@@ -1499,7 +1544,18 @@ func (r *Resolver) newDialer(ctx context.Context, rs *resolveState, proto string
 	return d
 }
 
-func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers *authority.Servers, parentDS []dns.RR, level int) {
+// delegationMatch is the result of a delegation-cache walk: the servers to
+// use, the DS set proving the delegation, the descent level, and the absolute
+// expiry of the matched cut (zero for the root, which is unbounded). The
+// deadline seeds resolveState.cutDeadline so descendants inherit it.
+type delegationMatch struct {
+	servers  *authority.Servers
+	parentDS []dns.RR
+	level    int
+	deadline time.Time
+}
+
+func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegationMatch {
 	if q.Qtype == dns.TypeDS {
 		// DS queries are answered by parent zone, move up one label
 		next, end := dns.NextLabel(q.Name, 0)
@@ -1523,7 +1579,12 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 			return r.searchCache(q, cd, origin)
 		}
 		zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
-		return ns.Servers, ns.DSSet, dns.CompareDomainName(origin, q.Name)
+		return delegationMatch{
+			servers:  ns.Servers,
+			parentDS: ns.DSSet,
+			level:    dns.CompareDomainName(origin, q.Name),
+			deadline: ns.ExpiresAt,
+		}
 	}
 
 	// A CD=0 query must NEVER borrow a CD=1 delegation. Delegations are
@@ -1537,7 +1598,8 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) (servers 
 	next, end := dns.NextLabel(q.Name, 0)
 
 	if end {
-		return r.rootServers, nil, 0 // reached root zone, use root servers
+		// Reached root zone: use root servers (unbounded — zero deadline).
+		return delegationMatch{servers: r.rootServers, level: 0}
 	}
 
 	q.Name = q.Name[next:]
@@ -2029,7 +2091,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, leaseDeadline time.Time) {
+func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) {
 	list := sortHosts(hosts, q.Name)
 
 	for _, name := range list {
@@ -2063,13 +2125,14 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			// DNSSEC chain was short-circuited, and caching that empty-DS
 			// entry would make a signed zone look insecure after recovery.
 			//
-			// Bound this provisional entry by the parent's remaining lease
-			// (absolute deadline), not a fresh duration: a flat one-minute
-			// route — or a restarted lease across several NS lookups — would
-			// outlive a 1-4s parent referral and keep a withdrawn child
-			// reachable (GHSA-mqfw-f48p-2vc8). A non-positive remainder is
-			// not cached (authority.Cache.Set skips it).
-			r.delegations.Set(key, parentDS, authservers, min(time.Until(leaseDeadline), time.Minute))
+			// Bound this provisional entry by the (inherited) cut deadline,
+			// stored as an absolute expiry — a flat one-minute route, or a
+			// lease restarted across several NS lookups, would outlive a
+			// 1-4s parent referral and keep a withdrawn child reachable
+			// (GHSA-mqfw-f48p-2vc8). Cap it at one minute so a long-lived cut
+			// still refreshes the provisional set promptly. A past deadline
+			// is not cached (SetUntil skips it).
+			r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
 		}
 
 		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
@@ -2636,12 +2699,13 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		return nil, errParentDetection
 	}
 
-	// Capture the parent-granted NS lease as an ABSOLUTE deadline BEFORE
-	// validation. DNSSEC validation and the NS-address lookups below take
-	// time and each cache insertion must expire at this fixed point — using
-	// a fresh duration at every insertion would restart the lease and let a
-	// 4s referral live far longer than 4s (GHSA-mqfw-f48p-2vc8).
-	leaseDeadline := time.Now().Add(time.Duration(nsInfo.nsTTL) * time.Second)
+	// Capture ONE observation instant BEFORE validation and derive both the
+	// NS and DS deadlines from it. Using a fresh time.Now() after validation
+	// would add the validation latency back onto a short DS lease; anchoring
+	// both to observedAt makes each insertion expire at a fixed point rather
+	// than restarting the lease (GHSA-mqfw-f48p-2vc8).
+	observedAt := time.Now()
+	leaseDeadline := observedAt.Add(time.Duration(nsInfo.nsTTL) * time.Second)
 
 	// DNSSEC validation for delegation
 	newParentDS, err := r.validateDelegation(ctx, rs.req, resp, q, rs.parentDS, rs.servers.Zone)
@@ -2654,10 +2718,16 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// from "its TTL": a retained DS with TTL 0 legitimately drives the lease
 	// to zero, so check the length, not whether minRRSetTTL is positive.
 	if len(rs.parentDS) > 0 {
-		if dsDeadline := time.Now().Add(time.Duration(minRRSetTTL(rs.parentDS)) * time.Second); dsDeadline.Before(leaseDeadline) {
+		if dsDeadline := observedAt.Add(time.Duration(minRRSetTTL(rs.parentDS)) * time.Second); dsDeadline.Before(leaseDeadline) {
 			leaseDeadline = dsDeadline
 		}
 	}
+
+	// Inherit the ancestor cut: a descendant delegation can never outlive
+	// the shallowest delegation on its path (Phoenix T2). This absolute
+	// deadline is stored verbatim (SetUntil), never reconstructed from a
+	// duration, so it cannot be re-inflated by scheduling delay.
+	childDeadline := minNonZero(leaseDeadline, rs.cutDeadline)
 
 	// Check for parent detection
 	nlevel := dns.CountLabel(q.Name)
@@ -2695,6 +2765,12 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	keyCD := rs.req.CheckingDisabled
 	key := cache.Key(q, keyCD)
 	if cached, err := r.delegations.Get(key); err == nil {
+		// Carry the CURRENT referral's deadline into the cached descent.
+		// The cached entry may hold a longer lease than the referral we just
+		// observed (e.g. it was inserted before the parent shortened its NS
+		// TTL); resolveWithCachedNameservers combines this with
+		// cached.ExpiresAt so the shortest applicable cut always wins.
+		rs.cutDeadline = childDeadline
 		return r.resolveWithCachedNameservers(ctx, rs, cached, key, q, cd)
 	}
 
@@ -2705,7 +2781,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, leaseDeadline)
+	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childDeadline)
 
 	if len(authservers.List) == 0 {
 		if minimized && rs.level < nlevel {
@@ -2720,10 +2796,9 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// lookup during the outage cannot land an empty-DS entry that later
 	// queries would treat as a proven-insecure delegation after recovery.
 	if !r.dnssec || r.hasTrustAnchors() {
-		// time.Until(leaseDeadline): the REMAINING lease, so time spent in
-		// validation and NS-address lookups counts against it instead of
-		// restarting it. A non-positive remainder is not cached.
-		r.delegations.Set(key, rs.parentDS, authservers, time.Until(leaseDeadline))
+		// Store the absolute (inherited) deadline verbatim. A past deadline
+		// is not cached (SetUntil skips it).
+		r.delegations.SetUntil(key, rs.parentDS, authservers, childDeadline)
 		zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
 	}
 
@@ -2749,10 +2824,12 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		return nil, errMaxDepth
 	}
 
-	// Continue resolution with new servers
+	// Continue resolution with new servers. Descend the inherited cut
+	// deadline so any deeper delegation is bounded by this one.
 	rs.servers = authservers
 	rs.level = nlevel
 	rs.isRoot = false
+	rs.cutDeadline = childDeadline
 	return r.resolve(ctx, rs)
 }
 
@@ -2929,5 +3006,8 @@ func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rs *resolve
 	rs.servers = cached.Servers
 	rs.parentDS = cached.DSSet
 	rs.isRoot = false
+	// Inherit the cached cut's deadline (defensive min, not overwrite) so a
+	// delegation established below it cannot outlive it.
+	rs.cutDeadline = minNonZero(rs.cutDeadline, cached.ExpiresAt)
 	return r.resolve(ctx, rs)
 }

@@ -9,12 +9,17 @@ import (
 
 // Delegation represents a cache entry holding the authoritative
 // servers for a zone plus the DS RRset that proves the delegation.
+//
+// ExpiresAt is a single immutable absolute expiry (monotonic clock
+// retained). Storing the absolute deadline — rather than a duration
+// re-anchored at insertion — is what lets a descendant delegation inherit
+// an ancestor's shorter lease without a scheduler pause between "compute
+// remaining" and "store" silently re-inflating it (GHSA-mqfw-f48p-2vc8,
+// Phoenix downward-delegation variant).
 type Delegation struct {
-	Servers *Servers
-	DSSet   []dns.RR
-	TTL     time.Duration
-
-	ut time.Time
+	Servers   *Servers
+	DSSet     []dns.RR
+	ExpiresAt time.Time
 }
 
 // Cache type.
@@ -44,19 +49,16 @@ func (n *Cache) Get(key uint64) (*Delegation, error) {
 
 	d := el.(*Delegation)
 
-	// Monotonic elapsed: n.now() and d.ut both retain the monotonic clock
-	// reading (no .UTC()/.Round(), which would strip it), so a wall-clock
-	// step cannot extend or prematurely expire a delegation lease.
-	elapsed := n.now().Sub(d.ut)
-
-	if elapsed >= d.TTL {
+	// now() and ExpiresAt both retain the monotonic clock reading, so a
+	// wall-clock step cannot extend or prematurely expire the lease.
+	if !n.now().Before(d.ExpiresAt) {
 		return nil, cache.ErrCacheExpired
 	}
 
 	return d, nil
 }
 
-// (*Cache).Set stores a delegation entry under the given key.
+// (*Cache).Set stores a delegation entry that expires ttl from now.
 //
 // The lease must honour the parent-granted TTL. The former one-hour lower
 // clamp inflated a short referral TTL (e.g. a 4s delegation) into a one-hour
@@ -73,11 +75,32 @@ func (n *Cache) Set(key uint64, dsSet []dns.RR, servers *Servers, ttl time.Durat
 		ttl = maximumTTL
 	}
 
+	n.store(key, dsSet, servers, n.now().Add(ttl))
+}
+
+// (*Cache).SetUntil stores a delegation with an ABSOLUTE expiry, capped at
+// the 12h ceiling. Resolver writes use this so a parent-granted deadline —
+// possibly inherited from a shorter-lived ancestor — is stored verbatim
+// rather than reconstructed from time.Until(deadline): any delay (including a
+// scheduler pause) between computing the remaining duration and Set's
+// now.Add(ttl) would otherwise restart the lease.
+func (n *Cache) SetUntil(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) {
+	now := n.now()
+	if !expiresAt.After(now) {
+		return
+	}
+	if ceiling := now.Add(maximumTTL); expiresAt.After(ceiling) {
+		expiresAt = ceiling
+	}
+
+	n.store(key, dsSet, servers, expiresAt)
+}
+
+func (n *Cache) store(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) {
 	n.cache.Add(key, &Delegation{
-		Servers: servers,
-		DSSet:   dsSet,
-		TTL:     ttl,
-		ut:      n.now(),
+		Servers:   servers,
+		DSSet:     dsSet,
+		ExpiresAt: expiresAt,
 	})
 }
 
