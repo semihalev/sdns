@@ -83,9 +83,9 @@ parts:
         *) echo "Unsupported architecture: ${CRAFT_ARCH_BUILD_FOR}"; exit 1 ;;
       esac
       
-      wget -q "https://go.dev/dl/go1.26.4.linux-${GOARCH}.tar.gz"
-      tar -C /usr/local -xzf "go1.26.4.linux-${GOARCH}.tar.gz"
-      rm "go1.26.4.linux-${GOARCH}.tar.gz"
+      wget -q "https://go.dev/dl/go1.26.5.linux-${GOARCH}.tar.gz"
+      tar -C /usr/local -xzf "go1.26.5.linux-${GOARCH}.tar.gz"
+      rm "go1.26.5.linux-${GOARCH}.tar.gz"
       
       export PATH=/usr/local/go/bin:$PATH
       export GOROOT=/usr/local/go
