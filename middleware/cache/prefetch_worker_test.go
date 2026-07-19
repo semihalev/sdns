@@ -2,12 +2,46 @@ package cache
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 )
+
+func TestPrefetchQueue_ConcurrentAddAndStop(t *testing.T) {
+	pq := NewPrefetchQueue(0, 256, &CacheMetrics{})
+
+	req := new(dns.Msg)
+	req.SetQuestion("shutdown.example.", dns.TypeA)
+	item := PrefetchRequest{Request: req}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 256 {
+				if !pq.Add(item) {
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	pq.Stop()
+	wg.Wait()
+
+	// Stop is idempotent and a completed stop permanently rejects new work.
+	pq.Stop()
+	if pq.Add(item) {
+		t.Fatal("Add succeeded after PrefetchQueue.Stop")
+	}
+}
 
 // signalingPrefetchQueryer returns a canned response and fires a
 // channel so the test can wait for the worker to run before

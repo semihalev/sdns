@@ -1,6 +1,10 @@
 package middleware
 
-import "github.com/miekg/dns"
+import (
+	"time"
+
+	"github.com/miekg/dns"
+)
 
 // ClientOnly marks a Handler as serving real client traffic only.
 // Middlewares that implement this method returning true are excluded
@@ -24,7 +28,19 @@ type ClientOnly interface {
 // the cache package.
 type Store interface {
 	Get(req *dns.Msg) (*dns.Msg, bool)
-	SetFromResponse(resp *dns.Msg, keyCD bool)
+	// SetFromResponse stores resp keyed on (Question[0], keyCD).
+	// cutUntil bounds the entry's effective lifetime to the
+	// delegation cut that produced it (GHSA-mqfw-f48p-2vc8); zero
+	// means unbounded.
+	SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.Time)
+}
+
+// CutStore is the extended production cache contract. Keeping Store's Phase
+// 1b signature stable avoids forcing plugin/test stores to implement lineage
+// identity before Phase 3 needs it; the built-in cache implements both.
+type CutStore interface {
+	Store
+	SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.Time, cutKey uint64)
 }
 
 // StoreProvider is implemented by handlers that own a Store which

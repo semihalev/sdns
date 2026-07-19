@@ -32,7 +32,7 @@ func (nc *NegativeCache) Get(key uint64) (*CacheEntry, bool) {
 
 	entry := v.(*CacheEntry)
 	if entry.IsExpired() {
-		nc.cache.Remove(key)
+		nc.cache.CompareAndDelete(key, entry)
 		return nil, false
 	}
 

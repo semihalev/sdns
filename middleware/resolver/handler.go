@@ -87,6 +87,14 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if ctx.Value(contextKeyRequestID) == nil {
 		ctx = context.WithValue(ctx, contextKeyRequestID, req.Id)
 	}
+	// Ensure a ResponseMeta sink exists so resolve() can report the
+	// delegation-cut deadline that bounds caching of this answer.
+	// Normally the cache middleware established one already (and
+	// reads it back on WriteMsg); this covers cache-less pipelines,
+	// where the sink is simply never consumed.
+	if middleware.ResponseMetaFrom(ctx) == nil {
+		ctx = middleware.WithResponseMeta(ctx, &ch.Meta)
+	}
 	msg := h.handle(ctx, req)
 
 	_ = w.WriteMsg(msg)

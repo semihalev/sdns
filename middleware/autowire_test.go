@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -46,8 +47,8 @@ func (h *clientOnlyHandler) ClientOnly() bool                        { return tr
 // nopStore implements Store.
 type nopStore struct{}
 
-func (nopStore) Get(*dns.Msg) (*dns.Msg, bool)  { return nil, false }
-func (nopStore) SetFromResponse(*dns.Msg, bool) {}
+func (nopStore) Get(*dns.Msg) (*dns.Msg, bool)             { return nil, false }
+func (nopStore) SetFromResponse(*dns.Msg, bool, time.Time) {}
 
 func TestAutoWire_NilSafe(t *testing.T) {
 	var p *Pipeline

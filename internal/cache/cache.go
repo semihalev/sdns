@@ -149,6 +149,50 @@ func (c *Cache) Remove(key uint64) {
 	c.data.Del(key)
 }
 
+// CompareAndSwap stores value under key only if the value currently
+// stored is identical (==, i.e. pointer identity for pointer-typed
+// values) to old. Returns false — storing nothing — when the key is
+// absent or holds a different value. The check-and-set runs under the
+// key's segment write lock, so a concurrent Add/Remove cannot
+// interleave between the compare and the swap.
+//
+// This is the late-write guard for asynchronous refreshes
+// (GHSA-mqfw-f48p-2vc8): a stale in-flight result may only replace
+// the exact entry it set out to refresh, never state that landed
+// after it started.
+func (c *Cache) CompareAndSwap(key uint64, old, value any) bool {
+	seg := c.data.data.getSegment(key)
+	seg.rwlock.Lock()
+	defer seg.rwlock.Unlock()
+
+	cur, ok := seg.data.Get(key)
+	if !ok || cur != old {
+		return false
+	}
+	seg.data.Put(key, value)
+	return true
+}
+
+// CompareAndDelete removes key only if its current value is identical to old.
+// Expiry cleanup uses this instead of an unconditional Remove: a fresh value
+// may be published after the reader loaded the expired entry, and that newer
+// value must not be deleted by the stale reader.
+func (c *Cache) CompareAndDelete(key uint64, old any) bool {
+	seg := c.data.data.getSegment(key)
+	seg.rwlock.Lock()
+	defer seg.rwlock.Unlock()
+
+	cur, ok := seg.data.Get(key)
+	if !ok || cur != old {
+		return false
+	}
+	if !seg.data.Del(key) {
+		return false
+	}
+	c.data.data.count.Add(-1)
+	return true
+}
+
 // Len returns current size
 func (c *Cache) Len() int {
 	return int(c.data.Len())

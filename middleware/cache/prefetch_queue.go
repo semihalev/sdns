@@ -3,10 +3,12 @@ package cache
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -23,6 +25,8 @@ type PrefetchQueue struct {
 	items   chan PrefetchRequest
 	workers int
 	wg      sync.WaitGroup
+	stop    sync.Once
+	stopped atomic.Bool
 	ctx     context.Context
 	cancel  context.CancelFunc
 	metrics *CacheMetrics
@@ -30,7 +34,7 @@ type PrefetchQueue struct {
 
 // NewPrefetchQueue creates a new prefetch queue.
 func NewPrefetchQueue(workers, queueSize int, metrics *CacheMetrics) *PrefetchQueue {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118 - cancel is stored on the queue and called by Stop
 
 	pq := &PrefetchQueue{
 		items:   make(chan PrefetchRequest, queueSize),
@@ -51,7 +55,27 @@ func NewPrefetchQueue(workers, queueSize int, metrics *CacheMetrics) *PrefetchQu
 
 // (*PrefetchQueue).Add add queues a prefetch request.
 func (pq *PrefetchQueue) Add(req PrefetchRequest) bool {
+	// Never send after shutdown. The queue deliberately remains open:
+	// closing it would race with a cache-hit goroutine already entering Add
+	// and can panic with "send on closed channel". Cancellation is enough to
+	// wake every worker, and the channel is reclaimed with the queue.
+	if pq.stopped.Load() {
+		return false
+	}
+
+	var done <-chan struct{}
+	if pq.ctx != nil {
+		done = pq.ctx.Done()
+	}
 	select {
+	case <-done:
+		return false
+	default:
+	}
+
+	select {
+	case <-done:
+		return false
 	case pq.items <- req:
 		return true
 	default:
@@ -63,8 +87,12 @@ func (pq *PrefetchQueue) Add(req PrefetchRequest) bool {
 
 // (*PrefetchQueue).Stop stop gracefully shuts down the prefetch queue.
 func (pq *PrefetchQueue) Stop() {
-	pq.cancel()
-	close(pq.items)
+	pq.stop.Do(func() {
+		pq.stopped.Store(true)
+		if pq.cancel != nil {
+			pq.cancel()
+		}
+	})
 	pq.wg.Wait()
 }
 
@@ -118,6 +146,13 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 		prefetchReq.SetEdns0(dnsutil.DefaultMsgSize, true)
 	}
 
+	// Give the refresh its own ResponseMeta sink so the resolver in
+	// the sub-pipeline reports the delegation-cut deadline of the
+	// re-resolved answer; the new entry is bounded by it just like
+	// an entry written on the external path.
+	var meta middleware.ResponseMeta
+	ctx = middleware.WithResponseMeta(ctx, &meta)
+
 	// Route through the cache-less prefetch sub-pipeline so the
 	// refresh reaches the upstream resolver/forwarder instead of
 	// its own about-to-expire entry. Local-answer middleware
@@ -137,7 +172,18 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// mutated by upstream middleware; using req.Request.CD
 	// preserves the dedup invariant that CD=1 and CD=0 entries
 	// stay separate.
-	req.Cache.store.SetFromResponseWithKey(req.Key, resp)
+	//
+	// Pointer-CAS write-back (GHSA-mqfw-f48p-2vc8): this refresh
+	// started while req.Entry was live. If newer state replaced it
+	// meanwhile — a withdrawal NXDOMAIN, a re-delegated answer —
+	// storing the stale refresh would resurrect the old answer past
+	// the parent's decision. Only the exact entry that claimed the
+	// prefetch may be replaced.
+	cutUntil, cutKey := meta.Cut()
+	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cutUntil, cutKey) {
+		zlog.Debug("Prefetch dropped, entry superseded", "query", formatQuestion(req.Request.Question[0]))
+		return
+	}
 	pq.metrics.Prefetch()
 
 	if len(resp.Answer) > 0 {

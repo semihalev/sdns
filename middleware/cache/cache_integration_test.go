@@ -209,17 +209,15 @@ func TestCache_Prefetch(t *testing.T) {
 	}
 
 	cache := New(cfg)
-	defer cache.Stop()
 
-	// Stop the prefetch workers before firing the query so the
-	// claim CAS set by cache.ServeDNS stays observable — otherwise
-	// a worker picks the item up, fails (no prefetchQueryer is
-	// wired in unit-test setup), and the deferred
-	// releasePrefetchClaim flips prefetch back to false before the
-	// test reads it. The queue's buffered channel still accepts
-	// the Add; no worker drains it, which is what we want.
-	cache.prefetchQueue.cancel()
-	cache.prefetchQueue.wg.Wait()
+	// Replace the live worker pool with a live zero-worker queue before
+	// firing the query so the claim CAS set by cache.ServeDNS stays
+	// observable. A stopped queue correctly rejects Add; relying on a
+	// canceled queue to keep accepting work would recreate the shutdown
+	// send/close race this test must not require.
+	cache.prefetchQueue.Stop()
+	cache.prefetchQueue = NewPrefetchQueue(0, 1, cache.metrics)
+	defer cache.Stop()
 
 	// Create a short-lived cache entry manually
 	req := new(dns.Msg)
