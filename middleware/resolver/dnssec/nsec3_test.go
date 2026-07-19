@@ -31,6 +31,58 @@ func makeNSEC3(name, next string, optOut bool, types []uint16) *dns.NSEC3 {
 	}
 }
 
+// adjacentNSEC3Hash returns the immediately adjacent base32hex value. It is
+// useful for constructing a narrow, ordinary NSEC3 interval around a name.
+func adjacentNSEC3Hash(t *testing.T, hash string, delta int) string {
+	t.Helper()
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUV"
+
+	b := []byte(hash)
+	fill := byte('0')
+	if delta < 0 {
+		fill = 'V'
+	}
+	for i := len(b) - 1; i >= 0; i-- {
+		idx := strings.IndexByte(alphabet, b[i])
+		if idx < 0 {
+			t.Fatalf("invalid NSEC3 hash %q", hash)
+		}
+		next := idx + delta
+		if next < 0 || next >= len(alphabet) {
+			continue
+		}
+		b[i] = alphabet[next]
+		for j := i + 1; j < len(b); j++ {
+			b[j] = fill
+		}
+		return string(b)
+	}
+
+	t.Fatalf("cannot find adjacent value for NSEC3 hash %q", hash)
+	return ""
+}
+
+func makeNSEC3Coverer(t *testing.T, name, zone string) *dns.NSEC3 {
+	t.Helper()
+	hash := dns.HashName(name, dns.SHA1, 0, "")
+	n := &dns.NSEC3{
+		Hdr: dns.RR_Header{
+			Name:   adjacentNSEC3Hash(t, hash, -1) + "." + dns.Fqdn(zone),
+			Class:  dns.ClassINET,
+			Rrtype: dns.TypeNSEC3,
+			Ttl:    10,
+		},
+		Hash:       dns.SHA1,
+		Iterations: 0,
+		HashLength: 32,
+		NextDomain: adjacentNSEC3Hash(t, hash, 1),
+	}
+	if !n.Cover(name) || n.Match(name) {
+		t.Fatalf("test NSEC3 does not strictly cover %q", name)
+	}
+	return n
+}
+
 func zoneToRecords(t *testing.T, z string) []dns.RR {
 	records := []dns.RR{}
 	tokens := dns.NewZoneParser(strings.NewReader(z), "", "")
@@ -82,6 +134,30 @@ b4um86eghhds6nea196smvmlo4ors995.example. 3600 IN NSEC3 1 0 12 aabbccdd gjeqe526
 	err = VerifyNameError(msg.SetQuestion("a.c.x.w.example.", dns.TypeA), records)
 	if err != nil {
 		t.Fatalf("VerifyNameError failed with RFC5155 Appendix B.1 example: %s", err)
+	}
+}
+
+func TestVerifyNameErrorRejectsExactOwnerAsCoverage(t *testing.T) {
+	const qname = "a.example.com."
+	exact := makeNSEC3(qname, "", false, nil)
+	hash := dns.HashName(qname, exact.Hash, exact.Iterations, exact.Salt)
+	exact.NextDomain = adjacentNSEC3Hash(t, hash, 1)
+	if !exact.Match(qname) || !exact.Cover(qname) {
+		t.Fatal("test requires the DNS library to report both Match and Cover for the exact owner")
+	}
+
+	// The wildcard denial is otherwise valid. The proof is still invalid
+	// because the record offered for next-closer coverage exactly matches the
+	// queried name and therefore proves its existence.
+	wildcardCover := makeNSEC3Coverer(t, "*."+qname, "com.")
+	if wildcardCover.Cover(qname) {
+		t.Fatal("wildcard coverer unexpectedly also covers the queried name")
+	}
+	records := []dns.RR{exact, wildcardCover}
+
+	msg := new(dns.Msg).SetQuestion(qname, dns.TypeA)
+	if err := VerifyNameError(msg, records); err != ErrNSECMissingCoverage {
+		t.Fatalf("exact NSEC3 owner must not prove NXDOMAIN coverage, got %v", err)
 	}
 }
 

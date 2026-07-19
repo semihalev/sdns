@@ -139,6 +139,27 @@ func TestVerifyWildcardAnswer_NSEC3(t *testing.T) {
 	}
 }
 
+func TestVerifyWildcardAnswer_NSEC3ExactOwnerRejected(t *testing.T) {
+	const nextCloser = "secure.example.com."
+	msg := new(dns.Msg)
+	msg.Answer = []dns.RR{
+		aRR(nextCloser),
+		wildcardSig(nextCloser, 2),
+	}
+
+	exact := makeNSEC3(nextCloser, "", false, nil)
+	hash := dns.HashName(nextCloser, exact.Hash, exact.Iterations, exact.Salt)
+	exact.NextDomain = adjacentNSEC3Hash(t, hash, 1)
+	if !exact.Match(nextCloser) || !exact.Cover(nextCloser) {
+		t.Fatal("test requires the DNS library to report both Match and Cover for the exact owner")
+	}
+	msg.Ns = []dns.RR{exact}
+
+	if err := VerifyWildcardAnswer(msg); err != ErrWildcardNoDenial {
+		t.Fatalf("exact NSEC3 owner must not deny the wildcard next closer, got %v", err)
+	}
+}
+
 // bumpHash returns the base32hex-encoded label h shifted by delta in its
 // last character, producing a neighbour hash for building covering NSEC3
 // intervals in tests.

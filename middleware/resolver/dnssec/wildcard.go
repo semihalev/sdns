@@ -81,7 +81,7 @@ func nextCloserDenied(nextCloser string, nsecSet, nsec3Set []dns.RR) bool {
 		if !nsec3Safe(n) {
 			continue
 		}
-		if n.Cover(nextCloser) {
+		if nsec3Covers(n, nextCloser) {
 			return true
 		}
 	}
