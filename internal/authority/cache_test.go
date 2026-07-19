@@ -49,34 +49,57 @@ func Test_Cache(t *testing.T) {
 	nscache.Remove(key)
 }
 
-func Test_CacheSetTTLClamping(t *testing.T) {
+// Test_CacheSetTTL locks in the ghost-domain (GHSA-mqfw-f48p-2vc8) lease
+// semantics: the parent-granted TTL is honoured exactly (no lower floor),
+// only the 12h ceiling is applied, and non-positive TTLs are not cached. The
+// old code floored any sub-1h TTL to one hour, which is what let a withdrawn
+// child survive.
+func Test_CacheSetTTL(t *testing.T) {
 	nscache := NewCache()
-
-	key1 := uint64(1)
-	key2 := uint64(2)
-	key3 := uint64(3)
+	base := time.Now()
+	nscache.now = func() time.Time { return base }
 
 	servers := &Servers{List: []*Server{NewServer("1.2.3.4:53", IPv4)}}
 
-	// Test TTL above maximum (should be clamped to 12h)
-	nscache.Set(key1, nil, servers, 24*time.Hour)
+	const (
+		capped = uint64(1) // 24h -> clamped to 12h
+		short  = uint64(2) // 4s  -> honoured exactly (used to be floored to 1h)
+		zero   = uint64(3) // 0   -> not cached
+		neg    = uint64(4) // <0  -> not cached
+	)
 
-	// Test TTL below minimum (should be clamped to 1h)
-	nscache.Set(key2, nil, servers, 1*time.Minute)
+	nscache.Set(capped, nil, servers, 24*time.Hour)
+	nscache.Set(short, nil, servers, 4*time.Second)
+	nscache.Set(zero, nil, servers, 0)
+	nscache.Set(neg, nil, servers, -time.Second)
 
-	// Test TTL within range
-	nscache.Set(key3, nil, servers, 6*time.Hour)
+	// A 4s delegation is valid at 3s and expired by 5s — proving it was NOT
+	// inflated to the old one-hour floor.
+	nscache.now = func() time.Time { return base.Add(3 * time.Second) }
+	if _, err := nscache.Get(short); err != nil {
+		t.Fatalf("4s delegation should be valid at 3s: %v", err)
+	}
+	nscache.now = func() time.Time { return base.Add(5 * time.Second) }
+	if _, err := nscache.Get(short); err == nil {
+		t.Fatal("4s delegation must be expired by 5s (old code floored it to 1h)")
+	}
 
-	// All should be retrievable
-	ns1, err := nscache.Get(key1)
-	assert.NoError(t, err)
-	assert.NotNil(t, ns1)
+	// 24h TTL is capped to 12h: valid at 11h, expired by 13h.
+	nscache.now = func() time.Time { return base.Add(11 * time.Hour) }
+	if _, err := nscache.Get(capped); err != nil {
+		t.Fatalf("24h TTL should be capped to 12h and valid at 11h: %v", err)
+	}
+	nscache.now = func() time.Time { return base.Add(13 * time.Hour) }
+	if _, err := nscache.Get(capped); err == nil {
+		t.Fatal("24h TTL capped to 12h must be expired by 13h")
+	}
 
-	ns2, err := nscache.Get(key2)
-	assert.NoError(t, err)
-	assert.NotNil(t, ns2)
-
-	ns3, err := nscache.Get(key3)
-	assert.NoError(t, err)
-	assert.NotNil(t, ns3)
+	// Non-positive TTLs are never cached.
+	nscache.now = func() time.Time { return base }
+	if _, err := nscache.Get(zero); err == nil {
+		t.Fatal("zero-TTL delegation must not be cached")
+	}
+	if _, err := nscache.Get(neg); err == nil {
+		t.Fatal("negative-TTL delegation must not be cached")
+	}
 }

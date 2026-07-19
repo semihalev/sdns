@@ -44,7 +44,10 @@ func (n *Cache) Get(key uint64) (*Delegation, error) {
 
 	d := el.(*Delegation)
 
-	elapsed := n.now().UTC().Sub(d.ut)
+	// Monotonic elapsed: n.now() and d.ut both retain the monotonic clock
+	// reading (no .UTC()/.Round(), which would strip it), so a wall-clock
+	// step cannot extend or prematurely expire a delegation lease.
+	elapsed := n.now().Sub(d.ut)
 
 	if elapsed >= d.TTL {
 		return nil, cache.ErrCacheExpired
@@ -54,18 +57,27 @@ func (n *Cache) Get(key uint64) (*Delegation, error) {
 }
 
 // (*Cache).Set stores a delegation entry under the given key.
+//
+// The lease must honour the parent-granted TTL. The former one-hour lower
+// clamp inflated a short referral TTL (e.g. a 4s delegation) into a one-hour
+// lease, which let a withdrawn child zone be kept alive indefinitely from its
+// own authoritative NS answer — the ghost-domain vulnerability
+// (GHSA-mqfw-f48p-2vc8). Only the upper bound is clamped now; a non-positive
+// TTL is not cached at all (caching an already-expired entry is pointless and
+// a zero TTL means "do not cache").
 func (n *Cache) Set(key uint64, dsSet []dns.RR, servers *Servers, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
 	if ttl > maximumTTL {
 		ttl = maximumTTL
-	} else if ttl < minimumTTL {
-		ttl = minimumTTL
 	}
 
 	n.cache.Add(key, &Delegation{
 		Servers: servers,
 		DSSet:   dsSet,
 		TTL:     ttl,
-		ut:      n.now().UTC().Round(time.Second),
+		ut:      n.now(),
 	})
 }
 
@@ -76,6 +88,5 @@ func (n *Cache) Remove(key uint64) {
 
 const (
 	maximumTTL = 12 * time.Hour
-	minimumTTL = 1 * time.Hour
 	defaultCap = 1024 * 256
 )
