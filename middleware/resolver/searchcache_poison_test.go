@@ -50,7 +50,8 @@ func Test_searchCache_CD1DelegationMustNotPoisonCD0(t *testing.T) {
 	// cached, it must fall through to the root and re-establish a
 	// validated chain — NOT borrow the unvalidated CD=1 com. delegation.
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	servers, parentDS, _ := r.searchCache(q, false, q.Name)
+	m := r.searchCache(q, false, q.Name)
+	servers, parentDS := m.servers, m.parentDS
 
 	if servers != nil && len(servers.List) > 0 && servers.List[0].Addr == "192.0.2.66:53" {
 		t.Fatalf("BUG REPRODUCED: a CD=0 query was served the unvalidated CD=1 com. "+

@@ -31,7 +31,8 @@ func Test_resolver(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, len(resp.Answer) > 0, true)
 
-	servers, _, _ := r.searchCache(req.Question[0], req.CheckingDisabled, "google.com.")
+	m := r.searchCache(req.Question[0], req.CheckingDisabled, "google.com.")
+	servers := m.servers
 	assert.Equal(t, true, len(servers.List) > 0)
 	atomic.AddUint32(&servers.ErrorCount, 4)
 

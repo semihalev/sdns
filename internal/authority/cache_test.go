@@ -103,3 +103,65 @@ func Test_CacheSetTTL(t *testing.T) {
 		t.Fatal("negative-TTL delegation must not be cached")
 	}
 }
+
+// Test_CacheSetUntil locks in the absolute-deadline semantics that the
+// Phoenix T2 inheritance fix depends on: the supplied deadline is stored
+// verbatim (never re-anchored), past/equal deadlines are not cached, and the
+// 12h ceiling still applies.
+func Test_CacheSetUntil(t *testing.T) {
+	nscache := NewCache()
+	base := time.Now()
+	nscache.now = func() time.Time { return base }
+
+	servers := &Servers{List: []*Server{NewServer("1.2.3.4:53", IPv4)}}
+
+	const (
+		exact  = uint64(1) // stored verbatim
+		past   = uint64(2) // before now -> not cached
+		atNow  = uint64(3) // equal to now -> not cached
+		capped = uint64(4) // beyond 12h -> capped
+	)
+
+	deadline := base.Add(10 * time.Second)
+	nscache.SetUntil(exact, nil, servers, deadline)
+	nscache.SetUntil(past, nil, servers, base.Add(-time.Second))
+	nscache.SetUntil(atNow, nil, servers, base)
+	nscache.SetUntil(capped, nil, servers, base.Add(24*time.Hour))
+
+	// The absolute deadline is stored exactly as supplied.
+	d, err := nscache.Get(exact)
+	if err != nil {
+		t.Fatalf("SetUntil entry should be cached: %v", err)
+	}
+	if !d.ExpiresAt.Equal(deadline) {
+		t.Fatalf("ExpiresAt = %v, want the supplied deadline %v (re-anchored?)", d.ExpiresAt, deadline)
+	}
+
+	// Valid strictly before the deadline, expired exactly at it.
+	nscache.now = func() time.Time { return deadline.Add(-time.Nanosecond) }
+	if _, err := nscache.Get(exact); err != nil {
+		t.Fatalf("entry should be valid just before its deadline: %v", err)
+	}
+	nscache.now = func() time.Time { return deadline }
+	if _, err := nscache.Get(exact); err == nil {
+		t.Fatal("entry must be expired exactly at its deadline")
+	}
+
+	// Past and now-equal deadlines are never cached.
+	nscache.now = func() time.Time { return base }
+	if _, err := nscache.Get(past); err == nil {
+		t.Fatal("past deadline must not be cached")
+	}
+	if _, err := nscache.Get(atNow); err == nil {
+		t.Fatal("deadline equal to now must not be cached")
+	}
+
+	// A deadline beyond the ceiling is capped to now+12h.
+	d, err = nscache.Get(capped)
+	if err != nil {
+		t.Fatalf("capped entry should be cached: %v", err)
+	}
+	if want := base.Add(12 * time.Hour); !d.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want ceiling %v", d.ExpiresAt, want)
+	}
+}
