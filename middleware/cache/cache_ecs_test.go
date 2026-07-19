@@ -231,7 +231,7 @@ func TestECSCache_PreStage2EntriesStillHit(t *testing.T) {
 	req.SetQuestion("legacy.example.", dns.TypeA)
 	pre := reply(req, "192.0.2.50", 0)
 	sharedKey := internalcache.Key(req.Question[0], false)
-	c.store.SetFromResponseWithKey(sharedKey, pre)
+	c.store.SetFromResponseWithKey(sharedKey, pre, time.Time{}, 0)
 
 	// Plain client lookup hits without an upstream call.
 	h := &echoHandler{aRecord: "should-not-be-used", scopeBits: 0}
@@ -259,7 +259,7 @@ func TestECSCache_SupernetHit(t *testing.T) {
 	scope, err := netip.ParsePrefix("203.0.112.0/22")
 	require.NoError(t, err)
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(key, reply(req, "10.1.1.1", 22))
+	c.store.SetFromResponseScoped(key, reply(req, "10.1.1.1", 22), time.Time{}, 0)
 
 	// Client at 203.0.113.42 — its /24 is 203.0.113.0, which falls
 	// inside 203.0.112.0/22. Lookup probes /24 (miss), /23 (miss),
@@ -329,13 +329,13 @@ func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
 	for _, addr := range []string{"203.0.113.0/24", "198.51.100.0/24"} {
 		scope := netip.MustParsePrefix(addr)
 		key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-		c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24))
+		c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24), time.Time{}, 0)
 		if _, ok := c.store.LookupByKey(key); !ok {
 			t.Fatalf("scoped seed for %s did not land in cache", addr)
 		}
 	}
 	sharedKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
-	c.store.SetFromResponseWithKey(sharedKey, reply(req, "10.0.0.99", 0))
+	c.store.SetFromResponseWithKey(sharedKey, reply(req, "10.0.0.99", 0), time.Time{}, 0)
 
 	c.store.Purge(req.Question[0])
 
@@ -622,7 +622,7 @@ func TestECSCache_PurgeIsCaseInsensitive(t *testing.T) {
 	req.SetQuestion("Mixed.Example.", dns.TypeA)
 	scope := netip.MustParsePrefix("203.0.113.0/24")
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24))
+	c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24), time.Time{}, 0)
 	require.Truef(t, func() bool { _, ok := c.store.LookupByKey(key); return ok }(),
 		"seed did not land in cache")
 
@@ -667,7 +667,7 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 
 	scope := netip.MustParsePrefix("203.0.113.0/24")
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(key, resp)
+	c.store.SetFromResponseScoped(key, resp, time.Time{}, 0)
 
 	entry, ok := c.store.LookupByKey(key)
 	require.True(t, ok, "scoped seed did not land in cache")
@@ -679,7 +679,7 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 	// Unscoped writes must NOT be capped — the cap is per
 	// CacheConfig.ECSMaxTTL gated by `scoped == true`.
 	plainKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
-	c.store.SetFromResponseWithKey(plainKey, resp)
+	c.store.SetFromResponseWithKey(plainKey, resp, time.Time{}, 0)
 	plain, ok := c.store.LookupByKey(plainKey)
 	require.True(t, ok)
 	if plain.ttl <= cfg.ECS.CacheLimitTTL.Duration {

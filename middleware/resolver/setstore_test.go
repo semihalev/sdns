@@ -13,8 +13,8 @@ import (
 // stubStore implements middleware.Store with no-op semantics.
 type stubStore struct{}
 
-func (stubStore) Get(*dns.Msg) (*dns.Msg, bool)  { return nil, false }
-func (stubStore) SetFromResponse(*dns.Msg, bool) {}
+func (stubStore) Get(*dns.Msg) (*dns.Msg, bool)             { return nil, false }
+func (stubStore) SetFromResponse(*dns.Msg, bool, time.Time) {}
 
 // TestDNSHandlerSetStore pins that SetStore installs the store on
 // the underlying Resolver so subQuery can consult it. Auto-wired

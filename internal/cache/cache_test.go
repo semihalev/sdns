@@ -47,6 +47,41 @@ func TestCacheRemove(t *testing.T) {
 	assert.False(t, found, "Item should not be found after removal")
 }
 
+func TestCacheConditionalReplaceAndDelete(t *testing.T) {
+	type value struct{ generation int }
+
+	c := New(4)
+	old := &value{generation: 1}
+	newer := &value{generation: 2}
+	other := &value{generation: 3}
+	c.Add(1, old)
+
+	if c.CompareAndSwap(1, other, newer) {
+		t.Fatal("CompareAndSwap succeeded with a stale expected pointer")
+	}
+	if !c.CompareAndSwap(1, old, newer) {
+		t.Fatal("CompareAndSwap rejected the current pointer")
+	}
+	if got, ok := c.Get(1); !ok || got != newer {
+		t.Fatalf("replacement = %#v, %v; want newer pointer", got, ok)
+	}
+
+	// This is the expiry-cleanup race: a reader that loaded old before the
+	// replacement must not delete newer after it is published.
+	if c.CompareAndDelete(1, old) {
+		t.Fatal("CompareAndDelete removed a newer replacement")
+	}
+	if !c.CompareAndDelete(1, newer) {
+		t.Fatal("CompareAndDelete rejected the current pointer")
+	}
+	if _, ok := c.Get(1); ok {
+		t.Fatal("current pointer was not deleted")
+	}
+	if got := c.Len(); got != 0 {
+		t.Fatalf("cache length = %d after conditional delete, want 0", got)
+	}
+}
+
 func TestCacheLRUEviction(t *testing.T) {
 	// Note: RadicalCache is not LRU, it clears segments for performance
 	// This test verifies size limits are maintained

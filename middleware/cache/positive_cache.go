@@ -35,7 +35,7 @@ func (pc *PositiveCache) Get(key uint64) (*CacheEntry, bool) {
 
 	entry := v.(*CacheEntry)
 	if entry.IsExpired() {
-		pc.cache.Remove(key)
+		pc.cache.CompareAndDelete(key, entry)
 		return nil, false
 	}
 

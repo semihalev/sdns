@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/middleware"
@@ -23,7 +24,7 @@ func (s *stubHitStore) Get(req *dns.Msg) (*dns.Msg, bool) {
 	return s.resp.Copy(), true
 }
 
-func (s *stubHitStore) SetFromResponse(resp *dns.Msg, keyCD bool) {
+func (s *stubHitStore) SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.Time) {
 	s.sets++
 }
 

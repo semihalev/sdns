@@ -79,7 +79,7 @@ func TestStoreGetLookupRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 
 	resp := newTestSuccessResp("example.com.")
-	s.SetFromResponse(resp, false)
+	s.SetFromResponse(resp, false, time.Time{})
 
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
@@ -129,11 +129,11 @@ func TestStorePurge(t *testing.T) {
 	s := newTestStore(t)
 
 	respCDFalse := newTestSuccessResp("purge.com.")
-	s.SetFromResponse(respCDFalse, false)
+	s.SetFromResponse(respCDFalse, false, time.Time{})
 
 	respCDTrue := newTestSuccessResp("purge.com.")
 	respCDTrue.CheckingDisabled = true
-	s.SetFromResponse(respCDTrue, true)
+	s.SetFromResponse(respCDTrue, true, time.Time{})
 
 	// Confirm both sides populated.
 	reqCDFalse := new(dns.Msg)
@@ -166,7 +166,7 @@ func TestCachePurgePublicAPI(t *testing.T) {
 	defer c.Stop()
 
 	resp := newTestSuccessResp("purge.com.")
-	c.store.SetFromResponse(resp, false)
+	c.store.SetFromResponse(resp, false, time.Time{})
 
 	req := new(dns.Msg)
 	req.SetQuestion("purge.com.", dns.TypeA)

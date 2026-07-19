@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // TestPhoenixT2_NestedDelegationInheritsAncestorDeadline is the Phase-1a
@@ -117,6 +118,10 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 	req.SetQuestion("www.sub.ghostzone.", dns.TypeA)
 	req.CheckingDisabled = true
 	ctx := context.WithValue(context.Background(), contextKeyRequestID, req.Id)
+	// Phase 1b seam: the resolution must report the delegation-cut
+	// deadline that bounds caching of this answer into the ctx meta.
+	var meta middleware.ResponseMeta
+	ctx = middleware.WithResponseMeta(ctx, &meta)
 
 	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, true, nil)
 	if err != nil {
@@ -151,6 +156,17 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 	// And it must be far below the 12h it advertised.
 	if subDeleg.ExpiresAt.After(time.Now().Add(time.Hour)) {
 		t.Fatalf("Phoenix T2: nested cut cached for far longer than the ancestor lease: ExpiresAt=%s", subDeleg.ExpiresAt)
+	}
+
+	// Phase 1b: the answer's reported cache bound must be the deepest
+	// cut on the path — exactly the (inherited) sub delegation deadline.
+	if !meta.CutUntil().Equal(subDeleg.ExpiresAt) {
+		t.Fatalf("ResponseMeta.CutUntil = %s, want the answering cut's deadline %s",
+			meta.CutUntil(), subDeleg.ExpiresAt)
+	}
+	ghostKey := cache.Key(dns.Question{Name: "ghostzone.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}, true)
+	if got := meta.CutKey(); got != ghostKey {
+		t.Fatalf("ResponseMeta.CutKey = %#x, want shortest ancestor ghostzone key %#x", got, ghostKey)
 	}
 }
 

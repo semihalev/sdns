@@ -132,7 +132,15 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 // SetFromResponse classifies resp (positive / NXDOMAIN+NODATA /
 // SERVFAIL) and stores it under (resp.Question[0], keyCD). CHAOS
 // signalling responses are skipped, matching ResponseWriter.WriteMsg.
-func (s *Store) SetFromResponse(resp *dns.Msg, keyCD bool) {
+// cutUntil bounds the entry to the delegation cut that produced it; zero
+// means unbounded. This compatibility entry point has no lineage identity.
+func (s *Store) SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.Time) {
+	s.SetFromResponseWithCut(resp, keyCD, cutUntil, 0)
+}
+
+// SetFromResponseWithCut is SetFromResponse plus the delegation identity that
+// supplied cutUntil, retained for the optional Phase-3 generation design.
+func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.Time, cutKey uint64) {
 	if len(resp.Question) == 0 {
 		return
 	}
@@ -141,13 +149,13 @@ func (s *Store) SetFromResponse(resp *dns.Msg, keyCD bool) {
 		(q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL) {
 		return
 	}
-	s.SetFromResponseWithKey(CacheKey{Question: q, CD: keyCD}.Hash(), resp)
+	s.SetFromResponseWithKey(CacheKey{Question: q, CD: keyCD}.Hash(), resp, cutUntil, cutKey)
 }
 
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
-func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg) {
-	s.setFromResponseWithKey(key, resp, false)
+func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
+	s.setFromResponseWithKey(key, resp, false, cutUntil, cutKey)
 }
 
 // SetFromResponseScoped is SetFromResponseWithKey for entries that
@@ -155,11 +163,11 @@ func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg) {
 // PrefetchEligible is false — the prefetch worker has no client IP
 // to derive ECS from, so refreshing a scoped entry would lose its
 // scope and store the wrong-audience answer.
-func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg) {
-	s.setFromResponseWithKey(key, resp, true)
+func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
+	s.setFromResponseWithKey(key, resp, true, cutUntil, cutKey)
 }
 
-func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool) {
+func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, cutUntil time.Time, cutKey uint64) {
 	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
@@ -178,12 +186,16 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool) {
 	}
 
 	newEntry := func(msg *dns.Msg, ttl time.Duration) *CacheEntry {
+		var e *CacheEntry
 		if scoped {
-			e := NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit)
+			e = NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit)
 			e.rateLimKey = key
-			return e
+		} else {
+			e = NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
 		}
-		return NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
+		e.cutUntil = cutUntil
+		e.cutKey = cutKey
+		return e
 	}
 
 	switch mt {
@@ -194,6 +206,46 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool) {
 		ttl := capTTL(s.negative.ttl.Calculate(msgTTL))
 		s.negative.Set(key, newEntry(filtered, ttl))
 	}
+}
+
+// ReplaceIfCurrent stores resp under key only if expected is still
+// the live entry for that key — the pointer-CAS late-write guard for
+// asynchronous refreshes (GHSA-mqfw-f48p-2vc8). A prefetch captures
+// the entry that claimed it; by the time its refresh returns, newer
+// state (a withdrawal NXDOMAIN, a re-delegated answer) may have
+// replaced that entry, and the stale result must be dropped, not
+// stored. Returns whether the replacement happened.
+//
+// Two deliberate asymmetries:
+//   - A SERVFAIL refresh never displaces a positive entry: it only
+//     CASes into the negative cache, so a transient upstream failure
+//     can't evict a still-valid answer.
+//   - The CAS stays within one sub-cache. A negative entry refreshing
+//     to a positive answer is dropped rather than promoted — the two
+//     caches can't be swapped atomically, and the negative entry's
+//     short TTL re-resolves naturally.
+func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg, cutUntil time.Time, cutKey uint64) bool {
+	if expected == nil || len(resp.Question) == 0 {
+		return false
+	}
+
+	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
+	filtered := filterCacheableAnswer(resp)
+	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
+
+	switch mt {
+	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
+		entry := NewCacheEntryWithKey(filtered, s.positive.ttl.Calculate(msgTTL), s.cfg.RateLimit, key)
+		entry.cutUntil = cutUntil
+		entry.cutKey = cutKey
+		return s.positive.cache.CompareAndSwap(key, expected, entry)
+	case dnsutil.TypeServerFailure:
+		entry := NewCacheEntryWithKey(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key)
+		entry.cutUntil = cutUntil
+		entry.cutKey = cutKey
+		return s.negative.cache.CompareAndSwap(key, expected, entry)
+	}
+	return false
 }
 
 // SetEntryWithKey replaces a stored entry directly. Used by

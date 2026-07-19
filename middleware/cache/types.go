@@ -36,6 +36,34 @@ type CacheEntry struct {
 	// entries are not eligible for background refresh — they just
 	// expire normally. PrefetchEligible() reflects this.
 	scoped bool
+
+	// cutUntil bounds the entry's effective lifetime to the
+	// delegation cut that produced the answer (GHSA-mqfw-f48p-2vc8,
+	// answer-cache ghost): an answer must never be served past the
+	// parent-granted lease of the delegation it came from, no matter
+	// how long its own TTL is. Zero means unbounded (forwarder and
+	// local answers, or no learned delegation on the path). Enforced
+	// at read time — remaining() takes the min of the TTL expiry and
+	// this deadline — so it also overrides the configured MinTTL
+	// floor when the cut is shorter.
+	cutUntil time.Time
+
+	// cutKey identifies the delegation cache entry that supplied cutUntil.
+	// It is retained for the optional Phase-3 generation design; Phase 1b
+	// enforcement depends only on cutUntil.
+	cutKey uint64
+}
+
+// remaining returns the entry's effective remaining lifetime at now:
+// the stored TTL minus elapsed time, further bounded by cutUntil.
+func (e *CacheEntry) remaining(now time.Time) time.Duration {
+	rem := e.ttl - now.Sub(e.stored)
+	if !e.cutUntil.IsZero() {
+		if cutRem := e.cutUntil.Sub(now); cutRem < rem {
+			rem = cutRem
+		}
+	}
+	return rem
 }
 
 // NewCacheEntry creates a new cache entry from a DNS message.
@@ -90,8 +118,11 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	}
 
 	entry := &CacheEntry{
-		msg:        msgCopy,
-		stored:     time.Now().UTC(),
+		msg: msgCopy,
+		// Keep the monotonic clock reading. Converting to UTC strips it and
+		// would let a backward wall-clock adjustment extend both the TTL and
+		// an inherited delegation cut.
+		stored:     time.Now(),
 		ttl:        ttl,
 		origTTL:    uint32(ttl.Seconds()),
 		rateLimit:  rateLimit,
@@ -104,9 +135,8 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 
 // (*CacheEntry).ToMsg toMsg creates a response message with updated TTLs.
 func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
-	now := time.Now().UTC()
-	elapsed := now.Sub(e.stored)
-	remainingTTL := e.ttl - elapsed
+	now := time.Now()
+	remainingTTL := e.remaining(now)
 
 	if remainingTTL <= 0 {
 		return nil
@@ -181,12 +211,12 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 
 // (*CacheEntry).IsExpired isExpired checks if the cache entry has expired.
 func (e *CacheEntry) IsExpired() bool {
-	return time.Since(e.stored) >= e.ttl
+	return e.remaining(time.Now()) <= 0
 }
 
 // (*CacheEntry).TTL TTL returns the remaining TTL in seconds.
 func (e *CacheEntry) TTL() int {
-	remaining := e.ttl - time.Since(e.stored)
+	remaining := e.remaining(time.Now())
 	if remaining <= 0 {
 		return 0
 	}

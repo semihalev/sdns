@@ -63,7 +63,7 @@ func (s *cannedDNSSECStore) Get(req *dns.Msg) (*dns.Msg, bool) {
 	return nil, false
 }
 
-func (s *cannedDNSSECStore) SetFromResponse(resp *dns.Msg, keyCD bool) {}
+func (s *cannedDNSSECStore) SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.Time) {}
 
 // Test_provenInsecureDelegation_OptOutSpan reproduces issue #506
 // (variant 1, tether.edge.apple): a signed parent zone that uses

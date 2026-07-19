@@ -390,6 +390,19 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		}
 	}
 
+	// Establish the request tree's ResponseMeta sink: the resolver
+	// (downstream, possibly in a nested sub-pipeline sharing this
+	// ctx) records the delegation-cut deadline into it, and WriteMsg
+	// reads it back to bound the cache entry (GHSA-mqfw-f48p-2vc8).
+	// Reuse an existing ctx meta so nested pipelines fold into the
+	// outermost request's sink; otherwise back it with this chain's
+	// pooled Meta field (zeroed on Chain.Reset).
+	meta := middleware.ResponseMetaFrom(ctx)
+	if meta == nil {
+		meta = &ch.Meta
+		ctx = middleware.WithResponseMeta(ctx, meta)
+	}
+
 	// Use pooled response writer. Restore via defer so a
 	// downstream panic that gets recovered upstream still
 	// unwraps this chain before it returns to the pool; a
@@ -407,11 +420,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// the insert key without re-reading the OPT (which by then
 	// may have been mutated by the edns wrapper on the response).
 	rw.clientScope = clientScope
+	rw.meta = meta
 	ch.Writer = rw
 	defer func() {
 		ch.Writer = w
 		rw.ctx = nil
 		rw.clientScope = netip.Prefix{}
+		rw.meta = nil
 		c.writerPool.Put(rw)
 	}()
 
@@ -683,6 +698,12 @@ type ResponseWriter struct {
 	// — that's how pre-Stage-2 traffic and SCOPE=0 responses keep
 	// the same cache shape they had before.
 	clientScope netip.Prefix
+	// meta is the request tree's ResponseMeta sink, stashed by
+	// Cache.ServeDNS. By the time WriteMsg runs, the resolver
+	// downstream has folded the delegation-cut deadline into it;
+	// the insert bounds the entry with that deadline. Nil when the
+	// writer is used outside ServeDNS.
+	meta *middleware.ResponseMeta
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ResponseWriter interface.
@@ -699,6 +720,21 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
+	// Complete any synchronous CNAME chase before reading ResponseMeta and
+	// publishing the cache entry. A target leg can cross a different (shorter)
+	// delegation cut; storing first would bind the outer CNAME only to its own
+	// longer cut and violate the request-tree "shortest cut wins" invariant.
+	// filterCacheableAnswer below still retains only records belonging to the
+	// original question, so this does not merge the target RRset into the outer
+	// cache entry.
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
+		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
+	}
+
 	// Classify, filter, and store via Store. Key is derived from
 	// the response's CD bit — today's behaviour and the contract
 	// the cache dedup leader and follower agree on.
@@ -710,34 +746,32 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// client (with or without ECS) hits the same entry. SCOPE>0
 	// means the answer is geo-tailored and gets a scoped key,
 	// clamped to the policy ceiling so cardinality stays bounded.
+	// The delegation-cut bound for this response, folded into the
+	// meta sink by the resolver while producing it. Zero (no meta,
+	// or no learned delegation on the path) leaves the entry
+	// unbounded — forwarder and local answers keep today's shape.
+	var (
+		cutUntil time.Time
+		cutKey   uint64
+	)
+	if w.meta != nil {
+		cutUntil, cutKey = w.meta.Cut()
+	}
+
 	if w.clientScope.IsValid() {
 		if respScope, ok := ecs.ReadResponseScope(res); ok {
 			clamped := w.cache.ecsPolicy.ClampScope(respScope, w.clientScope)
 			scopedKey := CacheKey{Question: q, CD: res.CheckingDisabled, Scope: clamped}.Hash()
-			w.cache.store.SetFromResponseScoped(scopedKey, res)
+			w.cache.store.SetFromResponseScoped(scopedKey, res, cutUntil, cutKey)
 		} else {
 			// No SCOPE in response (or SCOPE=0): authority says
 			// "global"; cache shared so future non-ECS clients hit.
 			key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
-			w.cache.store.SetFromResponseWithKey(key, res)
+			w.cache.store.SetFromResponseWithKey(key, res, cutUntil, cutKey)
 		}
 	} else {
 		key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
-		w.cache.store.SetFromResponseWithKey(key, res)
-	}
-
-	// Resolve CNAME chains before sending to client (matching V1
-	// behavior). Depth counter replaces the pre-Phase-3d
-	// !w.Internal() guard; the active request ctx was stashed on
-	// this writer by Cache.ServeDNS so WriteMsg can read it
-	// without the caller plumbing ctx through the
-	// dns.ResponseWriter interface.
-	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
-		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
+		w.cache.store.SetFromResponseWithKey(key, res, cutUntil, cutKey)
 	}
 
 	return w.ResponseWriter.WriteMsg(res)

@@ -54,9 +54,9 @@ func mustRR(t *testing.T, s string) dns.RR {
 // GHSA-mqfw-f48p-2vc8 (ghost / phoenix domain) at the delegation-lease layer.
 // It seeds r.delegations with explicit ip:port servers and drives
 // Resolver.Resolve directly, so it exercises the delegation cache + walk-up.
-// It does NOT cover the answer-cache/prefetch pipeline: a full parent-referral
-// -> answer-cache -> prefetch -> withdrawal test is deferred to the
-// delegation-generation/CAS follow-up.
+// The complementary full parent-referral -> answer-cache -> prefetch ->
+// withdrawal pipeline is covered by
+// TestGhostDomain_AnswerCacheAndPrefetch_FullPipeline.
 //
 // Topology (random loopback ports):
 //   - parent: authoritative for ghostzone. The delegation for loop.ghostzone.
@@ -294,5 +294,51 @@ func TestProgressingReferral(t *testing.T) {
 					tc.referral, tc.authZone, qname, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExtractDelegationInfo_CoherentRRSetAndMinimumTTL(t *testing.T) {
+	resp := new(dns.Msg)
+	resp.Ns = []dns.RR{
+		mustRR(t, "child.example. 300 IN NS ns1.child.example."),
+		mustRR(t, "child.example. 30 IN NS ns2.child.example."),
+		// These records are not members of the anchored owner/class RRset and
+		// must not widen its hosts or shorten/lengthen its lease.
+		mustRR(t, "offpath.example. 1 IN NS ns.offpath.example."),
+		mustRR(t, "child.example. 2 CH NS ns-chaos.child.example."),
+	}
+
+	info := (&Resolver{}).extractDelegationInfo(resp)
+	if info.nsRecord == nil || info.nsRecord.Header().Name != "child.example." {
+		t.Fatalf("anchored NS owner = %v, want child.example.", info.nsRecord)
+	}
+	if info.nsTTL != 30 {
+		t.Fatalf("NS RRset TTL = %d, want minimum coherent TTL 30", info.nsTTL)
+	}
+	if len(info.hosts) != 2 {
+		t.Fatalf("coherent NS hosts = %v, want exactly ns1 and ns2", info.hosts)
+	}
+	for _, host := range []string{"ns1.child.example.", "ns2.child.example."} {
+		if _, ok := info.hosts[host]; !ok {
+			t.Fatalf("coherent NS host %s missing from %v", host, info.hosts)
+		}
+	}
+}
+
+func TestMinRRSetTTL_ZeroWins(t *testing.T) {
+	rrs := []dns.RR{
+		mustRR(t, "child.example. 300 IN DS 12345 13 2 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"),
+		mustRR(t, "child.example. 0 IN DS 12346 13 2 1123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"),
+	}
+	if got := minRRSetTTL(rrs); got != 0 {
+		t.Fatalf("minimum DS RRset TTL = %d, want zero", got)
+	}
+}
+
+func TestMinCut_PreservesAncestorIdentityOnEqualDeadline(t *testing.T) {
+	deadline := time.Now().Add(time.Minute)
+	gotDeadline, gotKey := minCut(deadline, 0x601, deadline, 0x602)
+	if !gotDeadline.Equal(deadline) || gotKey != 0x601 {
+		t.Fatalf("equal minCut = (%v, %#x), want ancestor (%v, %#x)", gotDeadline, gotKey, deadline, uint64(0x601))
 	}
 }
