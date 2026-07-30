@@ -45,10 +45,10 @@ func (c *Client) Exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.
 	if proto == "" {
 		proto = "udp"
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, 0, err
-	}
 	if c.BeforeAttempt != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		if err := c.BeforeAttempt(proto); err != nil {
 			return nil, 0, err
 		}

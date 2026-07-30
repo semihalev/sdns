@@ -109,8 +109,12 @@ func (w *SingleflightWrapper) TimedDoChanWithRole(ctx context.Context, key strin
 	case result := <-ch:
 		return result.Val, result.Shared, ran.Load(), result.Err
 	case <-ctx.Done():
-		// Context cancelled/timed out - forget the key
-		w.Forget(key)
+		// Return promptly to this caller, but do not Forget the shared
+		// generation. A canceling follower cannot safely identify which
+		// generation it joined; deleting by key could erase a newer retry
+		// group and split deduplication into parallel upstream work. The
+		// running closure removes itself on completion, and cleanupLoop is
+		// the bounded backstop for a genuinely stuck call.
 		return nil, false, ran.Load(), ctx.Err()
 	}
 }

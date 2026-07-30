@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,6 +34,57 @@ func enforceWorkLedger(maxOutbound, maxInternal uint32) *middleware.RecursionWor
 		MaxOutboundQueries: maxOutbound,
 		MaxInternalQueries: maxInternal,
 	})
+}
+
+type singleflightRetryBarrierContext struct {
+	context.Context
+
+	firstOnce sync.Once
+	retryOnce sync.Once
+
+	firstArrivals *atomic.Int32
+	retryArrivals *atomic.Int32
+	participants  int32
+	releaseFirst  func()
+	releaseRetry  func()
+}
+
+func (c *singleflightRetryBarrierContext) Done() <-chan struct{} {
+	firstCall := false
+	c.firstOnce.Do(func() {
+		firstCall = true
+		if c.firstArrivals.Add(1) == c.participants {
+			c.releaseFirst()
+		}
+	})
+	if !firstCall {
+		c.retryOnce.Do(func() {
+			if c.retryArrivals.Add(1) == c.participants {
+				c.releaseRetry()
+			}
+		})
+	}
+	return c.Context.Done()
+}
+
+type delayedFirstDoneContext struct {
+	context.Context
+
+	calls        atomic.Int32
+	firstReady   chan struct{}
+	releaseFirst <-chan struct{}
+	retryOnce    sync.Once
+	releaseRetry func()
+}
+
+func (c *delayedFirstDoneContext) Done() <-chan struct{} {
+	if c.calls.Add(1) == 1 {
+		close(c.firstReady)
+		<-c.releaseFirst
+	} else {
+		c.retryOnce.Do(c.releaseRetry)
+	}
+	return c.Context.Done()
 }
 
 func TestRecursionWorkNXNSInternalBudget(t *testing.T) {
@@ -115,6 +167,43 @@ func TestRecursionWorkDetachedIPv6JobHasSharedBudget(t *testing.T) {
 	snapshot := ledger.Snapshot()
 	if snapshot.InternalQueries != cap || !snapshot.InternalExhausted {
 		t.Fatalf("detached IPv6 ledger snapshot = %+v, want used=%d exhausted=true", snapshot, cap)
+	}
+	if err := ledger.EnforcementError(); err != nil {
+		t.Fatalf("best-effort detached job poisoned request tree: %v", err)
+	}
+
+	wire := startAttackWireRecorder(t, func(q dns.Question) *dns.Msg {
+		return &dns.Msg{
+			MsgHdr: dns.MsgHdr{Authoritative: true},
+			Answer: []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: net.IPv4(192, 0, 2, 31),
+			}},
+		}
+	})
+	requiredServers := &authority.Servers{
+		Zone: ".",
+		List: []*authority.Server{
+			authority.NewServer(wire.addr(), authority.IPv4),
+		},
+	}
+	req := new(dns.Msg)
+	req.SetQuestion("required-after-optional.example.", dns.TypeA)
+
+	resp, err := r.Resolve(ctx, req, requiredServers, false, 30, 0, false, nil)
+	if err != nil {
+		t.Fatalf("required resolution after optional rejection: %v", err)
+	}
+	if resp == nil || resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+		t.Fatalf("required response = %#v, want one successful answer", resp)
+	}
+	if got := wire.count(); got != 1 {
+		t.Fatalf("required wire attempts = %d, want 1", got)
 	}
 }
 
@@ -259,15 +348,34 @@ func TestRecursionWorkOutboundRetryCap(t *testing.T) {
 	<-done
 }
 
-func TestRecursionWorkSingleflightFollowerUsesOwnLedger(t *testing.T) {
+func TestRecursionWorkSingleflightFollowersRegroupOnLeaderLimit(t *testing.T) {
+	const followerCount = int32(4)
+
+	testTimeout := time.After(10 * time.Second)
 	firstArrived := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	secondArrived := make(chan struct{})
+	releaseRetry := make(chan struct{})
+	var releaseFirstOnce, releaseRetryOnce sync.Once
+	closeFirst := func() {
+		releaseFirstOnce.Do(func() { close(releaseFirst) })
+	}
+	closeRetry := func() {
+		releaseRetryOnce.Do(func() { close(releaseRetry) })
+	}
+	t.Cleanup(closeFirst)
+	t.Cleanup(closeRetry)
+
 	var calls atomic.Int32
 	wire := startAttackWireRecorder(t, func(q dns.Question) *dns.Msg {
-		if calls.Add(1) == 1 {
+		switch calls.Add(1) {
+		case 1:
 			close(firstArrived)
 			<-releaseFirst
 			return &dns.Msg{MsgHdr: dns.MsgHdr{Rcode: dns.RcodeFormatError}}
+		case 2:
+			close(secondArrived)
+			<-releaseRetry
 		}
 		return &dns.Msg{
 			MsgHdr: dns.MsgHdr{Authoritative: true},
@@ -295,8 +403,10 @@ func TestRecursionWorkSingleflightFollowerUsesOwnLedger(t *testing.T) {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
 	type lookupOutcome struct {
-		resp *dns.Msg
-		err  error
+		index int
+		id    uint16
+		resp  *dns.Msg
+		err   error
 	}
 	leaderLedger := enforceWorkLedger(1, 32)
 	leaderDone := make(chan lookupOutcome, 1)
@@ -309,37 +419,265 @@ func TestRecursionWorkSingleflightFollowerUsesOwnLedger(t *testing.T) {
 		)
 		leaderDone <- lookupOutcome{resp: resp, err: err}
 	}()
-	<-firstArrived
-
-	followerLedger := enforceWorkLedger(4, 32)
-	followerCtx := &releaseOnDoneContext{
-		Context: context.Background(),
-		release: releaseFirst,
-	}
-	followerResp, followerErr := r.groupLookup(
-		followerCtx,
-		&resolveState{req: req, requestID: req.Id, work: followerLedger},
-		req,
-		servers,
-	)
-	if followerErr != nil {
-		t.Fatalf("follower inherited leader policy error: %v", followerErr)
-	}
-	if followerResp == nil || followerResp.Rcode != dns.RcodeSuccess || len(followerResp.Answer) != 1 {
-		t.Fatalf("follower response = %#v, want successful independent lookup", followerResp)
+	select {
+	case <-firstArrived:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for first singleflight leader")
 	}
 
-	leader := <-leaderDone
+	var firstArrivals, retryArrivals atomic.Int32
+	followerLedgers := make([]*middleware.RecursionWorkLedger, followerCount)
+	followerDone := make(chan lookupOutcome, followerCount)
+	for i := range int(followerCount) {
+		followerLedgers[i] = enforceWorkLedger(4, 32)
+		followerReq := req.Copy()
+		followerReq.Id = uint16(100 + i)
+		followerCtx := &singleflightRetryBarrierContext{
+			Context:       context.Background(),
+			firstArrivals: &firstArrivals,
+			retryArrivals: &retryArrivals,
+			participants:  followerCount,
+			releaseFirst:  closeFirst,
+			releaseRetry:  closeRetry,
+		}
+		go func(index int, ctx context.Context, request *dns.Msg, ledger *middleware.RecursionWorkLedger) {
+			resp, err := r.groupLookup(
+				ctx,
+				&resolveState{req: request, requestID: request.Id, work: ledger},
+				request,
+				servers,
+			)
+			followerDone <- lookupOutcome{index: index, id: request.Id, resp: resp, err: err}
+		}(i, followerCtx, followerReq, followerLedgers[i])
+	}
+
+	select {
+	case <-secondArrived:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for regrouped singleflight leader")
+	}
+	for range followerCount {
+		var outcome lookupOutcome
+		select {
+		case outcome = <-followerDone:
+		case <-testTimeout:
+			t.Fatal("timed out waiting for regrouped follower result")
+		}
+		if outcome.err != nil {
+			t.Fatalf("follower %d inherited leader policy error: %v", outcome.index, outcome.err)
+		}
+		if outcome.resp == nil || outcome.resp.Id != outcome.id ||
+			outcome.resp.Rcode != dns.RcodeSuccess || len(outcome.resp.Answer) != 1 {
+			t.Fatalf("follower %d response = %#v, want successful answer with id %d",
+				outcome.index, outcome.resp, outcome.id)
+		}
+	}
+
+	var leader lookupOutcome
+	select {
+	case leader = <-leaderDone:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for exhausted first leader")
+	}
 	if leader.resp != nil || !errors.Is(leader.err, middleware.ErrRecursionWorkLimit) {
 		t.Fatalf("leader outcome = resp:%#v err:%v, want recursion work limit", leader.resp, leader.err)
 	}
 	if snapshot := leaderLedger.Snapshot(); snapshot.OutboundQueries != 1 || !snapshot.OutboundExhausted {
 		t.Fatalf("leader ledger = %+v, want outbound=1 exhausted=true", snapshot)
 	}
-	if snapshot := followerLedger.Snapshot(); snapshot.OutboundQueries != 1 || snapshot.OutboundExhausted {
-		t.Fatalf("follower ledger = %+v, want outbound=1 exhausted=false", snapshot)
+	var followerOutbound uint32
+	for i, ledger := range followerLedgers {
+		snapshot := ledger.Snapshot()
+		followerOutbound += snapshot.OutboundQueries
+		if snapshot.OutboundExhausted {
+			t.Fatalf("follower %d ledger exhausted: %+v", i, snapshot)
+		}
+	}
+	if followerOutbound != 1 {
+		t.Fatalf("follower outbound work = %d, want one regrouped attempt", followerOutbound)
 	}
 	if got := wire.count(); got != 2 {
-		t.Fatalf("wire attempts = %d, want one leader plus one follower attempt", got)
+		t.Fatalf("wire attempts = %d, want one leader plus one regrouped follower attempt", got)
+	}
+}
+
+func TestRecursionWorkSingleflightHealthyFollowerRegroupsPastLowBudgetLeader(t *testing.T) {
+	testTimeout := time.After(10 * time.Second)
+
+	firstArrived := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondArrived := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	releaseHealthy := make(chan struct{})
+	var firstOnce, secondOnce, healthyOnce sync.Once
+	closeFirst := func() {
+		firstOnce.Do(func() { close(releaseFirst) })
+	}
+	closeSecond := func() {
+		secondOnce.Do(func() { close(releaseSecond) })
+	}
+	closeHealthy := func() {
+		healthyOnce.Do(func() { close(releaseHealthy) })
+	}
+	t.Cleanup(closeFirst)
+	t.Cleanup(closeSecond)
+	t.Cleanup(closeHealthy)
+
+	var calls atomic.Int32
+	wire := startAttackWireRecorder(t, func(q dns.Question) *dns.Msg {
+		switch calls.Add(1) {
+		case 1:
+			close(firstArrived)
+			<-releaseFirst
+			return &dns.Msg{MsgHdr: dns.MsgHdr{Rcode: dns.RcodeFormatError}}
+		case 2:
+			close(secondArrived)
+			<-releaseSecond
+			return &dns.Msg{MsgHdr: dns.MsgHdr{Rcode: dns.RcodeFormatError}}
+		default:
+			return &dns.Msg{
+				MsgHdr: dns.MsgHdr{Authoritative: true},
+				Answer: []dns.RR{&dns.A{
+					Hdr: dns.RR_Header{
+						Name:   q.Name,
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					A: net.IPv4(192, 0, 2, 32),
+				}},
+			}
+		}
+	})
+
+	r := newAttackHarnessResolver(&authority.Servers{Zone: "."})
+	servers := &authority.Servers{
+		Zone: ".",
+		List: []*authority.Server{
+			authority.NewServer(wire.addr(), authority.IPv4),
+		},
+	}
+	baseReq := new(dns.Msg)
+	baseReq.SetQuestion("heterogeneous-singleflight-budget.example.", dns.TypeA)
+	baseReq.SetEdns0(dnsutil.DefaultMsgSize, true)
+
+	type lookupOutcome struct {
+		resp *dns.Msg
+		err  error
+	}
+	firstLedger := enforceWorkLedger(1, 32)
+	firstDone := make(chan lookupOutcome, 1)
+	go func() {
+		resp, err := r.groupLookup(
+			context.Background(),
+			&resolveState{req: baseReq, requestID: baseReq.Id, work: firstLedger},
+			baseReq,
+			servers,
+		)
+		firstDone <- lookupOutcome{resp: resp, err: err}
+	}()
+	select {
+	case <-firstArrived:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for first low-budget leader")
+	}
+
+	healthyReq := baseReq.Copy()
+	healthyReq.Id = 300
+	healthyLedger := enforceWorkLedger(4, 32)
+	healthyFirstReady := make(chan struct{})
+	healthyCtx := &delayedFirstDoneContext{
+		Context:      context.Background(),
+		firstReady:   healthyFirstReady,
+		releaseFirst: releaseHealthy,
+		releaseRetry: closeSecond,
+	}
+	healthyDone := make(chan lookupOutcome, 1)
+	go func() {
+		resp, err := r.groupLookup(
+			healthyCtx,
+			&resolveState{req: healthyReq, requestID: healthyReq.Id, work: healthyLedger},
+			healthyReq,
+			servers,
+		)
+		healthyDone <- lookupOutcome{resp: resp, err: err}
+	}()
+	select {
+	case <-healthyFirstReady:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for healthy follower to join first group")
+	}
+
+	lowReq := baseReq.Copy()
+	lowReq.Id = 200
+	lowLedger := enforceWorkLedger(1, 32)
+	lowCtx := &runOnDoneContext{
+		Context: context.Background(),
+		run:     closeFirst,
+	}
+	lowDone := make(chan lookupOutcome, 1)
+	go func() {
+		resp, err := r.groupLookup(
+			lowCtx,
+			&resolveState{req: lowReq, requestID: lowReq.Id, work: lowLedger},
+			lowReq,
+			servers,
+		)
+		lowDone <- lookupOutcome{resp: resp, err: err}
+	}()
+
+	select {
+	case <-secondArrived:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for low-budget regroup leader")
+	}
+	closeHealthy()
+
+	var healthy lookupOutcome
+	select {
+	case healthy = <-healthyDone:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for healthy regrouped follower")
+	}
+	if healthy.err != nil {
+		t.Fatalf("healthy follower inherited regroup leader policy error: %v", healthy.err)
+	}
+	if healthy.resp == nil || healthy.resp.Id != healthyReq.Id ||
+		healthy.resp.Rcode != dns.RcodeSuccess || len(healthy.resp.Answer) != 1 {
+		t.Fatalf("healthy follower response = %#v, want successful answer with id %d",
+			healthy.resp, healthyReq.Id)
+	}
+
+	var low lookupOutcome
+	select {
+	case low = <-lowDone:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for low-budget regroup leader")
+	}
+	if low.resp != nil || !errors.Is(low.err, middleware.ErrRecursionWorkLimit) {
+		t.Fatalf("low-budget regroup outcome = resp:%#v err:%v, want work limit", low.resp, low.err)
+	}
+
+	var first lookupOutcome
+	select {
+	case first = <-firstDone:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for first low-budget leader result")
+	}
+	if first.resp != nil || !errors.Is(first.err, middleware.ErrRecursionWorkLimit) {
+		t.Fatalf("first leader outcome = resp:%#v err:%v, want work limit", first.resp, first.err)
+	}
+
+	if snapshot := firstLedger.Snapshot(); snapshot.OutboundQueries != 1 || !snapshot.OutboundExhausted {
+		t.Fatalf("first leader ledger = %+v, want outbound=1 exhausted=true", snapshot)
+	}
+	if snapshot := lowLedger.Snapshot(); snapshot.OutboundQueries != 1 || !snapshot.OutboundExhausted {
+		t.Fatalf("regroup leader ledger = %+v, want outbound=1 exhausted=true", snapshot)
+	}
+	if snapshot := healthyLedger.Snapshot(); snapshot.OutboundQueries != 1 || snapshot.OutboundExhausted {
+		t.Fatalf("healthy follower ledger = %+v, want outbound=1 exhausted=false", snapshot)
+	}
+	if got := wire.count(); got != 3 {
+		t.Fatalf("wire attempts = %d, want one attempt from each successive leader", got)
 	}
 }

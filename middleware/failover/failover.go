@@ -104,11 +104,16 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
-	client := dnsclient.Client{
-		Proto: "udp",
-		BeforeAttempt: func(string) error {
+	var beforeAttempt func(string) error
+	if middleware.RecursionWorkFrom(w.ctx) != nil {
+		beforeAttempt = func(string) error {
 			return middleware.DebitRecursionWork(w.ctx, middleware.RecursionWorkOutboundQuery)
-		},
+		}
+	}
+
+	client := dnsclient.Client{
+		Proto:         "udp",
+		BeforeAttempt: beforeAttempt,
 	}
 	for _, server := range w.f.servers {
 		// Preserve the historical independent five-second failover window.

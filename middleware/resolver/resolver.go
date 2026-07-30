@@ -187,16 +187,7 @@ const (
 
 // NewResolver return a resolver.
 func NewResolver(cfg *config.Config) *Resolver {
-	recursionFirewall := cfg.RecursionFirewall
-	recursionFirewall.Normalize()
-
-	workMode := middleware.RecursionWorkShadow
-	switch recursionFirewall.Mode {
-	case config.RecursionFirewallModeOff:
-		workMode = middleware.RecursionWorkOff
-	case config.RecursionFirewallModeEnforce:
-		workMode = middleware.RecursionWorkEnforce
-	}
+	workPolicy := middleware.MustRecursionWorkPolicyFromConfig(cfg.RecursionFirewall)
 
 	r := &Resolver{
 		cfg: cfg,
@@ -209,13 +200,9 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		dnssec: cfg.DNSSEC == "on",
 
-		qnameMinLevel: cfg.QnameMinLevel,
-		netTimeout:    defaultTimeout,
-		workPolicy: middleware.RecursionWorkPolicy{
-			Mode:               workMode,
-			MaxOutboundQueries: recursionFirewall.MaxOutboundQueries,
-			MaxInternalQueries: recursionFirewall.MaxInternalQueries,
-		},
+		qnameMinLevel:  cfg.QnameMinLevel,
+		netTimeout:     defaultTimeout,
+		workPolicy:     workPolicy,
 		sfGroup:        NewSingleflightWrapper(),
 		circuitBreaker: newCircuitBreaker(),
 	}
@@ -466,34 +453,38 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	// private copy, made here while we still exclusively own req.
 	leaderReq := req.Copy()
 
-	// Use TimedDoChan for automatic timeout handling
-	result, shared, leader, err := r.sfGroup.TimedDoChanWithRole(ctx, key, func() (any, error) {
-		return r.lookup(ctx, rs, leaderReq, servers)
-	})
-
-	if err != nil {
-		// A work-budget error belongs to the leader's request tree. A
-		// follower has an independent ledger and must compute its own result
-		// instead of inheriting the leader's local policy state. All normal
-		// results retain the existing cross-request deduplication.
-		if shared && !leader && errors.Is(err, middleware.ErrRecursionWorkLimit) {
+	for {
+		// Use TimedDoChan for automatic timeout handling. When a follower
+		// receives the leader's request-local policy error, it re-enters the
+		// same key. The completed call has already been removed by
+		// singleflight, so concurrent followers collapse onto one new leader
+		// without a racy Forget or N parallel lookups. If that leader also
+		// exhausts its own ledger, it returns its local error while the
+		// remaining followers regroup again; each caller's context bounds the
+		// sequence.
+		result, shared, leader, lookupErr := r.sfGroup.TimedDoChanWithRole(ctx, key, func() (any, error) {
 			return r.lookup(ctx, rs, leaderReq, servers)
-		}
-		return nil, err
-	}
+		})
 
-	resp = result.(*dns.Msg)
-	if resp != nil {
-		// Only copy when the response is actually shared with another
-		// goroutine. In the uncontended hot path we own the only
-		// reference and can mutate the ID in place.
-		if shared {
-			resp = resp.Copy()
+		if lookupErr != nil {
+			if shared && !leader && errors.Is(lookupErr, middleware.ErrRecursionWorkLimit) {
+				continue
+			}
+			return nil, lookupErr
 		}
-		resp.Id = req.Id
-	}
 
-	return resp, nil
+		resp = result.(*dns.Msg)
+		if resp != nil {
+			// Only copy when the response is actually shared with another
+			// goroutine. In the uncontended hot path we own the only
+			// reference and can mutate the ID in place.
+			if shared {
+				resp = resp.Copy()
+			}
+			resp.Id = req.Id
+		}
+		return resp, nil
+	}
 }
 
 func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (context.Context, bool) {
@@ -1392,7 +1383,13 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		return nil, ctx.Err()
 	}
 	if rs.work != nil {
-		if err := rs.work.Debit(middleware.RecursionWorkOutboundQuery); err != nil {
+		var err error
+		if middleware.IsBestEffortRecursionWork(ctx) {
+			err = rs.work.DebitBestEffort(middleware.RecursionWorkOutboundQuery)
+		} else {
+			err = rs.work.Debit(middleware.RecursionWorkOutboundQuery)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -2310,6 +2307,11 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, foundv6, hosts hostSet, cd bool) {
+	// IPv6 glue discovery enriches an already usable delegation. It must stop
+	// at the originating request tree's shared cap, but its rejected debit
+	// must not poison the required resolution path.
+	ctx = middleware.WithBestEffortRecursionWork(ctx)
+
 	// Let the main (IPv4) path drain its auth-server rate-limit budget
 	// before we pile on IPv6 probes, but don't spend the full delay
 	// sleeping when ctx (e.g. the 30s v6-lookup budget upstream) has

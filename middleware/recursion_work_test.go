@@ -7,9 +7,72 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
 )
+
+func TestMustRecursionWorkPolicyFromConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.RecursionFirewallConfig
+		want RecursionWorkPolicy
+	}{
+		{
+			name: "omitted defaults to shadow",
+			want: RecursionWorkPolicy{
+				Mode:               RecursionWorkShadow,
+				MaxOutboundQueries: config.DefaultRecursionFirewallMaxOutboundQueries,
+				MaxInternalQueries: config.DefaultRecursionFirewallMaxInternalQueries,
+			},
+		},
+		{
+			name: "off with custom limits",
+			cfg: config.RecursionFirewallConfig{
+				Mode:               config.RecursionFirewallModeOff,
+				MaxOutboundQueries: 9,
+				MaxInternalQueries: 7,
+			},
+			want: RecursionWorkPolicy{
+				Mode:               RecursionWorkOff,
+				MaxOutboundQueries: 9,
+				MaxInternalQueries: 7,
+			},
+		},
+		{
+			name: "enforce with custom limits",
+			cfg: config.RecursionFirewallConfig{
+				Mode:               config.RecursionFirewallModeEnforce,
+				MaxOutboundQueries: 96,
+				MaxInternalQueries: 24,
+			},
+			want: RecursionWorkPolicy{
+				Mode:               RecursionWorkEnforce,
+				MaxOutboundQueries: 96,
+				MaxInternalQueries: 24,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MustRecursionWorkPolicyFromConfig(tt.cfg); got != tt.want {
+				t.Fatalf("policy = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("invalid mode panics", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("invalid programmatic mode did not panic")
+			}
+		}()
+		MustRecursionWorkPolicyFromConfig(config.RecursionFirewallConfig{
+			Mode: "blocking",
+		})
+	})
+}
 
 func TestRecursionWorkLedgerShadowRecordsLimitCrossings(t *testing.T) {
 	ledger := NewRecursionWorkLedger(RecursionWorkPolicy{
@@ -145,6 +208,50 @@ func TestRecursionWorkLedgerEnforceConcurrentExactCap(t *testing.T) {
 					firstErr.Kind, firstErr.Limit, tt.kind, limit)
 			}
 		})
+	}
+}
+
+func TestRecursionWorkLedgerBestEffortRejectionDoesNotLatch(t *testing.T) {
+	ledger := NewRecursionWorkLedger(RecursionWorkPolicy{
+		Mode:               RecursionWorkEnforce,
+		MaxOutboundQueries: 2,
+		MaxInternalQueries: 1,
+	})
+
+	if err := ledger.DebitBestEffort(RecursionWorkInternalQuery); err != nil {
+		t.Fatalf("accepted best-effort debit: %v", err)
+	}
+	err := ledger.DebitBestEffort(RecursionWorkInternalQuery)
+	if !errors.Is(err, ErrRecursionWorkLimit) {
+		t.Fatalf("rejected best-effort debit = %v, want recursion work limit", err)
+	}
+	if err := ledger.EnforcementError(); err != nil {
+		t.Fatalf("best-effort rejection latched terminal provenance: %v", err)
+	}
+
+	snapshot := ledger.Snapshot()
+	if snapshot.InternalQueries != 1 || !snapshot.InternalExhausted {
+		t.Fatalf("best-effort snapshot = %+v, want internal=1 exhausted=true", snapshot)
+	}
+
+	if err := ledger.Debit(RecursionWorkOutboundQuery); err != nil {
+		t.Fatalf("required work was poisoned by optional rejection: %v", err)
+	}
+	if got := ledger.Snapshot().OutboundQueries; got != 1 {
+		t.Fatalf("required outbound work = %d, want 1", got)
+	}
+
+	// A later required rejection must still become terminal even when the
+	// same dimension was first exhausted by best-effort work.
+	if err := ledger.Debit(RecursionWorkInternalQuery); !errors.Is(err, ErrRecursionWorkLimit) {
+		t.Fatalf("required rejection = %v, want recursion work limit", err)
+	}
+	var limitErr *RecursionWorkLimitError
+	if !errors.As(ledger.EnforcementError(), &limitErr) {
+		t.Fatal("required rejection did not latch terminal provenance")
+	}
+	if limitErr.Kind != RecursionWorkInternalQuery {
+		t.Fatalf("latched kind = %v, want internal", limitErr.Kind)
 	}
 }
 

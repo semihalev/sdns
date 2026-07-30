@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,17 @@ type releaseOnDoneContext struct {
 
 func (c *releaseOnDoneContext) Done() <-chan struct{} {
 	c.once.Do(func() { close(c.release) })
+	return c.Context.Done()
+}
+
+type runOnDoneContext struct {
+	context.Context
+	once sync.Once
+	run  func()
+}
+
+func (c *runOnDoneContext) Done() <-chan struct{} {
+	c.once.Do(c.run)
 	return c.Context.Done()
 }
 
@@ -196,6 +208,93 @@ func TestTimedDoChanWithRoleDistinguishesLeaderAndFollower(t *testing.T) {
 	}
 	if got := followerRuns.Load(); got != 0 {
 		t.Fatalf("follower closure ran %d times, want 0", got)
+	}
+}
+
+func TestTimedDoChanCanceledFollowerDoesNotForgetLeader(t *testing.T) {
+	wrapper := NewSingleflightWrapper()
+	testTimeout := time.After(5 * time.Second)
+
+	leaderStarted := make(chan struct{})
+	releaseLeader := make(chan struct{})
+	var releaseLeaderOnce sync.Once
+	closeLeader := func() {
+		releaseLeaderOnce.Do(func() { close(releaseLeader) })
+	}
+	t.Cleanup(closeLeader)
+	leaderDone := make(chan error, 1)
+	go func() {
+		value, _, err := wrapper.TimedDoChan(context.Background(), "cancel-follower", func() (any, error) {
+			close(leaderStarted)
+			<-releaseLeader
+			return "leader-value", nil
+		})
+		if err == nil && value != "leader-value" {
+			err = errors.New("leader received unexpected value")
+		}
+		leaderDone <- err
+	}()
+	select {
+	case <-leaderStarted:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for singleflight leader")
+	}
+
+	followerBase, cancelFollower := context.WithCancel(context.Background())
+	followerJoined := make(chan struct{})
+	followerCtx := &releaseOnDoneContext{
+		Context: followerBase,
+		release: followerJoined,
+	}
+	followerDone := make(chan error, 1)
+	go func() {
+		_, _, err := wrapper.TimedDoChan(followerCtx, "cancel-follower", func() (any, error) {
+			return "unexpected follower value", nil
+		})
+		followerDone <- err
+	}()
+	select {
+	case <-followerJoined:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for follower to join")
+	}
+	cancelFollower()
+	var followerErr error
+	select {
+	case followerErr = <-followerDone:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for canceled follower")
+	}
+	if !errors.Is(followerErr, context.Canceled) {
+		t.Fatalf("canceled follower error = %v, want context.Canceled", followerErr)
+	}
+
+	var replacementRuns atomic.Int32
+	nextCtx := &runOnDoneContext{
+		Context: context.Background(),
+		run:     closeLeader,
+	}
+	value, shared, err := wrapper.TimedDoChan(nextCtx, "cancel-follower", func() (any, error) {
+		replacementRuns.Add(1)
+		return "replacement-value", nil
+	})
+	if err != nil {
+		t.Fatalf("next follower error: %v", err)
+	}
+	if value != "leader-value" || !shared {
+		t.Fatalf("next follower = value:%v shared:%v, want shared leader-value", value, shared)
+	}
+	if got := replacementRuns.Load(); got != 0 {
+		t.Fatalf("replacement closure ran %d times, want 0", got)
+	}
+	var leaderErr error
+	select {
+	case leaderErr = <-leaderDone:
+	case <-testTimeout:
+		t.Fatal("timed out waiting for original leader")
+	}
+	if leaderErr != nil {
+		t.Fatalf("leader error: %v", leaderErr)
 	}
 }
 

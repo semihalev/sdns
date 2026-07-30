@@ -10,6 +10,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -322,6 +323,33 @@ func TestClientExchange_CanceledContextSkipsAttemptHook(t *testing.T) {
 	}
 	if attempts != 0 {
 		t.Fatalf("attempt hook calls = %d, want 0 for canceled context", attempts)
+	}
+}
+
+func TestClientExchange_NilAttemptHookPreservesOperationError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// A nil hook is the firewall-off path. Preserve the historical order in
+	// which the transport starts its own operation instead of adding a new
+	// eager context preflight. This malformed name makes DoH fail while
+	// packing, before it needs an endpoint or HTTP client.
+	req := new(dns.Msg)
+	req.Question = []dns.Question{{
+		Name:   strings.Repeat("a", 64) + ".",
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	}}
+	c := &Client{Proto: "doh"}
+	resp, _, err := c.Exchange(ctx, req, "")
+	if err == nil || !strings.Contains(err.Error(), "pack") {
+		t.Fatalf("exchange error = %v, want DNS packing error", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("exchange error = %v, want operation error before context cancellation", err)
+	}
+	if resp != nil {
+		t.Fatalf("response = %v, want nil", resp)
 	}
 }
 

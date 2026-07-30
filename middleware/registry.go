@@ -88,6 +88,8 @@ func (r *Registry) List() []string {
 // the registry lock, so they may do heavy work (open files, spawn
 // goroutines) without starving concurrent List calls.
 func (r *Registry) Build(cfg *config.Config) *Pipeline {
+	workPolicy := MustRecursionWorkPolicyFromConfig(cfg.RecursionFirewall)
+
 	r.mu.Lock()
 	order := make([]string, len(r.order))
 	copy(order, r.order)
@@ -106,22 +108,6 @@ func (r *Registry) Build(cfg *config.Config) *Pipeline {
 		handlers = append(handlers, h)
 		byName[h.Name()] = h
 		zlog.Debug("Middleware registered", "name", h.Name(), "index", i)
-	}
-
-	rf := cfg.RecursionFirewall
-	rf.Normalize()
-
-	mode := RecursionWorkShadow
-	switch rf.Mode {
-	case config.RecursionFirewallModeOff:
-		mode = RecursionWorkOff
-	case config.RecursionFirewallModeEnforce:
-		mode = RecursionWorkEnforce
-	}
-	workPolicy := RecursionWorkPolicy{
-		Mode:               mode,
-		MaxOutboundQueries: rf.MaxOutboundQueries,
-		MaxInternalQueries: rf.MaxInternalQueries,
 	}
 
 	return newPipeline(handlers, byName, order, workPolicy)

@@ -189,6 +189,13 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	defer func() { req.CheckingDisabled = clientCD }()
 
+	var beforeAttempt func(string) error
+	if middleware.RecursionWorkFrom(ctx) != nil {
+		beforeAttempt = func(string) error {
+			return middleware.DebitRecursionWork(ctx, middleware.RecursionWorkOutboundQuery)
+		}
+	}
+
 	for _, server := range f.servers {
 		// Build a lightweight client per upstream. For DoH this
 		// references the reused, pinned-IP http.Client created at
@@ -196,11 +203,9 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// forwarder's TLS config dynamically. The question-section
 		// guard and ID match live inside Exchange.
 		client := dnsclient.Client{
-			Proto:   server.Proto,
-			Timeout: f.dialTimeout,
-			BeforeAttempt: func(string) error {
-				return middleware.DebitRecursionWork(ctx, middleware.RecursionWorkOutboundQuery)
-			},
+			Proto:         server.Proto,
+			Timeout:       f.dialTimeout,
+			BeforeAttempt: beforeAttempt,
 		}
 		switch server.Proto {
 		case "doh":

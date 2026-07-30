@@ -113,18 +113,34 @@ func NewRecursionWorkLedger(policy RecursionWorkPolicy) *RecursionWorkLedger {
 }
 
 // Debit reserves one unit of kind. Shadow mode records crossings but always
-// permits work. Enforce mode never lets an accepted counter exceed its cap.
-// Work is never refunded: failed, cancelled, and losing attempts consumed the
-// resource they started.
+// permits work. Enforce mode never lets an accepted counter exceed its cap and
+// records the rejection as terminal provenance for the request tree. Work is
+// never refunded: failed, cancelled, and losing attempts consumed the resource
+// they started.
 func (l *RecursionWorkLedger) Debit(kind RecursionWorkKind) error {
+	return l.debit(kind, true)
+}
+
+// DebitBestEffort reserves work for an optional branch. It shares the same
+// counters and returns the same limit error to stop that branch, but a rejected
+// debit does not make an otherwise successful request fail later via
+// EnforcementError. Exhaustion remains visible in the tree snapshot and
+// metrics.
+func (l *RecursionWorkLedger) DebitBestEffort(kind RecursionWorkKind) error {
+	return l.debit(kind, false)
+}
+
+func (l *RecursionWorkLedger) debit(kind RecursionWorkKind, latchRejection bool) error {
 	if l == nil || !l.policy.Enabled() {
 		return nil
 	}
 
 	counter, limit, bit := l.dimension(kind)
 	if l.policy.Mode == RecursionWorkShadow {
-		if counter.Add(1) > limit {
-			l.markExhausted(kind, bit)
+		// Exactly one goroutine observes the crossing, so work beyond the
+		// limit does not repeat the atomic exhaustion update.
+		if counter.Add(1) == limit+1 {
+			l.markExhausted(kind, bit, false)
 		}
 		return nil
 	}
@@ -132,7 +148,7 @@ func (l *RecursionWorkLedger) Debit(kind RecursionWorkKind) error {
 	for {
 		used := counter.Load()
 		if used >= limit {
-			l.markExhausted(kind, bit)
+			l.markExhausted(kind, bit, latchRejection)
 			return &RecursionWorkLimitError{Kind: kind, Limit: limit}
 		}
 		if counter.CompareAndSwap(used, used+1) {
@@ -150,9 +166,11 @@ func (l *RecursionWorkLedger) dimension(kind RecursionWorkKind) (*atomic.Uint32,
 	}
 }
 
-func (l *RecursionWorkLedger) markExhausted(kind RecursionWorkKind, bit uint32) {
+func (l *RecursionWorkLedger) markExhausted(kind RecursionWorkKind, bit uint32, latchRejection bool) {
 	l.exhausted.Or(bit)
-	l.first.CompareAndSwap(0, uint32(kind)+1)
+	if latchRejection {
+		l.first.CompareAndSwap(0, uint32(kind)+1)
+	}
 }
 
 // EnforcementError returns the first rejected dimension in enforce mode.
@@ -245,12 +263,27 @@ func (l *RecursionWorkLedger) release() {
 // goroutines. This avoids reloading a pooled ResponseMeta after its Chain has
 // been reset for another request.
 type recursionWorkKeyType struct{}
+type recursionWorkBestEffortKeyType struct{}
 
 var recursionWorkKey = &recursionWorkKeyType{}
+var recursionWorkBestEffortKey = &recursionWorkBestEffortKeyType{}
 
 // WithRecursionWork returns a derived context carrying the exact ledger.
 func WithRecursionWork(ctx context.Context, ledger *RecursionWorkLedger) context.Context {
 	return context.WithValue(ctx, recursionWorkKey, ledger)
+}
+
+// WithBestEffortRecursionWork marks optional work that must stop at the shared
+// cap without turning a successful required branch into a policy failure.
+func WithBestEffortRecursionWork(ctx context.Context) context.Context {
+	return context.WithValue(ctx, recursionWorkBestEffortKey, struct{}{})
+}
+
+// IsBestEffortRecursionWork reports whether work debited through ctx belongs to
+// an optional branch.
+func IsBestEffortRecursionWork(ctx context.Context) bool {
+	_, ok := ctx.Value(recursionWorkBestEffortKey).(struct{})
+	return ok
 }
 
 // RecursionWorkFrom returns the request-tree ledger, if one exists. The
@@ -294,6 +327,9 @@ func EnsureRecursionWork(ctx context.Context, policy RecursionWorkPolicy) (conte
 // DebitRecursionWork debits the current tree when accounting is active.
 func DebitRecursionWork(ctx context.Context, kind RecursionWorkKind) error {
 	if ledger := RecursionWorkFrom(ctx); ledger != nil {
+		if IsBestEffortRecursionWork(ctx) {
+			return ledger.DebitBestEffort(kind)
+		}
 		return ledger.Debit(kind)
 	}
 	return nil
@@ -325,6 +361,9 @@ var (
 		Help: "Recursion request trees that exhausted a work budget",
 	}, []string{"reason", "mode"})
 
+	// internal/metric intentionally shards scalar counters only; histograms
+	// remain native Prometheus collectors because bucket observations cannot
+	// use its delta-flush model.
 	recursionFanoutRatio = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "dns_recursion_fanout_ratio",
 		Help:    "Outbound recursive transport attempts per resolution tree",
