@@ -10,13 +10,12 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
-// Store is the cache backing for the cache middleware. It owns nothing
-// directly — the answer and failure sub-caches are constructed by
-// Cache.New and shared with Store — but it centralises classification,
-// keying, and TTL handling so callers outside ServeDNS (resolver
-// sub-queries, queryer-driven prefetch, future API purge wiring)
-// don't need to understand the wire-write rules in
-// ResponseWriter.WriteMsg.
+// Store is the cache backing for the cache middleware. The answer and failure
+// sub-caches are constructed by Cache.New and shared with Store; Store owns
+// the separately bounded RFC 8020 cut index. It centralises classification,
+// keying, and TTL handling so callers outside ServeDNS (resolver sub-queries,
+// queryer-driven prefetch, future API purge wiring) don't need to understand
+// the wire-write rules in ResponseWriter.WriteMsg.
 //
 // SetFromResponse keys on the caller-supplied keyCD rather than on
 // resp.CheckingDisabled to make the keying contract explicit at every
@@ -25,10 +24,11 @@ import (
 // is the kind of thing that splits CD=1 and CD=0 lookups across
 // stale entries when a future change forgets to restore.
 type Store struct {
-	positive *PositiveCache
-	negative *NegativeCache
-	failure  *FailureCache
-	cfg      CacheConfig
+	positive     *PositiveCache
+	negative     *NegativeCache
+	failure      *FailureCache
+	nxDomainCuts *nxDomainCutCache
+	cfg          CacheConfig
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
@@ -46,7 +46,30 @@ func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig,
 			MaxTTL:     DefaultFailureMaxTTL,
 		})
 	}
-	return &Store{positive: positive, negative: negative, failure: failure, cfg: cfg}
+
+	// Keep RFC 8020 state separately bounded so attacker-chosen denied names
+	// cannot evict ordinary positive answers. Sixteenth-of-cache is enough to
+	// retain useful subtree cuts while adding at most 6.25% to the configured
+	// answer-cache cardinality.
+	cutSize := cfg.Size / 16
+	if cutSize < 1 {
+		cutSize = 1
+	}
+	cutMaxTTL := cfg.NegativeTTL
+	if cutMaxTTL <= 0 {
+		cutMaxTTL = cfg.MaxTTL
+	}
+	if cfg.MaxTTL > 0 && cutMaxTTL > cfg.MaxTTL {
+		cutMaxTTL = cfg.MaxTTL
+	}
+
+	return &Store{
+		positive:     positive,
+		negative:     negative,
+		failure:      failure,
+		nxDomainCuts: newNXDomainCutCache(cutSize, cutMaxTTL),
+		cfg:          cfg,
+	}
 }
 
 // Lookup returns the cache entry for req without materialising a
@@ -138,6 +161,15 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 		}
 	}
 
+	if !req.CheckingDisabled {
+		if cut, ok := s.LookupNXDomainCut(req); ok {
+			if msg := cut.response(req); msg != nil {
+				nxDomainCutHits.Inc()
+				return msg, true
+			}
+		}
+	}
+
 	// Get is also used by resolver-private subqueries, which deliberately do
 	// not inherit the client's ECS audience. Keep RFC 9520 failure lookup
 	// unscoped here; request paths carrying ECS call LookupFailure directly
@@ -147,6 +179,32 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 		return hit.Response(req), true
 	}
 	return nil, false
+}
+
+// LookupNXDomainCut returns the closest locally validated RFC 8020 cut that
+// covers req. CD=1 is always a miss: checking-disabled clients explicitly
+// bypass locally synthesized authenticated denial state.
+func (s *Store) LookupNXDomainCut(req *dns.Msg) (*nxDomainCutEntry, bool) {
+	if s == nil || s.nxDomainCuts == nil || req == nil ||
+		len(req.Question) == 0 || req.CheckingDisabled {
+		return nil, false
+	}
+	return s.nxDomainCuts.lookup(req.Question[0])
+}
+
+// RecordNXDomainCut stores a locally validated terminal NXDOMAIN proof.
+// deniedName is the exact authoritative query cycle that returned NXDOMAIN;
+// it must never be inferred from the SOA owner.
+func (s *Store) RecordNXDomainCut(
+	proof *dns.Msg,
+	deniedName string,
+	zone string,
+	cutUntil time.Time,
+) bool {
+	if s == nil || s.nxDomainCuts == nil {
+		return false
+	}
+	return s.nxDomainCuts.record(proof, deniedName, zone, cutUntil)
 }
 
 // LookupFailure returns an active exact or closest-ancestor RFC 9520 failure.
@@ -411,6 +469,9 @@ func (s *Store) Purge(q dns.Question) {
 	if s.failure != nil {
 		s.failure.PurgeQuestion(q)
 	}
+	if s.nxDomainCuts != nil {
+		s.nxDomainCuts.purge(q)
+	}
 	for _, cd := range []bool{false, true} {
 		key := CacheKey{Question: q, CD: cd}.Hash()
 		s.positive.Remove(key)
@@ -456,6 +517,16 @@ func (s *Store) NegativeLen() int { return s.negative.Len() }
 
 // FailureLen returns retained active and expired RFC 9520 failure states.
 func (s *Store) FailureLen() int { return s.failure.Len() }
+
+// NXDomainCutLen returns retained locally validated RFC 8020 cuts.
+func (s *Store) NXDomainCutLen() int { return s.nxDomainCuts.len() }
+
+// Stop releases background resources owned by Store-only sub-caches.
+func (s *Store) Stop() {
+	if s != nil {
+		s.nxDomainCuts.stop()
+	}
+}
 
 // ForEach iterates over positive then negative entries. Returning
 // false from fn stops iteration. Iteration is not atomic with

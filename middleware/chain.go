@@ -35,6 +35,32 @@ type cachedFailureResponseSet struct {
 	messages map[*dns.Msg]uint32
 }
 
+// ValidatedDenial is resolver-authenticated NXDOMAIN provenance. It is carried
+// out of band because neither RcodeNameError nor the AD bit proves that this
+// resolver validated the denial itself.
+//
+// Values are copied into ResponseMeta and never mutated there. DeniedName is
+// the name proven not to exist; Zone is the signed zone that supplied the
+// proof.
+type ValidatedDenial struct {
+	DeniedName string
+	Zone       string
+	// Proof is the original response whose denial proof the resolver
+	// authenticated. Middleware may propagate the provenance to a replacement
+	// response, but consumers must derive cached proof material from this
+	// source rather than from the replacement's possibly rewritten sections.
+	Proof *dns.Msg
+}
+
+// validatedDenialResponseSet binds validated denial provenance to the exact
+// response that was authenticated. Pointer identity is deliberate: dns.Msg is
+// mutable, and a copy or independently produced NXDOMAIN has not inherited the
+// proof merely because its wire-visible fields happen to match.
+type validatedDenialResponseSet struct {
+	mu       sync.RWMutex
+	messages map[*dns.Msg]ValidatedDenial
+}
+
 type ResponseMeta struct {
 	// cut is an atomic pointer to an immutable deadline. Resolver work can
 	// fan out into concurrent NS-address sub-queries that share the request
@@ -57,6 +83,11 @@ type ResponseMeta struct {
 	// Reset detaches the set rather than mutating it, matching the lifetime
 	// rules for work and attempts above.
 	cachedFailures atomic.Pointer[cachedFailureResponseSet]
+
+	// validatedDenials points at immutable, exact-response NXDOMAIN
+	// provenance produced by this resolver. Reset detaches the complete set so
+	// a pooled Chain cannot expose one request's validation to the next.
+	validatedDenials atomic.Pointer[validatedDenialResponseSet]
 }
 
 // (*ResponseMeta).BoundCut folds a delegation-cut deadline into the
@@ -124,6 +155,7 @@ func (m *ResponseMeta) Reset() {
 		m.work.Store(nil)
 		m.attempts.Store(nil)
 		m.cachedFailures.Store(nil)
+		m.validatedDenials.Store(nil)
 	}
 }
 
@@ -179,6 +211,58 @@ func (m *ResponseMeta) IsCachedFailureResponse(msg *dns.Msg) bool {
 	marked := markers.messages[msg] > 0
 	markers.mu.RUnlock()
 	return marked
+}
+
+func (m *ResponseMeta) markValidatedDenialResponse(
+	msg, proof *dns.Msg,
+	denial ValidatedDenial,
+) bool {
+	if m == nil || msg == nil || proof == nil ||
+		msg.Rcode != dns.RcodeNameError || proof.Rcode != dns.RcodeNameError ||
+		denial.DeniedName == "" || denial.Zone == "" {
+		return false
+	}
+
+	// Store canonical values so later consumers can use the provenance as a
+	// stable DNS identity without depending on a caller's presentation case.
+	denial.DeniedName = dns.CanonicalName(denial.DeniedName)
+	denial.Zone = dns.CanonicalName(denial.Zone)
+	denial.Proof = proof
+
+	denials := m.validatedDenials.Load()
+	if denials == nil {
+		candidate := &validatedDenialResponseSet{
+			messages: make(map[*dns.Msg]ValidatedDenial),
+		}
+		if m.validatedDenials.CompareAndSwap(nil, candidate) {
+			denials = candidate
+		} else {
+			denials = m.validatedDenials.Load()
+		}
+	}
+
+	denials.mu.Lock()
+	existing, exists := denials.messages[msg]
+	if !exists {
+		denials.messages[msg] = denial
+	}
+	denials.mu.Unlock()
+	return !exists || existing == denial
+}
+
+func (m *ResponseMeta) validatedDenialForResponse(msg *dns.Msg) (ValidatedDenial, bool) {
+	if m == nil || msg == nil || msg.Rcode != dns.RcodeNameError {
+		return ValidatedDenial{}, false
+	}
+	denials := m.validatedDenials.Load()
+	if denials == nil {
+		return ValidatedDenial{}, false
+	}
+
+	denials.mu.RLock()
+	denial, ok := denials.messages[msg]
+	denials.mu.RUnlock()
+	return denial, ok
 }
 
 // EnsureResolutionAttemptGuard returns the request tree's retry guard,
@@ -248,6 +332,41 @@ func WithResponseMeta(ctx context.Context, m *ResponseMeta) context.Context {
 func ResponseMetaFrom(ctx context.Context) *ResponseMeta {
 	m, _ := ctx.Value(responseMetaKey).(*ResponseMeta)
 	return m
+}
+
+// MarkValidatedDenialResponse attaches explicit, resolver-local validation
+// provenance to an exact NXDOMAIN response. It intentionally does not inspect
+// or trust the response's AD bit.
+func MarkValidatedDenialResponse(ctx context.Context, msg *dns.Msg, denial ValidatedDenial) {
+	if meta := ResponseMetaFrom(ctx); meta != nil {
+		_ = meta.markValidatedDenialResponse(msg, msg, denial)
+	}
+}
+
+// ValidatedDenialForResponse returns resolver-local validation provenance for
+// this exact NXDOMAIN response. A copied or independently constructed message
+// never inherits the mark.
+func ValidatedDenialForResponse(ctx context.Context, msg *dns.Msg) (ValidatedDenial, bool) {
+	if meta := ResponseMetaFrom(ctx); meta != nil {
+		return meta.validatedDenialForResponse(msg)
+	}
+	return ValidatedDenial{}, false
+}
+
+// PropagateValidatedDenialResponse copies exact-response provenance from one
+// NXDOMAIN response identity to another. This is the only supported way for a
+// middleware that replaces a response object to preserve validated denial
+// metadata; ordinary dns.Msg copying does not do so.
+func PropagateValidatedDenialResponse(ctx context.Context, from, to *dns.Msg) bool {
+	denial, ok := ValidatedDenialForResponse(ctx, from)
+	if !ok || to == nil || to.Rcode != dns.RcodeNameError {
+		return false
+	}
+	meta := ResponseMetaFrom(ctx)
+	if meta == nil {
+		return false
+	}
+	return meta.markValidatedDenialResponse(to, denial.Proof, denial)
 }
 
 // Chain carries per-request state through the middleware pipeline.

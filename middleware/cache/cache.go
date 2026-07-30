@@ -198,7 +198,7 @@ func New(cfg *config.Config) *Cache {
 
 	// Register metrics instance for Prometheus hit rate calculation
 	SetMetricsInstance(c.metrics)
-	SetCacheSizeFuncs(c.positive.Len, c.negative.Len, c.failure.Len)
+	SetCacheSizeFuncs(c.positive.Len, c.negative.Len, c.failure.Len, c.store.NXDomainCutLen)
 
 	return c
 }
@@ -361,6 +361,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			return
 		}
 	}
+	if cut := c.lookupNXDomainCut(req, clientScope); cut != nil {
+		if c.handleNXDomainCutHit(ctx, ch, cut) {
+			c.metrics.Hit()
+			nxDomainCutHits.Inc()
+			return
+		}
+	}
 	if hit, ok := c.store.LookupFailure(req, clientScope); ok {
 		c.metrics.Hit()
 		failureCacheHits.Inc()
@@ -415,6 +422,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			if entry := c.checkCache(cacheKey); entry != nil {
 				if c.handleCacheHit(ctx, ch, entry, cacheKey) {
 					c.metrics.Hit()
+					return
+				}
+			}
+			if cut := c.lookupNXDomainCut(req, clientScope); cut != nil {
+				if c.handleNXDomainCutHit(ctx, ch, cut) {
+					c.metrics.Hit()
+					nxDomainCutHits.Inc()
 					return
 				}
 			}
@@ -520,6 +534,22 @@ func (c *Cache) requestScope(req *dns.Msg, client netip.Addr) netip.Prefix {
 	return netip.Prefix{}
 }
 
+func hasEDNSClientSubnet(req *dns.Msg) bool {
+	if req == nil {
+		return false
+	}
+	opt := req.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, option := range opt.Option {
+		if _, ok := option.(*dns.EDNS0_SUBNET); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // scopedLookup probes the cache for the longest scope match that
 // covers `clientPrefix`. Returns the entry + the key it was found
 // under, or (nil, 0) on miss. The shared-key fallback is the
@@ -557,6 +587,42 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 		}
 	}
 	return nil, 0
+}
+
+// lookupNXDomainCut checks the RFC 8020 subtree index after an exact answer
+// miss and before RFC 9520 failure state. CD=1 intentionally bypasses local
+// synthesis. ECS requests also bypass P4: a signed split-horizon denial can be
+// audience-specific, and P4 has no per-scope proof index. Failing open to
+// ordinary resolution is safer than sharing one audience's subtree cut.
+func (c *Cache) lookupNXDomainCut(req *dns.Msg, clientScope netip.Prefix) *nxDomainCutEntry {
+	if req == nil || len(req.Question) == 0 ||
+		req.CheckingDisabled || clientScope.IsValid() {
+		return nil
+	}
+	entry, _ := c.store.LookupNXDomainCut(req)
+	return entry
+}
+
+func (c *Cache) handleNXDomainCutHit(
+	ctx context.Context,
+	ch *middleware.Chain,
+	entry *nxDomainCutEntry,
+) bool {
+	resp := entry.response(ch.Request)
+	if resp == nil {
+		return false
+	}
+
+	// A cut hit is locally authenticated state, so it can safely become the
+	// terminal proof source when an enclosing CNAME/DNAME response explicitly
+	// propagates its exact-response provenance.
+	middleware.MarkValidatedDenialResponse(ctx, resp, middleware.ValidatedDenial{
+		DeniedName: entry.deniedName,
+		Zone:       entry.zone,
+	})
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+	return true
 }
 
 func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit FailureHit) {
@@ -679,6 +745,9 @@ func (c *Cache) Stop() {
 	if c.failure != nil {
 		c.failure.Stop()
 	}
+	if c.store != nil {
+		c.store.Stop()
+	}
 }
 
 // (*Cache).Set set adds a new element to the cache. Provided for API
@@ -714,13 +783,14 @@ func (c *Cache) Stats() map[string]any {
 	hits, misses, evictions, prefetches := c.metrics.Stats()
 
 	return map[string]any{
-		"hits":          hits,
-		"misses":        misses,
-		"evictions":     evictions,
-		"prefetches":    prefetches,
-		"positive_size": c.store.PositiveLen(),
-		"negative_size": c.store.NegativeLen(),
-		"failure_size":  c.store.FailureLen(),
+		"hits":              hits,
+		"misses":            misses,
+		"evictions":         evictions,
+		"prefetches":        prefetches,
+		"positive_size":     c.store.PositiveLen(),
+		"negative_size":     c.store.NegativeLen(),
+		"failure_size":      c.store.FailureLen(),
+		"nxdomain_cut_size": c.store.NXDomainCutLen(),
 		"hit_rate": func() float64 {
 			total := float64(hits + misses)
 			if total == 0 {
@@ -837,6 +907,25 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	)
 	if w.meta != nil {
 		cutUntil, cutKey = w.meta.Cut()
+	}
+
+	// RFC 8020 admission is an explicit resolver-to-cache trust seam. Never
+	// infer it from AD=1: forwarders and plugins can supply wire-authenticated
+	// looking responses without this process having validated the chain. The
+	// provenance retains the original terminal proof across alias merges, so
+	// cached descendant answers contain no outer CNAME/DNAME records. Check
+	// both the original request and the response CD bit so an intervening
+	// handler cannot turn a CD=1 request into cut admission by clearing CD.
+	requestCD := w.req != nil && w.req.CheckingDisabled
+	if !w.clientScope.IsValid() && !requestCD && !res.CheckingDisabled {
+		if denial, ok := middleware.ValidatedDenialForResponse(ctx, res); ok {
+			w.cache.store.RecordNXDomainCut(
+				denial.Proof,
+				denial.DeniedName,
+				denial.Zone,
+				cutUntil,
+			)
+		}
 	}
 
 	if w.clientScope.IsValid() {
@@ -997,6 +1086,13 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	if q.Qtype == dns.TypeCNAME || q.Qtype == dns.TypeDS {
 		return msg
 	}
+	if msg.Rcode == dns.RcodeNameError {
+		// RFC 6604 makes NXDOMAIN at the end of a CNAME/DNAME query
+		// cycle terminal. The response already carries the target
+		// denial proof; chasing an alias from its Answer again would
+		// duplicate work and can no longer change the result.
+		return msg
+	}
 
 	cnameReq := AcquireMsg()
 	defer ReleaseMsg(cnameReq)
@@ -1071,6 +1167,16 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		}
 
+		if respCname != nil && respCname.Rcode == dns.RcodeNameError {
+			// The internal query has already reached the terminal denied
+			// name. Do not query a target below that cut again, and retain
+			// the exact locally validated proof provenance rather than
+			// attributing the NXDOMAIN to the outer alias owner.
+			msg.Rcode = dns.RcodeNameError
+			middleware.PropagateValidatedDenialResponse(ctx, respCname, msg)
+			return msg
+		}
+
 		if target == q.Name {
 			return dnsutil.SetRcode(msg, dns.RcodeServerFailure, false)
 		}
@@ -1091,9 +1197,6 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			goto lookup
 		}
 
-		if respCname != nil && respCname.Rcode == dns.RcodeNameError {
-			msg.Rcode = dns.RcodeNameError
-		}
 	}
 
 	return msg

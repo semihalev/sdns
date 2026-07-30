@@ -57,15 +57,15 @@ func ExtractRRSet(in []dns.RR, name string, t ...uint16) []dns.RR {
 // helpers would accept a forged NSEC whose NextDomain is picked to
 // canonically straddle the qname.
 func FilterRRsToZone(rrs []dns.RR, zone string) []dns.RR {
-	z := strings.ToLower(dns.Fqdn(zone))
+	z := dns.CanonicalName(zone)
 	out := make([]dns.RR, 0, len(rrs))
 	for _, rr := range rrs {
-		name := strings.ToLower(dns.Fqdn(rr.Header().Name))
+		name := dns.CanonicalName(rr.Header().Name)
 		if !NameInZone(name, z) {
 			continue
 		}
 		if nsec, ok := rr.(*dns.NSEC); ok {
-			next := strings.ToLower(dns.Fqdn(nsec.NextDomain))
+			next := dns.CanonicalName(nsec.NextDomain)
 			if !NameInZone(next, z) {
 				continue
 			}
@@ -73,6 +73,24 @@ func FilterRRsToZone(rrs []dns.RR, zone string) []dns.RR {
 		out = append(out, rr)
 	}
 	return out
+}
+
+// HasNSEC3OptOut reports whether rrs contains an in-zone NSEC3 record with
+// the Opt-Out flag. Such a span can hide an insecure delegation, so it cannot
+// support RFC 8020 subtree synthesis even when its enclosing NXDOMAIN is
+// otherwise cryptographically valid.
+func HasNSEC3OptOut(rrs []dns.RR, zone string) bool {
+	z := dns.CanonicalName(zone)
+	for _, rr := range rrs {
+		nsec3, ok := rr.(*dns.NSEC3)
+		if !ok || !NameInZone(dns.CanonicalName(nsec3.Hdr.Name), z) {
+			continue
+		}
+		if nsec3.Flags&1 != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // NameInZone reports whether name is the zone apex or a descendant of

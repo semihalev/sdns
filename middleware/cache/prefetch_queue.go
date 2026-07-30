@@ -184,6 +184,26 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 		zlog.Debug("Prefetch dropped, entry superseded", "query", formatQuestion(req.Request.Question[0]))
 		return
 	}
+	// The cache-less prefetch pipeline bypasses ResponseWriter.WriteMsg, so a
+	// successful CAS must publish its resolver-authenticated NXDOMAIN cut
+	// here. Never publish before the CAS: a stale refresh that lost the
+	// generation race must not create subtree state. Scoped entries are not
+	// normally prefetch-eligible; the explicit guard also prevents a direct
+	// caller from widening one ECS audience into a global cut. Preserve the
+	// original request's CD/ECS isolation too: middleware may clear CD on the
+	// response, and an ECS client can prefetch a shared SCOPE=0 entry.
+	requestCD := req.Request != nil && req.Request.CheckingDisabled
+	if !req.Entry.scoped && !requestCD && !hasEDNSClientSubnet(req.Request) &&
+		!resp.CheckingDisabled {
+		if denial, ok := middleware.ValidatedDenialForResponse(ctx, resp); ok {
+			req.Cache.store.RecordNXDomainCut(
+				denial.Proof,
+				denial.DeniedName,
+				denial.Zone,
+				cutUntil,
+			)
+		}
+	}
 	pq.metrics.Prefetch()
 
 	if len(resp.Answer) > 0 {

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -91,7 +90,9 @@ func QuestionMatches(req dns.Question, resp []dns.Question) bool {
 		return false
 	}
 	r := resp[0]
-	return r.Qtype == req.Qtype && r.Qclass == req.Qclass && strings.EqualFold(r.Name, req.Name)
+	return r.Qtype == req.Qtype &&
+		r.Qclass == req.Qclass &&
+		dns.CanonicalName(r.Name) == dns.CanonicalName(req.Name)
 }
 
 // ReadMsg reads a single DNS message from co. The buffer is always

@@ -38,6 +38,11 @@ var (
 		Help: "Total number of RFC 9520 cached resolution failures served",
 	})
 
+	nxDomainCutHits = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "nxdomain_cut_hits_total",
+		Help: "Total number of descendant NXDOMAIN responses served from locally validated RFC 8020 cuts",
+	})
+
 	cacheSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dns_cache_size",
 		Help: "Current number of entries in the DNS cache",
@@ -76,6 +81,7 @@ var (
 	positiveCacheLen func() int
 	negativeCacheLen func() int
 	failureCacheLen  func() int
+	nxDomainCutLen   func() int
 )
 
 func init() {
@@ -88,11 +94,17 @@ func SetMetricsInstance(m *CacheMetrics) {
 	metricsInstance = m
 }
 
-// SetCacheSizeFuncs sets the functions to get cache sizes
-func SetCacheSizeFuncs(positive, negative, failure func() int) {
+// SetCacheSizeFuncs sets the functions to get cache sizes. The optional cut
+// function preserves source compatibility for external callers of the
+// pre-RFC-8020 three-argument API.
+func SetCacheSizeFuncs(positive, negative, failure func() int, cuts ...func() int) {
 	positiveCacheLen = positive
 	negativeCacheLen = negative
 	failureCacheLen = failure
+	nxDomainCutLen = nil
+	if len(cuts) > 0 {
+		nxDomainCutLen = cuts[0]
+	}
 }
 
 // UpdateCacheSizeMetrics updates the cache size gauges
@@ -105,6 +117,9 @@ func UpdateCacheSizeMetrics() {
 	}
 	if failureCacheLen != nil {
 		cacheSize.WithLabelValues("failure").Set(float64(failureCacheLen()))
+	}
+	if nxDomainCutLen != nil {
+		cacheSize.WithLabelValues("nxdomain_cut").Set(float64(nxDomainCutLen()))
 	}
 }
 

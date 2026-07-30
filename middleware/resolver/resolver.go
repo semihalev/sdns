@@ -1016,18 +1016,25 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		// both sides are.
 		resp.Answer = append(resp.Answer, targetMsg.Answer...)
 		resp.Rcode = targetMsg.Rcode
-		if len(targetMsg.Answer) == 0 {
-			// RFC 6672 §5.3.4: carry the target zone's SOA and
-			// NSEC/NSEC3 proof so the client sees the denial
-			// records the internal recursion already validated.
-			resp.Ns = append(resp.Ns, targetMsg.Ns...)
-		}
+		terminalDenial := targetMsg.Rcode == dns.RcodeNameError
 		if !req.CheckingDisabled {
 			resp.AuthenticatedData = resp.AuthenticatedData && targetMsg.AuthenticatedData
 		}
+		if terminalDenial {
+			middleware.PropagateValidatedDenialResponse(ctx, targetMsg, resp)
+			// RFC 6672 §5.3.4: carry only the target zone's SOA and
+			// NSEC/NSEC3 proof. clearAdditional removes any outer-zone
+			// authority/additional remnants first; restoring the target
+			// proof afterward prevents it from being wiped with them.
+			targetAuthority := append([]dns.RR(nil), targetMsg.Ns...)
+			resp = r.clearAdditional(req, resp, extra...)
+			resp.Ns = targetAuthority
+			return resp, nil
+		}
 		if len(targetMsg.Answer) == 0 {
-			// Preserve Ns for the denial proof; clearAdditional
-			// would wipe it.
+			// Preserve the historical NODATA handling: its target authority
+			// proof must survive the generic additional-section cleanup.
+			resp.Ns = append(resp.Ns, targetMsg.Ns...)
 			return resp, nil
 		}
 	}
@@ -1038,6 +1045,19 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 }
 
 func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS []dns.RR, zone string) (*dns.Msg, error) {
+	if req == nil || resp == nil || len(req.Question) != 1 ||
+		len(resp.Question) != 1 ||
+		req.Question[0].Qtype != resp.Question[0].Qtype ||
+		req.Question[0].Qclass != resp.Question[0].Qclass ||
+		dns.CanonicalName(req.Question[0].Name) != dns.CanonicalName(resp.Question[0].Name) {
+		// Bind semantic denial validation to the question we actually sent.
+		// The transport already rejects mismatched echoes; keeping the same
+		// invariant at this trust seam prevents a future/custom exchange path
+		// from validating one absent name and attributing its RFC 8020 cut to
+		// another.
+		return nil, ErrQuestion
+	}
+
 	if !req.CheckingDisabled {
 		if r.dnssec && !r.hasTrustAnchors() {
 			return nil, dnssec.ErrTrustAnchorsUnavailable
@@ -1108,7 +1128,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				return nil, lastErr
 			}
 
-			if verified {
+			if r.dnssec && verified {
 				// Require denial-of-existence proof for every
 				// negative response under a signed zone. Without
 				// it, a forged SOA+RRSIG would be enough to set
@@ -1160,6 +1180,16 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 
 				if !req.CheckingDisabled {
 					resp.AuthenticatedData = true
+				}
+				if resp.Rcode == dns.RcodeNameError {
+					deniedName := q.Name
+					if dnameTarget := dnsutil.DnameTarget(resp); dnameTarget != "" {
+						deniedName = dnameTarget
+					}
+					middleware.MarkValidatedDenialResponse(ctx, resp, middleware.ValidatedDenial{
+						DeniedName: deniedName,
+						Zone:       chosenSigner,
+					})
 				}
 			}
 		}
@@ -2893,6 +2923,37 @@ func (r *Resolver) clearResolutionZoneFailure(q dns.Question, zone string) {
 // processAuthoritySection handles the authority section of the response.
 func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
 	if minimized {
+		// RFC 8020: a locally authenticated NXDOMAIN at a minimized name
+		// denies that exact subtree, so there is no reason to continue
+		// querying progressively longer names. Validate the real
+		// authoritative query cycle first. Unsigned and checking-disabled
+		// answers keep the historical deeper walk; bogus signed proofs fail
+		// closed through authority().
+		if resp.Rcode == dns.RcodeNameError {
+			hasSOA := false
+			for _, rr := range resp.Ns {
+				if _, ok := rr.(*dns.SOA); ok {
+					hasSOA = true
+					break
+				}
+			}
+			if hasSOA {
+				result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+				if err != nil {
+					return nil, err
+				}
+				denial, secure := middleware.ValidatedDenialForResponse(ctx, result)
+				if secure && !dnsutil.HasNSEC3OptOut(result.Ns, denial.Zone) {
+					// Provenance keeps minReq's denied name. Only the
+					// client-visible Question is rebound to the original
+					// full QNAME.
+					result.Question = append([]dns.Question(nil), rs.req.Question...)
+					r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+					return result, nil
+				}
+			}
+		}
+
 		// Check if we need to continue with minimization
 		for _, rr := range resp.Ns {
 			switch rr.(type) {

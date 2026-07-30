@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,193 @@ func TestResponseMeta_ConcurrentBoundCut(t *testing.T) {
 	}
 	if got := meta.CutKey(); got != 0 {
 		t.Fatalf("CutKey after Reset = %#x, want zero", got)
+	}
+}
+
+func TestValidatedDenialResponseIdentityAndExplicitTrust(t *testing.T) {
+	t.Parallel()
+
+	var meta ResponseMeta
+	ctx := WithResponseMeta(context.Background(), &meta)
+	marked := new(dns.Msg)
+	marked.SetRcode(&dns.Msg{
+		MsgHdr: dns.MsgHdr{Id: 1},
+		Question: []dns.Question{{
+			Name:   "Missing.Example.",
+			Qtype:  dns.TypeA,
+			Qclass: dns.ClassINET,
+		}},
+	}, dns.RcodeNameError)
+	marked.AuthenticatedData = false
+	forgedProof := marked.Copy()
+
+	MarkValidatedDenialResponse(ctx, marked, ValidatedDenial{
+		DeniedName: "Missing.Example",
+		Zone:       "Example",
+		Proof:      forgedProof,
+	})
+
+	got, ok := ValidatedDenialForResponse(ctx, marked)
+	if !ok {
+		t.Fatal("exact NXDOMAIN response lost validated denial provenance")
+	}
+	want := ValidatedDenial{
+		DeniedName: "missing.example.",
+		Zone:       "example.",
+		Proof:      marked,
+	}
+	if got != want {
+		t.Fatalf("validated denial = %#v, want canonical %#v", got, want)
+	}
+
+	// Mark establishes immutable provenance once. Neither a caller-supplied
+	// proof pointer nor a later conflicting mark can replace its source.
+	MarkValidatedDenialResponse(ctx, marked, ValidatedDenial{
+		DeniedName: "different.example.",
+		Zone:       "different.example.",
+	})
+	if reread, rereadOK := ValidatedDenialForResponse(ctx, marked); !rereadOK || reread != want {
+		t.Fatalf("second mark replaced immutable validated denial: %#v, %v", reread, rereadOK)
+	}
+
+	// The returned value is a copy: mutating it cannot alter the immutable
+	// metadata held by ResponseMeta.
+	got.Zone = "changed.example."
+	if reread, rereadOK := ValidatedDenialForResponse(ctx, marked); !rereadOK || reread != want {
+		t.Fatalf("stored validated denial changed through returned value: %#v, %v", reread, rereadOK)
+	}
+
+	if copied, copiedOK := ValidatedDenialForResponse(ctx, marked.Copy()); copiedOK {
+		t.Fatalf("copied response inherited exact-response provenance: %#v", copied)
+	}
+
+	adOnly := marked.Copy()
+	adOnly.AuthenticatedData = true
+	if denial, adOnlyOK := ValidatedDenialForResponse(ctx, adOnly); adOnlyOK {
+		t.Fatalf("unmarked AD response was treated as locally validated: %#v", denial)
+	}
+}
+
+func TestValidatedDenialResponseConcurrentMessages(t *testing.T) {
+	t.Parallel()
+
+	const messageCount = 128
+	var meta ResponseMeta
+	ctx := WithResponseMeta(context.Background(), &meta)
+	messages := make([]*dns.Msg, messageCount)
+
+	var wg sync.WaitGroup
+	for i := range messages {
+		i := i
+		messages[i] = new(dns.Msg)
+		messages[i].SetRcode(new(dns.Msg), dns.RcodeNameError)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name := dns.Fqdn(fmt.Sprintf("missing-%d.example", i))
+			MarkValidatedDenialResponse(ctx, messages[i], ValidatedDenial{
+				DeniedName: name,
+				Zone:       "example.",
+			})
+			if got, ok := ValidatedDenialForResponse(ctx, messages[i]); !ok ||
+				got.DeniedName != name || got.Zone != "example." || got.Proof != messages[i] {
+				t.Errorf("message %d provenance = %#v, %v", i, got, ok)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i, msg := range messages {
+		wantName := dns.Fqdn(fmt.Sprintf("missing-%d.example", i))
+		got, ok := ValidatedDenialForResponse(ctx, msg)
+		if !ok || got.DeniedName != wantName || got.Zone != "example." || got.Proof != msg {
+			t.Fatalf("message %d final provenance = %#v, %v", i, got, ok)
+		}
+	}
+}
+
+func TestPropagateValidatedDenialResponse(t *testing.T) {
+	t.Parallel()
+
+	var meta ResponseMeta
+	ctx := WithResponseMeta(context.Background(), &meta)
+	from := new(dns.Msg)
+	from.SetRcode(new(dns.Msg), dns.RcodeNameError)
+	to := from.Copy()
+	denial := ValidatedDenial{
+		DeniedName: "absent.child.example.",
+		Zone:       "child.example.",
+	}
+	MarkValidatedDenialResponse(ctx, from, denial)
+
+	if !PropagateValidatedDenialResponse(ctx, from, to) {
+		t.Fatal("exact source provenance was not propagated")
+	}
+	got, ok := ValidatedDenialForResponse(ctx, to)
+	if !ok || got.DeniedName != denial.DeniedName || got.Zone != denial.Zone {
+		t.Fatalf("propagated provenance = %#v, %v; want names from %#v", got, ok, denial)
+	}
+	if got.Proof != from {
+		t.Fatalf("propagation proof source = %p, want original validated response %p", got.Proof, from)
+	}
+	if got, ok := ValidatedDenialForResponse(ctx, to.Copy()); ok {
+		t.Fatalf("copy of propagation target inherited provenance: %#v", got)
+	}
+
+	conflictingSource := from.Copy()
+	MarkValidatedDenialResponse(ctx, conflictingSource, ValidatedDenial{
+		DeniedName: "other.child.example.",
+		Zone:       "child.example.",
+	})
+	if PropagateValidatedDenialResponse(ctx, conflictingSource, to) {
+		t.Fatal("conflicting propagation replaced immutable target provenance")
+	}
+	if got, ok := ValidatedDenialForResponse(ctx, to); !ok || got.Proof != from {
+		t.Fatalf("conflicting propagation changed target provenance: %#v, %v", got, ok)
+	}
+
+	unmarked := from.Copy()
+	other := from.Copy()
+	if PropagateValidatedDenialResponse(ctx, unmarked, other) {
+		t.Fatal("unmarked source unexpectedly propagated provenance")
+	}
+	if got, ok := ValidatedDenialForResponse(ctx, other); ok {
+		t.Fatalf("target of failed propagation was marked: %#v", got)
+	}
+}
+
+func TestValidatedDenialResponseReset(t *testing.T) {
+	t.Parallel()
+
+	var meta ResponseMeta
+	ctx := WithResponseMeta(context.Background(), &meta)
+	oldResponse := new(dns.Msg)
+	oldResponse.SetRcode(new(dns.Msg), dns.RcodeNameError)
+	MarkValidatedDenialResponse(ctx, oldResponse, ValidatedDenial{
+		DeniedName: "old.example.",
+		Zone:       "example.",
+	})
+	if _, ok := ValidatedDenialForResponse(ctx, oldResponse); !ok {
+		t.Fatal("precondition: old request provenance is absent")
+	}
+
+	meta.Reset()
+	if got, ok := ValidatedDenialForResponse(ctx, oldResponse); ok {
+		t.Fatalf("Reset retained old request provenance: %#v", got)
+	}
+
+	newResponse := oldResponse.Copy()
+	MarkValidatedDenialResponse(ctx, newResponse, ValidatedDenial{
+		DeniedName: "new.example.",
+		Zone:       "example.",
+	})
+	if got, ok := ValidatedDenialForResponse(ctx, newResponse); !ok ||
+		got.DeniedName != "new.example." {
+		t.Fatalf("new request provenance after Reset = %#v, %v", got, ok)
+	}
+	if got, ok := ValidatedDenialForResponse(ctx, oldResponse); ok {
+		t.Fatalf("new request mark revived old response provenance: %#v", got)
 	}
 }
 
