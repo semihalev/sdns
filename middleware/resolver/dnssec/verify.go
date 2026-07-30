@@ -9,6 +9,7 @@ package dnssec
 
 import (
 	"encoding/base64"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,7 +78,18 @@ func IsSupportedDS(ds *dns.DS) bool {
 // not guarantee key-tag uniqueness: a colliding tag could otherwise
 // mask the KSK that actually authenticates the DS.
 func VerifyDS(keyMap map[uint16][]*dns.DNSKEY, parentDSSet []dns.RR) (bool, error) {
-	return verifyDSWith(keyMap, parentDSSet, (*dns.DNSKEY).ToDS)
+	return verifyDSWithWork(keyMap, parentDSSet, (*dns.DNSKEY).ToDS, nil)
+}
+
+// VerifyDSWithWork is VerifyDS with request-tree digest work accounting.
+// Cheap DS/DNSKEY compatibility checks and duplicate removal happen before a
+// digest slot is consumed.
+func VerifyDSWithWork(
+	keyMap map[uint16][]*dns.DNSKEY,
+	parentDSSet []dns.RR,
+	work DSDigestWork,
+) (bool, error) {
+	return verifyDSWithWork(keyMap, parentDSSet, (*dns.DNSKEY).ToDS, work)
 }
 
 type dnskeyToDSFunc func(*dns.DNSKEY, uint8) *dns.DS
@@ -91,32 +103,62 @@ func verifyDSWith(
 	parentDSSet []dns.RR,
 	toDS dnskeyToDSFunc,
 ) (bool, error) {
-	total := 0
+	return verifyDSWithWork(keyMap, parentDSSet, toDS, nil)
+}
+
+func verifyDSWithWork(
+	keyMap map[uint16][]*dns.DNSKEY,
+	parentDSSet []dns.RR,
+	toDS dnskeyToDSFunc,
+	work DSDigestWork,
+) (bool, error) {
+	dsRecords := uniqueSortedDSRecords(parentDSSet)
+	total := len(dsRecords)
 	supported := 0
 	var lastErr error
-	for _, r := range parentDSSet {
-		parentDS, ok := r.(*dns.DS)
-		if !ok {
-			continue
-		}
-		total++
+	for _, parentDS := range dsRecords {
 		if !IsSupportedDS(parentDS) {
 			continue
 		}
 		supported++
 
-		candidates, present := keyMap[parentDS.KeyTag]
+		rawCandidates, present := keyMap[parentDS.KeyTag]
 		if !present {
 			lastErr = ErrMissingKSK
 			continue
 		}
+
+		candidates := make([]*dns.DNSKEY, 0, len(rawCandidates))
+		for _, ksk := range rawCandidates {
+			if !usableDSCandidate(parentDS, ksk) {
+				continue
+			}
+			candidates = append(candidates, ksk)
+		}
+		candidates = uniqueSortedDNSKEYs(candidates)
+		if len(candidates) == 0 {
+			lastErr = ErrMissingKSK
+			continue
+		}
+
 		matched := false
+		var candidateUsed uint32
 		for _, ksk := range candidates {
-			ds := toDS(ksk, parentDS.DigestType)
+			if work != nil {
+				if err := work.CheckDNSKEYCandidate(candidateUsed); err != nil {
+					return false, wrapWorkError(err)
+				}
+			}
+
+			ds, err := runDSDigest(work, toDS, ksk, parentDS.DigestType)
+			if err != nil {
+				return false, err
+			}
+			candidateUsed++
 			if ds == nil {
 				continue
 			}
-			if ds.Digest == parentDS.Digest {
+			if strings.EqualFold(ds.Digest, parentDS.Digest) {
 				matched = true
 				break
 			}
@@ -139,6 +181,155 @@ func verifyDSWith(
 	return false, lastErr
 }
 
+type dnskeyIdentity struct {
+	name      string
+	class     uint16
+	flags     uint16
+	protocol  uint8
+	algorithm uint8
+	publicKey string
+}
+
+func dnskeyID(key *dns.DNSKEY) dnskeyIdentity {
+	return dnskeyIdentity{
+		name:      strings.ToLower(dns.Fqdn(key.Header().Name)),
+		class:     key.Header().Class,
+		flags:     key.Flags,
+		protocol:  key.Protocol,
+		algorithm: key.Algorithm,
+		publicKey: key.PublicKey,
+	}
+}
+
+func uniqueSortedDNSKEYs(keys []*dns.DNSKEY) []*dns.DNSKEY {
+	if len(keys) < 2 {
+		return keys
+	}
+
+	seen := make(map[dnskeyIdentity]struct{}, len(keys))
+	unique := make([]*dns.DNSKEY, 0, len(keys))
+	for _, key := range keys {
+		id := dnskeyID(key)
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, key)
+	}
+	sort.Slice(unique, func(i, j int) bool {
+		a, b := dnskeyID(unique[i]), dnskeyID(unique[j])
+		switch {
+		case a.name != b.name:
+			return a.name < b.name
+		case a.class != b.class:
+			return a.class < b.class
+		case a.flags != b.flags:
+			return a.flags < b.flags
+		case a.protocol != b.protocol:
+			return a.protocol < b.protocol
+		case a.algorithm != b.algorithm:
+			return a.algorithm < b.algorithm
+		default:
+			return a.publicKey < b.publicKey
+		}
+	})
+	return unique
+}
+
+type dsIdentity struct {
+	name       string
+	class      uint16
+	keyTag     uint16
+	algorithm  uint8
+	digestType uint8
+	digest     string
+}
+
+func dsID(ds *dns.DS) dsIdentity {
+	return dsIdentity{
+		name:       strings.ToLower(dns.Fqdn(ds.Header().Name)),
+		class:      ds.Header().Class,
+		keyTag:     ds.KeyTag,
+		algorithm:  ds.Algorithm,
+		digestType: ds.DigestType,
+		digest:     strings.ToUpper(ds.Digest),
+	}
+}
+
+func uniqueSortedDSRecords(records []dns.RR) []*dns.DS {
+	seen := make(map[dsIdentity]struct{}, len(records))
+	result := make([]*dns.DS, 0, len(records))
+	for _, record := range records {
+		ds, ok := record.(*dns.DS)
+		if !ok || ds == nil {
+			continue
+		}
+		id := dsID(ds)
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, ds)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		a, b := dsID(result[i]), dsID(result[j])
+		switch {
+		case a.name != b.name:
+			return a.name < b.name
+		case a.class != b.class:
+			return a.class < b.class
+		case a.keyTag != b.keyTag:
+			return a.keyTag < b.keyTag
+		case a.algorithm != b.algorithm:
+			return a.algorithm < b.algorithm
+		case a.digestType != b.digestType:
+			return a.digestType < b.digestType
+		default:
+			return a.digest < b.digest
+		}
+	})
+	return result
+}
+
+func usableDSCandidate(parentDS *dns.DS, key *dns.DNSKEY) bool {
+	if key == nil {
+		return false
+	}
+	return key.KeyTag() == parentDS.KeyTag &&
+		key.Algorithm == parentDS.Algorithm &&
+		key.Header().Class == parentDS.Header().Class &&
+		strings.EqualFold(key.Header().Name, parentDS.Header().Name) &&
+		key.Protocol == 3 &&
+		key.Flags&dns.ZONE != 0
+}
+
+func beginDSDigest(work DSDigestWork) (func(), error) {
+	if work == nil {
+		return nil, nil
+	}
+	release, err := work.BeginDSDigest()
+	if err != nil {
+		return nil, wrapWorkError(err)
+	}
+	return release, nil
+}
+
+func runDSDigest(
+	work DSDigestWork,
+	toDS dnskeyToDSFunc,
+	key *dns.DNSKEY,
+	digestType uint8,
+) (*dns.DS, error) {
+	release, err := beginDSDigest(work)
+	if err != nil {
+		return nil, err
+	}
+	if release != nil {
+		defer release()
+	}
+	return toDS(key, digestType), nil
+}
+
 // VerifyRRSIG validates that every in-zone RRset in msg is covered by at
 // least one RRSIG that successfully verifies against the supplied DNSKEYs.
 //
@@ -151,7 +342,19 @@ func verifyDSWith(
 // error, expired) only causes the RRset to fail if no sibling signature
 // succeeds.
 func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
-	return verifyRRSIGWith(signer, keys, msg, cryptoVerify)
+	return verifyRRSIGWithWork(signer, keys, msg, cryptoVerify, nil)
+}
+
+// VerifyRRSIGWithWork is VerifyRRSIG with request-tree signature work
+// accounting. Structural rejection, duplicate removal, and deterministic
+// candidate ordering all happen before a public-key operation consumes work.
+func VerifyRRSIGWithWork(
+	signer string,
+	keys map[uint16][]*dns.DNSKEY,
+	msg *dns.Msg,
+	work SignatureWork,
+) (bool, error) {
+	return verifyRRSIGWithWork(signer, keys, msg, cryptoVerify, work)
 }
 
 type rrsigVerifyFunc func(*dns.DNSKEY, *dns.RRSIG, []dns.RR) error
@@ -164,6 +367,16 @@ func verifyRRSIGWith(
 	keys map[uint16][]*dns.DNSKEY,
 	msg *dns.Msg,
 	verify rrsigVerifyFunc,
+) (bool, error) {
+	return verifyRRSIGWithWork(signer, keys, msg, verify, nil)
+}
+
+func verifyRRSIGWithWork(
+	signer string,
+	keys map[uint16][]*dns.DNSKEY,
+	msg *dns.Msg,
+	verify rrsigVerifyFunc,
+	work SignatureWork,
 ) (bool, error) {
 	if len(keys) == 0 {
 		return false, ErrMissingDNSKEY
@@ -181,6 +394,7 @@ func verifyRRSIGWith(
 	type rrsetKey struct {
 		name  string
 		rtype uint16
+		class uint16
 	}
 
 	// Collect DNAMEs in the signer zone first so we can recognise the
@@ -247,7 +461,7 @@ func verifyRRSIGWith(
 				}
 				continue
 			}
-			k := rrsetKey{name: name, rtype: rtype}
+			k := rrsetKey{name: name, rtype: rtype, class: r.Header().Class}
 			rrsets[k] = append(rrsets[k], r)
 		}
 	}
@@ -281,19 +495,44 @@ func verifyRRSIGWith(
 		if !dnsutil.NameInZone(name, signerZone) {
 			continue
 		}
-		k := rrsetKey{name: name, rtype: sig.TypeCovered}
+		k := rrsetKey{name: name, rtype: sig.TypeCovered, class: sig.Header().Class}
 		sigIndex[k] = append(sigIndex[k], sig)
 	}
 
-	for key, set := range rrsets {
+	keysInOrder := make([]rrsetKey, 0, len(rrsets))
+	for key := range rrsets {
+		keysInOrder = append(keysInOrder, key)
+	}
+	sort.Slice(keysInOrder, func(i, j int) bool {
+		switch {
+		case keysInOrder[i].name != keysInOrder[j].name:
+			return keysInOrder[i].name < keysInOrder[j].name
+		case keysInOrder[i].rtype != keysInOrder[j].rtype:
+			return keysInOrder[i].rtype < keysInOrder[j].rtype
+		default:
+			return keysInOrder[i].class < keysInOrder[j].class
+		}
+	})
+
+	for _, key := range keysInOrder {
+		set := rrsets[key]
 		sigList, ok := sigIndex[key]
 		if !ok {
 			return false, ErrMissingSigned
 		}
+		if !dns.IsRRset(set) {
+			return false, ErrMissingSigned
+		}
+		sigList = uniqueSortedRRSIGs(sigList)
+
 		var lastErr error
 		verified := false
+		var rrsetUsed uint32
 		for _, sig := range sigList {
-			if err := verifyOneSig(keys, set, sig, verify); err != nil {
+			if err := verifyOneSigWithWork(keys, set, sig, verify, work, &rrsetUsed); err != nil {
+				if IsWorkError(err) {
+					return false, err
+				}
 				lastErr = err
 				continue
 			}
@@ -311,6 +550,84 @@ func verifyRRSIGWith(
 	return true, nil
 }
 
+type rrsigIdentity struct {
+	name        string
+	class       uint16
+	typeCovered uint16
+	algorithm   uint8
+	labels      uint8
+	origTTL     uint32
+	expiration  uint32
+	inception   uint32
+	keyTag      uint16
+	signer      string
+	signature   string
+}
+
+func rrsigID(sig *dns.RRSIG) rrsigIdentity {
+	return rrsigIdentity{
+		name:        strings.ToLower(dns.Fqdn(sig.Header().Name)),
+		class:       sig.Header().Class,
+		typeCovered: sig.TypeCovered,
+		algorithm:   sig.Algorithm,
+		labels:      sig.Labels,
+		origTTL:     sig.OrigTtl,
+		expiration:  sig.Expiration,
+		inception:   sig.Inception,
+		keyTag:      sig.KeyTag,
+		signer:      strings.ToLower(dns.Fqdn(sig.SignerName)),
+		signature:   sig.Signature,
+	}
+}
+
+func uniqueSortedRRSIGs(signatures []*dns.RRSIG) []*dns.RRSIG {
+	if len(signatures) == 0 {
+		return signatures
+	}
+
+	seen := make(map[rrsigIdentity]struct{}, len(signatures))
+	unique := make([]*dns.RRSIG, 0, len(signatures))
+	for _, sig := range signatures {
+		if sig == nil {
+			continue
+		}
+		id := rrsigID(sig)
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, sig)
+	}
+	sort.Slice(unique, func(i, j int) bool {
+		a, b := rrsigID(unique[i]), rrsigID(unique[j])
+		switch {
+		case a.name != b.name:
+			return a.name < b.name
+		case a.class != b.class:
+			return a.class < b.class
+		case a.typeCovered != b.typeCovered:
+			return a.typeCovered < b.typeCovered
+		case a.algorithm != b.algorithm:
+			return a.algorithm < b.algorithm
+		case a.keyTag != b.keyTag:
+			return a.keyTag < b.keyTag
+		case a.signer != b.signer:
+			return a.signer < b.signer
+		case a.labels != b.labels:
+			return a.labels < b.labels
+		case a.origTTL != b.origTTL:
+			return a.origTTL < b.origTTL
+		case a.inception != b.inception:
+			return a.inception < b.inception
+		case a.expiration != b.expiration:
+			return a.expiration < b.expiration
+		default:
+			return a.signature < b.signature
+		}
+	})
+	return unique
+}
+
 // verifyOneSig returns nil when sig verifies set with any DNSKEY in
 // keys that matches sig.KeyTag. RFC 4034 Appendix B.1 says key tags are
 // not unique, so every candidate key with the same tag must be tried
@@ -323,6 +640,18 @@ func verifyOneSig(
 	sig *dns.RRSIG,
 	verify rrsigVerifyFunc,
 ) error {
+	var rrsetUsed uint32
+	return verifyOneSigWithWork(keys, set, sig, verify, nil, &rrsetUsed)
+}
+
+func verifyOneSigWithWork(
+	keys map[uint16][]*dns.DNSKEY,
+	set []dns.RR,
+	sig *dns.RRSIG,
+	verify rrsigVerifyFunc,
+	work SignatureWork,
+	rrsetUsed *uint32,
+) error {
 	candidates, ok := keys[sig.KeyTag]
 	if !ok || len(candidates) == 0 {
 		return ErrMissingDNSKEY
@@ -334,6 +663,9 @@ func verifyOneSig(
 	// be an unnecessary wire-visible compatibility change.
 	hasSigner := false
 	for _, k := range candidates {
+		if k == nil {
+			continue
+		}
 		if strings.EqualFold(sig.SignerName, k.Header().Name) {
 			hasSigner = true
 			break
@@ -349,16 +681,47 @@ func verifyOneSig(
 		return ErrInvalidSignaturePeriod
 	}
 
+	if !IsSupportedDNSKEYAlgorithm(sig.Algorithm) {
+		return dns.ErrAlg
+	}
+	if !signatureMatchesRRset(sig, set) {
+		return ErrMissingSigned
+	}
+
+	eligible := make([]*dns.DNSKEY, 0, len(candidates))
+	for _, key := range candidates {
+		if usableSignatureCandidate(sig, key) {
+			eligible = append(eligible, key)
+		}
+	}
+	eligible = uniqueSortedDNSKEYs(eligible)
+	if len(eligible) == 0 {
+		return ErrMissingDNSKEY
+	}
+
 	var lastErr error = ErrMissingDNSKEY
-	for _, k := range candidates {
-		if !strings.EqualFold(sig.SignerName, k.Header().Name) {
-			continue
+	var candidateUsed uint32
+	for _, k := range eligible {
+		if work != nil {
+			if err := work.CheckDNSKEYCandidate(candidateUsed); err != nil {
+				return wrapWorkError(err)
+			}
+			if err := work.CheckRRsetSignature(*rrsetUsed); err != nil {
+				return wrapWorkError(err)
+			}
 		}
 
-		if err := verify(k, sig, set); err != nil {
+		err := runSignatureVerification(work, verify, k, sig, set)
+		if err != nil {
+			if IsWorkError(err) {
+				return err
+			}
+			candidateUsed++
+			*rrsetUsed++
 			lastErr = err
 			continue
 		}
+		*rrsetUsed++
 		// Preserve the validator's original acceptance-time check as well as
 		// the new preflight. A large same-tag candidate set can spend enough
 		// time in crypto to cross the signature's one-second expiry boundary.
@@ -368,6 +731,59 @@ func verifyOneSig(
 		return nil
 	}
 	return lastErr
+}
+
+func usableSignatureCandidate(sig *dns.RRSIG, key *dns.DNSKEY) bool {
+	if key == nil {
+		return false
+	}
+	return key.KeyTag() == sig.KeyTag &&
+		key.Algorithm == sig.Algorithm &&
+		key.Header().Class == sig.Header().Class &&
+		strings.EqualFold(key.Header().Name, sig.SignerName) &&
+		key.Protocol == 3 &&
+		key.Flags&dns.ZONE != 0
+}
+
+func signatureMatchesRRset(sig *dns.RRSIG, set []dns.RR) bool {
+	if len(set) == 0 || !dns.IsRRset(set) {
+		return false
+	}
+	signer := dns.CanonicalName(sig.SignerName)
+	header := set[0].Header()
+	return header.Class == sig.Header().Class &&
+		header.Rrtype == sig.TypeCovered &&
+		dns.CountLabel(header.Name) >= int(sig.Labels) &&
+		strings.EqualFold(header.Name, sig.Header().Name) &&
+		dnsutil.NameInZone(strings.ToLower(dns.Fqdn(header.Name)), signer)
+}
+
+func beginSignature(work SignatureWork) (func(), error) {
+	if work == nil {
+		return nil, nil
+	}
+	release, err := work.BeginSignature()
+	if err != nil {
+		return nil, wrapWorkError(err)
+	}
+	return release, nil
+}
+
+func runSignatureVerification(
+	work SignatureWork,
+	verify rrsigVerifyFunc,
+	key *dns.DNSKEY,
+	sig *dns.RRSIG,
+	set []dns.RR,
+) error {
+	release, err := beginSignature(work)
+	if err != nil {
+		return err
+	}
+	if release != nil {
+		defer release()
+	}
+	return verify(key, sig, set)
 }
 
 // cryptoVerify runs the cryptographic RRSIG check for a single candidate

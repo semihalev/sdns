@@ -284,6 +284,7 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 		sub.RecursionDesired = true
 		resp, err := d.queryer.Query(ctx, sub)
 		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
 			do := false
 			if opt := ch.Request.IsEdns0(); opt != nil {
 				do = opt.Do()
@@ -292,8 +293,8 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 				ch.Request,
 				dns.RcodeServerFailure,
 				do,
-				middleware.RecursionWorkEDECode,
-				middleware.RecursionWorkEDEText,
+				edeCode,
+				edeText,
 			)
 			_ = ch.Writer.WriteMsg(out)
 			ch.Cancel()
@@ -387,7 +388,7 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	}
 	if m.Rcode == dns.RcodeServerFailure &&
 		middleware.RecursionWorkEnforcementError(w.ctx) != nil {
-		return w.writeRecursionWorkFailure()
+		return w.writeRecursionWorkFailure(nil)
 	}
 
 	// Filter the upstream Answer section against the AAAA
@@ -418,7 +419,7 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 
 	synth, err := w.synthesise(m)
 	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
-		return w.writeRecursionWorkFailure()
+		return w.writeRecursionWorkFailure(err)
 	}
 	if synth == nil {
 		// A lookup failed or yielded nothing usable; preserve the
@@ -430,7 +431,8 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	return w.ResponseWriter.WriteMsg(synth)
 }
 
-func (w *responseWriter) writeRecursionWorkFailure() error {
+func (w *responseWriter) writeRecursionWorkFailure(err error) error {
+	edeCode, edeText := middleware.RecursionWorkErrorEDE(w.ctx, err)
 	do := false
 	if opt := w.req.IsEdns0(); opt != nil {
 		do = opt.Do()
@@ -439,8 +441,8 @@ func (w *responseWriter) writeRecursionWorkFailure() error {
 		w.req,
 		dns.RcodeServerFailure,
 		do,
-		middleware.RecursionWorkEDECode,
-		middleware.RecursionWorkEDEText,
+		edeCode,
+		edeText,
 	))
 }
 

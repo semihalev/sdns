@@ -31,6 +31,12 @@ import (
 // Callers must invoke this only after VerifyRRSIG has returned true for
 // resp; a false or error result means the answer must be treated as bogus.
 func VerifyWildcardAnswer(resp *dns.Msg) error {
+	return VerifyWildcardAnswerWithWork(resp, nil)
+}
+
+// VerifyWildcardAnswerWithWork is VerifyWildcardAnswer with request-tree
+// accounting for every NSEC3 hash operation.
+func VerifyWildcardAnswerWithWork(resp *dns.Msg, work NSEC3Work) error {
 	var nsecSet, nsec3Set []dns.RR
 	for _, rr := range resp.Ns {
 		switch rr.(type) {
@@ -59,7 +65,11 @@ func VerifyWildcardAnswer(resp *dns.Msg) error {
 		// Closest encloser is the last sig.Labels labels of the owner; the
 		// next closer name is one label longer, towards the owner name.
 		nextCloser := dns.Fqdn(strings.Join(labels[len(labels)-int(sig.Labels)-1:], "."))
-		if !nextCloserDenied(nextCloser, nsecSet, nsec3Set) {
+		denied, err := nextCloserDeniedWithWork(nextCloser, nsecSet, nsec3Set, work)
+		if err != nil {
+			return err
+		}
+		if !denied {
 			return ErrWildcardNoDenial
 		}
 	}
@@ -67,23 +77,34 @@ func VerifyWildcardAnswer(resp *dns.Msg) error {
 	return nil
 }
 
-// nextCloserDenied reports whether some NSEC or NSEC3 in the response
+// nextCloserDeniedWithWork reports whether some NSEC or NSEC3 in the response
 // proves the next closer name does not exist.
-func nextCloserDenied(nextCloser string, nsecSet, nsec3Set []dns.RR) bool {
+func nextCloserDeniedWithWork(
+	nextCloser string,
+	nsecSet, nsec3Set []dns.RR,
+	work NSEC3Work,
+) (bool, error) {
 	for _, rr := range nsecSet {
 		n := rr.(*dns.NSEC)
 		if nsecCovers(n.Header().Name, n.NextDomain, nextCloser) {
-			return true
+			return true, nil
 		}
 	}
+	nsec3Set = normalizeNSEC3Set(nsec3Set)
+	match := nsec3Operation{predicate: (*dns.NSEC3).Match, work: work}
+	cover := nsec3Operation{predicate: (*dns.NSEC3).Cover, work: work}
 	for _, rr := range nsec3Set {
 		n := rr.(*dns.NSEC3)
 		if !nsec3Safe(n) {
 			continue
 		}
-		if nsec3Covers(n, nextCloser) {
-			return true
+		denied, err := nsec3CoversWithWork(n, nextCloser, match, cover)
+		if err != nil {
+			return false, err
+		}
+		if denied {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

@@ -23,6 +23,28 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func defaultRecursionFirewallConfigForTest(mode RecursionFirewallMode) RecursionFirewallConfig {
+	return RecursionFirewallConfig{
+		Mode:                    mode,
+		MaxOutboundQueries:      DefaultRecursionFirewallMaxOutboundQueries,
+		MaxInternalQueries:      DefaultRecursionFirewallMaxInternalQueries,
+		MaxDNSKEYCandidates:     DefaultRecursionFirewallMaxDNSKEYCandidates,
+		MaxRRsetSignatureChecks: DefaultRecursionFirewallMaxRRsetSignatureChecks,
+		MaxSignatureChecks:      DefaultRecursionFirewallMaxSignatureChecks,
+		MaxDSDigests:            DefaultRecursionFirewallMaxDSDigests,
+		MaxNSEC3Hashes:          DefaultRecursionFirewallMaxNSEC3Hashes,
+		MaxConcurrentCrypto:     DefaultRecursionFirewallMaxConcurrentCrypto,
+	}
+}
+
+func assertRecursionFirewallDefaults(t *testing.T, got RecursionFirewallConfig) {
+	t.Helper()
+	want := defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow)
+	if got != want {
+		t.Errorf("RecursionFirewall = %+v, want defaults %+v", got, want)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -178,16 +200,7 @@ func TestLoad(t *testing.T) {
 						t.Errorf("RecursionFirewall.Mode = %q, want %q",
 							cfg.RecursionFirewall.Mode, RecursionFirewallModeShadow)
 					}
-					if cfg.RecursionFirewall.MaxOutboundQueries != DefaultRecursionFirewallMaxOutboundQueries {
-						t.Errorf("RecursionFirewall.MaxOutboundQueries = %d, want %d",
-							cfg.RecursionFirewall.MaxOutboundQueries,
-							DefaultRecursionFirewallMaxOutboundQueries)
-					}
-					if cfg.RecursionFirewall.MaxInternalQueries != DefaultRecursionFirewallMaxInternalQueries {
-						t.Errorf("RecursionFirewall.MaxInternalQueries = %d, want %d",
-							cfg.RecursionFirewall.MaxInternalQueries,
-							DefaultRecursionFirewallMaxInternalQueries)
-					}
+					assertRecursionFirewallDefaults(t, cfg.RecursionFirewall)
 					if cfg.sVersion != tt.version {
 						t.Errorf("ServerVersion = %v, want %v", cfg.sVersion, tt.version)
 					}
@@ -364,48 +377,54 @@ func TestTestIPv6Network(t *testing.T) {
 
 func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {
 	tests := []struct {
-		name         string
-		cfg          RecursionFirewallConfig
-		wantMode     RecursionFirewallMode
-		wantOutbound uint32
-		wantInternal uint32
-		wantErr      bool
+		name    string
+		cfg     RecursionFirewallConfig
+		want    RecursionFirewallConfig
+		wantErr bool
 	}{
 		{
-			name:         "omitted uses shadow defaults",
-			wantMode:     RecursionFirewallModeShadow,
-			wantOutbound: DefaultRecursionFirewallMaxOutboundQueries,
-			wantInternal: DefaultRecursionFirewallMaxInternalQueries,
+			name: "omitted uses shadow defaults",
+			want: defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow),
 		},
 		{
 			name: "explicit off keeps custom limits",
 			cfg: RecursionFirewallConfig{
-				Mode:               RecursionFirewallModeOff,
-				MaxOutboundQueries: 256,
-				MaxInternalQueries: 48,
+				Mode:                    RecursionFirewallModeOff,
+				MaxOutboundQueries:      256,
+				MaxInternalQueries:      48,
+				MaxDNSKEYCandidates:     3,
+				MaxRRsetSignatureChecks: 5,
+				MaxSignatureChecks:      17,
+				MaxDSDigests:            19,
+				MaxNSEC3Hashes:          23,
+				MaxConcurrentCrypto:     29,
 			},
-			wantMode:     RecursionFirewallModeOff,
-			wantOutbound: 256,
-			wantInternal: 48,
+			want: RecursionFirewallConfig{
+				Mode:                    RecursionFirewallModeOff,
+				MaxOutboundQueries:      256,
+				MaxInternalQueries:      48,
+				MaxDNSKEYCandidates:     3,
+				MaxRRsetSignatureChecks: 5,
+				MaxSignatureChecks:      17,
+				MaxDSDigests:            19,
+				MaxNSEC3Hashes:          23,
+				MaxConcurrentCrypto:     29,
+			},
 		},
 		{
 			name: "explicit enforce fills zero limits",
 			cfg: RecursionFirewallConfig{
 				Mode: RecursionFirewallModeEnforce,
 			},
-			wantMode:     RecursionFirewallModeEnforce,
-			wantOutbound: DefaultRecursionFirewallMaxOutboundQueries,
-			wantInternal: DefaultRecursionFirewallMaxInternalQueries,
+			want: defaultRecursionFirewallConfigForTest(RecursionFirewallModeEnforce),
 		},
 		{
 			name: "invalid mode is rejected",
 			cfg: RecursionFirewallConfig{
 				Mode: "block",
 			},
-			wantMode:     "block",
-			wantOutbound: DefaultRecursionFirewallMaxOutboundQueries,
-			wantInternal: DefaultRecursionFirewallMaxInternalQueries,
-			wantErr:      true,
+			want:    defaultRecursionFirewallConfigForTest("block"),
+			wantErr: true,
 		},
 	}
 
@@ -417,14 +436,8 @@ func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if cfg.Mode != tt.wantMode {
-				t.Errorf("Mode = %q, want %q", cfg.Mode, tt.wantMode)
-			}
-			if cfg.MaxOutboundQueries != tt.wantOutbound {
-				t.Errorf("MaxOutboundQueries = %d, want %d", cfg.MaxOutboundQueries, tt.wantOutbound)
-			}
-			if cfg.MaxInternalQueries != tt.wantInternal {
-				t.Errorf("MaxInternalQueries = %d, want %d", cfg.MaxInternalQueries, tt.wantInternal)
+			if cfg != tt.want {
+				t.Errorf("normalized config = %+v, want %+v", cfg, tt.want)
 			}
 		})
 	}
@@ -443,6 +456,12 @@ ipv6access = true
 mode = "enforce"
 max_outbound_queries = 96
 max_internal_queries = 24
+max_dnskey_candidates = 3
+max_rrset_signature_checks = 5
+max_signature_checks = 17
+max_ds_digests = 19
+max_nsec3_hashes = 23
+max_concurrent_crypto = 29
 `, configver, workDir)
 		if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
 			t.Fatal(err)
@@ -463,6 +482,14 @@ max_internal_queries = 24
 		if cfg.RecursionFirewall.MaxInternalQueries != 24 {
 			t.Errorf("MaxInternalQueries = %d, want 24",
 				cfg.RecursionFirewall.MaxInternalQueries)
+		}
+		if cfg.RecursionFirewall.MaxDNSKEYCandidates != 3 ||
+			cfg.RecursionFirewall.MaxRRsetSignatureChecks != 5 ||
+			cfg.RecursionFirewall.MaxSignatureChecks != 17 ||
+			cfg.RecursionFirewall.MaxDSDigests != 19 ||
+			cfg.RecursionFirewall.MaxNSEC3Hashes != 23 ||
+			cfg.RecursionFirewall.MaxConcurrentCrypto != 29 {
+			t.Errorf("DNSSEC limits = %+v, want configured values", cfg.RecursionFirewall)
 		}
 	})
 
@@ -541,6 +568,12 @@ func TestConfigDefaults(t *testing.T) {
 		`mode = "shadow"`,
 		"max_outbound_queries = 128",
 		"max_internal_queries = 32",
+		"max_dnskey_candidates = 4",
+		"max_rrset_signature_checks = 8",
+		"max_signature_checks = 32",
+		"max_ds_digests = 32",
+		"max_nsec3_hashes = 32",
+		"max_concurrent_crypto = 32",
 	}
 	for _, option := range recursionFirewallOptions {
 		if !strings.Contains(generatedConfig, option) {
@@ -603,16 +636,7 @@ emptyzones = []
 		t.Errorf("RecursionFirewall.Mode = %q, want %q",
 			cfg.RecursionFirewall.Mode, RecursionFirewallModeShadow)
 	}
-	if cfg.RecursionFirewall.MaxOutboundQueries != DefaultRecursionFirewallMaxOutboundQueries {
-		t.Errorf("RecursionFirewall.MaxOutboundQueries = %d, want %d",
-			cfg.RecursionFirewall.MaxOutboundQueries,
-			DefaultRecursionFirewallMaxOutboundQueries)
-	}
-	if cfg.RecursionFirewall.MaxInternalQueries != DefaultRecursionFirewallMaxInternalQueries {
-		t.Errorf("RecursionFirewall.MaxInternalQueries = %d, want %d",
-			cfg.RecursionFirewall.MaxInternalQueries,
-			DefaultRecursionFirewallMaxInternalQueries)
-	}
+	assertRecursionFirewallDefaults(t, cfg.RecursionFirewall)
 
 	// Clean up
 	os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup

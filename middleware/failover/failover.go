@@ -93,7 +93,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(m)
 	}
 	if middleware.RecursionWorkEnforcementError(w.ctx) != nil {
-		return w.writeRecursionWorkFailure(m)
+		return w.writeRecursionWorkFailure(m, nil)
 	}
 
 	failoverAttempts.Inc()
@@ -123,7 +123,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		cancel()
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
-				return w.writeRecursionWorkFailure(m)
+				return w.writeRecursionWorkFailure(m, err)
 			}
 			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
@@ -138,11 +138,12 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	return w.ResponseWriter.WriteMsg(m)
 }
 
-func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
+func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg, workErr error) error {
 	req := w.req
 	if req == nil {
 		req = fallback
 	}
+	edeCode, edeText := middleware.RecursionWorkErrorEDE(w.ctx, workErr)
 	do := false
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
@@ -151,8 +152,8 @@ func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
 		req,
 		dns.RcodeServerFailure,
 		do,
-		middleware.RecursionWorkEDECode,
-		middleware.RecursionWorkEDEText,
+		edeCode,
+		edeText,
 	))
 }
 

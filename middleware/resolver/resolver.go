@@ -78,6 +78,7 @@ type Resolver struct {
 	// Circuit breaker and goroutine limiter
 	circuitBreaker *circuitBreaker
 	maxConcurrent  chan struct{} // Semaphore for limiting concurrent queries
+	cryptoLimiter  *dnssec.CryptoLimiter
 
 	// store is the cache facade used by subQuery for resolver-private
 	// DNSSEC record lookups (DS, DNSKEY). Auto-wired during
@@ -205,6 +206,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 		workPolicy:     workPolicy,
 		sfGroup:        NewSingleflightWrapper(),
 		circuitBreaker: newCircuitBreaker(),
+		cryptoLimiter:  dnssec.NewCryptoLimiter(workPolicy.MaxConcurrentCrypto),
 	}
 
 	// Set default for MaxConcurrentQueries if not configured
@@ -889,6 +891,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 				}
 				candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
 				if err != nil {
+					if isDNSSECWorkError(err) {
+						return nil, err
+					}
 					lastErr = err
 					continue
 				}
@@ -904,6 +909,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 				}
 				ok, verr := r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, candidateDSRR)
 				if verr != nil {
+					if isDNSSECWorkError(verr) {
+						return nil, verr
+					}
 					lastErr = verr
 					continue
 				}
@@ -924,7 +932,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					// replayed over a concrete name that really exists and
 					// returned with AD=1. The NSEC/NSEC3 proof consulted
 					// here was validated by verifyDNSSEC above.
-					if werr := dnssec.VerifyWildcardAnswer(resp); werr != nil {
+					if werr := dnssec.VerifyWildcardAnswerWithWork(resp, r.dnssecWork(ctx)); werr != nil {
 						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", formatQuestion(q), "error", werr.Error())
 						return nil, werr
 					}
@@ -1007,6 +1015,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 				candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
 				if err != nil {
+					if isDNSSECWorkError(err) {
+						return nil, err
+					}
 					lastErr = err
 					continue
 				}
@@ -1021,6 +1032,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 				ok, verr := r.verifyDNSSEC(ctx, signer, q.Name, resp, candidateDSRR)
 				if verr != nil {
+					if isDNSSECWorkError(verr) {
+						return nil, verr
+					}
 					lastErr = verr
 					continue
 				}
@@ -1059,12 +1073,12 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					switch {
 					case len(nsec3Set) > 0:
 						if resp.Rcode == dns.RcodeNameError {
-							if err := dnssec.VerifyNameError(resp, nsec3Set); err != nil {
+							if err := dnssec.VerifyNameErrorWithWork(resp, nsec3Set, r.dnssecWork(ctx)); err != nil {
 								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
 								return nil, err
 							}
 						} else {
-							if err := dnssec.VerifyNODATA(resp, nsec3Set); err != nil {
+							if err := dnssec.VerifyNODATAWithWork(resp, nsec3Set, r.dnssecWork(ctx)); err != nil {
 								zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
 								return nil, err
 							}
@@ -1772,14 +1786,21 @@ func (r *Resolver) findRRSIGSigners(resp *dns.Msg, qname string, inAnswer bool) 
 	// more-specific signers and push the real signer out of the retry
 	// set, producing false SERVFAILs on deep qnames.
 	sort.Slice(signers, func(i, j int) bool {
-		return dns.CountLabel(signers[i]) > dns.CountLabel(signers[j])
+		iLabels, jLabels := dns.CountLabel(signers[i]), dns.CountLabel(signers[j])
+		if iLabels != jLabels {
+			return iLabels > jLabels
+		}
+		return strings.ToLower(dns.Fqdn(signers[i])) < strings.ToLower(dns.Fqdn(signers[j]))
 	})
 	return signers
 }
 
 func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []dns.RR, cd bool) (dsset []dns.RR, err error) {
 	if signer == rootzone && len(parentDS) == 0 {
-		parentDS = r.dsRRFromRootKeys()
+		parentDS, err = r.dsRRFromRootKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
 	} else if len(parentDS) > 0 {
 		dsrr := parentDS[0].(*dns.DS)
 		dsname := strings.ToLower(dsrr.Header().Name)
@@ -1972,7 +1993,7 @@ func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child 
 	}
 
 	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(dsResp.Ns, "", dns.TypeNSEC3), signer); len(nsec3Set) > 0 {
-		if err := dnssec.VerifyDelegation(child, nsec3Set); err != nil {
+		if err := dnssec.VerifyDelegationWithWork(child, nsec3Set, r.dnssecWork(ctx)); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -2393,29 +2414,39 @@ func (r *Resolver) hasTrustAnchors() bool {
 	return len(r.rootKeys) > 0
 }
 
-func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
+func (r *Resolver) dsRRFromRootKeys(ctx context.Context) ([]dns.RR, error) {
 	r.RLock()
-	defer r.RUnlock()
+	rootKeys := append([]dns.RR(nil), r.rootKeys...)
+	r.RUnlock()
 
-	for _, rr := range r.rootKeys {
+	dsset := make([]dns.RR, 0, len(rootKeys))
+	work := r.dnssecWork(ctx)
+	for _, rr := range rootKeys {
 		if dnskey, ok := rr.(*dns.DNSKEY); ok {
-			dsset = append(dsset, dnskey.ToDS(dns.DH))
+			ds, err := dnssec.DNSKEYToDSWithWork(dnskey, dns.DH, work)
+			if err != nil {
+				return nil, err
+			}
+			if ds != nil {
+				dsset = append(dsset, ds)
+			}
 		}
 	}
 
 	if len(dsset) == 0 {
-		zlog.Fatal("Root zone dsset empty")
+		return nil, dnssec.ErrTrustAnchorsUnavailable
 	}
 
-	return
+	return dsset, nil
 }
 
-func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
+func (r *Resolver) verifyRootKeys(ctx context.Context, msg *dns.Msg) (bool, error) {
 	r.RLock()
-	defer r.RUnlock()
+	rootKeys := append([]dns.RR(nil), r.rootKeys...)
+	r.RUnlock()
 
 	keys := make(map[uint16][]*dns.DNSKEY)
-	for _, rr := range r.rootKeys {
+	for _, rr := range rootKeys {
 		dnskey := rr.(*dns.DNSKEY)
 		if dnskey.Flags == 257 {
 			tag := dnskey.KeyTag()
@@ -2424,29 +2455,24 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	if len(keys) == 0 {
-		zlog.Fatal("Root zone keys empty")
+		return false, dnssec.ErrTrustAnchorsUnavailable
 	}
 
-	dsset := []dns.RR{}
-	for _, rr := range r.rootKeys {
-		if dnskey, ok := rr.(*dns.DNSKEY); ok {
-			dsset = append(dsset, dnskey.ToDS(dns.DH))
-		}
+	dsset, err := r.dsRRFromRootKeys(ctx)
+	if err != nil {
+		return false, err
 	}
 
-	if len(dsset) == 0 {
-		zlog.Fatal("Root zone dsset empty")
+	work := r.dnssecWork(ctx)
+	if _, err := dnssec.VerifyDSWithWork(keys, dsset, work); err != nil {
+		return false, err
 	}
 
-	if _, err := dnssec.VerifyDS(keys, dsset); err != nil {
-		zlog.Fatal("Root zone DS not verified")
+	if _, err := dnssec.VerifyRRSIGWithWork(rootzone, keys, msg, work); err != nil {
+		return false, err
 	}
 
-	if _, err := dnssec.VerifyRRSIG(rootzone, keys, msg); err != nil {
-		zlog.Fatal("Root zone keys not verified")
-	}
-
-	return true
+	return true, nil
 }
 
 func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
@@ -2465,7 +2491,11 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		}
 	} else if q.Qtype == dns.TypeDNSKEY {
 		if q.Name == rootzone {
-			if !r.verifyRootKeys(resp) {
+			ok, rootErr := r.verifyRootKeys(ctx, resp)
+			if rootErr != nil {
+				return false, rootErr
+			}
+			if !ok {
 				return false, fmt.Errorf("root zone keys not verified")
 			}
 			return true, nil
@@ -2507,7 +2537,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, fmt.Errorf("DS RR set empty")
 	}
 
-	unsupportedOnly, err := dnssec.VerifyDS(keys, parentdsRR)
+	unsupportedOnly, err := dnssec.VerifyDSWithWork(keys, parentdsRR, r.dnssecWork(ctx))
 	if err != nil {
 		zlog.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported only", unsupportedOnly)
 		if unsupportedOnly {
@@ -2524,7 +2554,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, nil
 	}
 
-	if ok, err = dnssec.VerifyRRSIG(signer, keys, resp); err != nil {
+	if ok, err = dnssec.VerifyRRSIGWithWork(signer, keys, resp, r.dnssecWork(ctx)); err != nil {
 		return
 	}
 
@@ -3049,7 +3079,11 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		parentSigner = rootzone
 	}
 	if parentSigner == rootzone && len(effectiveParentDS) == 0 {
-		effectiveParentDS = r.dsRRFromRootKeys()
+		var err error
+		effectiveParentDS, err = r.dsRRFromRootKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	signers := r.findRRSIGSigners(resp, q.Name, false)
@@ -3089,6 +3123,9 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		}
 		candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
 		if err != nil {
+			if isDNSSECWorkError(err) {
+				return nil, err
+			}
 			lastErr = err
 			continue
 		}
@@ -3110,6 +3147,9 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		}
 		ok, verr := r.verifyDNSSEC(ctx, signer, q.Name, resp, candidateDSRR)
 		if verr != nil {
+			if isDNSSECWorkError(verr) {
+				return nil, verr
+			}
 			lastErr = verr
 			continue
 		}
@@ -3149,7 +3189,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	// attacker-injected NSEC/NSEC3 from an unrelated sibling zone
 	// cannot structurally satisfy the delegation check.
 	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner); len(nsec3Set) > 0 {
-		if err := dnssec.VerifyDelegation(q.Name, nsec3Set); err != nil {
+		if err := dnssec.VerifyDelegationWithWork(q.Name, nsec3Set, r.dnssecWork(ctx)); err != nil {
 			zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err
 		}

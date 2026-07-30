@@ -27,8 +27,14 @@ func MustRecursionWorkPolicyFromConfig(raw config.RecursionFirewallConfig) Recur
 	}
 
 	return RecursionWorkPolicy{
-		Mode:               mode,
-		MaxOutboundQueries: raw.MaxOutboundQueries,
-		MaxInternalQueries: raw.MaxInternalQueries,
+		Mode:                    mode,
+		MaxOutboundQueries:      raw.MaxOutboundQueries,
+		MaxInternalQueries:      raw.MaxInternalQueries,
+		MaxDNSKEYCandidates:     raw.MaxDNSKEYCandidates,
+		MaxRRsetSignatureChecks: raw.MaxRRsetSignatureChecks,
+		MaxSignatureChecks:      raw.MaxSignatureChecks,
+		MaxDSDigests:            raw.MaxDSDigests,
+		MaxNSEC3Hashes:          raw.MaxNSEC3Hashes,
+		MaxConcurrentCrypto:     raw.MaxConcurrentCrypto,
 	}
 }

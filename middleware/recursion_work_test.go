@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -12,6 +13,20 @@ import (
 	"github.com/semihalev/sdns/internal/mock"
 )
 
+func defaultRecursionWorkPolicyForTest(mode RecursionWorkMode) RecursionWorkPolicy {
+	return RecursionWorkPolicy{
+		Mode:                    mode,
+		MaxOutboundQueries:      config.DefaultRecursionFirewallMaxOutboundQueries,
+		MaxInternalQueries:      config.DefaultRecursionFirewallMaxInternalQueries,
+		MaxDNSKEYCandidates:     config.DefaultRecursionFirewallMaxDNSKEYCandidates,
+		MaxRRsetSignatureChecks: config.DefaultRecursionFirewallMaxRRsetSignatureChecks,
+		MaxSignatureChecks:      config.DefaultRecursionFirewallMaxSignatureChecks,
+		MaxDSDigests:            config.DefaultRecursionFirewallMaxDSDigests,
+		MaxNSEC3Hashes:          config.DefaultRecursionFirewallMaxNSEC3Hashes,
+		MaxConcurrentCrypto:     config.DefaultRecursionFirewallMaxConcurrentCrypto,
+	}
+}
+
 func TestMustRecursionWorkPolicyFromConfig(t *testing.T) {
 	tests := []struct {
 		name string
@@ -20,36 +35,56 @@ func TestMustRecursionWorkPolicyFromConfig(t *testing.T) {
 	}{
 		{
 			name: "omitted defaults to shadow",
-			want: RecursionWorkPolicy{
-				Mode:               RecursionWorkShadow,
-				MaxOutboundQueries: config.DefaultRecursionFirewallMaxOutboundQueries,
-				MaxInternalQueries: config.DefaultRecursionFirewallMaxInternalQueries,
-			},
+			want: defaultRecursionWorkPolicyForTest(RecursionWorkShadow),
 		},
 		{
 			name: "off with custom limits",
 			cfg: config.RecursionFirewallConfig{
-				Mode:               config.RecursionFirewallModeOff,
-				MaxOutboundQueries: 9,
-				MaxInternalQueries: 7,
+				Mode:                    config.RecursionFirewallModeOff,
+				MaxOutboundQueries:      9,
+				MaxInternalQueries:      7,
+				MaxDNSKEYCandidates:     3,
+				MaxRRsetSignatureChecks: 5,
+				MaxSignatureChecks:      11,
+				MaxDSDigests:            13,
+				MaxNSEC3Hashes:          17,
+				MaxConcurrentCrypto:     19,
 			},
 			want: RecursionWorkPolicy{
-				Mode:               RecursionWorkOff,
-				MaxOutboundQueries: 9,
-				MaxInternalQueries: 7,
+				Mode:                    RecursionWorkOff,
+				MaxOutboundQueries:      9,
+				MaxInternalQueries:      7,
+				MaxDNSKEYCandidates:     3,
+				MaxRRsetSignatureChecks: 5,
+				MaxSignatureChecks:      11,
+				MaxDSDigests:            13,
+				MaxNSEC3Hashes:          17,
+				MaxConcurrentCrypto:     19,
 			},
 		},
 		{
 			name: "enforce with custom limits",
 			cfg: config.RecursionFirewallConfig{
-				Mode:               config.RecursionFirewallModeEnforce,
-				MaxOutboundQueries: 96,
-				MaxInternalQueries: 24,
+				Mode:                    config.RecursionFirewallModeEnforce,
+				MaxOutboundQueries:      96,
+				MaxInternalQueries:      24,
+				MaxDNSKEYCandidates:     4,
+				MaxRRsetSignatureChecks: 8,
+				MaxSignatureChecks:      32,
+				MaxDSDigests:            31,
+				MaxNSEC3Hashes:          30,
+				MaxConcurrentCrypto:     29,
 			},
 			want: RecursionWorkPolicy{
-				Mode:               RecursionWorkEnforce,
-				MaxOutboundQueries: 96,
-				MaxInternalQueries: 24,
+				Mode:                    RecursionWorkEnforce,
+				MaxOutboundQueries:      96,
+				MaxInternalQueries:      24,
+				MaxDNSKEYCandidates:     4,
+				MaxRRsetSignatureChecks: 8,
+				MaxSignatureChecks:      32,
+				MaxDSDigests:            31,
+				MaxNSEC3Hashes:          30,
+				MaxConcurrentCrypto:     29,
 			},
 		},
 	}
@@ -113,6 +148,178 @@ func TestRecursionWorkLedgerShadowRecordsLimitCrossings(t *testing.T) {
 	}
 }
 
+func TestRecursionWorkLedgerShadowRecordsDNSSECCrossings(t *testing.T) {
+	ledger := NewRecursionWorkLedger(RecursionWorkPolicy{
+		Mode:                    RecursionWorkShadow,
+		MaxDNSKEYCandidates:     2,
+		MaxRRsetSignatureChecks: 3,
+		MaxSignatureChecks:      2,
+		MaxDSDigests:            2,
+		MaxNSEC3Hashes:          2,
+		MaxConcurrentCrypto:     7,
+	})
+
+	for _, kind := range []RecursionWorkKind{
+		RecursionWorkSignature,
+		RecursionWorkDSDigest,
+		RecursionWorkNSEC3Hash,
+	} {
+		for range 4 {
+			if err := ledger.Debit(kind); err != nil {
+				t.Fatalf("shadow debit for kind %v returned error: %v", kind, err)
+			}
+		}
+	}
+	if err := ledger.CheckLocal(RecursionWorkDNSKEYCandidate, 2); err != nil {
+		t.Fatalf("shadow DNSKEY candidate crossing returned error: %v", err)
+	}
+	if err := ledger.CheckLocal(RecursionWorkRRsetSignature, 3); err != nil {
+		t.Fatalf("shadow RRset signature crossing returned error: %v", err)
+	}
+	if err := ledger.Reject(RecursionWorkConcurrentCrypto); err != nil {
+		t.Fatalf("shadow concurrent-crypto rejection returned error: %v", err)
+	}
+
+	got := ledger.Snapshot()
+	if got.SignatureChecks != 4 || got.DSDigests != 4 || got.NSEC3Hashes != 4 {
+		t.Fatalf("DNSSEC counts = signatures:%d DS:%d NSEC3:%d, want 4 each",
+			got.SignatureChecks, got.DSDigests, got.NSEC3Hashes)
+	}
+	if !got.DNSKEYCandidatesExhausted ||
+		!got.RRsetSignatureChecksExhausted ||
+		!got.SignatureChecksExhausted ||
+		!got.DSDigestsExhausted ||
+		!got.NSEC3HashesExhausted ||
+		!got.ConcurrentCryptoExhausted {
+		t.Fatalf("DNSSEC crossing snapshot = %+v, want every DNSSEC dimension exhausted", got)
+	}
+	if got.MaxDNSKEYCandidates != 2 ||
+		got.MaxRRsetSignatureChecks != 3 ||
+		got.MaxSignatureChecks != 2 ||
+		got.MaxDSDigests != 2 ||
+		got.MaxNSEC3Hashes != 2 ||
+		got.MaxConcurrentCrypto != 7 {
+		t.Fatalf("DNSSEC limits snapshot = %+v, want configured values", got)
+	}
+	if err := ledger.EnforcementError(); err != nil {
+		t.Fatalf("shadow EnforcementError = %v, want nil", err)
+	}
+}
+
+func TestRecursionWorkLedgerLocalLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		kind RecursionWorkKind
+	}{
+		{name: "DNSKEY candidates", kind: RecursionWorkDNSKEYCandidate},
+		{name: "RRset signatures", kind: RecursionWorkRRsetSignature},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, mode := range []RecursionWorkMode{RecursionWorkShadow, RecursionWorkEnforce} {
+				t.Run(map[RecursionWorkMode]string{
+					RecursionWorkShadow:  "shadow",
+					RecursionWorkEnforce: "enforce",
+				}[mode], func(t *testing.T) {
+					ledger := NewRecursionWorkLedger(RecursionWorkPolicy{
+						Mode:                    mode,
+						MaxDNSKEYCandidates:     2,
+						MaxRRsetSignatureChecks: 2,
+					})
+
+					for used := uint32(0); used < 2; used++ {
+						if err := ledger.CheckLocal(tt.kind, used); err != nil {
+							t.Fatalf("CheckLocal(%d) = %v, want nil", used, err)
+						}
+					}
+					err := ledger.CheckLocal(tt.kind, 2)
+					if mode == RecursionWorkShadow {
+						if err != nil {
+							t.Fatalf("shadow crossing = %v, want nil", err)
+						}
+						if enforceErr := ledger.EnforcementError(); enforceErr != nil {
+							t.Fatalf("shadow EnforcementError = %v, want nil", enforceErr)
+						}
+					} else {
+						var limitErr *RecursionWorkLimitError
+						if !errors.As(err, &limitErr) {
+							t.Fatalf("enforce crossing type = %T, want *RecursionWorkLimitError", err)
+						}
+						if limitErr.Kind != tt.kind || limitErr.Limit != 2 {
+							t.Fatalf("enforce crossing = {Kind:%v Limit:%d}, want {Kind:%v Limit:2}",
+								limitErr.Kind, limitErr.Limit, tt.kind)
+						}
+						if enforceErr := ledger.EnforcementError(); !errors.Is(enforceErr, ErrRecursionWorkLimit) {
+							t.Fatalf("EnforcementError = %v, want ErrRecursionWorkLimit", enforceErr)
+						}
+					}
+
+					snapshot := ledger.Snapshot()
+					exhausted := snapshot.DNSKEYCandidatesExhausted
+					if tt.kind == RecursionWorkRRsetSignature {
+						exhausted = snapshot.RRsetSignatureChecksExhausted
+					}
+					if !exhausted {
+						t.Fatalf("local kind %v did not record exhaustion: %+v", tt.kind, snapshot)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRecursionWorkLedgerLocalLimitConcurrentCrossing(t *testing.T) {
+	const attempts = 256
+
+	for _, kind := range []RecursionWorkKind{
+		RecursionWorkDNSKEYCandidate,
+		RecursionWorkRRsetSignature,
+	} {
+		t.Run(fmt.Sprintf("kind=%d", kind), func(t *testing.T) {
+			ledger := NewRecursionWorkLedger(RecursionWorkPolicy{
+				Mode:                    RecursionWorkEnforce,
+				MaxDNSKEYCandidates:     1,
+				MaxRRsetSignatureChecks: 1,
+			})
+
+			start := make(chan struct{})
+			results := make([]error, attempts)
+			var wg sync.WaitGroup
+			wg.Add(attempts)
+			for i := range attempts {
+				go func() {
+					defer wg.Done()
+					<-start
+					results[i] = ledger.CheckLocal(kind, 1)
+				}()
+			}
+			close(start)
+			wg.Wait()
+
+			for _, err := range results {
+				var limitErr *RecursionWorkLimitError
+				if !errors.As(err, &limitErr) {
+					t.Fatalf("concurrent local crossing type = %T, want *RecursionWorkLimitError", err)
+				}
+				if limitErr.Kind != kind || limitErr.Limit != 1 {
+					t.Fatalf("concurrent local crossing = {Kind:%v Limit:%d}, want {Kind:%v Limit:1}",
+						limitErr.Kind, limitErr.Limit, kind)
+				}
+			}
+
+			var firstErr *RecursionWorkLimitError
+			if !errors.As(ledger.EnforcementError(), &firstErr) {
+				t.Fatal("concurrent local crossing did not latch an enforcement error")
+			}
+			if firstErr.Kind != kind || firstErr.Limit != 1 {
+				t.Fatalf("latched local crossing = {Kind:%v Limit:%d}, want {Kind:%v Limit:1}",
+					firstErr.Kind, firstErr.Limit, kind)
+			}
+		})
+	}
+}
+
 func TestRecursionWorkLedgerEnforceConcurrentExactCap(t *testing.T) {
 	const (
 		limit    = uint32(37)
@@ -125,6 +332,9 @@ func TestRecursionWorkLedgerEnforceConcurrentExactCap(t *testing.T) {
 	}{
 		{name: "outbound", kind: RecursionWorkOutboundQuery},
 		{name: "internal", kind: RecursionWorkInternalQuery},
+		{name: "signature", kind: RecursionWorkSignature},
+		{name: "DS digest", kind: RecursionWorkDSDigest},
+		{name: "NSEC3 hash", kind: RecursionWorkNSEC3Hash},
 	}
 
 	for _, tt := range tests {
@@ -133,6 +343,9 @@ func TestRecursionWorkLedgerEnforceConcurrentExactCap(t *testing.T) {
 				Mode:               RecursionWorkEnforce,
 				MaxOutboundQueries: limit,
 				MaxInternalQueries: limit,
+				MaxSignatureChecks: limit,
+				MaxDSDigests:       limit,
+				MaxNSEC3Hashes:     limit,
 			})
 
 			start := make(chan struct{})
@@ -178,25 +391,10 @@ func TestRecursionWorkLedgerEnforceConcurrentExactCap(t *testing.T) {
 			}
 
 			snapshot := ledger.Snapshot()
-			switch tt.kind {
-			case RecursionWorkOutboundQuery:
-				if snapshot.OutboundQueries != limit || !snapshot.OutboundExhausted {
-					t.Fatalf("outbound snapshot = count:%d exhausted:%v, want count:%d exhausted:true",
-						snapshot.OutboundQueries, snapshot.OutboundExhausted, limit)
-				}
-				if snapshot.InternalQueries != 0 || snapshot.InternalExhausted {
-					t.Fatalf("unselected internal dimension changed: count:%d exhausted:%v",
-						snapshot.InternalQueries, snapshot.InternalExhausted)
-				}
-			case RecursionWorkInternalQuery:
-				if snapshot.InternalQueries != limit || !snapshot.InternalExhausted {
-					t.Fatalf("internal snapshot = count:%d exhausted:%v, want count:%d exhausted:true",
-						snapshot.InternalQueries, snapshot.InternalExhausted, limit)
-				}
-				if snapshot.OutboundQueries != 0 || snapshot.OutboundExhausted {
-					t.Fatalf("unselected outbound dimension changed: count:%d exhausted:%v",
-						snapshot.OutboundQueries, snapshot.OutboundExhausted)
-				}
+			count, exhausted := aggregateSnapshotForKind(snapshot, tt.kind)
+			if count != limit || !exhausted {
+				t.Fatalf("snapshot for kind %v = count:%d exhausted:%v, want count:%d exhausted:true",
+					tt.kind, count, exhausted, limit)
 			}
 
 			var firstErr *RecursionWorkLimitError
@@ -208,6 +406,23 @@ func TestRecursionWorkLedgerEnforceConcurrentExactCap(t *testing.T) {
 					firstErr.Kind, firstErr.Limit, tt.kind, limit)
 			}
 		})
+	}
+}
+
+func aggregateSnapshotForKind(snapshot RecursionWorkSnapshot, kind RecursionWorkKind) (uint32, bool) {
+	switch kind {
+	case RecursionWorkOutboundQuery:
+		return snapshot.OutboundQueries, snapshot.OutboundExhausted
+	case RecursionWorkInternalQuery:
+		return snapshot.InternalQueries, snapshot.InternalExhausted
+	case RecursionWorkSignature:
+		return snapshot.SignatureChecks, snapshot.SignatureChecksExhausted
+	case RecursionWorkDSDigest:
+		return snapshot.DSDigests, snapshot.DSDigestsExhausted
+	case RecursionWorkNSEC3Hash:
+		return snapshot.NSEC3Hashes, snapshot.NSEC3HashesExhausted
+	default:
+		return 0, false
 	}
 }
 
@@ -325,6 +540,217 @@ func TestRecursionWorkLimitErrorCarriesSentinelAndPolicyEDE(t *testing.T) {
 	}
 	if text != RecursionWorkEDEText {
 		t.Fatalf("ErrorToEDE text = %q, want %q", text, RecursionWorkEDEText)
+	}
+}
+
+func TestRecursionWorkDNSSECLimitErrorCarriesIndeterminateEDE(t *testing.T) {
+	for _, kind := range []RecursionWorkKind{
+		RecursionWorkDNSKEYCandidate,
+		RecursionWorkRRsetSignature,
+		RecursionWorkSignature,
+		RecursionWorkDSDigest,
+		RecursionWorkNSEC3Hash,
+		RecursionWorkConcurrentCrypto,
+	} {
+		t.Run(fmt.Sprintf("kind=%d", kind), func(t *testing.T) {
+			err := &RecursionWorkLimitError{Kind: kind, Limit: 1}
+			if !errors.Is(err, ErrRecursionWorkLimit) {
+				t.Fatalf("error %v does not wrap ErrRecursionWorkLimit", err)
+			}
+			if err.Error() != DNSSECWorkEDEText {
+				t.Fatalf("error text = %q, want %q", err.Error(), DNSSECWorkEDEText)
+			}
+			if got := err.EDECode(); got != DNSSECWorkEDECode {
+				t.Fatalf("EDECode = %d, want DNSSEC Indeterminate (%d)",
+					got, DNSSECWorkEDECode)
+			}
+
+			code, text := dnsutil.ErrorToEDE(err)
+			if code != DNSSECWorkEDECode || text != DNSSECWorkEDEText {
+				t.Fatalf("ErrorToEDE = (%d, %q), want (%d, %q)",
+					code, text, DNSSECWorkEDECode, DNSSECWorkEDEText)
+			}
+		})
+	}
+}
+
+func TestRecursionWorkEDEReturnsLatchedKindOrGenericFallback(t *testing.T) {
+	t.Run("generic fallback", func(t *testing.T) {
+		code, text := RecursionWorkEDE(context.Background())
+		if code != RecursionWorkEDECode || text != RecursionWorkEDEText {
+			t.Fatalf("fallback EDE = (%d, %q), want (%d, %q)",
+				code, text, RecursionWorkEDECode, RecursionWorkEDEText)
+		}
+	})
+
+	tests := []struct {
+		name     string
+		kind     RecursionWorkKind
+		policy   RecursionWorkPolicy
+		wantCode uint16
+		wantText string
+	}{
+		{
+			name: "network",
+			kind: RecursionWorkOutboundQuery,
+			policy: RecursionWorkPolicy{
+				Mode:               RecursionWorkEnforce,
+				MaxOutboundQueries: 0,
+			},
+			wantCode: RecursionWorkEDECode,
+			wantText: RecursionWorkEDEText,
+		},
+		{
+			name: "DNSSEC",
+			kind: RecursionWorkSignature,
+			policy: RecursionWorkPolicy{
+				Mode:               RecursionWorkEnforce,
+				MaxSignatureChecks: 0,
+			},
+			wantCode: DNSSECWorkEDECode,
+			wantText: DNSSECWorkEDEText,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ledger := NewRecursionWorkLedger(tt.policy)
+			ctx := WithRecursionWork(context.Background(), ledger)
+			if err := ledger.Debit(tt.kind); !errors.Is(err, ErrRecursionWorkLimit) {
+				t.Fatalf("crossing = %v, want ErrRecursionWorkLimit", err)
+			}
+			code, text := RecursionWorkEDE(ctx)
+			if code != tt.wantCode || text != tt.wantText {
+				t.Fatalf("latched EDE = (%d, %q), want (%d, %q)",
+					code, text, tt.wantCode, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestRecursionWorkErrorEDEPrefersDirectTypedError(t *testing.T) {
+	ledger := NewRecursionWorkLedger(RecursionWorkPolicy{
+		Mode:               RecursionWorkEnforce,
+		MaxOutboundQueries: 0,
+	})
+	ctx := WithRecursionWork(context.Background(), ledger)
+	if err := ledger.Debit(RecursionWorkOutboundQuery); !errors.Is(err, ErrRecursionWorkLimit) {
+		t.Fatalf("network crossing = %v, want recursion work limit", err)
+	}
+
+	directErr := fmt.Errorf("exchange failed: %w", &RecursionWorkLimitError{
+		Kind:  RecursionWorkSignature,
+		Limit: 32,
+	})
+	code, text := RecursionWorkErrorEDE(ctx, directErr)
+	if code != DNSSECWorkEDECode || text != DNSSECWorkEDEText {
+		t.Fatalf("direct typed error EDE = (%d, %q), want (%d, %q)",
+			code, text, DNSSECWorkEDECode, DNSSECWorkEDEText)
+	}
+
+	code, text = RecursionWorkErrorEDE(ctx, errors.New("untyped exchange failure"))
+	if code != RecursionWorkEDECode || text != RecursionWorkEDEText {
+		t.Fatalf("context fallback EDE = (%d, %q), want (%d, %q)",
+			code, text, RecursionWorkEDECode, RecursionWorkEDEText)
+	}
+}
+
+func TestCheckRecursionWorkLocalLimitUsesContextLedger(t *testing.T) {
+	policy := RecursionWorkPolicy{
+		Mode:                    RecursionWorkEnforce,
+		MaxDNSKEYCandidates:     1,
+		MaxRRsetSignatureChecks: 1,
+	}
+	ledger := NewRecursionWorkLedger(policy)
+	ctx := WithRecursionWork(context.Background(), ledger)
+
+	if err := CheckRecursionWorkLocalLimit(ctx, RecursionWorkDNSKEYCandidate, 0); err != nil {
+		t.Fatalf("first local check: %v", err)
+	}
+	err := CheckRecursionWorkLocalLimit(ctx, RecursionWorkDNSKEYCandidate, 1)
+	var limitErr *RecursionWorkLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("crossing type = %T, want *RecursionWorkLimitError", err)
+	}
+	if limitErr.Kind != RecursionWorkDNSKEYCandidate || limitErr.Limit != 1 {
+		t.Fatalf("crossing = {Kind:%v Limit:%d}, want DNSKEY candidate limit 1",
+			limitErr.Kind, limitErr.Limit)
+	}
+}
+
+func TestRejectRecursionWorkLatchesConcurrentCryptoExhaustion(t *testing.T) {
+	policy := RecursionWorkPolicy{
+		Mode:                RecursionWorkEnforce,
+		MaxConcurrentCrypto: 3,
+	}
+	ledger := NewRecursionWorkLedger(policy)
+	ctx := WithRecursionWork(context.Background(), ledger)
+
+	err := RejectRecursionWork(ctx, RecursionWorkConcurrentCrypto)
+	var limitErr *RecursionWorkLimitError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("rejection type = %T, want *RecursionWorkLimitError", err)
+	}
+	if limitErr.Kind != RecursionWorkConcurrentCrypto || limitErr.Limit != 3 {
+		t.Fatalf("rejection = {Kind:%v Limit:%d}, want concurrent crypto limit 3",
+			limitErr.Kind, limitErr.Limit)
+	}
+	if limitErr.EDECode() != DNSSECWorkEDECode {
+		t.Fatalf("EDE code = %d, want DNSSEC Indeterminate", limitErr.EDECode())
+	}
+	if !ledger.Snapshot().ConcurrentCryptoExhausted {
+		t.Fatal("concurrent crypto exhaustion missing from snapshot")
+	}
+	if !errors.Is(ledger.EnforcementError(), ErrRecursionWorkLimit) {
+		t.Fatal("concurrent crypto rejection did not latch enforcement provenance")
+	}
+}
+
+func TestRecursionWorkFinishPublishesAggregateDNSSECWork(t *testing.T) {
+	ledger := NewRecursionWorkLedger(RecursionWorkPolicy{
+		Mode:               RecursionWorkShadow,
+		MaxSignatureChecks: 8,
+		MaxDSDigests:       8,
+		MaxNSEC3Hashes:     8,
+	})
+
+	signatureCounter := dnssecWorkTotal.WithLabelValues("signature_checks", "shadow")
+	dsCounter := dnssecWorkTotal.WithLabelValues("ds_digests", "shadow")
+	nsec3Counter := dnssecWorkTotal.WithLabelValues("nsec3_hashes", "shadow")
+	beforeSignatures := signatureCounter.Value()
+	beforeDS := dsCounter.Value()
+	beforeNSEC3 := nsec3Counter.Value()
+
+	for range 2 {
+		if err := ledger.Debit(RecursionWorkSignature); err != nil {
+			t.Fatalf("signature debit: %v", err)
+		}
+	}
+	for range 3 {
+		if err := ledger.Debit(RecursionWorkDSDigest); err != nil {
+			t.Fatalf("DS digest debit: %v", err)
+		}
+	}
+	for range 4 {
+		if err := ledger.Debit(RecursionWorkNSEC3Hash); err != nil {
+			t.Fatalf("NSEC3 hash debit: %v", err)
+		}
+	}
+
+	ledger.finish()
+	if got := signatureCounter.Value() - beforeSignatures; got != 2 {
+		t.Fatalf("published signature work = %d, want 2", got)
+	}
+	if got := dsCounter.Value() - beforeDS; got != 3 {
+		t.Fatalf("published DS work = %d, want 3", got)
+	}
+	if got := nsec3Counter.Value() - beforeNSEC3; got != 4 {
+		t.Fatalf("published NSEC3 work = %d, want 4", got)
+	}
+
+	ledger.finish()
+	if got := signatureCounter.Value() - beforeSignatures; got != 2 {
+		t.Fatalf("second finish republished signature work: delta=%d", got)
 	}
 }
 

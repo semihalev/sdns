@@ -796,6 +796,7 @@ func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
 	if req == nil {
 		req = fallback
 	}
+	edeCode, edeText := middleware.RecursionWorkEDE(w.ctx)
 	do := false
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
@@ -804,8 +805,8 @@ func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
 		req,
 		dns.RcodeServerFailure,
 		do,
-		middleware.RecursionWorkEDECode,
-		middleware.RecursionWorkEDEText,
+		edeCode,
+		edeText,
 	))
 }
 
@@ -954,6 +955,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		respCname, err := c.internalExchange(ctx, cnameReq)
 		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
 			do := false
 			if opt := msg.IsEdns0(); opt != nil {
 				do = opt.Do()
@@ -962,8 +964,8 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 				msg,
 				dns.RcodeServerFailure,
 				do,
-				middleware.RecursionWorkEDECode,
-				middleware.RecursionWorkEDEText,
+				edeCode,
+				edeText,
 			)
 		}
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {

@@ -226,12 +226,13 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 				if opt := req.IsEdns0(); opt != nil {
 					do = opt.Do()
 				}
+				edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
 				_ = w.WriteMsg(dnsutil.SetRcodeWithEDE(
 					req,
 					dns.RcodeServerFailure,
 					do,
-					middleware.RecursionWorkEDECode,
-					middleware.RecursionWorkEDEText,
+					edeCode,
+					edeText,
 				))
 				ch.Cancel()
 				return

@@ -252,18 +252,30 @@ const (
 	RecursionFirewallModeShadow  RecursionFirewallMode = "shadow"
 	RecursionFirewallModeEnforce RecursionFirewallMode = "enforce"
 
-	DefaultRecursionFirewallMaxOutboundQueries uint32 = 128
-	DefaultRecursionFirewallMaxInternalQueries uint32 = 32
+	DefaultRecursionFirewallMaxOutboundQueries      uint32 = 128
+	DefaultRecursionFirewallMaxInternalQueries      uint32 = 32
+	DefaultRecursionFirewallMaxDNSKEYCandidates     uint32 = 4
+	DefaultRecursionFirewallMaxRRsetSignatureChecks uint32 = 8
+	DefaultRecursionFirewallMaxSignatureChecks      uint32 = 32
+	DefaultRecursionFirewallMaxDSDigests            uint32 = 32
+	DefaultRecursionFirewallMaxNSEC3Hashes          uint32 = 32
+	DefaultRecursionFirewallMaxConcurrentCrypto     uint32 = 32
 )
 
-// RecursionFirewallConfig controls aggregate recursive work limits.
+// RecursionFirewallConfig controls aggregate and local recursive work limits.
 //
 // A zero limit means "use the default", not unlimited. Operators that
 // need to disable accounting use Mode=off explicitly.
 type RecursionFirewallConfig struct {
-	Mode               RecursionFirewallMode `toml:"mode"`
-	MaxOutboundQueries uint32                `toml:"max_outbound_queries"`
-	MaxInternalQueries uint32                `toml:"max_internal_queries"`
+	Mode                    RecursionFirewallMode `toml:"mode"`
+	MaxOutboundQueries      uint32                `toml:"max_outbound_queries"`
+	MaxInternalQueries      uint32                `toml:"max_internal_queries"`
+	MaxDNSKEYCandidates     uint32                `toml:"max_dnskey_candidates"`
+	MaxRRsetSignatureChecks uint32                `toml:"max_rrset_signature_checks"`
+	MaxSignatureChecks      uint32                `toml:"max_signature_checks"`
+	MaxDSDigests            uint32                `toml:"max_ds_digests"`
+	MaxNSEC3Hashes          uint32                `toml:"max_nsec3_hashes"`
+	MaxConcurrentCrypto     uint32                `toml:"max_concurrent_crypto"`
 }
 
 // Normalize applies omission-safe defaults. It deliberately does not
@@ -278,6 +290,24 @@ func (c *RecursionFirewallConfig) Normalize() {
 	}
 	if c.MaxInternalQueries == 0 {
 		c.MaxInternalQueries = DefaultRecursionFirewallMaxInternalQueries
+	}
+	if c.MaxDNSKEYCandidates == 0 {
+		c.MaxDNSKEYCandidates = DefaultRecursionFirewallMaxDNSKEYCandidates
+	}
+	if c.MaxRRsetSignatureChecks == 0 {
+		c.MaxRRsetSignatureChecks = DefaultRecursionFirewallMaxRRsetSignatureChecks
+	}
+	if c.MaxSignatureChecks == 0 {
+		c.MaxSignatureChecks = DefaultRecursionFirewallMaxSignatureChecks
+	}
+	if c.MaxDSDigests == 0 {
+		c.MaxDSDigests = DefaultRecursionFirewallMaxDSDigests
+	}
+	if c.MaxNSEC3Hashes == 0 {
+		c.MaxNSEC3Hashes = DefaultRecursionFirewallMaxNSEC3Hashes
+	}
+	if c.MaxConcurrentCrypto == 0 {
+		c.MaxConcurrentCrypto = DefaultRecursionFirewallMaxConcurrentCrypto
 	}
 }
 
@@ -298,6 +328,24 @@ func (c RecursionFirewallConfig) Validate() error {
 	}
 	if c.MaxInternalQueries == 0 {
 		return fmt.Errorf("max_internal_queries must be greater than zero")
+	}
+	if c.MaxDNSKEYCandidates == 0 {
+		return fmt.Errorf("max_dnskey_candidates must be greater than zero")
+	}
+	if c.MaxRRsetSignatureChecks == 0 {
+		return fmt.Errorf("max_rrset_signature_checks must be greater than zero")
+	}
+	if c.MaxSignatureChecks == 0 {
+		return fmt.Errorf("max_signature_checks must be greater than zero")
+	}
+	if c.MaxDSDigests == 0 {
+		return fmt.Errorf("max_ds_digests must be greater than zero")
+	}
+	if c.MaxNSEC3Hashes == 0 {
+		return fmt.Errorf("max_nsec3_hashes must be greater than zero")
+	}
+	if c.MaxConcurrentCrypto == 0 {
+		return fmt.Errorf("max_concurrent_crypto must be greater than zero")
 	}
 
 	return nil
@@ -912,6 +960,20 @@ max_outbound_queries = 128
 # including cache-missed DS/DNSKEY, NS-address, and alias lookups.
 # 0 uses the default (32); use mode = "off" to disable accounting.
 max_internal_queries = 32
+
+# Maximum same-tag DNSKEY candidates tried for one signature or DS
+# record, and signatures tried for one RRset.
+max_dnskey_candidates = 4
+max_rrset_signature_checks = 8
+
+# Aggregate DNSSEC operations across the complete request tree.
+max_signature_checks = 32
+max_ds_digests = 32
+max_nsec3_hashes = 32
+
+# Maximum signature, DS-digest, or NSEC3-hash operations executing
+# concurrently across request trees handled by this resolver.
+max_concurrent_crypto = 32
 
 # ============================
 # Plugins

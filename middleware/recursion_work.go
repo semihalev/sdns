@@ -27,7 +27,27 @@ type RecursionWorkKind uint8
 const (
 	RecursionWorkOutboundQuery RecursionWorkKind = iota
 	RecursionWorkInternalQuery
+	RecursionWorkDNSKEYCandidate
+	RecursionWorkRRsetSignature
+	RecursionWorkSignature
+	RecursionWorkDSDigest
+	RecursionWorkNSEC3Hash
+	RecursionWorkConcurrentCrypto
 )
+
+func (k RecursionWorkKind) isDNSSEC() bool {
+	switch k {
+	case RecursionWorkDNSKEYCandidate,
+		RecursionWorkRRsetSignature,
+		RecursionWorkSignature,
+		RecursionWorkDSDigest,
+		RecursionWorkNSEC3Hash,
+		RecursionWorkConcurrentCrypto:
+		return true
+	default:
+		return false
+	}
+}
 
 const (
 	// RecursionWorkEDEText is deliberately stable because it is returned to
@@ -40,8 +60,21 @@ const (
 	// contract.
 	RecursionWorkEDECode = dns.ExtendedErrorCodeOther
 
+	// DNSSECWorkEDEText and DNSSECWorkEDECode distinguish validation-work
+	// exhaustion from network fan-out on the wire.
+	DNSSECWorkEDEText = "DNSSEC validation work budget exceeded"
+	DNSSECWorkEDECode = dns.ExtendedErrorCodeDNSSECIndeterminate
+)
+
+const (
 	outboundExhausted uint32 = 1 << iota
 	internalExhausted
+	dnskeyCandidateExhausted
+	rrsetSignatureExhausted
+	signatureExhausted
+	dsDigestExhausted
+	nsec3HashExhausted
+	concurrentCryptoExhausted
 )
 
 // ErrRecursionWorkLimit is the sentinel carried by a
@@ -50,9 +83,15 @@ var ErrRecursionWorkLimit = errors.New("recursion work limit exceeded")
 
 // RecursionWorkPolicy is immutable after a ledger is created.
 type RecursionWorkPolicy struct {
-	Mode               RecursionWorkMode
-	MaxOutboundQueries uint32
-	MaxInternalQueries uint32
+	Mode                    RecursionWorkMode
+	MaxOutboundQueries      uint32
+	MaxInternalQueries      uint32
+	MaxDNSKEYCandidates     uint32
+	MaxRRsetSignatureChecks uint32
+	MaxSignatureChecks      uint32
+	MaxDSDigests            uint32
+	MaxNSEC3Hashes          uint32
+	MaxConcurrentCrypto     uint32
 }
 
 // Enabled reports whether the policy should create and account a ledger.
@@ -68,24 +107,48 @@ type RecursionWorkLimitError struct {
 	Limit uint32
 }
 
-func (e *RecursionWorkLimitError) Error() string { return RecursionWorkEDEText }
+func (e *RecursionWorkLimitError) Error() string {
+	if e != nil && e.Kind.isDNSSEC() {
+		return DNSSECWorkEDEText
+	}
+	return RecursionWorkEDEText
+}
 
 func (e *RecursionWorkLimitError) Unwrap() error { return ErrRecursionWorkLimit }
 
-// EDECode maps enforcement to RFC 8914's finalized catch-all EDE code.
+// EDECode maps network-work enforcement to RFC 8914's finalized catch-all
+// code and DNSSEC-work enforcement to DNSSEC Indeterminate.
 func (e *RecursionWorkLimitError) EDECode() uint16 {
+	if e != nil && e.Kind.isDNSSEC() {
+		return DNSSECWorkEDECode
+	}
 	return RecursionWorkEDECode
 }
 
 // RecursionWorkSnapshot is a race-safe point-in-time ledger view.
 type RecursionWorkSnapshot struct {
-	Mode               RecursionWorkMode
-	OutboundQueries    uint32
-	InternalQueries    uint32
-	OutboundExhausted  bool
-	InternalExhausted  bool
-	MaxOutboundQueries uint32
-	MaxInternalQueries uint32
+	Mode                          RecursionWorkMode
+	OutboundQueries               uint32
+	InternalQueries               uint32
+	SignatureChecks               uint32
+	DSDigests                     uint32
+	NSEC3Hashes                   uint32
+	OutboundExhausted             bool
+	InternalExhausted             bool
+	DNSKEYCandidatesExhausted     bool
+	RRsetSignatureChecksExhausted bool
+	SignatureChecksExhausted      bool
+	DSDigestsExhausted            bool
+	NSEC3HashesExhausted          bool
+	ConcurrentCryptoExhausted     bool
+	MaxOutboundQueries            uint32
+	MaxInternalQueries            uint32
+	MaxDNSKEYCandidates           uint32
+	MaxRRsetSignatureChecks       uint32
+	MaxSignatureChecks            uint32
+	MaxDSDigests                  uint32
+	MaxNSEC3Hashes                uint32
+	MaxConcurrentCrypto           uint32
 }
 
 // RecursionWorkLedger aggregates work across one complete recursive request
@@ -94,13 +157,16 @@ type RecursionWorkSnapshot struct {
 type RecursionWorkLedger struct {
 	policy RecursionWorkPolicy
 
-	outbound  atomic.Uint32
-	internal  atomic.Uint32
-	exhausted atomic.Uint32
-	first     atomic.Uint32
-	refs      atomic.Int64
-	rootDone  atomic.Bool
-	finished  atomic.Bool
+	outbound    atomic.Uint32
+	internal    atomic.Uint32
+	signatures  atomic.Uint32
+	dsDigests   atomic.Uint32
+	nsec3Hashes atomic.Uint32
+	exhausted   atomic.Uint32
+	first       atomic.Uint32
+	refs        atomic.Int64
+	rootDone    atomic.Bool
+	finished    atomic.Bool
 }
 
 // NewRecursionWorkLedger constructs a ledger for policy. Callers normally use
@@ -135,7 +201,10 @@ func (l *RecursionWorkLedger) debit(kind RecursionWorkKind, latchRejection bool)
 		return nil
 	}
 
-	counter, limit, bit := l.dimension(kind)
+	counter, limit, bit, ok := l.aggregateDimension(kind)
+	if !ok {
+		panic("middleware: aggregate Debit called with local recursion-work kind")
+	}
 	if l.policy.Mode == RecursionWorkShadow {
 		// Exactly one goroutine observes the crossing, so work beyond the
 		// limit does not repeat the atomic exhaustion update.
@@ -157,13 +226,94 @@ func (l *RecursionWorkLedger) debit(kind RecursionWorkKind, latchRejection bool)
 	}
 }
 
-func (l *RecursionWorkLedger) dimension(kind RecursionWorkKind) (*atomic.Uint32, uint32, uint32) {
-	switch kind {
-	case RecursionWorkInternalQuery:
-		return &l.internal, l.policy.MaxInternalQueries, internalExhausted
-	default:
-		return &l.outbound, l.policy.MaxOutboundQueries, outboundExhausted
+// CheckLocal checks a per-validation-object limit before the next item is
+// examined. used is the number of items already examined: values below the
+// limit are allowed, while used == limit is the first crossing. Local limits
+// do not add to graph-wide counters.
+func (l *RecursionWorkLedger) CheckLocal(kind RecursionWorkKind, used uint32) error {
+	return l.checkLocal(kind, used, true)
+}
+
+// Reject records a governor failure that has no accepted-work counter, such
+// as timing out while waiting for the resolver-wide crypto semaphore.
+func (l *RecursionWorkLedger) Reject(kind RecursionWorkKind) error {
+	return l.reject(kind, true)
+}
+
+func (l *RecursionWorkLedger) reject(kind RecursionWorkKind, latchRejection bool) error {
+	if l == nil || !l.policy.Enabled() {
+		return nil
 	}
+	limit, bit, ok := l.localDimension(kind)
+	if !ok {
+		panic("middleware: Reject called with aggregate recursion-work kind")
+	}
+	l.markExhausted(kind, bit, l.policy.Mode == RecursionWorkEnforce && latchRejection)
+	if l.policy.Mode == RecursionWorkShadow {
+		return nil
+	}
+	return &RecursionWorkLimitError{Kind: kind, Limit: limit}
+}
+
+func (l *RecursionWorkLedger) checkLocal(kind RecursionWorkKind, used uint32, latchRejection bool) error {
+	if l == nil || !l.policy.Enabled() {
+		return nil
+	}
+
+	limit, bit, ok := l.localDimension(kind)
+	if !ok {
+		panic("middleware: CheckLocal called with aggregate recursion-work kind")
+	}
+	if used < limit {
+		return nil
+	}
+
+	if l.policy.Mode == RecursionWorkShadow {
+		if used == limit {
+			l.markExhausted(kind, bit, false)
+		}
+		return nil
+	}
+	l.markExhausted(kind, bit, latchRejection)
+	return &RecursionWorkLimitError{Kind: kind, Limit: limit}
+}
+
+func (l *RecursionWorkLedger) aggregateDimension(kind RecursionWorkKind) (*atomic.Uint32, uint32, uint32, bool) {
+	switch kind {
+	case RecursionWorkOutboundQuery:
+		return &l.outbound, l.policy.MaxOutboundQueries, outboundExhausted, true
+	case RecursionWorkInternalQuery:
+		return &l.internal, l.policy.MaxInternalQueries, internalExhausted, true
+	case RecursionWorkSignature:
+		return &l.signatures, l.policy.MaxSignatureChecks, signatureExhausted, true
+	case RecursionWorkDSDigest:
+		return &l.dsDigests, l.policy.MaxDSDigests, dsDigestExhausted, true
+	case RecursionWorkNSEC3Hash:
+		return &l.nsec3Hashes, l.policy.MaxNSEC3Hashes, nsec3HashExhausted, true
+	default:
+		return nil, 0, 0, false
+	}
+}
+
+func (l *RecursionWorkLedger) localDimension(kind RecursionWorkKind) (uint32, uint32, bool) {
+	switch kind {
+	case RecursionWorkDNSKEYCandidate:
+		return l.policy.MaxDNSKEYCandidates, dnskeyCandidateExhausted, true
+	case RecursionWorkRRsetSignature:
+		return l.policy.MaxRRsetSignatureChecks, rrsetSignatureExhausted, true
+	case RecursionWorkConcurrentCrypto:
+		return l.policy.MaxConcurrentCrypto, concurrentCryptoExhausted, true
+	default:
+		return 0, 0, false
+	}
+}
+
+func (l *RecursionWorkLedger) limit(kind RecursionWorkKind) (uint32, bool) {
+	if _, limit, _, ok := l.aggregateDimension(kind); ok {
+		return limit, true
+	}
+	limit, _, ok := l.localDimension(kind)
+	return limit, ok
 }
 
 func (l *RecursionWorkLedger) markExhausted(kind RecursionWorkKind, bit uint32, latchRejection bool) {
@@ -182,11 +332,14 @@ func (l *RecursionWorkLedger) EnforcementError() error {
 	if first == 0 {
 		return nil
 	}
-	kind := RecursionWorkOutboundQuery
-	if first == uint32(RecursionWorkInternalQuery)+1 {
-		kind = RecursionWorkInternalQuery
+	if first > uint32(RecursionWorkConcurrentCrypto)+1 {
+		return nil
 	}
-	_, limit, _ := l.dimension(kind)
+	kind := RecursionWorkKind(first - 1) //nolint:gosec // first is bounded to the RecursionWorkKind range above.
+	limit, ok := l.limit(kind)
+	if !ok {
+		return nil
+	}
 	return &RecursionWorkLimitError{Kind: kind, Limit: limit}
 }
 
@@ -197,13 +350,28 @@ func (l *RecursionWorkLedger) Snapshot() RecursionWorkSnapshot {
 	}
 	exhausted := l.exhausted.Load()
 	return RecursionWorkSnapshot{
-		Mode:               l.policy.Mode,
-		OutboundQueries:    l.outbound.Load(),
-		InternalQueries:    l.internal.Load(),
-		OutboundExhausted:  exhausted&outboundExhausted != 0,
-		InternalExhausted:  exhausted&internalExhausted != 0,
-		MaxOutboundQueries: l.policy.MaxOutboundQueries,
-		MaxInternalQueries: l.policy.MaxInternalQueries,
+		Mode:                          l.policy.Mode,
+		OutboundQueries:               l.outbound.Load(),
+		InternalQueries:               l.internal.Load(),
+		SignatureChecks:               l.signatures.Load(),
+		DSDigests:                     l.dsDigests.Load(),
+		NSEC3Hashes:                   l.nsec3Hashes.Load(),
+		OutboundExhausted:             exhausted&outboundExhausted != 0,
+		InternalExhausted:             exhausted&internalExhausted != 0,
+		DNSKEYCandidatesExhausted:     exhausted&dnskeyCandidateExhausted != 0,
+		RRsetSignatureChecksExhausted: exhausted&rrsetSignatureExhausted != 0,
+		SignatureChecksExhausted:      exhausted&signatureExhausted != 0,
+		DSDigestsExhausted:            exhausted&dsDigestExhausted != 0,
+		NSEC3HashesExhausted:          exhausted&nsec3HashExhausted != 0,
+		ConcurrentCryptoExhausted:     exhausted&concurrentCryptoExhausted != 0,
+		MaxOutboundQueries:            l.policy.MaxOutboundQueries,
+		MaxInternalQueries:            l.policy.MaxInternalQueries,
+		MaxDNSKEYCandidates:           l.policy.MaxDNSKEYCandidates,
+		MaxRRsetSignatureChecks:       l.policy.MaxRRsetSignatureChecks,
+		MaxSignatureChecks:            l.policy.MaxSignatureChecks,
+		MaxDSDigests:                  l.policy.MaxDSDigests,
+		MaxNSEC3Hashes:                l.policy.MaxNSEC3Hashes,
+		MaxConcurrentCrypto:           l.policy.MaxConcurrentCrypto,
 	}
 }
 
@@ -253,6 +421,28 @@ func (l *RecursionWorkLedger) release() {
 	if snapshot.InternalExhausted {
 		recursionFirewallExhaustions.WithLabelValues("internal_queries", mode).Inc()
 	}
+	if snapshot.DNSKEYCandidatesExhausted {
+		recursionFirewallExhaustions.WithLabelValues("dnskey_candidates", mode).Inc()
+	}
+	if snapshot.RRsetSignatureChecksExhausted {
+		recursionFirewallExhaustions.WithLabelValues("rrset_signature_checks", mode).Inc()
+	}
+	if snapshot.SignatureChecksExhausted {
+		recursionFirewallExhaustions.WithLabelValues("signature_checks", mode).Inc()
+	}
+	if snapshot.DSDigestsExhausted {
+		recursionFirewallExhaustions.WithLabelValues("ds_digests", mode).Inc()
+	}
+	if snapshot.NSEC3HashesExhausted {
+		recursionFirewallExhaustions.WithLabelValues("nsec3_hashes", mode).Inc()
+	}
+	if snapshot.ConcurrentCryptoExhausted {
+		recursionFirewallExhaustions.WithLabelValues("concurrent_crypto", mode).Inc()
+	}
+
+	dnssecWorkTotal.WithLabelValues("signature_checks", mode).Add(int64(snapshot.SignatureChecks))
+	dnssecWorkTotal.WithLabelValues("ds_digests", mode).Add(int64(snapshot.DSDigests))
+	dnssecWorkTotal.WithLabelValues("nsec3_hashes", mode).Add(int64(snapshot.NSEC3Hashes))
 
 	// One recursive resolution tree is the denominator, so the count of
 	// outbound transport attempts is also that tree's fan-out ratio.
@@ -335,6 +525,32 @@ func DebitRecursionWork(ctx context.Context, kind RecursionWorkKind) error {
 	return nil
 }
 
+// CheckRecursionWorkLocalLimit checks a local DNSSEC work limit in the current
+// request tree. used is the number of candidates or signatures already
+// examined, so the first rejected value in enforce mode is exactly the limit.
+func CheckRecursionWorkLocalLimit(ctx context.Context, kind RecursionWorkKind, used uint32) error {
+	if ledger := RecursionWorkFrom(ctx); ledger != nil {
+		if IsBestEffortRecursionWork(ctx) {
+			return ledger.checkLocal(kind, used, false)
+		}
+		return ledger.CheckLocal(kind, used)
+	}
+	return nil
+}
+
+// RejectRecursionWork records a governor rejection that occurs outside an
+// accepted-work counter. Shadow mode observes it without replacing the
+// original operational error; enforce mode returns a typed policy error.
+func RejectRecursionWork(ctx context.Context, kind RecursionWorkKind) error {
+	if ledger := RecursionWorkFrom(ctx); ledger != nil {
+		if IsBestEffortRecursionWork(ctx) {
+			return ledger.reject(kind, false)
+		}
+		return ledger.Reject(kind)
+	}
+	return nil
+}
+
 // RecursionWorkEnforcementError returns the local request tree's first policy
 // rejection. Checking this context-owned state, rather than trusting an EDE
 // received on the wire, preserves shadow-mode compatibility with upstreams
@@ -344,6 +560,30 @@ func RecursionWorkEnforcementError(ctx context.Context) error {
 		return ledger.EnforcementError()
 	}
 	return nil
+}
+
+// RecursionWorkEDE returns the request tree's latched enforcement EDE. When
+// no local rejection is latched (for example, an upstream returned a generic
+// policy error), it preserves the existing recursion-work fallback.
+func RecursionWorkEDE(ctx context.Context) (uint16, string) {
+	if err := RecursionWorkEnforcementError(ctx); err != nil {
+		var limitErr *RecursionWorkLimitError
+		if errors.As(err, &limitErr) {
+			return limitErr.EDECode(), limitErr.Error()
+		}
+	}
+	return RecursionWorkEDECode, RecursionWorkEDEText
+}
+
+// RecursionWorkErrorEDE maps a directly returned recursion-work error before
+// consulting the request tree's latched rejection. Direct Queryer and Exchange
+// errors may carry more specific DNSSEC provenance than the context fallback.
+func RecursionWorkErrorEDE(ctx context.Context, err error) (uint16, string) {
+	var limitErr *RecursionWorkLimitError
+	if errors.As(err, &limitErr) {
+		return limitErr.EDECode(), limitErr.Error()
+	}
+	return RecursionWorkEDE(ctx)
 }
 
 // FinishRecursionWork publishes the current tree exactly once. Normal client
@@ -361,6 +601,11 @@ var (
 		Help: "Recursion request trees that exhausted a work budget",
 	}, []string{"reason", "mode"})
 
+	dnssecWorkTotal = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dnssec_work_total",
+		Help: "Accepted or observed DNSSEC work across completed request trees",
+	}, []string{"operation", "mode"})
+
 	// internal/metric intentionally shards scalar counters only; histograms
 	// remain native Prometheus collectors because bucket observations cannot
 	// use its delta-flush model.
@@ -374,6 +619,25 @@ var (
 	_ = recursionFirewallExhaustions.Register("outbound_queries", "enforce")
 	_ = recursionFirewallExhaustions.Register("internal_queries", "shadow")
 	_ = recursionFirewallExhaustions.Register("internal_queries", "enforce")
+	_ = recursionFirewallExhaustions.Register("dnskey_candidates", "shadow")
+	_ = recursionFirewallExhaustions.Register("dnskey_candidates", "enforce")
+	_ = recursionFirewallExhaustions.Register("rrset_signature_checks", "shadow")
+	_ = recursionFirewallExhaustions.Register("rrset_signature_checks", "enforce")
+	_ = recursionFirewallExhaustions.Register("signature_checks", "shadow")
+	_ = recursionFirewallExhaustions.Register("signature_checks", "enforce")
+	_ = recursionFirewallExhaustions.Register("ds_digests", "shadow")
+	_ = recursionFirewallExhaustions.Register("ds_digests", "enforce")
+	_ = recursionFirewallExhaustions.Register("nsec3_hashes", "shadow")
+	_ = recursionFirewallExhaustions.Register("nsec3_hashes", "enforce")
+	_ = recursionFirewallExhaustions.Register("concurrent_crypto", "shadow")
+	_ = recursionFirewallExhaustions.Register("concurrent_crypto", "enforce")
+
+	_ = dnssecWorkTotal.Register("signature_checks", "shadow")
+	_ = dnssecWorkTotal.Register("signature_checks", "enforce")
+	_ = dnssecWorkTotal.Register("ds_digests", "shadow")
+	_ = dnssecWorkTotal.Register("ds_digests", "enforce")
+	_ = dnssecWorkTotal.Register("nsec3_hashes", "shadow")
+	_ = dnssecWorkTotal.Register("nsec3_hashes", "enforce")
 )
 
 func init() {

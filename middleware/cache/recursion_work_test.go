@@ -24,10 +24,12 @@ func (q *recursionWorkErrorQueryer) Query(context.Context, *dns.Msg) (*dns.Msg, 
 
 func TestAdditionalAnswerRecursionWorkLimitEDE(t *testing.T) {
 	tests := []struct {
-		name    string
-		err     error
-		rcode   int
-		wantEDE bool
+		name     string
+		err      error
+		rcode    int
+		wantEDE  bool
+		wantCode uint16
+		wantText string
 	}{
 		{
 			name: "typed work limit",
@@ -35,8 +37,21 @@ func TestAdditionalAnswerRecursionWorkLimitEDE(t *testing.T) {
 				Kind:  middleware.RecursionWorkInternalQuery,
 				Limit: 32,
 			},
-			rcode:   dns.RcodeServerFailure,
-			wantEDE: true,
+			rcode:    dns.RcodeServerFailure,
+			wantEDE:  true,
+			wantCode: middleware.RecursionWorkEDECode,
+			wantText: middleware.RecursionWorkEDEText,
+		},
+		{
+			name: "typed crypto work limit",
+			err: &middleware.RecursionWorkLimitError{
+				Kind:  middleware.RecursionWorkSignature,
+				Limit: 32,
+			},
+			rcode:    dns.RcodeServerFailure,
+			wantEDE:  true,
+			wantCode: middleware.DNSSECWorkEDECode,
+			wantText: middleware.DNSSECWorkEDEText,
 		},
 		{
 			name:    "ordinary queryer error keeps original response",
@@ -86,13 +101,13 @@ func TestAdditionalAnswerRecursionWorkLimitEDE(t *testing.T) {
 			if ede == nil {
 				t.Fatal("work-limit SERVFAIL is missing EDE")
 			}
-			if ede.InfoCode != middleware.RecursionWorkEDECode {
+			if ede.InfoCode != tt.wantCode {
 				t.Errorf("EDE code = %d, want %d",
-					ede.InfoCode, middleware.RecursionWorkEDECode)
+					ede.InfoCode, tt.wantCode)
 			}
-			if ede.ExtraText != "Recursion work budget exceeded" {
+			if ede.ExtraText != tt.wantText {
 				t.Errorf("EDE text = %q, want exact stable text %q",
-					ede.ExtraText, "Recursion work budget exceeded")
+					ede.ExtraText, tt.wantText)
 			}
 		})
 	}
@@ -102,20 +117,37 @@ func TestRecursionWorkPolicySERVFAILCacheIsolation(t *testing.T) {
 	tests := []struct {
 		name       string
 		mode       middleware.RecursionWorkMode
+		kind       middleware.RecursionWorkKind
 		edeCode    uint16
 		extraText  string
+		wantCode   uint16
+		wantText   string
 		wantCached bool
 	}{
 		{
 			name:       "local enforce rejection is request scoped",
 			mode:       middleware.RecursionWorkEnforce,
+			kind:       middleware.RecursionWorkInternalQuery,
 			edeCode:    middleware.RecursionWorkEDECode,
 			extraText:  middleware.RecursionWorkEDEText,
+			wantCode:   middleware.RecursionWorkEDECode,
+			wantText:   middleware.RecursionWorkEDEText,
+			wantCached: false,
+		},
+		{
+			name:       "crypto rejection is EDE 5 and request scoped",
+			mode:       middleware.RecursionWorkEnforce,
+			kind:       middleware.RecursionWorkSignature,
+			edeCode:    middleware.RecursionWorkEDECode,
+			extraText:  middleware.RecursionWorkEDEText,
+			wantCode:   middleware.DNSSECWorkEDECode,
+			wantText:   middleware.DNSSECWorkEDEText,
 			wantCached: false,
 		},
 		{
 			name:       "upstream policy EDE remains cacheable in shadow",
 			mode:       middleware.RecursionWorkShadow,
+			kind:       middleware.RecursionWorkInternalQuery,
 			edeCode:    dns.ExtendedErrorCodeUnableToConformToPolicy,
 			extraText:  "upstream policy",
 			wantCached: true,
@@ -131,11 +163,12 @@ func TestRecursionWorkPolicySERVFAILCacheIsolation(t *testing.T) {
 				Mode:               tt.mode,
 				MaxOutboundQueries: 1,
 				MaxInternalQueries: 1,
+				MaxSignatureChecks: 1,
 			})
-			if err := ledger.Debit(middleware.RecursionWorkInternalQuery); err != nil {
-				t.Fatalf("first internal debit: %v", err)
+			if err := ledger.Debit(tt.kind); err != nil {
+				t.Fatalf("first work debit: %v", err)
 			}
-			secondErr := ledger.Debit(middleware.RecursionWorkInternalQuery)
+			secondErr := ledger.Debit(tt.kind)
 			if tt.mode == middleware.RecursionWorkEnforce && !errors.Is(secondErr, middleware.ErrRecursionWorkLimit) {
 				t.Fatalf("enforce crossing error = %v, want recursion work limit", secondErr)
 			}
@@ -143,12 +176,19 @@ func TestRecursionWorkPolicySERVFAILCacheIsolation(t *testing.T) {
 				t.Fatalf("shadow crossing error = %v, want nil", secondErr)
 			}
 			ctx := middleware.WithRecursionWork(context.Background(), ledger)
+			if tt.mode == middleware.RecursionWorkEnforce {
+				code, text := middleware.RecursionWorkEDE(ctx)
+				if code != tt.wantCode || text != tt.wantText {
+					t.Fatalf("latched EDE before cache = (%d, %q), want (%d, %q)",
+						code, text, tt.wantCode, tt.wantText)
+				}
+			}
 
 			req := new(dns.Msg)
 			req.SetQuestion("policy-cache.example.", dns.TypeA)
 			req.SetEdns0(dnsutil.DefaultMsgSize, true)
 			res := dnsutil.SetRcodeWithEDE(
-				req,
+				req.Copy(),
 				dns.RcodeServerFailure,
 				true,
 				tt.edeCode,
@@ -176,10 +216,13 @@ func TestRecursionWorkPolicySERVFAILCacheIsolation(t *testing.T) {
 			if tt.mode == middleware.RecursionWorkEnforce {
 				ede := dnsutil.GetEDE(writer.Msg())
 				if ede == nil ||
-					ede.InfoCode != middleware.RecursionWorkEDECode ||
-					ede.ExtraText != middleware.RecursionWorkEDEText {
+					ede.InfoCode != tt.wantCode ||
+					ede.ExtraText != tt.wantText {
 					t.Fatalf("local policy EDE = %+v, want code=%d text=%q",
-						ede, middleware.RecursionWorkEDECode, middleware.RecursionWorkEDEText)
+						ede, tt.wantCode, tt.wantText)
+				}
+				if writer.Msg().AuthenticatedData {
+					t.Fatal("policy SERVFAIL retained AD=1")
 				}
 			}
 
