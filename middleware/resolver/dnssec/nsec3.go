@@ -26,12 +26,18 @@ func nsec3Safe(n *dns.NSEC3) bool {
 	return n.Iterations <= maxNSEC3Iterations
 }
 
+type nsec3Predicate func(*dns.NSEC3, string) bool
+
 // nsec3Covers reports strict NSEC3 interval coverage. An exact owner match
 // proves that the name exists and therefore must never be accepted as a
 // denial-of-existence cover, even if the DNS library's Cover method includes
 // the owner boundary for an ordinary interval.
 func nsec3Covers(n *dns.NSEC3, name string) bool {
-	return !n.Match(name) && n.Cover(name)
+	return nsec3CoversWith(n, name, (*dns.NSEC3).Match, (*dns.NSEC3).Cover)
+}
+
+func nsec3CoversWith(n *dns.NSEC3, name string, match, cover nsec3Predicate) bool {
+	return !match(n, name) && cover(n, name)
 }
 
 func typesSet(set []uint16, types ...uint16) bool {
@@ -48,6 +54,10 @@ func typesSet(set []uint16, types ...uint16) bool {
 }
 
 func findClosestEncloser(name string, nsec []dns.RR) (string, string) {
+	return findClosestEncloserWith(name, nsec, (*dns.NSEC3).Match)
+}
+
+func findClosestEncloserWith(name string, nsec []dns.RR, match nsec3Predicate) (string, string) {
 	labelIndices := dns.Split(name)
 	nc := name
 
@@ -56,7 +66,7 @@ func findClosestEncloser(name string, nsec []dns.RR) (string, string) {
 		z := name[labelIndices[i]:]
 
 		// Check if this ancestor has a matching NSEC3
-		_, err := findMatching(z, nsec)
+		_, err := findMatchingWith(z, nsec, match)
 		if err != nil {
 			continue
 		}
@@ -74,12 +84,16 @@ func findClosestEncloser(name string, nsec []dns.RR) (string, string) {
 }
 
 func findMatching(name string, nsec []dns.RR) ([]uint16, error) {
+	return findMatchingWith(name, nsec, (*dns.NSEC3).Match)
+}
+
+func findMatchingWith(name string, nsec []dns.RR, match nsec3Predicate) ([]uint16, error) {
 	for _, rr := range nsec {
 		n := rr.(*dns.NSEC3)
 		if !nsec3Safe(n) {
 			continue
 		}
-		if n.Match(name) {
+		if match(n, name) {
 			return n.TypeBitMap, nil
 		}
 	}
@@ -87,12 +101,21 @@ func findMatching(name string, nsec []dns.RR) ([]uint16, error) {
 }
 
 func findCoverer(name string, nsec []dns.RR) ([]uint16, bool, error) {
+	return findCovererWith(name, nsec, (*dns.NSEC3).Match, (*dns.NSEC3).Cover)
+}
+
+func findCovererWith(
+	name string,
+	nsec []dns.RR,
+	match nsec3Predicate,
+	cover nsec3Predicate,
+) ([]uint16, bool, error) {
 	for _, rr := range nsec {
 		n := rr.(*dns.NSEC3)
 		if !nsec3Safe(n) {
 			continue
 		}
-		if nsec3Covers(n, name) {
+		if nsec3CoversWith(n, name, match, cover) {
 			return n.TypeBitMap, (n.Flags & 1) == 1, nil
 		}
 	}
@@ -103,6 +126,18 @@ func findCoverer(name string, nsec []dns.RR) ([]uint16, bool, error) {
 // 5155 §8.4): closest encloser exists, an NSEC3 covers the next closer
 // name, and an NSEC3 covers the wildcard at the closest encloser.
 func VerifyNameError(msg *dns.Msg, nsec []dns.RR) error {
+	return verifyNameErrorWith(msg, nsec, (*dns.NSEC3).Match, (*dns.NSEC3).Cover)
+}
+
+// verifyNameErrorWith is VerifyNameError with injectable NSEC3 hash-backed
+// match/cover operations. It keeps production behaviour unchanged while
+// allowing bounded-work tests to count every hash operation actually reached.
+func verifyNameErrorWith(
+	msg *dns.Msg,
+	nsec []dns.RR,
+	match nsec3Predicate,
+	cover nsec3Predicate,
+) error {
 	q := msg.Question[0]
 	qname := q.Name
 
@@ -110,7 +145,7 @@ func VerifyNameError(msg *dns.Msg, nsec []dns.RR) error {
 		qname = dname
 	}
 
-	ce, nc := findClosestEncloser(qname, nsec)
+	ce, nc := findClosestEncloserWith(qname, nsec, match)
 	if ce == "" {
 		return ErrNSECMissingCoverage
 	}
@@ -124,10 +159,10 @@ func VerifyNameError(msg *dns.Msg, nsec []dns.RR) error {
 	// Accepting a wildcard-only proof lets a signed zone claim any
 	// name is absent as long as some wildcard slot is unallocated —
 	// that is not a real name-error proof, so require all three.
-	if _, _, err := findCoverer(nc, nsec); err != nil {
+	if _, _, err := findCovererWith(nc, nsec, match, cover); err != nil {
 		return err
 	}
-	if _, _, err := findCoverer("*."+ce, nsec); err != nil {
+	if _, _, err := findCovererWith("*."+ce, nsec, match, cover); err != nil {
 		return err
 	}
 	return nil

@@ -77,6 +77,20 @@ func IsSupportedDS(ds *dns.DS) bool {
 // not guarantee key-tag uniqueness: a colliding tag could otherwise
 // mask the KSK that actually authenticates the DS.
 func VerifyDS(keyMap map[uint16][]*dns.DNSKEY, parentDSSet []dns.RR) (bool, error) {
+	return verifyDSWith(keyMap, parentDSSet, (*dns.DNSKEY).ToDS)
+}
+
+type dnskeyToDSFunc func(*dns.DNSKEY, uint8) *dns.DS
+
+// verifyDSWith is VerifyDS with an injectable digest operation. Production
+// passes DNSKEY.ToDS; the seam lets bounded-work regression tests count the
+// operations actually reached by the validator rather than infer them from
+// fixture size.
+func verifyDSWith(
+	keyMap map[uint16][]*dns.DNSKEY,
+	parentDSSet []dns.RR,
+	toDS dnskeyToDSFunc,
+) (bool, error) {
 	total := 0
 	supported := 0
 	var lastErr error
@@ -98,7 +112,7 @@ func VerifyDS(keyMap map[uint16][]*dns.DNSKEY, parentDSSet []dns.RR) (bool, erro
 		}
 		matched := false
 		for _, ksk := range candidates {
-			ds := ksk.ToDS(parentDS.DigestType)
+			ds := toDS(ksk, parentDS.DigestType)
 			if ds == nil {
 				continue
 			}
@@ -137,6 +151,20 @@ func VerifyDS(keyMap map[uint16][]*dns.DNSKEY, parentDSSet []dns.RR) (bool, erro
 // error, expired) only causes the RRset to fail if no sibling signature
 // succeeds.
 func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
+	return verifyRRSIGWith(signer, keys, msg, cryptoVerify)
+}
+
+type rrsigVerifyFunc func(*dns.DNSKEY, *dns.RRSIG, []dns.RR) error
+
+// verifyRRSIGWith is VerifyRRSIG with an injectable cryptographic operation.
+// Production passes cryptoVerify; tests use the seam to count the exact
+// candidate attempts reached by the current control flow.
+func verifyRRSIGWith(
+	signer string,
+	keys map[uint16][]*dns.DNSKEY,
+	msg *dns.Msg,
+	verify rrsigVerifyFunc,
+) (bool, error) {
 	if len(keys) == 0 {
 		return false, ErrMissingDNSKEY
 	}
@@ -265,7 +293,7 @@ func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bo
 		var lastErr error
 		verified := false
 		for _, sig := range sigList {
-			if err := verifyOneSig(keys, set, sig); err != nil {
+			if err := verifyOneSig(keys, set, sig, verify); err != nil {
 				lastErr = err
 				continue
 			}
@@ -289,24 +317,53 @@ func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bo
 // before giving up. Returns a descriptive error for every other
 // outcome so the caller can surface the most informative failure when
 // every candidate signature fails for an RRset.
-func verifyOneSig(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sig *dns.RRSIG) error {
+func verifyOneSig(
+	keys map[uint16][]*dns.DNSKEY,
+	set []dns.RR,
+	sig *dns.RRSIG,
+	verify rrsigVerifyFunc,
+) error {
 	candidates, ok := keys[sig.KeyTag]
 	if !ok || len(candidates) == 0 {
 		return ErrMissingDNSKEY
 	}
+
+	// Keep ErrMissingDNSKEY when no same-tag candidate belongs to the
+	// signature's claimed signer. This error is surfaced as EDE 9, so changing
+	// it to EDE 7 merely because the unrelated signature is also expired would
+	// be an unnecessary wire-visible compatibility change.
+	hasSigner := false
+	for _, k := range candidates {
+		if strings.EqualFold(sig.SignerName, k.Header().Name) {
+			hasSigner = true
+			break
+		}
+	}
+	if !hasSigner {
+		return ErrMissingDNSKEY
+	}
+
+	// Signature validity is candidate-independent, so reject it before the
+	// first public-key operation.
+	if !sig.ValidityPeriod(time.Time{}) {
+		return ErrInvalidSignaturePeriod
+	}
+
 	var lastErr error = ErrMissingDNSKEY
 	for _, k := range candidates {
 		if !strings.EqualFold(sig.SignerName, k.Header().Name) {
-			lastErr = ErrMissingDNSKEY
 			continue
 		}
-		if err := cryptoVerify(k, sig, set); err != nil {
+
+		if err := verify(k, sig, set); err != nil {
 			lastErr = err
 			continue
 		}
+		// Preserve the validator's original acceptance-time check as well as
+		// the new preflight. A large same-tag candidate set can spend enough
+		// time in crypto to cross the signature's one-second expiry boundary.
 		if !sig.ValidityPeriod(time.Time{}) {
-			lastErr = ErrInvalidSignaturePeriod
-			continue
+			return ErrInvalidSignaturePeriod
 		}
 		return nil
 	}
