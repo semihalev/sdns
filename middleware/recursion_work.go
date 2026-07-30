@@ -443,6 +443,9 @@ func (l *RecursionWorkLedger) release() {
 	dnssecWorkTotal.WithLabelValues("signature_checks", mode).Add(int64(snapshot.SignatureChecks))
 	dnssecWorkTotal.WithLabelValues("ds_digests", mode).Add(int64(snapshot.DSDigests))
 	dnssecWorkTotal.WithLabelValues("nsec3_hashes", mode).Add(int64(snapshot.NSEC3Hashes))
+	dnssecWorkPerRequest.WithLabelValues("signature_checks", mode).Observe(float64(snapshot.SignatureChecks))
+	dnssecWorkPerRequest.WithLabelValues("ds_digests", mode).Observe(float64(snapshot.DSDigests))
+	dnssecWorkPerRequest.WithLabelValues("nsec3_hashes", mode).Observe(float64(snapshot.NSEC3Hashes))
 
 	// One recursive resolution tree is the denominator, so the count of
 	// outbound transport attempts is also that tree's fan-out ratio.
@@ -609,6 +612,12 @@ var (
 	// internal/metric intentionally shards scalar counters only; histograms
 	// remain native Prometheus collectors because bucket observations cannot
 	// use its delta-flush model.
+	dnssecWorkPerRequest = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "dnssec_work_per_request",
+		Help:    "DNSSEC operations observed per completed recursive request tree",
+		Buckets: []float64{0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512},
+	}, []string{"operation", "mode"})
+
 	recursionFanoutRatio = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "dns_recursion_fanout_ratio",
 		Help:    "Outbound recursive transport attempts per resolution tree",
@@ -641,5 +650,10 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(recursionFanoutRatio)
+	for _, operation := range []string{"signature_checks", "ds_digests", "nsec3_hashes"} {
+		for _, mode := range []string{"shadow", "enforce"} {
+			dnssecWorkPerRequest.WithLabelValues(operation, mode)
+		}
+	}
+	prometheus.MustRegister(recursionFanoutRatio, dnssecWorkPerRequest)
 }

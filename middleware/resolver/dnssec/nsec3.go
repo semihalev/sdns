@@ -1,7 +1,7 @@
 package dnssec
 
 import (
-	"fmt"
+	"encoding/binary"
 	"sort"
 	"strings"
 
@@ -32,8 +32,6 @@ func nsec3Safe(n *dns.NSEC3) bool {
 	return n.Hash == dns.SHA1 && n.Iterations <= maxNSEC3Iterations
 }
 
-type nsec3Predicate func(*dns.NSEC3, string) bool
-
 func normalizeNSEC3Set(records []dns.RR) []dns.RR {
 	type keyedRecord struct {
 		key string
@@ -48,17 +46,7 @@ func normalizeNSEC3Set(records []dns.RR) []dns.RR {
 		}
 		types := append([]uint16(nil), nsec3.TypeBitMap...)
 		sort.Slice(types, func(i, j int) bool { return types[i] < types[j] })
-		key := fmt.Sprintf(
-			"%s|%d|%d|%d|%d|%s|%s|%v",
-			strings.ToLower(dns.Fqdn(nsec3.Header().Name)),
-			nsec3.Header().Class,
-			nsec3.Hash,
-			nsec3.Flags,
-			nsec3.Iterations,
-			strings.ToUpper(nsec3.Salt),
-			strings.ToUpper(nsec3.NextDomain),
-			types,
-		)
+		key := nsec3IdentityKey(nsec3, types)
 		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
@@ -75,14 +63,54 @@ func normalizeNSEC3Set(records []dns.RR) []dns.RR {
 	return result
 }
 
+func nsec3IdentityKey(nsec3 *dns.NSEC3, sortedTypes []uint16) string {
+	owner := strings.ToLower(dns.Fqdn(nsec3.Header().Name))
+	salt := strings.ToUpper(nsec3.Salt)
+	nextDomain := strings.ToUpper(nsec3.NextDomain)
+	key := make([]byte, 0, len(owner)+len(salt)+len(nextDomain)+9+2*len(sortedTypes))
+
+	// NUL separators are unambiguous for valid textual DNS names and NSEC3's
+	// hexadecimal/base32 fields. Fixed-width integers preserve the existing
+	// owner/class/hash/flags ordering without reflection-based formatting.
+	key = append(key, owner...)
+	key = append(key, 0)
+	key = appendUint16(key, nsec3.Header().Class)
+	key = append(key, nsec3.Hash, nsec3.Flags)
+	key = appendUint16(key, nsec3.Iterations)
+	key = append(key, salt...)
+	key = append(key, 0)
+	key = append(key, nextDomain...)
+	key = append(key, 0)
+	for _, rrtype := range sortedTypes {
+		key = appendUint16(key, rrtype)
+	}
+	return string(key)
+}
+
+func appendUint16(dst []byte, value uint16) []byte {
+	var encoded [2]byte
+	binary.BigEndian.PutUint16(encoded[:], value)
+	return append(dst, encoded[:]...)
+}
+
+type nsec3OperationKind uint8
+
+const (
+	nsec3MatchOperation nsec3OperationKind = iota
+	nsec3CoverOperation
+)
+
 type nsec3Operation struct {
-	predicate nsec3Predicate
-	work      NSEC3Work
+	kind nsec3OperationKind
+	work NSEC3Work
 }
 
 func (op nsec3Operation) run(n *dns.NSEC3, name string) (bool, error) {
 	if op.work == nil {
-		return op.predicate(n, name), nil
+		if op.kind == nsec3CoverOperation {
+			return n.Cover(name), nil
+		}
+		return n.Match(name), nil
 	}
 	release, err := op.work.BeginNSEC3Hash()
 	if err != nil {
@@ -91,7 +119,10 @@ func (op nsec3Operation) run(n *dns.NSEC3, name string) (bool, error) {
 	if release != nil {
 		defer release()
 	}
-	return op.predicate(n, name), nil
+	if op.kind == nsec3CoverOperation {
+		return n.Cover(name), nil
+	}
+	return n.Match(name), nil
 }
 
 // nsec3CoversWithWork reports strict NSEC3 interval coverage. An exact owner
@@ -125,14 +156,10 @@ func typesSet(set []uint16, types ...uint16) bool {
 }
 
 func findClosestEncloser(name string, nsec []dns.RR) (string, string) {
-	return findClosestEncloserWith(name, nsec, (*dns.NSEC3).Match)
-}
-
-func findClosestEncloserWith(name string, nsec []dns.RR, match nsec3Predicate) (string, string) {
 	ce, nc, _ := findClosestEncloserWithWork(
 		name,
 		nsec,
-		nsec3Operation{predicate: match},
+		nsec3Operation{kind: nsec3MatchOperation},
 	)
 	return ce, nc
 }
@@ -171,11 +198,7 @@ func findClosestEncloserWithWork(
 }
 
 func findMatching(name string, nsec []dns.RR) ([]uint16, error) {
-	return findMatchingWith(name, nsec, (*dns.NSEC3).Match)
-}
-
-func findMatchingWith(name string, nsec []dns.RR, match nsec3Predicate) ([]uint16, error) {
-	return findMatchingWithWork(name, nsec, nsec3Operation{predicate: match})
+	return findMatchingWithWork(name, nsec, nsec3Operation{kind: nsec3MatchOperation})
 }
 
 func findMatchingWithWork(
@@ -234,25 +257,8 @@ func VerifyNameErrorWithWork(msg *dns.Msg, nsec []dns.RR, work NSEC3Work) error 
 	return verifyNameErrorWithOperations(
 		msg,
 		nsec,
-		nsec3Operation{predicate: (*dns.NSEC3).Match, work: work},
-		nsec3Operation{predicate: (*dns.NSEC3).Cover, work: work},
-	)
-}
-
-// verifyNameErrorWith is VerifyNameError with injectable NSEC3 hash-backed
-// match/cover operations. It keeps production behaviour unchanged while
-// allowing bounded-work tests to count every hash operation actually reached.
-func verifyNameErrorWith(
-	msg *dns.Msg,
-	nsec []dns.RR,
-	match nsec3Predicate,
-	cover nsec3Predicate,
-) error {
-	return verifyNameErrorWithOperations(
-		msg,
-		nsec,
-		nsec3Operation{predicate: match},
-		nsec3Operation{predicate: cover},
+		nsec3Operation{kind: nsec3MatchOperation, work: work},
+		nsec3Operation{kind: nsec3CoverOperation, work: work},
 	)
 }
 
@@ -306,8 +312,8 @@ func VerifyNODATA(msg *dns.Msg, nsec []dns.RR) error {
 // the resolver-wide crypto semaphore enabled.
 func VerifyNODATAWithWork(msg *dns.Msg, nsec []dns.RR, work NSEC3Work) error {
 	nsec = normalizeNSEC3Set(nsec)
-	match := nsec3Operation{predicate: (*dns.NSEC3).Match, work: work}
-	cover := nsec3Operation{predicate: (*dns.NSEC3).Cover, work: work}
+	match := nsec3Operation{kind: nsec3MatchOperation, work: work}
+	cover := nsec3Operation{kind: nsec3CoverOperation, work: work}
 	q := msg.Question[0]
 	qname := q.Name
 
@@ -391,8 +397,8 @@ func VerifyDelegation(delegation string, nsec []dns.RR) error {
 // accounting and the resolver-wide crypto semaphore enabled.
 func VerifyDelegationWithWork(delegation string, nsec []dns.RR, work NSEC3Work) error {
 	nsec = normalizeNSEC3Set(nsec)
-	match := nsec3Operation{predicate: (*dns.NSEC3).Match, work: work}
-	cover := nsec3Operation{predicate: (*dns.NSEC3).Cover, work: work}
+	match := nsec3Operation{kind: nsec3MatchOperation, work: work}
+	cover := nsec3Operation{kind: nsec3CoverOperation, work: work}
 	types, err := findMatchingWithWork(delegation, nsec, match)
 	if err != nil {
 		if err != ErrNSECMissingCoverage {

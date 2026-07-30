@@ -62,6 +62,9 @@ func (w dnssecWorkBudget) begin(kind middleware.RecursionWorkKind) (func(), erro
 	if err == nil {
 		return release, nil
 	}
+	if !dnssec.IsCryptoWaitError(err) {
+		return nil, err
+	}
 	if rejection := middleware.RejectRecursionWork(
 		w.ctx,
 		middleware.RecursionWorkConcurrentCrypto,

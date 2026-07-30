@@ -78,7 +78,7 @@ func IsSupportedDS(ds *dns.DS) bool {
 // not guarantee key-tag uniqueness: a colliding tag could otherwise
 // mask the KSK that actually authenticates the DS.
 func VerifyDS(keyMap map[uint16][]*dns.DNSKEY, parentDSSet []dns.RR) (bool, error) {
-	return verifyDSWithWork(keyMap, parentDSSet, (*dns.DNSKEY).ToDS, nil)
+	return verifyDSWithWork(keyMap, parentDSSet, nil)
 }
 
 // VerifyDSWithWork is VerifyDS with request-tree digest work accounting.
@@ -89,27 +89,12 @@ func VerifyDSWithWork(
 	parentDSSet []dns.RR,
 	work DSDigestWork,
 ) (bool, error) {
-	return verifyDSWithWork(keyMap, parentDSSet, (*dns.DNSKEY).ToDS, work)
-}
-
-type dnskeyToDSFunc func(*dns.DNSKEY, uint8) *dns.DS
-
-// verifyDSWith is VerifyDS with an injectable digest operation. Production
-// passes DNSKEY.ToDS; the seam lets bounded-work regression tests count the
-// operations actually reached by the validator rather than infer them from
-// fixture size.
-func verifyDSWith(
-	keyMap map[uint16][]*dns.DNSKEY,
-	parentDSSet []dns.RR,
-	toDS dnskeyToDSFunc,
-) (bool, error) {
-	return verifyDSWithWork(keyMap, parentDSSet, toDS, nil)
+	return verifyDSWithWork(keyMap, parentDSSet, work)
 }
 
 func verifyDSWithWork(
 	keyMap map[uint16][]*dns.DNSKEY,
 	parentDSSet []dns.RR,
-	toDS dnskeyToDSFunc,
 	work DSDigestWork,
 ) (bool, error) {
 	dsRecords := uniqueSortedDSRecords(parentDSSet)
@@ -150,7 +135,7 @@ func verifyDSWithWork(
 				}
 			}
 
-			ds, err := runDSDigest(work, toDS, ksk, parentDS.DigestType)
+			ds, err := runDSDigest(work, ksk, parentDS.DigestType)
 			if err != nil {
 				return false, err
 			}
@@ -316,7 +301,6 @@ func beginDSDigest(work DSDigestWork) (func(), error) {
 
 func runDSDigest(
 	work DSDigestWork,
-	toDS dnskeyToDSFunc,
 	key *dns.DNSKEY,
 	digestType uint8,
 ) (*dns.DS, error) {
@@ -327,7 +311,7 @@ func runDSDigest(
 	if release != nil {
 		defer release()
 	}
-	return toDS(key, digestType), nil
+	return key.ToDS(digestType), nil
 }
 
 // VerifyRRSIG validates that every in-zone RRset in msg is covered by at
@@ -342,7 +326,7 @@ func runDSDigest(
 // error, expired) only causes the RRset to fail if no sibling signature
 // succeeds.
 func VerifyRRSIG(signer string, keys map[uint16][]*dns.DNSKEY, msg *dns.Msg) (bool, error) {
-	return verifyRRSIGWithWork(signer, keys, msg, cryptoVerify, nil)
+	return verifyRRSIGWithWork(signer, keys, msg, nil)
 }
 
 // VerifyRRSIGWithWork is VerifyRRSIG with request-tree signature work
@@ -354,28 +338,13 @@ func VerifyRRSIGWithWork(
 	msg *dns.Msg,
 	work SignatureWork,
 ) (bool, error) {
-	return verifyRRSIGWithWork(signer, keys, msg, cryptoVerify, work)
-}
-
-type rrsigVerifyFunc func(*dns.DNSKEY, *dns.RRSIG, []dns.RR) error
-
-// verifyRRSIGWith is VerifyRRSIG with an injectable cryptographic operation.
-// Production passes cryptoVerify; tests use the seam to count the exact
-// candidate attempts reached by the current control flow.
-func verifyRRSIGWith(
-	signer string,
-	keys map[uint16][]*dns.DNSKEY,
-	msg *dns.Msg,
-	verify rrsigVerifyFunc,
-) (bool, error) {
-	return verifyRRSIGWithWork(signer, keys, msg, verify, nil)
+	return verifyRRSIGWithWork(signer, keys, msg, work)
 }
 
 func verifyRRSIGWithWork(
 	signer string,
 	keys map[uint16][]*dns.DNSKEY,
 	msg *dns.Msg,
-	verify rrsigVerifyFunc,
 	work SignatureWork,
 ) (bool, error) {
 	if len(keys) == 0 {
@@ -529,7 +498,7 @@ func verifyRRSIGWithWork(
 		verified := false
 		var rrsetUsed uint32
 		for _, sig := range sigList {
-			if err := verifyOneSigWithWork(keys, set, sig, verify, work, &rrsetUsed); err != nil {
+			if err := verifyOneSigWithWork(keys, set, sig, work, &rrsetUsed); err != nil {
 				if IsWorkError(err) {
 					return false, err
 				}
@@ -638,17 +607,15 @@ func verifyOneSig(
 	keys map[uint16][]*dns.DNSKEY,
 	set []dns.RR,
 	sig *dns.RRSIG,
-	verify rrsigVerifyFunc,
 ) error {
 	var rrsetUsed uint32
-	return verifyOneSigWithWork(keys, set, sig, verify, nil, &rrsetUsed)
+	return verifyOneSigWithWork(keys, set, sig, nil, &rrsetUsed)
 }
 
 func verifyOneSigWithWork(
 	keys map[uint16][]*dns.DNSKEY,
 	set []dns.RR,
 	sig *dns.RRSIG,
-	verify rrsigVerifyFunc,
 	work SignatureWork,
 	rrsetUsed *uint32,
 ) error {
@@ -711,7 +678,7 @@ func verifyOneSigWithWork(
 			}
 		}
 
-		err := runSignatureVerification(work, verify, k, sig, set)
+		err := runSignatureVerification(work, k, sig, set)
 		if err != nil {
 			if IsWorkError(err) {
 				return err
@@ -771,7 +738,6 @@ func beginSignature(work SignatureWork) (func(), error) {
 
 func runSignatureVerification(
 	work SignatureWork,
-	verify rrsigVerifyFunc,
 	key *dns.DNSKEY,
 	sig *dns.RRSIG,
 	set []dns.RR,
@@ -783,7 +749,7 @@ func runSignatureVerification(
 	if release != nil {
 		defer release()
 	}
-	return verify(key, sig, set)
+	return cryptoVerify(key, sig, set)
 }
 
 // cryptoVerify runs the cryptographic RRSIG check for a single candidate

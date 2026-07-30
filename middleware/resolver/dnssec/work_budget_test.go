@@ -41,7 +41,8 @@ func TestCryptoLimiterBoundsAndReleases(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if release, err := limiter.Acquire(cancelled); !errors.Is(err, context.Canceled) || release != nil {
+	if release, err := limiter.Acquire(cancelled); !errors.Is(err, context.Canceled) ||
+		IsCryptoWaitError(err) || release != nil {
 		t.Fatalf("saturated Acquire returned release=%t err=%v, want release=false and context.Canceled",
 			release != nil, err)
 	}
@@ -55,10 +56,28 @@ func TestCryptoLimiterBoundsAndReleases(t *testing.T) {
 	release2()
 
 	unsaturated := NewCryptoLimiter(1)
-	if release, err := unsaturated.Acquire(cancelled); !errors.Is(err, context.Canceled) || release != nil {
+	if release, err := unsaturated.Acquire(cancelled); !errors.Is(err, context.Canceled) ||
+		IsCryptoWaitError(err) || release != nil {
 		t.Fatalf("unsaturated cancelled Acquire returned release=%t err=%v, want context.Canceled",
 			release != nil, err)
 	}
+
+	held, err := unsaturated.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("saturate limiter: %v", err)
+	}
+	if _, waitErr := unsaturated.acquireAfterPreflight(cancelled); !errors.Is(waitErr, context.Canceled) ||
+		!IsCryptoWaitError(waitErr) {
+		t.Fatalf("cancelled saturated wait error = %v, want marked crypto wait cancellation", waitErr)
+	}
+	held()
+
+	immediate := NewCryptoLimiter(1)
+	release, err := immediate.acquireAfterPreflight(cancelled)
+	if err != nil || release == nil {
+		t.Fatalf("free-slot admission after preflight = release:%t err:%v, want success", release != nil, err)
+	}
+	release()
 }
 
 func TestVerifyNameErrorNSEC3WorkBudgetExactBoundary(t *testing.T) {
@@ -96,9 +115,14 @@ func TestVerifyNameErrorNSEC3WorkBudgetStopsBeforeNextHash(t *testing.T) {
 func TestNSEC3CandidatesDeduplicateAndSortDeterministically(t *testing.T) {
 	const qname = "a.b.c.work-factor.example."
 	base := newWorkFactorNSEC3ProofRecords(0, 4)
+	base[0].(*dns.NSEC3).TypeBitMap = []uint16{dns.TypeNS, dns.TypeA}
+	semanticDuplicate := *base[0].(*dns.NSEC3)
+	semanticDuplicate.Hdr.Ttl++
+	semanticDuplicate.TypeBitMap = []uint16{dns.TypeA, dns.TypeNS}
 	permuted := append([]dns.RR(nil), base...)
 	slices.Reverse(permuted)
 	permuted = append(permuted, permuted...)
+	permuted = append(permuted, &semanticDuplicate)
 
 	run := func(records []dns.RR) uint32 {
 		t.Helper()
@@ -112,7 +136,7 @@ func TestNSEC3CandidatesDeduplicateAndSortDeterministically(t *testing.T) {
 
 	want := run(base)
 	if got := run(permuted); got != want {
-		t.Fatalf("hash calls after permutation+duplicates = %d, want %d", got, want)
+		t.Fatalf("hash calls after permutation+semantic duplicates = %d, want %d", got, want)
 	}
 }
 

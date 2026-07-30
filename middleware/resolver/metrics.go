@@ -71,6 +71,22 @@ var (
 	taMissing     = trustAnchorLifecycle.Register("missing")
 	taReappeared  = trustAnchorLifecycle.Register("reappeared")
 	taDeleted     = trustAnchorLifecycle.Register("deleted")
+
+	// AutoTA runs outside the client-facing handler, so its failures never
+	// reach classifyResolverErr. Count one terminal outcome per RFC 5011
+	// refresh so operators can alert on missing successes and distinguish a
+	// maintenance work-budget rejection from client-query exhaustion.
+	trustAnchorRefresh = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_trust_anchor_refresh_total",
+		Help: "RFC 5011 trust-anchor refresh attempts by terminal result",
+	}, []string{"result"})
+
+	taRefreshSuccess          = trustAnchorRefresh.Register("success")
+	taRefreshWorkBudget       = trustAnchorRefresh.Register("work_budget")
+	taRefreshTimeout          = trustAnchorRefresh.Register("timeout")
+	taRefreshQueryError       = trustAnchorRefresh.Register("query_error")
+	taRefreshValidationError  = trustAnchorRefresh.Register("validation_error")
+	taRefreshPersistenceError = trustAnchorRefresh.Register("persistence_error")
 )
 
 // classifyResolverErr increments the appropriate counter for a non-

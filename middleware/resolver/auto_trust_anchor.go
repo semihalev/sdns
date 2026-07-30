@@ -12,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
@@ -101,6 +102,11 @@ func (s State) String() string {
 }
 
 func (r *Resolver) AutoTA() {
+	refreshResult := taRefreshValidationError
+	defer func() {
+		refreshResult.Inc()
+	}()
+
 	filename := filepath.Join(r.cfg.Directory, stateFile)
 	tombstonePath := filepath.Join(r.cfg.Directory, tombstoneFile)
 
@@ -167,6 +173,7 @@ func (r *Resolver) AutoTA() {
 			r.Lock()
 			r.rootKeys = nil
 			r.Unlock()
+			refreshResult = taRefreshPersistenceError
 			return
 		}
 		zlog.Warn("Trust anchor tombstones file unreadable — proceeding with empty in-memory tombstones", "path", tombstonePath, "error", err.Error())
@@ -309,12 +316,14 @@ func (r *Resolver) AutoTA() {
 	resp, err := r.Resolve(ctx, req, r.rootServers, true, 5, 0, false, nil, true)
 	if err != nil {
 		zlog.Error("Refresh trust anchors failed", "error", err.Error())
+		refreshResult = autoTARefreshFailureCounter(err, taRefreshQueryError)
 		return
 	}
 
 	ok, revocationOnly, err := verifyFetchedKeysWithWork(candidate, resp.Answer, validationWork)
 	if !ok {
 		zlog.Error("Refresh trust anchors failed", "error", err.Error())
+		refreshResult = autoTARefreshFailureCounter(err, taRefreshValidationError)
 		return
 	}
 	if revocationOnly {
@@ -358,6 +367,7 @@ func (r *Resolver) AutoTA() {
 	)
 	if err != nil {
 		zlog.Error("Unable to validate trust-anchor revocations", "error", err.Error())
+		refreshResult = autoTARefreshFailureCounter(err, taRefreshValidationError)
 		return
 	}
 
@@ -540,6 +550,9 @@ func (r *Resolver) AutoTA() {
 	if stateErr != nil {
 		zlog.Error("Refresh trust anchors state write failed", "error", stateErr.Error())
 	}
+	if tombErr != nil || stateErr != nil {
+		refreshResult = taRefreshPersistenceError
+	}
 
 	// Publication policy: r.rootKeys is the live trust set that
 	// query validation paths consult. We refresh it only after a
@@ -581,7 +594,25 @@ func (r *Resolver) AutoTA() {
 		zlog.Info("Trust anchor tombstone", "keytag", tb.DNSKey.KeyTag(), "fp", fp, "firstseen", tb.FirstSeen.UTC().Format(time.UnixDate))
 	}
 
+	if tombErr == nil && stateErr == nil {
+		refreshResult = taRefreshSuccess
+	}
 	zlog.Info("Trust anchors refreshed", "path", filename, "nextrefresh", time.Now().Add(12*time.Hour).UTC().Format(time.UnixDate))
+}
+
+func autoTARefreshFailureCounter(err error, fallback *metric.Counter) *metric.Counter {
+	switch {
+	case errors.Is(err, middleware.ErrRecursionWorkLimit),
+		dnssec.IsCryptoWaitError(err):
+		return taRefreshWorkBudget
+	case errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, context.Canceled):
+		return taRefreshTimeout
+	case dnssec.IsWorkError(err):
+		return taRefreshWorkBudget
+	default:
+		return fallback
+	}
 }
 
 // sameKeyExceptRevoke reports whether revokedKey is the same DNSKEY

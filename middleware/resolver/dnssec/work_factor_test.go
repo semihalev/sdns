@@ -35,6 +35,19 @@ type workFactorDSFixture struct {
 	expectedDigestOps int
 }
 
+type workFactorNSEC3Work struct {
+	calls         int
+	sha1Rounds    int
+	roundsPerHash int
+	releases      int
+}
+
+func (w *workFactorNSEC3Work) BeginNSEC3Hash() (func(), error) {
+	w.calls++
+	w.sha1Rounds += w.roundsPerHash
+	return func() { w.releases++ }, nil
+}
+
 // newWorkFactorKey uses a fixed Ed25519 seed so the fixtures and benchmark
 // inputs are reproducible and do not spend benchmark time generating keys.
 func newWorkFactorKey(tb testing.TB) workFactorKeyMaterial {
@@ -321,24 +334,20 @@ func TestVerifyRRSIGWorkFactorLastSignatureAndCandidate(t *testing.T) {
 		t.Fatalf("last signature must verify with the last candidate: %v", err)
 	}
 
-	cryptoOps := 0
-	ok, err := verifyRRSIGWith(
-		workFactorZone,
-		fixture.keys,
-		fixture.msg,
-		func(key *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
-			cryptoOps++
-			return cryptoVerify(key, sig, rrset)
-		},
-	)
+	work := &countingVerifyWork{}
+	ok, err := VerifyRRSIGWithWork(workFactorZone, fixture.keys, fixture.msg, work)
 	if err != nil {
 		t.Fatalf("VerifyRRSIG rejected last-signature/last-candidate fixture: %v", err)
 	}
 	if !ok {
 		t.Fatal("VerifyRRSIG returned false for a valid final signature and candidate")
 	}
+	cryptoOps := int(work.signatures)
 	if cryptoOps < 1 || cryptoOps > fixture.expectedCryptoOps {
 		t.Fatalf("crypto operations = %d, want within [1,%d]", cryptoOps, fixture.expectedCryptoOps)
+	}
+	if work.releases != work.signatures {
+		t.Fatalf("signature releases = %d, want %d", work.releases, work.signatures)
 	}
 }
 
@@ -349,23 +358,20 @@ func TestVerifyDSWorkFactorLastRecordAndCandidate(t *testing.T) {
 	)
 	fixture := newWorkFactorDSFixture(t, dsCount, candidateCount)
 
-	digestOps := 0
-	unsupportedOnly, err := verifyDSWith(
-		fixture.keys,
-		fixture.parentDSSet,
-		func(key *dns.DNSKEY, digestType uint8) *dns.DS {
-			digestOps++
-			return key.ToDS(digestType)
-		},
-	)
+	work := &countingVerifyWork{}
+	unsupportedOnly, err := VerifyDSWithWork(fixture.keys, fixture.parentDSSet, work)
 	if err != nil {
 		t.Fatalf("VerifyDS rejected last-record/last-candidate fixture: %v", err)
 	}
 	if unsupportedOnly {
 		t.Fatal("supported SHA-256 DS fixture reported unsupported-only")
 	}
+	digestOps := int(work.digests)
 	if digestOps < 1 || digestOps > fixture.expectedDigestOps {
 		t.Fatalf("digest operations = %d, want within [1,%d]", digestOps, fixture.expectedDigestOps)
+	}
+	if work.releases != work.digests {
+		t.Fatalf("digest releases = %d, want %d", work.releases, work.digests)
 	}
 }
 
@@ -396,20 +402,19 @@ func TestVerifyRRSIGExpiredWorkFactor(t *testing.T) {
 	if err := expired.Verify(material.key, rrset); err != nil {
 		t.Fatalf("expired fixture must remain cryptographically valid: %v", err)
 	}
-	cryptoOps := 0
-	if err := verifyOneSig(
+	work := &countingVerifyWork{}
+	var rrsetUsed uint32
+	if err := verifyOneSigWithWork(
 		map[uint16][]*dns.DNSKEY{material.key.KeyTag(): {material.key}},
 		rrset,
 		expired,
-		func(key *dns.DNSKEY, sig *dns.RRSIG, set []dns.RR) error {
-			cryptoOps++
-			return cryptoVerify(key, sig, set)
-		},
+		work,
+		&rrsetUsed,
 	); err != ErrInvalidSignaturePeriod {
 		t.Fatalf("verifyOneSig error = %v, want %v", err, ErrInvalidSignaturePeriod)
 	}
-	if cryptoOps != 0 {
-		t.Fatalf("expired signature reached %d crypto operations, want 0", cryptoOps)
+	if work.signatures != 0 {
+		t.Fatalf("expired signature reached %d crypto operations, want 0", work.signatures)
 	}
 }
 
@@ -453,17 +458,8 @@ func TestVerifyNameErrorNSEC3WorkFactorCountsHashCalls(t *testing.T) {
 		t.Run(fmt.Sprintf("iterations=%d", iterations), func(t *testing.T) {
 			msg := new(dns.Msg).SetQuestion(qname, dns.TypeA)
 			records := newWorkFactorNSEC3ProofRecords(iterations, recordCount)
-			hashCalls := 0
-			match := func(n *dns.NSEC3, name string) bool {
-				hashCalls++
-				return n.Match(name)
-			}
-			cover := func(n *dns.NSEC3, name string) bool {
-				hashCalls++
-				return n.Cover(name)
-			}
-
-			err := verifyNameErrorWith(msg, records, match, cover)
+			work := &workFactorNSEC3Work{roundsPerHash: int(iterations) + 1}
+			err := VerifyNameErrorWithWork(msg, records, work)
 			if iterations <= maxNSEC3Iterations && err != nil {
 				t.Fatalf("VerifyNameError error = %v, want nil", err)
 			}
@@ -475,8 +471,8 @@ func TestVerifyNameErrorNSEC3WorkFactorCountsHashCalls(t *testing.T) {
 			if iterations <= maxNSEC3Iterations {
 				expected = (nsec3ClosestEncloserChecks(qname) + 4) * recordCount
 			}
-			if hashCalls != expected {
-				t.Fatalf("NSEC3 hash calls = %d, want %d", hashCalls, expected)
+			if got := work.calls; got != expected {
+				t.Fatalf("NSEC3 hash calls = %d, want %d", got, expected)
 			}
 		})
 	}
@@ -497,28 +493,20 @@ func BenchmarkVerifyRRSIGWorkFactor(b *testing.B) {
 		name := fmt.Sprintf("signatures=%d/candidates=%d", tc.signatures, tc.candidates)
 		b.Run(name, func(b *testing.B) {
 			fixture := newWorkFactorRRSIGFixture(b, tc.signatures, tc.candidates)
-			cryptoOps := 0
+			work := &countingVerifyWork{}
 			b.ReportAllocs()
 
 			for b.Loop() {
-				before := cryptoOps
-				ok, err := verifyRRSIGWith(
-					workFactorZone,
-					fixture.keys,
-					fixture.msg,
-					func(key *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
-						cryptoOps++
-						return cryptoVerify(key, sig, rrset)
-					},
-				)
+				before := work.signatures
+				ok, err := VerifyRRSIGWithWork(workFactorZone, fixture.keys, fixture.msg, work)
 				if err != nil || !ok {
 					b.Fatalf("VerifyRRSIG() = (%v, %v), want (true, nil)", ok, err)
 				}
-				if got := cryptoOps - before; got < 1 || got > fixture.expectedCryptoOps {
+				if got := int(work.signatures - before); got < 1 || got > fixture.expectedCryptoOps {
 					b.Fatalf("crypto operations = %d, want within [1,%d]", got, fixture.expectedCryptoOps)
 				}
 			}
-			b.ReportMetric(float64(cryptoOps)/float64(b.N), "crypto-ops/op")
+			b.ReportMetric(float64(work.signatures)/float64(b.N), "crypto-ops/op")
 		})
 	}
 }
@@ -538,27 +526,20 @@ func BenchmarkVerifyDSWorkFactor(b *testing.B) {
 		name := fmt.Sprintf("DS=%d/candidates=%d", tc.ds, tc.candidates)
 		b.Run(name, func(b *testing.B) {
 			fixture := newWorkFactorDSFixture(b, tc.ds, tc.candidates)
-			digestOps := 0
+			work := &countingVerifyWork{}
 			b.ReportAllocs()
 
 			for b.Loop() {
-				before := digestOps
-				unsupportedOnly, err := verifyDSWith(
-					fixture.keys,
-					fixture.parentDSSet,
-					func(key *dns.DNSKEY, digestType uint8) *dns.DS {
-						digestOps++
-						return key.ToDS(digestType)
-					},
-				)
+				before := work.digests
+				unsupportedOnly, err := VerifyDSWithWork(fixture.keys, fixture.parentDSSet, work)
 				if err != nil || unsupportedOnly {
 					b.Fatalf("VerifyDS() = (%v, %v), want (false, nil)", unsupportedOnly, err)
 				}
-				if got := digestOps - before; got < 1 || got > fixture.expectedDigestOps {
+				if got := int(work.digests - before); got < 1 || got > fixture.expectedDigestOps {
 					b.Fatalf("digest operations = %d, want within [1,%d]", got, fixture.expectedDigestOps)
 				}
 			}
-			b.ReportMetric(float64(digestOps)/float64(b.N), "digest-ops/op")
+			b.ReportMetric(float64(work.digests)/float64(b.N), "digest-ops/op")
 		})
 	}
 }
@@ -595,25 +576,17 @@ func BenchmarkVerifyRRSIGExpiredWorkFactor(b *testing.B) {
 				material.key.KeyTag(): {material.key},
 			}
 
-			cryptoOps := 0
+			work := &countingVerifyWork{}
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, err := verifyRRSIGWith(
-					workFactorZone,
-					keys,
-					msg,
-					func(key *dns.DNSKEY, sig *dns.RRSIG, set []dns.RR) error {
-						cryptoOps++
-						return cryptoVerify(key, sig, set)
-					},
-				); err != ErrInvalidSignaturePeriod {
+				if _, err := VerifyRRSIGWithWork(workFactorZone, keys, msg, work); err != ErrInvalidSignaturePeriod {
 					b.Fatalf("VerifyRRSIG error = %v, want %v", err, ErrInvalidSignaturePeriod)
 				}
 			}
-			if cryptoOps != 0 {
-				b.Fatalf("expired signatures reached %d crypto operations, want 0", cryptoOps)
+			if work.signatures != 0 {
+				b.Fatalf("expired signatures reached %d crypto operations, want 0", work.signatures)
 			}
-			b.ReportMetric(float64(cryptoOps)/float64(b.N), "crypto-ops/op")
+			b.ReportMetric(float64(work.signatures)/float64(b.N), "crypto-ops/op")
 		})
 	}
 }
@@ -695,38 +668,27 @@ func BenchmarkVerifyNameErrorNSEC3WorkFactor(b *testing.B) {
 				expectedSHA1Rounds = expectedHashCalls * (int(tc.iterations) + 1)
 			}
 
-			hashCalls := 0
-			sha1Rounds := 0
-			match := func(n *dns.NSEC3, name string) bool {
-				hashCalls++
-				sha1Rounds += int(n.Iterations) + 1
-				return n.Match(name)
-			}
-			cover := func(n *dns.NSEC3, name string) bool {
-				hashCalls++
-				sha1Rounds += int(n.Iterations) + 1
-				return n.Cover(name)
-			}
+			work := &workFactorNSEC3Work{roundsPerHash: int(tc.iterations) + 1}
 
 			b.ReportAllocs()
 			for b.Loop() {
-				beforeCalls, beforeRounds := hashCalls, sha1Rounds
-				err := verifyNameErrorWith(msg, records, match, cover)
+				beforeCalls, beforeRounds := work.calls, work.sha1Rounds
+				err := VerifyNameErrorWithWork(msg, records, work)
 				if tc.iterations <= maxNSEC3Iterations && err != nil {
 					b.Fatalf("VerifyNameError error = %v, want nil", err)
 				}
 				if tc.iterations > maxNSEC3Iterations && err != ErrNSECMissingCoverage {
 					b.Fatalf("VerifyNameError error = %v, want %v", err, ErrNSECMissingCoverage)
 				}
-				if got := hashCalls - beforeCalls; got != expectedHashCalls {
+				if got := work.calls - beforeCalls; got != expectedHashCalls {
 					b.Fatalf("NSEC3 hash calls = %d, want %d", got, expectedHashCalls)
 				}
-				if got := sha1Rounds - beforeRounds; got != expectedSHA1Rounds {
+				if got := work.sha1Rounds - beforeRounds; got != expectedSHA1Rounds {
 					b.Fatalf("NSEC3 SHA-1 rounds = %d, want %d", got, expectedSHA1Rounds)
 				}
 			}
-			b.ReportMetric(float64(hashCalls)/float64(b.N), "hash-calls/op")
-			b.ReportMetric(float64(sha1Rounds)/float64(b.N), "sha1-rounds/op")
+			b.ReportMetric(float64(work.calls)/float64(b.N), "hash-calls/op")
+			b.ReportMetric(float64(work.sha1Rounds)/float64(b.N), "sha1-rounds/op")
 		})
 	}
 }

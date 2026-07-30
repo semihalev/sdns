@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
@@ -720,6 +722,12 @@ func TestRecursionWorkFinishPublishesAggregateDNSSECWork(t *testing.T) {
 	beforeSignatures := signatureCounter.Value()
 	beforeDS := dsCounter.Value()
 	beforeNSEC3 := nsec3Counter.Value()
+	signatureHistogram := dnssecWorkPerRequest.WithLabelValues("signature_checks", "shadow")
+	dsHistogram := dnssecWorkPerRequest.WithLabelValues("ds_digests", "shadow")
+	nsec3Histogram := dnssecWorkPerRequest.WithLabelValues("nsec3_hashes", "shadow")
+	beforeSignatureCount, beforeSignatureSum := histogramCountAndSum(t, signatureHistogram)
+	beforeDSCount, beforeDSSum := histogramCountAndSum(t, dsHistogram)
+	beforeNSEC3Count, beforeNSEC3Sum := histogramCountAndSum(t, nsec3Histogram)
 
 	for range 2 {
 		if err := ledger.Debit(RecursionWorkSignature); err != nil {
@@ -747,10 +755,46 @@ func TestRecursionWorkFinishPublishesAggregateDNSSECWork(t *testing.T) {
 	if got := nsec3Counter.Value() - beforeNSEC3; got != 4 {
 		t.Fatalf("published NSEC3 work = %d, want 4", got)
 	}
+	assertHistogramDelta(t, signatureHistogram, beforeSignatureCount, beforeSignatureSum, 2)
+	assertHistogramDelta(t, dsHistogram, beforeDSCount, beforeDSSum, 3)
+	assertHistogramDelta(t, nsec3Histogram, beforeNSEC3Count, beforeNSEC3Sum, 4)
 
 	ledger.finish()
 	if got := signatureCounter.Value() - beforeSignatures; got != 2 {
 		t.Fatalf("second finish republished signature work: delta=%d", got)
+	}
+	assertHistogramDelta(t, signatureHistogram, beforeSignatureCount, beforeSignatureSum, 2)
+}
+
+func histogramCountAndSum(t *testing.T, observer prometheus.Observer) (uint64, float64) {
+	t.Helper()
+	m, ok := observer.(prometheus.Metric)
+	if !ok {
+		t.Fatalf("histogram observer type = %T, want prometheus.Metric", observer)
+	}
+	var out dto.Metric
+	if err := m.Write(&out); err != nil {
+		t.Fatalf("write histogram metric: %v", err)
+	}
+	histogram := out.GetHistogram()
+	if histogram == nil {
+		t.Fatal("metric did not contain a histogram")
+	}
+	return histogram.GetSampleCount(), histogram.GetSampleSum()
+}
+
+func assertHistogramDelta(
+	t *testing.T,
+	observer prometheus.Observer,
+	beforeCount uint64,
+	beforeSum float64,
+	want float64,
+) {
+	t.Helper()
+	count, sum := histogramCountAndSum(t, observer)
+	if count-beforeCount != 1 || sum-beforeSum != want {
+		t.Fatalf("histogram delta = count:%d sum:%g, want count:1 sum:%g",
+			count-beforeCount, sum-beforeSum, want)
 	}
 }
 

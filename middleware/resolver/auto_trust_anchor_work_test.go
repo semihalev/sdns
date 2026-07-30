@@ -1,12 +1,31 @@
 package resolver
 
 import (
+	"context"
 	"crypto"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware"
 )
+
+func TestAutoTARefreshFailureCounter(t *testing.T) {
+	workErr := &middleware.RecursionWorkLimitError{
+		Kind:  middleware.RecursionWorkSignature,
+		Limit: 1,
+	}
+	if got := autoTARefreshFailureCounter(workErr, taRefreshQueryError); got != taRefreshWorkBudget {
+		t.Fatal("work-limit error was not classified as AutoTA work-budget failure")
+	}
+	if got := autoTARefreshFailureCounter(context.DeadlineExceeded, taRefreshQueryError); got != taRefreshTimeout {
+		t.Fatal("deadline error was not classified as AutoTA timeout")
+	}
+	if got := autoTARefreshFailureCounter(errors.New("query failed"), taRefreshQueryError); got != taRefreshQueryError {
+		t.Fatal("ordinary error did not preserve the caller's AutoTA fallback result")
+	}
+}
 
 func TestStageRevocationSelfSignaturesContinuesAfterOrdinaryFailure(t *testing.T) {
 	type keyPair struct {

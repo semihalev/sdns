@@ -55,6 +55,25 @@ func IsWorkError(err error) bool {
 	return errors.As(err, &workErr)
 }
 
+// cryptoWaitError marks a context cancellation that happened only after the
+// limiter observed every crypto slot occupied. A plain context error means no
+// saturation was observed and must not be reported as concurrent-crypto
+// exhaustion.
+type cryptoWaitError struct {
+	err error
+}
+
+func (e *cryptoWaitError) Error() string { return e.err.Error() }
+
+func (e *cryptoWaitError) Unwrap() error { return e.err }
+
+// IsCryptoWaitError reports whether err followed an observed wait for a
+// resolver-wide crypto slot.
+func IsCryptoWaitError(err error) bool {
+	var waitErr *cryptoWaitError
+	return errors.As(err, &waitErr)
+}
+
 // DNSKEYToDSWithWork computes one DNSKEY digest under the same accounting and
 // concurrency gate used by VerifyDSWithWork. It is used when the resolver
 // materializes DS records from configured trust anchors.
@@ -98,11 +117,24 @@ func (l *CryptoLimiter) Acquire(ctx context.Context) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	return l.acquireAfterPreflight(ctx)
+}
+
+func (l *CryptoLimiter) acquireAfterPreflight(ctx context.Context) (func(), error) {
+	// Prefer immediate admission without selecting against ctx.Done. This
+	// makes a free slot authoritative when cancellation races the admission
+	// point. Only the slow path below has observed real saturation.
+	select {
+	case l.tokens <- struct{}{}:
+		return func() { <-l.tokens }, nil
+	default:
+	}
+
 	select {
 	case l.tokens <- struct{}{}:
 		return func() { <-l.tokens }, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, &cryptoWaitError{err: ctx.Err()}
 	}
 }
 

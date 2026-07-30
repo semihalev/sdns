@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto"
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -12,6 +11,33 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
+
+type stagedCancellationContext struct {
+	context.Context
+	done        chan struct{}
+	nilErrCalls int
+	errCalls    int
+}
+
+func newStagedCancellationContext(parent context.Context, nilErrCalls int) *stagedCancellationContext {
+	done := make(chan struct{})
+	close(done)
+	return &stagedCancellationContext{
+		Context:     parent,
+		done:        done,
+		nilErrCalls: nilErrCalls,
+	}
+}
+
+func (c *stagedCancellationContext) Done() <-chan struct{} { return c.done }
+
+func (c *stagedCancellationContext) Err() error {
+	c.errCalls++
+	if c.errCalls <= c.nilErrCalls {
+		return nil
+	}
+	return context.Canceled
+}
 
 func TestDNSSECWorkBudgetAppliesToExplicitCDValidation(t *testing.T) {
 	key := &dns.DNSKEY{
@@ -123,31 +149,17 @@ func TestDNSSECWorkBudgetMapsSemaphoreExhaustionToPolicyFailure(t *testing.T) {
 		t.Fatalf("first BeginSignature: %v", err)
 	}
 
-	waiting, cancel := context.WithCancel(ctx)
-	type beginResult struct {
-		release func()
-		err     error
-	}
-	result := make(chan beginResult, 1)
-	go func() {
-		nextRelease, nextErr := r.dnssecWork(waiting).BeginDSDigest()
-		result <- beginResult{release: nextRelease, err: nextErr}
-	}()
-	deadline := time.Now().Add(time.Second)
-	for ledger.Snapshot().DSDigests != 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("DS work did not reach the saturated semaphore")
-		}
-		runtime.Gosched()
-	}
-	cancel()
-	got := <-result
-	if !errors.Is(got.err, middleware.ErrRecursionWorkLimit) || got.release != nil {
+	// The first two Err calls cover dnssecWorkBudget.begin and
+	// CryptoLimiter.Acquire preflight. Done is already closed, so the limiter
+	// deterministically observes a full slot before cancellation wins.
+	waiting := newStagedCancellationContext(ctx, 2)
+	nextRelease, nextErr := r.dnssecWork(waiting).BeginDSDigest()
+	if !errors.Is(nextErr, middleware.ErrRecursionWorkLimit) || nextRelease != nil {
 		t.Fatalf("saturated BeginDSDigest returned release=%t err=%v, want crypto policy failure",
-			got.release != nil, got.err)
+			nextRelease != nil, nextErr)
 	}
 	var limitErr *middleware.RecursionWorkLimitError
-	if !errors.As(got.err, &limitErr) ||
+	if !errors.As(nextErr, &limitErr) ||
 		limitErr.Kind != middleware.RecursionWorkConcurrentCrypto ||
 		limitErr.EDECode() != middleware.DNSSECWorkEDECode {
 		t.Fatalf("semaphore error = %#v, want concurrent-crypto EDE 5", limitErr)
@@ -161,5 +173,39 @@ func TestDNSSECWorkBudgetMapsSemaphoreExhaustionToPolicyFailure(t *testing.T) {
 	}
 	if !snapshot.ConcurrentCryptoExhausted {
 		t.Fatal("semaphore exhaustion missing from request-tree provenance")
+	}
+}
+
+func TestDNSSECWorkBudgetDoesNotMisclassifyPreWaitCancellation(t *testing.T) {
+	policy := middleware.RecursionWorkPolicy{
+		Mode:                middleware.RecursionWorkEnforce,
+		MaxSignatureChecks:  1,
+		MaxDSDigests:        1,
+		MaxConcurrentCrypto: 1,
+	}
+	ctx, ledger := middleware.EnsureRecursionWork(context.Background(), policy)
+	r := &Resolver{cryptoLimiter: dnssec.NewCryptoLimiter(1)}
+
+	release, err := r.dnssecWork(ctx).BeginSignature()
+	if err != nil {
+		t.Fatalf("first BeginSignature: %v", err)
+	}
+	// Cancellation appears at CryptoLimiter.Acquire's preflight, before that
+	// limiter has observed contention.
+	cancelled := newStagedCancellationContext(ctx, 1)
+	nextRelease, err := r.dnssecWork(cancelled).BeginDSDigest()
+	release()
+
+	if !errors.Is(err, context.Canceled) || errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+		nextRelease != nil {
+		t.Fatalf("pre-wait cancellation returned release=%t err=%v, want plain context cancellation",
+			nextRelease != nil, err)
+	}
+	snapshot := ledger.Snapshot()
+	if snapshot.ConcurrentCryptoExhausted {
+		t.Fatal("pre-wait cancellation was misclassified as concurrent-crypto exhaustion")
+	}
+	if ledger.EnforcementError() != nil {
+		t.Fatalf("pre-wait cancellation latched enforcement error: %v", ledger.EnforcementError())
 	}
 }

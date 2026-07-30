@@ -91,8 +91,8 @@ func nextCloserDeniedWithWork(
 		}
 	}
 	nsec3Set = normalizeNSEC3Set(nsec3Set)
-	match := nsec3Operation{predicate: (*dns.NSEC3).Match, work: work}
-	cover := nsec3Operation{predicate: (*dns.NSEC3).Cover, work: work}
+	match := nsec3Operation{kind: nsec3MatchOperation, work: work}
+	cover := nsec3Operation{kind: nsec3CoverOperation, work: work}
 	for _, rr := range nsec3Set {
 		n := rr.(*dns.NSEC3)
 		if !nsec3Safe(n) {

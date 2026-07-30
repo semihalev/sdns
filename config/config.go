@@ -967,6 +967,8 @@ max_dnskey_candidates = 4
 max_rrset_signature_checks = 8
 
 # Aggregate DNSSEC operations across the complete request tree.
+# Keep shadow mode enabled first and calibrate these limits from the
+# dnssec_work_per_request histogram (especially NSEC3 p99) before enforce.
 max_signature_checks = 32
 max_ds_digests = 32
 max_nsec3_hashes = 32
