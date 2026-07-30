@@ -223,9 +223,13 @@ func (p *Pipeline) autoWire() {
 	// no provider — sub-queries in that deployment silently run
 	// uncached.
 	var (
-		store     Store
-		providers []string
-		hasSetter bool
+		store             Store
+		providers         []string
+		hasSetter         bool
+		cryptoLimiter     DNSSECCryptoLimiter
+		cryptoProvider    string
+		cryptoProviders   []string
+		hasCryptoConsumer bool
 	)
 	for _, h := range p.handlers {
 		if sp, ok := h.(StoreProvider); ok {
@@ -237,6 +241,17 @@ func (p *Pipeline) autoWire() {
 		if _, ok := h.(StoreSetter); ok {
 			hasSetter = true
 		}
+		if provider, ok := h.(DNSSECCryptoLimiterProvider); ok {
+			cryptoProviders = append(cryptoProviders, h.Name())
+			candidate := provider.DNSSECCryptoLimiter()
+			if isNilInterface(cryptoLimiter) && !isNilInterface(candidate) {
+				cryptoLimiter = candidate
+				cryptoProvider = h.Name()
+			}
+		}
+		if _, ok := h.(DNSSECCryptoLimiterSetter); ok {
+			hasCryptoConsumer = true
+		}
 	}
 	if len(providers) > 1 {
 		zlog.Warn("Multiple StoreProviders registered; first wins",
@@ -244,6 +259,13 @@ func (p *Pipeline) autoWire() {
 	}
 	if store == nil && hasSetter {
 		zlog.Warn("StoreSetter handler(s) present but no StoreProvider registered; internal sub-queries will run without cache")
+	}
+	if len(cryptoProviders) > 1 {
+		zlog.Warn("Multiple DNSSECCryptoLimiterProviders registered; first usable provider wins",
+			"selected", cryptoProvider, "providers", cryptoProviders)
+	}
+	if isNilInterface(cryptoLimiter) && hasCryptoConsumer {
+		zlog.Warn("DNSSEC crypto limiter consumer present but no provider registered; optional cache-side DNSSEC work will fail open")
 	}
 
 	for _, h := range p.handlers {
@@ -256,6 +278,11 @@ func (p *Pipeline) autoWire() {
 		if store != nil {
 			if s, ok := h.(StoreSetter); ok {
 				s.SetStore(store)
+			}
+		}
+		if !isNilInterface(cryptoLimiter) {
+			if s, ok := h.(DNSSECCryptoLimiterSetter); ok {
+				s.SetDNSSECCryptoLimiter(cryptoLimiter)
 			}
 		}
 	}

@@ -57,6 +57,27 @@ func withCnameChaseDepth(ctx context.Context, depth int) context.Context {
 	return context.WithValue(ctx, cnameChaseDepthKey, depth)
 }
 
+// sharedDenialBypassKey pins raw ECS and incoming CD=1 to the whole request
+// tree. CNAME and DNAME follow-ups manufacture fresh DO=1 messages and can
+// inherit header bits from a rewritten response; message-local checks would
+// therefore let an audience-scoped or checking-disabled client consume global
+// RFC 8020/8198 state on the alias target.
+type sharedDenialBypassKeyType struct{}
+
+var sharedDenialBypassKey = &sharedDenialBypassKeyType{}
+
+func withSharedDenialBypass(ctx context.Context) context.Context {
+	if sharedDenialBypass(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, sharedDenialBypassKey, true)
+}
+
+func sharedDenialBypass(ctx context.Context) bool {
+	bypass, _ := ctx.Value(sharedDenialBypassKey).(bool)
+	return bypass
+}
+
 // Cache is the cache implementation.
 type Cache struct {
 	positive *PositiveCache
@@ -82,6 +103,10 @@ type Cache struct {
 	// cache-less sub-pipeline so the refresh hits the upstream
 	// resolver / forwarder rather than its own stale entry.
 	prefetchQueryer middleware.Queryer
+	// dnssecCryptoLimiter is the resolver-owned shared concurrency gate.
+	// RFC 8198 NSEC3 synthesis uses only non-blocking acquisition: failure to
+	// get a slot is a cache miss, never a client-visible error.
+	dnssecCryptoLimiter middleware.DNSSECCryptoLimiter
 
 	config  CacheConfig
 	metrics *CacheMetrics
@@ -198,7 +223,13 @@ func New(cfg *config.Config) *Cache {
 
 	// Register metrics instance for Prometheus hit rate calculation
 	SetMetricsInstance(c.metrics)
-	SetCacheSizeFuncs(c.positive.Len, c.negative.Len, c.failure.Len, c.store.NXDomainCutLen)
+	SetCacheSizeFuncs(
+		c.positive.Len,
+		c.negative.Len,
+		c.failure.Len,
+		c.store.NXDomainCutLen,
+		c.store.DenialProofLen,
+	)
 
 	return c
 }
@@ -254,6 +285,15 @@ func (c *Cache) SetQueryer(q middleware.Queryer) { c.queryer = q }
 // instead of returning its own about-to-expire entry.
 func (c *Cache) SetPrefetchQueryer(q middleware.Queryer) { c.prefetchQueryer = q }
 
+// SetDNSSECCryptoLimiter installs the resolver-owned gate used by optional
+// NSEC3 proof lookups. Called once by middleware.Setup before publication.
+func (c *Cache) SetDNSSECCryptoLimiter(limiter middleware.DNSSECCryptoLimiter) {
+	c.dnssecCryptoLimiter = limiter
+	if c.store != nil {
+		c.store.dnssecCryptoLimiter = limiter
+	}
+}
+
 // errQueryerNotWired is returned when an internal Cache lookup fires
 // before sdns.go wiring has installed a Queryer. Production never
 // sees this path; it exists so tests that construct a partially
@@ -288,6 +328,12 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	q := req.Question[0]
+	requestCD := req.CheckingDisabled
+	requestHasECS := hasEDNSClientSubnet(req)
+	if requestCD || requestHasECS {
+		ctx = withSharedDenialBypass(ctx)
+	}
+	requestTreeBypassesSharedDenial := sharedDenialBypass(ctx)
 
 	// Validate query class and type
 	if !c.isValidQuery(q) {
@@ -361,10 +407,16 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			return
 		}
 	}
-	if cut := c.lookupNXDomainCut(req, clientScope); cut != nil {
+	if cut := c.lookupNXDomainCut(ctx, req, clientScope); cut != nil {
 		if c.handleNXDomainCutHit(ctx, ch, cut) {
 			c.metrics.Hit()
 			nxDomainCutHits.Inc()
+			return
+		}
+	}
+	if proof, kind, zone := c.lookupDenialProof(ctx, req, clientScope); proof != nil {
+		if c.handleDenialProofHit(ctx, ch, proof, kind, zone) {
+			c.metrics.Hit()
 			return
 		}
 	}
@@ -425,10 +477,16 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 					return
 				}
 			}
-			if cut := c.lookupNXDomainCut(req, clientScope); cut != nil {
+			if cut := c.lookupNXDomainCut(ctx, req, clientScope); cut != nil {
 				if c.handleNXDomainCutHit(ctx, ch, cut) {
 					c.metrics.Hit()
 					nxDomainCutHits.Inc()
+					return
+				}
+			}
+			if proof, kind, zone := c.lookupDenialProof(ctx, req, clientScope); proof != nil {
+				if c.handleDenialProofHit(ctx, ch, proof, kind, zone) {
+					c.metrics.Hit()
 					return
 				}
 			}
@@ -470,6 +528,9 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// writer doesn't leak a ctx reference between uses.
 	rw.ctx = ctx
 	rw.req = ch.Request
+	rw.requestCD = requestCD
+	rw.requestHasECS = requestHasECS
+	rw.requestTreeBypassesSharedDenial = requestTreeBypassesSharedDenial
 	// Stash the client's request scope so WriteMsg can derive
 	// the insert key without re-reading the OPT (which by then
 	// may have been mutated by the edns wrapper on the response).
@@ -481,6 +542,9 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		rw.ctx = nil
 		rw.req = nil
 		rw.clientScope = netip.Prefix{}
+		rw.requestCD = false
+		rw.requestHasECS = false
+		rw.requestTreeBypassesSharedDenial = false
 		rw.meta = nil
 		c.writerPool.Put(rw)
 	}()
@@ -594,13 +658,44 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 // synthesis. ECS requests also bypass P4: a signed split-horizon denial can be
 // audience-specific, and P4 has no per-scope proof index. Failing open to
 // ordinary resolution is safer than sharing one audience's subtree cut.
-func (c *Cache) lookupNXDomainCut(req *dns.Msg, clientScope netip.Prefix) *nxDomainCutEntry {
+func (c *Cache) lookupNXDomainCut(
+	ctx context.Context,
+	req *dns.Msg,
+	clientScope netip.Prefix,
+) *nxDomainCutEntry {
 	if req == nil || len(req.Question) == 0 ||
-		req.CheckingDisabled || clientScope.IsValid() {
+		req.CheckingDisabled || clientScope.IsValid() ||
+		sharedDenialBypass(ctx) {
 		return nil
 	}
 	entry, _ := c.store.LookupNXDomainCut(req)
 	return entry
+}
+
+// lookupDenialProof checks the RFC 8198 index after the exact-answer and RFC
+// 8020 cut paths, but before shared failure state. Like P4, the proof index is
+// intentionally global rather than ECS-scoped, so any raw ECS option is a
+// conservative miss even when policy did not derive a usable client scope.
+// NSEC3 hashing gets a fresh optional-work budget for this lookup and uses the
+// resolver-owned non-blocking crypto gate; saturation is only a cache miss.
+func (c *Cache) lookupDenialProof(
+	ctx context.Context,
+	req *dns.Msg,
+	clientScope netip.Prefix,
+) (*dns.Msg, middleware.ValidatedNegativeProofKind, string) {
+	if req == nil || len(req.Question) != 1 ||
+		req.CheckingDisabled || clientScope.IsValid() ||
+		hasEDNSClientSubnet(req) || sharedDenialBypass(ctx) {
+		return nil, middleware.ValidatedNegativeProofUnknown, ""
+	}
+	msg, kind, zone, ok := c.store.LookupDenialProof(
+		req,
+		newDenialProofWork(ctx, c.dnssecCryptoLimiter),
+	)
+	if !ok {
+		return nil, middleware.ValidatedNegativeProofUnknown, ""
+	}
+	return msg, kind, zone
 }
 
 func (c *Cache) handleNXDomainCutHit(
@@ -616,10 +711,40 @@ func (c *Cache) handleNXDomainCutHit(
 	// A cut hit is locally authenticated state, so it can safely become the
 	// terminal proof source when an enclosing CNAME/DNAME response explicitly
 	// propagates its exact-response provenance.
-	middleware.MarkValidatedDenialResponse(ctx, resp, middleware.ValidatedDenial{
-		DeniedName: entry.deniedName,
+	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+		Subject:    entry.deniedName,
 		Zone:       entry.zone,
+		Kind:       entry.proofKind,
+		Aggressive: true,
 	})
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+	return true
+}
+
+func (c *Cache) handleDenialProofHit(
+	ctx context.Context,
+	ch *middleware.Chain,
+	resp *dns.Msg,
+	kind middleware.ValidatedNegativeProofKind,
+	zone string,
+) bool {
+	if resp == nil || len(resp.Question) != 1 ||
+		(kind != middleware.ValidatedNegativeProofNSEC &&
+			kind != middleware.ValidatedNegativeProofNSEC3) {
+		return false
+	}
+
+	// Exact response identity makes a synthesized terminal proof safe to
+	// propagate through an enclosing CNAME/DNAME chase. It does not grant
+	// trust to copies or unrelated negative messages in the same request.
+	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+		Subject:    resp.Question[0].Name,
+		Zone:       zone,
+		Kind:       kind,
+		Aggressive: true,
+	})
+	observeAggressiveNegativeHit(kind, resp.Rcode)
 	_ = ch.Writer.WriteMsg(resp)
 	ch.Cancel()
 	return true
@@ -783,14 +908,17 @@ func (c *Cache) Stats() map[string]any {
 	hits, misses, evictions, prefetches := c.metrics.Stats()
 
 	return map[string]any{
-		"hits":              hits,
-		"misses":            misses,
-		"evictions":         evictions,
-		"prefetches":        prefetches,
-		"positive_size":     c.store.PositiveLen(),
-		"negative_size":     c.store.NegativeLen(),
-		"failure_size":      c.store.FailureLen(),
-		"nxdomain_cut_size": c.store.NXDomainCutLen(),
+		"hits":               hits,
+		"misses":             misses,
+		"evictions":          evictions,
+		"prefetches":         prefetches,
+		"positive_size":      c.store.PositiveLen(),
+		"negative_size":      c.store.NegativeLen(),
+		"failure_size":       c.store.FailureLen(),
+		"nxdomain_cut_size":  c.store.NXDomainCutLen(),
+		"denial_proof_size":  c.store.DenialProofLen(),
+		"denial_proof_zones": c.store.DenialProofZones(),
+		"denial_proof_bytes": c.store.DenialProofBytes(),
 		"hit_rate": func() float64 {
 			total := float64(hits + misses)
 			if total == 0 {
@@ -821,6 +949,12 @@ type ResponseWriter struct {
 	// — that's how pre-Stage-2 traffic and SCOPE=0 responses keep
 	// the same cache shape they had before.
 	clientScope netip.Prefix
+	// Immutable snapshots captured before downstream middleware can mutate
+	// the request. Shared authenticated-denial state is never published from
+	// checking-disabled or audience-scoped traffic.
+	requestCD                       bool
+	requestHasECS                   bool
+	requestTreeBypassesSharedDenial bool
 	// meta is the request tree's ResponseMeta sink, stashed by
 	// Cache.ServeDNS. By the time WriteMsg runs, the resolver
 	// downstream has folded the delegation-cut deadline into it;
@@ -909,22 +1043,33 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		cutUntil, cutKey = w.meta.Cut()
 	}
 
-	// RFC 8020 admission is an explicit resolver-to-cache trust seam. Never
-	// infer it from AD=1: forwarders and plugins can supply wire-authenticated
-	// looking responses without this process having validated the chain. The
-	// provenance retains the original terminal proof across alias merges, so
-	// cached descendant answers contain no outer CNAME/DNAME records. Check
-	// both the original request and the response CD bit so an intervening
-	// handler cannot turn a CD=1 request into cut admission by clearing CD.
-	requestCD := w.req != nil && w.req.CheckingDisabled
-	if !w.clientScope.IsValid() && !requestCD && !res.CheckingDisabled {
-		if denial, ok := middleware.ValidatedDenialForResponse(ctx, res); ok {
-			w.cache.store.RecordNXDomainCut(
-				denial.Proof,
-				denial.DeniedName,
-				denial.Zone,
+	// RFC 8020/8198 admission is an explicit resolver-to-cache trust seam.
+	// Never infer it from AD=1: forwarders and plugins can supply
+	// wire-authenticated-looking responses without this process having
+	// validated the chain. Provenance retains the original terminal proof
+	// across alias merges, so shared state contains no outer CNAME/DNAME
+	// records. Check both the original request and response CD bit so an
+	// intervening handler cannot turn a CD=1 request into admission.
+	if !w.clientScope.IsValid() && !w.requestHasECS &&
+		!w.requestTreeBypassesSharedDenial &&
+		!w.requestCD && !res.CheckingDisabled {
+		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, res); ok &&
+			negative.Aggressive &&
+			negative.Proof != nil {
+			w.cache.store.RecordDenialProof(
+				negative.Proof,
+				negative.Zone,
+				negative.Kind,
 				cutUntil,
 			)
+			if negative.Proof.Rcode == dns.RcodeNameError {
+				w.cache.store.RecordNXDomainCut(
+					negative.Proof,
+					negative.Subject,
+					negative.Zone,
+					cutUntil,
+				)
+			}
 		}
 	}
 
@@ -1175,6 +1320,18 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			msg.Rcode = dns.RcodeNameError
 			middleware.PropagateValidatedDenialResponse(ctx, respCname, msg)
 			return msg
+		}
+		if respCname != nil {
+			if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, respCname); ok &&
+				negative.Proof != nil &&
+				negative.Proof.Rcode == dns.RcodeSuccess &&
+				len(negative.Proof.Answer) == 0 {
+				// The target exists but lacks the requested type. Preserve
+				// its authenticated terminal proof on the outer alias
+				// response and stop; another chase cannot create that type.
+				middleware.PropagateValidatedNegativeProofResponse(ctx, respCname, msg)
+				return msg
+			}
 		}
 
 		if target == q.Name {

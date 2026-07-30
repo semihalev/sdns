@@ -1,8 +1,10 @@
 package cache
 
 import (
+	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/internal/metric"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // Counters use the internal/metric package (sharded + background
@@ -43,6 +45,19 @@ var (
 		Help: "Total number of descendant NXDOMAIN responses served from locally validated RFC 8020 cuts",
 	})
 
+	aggressiveNegativeHits = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "aggressive_negative_hits_total",
+		Help: "RFC 8198 negative responses synthesized from locally validated denial proofs",
+	}, []string{"proof", "rcode"})
+
+	// Closed label set: pre-resolve the four supported combinations so the
+	// request hot path avoids a label-map lookup and cannot create unbounded
+	// series from wire values.
+	aggressiveNSECNXDomainHits  = aggressiveNegativeHits.Register("nsec", "nxdomain")
+	aggressiveNSECNODATAHits    = aggressiveNegativeHits.Register("nsec", "nodata")
+	aggressiveNSEC3NXDomainHits = aggressiveNegativeHits.Register("nsec3", "nxdomain")
+	aggressiveNSEC3NODATAHits   = aggressiveNegativeHits.Register("nsec3", "nodata")
+
 	cacheSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dns_cache_size",
 		Help: "Current number of entries in the DNS cache",
@@ -82,6 +97,7 @@ var (
 	negativeCacheLen func() int
 	failureCacheLen  func() int
 	nxDomainCutLen   func() int
+	denialProofLen   func() int
 )
 
 func init() {
@@ -94,16 +110,20 @@ func SetMetricsInstance(m *CacheMetrics) {
 	metricsInstance = m
 }
 
-// SetCacheSizeFuncs sets the functions to get cache sizes. The optional cut
-// function preserves source compatibility for external callers of the
-// pre-RFC-8020 three-argument API.
-func SetCacheSizeFuncs(positive, negative, failure func() int, cuts ...func() int) {
+// SetCacheSizeFuncs sets the functions to get cache sizes. Optional functions
+// preserve source compatibility: extras[0] is the RFC 8020 cut index and
+// extras[1] is the RFC 8198 proof index.
+func SetCacheSizeFuncs(positive, negative, failure func() int, extras ...func() int) {
 	positiveCacheLen = positive
 	negativeCacheLen = negative
 	failureCacheLen = failure
 	nxDomainCutLen = nil
-	if len(cuts) > 0 {
-		nxDomainCutLen = cuts[0]
+	denialProofLen = nil
+	if len(extras) > 0 {
+		nxDomainCutLen = extras[0]
+	}
+	if len(extras) > 1 {
+		denialProofLen = extras[1]
 	}
 }
 
@@ -120,6 +140,22 @@ func UpdateCacheSizeMetrics() {
 	}
 	if nxDomainCutLen != nil {
 		cacheSize.WithLabelValues("nxdomain_cut").Set(float64(nxDomainCutLen()))
+	}
+	if denialProofLen != nil {
+		cacheSize.WithLabelValues("denial_proof").Set(float64(denialProofLen()))
+	}
+}
+
+func observeAggressiveNegativeHit(kind middleware.ValidatedNegativeProofKind, rcode int) {
+	switch {
+	case kind == middleware.ValidatedNegativeProofNSEC && rcode == dns.RcodeNameError:
+		aggressiveNSECNXDomainHits.Inc()
+	case kind == middleware.ValidatedNegativeProofNSEC && rcode == dns.RcodeSuccess:
+		aggressiveNSECNODATAHits.Inc()
+	case kind == middleware.ValidatedNegativeProofNSEC3 && rcode == dns.RcodeNameError:
+		aggressiveNSEC3NXDomainHits.Inc()
+	case kind == middleware.ValidatedNegativeProofNSEC3 && rcode == dns.RcodeSuccess:
+		aggressiveNSEC3NODATAHits.Inc()
 	}
 }
 

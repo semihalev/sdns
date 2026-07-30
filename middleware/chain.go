@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,13 +53,53 @@ type ValidatedDenial struct {
 	Proof *dns.Msg
 }
 
-// validatedDenialResponseSet binds validated denial provenance to the exact
-// response that was authenticated. Pointer identity is deliberate: dns.Msg is
-// mutable, and a copy or independently produced NXDOMAIN has not inherited the
-// proof merely because its wire-visible fields happen to match.
-type validatedDenialResponseSet struct {
+// ValidatedNegativeProofKind identifies the denial mechanism the resolver
+// authenticated. Keeping this in the provenance prevents a later cache layer
+// from combining NSEC and NSEC3 records, or choosing a different NSEC3 chain
+// than the one whose semantics were checked.
+type ValidatedNegativeProofKind uint8
+
+const (
+	ValidatedNegativeProofUnknown ValidatedNegativeProofKind = iota
+	ValidatedNegativeProofNSEC
+	ValidatedNegativeProofNSEC3
+)
+
+// ValidatedNegativeProof is resolver-authenticated NXDOMAIN or NODATA
+// provenance. Subject is the exact terminal (or QNAME-minimized) name whose
+// denial semantics were checked; Zone is the validated signer zone. Proof is
+// the original terminal response, never an outer alias response assembled
+// later in the request tree.
+//
+// The zero/Unknown Kind exists only so the older ValidatedDenial compatibility
+// API can preserve its source contract. RFC 8198 admission requires an
+// explicit NSEC or NSEC3 kind.
+type ValidatedNegativeProof struct {
+	Subject string
+	Zone    string
+	Kind    ValidatedNegativeProofKind
+	Proof   *dns.Msg
+	// Aggressive is true only when the stricter RFC 8198 evaluator
+	// classified this exact response with the same RCODE. Exact DNSSEC
+	// validation can legitimately succeed while aggressive reuse is forbidden
+	// (notably NSEC3 Opt-Out); consumers publishing shared proof state must
+	// require this bit in addition to local provenance.
+	Aggressive bool
+}
+
+// validatedNegativeProofResponseSet binds locally validated negative
+// provenance to the exact response identity that may publish it. Pointer
+// identity is deliberate: dns.Msg is mutable, and a copy or independently
+// produced negative response has not inherited the proof merely because its
+// wire-visible fields happen to match.
+type validatedNegativeProofResponseSet struct {
 	mu       sync.RWMutex
-	messages map[*dns.Msg]ValidatedDenial
+	messages map[*dns.Msg]validatedNegativeProofRecord
+}
+
+type validatedNegativeProofRecord struct {
+	negative    ValidatedNegativeProof
+	fingerprint [sha256.Size]byte
 }
 
 type ResponseMeta struct {
@@ -84,10 +125,10 @@ type ResponseMeta struct {
 	// rules for work and attempts above.
 	cachedFailures atomic.Pointer[cachedFailureResponseSet]
 
-	// validatedDenials points at immutable, exact-response NXDOMAIN
-	// provenance produced by this resolver. Reset detaches the complete set so
-	// a pooled Chain cannot expose one request's validation to the next.
-	validatedDenials atomic.Pointer[validatedDenialResponseSet]
+	// validatedNegativeProofs points at immutable, exact-response NXDOMAIN or
+	// NODATA provenance produced by this resolver. Reset detaches the complete
+	// set so a pooled Chain cannot expose one request's validation to the next.
+	validatedNegativeProofs atomic.Pointer[validatedNegativeProofResponseSet]
 }
 
 // (*ResponseMeta).BoundCut folds a delegation-cut deadline into the
@@ -155,7 +196,7 @@ func (m *ResponseMeta) Reset() {
 		m.work.Store(nil)
 		m.attempts.Store(nil)
 		m.cachedFailures.Store(nil)
-		m.validatedDenials.Store(nil)
+		m.validatedNegativeProofs.Store(nil)
 	}
 }
 
@@ -213,56 +254,114 @@ func (m *ResponseMeta) IsCachedFailureResponse(msg *dns.Msg) bool {
 	return marked
 }
 
-func (m *ResponseMeta) markValidatedDenialResponse(
+func (m *ResponseMeta) markValidatedNegativeProofResponse(
 	msg, proof *dns.Msg,
-	denial ValidatedDenial,
+	negative ValidatedNegativeProof,
 ) bool {
 	if m == nil || msg == nil || proof == nil ||
-		msg.Rcode != dns.RcodeNameError || proof.Rcode != dns.RcodeNameError ||
-		denial.DeniedName == "" || denial.Zone == "" {
+		msg.Rcode != proof.Rcode ||
+		(proof.Rcode != dns.RcodeNameError &&
+			(proof.Rcode != dns.RcodeSuccess || len(proof.Answer) != 0)) ||
+		negative.Subject == "" || negative.Zone == "" {
+		return false
+	}
+	fingerprint, ok := validatedNegativeProofFingerprint(proof)
+	if !ok {
 		return false
 	}
 
 	// Store canonical values so later consumers can use the provenance as a
 	// stable DNS identity without depending on a caller's presentation case.
-	denial.DeniedName = dns.CanonicalName(denial.DeniedName)
-	denial.Zone = dns.CanonicalName(denial.Zone)
-	denial.Proof = proof
+	negative.Subject = dns.CanonicalName(negative.Subject)
+	negative.Zone = dns.CanonicalName(negative.Zone)
+	negative.Proof = proof
 
-	denials := m.validatedDenials.Load()
-	if denials == nil {
-		candidate := &validatedDenialResponseSet{
-			messages: make(map[*dns.Msg]ValidatedDenial),
+	negatives := m.validatedNegativeProofs.Load()
+	if negatives == nil {
+		candidate := &validatedNegativeProofResponseSet{
+			messages: make(map[*dns.Msg]validatedNegativeProofRecord),
 		}
-		if m.validatedDenials.CompareAndSwap(nil, candidate) {
-			denials = candidate
+		if m.validatedNegativeProofs.CompareAndSwap(nil, candidate) {
+			negatives = candidate
 		} else {
-			denials = m.validatedDenials.Load()
+			negatives = m.validatedNegativeProofs.Load()
 		}
 	}
 
-	denials.mu.Lock()
-	existing, exists := denials.messages[msg]
+	negatives.mu.Lock()
+	existingRecord, exists := negatives.messages[msg]
+	existing := existingRecord.negative
 	if !exists {
-		denials.messages[msg] = denial
+		negatives.messages[msg] = validatedNegativeProofRecord{
+			negative:    negative,
+			fingerprint: fingerprint,
+		}
+	} else if existing.Kind == ValidatedNegativeProofUnknown &&
+		negative.Kind != ValidatedNegativeProofUnknown &&
+		existing.Subject == negative.Subject &&
+		existing.Zone == negative.Zone &&
+		existing.Proof == negative.Proof &&
+		existingRecord.fingerprint == fingerprint {
+		// Source-compatible legacy callers can mark NXDOMAIN before a newer
+		// resolver supplies the explicit proof family. Permit only this
+		// monotonic Unknown→typed refinement; subject, signer, and exact proof
+		// identity remain immutable.
+		negatives.messages[msg] = validatedNegativeProofRecord{
+			negative:    negative,
+			fingerprint: fingerprint,
+		}
+		existing = negative
 	}
-	denials.mu.Unlock()
-	return !exists || existing == denial
+	negatives.mu.Unlock()
+	return !exists || existing == negative
 }
 
-func (m *ResponseMeta) validatedDenialForResponse(msg *dns.Msg) (ValidatedDenial, bool) {
-	if m == nil || msg == nil || msg.Rcode != dns.RcodeNameError {
-		return ValidatedDenial{}, false
+func (m *ResponseMeta) validatedNegativeProofForResponse(
+	msg *dns.Msg,
+) (ValidatedNegativeProof, bool) {
+	if m == nil || msg == nil {
+		return ValidatedNegativeProof{}, false
 	}
-	denials := m.validatedDenials.Load()
-	if denials == nil {
-		return ValidatedDenial{}, false
+	negatives := m.validatedNegativeProofs.Load()
+	if negatives == nil {
+		return ValidatedNegativeProof{}, false
 	}
 
-	denials.mu.RLock()
-	denial, ok := denials.messages[msg]
-	denials.mu.RUnlock()
-	return denial, ok
+	negatives.mu.RLock()
+	record, ok := negatives.messages[msg]
+	negatives.mu.RUnlock()
+	if !ok || record.negative.Proof == nil ||
+		msg.Rcode != record.negative.Proof.Rcode ||
+		(record.negative.Proof.Rcode != dns.RcodeNameError &&
+			(record.negative.Proof.Rcode != dns.RcodeSuccess ||
+				len(record.negative.Proof.Answer) != 0)) {
+		return ValidatedNegativeProof{}, false
+	}
+	fingerprint, valid := validatedNegativeProofFingerprint(record.negative.Proof)
+	if !valid || fingerprint != record.fingerprint {
+		return ValidatedNegativeProof{}, false
+	}
+	return record.negative, true
+}
+
+// validatedNegativeProofFingerprint seals the locally validated proof
+// material against in-place downstream mutation while preserving exact
+// response identity. Header fields that response writers legitimately reshape
+// (ID, RD/RA/AD, EDNS) and the presentation Question are intentionally outside
+// the seal; RCODE and the complete authority section are inside it. The
+// terminal Answer shape is checked separately above.
+func validatedNegativeProofFingerprint(proof *dns.Msg) ([sha256.Size]byte, bool) {
+	if proof == nil {
+		return [sha256.Size]byte{}, false
+	}
+	sealed := new(dns.Msg)
+	sealed.Rcode = proof.Rcode
+	sealed.Ns = proof.Ns
+	wire, err := sealed.Pack()
+	if err != nil {
+		return [sha256.Size]byte{}, false
+	}
+	return sha256.Sum256(wire), true
 }
 
 // EnsureResolutionAttemptGuard returns the request tree's retry guard,
@@ -339,7 +438,11 @@ func ResponseMetaFrom(ctx context.Context) *ResponseMeta {
 // or trust the response's AD bit.
 func MarkValidatedDenialResponse(ctx context.Context, msg *dns.Msg, denial ValidatedDenial) {
 	if meta := ResponseMetaFrom(ctx); meta != nil {
-		_ = meta.markValidatedDenialResponse(msg, msg, denial)
+		_ = meta.markValidatedNegativeProofResponse(msg, msg, ValidatedNegativeProof{
+			Subject: denial.DeniedName,
+			Zone:    denial.Zone,
+			Kind:    ValidatedNegativeProofUnknown,
+		})
 	}
 }
 
@@ -348,9 +451,49 @@ func MarkValidatedDenialResponse(ctx context.Context, msg *dns.Msg, denial Valid
 // never inherits the mark.
 func ValidatedDenialForResponse(ctx context.Context, msg *dns.Msg) (ValidatedDenial, bool) {
 	if meta := ResponseMetaFrom(ctx); meta != nil {
-		return meta.validatedDenialForResponse(msg)
+		negative, ok := meta.validatedNegativeProofForResponse(msg)
+		if ok && msg != nil && msg.Rcode == dns.RcodeNameError &&
+			negative.Proof != nil && negative.Proof.Rcode == dns.RcodeNameError {
+			return ValidatedDenial{
+				DeniedName: negative.Subject,
+				Zone:       negative.Zone,
+				Proof:      negative.Proof,
+			}, true
+		}
 	}
 	return ValidatedDenial{}, false
+}
+
+// MarkValidatedNegativeProofResponse attaches explicit resolver-local
+// validation provenance to an exact NXDOMAIN or terminal NODATA response. The
+// caller-supplied Proof pointer is intentionally ignored: a fresh mark always
+// originates at msg, and only explicit propagation may retain an older
+// terminal proof identity.
+func MarkValidatedNegativeProofResponse(
+	ctx context.Context,
+	msg *dns.Msg,
+	negative ValidatedNegativeProof,
+) {
+	if negative.Kind != ValidatedNegativeProofNSEC &&
+		negative.Kind != ValidatedNegativeProofNSEC3 {
+		return
+	}
+	if meta := ResponseMetaFrom(ctx); meta != nil {
+		_ = meta.markValidatedNegativeProofResponse(msg, msg, negative)
+	}
+}
+
+// ValidatedNegativeProofForResponse returns resolver-local validation
+// provenance for this exact NXDOMAIN or NODATA response. AD alone, a message
+// copy, or an independently produced negative response never inherits it.
+func ValidatedNegativeProofForResponse(
+	ctx context.Context,
+	msg *dns.Msg,
+) (ValidatedNegativeProof, bool) {
+	if meta := ResponseMetaFrom(ctx); meta != nil {
+		return meta.validatedNegativeProofForResponse(msg)
+	}
+	return ValidatedNegativeProof{}, false
 }
 
 // PropagateValidatedDenialResponse copies exact-response provenance from one
@@ -358,7 +501,7 @@ func ValidatedDenialForResponse(ctx context.Context, msg *dns.Msg) (ValidatedDen
 // middleware that replaces a response object to preserve validated denial
 // metadata; ordinary dns.Msg copying does not do so.
 func PropagateValidatedDenialResponse(ctx context.Context, from, to *dns.Msg) bool {
-	denial, ok := ValidatedDenialForResponse(ctx, from)
+	negative, ok := ValidatedNegativeProofForResponse(ctx, from)
 	if !ok || to == nil || to.Rcode != dns.RcodeNameError {
 		return false
 	}
@@ -366,7 +509,23 @@ func PropagateValidatedDenialResponse(ctx context.Context, from, to *dns.Msg) bo
 	if meta == nil {
 		return false
 	}
-	return meta.markValidatedDenialResponse(to, denial.Proof, denial)
+	return meta.markValidatedNegativeProofResponse(to, negative.Proof, negative)
+}
+
+// PropagateValidatedNegativeProofResponse preserves the exact terminal proof
+// when a middleware builds a replacement negative response (for example an
+// outer CNAME/DNAME response). Ordinary dns.Msg copying is deliberately not a
+// trust-propagation operation.
+func PropagateValidatedNegativeProofResponse(ctx context.Context, from, to *dns.Msg) bool {
+	negative, ok := ValidatedNegativeProofForResponse(ctx, from)
+	if !ok || to == nil || to.Rcode != from.Rcode {
+		return false
+	}
+	meta := ResponseMetaFrom(ctx)
+	if meta == nil {
+		return false
+	}
+	return meta.markValidatedNegativeProofResponse(to, negative.Proof, negative)
 }
 
 // Chain carries per-request state through the middleware pipeline.

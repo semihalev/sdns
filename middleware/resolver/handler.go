@@ -269,6 +269,13 @@ func (h *DNSHandler) SetStore(s middleware.Store) { h.resolver.store.Store(&s) }
 // Auto-wired during middleware.Setup via middleware.QueryerSetter.
 func (h *DNSHandler) SetQueryer(q middleware.Queryer) { h.resolver.queryer.Store(&q) }
 
+// DNSSECCryptoLimiter exposes the resolver-owned concurrency gate through the
+// narrow middleware wiring interface. Optional cache-side hashing uses
+// non-blocking admission on the same gate as required DNSSEC validation.
+func (h *DNSHandler) DNSSECCryptoLimiter() middleware.DNSSECCryptoLimiter {
+	return h.resolver.cryptoLimiter
+}
+
 // (*DNSHandler).Stop stop gracefully shuts down the resolver.
 func (h *DNSHandler) Stop() {
 	if h.resolver.tcpPool != nil {

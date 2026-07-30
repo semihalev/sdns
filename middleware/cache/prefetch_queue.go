@@ -195,13 +195,23 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	requestCD := req.Request != nil && req.Request.CheckingDisabled
 	if !req.Entry.scoped && !requestCD && !hasEDNSClientSubnet(req.Request) &&
 		!resp.CheckingDisabled {
-		if denial, ok := middleware.ValidatedDenialForResponse(ctx, resp); ok {
-			req.Cache.store.RecordNXDomainCut(
-				denial.Proof,
-				denial.DeniedName,
-				denial.Zone,
+		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&
+			negative.Aggressive &&
+			negative.Proof != nil {
+			req.Cache.store.RecordDenialProof(
+				negative.Proof,
+				negative.Zone,
+				negative.Kind,
 				cutUntil,
 			)
+			if negative.Proof.Rcode == dns.RcodeNameError {
+				req.Cache.store.RecordNXDomainCut(
+					negative.Proof,
+					negative.Subject,
+					negative.Zone,
+					cutUntil,
+				)
+			}
 		}
 	}
 	pq.metrics.Prefetch()

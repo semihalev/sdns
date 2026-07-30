@@ -83,3 +83,24 @@ type QueryerSetter interface {
 type PrefetchQueryerSetter interface {
 	SetPrefetchQueryer(q Queryer)
 }
+
+// DNSSECCryptoLimiter is the narrow shared concurrency seam required by
+// optional cache-side DNSSEC work. TryAcquire is deliberately non-blocking:
+// RFC 8198 synthesis is an optimization, so saturation must fall through to
+// ordinary resolution instead of waiting ahead of required validation.
+type DNSSECCryptoLimiter interface {
+	TryAcquire() (release func(), ok bool)
+}
+
+// DNSSECCryptoLimiterProvider is implemented by the resolver that owns the
+// process-wide DNSSEC concurrency gate.
+type DNSSECCryptoLimiterProvider interface {
+	DNSSECCryptoLimiter() DNSSECCryptoLimiter
+}
+
+// DNSSECCryptoLimiterSetter is implemented by optional DNSSEC work consumers
+// such as the RFC 8198 proof cache. Setup wires the resolver-owned instance
+// before publishing the pipeline.
+type DNSSECCryptoLimiterSetter interface {
+	SetDNSSECCryptoLimiter(DNSSECCryptoLimiter)
+}

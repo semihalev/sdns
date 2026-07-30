@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"net/netip"
 	"strings"
 	"time"
@@ -8,6 +9,8 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
 // Store is the cache backing for the cache middleware. The answer and failure
@@ -28,7 +31,12 @@ type Store struct {
 	negative     *NegativeCache
 	failure      *FailureCache
 	nxDomainCuts *nxDomainCutCache
-	cfg          CacheConfig
+	denialProofs *denialProofCache
+	// Wired once at startup through the owning Cache. Resolver-private
+	// Store.Get calls then share the same non-blocking NSEC3 gate as client
+	// lookups; standalone Store users safely miss NSEC3 when it is nil.
+	dnssecCryptoLimiter middleware.DNSSECCryptoLimiter
+	cfg                 CacheConfig
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
@@ -63,11 +71,28 @@ func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig,
 		cutMaxTTL = cfg.MaxTTL
 	}
 
+	// RFC 8198 proof material has its own cardinality and byte bounds so
+	// attacker-chosen denial owners cannot evict ordinary answers. Production
+	// cache sizes are validated to at least 1024; the small floor keeps direct
+	// Store users useful without preallocating any entries.
+	proofSize := cfg.Size / 32
+	if proofSize < 64 {
+		proofSize = 64
+	}
+	proofMaxTTL := cfg.NegativeTTL
+	if proofMaxTTL <= 0 {
+		proofMaxTTL = cfg.MaxTTL
+	}
+	if cfg.MaxTTL > 0 && proofMaxTTL > cfg.MaxTTL {
+		proofMaxTTL = cfg.MaxTTL
+	}
+
 	return &Store{
 		positive:     positive,
 		negative:     negative,
 		failure:      failure,
 		nxDomainCuts: newNXDomainCutCache(cutSize, cutMaxTTL),
+		denialProofs: newDenialProofCache(proofSize, proofMaxTTL),
 		cfg:          cfg,
 	}
 }
@@ -168,6 +193,13 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 				return msg, true
 			}
 		}
+		if msg, kind, _, ok := s.LookupDenialProof(
+			req,
+			newDenialProofWork(context.Background(), s.dnssecCryptoLimiter),
+		); ok {
+			observeAggressiveNegativeHit(kind, msg.Rcode)
+			return msg, true
+		}
 	}
 
 	// Get is also used by resolver-private subqueries, which deliberately do
@@ -205,6 +237,54 @@ func (s *Store) RecordNXDomainCut(
 		return false
 	}
 	return s.nxDomainCuts.record(proof, deniedName, zone, cutUntil)
+}
+
+// LookupDenialProof evaluates the bounded RFC 8198 proof index for req.
+// The returned kind and signer zone describe the exact proof family selected
+// by the evaluator, including when a DO=0 response omits DNSSEC records.
+func (s *Store) LookupDenialProof(
+	req *dns.Msg,
+	work dnssec.NSEC3Work,
+) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, bool) {
+	if s == nil || s.denialProofs == nil {
+		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+	}
+	msg, kind, zone, ok := s.denialProofs.lookupWithMeta(req, work)
+	if !ok {
+		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+	}
+	switch kind {
+	case denialProofNSEC:
+		return msg, middleware.ValidatedNegativeProofNSEC, zone, true
+	case denialProofNSEC3:
+		return msg, middleware.ValidatedNegativeProofNSEC3, zone, true
+	default:
+		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+	}
+}
+
+// RecordDenialProof stores complete signed SOA and NSEC/NSEC3 RRsets from an
+// exact locally validated terminal proof. kind is checked against the retained
+// mechanism so provenance cannot be reinterpreted by a later cache layer.
+func (s *Store) RecordDenialProof(
+	proof *dns.Msg,
+	zone string,
+	kind middleware.ValidatedNegativeProofKind,
+	cutUntil time.Time,
+) bool {
+	if s == nil || s.denialProofs == nil || proof == nil {
+		return false
+	}
+	var expected denialProofKind
+	switch kind {
+	case middleware.ValidatedNegativeProofNSEC:
+		expected = denialProofNSEC
+	case middleware.ValidatedNegativeProofNSEC3:
+		expected = denialProofNSEC3
+	default:
+		return false
+	}
+	return s.denialProofs.recordWithKind(proof, zone, expected, cutUntil)
 }
 
 // LookupFailure returns an active exact or closest-ancestor RFC 9520 failure.
@@ -472,6 +552,9 @@ func (s *Store) Purge(q dns.Question) {
 	if s.nxDomainCuts != nil {
 		s.nxDomainCuts.purge(q)
 	}
+	if s.denialProofs != nil {
+		s.denialProofs.purge(q)
+	}
 	for _, cd := range []bool{false, true} {
 		key := CacheKey{Question: q, CD: cd}.Hash()
 		s.positive.Remove(key)
@@ -521,10 +604,20 @@ func (s *Store) FailureLen() int { return s.failure.Len() }
 // NXDomainCutLen returns retained locally validated RFC 8020 cuts.
 func (s *Store) NXDomainCutLen() int { return s.nxDomainCuts.len() }
 
+// DenialProofLen returns retained SOA and denial RRset entries.
+func (s *Store) DenialProofLen() int { return s.denialProofs.len() }
+
+// DenialProofZones returns the number of signer-zone shards.
+func (s *Store) DenialProofZones() int { return s.denialProofs.zones() }
+
+// DenialProofBytes returns the retained DNS wire bytes.
+func (s *Store) DenialProofBytes() int64 { return s.denialProofs.bytes() }
+
 // Stop releases background resources owned by Store-only sub-caches.
 func (s *Store) Stop() {
 	if s != nil {
 		s.nxDomainCuts.stop()
+		s.denialProofs.stop()
 	}
 }
 

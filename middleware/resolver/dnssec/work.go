@@ -120,6 +120,20 @@ func (l *CryptoLimiter) Acquire(ctx context.Context) (func(), error) {
 	return l.acquireAfterPreflight(ctx)
 }
 
+// TryAcquire reserves one crypto slot without waiting. Optional work uses this
+// path so a saturated resolver always gives required validation priority.
+func (l *CryptoLimiter) TryAcquire() (func(), bool) {
+	if l == nil {
+		return nil, false
+	}
+	select {
+	case l.tokens <- struct{}{}:
+		return func() { <-l.tokens }, true
+	default:
+		return nil, false
+	}
+}
+
 func (l *CryptoLimiter) acquireAfterPreflight(ctx context.Context) (func(), error) {
 	// Prefer immediate admission without selecting against ctx.Done. This
 	// makes a free slot authoritative when cancellation races the admission

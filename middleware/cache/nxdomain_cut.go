@@ -6,6 +6,7 @@ import (
 	"github.com/miekg/dns"
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // nxDomainCutQType is an internal cache-key discriminator. RFC 8020 cuts are
@@ -24,6 +25,7 @@ type nxDomainCutEntry struct {
 	deniedName string
 	zone       string
 	qclass     uint16
+	proofKind  middleware.ValidatedNegativeProofKind
 	msg        *dns.Msg
 	stored     time.Time
 	expires    time.Time
@@ -111,12 +113,27 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 		deniedName: deniedName,
 		zone:       zone,
 		qclass:     soa.Hdr.Class,
+		proofKind:  negativeProofKind(proof.Ns),
 		msg:        proof,
 		stored:     now,
 		expires:    now.Add(ttl),
 	}
 	c.cache.Add(nxDomainCutKey(deniedName, entry.qclass), entry)
 	return true
+}
+
+func negativeProofKind(records []dns.RR) middleware.ValidatedNegativeProofKind {
+	for _, rr := range records {
+		if _, ok := rr.(*dns.NSEC3); ok {
+			return middleware.ValidatedNegativeProofNSEC3
+		}
+	}
+	for _, rr := range records {
+		if _, ok := rr.(*dns.NSEC); ok {
+			return middleware.ValidatedNegativeProofNSEC
+		}
+	}
+	return middleware.ValidatedNegativeProofUnknown
 }
 
 // nxDomainCutProof extracts the SOA and authenticated NSEC/NSEC3 proof RRsets

@@ -1031,9 +1031,19 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 			resp.Ns = targetAuthority
 			return resp, nil
 		}
-		if len(targetMsg.Answer) == 0 {
+		negative, markedNegative := middleware.ValidatedNegativeProofForResponse(ctx, targetMsg)
+		terminalNODATA := markedNegative &&
+			negative.Proof != nil &&
+			negative.Proof.Rcode == dns.RcodeSuccess &&
+			len(negative.Proof.Answer) == 0
+		if terminalNODATA || len(targetMsg.Answer) == 0 {
 			// Preserve the historical NODATA handling: its target authority
-			// proof must survive the generic additional-section cleanup.
+			// proof must survive the generic additional-section cleanup. A
+			// target may itself contain an alias chain; the exact terminal
+			// proof marker, not targetMsg.Answer length, identifies that case.
+			if terminalNODATA {
+				middleware.PropagateValidatedNegativeProofResponse(ctx, targetMsg, resp)
+			}
 			resp.Ns = append(resp.Ns, targetMsg.Ns...)
 			return resp, nil
 		}
@@ -1145,10 +1155,17 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				nsecSet := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner)
 				isNegative := resp.Rcode == dns.RcodeNameError ||
 					(resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0)
+				proofKind := middleware.ValidatedNegativeProofUnknown
+				aggressiveEligible := false
+				proofQuestion := q
+				if dnameTarget := dnsutil.DnameTarget(resp); dnameTarget != "" {
+					proofQuestion.Name = dnameTarget
+				}
 
 				if isNegative {
 					switch {
 					case len(nsec3Set) > 0:
+						proofKind = middleware.ValidatedNegativeProofNSEC3
 						if resp.Rcode == dns.RcodeNameError {
 							if err := dnssec.VerifyNameErrorWithWork(resp, nsec3Set, r.dnssecWork(ctx)); err != nil {
 								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
@@ -1160,7 +1177,27 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 								return nil, err
 							}
 						}
+
+						result, err := dnssec.EvaluateAggressiveNSEC3(
+							proofQuestion,
+							chosenSigner,
+							nsec3Set,
+							newResolverAggressiveProofWork(ctx, r.cryptoLimiter),
+						)
+						if err == nil && result.Rcode == resp.Rcode {
+							aggressiveEligible = true
+						} else {
+							// Exact-response validation above remains
+							// authoritative. RFC 8198 reuse is stricter (for
+							// example covering Opt-Out records are valid in
+							// some RFC 5155 NODATA proofs but ineligible for
+							// aggressive caching), so any evaluator miss only
+							// withholds shared provenance.
+							zlog.Debug("NSEC3 proof not eligible for aggressive reuse",
+								"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
+						}
 					case len(nsecSet) > 0:
+						proofKind = middleware.ValidatedNegativeProofNSEC
 						if resp.Rcode == dns.RcodeNameError {
 							if err := dnssec.VerifyNameErrorNSEC(resp, nsecSet); err != nil {
 								zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
@@ -1172,6 +1209,14 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 								return nil, err
 							}
 						}
+
+						result, err := dnssec.EvaluateAggressiveNSEC(proofQuestion, chosenSigner, nsecSet)
+						if err == nil && result.Rcode == resp.Rcode {
+							aggressiveEligible = true
+						} else {
+							zlog.Debug("NSEC proof not eligible for aggressive reuse",
+								"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
+						}
 					default:
 						zlog.Warn("Negative answer missing NSEC/NSEC3 denial proof", "query", formatQuestion(q), "rcode", dns.RcodeToString[resp.Rcode])
 						return nil, dnssec.ErrNSECMissingCoverage
@@ -1181,14 +1226,13 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				if !req.CheckingDisabled {
 					resp.AuthenticatedData = true
 				}
-				if resp.Rcode == dns.RcodeNameError {
-					deniedName := q.Name
-					if dnameTarget := dnsutil.DnameTarget(resp); dnameTarget != "" {
-						deniedName = dnameTarget
-					}
-					middleware.MarkValidatedDenialResponse(ctx, resp, middleware.ValidatedDenial{
-						DeniedName: deniedName,
+				if !req.CheckingDisabled && isNegative &&
+					proofKind != middleware.ValidatedNegativeProofUnknown {
+					middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+						Subject:    proofQuestion.Name,
 						Zone:       chosenSigner,
+						Kind:       proofKind,
+						Aggressive: aggressiveEligible,
 					})
 				}
 			}
@@ -2942,8 +2986,11 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 				if err != nil {
 					return nil, err
 				}
-				denial, secure := middleware.ValidatedDenialForResponse(ctx, result)
-				if secure && !dnsutil.HasNSEC3OptOut(result.Ns, denial.Zone) {
+				negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, result)
+				if secure && negative.Aggressive &&
+					negative.Proof != nil &&
+					negative.Proof.Rcode == dns.RcodeNameError &&
+					!dnsutil.HasNSEC3OptOut(result.Ns, negative.Zone) {
 					// Provenance keeps minReq's denied name. Only the
 					// client-visible Question is rebound to the original
 					// full QNAME.

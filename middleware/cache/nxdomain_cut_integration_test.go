@@ -138,9 +138,11 @@ func nxCutExchange(
 }
 
 func nxCutMark(ctx context.Context, resp *dns.Msg, deniedName, zone string) {
-	middleware.MarkValidatedDenialResponse(ctx, resp, middleware.ValidatedDenial{
-		DeniedName: deniedName,
+	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+		Subject:    deniedName,
 		Zone:       zone,
+		Kind:       negativeProofKind(resp.Ns),
+		Aggressive: true,
 	})
 }
 

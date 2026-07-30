@@ -242,6 +242,199 @@ func TestValidatedDenialResponseReset(t *testing.T) {
 	}
 }
 
+func TestValidatedNegativeProofResponseNODATAIdentityAndPropagation(t *testing.T) {
+	t.Parallel()
+
+	var meta ResponseMeta
+	ctx := WithResponseMeta(context.Background(), &meta)
+	source := new(dns.Msg)
+	source.SetReply(new(dns.Msg).SetQuestion("www.example.", dns.TypeAAAA))
+	source.Rcode = dns.RcodeSuccess
+	source.AuthenticatedData = true
+
+	MarkValidatedNegativeProofResponse(ctx, source, ValidatedNegativeProof{
+		Subject: "WWW.Example",
+		Zone:    "Example",
+		Kind:    ValidatedNegativeProofNSEC,
+		Proof:   source.Copy(), // A fresh mark must pin source, not this value.
+	})
+
+	got, ok := ValidatedNegativeProofForResponse(ctx, source)
+	if !ok {
+		t.Fatal("exact NODATA response lost validated-negative provenance")
+	}
+	want := ValidatedNegativeProof{
+		Subject: "www.example.",
+		Zone:    "example.",
+		Kind:    ValidatedNegativeProofNSEC,
+		Proof:   source,
+	}
+	if got != want {
+		t.Fatalf("validated negative = %#v, want %#v", got, want)
+	}
+	if _, denial := ValidatedDenialForResponse(ctx, source); denial {
+		t.Fatal("NODATA provenance was exposed as an NXDOMAIN denial")
+	}
+	if _, copied := ValidatedNegativeProofForResponse(ctx, source.Copy()); copied {
+		t.Fatal("a copied NODATA response inherited exact-response provenance")
+	}
+
+	outer := source.Copy()
+	outer.Answer = []dns.RR{&dns.CNAME{
+		Hdr: dns.RR_Header{
+			Name:   "alias.example.",
+			Rrtype: dns.TypeCNAME,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		Target: "www.example.",
+	}}
+	if !PropagateValidatedNegativeProofResponse(ctx, source, outer) {
+		t.Fatal("terminal NODATA provenance was not propagated to alias response")
+	}
+	propagated, ok := ValidatedNegativeProofForResponse(ctx, outer)
+	if !ok || propagated != want {
+		t.Fatalf("propagated NODATA provenance = %#v, %v; want %#v", propagated, ok, want)
+	}
+
+	meta.Reset()
+	if stale, ok := ValidatedNegativeProofForResponse(ctx, outer); ok {
+		t.Fatalf("Reset retained NODATA provenance: %#v", stale)
+	}
+}
+
+func TestValidatedNegativeProofResponseRejectsUnknownAndNonNegative(t *testing.T) {
+	t.Parallel()
+
+	var meta ResponseMeta
+	ctx := WithResponseMeta(context.Background(), &meta)
+
+	nodata := new(dns.Msg)
+	nodata.SetReply(new(dns.Msg).SetQuestion("www.example.", dns.TypeAAAA))
+	MarkValidatedNegativeProofResponse(ctx, nodata, ValidatedNegativeProof{
+		Subject: "www.example.",
+		Zone:    "example.",
+		Kind:    ValidatedNegativeProofUnknown,
+	})
+	if got, ok := ValidatedNegativeProofForResponse(ctx, nodata); ok {
+		t.Fatalf("unknown proof kind was admitted: %#v", got)
+	}
+
+	positive := new(dns.Msg)
+	positive.SetReply(new(dns.Msg).SetQuestion("www.example.", dns.TypeA))
+	positive.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{
+			Name:   "www.example.",
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+	}}
+	MarkValidatedNegativeProofResponse(ctx, positive, ValidatedNegativeProof{
+		Subject: "www.example.",
+		Zone:    "example.",
+		Kind:    ValidatedNegativeProofNSEC,
+	})
+	if got, ok := ValidatedNegativeProofForResponse(ctx, positive); ok {
+		t.Fatalf("positive response was admitted as negative proof: %#v", got)
+	}
+}
+
+func TestValidatedNegativeProofLegacyMarkMonotonicUpgrade(t *testing.T) {
+	t.Parallel()
+
+	newNXDOMAIN := func() *dns.Msg {
+		msg := new(dns.Msg)
+		msg.SetRcode(
+			new(dns.Msg).SetQuestion("missing.example.", dns.TypeA),
+			dns.RcodeNameError,
+		)
+		return msg
+	}
+	explicit := ValidatedNegativeProof{
+		Subject: "missing.example.",
+		Zone:    "example.",
+		Kind:    ValidatedNegativeProofNSEC,
+	}
+
+	t.Run("legacy then explicit refines kind", func(t *testing.T) {
+		var meta ResponseMeta
+		ctx := WithResponseMeta(context.Background(), &meta)
+		msg := newNXDOMAIN()
+
+		MarkValidatedDenialResponse(ctx, msg, ValidatedDenial{
+			DeniedName: explicit.Subject,
+			Zone:       explicit.Zone,
+		})
+		MarkValidatedNegativeProofResponse(ctx, msg, explicit)
+
+		got, ok := ValidatedNegativeProofForResponse(ctx, msg)
+		if !ok || got.Kind != ValidatedNegativeProofNSEC || got.Proof != msg {
+			t.Fatalf("legacy→explicit provenance = %#v, %v", got, ok)
+		}
+	})
+
+	t.Run("explicit then legacy never downgrades", func(t *testing.T) {
+		var meta ResponseMeta
+		ctx := WithResponseMeta(context.Background(), &meta)
+		msg := newNXDOMAIN()
+
+		MarkValidatedNegativeProofResponse(ctx, msg, explicit)
+		MarkValidatedDenialResponse(ctx, msg, ValidatedDenial{
+			DeniedName: explicit.Subject,
+			Zone:       explicit.Zone,
+		})
+
+		got, ok := ValidatedNegativeProofForResponse(ctx, msg)
+		if !ok || got.Kind != ValidatedNegativeProofNSEC || got.Proof != msg {
+			t.Fatalf("explicit→legacy provenance = %#v, %v", got, ok)
+		}
+	})
+}
+
+func TestValidatedNegativeProofRejectsInPlaceProofMutation(t *testing.T) {
+	t.Parallel()
+
+	var meta ResponseMeta
+	ctx := WithResponseMeta(context.Background(), &meta)
+	msg := new(dns.Msg)
+	msg.SetReply(new(dns.Msg).SetQuestion("www.example.", dns.TypeAAAA))
+	nsec := &dns.NSEC{
+		Hdr: dns.RR_Header{
+			Name:   "www.example.",
+			Rrtype: dns.TypeNSEC,
+			Class:  dns.ClassINET,
+			Ttl:    300,
+		},
+		NextDomain: "z.example.",
+		TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
+	}
+	msg.Ns = []dns.RR{nsec}
+	MarkValidatedNegativeProofResponse(ctx, msg, ValidatedNegativeProof{
+		Subject:    "www.example.",
+		Zone:       "example.",
+		Kind:       ValidatedNegativeProofNSEC,
+		Aggressive: true,
+	})
+	if _, ok := ValidatedNegativeProofForResponse(ctx, msg); !ok {
+		t.Fatal("fresh proof provenance was not readable")
+	}
+
+	outer := new(dns.Msg)
+	outer.SetReply(msg)
+	if !PropagateValidatedNegativeProofResponse(ctx, msg, outer) {
+		t.Fatal("fresh proof provenance was not propagated")
+	}
+
+	nsec.NextDomain = "attacker.example."
+	if got, ok := ValidatedNegativeProofForResponse(ctx, msg); ok {
+		t.Fatalf("mutated source retained provenance: %#v", got)
+	}
+	if got, ok := ValidatedNegativeProofForResponse(ctx, outer); ok {
+		t.Fatalf("propagated identity retained mutated proof: %#v", got)
+	}
+}
+
 func Test_Chain(t *testing.T) {
 	w := mock.NewWriter("tcp", "127.0.0.1:0")
 	ch := NewChain([]Handler{&dummy{}})

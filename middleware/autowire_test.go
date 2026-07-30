@@ -13,13 +13,17 @@ import (
 // providerHandler implements Handler + StoreProvider (+ optional
 // extra roles via embedded bool flags).
 type providerHandler struct {
-	n     string
-	store Store
+	n       string
+	store   Store
+	limiter DNSSECCryptoLimiter
 }
 
 func (h *providerHandler) Name() string                            { return h.n }
 func (h *providerHandler) ServeDNS(ctx context.Context, ch *Chain) { ch.Next(ctx) }
 func (h *providerHandler) Store() Store                            { return h.store }
+func (h *providerHandler) DNSSECCryptoLimiter() DNSSECCryptoLimiter {
+	return h.limiter
+}
 
 // setterHandler implements QueryerSetter, PrefetchQueryerSetter,
 // and StoreSetter — used to pin that autoWire invokes all three.
@@ -28,6 +32,7 @@ type setterHandler struct {
 	gotQ   Queryer
 	gotPQ  Queryer
 	gotStr Store
+	gotLim DNSSECCryptoLimiter
 }
 
 func (h *setterHandler) Name() string                            { return h.n }
@@ -35,6 +40,9 @@ func (h *setterHandler) ServeDNS(ctx context.Context, ch *Chain) { ch.Next(ctx) 
 func (h *setterHandler) SetQueryer(q Queryer)                    { h.gotQ = q }
 func (h *setterHandler) SetPrefetchQueryer(q Queryer)            { h.gotPQ = q }
 func (h *setterHandler) SetStore(s Store)                        { h.gotStr = s }
+func (h *setterHandler) SetDNSSECCryptoLimiter(l DNSSECCryptoLimiter) {
+	h.gotLim = l
+}
 
 // clientOnlyHandler reports ClientOnly()==true; autoWire must
 // exclude it from both queryerSub and prefetchSub.
@@ -49,6 +57,14 @@ type nopStore struct{}
 
 func (nopStore) Get(*dns.Msg) (*dns.Msg, bool)             { return nil, false }
 func (nopStore) SetFromResponse(*dns.Msg, bool, time.Time) {}
+
+type nopCryptoLimiter struct{}
+
+func (nopCryptoLimiter) TryAcquire() (func(), bool) { return func() {}, true }
+
+type typedNilCryptoLimiter struct{}
+
+func (*typedNilCryptoLimiter) TryAcquire() (func(), bool) { return nil, false }
 
 func TestAutoWire_NilSafe(t *testing.T) {
 	var p *Pipeline
@@ -65,7 +81,8 @@ func TestAutoWire_FullWiring(t *testing.T) {
 	t.Cleanup(Reset)
 
 	st := nopStore{}
-	prov := &providerHandler{n: "cache", store: st}
+	limiter := nopCryptoLimiter{}
+	prov := &providerHandler{n: "cache", store: st, limiter: limiter}
 	setter := &setterHandler{n: "resolver"}
 	co := &clientOnlyHandler{n: "metrics"}
 
@@ -84,6 +101,7 @@ func TestAutoWire_FullWiring(t *testing.T) {
 	assert.NotNil(t, setter.gotQ, "SetQueryer not called")
 	assert.NotNil(t, setter.gotPQ, "SetPrefetchQueryer not called")
 	assert.Equal(t, Store(st), setter.gotStr, "SetStore received wrong store")
+	assert.Equal(t, DNSSECCryptoLimiter(limiter), setter.gotLim, "crypto limiter was not shared")
 }
 
 // TestAutoWire_MultipleProviders covers the first-wins branch plus
@@ -104,6 +122,25 @@ func TestAutoWire_MultipleProviders(t *testing.T) {
 
 	// First-wins: setter's store must be from the first provider.
 	assert.Equal(t, first.store, setter.gotStr)
+}
+
+func TestAutoWire_TypedNilCryptoProviderDoesNotMaskUsableProvider(t *testing.T) {
+	Reset()
+	t.Cleanup(Reset)
+
+	var unavailable *typedNilCryptoLimiter
+	usable := nopCryptoLimiter{}
+	first := &providerHandler{n: "resolverA", limiter: unavailable}
+	second := &providerHandler{n: "resolverB", limiter: usable}
+	setter := &setterHandler{n: "cache"}
+
+	Register("resolverA", func(*config.Config) Handler { return first })
+	Register("resolverB", func(*config.Config) Handler { return second })
+	Register("cache", func(*config.Config) Handler { return setter })
+
+	Setup(&config.Config{})
+
+	assert.Equal(t, DNSSECCryptoLimiter(usable), setter.gotLim)
 }
 
 // TestAutoWire_SetterWithoutProvider covers the
