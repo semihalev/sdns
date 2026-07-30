@@ -82,6 +82,111 @@ func TestResolutionAttemptLimitDoesNotPoisonCircuitBreaker(t *testing.T) {
 	}
 }
 
+func TestResolverHandlerMarksAttemptLimitResponse(t *testing.T) {
+	server := authority.NewServer("192.0.2.53:53", authority.IPv4)
+	root := &authority.Servers{Zone: ".", List: []*authority.Server{server}}
+	r := newAttackHarnessResolver(root)
+	r.cfg.QueryTimeout.Duration = time.Second
+	h := &DNSHandler{resolver: r, cfg: r.cfg}
+
+	req := new(dns.Msg)
+	req.SetQuestion(".", dns.TypeNS)
+	req.SetEdns0(1232, true)
+	req.RecursionDesired = true
+	ctx, guard := middleware.EnsureResolutionAttemptGuard(context.Background())
+	for range 3 {
+		if err := guard.Begin(req.Question[0], server.Addr, "udp"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resp := h.handle(ctx, req)
+	if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("handler response = %#v, want SERVFAIL", resp)
+	}
+	if err := middleware.RequestLocalFailureForResponse(ctx, resp); !errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+		t.Fatalf("handler response provenance = %v, want ErrResolutionAttemptLimit", err)
+	}
+	if err := middleware.RequestLocalFailureForResponse(ctx, resp.Copy()); err != nil {
+		t.Fatalf("copied handler response inherited exact provenance: %v", err)
+	}
+}
+
+func TestResolverHandlerMarksDerivedDeadlineResponse(t *testing.T) {
+	server := authority.NewServer("192.0.2.53:53", authority.IPv4)
+	root := &authority.Servers{Zone: ".", List: []*authority.Server{server}}
+	r := newAttackHarnessResolver(root)
+	r.cfg.QueryTimeout.Duration = -time.Second
+	h := &DNSHandler{resolver: r, cfg: r.cfg}
+
+	req := new(dns.Msg)
+	req.SetQuestion(".", dns.TypeNS)
+	req.SetEdns0(1232, true)
+	req.RecursionDesired = true
+	var meta middleware.ResponseMeta
+	ctx := middleware.WithResponseMeta(context.Background(), &meta)
+
+	resp := h.handle(ctx, req)
+	if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("handler response = %#v, want SERVFAIL", resp)
+	}
+	if err := middleware.RequestLocalFailureForResponse(ctx, resp); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("handler response provenance = %v, want context deadline", err)
+	}
+}
+
+type resolverErrorQueryer struct {
+	err   error
+	calls atomic.Int32
+}
+
+func (q *resolverErrorQueryer) Query(context.Context, *dns.Msg) (*dns.Msg, error) {
+	q.calls.Add(1)
+	return nil, q.err
+}
+
+func TestResolverHandlerMarksQueryerRecursionLimitResponse(t *testing.T) {
+	wire := startAttackWireRecorder(t, func(dns.Question) *dns.Msg {
+		return &dns.Msg{
+			MsgHdr: dns.MsgHdr{Authoritative: true},
+			Answer: []dns.RR{&dns.DNAME{
+				Hdr: dns.RR_Header{
+					Name:   "a.loop.test.",
+					Rrtype: dns.TypeDNAME,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				Target: "b.loop.test.",
+			}},
+		}
+	})
+	server := authority.NewServer(wire.addr(), authority.IPv4)
+	root := &authority.Servers{Zone: ".", List: []*authority.Server{server}}
+	r := newAttackHarnessResolver(root)
+	r.cfg.QueryTimeout.Duration = time.Second
+	queryer := &resolverErrorQueryer{err: middleware.ErrMaxRecursion}
+	installAttackQueryer(r, queryer)
+	h := &DNSHandler{resolver: r, cfg: r.cfg}
+
+	req := new(dns.Msg)
+	req.SetQuestion("host.a.loop.test.", dns.TypeA)
+	req.SetEdns0(1232, true)
+	req.RecursionDesired = true
+	var meta middleware.ResponseMeta
+	ctx := middleware.WithResponseMeta(context.Background(), &meta)
+
+	resp := h.handle(ctx, req)
+	if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("handler response = %#v, want SERVFAIL", resp)
+	}
+	if got := queryer.calls.Load(); got != 1 {
+		t.Fatalf("DNAME target queryer calls = %d, want 1", got)
+	}
+	if err := middleware.RequestLocalFailureForResponse(ctx, resp); !errors.Is(err, middleware.ErrMaxRecursion) {
+		t.Fatalf("handler response provenance = %v, want ErrMaxRecursion", err)
+	}
+}
+
 func TestPickFallbackResponsePreservesRequestLocalAttemptError(t *testing.T) {
 	servfail := new(dns.Msg)
 	servfail.Rcode = dns.RcodeServerFailure
@@ -269,6 +374,7 @@ func TestResolutionZoneFailureStoreGuardsAndClear(t *testing.T) {
 	r.recordResolutionZoneFailure(context.Background(), q, "child.example.", fatalError(errConnectionFailed))
 	r.recordResolutionZoneFailure(context.Background(), q, "child.example.", middleware.ErrResolutionAttemptLimit)
 	r.recordResolutionZoneFailure(context.Background(), q, "child.example.", middleware.ErrRecursionWorkLimit)
+	r.recordResolutionZoneFailure(context.Background(), q, "child.example.", middleware.ErrMaxRecursion)
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -502,6 +608,27 @@ func TestLookupV4NssAttemptLimitRemainsTupleLocal(t *testing.T) {
 	)
 	if !errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 		t.Fatalf("all tuple-limited lookup error = %v, want ErrResolutionAttemptLimit", err)
+	}
+
+	maxQueryer := &resolverErrorQueryer{err: middleware.ErrMaxRecursion}
+	rMax := newAttackHarnessResolver(&authority.Servers{Zone: "example."})
+	installAttackQueryer(rMax, maxQueryer)
+	err = rMax.lookupV4Nss(
+		context.Background(),
+		q,
+		&authority.Servers{Zone: q.Name},
+		internalcache.Key(q),
+		nil,
+		make(hostSet),
+		hosts,
+		false,
+		time.Now().Add(time.Minute),
+	)
+	if !errors.Is(err, middleware.ErrMaxRecursion) {
+		t.Fatalf("queryer recursion error = %v, want ErrMaxRecursion", err)
+	}
+	if got := maxQueryer.calls.Load(); got != 1 {
+		t.Fatalf("queryer recursion calls = %d, want immediate stop after 1", got)
 	}
 }
 

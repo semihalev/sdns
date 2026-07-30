@@ -501,7 +501,8 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 		if lookupErr != nil {
 			if shared && !leader &&
 				(errors.Is(lookupErr, middleware.ErrRecursionWorkLimit) ||
-					errors.Is(lookupErr, middleware.ErrResolutionAttemptLimit)) {
+					errors.Is(lookupErr, middleware.ErrResolutionAttemptLimit) ||
+					errors.Is(lookupErr, middleware.ErrMaxRecursion)) {
 				continue
 			}
 			return nil, lookupErr
@@ -2369,6 +2370,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+				errors.Is(err, middleware.ErrMaxRecursion) ||
 				errors.Is(err, context.Canceled) ||
 				errors.Is(err, context.DeadlineExceeded) {
 				return err
@@ -2463,7 +2465,8 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {
-			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+				errors.Is(err, middleware.ErrMaxRecursion) {
 				return
 			}
 			// Keep going: one nameserver without an AAAA (or rate
@@ -2817,7 +2820,8 @@ func (r *Resolver) run() {
 
 // handleLookupError processes errors from groupLookup.
 func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolveState, minReq *dns.Msg, minimized bool) (*dns.Msg, error) {
-	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+	if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+		errors.Is(err, middleware.ErrMaxRecursion) {
 		return nil, err
 	}
 
@@ -2859,7 +2863,8 @@ func (r *Resolver) recordResolutionZoneFailure(ctx context.Context, q dns.Questi
 		errors.Is(cause, context.Canceled) ||
 		errors.Is(cause, context.DeadlineExceeded) ||
 		errors.Is(cause, middleware.ErrRecursionWorkLimit) ||
-		errors.Is(cause, middleware.ErrResolutionAttemptLimit) {
+		errors.Is(cause, middleware.ErrResolutionAttemptLimit) ||
+		errors.Is(cause, middleware.ErrMaxRecursion) {
 		return
 	}
 

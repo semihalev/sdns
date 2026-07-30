@@ -786,11 +786,10 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	mt, _ := dnsutil.ClassifyResponse(res, time.Now().UTC())
 	if mt == dnsutil.TypeServerFailure {
 		out := res
-		if res.Rcode == dns.RcodeServerFailure &&
-			middleware.RecursionWorkEnforcementError(ctx) != nil {
+		if res.Rcode == dns.RcodeServerFailure && middleware.RecursionWorkEnforcementError(ctx) != nil {
 			out = w.recursionWorkFailure(res)
 		}
-		if ctx.Err() == nil {
+		if cacheableResolutionFailure(ctx, out) {
 			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"))
 		}
 		return w.ResponseWriter.WriteMsg(out)
@@ -807,10 +806,14 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
 	}
 	if chasedType, _ := dnsutil.ClassifyResponse(res, time.Now().UTC()); chasedType == dnsutil.TypeServerFailure {
-		if ctx.Err() == nil {
-			w.cache.store.RecordFailure(res, w.clientScope, FailureProvenance("response"))
+		out := res
+		if res.Rcode == dns.RcodeServerFailure && middleware.RecursionWorkEnforcementError(ctx) != nil {
+			out = w.recursionWorkFailure(res)
 		}
-		return w.ResponseWriter.WriteMsg(res)
+		if cacheableResolutionFailure(ctx, out) {
+			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"))
+		}
+		return w.ResponseWriter.WriteMsg(out)
 	}
 
 	// Classify, filter, and store via Store. Key is derived from
@@ -858,6 +861,17 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
 
 	return w.ResponseWriter.WriteMsg(res)
+}
+
+// cacheableResolutionFailure admits only failures that describe shared
+// resolution state. Work-budget and attempt-limit rejections belong to one
+// request tree; optional enrichment, cancellation, and deadline paths likewise
+// cannot poison independent clients through the RFC 9520 cache.
+func cacheableResolutionFailure(ctx context.Context, res *dns.Msg) bool {
+	return ctx.Err() == nil &&
+		!middleware.IsBestEffortRecursionWork(ctx) &&
+		middleware.RecursionWorkEnforcementError(ctx) == nil &&
+		middleware.RequestLocalFailureForResponse(ctx, res) == nil
 }
 
 func (w *ResponseWriter) recursionWorkFailure(fallback *dns.Msg) *dns.Msg {
@@ -1036,6 +1050,22 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 				edeCode,
 				edeText,
 			)
+		}
+		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+			edeCode, edeText := dnsutil.ErrorToEDE(err)
+			do := false
+			if opt := msg.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			out := dnsutil.SetRcodeWithEDE(
+				msg,
+				dns.RcodeServerFailure,
+				do,
+				edeCode,
+				edeText,
+			)
+			middleware.MarkRequestLocalFailureResponse(ctx, out, err)
+			return out
 		}
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)

@@ -870,6 +870,60 @@ func TestCachedFailure_PassesThroughWithoutALookup(t *testing.T) {
 	}
 }
 
+func TestRequestLocalFailurePassesThroughWithoutALookup(t *testing.T) {
+	attemptErr := &middleware.ResolutionAttemptLimitError{
+		Question:  dns.Question{Name: "foo.example.org.", Qtype: dns.TypeAAAA, Qclass: dns.ClassINET},
+		Endpoint:  "192.0.2.53:53",
+		Transport: "udp",
+	}
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "attempt limit", err: attemptErr},
+		{name: "deadline", err: context.DeadlineExceeded},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := middleware.EnsureResolutionAttemptGuard(context.Background())
+			d := New(baseConfig())
+			q := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+			d.queryer = q
+
+			var marked *dns.Msg
+			downstream := middleware.HandlerFunc(func(handlerCtx context.Context, ch *middleware.Chain) {
+				marked = new(dns.Msg)
+				marked.SetReply(ch.Request)
+				marked.Rcode = dns.RcodeServerFailure
+				middleware.MarkRequestLocalFailureResponse(handlerCtx, marked, tt.err)
+				_ = ch.Writer.WriteMsg(marked)
+				ch.Cancel()
+			})
+			ch := middleware.NewChain([]middleware.Handler{d, downstream})
+			mw := mock.NewWriter("udp", "203.0.113.5:53")
+			req := new(dns.Msg)
+			req.SetQuestion("foo.example.org.", dns.TypeAAAA)
+			req.SetEdns0(4096, true)
+			ch.Reset(mw, req)
+			ch.Next(ctx)
+
+			if q.last != nil {
+				t.Fatal("request-local failure triggered a DNS64 A lookup")
+			}
+			if mw.Msg() != marked {
+				t.Fatal("DNS64 did not pass through the exact marked response")
+			}
+			if !errors.Is(middleware.RequestLocalFailureForResponse(ctx, mw.Msg()), tt.err) {
+				t.Fatalf("passed-through response lost request-local provenance for %v", tt.err)
+			}
+			if middleware.RequestLocalFailureForResponse(ctx, mw.Msg().Copy()) != nil {
+				t.Fatal("request-local provenance leaked to a copied response")
+			}
+		})
+	}
+}
+
 func TestFailureCacheHitPassesThroughDNS64WithAndWithoutEDNS(t *testing.T) {
 	for _, withEDNS := range []bool{true, false} {
 		name := "without_edns"
@@ -1257,6 +1311,80 @@ func TestPTR_RecursionWorkLimitReturnsPolicyEDE(t *testing.T) {
 	if assert.NotNil(t, queryer.last, "secondary PTR query must be attempted") {
 		assert.Equal(t, dns.TypePTR, queryer.last.Question[0].Qtype)
 		assert.Equal(t, "33.2.0.192.in-addr.arpa.", queryer.last.Question[0].Name)
+	}
+}
+
+func TestAttemptLimitQueryErrorsProduceMarkedSERVFAIL(t *testing.T) {
+	attemptErr := &middleware.ResolutionAttemptLimitError{
+		Question: dns.Question{
+			Name:   "foo.example.org.",
+			Qtype:  dns.TypeA,
+			Qclass: dns.ClassINET,
+		},
+		Endpoint:  "192.0.2.53:53",
+		Transport: "udp",
+	}
+
+	tests := []struct {
+		name  string
+		qname string
+		qtype uint16
+	}{
+		{name: "secondary A", qname: "foo.example.org.", qtype: dns.TypeAAAA},
+		{
+			name:  "translated PTR",
+			qname: "1.2.2.0.0.0.0.c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.9.f.f.4.6.0.0.ip6.arpa.",
+			qtype: dns.TypePTR,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := middleware.EnsureResolutionAttemptGuard(context.Background())
+			d := New(baseConfig())
+			queryer := &stubQueryer{err: attemptErr}
+			d.queryer = queryer
+
+			downstream := &stubAnswerer{msg: noDataMsg(tt.qname, 300)}
+			ch, mw := makeChain(t, d, downstream, "203.0.113.5:53", tt.qname, tt.qtype)
+			ch.Next(ctx)
+
+			resp := mw.Msg()
+			if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("response = %#v, want SERVFAIL", resp)
+			}
+			if !errors.Is(middleware.RequestLocalFailureForResponse(ctx, resp), middleware.ErrResolutionAttemptLimit) {
+				t.Fatal("DNS64 terminal response is missing request-local attempt-limit provenance")
+			}
+			if queryer.last == nil {
+				t.Fatal("secondary query was not attempted")
+			}
+			wantType := dns.TypeA
+			if tt.qtype == dns.TypePTR {
+				wantType = dns.TypePTR
+			}
+			if got := queryer.last.Question[0].Qtype; got != wantType {
+				t.Fatalf("secondary query type = %s, want %s", dns.TypeToString[got], dns.TypeToString[wantType])
+			}
+		})
+	}
+}
+
+func TestClassifyQueryErrPreservesSpecificLocalLabels(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{err: middleware.ErrResolutionAttemptLimit, want: "attempt_limit"},
+		{err: middleware.ErrNoResponse, want: "no_response"},
+		{err: middleware.ErrMaxRecursion, want: "max_recursion"},
+		{err: context.DeadlineExceeded, want: "request_local"},
+		{err: context.Canceled, want: "request_local"},
+	}
+	for _, tt := range tests {
+		if got := classifyQueryErr(tt.err); got != tt.want {
+			t.Errorf("classifyQueryErr(%v) = %q, want %q", tt.err, got, tt.want)
+		}
 	}
 }
 

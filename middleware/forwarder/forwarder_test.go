@@ -7,8 +7,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -265,6 +267,222 @@ func TestForwarderTriesNextServerAfterUnusableDNSResponse(t *testing.T) {
 	}
 	if badCalls.Load() != 1 || goodCalls.Load() != 1 {
 		t.Fatalf("server calls = bad:%d good:%d, want 1/1", badCalls.Load(), goodCalls.Load())
+	}
+}
+
+func TestForwarderResolutionAttemptProvenanceMarksSelectedTerminalFailure(t *testing.T) {
+	failureAddr, failureCalls, stopFailure := startForwarderRcodeServer(t, dns.RcodeServerFailure)
+	defer stopFailure()
+	blockedAddr, blockedCalls, stopBlocked := startForwarderRcodeServer(t, dns.RcodeSuccess)
+	defer stopBlocked()
+
+	req := new(dns.Msg)
+	req.SetQuestion("attempt-provenance.example.", dns.TypeA)
+	ctx := middleware.WithResolutionAttemptGuard(
+		context.Background(),
+		middleware.NewResolutionAttemptGuard(),
+	)
+	exhaustForwarderAttemptTuple(t, ctx, req.Question[0], blockedAddr)
+
+	f := &Forwarder{servers: []*server{
+		{Addr: failureAddr, Proto: "udp"},
+		{Addr: blockedAddr, Proto: "udp"},
+	}}
+	writer := mock.NewWriter("udp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{f})
+	ch.Reset(writer, req)
+	ch.Next(ctx)
+
+	resp := writer.Msg()
+	if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("forwarder response = %#v, want terminal SERVFAIL", resp)
+	}
+	if failureCalls.Load() != 1 || blockedCalls.Load() != 0 {
+		t.Fatalf("server calls = failure:%d blocked:%d, want 1/0",
+			failureCalls.Load(), blockedCalls.Load())
+	}
+
+	provenance := middleware.RequestLocalFailureForResponse(ctx, resp)
+	if !errors.Is(provenance, middleware.ErrResolutionAttemptLimit) {
+		t.Fatalf("terminal provenance = %v, want ErrResolutionAttemptLimit", provenance)
+	}
+	var limitErr *middleware.ResolutionAttemptLimitError
+	if !errors.As(provenance, &limitErr) {
+		t.Fatalf("terminal provenance type = %T, want *ResolutionAttemptLimitError", provenance)
+	}
+	if got, want := limitErr.Endpoint, middleware.CanonicalResolutionEndpoint(blockedAddr); got != want {
+		t.Fatalf("blocked endpoint = %q, want %q", got, want)
+	}
+	if copied := middleware.RequestLocalFailureForResponse(ctx, resp.Copy()); copied != nil {
+		t.Fatalf("copied response inherited exact-response provenance: %v", copied)
+	}
+}
+
+func TestForwarderResolutionAttemptProvenanceDoesNotMarkRecovery(t *testing.T) {
+	blockedAddr, blockedCalls, stopBlocked := startForwarderRcodeServer(t, dns.RcodeServerFailure)
+	defer stopBlocked()
+	goodAddr, goodCalls, stopGood := startForwarderRcodeServer(t, dns.RcodeSuccess)
+	defer stopGood()
+
+	req := new(dns.Msg)
+	req.SetQuestion("attempt-recovery.example.", dns.TypeA)
+	ctx := middleware.WithResolutionAttemptGuard(
+		context.Background(),
+		middleware.NewResolutionAttemptGuard(),
+	)
+	exhaustForwarderAttemptTuple(t, ctx, req.Question[0], blockedAddr)
+
+	f := &Forwarder{servers: []*server{
+		{Addr: blockedAddr, Proto: "udp"},
+		{Addr: goodAddr, Proto: "udp"},
+	}}
+	writer := mock.NewWriter("udp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{f})
+	ch.Reset(writer, req)
+	ch.Next(ctx)
+
+	resp := writer.Msg()
+	if resp == nil || resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+		t.Fatalf("forwarder response = %#v, want useful recovery answer", resp)
+	}
+	if blockedCalls.Load() != 0 || goodCalls.Load() != 1 {
+		t.Fatalf("server calls = blocked:%d good:%d, want 0/1",
+			blockedCalls.Load(), goodCalls.Load())
+	}
+	if provenance := middleware.RequestLocalFailureForResponse(ctx, resp); provenance != nil {
+		t.Fatalf("successful recovery inherited attempt-limit provenance: %v", provenance)
+	}
+}
+
+func TestForwarderResolutionAttemptProvenanceMarksAllTuplesBlocked(t *testing.T) {
+	blockedAddr, blockedCalls, stopBlocked := startForwarderRcodeServer(t, dns.RcodeSuccess)
+	defer stopBlocked()
+
+	req := new(dns.Msg)
+	req.SetQuestion("all-tuples-blocked.example.", dns.TypeA)
+	ctx := middleware.WithResolutionAttemptGuard(
+		context.Background(),
+		middleware.NewResolutionAttemptGuard(),
+	)
+	exhaustForwarderAttemptTuple(t, ctx, req.Question[0], blockedAddr)
+
+	f := &Forwarder{servers: []*server{{Addr: blockedAddr, Proto: "udp"}}}
+	writer := mock.NewWriter("udp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{f})
+	ch.Reset(writer, req)
+	ch.Next(ctx)
+
+	resp := writer.Msg()
+	if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("forwarder response = %#v, want terminal SERVFAIL", resp)
+	}
+	if got := blockedCalls.Load(); got != 0 {
+		t.Fatalf("blocked tuple reached wire %d times, want 0", got)
+	}
+	provenance := middleware.RequestLocalFailureForResponse(ctx, resp)
+	if !errors.Is(provenance, middleware.ErrResolutionAttemptLimit) {
+		t.Fatalf("all-tuples-blocked provenance = %v, want ErrResolutionAttemptLimit", provenance)
+	}
+	var limitErr *middleware.ResolutionAttemptLimitError
+	if !errors.As(provenance, &limitErr) {
+		t.Fatalf("all-tuples-blocked provenance type = %T, want *ResolutionAttemptLimitError", provenance)
+	}
+}
+
+type contextWaitRoundTripper struct {
+	calls atomic.Int32
+}
+
+func (rt *contextWaitRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.calls.Add(1)
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+func TestForwarderTimeoutProvenanceUsesOverallContextOnly(t *testing.T) {
+	tests := []struct {
+		name          string
+		queryTimeout  time.Duration
+		clientTimeout time.Duration
+		wantLocal     bool
+	}{
+		{
+			name:         "derived query timeout is request local",
+			queryTimeout: 20 * time.Millisecond,
+			wantLocal:    true,
+		},
+		{
+			name:          "endpoint timeout remains shareable",
+			queryTimeout:  time.Second,
+			clientTimeout: 20 * time.Millisecond,
+			wantLocal:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := new(contextWaitRoundTripper)
+			endpoint := "https://timeout.example/dns-query"
+			f := &Forwarder{
+				servers: []*server{{
+					Addr:      endpoint,
+					Proto:     "doh",
+					DoHURL:    endpoint,
+					DoHClient: &http.Client{Transport: transport, Timeout: tt.clientTimeout},
+				}},
+				queryTimeout: tt.queryTimeout,
+			}
+
+			ctx := middleware.WithResolutionAttemptGuard(
+				context.Background(),
+				middleware.NewResolutionAttemptGuard(),
+			)
+			req := new(dns.Msg)
+			req.SetQuestion("timeout-provenance.example.", dns.TypeA)
+			req.SetEdns0(dnsutil.DefaultMsgSize, true)
+			writer := mock.NewWriter("udp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{f})
+			ch.Reset(writer, req)
+			ch.Next(ctx)
+
+			resp := writer.Msg()
+			if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("forwarder response = %#v, want terminal SERVFAIL", resp)
+			}
+			if ede := dnsutil.GetEDE(resp); ede != nil {
+				t.Fatalf("forwarder timeout changed historical plain SERVFAIL into EDE: %+v", ede)
+			}
+			if got := transport.calls.Load(); got != 1 {
+				t.Fatalf("transport calls = %d, want 1", got)
+			}
+
+			provenance := middleware.RequestLocalFailureForResponse(ctx, resp)
+			if tt.wantLocal {
+				if !errors.Is(provenance, context.DeadlineExceeded) {
+					t.Fatalf("overall-timeout provenance = %v, want context deadline", provenance)
+				}
+				if copied := middleware.RequestLocalFailureForResponse(ctx, resp.Copy()); copied != nil {
+					t.Fatalf("copied timeout response inherited provenance: %v", copied)
+				}
+			} else if provenance != nil {
+				t.Fatalf("endpoint timeout was misclassified as request local: %v", provenance)
+			}
+		})
+	}
+}
+
+func exhaustForwarderAttemptTuple(
+	t *testing.T,
+	ctx context.Context,
+	question dns.Question,
+	endpoint string,
+) {
+	t.Helper()
+
+	for range 3 {
+		if err := middleware.BeginResolutionAttempt(ctx, question, endpoint, "udp"); err != nil {
+			t.Fatalf("pre-consuming attempt tuple: %v", err)
+		}
 	}
 }
 

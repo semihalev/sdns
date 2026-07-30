@@ -134,8 +134,62 @@ func TestResolutionAttemptGuardResponseMetaOwnershipAndReset(t *testing.T) {
 	if err := BeginResolutionAttempt(freshCtx, q, "192.0.2.20:53", "udp"); err != nil {
 		t.Fatalf("fresh request attempt rejected: %v", err)
 	}
-	if err := BeginResolutionAttempt(ctx, q, "192.0.2.20:53", "udp"); !errors.Is(err, ErrResolutionAttemptLimit) {
-		t.Fatalf("detached pinned guard after Reset = %v, want original exhaustion", err)
+	limitErr := BeginResolutionAttempt(ctx, q, "192.0.2.20:53", "udp")
+	if !errors.Is(limitErr, ErrResolutionAttemptLimit) {
+		t.Fatalf("detached pinned guard after Reset = %v, want original exhaustion", limitErr)
+	}
+	marked := new(dns.Msg)
+	marked.SetQuestion(q.Name, q.Qtype)
+	other := marked.Copy()
+	MarkRequestLocalFailureResponse(ctx, marked, limitErr)
+	if got := RequestLocalFailureForResponse(ctx, marked); !errors.Is(got, ErrResolutionAttemptLimit) {
+		t.Fatalf("marked response provenance = %v, want ErrResolutionAttemptLimit", got)
+	}
+	if got := RequestLocalFailureForResponse(ctx, other); got != nil {
+		t.Fatalf("copied response inherited pointer provenance: %v", got)
+	}
+	if got := RequestLocalFailureForResponse(freshCtx, marked); got != nil {
+		t.Fatalf("fresh request inherited previous response provenance: %v", got)
+	}
+}
+
+func TestRequestLocalFailureResponseIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "work limit", err: ErrRecursionWorkLimit},
+		{name: "attempt limit", err: ErrResolutionAttemptLimit},
+		{name: "queryer recursion", err: ErrMaxRecursion},
+		{name: "canceled", err: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, _ := EnsureResolutionAttemptGuard(context.Background())
+			marked := new(dns.Msg)
+			marked.SetQuestion("local.example.", dns.TypeA)
+			MarkRequestLocalFailureResponse(ctx, marked, tt.err)
+
+			if got := RequestLocalFailureForResponse(ctx, marked); !errors.Is(got, tt.err) {
+				t.Fatalf("exact response provenance = %v, want %v", got, tt.err)
+			}
+			if got := RequestLocalFailureForResponse(ctx, marked.Copy()); got != nil {
+				t.Fatalf("copied response inherited request-local provenance: %v", got)
+			}
+
+			unmarked := new(dns.Msg)
+			unmarked.SetQuestion("local.example.", dns.TypeA)
+			MarkRequestLocalFailureResponse(ctx, unmarked, errors.New("upstream failure"))
+			if got := RequestLocalFailureForResponse(ctx, unmarked); got != nil {
+				t.Fatalf("shared upstream failure was marked request-local: %v", got)
+			}
+		})
 	}
 }
 

@@ -54,11 +54,13 @@ type resolutionAttemptKey struct {
 	transport string
 }
 
-// ResolutionAttemptGuard owns retry state for one complete client request
-// tree. A mutex keeps the check-and-increment atomic across resolver fan-out.
+// ResolutionAttemptGuard owns retry state and exact terminal request-local
+// response provenance for one complete client request tree. A mutex keeps both
+// maps atomic across resolver fan-out.
 type ResolutionAttemptGuard struct {
-	mu       sync.Mutex
-	attempts map[resolutionAttemptKey]uint8
+	mu                    sync.Mutex
+	attempts              map[resolutionAttemptKey]uint8
+	localFailureResponses map[*dns.Msg]error
 }
 
 // NewResolutionAttemptGuard returns an empty request-tree retry guard.
@@ -205,4 +207,51 @@ func BeginResolutionAttempt(ctx context.Context, q dns.Question, endpoint, trans
 		return guard.Begin(q, endpoint, transport)
 	}
 	return nil
+}
+
+// IsRequestLocalResolutionError reports whether err describes this request
+// tree rather than shared upstream resolution state. Such failures must never
+// be admitted to the RFC 9520 failure cache.
+func IsRequestLocalResolutionError(err error) bool {
+	return errors.Is(err, ErrRecursionWorkLimit) ||
+		errors.Is(err, ErrResolutionAttemptLimit) ||
+		errors.Is(err, ErrMaxRecursion) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+// MarkRequestLocalFailureResponse attaches exact request-local provenance to
+// a terminal DNS response. Pointer identity prevents an unrelated upstream
+// SERVFAIL later selected by failover from inheriting a losing branch's local
+// attempt rejection or deadline.
+func MarkRequestLocalFailureResponse(ctx context.Context, msg *dns.Msg, err error) {
+	if msg == nil || !IsRequestLocalResolutionError(err) {
+		return
+	}
+	if guard := ResolutionAttemptGuardFrom(ctx); guard != nil {
+		guard.mu.Lock()
+		if guard.localFailureResponses == nil {
+			guard.localFailureResponses = make(map[*dns.Msg]error)
+		}
+		if _, exists := guard.localFailureResponses[msg]; !exists {
+			guard.localFailureResponses[msg] = err
+		}
+		guard.mu.Unlock()
+	}
+}
+
+// RequestLocalFailureForResponse returns the typed request-local error
+// attached to this exact response, if any.
+func RequestLocalFailureForResponse(ctx context.Context, msg *dns.Msg) error {
+	if msg == nil {
+		return nil
+	}
+	guard := ResolutionAttemptGuardFrom(ctx)
+	if guard == nil {
+		return nil
+	}
+	guard.mu.Lock()
+	err := guard.localFailureResponses[msg]
+	guard.mu.Unlock()
+	return err
 }

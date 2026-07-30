@@ -34,6 +34,8 @@ var (
 	passthroughNXDomain       = Passthrough.Register("nxdomain")
 	passthroughDNSSECFail     = Passthrough.Register("dnssec_fail")
 	passthroughCachedFailure  = Passthrough.Register("cached_failure")
+	passthroughAttemptLimit   = Passthrough.Register("attempt_limit")
+	passthroughRequestLocal   = Passthrough.Register("request_local")
 	passthroughAAAAPresent    = Passthrough.Register("aaaa_present")
 	passthroughAExcluded      = Passthrough.Register("a_excluded")
 
@@ -57,6 +59,8 @@ var (
 	aLookupNoA          = ALookupFailures.Register("no_a")
 	_                   = ALookupFailures.Register("no_response")
 	_                   = ALookupFailures.Register("max_recursion")
+	_                   = ALookupFailures.Register("attempt_limit")
+	_                   = ALookupFailures.Register("request_local")
 	_                   = ALookupFailures.Register("other")
 
 	// PTRTranslated counts ip6.arpa PTR queries DNS64 redirected

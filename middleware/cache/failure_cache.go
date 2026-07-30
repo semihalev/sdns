@@ -183,6 +183,10 @@ func NewFailureCache(cfg FailureCacheConfig) (*FailureCache, error) {
 // ancestor-zone failure. Expired state is retained for Record and RetryKey but
 // never returned as a hit.
 func (c *FailureCache) Lookup(key FailureQuestionKey) (FailureHit, bool) {
+	if c.entries.Len() == 0 {
+		return FailureHit{}, false
+	}
+
 	key = normalizeFailureQuestionKey(key)
 	now := c.now()
 
@@ -210,6 +214,10 @@ func (c *FailureCache) Lookup(key FailureQuestionKey) (FailureHit, bool) {
 // precedence over exact history so different random QNAMEs below a failed
 // authority converge on one probe generation.
 func (c *FailureCache) RetryKey(key FailureQuestionKey) (uint64, bool) {
+	if c.entries.Len() == 0 {
+		return 0, false
+	}
+
 	key = normalizeFailureQuestionKey(key)
 	now := c.now()
 

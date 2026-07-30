@@ -142,6 +142,22 @@ func (h *recordingHandler) ServeDNS(ctx context.Context, ch *Chain) {
 	_ = ch.Writer.WriteMsg(reply)
 }
 
+type requestLocalResponseHandler struct {
+	name string
+	err  error
+}
+
+func (h *requestLocalResponseHandler) Name() string { return h.name }
+func (h *requestLocalResponseHandler) ServeDNS(ctx context.Context, ch *Chain) {
+	reply := new(dns.Msg)
+	reply.SetReply(ch.Request)
+	reply.Rcode = dns.RcodeServerFailure
+	if h.err != nil {
+		MarkRequestLocalFailureResponse(ctx, reply, h.err)
+	}
+	_ = ch.Writer.WriteMsg(reply)
+}
+
 // silentHandler satisfies Handler but never writes. Used
 // to exercise the Queryer "no response" path.
 type silentHandler struct{ name string }
@@ -176,6 +192,49 @@ func TestQueryerReturnsServfailAsMsg(t *testing.T) {
 	}
 	if resp == nil || resp.Rcode != dns.RcodeServerFailure {
 		t.Fatalf("resp rcode = %v, want SERVFAIL *dns.Msg", resp)
+	}
+}
+
+func TestQueryerRequestLocalFailureUsesResponseIdentity(t *testing.T) {
+	attemptErr := &ResolutionAttemptLimitError{
+		Question:  dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+		Endpoint:  "192.0.2.53:53",
+		Transport: "udp",
+	}
+	tests := []struct {
+		name    string
+		markErr error
+		wantErr error
+	}{
+		{name: "marked attempt limit", markErr: attemptErr, wantErr: ErrResolutionAttemptLimit},
+		{name: "marked deadline", markErr: context.DeadlineExceeded, wantErr: context.DeadlineExceeded},
+		{name: "identical unmarked SERVFAIL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &requestLocalResponseHandler{name: "request-local-" + tt.name, err: tt.markErr}
+			q := NewPipelineQueryer(buildPipeline(t, h))
+			req := new(dns.Msg)
+			req.SetQuestion("example.com.", dns.TypeA)
+
+			resp, err := q.Query(context.Background(), req)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Query error = %v, want %v", err, tt.wantErr)
+				}
+				if resp != nil {
+					t.Fatalf("Query response = %#v, want nil for marked local rejection", resp)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Query returned error for unmarked SERVFAIL: %v", err)
+			}
+			if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("Query response = %#v, want SERVFAIL *dns.Msg", resp)
+			}
+		})
 	}
 }
 

@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"os"
 	"time"
 
@@ -126,6 +127,11 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
+	// Pin the request-tree guard before deriving the resolver deadline so a
+	// terminal request-local cause can be attached to the exact response and
+	// observed by outer cache/queryer wrappers.
+	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
+
 	// Prepare request for authoritative servers
 	// Clear RD and AD flags as we're querying authoritative servers
 	req.RecursionDesired = false
@@ -146,6 +152,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	depth := h.cfg.Maxdepth
 	isRootQuery := q.Name == rootzone
 	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootServers, true, depth, 0, false, nil, isRootQuery)
+	requestCtxErr := ctx.Err()
 
 	// Restore original CD flag if DNSSEC is not supported
 	if !h.resolver.dnssec {
@@ -161,7 +168,16 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 
 		// Add Extended DNS Error information for recursor validation failures
 		edeCode, edeText := dnsutil.ErrorToEDE(err)
-		return dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
+		resp := dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
+		switch {
+		case errors.Is(err, middleware.ErrRecursionWorkLimit),
+			errors.Is(err, middleware.ErrResolutionAttemptLimit),
+			errors.Is(err, middleware.ErrMaxRecursion):
+			middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
+		case requestCtxErr != nil:
+			middleware.MarkRequestLocalFailureResponse(ctx, resp, requestCtxErr)
+		}
+		return resp
 	}
 
 	// Convert certain response codes to SERVFAIL with appropriate EDE

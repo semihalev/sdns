@@ -116,7 +116,10 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
-	var failureResponse *dns.Msg
+	var (
+		failureResponse *dns.Msg
+		requestLocalErr = middleware.RequestLocalFailureForResponse(w.ctx, m)
+	)
 	for _, server := range w.f.servers {
 		client := dnsclient.Client{
 			Proto: "udp",
@@ -133,9 +136,16 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		resp, _, err := client.Exchange(ctx, req, server)
 		cancel()
 		if err != nil {
+			// This ctx is an independent per-endpoint five-second window,
+			// not the originating request context. Its cancellation or
+			// deadline is shared upstream failure evidence; only an explicit
+			// request-tree attempt rejection carries local provenance here.
 			if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 				// Request-local retry exhaustion is not an upstream health
 				// failure; try another endpoint without noisy logging.
+				if requestLocalErr == nil {
+					requestLocalErr = err
+				}
 				continue
 			}
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
@@ -163,7 +173,13 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	}
 
 	if failureResponse != nil {
+		if requestLocalErr != nil {
+			middleware.MarkRequestLocalFailureResponse(w.ctx, failureResponse, requestLocalErr)
+		}
 		return w.ResponseWriter.WriteMsg(failureResponse)
+	}
+	if requestLocalErr != nil {
+		middleware.MarkRequestLocalFailureResponse(w.ctx, m, requestLocalErr)
 	}
 	return w.ResponseWriter.WriteMsg(m)
 }

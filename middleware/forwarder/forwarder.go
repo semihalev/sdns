@@ -203,7 +203,10 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	defer func() { req.CheckingDisabled = clientCD }()
 
-	var failureResponse *dns.Msg
+	var (
+		failureResponse *dns.Msg
+		requestLocalErr error
+	)
 	for _, server := range f.servers {
 		// Build a lightweight client per upstream. For DoH this
 		// references the reused, pinned-IP http.Client created at
@@ -237,6 +240,9 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 				// The request-local guard says nothing about this upstream's
 				// health. Try another endpoint without failure telemetry.
+				if requestLocalErr == nil {
+					requestLocalErr = err
+				}
 				continue
 			}
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
@@ -258,6 +264,16 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 				))
 				ch.Cancel()
 				return
+			}
+			// Only the shared Forwarder context represents the request's
+			// overall query window. A dnsclient per-endpoint timeout can
+			// return a timeout error while this context is still live; that
+			// remains evidence about the upstream and is safe to share.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				if requestLocalErr == nil {
+					requestLocalErr = ctxErr
+				}
+				break
 			}
 
 			// A mismatched question section is a security signal
@@ -303,7 +319,31 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// return on success.
 	req.CheckingDisabled = clientCD
 	if failureResponse != nil {
+		if requestLocalErr != nil {
+			// A fresh request may still reach a tuple this request had to
+			// skip, so even a real SERVFAIL from another peer is not safe to
+			// share as the terminal pool result. The same applies when the
+			// request's overall query window expired before every peer could
+			// be tried.
+			middleware.MarkRequestLocalFailureResponse(ctx, failureResponse, requestLocalErr)
+		}
 		_ = w.WriteMsg(failureResponse)
+		return
+	}
+	if requestLocalErr != nil {
+		// Preserve CancelWithRcode's historical plain-SERVFAIL wire shape;
+		// provenance is request-local metadata, not a new EDE contract.
+		resp := new(dns.Msg)
+		resp.Extra = req.Extra
+		resp.SetRcode(req, dns.RcodeServerFailure)
+		resp.RecursionAvailable = true
+		resp.RecursionDesired = true
+		if opt := resp.IsEdns0(); opt != nil {
+			opt.SetDo(true)
+		}
+		middleware.MarkRequestLocalFailureResponse(ctx, resp, requestLocalErr)
+		_ = w.WriteMsg(resp)
+		ch.Cancel()
 		return
 	}
 	ch.CancelWithRcode(dns.RcodeServerFailure, true)

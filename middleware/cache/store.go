@@ -138,6 +138,10 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 		}
 	}
 
+	// Get is also used by resolver-private subqueries, which deliberately do
+	// not inherit the client's ECS audience. Keep RFC 9520 failure lookup
+	// unscoped here; request paths carrying ECS call LookupFailure directly
+	// with their explicit audience.
 	if hit, ok := s.LookupFailure(req, netip.Prefix{}); ok {
 		failureCacheHits.Inc()
 		return hit.Response(req), true

@@ -300,6 +300,24 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 			ch.Cancel()
 			return true
 		}
+		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+			edeCode, edeText := dnsutil.ErrorToEDE(err)
+			do := false
+			if opt := ch.Request.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			out := dnsutil.SetRcodeWithEDE(
+				ch.Request,
+				dns.RcodeServerFailure,
+				do,
+				edeCode,
+				edeText,
+			)
+			middleware.MarkRequestLocalFailureResponse(ctx, out, err)
+			_ = ch.Writer.WriteMsg(out)
+			ch.Cancel()
+			return true
+		}
 		if err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
 			for _, rr := range resp.Answer {
 				if rr.Header().Rrtype == dns.TypePTR {
@@ -394,6 +412,14 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		passthroughCachedFailure.Inc()
 		return w.ResponseWriter.WriteMsg(m)
 	}
+	if err := middleware.RequestLocalFailureForResponse(w.ctx, m); err != nil {
+		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+			passthroughAttemptLimit.Inc()
+		} else {
+			passthroughRequestLocal.Inc()
+		}
+		return w.ResponseWriter.WriteMsg(m)
+	}
 	if m.Rcode == dns.RcodeServerFailure &&
 		middleware.RecursionWorkEnforcementError(w.ctx) != nil {
 		return w.writeRecursionWorkFailure(nil)
@@ -429,6 +455,9 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 		return w.writeRecursionWorkFailure(err)
 	}
+	if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+		return w.writeResolutionAttemptFailure(err)
+	}
 	if synth == nil {
 		// A lookup failed or yielded nothing usable; preserve the
 		// original (already AAAA-filtered) answer rather than
@@ -452,6 +481,23 @@ func (w *responseWriter) writeRecursionWorkFailure(err error) error {
 		edeCode,
 		edeText,
 	))
+}
+
+func (w *responseWriter) writeResolutionAttemptFailure(err error) error {
+	edeCode, edeText := dnsutil.ErrorToEDE(err)
+	do := false
+	if opt := w.req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	resp := dnsutil.SetRcodeWithEDE(
+		w.req,
+		dns.RcodeServerFailure,
+		do,
+		edeCode,
+		edeText,
+	)
+	middleware.MarkRequestLocalFailureResponse(w.ctx, resp, err)
+	return w.ResponseWriter.WriteMsg(resp)
 }
 
 // filterUpstreamAAAA inspects m and, if any AAAA records fall in
@@ -832,10 +878,14 @@ func negativeAAAATTL(m *dns.Msg) uint32 {
 // flows under "other".
 func classifyQueryErr(err error) string {
 	switch {
+	case errors.Is(err, middleware.ErrResolutionAttemptLimit):
+		return "attempt_limit"
 	case errors.Is(err, middleware.ErrNoResponse):
 		return "no_response"
 	case errors.Is(err, middleware.ErrMaxRecursion):
 		return "max_recursion"
+	case middleware.IsRequestLocalResolutionError(err):
+		return "request_local"
 	case errors.Is(err, errQueryerNotWired):
 		return "queryer_error"
 	}
