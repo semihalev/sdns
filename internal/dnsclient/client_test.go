@@ -243,7 +243,15 @@ func TestClientExchange_TruncationFallsBackToTCP(t *testing.T) {
 	go func() { _ = s.ActivateAndServe() }()
 	defer func() { _ = s.Shutdown() }()
 
-	c := &Client{Proto: "udp", Timeout: 2 * time.Second}
+	var attempts []string
+	c := &Client{
+		Proto:   "udp",
+		Timeout: 2 * time.Second,
+		BeforeAttempt: func(proto string) error {
+			attempts = append(attempts, proto)
+			return nil
+		},
+	}
 	resp, _, err := c.Exchange(context.Background(), newReq(), udpAddr)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
@@ -253,6 +261,67 @@ func TestClientExchange_TruncationFallsBackToTCP(t *testing.T) {
 	}
 	if len(resp.Answer) != 1 {
 		t.Fatalf("expected 1 answer from TCP fallback, got %d", len(resp.Answer))
+	}
+	if len(attempts) != 2 || attempts[0] != "udp" || attempts[1] != "tcp" {
+		t.Fatalf("attempt protocols = %v, want [udp tcp]", attempts)
+	}
+}
+
+func TestClientExchange_BeforeAttemptCanRejectTCPFallback(t *testing.T) {
+	udpAddr, stopUDP := startServer(t, "udp", func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Truncated = true
+		_ = w.WriteMsg(m)
+	})
+	defer stopUDP()
+
+	errBudget := errors.New("test attempt budget exhausted")
+	var attempts []string
+	c := &Client{
+		Proto:   "udp",
+		Timeout: 2 * time.Second,
+		BeforeAttempt: func(proto string) error {
+			attempts = append(attempts, proto)
+			if proto == "tcp" {
+				return errBudget
+			}
+			return nil
+		},
+	}
+
+	resp, _, err := c.Exchange(context.Background(), newReq(), udpAddr)
+	if !errors.Is(err, errBudget) {
+		t.Fatalf("exchange error = %v, want %v", err, errBudget)
+	}
+	if resp != nil {
+		t.Fatalf("response = %v, want nil after rejected TCP fallback", resp)
+	}
+	if len(attempts) != 2 || attempts[0] != "udp" || attempts[1] != "tcp" {
+		t.Fatalf("attempt protocols = %v, want [udp tcp]", attempts)
+	}
+}
+
+func TestClientExchange_CanceledContextSkipsAttemptHook(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var attempts int
+	c := &Client{
+		BeforeAttempt: func(string) error {
+			attempts++
+			return nil
+		},
+	}
+	resp, _, err := c.Exchange(ctx, newReq(), "127.0.0.1:1")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("exchange error = %v, want context.Canceled", err)
+	}
+	if resp != nil {
+		t.Fatalf("response = %v, want nil", resp)
+	}
+	if attempts != 0 {
+		t.Fatalf("attempt hook calls = %d, want 0 for canceled context", attempts)
 	}
 }
 

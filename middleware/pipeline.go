@@ -15,19 +15,20 @@ import (
 // the same Pipeline across all callers — pooling *Chain keeps
 // per-internal-query allocations off the hot path for Queryer.
 type Pipeline struct {
-	handlers  []Handler
-	byName    map[string]Handler
-	names     []string // full registered name list, including disabled
-	chainPool sync.Pool
+	handlers   []Handler
+	byName     map[string]Handler
+	names      []string // full registered name list, including disabled
+	workPolicy RecursionWorkPolicy
+	chainPool  sync.Pool
 }
 
 // newPipeline constructs a Pipeline and initialises its chain pool.
 // Used by Registry.Build and Pipeline.SubPipeline so every pipeline
 // (full and sub) gets its own pool bound to its own handler list.
-func newPipeline(handlers []Handler, byName map[string]Handler, names []string) *Pipeline {
-	p := &Pipeline{handlers: handlers, byName: byName, names: names}
+func newPipeline(handlers []Handler, byName map[string]Handler, names []string, workPolicy RecursionWorkPolicy) *Pipeline {
+	p := &Pipeline{handlers: handlers, byName: byName, names: names, workPolicy: workPolicy}
 	p.chainPool.New = func() any {
-		return NewChain(p.handlers)
+		return newChain(p.handlers, p.workPolicy)
 	}
 	return p
 }
@@ -90,7 +91,7 @@ func (p *Pipeline) SubPipeline(skip ...string) *Pipeline {
 		handlers = append(handlers, h)
 		byName[h.Name()] = h
 	}
-	return newPipeline(handlers, byName, p.names)
+	return newPipeline(handlers, byName, p.names, p.workPolicy)
 }
 
 // NewChain returns a Chain bound to this pipeline's handlers,

@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -89,14 +90,27 @@ func (w *SingleflightWrapper) cleanupStuckQueries() {
 // (e.g. set a new message ID) should defensive-copy only when shared
 // is true; uncontended callers can return the value directly.
 func (w *SingleflightWrapper) TimedDoChan(ctx context.Context, key string, fn func() (any, error)) (val any, shared bool, err error) {
-	ch := w.DoChan(key, fn)
+	val, shared, _, err = w.TimedDoChanWithRole(ctx, key, fn)
+	return val, shared, err
+}
+
+// TimedDoChanWithRole is TimedDoChan plus a leader result. leader is true only
+// for the caller whose closure actually ran; followers receive the shared
+// result without executing their closure. Resolver policy errors use this bit
+// to avoid leaking one request tree's exhausted budget into another.
+func (w *SingleflightWrapper) TimedDoChanWithRole(ctx context.Context, key string, fn func() (any, error)) (val any, shared, leader bool, err error) {
+	var ran atomic.Bool
+	ch := w.DoChan(key, func() (any, error) {
+		ran.Store(true)
+		return fn()
+	})
 
 	select {
 	case result := <-ch:
-		return result.Val, result.Shared, result.Err
+		return result.Val, result.Shared, ran.Load(), result.Err
 	case <-ctx.Done():
 		// Context cancelled/timed out - forget the key
 		w.Forget(key)
-		return nil, false, ctx.Err()
+		return nil, false, ran.Load(), ctx.Err()
 	}
 }

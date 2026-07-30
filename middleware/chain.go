@@ -31,6 +31,11 @@ type ResponseMeta struct {
 	// context, so a plain time.Time here races even though every update is
 	// min-only.
 	cut atomic.Pointer[responseCut]
+
+	// work points at a heap-owned request-tree ledger. Reset detaches the
+	// pointer without mutating the ledger so resolver goroutines that briefly
+	// outlive a pooled Chain keep charging their original request.
+	work atomic.Pointer[RecursionWorkLedger]
 }
 
 // (*ResponseMeta).BoundCut folds a delegation-cut deadline into the
@@ -95,7 +100,33 @@ func (m *ResponseMeta) CutKey() uint64 {
 func (m *ResponseMeta) Reset() {
 	if m != nil {
 		m.cut.Store(nil)
+		m.work.Store(nil)
 	}
+}
+
+// EnsureRecursionWork returns the request tree's ledger, installing one with
+// policy when this is the first recursive work in the tree.
+func (m *ResponseMeta) EnsureRecursionWork(policy RecursionWorkPolicy) *RecursionWorkLedger {
+	if m == nil || !policy.Enabled() {
+		return nil
+	}
+	if ledger := m.work.Load(); ledger != nil {
+		return ledger
+	}
+
+	ledger := NewRecursionWorkLedger(policy)
+	if m.work.CompareAndSwap(nil, ledger) {
+		return ledger
+	}
+	return m.work.Load()
+}
+
+// RecursionWork returns the request tree's ledger, if accounting is active.
+func (m *ResponseMeta) RecursionWork() *RecursionWorkLedger {
+	if m == nil {
+		return nil
+	}
+	return m.work.Load()
 }
 
 // responseMetaKey tags ctx with the active *ResponseMeta. Sentinel
@@ -134,16 +165,23 @@ type Chain struct {
 	handlers []Handler
 	pos      int // index of the next handler to run
 	count    int // handlers remaining; goes to 0 on Cancel
+
+	workPolicy RecursionWorkPolicy
 }
 
 // NewChain returns a Chain bound to the given handler pipeline. The slice
 // is captured by reference and must not be mutated by the caller after
 // this call.
 func NewChain(handlers []Handler) *Chain {
+	return newChain(handlers, RecursionWorkPolicy{})
+}
+
+func newChain(handlers []Handler, workPolicy RecursionWorkPolicy) *Chain {
 	return &Chain{
-		Writer:   &responseWriter{},
-		handlers: handlers,
-		count:    len(handlers),
+		Writer:     &responseWriter{},
+		handlers:   handlers,
+		count:      len(handlers),
+		workPolicy: workPolicy,
 	}
 }
 
@@ -153,6 +191,26 @@ func (ch *Chain) Next(ctx context.Context) {
 	if ch.count == 0 {
 		return
 	}
+
+	// The first chain in a client request owns ResponseMeta and the work
+	// ledger's completion boundary. Nested Queryer pipelines inherit both
+	// pointers, so retries and child lookups cannot reset their budgets.
+	if ch.pos == 0 {
+		meta := ResponseMetaFrom(ctx)
+		if meta == nil {
+			meta = &ch.Meta
+			ctx = WithResponseMeta(ctx, meta)
+		}
+		if ch.workPolicy.Enabled() {
+			hadLedger := RecursionWorkFrom(ctx) != nil
+			var ledger *RecursionWorkLedger
+			ctx, ledger = EnsureRecursionWork(ctx, ch.workPolicy)
+			if !hadLedger {
+				defer ledger.finish()
+			}
+		}
+	}
+
 	h := ch.handlers[ch.pos]
 	ch.pos++
 	ch.count--

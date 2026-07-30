@@ -21,9 +21,9 @@ import (
 
 // Server type.
 type Server struct {
-	cfg *config.Config
+	cfg      *config.Config
+	pipeline *middleware.Pipeline
 
-	chainPool   sync.Pool
 	certManager *CertManager
 	certMu      sync.Mutex
 
@@ -40,10 +40,7 @@ func New(cfg *config.Config) *Server {
 		cfg.Bind = ":53"
 	}
 
-	s := &Server{cfg: cfg}
-	s.chainPool.New = func() any {
-		return middleware.NewChain(middleware.Handlers())
-	}
+	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline()}
 
 	timeout := cfg.QueryTimeout.Duration
 	s.listeners = []Listener{
@@ -82,8 +79,15 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
-	ch := s.chainPool.Get().(*middleware.Chain)
-	defer s.chainPool.Put(ch)
+	if s.pipeline == nil {
+		servfail := new(dns.Msg)
+		servfail.SetRcode(r, dns.RcodeServerFailure)
+		_ = w.WriteMsg(servfail)
+		return
+	}
+
+	ch := s.pipeline.NewChain()
+	defer s.pipeline.PutChain(ch)
 
 	ch.Reset(w, r)
 

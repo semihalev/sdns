@@ -99,6 +99,11 @@ type Config struct {
 	// so the on-disk schema only bumps once.
 	ECS ECSConfig `toml:"ecs"`
 
+	// RecursionFirewall bounds aggregate work across one recursive
+	// request tree. Shadow mode records limit crossings without
+	// changing responses; enforce mode terminates over-budget work.
+	RecursionFirewall RecursionFirewallConfig `toml:"recursion_firewall"`
+
 	Plugins map[string]Plugin
 
 	CookieSecret string
@@ -236,6 +241,66 @@ type ECSConfig struct {
 	CacheLimitTTL  Duration `toml:"cache_limit_ttl"`
 	MinScopeV4     uint8    `toml:"min_scope_v4"`
 	MinScopeV6     uint8    `toml:"min_scope_v6"`
+}
+
+// RecursionFirewallMode controls whether request-tree work limits are
+// disabled, observed, or enforced.
+type RecursionFirewallMode string
+
+const (
+	RecursionFirewallModeOff     RecursionFirewallMode = "off"
+	RecursionFirewallModeShadow  RecursionFirewallMode = "shadow"
+	RecursionFirewallModeEnforce RecursionFirewallMode = "enforce"
+
+	DefaultRecursionFirewallMaxOutboundQueries uint32 = 128
+	DefaultRecursionFirewallMaxInternalQueries uint32 = 32
+)
+
+// RecursionFirewallConfig controls aggregate recursive work limits.
+//
+// A zero limit means "use the default", not unlimited. Operators that
+// need to disable accounting use Mode=off explicitly.
+type RecursionFirewallConfig struct {
+	Mode               RecursionFirewallMode `toml:"mode"`
+	MaxOutboundQueries uint32                `toml:"max_outbound_queries"`
+	MaxInternalQueries uint32                `toml:"max_internal_queries"`
+}
+
+// Normalize applies omission-safe defaults. It deliberately does not
+// silently repair an unknown mode; Validate reports that typo to the
+// operator instead of selecting a security policy by accident.
+func (c *RecursionFirewallConfig) Normalize() {
+	if c.Mode == "" {
+		c.Mode = RecursionFirewallModeShadow
+	}
+	if c.MaxOutboundQueries == 0 {
+		c.MaxOutboundQueries = DefaultRecursionFirewallMaxOutboundQueries
+	}
+	if c.MaxInternalQueries == 0 {
+		c.MaxInternalQueries = DefaultRecursionFirewallMaxInternalQueries
+	}
+}
+
+// Validate verifies the normalized recursion-firewall policy.
+func (c RecursionFirewallConfig) Validate() error {
+	switch c.Mode {
+	case RecursionFirewallModeOff, RecursionFirewallModeShadow, RecursionFirewallModeEnforce:
+	default:
+		return fmt.Errorf("mode %q must be one of %q, %q, or %q",
+			c.Mode,
+			RecursionFirewallModeOff,
+			RecursionFirewallModeShadow,
+			RecursionFirewallModeEnforce)
+	}
+
+	if c.MaxOutboundQueries == 0 {
+		return fmt.Errorf("max_outbound_queries must be greater than zero")
+	}
+	if c.MaxInternalQueries == 0 {
+		return fmt.Errorf("max_internal_queries must be greater than zero")
+	}
+
+	return nil
 }
 
 // Plugin type.
@@ -825,6 +890,30 @@ min_scope_v4 = 24
 min_scope_v6 = 56
 
 # ============================
+# Recursion Firewall
+# ============================
+
+# Bounds aggregate resolver work across the complete request tree,
+# including retries and nested resolver-generated queries.
+[recursion_firewall]
+
+# "off" disables accounting, "shadow" records would-be limit
+# crossings without changing replies, and "enforce" terminates
+# over-budget recursion with SERVFAIL. Shadow is the rollout-safe
+# default for existing installations.
+mode = "shadow"
+
+# Maximum outbound transport attempts in one request tree. Retries
+# and UDP-to-TCP fallbacks each consume another attempt.
+# 0 uses the default (128); use mode = "off" to disable accounting.
+max_outbound_queries = 128
+
+# Maximum resolver-generated child queries in one request tree,
+# including cache-missed DS/DNSKEY, NS-address, and alias lookups.
+# 0 uses the default (32); use mode = "off" to disable accounting.
+max_internal_queries = 32
+
+# ============================
 # Plugins
 # ============================
 
@@ -864,6 +953,11 @@ func Load(cfgfile, version string) (*Config, error) {
 
 	if config.Version != configver {
 		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
+	}
+
+	config.RecursionFirewall.Normalize()
+	if err := config.RecursionFirewall.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
 	}
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {

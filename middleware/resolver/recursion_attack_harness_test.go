@@ -511,7 +511,7 @@ func BenchmarkRecursionAttackHarness_NXNSAddressFanout(b *testing.B) {
 				q := dns.Question{Name: "victim.test.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 				before := oracle.count()
 				b.StartTimer()
-				r.lookupV4Nss(
+				_ = r.lookupV4Nss(
 					context.Background(),
 					q,
 					authservers,

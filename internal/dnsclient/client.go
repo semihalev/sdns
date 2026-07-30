@@ -26,6 +26,12 @@ type Client struct {
 	DoHURL    string        // DoH endpoint URL
 	DoHClient *http.Client  // DoH HTTP client (reused transport / HTTP2 pool)
 
+	// BeforeAttempt runs immediately before each wire transport attempt.
+	// It is inherited by the transparent UDP-to-TCP fallback, allowing
+	// request-wide work accounting to reject that second attempt before it
+	// dials. Nil preserves the historical behaviour.
+	BeforeAttempt func(proto string) error
+
 	// SkipQuestionCheck disables the response question-section guard.
 	// The guard is on by default; leave this false unless a caller has
 	// a specific reason to accept mismatched questions.
@@ -38,6 +44,14 @@ func (c *Client) Exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.
 	proto := c.Proto
 	if proto == "" {
 		proto = "udp"
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	if c.BeforeAttempt != nil {
+		if err := c.BeforeAttempt(proto); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	if proto == "doh" {

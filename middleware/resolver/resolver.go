@@ -68,6 +68,7 @@ type Resolver struct {
 
 	qnameMinLevel int
 	netTimeout    time.Duration
+	workPolicy    middleware.RecursionWorkPolicy
 
 	sfGroup *SingleflightWrapper
 
@@ -117,6 +118,7 @@ type resolveState struct {
 	isRoot    bool
 	extra     []bool
 	requestID uint16
+	work      *middleware.RecursionWorkLedger
 
 	// cutDeadline is the absolute expiry of the shallowest delegation on
 	// the path descended so far (zero = unbounded, at/above root). A newly
@@ -185,6 +187,17 @@ const (
 
 // NewResolver return a resolver.
 func NewResolver(cfg *config.Config) *Resolver {
+	recursionFirewall := cfg.RecursionFirewall
+	recursionFirewall.Normalize()
+
+	workMode := middleware.RecursionWorkShadow
+	switch recursionFirewall.Mode {
+	case config.RecursionFirewallModeOff:
+		workMode = middleware.RecursionWorkOff
+	case config.RecursionFirewallModeEnforce:
+		workMode = middleware.RecursionWorkEnforce
+	}
+
 	r := &Resolver{
 		cfg: cfg,
 
@@ -196,8 +209,13 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		dnssec: cfg.DNSSEC == "on",
 
-		qnameMinLevel:  cfg.QnameMinLevel,
-		netTimeout:     defaultTimeout,
+		qnameMinLevel: cfg.QnameMinLevel,
+		netTimeout:    defaultTimeout,
+		workPolicy: middleware.RecursionWorkPolicy{
+			Mode:               workMode,
+			MaxOutboundQueries: recursionFirewall.MaxOutboundQueries,
+			MaxInternalQueries: recursionFirewall.MaxInternalQueries,
+		},
 		sfGroup:        NewSingleflightWrapper(),
 		circuitBreaker: newCircuitBreaker(),
 	}
@@ -305,6 +323,17 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 
 // (*Resolver).Resolve resolve starts a DNS resolution - public interface with old signature for compatibility.
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority.Servers, root bool, depth int, level int, nomin bool, parentDS []dns.RR, extra ...bool) (*dns.Msg, error) {
+	hadWork := middleware.RecursionWorkFrom(ctx) != nil
+	ctx, work := middleware.EnsureRecursionWork(ctx, r.workPolicy)
+	if !hadWork && work != nil {
+		defer middleware.FinishRecursionWork(ctx)
+	}
+	if work != nil {
+		if err := work.EnforcementError(); err != nil {
+			return nil, err
+		}
+	}
+
 	reqid := req.Id
 	if v := ctx.Value(contextKeyRequestID); v != nil {
 		if id, ok := v.(uint16); ok {
@@ -321,8 +350,15 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority
 		isRoot:    root,
 		extra:     extra,
 		requestID: reqid,
+		work:      work,
 	}
-	return r.resolve(ctx, rs)
+	resp, err := r.resolve(ctx, rs)
+	if work != nil {
+		if workErr := work.EnforcementError(); workErr != nil {
+			return nil, workErr
+		}
+	}
+	return resp, err
 }
 
 // resolve performs the actual DNS resolution with cleaner parameters.
@@ -431,11 +467,18 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	leaderReq := req.Copy()
 
 	// Use TimedDoChan for automatic timeout handling
-	result, shared, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
+	result, shared, leader, err := r.sfGroup.TimedDoChanWithRole(ctx, key, func() (any, error) {
 		return r.lookup(ctx, rs, leaderReq, servers)
 	})
 
 	if err != nil {
+		// A work-budget error belongs to the leader's request tree. A
+		// follower has an independent ledger and must compute its own result
+		// instead of inheriting the leader's local policy state. All normal
+		// results retain the existing cross-request deduplication.
+		if shared && !leader && errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			return r.lookup(ctx, rs, leaderReq, servers)
+		}
 		return nil, err
 	}
 
@@ -1153,6 +1196,13 @@ mainloop:
 				left--
 
 				if res.err != nil {
+					// A request-tree work rejection is terminal policy,
+					// not an authority failure. Trying another server
+					// would only repeat the rejected operation and can
+					// hide the policy EDE behind a fallback response.
+					if errors.Is(res.err, middleware.ErrRecursionWorkLimit) {
+						return nil, res.err
+					}
 					fatalErrors = append(fatalErrors, res.err)
 
 					if left > 0 && len(serversList)-1 == index {
@@ -1256,6 +1306,9 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, originalID
 			resp.Id = originalID
 		}
 		switch {
+		case errors.Is(err, middleware.ErrRecursionWorkLimit):
+			// Local policy exhaustion says nothing about the
+			// authority's health; do not poison its circuit breaker.
 		case err != nil:
 			r.circuitBreaker.recordFailure(server.Addr)
 		case resp != nil:
@@ -1307,6 +1360,15 @@ func adaptiveServerTimeout(server *authority.Server) time.Duration {
 // list, then a connection error, then the absolute-last-resort no-roots
 // fatal.
 func pickFallbackResponse(responseErrors, configErrors []*dns.Msg, fatalErrors []error) (*dns.Msg, error) {
+	// Policy exhaustion is terminal even if an earlier authority supplied a
+	// fallback response. Returning that response would conceal the enforced
+	// request-tree limit and let caller retry paths continue doing work.
+	for _, err := range fatalErrors {
+		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			return nil, err
+		}
+	}
+
 	if len(responseErrors) > 0 {
 		for _, resp := range responseErrors {
 			if resp.Rcode == dns.RcodeNameError {
@@ -1328,6 +1390,11 @@ func pickFallbackResponse(responseErrors, configErrors []*dns.Msg, fatalErrors [
 func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string, req *dns.Msg, server *authority.Server, retried int) (*dns.Msg, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+	if rs.work != nil {
+		if err := rs.work.Debit(middleware.RecursionWorkOutboundQuery); err != nil {
+			return nil, err
+		}
 	}
 
 	q := req.Question[0]
@@ -2012,6 +2079,9 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 			return msg, nil
 		}
 	}
+	if err := middleware.DebitRecursionWork(ctx, middleware.RecursionWorkInternalQuery); err != nil {
+		return nil, err
+	}
 
 	// Clear RD/AD before hitting authoritative servers.
 	// DNSHandler.handle does this at handler.go:134-135 for chain-
@@ -2059,8 +2129,14 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 		isRoot:    true,
 		extra:     nil,
 		requestID: reqid,
+		work:      middleware.RecursionWorkFrom(ctx),
 	}
 	resp, err := r.resolve(ctx, child)
+	if child.work != nil {
+		if workErr := child.work.EnforcementError(); workErr != nil {
+			return nil, workErr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2101,7 +2177,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
+		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {
@@ -2132,7 +2208,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s (%v)", qname, err)
+		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {
@@ -2147,7 +2223,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) {
+func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) error {
 	list := sortHosts(hosts, q.Name)
 
 	for _, name := range list {
@@ -2195,6 +2271,9 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv4 := make(map[string][]string)
 
 		if err != nil {
+			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+				return err
+			}
 			zlog.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 			continue
 		}
@@ -2226,6 +2305,8 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		authservers.Unlock()
 		r.addIPv4Cache(nsipv4)
 	}
+
+	return nil
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, foundv6, hosts hostSet, cd bool) {
@@ -2262,6 +2343,9 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {
+			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+				return
+			}
 			// Keep going: one nameserver without an AAAA (or rate
 			// limited) must not prevent subsequent NSs in the
 			// delegation from contributing IPv6 addresses. The IPv4
@@ -2595,6 +2679,10 @@ func (r *Resolver) run() {
 
 // handleLookupError processes errors from groupLookup.
 func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolveState, minReq *dns.Msg, minimized bool) (*dns.Msg, error) {
+	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+		return nil, err
+	}
+
 	if minimized {
 		// retry without minimization
 		rs.nomin = true
@@ -2808,6 +2896,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 				isRoot:    true,
 				extra:     rs.extra,
 				requestID: rs.requestID,
+				work:      rs.work,
 			}
 			return r.resolve(ctx, newRS)
 		}
@@ -2844,7 +2933,9 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childDeadline)
+	if err := r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childDeadline); err != nil {
+		return nil, err
+	}
 
 	if len(authservers.List) == 0 {
 		if minimized && rs.level < nlevel {
@@ -2874,12 +2965,36 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// after the query returned.
 	if r.cfg.IPv6Access {
 		reqid := ctx.Value(contextKeyRequestID)
-		go func() { //nolint:gosec // G118 - IPv6 NS lookup intentionally outlives the request but is bounded by WithTimeout below
-			v6ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
-			r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.hosts, cd)
-		}()
+		work := rs.work
+		var releaseWork func()
+		if work != nil {
+			var retained bool
+			releaseWork, retained = work.Retain()
+			if !retained {
+				// The request tree has already completed. Starting work now
+				// would escape its aggregate cap, so skip this optional
+				// enrichment job.
+				work = nil
+			}
+		}
+		if rs.work == nil || work != nil {
+			go func() { //nolint:gosec // G118 - IPv6 NS lookup intentionally outlives the request but is bounded by WithTimeout below
+				if releaseWork != nil {
+					defer releaseWork()
+				}
+				v6ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				// Retain and pin the originating request-tree ledger before
+				// detaching. Every referral job then shares one aggregate
+				// cap, and the final metric snapshot waits for these jobs
+				// without delaying the client response.
+				if work != nil {
+					v6ctx = middleware.WithRecursionWork(v6ctx, work)
+				}
+				v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
+				r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.hosts, cd)
+			}()
+		}
 	}
 
 	rs.depth--

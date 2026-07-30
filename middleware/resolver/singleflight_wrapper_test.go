@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+type releaseOnDoneContext struct {
+	context.Context
+	once    sync.Once
+	release chan struct{}
+}
+
+func (c *releaseOnDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.release) })
+	return c.Context.Done()
+}
+
 // TestSingleflightWrapperCleanup verifies the cleanup mechanism works.
 func TestSingleflightWrapperCleanup(t *testing.T) {
 	wrapper := NewSingleflightWrapper()
@@ -123,6 +134,69 @@ func TestTimedDoChan(t *testing.T) {
 			t.Errorf("Expected function to be called once, was called %d times", calls)
 		}
 	})
+}
+
+func TestTimedDoChanWithRoleDistinguishesLeaderAndFollower(t *testing.T) {
+	wrapper := NewSingleflightWrapper()
+
+	leaderStarted := make(chan struct{})
+	releaseLeader := make(chan struct{})
+	type result struct {
+		value  any
+		shared bool
+		leader bool
+		err    error
+	}
+
+	leaderResult := make(chan result, 1)
+	go func() {
+		value, shared, leader, err := wrapper.TimedDoChanWithRole(
+			context.Background(),
+			"role-test",
+			func() (any, error) {
+				close(leaderStarted)
+				<-releaseLeader
+				return "leader-value", nil
+			},
+		)
+		leaderResult <- result{value: value, shared: shared, leader: leader, err: err}
+	}()
+	<-leaderStarted
+
+	var followerRuns atomic.Int32
+	followerCtx := &releaseOnDoneContext{
+		Context: context.Background(),
+		release: releaseLeader,
+	}
+	value, shared, leader, err := wrapper.TimedDoChanWithRole(
+		followerCtx,
+		"role-test",
+		func() (any, error) {
+			followerRuns.Add(1)
+			return "follower-value", nil
+		},
+	)
+	second := result{value: value, shared: shared, leader: leader, err: err}
+
+	first := <-leaderResult
+	if first.err != nil || second.err != nil {
+		t.Fatalf("leader error = %v, follower error = %v", first.err, second.err)
+	}
+	if first.value != "leader-value" || second.value != "leader-value" {
+		t.Fatalf("values = leader:%v follower:%v, want shared leader-value",
+			first.value, second.value)
+	}
+	if !first.shared || !second.shared {
+		t.Fatalf("shared flags = leader:%v follower:%v, want both true",
+			first.shared, second.shared)
+	}
+	if !first.leader || second.leader {
+		t.Fatalf("leader flags = first:%v second:%v, want true/false",
+			first.leader, second.leader)
+	}
+	if got := followerRuns.Load(); got != 0 {
+		t.Fatalf("follower closure ran %d times, want 0", got)
+	}
 }
 
 // TestCleanupLoop verifies that stuck queries are cleaned up periodically.

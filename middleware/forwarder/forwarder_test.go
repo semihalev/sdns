@@ -10,11 +10,13 @@ import (
 	"math/big"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -216,4 +218,147 @@ func Test_Forwarder_RejectsMismatchedQuestion(t *testing.T) {
 	// drop the response and report SERVFAIL rather than letting an unrelated
 	// answer through to the client (and the cache).
 	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
+}
+
+func TestForwarderRecursionWorkCountsUDPToTCPAttempts(t *testing.T) {
+	tests := []struct {
+		name         string
+		mode         middleware.RecursionWorkMode
+		wantRcode    int
+		wantTCP      int32
+		wantOutbound uint32
+		wantEDE      bool
+	}{
+		{
+			name:         "enforce rejects TCP fallback at cap",
+			mode:         middleware.RecursionWorkEnforce,
+			wantRcode:    dns.RcodeServerFailure,
+			wantTCP:      0,
+			wantOutbound: 1,
+			wantEDE:      true,
+		},
+		{
+			name:         "shadow observes but preserves fallback",
+			mode:         middleware.RecursionWorkShadow,
+			wantRcode:    dns.RcodeSuccess,
+			wantTCP:      1,
+			wantOutbound: 2,
+			wantEDE:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, udpCalls, tcpCalls, stop := startTruncatingForwarderServers(t)
+			defer stop()
+
+			f := &Forwarder{
+				servers:     []*server{{Addr: addr, Proto: "udp"}},
+				dialTimeout: time.Second,
+			}
+			ledger := middleware.NewRecursionWorkLedger(middleware.RecursionWorkPolicy{
+				Mode:               tt.mode,
+				MaxOutboundQueries: 1,
+				MaxInternalQueries: 32,
+			})
+			ctx := middleware.WithRecursionWork(context.Background(), ledger)
+
+			req := new(dns.Msg)
+			req.SetQuestion("fallback.example.", dns.TypeA)
+			req.SetEdns0(1232, true)
+			req.RecursionDesired = true
+			mw := mock.NewWriter("udp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{f})
+			ch.Reset(mw, req)
+			ch.Next(ctx)
+
+			resp := mw.Msg()
+			if resp == nil || resp.Rcode != tt.wantRcode {
+				t.Fatalf("response = %#v, want rcode %s", resp, dns.RcodeToString[tt.wantRcode])
+			}
+			if got := udpCalls.Load(); got != 1 {
+				t.Fatalf("UDP calls = %d, want 1", got)
+			}
+			if got := tcpCalls.Load(); got != tt.wantTCP {
+				t.Fatalf("TCP calls = %d, want %d", got, tt.wantTCP)
+			}
+
+			snapshot := ledger.Snapshot()
+			if snapshot.OutboundQueries != tt.wantOutbound || !snapshot.OutboundExhausted {
+				t.Fatalf("ledger snapshot = %+v, want outbound=%d exhausted=true",
+					snapshot, tt.wantOutbound)
+			}
+			ede := dnsutil.GetEDE(resp)
+			if tt.wantEDE {
+				if ede == nil ||
+					ede.InfoCode != middleware.RecursionWorkEDECode ||
+					ede.ExtraText != middleware.RecursionWorkEDEText {
+					t.Fatalf("policy EDE = %+v, want code=%d text=%q",
+						ede, middleware.RecursionWorkEDECode, middleware.RecursionWorkEDEText)
+				}
+			} else if ede != nil {
+				t.Fatalf("shadow response unexpectedly carries EDE: %+v", ede)
+			}
+		})
+	}
+}
+
+func startTruncatingForwarderServers(t *testing.T) (
+	addr string,
+	udpCalls, tcpCalls *atomic.Int32,
+	stop func(),
+) {
+	t.Helper()
+
+	udpCalls = new(atomic.Int32)
+	tcpCalls = new(atomic.Int32)
+
+	udpMux := dns.NewServeMux()
+	udpMux.HandleFunc(".", func(w dns.ResponseWriter, req *dns.Msg) {
+		udpCalls.Add(1)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Truncated = true
+		_ = w.WriteMsg(resp)
+	})
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen UDP: %v", err)
+	}
+	udpServer := &dns.Server{Net: "udp", PacketConn: packet, Handler: udpMux}
+	go func() { _ = udpServer.ActivateAndServe() }()
+
+	host, port, err := net.SplitHostPort(packet.LocalAddr().String())
+	if err != nil {
+		_ = udpServer.Shutdown()
+		t.Fatalf("split UDP address: %v", err)
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		_ = udpServer.Shutdown()
+		t.Fatalf("listen TCP on UDP port: %v", err)
+	}
+	tcpMux := dns.NewServeMux()
+	tcpMux.HandleFunc(".", func(w dns.ResponseWriter, req *dns.Msg) {
+		tcpCalls.Add(1)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{
+				Name:   req.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			A: net.IPv4(192, 0, 2, 10),
+		}}
+		_ = w.WriteMsg(resp)
+	})
+	tcpServer := &dns.Server{Net: "tcp", Listener: listener, Handler: tcpMux}
+	go func() { _ = tcpServer.ActivateAndServe() }()
+
+	return packet.LocalAddr().String(), udpCalls, tcpCalls, func() {
+		_ = udpServer.Shutdown()
+		_ = tcpServer.Shutdown()
+	}
 }

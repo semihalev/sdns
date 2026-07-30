@@ -83,6 +83,20 @@ func makeChain(t *testing.T, d *DNS64, downstream middleware.Handler, clientAddr
 	return ch, mw
 }
 
+func assertRecursionWorkLimitEDE(t *testing.T, resp *dns.Msg) {
+	t.Helper()
+	if !assert.NotNil(t, resp, "work-limit path must produce a response") {
+		return
+	}
+	assert.Equal(t, dns.RcodeServerFailure, resp.Rcode)
+	ede := dnsutil.GetEDE(resp)
+	if assert.NotNil(t, ede, "work-limit SERVFAIL must carry an EDE") {
+		assert.Equal(t, middleware.RecursionWorkEDECode, ede.InfoCode)
+		assert.Equal(t, "Recursion work budget exceeded", ede.ExtraText,
+			"EDE text is a stable wire-visible contract")
+	}
+}
+
 // noDataMsg returns a NOERROR/NODATA response with an SOA in the
 // Authority section carrying the given negative TTL.
 func noDataMsg(qname string, soaMin uint32) *dns.Msg {
@@ -334,6 +348,69 @@ func TestServFail_TriggersSynthesis(t *testing.T) {
 	}
 }
 
+func TestUpstreamPolicyEDEInShadowStillSynthesises(t *testing.T) {
+	tests := []struct {
+		name  string
+		rcode int
+	}{
+		{name: "NOERROR NODATA", rcode: dns.RcodeSuccess},
+		{name: "SERVFAIL", rcode: dns.RcodeServerFailure},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := noDataMsg("foo.example.org.", 300)
+			orig.Rcode = tt.rcode
+			dnsutil.SetEDE(
+				orig,
+				dns.ExtendedErrorCodeUnableToConformToPolicy,
+				"upstream policy",
+			)
+
+			d := New(baseConfig())
+			queryer := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+			d.queryer = queryer
+
+			ledger := middleware.NewRecursionWorkLedger(middleware.RecursionWorkPolicy{
+				Mode:               middleware.RecursionWorkShadow,
+				MaxOutboundQueries: 1,
+				MaxInternalQueries: 1,
+			})
+			if err := ledger.Debit(middleware.RecursionWorkInternalQuery); err != nil {
+				t.Fatalf("first shadow debit: %v", err)
+			}
+			if err := ledger.Debit(middleware.RecursionWorkInternalQuery); err != nil {
+				t.Fatalf("shadow crossing debit: %v", err)
+			}
+			if !ledger.Snapshot().InternalExhausted {
+				t.Fatal("test setup did not cross the shadow internal limit")
+			}
+			ctx := middleware.WithRecursionWork(context.Background(), ledger)
+
+			ch, mw := makeChain(
+				t,
+				d,
+				&stubAnswerer{msg: orig},
+				"203.0.113.5:53",
+				"foo.example.org.",
+				dns.TypeAAAA,
+			)
+			d.ServeDNS(ctx, ch)
+
+			if queryer.last == nil || queryer.last.Question[0].Qtype != dns.TypeA {
+				t.Fatal("upstream policy EDE suppressed the DNS64 A lookup in shadow mode")
+			}
+			resp := mw.Msg()
+			if assert.Equal(t, dns.RcodeSuccess, resp.Rcode) && assert.Len(t, resp.Answer, 1) {
+				aaaa, ok := resp.Answer[0].(*dns.AAAA)
+				if assert.True(t, ok) {
+					assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
+				}
+			}
+		})
+	}
+}
+
 func TestSynthesise_QueryerError_FallsBack(t *testing.T) {
 	d := New(baseConfig())
 	d.queryer = &stubQueryer{err: errors.New("simulated upstream failure")}
@@ -348,6 +425,66 @@ func TestSynthesise_QueryerError_FallsBack(t *testing.T) {
 		if rr.Header().Rrtype == dns.TypeAAAA {
 			t.Fatalf("queryer error must not produce synthesised AAAA")
 		}
+	}
+}
+
+func TestLocalRecursionWorkFailureUsesClientEDNS(t *testing.T) {
+	d := New(baseConfig())
+	queryer := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+	d.queryer = queryer
+
+	// Deliberately omit OPT from the downstream response. The policy EDE
+	// must be built from the original EDNS-capable client request.
+	servfail := new(dns.Msg)
+	servfail.SetQuestion("foo.example.org.", dns.TypeAAAA)
+	servfail.Response = true
+	servfail.Rcode = dns.RcodeServerFailure
+
+	ledger := middleware.NewRecursionWorkLedger(middleware.RecursionWorkPolicy{
+		Mode:               middleware.RecursionWorkEnforce,
+		MaxOutboundQueries: 1,
+		MaxInternalQueries: 0,
+	})
+	if err := ledger.Debit(middleware.RecursionWorkInternalQuery); !errors.Is(err, middleware.ErrRecursionWorkLimit) {
+		t.Fatalf("test setup debit error = %v, want recursion work limit", err)
+	}
+	ctx := middleware.WithRecursionWork(context.Background(), ledger)
+
+	ch, mw := makeChain(
+		t,
+		d,
+		&stubAnswerer{msg: servfail},
+		"203.0.113.5:53",
+		"foo.example.org.",
+		dns.TypeAAAA,
+	)
+	d.ServeDNS(ctx, ch)
+
+	if queryer.last != nil {
+		t.Fatal("local recursion-work SERVFAIL triggered a DNS64 A lookup")
+	}
+	assertRecursionWorkLimitEDE(t, mw.Msg())
+}
+
+func TestSynthesise_RecursionWorkLimitReturnsPolicyEDE(t *testing.T) {
+	d := New(baseConfig())
+	queryer := &stubQueryer{err: &middleware.RecursionWorkLimitError{
+		Kind:  middleware.RecursionWorkInternalQuery,
+		Limit: 32,
+	}}
+	d.queryer = queryer
+
+	ch, mw := makeChain(t, d,
+		&stubAnswerer{msg: noDataMsg("foo.example.org.", 300)},
+		"203.0.113.5:53",
+		"foo.example.org.",
+		dns.TypeAAAA,
+	)
+	d.ServeDNS(context.Background(), ch)
+
+	assertRecursionWorkLimitEDE(t, mw.Msg())
+	if assert.NotNil(t, queryer.last, "secondary A query must be attempted") {
+		assert.Equal(t, dns.TypeA, queryer.last.Question[0].Qtype)
 	}
 }
 
@@ -994,6 +1131,47 @@ func TestPTR_TranslatesUnderWellKnown(t *testing.T) {
 		if assert.True(t, ok) {
 			assert.Equal(t, "target.example.com.", ptr.Ptr)
 		}
+	}
+}
+
+func TestPTR_RecursionWorkLimitReturnsPolicyEDE(t *testing.T) {
+	d := New(baseConfig())
+	queryer := &stubQueryer{err: &middleware.RecursionWorkLimitError{
+		Kind:  middleware.RecursionWorkInternalQuery,
+		Limit: 32,
+	}}
+	d.queryer = queryer
+
+	// 192.0.2.33 embedded in 64:ff9b::/96.
+	qname := "1.2.2.0.0.0.0.c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.9.f.f.4.6.0.0.ip6.arpa."
+	ch, mw := makeChain(t, d, &stubAnswerer{}, "203.0.113.5:53", qname, dns.TypePTR)
+	d.ServeDNS(context.Background(), ch)
+
+	assertRecursionWorkLimitEDE(t, mw.Msg())
+	if assert.NotNil(t, queryer.last, "secondary PTR query must be attempted") {
+		assert.Equal(t, dns.TypePTR, queryer.last.Question[0].Qtype)
+		assert.Equal(t, "33.2.0.192.in-addr.arpa.", queryer.last.Question[0].Name)
+	}
+}
+
+func TestPTR_OrdinaryQueryerErrorKeepsCNAMEOnly(t *testing.T) {
+	d := New(baseConfig())
+	d.queryer = &stubQueryer{err: errors.New("ordinary PTR chase failure")}
+
+	// 192.0.2.33 embedded in 64:ff9b::/96.
+	qname := "1.2.2.0.0.0.0.c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.9.f.f.4.6.0.0.ip6.arpa."
+	ch, mw := makeChain(t, d, &stubAnswerer{}, "203.0.113.5:53", qname, dns.TypePTR)
+	d.ServeDNS(context.Background(), ch)
+
+	resp := mw.Msg()
+	if !assert.NotNil(t, resp) {
+		return
+	}
+	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+	assert.Nil(t, dnsutil.GetEDE(resp))
+	if assert.Len(t, resp.Answer, 1, "ordinary chase errors retain the CNAME-only fallback") {
+		_, ok := resp.Answer[0].(*dns.CNAME)
+		assert.True(t, ok, "fallback answer must be the synthesised CNAME")
 	}
 }
 

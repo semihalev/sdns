@@ -174,6 +174,20 @@ func TestLoad(t *testing.T) {
 					if cfg.DNSSEC != "on" {
 						t.Errorf("DNSSEC = %v, want 'on'", cfg.DNSSEC)
 					}
+					if cfg.RecursionFirewall.Mode != RecursionFirewallModeShadow {
+						t.Errorf("RecursionFirewall.Mode = %q, want %q",
+							cfg.RecursionFirewall.Mode, RecursionFirewallModeShadow)
+					}
+					if cfg.RecursionFirewall.MaxOutboundQueries != DefaultRecursionFirewallMaxOutboundQueries {
+						t.Errorf("RecursionFirewall.MaxOutboundQueries = %d, want %d",
+							cfg.RecursionFirewall.MaxOutboundQueries,
+							DefaultRecursionFirewallMaxOutboundQueries)
+					}
+					if cfg.RecursionFirewall.MaxInternalQueries != DefaultRecursionFirewallMaxInternalQueries {
+						t.Errorf("RecursionFirewall.MaxInternalQueries = %d, want %d",
+							cfg.RecursionFirewall.MaxInternalQueries,
+							DefaultRecursionFirewallMaxInternalQueries)
+					}
 					if cfg.sVersion != tt.version {
 						t.Errorf("ServerVersion = %v, want %v", cfg.sVersion, tt.version)
 					}
@@ -348,6 +362,135 @@ func TestTestIPv6Network(t *testing.T) {
 	_ = err
 }
 
+func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {
+	tests := []struct {
+		name         string
+		cfg          RecursionFirewallConfig
+		wantMode     RecursionFirewallMode
+		wantOutbound uint32
+		wantInternal uint32
+		wantErr      bool
+	}{
+		{
+			name:         "omitted uses shadow defaults",
+			wantMode:     RecursionFirewallModeShadow,
+			wantOutbound: DefaultRecursionFirewallMaxOutboundQueries,
+			wantInternal: DefaultRecursionFirewallMaxInternalQueries,
+		},
+		{
+			name: "explicit off keeps custom limits",
+			cfg: RecursionFirewallConfig{
+				Mode:               RecursionFirewallModeOff,
+				MaxOutboundQueries: 256,
+				MaxInternalQueries: 48,
+			},
+			wantMode:     RecursionFirewallModeOff,
+			wantOutbound: 256,
+			wantInternal: 48,
+		},
+		{
+			name: "explicit enforce fills zero limits",
+			cfg: RecursionFirewallConfig{
+				Mode: RecursionFirewallModeEnforce,
+			},
+			wantMode:     RecursionFirewallModeEnforce,
+			wantOutbound: DefaultRecursionFirewallMaxOutboundQueries,
+			wantInternal: DefaultRecursionFirewallMaxInternalQueries,
+		},
+		{
+			name: "invalid mode is rejected",
+			cfg: RecursionFirewallConfig{
+				Mode: "block",
+			},
+			wantMode:     "block",
+			wantOutbound: DefaultRecursionFirewallMaxOutboundQueries,
+			wantInternal: DefaultRecursionFirewallMaxInternalQueries,
+			wantErr:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			cfg.Normalize()
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if cfg.Mode != tt.wantMode {
+				t.Errorf("Mode = %q, want %q", cfg.Mode, tt.wantMode)
+			}
+			if cfg.MaxOutboundQueries != tt.wantOutbound {
+				t.Errorf("MaxOutboundQueries = %d, want %d", cfg.MaxOutboundQueries, tt.wantOutbound)
+			}
+			if cfg.MaxInternalQueries != tt.wantInternal {
+				t.Errorf("MaxInternalQueries = %d, want %d", cfg.MaxInternalQueries, tt.wantInternal)
+			}
+		})
+	}
+}
+
+func TestLoadRecursionFirewallPolicy(t *testing.T) {
+	t.Run("explicit enforce values", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfgFile := filepath.Join(tmpDir, "sdns.conf")
+		workDir := filepath.Join(tmpDir, "db")
+		content := fmt.Sprintf(`version = %q
+directory = %q
+ipv6access = true
+
+[recursion_firewall]
+mode = "enforce"
+max_outbound_queries = 96
+max_internal_queries = 24
+`, configver, workDir)
+		if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+			t.Fatal(err)
+		}
+
+		cfg, err := Load(cfgFile, "test")
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.RecursionFirewall.Mode != RecursionFirewallModeEnforce {
+			t.Errorf("Mode = %q, want %q",
+				cfg.RecursionFirewall.Mode, RecursionFirewallModeEnforce)
+		}
+		if cfg.RecursionFirewall.MaxOutboundQueries != 96 {
+			t.Errorf("MaxOutboundQueries = %d, want 96",
+				cfg.RecursionFirewall.MaxOutboundQueries)
+		}
+		if cfg.RecursionFirewall.MaxInternalQueries != 24 {
+			t.Errorf("MaxInternalQueries = %d, want 24",
+				cfg.RecursionFirewall.MaxInternalQueries)
+		}
+	})
+
+	t.Run("invalid mode fails before directory creation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cfgFile := filepath.Join(tmpDir, "sdns.conf")
+		workDir := filepath.Join(tmpDir, "must-not-exist")
+		content := fmt.Sprintf(`version = %q
+directory = %q
+ipv6access = true
+
+[recursion_firewall]
+mode = "blocking"
+`, configver, workDir)
+		if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+			t.Fatal(err)
+		}
+
+		_, err := Load(cfgFile, "test")
+		if err == nil || !strings.Contains(err.Error(), "invalid recursion firewall config") {
+			t.Fatalf("Load() error = %v, want invalid recursion firewall config", err)
+		}
+		if _, statErr := os.Stat(workDir); !os.IsNotExist(statErr) {
+			t.Fatalf("invalid config created working directory: stat error = %v", statErr)
+		}
+	})
+}
+
 func TestConfigDefaults(t *testing.T) {
 	// Test that default config contains all expected sections
 	generatedConfig := fmt.Sprintf(defaultConfig, configver)
@@ -367,6 +510,7 @@ func TestConfigDefaults(t *testing.T) {
 		"# Custom Lists",
 		"# Advanced Features",
 		"# Dnstap Binary Logging",
+		"# Recursion Firewall",
 		"# Plugins",
 	}
 
@@ -389,6 +533,18 @@ func TestConfigDefaults(t *testing.T) {
 	for _, option := range dnstapOptions {
 		if !strings.Contains(generatedConfig, option) {
 			t.Errorf("Default config missing dnstap option: %s", option)
+		}
+	}
+
+	recursionFirewallOptions := []string{
+		`[recursion_firewall]`,
+		`mode = "shadow"`,
+		"max_outbound_queries = 128",
+		"max_internal_queries = 32",
+	}
+	for _, option := range recursionFirewallOptions {
+		if !strings.Contains(generatedConfig, option) {
+			t.Errorf("Default config missing recursion firewall option: %s", option)
 		}
 	}
 }
@@ -441,7 +597,21 @@ emptyzones = []
 		t.Errorf("Load() unexpected error = %v", err)
 	}
 	if cfg == nil {
-		t.Error("Load() returned nil config")
+		t.Fatal("Load() returned nil config")
+	}
+	if cfg.RecursionFirewall.Mode != RecursionFirewallModeShadow {
+		t.Errorf("RecursionFirewall.Mode = %q, want %q",
+			cfg.RecursionFirewall.Mode, RecursionFirewallModeShadow)
+	}
+	if cfg.RecursionFirewall.MaxOutboundQueries != DefaultRecursionFirewallMaxOutboundQueries {
+		t.Errorf("RecursionFirewall.MaxOutboundQueries = %d, want %d",
+			cfg.RecursionFirewall.MaxOutboundQueries,
+			DefaultRecursionFirewallMaxOutboundQueries)
+	}
+	if cfg.RecursionFirewall.MaxInternalQueries != DefaultRecursionFirewallMaxInternalQueries {
+		t.Errorf("RecursionFirewall.MaxInternalQueries = %d, want %d",
+			cfg.RecursionFirewall.MaxInternalQueries,
+			DefaultRecursionFirewallMaxInternalQueries)
 	}
 
 	// Clean up

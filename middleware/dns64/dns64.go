@@ -282,7 +282,24 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 		sub := new(dns.Msg)
 		sub.SetQuestion(target, dns.TypePTR)
 		sub.RecursionDesired = true
-		if resp, err := d.queryer.Query(ctx, sub); err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
+		resp, err := d.queryer.Query(ctx, sub)
+		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			do := false
+			if opt := ch.Request.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			out := dnsutil.SetRcodeWithEDE(
+				ch.Request,
+				dns.RcodeServerFailure,
+				do,
+				middleware.RecursionWorkEDECode,
+				middleware.RecursionWorkEDEText,
+			)
+			_ = ch.Writer.WriteMsg(out)
+			ch.Cancel()
+			return true
+		}
+		if err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
 			for _, rr := range resp.Answer {
 				if rr.Header().Rrtype == dns.TypePTR {
 					answers = append(answers, rr)
@@ -368,6 +385,10 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		passthroughDNSSECFail.Inc()
 		return w.ResponseWriter.WriteMsg(m)
 	}
+	if m.Rcode == dns.RcodeServerFailure &&
+		middleware.RecursionWorkEnforcementError(w.ctx) != nil {
+		return w.writeRecursionWorkFailure()
+	}
 
 	// Filter the upstream Answer section against the AAAA
 	// exclude list. If anything survives, the response is
@@ -395,7 +416,10 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		m = filtered
 	}
 
-	synth := w.synthesise(m)
+	synth, err := w.synthesise(m)
+	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+		return w.writeRecursionWorkFailure()
+	}
 	if synth == nil {
 		// A lookup failed or yielded nothing usable; preserve the
 		// original (already AAAA-filtered) answer rather than
@@ -404,6 +428,20 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	}
 	Synthesised.Inc()
 	return w.ResponseWriter.WriteMsg(synth)
+}
+
+func (w *responseWriter) writeRecursionWorkFailure() error {
+	do := false
+	if opt := w.req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	return w.ResponseWriter.WriteMsg(dnsutil.SetRcodeWithEDE(
+		w.req,
+		dns.RcodeServerFailure,
+		do,
+		middleware.RecursionWorkEDECode,
+		middleware.RecursionWorkEDEText,
+	))
 }
 
 // filterUpstreamAAAA inspects m and, if any AAAA records fall in
@@ -458,10 +496,10 @@ func (w *responseWriter) filterUpstreamAAAA(m *dns.Msg) (*dns.Msg, bool, int, in
 // (empty answer, NXDOMAIN, SERVFAIL), RFC 6147 §5.1.6 says the
 // A response is the basis for the client reply, so we return a
 // non-nil empty/error response addressed to the AAAA question.
-func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
+func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 	if w.d.queryer == nil {
 		aLookupQueryerError.Inc()
-		return nil
+		return nil, nil
 	}
 
 	aReq := new(dns.Msg)
@@ -476,11 +514,11 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	aResp, err := w.d.queryer.Query(w.ctx, aReq)
 	if err != nil {
 		ALookupFailures.WithLabelValues(classifyQueryErr(err)).Inc()
-		return nil
+		return nil, err
 	}
 	if aResp == nil {
 		aLookupNilResponse.Inc()
-		return nil
+		return nil, nil
 	}
 	if aResp.Rcode != dns.RcodeSuccess {
 		switch aResp.Rcode {
@@ -491,7 +529,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 		default:
 			aLookupOtherRcode.Inc()
 		}
-		return w.buildAResponseAsBasis(orig, aResp)
+		return w.buildAResponseAsBasis(orig, aResp), nil
 	}
 
 	chain, addresses := splitChainAndA(aResp)
@@ -500,7 +538,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 		// applies: the empty A response is the basis for the
 		// client reply.
 		aLookupNoA.Inc()
-		return w.buildAResponseAsBasis(orig, aResp)
+		return w.buildAResponseAsBasis(orig, aResp), nil
 	}
 
 	// RFC 6147 §5.1.7: synthesised TTL = min(A TTL, negative-cache
@@ -553,7 +591,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	// existed. Fall back to the original NODATA.
 	if !hasAAAAInList(answers) {
 		passthroughAExcluded.Inc()
-		return nil
+		return nil, nil
 	}
 
 	out := new(dns.Msg)
@@ -582,7 +620,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	if orig.AuthenticatedData {
 		dnsutil.SetEDE(out, dns.ExtendedErrorCodeForgedAnswer, "DNS64 synthesis")
 	}
-	return out
+	return out, nil
 }
 
 // buildAResponseAsBasis implements RFC 6147 §5.1.6: when the

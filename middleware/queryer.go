@@ -113,6 +113,9 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 	if depth >= maxQueryerRecursion {
 		return nil, ErrMaxRecursion
 	}
+	if err := DebitRecursionWork(ctx, RecursionWorkInternalQuery); err != nil {
+		return nil, err
+	}
 	ctx = context.WithValue(ctx, queryerDepthKey, depth+1)
 
 	// The BufferWriter is propagated as internal via its
@@ -130,6 +133,10 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 
 	ch.Reset(w, req)
 	ch.Next(ctx)
+
+	if err := RecursionWorkEnforcementError(ctx); err != nil {
+		return nil, err
+	}
 
 	// w.Msg() is evaluated for the return value before the
 	// deferred putBufferWriter clears w.msg, and the *dns.Msg it

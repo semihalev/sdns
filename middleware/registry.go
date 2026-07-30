@@ -108,7 +108,23 @@ func (r *Registry) Build(cfg *config.Config) *Pipeline {
 		zlog.Debug("Middleware registered", "name", h.Name(), "index", i)
 	}
 
-	return newPipeline(handlers, byName, order)
+	rf := cfg.RecursionFirewall
+	rf.Normalize()
+
+	mode := RecursionWorkShadow
+	switch rf.Mode {
+	case config.RecursionFirewallModeOff:
+		mode = RecursionWorkOff
+	case config.RecursionFirewallModeEnforce:
+		mode = RecursionWorkEnforce
+	}
+	workPolicy := RecursionWorkPolicy{
+		Mode:               mode,
+		MaxOutboundQueries: rf.MaxOutboundQueries,
+		MaxInternalQueries: rf.MaxInternalQueries,
+	}
+
+	return newPipeline(handlers, byName, order, workPolicy)
 }
 
 // loadPlugins walks cfg.Plugins, opens each as a Go plugin and registers

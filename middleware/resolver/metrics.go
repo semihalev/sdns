@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // Resolution failure metrics. Classified at the central handler
@@ -24,6 +25,7 @@ var (
 	resolverFailNoReachable = resolverFailures.Register("no_reachable_auth")
 	resolverFailMaxDepth    = resolverFailures.Register("max_depth")
 	resolverFailNetwork     = resolverFailures.Register("network_error")
+	resolverFailWorkBudget  = resolverFailures.Register("work_budget")
 	resolverFailOther       = resolverFailures.Register("other")
 
 	resolverDNSSECFailures = metric.NewCounterVec(nil, prometheus.CounterOpts{
@@ -84,6 +86,10 @@ func classifyResolverErr(err error) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		resolverFailTimeout.Inc()
+		return
+	}
+	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+		resolverFailWorkBudget.Inc()
 		return
 	}
 

@@ -2,6 +2,7 @@ package failover
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"time"
@@ -43,7 +44,9 @@ type Failover struct {
 type ResponseWriter struct {
 	middleware.ResponseWriter
 
-	f *Failover
+	f   *Failover
+	ctx context.Context //nolint:containedctx // response writer is request-scoped and used synchronously
+	req *dns.Msg
 }
 
 // New return failover.
@@ -71,7 +74,7 @@ func (f *Failover) Name() string { return name }
 func (f *Failover) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w := ch.Writer
 
-	ch.Writer = &ResponseWriter{ResponseWriter: w, f: f}
+	ch.Writer = &ResponseWriter{ResponseWriter: w, f: f, ctx: ctx, req: ch.Request}
 	// Restore via defer so a panicked downstream handler,
 	// recovered higher up, still unwraps the chain before it
 	// returns to the pool.
@@ -89,6 +92,9 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	if m.Rcode != dns.RcodeServerFailure || !m.RecursionDesired {
 		return w.ResponseWriter.WriteMsg(m)
 	}
+	if middleware.RecursionWorkEnforcementError(w.ctx) != nil {
+		return w.writeRecursionWorkFailure(m)
+	}
 
 	failoverAttempts.Inc()
 
@@ -98,12 +104,22 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
-	client := dnsclient.Client{Proto: "udp"}
+	client := dnsclient.Client{
+		Proto: "udp",
+		BeforeAttempt: func(string) error {
+			return middleware.DebitRecursionWork(w.ctx, middleware.RecursionWorkOutboundQuery)
+		},
+	}
 	for _, server := range w.f.servers {
+		// Preserve the historical independent five-second failover window.
+		// Work accounting still reads the request-scoped ledger from w.ctx.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		resp, _, err := client.Exchange(ctx, req, server)
 		cancel()
 		if err != nil {
+			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+				return w.writeRecursionWorkFailure(m)
+			}
 			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
 			continue
 		}
@@ -115,6 +131,24 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	}
 
 	return w.ResponseWriter.WriteMsg(m)
+}
+
+func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
+	req := w.req
+	if req == nil {
+		req = fallback
+	}
+	do := false
+	if opt := req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	return w.ResponseWriter.WriteMsg(dnsutil.SetRcodeWithEDE(
+		req,
+		dns.RcodeServerFailure,
+		do,
+		middleware.RecursionWorkEDECode,
+		middleware.RecursionWorkEDEText,
+	))
 }
 
 func formatQuestion(q dns.Question) string {

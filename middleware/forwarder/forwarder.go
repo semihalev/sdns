@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsclient"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -194,7 +195,13 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// startup (never per query); for DoT it picks up the
 		// forwarder's TLS config dynamically. The question-section
 		// guard and ID match live inside Exchange.
-		client := dnsclient.Client{Proto: server.Proto, Timeout: f.dialTimeout}
+		client := dnsclient.Client{
+			Proto:   server.Proto,
+			Timeout: f.dialTimeout,
+			BeforeAttempt: func(string) error {
+				return middleware.DebitRecursionWork(ctx, middleware.RecursionWorkOutboundQuery)
+			},
+		}
 		switch server.Proto {
 		case "doh":
 			client.DoHURL = server.DoHURL
@@ -205,6 +212,26 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		resp, _, err := client.Exchange(ctx, req, server.Addr)
 		if err != nil {
+			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+				// Policy exhaustion is request-local, not an upstream
+				// health failure. Preserve the client's CD/DO bits and
+				// return the same EDE used by the iterative resolver.
+				req.CheckingDisabled = clientCD
+				do := false
+				if opt := req.IsEdns0(); opt != nil {
+					do = opt.Do()
+				}
+				_ = w.WriteMsg(dnsutil.SetRcodeWithEDE(
+					req,
+					dns.RcodeServerFailure,
+					do,
+					middleware.RecursionWorkEDECode,
+					middleware.RecursionWorkEDEText,
+				))
+				ch.Cancel()
+				return
+			}
+
 			// A mismatched question section is a security signal
 			// (potential cache poisoning), not a generic upstream
 			// failure — count it separately. Every other error is a

@@ -416,6 +416,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// sub-query. The field is cleared on release so a pooled
 	// writer doesn't leak a ctx reference between uses.
 	rw.ctx = ctx
+	rw.req = ch.Request
 	// Stash the client's request scope so WriteMsg can derive
 	// the insert key without re-reading the OPT (which by then
 	// may have been mutated by the edns wrapper on the response).
@@ -425,6 +426,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() {
 		ch.Writer = w
 		rw.ctx = nil
+		rw.req = nil
 		rw.clientScope = netip.Prefix{}
 		rw.meta = nil
 		c.writerPool.Put(rw)
@@ -691,6 +693,10 @@ type ResponseWriter struct {
 	// additionalAnswer's sub-query. Set by Cache.ServeDNS when the
 	// writer is pulled from the pool; cleared on defer.
 	ctx context.Context
+	// req retains the original client EDNS capabilities so a local
+	// recursion-work failure can carry its policy EDE even when the
+	// downstream response omitted OPT.
+	req *dns.Msg
 	// clientScope is the prefix derived from the request's ECS
 	// option (already clamped by the edns middleware to the policy
 	// ceiling). Zero value when ECS doesn't apply, in which case
@@ -735,6 +741,14 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
 	}
 
+	// A recursion-work rejection belongs to this request tree. Caching it as
+	// an ordinary 30-second SERVFAIL would make one client's exhausted
+	// budget poison otherwise independent requests for the same name.
+	if res.Rcode == dns.RcodeServerFailure &&
+		middleware.RecursionWorkEnforcementError(ctx) != nil {
+		return w.writeRecursionWorkFailure(res)
+	}
+
 	// Classify, filter, and store via Store. Key is derived from
 	// the response's CD bit — today's behaviour and the contract
 	// the cache dedup leader and follower agree on.
@@ -775,6 +789,24 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	}
 
 	return w.ResponseWriter.WriteMsg(res)
+}
+
+func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
+	req := w.req
+	if req == nil {
+		req = fallback
+	}
+	do := false
+	if opt := req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	return w.ResponseWriter.WriteMsg(dnsutil.SetRcodeWithEDE(
+		req,
+		dns.RcodeServerFailure,
+		do,
+		middleware.RecursionWorkEDECode,
+		middleware.RecursionWorkEDEText,
+	))
 }
 
 // filterCacheableAnswer keeps only the records directly relevant to
@@ -921,6 +953,19 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		targets = append(targets, target)
 
 		respCname, err := c.internalExchange(ctx, cnameReq)
+		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			do := false
+			if opt := msg.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			return dnsutil.SetRcodeWithEDE(
+				msg,
+				dns.RcodeServerFailure,
+				do,
+				middleware.RecursionWorkEDECode,
+				middleware.RecursionWorkEDEText,
+			)
+		}
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
 		}
