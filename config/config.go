@@ -260,6 +260,9 @@ const (
 	DefaultRecursionFirewallMaxDSDigests            uint32 = 32
 	DefaultRecursionFirewallMaxNSEC3Hashes          uint32 = 32
 	DefaultRecursionFirewallMaxConcurrentCrypto     uint32 = 32
+	DefaultRecursionFirewallFailureCacheSize        int    = 4096
+	DefaultRecursionFirewallFailureCacheMinTTL             = 5 * time.Second
+	DefaultRecursionFirewallFailureCacheMaxTTL             = 5 * time.Minute
 )
 
 // RecursionFirewallConfig controls aggregate and local recursive work limits.
@@ -276,6 +279,9 @@ type RecursionFirewallConfig struct {
 	MaxDSDigests            uint32                `toml:"max_ds_digests"`
 	MaxNSEC3Hashes          uint32                `toml:"max_nsec3_hashes"`
 	MaxConcurrentCrypto     uint32                `toml:"max_concurrent_crypto"`
+	FailureCacheSize        int                   `toml:"failure_cache_size"`
+	FailureCacheMinTTL      Duration              `toml:"failure_cache_min_ttl"`
+	FailureCacheMaxTTL      Duration              `toml:"failure_cache_max_ttl"`
 }
 
 // Normalize applies omission-safe defaults. It deliberately does not
@@ -308,6 +314,15 @@ func (c *RecursionFirewallConfig) Normalize() {
 	}
 	if c.MaxConcurrentCrypto == 0 {
 		c.MaxConcurrentCrypto = DefaultRecursionFirewallMaxConcurrentCrypto
+	}
+	if c.FailureCacheSize == 0 {
+		c.FailureCacheSize = DefaultRecursionFirewallFailureCacheSize
+	}
+	if c.FailureCacheMinTTL.Duration == 0 {
+		c.FailureCacheMinTTL.Duration = DefaultRecursionFirewallFailureCacheMinTTL
+	}
+	if c.FailureCacheMaxTTL.Duration == 0 {
+		c.FailureCacheMaxTTL.Duration = DefaultRecursionFirewallFailureCacheMaxTTL
 	}
 }
 
@@ -346,6 +361,18 @@ func (c RecursionFirewallConfig) Validate() error {
 	}
 	if c.MaxConcurrentCrypto == 0 {
 		return fmt.Errorf("max_concurrent_crypto must be greater than zero")
+	}
+	if c.FailureCacheSize <= 0 {
+		return fmt.Errorf("failure_cache_size must be greater than zero")
+	}
+	if c.FailureCacheMinTTL.Duration < time.Second {
+		return fmt.Errorf("failure_cache_min_ttl must be at least 1s")
+	}
+	if c.FailureCacheMaxTTL.Duration < c.FailureCacheMinTTL.Duration {
+		return fmt.Errorf("failure_cache_max_ttl must be greater than or equal to failure_cache_min_ttl")
+	}
+	if c.FailureCacheMaxTTL.Duration > 5*time.Minute {
+		return fmt.Errorf("failure_cache_max_ttl must not exceed 5m")
 	}
 
 	return nil
@@ -604,7 +631,9 @@ timeout = "2s"
 # Maximum time to wait for any DNS query to complete
 querytimeout = "10s"
 
-# Cache TTL for error responses (seconds)
+# Legacy error-cache ceiling retained for configuration compatibility.
+# Recursive resolution failures use the RFC 9520 failure_cache_* settings
+# below instead of DNS-message TTLs.
 expire = 600
 
 # Maximum number of cached DNS records
@@ -976,6 +1005,17 @@ max_nsec3_hashes = 32
 # Maximum signature, DS-digest, or NSEC3-hash operations executing
 # concurrently across request trees handled by this resolver.
 max_concurrent_crypto = 32
+
+# RFC 9520 resolution-failure cache. This cache is active independently
+# of mode: mode controls work accounting, while failure caching and the
+# per-server retry ceiling are resolver protocol requirements.
+#
+# The first failed resolution is held for 5s. Repeated failures back off
+# exponentially up to 5m. RFC 9520 requires every active failure interval
+# to stay between 1s and 5m.
+failure_cache_size = 4096
+failure_cache_min_ttl = "5s"
+failure_cache_max_ttl = "5m"
 
 # ============================
 # Plugins

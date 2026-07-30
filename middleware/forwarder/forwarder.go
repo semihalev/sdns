@@ -102,6 +102,19 @@ func New(cfg *config.Config) *Forwarder {
 	}
 
 	forwarderservers := []*server{}
+	seen := make(map[string]struct{})
+	appendServer := func(srv *server) {
+		endpoint := srv.Addr
+		if srv.Proto == "doh" {
+			endpoint = srv.DoHURL
+		}
+		key := srv.Proto + "\x00" + middleware.CanonicalResolutionEndpoint(endpoint)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		forwarderservers = append(forwarderservers, srv)
+	}
 	for _, s := range cfg.ForwarderServers {
 		switch {
 		case strings.HasPrefix(s, "https://"):
@@ -110,7 +123,7 @@ func New(cfg *config.Config) *Forwarder {
 				zlog.Error("Forwarder DoH server not usable", "server", s, "error", err.Error())
 				continue
 			}
-			forwarderservers = append(forwarderservers, srv)
+			appendServer(srv)
 
 		case strings.HasPrefix(s, "tls://"):
 			addr := strings.TrimPrefix(s, "tls://")
@@ -118,14 +131,14 @@ func New(cfg *config.Config) *Forwarder {
 				zlog.Error("Forwarder server is not correct. Check your config.", "server", s)
 				continue
 			}
-			forwarderservers = append(forwarderservers, &server{Addr: addr, Proto: "tcp-tls"})
+			appendServer(&server{Addr: addr, Proto: "tcp-tls"})
 
 		default:
 			if !validForwarderAddr(s) {
 				zlog.Error("Forwarder server is not correct. Check your config.", "server", s)
 				continue
 			}
-			forwarderservers = append(forwarderservers, &server{Addr: s, Proto: "udp"})
+			appendServer(&server{Addr: s, Proto: "udp"})
 		}
 	}
 
@@ -159,6 +172,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.CancelWithRcode(dns.RcodeServerFailure, true)
 		return
 	}
+	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 
 	// Wrap ctx with the shared per-query budget so the dispatch
 	// loop below cannot exceed cfg.QueryTimeout regardless of how
@@ -189,23 +203,26 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	defer func() { req.CheckingDisabled = clientCD }()
 
-	var beforeAttempt func(string) error
-	if middleware.RecursionWorkFrom(ctx) != nil {
-		beforeAttempt = func(string) error {
-			return middleware.DebitRecursionWork(ctx, middleware.RecursionWorkOutboundQuery)
-		}
-	}
-
+	var failureResponse *dns.Msg
 	for _, server := range f.servers {
 		// Build a lightweight client per upstream. For DoH this
 		// references the reused, pinned-IP http.Client created at
 		// startup (never per query); for DoT it picks up the
 		// forwarder's TLS config dynamically. The question-section
 		// guard and ID match live inside Exchange.
+		endpoint := server.Addr
+		if server.Proto == "doh" {
+			endpoint = server.DoHURL
+		}
 		client := dnsclient.Client{
-			Proto:         server.Proto,
-			Timeout:       f.dialTimeout,
-			BeforeAttempt: beforeAttempt,
+			Proto:   server.Proto,
+			Timeout: f.dialTimeout,
+			BeforeAttempt: func(proto string) error {
+				if err := middleware.BeginResolutionAttempt(ctx, req.Question[0], endpoint, proto); err != nil {
+					return err
+				}
+				return middleware.DebitRecursionWork(ctx, middleware.RecursionWorkOutboundQuery)
+			},
 		}
 		switch server.Proto {
 		case "doh":
@@ -217,6 +234,11 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		resp, _, err := client.Exchange(ctx, req, server.Addr)
 		if err != nil {
+			if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+				// The request-local guard says nothing about this upstream's
+				// health. Try another endpoint without failure telemetry.
+				continue
+			}
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 				// Policy exhaustion is request-local, not an upstream
 				// health failure. Preserve the client's CD/DO bits and
@@ -255,6 +277,17 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		resp.Id = req.Id
 		resp.CheckingDisabled = clientCD
+		responseType, _ := dnsutil.ClassifyResponse(resp, time.Now())
+		if responseType == dnsutil.TypeServerFailure {
+			// A DNS response is not necessarily a useful response. RFC 9520
+			// requires a resolution failure only after the available servers
+			// have failed, so keep the first diagnostic reply and continue to
+			// a healthy configured peer.
+			if failureResponse == nil {
+				failureResponse = resp
+			}
+			continue
+		}
 
 		_ = w.WriteMsg(resp)
 		return
@@ -269,6 +302,10 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// The deferred restore above still covers the early
 	// return on success.
 	req.CheckingDisabled = clientCD
+	if failureResponse != nil {
+		_ = w.WriteMsg(failureResponse)
+		return
+	}
 	ch.CancelWithRcode(dns.RcodeServerFailure, true)
 }
 

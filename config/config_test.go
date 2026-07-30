@@ -34,6 +34,9 @@ func defaultRecursionFirewallConfigForTest(mode RecursionFirewallMode) Recursion
 		MaxDSDigests:            DefaultRecursionFirewallMaxDSDigests,
 		MaxNSEC3Hashes:          DefaultRecursionFirewallMaxNSEC3Hashes,
 		MaxConcurrentCrypto:     DefaultRecursionFirewallMaxConcurrentCrypto,
+		FailureCacheSize:        DefaultRecursionFirewallFailureCacheSize,
+		FailureCacheMinTTL:      Duration{Duration: DefaultRecursionFirewallFailureCacheMinTTL},
+		FailureCacheMaxTTL:      Duration{Duration: DefaultRecursionFirewallFailureCacheMaxTTL},
 	}
 }
 
@@ -398,6 +401,9 @@ func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {
 				MaxDSDigests:            19,
 				MaxNSEC3Hashes:          23,
 				MaxConcurrentCrypto:     29,
+				FailureCacheSize:        8192,
+				FailureCacheMinTTL:      Duration{Duration: 2 * time.Second},
+				FailureCacheMaxTTL:      Duration{Duration: 2 * time.Minute},
 			},
 			want: RecursionFirewallConfig{
 				Mode:                    RecursionFirewallModeOff,
@@ -409,6 +415,9 @@ func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {
 				MaxDSDigests:            19,
 				MaxNSEC3Hashes:          23,
 				MaxConcurrentCrypto:     29,
+				FailureCacheSize:        8192,
+				FailureCacheMinTTL:      Duration{Duration: 2 * time.Second},
+				FailureCacheMaxTTL:      Duration{Duration: 2 * time.Minute},
 			},
 		},
 		{
@@ -424,6 +433,50 @@ func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {
 				Mode: "block",
 			},
 			want:    defaultRecursionFirewallConfigForTest("block"),
+			wantErr: true,
+		},
+		{
+			name: "failure cache minimum below RFC floor is rejected",
+			cfg: func() RecursionFirewallConfig {
+				cfg := defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow)
+				cfg.FailureCacheMinTTL.Duration = 999 * time.Millisecond
+				return cfg
+			}(),
+			want: func() RecursionFirewallConfig {
+				cfg := defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow)
+				cfg.FailureCacheMinTTL.Duration = 999 * time.Millisecond
+				return cfg
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "failure cache maximum above RFC ceiling is rejected",
+			cfg: func() RecursionFirewallConfig {
+				cfg := defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow)
+				cfg.FailureCacheMaxTTL.Duration = 5*time.Minute + time.Second
+				return cfg
+			}(),
+			want: func() RecursionFirewallConfig {
+				cfg := defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow)
+				cfg.FailureCacheMaxTTL.Duration = 5*time.Minute + time.Second
+				return cfg
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "failure cache maximum below minimum is rejected",
+			cfg: func() RecursionFirewallConfig {
+				cfg := defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow)
+				cfg.FailureCacheMinTTL.Duration = 30 * time.Second
+				cfg.FailureCacheMaxTTL.Duration = 10 * time.Second
+				return cfg
+			}(),
+			want: func() RecursionFirewallConfig {
+				cfg := defaultRecursionFirewallConfigForTest(RecursionFirewallModeShadow)
+				cfg.FailureCacheMinTTL.Duration = 30 * time.Second
+				cfg.FailureCacheMaxTTL.Duration = 10 * time.Second
+				return cfg
+			}(),
 			wantErr: true,
 		},
 	}
@@ -462,6 +515,9 @@ max_signature_checks = 17
 max_ds_digests = 19
 max_nsec3_hashes = 23
 max_concurrent_crypto = 29
+failure_cache_size = 8192
+failure_cache_min_ttl = "2s"
+failure_cache_max_ttl = "2m"
 `, configver, workDir)
 		if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
 			t.Fatal(err)
@@ -490,6 +546,11 @@ max_concurrent_crypto = 29
 			cfg.RecursionFirewall.MaxNSEC3Hashes != 23 ||
 			cfg.RecursionFirewall.MaxConcurrentCrypto != 29 {
 			t.Errorf("DNSSEC limits = %+v, want configured values", cfg.RecursionFirewall)
+		}
+		if cfg.RecursionFirewall.FailureCacheSize != 8192 ||
+			cfg.RecursionFirewall.FailureCacheMinTTL.Duration != 2*time.Second ||
+			cfg.RecursionFirewall.FailureCacheMaxTTL.Duration != 2*time.Minute {
+			t.Errorf("Failure cache = %+v, want configured values", cfg.RecursionFirewall)
 		}
 	})
 

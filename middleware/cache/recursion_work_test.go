@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -115,42 +116,38 @@ func TestAdditionalAnswerRecursionWorkLimitEDE(t *testing.T) {
 
 func TestRecursionWorkPolicySERVFAILCacheIsolation(t *testing.T) {
 	tests := []struct {
-		name       string
-		mode       middleware.RecursionWorkMode
-		kind       middleware.RecursionWorkKind
-		edeCode    uint16
-		extraText  string
-		wantCode   uint16
-		wantText   string
-		wantCached bool
+		name      string
+		mode      middleware.RecursionWorkMode
+		kind      middleware.RecursionWorkKind
+		edeCode   uint16
+		extraText string
+		wantCode  uint16
+		wantText  string
 	}{
 		{
-			name:       "local enforce rejection is request scoped",
-			mode:       middleware.RecursionWorkEnforce,
-			kind:       middleware.RecursionWorkInternalQuery,
-			edeCode:    middleware.RecursionWorkEDECode,
-			extraText:  middleware.RecursionWorkEDEText,
-			wantCode:   middleware.RecursionWorkEDECode,
-			wantText:   middleware.RecursionWorkEDEText,
-			wantCached: false,
+			name:      "local enforce rejection is request scoped",
+			mode:      middleware.RecursionWorkEnforce,
+			kind:      middleware.RecursionWorkInternalQuery,
+			edeCode:   middleware.RecursionWorkEDECode,
+			extraText: middleware.RecursionWorkEDEText,
+			wantCode:  middleware.RecursionWorkEDECode,
+			wantText:  middleware.RecursionWorkEDEText,
 		},
 		{
-			name:       "crypto rejection is EDE 5 and request scoped",
-			mode:       middleware.RecursionWorkEnforce,
-			kind:       middleware.RecursionWorkSignature,
-			edeCode:    middleware.RecursionWorkEDECode,
-			extraText:  middleware.RecursionWorkEDEText,
-			wantCode:   middleware.DNSSECWorkEDECode,
-			wantText:   middleware.DNSSECWorkEDEText,
-			wantCached: false,
+			name:      "crypto rejection is EDE 5 and request scoped",
+			mode:      middleware.RecursionWorkEnforce,
+			kind:      middleware.RecursionWorkSignature,
+			edeCode:   middleware.RecursionWorkEDECode,
+			extraText: middleware.RecursionWorkEDEText,
+			wantCode:  middleware.DNSSECWorkEDECode,
+			wantText:  middleware.DNSSECWorkEDEText,
 		},
 		{
-			name:       "upstream policy EDE remains cacheable in shadow",
-			mode:       middleware.RecursionWorkShadow,
-			kind:       middleware.RecursionWorkInternalQuery,
-			edeCode:    dns.ExtendedErrorCodeUnableToConformToPolicy,
-			extraText:  "upstream policy",
-			wantCached: true,
+			name:      "upstream policy EDE remains cacheable in shadow",
+			mode:      middleware.RecursionWorkShadow,
+			kind:      middleware.RecursionWorkInternalQuery,
+			edeCode:   dns.ExtendedErrorCodeUnableToConformToPolicy,
+			extraText: "upstream policy",
 		},
 	}
 
@@ -227,9 +224,17 @@ func TestRecursionWorkPolicySERVFAILCacheIsolation(t *testing.T) {
 			}
 
 			key := CacheKey{Question: req.Question[0], CD: false}.Hash()
-			_, cached := c.store.LookupByKey(key)
-			if cached != tt.wantCached {
-				t.Fatalf("policy SERVFAIL cached = %v, want %v", cached, tt.wantCached)
+			if _, cached := c.store.LookupByKey(key); cached {
+				t.Fatal("policy SERVFAIL entered the ordinary answer cache")
+			}
+			hit, cached := c.store.LookupFailure(req, netip.Prefix{})
+			if !cached {
+				t.Fatal("terminal failure missing from RFC 9520 failure cache")
+			}
+			cachedResp := hit.Response(req)
+			ede := dnsutil.GetEDE(cachedResp)
+			if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeCachedError {
+				t.Fatalf("cached policy failure EDE = %+v, want EDE 13", ede)
 			}
 		})
 	}

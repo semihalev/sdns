@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"net/netip"
 	"strings"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // Store is the cache backing for the cache middleware. It owns nothing
-// directly — the positive/negative sub-caches are constructed by
+// directly — the answer and failure sub-caches are constructed by
 // Cache.New and shared with Store — but it centralises classification,
 // keying, and TTL handling so callers outside ServeDNS (resolver
 // sub-queries, queryer-driven prefetch, future API purge wiring)
@@ -26,14 +27,26 @@ import (
 type Store struct {
 	positive *PositiveCache
 	negative *NegativeCache
+	failure  *FailureCache
 	cfg      CacheConfig
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
 // caches are shared with the surrounding *Cache; this constructor
 // does not allocate them.
-func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig) *Store {
-	return &Store{positive: positive, negative: negative, cfg: cfg}
+func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig, failures ...*FailureCache) *Store {
+	var failure *FailureCache
+	if len(failures) > 0 {
+		failure = failures[0]
+	}
+	if failure == nil {
+		failure, _ = NewFailureCache(FailureCacheConfig{
+			Size:       DefaultFailureCacheSize,
+			InitialTTL: DefaultFailureInitialTTL,
+			MaxTTL:     DefaultFailureMaxTTL,
+		})
+	}
+	return &Store{positive: positive, negative: negative, failure: failure, cfg: cfg}
 }
 
 // Lookup returns the cache entry for req without materialising a
@@ -118,19 +131,112 @@ func equalNameASCIIFold(a, b string) bool {
 // needs req for SetReply.
 func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 	entry, ok := s.Lookup(req)
-	if !ok {
-		return nil, false
+	if ok {
+		msg := entry.ToMsg(req)
+		if msg != nil {
+			return msg, true
+		}
 	}
-	msg := entry.ToMsg(req)
-	if msg == nil {
-		// Entry expired between Lookup and ToMsg.
-		return nil, false
+
+	if hit, ok := s.LookupFailure(req, netip.Prefix{}); ok {
+		failureCacheHits.Inc()
+		return hit.Response(req), true
 	}
-	return msg, true
+	return nil, false
 }
 
-// SetFromResponse classifies resp (positive / NXDOMAIN+NODATA /
-// SERVFAIL) and stores it under (resp.Question[0], keyCD). CHAOS
+// LookupFailure returns an active exact or closest-ancestor RFC 9520 failure.
+func (s *Store) LookupFailure(req *dns.Msg, scope netip.Prefix) (FailureHit, bool) {
+	if s.failure == nil || req == nil || len(req.Question) == 0 {
+		return FailureHit{}, false
+	}
+	return s.failure.Lookup(FailureQuestionKey{
+		Question: req.Question[0],
+		CD:       req.CheckingDisabled,
+		Scope:    scope,
+	})
+}
+
+// FailureRetryKey returns the retained failure generation used to coalesce the
+// first retry after a backoff expires. Different random QNAMEs below the same
+// failed zone therefore elect only one probe leader.
+func (s *Store) FailureRetryKey(req *dns.Msg, scope netip.Prefix) (uint64, bool) {
+	if s.failure == nil || req == nil || len(req.Question) == 0 {
+		return 0, false
+	}
+	return s.failure.RetryKey(FailureQuestionKey{
+		Question: req.Question[0],
+		CD:       req.CheckingDisabled,
+		Scope:    scope,
+	})
+}
+
+// RecordFailure records a question-specific terminal resolution failure.
+func (s *Store) RecordFailure(req *dns.Msg, scope netip.Prefix, provenance FailureProvenance) {
+	if s.failure == nil || req == nil || len(req.Question) == 0 {
+		return
+	}
+	s.recordFailureQuestion(req.Question[0], req.CheckingDisabled, scope, provenance)
+}
+
+func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefix, provenance FailureProvenance) {
+	if s.failure == nil {
+		return
+	}
+	s.failure.RecordQuestion(FailureQuestionKey{
+		Question: q,
+		CD:       cd,
+		Scope:    scope,
+	}, provenance)
+}
+
+// RecordZoneFailure implements middleware.ResolutionFailureStore. Zone-wide
+// reachability failures are deliberately independent of CD and ECS.
+func (s *Store) RecordZoneFailure(q dns.Question, zone string) {
+	if s.failure == nil || zone == "" {
+		return
+	}
+	s.failure.RecordZone(FailureZoneKey{
+		Zone:   zone,
+		Qclass: q.Qclass,
+	}, FailureProvenance("authority"))
+}
+
+// ClearZoneFailure removes authority reachability history after the resolver
+// receives a useful response from that same zone. Local/static cache writers
+// never call this, so a hosts-file answer cannot falsely mark an upstream zone
+// as recovered.
+func (s *Store) ClearZoneFailure(q dns.Question, zone string) {
+	if s.failure == nil || zone == "" {
+		return
+	}
+	s.failure.ResetZone(FailureZoneKey{Zone: zone, Qclass: q.Qclass})
+}
+
+func (s *Store) resetQuestionFailure(q dns.Question, cd bool, scope netip.Prefix) {
+	if s.failure == nil {
+		return
+	}
+	s.failure.ResetQuestion(FailureQuestionKey{
+		Question: q,
+		CD:       cd,
+		Scope:    scope,
+	})
+}
+
+func (s *Store) resetMatchingFailures(q dns.Question, cd bool, scope netip.Prefix) {
+	if s.failure == nil {
+		return
+	}
+	s.failure.ResetMatching(FailureQuestionKey{
+		Question: q,
+		CD:       cd,
+		Scope:    scope,
+	})
+}
+
+// SetFromResponse classifies resp (answer / NXDOMAIN+NODATA /
+// resolution failure) and stores it under (resp.Question[0], keyCD). CHAOS
 // signalling responses are skipped, matching ResponseWriter.WriteMsg.
 // cutUntil bounds the entry to the delegation cut that produced it; zero
 // means unbounded. This compatibility entry point has no lineage identity.
@@ -149,13 +255,20 @@ func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.
 		(q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL) {
 		return
 	}
-	s.SetFromResponseWithKey(CacheKey{Question: q, CD: keyCD}.Hash(), resp, cutUntil, cutKey)
+	s.setFromResponseWithKey(
+		CacheKey{Question: q, CD: keyCD}.Hash(),
+		resp,
+		false,
+		cutUntil,
+		cutKey,
+		keyCD,
+	)
 }
 
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
 func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, false, cutUntil, cutKey)
+	s.setFromResponseWithKey(key, resp, false, cutUntil, cutKey, resp.CheckingDisabled)
 }
 
 // SetFromResponseScoped is SetFromResponseWithKey for entries that
@@ -164,10 +277,10 @@ func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.
 // to derive ECS from, so refreshing a scoped entry would lose its
 // scope and store the wrong-audience answer.
 func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, true, cutUntil, cutKey)
+	s.setFromResponseWithKey(key, resp, true, cutUntil, cutKey, resp.CheckingDisabled)
 }
 
-func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, cutUntil time.Time, cutKey uint64) {
+func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, cutUntil time.Time, cutKey uint64, keyCD bool) {
 	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
@@ -202,9 +315,20 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		ttl := capTTL(s.positive.ttl.Calculate(msgTTL))
 		s.positive.Set(key, newEntry(filtered, ttl))
+		// A scoped write has no source prefix here (only its already-hashed
+		// cache key), so it must not reset the unrelated global failure
+		// audience. Cache.ResponseWriter owns scoped failure reset because it
+		// still has the concrete client prefix.
+		if !scoped {
+			s.resetQuestionFailure(resp.Question[0], keyCD, netip.Prefix{})
+		}
 	case dnsutil.TypeServerFailure:
-		ttl := capTTL(s.negative.ttl.Calculate(msgTTL))
-		s.negative.Set(key, newEntry(filtered, ttl))
+		// Resolution failures normally bypass this path in ResponseWriter.
+		// If a pre-keyed scoped caller reaches it, do not misfile that
+		// audience-specific failure as a global one without its prefix.
+		if !scoped {
+			s.recordFailureQuestion(resp.Question[0], keyCD, netip.Prefix{}, FailureProvenance("response"))
+		}
 	}
 }
 
@@ -256,8 +380,13 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		s.positive.Set(key, entry)
+		if entry != nil && entry.msg != nil && len(entry.msg.Question) > 0 {
+			s.resetQuestionFailure(entry.msg.Question[0], entry.msg.CheckingDisabled, netip.Prefix{})
+		}
 	case dnsutil.TypeServerFailure:
-		s.negative.Set(key, entry)
+		if entry != nil && entry.msg != nil {
+			s.RecordFailure(entry.msg, netip.Prefix{}, FailureProvenance("response"))
+		}
 	}
 }
 
@@ -275,6 +404,9 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 // call) so the linear scan is acceptable. If purge becomes
 // hot, a per-qname index would lift this back to O(matches).
 func (s *Store) Purge(q dns.Question) {
+	if s.failure != nil {
+		s.failure.PurgeQuestion(q)
+	}
 	for _, cd := range []bool{false, true} {
 		key := CacheKey{Question: q, CD: cd}.Hash()
 		s.positive.Remove(key)
@@ -317,6 +449,9 @@ func (s *Store) PositiveLen() int { return s.positive.Len() }
 
 // NegativeLen returns the number of entries in the negative cache.
 func (s *Store) NegativeLen() int { return s.negative.Len() }
+
+// FailureLen returns retained active and expired RFC 9520 failure states.
+func (s *Store) FailureLen() int { return s.failure.Len() }
 
 // ForEach iterates over positive then negative entries. Returning
 // false from fn stops iteration. Iteration is not atomic with

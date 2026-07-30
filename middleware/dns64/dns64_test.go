@@ -11,6 +11,7 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
+	cachemw "github.com/semihalev/sdns/middleware/cache"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -840,6 +841,111 @@ func TestDNSSECFailure_PassesThrough(t *testing.T) {
 				assert.Equal(t, code, ede.InfoCode)
 			}
 		})
+	}
+}
+
+func TestCachedFailure_PassesThroughWithoutALookup(t *testing.T) {
+	d := New(baseConfig())
+	q := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+	d.queryer = q
+
+	servfail := new(dns.Msg)
+	servfail.SetQuestion("foo.example.org.", dns.TypeAAAA)
+	servfail.Response = true
+	servfail.Rcode = dns.RcodeServerFailure
+	servfail.SetEdns0(4096, true)
+	dnsutil.SetEDE(servfail, dns.ExtendedErrorCodeCachedError, "Cached recursion failure")
+
+	ch, mw := makeChain(t, d, &stubAnswerer{msg: servfail}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
+	d.ServeDNS(context.Background(), ch)
+
+	resp := mw.Msg()
+	assert.Equal(t, dns.RcodeServerFailure, resp.Rcode)
+	if q.last != nil {
+		t.Fatal("RFC 9520 cached failure triggered a DNS64 A lookup")
+	}
+	ede := dnsutil.GetEDE(resp)
+	if assert.NotNil(t, ede) {
+		assert.Equal(t, dns.ExtendedErrorCodeCachedError, ede.InfoCode)
+	}
+}
+
+func TestFailureCacheHitPassesThroughDNS64WithAndWithoutEDNS(t *testing.T) {
+	for _, withEDNS := range []bool{true, false} {
+		name := "without_edns"
+		if withEDNS {
+			name = "with_edns"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.CacheSize = 1024
+			d := New(cfg)
+			c := cachemw.New(cfg)
+			defer c.Stop()
+
+			q := &stubQueryer{resp: aRespMsg("cached.example.org.", 60, "192.0.2.33")}
+			d.queryer = q
+
+			failure := new(dns.Msg)
+			failure.SetQuestion("cached.example.org.", dns.TypeAAAA)
+			failure.Response = true
+			failure.Rcode = dns.RcodeServerFailure
+			key := cachemw.CacheKey{Question: failure.Question[0]}.Hash()
+			c.Set(key, failure)
+
+			downstreamCalls := 0
+			downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+				downstreamCalls++
+				ch.CancelWithRcode(dns.RcodeSuccess, false)
+			})
+			ch := middleware.NewChain([]middleware.Handler{d, c, downstream})
+			writer := mock.NewWriter("udp", "203.0.113.5:53000")
+			req := new(dns.Msg)
+			req.SetQuestion("cached.example.org.", dns.TypeAAAA)
+			if withEDNS {
+				req.SetEdns0(4096, true)
+			}
+			ch.Reset(writer, req)
+			ch.Next(context.Background())
+
+			resp := writer.Msg()
+			if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("cached failure response = %#v, want SERVFAIL", resp)
+			}
+			if q.last != nil {
+				t.Fatal("cached AAAA failure triggered a DNS64 A lookup")
+			}
+			if downstreamCalls != 0 {
+				t.Fatalf("cached failure reached downstream %d times", downstreamCalls)
+			}
+
+			ede := dnsutil.GetEDE(resp)
+			if withEDNS {
+				if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeCachedError {
+					t.Fatalf("cached failure EDE = %+v, want EDE 13", ede)
+				}
+			} else if ede != nil || resp.IsEdns0() != nil {
+				t.Fatalf("non-EDNS cached failure carried EDNS data: EDE=%+v extra=%#v", ede, resp.Extra)
+			}
+		})
+	}
+}
+
+func TestCachedFailureResponseMarkerUsesPointerIdentity(t *testing.T) {
+	meta := new(middleware.ResponseMeta)
+	marked := new(dns.Msg)
+	other := new(dns.Msg)
+
+	release := meta.MarkCachedFailureResponse(marked)
+	if !meta.IsCachedFailureResponse(marked) {
+		t.Fatal("marked response pointer was not recognized")
+	}
+	if meta.IsCachedFailureResponse(other) {
+		t.Fatal("marker leaked to another response in the same request tree")
+	}
+	release()
+	if meta.IsCachedFailureResponse(marked) {
+		t.Fatal("released response pointer remained marked")
 	}
 }
 

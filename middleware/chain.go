@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,6 +26,15 @@ type responseCut struct {
 	key      uint64
 }
 
+// cachedFailureResponseSet tracks the exact response pointers currently being
+// emitted from the RFC 9520 failure cache. Pointer identity is deliberate: a
+// request tree can produce other SERVFAIL responses concurrently, and a
+// request-wide boolean would let one cached response misclassify another.
+type cachedFailureResponseSet struct {
+	mu       sync.RWMutex
+	messages map[*dns.Msg]uint32
+}
+
 type ResponseMeta struct {
 	// cut is an atomic pointer to an immutable deadline. Resolver work can
 	// fan out into concurrent NS-address sub-queries that share the request
@@ -36,6 +46,17 @@ type ResponseMeta struct {
 	// pointer without mutating the ledger so resolver goroutines that briefly
 	// outlive a pooled Chain keep charging their original request.
 	work atomic.Pointer[RecursionWorkLedger]
+
+	// attempts points at a heap-owned RFC 9520 request-tree retry guard.
+	// Reset only detaches it; pinned resolver goroutines keep their original
+	// guard even after the pooled Chain is reused.
+	attempts atomic.Pointer[ResolutionAttemptGuard]
+
+	// cachedFailures points at a heap-owned, pointer-identity set of failure
+	// cache responses currently crossing outer response-writer wrappers.
+	// Reset detaches the set rather than mutating it, matching the lifetime
+	// rules for work and attempts above.
+	cachedFailures atomic.Pointer[cachedFailureResponseSet]
 }
 
 // (*ResponseMeta).BoundCut folds a delegation-cut deadline into the
@@ -93,7 +114,7 @@ func (m *ResponseMeta) CutKey() uint64 {
 	return key
 }
 
-// Reset clears the accumulated deadline before a pooled Chain is reused.
+// Reset clears request metadata before a pooled Chain is reused.
 // Store(nil) is safe even if the ResponseMeta has previously been used; do
 // not replace the struct by assignment because atomic values must not be
 // copied after first use.
@@ -101,7 +122,88 @@ func (m *ResponseMeta) Reset() {
 	if m != nil {
 		m.cut.Store(nil)
 		m.work.Store(nil)
+		m.attempts.Store(nil)
+		m.cachedFailures.Store(nil)
 	}
+}
+
+// MarkCachedFailureResponse marks msg as a response currently being emitted
+// from the RFC 9520 failure cache and returns an idempotent release function.
+// Callers must keep the mark only around the synchronous WriteMsg call.
+func (m *ResponseMeta) MarkCachedFailureResponse(msg *dns.Msg) func() {
+	if m == nil || msg == nil {
+		return func() {}
+	}
+
+	markers := m.cachedFailures.Load()
+	if markers == nil {
+		candidate := &cachedFailureResponseSet{messages: make(map[*dns.Msg]uint32)}
+		if m.cachedFailures.CompareAndSwap(nil, candidate) {
+			markers = candidate
+		} else {
+			markers = m.cachedFailures.Load()
+		}
+	}
+
+	markers.mu.Lock()
+	markers.messages[msg]++
+	markers.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			markers.mu.Lock()
+			switch markers.messages[msg] {
+			case 0, 1:
+				delete(markers.messages, msg)
+			default:
+				markers.messages[msg]--
+			}
+			markers.mu.Unlock()
+		})
+	}
+}
+
+// IsCachedFailureResponse reports whether msg is the exact response currently
+// being emitted from the RFC 9520 failure cache for this request tree.
+func (m *ResponseMeta) IsCachedFailureResponse(msg *dns.Msg) bool {
+	if m == nil || msg == nil {
+		return false
+	}
+	markers := m.cachedFailures.Load()
+	if markers == nil {
+		return false
+	}
+
+	markers.mu.RLock()
+	marked := markers.messages[msg] > 0
+	markers.mu.RUnlock()
+	return marked
+}
+
+// EnsureResolutionAttemptGuard returns the request tree's retry guard,
+// installing one on first use.
+func (m *ResponseMeta) EnsureResolutionAttemptGuard() *ResolutionAttemptGuard {
+	if m == nil {
+		return nil
+	}
+	if guard := m.attempts.Load(); guard != nil {
+		return guard
+	}
+
+	guard := NewResolutionAttemptGuard()
+	if m.attempts.CompareAndSwap(nil, guard) {
+		return guard
+	}
+	return m.attempts.Load()
+}
+
+// ResolutionAttemptGuard returns the request tree's retry guard, if present.
+func (m *ResponseMeta) ResolutionAttemptGuard() *ResolutionAttemptGuard {
+	if m == nil {
+		return nil
+	}
+	return m.attempts.Load()
 }
 
 // EnsureRecursionWork returns the request tree's ledger, installing one with

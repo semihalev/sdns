@@ -43,6 +43,20 @@ type CutStore interface {
 	SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.Time, cutKey uint64)
 }
 
+// ResolutionFailureStore is the optional RFC 9520 extension implemented by
+// the built-in cache. A resolver records a zone only after every usable
+// authority endpoint for that delegation failed; the cache can then suppress
+// random-QNAME retries below the same failed zone (and the resulting
+// parent/ancestor traffic) until the bounded backoff expires.
+//
+// This stays separate from Store so plugins and test stores that only need
+// ordinary answer caching do not have to implement failure-state policy.
+type ResolutionFailureStore interface {
+	Store
+	RecordZoneFailure(q dns.Question, zone string)
+	ClearZoneFailure(q dns.Question, zone string)
+}
+
 // StoreProvider is implemented by handlers that own a Store which
 // should be shared with other handlers (today: the cache
 // middleware; consumed by the resolver handler).

@@ -273,16 +273,19 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 		t.Fatal("positive entry lost after SERVFAIL refresh attempt")
 	}
 
-	// SERVFAIL-to-SERVFAIL refresh within the negative cache works.
+	// Failure entries are deliberately outside CacheEntry/prefetch CAS:
+	// an active RFC 9520 failure is never refreshed in the background.
 	negQ := dns.Question{Name: "neg.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	negKey := CacheKey{Question: negQ, CD: false}.Hash()
 	s.SetFromResponseWithKey(negKey, cutTestMsg("neg.example.", dns.RcodeServerFailure, 0), time.Time{}, 0)
-	negEntry, ok := s.LookupByKey(negKey)
-	if !ok {
-		t.Fatal("negative seed entry missing")
+	req := new(dns.Msg)
+	req.SetQuestion(negQ.Name, negQ.Qtype)
+	hit, ok := s.LookupFailure(req, netip.Prefix{})
+	if !ok || hit.Kind != FailureKindQuestion {
+		t.Fatal("dedicated failure seed entry missing")
 	}
-	if !s.ReplaceIfCurrent(negKey, negEntry, cutTestMsg("neg.example.", dns.RcodeServerFailure, 0), time.Time{}, 0) {
-		t.Fatal("refresh of a still-current negative entry must succeed")
+	if _, ok := s.LookupByKey(negKey); ok {
+		t.Fatal("failure leaked into the ordinary CacheEntry stores")
 	}
 }
 

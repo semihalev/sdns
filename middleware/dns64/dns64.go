@@ -386,6 +386,14 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		passthroughDNSSECFail.Inc()
 		return w.ResponseWriter.WriteMsg(m)
 	}
+	// RFC 9520 cached failures must not trigger any corresponding outgoing
+	// query while their backoff interval is active. The ResponseMeta marker
+	// covers clients without EDNS (where EDE cannot be emitted), while EDE 13
+	// also keeps cached failures returned by an upstream resolver terminal.
+	if isCachedFailureResponse(w.ctx, m) {
+		passthroughCachedFailure.Inc()
+		return w.ResponseWriter.WriteMsg(m)
+	}
 	if m.Rcode == dns.RcodeServerFailure &&
 		middleware.RecursionWorkEnforcementError(w.ctx) != nil {
 		return w.writeRecursionWorkFailure(nil)
@@ -778,6 +786,29 @@ func isDNSSECFailure(m *dns.Msg) bool {
 		}
 	}
 	return false
+}
+
+func hasExtendedError(m *dns.Msg, code uint16) bool {
+	if m == nil || m.Rcode != dns.RcodeServerFailure {
+		return false
+	}
+	opt := m.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, option := range opt.Option {
+		if ede, ok := option.(*dns.EDNS0_EDE); ok && ede.InfoCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func isCachedFailureResponse(ctx context.Context, m *dns.Msg) bool {
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil && meta.IsCachedFailureResponse(m) {
+		return true
+	}
+	return hasExtendedError(m, dns.ExtendedErrorCodeCachedError)
 }
 
 // negativeAAAATTL returns the SOA-derived minimum negative TTL of

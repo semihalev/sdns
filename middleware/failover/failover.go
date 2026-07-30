@@ -52,12 +52,23 @@ type ResponseWriter struct {
 // New return failover.
 func New(cfg *config.Config) *Failover {
 	fallbackservers := []string{}
+	seen := make(map[string]struct{})
 	for _, s := range cfg.FallbackServers {
 		host, _, _ := net.SplitHostPort(s)
 
 		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			key := middleware.CanonicalResolutionEndpoint(s)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
 			fallbackservers = append(fallbackservers, s)
 		} else if ip != nil && ip.To16() != nil {
+			key := middleware.CanonicalResolutionEndpoint(s)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
 			fallbackservers = append(fallbackservers, s)
 		} else {
 			zlog.Error("Fallback server is not correct. Check your config.", "server", s)
@@ -73,6 +84,7 @@ func (f *Failover) Name() string { return name }
 // (*Failover).ServeDNS serveDNS implements the Handle interface.
 func (f *Failover) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w := ch.Writer
+	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 
 	ch.Writer = &ResponseWriter{ResponseWriter: w, f: f, ctx: ctx, req: ch.Request}
 	// Restore via defer so a panicked downstream handler,
@@ -104,24 +116,28 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
-	var beforeAttempt func(string) error
-	if middleware.RecursionWorkFrom(w.ctx) != nil {
-		beforeAttempt = func(string) error {
-			return middleware.DebitRecursionWork(w.ctx, middleware.RecursionWorkOutboundQuery)
-		}
-	}
-
-	client := dnsclient.Client{
-		Proto:         "udp",
-		BeforeAttempt: beforeAttempt,
-	}
+	var failureResponse *dns.Msg
 	for _, server := range w.f.servers {
+		client := dnsclient.Client{
+			Proto: "udp",
+			BeforeAttempt: func(proto string) error {
+				if err := middleware.BeginResolutionAttempt(w.ctx, req.Question[0], server, proto); err != nil {
+					return err
+				}
+				return middleware.DebitRecursionWork(w.ctx, middleware.RecursionWorkOutboundQuery)
+			},
+		}
 		// Preserve the historical independent five-second failover window.
 		// Work accounting still reads the request-scoped ledger from w.ctx.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		resp, _, err := client.Exchange(ctx, req, server)
 		cancel()
 		if err != nil {
+			if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+				// Request-local retry exhaustion is not an upstream health
+				// failure; try another endpoint without noisy logging.
+				continue
+			}
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 				return w.writeRecursionWorkFailure(m, err)
 			}
@@ -130,11 +146,25 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		}
 
 		resp.Id = m.Id
+		// The fallback is answering the original client request. Do not trust
+		// an upstream to echo CD correctly: cache failure isolation and
+		// success reset both key on this bit.
+		resp.CheckingDisabled = m.CheckingDisabled
+		responseType, _ := dnsutil.ClassifyResponse(resp, time.Now())
+		if responseType == dnsutil.TypeServerFailure {
+			if failureResponse == nil {
+				failureResponse = resp
+			}
+			continue
+		}
 
 		failoverSuccess.Inc()
 		return w.ResponseWriter.WriteMsg(resp)
 	}
 
+	if failureResponse != nil {
+		return w.ResponseWriter.WriteMsg(failureResponse)
+	}
 	return w.ResponseWriter.WriteMsg(m)
 }
 

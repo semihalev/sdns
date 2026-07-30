@@ -167,6 +167,161 @@ func TestFailoverRecursionWorkBoundsFallbackPool(t *testing.T) {
 	}
 }
 
+func TestFailoverResolutionAttemptGuardBoundsDuplicateEndpoints(t *testing.T) {
+	addr, calls, stop := startFailoverServer(t, true)
+	defer stop()
+
+	f := &Failover{servers: []string{addr, addr, addr, addr, addr}}
+	req := new(dns.Msg)
+	req.SetQuestion("attempt-guard.example.", dns.TypeA)
+	req.RecursionDesired = true
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{f, &dummy{}})
+	ch.Reset(mw, req)
+	ch.Next(context.Background())
+
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("fallback wire attempts = %d, want 3", got)
+	}
+	if mw.Rcode() != dns.RcodeServerFailure {
+		t.Fatalf("rcode = %s, want SERVFAIL", dns.RcodeToString[mw.Rcode()])
+	}
+}
+
+func TestFailoverTriesNextServerAfterUnusableDNSResponse(t *testing.T) {
+	badAddr, badCalls, stopBad := startFailoverRcodeServer(t, dns.RcodeServerFailure)
+	defer stopBad()
+	goodAddr, goodCalls, stopGood := startFailoverRcodeServer(t, dns.RcodeSuccess)
+	defer stopGood()
+
+	f := &Failover{servers: []string{badAddr, goodAddr}}
+	req := new(dns.Msg)
+	req.SetQuestion("useful-failover.example.", dns.TypeA)
+	req.RecursionDesired = true
+	writer := mock.NewWriter("udp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{f, &dummy{}})
+	ch.Reset(writer, req)
+	ch.Next(context.Background())
+
+	if got := writer.Msg(); got == nil || got.Rcode != dns.RcodeSuccess || len(got.Answer) != 1 {
+		t.Fatalf("failover response = %#v, want useful second-server answer", got)
+	}
+	if badCalls.Load() != 1 || goodCalls.Load() != 1 {
+		t.Fatalf("server calls = bad:%d good:%d, want 1/1", badCalls.Load(), goodCalls.Load())
+	}
+}
+
+func TestFailoverNormalizesCheckingDisabled(t *testing.T) {
+	tests := []struct {
+		name  string
+		rcode int
+	}{
+		{name: "useful response", rcode: dns.RcodeSuccess},
+		{name: "failure response", rcode: dns.RcodeServerFailure},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, stop := startFailoverCDServer(t, tt.rcode, false)
+			defer stop()
+
+			f := &Failover{servers: []string{addr}}
+			req := new(dns.Msg)
+			req.SetQuestion("cd-failover.example.", dns.TypeA)
+			req.RecursionDesired = true
+			req.CheckingDisabled = true
+			writer := mock.NewWriter("udp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{f, &dummy{}})
+			ch.Reset(writer, req)
+			ch.Next(context.Background())
+
+			got := writer.Msg()
+			if got == nil || got.Rcode != tt.rcode {
+				t.Fatalf("failover response = %#v, want rcode %s", got, dns.RcodeToString[tt.rcode])
+			}
+			if !got.CheckingDisabled {
+				t.Fatal("fallback response lost the client CD=1 bit")
+			}
+		})
+	}
+}
+
+func TestNewDeduplicatesCanonicalFallbackEndpoints(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.FallbackServers = []string{
+		"192.0.2.1:53",
+		"192.0.2.1:053",
+		"[2001:db8::1]:53",
+		"[2001:0DB8:0:0::1]:053",
+	}
+
+	f := New(cfg)
+	if got := len(f.servers); got != 2 {
+		t.Fatalf("canonical fallback servers = %d, want 2", got)
+	}
+}
+
+func startFailoverRcodeServer(t *testing.T, rcode int) (string, *atomic.Int32, func()) {
+	t.Helper()
+
+	calls := new(atomic.Int32)
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+		calls.Add(1)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Rcode = rcode
+		if rcode == dns.RcodeSuccess {
+			resp.Answer = []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   req.Question[0].Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: net.IPv4(192, 0, 2, 43),
+			}}
+		}
+		_ = w.WriteMsg(resp)
+	})
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &dns.Server{Net: "udp", PacketConn: packet, Handler: handler}
+	go func() { _ = srv.ActivateAndServe() }()
+	return packet.LocalAddr().String(), calls, func() { _ = srv.Shutdown() }
+}
+
+func startFailoverCDServer(t *testing.T, rcode int, cd bool) (string, func()) {
+	t.Helper()
+
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Rcode = rcode
+		resp.CheckingDisabled = cd
+		if rcode == dns.RcodeSuccess {
+			resp.Answer = []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   req.Question[0].Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: net.IPv4(192, 0, 2, 44),
+			}}
+		}
+		_ = w.WriteMsg(resp)
+	})
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &dns.Server{Net: "udp", PacketConn: packet, Handler: handler}
+	go func() { _ = srv.ActivateAndServe() }()
+	return packet.LocalAddr().String(), func() { _ = srv.Shutdown() }
+}
+
 func startFailoverServer(t *testing.T, mismatchQuestion bool) (
 	addr string,
 	calls *atomic.Int32,

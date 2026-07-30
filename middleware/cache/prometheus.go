@@ -33,6 +33,11 @@ var (
 		Help: "Total number of DNS cache prefetches",
 	})
 
+	failureCacheHits = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "failure_cache_hits_total",
+		Help: "Total number of RFC 9520 cached resolution failures served",
+	})
+
 	cacheSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dns_cache_size",
 		Help: "Current number of entries in the DNS cache",
@@ -70,6 +75,7 @@ var (
 	metricsInstance  *CacheMetrics
 	positiveCacheLen func() int
 	negativeCacheLen func() int
+	failureCacheLen  func() int
 )
 
 func init() {
@@ -83,9 +89,10 @@ func SetMetricsInstance(m *CacheMetrics) {
 }
 
 // SetCacheSizeFuncs sets the functions to get cache sizes
-func SetCacheSizeFuncs(positive, negative func() int) {
+func SetCacheSizeFuncs(positive, negative, failure func() int) {
 	positiveCacheLen = positive
 	negativeCacheLen = negative
+	failureCacheLen = failure
 }
 
 // UpdateCacheSizeMetrics updates the cache size gauges
@@ -95,6 +102,9 @@ func UpdateCacheSizeMetrics() {
 	}
 	if negativeCacheLen != nil {
 		cacheSize.WithLabelValues("negative").Set(float64(negativeCacheLen()))
+	}
+	if failureCacheLen != nil {
+		cacheSize.WithLabelValues("failure").Set(float64(failureCacheLen()))
 	}
 }
 

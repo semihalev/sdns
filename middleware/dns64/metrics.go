@@ -33,6 +33,7 @@ var (
 	passthroughZoneExcluded   = Passthrough.Register("zone_excluded")
 	passthroughNXDomain       = Passthrough.Register("nxdomain")
 	passthroughDNSSECFail     = Passthrough.Register("dnssec_fail")
+	passthroughCachedFailure  = Passthrough.Register("cached_failure")
 	passthroughAAAAPresent    = Passthrough.Register("aaaa_present")
 	passthroughAExcluded      = Passthrough.Register("a_excluded")
 

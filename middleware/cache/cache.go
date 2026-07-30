@@ -61,13 +61,14 @@ func withCnameChaseDepth(ctx context.Context, depth int) context.Context {
 type Cache struct {
 	positive *PositiveCache
 	negative *NegativeCache
+	failure  *FailureCache
 
 	// store is the public-facing storage facade backed by the same
-	// positive/negative sub-caches. External callers (resolver
+	// answer caches and RFC 9520 failure cache. External callers (resolver
 	// sub-queries, queryer-driven prefetch, future API purge wiring)
 	// route through Store; the middleware itself uses both views —
 	// Store for the new API surface, direct sub-cache access for
-	// the few existing hot paths that already have a key in hand.
+	// the few existing answer hot paths that already have a key in hand.
 	store *Store
 
 	prefetchQueue *PrefetchQueue
@@ -104,6 +105,9 @@ type Cache struct {
 
 // New creates a new cache.
 func New(cfg *config.Config) *Cache {
+	failureCfg := cfg.RecursionFirewall
+	failureCfg.Normalize()
+
 	// Build cache configuration
 	cacheConfig := CacheConfig{
 		Size:        cfg.CacheSize,
@@ -147,12 +151,26 @@ func New(cfg *config.Config) *Cache {
 
 	positive := NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics)
 	negative := NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics)
+	failure, err := NewFailureCache(FailureCacheConfig{
+		Size:       failureCfg.FailureCacheSize,
+		InitialTTL: failureCfg.FailureCacheMinTTL.Duration,
+		MaxTTL:     failureCfg.FailureCacheMaxTTL.Duration,
+	})
+	if err != nil {
+		zlog.Warn("Failure cache configuration validation failed, using defaults", "error", err.Error())
+		failure, _ = NewFailureCache(FailureCacheConfig{
+			Size:       config.DefaultRecursionFirewallFailureCacheSize,
+			InitialTTL: config.DefaultRecursionFirewallFailureCacheMinTTL,
+			MaxTTL:     config.DefaultRecursionFirewallFailureCacheMaxTTL,
+		})
+	}
 
 	c := &Cache{
 		positive: positive,
 		negative: negative,
+		failure:  failure,
 
-		store: NewStore(positive, negative, cacheConfig),
+		store: NewStore(positive, negative, cacheConfig, failure),
 
 		config:    cacheConfig,
 		metrics:   metrics,
@@ -180,7 +198,7 @@ func New(cfg *config.Config) *Cache {
 
 	// Register metrics instance for Prometheus hit rate calculation
 	SetMetricsInstance(c.metrics)
-	SetCacheSizeFuncs(c.positive.Len, c.negative.Len)
+	SetCacheSizeFuncs(c.positive.Len, c.negative.Len, c.failure.Len)
 
 	return c
 }
@@ -329,6 +347,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 			ecsLookupHitScoped.Inc()
 			if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+				c.metrics.Hit()
 				return
 			}
 		}
@@ -338,9 +357,21 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			ecsLookupHitShared.Inc()
 		}
 		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+			c.metrics.Hit()
 			return
 		}
-	} else if clientScope.IsValid() {
+	}
+	if hit, ok := c.store.LookupFailure(req, clientScope); ok {
+		c.metrics.Hit()
+		failureCacheHits.Inc()
+		c.handleFailureHit(ctx, ch, hit)
+		return
+	}
+	if retryKey, ok := c.store.FailureRetryKey(req, clientScope); ok {
+		dedupKey = retryKey
+	}
+	c.metrics.Miss()
+	if clientScope.IsValid() {
 		ecsLookupMiss.Inc()
 	}
 
@@ -376,14 +407,22 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			if clientScope.IsValid() {
 				if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 					if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+						c.metrics.Hit()
 						return
 					}
 				}
 			}
 			if entry := c.checkCache(cacheKey); entry != nil {
 				if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+					c.metrics.Hit()
 					return
 				}
+			}
+			if hit, ok := c.store.LookupFailure(req, clientScope); ok {
+				c.metrics.Hit()
+				failureCacheHits.Inc()
+				c.handleFailureHit(ctx, ch, hit)
+				return
 			}
 		} else {
 			defer c.wg.Done(dedupKey)
@@ -435,17 +474,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)
 }
 
-// checkCache checks both positive and negative caches and records
-// a single Hit/Miss metric per call. Sub-cache Get no longer
-// records its own metrics, so a miss in the positive cache that
-// then hits the negative cache (or vice versa) counts once.
+// checkCache checks the ordinary answer caches. RFC 9520 failures use their
+// own verified lookup path because they synthesize EDE 13 and must never enter
+// prefetch or CNAME-chase handling.
 func (c *Cache) checkCache(key uint64) *CacheEntry {
 	if entry, ok := c.store.LookupByKey(key); ok {
-		c.metrics.Hit()
 		return entry
 	}
-
-	c.metrics.Miss()
 	return nil
 }
 
@@ -518,11 +553,20 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 		}
 		key := CacheKey{Question: q, CD: cd, Scope: scope}.Hash()
 		if entry, ok := c.store.LookupByKey(key); ok {
-			c.metrics.Hit()
 			return entry, key
 		}
 	}
 	return nil, 0
+}
+
+func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit FailureHit) {
+	resp := hit.Response(ch.Request)
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
+		release := meta.MarkCachedFailureResponse(resp)
+		defer release()
+	}
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
 }
 
 // handleCacheHit processes a cache hit.
@@ -632,6 +676,9 @@ func (c *Cache) Stop() {
 	if c.prefetchQueue != nil {
 		c.prefetchQueue.Stop()
 	}
+	if c.failure != nil {
+		c.failure.Stop()
+	}
 }
 
 // (*Cache).Set set adds a new element to the cache. Provided for API
@@ -646,14 +693,13 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 
 	filtered := filterCacheableAnswer(msg)
 	mt, _ := dnsutil.ClassifyResponse(filtered, time.Now().UTC())
+	if mt == dnsutil.TypeServerFailure {
+		c.store.RecordFailure(filtered, netip.Prefix{}, FailureProvenance("response"))
+		return
+	}
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
-	var ttl time.Duration
-	if mt == dnsutil.TypeServerFailure {
-		ttl = c.negative.ttl.Calculate(msgTTL)
-	} else {
-		ttl = c.positive.ttl.Calculate(msgTTL)
-	}
+	ttl := c.positive.ttl.Calculate(msgTTL)
 
 	entry := NewCacheEntryWithKey(filtered, ttl, c.config.RateLimit, key)
 	if ttl > 0 {
@@ -674,6 +720,7 @@ func (c *Cache) Stats() map[string]any {
 		"prefetches":    prefetches,
 		"positive_size": c.store.PositiveLen(),
 		"negative_size": c.store.NegativeLen(),
+		"failure_size":  c.store.FailureLen(),
 		"hit_rate": func() float64 {
 			total := float64(hits + misses)
 			if total == 0 {
@@ -726,6 +773,29 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Resolution failures live in the dedicated RFC 9520 cache. They bypass
+	// ordinary CacheEntry handling entirely: no CNAME chase, no prefetch, no
+	// RR TTL, and no replay of an upstream EDE. The first response is still
+	// written verbatim (or with the local work-limit EDE); only a later cache
+	// hit is synthesized as EDE 13.
+	mt, _ := dnsutil.ClassifyResponse(res, time.Now().UTC())
+	if mt == dnsutil.TypeServerFailure {
+		out := res
+		if res.Rcode == dns.RcodeServerFailure &&
+			middleware.RecursionWorkEnforcementError(ctx) != nil {
+			out = w.recursionWorkFailure(res)
+		}
+		if ctx.Err() == nil {
+			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"))
+		}
+		return w.ResponseWriter.WriteMsg(out)
+	}
+
 	// Complete any synchronous CNAME chase before reading ResponseMeta and
 	// publishing the cache entry. A target leg can cross a different (shorter)
 	// delegation cut; storing first would bind the outer CNAME only to its own
@@ -733,20 +803,14 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// filterCacheableAnswer below still retains only records belonging to the
 	// original question, so this does not merge the target RRset into the outer
 	// cache entry.
-	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
 		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
 	}
-
-	// A recursion-work rejection belongs to this request tree. Caching it as
-	// an ordinary 30-second SERVFAIL would make one client's exhausted
-	// budget poison otherwise independent requests for the same name.
-	if res.Rcode == dns.RcodeServerFailure &&
-		middleware.RecursionWorkEnforcementError(ctx) != nil {
-		return w.writeRecursionWorkFailure(res)
+	if chasedType, _ := dnsutil.ClassifyResponse(res, time.Now().UTC()); chasedType == dnsutil.TypeServerFailure {
+		if ctx.Err() == nil {
+			w.cache.store.RecordFailure(res, w.clientScope, FailureProvenance("response"))
+		}
+		return w.ResponseWriter.WriteMsg(res)
 	}
 
 	// Classify, filter, and store via Store. Key is derived from
@@ -787,11 +851,16 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
 		w.cache.store.SetFromResponseWithKey(key, res, cutUntil, cutKey)
 	}
+	// This is the final downstream response observed by the cache wrapper.
+	// A useful answer here means resolver/failover/forwarder recovery really
+	// reached the client path, so both exact and covering zone backoff can
+	// restart at the initial interval on a later failure.
+	w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
 
 	return w.ResponseWriter.WriteMsg(res)
 }
 
-func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
+func (w *ResponseWriter) recursionWorkFailure(fallback *dns.Msg) *dns.Msg {
 	req := w.req
 	if req == nil {
 		req = fallback
@@ -801,13 +870,13 @@ func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg) error {
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
 	}
-	return w.ResponseWriter.WriteMsg(dnsutil.SetRcodeWithEDE(
+	return dnsutil.SetRcodeWithEDE(
 		req,
 		dns.RcodeServerFailure,
 		do,
 		edeCode,
 		edeText,
-	))
+	)
 }
 
 // filterCacheableAnswer keeps only the records directly relevant to

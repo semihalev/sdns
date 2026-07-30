@@ -220,6 +220,102 @@ func Test_Forwarder_RejectsMismatchedQuestion(t *testing.T) {
 	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
 }
 
+func TestForwarderResolutionAttemptGuardBoundsDuplicateEndpoints(t *testing.T) {
+	addr, stop := startMismatchedQuestionServer(t)
+	defer stop()
+
+	duplicate := &server{Addr: addr, Proto: "udp"}
+	f := &Forwarder{servers: []*server{duplicate, duplicate, duplicate, duplicate, duplicate}}
+	ch := middleware.NewChain([]middleware.Handler{f})
+	mw := mock.NewWriter("udp", "127.0.0.1:0")
+	req := new(dns.Msg)
+	req.SetQuestion("attempt-guard.example.", dns.TypeA)
+	ch.Reset(mw, req)
+
+	before := forwarderResponseMismatch.Value()
+	ch.Next(context.Background())
+
+	if got := forwarderResponseMismatch.Value() - before; got != 3 {
+		t.Fatalf("wire mismatches = %d, want exactly 3 attempts", got)
+	}
+	if mw.Rcode() != dns.RcodeServerFailure {
+		t.Fatalf("rcode = %s, want SERVFAIL", dns.RcodeToString[mw.Rcode()])
+	}
+}
+
+func TestForwarderTriesNextServerAfterUnusableDNSResponse(t *testing.T) {
+	badAddr, badCalls, stopBad := startForwarderRcodeServer(t, dns.RcodeServerFailure)
+	defer stopBad()
+	goodAddr, goodCalls, stopGood := startForwarderRcodeServer(t, dns.RcodeSuccess)
+	defer stopGood()
+
+	f := &Forwarder{servers: []*server{
+		{Addr: badAddr, Proto: "udp"},
+		{Addr: goodAddr, Proto: "udp"},
+	}}
+	ch := middleware.NewChain([]middleware.Handler{f})
+	writer := mock.NewWriter("udp", "127.0.0.1:0")
+	req := new(dns.Msg)
+	req.SetQuestion("useful-response.example.", dns.TypeA)
+	ch.Reset(writer, req)
+	ch.Next(context.Background())
+
+	if got := writer.Msg(); got == nil || got.Rcode != dns.RcodeSuccess || len(got.Answer) != 1 {
+		t.Fatalf("forwarder response = %#v, want useful second-server answer", got)
+	}
+	if badCalls.Load() != 1 || goodCalls.Load() != 1 {
+		t.Fatalf("server calls = bad:%d good:%d, want 1/1", badCalls.Load(), goodCalls.Load())
+	}
+}
+
+func TestNewDeduplicatesCanonicalForwarderEndpointsPerTransport(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.ForwarderServers = []string{
+		"192.0.2.1:53",
+		"192.0.2.1:053",
+		"tls://192.0.2.1:53",
+		"tls://192.0.2.1:053",
+		"https://192.0.2.1/dns-query",
+		"https://192.0.2.1:443/dns-query",
+	}
+
+	f := New(cfg)
+	if got := len(f.servers); got != 3 {
+		t.Fatalf("canonical servers = %d, want one per transport", got)
+	}
+}
+
+func startForwarderRcodeServer(t *testing.T, rcode int) (string, *atomic.Int32, func()) {
+	t.Helper()
+
+	calls := new(atomic.Int32)
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+		calls.Add(1)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Rcode = rcode
+		if rcode == dns.RcodeSuccess {
+			resp.Answer = []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{
+					Name:   req.Question[0].Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: net.IPv4(192, 0, 2, 42),
+			}}
+		}
+		_ = w.WriteMsg(resp)
+	})
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &dns.Server{Net: "udp", PacketConn: packet, Handler: handler}
+	go func() { _ = srv.ActivateAndServe() }()
+	return packet.LocalAddr().String(), calls, func() { _ = srv.Shutdown() }
+}
+
 func TestForwarderRecursionWorkCountsUDPToTCPAttempts(t *testing.T) {
 	tests := []struct {
 		name         string
