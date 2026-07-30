@@ -66,7 +66,10 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 
 	deniedName = dns.CanonicalName(deniedName)
 	zone = dns.CanonicalName(zone)
-	if deniedName == "." || !dns.IsSubDomain(zone, deniedName) {
+	// The signer-zone apex cannot be absent while its SOA exists. Rejecting
+	// this impossible provenance locally prevents it becoming a zone-wide cut.
+	if deniedName == "." || deniedName == zone ||
+		!dns.IsSubDomain(zone, deniedName) {
 		return false
 	}
 

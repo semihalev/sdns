@@ -365,6 +365,24 @@ func TestNXDomainCutLookupBoundariesAndDimensions(t *testing.T) {
 	}
 }
 
+func TestNXDomainCutAdmissionRejectsSignerZoneApex(t *testing.T) {
+	t.Parallel()
+
+	cut := newNXDomainCutCache(8, time.Minute)
+	t.Cleanup(cut.stop)
+	fixture := newNXDomainCutFixture(t, "example.", "example.", dns.ClassINET)
+
+	// A zone apex cannot itself be absent while supplying its SOA and denial
+	// proof. Compare after DNS canonicalisation so presentation case cannot
+	// bypass this fail-closed admission invariant.
+	if cut.record(fixture.msg, "ExAmPlE.", "eXaMpLe.", time.Time{}) {
+		t.Fatal("signer-zone apex NXDOMAIN was admitted as a subtree cut")
+	}
+	if got := cut.len(); got != 0 {
+		t.Fatalf("retained cuts = %d, want 0", got)
+	}
+}
+
 func TestNXDomainCutAllowsExactDenialSignedByRoot(t *testing.T) {
 	t.Parallel()
 
