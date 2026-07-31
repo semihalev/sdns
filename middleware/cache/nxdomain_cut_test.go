@@ -536,6 +536,21 @@ func TestNXDomainCutAdmissionRejectsIncompleteOrOptOutProof(t *testing.T) {
 			},
 		},
 		{
+			name: "same NSEC RRset mixes safe and escaping next domains",
+			fixture: func(tb testing.TB) *nxDomainCutFixture {
+				return newNXDomainCutFixture(tb, "missing.example.", "example.", dns.ClassINET)
+			},
+			mutate: func(f *nxDomainCutFixture) {
+				safe := f.proof.(*dns.NSEC)
+				escaping := dns.Copy(safe).(*dns.NSEC)
+				escaping.NextDomain = "outside.test."
+				// Both records share the one retained NSEC RRset and its
+				// RRSIG. A record-level filter would replay a signature over
+				// a different RRset, so the complete cut must be rejected.
+				f.msg.Ns = append(f.msg.Ns, escaping)
+			},
+		},
+		{
 			name: "checking disabled proof",
 			fixture: func(tb testing.TB) *nxDomainCutFixture {
 				return newNXDomainCutFixture(tb, "missing.example.", "example.", dns.ClassINET)
@@ -606,6 +621,327 @@ func TestNXDomainCutAdmissionRejectsIncompleteOrOptOutProof(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNXDomainCutBudgetDefaultsAndClamps(t *testing.T) {
+	t.Parallel()
+
+	cut := newNXDomainCutCache(16_000, time.Minute)
+	t.Cleanup(cut.stop)
+	if cut.maxEntries != 16_000 ||
+		cut.maxEntriesPerZone != 250 ||
+		cut.maxBytes != 16_000*nxDomainCutBudgetBytesPerEntry ||
+		cut.maxBytesPerZone != 250*nxDomainCutBudgetBytesPerEntry {
+		t.Fatalf(
+			"default limits = entries %d/%d bytes %d/%d, want 16000/250 and %d/%d",
+			cut.maxEntries,
+			cut.maxEntriesPerZone,
+			cut.maxBytes,
+			cut.maxBytesPerZone,
+			16_000*nxDomainCutBudgetBytesPerEntry,
+			250*nxDomainCutBudgetBytesPerEntry,
+		)
+	}
+
+	small := newNXDomainCutCache(1, time.Minute)
+	t.Cleanup(small.stop)
+	if small.maxEntries != 1 || small.maxEntriesPerZone != 1 {
+		t.Fatalf(
+			"small entry limits = %d/%d, want 1/1",
+			small.maxEntries,
+			small.maxEntriesPerZone,
+		)
+	}
+	if small.maxBytes != maxNXDomainCutProofBytes ||
+		small.maxBytesPerZone != maxNXDomainCutProofBytes {
+		t.Fatalf(
+			"small byte limits = %d/%d, want one full proof %d/%d",
+			small.maxBytes,
+			small.maxBytesPerZone,
+			maxNXDomainCutProofBytes,
+			maxNXDomainCutProofBytes,
+		)
+	}
+
+	clamped := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+		MaxEntries:        2,
+		MaxEntriesPerZone: 99,
+		MaxBytes:          100,
+		MaxBytesPerZone:   200,
+		MaxTTL:            time.Minute,
+	})
+	t.Cleanup(clamped.stop)
+	if clamped.maxEntriesPerZone != 2 || clamped.maxBytesPerZone != 100 {
+		t.Fatalf(
+			"clamped limits = entries/zone %d bytes/zone %d, want 2 and 100",
+			clamped.maxEntriesPerZone,
+			clamped.maxBytesPerZone,
+		)
+	}
+}
+
+func TestNXDomainCutGlobalEntryBudgetEvictsOldest(t *testing.T) {
+	t.Parallel()
+
+	cut := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+		MaxEntries:        2,
+		MaxEntriesPerZone: 2,
+		MaxBytes:          1 << 20,
+		MaxBytesPerZone:   1 << 20,
+		MaxTTL:            time.Minute,
+	})
+	t.Cleanup(cut.stop)
+
+	mustRecordNXDomainCut(t, cut, "one.alpha.test.", "alpha.test.")
+	mustRecordNXDomainCut(t, cut, "two.bravo.test.", "bravo.test.")
+	mustRecordNXDomainCut(t, cut, "three.charlie.test.", "charlie.test.")
+
+	assertNXDomainCutLookup(t, cut, "one.alpha.test.", false)
+	assertNXDomainCutLookup(t, cut, "two.bravo.test.", true)
+	assertNXDomainCutLookup(t, cut, "three.charlie.test.", true)
+	assertNXDomainCutAccounting(t, cut)
+}
+
+func TestNXDomainCutZoneEntryBudgetEvictsOwnOldestFirst(t *testing.T) {
+	t.Parallel()
+
+	cut := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+		MaxEntries:        2,
+		MaxEntriesPerZone: 1,
+		MaxBytes:          1 << 20,
+		MaxBytesPerZone:   1 << 20,
+		MaxTTL:            time.Minute,
+	})
+	t.Cleanup(cut.stop)
+
+	mustRecordNXDomainCut(t, cut, "missing.healthy.test.", "healthy.test.")
+	mustRecordNXDomainCut(t, cut, "first.attack.test.", "attack.test.")
+	// The global cache is full here. Enforcing the attacker's zone before the
+	// global FIFO must remove first.attack, not missing.healthy.
+	mustRecordNXDomainCut(t, cut, "second.attack.test.", "attack.test.")
+
+	assertNXDomainCutLookup(t, cut, "missing.healthy.test.", true)
+	assertNXDomainCutLookup(t, cut, "first.attack.test.", false)
+	assertNXDomainCutLookup(t, cut, "second.attack.test.", true)
+	assertNXDomainCutAccounting(t, cut)
+}
+
+func TestNXDomainCutWireByteBudgets(t *testing.T) {
+	t.Parallel()
+
+	t.Run("global", func(t *testing.T) {
+		first := newNXDomainCutFixture(t, "one.alpha.test.", "alpha.test.", dns.ClassINET)
+		second := newNXDomainCutFixture(t, "two.bravo.test.", "bravo.test.", dns.ClassINET)
+		firstBytes := nxDomainCutFixtureWireBytes(t, first, "one.alpha.test.", "alpha.test.")
+		secondBytes := nxDomainCutFixtureWireBytes(t, second, "two.bravo.test.", "bravo.test.")
+
+		cut := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+			MaxEntries:        8,
+			MaxEntriesPerZone: 8,
+			MaxBytes:          firstBytes + secondBytes - 1,
+			MaxBytesPerZone:   firstBytes + secondBytes,
+			MaxTTL:            time.Minute,
+		})
+		t.Cleanup(cut.stop)
+
+		if !cut.record(first.msg, "one.alpha.test.", "alpha.test.", time.Time{}) {
+			t.Fatal("first global-byte fixture was not recorded")
+		}
+		if !cut.record(second.msg, "two.bravo.test.", "bravo.test.", time.Time{}) {
+			t.Fatal("second global-byte fixture was not recorded")
+		}
+		assertNXDomainCutLookup(t, cut, "one.alpha.test.", false)
+		assertNXDomainCutLookup(t, cut, "two.bravo.test.", true)
+		assertNXDomainCutAccounting(t, cut)
+	})
+
+	t.Run("per zone preserves unrelated zone", func(t *testing.T) {
+		first := newNXDomainCutFixture(t, "first.attack.test.", "attack.test.", dns.ClassINET)
+		second := newNXDomainCutFixture(t, "second.attack.test.", "attack.test.", dns.ClassINET)
+		firstBytes := nxDomainCutFixtureWireBytes(t, first, "first.attack.test.", "attack.test.")
+		secondBytes := nxDomainCutFixtureWireBytes(t, second, "second.attack.test.", "attack.test.")
+
+		cut := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+			MaxEntries:        8,
+			MaxEntriesPerZone: 8,
+			MaxBytes:          1 << 20,
+			MaxBytesPerZone:   firstBytes + secondBytes - 1,
+			MaxTTL:            time.Minute,
+		})
+		t.Cleanup(cut.stop)
+
+		mustRecordNXDomainCut(t, cut, "missing.healthy.test.", "healthy.test.")
+		if !cut.record(first.msg, "first.attack.test.", "attack.test.", time.Time{}) {
+			t.Fatal("first per-zone-byte fixture was not recorded")
+		}
+		if !cut.record(second.msg, "second.attack.test.", "attack.test.", time.Time{}) {
+			t.Fatal("second per-zone-byte fixture was not recorded")
+		}
+
+		assertNXDomainCutLookup(t, cut, "missing.healthy.test.", true)
+		assertNXDomainCutLookup(t, cut, "first.attack.test.", false)
+		assertNXDomainCutLookup(t, cut, "second.attack.test.", true)
+		assertNXDomainCutAccounting(t, cut)
+	})
+}
+
+func TestNXDomainCutOversizedReplacementPreservesCurrent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		deniedName = "missing.example."
+		zone       = "example."
+	)
+	currentFixture := newNXDomainCutFixture(t, deniedName, zone, dns.ClassINET)
+	currentBytes := nxDomainCutFixtureWireBytes(t, currentFixture, deniedName, zone)
+	cut := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+		MaxEntries:        8,
+		MaxEntriesPerZone: 8,
+		MaxBytes:          maxNXDomainCutProofBytes,
+		MaxBytesPerZone:   currentBytes,
+		MaxTTL:            time.Minute,
+	})
+	t.Cleanup(cut.stop)
+	if !cut.record(currentFixture.msg, deniedName, zone, time.Time{}) {
+		t.Fatal("current cut was not recorded")
+	}
+	current, ok := cut.lookup(dns.Question{
+		Name: deniedName, Qtype: dns.TypeA, Qclass: dns.ClassINET,
+	})
+	if !ok {
+		t.Fatal("current cut missed before replacement")
+	}
+
+	replacement := newNXDomainCutFixture(t, deniedName, zone, dns.ClassINET)
+	replacement.proofSig.Signature = strings.Repeat("A", 1024)
+	replacementBytes := nxDomainCutFixtureWireBytes(t, replacement, deniedName, zone)
+	if replacementBytes <= currentBytes || replacementBytes > maxNXDomainCutProofBytes {
+		t.Fatalf(
+			"replacement bytes = %d, want (%d, %d]",
+			replacementBytes,
+			currentBytes,
+			maxNXDomainCutProofBytes,
+		)
+	}
+	if cut.record(replacement.msg, deniedName, zone, time.Time{}) {
+		t.Fatal("replacement exceeding the zone byte budget was admitted")
+	}
+	retained, ok := cut.lookup(dns.Question{
+		Name: deniedName, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET,
+	})
+	if !ok || retained != current {
+		t.Fatalf("oversized replacement displaced current cut: got %#v", retained)
+	}
+	assertNXDomainCutAccounting(t, cut)
+}
+
+func TestNXDomainCutReplacementMovesZoneAccounting(t *testing.T) {
+	t.Parallel()
+
+	const deniedName = "missing.child.example."
+	cut := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+		MaxEntries:        8,
+		MaxEntriesPerZone: 8,
+		MaxBytes:          1 << 20,
+		MaxBytesPerZone:   1 << 20,
+		MaxTTL:            time.Minute,
+	})
+	t.Cleanup(cut.stop)
+
+	mustRecordNXDomainCut(t, cut, deniedName, "example.")
+	mustRecordNXDomainCut(t, cut, deniedName, "child.example.")
+
+	entry, ok := cut.lookup(dns.Question{
+		Name: deniedName, Qtype: dns.TypeA, Qclass: dns.ClassINET,
+	})
+	if !ok {
+		t.Fatal("replacement cut missed")
+	}
+	if entry.zone != "child.example." {
+		t.Fatalf("replacement signer zone = %q, want child.example.", entry.zone)
+	}
+	cut.mu.RLock()
+	_, oldZoneRetained := cut.zones[nxDomainCutZoneKey{zone: "example.", qclass: dns.ClassINET}]
+	cut.mu.RUnlock()
+	if oldZoneRetained {
+		t.Fatal("replacement left stale accounting for the previous signer zone")
+	}
+	assertNXDomainCutAccounting(t, cut)
+}
+
+func TestNXDomainCutConcurrentBudgetAccounting(t *testing.T) {
+	t.Parallel()
+
+	const workers = 32
+	cut := newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+		MaxEntries:        16,
+		MaxEntriesPerZone: 8,
+		MaxBytes:          64 << 10,
+		MaxBytesPerZone:   32 << 10,
+		MaxTTL:            time.Minute,
+	})
+	t.Cleanup(cut.stop)
+
+	fixtures := make([]*nxDomainCutFixture, workers)
+	deniedNames := make([]string, workers)
+	for i := range workers {
+		deniedNames[i] = fmt.Sprintf("host-%02d.attack.test.", i)
+		fixtures[i] = newNXDomainCutFixture(t, deniedNames[i], "attack.test.", dns.ClassINET)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range workers {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for round := range 8 {
+				cut.record(fixtures[i].msg, deniedNames[i], "attack.test.", time.Time{})
+				cut.lookup(dns.Question{
+					Name:   "child." + deniedNames[i],
+					Qtype:  dns.TypeA + uint16(round%2),
+					Qclass: dns.ClassINET,
+				})
+				if round%3 == 0 {
+					cut.purge(dns.Question{
+						Name:   "child." + deniedNames[i],
+						Qtype:  dns.TypeTXT,
+						Qclass: dns.ClassINET,
+					})
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	assertNXDomainCutAccounting(t, cut)
+}
+
+func TestNXDomainCutStopClearsStateAndRejectsAdmission(t *testing.T) {
+	t.Parallel()
+
+	cut := newNXDomainCutCache(8, time.Minute)
+	mustRecordNXDomainCut(t, cut, "missing.example.", "example.")
+	mustRecordNXDomainCut(t, cut, "missing.test.", "test.")
+
+	cut.stop()
+	assertNXDomainCutAccounting(t, cut)
+	cut.mu.RLock()
+	stopped := cut.stopped
+	zoneCount := len(cut.zones)
+	cut.mu.RUnlock()
+	if !stopped || zoneCount != 0 {
+		t.Fatalf("stop state = stopped:%v zones:%d, want true/0", stopped, zoneCount)
+	}
+
+	fixture := newNXDomainCutFixture(t, "after-stop.example.", "example.", dns.ClassINET)
+	if cut.record(fixture.msg, "after-stop.example.", "example.", time.Time{}) {
+		t.Fatal("stopped cut cache admitted a new entry")
+	}
+	assertNXDomainCutLookup(t, cut, "after-stop.example.", false)
+	assertNXDomainCutAccounting(t, cut)
 }
 
 func TestNXDomainCutResponseMaterialization(t *testing.T) {
@@ -681,6 +1017,7 @@ func TestNXDomainCutExpiryAndPurge(t *testing.T) {
 	if got := cut.len(); got != 0 {
 		t.Fatalf("expired cut was not removed, len = %d", got)
 	}
+	assertNXDomainCutAccounting(t, cut)
 
 	if !cut.record(fixture.msg, "missing.example.", "example.", time.Time{}) {
 		t.Fatal("cut could not be re-recorded after expiry")
@@ -696,6 +1033,7 @@ func TestNXDomainCutExpiryAndPurge(t *testing.T) {
 	if got := cut.len(); got != 0 {
 		t.Fatalf("purged cut was retained, len = %d", got)
 	}
+	assertNXDomainCutAccounting(t, cut)
 }
 
 func TestNXDomainCutConcurrentResponseIsolation(t *testing.T) {
@@ -767,6 +1105,144 @@ func TestNXDomainCutConcurrentResponseIsolation(t *testing.T) {
 	}
 	if got := entry.msg.Ns[0].Header().Name; got != "example." {
 		t.Fatalf("mutating a response changed stored proof owner to %q", got)
+	}
+}
+
+func mustRecordNXDomainCut(
+	tb testing.TB,
+	cut *nxDomainCutCache,
+	deniedName string,
+	zone string,
+) {
+	tb.Helper()
+	fixture := newNXDomainCutFixture(tb, deniedName, zone, dns.ClassINET)
+	if !cut.record(fixture.msg, deniedName, zone, time.Time{}) {
+		tb.Fatalf("record(%q, %q) = false, want true", deniedName, zone)
+	}
+}
+
+func nxDomainCutFixtureWireBytes(
+	tb testing.TB,
+	fixture *nxDomainCutFixture,
+	deniedName string,
+	zone string,
+) int64 {
+	tb.Helper()
+	proof, _, ok := nxDomainCutProof(
+		fixture.msg,
+		dns.CanonicalName(deniedName),
+		dns.CanonicalName(zone),
+	)
+	if !ok {
+		tb.Fatalf("fixture proof for %q in %q was rejected", deniedName, zone)
+	}
+	return int64(proof.Len())
+}
+
+func assertNXDomainCutLookup(
+	tb testing.TB,
+	cut *nxDomainCutCache,
+	name string,
+	want bool,
+) {
+	tb.Helper()
+	entry, ok := cut.lookup(dns.Question{
+		Name:   name,
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	})
+	if ok != want {
+		tb.Fatalf("lookup(%q) = (%#v, %v), want hit=%v", name, entry, ok, want)
+	}
+}
+
+func assertNXDomainCutAccounting(tb testing.TB, cut *nxDomainCutCache) {
+	tb.Helper()
+	cut.mu.RLock()
+	defer cut.mu.RUnlock()
+
+	if got, want := cut.fifo.Len(), len(cut.entries); got != want {
+		tb.Fatalf("global FIFO length = %d, entries = %d", got, want)
+	}
+	if len(cut.entries) > cut.maxEntries {
+		tb.Fatalf("entries = %d, global limit = %d", len(cut.entries), cut.maxEntries)
+	}
+
+	var (
+		globalBytes int64
+		globalSeen  = make(map[*nxDomainCutEntry]struct{}, len(cut.entries))
+	)
+	for element := cut.fifo.Front(); element != nil; element = element.Next() {
+		entry, ok := element.Value.(*nxDomainCutEntry)
+		if !ok || entry == nil {
+			tb.Fatalf("global FIFO contains invalid entry %#v", element.Value)
+		}
+		if entry.globalElem != element {
+			tb.Fatalf("entry %q has stale global FIFO pointer", entry.deniedName)
+		}
+		if cut.entries[entry.id] != entry {
+			tb.Fatalf("global FIFO entry %q is not current", entry.deniedName)
+		}
+		if _, duplicate := globalSeen[entry]; duplicate {
+			tb.Fatalf("global FIFO contains duplicate entry %q", entry.deniedName)
+		}
+		globalSeen[entry] = struct{}{}
+		globalBytes += entry.wireBytes
+	}
+	if globalBytes != cut.totalBytes {
+		tb.Fatalf("summed wire bytes = %d, totalBytes = %d", globalBytes, cut.totalBytes)
+	}
+	if cut.totalBytes > cut.maxBytes {
+		tb.Fatalf("totalBytes = %d, global limit = %d", cut.totalBytes, cut.maxBytes)
+	}
+
+	zoneEntryCount := 0
+	for key, zoneState := range cut.zones {
+		if zoneState == nil || zoneState.fifo.Len() == 0 {
+			tb.Fatalf("zone %v retained an empty state", key)
+		}
+		if zoneState.fifo.Len() > cut.maxEntriesPerZone {
+			tb.Fatalf(
+				"zone %v entries = %d, limit = %d",
+				key,
+				zoneState.fifo.Len(),
+				cut.maxEntriesPerZone,
+			)
+		}
+		var zoneBytes int64
+		for element := zoneState.fifo.Front(); element != nil; element = element.Next() {
+			entry, ok := element.Value.(*nxDomainCutEntry)
+			if !ok || entry == nil {
+				tb.Fatalf("zone %v FIFO contains invalid entry %#v", key, element.Value)
+			}
+			if entry.zoneKey != key || entry.zoneElem != element {
+				tb.Fatalf("zone %v FIFO has stale entry %q", key, entry.deniedName)
+			}
+			if _, ok := globalSeen[entry]; !ok {
+				tb.Fatalf("zone %v entry %q is missing globally", key, entry.deniedName)
+			}
+			zoneBytes += entry.wireBytes
+			zoneEntryCount++
+		}
+		if zoneBytes != zoneState.wireBytes {
+			tb.Fatalf(
+				"zone %v summed bytes = %d, state bytes = %d",
+				key,
+				zoneBytes,
+				zoneState.wireBytes,
+			)
+		}
+		if zoneState.wireBytes > cut.maxBytesPerZone {
+			tb.Fatalf(
+				"zone %v bytes = %d, limit = %d",
+				key,
+				zoneState.wireBytes,
+				cut.maxBytesPerZone,
+			)
+		}
+	}
+	if zoneEntryCount != len(cut.entries) {
+		tb.Fatalf("zone entry count = %d, global entries = %d", zoneEntryCount, len(cut.entries))
 	}
 }
 

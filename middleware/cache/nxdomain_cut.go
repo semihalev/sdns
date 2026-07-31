@@ -1,26 +1,36 @@
 package cache
 
 import (
+	"container/list"
+	"math"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
-	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 )
 
-// nxDomainCutQType is an internal cache-key discriminator. RFC 8020 cuts are
-// QTYPE-independent, so they cannot use the QTYPE from the request that
-// originally received NXDOMAIN.
 const (
-	nxDomainCutQType         uint16 = 0
-	maxNXDomainCutProofRRs          = 32
-	maxNXDomainCutProofBytes        = 8 << 10
+	maxNXDomainCutProofRRs         = 32
+	maxNXDomainCutProofBytes       = 8 << 10
+	nxDomainCutBudgetBytesPerEntry = 2 << 10
 )
+
+type nxDomainCutID struct {
+	deniedName string
+	qclass     uint16
+}
+
+type nxDomainCutZoneKey struct {
+	zone   string
+	qclass uint16
+}
 
 // nxDomainCutEntry is an immutable, locally validated RFC 8020 cut. It stores
 // only the terminal denial proof; CNAME/DNAME records from an outer alias
-// response must never leak into a synthesized descendant response.
+// response must never leak into a synthesized descendant response. Queue
+// pointers are touched only while the cache write lock is held.
 type nxDomainCutEntry struct {
 	deniedName string
 	zone       string
@@ -29,31 +39,120 @@ type nxDomainCutEntry struct {
 	msg        *dns.Msg
 	stored     time.Time
 	expires    time.Time
+	wireBytes  int64
+	id         nxDomainCutID
+	zoneKey    nxDomainCutZoneKey
+	globalElem *list.Element
+	zoneElem   *list.Element
+}
+
+type nxDomainCutZoneState struct {
+	fifo      list.List
+	wireBytes int64
+}
+
+type nxDomainCutCacheConfig struct {
+	MaxEntries        int
+	MaxEntriesPerZone int
+	MaxBytes          int64
+	MaxBytesPerZone   int64
+	MaxTTL            time.Duration
 }
 
 // nxDomainCutCache is deliberately separate from the ordinary answer cache.
 // Random names can create many distinct cuts, so the index must have its own
-// hard bound and must not evict useful positive answers.
+// hard entry and wire-byte bounds and must not evict useful positive answers.
+// Each signer zone has independent bounds so one hostile signed zone cannot
+// monopolise the complete RFC 8020 index.
 type nxDomainCutCache struct {
-	cache  *internalcache.Cache
-	maxTTL time.Duration
+	mu sync.RWMutex
+
+	entries map[nxDomainCutID]*nxDomainCutEntry
+	zones   map[nxDomainCutZoneKey]*nxDomainCutZoneState
+	fifo    list.List
+
+	maxEntries        int
+	maxEntriesPerZone int
+	maxBytes          int64
+	maxBytesPerZone   int64
+	maxTTL            time.Duration
+
+	totalBytes int64
+	stopped    bool
 }
 
 func newNXDomainCutCache(size int, maxTTL time.Duration) *nxDomainCutCache {
 	if size < 1 {
 		size = 1
 	}
-	if maxTTL <= 0 {
-		maxTTL = dnsutil.MaxCacheTTL
+
+	perZone := size / 64
+	if perZone < 8 {
+		perZone = 8
 	}
+	if perZone > 256 {
+		perZone = 256
+	}
+	if perZone > size {
+		perZone = size
+	}
+
+	return newNXDomainCutCacheWithConfig(nxDomainCutCacheConfig{
+		MaxEntries:        size,
+		MaxEntriesPerZone: perZone,
+		MaxBytes:          nxDomainCutDerivedBytes(size),
+		MaxBytesPerZone:   nxDomainCutDerivedBytes(perZone),
+		MaxTTL:            maxTTL,
+	})
+}
+
+func newNXDomainCutCacheWithConfig(cfg nxDomainCutCacheConfig) *nxDomainCutCache {
+	if cfg.MaxEntries < 1 {
+		cfg.MaxEntries = 1
+	}
+	if cfg.MaxEntriesPerZone < 1 {
+		cfg.MaxEntriesPerZone = 1
+	}
+	if cfg.MaxEntriesPerZone > cfg.MaxEntries {
+		cfg.MaxEntriesPerZone = cfg.MaxEntries
+	}
+	if cfg.MaxBytes < 1 {
+		cfg.MaxBytes = nxDomainCutDerivedBytes(cfg.MaxEntries)
+	}
+	if cfg.MaxBytesPerZone < 1 {
+		cfg.MaxBytesPerZone = nxDomainCutDerivedBytes(cfg.MaxEntriesPerZone)
+	}
+	if cfg.MaxBytesPerZone > cfg.MaxBytes {
+		cfg.MaxBytesPerZone = cfg.MaxBytes
+	}
+	if cfg.MaxTTL <= 0 {
+		cfg.MaxTTL = dnsutil.MaxCacheTTL
+	}
+
 	return &nxDomainCutCache{
-		cache:  internalcache.New(size),
-		maxTTL: maxTTL,
+		entries:           make(map[nxDomainCutID]*nxDomainCutEntry),
+		zones:             make(map[nxDomainCutZoneKey]*nxDomainCutZoneState),
+		maxEntries:        cfg.MaxEntries,
+		maxEntriesPerZone: cfg.MaxEntriesPerZone,
+		maxBytes:          cfg.MaxBytes,
+		maxBytesPerZone:   cfg.MaxBytesPerZone,
+		maxTTL:            cfg.MaxTTL,
 	}
 }
 
-func nxDomainCutKey(name string, qclass uint16) uint64 {
-	return internalcache.KeyString(name, nxDomainCutQType, qclass, false)
+func nxDomainCutDerivedBytes(entries int) int64 {
+	if entries < 1 {
+		return maxNXDomainCutProofBytes
+	}
+	count := int64(entries)
+	if count > math.MaxInt64/nxDomainCutBudgetBytesPerEntry {
+		return math.MaxInt64
+	}
+	derived := count * nxDomainCutBudgetBytesPerEntry
+	if derived < maxNXDomainCutProofBytes {
+		return maxNXDomainCutProofBytes
+	}
+	return derived
 }
 
 // record publishes a cut for the exact locally validated denied name. zone is
@@ -117,9 +216,43 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 		msg:        proof,
 		stored:     now,
 		expires:    now.Add(ttl),
+		wireBytes:  int64(proof.Len()),
 	}
-	c.cache.Add(nxDomainCutKey(deniedName, entry.qclass), entry)
-	return true
+	entry.id = nxDomainCutID{deniedName: deniedName, qclass: entry.qclass}
+	entry.zoneKey = nxDomainCutZoneKey{zone: zone, qclass: entry.qclass}
+
+	// Preserve a current usable cut if its replacement cannot fit even in an
+	// otherwise-empty cache or zone.
+	if entry.wireBytes > c.maxBytes || entry.wireBytes > c.maxBytesPerZone {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped {
+		return false
+	}
+	if previous := c.entries[entry.id]; previous != nil {
+		c.removeEntryLocked(previous)
+	}
+
+	zoneState := c.zones[entry.zoneKey]
+	if zoneState == nil {
+		zoneState = new(nxDomainCutZoneState)
+		c.zones[entry.zoneKey] = zoneState
+	}
+	entry.globalElem = c.fifo.PushBack(entry)
+	entry.zoneElem = zoneState.fifo.PushBack(entry)
+	c.entries[entry.id] = entry
+	c.totalBytes += entry.wireBytes
+	zoneState.wireBytes += entry.wireBytes
+
+	// Zone limits must run first. If the global index is already full, a
+	// hostile zone refreshing its own full partition must evict one of its own
+	// cuts rather than displacing an unrelated healthy zone.
+	c.enforceZoneLimitsLocked(entry.zoneKey)
+	c.enforceGlobalLimitsLocked()
+	return c.entries[entry.id] == entry
 }
 
 func negativeProofKind(records []dns.RR) middleware.ValidatedNegativeProofKind {
@@ -200,8 +333,14 @@ func nxDomainCutProof(msg *dns.Msg, deniedName, zone string) (*dns.Msg, *dns.SOA
 			key = soaKey
 		case *dns.NSEC:
 			next := dns.CanonicalName(record.NextDomain)
-			if useNSEC3 || !dns.IsSubDomain(zone, next) {
+			if useNSEC3 {
 				continue
+			}
+			// Filtering just this RDATA would leave the retained RRSIG
+			// covering a different RRset. Fail closed for shared cut
+			// admission instead; the exact negative answer remains cached.
+			if !dns.IsSubDomain(zone, next) {
+				return nil, nil, false
 			}
 			key = rrsetKey{owner: owner, rtype: dns.TypeNSEC, qclass: record.Hdr.Class}
 			proofKeys[key] = struct{}{}
@@ -291,26 +430,26 @@ func nxDomainCutProof(msg *dns.Msg, deniedName, zone string) (*dns.Msg, *dns.SOA
 // boundaries (rather than using a string suffix) keeps sibling names such as
 // notexample.com. isolated from example.com.
 func (c *nxDomainCutCache) lookup(q dns.Question) (*nxDomainCutEntry, bool) {
-	if c == nil || c.cache.Len() == 0 || q.Qclass == 0 {
+	if c == nil || q.Qclass == 0 {
 		return nil, false
 	}
 
 	name := dns.CanonicalName(q.Name)
+	now := time.Now()
 	for _, offset := range dns.Split(name) {
 		candidate := name[offset:]
-		key := nxDomainCutKey(candidate, q.Qclass)
-		value, ok := c.cache.Get(key)
-		if !ok {
+		id := nxDomainCutID{deniedName: candidate, qclass: q.Qclass}
+
+		c.mu.RLock()
+		entry := c.entries[id]
+		c.mu.RUnlock()
+		if entry == nil {
 			continue
 		}
-		entry, ok := value.(*nxDomainCutEntry)
-		if !ok || entry == nil ||
-			entry.qclass != q.Qclass ||
-			!equalNameASCIIFold(entry.deniedName, candidate) {
-			continue
-		}
-		if !time.Now().Before(entry.expires) {
-			c.cache.CompareAndDelete(key, entry)
+		if !now.Before(entry.expires) {
+			c.mu.Lock()
+			c.removeEntryLocked(entry)
+			c.mu.Unlock()
 			continue
 		}
 		return entry, true
@@ -353,23 +492,86 @@ func (e *nxDomainCutEntry) response(req *dns.Msg) *dns.Msg {
 // operator purge of a descendant would immediately be hidden again by its
 // cached denied ancestor.
 func (c *nxDomainCutCache) purge(q dns.Question) {
-	if c == nil || c.cache.Len() == 0 {
+	if c == nil {
 		return
 	}
 	name := dns.CanonicalName(q.Name)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, offset := range dns.Split(name) {
 		candidate := name[offset:]
-		key := nxDomainCutKey(candidate, q.Qclass)
-		value, ok := c.cache.Get(key)
-		if !ok {
+		id := nxDomainCutID{deniedName: candidate, qclass: q.Qclass}
+		if entry := c.entries[id]; entry != nil {
+			c.removeEntryLocked(entry)
+		}
+	}
+}
+
+func (c *nxDomainCutCache) removeEntryLocked(entry *nxDomainCutEntry) {
+	if entry == nil || c.entries[entry.id] != entry {
+		return
+	}
+	delete(c.entries, entry.id)
+	if entry.globalElem != nil {
+		c.fifo.Remove(entry.globalElem)
+		entry.globalElem = nil
+	}
+	c.totalBytes -= entry.wireBytes
+	if c.totalBytes < 0 {
+		c.totalBytes = 0
+	}
+
+	zoneState := c.zones[entry.zoneKey]
+	if zoneState == nil {
+		return
+	}
+	if entry.zoneElem != nil {
+		zoneState.fifo.Remove(entry.zoneElem)
+		entry.zoneElem = nil
+	}
+	zoneState.wireBytes -= entry.wireBytes
+	if zoneState.wireBytes < 0 {
+		zoneState.wireBytes = 0
+	}
+	if zoneState.fifo.Len() == 0 {
+		delete(c.zones, entry.zoneKey)
+	}
+}
+
+func (c *nxDomainCutCache) enforceZoneLimitsLocked(key nxDomainCutZoneKey) {
+	for {
+		zoneState := c.zones[key]
+		if zoneState == nil ||
+			(zoneState.fifo.Len() <= c.maxEntriesPerZone &&
+				zoneState.wireBytes <= c.maxBytesPerZone) {
+			return
+		}
+		element := zoneState.fifo.Front()
+		if element == nil {
+			delete(c.zones, key)
+			return
+		}
+		entry, _ := element.Value.(*nxDomainCutEntry)
+		if entry == nil {
+			zoneState.fifo.Remove(element)
 			continue
 		}
-		entry, ok := value.(*nxDomainCutEntry)
-		if ok && entry != nil &&
-			entry.qclass == q.Qclass &&
-			equalNameASCIIFold(entry.deniedName, candidate) {
-			c.cache.CompareAndDelete(key, entry)
+		c.removeEntryLocked(entry)
+	}
+}
+
+func (c *nxDomainCutCache) enforceGlobalLimitsLocked() {
+	for len(c.entries) > c.maxEntries || c.totalBytes > c.maxBytes {
+		element := c.fifo.Front()
+		if element == nil {
+			return
 		}
+		entry, _ := element.Value.(*nxDomainCutEntry)
+		if entry == nil {
+			c.fifo.Remove(element)
+			continue
+		}
+		c.removeEntryLocked(entry)
 	}
 }
 
@@ -377,11 +579,21 @@ func (c *nxDomainCutCache) len() int {
 	if c == nil {
 		return 0
 	}
-	return c.cache.Len()
+	c.mu.RLock()
+	length := len(c.entries)
+	c.mu.RUnlock()
+	return length
 }
 
 func (c *nxDomainCutCache) stop() {
-	if c != nil {
-		c.cache.Stop()
+	if c == nil {
+		return
 	}
+	c.mu.Lock()
+	c.stopped = true
+	c.entries = make(map[nxDomainCutID]*nxDomainCutEntry)
+	c.zones = make(map[nxDomainCutZoneKey]*nxDomainCutZoneState)
+	c.fifo.Init()
+	c.totalBytes = 0
+	c.mu.Unlock()
 }
