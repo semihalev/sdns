@@ -378,8 +378,9 @@ func TestInterruptOnCancelWaitsForStartedCallback(t *testing.T) {
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
+	co := &Conn{Conn: conn}
 	ctx, cancel := context.WithCancel(context.Background())
-	cleanup := InterruptOnCancel(ctx, conn)
+	interrupt := co.BeginCancelInterrupt(ctx)
 	cancel()
 
 	select {
@@ -389,24 +390,43 @@ func TestInterruptOnCancelWaitsForStartedCallback(t *testing.T) {
 	}
 	cleanupDone := make(chan struct{})
 	go func() {
-		cleanup()
+		interrupt.Stop()
 		close(cleanupDone)
+	}()
+	concurrentCleanupDone := make(chan struct{})
+	go func() {
+		interrupt.Stop()
+		nextCtx, nextCancel := context.WithCancel(context.Background())
+		next := co.BeginCancelInterrupt(nextCtx)
+		next.Stop()
+		nextCancel()
+		close(concurrentCleanupDone)
 	}()
 	select {
 	case <-cleanupDone:
 		t.Fatal("cleanup returned while SetDeadline callback was still running")
 	case <-time.After(20 * time.Millisecond):
 	}
-	close(conn.release)
 	select {
-	case <-cleanupDone:
-	case <-time.After(time.Second):
-		t.Fatal("cleanup did not return after cancellation callback completed")
+	case <-concurrentCleanupDone:
+		t.Fatal("concurrent cleanup returned while the first cleanup was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(conn.release)
+	for name, done := range map[string]<-chan struct{}{
+		"leader":     cleanupDone,
+		"concurrent": concurrentCleanupDone,
+	} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s cleanup did not return after cancellation callback completed", name)
+		}
 	}
 
 	secondCleanupDone := make(chan struct{})
 	go func() {
-		cleanup()
+		interrupt.Stop()
 		close(secondCleanupDone)
 	}()
 	select {
@@ -419,12 +439,12 @@ func TestInterruptOnCancelWaitsForStartedCallback(t *testing.T) {
 func TestInterruptOnCancelCleanupIsIdempotentAfterStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cleanup := InterruptOnCancel(ctx, nil)
-	cleanup()
+	interrupt := new(Conn).BeginCancelInterrupt(ctx)
+	interrupt.Stop()
 
 	done := make(chan struct{})
 	go func() {
-		cleanup()
+		interrupt.Stop()
 		close(done)
 	}()
 	select {
@@ -432,6 +452,24 @@ func TestInterruptOnCancelCleanupIsIdempotentAfterStop(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("second cleanup blocked after the callback was stopped")
 	}
+}
+
+func TestCancelInterruptStaleHandleDoesNotStopNextGeneration(t *testing.T) {
+	co := new(Conn)
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	defer firstCancel()
+	first := co.BeginCancelInterrupt(firstCtx)
+	first.Stop()
+
+	secondCtx, secondCancel := context.WithCancel(context.Background())
+	defer secondCancel()
+	second := co.BeginCancelInterrupt(secondCtx)
+
+	first.Stop()
+	if !co.cancelInterrupt.active() {
+		t.Fatal("stale handle stopped the next generation")
+	}
+	second.Stop()
 }
 
 func TestClientExchange_NilAttemptHookPreservesOperationError(t *testing.T) {
@@ -495,4 +533,25 @@ func BenchmarkClientExchangeUDP(b *testing.B) {
 			b.Fatalf("exchange: %v", err)
 		}
 	}
+}
+
+func BenchmarkCancelInterrupt(b *testing.B) {
+	b.Run("background", func(b *testing.B) {
+		co := new(Conn)
+		ctx := context.Background()
+		b.ReportAllocs()
+		for b.Loop() {
+			co.BeginCancelInterrupt(ctx).Stop()
+		}
+	})
+
+	b.Run("cancelable", func(b *testing.B) {
+		co := new(Conn)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		b.ReportAllocs()
+		for b.Loop() {
+			co.BeginCancelInterrupt(ctx).Stop()
+		}
+	})
 }

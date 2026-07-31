@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
 )
@@ -861,6 +863,360 @@ func TestChainRootAndNestedShareRecursionWorkLedger(t *testing.T) {
 	}
 	if !rootLedger.finished.Load() {
 		t.Fatal("outer Chain did not publish the request-tree completion")
+	}
+}
+
+func TestLazyChainMaterializesWorkOnFirstUseWithOuterPolicy(t *testing.T) {
+	rootPolicy := RecursionWorkPolicy{
+		Mode:               RecursionWorkEnforce,
+		MaxOutboundQueries: 9,
+		MaxInternalQueries: 7,
+	}
+	nestedPolicy := RecursionWorkPolicy{
+		Mode:               RecursionWorkShadow,
+		MaxOutboundQueries: 1,
+		MaxInternalQueries: 1,
+	}
+
+	var (
+		before    *RecursionWorkLedger
+		ledger    *RecursionWorkLedger
+		pinnedCtx context.Context
+	)
+	ch := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+		before = RecursionWorkFrom(ctx)
+		pinnedCtx, ledger = EnsureRecursionWork(ctx, nestedPolicy)
+		if err := DebitRecursionWork(pinnedCtx, RecursionWorkOutboundQuery); err != nil {
+			t.Fatalf("outbound debit: %v", err)
+		}
+		ch.Cancel()
+	})}, rootPolicy)
+	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+
+	ctx := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+	ch.Next(ctx)
+
+	if before != nil {
+		t.Fatalf("ledger materialized before first use: %p", before)
+	}
+	if ledger == nil {
+		t.Fatal("first work use did not materialize a ledger")
+	}
+	snapshot := ledger.Snapshot()
+	if snapshot.Mode != rootPolicy.Mode ||
+		snapshot.MaxOutboundQueries != rootPolicy.MaxOutboundQueries ||
+		snapshot.MaxInternalQueries != rootPolicy.MaxInternalQueries ||
+		snapshot.OutboundQueries != 1 {
+		t.Fatalf("lazy ledger snapshot = %+v, want outer policy and one debit", snapshot)
+	}
+	if !ledger.finished.Load() {
+		t.Fatal("outer Chain did not finish the lazily created ledger")
+	}
+
+	ch.Meta.Reset()
+	if got := RecursionWorkFrom(pinnedCtx); got != ledger {
+		t.Fatalf("pinned context resolved ledger %p after pooled meta reset, want %p", got, ledger)
+	}
+}
+
+func TestLazyChainSkipsLedgerWhenNoRecursiveWorkRuns(t *testing.T) {
+	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
+	var got *RecursionWorkLedger
+	ch := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+		got = RecursionWorkFrom(ctx)
+		ch.Cancel()
+	})}, policy)
+	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+
+	ctx := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+	ch.Next(ctx)
+
+	if got != nil || ch.Meta.RecursionWork() != nil {
+		t.Fatalf("no-work request materialized ledger handler=%p meta=%p", got, ch.Meta.RecursionWork())
+	}
+}
+
+func TestLazyChainNoWorkContextCannotDebitReusedMetaLedger(t *testing.T) {
+	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
+	var contexts []context.Context
+	ch := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+		contexts = append(contexts, ctx)
+		if len(contexts) == 2 {
+			if err := DebitRecursionWork(ctx, RecursionWorkOutboundQuery); err != nil {
+				t.Fatalf("second-request debit: %v", err)
+			}
+		}
+		ch.Cancel()
+	})}, policy)
+
+	first := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer first.Cancel()
+	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+	ch.Next(first)
+	if got := RecursionWorkFrom(contexts[0]); got != nil {
+		t.Fatalf("completed no-work request resolved ledger %p", got)
+	}
+
+	second := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer second.Cancel()
+	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+	ch.Next(second)
+	secondLedger := RecursionWorkFrom(contexts[1])
+	if secondLedger == nil {
+		t.Fatal("second request did not materialize its ledger")
+	}
+	before := secondLedger.Snapshot()
+
+	if got := RecursionWorkFrom(contexts[0]); got != nil {
+		t.Fatalf("old context observed reused ledger %p", got)
+	}
+	_, closedWork := EnsureRecursionWork(contexts[0], policy)
+	if closedWork == nil {
+		t.Fatal("late ensure returned nil instead of a closed work guard")
+	}
+	if err := closedWork.EnforcementError(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("late ensure error = %v, want context.Canceled", err)
+	}
+	if err := DebitRecursionWork(contexts[0], RecursionWorkOutboundQuery); !errors.Is(err, context.Canceled) {
+		t.Fatalf("late old-context debit = %v, want context.Canceled", err)
+	}
+	after := secondLedger.Snapshot()
+	if after.OutboundQueries != before.OutboundQueries {
+		t.Fatalf("old context changed new ledger outbound count from %d to %d",
+			before.OutboundQueries, after.OutboundQueries)
+	}
+	if ch.Meta.RecursionWork() != secondLedger {
+		t.Fatalf("pooled meta ledger = %p, want second request ledger %p",
+			ch.Meta.RecursionWork(), secondLedger)
+	}
+}
+
+func TestLazyChainDisabledEnsureUsesEnabledOuterPolicy(t *testing.T) {
+	outerPolicy := RecursionWorkPolicy{
+		Mode:               RecursionWorkEnforce,
+		MaxOutboundQueries: 7,
+		MaxInternalQueries: 5,
+	}
+	var ledger *RecursionWorkLedger
+	ch := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+		var returned context.Context
+		returned, ledger = EnsureRecursionWork(ctx, RecursionWorkPolicy{})
+		if returned != ctx {
+			t.Fatal("lazy outer ledger added an unnecessary context wrapper")
+		}
+		ch.Cancel()
+	})}, outerPolicy)
+	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+
+	ctx := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+	ch.Next(ctx)
+
+	if ledger == nil {
+		t.Fatal("disabled nested policy bypassed the enabled outer policy")
+	}
+	snapshot := ledger.Snapshot()
+	if snapshot.Mode != outerPolicy.Mode ||
+		snapshot.MaxOutboundQueries != outerPolicy.MaxOutboundQueries ||
+		snapshot.MaxInternalQueries != outerPolicy.MaxInternalQueries {
+		t.Fatalf("ledger policy = %+v, want outer policy %+v", snapshot, outerPolicy)
+	}
+	if !ledger.finished.Load() {
+		t.Fatal("outer Chain did not finish the ledger")
+	}
+}
+
+func TestLazyChainConcurrentFirstDebitsShareOneLedger(t *testing.T) {
+	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
+	const workers = 16
+	var ledger *RecursionWorkLedger
+	ch := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+		var wg sync.WaitGroup
+		errs := make(chan error, workers)
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- DebitRecursionWork(ctx, RecursionWorkOutboundQuery)
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Errorf("concurrent debit: %v", err)
+			}
+		}
+		ledger = RecursionWorkFrom(ctx)
+		ch.Cancel()
+	})}, policy)
+	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+
+	ctx := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+	ch.Next(ctx)
+
+	if ledger == nil {
+		t.Fatal("concurrent first debits did not establish a ledger")
+	}
+	if got := ledger.Snapshot().OutboundQueries; got != workers {
+		t.Fatalf("outbound debits = %d, want %d", got, workers)
+	}
+	if !ledger.finished.Load() {
+		t.Fatal("outer Chain did not finish the shared ledger")
+	}
+}
+
+func TestLazyChainCompletionRacesFirstDebitWithoutLeakingLedger(t *testing.T) {
+	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
+	const iterations = 250
+
+	for range iterations {
+		var (
+			captured context.Context
+			debitErr error
+			done     = make(chan struct{})
+		)
+		ch := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+			captured = ctx
+			start := make(chan struct{})
+			go func() {
+				<-start
+				debitErr = DebitRecursionWork(ctx, RecursionWorkOutboundQuery)
+				close(done)
+			}()
+			close(start)
+			ch.Cancel()
+		})}, policy)
+		ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+
+		ctx := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+		ch.Next(ctx)
+		<-done
+
+		ledger := RecursionWorkFrom(captured)
+		if ledger == nil {
+			if !errors.Is(debitErr, context.Canceled) {
+				t.Fatalf("closed racing debit = %v, want context.Canceled", debitErr)
+			}
+			if leaked := ch.Meta.RecursionWork(); leaked != nil {
+				t.Fatalf("closed request leaked unpinned ledger %p into pooled metadata", leaked)
+			}
+		} else {
+			if debitErr != nil {
+				t.Fatalf("accepted racing debit: %v", debitErr)
+			}
+			if !ledger.finished.Load() {
+				t.Fatalf("racing request ledger %p was not finished", ledger)
+			}
+			if got := ledger.Snapshot().OutboundQueries; got != 1 {
+				t.Fatalf("racing request outbound count = %d, want 1", got)
+			}
+		}
+		ctx.Cancel()
+	}
+}
+
+func TestLazyChainCompletionRacesFirstEnsureWithoutLeakingLedger(t *testing.T) {
+	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
+	const iterations = 250
+
+	for range iterations {
+		var (
+			captured context.Context
+			returned context.Context
+			ledger   *RecursionWorkLedger
+			done     = make(chan struct{})
+		)
+		ch := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+			captured = ctx
+			start := make(chan struct{})
+			go func() {
+				<-start
+				returned, ledger = EnsureRecursionWork(ctx, policy)
+				close(done)
+			}()
+			close(start)
+			ch.Cancel()
+		})}, policy)
+		ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+
+		ctx := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+		ch.Next(ctx)
+		<-done
+
+		if returned != captured {
+			t.Fatal("lazy ensure added an unnecessary context wrapper")
+		}
+		switch ledger {
+		case nil:
+			t.Fatal("racing ensure returned no ledger")
+		case recursionWorkClosed:
+			if active := RecursionWorkFrom(captured); active != nil {
+				t.Fatalf("closed request exposed ledger %p", active)
+			}
+			if leaked := ch.Meta.RecursionWork(); leaked != nil {
+				t.Fatalf("closed request leaked unpinned ledger %p into pooled metadata", leaked)
+			}
+			if !errors.Is(ledger.EnforcementError(), context.Canceled) {
+				t.Fatalf("closed ledger error = %v, want context.Canceled", ledger.EnforcementError())
+			}
+		default:
+			if active := RecursionWorkFrom(captured); active != ledger {
+				t.Fatalf("active racing ledger = %p, want %p", active, ledger)
+			}
+			if !ledger.finished.Load() {
+				t.Fatalf("racing request ledger %p was not finished", ledger)
+			}
+		}
+		ctx.Cancel()
+	}
+}
+
+func TestLazyOuterChainOwnsQueryerLedgerUntilReturn(t *testing.T) {
+	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
+	subHandler := HandlerFunc(func(_ context.Context, ch *Chain) {
+		reply := new(dns.Msg)
+		reply.SetReply(ch.Request)
+		_ = ch.Writer.WriteMsg(reply)
+		ch.Cancel()
+	})
+	sub := newPipeline(
+		[]Handler{subHandler},
+		map[string]Handler{subHandler.Name(): subHandler},
+		[]string{subHandler.Name()},
+		policy,
+	)
+	queryer := NewPipelineQueryer(sub)
+
+	var ledger *RecursionWorkLedger
+	outer := newChain([]Handler{HandlerFunc(func(ctx context.Context, ch *Chain) {
+		if _, err := queryer.Query(ctx, recursionWorkTestRequest()); err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		ledger = RecursionWorkFrom(ctx)
+		if ledger == nil {
+			t.Fatal("Query did not materialize the outer ledger")
+		}
+		if ledger.rootDone.Load() {
+			t.Fatal("nested Query finished the outer ledger")
+		}
+		ch.Cancel()
+	})}, policy)
+	outer.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), recursionWorkTestRequest())
+
+	ctx := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+	outer.Next(ctx)
+
+	if ledger == nil || !ledger.finished.Load() {
+		t.Fatalf("ledger completion after outer return = ledger:%p finished:%v",
+			ledger, ledger != nil && ledger.finished.Load())
+	}
+	if got := ledger.Snapshot().InternalQueries; got != 1 {
+		t.Fatalf("internal query count = %d, want 1", got)
 	}
 }
 

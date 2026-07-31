@@ -27,8 +27,9 @@ var ErrQuestion = errors.New("dns: response question did not match request")
 // (either a connected UDP socket or a TCP/TLS stream) and tracks the
 // negotiated UDP receive size.
 type Conn struct {
-	net.Conn        // underlying connection
-	UDPSize  uint16 // minimum receive buffer for UDP messages
+	net.Conn               // underlying connection
+	UDPSize         uint16 // minimum receive buffer for UDP messages
+	cancelInterrupt cancelInterruptState
 }
 
 // Exchange performs a synchronous query over co: it writes m, reads the

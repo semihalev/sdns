@@ -19,8 +19,8 @@ type recursionWorkProbe struct {
 func (p *recursionWorkProbe) Name() string { return "recursion-work-probe" }
 
 func (p *recursionWorkProbe) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	p.ledger = middleware.RecursionWorkFrom(ctx)
 	p.err = middleware.DebitRecursionWork(ctx, middleware.RecursionWorkOutboundQuery)
+	p.ledger = middleware.RecursionWorkFrom(ctx)
 
 	resp := new(dns.Msg)
 	resp.SetReply(ch.Request)
@@ -80,6 +80,36 @@ func TestServeDNSUsesPipelineRecursionWorkPolicy(t *testing.T) {
 	}
 	if got := afterSum - beforeSum; got != 1 {
 		t.Fatalf("fanout sum delta = %v, want one outbound attempt", got)
+	}
+}
+
+func TestServeDNSNoRecursiveWorkSkipsLedgerAndFanoutObservation(t *testing.T) {
+	cfg := &config.Config{
+		RecursionFirewall: config.RecursionFirewallConfig{
+			Mode:               config.RecursionFirewallModeShadow,
+			MaxOutboundQueries: 3,
+			MaxInternalQueries: 2,
+		},
+	}
+	var ledger *middleware.RecursionWorkLedger
+	handler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+		ledger = middleware.RecursionWorkFrom(ctx)
+		ch.Cancel()
+	})
+	s := serverWithHandler(cfg, handler)
+
+	beforeCount, beforeSum := recursionFanoutHistogram(t)
+	req := new(dns.Msg)
+	req.SetQuestion("local-hit.example.", dns.TypeA)
+	s.ServeDNS(mock.NewWriter("udp", "192.0.2.1:53000"), req)
+	afterCount, afterSum := recursionFanoutHistogram(t)
+
+	if ledger != nil {
+		t.Fatalf("local terminal response created recursion-work ledger %p", ledger)
+	}
+	if afterCount != beforeCount || afterSum != beforeSum {
+		t.Fatalf("no-work request changed fanout histogram count/sum from %d/%v to %d/%v",
+			beforeCount, beforeSum, afterCount, afterSum)
 	}
 }
 

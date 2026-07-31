@@ -78,8 +78,8 @@ func (s *Server) ServeDNSContext(parent context.Context, w dns.ResponseWriter, r
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(parent, s.queryTimeout())
-	defer cancel()
+	ctx := contextutil.WithLazyTimeout(parent, s.queryTimeout())
+	defer ctx.Cancel()
 	if contextutil.EffectiveError(ctx) != nil {
 		return
 	}

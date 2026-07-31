@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -82,9 +81,9 @@ func (c *Client) Exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.
 	// deadline can retain this exchange until c.Timeout (or forever when it is
 	// zero). The client is dial-per-Exchange, so forcing its deadline cannot
 	// affect another request.
-	stopCancelInterrupt := InterruptOnCancel(ctx, co)
+	cancelInterrupt := co.BeginCancelInterrupt(ctx)
 	resp, rtt, err := co.Exchange(req)
-	stopCancelInterrupt()
+	cancelInterrupt.Stop()
 	_ = co.Close()
 	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
 		return nil, rtt, ctxErr
@@ -144,26 +143,5 @@ func (c *Client) setDeadline(ctx context.Context, co *Conn) {
 	}
 	if !deadline.IsZero() {
 		_ = co.SetDeadline(deadline)
-	}
-}
-
-// InterruptOnCancel makes a synchronous DNS connection operation observe
-// context cancellation after dialing has completed. The returned cleanup
-// function must be called before conn or its wrapper can be pooled/reused. It
-// waits for an already-started callback, preventing a late SetDeadline from
-// landing on the next borrower of a pooled wrapper or TCP connection.
-func InterruptOnCancel(ctx context.Context, conn net.Conn) func() {
-	callbackDone := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() {
-		defer close(callbackDone)
-		_ = conn.SetDeadline(time.Now())
-	})
-	var cleanupOnce sync.Once
-	return func() {
-		cleanupOnce.Do(func() {
-			if !stop() {
-				<-callbackDone
-			}
-		})
 	}
 }

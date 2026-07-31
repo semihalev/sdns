@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/contextutil"
 )
 
 // ResponseMeta carries resolver-produced metadata about a response
@@ -129,6 +130,12 @@ type ResponseMeta struct {
 	// NODATA provenance produced by this resolver. Reset detaches the complete
 	// set so a pooled Chain cannot expose one request's validation to the next.
 	validatedNegativeProofs atomic.Pointer[validatedNegativeProofResponseSet]
+
+	// workPolicy is immutable after a Chain is constructed. It lets the
+	// server's request context create the ledger only when real recursive work
+	// begins while preserving the outer pipeline's first-policy precedence.
+	// Standalone ResponseMeta values leave it zero.
+	workPolicy RecursionWorkPolicy
 }
 
 // (*ResponseMeta).BoundCut folds a delegation-cut deadline into the
@@ -389,10 +396,18 @@ func (m *ResponseMeta) ResolutionAttemptGuard() *ResolutionAttemptGuard {
 	return m.attempts.Load()
 }
 
-// EnsureRecursionWork returns the request tree's ledger, installing one with
-// policy when this is the first recursive work in the tree.
-func (m *ResponseMeta) EnsureRecursionWork(policy RecursionWorkPolicy) *RecursionWorkLedger {
-	if m == nil || !policy.Enabled() {
+// ensureRecursionWork returns the request tree's ledger, installing one with
+// policy when this is the first recursive work in the tree. Creation stays
+// behind the context-aware EnsureRecursionWork API so a lazy request owner's
+// completion tombstone can linearize against the first install.
+func (m *ResponseMeta) ensureRecursionWork(policy RecursionWorkPolicy) *RecursionWorkLedger {
+	if m == nil {
+		return nil
+	}
+	if m.workPolicy.Enabled() {
+		policy = m.workPolicy
+	}
+	if !policy.Enabled() {
 		return nil
 	}
 	if ledger := m.work.Load(); ledger != nil {
@@ -424,6 +439,24 @@ var responseMetaKey = &responseMetaKeyType{}
 // tree's response metadata sink.
 func WithResponseMeta(ctx context.Context, m *ResponseMeta) context.Context {
 	return context.WithValue(ctx, responseMetaKey, m)
+}
+
+func withResponseMeta(ctx context.Context, m *ResponseMeta) (context.Context, bool) {
+	if contextutil.TrySetValueProvider(ctx, m) {
+		return ctx, true
+	}
+	return context.WithValue(ctx, responseMetaKey, m), false
+}
+
+// ContextValue lets the root Chain expose its pooled ResponseMeta through a
+// dedicated lazy server request context without another context.WithValue
+// allocation. Exported WithResponseMeta retains normal derived-context
+// isolation.
+func (m *ResponseMeta) ContextValue(key any) (any, bool) {
+	if key == responseMetaKey {
+		return m, true
+	}
+	return nil, false
 }
 
 // ResponseMetaFrom returns the ctx's response metadata sink, or nil
@@ -557,12 +590,14 @@ func NewChain(handlers []Handler) *Chain {
 }
 
 func newChain(handlers []Handler, workPolicy RecursionWorkPolicy) *Chain {
-	return &Chain{
+	ch := &Chain{
 		Writer:     &responseWriter{},
 		handlers:   handlers,
 		count:      len(handlers),
 		workPolicy: workPolicy,
 	}
+	ch.Meta.workPolicy = workPolicy
+	return ch
 }
 
 // Next invokes the next handler in the chain. Each handler is responsible
@@ -577,16 +612,35 @@ func (ch *Chain) Next(ctx context.Context) {
 	// pointers, so retries and child lookups cannot reset their budgets.
 	if ch.pos == 0 {
 		meta := ResponseMetaFrom(ctx)
+		ownsMeta := meta == nil
+		lazyOwner := false
 		if meta == nil {
 			meta = &ch.Meta
-			ctx = WithResponseMeta(ctx, meta)
+			var lazyMeta bool
+			ctx, lazyMeta = withResponseMeta(ctx, meta)
+			if lazyMeta && beginLazyRecursionWorkOwner(ctx) {
+				lazyOwner = true
+				// The server request context owns exact request-lifetime
+				// state. Delay ledger creation until real recursive work and
+				// close the pin before pooled metadata can be reused.
+				defer finishLazyRecursionWork(ctx, meta)
+			}
 		}
 		if ch.workPolicy.Enabled() {
-			hadLedger := RecursionWorkFrom(ctx) != nil
-			var ledger *RecursionWorkLedger
-			ctx, ledger = EnsureRecursionWork(ctx, ch.workPolicy)
-			if !hadLedger {
-				defer ledger.finish()
+			switch {
+			case ownsMeta && lazyOwner:
+				// The deferred owner above publishes a ledger only if work
+				// later materializes one.
+			case !ownsMeta && RecursionWorkRootOwned(ctx) && meta.workPolicy.Enabled():
+				// A nested pipeline inherits an active outer policy and
+				// completion boundary without materializing it early.
+			default:
+				hadLedger := RecursionWorkFrom(ctx) != nil
+				var ledger *RecursionWorkLedger
+				ctx, ledger = EnsureRecursionWork(ctx, ch.workPolicy)
+				if !hadLedger && ledger != nil {
+					defer ledger.finish()
+				}
 			}
 		}
 	}

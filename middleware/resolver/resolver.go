@@ -348,9 +348,10 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority.Servers, root bool, depth int, level int, nomin bool, parentDS []dns.RR, extra ...bool) (*dns.Msg, error) {
 	ctx = dnssec.EnsureNSEC3HashMemo(ctx)
 	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
+	rootOwnsWork := middleware.RecursionWorkRootOwned(ctx)
 	hadWork := middleware.RecursionWorkFrom(ctx) != nil
 	ctx, work := middleware.EnsureRecursionWork(ctx, r.workPolicy)
-	if !hadWork && work != nil {
+	if !rootOwnsWork && !hadWork && work != nil {
 		defer middleware.FinishRecursionWork(ctx)
 	}
 	if work != nil {
@@ -1701,9 +1702,9 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	}
 	_ = co.SetDeadline(deadline)
 
-	stopCancelInterrupt := InterruptOnCancel(ctx, co)
+	cancelInterrupt := co.BeginCancelInterrupt(ctx)
 	resp, rtt, err = co.Exchange(req)
-	stopCancelInterrupt()
+	cancelInterrupt.Stop()
 	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
 		resp = nil
 		err = ctxErr

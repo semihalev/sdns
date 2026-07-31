@@ -8,9 +8,25 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestWithResponseMetaKeepsBaseContextIsolated(t *testing.T) {
+	base := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer base.Cancel()
+	meta := new(ResponseMeta)
+
+	derived := WithResponseMeta(base, meta)
+
+	if got := ResponseMetaFrom(base); got != nil {
+		t.Fatalf("base context was mutated with ResponseMeta %p", got)
+	}
+	if got := ResponseMetaFrom(derived); got != meta {
+		t.Fatalf("derived context ResponseMeta = %p, want %p", got, meta)
+	}
+}
 
 func TestResponseMeta_ConcurrentBoundCut(t *testing.T) {
 	var meta ResponseMeta
