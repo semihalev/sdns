@@ -143,6 +143,70 @@ func TestPrepareNSEC3RingDeduplicatesIdenticalOwnerAndRejectsConflict(t *testing
 	}
 }
 
+func TestPrepareNSEC3RingRejectsMixedParameterChainsBeforeHashWork(t *testing.T) {
+	const (
+		qname = "missing.rollover.example."
+		zone  = "example."
+	)
+	primary := ringTestNSEC3SingletonChain(t, zone, 0, "", 0)
+
+	tests := []struct {
+		name           string
+		second         []dns.RR
+		secondComplete bool
+	}{
+		{
+			name: "second complete chain",
+			second: []dns.RR{
+				ringTestNSEC3SingletonChain(t, zone, 0, "AA", 1),
+			},
+			secondComplete: true,
+		},
+		{
+			name: "second incomplete chain",
+			second: []dns.RR{
+				ringTestNSEC3PartialChain(t, qname, zone, 0, "AA", 1),
+			},
+		},
+	}
+
+	verify := func(records []dns.RR, work NSEC3Work) error {
+		t.Helper()
+		msg := new(dns.Msg).SetQuestion(qname, dns.TypeA)
+		msg.Rcode = dns.RcodeNameError
+		_, err := VerifyNameErrorForZoneWithWork(msg, records, zone, work)
+		return err
+	}
+
+	if err := verify([]dns.RR{primary}, nil); err != nil {
+		t.Fatalf("primary complete chain rejected: %v", err)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.secondComplete {
+				if err := verify(tt.second, nil); err != nil {
+					t.Fatalf("second complete chain rejected in isolation: %v", err)
+				}
+			} else if err := verify(tt.second, nil); !errors.Is(err, ErrNSECMissingCoverage) {
+				t.Fatalf("second incomplete chain error = %v, want %v",
+					err, ErrNSECMissingCoverage)
+			}
+
+			records := append([]dns.RR{primary}, tt.second...)
+			work := &countingNSEC3Work{limit: 128}
+			if err := verify(records, work); !errors.Is(err, ErrNSECMissingCoverage) {
+				t.Fatalf("mixed-parameter response error = %v, want %v",
+					err, ErrNSECMissingCoverage)
+			}
+			if work.calls != 0 {
+				t.Fatalf("mixed-parameter preflight consumed %d hash debits, want 0",
+					work.calls)
+			}
+		})
+	}
+}
+
 func TestNSEC3RingLookupMatchesStrictIntervalReference(t *testing.T) {
 	const cases = 256
 	parameters := ringTestParameters()
@@ -322,6 +386,61 @@ func ringTestRecordForName(
 	record := ringTestEntry(owner, next).rr
 	record.Hdr.Name = aggressiveNSEC3Base32.EncodeToString(owner) + "." + dns.Fqdn(zone)
 	return record
+}
+
+func ringTestNSEC3SingletonChain(
+	t *testing.T,
+	zone string,
+	iterations uint16,
+	salt string,
+	saltLength uint8,
+) *dns.NSEC3 {
+	t.Helper()
+	apexHash := aggressiveTestNSEC3Hash(t, zone, iterations, salt)
+	return &dns.NSEC3{
+		Hdr: dns.RR_Header{
+			Name:   aggressiveTestNSEC3Owner(apexHash, zone),
+			Rrtype: dns.TypeNSEC3,
+			Class:  dns.ClassINET,
+			Ttl:    300,
+		},
+		Hash:       dns.SHA1,
+		Iterations: iterations,
+		SaltLength: saltLength,
+		Salt:       salt,
+		HashLength: 20,
+		NextDomain: apexHash,
+		TypeBitMap: []uint16{dns.TypeNS, dns.TypeSOA},
+	}
+}
+
+func ringTestNSEC3PartialChain(
+	t *testing.T,
+	name string,
+	zone string,
+	iterations uint16,
+	salt string,
+	saltLength uint8,
+) *dns.NSEC3 {
+	t.Helper()
+	hash := aggressiveTestNSEC3Hash(t, name, iterations, salt)
+	return &dns.NSEC3{
+		Hdr: dns.RR_Header{
+			Name: aggressiveTestNSEC3Owner(
+				adjacentNSEC3Hash(t, hash, -1),
+				zone,
+			),
+			Rrtype: dns.TypeNSEC3,
+			Class:  dns.ClassINET,
+			Ttl:    300,
+		},
+		Hash:       dns.SHA1,
+		Iterations: iterations,
+		SaltLength: saltLength,
+		Salt:       salt,
+		HashLength: 20,
+		NextDomain: adjacentNSEC3Hash(t, hash, 1),
+	}
 }
 
 func ringTestWrappingCover(

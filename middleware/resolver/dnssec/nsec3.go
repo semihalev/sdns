@@ -121,9 +121,13 @@ type preparedNSEC3Set struct {
 
 // prepareNSEC3Set binds every usable record to one signer zone and one
 // (algorithm, iterations, salt) chain before semantic validation starts.
-// Without this preflight, closest-encloser, next-closer, and wildcard
-// witnesses could be assembled from different parameter chains or from an
-// extra label below the actual RRSIG signer.
+// RFC 5155 §7.2 requires all NSEC3 RRs in one response to use the same
+// parameter tuple, even when multiple valid chains coexist in the zone. Its
+// §8.2 explicitly permits a validator to treat a mixed-parameter response as
+// bogus. This implementation deliberately takes that fail-closed option
+// rather than choosing a chain or risking closest-encloser, next-closer, and
+// wildcard witnesses being assembled across chains. Binding owners to the
+// exact RRSIG signer also excludes an extra label below the signer zone.
 func prepareNSEC3Set(records []dns.RR, signer string) (preparedNSEC3Set, error) {
 	normalized := normalizeNSEC3Set(records)
 	var (
@@ -192,6 +196,9 @@ func prepareNSEC3Set(records []dns.RR, signer string) (preparedNSEC3Set, error) 
 		} else if current.hash != parameters.hash ||
 			current.iterations != parameters.iterations ||
 			!bytes.Equal(current.salt, parameters.salt) {
+			// Deliberately reject the whole non-conforming response under
+			// RFC 5155 §7.2 and the validator option in §8.2. A server with
+			// multiple chains must select one homogeneous chain to serve.
 			return preparedNSEC3Set{}, ErrNSECMissingCoverage
 		}
 
