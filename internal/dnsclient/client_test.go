@@ -393,47 +393,46 @@ func TestInterruptOnCancelWaitsForStartedCallback(t *testing.T) {
 		interrupt.Stop()
 		close(cleanupDone)
 	}()
-	concurrentCleanupDone := make(chan struct{})
-	go func() {
-		interrupt.Stop()
-		nextCtx, nextCancel := context.WithCancel(context.Background())
-		next := co.BeginCancelInterrupt(nextCtx)
-		next.Stop()
-		nextCancel()
-		close(concurrentCleanupDone)
-	}()
 	select {
 	case <-cleanupDone:
 		t.Fatal("cleanup returned while SetDeadline callback was still running")
 	case <-time.After(20 * time.Millisecond):
 	}
-	select {
-	case <-concurrentCleanupDone:
-		t.Fatal("concurrent cleanup returned while the first cleanup was still running")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(conn.release)
-	for name, done := range map[string]<-chan struct{}{
-		"leader":     cleanupDone,
-		"concurrent": concurrentCleanupDone,
-	} {
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatalf("%s cleanup did not return after cancellation callback completed", name)
+
+	state := &co.cancelInterrupt
+	deadline := time.Now().Add(time.Second)
+	for {
+		state.mu.Lock()
+		phase := state.phase
+		state.mu.Unlock()
+		if phase == cancelInterruptStopping {
+			break
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("interrupt phase = %d, want stopping", phase)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("concurrent duplicate Stop did not panic")
+			}
+		}()
+		interrupt.Stop()
+	}()
+
+	close(conn.release)
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not return after cancellation callback completed")
 	}
 
-	secondCleanupDone := make(chan struct{})
-	go func() {
-		interrupt.Stop()
-		close(secondCleanupDone)
-	}()
-	select {
-	case <-secondCleanupDone:
-	case <-time.After(time.Second):
-		t.Fatal("cleanup was not idempotent")
-	}
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	next := co.BeginCancelInterrupt(nextCtx)
+	next.Stop()
+	nextCancel()
 }
 
 func TestInterruptOnCancelCleanupIsIdempotentAfterStop(t *testing.T) {
@@ -470,6 +469,58 @@ func TestCancelInterruptStaleHandleDoesNotStopNextGeneration(t *testing.T) {
 		t.Fatal("stale handle stopped the next generation")
 	}
 	second.Stop()
+}
+
+func TestCancelInterruptRejectsOverlappingBegin(t *testing.T) {
+	co := new(Conn)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	interrupt := co.BeginCancelInterrupt(ctx)
+	defer interrupt.Stop()
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("overlapping BeginCancelInterrupt did not panic")
+			}
+		}()
+		co.BeginCancelInterrupt(ctx)
+	}()
+}
+
+type panicWriteConn struct {
+	net.Conn
+}
+
+func (panicWriteConn) Write([]byte) (int, error) {
+	panic("write failed")
+}
+
+func TestExchangeContextStopsInterruptAfterPanic(t *testing.T) {
+	co := &Conn{Conn: panicWriteConn{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	panicked := false
+	func() {
+		defer func() {
+			panicked = recover() != nil
+		}()
+		_, _, _ = co.ExchangeContext(ctx, newReq())
+	}()
+	if !panicked {
+		t.Fatal("panicking connection did not propagate its panic")
+	}
+	co.cancelInterrupt.mu.Lock()
+	phase := co.cancelInterrupt.phase
+	co.cancelInterrupt.mu.Unlock()
+	if phase != cancelInterruptIdle {
+		t.Fatalf("panic left cancellation interrupt in phase %d, want idle", phase)
+	}
+
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	next := co.BeginCancelInterrupt(nextCtx)
+	next.Stop()
+	nextCancel()
 }
 
 func TestClientExchange_NilAttemptHookPreservesOperationError(t *testing.T) {

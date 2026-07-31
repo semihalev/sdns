@@ -81,9 +81,7 @@ func (c *Client) Exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.
 	// deadline can retain this exchange until c.Timeout (or forever when it is
 	// zero). The client is dial-per-Exchange, so forcing its deadline cannot
 	// affect another request.
-	cancelInterrupt := co.BeginCancelInterrupt(ctx)
-	resp, rtt, err := co.Exchange(req)
-	cancelInterrupt.Stop()
+	resp, rtt, err := co.ExchangeContext(ctx, req)
 	_ = co.Close()
 	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
 		return nil, rtt, ctxErr

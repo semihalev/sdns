@@ -2,7 +2,6 @@ package dnsclient
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"time"
 )
@@ -14,12 +13,11 @@ const (
 )
 
 type cancelInterruptState struct {
-	mu           sync.Mutex
-	done         sync.WaitGroup
-	generation   uint64
-	phase        uint32
-	participants uint32
-	stop         func() bool
+	mu         sync.Mutex
+	done       sync.WaitGroup
+	generation uint64
+	phase      uint32
+	stop       func() bool
 }
 
 // CancelInterrupt identifies one connection-cancellation registration.
@@ -34,9 +32,10 @@ type CancelInterrupt struct {
 // underlying connection rather than the reusable wrapper, and Stop joins an
 // already-started callback before reuse is allowed.
 //
-// A Conn supports one active interrupt registration at a time. The zero handle
-// returned for a context without a Done channel has no allocation or cleanup
-// cost.
+// A Conn supports one active interrupt registration at a time; overlapping
+// registration is a connection-reuse invariant violation and panics. The zero
+// handle returned for a context without a Done channel has no allocation or
+// cleanup cost.
 func (co *Conn) BeginCancelInterrupt(ctx context.Context) CancelInterrupt {
 	if ctx.Done() == nil {
 		return CancelInterrupt{}
@@ -66,8 +65,8 @@ func (co *Conn) BeginCancelInterrupt(ctx context.Context) CancelInterrupt {
 }
 
 // Stop detaches the cancellation callback and waits if it has already started.
-// Concurrent repeated calls join the same cleanup; stale-generation calls are
-// no-ops.
+// Stop has one owner and must not be called concurrently for the same handle.
+// Sequential repeated calls and stale-generation handles are no-ops.
 func (h CancelInterrupt) Stop() {
 	state := h.state
 	if state == nil {
@@ -79,34 +78,23 @@ func (h CancelInterrupt) Stop() {
 		state.mu.Unlock()
 		return
 	}
-	leader := state.phase == cancelInterruptActive
-	if leader {
-		state.phase = cancelInterruptStopping
+	if state.phase == cancelInterruptStopping {
+		state.mu.Unlock()
+		panic("dnsclient: concurrent cancellation interrupt Stop")
 	}
-	state.participants++
+	state.phase = cancelInterruptStopping
 	stop := state.stop
 	state.mu.Unlock()
 
-	if leader && stop != nil && stop() {
+	if stop != nil && stop() {
 		state.done.Done()
 	}
 	state.done.Wait()
 
-	// Keep every same-generation Stop joined through the final idle
-	// transition. The wait group has already reached zero here, so the only
-	// remaining window is another Stop completing its bookkeeping; yielding
-	// avoids adding a per-Conn condition variable to this transport hot path.
 	state.mu.Lock()
-	state.participants--
-	if state.participants == 0 {
+	if state.generation == h.generation && state.phase == cancelInterruptStopping {
 		state.stop = nil
 		state.phase = cancelInterruptIdle
-	} else {
-		for state.phase != cancelInterruptIdle {
-			state.mu.Unlock()
-			runtime.Gosched()
-			state.mu.Lock()
-		}
 	}
 	state.mu.Unlock()
 }

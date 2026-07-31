@@ -1175,6 +1175,62 @@ func TestLazyChainCompletionRacesFirstEnsureWithoutLeakingLedger(t *testing.T) {
 	}
 }
 
+func TestRecursionWorkControlLedgersAreImmutable(t *testing.T) {
+	const workers = 64
+	tests := []struct {
+		name    string
+		ledger  *RecursionWorkLedger
+		state   recursionWorkLedgerState
+		wantErr error
+	}{
+		{name: "pending", ledger: recursionWorkPending, state: recursionWorkLedgerPending},
+		{name: "closed", ledger: recursionWorkClosed, state: recursionWorkLedgerClosed, wantErr: context.Canceled},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := make(chan error, workers)
+			var wg sync.WaitGroup
+			for range workers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for _, err := range []error{
+						tc.ledger.Debit(RecursionWorkOutboundQuery),
+						tc.ledger.DebitBestEffort(RecursionWorkInternalQuery),
+						tc.ledger.CheckLocal(RecursionWorkDNSKEYCandidate, 0),
+						tc.ledger.Reject(RecursionWorkConcurrentCrypto),
+						tc.ledger.EnforcementError(),
+					} {
+						if !errors.Is(err, tc.wantErr) {
+							errs <- fmt.Errorf("control ledger error = %v, want %v", err, tc.wantErr)
+							return
+						}
+					}
+					if release, ok := tc.ledger.Retain(); ok || release != nil {
+						errs <- errors.New("control ledger Retain succeeded; want nil, false")
+						return
+					}
+					tc.ledger.finish()
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Error(err)
+			}
+
+			if got := tc.ledger.Snapshot(); got != (RecursionWorkSnapshot{}) {
+				t.Fatalf("control ledger snapshot mutated: %+v", got)
+			}
+			if tc.ledger.lifecycleState() != tc.state ||
+				tc.ledger.refs.Load() != 0 ||
+				tc.ledger.finished.Load() {
+				t.Fatal("control ledger lifecycle state mutated")
+			}
+		})
+	}
+}
+
 func TestLazyOuterChainOwnsQueryerLedgerUntilReturn(t *testing.T) {
 	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
 	subHandler := HandlerFunc(func(_ context.Context, ch *Chain) {
@@ -1200,7 +1256,7 @@ func TestLazyOuterChainOwnsQueryerLedgerUntilReturn(t *testing.T) {
 		if ledger == nil {
 			t.Fatal("Query did not materialize the outer ledger")
 		}
-		if ledger.rootDone.Load() {
+		if ledger.lifecycleState() == recursionWorkLedgerRootDone {
 			t.Fatal("nested Query finished the outer ledger")
 		}
 		ch.Cancel()

@@ -348,9 +348,13 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority.Servers, root bool, depth int, level int, nomin bool, parentDS []dns.RR, extra ...bool) (*dns.Msg, error) {
 	ctx = dnssec.EnsureNSEC3HashMemo(ctx)
 	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
-	rootOwnsWork := middleware.RecursionWorkRootOwned(ctx)
 	hadWork := middleware.RecursionWorkFrom(ctx) != nil
 	ctx, work := middleware.EnsureRecursionWork(ctx, r.workPolicy)
+	// Test ownership after Ensure. A LazyDeadline pin remains root-owned across
+	// its pending -> active transition, while a direct Resolver caller owns and
+	// must finish the standalone ledger Ensure just created. Keeping ownership
+	// encoded in the pin avoids a call-order-dependent double finish.
+	rootOwnsWork := middleware.RecursionWorkRootOwned(ctx)
 	if !rootOwnsWork && !hadWork && work != nil {
 		defer middleware.FinishRecursionWork(ctx)
 	}
@@ -1702,9 +1706,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	}
 	_ = co.SetDeadline(deadline)
 
-	cancelInterrupt := co.BeginCancelInterrupt(ctx)
-	resp, rtt, err = co.Exchange(req)
-	cancelInterrupt.Stop()
+	resp, rtt, err = co.ExchangeContext(ctx, req)
 	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
 		resp = nil
 		err = ctxErr

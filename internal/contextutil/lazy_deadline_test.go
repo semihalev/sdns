@@ -116,7 +116,7 @@ func TestLazyDeadlineCancelPreservesAlreadyCanceledParentCause(t *testing.T) {
 	}
 }
 
-func TestLazyDeadlineCarriesProviderAndPinnedValueWithoutMaterializing(t *testing.T) {
+func TestLazyDeadlineCarriesProviderAndInternalPinWithoutMaterializing(t *testing.T) {
 	providerKey := &lazyDeadlineKey{}
 	pinnedKey := new(int)
 	ctx := WithLazyTimeout(context.Background(), time.Minute)
@@ -131,22 +131,22 @@ func TestLazyDeadlineCarriesProviderAndPinnedValueWithoutMaterializing(t *testin
 	if got := wrapped.Value(providerKey); got != "provider" {
 		t.Fatalf("provider value = %v, want provider", got)
 	}
-	if got := wrapped.Value(pinnedKey); got != "pinned" {
-		t.Fatalf("pinned value = %v, want pinned", got)
+	if got := wrapped.Value(pinnedKey); got != nil {
+		t.Fatalf("internal pin leaked through Context.Value: %v", got)
 	}
 	if got, ok := PinnedValue(wrapped, pinnedKey); !ok || got != "pinned" {
 		t.Fatalf("exact pinned value = %v, %v; want pinned, true", got, ok)
 	}
-	value, updated := TryUpdatePinnedValue(wrapped, pinnedKey, "pinned", func() string {
+	value, updated := TryUpdatePinnedValueLocked(wrapped, pinnedKey, "pinned", func() string {
 		return "replacement"
 	})
 	if !updated || value != "replacement" {
 		t.Fatalf("matching pinned update = %q, %v; want replacement, true", value, updated)
 	}
-	if got := wrapped.Value(pinnedKey); got != "replacement" {
-		t.Fatalf("replaced pinned value = %v, want replacement", got)
+	if got := wrapped.Value(pinnedKey); got != nil {
+		t.Fatalf("replaced internal pin leaked through Context.Value: %v", got)
 	}
-	value, updated = TryUpdatePinnedValue(wrapped, pinnedKey, "pinned", func() string {
+	value, updated = TryUpdatePinnedValueLocked(wrapped, pinnedKey, "pinned", func() string {
 		return "stale"
 	})
 	if updated || value != "replacement" {
@@ -158,6 +158,36 @@ func TestLazyDeadlineCarriesProviderAndPinnedValueWithoutMaterializing(t *testin
 	if TryPinValue(wrapped, new(int), "second") {
 		t.Fatal("second distinct request-local pin unexpectedly succeeded")
 	}
+}
+
+func TestLazyDeadlinePinnedUpdateMayInspectCancellation(t *testing.T) {
+	ctx := WithLazyTimeout(context.Background(), time.Minute)
+	key := new(int)
+	if !TryPinValue(ctx, key, "pending") {
+		t.Fatal("request-local value was not pinned")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		value, updated := TryUpdatePinnedValueLocked(ctx, key, "pending", func() string {
+			_ = ctx.Done()
+			_ = ctx.Err()
+			stop := context.AfterFunc(ctx, func() {})
+			_ = stop()
+			return "active"
+		})
+		if !updated || value != "active" {
+			t.Errorf("pinned update = %q, %v; want active, true", value, updated)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pinned update deadlocked while inspecting cancellation")
+	}
+	ctx.Cancel()
 }
 
 func TestLazyDeadlineUsesEarlierParentDeadline(t *testing.T) {

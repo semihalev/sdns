@@ -155,6 +155,15 @@ type RecursionWorkSnapshot struct {
 // RecursionWorkLedger aggregates work across one complete recursive request
 // tree. It owns no timer: the existing request context deadline remains the
 // single authoritative time budget.
+type recursionWorkLedgerState uint32
+
+const (
+	recursionWorkLedgerLive recursionWorkLedgerState = iota
+	recursionWorkLedgerRootDone
+	recursionWorkLedgerPending
+	recursionWorkLedgerClosed
+)
+
 type RecursionWorkLedger struct {
 	policy RecursionWorkPolicy
 
@@ -166,8 +175,11 @@ type RecursionWorkLedger struct {
 	exhausted   atomic.Uint32
 	first       atomic.Uint32
 	refs        atomic.Int64
-	rootDone    atomic.Bool
-	finished    atomic.Bool
+	// rootState packs root completion and immutable pending/closed control
+	// states into the existing atomic word. This keeps a live ledger in the
+	// 80-byte allocator class instead of adding a separate lifecycle field.
+	rootState atomic.Uint32
+	finished  atomic.Bool
 }
 
 // NewRecursionWorkLedger constructs a ledger for policy. Callers normally use
@@ -177,6 +189,32 @@ func NewRecursionWorkLedger(policy RecursionWorkPolicy) *RecursionWorkLedger {
 	ledger := &RecursionWorkLedger{policy: policy}
 	ledger.refs.Store(1)
 	return ledger
+}
+
+func (l *RecursionWorkLedger) controlError() (error, bool) {
+	if l == nil {
+		return nil, false
+	}
+	switch l.lifecycleState() {
+	case recursionWorkLedgerLive, recursionWorkLedgerRootDone:
+		return nil, false
+	case recursionWorkLedgerClosed:
+		return context.Canceled, true
+	default:
+		return nil, true
+	}
+}
+
+func (l *RecursionWorkLedger) isLive() bool {
+	if l == nil {
+		return false
+	}
+	state := l.lifecycleState()
+	return state == recursionWorkLedgerLive || state == recursionWorkLedgerRootDone
+}
+
+func (l *RecursionWorkLedger) lifecycleState() recursionWorkLedgerState {
+	return recursionWorkLedgerState(l.rootState.Load())
 }
 
 // Debit reserves one unit of kind. Shadow mode records crossings but always
@@ -198,8 +236,8 @@ func (l *RecursionWorkLedger) DebitBestEffort(kind RecursionWorkKind) error {
 }
 
 func (l *RecursionWorkLedger) debit(kind RecursionWorkKind, latchRejection bool) error {
-	if l == recursionWorkClosed {
-		return context.Canceled
+	if err, control := l.controlError(); control {
+		return err
 	}
 	if l == nil || !l.policy.Enabled() {
 		return nil
@@ -245,8 +283,8 @@ func (l *RecursionWorkLedger) Reject(kind RecursionWorkKind) error {
 }
 
 func (l *RecursionWorkLedger) reject(kind RecursionWorkKind, latchRejection bool) error {
-	if l == recursionWorkClosed {
-		return context.Canceled
+	if err, control := l.controlError(); control {
+		return err
 	}
 	if l == nil || !l.policy.Enabled() {
 		return nil
@@ -263,8 +301,8 @@ func (l *RecursionWorkLedger) reject(kind RecursionWorkKind, latchRejection bool
 }
 
 func (l *RecursionWorkLedger) checkLocal(kind RecursionWorkKind, used uint32, latchRejection bool) error {
-	if l == recursionWorkClosed {
-		return context.Canceled
+	if err, control := l.controlError(); control {
+		return err
 	}
 	if l == nil || !l.policy.Enabled() {
 		return nil
@@ -327,6 +365,9 @@ func (l *RecursionWorkLedger) limit(kind RecursionWorkKind) (uint32, bool) {
 }
 
 func (l *RecursionWorkLedger) markExhausted(kind RecursionWorkKind, bit uint32, latchRejection bool) {
+	if !l.isLive() {
+		return
+	}
 	l.exhausted.Or(bit)
 	if latchRejection {
 		l.first.CompareAndSwap(0, uint32(kind)+1)
@@ -335,8 +376,8 @@ func (l *RecursionWorkLedger) markExhausted(kind RecursionWorkKind, bit uint32, 
 
 // EnforcementError returns the first rejected dimension in enforce mode.
 func (l *RecursionWorkLedger) EnforcementError() error {
-	if l == recursionWorkClosed {
-		return context.Canceled
+	if err, control := l.controlError(); control {
+		return err
 	}
 	if l == nil || l.policy.Mode != RecursionWorkEnforce {
 		return nil
@@ -358,7 +399,7 @@ func (l *RecursionWorkLedger) EnforcementError() error {
 
 // Snapshot returns the current accepted/observed work totals and crossings.
 func (l *RecursionWorkLedger) Snapshot() RecursionWorkSnapshot {
-	if l == nil {
+	if !l.isLive() {
 		return RecursionWorkSnapshot{}
 	}
 	exhausted := l.exhausted.Load()
@@ -392,7 +433,7 @@ func (l *RecursionWorkLedger) Snapshot() RecursionWorkSnapshot {
 // outlive the client-facing chain. The returned release function is safe to
 // call more than once; callers must call it when that work is complete.
 func (l *RecursionWorkLedger) Retain() (release func(), ok bool) {
-	if l == nil || !l.policy.Enabled() {
+	if !l.isLive() || !l.policy.Enabled() {
 		return nil, false
 	}
 	for {
@@ -413,13 +454,18 @@ func (l *RecursionWorkLedger) Retain() (release func(), ok bool) {
 // retained asynchronous work, so its debits are included without delaying
 // the client response.
 func (l *RecursionWorkLedger) finish() {
-	if l == nil || !l.policy.Enabled() || !l.rootDone.CompareAndSwap(false, true) {
+	if !l.isLive() ||
+		!l.policy.Enabled() ||
+		!l.rootState.CompareAndSwap(uint32(recursionWorkLedgerLive), uint32(recursionWorkLedgerRootDone)) {
 		return
 	}
 	l.release()
 }
 
 func (l *RecursionWorkLedger) release() {
+	if !l.isLive() {
+		return
+	}
 	if l.refs.Add(-1) != 0 || !l.finished.CompareAndSwap(false, true) {
 		return
 	}
@@ -465,28 +511,34 @@ func (l *RecursionWorkLedger) release() {
 	recursionFanoutRatio.Observe(float64(snapshot.OutboundQueries))
 }
 
-// recursionWorkKey pins the exact heap ledger in contexts passed to resolver
-// goroutines. This avoids reloading a pooled ResponseMeta after its Chain has
-// been reset for another request.
+// recursionWorkKey carries either an explicit heap ledger on ordinary derived
+// contexts or an internal LazyDeadline lifecycle pin. Both forms avoid
+// reloading a pooled ResponseMeta after its Chain has been reset.
 type recursionWorkKeyType struct{}
 type recursionWorkBestEffortKeyType struct{}
 
 var recursionWorkKey = &recursionWorkKeyType{}
 var recursionWorkBestEffortKey = &recursionWorkBestEffortKeyType{}
 
-// A LazyDeadline has one request-owned pin slot. These sentinels turn that
-// slot into a tiny lifecycle state machine without allocating a ledger for
-// cache/local hits:
+// A LazyDeadline has one request-owned pin slot. Immutable control ledgers turn
+// that slot into a tiny lifecycle state machine without allocating a real
+// ledger for cache/local hits:
 //
 //	pending -> ledger -> finished by the outer Chain
 //	pending -> closed  -> no later pooled ResponseMeta fallback is allowed
 //
-// All values have the same concrete pointer type because the slot is backed by
-// atomic.Value.
+// Pointers keep atomic.Value updates allocation-free. rootState makes their
+// immutability explicit and every mutating ledger entry point rejects them.
 var (
-	recursionWorkPending = &RecursionWorkLedger{}
-	recursionWorkClosed  = &RecursionWorkLedger{}
+	recursionWorkPending = newRecursionWorkControlLedger(recursionWorkLedgerPending)
+	recursionWorkClosed  = newRecursionWorkControlLedger(recursionWorkLedgerClosed)
 )
+
+func newRecursionWorkControlLedger(state recursionWorkLedgerState) *RecursionWorkLedger {
+	ledger := new(RecursionWorkLedger)
+	ledger.rootState.Store(uint32(state))
+	return ledger
+}
 
 // WithRecursionWork returns a derived context carrying the exact ledger.
 func WithRecursionWork(ctx context.Context, ledger *RecursionWorkLedger) context.Context {
@@ -511,13 +563,16 @@ func IsBestEffortRecursionWork(ctx context.Context) bool {
 // captured before a downstream resolver pinned the ledger directly.
 func RecursionWorkFrom(ctx context.Context) *RecursionWorkLedger {
 	if ledger, _ := ctx.Value(recursionWorkKey).(*RecursionWorkLedger); ledger != nil {
-		switch ledger {
-		case recursionWorkClosed:
+		return ledger
+	}
+	if pinned, ok := pinnedRecursionWork(ctx); ok {
+		switch pinned.lifecycleState() {
+		case recursionWorkLedgerClosed:
 			// The owning Chain has completed. Never fall through to its
 			// pooled ResponseMeta, which may already belong to another
 			// request.
 			return nil
-		case recursionWorkPending:
+		case recursionWorkLedgerPending:
 			// The context-aware installer publishes the heap ledger to
 			// ResponseMeta immediately before replacing this pin. The Chain
 			// is still active, so observing that narrow window is safe.
@@ -526,7 +581,7 @@ func RecursionWorkFrom(ctx context.Context) *RecursionWorkLedger {
 			}
 			return nil
 		default:
-			return ledger
+			return pinned
 		}
 	}
 	if meta := ResponseMetaFrom(ctx); meta != nil {
@@ -539,10 +594,13 @@ func RecursionWorkFrom(ctx context.Context) *RecursionWorkLedger {
 // pins it into the returned context. The first policy in a request tree wins.
 func EnsureRecursionWork(ctx context.Context, policy RecursionWorkPolicy) (context.Context, *RecursionWorkLedger) {
 	if pinned, _ := ctx.Value(recursionWorkKey).(*RecursionWorkLedger); pinned != nil {
-		switch pinned {
-		case recursionWorkClosed:
+		return ctx, pinned
+	}
+	if pinned, ok := pinnedRecursionWork(ctx); ok {
+		switch pinned.lifecycleState() {
+		case recursionWorkLedgerClosed:
 			return ctx, recursionWorkClosed
-		case recursionWorkPending:
+		case recursionWorkLedgerPending:
 			meta := ResponseMetaFrom(ctx)
 			if meta == nil {
 				return ctx, nil
@@ -551,7 +609,7 @@ func EnsureRecursionWork(ctx context.Context, policy RecursionWorkPolicy) (conte
 				policy = meta.workPolicy
 			}
 
-			value, _ := contextutil.TryUpdatePinnedValue(
+			value, _ := contextutil.TryUpdatePinnedValueLocked(
 				ctx,
 				recursionWorkKey,
 				recursionWorkPending,
@@ -565,15 +623,14 @@ func EnsureRecursionWork(ctx context.Context, policy RecursionWorkPolicy) (conte
 					return meta.ensureRecursionWork(policy)
 				},
 			)
-			if value != nil &&
-				value != recursionWorkPending &&
-				value != recursionWorkClosed {
+			switch value {
+			case recursionWorkClosed:
+				return ctx, recursionWorkClosed
+			case recursionWorkPending, nil:
+				return ctx, nil
+			default:
 				return ctx, value
 			}
-			if value == recursionWorkClosed {
-				return ctx, recursionWorkClosed
-			}
-			return ctx, nil
 		default:
 			return ctx, pinned
 		}
@@ -605,7 +662,7 @@ func recursionWorkForUse(ctx context.Context) *RecursionWorkLedger {
 	if ledger := RecursionWorkFrom(ctx); ledger != nil {
 		return ledger
 	}
-	if pinned, _ := ctx.Value(recursionWorkKey).(*RecursionWorkLedger); pinned == recursionWorkClosed {
+	if pinned, ok := pinnedRecursionWork(ctx); ok && pinned == recursionWorkClosed {
 		return recursionWorkClosed
 	}
 	meta := ResponseMetaFrom(ctx)
@@ -657,8 +714,8 @@ func RejectRecursionWork(ctx context.Context, kind RecursionWorkKind) error {
 // ledger's completion boundary, including when the ledger has not yet been
 // materialized.
 func RecursionWorkRootOwned(ctx context.Context) bool {
-	pinned, ok := contextutil.PinnedValue(ctx, recursionWorkKey)
-	return ok && pinned == recursionWorkPending
+	pinned, ok := pinnedRecursionWork(ctx)
+	return ok && pinned != recursionWorkClosed
 }
 
 func beginLazyRecursionWorkOwner(ctx context.Context) bool {
@@ -667,16 +724,15 @@ func beginLazyRecursionWorkOwner(ctx context.Context) bool {
 
 func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) {
 	for {
-		value, ok := contextutil.PinnedValue(ctx, recursionWorkKey)
+		pinned, ok := pinnedRecursionWork(ctx)
 		if !ok {
 			return
 		}
-		ledger, _ := value.(*RecursionWorkLedger)
-		switch ledger {
-		case nil, recursionWorkClosed:
+		switch pinned {
+		case recursionWorkClosed:
 			return
 		case recursionWorkPending:
-			next, _ := contextutil.TryUpdatePinnedValue(
+			next, _ := contextutil.TryUpdatePinnedValueLocked(
 				ctx,
 				recursionWorkKey,
 				recursionWorkPending,
@@ -696,10 +752,19 @@ func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) {
 			next.finish()
 			return
 		default:
-			ledger.finish()
+			pinned.finish()
 			return
 		}
 	}
+}
+
+func pinnedRecursionWork(ctx context.Context) (*RecursionWorkLedger, bool) {
+	value, ok := contextutil.PinnedValue(ctx, recursionWorkKey)
+	if !ok {
+		return nil, false
+	}
+	pinned, ok := value.(*RecursionWorkLedger)
+	return pinned, ok
 }
 
 // RecursionWorkEnforcementError returns the local request tree's first policy

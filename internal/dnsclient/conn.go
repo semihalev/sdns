@@ -6,6 +6,7 @@
 package dnsclient
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -30,6 +31,16 @@ type Conn struct {
 	net.Conn               // underlying connection
 	UDPSize         uint16 // minimum receive buffer for UDP messages
 	cancelInterrupt cancelInterruptState
+}
+
+// ExchangeContext performs Exchange with a cancellation interrupt bound to
+// ctx. The caller still owns dialing and the ordinary network deadline. The
+// deferred Stop makes the interrupt lifecycle panic-safe and guarantees that
+// the connection is reusable only after a started cancellation callback ends.
+func (co *Conn) ExchangeContext(ctx context.Context, m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
+	interrupt := co.BeginCancelInterrupt(ctx)
+	defer interrupt.Stop()
+	return co.Exchange(m)
 }
 
 // Exchange performs a synchronous query over co: it writes m, reads the

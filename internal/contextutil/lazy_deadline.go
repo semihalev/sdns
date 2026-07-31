@@ -48,6 +48,7 @@ type LazyDeadline struct {
 	deadline time.Time
 
 	mu     sync.Mutex
+	pinMu  sync.Mutex
 	state  atomic.Uint32
 	active atomic.Pointer[lazyDeadlineHolder]
 
@@ -117,9 +118,6 @@ func (c *LazyDeadline) Value(key any) any {
 	if key == lazyDeadlineCarrierKey {
 		return c
 	}
-	if c.pinned.Load() && key == c.pinnedKey {
-		return c.pinnedValue.Load()
-	}
 	if provider, _ := c.valueProvider.Load().(ValueProvider); provider != nil {
 		if value, ok := provider.ContextValue(key); ok {
 			return value
@@ -132,6 +130,9 @@ func (c *LazyDeadline) Value(key any) any {
 		// Suppress the parent's private cancellation identity after a local
 		// fast-path Cancel. Otherwise context.Cause could later report a
 		// parent cause that happened after this context was already canceled.
+		if c.parent.Done() == nil {
+			return c.parent.Value(key)
+		}
 		return context.WithoutCancel(c.parent).Value(key)
 	}
 	return c.parent.Value(key)
@@ -149,8 +150,8 @@ func TrySetValueProvider(ctx context.Context, provider ValueProvider) bool {
 		return false
 	}
 
-	lazy.mu.Lock()
-	defer lazy.mu.Unlock()
+	lazy.pinMu.Lock()
+	defer lazy.pinMu.Unlock()
 	if lazy.valueProvider.Load() != nil {
 		return false
 	}
@@ -158,10 +159,11 @@ func TrySetValueProvider(ctx context.Context, provider ValueProvider) bool {
 	return true
 }
 
-// TryPinValue stores one exact request-lifetime value directly on the
-// LazyDeadline reachable through ctx. The pin survives pooled metadata reuse
-// without allocating a context.WithValue node. A second distinct pin falls
-// back to the caller's normal context path.
+// TryPinValue stores one internal request-lifetime control value directly on
+// the LazyDeadline reachable through ctx. The pin survives pooled metadata
+// reuse without allocating a context.WithValue node. It is deliberately not
+// exposed through Context.Value: callers must use PinnedValue, keeping the
+// ordinary context value chain immutable. A second distinct pin fails.
 func TryPinValue(ctx context.Context, key, value any) bool {
 	if ctx == nil || key == nil || value == nil {
 		return false
@@ -171,8 +173,8 @@ func TryPinValue(ctx context.Context, key, value any) bool {
 		return false
 	}
 
-	lazy.mu.Lock()
-	defer lazy.mu.Unlock()
+	lazy.pinMu.Lock()
+	defer lazy.pinMu.Unlock()
 	if lazy.pinned.Load() {
 		return false
 	}
@@ -196,11 +198,17 @@ func PinnedValue(ctx context.Context, key any) (any, bool) {
 	return lazy.pinnedValue.Load(), true
 }
 
-// TryUpdatePinnedValue computes and installs a replacement while holding the
-// LazyDeadline's request-lifetime lock. It is intended for transitions whose
-// initialization must complete before a concurrent request owner can close
-// and recycle adjacent pooled state.
-func TryUpdatePinnedValue[T comparable](
+// TryUpdatePinnedValueLocked computes and installs a replacement while holding
+// the LazyDeadline's request-lifetime lock. It is intended for transitions
+// whose initialization must complete before a concurrent request owner can
+// close and recycle adjacent pooled state.
+//
+// update must be bounded and must not call the pin mutation APIs recursively
+// on ctx (or a context derived from it): pinMu is deliberately non-reentrant.
+// Cancellation methods use a separate lock, so update may safely inspect Done,
+// Err or context.AfterFunc. The Locked suffix exposes the callback contract at
+// each call site.
+func TryUpdatePinnedValueLocked[T comparable](
 	ctx context.Context,
 	key any,
 	old T,
@@ -215,8 +223,8 @@ func TryUpdatePinnedValue[T comparable](
 		return zero, false
 	}
 
-	lazy.mu.Lock()
-	defer lazy.mu.Unlock()
+	lazy.pinMu.Lock()
+	defer lazy.pinMu.Unlock()
 	current, typeOK := lazy.pinnedValue.Load().(T)
 	if !lazy.pinned.Load() || key != lazy.pinnedKey || !typeOK || current != old {
 		return current, false
@@ -224,21 +232,6 @@ func TryUpdatePinnedValue[T comparable](
 	value := update()
 	lazy.pinnedValue.Store(value)
 	return value, true
-}
-
-// AfterFunc lets context.AfterFunc attach directly to the materialized
-// standard context, preserving its no-goroutine cancellation fast path.
-func (c *LazyDeadline) AfterFunc(f func()) func() bool {
-	if active := c.materialize(); active != nil {
-		return context.AfterFunc(active.ctx, f)
-	}
-
-	// The request was canceled before it needed a Done channel. This is a cold
-	// path; use a standard canceled context to retain AfterFunc's stop race
-	// semantics without burdening every live request with more state.
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	return context.AfterFunc(canceled, f)
 }
 
 // Cancel releases an armed timer/parent registration, or records a terminal
