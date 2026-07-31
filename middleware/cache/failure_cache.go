@@ -323,8 +323,15 @@ func (c *FailureCache) ResetZone(key FailureZoneKey) bool {
 }
 
 // ResetMatching removes exact history and every ancestor-zone history covered
-// by a fresh useful response. It returns the number of states deleted.
+// by a fresh useful response. Recovery deliberately deletes the streak: RFC
+// 9520 backoff applies to persistent failures, so a later independent failure
+// starts a new episode at the initial interval. Retaining an expired streak
+// here would also keep healthy descendants in the retry-generation path.
+// It returns the number of states deleted.
 func (c *FailureCache) ResetMatching(key FailureQuestionKey) int {
+	if c.entries.Len() == 0 {
+		return 0
+	}
 	key = normalizeFailureQuestionKey(key)
 	removed := 0
 	if c.ResetQuestion(key) {

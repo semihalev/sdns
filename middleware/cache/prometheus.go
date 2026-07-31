@@ -111,19 +111,23 @@ func SetMetricsInstance(m *CacheMetrics) {
 }
 
 // SetCacheSizeFuncs sets the functions to get cache sizes. Optional functions
-// preserve source compatibility: extras[0] is the RFC 8020 cut index and
-// extras[1] is the RFC 8198 proof index.
-func SetCacheSizeFuncs(positive, negative, failure func() int, extras ...func() int) {
+// preserve the original two-argument source contract: extras[0] is the RFC
+// 9520 failure cache, extras[1] the RFC 8020 cut index, and extras[2] the RFC
+// 8198 proof index.
+func SetCacheSizeFuncs(positive, negative func() int, extras ...func() int) {
 	positiveCacheLen = positive
 	negativeCacheLen = negative
-	failureCacheLen = failure
+	failureCacheLen = nil
 	nxDomainCutLen = nil
 	denialProofLen = nil
 	if len(extras) > 0 {
-		nxDomainCutLen = extras[0]
+		failureCacheLen = extras[0]
 	}
 	if len(extras) > 1 {
-		denialProofLen = extras[1]
+		nxDomainCutLen = extras[1]
+	}
+	if len(extras) > 2 {
+		denialProofLen = extras[2]
 	}
 }
 

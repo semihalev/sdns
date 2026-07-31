@@ -30,6 +30,7 @@ type Config struct {
 	Root6Servers     []string
 	DNSSEC           string
 	RFC8198          *bool `toml:"rfc8198"` // nil is default-on for backward compatibility
+	RFC9520          *bool `toml:"rfc9520"` // nil is default-on; false is an emergency kill switch
 	RootKeys         []string
 	FallbackServers  []string
 	ForwarderServers []string
@@ -133,6 +134,14 @@ type Config struct {
 // switch. RFC 8020 NXDOMAIN subtree cuts are controlled independently.
 func (c *Config) RFC8198Enabled() bool {
 	return c == nil || c.RFC8198 == nil || *c.RFC8198
+}
+
+// RFC9520Enabled reports whether shared resolution-failure caching is
+// enabled. Omission is default-on because RFC 9520 requires resolvers to
+// cache failures; explicit false exists as an operational rollback switch
+// for the shared question and authority-zone state.
+func (c *Config) RFC9520Enabled() bool {
+	return c == nil || c.RFC9520 == nil || *c.RFC9520
 }
 
 // ViewConfig describes a single per-client static-answer view.
@@ -512,6 +521,12 @@ dnssec = "on"
 # Set false as an operational kill switch. Exact negative caching and
 # RFC 8020 NXDOMAIN subtree cuts remain active.
 rfc8198 = true
+
+# Cache recursive resolution failures and failed-authority state (RFC 9520).
+# Set false only as an emergency rollback switch. This disables RFC 9520
+# conformance; request work limits, DNSSEC validation, and ordinary
+# positive/NXDOMAIN caching remain active.
+rfc9520 = true
 
 # DNSSEC root trust anchors
 # These are the public keys used to verify the DNS root zone

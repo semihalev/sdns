@@ -175,8 +175,13 @@ func New(cfg *config.Config) *Cache {
 
 	metrics := &CacheMetrics{}
 
-	positive := NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics)
-	negative := NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics)
+	// RFC 9520 failures no longer occupy the legacy negative answer cache.
+	// Give the configured answer-cache budget to the live positive/NXDOMAIN
+	// store instead of stranding half of it in an unreachable SERVFAIL cache.
+	// Keep one legacy slot so the exported NegativeCache/Store compatibility
+	// surface remains non-nil for programmatic users.
+	positive := NewPositiveCache(cacheConfig.Size, minTTL, maxTTL, metrics)
+	negative := NewNegativeCache(1, minTTL, cacheConfig.NegativeTTL, metrics)
 	failure, err := NewFailureCache(FailureCacheConfig{
 		Size:       failureCfg.FailureCacheSize,
 		InitialTTL: failureCfg.FailureCacheMinTTL.Duration,
@@ -191,12 +196,15 @@ func New(cfg *config.Config) *Cache {
 		})
 	}
 
+	store := NewStore(positive, negative, cacheConfig, failure)
+	store.failureCacheDisabled = !cfg.RFC9520Enabled()
+
 	c := &Cache{
 		positive: positive,
 		negative: negative,
 		failure:  failure,
 
-		store: NewStore(positive, negative, cacheConfig, failure),
+		store: store,
 
 		config:    cacheConfig,
 		metrics:   metrics,
@@ -233,7 +241,7 @@ func New(cfg *config.Config) *Cache {
 	SetCacheSizeFuncs(
 		c.positive.Len,
 		c.negative.Len,
-		c.failure.Len,
+		c.store.FailureLen,
 		c.store.NXDomainCutLen,
 		c.store.DenialProofLen,
 	)
@@ -929,11 +937,15 @@ func (c *Cache) Stop() {
 	}
 }
 
-// (*Cache).Set set adds a new element to the cache. Provided for API
-// compatibility (prefetch worker, plugin callers). Internally goes
-// through Store; the entry is constructed with origTTL adjusted to
-// the real upstream TTL so subsequent prefetch decisions don't
-// miscalculate from the post-Calculate (clamped) value.
+// (*Cache).Set adds a new element to the cache. It is retained for source
+// compatibility with prefetch and plugin callers. Ordinary answers honor the
+// supplied answer-cache key. SERVFAIL uses its full DNS Question instead:
+// shared RFC 9520 state verifies the complete key preimage and cannot safely
+// accept an opaque hash as its identity.
+//
+// Internally the entry is constructed with origTTL adjusted to the real
+// upstream TTL so subsequent prefetch decisions don't miscalculate from the
+// post-Calculate (clamped) value.
 func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	if len(msg.Question) == 0 {
 		return

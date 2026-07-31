@@ -591,6 +591,98 @@ ipv6access = true
 	}
 }
 
+func TestRFC9520EnabledDefaultsAndOverrides(t *testing.T) {
+	enabled := true
+	disabled := false
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{
+			name: "nil config defaults on",
+			want: true,
+		},
+		{
+			name: "omitted defaults on",
+			cfg:  &Config{},
+			want: true,
+		},
+		{
+			name: "explicit true",
+			cfg:  &Config{RFC9520: &enabled},
+			want: true,
+		},
+		{
+			name: "explicit false",
+			cfg:  &Config{RFC9520: &disabled},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.RFC9520Enabled(); got != tt.want {
+				t.Fatalf("RFC9520Enabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRFC9520Policy(t *testing.T) {
+	tests := []struct {
+		name        string
+		setting     string
+		wantEnabled bool
+		wantSet     bool
+	}{
+		{
+			name:        "omitted remains default on",
+			wantEnabled: true,
+		},
+		{
+			name:        "explicit true",
+			setting:     "rfc9520 = true",
+			wantEnabled: true,
+			wantSet:     true,
+		},
+		{
+			name:        "explicit false",
+			setting:     "rfc9520 = false",
+			wantEnabled: false,
+			wantSet:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgFile := filepath.Join(tmpDir, "sdns.conf")
+			workDir := filepath.Join(tmpDir, "db")
+			content := fmt.Sprintf(`version = %q
+directory = %q
+ipv6access = true
+%s
+`, configver, workDir, tt.setting)
+			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+				t.Fatal(err)
+			}
+
+			cfg, err := Load(cfgFile, "test")
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := cfg.RFC9520Enabled(); got != tt.wantEnabled {
+				t.Fatalf("RFC9520Enabled() = %v, want %v", got, tt.wantEnabled)
+			}
+			if got := cfg.RFC9520 != nil; got != tt.wantSet {
+				t.Fatalf("RFC9520 pointer set = %v, want %v", got, tt.wantSet)
+			}
+		})
+	}
+}
+
 func TestLoadRecursionFirewallPolicy(t *testing.T) {
 	t.Run("explicit enforce values", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -685,6 +777,7 @@ func TestConfigDefaults(t *testing.T) {
 		"# Root DNS Servers",
 		"# DNSSEC Configuration",
 		"rfc8198 = true",
+		"rfc9520 = true",
 		"# Upstream Servers",
 		"# API and Logging",
 		"# Filtering and Blocking",

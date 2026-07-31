@@ -44,7 +44,11 @@ type Store struct {
 	// admission and synthesis. Keep it separate from sharedDenialDisabled:
 	// RFC 8020 subtree cuts remain available when only RFC 8198 is disabled.
 	rfc8198Disabled bool
-	cfg             CacheConfig
+	// failureCacheDisabled is the RFC 9520 operational rollback switch.
+	// The bounded cache remains allocated so the surrounding Cache and Store
+	// keep one stable shape, but no shared failure state is read or written.
+	failureCacheDisabled bool
+	cfg                  CacheConfig
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
@@ -316,7 +320,7 @@ func (s *Store) RecordDenialProof(
 
 // LookupFailure returns an active exact or closest-ancestor RFC 9520 failure.
 func (s *Store) LookupFailure(req *dns.Msg, scope netip.Prefix) (FailureHit, bool) {
-	if s.failure == nil || req == nil || len(req.Question) == 0 {
+	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
 		return FailureHit{}, false
 	}
 	return s.failure.Lookup(FailureQuestionKey{
@@ -330,7 +334,7 @@ func (s *Store) LookupFailure(req *dns.Msg, scope netip.Prefix) (FailureHit, boo
 // first retry after a backoff expires. Different random QNAMEs below the same
 // failed zone therefore elect only one probe leader.
 func (s *Store) FailureRetryKey(req *dns.Msg, scope netip.Prefix) (uint64, bool) {
-	if s.failure == nil || req == nil || len(req.Question) == 0 {
+	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
 		return 0, false
 	}
 	return s.failure.RetryKey(FailureQuestionKey{
@@ -342,14 +346,14 @@ func (s *Store) FailureRetryKey(req *dns.Msg, scope netip.Prefix) (uint64, bool)
 
 // RecordFailure records a question-specific terminal resolution failure.
 func (s *Store) RecordFailure(req *dns.Msg, scope netip.Prefix, provenance FailureProvenance) {
-	if s.failure == nil || req == nil || len(req.Question) == 0 {
+	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
 		return
 	}
 	s.recordFailureQuestion(req.Question[0], req.CheckingDisabled, scope, provenance)
 }
 
 func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefix, provenance FailureProvenance) {
-	if s.failure == nil {
+	if s.failureCacheDisabled || s.failure == nil {
 		return
 	}
 	s.failure.RecordQuestion(FailureQuestionKey{
@@ -362,7 +366,7 @@ func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefi
 // RecordZoneFailure implements middleware.ResolutionFailureStore. Zone-wide
 // reachability failures are deliberately independent of CD and ECS.
 func (s *Store) RecordZoneFailure(q dns.Question, zone string) {
-	if s.failure == nil || zone == "" {
+	if s.failureCacheDisabled || s.failure == nil || zone == "" {
 		return
 	}
 	s.failure.RecordZone(FailureZoneKey{
@@ -376,14 +380,14 @@ func (s *Store) RecordZoneFailure(q dns.Question, zone string) {
 // never call this, so a hosts-file answer cannot falsely mark an upstream zone
 // as recovered.
 func (s *Store) ClearZoneFailure(q dns.Question, zone string) {
-	if s.failure == nil || zone == "" {
+	if s.failureCacheDisabled || s.failure == nil || zone == "" {
 		return
 	}
 	s.failure.ResetZone(FailureZoneKey{Zone: zone, Qclass: q.Qclass})
 }
 
 func (s *Store) resetQuestionFailure(q dns.Question, cd bool, scope netip.Prefix) {
-	if s.failure == nil {
+	if s.failureCacheDisabled || s.failure == nil {
 		return
 	}
 	s.failure.ResetQuestion(FailureQuestionKey{
@@ -394,7 +398,7 @@ func (s *Store) resetQuestionFailure(q dns.Question, cd bool, scope netip.Prefix
 }
 
 func (s *Store) resetMatchingFailures(q dns.Question, cd bool, scope netip.Prefix) {
-	if s.failure == nil {
+	if s.failureCacheDisabled || s.failure == nil {
 		return
 	}
 	s.failure.ResetMatching(FailureQuestionKey{
@@ -573,7 +577,7 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 // call) so the linear scan is acceptable. If purge becomes
 // hot, a per-qname index would lift this back to O(matches).
 func (s *Store) Purge(q dns.Question) {
-	if s.failure != nil {
+	if !s.failureCacheDisabled && s.failure != nil {
 		s.failure.PurgeQuestion(q)
 	}
 	if s.nxDomainCuts != nil {
@@ -626,7 +630,12 @@ func (s *Store) PositiveLen() int { return s.positive.Len() }
 func (s *Store) NegativeLen() int { return s.negative.Len() }
 
 // FailureLen returns retained active and expired RFC 9520 failure states.
-func (s *Store) FailureLen() int { return s.failure.Len() }
+func (s *Store) FailureLen() int {
+	if s == nil || s.failureCacheDisabled || s.failure == nil {
+		return 0
+	}
+	return s.failure.Len()
+}
 
 // NXDomainCutLen returns retained locally validated RFC 8020 cuts.
 func (s *Store) NXDomainCutLen() int { return s.nxDomainCuts.len() }
