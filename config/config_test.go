@@ -199,6 +199,9 @@ func TestLoad(t *testing.T) {
 					if cfg.DNSSEC != "on" {
 						t.Errorf("DNSSEC = %v, want 'on'", cfg.DNSSEC)
 					}
+					if cfg.RFC8198 == nil || !cfg.RFC8198Enabled() {
+						t.Error("generated config must explicitly enable RFC 8198")
+					}
 					if cfg.RecursionFirewall.Mode != RecursionFirewallModeShadow {
 						t.Errorf("RecursionFirewall.Mode = %q, want %q",
 							cfg.RecursionFirewall.Mode, RecursionFirewallModeShadow)
@@ -496,6 +499,98 @@ func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {
 	}
 }
 
+func TestRFC8198EnabledDefaultsAndOverrides(t *testing.T) {
+	enabled := true
+	disabled := false
+
+	tests := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{
+			name: "nil config defaults on",
+			want: true,
+		},
+		{
+			name: "omitted defaults on",
+			cfg:  &Config{},
+			want: true,
+		},
+		{
+			name: "explicit true",
+			cfg:  &Config{RFC8198: &enabled},
+			want: true,
+		},
+		{
+			name: "explicit false",
+			cfg:  &Config{RFC8198: &disabled},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.RFC8198Enabled(); got != tt.want {
+				t.Fatalf("RFC8198Enabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRFC8198Policy(t *testing.T) {
+	tests := []struct {
+		name        string
+		setting     string
+		wantEnabled bool
+		wantSet     bool
+	}{
+		{
+			name:        "omitted remains default on",
+			wantEnabled: true,
+		},
+		{
+			name:        "explicit true",
+			setting:     "rfc8198 = true",
+			wantEnabled: true,
+			wantSet:     true,
+		},
+		{
+			name:        "explicit false",
+			setting:     "rfc8198 = false",
+			wantEnabled: false,
+			wantSet:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgFile := filepath.Join(tmpDir, "sdns.conf")
+			workDir := filepath.Join(tmpDir, "db")
+			content := fmt.Sprintf(`version = %q
+directory = %q
+ipv6access = true
+%s
+`, configver, workDir, tt.setting)
+			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+				t.Fatal(err)
+			}
+
+			cfg, err := Load(cfgFile, "test")
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := cfg.RFC8198Enabled(); got != tt.wantEnabled {
+				t.Fatalf("RFC8198Enabled() = %v, want %v", got, tt.wantEnabled)
+			}
+			if got := cfg.RFC8198 != nil; got != tt.wantSet {
+				t.Fatalf("RFC8198 pointer set = %v, want %v", got, tt.wantSet)
+			}
+		})
+	}
+}
+
 func TestLoadRecursionFirewallPolicy(t *testing.T) {
 	t.Run("explicit enforce values", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -589,6 +684,7 @@ func TestConfigDefaults(t *testing.T) {
 		"# Network Configuration",
 		"# Root DNS Servers",
 		"# DNSSEC Configuration",
+		"rfc8198 = true",
 		"# Upstream Servers",
 		"# API and Logging",
 		"# Filtering and Blocking",
@@ -640,6 +736,18 @@ func TestConfigDefaults(t *testing.T) {
 		if !strings.Contains(generatedConfig, option) {
 			t.Errorf("Default config missing recursion firewall option: %s", option)
 		}
+	}
+}
+
+func TestPackagedConfigMatchesGeneratedDefault(t *testing.T) {
+	path := filepath.Join("..", "contrib", "linux", "sdns.conf")
+	packaged, err := os.ReadFile(path) //nolint:gosec // G304 - fixed repository fixture
+	if err != nil {
+		t.Fatalf("read packaged config: %v", err)
+	}
+	generated := fmt.Sprintf(defaultConfig, configver)
+	if strings.TrimSpace(string(packaged)) != strings.TrimSpace(generated) {
+		t.Fatal("packaged config differs from the generated default")
 	}
 }
 

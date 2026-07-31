@@ -29,6 +29,7 @@ type Config struct {
 	RootServers      []string
 	Root6Servers     []string
 	DNSSEC           string
+	RFC8198          *bool `toml:"rfc8198"` // nil is default-on for backward compatibility
 	RootKeys         []string
 	FallbackServers  []string
 	ForwarderServers []string
@@ -125,6 +126,13 @@ type Config struct {
 	ReflexThreshold    float64 // Suspicion threshold (0.0-1.0, default: 0.7)
 
 	sVersion string
+}
+
+// RFC8198Enabled reports whether aggressive NSEC/NSEC3 denial synthesis is
+// enabled. Omission is default-on; an explicit false is the operational kill
+// switch. RFC 8020 NXDOMAIN subtree cuts are controlled independently.
+func (c *Config) RFC8198Enabled() bool {
+	return c == nil || c.RFC8198 == nil || *c.RFC8198
 }
 
 // ViewConfig describes a single per-client static-answer view.
@@ -498,6 +506,12 @@ root6servers = [
 # "on" = validate DNSSEC for signed zones
 # "off" = disable DNSSEC validation
 dnssec = "on"
+
+# Aggressively reuse locally validated NSEC/NSEC3 records to answer
+# later negative queries without another authoritative lookup (RFC 8198).
+# Set false as an operational kill switch. Exact negative caching and
+# RFC 8020 NXDOMAIN subtree cuts remain active.
+rfc8198 = true
 
 # DNSSEC root trust anchors
 # These are the public keys used to verify the DNS root zone

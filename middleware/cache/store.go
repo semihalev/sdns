@@ -40,7 +40,11 @@ type Store struct {
 	// validation cannot establish provenance (DNSSEC off or forwarding).
 	// The zero value intentionally permits standalone Store tests/users.
 	sharedDenialDisabled bool
-	cfg                  CacheConfig
+	// rfc8198Disabled is the operator kill switch for aggressive NSEC/NSEC3
+	// admission and synthesis. Keep it separate from sharedDenialDisabled:
+	// RFC 8020 subtree cuts remain available when only RFC 8198 is disabled.
+	rfc8198Disabled bool
+	cfg             CacheConfig
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
@@ -211,12 +215,14 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 				return msg, true
 			}
 		}
-		if msg, kind, _, ok := s.LookupDenialProof(
-			req,
-			newDenialProofWork(ctx, s.dnssecCryptoLimiter),
-		); ok {
-			observeAggressiveNegativeHit(kind, msg.Rcode)
-			return msg, true
+		if !s.rfc8198Disabled {
+			if msg, kind, _, ok := s.LookupDenialProof(
+				req,
+				newDenialProofWork(ctx, s.dnssecCryptoLimiter),
+			); ok {
+				observeAggressiveNegativeHit(kind, msg.Rcode)
+				return msg, true
+			}
 		}
 	}
 
@@ -265,7 +271,8 @@ func (s *Store) LookupDenialProof(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
 ) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, bool) {
-	if s == nil || s.denialProofs == nil || s.sharedDenialDisabled {
+	if s == nil || s.denialProofs == nil ||
+		s.sharedDenialDisabled || s.rfc8198Disabled {
 		return nil, middleware.ValidatedNegativeProofUnknown, "", false
 	}
 	msg, kind, zone, ok := s.denialProofs.lookupWithMeta(req, work)
@@ -292,7 +299,7 @@ func (s *Store) RecordDenialProof(
 	cutUntil time.Time,
 ) bool {
 	if s == nil || s.denialProofs == nil || proof == nil ||
-		s.sharedDenialDisabled {
+		s.sharedDenialDisabled || s.rfc8198Disabled {
 		return false
 	}
 	var expected denialProofKind

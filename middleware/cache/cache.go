@@ -215,6 +215,7 @@ func New(cfg *config.Config) *Cache {
 	// mode cannot safely admit or consume RFC 8020/8198 proofs.
 	c.store.sharedDenialDisabled =
 		cfg.DNSSEC == "off" || len(cfg.ForwarderServers) != 0
+	c.store.rfc8198Disabled = !cfg.RFC8198Enabled()
 
 	// Initialize prefetch queue if enabled
 	if cacheConfig.Prefetch > 0 {
@@ -429,7 +430,8 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// request-tree memo only when aggressive denial lookup is actually
 	// reachable, then carry it into resolver fallback and nested subqueries.
 	if !requestTreeBypassesSharedDenial &&
-		!c.store.sharedDenialDisabled {
+		!c.store.sharedDenialDisabled &&
+		!c.store.rfc8198Disabled {
 		ctx = dnssec.EnsureNSEC3HashMemo(ctx)
 	}
 	if proof, kind, zone := c.lookupDenialProof(ctx, req, clientScope); proof != nil {
@@ -703,7 +705,8 @@ func (c *Cache) lookupDenialProof(
 ) (*dns.Msg, middleware.ValidatedNegativeProofKind, string) {
 	if req == nil || len(req.Question) != 1 ||
 		req.CheckingDisabled || clientScope.IsValid() ||
-		hasEDNSClientSubnet(req) || sharedDenialBypass(ctx) {
+		hasEDNSClientSubnet(req) || sharedDenialBypass(ctx) ||
+		c.store.rfc8198Disabled {
 		return nil, middleware.ValidatedNegativeProofUnknown, ""
 	}
 	msg, kind, zone, ok := c.store.LookupDenialProof(
