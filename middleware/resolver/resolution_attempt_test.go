@@ -418,6 +418,26 @@ func TestHandleLookupErrorRecordsOnlyTerminalAuthorityFailure(t *testing.T) {
 	if records != 1 {
 		t.Fatalf("terminal authority failure records = %d, want 1", records)
 	}
+	errorCount := atomic.LoadUint32(&rs.servers.ErrorCount)
+
+	ordinaryErr := errors.New("ordinary resolver error")
+	_, gotErr := r.handleLookupError(
+		context.Background(),
+		ordinaryErr,
+		rs,
+		req,
+		false,
+	)
+	if !errors.Is(gotErr, ordinaryErr) {
+		t.Fatalf("ordinary error = %v, want %v", gotErr, ordinaryErr)
+	}
+	records, _ = recorder.counts()
+	if records != 1 {
+		t.Fatalf("ordinary resolver error created zone failure state: records=%d", records)
+	}
+	if got := atomic.LoadUint32(&rs.servers.ErrorCount); got != errorCount {
+		t.Fatalf("ordinary resolver error incremented authority error count: got %d want %d", got, errorCount)
+	}
 
 	nsLookupCtx := context.WithValue(context.Background(), contextKeyNSL, struct{}{})
 	_, _ = r.handleLookupError(

@@ -175,7 +175,29 @@ func noteCut(ctx context.Context, deadline time.Time, key uint64) {
 
 type hostSet map[string]struct{}
 
-type fatalError error
+// fatalResolverError marks an error that represents terminal failure of every
+// authority server considered by a lookup. It must be a concrete wrapper:
+// defining the marker as `type fatalError error` makes every non-nil error
+// satisfy the interface assertion and incorrectly attributes local failures
+// to the authority zone.
+type fatalResolverError struct {
+	cause error
+}
+
+func (e *fatalResolverError) Error() string { return e.cause.Error() }
+func (e *fatalResolverError) Unwrap() error { return e.cause }
+
+func fatalError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &fatalResolverError{cause: cause}
+}
+
+func isFatalError(err error) bool {
+	var target *fatalResolverError
+	return errors.As(err, &target)
+}
 
 // Error variables are defined in errors.go
 
@@ -2944,7 +2966,7 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolve
 		return nil, err
 	}
 
-	if _, ok := err.(fatalError); ok {
+	if isFatalError(err) {
 		// no check for nsaddrs lookups
 		if v := ctx.Value(contextKeyNSL); v != nil {
 			return nil, err
