@@ -1,10 +1,6 @@
 package dnssec
 
-import (
-	"strings"
-
-	"github.com/miekg/dns"
-)
+import "github.com/miekg/dns"
 
 // VerifyWildcardAnswer enforces the RFC 4035 §5.3.4 / RFC 5155 §8.8
 // requirement for positive answers synthesized from a wildcard.
@@ -37,6 +33,19 @@ func VerifyWildcardAnswer(resp *dns.Msg) error {
 // VerifyWildcardAnswerWithWork is VerifyWildcardAnswer with request-tree
 // accounting for every NSEC3 hash operation.
 func VerifyWildcardAnswerWithWork(resp *dns.Msg, work NSEC3Work) error {
+	_, err := VerifyWildcardAnswerForZoneWithWork(resp, "", work)
+	return err
+}
+
+// VerifyWildcardAnswerForZoneWithWork binds NSEC3 witnesses to signer and
+// reports whether every denial interval is fully authenticated. An Opt-Out
+// next-closer interval validates only an insecure answer and therefore
+// returns secure=false without turning the response into SERVFAIL.
+func VerifyWildcardAnswerForZoneWithWork(
+	resp *dns.Msg,
+	signer string,
+	work NSEC3Work,
+) (secure bool, err error) {
 	var nsecSet, nsec3Set []dns.RR
 	for _, rr := range resp.Ns {
 		switch rr.(type) {
@@ -47,64 +56,86 @@ func VerifyWildcardAnswerWithWork(resp *dns.Msg, work NSEC3Work) error {
 		}
 	}
 
+	secure = true
 	for _, rr := range resp.Answer {
 		sig, ok := rr.(*dns.RRSIG)
 		if !ok {
 			continue
 		}
 
-		owner := strings.ToLower(dns.Fqdn(sig.Header().Name))
-		labels := dns.SplitDomainName(owner)
+		owner, err := newAggressiveCanonicalName(sig.Header().Name)
+		if err != nil {
+			return false, err
+		}
 		// Labels >= owner label count means an exact (non-wildcard) owner.
 		// A malformed over-count is rejected by RRSIG.Verify itself, so it
 		// never reaches here with ok=true; treat it as non-wildcard.
-		if int(sig.Labels) >= len(labels) {
+		if int(sig.Labels) >= len(owner.labels) {
 			continue
 		}
 
 		// Closest encloser is the last sig.Labels labels of the owner; the
-		// next closer name is one label longer, towards the owner name.
-		nextCloser := dns.Fqdn(strings.Join(labels[len(labels)-int(sig.Labels)-1:], "."))
-		denied, err := nextCloserDeniedWithWork(nextCloser, nsecSet, nsec3Set, work)
+		// next closer name is one label longer, towards the owner name. Work
+		// from canonical wire labels: Unicode case folding is not DNS
+		// canonicalization and can alias distinct octet names (for example,
+		// Kelvin sign and ASCII "k").
+		nextCloserName := owner.suffix(int(sig.Labels) + 1)
+		nextCloser, end, unpackErr := dns.UnpackDomainName(
+			nextCloserName.wire,
+			0,
+		)
+		if unpackErr != nil || end != len(nextCloserName.wire) {
+			return false, aggressiveFallback("invalid wildcard next-closer name")
+		}
+		denied, authenticated, err := nextCloserDeniedWithWork(
+			nextCloser,
+			signer,
+			nsecSet,
+			nsec3Set,
+			work,
+		)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !denied {
-			return ErrWildcardNoDenial
+			return false, ErrWildcardNoDenial
+		}
+		if !authenticated {
+			secure = false
 		}
 	}
 
-	return nil
+	return secure, nil
 }
 
 // nextCloserDeniedWithWork reports whether some NSEC or NSEC3 in the response
 // proves the next closer name does not exist.
 func nextCloserDeniedWithWork(
 	nextCloser string,
+	signer string,
 	nsecSet, nsec3Set []dns.RR,
 	work NSEC3Work,
-) (bool, error) {
+) (denied bool, secure bool, err error) {
 	for _, rr := range nsecSet {
 		n := rr.(*dns.NSEC)
 		if nsecCovers(n.Header().Name, n.NextDomain, nextCloser) {
-			return true, nil
+			return true, true, nil
 		}
 	}
-	nsec3Set = normalizeNSEC3Set(nsec3Set)
-	match := nsec3Operation{kind: nsec3MatchOperation, work: work}
-	cover := nsec3Operation{kind: nsec3CoverOperation, work: work}
-	for _, rr := range nsec3Set {
-		n := rr.(*dns.NSEC3)
-		if !nsec3Safe(n) {
-			continue
-		}
-		denied, err := nsec3CoversWithWork(n, nextCloser, match, cover)
-		if err != nil {
-			return false, err
-		}
-		if denied {
-			return true, nil
-		}
+	if len(nsec3Set) == 0 {
+		return false, false, nil
 	}
-	return false, nil
+	prepared, err := prepareNSEC3Set(nsec3Set, signer)
+	if err != nil {
+		return false, false, err
+	}
+	evaluator := newNSEC3RingEvaluator(prepared, work)
+	_, cover, err := evaluator.lookup(nextCloser)
+	if err != nil {
+		return false, false, err
+	}
+	if cover != nil {
+		return true, cover.rr.Flags&1 == 0, nil
+	}
+	return false, false, nil
 }

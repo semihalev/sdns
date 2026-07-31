@@ -292,9 +292,14 @@ func TestNXDomainCutMinimizedNSEC3OptOutDoesNotCutDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate minimized NSEC3 Opt-Out denial: %v", err)
 	}
-	if denialMark, ok := middleware.ValidatedDenialForResponse(validationCtx, validated); !ok ||
-		denialMark.DeniedName != dns.CanonicalName(minimizedName) {
-		t.Fatalf("validated Opt-Out provenance = %+v, %v", denialMark, ok)
+	if validated.AuthenticatedData {
+		t.Fatal("NSEC3 Opt-Out denial carried AD=1")
+	}
+	if denialMark, ok := middleware.ValidatedDenialForResponse(validationCtx, validated); ok {
+		t.Fatalf("insecure Opt-Out denial published NXDOMAIN-cut provenance: %+v", denialMark)
+	}
+	if negative, ok := middleware.ValidatedNegativeProofForResponse(validationCtx, validated); ok {
+		t.Fatalf("insecure Opt-Out denial published shared negative-proof provenance: %+v", negative)
 	}
 
 	req := new(dns.Msg)

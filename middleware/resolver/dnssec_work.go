@@ -46,6 +46,11 @@ func (w dnssecWorkBudget) BeginNSEC3Hash() (func(), error) {
 	return w.begin(middleware.RecursionWorkNSEC3Hash)
 }
 
+func (w dnssecWorkBudget) NSEC3HashMemos() dnssec.NSEC3HashMemoAccess {
+	memo := dnssec.NSEC3HashMemoFromContext(w.ctx)
+	return dnssec.NSEC3HashMemoAccess{Read: memo, Write: memo}
+}
+
 func (w dnssecWorkBudget) begin(kind middleware.RecursionWorkKind) (func(), error) {
 	if err := w.ctx.Err(); err != nil {
 		return nil, err

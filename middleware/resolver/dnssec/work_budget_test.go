@@ -83,7 +83,7 @@ func TestCryptoLimiterBoundsAndReleases(t *testing.T) {
 func TestVerifyNameErrorNSEC3WorkBudgetExactBoundary(t *testing.T) {
 	const (
 		qname = "a.b.c.work-factor.example."
-		limit = 32
+		limit = 5
 	)
 	msg := new(dns.Msg).SetQuestion(qname, dns.TypeA)
 	records := newWorkFactorNSEC3ProofRecords(0, 4)
@@ -98,7 +98,7 @@ func TestVerifyNameErrorNSEC3WorkBudgetExactBoundary(t *testing.T) {
 }
 
 func TestVerifyNameErrorNSEC3WorkBudgetStopsBeforeNextHash(t *testing.T) {
-	const limit = 32
+	const limit = 5
 	msg := new(dns.Msg).SetQuestion("x.a.b.c.work-factor.example.", dns.TypeA)
 	records := newWorkFactorNSEC3ProofRecords(0, 4)
 	work := &countingNSEC3Work{limit: limit}

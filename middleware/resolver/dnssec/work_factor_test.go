@@ -432,7 +432,9 @@ func TestNSEC3WorkFactorIterationBoundary(t *testing.T) {
 			},
 			Hash:       dns.SHA1,
 			Iterations: iterations,
+			SaltLength: 2,
 			Salt:       "A1B2",
+			HashLength: 20,
 			NextDomain: hash,
 		}
 	}
@@ -469,7 +471,11 @@ func TestVerifyNameErrorNSEC3WorkFactorCountsHashCalls(t *testing.T) {
 
 			expected := 0
 			if iterations <= maxNSEC3Iterations {
-				expected = (nsec3ClosestEncloserChecks(qname) + 4) * recordCount
+				// The ring hashes each distinct semantic name once. The next
+				// closer was already visited during the closest-encloser walk;
+				// only the wildcard adds one more digest. Record count changes
+				// interval comparisons, never SHA-1 work.
+				expected = nsec3ClosestEncloserChecks(qname) + 1
 			}
 			if got := work.calls; got != expected {
 				t.Fatalf("NSEC3 hash calls = %d, want %d", got, expected)
@@ -606,7 +612,9 @@ func newWorkFactorNSEC3ProofRecords(iterations uint16, count int) []dns.RR {
 			},
 			Hash:       dns.SHA1,
 			Iterations: iterations,
+			SaltLength: 2,
 			Salt:       "A1B2",
+			HashLength: 20,
 			NextDomain: fmt.Sprintf("%032X", i*2+1),
 		})
 	}
@@ -624,7 +632,9 @@ func newWorkFactorNSEC3ProofRecords(iterations uint16, count int) []dns.RR {
 		},
 		Hash:       dns.SHA1,
 		Iterations: iterations,
+		SaltLength: 2,
 		Salt:       "A1B2",
+		HashLength: 20,
 		NextDomain: apexHash,
 	})
 	return records
@@ -664,7 +674,7 @@ func BenchmarkVerifyNameErrorNSEC3WorkFactor(b *testing.B) {
 				if err := VerifyNameError(msg, records); err != nil {
 					b.Fatalf("fixture must provide a complete NSEC3 name-error proof: %v", err)
 				}
-				expectedHashCalls = (nsec3ClosestEncloserChecks(qname) + 4) * tc.records
+				expectedHashCalls = nsec3ClosestEncloserChecks(qname) + 1
 				expectedSHA1Rounds = expectedHashCalls * (int(tc.iterations) + 1)
 			}
 

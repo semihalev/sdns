@@ -41,6 +41,11 @@ type denialProofNSEC3Params struct {
 	salt       string
 }
 
+type denialProofNSEC3ConflictKey struct {
+	zone   denialProofZoneKey
+	params denialProofNSEC3Params
+}
+
 type denialProofID struct {
 	zone       string
 	owner      string
@@ -111,6 +116,14 @@ type denialProofCache struct {
 	totalBytes int64
 	sequence   uint64
 	stopped    bool
+
+	// A locally validated tuple that presents two different RDATA values at
+	// one owner hash is ambiguous until both observations expire. Tombstones
+	// preserve that fact after the retained ring is removed. The map is
+	// bounded by maxEntries; if it fills, one global expiry backstop keeps
+	// new NSEC3 admission and synthesis fail-open without unbounded memory.
+	nsec3Conflicts             map[denialProofNSEC3ConflictKey]time.Time
+	nsec3ConflictOverflowUntil time.Time
 }
 
 func newDenialProofCache(size int, maxTTL time.Duration) *denialProofCache {
@@ -172,6 +185,7 @@ func newDenialProofCacheWithConfig(cfg denialProofCacheConfig) *denialProofCache
 		maxBytesPerZone:   cfg.MaxBytesPerZone,
 		maxTTL:            cfg.MaxTTL,
 		now:               cfg.Now,
+		nsec3Conflicts:    make(map[denialProofNSEC3ConflictKey]time.Time),
 	}
 }
 
@@ -261,6 +275,58 @@ func (c *denialProofCache) recordWithKind(
 	}
 
 	for _, entry := range entries {
+		if entry.id.kind == denialProofNSEC3 &&
+			c.nsec3ConflictActiveLocked(
+				denialProofNSEC3ConflictKey{
+					zone:   entry.zoneKey,
+					params: entry.params,
+				},
+				now,
+			) {
+			return false
+		}
+	}
+
+	// A second locally validated RRset at the same tuple+owner hash with
+	// different NSEC3 semantics is a detectable collision/chain ambiguity.
+	// Never choose "latest wins": invalidate the complete parameter ring and
+	// quarantine it through both observations' lifetimes so a third response
+	// cannot immediately repopulate the detected-ambiguous tuple.
+	for _, entry := range entries {
+		if entry.id.kind != denialProofNSEC3 {
+			continue
+		}
+		previous := c.byID[entry.id]
+		if previous == nil || !now.Before(previous.expires) ||
+			denialProofNSEC3EntriesEquivalent(previous, entry) {
+			continue
+		}
+		snapshot := c.zoneIndex[entry.zoneKey]
+		if snapshot != nil {
+			conflicted := append(
+				[]*denialProofEntry(nil),
+				snapshot.nsec3[entry.params]...,
+			)
+			for _, retained := range conflicted {
+				c.removeEntryLocked(retained)
+			}
+		}
+		expires := entry.expires
+		if previous.expires.After(expires) {
+			expires = previous.expires
+		}
+		c.recordNSEC3ConflictLocked(
+			denialProofNSEC3ConflictKey{
+				zone:   entry.zoneKey,
+				params: entry.params,
+			},
+			expires,
+			now,
+		)
+		return false
+	}
+
+	for _, entry := range entries {
 		if previous := c.byID[entry.id]; previous != nil {
 			c.removeEntryLocked(previous)
 		}
@@ -280,6 +346,78 @@ func (c *denialProofCache) recordWithKind(
 	c.enforceZoneLimitsLocked(entries[0].zoneKey)
 	c.enforceGlobalLimitsLocked()
 	return true
+}
+
+func (c *denialProofCache) pruneNSEC3ConflictsLocked(now time.Time) {
+	for key, expires := range c.nsec3Conflicts {
+		if !now.Before(expires) {
+			delete(c.nsec3Conflicts, key)
+		}
+	}
+	if !now.Before(c.nsec3ConflictOverflowUntil) {
+		c.nsec3ConflictOverflowUntil = time.Time{}
+	}
+}
+
+func (c *denialProofCache) nsec3ConflictActiveLocked(
+	key denialProofNSEC3ConflictKey,
+	now time.Time,
+) bool {
+	if now.Before(c.nsec3ConflictOverflowUntil) {
+		return true
+	}
+	return now.Before(c.nsec3Conflicts[key])
+}
+
+func (c *denialProofCache) recordNSEC3ConflictLocked(
+	key denialProofNSEC3ConflictKey,
+	expires time.Time,
+	now time.Time,
+) {
+	if !now.Before(expires) {
+		return
+	}
+	if previous, exists := c.nsec3Conflicts[key]; exists {
+		if now.Before(previous) {
+			if expires.After(previous) {
+				c.nsec3Conflicts[key] = expires
+			}
+			return
+		}
+		delete(c.nsec3Conflicts, key)
+	}
+	// Expiry pruning is O(number of tombstones), so keep it off the normal
+	// admission path and pay that scan only when the bounded map is full.
+	if len(c.nsec3Conflicts) >= c.maxEntries {
+		c.pruneNSEC3ConflictsLocked(now)
+	}
+	if len(c.nsec3Conflicts) < c.maxEntries {
+		c.nsec3Conflicts[key] = expires
+		return
+	}
+	if expires.After(c.nsec3ConflictOverflowUntil) {
+		c.nsec3ConflictOverflowUntil = expires
+	}
+}
+
+func denialProofNSEC3EntriesEquivalent(a, b *denialProofEntry) bool {
+	if a == nil || b == nil ||
+		a.id.kind != denialProofNSEC3 ||
+		b.id.kind != denialProofNSEC3 ||
+		a.params != b.params ||
+		a.ownerHash != b.ownerHash ||
+		len(a.data) == 0 ||
+		len(b.data) == 0 {
+		return false
+	}
+	left, leftOK := a.data[0].(*dns.NSEC3)
+	right, rightOK := b.data[0].(*dns.NSEC3)
+	if !leftOK || !rightOK || left == nil || right == nil {
+		return false
+	}
+	return left.Flags == right.Flags &&
+		strings.EqualFold(left.NextDomain, right.NextDomain) &&
+		denialProofTypeBitmapsEqual(left.TypeBitMap, right.TypeBitMap)
 }
 
 func (c *denialProofCache) extract(
@@ -997,12 +1135,25 @@ func (c *denialProofCache) lookupWithMeta(
 		if !ok {
 			continue
 		}
+
+		// Re-check conflict quarantine after evaluation. A writer may have
+		// detected an owner collision after this lookup captured its immutable
+		// snapshot; holding RLock through response shaping linearizes either
+		// the synthesis or the conflict invalidation, never both.
+		c.mu.RLock()
+		if c.stopped ||
+			c.nsec3SelectionConflictedLocked(entries, now) {
+			c.mu.RUnlock()
+			continue
+		}
 		response := denialProofResponse(req, result, entries, candidate.snapshot.soa, now)
 		if response == nil || len(entries) == 0 {
+			c.mu.RUnlock()
 			continue
 		}
 		kind := entries[0].id.kind
 		if kind != denialProofNSEC && kind != denialProofNSEC3 {
+			c.mu.RUnlock()
 			continue
 		}
 		homogeneous := true
@@ -1013,10 +1164,33 @@ func (c *denialProofCache) lookupWithMeta(
 			}
 		}
 		if homogeneous {
+			c.mu.RUnlock()
 			return response, kind, candidate.zone.zone, true
 		}
+		c.mu.RUnlock()
 	}
 	return nil, 0, "", false
+}
+
+func (c *denialProofCache) nsec3SelectionConflictedLocked(
+	entries []*denialProofEntry,
+	now time.Time,
+) bool {
+	for _, entry := range entries {
+		if entry == nil || entry.id.kind != denialProofNSEC3 {
+			continue
+		}
+		if c.nsec3ConflictActiveLocked(
+			denialProofNSEC3ConflictKey{
+				zone:   entry.zoneKey,
+				params: entry.params,
+			},
+			now,
+		) {
+			return true
+		}
+	}
+	return false
 }
 
 func denialProofAncestors(name string) []string {
@@ -1209,8 +1383,17 @@ func (c *denialProofCache) purge(q dns.Question) {
 	if c.stopped {
 		return
 	}
+	// Administrative purge is an explicit recovery boundary. The overflow
+	// backstop cannot identify its originating tuple, so clear it globally;
+	// keyed tombstones below are removed only for the requested ancestors.
+	c.nsec3ConflictOverflowUntil = time.Time{}
 	for _, zone := range denialProofAncestors(q.Name) {
 		key := denialProofZoneKey{zone: zone, qclass: q.Qclass}
+		for conflict := range c.nsec3Conflicts {
+			if conflict.zone == key {
+				delete(c.nsec3Conflicts, conflict)
+			}
+		}
 		snapshot := c.zoneIndex[key]
 		if snapshot == nil {
 			continue
@@ -1265,6 +1448,8 @@ func (c *denialProofCache) stop() {
 	c.stopped = true
 	c.zoneIndex = make(map[denialProofZoneKey]*denialProofZoneSnapshot)
 	c.byID = make(map[denialProofID]*denialProofEntry)
+	c.nsec3Conflicts = make(map[denialProofNSEC3ConflictKey]time.Time)
+	c.nsec3ConflictOverflowUntil = time.Time{}
 	c.fifo.Init()
 	c.totalBytes = 0
 	c.mu.Unlock()

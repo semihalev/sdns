@@ -16,6 +16,7 @@ import (
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/waitgroup"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -209,6 +210,11 @@ func New(cfg *config.Config) *Cache {
 			},
 		},
 	}
+	// Shared denial state requires validation performed by this resolver.
+	// Forwarder AD is a wire assertion, not local provenance, and DNSSEC-off
+	// mode cannot safely admit or consume RFC 8020/8198 proofs.
+	c.store.sharedDenialDisabled =
+		cfg.DNSSEC == "off" || len(cfg.ForwarderServers) != 0
 
 	// Initialize prefetch queue if enabled
 	if cacheConfig.Prefetch > 0 {
@@ -326,10 +332,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Cancel()
 		return
 	}
-
 	q := req.Question[0]
 	requestCD := req.CheckingDisabled
-	requestHasECS := hasEDNSClientSubnet(req)
+	requestHasECS := middleware.HasClientECS(ctx) || hasEDNSClientSubnet(req)
+	if requestHasECS {
+		// EDNS normally installs this before policy stripping. Preserve the
+		// same whole-tree contract for cache-only/custom pipelines where the
+		// raw option reaches Cache directly.
+		ctx = middleware.MarkClientECS(ctx)
+	}
 	if requestCD || requestHasECS {
 		ctx = withSharedDenialBypass(ctx)
 	}
@@ -413,6 +424,13 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			nxDomainCutHits.Inc()
 			return
 		}
+	}
+	// Exact answer and subtree-cut hits need no NSEC3 state. Install the
+	// request-tree memo only when aggressive denial lookup is actually
+	// reachable, then carry it into resolver fallback and nested subqueries.
+	if !requestTreeBypassesSharedDenial &&
+		!c.store.sharedDenialDisabled {
+		ctx = dnssec.EnsureNSEC3HashMemo(ctx)
 	}
 	if proof, kind, zone := c.lookupDenialProof(ctx, req, clientScope); proof != nil {
 		if c.handleDenialProofHit(ctx, ch, proof, kind, zone) {
@@ -808,6 +826,8 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 				Key:     key,
 				Cache:   c,
 				Entry:   entry,
+				RequestHadECS: middleware.HasClientECS(ctx) ||
+					hasEDNSClientSubnet(req),
 			}) {
 				entry.prefetch.Store(false)
 			}

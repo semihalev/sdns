@@ -323,6 +323,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 
 // (*Resolver).Resolve resolve starts a DNS resolution - public interface with old signature for compatibility.
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority.Servers, root bool, depth int, level int, nomin bool, parentDS []dns.RR, extra ...bool) (*dns.Msg, error) {
+	ctx = dnssec.EnsureNSEC3HashMemo(ctx)
 	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 	hadWork := middleware.RecursionWorkFrom(ctx) != nil
 	ctx, work := middleware.EnsureRecursionWork(ctx, r.workPolicy)
@@ -989,10 +990,16 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					// replayed over a concrete name that really exists and
 					// returned with AD=1. The NSEC/NSEC3 proof consulted
 					// here was validated by verifyDNSSEC above.
-					if werr := dnssec.VerifyWildcardAnswerWithWork(resp, r.dnssecWork(ctx)); werr != nil {
+					wildcardSecure, werr := dnssec.VerifyWildcardAnswerForZoneWithWork(
+						resp,
+						signer,
+						r.dnssecWork(ctx),
+					)
+					if werr != nil {
 						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", formatQuestion(q), "error", werr.Error())
 						return nil, werr
 					}
+					ok = wildcardSecure
 				}
 				resp.AuthenticatedData = ok
 				settled = true
@@ -1157,6 +1164,8 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					(resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0)
 				proofKind := middleware.ValidatedNegativeProofUnknown
 				aggressiveEligible := false
+				denialSecure := true
+				var denialErr error
 				proofQuestion := q
 				if dnameTarget := dnsutil.DnameTarget(resp); dnameTarget != "" {
 					proofQuestion.Name = dnameTarget
@@ -1167,34 +1176,46 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					case len(nsec3Set) > 0:
 						proofKind = middleware.ValidatedNegativeProofNSEC3
 						if resp.Rcode == dns.RcodeNameError {
-							if err := dnssec.VerifyNameErrorWithWork(resp, nsec3Set, r.dnssecWork(ctx)); err != nil {
-								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-								return nil, err
+							denialSecure, denialErr = dnssec.VerifyNameErrorForZoneWithWork(
+								resp,
+								nsec3Set,
+								chosenSigner,
+								r.dnssecWork(ctx),
+							)
+							if denialErr != nil {
+								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", denialErr.Error())
+								return nil, denialErr
 							}
 						} else {
-							if err := dnssec.VerifyNODATAWithWork(resp, nsec3Set, r.dnssecWork(ctx)); err != nil {
-								zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
-								return nil, err
+							denialSecure, denialErr = dnssec.VerifyNODATAForZoneWithWork(
+								resp,
+								nsec3Set,
+								chosenSigner,
+								r.dnssecWork(ctx),
+							)
+							if denialErr != nil {
+								zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", denialErr.Error())
+								return nil, denialErr
 							}
 						}
 
-						result, err := dnssec.EvaluateAggressiveNSEC3(
-							proofQuestion,
-							chosenSigner,
-							nsec3Set,
-							newResolverAggressiveProofWork(ctx, r.cryptoLimiter),
-						)
-						if err == nil && result.Rcode == resp.Rcode {
-							aggressiveEligible = true
-						} else {
-							// Exact-response validation above remains
-							// authoritative. RFC 8198 reuse is stricter (for
-							// example covering Opt-Out records are valid in
-							// some RFC 5155 NODATA proofs but ineligible for
-							// aggressive caching), so any evaluator miss only
-							// withholds shared provenance.
-							zlog.Debug("NSEC3 proof not eligible for aggressive reuse",
-								"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
+						if denialSecure {
+							result, err := dnssec.EvaluateAggressiveNSEC3(
+								proofQuestion,
+								chosenSigner,
+								nsec3Set,
+								newResolverAggressiveProofWork(ctx, r.cryptoLimiter),
+							)
+							if err == nil && result.Rcode == resp.Rcode {
+								aggressiveEligible = true
+							} else {
+								// Exact-response validation above remains
+								// authoritative. RFC 8198 reuse is stricter,
+								// so any evaluator miss only withholds shared
+								// provenance.
+								zlog.Debug("NSEC3 proof not eligible for aggressive reuse",
+									"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
+							}
 						}
 					case len(nsecSet) > 0:
 						proofKind = middleware.ValidatedNegativeProofNSEC
@@ -1224,9 +1245,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 
 				if !req.CheckingDisabled {
-					resp.AuthenticatedData = true
+					resp.AuthenticatedData = denialSecure
 				}
-				if !req.CheckingDisabled && isNegative &&
+				if !req.CheckingDisabled && denialSecure && isNegative &&
 					proofKind != middleware.ValidatedNegativeProofUnknown {
 					middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
 						Subject:    proofQuestion.Name,
@@ -2146,7 +2167,12 @@ func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child 
 	}
 
 	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(dsResp.Ns, "", dns.TypeNSEC3), signer); len(nsec3Set) > 0 {
-		if err := dnssec.VerifyDelegationWithWork(child, nsec3Set, r.dnssecWork(ctx)); err != nil {
+		if err := dnssec.VerifyDelegationForZoneWithWork(
+			child,
+			signer,
+			nsec3Set,
+			r.dnssecWork(ctx),
+		); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -2246,7 +2272,16 @@ func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg
 func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	store := r.store.Load()
 	if store != nil {
-		if msg, ok := (*store).Get(req); ok {
+		var (
+			msg *dns.Msg
+			ok  bool
+		)
+		if contextStore, aware := (*store).(middleware.ContextStore); aware {
+			msg, ok = contextStore.GetWithContext(ctx, req)
+		} else {
+			msg, ok = (*store).Get(req)
+		}
+		if ok {
 			return msg, nil
 		}
 	}
@@ -3292,11 +3327,18 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 			}
 		}
 		if rs.work == nil || work != nil {
+			detachedBase := dnssec.InheritNSEC3HashMemos(
+				context.Background(),
+				ctx,
+			)
+			if middleware.HasClientECS(ctx) {
+				detachedBase = middleware.MarkClientECS(detachedBase)
+			}
 			go func() { //nolint:gosec // G118 - intentionally detached and bounded by the timeout below
 				if releaseWork != nil {
 					defer releaseWork()
 				}
-				v6ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				v6ctx, cancel := context.WithTimeout(detachedBase, 30*time.Second)
 				defer cancel()
 				// Retain and pin the originating request-tree ledger before
 				// detaching. Every referral job then shares one aggregate
@@ -3474,7 +3516,12 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	// attacker-injected NSEC/NSEC3 from an unrelated sibling zone
 	// cannot structurally satisfy the delegation check.
 	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner); len(nsec3Set) > 0 {
-		if err := dnssec.VerifyDelegationWithWork(q.Name, nsec3Set, r.dnssecWork(ctx)); err != nil {
+		if err := dnssec.VerifyDelegationForZoneWithWork(
+			q.Name,
+			chosenSigner,
+			nsec3Set,
+			r.dnssecWork(ctx),
+		); err != nil {
 			zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err
 		}

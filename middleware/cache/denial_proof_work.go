@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
@@ -27,7 +26,7 @@ var (
 type denialProofWork struct {
 	ctx     context.Context
 	limiter middleware.DNSSECCryptoLimiter
-	hashes  atomic.Uint32
+	memo    *dnssec.NSEC3HashMemo
 }
 
 var _ dnssec.NSEC3Work = (*denialProofWork)(nil)
@@ -36,7 +35,18 @@ func newDenialProofWork(
 	ctx context.Context,
 	limiter middleware.DNSSECCryptoLimiter,
 ) *denialProofWork {
-	return &denialProofWork{ctx: ctx, limiter: limiter}
+	memo := dnssec.NSEC3HashMemoFromContextScope(
+		ctx,
+		dnssec.NSEC3HashMemoScopeCacheOptional,
+	)
+	if memo == nil {
+		memo = dnssec.NewNSEC3HashMemo()
+	}
+	return &denialProofWork{
+		ctx:     ctx,
+		limiter: limiter,
+		memo:    memo,
+	}
 }
 
 // BeginNSEC3Hash reserves one local hash allowance and one shared crypto slot.
@@ -74,16 +84,16 @@ func (w *denialProofWork) BeginNSEC3Hash() (func(), error) {
 	return sync.OnceFunc(release), nil
 }
 
-func (w *denialProofWork) reserveHash() bool {
-	for {
-		used := w.hashes.Load()
-		if used >= denialProofMaxNSEC3Hashes {
-			return false
-		}
-		if w.hashes.CompareAndSwap(used, used+1) {
-			return true
-		}
+func (w *denialProofWork) NSEC3HashMemos() dnssec.NSEC3HashMemoAccess {
+	if w == nil {
+		return dnssec.NSEC3HashMemoAccess{}
 	}
+	return dnssec.NSEC3HashMemoAccess{Read: w.memo, Write: w.memo}
+}
+
+func (w *denialProofWork) reserveHash() bool {
+	return w != nil &&
+		w.memo.TryReserveWork(denialProofMaxNSEC3Hashes)
 }
 
 func denialProofContextError(err error) error {

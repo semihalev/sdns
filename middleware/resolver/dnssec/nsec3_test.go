@@ -25,7 +25,7 @@ func makeNSEC3(name, next string, optOut bool, types []uint16) *dns.NSEC3 {
 		Iterations: 0,
 		SaltLength: 0,
 		Salt:       salt,
-		HashLength: 32,
+		HashLength: 20,
 		NextDomain: dns.HashName(next, dns.SHA1, 0, salt),
 		TypeBitMap: types,
 	}
@@ -74,7 +74,7 @@ func makeNSEC3Coverer(t *testing.T, name, zone string) *dns.NSEC3 {
 		},
 		Hash:       dns.SHA1,
 		Iterations: 0,
-		HashLength: 32,
+		HashLength: 20,
 		NextDomain: adjacentNSEC3Hash(t, hash, 1),
 	}
 	if !n.Cover(name) || n.Match(name) {
@@ -301,9 +301,11 @@ func Test_VerifyDelegation(t *testing.T) {
 	}
 
 	// Valid Opt-Out delegation
+	coverer := makeNSEC3Coverer(t, "b.com.", "com.")
+	coverer.Flags = 1
 	records = []dns.RR{
-		makeNSEC3("com.", "a.com.", false, []uint16{dns.TypeNS}),  // CE
-		makeNSEC3("a.com.", "e.com.", true, []uint16{dns.TypeNS}), // NC coverer, e.com is a lucky hash, thats not how ordering works
+		makeNSEC3("com.", "b.com.", false, []uint16{dns.TypeNS, dns.TypeSOA}),
+		coverer,
 	}
 	err = VerifyDelegation("b.com.", records)
 	if err != nil {
@@ -312,7 +314,7 @@ func Test_VerifyDelegation(t *testing.T) {
 
 	// Invalid Opt-Out delegation, no NC
 	records = []dns.RR{
-		makeNSEC3("com.", "a.com.", false, []uint16{dns.TypeNS}),
+		makeNSEC3("com.", "b.com.", false, []uint16{dns.TypeNS, dns.TypeSOA}),
 	}
 	err = VerifyDelegation("b.com.", records)
 	if err == nil {
@@ -320,9 +322,10 @@ func Test_VerifyDelegation(t *testing.T) {
 	}
 
 	// Invalid Opt-Out delegation, opt-out bit not set on NC
+	coverer = makeNSEC3Coverer(t, "b.com.", "com.")
 	records = []dns.RR{
-		makeNSEC3("com.", "a.com.", false, []uint16{dns.TypeNS}),
-		makeNSEC3("a.com.", "e.com.", false, []uint16{dns.TypeNS}),
+		makeNSEC3("com.", "b.com.", false, []uint16{dns.TypeNS, dns.TypeSOA}),
+		coverer,
 	}
 	err = VerifyDelegation("b.com.", records)
 	if err == nil {

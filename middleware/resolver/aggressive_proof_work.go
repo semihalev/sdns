@@ -23,7 +23,7 @@ var (
 type resolverAggressiveProofWork struct {
 	ctx     context.Context
 	limiter *dnssec.CryptoLimiter
-	hashes  uint32
+	memo    *dnssec.NSEC3HashMemo
 }
 
 var _ dnssec.NSEC3Work = (*resolverAggressiveProofWork)(nil)
@@ -32,7 +32,18 @@ func newResolverAggressiveProofWork(
 	ctx context.Context,
 	limiter *dnssec.CryptoLimiter,
 ) *resolverAggressiveProofWork {
-	return &resolverAggressiveProofWork{ctx: ctx, limiter: limiter}
+	memo := dnssec.NSEC3HashMemoFromContextScope(
+		ctx,
+		dnssec.NSEC3HashMemoScopeResolverOptional,
+	)
+	if memo == nil {
+		memo = dnssec.NewNSEC3HashMemo()
+	}
+	return &resolverAggressiveProofWork{
+		ctx:     ctx,
+		limiter: limiter,
+		memo:    memo,
+	}
 }
 
 func (w *resolverAggressiveProofWork) BeginNSEC3Hash() (func(), error) {
@@ -42,10 +53,9 @@ func (w *resolverAggressiveProofWork) BeginNSEC3Hash() (func(), error) {
 	if err := w.ctx.Err(); err != nil {
 		return nil, err
 	}
-	if w.hashes >= resolverAggressiveProofMaxNSEC3Hashes {
+	if !w.memo.TryReserveWork(resolverAggressiveProofMaxNSEC3Hashes) {
 		return nil, errResolverAggressiveProofHashLimit
 	}
-	w.hashes++
 	if w.limiter == nil {
 		// Focused resolver tests use zero-value Resolver instances. Production
 		// construction always installs the shared limiter; mirror dnssecWork's
@@ -62,4 +72,14 @@ func (w *resolverAggressiveProofWork) BeginNSEC3Hash() (func(), error) {
 		return nil, err
 	}
 	return sync.OnceFunc(release), nil
+}
+
+func (w *resolverAggressiveProofWork) NSEC3HashMemos() dnssec.NSEC3HashMemoAccess {
+	if w == nil {
+		return dnssec.NSEC3HashMemoAccess{}
+	}
+	return dnssec.NSEC3HashMemoAccess{
+		Read:  dnssec.NSEC3HashMemoFromContext(w.ctx),
+		Write: w.memo,
+	}
 }

@@ -107,6 +107,13 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	noedns := req.IsEdns0() == nil
+	if hasClientECS(req) {
+		// Preserve the ingress fact before SetEdns0 applies the forwarding
+		// policy. A disabled policy or an allow-list miss strips ECS from the
+		// message, but downstream shared denial caches must still fail open
+		// for the complete request tree.
+		ctx = middleware.MarkClientECS(ctx)
+	}
 
 	// Convert the writer's net.IP to a netip.Addr for the ECS policy
 	// check. AddrFromSlice handles v4 vs v6 by length; an unusable
@@ -162,6 +169,22 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		responseWriterPool.Put(rw)
 	}()
 	ch.Next(ctx)
+}
+
+func hasClientECS(req *dns.Msg) bool {
+	if req == nil {
+		return false
+	}
+	opt := req.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, option := range opt.Option {
+		if _, ok := option.(*dns.EDNS0_SUBNET); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ctx.ResponseWriter interface.

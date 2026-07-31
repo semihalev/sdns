@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"time"
 
 	"github.com/miekg/dns"
@@ -33,6 +34,15 @@ type Store interface {
 	// delegation cut that produced it (GHSA-mqfw-f48p-2vc8); zero
 	// means unbounded.
 	SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.Time)
+}
+
+// ContextStore is the optional request-tree-aware cache contract. The built-in
+// cache uses ctx to share bounded NSEC3 hash results with required DNSSEC
+// validation and to retain client CD/ECS bypass policy across resolver-private
+// DS and DNSKEY sub-queries. Third-party stores can keep implementing Store.
+type ContextStore interface {
+	Store
+	GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, bool)
 }
 
 // CutStore is the extended production cache contract. Keeping Store's Phase

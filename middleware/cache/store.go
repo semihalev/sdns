@@ -36,7 +36,11 @@ type Store struct {
 	// Store.Get calls then share the same non-blocking NSEC3 gate as client
 	// lookups; standalone Store users safely miss NSEC3 when it is nil.
 	dnssecCryptoLimiter middleware.DNSSECCryptoLimiter
-	cfg                 CacheConfig
+	// sharedDenialDisabled is set only by the owning Cache when local DNSSEC
+	// validation cannot establish provenance (DNSSEC off or forwarding).
+	// The zero value intentionally permits standalone Store tests/users.
+	sharedDenialDisabled bool
+	cfg                  CacheConfig
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
@@ -178,6 +182,16 @@ func equalNameASCIIFold(a, b string) bool {
 // header/ID/CD/AD interaction is handled by CacheEntry.ToMsg, which
 // needs req for SetReply.
 func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
+	return s.GetWithContext(context.Background(), req)
+}
+
+// GetWithContext is Get with request-tree policy and NSEC3 memo propagation.
+// Resolver-private DS/DNSKEY lookups manufacture fresh messages, so the
+// context marker is what preserves an outer client's CD/ECS isolation.
+func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, bool) {
+	if req == nil {
+		return nil, false
+	}
 	entry, ok := s.Lookup(req)
 	if ok {
 		msg := entry.ToMsg(req)
@@ -186,7 +200,11 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 		}
 	}
 
-	if !req.CheckingDisabled {
+	requestTreeBypassesDenial := req.CheckingDisabled ||
+		hasEDNSClientSubnet(req) ||
+		middleware.HasClientECS(ctx) ||
+		sharedDenialBypass(ctx)
+	if !requestTreeBypassesDenial {
 		if cut, ok := s.LookupNXDomainCut(req); ok {
 			if msg := cut.response(req); msg != nil {
 				nxDomainCutHits.Inc()
@@ -195,7 +213,7 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 		}
 		if msg, kind, _, ok := s.LookupDenialProof(
 			req,
-			newDenialProofWork(context.Background(), s.dnssecCryptoLimiter),
+			newDenialProofWork(ctx, s.dnssecCryptoLimiter),
 		); ok {
 			observeAggressiveNegativeHit(kind, msg.Rcode)
 			return msg, true
@@ -218,6 +236,7 @@ func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
 // bypass locally synthesized authenticated denial state.
 func (s *Store) LookupNXDomainCut(req *dns.Msg) (*nxDomainCutEntry, bool) {
 	if s == nil || s.nxDomainCuts == nil || req == nil ||
+		s.sharedDenialDisabled ||
 		len(req.Question) == 0 || req.CheckingDisabled {
 		return nil, false
 	}
@@ -233,7 +252,7 @@ func (s *Store) RecordNXDomainCut(
 	zone string,
 	cutUntil time.Time,
 ) bool {
-	if s == nil || s.nxDomainCuts == nil {
+	if s == nil || s.nxDomainCuts == nil || s.sharedDenialDisabled {
 		return false
 	}
 	return s.nxDomainCuts.record(proof, deniedName, zone, cutUntil)
@@ -246,7 +265,7 @@ func (s *Store) LookupDenialProof(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
 ) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, bool) {
-	if s == nil || s.denialProofs == nil {
+	if s == nil || s.denialProofs == nil || s.sharedDenialDisabled {
 		return nil, middleware.ValidatedNegativeProofUnknown, "", false
 	}
 	msg, kind, zone, ok := s.denialProofs.lookupWithMeta(req, work)
@@ -272,7 +291,8 @@ func (s *Store) RecordDenialProof(
 	kind middleware.ValidatedNegativeProofKind,
 	cutUntil time.Time,
 ) bool {
-	if s == nil || s.denialProofs == nil || proof == nil {
+	if s == nil || s.denialProofs == nil || proof == nil ||
+		s.sharedDenialDisabled {
 		return false
 	}
 	var expected denialProofKind

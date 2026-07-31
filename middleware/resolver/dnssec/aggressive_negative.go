@@ -2,7 +2,7 @@ package dnssec
 
 import (
 	"bytes"
-	"crypto/sha1" //nolint:gosec // RFC 5155 defines SHA-1 as the NSEC3 hash algorithm.
+	"crypto/sha1" //nolint:gosec // RFC 5155 fixes the NSEC3 digest size to SHA-1.
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
@@ -149,6 +149,8 @@ func EvaluateAggressiveNSEC3(
 	}
 	hasher := aggressiveNSEC3Hasher{
 		parameters: parameters,
+		zone:       signer,
+		qclass:     q.Qclass,
 		work:       work,
 		hashes:     make(map[string][]byte),
 	}
@@ -665,7 +667,7 @@ func newAggressiveNSEC3Entries(
 		}
 
 		salt, err := hex.DecodeString(nsec3.Salt)
-		if err != nil {
+		if err != nil || len(salt) != int(nsec3.SaltLength) {
 			return nil, aggressiveNSEC3Parameters{}, aggressiveFallback("invalid NSEC3 salt")
 		}
 		if index == 0 {
@@ -691,6 +693,10 @@ func newAggressiveNSEC3Entries(
 		ownerHash, err := decodeAggressiveNSEC3Hash(owner.labels[0])
 		if err != nil {
 			return nil, aggressiveNSEC3Parameters{}, err
+		}
+		if int(nsec3.HashLength) != len(ownerHash) {
+			return nil, aggressiveNSEC3Parameters{},
+				aggressiveFallback("invalid NSEC3 hash length")
 		}
 		nextHash, err := decodeAggressiveNSEC3Hash([]byte(nsec3.NextDomain))
 		if err != nil {
@@ -753,6 +759,8 @@ func decodeAggressiveNSEC3Hash(encoded []byte) ([]byte, error) {
 
 type aggressiveNSEC3Hasher struct {
 	parameters aggressiveNSEC3Parameters
+	zone       aggressiveCanonicalName
+	qclass     uint16
 	work       NSEC3Work
 	hashes     map[string][]byte
 }
@@ -763,25 +771,31 @@ func (hasher *aggressiveNSEC3Hasher) hash(name aggressiveCanonicalName) ([]byte,
 		return cached, nil
 	}
 
-	if hasher.work != nil {
-		release, err := hasher.work.BeginNSEC3Hash()
-		if err != nil {
-			return nil, wrapWorkError(err)
+	compute := func() ([]byte, error) {
+		if hasher.work != nil {
+			release, err := hasher.work.BeginNSEC3Hash()
+			if err != nil {
+				return nil, wrapWorkError(err)
+			}
+			if release != nil {
+				defer release()
+			}
 		}
-		if release != nil {
-			defer release()
-		}
+		return calculateAggressiveNSEC3Hash(name, hasher.parameters), nil
 	}
 
-	digest := sha1.New() //nolint:gosec // RFC 5155 requires SHA-1 for NSEC3.
-	_, _ = digest.Write(name.wire)
-	_, _ = digest.Write(hasher.parameters.salt)
-	value := digest.Sum(nil)
-	for range hasher.parameters.iterations {
-		digest.Reset()
-		_, _ = digest.Write(value)
-		_, _ = digest.Write(hasher.parameters.salt)
-		value = digest.Sum(value[:0])
+	value, err := nsec3HashWithMemo(
+		hasher.work,
+		aggressiveNSEC3HashMemoKey(
+			name,
+			hasher.zone,
+			hasher.qclass,
+			hasher.parameters,
+		),
+		compute,
+	)
+	if err != nil {
+		return nil, err
 	}
 	hasher.hashes[key] = value
 	return value, nil

@@ -9,15 +9,17 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
 )
 
 // PrefetchRequest represents a DNS query to be prefetched.
 type PrefetchRequest struct {
-	Request *dns.Msg
-	Key     uint64
-	Cache   *Cache      // Reference to the cache to store prefetched results
-	Entry   *CacheEntry // Entry that claimed the prefetch; used to release the claim on failure/drop
+	Request       *dns.Msg
+	Key           uint64
+	Cache         *Cache      // Reference to the cache to store prefetched results
+	Entry         *CacheEntry // Entry that claimed the prefetch; used to release the claim on failure/drop
+	RequestHadECS bool        // Original client ECS, retained after EDNS policy stripping
 }
 
 // PrefetchQueue manages prefetch requests with worker pool.
@@ -123,6 +125,10 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	ctx, cancel := context.WithTimeout(pq.ctx, 5*time.Second)
 	defer cancel()
 	defer releasePrefetchClaim(req.Entry)
+	ctx = dnssec.EnsureNSEC3HashMemo(ctx)
+	if req.RequestHadECS {
+		ctx = middleware.MarkClientECS(ctx)
+	}
 
 	zlog.Debug("Processing prefetch", "query", formatQuestion(req.Request.Question[0]))
 
@@ -193,7 +199,8 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// original request's CD/ECS isolation too: middleware may clear CD on the
 	// response, and an ECS client can prefetch a shared SCOPE=0 entry.
 	requestCD := req.Request != nil && req.Request.CheckingDisabled
-	if !req.Entry.scoped && !requestCD && !hasEDNSClientSubnet(req.Request) &&
+	if !req.Entry.scoped && !requestCD && !req.RequestHadECS &&
+		!hasEDNSClientSubnet(req.Request) &&
 		!resp.CheckingDisabled {
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&
 			negative.Aggressive &&

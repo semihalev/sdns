@@ -129,13 +129,38 @@ func TestVerifyWildcardAnswer_NSEC3(t *testing.T) {
 	n3 := &dns.NSEC3{
 		Hash:       dns.SHA1,
 		Iterations: 0,
+		SaltLength: uint8(len(salt) / 2),
 		Salt:       salt,
+		HashLength: 20,
 		NextDomain: bumpHash(h, +1),
 	}
 	n3.Hdr = dns.RR_Header{Name: bumpHash(h, -1) + ".example.com.", Rrtype: dns.TypeNSEC3, Class: dns.ClassINET}
 	msg.Ns = []dns.RR{n3}
 	if err := VerifyWildcardAnswer(msg); err != nil {
 		t.Fatalf("wildcard answer with covering NSEC3 should verify, got %v", err)
+	}
+}
+
+func TestVerifyWildcardAnswerForZoneWithWorkOptOutIsInsecure(t *testing.T) {
+	const (
+		nextCloser = "secure.example.com."
+		zone       = "example.com."
+	)
+	msg := new(dns.Msg)
+	msg.Answer = []dns.RR{
+		aRR(nextCloser),
+		wildcardSig(nextCloser, 2),
+	}
+	cover := aggressiveTestNSEC3Cover(t, nextCloser, zone)
+	cover.Flags = 1
+	msg.Ns = []dns.RR{cover}
+
+	secure, err := VerifyWildcardAnswerForZoneWithWork(msg, zone, nil)
+	if err != nil {
+		t.Fatalf("valid Opt-Out wildcard denial rejected: %v", err)
+	}
+	if secure {
+		t.Fatal("Opt-Out wildcard next-closer denial reported secure")
 	}
 }
 
@@ -158,6 +183,41 @@ func TestVerifyWildcardAnswer_NSEC3ExactOwnerRejected(t *testing.T) {
 	if err := VerifyWildcardAnswer(msg); err != ErrWildcardNoDenial {
 		t.Fatalf("exact NSEC3 owner must not deny the wildcard next closer, got %v", err)
 	}
+}
+
+func TestVerifyWildcardAnswerNextCloserUsesDNSASCIICanonicalization(t *testing.T) {
+	const zone = "example."
+	asciiCover := aggressiveTestNSEC3Cover(t, "k.example.", zone)
+
+	t.Run("escaped ASCII folds", func(t *testing.T) {
+		const owner = `a.\075.example.`
+		msg := new(dns.Msg)
+		msg.Answer = []dns.RR{
+			aRR(owner),
+			wildcardSig(owner, 1),
+		}
+		msg.Ns = []dns.RR{asciiCover}
+		if _, err := VerifyWildcardAnswerForZoneWithWork(msg, zone, nil); err != nil {
+			t.Fatalf("escaped ASCII next-closer proof rejected: %v", err)
+		}
+	})
+
+	t.Run("Unicode Kelvin sign is distinct", func(t *testing.T) {
+		const owner = "a.\u212A.example."
+		msg := new(dns.Msg)
+		msg.Answer = []dns.RR{
+			aRR(owner),
+			wildcardSig(owner, 1),
+		}
+		msg.Ns = []dns.RR{asciiCover}
+		if _, err := VerifyWildcardAnswerForZoneWithWork(
+			msg,
+			zone,
+			nil,
+		); err != ErrWildcardNoDenial {
+			t.Fatalf("Kelvin-sign next closer used ASCII-k denial: %v", err)
+		}
+	})
 }
 
 // bumpHash returns the base32hex-encoded label h shifted by delta in its
