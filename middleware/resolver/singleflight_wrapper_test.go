@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 type releaseOnDoneContext struct {
@@ -37,8 +39,9 @@ func TestSingleflightWrapperCleanup(t *testing.T) {
 
 	// Manually insert a stuck query that started 20 seconds ago
 	key := "test-cleanup"
-	oldStartTime := time.Now().Add(-20 * time.Second)
-	wrapper.tracking.Store(key, oldStartTime)
+	generation := &singleflightGeneration{started: time.Now().Add(-20 * time.Second)}
+	wrapper.current[key] = generation
+	wrapper.tracking.Store(key, generation)
 
 	// Also start a real query to verify it affects singleflight
 	wrapper.group.DoChan(key, func() (any, error) {
@@ -59,6 +62,124 @@ func TestSingleflightWrapperCleanup(t *testing.T) {
 	_, exists = wrapper.tracking.Load(key)
 	if exists {
 		t.Error("Key should have been cleaned up from tracking")
+	}
+}
+
+func TestSingleflightWrapperHotFollowersCannotRefreshOrDeleteGeneration(t *testing.T) {
+	// Construct without the 30-second background cleanup loop: this test
+	// drives cleanup explicitly and ages the published generation in place.
+	wrapper := &SingleflightWrapper{
+		current: make(map[string]*singleflightGeneration),
+	}
+	const key = "hot-stuck-key"
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseFirstOnce sync.Once
+	releaseFirstCall := func() {
+		releaseFirstOnce.Do(func() { close(releaseFirst) })
+	}
+	t.Cleanup(releaseFirstCall)
+	firstResult := wrapper.DoChan(key, func() (any, error) {
+		close(firstStarted)
+		<-releaseFirst
+		return "first", nil
+	})
+	<-firstStarted
+
+	tracked, ok := wrapper.tracking.Load(key)
+	if !ok {
+		t.Fatal("leader was not tracked after its closure started")
+	}
+	firstGeneration, ok := tracked.(*singleflightGeneration)
+	if !ok {
+		t.Fatalf("tracking value = %T, want *singleflightGeneration", tracked)
+	}
+	firstGeneration.started = time.Now().Add(-20 * time.Second)
+
+	var followerRuns atomic.Int32
+	followerResults := make([]<-chan singleflight.Result, 20)
+	for i := range followerResults {
+		followerResults[i] = wrapper.DoChan(key, func() (any, error) {
+			followerRuns.Add(1)
+			return "unexpected-follower", nil
+		})
+	}
+	if current, exists := wrapper.tracking.Load(key); !exists || current != firstGeneration {
+		t.Fatalf("hot followers replaced leader generation: current=%p first=%p",
+			current, firstGeneration)
+	}
+	if time.Since(firstGeneration.started) < 15*time.Second {
+		t.Fatal("hot followers refreshed the stuck-generation start time")
+	}
+
+	wrapper.cleanupStuckQueries()
+	if _, exists := wrapper.tracking.Load(key); exists {
+		t.Fatal("stuck generation remained tracked after cleanup")
+	}
+
+	replacementStarted := make(chan struct{})
+	releaseReplacement := make(chan struct{})
+	var releaseReplacementOnce sync.Once
+	releaseReplacementCall := func() {
+		releaseReplacementOnce.Do(func() { close(releaseReplacement) })
+	}
+	t.Cleanup(releaseReplacementCall)
+	replacementResult := wrapper.DoChan(key, func() (any, error) {
+		close(replacementStarted)
+		<-releaseReplacement
+		return "replacement", nil
+	})
+	<-replacementStarted
+
+	replacementTracked, ok := wrapper.tracking.Load(key)
+	if !ok || replacementTracked == firstGeneration {
+		t.Fatalf("replacement generation = %p, first = %p", replacementTracked, firstGeneration)
+	}
+
+	// A stale cleanup candidate must not forget the replacement generation.
+	wrapper.retireGeneration(key, firstGeneration)
+	if current, exists := wrapper.tracking.Load(key); !exists || current != replacementTracked {
+		t.Fatalf("stale cleanup removed replacement: current=%p replacement=%p",
+			current, replacementTracked)
+	}
+
+	var replacementFollowerRuns atomic.Int32
+	replacementFollower := wrapper.DoChan(key, func() (any, error) {
+		replacementFollowerRuns.Add(1)
+		return "unexpected-replacement-follower", nil
+	})
+
+	releaseFirstCall()
+	if result := <-firstResult; result.Err != nil || result.Val != "first" {
+		t.Fatalf("first result = (%v, %v), want (first, nil)", result.Val, result.Err)
+	}
+	for i, resultCh := range followerResults {
+		result := <-resultCh
+		if result.Err != nil || result.Val != "first" {
+			t.Fatalf("first-generation follower %d = (%v, %v), want (first, nil)",
+				i, result.Val, result.Err)
+		}
+	}
+	if current, exists := wrapper.tracking.Load(key); !exists || current != replacementTracked {
+		t.Fatalf("old leader completion removed replacement: current=%p replacement=%p",
+			current, replacementTracked)
+	}
+
+	releaseReplacementCall()
+	if result := <-replacementResult; result.Err != nil || result.Val != "replacement" {
+		t.Fatalf("replacement result = (%v, %v), want (replacement, nil)",
+			result.Val, result.Err)
+	}
+	if result := <-replacementFollower; result.Err != nil || result.Val != "replacement" {
+		t.Fatalf("replacement follower = (%v, %v), want (replacement, nil)",
+			result.Val, result.Err)
+	}
+	if got := followerRuns.Load(); got != 0 {
+		t.Fatalf("first-generation follower closures ran %d times, want 0", got)
+	}
+	if got := replacementFollowerRuns.Load(); got != 0 {
+		t.Fatalf("replacement follower closure ran %d times, want 0", got)
 	}
 }
 
@@ -307,7 +428,11 @@ func TestCleanupLoop(t *testing.T) {
 	// Add multiple stuck queries
 	for i := 0; i < 5; i++ {
 		key := string(rune('a' + i))
-		wrapper.tracking.Store(key, time.Now().Add(-20*time.Second)) // Pretend they started 20s ago
+		generation := &singleflightGeneration{
+			started: time.Now().Add(-20 * time.Second),
+		}
+		wrapper.current[key] = generation
+		wrapper.tracking.Store(key, generation)
 	}
 
 	// Run cleanup

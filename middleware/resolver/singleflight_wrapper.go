@@ -11,13 +11,29 @@ import (
 
 // SingleflightWrapper wraps singleflight.Group with timeout tracking.
 type SingleflightWrapper struct {
-	group    singleflight.Group
-	tracking sync.Map // key -> startTime
+	group singleflight.Group
+
+	// generationMu serializes registration with Forget. The underlying
+	// singleflight group protects its own map, but Forget works by key only;
+	// without this wrapper-level ordering, cleanup for an old generation can
+	// race with registration of its replacement and forget the new call.
+	generationMu sync.Mutex
+	current      map[string]*singleflightGeneration
+	tracking     sync.Map // key -> *singleflightGeneration
+}
+
+// singleflightGeneration is also the generation token. Pointer identity lets
+// an old leader remove only its own tracking record after cleanup has allowed
+// a replacement leader to start for the same key.
+type singleflightGeneration struct {
+	started time.Time
 }
 
 // NewSingleflightWrapper creates a new wrapper with periodic cleanup.
 func NewSingleflightWrapper() *SingleflightWrapper {
-	w := &SingleflightWrapper{}
+	w := &SingleflightWrapper{
+		current: make(map[string]*singleflightGeneration),
+	}
 
 	// Start cleanup goroutine
 	go w.cleanupLoop()
@@ -27,23 +43,46 @@ func NewSingleflightWrapper() *SingleflightWrapper {
 
 // (*SingleflightWrapper).DoChan doChan wraps singleflight.DoChan with timeout tracking.
 func (w *SingleflightWrapper) DoChan(key string, fn func() (any, error)) <-chan singleflight.Result {
-	// Track when this key started
-	w.tracking.Store(key, time.Now())
-
-	// Call the underlying DoChan
+	w.generationMu.Lock()
+	if w.current == nil {
+		w.current = make(map[string]*singleflightGeneration)
+	}
+	generation := w.current[key]
+	if generation == nil {
+		generation = new(singleflightGeneration)
+		w.current[key] = generation
+	}
 	ch := w.group.DoChan(key, func() (any, error) {
-		// Clean up tracking when done
-		defer w.tracking.Delete(key)
+		// Only the closure selected by singleflight is a leader. Registering
+		// here prevents hot followers from refreshing the stuck-call clock.
+		w.generationMu.Lock()
+		if w.current[key] == generation {
+			generation.started = time.Now()
+			w.tracking.Store(key, generation)
+		}
+		w.generationMu.Unlock()
+		defer w.retireGeneration(key, generation)
+
 		return fn()
 	})
+	w.generationMu.Unlock()
 
 	return ch
 }
 
 // (*SingleflightWrapper).Forget forget wraps singleflight.Forget and cleans up tracking.
 func (w *SingleflightWrapper) Forget(key string) {
+	w.generationMu.Lock()
+	defer w.generationMu.Unlock()
+
+	generation := w.current[key]
 	w.group.Forget(key)
-	w.tracking.Delete(key)
+	delete(w.current, key)
+	if generation == nil {
+		w.tracking.Delete(key)
+		return
+	}
+	w.tracking.CompareAndDelete(key, generation)
 }
 
 // cleanupLoop periodically cleans up stuck queries.
@@ -61,25 +100,48 @@ func (w *SingleflightWrapper) cleanupStuckQueries() {
 	now := time.Now()
 	maxDuration := 15 * time.Second // Maximum time before considering a query stuck
 
-	var stuckKeys []string
+	type stuckGeneration struct {
+		key        string
+		generation *singleflightGeneration
+	}
+	var stuck []stuckGeneration
 
 	// Find stuck queries
 	w.tracking.Range(func(key, value any) bool {
-		startTime, ok := value.(time.Time)
-		if !ok {
+		keyString, keyOK := key.(string)
+		generation, generationOK := value.(*singleflightGeneration)
+		if !keyOK || !generationOK {
 			return true // Skip invalid entries
 		}
 
-		if now.Sub(startTime) > maxDuration {
-			stuckKeys = append(stuckKeys, key.(string))
+		if now.Sub(generation.started) > maxDuration {
+			stuck = append(stuck, stuckGeneration{
+				key:        keyString,
+				generation: generation,
+			})
 		}
 		return true
 	})
 
-	// Forget stuck queries
-	for _, key := range stuckKeys {
-		w.Forget(key)
+	// Forget only the generation observed by the scan. A completed old leader
+	// or a concurrent cleanup may already have made a replacement current.
+	for _, candidate := range stuck {
+		w.retireGeneration(candidate.key, candidate.generation)
 	}
+}
+
+func (w *SingleflightWrapper) retireGeneration(key string, generation *singleflightGeneration) {
+	w.generationMu.Lock()
+	defer w.generationMu.Unlock()
+
+	if w.current[key] == generation {
+		// Forget before releasing the wrapper lock so the current token and
+		// x/sync's key map move to the next generation together. The old
+		// doCall checks its own call pointer and cannot remove a replacement.
+		w.group.Forget(key)
+		delete(w.current, key)
+	}
+	w.tracking.CompareAndDelete(key, generation)
 }
 
 // (*SingleflightWrapper).TimedDoChan timedDoChan executes a function

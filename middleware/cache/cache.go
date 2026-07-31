@@ -456,9 +456,11 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Miss. Dedup upstream work: followers wait for the leader
 	// to finish, then re-check the cache — the leader may have
-	// just filled it. Followers that still see a miss (leader
-	// failed, or wrote a response that didn't cache) proceed
-	// to run the upstream chain themselves.
+	// just filled it. Ordinary followers that still see a miss
+	// proceed to run the upstream chain themselves. Followers of
+	// an expired RFC 9520 failure probe re-elect one leader while
+	// that failure generation remains: a request-local probe error
+	// must not fan every random QNAME out to the authority at once.
 	//
 	// Followers do NOT call Done: they never registered as a
 	// participant (Join only bumps the dup counter for the
@@ -477,8 +479,33 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// ctx-based successor for code paths without a writer in
 	// scope.
 	if !w.Internal() {
-		if wait := c.wg.Join(dedupKey); wait != nil {
-			<-wait
+		var previousWait <-chan struct{}
+		for {
+			wait := c.wg.Join(dedupKey)
+			if wait == nil {
+				leaderKey := dedupKey
+				defer c.wg.Done(leaderKey)
+				break
+			}
+
+			// WaitGroup's bounded wait channel can close while its leader
+			// remains registered. Rejoining that same closed generation
+			// would spin. Preserve the existing timeout fail-open path;
+			// a real regroup generation always has a different channel.
+			if wait == previousWait {
+				break
+			}
+			previousWait = wait
+			select {
+			case <-wait:
+			case <-ctx.Done():
+				// Re-election can span several short-lived request-local
+				// probe generations. Do not retain a canceled client tree
+				// indefinitely while fresh followers keep winning leadership.
+				ch.Cancel()
+				return
+			}
+
 			// Re-check both paths after a follower wakes up: the
 			// leader may have just stored a scoped entry (a
 			// shared-key check would miss it), or a SCOPE=0
@@ -516,8 +543,12 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 				c.handleFailureHit(ctx, ch, hit)
 				return
 			}
-		} else {
-			defer c.wg.Done(dedupKey)
+
+			retryKey, retry := c.store.FailureRetryKey(req, clientScope)
+			if !retry {
+				break
+			}
+			dedupKey = retryKey
 		}
 	}
 
