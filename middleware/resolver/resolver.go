@@ -17,6 +17,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
@@ -499,33 +500,34 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	key := strconv.FormatUint(cache.Key(q), 10) + "|" + servers.Zone +
 		"|" + string(cd) + "|" + strconv.FormatUint(servers.Fingerprint(), 10)
 
-	// The leader closure can outlive this caller: TimedDoChan returns on
-	// ctx timeout/cancel and Forgets the key while the closure keeps
-	// running. After we return, req resumes its lifecycle upstack — the
-	// response re-attaches the request OPT and the edns writer mutates it
-	// in place — so an abandoned leader copying req (lookup's per-server
-	// CopyTo) would race on caller-owned memory. Hand the closure its own
-	// private copy, made here while we still exclusively own req.
+	// The leader closure can outlive this caller: TimedDoChan returns on this
+	// caller's timeout/cancel while the shared generation remains registered
+	// until its closure finishes (or bounded stuck cleanup retires it). After
+	// we return, req resumes its lifecycle upstack — the response re-attaches
+	// the request OPT and the edns writer mutates it in place — so an
+	// abandoned leader copying req (lookup's per-server CopyTo) would race on
+	// caller-owned memory. Hand the closure its own private copy, made here
+	// while we still exclusively own req.
 	leaderReq := req.Copy()
 
 	for {
 		// Use TimedDoChan for automatic timeout handling. When a follower
-		// receives the leader's request-local policy error, it re-enters the
-		// same key. The completed call has already been removed by
-		// singleflight, so concurrent followers collapse onto one new leader
-		// without a racy Forget or N parallel lookups. If that leader also
-		// exhausts its own ledger, it returns its local error while the
-		// remaining followers regroup again; each caller's context bounds the
-		// sequence.
+		// receives the leader's request-local policy or lifecycle error, it
+		// re-enters the same key under its own still-live context. The
+		// completed call has already been removed by singleflight, so
+		// concurrent followers collapse onto one new leader without a racy
+		// Forget or N parallel lookups. If that leader also fails locally, it
+		// returns its own error while the remaining healthy followers regroup
+		// again; each caller's context bounds the sequence.
 		result, shared, leader, lookupErr := r.sfGroup.TimedDoChanWithRole(ctx, key, func() (any, error) {
 			return r.lookup(ctx, rs, leaderReq, servers)
 		})
 
 		if lookupErr != nil {
-			if shared && !leader &&
-				(errors.Is(lookupErr, middleware.ErrRecursionWorkLimit) ||
-					errors.Is(lookupErr, middleware.ErrResolutionAttemptLimit) ||
-					errors.Is(lookupErr, middleware.ErrMaxRecursion)) {
+			if shared && !leader && middleware.IsRequestLocalResolutionError(lookupErr) {
+				if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
+					return nil, ctxErr
+				}
 				continue
 			}
 			return nil, lookupErr
@@ -1490,7 +1492,7 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, originalID
 	switch {
 	case !r.circuitBreaker.canQuery(server.Addr):
 		res.err = fatalError(errConnectionFailed)
-	case ctx.Err() != nil:
+	case contextutil.EffectiveError(ctx) != nil:
 		return
 	default:
 		reqCopy.Id = dns.Id() // anti-spoofing
@@ -1500,9 +1502,16 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, originalID
 		}
 		switch {
 		case errors.Is(err, middleware.ErrRecursionWorkLimit),
-			errors.Is(err, middleware.ErrResolutionAttemptLimit):
+			errors.Is(err, middleware.ErrResolutionAttemptLimit),
+			errors.Is(err, middleware.ErrFailureProbeLimit),
+			errors.Is(err, middleware.ErrMaxRecursion),
+			contextutil.EffectiveError(ctx) != nil:
 			// Local policy exhaustion says nothing about the
-			// authority's health; do not poison its circuit breaker.
+			// authority's health; neither does cancellation of this request
+			// tree. Do not use errors.Is(err, context.DeadlineExceeded) here:
+			// a per-socket or Dialer timeout may wrap that sentinel while the
+			// request context itself is still live, and that is genuine
+			// upstream health evidence.
 		case err != nil:
 			r.circuitBreaker.recordFailure(server.Addr)
 		case resp != nil:
@@ -1587,8 +1596,8 @@ func pickFallbackResponse(responseErrors, configErrors []*dns.Msg, fatalErrors [
 }
 
 func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string, req *dns.Msg, server *authority.Server, retried int) (*dns.Msg, error) {
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
+	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
+		return nil, ctxErr
 	}
 	q := req.Question[0]
 	if err := middleware.BeginResolutionAttempt(ctx, q, server.Addr, proto); err != nil {
@@ -1612,6 +1621,9 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	// Track RTT for adaptive timeouts
 	var rtt = r.netTimeout
 	defer func() {
+		if contextutil.EffectiveError(ctx) != nil {
+			return
+		}
 		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
 		atomic.AddInt64(&server.Count, 1)
 	}()
@@ -1689,7 +1701,13 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	}
 	_ = co.SetDeadline(deadline)
 
+	stopCancelInterrupt := InterruptOnCancel(ctx, co)
 	resp, rtt, err = co.Exchange(req)
+	stopCancelInterrupt()
+	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
+		resp = nil
+		err = ctxErr
+	}
 	if err != nil {
 		zlog.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
@@ -1697,6 +1715,9 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		// Don't return connection to pool on error
 		ReleaseConn(co)
 
+		if contextutil.EffectiveError(ctx) != nil {
+			return nil, err
+		}
 		if retried < 2 {
 			if retried == 1 && proto == "udp" {
 				proto = "tcp"
@@ -2990,7 +3011,7 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolve
 func (r *Resolver) recordResolutionZoneFailure(ctx context.Context, q dns.Question, zone string, cause error) {
 	if zone == "" ||
 		middleware.IsBestEffortRecursionWork(ctx) ||
-		ctx.Err() != nil ||
+		contextutil.EffectiveError(ctx) != nil ||
 		errors.Is(cause, context.Canceled) ||
 		errors.Is(cause, context.DeadlineExceeded) ||
 		errors.Is(cause, middleware.ErrRecursionWorkLimit) ||

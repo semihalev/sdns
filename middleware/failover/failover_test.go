@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -30,6 +31,9 @@ func (d *dummy) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 func (d *dummy) Name() string { return "dummy" }
 
 func Test_Failover(t *testing.T) {
+	middleware.Reset()
+	t.Cleanup(middleware.Reset)
+
 	logger := zlog.NewStructured()
 	logger.SetWriter(zlog.StdoutTerminal())
 	logger.SetLevel(zlog.LevelDebug)
@@ -364,6 +368,166 @@ func TestFailoverIncomingRequestLocalProvenanceFollowsSelectedResponse(t *testin
 				t.Fatalf("successful fallback inherited request-local provenance: %v", provenance)
 			}
 		})
+	}
+}
+
+func TestFailoverStopsWhenIngressContextIsDone(t *testing.T) {
+	addr, calls, stop := startFailoverRcodeServer(t, dns.RcodeSuccess)
+	defer stop()
+
+	tests := []struct {
+		name string
+		ctx  func(context.Context) (context.Context, context.CancelFunc)
+		err  error
+	}{
+		{
+			name: "canceled",
+			ctx: func(parent context.Context) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(parent)
+				cancel()
+				return ctx, func() {}
+			},
+			err: context.Canceled,
+		},
+		{
+			name: "deadline",
+			ctx: func(parent context.Context) (context.Context, context.CancelFunc) {
+				return context.WithDeadline(parent, time.Now().Add(-time.Second))
+			},
+			err: context.DeadlineExceeded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := middleware.WithResolutionAttemptGuard(
+				context.Background(),
+				middleware.NewResolutionAttemptGuard(),
+			)
+			ctx, cancel := tt.ctx(base)
+			defer cancel()
+
+			req := new(dns.Msg)
+			req.SetQuestion("done-context.example.", dns.TypeA)
+			req.RecursionDesired = true
+			writer := mock.NewWriter("udp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{
+				&Failover{servers: []string{addr}},
+				&dummy{},
+			})
+			ch.Reset(writer, req)
+			ch.Next(ctx)
+
+			if got := calls.Load(); got != 0 {
+				t.Fatalf("fallback calls = %d, want 0", got)
+			}
+			if resp := writer.Msg(); resp == nil || resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("response = %#v, want original SERVFAIL", resp)
+			}
+			if err := middleware.RequestLocalFailureForResponse(ctx, writer.Msg()); !errors.Is(err, tt.err) {
+				t.Fatalf("response provenance = %v, want %v", err, tt.err)
+			}
+		})
+	}
+}
+
+func TestFailoverFailureProbeLimitIsTerminal(t *testing.T) {
+	addr, calls, stop := startFailoverRcodeServer(t, dns.RcodeSuccess)
+	defer stop()
+
+	ctx := middleware.WithResolutionAttemptGuard(
+		context.Background(),
+		middleware.NewResolutionAttemptGuard(),
+	)
+	req := new(dns.Msg)
+	req.SetQuestion("probe-limit.example.", dns.TypeA)
+	req.RecursionDesired = true
+	incoming := new(dns.Msg)
+	incoming.SetRcode(req, dns.RcodeServerFailure)
+	middleware.MarkRequestLocalFailureResponse(ctx, incoming, middleware.ErrFailureProbeLimit)
+
+	writer := mock.NewWriter("udp", "127.0.0.1:0")
+	responseWriter := &ResponseWriter{
+		ResponseWriter: writer,
+		f:              &Failover{servers: []string{addr}},
+		ctx:            ctx,
+		req:            req,
+	}
+	if err := responseWriter.WriteMsg(incoming); err != nil {
+		t.Fatalf("WriteMsg: %v", err)
+	}
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("fallback calls = %d, want 0", got)
+	}
+	if writer.Msg() != incoming {
+		t.Fatal("failure-probe limit response was replaced")
+	}
+}
+
+func TestFailoverInFlightAttemptHonorsIngressDeadline(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+		started <- struct{}{}
+		<-release
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		_ = w.WriteMsg(resp)
+	})
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &dns.Server{Net: "udp", PacketConn: packet, Handler: handler}
+	go func() { _ = srv.ActivateAndServe() }()
+	defer func() {
+		close(release)
+		_ = srv.Shutdown()
+	}()
+
+	goodAddr, goodCalls, stopGood := startFailoverRcodeServer(t, dns.RcodeSuccess)
+	defer stopGood()
+
+	base := middleware.WithResolutionAttemptGuard(
+		context.Background(),
+		middleware.NewResolutionAttemptGuard(),
+	)
+	ctx, cancel := context.WithTimeout(base, 50*time.Millisecond)
+	defer cancel()
+	req := new(dns.Msg)
+	req.SetQuestion("bounded-failover.example.", dns.TypeA)
+	req.RecursionDesired = true
+	incoming := new(dns.Msg)
+	incoming.SetRcode(req, dns.RcodeServerFailure)
+	writer := mock.NewWriter("udp", "127.0.0.1:0")
+	responseWriter := &ResponseWriter{
+		ResponseWriter: writer,
+		f: &Failover{servers: []string{
+			packet.LocalAddr().String(),
+			goodAddr,
+		}},
+		ctx: ctx,
+		req: req,
+	}
+
+	start := time.Now()
+	if err := responseWriter.WriteMsg(incoming); err != nil {
+		t.Fatalf("WriteMsg: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("failover returned after %v, want ingress deadline bound", elapsed)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("blocking fallback did not receive first attempt")
+	}
+	if got := goodCalls.Load(); got != 0 {
+		t.Fatalf("second fallback calls = %d, want 0 after ingress deadline", got)
+	}
+	if err := middleware.RequestLocalFailureForResponse(ctx, writer.Msg()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("terminal provenance = %v, want DeadlineExceeded", err)
 	}
 }
 

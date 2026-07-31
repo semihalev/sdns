@@ -154,7 +154,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **root6servers**     | Root DNS servers (IPv6). These are the authoritative name servers for the DNS root zone                             |
 | **dnssec**           | Enable DNSSEC validation for secure DNS responses. Options: "on" or "off". Default: "on"                            |
 | **rfc8198**          | Aggressively reuse validated NSEC/NSEC3 proofs. Set false to stop RFC 8198 admission and synthesis without disabling DNSSEC, exact negative caching, or RFC 8020 cuts. Default: true |
-| **rfc9520**          | Cache shared recursive-resolution and failed-authority state. Emergency rollback switch; setting false disables RFC 9520 conformance but leaves request work limits and ordinary DNS caching active. Default: true |
+| **rfc9520**          | Cache shared recursive-resolution and failed-authority state. Emergency rollback switch; setting false means SERVFAIL responses and failed-authority state are not cached, which can increase upstream retry load. Per-server retry ceilings, request work limits, and ordinary DNS caching remain active. Default: true |
 | **rootkeys**         | DNSSEC root zone trust anchors in DNSKEY format                                                                     |
 | **fallbackservers**  | Upstream DNS servers used when all others fail. Format: "IP:port" (e.g., "8.8.8.8:53")                             |
 | **forwarderservers** | Forward all queries to these DNS servers. Accepts `IP:port` (plain UDP/TCP), `tls://IP:port` (DoT, RFC 7858), or `https://host/dns-query` (DoH, RFC 8484; hostname or IP literal). See [Forwarder upstreams](#forwarder-upstreams) for details. |

@@ -12,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/waitgroup"
@@ -30,6 +31,13 @@ const (
 	name   = "cache"
 	maxTTL = dnsutil.MaxCacheTTL
 	minTTL = dnsutil.MinCacheTTL
+
+	// One clean re-election lets a healthy follower recover after the first
+	// expired-failure probe was rejected by a request-local budget. A second
+	// request-local generation sheds the remaining cohort instead of turning
+	// N followers into N sequential authority probes.
+	maxFailureProbeRegroups  = 1
+	failureProbeLimitEDEText = "Failure probe retry limit exceeded"
 
 	// maxCnameChaseDepth bounds how many nested CNAME-chase
 	// invocations may happen for a single client query. The
@@ -454,8 +462,10 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		c.handleFailureHit(ctx, ch, hit)
 		return
 	}
+	failureProbe := false
 	if retryKey, ok := c.store.FailureRetryKey(req, clientScope); ok {
 		dedupKey = retryKey
+		failureProbe = true
 	}
 	c.metrics.Miss()
 	if clientScope.IsValid() {
@@ -471,10 +481,8 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// must not fan every random QNAME out to the authority at once.
 	//
 	// Followers do NOT call Done: they never registered as a
-	// participant (Join only bumps the dup counter for the
-	// leader). Calling Done from a follower would either
-	// over-decrement the counter or cancel the leader's
-	// context out from under them.
+	// participant. Calling Done from a follower would cancel the
+	// leader's context out from under it.
 	//
 	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
 	// must skip the Join to avoid deadlock: if an outer client
@@ -487,30 +495,46 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// ctx-based successor for code paths without a writer in
 	// scope.
 	if !w.Internal() {
-		var previousWait <-chan struct{}
+		var (
+			previousGeneration   *waitgroup.Generation
+			failureProbeRegroups int
+		)
 		for {
-			wait := c.wg.Join(dedupKey)
-			if wait == nil {
+			var (
+				generation *waitgroup.Generation
+				leader     bool
+			)
+			if previousGeneration != nil && failureProbe {
+				if failureProbeRegroups >= maxFailureProbeRegroups {
+					c.writeFailureProbeLimit(ctx, ch)
+					return
+				}
+				generation, leader = c.wg.Regroup(dedupKey, previousGeneration)
+				failureProbeRegroups++
+			} else {
+				generation, leader = c.wg.JoinGeneration(dedupKey)
+			}
+			if leader {
 				leaderKey := dedupKey
-				defer c.wg.Done(leaderKey)
+				leaderGeneration := generation
+				defer c.wg.DoneGeneration(leaderKey, leaderGeneration)
 				break
 			}
 
-			// WaitGroup's bounded wait channel can close while its leader
-			// remains registered. Rejoining that same closed generation
-			// would spin. Preserve the existing timeout fail-open path;
-			// a real regroup generation always has a different channel.
-			if wait == previousWait {
-				break
-			}
-			previousWait = wait
 			select {
-			case <-wait:
+			case <-generation.Done():
 			case <-ctx.Done():
 				// Re-election can span several short-lived request-local
 				// probe generations. Do not retain a canceled client tree
 				// indefinitely while fresh followers keep winning leadership.
-				ch.Cancel()
+				c.stopCanceledRequest(ctx, ch)
+				return
+			}
+			// The leader completion and request deadline can become ready in
+			// the same scheduler turn. Prefer cancellation deterministically
+			// instead of letting select choose the wait branch and regroup.
+			if contextutil.EffectiveError(ctx) != nil {
+				c.stopCanceledRequest(ctx, ch)
 				return
 			}
 
@@ -552,12 +576,39 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 				return
 			}
 
+			generationTimedOut := errors.Is(generation.Err(), context.DeadlineExceeded)
+			if failureProbe && generationTimedOut {
+				// The request joined this key specifically as an expired
+				// failure probe. Eviction or concurrent recovery may remove
+				// the retained failure state while it waits, but an abandoned
+				// leader must remain terminal for that cohort or every random
+				// QNAME follower would fall through together.
+				c.writeFailureProbeLimit(ctx, ch)
+				return
+			}
 			retryKey, retry := c.store.FailureRetryKey(req, clientScope)
 			if !retry {
 				break
 			}
+			failureProbe = true
+			// A bounded WaitGroup channel may close while its leader remains
+			// registered. Never replace a timed-out failure-probe generation
+			// or fan its followers through to the authority.
+			if generationTimedOut {
+				c.writeFailureProbeLimit(ctx, ch)
+				return
+			}
+			previousGeneration = generation
 			dedupKey = retryKey
 		}
+	}
+
+	// Leadership can be won in the same scheduler turn that the ingress
+	// query budget expires. Never start downstream resolution for a request
+	// whose client tree is already canceled.
+	if contextutil.EffectiveError(ctx) != nil {
+		c.stopCanceledRequest(ctx, ch)
+		return
 	}
 
 	// Establish the request tree's ResponseMeta sink: the resolver
@@ -609,6 +660,89 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}()
 
 	ch.Next(ctx)
+}
+
+// writeFailureProbeLimit sheds one follower without publishing shared RFC 9520
+// state. The exact response marker prevents outer DNS64/failover wrappers from
+// interpreting this local SERVFAIL as authority evidence or launching more
+// work. Its OPT is rebuilt from scratch so client COOKIE/ECS options are not
+// reflected.
+func (c *Cache) writeFailureProbeLimit(ctx context.Context, ch *middleware.Chain) {
+	c.writeRequestLocalFailure(
+		ctx,
+		ch,
+		middleware.ErrFailureProbeLimit,
+		dns.ExtendedErrorCodeOther,
+		failureProbeLimitEDEText,
+	)
+}
+
+func (c *Cache) stopCanceledRequest(ctx context.Context, ch *middleware.Chain) {
+	err := contextutil.EffectiveError(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		c.writeRequestLocalFailure(
+			ctx,
+			ch,
+			err,
+			dns.ExtendedErrorCodeNoReachableAuthority,
+			"Query timeout exceeded",
+		)
+		return
+	}
+	// A canceled transport generally means the client has gone away; avoid a
+	// late write to a closed HTTP/QUIC stream.
+	ch.Cancel()
+}
+
+func (c *Cache) writeRequestLocalFailure(
+	ctx context.Context,
+	ch *middleware.Chain,
+	err error,
+	edeCode uint16,
+	edeText string,
+) {
+	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
+	resp := cleanRequestLocalFailureResponse(ch.Request, edeCode, edeText)
+	middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+}
+
+func cleanRequestLocalFailureResponse(req *dns.Msg, edeCode uint16, edeText string) *dns.Msg {
+	resp := new(dns.Msg)
+	if req != nil {
+		resp.SetReply(req)
+	} else {
+		resp.Response = true
+	}
+	resp.Rcode = dns.RcodeServerFailure
+	resp.RecursionAvailable = true
+	resp.AuthenticatedData = false
+	resp.Authoritative = false
+	resp.Truncated = false
+	resp.Answer = nil
+	resp.Ns = nil
+	resp.Extra = nil
+
+	if req == nil {
+		return resp
+	}
+	reqOPT := req.IsEdns0()
+	if reqOPT == nil {
+		return resp
+	}
+
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(reqOPT.UDPSize())
+	opt.SetDo(reqOPT.Do())
+	opt.Option = []dns.EDNS0{&dns.EDNS0_EDE{
+		InfoCode:  edeCode,
+		ExtraText: edeText,
+	}}
+	resp.Extra = []dns.RR{opt}
+	return resp
 }
 
 // checkCache checks the ordinary answer caches. RFC 9520 failures use their
@@ -1168,7 +1302,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 // request tree; optional enrichment, cancellation, and deadline paths likewise
 // cannot poison independent clients through the RFC 9520 cache.
 func cacheableResolutionFailure(ctx context.Context, res *dns.Msg) bool {
-	return ctx.Err() == nil &&
+	return contextutil.EffectiveError(ctx) == nil &&
 		!middleware.IsBestEffortRecursionWork(ctx) &&
 		middleware.RecursionWorkEnforcementError(ctx) == nil &&
 		middleware.RequestLocalFailureForResponse(ctx, res) == nil

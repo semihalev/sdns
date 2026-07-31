@@ -18,10 +18,17 @@ import (
 // same question, server endpoint, and transport tuple.
 const maxResolutionAttempts = 3
 
-// ErrResolutionAttemptLimit identifies a request-tree retry-guard rejection.
-// It is request-local: callers must not treat it as evidence that the upstream
-// server is unhealthy.
-var ErrResolutionAttemptLimit = errors.New("resolution attempt limit exceeded")
+var (
+	// ErrResolutionAttemptLimit identifies a request-tree retry-guard
+	// rejection. It is request-local: callers must not treat it as evidence
+	// that the upstream server is unhealthy.
+	ErrResolutionAttemptLimit = errors.New("resolution attempt limit exceeded")
+
+	// ErrFailureProbeLimit identifies a follower shed after the bounded
+	// re-election of an expired RFC 9520 failure probe. The limit belongs to
+	// one request cohort and must never create shared failure-cache state.
+	ErrFailureProbeLimit = errors.New("failure probe retry limit exceeded")
+)
 
 // ResolutionAttemptLimitError records the tuple rejected by the RFC 9520
 // request-tree attempt guard.
@@ -215,6 +222,7 @@ func BeginResolutionAttempt(ctx context.Context, q dns.Question, endpoint, trans
 func IsRequestLocalResolutionError(err error) bool {
 	return errors.Is(err, ErrRecursionWorkLimit) ||
 		errors.Is(err, ErrResolutionAttemptLimit) ||
+		errors.Is(err, ErrFailureProbeLimit) ||
 		errors.Is(err, ErrMaxRecursion) ||
 		errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded)

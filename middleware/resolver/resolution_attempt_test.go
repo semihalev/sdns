@@ -657,6 +657,25 @@ func (c *attemptGuardSignalContext) Done() <-chan struct{} {
 	return c.Context.Done()
 }
 
+type singleflightRegroupSignalContext struct {
+	context.Context
+	calls      atomic.Int32
+	firstOnce  sync.Once
+	secondOnce sync.Once
+	first      chan struct{}
+	second     chan struct{}
+}
+
+func (c *singleflightRegroupSignalContext) Done() <-chan struct{} {
+	switch c.calls.Add(1) {
+	case 1:
+		c.firstOnce.Do(func() { close(c.first) })
+	default:
+		c.secondOnce.Do(func() { close(c.second) })
+	}
+	return c.Context.Done()
+}
+
 func TestResolutionAttemptSingleflightFollowerRegroups(t *testing.T) {
 	wire := startAttackWireRecorder(t, func(q dns.Question) *dns.Msg {
 		return &dns.Msg{
@@ -746,6 +765,103 @@ func TestResolutionAttemptSingleflightFollowerRegroups(t *testing.T) {
 	}
 	if got := wire.count(); got != 1 {
 		t.Fatalf("wire attempts = %d, want one regrouped follower attempt", got)
+	}
+}
+
+func TestCanceledSingleflightLeaderDoesNotFailHealthyFollower(t *testing.T) {
+	wire := startAttackWireRecorder(t, func(q dns.Question) *dns.Msg {
+		return &dns.Msg{
+			MsgHdr: dns.MsgHdr{Authoritative: true},
+			Answer: []dns.RR{&dns.A{
+				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+				A:   net.IPv4(192, 0, 2, 62),
+			}},
+		}
+	})
+	r := newAttackHarnessResolver(&authority.Servers{Zone: "."})
+	r.maxConcurrent = make(chan struct{}, 1)
+	r.maxConcurrent <- struct{}{} // hold the first leader before queryServer starts
+
+	server := authority.NewServer(wire.addr(), authority.IPv4)
+	servers := &authority.Servers{Zone: ".", List: []*authority.Server{server}}
+	req := new(dns.Msg)
+	req.SetQuestion("singleflight-cancel.example.", dns.TypeA)
+
+	leaderBase, cancelLeader := context.WithCancel(context.Background())
+	leaderReady := make(chan struct{})
+	leaderCtx := &attemptGuardSignalContext{Context: leaderBase, ready: leaderReady}
+	type result struct {
+		resp *dns.Msg
+		err  error
+	}
+	leaderDone := make(chan result, 1)
+	go func() {
+		resp, err := r.groupLookup(
+			leaderCtx,
+			&resolveState{req: req, requestID: req.Id},
+			req,
+			servers,
+		)
+		leaderDone <- result{resp: resp, err: err}
+	}()
+	select {
+	case <-leaderReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader did not enter singleflight")
+	}
+
+	followerReq := req.Copy()
+	followerReq.Id++
+	followerFirst := make(chan struct{})
+	followerRegrouped := make(chan struct{})
+	followerCtx := &singleflightRegroupSignalContext{
+		Context: context.Background(),
+		first:   followerFirst,
+		second:  followerRegrouped,
+	}
+	followerDone := make(chan result, 1)
+	go func() {
+		resp, err := r.groupLookup(
+			followerCtx,
+			&resolveState{req: followerReq, requestID: followerReq.Id},
+			followerReq,
+			servers,
+		)
+		followerDone <- result{resp: resp, err: err}
+	}()
+	select {
+	case <-followerFirst:
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy follower did not join the canceled leader generation")
+	}
+
+	cancelLeader()
+	select {
+	case got := <-leaderDone:
+		if got.resp != nil || !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("leader = resp:%#v err:%v, want context.Canceled", got.resp, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled leader did not return")
+	}
+	select {
+	case <-followerRegrouped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("healthy follower inherited cancellation instead of regrouping")
+	}
+
+	<-r.maxConcurrent
+	select {
+	case got := <-followerDone:
+		if got.err != nil || got.resp == nil || len(got.resp.Answer) != 1 ||
+			got.resp.Id != followerReq.Id {
+			t.Fatalf("follower result = resp:%#v err:%v, want successful regroup", got.resp, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("regrouped healthy follower did not finish")
+	}
+	if got := wire.count(); got != 1 {
+		t.Fatalf("wire attempts = %d, want only the healthy follower attempt", got)
 	}
 }
 

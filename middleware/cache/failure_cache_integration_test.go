@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -152,6 +153,7 @@ func TestFailureProbeFollowersRegroupAfterRequestLocalLeader(t *testing.T) {
 
 		resp := new(dns.Msg)
 		resp.SetRcode(ch.Request, dns.RcodeServerFailure)
+		ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 		middleware.MarkRequestLocalFailureResponse(
 			ctx,
 			resp,
@@ -166,6 +168,9 @@ func TestFailureProbeFollowersRegroupAfterRequestLocalLeader(t *testing.T) {
 		req := new(dns.Msg)
 		req.SetQuestion(string(rune('a'+i))+".dead.example.", dns.TypeA)
 		req.SetEdns0(dnsutil.DefaultMsgSize, true)
+		req.IsEdns0().Option = append(req.IsEdns0().Option, &dns.EDNS0_COOKIE{
+			Cookie: "0011223344556677",
+		})
 
 		writer := mock.NewWriter("udp", "192.0.2.1:53000")
 		chain := middleware.NewChain([]middleware.Handler{c, downstream})
@@ -228,21 +233,167 @@ func TestFailureProbeFollowersRegroupAfterRequestLocalLeader(t *testing.T) {
 	}
 
 	releaseRemainingProbes()
+	shed := 0
 	for i := range requests {
 		select {
 		case msg := <-results:
 			if msg == nil || msg.Rcode != dns.RcodeServerFailure {
 				t.Fatalf("result %d = %#v, want request-local SERVFAIL", i, msg)
 			}
+			if ede := dnsutil.GetEDE(msg); ede != nil {
+				if ede.InfoCode == dns.ExtendedErrorCodeCachedError {
+					t.Fatalf("result %d carried cached-error EDE 13", i)
+				}
+				if ede.InfoCode != dns.ExtendedErrorCodeOther ||
+					ede.ExtraText != failureProbeLimitEDEText {
+					t.Fatalf("result %d EDE = %+v, want bounded-probe EDE Other", i, ede)
+				}
+				if opt := msg.IsEdns0(); opt == nil || len(opt.Option) != 1 {
+					t.Fatalf("result %d reflected client EDNS options: %#v", i, opt)
+				}
+				shed++
+			}
 		case <-time.After(time.Second):
 			t.Fatalf("request %d did not finish after releasing regrouped probes", i)
 		}
 	}
-	if got := calls.Load(); got != requests {
-		t.Fatalf("eventual downstream calls = %d, want %d sequential local attempts", got, requests)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("eventual downstream calls = %d, want 2 bounded local attempts", got)
 	}
 	if got := maxInFlight.Load(); got != 1 {
 		t.Fatalf("maximum concurrent failure probes = %d, want 1", got)
+	}
+	if shed != requests-2 {
+		t.Fatalf("shed followers = %d, want %d", shed, requests-2)
+	}
+}
+
+func TestFailureProbeRegroupCanPublishRecovery(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024})
+	defer c.Stop()
+
+	clock := newFailureFakeClock()
+	expireFailureProbeZone(t, c, clock)
+
+	const requests = 4
+	joinReached := make(chan struct{}, requests)
+	releaseJoin := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var releaseJoinOnce, releaseFirstOnce, releaseSecondOnce sync.Once
+	releaseAllJoins := func() {
+		releaseJoinOnce.Do(func() { close(releaseJoin) })
+	}
+	releaseFirstProbe := func() {
+		releaseFirstOnce.Do(func() { close(releaseFirst) })
+	}
+	releaseSecondProbe := func() {
+		releaseSecondOnce.Do(func() { close(releaseSecond) })
+	}
+	t.Cleanup(releaseAllJoins)
+	t.Cleanup(releaseFirstProbe)
+	t.Cleanup(releaseSecondProbe)
+
+	var calls atomic.Int32
+	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+		call := calls.Add(1)
+		if call == 1 {
+			<-releaseFirst
+			resp := new(dns.Msg)
+			resp.SetRcode(ch.Request, dns.RcodeServerFailure)
+			ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
+			middleware.MarkRequestLocalFailureResponse(
+				ctx,
+				resp,
+				middleware.ErrResolutionAttemptLimit,
+			)
+			_ = ch.Writer.WriteMsg(resp)
+			ch.Cancel()
+			return
+		}
+		if call == 2 {
+			close(secondStarted)
+			<-releaseSecond
+		}
+
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request)
+		resp.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{
+				Name:   ch.Request.Question[0].Name,
+				Rrtype: dns.TypeA,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			A: []byte{192, 0, 2, 10},
+		}}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	results := make(chan *dns.Msg, requests)
+	for range requests {
+		req := new(dns.Msg)
+		req.SetQuestion("recovery.dead.example.", dns.TypeA)
+		writer := mock.NewWriter("udp", "192.0.2.1:53000")
+		chain := middleware.NewChain([]middleware.Handler{c, downstream})
+		chain.Reset(writer, req)
+		chain.Writer = &failureProbeJoinBarrierWriter{
+			ResponseWriter: chain.Writer,
+			reached:        joinReached,
+			release:        releaseJoin,
+		}
+
+		go func() {
+			chain.Next(context.Background())
+			results <- writer.Msg()
+		}()
+	}
+
+	for range requests {
+		select {
+		case <-joinReached:
+		case <-time.After(time.Second):
+			t.Fatal("request did not reach the recovery probe election")
+		}
+	}
+	releaseAllJoins()
+	time.Sleep(50 * time.Millisecond)
+	releaseFirstProbe()
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("regrouped recovery probe did not reach downstream")
+	}
+	time.Sleep(50 * time.Millisecond)
+	releaseSecondProbe()
+
+	successes := 0
+	failures := 0
+	for i := range requests {
+		select {
+		case msg := <-results:
+			if msg == nil {
+				t.Fatalf("result %d is nil", i)
+			}
+			switch msg.Rcode {
+			case dns.RcodeSuccess:
+				successes++
+			case dns.RcodeServerFailure:
+				failures++
+			default:
+				t.Fatalf("result %d RCODE = %d", i, msg.Rcode)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("request %d did not finish after recovery", i)
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("recovery downstream calls = %d, want 2", got)
+	}
+	if failures != 1 || successes != requests-1 {
+		t.Fatalf("recovery results = %d successes/%d failures, want %d/1", successes, failures, requests-1)
 	}
 }
 
@@ -253,16 +404,18 @@ func TestFailureProbeRegroupDoesNotSpinOnExpiredWaitGeneration(t *testing.T) {
 	clock := newFailureFakeClock()
 	retryKey := expireFailureProbeZone(t, c, clock)
 	c.wg = waitgroup.New(20 * time.Millisecond)
-	if wait := c.wg.Join(retryKey); wait != nil {
+	generation, leader := c.wg.JoinGeneration(retryKey)
+	if !leader {
 		t.Fatal("failed to install abandoned failure-probe leader")
 	}
-	defer c.wg.Done(retryKey)
+	defer c.wg.DoneGeneration(retryKey, generation)
 
 	var calls atomic.Int32
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		calls.Add(1)
 		resp := new(dns.Msg)
 		resp.SetRcode(ch.Request, dns.RcodeServerFailure)
+		ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 		middleware.MarkRequestLocalFailureResponse(
 			ctx,
 			resp,
@@ -274,13 +427,19 @@ func TestFailureProbeRegroupDoesNotSpinOnExpiredWaitGeneration(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("timeout.dead.example.", dns.TypeA)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.IsEdns0().Option = append(req.IsEdns0().Option,
+		&dns.EDNS0_COOKIE{Cookie: "0011223344556677"},
+	)
 	writer := mock.NewWriter("udp", "192.0.2.1:53000")
 	chain := middleware.NewChain([]middleware.Handler{c, downstream})
 	chain.Reset(writer, req)
+	meta := new(middleware.ResponseMeta)
+	ctx := middleware.WithResponseMeta(context.Background(), meta)
 
 	done := make(chan struct{})
 	go func() {
-		chain.Next(context.Background())
+		chain.Next(ctx)
 		close(done)
 	}()
 
@@ -289,8 +448,104 @@ func TestFailureProbeRegroupDoesNotSpinOnExpiredWaitGeneration(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("follower spun while rejoining an already-expired wait generation")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("timeout fall-through downstream calls = %d, want 1", got)
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("expired-generation downstream calls = %d, want 0", got)
+	}
+	if !writer.Written() || writer.Msg().Rcode != dns.RcodeServerFailure {
+		t.Fatalf("expired-generation response = %#v, want local SERVFAIL", writer.Msg())
+	}
+	ede := dnsutil.GetEDE(writer.Msg())
+	if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeOther ||
+		ede.ExtraText != failureProbeLimitEDEText {
+		t.Fatalf("expired-generation EDE = %+v, want bounded-probe EDE Other", ede)
+	}
+	if opt := writer.Msg().IsEdns0(); opt == nil || len(opt.Option) != 1 {
+		t.Fatalf("expired-generation response reflected client EDNS options: %#v", opt)
+	}
+	if err := middleware.RequestLocalFailureForResponse(ctx, writer.Msg()); !errors.Is(err, middleware.ErrFailureProbeLimit) {
+		t.Fatalf("expired-generation provenance = %v, want ErrFailureProbeLimit", err)
+	}
+}
+
+func TestFailureProbeAbandonedLeaderDoesNotFanOutFollowers(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024})
+	defer c.Stop()
+
+	clock := newFailureFakeClock()
+	retryKey := expireFailureProbeZone(t, c, clock)
+	c.wg = waitgroup.New(50 * time.Millisecond)
+	generation, leader := c.wg.JoinGeneration(retryKey)
+	if !leader {
+		t.Fatal("failed to install abandoned failure-probe leader")
+	}
+	defer c.wg.DoneGeneration(retryKey, generation)
+
+	const requests = 8
+	joinReached := make(chan struct{}, requests)
+	releaseJoin := make(chan struct{})
+	var releaseJoinOnce sync.Once
+	releaseAllJoins := func() {
+		releaseJoinOnce.Do(func() { close(releaseJoin) })
+	}
+	t.Cleanup(releaseAllJoins)
+
+	var calls atomic.Int32
+	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		calls.Add(1)
+		ch.Cancel()
+	})
+
+	results := make(chan *dns.Msg, requests)
+	for i := range requests {
+		req := new(dns.Msg)
+		req.SetQuestion(string(rune('a'+i))+".dead.example.", dns.TypeA)
+		req.SetEdns0(dnsutil.DefaultMsgSize, true)
+		writer := mock.NewWriter("udp", "192.0.2.1:53000")
+		chain := middleware.NewChain([]middleware.Handler{c, downstream})
+		chain.Reset(writer, req)
+		chain.Writer = &failureProbeJoinBarrierWriter{
+			ResponseWriter: chain.Writer,
+			reached:        joinReached,
+			release:        releaseJoin,
+		}
+
+		go func() {
+			chain.Next(context.Background())
+			results <- writer.Msg()
+		}()
+	}
+
+	for range requests {
+		select {
+		case <-joinReached:
+		case <-time.After(time.Second):
+			t.Fatal("request did not reach the abandoned failure-probe election")
+		}
+	}
+	// The retained RFC 9520 state can disappear through recovery, eviction,
+	// or purge while followers are waiting. They still joined this generation
+	// as failure probes, so its timeout must remain terminal for the cohort.
+	if !c.failure.ResetZone(FailureZoneKey{Zone: "dead.example.", Qclass: dns.ClassINET}) {
+		t.Fatal("failed to remove retained failure state before generation timeout")
+	}
+	releaseAllJoins()
+
+	for i := range requests {
+		select {
+		case msg := <-results:
+			if msg == nil || msg.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("result %d = %#v, want bounded local SERVFAIL", i, msg)
+			}
+			if ede := dnsutil.GetEDE(msg); ede == nil ||
+				ede.InfoCode != dns.ExtendedErrorCodeOther {
+				t.Fatalf("result %d EDE = %+v, want EDE Other", i, ede)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("request %d remained pinned to abandoned probe", i)
+		}
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("abandoned failure probe fanned out %d downstream calls", got)
 	}
 }
 
@@ -300,10 +555,13 @@ func TestFailureProbeCanceledFollowerStopsBeforeRegroup(t *testing.T) {
 
 	clock := newFailureFakeClock()
 	retryKey := expireFailureProbeZone(t, c, clock)
-	if wait := c.wg.Join(retryKey); wait != nil {
+	c.wg = waitgroup.New(time.Millisecond)
+	generation, leader := c.wg.JoinGeneration(retryKey)
+	if !leader {
 		t.Fatal("failed to install failure-probe leader")
 	}
-	defer c.wg.Done(retryKey)
+	defer c.wg.DoneGeneration(retryKey, generation)
+	<-generation.Done()
 
 	var calls atomic.Int32
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
@@ -326,6 +584,59 @@ func TestFailureProbeCanceledFollowerStopsBeforeRegroup(t *testing.T) {
 	}
 	if writer.Written() {
 		t.Fatalf("canceled follower wrote an unexpected response: %#v", writer.Msg())
+	}
+}
+
+func TestFailureProbeDeadlineReturnsLocalSERVFAIL(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024})
+	defer c.Stop()
+
+	clock := newFailureFakeClock()
+	retryKey := expireFailureProbeZone(t, c, clock)
+	generation, leader := c.wg.JoinGeneration(retryKey)
+	if !leader {
+		t.Fatal("failed to install failure-probe leader")
+	}
+	defer c.wg.DoneGeneration(retryKey, generation)
+
+	var calls atomic.Int32
+	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		calls.Add(1)
+		ch.Cancel()
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("deadline.dead.example.", dns.TypeA)
+	req.SetEdns0(dnsutil.DefaultMsgSize, true)
+	req.IsEdns0().Option = append(req.IsEdns0().Option,
+		&dns.EDNS0_COOKIE{Cookie: "0011223344556677"},
+	)
+	writer := mock.NewWriter("udp", "192.0.2.1:53000")
+	chain := middleware.NewChain([]middleware.Handler{c, downstream})
+	chain.Reset(writer, req)
+
+	deadlineCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	meta := new(middleware.ResponseMeta)
+	ctx := middleware.WithResponseMeta(deadlineCtx, meta)
+	chain.Next(ctx)
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("deadline follower reached downstream %d times, want 0", got)
+	}
+	if !writer.Written() || writer.Msg().Rcode != dns.RcodeServerFailure {
+		t.Fatalf("deadline response = %#v, want local SERVFAIL", writer.Msg())
+	}
+	ede := dnsutil.GetEDE(writer.Msg())
+	if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeNoReachableAuthority ||
+		ede.ExtraText != "Query timeout exceeded" {
+		t.Fatalf("deadline EDE = %+v, want no-reachable-authority timeout", ede)
+	}
+	if opt := writer.Msg().IsEdns0(); opt == nil || len(opt.Option) != 1 {
+		t.Fatalf("deadline response reflected client EDNS options: %#v", opt)
+	}
+	if err := middleware.RequestLocalFailureForResponse(ctx, writer.Msg()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline provenance = %v, want DeadlineExceeded", err)
 	}
 }
 

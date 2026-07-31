@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsclient"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
@@ -108,6 +109,17 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		return w.writeRecursionWorkFailure(m, nil)
 	}
 
+	requestLocalErr := middleware.RequestLocalFailureForResponse(w.ctx, m)
+	if requestErr := contextutil.EffectiveError(w.ctx); requestErr != nil {
+		middleware.MarkRequestLocalFailureResponse(w.ctx, m, requestErr)
+		return w.ResponseWriter.WriteMsg(m)
+	}
+	// This response is the cache probe's deliberate cohort shed. Starting a
+	// fallback query here would bypass the very work bound it enforces.
+	if errors.Is(requestLocalErr, middleware.ErrFailureProbeLimit) {
+		return w.ResponseWriter.WriteMsg(m)
+	}
+
 	failoverAttempts.Inc()
 
 	req := new(dns.Msg)
@@ -116,11 +128,12 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = m.CheckingDisabled
 
-	var (
-		failureResponse *dns.Msg
-		requestLocalErr = middleware.RequestLocalFailureForResponse(w.ctx, m)
-	)
+	var failureResponse *dns.Msg
 	for _, server := range w.f.servers {
+		if requestErr := contextutil.EffectiveError(w.ctx); requestErr != nil {
+			middleware.MarkRequestLocalFailureResponse(w.ctx, m, requestErr)
+			return w.ResponseWriter.WriteMsg(m)
+		}
 		client := dnsclient.Client{
 			Proto: "udp",
 			BeforeAttempt: func(proto string) error {
@@ -130,16 +143,20 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 				return middleware.DebitRecursionWork(w.ctx, middleware.RecursionWorkOutboundQuery)
 			},
 		}
-		// Preserve the historical independent five-second failover window.
-		// Work accounting still reads the request-scoped ledger from w.ctx.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		resp, _, err := client.Exchange(ctx, req, server)
+		// Keep the historical five-second per-endpoint ceiling, but derive it
+		// from the pipeline-ingress request so querytimeout and transport
+		// cancellation remain hard resolution bounds.
+		attemptCtx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+		resp, _, err := client.Exchange(attemptCtx, req, server)
 		cancel()
 		if err != nil {
-			// This ctx is an independent per-endpoint five-second window,
-			// not the originating request context. Its cancellation or
-			// deadline is shared upstream failure evidence; only an explicit
-			// request-tree attempt rejection carries local provenance here.
+			if requestErr := contextutil.EffectiveError(w.ctx); requestErr != nil {
+				middleware.MarkRequestLocalFailureResponse(w.ctx, m, requestErr)
+				return w.ResponseWriter.WriteMsg(m)
+			}
+			// A child five-second deadline with a still-live request is shared
+			// upstream failure evidence; only an explicit request-tree attempt
+			// rejection carries local provenance here.
 			if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 				// Request-local retry exhaustion is not an upstream health
 				// failure; try another endpoint without noisy logging.

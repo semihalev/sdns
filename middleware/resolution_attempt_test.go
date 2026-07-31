@@ -162,6 +162,7 @@ func TestRequestLocalFailureResponseIdentity(t *testing.T) {
 	}{
 		{name: "work limit", err: ErrRecursionWorkLimit},
 		{name: "attempt limit", err: ErrResolutionAttemptLimit},
+		{name: "failure probe limit", err: ErrFailureProbeLimit},
 		{name: "queryer recursion", err: ErrMaxRecursion},
 		{name: "canceled", err: context.Canceled},
 		{name: "deadline", err: context.DeadlineExceeded},

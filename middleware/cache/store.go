@@ -516,7 +516,9 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 // Two deliberate asymmetries:
 //   - A SERVFAIL refresh never displaces a positive entry: it only
 //     CASes into the negative cache, so a transient upstream failure
-//     can't evict a still-valid answer.
+//     can't evict a still-valid answer. Production Cache SERVFAILs use
+//     FailureCache; this branch preserves the exported Store/NegativeCache
+//     contract for programmatic callers and manually seeded legacy entries.
 //   - The CAS stays within one sub-cache. A negative entry refreshing
 //     to a positive answer is dropped rather than promoted — the two
 //     caches can't be swapped atomically, and the negative entry's

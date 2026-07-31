@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"errors"
 	"os"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -152,7 +152,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	depth := h.cfg.Maxdepth
 	isRootQuery := q.Name == rootzone
 	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootServers, true, depth, 0, false, nil, isRootQuery)
-	requestCtxErr := ctx.Err()
+	requestCtxErr := contextutil.EffectiveError(ctx)
 
 	// Restore original CD flag if DNSSEC is not supported
 	if !h.resolver.dnssec {
@@ -170,9 +170,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		edeCode, edeText := dnsutil.ErrorToEDE(err)
 		resp := dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
 		switch {
-		case errors.Is(err, middleware.ErrRecursionWorkLimit),
-			errors.Is(err, middleware.ErrResolutionAttemptLimit),
-			errors.Is(err, middleware.ErrMaxRecursion):
+		case middleware.IsRequestLocalResolutionError(err):
 			middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
 		case requestCtxErr != nil:
 			middleware.MarkRequestLocalFailureResponse(ctx, resp, requestCtxErr)

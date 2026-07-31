@@ -12,6 +12,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsclient"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
@@ -269,7 +270,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// overall query window. A dnsclient per-endpoint timeout can
 			// return a timeout error while this context is still live; that
 			// remains evidence about the upstream and is safe to share.
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
 				if requestLocalErr == nil {
 					requestLocalErr = ctxErr
 				}

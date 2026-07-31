@@ -19,6 +19,7 @@ var ErrQuestion = dnsclient.ErrQuestion
 
 // AcquireBuf and ReleaseBuf expose the shared size-bucketed buffer pool.
 var (
-	AcquireBuf = dnsclient.AcquireBuf
-	ReleaseBuf = dnsclient.ReleaseBuf
+	AcquireBuf        = dnsclient.AcquireBuf
+	ReleaseBuf        = dnsclient.ReleaseBuf
+	InterruptOnCancel = dnsclient.InterruptOnCancel
 )

@@ -326,6 +326,114 @@ func TestClientExchange_CanceledContextSkipsAttemptHook(t *testing.T) {
 	}
 }
 
+func TestClientExchange_CancelInterruptsInFlightUDPRead(t *testing.T) {
+	received := make(chan struct{})
+	release := make(chan struct{})
+	addr, stop := startServer(t, "udp", func(dns.ResponseWriter, *dns.Msg) {
+		close(received)
+		<-release
+	})
+	defer func() {
+		close(release)
+		stop()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := (&Client{Proto: "udp"}).Exchange(ctx, newReq(), addr)
+		result <- err
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive the in-flight UDP query")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("exchange error = %v, want context.Canceled", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("in-flight UDP read ignored context cancellation")
+	}
+}
+
+type blockingDeadlineConn struct {
+	net.Conn
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingDeadlineConn) SetDeadline(time.Time) error {
+	close(c.started)
+	<-c.release
+	return nil
+}
+
+func TestInterruptOnCancelWaitsForStartedCallback(t *testing.T) {
+	conn := &blockingDeadlineConn{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cleanup := InterruptOnCancel(ctx, conn)
+	cancel()
+
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation callback did not start")
+	}
+	cleanupDone := make(chan struct{})
+	go func() {
+		cleanup()
+		close(cleanupDone)
+	}()
+	select {
+	case <-cleanupDone:
+		t.Fatal("cleanup returned while SetDeadline callback was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(conn.release)
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not return after cancellation callback completed")
+	}
+
+	secondCleanupDone := make(chan struct{})
+	go func() {
+		cleanup()
+		close(secondCleanupDone)
+	}()
+	select {
+	case <-secondCleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup was not idempotent")
+	}
+}
+
+func TestInterruptOnCancelCleanupIsIdempotentAfterStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cleanup := InterruptOnCancel(ctx, nil)
+	cleanup()
+
+	done := make(chan struct{})
+	go func() {
+		cleanup()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("second cleanup blocked after the callback was stopped")
+	}
+}
+
 func TestClientExchange_NilAttemptHookPreservesOperationError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

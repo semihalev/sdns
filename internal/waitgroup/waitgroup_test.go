@@ -1,6 +1,7 @@
 package waitgroup
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -110,4 +111,153 @@ func Test_JoinLeaderWakesFollowers(t *testing.T) {
 		}
 	}
 	assert.Equal(t, int32(followers), woken.Load())
+}
+
+func Test_RegroupPinsLateFollowersToOneNextGeneration(t *testing.T) {
+	wg := New(5 * time.Second)
+	key := cache.Key(dns.Question{Name: "regroup.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+
+	first, leader := wg.JoinGeneration(key)
+	require.True(t, leader)
+	follower, leader := wg.JoinGeneration(key)
+	require.False(t, leader)
+	require.Same(t, first, follower)
+	wg.DoneGeneration(key, first)
+	<-first.Done()
+
+	second, leader := wg.Regroup(key, first)
+	require.True(t, leader)
+	wg.DoneGeneration(key, second)
+	<-second.Done()
+
+	// The next generation has already completed, but a late member of the
+	// first cohort must still observe that exact token instead of becoming a
+	// third leader.
+	late, leader := wg.Regroup(key, follower)
+	require.False(t, leader)
+	require.Same(t, second, late)
+}
+
+func Test_DoneGenerationCannotDeleteNewerRegroup(t *testing.T) {
+	wg := New(5 * time.Second)
+	key := cache.Key(dns.Question{Name: "stale.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+
+	first, leader := wg.JoinGeneration(key)
+	require.True(t, leader)
+	wg.DoneGeneration(key, first)
+	<-first.Done()
+
+	second, leader := wg.Regroup(key, first)
+	require.True(t, leader)
+
+	// The abandoned first leader finally returns. Its token-specific Done
+	// must not erase the current second generation.
+	wg.DoneGeneration(key, first)
+	current, leader := wg.JoinGeneration(key)
+	require.False(t, leader)
+	require.Same(t, second, current)
+
+	wg.DoneGeneration(key, second)
+}
+
+func Test_TimedOutGenerationRemainsTombstoneUntilLeaderDone(t *testing.T) {
+	wg := New(time.Millisecond)
+	key := cache.Key(dns.Question{Name: "timeout.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+
+	first, leader := wg.JoinGeneration(key)
+	require.True(t, leader)
+	<-first.Done()
+	require.ErrorIs(t, first.Err(), context.DeadlineExceeded)
+
+	regrouped, leader := wg.Regroup(key, first)
+	require.False(t, leader)
+	require.Same(t, first, regrouped)
+	current, leader := wg.JoinGeneration(key)
+	require.False(t, leader)
+	require.Same(t, first, current)
+
+	wg.DoneGeneration(key, first)
+	next, leader := wg.JoinGeneration(key)
+	require.True(t, leader)
+	require.NotSame(t, first, next)
+	wg.DoneGeneration(key, next)
+}
+
+func Test_ConcurrentRegroupElectsOneSharedLeader(t *testing.T) {
+	wg := New(5 * time.Second)
+	key := cache.Key(dns.Question{Name: "concurrent.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+
+	first, leader := wg.JoinGeneration(key)
+	require.True(t, leader)
+	wg.DoneGeneration(key, first)
+	<-first.Done()
+
+	const followers = 32
+	start := make(chan struct{})
+	type result struct {
+		generation *Generation
+		leader     bool
+	}
+	results := make(chan result, followers)
+	for range followers {
+		go func() {
+			<-start
+			generation, elected := wg.Regroup(key, first)
+			results <- result{generation: generation, leader: elected}
+		}()
+	}
+	close(start)
+
+	var (
+		next    *Generation
+		leaders int
+	)
+	for range followers {
+		got := <-results
+		if got.leader {
+			leaders++
+		}
+		if next == nil {
+			next = got.generation
+		} else {
+			require.Same(t, next, got.generation)
+		}
+	}
+	require.Equal(t, 1, leaders)
+	wg.DoneGeneration(key, next)
+}
+
+func Test_JoinAndRegroupRaceAdoptsOneGeneration(t *testing.T) {
+	for range 100 {
+		wg := New(5 * time.Second)
+		key := cache.Key(dns.Question{Name: "adopt.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+		first, leader := wg.JoinGeneration(key)
+		require.True(t, leader)
+		wg.DoneGeneration(key, first)
+		<-first.Done()
+
+		start := make(chan struct{})
+		type result struct {
+			generation *Generation
+			leader     bool
+		}
+		results := make(chan result, 2)
+		go func() {
+			<-start
+			generation, elected := wg.JoinGeneration(key)
+			results <- result{generation: generation, leader: elected}
+		}()
+		go func() {
+			<-start
+			generation, elected := wg.Regroup(key, first)
+			results <- result{generation: generation, leader: elected}
+		}()
+		close(start)
+
+		a := <-results
+		b := <-results
+		require.Same(t, a.generation, b.generation)
+		require.NotEqual(t, a.leader, b.leader)
+		wg.DoneGeneration(key, a.generation)
+	}
 }

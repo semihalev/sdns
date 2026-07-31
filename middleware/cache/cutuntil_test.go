@@ -287,6 +287,28 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 	if _, ok := s.LookupByKey(negKey); ok {
 		t.Fatal("failure leaked into the ordinary CacheEntry stores")
 	}
+
+	// The exported NegativeCache can still be seeded directly by
+	// programmatic/legacy callers. Preserve token-safe SERVFAIL replacement
+	// for that compatibility surface even though production Cache admission
+	// routes failures through FailureCache.
+	legacyQ := dns.Question{Name: "legacy-neg.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	legacyKey := CacheKey{Question: legacyQ}.Hash()
+	legacyMsg := cutTestMsg(legacyQ.Name, dns.RcodeServerFailure, 0)
+	legacyEntry := NewCacheEntry(legacyMsg, time.Minute, 0)
+	s.negative.Set(legacyKey, legacyEntry)
+	if !s.ReplaceIfCurrent(
+		legacyKey,
+		legacyEntry,
+		cutTestMsg(legacyQ.Name, dns.RcodeServerFailure, 0),
+		time.Time{},
+		0,
+	) {
+		t.Fatal("manually seeded legacy SERVFAIL was not replaced")
+	}
+	if current, ok := s.negative.Get(legacyKey); !ok || current == legacyEntry {
+		t.Fatal("legacy negative cache did not receive the CAS replacement")
+	}
 }
 
 func TestStore_ReplaceIfCurrent_ConcurrentSingleWinner(t *testing.T) {
