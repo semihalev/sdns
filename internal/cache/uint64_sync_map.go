@@ -2,7 +2,6 @@ package cache
 
 import (
 	"iter"
-	"unsafe"
 )
 
 // SyncUInt64Map wraps SegmentUInt64Map to provide the expected interface
@@ -58,45 +57,10 @@ func (m *SyncUInt64Map[V]) All() iter.Seq2[uint64, V] {
 	return m.ForEach
 }
 
-// RandomSample returns a random sample of keys
-func (m *SyncUInt64Map[V]) RandomSample(maxSample int) []uint64 {
-	if maxSample <= 0 {
-		return nil
-	}
-
-	// For better randomness, sample from different segments
-	result := make([]uint64, 0, maxSample)
-	segments := m.data.segments
-	numSegments := len(segments)
-
-	// Start from a random segment
-	startIdx := int(uint64(uintptr(unsafe.Pointer(&result))) % uint64(numSegments)) //nolint:gosec // G103 G115 - using pointer address for randomization
-
-	// Sample across segments round-robin
-	for i := 0; i < numSegments && len(result) < maxSample; i++ {
-		segIdx := (startIdx + i) % numSegments
-		segment := segments[segIdx]
-
-		// Lock segment for sampling
-		segment.rwlock.RLock()
-
-		// Sample a few keys from this segment
-		sampled := 0
-		maxFromSegment := (maxSample / numSegments) + 1
-
-		segment.data.ForEach(func(key uint64, _ V) bool {
-			if sampled >= maxFromSegment || len(result) >= maxSample {
-				return false
-			}
-			result = append(result, key)
-			sampled++
-			return true
-		})
-
-		segment.rwlock.RUnlock()
-	}
-
-	return result
+// SetWithCap adds or updates a key-value pair, self-evicting from the same
+// segment under the same lock when total occupancy exceeds capacity.
+func (m *SyncUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) {
+	m.data.SetWithCap(key, value, capacity)
 }
 
 // Compact is a no-op for this implementation as it handles memory efficiently
@@ -114,14 +78,4 @@ func (m *SyncUInt64Map[V]) Stop() {
 // Clear removes all entries - FAST!
 func (m *SyncUInt64Map[V]) Clear() {
 	m.data.Clear()
-}
-
-// ClearSegment clears a specific segment - for radical eviction
-func (m *SyncUInt64Map[V]) ClearSegment(index int) {
-	m.data.ClearSegment(index)
-}
-
-// SegmentCount returns the number of segments
-func (m *SyncUInt64Map[V]) SegmentCount() int {
-	return m.data.SegmentCount()
 }
