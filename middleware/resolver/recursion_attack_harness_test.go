@@ -239,16 +239,17 @@ func newAttackHarnessResolver(root *authority.Servers) *Resolver {
 		Timeout:              config.Duration{Duration: time.Second},
 	}
 	return &Resolver{
-		cfg:            cfg,
-		delegations:    authority.NewCache(),
-		rootServers:    root,
-		glueV4:         internalcache.New(defaultCacheSize),
-		dnssec:         false,
-		qnameMinLevel:  0,
-		netTimeout:     time.Second,
-		sfGroup:        NewSingleflightWrapper(),
-		circuitBreaker: newCircuitBreaker(),
-		maxConcurrent:  make(chan struct{}, maxConcurrent),
+		cfg:             cfg,
+		delegations:     authority.NewCache(),
+		rootServers:     root,
+		glueV4:          internalcache.New(defaultCacheSize),
+		dnssec:          false,
+		qnameMinLevel:   0,
+		netTimeout:      time.Second,
+		sfGroup:         NewSingleflightWrapper(),
+		circuitBreaker:  newCircuitBreaker(),
+		maxConcurrent:   make(chan struct{}, maxConcurrent),
+		resolutionSlots: make(chan struct{}, maxConcurrent),
 	}
 }
 

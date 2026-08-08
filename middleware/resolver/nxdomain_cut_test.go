@@ -241,16 +241,17 @@ func TestNXDomainCutMinimizedNSEC3OptOutDoesNotCutDescendant(t *testing.T) {
 		Timeout:              config.Duration{Duration: time.Second},
 	}
 	r := &Resolver{
-		cfg:            cfg,
-		delegations:    authority.NewCache(),
-		rootServers:    servers,
-		dnssec:         true,
-		rootKeys:       []dns.RR{key},
-		netTimeout:     time.Second,
-		sfGroup:        NewSingleflightWrapper(),
-		circuitBreaker: newCircuitBreaker(),
-		maxConcurrent:  make(chan struct{}, cfg.MaxConcurrentQueries),
-		qnameMinLevel:  10,
+		cfg:             cfg,
+		delegations:     authority.NewCache(),
+		rootServers:     servers,
+		dnssec:          true,
+		rootKeys:        []dns.RR{key},
+		netTimeout:      time.Second,
+		sfGroup:         NewSingleflightWrapper(),
+		circuitBreaker:  newCircuitBreaker(),
+		maxConcurrent:   make(chan struct{}, cfg.MaxConcurrentQueries),
+		resolutionSlots: make(chan struct{}, cfg.MaxConcurrentQueries),
+		qnameMinLevel:   10,
 	}
 
 	keyResponse := new(dns.Msg)

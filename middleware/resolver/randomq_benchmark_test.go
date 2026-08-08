@@ -72,15 +72,16 @@ func newRandomQFloodFixture(tb testing.TB, signed bool) *randomQFloodFixture {
 		Timeout:              config.Duration{Duration: time.Second},
 	}
 	fixture.resolver = &Resolver{
-		cfg:            cfg,
-		delegations:    authority.NewCache(),
-		rootServers:    fixture.servers,
-		dnssec:         true,
-		rootKeys:       []dns.RR{key},
-		netTimeout:     time.Second,
-		sfGroup:        NewSingleflightWrapper(),
-		circuitBreaker: newCircuitBreaker(),
-		maxConcurrent:  make(chan struct{}, cfg.MaxConcurrentQueries),
+		cfg:             cfg,
+		delegations:     authority.NewCache(),
+		rootServers:     fixture.servers,
+		dnssec:          true,
+		rootKeys:        []dns.RR{key},
+		netTimeout:      time.Second,
+		sfGroup:         NewSingleflightWrapper(),
+		circuitBreaker:  newCircuitBreaker(),
+		maxConcurrent:   make(chan struct{}, cfg.MaxConcurrentQueries),
+		resolutionSlots: make(chan struct{}, cfg.MaxConcurrentQueries),
 	}
 
 	if signed {

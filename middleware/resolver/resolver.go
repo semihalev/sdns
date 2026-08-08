@@ -77,9 +77,11 @@ type Resolver struct {
 	tcpPool *TCPConnPool
 
 	// Circuit breaker and goroutine limiter
-	circuitBreaker *circuitBreaker
-	maxConcurrent  chan struct{} // Semaphore for limiting concurrent queries
-	cryptoLimiter  *dnssec.CryptoLimiter
+	circuitBreaker  *circuitBreaker
+	maxConcurrent   chan struct{} // Semaphore for limiting concurrent queries
+	v6LookupSlots   chan struct{} // Global cap on detached IPv6 NS enrichment jobs
+	resolutionSlots chan struct{} // Hard ceiling on in-flight zone lookups; full → fail fast
+	cryptoLimiter   *dnssec.CryptoLimiter
 
 	// store is the cache facade used by subQuery for resolver-private
 	// DNSSEC record lookups (DS, DNSKEY). Auto-wired during
@@ -238,9 +240,15 @@ func NewResolver(cfg *config.Config) *Resolver {
 		maxConcurrent = 1000 // Default to 1000 concurrent queries
 	}
 	r.maxConcurrent = make(chan struct{}, maxConcurrent)
+	r.resolutionSlots = make(chan struct{}, maxConcurrent)
 
 	if r.cfg.IPv6Access {
 		r.glueV6 = cache.New(defaultCacheSize)
+		// Detached V6 enrichment shares the query budget's scale: during a
+		// network incident every referral wants one of these jobs, and an
+		// uncapped pool grows at arrival-rate × timeout (2026-07-28: 1.4M
+		// goroutines). Full slots shed the job instead of queueing it.
+		r.v6LookupSlots = make(chan struct{}, maxConcurrent)
 	}
 
 	if r.cfg.Timeout.Duration > 0 {
@@ -525,6 +533,22 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 		// returns its own error while the remaining healthy followers regroup
 		// again; each caller's context bounds the sequence.
 		result, shared, leader, lookupErr := r.sfGroup.TimedDoChanWithRole(ctx, key, func() (any, error) {
+			// Hard ceiling on in-flight zone lookups, held only for this
+			// wire-level lookup — never across recursion levels, so a
+			// nested sub-lookup can't deadlock on its parent's slot. When
+			// every slot is pinned by lookups waiting out dead upstreams,
+			// new work is shed immediately instead of joining the queue:
+			// during a partial outage the queue's growth rate is
+			// arrival-rate × timeout and it never drains (2026-07-28).
+			// A nil pool (bare test resolvers) disables the ceiling.
+			if r.resolutionSlots != nil {
+				select {
+				case r.resolutionSlots <- struct{}{}:
+				default:
+					return nil, errResolutionCapacity
+				}
+				defer func() { <-r.resolutionSlots }()
+			}
 			return r.lookup(ctx, rs, leaderReq, servers)
 		})
 
@@ -3372,7 +3396,25 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 				work = nil
 			}
 		}
-		if rs.work == nil || work != nil {
+		spawn := rs.work == nil || work != nil
+		if spawn && r.v6LookupSlots != nil {
+			// Non-blocking slot acquire. The pool caps detached V6 jobs
+			// GLOBALLY: a partial upstream outage makes every job live out
+			// its full timeout while fresh referrals keep arriving, and an
+			// unbounded pool then grows at arrival-rate × timeout. This is
+			// optional enrichment — shedding it under pressure is strictly
+			// better than becoming the pressure. A nil pool (bare test
+			// resolvers) disables the cap.
+			select {
+			case r.v6LookupSlots <- struct{}{}:
+			default:
+				spawn = false
+				if releaseWork != nil {
+					releaseWork()
+				}
+			}
+		}
+		if spawn {
 			detachedBase := dnssec.InheritNSEC3HashMemos(
 				context.Background(),
 				ctx,
@@ -3381,6 +3423,11 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 				detachedBase = middleware.MarkClientECS(detachedBase)
 			}
 			go func() { //nolint:gosec // G118 - intentionally detached and bounded by the timeout below
+				defer func() {
+					if r.v6LookupSlots != nil {
+						<-r.v6LookupSlots
+					}
+				}()
 				if releaseWork != nil {
 					defer releaseWork()
 				}
