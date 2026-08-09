@@ -245,16 +245,16 @@ func TestCacheSizeMonitoring(t *testing.T) {
 	t.Logf("Max observed size: %d (limit: %d)", maxObserved, maxSize)
 	t.Logf("Times exceeded limit: %d (%.2f%%)", exceedances, exceedanceRate)
 
-	// The cache may temporarily exceed the limit but should quickly recover
-	// Allow up to 50% exceedance rate since we're sampling during active modifications
-	if exceedanceRate > 50 {
-		t.Errorf("Cache exceeded limit too often: %.2f%% of samples", exceedanceRate)
-	}
-
-	// Max observed should not be too far above limit
-	if maxObserved > maxSize+maxSize/10 {
-		t.Errorf("Max observed size %d exceeds limit %d by more than 10%%",
-			maxObserved, maxSize)
+	// Proportional eviction hovers at capacity by design: an over-capacity
+	// insert reaches maxSize+1 and immediately evicts back under the same
+	// segment lock. Samples routinely land inside that window (under the race
+	// detector it covers most of an eviction cycle), so a sample-rate
+	// threshold is a coin flip. Assert the design's hard bound instead —
+	// occupancy may never exceed capacity by more than the one in-flight
+	// insert.
+	if maxObserved > maxSize+1 {
+		t.Errorf("Max observed size %d exceeds hard bound %d (maxSize+1)",
+			maxObserved, maxSize+1)
 	}
 }
 
