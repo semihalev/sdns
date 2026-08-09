@@ -28,6 +28,17 @@ var (
 	resolverFailWorkBudget  = resolverFailures.Register("work_budget")
 	resolverFailOther       = resolverFailures.Register("other")
 
+	// Capacity sheds happen before any upstream work and never reach
+	// classifyResolverErr, so without their own counters the in-flight
+	// ceilings would be observable only as EDE text in client responses.
+	resolutionSheds = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_resolution_shed_total",
+		Help: "Lookups shed at an in-flight capacity ceiling before any upstream work",
+	}, []string{"scope"})
+
+	shedGlobalCapacity = resolutionSheds.Register("global")
+	shedZoneCapacity   = resolutionSheds.Register("zone")
+
 	resolverDNSSECFailures = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_resolver_dnssec_failures_total",
 		Help: "DNSSEC validation failures by reason",

@@ -551,6 +551,7 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 				select {
 				case r.resolutionSlots <- struct{}{}:
 				default:
+					shedGlobalCapacity.Inc()
 					return nil, errResolutionCapacity
 				}
 				defer func() { <-r.resolutionSlots }()
@@ -564,6 +565,7 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 			if r.zoneInflight != nil {
 				release, ok := r.zoneInflight.acquire(servers.Zone)
 				if !ok {
+					shedZoneCapacity.Inc()
 					return nil, errZoneCapacity
 				}
 				defer release()
