@@ -15,11 +15,18 @@ func Test_ClientTimeout(t *testing.T) {
 	req.SetQuestion(".", dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
+	// A silent local listener guarantees a read timeout on any host. The
+	// previous hardcoded 127.1.0.255:53 target is answered by a wildcard-bound
+	// DNS server on the same machine (e.g. a live sdns), which turned this
+	// timeout test into a successful live query.
+	blackhole, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	assert.NoError(t, err)
+	defer func() { _ = blackhole.Close() }()
+
 	dialer := &net.Dialer{Deadline: time.Now().Add(2 * time.Second)}
 	co := &Conn{}
 
-	var err error
-	co.Conn, err = dialer.Dial("udp4", "127.1.0.255:53")
+	co.Conn, err = dialer.Dial("udp4", blackhole.LocalAddr().String())
 	assert.NoError(t, err)
 
 	err = co.SetDeadline(time.Now().Add(2 * time.Second))

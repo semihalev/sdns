@@ -838,8 +838,13 @@ func TestPackagedConfigMatchesGeneratedDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read packaged config: %v", err)
 	}
+	// A Windows checkout with autocrlf gives the packaged file CRLF line
+	// endings, while the Go spec discards carriage returns from raw string
+	// literals — so the generated text is always LF. Normalize before
+	// comparing content.
+	packagedText := strings.ReplaceAll(string(packaged), "\r\n", "\n")
 	generated := fmt.Sprintf(defaultConfig, configver)
-	if strings.TrimSpace(string(packaged)) != strings.TrimSpace(generated) {
+	if strings.TrimSpace(packagedText) != strings.TrimSpace(generated) {
 		t.Fatal("packaged config differs from the generated default")
 	}
 }
