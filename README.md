@@ -155,6 +155,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **dnssec**           | Enable DNSSEC validation for secure DNS responses. Options: "on" or "off". Default: "on"                            |
 | **rfc8198**          | Aggressively reuse validated NSEC/NSEC3 proofs. Set false to stop RFC 8198 admission and synthesis without disabling DNSSEC, exact negative caching, or RFC 8020 cuts. Default: true |
 | **rfc9520**          | Cache shared recursive-resolution and failed-authority state. Emergency rollback switch; setting false means SERVFAIL responses and failed-authority state are not cached, which can increase upstream retry load. Per-server retry ceilings, request work limits, and ordinary DNS caching remain active. Default: true |
+| **[recursion_firewall]** | Request-tree work budgets (outbound/internal queries, DNSSEC operations) with off/shadow/enforce modes, plus RFC 9520 failure-cache tuning. See the Recursion Firewall section below |
 | **rootkeys**         | DNSSEC root zone trust anchors in DNSKEY format                                                                     |
 | **fallbackservers**  | Upstream DNS servers used when all others fail. Format: "IP:port" (e.g., "8.8.8.8:53")                             |
 | **forwarderservers** | Forward all queries to these DNS servers. Accepts `IP:port` (plain UDP/TCP), `tls://IP:port` (DoT, RFC 7858), or `https://host/dns-query` (DoH, RFC 8484; hostname or IP literal). See [Forwarder upstreams](#forwarder-upstreams) for details. |
@@ -369,6 +370,41 @@ min_scope_v6    = 56
 - Scoped entries are never prefetched (the worker has no client IP to derive ECS from). They expire normally; busy scoped names cost an upstream query per TTL window.
 - `Purge` (the `/api/v1/purge` endpoint) removes both the shared-key entry and every scoped entry for the qname.
 - The full request → upstream → response → cache path is exercised end-to-end by `middleware/cache/cache_ecs_test.go` if you need a usage reference.
+
+#### Recursion Firewall
+
+Bounds aggregate resolver work across one complete request tree — retries, UDP→TCP fallbacks, and nested resolver-generated lookups (DS/DNSKEY, NS addresses, alias targets) all draw from the same budgets, so a single hostile query cannot amplify into unbounded upstream traffic or DNSSEC crypto work.
+
+**Configuration:**
+```toml
+[recursion_firewall]
+mode = "shadow"                  # "off" | "shadow" | "enforce"
+
+max_outbound_queries = 128       # transport attempts per request tree
+max_internal_queries = 32        # resolver-generated child queries
+max_dnskey_candidates = 4        # same-tag DNSKEY candidates per signature/DS
+max_rrset_signature_checks = 8   # signatures tried per RRset
+max_signature_checks = 32        # aggregate RRSIG verifications
+max_ds_digests = 32              # aggregate DS digest computations
+max_nsec3_hashes = 32            # aggregate NSEC3 hash operations
+max_concurrent_crypto = 32       # process-wide concurrent crypto operations
+
+failure_cache_size = 4096        # RFC 9520 failure states retained
+failure_cache_min_ttl = "5s"     # first-failure backoff interval
+failure_cache_max_ttl = "5m"     # backoff ceiling (RFC 9520 bounds: 1s–5m)
+```
+
+- `shadow` (the default) records would-be limit crossings in metrics without changing any response. Run it first and calibrate the limits from live traffic before switching to `enforce`.
+- `enforce` terminates over-budget request trees with SERVFAIL plus an RFC 8914 Extended DNS Error.
+- A limit of 0 means "use the default", not unlimited; disable accounting with `mode = "off"`.
+- The RFC 9520 failure cache itself is switched by the top-level `rfc9520` setting, independent of `mode`: failure caching is protocol behaviour, `mode` only governs work accounting.
+
+**Prometheus Metrics:**
+- `dns_recursion_firewall_exhaustions_total{reason,mode}` — request trees that crossed a work budget
+- `dnssec_work_per_request{operation,mode}` — histogram of DNSSEC operations per request tree; calibrate `enforce` limits from its p99 (especially `nsec3_hashes`)
+- `dns_recursion_fanout_ratio` — outbound transport attempts per resolution tree
+- `dnssec_work_total{operation,mode}` — aggregate DNSSEC work counters
+- `failure_cache_hits_total` — RFC 9520 cached resolution failures served
 
 #### Cache Metrics
 
