@@ -18,7 +18,7 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-const configver = "1.7.0"
+const configver = "1.7.4"
 
 // Config type.
 type Config struct {
