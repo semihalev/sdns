@@ -81,6 +81,7 @@ type Resolver struct {
 	maxConcurrent   chan struct{} // Semaphore for limiting concurrent queries
 	v6LookupSlots   chan struct{} // Global cap on detached IPv6 NS enrichment jobs
 	resolutionSlots chan struct{} // Hard ceiling on in-flight zone lookups; full → fail fast
+	zoneInflight    *zoneInflightLimiter
 	cryptoLimiter   *dnssec.CryptoLimiter
 
 	// store is the cache facade used by subQuery for resolver-private
@@ -241,6 +242,11 @@ func NewResolver(cfg *config.Config) *Resolver {
 	}
 	r.maxConcurrent = make(chan struct{}, maxConcurrent)
 	r.resolutionSlots = make(chan struct{}, maxConcurrent)
+	// Destination fairness: one hanging zone may pin at most a small slice
+	// of the in-flight budget, so a partial outage of a popular authority
+	// set (one provider's network) can never starve resolution for the
+	// healthy rest of the namespace.
+	r.zoneInflight = newZoneInflightLimiter(max(maxConcurrent/16, 16))
 
 	if r.cfg.IPv6Access {
 		r.glueV6 = cache.New(defaultCacheSize)
@@ -548,6 +554,19 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 					return nil, errResolutionCapacity
 				}
 				defer func() { <-r.resolutionSlots }()
+			}
+			// Per-zone quota (BIND fetches-per-zone analog): the global
+			// pool is blind to WHO holds its slots, so without this a
+			// single popular destination going dark would pin slots at
+			// arrival-rate × timeout and shed healthy zones along with
+			// the dead one. A zone at its quota is shed by itself;
+			// everyone else keeps resolving at full speed.
+			if r.zoneInflight != nil {
+				release, ok := r.zoneInflight.acquire(servers.Zone)
+				if !ok {
+					return nil, errZoneCapacity
+				}
+				defer release()
 			}
 			return r.lookup(ctx, rs, leaderReq, servers)
 		})

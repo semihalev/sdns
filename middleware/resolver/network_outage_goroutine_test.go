@@ -118,6 +118,7 @@ func newOutageResolver(root *authority.Servers, maxConcurrent int) *Resolver {
 		maxConcurrent:   make(chan struct{}, maxConcurrent),
 		resolutionSlots: make(chan struct{}, maxConcurrent),
 		v6LookupSlots:   make(chan struct{}, maxConcurrent),
+		zoneInflight:    newZoneInflightLimiter(max(maxConcurrent/16, 16)),
 	}
 }
 
@@ -249,12 +250,26 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	// Root refers every zone to an in-bailiwick nameserver with V4 glue only.
 	// The missing AAAA glue is deliberate: it is exactly the condition that
 	// arms the detached 30s lookupV6Nss goroutine on the referral path.
+	//
+	// Zones named dead*.test model a breaker-resistant dark destination:
+	// every referral advertises a FRESH nameserver name and glue address
+	// (172.16.x.y), so the per-server circuit breaker never accumulates
+	// five failures against any single address — the resolver's slot pools
+	// are the only thing standing between one dark provider and everyone
+	// else.
+	var darkGlue atomic.Uint32
 	root := startBlackholeAuthority(t, func(q dns.Question) *dns.Msg {
 		zone := zoneOf(q.Name)
 		if zone == "" {
 			return &dns.Msg{MsgHdr: dns.MsgHdr{Rcode: dns.RcodeNameError}}
 		}
 		ns := "ns." + zone
+		glue := glueIPFor(zone)
+		if strings.HasPrefix(zone, "dead") {
+			n := darkGlue.Add(1)
+			ns = fmt.Sprintf("ns%d.%s", n, zone)
+			glue = net.IPv4(172, 16, byte(n>>8), byte(n)) //nolint:gosec // G115 - deliberate byte truncation
+		}
 		return &dns.Msg{
 			Ns: []dns.RR{&dns.NS{
 				Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 60},
@@ -262,7 +277,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 			}},
 			Extra: []dns.RR{&dns.A{
 				Hdr: dns.RR_Header{Name: ns, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
-				A:   glueIPFor(zone),
+				A:   glue,
 			}},
 		}
 	})
@@ -276,18 +291,29 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 		return msg
 	})
 
-	// Every 10.x.y.z glue address dials the shared child fixture; the root
-	// keeps its real address. The resolver still sees thousands of distinct
-	// server identities — RTT stats, circuit breaker and connection pooling
-	// all operate per unique address, as they did in production.
+	// darkChild swallows every packet from the start — it exists only to be
+	// the dead destination behind 172.16.x.y glue.
+	darkChild := startBlackholeAuthority(t, func(dns.Question) *dns.Msg { return nil })
+	darkChild.dropping.Store(true)
+
+	// Every 10.x.y.z glue address dials the shared child fixture and every
+	// 172.16.x.y address dials the dark one; the root keeps its real
+	// address. The resolver still sees thousands of distinct server
+	// identities — RTT stats, circuit breaker and connection pooling all
+	// operate per unique address, as they did in production.
 	rootAddr := root.addr()
 	mapper := func(addr string) string {
 		if addr == rootAddr {
 			return addr
 		}
 		if host, _, err := net.SplitHostPort(addr); err == nil {
-			if ip := net.ParseIP(host); ip != nil && ip.To4() != nil && ip.To4()[0] == 10 {
-				return child.addr()
+			if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+				switch ip.To4()[0] {
+				case 10:
+					return child.addr()
+				case 172:
+					return darkChild.addr()
+				}
 			}
 		}
 		return addr
@@ -408,6 +434,70 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	t.Logf("wire during outage: root_rx=%d child_rx=%d (offered=%d) — "+
 		"referrals answered, leaf queries swallowed",
 		root.received.Load()-rootBefore, child.received.Load()-childBefore, outageIssued)
+
+	// Destination-fairness arm — the "one provider's network is down"
+	// scenario. Two dead zones (each hiding behind ever-fresh NS addresses,
+	// so the circuit breaker cannot collapse them) receive half the load;
+	// unique healthy zones receive the other half. The claim: the dead
+	// destination pays for itself via its per-zone quota, and resolution
+	// for everyone else keeps flowing.
+	{
+		settleDeadline := time.Now().Add(40 * time.Second)
+		for time.Now().Before(settleDeadline) &&
+			runtime.NumGoroutine() > testStartGoroutines+20 {
+			time.Sleep(250 * time.Millisecond)
+		}
+
+		r := newOutageResolver(rootServers, maxConcurrent)
+		r.resolveTarget.Store(&mapper)
+
+		resolve := func(name string) error {
+			req := new(dns.Msg)
+			req.SetQuestion(name, dns.TypeA)
+			req.CheckingDisabled = true
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ctx = context.WithValue(ctx, contextKeyRequestID, req.Id)
+			_, err := r.Resolve(ctx, req, rootServers, false, 30, 0, true, nil)
+			return err
+		}
+
+		var wg sync.WaitGroup
+		var healthyIss, healthyRes, darkIss atomic.Int64
+		deadline := time.Now().Add(outageWindow)
+		for i := 0; time.Now().Before(deadline); i++ {
+			wg.Add(1)
+			go func(n int) {
+				defer wg.Done()
+				if n%2 == 0 {
+					healthyIss.Add(1)
+					if resolve(fmt.Sprintf("www.good%d.test.", n)) == nil {
+						healthyRes.Add(1)
+					}
+					return
+				}
+				darkIss.Add(1)
+				// Half the load hammers two dead zones — many hosts, few
+				// zones, exactly the popular-destination outage shape.
+				_ = resolve(fmt.Sprintf("www%d.dead%d.test.", n, n%4/2))
+			}(i)
+			time.Sleep(arrivalRate)
+		}
+		wg.Wait()
+
+		ratio := float64(healthyRes.Load()) / float64(max(healthyIss.Load(), 1))
+		t.Logf("fairness: healthy=%d/%d (%.1f%%) dark_offered=%d",
+			healthyRes.Load(), healthyIss.Load(), 100*ratio, darkIss.Load())
+
+		// The healthy half must be essentially untouched by the dead
+		// destination — this is the property that makes shedding
+		// destination-scoped rather than resolver-wide.
+		if ratio < 0.9 {
+			t.Errorf("healthy resolution collapsed during a single-destination outage: "+
+				"%d/%d (%.1f%%), want >= 90%%; the dead destination is starving healthy zones",
+				healthyRes.Load(), healthyIss.Load(), 100*ratio)
+		}
+	}
 
 	// Recovery — network restored, load stopped. Detached jobs get their
 	// full 30s budget to retire; sample until they do or the budget expires.

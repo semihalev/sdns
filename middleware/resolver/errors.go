@@ -39,6 +39,13 @@ var (
 		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
 		Message: "Resolver at in-flight resolution capacity",
 	}
+	// errZoneCapacity is destination-scoped shedding: THIS zone's in-flight
+	// quota is exhausted (its authorities are almost certainly not
+	// answering), while lookups for other zones continue unaffected.
+	errZoneCapacity = &dnsutil.EDEError{
+		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
+		Message: "Zone at in-flight lookup capacity",
+	}
 )
 
 // NewNetworkError creates a network error with EDE information.
