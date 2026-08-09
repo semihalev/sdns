@@ -3,13 +3,16 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/metric"
+	"github.com/semihalev/zlog/v2"
 )
 
 // RecursionWorkMode controls whether request-tree work limits are disabled,
@@ -722,15 +725,18 @@ func beginLazyRecursionWorkOwner(ctx context.Context) bool {
 	return contextutil.TryPinValue(ctx, recursionWorkKey, recursionWorkPending)
 }
 
-func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) {
+// finishLazyRecursionWork completes the root-owned ledger, if one was ever
+// materialized, and returns it so the caller can attach request identity to
+// its final state. Control-ledger outcomes return nil.
+func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) *RecursionWorkLedger {
 	for {
 		pinned, ok := pinnedRecursionWork(ctx)
 		if !ok {
-			return
+			return nil
 		}
 		switch pinned {
 		case recursionWorkClosed:
-			return
+			return nil
 		case recursionWorkPending:
 			next, _ := contextutil.TryUpdatePinnedValueLocked(
 				ctx,
@@ -747,15 +753,70 @@ func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) {
 				continue
 			}
 			if next == nil || next == recursionWorkClosed {
-				return
+				return nil
 			}
 			next.finish()
-			return
+			return next
 		default:
 			pinned.finish()
-			return
+			return pinned
 		}
 	}
+}
+
+// recursionWorkExhaustionLogGate rate-limits the exhaustion breadcrumb to one
+// line per second process-wide. Metrics remain the authoritative count; the
+// log exists so shadow-mode crossings can be classified as pathological or
+// legitimately heavy — by name — before enforce is enabled.
+var recursionWorkExhaustionLogGate atomic.Int64
+
+func logRecursionWorkExhaustion(ledger *RecursionWorkLedger, req *dns.Msg) {
+	if ledger == nil || req == nil || len(req.Question) == 0 {
+		return
+	}
+	snapshot := ledger.Snapshot()
+
+	exhausted := make([]string, 0, 4)
+	for _, dimension := range []struct {
+		crossed bool
+		reason  string
+	}{
+		{snapshot.OutboundExhausted, "outbound_queries"},
+		{snapshot.InternalExhausted, "internal_queries"},
+		{snapshot.DNSKEYCandidatesExhausted, "dnskey_candidates"},
+		{snapshot.RRsetSignatureChecksExhausted, "rrset_signature_checks"},
+		{snapshot.SignatureChecksExhausted, "signature_checks"},
+		{snapshot.DSDigestsExhausted, "ds_digests"},
+		{snapshot.NSEC3HashesExhausted, "nsec3_hashes"},
+		{snapshot.ConcurrentCryptoExhausted, "concurrent_crypto"},
+	} {
+		if dimension.crossed {
+			exhausted = append(exhausted, dimension.reason)
+		}
+	}
+	if len(exhausted) == 0 {
+		return
+	}
+
+	now := time.Now().Unix()
+	last := recursionWorkExhaustionLogGate.Load()
+	if now == last || !recursionWorkExhaustionLogGate.CompareAndSwap(last, now) {
+		return
+	}
+
+	mode := "shadow"
+	if snapshot.Mode == RecursionWorkEnforce {
+		mode = "enforce"
+	}
+	q := req.Question[0]
+	zlog.Warn("Recursion work budget crossed",
+		"query", dns.CanonicalName(q.Name)+" "+dns.ClassToString[q.Qclass]+" "+dns.TypeToString[q.Qtype],
+		"mode", mode,
+		"exhausted", strings.Join(exhausted, ","),
+		"outbound", snapshot.OutboundQueries,
+		"internal", snapshot.InternalQueries,
+		"signatures", snapshot.SignatureChecks,
+		"nsec3_hashes", snapshot.NSEC3Hashes)
 }
 
 func pinnedRecursionWork(ctx context.Context) (*RecursionWorkLedger, bool) {

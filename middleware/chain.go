@@ -623,7 +623,11 @@ func (ch *Chain) Next(ctx context.Context) {
 				// The server request context owns exact request-lifetime
 				// state. Delay ledger creation until real recursive work and
 				// close the pin before pooled metadata can be reused.
-				defer finishLazyRecursionWork(ctx, meta)
+				defer func() {
+					if finished := finishLazyRecursionWork(ctx, meta); finished != nil {
+						logRecursionWorkExhaustion(finished, ch.Request)
+					}
+				}()
 			}
 		}
 		if ch.workPolicy.Enabled() {
@@ -639,7 +643,10 @@ func (ch *Chain) Next(ctx context.Context) {
 				var ledger *RecursionWorkLedger
 				ctx, ledger = EnsureRecursionWork(ctx, ch.workPolicy)
 				if !hadLedger && ledger != nil {
-					defer ledger.finish()
+					defer func() {
+						ledger.finish()
+						logRecursionWorkExhaustion(ledger, ch.Request)
+					}()
 				}
 			}
 		}
