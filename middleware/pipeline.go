@@ -15,19 +15,20 @@ import (
 // the same Pipeline across all callers — pooling *Chain keeps
 // per-internal-query allocations off the hot path for Queryer.
 type Pipeline struct {
-	handlers  []Handler
-	byName    map[string]Handler
-	names     []string // full registered name list, including disabled
-	chainPool sync.Pool
+	handlers   []Handler
+	byName     map[string]Handler
+	names      []string // full registered name list, including disabled
+	workPolicy RecursionWorkPolicy
+	chainPool  sync.Pool
 }
 
 // newPipeline constructs a Pipeline and initialises its chain pool.
 // Used by Registry.Build and Pipeline.SubPipeline so every pipeline
 // (full and sub) gets its own pool bound to its own handler list.
-func newPipeline(handlers []Handler, byName map[string]Handler, names []string) *Pipeline {
-	p := &Pipeline{handlers: handlers, byName: byName, names: names}
+func newPipeline(handlers []Handler, byName map[string]Handler, names []string, workPolicy RecursionWorkPolicy) *Pipeline {
+	p := &Pipeline{handlers: handlers, byName: byName, names: names, workPolicy: workPolicy}
 	p.chainPool.New = func() any {
-		return NewChain(p.handlers)
+		return newChain(p.handlers, p.workPolicy)
 	}
 	return p
 }
@@ -90,7 +91,7 @@ func (p *Pipeline) SubPipeline(skip ...string) *Pipeline {
 		handlers = append(handlers, h)
 		byName[h.Name()] = h
 	}
-	return newPipeline(handlers, byName, p.names)
+	return newPipeline(handlers, byName, p.names, p.workPolicy)
 }
 
 // NewChain returns a Chain bound to this pipeline's handlers,
@@ -222,9 +223,13 @@ func (p *Pipeline) autoWire() {
 	// no provider — sub-queries in that deployment silently run
 	// uncached.
 	var (
-		store     Store
-		providers []string
-		hasSetter bool
+		store             Store
+		providers         []string
+		hasSetter         bool
+		cryptoLimiter     DNSSECCryptoLimiter
+		cryptoProvider    string
+		cryptoProviders   []string
+		hasCryptoConsumer bool
 	)
 	for _, h := range p.handlers {
 		if sp, ok := h.(StoreProvider); ok {
@@ -236,6 +241,17 @@ func (p *Pipeline) autoWire() {
 		if _, ok := h.(StoreSetter); ok {
 			hasSetter = true
 		}
+		if provider, ok := h.(DNSSECCryptoLimiterProvider); ok {
+			cryptoProviders = append(cryptoProviders, h.Name())
+			candidate := provider.DNSSECCryptoLimiter()
+			if isNilInterface(cryptoLimiter) && !isNilInterface(candidate) {
+				cryptoLimiter = candidate
+				cryptoProvider = h.Name()
+			}
+		}
+		if _, ok := h.(DNSSECCryptoLimiterSetter); ok {
+			hasCryptoConsumer = true
+		}
 	}
 	if len(providers) > 1 {
 		zlog.Warn("Multiple StoreProviders registered; first wins",
@@ -243,6 +259,13 @@ func (p *Pipeline) autoWire() {
 	}
 	if store == nil && hasSetter {
 		zlog.Warn("StoreSetter handler(s) present but no StoreProvider registered; internal sub-queries will run without cache")
+	}
+	if len(cryptoProviders) > 1 {
+		zlog.Warn("Multiple DNSSECCryptoLimiterProviders registered; first usable provider wins",
+			"selected", cryptoProvider, "providers", cryptoProviders)
+	}
+	if isNilInterface(cryptoLimiter) && hasCryptoConsumer {
+		zlog.Warn("DNSSEC crypto limiter consumer present but no provider registered; optional cache-side DNSSEC work will fail open")
 	}
 
 	for _, h := range p.handlers {
@@ -255,6 +278,11 @@ func (p *Pipeline) autoWire() {
 		if store != nil {
 			if s, ok := h.(StoreSetter); ok {
 				s.SetStore(store)
+			}
+		}
+		if !isNilInterface(cryptoLimiter) {
+			if s, ok := h.(DNSSECCryptoLimiterSetter); ok {
+				s.SetDNSSECCryptoLimiter(cryptoLimiter)
 			}
 		}
 	}

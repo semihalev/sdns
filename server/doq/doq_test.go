@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,11 +20,29 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
+	"github.com/semihalev/sdns/internal/mock"
 	"github.com/stretchr/testify/assert"
 )
 
 type dummyHandler struct {
 	dns.Handler
+}
+
+type doqContextKeyType struct{}
+
+type contextAwareHandler struct {
+	got any
+}
+
+func (h *contextAwareHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	_ = w.WriteMsg(resp)
+}
+
+func (h *contextAwareHandler) ServeDNSContext(ctx context.Context, w dns.ResponseWriter, req *dns.Msg) {
+	h.got = ctx.Value(doqContextKeyType{})
+	h.ServeDNS(w, req)
 }
 
 func makeRR(data string) dns.RR {
@@ -127,10 +146,20 @@ func Test_doq(t *testing.T) {
 
 	h := &dummyHandler{}
 
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := packet.LocalAddr().String()
+	if err := packet.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	s := &Server{
-		Addr:    "127.0.0.1:45853",
+		Addr:    addr,
 		Handler: h,
 	}
+	t.Cleanup(func() { _ = s.Shutdown() })
 
 	go func() {
 		err := s.ListenAndServeQUIC(cert, privkey)
@@ -217,4 +246,22 @@ func Test_doq(t *testing.T) {
 
 	err = s.Shutdown()
 	assert.NoError(t, err)
+}
+
+func TestServerDispatchesStreamContextToAwareHandler(t *testing.T) {
+	handler := new(contextAwareHandler)
+	s := &Server{Handler: handler}
+	req := new(dns.Msg)
+	req.SetQuestion("context.example.", dns.TypeA)
+	writer := mock.NewWriter("udp", "192.0.2.1:53000")
+	ctx := context.WithValue(context.Background(), doqContextKeyType{}, "stream")
+
+	s.serveDNS(ctx, writer, req)
+
+	if handler.got != "stream" {
+		t.Fatalf("handler context value = %v, want stream", handler.got)
+	}
+	if !writer.Written() || writer.Msg().Rcode != dns.RcodeSuccess {
+		t.Fatalf("handler response = %#v, want NOERROR", writer.Msg())
+	}
 }

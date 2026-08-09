@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // Resolution failure metrics. Classified at the central handler
@@ -24,7 +25,19 @@ var (
 	resolverFailNoReachable = resolverFailures.Register("no_reachable_auth")
 	resolverFailMaxDepth    = resolverFailures.Register("max_depth")
 	resolverFailNetwork     = resolverFailures.Register("network_error")
+	resolverFailWorkBudget  = resolverFailures.Register("work_budget")
 	resolverFailOther       = resolverFailures.Register("other")
+
+	// Capacity sheds happen before any upstream work and never reach
+	// classifyResolverErr, so without their own counters the in-flight
+	// ceilings would be observable only as EDE text in client responses.
+	resolutionSheds = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_resolution_shed_total",
+		Help: "Lookups shed at an in-flight capacity ceiling before any upstream work",
+	}, []string{"scope"})
+
+	shedGlobalCapacity = resolutionSheds.Register("global")
+	shedZoneCapacity   = resolutionSheds.Register("zone")
 
 	resolverDNSSECFailures = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_resolver_dnssec_failures_total",
@@ -69,6 +82,22 @@ var (
 	taMissing     = trustAnchorLifecycle.Register("missing")
 	taReappeared  = trustAnchorLifecycle.Register("reappeared")
 	taDeleted     = trustAnchorLifecycle.Register("deleted")
+
+	// AutoTA runs outside the client-facing handler, so its failures never
+	// reach classifyResolverErr. Count one terminal outcome per RFC 5011
+	// refresh so operators can alert on missing successes and distinguish a
+	// maintenance work-budget rejection from client-query exhaustion.
+	trustAnchorRefresh = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_trust_anchor_refresh_total",
+		Help: "RFC 5011 trust-anchor refresh attempts by terminal result",
+	}, []string{"result"})
+
+	taRefreshSuccess          = trustAnchorRefresh.Register("success")
+	taRefreshWorkBudget       = trustAnchorRefresh.Register("work_budget")
+	taRefreshTimeout          = trustAnchorRefresh.Register("timeout")
+	taRefreshQueryError       = trustAnchorRefresh.Register("query_error")
+	taRefreshValidationError  = trustAnchorRefresh.Register("validation_error")
+	taRefreshPersistenceError = trustAnchorRefresh.Register("persistence_error")
 )
 
 // classifyResolverErr increments the appropriate counter for a non-
@@ -84,6 +113,10 @@ func classifyResolverErr(err error) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		resolverFailTimeout.Inc()
+		return
+	}
+	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+		resolverFailWorkBudget.Inc()
 		return
 	}
 

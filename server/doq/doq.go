@@ -34,6 +34,10 @@ type Server struct {
 	ln *quic.Listener
 }
 
+type contextHandler interface {
+	ServeDNSContext(context.Context, dns.ResponseWriter, *dns.Msg)
+}
+
 // Message pool for better memory management.
 var msgPool = sync.Pool{
 	New: func() any {
@@ -223,5 +227,13 @@ func (s *Server) handleStream(conn *quic.Conn, stream *quic.Stream) {
 	req.Id = dns.Id()
 
 	w := &ResponseWriter{Conn: conn, Stream: stream}
+	s.serveDNS(stream.Context(), w, req)
+}
+
+func (s *Server) serveDNS(ctx context.Context, w dns.ResponseWriter, req *dns.Msg) {
+	if handler, ok := s.Handler.(contextHandler); ok {
+		handler.ServeDNSContext(ctx, w, req)
+		return
+	}
 	s.Handler.ServeDNS(w, req)
 }

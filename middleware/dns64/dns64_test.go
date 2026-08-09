@@ -11,6 +11,7 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
+	cachemw "github.com/semihalev/sdns/middleware/cache"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -81,6 +82,20 @@ func makeChain(t *testing.T, d *DNS64, downstream middleware.Handler, clientAddr
 	req.SetEdns0(4096, true)
 	ch.Reset(mw, req)
 	return ch, mw
+}
+
+func assertRecursionWorkLimitEDE(t *testing.T, resp *dns.Msg) {
+	t.Helper()
+	if !assert.NotNil(t, resp, "work-limit path must produce a response") {
+		return
+	}
+	assert.Equal(t, dns.RcodeServerFailure, resp.Rcode)
+	ede := dnsutil.GetEDE(resp)
+	if assert.NotNil(t, ede, "work-limit SERVFAIL must carry an EDE") {
+		assert.Equal(t, middleware.RecursionWorkEDECode, ede.InfoCode)
+		assert.Equal(t, "Recursion work budget exceeded", ede.ExtraText,
+			"EDE text is a stable wire-visible contract")
+	}
 }
 
 // noDataMsg returns a NOERROR/NODATA response with an SOA in the
@@ -334,6 +349,69 @@ func TestServFail_TriggersSynthesis(t *testing.T) {
 	}
 }
 
+func TestUpstreamPolicyEDEInShadowStillSynthesises(t *testing.T) {
+	tests := []struct {
+		name  string
+		rcode int
+	}{
+		{name: "NOERROR NODATA", rcode: dns.RcodeSuccess},
+		{name: "SERVFAIL", rcode: dns.RcodeServerFailure},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := noDataMsg("foo.example.org.", 300)
+			orig.Rcode = tt.rcode
+			dnsutil.SetEDE(
+				orig,
+				dns.ExtendedErrorCodeUnableToConformToPolicy,
+				"upstream policy",
+			)
+
+			d := New(baseConfig())
+			queryer := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+			d.queryer = queryer
+
+			ledger := middleware.NewRecursionWorkLedger(middleware.RecursionWorkPolicy{
+				Mode:               middleware.RecursionWorkShadow,
+				MaxOutboundQueries: 1,
+				MaxInternalQueries: 1,
+			})
+			if err := ledger.Debit(middleware.RecursionWorkInternalQuery); err != nil {
+				t.Fatalf("first shadow debit: %v", err)
+			}
+			if err := ledger.Debit(middleware.RecursionWorkInternalQuery); err != nil {
+				t.Fatalf("shadow crossing debit: %v", err)
+			}
+			if !ledger.Snapshot().InternalExhausted {
+				t.Fatal("test setup did not cross the shadow internal limit")
+			}
+			ctx := middleware.WithRecursionWork(context.Background(), ledger)
+
+			ch, mw := makeChain(
+				t,
+				d,
+				&stubAnswerer{msg: orig},
+				"203.0.113.5:53",
+				"foo.example.org.",
+				dns.TypeAAAA,
+			)
+			d.ServeDNS(ctx, ch)
+
+			if queryer.last == nil || queryer.last.Question[0].Qtype != dns.TypeA {
+				t.Fatal("upstream policy EDE suppressed the DNS64 A lookup in shadow mode")
+			}
+			resp := mw.Msg()
+			if assert.Equal(t, dns.RcodeSuccess, resp.Rcode) && assert.Len(t, resp.Answer, 1) {
+				aaaa, ok := resp.Answer[0].(*dns.AAAA)
+				if assert.True(t, ok) {
+					assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
+				}
+			}
+		})
+	}
+}
+
 func TestSynthesise_QueryerError_FallsBack(t *testing.T) {
 	d := New(baseConfig())
 	d.queryer = &stubQueryer{err: errors.New("simulated upstream failure")}
@@ -348,6 +426,66 @@ func TestSynthesise_QueryerError_FallsBack(t *testing.T) {
 		if rr.Header().Rrtype == dns.TypeAAAA {
 			t.Fatalf("queryer error must not produce synthesised AAAA")
 		}
+	}
+}
+
+func TestLocalRecursionWorkFailureUsesClientEDNS(t *testing.T) {
+	d := New(baseConfig())
+	queryer := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+	d.queryer = queryer
+
+	// Deliberately omit OPT from the downstream response. The policy EDE
+	// must be built from the original EDNS-capable client request.
+	servfail := new(dns.Msg)
+	servfail.SetQuestion("foo.example.org.", dns.TypeAAAA)
+	servfail.Response = true
+	servfail.Rcode = dns.RcodeServerFailure
+
+	ledger := middleware.NewRecursionWorkLedger(middleware.RecursionWorkPolicy{
+		Mode:               middleware.RecursionWorkEnforce,
+		MaxOutboundQueries: 1,
+		MaxInternalQueries: 0,
+	})
+	if err := ledger.Debit(middleware.RecursionWorkInternalQuery); !errors.Is(err, middleware.ErrRecursionWorkLimit) {
+		t.Fatalf("test setup debit error = %v, want recursion work limit", err)
+	}
+	ctx := middleware.WithRecursionWork(context.Background(), ledger)
+
+	ch, mw := makeChain(
+		t,
+		d,
+		&stubAnswerer{msg: servfail},
+		"203.0.113.5:53",
+		"foo.example.org.",
+		dns.TypeAAAA,
+	)
+	d.ServeDNS(ctx, ch)
+
+	if queryer.last != nil {
+		t.Fatal("local recursion-work SERVFAIL triggered a DNS64 A lookup")
+	}
+	assertRecursionWorkLimitEDE(t, mw.Msg())
+}
+
+func TestSynthesise_RecursionWorkLimitReturnsPolicyEDE(t *testing.T) {
+	d := New(baseConfig())
+	queryer := &stubQueryer{err: &middleware.RecursionWorkLimitError{
+		Kind:  middleware.RecursionWorkInternalQuery,
+		Limit: 32,
+	}}
+	d.queryer = queryer
+
+	ch, mw := makeChain(t, d,
+		&stubAnswerer{msg: noDataMsg("foo.example.org.", 300)},
+		"203.0.113.5:53",
+		"foo.example.org.",
+		dns.TypeAAAA,
+	)
+	d.ServeDNS(context.Background(), ch)
+
+	assertRecursionWorkLimitEDE(t, mw.Msg())
+	if assert.NotNil(t, queryer.last, "secondary A query must be attempted") {
+		assert.Equal(t, dns.TypeA, queryer.last.Question[0].Qtype)
 	}
 }
 
@@ -706,6 +844,165 @@ func TestDNSSECFailure_PassesThrough(t *testing.T) {
 	}
 }
 
+func TestCachedFailure_PassesThroughWithoutALookup(t *testing.T) {
+	d := New(baseConfig())
+	q := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+	d.queryer = q
+
+	servfail := new(dns.Msg)
+	servfail.SetQuestion("foo.example.org.", dns.TypeAAAA)
+	servfail.Response = true
+	servfail.Rcode = dns.RcodeServerFailure
+	servfail.SetEdns0(4096, true)
+	dnsutil.SetEDE(servfail, dns.ExtendedErrorCodeCachedError, "Cached recursion failure")
+
+	ch, mw := makeChain(t, d, &stubAnswerer{msg: servfail}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
+	d.ServeDNS(context.Background(), ch)
+
+	resp := mw.Msg()
+	assert.Equal(t, dns.RcodeServerFailure, resp.Rcode)
+	if q.last != nil {
+		t.Fatal("RFC 9520 cached failure triggered a DNS64 A lookup")
+	}
+	ede := dnsutil.GetEDE(resp)
+	if assert.NotNil(t, ede) {
+		assert.Equal(t, dns.ExtendedErrorCodeCachedError, ede.InfoCode)
+	}
+}
+
+func TestRequestLocalFailurePassesThroughWithoutALookup(t *testing.T) {
+	attemptErr := &middleware.ResolutionAttemptLimitError{
+		Question:  dns.Question{Name: "foo.example.org.", Qtype: dns.TypeAAAA, Qclass: dns.ClassINET},
+		Endpoint:  "192.0.2.53:53",
+		Transport: "udp",
+	}
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "attempt limit", err: attemptErr},
+		{name: "deadline", err: context.DeadlineExceeded},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := middleware.EnsureResolutionAttemptGuard(context.Background())
+			d := New(baseConfig())
+			q := &stubQueryer{resp: aRespMsg("foo.example.org.", 60, "192.0.2.33")}
+			d.queryer = q
+
+			var marked *dns.Msg
+			downstream := middleware.HandlerFunc(func(handlerCtx context.Context, ch *middleware.Chain) {
+				marked = new(dns.Msg)
+				marked.SetReply(ch.Request)
+				marked.Rcode = dns.RcodeServerFailure
+				middleware.MarkRequestLocalFailureResponse(handlerCtx, marked, tt.err)
+				_ = ch.Writer.WriteMsg(marked)
+				ch.Cancel()
+			})
+			ch := middleware.NewChain([]middleware.Handler{d, downstream})
+			mw := mock.NewWriter("udp", "203.0.113.5:53")
+			req := new(dns.Msg)
+			req.SetQuestion("foo.example.org.", dns.TypeAAAA)
+			req.SetEdns0(4096, true)
+			ch.Reset(mw, req)
+			ch.Next(ctx)
+
+			if q.last != nil {
+				t.Fatal("request-local failure triggered a DNS64 A lookup")
+			}
+			if mw.Msg() != marked {
+				t.Fatal("DNS64 did not pass through the exact marked response")
+			}
+			if !errors.Is(middleware.RequestLocalFailureForResponse(ctx, mw.Msg()), tt.err) {
+				t.Fatalf("passed-through response lost request-local provenance for %v", tt.err)
+			}
+			if middleware.RequestLocalFailureForResponse(ctx, mw.Msg().Copy()) != nil {
+				t.Fatal("request-local provenance leaked to a copied response")
+			}
+		})
+	}
+}
+
+func TestFailureCacheHitPassesThroughDNS64WithAndWithoutEDNS(t *testing.T) {
+	for _, withEDNS := range []bool{true, false} {
+		name := "without_edns"
+		if withEDNS {
+			name = "with_edns"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.CacheSize = 1024
+			d := New(cfg)
+			c := cachemw.New(cfg)
+			defer c.Stop()
+
+			q := &stubQueryer{resp: aRespMsg("cached.example.org.", 60, "192.0.2.33")}
+			d.queryer = q
+
+			failure := new(dns.Msg)
+			failure.SetQuestion("cached.example.org.", dns.TypeAAAA)
+			failure.Response = true
+			failure.Rcode = dns.RcodeServerFailure
+			key := cachemw.CacheKey{Question: failure.Question[0]}.Hash()
+			c.Set(key, failure)
+
+			downstreamCalls := 0
+			downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+				downstreamCalls++
+				ch.CancelWithRcode(dns.RcodeSuccess, false)
+			})
+			ch := middleware.NewChain([]middleware.Handler{d, c, downstream})
+			writer := mock.NewWriter("udp", "203.0.113.5:53000")
+			req := new(dns.Msg)
+			req.SetQuestion("cached.example.org.", dns.TypeAAAA)
+			if withEDNS {
+				req.SetEdns0(4096, true)
+			}
+			ch.Reset(writer, req)
+			ch.Next(context.Background())
+
+			resp := writer.Msg()
+			if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("cached failure response = %#v, want SERVFAIL", resp)
+			}
+			if q.last != nil {
+				t.Fatal("cached AAAA failure triggered a DNS64 A lookup")
+			}
+			if downstreamCalls != 0 {
+				t.Fatalf("cached failure reached downstream %d times", downstreamCalls)
+			}
+
+			ede := dnsutil.GetEDE(resp)
+			if withEDNS {
+				if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeCachedError {
+					t.Fatalf("cached failure EDE = %+v, want EDE 13", ede)
+				}
+			} else if ede != nil || resp.IsEdns0() != nil {
+				t.Fatalf("non-EDNS cached failure carried EDNS data: EDE=%+v extra=%#v", ede, resp.Extra)
+			}
+		})
+	}
+}
+
+func TestCachedFailureResponseMarkerUsesPointerIdentity(t *testing.T) {
+	meta := new(middleware.ResponseMeta)
+	marked := new(dns.Msg)
+	other := new(dns.Msg)
+
+	release := meta.MarkCachedFailureResponse(marked)
+	if !meta.IsCachedFailureResponse(marked) {
+		t.Fatal("marked response pointer was not recognized")
+	}
+	if meta.IsCachedFailureResponse(other) {
+		t.Fatal("marker leaked to another response in the same request tree")
+	}
+	release()
+	if meta.IsCachedFailureResponse(marked) {
+		t.Fatal("released response pointer remained marked")
+	}
+}
+
 // TestServFail_NonDNSSEC_StillSynthesises confirms that a plain
 // transport-level SERVFAIL (no DNSSEC EDE) still triggers the
 // §5.1.3 "treat as empty answer" path. DNSSEC pass-through must
@@ -994,6 +1291,121 @@ func TestPTR_TranslatesUnderWellKnown(t *testing.T) {
 		if assert.True(t, ok) {
 			assert.Equal(t, "target.example.com.", ptr.Ptr)
 		}
+	}
+}
+
+func TestPTR_RecursionWorkLimitReturnsPolicyEDE(t *testing.T) {
+	d := New(baseConfig())
+	queryer := &stubQueryer{err: &middleware.RecursionWorkLimitError{
+		Kind:  middleware.RecursionWorkInternalQuery,
+		Limit: 32,
+	}}
+	d.queryer = queryer
+
+	// 192.0.2.33 embedded in 64:ff9b::/96.
+	qname := "1.2.2.0.0.0.0.c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.9.f.f.4.6.0.0.ip6.arpa."
+	ch, mw := makeChain(t, d, &stubAnswerer{}, "203.0.113.5:53", qname, dns.TypePTR)
+	d.ServeDNS(context.Background(), ch)
+
+	assertRecursionWorkLimitEDE(t, mw.Msg())
+	if assert.NotNil(t, queryer.last, "secondary PTR query must be attempted") {
+		assert.Equal(t, dns.TypePTR, queryer.last.Question[0].Qtype)
+		assert.Equal(t, "33.2.0.192.in-addr.arpa.", queryer.last.Question[0].Name)
+	}
+}
+
+func TestAttemptLimitQueryErrorsProduceMarkedSERVFAIL(t *testing.T) {
+	attemptErr := &middleware.ResolutionAttemptLimitError{
+		Question: dns.Question{
+			Name:   "foo.example.org.",
+			Qtype:  dns.TypeA,
+			Qclass: dns.ClassINET,
+		},
+		Endpoint:  "192.0.2.53:53",
+		Transport: "udp",
+	}
+
+	tests := []struct {
+		name  string
+		qname string
+		qtype uint16
+	}{
+		{name: "secondary A", qname: "foo.example.org.", qtype: dns.TypeAAAA},
+		{
+			name:  "translated PTR",
+			qname: "1.2.2.0.0.0.0.c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.9.f.f.4.6.0.0.ip6.arpa.",
+			qtype: dns.TypePTR,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := middleware.EnsureResolutionAttemptGuard(context.Background())
+			d := New(baseConfig())
+			queryer := &stubQueryer{err: attemptErr}
+			d.queryer = queryer
+
+			downstream := &stubAnswerer{msg: noDataMsg(tt.qname, 300)}
+			ch, mw := makeChain(t, d, downstream, "203.0.113.5:53", tt.qname, tt.qtype)
+			ch.Next(ctx)
+
+			resp := mw.Msg()
+			if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("response = %#v, want SERVFAIL", resp)
+			}
+			if !errors.Is(middleware.RequestLocalFailureForResponse(ctx, resp), middleware.ErrResolutionAttemptLimit) {
+				t.Fatal("DNS64 terminal response is missing request-local attempt-limit provenance")
+			}
+			if queryer.last == nil {
+				t.Fatal("secondary query was not attempted")
+			}
+			wantType := dns.TypeA
+			if tt.qtype == dns.TypePTR {
+				wantType = dns.TypePTR
+			}
+			if got := queryer.last.Question[0].Qtype; got != wantType {
+				t.Fatalf("secondary query type = %s, want %s", dns.TypeToString[got], dns.TypeToString[wantType])
+			}
+		})
+	}
+}
+
+func TestClassifyQueryErrPreservesSpecificLocalLabels(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{err: middleware.ErrResolutionAttemptLimit, want: "attempt_limit"},
+		{err: middleware.ErrNoResponse, want: "no_response"},
+		{err: middleware.ErrMaxRecursion, want: "max_recursion"},
+		{err: context.DeadlineExceeded, want: "request_local"},
+		{err: context.Canceled, want: "request_local"},
+	}
+	for _, tt := range tests {
+		if got := classifyQueryErr(tt.err); got != tt.want {
+			t.Errorf("classifyQueryErr(%v) = %q, want %q", tt.err, got, tt.want)
+		}
+	}
+}
+
+func TestPTR_OrdinaryQueryerErrorKeepsCNAMEOnly(t *testing.T) {
+	d := New(baseConfig())
+	d.queryer = &stubQueryer{err: errors.New("ordinary PTR chase failure")}
+
+	// 192.0.2.33 embedded in 64:ff9b::/96.
+	qname := "1.2.2.0.0.0.0.c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.b.9.f.f.4.6.0.0.ip6.arpa."
+	ch, mw := makeChain(t, d, &stubAnswerer{}, "203.0.113.5:53", qname, dns.TypePTR)
+	d.ServeDNS(context.Background(), ch)
+
+	resp := mw.Msg()
+	if !assert.NotNil(t, resp) {
+		return
+	}
+	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+	assert.Nil(t, dnsutil.GetEDE(resp))
+	if assert.Len(t, resp.Answer, 1, "ordinary chase errors retain the CNAME-only fallback") {
+		_, ok := resp.Answer[0].(*dns.CNAME)
+		assert.True(t, ok, "fallback answer must be the synthesised CNAME")
 	}
 }
 

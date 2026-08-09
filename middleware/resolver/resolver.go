@@ -17,6 +17,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
@@ -68,6 +69,7 @@ type Resolver struct {
 
 	qnameMinLevel int
 	netTimeout    time.Duration
+	workPolicy    middleware.RecursionWorkPolicy
 
 	sfGroup *SingleflightWrapper
 
@@ -75,8 +77,12 @@ type Resolver struct {
 	tcpPool *TCPConnPool
 
 	// Circuit breaker and goroutine limiter
-	circuitBreaker *circuitBreaker
-	maxConcurrent  chan struct{} // Semaphore for limiting concurrent queries
+	circuitBreaker  *circuitBreaker
+	maxConcurrent   chan struct{} // Semaphore for limiting concurrent queries
+	v6LookupSlots   chan struct{} // Global cap on detached IPv6 NS enrichment jobs
+	resolutionSlots chan struct{} // Hard ceiling on in-flight zone lookups; full → fail fast
+	zoneInflight    *zoneInflightLimiter
+	cryptoLimiter   *dnssec.CryptoLimiter
 
 	// store is the cache facade used by subQuery for resolver-private
 	// DNSSEC record lookups (DS, DNSKEY). Auto-wired during
@@ -117,6 +123,7 @@ type resolveState struct {
 	isRoot    bool
 	extra     []bool
 	requestID uint16
+	work      *middleware.RecursionWorkLedger
 
 	// cutDeadline is the absolute expiry of the shallowest delegation on
 	// the path descended so far (zero = unbounded, at/above root). A newly
@@ -172,7 +179,29 @@ func noteCut(ctx context.Context, deadline time.Time, key uint64) {
 
 type hostSet map[string]struct{}
 
-type fatalError error
+// fatalResolverError marks an error that represents terminal failure of every
+// authority server considered by a lookup. It must be a concrete wrapper:
+// defining the marker as `type fatalError error` makes every non-nil error
+// satisfy the interface assertion and incorrectly attributes local failures
+// to the authority zone.
+type fatalResolverError struct {
+	cause error
+}
+
+func (e *fatalResolverError) Error() string { return e.cause.Error() }
+func (e *fatalResolverError) Unwrap() error { return e.cause }
+
+func fatalError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return &fatalResolverError{cause: cause}
+}
+
+func isFatalError(err error) bool {
+	var target *fatalResolverError
+	return errors.As(err, &target)
+}
 
 // Error variables are defined in errors.go
 
@@ -185,6 +214,8 @@ const (
 
 // NewResolver return a resolver.
 func NewResolver(cfg *config.Config) *Resolver {
+	workPolicy := middleware.MustRecursionWorkPolicyFromConfig(cfg.RecursionFirewall)
+
 	r := &Resolver{
 		cfg: cfg,
 
@@ -198,8 +229,10 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		qnameMinLevel:  cfg.QnameMinLevel,
 		netTimeout:     defaultTimeout,
+		workPolicy:     workPolicy,
 		sfGroup:        NewSingleflightWrapper(),
 		circuitBreaker: newCircuitBreaker(),
+		cryptoLimiter:  dnssec.NewCryptoLimiter(workPolicy.MaxConcurrentCrypto),
 	}
 
 	// Set default for MaxConcurrentQueries if not configured
@@ -208,9 +241,20 @@ func NewResolver(cfg *config.Config) *Resolver {
 		maxConcurrent = 1000 // Default to 1000 concurrent queries
 	}
 	r.maxConcurrent = make(chan struct{}, maxConcurrent)
+	r.resolutionSlots = make(chan struct{}, maxConcurrent)
+	// Destination fairness: one hanging zone may pin at most a small slice
+	// of the in-flight budget, so a partial outage of a popular authority
+	// set (one provider's network) can never starve resolution for the
+	// healthy rest of the namespace.
+	r.zoneInflight = newZoneInflightLimiter(max(maxConcurrent/16, 16))
 
 	if r.cfg.IPv6Access {
 		r.glueV6 = cache.New(defaultCacheSize)
+		// Detached V6 enrichment shares the query budget's scale: during a
+		// network incident every referral wants one of these jobs, and an
+		// uncapped pool grows at arrival-rate × timeout (2026-07-28: 1.4M
+		// goroutines). Full slots shed the job instead of queueing it.
+		r.v6LookupSlots = make(chan struct{}, maxConcurrent)
 	}
 
 	if r.cfg.Timeout.Duration > 0 {
@@ -247,11 +291,17 @@ func NewResolver(cfg *config.Config) *Resolver {
 func (r *Resolver) parseRootServers(cfg *config.Config) {
 	r.rootServers = &authority.Servers{}
 	r.rootServers.Zone = rootzone
+	seen := make(map[string]struct{})
 
 	for _, s := range cfg.RootServers {
 		host, _, _ := net.SplitHostPort(s)
 
 		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			key := middleware.CanonicalResolutionEndpoint(s)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
 			r.rootServers.List = append(r.rootServers.List, authority.NewServer(s, authority.IPv4))
 		}
 	}
@@ -261,6 +311,11 @@ func (r *Resolver) parseRootServers(cfg *config.Config) {
 			host, _, _ := net.SplitHostPort(s)
 
 			if ip := net.ParseIP(host); ip != nil && ip.To16() != nil {
+				key := middleware.CanonicalResolutionEndpoint(s)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
 				r.rootServers.List = append(r.rootServers.List, authority.NewServer(s, authority.IPv6))
 			}
 		}
@@ -305,6 +360,24 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 
 // (*Resolver).Resolve resolve starts a DNS resolution - public interface with old signature for compatibility.
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority.Servers, root bool, depth int, level int, nomin bool, parentDS []dns.RR, extra ...bool) (*dns.Msg, error) {
+	ctx = dnssec.EnsureNSEC3HashMemo(ctx)
+	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
+	hadWork := middleware.RecursionWorkFrom(ctx) != nil
+	ctx, work := middleware.EnsureRecursionWork(ctx, r.workPolicy)
+	// Test ownership after Ensure. A LazyDeadline pin remains root-owned across
+	// its pending -> active transition, while a direct Resolver caller owns and
+	// must finish the standalone ledger Ensure just created. Keeping ownership
+	// encoded in the pin avoids a call-order-dependent double finish.
+	rootOwnsWork := middleware.RecursionWorkRootOwned(ctx)
+	if !rootOwnsWork && !hadWork && work != nil {
+		defer middleware.FinishRecursionWork(ctx)
+	}
+	if work != nil {
+		if err := work.EnforcementError(); err != nil {
+			return nil, err
+		}
+	}
+
 	reqid := req.Id
 	if v := ctx.Value(contextKeyRequestID); v != nil {
 		if id, ok := v.(uint16); ok {
@@ -321,8 +394,15 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority
 		isRoot:    root,
 		extra:     extra,
 		requestID: reqid,
+		work:      work,
 	}
-	return r.resolve(ctx, rs)
+	resp, err := r.resolve(ctx, rs)
+	if work != nil {
+		if workErr := work.EnforcementError(); workErr != nil {
+			return nil, workErr
+		}
+	}
+	return resp, err
 }
 
 // resolve performs the actual DNS resolution with cleaner parameters.
@@ -350,12 +430,22 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	resp = r.setTags(rs.req, resp)
+	serverFailureResponse := false
+	if resp.Rcode != dns.RcodeSuccess {
+		responseType, _ := dnsutil.ClassifyResponse(resp, time.Now())
+		serverFailureResponse = responseType == dnsutil.TypeServerFailure
+	}
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if minimized {
 			rs.level++
 			rs.isRoot = false
 			return r.resolve(ctx, rs)
+		}
+		if serverFailureResponse {
+			r.recordResolutionZoneFailure(ctx, rs.req.Question[0], rs.servers.Zone, nil)
+		} else {
+			r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
 		}
 		return resp, nil
 	}
@@ -367,10 +457,18 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		}
 
 		if resp.Rcode == dns.RcodeNameError {
-			return r.authority(ctx, rs.req, resp, rs.parentDS, rs.servers.Zone) // handle NXDOMAIN with DNSSEC proof
+			result, resultErr := r.authority(ctx, rs.req, resp, rs.parentDS, rs.servers.Zone)
+			if resultErr == nil {
+				r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+			}
+			return result, resultErr // handle NXDOMAIN with DNSSEC proof
 		}
 
-		return r.answer(ctx, rs.req, resp, rs.parentDS, rs.servers.Zone, rs.extra...)
+		result, resultErr := r.answer(ctx, rs.req, resp, rs.parentDS, rs.servers.Zone, rs.extra...)
+		if resultErr == nil {
+			r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+		}
+		return result, resultErr
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
@@ -421,36 +519,82 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	key := strconv.FormatUint(cache.Key(q), 10) + "|" + servers.Zone +
 		"|" + string(cd) + "|" + strconv.FormatUint(servers.Fingerprint(), 10)
 
-	// The leader closure can outlive this caller: TimedDoChan returns on
-	// ctx timeout/cancel and Forgets the key while the closure keeps
-	// running. After we return, req resumes its lifecycle upstack — the
-	// response re-attaches the request OPT and the edns writer mutates it
-	// in place — so an abandoned leader copying req (lookup's per-server
-	// CopyTo) would race on caller-owned memory. Hand the closure its own
-	// private copy, made here while we still exclusively own req.
+	// The leader closure can outlive this caller: TimedDoChan returns on this
+	// caller's timeout/cancel while the shared generation remains registered
+	// until its closure finishes (or bounded stuck cleanup retires it). After
+	// we return, req resumes its lifecycle upstack — the response re-attaches
+	// the request OPT and the edns writer mutates it in place — so an
+	// abandoned leader copying req (lookup's per-server CopyTo) would race on
+	// caller-owned memory. Hand the closure its own private copy, made here
+	// while we still exclusively own req.
 	leaderReq := req.Copy()
 
-	// Use TimedDoChan for automatic timeout handling
-	result, shared, err := r.sfGroup.TimedDoChan(ctx, key, func() (any, error) {
-		return r.lookup(ctx, rs, leaderReq, servers)
-	})
+	for {
+		// Use TimedDoChan for automatic timeout handling. When a follower
+		// receives the leader's request-local policy or lifecycle error, it
+		// re-enters the same key under its own still-live context. The
+		// completed call has already been removed by singleflight, so
+		// concurrent followers collapse onto one new leader without a racy
+		// Forget or N parallel lookups. If that leader also fails locally, it
+		// returns its own error while the remaining healthy followers regroup
+		// again; each caller's context bounds the sequence.
+		result, shared, leader, lookupErr := r.sfGroup.TimedDoChanWithRole(ctx, key, func() (any, error) {
+			// Hard ceiling on in-flight zone lookups, held only for this
+			// wire-level lookup — never across recursion levels, so a
+			// nested sub-lookup can't deadlock on its parent's slot. When
+			// every slot is pinned by lookups waiting out dead upstreams,
+			// new work is shed immediately instead of joining the queue:
+			// during a partial outage the queue's growth rate is
+			// arrival-rate × timeout and it never drains (2026-07-28).
+			// A nil pool (bare test resolvers) disables the ceiling.
+			if r.resolutionSlots != nil {
+				select {
+				case r.resolutionSlots <- struct{}{}:
+				default:
+					shedGlobalCapacity.Inc()
+					return nil, errResolutionCapacity
+				}
+				defer func() { <-r.resolutionSlots }()
+			}
+			// Per-zone quota (BIND fetches-per-zone analog): the global
+			// pool is blind to WHO holds its slots, so without this a
+			// single popular destination going dark would pin slots at
+			// arrival-rate × timeout and shed healthy zones along with
+			// the dead one. A zone at its quota is shed by itself;
+			// everyone else keeps resolving at full speed.
+			if r.zoneInflight != nil {
+				release, ok := r.zoneInflight.acquire(servers.Zone)
+				if !ok {
+					shedZoneCapacity.Inc()
+					return nil, errZoneCapacity
+				}
+				defer release()
+			}
+			return r.lookup(ctx, rs, leaderReq, servers)
+		})
 
-	if err != nil {
-		return nil, err
-	}
-
-	resp = result.(*dns.Msg)
-	if resp != nil {
-		// Only copy when the response is actually shared with another
-		// goroutine. In the uncontended hot path we own the only
-		// reference and can mutate the ID in place.
-		if shared {
-			resp = resp.Copy()
+		if lookupErr != nil {
+			if shared && !leader && middleware.IsRequestLocalResolutionError(lookupErr) {
+				if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
+					return nil, ctxErr
+				}
+				continue
+			}
+			return nil, lookupErr
 		}
-		resp.Id = req.Id
-	}
 
-	return resp, nil
+		resp = result.(*dns.Msg)
+		if resp != nil {
+			// Only copy when the response is actually shared with another
+			// goroutine. In the uncontended hot path we own the only
+			// reference and can mutate the ID in place.
+			if shared {
+				resp = resp.Copy()
+			}
+			resp.Id = req.Id
+		}
+		return resp, nil
+	}
 }
 
 func (r *Resolver) checkLoop(ctx context.Context, qname string, qtype uint16) (context.Context, bool) {
@@ -578,12 +722,14 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 	// Deduplicate and add new servers
 	existing := make(map[string]bool)
 	for _, s := range servers.List {
-		existing[s.Addr] = true
+		existing[middleware.CanonicalResolutionEndpoint(s.Addr)] = true
 	}
 
 	for _, newServer := range newServers {
-		if !existing[newServer.Addr] {
+		key := middleware.CanonicalResolutionEndpoint(newServer.Addr)
+		if !existing[key] {
 			servers.List = append(servers.List, newServer)
+			existing[key] = true
 		}
 	}
 
@@ -597,6 +743,7 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 
 func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*authority.Servers, hostSet, hostSet) {
 	authservers := &authority.Servers{}
+	seenServers := make(map[string]struct{})
 
 	foundv4 := make(hostSet)
 	foundv6 := make(hostSet)
@@ -626,8 +773,14 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 					foundv6[name] = struct{}{}
 
-					nsipv6[name] = append(nsipv6[name], extra.AAAA.String())
-					authservers.List = append(authservers.List, authority.NewServer(net.JoinHostPort(extra.AAAA.String(), "53"), authority.IPv6))
+					ip := extra.AAAA.String()
+					nsipv6[name] = appendUniqueString(nsipv6[name], ip)
+					endpoint := net.JoinHostPort(ip, "53")
+					key := middleware.CanonicalResolutionEndpoint(endpoint)
+					if _, ok := seenServers[key]; !ok {
+						seenServers[key] = struct{}{}
+						authservers.List = append(authservers.List, authority.NewServer(endpoint, authority.IPv6))
+					}
 				}
 			}
 		}
@@ -658,14 +811,29 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 				foundv4[name] = struct{}{}
 
-				nsipv4[name] = append(nsipv4[name], extra.A.String())
-				authservers.List = append(authservers.List, authority.NewServer(net.JoinHostPort(extra.A.String(), "53"), authority.IPv4))
+				ip := extra.A.String()
+				nsipv4[name] = appendUniqueString(nsipv4[name], ip)
+				endpoint := net.JoinHostPort(ip, "53")
+				key := middleware.CanonicalResolutionEndpoint(endpoint)
+				if _, ok := seenServers[key]; !ok {
+					seenServers[key] = struct{}{}
+					authservers.List = append(authservers.List, authority.NewServer(endpoint, authority.IPv4))
+				}
 			}
 		}
 	}
 	r.addIPv4Cache(nsipv4)
 
 	return authservers, foundv4, foundv6
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
@@ -855,6 +1023,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 				}
 				candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
 				if err != nil {
+					if isDNSSECWorkError(err) {
+						return nil, err
+					}
 					lastErr = err
 					continue
 				}
@@ -870,6 +1041,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 				}
 				ok, verr := r.verifyDNSSEC(ctx, signer, strings.ToLower(q.Name), resp, candidateDSRR)
 				if verr != nil {
+					if isDNSSECWorkError(verr) {
+						return nil, verr
+					}
 					lastErr = verr
 					continue
 				}
@@ -890,10 +1064,16 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					// replayed over a concrete name that really exists and
 					// returned with AD=1. The NSEC/NSEC3 proof consulted
 					// here was validated by verifyDNSSEC above.
-					if werr := dnssec.VerifyWildcardAnswer(resp); werr != nil {
+					wildcardSecure, werr := dnssec.VerifyWildcardAnswerForZoneWithWork(
+						resp,
+						signer,
+						r.dnssecWork(ctx),
+					)
+					if werr != nil {
 						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", formatQuestion(q), "error", werr.Error())
 						return nil, werr
 					}
+					ok = wildcardSecure
 				}
 				resp.AuthenticatedData = ok
 				settled = true
@@ -917,18 +1097,35 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		// both sides are.
 		resp.Answer = append(resp.Answer, targetMsg.Answer...)
 		resp.Rcode = targetMsg.Rcode
-		if len(targetMsg.Answer) == 0 {
-			// RFC 6672 §5.3.4: carry the target zone's SOA and
-			// NSEC/NSEC3 proof so the client sees the denial
-			// records the internal recursion already validated.
-			resp.Ns = append(resp.Ns, targetMsg.Ns...)
-		}
+		terminalDenial := targetMsg.Rcode == dns.RcodeNameError
 		if !req.CheckingDisabled {
 			resp.AuthenticatedData = resp.AuthenticatedData && targetMsg.AuthenticatedData
 		}
-		if len(targetMsg.Answer) == 0 {
-			// Preserve Ns for the denial proof; clearAdditional
-			// would wipe it.
+		if terminalDenial {
+			middleware.PropagateValidatedDenialResponse(ctx, targetMsg, resp)
+			// RFC 6672 §5.3.4: carry only the target zone's SOA and
+			// NSEC/NSEC3 proof. clearAdditional removes any outer-zone
+			// authority/additional remnants first; restoring the target
+			// proof afterward prevents it from being wiped with them.
+			targetAuthority := append([]dns.RR(nil), targetMsg.Ns...)
+			resp = r.clearAdditional(req, resp, extra...)
+			resp.Ns = targetAuthority
+			return resp, nil
+		}
+		negative, markedNegative := middleware.ValidatedNegativeProofForResponse(ctx, targetMsg)
+		terminalNODATA := markedNegative &&
+			negative.Proof != nil &&
+			negative.Proof.Rcode == dns.RcodeSuccess &&
+			len(negative.Proof.Answer) == 0
+		if terminalNODATA || len(targetMsg.Answer) == 0 {
+			// Preserve the historical NODATA handling: its target authority
+			// proof must survive the generic additional-section cleanup. A
+			// target may itself contain an alias chain; the exact terminal
+			// proof marker, not targetMsg.Answer length, identifies that case.
+			if terminalNODATA {
+				middleware.PropagateValidatedNegativeProofResponse(ctx, targetMsg, resp)
+			}
+			resp.Ns = append(resp.Ns, targetMsg.Ns...)
 			return resp, nil
 		}
 	}
@@ -939,6 +1136,19 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 }
 
 func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS []dns.RR, zone string) (*dns.Msg, error) {
+	if req == nil || resp == nil || len(req.Question) != 1 ||
+		len(resp.Question) != 1 ||
+		req.Question[0].Qtype != resp.Question[0].Qtype ||
+		req.Question[0].Qclass != resp.Question[0].Qclass ||
+		dns.CanonicalName(req.Question[0].Name) != dns.CanonicalName(resp.Question[0].Name) {
+		// Bind semantic denial validation to the question we actually sent.
+		// The transport already rejects mismatched echoes; keeping the same
+		// invariant at this trust seam prevents a future/custom exchange path
+		// from validating one absent name and attributing its RFC 8020 cut to
+		// another.
+		return nil, ErrQuestion
+	}
+
 	if !req.CheckingDisabled {
 		if r.dnssec && !r.hasTrustAnchors() {
 			return nil, dnssec.ErrTrustAnchorsUnavailable
@@ -973,6 +1183,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 				candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
 				if err != nil {
+					if isDNSSECWorkError(err) {
+						return nil, err
+					}
 					lastErr = err
 					continue
 				}
@@ -987,6 +1200,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 				ok, verr := r.verifyDNSSEC(ctx, signer, q.Name, resp, candidateDSRR)
 				if verr != nil {
+					if isDNSSECWorkError(verr) {
+						return nil, verr
+					}
 					lastErr = verr
 					continue
 				}
@@ -1003,7 +1219,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				return nil, lastErr
 			}
 
-			if verified {
+			if r.dnssec && verified {
 				// Require denial-of-existence proof for every
 				// negative response under a signed zone. Without
 				// it, a forged SOA+RRSIG would be enough to set
@@ -1020,22 +1236,63 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				nsecSet := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner)
 				isNegative := resp.Rcode == dns.RcodeNameError ||
 					(resp.Rcode == dns.RcodeSuccess && len(resp.Answer) == 0)
+				proofKind := middleware.ValidatedNegativeProofUnknown
+				aggressiveEligible := false
+				denialSecure := true
+				var denialErr error
+				proofQuestion := q
+				if dnameTarget := dnsutil.DnameTarget(resp); dnameTarget != "" {
+					proofQuestion.Name = dnameTarget
+				}
 
 				if isNegative {
 					switch {
 					case len(nsec3Set) > 0:
+						proofKind = middleware.ValidatedNegativeProofNSEC3
 						if resp.Rcode == dns.RcodeNameError {
-							if err := dnssec.VerifyNameError(resp, nsec3Set); err != nil {
-								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
-								return nil, err
+							denialSecure, denialErr = dnssec.VerifyNameErrorForZoneWithWork(
+								resp,
+								nsec3Set,
+								chosenSigner,
+								r.dnssecWork(ctx),
+							)
+							if denialErr != nil {
+								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", denialErr.Error())
+								return nil, denialErr
 							}
 						} else {
-							if err := dnssec.VerifyNODATA(resp, nsec3Set); err != nil {
-								zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
-								return nil, err
+							denialSecure, denialErr = dnssec.VerifyNODATAForZoneWithWork(
+								resp,
+								nsec3Set,
+								chosenSigner,
+								r.dnssecWork(ctx),
+							)
+							if denialErr != nil {
+								zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", denialErr.Error())
+								return nil, denialErr
+							}
+						}
+
+						if denialSecure {
+							result, err := dnssec.EvaluateAggressiveNSEC3(
+								proofQuestion,
+								chosenSigner,
+								nsec3Set,
+								newResolverAggressiveProofWork(ctx, r.cryptoLimiter),
+							)
+							if err == nil && result.Rcode == resp.Rcode {
+								aggressiveEligible = true
+							} else {
+								// Exact-response validation above remains
+								// authoritative. RFC 8198 reuse is stricter,
+								// so any evaluator miss only withholds shared
+								// provenance.
+								zlog.Debug("NSEC3 proof not eligible for aggressive reuse",
+									"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
 							}
 						}
 					case len(nsecSet) > 0:
+						proofKind = middleware.ValidatedNegativeProofNSEC
 						if resp.Rcode == dns.RcodeNameError {
 							if err := dnssec.VerifyNameErrorNSEC(resp, nsecSet); err != nil {
 								zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
@@ -1047,6 +1304,14 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 								return nil, err
 							}
 						}
+
+						result, err := dnssec.EvaluateAggressiveNSEC(proofQuestion, chosenSigner, nsecSet)
+						if err == nil && result.Rcode == resp.Rcode {
+							aggressiveEligible = true
+						} else {
+							zlog.Debug("NSEC proof not eligible for aggressive reuse",
+								"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
+						}
 					default:
 						zlog.Warn("Negative answer missing NSEC/NSEC3 denial proof", "query", formatQuestion(q), "rcode", dns.RcodeToString[resp.Rcode])
 						return nil, dnssec.ErrNSECMissingCoverage
@@ -1054,7 +1319,16 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 
 				if !req.CheckingDisabled {
-					resp.AuthenticatedData = true
+					resp.AuthenticatedData = denialSecure
+				}
+				if !req.CheckingDisabled && denialSecure && isNegative &&
+					proofKind != middleware.ValidatedNegativeProofUnknown {
+					middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+						Subject:    proofQuestion.Name,
+						Zone:       chosenSigner,
+						Kind:       proofKind,
+						Aggressive: aggressiveEligible,
+					})
 				}
 			}
 		}
@@ -1072,6 +1346,7 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	servers.RUnlock()
 
 	authority.Sort(serversList, atomic.AddUint64(&servers.Called, 1)) // sort by RTT and failure rate
+	serversList = dedupeAuthorityServers(serversList)
 
 	responseErrors := []*dns.Msg{}
 	configErrors := []*dns.Msg{}
@@ -1153,6 +1428,13 @@ mainloop:
 				left--
 
 				if res.err != nil {
+					// A request-tree work rejection is terminal policy,
+					// not an authority failure. Trying another server
+					// would only repeat the rejected operation and can
+					// hide the policy EDE behind a fallback response.
+					if errors.Is(res.err, middleware.ErrRecursionWorkLimit) {
+						return nil, res.err
+					}
 					fatalErrors = append(fatalErrors, res.err)
 
 					if left > 0 && len(serversList)-1 == index {
@@ -1179,25 +1461,21 @@ mainloop:
 				}
 
 				if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
-					for _, rr := range resp.Ns {
-						if nsrec, ok := rr.(*dns.NS); ok {
-							// looks invalid configuration, try another server
-							if dns.CountLabel(nsrec.Header().Name) <= level {
-								configErrors = append(configErrors, resp)
+					info := r.extractDelegationInfo(resp)
+					if info.nsRecord != nil && !validReferral(info, servers.Zone, req.Question[0]) {
+						configErrors = append(configErrors, resp)
 
-								// Penalise the server that actually produced this
-								// bogus delegation, not the current loop index —
-								// results arrive out of order from parallel
-								// goroutines, so `server` can be a later peer.
-								atomic.AddInt64(&res.server.Rtt, 2*time.Second.Nanoseconds())
-								atomic.AddInt64(&res.server.Count, 1)
+						// Penalise the server that actually produced this
+						// bogus delegation, not the current loop index —
+						// results arrive out of order from parallel
+						// goroutines, so `server` can be a later peer.
+						atomic.AddInt64(&res.server.Rtt, 2*time.Second.Nanoseconds())
+						atomic.AddInt64(&res.server.Count, 1)
 
-								if left > 0 && len(serversList)-1 == index {
-									continue fallbackloop
-								}
-								continue mainloop
-							}
+						if left > 0 && len(serversList)-1 == index {
+							continue fallbackloop
 						}
+						continue mainloop
 					}
 				}
 
@@ -1207,6 +1485,23 @@ mainloop:
 	}
 
 	return pickFallbackResponse(responseErrors, configErrors, fatalErrors)
+}
+
+func dedupeAuthorityServers(servers []*authority.Server) []*authority.Server {
+	seen := make(map[string]struct{}, len(servers))
+	result := servers[:0]
+	for _, server := range servers {
+		if server == nil {
+			continue
+		}
+		key := middleware.CanonicalResolutionEndpoint(server.Addr)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, server)
+	}
+	return result
 }
 
 // lookupResult bundles a single per-server query outcome for the
@@ -1247,7 +1542,7 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, originalID
 	switch {
 	case !r.circuitBreaker.canQuery(server.Addr):
 		res.err = fatalError(errConnectionFailed)
-	case ctx.Err() != nil:
+	case contextutil.EffectiveError(ctx) != nil:
 		return
 	default:
 		reqCopy.Id = dns.Id() // anti-spoofing
@@ -1256,6 +1551,17 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, originalID
 			resp.Id = originalID
 		}
 		switch {
+		case errors.Is(err, middleware.ErrRecursionWorkLimit),
+			errors.Is(err, middleware.ErrResolutionAttemptLimit),
+			errors.Is(err, middleware.ErrFailureProbeLimit),
+			errors.Is(err, middleware.ErrMaxRecursion),
+			contextutil.EffectiveError(ctx) != nil:
+			// Local policy exhaustion says nothing about the
+			// authority's health; neither does cancellation of this request
+			// tree. Do not use errors.Is(err, context.DeadlineExceeded) here:
+			// a per-socket or Dialer timeout may wrap that sentinel while the
+			// request context itself is still live, and that is genuine
+			// upstream health evidence.
 		case err != nil:
 			r.circuitBreaker.recordFailure(server.Addr)
 		case resp != nil:
@@ -1307,12 +1613,26 @@ func adaptiveServerTimeout(server *authority.Server) time.Duration {
 // list, then a connection error, then the absolute-last-resort no-roots
 // fatal.
 func pickFallbackResponse(responseErrors, configErrors []*dns.Msg, fatalErrors []error) (*dns.Msg, error) {
-	if len(responseErrors) > 0 {
-		for _, resp := range responseErrors {
-			if resp.Rcode == dns.RcodeNameError {
-				return resp, nil
-			}
+	// Policy exhaustion is terminal even if an earlier authority supplied a
+	// fallback response. Returning that response would conceal the enforced
+	// request-tree limit and let caller retry paths continue doing work.
+	for _, err := range fatalErrors {
+		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			return nil, err
 		}
+	}
+
+	for _, resp := range responseErrors {
+		if resp.Rcode == dns.RcodeNameError {
+			return resp, nil
+		}
+	}
+	for _, err := range fatalErrors {
+		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+			return nil, err
+		}
+	}
+	if len(responseErrors) > 0 {
 		return responseErrors[0], nil
 	}
 	if len(configErrors) > 0 {
@@ -1326,11 +1646,24 @@ func pickFallbackResponse(responseErrors, configErrors []*dns.Msg, fatalErrors [
 }
 
 func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string, req *dns.Msg, server *authority.Server, retried int) (*dns.Msg, error) {
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
+	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
+		return nil, ctxErr
 	}
-
 	q := req.Question[0]
+	if err := middleware.BeginResolutionAttempt(ctx, q, server.Addr, proto); err != nil {
+		return nil, err
+	}
+	if rs.work != nil {
+		var err error
+		if middleware.IsBestEffortRecursionWork(ctx) {
+			err = rs.work.DebitBestEffort(middleware.RecursionWorkOutboundQuery)
+		} else {
+			err = rs.work.Debit(middleware.RecursionWorkOutboundQuery)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	var resp *dns.Msg
 	var err error
@@ -1338,6 +1671,9 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	// Track RTT for adaptive timeouts
 	var rtt = r.netTimeout
 	defer func() {
+		if contextutil.EffectiveError(ctx) != nil {
+			return
+		}
 		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
 		atomic.AddInt64(&server.Count, 1)
 	}()
@@ -1415,7 +1751,11 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	}
 	_ = co.SetDeadline(deadline)
 
-	resp, rtt, err = co.Exchange(req)
+	resp, rtt, err = co.ExchangeContext(ctx, req)
+	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
+		resp = nil
+		err = ctxErr
+	}
 	if err != nil {
 		zlog.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
@@ -1423,6 +1763,9 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		// Don't return connection to pool on error
 		ReleaseConn(co)
 
+		if contextutil.EffectiveError(ctx) != nil {
+			return nil, err
+		}
 		if retried < 2 {
 			if retried == 1 && proto == "udp" {
 				proto = "tcp"
@@ -1521,7 +1864,7 @@ func localAddrIndex(n int) int {
 	}
 	// The modulo result is in [0, n) and n is a small positive int,
 	// so the uint64 -> int conversion is always safe.
-	return int(localAddrCounter.Add(1) % uint64(n)) //nolint:gosec // G115 — result < n, fits in int
+	return int(localAddrCounter.Add(1) % uint64(n)) //nolint:gosec // G115 - modulo result is less than n
 }
 
 var localAddrCounter atomic.Uint64
@@ -1708,14 +2051,21 @@ func (r *Resolver) findRRSIGSigners(resp *dns.Msg, qname string, inAnswer bool) 
 	// more-specific signers and push the real signer out of the retry
 	// set, producing false SERVFAILs on deep qnames.
 	sort.Slice(signers, func(i, j int) bool {
-		return dns.CountLabel(signers[i]) > dns.CountLabel(signers[j])
+		iLabels, jLabels := dns.CountLabel(signers[i]), dns.CountLabel(signers[j])
+		if iLabels != jLabels {
+			return iLabels > jLabels
+		}
+		return strings.ToLower(dns.Fqdn(signers[i])) < strings.ToLower(dns.Fqdn(signers[j]))
 	})
 	return signers
 }
 
 func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []dns.RR, cd bool) (dsset []dns.RR, err error) {
 	if signer == rootzone && len(parentDS) == 0 {
-		parentDS = r.dsRRFromRootKeys()
+		parentDS, err = r.dsRRFromRootKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
 	} else if len(parentDS) > 0 {
 		dsrr := parentDS[0].(*dns.DS)
 		dsname := strings.ToLower(dsrr.Header().Name)
@@ -1908,7 +2258,12 @@ func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child 
 	}
 
 	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(dsResp.Ns, "", dns.TypeNSEC3), signer); len(nsec3Set) > 0 {
-		if err := dnssec.VerifyDelegation(child, nsec3Set); err != nil {
+		if err := dnssec.VerifyDelegationForZoneWithWork(
+			child,
+			signer,
+			nsec3Set,
+			r.dnssecWork(ctx),
+		); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -2008,9 +2363,21 @@ func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg
 func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	store := r.store.Load()
 	if store != nil {
-		if msg, ok := (*store).Get(req); ok {
+		var (
+			msg *dns.Msg
+			ok  bool
+		)
+		if contextStore, aware := (*store).(middleware.ContextStore); aware {
+			msg, ok = contextStore.GetWithContext(ctx, req)
+		} else {
+			msg, ok = (*store).Get(req)
+		}
+		if ok {
 			return msg, nil
 		}
+	}
+	if err := middleware.DebitRecursionWork(ctx, middleware.RecursionWorkInternalQuery); err != nil {
+		return nil, err
 	}
 
 	// Clear RD/AD before hitting authoritative servers.
@@ -2059,8 +2426,14 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 		isRoot:    true,
 		extra:     nil,
 		requestID: reqid,
+		work:      middleware.RecursionWorkFrom(ctx),
 	}
 	resp, err := r.resolve(ctx, child)
+	if child.work != nil {
+		if workErr := child.work.EnforcementError(); workErr != nil {
+			return nil, workErr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2101,7 +2474,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s (%v)", qname, err)
+		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {
@@ -2132,7 +2505,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s (%v)", qname, err)
+		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
 	}
 
 	if addrs, ok := searchAddrs(nsres); ok {
@@ -2147,8 +2520,9 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) {
+func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) error {
 	list := sortHosts(hosts, q.Name)
+	var lastAttemptLimit error
 
 	for _, name := range list {
 		// Hosts is copied by readers (checkHosts) under RLock once
@@ -2195,6 +2569,20 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv4 := make(map[string][]string)
 
 		if err != nil {
+			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+				errors.Is(err, middleware.ErrMaxRecursion) ||
+				errors.Is(err, context.Canceled) ||
+				errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+				// RFC 9520 keys by question tuple: exhausting one NS
+				// hostname must not prevent trying the delegation's other
+				// hostnames.
+				lastAttemptLimit = err
+				zlog.Debug("Lookup NS ipv4 address reached attempt limit", "query", formatQuestion(q), "ns", name)
+				continue
+			}
 			zlog.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
 			continue
 		}
@@ -2226,9 +2614,24 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		authservers.Unlock()
 		r.addIPv4Cache(nsipv4)
 	}
+
+	if lastAttemptLimit != nil {
+		authservers.RLock()
+		hasServer := len(authservers.List) > 0
+		authservers.RUnlock()
+		if !hasServer {
+			return lastAttemptLimit
+		}
+	}
+	return nil
 }
 
 func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, foundv6, hosts hostSet, cd bool) {
+	// IPv6 glue discovery enriches an already usable delegation. It must stop
+	// at the originating request tree's shared cap, but its rejected debit
+	// must not poison the required resolution path.
+	ctx = middleware.WithBestEffortRecursionWork(ctx)
+
 	// Let the main (IPv4) path drain its auth-server rate-limit budget
 	// before we pile on IPv6 probes, but don't spend the full delay
 	// sleeping when ctx (e.g. the 30s v6-lookup budget upstream) has
@@ -2262,6 +2665,10 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		nsipv6 := make(map[string][]string)
 
 		if err != nil {
+			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+				errors.Is(err, middleware.ErrMaxRecursion) {
+				return
+			}
 			// Keep going: one nameserver without an AAAA (or rate
 			// limited) must not prevent subsequent NSs in the
 			// delegation from contributing IPv6 addresses. The IPv4
@@ -2307,29 +2714,39 @@ func (r *Resolver) hasTrustAnchors() bool {
 	return len(r.rootKeys) > 0
 }
 
-func (r *Resolver) dsRRFromRootKeys() (dsset []dns.RR) {
+func (r *Resolver) dsRRFromRootKeys(ctx context.Context) ([]dns.RR, error) {
 	r.RLock()
-	defer r.RUnlock()
+	rootKeys := append([]dns.RR(nil), r.rootKeys...)
+	r.RUnlock()
 
-	for _, rr := range r.rootKeys {
+	dsset := make([]dns.RR, 0, len(rootKeys))
+	work := r.dnssecWork(ctx)
+	for _, rr := range rootKeys {
 		if dnskey, ok := rr.(*dns.DNSKEY); ok {
-			dsset = append(dsset, dnskey.ToDS(dns.DH))
+			ds, err := dnssec.DNSKEYToDSWithWork(dnskey, dns.DH, work)
+			if err != nil {
+				return nil, err
+			}
+			if ds != nil {
+				dsset = append(dsset, ds)
+			}
 		}
 	}
 
 	if len(dsset) == 0 {
-		zlog.Fatal("Root zone dsset empty")
+		return nil, dnssec.ErrTrustAnchorsUnavailable
 	}
 
-	return
+	return dsset, nil
 }
 
-func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
+func (r *Resolver) verifyRootKeys(ctx context.Context, msg *dns.Msg) (bool, error) {
 	r.RLock()
-	defer r.RUnlock()
+	rootKeys := append([]dns.RR(nil), r.rootKeys...)
+	r.RUnlock()
 
 	keys := make(map[uint16][]*dns.DNSKEY)
-	for _, rr := range r.rootKeys {
+	for _, rr := range rootKeys {
 		dnskey := rr.(*dns.DNSKEY)
 		if dnskey.Flags == 257 {
 			tag := dnskey.KeyTag()
@@ -2338,29 +2755,24 @@ func (r *Resolver) verifyRootKeys(msg *dns.Msg) (ok bool) {
 	}
 
 	if len(keys) == 0 {
-		zlog.Fatal("Root zone keys empty")
+		return false, dnssec.ErrTrustAnchorsUnavailable
 	}
 
-	dsset := []dns.RR{}
-	for _, rr := range r.rootKeys {
-		if dnskey, ok := rr.(*dns.DNSKEY); ok {
-			dsset = append(dsset, dnskey.ToDS(dns.DH))
-		}
+	dsset, err := r.dsRRFromRootKeys(ctx)
+	if err != nil {
+		return false, err
 	}
 
-	if len(dsset) == 0 {
-		zlog.Fatal("Root zone dsset empty")
+	work := r.dnssecWork(ctx)
+	if _, err := dnssec.VerifyDSWithWork(keys, dsset, work); err != nil {
+		return false, err
 	}
 
-	if _, err := dnssec.VerifyDS(keys, dsset); err != nil {
-		zlog.Fatal("Root zone DS not verified")
+	if _, err := dnssec.VerifyRRSIGWithWork(rootzone, keys, msg, work); err != nil {
+		return false, err
 	}
 
-	if _, err := dnssec.VerifyRRSIG(rootzone, keys, msg); err != nil {
-		zlog.Fatal("Root zone keys not verified")
-	}
-
-	return true
+	return true, nil
 }
 
 func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp *dns.Msg, parentdsRR []dns.RR) (ok bool, err error) {
@@ -2379,7 +2791,11 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		}
 	} else if q.Qtype == dns.TypeDNSKEY {
 		if q.Name == rootzone {
-			if !r.verifyRootKeys(resp) {
+			ok, rootErr := r.verifyRootKeys(ctx, resp)
+			if rootErr != nil {
+				return false, rootErr
+			}
+			if !ok {
 				return false, fmt.Errorf("root zone keys not verified")
 			}
 			return true, nil
@@ -2421,7 +2837,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, fmt.Errorf("DS RR set empty")
 	}
 
-	unsupportedOnly, err := dnssec.VerifyDS(keys, parentdsRR)
+	unsupportedOnly, err := dnssec.VerifyDSWithWork(keys, parentdsRR, r.dnssecWork(ctx))
 	if err != nil {
 		zlog.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported only", unsupportedOnly)
 		if unsupportedOnly {
@@ -2438,7 +2854,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, nil
 	}
 
-	if ok, err = dnssec.VerifyRRSIG(signer, keys, resp); err != nil {
+	if ok, err = dnssec.VerifyRRSIGWithWork(signer, keys, resp, r.dnssecWork(ctx)); err != nil {
 		return
 	}
 
@@ -2522,16 +2938,21 @@ func (r *Resolver) checkPriming() {
 
 	var tmpservers authority.Servers
 	foundServers := make(map[string]bool)
+	seenEndpoints := make(map[string]struct{})
 
 	// Process IPv6 addresses if enabled
-	if r.cfg.IPv6Access {
+	if r.cfg.IPv6Access { //nolint:gosec // G118 - detached enrichment is intentionally bounded below
 		for _, r := range resp.Extra {
 			if v6, ok := r.(*dns.AAAA); ok {
 				serverName := strings.ToLower(v6.Header().Name)
 				if nsServers[serverName] {
 					foundServers[serverName] = true
 					host := net.JoinHostPort(v6.AAAA.String(), "53")
-					tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv6))
+					key := middleware.CanonicalResolutionEndpoint(host)
+					if _, ok := seenEndpoints[key]; !ok {
+						seenEndpoints[key] = struct{}{}
+						tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv6))
+					}
 				}
 			}
 		}
@@ -2544,7 +2965,11 @@ func (r *Resolver) checkPriming() {
 			if nsServers[serverName] {
 				foundServers[serverName] = true
 				host := net.JoinHostPort(v4.A.String(), "53")
-				tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv4))
+				key := middleware.CanonicalResolutionEndpoint(host)
+				if _, ok := seenEndpoints[key]; !ok {
+					seenEndpoints[key] = struct{}{}
+					tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv4))
+				}
 			}
 		}
 	}
@@ -2595,14 +3020,22 @@ func (r *Resolver) run() {
 
 // handleLookupError processes errors from groupLookup.
 func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolveState, minReq *dns.Msg, minimized bool) (*dns.Msg, error) {
+	if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+		errors.Is(err, middleware.ErrMaxRecursion) {
+		return nil, err
+	}
+
 	if minimized {
 		// retry without minimization
 		rs.nomin = true
 		rs.isRoot = false
 		return r.resolve(ctx, rs)
 	}
+	if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+		return nil, err
+	}
 
-	if _, ok := err.(fatalError); ok {
+	if isFatalError(err) {
 		// no check for nsaddrs lookups
 		if v := ctx.Value(contextKeyNSL); v != nil {
 			return nil, err
@@ -2615,13 +3048,85 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolve
 				return r.resolve(ctx, rs)
 			}
 		}
+		r.recordResolutionZoneFailure(ctx, rs.req.Question[0], rs.servers.Zone, err)
 	}
 	return nil, err
+}
+
+// recordResolutionZoneFailure publishes only terminal, required-path
+// authority failures. Request-local policy limits, cancellation, and detached
+// best-effort enrichment must not create shared RFC 9520 failure state.
+func (r *Resolver) recordResolutionZoneFailure(ctx context.Context, q dns.Question, zone string, cause error) {
+	if zone == "" ||
+		middleware.IsBestEffortRecursionWork(ctx) ||
+		contextutil.EffectiveError(ctx) != nil ||
+		errors.Is(cause, context.Canceled) ||
+		errors.Is(cause, context.DeadlineExceeded) ||
+		errors.Is(cause, middleware.ErrRecursionWorkLimit) ||
+		errors.Is(cause, middleware.ErrResolutionAttemptLimit) ||
+		errors.Is(cause, middleware.ErrMaxRecursion) {
+		return
+	}
+
+	store := r.store.Load()
+	if store == nil {
+		return
+	}
+	if failures, ok := (*store).(middleware.ResolutionFailureStore); ok {
+		failures.RecordZoneFailure(q, zone)
+	}
+}
+
+func (r *Resolver) clearResolutionZoneFailure(q dns.Question, zone string) {
+	if zone == "" {
+		return
+	}
+	store := r.store.Load()
+	if store == nil {
+		return
+	}
+	if failures, ok := (*store).(middleware.ResolutionFailureStore); ok {
+		failures.ClearZoneFailure(q, zone)
+	}
 }
 
 // processAuthoritySection handles the authority section of the response.
 func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
 	if minimized {
+		// RFC 8020: a locally authenticated NXDOMAIN at a minimized name
+		// denies that exact subtree, so there is no reason to continue
+		// querying progressively longer names. Validate the real
+		// authoritative query cycle first. Unsigned and checking-disabled
+		// answers keep the historical deeper walk; bogus signed proofs fail
+		// closed through authority().
+		if resp.Rcode == dns.RcodeNameError {
+			hasSOA := false
+			for _, rr := range resp.Ns {
+				if _, ok := rr.(*dns.SOA); ok {
+					hasSOA = true
+					break
+				}
+			}
+			if hasSOA {
+				result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+				if err != nil {
+					return nil, err
+				}
+				negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, result)
+				if secure && negative.Aggressive &&
+					negative.Proof != nil &&
+					negative.Proof.Rcode == dns.RcodeNameError &&
+					!dnsutil.HasNSEC3OptOut(result.Ns, negative.Zone) {
+					// Provenance keeps minReq's denied name. Only the
+					// client-visible Question is rebound to the original
+					// full QNAME.
+					result.Question = append([]dns.Question(nil), rs.req.Question...)
+					r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+					return result, nil
+				}
+			}
+		}
+
 		// Check if we need to continue with minimization
 		for _, rr := range resp.Ns {
 			switch rr.(type) {
@@ -2636,13 +3141,21 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 	// Extract nameserver information
 	nsInfo := r.extractDelegationInfo(resp)
 	if len(nsInfo.hosts) == 0 {
-		return r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+		result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+		if err == nil {
+			r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+		}
+		return result, err
 	}
 
 	// Handle SOA records
 	if nsInfo.hasSOA {
 		resp.Ns = r.filterAuthorityRecords(resp.Ns)
-		return r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+		result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+		if err == nil {
+			r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+		}
+		return result, err
 	}
 
 	// Process delegation
@@ -2651,10 +3164,11 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 
 // delegationInfo holds extracted nameserver information.
 type delegationInfo struct {
-	hosts    hostSet
-	nsRecord *dns.NS
-	nsTTL    uint32
-	hasSOA   bool
+	hosts      hostSet
+	nsRecord   *dns.NS
+	nsTTL      uint32
+	hasSOA     bool
+	incoherent bool
 }
 
 // extractDelegationInfo extracts nameserver information from response.
@@ -2682,6 +3196,7 @@ func (r *Resolver) extractDelegationInfo(resp *dns.Msg) delegationInfo {
 			// delegation — a mixed-owner Authority section is not a valid
 			// referral and must not widen the cached nameserver set.
 			if !strings.EqualFold(h.Name, info.nsRecord.Header().Name) || h.Class != info.nsRecord.Header().Class {
+				info.incoherent = true
 				continue
 			}
 			// Lease for the MINIMUM TTL across the RRset, not the last
@@ -2724,6 +3239,16 @@ func progressingReferral(referral, authZone, qname string) bool {
 	return dns.IsSubDomain(referral, qname) // must be on the path to qname
 }
 
+// validReferral applies one coherent rule at both lookup winner selection and
+// the processDelegation cache boundary. Rejecting a bad fast responder here
+// leaves slower healthy authorities eligible to answer the same lookup.
+func validReferral(info delegationInfo, authZone string, q dns.Question) bool {
+	return info.nsRecord != nil &&
+		!info.incoherent &&
+		info.nsRecord.Header().Class == q.Qclass &&
+		progressingReferral(info.nsRecord.Header().Name, authZone, q.Name)
+}
+
 // filterAuthorityRecords filters authority records for SOA responses.
 func (r *Resolver) filterAuthorityRecords(nsRecords []dns.RR) []dns.RR {
 	filtered := []dns.RR{}
@@ -2755,7 +3280,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// reject it here before it can reach the delegation cache. The referral
 	// must be a strict descendant of the queried zone AND an ancestor of the
 	// name we are resolving.
-	if !progressingReferral(q.Name, rs.servers.Zone, rs.req.Question[0].Name) {
+	if !validReferral(nsInfo, rs.servers.Zone, rs.req.Question[0]) {
 		zlog.Debug("Rejecting non-progressing delegation", "zone", rs.servers.Zone, "referral", q.Name, "qname", rs.req.Question[0].Name)
 		return nil, errParentDetection
 	}
@@ -2773,6 +3298,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	if err != nil {
 		return nil, err
 	}
+	r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
 	rs.parentDS = newParentDS
 
 	// Bound the lease by the retained DS lifetime. "Has a DS" is separate
@@ -2808,6 +3334,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 				isRoot:    true,
 				extra:     rs.extra,
 				requestID: rs.requestID,
+				work:      rs.work,
 			}
 			return r.resolve(ctx, newRS)
 		}
@@ -2844,7 +3371,9 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childDeadline)
+	if err := r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childDeadline); err != nil {
+		return nil, err
+	}
 
 	if len(authservers.List) == 0 {
 		if minimized && rs.level < nlevel {
@@ -2852,6 +3381,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 			rs.isRoot = false
 			return r.resolve(ctx, rs)
 		}
+		r.recordResolutionZoneFailure(ctx, rs.req.Question[0], q.Name, errNoReachableAuth)
 		return nil, errNoReachableAuth
 	}
 
@@ -2874,12 +3404,70 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// after the query returned.
 	if r.cfg.IPv6Access {
 		reqid := ctx.Value(contextKeyRequestID)
-		go func() { //nolint:gosec // G118 - IPv6 NS lookup intentionally outlives the request but is bounded by WithTimeout below
-			v6ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
-			r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.hosts, cd)
-		}()
+		work := rs.work
+		attemptGuard := middleware.ResolutionAttemptGuardFrom(ctx)
+		var releaseWork func()
+		if work != nil {
+			var retained bool
+			releaseWork, retained = work.Retain()
+			if !retained {
+				// The request tree has already completed. Starting work now
+				// would escape its aggregate cap, so skip this optional
+				// enrichment job.
+				work = nil
+			}
+		}
+		spawn := rs.work == nil || work != nil
+		if spawn && r.v6LookupSlots != nil {
+			// Non-blocking slot acquire. The pool caps detached V6 jobs
+			// GLOBALLY: a partial upstream outage makes every job live out
+			// its full timeout while fresh referrals keep arriving, and an
+			// unbounded pool then grows at arrival-rate × timeout. This is
+			// optional enrichment — shedding it under pressure is strictly
+			// better than becoming the pressure. A nil pool (bare test
+			// resolvers) disables the cap.
+			select {
+			case r.v6LookupSlots <- struct{}{}:
+			default:
+				spawn = false
+				if releaseWork != nil {
+					releaseWork()
+				}
+			}
+		}
+		if spawn {
+			detachedBase := dnssec.InheritNSEC3HashMemos(
+				context.Background(),
+				ctx,
+			)
+			if middleware.HasClientECS(ctx) {
+				detachedBase = middleware.MarkClientECS(detachedBase)
+			}
+			go func() { //nolint:gosec // G118 - intentionally detached and bounded by the timeout below
+				defer func() {
+					if r.v6LookupSlots != nil {
+						<-r.v6LookupSlots
+					}
+				}()
+				if releaseWork != nil {
+					defer releaseWork()
+				}
+				v6ctx, cancel := context.WithTimeout(detachedBase, 30*time.Second)
+				defer cancel()
+				// Retain and pin the originating request-tree ledger before
+				// detaching. Every referral job then shares one aggregate
+				// cap, and the final metric snapshot waits for these jobs
+				// without delaying the client response.
+				if work != nil {
+					v6ctx = middleware.WithRecursionWork(v6ctx, work)
+				}
+				if attemptGuard != nil {
+					v6ctx = middleware.WithResolutionAttemptGuard(v6ctx, attemptGuard)
+				}
+				v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
+				r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.hosts, cd)
+			}()
+		}
 	}
 
 	rs.depth--
@@ -2932,7 +3520,11 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		parentSigner = rootzone
 	}
 	if parentSigner == rootzone && len(effectiveParentDS) == 0 {
-		effectiveParentDS = r.dsRRFromRootKeys()
+		var err error
+		effectiveParentDS, err = r.dsRRFromRootKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	signers := r.findRRSIGSigners(resp, q.Name, false)
@@ -2972,6 +3564,9 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		}
 		candidateDSRR, err := r.findDS(ctx, signer, q.Name, origDSRR, false)
 		if err != nil {
+			if isDNSSECWorkError(err) {
+				return nil, err
+			}
 			lastErr = err
 			continue
 		}
@@ -2993,6 +3588,9 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		}
 		ok, verr := r.verifyDNSSEC(ctx, signer, q.Name, resp, candidateDSRR)
 		if verr != nil {
+			if isDNSSECWorkError(verr) {
+				return nil, verr
+			}
 			lastErr = verr
 			continue
 		}
@@ -3032,7 +3630,12 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	// attacker-injected NSEC/NSEC3 from an unrelated sibling zone
 	// cannot structurally satisfy the delegation check.
 	if nsec3Set := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC3), chosenSigner); len(nsec3Set) > 0 {
-		if err := dnssec.VerifyDelegation(q.Name, nsec3Set); err != nil {
+		if err := dnssec.VerifyDelegationForZoneWithWork(
+			q.Name,
+			chosenSigner,
+			nsec3Set,
+			r.dnssecWork(ctx),
+		); err != nil {
 			zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
 			return nil, err
 		}

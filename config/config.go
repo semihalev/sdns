@@ -29,6 +29,8 @@ type Config struct {
 	RootServers      []string
 	Root6Servers     []string
 	DNSSEC           string
+	RFC8198          *bool `toml:"rfc8198"` // nil is default-on for backward compatibility
+	RFC9520          *bool `toml:"rfc9520"` // nil is default-on; false is an emergency kill switch
 	RootKeys         []string
 	FallbackServers  []string
 	ForwarderServers []string
@@ -99,6 +101,11 @@ type Config struct {
 	// so the on-disk schema only bumps once.
 	ECS ECSConfig `toml:"ecs"`
 
+	// RecursionFirewall bounds aggregate work across one recursive
+	// request tree. Shadow mode records limit crossings without
+	// changing responses; enforce mode terminates over-budget work.
+	RecursionFirewall RecursionFirewallConfig `toml:"recursion_firewall"`
+
 	Plugins map[string]Plugin
 
 	CookieSecret string
@@ -120,6 +127,21 @@ type Config struct {
 	ReflexThreshold    float64 // Suspicion threshold (0.0-1.0, default: 0.7)
 
 	sVersion string
+}
+
+// RFC8198Enabled reports whether aggressive NSEC/NSEC3 denial synthesis is
+// enabled. Omission is default-on; an explicit false is the operational kill
+// switch. RFC 8020 NXDOMAIN subtree cuts are controlled independently.
+func (c *Config) RFC8198Enabled() bool {
+	return c == nil || c.RFC8198 == nil || *c.RFC8198
+}
+
+// RFC9520Enabled reports whether shared resolution-failure caching is
+// enabled. Omission is default-on because RFC 9520 requires resolvers to
+// cache failures; explicit false exists as an operational rollback switch
+// for the shared question and authority-zone state.
+func (c *Config) RFC9520Enabled() bool {
+	return c == nil || c.RFC9520 == nil || *c.RFC9520
 }
 
 // ViewConfig describes a single per-client static-answer view.
@@ -236,6 +258,141 @@ type ECSConfig struct {
 	CacheLimitTTL  Duration `toml:"cache_limit_ttl"`
 	MinScopeV4     uint8    `toml:"min_scope_v4"`
 	MinScopeV6     uint8    `toml:"min_scope_v6"`
+}
+
+// RecursionFirewallMode controls whether request-tree work limits are
+// disabled, observed, or enforced.
+type RecursionFirewallMode string
+
+const (
+	RecursionFirewallModeOff     RecursionFirewallMode = "off"
+	RecursionFirewallModeShadow  RecursionFirewallMode = "shadow"
+	RecursionFirewallModeEnforce RecursionFirewallMode = "enforce"
+
+	DefaultRecursionFirewallMaxOutboundQueries      uint32 = 128
+	DefaultRecursionFirewallMaxInternalQueries      uint32 = 32
+	DefaultRecursionFirewallMaxDNSKEYCandidates     uint32 = 4
+	DefaultRecursionFirewallMaxRRsetSignatureChecks uint32 = 8
+	DefaultRecursionFirewallMaxSignatureChecks      uint32 = 32
+	DefaultRecursionFirewallMaxDSDigests            uint32 = 32
+	DefaultRecursionFirewallMaxNSEC3Hashes          uint32 = 32
+	DefaultRecursionFirewallMaxConcurrentCrypto     uint32 = 32
+	DefaultRecursionFirewallFailureCacheSize        int    = 4096
+	DefaultRecursionFirewallFailureCacheMinTTL             = 5 * time.Second
+	DefaultRecursionFirewallFailureCacheMaxTTL             = 5 * time.Minute
+)
+
+// RecursionFirewallConfig controls aggregate and local recursive work limits.
+//
+// A zero limit means "use the default", not unlimited. Operators that
+// need to disable accounting use Mode=off explicitly.
+type RecursionFirewallConfig struct {
+	Mode                    RecursionFirewallMode `toml:"mode"`
+	MaxOutboundQueries      uint32                `toml:"max_outbound_queries"`
+	MaxInternalQueries      uint32                `toml:"max_internal_queries"`
+	MaxDNSKEYCandidates     uint32                `toml:"max_dnskey_candidates"`
+	MaxRRsetSignatureChecks uint32                `toml:"max_rrset_signature_checks"`
+	MaxSignatureChecks      uint32                `toml:"max_signature_checks"`
+	MaxDSDigests            uint32                `toml:"max_ds_digests"`
+	MaxNSEC3Hashes          uint32                `toml:"max_nsec3_hashes"`
+	MaxConcurrentCrypto     uint32                `toml:"max_concurrent_crypto"`
+	FailureCacheSize        int                   `toml:"failure_cache_size"`
+	FailureCacheMinTTL      Duration              `toml:"failure_cache_min_ttl"`
+	FailureCacheMaxTTL      Duration              `toml:"failure_cache_max_ttl"`
+}
+
+// Normalize applies omission-safe defaults. It deliberately does not
+// silently repair an unknown mode; Validate reports that typo to the
+// operator instead of selecting a security policy by accident.
+func (c *RecursionFirewallConfig) Normalize() {
+	if c.Mode == "" {
+		c.Mode = RecursionFirewallModeShadow
+	}
+	if c.MaxOutboundQueries == 0 {
+		c.MaxOutboundQueries = DefaultRecursionFirewallMaxOutboundQueries
+	}
+	if c.MaxInternalQueries == 0 {
+		c.MaxInternalQueries = DefaultRecursionFirewallMaxInternalQueries
+	}
+	if c.MaxDNSKEYCandidates == 0 {
+		c.MaxDNSKEYCandidates = DefaultRecursionFirewallMaxDNSKEYCandidates
+	}
+	if c.MaxRRsetSignatureChecks == 0 {
+		c.MaxRRsetSignatureChecks = DefaultRecursionFirewallMaxRRsetSignatureChecks
+	}
+	if c.MaxSignatureChecks == 0 {
+		c.MaxSignatureChecks = DefaultRecursionFirewallMaxSignatureChecks
+	}
+	if c.MaxDSDigests == 0 {
+		c.MaxDSDigests = DefaultRecursionFirewallMaxDSDigests
+	}
+	if c.MaxNSEC3Hashes == 0 {
+		c.MaxNSEC3Hashes = DefaultRecursionFirewallMaxNSEC3Hashes
+	}
+	if c.MaxConcurrentCrypto == 0 {
+		c.MaxConcurrentCrypto = DefaultRecursionFirewallMaxConcurrentCrypto
+	}
+	if c.FailureCacheSize == 0 {
+		c.FailureCacheSize = DefaultRecursionFirewallFailureCacheSize
+	}
+	if c.FailureCacheMinTTL.Duration == 0 {
+		c.FailureCacheMinTTL.Duration = DefaultRecursionFirewallFailureCacheMinTTL
+	}
+	if c.FailureCacheMaxTTL.Duration == 0 {
+		c.FailureCacheMaxTTL.Duration = DefaultRecursionFirewallFailureCacheMaxTTL
+	}
+}
+
+// Validate verifies the normalized recursion-firewall policy.
+func (c RecursionFirewallConfig) Validate() error {
+	switch c.Mode {
+	case RecursionFirewallModeOff, RecursionFirewallModeShadow, RecursionFirewallModeEnforce:
+	default:
+		return fmt.Errorf("mode %q must be one of %q, %q, or %q",
+			c.Mode,
+			RecursionFirewallModeOff,
+			RecursionFirewallModeShadow,
+			RecursionFirewallModeEnforce)
+	}
+
+	if c.MaxOutboundQueries == 0 {
+		return fmt.Errorf("max_outbound_queries must be greater than zero")
+	}
+	if c.MaxInternalQueries == 0 {
+		return fmt.Errorf("max_internal_queries must be greater than zero")
+	}
+	if c.MaxDNSKEYCandidates == 0 {
+		return fmt.Errorf("max_dnskey_candidates must be greater than zero")
+	}
+	if c.MaxRRsetSignatureChecks == 0 {
+		return fmt.Errorf("max_rrset_signature_checks must be greater than zero")
+	}
+	if c.MaxSignatureChecks == 0 {
+		return fmt.Errorf("max_signature_checks must be greater than zero")
+	}
+	if c.MaxDSDigests == 0 {
+		return fmt.Errorf("max_ds_digests must be greater than zero")
+	}
+	if c.MaxNSEC3Hashes == 0 {
+		return fmt.Errorf("max_nsec3_hashes must be greater than zero")
+	}
+	if c.MaxConcurrentCrypto == 0 {
+		return fmt.Errorf("max_concurrent_crypto must be greater than zero")
+	}
+	if c.FailureCacheSize <= 0 {
+		return fmt.Errorf("failure_cache_size must be greater than zero")
+	}
+	if c.FailureCacheMinTTL.Duration < time.Second {
+		return fmt.Errorf("failure_cache_min_ttl must be at least 1s")
+	}
+	if c.FailureCacheMaxTTL.Duration < c.FailureCacheMinTTL.Duration {
+		return fmt.Errorf("failure_cache_max_ttl must be greater than or equal to failure_cache_min_ttl")
+	}
+	if c.FailureCacheMaxTTL.Duration > 5*time.Minute {
+		return fmt.Errorf("failure_cache_max_ttl must not exceed 5m")
+	}
+
+	return nil
 }
 
 // Plugin type.
@@ -358,6 +515,20 @@ root6servers = [
 # "on" = validate DNSSEC for signed zones
 # "off" = disable DNSSEC validation
 dnssec = "on"
+
+# Aggressively reuse locally validated NSEC/NSEC3 records to answer
+# later negative queries without another authoritative lookup (RFC 8198).
+# Set false as an operational kill switch. Exact negative caching and
+# RFC 8020 NXDOMAIN subtree cuts remain active.
+rfc8198 = true
+
+# Cache recursive resolution failures and failed-authority state (RFC 9520).
+# Set false only as an emergency rollback switch. This disables RFC 9520
+# conformance: SERVFAIL responses and failed-authority state are not cached,
+# which can increase upstream retry load. Per-server retry ceilings, request
+# work limits, DNSSEC validation, and ordinary positive/NXDOMAIN caching remain
+# active.
+rfc9520 = true
 
 # DNSSEC root trust anchors
 # These are the public keys used to verify the DNS root zone
@@ -491,7 +662,9 @@ timeout = "2s"
 # Maximum time to wait for any DNS query to complete
 querytimeout = "10s"
 
-# Cache TTL for error responses (seconds)
+# Legacy error-cache ceiling retained for configuration compatibility.
+# Recursive resolution failures use the RFC 9520 failure_cache_* settings
+# below instead of DNS-message TTLs.
 expire = 600
 
 # Maximum number of cached DNS records
@@ -825,6 +998,57 @@ min_scope_v4 = 24
 min_scope_v6 = 56
 
 # ============================
+# Recursion Firewall
+# ============================
+
+# Bounds aggregate resolver work across the complete request tree,
+# including retries and nested resolver-generated queries.
+[recursion_firewall]
+
+# "off" disables accounting, "shadow" records would-be limit
+# crossings without changing replies, and "enforce" terminates
+# over-budget recursion with SERVFAIL. Shadow is the rollout-safe
+# default for existing installations.
+mode = "shadow"
+
+# Maximum outbound transport attempts in one request tree. Retries
+# and UDP-to-TCP fallbacks each consume another attempt.
+# 0 uses the default (128); use mode = "off" to disable accounting.
+max_outbound_queries = 128
+
+# Maximum resolver-generated child queries in one request tree,
+# including cache-missed DS/DNSKEY, NS-address, and alias lookups.
+# 0 uses the default (32); use mode = "off" to disable accounting.
+max_internal_queries = 32
+
+# Maximum same-tag DNSKEY candidates tried for one signature or DS
+# record, and signatures tried for one RRset.
+max_dnskey_candidates = 4
+max_rrset_signature_checks = 8
+
+# Aggregate DNSSEC operations across the complete request tree.
+# Keep shadow mode enabled first and calibrate these limits from the
+# dnssec_work_per_request histogram (especially NSEC3 p99) before enforce.
+max_signature_checks = 32
+max_ds_digests = 32
+max_nsec3_hashes = 32
+
+# Maximum signature, DS-digest, or NSEC3-hash operations executing
+# concurrently across request trees handled by this resolver.
+max_concurrent_crypto = 32
+
+# RFC 9520 resolution-failure cache. This cache is active independently
+# of mode: mode controls work accounting, while failure caching and the
+# per-server retry ceiling are resolver protocol requirements.
+#
+# The first failed resolution is held for 5s. Repeated failures back off
+# exponentially up to 5m. RFC 9520 requires every active failure interval
+# to stay between 1s and 5m.
+failure_cache_size = 4096
+failure_cache_min_ttl = "5s"
+failure_cache_max_ttl = "5m"
+
+# ============================
 # Plugins
 # ============================
 
@@ -864,6 +1088,11 @@ func Load(cfgfile, version string) (*Config, error) {
 
 	if config.Version != configver {
 		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
+	}
+
+	config.RecursionFirewall.Normalize()
+	if err := config.RecursionFirewall.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
 	}
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {

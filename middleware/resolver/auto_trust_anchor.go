@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/metric"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
 )
@@ -99,6 +102,11 @@ func (s State) String() string {
 }
 
 func (r *Resolver) AutoTA() {
+	refreshResult := taRefreshValidationError
+	defer func() {
+		refreshResult.Inc()
+	}()
+
 	filename := filepath.Join(r.cfg.Directory, stateFile)
 	tombstonePath := filepath.Join(r.cfg.Directory, tombstoneFile)
 
@@ -165,6 +173,7 @@ func (r *Resolver) AutoTA() {
 			r.Lock()
 			r.rootKeys = nil
 			r.Unlock()
+			refreshResult = taRefreshPersistenceError
 			return
 		}
 		zlog.Warn("Trust anchor tombstones file unreadable — proceeding with empty in-memory tombstones", "path", tombstonePath, "error", err.Error())
@@ -300,16 +309,21 @@ func (r *Resolver) AutoTA() {
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(r.netTimeout))
 	defer cancel()
+	ctx, _ = middleware.EnsureRecursionWork(ctx, r.workPolicy)
+	defer middleware.FinishRecursionWork(ctx)
+	validationWork := r.dnssecWork(ctx)
 
 	resp, err := r.Resolve(ctx, req, r.rootServers, true, 5, 0, false, nil, true)
 	if err != nil {
 		zlog.Error("Refresh trust anchors failed", "error", err.Error())
+		refreshResult = autoTARefreshFailureCounter(err, taRefreshQueryError)
 		return
 	}
 
-	ok, revocationOnly, err := verifyFetchedKeys(candidate, resp.Answer)
+	ok, revocationOnly, err := verifyFetchedKeysWithWork(candidate, resp.Answer, validationWork)
 	if !ok {
 		zlog.Error("Refresh trust anchors failed", "error", err.Error())
+		refreshResult = autoTARefreshFailureCounter(err, taRefreshValidationError)
 		return
 	}
 	if revocationOnly {
@@ -332,7 +346,33 @@ func (r *Resolver) AutoTA() {
 		}
 	}
 
-	for tag, ta := range kskFetched {
+	fetchedTags := make([]uint16, 0, len(kskFetched))
+	for tag := range kskFetched {
+		fetchedTags = append(fetchedTags, tag)
+	}
+	sort.Slice(fetchedTags, func(i, j int) bool { return fetchedTags[i] < fetchedTags[j] })
+
+	// Authenticate every actionable revocation before mutating state. A shared
+	// work limit can reject a later self-signature; staging all results first
+	// prevents that rejection from returning after an earlier revocation was
+	// changed only in memory and before its tombstone/state contraction was
+	// persisted and published.
+	revocationSelfSigned, err := stageRevocationSelfSignatures(
+		resp.Answer,
+		fetchedTags,
+		kskFetched,
+		kskCurrent,
+		tombstones,
+		validationWork,
+	)
+	if err != nil {
+		zlog.Error("Unable to validate trust-anchor revocations", "error", err.Error())
+		refreshResult = autoTARefreshFailureCounter(err, taRefreshValidationError)
+		return
+	}
+
+	for _, tag := range fetchedTags {
+		ta := kskFetched[tag]
 		// Tombstoned by material? RFC 5011 §2.1 says revocation is
 		// permanent — ignore this fetched key regardless of tag.
 		if _, tombstoned := tombstones[dnskeyMaterialFP(ta.DNSKey)]; tombstoned {
@@ -368,7 +408,7 @@ func (r *Resolver) AutoTA() {
 					zlog.Warn("Trust anchor REVOKE bit matches tag but not key material — ignoring revocation", "keytag", tag)
 					continue
 				}
-				if !revocationIsSelfSigned(resp.Answer, ta.DNSKey) {
+				if !revocationSelfSigned[tag] {
 					zlog.Warn("Trust anchor REVOKE bit present but no valid self-signed RRSIG — ignoring revocation", "keytag", tag)
 					continue
 				}
@@ -510,6 +550,9 @@ func (r *Resolver) AutoTA() {
 	if stateErr != nil {
 		zlog.Error("Refresh trust anchors state write failed", "error", stateErr.Error())
 	}
+	if tombErr != nil || stateErr != nil {
+		refreshResult = taRefreshPersistenceError
+	}
 
 	// Publication policy: r.rootKeys is the live trust set that
 	// query validation paths consult. We refresh it only after a
@@ -551,7 +594,25 @@ func (r *Resolver) AutoTA() {
 		zlog.Info("Trust anchor tombstone", "keytag", tb.DNSKey.KeyTag(), "fp", fp, "firstseen", tb.FirstSeen.UTC().Format(time.UnixDate))
 	}
 
+	if tombErr == nil && stateErr == nil {
+		refreshResult = taRefreshSuccess
+	}
 	zlog.Info("Trust anchors refreshed", "path", filename, "nextrefresh", time.Now().Add(12*time.Hour).UTC().Format(time.UnixDate))
+}
+
+func autoTARefreshFailureCounter(err error, fallback *metric.Counter) *metric.Counter {
+	switch {
+	case errors.Is(err, middleware.ErrRecursionWorkLimit),
+		dnssec.IsCryptoWaitError(err):
+		return taRefreshWorkBudget
+	case errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, context.Canceled):
+		return taRefreshTimeout
+	case dnssec.IsWorkError(err):
+		return taRefreshWorkBudget
+	default:
+		return fallback
+	}
 }
 
 // sameKeyExceptRevoke reports whether revokedKey is the same DNSKEY
@@ -580,40 +641,67 @@ func sameKeyExceptRevoke(currentKey, revokedKey *dns.DNSKEY) bool {
 	return true
 }
 
-// revocationIsSelfSigned reports whether revokedKey (a DNSKEY carrying
-// the REVOKE bit) has a valid RRSIG over the DNSKEY RRset it was
-// fetched in, produced by revokedKey itself. Per RFC 5011 §2.1 this
-// self-signature is a precondition for accepting a revocation.
-func revocationIsSelfSigned(rrs []dns.RR, revokedKey *dns.DNSKEY) bool {
-	dnskeys := dnsutil.ExtractRRSet(rrs, "", dns.TypeDNSKEY)
-	if len(dnskeys) == 0 {
-		return false
+func revocationIsSelfSignedWithWork(
+	rrs []dns.RR,
+	revokedKey *dns.DNSKEY,
+	work dnssec.SignatureWork,
+) (bool, error) {
+	if revokedKey == nil {
+		return false, dnssec.ErrMissingKSK
 	}
-	rrsigs := dnsutil.ExtractRRSet(rrs, "", dns.TypeRRSIG)
-	revokedTag := revokedKey.KeyTag()
-	for _, rr := range rrsigs {
-		rrsig := rr.(*dns.RRSIG)
-		if rrsig.KeyTag != revokedTag {
-			continue
-		}
-		if rrsig.TypeCovered != dns.TypeDNSKEY {
-			continue
-		}
-		if rrsig.SignerName != revokedKey.Header().Name {
-			continue
-		}
-		if err := rrsig.Verify(revokedKey, dnskeys); err != nil {
-			continue
-		}
-		if !rrsig.ValidityPeriod(time.Time{}) {
-			continue
-		}
-		return true
+	msg := &dns.Msg{Answer: append([]dns.RR(nil), rrs...)}
+	keys := map[uint16][]*dns.DNSKEY{
+		revokedKey.KeyTag(): {revokedKey},
 	}
-	return false
+	return dnssec.VerifyRRSIGWithWork(revokedKey.Header().Name, keys, msg, work)
 }
 
-// verifyFetchedKeys authenticates a freshly fetched root DNSKEY RRset
+// stageRevocationSelfSignatures validates every actionable revocation before
+// AutoTA mutates trust-anchor state. Ordinary signature failures reject only
+// that revocation; a work-governor failure is terminal because continuing
+// would bypass the request-tree crypto budget.
+func stageRevocationSelfSignatures(
+	rrs []dns.RR,
+	fetchedTags []uint16,
+	kskFetched TrustAnchors,
+	kskCurrent TrustAnchors,
+	tombstones Tombstones,
+	work dnssec.SignatureWork,
+) (map[uint16]bool, error) {
+	selfSignedByTag := make(map[uint16]bool)
+	for _, tag := range fetchedTags {
+		ta := kskFetched[tag]
+		if ta == nil || ta.DNSKey == nil || ta.DNSKey.Flags&DNSKEYFlagRevoke == 0 {
+			continue
+		}
+		if _, tombstoned := tombstones[dnskeyMaterialFP(ta.DNSKey)]; tombstoned {
+			continue
+		}
+		existing := kskCurrent[tag]
+		if existing != nil &&
+			existing.DNSKey.Algorithm == ta.DNSKey.Algorithm &&
+			existing.DNSKey.Protocol == ta.DNSKey.Protocol &&
+			existing.DNSKey.PublicKey == ta.DNSKey.PublicKey &&
+			existing.DNSKey.Flags == ta.DNSKey.Flags {
+			continue
+		}
+		oldTA := kskCurrent[tag-DNSKEYFlagRevoke]
+		if oldTA == nil || (oldTA.State != StateValid && oldTA.State != StateMissing) {
+			continue
+		}
+		if !sameKeyExceptRevoke(oldTA.DNSKey, ta.DNSKey) {
+			continue
+		}
+		selfSigned, err := revocationIsSelfSignedWithWork(rrs, ta.DNSKey, work)
+		if dnssec.IsWorkError(err) {
+			return nil, err
+		}
+		selfSignedByTag[tag] = err == nil && selfSigned
+	}
+	return selfSignedByTag, nil
+}
+
+// verifyFetchedKeysWithWork authenticates a freshly fetched root DNSKEY RRset
 // against the currently trusted KSKs per RFC 5011 §2.2: the RRset is
 // accepted if *at least one* RRSIG from a currently-valid trust anchor
 // verifies it. RRSIGs from unknown keys (e.g. a newly published KSK
@@ -626,20 +714,24 @@ func revocationIsSelfSigned(rrs []dns.RR, revokedKey *dns.DNSKEY) bool {
 // RRSet specifically for the purpose of validating the revocation".
 // The returned revocationOnly flag indicates that no non-revoked
 // currently-trusted anchor signed the RRset: only revocation
-// processing is safe against that response, and the caller must not
-// drive any other state transition (AddPend seeding, Missing
-// marking, etc.) from it.
-func verifyFetchedKeys(rootKeys []dns.RR, rrs []dns.RR) (ok bool, revocationOnly bool, err error) {
+// processing is safe against that response, and the caller must not drive any
+// other state transition (AddPend seeding, Missing marking, etc.) from it.
+func verifyFetchedKeysWithWork(
+	rootKeys []dns.RR,
+	rrs []dns.RR,
+	work dnssec.SignatureWork,
+) (ok bool, revocationOnly bool, err error) {
 	fetchedkeys := dnsutil.ExtractRRSet(rrs, "", dns.TypeDNSKEY)
 	if len(fetchedkeys) == 0 {
 		return false, false, dnssec.ErrNoDNSKEY
 	}
 
-	currentKeys := make(map[uint16]*dns.DNSKEY)
+	currentKeys := make(map[uint16][]*dns.DNSKEY)
 	for _, r := range rootKeys {
 		dnskey := r.(*dns.DNSKEY)
 		if dnskey.Flags&DNSKEYFlagKSK != 0 {
-			currentKeys[dnskey.KeyTag()] = dnskey
+			tag := dnskey.KeyTag()
+			currentKeys[tag] = append(currentKeys[tag], dnskey)
 		}
 	}
 
@@ -654,78 +746,49 @@ func verifyFetchedKeys(rootKeys []dns.RR, rrs []dns.RR) (ok bool, revocationOnly
 	// be unsafe: key tags are 16-bit checksums and an attacker
 	// could craft an unrelated self-signed revoked key that
 	// collides on tag.
-	revokedBootstrap := make(map[uint16]*dns.DNSKEY)
+	revokedBootstrap := make(map[uint16][]*dns.DNSKEY)
 	for _, r := range fetchedkeys {
 		dnskey := r.(*dns.DNSKEY)
 		if dnskey.Flags&DNSKEYFlagRevoke == 0 {
 			continue
 		}
-		candidate := currentKeys[dnskey.KeyTag()-DNSKEYFlagRevoke]
-		if sameKeyExceptRevoke(candidate, dnskey) {
-			revokedBootstrap[dnskey.KeyTag()] = dnskey
+		for _, candidate := range currentKeys[dnskey.KeyTag()-DNSKEYFlagRevoke] {
+			if sameKeyExceptRevoke(candidate, dnskey) {
+				tag := dnskey.KeyTag()
+				revokedBootstrap[tag] = append(revokedBootstrap[tag], dnskey)
+				break
+			}
 		}
 	}
 
-	rrsigs := dnsutil.ExtractRRSet(rrs, "", dns.TypeRRSIG)
-	if len(rrsigs) == 0 {
-		return false, false, dnssec.ErrNoSignatures
-	}
-
+	msg := &dns.Msg{Answer: append([]dns.RR(nil), rrs...)}
 	var lastErr error = dnssec.ErrMissingDNSKEY
 
 	// Pass 1: non-revoked current trust anchors. A success here is
 	// full authentication — the caller may process any state
 	// transition against this RRset.
-	for _, rr := range rrsigs {
-		rrsig := rr.(*dns.RRSIG)
-		k, known := currentKeys[rrsig.KeyTag]
-		if !known {
-			continue
-		}
-		if verifyOneRRSIG(rrsig, k, fetchedkeys, &lastErr) {
-			return true, false, nil
-		}
+	if verified, verifyErr := dnssec.VerifyRRSIGWithWork(rootzone, currentKeys, msg, work); verified {
+		return true, false, nil
+	} else if dnssec.IsWorkError(verifyErr) {
+		return false, false, verifyErr
+	} else if verifyErr != nil {
+		lastErr = verifyErr
 	}
 
 	// Pass 2: revoked-bootstrap. A success here authenticates only
 	// the revocation itself; the caller must restrict processing to
 	// the revocation path (RFC 5011 §2.1).
-	for _, rr := range rrsigs {
-		rrsig := rr.(*dns.RRSIG)
-		k, known := revokedBootstrap[rrsig.KeyTag]
-		if !known {
-			continue
-		}
-		if verifyOneRRSIG(rrsig, k, fetchedkeys, &lastErr) {
+	if len(revokedBootstrap) > 0 {
+		if verified, verifyErr := dnssec.VerifyRRSIGWithWork(rootzone, revokedBootstrap, msg, work); verified {
 			return true, true, nil
+		} else if dnssec.IsWorkError(verifyErr) {
+			return false, false, verifyErr
+		} else if verifyErr != nil {
+			lastErr = verifyErr
 		}
 	}
 
 	return false, false, lastErr
-}
-
-// verifyOneRRSIG runs the per-signature checks for verifyFetchedKeys.
-// Returns true if the signature authenticates fetchedkeys under k;
-// otherwise updates *lastErr with the most informative failure.
-func verifyOneRRSIG(rrsig *dns.RRSIG, k *dns.DNSKEY, fetchedkeys []dns.RR, lastErr *error) bool {
-	if rrsig.SignerName != k.Header().Name {
-		*lastErr = dnssec.ErrMissingSigned
-		return false
-	}
-	rest := dnsutil.ExtractRRSet(fetchedkeys, rrsig.Header().Name, rrsig.TypeCovered)
-	if len(rest) == 0 {
-		*lastErr = dnssec.ErrMissingSigned
-		return false
-	}
-	if err := rrsig.Verify(k, rest); err != nil {
-		*lastErr = err
-		return false
-	}
-	if !rrsig.ValidityPeriod(time.Time{}) {
-		*lastErr = dnssec.ErrInvalidSignaturePeriod
-		return false
-	}
-	return true
 }
 
 func readFromTAFile(filename string) (TrustAnchors, error) {

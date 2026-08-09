@@ -88,6 +88,8 @@ func (r *Registry) List() []string {
 // the registry lock, so they may do heavy work (open files, spawn
 // goroutines) without starving concurrent List calls.
 func (r *Registry) Build(cfg *config.Config) *Pipeline {
+	workPolicy := MustRecursionWorkPolicyFromConfig(cfg.RecursionFirewall)
+
 	r.mu.Lock()
 	order := make([]string, len(r.order))
 	copy(order, r.order)
@@ -108,7 +110,7 @@ func (r *Registry) Build(cfg *config.Config) *Pipeline {
 		zlog.Debug("Middleware registered", "name", h.Name(), "index", i)
 	}
 
-	return newPipeline(handlers, byName, order)
+	return newPipeline(handlers, byName, order, workPolicy)
 }
 
 // loadPlugins walks cfg.Plugins, opens each as a Go plugin and registers

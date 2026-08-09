@@ -9,6 +9,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -126,6 +127,11 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 		return dnsutil.SetRcode(req, dns.RcodeServerFailure, do)
 	}
 
+	// Pin the request-tree guard before deriving the resolver deadline so a
+	// terminal request-local cause can be attached to the exact response and
+	// observed by outer cache/queryer wrappers.
+	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
+
 	// Prepare request for authoritative servers
 	// Clear RD and AD flags as we're querying authoritative servers
 	req.RecursionDesired = false
@@ -146,6 +152,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	depth := h.cfg.Maxdepth
 	isRootQuery := q.Name == rootzone
 	resp, err := h.resolver.Resolve(ctx, req, h.resolver.rootServers, true, depth, 0, false, nil, isRootQuery)
+	requestCtxErr := contextutil.EffectiveError(ctx)
 
 	// Restore original CD flag if DNSSEC is not supported
 	if !h.resolver.dnssec {
@@ -161,7 +168,14 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 
 		// Add Extended DNS Error information for recursor validation failures
 		edeCode, edeText := dnsutil.ErrorToEDE(err)
-		return dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
+		resp := dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do, edeCode, edeText)
+		switch {
+		case middleware.IsRequestLocalResolutionError(err):
+			middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
+		case requestCtxErr != nil:
+			middleware.MarkRequestLocalFailureResponse(ctx, resp, requestCtxErr)
+		}
+		return resp
 	}
 
 	// Convert certain response codes to SERVFAIL with appropriate EDE
@@ -252,6 +266,13 @@ func (h *DNSHandler) SetStore(s middleware.Store) { h.resolver.store.Store(&s) }
 // for policy-aware internal lookups (NS A/AAAA, DNAME target).
 // Auto-wired during middleware.Setup via middleware.QueryerSetter.
 func (h *DNSHandler) SetQueryer(q middleware.Queryer) { h.resolver.queryer.Store(&q) }
+
+// DNSSECCryptoLimiter exposes the resolver-owned concurrency gate through the
+// narrow middleware wiring interface. Optional cache-side hashing uses
+// non-blocking admission on the same gate as required DNSSEC validation.
+func (h *DNSHandler) DNSSECCryptoLimiter() middleware.DNSSECCryptoLimiter {
+	return h.resolver.cryptoLimiter
+}
 
 // (*DNSHandler).Stop stop gracefully shuts down the resolver.
 func (h *DNSHandler) Stop() {

@@ -134,6 +134,28 @@ func TestExchange_UDP_SkipsMismatchedID(t *testing.T) {
 	}
 }
 
+func TestQuestionMatchesUsesDNSASCIICaseFolding(t *testing.T) {
+	req := dns.Question{
+		Name:   "k.example.",
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	}
+	if !QuestionMatches(req, []dns.Question{{
+		Name:   "K.Example.",
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	}}) {
+		t.Fatal("ordinary ASCII DNS case difference did not match")
+	}
+	if QuestionMatches(req, []dns.Question{{
+		Name:   "\u212A.example.",
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	}}) {
+		t.Fatal("Unicode Kelvin sign was incorrectly folded to ASCII k")
+	}
+}
+
 // fakeStreamConn is a net.Conn (not a net.PacketConn, so (*Conn).ReadMsg
 // takes its stream branch) that replays a fixed byte script across Reads
 // and then reports EOF — letting a test deliver a length prefix followed

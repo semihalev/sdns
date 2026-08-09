@@ -10,6 +10,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,7 +244,15 @@ func TestClientExchange_TruncationFallsBackToTCP(t *testing.T) {
 	go func() { _ = s.ActivateAndServe() }()
 	defer func() { _ = s.Shutdown() }()
 
-	c := &Client{Proto: "udp", Timeout: 2 * time.Second}
+	var attempts []string
+	c := &Client{
+		Proto:   "udp",
+		Timeout: 2 * time.Second,
+		BeforeAttempt: func(proto string) error {
+			attempts = append(attempts, proto)
+			return nil
+		},
+	}
 	resp, _, err := c.Exchange(context.Background(), newReq(), udpAddr)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
@@ -253,6 +262,291 @@ func TestClientExchange_TruncationFallsBackToTCP(t *testing.T) {
 	}
 	if len(resp.Answer) != 1 {
 		t.Fatalf("expected 1 answer from TCP fallback, got %d", len(resp.Answer))
+	}
+	if len(attempts) != 2 || attempts[0] != "udp" || attempts[1] != "tcp" {
+		t.Fatalf("attempt protocols = %v, want [udp tcp]", attempts)
+	}
+}
+
+func TestClientExchange_BeforeAttemptCanRejectTCPFallback(t *testing.T) {
+	udpAddr, stopUDP := startServer(t, "udp", func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Truncated = true
+		_ = w.WriteMsg(m)
+	})
+	defer stopUDP()
+
+	errBudget := errors.New("test attempt budget exhausted")
+	var attempts []string
+	c := &Client{
+		Proto:   "udp",
+		Timeout: 2 * time.Second,
+		BeforeAttempt: func(proto string) error {
+			attempts = append(attempts, proto)
+			if proto == "tcp" {
+				return errBudget
+			}
+			return nil
+		},
+	}
+
+	resp, _, err := c.Exchange(context.Background(), newReq(), udpAddr)
+	if !errors.Is(err, errBudget) {
+		t.Fatalf("exchange error = %v, want %v", err, errBudget)
+	}
+	if resp != nil {
+		t.Fatalf("response = %v, want nil after rejected TCP fallback", resp)
+	}
+	if len(attempts) != 2 || attempts[0] != "udp" || attempts[1] != "tcp" {
+		t.Fatalf("attempt protocols = %v, want [udp tcp]", attempts)
+	}
+}
+
+func TestClientExchange_CanceledContextSkipsAttemptHook(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var attempts int
+	c := &Client{
+		BeforeAttempt: func(string) error {
+			attempts++
+			return nil
+		},
+	}
+	resp, _, err := c.Exchange(ctx, newReq(), "127.0.0.1:1")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("exchange error = %v, want context.Canceled", err)
+	}
+	if resp != nil {
+		t.Fatalf("response = %v, want nil", resp)
+	}
+	if attempts != 0 {
+		t.Fatalf("attempt hook calls = %d, want 0 for canceled context", attempts)
+	}
+}
+
+func TestClientExchange_CancelInterruptsInFlightUDPRead(t *testing.T) {
+	received := make(chan struct{})
+	release := make(chan struct{})
+	addr, stop := startServer(t, "udp", func(dns.ResponseWriter, *dns.Msg) {
+		close(received)
+		<-release
+	})
+	defer func() {
+		close(release)
+		stop()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := (&Client{Proto: "udp"}).Exchange(ctx, newReq(), addr)
+		result <- err
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive the in-flight UDP query")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("exchange error = %v, want context.Canceled", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("in-flight UDP read ignored context cancellation")
+	}
+}
+
+type blockingDeadlineConn struct {
+	net.Conn
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingDeadlineConn) SetDeadline(time.Time) error {
+	close(c.started)
+	<-c.release
+	return nil
+}
+
+func TestInterruptOnCancelWaitsForStartedCallback(t *testing.T) {
+	conn := &blockingDeadlineConn{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	co := &Conn{Conn: conn}
+	ctx, cancel := context.WithCancel(context.Background())
+	interrupt := co.BeginCancelInterrupt(ctx)
+	cancel()
+
+	select {
+	case <-conn.started:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation callback did not start")
+	}
+	cleanupDone := make(chan struct{})
+	go func() {
+		interrupt.Stop()
+		close(cleanupDone)
+	}()
+	select {
+	case <-cleanupDone:
+		t.Fatal("cleanup returned while SetDeadline callback was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	state := &co.cancelInterrupt
+	deadline := time.Now().Add(time.Second)
+	for {
+		state.mu.Lock()
+		phase := state.phase
+		state.mu.Unlock()
+		if phase == cancelInterruptStopping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("interrupt phase = %d, want stopping", phase)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("concurrent duplicate Stop did not panic")
+			}
+		}()
+		interrupt.Stop()
+	}()
+
+	close(conn.release)
+	select {
+	case <-cleanupDone:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not return after cancellation callback completed")
+	}
+
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	next := co.BeginCancelInterrupt(nextCtx)
+	next.Stop()
+	nextCancel()
+}
+
+func TestInterruptOnCancelCleanupIsIdempotentAfterStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	interrupt := new(Conn).BeginCancelInterrupt(ctx)
+	interrupt.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		interrupt.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("second cleanup blocked after the callback was stopped")
+	}
+}
+
+func TestCancelInterruptStaleHandleDoesNotStopNextGeneration(t *testing.T) {
+	co := new(Conn)
+	firstCtx, firstCancel := context.WithCancel(context.Background())
+	defer firstCancel()
+	first := co.BeginCancelInterrupt(firstCtx)
+	first.Stop()
+
+	secondCtx, secondCancel := context.WithCancel(context.Background())
+	defer secondCancel()
+	second := co.BeginCancelInterrupt(secondCtx)
+
+	first.Stop()
+	if !co.cancelInterrupt.active() {
+		t.Fatal("stale handle stopped the next generation")
+	}
+	second.Stop()
+}
+
+func TestCancelInterruptRejectsOverlappingBegin(t *testing.T) {
+	co := new(Conn)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	interrupt := co.BeginCancelInterrupt(ctx)
+	defer interrupt.Stop()
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("overlapping BeginCancelInterrupt did not panic")
+			}
+		}()
+		co.BeginCancelInterrupt(ctx)
+	}()
+}
+
+type panicWriteConn struct {
+	net.Conn
+}
+
+func (panicWriteConn) Write([]byte) (int, error) {
+	panic("write failed")
+}
+
+func TestExchangeContextStopsInterruptAfterPanic(t *testing.T) {
+	co := &Conn{Conn: panicWriteConn{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	panicked := false
+	func() {
+		defer func() {
+			panicked = recover() != nil
+		}()
+		_, _, _ = co.ExchangeContext(ctx, newReq())
+	}()
+	if !panicked {
+		t.Fatal("panicking connection did not propagate its panic")
+	}
+	co.cancelInterrupt.mu.Lock()
+	phase := co.cancelInterrupt.phase
+	co.cancelInterrupt.mu.Unlock()
+	if phase != cancelInterruptIdle {
+		t.Fatalf("panic left cancellation interrupt in phase %d, want idle", phase)
+	}
+
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	next := co.BeginCancelInterrupt(nextCtx)
+	next.Stop()
+	nextCancel()
+}
+
+func TestClientExchange_NilAttemptHookPreservesOperationError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// A nil hook is the firewall-off path. Preserve the historical order in
+	// which the transport starts its own operation instead of adding a new
+	// eager context preflight. This malformed name makes DoH fail while
+	// packing, before it needs an endpoint or HTTP client.
+	req := new(dns.Msg)
+	req.Question = []dns.Question{{
+		Name:   strings.Repeat("a", 64) + ".",
+		Qtype:  dns.TypeA,
+		Qclass: dns.ClassINET,
+	}}
+	c := &Client{Proto: "doh"}
+	resp, _, err := c.Exchange(ctx, req, "")
+	if err == nil || !strings.Contains(err.Error(), "pack") {
+		t.Fatalf("exchange error = %v, want DNS packing error", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("exchange error = %v, want operation error before context cancellation", err)
+	}
+	if resp != nil {
+		t.Fatalf("response = %v, want nil", resp)
 	}
 }
 
@@ -290,4 +584,25 @@ func BenchmarkClientExchangeUDP(b *testing.B) {
 			b.Fatalf("exchange: %v", err)
 		}
 	}
+}
+
+func BenchmarkCancelInterrupt(b *testing.B) {
+	b.Run("background", func(b *testing.B) {
+		co := new(Conn)
+		ctx := context.Background()
+		b.ReportAllocs()
+		for b.Loop() {
+			co.BeginCancelInterrupt(ctx).Stop()
+		}
+	})
+
+	b.Run("cancelable", func(b *testing.B) {
+		co := new(Conn)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		b.ReportAllocs()
+		for b.Loop() {
+			co.BeginCancelInterrupt(ctx).Stop()
+		}
+	})
 }

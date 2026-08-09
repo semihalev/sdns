@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"time"
 
 	"github.com/miekg/dns"
@@ -35,12 +36,35 @@ type Store interface {
 	SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.Time)
 }
 
+// ContextStore is the optional request-tree-aware cache contract. The built-in
+// cache uses ctx to share bounded NSEC3 hash results with required DNSSEC
+// validation and to retain client CD/ECS bypass policy across resolver-private
+// DS and DNSKEY sub-queries. Third-party stores can keep implementing Store.
+type ContextStore interface {
+	Store
+	GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, bool)
+}
+
 // CutStore is the extended production cache contract. Keeping Store's Phase
 // 1b signature stable avoids forcing plugin/test stores to implement lineage
 // identity before Phase 3 needs it; the built-in cache implements both.
 type CutStore interface {
 	Store
 	SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.Time, cutKey uint64)
+}
+
+// ResolutionFailureStore is the optional RFC 9520 extension implemented by
+// the built-in cache. A resolver records a zone only after every usable
+// authority endpoint for that delegation failed; the cache can then suppress
+// random-QNAME retries below the same failed zone (and the resulting
+// parent/ancestor traffic) until the bounded backoff expires.
+//
+// This stays separate from Store so plugins and test stores that only need
+// ordinary answer caching do not have to implement failure-state policy.
+type ResolutionFailureStore interface {
+	Store
+	RecordZoneFailure(q dns.Question, zone string)
+	ClearZoneFailure(q dns.Question, zone string)
 }
 
 // StoreProvider is implemented by handlers that own a Store which
@@ -68,4 +92,25 @@ type QueryerSetter interface {
 // prefetch worker).
 type PrefetchQueryerSetter interface {
 	SetPrefetchQueryer(q Queryer)
+}
+
+// DNSSECCryptoLimiter is the narrow shared concurrency seam required by
+// optional cache-side DNSSEC work. TryAcquire is deliberately non-blocking:
+// RFC 8198 synthesis is an optimization, so saturation must fall through to
+// ordinary resolution instead of waiting ahead of required validation.
+type DNSSECCryptoLimiter interface {
+	TryAcquire() (release func(), ok bool)
+}
+
+// DNSSECCryptoLimiterProvider is implemented by the resolver that owns the
+// process-wide DNSSEC concurrency gate.
+type DNSSECCryptoLimiterProvider interface {
+	DNSSECCryptoLimiter() DNSSECCryptoLimiter
+}
+
+// DNSSECCryptoLimiterSetter is implemented by optional DNSSEC work consumers
+// such as the RFC 8198 proof cache. Setup wires the resolver-owned instance
+// before publishing the pipeline.
+type DNSSECCryptoLimiterSetter interface {
+	SetDNSSECCryptoLimiter(DNSSECCryptoLimiter)
 }

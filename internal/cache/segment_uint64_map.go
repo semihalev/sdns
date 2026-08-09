@@ -59,13 +59,16 @@ func NewSegmentUInt64Map[V any](segmentPower uint8, initialCapacity int) *Segmen
 }
 
 // getSegment returns the segment for a given key
-func (m *SegmentUInt64Map[V]) getSegment(key uint64) *segment[V] {
+func (m *SegmentUInt64Map[V]) getSegmentIndex(key uint64) uint {
 	// Use the high bits of the hash as segment index
 	// This distributes sequential keys across different segments
 	// and reduces contention for clustered keys
 	h := uint(key * 0x9E3779B9)
-	segmentIndex := (h >> 16) & uint(m.segmentMask) //nolint:gosec // G115 - segmentMask ensures valid range
-	return m.segments[segmentIndex]
+	return (h >> 16) & uint(m.segmentMask) //nolint:gosec // G115 - segmentMask ensures valid range
+}
+
+func (m *SegmentUInt64Map[V]) getSegment(key uint64) *segment[V] {
+	return m.segments[m.getSegmentIndex(key)]
 }
 
 // Has checks if a key exists in the map
@@ -98,6 +101,61 @@ func (m *SegmentUInt64Map[V]) Set(key uint64, value V) {
 	// Only increment count if size increased (new key was added)
 	if newSize > oldSize {
 		m.count.Add(1)
+	}
+}
+
+// SetWithCap adds or updates a key-value pair and, when total occupancy
+// exceeds capacity, evicts up to two other entries from the same segment —
+// under the same write lock the insert already holds. This is the whole
+// eviction design: no extra lock, no evictor handoff, no bulk pass for
+// other writers to sleep behind. Every over-capacity insert pays a small
+// constant toll (net occupancy change ≥ -1), so the map is self-bounding
+// at any write rate. The scan offset is derived from the key's hash with
+// a different mixer than slot placement, so the loss stays uniform.
+func (m *SegmentUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) {
+	segIdx := m.getSegmentIndex(key)
+	segment := m.segments[segIdx]
+	offset := int((key * 0xff51afd7ed558ccd) >> 40) //nolint:gosec // G115 - masked to bucket range by EvictKeysAt
+
+	segment.rwlock.Lock()
+	oldSize := segment.data.Len()
+	segment.data.Put(key, value)
+	if segment.data.Len() > oldSize {
+		m.count.Add(1)
+	}
+	deficit := 0
+	if m.count.Load() > capacity {
+		d := segment.data.EvictKeysAt(offset, 2, key)
+		if d > 0 {
+			m.count.Add(int64(-d))
+		}
+		deficit = 2 - d
+	}
+	segment.rwlock.Unlock()
+
+	if deficit <= 0 {
+		return
+	}
+
+	// The writer's own segment couldn't cover the toll — it happens when
+	// entries are sparse relative to the segment count (small caches).
+	// Collect the remainder from the following segments, one lock at a
+	// time and never nested, so two writers can never hold each other's
+	// segment. Stop as soon as the map is back under capacity.
+	for i := uint(1); i < uint(len(m.segments)) && deficit > 0; i++ {
+		if m.count.Load() <= capacity {
+			return
+		}
+		next := m.segments[(segIdx+i)&uint(m.segmentMask)] //nolint:gosec // G115 - segmentMask ensures valid range
+
+		next.rwlock.Lock()
+		d := next.data.EvictKeysAt(offset, deficit, key)
+		next.rwlock.Unlock()
+
+		if d > 0 {
+			m.count.Add(int64(-d))
+			deficit -= d
+		}
 	}
 }
 

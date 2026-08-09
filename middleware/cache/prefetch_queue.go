@@ -9,15 +9,17 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
 )
 
 // PrefetchRequest represents a DNS query to be prefetched.
 type PrefetchRequest struct {
-	Request *dns.Msg
-	Key     uint64
-	Cache   *Cache      // Reference to the cache to store prefetched results
-	Entry   *CacheEntry // Entry that claimed the prefetch; used to release the claim on failure/drop
+	Request       *dns.Msg
+	Key           uint64
+	Cache         *Cache      // Reference to the cache to store prefetched results
+	Entry         *CacheEntry // Entry that claimed the prefetch; used to release the claim on failure/drop
+	RequestHadECS bool        // Original client ECS, retained after EDNS policy stripping
 }
 
 // PrefetchQueue manages prefetch requests with worker pool.
@@ -123,6 +125,10 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	ctx, cancel := context.WithTimeout(pq.ctx, 5*time.Second)
 	defer cancel()
 	defer releasePrefetchClaim(req.Entry)
+	ctx = dnssec.EnsureNSEC3HashMemo(ctx)
+	if req.RequestHadECS {
+		ctx = middleware.MarkClientECS(ctx)
+	}
 
 	zlog.Debug("Processing prefetch", "query", formatQuestion(req.Request.Question[0]))
 
@@ -183,6 +189,37 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cutUntil, cutKey) {
 		zlog.Debug("Prefetch dropped, entry superseded", "query", formatQuestion(req.Request.Question[0]))
 		return
+	}
+	// The cache-less prefetch pipeline bypasses ResponseWriter.WriteMsg, so a
+	// successful CAS must publish its resolver-authenticated NXDOMAIN cut
+	// here. Never publish before the CAS: a stale refresh that lost the
+	// generation race must not create subtree state. Scoped entries are not
+	// normally prefetch-eligible; the explicit guard also prevents a direct
+	// caller from widening one ECS audience into a global cut. Preserve the
+	// original request's CD/ECS isolation too: middleware may clear CD on the
+	// response, and an ECS client can prefetch a shared SCOPE=0 entry.
+	requestCD := req.Request != nil && req.Request.CheckingDisabled
+	if !req.Entry.scoped && !requestCD && !req.RequestHadECS &&
+		!hasEDNSClientSubnet(req.Request) &&
+		!resp.CheckingDisabled {
+		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&
+			negative.Aggressive &&
+			negative.Proof != nil {
+			req.Cache.store.RecordDenialProof(
+				negative.Proof,
+				negative.Zone,
+				negative.Kind,
+				cutUntil,
+			)
+			if negative.Proof.Rcode == dns.RcodeNameError {
+				req.Cache.store.RecordNXDomainCut(
+					negative.Proof,
+					negative.Subject,
+					negative.Zone,
+					cutUntil,
+				)
+			}
+		}
 	}
 	pq.metrics.Prefetch()
 

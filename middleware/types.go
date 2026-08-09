@@ -41,10 +41,16 @@ func (f HandlerFunc) ServeDNS(ctx context.Context, ch *Chain) { f(ctx, ch) }
 // the untyped-nil and typed-nil cases so Constructors can keep their
 // existing "return nil when disabled" idiom.
 func isNilHandler(h Handler) bool {
-	if h == nil {
+	return isNilInterface(h)
+}
+
+// isNilInterface detects nil dynamic values behind any interface. Startup
+// wiring uses it for optional providers as well as Handler construction.
+func isNilInterface(value any) bool {
+	if value == nil {
 		return true
 	}
-	v := reflect.ValueOf(h)
+	v := reflect.ValueOf(value)
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Interface, reflect.Chan, reflect.Map, reflect.Slice, reflect.Func:
 		return v.IsNil()

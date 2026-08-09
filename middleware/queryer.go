@@ -104,6 +104,8 @@ type pipelineQueryer struct {
 }
 
 func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	ctx, _ = EnsureResolutionAttemptGuard(ctx)
+
 	// Generic recursion bound — see ErrMaxRecursion doc for the
 	// motivation. A plugin middleware that dispatches an internal
 	// sub-query from inside its own ServeDNS and ends up back in
@@ -112,6 +114,9 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 	depth, _ := ctx.Value(queryerDepthKey).(int)
 	if depth >= maxQueryerRecursion {
 		return nil, ErrMaxRecursion
+	}
+	if err := DebitRecursionWork(ctx, RecursionWorkInternalQuery); err != nil {
+		return nil, err
 	}
 	ctx = context.WithValue(ctx, queryerDepthKey, depth+1)
 
@@ -130,6 +135,13 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 
 	ch.Reset(w, req)
 	ch.Next(ctx)
+
+	if err := RecursionWorkEnforcementError(ctx); err != nil {
+		return nil, err
+	}
+	if err := RequestLocalFailureForResponse(ctx, w.Msg()); err != nil {
+		return nil, err
+	}
 
 	// w.Msg() is evaluated for the return value before the
 	// deferred putBufferWriter clears w.msg, and the *dns.Msg it

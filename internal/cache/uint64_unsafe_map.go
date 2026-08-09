@@ -394,6 +394,48 @@ func (m *UInt64Map[V]) Len() int {
 	return m.size
 }
 
+// EvictKeysAt deletes up to n entries (skipping key skip) in one scan
+// starting at offset, wrapping around, and returns the number deleted.
+// This is eviction's primitive: deleting at the scan cursor skips the
+// second hash-and-probe a collect-then-Del pass would pay per key. The
+// caller derives offset from the key hash, so repeated eviction spreads
+// across the array instead of hollowing out its front — a front-biased
+// scan degrades to O(buckets) per key once the leading slots empty out.
+func (m *UInt64Map[V]) EvictKeysAt(offset, n int, skip uint64) int {
+	if m == nil || n <= 0 || len(m.data) == 0 {
+		return 0
+	}
+
+	var zero V
+	deleted := 0
+	idx := offset & m.mask
+	// Every iteration either advances the cursor or consumes one of the
+	// n deletions, so the scan terminates.
+	for scanned := 0; scanned <= m.mask && deleted < n; {
+		if k := m.data[idx].Key; k == 0 || k == skip {
+			idx = (idx + 1) & m.mask
+			scanned++
+			continue
+		}
+		m.data[idx].Key = 0
+		m.data[idx].Value = zero
+		m.size--
+		m.backwardShiftDelete(idx)
+		deleted++
+		// Backward shift may pull a cluster entry into idx — re-examine
+		// the same slot rather than advancing past it.
+	}
+	// The zero key lives out of band; take it last so it stays evictable.
+	// skip == 0 means the caller just stored the zero key — protect it.
+	if deleted < n && m.hasZeroKey && skip != 0 {
+		m.hasZeroKey = false
+		m.zeroVal = zero
+		m.size--
+		deleted++
+	}
+	return deleted
+}
+
 // Internal helper functions
 
 // primaryIndex calculates the initial index for a key
@@ -488,55 +530,38 @@ func (m *UInt64Map[V]) grow() {
 }
 
 // backwardShiftDelete implements backward shift deletion for linear probing
-// This is efficient and maintains the invariant that all keys remain findable
+// (Knuth 6.4 algorithm R). Scanning continues past entries that cannot move —
+// stopping at the first unmovable entry would leave any later entry whose
+// probe path crosses the gap unfindable (a ghost: present and counted, never
+// returned by Get). Each cluster slot is visited exactly once, so a delete
+// costs O(cluster), not O(cluster²).
 func (m *UInt64Map[V]) backwardShiftDelete(deletedIdx int) {
 	var zero V
-	idx := deletedIdx
+	i := deletedIdx
 
-	// Shift entries back to fill the gap
-	for {
-		// Look at the next slot
-		nextIdx := (idx + 1) & m.mask
-
-		// If next slot is empty, we're done
-		if m.data[nextIdx].Key == 0 {
+	for j := i; ; {
+		j = (j + 1) & m.mask
+		if m.data[j].Key == 0 {
 			break
 		}
 
-		// Get the ideal position for the key in the next slot
-		idealIdx := m.primaryIndex(m.data[nextIdx].Key)
-
-		// With linear probing, we need to check if moving this key
-		// would break the probe chain for finding it
-		// The key can be moved if there's no gap between its ideal position
-		// and the empty slot when following the linear probe sequence
-
-		// Simple check: can we reach the empty slot from the ideal position?
-		canReachEmpty := false
-		checkIdx := idealIdx
-		for i := 0; i < len(m.data); i++ {
-			if checkIdx == idx {
-				canReachEmpty = true
-				break
+		// The entry at j may move into the gap at i only if its ideal
+		// slot is NOT cyclically within (i, j] — otherwise the move would
+		// put it before its ideal position and break its probe chain.
+		k := m.primaryIndex(m.data[j].Key)
+		if i <= j {
+			if i < k && k <= j {
+				continue
 			}
-			if m.data[checkIdx].Key == 0 {
-				// There's a gap before reaching the empty slot
-				break
-			}
-			checkIdx = (checkIdx + 1) & m.mask
-		}
-
-		if canReachEmpty {
-			// Move this entry back to fill the gap
-			m.data[idx] = m.data[nextIdx]
-			m.data[nextIdx].Key = 0
-			m.data[nextIdx].Value = zero
-			// Continue from the newly empty slot
-			idx = nextIdx
 		} else {
-			// Cannot move this key without breaking probe chains
-			// We're done
-			break
+			if i < k || k <= j {
+				continue
+			}
 		}
+
+		m.data[i] = m.data[j]
+		m.data[j].Key = 0
+		m.data[j].Value = zero
+		i = j
 	}
 }

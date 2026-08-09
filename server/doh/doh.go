@@ -107,6 +107,9 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 
 		msg := handle(req)
 		if msg == nil {
+			if r.Context().Err() != nil {
+				return
+			}
 			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}
@@ -161,6 +164,9 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 
 		msg := handle(req)
 		if msg == nil {
+			if r.Context().Err() != nil {
+				return
+			}
 			writeHTTPError(w, http.StatusBadRequest)
 			return
 		}

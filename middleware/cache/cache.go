@@ -12,10 +12,12 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/waitgroup"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -29,6 +31,13 @@ const (
 	name   = "cache"
 	maxTTL = dnsutil.MaxCacheTTL
 	minTTL = dnsutil.MinCacheTTL
+
+	// One clean re-election lets a healthy follower recover after the first
+	// expired-failure probe was rejected by a request-local budget. A second
+	// request-local generation sheds the remaining cohort instead of turning
+	// N followers into N sequential authority probes.
+	maxFailureProbeRegroups  = 1
+	failureProbeLimitEDEText = "Failure probe retry limit exceeded"
 
 	// maxCnameChaseDepth bounds how many nested CNAME-chase
 	// invocations may happen for a single client query. The
@@ -57,17 +66,39 @@ func withCnameChaseDepth(ctx context.Context, depth int) context.Context {
 	return context.WithValue(ctx, cnameChaseDepthKey, depth)
 }
 
+// sharedDenialBypassKey pins raw ECS and incoming CD=1 to the whole request
+// tree. CNAME and DNAME follow-ups manufacture fresh DO=1 messages and can
+// inherit header bits from a rewritten response; message-local checks would
+// therefore let an audience-scoped or checking-disabled client consume global
+// RFC 8020/8198 state on the alias target.
+type sharedDenialBypassKeyType struct{}
+
+var sharedDenialBypassKey = &sharedDenialBypassKeyType{}
+
+func withSharedDenialBypass(ctx context.Context) context.Context {
+	if sharedDenialBypass(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, sharedDenialBypassKey, true)
+}
+
+func sharedDenialBypass(ctx context.Context) bool {
+	bypass, _ := ctx.Value(sharedDenialBypassKey).(bool)
+	return bypass
+}
+
 // Cache is the cache implementation.
 type Cache struct {
 	positive *PositiveCache
 	negative *NegativeCache
+	failure  *FailureCache
 
 	// store is the public-facing storage facade backed by the same
-	// positive/negative sub-caches. External callers (resolver
+	// answer caches and RFC 9520 failure cache. External callers (resolver
 	// sub-queries, queryer-driven prefetch, future API purge wiring)
 	// route through Store; the middleware itself uses both views —
 	// Store for the new API surface, direct sub-cache access for
-	// the few existing hot paths that already have a key in hand.
+	// the few existing answer hot paths that already have a key in hand.
 	store *Store
 
 	prefetchQueue *PrefetchQueue
@@ -81,6 +112,10 @@ type Cache struct {
 	// cache-less sub-pipeline so the refresh hits the upstream
 	// resolver / forwarder rather than its own stale entry.
 	prefetchQueryer middleware.Queryer
+	// dnssecCryptoLimiter is the resolver-owned shared concurrency gate.
+	// RFC 8198 NSEC3 synthesis uses only non-blocking acquisition: failure to
+	// get a slot is a cache miss, never a client-visible error.
+	dnssecCryptoLimiter middleware.DNSSECCryptoLimiter
 
 	config  CacheConfig
 	metrics *CacheMetrics
@@ -104,6 +139,9 @@ type Cache struct {
 
 // New creates a new cache.
 func New(cfg *config.Config) *Cache {
+	failureCfg := cfg.RecursionFirewall
+	failureCfg.Normalize()
+
 	// Build cache configuration
 	cacheConfig := CacheConfig{
 		Size:        cfg.CacheSize,
@@ -145,14 +183,36 @@ func New(cfg *config.Config) *Cache {
 
 	metrics := &CacheMetrics{}
 
-	positive := NewPositiveCache(cacheConfig.Size/2, minTTL, maxTTL, metrics)
-	negative := NewNegativeCache(cacheConfig.Size/2, minTTL, cacheConfig.NegativeTTL, metrics)
+	// RFC 9520 failures no longer occupy the legacy negative answer cache.
+	// Give the configured answer-cache budget to the live positive/NXDOMAIN
+	// store instead of stranding half of it in an unreachable SERVFAIL cache.
+	// Keep one legacy slot so the exported NegativeCache/Store compatibility
+	// surface remains non-nil for programmatic users.
+	positive := NewPositiveCache(cacheConfig.Size, minTTL, maxTTL, metrics)
+	negative := NewNegativeCache(1, minTTL, cacheConfig.NegativeTTL, metrics)
+	failure, err := NewFailureCache(FailureCacheConfig{
+		Size:       failureCfg.FailureCacheSize,
+		InitialTTL: failureCfg.FailureCacheMinTTL.Duration,
+		MaxTTL:     failureCfg.FailureCacheMaxTTL.Duration,
+	})
+	if err != nil {
+		zlog.Warn("Failure cache configuration validation failed, using defaults", "error", err.Error())
+		failure, _ = NewFailureCache(FailureCacheConfig{
+			Size:       config.DefaultRecursionFirewallFailureCacheSize,
+			InitialTTL: config.DefaultRecursionFirewallFailureCacheMinTTL,
+			MaxTTL:     config.DefaultRecursionFirewallFailureCacheMaxTTL,
+		})
+	}
+
+	store := NewStore(positive, negative, cacheConfig, failure)
+	store.failureCacheDisabled = !cfg.RFC9520Enabled()
 
 	c := &Cache{
 		positive: positive,
 		negative: negative,
+		failure:  failure,
 
-		store: NewStore(positive, negative, cacheConfig),
+		store: store,
 
 		config:    cacheConfig,
 		metrics:   metrics,
@@ -166,6 +226,12 @@ func New(cfg *config.Config) *Cache {
 			},
 		},
 	}
+	// Shared denial state requires validation performed by this resolver.
+	// Forwarder AD is a wire assertion, not local provenance, and DNSSEC-off
+	// mode cannot safely admit or consume RFC 8020/8198 proofs.
+	c.store.sharedDenialDisabled =
+		cfg.DNSSEC == "off" || len(cfg.ForwarderServers) != 0
+	c.store.rfc8198Disabled = !cfg.RFC8198Enabled()
 
 	// Initialize prefetch queue if enabled
 	if cacheConfig.Prefetch > 0 {
@@ -180,7 +246,13 @@ func New(cfg *config.Config) *Cache {
 
 	// Register metrics instance for Prometheus hit rate calculation
 	SetMetricsInstance(c.metrics)
-	SetCacheSizeFuncs(c.positive.Len, c.negative.Len)
+	SetCacheSizeFuncs(
+		c.positive.Len,
+		c.negative.Len,
+		c.store.FailureLen,
+		c.store.NXDomainCutLen,
+		c.store.DenialProofLen,
+	)
 
 	return c
 }
@@ -236,6 +308,15 @@ func (c *Cache) SetQueryer(q middleware.Queryer) { c.queryer = q }
 // instead of returning its own about-to-expire entry.
 func (c *Cache) SetPrefetchQueryer(q middleware.Queryer) { c.prefetchQueryer = q }
 
+// SetDNSSECCryptoLimiter installs the resolver-owned gate used by optional
+// NSEC3 proof lookups. Called once by middleware.Setup before publication.
+func (c *Cache) SetDNSSECCryptoLimiter(limiter middleware.DNSSECCryptoLimiter) {
+	c.dnssecCryptoLimiter = limiter
+	if c.store != nil {
+		c.store.dnssecCryptoLimiter = limiter
+	}
+}
+
 // errQueryerNotWired is returned when an internal Cache lookup fires
 // before sdns.go wiring has installed a Queryer. Production never
 // sees this path; it exists so tests that construct a partially
@@ -268,8 +349,19 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Cancel()
 		return
 	}
-
 	q := req.Question[0]
+	requestCD := req.CheckingDisabled
+	requestHasECS := middleware.HasClientECS(ctx) || hasEDNSClientSubnet(req)
+	if requestHasECS {
+		// EDNS normally installs this before policy stripping. Preserve the
+		// same whole-tree contract for cache-only/custom pipelines where the
+		// raw option reaches Cache directly.
+		ctx = middleware.MarkClientECS(ctx)
+	}
+	if requestCD || requestHasECS {
+		ctx = withSharedDenialBypass(ctx)
+	}
+	requestTreeBypassesSharedDenial := sharedDenialBypass(ctx)
 
 	// Validate query class and type
 	if !c.isValidQuery(q) {
@@ -329,6 +421,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 			ecsLookupHitScoped.Inc()
 			if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+				c.metrics.Hit()
 				return
 			}
 		}
@@ -338,23 +431,58 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			ecsLookupHitShared.Inc()
 		}
 		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+			c.metrics.Hit()
 			return
 		}
-	} else if clientScope.IsValid() {
+	}
+	if cut := c.lookupNXDomainCut(ctx, req, clientScope); cut != nil {
+		if c.handleNXDomainCutHit(ctx, ch, cut) {
+			c.metrics.Hit()
+			nxDomainCutHits.Inc()
+			return
+		}
+	}
+	// Exact answer and subtree-cut hits need no NSEC3 state. Install the
+	// request-tree memo only when aggressive denial lookup is actually
+	// reachable, then carry it into resolver fallback and nested subqueries.
+	if !requestTreeBypassesSharedDenial &&
+		!c.store.sharedDenialDisabled &&
+		!c.store.rfc8198Disabled {
+		ctx = dnssec.EnsureNSEC3HashMemo(ctx)
+	}
+	if proof, kind, zone := c.lookupDenialProof(ctx, req, clientScope); proof != nil {
+		if c.handleDenialProofHit(ctx, ch, proof, kind, zone) {
+			c.metrics.Hit()
+			return
+		}
+	}
+	if hit, ok := c.store.LookupFailure(req, clientScope); ok {
+		c.metrics.Hit()
+		failureCacheHits.Inc()
+		c.handleFailureHit(ctx, ch, hit)
+		return
+	}
+	failureProbe := false
+	if retryKey, ok := c.store.FailureRetryKey(req, clientScope); ok {
+		dedupKey = retryKey
+		failureProbe = true
+	}
+	c.metrics.Miss()
+	if clientScope.IsValid() {
 		ecsLookupMiss.Inc()
 	}
 
 	// Miss. Dedup upstream work: followers wait for the leader
 	// to finish, then re-check the cache — the leader may have
-	// just filled it. Followers that still see a miss (leader
-	// failed, or wrote a response that didn't cache) proceed
-	// to run the upstream chain themselves.
+	// just filled it. Ordinary followers that still see a miss
+	// proceed to run the upstream chain themselves. Followers of
+	// an expired RFC 9520 failure probe re-elect one leader while
+	// that failure generation remains: a request-local probe error
+	// must not fan every random QNAME out to the authority at once.
 	//
 	// Followers do NOT call Done: they never registered as a
-	// participant (Join only bumps the dup counter for the
-	// leader). Calling Done from a follower would either
-	// over-decrement the counter or cancel the leader's
-	// context out from under them.
+	// participant. Calling Done from a follower would cancel the
+	// leader's context out from under it.
 	//
 	// Internal sub-queries (CNAME chase, DNAME target, NS lookup)
 	// must skip the Join to avoid deadlock: if an outer client
@@ -367,8 +495,49 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// ctx-based successor for code paths without a writer in
 	// scope.
 	if !w.Internal() {
-		if wait := c.wg.Join(dedupKey); wait != nil {
-			<-wait
+		var (
+			previousGeneration   *waitgroup.Generation
+			failureProbeRegroups int
+		)
+		for {
+			var (
+				generation *waitgroup.Generation
+				leader     bool
+			)
+			if previousGeneration != nil && failureProbe {
+				if failureProbeRegroups >= maxFailureProbeRegroups {
+					c.writeFailureProbeLimit(ctx, ch)
+					return
+				}
+				generation, leader = c.wg.Regroup(dedupKey, previousGeneration)
+				failureProbeRegroups++
+			} else {
+				generation, leader = c.wg.JoinGeneration(dedupKey)
+			}
+			if leader {
+				leaderKey := dedupKey
+				leaderGeneration := generation
+				defer c.wg.DoneGeneration(leaderKey, leaderGeneration)
+				break
+			}
+
+			select {
+			case <-generation.Done():
+			case <-ctx.Done():
+				// Re-election can span several short-lived request-local
+				// probe generations. Do not retain a canceled client tree
+				// indefinitely while fresh followers keep winning leadership.
+				c.stopCanceledRequest(ctx, ch)
+				return
+			}
+			// The leader completion and request deadline can become ready in
+			// the same scheduler turn. Prefer cancellation deterministically
+			// instead of letting select choose the wait branch and regroup.
+			if contextutil.EffectiveError(ctx) != nil {
+				c.stopCanceledRequest(ctx, ch)
+				return
+			}
+
 			// Re-check both paths after a follower wakes up: the
 			// leader may have just stored a scoped entry (a
 			// shared-key check would miss it), or a SCOPE=0
@@ -376,18 +545,70 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			if clientScope.IsValid() {
 				if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 					if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+						c.metrics.Hit()
 						return
 					}
 				}
 			}
 			if entry := c.checkCache(cacheKey); entry != nil {
 				if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+					c.metrics.Hit()
 					return
 				}
 			}
-		} else {
-			defer c.wg.Done(dedupKey)
+			if cut := c.lookupNXDomainCut(ctx, req, clientScope); cut != nil {
+				if c.handleNXDomainCutHit(ctx, ch, cut) {
+					c.metrics.Hit()
+					nxDomainCutHits.Inc()
+					return
+				}
+			}
+			if proof, kind, zone := c.lookupDenialProof(ctx, req, clientScope); proof != nil {
+				if c.handleDenialProofHit(ctx, ch, proof, kind, zone) {
+					c.metrics.Hit()
+					return
+				}
+			}
+			if hit, ok := c.store.LookupFailure(req, clientScope); ok {
+				c.metrics.Hit()
+				failureCacheHits.Inc()
+				c.handleFailureHit(ctx, ch, hit)
+				return
+			}
+
+			generationTimedOut := errors.Is(generation.Err(), context.DeadlineExceeded)
+			if failureProbe && generationTimedOut {
+				// The request joined this key specifically as an expired
+				// failure probe. Eviction or concurrent recovery may remove
+				// the retained failure state while it waits, but an abandoned
+				// leader must remain terminal for that cohort or every random
+				// QNAME follower would fall through together.
+				c.writeFailureProbeLimit(ctx, ch)
+				return
+			}
+			retryKey, retry := c.store.FailureRetryKey(req, clientScope)
+			if !retry {
+				break
+			}
+			failureProbe = true
+			// A bounded WaitGroup channel may close while its leader remains
+			// registered. Never replace a timed-out failure-probe generation
+			// or fan its followers through to the authority.
+			if generationTimedOut {
+				c.writeFailureProbeLimit(ctx, ch)
+				return
+			}
+			previousGeneration = generation
+			dedupKey = retryKey
 		}
+	}
+
+	// Leadership can be won in the same scheduler turn that the ingress
+	// query budget expires. Never start downstream resolution for a request
+	// whose client tree is already canceled.
+	if contextutil.EffectiveError(ctx) != nil {
+		c.stopCanceledRequest(ctx, ch)
+		return
 	}
 
 	// Establish the request tree's ResponseMeta sink: the resolver
@@ -416,6 +637,10 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// sub-query. The field is cleared on release so a pooled
 	// writer doesn't leak a ctx reference between uses.
 	rw.ctx = ctx
+	rw.req = ch.Request
+	rw.requestCD = requestCD
+	rw.requestHasECS = requestHasECS
+	rw.requestTreeBypassesSharedDenial = requestTreeBypassesSharedDenial
 	// Stash the client's request scope so WriteMsg can derive
 	// the insert key without re-reading the OPT (which by then
 	// may have been mutated by the edns wrapper on the response).
@@ -425,7 +650,11 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	defer func() {
 		ch.Writer = w
 		rw.ctx = nil
+		rw.req = nil
 		rw.clientScope = netip.Prefix{}
+		rw.requestCD = false
+		rw.requestHasECS = false
+		rw.requestTreeBypassesSharedDenial = false
 		rw.meta = nil
 		c.writerPool.Put(rw)
 	}()
@@ -433,17 +662,96 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)
 }
 
-// checkCache checks both positive and negative caches and records
-// a single Hit/Miss metric per call. Sub-cache Get no longer
-// records its own metrics, so a miss in the positive cache that
-// then hits the negative cache (or vice versa) counts once.
-func (c *Cache) checkCache(key uint64) *CacheEntry {
-	if entry, ok := c.store.LookupByKey(key); ok {
-		c.metrics.Hit()
-		return entry
+// writeFailureProbeLimit sheds one follower without publishing shared RFC 9520
+// state. The exact response marker prevents outer DNS64/failover wrappers from
+// interpreting this local SERVFAIL as authority evidence or launching more
+// work. Its OPT is rebuilt from scratch so client COOKIE/ECS options are not
+// reflected.
+func (c *Cache) writeFailureProbeLimit(ctx context.Context, ch *middleware.Chain) {
+	c.writeRequestLocalFailure(
+		ctx,
+		ch,
+		middleware.ErrFailureProbeLimit,
+		dns.ExtendedErrorCodeOther,
+		failureProbeLimitEDEText,
+	)
+}
+
+func (c *Cache) stopCanceledRequest(ctx context.Context, ch *middleware.Chain) {
+	err := contextutil.EffectiveError(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		c.writeRequestLocalFailure(
+			ctx,
+			ch,
+			err,
+			dns.ExtendedErrorCodeNoReachableAuthority,
+			"Query timeout exceeded",
+		)
+		return
+	}
+	// A canceled transport generally means the client has gone away; avoid a
+	// late write to a closed HTTP/QUIC stream.
+	ch.Cancel()
+}
+
+func (c *Cache) writeRequestLocalFailure(
+	ctx context.Context,
+	ch *middleware.Chain,
+	err error,
+	edeCode uint16,
+	edeText string,
+) {
+	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
+	resp := cleanRequestLocalFailureResponse(ch.Request, edeCode, edeText)
+	middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+}
+
+func cleanRequestLocalFailureResponse(req *dns.Msg, edeCode uint16, edeText string) *dns.Msg {
+	resp := new(dns.Msg)
+	if req != nil {
+		resp.SetReply(req)
+	} else {
+		resp.Response = true
+	}
+	resp.Rcode = dns.RcodeServerFailure
+	resp.RecursionAvailable = true
+	resp.AuthenticatedData = false
+	resp.Authoritative = false
+	resp.Truncated = false
+	resp.Answer = nil
+	resp.Ns = nil
+	resp.Extra = nil
+
+	if req == nil {
+		return resp
+	}
+	reqOPT := req.IsEdns0()
+	if reqOPT == nil {
+		return resp
 	}
 
-	c.metrics.Miss()
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(reqOPT.UDPSize())
+	opt.SetDo(reqOPT.Do())
+	opt.Option = []dns.EDNS0{&dns.EDNS0_EDE{
+		InfoCode:  edeCode,
+		ExtraText: edeText,
+	}}
+	resp.Extra = []dns.RR{opt}
+	return resp
+}
+
+// checkCache checks the ordinary answer caches. RFC 9520 failures use their
+// own verified lookup path because they synthesize EDE 13 and must never enter
+// prefetch or CNAME-chase handling.
+func (c *Cache) checkCache(key uint64) *CacheEntry {
+	if entry, ok := c.store.LookupByKey(key); ok {
+		return entry
+	}
 	return nil
 }
 
@@ -483,6 +791,22 @@ func (c *Cache) requestScope(req *dns.Msg, client netip.Addr) netip.Prefix {
 	return netip.Prefix{}
 }
 
+func hasEDNSClientSubnet(req *dns.Msg) bool {
+	if req == nil {
+		return false
+	}
+	opt := req.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, option := range opt.Option {
+		if _, ok := option.(*dns.EDNS0_SUBNET); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // scopedLookup probes the cache for the longest scope match that
 // covers `clientPrefix`. Returns the entry + the key it was found
 // under, or (nil, 0) on miss. The shared-key fallback is the
@@ -516,11 +840,118 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 		}
 		key := CacheKey{Question: q, CD: cd, Scope: scope}.Hash()
 		if entry, ok := c.store.LookupByKey(key); ok {
-			c.metrics.Hit()
 			return entry, key
 		}
 	}
 	return nil, 0
+}
+
+// lookupNXDomainCut checks the RFC 8020 subtree index after an exact answer
+// miss and before RFC 9520 failure state. CD=1 intentionally bypasses local
+// synthesis. ECS requests also bypass P4: a signed split-horizon denial can be
+// audience-specific, and P4 has no per-scope proof index. Failing open to
+// ordinary resolution is safer than sharing one audience's subtree cut.
+func (c *Cache) lookupNXDomainCut(
+	ctx context.Context,
+	req *dns.Msg,
+	clientScope netip.Prefix,
+) *nxDomainCutEntry {
+	if req == nil || len(req.Question) == 0 ||
+		req.CheckingDisabled || clientScope.IsValid() ||
+		sharedDenialBypass(ctx) {
+		return nil
+	}
+	entry, _ := c.store.LookupNXDomainCut(req)
+	return entry
+}
+
+// lookupDenialProof checks the RFC 8198 index after the exact-answer and RFC
+// 8020 cut paths, but before shared failure state. Like P4, the proof index is
+// intentionally global rather than ECS-scoped, so any raw ECS option is a
+// conservative miss even when policy did not derive a usable client scope.
+// NSEC3 hashing gets a fresh optional-work budget for this lookup and uses the
+// resolver-owned non-blocking crypto gate; saturation is only a cache miss.
+func (c *Cache) lookupDenialProof(
+	ctx context.Context,
+	req *dns.Msg,
+	clientScope netip.Prefix,
+) (*dns.Msg, middleware.ValidatedNegativeProofKind, string) {
+	if req == nil || len(req.Question) != 1 ||
+		req.CheckingDisabled || clientScope.IsValid() ||
+		hasEDNSClientSubnet(req) || sharedDenialBypass(ctx) ||
+		c.store.rfc8198Disabled {
+		return nil, middleware.ValidatedNegativeProofUnknown, ""
+	}
+	msg, kind, zone, ok := c.store.LookupDenialProof(
+		req,
+		newDenialProofWork(ctx, c.dnssecCryptoLimiter),
+	)
+	if !ok {
+		return nil, middleware.ValidatedNegativeProofUnknown, ""
+	}
+	return msg, kind, zone
+}
+
+func (c *Cache) handleNXDomainCutHit(
+	ctx context.Context,
+	ch *middleware.Chain,
+	entry *nxDomainCutEntry,
+) bool {
+	resp := entry.response(ch.Request)
+	if resp == nil {
+		return false
+	}
+
+	// A cut hit is locally authenticated state, so it can safely become the
+	// terminal proof source when an enclosing CNAME/DNAME response explicitly
+	// propagates its exact-response provenance.
+	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+		Subject:    entry.deniedName,
+		Zone:       entry.zone,
+		Kind:       entry.proofKind,
+		Aggressive: true,
+	})
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+	return true
+}
+
+func (c *Cache) handleDenialProofHit(
+	ctx context.Context,
+	ch *middleware.Chain,
+	resp *dns.Msg,
+	kind middleware.ValidatedNegativeProofKind,
+	zone string,
+) bool {
+	if resp == nil || len(resp.Question) != 1 ||
+		(kind != middleware.ValidatedNegativeProofNSEC &&
+			kind != middleware.ValidatedNegativeProofNSEC3) {
+		return false
+	}
+
+	// Exact response identity makes a synthesized terminal proof safe to
+	// propagate through an enclosing CNAME/DNAME chase. It does not grant
+	// trust to copies or unrelated negative messages in the same request.
+	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+		Subject:    resp.Question[0].Name,
+		Zone:       zone,
+		Kind:       kind,
+		Aggressive: true,
+	})
+	observeAggressiveNegativeHit(kind, resp.Rcode)
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+	return true
+}
+
+func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit FailureHit) {
+	resp := hit.Response(ch.Request)
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
+		release := meta.MarkCachedFailureResponse(resp)
+		defer release()
+	}
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
 }
 
 // handleCacheHit processes a cache hit.
@@ -571,6 +1002,8 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 				Key:     key,
 				Cache:   c,
 				Entry:   entry,
+				RequestHadECS: middleware.HasClientECS(ctx) ||
+					hasEDNSClientSubnet(req),
 			}) {
 				entry.prefetch.Store(false)
 			}
@@ -630,13 +1063,23 @@ func (c *Cache) Stop() {
 	if c.prefetchQueue != nil {
 		c.prefetchQueue.Stop()
 	}
+	if c.failure != nil {
+		c.failure.Stop()
+	}
+	if c.store != nil {
+		c.store.Stop()
+	}
 }
 
-// (*Cache).Set set adds a new element to the cache. Provided for API
-// compatibility (prefetch worker, plugin callers). Internally goes
-// through Store; the entry is constructed with origTTL adjusted to
-// the real upstream TTL so subsequent prefetch decisions don't
-// miscalculate from the post-Calculate (clamped) value.
+// (*Cache).Set adds a new element to the cache. It is retained for source
+// compatibility with prefetch and plugin callers. Ordinary answers honor the
+// supplied answer-cache key. SERVFAIL uses its full DNS Question instead:
+// shared RFC 9520 state verifies the complete key preimage and cannot safely
+// accept an opaque hash as its identity.
+//
+// Internally the entry is constructed with origTTL adjusted to the real
+// upstream TTL so subsequent prefetch decisions don't miscalculate from the
+// post-Calculate (clamped) value.
 func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	if len(msg.Question) == 0 {
 		return
@@ -644,14 +1087,13 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 
 	filtered := filterCacheableAnswer(msg)
 	mt, _ := dnsutil.ClassifyResponse(filtered, time.Now().UTC())
+	if mt == dnsutil.TypeServerFailure {
+		c.store.RecordFailure(filtered, netip.Prefix{}, FailureProvenance("response"))
+		return
+	}
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
-	var ttl time.Duration
-	if mt == dnsutil.TypeServerFailure {
-		ttl = c.negative.ttl.Calculate(msgTTL)
-	} else {
-		ttl = c.positive.ttl.Calculate(msgTTL)
-	}
+	ttl := c.positive.ttl.Calculate(msgTTL)
 
 	entry := NewCacheEntryWithKey(filtered, ttl, c.config.RateLimit, key)
 	if ttl > 0 {
@@ -666,12 +1108,17 @@ func (c *Cache) Stats() map[string]any {
 	hits, misses, evictions, prefetches := c.metrics.Stats()
 
 	return map[string]any{
-		"hits":          hits,
-		"misses":        misses,
-		"evictions":     evictions,
-		"prefetches":    prefetches,
-		"positive_size": c.store.PositiveLen(),
-		"negative_size": c.store.NegativeLen(),
+		"hits":               hits,
+		"misses":             misses,
+		"evictions":          evictions,
+		"prefetches":         prefetches,
+		"positive_size":      c.store.PositiveLen(),
+		"negative_size":      c.store.NegativeLen(),
+		"failure_size":       c.store.FailureLen(),
+		"nxdomain_cut_size":  c.store.NXDomainCutLen(),
+		"denial_proof_size":  c.store.DenialProofLen(),
+		"denial_proof_zones": c.store.DenialProofZones(),
+		"denial_proof_bytes": c.store.DenialProofBytes(),
 		"hit_rate": func() float64 {
 			total := float64(hits + misses)
 			if total == 0 {
@@ -691,6 +1138,10 @@ type ResponseWriter struct {
 	// additionalAnswer's sub-query. Set by Cache.ServeDNS when the
 	// writer is pulled from the pool; cleared on defer.
 	ctx context.Context
+	// req retains the original client EDNS capabilities so a local
+	// recursion-work failure can carry its policy EDE even when the
+	// downstream response omitted OPT.
+	req *dns.Msg
 	// clientScope is the prefix derived from the request's ECS
 	// option (already clamped by the edns middleware to the policy
 	// ceiling). Zero value when ECS doesn't apply, in which case
@@ -698,6 +1149,12 @@ type ResponseWriter struct {
 	// — that's how pre-Stage-2 traffic and SCOPE=0 responses keep
 	// the same cache shape they had before.
 	clientScope netip.Prefix
+	// Immutable snapshots captured before downstream middleware can mutate
+	// the request. Shared authenticated-denial state is never published from
+	// checking-disabled or audience-scoped traffic.
+	requestCD                       bool
+	requestHasECS                   bool
+	requestTreeBypassesSharedDenial bool
 	// meta is the request tree's ResponseMeta sink, stashed by
 	// Cache.ServeDNS. By the time WriteMsg runs, the resolver
 	// downstream has folded the delegation-cut deadline into it;
@@ -720,6 +1177,28 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		return w.ResponseWriter.WriteMsg(res)
 	}
 
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Resolution failures live in the dedicated RFC 9520 cache. They bypass
+	// ordinary CacheEntry handling entirely: no CNAME chase, no prefetch, no
+	// RR TTL, and no replay of an upstream EDE. The first response is still
+	// written verbatim (or with the local work-limit EDE); only a later cache
+	// hit is synthesized as EDE 13.
+	mt, _ := dnsutil.ClassifyResponse(res, time.Now().UTC())
+	if mt == dnsutil.TypeServerFailure {
+		out := res
+		if res.Rcode == dns.RcodeServerFailure && middleware.RecursionWorkEnforcementError(ctx) != nil {
+			out = w.recursionWorkFailure(res)
+		}
+		if cacheableResolutionFailure(ctx, out) {
+			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"))
+		}
+		return w.ResponseWriter.WriteMsg(out)
+	}
+
 	// Complete any synchronous CNAME chase before reading ResponseMeta and
 	// publishing the cache entry. A target leg can cross a different (shorter)
 	// delegation cut; storing first would bind the outer CNAME only to its own
@@ -727,12 +1206,18 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// filterCacheableAnswer below still retains only records belonging to the
 	// original question, so this does not merge the target RRset into the outer
 	// cache entry.
-	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
 		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
+	}
+	if chasedType, _ := dnsutil.ClassifyResponse(res, time.Now().UTC()); chasedType == dnsutil.TypeServerFailure {
+		out := res
+		if res.Rcode == dns.RcodeServerFailure && middleware.RecursionWorkEnforcementError(ctx) != nil {
+			out = w.recursionWorkFailure(res)
+		}
+		if cacheableResolutionFailure(ctx, out) {
+			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"))
+		}
+		return w.ResponseWriter.WriteMsg(out)
 	}
 
 	// Classify, filter, and store via Store. Key is derived from
@@ -758,6 +1243,36 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		cutUntil, cutKey = w.meta.Cut()
 	}
 
+	// RFC 8020/8198 admission is an explicit resolver-to-cache trust seam.
+	// Never infer it from AD=1: forwarders and plugins can supply
+	// wire-authenticated-looking responses without this process having
+	// validated the chain. Provenance retains the original terminal proof
+	// across alias merges, so shared state contains no outer CNAME/DNAME
+	// records. Check both the original request and response CD bit so an
+	// intervening handler cannot turn a CD=1 request into admission.
+	if !w.clientScope.IsValid() && !w.requestHasECS &&
+		!w.requestTreeBypassesSharedDenial &&
+		!w.requestCD && !res.CheckingDisabled {
+		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, res); ok &&
+			negative.Aggressive &&
+			negative.Proof != nil {
+			w.cache.store.RecordDenialProof(
+				negative.Proof,
+				negative.Zone,
+				negative.Kind,
+				cutUntil,
+			)
+			if negative.Proof.Rcode == dns.RcodeNameError {
+				w.cache.store.RecordNXDomainCut(
+					negative.Proof,
+					negative.Subject,
+					negative.Zone,
+					cutUntil,
+				)
+			}
+		}
+	}
+
 	if w.clientScope.IsValid() {
 		if respScope, ok := ecs.ReadResponseScope(res); ok {
 			clamped := w.cache.ecsPolicy.ClampScope(respScope, w.clientScope)
@@ -773,8 +1288,43 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
 		w.cache.store.SetFromResponseWithKey(key, res, cutUntil, cutKey)
 	}
+	// This is the final downstream response observed by the cache wrapper.
+	// A useful answer here means resolver/failover/forwarder recovery really
+	// reached the client path, so both exact and covering zone backoff can
+	// restart at the initial interval on a later failure.
+	w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
 
 	return w.ResponseWriter.WriteMsg(res)
+}
+
+// cacheableResolutionFailure admits only failures that describe shared
+// resolution state. Work-budget and attempt-limit rejections belong to one
+// request tree; optional enrichment, cancellation, and deadline paths likewise
+// cannot poison independent clients through the RFC 9520 cache.
+func cacheableResolutionFailure(ctx context.Context, res *dns.Msg) bool {
+	return contextutil.EffectiveError(ctx) == nil &&
+		!middleware.IsBestEffortRecursionWork(ctx) &&
+		middleware.RecursionWorkEnforcementError(ctx) == nil &&
+		middleware.RequestLocalFailureForResponse(ctx, res) == nil
+}
+
+func (w *ResponseWriter) recursionWorkFailure(fallback *dns.Msg) *dns.Msg {
+	req := w.req
+	if req == nil {
+		req = fallback
+	}
+	edeCode, edeText := middleware.RecursionWorkEDE(w.ctx)
+	do := false
+	if opt := req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	return dnsutil.SetRcodeWithEDE(
+		req,
+		dns.RcodeServerFailure,
+		do,
+		edeCode,
+		edeText,
+	)
 }
 
 // filterCacheableAnswer keeps only the records directly relevant to
@@ -881,6 +1431,13 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	if q.Qtype == dns.TypeCNAME || q.Qtype == dns.TypeDS {
 		return msg
 	}
+	if msg.Rcode == dns.RcodeNameError {
+		// RFC 6604 makes NXDOMAIN at the end of a CNAME/DNAME query
+		// cycle terminal. The response already carries the target
+		// denial proof; chasing an alias from its Answer again would
+		// duplicate work and can no longer change the result.
+		return msg
+	}
 
 	cnameReq := AcquireMsg()
 	defer ReleaseMsg(cnameReq)
@@ -921,8 +1478,60 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		targets = append(targets, target)
 
 		respCname, err := c.internalExchange(ctx, cnameReq)
+		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
+			do := false
+			if opt := msg.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			return dnsutil.SetRcodeWithEDE(
+				msg,
+				dns.RcodeServerFailure,
+				do,
+				edeCode,
+				edeText,
+			)
+		}
+		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+			edeCode, edeText := dnsutil.ErrorToEDE(err)
+			do := false
+			if opt := msg.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			out := dnsutil.SetRcodeWithEDE(
+				msg,
+				dns.RcodeServerFailure,
+				do,
+				edeCode,
+				edeText,
+			)
+			middleware.MarkRequestLocalFailureResponse(ctx, out, err)
+			return out
+		}
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
+		}
+
+		if respCname != nil && respCname.Rcode == dns.RcodeNameError {
+			// The internal query has already reached the terminal denied
+			// name. Do not query a target below that cut again, and retain
+			// the exact locally validated proof provenance rather than
+			// attributing the NXDOMAIN to the outer alias owner.
+			msg.Rcode = dns.RcodeNameError
+			middleware.PropagateValidatedDenialResponse(ctx, respCname, msg)
+			return msg
+		}
+		if respCname != nil {
+			if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, respCname); ok &&
+				negative.Proof != nil &&
+				negative.Proof.Rcode == dns.RcodeSuccess &&
+				len(negative.Proof.Answer) == 0 {
+				// The target exists but lacks the requested type. Preserve
+				// its authenticated terminal proof on the outer alias
+				// response and stop; another chase cannot create that type.
+				middleware.PropagateValidatedNegativeProofResponse(ctx, respCname, msg)
+				return msg
+			}
 		}
 
 		if target == q.Name {
@@ -945,9 +1554,6 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			goto lookup
 		}
 
-		if respCname != nil && respCname.Rcode == dns.RcodeNameError {
-			msg.Rcode = dns.RcodeNameError
-		}
 	}
 
 	return msg

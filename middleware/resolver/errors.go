@@ -30,6 +30,22 @@ var (
 		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
 		Message: "Unable to reach root servers",
 	}
+	// errResolutionCapacity is the load-shedding sentinel: every in-flight
+	// resolution slot is occupied, which in practice means upstream
+	// authorities have stopped answering and slots are pinned for their
+	// full timeouts. Failing fast keeps the resolver's goroutine count
+	// bounded instead of queueing new arrivals behind dead servers.
+	errResolutionCapacity = &dnsutil.EDEError{
+		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
+		Message: "Resolver at in-flight resolution capacity",
+	}
+	// errZoneCapacity is destination-scoped shedding: THIS zone's in-flight
+	// quota is exhausted (its authorities are almost certainly not
+	// answering), while lookups for other zones continue unaffected.
+	errZoneCapacity = &dnsutil.EDEError{
+		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
+		Message: "Zone at in-flight lookup capacity",
+	}
 )
 
 // NewNetworkError creates a network error with EDE information.

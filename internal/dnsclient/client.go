@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/contextutil"
 )
 
 // Client is a high-level, dial-per-Exchange DNS client for callers that
@@ -26,6 +27,12 @@ type Client struct {
 	DoHURL    string        // DoH endpoint URL
 	DoHClient *http.Client  // DoH HTTP client (reused transport / HTTP2 pool)
 
+	// BeforeAttempt runs immediately before each wire transport attempt.
+	// It is inherited by the transparent UDP-to-TCP fallback, allowing
+	// request-wide work accounting to reject that second attempt before it
+	// dials. Nil preserves the historical behaviour.
+	BeforeAttempt func(proto string) error
+
 	// SkipQuestionCheck disables the response question-section guard.
 	// The guard is on by default; leave this false unless a caller has
 	// a specific reason to accept mismatched questions.
@@ -38,6 +45,14 @@ func (c *Client) Exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.
 	proto := c.Proto
 	if proto == "" {
 		proto = "udp"
+	}
+	if c.BeforeAttempt != nil {
+		if err := contextutil.EffectiveError(ctx); err != nil {
+			return nil, 0, err
+		}
+		if err := c.BeforeAttempt(proto); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	if proto == "doh" {
@@ -60,8 +75,17 @@ func (c *Client) Exchange(ctx context.Context, req *dns.Msg, addr string) (*dns.
 
 	c.setDeadline(ctx, co)
 
-	resp, rtt, err := co.Exchange(req)
+	// net.Conn operations do not observe cancellation after DialContext has
+	// returned. Wake an in-flight UDP/TCP/DoT read immediately when the
+	// request is canceled; otherwise a transport disconnect with no context
+	// deadline can retain this exchange until c.Timeout (or forever when it is
+	// zero). The client is dial-per-Exchange, so forcing its deadline cannot
+	// affect another request.
+	resp, rtt, err := co.ExchangeContext(ctx, req)
 	_ = co.Close()
+	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
+		return nil, rtt, ctxErr
+	}
 	// (*Conn).Exchange already enforces the question guard. When a caller
 	// opts out, tolerate only that specific error and keep the response;
 	// every other error (ID mismatch, read failure) is still fatal.

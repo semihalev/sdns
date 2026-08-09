@@ -13,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/server/doh"
@@ -21,9 +22,9 @@ import (
 
 // Server type.
 type Server struct {
-	cfg *config.Config
+	cfg      *config.Config
+	pipeline *middleware.Pipeline
 
-	chainPool   sync.Pool
 	certManager *CertManager
 	certMu      sync.Mutex
 
@@ -40,10 +41,7 @@ func New(cfg *config.Config) *Server {
 		cfg.Bind = ":53"
 	}
 
-	s := &Server{cfg: cfg}
-	s.chainPool.New = func() any {
-		return middleware.NewChain(middleware.Handlers())
-	}
+	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline()}
 
 	timeout := cfg.QueryTimeout.Duration
 	s.listeners = []Listener{
@@ -68,6 +66,24 @@ func New(cfg *config.Config) *Server {
 
 // (*Server).ServeDNS serveDNS implements the Handle interface.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	s.ServeDNSContext(context.Background(), w, r)
+}
+
+// ServeDNSContext serves one decoded DNS request under the transport's
+// lifetime and the configured end-to-end middleware/resolution timeout.
+// DNS-over-HTTP and DNS-over-QUIC supply client-aware parents; classic
+// dns.Handler transports start from a background parent but still receive the
+// same pipeline-ingress deadline.
+func (s *Server) ServeDNSContext(parent context.Context, w dns.ResponseWriter, r *dns.Msg) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx := contextutil.WithLazyTimeout(parent, s.queryTimeout())
+	defer ctx.Cancel()
+	if contextutil.EffectiveError(ctx) != nil {
+		return
+	}
+
 	// A standard query carries exactly one question. Reject a malformed
 	// QDCOUNT here — at the single entry shared by every transport — with
 	// FORMERR, so downstream middlewares can index req.Question[0] without
@@ -82,12 +98,18 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
-	ch := s.chainPool.Get().(*middleware.Chain)
-	defer s.chainPool.Put(ch)
+	if s.pipeline == nil {
+		servfail := new(dns.Msg)
+		servfail.SetRcode(r, dns.RcodeServerFailure)
+		_ = w.WriteMsg(servfail)
+		return
+	}
+
+	ch := s.pipeline.NewChain()
+	defer s.pipeline.PutChain(ch)
 
 	ch.Reset(w, r)
-
-	ch.Next(context.Background())
+	ch.Next(ctx)
 }
 
 // ServeHTTP implements http.Handler (DoH + DoH3).
@@ -102,7 +124,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handle := func(req *dns.Msg) *dns.Msg {
 		mw := mock.NewWriter("doh", r.RemoteAddr)
-		s.ServeDNS(mw, req)
+		s.ServeDNSContext(r.Context(), mw, req)
 		if !mw.Written() {
 			return nil
 		}
@@ -174,6 +196,10 @@ func (s *Server) superviseShutdown(ctx context.Context, active []Listener) {
 }
 
 func (s *Server) shutdownTimeout() time.Duration {
+	return s.queryTimeout()
+}
+
+func (s *Server) queryTimeout() time.Duration {
 	if t := s.cfg.QueryTimeout.Duration; t > 0 {
 		return t
 	}

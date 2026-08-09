@@ -282,7 +282,43 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 		sub := new(dns.Msg)
 		sub.SetQuestion(target, dns.TypePTR)
 		sub.RecursionDesired = true
-		if resp, err := d.queryer.Query(ctx, sub); err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
+		resp, err := d.queryer.Query(ctx, sub)
+		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
+			do := false
+			if opt := ch.Request.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			out := dnsutil.SetRcodeWithEDE(
+				ch.Request,
+				dns.RcodeServerFailure,
+				do,
+				edeCode,
+				edeText,
+			)
+			_ = ch.Writer.WriteMsg(out)
+			ch.Cancel()
+			return true
+		}
+		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+			edeCode, edeText := dnsutil.ErrorToEDE(err)
+			do := false
+			if opt := ch.Request.IsEdns0(); opt != nil {
+				do = opt.Do()
+			}
+			out := dnsutil.SetRcodeWithEDE(
+				ch.Request,
+				dns.RcodeServerFailure,
+				do,
+				edeCode,
+				edeText,
+			)
+			middleware.MarkRequestLocalFailureResponse(ctx, out, err)
+			_ = ch.Writer.WriteMsg(out)
+			ch.Cancel()
+			return true
+		}
+		if err == nil && resp != nil && resp.Rcode == dns.RcodeSuccess {
 			for _, rr := range resp.Answer {
 				if rr.Header().Rrtype == dns.TypePTR {
 					answers = append(answers, rr)
@@ -368,6 +404,26 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		passthroughDNSSECFail.Inc()
 		return w.ResponseWriter.WriteMsg(m)
 	}
+	// RFC 9520 cached failures must not trigger any corresponding outgoing
+	// query while their backoff interval is active. The ResponseMeta marker
+	// covers clients without EDNS (where EDE cannot be emitted), while EDE 13
+	// also keeps cached failures returned by an upstream resolver terminal.
+	if isCachedFailureResponse(w.ctx, m) {
+		passthroughCachedFailure.Inc()
+		return w.ResponseWriter.WriteMsg(m)
+	}
+	if err := middleware.RequestLocalFailureForResponse(w.ctx, m); err != nil {
+		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+			passthroughAttemptLimit.Inc()
+		} else {
+			passthroughRequestLocal.Inc()
+		}
+		return w.ResponseWriter.WriteMsg(m)
+	}
+	if m.Rcode == dns.RcodeServerFailure &&
+		middleware.RecursionWorkEnforcementError(w.ctx) != nil {
+		return w.writeRecursionWorkFailure(nil)
+	}
 
 	// Filter the upstream Answer section against the AAAA
 	// exclude list. If anything survives, the response is
@@ -395,7 +451,13 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		m = filtered
 	}
 
-	synth := w.synthesise(m)
+	synth, err := w.synthesise(m)
+	if errors.Is(err, middleware.ErrRecursionWorkLimit) {
+		return w.writeRecursionWorkFailure(err)
+	}
+	if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
+		return w.writeResolutionAttemptFailure(err)
+	}
 	if synth == nil {
 		// A lookup failed or yielded nothing usable; preserve the
 		// original (already AAAA-filtered) answer rather than
@@ -404,6 +466,38 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	}
 	Synthesised.Inc()
 	return w.ResponseWriter.WriteMsg(synth)
+}
+
+func (w *responseWriter) writeRecursionWorkFailure(err error) error {
+	edeCode, edeText := middleware.RecursionWorkErrorEDE(w.ctx, err)
+	do := false
+	if opt := w.req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	return w.ResponseWriter.WriteMsg(dnsutil.SetRcodeWithEDE(
+		w.req,
+		dns.RcodeServerFailure,
+		do,
+		edeCode,
+		edeText,
+	))
+}
+
+func (w *responseWriter) writeResolutionAttemptFailure(err error) error {
+	edeCode, edeText := dnsutil.ErrorToEDE(err)
+	do := false
+	if opt := w.req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	resp := dnsutil.SetRcodeWithEDE(
+		w.req,
+		dns.RcodeServerFailure,
+		do,
+		edeCode,
+		edeText,
+	)
+	middleware.MarkRequestLocalFailureResponse(w.ctx, resp, err)
+	return w.ResponseWriter.WriteMsg(resp)
 }
 
 // filterUpstreamAAAA inspects m and, if any AAAA records fall in
@@ -458,10 +552,10 @@ func (w *responseWriter) filterUpstreamAAAA(m *dns.Msg) (*dns.Msg, bool, int, in
 // (empty answer, NXDOMAIN, SERVFAIL), RFC 6147 §5.1.6 says the
 // A response is the basis for the client reply, so we return a
 // non-nil empty/error response addressed to the AAAA question.
-func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
+func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 	if w.d.queryer == nil {
 		aLookupQueryerError.Inc()
-		return nil
+		return nil, nil
 	}
 
 	aReq := new(dns.Msg)
@@ -476,11 +570,11 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	aResp, err := w.d.queryer.Query(w.ctx, aReq)
 	if err != nil {
 		ALookupFailures.WithLabelValues(classifyQueryErr(err)).Inc()
-		return nil
+		return nil, err
 	}
 	if aResp == nil {
 		aLookupNilResponse.Inc()
-		return nil
+		return nil, nil
 	}
 	if aResp.Rcode != dns.RcodeSuccess {
 		switch aResp.Rcode {
@@ -491,7 +585,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 		default:
 			aLookupOtherRcode.Inc()
 		}
-		return w.buildAResponseAsBasis(orig, aResp)
+		return w.buildAResponseAsBasis(orig, aResp), nil
 	}
 
 	chain, addresses := splitChainAndA(aResp)
@@ -500,7 +594,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 		// applies: the empty A response is the basis for the
 		// client reply.
 		aLookupNoA.Inc()
-		return w.buildAResponseAsBasis(orig, aResp)
+		return w.buildAResponseAsBasis(orig, aResp), nil
 	}
 
 	// RFC 6147 §5.1.7: synthesised TTL = min(A TTL, negative-cache
@@ -553,7 +647,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	// existed. Fall back to the original NODATA.
 	if !hasAAAAInList(answers) {
 		passthroughAExcluded.Inc()
-		return nil
+		return nil, nil
 	}
 
 	out := new(dns.Msg)
@@ -582,7 +676,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) *dns.Msg {
 	if orig.AuthenticatedData {
 		dnsutil.SetEDE(out, dns.ExtendedErrorCodeForgedAnswer, "DNS64 synthesis")
 	}
-	return out
+	return out, nil
 }
 
 // buildAResponseAsBasis implements RFC 6147 §5.1.6: when the
@@ -740,6 +834,29 @@ func isDNSSECFailure(m *dns.Msg) bool {
 	return false
 }
 
+func hasExtendedError(m *dns.Msg, code uint16) bool {
+	if m == nil || m.Rcode != dns.RcodeServerFailure {
+		return false
+	}
+	opt := m.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, option := range opt.Option {
+		if ede, ok := option.(*dns.EDNS0_EDE); ok && ede.InfoCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func isCachedFailureResponse(ctx context.Context, m *dns.Msg) bool {
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil && meta.IsCachedFailureResponse(m) {
+		return true
+	}
+	return hasExtendedError(m, dns.ExtendedErrorCodeCachedError)
+}
+
 // negativeAAAATTL returns the SOA-derived minimum negative TTL of
 // the original AAAA response, or 0 if no SOA is present. RFC 2308
 // — the negative TTL is min(SOA.MINIMUM, SOA.TTL).
@@ -761,10 +878,14 @@ func negativeAAAATTL(m *dns.Msg) uint32 {
 // flows under "other".
 func classifyQueryErr(err error) string {
 	switch {
+	case errors.Is(err, middleware.ErrResolutionAttemptLimit):
+		return "attempt_limit"
 	case errors.Is(err, middleware.ErrNoResponse):
 		return "no_response"
 	case errors.Is(err, middleware.ErrMaxRecursion):
 		return "max_recursion"
+	case middleware.IsRequestLocalResolutionError(err):
+		return "request_local"
 	case errors.Is(err, errQueryerNotWired):
 		return "queryer_error"
 	}

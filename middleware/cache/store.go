@@ -1,21 +1,24 @@
 package cache
 
 import (
+	"context"
+	"net/netip"
 	"strings"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
-// Store is the cache backing for the cache middleware. It owns nothing
-// directly — the positive/negative sub-caches are constructed by
-// Cache.New and shared with Store — but it centralises classification,
-// keying, and TTL handling so callers outside ServeDNS (resolver
-// sub-queries, queryer-driven prefetch, future API purge wiring)
-// don't need to understand the wire-write rules in
-// ResponseWriter.WriteMsg.
+// Store is the cache backing for the cache middleware. The answer and failure
+// sub-caches are constructed by Cache.New and shared with Store; Store owns
+// the separately bounded RFC 8020 cut index. It centralises classification,
+// keying, and TTL handling so callers outside ServeDNS (resolver sub-queries,
+// queryer-driven prefetch, future API purge wiring) don't need to understand
+// the wire-write rules in ResponseWriter.WriteMsg.
 //
 // SetFromResponse keys on the caller-supplied keyCD rather than on
 // resp.CheckingDisabled to make the keying contract explicit at every
@@ -24,16 +27,86 @@ import (
 // is the kind of thing that splits CD=1 and CD=0 lookups across
 // stale entries when a future change forgets to restore.
 type Store struct {
-	positive *PositiveCache
-	negative *NegativeCache
-	cfg      CacheConfig
+	positive     *PositiveCache
+	negative     *NegativeCache
+	failure      *FailureCache
+	nxDomainCuts *nxDomainCutCache
+	denialProofs *denialProofCache
+	// Wired once at startup through the owning Cache. Resolver-private
+	// Store.Get calls then share the same non-blocking NSEC3 gate as client
+	// lookups; standalone Store users safely miss NSEC3 when it is nil.
+	dnssecCryptoLimiter middleware.DNSSECCryptoLimiter
+	// sharedDenialDisabled is set only by the owning Cache when local DNSSEC
+	// validation cannot establish provenance (DNSSEC off or forwarding).
+	// The zero value intentionally permits standalone Store tests/users.
+	sharedDenialDisabled bool
+	// rfc8198Disabled is the operator kill switch for aggressive NSEC/NSEC3
+	// admission and synthesis. Keep it separate from sharedDenialDisabled:
+	// RFC 8020 subtree cuts remain available when only RFC 8198 is disabled.
+	rfc8198Disabled bool
+	// failureCacheDisabled is the RFC 9520 operational rollback switch.
+	// The bounded cache remains allocated so the surrounding Cache and Store
+	// keep one stable shape, but no shared failure state is read or written.
+	failureCacheDisabled bool
+	cfg                  CacheConfig
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
 // caches are shared with the surrounding *Cache; this constructor
 // does not allocate them.
-func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig) *Store {
-	return &Store{positive: positive, negative: negative, cfg: cfg}
+func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig, failures ...*FailureCache) *Store {
+	var failure *FailureCache
+	if len(failures) > 0 {
+		failure = failures[0]
+	}
+	if failure == nil {
+		failure, _ = NewFailureCache(FailureCacheConfig{
+			Size:       DefaultFailureCacheSize,
+			InitialTTL: DefaultFailureInitialTTL,
+			MaxTTL:     DefaultFailureMaxTTL,
+		})
+	}
+
+	// Keep RFC 8020 state separately bounded so attacker-chosen denied names
+	// cannot evict ordinary positive answers. Sixteenth-of-cache is enough to
+	// retain useful subtree cuts while adding at most 6.25% to the configured
+	// answer-cache cardinality.
+	cutSize := cfg.Size / 16
+	if cutSize < 1 {
+		cutSize = 1
+	}
+	cutMaxTTL := cfg.NegativeTTL
+	if cutMaxTTL <= 0 {
+		cutMaxTTL = cfg.MaxTTL
+	}
+	if cfg.MaxTTL > 0 && cutMaxTTL > cfg.MaxTTL {
+		cutMaxTTL = cfg.MaxTTL
+	}
+
+	// RFC 8198 proof material has its own cardinality and byte bounds so
+	// attacker-chosen denial owners cannot evict ordinary answers. Production
+	// cache sizes are validated to at least 1024; the small floor keeps direct
+	// Store users useful without preallocating any entries.
+	proofSize := cfg.Size / 32
+	if proofSize < 64 {
+		proofSize = 64
+	}
+	proofMaxTTL := cfg.NegativeTTL
+	if proofMaxTTL <= 0 {
+		proofMaxTTL = cfg.MaxTTL
+	}
+	if cfg.MaxTTL > 0 && proofMaxTTL > cfg.MaxTTL {
+		proofMaxTTL = cfg.MaxTTL
+	}
+
+	return &Store{
+		positive:     positive,
+		negative:     negative,
+		failure:      failure,
+		nxDomainCuts: newNXDomainCutCache(cutSize, cutMaxTTL),
+		denialProofs: newDenialProofCache(proofSize, proofMaxTTL),
+		cfg:          cfg,
+	}
 }
 
 // Lookup returns the cache entry for req without materialising a
@@ -117,20 +190,226 @@ func equalNameASCIIFold(a, b string) bool {
 // header/ID/CD/AD interaction is handled by CacheEntry.ToMsg, which
 // needs req for SetReply.
 func (s *Store) Get(req *dns.Msg) (*dns.Msg, bool) {
-	entry, ok := s.Lookup(req)
-	if !ok {
-		return nil, false
-	}
-	msg := entry.ToMsg(req)
-	if msg == nil {
-		// Entry expired between Lookup and ToMsg.
-		return nil, false
-	}
-	return msg, true
+	return s.GetWithContext(context.Background(), req)
 }
 
-// SetFromResponse classifies resp (positive / NXDOMAIN+NODATA /
-// SERVFAIL) and stores it under (resp.Question[0], keyCD). CHAOS
+// GetWithContext is Get with request-tree policy and NSEC3 memo propagation.
+// Resolver-private DS/DNSKEY lookups manufacture fresh messages, so the
+// context marker is what preserves an outer client's CD/ECS isolation.
+func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, bool) {
+	if req == nil {
+		return nil, false
+	}
+	entry, ok := s.Lookup(req)
+	if ok {
+		msg := entry.ToMsg(req)
+		if msg != nil {
+			return msg, true
+		}
+	}
+
+	requestTreeBypassesDenial := req.CheckingDisabled ||
+		hasEDNSClientSubnet(req) ||
+		middleware.HasClientECS(ctx) ||
+		sharedDenialBypass(ctx)
+	if !requestTreeBypassesDenial {
+		if cut, ok := s.LookupNXDomainCut(req); ok {
+			if msg := cut.response(req); msg != nil {
+				nxDomainCutHits.Inc()
+				return msg, true
+			}
+		}
+		if !s.rfc8198Disabled {
+			if msg, kind, _, ok := s.LookupDenialProof(
+				req,
+				newDenialProofWork(ctx, s.dnssecCryptoLimiter),
+			); ok {
+				observeAggressiveNegativeHit(kind, msg.Rcode)
+				return msg, true
+			}
+		}
+	}
+
+	// Get is also used by resolver-private subqueries, which deliberately do
+	// not inherit the client's ECS audience. Keep RFC 9520 failure lookup
+	// unscoped here; request paths carrying ECS call LookupFailure directly
+	// with their explicit audience.
+	if hit, ok := s.LookupFailure(req, netip.Prefix{}); ok {
+		failureCacheHits.Inc()
+		return hit.Response(req), true
+	}
+	return nil, false
+}
+
+// LookupNXDomainCut returns the closest locally validated RFC 8020 cut that
+// covers req. CD=1 is always a miss: checking-disabled clients explicitly
+// bypass locally synthesized authenticated denial state.
+func (s *Store) LookupNXDomainCut(req *dns.Msg) (*nxDomainCutEntry, bool) {
+	if s == nil || s.nxDomainCuts == nil || req == nil ||
+		s.sharedDenialDisabled ||
+		len(req.Question) == 0 || req.CheckingDisabled {
+		return nil, false
+	}
+	return s.nxDomainCuts.lookup(req.Question[0])
+}
+
+// RecordNXDomainCut stores a locally validated terminal NXDOMAIN proof.
+// deniedName is the exact authoritative query cycle that returned NXDOMAIN;
+// it must never be inferred from the SOA owner.
+func (s *Store) RecordNXDomainCut(
+	proof *dns.Msg,
+	deniedName string,
+	zone string,
+	cutUntil time.Time,
+) bool {
+	if s == nil || s.nxDomainCuts == nil || s.sharedDenialDisabled {
+		return false
+	}
+	return s.nxDomainCuts.record(proof, deniedName, zone, cutUntil)
+}
+
+// LookupDenialProof evaluates the bounded RFC 8198 proof index for req.
+// The returned kind and signer zone describe the exact proof family selected
+// by the evaluator, including when a DO=0 response omits DNSSEC records.
+func (s *Store) LookupDenialProof(
+	req *dns.Msg,
+	work dnssec.NSEC3Work,
+) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, bool) {
+	if s == nil || s.denialProofs == nil ||
+		s.sharedDenialDisabled || s.rfc8198Disabled {
+		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+	}
+	msg, kind, zone, ok := s.denialProofs.lookupWithMeta(req, work)
+	if !ok {
+		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+	}
+	switch kind {
+	case denialProofNSEC:
+		return msg, middleware.ValidatedNegativeProofNSEC, zone, true
+	case denialProofNSEC3:
+		return msg, middleware.ValidatedNegativeProofNSEC3, zone, true
+	default:
+		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+	}
+}
+
+// RecordDenialProof stores complete signed SOA and NSEC/NSEC3 RRsets from an
+// exact locally validated terminal proof. kind is checked against the retained
+// mechanism so provenance cannot be reinterpreted by a later cache layer.
+func (s *Store) RecordDenialProof(
+	proof *dns.Msg,
+	zone string,
+	kind middleware.ValidatedNegativeProofKind,
+	cutUntil time.Time,
+) bool {
+	if s == nil || s.denialProofs == nil || proof == nil ||
+		s.sharedDenialDisabled || s.rfc8198Disabled {
+		return false
+	}
+	var expected denialProofKind
+	switch kind {
+	case middleware.ValidatedNegativeProofNSEC:
+		expected = denialProofNSEC
+	case middleware.ValidatedNegativeProofNSEC3:
+		expected = denialProofNSEC3
+	default:
+		return false
+	}
+	return s.denialProofs.recordWithKind(proof, zone, expected, cutUntil)
+}
+
+// LookupFailure returns an active exact or closest-ancestor RFC 9520 failure.
+func (s *Store) LookupFailure(req *dns.Msg, scope netip.Prefix) (FailureHit, bool) {
+	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
+		return FailureHit{}, false
+	}
+	return s.failure.Lookup(FailureQuestionKey{
+		Question: req.Question[0],
+		CD:       req.CheckingDisabled,
+		Scope:    scope,
+	})
+}
+
+// FailureRetryKey returns the retained failure generation used to coalesce the
+// first retry after a backoff expires. Different random QNAMEs below the same
+// failed zone therefore elect only one probe leader.
+func (s *Store) FailureRetryKey(req *dns.Msg, scope netip.Prefix) (uint64, bool) {
+	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
+		return 0, false
+	}
+	return s.failure.RetryKey(FailureQuestionKey{
+		Question: req.Question[0],
+		CD:       req.CheckingDisabled,
+		Scope:    scope,
+	})
+}
+
+// RecordFailure records a question-specific terminal resolution failure.
+func (s *Store) RecordFailure(req *dns.Msg, scope netip.Prefix, provenance FailureProvenance) {
+	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
+		return
+	}
+	s.recordFailureQuestion(req.Question[0], req.CheckingDisabled, scope, provenance)
+}
+
+func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefix, provenance FailureProvenance) {
+	if s.failureCacheDisabled || s.failure == nil {
+		return
+	}
+	s.failure.RecordQuestion(FailureQuestionKey{
+		Question: q,
+		CD:       cd,
+		Scope:    scope,
+	}, provenance)
+}
+
+// RecordZoneFailure implements middleware.ResolutionFailureStore. Zone-wide
+// reachability failures are deliberately independent of CD and ECS.
+func (s *Store) RecordZoneFailure(q dns.Question, zone string) {
+	if s.failureCacheDisabled || s.failure == nil || zone == "" {
+		return
+	}
+	s.failure.RecordZone(FailureZoneKey{
+		Zone:   zone,
+		Qclass: q.Qclass,
+	}, FailureProvenance("authority"))
+}
+
+// ClearZoneFailure removes authority reachability history after the resolver
+// receives a useful response from that same zone. Local/static cache writers
+// never call this, so a hosts-file answer cannot falsely mark an upstream zone
+// as recovered.
+func (s *Store) ClearZoneFailure(q dns.Question, zone string) {
+	if s.failureCacheDisabled || s.failure == nil || zone == "" {
+		return
+	}
+	s.failure.ResetZone(FailureZoneKey{Zone: zone, Qclass: q.Qclass})
+}
+
+func (s *Store) resetQuestionFailure(q dns.Question, cd bool, scope netip.Prefix) {
+	if s.failureCacheDisabled || s.failure == nil {
+		return
+	}
+	s.failure.ResetQuestion(FailureQuestionKey{
+		Question: q,
+		CD:       cd,
+		Scope:    scope,
+	})
+}
+
+func (s *Store) resetMatchingFailures(q dns.Question, cd bool, scope netip.Prefix) {
+	if s.failureCacheDisabled || s.failure == nil {
+		return
+	}
+	s.failure.ResetMatching(FailureQuestionKey{
+		Question: q,
+		CD:       cd,
+		Scope:    scope,
+	})
+}
+
+// SetFromResponse classifies resp (answer / NXDOMAIN+NODATA /
+// resolution failure) and stores it under (resp.Question[0], keyCD). CHAOS
 // signalling responses are skipped, matching ResponseWriter.WriteMsg.
 // cutUntil bounds the entry to the delegation cut that produced it; zero
 // means unbounded. This compatibility entry point has no lineage identity.
@@ -149,13 +428,20 @@ func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.
 		(q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeNULL) {
 		return
 	}
-	s.SetFromResponseWithKey(CacheKey{Question: q, CD: keyCD}.Hash(), resp, cutUntil, cutKey)
+	s.setFromResponseWithKey(
+		CacheKey{Question: q, CD: keyCD}.Hash(),
+		resp,
+		false,
+		cutUntil,
+		cutKey,
+		keyCD,
+	)
 }
 
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
 func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, false, cutUntil, cutKey)
+	s.setFromResponseWithKey(key, resp, false, cutUntil, cutKey, resp.CheckingDisabled)
 }
 
 // SetFromResponseScoped is SetFromResponseWithKey for entries that
@@ -164,10 +450,10 @@ func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.
 // to derive ECS from, so refreshing a scoped entry would lose its
 // scope and store the wrong-audience answer.
 func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, true, cutUntil, cutKey)
+	s.setFromResponseWithKey(key, resp, true, cutUntil, cutKey, resp.CheckingDisabled)
 }
 
-func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, cutUntil time.Time, cutKey uint64) {
+func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, cutUntil time.Time, cutKey uint64, keyCD bool) {
 	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
@@ -202,9 +488,20 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		ttl := capTTL(s.positive.ttl.Calculate(msgTTL))
 		s.positive.Set(key, newEntry(filtered, ttl))
+		// A scoped write has no source prefix here (only its already-hashed
+		// cache key), so it must not reset the unrelated global failure
+		// audience. Cache.ResponseWriter owns scoped failure reset because it
+		// still has the concrete client prefix.
+		if !scoped {
+			s.resetQuestionFailure(resp.Question[0], keyCD, netip.Prefix{})
+		}
 	case dnsutil.TypeServerFailure:
-		ttl := capTTL(s.negative.ttl.Calculate(msgTTL))
-		s.negative.Set(key, newEntry(filtered, ttl))
+		// Resolution failures normally bypass this path in ResponseWriter.
+		// If a pre-keyed scoped caller reaches it, do not misfile that
+		// audience-specific failure as a global one without its prefix.
+		if !scoped {
+			s.recordFailureQuestion(resp.Question[0], keyCD, netip.Prefix{}, FailureProvenance("response"))
+		}
 	}
 }
 
@@ -219,7 +516,9 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 // Two deliberate asymmetries:
 //   - A SERVFAIL refresh never displaces a positive entry: it only
 //     CASes into the negative cache, so a transient upstream failure
-//     can't evict a still-valid answer.
+//     can't evict a still-valid answer. Production Cache SERVFAILs use
+//     FailureCache; this branch preserves the exported Store/NegativeCache
+//     contract for programmatic callers and manually seeded legacy entries.
 //   - The CAS stays within one sub-cache. A negative entry refreshing
 //     to a positive answer is dropped rather than promoted — the two
 //     caches can't be swapped atomically, and the negative entry's
@@ -256,8 +555,13 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		s.positive.Set(key, entry)
+		if entry != nil && entry.msg != nil && len(entry.msg.Question) > 0 {
+			s.resetQuestionFailure(entry.msg.Question[0], entry.msg.CheckingDisabled, netip.Prefix{})
+		}
 	case dnsutil.TypeServerFailure:
-		s.negative.Set(key, entry)
+		if entry != nil && entry.msg != nil {
+			s.RecordFailure(entry.msg, netip.Prefix{}, FailureProvenance("response"))
+		}
 	}
 }
 
@@ -275,6 +579,15 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 // call) so the linear scan is acceptable. If purge becomes
 // hot, a per-qname index would lift this back to O(matches).
 func (s *Store) Purge(q dns.Question) {
+	if !s.failureCacheDisabled && s.failure != nil {
+		s.failure.PurgeQuestion(q)
+	}
+	if s.nxDomainCuts != nil {
+		s.nxDomainCuts.purge(q)
+	}
+	if s.denialProofs != nil {
+		s.denialProofs.purge(q)
+	}
 	for _, cd := range []bool{false, true} {
 		key := CacheKey{Question: q, CD: cd}.Hash()
 		s.positive.Remove(key)
@@ -317,6 +630,34 @@ func (s *Store) PositiveLen() int { return s.positive.Len() }
 
 // NegativeLen returns the number of entries in the negative cache.
 func (s *Store) NegativeLen() int { return s.negative.Len() }
+
+// FailureLen returns retained active and expired RFC 9520 failure states.
+func (s *Store) FailureLen() int {
+	if s == nil || s.failureCacheDisabled || s.failure == nil {
+		return 0
+	}
+	return s.failure.Len()
+}
+
+// NXDomainCutLen returns retained locally validated RFC 8020 cuts.
+func (s *Store) NXDomainCutLen() int { return s.nxDomainCuts.len() }
+
+// DenialProofLen returns retained SOA and denial RRset entries.
+func (s *Store) DenialProofLen() int { return s.denialProofs.len() }
+
+// DenialProofZones returns the number of signer-zone shards.
+func (s *Store) DenialProofZones() int { return s.denialProofs.zones() }
+
+// DenialProofBytes returns the retained DNS wire bytes.
+func (s *Store) DenialProofBytes() int64 { return s.denialProofs.bytes() }
+
+// Stop releases background resources owned by Store-only sub-caches.
+func (s *Store) Stop() {
+	if s != nil {
+		s.nxDomainCuts.stop()
+		s.denialProofs.stop()
+	}
+}
 
 // ForEach iterates over positive then negative entries. Returning
 // false from fn stops iteration. Iteration is not atomic with

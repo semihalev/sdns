@@ -6,11 +6,11 @@
 package dnsclient
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -28,8 +28,19 @@ var ErrQuestion = errors.New("dns: response question did not match request")
 // (either a connected UDP socket or a TCP/TLS stream) and tracks the
 // negotiated UDP receive size.
 type Conn struct {
-	net.Conn        // underlying connection
-	UDPSize  uint16 // minimum receive buffer for UDP messages
+	net.Conn               // underlying connection
+	UDPSize         uint16 // minimum receive buffer for UDP messages
+	cancelInterrupt cancelInterruptState
+}
+
+// ExchangeContext performs Exchange with a cancellation interrupt bound to
+// ctx. The caller still owns dialing and the ordinary network deadline. The
+// deferred Stop makes the interrupt lifecycle panic-safe and guarantees that
+// the connection is reusable only after a started cancellation callback ends.
+func (co *Conn) ExchangeContext(ctx context.Context, m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
+	interrupt := co.BeginCancelInterrupt(ctx)
+	defer interrupt.Stop()
+	return co.Exchange(m)
 }
 
 // Exchange performs a synchronous query over co: it writes m, reads the
@@ -91,7 +102,9 @@ func QuestionMatches(req dns.Question, resp []dns.Question) bool {
 		return false
 	}
 	r := resp[0]
-	return r.Qtype == req.Qtype && r.Qclass == req.Qclass && strings.EqualFold(r.Name, req.Name)
+	return r.Qtype == req.Qtype &&
+		r.Qclass == req.Qclass &&
+		dns.CanonicalName(r.Name) == dns.CanonicalName(req.Name)
 }
 
 // ReadMsg reads a single DNS message from co. The buffer is always

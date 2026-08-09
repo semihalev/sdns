@@ -52,7 +52,9 @@ func TestSubQueryReturnsCacheHit(t *testing.T) {
 	var s middleware.Store = hit
 	r.store.Store(&s)
 
-	got, err := r.subQuery(context.Background(), req)
+	ledger := enforceWorkLedger(128, 1)
+	ctx := middleware.WithRecursionWork(context.Background(), ledger)
+	got, err := r.subQuery(ctx, req)
 	if err != nil {
 		t.Fatalf("subQuery returned err on cache hit: %v", err)
 	}
@@ -64,5 +66,8 @@ func TestSubQueryReturnsCacheHit(t *testing.T) {
 	}
 	if hit.sets != 0 {
 		t.Fatalf("store.SetFromResponse was called %d times on a hit; must be 0", hit.sets)
+	}
+	if got := ledger.Snapshot().InternalQueries; got != 0 {
+		t.Fatalf("DNSSEC cache hit consumed %d internal-query units, want 0", got)
 	}
 }
