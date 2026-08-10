@@ -35,7 +35,13 @@ type CacheEntry struct {
 	question dns.Question
 	// cd mirrors the packed header's CD bit for compat paths that classify
 	// an entry without unpacking it.
-	cd         bool
+	cd bool
+	// compress preserves the admitted message's Compress flag. Unpack never
+	// sets it, so without this a served message would always repack
+	// uncompressed — invisible inside the standard chain (the edns layer
+	// re-enables compression) but a behavior break for exported
+	// Store/CacheEntry consumers writing responses directly.
+	compress   bool
 	stored     time.Time
 	ttl        time.Duration
 	origTTL    uint32 // Original TTL in seconds for prefetch calculation
@@ -138,10 +144,16 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 
 	// Name compression keeps the stored form smaller than the upstream wire.
 	msgCopy.Compress = true
-	wire, err := msgCopy.Pack()
+	packed, err := msgCopy.Pack()
 	if err != nil {
 		return nil
 	}
+	// Pack sizes its backing array for the uncompressed length and returns
+	// the compressed prefix — half the capacity can be dead weight on
+	// compressible messages. The entry is long-lived; retain an exact-size
+	// copy, not the oversized scratch buffer.
+	wire := make([]byte, len(packed))
+	copy(wire, packed)
 
 	entry := &CacheEntry{
 		wire: wire,
@@ -155,6 +167,7 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 		rateLimKey: key,
 		ede:        ede,
 		cd:         msg.CheckingDisabled,
+		compress:   msg.Compress,
 	}
 	if len(msg.Question) > 0 {
 		entry.question = msg.Question[0]
@@ -178,6 +191,9 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 		// means corruption, and a miss re-resolves safely.
 		return nil
 	}
+	// Unpack leaves Compress unset; restore the admitted flag so direct
+	// writers repack exactly as the parsed representation did.
+	resp.Compress = e.compress
 	originalRcode := resp.Rcode // Save the original Rcode
 	originalExtra := resp.Extra // Save the original Extra section
 	resp.SetReply(req)
@@ -255,6 +271,7 @@ func (e *CacheEntry) storedMsg() *dns.Msg {
 	if err := msg.Unpack(e.wire); err != nil {
 		return nil
 	}
+	msg.Compress = e.compress
 	return msg
 }
 

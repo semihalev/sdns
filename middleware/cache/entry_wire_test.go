@@ -94,3 +94,55 @@ func TestCacheEntryWireRoundTrip(t *testing.T) {
 		t.Fatal("CD=1 serve kept the AD bit")
 	}
 }
+
+// TestCacheEntryPreservesCompressFlag pins the parsed representation's
+// contract for direct writers: the admitted message's Compress flag survives
+// the round trip even though Unpack never sets it.
+func TestCacheEntryPreservesCompressFlag(t *testing.T) {
+	for _, compress := range []bool{true, false} {
+		req := new(dns.Msg)
+		req.SetQuestion("flag.example.com.", dns.TypeA)
+		src := new(dns.Msg)
+		src.SetReply(req)
+		src.Compress = compress
+		src.Answer = append(src.Answer, makeRR("flag.example.com. 300 IN A 192.0.2.9"))
+
+		entry := NewCacheEntryWithKey(src, time.Minute, 0, 1)
+		if entry == nil {
+			t.Fatal("entry not admitted")
+		}
+		resp := entry.ToMsg(req)
+		if resp == nil {
+			t.Fatal("entry did not serve")
+		}
+		if resp.Compress != compress {
+			t.Fatalf("served Compress = %v, want %v", resp.Compress, compress)
+		}
+	}
+}
+
+// TestCacheEntryWireIsExactSize pins the residency contract against Pack's
+// scratch buffer: PackBuffer sizes its backing array for the uncompressed
+// length, and retaining that slice would silently keep the dead capacity
+// alive for the entry's whole lifetime.
+func TestCacheEntryWireIsExactSize(t *testing.T) {
+	req := new(dns.Msg)
+	req.SetQuestion("www.compressible.example.com.", dns.TypeA)
+	src := new(dns.Msg)
+	src.SetReply(req)
+	// A highly compressible shape: repeated long owner names.
+	for range 5 {
+		src.Answer = append(src.Answer, makeRR(
+			"www.compressible.example.com. 300 IN CNAME edge.very-long-cdn-target.example.net.",
+		))
+	}
+
+	entry := NewCacheEntryWithKey(src, time.Minute, 0, 1)
+	if entry == nil {
+		t.Fatal("entry not admitted")
+	}
+	if cap(entry.wire) != len(entry.wire) {
+		t.Fatalf("wire cap %d != len %d: entry retains Pack's oversized scratch buffer",
+			cap(entry.wire), len(entry.wire))
+	}
+}
