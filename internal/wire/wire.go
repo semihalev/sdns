@@ -85,7 +85,6 @@ func ClearAD(body []byte) {
 // cleared AA (a cached answer is never authoritative). RA and TC are left
 // as stored, matching the message path.
 func ApplyReply(body []byte, id uint16, opcode int, rd, cd bool) {
-	//nolint:gosec // masked to the 4-bit opcode field below
 	if len(body) < HeaderLen {
 		return
 	}

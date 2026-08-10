@@ -141,6 +141,12 @@ func (e *CacheEntry) serveWire(req *dns.Msg, reserve int) ([]byte, middleware.Wi
 		// entry the lookup key already matched, since names that fold to the
 		// same key encode to the same length. Checked anyway; the body is
 		// simply dropped.
+		//
+		// Records are stored compressed, so an answer whose owner name is
+		// the question points back here and now decodes with the client's
+		// spelling too, where the message path would return the stored one.
+		// Intended: names are case-insensitive, and echoing the client's
+		// case throughout is what a 0x20-aware server should do.
 		end, err := dns.PackDomainName(name, body, wire.HeaderLen, nil, false)
 		if err != nil || end-wire.HeaderLen != question.NameLen {
 			return nil, middleware.WireInfo{}, false
