@@ -270,7 +270,7 @@ func TestDenialProofCanonicalNameOrder(t *testing.T) {
 		"com.",
 	}
 	sort.Slice(names, func(i, j int) bool {
-		return denialProofCanonicalNameCompare(names[i], names[j]) < 0
+		return denialProofNameOrderFor(names[i]).compare(denialProofNameOrderFor(names[j])) < 0
 	})
 	want := []string{
 		".",
