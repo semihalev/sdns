@@ -348,3 +348,57 @@ func Test_BlockList_WhitelistHierarchy(t *testing.T) {
 	assert.False(t, b.Set("sub.example.com."), "Set must refuse a hierarchically-whitelisted name")
 	assert.False(t, b.Exists("sub.example.com."), "shadowed name stays exempt")
 }
+
+// Test_BlockList_PersistOrdering pins the ordering guarantee of the
+// asynchronous persist path. Snapshots are taken in a total order
+// under mu, but persist() runs after mu is released and is only
+// serialized by saveMu, so two concurrent mutations can reach the
+// rename in either order. A stale (older-version) snapshot that
+// lands after a newer one must be dropped, so the on-disk file never
+// rolls backwards relative to memory.
+func Test_BlockList_PersistOrdering(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_persistorder")
+	_ = os.RemoveAll(cfg.BlockListDir)
+	if err := os.MkdirAll(cfg.BlockListDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	bl := New(cfg)
+
+	// Build two snapshots in version order, exactly as the mutation
+	// paths do: an older one describing {a} and a newer one {a, b}.
+	bl.mu.Lock()
+	bl.setLocked("a.example.")
+	low := bl.snapshotLocked() // older version
+	bl.setLocked("b.example.")
+	high := bl.snapshotLocked() // newer version
+	bl.mu.Unlock()
+
+	assert.Greater(t, high.version, low.version, "later snapshot must carry a higher version")
+
+	// Persist out of order: newer first, then the stale older one
+	// races in behind it.
+	bl.persist(high)
+	bl.persist(low)
+
+	data, err := os.ReadFile(filepath.Join(cfg.BlockListDir, "local"))
+	assert.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "a.example.")
+	assert.Contains(t, got, "b.example.",
+		"stale snapshot overwrote newer on-disk state: persist rolled backwards")
+
+	// A brand-new, newer snapshot still writes normally.
+	bl.mu.Lock()
+	bl.setLocked("c.example.")
+	next := bl.snapshotLocked()
+	bl.mu.Unlock()
+	bl.persist(next)
+
+	data, err = os.ReadFile(filepath.Join(cfg.BlockListDir, "local"))
+	assert.NoError(t, err)
+	assert.Contains(t, string(data), "c.example.", "a newer snapshot must still persist")
+}
