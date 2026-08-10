@@ -70,7 +70,7 @@ func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			w.Proto(),
 			cd,
 			dns.RcodeToString[w.Rcode()],
-			strconv.Itoa(w.Size()),
+			strconv.Itoa(middleware.ResponseSize(w)),
 		}
 
 		_, err := a.logFile.WriteString(strings.Join(record, " ") + "\n")

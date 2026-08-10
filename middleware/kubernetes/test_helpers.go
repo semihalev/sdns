@@ -49,14 +49,8 @@ func (m *mockResponseWriter) TsigTimersOnly(bool) {}
 func (m *mockResponseWriter) Hijack()             {}
 
 // middleware.ResponseWriter methods
-func (m *mockResponseWriter) Msg() *dns.Msg { return m.msg }
-func (m *mockResponseWriter) Rcode() int    { return m.rcode }
-func (m *mockResponseWriter) Size() int {
-	if m.msg == nil {
-		return 0
-	}
-	return m.msg.Len()
-}
+func (m *mockResponseWriter) Msg() *dns.Msg              { return m.msg }
+func (m *mockResponseWriter) Rcode() int                 { return m.rcode }
 func (m *mockResponseWriter) Written() bool              { return m.written }
 func (m *mockResponseWriter) Reset(w dns.ResponseWriter) {}
 func (m *mockResponseWriter) Proto() string              { return "udp" }

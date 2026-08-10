@@ -14,9 +14,6 @@ type ResponseWriter interface {
 	dns.ResponseWriter
 	Msg() *dns.Msg
 	Rcode() int
-	// Size is the response's wire length, answerable without decoding
-	// whichever form the writer happens to hold.
-	Size() int
 	Written() bool
 	Reset(dns.ResponseWriter)
 	Proto() string
@@ -116,6 +113,10 @@ func (w *responseWriter) Write(m []byte) (int, error) {
 	w.rcode = w.msg.Rcode
 
 	n, err := w.ResponseWriter.Write(m)
+	// The byte count is the response's true wire length. Reading it from
+	// the decoded message instead would overstate a compressed response,
+	// because Unpack does not restore the Compress flag. The caller owns m,
+	// so only the count is kept.
 	w.size = n
 	return n, err
 }

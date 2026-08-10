@@ -77,13 +77,40 @@ func (w *responseWriter) WireReady() (WireCapability, bool) {
 	}
 }
 
-// Size reports the response's length on the wire. Observers ask for it
-// instead of measuring a parsed message: on the byte path that measurement
-// would force an unpack, and a message decoded from bytes reports an
-// inflated uncompressed length because Unpack does not restore Compress.
+// ResponseSizer is implemented by writers that can report a response's wire
+// length without decoding it. It is deliberately separate from
+// ResponseWriter: adding a method to that interface would break any plugin
+// writer that implements it directly rather than by embedding.
+type ResponseSizer interface {
+	Size() int
+}
+
+// ResponseSize returns the response's length on the wire. Observers ask for
+// it instead of measuring a parsed message: on the byte path that
+// measurement would force an unpack, and a message decoded from bytes
+// reports an inflated uncompressed length because Unpack does not restore
+// Compress. A writer that cannot answer falls back to that measurement.
+func ResponseSize(w ResponseWriter) int {
+	if sizer, ok := w.(ResponseSizer); ok {
+		return sizer.Size()
+	}
+	if msg := w.Msg(); msg != nil {
+		return msg.Len()
+	}
+	return 0
+}
+
+// Size reports the bytes this response occupies on the wire: counted
+// exactly whenever the response reached the transport as bytes, and
+// computed from the message only when it did not.
 func (w *responseWriter) Size() int {
-	if w.wire != nil {
+	if len(w.wire) > 0 {
 		return len(w.wire)
+	}
+	// WriteMsg marks itself written with a zero size; a raw write records
+	// the real count, so a positive value is authoritative.
+	if w.size > 0 {
+		return w.size
 	}
 	if w.msg != nil {
 		return w.msg.Len()
