@@ -50,6 +50,14 @@ func TestLogsWireSizeThroughEDNSWrapper(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.AccessLog = path
 	logger := New(cfg)
+	if logger.logFile == nil {
+		t.Fatalf("access log %s was not opened", path)
+	}
+	// Release the handle before TempDir's cleanup runs: Windows refuses to
+	// remove a file that is still open, which would fail the test for a
+	// reason that has nothing to do with what it asserts.
+	t.Cleanup(func() { _ = logger.logFile.Close() })
+
 	e := edns.New(cfg)
 
 	req := new(dns.Msg)
