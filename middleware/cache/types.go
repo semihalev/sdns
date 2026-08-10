@@ -20,8 +20,22 @@ type DCache interface {
 }
 
 // CacheEntry represents an immutable cache entry.
+//
+// The response is retained in packed wire form: one pointer-free byte slice
+// instead of a parsed message graph of ~two dozen heap objects. At the field
+// scale that graph was the dominant GC mark cost (18M live objects on a warm
+// 743k-entry canary). Serving unpacks a fresh message per hit — comparable
+// work to the deep Copy the parsed representation already paid, since a
+// served message must be privately mutable either way.
 type CacheEntry struct {
-	msg        *dns.Msg
+	wire []byte
+	// question is the packed message's question, retained unpacked so the
+	// per-hit hash-collision verification (LookupByKeyVerified) and the cold
+	// compat paths never need to touch the wire.
+	question dns.Question
+	// cd mirrors the packed header's CD bit for compat paths that classify
+	// an entry without unpacking it.
+	cd         bool
 	stored     time.Time
 	ttl        time.Duration
 	origTTL    uint32 // Original TTL in seconds for prefetch calculation
@@ -76,6 +90,9 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 // client IP to derive the scope from on refresh).
 func NewScopedCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 	e := NewCacheEntryWithKey(msg, ttl, rateLimit, 0)
+	if e == nil {
+		return nil
+	}
 	e.scoped = true
 	return e
 }
@@ -86,12 +103,14 @@ func NewScopedCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheE
 // shared-key entry instead — wrong answer for the wrong audience.
 func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped }
 
-// NewCacheEntryWithKey creates a new cache entry with a specific key for rate limiting
+// NewCacheEntryWithKey creates a new cache entry with a specific key for rate
+// limiting. A message that cannot be packed returns nil — such a response was
+// never servable on the wire, so declining to cache it is the safe outcome.
 func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
-	// Create a copy and filter out OPT records (matching V1 behavior)
+	// Assemble the storable view and filter out OPT records (matching V1
+	// behavior): OPT is per-client hop metadata the serve path rebuilds.
 	msgCopy := new(dns.Msg)
 	msgCopy.MsgHdr = msg.MsgHdr
-	msgCopy.Compress = msg.Compress
 	msgCopy.Question = msg.Question
 	msgCopy.Answer = msg.Answer
 	msgCopy.Ns = msg.Ns
@@ -117,8 +136,15 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 		msgCopy.Extra = extra
 	}
 
+	// Name compression keeps the stored form smaller than the upstream wire.
+	msgCopy.Compress = true
+	wire, err := msgCopy.Pack()
+	if err != nil {
+		return nil
+	}
+
 	entry := &CacheEntry{
-		msg: msgCopy,
+		wire: wire,
 		// Keep the monotonic clock reading. Converting to UTC strips it and
 		// would let a backward wall-clock adjustment extend both the TTL and
 		// an inherited delegation cut.
@@ -128,6 +154,10 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 		rateLimit:  rateLimit,
 		rateLimKey: key,
 		ede:        ede,
+		cd:         msg.CheckingDisabled,
+	}
+	if len(msg.Question) > 0 {
+		entry.question = msg.Question[0]
 	}
 
 	return entry
@@ -142,7 +172,12 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 		return nil
 	}
 
-	resp := e.msg.Copy()
+	resp := new(dns.Msg)
+	if err := resp.Unpack(e.wire); err != nil {
+		// The wire was produced by our own Pack at admission; failure here
+		// means corruption, and a miss re-resolves safely.
+		return nil
+	}
 	originalRcode := resp.Rcode // Save the original Rcode
 	originalExtra := resp.Extra // Save the original Extra section
 	resp.SetReply(req)
@@ -207,6 +242,20 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	}
 
 	return resp
+}
+
+// storedMsg unpacks the retained wire form without any serve-time shaping.
+// Inspection paths (tests, future debug surfaces) use it; the hit path goes
+// through ToMsg.
+func (e *CacheEntry) storedMsg() *dns.Msg {
+	if e == nil {
+		return nil
+	}
+	msg := new(dns.Msg)
+	if err := msg.Unpack(e.wire); err != nil {
+		return nil
+	}
+	return msg
 }
 
 // (*CacheEntry).IsExpired isExpired checks if the cache entry has expired.

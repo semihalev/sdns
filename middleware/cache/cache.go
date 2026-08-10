@@ -1096,6 +1096,9 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	ttl := c.positive.ttl.Calculate(msgTTL)
 
 	entry := NewCacheEntryWithKey(filtered, ttl, c.config.RateLimit, key)
+	if entry == nil {
+		return
+	}
 	if ttl > 0 {
 		entry.origTTL = uint32(ttl.Seconds())
 	}

@@ -107,8 +107,12 @@ func TestPrefetchKeepsDNSSECForDO0Trigger(t *testing.T) {
 			// Refreshed. The stored answer must still carry the RRSIG
 			// and the AD bit — proving the DO=0 trigger did not strip
 			// DNSSEC via the prefetch sub-pipeline's edns layer.
+			stored := got.storedMsg()
+			if stored == nil {
+				t.Fatal("refreshed entry wire failed to unpack")
+			}
 			hasRRSIG := false
-			for _, rr := range got.msg.Answer {
+			for _, rr := range stored.Answer {
 				if _, ok := rr.(*dns.RRSIG); ok {
 					hasRRSIG = true
 				}
@@ -116,7 +120,7 @@ func TestPrefetchKeepsDNSSECForDO0Trigger(t *testing.T) {
 			if !hasRRSIG {
 				t.Fatalf("prefetch dropped the RRSIG: a DO=0 trigger downgraded the signed entry")
 			}
-			if !got.msg.AuthenticatedData {
+			if !stored.AuthenticatedData {
 				t.Fatalf("prefetch cleared the AD bit: a DO=0 trigger downgraded the signed entry")
 			}
 			return
