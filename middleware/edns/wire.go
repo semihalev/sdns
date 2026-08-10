@@ -1,51 +1,46 @@
 package edns
 
 import (
-	"encoding/binary"
-
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 )
 
-// WriteWire shapes a packed, OPT-less response body exactly as WriteMsg
-// shapes a *dns.Msg: DNSSEC records are withheld from DO=0 clients (by
-// falling back — stripping records is Msg-path work), the AD policy is
-// applied, and the per-client OPT (DO, UDP size, cookie, NSID; never ECS)
-// is appended. Anything the byte path cannot reproduce faithfully returns
-// ErrWireFallback before any state or bytes change, so the Msg path can
-// re-serve the identical response.
-func (w *ResponseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+// WireReady reports what the byte path may produce for this client and
+// reserves room for the OPT this layer appends. It answers with the
+// client's own DO bit — the request's OPT no longer carries it, because
+// SetEdns0 turns DO on for upstream validation regardless of what the
+// client asked for.
+//
+// The OPT is composed here, into the pooled record, so the reservation is
+// exact and WriteWire adds no further work.
+func (w *ResponseWriter) WireReady() (middleware.WireCapability, bool) {
 	next, ok := w.ResponseWriter.(middleware.WireWriter)
 	if !ok {
-		return middleware.ErrWireFallback
+		return middleware.WireCapability{}, false
 	}
-	if len(body) < 12 {
-		return middleware.ErrWireFallback
-	}
-
-	// DO=0 responses must not carry DNSSEC records; removing them reshapes
-	// the body, which is the Msg path's job.
-	if !w.do && info.HasDNSSEC {
-		return middleware.ErrWireFallback
+	capability, ok := next.WireReady()
+	if !ok {
+		return middleware.WireCapability{}, false
 	}
 
-	if w.noedns {
-		// The stored body already carries no OPT — a legacy client's
-		// response is complete as-is.
-		if w.Proto() == "udp" && len(body) > w.size {
-			return middleware.ErrWireFallback
-		}
-		if w.noad && info.AuthenticatedData {
-			middleware.ClearWireAD(body)
-			info.AuthenticatedData = false
-		}
-		return next.WriteWire(body, info)
+	capability.DO = w.do
+	if !w.noedns {
+		capability.Reserve += dns.Len(w.buildWireOPT())
 	}
+	// A UDP client's advertised size bounds the reply; exceeding it means
+	// truncation, which reshapes the message and belongs to the Msg path.
+	if w.Proto() == "udp" && (capability.MaxSize == 0 || w.size < capability.MaxSize) {
+		capability.MaxSize = w.size
+	}
+	return capability, true
+}
 
-	// Compose the same per-client OPT the Msg path would attach, without
-	// touching writer state: a later fallback must not leave a duplicate
-	// cookie or NSID behind. ECS options are excluded from the reply
-	// exactly as WriteMsg's strip does.
+// buildWireOPT composes the per-client OPT into the pooled record: the
+// same one WriteMsg would attach (DO, UDP size, cookie, NSID), minus every
+// ECS option. Writer state is untouched, so a fallback after this point
+// cannot leave a duplicated option behind.
+func (w *ResponseWriter) buildWireOPT() *dns.OPT {
 	opt := &w.wireOPT
 	opt.Hdr.Name = "."
 	opt.Hdr.Rrtype = dns.TypeOPT
@@ -65,9 +60,36 @@ func (w *ResponseWriter) WriteWire(body []byte, info middleware.WireInfo) error 
 	if option, ok := w.nsidOption(); ok {
 		opt.Option = append(opt.Option, option)
 	}
+	return opt
+}
 
+// WriteWire appends the per-client OPT composed during the preflight and
+// forwards the bytes. The guards here are backstops: WireReady already
+// established DO, size, and chain support, so a fallback at this point
+// means an assumption broke rather than an ordinary refusal.
+func (w *ResponseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+	next, ok := w.ResponseWriter.(middleware.WireWriter)
+	if !ok || len(body) < wire.HeaderLen {
+		return middleware.ErrWireFallback
+	}
+	if !w.do && info.HasDNSSEC {
+		return middleware.ErrWireFallback
+	}
+	if w.noad && info.AuthenticatedData {
+		wire.ClearAD(body)
+		info.AuthenticatedData = false
+	}
+
+	if w.noedns {
+		if w.Proto() == "udp" && len(body) > w.size {
+			return middleware.ErrWireFallback
+		}
+		return next.WriteWire(body, info)
+	}
+
+	opt := &w.wireOPT
 	buf := body
-	if need := len(body) + dns.Len(opt) + 4; cap(buf) < need {
+	if need := len(body) + dns.Len(opt); cap(buf) < need {
 		buf = append(make([]byte, 0, need), body...)
 	}
 	buf = buf[:cap(buf)]
@@ -77,18 +99,10 @@ func (w *ResponseWriter) WriteWire(body []byte, info middleware.WireInfo) error 
 	}
 	withOPT := buf[:off]
 
-	// RFC 1035 truncation for UDP clients whose advertised size the reply
-	// exceeds: the Msg path empties the sections and sets TC — reshaping,
-	// so the byte path steps aside.
 	if w.Proto() == "udp" && len(withOPT) > w.size {
 		return middleware.ErrWireFallback
 	}
-
-	if w.noad && info.AuthenticatedData {
-		middleware.ClearWireAD(withOPT)
-		info.AuthenticatedData = false
-	}
-	binary.BigEndian.PutUint16(withOPT[10:12], 1) // ARCOUNT: the appended OPT
+	wire.SetARCount(withOPT, 1)
 
 	return next.WriteWire(withOPT, info)
 }

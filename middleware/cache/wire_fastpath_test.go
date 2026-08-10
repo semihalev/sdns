@@ -100,8 +100,10 @@ func normalize(tb testing.TB, msg *dns.Msg) (header string, rrs []string, option
 		name string
 		on   bool
 	}{
+		{"QR", msg.Response}, {"AA", msg.Authoritative},
 		{"AD", msg.AuthenticatedData}, {"TC", msg.Truncated},
-		{"RA", msg.RecursionAvailable}, {"CD", msg.CheckingDisabled},
+		{"RD", msg.RecursionDesired}, {"RA", msg.RecursionAvailable},
+		{"CD", msg.CheckingDisabled},
 	} {
 		if flag.on {
 			sb.WriteString(" " + flag.name)
@@ -153,6 +155,14 @@ func assertEquivalent(t *testing.T, name string, wirePath, msgPath *dns.Msg) {
 			t.Fatalf("%s: OPT option %d diverged\n wire: %s\n  msg: %s", name, i, wo[i], mo[i])
 		}
 	}
+}
+
+func wireFastEntryAA(tb testing.TB, qname string, qtype uint16) *dns.Msg {
+	msg := wireFastEntry(tb, qname, qtype, false)
+	// A forwarder can hand back an authoritative answer; the cache stores
+	// the header as received.
+	msg.Authoritative = true
+	return msg
 }
 
 func wireFastEntry(tb testing.TB, qname string, qtype uint16, dnssec bool) *dns.Msg {
@@ -279,10 +289,15 @@ func TestWireFastPathTruncationFallsBack(t *testing.T) {
 	client.RecursionDesired = true
 	client.SetEdns0(512, false)
 
+	servedBefore := wireFastServed.Value()
 	fallbackBefore := wireFastFallback.Value()
 	resp := serveThrough(t, c, e, client, false)
-	if wireFastFallback.Value() != fallbackBefore+1 {
-		t.Fatal("oversized UDP reply did not take the late fallback")
+	if wireFastServed.Value() != servedBefore {
+		t.Fatal("an oversized UDP reply must not be served as bytes")
+	}
+	if wireFastFallback.Value() != fallbackBefore {
+		t.Fatal("the size ceiling must be caught by the preflight, " +
+			"before a body is built — a late fallback means both paths were paid")
 	}
 	if !resp.Truncated || len(resp.Answer) != 0 {
 		t.Fatalf("fallback response tc=%v answers=%d, want truncated empty",
@@ -315,14 +330,21 @@ func TestWireServableGatesRunBeforeCopy(t *testing.T) {
 		return e
 	}
 
-	if !entryOf(plain).wireServable(req, false) {
+	do0 := middleware.WireCapability{DO: false}
+	do1 := middleware.WireCapability{DO: true}
+	if !entryOf(plain).wireServable(req, do0) {
 		t.Fatal("plain entry must be servable to DO=0")
 	}
-	if entryOf(signed).wireServable(req, false) {
+	if entryOf(signed).wireServable(req, do0) {
 		t.Fatal("DNSSEC entry must be gated for DO=0 before any copy")
 	}
-	if !entryOf(signed).wireServable(req, true) {
+	if !entryOf(signed).wireServable(req, do1) {
 		t.Fatal("DNSSEC entry must be servable to DO=1")
+	}
+	// The transport's size ceiling is part of the same allocation-free gate.
+	tight := middleware.WireCapability{DO: true, Reserve: 11, MaxSize: len(entryOf(plain).wire) + 10}
+	if entryOf(plain).wireServable(req, tight) {
+		t.Fatal("a reply exceeding the transport ceiling must be gated before any copy")
 	}
 	chaseEntry := NewCacheEntryWithKey(chase, time.Minute, 0, 1)
 	if chaseEntry == nil {
@@ -330,7 +352,7 @@ func TestWireServableGatesRunBeforeCopy(t *testing.T) {
 	}
 	chaseReq2 := new(dns.Msg)
 	chaseReq2.SetQuestion("alias.example.com.", dns.TypeA)
-	if chaseEntry.wireServable(chaseReq2, true) {
+	if chaseEntry.wireServable(chaseReq2, do1) {
 		t.Fatal("incomplete CNAME chain must stay on the Msg path")
 	}
 }
@@ -403,4 +425,147 @@ func BenchmarkWireFastPath(b *testing.B) {
 	b.Run("wire_served", func(b *testing.B) { run(b, true, true, false) })
 	b.Run("gate_rejected_to_msg", func(b *testing.B) { run(b, true, false, false) })
 	b.Run("msg_path_baseline", func(b *testing.B) { run(b, true, true, true) })
+}
+
+// TestWireFastPathClearsAuthoritative pins the reply-header contract that
+// the message path gets from SetReply plus its own shaping: a cached answer
+// is never authoritative, and RD/CD come from the request in flight — not
+// from whatever the upstream stored.
+func TestWireFastPathClearsAuthoritative(t *testing.T) {
+	const qname = "aa.example.com."
+	entry := wireFastEntryAA(t, qname, dns.TypeA)
+	c, e := wireFastTestPipeline(t, entry)
+
+	// The cache refuses RD=0 queries outright, so the pipeline can only
+	// exercise RD=1; the copied-bit contract is pinned at the unit level
+	// below.
+	for _, rd := range []bool{true} {
+		req := new(dns.Msg)
+		req.SetQuestion(qname, dns.TypeA)
+		req.Id = 11
+		req.RecursionDesired = rd
+		req.SetEdns0(1232, true)
+
+		servedBefore := wireFastServed.Value()
+		viaWire := serveThrough(t, c, e, req, false)
+		if wireFastServed.Value() != servedBefore+1 {
+			t.Fatal("expected the byte path to serve")
+		}
+		if viaWire.Authoritative {
+			t.Fatal("cached answer served with AA=1")
+		}
+		if viaWire.RecursionDesired != rd {
+			t.Fatalf("RD = %v, want the request's %v", viaWire.RecursionDesired, rd)
+		}
+		if !viaWire.Response {
+			t.Fatal("QR not set on the served reply")
+		}
+		assertEquivalent(t, "aa", viaWire, serveThrough(t, c, e, req, true))
+	}
+
+	// Unit level: the served bytes carry the request's RD and CD, and never
+	// the stored AA.
+	stored := NewCacheEntryWithKey(entry, time.Minute, 0, 1)
+	if stored == nil {
+		t.Fatal("entry not admitted")
+	}
+	for _, want := range []struct{ rd, cd bool }{{true, false}, {false, true}, {false, false}} {
+		probe := new(dns.Msg)
+		probe.SetQuestion(qname, dns.TypeA)
+		probe.Id = 33
+		probe.RecursionDesired = want.rd
+		probe.CheckingDisabled = want.cd
+
+		body, _, ok := stored.serveWire(probe)
+		if !ok {
+			t.Fatal("serveWire refused a plain request")
+		}
+		decoded := new(dns.Msg)
+		if err := decoded.Unpack(body); err != nil {
+			t.Fatalf("served bytes do not decode: %v", err)
+		}
+		if decoded.Authoritative {
+			t.Fatal("served bytes kept the stored AA bit")
+		}
+		if decoded.RecursionDesired != want.rd || decoded.CheckingDisabled != want.cd {
+			t.Fatalf("rd/cd = %v/%v, want %v/%v",
+				decoded.RecursionDesired, decoded.CheckingDisabled, want.rd, want.cd)
+		}
+		if !decoded.Response || decoded.Id != probe.Id {
+			t.Fatalf("qr=%v id=%d", decoded.Response, decoded.Id)
+		}
+	}
+}
+
+// TestWireFastPathExcludesNonByteTransports pins the transport gate. DoQ
+// requires the reply ID to be zero (RFC 9250 §4.2.1) — a rewrite its raw
+// byte write does not perform — and the DoH assembly path unpacks whatever
+// bytes it receives only to pack them again. Both must stay on the message
+// path until they can carry bytes natively.
+func TestWireFastPathExcludesNonByteTransports(t *testing.T) {
+	const qname = "proto.example.com."
+	entry := wireFastEntry(t, qname, dns.TypeA, false)
+
+	for _, proto := range []string{"doq", "doh", "udp"} {
+		c, e := wireFastTestPipeline(t, entry)
+		req := new(dns.Msg)
+		req.SetQuestion(qname, dns.TypeA)
+		req.Id = 4242
+		req.RecursionDesired = true
+		req.SetEdns0(1232, true)
+
+		writer := mock.NewWriter(proto, "198.51.100.77:40000")
+		terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+			t.Fatal("missed cache")
+		})
+		ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
+		ch.Reset(writer, req)
+
+		servedBefore := wireFastServed.Value()
+		ch.Next(context.Background())
+		served := wireFastServed.Value() - servedBefore
+
+		wantServed := proto == "udp"
+		if wantServed != (served == 1) {
+			t.Fatalf("proto %s: wire served %d, want served=%v", proto, served, wantServed)
+		}
+		if got := writer.Msg(); got == nil || len(got.Answer) != 2 {
+			t.Fatalf("proto %s: response = %v", proto, got)
+		}
+	}
+}
+
+// TestWireFastPathGateRunsBeforeAnyAllocation pins the "never pay both
+// paths" property directly: a request the chain cannot serve as bytes must
+// not allocate the body copy the byte path would need.
+func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
+	const qname = "gate2.example.com."
+	// A signed entry with a DO=0 client: the request's own OPT says DO=1 by
+	// the time the cache sees it (the edns layer sets it for upstream
+	// validation), so only the writer chain's preflight can tell the truth.
+	entry := wireFastEntry(t, qname, dns.TypeA, true)
+	c, e := wireFastTestPipeline(t, entry)
+
+	req := new(dns.Msg)
+	req.SetQuestion(qname, dns.TypeA)
+	req.Id = 12
+	req.RecursionDesired = true
+	req.SetEdns0(1232, false) // client did not ask for DNSSEC
+
+	writer := mock.NewWriter("udp", "198.51.100.77:40000")
+	terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		t.Fatal("missed cache")
+	})
+	ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
+
+	fallbackBefore := wireFastFallback.Value()
+	allocs := testing.AllocsPerRun(50, func() {
+		ch.Reset(writer, req)
+		ch.Next(context.Background())
+	})
+	if wireFastFallback.Value() != fallbackBefore {
+		t.Fatal("a DO=0 client with a signed entry reached the late fallback; " +
+			"the preflight must refuse before the body is built")
+	}
+	t.Logf("message-path allocations for a preflight-refused hit: %.0f", allocs)
 }

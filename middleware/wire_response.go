@@ -26,21 +26,55 @@ type WireInfo struct {
 	HasDNSSEC bool
 }
 
+// WireCapability is what the writer chain reports about serving bytes for
+// the request in flight. It is gathered before any body is produced, so a
+// request that cannot take the byte path never pays for it.
+type WireCapability struct {
+	// DO is the client's own DNSSEC-OK bit. It cannot be read from the
+	// request at serve time: the edns layer sets DO on the request's OPT
+	// so upstream validation happens regardless of what the client asked
+	// for, and only the writer still remembers the original.
+	DO bool
+	// Reserve is how many bytes the chain will append below this point
+	// (the per-client OPT).
+	Reserve int
+	// MaxSize caps the reply the transport accepts; 0 means unbounded.
+	MaxSize int
+}
+
 // WireWriter is the optional byte-serving contract. A response written
 // through WriteWire carries no OPT record; the edns layer appends the
-// per-client OPT it would have attached on the Msg path. Implementations
-// either shape-and-forward, or return ErrWireFallback untouched.
+// per-client OPT it would have attached on the Msg path.
 //
-// Every wrapper between the caller and the transport must implement
-// WireWriter for the write to proceed; the first non-implementing layer
-// turns the attempt into a fallback.
+// WireReady is the allocation-free preflight: it walks the whole chain and
+// reports both whether every layer can shape bytes and the facts the caller
+// needs to decide. Callers must consult it before building a body — a late
+// refusal would mean paying for both paths.
+//
+// WriteWire keeps ErrWireFallback as a defensive backstop for conditions a
+// preflight cannot foresee; it must still return before writing any byte.
 type WireWriter interface {
+	WireReady() (WireCapability, bool)
 	WriteWire(body []byte, info WireInfo) error
 }
 
 // ClearWireAD clears the AD bit in a packed message header in place.
 func ClearWireAD(body []byte) {
 	wire.ClearAD(body)
+}
+
+// WireReady reports whether this transport is a true byte sink. DoQ needs
+// its reply ID normalized to zero (RFC 9250 §4.2.1), a rewrite its raw
+// Write does not perform, and the DoH assembly path unpacks whatever bytes
+// it is handed only to pack them again — both are excluded until they can
+// carry bytes natively.
+func (w *responseWriter) WireReady() (WireCapability, bool) {
+	switch w.proto {
+	case "udp", "tcp":
+		return WireCapability{}, true
+	default:
+		return WireCapability{}, false
+	}
 }
 
 // WriteWire on the base response writer sends the bytes straight to the

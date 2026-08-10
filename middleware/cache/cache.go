@@ -1010,16 +1010,15 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		}
 	}
 
-	// Byte fast path: serve the stored wire directly when the entry is
-	// chase-invariant and every layer between here and the transport can
-	// shape bytes. All cheap predicates run before the body copy, so a
-	// request destined for the Msg path never pays for both.
+	// Byte fast path: serve the stored wire directly. The writer chain's
+	// preflight settles every refusal — transport support, the client's
+	// real DO bit, the size ceiling — before a body exists, so a request
+	// bound for the Msg path never pays for both.
 	if !w.Internal() {
-		opt := req.IsEdns0()
-		do := opt != nil && opt.Do()
-		if entry.wireServable(req, do) {
-			if ww, ok := w.(middleware.WireWriter); ok {
-				if body, info, ready := entry.serveWire(req); ready {
+		if ww, ok := w.(middleware.WireWriter); ok {
+			if capability, ready := ww.WireReady(); ready &&
+				entry.wireServable(req, capability) {
+				if body, info, built := entry.serveWire(req); built {
 					switch err := ww.WriteWire(body, info); {
 					case err == nil:
 						wireFastServed.Inc()

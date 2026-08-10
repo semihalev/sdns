@@ -13,10 +13,18 @@ import "encoding/binary"
 // HeaderLen is the fixed DNS header size (RFC 1035 §4.1.1).
 const HeaderLen = 12
 
-// Flag bits within Header.Flags.
+// Flag bits within Header.Flags (RFC 1035 §4.1.1 layout).
 const (
-	FlagAD = 1 << 5 // authenticated data (RFC 4035 §3.1.6)
-	FlagTC = 1 << 9 // truncated
+	FlagRcodeMask = 0x000F
+	FlagCD        = 1 << 4  // checking disabled
+	FlagAD        = 1 << 5  // authenticated data (RFC 4035 §3.1.6)
+	FlagRA        = 1 << 7  // recursion available
+	FlagRD        = 1 << 8  // recursion desired
+	FlagTC        = 1 << 9  // truncated
+	FlagAA        = 1 << 10 // authoritative answer
+	FlagOpcodeSh  = 11      // opcode occupies bits 11-14
+	FlagOpcodeMsk = 0xF << FlagOpcodeSh
+	FlagQR        = 1 << 15 // response
 )
 
 // Header is the fixed-size DNS message header.
@@ -69,6 +77,35 @@ func ClearAD(body []byte) {
 	if len(body) >= 4 {
 		body[3] &^= FlagAD
 	}
+}
+
+// ApplyReply stamps onto a packed response the header fields miekg's
+// SetReply derives from the request, plus the cache's own reply shaping:
+// the request ID, QR, the request opcode, the copied RD/CD bits, and a
+// cleared AA (a cached answer is never authoritative). RA and TC are left
+// as stored, matching the message path.
+func ApplyReply(body []byte, id uint16, opcode int, rd, cd bool) {
+	//nolint:gosec // masked to the 4-bit opcode field below
+	if len(body) < HeaderLen {
+		return
+	}
+	binary.BigEndian.PutUint16(body[0:2], id)
+
+	flags := binary.BigEndian.Uint16(body[2:4])
+	flags |= FlagQR
+	flags &^= FlagAA
+	flags = (flags &^ FlagOpcodeMsk) | (uint16(opcode)<<FlagOpcodeSh)&FlagOpcodeMsk //nolint:gosec // masked to the 4-bit opcode field
+	if rd {
+		flags |= FlagRD
+	} else {
+		flags &^= FlagRD
+	}
+	if cd {
+		flags |= FlagCD
+	} else {
+		flags &^= FlagCD
+	}
+	binary.BigEndian.PutUint16(body[2:4], flags)
 }
 
 // SkipName advances past a (possibly compressed) domain name starting at
