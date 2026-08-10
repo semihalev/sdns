@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"slices"
 	"sort"
 	"strconv"
@@ -641,7 +642,7 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 
 	type lookupResult struct {
 		name   string
-		addrs  []string
+		addrs  []netip.Addr
 		isIPv6 bool
 	}
 	results := make(chan lookupResult, len(hostsToCheck)*2)
@@ -689,20 +690,20 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 	}()
 
 	// Collect results
-	nsipv4 := make(map[string][]string)
-	nsipv6 := make(map[string][]string)
+	nsipv4 := make(map[string][]netip.Addr)
+	nsipv6 := make(map[string][]netip.Addr)
 	var newServers []*authority.Server
 
 	for result := range results {
 		if result.isIPv6 {
 			nsipv6[result.name] = result.addrs
 			for _, addr := range result.addrs {
-				newServers = append(newServers, authority.NewServer(net.JoinHostPort(addr, "53"), authority.IPv6))
+				newServers = append(newServers, authority.NewServerFromAddrPort(netip.AddrPortFrom(addr, 53)))
 			}
 		} else {
 			nsipv4[result.name] = result.addrs
 			for _, addr := range result.addrs {
-				newServers = append(newServers, authority.NewServer(net.JoinHostPort(addr, "53"), authority.IPv4))
+				newServers = append(newServers, authority.NewServerFromAddrPort(netip.AddrPortFrom(addr, 53)))
 			}
 		}
 	}
@@ -743,13 +744,13 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 
 func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*authority.Servers, hostSet, hostSet) {
 	authservers := &authority.Servers{}
-	seenServers := make(map[string]struct{})
+	seenServers := make(map[netip.AddrPort]struct{})
 
 	foundv4 := make(hostSet)
 	foundv6 := make(hostSet)
 
 	if r.cfg.IPv6Access {
-		nsipv6 := make(map[string][]string)
+		nsipv6 := make(map[string][]netip.Addr)
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.AAAA); ok {
 				name := strings.ToLower(extra.Header().Name)
@@ -763,23 +764,18 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 				}
 
 				if _, ok := hosts[name]; ok {
-					if isLocalIP(extra.AAAA) {
-						continue
-					}
-
-					if extra.AAAA.IsLoopback() {
+					addr, valid := usableAddr(extra.AAAA)
+					if !valid {
 						continue
 					}
 
 					foundv6[name] = struct{}{}
 
-					ip := extra.AAAA.String()
-					nsipv6[name] = appendUniqueString(nsipv6[name], ip)
-					endpoint := net.JoinHostPort(ip, "53")
-					key := middleware.CanonicalResolutionEndpoint(endpoint)
-					if _, ok := seenServers[key]; !ok {
-						seenServers[key] = struct{}{}
-						authservers.List = append(authservers.List, authority.NewServer(endpoint, authority.IPv6))
+					nsipv6[name] = appendUniqueAddr(nsipv6[name], addr)
+					endpoint := netip.AddrPortFrom(addr, 53)
+					if _, ok := seenServers[endpoint]; !ok {
+						seenServers[endpoint] = struct{}{}
+						authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
 					}
 				}
 			}
@@ -787,7 +783,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 		r.addIPv6Cache(nsipv6)
 	}
 
-	nsipv4 := make(map[string][]string)
+	nsipv4 := make(map[string][]netip.Addr)
 	for _, a := range resp.Extra {
 		if extra, ok := a.(*dns.A); ok {
 			name := strings.ToLower(extra.Header().Name)
@@ -801,23 +797,18 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 			}
 
 			if _, ok := hosts[name]; ok {
-				if isLocalIP(extra.A) {
-					continue
-				}
-
-				if extra.A.IsLoopback() {
+				addr, valid := usableAddr(extra.A)
+				if !valid {
 					continue
 				}
 
 				foundv4[name] = struct{}{}
 
-				ip := extra.A.String()
-				nsipv4[name] = appendUniqueString(nsipv4[name], ip)
-				endpoint := net.JoinHostPort(ip, "53")
-				key := middleware.CanonicalResolutionEndpoint(endpoint)
-				if _, ok := seenServers[key]; !ok {
-					seenServers[key] = struct{}{}
-					authservers.List = append(authservers.List, authority.NewServer(endpoint, authority.IPv4))
+				nsipv4[name] = appendUniqueAddr(nsipv4[name], addr)
+				endpoint := netip.AddrPortFrom(addr, 53)
+				if _, ok := seenServers[endpoint]; !ok {
+					seenServers[endpoint] = struct{}{}
+					authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
 				}
 			}
 		}
@@ -827,49 +818,40 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 	return authservers, foundv4, foundv6
 }
 
-func appendUniqueString(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
-}
-
-func (r *Resolver) addIPv4Cache(nsipv4 map[string][]string) {
+func (r *Resolver) addIPv4Cache(nsipv4 map[string][]netip.Addr) {
 	for name, addrs := range nsipv4 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
 		r.glueV4.Add(key, addrs)
 	}
 }
 
-func (r *Resolver) getIPv4Cache(name string) ([]string, bool) {
+func (r *Resolver) getIPv4Cache(name string) ([]netip.Addr, bool) {
 	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
 	if v, ok := r.glueV4.Get(key); ok {
-		return v.([]string), ok
+		return v.([]netip.Addr), ok
 	}
 
-	return []string{}, false
+	return nil, false
 }
 
 func (r *Resolver) removeIPv4Cache(name string) {
 	r.glueV4.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
-func (r *Resolver) addIPv6Cache(nsipv6 map[string][]string) {
+func (r *Resolver) addIPv6Cache(nsipv6 map[string][]netip.Addr) {
 	for name, addrs := range nsipv6 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
 		r.glueV6.Add(key, addrs)
 	}
 }
 
-func (r *Resolver) getIPv6Cache(name string) ([]string, bool) {
+func (r *Resolver) getIPv6Cache(name string) ([]netip.Addr, bool) {
 	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
 	if v, ok := r.glueV6.Get(key); ok {
-		return v.([]string), ok
+		return v.([]netip.Addr), ok
 	}
 
-	return []string{}, false
+	return nil, false
 }
 
 func (r *Resolver) removeIPv6Cache(name string) {
@@ -2458,7 +2440,7 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	return resp, nil
 }
 
-func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, err error) {
 	zlog.Debug("Lookup NS ipv4 address", "qname", qname)
 
 	if addrs, ok := r.getIPv4Cache(qname); ok {
@@ -2489,7 +2471,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 	return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []string, err error) {
+func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, err error) {
 	zlog.Debug("Lookup NS ipv6 address", "qname", qname)
 
 	if addrs, ok := r.getIPv6Cache(qname); ok {
@@ -2566,7 +2548,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		}
 
 		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
-		nsipv4 := make(map[string][]string)
+		nsipv4 := make(map[string][]netip.Addr)
 
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
@@ -2597,13 +2579,13 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		before := len(authservers.List)
 	addrsloop:
 		for _, addr := range addrs {
-			raddr := net.JoinHostPort(addr, "53")
+			endpoint := netip.AddrPortFrom(addr, 53)
 			for _, s := range authservers.List {
-				if s.Addr == raddr {
+				if s.UDPAddr != nil && s.UDPAddr.AddrPort() == endpoint {
 					continue addrsloop
 				}
 			}
-			authservers.List = append(authservers.List, authority.NewServer(raddr, authority.IPv4))
+			authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
 		}
 		if len(authservers.List) != before {
 			// Invalidate *before* releasing the write lock: after
@@ -2662,7 +2644,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		}
 
 		addrs, err := r.lookupNSAddrV6(ctx, name, cd)
-		nsipv6 := make(map[string][]string)
+		nsipv6 := make(map[string][]netip.Addr)
 
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
@@ -2687,13 +2669,13 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		before := len(authservers.List)
 	addrsloop:
 		for _, addr := range addrs {
-			raddr := net.JoinHostPort(addr, "53")
+			endpoint := netip.AddrPortFrom(addr, 53)
 			for _, s := range authservers.List {
-				if s.Addr == raddr {
+				if s.UDPAddr != nil && s.UDPAddr.AddrPort() == endpoint {
 					continue addrsloop
 				}
 			}
-			authservers.List = append(authservers.List, authority.NewServer(raddr, authority.IPv6))
+			authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
 		}
 		if len(authservers.List) != before {
 			authservers.InvalidateFingerprint()
@@ -2938,7 +2920,7 @@ func (r *Resolver) checkPriming() {
 
 	var tmpservers authority.Servers
 	foundServers := make(map[string]bool)
-	seenEndpoints := make(map[string]struct{})
+	seenEndpoints := make(map[netip.AddrPort]struct{})
 
 	// Process IPv6 addresses if enabled
 	if r.cfg.IPv6Access { //nolint:gosec // G118 - detached enrichment is intentionally bounded below
@@ -2947,11 +2929,12 @@ func (r *Resolver) checkPriming() {
 				serverName := strings.ToLower(v6.Header().Name)
 				if nsServers[serverName] {
 					foundServers[serverName] = true
-					host := net.JoinHostPort(v6.AAAA.String(), "53")
-					key := middleware.CanonicalResolutionEndpoint(host)
-					if _, ok := seenEndpoints[key]; !ok {
-						seenEndpoints[key] = struct{}{}
-						tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv6))
+					if addr, valid := netip.AddrFromSlice(v6.AAAA); valid {
+						endpoint := netip.AddrPortFrom(addr.Unmap(), 53)
+						if _, ok := seenEndpoints[endpoint]; !ok {
+							seenEndpoints[endpoint] = struct{}{}
+							tmpservers.List = append(tmpservers.List, authority.NewServerFromAddrPort(endpoint))
+						}
 					}
 				}
 			}
@@ -2964,11 +2947,12 @@ func (r *Resolver) checkPriming() {
 			serverName := strings.ToLower(v4.Header().Name)
 			if nsServers[serverName] {
 				foundServers[serverName] = true
-				host := net.JoinHostPort(v4.A.String(), "53")
-				key := middleware.CanonicalResolutionEndpoint(host)
-				if _, ok := seenEndpoints[key]; !ok {
-					seenEndpoints[key] = struct{}{}
-					tmpservers.List = append(tmpservers.List, authority.NewServer(host, authority.IPv4))
+				if addr, valid := netip.AddrFromSlice(v4.A); valid {
+					endpoint := netip.AddrPortFrom(addr.Unmap(), 53)
+					if _, ok := seenEndpoints[endpoint]; !ok {
+						seenEndpoints[endpoint] = struct{}{}
+						tmpservers.List = append(tmpservers.List, authority.NewServerFromAddrPort(endpoint))
+					}
 				}
 			}
 		}

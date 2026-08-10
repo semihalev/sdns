@@ -3,6 +3,7 @@ package resolver
 import (
 	"math/rand/v2"
 	"net"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -41,39 +42,27 @@ func shuffleStr(vals []string) []string {
 	return ret
 }
 
-func searchAddrs(msg *dns.Msg) (addrs []string, found bool) {
+// searchAddrs collects usable NS addresses from an answer as heap-free
+// netip values. Address strings are deliberately never materialized here:
+// the whole downstream pipeline (glue caches, Server construction, dedup)
+// is netip-native and derives its one canonical string per Server.
+func searchAddrs(msg *dns.Msg) (addrs []netip.Addr, found bool) {
 	found = false
 
 	for _, rr := range msg.Answer {
 		if r, ok := rr.(*dns.A); ok {
-			if isLocalIP(r.A) {
+			addr, valid := usableAddr(r.A)
+			if !valid || !addr.Is4() {
 				continue
 			}
-
-			if r.A.To4() == nil {
-				continue
-			}
-
-			if r.A.IsLoopback() {
-				continue
-			}
-
-			addrs = append(addrs, r.A.String())
+			addrs = append(addrs, addr)
 			found = true
 		} else if r, ok := rr.(*dns.AAAA); ok {
-			if isLocalIP(r.AAAA) {
+			addr, valid := usableAddr(r.AAAA)
+			if !valid {
 				continue
 			}
-
-			if r.AAAA.To16() == nil {
-				continue
-			}
-
-			if r.AAAA.IsLoopback() {
-				continue
-			}
-
-			addrs = append(addrs, r.AAAA.String())
+			addrs = append(addrs, addr)
 			found = true
 		}
 	}
@@ -115,6 +104,31 @@ func isLocalIP(ip net.IP) (ok bool) {
 	}
 
 	return
+}
+
+// usableAddr converts an RR address to its canonical netip value and applies
+// the shared NS-address filters (local interface addresses, loopback). The
+// bool is false when the address is malformed or filtered.
+func usableAddr(ip net.IP) (netip.Addr, bool) {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	addr = addr.Unmap()
+	if addr.IsLoopback() || isLocalIP(ip) {
+		return netip.Addr{}, false
+	}
+	return addr, true
+}
+
+// appendUniqueAddr grows a small per-NS address list without duplicates.
+func appendUniqueAddr(values []netip.Addr, value netip.Addr) []netip.Addr {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func isDO(req *dns.Msg) bool {
