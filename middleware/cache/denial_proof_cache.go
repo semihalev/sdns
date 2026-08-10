@@ -60,16 +60,17 @@ type denialProofID struct {
 // touched only while the cache write lock is held and is never observed by
 // readers.
 type denialProofEntry struct {
-	id        denialProofID
-	zoneKey   denialProofZoneKey
-	params    denialProofNSEC3Params
-	ownerHash string
-	data      []dns.RR
-	records   []dns.RR
-	expires   time.Time
-	wireBytes int64
-	sequence  uint64
-	queue     *list.Element
+	id         denialProofID
+	zoneKey    denialProofZoneKey
+	params     denialProofNSEC3Params
+	ownerHash  string
+	ownerOrder denialProofNameOrder
+	data       []dns.RR
+	records    []dns.RR
+	expires    time.Time
+	wireBytes  int64
+	sequence   uint64
+	queue      *list.Element
 }
 
 // denialProofZoneSnapshot is published copy-on-write. Readers may retain a
@@ -206,14 +207,15 @@ type denialProofRRSetKey struct {
 }
 
 type denialProofRRSet struct {
-	key       denialProofRRSetKey
-	params    denialProofNSEC3Params
-	ownerHash string
-	next      string
-	flags     uint8
-	types     []uint16
-	data      []dns.RR
-	sigs      []dns.RR
+	key        denialProofRRSetKey
+	ownerOrder denialProofNameOrder
+	params     denialProofNSEC3Params
+	ownerHash  string
+	next       string
+	flags      uint8
+	types      []uint16
+	data       []dns.RR
+	sigs       []dns.RR
 }
 
 // record accepts only a terminal response whose denial semantics and
@@ -471,7 +473,10 @@ func (c *denialProofCache) extract(
 			}
 			set := sets[soaKey]
 			if set == nil {
-				set = &denialProofRRSet{key: soaKey}
+				set = &denialProofRRSet{
+					key:        soaKey,
+					ownerOrder: denialProofNameOrderFor(zone),
+				}
 				sets[soaKey] = set
 			}
 			// RFC 1035 defines one SOA at an apex. Multiple SOA RDATA
@@ -500,9 +505,10 @@ func (c *denialProofCache) extract(
 			set := sets[key]
 			if set == nil {
 				set = &denialProofRRSet{
-					key:   key,
-					next:  next,
-					types: append([]uint16(nil), record.TypeBitMap...),
+					key:        key,
+					ownerOrder: denialProofNameOrderFor(owner),
+					next:       next,
+					types:      append([]uint16(nil), record.TypeBitMap...),
 				}
 				sets[key] = set
 			} else if set.next != next ||
@@ -535,12 +541,13 @@ func (c *denialProofCache) extract(
 			set := sets[key]
 			if set == nil {
 				set = &denialProofRRSet{
-					key:       key,
-					params:    params,
-					ownerHash: ownerHash,
-					next:      nextHash,
-					flags:     record.Flags,
-					types:     append([]uint16(nil), record.TypeBitMap...),
+					key:        key,
+					ownerOrder: denialProofNameOrderFor(owner),
+					params:     params,
+					ownerHash:  ownerHash,
+					next:       nextHash,
+					flags:      record.Flags,
+					types:      append([]uint16(nil), record.TypeBitMap...),
 				}
 				sets[key] = set
 			} else if set.params != params ||
@@ -617,10 +624,7 @@ func (c *denialProofCache) extract(
 		if proofSets[i].key.kind != proofSets[j].key.kind {
 			return proofSets[i].key.kind < proofSets[j].key.kind
 		}
-		return denialProofCanonicalNameCompare(
-			proofSets[i].key.owner,
-			proofSets[j].key.owner,
-		) < 0
+		return proofSets[i].ownerOrder.compare(proofSets[j].ownerOrder) < 0
 	})
 
 	retained := make([]dns.RR, 0, maxDenialProofBundleRRs)
@@ -729,14 +733,15 @@ func newDenialProofEntry(
 		hash:       set.params.hash,
 	}
 	return &denialProofEntry{
-		id:        id,
-		zoneKey:   zoneKey,
-		params:    set.params,
-		ownerHash: set.ownerHash,
-		data:      data,
-		records:   records,
-		expires:   expires,
-		wireBytes: wireBytes,
+		id:         id,
+		zoneKey:    zoneKey,
+		params:     set.params,
+		ownerHash:  set.ownerHash,
+		ownerOrder: set.ownerOrder,
+		data:       data,
+		records:    records,
+		expires:    expires,
+		wireBytes:  wireBytes,
 	}, true
 }
 
@@ -900,10 +905,7 @@ func (c *denialProofCache) publishZoneLocked(
 		}
 	}
 	sort.Slice(snapshot.nsec, func(i, j int) bool {
-		compared := denialProofCanonicalNameCompare(
-			snapshot.nsec[i].id.owner,
-			snapshot.nsec[j].id.owner,
-		)
+		compared := snapshot.nsec[i].ownerOrder.compare(snapshot.nsec[j].ownerOrder)
 		if compared != 0 {
 			return compared < 0
 		}
@@ -939,24 +941,47 @@ func (c *denialProofCache) publishZoneLocked(
 	c.zoneIndex[key] = snapshot
 }
 
-func denialProofCanonicalNameCompare(a, b string) int {
-	aLabels, aOK := denialProofCanonicalWireLabels(a)
-	bLabels, bOK := denialProofCanonicalWireLabels(b)
-	if !aOK || !bOK {
-		return strings.Compare(dns.CanonicalName(a), dns.CanonicalName(b))
+// denialProofNameOrder is a name's canonical comparison form, derived exactly
+// once per admitted RRset. Snapshot republication sorts on every admission and
+// eviction; deriving wire labels inside the comparator instead made that sort
+// the process's dominant allocation site (84% of all allocated bytes on a
+// DNSBL-heavy resolver).
+type denialProofNameOrder struct {
+	// labels are the lowercased wire labels; nil when the name cannot be
+	// packed, in which case fallback carries the comparison identity.
+	labels   [][]byte
+	fallback string
+}
+
+// denialProofNameOrderFor expects name in dns.CanonicalName form, which every
+// admission-path owner already is.
+func denialProofNameOrderFor(name string) denialProofNameOrder {
+	labels, ok := denialProofCanonicalWireLabels(name)
+	if !ok {
+		return denialProofNameOrder{fallback: name}
 	}
-	i, j := len(aLabels)-1, len(bLabels)-1
+	return denialProofNameOrder{labels: labels, fallback: name}
+}
+
+// compare is the RFC 4034 §6.1 canonical name ordering. The unpackable-name
+// fallback compares the canonical presentation forms, preserving the previous
+// comparator's behaviour.
+func (a denialProofNameOrder) compare(b denialProofNameOrder) int {
+	if a.labels == nil || b.labels == nil {
+		return strings.Compare(a.fallback, b.fallback)
+	}
+	i, j := len(a.labels)-1, len(b.labels)-1
 	for i >= 0 && j >= 0 {
-		if compared := bytes.Compare(aLabels[i], bLabels[j]); compared != 0 {
+		if compared := bytes.Compare(a.labels[i], b.labels[j]); compared != 0 {
 			return compared
 		}
 		i--
 		j--
 	}
 	switch {
-	case len(aLabels) < len(bLabels):
+	case len(a.labels) < len(b.labels):
 		return -1
-	case len(aLabels) > len(bLabels):
+	case len(a.labels) > len(b.labels):
 		return 1
 	default:
 		return 0
