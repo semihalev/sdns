@@ -113,11 +113,13 @@ func (w *responseWriter) Write(m []byte) (int, error) {
 	w.rcode = w.msg.Rcode
 
 	n, err := w.ResponseWriter.Write(m)
-	// The byte count is the response's true wire length. Reading it from
-	// the decoded message instead would overstate a compressed response,
-	// because Unpack does not restore the Compress flag. The caller owns m,
-	// so only the count is kept.
-	w.size = n
+	// Record the DNS payload's own length, not the transport's return
+	// value: stream transports prepend a two-byte length prefix and count
+	// it, which would overstate every TCP and DoQ response. Measuring the
+	// decoded message instead would overstate compressed ones, because
+	// Unpack does not restore the Compress flag. The caller owns m, so only
+	// its length is kept.
+	w.size = len(m)
 	return n, err
 }
 

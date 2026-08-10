@@ -26,6 +26,15 @@ const (
 	cookiePreimageMax = 256
 )
 
+// Size forwards the response's wire length from the writer beneath. The
+// wrapper embeds the narrow ResponseWriter interface, which deliberately
+// does not carry Size, so without this an observer above this layer — the
+// access log is one — would fall back to decoding the response just to
+// measure it, which on the byte path is the whole cost this path avoids.
+func (w *ResponseWriter) Size() int {
+	return middleware.ResponseSize(w.ResponseWriter)
+}
+
 // WireReady reports what the byte path may produce for this client. It
 // allocates nothing: the OPT's contribution is arithmetic, so a request the
 // caller ends up refusing has cost only field reads. The record itself is

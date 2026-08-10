@@ -84,6 +84,57 @@ func TestResponseSizeReportsWireLength(t *testing.T) {
 	})
 }
 
+// streamWriter models a stream transport: miekg's TCP and DoQ writers
+// prepend a two-byte length prefix and return the framed count, so a writer
+// that trusts that return value overstates every stream response.
+type streamWriter struct {
+	*mock.Writer
+	framed int
+}
+
+func (w *streamWriter) Write(b []byte) (int, error) {
+	w.framed = len(b) + 2
+	return w.framed, nil
+}
+
+// TestResponseSizeExcludesStreamFraming pins the payload/framing boundary:
+// the size an observer reports is the DNS message's own length, never the
+// transport's framed byte count.
+func TestResponseSizeExcludesStreamFraming(t *testing.T) {
+	reply := compressibleReply(t)
+	body, err := reply.Pack()
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		write func(w *responseWriter) error
+	}{
+		{"raw write", func(w *responseWriter) error {
+			_, err := w.Write(body)
+			return err
+		}},
+		{"wire write", func(w *responseWriter) error {
+			return w.WriteWire(body, WireInfo{Rcode: dns.RcodeSuccess})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := &streamWriter{Writer: mock.NewWriter("tcp", "192.0.2.1:53000")}
+			w := &responseWriter{}
+			w.Reset(stream)
+			if err := tc.write(w); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if got := ResponseSize(w); got != len(body) {
+				t.Fatalf("size = %d, want the %d-byte payload; the transport "+
+					"reported %d including its length prefix",
+					got, len(body), stream.framed)
+			}
+		})
+	}
+}
+
 // sizelessWriter implements ResponseWriter without Size, standing in for a
 // plugin writer that predates the optional interface.
 type sizelessWriter struct {

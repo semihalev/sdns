@@ -131,8 +131,10 @@ func (w *responseWriter) WriteWire(body []byte, info WireInfo) error {
 	w.wire = body
 	w.rcode = info.Rcode
 
-	n, err := w.ResponseWriter.Write(body)
-	w.size = n
+	// Size comes from len(w.wire); the transport's count would include a
+	// stream length prefix. A zero here only marks the response written.
+	_, err := w.ResponseWriter.Write(body)
+	w.size = 0
 	return err
 }
 
