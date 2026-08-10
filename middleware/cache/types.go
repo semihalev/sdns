@@ -36,6 +36,9 @@ type CacheEntry struct {
 	// cd mirrors the packed header's CD bit for compat paths that classify
 	// an entry without unpacking it.
 	cd bool
+	// wireServe is the admission-derived byte-serving plan; its zero value
+	// keeps this entry on the Msg path.
+	wireServe wireServeState
 	// compress preserves the admitted message's Compress flag. Unpack never
 	// sets it, so without this a served message would always repack
 	// uncompressed — invisible inside the standard chain (the edns layer
@@ -172,6 +175,7 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	if len(msg.Question) > 0 {
 		entry.question = msg.Question[0]
 	}
+	entry.wireServe = prepareWireServe(wire, ede)
 
 	return entry
 }

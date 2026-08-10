@@ -92,6 +92,11 @@ type ResponseWriter struct {
 	nsid   bool
 	noedns bool
 	noad   bool
+
+	// wireOPT is the reusable OPT the byte-serving path packs into the
+	// reply. It lives on the pooled wrapper so a cache hit adds no
+	// allocation for the record or its option slice.
+	wireOPT dns.OPT
 }
 
 // (*EDNS).ServeDNS serveDNS implements the Handle interface.
@@ -165,7 +170,11 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// up a stale EDNS wrapper.
 	defer func() {
 		ch.Writer = w
+		// Retain the byte path's option slice across pool cycles; the
+		// wholesale reset would drop its backing array every request.
+		wireOpts := rw.wireOPT.Option[:0]
 		*rw = ResponseWriter{}
+		rw.wireOPT.Option = wireOpts
 		responseWriterPool.Put(rw)
 	}()
 	ch.Next(ctx)
@@ -268,25 +277,38 @@ func stripECS(opts []dns.EDNS0) []dns.EDNS0 {
 }
 
 func (w *ResponseWriter) setCookie() {
-	if w.cookie == "" {
-		return
+	if option, ok := w.cookieOption(); ok {
+		w.opt.Option = append(w.opt.Option, option)
 	}
+}
 
-	w.opt.Option = append(w.opt.Option, &dns.EDNS0_COOKIE{
+// cookieOption builds the per-client server cookie without mutating any
+// writer state, so the wire path can compose an OPT and still fall back to
+// the Msg path without double-appending.
+func (w *ResponseWriter) cookieOption() (dns.EDNS0, bool) {
+	if w.cookie == "" {
+		return nil, false
+	}
+	return &dns.EDNS0_COOKIE{
 		Code:   dns.EDNS0COOKIE,
 		Cookie: dnsutil.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
-	})
+	}, true
 }
 
 func (w *ResponseWriter) setNSID() {
-	if w.nsidstr == "" || !w.nsid {
-		return
+	if option, ok := w.nsidOption(); ok {
+		w.opt.Option = append(w.opt.Option, option)
 	}
+}
 
-	w.opt.Option = append(w.opt.Option, &dns.EDNS0_NSID{
+func (w *ResponseWriter) nsidOption() (dns.EDNS0, bool) {
+	if w.nsidstr == "" || !w.nsid {
+		return nil, false
+	}
+	return &dns.EDNS0_NSID{
 		Code: dns.EDNS0NSID,
 		Nsid: hex.EncodeToString([]byte(w.nsidstr)),
-	})
+	}, true
 }
 
 const name = "edns"

@@ -40,6 +40,14 @@ var (
 		Help: "Total number of RFC 9520 cached resolution failures served",
 	})
 
+	wireFastPath = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_cache_wire_fastpath_total",
+		Help: "Cache hits attempted on the byte serving path, by outcome",
+	}, []string{"outcome"})
+
+	wireFastServed   = wireFastPath.Register("served")
+	wireFastFallback = wireFastPath.Register("fallback")
+
 	nxDomainCutHits = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "nxdomain_cut_hits_total",
 		Help: "Total number of descendant NXDOMAIN responses served from locally validated RFC 8020 cuts",

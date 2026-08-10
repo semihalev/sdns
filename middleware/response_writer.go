@@ -24,6 +24,7 @@ type ResponseWriter interface {
 type responseWriter struct {
 	dns.ResponseWriter
 	msg      *dns.Msg
+	wire     []byte
 	size     int
 	rcode    int
 	proto    string
@@ -42,14 +43,11 @@ var errAlreadyWritten = errors.New("msg already written")
 // net.IP.String and allocates ~32 bytes per query.
 var internalIP = net.IPv4(127, 0, 0, 255)
 
-func (w *responseWriter) Msg() *dns.Msg {
-	return w.msg
-}
-
 func (w *responseWriter) Reset(rw dns.ResponseWriter) {
 	w.ResponseWriter = rw
 	w.size = -1
 	w.msg = nil
+	w.wire = nil
 	w.rcode = dns.RcodeSuccess
 	w.proto = ""
 	w.remoteip = nil
