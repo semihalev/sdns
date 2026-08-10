@@ -118,20 +118,29 @@ func (e *CacheEntry) serveWire(req *dns.Msg, reserve int) ([]byte, middleware.Wi
 	}
 
 	// The client's question-name spelling is echoed byte-for-byte (0x20
-	// compatibility). Names compare case-insensitively, so a wire-length
-	// mismatch means this is not actually the stored question. Checked
-	// against the stored bytes, before anything is copied.
-	var qname [255]byte
-	n, err := dns.PackDomainName(req.Question[0].Name, qname[:], 0, nil, false)
-	if err != nil || n != question.NameLen {
-		return nil, middleware.WireInfo{}, false
-	}
+	// compatibility). Almost always the stored bytes already carry that
+	// spelling — clients overwhelmingly ask in one consistent case — and
+	// then the name needs no re-encoding at all.
+	name := req.Question[0].Name
+	rewrite := !wire.NameEqualsPresentation(e.wire[wire.HeaderLen:wire.HeaderLen+question.NameLen], name)
 
 	// Exactly the capacity the chain reported it needs: no slack to carry
 	// per hit, and no second buffer for the OPT append.
 	body := make([]byte, len(e.wire), len(e.wire)+reserve)
 	copy(body, e.wire)
-	copy(body[wire.HeaderLen:], qname[:n])
+
+	if rewrite {
+		// Encoded straight over the stored name, so the spelling swap needs
+		// no scratch buffer of its own. A length change would mean the
+		// request's name is not the stored one after all — impossible for an
+		// entry the lookup key already matched, since names that fold to the
+		// same key encode to the same length. Checked anyway; the body is
+		// simply dropped.
+		end, err := dns.PackDomainName(name, body, wire.HeaderLen, nil, false)
+		if err != nil || end-wire.HeaderLen != question.NameLen {
+			return nil, middleware.WireInfo{}, false
+		}
+	}
 
 	// Apply the same header the Msg path derives from the request: ID, QR,
 	// opcode, the copied RD/CD bits, and AA cleared — a cached answer is

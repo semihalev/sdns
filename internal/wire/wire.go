@@ -188,6 +188,50 @@ func ParseRR(body []byte, off int) (RR, bool) {
 	}, true
 }
 
+// NameEqualsPresentation reports whether a packed domain name is byte-for-byte
+// the presentation-form name, case included. It is the cheap answer to "does
+// this reply already carry the spelling the client used", letting a caller
+// skip re-encoding the name entirely.
+//
+// It is deliberately conservative: a presentation name using escape
+// sequences, or one whose case differs anywhere, reports false and leaves
+// the caller to take its general path. False never means the names differ,
+// only that this shortcut cannot prove they are identical.
+func NameEqualsPresentation(packed []byte, name string) bool {
+	if name == "." {
+		return len(packed) == 1 && packed[0] == 0
+	}
+
+	read := 0
+	for off := 0; off < len(packed); {
+		length := int(packed[off])
+		if length == 0 {
+			return read == len(name)
+		}
+		if length > 63 || off+1+length > len(packed) {
+			return false
+		}
+		// The label's bytes plus its trailing dot must still fit.
+		if read+length+1 > len(name) {
+			return false
+		}
+		for i := range length {
+			c := name[read+i]
+			// A backslash starts an escape, so the presentation form is not
+			// a plain transcription of these bytes.
+			if c == '\\' || c != packed[off+1+i] {
+				return false
+			}
+		}
+		if name[read+length] != '.' {
+			return false
+		}
+		read += length + 1
+		off += 1 + length
+	}
+	return false
+}
+
 // SetTTL stamps a TTL value at a previously recorded offset.
 func SetTTL(body []byte, ttlOff int, ttl uint32) {
 	if ttlOff >= 0 && ttlOff+4 <= len(body) {

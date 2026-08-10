@@ -363,13 +363,13 @@ var _ = config.Config{} // keep the config import for makeTestConfig callers
 // keep honest: the byte path itself, the pre-copy rejection (which must cost
 // nearly nothing on top of the Msg path), and the historical Msg path.
 func BenchmarkWireFastPath(b *testing.B) {
-	run := func(b *testing.B, dnssec, do, forceMsg bool, cookie ...string) {
-		const qname = "bench.example.com."
+	const qname = "bench.example.com."
+	run := func(b *testing.B, reqName string, dnssec, do, forceMsg bool, cookie ...string) {
 		entry := wireFastEntry(b, qname, dns.TypeA, dnssec)
 		c, e := wireFastTestPipeline(b, entry)
 
 		req := new(dns.Msg)
-		req.SetQuestion(qname, dns.TypeA)
+		req.SetQuestion(reqName, dns.TypeA)
 		req.Id = 4242
 		req.RecursionDesired = true
 		// The edns layer appends the server cookie to the *request's* OPT,
@@ -428,11 +428,15 @@ func BenchmarkWireFastPath(b *testing.B) {
 		}
 	}
 
-	b.Run("wire_served", func(b *testing.B) { run(b, true, true, false) })
-	b.Run("wire_served_cookie", func(b *testing.B) { run(b, true, true, false, "0123456789abcdef") })
-	b.Run("gate_rejected_to_msg", func(b *testing.B) { run(b, true, false, false) })
-	b.Run("msg_path_baseline", func(b *testing.B) { run(b, true, true, true) })
-	b.Run("msg_baseline_cookie", func(b *testing.B) { run(b, true, true, true, "0123456789abcdef") })
+	b.Run("wire_served", func(b *testing.B) { run(b, qname, true, true, false) })
+	b.Run("wire_served_cookie", func(b *testing.B) { run(b, qname, true, true, false, "0123456789abcdef") })
+	// The client's spelling differs from the stored one, so the question has
+	// to be re-encoded. This is the path the exact-match shortcut declines;
+	// it must stay a byte-served reply, and no dearer than it was.
+	b.Run("wire_served_case_rewrite", func(b *testing.B) { run(b, "BeNcH.ExAmPlE.CoM.", true, true, false) })
+	b.Run("gate_rejected_to_msg", func(b *testing.B) { run(b, qname, true, false, false) })
+	b.Run("msg_path_baseline", func(b *testing.B) { run(b, qname, true, true, true) })
+	b.Run("msg_baseline_cookie", func(b *testing.B) { run(b, qname, true, true, true, "0123456789abcdef") })
 }
 
 // TestWireFastPathClearsAuthoritative pins the reply-header contract that
