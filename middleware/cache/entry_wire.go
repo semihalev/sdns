@@ -121,8 +121,13 @@ func (e *CacheEntry) serveWire(req *dns.Msg, reserve int) ([]byte, middleware.Wi
 	// compatibility). Almost always the stored bytes already carry that
 	// spelling — clients overwhelmingly ask in one consistent case — and
 	// then the name needs no re-encoding at all.
+	//
+	// The stored name and the stored bytes come from one message: the entry
+	// keeps msg.Question[0] and packs that same msg, and neither is touched
+	// afterwards. So an identical spelling here means the packed question is
+	// already identical too, which a string compare settles outright.
 	name := req.Question[0].Name
-	rewrite := !wire.NameEqualsPresentation(e.wire[wire.HeaderLen:wire.HeaderLen+question.NameLen], name)
+	rewrite := name != e.question.Name
 
 	// Exactly the capacity the chain reported it needs: no slack to carry
 	// per hit, and no second buffer for the OPT append.
