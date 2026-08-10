@@ -3,6 +3,7 @@ package resolver
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -58,8 +59,8 @@ func Test_searchAddr(t *testing.T) {
 
 	addrs, found := searchAddrs(m)
 	assert.Equal(t, len(addrs), 1)
-	assert.NotEqual(t, addrs[0], "127.0.0.1")
-	assert.Equal(t, addrs[0], "192.0.2.1")
+	assert.NotEqual(t, addrs[0], netip.MustParseAddr("127.0.0.1"))
+	assert.Equal(t, addrs[0], netip.MustParseAddr("192.0.2.1"))
 	assert.Equal(t, found, true)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -277,7 +278,7 @@ func TestCheckGlueRRDeduplicatesEndpointsWithoutDroppingHostCache(t *testing.T) 
 	}
 	for name := range hosts {
 		addrs, ok := r.getIPv4Cache(name)
-		if !ok || len(addrs) != 1 || addrs[0] != "192.0.2.70" {
+		if !ok || len(addrs) != 1 || addrs[0] != netip.MustParseAddr("192.0.2.70") {
 			t.Fatalf("cached glue for %s = %v, %v; want one address", name, addrs, ok)
 		}
 	}

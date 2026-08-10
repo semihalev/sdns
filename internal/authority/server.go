@@ -3,6 +3,7 @@ package authority
 import (
 	"hash/fnv"
 	"net"
+	"net/netip"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -39,15 +40,44 @@ const (
 // NewServer return a new server. addr is expected to be an
 // "IP:port" pair — the IP is parsed once here so upstream exchanges
 // can skip Go's DialContext address-resolution path.
+//
+// Addr is stored in canonical netip form (lowercase, compressed,
+// 4-in-6 unmapped). Every producer builds addr from an IP literal
+// (glue A/AAAA String, configured roots), so the canonical form is
+// what comparison sites and map keys already see; deriving it here
+// keeps one string per server instead of the parse chain's residue.
 func NewServer(addr string, ipVersion IPVersion) *Server {
+	if ap, err := netip.ParseAddrPort(addr); err == nil {
+		return NewServerFromAddrPort(netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()))
+	}
 	s := &Server{
 		Addr:      addr,
 		IPVersion: ipVersion,
 	}
 	if ua, err := net.ResolveUDPAddr("udp", addr); err == nil {
+		// Non-literal input (tests, exotic callers): keep the historical
+		// resolution fallback.
 		s.UDPAddr = ua
 	}
 	return s
+}
+
+// NewServerFromAddrPort builds a Server straight from a decoded address —
+// the netip-native producer path (glue records, NS-address lookups) that
+// never materializes an intermediate "IP:port" string. The IP family is
+// derived from the address itself, and the canonical string is created
+// exactly once here for the key/log surfaces that need it.
+func NewServerFromAddrPort(ap netip.AddrPort) *Server {
+	ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+	version := IPv4
+	if !ap.Addr().Is4() {
+		version = IPv6
+	}
+	return &Server{
+		Addr:      ap.String(),
+		IPVersion: version,
+		UDPAddr:   net.UDPAddrFromAddrPort(ap),
+	}
 }
 
 func (v IPVersion) String() string {
