@@ -3,6 +3,7 @@ package authority
 import (
 	"fmt"
 	"math/rand"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -109,4 +110,36 @@ func Test_ServerString(t *testing.T) {
 	s.Count = 1
 	str = s.String()
 	assert.Contains(t, str, "POOR")
+}
+
+// TestNewServerCanonicalizes directly pins the canonical Addr contract every
+// comparison site and map key now depends on: IPv6 case/compression collapse
+// to one spelling, 4-in-6 addresses unmap to plain IPv4, and the pre-parsed
+// UDPAddr survives construction on every literal path.
+func TestNewServerCanonicalizes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"192.0.2.1:53", "192.0.2.1:53"},
+		{"[::ffff:192.0.2.7]:53", "192.0.2.7:53"}, // 4-in-6 unmapped
+		{"[2001:DB8::A]:53", "[2001:db8::a]:53"},  // case + compression
+		{"[2001:db8:0:0:0:0:0:a]:53", "[2001:db8::a]:53"},
+	}
+	for _, tc := range cases {
+		s := NewServer(tc.in, IPv4)
+		if s.Addr != tc.want {
+			t.Fatalf("NewServer(%q).Addr = %q, want %q", tc.in, s.Addr, tc.want)
+		}
+		if s.UDPAddr == nil {
+			t.Fatalf("NewServer(%q) lost the pre-parsed UDPAddr", tc.in)
+		}
+	}
+
+	// Spelling variants must also converge through NewServerFromAddrPort,
+	// including its family derivation.
+	ap := NewServerFromAddrPort(netip.MustParseAddrPort("[::ffff:198.51.100.4]:53"))
+	if ap.Addr != "198.51.100.4:53" || ap.IPVersion != IPv4 {
+		t.Fatalf("AddrPort construction = %q/%v, want unmapped IPv4", ap.Addr, ap.IPVersion)
+	}
+	if v6 := NewServerFromAddrPort(netip.MustParseAddrPort("[2001:DB8::1]:53")); v6.IPVersion != IPv6 {
+		t.Fatalf("IPv6 family derivation = %v", v6.IPVersion)
+	}
 }
