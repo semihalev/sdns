@@ -126,8 +126,9 @@ func TestPrefetchWorkerStoresRefresh(t *testing.T) {
 		got, ok := c.positive.Get(key)
 		if ok && got != entry {
 			// Replaced — worker finished.
-			if len(got.msg.Answer) != 1 {
-				t.Fatalf("refreshed entry answer count = %d, want 1", len(got.msg.Answer))
+			stored := got.storedMsg()
+			if stored == nil || len(stored.Answer) != 1 {
+				t.Fatalf("refreshed entry = %v, want one answer", stored)
 			}
 			return
 		}

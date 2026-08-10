@@ -154,10 +154,10 @@ func (s *Store) LookupByKeyVerified(key uint64, q dns.Question) (*CacheEntry, bo
 // type and class exactly, name case-insensitively (RFC 4343 — matching the
 // key hash, which lowercases the name in its preimage).
 func entryMatchesQuestion(entry *CacheEntry, q dns.Question) bool {
-	if entry == nil || entry.msg == nil || len(entry.msg.Question) == 0 {
+	if entry == nil || entry.question.Name == "" {
 		return false
 	}
-	eq := entry.msg.Question[0]
+	eq := entry.question
 	return eq.Qtype == q.Qtype && eq.Qclass == q.Qclass && equalNameASCIIFold(eq.Name, q.Name)
 }
 
@@ -475,9 +475,15 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 		var e *CacheEntry
 		if scoped {
 			e = NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit)
-			e.rateLimKey = key
 		} else {
 			e = NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
+		}
+		if e == nil {
+			// Unpackable response: never cacheable, callers skip the write.
+			return nil
+		}
+		if scoped {
+			e.rateLimKey = key
 		}
 		e.cutUntil = cutUntil
 		e.cutKey = cutKey
@@ -487,7 +493,9 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		ttl := capTTL(s.positive.ttl.Calculate(msgTTL))
-		s.positive.Set(key, newEntry(filtered, ttl))
+		if entry := newEntry(filtered, ttl); entry != nil {
+			s.positive.Set(key, entry)
+		}
 		// A scoped write has no source prefix here (only its already-hashed
 		// cache key), so it must not reset the unrelated global failure
 		// audience. Cache.ResponseWriter owns scoped failure reset because it
@@ -535,11 +543,17 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
 		entry := NewCacheEntryWithKey(filtered, s.positive.ttl.Calculate(msgTTL), s.cfg.RateLimit, key)
+		if entry == nil {
+			return false
+		}
 		entry.cutUntil = cutUntil
 		entry.cutKey = cutKey
 		return s.positive.cache.CompareAndSwap(key, expected, entry)
 	case dnsutil.TypeServerFailure:
 		entry := NewCacheEntryWithKey(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key)
+		if entry == nil {
+			return false
+		}
 		entry.cutUntil = cutUntil
 		entry.cutKey = cutKey
 		return s.negative.cache.CompareAndSwap(key, expected, entry)
@@ -554,13 +568,16 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.ResponseType) {
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
+		if entry == nil {
+			return
+		}
 		s.positive.Set(key, entry)
-		if entry != nil && entry.msg != nil && len(entry.msg.Question) > 0 {
-			s.resetQuestionFailure(entry.msg.Question[0], entry.msg.CheckingDisabled, netip.Prefix{})
+		if entry.question.Name != "" {
+			s.resetQuestionFailure(entry.question, entry.cd, netip.Prefix{})
 		}
 	case dnsutil.TypeServerFailure:
-		if entry != nil && entry.msg != nil {
-			s.RecordFailure(entry.msg, netip.Prefix{}, FailureProvenance("response"))
+		if entry != nil && entry.question.Name != "" {
+			s.recordFailureQuestion(entry.question, entry.cd, netip.Prefix{}, FailureProvenance("response"))
 		}
 	}
 }
@@ -600,10 +617,10 @@ func (s *Store) Purge(q dns.Question) {
 	}
 	var hits []located
 	s.ForEach(func(positive bool, key uint64, e *CacheEntry) bool {
-		if e == nil || !e.scoped || e.msg == nil || len(e.msg.Question) == 0 {
+		if e == nil || !e.scoped || e.question.Name == "" {
 			return true
 		}
-		eq := e.msg.Question[0]
+		eq := e.question
 		// DNS names compare case-insensitively (RFC 4343). The
 		// unscoped purge path is already case-insensitive — its
 		// key derives from internal/cache.Key which lowercases the
