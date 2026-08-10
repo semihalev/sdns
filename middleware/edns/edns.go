@@ -92,11 +92,6 @@ type ResponseWriter struct {
 	nsid   bool
 	noedns bool
 	noad   bool
-
-	// wireOPT is the reusable OPT the byte-serving path packs into the
-	// reply. It lives on the pooled wrapper so a cache hit adds no
-	// allocation for the record or its option slice.
-	wireOPT dns.OPT
 }
 
 // (*EDNS).ServeDNS serveDNS implements the Handle interface.
@@ -170,11 +165,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// up a stale EDNS wrapper.
 	defer func() {
 		ch.Writer = w
-		// Retain the byte path's option slice across pool cycles; the
-		// wholesale reset would drop its backing array every request.
-		wireOpts := rw.wireOPT.Option[:0]
 		*rw = ResponseWriter{}
-		rw.wireOPT.Option = wireOpts
 		responseWriterPool.Put(rw)
 	}()
 	ch.Next(ctx)

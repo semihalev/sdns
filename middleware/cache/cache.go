@@ -1010,15 +1010,15 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		}
 	}
 
-	// Byte fast path: serve the stored wire directly. The writer chain's
-	// preflight settles every refusal — transport support, the client's
-	// real DO bit, the size ceiling — before a body exists, so a request
-	// bound for the Msg path never pays for both.
-	if !w.Internal() {
+	// Byte fast path: serve the stored wire directly. The entry-local gate
+	// runs first, then the writer chain's preflight — both allocation-free
+	// and together complete, so a request bound for the Msg path never
+	// builds a body nor makes the chain compose anything.
+	if !w.Internal() && entry.wireEligibleFor(req) {
 		if ww, ok := w.(middleware.WireWriter); ok {
 			if capability, ready := ww.WireReady(); ready &&
-				entry.wireServable(req, capability) {
-				if body, info, built := entry.serveWire(req); built {
+				entry.wireFitsChain(capability) {
+				if body, info, built := entry.serveWire(req, capability.Reserve); built {
 					switch err := ww.WriteWire(body, info); {
 					case err == nil:
 						wireFastServed.Inc()

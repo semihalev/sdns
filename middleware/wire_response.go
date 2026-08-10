@@ -77,6 +77,20 @@ func (w *responseWriter) WireReady() (WireCapability, bool) {
 	}
 }
 
+// Size reports the response's length on the wire. Observers ask for it
+// instead of measuring a parsed message: on the byte path that measurement
+// would force an unpack, and a message decoded from bytes reports an
+// inflated uncompressed length because Unpack does not restore Compress.
+func (w *responseWriter) Size() int {
+	if w.wire != nil {
+		return len(w.wire)
+	}
+	if w.msg != nil {
+		return w.msg.Len()
+	}
+	return 0
+}
+
 // WriteWire on the base response writer sends the bytes straight to the
 // transport. Observability fields are taken from info instead of an
 // unpack; Msg() reads after a wire write decode lazily from the retained

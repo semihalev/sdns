@@ -194,3 +194,64 @@ func SetTTL(body []byte, ttlOff int, ttl uint32) {
 		binary.BigEndian.PutUint32(body[ttlOff:], ttl)
 	}
 }
+
+// OPT record geometry (RFC 6891 §6.1.2).
+const (
+	// OPTFixedLen is the record's size before any option: the root owner
+	// name, TYPE, CLASS (the requestor's UDP size), TTL (extended RCODE,
+	// version and flags) and RDLENGTH.
+	OPTFixedLen = 11
+	// OPTOptionHdrLen is the per-option code and length prefix.
+	OPTOptionHdrLen = 4
+
+	optDOFlag = 1 << 15 // DNSSEC OK, the high bit of the OPT TTL field
+)
+
+// AppendOPTHeader writes an OPT record's fixed part and returns the buffer
+// along with the offset of its RDLENGTH field, which FinishOPT fills in
+// once the options are known. Encoding the record directly avoids building
+// a dns.OPT and its option objects only for the library to pack them —
+// and, for options carried as hex text, avoids encoding bytes to hex just
+// so the packer can decode them back.
+func AppendOPTHeader(dst []byte, udpSize uint16, do bool) ([]byte, int) {
+	dst = append(dst, 0) // root owner name
+	dst = binary.BigEndian.AppendUint16(dst, 41)
+	dst = binary.BigEndian.AppendUint16(dst, udpSize)
+	var ttl uint32
+	if do {
+		ttl |= optDOFlag
+	}
+	dst = binary.BigEndian.AppendUint32(dst, ttl)
+	rdlenOff := len(dst)
+	return append(dst, 0, 0), rdlenOff
+}
+
+// AppendOption writes one EDNS0 option in wire form.
+//
+// Options are written as the bytes the wire carries. Several of them —
+// NSID and the cookies among them — are held in text form by the library's
+// option types and hex-decoded during packing, so producing that text only
+// to have it decoded back is pure waste on a hot path.
+func AppendOption(dst []byte, code uint16, data []byte) []byte {
+	dst = binary.BigEndian.AppendUint16(dst, code)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(data))) //nolint:gosec // callers bound option data to the message size
+	return append(dst, data...)
+}
+
+// AppendOptionString is AppendOption for an option whose payload is already
+// held as a string, appended without a byte-slice conversion.
+func AppendOptionString(dst []byte, code uint16, data string) []byte {
+	dst = binary.BigEndian.AppendUint16(dst, code)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(data))) //nolint:gosec // callers bound option data to the message size
+	return append(dst, data...)
+}
+
+// FinishOPT records the RDLENGTH of the options written since
+// AppendOPTHeader returned rdlenOff.
+func FinishOPT(dst []byte, rdlenOff int) []byte {
+	if rdlenOff < 0 || rdlenOff+2 > len(dst) {
+		return dst
+	}
+	binary.BigEndian.PutUint16(dst[rdlenOff:], uint16(len(dst)-rdlenOff-2)) //nolint:gosec // bounded by the message size
+	return dst
+}

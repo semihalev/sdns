@@ -14,6 +14,9 @@ type ResponseWriter interface {
 	dns.ResponseWriter
 	Msg() *dns.Msg
 	Rcode() int
+	// Size is the response's wire length, answerable without decoding
+	// whichever form the writer happens to hold.
+	Size() int
 	Written() bool
 	Reset(dns.ResponseWriter)
 	Proto() string

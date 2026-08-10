@@ -332,18 +332,18 @@ func TestWireServableGatesRunBeforeCopy(t *testing.T) {
 
 	do0 := middleware.WireCapability{DO: false}
 	do1 := middleware.WireCapability{DO: true}
-	if !entryOf(plain).wireServable(req, do0) {
+	if !entryOf(plain).wireEligibleFor(req) || !entryOf(plain).wireFitsChain(do0) {
 		t.Fatal("plain entry must be servable to DO=0")
 	}
-	if entryOf(signed).wireServable(req, do0) {
+	if entryOf(signed).wireFitsChain(do0) {
 		t.Fatal("DNSSEC entry must be gated for DO=0 before any copy")
 	}
-	if !entryOf(signed).wireServable(req, do1) {
+	if !entryOf(signed).wireFitsChain(do1) {
 		t.Fatal("DNSSEC entry must be servable to DO=1")
 	}
 	// The transport's size ceiling is part of the same allocation-free gate.
 	tight := middleware.WireCapability{DO: true, Reserve: 11, MaxSize: len(entryOf(plain).wire) + 10}
-	if entryOf(plain).wireServable(req, tight) {
+	if entryOf(plain).wireFitsChain(tight) {
 		t.Fatal("a reply exceeding the transport ceiling must be gated before any copy")
 	}
 	chaseEntry := NewCacheEntryWithKey(chase, time.Minute, 0, 1)
@@ -352,7 +352,7 @@ func TestWireServableGatesRunBeforeCopy(t *testing.T) {
 	}
 	chaseReq2 := new(dns.Msg)
 	chaseReq2.SetQuestion("alias.example.com.", dns.TypeA)
-	if chaseEntry.wireServable(chaseReq2, do1) {
+	if chaseEntry.wireEligibleFor(chaseReq2) {
 		t.Fatal("incomplete CNAME chain must stay on the Msg path")
 	}
 }
@@ -363,7 +363,7 @@ var _ = config.Config{} // keep the config import for makeTestConfig callers
 // keep honest: the byte path itself, the pre-copy rejection (which must cost
 // nearly nothing on top of the Msg path), and the historical Msg path.
 func BenchmarkWireFastPath(b *testing.B) {
-	run := func(b *testing.B, dnssec, do, forceMsg bool) {
+	run := func(b *testing.B, dnssec, do, forceMsg bool, cookie ...string) {
 		const qname = "bench.example.com."
 		entry := wireFastEntry(b, qname, dns.TypeA, dnssec)
 		c, e := wireFastTestPipeline(b, entry)
@@ -381,6 +381,12 @@ func BenchmarkWireFastPath(b *testing.B) {
 		freshOPT := func() {
 			req.Extra = req.Extra[:0]
 			req.SetEdns0(1232, do)
+			if len(cookie) > 0 {
+				opt := req.IsEdns0()
+				opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
+					Code: dns.EDNS0COOKIE, Cookie: cookie[0],
+				})
+			}
 		}
 		freshOPT()
 
@@ -423,8 +429,10 @@ func BenchmarkWireFastPath(b *testing.B) {
 	}
 
 	b.Run("wire_served", func(b *testing.B) { run(b, true, true, false) })
+	b.Run("wire_served_cookie", func(b *testing.B) { run(b, true, true, false, "0123456789abcdef") })
 	b.Run("gate_rejected_to_msg", func(b *testing.B) { run(b, true, false, false) })
 	b.Run("msg_path_baseline", func(b *testing.B) { run(b, true, true, true) })
+	b.Run("msg_baseline_cookie", func(b *testing.B) { run(b, true, true, true, "0123456789abcdef") })
 }
 
 // TestWireFastPathClearsAuthoritative pins the reply-header contract that
@@ -476,7 +484,7 @@ func TestWireFastPathClearsAuthoritative(t *testing.T) {
 		probe.RecursionDesired = want.rd
 		probe.CheckingDisabled = want.cd
 
-		body, _, ok := stored.serveWire(probe)
+		body, _, ok := stored.serveWire(probe, 0)
 		if !ok {
 			t.Fatal("serveWire refused a plain request")
 		}
