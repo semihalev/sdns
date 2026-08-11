@@ -30,9 +30,12 @@ func hermeticResolve(
 	return r.Resolve(context.Background(), req, r.rootServers, true, 30, 0, false, nil)
 }
 
-// TestHermeticResolve is the ordinary path: a name resolves, the delegation
-// it went through is cached, and a later query still answers when the
-// cached authority has gone sour.
+// TestHermeticResolve is the ordinary path: a name resolves, and the
+// delegation it was reached through is left in the cache, named for the
+// zone it was learned for.
+//
+// What happens when that cached delegation stops working is a different
+// story, and TestHermeticResolveRefreshesStaleAuthority tells it.
 func TestHermeticResolve(t *testing.T) {
 	net := newHermeticNet(t)
 	zone := net.Delegate("shop.test.")
@@ -52,11 +55,9 @@ func TestHermeticResolve(t *testing.T) {
 		t.Fatal("the delegation used to answer was not cached")
 	}
 
-	// The cached delegation names the zone it was learned for, and carries
-	// the error counter the failure paths raise.
 	assert.Equal(t, "shop.test.", match.servers.Zone)
-	atomic.AddUint32(&match.servers.ErrorCount, 4)
-	assert.Equal(t, uint32(4), atomic.LoadUint32(&match.servers.ErrorCount))
+	assert.Equal(t, uint32(0), atomic.LoadUint32(&match.servers.ErrorCount),
+		"a delegation that answered should not be carrying failures")
 }
 
 // TestHermeticResolveMinimize walks a deep name with QNAME minimisation on,

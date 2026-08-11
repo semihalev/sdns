@@ -49,11 +49,18 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 		t.Fatal("the delegation used to answer was not cached")
 	}
 
-	// Point the cached delegation at an address nothing answers on, and put
-	// it one failure short of the threshold where the resolver gives up on
-	// what it has and asks where the nameservers are now.
+	// Point the cached delegation at something that fails, and put it one
+	// failure short of the threshold where the resolver gives up on what it
+	// has and asks where the nameservers are now.
+	//
+	// The failure comes from a loopback server that answers with something
+	// which is not a DNS message. A TEST-NET address would do as far as the
+	// resolver is concerned, but the packets would really leave the host —
+	// where a VPN or a helpful local network may route or answer them — and
+	// each attempt would cost a timeout.
+	stale := malformedResponder(t)
 	match.servers.List = []*authority.Server{
-		authority.NewServer("192.0.2.250:53", authority.IPv4),
+		authority.NewServer(stale, authority.IPv4),
 	}
 	match.servers.Checked = false
 	atomic.StoreUint32(&match.servers.ErrorCount, 4)
@@ -92,4 +99,31 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 		assert.Contains(t, addrs, working,
 			"the refreshed delegation does not carry the address that answers")
 	}
+}
+
+// malformedResponder answers every query with something that is not a DNS
+// message. A resolver pointed at it fails at once and for one reason, which
+// is what a test wants from a broken endpoint — no timeout to sit through
+// and no packet leaving the host.
+func malformedResponder(t *testing.T) string {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, readErr := pc.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = pc.WriteTo([]byte("not a DNS message")[:min(n, 17)], from)
+		}
+	}()
+
+	return pc.LocalAddr().String()
 }
