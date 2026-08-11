@@ -40,6 +40,69 @@ func EvaluateAggressiveNSEC(
 		return AggressiveNegativeResult{}, err
 	}
 
+	return evaluateAggressiveNSECEntries(q, qname, signer, entries)
+}
+
+// PreparedNSEC is an NSEC record whose owner and next-domain names are
+// already in canonical form.
+//
+// Canonicalizing a name allocates, and it is a pure function of the record,
+// so a caller holding NSEC records across many queries — a denial-proof
+// cache is why this exists — can pay for it once when the record is
+// admitted instead of on every evaluation. The canonical form is immutable
+// once built and may be shared by concurrent evaluations.
+type PreparedNSEC struct {
+	entry aggressiveNSECEntry
+}
+
+// PrepareAggressiveNSEC canonicalizes rr's names for later evaluation. The
+// result keeps rr itself, which the evaluator hands back in its proof, so
+// the caller must not mutate the record afterwards.
+func PrepareAggressiveNSEC(rr *dns.NSEC) (PreparedNSEC, error) {
+	if rr == nil || rr.Header().Rrtype != dns.TypeNSEC {
+		return PreparedNSEC{}, aggressiveFallback("record is not an NSEC")
+	}
+	owner, err := newAggressiveCanonicalName(rr.Header().Name)
+	if err != nil {
+		return PreparedNSEC{}, err
+	}
+	next, err := newAggressiveCanonicalName(rr.NextDomain)
+	if err != nil {
+		return PreparedNSEC{}, err
+	}
+	return PreparedNSEC{
+		entry: aggressiveNSECEntry{rr: rr, owner: owner, next: next},
+	}, nil
+}
+
+// EvaluateAggressiveNSECPrepared is EvaluateAggressiveNSEC over records
+// canonicalized ahead of time by PrepareAggressiveNSEC. It applies the same
+// set-level validation and reaches the same verdict; only the per-record
+// canonicalization is already paid for.
+func EvaluateAggressiveNSECPrepared(
+	q dns.Question,
+	zone string,
+	prepared []PreparedNSEC,
+) (AggressiveNegativeResult, error) {
+	qname, signer, err := validateAggressiveQuestion(q, zone)
+	if err != nil {
+		return AggressiveNegativeResult{}, err
+	}
+
+	entries, err := aggressiveNSECEntriesFromPrepared(prepared, q.Qclass, signer)
+	if err != nil {
+		return AggressiveNegativeResult{}, err
+	}
+
+	return evaluateAggressiveNSECEntries(q, qname, signer, entries)
+}
+
+func evaluateAggressiveNSECEntries(
+	q dns.Question,
+	qname aggressiveCanonicalName,
+	signer aggressiveCanonicalName,
+	entries []aggressiveNSECEntry,
+) (AggressiveNegativeResult, error) {
 	qproof, err := classifyAggressiveNSECName(qname, entries)
 	if err != nil {
 		return AggressiveNegativeResult{}, err
@@ -479,42 +542,80 @@ func newAggressiveNSECEntries(
 			nsec.Header().Class != qclass {
 			return nil, aggressiveFallback("NSEC set is not homogeneous")
 		}
-		owner, err := newAggressiveCanonicalName(nsec.Header().Name)
+		prepared, err := PrepareAggressiveNSEC(nsec)
 		if err != nil {
 			return nil, err
 		}
-		next, err := newAggressiveCanonicalName(nsec.NextDomain)
+		entries, err = appendAggressiveNSECEntry(entries, prepared.entry, zone)
 		if err != nil {
 			return nil, err
-		}
-		if !owner.isSubdomainOf(zone) || !next.isSubdomainOf(zone) {
-			return nil, aggressiveFallback("NSEC record crosses signer zone")
-		}
-		if owner.equal(next) && !owner.equal(zone) {
-			return nil, aggressiveFallback("non-apex NSEC has a singleton interval")
-		}
-
-		candidate := aggressiveNSECEntry{rr: nsec, owner: owner, next: next}
-		duplicate := false
-		for i := range entries {
-			if !entries[i].owner.equal(owner) {
-				continue
-			}
-			if !entries[i].next.equal(next) ||
-				!aggressiveTypeBitmapsEqual(entries[i].rr.TypeBitMap, nsec.TypeBitMap) {
-				return nil, aggressiveFallback("conflicting NSEC owners")
-			}
-			duplicate = true
-			break
-		}
-		if !duplicate {
-			entries = append(entries, candidate)
 		}
 	}
 	if len(entries) == 0 {
 		return nil, ErrNSECMissingCoverage
 	}
 	return entries, nil
+}
+
+// aggressiveNSECEntriesFromPrepared is newAggressiveNSECEntries for records
+// canonicalized ahead of time. The set-level checks are unchanged; only the
+// per-record name canonicalization is absent, having happened once already.
+func aggressiveNSECEntriesFromPrepared(
+	prepared []PreparedNSEC,
+	qclass uint16,
+	zone aggressiveCanonicalName,
+) ([]aggressiveNSECEntry, error) {
+	if len(prepared) == 0 {
+		return nil, ErrNSECMissingCoverage
+	}
+
+	entries := make([]aggressiveNSECEntry, 0, len(prepared))
+	for _, candidate := range prepared {
+		nsec := candidate.entry.rr
+		if nsec == nil ||
+			nsec.Header().Rrtype != dns.TypeNSEC ||
+			nsec.Header().Class != qclass {
+			return nil, aggressiveFallback("NSEC set is not homogeneous")
+		}
+		var err error
+		entries, err = appendAggressiveNSECEntry(entries, candidate.entry, zone)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(entries) == 0 {
+		return nil, ErrNSECMissingCoverage
+	}
+	return entries, nil
+}
+
+// appendAggressiveNSECEntry admits one canonicalized record into the set:
+// it must lie inside the signer zone, must not describe a singleton
+// interval below the apex, and must not contradict a record already
+// admitted for the same owner. An exact repeat is dropped.
+func appendAggressiveNSECEntry(
+	entries []aggressiveNSECEntry,
+	candidate aggressiveNSECEntry,
+	zone aggressiveCanonicalName,
+) ([]aggressiveNSECEntry, error) {
+	if !candidate.owner.isSubdomainOf(zone) || !candidate.next.isSubdomainOf(zone) {
+		return nil, aggressiveFallback("NSEC record crosses signer zone")
+	}
+	if candidate.owner.equal(candidate.next) && !candidate.owner.equal(zone) {
+		return nil, aggressiveFallback("non-apex NSEC has a singleton interval")
+	}
+
+	for i := range entries {
+		if !entries[i].owner.equal(candidate.owner) {
+			continue
+		}
+		if !entries[i].next.equal(candidate.next) ||
+			!aggressiveTypeBitmapsEqual(entries[i].rr.TypeBitMap, candidate.rr.TypeBitMap) {
+			return nil, aggressiveFallback("conflicting NSEC owners")
+		}
+		return entries, nil
+	}
+	return append(entries, candidate), nil
 }
 
 func classifyAggressiveNSECName(
