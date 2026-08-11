@@ -15,9 +15,21 @@ import (
 )
 
 func handleTest(w http.ResponseWriter, r *http.Request) {
+	// Answer locally. These tests are about the HTTP framing DoH puts
+	// around a DNS message — status codes, media types, JSON shape — and
+	// none of that needs a real resolver. Every request used to go to
+	// 8.8.8.8, so the whole file failed on a machine without internet, and
+	// what it verified depended on Google's answer for www.google.com.
 	handle := func(req *dns.Msg) *dns.Msg {
-		msg, _ := dns.Exchange(req, "8.8.8.8:53")
-
+		msg := new(dns.Msg)
+		msg.SetReply(req)
+		msg.RecursionAvailable = true
+		if len(req.Question) == 1 {
+			rr, err := dns.NewRR(req.Question[0].Name + " 300 IN A 192.0.2.1")
+			if err == nil {
+				msg.Answer = append(msg.Answer, rr)
+			}
+		}
 		return msg
 	}
 

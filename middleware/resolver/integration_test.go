@@ -230,13 +230,18 @@ func TestCircuitBreakerWithMixedServers(t *testing.T) {
 	cfg.MaxConcurrentQueries = 50
 	r := newWiredTestResolver(cfg)
 
-	// Mix of servers - some good, some bad
+	// Mix of servers - some good, some bad. The good one answers from
+	// loopback; it used to be a root server, which made a circuit-breaker
+	// test depend on the internet being reachable.
+	goodAddr, stopGood := startEchoingQuestionServer(t)
+	defer stopGood()
+
 	servers := &authority.Servers{
 		Zone: ".",
 		List: []*authority.Server{
-			authority.NewServer("192.0.2.1:53", authority.IPv4),   // Bad - will timeout
-			authority.NewServer("192.5.5.241:53", authority.IPv4), // Good - root server
-			authority.NewServer("192.0.2.2:53", authority.IPv4),   // Bad - will timeout
+			authority.NewServer("192.0.2.1:53", authority.IPv4), // Bad - will timeout
+			authority.NewServer(goodAddr, authority.IPv4),       // Good
+			authority.NewServer("192.0.2.2:53", authority.IPv4), // Bad - will timeout
 		},
 	}
 
@@ -270,7 +275,7 @@ func TestCircuitBreakerWithMixedServers(t *testing.T) {
 		"Should have some successful queries from good server")
 
 	// Bad servers should be in circuit breaker
-	assert.True(t, r.circuitBreaker.canQuery("192.5.5.241:53"),
+	assert.True(t, r.circuitBreaker.canQuery(goodAddr),
 		"Good server should still be queryable")
 }
 
@@ -385,9 +390,19 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	assert.LessOrEqual(t, goroutineGrowth, cfg.MaxConcurrentQueries*3,
 		"Goroutine growth should be limited by MaxConcurrentQueries")
 
-	// Wait for cleanup
-	time.Sleep(3 * time.Second)
+	// Wait for cleanup, but only as long as it actually takes: the test is
+	// about the goroutines going away, not about how long we are willing to
+	// sit here.
+	const cleanupBudget = 3 * time.Second
+	deadline := time.Now().Add(cleanupBudget)
 	finalGoroutines := runtime.NumGoroutine()
+	for time.Now().Before(deadline) {
+		finalGoroutines = runtime.NumGoroutine()
+		if finalGoroutines-startGoroutines <= 20 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	t.Logf("After cleanup: %d goroutines (started with %d)",
 		finalGoroutines, startGoroutines)

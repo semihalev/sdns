@@ -2,6 +2,7 @@ package blocklist
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -165,6 +166,43 @@ func (b *BlockList) downloadBlocklist(uri, name string) (err error) {
 	return nil
 }
 
+// fileNameForHost makes a URL host safe to use as a file name, and keeps
+// distinct hosts distinct.
+//
+// A host carrying a port — "lists.example:8080" — spells a name Windows
+// refuses to create, and the download was then discarded with only a log
+// line, so a list configured with an explicit port silently never loaded
+// there. Replacing the offending characters fixes that but is not
+// injective: "lists.example:8080" and "lists.example_8080" would collapse
+// onto one name and two concurrent downloads would truncate each other's
+// file. The digest keeps them apart, and also settles reserved names like
+// "con" and hosts too long to be a filename.
+func fileNameForHost(host string) string {
+	sum := sha256.Sum256([]byte(host))
+	return fmt.Sprintf("%s-%x", sanitizeHostLabel(host), sum[:6])
+}
+
+// sanitizeHostLabel keeps the readable part of a file name within what every
+// filesystem accepts. It is a label, not an identity — fileNameForHost
+// appends the digest that makes the name unique.
+func sanitizeHostLabel(host string) string {
+	const maxLabel = 48
+
+	label := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9', r == '.', r == '-':
+			return r
+		}
+		return '_'
+	}, host)
+
+	if len(label) > maxLabel {
+		label = label[:maxLabel]
+	}
+	return label
+}
+
 func (b *BlockList) fetchBlocklist() {
 	var wg sync.WaitGroup
 
@@ -183,7 +221,7 @@ func (b *BlockList) fetchBlocklist() {
 
 		// Atomically increment the counter using our type-safe counter
 		count := timesSeen.increment(host)
-		fileName := fmt.Sprintf("%s.%d.tmp", host, count)
+		fileName := fmt.Sprintf("%s.%d.tmp", fileNameForHost(host), count)
 
 		wg.Add(1)
 		go func(uri string, name string) {

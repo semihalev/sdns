@@ -28,6 +28,10 @@ func Test_BlockList(t *testing.T) {
 	// aren't polluted.
 	_ = os.RemoveAll(cfg.BlockListDir)
 
+	// The registry is process-wide, so a second run in the same process —
+	// go test -count=2, say — would otherwise panic on re-registration.
+	middleware.Reset()
+	t.Cleanup(middleware.Reset)
 	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 

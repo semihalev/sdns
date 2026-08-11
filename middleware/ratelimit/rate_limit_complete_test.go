@@ -74,24 +74,40 @@ func TestRateLimitEnforcement(t *testing.T) {
 
 	// Test rate recovery
 	t.Run("RateRecovery", func(t *testing.T) {
-		ip := "10.0.2.1:53"
+		// Tokens refill at rate/minute, so the wait for one of them is set
+		// by the configured rate: at five per minute it is twelve seconds,
+		// at sixty it is one. The behaviour under test is the same either
+		// way, so this case uses its own limiter rather than the shared one.
+		const perMinute = 60
+		recovery := New(&config.Config{ClientRateLimit: perMinute})
 
-		// Use up the burst
-		for i := 0; i < 5; i++ {
-			assert.True(t, testRequest(ip), "Initial request %d should be allowed", i+1)
+		ip := "10.0.2.1:53"
+		allow := func() bool {
+			mw := mock.NewWriter("udp", ip)
+			allowed := false
+			ch := middleware.NewChain([]middleware.Handler{
+				middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+					allowed = true
+					ch.Next(ctx)
+				}),
+			})
+			ch.Reset(mw, req)
+			recovery.ServeDNS(context.Background(), ch)
+			return allowed
 		}
 
-		// Should be blocked now
-		assert.False(t, testRequest(ip), "Should be rate limited after burst")
+		for i := range perMinute {
+			assert.True(t, allow(), "Initial request %d should be allowed", i+1)
+		}
+		assert.False(t, allow(), "Should be rate limited after burst")
 
-		// Wait for one token to regenerate (5 per minute = 12 seconds per token)
-		time.Sleep(13 * time.Second)
+		// One token's worth, plus enough margin that a slow scheduler does
+		// not turn this into a flake — but well under the two seconds that
+		// would hand out a second token.
+		time.Sleep(1200 * time.Millisecond)
 
-		// Should allow one more
-		assert.True(t, testRequest(ip), "Should allow after token regeneration")
-
-		// But not two
-		assert.False(t, testRequest(ip), "Should block again after using regenerated token")
+		assert.True(t, allow(), "Should allow after token regeneration")
+		assert.False(t, allow(), "Should block again after using regenerated token")
 	})
 }
 

@@ -38,6 +38,12 @@ func Test_ClientTimeout(t *testing.T) {
 }
 
 func Test_Client(t *testing.T) {
+	// Answered from loopback. This exercises the connection's own exchange —
+	// write, read, match — which a root server is not needed for, and which
+	// used to make the test fail on any machine without internet.
+	addr, stop := startEchoingQuestionServer(t)
+	defer stop()
+
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
@@ -46,7 +52,7 @@ func Test_Client(t *testing.T) {
 	co := &Conn{}
 
 	var err error
-	co.Conn, err = dialer.Dial("udp4", "198.41.0.4:53")
+	co.Conn, err = dialer.Dial("udp4", addr)
 	assert.NoError(t, err)
 
 	err = co.SetDeadline(time.Now().Add(2 * time.Second))
@@ -108,4 +114,30 @@ func Test_Client_RejectsMismatchedQuestion(t *testing.T) {
 	// caller (which would otherwise cache it under victim.test.).
 	_, _, err = co.Exchange(req)
 	assert.ErrorIs(t, err, ErrQuestion)
+}
+
+// startEchoingQuestionServer answers every query with the question it was
+// asked and one NS record, which is all a connection-level exchange test
+// needs from the other end.
+func startEchoingQuestionServer(t *testing.T) (string, func()) {
+	t.Helper()
+
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Authoritative = true
+		if rr, err := dns.NewRR(". 3600 IN NS ns.test."); err == nil {
+			m.Answer = []dns.RR{rr}
+		}
+		_ = w.WriteMsg(m)
+	})
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	s := &dns.Server{Net: "udp", Handler: mux, PacketConn: pc}
+	go func() { _ = s.ActivateAndServe() }()
+	return pc.LocalAddr().String(), func() { _ = s.Shutdown() }
 }

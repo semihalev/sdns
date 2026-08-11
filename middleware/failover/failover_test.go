@@ -39,8 +39,16 @@ func Test_Failover(t *testing.T) {
 	logger.SetLevel(zlog.LevelDebug)
 	zlog.SetDefault(logger)
 
+	// A fallback that answers, one that refuses immediately, and one that is
+	// not an address at all. The pair used to be a black-holed IPv6 address
+	// and 8.8.8.8, which made this test both slow — the black hole had to
+	// time out — and dependent on Google answering for example.com.
+	answering, _, stop := startFailoverRcodeServer(t, dns.RcodeSuccess)
+	defer stop()
+	vacant := vacantLoopbackAddr(t)
+
 	cfg := new(config.Config)
-	cfg.FallbackServers = []string{"[::255]:53", "8.8.8.8:53", "1"}
+	cfg.FallbackServers = []string{vacant, answering, "1"}
 
 	middleware.Register("failover", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
@@ -79,7 +87,9 @@ func Test_Failover(t *testing.T) {
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 
-	f.servers = []string{"[::255]:53"}
+	// A refused port rather than a black hole: the assertion is that an
+	// unusable fallback yields SERVFAIL, not that we can wait out a timeout.
+	f.servers = []string{vacant}
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
@@ -698,4 +708,31 @@ func startFailoverServer(t *testing.T, mismatchQuestion bool) (
 	go func() { _ = server.ActivateAndServe() }()
 
 	return packet.LocalAddr().String(), calls, func() { _ = server.Shutdown() }
+}
+
+// vacantLoopbackAddr returns the address of a server that answers with
+// something that is not a DNS message, which is a deterministic failure.
+// An address assumed closed is a race — it can be taken between being
+// released and being used — and a silent one costs a full timeout.
+func vacantLoopbackAddr(t *testing.T) string {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, readErr := pc.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = pc.WriteTo([]byte("not a DNS message")[:min(n, 17)], from)
+		}
+	}()
+
+	return pc.LocalAddr().String()
 }

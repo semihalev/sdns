@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -18,6 +21,12 @@ func TestMain(m *testing.M) {
 	logger.SetWriter(zlog.StdoutTerminal())
 	logger.SetLevel(zlog.LevelDebug)
 	zlog.SetDefault(logger)
+
+	// Loading a configuration probes for IPv6 connectivity, which is a real
+	// query to a root server. Every test that loads one paid two seconds for
+	// it on any host without IPv6 — including CI. Answer it here instead;
+	// TestIPv6ProbeDecidesAccess covers the wiring.
+	ipv6Probe = func() error { return errors.New("no IPv6 in tests") }
 
 	code := m.Run()
 	os.Exit(code)
@@ -374,11 +383,100 @@ func TestGenerateConfig(t *testing.T) {
 	}
 }
 
-func TestTestIPv6Network(t *testing.T) {
-	// Just test that the function doesn't panic
-	err := testIPv6Network()
-	// We can't control the network state, so just verify it returns without panic
-	_ = err
+// TestIPv6NetworkProbe covers the probe itself against a server it can
+// reach, and against one that is not listening. The test this replaces
+// called the real probe, waited two seconds for a root server, and then
+// discarded the result — so the function was "covered" without anything
+// being established about it.
+func TestIPv6NetworkProbe(t *testing.T) {
+	original := ipv6ProbeServer
+	defer func() { ipv6ProbeServer = original }()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
+		reply := new(dns.Msg)
+		reply.SetReply(r)
+		_ = w.WriteMsg(reply)
+	})
+	server := &dns.Server{Net: "udp", PacketConn: pc, Handler: mux}
+	go func() { _ = server.ActivateAndServe() }()
+	defer func() { _ = server.Shutdown() }()
+	time.Sleep(10 * time.Millisecond)
+
+	ipv6ProbeServer = pc.LocalAddr().String()
+	if err := testIPv6Network(); err != nil {
+		t.Fatalf("a reachable server must satisfy the probe: %v", err)
+	}
+
+	// An exchange that fails has to be reported as a failure, not taken for
+	// a working network. The failure comes from a server that answers with
+	// something that is not a DNS message: a port assumed closed is a race
+	// — the address can be taken between releasing it and using it — and
+	// one that is merely silent costs the probe's whole timeout.
+	broken, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer broken.Close()
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, readErr := broken.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = broken.WriteTo([]byte("this is not a DNS message")[:min(n, 25)], from)
+		}
+	}()
+
+	ipv6ProbeServer = broken.LocalAddr().String()
+	if err := testIPv6Network(); err == nil {
+		t.Fatal("a server that cannot answer must fail the probe")
+	}
+}
+
+// TestIPv6ProbeDecidesAccess pins what the probe is for. The test it
+// replaces called the real thing, waited two seconds for the network, and
+// then discarded the result — it asserted nothing at all.
+func TestIPv6ProbeDecidesAccess(t *testing.T) {
+	original := ipv6Probe
+	defer func() { ipv6Probe = original }()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdns.conf")
+	content := fmt.Sprintf("version = %q\ndirectory = %q\n",
+		configver, filepath.Join(dir, "db"))
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	load := func() *Config {
+		t.Helper()
+		cfg, err := Load(path, "test")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		return cfg
+	}
+
+	asked := 0
+	ipv6Probe = func() error { asked++; return nil }
+	if cfg := load(); !cfg.IPv6Access {
+		t.Fatal("a reachable IPv6 network must turn IPv6 access on")
+	}
+
+	ipv6Probe = func() error { asked++; return errors.New("unreachable") }
+	if cfg := load(); cfg.IPv6Access {
+		t.Fatal("an unreachable IPv6 network must leave IPv6 access off")
+	}
+
+	if asked != 2 {
+		t.Fatalf("probe ran %d times, want once per load", asked)
+	}
 }
 
 func TestRecursionFirewallConfigNormalizeAndValidate(t *testing.T) {

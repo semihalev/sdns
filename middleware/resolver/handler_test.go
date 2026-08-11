@@ -25,8 +25,13 @@ func makeTestConfig() *config.Config {
 	zlog.SetDefault(logger)
 
 	cfg := new(config.Config)
-	cfg.RootServers = []string{"192.5.5.241:53"}
-	cfg.Root6Servers = []string{"[2001:500:2f::f]:53"}
+	// TEST-NET-1 (RFC 5737): reserved for documentation and routed nowhere.
+	// The resolver primes its root list in the background as soon as it is
+	// built, so a real root address here would send every test in this
+	// package to the internet whether it wanted to go or not. Tests that
+	// need a root that answers stand one up themselves — see hermetic_test.go.
+	cfg.RootServers = []string{"192.0.2.1:53"}
+	cfg.Root6Servers = nil
 	cfg.RootKeys = []string{
 		".			172800	IN	DNSKEY	257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU=",
 	}
@@ -39,14 +44,23 @@ func makeTestConfig() *config.Config {
 	cfg.IPv6Access = true
 	cfg.DNSSEC = "on"
 
-	if !middleware.Ready() {
+	// Register once for the whole process. The Ready check alone is not a
+	// guard: two parallel tests can both pass it and the second Register
+	// panics with "edns already registered", which is why this shows up
+	// when a single test is run by name and not in a full-package run.
+	registerTestMiddleware.Do(func() {
+		if middleware.Ready() {
+			return
+		}
 		middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })
 		middleware.Register("resolver", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 		middleware.Setup(cfg)
-	}
+	})
 
 	return cfg
 }
+
+var registerTestMiddleware sync.Once
 
 // startTestAuthority serves answers for the given questions from loopback.
 // It replies authoritatively to everything it knows, so a resolver pointed
@@ -186,8 +200,10 @@ func Test_HandlerHINFO(t *testing.T) {
 }
 
 func Test_HandlerServe(t *testing.T) {
-	cfg := makeTestConfig()
-	h := New(cfg)
+	// Against the package's unroutable default roots this would spend the
+	// whole query budget timing out before writing its SERVFAIL. A root that
+	// answers keeps it about the handler writing a response at all.
+	h := newHermeticNet(t).Handler()
 
 	ch := middleware.NewChain([]middleware.Handler{})
 	mw := mock.NewWriter("tcp", "127.0.0.1:0")

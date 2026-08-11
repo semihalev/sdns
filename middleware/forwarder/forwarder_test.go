@@ -116,8 +116,15 @@ func Test_Forwarder(t *testing.T) {
 	cfg := new(config.Config)
 	// Keep a known-bad entry first to exercise failover, but use local servers
 	// so the test is hermetic and does not require external DNS reachability.
-	cfg.ForwarderServers = []string{"[::255]:53", udpAddr, "1", "tls://" + tlsAddr}
+	// The bad entry is a closed loopback port rather than a black-holed
+	// address: both fail, but one fails now and the other only after a
+	// timeout, and this test is about the failover, not the wait.
+	cfg.ForwarderServers = []string{vacantLoopbackAddr(t), udpAddr, "1", "tls://" + tlsAddr}
 
+	// The registry is process-wide, so a second run in the same process —
+	// go test -count=2, say — would otherwise panic on re-registration.
+	middleware.Reset()
+	t.Cleanup(middleware.Reset)
 	middleware.Register("forwarder", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
@@ -158,7 +165,7 @@ func Test_Forwarder(t *testing.T) {
 
 	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
 
-	srv := &server{Addr: "[::255]:53", Proto: "udp"}
+	srv := &server{Addr: vacantLoopbackAddr(t), Proto: "udp"}
 	f.servers = []*server{srv}
 
 	ch.Reset(mw, req)
@@ -675,4 +682,31 @@ func startTruncatingForwarderServers(t *testing.T) (
 		_ = udpServer.Shutdown()
 		_ = tcpServer.Shutdown()
 	}
+}
+
+// vacantLoopbackAddr returns the address of a server that answers with
+// something that is not a DNS message, which is a deterministic failure.
+// An address assumed closed is a race — it can be taken between being
+// released and being used — and a silent one costs a full timeout.
+func vacantLoopbackAddr(t *testing.T) string {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, readErr := pc.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = pc.WriteTo([]byte("not a DNS message")[:min(n, 17)], from)
+		}
+	}()
+
+	return pc.LocalAddr().String()
 }

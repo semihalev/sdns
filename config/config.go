@@ -1123,7 +1123,7 @@ func Load(cfgfile, version string) (*Config, error) {
 	}
 
 	if !config.IPv6Access {
-		err := testIPv6Network()
+		err := ipv6Probe()
 		if err == nil {
 			config.IPv6Access = true
 		}
@@ -1185,6 +1185,17 @@ func generateConfig(path string) error {
 	return nil
 }
 
+// ipv6Probe answers whether this host can reach the IPv6 internet. Loading a
+// configuration that does not already declare IPv6 access asks it, and the
+// answer costs a round trip to a root server — so it is a variable, letting
+// tests settle the question without going near the network.
+var ipv6Probe = testIPv6Network
+
+// ipv6ProbeServer is the address the probe asks. A variable so a test can
+// point it at a server it controls and cover the probe itself rather than
+// stubbing past it.
+var ipv6ProbeServer = net.JoinHostPort("2001:500:2::c", "53") // a root server
+
 func testIPv6Network() error {
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeNS)
@@ -1192,8 +1203,7 @@ func testIPv6Network() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// root server
 	client := dnsclient.Client{Proto: "udp", Timeout: 2 * time.Second}
-	_, _, err := client.Exchange(ctx, req, net.JoinHostPort("2001:500:2::c", "53"))
+	_, _, err := client.Exchange(ctx, req, ipv6ProbeServer)
 	return err
 }

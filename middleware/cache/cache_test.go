@@ -100,7 +100,12 @@ func TestCachePurge(t *testing.T) {
 	req.Question[0].Qclass = dns.ClassCHAOS
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	ch := middleware.NewChain([]middleware.Handler{c, mockHandler})
+	// The cache is invoked directly, so it must not also sit in the chain:
+	// its own ch.Next would then enter it a second time for the same
+	// request, and the second entry would wait as a follower on the
+	// deduplication generation its own caller still holds. That deadlock
+	// resolved only when the wait timed out, fifteen seconds later.
+	ch := middleware.NewChain([]middleware.Handler{mockHandler})
 	ch.Reset(mw, req)
 
 	c.ServeDNS(context.Background(), ch)
@@ -212,8 +217,11 @@ func TestCacheTTL(t *testing.T) {
 	entry := c.checkCache(key)
 	require.NotNil(t, entry)
 
-	// Wait for expiration (5 seconds plus buffer)
-	time.Sleep(5100 * time.Millisecond)
+	// Age the entry past its TTL rather than waiting it out: expiry is
+	// derived from stored+ttl, so moving stored back is exactly equivalent
+	// to five seconds passing — and the minimum TTL the configuration
+	// accepts is five seconds, so waiting is the only alternative.
+	entry.stored = entry.stored.Add(-6 * time.Second)
 
 	// Should be expired
 	entry = c.checkCache(key)
@@ -436,7 +444,7 @@ func TestCacheEDNS(t *testing.T) {
 	req2.SetEdns0(512, false)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	ch := middleware.NewChain([]middleware.Handler{c})
+	ch := middleware.NewChain([]middleware.Handler{})
 	ch.Reset(mw, req2)
 
 	c.ServeDNS(context.Background(), ch)
