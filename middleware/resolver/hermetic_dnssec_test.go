@@ -266,9 +266,16 @@ func TestHermeticDNSSECNSEC3OptOut(t *testing.T) {
 
 	resp := hermeticAsk(t, net.Handler(), "absent.optout.test.", dns.TypeA)
 
-	t.Logf("rcode=%s ad=%v answers=%d", dns.RcodeToString[resp.Rcode],
-		resp.AuthenticatedData, len(resp.Answer))
-
+	// The distinction §9.2 draws is between accepting the answer and
+	// vouching for it. Refusing Opt-Out denials outright would satisfy an
+	// AD check on its own, so the denial itself is pinned too.
+	if resp.Rcode != dns.RcodeNameError {
+		t.Fatalf("rcode = %s, want NXDOMAIN: an Opt-Out span still denies the "+
+			"name, it just cannot be vouched for", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Fatalf("NXDOMAIN carries %d answers", len(resp.Answer))
+	}
 	if resp.AuthenticatedData {
 		t.Fatal("a denial resting on an Opt-Out span was reported as " +
 			"authenticated; the span may hide an unsigned delegation")
@@ -308,13 +315,33 @@ func TestHermeticDNSSECDenialWithoutCoverageRefused(t *testing.T) {
 			resp := hermeticAsk(t, net.Handler(),
 				"absent.nocover-"+tc.name+".test.", dns.TypeA)
 
+			// Refusing has to mean SERVFAIL. Anything else — NODATA,
+			// REFUSED, an empty NOERROR — would let a resolver that quietly
+			// gave up pass a test that only ruled out NXDOMAIN.
+			if resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("rcode = %s, want SERVFAIL: a denial that covers "+
+					"nothing must be refused", dns.RcodeToString[resp.Rcode])
+			}
 			if resp.AuthenticatedData {
 				t.Fatal("a denial whose records cover nothing was reported as " +
 					"authenticated")
 			}
-			if resp.Rcode == dns.RcodeNameError {
-				t.Fatalf("rcode = NXDOMAIN: the denial was accepted although " +
-					"nothing in it covers the name")
+			if len(resp.Answer) != 0 {
+				t.Fatalf("SERVFAIL carries %d answers", len(resp.Answer))
+			}
+
+			// And the client should be told why.
+			if opt := resp.IsEdns0(); opt != nil {
+				for _, option := range opt.Option {
+					ede, ok := option.(*dns.EDNS0_EDE)
+					if !ok {
+						continue
+					}
+					if ede.InfoCode != dns.ExtendedErrorCodeNSECMissing {
+						t.Fatalf("EDE code = %d (%s), want NSECMissing",
+							ede.InfoCode, dns.ExtendedErrorCodeToString[ede.InfoCode])
+					}
+				}
 			}
 		})
 	}
