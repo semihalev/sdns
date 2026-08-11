@@ -44,14 +44,23 @@ func makeTestConfig() *config.Config {
 	cfg.IPv6Access = true
 	cfg.DNSSEC = "on"
 
-	if !middleware.Ready() {
+	// Register once for the whole process. The Ready check alone is not a
+	// guard: two parallel tests can both pass it and the second Register
+	// panics with "edns already registered", which is why this shows up
+	// when a single test is run by name and not in a full-package run.
+	registerTestMiddleware.Do(func() {
+		if middleware.Ready() {
+			return
+		}
 		middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })
 		middleware.Register("resolver", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 		middleware.Setup(cfg)
-	}
+	})
 
 	return cfg
 }
+
+var registerTestMiddleware sync.Once
 
 // startTestAuthority serves answers for the given questions from loopback.
 // It replies authoritatively to everything it knows, so a resolver pointed

@@ -73,3 +73,20 @@ func Test_UpdateBlocklists(t *testing.T) {
 		}
 	}
 }
+
+// TestFileNameForHost pins that a host is turned into something every
+// filesystem will accept. A list configured with an explicit port used to
+// produce a name Windows refuses, and the download was dropped with only a
+// log line to show for it.
+func TestFileNameForHost(t *testing.T) {
+	for _, tc := range []struct{ host, want string }{
+		{"lists.example", "lists.example"},
+		{"lists.example:8080", "lists.example_8080"},
+		{"127.0.0.1:51542", "127.0.0.1_51542"},
+		{"[::1]:53", "[__1]_53"},
+	} {
+		if got := fileNameForHost(tc.host); got != tc.want {
+			t.Errorf("fileNameForHost(%q) = %q, want %q", tc.host, got, tc.want)
+		}
+	}
+}
