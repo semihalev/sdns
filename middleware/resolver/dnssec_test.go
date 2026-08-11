@@ -268,8 +268,23 @@ func Test_isZoneSecure(t *testing.T) {
 	}
 }
 
+// Test_isZoneSecureIntegration drives isZoneSecure through the paths that
+// reach it — an answer, an insecure delegation, and a denial — against a
+// signed loopback namespace. It used to ask dnscheck.tools, stackoverflow.com
+// and ietf.org, which made a resolver test depend on three third parties.
 func Test_isZoneSecureIntegration(t *testing.T) {
-	t.Parallel()
+	net := newHermeticNet(t)
+
+	missing := net.Delegate("missing-sig.test.")
+	missing.ServeUnsigned(mustRR(t, "www.missing-sig.test. 300 IN A 192.0.2.81"))
+
+	insecure := net.DelegateInsecure("unsigned.test.")
+	insecure.Serve(mustRR(t, "www.unsigned.test. 300 IN A 192.0.2.82"))
+
+	denial := net.Delegate("denial.test.")
+	denial.Serve(mustRR(t, "present.denial.test. 300 IN A 192.0.2.83"))
+
+	r := net.Resolver()
 
 	tests := []struct {
 		name      string
@@ -278,47 +293,34 @@ func Test_isZoneSecureIntegration(t *testing.T) {
 		expectNil bool
 	}{
 		{
-			// Signed zone that omits RRSIGs — exercises answer() → isZoneSecure()
-			// returning true → dnssec.ErrNoSignatures.
+			// A signed zone that omits RRSIGs: answer() -> isZoneSecure()
+			// reports the zone secure, so the missing signature is fatal.
 			name:      "signed zone missing RRSIG returns error",
-			qname:     "nosig-e5ecc382.test-alg15.dnscheck.tools.",
+			qname:     "www.missing-sig.test.",
 			expectErr: true,
 			expectNil: true,
 		},
 		{
-			// Insecure delegation: parent (com.) is signed but
-			// stackoverflow.com. has no DS record at the delegation point.
-			// Unsigned responses must not trigger dnssec.ErrNoSignatures.
+			// No DS at the cut, so unsigned data here is not a failure.
 			name:      "insecure delegation resolves successfully",
-			qname:     "stackoverflow.com.",
+			qname:     "www.unsigned.test.",
 			expectErr: false,
 			expectNil: false,
 		},
 		{
-			// Nonexistent name under a signed zone — exercises authority() →
-			// isZoneSecure() path. The resolver should validate the NSEC/RRSIG
-			// proofs and not return dnssec.ErrNoSignatures.
-			name:      "NXDOMAIN under signed zone validates",
-			qname:     "thisdoesnotexist.ietf.org.",
+			// A name that does not exist under a signed zone: the denial
+			// travels through authority() -> isZoneSecure() and must not be
+			// mistaken for missing signatures.
+			name:      "denial under signed zone validates",
+			qname:     "absent.denial.test.",
 			expectErr: false,
 			expectNil: false,
 		},
 	}
 
-	cfg := makeTestConfig()
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctx := context.Background()
-			r := newWiredTestResolver(cfg)
-
-			req := new(dns.Msg)
-			req.SetQuestion(tt.qname, dns.TypeA)
-			req.SetEdns0(4096, true)
-
-			resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
+			resp, err := hermeticResolve(t, r, tt.qname, dns.TypeA)
 
 			if tt.expectErr {
 				assert.Error(t, err)
