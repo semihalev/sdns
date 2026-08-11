@@ -710,9 +710,10 @@ func startFailoverServer(t *testing.T, mismatchQuestion bool) (
 	return packet.LocalAddr().String(), calls, func() { _ = server.Shutdown() }
 }
 
-// vacantLoopbackAddr returns a loopback address this test just held and
-// released. Nothing else on the host can be listening there, which a low
-// port number only assumes.
+// vacantLoopbackAddr returns the address of a server that answers with
+// something that is not a DNS message, which is a deterministic failure.
+// An address assumed closed is a race — it can be taken between being
+// released and being used — and a silent one costs a full timeout.
 func vacantLoopbackAddr(t *testing.T) string {
 	t.Helper()
 
@@ -720,9 +721,18 @@ func vacantLoopbackAddr(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("listen udp: %v", err)
 	}
-	addr := pc.LocalAddr().String()
-	if err := pc.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	return addr
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, readErr := pc.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = pc.WriteTo([]byte("not a DNS message")[:min(n, 17)], from)
+		}
+	}()
+
+	return pc.LocalAddr().String()
 }

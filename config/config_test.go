@@ -412,22 +412,30 @@ func TestIPv6NetworkProbe(t *testing.T) {
 		t.Fatalf("a reachable server must satisfy the probe: %v", err)
 	}
 
-	// Nothing listening: the probe has to report that, not decide the
-	// network is fine. The address is one this test just held and released,
-	// rather than a low port assumed to be free — nothing else on the host
-	// can be answering on it.
-	vacant, err := net.ListenPacket("udp", "127.0.0.1:0")
+	// An exchange that fails has to be reported as a failure, not taken for
+	// a working network. The failure comes from a server that answers with
+	// something that is not a DNS message: a port assumed closed is a race
+	// — the address can be taken between releasing it and using it — and
+	// one that is merely silent costs the probe's whole timeout.
+	broken, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen udp: %v", err)
 	}
-	vacantAddr := vacant.LocalAddr().String()
-	if err := vacant.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	defer broken.Close()
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, readErr := broken.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = broken.WriteTo([]byte("this is not a DNS message")[:min(n, 25)], from)
+		}
+	}()
 
-	ipv6ProbeServer = vacantAddr
+	ipv6ProbeServer = broken.LocalAddr().String()
 	if err := testIPv6Network(); err == nil {
-		t.Fatal("an unreachable server must fail the probe")
+		t.Fatal("a server that cannot answer must fail the probe")
 	}
 }
 

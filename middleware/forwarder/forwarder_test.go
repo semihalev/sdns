@@ -121,6 +121,10 @@ func Test_Forwarder(t *testing.T) {
 	// timeout, and this test is about the failover, not the wait.
 	cfg.ForwarderServers = []string{vacantLoopbackAddr(t), udpAddr, "1", "tls://" + tlsAddr}
 
+	// The registry is process-wide, so a second run in the same process —
+	// go test -count=2, say — would otherwise panic on re-registration.
+	middleware.Reset()
+	t.Cleanup(middleware.Reset)
 	middleware.Register("forwarder", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
 
@@ -680,9 +684,10 @@ func startTruncatingForwarderServers(t *testing.T) (
 	}
 }
 
-// vacantLoopbackAddr returns a loopback address this test just held and
-// released. Nothing else on the host can be listening there, which a low
-// port number only assumes.
+// vacantLoopbackAddr returns the address of a server that answers with
+// something that is not a DNS message, which is a deterministic failure.
+// An address assumed closed is a race — it can be taken between being
+// released and being used — and a silent one costs a full timeout.
 func vacantLoopbackAddr(t *testing.T) string {
 	t.Helper()
 
@@ -690,9 +695,18 @@ func vacantLoopbackAddr(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("listen udp: %v", err)
 	}
-	addr := pc.LocalAddr().String()
-	if err := pc.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	return addr
+	t.Cleanup(func() { _ = pc.Close() })
+
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, readErr := pc.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			_, _ = pc.WriteTo([]byte("not a DNS message")[:min(n, 17)], from)
+		}
+	}()
+
+	return pc.LocalAddr().String()
 }

@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -79,14 +80,31 @@ func Test_UpdateBlocklists(t *testing.T) {
 // produce a name Windows refuses, and the download was dropped with only a
 // log line to show for it.
 func TestFileNameForHost(t *testing.T) {
-	for _, tc := range []struct{ host, want string }{
-		{"lists.example", "lists.example"},
-		{"lists.example:8080", "lists.example_8080"},
-		{"127.0.0.1:51542", "127.0.0.1_51542"},
-		{"[::1]:53", "[__1]_53"},
-	} {
-		if got := fileNameForHost(tc.host); got != tc.want {
-			t.Errorf("fileNameForHost(%q) = %q, want %q", tc.host, got, tc.want)
+	hosts := []string{
+		"lists.example",
+		"lists.example:8080",
+		// Sanitising alone would fold this onto the one above, and two
+		// concurrent downloads would then truncate each other's file.
+		"lists.example_8080",
+		"127.0.0.1:51542",
+		"[::1]:53",
+		"con",
+		strings.Repeat("very-long-host.", 20) + "example",
+	}
+
+	seen := make(map[string]string, len(hosts))
+	for _, host := range hosts {
+		name := fileNameForHost(host)
+
+		if strings.ContainsAny(name, `:/\<>"|?*`) {
+			t.Errorf("fileNameForHost(%q) = %q, which not every filesystem accepts", host, name)
 		}
+		if len(name) > 96 {
+			t.Errorf("fileNameForHost(%q) is %d characters", host, len(name))
+		}
+		if other, clash := seen[name]; clash {
+			t.Errorf("%q and %q both map to %q", other, host, name)
+		}
+		seen[name] = host
 	}
 }

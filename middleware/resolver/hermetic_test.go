@@ -579,6 +579,11 @@ func (n *hermeticNet) Delegate(zone string) *hermeticZone {
 // DelegateNSEC3 is Delegate for a zone that denies with hashed names. The
 // two denial families take different paths through the resolver, so a
 // fixture that only ever produces NSEC leaves the NSEC3 one unexercised.
+//
+// NODATA only: a hashed proof that a name does not exist at all needs a
+// closest encloser, a next closer and a wildcard, which this does not
+// build. Such a zone therefore cannot prove an NXDOMAIN, and a query for an
+// absent name under it fails rather than quietly falling back to NSEC.
 func (n *hermeticNet) DelegateNSEC3(zone string) *hermeticZone {
 	n.tb.Helper()
 
@@ -599,6 +604,13 @@ func (n *hermeticNet) DelegateNSEC3(zone string) *hermeticZone {
 	for _, name := range names {
 		z.server.rebuildNODATAProofLocked(name)
 	}
+	// Drop the NSEC that denies absent names. A hashed NXDOMAIN proof is a
+	// different shape — closest encloser, next closer, wildcard — and is not
+	// built here, so leaving the NSEC one in place would let a test that
+	// believes it is exercising NSEC3 quietly exercise NSEC instead. Without
+	// it an NXDOMAIN from this zone is unprovable and fails, which is the
+	// honest outcome until the hashed proof exists.
+	z.server.nxProof = nil
 	z.server.mu.Unlock()
 
 	return z
