@@ -23,6 +23,12 @@ func TestGhostDomain_ParentStateAtLeaseDeadline(t *testing.T) {
 		{name: "parent redelegated", redelegate: true, wantAddress: "192.0.2.20"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each case stands up its own counters, servers and resolver, and
+			// most of its runtime is spent waiting out a one-second delegation
+			// lease — the shortest a DNS TTL can express. Running the cases
+			// side by side spends that second once instead of twice.
+			t.Parallel()
+
 			var rootHits, oldHits, newHits int64
 
 			leaf := func(address string) func(dns.Question) *dns.Msg {

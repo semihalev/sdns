@@ -385,9 +385,19 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	assert.LessOrEqual(t, goroutineGrowth, cfg.MaxConcurrentQueries*3,
 		"Goroutine growth should be limited by MaxConcurrentQueries")
 
-	// Wait for cleanup
-	time.Sleep(3 * time.Second)
+	// Wait for cleanup, but only as long as it actually takes: the test is
+	// about the goroutines going away, not about how long we are willing to
+	// sit here.
+	const cleanupBudget = 3 * time.Second
+	deadline := time.Now().Add(cleanupBudget)
 	finalGoroutines := runtime.NumGoroutine()
+	for time.Now().Before(deadline) {
+		finalGoroutines = runtime.NumGoroutine()
+		if finalGoroutines-startGoroutines <= 20 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	t.Logf("After cleanup: %d goroutines (started with %d)",
 		finalGoroutines, startGoroutines)
