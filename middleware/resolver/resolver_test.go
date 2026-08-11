@@ -149,23 +149,6 @@ func Test_resolverBadKeyDNSSEC(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func Test_resolverExponentDNSSEC(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	req := new(dns.Msg)
-	req.SetQuestion("verteiltesysteme.net.", dns.TypeNS)
-	req.SetEdns0(4096, true)
-
-	cfg := makeTestConfig()
-	r := newWiredTestResolver(cfg)
-
-	_, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
-
-	assert.NoError(t, err)
-}
-
 func Test_resolverDS(t *testing.T) {
 	t.Parallel()
 

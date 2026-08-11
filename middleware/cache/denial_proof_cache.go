@@ -66,11 +66,17 @@ type denialProofEntry struct {
 	ownerHash  string
 	ownerOrder denialProofNameOrder
 	data       []dns.RR
-	records    []dns.RR
-	expires    time.Time
-	wireBytes  int64
-	sequence   uint64
-	queue      *list.Element
+	// preparedNSEC mirrors data for an NSEC set, with each record's owner
+	// and next-domain names already canonical. Canonicalizing is a pure
+	// function of records that never change while cached, so it is paid for
+	// here — once per admission — instead of on every lookup that consults
+	// this zone. Empty for SOA and NSEC3 sets.
+	preparedNSEC []dnssec.PreparedNSEC
+	records      []dns.RR
+	expires      time.Time
+	wireBytes    int64
+	sequence     uint64
+	queue        *list.Element
 }
 
 // denialProofZoneSnapshot is published copy-on-write. Readers may retain a
@@ -704,11 +710,30 @@ func newDenialProofEntry(
 
 	data := make([]dns.RR, 0, len(set.data))
 	records := make([]dns.RR, 0, len(set.data)+len(set.sigs))
+	var prepared []dnssec.PreparedNSEC
+	if set.key.kind == denialProofNSEC {
+		prepared = make([]dnssec.PreparedNSEC, 0, len(set.data))
+	}
 	var wireBytes int64
 	for _, rr := range set.data {
 		copied := dns.Copy(rr)
 		if copied == nil {
 			return nil, false
+		}
+		if prepared != nil {
+			nsec, ok := copied.(*dns.NSEC)
+			if !ok {
+				return nil, false
+			}
+			// A record whose names cannot be canonicalized could never
+			// produce an aggressive answer, so there is nothing to gain by
+			// holding it: refusing it here leaves the lookup falling back to
+			// ordinary resolution, exactly as an evaluation failure would.
+			candidate, err := dnssec.PrepareAggressiveNSEC(nsec)
+			if err != nil {
+				return nil, false
+			}
+			prepared = append(prepared, candidate)
 		}
 		data = append(data, copied)
 		records = append(records, copied)
@@ -733,15 +758,16 @@ func newDenialProofEntry(
 		hash:       set.params.hash,
 	}
 	return &denialProofEntry{
-		id:         id,
-		zoneKey:    zoneKey,
-		params:     set.params,
-		ownerHash:  set.ownerHash,
-		ownerOrder: set.ownerOrder,
-		data:       data,
-		records:    records,
-		expires:    expires,
-		wireBytes:  wireBytes,
+		id:           id,
+		zoneKey:      zoneKey,
+		params:       set.params,
+		ownerHash:    set.ownerHash,
+		ownerOrder:   set.ownerOrder,
+		data:         data,
+		preparedNSEC: prepared,
+		records:      records,
+		expires:      expires,
+		wireBytes:    wireBytes,
 	}, true
 }
 
@@ -1243,9 +1269,9 @@ func denialProofEvaluate(
 		return dnssec.AggressiveNegativeResult{}, nil, false
 	}
 
-	nsecEntries, nsecRecords := denialProofLiveRecords(snapshot.nsec, now)
-	if len(nsecRecords) != 0 {
-		result, err := dnssec.EvaluateAggressiveNSEC(q, zone.zone, nsecRecords)
+	nsecEntries, nsecPrepared := denialProofLivePreparedNSEC(snapshot.nsec, now)
+	if len(nsecPrepared) != 0 {
+		result, err := dnssec.EvaluateAggressiveNSECPrepared(q, zone.zone, nsecPrepared)
 		if err == nil {
 			entries, selected := denialProofSelectedEntries(result.Proof, nsecEntries)
 			if selected {
@@ -1273,6 +1299,26 @@ func denialProofEvaluate(
 		}
 	}
 	return dnssec.AggressiveNegativeResult{}, nil, false
+}
+
+// denialProofLivePreparedNSEC collects a zone's unexpired NSEC entries along
+// with their canonicalized records. Admission refuses an NSEC entry whose
+// names it cannot canonicalize, so every live entry here carries a prepared
+// form covering exactly its own records.
+func denialProofLivePreparedNSEC(
+	entries []*denialProofEntry,
+	now time.Time,
+) ([]*denialProofEntry, []dnssec.PreparedNSEC) {
+	live := make([]*denialProofEntry, 0, len(entries))
+	prepared := make([]dnssec.PreparedNSEC, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || !now.Before(entry.expires) {
+			continue
+		}
+		live = append(live, entry)
+		prepared = append(prepared, entry.preparedNSEC...)
+	}
+	return live, prepared
 }
 
 func denialProofLiveRecords(
