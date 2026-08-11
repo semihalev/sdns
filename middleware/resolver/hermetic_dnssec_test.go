@@ -330,18 +330,27 @@ func TestHermeticDNSSECDenialWithoutCoverageRefused(t *testing.T) {
 				t.Fatalf("SERVFAIL carries %d answers", len(resp.Answer))
 			}
 
-			// And the client should be told why.
-			if opt := resp.IsEdns0(); opt != nil {
-				for _, option := range opt.Option {
-					ede, ok := option.(*dns.EDNS0_EDE)
-					if !ok {
-						continue
-					}
-					if ede.InfoCode != dns.ExtendedErrorCodeNSECMissing {
-						t.Fatalf("EDE code = %d (%s), want NSECMissing",
-							ede.InfoCode, dns.ExtendedErrorCodeToString[ede.InfoCode])
-					}
+			// And the client should be told why — which means the extended
+			// error has to be there at all, not merely carry the right code
+			// whenever it happens to be present.
+			opt := resp.IsEdns0()
+			if opt == nil {
+				t.Fatal("no OPT record, so no extended error reached the client")
+			}
+			var ede *dns.EDNS0_EDE
+			for _, option := range opt.Option {
+				if found, ok := option.(*dns.EDNS0_EDE); ok {
+					ede = found
+					break
 				}
+			}
+			if ede == nil {
+				t.Fatal("no EDE option: the client is told the query failed " +
+					"but not that the denial was unprovable")
+			}
+			if ede.InfoCode != dns.ExtendedErrorCodeNSECMissing {
+				t.Fatalf("EDE code = %d (%s), want NSECMissing",
+					ede.InfoCode, dns.ExtendedErrorCodeToString[ede.InfoCode])
 			}
 		})
 	}
