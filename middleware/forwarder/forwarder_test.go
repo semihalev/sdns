@@ -116,7 +116,10 @@ func Test_Forwarder(t *testing.T) {
 	cfg := new(config.Config)
 	// Keep a known-bad entry first to exercise failover, but use local servers
 	// so the test is hermetic and does not require external DNS reachability.
-	cfg.ForwarderServers = []string{"[::255]:53", udpAddr, "1", "tls://" + tlsAddr}
+	// The bad entry is a closed loopback port rather than a black-holed
+	// address: both fail, but one fails now and the other only after a
+	// timeout, and this test is about the failover, not the wait.
+	cfg.ForwarderServers = []string{"127.0.0.1:1", udpAddr, "1", "tls://" + tlsAddr}
 
 	middleware.Register("forwarder", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
@@ -158,7 +161,7 @@ func Test_Forwarder(t *testing.T) {
 
 	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
 
-	srv := &server{Addr: "[::255]:53", Proto: "udp"}
+	srv := &server{Addr: "127.0.0.1:1", Proto: "udp"}
 	f.servers = []*server{srv}
 
 	ch.Reset(mw, req)
