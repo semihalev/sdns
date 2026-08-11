@@ -1123,7 +1123,7 @@ func Load(cfgfile, version string) (*Config, error) {
 	}
 
 	if !config.IPv6Access {
-		err := testIPv6Network()
+		err := ipv6Probe()
 		if err == nil {
 			config.IPv6Access = true
 		}
@@ -1184,6 +1184,12 @@ func generateConfig(path string) error {
 
 	return nil
 }
+
+// ipv6Probe answers whether this host can reach the IPv6 internet. Loading a
+// configuration that does not already declare IPv6 access asks it, and the
+// answer costs a round trip to a root server — so it is a variable, letting
+// tests settle the question without going near the network.
+var ipv6Probe = testIPv6Network
 
 func testIPv6Network() error {
 	req := new(dns.Msg)
