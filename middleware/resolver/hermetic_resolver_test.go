@@ -90,6 +90,26 @@ func TestHermeticResolveNXDOMAIN(t *testing.T) {
 	assert.Equal(t, dns.RcodeNameError, resp.Rcode)
 }
 
+// TestHermeticResolveEmptyNonTerminal asks for a label that only exists
+// because something is delegated beneath it. Such a name holds no records
+// but is not absent, so the answer is NODATA — denying it would deny the
+// whole subtree, and a resolver walking down to that subtree would then be
+// relying on its broken-parent fallback to get anywhere.
+func TestHermeticResolveEmptyNonTerminal(t *testing.T) {
+	net := newHermeticNet(t)
+	zone := net.Delegate("ent.test.")
+	zone.Serve(mustRR(t, "www.ent.test. 300 IN A 192.0.2.14"))
+
+	resp, err := hermeticResolve(t, net.Resolver(), "test.", dns.TypeA)
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, resp) {
+		assert.Equal(t, dns.RcodeSuccess, resp.Rcode,
+			"a label above a delegation exists; denying it denies the subtree")
+		assert.Equal(t, 0, len(resp.Answer))
+	}
+}
+
 // TestHermeticResolveNODATA asks an existing name for a type it does not
 // have. That too is an answer, and it must not be reported as an error.
 func TestHermeticResolveNODATA(t *testing.T) {

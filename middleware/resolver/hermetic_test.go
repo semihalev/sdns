@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -104,6 +105,18 @@ func nextInZone(owner string) string {
 		return "zz-last."
 	}
 	return "zz-last." + dns.Fqdn(owner)
+}
+
+// emptyNonTerminals lists the names strictly between the root and zone.
+// They hold no records of their own, but they exist: a query for one is
+// NODATA, never a denial of the whole subtree below it.
+func emptyNonTerminals(zone string) []string {
+	labels := dns.SplitDomainName(dns.Fqdn(zone))
+	ents := make([]string, 0, len(labels))
+	for i := 1; i < len(labels); i++ {
+		ents = append(ents, dns.Fqdn(strings.Join(labels[i:], ".")))
+	}
+	return ents
 }
 
 // hermeticReferral is what a parent hands back for a name below a zone cut:
@@ -649,6 +662,14 @@ func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *he
 
 	n.root.mu.Lock()
 	n.root.children[zone] = referral
+	// Every label between the root and the cut exists as an empty
+	// non-terminal. Denying it outright would be wrong — and the resolver
+	// only gets past it through its broken-parent fallback, so a fixture
+	// that does so quietly tests the fallback instead of the descent.
+	for _, ent := range emptyNonTerminals(zone) {
+		n.root.names[ent] = true
+		n.root.rebuildNODATAProofLocked(ent)
+	}
 	n.root.mu.Unlock()
 
 	n.zones = append(n.zones, z)
