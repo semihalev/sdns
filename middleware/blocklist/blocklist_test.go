@@ -402,3 +402,57 @@ func Test_BlockList_PersistOrdering(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, string(data), "c.example.", "a newer snapshot must still persist")
 }
+
+// Test_BlockList_EntriesGauge pins dns_blocklist_entries to the live map
+// contents. The gauge exists so operators can alert on a list that failed
+// to load or was emptied by a bad update — cases where the hits counter
+// stays at zero and looks indistinguishable from "nothing matched". A
+// gauge captured once at load time would miss exactly those regressions,
+// so this asserts it tracks mutations too.
+func Test_BlockList_EntriesGauge(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.Nullroute = "0.0.0.0"
+	cfg.Nullroutev6 = "::0"
+	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_entriesgauge")
+	_ = os.RemoveAll(cfg.BlockListDir)
+	if err := os.MkdirAll(cfg.BlockListDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+
+	bl := New(cfg)
+
+	read := func() float64 {
+		fn := blocklistLen.Load()
+		if fn == nil {
+			return 0
+		}
+		return float64((*fn)())
+	}
+
+	assert.Equal(t, float64(0), read(), "a fresh blocklist reports zero entries")
+
+	bl.Set("one.example.")
+	bl.Set("two.example.")
+	bl.Set("*.three.example.")
+	assert.Equal(t, float64(3), read(),
+		"gauge must count exact names plus wildcard suffixes")
+	assert.Equal(t, float64(bl.Length()), read(), "gauge must track Length()")
+
+	bl.Remove("one.example.")
+	assert.Equal(t, float64(2), read(), "gauge must follow removals, not just adds")
+
+	// A second instance takes over the published accessor, mirroring what
+	// happens when the middleware is rebuilt; the gauge must follow the
+	// live one rather than keep reporting the dead instance's count.
+	cfg2 := new(config.Config)
+	cfg2.Nullroute = "0.0.0.0"
+	cfg2.Nullroutev6 = "::0"
+	cfg2.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp_entriesgauge2")
+	_ = os.RemoveAll(cfg2.BlockListDir)
+	if err := os.MkdirAll(cfg2.BlockListDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	bl2 := New(cfg2)
+	bl2.Set("only.example.")
+	assert.Equal(t, float64(1), read(), "gauge must follow the newest instance")
+}
