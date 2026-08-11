@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -392,6 +393,11 @@ type hermeticZone struct {
 	// resolver dials — glue cannot name a port, so the address the
 	// delegation carries can never be the one a test binds.
 	glue net.IP
+	// glue6 is the same nameserver's IPv6 address. Advertising both is what
+	// sends the resolver down its AAAA paths — looking a nameserver's v6
+	// address up, caching it, choosing between families — which a v4-only
+	// fixture leaves untouched. Both are remapped to the same socket.
+	glue6 net.IP
 	// extra are further nameservers the parent advertises for this zone,
 	// so a lookup has more than one address to choose between.
 	extra []hermeticAuthority
@@ -629,11 +635,18 @@ func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *he
 		Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 3600},
 		Ns:  nsName,
 	}
+	z.glue6 = net.ParseIP("2001:db8::" + strconv.Itoa(10+len(n.zones)))
 	glue := &dns.A{
 		Hdr: dns.RR_Header{Name: nsName, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
 		A:   z.glue,
 	}
-	referral := &hermeticReferral{zone: zone, ns: []dns.RR{ns}, extra: []dns.RR{glue}}
+	glue6 := &dns.AAAA{
+		Hdr:  dns.RR_Header{Name: nsName, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 3600},
+		AAAA: z.glue6,
+	}
+	referral := &hermeticReferral{
+		zone: zone, ns: []dns.RR{ns}, extra: []dns.RR{glue, glue6},
+	}
 
 	if publishDS {
 		dsKey := z.key
@@ -681,7 +694,10 @@ func (n *hermeticNet) Config() *config.Config {
 	cfg := makeTestConfig()
 	cfg.RootServers = []string{n.root.addr}
 	cfg.Root6Servers = nil
-	cfg.IPv6Access = false
+	// Zones advertise both families, so the resolver exercises its AAAA
+	// paths; every address is remapped to the same loopback socket, so no
+	// IPv6 packet is actually sent.
+	cfg.IPv6Access = true
 	cfg.DNSSEC = "on"
 	cfg.RootKeys = []string{n.rootKey.key.String()}
 	return cfg
@@ -715,6 +731,7 @@ func (n *hermeticNet) handlerWithConfig(cfg *config.Config) *DNSHandler {
 	byGlue := make(map[string]string, len(n.zones))
 	for _, z := range n.zones {
 		byGlue[net.JoinHostPort(z.glue.String(), "53")] = z.server.addr
+		byGlue[net.JoinHostPort(z.glue6.String(), "53")] = z.server.addr
 		for _, extra := range z.extra {
 			byGlue[net.JoinHostPort(extra.glue.String(), "53")] = extra.server.addr
 		}
