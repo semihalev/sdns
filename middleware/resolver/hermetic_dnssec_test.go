@@ -178,6 +178,40 @@ func TestHermeticDNSSECNSEC3NODATA(t *testing.T) {
 	}
 }
 
+// TestHermeticDNSSECNSEC3NameError covers the hashed proof that a name does
+// not exist. RFC 5155 §8.4 wants three things together — a record matching
+// the closest encloser, one covering the next closer, and one covering the
+// wildcard beneath the closest encloser — and they are what the zone's
+// NSEC3 chain supplies.
+func TestHermeticDNSSECNSEC3NameError(t *testing.T) {
+	net := newHermeticNet(t)
+	zone := net.DelegateNSEC3("nx3.test.")
+	zone.Serve(mustRR(t, "host.nx3.test. 300 IN A 192.0.2.96"))
+
+	for _, qname := range []string{
+		// Directly beneath the apex: the next closer is the name itself.
+		"absent.nx3.test.",
+		// Deeper, so the closest encloser is still the apex but the next
+		// closer is an intermediate name that does not exist either.
+		"a.b.absent.nx3.test.",
+	} {
+		t.Run(qname, func(t *testing.T) {
+			resp := hermeticAsk(t, net.Handler(), qname, dns.TypeA)
+
+			if resp.Rcode != dns.RcodeNameError {
+				t.Fatalf("rcode = %s, want NXDOMAIN", dns.RcodeToString[resp.Rcode])
+			}
+			if !resp.AuthenticatedData {
+				t.Fatal("a signed NSEC3 denial must come back authenticated; " +
+					"AD=0 means the proof was not verified")
+			}
+			if len(resp.Answer) != 0 {
+				t.Fatalf("NXDOMAIN carries %d answers", len(resp.Answer))
+			}
+		})
+	}
+}
+
 // TestHermeticDNSSECInsecureDelegation pins the other half of fail-closed:
 // a zone with no DS at the cut is unsigned, not broken, so its answers are
 // served — just not authenticated.
@@ -218,5 +252,70 @@ func TestHermeticDNSSECNODATA(t *testing.T) {
 	if len(resp.Answer) != 0 {
 		t.Fatalf("DS query returned %d answers for an undelegated name",
 			len(resp.Answer))
+	}
+}
+
+// TestHermeticDNSSECNSEC3OptOut pins what an Opt-Out span is worth. Such a
+// span may contain unsigned delegations, so a denial resting on one does
+// not establish that the name is absent — the answer may be served, but it
+// must not be presented as authenticated (RFC 5155 §6, §9.2).
+func TestHermeticDNSSECNSEC3OptOut(t *testing.T) {
+	net := newHermeticNet(t)
+	zone := net.DelegateNSEC3OptOut("optout.test.")
+	zone.Serve(mustRR(t, "host.optout.test. 300 IN A 192.0.2.97"))
+
+	resp := hermeticAsk(t, net.Handler(), "absent.optout.test.", dns.TypeA)
+
+	t.Logf("rcode=%s ad=%v answers=%d", dns.RcodeToString[resp.Rcode],
+		resp.AuthenticatedData, len(resp.Answer))
+
+	if resp.AuthenticatedData {
+		t.Fatal("a denial resting on an Opt-Out span was reported as " +
+			"authenticated; the span may hide an unsigned delegation")
+	}
+}
+
+// TestHermeticDNSSECDenialWithoutCoverageRefused is the negative case the
+// positive ones cannot make: a zone that answers a denial with records that
+// cover nothing. The proof is signed and well formed, so a validator that
+// only checks signatures accepts it — and would then accept a denial for a
+// name that exists. Both denial families are checked, since each is
+// verified by its own code.
+func TestHermeticDNSSECDenialWithoutCoverageRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		delegate func(*hermeticNet, string) *hermeticZone
+	}{
+		{
+			name: "nsec",
+			delegate: func(n *hermeticNet, zone string) *hermeticZone {
+				return n.Delegate(zone)
+			},
+		},
+		{
+			name: "nsec3",
+			delegate: func(n *hermeticNet, zone string) *hermeticZone {
+				return n.DelegateNSEC3(zone)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			net := newHermeticNet(t)
+			zone := tc.delegate(net, "nocover-"+tc.name+".test.")
+			zone.Serve(mustRR(t, "host.nocover-"+tc.name+".test. 300 IN A 192.0.2.98"))
+			zone.WithholdDenialCoverage()
+
+			resp := hermeticAsk(t, net.Handler(),
+				"absent.nocover-"+tc.name+".test.", dns.TypeA)
+
+			if resp.AuthenticatedData {
+				t.Fatal("a denial whose records cover nothing was reported as " +
+					"authenticated")
+			}
+			if resp.Rcode == dns.RcodeNameError {
+				t.Fatalf("rcode = NXDOMAIN: the denial was accepted although " +
+					"nothing in it covers the name")
+			}
+		})
 	}
 }

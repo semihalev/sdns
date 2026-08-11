@@ -162,6 +162,10 @@ type hermeticServer struct {
 	nsec3      bool
 	nsec3Salt  string
 	nsec3Iters uint16
+	// nsec3Flags carries the Opt-Out bit. A span marked Opt-Out may hide an
+	// unsigned delegation, so a denial resting on one proves less than it
+	// appears to (RFC 5155 §6).
+	nsec3Flags uint8
 	queries    map[hermeticRRSetKey]int
 	// silent drops queries instead of answering, which is what a dead
 	// authority looks like from the resolver's side.
@@ -307,10 +311,7 @@ func (s *hermeticServer) rebuildNODATAProofLocked(name string) {
 		}
 	}
 	if s.nsec3 {
-		present = append(present, dns.TypeRRSIG)
-		slices.Sort(present)
-		present = slices.Compact(present)
-		s.nodataProof[name] = s.nsec3ProofLocked(name, present)
+		s.rebuildNSEC3RingLocked()
 		return
 	}
 
@@ -329,33 +330,80 @@ func (s *hermeticServer) rebuildNODATAProofLocked(name string) {
 	s.nodataProof[name] = []dns.RR{nsec, s.key.sign(s.tb, []dns.RR{nsec})}
 }
 
-// nsec3ProofLocked builds the NSEC3 that denies every type but present at
-// name. An NSEC3 speaks about a name by its hash, so the record's owner is
-// that hash placed under the zone rather than the name itself — which is
-// the whole point of NSEC3, and the reason a fixture cannot simply reuse
-// the NSEC shape with a different type number.
-func (s *hermeticServer) nsec3ProofLocked(name string, present []uint16) []dns.RR {
-	owner := dns.HashName(name, dns.SHA1, s.nsec3Iters, s.nsec3Salt)
-
-	nsec3 := &dns.NSEC3{
-		Hdr: dns.RR_Header{
-			Name:   owner + "." + s.zoneName,
-			Rrtype: dns.TypeNSEC3,
-			Class:  dns.ClassINET,
-			Ttl:    3600,
-		},
-		Hash:       dns.SHA1,
-		Flags:      0,
-		Iterations: s.nsec3Iters,
-		SaltLength: uint8(len(s.nsec3Salt) / 2), //nolint:gosec // fixture salt is two octets
-		Salt:       s.nsec3Salt,
-		HashLength: 20,
-		// The interval is irrelevant for a NODATA proof, which matches the
-		// owner exactly; it only has to be a well-formed hash.
-		NextDomain: dns.HashName("zz-last."+s.zoneName, dns.SHA1, s.nsec3Iters, s.nsec3Salt),
-		TypeBitMap: present,
+// rebuildNSEC3RingLocked recomputes the zone's whole NSEC3 chain: one record
+// per name it holds, owners ordered by hash, each naming the next and the
+// last wrapping round to the first.
+//
+// The chain is what makes a denial provable. RFC 5155 §8.4 asks for three
+// things to refuse a name: a record matching the closest encloser, one
+// covering the next closer, and one covering the wildcard at the closest
+// encloser. A ring over the zone's real names supplies all three, because
+// every hash that is not an owner falls inside exactly one interval.
+func (s *hermeticServer) rebuildNSEC3RingLocked() {
+	if s.key == nil || !s.nsec3 {
+		return
 	}
-	return []dns.RR{nsec3, s.key.sign(s.tb, []dns.RR{nsec3})}
+
+	type ringEntry struct {
+		hash string
+		name string
+	}
+	entries := make([]ringEntry, 0, len(s.names))
+	for name := range s.names {
+		entries = append(entries, ringEntry{
+			hash: dns.HashName(name, dns.SHA1, s.nsec3Iters, s.nsec3Salt),
+			name: name,
+		})
+	}
+	if len(entries) == 0 {
+		return
+	}
+	slices.SortFunc(entries, func(a, b ringEntry) int {
+		return strings.Compare(a.hash, b.hash)
+	})
+
+	all := make([]dns.RR, 0, len(entries)*2)
+	s.nodataProof = make(map[string][]dns.RR, len(entries))
+	for i, entry := range entries {
+		nsec3 := &dns.NSEC3{
+			Hdr: dns.RR_Header{
+				Name:   entry.hash + "." + s.zoneName,
+				Rrtype: dns.TypeNSEC3,
+				Class:  dns.ClassINET,
+				Ttl:    3600,
+			},
+			Hash:       dns.SHA1,
+			Flags:      s.nsec3Flags,
+			Iterations: s.nsec3Iters,
+			SaltLength: uint8(len(s.nsec3Salt) / 2), //nolint:gosec // fixture salt is two octets
+			Salt:       s.nsec3Salt,
+			HashLength: 20,
+			NextDomain: entries[(i+1)%len(entries)].hash,
+			TypeBitMap: s.typesAtLocked(entry.name),
+		}
+		set := []dns.RR{nsec3, s.key.sign(s.tb, []dns.RR{nsec3})}
+
+		// The record whose owner is this name's hash is what proves NODATA
+		// at it; the ring as a whole is what proves a denial.
+		s.nodataProof[entry.name] = set
+		all = append(all, set...)
+	}
+	s.nxProof = all
+}
+
+// typesAtLocked lists the types the zone holds at one name, in the ascending
+// order a bitmap is read in. RRSIG is always there because the zone is
+// signed; NSEC3 is not, since those records live at hashed owners of their
+// own and this bitmap describes the original name.
+func (s *hermeticServer) typesAtLocked(name string) []uint16 {
+	present := []uint16{dns.TypeRRSIG}
+	for key := range s.records {
+		if key.name == name {
+			present = append(present, key.qtype)
+		}
+	}
+	slices.Sort(present)
+	return slices.Compact(present)
 }
 
 // silence makes the server stop answering, so the resolver sees an authority
@@ -454,6 +502,42 @@ func (z *hermeticZone) asked(name string, qtype uint16) int {
 
 // Silence stops the zone answering anything further.
 func (z *hermeticZone) Silence() { z.server.silence() }
+
+// WithholdDenialCoverage keeps only the record that matches the zone apex in
+// what a denial carries, dropping the ones whose intervals cover anything
+// else. The result looks like a proof and proves nothing: a validator that
+// accepts it would accept a denial for a name that exists.
+func (z *hermeticZone) WithholdDenialCoverage() {
+	z.tb.Helper()
+
+	z.server.mu.Lock()
+	defer z.server.mu.Unlock()
+
+	if z.server.nsec3 {
+		// The record matching the apex covers a narrow slice of the hash
+		// ring, so keeping only it already withholds coverage of anything
+		// else.
+		apex := z.server.nodataProof[z.name]
+		if len(apex) == 0 {
+			z.tb.Fatalf("%s has no proof at its apex to keep", z.name)
+		}
+		z.server.nxProof = apex
+		return
+	}
+
+	// An NSEC's interval is over names, and the apex record spans the whole
+	// zone — keeping it would still cover everything. This one stops just
+	// after the apex, so it covers almost nothing and certainly not the
+	// names these tests ask about.
+	narrow := &dns.NSEC{
+		Hdr: dns.RR_Header{
+			Name: z.name, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 3600,
+		},
+		NextDomain: "aaa." + z.name,
+		TypeBitMap: []uint16{dns.TypeNS, dns.TypeSOA, dns.TypeRRSIG, dns.TypeNSEC},
+	}
+	z.server.nxProof = []dns.RR{narrow, z.key.sign(z.tb, []dns.RR{narrow})}
+}
 
 // silentAsked reports how many times the zone's silent nameservers were
 // asked for one name. A silent server counts the query before dropping it,
@@ -649,12 +733,19 @@ func (n *hermeticNet) DelegateVia(zone, nsHost string) *hermeticZone {
 // DelegateNSEC3 is Delegate for a zone that denies with hashed names. The
 // two denial families take different paths through the resolver, so a
 // fixture that only ever produces NSEC leaves the NSEC3 one unexercised.
-//
-// NODATA only: a hashed proof that a name does not exist at all needs a
-// closest encloser, a next closer and a wildcard, which this does not
-// build. Such a zone therefore cannot prove an NXDOMAIN, and a query for an
-// absent name under it fails rather than quietly falling back to NSEC.
 func (n *hermeticNet) DelegateNSEC3(zone string) *hermeticZone {
+	return n.delegateNSEC3(zone, 0)
+}
+
+// DelegateNSEC3OptOut is DelegateNSEC3 with the Opt-Out bit set on every
+// record. Such a span may hide an unsigned delegation, so what it denies is
+// not fully established and a validator must not present the answer as
+// authenticated.
+func (n *hermeticNet) DelegateNSEC3OptOut(zone string) *hermeticZone {
+	return n.delegateNSEC3(zone, 1)
+}
+
+func (n *hermeticNet) delegateNSEC3(zone string, flags uint8) *hermeticZone {
 	n.tb.Helper()
 
 	z := n.delegate(zone, true, true, false)
@@ -662,6 +753,7 @@ func (n *hermeticNet) DelegateNSEC3(zone string) *hermeticZone {
 	z.server.nsec3 = true
 	z.server.nsec3Salt = "aabb"
 	z.server.nsec3Iters = 0
+	z.server.nsec3Flags = flags
 	z.server.mu.Unlock()
 
 	// The apex proof was built as NSEC when the zone was created; rebuild
@@ -674,13 +766,10 @@ func (n *hermeticNet) DelegateNSEC3(zone string) *hermeticZone {
 	for _, name := range names {
 		z.server.rebuildNODATAProofLocked(name)
 	}
-	// Drop the NSEC that denies absent names. A hashed NXDOMAIN proof is a
-	// different shape — closest encloser, next closer, wildcard — and is not
-	// built here, so leaving the NSEC one in place would let a test that
-	// believes it is exercising NSEC3 quietly exercise NSEC instead. Without
-	// it an NXDOMAIN from this zone is unprovable and fails, which is the
-	// honest outcome until the hashed proof exists.
-	z.server.nxProof = nil
+	// The NSEC records built when the zone was created describe a chain this
+	// zone no longer has; the ring replaces both the per-name proofs and the
+	// denial set.
+	z.server.rebuildNSEC3RingLocked()
 	z.server.mu.Unlock()
 
 	return z
