@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"net"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -770,9 +771,31 @@ func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *he
 	return z
 }
 
+// workDir gives this namespace a directory of its own.
+//
+// Each namespace generates its own root key, and the resolver persists trust
+// anchors under the working directory: sharing one directory means every run
+// reloads and rewrites the random keys of every run before it, which makes
+// state depend on test order and two test processes write the same file.
+//
+// It is not TempDir, whose cleanup fails the test if anything appears in the
+// directory while it is being removed — and the resolver's trust-anchor
+// upkeep runs in the background, so something does.
+func (n *hermeticNet) workDir() string {
+	n.tb.Helper()
+
+	dir, err := os.MkdirTemp("", "sdns-hermetic-")
+	if err != nil {
+		n.tb.Fatalf("temp dir: %v", err)
+	}
+	n.tb.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // Config returns a resolver configuration anchored on this namespace's root.
 func (n *hermeticNet) Config() *config.Config {
 	cfg := makeTestConfig()
+	cfg.Directory = n.workDir()
 	cfg.RootServers = []string{n.root.addr}
 	cfg.Root6Servers = nil
 	// Zones advertise both families, so the resolver exercises its AAAA

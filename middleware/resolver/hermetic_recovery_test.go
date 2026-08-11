@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,10 +21,10 @@ import (
 // have stopped answering, so there would be nothing to recover with — and
 // the refresh, having nowhere to go, would never be exercised.
 func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
-	net := newHermeticNet(t)
+	world := newHermeticNet(t)
 
-	helper := net.Delegate("helper.test.")
-	shop := net.DelegateVia("shop.test.", "ns1.helper.test.")
+	helper := world.Delegate("helper.test.")
+	shop := world.DelegateVia("shop.test.", "ns1.helper.test.")
 	shop.Serve(mustRR(t, "www.shop.test. 300 IN A 192.0.2.60"))
 
 	// The nameserver's address is published by the other zone, and points
@@ -32,9 +33,9 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 
 	// The recovery is reached by failing against the stale address first,
 	// so the per-server budget is what this test spends its time on.
-	cfg := net.Config()
+	cfg := world.Config()
 	cfg.Timeout.Duration = 200 * time.Millisecond
-	r := net.handlerWithConfig(cfg).resolver
+	r := world.handlerWithConfig(cfg).resolver
 
 	resp, err := hermeticResolve(t, r, "www.shop.test.", dns.TypeA)
 	assert.NoError(t, err)
@@ -72,9 +73,23 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 		assert.Equal(t, []string{"192.0.2.60"}, addresses)
 	}
 
-	// The refresh is the point, and this is what it looks like from
-	// outside: the resolver went and asked where the nameserver lives
-	// rather than continuing to fail against the address it had.
+	// The refresh is the point, and it shows in two places: the resolver
+	// went and asked where the nameserver lives, and the address it found
+	// is now among the ones it will use. The stale entry stays — the
+	// refresh adds what works rather than pruning what does not — so this
+	// asks whether the working address is present, not whether the dead one
+	// is gone.
 	assert.Greater(t, helper.asked("ns1.helper.test.", dns.TypeA), lookupsBefore,
 		"the nameserver's address was never looked up again, so nothing was refreshed")
+
+	working := net.JoinHostPort(shop.glue.String(), "53")
+	after := r.searchCache(question, false, "www.shop.test.")
+	if assert.NotNil(t, after.servers) {
+		addrs := make([]string, 0, len(after.servers.List))
+		for _, server := range after.servers.List {
+			addrs = append(addrs, server.Addr)
+		}
+		assert.Contains(t, addrs, working,
+			"the refreshed delegation does not carry the address that answers")
+	}
 }
