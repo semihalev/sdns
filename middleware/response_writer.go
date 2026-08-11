@@ -24,6 +24,7 @@ type ResponseWriter interface {
 type responseWriter struct {
 	dns.ResponseWriter
 	msg      *dns.Msg
+	wire     []byte
 	size     int
 	rcode    int
 	proto    string
@@ -42,14 +43,11 @@ var errAlreadyWritten = errors.New("msg already written")
 // net.IP.String and allocates ~32 bytes per query.
 var internalIP = net.IPv4(127, 0, 0, 255)
 
-func (w *responseWriter) Msg() *dns.Msg {
-	return w.msg
-}
-
 func (w *responseWriter) Reset(rw dns.ResponseWriter) {
 	w.ResponseWriter = rw
 	w.size = -1
 	w.msg = nil
+	w.wire = nil
 	w.rcode = dns.RcodeSuccess
 	w.proto = ""
 	w.remoteip = nil
@@ -115,7 +113,13 @@ func (w *responseWriter) Write(m []byte) (int, error) {
 	w.rcode = w.msg.Rcode
 
 	n, err := w.ResponseWriter.Write(m)
-	w.size = n
+	// Record the DNS payload's own length, not the transport's return
+	// value: stream transports prepend a two-byte length prefix and count
+	// it, which would overstate every TCP and DoQ response. Measuring the
+	// decoded message instead would overstate compressed ones, because
+	// Unpack does not restore the Compress flag. The caller owns m, so only
+	// its length is kept.
+	w.size = len(m)
 	return n, err
 }
 

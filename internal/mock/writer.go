@@ -13,7 +13,8 @@ var internalIP = net.IPv4(127, 0, 0, 255)
 
 // Writer type.
 type Writer struct {
-	msg *dns.Msg
+	msg  *dns.Msg
+	size int
 
 	proto string
 
@@ -78,13 +79,27 @@ func (w *Writer) Write(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	w.size = len(b)
 	return len(b), nil
 }
 
 // (*Writer).WriteMsg writeMsg func.
 func (w *Writer) WriteMsg(msg *dns.Msg) error {
 	w.msg = msg
+	w.size = 0
 	return nil
+}
+
+// (*Writer).Size reports the response's wire length: exact for a raw
+// write, computed from the message otherwise.
+func (w *Writer) Size() int {
+	if w.size > 0 {
+		return w.size
+	}
+	if w.msg != nil {
+		return w.msg.Len()
+	}
+	return 0
 }
 
 // (*Writer).Written written func.

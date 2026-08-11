@@ -51,22 +51,26 @@ func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	w := ch.Writer
 
-	if a.logFile != nil && w.Written() && !w.Internal() {
-		resp := w.Msg()
-
+	if a.logFile != nil && w.Written() && !w.Internal() && len(ch.Request.Question) > 0 {
+		// Read the log's facts from the request and the writer rather than
+		// from a parsed response: a response served as bytes would have to
+		// be decoded just to be logged, and a message decoded from bytes
+		// reports an inflated length because Unpack does not restore
+		// Compress. A reply's CD is the request's (RFC 1035 §4.1.1), and
+		// its question is the one asked.
 		cd := "-cd"
-		if resp.CheckingDisabled {
+		if ch.Request.CheckingDisabled {
 			cd = "+cd"
 		}
 
 		record := []string{
 			w.RemoteIP().String() + " -",
 			"[" + time.Now().Format("02/Jan/2006:15:04:05 -0700") + "]",
-			formatQuestion(resp.Question[0]),
+			formatQuestion(ch.Request.Question[0]),
 			w.Proto(),
 			cd,
-			dns.RcodeToString[resp.Rcode],
-			strconv.Itoa(resp.Len()),
+			dns.RcodeToString[w.Rcode()],
+			strconv.Itoa(middleware.ResponseSize(w)),
 		}
 
 		_, err := a.logFile.WriteString(strings.Join(record, " ") + "\n")

@@ -268,25 +268,38 @@ func stripECS(opts []dns.EDNS0) []dns.EDNS0 {
 }
 
 func (w *ResponseWriter) setCookie() {
-	if w.cookie == "" {
-		return
+	if option, ok := w.cookieOption(); ok {
+		w.opt.Option = append(w.opt.Option, option)
 	}
+}
 
-	w.opt.Option = append(w.opt.Option, &dns.EDNS0_COOKIE{
+// cookieOption builds the per-client server cookie without mutating any
+// writer state, so the wire path can compose an OPT and still fall back to
+// the Msg path without double-appending.
+func (w *ResponseWriter) cookieOption() (dns.EDNS0, bool) {
+	if w.cookie == "" {
+		return nil, false
+	}
+	return &dns.EDNS0_COOKIE{
 		Code:   dns.EDNS0COOKIE,
 		Cookie: dnsutil.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
-	})
+	}, true
 }
 
 func (w *ResponseWriter) setNSID() {
-	if w.nsidstr == "" || !w.nsid {
-		return
+	if option, ok := w.nsidOption(); ok {
+		w.opt.Option = append(w.opt.Option, option)
 	}
+}
 
-	w.opt.Option = append(w.opt.Option, &dns.EDNS0_NSID{
+func (w *ResponseWriter) nsidOption() (dns.EDNS0, bool) {
+	if w.nsidstr == "" || !w.nsid {
+		return nil, false
+	}
+	return &dns.EDNS0_NSID{
 		Code: dns.EDNS0NSID,
 		Nsid: hex.EncodeToString([]byte(w.nsidstr)),
-	})
+	}, true
 }
 
 const name = "edns"

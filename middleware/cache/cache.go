@@ -1010,6 +1010,34 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		}
 	}
 
+	// Byte fast path: serve the stored wire directly. The entry-local gate
+	// runs first, then the writer chain's preflight — both allocation-free
+	// and together complete, so a request bound for the Msg path never
+	// builds a body nor makes the chain compose anything.
+	if !w.Internal() && entry.wireEligibleFor(req) {
+		if ww, ok := w.(middleware.WireWriter); ok {
+			if capability, ready := ww.WireReady(); ready &&
+				entry.wireFitsChain(capability) {
+				if body, info, built := entry.serveWire(req, capability.Reserve); built {
+					switch err := ww.WriteWire(body, info); {
+					case err == nil:
+						wireFastServed.Inc()
+						ch.Cancel()
+						return true
+					case errors.Is(err, middleware.ErrWireFallback):
+						wireFastFallback.Inc()
+						// fall through to the Msg path below
+					default:
+						// Transport-level failure after commit — mirror the
+						// Msg path's ignored WriteMsg error.
+						ch.Cancel()
+						return true
+					}
+				}
+			}
+		}
+	}
+
 	// Build response from cache
 	msg := entry.ToMsg(req)
 	if msg == nil {

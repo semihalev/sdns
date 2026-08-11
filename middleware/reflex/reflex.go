@@ -240,6 +240,13 @@ type responseWriter struct {
 	ip      string
 }
 
+// Size forwards the response's wire length from the writer beneath. The
+// embedded interface deliberately does not carry Size, so a wrapper has to
+// pass it along or observers above fall back to decoding the response.
+func (w *responseWriter) Size() int {
+	return middleware.ResponseSize(w.ResponseWriter)
+}
+
 func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 	// Record response size for amplification tracking
 	if res != nil {
