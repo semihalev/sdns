@@ -45,9 +45,10 @@ func Test_Failover(t *testing.T) {
 	// time out — and dependent on Google answering for example.com.
 	answering, _, stop := startFailoverRcodeServer(t, dns.RcodeSuccess)
 	defer stop()
+	vacant := vacantLoopbackAddr(t)
 
 	cfg := new(config.Config)
-	cfg.FallbackServers = []string{"127.0.0.1:1", answering, "1"}
+	cfg.FallbackServers = []string{vacant, answering, "1"}
 
 	middleware.Register("failover", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
@@ -88,7 +89,7 @@ func Test_Failover(t *testing.T) {
 
 	// A refused port rather than a black hole: the assertion is that an
 	// unusable fallback yields SERVFAIL, not that we can wait out a timeout.
-	f.servers = []string{"127.0.0.1:1"}
+	f.servers = []string{vacant}
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
@@ -707,4 +708,21 @@ func startFailoverServer(t *testing.T, mismatchQuestion bool) (
 	go func() { _ = server.ActivateAndServe() }()
 
 	return packet.LocalAddr().String(), calls, func() { _ = server.Shutdown() }
+}
+
+// vacantLoopbackAddr returns a loopback address this test just held and
+// released. Nothing else on the host can be listening there, which a low
+// port number only assumes.
+func vacantLoopbackAddr(t *testing.T) string {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	addr := pc.LocalAddr().String()
+	if err := pc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return addr
 }

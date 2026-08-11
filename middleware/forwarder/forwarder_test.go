@@ -119,7 +119,7 @@ func Test_Forwarder(t *testing.T) {
 	// The bad entry is a closed loopback port rather than a black-holed
 	// address: both fail, but one fails now and the other only after a
 	// timeout, and this test is about the failover, not the wait.
-	cfg.ForwarderServers = []string{"127.0.0.1:1", udpAddr, "1", "tls://" + tlsAddr}
+	cfg.ForwarderServers = []string{vacantLoopbackAddr(t), udpAddr, "1", "tls://" + tlsAddr}
 
 	middleware.Register("forwarder", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
@@ -161,7 +161,7 @@ func Test_Forwarder(t *testing.T) {
 
 	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
 
-	srv := &server{Addr: "127.0.0.1:1", Proto: "udp"}
+	srv := &server{Addr: vacantLoopbackAddr(t), Proto: "udp"}
 	f.servers = []*server{srv}
 
 	ch.Reset(mw, req)
@@ -678,4 +678,21 @@ func startTruncatingForwarderServers(t *testing.T) (
 		_ = udpServer.Shutdown()
 		_ = tcpServer.Shutdown()
 	}
+}
+
+// vacantLoopbackAddr returns a loopback address this test just held and
+// released. Nothing else on the host can be listening there, which a low
+// port number only assumes.
+func vacantLoopbackAddr(t *testing.T) string {
+	t.Helper()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	addr := pc.LocalAddr().String()
+	if err := pc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return addr
 }

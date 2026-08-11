@@ -413,8 +413,19 @@ func TestIPv6NetworkProbe(t *testing.T) {
 	}
 
 	// Nothing listening: the probe has to report that, not decide the
-	// network is fine.
-	ipv6ProbeServer = "127.0.0.1:1"
+	// network is fine. The address is one this test just held and released,
+	// rather than a low port assumed to be free — nothing else on the host
+	// can be answering on it.
+	vacant, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	vacantAddr := vacant.LocalAddr().String()
+	if err := vacant.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	ipv6ProbeServer = vacantAddr
 	if err := testIPv6Network(); err == nil {
 		t.Fatal("an unreachable server must fail the probe")
 	}
