@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"context"
 	"crypto"
 	"net"
 	"slices"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // A signed DNS namespace served from loopback, so that resolution — including
@@ -163,6 +165,10 @@ type hermeticServer struct {
 	// silent drops queries instead of answering, which is what a dead
 	// authority looks like from the resolver's side.
 	silent bool
+	// beforeReply, when set, runs before this server answers. It lets a
+	// test hold one server's reply until something else has happened —
+	// the only way to observe whether two servers were asked at once.
+	beforeReply func(dns.Question)
 
 	addr string
 	stop func()
@@ -195,11 +201,14 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 		q := r.Question[0]
 
 		s.mu.Lock()
+		// Count first: a silent server still received the query, and
+		// whether it did is exactly what tells a fan-out from one server
+		// answering on its own.
+		s.queries[hermeticRRSetKey{q.Name, q.Qtype}]++
 		if s.silent {
 			s.mu.Unlock()
 			return
 		}
-		s.queries[hermeticRRSetKey{q.Name, q.Qtype}]++
 		rrs, known := s.records[hermeticRRSetKey{q.Name, q.Qtype}]
 		nameExists := s.names[q.Name]
 		proof := s.proofs[hermeticRRSetKey{q.Name, q.Qtype}]
@@ -217,7 +226,12 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 				break
 			}
 		}
+		beforeReply := s.beforeReply
 		s.mu.Unlock()
+
+		if beforeReply != nil {
+			beforeReply(q)
+		}
 
 		reply := new(dns.Msg)
 		reply.SetReply(r)
@@ -440,6 +454,31 @@ func (z *hermeticZone) asked(name string, qtype uint16) int {
 // Silence stops the zone answering anything further.
 func (z *hermeticZone) Silence() { z.server.silence() }
 
+// silentAsked reports how many times the zone's silent nameservers were
+// asked for one name. A silent server counts the query before dropping it,
+// so this is how a test can tell that a second server was contacted.
+func (z *hermeticZone) silentAsked(name string, qtype uint16) int {
+	total := 0
+	for _, extra := range z.extra {
+		total += extra.server.asked(name, qtype)
+	}
+	return total
+}
+
+// HoldUntil makes the zone's primary nameserver wait for cond before it
+// answers, up to a bound. A test uses it to keep the fast server quiet
+// until a slower path has been observed.
+func (z *hermeticZone) HoldUntil(cond func() bool, limit time.Duration) {
+	z.server.mu.Lock()
+	defer z.server.mu.Unlock()
+	z.server.beforeReply = func(dns.Question) {
+		deadline := time.Now().Add(limit)
+		for !cond() && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 // AddSilentAuthority gives the zone a second nameserver that never replies.
 // A zone served by one address cannot exercise the resolver's parallel
 // server path at all: there is nothing to race, and an answer carrying two
@@ -574,6 +613,36 @@ func newHermeticNet(tb testing.TB) *hermeticNet {
 // so an answer from it validates all the way to the anchor.
 func (n *hermeticNet) Delegate(zone string) *hermeticZone {
 	return n.delegate(zone, true, true, false)
+}
+
+// DelegateVia is Delegate for a zone whose nameserver is named in some
+// other zone. The parent then has no glue to offer — an address record for
+// a name it is not authoritative for would be ignored — so the resolver has
+// to look the nameserver up before it can reach the child at all. That is
+// also the only way the address can later be refreshed: a nameserver named
+// inside its own zone can only be found through the very servers that have
+// stopped working.
+func (n *hermeticNet) DelegateVia(zone, nsHost string) *hermeticZone {
+	n.tb.Helper()
+
+	z := n.delegate(zone, true, true, false)
+
+	zone = dns.Fqdn(zone)
+	ns := &dns.NS{
+		Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 3600},
+		Ns:  dns.Fqdn(nsHost),
+	}
+
+	n.root.mu.Lock()
+	referral := n.root.children[zone]
+	// Replace the in-zone nameserver and its glue outright: leaving them
+	// would give the resolver a working address and the lookup would never
+	// happen.
+	referral.ns = append([]dns.RR{ns}, referral.ns[1:]...)
+	referral.extra = nil
+	n.root.mu.Unlock()
+
+	return z
 }
 
 // DelegateNSEC3 is Delegate for a zone that denies with hashed names. The
@@ -756,5 +825,26 @@ func (n *hermeticNet) handlerWithConfig(cfg *config.Config) *DNSHandler {
 	}
 	handler.resolver.resolveTarget.Store(&mapper)
 
+	// A resolver asks itself things: where a nameserver lives, most of all.
+	// Without somewhere to send those sub-queries it cannot look a
+	// nameserver up, so every path that refreshes addresses is unreachable
+	// and a delegation whose glue has gone stale can never recover.
+	var queryer middleware.Queryer = hermeticQueryer{handler: handler}
+	handler.resolver.queryer.Store(&queryer)
+
 	return handler
+}
+
+// hermeticQueryer answers a resolver's internal sub-queries from the same
+// namespace the resolver itself is pointed at.
+type hermeticQueryer struct {
+	handler *DNSHandler
+}
+
+func (q hermeticQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	resp := q.handler.handle(ctx, req)
+	if resp == nil {
+		return nil, middleware.ErrNoResponse
+	}
+	return resp, nil
 }

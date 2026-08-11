@@ -25,6 +25,14 @@ func TestParallelLookupIntegration(t *testing.T) {
 	// pick a winner rather than simply talk to the only address it has.
 	zone.AddSilentAuthority(net)
 
+	// Hold the answering nameserver until the silent one has been asked.
+	// Without this the fast server answers first and the second address is
+	// never tried, so the test would pass against a resolver that queries
+	// one server at a time — removing this line makes it fail.
+	zone.HoldUntil(func() bool {
+		return zone.silentAsked("www.parallel.test.", dns.TypeA) > 0
+	}, 3*time.Second)
+
 	cfg := net.Config()
 	cfg.QnameMinLevel = 0 // resolve the full name at each step
 	// A per-server budget long enough that waiting one out is unmistakable.
@@ -45,17 +53,15 @@ func TestParallelLookupIntegration(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 
-	// The zone has two nameservers, one of which never replies, and the
-	// answer still arrives without waiting out its budget.
-	//
-	// This does not demonstrate that the two were queried at once, and it
-	// should not pretend to: measurement shows the silent nameserver is
-	// never contacted at all for this query, so the resolver picks one
-	// server and consults another only when the first disappoints it. What
-	// is pinned here is that a dead nameserver among the live ones costs
-	// nothing — which is what the assertion above about elapsed time means.
+	// Both assertions together are what a serial implementation cannot
+	// satisfy. The answering nameserver was held until the silent one had
+	// been contacted, so an answer arriving at all means the two were in
+	// flight together; and it arrived well inside the budget, so nothing
+	// waited the silent one out first.
+	assert.Greater(t, zone.silentAsked("www.parallel.test.", dns.TypeA), 0,
+		"the second nameserver was never contacted, so nothing was raced")
 	assert.Less(t, elapsed, cfg.Timeout.Duration,
-		"a dead second nameserver delayed an answer the first could give")
+		"the answer arrived only after the silent nameserver's budget expired")
 
 	addresses := []string{}
 	for _, answer := range resp.Answer {
