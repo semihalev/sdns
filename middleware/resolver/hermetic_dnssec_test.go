@@ -154,6 +154,30 @@ func TestHermeticDNSSECWrongDSFailsClosed(t *testing.T) {
 	}
 }
 
+// TestHermeticDNSSECNSEC3NODATA covers the hashed-denial path. NSEC and
+// NSEC3 are verified by different code in the resolver, so a fixture that
+// only ever produces NSEC leaves the other branch untouched — which is what
+// the removed Test_resolverNSEC3nodata used a third-party zone for.
+func TestHermeticDNSSECNSEC3NODATA(t *testing.T) {
+	net := newHermeticNet(t)
+	zone := net.DelegateNSEC3("hashed.test.")
+	zone.Serve(mustRR(t, "host.hashed.test. 300 IN A 192.0.2.95"))
+
+	resp := hermeticAsk(t, net.Handler(), "host.hashed.test.", dns.TypeAAAA)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s, want NOERROR: a name without the queried type "+
+			"is NODATA", dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) != 0 {
+		t.Fatalf("NODATA carries %d answers", len(resp.Answer))
+	}
+	if !resp.AuthenticatedData {
+		t.Fatal("a signed NSEC3 denial must come back authenticated; AD=0 " +
+			"means the proof was not verified")
+	}
+}
+
 // TestHermeticDNSSECInsecureDelegation pins the other half of fail-closed:
 // a zone with no DS at the cut is unsigned, not broken, so its answers are
 // served — just not authenticated.

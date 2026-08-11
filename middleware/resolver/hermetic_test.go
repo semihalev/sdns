@@ -138,7 +138,14 @@ type hermeticServer struct {
 	nodataProof map[string][]dns.RR
 	key         *hermeticKey
 	tb          testing.TB
-	queries     map[hermeticRRSetKey]int
+	// zoneName, and the NSEC3 parameters when the zone uses hashed denial,
+	// are needed to name a proof record: an NSEC3's owner is the hash of
+	// the name it speaks for, placed under the zone.
+	zoneName   string
+	nsec3      bool
+	nsec3Salt  string
+	nsec3Iters uint16
+	queries    map[hermeticRRSetKey]int
 	// silent drops queries instead of answering, which is what a dead
 	// authority looks like from the resolver's side.
 	silent bool
@@ -270,6 +277,14 @@ func (s *hermeticServer) rebuildNODATAProofLocked(name string) {
 			present = append(present, key.qtype)
 		}
 	}
+	if s.nsec3 {
+		present = append(present, dns.TypeRRSIG)
+		slices.Sort(present)
+		present = slices.Compact(present)
+		s.nodataProof[name] = s.nsec3ProofLocked(name, present)
+		return
+	}
+
 	present = append(present, dns.TypeRRSIG, dns.TypeNSEC)
 	slices.Sort(present)
 	present = slices.Compact(present)
@@ -283,6 +298,35 @@ func (s *hermeticServer) rebuildNODATAProofLocked(name string) {
 		TypeBitMap: present,
 	}
 	s.nodataProof[name] = []dns.RR{nsec, s.key.sign(s.tb, []dns.RR{nsec})}
+}
+
+// nsec3ProofLocked builds the NSEC3 that denies every type but present at
+// name. An NSEC3 speaks about a name by its hash, so the record's owner is
+// that hash placed under the zone rather than the name itself — which is
+// the whole point of NSEC3, and the reason a fixture cannot simply reuse
+// the NSEC shape with a different type number.
+func (s *hermeticServer) nsec3ProofLocked(name string, present []uint16) []dns.RR {
+	owner := dns.HashName(name, dns.SHA1, s.nsec3Iters, s.nsec3Salt)
+
+	nsec3 := &dns.NSEC3{
+		Hdr: dns.RR_Header{
+			Name:   owner + "." + s.zoneName,
+			Rrtype: dns.TypeNSEC3,
+			Class:  dns.ClassINET,
+			Ttl:    3600,
+		},
+		Hash:       dns.SHA1,
+		Flags:      0,
+		Iterations: s.nsec3Iters,
+		SaltLength: uint8(len(s.nsec3Salt) / 2), //nolint:gosec // fixture salt is two octets
+		Salt:       s.nsec3Salt,
+		HashLength: 20,
+		// The interval is irrelevant for a NODATA proof, which matches the
+		// owner exactly; it only has to be a well-formed hash.
+		NextDomain: dns.HashName("zz-last."+s.zoneName, dns.SHA1, s.nsec3Iters, s.nsec3Salt),
+		TypeBitMap: present,
+	}
+	return []dns.RR{nsec3, s.key.sign(s.tb, []dns.RR{nsec3})}
 }
 
 // silence makes the server stop answering, so the resolver sees an authority
@@ -428,6 +472,7 @@ func signedSOA(tb testing.TB, server *hermeticServer, zone string, key *hermetic
 	if key != nil {
 		server.mu.Lock()
 		server.key = key
+		server.zoneName = zone
 		server.mu.Unlock()
 	}
 	server.serve(zone, dns.TypeSOA, set...)
@@ -510,6 +555,34 @@ func newHermeticNet(tb testing.TB) *hermeticNet {
 // so an answer from it validates all the way to the anchor.
 func (n *hermeticNet) Delegate(zone string) *hermeticZone {
 	return n.delegate(zone, true, true, false)
+}
+
+// DelegateNSEC3 is Delegate for a zone that denies with hashed names. The
+// two denial families take different paths through the resolver, so a
+// fixture that only ever produces NSEC leaves the NSEC3 one unexercised.
+func (n *hermeticNet) DelegateNSEC3(zone string) *hermeticZone {
+	n.tb.Helper()
+
+	z := n.delegate(zone, true, true, false)
+	z.server.mu.Lock()
+	z.server.nsec3 = true
+	z.server.nsec3Salt = "aabb"
+	z.server.nsec3Iters = 0
+	z.server.mu.Unlock()
+
+	// The apex proof was built as NSEC when the zone was created; rebuild
+	// everything published so far in the hashed form.
+	z.server.mu.Lock()
+	names := make([]string, 0, len(z.server.names))
+	for name := range z.server.names {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		z.server.rebuildNODATAProofLocked(name)
+	}
+	z.server.mu.Unlock()
+
+	return z
 }
 
 // DelegateInsecure creates a child zone with no DS at the cut. The resolver
