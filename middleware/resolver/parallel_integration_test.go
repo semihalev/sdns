@@ -27,6 +27,8 @@ func TestParallelLookupIntegration(t *testing.T) {
 
 	cfg := net.Config()
 	cfg.QnameMinLevel = 0 // resolve the full name at each step
+	// A per-server budget long enough that waiting one out is unmistakable.
+	cfg.Timeout.Duration = 2 * time.Second
 	r := net.handlerWithConfig(cfg).resolver
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -36,10 +38,24 @@ func TestParallelLookupIntegration(t *testing.T) {
 	req.SetQuestion("www.parallel.test.", dns.TypeA)
 	req.SetEdns0(4096, true)
 
+	start := time.Now()
 	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
+	elapsed := time.Since(start)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
+
+	// The zone has two nameservers, one of which never replies, and the
+	// answer still arrives without waiting out its budget.
+	//
+	// This does not demonstrate that the two were queried at once, and it
+	// should not pretend to: measurement shows the silent nameserver is
+	// never contacted at all for this query, so the resolver picks one
+	// server and consults another only when the first disappoints it. What
+	// is pinned here is that a dead nameserver among the live ones costs
+	// nothing — which is what the assertion above about elapsed time means.
+	assert.Less(t, elapsed, cfg.Timeout.Duration,
+		"a dead second nameserver delayed an answer the first could give")
 
 	addresses := []string{}
 	for _, answer := range resp.Answer {

@@ -43,6 +43,27 @@ func TestHermeticDNSSECSecure(t *testing.T) {
 	}
 }
 
+// TestHermeticDNSSECZoneApex asks the child's own apex. The name sits on
+// the cut, so the parent must refer it rather than answer for it — the DS
+// is the only record there the parent legitimately holds.
+func TestHermeticDNSSECZoneApex(t *testing.T) {
+	net := newHermeticNet(t)
+	zone := net.Delegate("apex.test.")
+	zone.Serve(mustRR(t, "apex.test. 300 IN A 192.0.2.90"))
+
+	resp := hermeticAsk(t, net.Handler(), "apex.test.", dns.TypeA)
+
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %s, want NOERROR", dns.RcodeToString[resp.Rcode])
+	}
+	if !resp.AuthenticatedData {
+		t.Fatal("the apex answer came back unauthenticated")
+	}
+	if zone.asked("apex.test.", dns.TypeA) == 0 {
+		t.Fatal("the apex query never reached the zone that owns it")
+	}
+}
+
 // TestHermeticDNSSECBogusFailsClosed restores at the handler level what a
 // live "signed zone, missing signatures" probe used to cover: the answer is
 // refused, nothing is served, and the response carries an EDE saying why.

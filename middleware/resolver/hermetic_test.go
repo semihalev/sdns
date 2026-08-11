@@ -25,11 +25,15 @@ import (
 //   - Each zone needs its own socket. The root and the child are asked the
 //     same question — one to delegate it, the other to answer it — and a
 //     single socket could not tell those apart.
-//   - A child's address is seeded into the delegation cache rather than
-//     carried as glue. Glue is an A/AAAA record, so its address always means
-//     port 53, which a test cannot bind. The DS still travels in the referral
-//     and is still validated against the parent, so seeding supplies the
-//     address only — never the trust.
+//   - Glue is remapped rather than seeded. A glue address always means port
+//     53, which a test cannot bind, so zones advertise TEST-NET-1 addresses
+//     and the resolver is told to dial the loopback socket serving each one.
+//     Seeding the delegation cache instead would hand the resolver a child
+//     it already knows, and the referral — with the DS inside it — would
+//     never be processed or checked against the parent.
+//   - Denials carry proof. A signed zone answers NODATA and NXDOMAIN with a
+//     signed SOA and an NSEC, because a validator cannot tell a denial from
+//     a stripped answer without one, and correctly refuses.
 
 type hermeticKey struct {
 	key  *dns.DNSKEY
@@ -181,9 +185,13 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 		soaProof := s.soaProof
 		nxProof := s.nxProof
 		nodataProof := s.nodataProof[q.Name]
+		// The zone cut itself is below the cut too: a query for the child's
+		// apex belongs to the child, not the parent. Only the records the
+		// parent genuinely holds there — the DS — are answered here, and the
+		// switch below reaches those first.
 		var referral *hermeticReferral
 		for zone, delegation := range s.children {
-			if q.Name != zone && dns.IsSubDomain(zone, q.Name) {
+			if dns.IsSubDomain(zone, q.Name) {
 				referral = delegation
 				break
 			}
@@ -196,6 +204,13 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 		case known:
 			reply.Authoritative = true
 			reply.Answer = append(reply.Answer, rrs...)
+		case proof != nil:
+			// A fact the parent holds about the cut — that there is no DS
+			// here, say. It has to be answered rather than referred, or the
+			// denial the child cannot make for itself never gets made.
+			reply.Authoritative = true
+			reply.Ns = append(reply.Ns, soaProof...)
+			reply.Ns = append(reply.Ns, proof...)
 		case referral != nil:
 			// A referral names the child's servers and carries their
 			// addresses as glue, which is how the resolver reaches them —
@@ -205,12 +220,6 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 			reply.Authoritative = false
 			reply.Ns = append(reply.Ns, referral.ns...)
 			reply.Extra = append(reply.Extra, referral.extra...)
-		case proof != nil:
-			// The name is there, the type is not, and here is the signed
-			// proof of it.
-			reply.Authoritative = true
-			reply.Ns = append(reply.Ns, soaProof...)
-			reply.Ns = append(reply.Ns, proof...)
 		case nameExists:
 			// NODATA: the name is there, this type is not, and the NSEC
 			// listing what the name does hold is what proves it.
