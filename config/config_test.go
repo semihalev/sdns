@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -378,6 +380,43 @@ func TestGenerateConfig(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestIPv6NetworkProbe covers the probe itself against a server it can
+// reach, and against one that is not listening. The test this replaces
+// called the real probe, waited two seconds for a root server, and then
+// discarded the result — so the function was "covered" without anything
+// being established about it.
+func TestIPv6NetworkProbe(t *testing.T) {
+	original := ipv6ProbeServer
+	defer func() { ipv6ProbeServer = original }()
+
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	mux := dns.NewServeMux()
+	mux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
+		reply := new(dns.Msg)
+		reply.SetReply(r)
+		_ = w.WriteMsg(reply)
+	})
+	server := &dns.Server{Net: "udp", PacketConn: pc, Handler: mux}
+	go func() { _ = server.ActivateAndServe() }()
+	defer func() { _ = server.Shutdown() }()
+	time.Sleep(10 * time.Millisecond)
+
+	ipv6ProbeServer = pc.LocalAddr().String()
+	if err := testIPv6Network(); err != nil {
+		t.Fatalf("a reachable server must satisfy the probe: %v", err)
+	}
+
+	// Nothing listening: the probe has to report that, not decide the
+	// network is fine.
+	ipv6ProbeServer = "127.0.0.1:1"
+	if err := testIPv6Network(); err == nil {
+		t.Fatal("an unreachable server must fail the probe")
 	}
 }
 

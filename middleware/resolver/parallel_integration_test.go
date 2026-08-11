@@ -21,6 +21,9 @@ func TestParallelLookupIntegration(t *testing.T) {
 		mustRR(t, "www.parallel.test. 300 IN A 192.0.2.71"),
 		mustRR(t, "www.parallel.test. 300 IN A 192.0.2.72"),
 	)
+	// Two nameservers, one of which never replies, so the lookup has to
+	// pick a winner rather than simply talk to the only address it has.
+	zone.AddSilentAuthority(net)
 
 	cfg := net.Config()
 	cfg.QnameMinLevel = 0 // resolve the full name at each step
