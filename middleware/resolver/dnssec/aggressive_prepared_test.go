@@ -192,6 +192,57 @@ func TestPrepareAggressiveNSECRejectsNonNSEC(t *testing.T) {
 	}
 }
 
+// TestPrepareAggressiveNSECSizesItsBuffers pins what makes the prepared
+// form safe to retain. Canonicalization packs into a 255-octet scratch
+// buffer and keeps a view of it, which is free for a name used and dropped
+// inside one evaluation — but a cache entry holds its names for as long as
+// the record lives, and the cache's byte budget does not see them. Sized
+// down, an entry retains its names rather than two 255-octet buffers.
+func TestPrepareAggressiveNSECSizesItsBuffers(t *testing.T) {
+	prepared, err := PrepareAggressiveNSEC(
+		nsecRecord("a.example.com.", "c.example.com.", dns.TypeA))
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	for _, held := range []struct {
+		what string
+		name aggressiveCanonicalName
+	}{
+		{"owner", prepared.entry.owner},
+		{"next", prepared.entry.next},
+	} {
+		if cap(held.name.wire) != len(held.name.wire) {
+			t.Errorf("%s retains a %d-octet buffer for a %d-octet name",
+				held.what, cap(held.name.wire), len(held.name.wire))
+		}
+		if cap(held.name.labels) != len(held.name.labels) {
+			t.Errorf("%s retains room for %d labels but has %d",
+				held.what, cap(held.name.labels), len(held.name.labels))
+		}
+	}
+
+	// Sizing down must not disturb what the name means: the wire form backs
+	// equality, and the label views back the zone and ordering comparisons.
+	direct, err := newAggressiveCanonicalName("a.example.com.")
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+	zone, err := newAggressiveCanonicalName("example.com.")
+	if err != nil {
+		t.Fatalf("canonicalize zone: %v", err)
+	}
+	if !prepared.entry.owner.equal(direct) {
+		t.Fatal("compacted owner is not equal to the same name canonicalized directly")
+	}
+	if !prepared.entry.owner.isSubdomainOf(zone) {
+		t.Fatal("compacted owner lost its label views")
+	}
+	if prepared.entry.owner.compare(direct) != 0 {
+		t.Fatal("compacted owner orders differently from the same name")
+	}
+}
+
 // TestPrepareAggressiveNSECIsAllocatedOnce pins the point of the whole
 // exercise: evaluating prepared records must not re-canonicalize, which
 // shows up as a materially smaller allocation count per evaluation.

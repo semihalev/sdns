@@ -70,8 +70,14 @@ func PrepareAggressiveNSEC(rr *dns.NSEC) (PreparedNSEC, error) {
 	if err != nil {
 		return PreparedNSEC{}, err
 	}
+	// These are held for the record's whole time in the cache, so they are
+	// sized down rather than left as views into a 255-octet scratch buffer.
 	return PreparedNSEC{
-		entry: aggressiveNSECEntry{rr: rr, owner: owner, next: next},
+		entry: aggressiveNSECEntry{
+			rr:    rr,
+			owner: owner.compact(),
+			next:  next.compact(),
+		},
 	}, nil
 }
 
@@ -388,6 +394,29 @@ func newAggressiveCanonicalNameFromLabels(labels [][]byte) aggressiveCanonicalNa
 	}
 	wire = append(wire, 0)
 	return aggressiveCanonicalName{labels: copiedLabels, wire: wire}
+}
+
+// compact returns an equivalent name sized to what it holds. Construction
+// packs into a fixed 255-octet buffer and keeps a view of it, which costs
+// nothing for a name built and dropped inside one evaluation but retains
+// the whole buffer — and a label header array sized for eight labels — for
+// a name kept in a cache entry. Only retained names pay the copy.
+func (name aggressiveCanonicalName) compact() aggressiveCanonicalName {
+	if len(name.wire) == 0 || cap(name.wire) == len(name.wire) {
+		return name
+	}
+
+	wire := make([]byte, len(name.wire))
+	copy(wire, name.wire)
+
+	labels := make([][]byte, len(name.labels))
+	offset := 0
+	for i, label := range name.labels {
+		offset++ // length octet
+		labels[i] = wire[offset : offset+len(label)]
+		offset += len(label)
+	}
+	return aggressiveCanonicalName{labels: labels, wire: wire}
 }
 
 func (name aggressiveCanonicalName) compare(other aggressiveCanonicalName) int {

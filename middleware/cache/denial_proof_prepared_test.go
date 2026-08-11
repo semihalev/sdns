@@ -45,8 +45,19 @@ func denialProofNSECZone(tb testing.TB, count int) (*denialProofCache, *dns.Msg)
 	const qname = "a001.example."
 
 	request := denialProofTestRequest(qname, dns.TypeAAAA, true)
-	if _, ok := cache.Lookup(request, nil); !ok {
+
+	// Assert the verdict, not just that something came back: a mispaired
+	// canonical name would still answer, only with the wrong denial — a
+	// synthesized NXDOMAIN where the seeded proof says NODATA.
+	response, ok := cache.Lookup(request, nil)
+	if !ok {
 		tb.Fatal("the seeded proof does not answer its own question")
+	}
+	if response.Rcode != dns.RcodeSuccess {
+		tb.Fatalf("seeded NODATA answered as %s", dns.RcodeToString[response.Rcode])
+	}
+	if len(response.Answer) != 0 {
+		tb.Fatalf("NODATA carries %d answers", len(response.Answer))
 	}
 	return cache, request
 }
