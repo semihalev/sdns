@@ -39,8 +39,15 @@ func Test_Failover(t *testing.T) {
 	logger.SetLevel(zlog.LevelDebug)
 	zlog.SetDefault(logger)
 
+	// A fallback that answers, one that refuses immediately, and one that is
+	// not an address at all. The pair used to be a black-holed IPv6 address
+	// and 8.8.8.8, which made this test both slow — the black hole had to
+	// time out — and dependent on Google answering for example.com.
+	answering, _, stop := startFailoverRcodeServer(t, dns.RcodeSuccess)
+	defer stop()
+
 	cfg := new(config.Config)
-	cfg.FallbackServers = []string{"[::255]:53", "8.8.8.8:53", "1"}
+	cfg.FallbackServers = []string{"127.0.0.1:1", answering, "1"}
 
 	middleware.Register("failover", func(cfg *config.Config) middleware.Handler { return New(cfg) })
 	middleware.Setup(cfg)
@@ -79,7 +86,9 @@ func Test_Failover(t *testing.T) {
 
 	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
 
-	f.servers = []string{"[::255]:53"}
+	// A refused port rather than a black hole: the assertion is that an
+	// unusable fallback yields SERVFAIL, not that we can wait out a timeout.
+	f.servers = []string{"127.0.0.1:1"}
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
