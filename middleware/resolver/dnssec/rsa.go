@@ -144,66 +144,6 @@ func rsaHash(alg uint8) (hash.Hash, []byte, bool) {
 	return nil, nil, false
 }
 
-// verifyRSAWideExponent performs the RFC 4034 §3.1.8.1 RSA signature check
-// for keys whose exponent crypto/rsa refuses to load. It reproduces miekg's
-// canonical signed-data construction exactly (so it agrees with sig.Verify
-// for every key the library can handle) and then does the modular
-// exponentiation itself with math/big, bypassing the standard library's
-// exponent ceiling. Returns nil on a valid signature.
-func verifyRSAWideExponent(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
-	// Mirror miekg/dns RRSIG.Verify's preflight so this path is never more
-	// permissive than the library it stands in for: bind the signature to
-	// this exact key (RFC 4034 §3.1) and RRset (RFC 4035 §5.3.1) before
-	// trusting any cryptographic result.
-	if !dns.IsRRset(rrset) {
-		return ErrMissingSigned
-	}
-	if k.Protocol != 3 || k.Flags&dns.ZONE == 0 {
-		return ErrMissingDNSKEY
-	}
-	if sig.KeyTag != k.KeyTag() || sig.Algorithm != k.Algorithm || sig.Hdr.Class != k.Hdr.Class {
-		return ErrMissingDNSKEY
-	}
-	if !strings.EqualFold(sig.SignerName, k.Hdr.Name) {
-		return ErrMissingDNSKEY
-	}
-	signer := dns.CanonicalName(sig.SignerName)
-	h0 := rrset[0].Header()
-	if h0.Class != sig.Hdr.Class || h0.Rrtype != sig.TypeCovered ||
-		dns.CountLabel(h0.Name) < int(sig.Labels) ||
-		!strings.EqualFold(h0.Name, sig.Hdr.Name) ||
-		!strings.HasSuffix(dns.CanonicalName(h0.Name), signer) {
-		return ErrMissingSigned
-	}
-
-	n, e, ok := parseRSAPublicKey(k.PublicKey)
-	if !ok {
-		return ErrMissingDNSKEY
-	}
-	if !usableRSAKey(n, e) {
-		return ErrMissingDNSKEY
-	}
-
-	h, prefix, ok := rsaHash(sig.Algorithm)
-	if !ok {
-		return ErrMissingDNSKEY
-	}
-
-	signed, err := rrsigSignedData(sig, rrset)
-	if err != nil {
-		return err
-	}
-	h.Write(signed)
-	hashed := h.Sum(nil)
-
-	sigbuf, err := fromBase64([]byte(sig.Signature))
-	if err != nil {
-		return ErrMissingSigned
-	}
-
-	return rsaVerifyPKCS1v15(n, e, prefix, hashed, sigbuf)
-}
-
 // rsaVerifyPKCS1v15 verifies a PKCS#1 v1.5 signature by raw modular
 // exponentiation (m = sig^e mod n) and a constant-time comparison against
 // the expected EMSA-PKCS1-v1_5 encoding of hashed.

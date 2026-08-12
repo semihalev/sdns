@@ -764,17 +764,18 @@ func runSignatureVerification(
 	return cryptoVerify(key, sig, set)
 }
 
-// cryptoVerify runs the cryptographic RRSIG check for a single candidate
-// key. RSA keys whose public exponent exceeds crypto/rsa's ceiling (e.g.
-// mailbox.org's alg-7/alg-10 ZSKs, exponent 2^32+1) are verified by the
-// raw modexp path so they validate instead of bogusing out; every other
-// key takes miekg/dns' sig.Verify, which rejects malformed keys itself.
+// cryptoVerify runs the cryptographic RRSIG check for a single candidate key,
+// through this package's own verifier for the algorithms it implements and
+// the library's for anything else. The two agree by construction: the
+// canonical signed data is the same, and the cryptography is the standard
+// library's on both sides.
+//
+// Keys whose public exponent exceeds crypto/rsa's ceiling — mailbox.org's
+// alg-7/alg-10 ZSKs, exponent 2^32+1 — keep the raw modexp path inside that
+// verifier, so they validate instead of bogusing out.
 func cryptoVerify(k *dns.DNSKEY, sig *dns.RRSIG, set []dns.RR) error {
-	switch k.Algorithm {
-	case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512:
-		if rsaExponentExceedsStdlib(k.PublicKey) {
-			return verifyRSAWideExponent(k, sig, set)
-		}
+	if verifySignatureSupported(k.Algorithm) {
+		return verifySignature(k, sig, set)
 	}
 	return sig.Verify(k, set)
 }

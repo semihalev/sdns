@@ -51,8 +51,8 @@ func TestVerifyRSAWideExponent_LiveMailbox(t *testing.T) {
 			if !rsaExponentExceedsStdlib(key.PublicKey) {
 				t.Fatal("expected exponent to exceed stdlib ceiling")
 			}
-			if err := verifyRSAWideExponent(key, sig, []dns.RR{a}); err != nil {
-				t.Fatalf("verifyRSAWideExponent: %v", err)
+			if err := verifySignature(key, sig, []dns.RR{a}); err != nil {
+				t.Fatalf("verifySignature: %v", err)
 			}
 		})
 	}
@@ -64,7 +64,7 @@ func TestVerifyRSAWideExponent_TamperedSignature(t *testing.T) {
 
 	// Flip the answer so the signature no longer covers it.
 	bad := mustRR(t, "mailbox.org.\t103\tIN\tA\t185.97.174.36")
-	if err := verifyRSAWideExponent(key, sig, []dns.RR{bad}); err == nil {
+	if err := verifySignature(key, sig, []dns.RR{bad}); err == nil {
 		t.Fatal("expected verification failure for tampered RRset")
 	}
 }
@@ -109,14 +109,14 @@ func TestVerifyRSAWideExponent_MatchesMiekg(t *testing.T) {
 				t.Fatalf("miekg Verify rejected its own signature: %v", err)
 			}
 			// Cross-check: our raw path agrees byte-for-byte.
-			if err := verifyRSAWideExponent(key, sig, rrset); err != nil {
+			if err := verifySignature(key, sig, rrset); err != nil {
 				t.Fatalf("verifyRSAWideExponent disagreed with miekg: %v", err)
 			}
 
 			// Altered RDATA must fail.
 			tampered := append([]dns.RR(nil), rrset...)
 			tampered[0] = mustRR(t, "MX.Example.org.\t300\tIN\tMX\t20 Evil.Example.Org.")
-			if err := verifyRSAWideExponent(key, sig, tampered); err == nil {
+			if err := verifySignature(key, sig, tampered); err == nil {
 				t.Fatal("expected failure for tampered RRset")
 			}
 		})
@@ -215,7 +215,7 @@ func TestVerifyRSAWideExponent_NonCanonicalModulus(t *testing.T) {
 	if key.KeyTag() != sig.KeyTag {
 		t.Fatalf("zero padding changed key tag to %d; test premise invalid", key.KeyTag())
 	}
-	if err := verifyRSAWideExponent(key, sig, []dns.RR{a}); err == nil {
+	if err := verifySignature(key, sig, []dns.RR{a}); err == nil {
 		t.Fatal("expected non-canonical modulus to be rejected")
 	}
 }
@@ -229,7 +229,7 @@ func TestVerifyRSAWideExponent_Preflight(t *testing.T) {
 
 	mismatched := mustRR(t, mboxZSK7).(*dns.DNSKEY)
 	mismatched.Algorithm = dns.RSASHA1 // alg 5: same hash family, but != sig alg 7
-	if err := verifyRSAWideExponent(mismatched, sig, []dns.RR{a}); err == nil {
+	if err := verifySignature(mismatched, sig, []dns.RR{a}); err == nil {
 		t.Fatal("expected rejection on algorithm/key-tag mismatch")
 	}
 }
@@ -287,7 +287,7 @@ func TestVerifyRSAWideExponent_LiveLatviaTLD(t *testing.T) {
 		t.Fatalf("unexpected .lv KSK: tag=%d wide=%v", ksk.KeyTag(), rsaExponentExceedsStdlib(ksk.PublicKey))
 	}
 	// The DS-pinned KSK must validate the apex DNSKEY RRset (alg 8).
-	if err := verifyRSAWideExponent(ksk, sig, []dns.RR{zsk, ksk}); err != nil {
+	if err := verifySignature(ksk, sig, []dns.RR{zsk, ksk}); err != nil {
 		t.Fatalf(".lv DNSKEY RRset failed to validate via wide-exponent KSK: %v", err)
 	}
 }
