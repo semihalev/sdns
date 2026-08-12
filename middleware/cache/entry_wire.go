@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -89,13 +90,21 @@ func (e *CacheEntry) wireEligibleFor(req *dns.Msg) bool {
 // are allocation-free and complete, so no body is ever built for a request
 // that will fall back.
 func (e *CacheEntry) wireFitsChain(capability middleware.WireCapability) bool {
+	return e.wireChainMismatch(capability) == nil
+}
+
+// wireChainMismatch is wireFitsChain naming what turned the request away, for
+// the counter that reports which gate a hit failed.
+func (e *CacheEntry) wireChainMismatch(
+	capability middleware.WireCapability,
+) *metric.Counter {
 	if !capability.DO && e.wireServe&wireHasDNSSEC != 0 {
-		return false
+		return wireSkipDNSSEC
 	}
 	if capability.MaxSize > 0 && len(e.wire)+capability.Reserve > capability.MaxSize {
-		return false
+		return wireSkipSize
 	}
-	return true
+	return nil
 }
 
 // serveWire produces a transport-ready body (sans OPT) for req: the stored
