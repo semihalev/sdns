@@ -314,9 +314,21 @@ const name = "edns"
 // compression doesn't apply, OPT options are open-ended, and names
 // inside rdata (CNAME/NS/PTR/MX/DNAME/SRV target) lift even the
 // "small" types past any reasonable constant. An under-estimate
-// there would let an oversize reply slip out on UDP without TC=1,
-// so we just call Msg.Len() — correctness first, and the cost is
-// bounded by response size.
+// there would let an oversize reply slip out on UDP without TC=1.
+//
+// The message's own uncompressed length is an upper bound that carries no
+// such risk: compression only replaces name suffixes with two-octet
+// pointers, so it can never make a message longer. Measuring it costs
+// nothing — Msg.Len builds a compression map only for a message that asks
+// to be compressed — and almost every response clears the limit by that
+// bound alone. Only the ones that do not are worth measuring exactly.
 func udpOverflow(m *dns.Msg, limit int) bool {
+	// A copy of the header, not of the records: Len only reads, and the
+	// response must not be told it is uncompressed on its way out.
+	uncompressed := *m
+	uncompressed.Compress = false
+	if uncompressed.Len() <= limit {
+		return false
+	}
 	return m.Len() > limit
 }
