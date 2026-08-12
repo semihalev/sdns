@@ -367,3 +367,64 @@ func BenchmarkDenialProofStaleZoneLookup(b *testing.B) {
 		cache.Lookup(req, nil)
 	}
 }
+
+// TestDenialProofLookupRetiresZoneWhenSOAExpiresFirst covers the case where
+// the SOA is shorter-lived than the proofs beneath it, which a server can
+// cause at any time by lowering its negative TTL. Retiring only the expired
+// entries would leave the zone published without a SOA — unable to answer,
+// and invisible to every later lookup, which stops evaluating at the missing
+// SOA and so never notices the remaining proofs expiring either.
+func TestDenialProofLookupRetiresZoneWhenSOAExpiresFirst(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	cache := newDenialProofTestCache(&now, 64, 32, maxDenialProofTTL)
+
+	long := newDenialProofNSECFixture(
+		t, now, "a.example.", dns.TypeA, dns.RcodeNameError, "example.",
+		[2]string{"a.example.", "az.example."},
+	)
+	if !cache.record(long.msg, "example.", time.Time{}) {
+		t.Fatal("first admission was rejected")
+	}
+
+	// A second proof carrying a much shorter SOA. Only the SOA entry is
+	// replaced; the NSEC admitted above keeps its own longer lifetime.
+	now = now.Add(50 * time.Second)
+	short := newDenialProofNSECFixture(
+		t, now, "b.example.", dns.TypeA, dns.RcodeNameError, "example.",
+		[2]string{"b.example.", "bz.example."},
+	)
+	short.soa.Hdr.Ttl = 30
+	short.soa.Minttl = 30
+	short.soaSig.Hdr.Ttl = 30
+	short.soaSig.OrigTtl = 30
+	if !cache.record(short.msg, "example.", time.Time{}) {
+		t.Fatal("second admission was rejected")
+	}
+
+	snapshot := denialProofOnlySnapshot(t, cache)
+	if got := cache.len(); got != 3 {
+		t.Fatalf("cached entries = %d, want 3 (SOA and two NSEC)", got)
+	}
+	outlives := 0
+	for _, entry := range snapshot.nsec {
+		if snapshot.soa.expires.Before(entry.expires) {
+			outlives++
+		}
+	}
+	if outlives == 0 {
+		t.Fatalf("fixture is wrong: no proof outlives the SOA, which expires at %v",
+			snapshot.soa.expires)
+	}
+
+	// Past the SOA, short of every proof.
+	now = now.Add(100 * time.Second)
+	cache.Lookup(denialProofTestRequest("q.example.", dns.TypeA, true), nil)
+
+	if got := cache.len(); got != 0 {
+		t.Fatalf("cached entries = %d, want 0 — the zone outlived its SOA", got)
+	}
+	if len(cache.zoneIndex) != 0 || len(cache.zoneEntries) != 0 {
+		t.Fatalf("zones left behind: %d published, %d writer-side",
+			len(cache.zoneIndex), len(cache.zoneEntries))
+	}
+}

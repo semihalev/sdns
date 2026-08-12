@@ -1093,25 +1093,29 @@ func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
 	}
 }
 
-// pruneExpiredZoneLocked drops the zone's expired entries. Nothing else
-// removes them: a proof leaves the cache when a newer one replaces it or
-// when capacity evicts it, so an expired entry no one re-queries stays in
-// its zone's published view, where every lookup has to filter it out again.
+// pruneZoneLocked drops what a lookup found unusable. Nothing else removes
+// it: a proof leaves the cache when a newer one replaces it or when capacity
+// evicts it, so an expired entry no one re-queries stays in its zone's
+// published view, where every lookup has to filter it out again.
 //
 // published is the snapshot the lookup evaluated. A different one means
 // another writer has already rebuilt the zone, and rescanning it here would
 // only cost the write lock a second time.
-func (c *denialProofCache) pruneExpiredZoneLocked(
+func (c *denialProofCache) pruneZoneLocked(
 	key denialProofZoneKey,
 	published *denialProofZoneSnapshot,
 	now time.Time,
+	mode denialProofPrune,
 ) {
 	if c.zoneIndex[key] != published {
 		return
 	}
 	pruned := false
 	for _, entry := range c.zoneEntries[key] {
-		if !now.Before(entry.expires) && c.detachEntryLocked(entry) {
+		if mode != denialProofPruneZone && now.Before(entry.expires) {
+			continue
+		}
+		if c.detachEntryLocked(entry) {
 			pruned = true
 		}
 	}
@@ -1239,16 +1243,16 @@ func (c *denialProofCache) lookupWithMeta(
 
 	now := c.now()
 	for _, candidate := range candidates {
-		result, entries, stale, ok := denialProofEvaluate(
+		result, entries, prune, ok := denialProofEvaluate(
 			q,
 			candidate.zone,
 			candidate.snapshot,
 			now,
 			work,
 		)
-		if stale {
+		if prune != denialProofPruneNone {
 			c.mu.Lock()
-			c.pruneExpiredZoneLocked(candidate.zone, candidate.snapshot, now)
+			c.pruneZoneLocked(candidate.zone, candidate.snapshot, now, prune)
 			c.mu.Unlock()
 		}
 		if !ok {
@@ -1332,24 +1336,36 @@ func denialProofAncestors(name string, buf []string) []string {
 	return buf
 }
 
-// denialProofEvaluate additionally reports whether it passed over an expired
-// entry, so the caller can retire it. Filtering one out is cheap, but nothing
-// else removes it, so an entry left behind is filtered again by every lookup
-// the zone serves from then on.
+// denialProofPrune is what a lookup leaves behind for the zone it evaluated.
+type denialProofPrune uint8
+
+const (
+	denialProofPruneNone denialProofPrune = iota
+	// denialProofPruneExpired retires the zone's expired entries. Filtering
+	// one out of an evaluation is cheap, but nothing else removes it, so an
+	// entry left behind is filtered again by every lookup the zone serves
+	// from then on.
+	denialProofPruneExpired
+	// denialProofPruneZone retires the zone outright. Evaluation stops at a
+	// zone without a live SOA, so it can neither answer nor ever notice its
+	// remaining proofs expiring: retiring only the expired entries would
+	// leave the rest pinned for as long as the cache has room for them.
+	denialProofPruneZone
+)
+
+// denialProofEvaluate additionally reports what the lookup should retire.
 func denialProofEvaluate(
 	q dns.Question,
 	zone denialProofZoneKey,
 	snapshot *denialProofZoneSnapshot,
 	now time.Time,
 	work dnssec.NSEC3Work,
-) (_ dnssec.AggressiveNegativeResult, _ []*denialProofEntry, stale, ok bool) {
-	if snapshot == nil || snapshot.soa == nil {
-		return dnssec.AggressiveNegativeResult{}, nil, false, false
+) (_ dnssec.AggressiveNegativeResult, _ []*denialProofEntry, prune denialProofPrune, ok bool) {
+	if snapshot == nil {
+		return dnssec.AggressiveNegativeResult{}, nil, denialProofPruneNone, false
 	}
-	if !now.Before(snapshot.soa.expires) {
-		// Without a live SOA the zone cannot answer at all, and every entry
-		// under it is at least as old as the SOA's own admission.
-		return dnssec.AggressiveNegativeResult{}, nil, true, false
+	if snapshot.soa == nil || !now.Before(snapshot.soa.expires) {
+		return dnssec.AggressiveNegativeResult{}, nil, denialProofPruneZone, false
 	}
 
 	nsecEntries, nsecPrepared := denialProofLivePreparedNSEC(
@@ -1357,13 +1373,15 @@ func denialProofEvaluate(
 		snapshot.nsecPrepared,
 		now,
 	)
-	stale = len(nsecEntries) != len(snapshot.nsec)
+	if len(nsecEntries) != len(snapshot.nsec) {
+		prune = denialProofPruneExpired
+	}
 	if len(nsecPrepared) != 0 {
 		result, err := dnssec.EvaluateAggressiveNSECPrepared(q, zone.zone, nsecPrepared)
 		if err == nil {
 			entries, selected := denialProofSelectedEntries(result.Proof, nsecEntries)
 			if selected {
-				return result, entries, stale, true
+				return result, entries, prune, true
 			}
 		}
 	}
@@ -1372,7 +1390,7 @@ func denialProofEvaluate(
 		group := snapshot.nsec3[params]
 		entries, records := denialProofLiveRecords(group, now)
 		if len(entries) != len(group) {
-			stale = true
+			prune = denialProofPruneExpired
 		}
 		if len(records) == 0 {
 			continue
@@ -1380,16 +1398,16 @@ func denialProofEvaluate(
 		result, err := dnssec.EvaluateAggressiveNSEC3(q, zone.zone, records, work)
 		if err != nil {
 			if dnssec.IsWorkError(err) {
-				return dnssec.AggressiveNegativeResult{}, nil, stale, false
+				return dnssec.AggressiveNegativeResult{}, nil, prune, false
 			}
 			continue
 		}
 		selectedEntries, selected := denialProofSelectedEntries(result.Proof, entries)
 		if selected {
-			return result, selectedEntries, stale, true
+			return result, selectedEntries, prune, true
 		}
 	}
-	return dnssec.AggressiveNegativeResult{}, nil, stale, false
+	return dnssec.AggressiveNegativeResult{}, nil, prune, false
 }
 
 // denialProofLivePreparedNSEC collects a zone's unexpired NSEC entries along
