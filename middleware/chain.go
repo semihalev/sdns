@@ -536,11 +536,21 @@ func WithResponseMeta(ctx context.Context, m *ResponseMeta) context.Context {
 type forkedCutContext struct {
 	context.Context
 	meta ResponseMeta
+	// guard is the request tree's retry guard, carried here because the
+	// first thing a sub-query does is pin it: a scope that did not offer it
+	// would be followed immediately by another context wrapper holding the
+	// same value.
+	guard *ResolutionAttemptGuard
 }
 
 func (c *forkedCutContext) Value(key any) any {
-	if key == responseMetaKey {
+	switch key {
+	case responseMetaKey:
 		return &c.meta
+	case resolutionAttemptContextKey:
+		if c.guard != nil {
+			return c.guard
+		}
 	}
 	return c.Context.Value(key)
 }
@@ -556,8 +566,18 @@ func WithForkedCut(ctx context.Context) (context.Context, *ResponseMeta) {
 	if parent == nil {
 		return ctx, nil
 	}
-	forked := &forkedCutContext{Context: ctx}
-	forked.meta.ledgers.Store(parent.ensureLedgerHost())
+	host := parent.ensureLedgerHost()
+
+	// The tree's own guard, unless one is already pinned — a detached or
+	// custom context can carry a guard this meta does not own, and shadowing
+	// it would silently move that sub-query's accounting somewhere else.
+	guard := &host.guard
+	if pinned, _ := ctx.Value(resolutionAttemptContextKey).(*ResolutionAttemptGuard); pinned != nil {
+		guard = pinned
+	}
+
+	forked := &forkedCutContext{Context: ctx, guard: guard}
+	forked.meta.ledgers.Store(host)
 	forked.meta.workPolicy = parent.workPolicy
 	return forked, &forked.meta
 }

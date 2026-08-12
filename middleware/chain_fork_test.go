@@ -173,18 +173,33 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 // see what the first scope of a request costs — which is the one a CNAME or
 // DNAME leg actually pays.
 func TestForkedCutScopeCostsOneAllocation(t *testing.T) {
+	// What a sub-query actually does: take a scope, then pin the request
+	// tree's retry guard. Measuring the scope alone would miss a wrapper the
+	// pin adds when the scope does not carry the guard itself.
+	enterSubQuery := func(t *testing.T, base context.Context) {
+		t.Helper()
+		ctx, child := WithForkedCut(base)
+		if child == nil || ResponseMetaFrom(ctx) != child {
+			t.Fatal("the scope did not carry its own meta")
+		}
+		pinned, guard := EnsureResolutionAttemptGuard(ctx)
+		if guard == nil {
+			t.Fatal("the sub-query has no retry guard")
+		}
+		if pinned != ctx {
+			t.Fatal("pinning the retry guard wrapped the scope again; the " +
+				"scope must carry it")
+		}
+	}
+
 	t.Run("warm", func(t *testing.T) {
 		var meta ResponseMeta
+		meta.EnsureResolutionAttemptGuard()
 		base := WithResponseMeta(context.Background(), &meta)
 
-		allocs := testing.AllocsPerRun(200, func() {
-			ctx, child := WithForkedCut(base)
-			if child == nil || ResponseMetaFrom(ctx) != child {
-				t.Fatal("the scope did not carry its own meta")
-			}
-		})
+		allocs := testing.AllocsPerRun(200, func() { enterSubQuery(t, base) })
 		if allocs != 1 {
-			t.Fatalf("a sub-query scope cost %.0f allocations, want 1", allocs)
+			t.Fatalf("a sub-query cost %.0f allocations, want 1", allocs)
 		}
 	})
 
@@ -197,16 +212,35 @@ func TestForkedCutScopeCostsOneAllocation(t *testing.T) {
 
 		allocs := testing.AllocsPerRun(200, func() {
 			meta.Reset()
-			ctx, child := WithForkedCut(base)
-			if child == nil || ResponseMetaFrom(ctx) != child {
-				t.Fatal("the scope did not carry its own meta")
-			}
+			enterSubQuery(t, base)
 		})
 		if allocs > budget {
-			t.Fatalf("the first sub-query scope of a request cost %.0f "+
+			t.Fatalf("the first sub-query of a request cost %.0f "+
 				"allocations, budget is %d", allocs, budget)
 		}
 	})
+}
+
+// TestForkedCutScopeKeepsAPinnedGuard pins what the scope may not do with a
+// guard it does not own. A detached or custom context can carry one, and
+// shadowing it would move that sub-query's retry accounting to a guard
+// nobody else is reading.
+func TestForkedCutScopeKeepsAPinnedGuard(t *testing.T) {
+	var meta ResponseMeta
+	own := meta.EnsureResolutionAttemptGuard()
+
+	foreign := NewResolutionAttemptGuard()
+	base := WithResolutionAttemptGuard(
+		WithResponseMeta(context.Background(), &meta), foreign)
+
+	ctx, _ := WithForkedCut(base)
+	got := ResolutionAttemptGuardFrom(ctx)
+	if got == own {
+		t.Fatal("the scope replaced a pinned guard with the meta's own")
+	}
+	if got != foreign {
+		t.Fatalf("the scope lost the pinned guard: %v", got)
+	}
 }
 
 // BenchmarkForkedCutScope measures what a chase hop pays to separate its
