@@ -1027,12 +1027,12 @@ func TestDenialProofCacheConcurrentCopyOnWrite(t *testing.T) {
 		t.Fatalf("entry byte sum = %d, counter = %d", bytes, cache.totalBytes)
 	}
 	for key, snapshot := range cache.zoneIndex {
-		if len(snapshot.entries) > cache.maxEntriesPerZone ||
+		if len(cache.zoneEntries[key]) > cache.maxEntriesPerZone ||
 			snapshot.wireBytes > cache.maxBytesPerZone {
 			t.Fatalf(
 				"zone %v invariants: entries=%d/%d bytes=%d/%d",
 				key,
-				len(snapshot.entries),
+				len(cache.zoneEntries[key]),
 				cache.maxEntriesPerZone,
 				snapshot.wireBytes,
 				cache.maxBytesPerZone,
