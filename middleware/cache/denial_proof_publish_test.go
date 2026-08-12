@@ -1,0 +1,205 @@
+package cache
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
+)
+
+// denialProofOnlySnapshot returns the single zone the test cache holds.
+func denialProofOnlySnapshot(
+	tb testing.TB,
+	cache *denialProofCache,
+) *denialProofZoneSnapshot {
+	tb.Helper()
+	if len(cache.zoneIndex) != 1 {
+		tb.Fatalf("published zones = %d, want 1", len(cache.zoneIndex))
+	}
+	for _, snapshot := range cache.zoneIndex {
+		return snapshot
+	}
+	return nil
+}
+
+// TestDenialProofAdmissionKeepsZoneIndex pins that admitting into a zone
+// reuses the writer's entry map rather than rewriting it. Republishing used
+// to clone the map on every admission and every eviction, so a zone holding
+// thousands of names paid for all of them to record one.
+func TestDenialProofAdmissionKeepsZoneIndex(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	cache := newDenialProofTestCache(&now, 64, 32, maxDenialProofTTL)
+
+	admit := func(label string) {
+		t.Helper()
+		owner, next := label+".example.", label+"z.example."
+		fixture := newDenialProofNSECFixture(
+			t, now, owner, dns.TypeA, dns.RcodeNameError, "example.",
+			[2]string{owner, next},
+		)
+		if !cache.record(fixture.msg, "example.", time.Time{}) {
+			t.Fatalf("admission of %s was rejected", owner)
+		}
+	}
+
+	admit("a")
+	if len(cache.zoneEntries) != 1 {
+		t.Fatalf("writer zones = %d, want 1", len(cache.zoneEntries))
+	}
+	var key denialProofZoneKey
+	for zone := range cache.zoneEntries {
+		key = zone
+	}
+	before := reflect.ValueOf(cache.zoneEntries[key]).Pointer()
+
+	admit("b")
+	if after := reflect.ValueOf(cache.zoneEntries[key]).Pointer(); after != before {
+		t.Fatal("admission replaced the zone's entry map instead of adding to it")
+	}
+
+	cache.purge(dns.Question{
+		Name: "b.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET,
+	})
+	if after := reflect.ValueOf(cache.zoneEntries[key]).Pointer(); after != before {
+		t.Fatal("eviction replaced the zone's entry map instead of deleting from it")
+	}
+}
+
+// TestDenialProofZoneIndexesStayInStep pins that the writer's index does not
+// outlive the published view. The two are updated together, and a zone that
+// empties has to disappear from both — otherwise the map the writer keeps
+// grows for every zone ever seen.
+func TestDenialProofZoneIndexesStayInStep(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	// Two entries — one SOA and one NSEC — so admitting a second zone
+	// evicts the first one whole.
+	cache := newDenialProofTestCache(&now, 2, 2, maxDenialProofTTL)
+
+	admit := func(zone string) {
+		t.Helper()
+		owner := "gone." + zone
+		fixture := newDenialProofNSECFixture(
+			t, now, owner, dns.TypeA, dns.RcodeNameError, zone,
+			[2]string{owner, "gonez." + zone},
+		)
+		if !cache.record(fixture.msg, zone, time.Time{}) {
+			t.Fatalf("admission into %s was rejected", zone)
+		}
+	}
+
+	admit("first.example.")
+	if len(cache.zoneEntries) != 1 || len(cache.zoneIndex) != 1 {
+		t.Fatalf("after admission: %d writer zones, %d published zones, want 1 / 1",
+			len(cache.zoneEntries), len(cache.zoneIndex))
+	}
+
+	// Displaces the first zone entirely.
+	admit("second.example.")
+
+	if len(cache.zoneEntries) != len(cache.zoneIndex) {
+		t.Fatalf("after eviction: %d writer zones, %d published zones — the "+
+			"writer index is retaining zones nobody can see",
+			len(cache.zoneEntries), len(cache.zoneIndex))
+	}
+	if len(cache.zoneEntries) != 1 {
+		t.Fatalf("writer zones = %d, want only the surviving one",
+			len(cache.zoneEntries))
+	}
+}
+
+// TestDenialProofPreparedNSECPublished pins the two halves of the prepared
+// NSEC set: publication flattens it in the same order as the entries it came
+// from, and a lookup that finds nothing expired evaluates that published
+// slice as it stands instead of rebuilding it.
+func TestDenialProofPreparedNSECPublished(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	cache := newDenialProofTestCache(&now, 64, 32, maxDenialProofTTL)
+
+	for _, label := range []string{"a", "b"} {
+		owner, next := label+".example.", label+"z.example."
+		fixture := newDenialProofNSECFixture(
+			t, now, owner, dns.TypeA, dns.RcodeNameError, "example.",
+			[2]string{owner, next},
+		)
+		if !cache.record(fixture.msg, "example.", time.Time{}) {
+			t.Fatalf("admission of %s was rejected", owner)
+		}
+	}
+
+	snapshot := denialProofOnlySnapshot(t, cache)
+	if len(snapshot.nsec) != 2 {
+		t.Fatalf("published NSEC entries = %d, want 2", len(snapshot.nsec))
+	}
+
+	var want []dnssec.PreparedNSEC
+	for _, entry := range snapshot.nsec {
+		want = append(want, entry.preparedNSEC...)
+	}
+	if !reflect.DeepEqual(snapshot.nsecPrepared, want) {
+		t.Fatal("the published prepared set does not match its entries in order")
+	}
+
+	live, prepared := denialProofLivePreparedNSEC(
+		snapshot.nsec,
+		snapshot.nsecPrepared,
+		now,
+	)
+	if len(live) == 0 || &live[0] != &snapshot.nsec[0] {
+		t.Fatal("nothing had expired, yet the live entries were copied")
+	}
+	if len(prepared) == 0 || &prepared[0] != &snapshot.nsecPrepared[0] {
+		t.Fatal("nothing had expired, yet the prepared set was rebuilt")
+	}
+}
+
+// TestDenialProofPreparedNSECDropsExpired covers the other side: once an
+// entry has expired the lookup has to filter, and it must do so without
+// disturbing the published slice that other readers still hold.
+func TestDenialProofPreparedNSECDropsExpired(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	cache := newDenialProofTestCache(&now, 64, 32, maxDenialProofTTL)
+
+	early := newDenialProofNSECFixture(
+		t, now, "a.example.", dns.TypeA, dns.RcodeNameError, "example.",
+		[2]string{"a.example.", "az.example."},
+	)
+	if !cache.record(early.msg, "example.", time.Time{}) {
+		t.Fatal("first admission was rejected")
+	}
+
+	// Admitted 100 seconds later, so it outlives the first by that much.
+	now = now.Add(100 * time.Second)
+	late := newDenialProofNSECFixture(
+		t, now, "b.example.", dns.TypeA, dns.RcodeNameError, "example.",
+		[2]string{"b.example.", "bz.example."},
+	)
+	if !cache.record(late.msg, "example.", time.Time{}) {
+		t.Fatal("second admission was rejected")
+	}
+
+	snapshot := denialProofOnlySnapshot(t, cache)
+	publishedLen := len(snapshot.nsecPrepared)
+	if len(snapshot.nsec) != 2 || publishedLen != 2 {
+		t.Fatalf("published %d entries / %d prepared, want 2 / 2",
+			len(snapshot.nsec), publishedLen)
+	}
+
+	// Past the first entry's expiry, short of the second's.
+	live, prepared := denialProofLivePreparedNSEC(
+		snapshot.nsec,
+		snapshot.nsecPrepared,
+		now.Add(250*time.Second),
+	)
+	if len(live) != 1 || len(prepared) != 1 {
+		t.Fatalf("live = %d entries / %d prepared, want 1 / 1",
+			len(live), len(prepared))
+	}
+	if owner := live[0].data[0].Header().Name; owner != "b.example." {
+		t.Fatalf("surviving entry = %q, want the later one", owner)
+	}
+	if len(snapshot.nsecPrepared) != publishedLen {
+		t.Fatal("filtering an expired entry disturbed the published set")
+	}
+}

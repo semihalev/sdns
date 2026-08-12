@@ -83,12 +83,15 @@ type denialProofEntry struct {
 // pointer after dropping the cache lock; writers therefore never mutate its
 // maps or slices.
 type denialProofZoneSnapshot struct {
-	entries    map[denialProofID]*denialProofEntry
-	soa        *denialProofEntry
-	nsec       []*denialProofEntry
-	nsec3      map[denialProofNSEC3Params][]*denialProofEntry
-	nsec3Order []denialProofNSEC3Params
-	wireBytes  int64
+	soa  *denialProofEntry
+	nsec []*denialProofEntry
+	// nsecPrepared is nsec's canonicalized records, flattened in the same
+	// order. Readers treat it as immutable, as they do the rest of the
+	// snapshot.
+	nsecPrepared []dnssec.PreparedNSEC
+	nsec3        map[denialProofNSEC3Params][]*denialProofEntry
+	nsec3Order   []denialProofNSEC3Params
+	wireBytes    int64
 }
 
 type denialProofCacheConfig struct {
@@ -110,8 +113,13 @@ type denialProofCache struct {
 	mu sync.RWMutex
 
 	zoneIndex map[denialProofZoneKey]*denialProofZoneSnapshot
-	byID      map[denialProofID]*denialProofEntry
-	fifo      list.List
+	// zoneEntries is the writer's own index of what each zone holds. It is
+	// never published, so it can be mutated in place: a snapshot used to
+	// carry this map too, which meant admitting or evicting one entry
+	// copied the entire zone.
+	zoneEntries map[denialProofZoneKey]map[denialProofID]*denialProofEntry
+	byID        map[denialProofID]*denialProofEntry
+	fifo        list.List
 
 	maxEntries        int
 	maxEntriesPerZone int
@@ -185,6 +193,7 @@ func newDenialProofCacheWithConfig(cfg denialProofCacheConfig) *denialProofCache
 
 	return &denialProofCache{
 		zoneIndex:         make(map[denialProofZoneKey]*denialProofZoneSnapshot),
+		zoneEntries:       make(map[denialProofZoneKey]map[denialProofID]*denialProofEntry),
 		byID:              make(map[denialProofID]*denialProofEntry),
 		maxEntries:        cfg.MaxEntries,
 		maxEntriesPerZone: cfg.MaxEntriesPerZone,
@@ -344,10 +353,8 @@ func (c *denialProofCache) recordWithKind(
 		c.byID[entry.id] = entry
 		c.totalBytes += entry.wireBytes
 
-		snapshot := c.zoneIndex[entry.zoneKey]
-		zoneEntries := cloneDenialProofEntries(snapshot)
-		zoneEntries[entry.id] = entry
-		c.publishZoneLocked(entry.zoneKey, zoneEntries)
+		c.zoneEntriesLocked(entry.zoneKey)[entry.id] = entry
+		c.publishZoneLocked(entry.zoneKey)
 	}
 
 	c.enforceNSEC3GroupLimitLocked(entries[0].zoneKey)
@@ -887,30 +894,34 @@ func denialProofTypeBitmapsEqual(a, b []uint16) bool {
 	return true
 }
 
-func cloneDenialProofEntries(
-	snapshot *denialProofZoneSnapshot,
+// zoneEntriesLocked returns the writer's index for a zone, creating it on
+// first use. It is not published, so callers add to and delete from it
+// directly; publishZoneLocked then derives a fresh read-only snapshot from
+// whatever it holds.
+func (c *denialProofCache) zoneEntriesLocked(
+	key denialProofZoneKey,
 ) map[denialProofID]*denialProofEntry {
-	if snapshot == nil {
-		return make(map[denialProofID]*denialProofEntry)
-	}
-	entries := make(map[denialProofID]*denialProofEntry, len(snapshot.entries)+1)
-	for id, entry := range snapshot.entries {
-		entries[id] = entry
+	entries := c.zoneEntries[key]
+	if entries == nil {
+		entries = make(map[denialProofID]*denialProofEntry)
+		c.zoneEntries[key] = entries
 	}
 	return entries
 }
 
-func (c *denialProofCache) publishZoneLocked(
-	key denialProofZoneKey,
-	entries map[denialProofID]*denialProofEntry,
-) {
+// publishZoneLocked rebuilds the read-only view readers see. Readers keep a
+// pointer to it without holding the lock, so it is replaced rather than
+// edited — but only the derived views need copying, not the writer's index
+// of the zone.
+func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
+	entries := c.zoneEntries[key]
 	if len(entries) == 0 {
 		delete(c.zoneIndex, key)
+		delete(c.zoneEntries, key)
 		return
 	}
 	snapshot := &denialProofZoneSnapshot{
-		entries: entries,
-		nsec3:   make(map[denialProofNSEC3Params][]*denialProofEntry),
+		nsec3: make(map[denialProofNSEC3Params][]*denialProofEntry),
 	}
 	groupSequence := make(map[denialProofNSEC3Params]uint64)
 	for _, entry := range entries {
@@ -937,6 +948,16 @@ func (c *denialProofCache) publishZoneLocked(
 		}
 		return snapshot.nsec[i].sequence < snapshot.nsec[j].sequence
 	})
+	// The flat prepared form is what the reader actually evaluates, and it
+	// only changes when the zone's NSEC set does. Building it here means a
+	// lookup that finds nothing expired evaluates the published slice as it
+	// stands, instead of concatenating it again on every query.
+	for _, entry := range snapshot.nsec {
+		snapshot.nsecPrepared = append(
+			snapshot.nsecPrepared,
+			entry.preparedNSEC...,
+		)
+	}
 	snapshot.nsec3Order = make(
 		[]denialProofNSEC3Params,
 		0,
@@ -1059,10 +1080,8 @@ func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
 		c.totalBytes = 0
 	}
 
-	snapshot := c.zoneIndex[entry.zoneKey]
-	zoneEntries := cloneDenialProofEntries(snapshot)
-	delete(zoneEntries, entry.id)
-	c.publishZoneLocked(entry.zoneKey, zoneEntries)
+	delete(c.zoneEntries[entry.zoneKey], entry.id)
+	c.publishZoneLocked(entry.zoneKey)
 }
 
 func (c *denialProofCache) enforceNSEC3GroupLimitLocked(
@@ -1086,7 +1105,7 @@ func (c *denialProofCache) enforceZoneLimitsLocked(key denialProofZoneKey) {
 	for {
 		snapshot := c.zoneIndex[key]
 		if snapshot == nil ||
-			(len(snapshot.entries) <= c.maxEntriesPerZone &&
+			(len(c.zoneEntries[key]) <= c.maxEntriesPerZone &&
 				snapshot.wireBytes <= c.maxBytesPerZone) {
 			return
 		}
@@ -1269,7 +1288,11 @@ func denialProofEvaluate(
 		return dnssec.AggressiveNegativeResult{}, nil, false
 	}
 
-	nsecEntries, nsecPrepared := denialProofLivePreparedNSEC(snapshot.nsec, now)
+	nsecEntries, nsecPrepared := denialProofLivePreparedNSEC(
+		snapshot.nsec,
+		snapshot.nsecPrepared,
+		now,
+	)
 	if len(nsecPrepared) != 0 {
 		result, err := dnssec.EvaluateAggressiveNSECPrepared(q, zone.zone, nsecPrepared)
 		if err == nil {
@@ -1305,12 +1328,28 @@ func denialProofEvaluate(
 // with their canonicalized records. Admission refuses an NSEC entry whose
 // names it cannot canonicalize, so every live entry here carries a prepared
 // form covering exactly its own records.
+//
+// The common case is that nothing in the zone has expired since it was
+// published, and then both results are the published slices themselves. Only
+// an actual expiry pays for a filtered copy.
 func denialProofLivePreparedNSEC(
 	entries []*denialProofEntry,
+	published []dnssec.PreparedNSEC,
 	now time.Time,
 ) ([]*denialProofEntry, []dnssec.PreparedNSEC) {
+	expired := false
+	for _, entry := range entries {
+		if entry == nil || !now.Before(entry.expires) {
+			expired = true
+			break
+		}
+	}
+	if !expired {
+		return entries, published
+	}
+
 	live := make([]*denialProofEntry, 0, len(entries))
-	prepared := make([]dnssec.PreparedNSEC, 0, len(entries))
+	prepared := make([]dnssec.PreparedNSEC, 0, len(published))
 	for _, entry := range entries {
 		if entry == nil || !now.Before(entry.expires) {
 			continue
@@ -1469,8 +1508,9 @@ func (c *denialProofCache) purge(q dns.Question) {
 		if snapshot == nil {
 			continue
 		}
-		entries := make([]*denialProofEntry, 0, len(snapshot.entries)-1)
-		for _, entry := range snapshot.entries {
+		zoneEntries := c.zoneEntries[key]
+		entries := make([]*denialProofEntry, 0, len(zoneEntries))
+		for _, entry := range zoneEntries {
 			if entry.id.kind != denialProofSOA {
 				entries = append(entries, entry)
 			}
@@ -1518,6 +1558,7 @@ func (c *denialProofCache) stop() {
 	c.mu.Lock()
 	c.stopped = true
 	c.zoneIndex = make(map[denialProofZoneKey]*denialProofZoneSnapshot)
+	c.zoneEntries = make(map[denialProofZoneKey]map[denialProofID]*denialProofEntry)
 	c.byID = make(map[denialProofID]*denialProofEntry)
 	c.nsec3Conflicts = make(map[denialProofNSEC3ConflictKey]time.Time)
 	c.nsec3ConflictOverflowUntil = time.Time{}
