@@ -9,6 +9,7 @@ package dnssec
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"sort"
 	"strings"
 	"time"
@@ -126,6 +127,15 @@ func verifyDSWithWork(
 			continue
 		}
 
+		// Decoded once for the whole candidate set: the parent's digest is
+		// what every candidate is measured against, and it does not change
+		// between them.
+		wantDigest, decodeErr := hex.DecodeString(parentDS.Digest)
+		if decodeErr != nil || len(wantDigest) == 0 {
+			lastErr = ErrMismatchingDS
+			continue
+		}
+
 		matched := false
 		var candidateUsed uint32
 		for _, ksk := range candidates {
@@ -135,15 +145,12 @@ func verifyDSWithWork(
 				}
 			}
 
-			ds, err := runDSDigest(work, ksk, parentDS.DigestType)
+			ok, err := runDSDigestMatch(work, ksk, parentDS.DigestType, wantDigest)
 			if err != nil {
 				return false, err
 			}
 			candidateUsed++
-			if ds == nil {
-				continue
-			}
-			if strings.EqualFold(ds.Digest, parentDS.Digest) {
+			if ok {
 				matched = true
 				break
 			}
@@ -299,19 +306,24 @@ func beginDSDigest(work DSDigestWork) (func(), error) {
 	return release, nil
 }
 
-func runDSDigest(
+// runDSDigestMatch charges the request tree for one DS digest and reports
+// whether key hashes to want. The comparison happens on the digest bytes
+// rather than through a dns.DS: the record, its hexadecimal digest and the
+// two oversized buffers behind them exist only to be compared and dropped.
+func runDSDigestMatch(
 	work DSDigestWork,
 	key *dns.DNSKEY,
 	digestType uint8,
-) (*dns.DS, error) {
+	want []byte,
+) (bool, error) {
 	release, err := beginDSDigest(work)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	if release != nil {
 		defer release()
 	}
-	return key.ToDS(digestType), nil
+	return dsDigestMatches(key, digestType, want), nil
 }
 
 // VerifyRRSIG validates that every in-zone RRset in msg is covered by at
