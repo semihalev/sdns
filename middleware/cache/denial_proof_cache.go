@@ -1067,9 +1067,12 @@ func denialProofCanonicalWireLabels(name string) ([][]byte, bool) {
 	}
 }
 
-func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
+// detachEntryLocked unlinks one entry from the cache's own bookkeeping
+// without republishing its zone, so that a caller removing several entries
+// from one zone can publish once at the end.
+func (c *denialProofCache) detachEntryLocked(entry *denialProofEntry) bool {
 	if entry == nil || c.byID[entry.id] != entry {
-		return
+		return false
 	}
 	delete(c.byID, entry.id)
 	if entry.queue != nil {
@@ -1081,7 +1084,44 @@ func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
 	}
 
 	delete(c.zoneEntries[entry.zoneKey], entry.id)
-	c.publishZoneLocked(entry.zoneKey)
+	return true
+}
+
+func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
+	if c.detachEntryLocked(entry) {
+		c.publishZoneLocked(entry.zoneKey)
+	}
+}
+
+// pruneZoneLocked drops what a lookup found unusable. Nothing else removes
+// it: a proof leaves the cache when a newer one replaces it or when capacity
+// evicts it, so an expired entry no one re-queries stays in its zone's
+// published view, where every lookup has to filter it out again.
+//
+// published is the snapshot the lookup evaluated. A different one means
+// another writer has already rebuilt the zone, and rescanning it here would
+// only cost the write lock a second time.
+func (c *denialProofCache) pruneZoneLocked(
+	key denialProofZoneKey,
+	published *denialProofZoneSnapshot,
+	now time.Time,
+	mode denialProofPrune,
+) {
+	if c.zoneIndex[key] != published {
+		return
+	}
+	pruned := false
+	for _, entry := range c.zoneEntries[key] {
+		if mode != denialProofPruneZone && now.Before(entry.expires) {
+			continue
+		}
+		if c.detachEntryLocked(entry) {
+			pruned = true
+		}
+	}
+	if pruned {
+		c.publishZoneLocked(key)
+	}
 }
 
 func (c *denialProofCache) enforceNSEC3GroupLimitLocked(
@@ -1176,13 +1216,21 @@ func (c *denialProofCache) lookupWithMeta(
 		return nil, 0, "", false
 	}
 
+	// A name deep enough to overflow either buffer simply grows it; the sizes
+	// cover ordinary names so that a lookup allocates nothing to find its
+	// candidate zones.
+	var (
+		ancestorStorage  [12]string
+		candidateStorage [12]denialProofCandidate
+	)
+
 	c.mu.RLock()
 	if c.stopped {
 		c.mu.RUnlock()
 		return nil, 0, "", false
 	}
-	candidates := make([]denialProofCandidate, 0, len(dns.Split(qname))+1)
-	for _, zone := range denialProofAncestors(qname) {
+	candidates := candidateStorage[:0]
+	for _, zone := range denialProofAncestors(qname, ancestorStorage[:0]) {
 		key := denialProofZoneKey{zone: zone, qclass: q.Qclass}
 		if snapshot := c.zoneIndex[key]; snapshot != nil {
 			candidates = append(candidates, denialProofCandidate{
@@ -1195,13 +1243,18 @@ func (c *denialProofCache) lookupWithMeta(
 
 	now := c.now()
 	for _, candidate := range candidates {
-		result, entries, ok := denialProofEvaluate(
+		result, entries, prune, ok := denialProofEvaluate(
 			q,
 			candidate.zone,
 			candidate.snapshot,
 			now,
 			work,
 		)
+		if prune != denialProofPruneNone {
+			c.mu.Lock()
+			c.pruneZoneLocked(candidate.zone, candidate.snapshot, now, prune)
+			c.mu.Unlock()
+		}
 		if !ok {
 			continue
 		}
@@ -1263,29 +1316,56 @@ func (c *denialProofCache) nsec3SelectionConflictedLocked(
 	return false
 }
 
-func denialProofAncestors(name string) []string {
-	if name == "." {
-		return []string{"."}
+// denialProofAncestors appends name and each of its ancestors, ending at the
+// root, to buf and returns it. Every lookup walks this list, so the caller
+// supplies the storage: the names themselves are substrings of name and cost
+// nothing, and a caller whose buffer is large enough allocates nothing at all.
+func denialProofAncestors(name string, buf []string) []string {
+	buf = buf[:0]
+	for offset := 0; ; {
+		buf = append(buf, name[offset:])
+		next, end := dns.NextLabel(name, offset)
+		if end {
+			break
+		}
+		offset = next
 	}
-	offsets := dns.Split(name)
-	result := make([]string, 0, len(offsets)+1)
-	for _, offset := range offsets {
-		result = append(result, name[offset:])
+	if name != "." {
+		buf = append(buf, ".")
 	}
-	result = append(result, ".")
-	return result
+	return buf
 }
 
+// denialProofPrune is what a lookup leaves behind for the zone it evaluated.
+type denialProofPrune uint8
+
+const (
+	denialProofPruneNone denialProofPrune = iota
+	// denialProofPruneExpired retires the zone's expired entries. Filtering
+	// one out of an evaluation is cheap, but nothing else removes it, so an
+	// entry left behind is filtered again by every lookup the zone serves
+	// from then on.
+	denialProofPruneExpired
+	// denialProofPruneZone retires the zone outright. Evaluation stops at a
+	// zone without a live SOA, so it can neither answer nor ever notice its
+	// remaining proofs expiring: retiring only the expired entries would
+	// leave the rest pinned for as long as the cache has room for them.
+	denialProofPruneZone
+)
+
+// denialProofEvaluate additionally reports what the lookup should retire.
 func denialProofEvaluate(
 	q dns.Question,
 	zone denialProofZoneKey,
 	snapshot *denialProofZoneSnapshot,
 	now time.Time,
 	work dnssec.NSEC3Work,
-) (dnssec.AggressiveNegativeResult, []*denialProofEntry, bool) {
-	if snapshot == nil || snapshot.soa == nil ||
-		!now.Before(snapshot.soa.expires) {
-		return dnssec.AggressiveNegativeResult{}, nil, false
+) (_ dnssec.AggressiveNegativeResult, _ []*denialProofEntry, prune denialProofPrune, ok bool) {
+	if snapshot == nil {
+		return dnssec.AggressiveNegativeResult{}, nil, denialProofPruneNone, false
+	}
+	if snapshot.soa == nil || !now.Before(snapshot.soa.expires) {
+		return dnssec.AggressiveNegativeResult{}, nil, denialProofPruneZone, false
 	}
 
 	nsecEntries, nsecPrepared := denialProofLivePreparedNSEC(
@@ -1293,12 +1373,15 @@ func denialProofEvaluate(
 		snapshot.nsecPrepared,
 		now,
 	)
+	if len(nsecEntries) != len(snapshot.nsec) {
+		prune = denialProofPruneExpired
+	}
 	if len(nsecPrepared) != 0 {
 		result, err := dnssec.EvaluateAggressiveNSECPrepared(q, zone.zone, nsecPrepared)
 		if err == nil {
 			entries, selected := denialProofSelectedEntries(result.Proof, nsecEntries)
 			if selected {
-				return result, entries, true
+				return result, entries, prune, true
 			}
 		}
 	}
@@ -1306,22 +1389,25 @@ func denialProofEvaluate(
 	for _, params := range snapshot.nsec3Order {
 		group := snapshot.nsec3[params]
 		entries, records := denialProofLiveRecords(group, now)
+		if len(entries) != len(group) {
+			prune = denialProofPruneExpired
+		}
 		if len(records) == 0 {
 			continue
 		}
 		result, err := dnssec.EvaluateAggressiveNSEC3(q, zone.zone, records, work)
 		if err != nil {
 			if dnssec.IsWorkError(err) {
-				return dnssec.AggressiveNegativeResult{}, nil, false
+				return dnssec.AggressiveNegativeResult{}, nil, prune, false
 			}
 			continue
 		}
 		selectedEntries, selected := denialProofSelectedEntries(result.Proof, entries)
 		if selected {
-			return result, selectedEntries, true
+			return result, selectedEntries, prune, true
 		}
 	}
-	return dnssec.AggressiveNegativeResult{}, nil, false
+	return dnssec.AggressiveNegativeResult{}, nil, prune, false
 }
 
 // denialProofLivePreparedNSEC collects a zone's unexpired NSEC entries along
@@ -1497,7 +1583,7 @@ func (c *denialProofCache) purge(q dns.Question) {
 	// backstop cannot identify its originating tuple, so clear it globally;
 	// keyed tombstones below are removed only for the requested ancestors.
 	c.nsec3ConflictOverflowUntil = time.Time{}
-	for _, zone := range denialProofAncestors(q.Name) {
+	for _, zone := range denialProofAncestors(q.Name, nil) {
 		key := denialProofZoneKey{zone: zone, qclass: q.Qclass}
 		for conflict := range c.nsec3Conflicts {
 			if conflict.zone == key {
