@@ -1193,7 +1193,7 @@ func (c *denialProofCache) Lookup(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
 ) (*dns.Msg, bool) {
-	response, _, _, ok := c.lookupWithMeta(req, work)
+	response, _, _, _, ok := c.lookupWithMeta(req, work)
 	return response, ok
 }
 
@@ -1201,19 +1201,24 @@ func (c *denialProofCache) Lookup(
 // response shaping. This is required for DO=0 hits, where the wire response
 // correctly strips NSEC/NSEC3 records and therefore cannot be inspected to
 // recover safe resolver-local provenance.
+// lookupWithMeta additionally reports the instant past which the synthesized
+// answer must not be used: the earliest expiry among the SOA and the proof
+// records it was built from. Anything derived from this answer inherits that
+// bound, and without it the TTL floor would re-publish a proof that had
+// seconds left for the cache minimum.
 func (c *denialProofCache) lookupWithMeta(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
-) (*dns.Msg, denialProofKind, string, bool) {
+) (*dns.Msg, denialProofKind, string, time.Time, bool) {
 	if c == nil || req == nil || len(req.Question) != 1 ||
 		req.CheckingDisabled {
-		return nil, 0, "", false
+		return nil, 0, "", time.Time{}, false
 	}
 	q := req.Question[0]
 	qname := dns.CanonicalName(q.Name)
 	if _, valid := dns.IsDomainName(qname); !valid ||
 		q.Qclass == 0 || q.Qclass == dns.ClassANY || q.Qclass == dns.ClassNONE {
-		return nil, 0, "", false
+		return nil, 0, "", time.Time{}, false
 	}
 
 	// A name deep enough to overflow either buffer simply grows it; the sizes
@@ -1227,7 +1232,7 @@ func (c *denialProofCache) lookupWithMeta(
 	c.mu.RLock()
 	if c.stopped {
 		c.mu.RUnlock()
-		return nil, 0, "", false
+		return nil, 0, "", time.Time{}, false
 	}
 	candidates := candidateStorage[:0]
 	for _, zone := range denialProofAncestors(qname, ancestorStorage[:0]) {
@@ -1269,7 +1274,7 @@ func (c *denialProofCache) lookupWithMeta(
 			c.mu.RUnlock()
 			continue
 		}
-		response := denialProofResponse(req, result, entries, candidate.snapshot.soa, now)
+		response, expires := denialProofResponse(req, result, entries, candidate.snapshot.soa, now)
 		if response == nil || len(entries) == 0 {
 			c.mu.RUnlock()
 			continue
@@ -1288,11 +1293,11 @@ func (c *denialProofCache) lookupWithMeta(
 		}
 		if homogeneous {
 			c.mu.RUnlock()
-			return response, kind, candidate.zone.zone, true
+			return response, kind, candidate.zone.zone, expires, true
 		}
 		c.mu.RUnlock()
 	}
-	return nil, 0, "", false
+	return nil, 0, "", time.Time{}, false
 }
 
 func (c *denialProofCache) nsec3SelectionConflictedLocked(
@@ -1498,17 +1503,17 @@ func denialProofResponse(
 	proofEntries []*denialProofEntry,
 	soa *denialProofEntry,
 	now time.Time,
-) *dns.Msg {
+) (*dns.Msg, time.Time) {
 	if req == nil || soa == nil || !now.Before(soa.expires) ||
 		(result.Rcode != dns.RcodeNameError && result.Rcode != dns.RcodeSuccess) ||
 		len(proofEntries) == 0 {
-		return nil
+		return nil, time.Time{}
 	}
 
 	expires := soa.expires
 	for _, entry := range proofEntries {
 		if entry == nil || !now.Before(entry.expires) {
-			return nil
+			return nil, time.Time{}
 		}
 		if entry.expires.Before(expires) {
 			expires = entry.expires
@@ -1516,7 +1521,7 @@ func denialProofResponse(
 	}
 	remaining := expires.Sub(now)
 	if remaining <= 0 {
-		return nil
+		return nil, time.Time{}
 	}
 
 	response := new(dns.Msg)
@@ -1556,7 +1561,7 @@ func denialProofResponse(
 		}
 		response.Ns = kept
 	}
-	return response
+	return response, expires
 }
 
 // purge removes denial RRsets from every cached signer-zone shard that is an

@@ -98,30 +98,54 @@ func (e *CacheEntry) wireFitsChain(capability middleware.WireCapability) bool {
 func (e *CacheEntry) wireChainMismatch(
 	capability middleware.WireCapability,
 ) *metric.Counter {
-	if !capability.DO && e.wireServe&wireHasDNSSEC != 0 {
+	body, _ := e.wireBodyFor(capability.DO)
+	if body == nil {
 		return wireSkipDNSSEC
 	}
-	if capability.MaxSize > 0 && len(e.wire)+capability.Reserve > capability.MaxSize {
+	if capability.MaxSize > 0 && len(body)+capability.Reserve > capability.MaxSize {
 		return wireSkipSize
 	}
 	return nil
+}
+
+// wireBodyFor returns the stored body this client may be served, and the
+// verdict that goes with it. A client that asked for DNSSEC gets the stored
+// message; one that did not gets the stripped form, which is nil when the
+// entry has none — that client keeps the Msg path, which strips as it goes.
+func (e *CacheEntry) wireBodyFor(do bool) ([]byte, wireServeFlags) {
+	if do || e.wireServe&wireHasDNSSEC == 0 {
+		return e.wire, e.wireServe
+	}
+	if e.stripped == nil {
+		return nil, 0
+	}
+	return e.stripped, e.strippedServe
 }
 
 // serveWire produces a transport-ready body (sans OPT) for req: the stored
 // bytes with this reply's header, the client's question spelling, and the
 // remaining TTL written at every record. The TTL walk reuses the packed
 // message's own structure rather than a stored offset table.
-func (e *CacheEntry) serveWire(req *dns.Msg, reserve int) ([]byte, middleware.WireInfo, bool) {
+func (e *CacheEntry) serveWire(
+	req *dns.Msg,
+	reserve int,
+	do bool,
+) ([]byte, middleware.WireInfo, bool) {
 	remaining := e.remaining(time.Now())
 	if remaining <= 0 {
 		return nil, middleware.WireInfo{}, false
 	}
 
-	header, ok := wire.ParseHeader(e.wire)
+	stored, flags := e.wireBodyFor(do)
+	if stored == nil {
+		return nil, middleware.WireInfo{}, false
+	}
+
+	header, ok := wire.ParseHeader(stored)
 	if !ok {
 		return nil, middleware.WireInfo{}, false
 	}
-	question, ok := wire.ParseQuestion(e.wire, wire.HeaderLen)
+	question, ok := wire.ParseQuestion(stored, wire.HeaderLen)
 	if !ok {
 		return nil, middleware.WireInfo{}, false
 	}
@@ -140,8 +164,8 @@ func (e *CacheEntry) serveWire(req *dns.Msg, reserve int) ([]byte, middleware.Wi
 
 	// Exactly the capacity the chain reported it needs: no slack to carry
 	// per hit, and no second buffer for the OPT append.
-	body := make([]byte, len(e.wire), len(e.wire)+reserve)
-	copy(body, e.wire)
+	body := make([]byte, len(stored), len(stored)+reserve)
+	copy(body, stored)
 
 	if rewrite {
 		// Encoded straight over the stored name, so the spelling swap needs
@@ -187,6 +211,6 @@ func (e *CacheEntry) serveWire(req *dns.Msg, reserve int) ([]byte, middleware.Wi
 	return body, middleware.WireInfo{
 		Rcode:             header.Rcode(),
 		AuthenticatedData: authData,
-		HasDNSSEC:         e.wireServe&wireHasDNSSEC != 0,
+		HasDNSSEC:         flags&wireHasDNSSEC != 0,
 	}, true
 }

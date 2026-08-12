@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +199,11 @@ func TestWireFastPathEquivalence(t *testing.T) {
 	cases := []client{
 		{"do1_dnssec", func(r *dns.Msg) { r.SetEdns0(1232, true) }, true, true},
 		{"do0_plain", func(r *dns.Msg) { r.SetEdns0(1232, false) }, false, true},
-		{"do0_dnssec_falls_back", func(r *dns.Msg) { r.SetEdns0(1232, false) }, true, false},
+		// A client without DO is served the stripped body, so the byte path
+		// covers it too — and assertEquivalent is what proves the stripped
+		// body carries exactly what the Msg path would have sent, DNSSEC
+		// records removed and everything else identical.
+		{"do0_dnssec_stripped", func(r *dns.Msg) { r.SetEdns0(1232, false) }, true, true},
 		{"noedns", func(r *dns.Msg) {}, false, true},
 		{"cd1", func(r *dns.Msg) { r.SetEdns0(1232, true); r.CheckingDisabled = true }, true, true},
 		// entryShape marks cases that must prime the CD=true cache partition
@@ -335,8 +340,22 @@ func TestWireServableGatesRunBeforeCopy(t *testing.T) {
 	if !entryOf(plain).wireEligibleFor(req) || !entryOf(plain).wireFitsChain(do0) {
 		t.Fatal("plain entry must be servable to DO=0")
 	}
-	if entryOf(signed).wireFitsChain(do0) {
-		t.Fatal("DNSSEC entry must be gated for DO=0 before any copy")
+	// A signed entry is servable to DO=0 as well, but only from the stripped
+	// body — the stored one must never reach a client that did not ask for
+	// DNSSEC.
+	signedEntry := entryOf(signed)
+	if !signedEntry.wireFitsChain(do0) {
+		t.Fatal("DNSSEC entry must be servable to DO=0 from its stripped body")
+	}
+	if body, flags := signedEntry.wireBodyFor(false); body == nil ||
+		&body[0] == &signedEntry.wire[0] || flags&wireHasDNSSEC != 0 {
+		t.Fatal("DO=0 must be served the stripped body, never the stored one")
+	}
+	// Without a stripped body the gate still has to turn the request away.
+	bare := entryOf(signed)
+	bare.stripped, bare.strippedServe = nil, 0
+	if bare.wireFitsChain(do0) {
+		t.Fatal("a DNSSEC entry with no stripped body must be gated for DO=0")
 	}
 	if !entryOf(signed).wireFitsChain(do1) {
 		t.Fatal("DNSSEC entry must be servable to DO=1")
@@ -410,7 +429,10 @@ func BenchmarkWireFastPath(b *testing.B) {
 		servedBefore := wireFastServed.Value()
 		ch.Next(context.Background())
 		servedDelta := wireFastServed.Value() - servedBefore
-		wantWire := !forceMsg && (do || !dnssec)
+		// A signed entry reaches a client without DO too, from its stripped
+		// body — the gate only turns a request away when there is no body
+		// it may be served.
+		wantWire := !forceMsg
 		if wantWire != (servedDelta == 1) {
 			b.Fatalf("path check: wire served %d, wantWire=%v", servedDelta, wantWire)
 		}
@@ -434,7 +456,9 @@ func BenchmarkWireFastPath(b *testing.B) {
 	// to be re-encoded. This is the path the exact-match shortcut declines;
 	// it must stay a byte-served reply, and no dearer than it was.
 	b.Run("wire_served_case_rewrite", func(b *testing.B) { run(b, "BeNcH.ExAmPlE.CoM.", true, true, false) })
-	b.Run("gate_rejected_to_msg", func(b *testing.B) { run(b, qname, true, false, false) })
+	// A signed entry answering a client without DO: served from the stripped
+	// body, which is the commonest hit a validating resolver has.
+	b.Run("wire_served_do0_stripped", func(b *testing.B) { run(b, qname, true, false, false) })
 	b.Run("msg_path_baseline", func(b *testing.B) { run(b, qname, true, true, true) })
 	b.Run("msg_baseline_cookie", func(b *testing.B) { run(b, qname, true, true, true, "0123456789abcdef") })
 }
@@ -488,7 +512,7 @@ func TestWireFastPathClearsAuthoritative(t *testing.T) {
 		probe.RecursionDesired = want.rd
 		probe.CheckingDisabled = want.cd
 
-		body, _, ok := stored.serveWire(probe, 0)
+		body, _, ok := stored.serveWire(probe, 0, true)
 		if !ok {
 			t.Fatal("serveWire refused a plain request")
 		}
@@ -550,34 +574,106 @@ func TestWireFastPathExcludesNonByteTransports(t *testing.T) {
 // TestWireFastPathGateRunsBeforeAnyAllocation pins the "never pay both
 // paths" property directly: a request the chain cannot serve as bytes must
 // not allocate the body copy the byte path would need.
+//
+// The refusal is the transport ceiling, so the entry has a servable body and
+// an ordering regression that built it before consulting the gate would show
+// up as an allocation. What it is measured against is the same request with
+// the byte path removed from the chain entirely: a refused gate must cost
+// exactly the message path, which states the property with no ceiling
+// constant to drift against.
 func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 	const qname = "gate2.example.com."
-	// A signed entry with a DO=0 client: the request's own OPT says DO=1 by
-	// the time the cache sees it (the edns layer sets it for upstream
-	// validation), so only the writer chain's preflight can tell the truth.
-	entry := wireFastEntry(t, qname, dns.TypeA, true)
-	c, e := wireFastTestPipeline(t, entry)
+	// Comfortably beyond what the client below will advertise.
+	entryMsg := wireFastEntry(t, qname, dns.TypeA, false)
+	for range 40 {
+		entryMsg.Answer = append(entryMsg.Answer, makeRR(
+			qname+" 300 IN TXT \""+strings.Repeat("x", 60)+"\""))
+	}
+	c, e := wireFastTestPipeline(t, entryMsg)
 
 	req := new(dns.Msg)
 	req.SetQuestion(qname, dns.TypeA)
 	req.Id = 12
 	req.RecursionDesired = true
-	req.SetEdns0(1232, false) // client did not ask for DNSSEC
 
-	writer := mock.NewWriter("udp", "198.51.100.77:40000")
-	terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
-		t.Fatal("missed cache")
-	})
-	ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
-
-	fallbackBefore := wireFastFallback.Value()
-	allocs := testing.AllocsPerRun(50, func() {
-		ch.Reset(writer, req)
-		ch.Next(context.Background())
-	})
-	if wireFastFallback.Value() != fallbackBefore {
-		t.Fatal("a DO=0 client with a signed entry reached the late fallback; " +
-			"the preflight must refuse before the body is built")
+	cached, ok := c.store.LookupByKey(CacheKey{Question: req.Question[0]}.Hash())
+	if !ok {
+		t.Fatal("the entry under test was not admitted")
 	}
-	t.Logf("message-path allocations for a preflight-refused hit: %.0f", allocs)
+	if len(cached.wire) <= dns.MinMsgSize {
+		t.Fatalf("fixture is wrong: stored body is %d bytes, want more than the "+
+			"%d the client advertises so the ceiling refuses it",
+			len(cached.wire), dns.MinMsgSize)
+	}
+
+	// Bytes, not counts. The two sides do not do identical work before they
+	// diverge — the ceiling refusal asks the chain what it can take, while
+	// removing the byte path fails the writer type assertion before that —
+	// so their allocation counts differ by small amounts that say nothing.
+	// What this test exists to notice is a body copy, and that is 2 KB of
+	// difference, not one object.
+	const runs = 200
+	measure := func(forceMsg bool) uint64 {
+		writer := mock.NewWriter("udp", "198.51.100.77:40000")
+		terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+			t.Fatal("missed cache")
+		})
+		ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
+		// Wrapped once: the shim is what removes the byte path, and building
+		// it inside the loop would charge one side work the other avoids.
+		ch.Reset(writer, req)
+		if forceMsg {
+			ch.Writer = &msgPathShim{ResponseWriter: ch.Writer}
+		}
+		shim := ch.Writer
+
+		serve := func() {
+			// The edns layer sets DO on the request's OPT for upstream
+			// validation, so a request reused across iterations stops
+			// advertising the size the client asked for and the ceiling
+			// would never apply. A live query always carries a fresh one,
+			// and both sides pay for the refresh equally.
+			req.Extra = req.Extra[:0]
+			req.SetEdns0(dns.MinMsgSize, false)
+			ch.Writer = shim
+			ch.Reset(writer, req)
+			ch.Next(context.Background())
+		}
+
+		serve() // warm the pools both paths draw from
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range runs {
+			serve()
+		}
+		runtime.ReadMemStats(&after)
+		return (after.TotalAlloc - before.TotalAlloc) / runs
+	}
+
+	servedBefore := wireFastServed.Value()
+	fallbackBefore := wireFastFallback.Value()
+	skippedBefore := wireSkipSize.Value()
+	refused := measure(false)
+
+	if wireFastServed.Value() != servedBefore {
+		t.Fatal("a reply beyond the transport ceiling was served as bytes")
+	}
+	if wireFastFallback.Value() != fallbackBefore {
+		t.Fatal("the request reached the late fallback; the preflight must " +
+			"refuse before the body is built")
+	}
+	if wireSkipSize.Value() == skippedBefore {
+		t.Fatal("the refusal was not attributed to the transport ceiling")
+	}
+
+	// Half a body is far outside the few dozen bytes the two paths differ
+	// by, and far inside the copy this test is looking for.
+	pure := measure(true)
+	if margin := uint64(len(cached.wire)) / 2; refused > pure+margin {
+		t.Fatalf("a refused gate allocated %d bytes per hit against the "+
+			"message path's %d, more than half a %d-byte body apart: the "+
+			"byte path is building one before it consults the gate",
+			refused, pure, len(cached.wire))
+	}
 }

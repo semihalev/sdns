@@ -347,7 +347,7 @@ func TestDenialProofCacheNSECNODATAAndDOShaping(t *testing.T) {
 	}
 
 	do0Request := denialProofTestRequest("www.example.", dns.TypeAAAA, false)
-	do0Response, kind, signerZone, ok := cache.lookupWithMeta(do0Request, nil)
+	do0Response, kind, signerZone, _, ok := cache.lookupWithMeta(do0Request, nil)
 	if !ok {
 		t.Fatal("DO=0 NSEC NODATA lookup missed")
 	}
@@ -744,7 +744,7 @@ func TestDenialProofCacheNSEC3UsesBoundedEvaluatorWork(t *testing.T) {
 	}
 
 	work := new(denialProofCountingWork)
-	response, kind, signerZone, ok := cache.lookupWithMeta(
+	response, kind, signerZone, _, ok := cache.lookupWithMeta(
 		denialProofTestRequest("www.example.", dns.TypeAAAA, true),
 		work,
 	)
