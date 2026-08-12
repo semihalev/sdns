@@ -2,11 +2,37 @@ package middleware
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 )
+
+// TestForkResetRacesWithLedgerReaders pins the synchronisation on the fork
+// link. Metas are pooled, so one request can reset a root while a sub-query
+// of the request before it is still reading the tree through its fork.
+func TestForkResetRacesWithLedgerReaders(t *testing.T) {
+	parent := new(ResponseMeta)
+	parent.EnsureResolutionAttemptGuard()
+	child := parent.ForkCut()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 2000 {
+			child.Reset()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 2000 {
+			_ = child.ResolutionAttemptGuard()
+		}
+	}()
+	wg.Wait()
+}
 
 // TestForkCutSeparatesLineageAndSharesLedgers pins what a sub-query's meta
 // keeps to itself and what it shares.
@@ -66,6 +92,26 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 	if _, ok := parent.validatedNegativeProofForResponse(proof); !ok {
 		t.Fatal("provenance recorded by the sub-query is invisible to the " +
 			"request tree")
+	}
+}
+
+// TestForkedCutScopeCostsOneAllocation is the gate the benchmark below only
+// reports. A sub-query scope runs once per chase hop and once per DNAME leg,
+// so carrying the meta inside the context value rather than forking one and
+// wrapping the context around it is a property worth failing on, not a
+// number to read afterwards.
+func TestForkedCutScopeCostsOneAllocation(t *testing.T) {
+	var meta ResponseMeta
+	base := WithResponseMeta(context.Background(), &meta)
+
+	allocs := testing.AllocsPerRun(200, func() {
+		ctx, child := WithForkedCut(base)
+		if child == nil || ResponseMetaFrom(ctx) != child {
+			t.Fatal("the scope did not carry its own meta")
+		}
+	})
+	if allocs != 1 {
+		t.Fatalf("a sub-query scope cost %.0f allocations, want 1", allocs)
 	}
 }
 

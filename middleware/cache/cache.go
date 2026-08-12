@@ -356,14 +356,20 @@ func (c *Cache) internalExchange(
 // outer entry that has not changed.
 type subQueryLineage struct {
 	parent, child *middleware.ResponseMeta
+	inherited     bool
 }
 
 // inherit folds the sub-query's bound into the deriving request. Call it
 // where the sub-query's records or provenance reach the outer response.
-func (l subQueryLineage) inherit() {
-	if l.child == nil {
+//
+// Idempotent: a terminal denial carrying authority records is consumed by
+// the generic merge and then again by the branch that adopts its rcode, and
+// the second fold would take both metas' locks to learn the same thing.
+func (l *subQueryLineage) inherit() {
+	if l.child == nil || l.inherited {
 		return
 	}
+	l.inherited = true
 	deadline, key := l.child.Cut()
 	l.parent.BoundCutFor(deadline, key)
 }

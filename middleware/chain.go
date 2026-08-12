@@ -139,14 +139,18 @@ type ResponseMeta struct {
 
 	// ledgers, when set, is the meta that owns every field above except the
 	// cut: a sub-query's meta keeps its own delegation-cut deadline and
-	// shares the rest of the request tree's state. It is written once, at
-	// construction, and read without synchronisation.
+	// shares the rest of the request tree's state.
 	//
 	// Sharing by delegation rather than by copying the pointers is what makes
 	// it correct: the ledgers are created lazily, so a child that copied a
 	// nil pointer would build its own and the request tree would never see
 	// what it recorded.
-	ledgers *ResponseMeta
+	//
+	// Atomic because metas are pooled: Reset detaches the link while a
+	// sub-query of the request before it may still be reading the tree
+	// through it, which is the same lifetime rule the ledger pointers above
+	// already follow.
+	ledgers atomic.Pointer[ResponseMeta]
 
 	// workPolicy is immutable after a Chain is constructed. It lets the
 	// server's request context create the ledger only when real recursive work
@@ -158,10 +162,13 @@ type ResponseMeta struct {
 // ledgerHost returns the meta that owns the request-tree state. A sub-query's
 // meta delegates to the one it was forked from; every other meta owns its own.
 func (m *ResponseMeta) ledgerHost() *ResponseMeta {
-	if m == nil || m.ledgers == nil {
-		return m
+	if m == nil {
+		return nil
 	}
-	return m.ledgers
+	if host := m.ledgers.Load(); host != nil {
+		return host
+	}
+	return m
 }
 
 // ForkCut returns a meta that shares this one's request-tree state — work
@@ -179,7 +186,9 @@ func (m *ResponseMeta) ForkCut() *ResponseMeta {
 		return nil
 	}
 	host := m.ledgerHost()
-	return &ResponseMeta{ledgers: host, workPolicy: host.workPolicy}
+	child := &ResponseMeta{workPolicy: host.workPolicy}
+	child.ledgers.Store(host)
+	return child
 }
 
 // (*ResponseMeta).BoundCut folds a delegation-cut deadline into the
@@ -244,7 +253,7 @@ func (m *ResponseMeta) Reset() {
 		// Detached first: a fork left attached would keep reading the state
 		// of the request it was forked from, which is exactly what a reset
 		// exists to prevent.
-		m.ledgers = nil
+		m.ledgers.Store(nil)
 		m.work.Store(nil)
 		m.attempts.Store(nil)
 		m.cachedFailures.Store(nil)
@@ -515,7 +524,7 @@ func WithForkedCut(ctx context.Context) (context.Context, *ResponseMeta) {
 	}
 	host := parent.ledgerHost()
 	forked := &forkedCutContext{Context: ctx}
-	forked.meta.ledgers = host
+	forked.meta.ledgers.Store(host)
 	forked.meta.workPolicy = host.workPolicy
 	return forked, &forked.meta
 }
