@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -605,32 +606,49 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 			len(cached.wire), dns.MinMsgSize)
 	}
 
-	measure := func(forceMsg bool) float64 {
+	// Bytes, not counts. The two sides do not do identical work before they
+	// diverge — the ceiling refusal asks the chain what it can take, while
+	// removing the byte path fails the writer type assertion before that —
+	// so their allocation counts differ by small amounts that say nothing.
+	// What this test exists to notice is a body copy, and that is 2 KB of
+	// difference, not one object.
+	const runs = 200
+	measure := func(forceMsg bool) uint64 {
 		writer := mock.NewWriter("udp", "198.51.100.77:40000")
 		terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 			t.Fatal("missed cache")
 		})
 		ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
 		// Wrapped once: the shim is what removes the byte path, and building
-		// it inside the loop would charge the comparison an allocation the
-		// other side does not pay.
+		// it inside the loop would charge one side work the other avoids.
 		ch.Reset(writer, req)
 		if forceMsg {
 			ch.Writer = &msgPathShim{ResponseWriter: ch.Writer}
 		}
 		shim := ch.Writer
 
-		return testing.AllocsPerRun(50, func() {
+		serve := func() {
 			// The edns layer sets DO on the request's OPT for upstream
-			// validation, so a reused request stops advertising what the
-			// client asked for. A live query always arrives with a fresh
-			// one, and both sides of this comparison pay for it equally.
+			// validation, so a request reused across iterations stops
+			// advertising the size the client asked for and the ceiling
+			// would never apply. A live query always carries a fresh one,
+			// and both sides pay for the refresh equally.
 			req.Extra = req.Extra[:0]
 			req.SetEdns0(dns.MinMsgSize, false)
 			ch.Writer = shim
 			ch.Reset(writer, req)
 			ch.Next(context.Background())
-		})
+		}
+
+		serve() // warm the pools both paths draw from
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range runs {
+			serve()
+		}
+		runtime.ReadMemStats(&after)
+		return (after.TotalAlloc - before.TotalAlloc) / runs
 	}
 
 	servedBefore := wireFastServed.Value()
@@ -649,9 +667,13 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 		t.Fatal("the refusal was not attributed to the transport ceiling")
 	}
 
-	if pure := measure(true); refused != pure {
-		t.Fatalf("a refused gate cost %.0f allocations against the message "+
-			"path's %.0f: the byte path is paying for something before it "+
-			"consults the gate", refused, pure)
+	// Half a body is far outside the few dozen bytes the two paths differ
+	// by, and far inside the copy this test is looking for.
+	pure := measure(true)
+	if margin := uint64(len(cached.wire)) / 2; refused > pure+margin {
+		t.Fatalf("a refused gate allocated %d bytes per hit against the "+
+			"message path's %d, more than half a %d-byte body apart: the "+
+			"byte path is building one before it consults the gate",
+			refused, pure, len(cached.wire))
 	}
 }
