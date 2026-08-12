@@ -1064,8 +1064,14 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 			wireFastFallback.Inc()
 			// fall through to the Msg path below
 		default:
-			// Transport-level failure after commit — mirror the
-			// Msg path's ignored WriteMsg error.
+			// Transport-level failure after commit — mirror the Msg
+			// path's ignored WriteMsg error. The body was handed over
+			// before the transport was called and the response counts
+			// as written, so a caller reading it back through Msg()
+			// still gets this entry's answer: it binds like any other
+			// terminal outcome. Only a fallback stays unbound, because
+			// there the message path binds instead.
+			boundRequestToEntryLifetime(ctx, entry)
 			ch.Cancel()
 			served = true
 		}

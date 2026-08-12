@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,6 +47,9 @@ func TestCNAMEChainInheritsCachedTargetLifetime(t *testing.T) {
 		}},
 		{"wire-capable writer", func(h []middleware.Handler) middleware.Queryer {
 			return &cutTestQueryer{handlers: h}
+		}},
+		{"wire write reports a transport failure", func(h []middleware.Handler) middleware.Queryer {
+			return &failingWireQueryer{handlers: h}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -247,4 +251,51 @@ func TestStoreGetWithContextBindsEntryLifetime(t *testing.T) {
 	if want := entryExpiry(entry); !got.Equal(want) {
 		t.Fatalf("request tree bound to %v, want the entry's expiry %v", got, want)
 	}
+}
+
+// failingWireWriter hands the body to the writer beneath it — which retains
+// it and marks the response written — and then reports a transport failure
+// that is not a fallback. The cache treats that outcome as terminal, and a
+// caller reading the response back through Msg() still gets the answer, so
+// the lifetime binding has to happen there too.
+type failingWireWriter struct {
+	middleware.ResponseWriter
+}
+
+var errWireTransport = errors.New("cache: synthetic transport failure")
+
+func (w *failingWireWriter) WireReady() (middleware.WireCapability, bool) {
+	next, ok := w.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.WireCapability{}, false
+	}
+	return next.WireReady()
+}
+
+func (w *failingWireWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+	next, ok := w.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.ErrWireFallback
+	}
+	if err := next.WriteWire(body, info); err != nil {
+		return err
+	}
+	return errWireTransport
+}
+
+// failingWireQueryer is the wire-capable sub-query path with that writer.
+type failingWireQueryer struct {
+	handlers []middleware.Handler
+}
+
+func (q *failingWireQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	w := mock.NewWriter("tcp", "127.0.0.1:0")
+	ch := middleware.NewChain(q.handlers)
+	ch.Reset(w, req)
+	ch.Writer = &failingWireWriter{ResponseWriter: ch.Writer}
+	ch.Next(ctx)
+	if !w.Written() {
+		return nil, middleware.ErrNoResponse
+	}
+	return w.Msg(), nil
 }
