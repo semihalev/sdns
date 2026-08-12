@@ -167,19 +167,46 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 // so carrying the meta inside the context value rather than forking one and
 // wrapping the context around it is a property worth failing on, not a
 // number to read afterwards.
+//
+// Both the warm and the cold shape are measured. AllocsPerRun establishes
+// the request's ledgers during its warm-up, so a warm-only gate would never
+// see what the first scope of a request costs — which is the one a CNAME or
+// DNAME leg actually pays.
 func TestForkedCutScopeCostsOneAllocation(t *testing.T) {
-	var meta ResponseMeta
-	base := WithResponseMeta(context.Background(), &meta)
+	t.Run("warm", func(t *testing.T) {
+		var meta ResponseMeta
+		base := WithResponseMeta(context.Background(), &meta)
 
-	allocs := testing.AllocsPerRun(200, func() {
-		ctx, child := WithForkedCut(base)
-		if child == nil || ResponseMetaFrom(ctx) != child {
-			t.Fatal("the scope did not carry its own meta")
+		allocs := testing.AllocsPerRun(200, func() {
+			ctx, child := WithForkedCut(base)
+			if child == nil || ResponseMetaFrom(ctx) != child {
+				t.Fatal("the scope did not carry its own meta")
+			}
+		})
+		if allocs != 1 {
+			t.Fatalf("a sub-query scope cost %.0f allocations, want 1", allocs)
 		}
 	})
-	if allocs != 1 {
-		t.Fatalf("a sub-query scope cost %.0f allocations, want 1", allocs)
-	}
+
+	t.Run("cold", func(t *testing.T) {
+		// The scope, and the request's ledgers it establishes.
+		const budget = 2
+
+		var meta ResponseMeta
+		base := WithResponseMeta(context.Background(), &meta)
+
+		allocs := testing.AllocsPerRun(200, func() {
+			meta.Reset()
+			ctx, child := WithForkedCut(base)
+			if child == nil || ResponseMetaFrom(ctx) != child {
+				t.Fatal("the scope did not carry its own meta")
+			}
+		})
+		if allocs > budget {
+			t.Fatalf("the first sub-query scope of a request cost %.0f "+
+				"allocations, budget is %d", allocs, budget)
+		}
+	})
 }
 
 // BenchmarkForkedCutScope measures what a chase hop pays to separate its

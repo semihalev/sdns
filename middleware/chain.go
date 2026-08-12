@@ -118,12 +118,17 @@ type requestLedgers struct {
 	// a pooled Chain keep charging their original request.
 	work atomic.Pointer[RecursionWorkLedger]
 
-	// attempts is the RFC 9520 request-tree retry guard. It points at guard
-	// below once established: every recursive request establishes one, so
-	// giving it storage here costs the request nothing beyond the ledgers it
-	// was already allocating, where a separate guard is a second object.
-	attempts atomic.Pointer[ResolutionAttemptGuard]
-	guard    ResolutionAttemptGuard
+	// guard is the RFC 9520 request-tree retry guard, ready to use as soon as
+	// this value exists. It has storage here rather than being a second
+	// object per request.
+	//
+	// There is no flag for whether it was established: every path that can
+	// create these ledgers establishes the guard first — the queryer, the
+	// cache, the resolver, the forwarder and failover all do — so inside a
+	// request tree the distinction cannot arise. Outside one there is no
+	// meta at all, and the callers that are meant to skip accounting still
+	// find nothing.
+	guard ResolutionAttemptGuard
 
 	// cachedFailures is a pointer-identity set of failure cache responses
 	// currently crossing outer response-writer wrappers.
@@ -465,14 +470,7 @@ func (m *ResponseMeta) EnsureResolutionAttemptGuard() *ResolutionAttemptGuard {
 		return nil
 	}
 	host := m.ensureLedgerHost()
-	if guard := host.attempts.Load(); guard != nil {
-		return guard
-	}
-
-	if host.attempts.CompareAndSwap(nil, &host.guard) {
-		return &host.guard
-	}
-	return host.attempts.Load()
+	return &host.guard
 }
 
 // ResolutionAttemptGuard returns the request tree's retry guard, if present.
@@ -481,7 +479,7 @@ func (m *ResponseMeta) ResolutionAttemptGuard() *ResolutionAttemptGuard {
 	if host == nil {
 		return nil
 	}
-	return host.attempts.Load()
+	return &host.guard
 }
 
 // ensureRecursionWork returns the request tree's ledger, installing one with
