@@ -232,7 +232,6 @@ func TestWireFastPathEquivalence(t *testing.T) {
 			req.RecursionDesired = true
 			tc.shape(req)
 
-			t.Logf("skips before: size=%d writer=%d entry=%d dnssec=%d served=%d", wireSkipSize.Value(), wireSkipWriter.Value(), wireSkipEntry.Value(), wireSkipDNSSEC.Value(), wireFastServed.Value())
 			servedBefore := wireFastServed.Value()
 			viaWire := serveThrough(t, c, e, req, false)
 			viaMsg := serveThrough(t, c, e, req, true)
@@ -297,7 +296,6 @@ func TestWireFastPathTruncationFallsBack(t *testing.T) {
 	servedBefore := wireFastServed.Value()
 	fallbackBefore := wireFastFallback.Value()
 	resp := serveThrough(t, c, e, client, false)
-	t.Logf("skips after: size=%d writer=%d entry=%d dnssec=%d served=%d", wireSkipSize.Value(), wireSkipWriter.Value(), wireSkipEntry.Value(), wireSkipDNSSEC.Value(), wireFastServed.Value())
 	if wireFastServed.Value() != servedBefore {
 		t.Fatal("an oversized UDP reply must not be served as bytes")
 	}
@@ -576,39 +574,36 @@ func TestWireFastPathExcludesNonByteTransports(t *testing.T) {
 // paths" property directly: a request the chain cannot serve as bytes must
 // not allocate the body copy the byte path would need.
 //
-// What it is measured against is the same request with the byte path removed
-// from the chain entirely. A refused gate must cost exactly the message path
-// and nothing more, which states the property without a ceiling constant to
-// drift against.
+// The refusal is the transport ceiling, so the entry has a servable body and
+// an ordering regression that built it before consulting the gate would show
+// up as an allocation. What it is measured against is the same request with
+// the byte path removed from the chain entirely: a refused gate must cost
+// exactly the message path, which states the property with no ceiling
+// constant to drift against.
 func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 	const qname = "gate2.example.com."
-	// A signed entry with a DO=0 client: the request's own OPT says DO=1 by
-	// the time the cache sees it (the edns layer sets it for upstream
-	// validation), so only the writer chain's preflight can tell the truth.
-	//
-	// Such an entry is normally served from its stripped body, so the one
-	// held here has none — the state an entry lands in when its stripped
-	// form could not be packed or is not itself byte-servable. That is what
-	// still makes the preflight refuse.
-	c, e := wireFastTestPipeline(t, wireFastEntry(t, qname, dns.TypeA, true))
-
-	newRequest := func() *dns.Msg {
-		req := new(dns.Msg)
-		req.SetQuestion(qname, dns.TypeA)
-		req.Id = 12
-		req.RecursionDesired = true
-		req.SetEdns0(1232, false) // client did not ask for DNSSEC
-		return req
+	// Comfortably beyond what the client below will advertise.
+	entryMsg := wireFastEntry(t, qname, dns.TypeA, false)
+	for range 40 {
+		entryMsg.Answer = append(entryMsg.Answer, makeRR(
+			qname+" 300 IN TXT \""+strings.Repeat("x", 60)+"\""))
 	}
+	c, e := wireFastTestPipeline(t, entryMsg)
 
-	cached, ok := c.store.LookupByKey(CacheKey{Question: newRequest().Question[0]}.Hash())
+	req := new(dns.Msg)
+	req.SetQuestion(qname, dns.TypeA)
+	req.Id = 12
+	req.RecursionDesired = true
+
+	cached, ok := c.store.LookupByKey(CacheKey{Question: req.Question[0]}.Hash())
 	if !ok {
 		t.Fatal("the entry under test was not admitted")
 	}
-	if cached.stripped == nil {
-		t.Fatal("fixture is wrong: a signed entry should carry a stripped body")
+	if len(cached.wire) <= dns.MinMsgSize {
+		t.Fatalf("fixture is wrong: stored body is %d bytes, want more than the "+
+			"%d the client advertises so the ceiling refuses it",
+			len(cached.wire), dns.MinMsgSize)
 	}
-	cached.stripped, cached.strippedServe = nil, 0
 
 	measure := func(forceMsg bool) float64 {
 		writer := mock.NewWriter("udp", "198.51.100.77:40000")
@@ -616,38 +611,47 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 			t.Fatal("missed cache")
 		})
 		ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
-		req := newRequest()
+		// Wrapped once: the shim is what removes the byte path, and building
+		// it inside the loop would charge the comparison an allocation the
+		// other side does not pay.
+		ch.Reset(writer, req)
+		if forceMsg {
+			ch.Writer = &msgPathShim{ResponseWriter: ch.Writer}
+		}
+		shim := ch.Writer
+
 		return testing.AllocsPerRun(50, func() {
+			// The edns layer sets DO on the request's OPT for upstream
+			// validation, so a reused request stops advertising what the
+			// client asked for. A live query always arrives with a fresh
+			// one, and both sides of this comparison pay for it equally.
+			req.Extra = req.Extra[:0]
+			req.SetEdns0(dns.MinMsgSize, false)
+			ch.Writer = shim
 			ch.Reset(writer, req)
-			if forceMsg {
-				ch.Writer = &msgPathShim{ResponseWriter: ch.Writer}
-			}
 			ch.Next(context.Background())
 		})
 	}
 
 	servedBefore := wireFastServed.Value()
 	fallbackBefore := wireFastFallback.Value()
-	skippedBefore := wireSkipDNSSEC.Value()
+	skippedBefore := wireSkipSize.Value()
 	refused := measure(false)
 
 	if wireFastServed.Value() != servedBefore {
-		t.Fatal("an entry with no stripped body was served as bytes to a " +
-			"client that did not ask for DNSSEC")
+		t.Fatal("a reply beyond the transport ceiling was served as bytes")
 	}
 	if wireFastFallback.Value() != fallbackBefore {
 		t.Fatal("the request reached the late fallback; the preflight must " +
 			"refuse before the body is built")
 	}
-	if wireSkipDNSSEC.Value() == skippedBefore {
-		t.Fatal("the refusal was not attributed to the DNSSEC gate")
+	if wireSkipSize.Value() == skippedBefore {
+		t.Fatal("the refusal was not attributed to the transport ceiling")
 	}
 
-	pure := measure(true)
-	if refused > pure {
+	if pure := measure(true); refused != pure {
 		t.Fatalf("a refused gate cost %.0f allocations against the message "+
 			"path's %.0f: the byte path is paying for something before it "+
 			"consults the gate", refused, pure)
 	}
-	t.Logf("refused gate %.0f allocations, message path alone %.0f", refused, pure)
 }
