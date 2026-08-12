@@ -903,6 +903,12 @@ func (c *Cache) handleNXDomainCutHit(
 		return false
 	}
 
+	// Same lineage rule as an exact hit: whatever is assembled from this cut
+	// inherits its lifetime.
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
+		meta.BoundCutFor(entry.expires, 0)
+	}
+
 	// A cut hit is locally authenticated state, so it can safely become the
 	// terminal proof source when an enclosing CNAME/DNAME response explicitly
 	// propagates its exact-response provenance.
@@ -1039,6 +1045,9 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		if !built {
 			return wireSkipBuild
 		}
+		// The body exists, so the entry was live when it was built: bind the
+		// request tree to its lifetime before anything can be derived from it.
+		c.boundRequestToEntry(ctx, entry)
 		switch err := ww.WriteWire(body, info); {
 		case err == nil:
 			wireFastServed.Inc()
@@ -1068,6 +1077,10 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		return false
 	}
 
+	// The message materialized, so the entry was live: same binding as the
+	// byte path above, for everything derived from this hit below.
+	c.boundRequestToEntry(ctx, entry)
+
 	// Resolve CNAME chains if needed (matching V1 behavior).
 	// The depth counter bounds nested chases across the Queryer
 	// boundary: each additionalAnswer invocation increments the
@@ -1081,6 +1094,26 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	_ = w.WriteMsg(msg)
 	ch.Cancel()
 	return true
+}
+
+// boundRequestToEntry folds an entry's absolute expiry into the request
+// tree's bound, so anything derived from it inherits its lifetime.
+//
+// The bound is the earlier of the entry's own expiry and the delegation lease
+// it inherited — not the lease alone. A cached answer near the end of its TTL
+// has the shorter claim, and passing only the lease would let the TTL floor
+// re-publish it under whatever is being assembled.
+func (c *Cache) boundRequestToEntry(ctx context.Context, entry *CacheEntry) {
+	meta := middleware.ResponseMetaFrom(ctx)
+	if meta == nil || entry == nil {
+		return
+	}
+	hardUntil := entry.stored.Add(entry.ttl)
+	hardKey := uint64(0)
+	if !entry.cutUntil.IsZero() && !entry.cutUntil.After(hardUntil) {
+		hardUntil, hardKey = entry.cutUntil, entry.cutKey
+	}
+	meta.BoundCutFor(hardUntil, hardKey)
 }
 
 // isValidQuery checks if the query is valid.

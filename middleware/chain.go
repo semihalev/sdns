@@ -104,11 +104,17 @@ type validatedNegativeProofRecord struct {
 }
 
 type ResponseMeta struct {
-	// cut is an atomic pointer to an immutable deadline. Resolver work can
-	// fan out into concurrent NS-address sub-queries that share the request
-	// context, so a plain time.Time here races even though every update is
-	// min-only.
-	cut atomic.Pointer[responseCut]
+	// cut is the earliest deadline observed for the request tree, guarded by
+	// its own mutex. Resolver work can fan out into concurrent NS-address
+	// sub-queries that share the request context, so a plain time.Time here
+	// races even though every update is min-only.
+	//
+	// The value is held inline rather than behind an atomic pointer: every
+	// cache hit now folds its own lifetime in, so a publish that allocated
+	// an immutable deadline per call would put an allocation on the hottest
+	// path in the server. The critical section is two comparisons.
+	cutMu sync.Mutex
+	cut   responseCut
 
 	// work points at a heap-owned request-tree ledger. Reset detaches the
 	// pointer without mutating the ledger so resolver goroutines that briefly
@@ -154,16 +160,11 @@ func (m *ResponseMeta) BoundCutFor(deadline time.Time, key uint64) {
 		return
 	}
 
-	next := &responseCut{deadline: deadline, key: key}
-	for {
-		current := m.cut.Load()
-		if current != nil && !deadline.Before(current.deadline) {
-			return
-		}
-		if m.cut.CompareAndSwap(current, next) {
-			return
-		}
+	m.cutMu.Lock()
+	if m.cut.deadline.IsZero() || deadline.Before(m.cut.deadline) {
+		m.cut = responseCut{deadline: deadline, key: key}
 	}
+	m.cutMu.Unlock()
 }
 
 // Cut returns the earliest delegation-cut deadline observed for the request
@@ -173,10 +174,10 @@ func (m *ResponseMeta) Cut() (time.Time, uint64) {
 	if m == nil {
 		return time.Time{}, 0
 	}
-	if cut := m.cut.Load(); cut != nil {
-		return cut.deadline, cut.key
-	}
-	return time.Time{}, 0
+	m.cutMu.Lock()
+	deadline, key := m.cut.deadline, m.cut.key
+	m.cutMu.Unlock()
+	return deadline, key
 }
 
 // CutUntil returns the earliest delegation-cut deadline observed for the
@@ -199,7 +200,9 @@ func (m *ResponseMeta) CutKey() uint64 {
 // copied after first use.
 func (m *ResponseMeta) Reset() {
 	if m != nil {
-		m.cut.Store(nil)
+		m.cutMu.Lock()
+		m.cut = responseCut{}
+		m.cutMu.Unlock()
 		m.work.Store(nil)
 		m.attempts.Store(nil)
 		m.cachedFailures.Store(nil)
