@@ -203,3 +203,48 @@ func TestDenialProofPreparedNSECDropsExpired(t *testing.T) {
 		t.Fatal("filtering an expired entry disturbed the published set")
 	}
 }
+
+// TestDenialProofAncestorsMatchesSplit pins the ancestor walk to the
+// dns.Split-based list it replaced, including the shapes where they could
+// differ: the root, a single label, and escaped separators.
+func TestDenialProofAncestorsMatchesSplit(t *testing.T) {
+	reference := func(name string) []string {
+		if name == "." {
+			return []string{"."}
+		}
+		var result []string
+		for _, offset := range dns.Split(name) {
+			result = append(result, name[offset:])
+		}
+		return append(result, ".")
+	}
+
+	for _, name := range []string{
+		".",
+		"com.",
+		"example.com.",
+		"a.b.example.com.",
+		`a\.b.example.com.`,
+	} {
+		want := reference(name)
+		got := denialProofAncestors(name, nil)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("ancestors of %q = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TestDenialProofAncestorsUsesCallerStorage pins that the walk allocates
+// nothing when the caller's buffer is large enough. Every lookup makes this
+// call, which is why the list is not built freshly each time.
+func TestDenialProofAncestorsUsesCallerStorage(t *testing.T) {
+	var storage [12]string
+	allocs := testing.AllocsPerRun(200, func() {
+		if got := denialProofAncestors("a.b.example.com.", storage[:0]); len(got) != 5 {
+			t.Fatalf("ancestors = %d entries, want 5", len(got))
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("ancestor walk allocated %.1f times per call, want 0", allocs)
+	}
+}

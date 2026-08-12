@@ -1176,13 +1176,21 @@ func (c *denialProofCache) lookupWithMeta(
 		return nil, 0, "", false
 	}
 
+	// A name deep enough to overflow either buffer simply grows it; the sizes
+	// cover ordinary names so that a lookup allocates nothing to find its
+	// candidate zones.
+	var (
+		ancestorStorage  [12]string
+		candidateStorage [12]denialProofCandidate
+	)
+
 	c.mu.RLock()
 	if c.stopped {
 		c.mu.RUnlock()
 		return nil, 0, "", false
 	}
-	candidates := make([]denialProofCandidate, 0, len(dns.Split(qname))+1)
-	for _, zone := range denialProofAncestors(qname) {
+	candidates := candidateStorage[:0]
+	for _, zone := range denialProofAncestors(qname, ancestorStorage[:0]) {
 		key := denialProofZoneKey{zone: zone, qclass: q.Qclass}
 		if snapshot := c.zoneIndex[key]; snapshot != nil {
 			candidates = append(candidates, denialProofCandidate{
@@ -1263,17 +1271,24 @@ func (c *denialProofCache) nsec3SelectionConflictedLocked(
 	return false
 }
 
-func denialProofAncestors(name string) []string {
-	if name == "." {
-		return []string{"."}
+// denialProofAncestors appends name and each of its ancestors, ending at the
+// root, to buf and returns it. Every lookup walks this list, so the caller
+// supplies the storage: the names themselves are substrings of name and cost
+// nothing, and a caller whose buffer is large enough allocates nothing at all.
+func denialProofAncestors(name string, buf []string) []string {
+	buf = buf[:0]
+	for offset := 0; ; {
+		buf = append(buf, name[offset:])
+		next, end := dns.NextLabel(name, offset)
+		if end {
+			break
+		}
+		offset = next
 	}
-	offsets := dns.Split(name)
-	result := make([]string, 0, len(offsets)+1)
-	for _, offset := range offsets {
-		result = append(result, name[offset:])
+	if name != "." {
+		buf = append(buf, ".")
 	}
-	result = append(result, ".")
-	return result
+	return buf
 }
 
 func denialProofEvaluate(
@@ -1497,7 +1512,7 @@ func (c *denialProofCache) purge(q dns.Question) {
 	// backstop cannot identify its originating tuple, so clear it globally;
 	// keyed tombstones below are removed only for the requested ancestors.
 	c.nsec3ConflictOverflowUntil = time.Time{}
-	for _, zone := range denialProofAncestors(q.Name) {
+	for _, zone := range denialProofAncestors(q.Name, nil) {
 		key := denialProofZoneKey{zone: zone, qclass: q.Qclass}
 		for conflict := range c.nsec3Conflicts {
 			if conflict.zone == key {
