@@ -299,3 +299,142 @@ func (q *failingWireQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg,
 	}
 	return w.Msg(), nil
 }
+
+// TestChildEntryKeepsItsOwnLifetime is the other half of the lineage rule.
+// A derived answer must not outlive its source — but the source must not be
+// shortened to the deriver's lifetime either. They share one request tree,
+// and today they share one bound, so a nearly expired alias drags a freshly
+// resolved target down to its own seconds.
+//
+// Safe, and expensive: the target's entry expires almost immediately and the
+// next query for it resolves again.
+func TestChildEntryKeepsItsOwnLifetime(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+
+	const alias, target = "alias.child.", "target.child."
+
+	// The target is resolved fresh, with a long lifetime of its own.
+	targetHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request)
+		resp.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{
+				Name: target, Rrtype: dns.TypeA,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			A: []byte{192, 0, 2, 7},
+		}}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	// The alias is cached and nearly expired when the client asks for it.
+	aliasHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request)
+		resp.Answer = []dns.RR{&dns.CNAME{
+			Hdr: dns.RR_Header{
+				Name: alias, Rrtype: dns.TypeCNAME,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Target: target,
+		}}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, targetHandler}})
+
+	primeReq := new(dns.Msg)
+	primeReq.SetQuestion(alias, dns.TypeA)
+	primeReq.RecursionDesired = true
+	primeChain := middleware.NewChain([]middleware.Handler{c, aliasHandler})
+	primeChain.Reset(mock.NewWriter("udp", "127.0.0.1:0"), primeReq)
+	primeChain.Next(context.Background())
+
+	aliasKey := CacheKey{Question: primeReq.Question[0], CD: false}.Hash()
+	aliasEntry, ok := c.store.LookupByKey(aliasKey)
+	if !ok {
+		t.Fatal("the alias was not cached")
+	}
+	// Age the alias to a second of remaining life, and drop the target so the
+	// chase below has to resolve it fresh.
+	aliasEntry.stored = aliasEntry.stored.Add(-aliasEntry.ttl + time.Second)
+	targetKey := CacheKey{Question: dns.Question{
+		Name: target, Qtype: dns.TypeA, Qclass: dns.ClassINET,
+	}, CD: false}.Hash()
+	c.store.positive.Remove(targetKey)
+	c.store.negative.Remove(targetKey)
+
+	req := new(dns.Msg)
+	req.SetQuestion(alias, dns.TypeA)
+	req.RecursionDesired = true
+	chain := middleware.NewChain([]middleware.Handler{c, aliasHandler})
+	chain.Reset(mock.NewWriter("udp", "127.0.0.1:0"), req)
+	chain.Next(context.Background())
+
+	targetEntry, ok := c.store.LookupByKey(targetKey)
+	if !ok {
+		t.Fatal("the chase did not cache the target it resolved")
+	}
+	if got := time.Until(entryExpiry(targetEntry)); got < 30*time.Second {
+		t.Fatalf("a freshly resolved target was stored with %v of life, "+
+			"cut down to the alias that happened to ask for it", got)
+	}
+}
+
+// boundThenSilentQueryer is a sub-query that observes a short delegation cut
+// and then produces nothing. Its lineage belongs to an answer that was never
+// assembled, so the deriving request must not inherit it.
+type boundThenSilentQueryer struct {
+	deadline time.Time
+}
+
+func (q *boundThenSilentQueryer) Query(ctx context.Context, _ *dns.Msg) (*dns.Msg, error) {
+	middleware.ResponseMetaFrom(ctx).BoundCutFor(q.deadline, 0)
+	return nil, middleware.ErrNoResponse
+}
+
+// TestUnusedSubQueryLineageIsNotInherited pins when a sub-query's bound
+// counts. It travels to the deriving request because the composed answer
+// carries the sub-query's records — so a sub-query that contributed no
+// records must not shorten anything.
+func TestUnusedSubQueryLineageIsNotInherited(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+
+	const alias, target = "alias.unused.", "target.unused."
+
+	c.SetQueryer(&boundThenSilentQueryer{deadline: time.Now().Add(time.Second)})
+
+	aliasHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request)
+		resp.Answer = []dns.RR{&dns.CNAME{
+			Hdr: dns.RR_Header{
+				Name: alias, Rrtype: dns.TypeCNAME,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Target: target,
+		}}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion(alias, dns.TypeA)
+	req.RecursionDesired = true
+	chain := middleware.NewChain([]middleware.Handler{c, aliasHandler})
+	chain.Reset(mock.NewWriter("udp", "127.0.0.1:0"), req)
+	chain.Next(context.Background())
+
+	entry, ok := c.store.LookupByKey(CacheKey{Question: req.Question[0], CD: false}.Hash())
+	if !ok {
+		t.Fatal("the alias was not cached")
+	}
+	if got := time.Until(entryExpiry(entry)); got < 30*time.Second {
+		t.Fatalf("the alias was bound to %v by a sub-query that produced "+
+			"nothing for it", got)
+	}
+}

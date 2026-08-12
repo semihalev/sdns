@@ -901,20 +901,23 @@ func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
 // the redirect would let an overlong or cyclic chain degrade into a
 // NOERROR response containing only the outer DNAME and leave the
 // client with an unresolved reference.
-func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, error) {
+func (r *Resolver) checkDname(
+	ctx context.Context,
+	resp *dns.Msg,
+) (*dns.Msg, *middleware.ResponseMeta, error) {
 	if len(resp.Question) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	q := resp.Question[0]
 
 	if q.Qtype == dns.TypeCNAME {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	target := dnsutil.DnameTarget(resp)
 	if target == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Cap the DNAME alias chain. Each follow-up goes through
@@ -925,7 +928,7 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 	depth, _ := ctx.Value(contextKeyDnameDepth).(int)
 	if depth >= maxDnameDepth {
 		zlog.Warn("DNAME alias chain too long", "qname", q.Name, "target", target, "depth", depth)
-		return nil, errMaxDepth
+		return nil, nil, errMaxDepth
 	}
 	ctx = context.WithValue(ctx, contextKeyDnameDepth, depth+1)
 
@@ -940,11 +943,18 @@ func (r *Resolver) checkDname(ctx context.Context, resp *dns.Msg) (*dns.Msg, err
 	// setTags() so it's the authoritative source here.
 	req.CheckingDisabled = resp.CheckingDisabled
 
+	// The DNAME target is resolved and cached under its own name, so it
+	// carries its own lineage rather than the outer DNAME's. The outer
+	// answer inherits it only where the target is spliced in, which is
+	// after validation and is the only place the target's records become
+	// part of what the client is served.
+	ctx, targetCut := middleware.WithForkedCut(ctx)
+
 	msg, err := r.internalExchange(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return msg, nil
+	return msg, targetCut, nil
 }
 
 func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dns.RR, zone string, extra ...bool) (*dns.Msg, error) {
@@ -956,7 +966,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 	// answer. By validating the outer response alone and merging the
 	// target data afterward, dnssec.VerifyRRSIG sees only the signer zone's
 	// records and the combined AD still reflects both sides.
-	targetMsg, err := r.checkDname(ctx, resp)
+	targetMsg, targetCut, err := r.checkDname(ctx, resp)
 	if err != nil {
 		// Depth cap or internal-exchange failure on the DNAME leg.
 		// Surfacing the error prevents a cyclic/overlong DNAME chain
@@ -1077,6 +1087,12 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		// and set msg.AuthenticatedData accordingly; AND it into the
 		// outer AD so the combined response is authentic only if
 		// both sides are.
+		if targetCut != nil {
+			// The target's records are part of the client's answer now, so
+			// the outer response inherits how long they may be served.
+			deadline, key := targetCut.Cut()
+			middleware.ResponseMetaFrom(ctx).BoundCutFor(deadline, key)
+		}
 		resp.Answer = append(resp.Answer, targetMsg.Answer...)
 		resp.Rcode = targetMsg.Rcode
 		terminalDenial := targetMsg.Rcode == dns.RcodeNameError
