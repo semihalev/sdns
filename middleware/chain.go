@@ -103,6 +103,33 @@ type validatedNegativeProofRecord struct {
 	fingerprint [sha256.Size]byte
 }
 
+// requestLedgers is one request tree's shared state, held apart from the
+// metas that reach it.
+//
+// A ResponseMeta is pooled and reused by the next request, so its address is
+// not an identity: a sub-query that outlives its request would otherwise read
+// whatever the next one put in the same struct. This is allocated per request
+// generation and captured by the root and every fork under it, so a reset
+// root drops only its own reference and the forks that came before keep the
+// state they belong to.
+type requestLedgers struct {
+	// work is the request-tree recursion ledger. Reset detaches the pointer
+	// without mutating the ledger so resolver goroutines that briefly outlive
+	// a pooled Chain keep charging their original request.
+	work atomic.Pointer[RecursionWorkLedger]
+
+	// attempts is the RFC 9520 request-tree retry guard.
+	attempts atomic.Pointer[ResolutionAttemptGuard]
+
+	// cachedFailures is a pointer-identity set of failure cache responses
+	// currently crossing outer response-writer wrappers.
+	cachedFailures atomic.Pointer[cachedFailureResponseSet]
+
+	// validatedNegativeProofs is immutable, exact-response NXDOMAIN or NODATA
+	// provenance produced by this resolver.
+	validatedNegativeProofs atomic.Pointer[validatedNegativeProofResponseSet]
+}
+
 type ResponseMeta struct {
 	// cut is the earliest deadline observed for the request tree, guarded by
 	// its own mutex. Resolver work can fan out into concurrent NS-address
@@ -116,41 +143,11 @@ type ResponseMeta struct {
 	cutMu sync.Mutex
 	cut   responseCut
 
-	// work points at a heap-owned request-tree ledger. Reset detaches the
-	// pointer without mutating the ledger so resolver goroutines that briefly
-	// outlive a pooled Chain keep charging their original request.
-	work atomic.Pointer[RecursionWorkLedger]
-
-	// attempts points at a heap-owned RFC 9520 request-tree retry guard.
-	// Reset only detaches it; pinned resolver goroutines keep their original
-	// guard even after the pooled Chain is reused.
-	attempts atomic.Pointer[ResolutionAttemptGuard]
-
-	// cachedFailures points at a heap-owned, pointer-identity set of failure
-	// cache responses currently crossing outer response-writer wrappers.
-	// Reset detaches the set rather than mutating it, matching the lifetime
-	// rules for work and attempts above.
-	cachedFailures atomic.Pointer[cachedFailureResponseSet]
-
-	// validatedNegativeProofs points at immutable, exact-response NXDOMAIN or
-	// NODATA provenance produced by this resolver. Reset detaches the complete
-	// set so a pooled Chain cannot expose one request's validation to the next.
-	validatedNegativeProofs atomic.Pointer[validatedNegativeProofResponseSet]
-
-	// ledgers, when set, is the meta that owns every field above except the
-	// cut: a sub-query's meta keeps its own delegation-cut deadline and
-	// shares the rest of the request tree's state.
-	//
-	// Sharing by delegation rather than by copying the pointers is what makes
-	// it correct: the ledgers are created lazily, so a child that copied a
-	// nil pointer would build its own and the request tree would never see
-	// what it recorded.
-	//
-	// Atomic because metas are pooled: Reset detaches the link while a
-	// sub-query of the request before it may still be reading the tree
-	// through it, which is the same lifetime rule the ledger pointers above
-	// already follow.
-	ledgers atomic.Pointer[ResponseMeta]
+	// ledgers is this request tree's shared state. A root creates it on first
+	// use and drops it on Reset; a fork captures the same one at construction
+	// and keeps it for as long as it lives, which is what stops a fork from
+	// following a pooled root into the next request.
+	ledgers atomic.Pointer[requestLedgers]
 
 	// workPolicy is immutable after a Chain is constructed. It lets the
 	// server's request context create the ledger only when real recursive work
@@ -159,16 +156,33 @@ type ResponseMeta struct {
 	workPolicy RecursionWorkPolicy
 }
 
-// ledgerHost returns the meta that owns the request-tree state. A sub-query's
-// meta delegates to the one it was forked from; every other meta owns its own.
-func (m *ResponseMeta) ledgerHost() *ResponseMeta {
+// ledgerHost returns this meta's request-tree state, or nil when the request
+// has established none. Readers take this one.
+//
+// Every operation snapshots the host once and works on that value: a root
+// being reset concurrently must not leave a single operation reading one
+// generation and writing another.
+func (m *ResponseMeta) ledgerHost() *requestLedgers {
+	if m == nil {
+		return nil
+	}
+	return m.ledgers.Load()
+}
+
+// ensureLedgerHost is ledgerHost for the operations that establish state,
+// creating the request tree's ledgers on first use.
+func (m *ResponseMeta) ensureLedgerHost() *requestLedgers {
 	if m == nil {
 		return nil
 	}
 	if host := m.ledgers.Load(); host != nil {
 		return host
 	}
-	return m
+	host := new(requestLedgers)
+	if m.ledgers.CompareAndSwap(nil, host) {
+		return host
+	}
+	return m.ledgers.Load()
 }
 
 // ForkCut returns a meta that shares this one's request-tree state — work
@@ -185,9 +199,11 @@ func (m *ResponseMeta) ForkCut() *ResponseMeta {
 	if m == nil {
 		return nil
 	}
-	host := m.ledgerHost()
-	child := &ResponseMeta{workPolicy: host.workPolicy}
-	child.ledgers.Store(host)
+	// Established here rather than read: a fork is the moment the tree needs
+	// a stable host, and a child that captured a nil one would build its own
+	// and record where the tree cannot see it.
+	child := &ResponseMeta{workPolicy: m.workPolicy}
+	child.ledgers.Store(m.ensureLedgerHost())
 	return child
 }
 
@@ -250,14 +266,12 @@ func (m *ResponseMeta) Reset() {
 		m.cutMu.Lock()
 		m.cut = responseCut{}
 		m.cutMu.Unlock()
-		// Detached first: a fork left attached would keep reading the state
-		// of the request it was forked from, which is exactly what a reset
-		// exists to prevent.
+		// Dropping the reference is the whole of it: the next request gets a
+		// new one on first use, and anything still holding this one — a
+		// resolver goroutine outliving the pooled Chain, a sub-query's fork —
+		// keeps the request it belongs to rather than following this struct
+		// into the next.
 		m.ledgers.Store(nil)
-		m.work.Store(nil)
-		m.attempts.Store(nil)
-		m.cachedFailures.Store(nil)
-		m.validatedNegativeProofs.Store(nil)
 	}
 }
 
@@ -269,13 +283,14 @@ func (m *ResponseMeta) MarkCachedFailureResponse(msg *dns.Msg) func() {
 		return func() {}
 	}
 
-	markers := m.ledgerHost().cachedFailures.Load()
+	host := m.ensureLedgerHost()
+	markers := host.cachedFailures.Load()
 	if markers == nil {
 		candidate := &cachedFailureResponseSet{messages: make(map[*dns.Msg]uint32)}
-		if m.ledgerHost().cachedFailures.CompareAndSwap(nil, candidate) {
+		if host.cachedFailures.CompareAndSwap(nil, candidate) {
 			markers = candidate
 		} else {
-			markers = m.ledgerHost().cachedFailures.Load()
+			markers = host.cachedFailures.Load()
 		}
 	}
 
@@ -304,7 +319,11 @@ func (m *ResponseMeta) IsCachedFailureResponse(msg *dns.Msg) bool {
 	if m == nil || msg == nil {
 		return false
 	}
-	markers := m.ledgerHost().cachedFailures.Load()
+	host := m.ledgerHost()
+	if host == nil {
+		return false
+	}
+	markers := host.cachedFailures.Load()
 	if markers == nil {
 		return false
 	}
@@ -337,15 +356,16 @@ func (m *ResponseMeta) markValidatedNegativeProofResponse(
 	negative.Zone = dns.CanonicalName(negative.Zone)
 	negative.Proof = proof
 
-	negatives := m.ledgerHost().validatedNegativeProofs.Load()
+	host := m.ensureLedgerHost()
+	negatives := host.validatedNegativeProofs.Load()
 	if negatives == nil {
 		candidate := &validatedNegativeProofResponseSet{
 			messages: make(map[*dns.Msg]validatedNegativeProofRecord),
 		}
-		if m.ledgerHost().validatedNegativeProofs.CompareAndSwap(nil, candidate) {
+		if host.validatedNegativeProofs.CompareAndSwap(nil, candidate) {
 			negatives = candidate
 		} else {
-			negatives = m.ledgerHost().validatedNegativeProofs.Load()
+			negatives = host.validatedNegativeProofs.Load()
 		}
 	}
 
@@ -383,7 +403,11 @@ func (m *ResponseMeta) validatedNegativeProofForResponse(
 	if m == nil || msg == nil {
 		return ValidatedNegativeProof{}, false
 	}
-	negatives := m.ledgerHost().validatedNegativeProofs.Load()
+	host := m.ledgerHost()
+	if host == nil {
+		return ValidatedNegativeProof{}, false
+	}
+	negatives := host.validatedNegativeProofs.Load()
 	if negatives == nil {
 		return ValidatedNegativeProof{}, false
 	}
@@ -431,23 +455,25 @@ func (m *ResponseMeta) EnsureResolutionAttemptGuard() *ResolutionAttemptGuard {
 	if m == nil {
 		return nil
 	}
-	if guard := m.ledgerHost().attempts.Load(); guard != nil {
+	host := m.ensureLedgerHost()
+	if guard := host.attempts.Load(); guard != nil {
 		return guard
 	}
 
 	guard := NewResolutionAttemptGuard()
-	if m.ledgerHost().attempts.CompareAndSwap(nil, guard) {
+	if host.attempts.CompareAndSwap(nil, guard) {
 		return guard
 	}
-	return m.ledgerHost().attempts.Load()
+	return host.attempts.Load()
 }
 
 // ResolutionAttemptGuard returns the request tree's retry guard, if present.
 func (m *ResponseMeta) ResolutionAttemptGuard() *ResolutionAttemptGuard {
-	if m == nil {
+	host := m.ledgerHost()
+	if host == nil {
 		return nil
 	}
-	return m.ledgerHost().attempts.Load()
+	return host.attempts.Load()
 }
 
 // ensureRecursionWork returns the request tree's ledger, installing one with
@@ -464,23 +490,25 @@ func (m *ResponseMeta) ensureRecursionWork(policy RecursionWorkPolicy) *Recursio
 	if !policy.Enabled() {
 		return nil
 	}
-	if ledger := m.ledgerHost().work.Load(); ledger != nil {
+	host := m.ensureLedgerHost()
+	if ledger := host.work.Load(); ledger != nil {
 		return ledger
 	}
 
 	ledger := NewRecursionWorkLedger(policy)
-	if m.ledgerHost().work.CompareAndSwap(nil, ledger) {
+	if host.work.CompareAndSwap(nil, ledger) {
 		return ledger
 	}
-	return m.ledgerHost().work.Load()
+	return host.work.Load()
 }
 
 // RecursionWork returns the request tree's ledger, if accounting is active.
 func (m *ResponseMeta) RecursionWork() *RecursionWorkLedger {
-	if m == nil {
+	host := m.ledgerHost()
+	if host == nil {
 		return nil
 	}
-	return m.ledgerHost().work.Load()
+	return host.work.Load()
 }
 
 // responseMetaKey tags ctx with the active *ResponseMeta. Sentinel
@@ -522,10 +550,9 @@ func WithForkedCut(ctx context.Context) (context.Context, *ResponseMeta) {
 	if parent == nil {
 		return ctx, nil
 	}
-	host := parent.ledgerHost()
 	forked := &forkedCutContext{Context: ctx}
-	forked.meta.ledgers.Store(host)
-	forked.meta.workPolicy = host.workPolicy
+	forked.meta.ledgers.Store(parent.ensureLedgerHost())
+	forked.meta.workPolicy = parent.workPolicy
 	return forked, &forked.meta
 }
 

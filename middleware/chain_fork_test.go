@@ -9,6 +9,40 @@ import (
 	"github.com/miekg/dns"
 )
 
+// TestForkDoesNotCrossRequestGenerations pins the isolation a pooled root
+// requires. A root meta is reset and reused by the next request, and a fork
+// of the request before it can still be alive — it must keep reading the
+// state of the request it belongs to, never the one that took the root over.
+func TestForkDoesNotCrossRequestGenerations(t *testing.T) {
+	root := new(ResponseMeta)
+
+	first := root.EnsureResolutionAttemptGuard()
+	if first == nil {
+		t.Fatal("the first request could not establish a retry guard")
+	}
+	child := root.ForkCut()
+	if child.ResolutionAttemptGuard() != first {
+		t.Fatal("the fork does not share its own request's retry guard")
+	}
+
+	// The root is returned to the pool and taken over by the next request.
+	root.Reset()
+	second := root.EnsureResolutionAttemptGuard()
+	if second == nil {
+		t.Fatal("the second request could not establish a retry guard")
+	}
+	if second == first {
+		t.Fatal("the reset root handed the second request the first's guard")
+	}
+
+	if got := child.ResolutionAttemptGuard(); got == second {
+		t.Fatal("a fork of the first request now reads the second request's " +
+			"retry guard: the pooled root's address is not an identity")
+	} else if got != first {
+		t.Fatalf("a fork of the first request lost its own guard: %v", got)
+	}
+}
+
 // TestForkResetRacesWithLedgerReaders pins the synchronisation on the fork
 // link. Metas are pooled, so one request can reset a root while a sub-query
 // of the request before it is still reading the tree through its fork.
