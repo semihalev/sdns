@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/miekg/dns"
 )
@@ -340,14 +341,22 @@ func newAggressiveCanonicalName(name string) (aggressiveCanonicalName, error) {
 		return aggressiveCanonicalName{}, aggressiveFallback("empty domain name")
 	}
 
-	packed := make([]byte, 255)
-	end, err := dns.PackDomainName(dns.Fqdn(name), packed, 0, nil, false)
+	// A name's wire form never exceeds its presentation length by more than
+	// the root label, and escape sequences only make it shorter, so the text
+	// bounds the buffer. The 255-octet ceiling is not merely a cap here:
+	// PackDomainName does not enforce the wire-format limit itself, so the
+	// buffer is what rejects an over-long name.
+	fqdn := dns.Fqdn(name)
+	packed := make([]byte, min(len(fqdn)+1, 255))
+	end, err := dns.PackDomainName(fqdn, packed, 0, nil, false)
 	if err != nil || end == 0 || end > len(packed) {
 		return aggressiveCanonicalName{}, aggressiveFallback("invalid domain name")
 	}
 	packed = packed[:end]
 
-	labels := make([][]byte, 0, 8)
+	// Every label but the root is preceded by a separator in the text, so the
+	// separator count bounds the label count. Escaped dots only overcount.
+	labels := make([][]byte, 0, strings.Count(fqdn, "."))
 	for offset := 0; ; {
 		if offset >= len(packed) {
 			return aggressiveCanonicalName{}, aggressiveFallback("unterminated domain name")
@@ -397,10 +406,10 @@ func newAggressiveCanonicalNameFromLabels(labels [][]byte) aggressiveCanonicalNa
 }
 
 // compact returns an equivalent name sized to what it holds. Construction
-// packs into a fixed 255-octet buffer and keeps a view of it, which costs
-// nothing for a name built and dropped inside one evaluation but retains
-// the whole buffer — and a label header array sized for eight labels — for
-// a name kept in a cache entry. Only retained names pay the copy.
+// packs into a buffer bounded by the presentation form and keeps a view of
+// it, which costs nothing for a name built and dropped inside one evaluation
+// but retains the slack for a name kept in a cache entry. Only retained names
+// pay the copy.
 func (name aggressiveCanonicalName) compact() aggressiveCanonicalName {
 	if len(name.wire) == 0 || cap(name.wire) == len(name.wire) {
 		return name
