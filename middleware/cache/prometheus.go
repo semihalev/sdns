@@ -48,6 +48,17 @@ var (
 	wireFastServed   = wireFastPath.Register("served")
 	wireFastFallback = wireFastPath.Register("fallback")
 
+	// A hit that never attempts the byte path is counted by what stopped it.
+	// Serving bytes is what keeps a hit from decoding and re-encoding a
+	// message it already holds, so which gate turns hits away decides where
+	// widening it would pay.
+	wireSkipInternal = wireFastPath.Register("skip_internal")
+	wireSkipEntry    = wireFastPath.Register("skip_entry")
+	wireSkipWriter   = wireFastPath.Register("skip_writer")
+	wireSkipDNSSEC   = wireFastPath.Register("skip_dnssec")
+	wireSkipSize     = wireFastPath.Register("skip_size")
+	wireSkipBuild    = wireFastPath.Register("skip_build")
+
 	nxDomainCutHits = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "nxdomain_cut_hits_total",
 		Help: "Total number of descendant NXDOMAIN responses served from locally validated RFC 8020 cuts",

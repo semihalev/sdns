@@ -15,6 +15,7 @@ import (
 	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/waitgroup"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
@@ -1013,29 +1014,51 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	// Byte fast path: serve the stored wire directly. The entry-local gate
 	// runs first, then the writer chain's preflight — both allocation-free
 	// and together complete, so a request bound for the Msg path never
-	// builds a body nor makes the chain compose anything.
-	if !w.Internal() && entry.wireEligibleFor(req) {
-		if ww, ok := w.(middleware.WireWriter); ok {
-			if capability, ready := ww.WireReady(); ready &&
-				entry.wireFitsChain(capability) {
-				if body, info, built := entry.serveWire(req, capability.Reserve); built {
-					switch err := ww.WriteWire(body, info); {
-					case err == nil:
-						wireFastServed.Inc()
-						ch.Cancel()
-						return true
-					case errors.Is(err, middleware.ErrWireFallback):
-						wireFastFallback.Inc()
-						// fall through to the Msg path below
-					default:
-						// Transport-level failure after commit — mirror the
-						// Msg path's ignored WriteMsg error.
-						ch.Cancel()
-						return true
-					}
-				}
-			}
+	// builds a body nor makes the chain compose anything. A hit that never
+	// reaches WriteWire records which gate turned it away.
+	var served bool
+	if skipped := func() *metric.Counter {
+		if w.Internal() {
+			return wireSkipInternal
 		}
+		if !entry.wireEligibleFor(req) {
+			return wireSkipEntry
+		}
+		ww, ok := w.(middleware.WireWriter)
+		if !ok {
+			return wireSkipWriter
+		}
+		capability, ready := ww.WireReady()
+		if !ready {
+			return wireSkipWriter
+		}
+		if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
+			return mismatch
+		}
+		body, info, built := entry.serveWire(req, capability.Reserve)
+		if !built {
+			return wireSkipBuild
+		}
+		switch err := ww.WriteWire(body, info); {
+		case err == nil:
+			wireFastServed.Inc()
+			ch.Cancel()
+			served = true
+		case errors.Is(err, middleware.ErrWireFallback):
+			wireFastFallback.Inc()
+			// fall through to the Msg path below
+		default:
+			// Transport-level failure after commit — mirror the
+			// Msg path's ignored WriteMsg error.
+			ch.Cancel()
+			served = true
+		}
+		return nil
+	}(); skipped != nil {
+		skipped.Inc()
+	}
+	if served {
+		return true
 	}
 
 	// Build response from cache
