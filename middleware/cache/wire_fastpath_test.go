@@ -428,7 +428,10 @@ func BenchmarkWireFastPath(b *testing.B) {
 		servedBefore := wireFastServed.Value()
 		ch.Next(context.Background())
 		servedDelta := wireFastServed.Value() - servedBefore
-		wantWire := !forceMsg && (do || !dnssec)
+		// A signed entry reaches a client without DO too, from its stripped
+		// body — the gate only turns a request away when there is no body
+		// it may be served.
+		wantWire := !forceMsg
 		if wantWire != (servedDelta == 1) {
 			b.Fatalf("path check: wire served %d, wantWire=%v", servedDelta, wantWire)
 		}
@@ -452,7 +455,9 @@ func BenchmarkWireFastPath(b *testing.B) {
 	// to be re-encoded. This is the path the exact-match shortcut declines;
 	// it must stay a byte-served reply, and no dearer than it was.
 	b.Run("wire_served_case_rewrite", func(b *testing.B) { run(b, "BeNcH.ExAmPlE.CoM.", true, true, false) })
-	b.Run("gate_rejected_to_msg", func(b *testing.B) { run(b, qname, true, false, false) })
+	// A signed entry answering a client without DO: served from the stripped
+	// body, which is the commonest hit a validating resolver has.
+	b.Run("wire_served_do0_stripped", func(b *testing.B) { run(b, qname, true, false, false) })
 	b.Run("msg_path_baseline", func(b *testing.B) { run(b, qname, true, true, true) })
 	b.Run("msg_baseline_cookie", func(b *testing.B) { run(b, qname, true, true, true, "0123456789abcdef") })
 }

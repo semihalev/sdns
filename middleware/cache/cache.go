@@ -883,13 +883,16 @@ func (c *Cache) lookupDenialProof(
 		c.store.rfc8198Disabled {
 		return nil, middleware.ValidatedNegativeProofUnknown, ""
 	}
-	msg, kind, zone, ok := c.store.LookupDenialProof(
+	msg, kind, zone, proofExpires, ok := c.store.LookupDenialProof(
 		req,
 		newDenialProofWork(ctx, c.dnssecCryptoLimiter),
 	)
 	if !ok {
 		return nil, middleware.ValidatedNegativeProofUnknown, ""
 	}
+	// The answer exists, so the records behind it were live: bind the request
+	// tree to the earliest of their expiries before it is used for anything.
+	boundRequestTo(ctx, proofExpires)
 	return msg, kind, zone
 }
 
@@ -905,9 +908,7 @@ func (c *Cache) handleNXDomainCutHit(
 
 	// Same lineage rule as an exact hit: whatever is assembled from this cut
 	// inherits its lifetime.
-	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-		meta.BoundCutFor(entry.expires, 0)
-	}
+	boundRequestTo(ctx, entry.expires)
 
 	// A cut hit is locally authenticated state, so it can safely become the
 	// terminal proof source when an enclosing CNAME/DNAME response explicitly
@@ -1045,9 +1046,12 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		if !built {
 			return wireSkipBuild
 		}
-		// The body exists, so the entry was live when it was built: bind the
-		// request tree to its lifetime before anything can be derived from it.
-		c.boundRequestToEntry(ctx, entry)
+		// No lineage binding here. The byte path serves external clients
+		// only — internal requests are turned away above — so nothing is
+		// ever derived from what it writes, and binding before WriteWire
+		// has reported success would pin the request tree to this entry's
+		// deadline even when the write falls back and the entry then turns
+		// out to be expired.
 		switch err := ww.WriteWire(body, info); {
 		case err == nil:
 			wireFastServed.Inc()
@@ -1077,9 +1081,9 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		return false
 	}
 
-	// The message materialized, so the entry was live: same binding as the
-	// byte path above, for everything derived from this hit below.
-	c.boundRequestToEntry(ctx, entry)
+	// The message materialized, so the entry was live: bind the request tree
+	// to its lifetime before the chase below can derive anything from it.
+	boundRequestToEntryLifetime(ctx, entry)
 
 	// Resolve CNAME chains if needed (matching V1 behavior).
 	// The depth counter bounds nested chases across the Queryer
@@ -1103,9 +1107,8 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 // it inherited — not the lease alone. A cached answer near the end of its TTL
 // has the shorter claim, and passing only the lease would let the TTL floor
 // re-publish it under whatever is being assembled.
-func (c *Cache) boundRequestToEntry(ctx context.Context, entry *CacheEntry) {
-	meta := middleware.ResponseMetaFrom(ctx)
-	if meta == nil || entry == nil {
+func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
+	if entry == nil {
 		return
 	}
 	hardUntil := entry.stored.Add(entry.ttl)
@@ -1113,7 +1116,18 @@ func (c *Cache) boundRequestToEntry(ctx context.Context, entry *CacheEntry) {
 	if !entry.cutUntil.IsZero() && !entry.cutUntil.After(hardUntil) {
 		hardUntil, hardKey = entry.cutUntil, entry.cutKey
 	}
-	meta.BoundCutFor(hardUntil, hardKey)
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
+		meta.BoundCutFor(hardUntil, hardKey)
+	}
+}
+
+// boundRequestTo folds an absolute expiry that is already exact — a subtree
+// cut's, or the earliest among the records an RFC 8198 answer was synthesized
+// from — into the request tree.
+func boundRequestTo(ctx context.Context, expires time.Time) {
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
+		meta.BoundCutFor(expires, 0)
+	}
 }
 
 // isValidQuery checks if the query is valid.

@@ -200,10 +200,16 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 	if req == nil {
 		return nil, false
 	}
+	// Every answer handed out here is consumed by the resolver — DS and
+	// DNSKEY lookups above all — and folded into whatever it is validating.
+	// So each one binds the request tree to its own lifetime, exactly as the
+	// middleware hit paths do: a delegation held insecure by a cached DS
+	// denial must not outlive the proof that said so.
 	entry, ok := s.Lookup(req)
 	if ok {
 		msg := entry.ToMsg(req)
 		if msg != nil {
+			boundRequestToEntryLifetime(ctx, entry)
 			return msg, true
 		}
 	}
@@ -215,15 +221,17 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 	if !requestTreeBypassesDenial {
 		if cut, ok := s.LookupNXDomainCut(req); ok {
 			if msg := cut.response(req); msg != nil {
+				boundRequestTo(ctx, cut.expires)
 				nxDomainCutHits.Inc()
 				return msg, true
 			}
 		}
 		if !s.rfc8198Disabled {
-			if msg, kind, _, ok := s.LookupDenialProof(
+			if msg, kind, _, expires, ok := s.LookupDenialProof(
 				req,
 				newDenialProofWork(ctx, s.dnssecCryptoLimiter),
 			); ok {
+				boundRequestTo(ctx, expires)
 				observeAggressiveNegativeHit(kind, msg.Rcode)
 				return msg, true
 			}
@@ -274,22 +282,22 @@ func (s *Store) RecordNXDomainCut(
 func (s *Store) LookupDenialProof(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
-) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, bool) {
+) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, time.Time, bool) {
 	if s == nil || s.denialProofs == nil ||
 		s.sharedDenialDisabled || s.rfc8198Disabled {
-		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+		return nil, middleware.ValidatedNegativeProofUnknown, "", time.Time{}, false
 	}
-	msg, kind, zone, ok := s.denialProofs.lookupWithMeta(req, work)
+	msg, kind, zone, expires, ok := s.denialProofs.lookupWithMeta(req, work)
 	if !ok {
-		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+		return nil, middleware.ValidatedNegativeProofUnknown, "", time.Time{}, false
 	}
 	switch kind {
 	case denialProofNSEC:
-		return msg, middleware.ValidatedNegativeProofNSEC, zone, true
+		return msg, middleware.ValidatedNegativeProofNSEC, zone, expires, true
 	case denialProofNSEC3:
-		return msg, middleware.ValidatedNegativeProofNSEC3, zone, true
+		return msg, middleware.ValidatedNegativeProofNSEC3, zone, expires, true
 	default:
-		return nil, middleware.ValidatedNegativeProofUnknown, "", false
+		return nil, middleware.ValidatedNegativeProofUnknown, "", time.Time{}, false
 	}
 }
 

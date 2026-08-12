@@ -43,7 +43,7 @@ func TestP6RFC8198KillSwitchDisablesAdmissionAndSynthesis(t *testing.T) {
 
 	work := &p6NSEC3Work{limit: 8}
 	req := denialProofTestRequest(p6NSEC3Denied, dns.TypeA, true)
-	if got, kind, zone, ok := cache.store.LookupDenialProof(req, work); ok ||
+	if got, kind, zone, _, ok := cache.store.LookupDenialProof(req, work); ok ||
 		got != nil ||
 		kind != middleware.ValidatedNegativeProofUnknown ||
 		zone != "" {
