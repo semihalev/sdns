@@ -10,6 +10,52 @@ import (
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
+// TestDenialProofAdmissionPublishesOnce pins the cost of admitting one proof
+// into a zone that already holds many.
+//
+// A snapshot is the zone's whole derived view, so publishing per entry — and
+// again per entry replaced — rebuilt it several times to arrive at the state
+// the last publish produced. The budget is what one rebuild costs; a return
+// to per-entry publishing multiplies it.
+func TestDenialProofAdmissionPublishesOnce(t *testing.T) {
+	const zone = "bl.example."
+	const preload = 200
+	// One rebuild of a 200-entry zone: the entry slice, the prepared slice,
+	// the snapshot, the NSEC3 map and its ordering, plus the admitted proof
+	// itself. Raise it deliberately, with the reason.
+	const budget = 60
+
+	now := time.Unix(1_700_000_000, 0)
+	cache := newDenialProofTestCache(&now, 4096, 512, time.Hour)
+	for i := range preload {
+		owner := fmt.Sprintf("h%03d.%s", i, zone)
+		fixture := newDenialProofNSECFixture(
+			t, now, fmt.Sprintf("q%03d.%s", i, zone), dns.TypeA,
+			dns.RcodeNameError, zone,
+			[2]string{owner, fmt.Sprintf("h%03dz.%s", i, zone)},
+		)
+		if !cache.record(fixture.msg, zone, time.Time{}) {
+			t.Fatalf("preload admission %d rejected", i)
+		}
+	}
+
+	churn := newDenialProofNSECFixture(
+		t, now, "qchurn."+zone, dns.TypeA, dns.RcodeNameError, zone,
+		[2]string{"h000." + zone, "h000z." + zone},
+	)
+
+	allocs := testing.AllocsPerRun(50, func() {
+		if !cache.record(churn.msg, zone, time.Time{}) {
+			t.Fatal("churn admission rejected")
+		}
+	})
+	if allocs > budget {
+		t.Fatalf("admitting one proof into a %d-entry zone cost %.0f "+
+			"allocations, budget is %d", preload, allocs, budget)
+	}
+	t.Logf("admission allocations: %.0f of %d", allocs, budget)
+}
+
 // denialProofOnlySnapshot returns the single zone the test cache holds.
 func denialProofOnlySnapshot(
 	tb testing.TB,

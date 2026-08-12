@@ -343,9 +343,13 @@ func (c *denialProofCache) recordWithKind(
 		return false
 	}
 
+	// The whole bundle lands before anything is published. Every entry used
+	// to publish its own snapshot, and every entry it replaced published one
+	// more, so admitting one proof rebuilt its zone's derived views half a
+	// dozen times to arrive at the state the last of them produced.
 	for _, entry := range entries {
 		if previous := c.byID[entry.id]; previous != nil {
-			c.removeEntryLocked(previous)
+			c.detachEntryLocked(previous)
 		}
 		c.sequence++
 		entry.sequence = c.sequence
@@ -354,8 +358,10 @@ func (c *denialProofCache) recordWithKind(
 		c.totalBytes += entry.wireBytes
 
 		c.zoneEntriesLocked(entry.zoneKey)[entry.id] = entry
-		c.publishZoneLocked(entry.zoneKey)
 	}
+	// One bundle carries one signer zone's records, which is the same
+	// assumption the limit enforcement below already makes.
+	c.publishZoneLocked(entries[0].zoneKey)
 
 	c.enforceNSEC3GroupLimitLocked(entries[0].zoneKey)
 	c.enforceZoneLimitsLocked(entries[0].zoneKey)
@@ -920,8 +926,22 @@ func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 		delete(c.zoneEntries, key)
 		return
 	}
+	// Counted before anything is filled. A snapshot is rebuilt whenever the
+	// zone changes and the NSEC slices are the largest thing in it, so
+	// growing them by doubling leaves the intermediate arrays behind on
+	// every publish.
+	var nsecCount, preparedCount int
+	for _, entry := range entries {
+		if entry.id.kind == denialProofNSEC {
+			nsecCount++
+			preparedCount += len(entry.preparedNSEC)
+		}
+	}
+
 	snapshot := &denialProofZoneSnapshot{
-		nsec3: make(map[denialProofNSEC3Params][]*denialProofEntry),
+		nsec:         make([]*denialProofEntry, 0, nsecCount),
+		nsecPrepared: make([]dnssec.PreparedNSEC, 0, preparedCount),
+		nsec3:        make(map[denialProofNSEC3Params][]*denialProofEntry),
 	}
 	groupSequence := make(map[denialProofNSEC3Params]uint64)
 	for _, entry := range entries {
