@@ -1067,9 +1067,12 @@ func denialProofCanonicalWireLabels(name string) ([][]byte, bool) {
 	}
 }
 
-func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
+// detachEntryLocked unlinks one entry from the cache's own bookkeeping
+// without republishing its zone, so that a caller removing several entries
+// from one zone can publish once at the end.
+func (c *denialProofCache) detachEntryLocked(entry *denialProofEntry) bool {
 	if entry == nil || c.byID[entry.id] != entry {
-		return
+		return false
 	}
 	delete(c.byID, entry.id)
 	if entry.queue != nil {
@@ -1081,7 +1084,40 @@ func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
 	}
 
 	delete(c.zoneEntries[entry.zoneKey], entry.id)
-	c.publishZoneLocked(entry.zoneKey)
+	return true
+}
+
+func (c *denialProofCache) removeEntryLocked(entry *denialProofEntry) {
+	if c.detachEntryLocked(entry) {
+		c.publishZoneLocked(entry.zoneKey)
+	}
+}
+
+// pruneExpiredZoneLocked drops the zone's expired entries. Nothing else
+// removes them: a proof leaves the cache when a newer one replaces it or
+// when capacity evicts it, so an expired entry no one re-queries stays in
+// its zone's published view, where every lookup has to filter it out again.
+//
+// published is the snapshot the lookup evaluated. A different one means
+// another writer has already rebuilt the zone, and rescanning it here would
+// only cost the write lock a second time.
+func (c *denialProofCache) pruneExpiredZoneLocked(
+	key denialProofZoneKey,
+	published *denialProofZoneSnapshot,
+	now time.Time,
+) {
+	if c.zoneIndex[key] != published {
+		return
+	}
+	pruned := false
+	for _, entry := range c.zoneEntries[key] {
+		if !now.Before(entry.expires) && c.detachEntryLocked(entry) {
+			pruned = true
+		}
+	}
+	if pruned {
+		c.publishZoneLocked(key)
+	}
 }
 
 func (c *denialProofCache) enforceNSEC3GroupLimitLocked(
@@ -1203,13 +1239,18 @@ func (c *denialProofCache) lookupWithMeta(
 
 	now := c.now()
 	for _, candidate := range candidates {
-		result, entries, ok := denialProofEvaluate(
+		result, entries, stale, ok := denialProofEvaluate(
 			q,
 			candidate.zone,
 			candidate.snapshot,
 			now,
 			work,
 		)
+		if stale {
+			c.mu.Lock()
+			c.pruneExpiredZoneLocked(candidate.zone, candidate.snapshot, now)
+			c.mu.Unlock()
+		}
 		if !ok {
 			continue
 		}
@@ -1291,16 +1332,24 @@ func denialProofAncestors(name string, buf []string) []string {
 	return buf
 }
 
+// denialProofEvaluate additionally reports whether it passed over an expired
+// entry, so the caller can retire it. Filtering one out is cheap, but nothing
+// else removes it, so an entry left behind is filtered again by every lookup
+// the zone serves from then on.
 func denialProofEvaluate(
 	q dns.Question,
 	zone denialProofZoneKey,
 	snapshot *denialProofZoneSnapshot,
 	now time.Time,
 	work dnssec.NSEC3Work,
-) (dnssec.AggressiveNegativeResult, []*denialProofEntry, bool) {
-	if snapshot == nil || snapshot.soa == nil ||
-		!now.Before(snapshot.soa.expires) {
-		return dnssec.AggressiveNegativeResult{}, nil, false
+) (_ dnssec.AggressiveNegativeResult, _ []*denialProofEntry, stale, ok bool) {
+	if snapshot == nil || snapshot.soa == nil {
+		return dnssec.AggressiveNegativeResult{}, nil, false, false
+	}
+	if !now.Before(snapshot.soa.expires) {
+		// Without a live SOA the zone cannot answer at all, and every entry
+		// under it is at least as old as the SOA's own admission.
+		return dnssec.AggressiveNegativeResult{}, nil, true, false
 	}
 
 	nsecEntries, nsecPrepared := denialProofLivePreparedNSEC(
@@ -1308,12 +1357,13 @@ func denialProofEvaluate(
 		snapshot.nsecPrepared,
 		now,
 	)
+	stale = len(nsecEntries) != len(snapshot.nsec)
 	if len(nsecPrepared) != 0 {
 		result, err := dnssec.EvaluateAggressiveNSECPrepared(q, zone.zone, nsecPrepared)
 		if err == nil {
 			entries, selected := denialProofSelectedEntries(result.Proof, nsecEntries)
 			if selected {
-				return result, entries, true
+				return result, entries, stale, true
 			}
 		}
 	}
@@ -1321,22 +1371,25 @@ func denialProofEvaluate(
 	for _, params := range snapshot.nsec3Order {
 		group := snapshot.nsec3[params]
 		entries, records := denialProofLiveRecords(group, now)
+		if len(entries) != len(group) {
+			stale = true
+		}
 		if len(records) == 0 {
 			continue
 		}
 		result, err := dnssec.EvaluateAggressiveNSEC3(q, zone.zone, records, work)
 		if err != nil {
 			if dnssec.IsWorkError(err) {
-				return dnssec.AggressiveNegativeResult{}, nil, false
+				return dnssec.AggressiveNegativeResult{}, nil, stale, false
 			}
 			continue
 		}
 		selectedEntries, selected := denialProofSelectedEntries(result.Proof, entries)
 		if selected {
-			return result, selectedEntries, true
+			return result, selectedEntries, stale, true
 		}
 	}
-	return dnssec.AggressiveNegativeResult{}, nil, false
+	return dnssec.AggressiveNegativeResult{}, nil, stale, false
 }
 
 // denialProofLivePreparedNSEC collects a zone's unexpired NSEC entries along

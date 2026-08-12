@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -246,5 +247,123 @@ func TestDenialProofAncestorsUsesCallerStorage(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("ancestor walk allocated %.1f times per call, want 0", allocs)
+	}
+}
+
+// TestDenialProofLookupRetiresExpiredEntry pins that a lookup which passes
+// over an expired entry retires it. Nothing else would: the entry is never
+// re-queried, so it would sit in the zone's published view and be filtered
+// out again by every later lookup, permanently defeating the fast path.
+func TestDenialProofLookupRetiresExpiredEntry(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	cache := newDenialProofTestCache(&now, 64, 32, maxDenialProofTTL)
+
+	admit := func(label string) {
+		t.Helper()
+		owner, next := label+".example.", label+"z.example."
+		fixture := newDenialProofNSECFixture(
+			t, now, owner, dns.TypeA, dns.RcodeNameError, "example.",
+			[2]string{owner, next},
+		)
+		if !cache.record(fixture.msg, "example.", time.Time{}) {
+			t.Fatalf("admission of %s was rejected", owner)
+		}
+	}
+
+	admit("a")
+	now = now.Add(100 * time.Second) // the later entry outlives the first
+	admit("b")
+
+	if got := cache.len(); got != 3 {
+		t.Fatalf("cached entries = %d, want 3 (SOA and two NSEC)", got)
+	}
+
+	// Past the first entry's expiry, short of the second's and the SOA's.
+	now = now.Add(250 * time.Second)
+	cache.Lookup(denialProofTestRequest("q.example.", dns.TypeA, true), nil)
+
+	if got := cache.len(); got != 2 {
+		t.Fatalf("cached entries after the lookup = %d, want 2 — the expired "+
+			"entry was filtered but never retired", got)
+	}
+
+	snapshot := denialProofOnlySnapshot(t, cache)
+	if len(snapshot.nsec) != 1 || len(snapshot.nsecPrepared) != 1 {
+		t.Fatalf("republished zone holds %d entries / %d prepared, want 1 / 1",
+			len(snapshot.nsec), len(snapshot.nsecPrepared))
+	}
+	if owner := snapshot.nsec[0].data[0].Header().Name; owner != "b.example." {
+		t.Fatalf("surviving entry = %q, want the later one", owner)
+	}
+
+	// With the stale entry gone the zone is back on the fast path.
+	live, prepared := denialProofLivePreparedNSEC(
+		snapshot.nsec,
+		snapshot.nsecPrepared,
+		now,
+	)
+	if &live[0] != &snapshot.nsec[0] || &prepared[0] != &snapshot.nsecPrepared[0] {
+		t.Fatal("the pruned zone still rebuilds its prepared set per lookup")
+	}
+}
+
+// TestDenialProofLookupRetiresExpiredZone covers the whole-zone case: once the
+// SOA has expired the zone cannot answer anything, so it should not keep
+// occupying the cache.
+func TestDenialProofLookupRetiresExpiredZone(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	cache := newDenialProofTestCache(&now, 64, 32, maxDenialProofTTL)
+
+	fixture := newDenialProofNSECFixture(
+		t, now, "a.example.", dns.TypeA, dns.RcodeNameError, "example.",
+		[2]string{"a.example.", "az.example."},
+	)
+	if !cache.record(fixture.msg, "example.", time.Time{}) {
+		t.Fatal("admission was rejected")
+	}
+
+	now = now.Add(400 * time.Second) // past every record's TTL
+	cache.Lookup(denialProofTestRequest("q.example.", dns.TypeA, true), nil)
+
+	if got := cache.len(); got != 0 {
+		t.Fatalf("cached entries = %d, want 0 — an expired zone was retained", got)
+	}
+	if len(cache.zoneIndex) != 0 || len(cache.zoneEntries) != 0 {
+		t.Fatalf("zones left behind: %d published, %d writer-side",
+			len(cache.zoneIndex), len(cache.zoneEntries))
+	}
+}
+
+// BenchmarkDenialProofStaleZoneLookup measures repeated lookups against a zone
+// that holds one expired entry among many live ones — the shape a resolver
+// settles into, since a proof no one re-queries is never replaced.
+func BenchmarkDenialProofStaleZoneLookup(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0)
+	cache := newDenialProofTestCache(&now, 4096, 512, time.Hour)
+
+	const zone = "bl.example."
+	admit := func(index int) {
+		owner := fmt.Sprintf("h%03d.%s", index, zone)
+		fixture := newDenialProofNSECFixture(
+			b, now, owner, dns.TypeA, dns.RcodeNameError, zone,
+			[2]string{owner, fmt.Sprintf("h%03dz.%s", index, zone)},
+		)
+		if !cache.record(fixture.msg, zone, time.Time{}) {
+			b.Fatalf("admission %d rejected", index)
+		}
+	}
+
+	admit(0)
+	now = now.Add(100 * time.Second) // everything below outlives entry 0
+	for i := 1; i < 200; i++ {
+		admit(i)
+	}
+	now = now.Add(250 * time.Second) // entry 0 has expired, the rest have not
+
+	req := denialProofTestRequest("q000."+zone, dns.TypeA, true)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		cache.Lookup(req, nil)
 	}
 }
