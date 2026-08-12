@@ -241,6 +241,10 @@ func (m *ResponseMeta) Reset() {
 		m.cutMu.Lock()
 		m.cut = responseCut{}
 		m.cutMu.Unlock()
+		// Detached first: a fork left attached would keep reading the state
+		// of the request it was forked from, which is exactly what a reset
+		// exists to prevent.
+		m.ledgers = nil
 		m.work.Store(nil)
 		m.attempts.Store(nil)
 		m.cachedFailures.Store(nil)
@@ -480,6 +484,40 @@ var responseMetaKey = &responseMetaKeyType{}
 // tree's response metadata sink.
 func WithResponseMeta(ctx context.Context, m *ResponseMeta) context.Context {
 	return context.WithValue(ctx, responseMetaKey, m)
+}
+
+// forkedCutContext carries a sub-query's meta inside the context value itself.
+// Forking a meta and then wrapping the context in a value node is two
+// allocations on a path that runs once per chase hop; holding the meta here
+// makes it one.
+type forkedCutContext struct {
+	context.Context
+	meta ResponseMeta
+}
+
+func (c *forkedCutContext) Value(key any) any {
+	if key == responseMetaKey {
+		return &c.meta
+	}
+	return c.Context.Value(key)
+}
+
+// WithForkedCut returns ctx carrying a meta that keeps its own
+// delegation-cut deadline while sharing the request tree's state, and that
+// meta. See ForkCut for what the separation is for.
+//
+// The returned meta is nil, and ctx unchanged, when ctx carries no meta to
+// fork from — a caller with nothing to separate needs no scope.
+func WithForkedCut(ctx context.Context) (context.Context, *ResponseMeta) {
+	parent := ResponseMetaFrom(ctx)
+	if parent == nil {
+		return ctx, nil
+	}
+	host := parent.ledgerHost()
+	forked := &forkedCutContext{Context: ctx}
+	forked.meta.ledgers = host
+	forked.meta.workPolicy = host.workPolicy
+	return forked, &forked.meta
 }
 
 func withResponseMeta(ctx context.Context, m *ResponseMeta) (context.Context, bool) {

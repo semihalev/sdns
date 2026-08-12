@@ -324,11 +324,15 @@ func (c *Cache) SetDNSSECCryptoLimiter(limiter middleware.DNSSECCryptoLimiter) {
 // wired Cache fail with a clear error instead of a nil deref.
 var errQueryerNotWired = errors.New("cache: queryer not wired")
 
-// internalExchange routes CNAME-chase sub-queries through the
-// installed Queryer.
-func (c *Cache) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+// internalExchange routes CNAME-chase sub-queries through the installed
+// Queryer, and hands back the sub-query's own lineage for the caller to
+// inherit if it uses the answer.
+func (c *Cache) internalExchange(
+	ctx context.Context,
+	req *dns.Msg,
+) (*dns.Msg, subQueryLineage, error) {
 	if c.queryer == nil {
-		return nil, errQueryerNotWired
+		return nil, subQueryLineage{}, errQueryerNotWired
 	}
 
 	// The sub-query accumulates its own delegation-cut deadline. Its answer
@@ -336,21 +340,32 @@ func (c *Cache) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 	// lifetime of whatever asked for it — a nearly expired alias would
 	// otherwise store a freshly resolved target with seconds of life.
 	parent := middleware.ResponseMetaFrom(ctx)
-	child := parent.ForkCut()
-	if child != nil {
-		ctx = middleware.WithResponseMeta(ctx, child)
-	}
+	ctx, child := middleware.WithForkedCut(ctx)
 
 	res, err := c.queryer.Query(ctx, req)
+	return res, subQueryLineage{parent: parent, child: child}, err
+}
 
-	// The composed answer contains the sub-query's records, so the deriving
-	// request inherits its bound — after the fact, which is what keeps the
-	// two lineages from contaminating each other.
-	if child != nil {
-		deadline, key := child.Cut()
-		parent.BoundCutFor(deadline, key)
+// subQueryLineage is a sub-query's delegation-cut bound, held back until the
+// caller knows whether it used the answer.
+//
+// The deriving request inherits the bound because the composed answer
+// contains the sub-query's records. A sub-query that contributed none — it
+// failed, or returned something the chase did not consume — describes an
+// answer nobody is caching, and folding its bound in anyway would shorten an
+// outer entry that has not changed.
+type subQueryLineage struct {
+	parent, child *middleware.ResponseMeta
+}
+
+// inherit folds the sub-query's bound into the deriving request. Call it
+// where the sub-query's records or provenance reach the outer response.
+func (l subQueryLineage) inherit() {
+	if l.child == nil {
+		return
 	}
-	return res, err
+	deadline, key := l.child.Cut()
+	l.parent.BoundCutFor(deadline, key)
 }
 
 // prefetchExchange routes prefetch refresh traffic through the
@@ -1607,7 +1622,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		targets = append(targets, target)
 
-		respCname, err := c.internalExchange(ctx, cnameReq)
+		respCname, lineage, err := c.internalExchange(ctx, cnameReq)
 		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
 			do := false
@@ -1640,6 +1655,9 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		}
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
+			// The sub-query's records are now part of the outer answer, so
+			// the outer answer inherits how long they may be served.
+			lineage.inherit()
 		}
 
 		if respCname != nil && respCname.Rcode == dns.RcodeNameError {
@@ -1649,6 +1667,8 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			// attributing the NXDOMAIN to the outer alias owner.
 			msg.Rcode = dns.RcodeNameError
 			middleware.PropagateValidatedDenialResponse(ctx, respCname, msg)
+			// The outer response is now this denial, proof and all.
+			lineage.inherit()
 			return msg
 		}
 		if respCname != nil {
@@ -1660,6 +1680,8 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 				// its authenticated terminal proof on the outer alias
 				// response and stop; another chase cannot create that type.
 				middleware.PropagateValidatedNegativeProofResponse(ctx, respCname, msg)
+				// The outer response now carries the target's terminal proof.
+				lineage.inherit()
 				return msg
 			}
 		}

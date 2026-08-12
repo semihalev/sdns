@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -65,5 +66,60 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 	if _, ok := parent.validatedNegativeProofForResponse(proof); !ok {
 		t.Fatal("provenance recorded by the sub-query is invisible to the " +
 			"request tree")
+	}
+}
+
+// BenchmarkForkedCutScope measures what a chase hop pays to separate its
+// lineage. It runs once per sub-query, so the scope must not cost more than
+// the separation is worth.
+func BenchmarkForkedCutScope(b *testing.B) {
+	var meta ResponseMeta
+	base := WithResponseMeta(context.Background(), &meta)
+
+	b.Run("embedded", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx, child := WithForkedCut(base)
+			if child == nil || ResponseMetaFrom(ctx) != child {
+				b.Fatal("the scope did not carry its own meta")
+			}
+		}
+	})
+
+	b.Run("separate value node", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			child := meta.ForkCut()
+			ctx := WithResponseMeta(base, child)
+			if child == nil || ResponseMetaFrom(ctx) != child {
+				b.Fatal("the scope did not carry its own meta")
+			}
+		}
+	})
+}
+
+// TestForkResetDetachesTheRequestTree pins the reset contract for a fork.
+// ResponseMeta values are pooled and reused, so a reset one that still read
+// the state of the request it was forked from would hand the next request
+// the previous one's retry guard.
+func TestForkResetDetachesTheRequestTree(t *testing.T) {
+	parent := new(ResponseMeta)
+	guard := parent.EnsureResolutionAttemptGuard()
+	if guard == nil {
+		t.Fatal("the request tree could not establish a retry guard")
+	}
+
+	child := parent.ForkCut()
+	if child.ResolutionAttemptGuard() != guard {
+		t.Fatal("the fork does not share the request tree's retry guard")
+	}
+
+	child.Reset()
+	if got := child.ResolutionAttemptGuard(); got != nil {
+		t.Fatal("a reset fork still reads the state of the request it was " +
+			"forked from")
+	}
+	if parent.ResolutionAttemptGuard() != guard {
+		t.Fatal("resetting a fork disturbed the request tree it left")
 	}
 }
