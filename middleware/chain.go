@@ -118,8 +118,12 @@ type requestLedgers struct {
 	// a pooled Chain keep charging their original request.
 	work atomic.Pointer[RecursionWorkLedger]
 
-	// attempts is the RFC 9520 request-tree retry guard.
+	// attempts is the RFC 9520 request-tree retry guard. It points at guard
+	// below once established: every recursive request establishes one, so
+	// giving it storage here costs the request nothing beyond the ledgers it
+	// was already allocating, where a separate guard is a second object.
 	attempts atomic.Pointer[ResolutionAttemptGuard]
+	guard    ResolutionAttemptGuard
 
 	// cachedFailures is a pointer-identity set of failure cache responses
 	// currently crossing outer response-writer wrappers.
@@ -171,18 +175,23 @@ func (m *ResponseMeta) ledgerHost() *requestLedgers {
 
 // ensureLedgerHost is ledgerHost for the operations that establish state,
 // creating the request tree's ledgers on first use.
+//
+// It retries rather than reading back after a lost race: a Reset landing
+// between the losing exchange and the read would return nil to a caller that
+// is about to establish state in it.
 func (m *ResponseMeta) ensureLedgerHost() *requestLedgers {
 	if m == nil {
 		return nil
 	}
-	if host := m.ledgers.Load(); host != nil {
-		return host
+	for {
+		if host := m.ledgers.Load(); host != nil {
+			return host
+		}
+		host := new(requestLedgers)
+		if m.ledgers.CompareAndSwap(nil, host) {
+			return host
+		}
 	}
-	host := new(requestLedgers)
-	if m.ledgers.CompareAndSwap(nil, host) {
-		return host
-	}
-	return m.ledgers.Load()
 }
 
 // ForkCut returns a meta that shares this one's request-tree state — work
@@ -460,9 +469,8 @@ func (m *ResponseMeta) EnsureResolutionAttemptGuard() *ResolutionAttemptGuard {
 		return guard
 	}
 
-	guard := NewResolutionAttemptGuard()
-	if host.attempts.CompareAndSwap(nil, guard) {
-		return guard
+	if host.attempts.CompareAndSwap(nil, &host.guard) {
+		return &host.guard
 	}
 	return host.attempts.Load()
 }

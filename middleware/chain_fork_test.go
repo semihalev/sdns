@@ -43,6 +43,39 @@ func TestForkDoesNotCrossRequestGenerations(t *testing.T) {
 	}
 }
 
+// TestEstablishingUnderResetAlwaysYieldsAHost pins what an operation that is
+// about to record something gets while the root is being reset underneath it.
+//
+// Establishing state is a load, a create and an exchange; a reset landing
+// between a lost exchange and a read back would hand the caller nothing to
+// record into. Every caller here dereferences what it is given.
+func TestEstablishingUnderResetAlwaysYieldsAHost(t *testing.T) {
+	root := new(ResponseMeta)
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 4000 {
+				if guard := root.EnsureResolutionAttemptGuard(); guard == nil {
+					t.Error("establishing a retry guard yielded nothing to " +
+						"record into")
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 4000 {
+			root.Reset()
+		}
+	}()
+	wg.Wait()
+}
+
 // TestForkResetRacesWithLedgerReaders pins the synchronisation on the fork
 // link. Metas are pooled, so one request can reset a root while a sub-query
 // of the request before it is still reading the tree through its fork.
