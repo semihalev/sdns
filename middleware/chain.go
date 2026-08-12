@@ -137,11 +137,49 @@ type ResponseMeta struct {
 	// set so a pooled Chain cannot expose one request's validation to the next.
 	validatedNegativeProofs atomic.Pointer[validatedNegativeProofResponseSet]
 
+	// ledgers, when set, is the meta that owns every field above except the
+	// cut: a sub-query's meta keeps its own delegation-cut deadline and
+	// shares the rest of the request tree's state. It is written once, at
+	// construction, and read without synchronisation.
+	//
+	// Sharing by delegation rather than by copying the pointers is what makes
+	// it correct: the ledgers are created lazily, so a child that copied a
+	// nil pointer would build its own and the request tree would never see
+	// what it recorded.
+	ledgers *ResponseMeta
+
 	// workPolicy is immutable after a Chain is constructed. It lets the
 	// server's request context create the ledger only when real recursive work
 	// begins while preserving the outer pipeline's first-policy precedence.
 	// Standalone ResponseMeta values leave it zero.
 	workPolicy RecursionWorkPolicy
+}
+
+// ledgerHost returns the meta that owns the request-tree state. A sub-query's
+// meta delegates to the one it was forked from; every other meta owns its own.
+func (m *ResponseMeta) ledgerHost() *ResponseMeta {
+	if m == nil || m.ledgers == nil {
+		return m
+	}
+	return m.ledgers
+}
+
+// ForkCut returns a meta that shares this one's request-tree state — work
+// ledger, retry guard, failure and proof provenance — but accumulates its own
+// delegation-cut deadline.
+//
+// A sub-query's answer is cached under its own key, so it must be bounded by
+// its own lineage and not by whatever asked for it: a nearly expired alias
+// would otherwise store a freshly resolved target with seconds of life. The
+// deriving request still inherits the sub-query's bound, by folding the fork's
+// deadline back in once the sub-query has returned — the composed answer does
+// contain the sub-query's records.
+func (m *ResponseMeta) ForkCut() *ResponseMeta {
+	if m == nil {
+		return nil
+	}
+	host := m.ledgerHost()
+	return &ResponseMeta{ledgers: host, workPolicy: host.workPolicy}
 }
 
 // (*ResponseMeta).BoundCut folds a delegation-cut deadline into the
@@ -218,13 +256,13 @@ func (m *ResponseMeta) MarkCachedFailureResponse(msg *dns.Msg) func() {
 		return func() {}
 	}
 
-	markers := m.cachedFailures.Load()
+	markers := m.ledgerHost().cachedFailures.Load()
 	if markers == nil {
 		candidate := &cachedFailureResponseSet{messages: make(map[*dns.Msg]uint32)}
-		if m.cachedFailures.CompareAndSwap(nil, candidate) {
+		if m.ledgerHost().cachedFailures.CompareAndSwap(nil, candidate) {
 			markers = candidate
 		} else {
-			markers = m.cachedFailures.Load()
+			markers = m.ledgerHost().cachedFailures.Load()
 		}
 	}
 
@@ -253,7 +291,7 @@ func (m *ResponseMeta) IsCachedFailureResponse(msg *dns.Msg) bool {
 	if m == nil || msg == nil {
 		return false
 	}
-	markers := m.cachedFailures.Load()
+	markers := m.ledgerHost().cachedFailures.Load()
 	if markers == nil {
 		return false
 	}
@@ -286,15 +324,15 @@ func (m *ResponseMeta) markValidatedNegativeProofResponse(
 	negative.Zone = dns.CanonicalName(negative.Zone)
 	negative.Proof = proof
 
-	negatives := m.validatedNegativeProofs.Load()
+	negatives := m.ledgerHost().validatedNegativeProofs.Load()
 	if negatives == nil {
 		candidate := &validatedNegativeProofResponseSet{
 			messages: make(map[*dns.Msg]validatedNegativeProofRecord),
 		}
-		if m.validatedNegativeProofs.CompareAndSwap(nil, candidate) {
+		if m.ledgerHost().validatedNegativeProofs.CompareAndSwap(nil, candidate) {
 			negatives = candidate
 		} else {
-			negatives = m.validatedNegativeProofs.Load()
+			negatives = m.ledgerHost().validatedNegativeProofs.Load()
 		}
 	}
 
@@ -332,7 +370,7 @@ func (m *ResponseMeta) validatedNegativeProofForResponse(
 	if m == nil || msg == nil {
 		return ValidatedNegativeProof{}, false
 	}
-	negatives := m.validatedNegativeProofs.Load()
+	negatives := m.ledgerHost().validatedNegativeProofs.Load()
 	if negatives == nil {
 		return ValidatedNegativeProof{}, false
 	}
@@ -380,15 +418,15 @@ func (m *ResponseMeta) EnsureResolutionAttemptGuard() *ResolutionAttemptGuard {
 	if m == nil {
 		return nil
 	}
-	if guard := m.attempts.Load(); guard != nil {
+	if guard := m.ledgerHost().attempts.Load(); guard != nil {
 		return guard
 	}
 
 	guard := NewResolutionAttemptGuard()
-	if m.attempts.CompareAndSwap(nil, guard) {
+	if m.ledgerHost().attempts.CompareAndSwap(nil, guard) {
 		return guard
 	}
-	return m.attempts.Load()
+	return m.ledgerHost().attempts.Load()
 }
 
 // ResolutionAttemptGuard returns the request tree's retry guard, if present.
@@ -396,7 +434,7 @@ func (m *ResponseMeta) ResolutionAttemptGuard() *ResolutionAttemptGuard {
 	if m == nil {
 		return nil
 	}
-	return m.attempts.Load()
+	return m.ledgerHost().attempts.Load()
 }
 
 // ensureRecursionWork returns the request tree's ledger, installing one with
@@ -413,15 +451,15 @@ func (m *ResponseMeta) ensureRecursionWork(policy RecursionWorkPolicy) *Recursio
 	if !policy.Enabled() {
 		return nil
 	}
-	if ledger := m.work.Load(); ledger != nil {
+	if ledger := m.ledgerHost().work.Load(); ledger != nil {
 		return ledger
 	}
 
 	ledger := NewRecursionWorkLedger(policy)
-	if m.work.CompareAndSwap(nil, ledger) {
+	if m.ledgerHost().work.CompareAndSwap(nil, ledger) {
 		return ledger
 	}
-	return m.work.Load()
+	return m.ledgerHost().work.Load()
 }
 
 // RecursionWork returns the request tree's ledger, if accounting is active.
@@ -429,7 +467,7 @@ func (m *ResponseMeta) RecursionWork() *RecursionWorkLedger {
 	if m == nil {
 		return nil
 	}
-	return m.work.Load()
+	return m.ledgerHost().work.Load()
 }
 
 // responseMetaKey tags ctx with the active *ResponseMeta. Sentinel

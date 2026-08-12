@@ -330,7 +330,27 @@ func (c *Cache) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 	if c.queryer == nil {
 		return nil, errQueryerNotWired
 	}
-	return c.queryer.Query(ctx, req)
+
+	// The sub-query accumulates its own delegation-cut deadline. Its answer
+	// is cached under its own key and must carry its own lineage, not the
+	// lifetime of whatever asked for it — a nearly expired alias would
+	// otherwise store a freshly resolved target with seconds of life.
+	parent := middleware.ResponseMetaFrom(ctx)
+	child := parent.ForkCut()
+	if child != nil {
+		ctx = middleware.WithResponseMeta(ctx, child)
+	}
+
+	res, err := c.queryer.Query(ctx, req)
+
+	// The composed answer contains the sub-query's records, so the deriving
+	// request inherits its bound — after the fact, which is what keeps the
+	// two lineages from contaminating each other.
+	if child != nil {
+		deadline, key := child.Cut()
+		parent.BoundCutFor(deadline, key)
+	}
+	return res, err
 }
 
 // prefetchExchange routes prefetch refresh traffic through the
