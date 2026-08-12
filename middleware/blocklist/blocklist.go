@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,6 +25,39 @@ var blocklistHits = metric.NewCounter(nil, prometheus.CounterOpts{
 	Name: "dns_blocklist_hits_total",
 	Help: "Total DNS queries blocked by the blocklist middleware",
 })
+
+// blocklistLen returns the live entry count of the active BlockList.
+// It is set by New and read only at scrape time by blocklistEntries.
+// A plain func value (rather than a *BlockList) mirrors the pattern the
+// cache middleware uses for dns_cache_size, and keeps the gauge working
+// when the middleware is absent — it then reports 0 rather than panicking.
+var blocklistLen atomic.Pointer[func() int]
+
+// blocklistEntries exposes how many names the blocklist currently holds.
+// dns_blocklist_hits_total alone cannot distinguish "nothing matched" from
+// "the list failed to load or was silently emptied by a bad update": both
+// show zero hits. Operators feeding a large remote catalogue need the
+// loaded size to alert on, so this is a gauge over the live maps rather
+// than a number captured once at load time.
+//
+// GaugeFunc evaluates at scrape time, so there is no hot-path cost. Length
+// takes mu.RLock, which is the same lock ServeDNS holds for reads and so
+// cannot serialise queries against each other; only an in-flight mutation
+// briefly delays a scrape.
+var blocklistEntries = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+	Name: "dns_blocklist_entries",
+	Help: "Current number of entries in the blocklist (exact names plus wildcard suffixes)",
+}, func() float64 {
+	fn := blocklistLen.Load()
+	if fn == nil {
+		return 0
+	}
+	return float64((*fn)())
+})
+
+func init() {
+	prometheus.MustRegister(blocklistEntries)
+}
 
 // BlockList type
 //
@@ -92,6 +126,12 @@ func New(cfg *config.Config) *BlockList {
 	}
 
 	b.loadInitial()
+
+	// Publish before the refresh goroutine starts so a scrape landing
+	// during the initial remote fetch already reports the local count.
+	length := b.Length
+	blocklistLen.Store(&length)
+
 	go b.refreshRemote()
 
 	return b
