@@ -1035,7 +1035,7 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
 			return mismatch
 		}
-		body, info, built := entry.serveWire(req, capability.Reserve)
+		body, info, built := entry.serveWire(req, capability.Reserve, capability.DO)
 		if !built {
 			return wireSkipBuild
 		}

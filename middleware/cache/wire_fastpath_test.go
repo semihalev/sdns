@@ -198,7 +198,11 @@ func TestWireFastPathEquivalence(t *testing.T) {
 	cases := []client{
 		{"do1_dnssec", func(r *dns.Msg) { r.SetEdns0(1232, true) }, true, true},
 		{"do0_plain", func(r *dns.Msg) { r.SetEdns0(1232, false) }, false, true},
-		{"do0_dnssec_falls_back", func(r *dns.Msg) { r.SetEdns0(1232, false) }, true, false},
+		// A client without DO is served the stripped body, so the byte path
+		// covers it too — and assertEquivalent is what proves the stripped
+		// body carries exactly what the Msg path would have sent, DNSSEC
+		// records removed and everything else identical.
+		{"do0_dnssec_stripped", func(r *dns.Msg) { r.SetEdns0(1232, false) }, true, true},
 		{"noedns", func(r *dns.Msg) {}, false, true},
 		{"cd1", func(r *dns.Msg) { r.SetEdns0(1232, true); r.CheckingDisabled = true }, true, true},
 		// entryShape marks cases that must prime the CD=true cache partition
@@ -335,8 +339,22 @@ func TestWireServableGatesRunBeforeCopy(t *testing.T) {
 	if !entryOf(plain).wireEligibleFor(req) || !entryOf(plain).wireFitsChain(do0) {
 		t.Fatal("plain entry must be servable to DO=0")
 	}
-	if entryOf(signed).wireFitsChain(do0) {
-		t.Fatal("DNSSEC entry must be gated for DO=0 before any copy")
+	// A signed entry is servable to DO=0 as well, but only from the stripped
+	// body — the stored one must never reach a client that did not ask for
+	// DNSSEC.
+	signedEntry := entryOf(signed)
+	if !signedEntry.wireFitsChain(do0) {
+		t.Fatal("DNSSEC entry must be servable to DO=0 from its stripped body")
+	}
+	if body, flags := signedEntry.wireBodyFor(false); body == nil ||
+		&body[0] == &signedEntry.wire[0] || flags&wireHasDNSSEC != 0 {
+		t.Fatal("DO=0 must be served the stripped body, never the stored one")
+	}
+	// Without a stripped body the gate still has to turn the request away.
+	bare := entryOf(signed)
+	bare.stripped, bare.strippedServe = nil, 0
+	if bare.wireFitsChain(do0) {
+		t.Fatal("a DNSSEC entry with no stripped body must be gated for DO=0")
 	}
 	if !entryOf(signed).wireFitsChain(do1) {
 		t.Fatal("DNSSEC entry must be servable to DO=1")
@@ -488,7 +506,7 @@ func TestWireFastPathClearsAuthoritative(t *testing.T) {
 		probe.RecursionDesired = want.rd
 		probe.CheckingDisabled = want.cd
 
-		body, _, ok := stored.serveWire(probe, 0)
+		body, _, ok := stored.serveWire(probe, 0, true)
 		if !ok {
 			t.Fatal("serveWire refused a plain request")
 		}

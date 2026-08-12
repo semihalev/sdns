@@ -8,6 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"golang.org/x/time/rate"
 )
 
@@ -29,6 +30,13 @@ type DCache interface {
 // served message must be privately mutable either way.
 type CacheEntry struct {
 	wire []byte
+	// stripped is wire without its DNSSEC records, packed at admission for
+	// clients that did not set DO. It is nil unless wire carries DNSSEC
+	// records and the stripped form is itself byte-servable.
+	stripped []byte
+	// strippedServe is the byte-serving verdict for stripped, derived the
+	// same way as wireServe and never carrying wireHasDNSSEC.
+	strippedServe wireServeFlags
 	// question is the packed message's question, retained unpacked so the
 	// per-hit hash-collision verification (LookupByKeyVerified) and the cold
 	// compat paths never need to touch the wire.
@@ -176,8 +184,50 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 		entry.question = msg.Question[0]
 	}
 	entry.wireServe = prepareWireServe(wire, ede)
+	entry.prepareStripped(msgCopy, ede)
 
 	return entry
+}
+
+// prepareStripped packs the body a client without DO receives: the same
+// message with its DNSSEC records removed. Most clients do not set DO, and
+// most of what a validating resolver caches is signed, so without this the
+// commonest hit of all decodes the stored bytes into a message — turning
+// every signature into a base64 string on the way — only to drop those very
+// records and pack what is left.
+//
+// The stripped body is packed here, once per entry, rather than derived from
+// the stored bytes per hit: name compression makes the sections' offsets
+// interdependent, so records cannot be cut out of a packed message without
+// re-encoding it.
+func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg, ede *dns.EDNS0_EDE) {
+	if e.wireServe&wireHasDNSSEC == 0 {
+		return
+	}
+
+	// ClearDNSSEC replaces the sections it filters rather than editing them,
+	// so the stored message's own arrays are unaffected by this copy — and
+	// the body is stripped by exactly the function the Msg path uses, which
+	// is what keeps the two answers identical.
+	stripped := *msgCopy
+	dnsutil.ClearDNSSEC(&stripped)
+	stripped.Compress = true
+
+	packed, err := stripped.Pack()
+	if err != nil {
+		return
+	}
+	body := make([]byte, len(packed))
+	copy(body, packed)
+
+	flags := prepareWireServe(body, ede)
+	// Byte serving is all-or-nothing per body: an entry whose stripped form
+	// is not servable simply keeps the Msg path for its DO=0 hits.
+	const ready = wireEligible | wireChaseSafe
+	if flags&ready != ready || flags&wireHasDNSSEC != 0 {
+		return
+	}
+	e.stripped, e.strippedServe = body, flags
 }
 
 // (*CacheEntry).ToMsg toMsg creates a response message with updated TTLs.
