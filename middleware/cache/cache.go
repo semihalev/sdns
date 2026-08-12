@@ -883,7 +883,7 @@ func (c *Cache) lookupDenialProof(
 		c.store.rfc8198Disabled {
 		return nil, middleware.ValidatedNegativeProofUnknown, ""
 	}
-	msg, kind, zone, proofExpires, ok := c.store.LookupDenialProof(
+	msg, kind, zone, proofExpires, ok := c.store.lookupDenialProofWithExpiry(
 		req,
 		newDenialProofWork(ctx, c.dnssecCryptoLimiter),
 	)
@@ -1046,14 +1046,17 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 		if !built {
 			return wireSkipBuild
 		}
-		// No lineage binding here. The byte path serves external clients
-		// only — internal requests are turned away above — so nothing is
-		// ever derived from what it writes, and binding before WriteWire
-		// has reported success would pin the request tree to this entry's
-		// deadline even when the write falls back and the entry then turns
-		// out to be expired.
 		switch err := ww.WriteWire(body, info); {
 		case err == nil:
+			// The answer is out, so bind the request tree to this entry's
+			// lifetime. The byte path is normally reached only by external
+			// clients, whose responses nothing derives from — but Queryer is
+			// a public interface and SetQueryer does not require a
+			// sub-query's writer to report Internal(), so the rule cannot
+			// rest on that. Bound only after the write reported success, and
+			// never after a fallback: the Msg path below binds once it has a
+			// message of its own.
+			boundRequestToEntryLifetime(ctx, entry)
 			wireFastServed.Inc()
 			ch.Cancel()
 			served = true

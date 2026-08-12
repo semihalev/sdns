@@ -335,7 +335,7 @@ func TestP6NSEC3ForwarderConfigDisablesAdmissionAndLookup(t *testing.T) {
 		dns.TypeAAAA,
 		true,
 	)
-	if got, kind, zone, _, ok := cache.store.LookupDenialProof(req, work); ok ||
+	if got, kind, zone, ok := cache.store.LookupDenialProof(req, work); ok ||
 		got != nil ||
 		kind != middleware.ValidatedNegativeProofUnknown ||
 		zone != "" {

@@ -173,67 +173,6 @@ func TestUnsignedEntryHasNoStrippedBody(t *testing.T) {
 	}
 }
 
-// BenchmarkSignedHitWithoutDO measures the commonest hit a validating
-// resolver serves: a signed entry answering a client that did not ask for
-// DNSSEC. Before the stripped body it went down the Msg path, which decoded
-// the stored bytes — base64-encoding every signature on the way — dropped
-// those very records, and packed what was left.
-func BenchmarkSignedHitWithoutDO(b *testing.B) {
-	const qname = "signed.example.com."
-	c, e := wireFastTestPipeline(b, wireFastEntry(b, qname, dns.TypeA, true))
-
-	req := new(dns.Msg)
-	req.SetQuestion(qname, dns.TypeA)
-	req.Id = 4242
-	req.RecursionDesired = true
-	req.SetEdns0(1232, false) // no DO
-
-	b.ReportAllocs()
-	for b.Loop() {
-		serveThrough(b, c, e, req, false)
-	}
-}
-
-// BenchmarkSignedHitWithoutDORealistic uses signatures of the size a real
-// zone produces. The saving scales with what has to be decoded and thrown
-// away, and a signature — not the record it covers — is most of a signed
-// response's bytes.
-func BenchmarkSignedHitWithoutDORealistic(b *testing.B) {
-	const qname = "signed.example.com."
-	req := new(dns.Msg)
-	req.SetQuestion(qname, dns.TypeA)
-	msg := new(dns.Msg)
-	msg.SetReply(req)
-	msg.RecursionAvailable = true
-	msg.AuthenticatedData = true
-	msg.Answer = append(msg.Answer,
-		makeRR(qname+" 300 IN A 192.0.2.10"),
-		makeRR(qname+" 300 IN A 192.0.2.11"),
-	)
-	// An RSA/SHA-256 signature is 256 octets, which base64 renders as 344
-	// characters — the string the Msg path builds per signature per hit.
-	signature := strings.Repeat("A", 342) + "=="
-	msg.Answer = append(msg.Answer, makeRR(
-		qname+" 300 IN RRSIG A 8 3 300 20370101000000 20260101000000 7 example.com. "+signature))
-	msg.Ns = append(msg.Ns,
-		makeRR("example.com. 300 IN NS ns1.example.com."),
-		makeRR("example.com. 300 IN RRSIG NS 8 2 300 20370101000000 20260101000000 7 example.com. "+signature),
-	)
-
-	c, e := wireFastTestPipeline(b, msg)
-
-	probe := new(dns.Msg)
-	probe.SetQuestion(qname, dns.TypeA)
-	probe.Id = 4242
-	probe.RecursionDesired = true
-	probe.SetEdns0(1232, false) // no DO
-
-	b.ReportAllocs()
-	for b.Loop() {
-		serveThrough(b, c, e, probe, false)
-	}
-}
-
 // BenchmarkAdmitSignedEntry measures what the stripped body costs where it
 // is paid: admission, which happens on a cache miss — after a full recursion
 // and validation, and once per entry rather than once per hit.

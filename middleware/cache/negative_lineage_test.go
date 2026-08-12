@@ -31,6 +31,34 @@ func entryExpiry(e *CacheEntry) time.Time {
 // — so the merged answer is stored with no bound at all, and the TTL floor
 // then extends a nearly-expired denial proof to the cache's minimum.
 func TestCNAMEChainInheritsCachedTargetLifetime(t *testing.T) {
+	// Both sub-query shapes a Queryer may take. The built-in pipeline hands
+	// the nested chain an internal writer, which keeps derived work off the
+	// byte path; SetQueryer is public and does not require that, so a
+	// wire-capable queryer reaches the byte path with a derived request. The
+	// rule has to hold either way — it cannot rest on a contract the API
+	// does not enforce.
+	for _, tc := range []struct {
+		name    string
+		queryer func([]middleware.Handler) middleware.Queryer
+	}{
+		{"internal writer", func(h []middleware.Handler) middleware.Queryer {
+			return &internalQueryer{handlers: h}
+		}},
+		{"wire-capable writer", func(h []middleware.Handler) middleware.Queryer {
+			return &cutTestQueryer{handlers: h}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertChainInheritsTargetLifetime(t, tc.queryer)
+		})
+	}
+}
+
+func assertChainInheritsTargetLifetime(
+	t *testing.T,
+	newQueryer func([]middleware.Handler) middleware.Queryer,
+) {
+	t.Helper()
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
 
@@ -77,7 +105,7 @@ func TestCNAMEChainInheritsCachedTargetLifetime(t *testing.T) {
 	targetExpiry := entryExpiry(targetEntry)
 
 	// The alias is resolved, and its chase finds the target in cache.
-	c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, targetHandler}})
+	c.SetQueryer(newQueryer([]middleware.Handler{c, targetHandler}))
 	outerHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
 		resp.SetReply(ch.Request)

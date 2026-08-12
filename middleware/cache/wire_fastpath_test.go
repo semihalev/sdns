@@ -578,6 +578,11 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 	// A signed entry with a DO=0 client: the request's own OPT says DO=1 by
 	// the time the cache sees it (the edns layer sets it for upstream
 	// validation), so only the writer chain's preflight can tell the truth.
+	//
+	// Such an entry is normally served from its stripped body, so the one
+	// held here has none — the state an entry lands in when its stripped
+	// form could not be packed or is not itself byte-servable. That is what
+	// still makes the preflight refuse.
 	entry := wireFastEntry(t, qname, dns.TypeA, true)
 	c, e := wireFastTestPipeline(t, entry)
 
@@ -587,6 +592,15 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 	req.RecursionDesired = true
 	req.SetEdns0(1232, false) // client did not ask for DNSSEC
 
+	cached, ok := c.store.LookupByKey(CacheKey{Question: req.Question[0]}.Hash())
+	if !ok {
+		t.Fatal("the entry under test was not admitted")
+	}
+	if cached.stripped == nil {
+		t.Fatal("fixture is wrong: a signed entry should carry a stripped body")
+	}
+	cached.stripped, cached.strippedServe = nil, 0
+
 	writer := mock.NewWriter("udp", "198.51.100.77:40000")
 	terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		t.Fatal("missed cache")
@@ -594,6 +608,8 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 	ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
 
 	fallbackBefore := wireFastFallback.Value()
+	servedBefore := wireFastServed.Value()
+	skippedBefore := wireSkipDNSSEC.Value()
 	allocs := testing.AllocsPerRun(50, func() {
 		ch.Reset(writer, req)
 		ch.Next(context.Background())
@@ -601,6 +617,23 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 	if wireFastFallback.Value() != fallbackBefore {
 		t.Fatal("a DO=0 client with a signed entry reached the late fallback; " +
 			"the preflight must refuse before the body is built")
+	}
+	if wireFastServed.Value() != servedBefore {
+		t.Fatal("an entry with no stripped body was served as bytes to a " +
+			"client that did not ask for DNSSEC")
+	}
+	if wireSkipDNSSEC.Value() == skippedBefore {
+		t.Fatal("the refusal was not attributed to the DNSSEC gate")
+	}
+
+	// The point of refusing early is that the message path pays for itself
+	// and nothing else: no body copy built for a request that cannot take
+	// one. The ceiling is loose enough to survive unrelated churn and tight
+	// enough that building the byte body too would break it.
+	const ceiling = 40
+	if allocs > ceiling {
+		t.Fatalf("a preflight-refused hit allocated %.0f times, want at most %d",
+			allocs, ceiling)
 	}
 	t.Logf("message-path allocations for a preflight-refused hit: %.0f", allocs)
 }

@@ -227,7 +227,7 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 			}
 		}
 		if !s.rfc8198Disabled {
-			if msg, kind, _, expires, ok := s.LookupDenialProof(
+			if msg, kind, _, expires, ok := s.lookupDenialProofWithExpiry(
 				req,
 				newDenialProofWork(ctx, s.dnssecCryptoLimiter),
 			); ok {
@@ -280,6 +280,19 @@ func (s *Store) RecordNXDomainCut(
 // The returned kind and signer zone describe the exact proof family selected
 // by the evaluator, including when a DO=0 response omits DNSSEC records.
 func (s *Store) LookupDenialProof(
+	req *dns.Msg,
+	work dnssec.NSEC3Work,
+) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, bool) {
+	msg, kind, zone, _, ok := s.lookupDenialProofWithExpiry(req, work)
+	return msg, kind, zone, ok
+}
+
+// lookupDenialProofWithExpiry is LookupDenialProof plus the instant past which
+// the synthesized answer must not be used: the earliest expiry among the SOA
+// and the proof records it was built from. Anything derived from the answer
+// inherits that bound. Kept separate so the exported signature above stays as
+// callers outside this repository have it.
+func (s *Store) lookupDenialProofWithExpiry(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
 ) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, time.Time, bool) {
