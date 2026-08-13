@@ -38,6 +38,32 @@ func dsDigestHash(digestType uint8) (crypto.Hash, bool) {
 	}
 }
 
+// oversizedKeyMaterial reports whether a DNSKEY carries more key material
+// than maxDSKeyMaterial allows, judged on the encoded length so the answer
+// is known before anything decodes it.
+//
+// An attacker-supplied DNSKEY can be as large as the message allows, and a
+// DS set can name the same key many times over; deciding it is too big only
+// after materializing it pays for the very thing being refused, once per
+// mention.
+func oversizedKeyMaterial(publicKey string) bool {
+	limit := base64.StdEncoding.EncodedLen(maxDSKeyMaterial)
+	if len(publicKey) <= limit {
+		return false
+	}
+	// The decoder skips CR and LF, so a key that is only long because it
+	// is wrapped is not oversized, and refusing it would reject an input
+	// the library accepts. Counted rather than assumed — but only on this
+	// branch, so a key of ordinary size never walks its own material.
+	newlines := 0
+	for i := range len(publicKey) {
+		if c := publicKey[i]; c == '\r' || c == '\n' {
+			newlines++
+		}
+	}
+	return len(publicKey)-newlines > limit
+}
+
 // dsDigestMatches reports whether key hashes to want under digestType.
 //
 // This is the RFC 4034 §5.1.4 digest — hash(canonical owner name | flags |
@@ -55,11 +81,7 @@ func dsDigestMatches(key *dns.DNSKEY, digestType uint8, want []byte) bool {
 		return false
 	}
 
-	// Refused on the encoded length, before anything decodes it. An
-	// attacker-supplied DNSKEY can be as large as the message allows, and
-	// deciding it is too big only after materializing it is a decode this
-	// answer never needed.
-	if len(key.PublicKey) > base64.StdEncoding.EncodedLen(maxDSKeyMaterial) {
+	if oversizedKeyMaterial(key.PublicKey) {
 		return false
 	}
 

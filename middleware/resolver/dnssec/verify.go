@@ -287,6 +287,17 @@ func usableDSCandidate(parentDS *dns.DS, key *dns.DNSKEY) bool {
 	if key == nil {
 		return false
 	}
+	// Ahead of KeyTag, which packs the key into a buffer of its own and
+	// decodes the material to fill it. A key too large to produce a DS can
+	// never match one, and a DS set may name the same key repeatedly: the
+	// cheap check has to come first or the expensive one runs per mention.
+	// Ahead of KeyTag, which packs the key into a buffer of its own and
+	// decodes the material to fill it. A key too large to produce a DS can
+	// never match one, and a DS set may name the same key repeatedly: the
+	// cheap check has to come first or the expensive one runs per mention.
+	if oversizedKeyMaterial(key.PublicKey) {
+		return false
+	}
 	return key.KeyTag() == parentDS.KeyTag &&
 		key.Algorithm == parentDS.Algorithm &&
 		key.Header().Class == parentDS.Header().Class &&

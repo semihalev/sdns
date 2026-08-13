@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -216,23 +217,28 @@ func TestDSDigestKeepsTheLibraryEnvelope(t *testing.T) {
 	}
 }
 
+// oversizedMaterial is well past maxDSKeyMaterial, so a decode that should
+// not happen is unmistakable in a measurement.
+const oversizedMaterial = 48 << 10
+
+func oversizedKey(algorithm uint8) *dns.DNSKEY {
+	return &dns.DNSKEY{
+		Hdr: dns.RR_Header{
+			Name: "example.com.", Rrtype: dns.TypeDNSKEY,
+			Class: dns.ClassINET, Ttl: 3600,
+		},
+		Flags: 257, Protocol: 3, Algorithm: algorithm,
+		PublicKey: base64.StdEncoding.EncodeToString(
+			bytes.Repeat([]byte{0x5a}, oversizedMaterial)),
+	}
+}
+
 // TestDSDigestRefusesOversizedBeforeDecoding pins where the size limit is
 // applied. A DNSKEY can be as large as the message allows and its material is
 // attacker-supplied, so deciding it is too big has to happen on the encoded
 // length — deciding it after decoding pays for the very thing being refused.
 func TestDSDigestRefusesOversizedBeforeDecoding(t *testing.T) {
-	// Well past the limit, so the decode this must not perform would be
-	// unmistakable in the measurement.
-	const material = 48 << 10
-	key := &dns.DNSKEY{
-		Hdr: dns.RR_Header{
-			Name: "example.com.", Rrtype: dns.TypeDNSKEY,
-			Class: dns.ClassINET, Ttl: 3600,
-		},
-		Flags: 257, Protocol: 3, Algorithm: dns.RSASHA256,
-		PublicKey: base64.StdEncoding.EncodeToString(
-			bytes.Repeat([]byte{0x5a}, material)),
-	}
+	key := oversizedKey(dns.RSASHA256)
 	want := make([]byte, sha256.Size)
 
 	allocs := testing.AllocsPerRun(100, func() {
@@ -242,7 +248,115 @@ func TestDSDigestRefusesOversizedBeforeDecoding(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("refusing a %d-octet key cost %.0f allocations; the length "+
-			"check is running after the decode", material, allocs)
+			"check is running after the decode", oversizedMaterial, allocs)
+	}
+}
+
+// TestDSDigestIgnoresWrappedKeyMaterial keeps the size check from narrowing
+// what the library accepts.
+//
+// The limit is judged on the encoded length, but base64 decoding skips CR and
+// LF — so a key at exactly the maximum, wrapped into lines, decodes to a
+// packable key while measuring longer than the limit. Judging the raw length
+// alone would refuse an input the library turns into a DS.
+func TestDSDigestIgnoresWrappedKeyMaterial(t *testing.T) {
+	material := bytes.Repeat([]byte{0x5a}, maxDSKeyMaterial)
+	flat := base64.StdEncoding.EncodeToString(material)
+
+	var wrapped strings.Builder
+	for i := 0; i < len(flat); i += 64 {
+		wrapped.WriteString(flat[i:min(i+64, len(flat))])
+		wrapped.WriteString("\r\n")
+	}
+	if wrapped.Len() <= base64.StdEncoding.EncodedLen(maxDSKeyMaterial) {
+		t.Fatal("fixture is wrong: the wrapped key is not longer than the limit")
+	}
+
+	key := &dns.DNSKEY{
+		Hdr: dns.RR_Header{
+			Name: "example.com.", Rrtype: dns.TypeDNSKEY,
+			Class: dns.ClassINET, Ttl: 3600,
+		},
+		Flags: 257, Protocol: 3, Algorithm: dns.RSASHA256,
+		PublicKey: wrapped.String(),
+	}
+
+	reference := key.ToDS(dns.SHA256)
+	if reference == nil {
+		t.Fatal("fixture is wrong: the library refused the wrapped key")
+	}
+	want, err := hex.DecodeString(reference.Digest)
+	if err != nil {
+		t.Fatalf("library digest is not hexadecimal: %v", err)
+	}
+	if !dsDigestMatches(key, dns.SHA256, want) {
+		t.Fatal("refused a wrapped key the library accepts; the size check is " +
+			"counting line breaks as key material")
+	}
+}
+
+// TestVerifyDSRefusesOversizedKeyWithoutDecodingIt measures the path a query
+// actually takes, which the helper-level test above does not.
+//
+// VerifyDS reaches usableDSCandidate before any digest, and that begins with
+// KeyTag — which packs the key into a buffer of its own and decodes the
+// material to fill it. Nothing about that decode depends on which DS is being
+// considered, so a DS RRset naming the same key many times paid for it once
+// per mention: one 48 KiB key across 32 DS records amplified to megabytes.
+//
+// The measurement is in bytes rather than allocations because the surrounding
+// bookkeeping — deduplicating and sorting the DS records — allocates by
+// design. The ceiling is one key's worth of material: crossing it means at
+// least one decode happened, which is the thing being ruled out.
+func TestVerifyDSRefusesOversizedKeyWithoutDecodingIt(t *testing.T) {
+	const dsCount = 32
+	key := oversizedKey(dns.RSASHA256)
+
+	// The library cannot pack this key, so the tag it computes is 0 rather
+	// than the key's real one. That is what an attacker indexes against.
+	if tag := key.KeyTag(); tag != 0 {
+		t.Fatalf("fixture is wrong: the library computed key tag %d for an "+
+			"unpackable key", tag)
+	}
+	keyMap := map[uint16][]*dns.DNSKEY{0: {key}}
+
+	// Distinct digests, so deduplication keeps all of them: every one is a
+	// separate mention of the same key.
+	dsSet := make([]dns.RR, 0, dsCount)
+	for i := range dsCount {
+		digest := bytes.Repeat([]byte{0x11}, sha256.Size)
+		digest[0] = byte(i)
+		dsSet = append(dsSet, &dns.DS{
+			Hdr: dns.RR_Header{
+				Name: "example.com.", Rrtype: dns.TypeDS,
+				Class: dns.ClassINET, Ttl: 3600,
+			},
+			KeyTag: 0, Algorithm: dns.RSASHA256, DigestType: dns.SHA256,
+			Digest: hex.EncodeToString(digest),
+		})
+	}
+
+	if unsupportedOnly, err := VerifyDS(keyMap, dsSet); err == nil {
+		t.Fatalf("an oversized key authenticated a DS (unsupportedOnly=%v)",
+			unsupportedOnly)
+	}
+
+	const runs = 20
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for range runs {
+		if _, err := VerifyDS(keyMap, dsSet); err == nil {
+			t.Fatal("an oversized key authenticated a DS")
+		}
+	}
+	runtime.ReadMemStats(&after)
+
+	perCall := (after.TotalAlloc - before.TotalAlloc) / runs
+	if perCall > oversizedMaterial {
+		t.Fatalf("VerifyDS over %d DS records naming one %d-octet key "+
+			"allocated %d B; the size check is running after KeyTag, so the "+
+			"key is decoded once per DS", dsCount, oversizedMaterial, perCall)
 	}
 }
 

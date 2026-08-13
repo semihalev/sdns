@@ -168,6 +168,63 @@ func TestSignatureBindingRequiresALabelBoundary(t *testing.T) {
 	}
 }
 
+// Test_VerifyRRSIG_EscapedDotIsNotALabelBoundary is the production-path
+// regression for the same defect one level up.
+//
+// `foo\.zone.example.` is a single label `foo.zone` under `example.` — it
+// ends with the *text* of the signer zone while living outside it. Signed
+// with the zone's own valid key, a containment check written as a string
+// suffix authenticates it: a zone operator would be able to sign answers for
+// owners no delegation ever gave them.
+func Test_VerifyRRSIG_EscapedDotIsNotALabelBoundary(t *testing.T) {
+	signerZone := "zone.example."
+	key, priv := makeZoneKey(t, signerZone)
+	keys := map[uint16][]*dns.DNSKEY{key.KeyTag(): {key}}
+
+	impostor := &dns.A{
+		Hdr: dns.RR_Header{
+			Name: `foo\.zone.example.`, Rrtype: dns.TypeA,
+			Class: dns.ClassINET, Ttl: 300,
+		},
+		A: []byte{192, 0, 2, 66},
+	}
+	sig := signRRSet(t, key, priv, []dns.RR{impostor})
+
+	msg := new(dns.Msg)
+	msg.SetQuestion(`foo\.zone.example.`, dns.TypeA)
+	msg.Answer = []dns.RR{impostor, sig}
+
+	if ok, err := VerifyRRSIG(signerZone, keys, msg); ok && err == nil {
+		t.Fatal("BUG REPRODUCED: an RRset whose owner is a single label " +
+			`containing a literal dot (foo\.zone.example.) authenticated ` +
+			"against the zone.example. key; the escaped dot was read as a " +
+			"label separator")
+	}
+
+	// The genuine descendant, spelled with a real separator, still validates:
+	// the fix must not cost the ordinary name.
+	genuine := &dns.A{
+		Hdr: dns.RR_Header{
+			Name: "foo.zone.example.", Rrtype: dns.TypeA,
+			Class: dns.ClassINET, Ttl: 300,
+		},
+		A: []byte{192, 0, 2, 67},
+	}
+	genuineSig := signRRSet(t, key, priv, []dns.RR{genuine})
+
+	valid := new(dns.Msg)
+	valid.SetQuestion("foo.zone.example.", dns.TypeA)
+	valid.Answer = []dns.RR{genuine, genuineSig}
+
+	ok, err := VerifyRRSIG(signerZone, keys, valid)
+	if err != nil {
+		t.Fatalf("a genuine in-zone RRset failed to validate: %v", err)
+	}
+	if !ok {
+		t.Fatal("a genuine in-zone RRset did not validate")
+	}
+}
+
 // TestVerifySignatureAgreesWithLibrary is the contract that lets this package
 // verify signatures itself: for the signatures a signer produces, and for
 // inputs corrupted in the ways a resolver actually meets, it must reach the

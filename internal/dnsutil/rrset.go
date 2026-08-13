@@ -95,6 +95,13 @@ func HasNSEC3OptOut(rrs []dns.RR, zone string) bool {
 
 // NameInZone reports whether name is the zone apex or a descendant of
 // zone. Both arguments are expected to be lowercase FQDNs.
+//
+// The separator has to be a real one. In presentation format a dot inside
+// a label is written `\.`, so `foo\.example.com.` is the two labels
+// `foo.example` and `com` — it ends with the text of `example.com.`
+// without being anywhere below that zone. Reading it as a descendant
+// would let a key for example.com. authenticate an owner it has no
+// authority over.
 func NameInZone(name, zone string) bool {
 	if zone == "." || zone == "" {
 		return true
@@ -102,7 +109,33 @@ func NameInZone(name, zone string) bool {
 	if name == zone {
 		return true
 	}
-	return strings.HasSuffix(name, "."+zone)
+	if len(name) <= len(zone) {
+		return false
+	}
+	// Compared in place rather than against "."+zone. The concatenation
+	// stays on the stack while it fits the runtime's temporary buffer,
+	// so a short zone never paid for it — but a zone name of 32 octets
+	// or more heap-allocated on every call, and this runs for every
+	// RRset of every signed response.
+	cut := len(name) - len(zone)
+	if name[cut-1] != '.' || name[cut:] != zone {
+		return false
+	}
+	return !escapedDot(name, cut-1)
+}
+
+// escapedDot reports whether the dot at i is a literal dot within a label
+// rather than a label separator.
+//
+// A backslash escapes the character after it, and escapes itself as `\\`,
+// so the dot is a separator exactly when an even number of backslashes
+// precede it.
+func escapedDot(name string, i int) bool {
+	backslashes := 0
+	for j := i - 1; j >= 0 && name[j] == '\\'; j-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 // DnameTarget returns the synthesized CNAME target for the question
