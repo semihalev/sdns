@@ -30,7 +30,7 @@ func signatureBinding(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 	if k.Protocol != 3 || k.Flags&dns.ZONE == 0 {
 		return ErrMissingDNSKEY
 	}
-	if sig.KeyTag != k.KeyTag() || sig.Algorithm != k.Algorithm ||
+	if sig.KeyTag != KeyTag(k) || sig.Algorithm != k.Algorithm ||
 		sig.Hdr.Class != k.Hdr.Class {
 		return ErrMissingDNSKEY
 	}
