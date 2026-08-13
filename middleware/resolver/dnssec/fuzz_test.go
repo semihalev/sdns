@@ -94,6 +94,45 @@ func FuzzTypesSet(f *testing.F) {
 	})
 }
 
+// FuzzKeyTag drives the key tag against the library's for arbitrary key
+// material. The tag decides which key a DS or an RRSIG is matched against, so
+// a disagreement does not fail loudly — it quietly stops the right key from
+// being tried. A checksum read in chunks is exactly the kind of thing that
+// agrees on the inputs someone thought to write down, so this looks for the
+// ones nobody did.
+func FuzzKeyTag(f *testing.F) {
+	f.Add(uint16(257), uint8(3), dns.RSASHA256, "AwEAAcQ8")
+	f.Add(uint16(256), uint8(3), dns.ECDSAP256SHA256, "")
+	f.Add(uint16(0), uint8(0), dns.ED25519, "not base64!!")
+	f.Add(uint16(0xFFFF), uint8(255), dns.RSASHA512, "AAAA=AAA")
+	f.Add(uint16(385), uint8(3), dns.RSAMD5, "AQAB")
+	f.Add(uint16(257), uint8(3), dns.RSASHA256, "AAAA\r\nAAAA")
+
+	f.Fuzz(func(t *testing.T, flags uint16, protocol, algorithm uint8, publicKey string) {
+		key := &dns.DNSKEY{
+			Hdr: dns.RR_Header{
+				Name: "example.com.", Rrtype: dns.TypeDNSKEY,
+				Class: dns.ClassINET, Ttl: 3600,
+			},
+			Flags: flags, Protocol: protocol, Algorithm: algorithm,
+			PublicKey: publicKey,
+		}
+		if algorithm == dns.RSAMD5 {
+			// Not compared: the library panics on part of this input
+			// space, which is why RSAMD5 has no tag here. See KeyTag.
+			if got := KeyTag(key); got != 0 {
+				t.Fatalf("RSAMD5 key=%q: tag %d, want 0", publicKey, got)
+			}
+			return
+		}
+		if got, want := KeyTag(key), key.KeyTag(); got != want {
+			t.Fatalf("flags=%d protocol=%d algorithm=%d key=%q: tag %d, "+
+				"library says %d", flags, protocol, algorithm, publicKey,
+				got, want)
+		}
+	})
+}
+
 // FuzzFindClosestEncloser fuzzes the NSEC3 closest encloser algorithm.
 func FuzzFindClosestEncloser(f *testing.F) {
 	f.Add("sub.example.com.")

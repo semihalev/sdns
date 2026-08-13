@@ -140,7 +140,7 @@ func (r *Resolver) AutoTA() {
 		for _, rr := range r.rootKeys {
 			if dnskey, ok := rr.(*dns.DNSKEY); ok {
 				if dnskey.Flags&DNSKEYFlagKSK != 0 {
-					keyTag := dnskey.KeyTag()
+					keyTag := dnssec.KeyTag(dnskey)
 					ta := &TrustAnchor{
 						DNSKey:    dnskey,
 						State:     StateValid,
@@ -230,7 +230,7 @@ func (r *Resolver) AutoTA() {
 		if !ok || dnskey.Flags&DNSKEYFlagKSK == 0 {
 			continue
 		}
-		tag := dnskey.KeyTag()
+		tag := dnssec.KeyTag(dnskey)
 		if _, exists := kskCurrent[tag]; exists {
 			continue
 		}
@@ -268,10 +268,10 @@ func (r *Resolver) AutoTA() {
 	}
 
 	for _, k := range candidate {
-		validTag := k.(*dns.DNSKEY).KeyTag()
+		validTag := dnssec.KeyTag(k.(*dns.DNSKEY))
 		ok := false
 		for _, kv := range r.configuredRootKeys {
-			currTag := kv.(*dns.DNSKEY).KeyTag()
+			currTag := dnssec.KeyTag(kv.(*dns.DNSKEY))
 			if currTag == validTag {
 				ok = true
 			}
@@ -335,7 +335,7 @@ func (r *Resolver) AutoTA() {
 	for _, rr := range resp.Answer {
 		if dnskey, ok := rr.(*dns.DNSKEY); ok {
 			if dnskey.Flags&DNSKEYFlagKSK != 0 {
-				keyTag := dnskey.KeyTag()
+				keyTag := dnssec.KeyTag(dnskey)
 				ta := &TrustAnchor{
 					DNSKey: dnskey,
 					State:  StateStart,
@@ -591,7 +591,7 @@ func (r *Resolver) AutoTA() {
 		zlog.Info("Trust anchor status", "keytag", tag, "state", ta.State.String(), "firstseen", ta.FirstSeen.UTC().Format(time.UnixDate))
 	}
 	for fp, tb := range tombstones {
-		zlog.Info("Trust anchor tombstone", "keytag", tb.DNSKey.KeyTag(), "fp", fp, "firstseen", tb.FirstSeen.UTC().Format(time.UnixDate))
+		zlog.Info("Trust anchor tombstone", "keytag", dnssec.KeyTag(tb.DNSKey), "fp", fp, "firstseen", tb.FirstSeen.UTC().Format(time.UnixDate))
 	}
 
 	if tombErr == nil && stateErr == nil {
@@ -651,7 +651,7 @@ func revocationIsSelfSignedWithWork(
 	}
 	msg := &dns.Msg{Answer: append([]dns.RR(nil), rrs...)}
 	keys := map[uint16][]*dns.DNSKEY{
-		revokedKey.KeyTag(): {revokedKey},
+		dnssec.KeyTag(revokedKey): {revokedKey},
 	}
 	return dnssec.VerifyRRSIGWithWork(revokedKey.Header().Name, keys, msg, work)
 }
@@ -730,7 +730,7 @@ func verifyFetchedKeysWithWork(
 	for _, r := range rootKeys {
 		dnskey := r.(*dns.DNSKEY)
 		if dnskey.Flags&DNSKEYFlagKSK != 0 {
-			tag := dnskey.KeyTag()
+			tag := dnssec.KeyTag(dnskey)
 			currentKeys[tag] = append(currentKeys[tag], dnskey)
 		}
 	}
@@ -752,9 +752,9 @@ func verifyFetchedKeysWithWork(
 		if dnskey.Flags&DNSKEYFlagRevoke == 0 {
 			continue
 		}
-		for _, candidate := range currentKeys[dnskey.KeyTag()-DNSKEYFlagRevoke] {
+		for _, candidate := range currentKeys[dnssec.KeyTag(dnskey)-DNSKEYFlagRevoke] {
 			if sameKeyExceptRevoke(candidate, dnskey) {
-				tag := dnskey.KeyTag()
+				tag := dnssec.KeyTag(dnskey)
 				revokedBootstrap[tag] = append(revokedBootstrap[tag], dnskey)
 				break
 			}

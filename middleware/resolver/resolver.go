@@ -2821,7 +2821,7 @@ func (r *Resolver) verifyRootKeys(ctx context.Context, msg *dns.Msg) (bool, erro
 	for _, rr := range rootKeys {
 		dnskey := rr.(*dns.DNSKEY)
 		if dnskey.Flags == 257 {
-			tag := dnskey.KeyTag()
+			tag := dnssec.KeyTag(dnskey)
 			keys[tag] = append(keys[tag], dnskey)
 		}
 	}
@@ -2895,7 +2895,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 				continue
 			}
 			if dnskey.Flags == 256 || dnskey.Flags == 257 {
-				tag := dnskey.KeyTag()
+				tag := dnssec.KeyTag(dnskey)
 				keys[tag] = append(keys[tag], dnskey)
 			}
 		}

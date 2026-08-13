@@ -294,7 +294,7 @@ func usableDSCandidate(parentDS *dns.DS, key *dns.DNSKEY) bool {
 	if oversizedKeyMaterial(key.PublicKey) {
 		return false
 	}
-	return key.KeyTag() == parentDS.KeyTag &&
+	return KeyTag(key) == parentDS.KeyTag &&
 		key.Algorithm == parentDS.Algorithm &&
 		key.Header().Class == parentDS.Header().Class &&
 		strings.EqualFold(key.Header().Name, parentDS.Header().Name) &&
@@ -723,7 +723,7 @@ func usableSignatureCandidate(sig *dns.RRSIG, key *dns.DNSKEY) bool {
 	if key == nil {
 		return false
 	}
-	return key.KeyTag() == sig.KeyTag &&
+	return KeyTag(key) == sig.KeyTag &&
 		key.Algorithm == sig.Algorithm &&
 		key.Header().Class == sig.Header().Class &&
 		strings.EqualFold(key.Header().Name, sig.SignerName) &&
