@@ -6,6 +6,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/mock"
+	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/server/doq"
 )
 
@@ -30,6 +31,16 @@ type responseWriter struct {
 	proto    string
 	remoteip net.IP
 	internal bool
+
+	// directPack records that the transport beneath this writer is an
+	// SDNS-owned UDP, TCP or DoT sink whose Write sends raw wire bytes
+	// unchanged. It is a declaration, never an inference: the server's
+	// owned-listener ingress is the only caller of AllowDirectPack, so a
+	// plugin writer that merely looks like a datagram transport — same
+	// RemoteAddr type, same proto string — never receives packed bytes it
+	// might re-decode or reshape. Reset clears it, so a pooled chain
+	// cannot carry the capability to a writer that did not declare it.
+	directPack bool
 }
 
 var _ ResponseWriter = &responseWriter{}
@@ -52,6 +63,7 @@ func (w *responseWriter) Reset(rw dns.ResponseWriter) {
 	w.proto = ""
 	w.remoteip = nil
 	w.internal = false
+	w.directPack = false
 
 	switch a := rw.RemoteAddr().(type) {
 	case *net.UDPAddr:
@@ -126,6 +138,31 @@ func (w *responseWriter) Write(m []byte) (int, error) {
 func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	if w.Written() {
 		return errAlreadyWritten
+	}
+
+	// The direct path: pack in pooled storage and hand the transport raw
+	// bytes, skipping the library's per-message dictionary and buffer. Only
+	// on a declared SDNS-owned sink — see directPack — and never for an
+	// internal sub-query, whose consumer wants the message, not bytes.
+	//
+	// The bookkeeping runs inside the consumer, before the transport write:
+	// the size marks the response written even if the transport then
+	// errors, so nothing retries a wire that may be partially out. Msg()
+	// keeps returning the caller's message, pointer identity included —
+	// request-local provenance is keyed on it. A message TryPack cannot
+	// handle falls through untouched to the library path below, which is
+	// byte-identical by TryPack's contract.
+	if w.directPack && !w.internal {
+		handled, err := wire.TryPack(m, func(body []byte) error {
+			w.msg = m
+			w.rcode = m.Rcode
+			w.size = len(body)
+			_, werr := w.ResponseWriter.Write(body)
+			return werr
+		})
+		if handled {
+			return err
+		}
 	}
 
 	w.msg = m
