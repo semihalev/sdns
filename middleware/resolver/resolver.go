@@ -1485,14 +1485,56 @@ mainloop:
 	return pickFallbackResponse(responseErrors, configErrors, fatalErrors)
 }
 
+// linearDedupeLimit is the list size below which duplicate suppression
+// compares rather than indexes. A delegation names a handful of servers — the
+// root names thirteen — so the quadratic scan is a few dozen comparisons of
+// values already in registers, against a map that has to be built, sized and
+// discarded on every lookup.
+const linearDedupeLimit = 24
+
 func dedupeAuthorityServers(servers []*authority.Server) []*authority.Server {
+	if len(servers) <= linearDedupeLimit {
+		return dedupeAuthorityServersLinear(servers)
+	}
+	return dedupeAuthorityServersIndexed(servers)
+}
+
+// dedupeAuthorityServersLinear suppresses duplicates by comparing each server
+// against the ones already kept, in place and without allocating.
+//
+// The addresses arrive decoded — Endpoint is the value the constructor built
+// Addr from — so identity is a comparison of two netip.AddrPorts. Only a
+// server whose address is not an IP:port literal needs its spelling
+// canonicalized, and those never reach this path from the delegation
+// producers.
+func dedupeAuthorityServersLinear(servers []*authority.Server) []*authority.Server {
+	result := servers[:0]
+	for _, server := range servers {
+		if server == nil {
+			continue
+		}
+		duplicate := false
+		for _, kept := range result {
+			if sameResolutionEndpoint(kept, server) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			result = append(result, server)
+		}
+	}
+	return result
+}
+
+func dedupeAuthorityServersIndexed(servers []*authority.Server) []*authority.Server {
 	seen := make(map[string]struct{}, len(servers))
 	result := servers[:0]
 	for _, server := range servers {
 		if server == nil {
 			continue
 		}
-		key := middleware.CanonicalResolutionEndpoint(server.Addr)
+		key := resolutionEndpointIdentity(server)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -1500,6 +1542,28 @@ func dedupeAuthorityServers(servers []*authority.Server) []*authority.Server {
 		result = append(result, server)
 	}
 	return result
+}
+
+// resolutionEndpointIdentity returns the spelling that identifies a server's
+// upstream. A server built from a decoded address already holds it; anything
+// else has to be normalized, and normalization is what produces a string.
+func resolutionEndpointIdentity(server *authority.Server) string {
+	if addr, canonical := server.CanonicalAddr(); canonical {
+		return addr
+	}
+	return middleware.CanonicalResolutionEndpoint(server.Addr)
+}
+
+// sameResolutionEndpoint reports whether two servers name the same upstream.
+// Two canonical spellings compare directly; anything else is normalized
+// first, which only the servers whose address never was a literal reach.
+func sameResolutionEndpoint(a, b *authority.Server) bool {
+	aAddr, aCanonical := a.CanonicalAddr()
+	bAddr, bCanonical := b.CanonicalAddr()
+	if aCanonical && bCanonical {
+		return aAddr == bAddr
+	}
+	return resolutionEndpointIdentity(a) == resolutionEndpointIdentity(b)
 }
 
 // lookupResult bundles a single per-server query outcome for the
@@ -1648,8 +1712,18 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		return nil, ctxErr
 	}
 	q := req.Question[0]
-	if err := middleware.BeginResolutionAttempt(ctx, q, server.Addr, proto); err != nil {
-		return nil, err
+	// Addr was printed from a decoded address at construction, so it is
+	// already the canonical spelling the guard keys on; normalizing it
+	// again would parse that string and print an identical one back.
+	// A server whose address never was a literal has no such promise.
+	attemptErr := error(nil)
+	if addr, canonical := server.CanonicalAddr(); canonical {
+		attemptErr = middleware.BeginResolutionAttemptCanonical(ctx, q, addr, proto)
+	} else {
+		attemptErr = middleware.BeginResolutionAttempt(ctx, q, server.Addr, proto)
+	}
+	if attemptErr != nil {
+		return nil, attemptErr
 	}
 	if rs.work != nil {
 		var err error

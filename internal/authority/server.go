@@ -18,12 +18,34 @@ type Server struct {
 	Addr      string
 	IPVersion IPVersion
 
+	// canonical records that Addr was printed from a decoded address and is
+	// therefore already the identity spelling — what duplicate suppression
+	// compares and what the retry guard keys on. Deriving that identity by
+	// parsing Addr and printing it back produced a string per server per
+	// lookup, for a string this constructor had just built.
+	//
+	// It sits next to IPVersion so it lands in the padding those two share,
+	// and knowing this costs the Server nothing. False only when Addr was
+	// never an IP:port literal, where the spelling is not the identity and
+	// callers must normalize.
+	canonical bool
+
 	// UDPAddr is Addr pre-parsed as *net.UDPAddr so the upstream
 	// exchange path can use net.DialUDP directly instead of going
 	// through Dialer.DialContext's string-parsing + dialParallel
 	// machinery. Nil only if Addr failed to parse — callers fall
 	// back to the string path in that case.
 	UDPAddr *net.UDPAddr
+}
+
+// CanonicalAddr returns Addr together with whether it is already in the
+// canonical spelling. A caller that keys on the endpoint can use the string
+// as-is when this reports true, and must normalize it otherwise.
+func (a *Server) CanonicalAddr() (string, bool) {
+	if a == nil {
+		return "", false
+	}
+	return a.Addr, a.canonical
 }
 
 // IPVersion type.
@@ -77,6 +99,10 @@ func NewServerFromAddrPort(ap netip.AddrPort) *Server {
 		Addr:      ap.String(),
 		IPVersion: version,
 		UDPAddr:   net.UDPAddrFromAddrPort(ap),
+		// The zero AddrPort prints as "invalid AddrPort", which is a
+		// spelling and not an address. No producer hands one over, but the
+		// marker is a promise about Addr and must not be made about that.
+		canonical: ap.IsValid(),
 	}
 }
 

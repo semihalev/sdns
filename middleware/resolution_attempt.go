@@ -55,19 +55,55 @@ func (e *ResolutionAttemptLimitError) Unwrap() error { return ErrResolutionAttem
 
 type resolutionAttemptKey struct {
 	qname     string
-	qtype     uint16
-	qclass    uint16
 	endpoint  string
 	transport string
+	qtype     uint16
+	qclass    uint16
+}
+
+func (k resolutionAttemptKey) limitError() error {
+	return &ResolutionAttemptLimitError{
+		Question:  dns.Question{Name: k.qname, Qtype: k.qtype, Qclass: k.qclass},
+		Endpoint:  k.endpoint,
+		Transport: k.transport,
+	}
+}
+
+// resolutionAttemptEntry is one recorded tuple in the guard's inline table.
+type resolutionAttemptEntry struct {
+	key   resolutionAttemptKey
+	count uint8
 }
 
 // ResolutionAttemptGuard owns retry state and exact terminal request-local
 // response provenance for one complete client request tree. A mutex keeps both
 // maps atomic across resolver fan-out.
 type ResolutionAttemptGuard struct {
-	mu                    sync.Mutex
-	attempts              map[resolutionAttemptKey]uint8
+	mu sync.Mutex
+	// attempts holds the tree's recorded tuples. It hangs off a pointer
+	// because most requests are answered from cache and record none; those
+	// must not carry storage for a tuple they never had.
+	attempts              *resolutionAttemptStore
 	localFailureResponses map[*dns.Msg]error
+}
+
+// resolutionAttemptOverflowHint sizes the overflow map the moment the slots
+// are full, so a tree that fans out grows it once instead of rehashing its way
+// up from nothing.
+const resolutionAttemptOverflowHint = 8
+
+// resolutionAttemptStore is the guard's storage: a fixed set of slots for the
+// tuples a request tree normally records, and a map for the trees that fan out
+// past them.
+//
+// The two live together under one pointer rather than beside each other in the
+// guard. The guard is embedded in the request tree's ledgers, so a second
+// pointer there is eight bytes on every request that resolves anything, while
+// here it lands inside the allocation the slots already needed.
+type resolutionAttemptStore struct {
+	len      int
+	slots    [8]resolutionAttemptEntry
+	overflow map[resolutionAttemptKey]uint8
 }
 
 // NewResolutionAttemptGuard returns an empty request-tree retry guard.
@@ -84,28 +120,71 @@ func (g *ResolutionAttemptGuard) Begin(q dns.Question, endpoint, transport strin
 		return nil
 	}
 
-	key := resolutionAttemptKey{
+	return g.BeginCanonical(q, CanonicalResolutionEndpoint(endpoint), transport)
+}
+
+// BeginCanonical is Begin for a caller whose endpoint is already spelled the
+// way CanonicalResolutionEndpoint would spell it — the delegation path, where
+// the address was decoded from glue and its "IP:port" form was printed from
+// that value once, at construction. Normalizing it again parses the string
+// and prints an identical one back, per attempt.
+//
+// The promise matters: a spelling that is not canonical splits one tuple's
+// counter in two, and the RFC 9520 limit is what the counter enforces. Callers
+// that cannot make the promise must use Begin.
+func (g *ResolutionAttemptGuard) BeginCanonical(q dns.Question, endpoint, transport string) error {
+	if g == nil {
+		return nil
+	}
+	return g.begin(resolutionAttemptKey{
 		qname:     dns.CanonicalName(q.Name),
 		qtype:     q.Qtype,
 		qclass:    q.Qclass,
-		endpoint:  CanonicalResolutionEndpoint(endpoint),
+		endpoint:  endpoint,
 		transport: canonicalResolutionTransport(transport),
-	}
+	})
+}
 
+func (g *ResolutionAttemptGuard) begin(key resolutionAttemptKey) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if g.attempts == nil {
-		g.attempts = make(map[resolutionAttemptKey]uint8)
+		g.attempts = new(resolutionAttemptStore)
 	}
-	if g.attempts[key] >= maxResolutionAttempts {
-		return &ResolutionAttemptLimitError{
-			Question:  dns.Question{Name: key.qname, Qtype: key.qtype, Qclass: key.qclass},
-			Endpoint:  key.endpoint,
-			Transport: key.transport,
+	store := g.attempts
+
+	// A tuple lives in exactly one place, so a hit in the slots is
+	// conclusive and the overflow map is never consulted for it.
+	for i := range store.len {
+		entry := &store.slots[i]
+		if entry.key != key {
+			continue
 		}
+		if entry.count >= maxResolutionAttempts {
+			return key.limitError()
+		}
+		entry.count++
+		return nil
 	}
-	g.attempts[key]++
+
+	if count, recorded := store.overflow[key]; recorded {
+		if count >= maxResolutionAttempts {
+			return key.limitError()
+		}
+		store.overflow[key] = count + 1
+		return nil
+	}
+
+	if store.len < len(store.slots) {
+		store.slots[store.len] = resolutionAttemptEntry{key: key, count: 1}
+		store.len++
+		return nil
+	}
+	if store.overflow == nil {
+		store.overflow = make(map[resolutionAttemptKey]uint8, resolutionAttemptOverflowHint)
+	}
+	store.overflow[key] = 1
 	return nil
 }
 
@@ -212,6 +291,20 @@ func EnsureResolutionAttemptGuard(ctx context.Context) (context.Context, *Resolu
 func BeginResolutionAttempt(ctx context.Context, q dns.Question, endpoint, transport string) error {
 	if guard := ResolutionAttemptGuardFrom(ctx); guard != nil {
 		return guard.Begin(q, endpoint, transport)
+	}
+	return nil
+}
+
+// BeginResolutionAttemptCanonical is BeginResolutionAttempt for a caller whose
+// endpoint is already canonically spelled. See BeginCanonical for what that
+// promise means.
+func BeginResolutionAttemptCanonical(
+	ctx context.Context,
+	q dns.Question,
+	endpoint, transport string,
+) error {
+	if guard := ResolutionAttemptGuardFrom(ctx); guard != nil {
+		return guard.BeginCanonical(q, endpoint, transport)
 	}
 	return nil
 }
