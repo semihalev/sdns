@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/contextutil"
+	"github.com/semihalev/sdns/internal/wire"
 )
 
 // ResponseMeta carries resolver-produced metadata about a response
@@ -456,11 +457,27 @@ func validatedNegativeProofFingerprint(proof *dns.Msg) ([sha256.Size]byte, bool)
 	sealed := new(dns.Msg)
 	sealed.Rcode = proof.Rcode
 	sealed.Ns = proof.Ns
-	wire, err := sealed.Pack()
+
+	// The packed form exists only to be hashed, so it is hashed where it
+	// lies — in the packer's pooled buffer — instead of allocated, summed
+	// and dropped. An authority section the pooled buffer cannot hold takes
+	// the library, exactly as before.
+	var sum [sha256.Size]byte
+	handled, err := wire.TryPack(sealed, func(body []byte) error {
+		sum = sha256.Sum256(body)
+		return nil
+	})
 	if err != nil {
 		return [sha256.Size]byte{}, false
 	}
-	return sha256.Sum256(wire), true
+	if !handled {
+		packed, packErr := sealed.Pack()
+		if packErr != nil {
+			return [sha256.Size]byte{}, false
+		}
+		sum = sha256.Sum256(packed)
+	}
+	return sum, true
 }
 
 // EnsureResolutionAttemptGuard returns the request tree's retry guard,

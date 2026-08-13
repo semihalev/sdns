@@ -9,6 +9,8 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	// Aliased: this file's local "wire" is the packed body itself.
+	wirepack "github.com/semihalev/sdns/internal/wire"
 	"golang.org/x/time/rate"
 )
 
@@ -154,17 +156,15 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	}
 
 	// Name compression keeps the stored form smaller than the upstream wire.
+	// PackClone packs into pooled scratch and returns an exact-size copy:
+	// the compression dictionary and the oversized pack buffer the library
+	// allocated per admission are pooled away, and the entry — long-lived —
+	// retains only the bytes it serves.
 	msgCopy.Compress = true
-	packed, err := msgCopy.Pack()
+	wire, err := wirepack.PackClone(msgCopy)
 	if err != nil {
 		return nil
 	}
-	// Pack sizes its backing array for the uncompressed length and returns
-	// the compressed prefix — half the capacity can be dead weight on
-	// compressible messages. The entry is long-lived; retain an exact-size
-	// copy, not the oversized scratch buffer.
-	wire := make([]byte, len(packed))
-	copy(wire, packed)
 
 	entry := &CacheEntry{
 		wire: wire,
@@ -213,12 +213,12 @@ func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg, ede *dns.EDNS0_EDE) {
 	dnsutil.ClearDNSSEC(&stripped)
 	stripped.Compress = true
 
-	packed, err := stripped.Pack()
+	// Pooled scratch, exact-size result — the second per-admission pack,
+	// same treatment as the first.
+	body, err := wirepack.PackClone(&stripped)
 	if err != nil {
 		return
 	}
-	body := make([]byte, len(packed))
-	copy(body, packed)
 
 	flags := prepareWireServe(body, ede)
 	// Byte serving is all-or-nothing per body: an entry whose stripped form
