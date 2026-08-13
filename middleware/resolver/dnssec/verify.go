@@ -9,6 +9,7 @@ package dnssec
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"sort"
 	"strings"
 	"time"
@@ -126,6 +127,15 @@ func verifyDSWithWork(
 			continue
 		}
 
+		// Decoded once for the whole candidate set: the parent's digest is
+		// what every candidate is measured against, and it does not change
+		// between them.
+		wantDigest, decodeErr := hex.DecodeString(parentDS.Digest)
+		if decodeErr != nil || len(wantDigest) == 0 {
+			lastErr = ErrMismatchingDS
+			continue
+		}
+
 		matched := false
 		var candidateUsed uint32
 		for _, ksk := range candidates {
@@ -135,15 +145,12 @@ func verifyDSWithWork(
 				}
 			}
 
-			ds, err := runDSDigest(work, ksk, parentDS.DigestType)
+			ok, err := runDSDigestMatch(work, ksk, parentDS.DigestType, wantDigest)
 			if err != nil {
 				return false, err
 			}
 			candidateUsed++
-			if ds == nil {
-				continue
-			}
-			if strings.EqualFold(ds.Digest, parentDS.Digest) {
+			if ok {
 				matched = true
 				break
 			}
@@ -280,6 +287,13 @@ func usableDSCandidate(parentDS *dns.DS, key *dns.DNSKEY) bool {
 	if key == nil {
 		return false
 	}
+	// Ahead of KeyTag, which packs the key into a buffer of its own and
+	// decodes the material to fill it. A key too large to produce a DS can
+	// never match one, and a DS set may name the same key repeatedly: the
+	// cheap check has to come first or the expensive one runs per mention.
+	if oversizedKeyMaterial(key.PublicKey) {
+		return false
+	}
 	return key.KeyTag() == parentDS.KeyTag &&
 		key.Algorithm == parentDS.Algorithm &&
 		key.Header().Class == parentDS.Header().Class &&
@@ -299,19 +313,24 @@ func beginDSDigest(work DSDigestWork) (func(), error) {
 	return release, nil
 }
 
-func runDSDigest(
+// runDSDigestMatch charges the request tree for one DS digest and reports
+// whether key hashes to want. The comparison happens on the digest bytes
+// rather than through a dns.DS: the record, its hexadecimal digest and the
+// two oversized buffers behind them exist only to be compared and dropped.
+func runDSDigestMatch(
 	work DSDigestWork,
 	key *dns.DNSKEY,
 	digestType uint8,
-) (*dns.DS, error) {
+	want []byte,
+) (bool, error) {
 	release, err := beginDSDigest(work)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	if release != nil {
 		defer release()
 	}
-	return key.ToDS(digestType), nil
+	return dsDigestMatches(key, digestType, want), nil
 }
 
 // VerifyRRSIG validates that every in-zone RRset in msg is covered by at
@@ -752,17 +771,18 @@ func runSignatureVerification(
 	return cryptoVerify(key, sig, set)
 }
 
-// cryptoVerify runs the cryptographic RRSIG check for a single candidate
-// key. RSA keys whose public exponent exceeds crypto/rsa's ceiling (e.g.
-// mailbox.org's alg-7/alg-10 ZSKs, exponent 2^32+1) are verified by the
-// raw modexp path so they validate instead of bogusing out; every other
-// key takes miekg/dns' sig.Verify, which rejects malformed keys itself.
+// cryptoVerify runs the cryptographic RRSIG check for a single candidate key,
+// through this package's own verifier for the algorithms it implements and
+// the library's for anything else. The two agree by construction: the
+// canonical signed data is the same, and the cryptography is the standard
+// library's on both sides.
+//
+// Keys whose public exponent exceeds crypto/rsa's ceiling — mailbox.org's
+// alg-7/alg-10 ZSKs, exponent 2^32+1 — keep the raw modexp path inside that
+// verifier, so they validate instead of bogusing out.
 func cryptoVerify(k *dns.DNSKEY, sig *dns.RRSIG, set []dns.RR) error {
-	switch k.Algorithm {
-	case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512:
-		if rsaExponentExceedsStdlib(k.PublicKey) {
-			return verifyRSAWideExponent(k, sig, set)
-		}
+	if verifySignatureSupported(k.Algorithm) {
+		return verifySignature(k, sig, set)
 	}
 	return sig.Verify(k, set)
 }
