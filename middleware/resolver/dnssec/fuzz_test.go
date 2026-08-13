@@ -118,10 +118,14 @@ func FuzzKeyTag(f *testing.F) {
 			PublicKey: publicKey,
 		}
 		if algorithm == dns.RSAMD5 {
-			// Not compared: the library panics on part of this input
-			// space, which is why RSAMD5 has no tag here. See KeyTag.
-			if got := KeyTag(key); got != 0 {
-				t.Fatalf("RSAMD5 key=%q: tag %d, want 0", publicKey, got)
+			// The library panics on part of this space, which is why the
+			// RSAMD5 tag is derived here; where it answers, the answers
+			// must match.
+			want, panicked := libraryKeyTag(key)
+			got := KeyTag(key)
+			if !panicked && got != want {
+				t.Fatalf("RSAMD5 key=%q: tag %d, library says %d",
+					publicKey, got, want)
 			}
 			return
 		}

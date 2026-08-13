@@ -142,56 +142,129 @@ func TestKeyTagDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// TestKeyTagGivesRSAMD5NoTag records the one deliberate divergence, and the
-// crash behind it.
-//
-// RFC 4034 Appendix B.1 derives the RSAMD5 tag from the modulus rather than
-// from the checksum. The library implements that by reading three octets from
-// the end of the decoded modulus after checking that it has more than one, so
-// a DNSKEY whose material decodes to exactly two octets indexes below the
-// start of a slice. The record is attacker-supplied and the tag is computed
-// before anything about it has been validated.
-//
-// RFC 8624 §3.1 makes RSAMD5 MUST NOT for validation and
-// IsSupportedDNSKEYAlgorithm refuses it, so a key that carries it can never
-// validate anything and losing its tag costs nothing.
-func TestKeyTagGivesRSAMD5NoTag(t *testing.T) {
-	if IsSupportedDNSKEYAlgorithm(dns.RSAMD5) {
-		t.Fatal("the resolver now validates RSAMD5; this divergence and " +
-			"KeyTag have to be revisited together")
-	}
+// libraryKeyTag returns the library's tag, reporting separately when it
+// crashed instead of answering.
+func libraryKeyTag(key *dns.DNSKEY) (tag uint16, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			panicked = true
+		}
+	}()
+	return key.KeyTag(), false
+}
 
-	rsamd5 := func(publicKey string) *dns.DNSKEY {
-		return &dns.DNSKEY{
-			Hdr: dns.RR_Header{
-				Name: "example.com.", Rrtype: dns.TypeDNSKEY,
-				Class: dns.ClassINET, Ttl: 3600,
-			},
-			Flags: 257, Protocol: 3, Algorithm: dns.RSAMD5,
-			PublicKey: publicKey,
+func rsamd5Key(publicKey string) *dns.DNSKEY {
+	return &dns.DNSKEY{
+		Hdr: dns.RR_Header{
+			Name: "example.com.", Rrtype: dns.TypeDNSKEY,
+			Class: dns.ClassINET, Ttl: 3600,
+		},
+		Flags: 257, Protocol: 3, Algorithm: dns.RSAMD5,
+		PublicKey: publicKey,
+	}
+}
+
+// TestKeyTagDerivesRSAMD5 covers the one algorithm whose tag is not this
+// checksum, and the crash that is the reason it is derived here.
+//
+// RFC 4034 Appendix B.1 with errata 193 takes the RSAMD5 tag from the two
+// octets below the last of the modulus. The library reads those three octets
+// after checking only that the modulus has more than one, so material that
+// decodes to exactly two octets indexes below the start of a slice — on a
+// record that arrives from the network and is tagged before anything about it
+// has been validated.
+//
+// Handing every RSAMD5 key a tag of zero instead would trade the crash for a
+// collision: zero is a tag a supported key can have, and the trust-anchor
+// state keeps one anchor per tag.
+func TestKeyTagDerivesRSAMD5(t *testing.T) {
+	// Where the library answers, the answers must agree.
+	for size := 3; size <= 300; size++ {
+		material := make([]byte, size)
+		for i := range material {
+			material[i] = byte(i*11 + 3)
+		}
+		key := rsamd5Key(base64.StdEncoding.EncodeToString(material))
+		want, panicked := libraryKeyTag(key)
+		if panicked {
+			t.Fatalf("%d octets: the library panicked where it should not", size)
+		}
+		if got := KeyTag(key); got != want {
+			t.Fatalf("%d octets: tag %d, library says %d", size, got, want)
+		}
+		// The tag is the two octets below the last, not the last two.
+		if want != uint16(material[size-3])<<8|uint16(material[size-2]) {
+			t.Fatalf("%d octets: fixture disagrees with RFC 4034 B.1", size)
 		}
 	}
 
-	// The shape that crashes the library: two decoded octets.
-	crasher := rsamd5(base64.StdEncoding.EncodeToString([]byte{0x30, 0x30}))
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Log("the library no longer panics on a two-octet RSAMD5 " +
-					"modulus; the divergence may be reconsidered")
+	// Below three octets there is no tag to derive. The library agrees at
+	// zero and one, and crashes at two.
+	for _, size := range []int{0, 1, 2} {
+		key := rsamd5Key(base64.StdEncoding.EncodeToString(
+			bytes.Repeat([]byte{0x30}, size)))
+		if got := KeyTag(key); got != 0 {
+			t.Fatalf("%d octets: tag %d, want 0", size, got)
+		}
+		want, panicked := libraryKeyTag(key)
+		switch size {
+		case 2:
+			if !panicked {
+				t.Log("the library no longer crashes on a two-octet RSAMD5 " +
+					"modulus")
 			}
-		}()
-		_ = crasher.KeyTag()
-	}()
-	if got := KeyTag(crasher); got != 0 {
-		t.Fatalf("tag %d for an RSAMD5 key, want 0", got)
+		default:
+			if panicked || want != 0 {
+				t.Fatalf("%d octets: library tag %d panicked=%v, want 0",
+					size, want, panicked)
+			}
+		}
 	}
 
-	// And an ordinary one, which the library handles but we still refuse.
-	ordinary := rsamd5(base64.StdEncoding.EncodeToString(
-		bytes.Repeat([]byte{0x5a}, 130)))
-	if got := KeyTag(ordinary); got != 0 {
-		t.Fatalf("tag %d for an RSAMD5 key, want 0", got)
+	// Wrapped material. The decoder skips CR and LF, so a line break left
+	// inside a chunk would split a group that a single decode keeps whole
+	// and the modulus would end somewhere else entirely.
+	for _, wrap := range []string{"\r", "\n", "\r\n"} {
+		material := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+		flat := base64.StdEncoding.EncodeToString(material)
+		for cut := 1; cut < len(flat); cut++ {
+			key := rsamd5Key(flat[:cut] + wrap + flat[cut:])
+			want, panicked := libraryKeyTag(key)
+			if panicked {
+				t.Fatalf("%q at %d: the library panicked", wrap, cut)
+			}
+			if got := KeyTag(key); got != want {
+				t.Fatalf("%q at %d: tag %d, library says %d",
+					wrap, cut, got, want)
+			}
+		}
+	}
+
+	// Distinct keys keep distinct tags: collapsing them onto one value is
+	// the thing this must not do.
+	seen := make(map[uint16]struct{})
+	for i := range 64 {
+		key := rsamd5Key(base64.StdEncoding.EncodeToString(
+			[]byte{byte(i), byte(i * 7), 0x00}))
+		seen[KeyTag(key)] = struct{}{}
+	}
+	if len(seen) != 64 {
+		t.Fatalf("64 distinct RSAMD5 keys produced %d distinct tags", len(seen))
+	}
+}
+
+// TestKeyTagDerivesRSAMD5WithoutAllocating keeps the derived path on the same
+// footing as the checksum one.
+func TestKeyTagDerivesRSAMD5WithoutAllocating(t *testing.T) {
+	key := rsamd5Key(base64.StdEncoding.EncodeToString(
+		bytes.Repeat([]byte{0x5a}, 300)))
+	allocs := testing.AllocsPerRun(200, func() {
+		if KeyTag(key) == 0 {
+			t.Fatal("no tag")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("an RSAMD5 tag cost %.0f allocations", allocs)
 	}
 }
 

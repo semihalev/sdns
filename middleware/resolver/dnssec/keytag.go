@@ -12,7 +12,7 @@ import (
 const keyTagChunk = 256
 
 // KeyTag returns the RFC 4034 Appendix B key tag of a DNSKEY, agreeing with
-// dns.DNSKEY.KeyTag on every input.
+// dns.DNSKEY.KeyTag on every input that one can answer for.
 //
 // The tag is a checksum over the record's RDATA, and the library computes it
 // by packing that RDATA into a fixed buffer and summing it. The buffer itself
@@ -25,23 +25,16 @@ const keyTagChunk = 256
 //
 // An encoding the chunked decode cannot read the same way a single decode
 // would is handed to the library rather than guessed at, so the two agree on
-// every input — with one deliberate exception.
+// every input the library can answer for.
 //
-// RSAMD5 has no tag here. It does not use this checksum at all: RFC 4034
-// Appendix B.1 takes the tag from the modulus itself, and the library's
-// implementation of that reads three octets after checking for two, so a
-// DNSKEY whose material decodes to exactly two octets makes it index below
-// the start of a slice and panic. That record is attacker-supplied and the
-// tag is computed before anything has been validated. RFC 8624 §3.1 sets
-// RSAMD5 to MUST NOT for validation and IsSupportedDNSKEYAlgorithm refuses
-// it, so such a key can never validate anything; giving it no tag costs
-// nothing and takes the crash off the path.
+// RSAMD5 is derived here rather than delegated, because the library's
+// derivation of it crashes; see rsamd5KeyTag.
 func KeyTag(key *dns.DNSKEY) uint16 {
 	if key == nil {
 		return 0
 	}
 	if key.Algorithm == dns.RSAMD5 {
-		return 0
+		return rsamd5KeyTag(key.PublicKey)
 	}
 	// The library packs the RDATA into a buffer to sum it, so a key too
 	// large to pack has no tag. Judged on the encoded length, which is why
@@ -91,4 +84,74 @@ func KeyTag(key *dns.DNSKEY) uint16 {
 
 	sum += sum >> 16 & 0xFFFF
 	return uint16(sum & 0xFFFF)
+}
+
+// rsamd5KeyTag derives an RSAMD5 key's tag the way RFC 4034 Appendix B.1 and
+// its errata 193 do: from the two octets below the last one of the modulus,
+// rather than from the checksum every other algorithm uses.
+//
+// It is computed here rather than left to the library because the library
+// reads those three octets after checking only that the modulus has more than
+// one, so material that decodes to exactly two octets indexes below the start
+// of a slice and panics. The record is attacker-supplied and its tag is taken
+// before anything about it has been validated.
+//
+// Returning zero for every RSAMD5 key instead would be its own defect: zero is
+// a tag a supported key can legitimately have, and the trust-anchor state
+// keeps one anchor per tag — an RSAMD5 key mapped to zero could displace a
+// real one. Only material too short to have a tag gets zero, which is what the
+// library returns for it as well.
+func rsamd5KeyTag(publicKey string) uint16 {
+	var (
+		in   [keyTagChunk]byte
+		out  [keyTagChunk / 4 * 3]byte
+		tail [3]byte
+		seen int
+	)
+	for encoded := publicKey; len(encoded) > 0; {
+		// Line breaks are dropped while filling rather than copied in: the
+		// decoder skips them, so leaving them would let one land inside a
+		// chunk and split a group that a single decode would have kept
+		// whole. That is the difference between reading a wrapped key and
+		// failing to.
+		filled, consumed := fillKeyTagChunk(in[:], encoded)
+		encoded = encoded[consumed:]
+
+		// A decode error still yields the octets read before it, which is
+		// the modulus the library would have gone on to use.
+		decoded, err := base64.StdEncoding.Decode(out[:], in[:filled])
+		for i := range decoded {
+			tail[0], tail[1], tail[2] = tail[1], tail[2], out[i]
+			if seen < len(tail) {
+				seen++
+			}
+		}
+		if err != nil {
+			break
+		}
+		// A short chunk with material still to come means padding closed
+		// the stream early, which is where a single decode stops too.
+		if len(encoded) > 0 && decoded < len(out) {
+			break
+		}
+	}
+	if seen < len(tail) {
+		return 0
+	}
+	return uint16(tail[0])<<8 | uint16(tail[1])
+}
+
+// fillKeyTagChunk copies base64 from encoded into dst, leaving out the CR and
+// LF the decoder ignores, and reports how much of each it used.
+func fillKeyTagChunk(dst []byte, encoded string) (filled, consumed int) {
+	for consumed < len(encoded) && filled < len(dst) {
+		c := encoded[consumed]
+		consumed++
+		if c == '\r' || c == '\n' {
+			continue
+		}
+		dst[filled] = c
+		filled++
+	}
+	return filled, consumed
 }
