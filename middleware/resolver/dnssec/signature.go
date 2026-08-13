@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
 // signatureBinding is the preflight every RRSIG check shares: the signature
@@ -20,7 +21,8 @@ import (
 // 4035 §5.3.1) before any cryptographic result means anything.
 //
 // It mirrors miekg/dns RRSIG.Verify's own preflight, so this package is never
-// more permissive than the library it stands in for.
+// more permissive than the library it stands in for, and is stricter in the
+// one place noted below.
 func signatureBinding(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 	if k == nil || sig == nil || !dns.IsRRset(rrset) {
 		return ErrMissingSigned
@@ -41,7 +43,15 @@ func signatureBinding(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 	if h0.Class != sig.Hdr.Class || h0.Rrtype != sig.TypeCovered ||
 		dns.CountLabel(h0.Name) < int(sig.Labels) ||
 		!strings.EqualFold(h0.Name, sig.Hdr.Name) ||
-		!strings.HasSuffix(dns.CanonicalName(h0.Name), signer) {
+		// On a label boundary, not a string suffix. RFC 4035 §5.3.1 requires
+		// the signer to name the zone containing the RRset, and a plain
+		// suffix test reads evilexample.com. as inside example.com. The
+		// library settles for the suffix — its own comment calls that the
+		// best it can do without SOA context — and the resolver's zone
+		// containment check catches it a layer up, but a check that means
+		// something only in the presence of another one is worth fixing
+		// where it is written.
+		!dnsutil.NameInZone(dns.CanonicalName(h0.Name), signer) {
 		return ErrMissingSigned
 	}
 	return nil
@@ -50,11 +60,24 @@ func signatureBinding(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 // verifySignature checks an RRSIG against a DNSKEY, returning nil when the
 // signature is valid.
 //
-// The canonical signed data is this package's own — the same construction
-// verifyRSAWideExponent has always used — and the cryptography is the
+// The canonical signed data is this package's own — the construction the
+// wide-exponent RSA path has always used — and the cryptography is the
 // standard library's. What it avoids is the library's fixed 4096-octet
 // signed-data buffer, allocated for every signature of every response, and
 // re-deriving the key material and key tag on each one.
+//
+// It agrees with dns.RRSIG.Verify on the signatures a signer produces, and
+// deliberately differs on two inputs no signer produces:
+//
+//   - An ECDSA signature whose r and s are not the fixed width RFC 6605 §4
+//     gives them. The library splits whatever it is handed in half and lets
+//     leading zeros pass; a 66-octet P-256 signature is not a P-256
+//     signature, and is refused here.
+//   - An RSA key below crypto/rsa's minimum modulus. The library's path and
+//     this one both refuse it, but this one accepts it under
+//     GODEBUG=rsa1024min=0 only for the wide exponents that take the raw
+//     modular exponentiation, which the standard library's minimum does not
+//     govern.
 //
 // An algorithm this does not implement is refused rather than guessed at;
 // cryptoVerify keeps such keys on the library's path.

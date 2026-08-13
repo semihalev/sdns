@@ -55,6 +55,14 @@ func dsDigestMatches(key *dns.DNSKEY, digestType uint8, want []byte) bool {
 		return false
 	}
 
+	// Refused on the encoded length, before anything decodes it. An
+	// attacker-supplied DNSKEY can be as large as the message allows, and
+	// deciding it is too big only after materializing it is a decode this
+	// answer never needed.
+	if len(key.PublicKey) > base64.StdEncoding.EncodedLen(maxDSKeyMaterial) {
+		return false
+	}
+
 	// The public key travels as base64 in the record, so this decode is what
 	// the digest is actually over.
 	public, err := base64.StdEncoding.DecodeString(key.PublicKey)

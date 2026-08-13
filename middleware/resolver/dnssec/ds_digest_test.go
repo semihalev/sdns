@@ -216,6 +216,36 @@ func TestDSDigestKeepsTheLibraryEnvelope(t *testing.T) {
 	}
 }
 
+// TestDSDigestRefusesOversizedBeforeDecoding pins where the size limit is
+// applied. A DNSKEY can be as large as the message allows and its material is
+// attacker-supplied, so deciding it is too big has to happen on the encoded
+// length — deciding it after decoding pays for the very thing being refused.
+func TestDSDigestRefusesOversizedBeforeDecoding(t *testing.T) {
+	// Well past the limit, so the decode this must not perform would be
+	// unmistakable in the measurement.
+	const material = 48 << 10
+	key := &dns.DNSKEY{
+		Hdr: dns.RR_Header{
+			Name: "example.com.", Rrtype: dns.TypeDNSKEY,
+			Class: dns.ClassINET, Ttl: 3600,
+		},
+		Flags: 257, Protocol: 3, Algorithm: dns.RSASHA256,
+		PublicKey: base64.StdEncoding.EncodeToString(
+			bytes.Repeat([]byte{0x5a}, material)),
+	}
+	want := make([]byte, sha256.Size)
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if dsDigestMatches(key, dns.SHA256, want) {
+			t.Fatal("accepted an oversized key")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("refusing a %d-octet key cost %.0f allocations; the length "+
+			"check is running after the decode", material, allocs)
+	}
+}
+
 // oversizedDigestInput builds what the digest over key would be if the
 // library could pack it, so the test compares against the one value that
 // could plausibly be accepted rather than an arbitrary one.
