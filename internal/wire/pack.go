@@ -62,17 +62,15 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	if msg == nil || msg.Rcode < 0 || msg.Rcode > 0xFFF {
 		return false, nil
 	}
-	// The extended rcode travels in the OPT record. With no OPT to carry it,
-	// the library errors; that path is left to the library so the error is
-	// its own.
-	opt := msg.IsEdns0()
-	if opt == nil && msg.Rcode > 0xF {
-		return false, nil
-	}
 
 	// Everything that decides handled-or-not runs before any byte is
 	// written, so a message this path cannot finish is never half-packed
 	// and then packed again in full by the fallback.
+	//
+	// Admission also runs before anything walks Extra looking for the OPT:
+	// IsEdns0 dereferences each record's header and type-asserts the match,
+	// so on a nil record or an OPT-shaped wrapper it panics — this preflight
+	// is what turns those into a clean fallback instead.
 	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
 			if rr == nil {
@@ -82,6 +80,18 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 				return false, nil
 			}
 		}
+	}
+
+	// The extended rcode travels in the OPT record. With no OPT to carry it,
+	// the library errors; that path is left to the library so the error is
+	// its own. A shape whose OPT selection would panic the library is not
+	// selected here — the caller's library path owns that behavior.
+	opt, safe := selectOPT(msg)
+	if !safe {
+		return false, nil
+	}
+	if opt == nil && msg.Rcode > 0xF {
+		return false, nil
 	}
 	// The uncompressed length bounds the compressed one, and the library
 	// computes it without allocating when no dictionary is asked for. A
@@ -143,27 +153,104 @@ func PackClone(msg *dns.Msg) ([]byte, error) {
 	return owned, nil
 }
 
+// selectOPT finds the OPT record the library's IsEdns0 would select, without
+// its two panics: IsEdns0 dereferences each record's header on the way and
+// type-asserts the OPT-typed one it stops at. safe=false marks the shapes it
+// would panic on — a nil record, or a record wearing the OPT type without
+// being one — which stay on the library path so its behavior remains its own.
+//
+// The scan runs backwards, because that is the library's scan: RFC 6891 puts
+// the OPT anywhere in the additional section but usually last, so IsEdns0
+// starts from the end. With more than one OPT in the message the direction
+// decides which record carries the extended rcode — a forward scan here
+// picked the wrong one, and only a reference that preserved the message's
+// aliasing could show it.
+func selectOPT(msg *dns.Msg) (opt *dns.OPT, safe bool) {
+	for i := len(msg.Extra) - 1; i >= 0; i-- {
+		rr := msg.Extra[i]
+		if rr == nil {
+			return nil, false
+		}
+		if rr.Header().Rrtype != dns.TypeOPT {
+			continue
+		}
+		o, ok := rr.(*dns.OPT)
+		if !ok {
+			return nil, false
+		}
+		return o, true
+	}
+	return nil, true
+}
+
 // libraryPackImmutable is the library's Pack without its one write into the
 // message: Pack stores the extended rcode into the caller's OPT, which on a
 // shared message is a data race and on any message breaks the promise this
-// package makes. The pack runs on a shallow copy whose Extra holds a copy of
-// the selected OPT, so the library mutates that and the caller's record
-// stays as built. Everything else is shared — the private packing path
-// writes nothing into records.
+// package makes. The pack runs on a shallow copy in which every occurrence
+// of the selected OPT — whichever section it appears in — is the same copy,
+// so the library mutates that and the caller's record stays as built.
+// Everything else is shared, because a library-defined record's packing
+// reads only its own fields.
+//
+// That last clause is the boundary of the promise. A PrivateRR packs through
+// registrant code that can observe anything, including the original OPT the
+// library would have mutated by now — for such a message, byte parity and
+// immutability cannot both be promised, and parity wins: the message keeps
+// the library's own semantics wholesale, mutation included. The same applies
+// to any shape the library would reject or panic on, so its errors stay its
+// own. The immutability promise is exactly for messages built from the
+// library's records, which is every message this server produces.
 func libraryPackImmutable(msg *dns.Msg) ([]byte, error) {
-	opt := msg.IsEdns0()
-	if opt == nil {
+	// The library validates the rcode before it touches the OPT; an invalid
+	// one has to surface as its error, not as a panic hunting for an OPT the
+	// library would never have looked for.
+	if msg.Rcode < 0 || msg.Rcode > 0xFFF {
 		return msg.Pack()
 	}
-	clone := *msg
-	clone.Extra = make([]dns.RR, len(msg.Extra))
-	copy(clone.Extra, msg.Extra)
-	optCopy := *opt
-	for i, rr := range clone.Extra {
-		if o, ok := rr.(*dns.OPT); ok && o == opt {
-			clone.Extra[i] = &optCopy
+	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+		for _, rr := range section {
+			if rr == nil {
+				return msg.Pack()
+			}
+			if _, ok := builtinRR[reflect.TypeOf(rr)]; !ok {
+				return msg.Pack()
+			}
 		}
 	}
+	opt, safe := selectOPT(msg)
+	if !safe || opt == nil {
+		// Without an OPT the library's Pack writes nothing into the message.
+		return msg.Pack()
+	}
+
+	clone := *msg
+	optCopy := *opt
+	replaceOPT := func(section []dns.RR) []dns.RR {
+		aliased := false
+		for _, rr := range section {
+			if o, ok := rr.(*dns.OPT); ok && o == opt {
+				aliased = true
+				break
+			}
+		}
+		if !aliased {
+			return section
+		}
+		replaced := make([]dns.RR, len(section))
+		copy(replaced, section)
+		for i, rr := range replaced {
+			if o, ok := rr.(*dns.OPT); ok && o == opt {
+				replaced[i] = &optCopy
+			}
+		}
+		return replaced
+	}
+	// Every section: the library packs one object however often and wherever
+	// it appears, so every alias has to become the same copy or the sections
+	// outside Extra would carry the stale TTL.
+	clone.Answer = replaceOPT(msg.Answer)
+	clone.Ns = replaceOPT(msg.Ns)
+	clone.Extra = replaceOPT(msg.Extra)
 	return clone.Pack()
 }
 

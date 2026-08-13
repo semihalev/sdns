@@ -34,12 +34,32 @@ func tryPackBytes(tb testing.TB, msg *dns.Msg) ([]byte, bool) {
 	return got, handled
 }
 
-// libraryPack packs through the library on a copy, because the library writes
-// into the message it packs — the extended rcode into its OPT — and parity
-// must be judged against what it produces, not what it mutates.
+// libraryPack is the reference: the library packing the original message,
+// with its one write — the extended rcode into the selected OPT's TTL —
+// undone afterwards so the corpus message stays as built for the next
+// comparison.
+//
+// It must be the original, not a Copy. Copy duplicates each record
+// separately, so a message carrying the same OPT pointer twice becomes two
+// distinct objects, of which the library mutates only the first — while on
+// the original it mutates the one object and packs the new TTL at every
+// occurrence. Aliasing is part of the semantics being compared, and a copy
+// destroys it.
 func libraryPack(tb testing.TB, msg *dns.Msg) ([]byte, error) {
 	tb.Helper()
-	return msg.Copy().Pack()
+	opt, safe := selectOPT(msg)
+	if !safe {
+		tb.Fatal("libraryPack: a shape IsEdns0 panics on has no reference")
+	}
+	var saved uint32
+	if opt != nil {
+		saved = opt.Hdr.Ttl
+	}
+	packed, err := msg.Pack()
+	if opt != nil {
+		opt.Hdr.Ttl = saved
+	}
+	return packed, err
 }
 
 func packCorpus(tb testing.TB) []*dns.Msg {
@@ -407,6 +427,22 @@ func TestTryPackFallsBack(t *testing.T) {
 	m.SetQuestion("example.com.", dns.TypeA)
 	m.Answer = []dns.RR{wrappedRR{mustPackRR(t, "example.com. 300 IN A 192.0.2.1")}}
 	assertFallback("a wrapped builtin record", m)
+
+	// The two shapes that panic IsEdns0 — a nil record in Extra, and a
+	// wrapper wearing the OPT type — must be turned away by admission
+	// before anything walks Extra looking for the OPT.
+	m = new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	m.Extra = []dns.RR{nil}
+	assertFallback("a nil record in Extra", m)
+
+	fakeOPT := new(dns.OPT)
+	fakeOPT.Hdr.Name = "."
+	fakeOPT.Hdr.Rrtype = dns.TypeOPT
+	m = new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	m.Extra = []dns.RR{wrappedRR{fakeOPT}}
+	assertFallback("a wrapped record wearing the OPT type", m)
 }
 
 // wrappedRR is the external-embedding shape the type admission must refuse:
@@ -458,7 +494,7 @@ func TestTryPackFallsBackOnPrivateRR(t *testing.T) {
 
 	// The registry snapshot must not have admitted the private type even
 	// though registration put it in dns.TypeToRR.
-	if _, admitted := builtinRR[reflect.TypeOf(rr)]; admitted {
+	if _, admitted := builtinRR[reflect.TypeFor[*dns.PrivateRR]()]; admitted {
 		t.Fatal("*dns.PrivateRR is in the admission set")
 	}
 }
@@ -787,6 +823,124 @@ func TestPackCloneFallbackDoesNotMutate(t *testing.T) {
 	}
 }
 
+// TestPackCloneInvalidRcodeIsTheLibrarysError pins the validation order. The
+// library checks the rcode before it goes looking for an OPT; a fallback
+// that looked first would panic on a nil record in Extra where the library
+// reports its error.
+func TestPackCloneInvalidRcodeIsTheLibrarysError(t *testing.T) {
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	m.Rcode = 0x1000
+	m.Extra = []dns.RR{nil}
+
+	// The reference carries the same rcode without the nil: the library
+	// errors before it touches Extra, which is the ordering under test.
+	reference := new(dns.Msg)
+	reference.SetQuestion("example.com.", dns.TypeA)
+	reference.Rcode = 0x1000
+	_, wantErr := reference.Pack()
+	if wantErr == nil {
+		t.Fatal("fixture is wrong: the library accepts rcode 0x1000")
+	}
+	_, err := PackClone(m)
+	if err == nil || err.Error() != wantErr.Error() {
+		t.Fatalf("PackClone error %v, library says %v", err, wantErr)
+	}
+}
+
+// TestPackCloneOPTAliasedAcrossSections pins the fallback against an OPT
+// whose pointer appears outside Extra as well. The library packs the one
+// object with its rewritten TTL wherever it occurs; a fallback that copied
+// only Extra would emit the stale TTL in the other sections.
+func TestPackCloneOPTAliasedAcrossSections(t *testing.T) {
+	big := sizedMessage(t, packBufferSize+200)
+	big.Rcode = dns.RcodeBadVers
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(1232)
+	opt.Hdr.Ttl |= 0xAB << 24
+	big.Answer = append(big.Answer, opt)
+	big.Ns = []dns.RR{opt}
+	big.Extra = []dns.RR{opt}
+
+	if handled, _ := TryPack(big, func([]byte) error { return nil }); handled {
+		t.Fatal("fixture is wrong: the oversized message did not fall back")
+	}
+
+	before := messageFingerprint(big)
+	want, err := libraryPack(t, big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := PackClone(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("an OPT aliased outside Extra packed differently from the " +
+			"library; a section still carries the stale TTL")
+	}
+	if after := messageFingerprint(big); after != before {
+		t.Fatal("the fallback modified the message")
+	}
+}
+
+// TestPackClonePrivateRRKeepsLibrarySemantics pins the boundary of the
+// immutability promise. A PrivateRR packs through registrant code that can
+// observe anything, including the OPT the library mutates before packing it —
+// exact bytes and immutability cannot both be promised there, and parity
+// wins: the message keeps the library's own semantics, mutation included.
+func TestPackClonePrivateRRKeepsLibrarySemantics(t *testing.T) {
+	const privateType = 0xFF71
+	dns.PrivateHandle("TESTPRIV2", privateType, func() dns.PrivateRdata {
+		return new(testPrivateRdata)
+	})
+	defer dns.PrivateHandleRemove(privateType)
+
+	build := func() *dns.Msg {
+		m := new(dns.Msg)
+		m.SetQuestion("example.com.", dns.TypeA)
+		// Pinned: SetQuestion draws a random ID, and this test builds the
+		// message twice to compare two packs of the same thing.
+		m.Id = 42
+		m.Rcode = dns.RcodeBadVers
+		m.Answer = []dns.RR{&dns.PrivateRR{
+			Hdr: dns.RR_Header{
+				Name: "example.com.", Rrtype: privateType,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Data: &testPrivateRdata{data: "abc"},
+		}}
+		opt := new(dns.OPT)
+		opt.Hdr.Name = "."
+		opt.Hdr.Rrtype = dns.TypeOPT
+		opt.SetUDPSize(1232)
+		m.Extra = []dns.RR{opt}
+		return m
+	}
+
+	reference := build()
+	want, err := reference.Pack()
+	if err != nil {
+		t.Fatalf("library: %v", err)
+	}
+
+	msg := build()
+	got, err := PackClone(msg)
+	if err != nil {
+		t.Fatalf("PackClone: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("a PrivateRR message packed differently from the library")
+	}
+	// Library semantics means the library's write happened: the caller's OPT
+	// carries the extended rcode, exactly as it would after msg.Pack.
+	if msg.IsEdns0().Hdr.Ttl != reference.IsEdns0().Hdr.Ttl {
+		t.Fatal("the OPT was not mutated the way the library mutates it")
+	}
+}
+
 // TestPackClone pins the owning wrapper: exact size, caller-owned, and the
 // same bytes whichever path produced them.
 func TestPackClone(t *testing.T) {
@@ -901,8 +1055,21 @@ func FuzzPackMsg(f *testing.F) {
 				t.Fatalf("compress=%v: consume error: %v", compress, err)
 			}
 			if !handled {
-				// Falling back is always allowed; producing different
-				// bytes is not.
+				// A fallback needs a reason. Everything Unpack produces is a
+				// library type with an in-range rcode, so the legitimate
+				// reasons are size and an input the library itself cannot
+				// pack — Unpack accepts rdata that Pack refuses, an empty
+				// ALPN in an SVCB for one. A packer drifting toward blanket
+				// fallback fails loudly instead of passing quietly.
+				if wantErr != nil {
+					continue
+				}
+				probe := msg
+				probe.Compress = false
+				if probe.Len() <= packBufferSize {
+					t.Fatalf("compress=%v: fell back on a handleable message",
+						compress)
+				}
 				continue
 			}
 			if wantErr != nil {
