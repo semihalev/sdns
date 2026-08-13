@@ -403,6 +403,37 @@ func TestDSDigestNameFolding(t *testing.T) {
 	}
 }
 
+// BenchmarkVerifyDSOversizedKey is the attack shape rather than the ordinary
+// one: a DS RRset naming the same unpackable key many times over. What it
+// measures is that neither the decode nor the walk that replaced it scales
+// with the size of what was sent.
+func BenchmarkVerifyDSOversizedKey(b *testing.B) {
+	const dsCount = 32
+	key := oversizedKey(dns.RSASHA256)
+	keyMap := map[uint16][]*dns.DNSKEY{0: {key}}
+
+	dsSet := make([]dns.RR, 0, dsCount)
+	for i := range dsCount {
+		digest := bytes.Repeat([]byte{0x11}, sha256.Size)
+		digest[0] = byte(i)
+		dsSet = append(dsSet, &dns.DS{
+			Hdr: dns.RR_Header{
+				Name: "example.com.", Rrtype: dns.TypeDS,
+				Class: dns.ClassINET, Ttl: 3600,
+			},
+			KeyTag: 0, Algorithm: dns.RSASHA256, DigestType: dns.SHA256,
+			Digest: hex.EncodeToString(digest),
+		})
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := VerifyDS(keyMap, dsSet); err == nil {
+			b.Fatal("an oversized key authenticated a DS")
+		}
+	}
+}
+
 func BenchmarkDSDigestMatches(b *testing.B) {
 	key := dsDigestTestKeys(b)[0]
 	want, err := hex.DecodeString(key.ToDS(dns.SHA256).Digest)

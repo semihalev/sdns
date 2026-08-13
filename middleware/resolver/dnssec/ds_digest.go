@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"encoding/base64"
 	"encoding/binary"
+	"strings"
 
 	"github.com/miekg/dns"
 )
@@ -53,15 +54,30 @@ func oversizedKeyMaterial(publicKey string) bool {
 	}
 	// The decoder skips CR and LF, so a key that is only long because it
 	// is wrapped is not oversized, and refusing it would reject an input
-	// the library accepts. Counted rather than assumed — but only on this
-	// branch, so a key of ordinary size never walks its own material.
-	newlines := 0
+	// the library accepts. The line breaks are counted out rather than
+	// assumed away — but only as far as the answer needs: once limit+1
+	// octets of actual material have been seen, nothing in the rest can
+	// bring the decoded length back under the limit. The walk is bounded
+	// by the limit, not by the size of what an attacker sent.
+	// Wrapping is the rare case, and the two searches below are the
+	// assembly-optimized ones: limit+1 octets with no line break in them
+	// settle it without a byte-at-a-time walk.
+	head := publicKey[:limit+1]
+	if strings.IndexByte(head, '\n') < 0 && strings.IndexByte(head, '\r') < 0 {
+		return true
+	}
+
+	material := 0
 	for i := range len(publicKey) {
 		if c := publicKey[i]; c == '\r' || c == '\n' {
-			newlines++
+			continue
+		}
+		material++
+		if material > limit {
+			return true
 		}
 	}
-	return len(publicKey)-newlines > limit
+	return false
 }
 
 // dsDigestMatches reports whether key hashes to want under digestType.

@@ -73,11 +73,13 @@ func signatureBinding(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 //     gives them. The library splits whatever it is handed in half and lets
 //     leading zeros pass; a 66-octet P-256 signature is not a P-256
 //     signature, and is refused here.
-//   - An RSA key below crypto/rsa's minimum modulus. The library's path and
-//     this one both refuse it, but this one accepts it under
-//     GODEBUG=rsa1024min=0 only for the wide exponents that take the raw
-//     modular exponentiation, which the standard library's minimum does not
-//     govern.
+//   - An RSA modulus outside usableRSAKey's bounds. Below 1024 bits both
+//     refuse by default, but the library's floor is crypto/rsa's and lifts
+//     under GODEBUG=rsa1024min=0, while this one is the package's own and
+//     does not; above 4096 bits the library has no bound and this one
+//     refuses. Both directions narrow what is accepted, and the wide-exponent
+//     path is gated by the same bounds before it reaches the raw modular
+//     exponentiation that bypasses crypto/rsa.
 //
 // An algorithm this does not implement is refused rather than guessed at;
 // cryptoVerify keeps such keys on the library's path.
