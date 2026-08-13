@@ -24,6 +24,18 @@ type Server struct {
 	// machinery. Nil only if Addr failed to parse — callers fall
 	// back to the string path in that case.
 	UDPAddr *net.UDPAddr
+
+	// Endpoint is this server's identity as a comparable value: the same
+	// address Addr spells, before it was spelled. Duplicate suppression and
+	// the retry guard both key on the endpoint, and deriving that key by
+	// parsing Addr and printing it back produced a string per server per
+	// lookup — for a string the constructor had just built from this very
+	// value.
+	//
+	// Zero when Addr is not an IP:port literal, which is the only case
+	// where the spelling is the identity; callers fall back to canonical
+	// normalization there.
+	Endpoint netip.AddrPort
 }
 
 // IPVersion type.
@@ -77,6 +89,7 @@ func NewServerFromAddrPort(ap netip.AddrPort) *Server {
 		Addr:      ap.String(),
 		IPVersion: version,
 		UDPAddr:   net.UDPAddrFromAddrPort(ap),
+		Endpoint:  ap,
 	}
 }
 

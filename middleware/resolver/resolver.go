@@ -1485,21 +1485,90 @@ mainloop:
 	return pickFallbackResponse(responseErrors, configErrors, fatalErrors)
 }
 
+// linearDedupeLimit is the list size below which duplicate suppression
+// compares rather than indexes. A delegation names a handful of servers — the
+// root names thirteen — so the quadratic scan is a few dozen comparisons of
+// values already in registers, against a map that has to be built, sized and
+// discarded on every lookup.
+const linearDedupeLimit = 24
+
 func dedupeAuthorityServers(servers []*authority.Server) []*authority.Server {
-	seen := make(map[string]struct{}, len(servers))
+	if len(servers) <= linearDedupeLimit {
+		return dedupeAuthorityServersLinear(servers)
+	}
+	return dedupeAuthorityServersIndexed(servers)
+}
+
+// dedupeAuthorityServersLinear suppresses duplicates by comparing each server
+// against the ones already kept, in place and without allocating.
+//
+// The addresses arrive decoded — Endpoint is the value the constructor built
+// Addr from — so identity is a comparison of two netip.AddrPorts. Only a
+// server whose address is not an IP:port literal needs its spelling
+// canonicalized, and those never reach this path from the delegation
+// producers.
+func dedupeAuthorityServersLinear(servers []*authority.Server) []*authority.Server {
 	result := servers[:0]
 	for _, server := range servers {
 		if server == nil {
 			continue
 		}
-		key := middleware.CanonicalResolutionEndpoint(server.Addr)
-		if _, ok := seen[key]; ok {
+		duplicate := false
+		for _, kept := range result {
+			if sameResolutionEndpoint(kept, server) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			result = append(result, server)
+		}
+	}
+	return result
+}
+
+func dedupeAuthorityServersIndexed(servers []*authority.Server) []*authority.Server {
+	seen := make(map[netip.AddrPort]struct{}, len(servers))
+	var seenSpelled map[string]struct{}
+	result := servers[:0]
+	for _, server := range servers {
+		if server == nil {
 			continue
 		}
-		seen[key] = struct{}{}
+		if endpoint := server.Endpoint; endpoint.IsValid() {
+			if _, ok := seen[endpoint]; ok {
+				continue
+			}
+			seen[endpoint] = struct{}{}
+			result = append(result, server)
+			continue
+		}
+		// Not an IP:port literal: identity is the canonical spelling, and
+		// it is kept apart so a decoded address is never compared against
+		// a printed one.
+		key := middleware.CanonicalResolutionEndpoint(server.Addr)
+		if _, ok := seenSpelled[key]; ok {
+			continue
+		}
+		if seenSpelled == nil {
+			seenSpelled = make(map[string]struct{})
+		}
+		seenSpelled[key] = struct{}{}
 		result = append(result, server)
 	}
 	return result
+}
+
+// sameResolutionEndpoint reports whether two servers name the same upstream.
+// A decoded address compares as a value; anything else falls back to the
+// canonical spelling, and the two kinds never match each other because a
+// literal is exactly what the spelling path cannot produce.
+func sameResolutionEndpoint(a, b *authority.Server) bool {
+	if a.Endpoint.IsValid() || b.Endpoint.IsValid() {
+		return a.Endpoint == b.Endpoint
+	}
+	return middleware.CanonicalResolutionEndpoint(a.Addr) ==
+		middleware.CanonicalResolutionEndpoint(b.Addr)
 }
 
 // lookupResult bundles a single per-server query outcome for the
@@ -1648,8 +1717,18 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		return nil, ctxErr
 	}
 	q := req.Question[0]
-	if err := middleware.BeginResolutionAttempt(ctx, q, server.Addr, proto); err != nil {
-		return nil, err
+	// Addr was printed from a decoded address at construction, so it is
+	// already the canonical spelling the guard keys on; normalizing it
+	// again would parse that string and print an identical one back.
+	// A server whose address never was a literal has no such promise.
+	attemptErr := error(nil)
+	if server.Endpoint.IsValid() {
+		attemptErr = middleware.BeginResolutionAttemptCanonical(ctx, q, server.Addr, proto)
+	} else {
+		attemptErr = middleware.BeginResolutionAttempt(ctx, q, server.Addr, proto)
+	}
+	if attemptErr != nil {
+		return nil, attemptErr
 	}
 	if rs.work != nil {
 		var err error
