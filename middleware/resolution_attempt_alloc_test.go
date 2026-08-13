@@ -206,16 +206,28 @@ func TestResolutionAttemptGuardConcurrentOverflow(t *testing.T) {
 	}
 }
 
+// guardLayoutReference is what the guard is allowed to be: a mutex and the two
+// pointers it stores through. Comparing against it rather than a byte count
+// keeps the claim — "no third field, and the slots and their overflow share
+// one pointer" — true on every ABI rather than only a 64-bit one.
+// Only the shapes matter, so the fields are unnamed: a mutex, the pointer the
+// slots and their overflow share, and the failure-response map.
+type guardLayoutReference struct {
+	_ sync.Mutex
+	_ *resolutionAttemptStore
+	_ map[*dns.Msg]error
+}
+
 // TestGuardLayoutStaysSmall pins what this change is for. The guard is
 // embedded in every request tree's ledgers, so a field added here is bytes on
 // every request that resolves anything — including the ones that never record
 // an attempt. The store's own size matters far less: it is allocated once per
 // resolving tree, and only for those.
 func TestGuardLayoutStaysSmall(t *testing.T) {
-	const wantGuard = 24 // a mutex and two pointers
-	if got := unsafe.Sizeof(ResolutionAttemptGuard{}); got != wantGuard {
-		t.Fatalf("ResolutionAttemptGuard is %d B, want %d; a field here is "+
-			"carried by every request tree", got, wantGuard)
+	want := unsafe.Sizeof(guardLayoutReference{})
+	if got := unsafe.Sizeof(ResolutionAttemptGuard{}); got != want {
+		t.Fatalf("ResolutionAttemptGuard is %d B against a reference of %d B; "+
+			"the extra is carried by every request tree", got, want)
 	}
 }
 

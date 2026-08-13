@@ -99,7 +99,10 @@ func NewServerFromAddrPort(ap netip.AddrPort) *Server {
 		Addr:      ap.String(),
 		IPVersion: version,
 		UDPAddr:   net.UDPAddrFromAddrPort(ap),
-		canonical: true,
+		// The zero AddrPort prints as "invalid AddrPort", which is a
+		// spelling and not an address. No producer hands one over, but the
+		// marker is a promise about Addr and must not be made about that.
+		canonical: ap.IsValid(),
 	}
 }
 

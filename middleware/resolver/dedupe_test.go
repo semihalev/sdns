@@ -80,27 +80,46 @@ func TestDedupeAuthorityServers(t *testing.T) {
 	})
 
 	t.Run("across the linear/indexed threshold", func(t *testing.T) {
-		// The two implementations must agree, and the boundary is where a
-		// disagreement would hide.
+		// The threshold is on the input length, so the corpus has to be
+		// exactly that long: duplicates come from repeating servers within
+		// it, not from lengthening it.
 		for _, count := range []int{
 			linearDedupeLimit - 1, linearDedupeLimit, linearDedupeLimit + 1,
 		} {
-			servers := authorityServers(t, count)
-			// Every server twice: the result must be the originals, in
-			// order, whichever side of the threshold the input lands on.
-			doubled := make([]*authority.Server, 0, count*2)
-			doubled = append(doubled, servers...)
-			doubled = append(doubled, servers...)
-
-			got := serverAddrs(dedupeAuthorityServers(doubled))
-			if len(got) != count {
-				t.Fatalf("%d duplicated servers deduped to %d, want %d",
-					count*2, len(got), count)
+			unique := authorityServers(t, (count+1)/2)
+			corpus := make([]*authority.Server, count)
+			for i := range corpus {
+				// Repeats interleaved with first occurrences, so order is
+				// something the implementations can disagree about.
+				corpus[i] = unique[(i*3)%len(unique)]
 			}
-			for i, server := range servers {
-				if got[i] != server.Addr {
-					t.Fatalf("at %d servers, position %d is %q, want %q",
-						count, i, got[i], server.Addr)
+			if len(corpus) != count {
+				t.Fatalf("fixture is wrong: corpus is %d long, want %d",
+					len(corpus), count)
+			}
+
+			// Both implementations run on the same corpus, each on its own
+			// copy since they dedupe in place.
+			linear := serverAddrs(dedupeAuthorityServersLinear(
+				append([]*authority.Server(nil), corpus...)))
+			indexed := serverAddrs(dedupeAuthorityServersIndexed(
+				append([]*authority.Server(nil), corpus...)))
+			chosen := serverAddrs(dedupeAuthorityServers(
+				append([]*authority.Server(nil), corpus...)))
+
+			if len(linear) != len(indexed) {
+				t.Fatalf("at %d servers: linear kept %d, indexed kept %d",
+					count, len(linear), len(indexed))
+			}
+			for i := range linear {
+				if linear[i] != indexed[i] {
+					t.Fatalf("at %d servers, position %d: linear %q, "+
+						"indexed %q", count, i, linear[i], indexed[i])
+				}
+				if chosen[i] != linear[i] {
+					t.Fatalf("at %d servers, position %d: the threshold "+
+						"picked %q, both implementations say %q",
+						count, i, chosen[i], linear[i])
 				}
 			}
 		}

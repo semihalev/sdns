@@ -3,6 +3,7 @@ package authority
 import (
 	"fmt"
 	"math/rand"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -11,16 +12,28 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// serverWithoutCanonical is Server as it stood before it recorded whether its
+// address is canonical. It is the reference the size test compares against, so
+// the claim being made is "the marker is free" rather than a byte count that
+// is only true on one ABI.
+type serverWithoutCanonical struct {
+	Rtt       int64
+	Count     int64
+	Addr      string
+	IPVersion IPVersion
+	UDPAddr   *net.UDPAddr
+}
+
 // TestServerLayoutStaysSmall pins that knowing an address is canonical costs
 // nothing. There is one Server per authority per delegation and they are
 // allocated as the resolver reads referrals, so a field that pushes this into
-// the next size class is paid for continuously. canonical fits in the padding
+// the next size class is paid for continuously; canonical fits in the padding
 // IPVersion already leaves.
 func TestServerLayoutStaysSmall(t *testing.T) {
-	const want = 48
+	want := unsafe.Sizeof(serverWithoutCanonical{})
 	if got := unsafe.Sizeof(Server{}); got != want {
-		t.Fatalf("Server is %d B, want %d; a new field left the padding "+
-			"IPVersion shares", got, want)
+		t.Fatalf("Server is %d B against a reference of %d B; a field left "+
+			"the padding IPVersion shares", got, want)
 	}
 }
 
