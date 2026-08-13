@@ -290,4 +290,16 @@ func TestVerifyRSAWideExponent_LiveLatviaTLD(t *testing.T) {
 	if err := verifySignature(ksk, sig, []dns.RR{zsk, ksk}); err != nil {
 		t.Fatalf(".lv DNSKEY RRset failed to validate via wide-exponent KSK: %v", err)
 	}
+
+	// Accepting the real RRset proves the modular exponentiation runs; it
+	// does not prove the result is being checked. An RRset the signature
+	// does not cover has to fail on the same path.
+	if err := verifySignature(ksk, sig, []dns.RR{zsk}); err == nil {
+		t.Fatal(".lv KSK accepted a signature over an RRset it does not cover")
+	}
+	tampered := dns.Copy(ksk).(*dns.DNSKEY)
+	tampered.Flags = 256
+	if err := verifySignature(ksk, sig, []dns.RR{zsk, tampered}); err == nil {
+		t.Fatal(".lv KSK accepted a signature over an altered DNSKEY RRset")
+	}
 }
