@@ -2,7 +2,11 @@
 
 package wire
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/miekg/dns"
+)
 
 // TestTryPackDoesNotAllocate is the point of the packer: the dictionary, the
 // output buffer and the record shim all live in pooled state, so packing an
@@ -20,8 +24,12 @@ func TestTryPackDoesNotAllocate(t *testing.T) {
 	for i, msg := range packCorpus(t) {
 		msg.Compress = true
 
+		// The library side is measured on its own long-lived copy so the
+		// comparison is against Pack alone — folding a per-run Copy into it
+		// would inflate the number this is compared to.
+		libMsg := msg.Copy()
 		library := testing.AllocsPerRun(200, func() {
-			if _, err := msg.Copy().Pack(); err != nil {
+			if _, err := libMsg.Pack(); err != nil {
 				t.Fatalf("message %d: %v", i, err)
 			}
 		})
@@ -76,5 +84,48 @@ func TestPackCloneAllocatesOnlyTheClone(t *testing.T) {
 	})
 	if allocs != 1 {
 		t.Fatalf("PackClone cost %.0f allocations, want 1 (the clone)", allocs)
+	}
+}
+
+// TestPackCloneOversizedCostsOnePack pins that the size preflight keeps a
+// too-large message off the custom path entirely: the cost must be one
+// library pack plus the clone, not a partial custom pack thrown away first.
+// Allocation-heavy RDATA is where a double pack would show — an SVCB's
+// parameters are built on every pack of every record.
+func TestPackCloneOversizedCostsOnePack(t *testing.T) {
+	msg := new(dns.Msg)
+	msg.SetQuestion("example.com.", dns.TypeHTTPS)
+	msg.Compress = true
+	for range 100 {
+		msg.Answer = append(msg.Answer, mustPackRR(t,
+			`long-owner-name-padding-the-message.example.com. 300 IN SVCB 2 `+
+				`svc.example.com. port=8443 alpn="h3,h2"`))
+	}
+	sizeProbe := *msg
+	sizeProbe.Compress = false
+	if sizeProbe.Len() <= packBufferSize {
+		t.Fatalf("fixture is wrong: %d bytes fits the pooled buffer",
+			sizeProbe.Len())
+	}
+
+	libMsg := msg.Copy()
+	library := testing.AllocsPerRun(50, func() {
+		if _, err := libMsg.Pack(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	clone := testing.AllocsPerRun(50, func() {
+		if _, err := PackClone(msg); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// The fallback adds the exact-size clone, the shallow message copy and
+	// its Extra slice — a handful on top, never a second pack of every
+	// record's RDATA.
+	const fallbackOverhead = 4
+	if clone > library+fallbackOverhead {
+		t.Fatalf("an oversized PackClone cost %.0f allocations against the "+
+			"library's %.0f; the message is being packed twice", clone, library)
 	}
 }

@@ -2,10 +2,37 @@ package wire
 
 import (
 	"encoding/binary"
+	"reflect"
 	"sync"
 
 	"github.com/miekg/dns"
 )
+
+// builtinRR is the set of record types this path will pack: exactly the
+// concrete pointer types the library itself defines, snapshotted from its
+// public registry at init.
+//
+// The check has to be on the dynamic type, not an interface assertion. An
+// external type embedding dns.RR satisfies the interface through promotion
+// and slips past any single-type assertion — including one for *dns.PrivateRR,
+// whose registrant-defined packing runs a sizing pass this path does not.
+// A wrapper is not a library record however it packs, so only the library's
+// own types are admitted and everything else falls back.
+//
+// RFC3597, the unknown-type representation Unpack produces, is added
+// explicitly: it has no entry in the registry because it has no own type code.
+var builtinRR = func() map[reflect.Type]struct{} {
+	allowed := make(map[reflect.Type]struct{}, len(dns.TypeToRR)+1)
+	for _, newRR := range dns.TypeToRR {
+		rr := newRR()
+		if _, private := rr.(*dns.PrivateRR); private {
+			continue
+		}
+		allowed[reflect.TypeOf(rr)] = struct{}{}
+	}
+	allowed[reflect.TypeFor[*dns.RFC3597]()] = struct{}{}
+	return allowed
+}()
 
 // TryPack encodes msg into wire format inside pooled storage and hands the
 // bytes to consume. It exists because the library's Pack builds a compression
@@ -43,6 +70,29 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 		return false, nil
 	}
 
+	// Everything that decides handled-or-not runs before any byte is
+	// written, so a message this path cannot finish is never half-packed
+	// and then packed again in full by the fallback.
+	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+		for _, rr := range section {
+			if rr == nil {
+				return false, nil
+			}
+			if _, ok := builtinRR[reflect.TypeOf(rr)]; !ok {
+				return false, nil
+			}
+		}
+	}
+	// The uncompressed length bounds the compressed one, and the library
+	// computes it without allocating when no dictionary is asked for. A
+	// probe on a shallow copy, so the caller's Compress flag is not
+	// touched.
+	sizeProbe := *msg
+	sizeProbe.Compress = false
+	if sizeProbe.Len() > packBufferSize {
+		return false, nil
+	}
+
 	state := packStatePool.Get().(*packState)
 	defer state.release()
 
@@ -50,7 +100,11 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	var compression map[string]int
 	if compress {
 		if state.compression == nil {
-			state.compression = make(map[string]int, maxPooledCompressionEntries)
+			// Unhinted: the runtime's smallest map is cheaper to create and
+			// faster to fill for the handful of names an ordinary answer
+			// carries, and a message that outgrows it is the case the >64
+			// drop policy already prices in.
+			state.compression = make(map[string]int)
 		}
 		compression = state.compression
 	}
@@ -77,7 +131,7 @@ func PackClone(msg *dns.Msg) ([]byte, error) {
 		return owned, err
 	}
 
-	packed, err := msg.Pack()
+	packed, err := libraryPackImmutable(msg)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +141,30 @@ func PackClone(msg *dns.Msg) ([]byte, error) {
 	owned = make([]byte, len(packed))
 	copy(owned, packed)
 	return owned, nil
+}
+
+// libraryPackImmutable is the library's Pack without its one write into the
+// message: Pack stores the extended rcode into the caller's OPT, which on a
+// shared message is a data race and on any message breaks the promise this
+// package makes. The pack runs on a shallow copy whose Extra holds a copy of
+// the selected OPT, so the library mutates that and the caller's record
+// stays as built. Everything else is shared — the private packing path
+// writes nothing into records.
+func libraryPackImmutable(msg *dns.Msg) ([]byte, error) {
+	opt := msg.IsEdns0()
+	if opt == nil {
+		return msg.Pack()
+	}
+	clone := *msg
+	clone.Extra = make([]dns.RR, len(msg.Extra))
+	copy(clone.Extra, msg.Extra)
+	optCopy := *opt
+	for i, rr := range clone.Extra {
+		if o, ok := rr.(*dns.OPT); ok && o == opt {
+			clone.Extra[i] = &optCopy
+		}
+	}
+	return clone.Pack()
 }
 
 // packState is everything one pack borrows, under a single pool pointer: the
@@ -129,16 +207,9 @@ func (state *packState) packInto(
 
 	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
-			if rr == nil {
-				return 0, false
-			}
-			// PrivateRR packs through a caller-registered protocol whose
-			// sizing pass the library runs and this path does not. Its
-			// side-effect order is that caller's contract, not ours to
-			// reorder.
-			if _, ok := rr.(*dns.PrivateRR); ok {
-				return 0, false
-			}
+			// Record admission — non-nil, and a type the library defines —
+			// happened in TryPack's preflight, before anything was written.
+			//
 			// At off == len(out) there is no room even for a header. On the
 			// current library PackRR's own per-field bounds checks refuse
 			// this too — the guard is defense in depth, so a change in those

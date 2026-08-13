@@ -3,6 +3,7 @@ package wire
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -397,10 +398,25 @@ func TestTryPackFallsBack(t *testing.T) {
 	m.SetQuestion("example.com.", dns.TypeA)
 	m.Answer = []dns.RR{mustPackRR(t, "example.com. 300 IN A 192.0.2.1"), nil}
 	assertFallback("nil record", m)
+
+	// A wrapper embedding dns.RR satisfies the interface through promotion
+	// and packs — but it is not a library record, and a wrapper hiding a
+	// PrivateRR would slip past any single-type assertion. Admission is by
+	// dynamic type, so both fall back.
+	m = new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	m.Answer = []dns.RR{wrappedRR{mustPackRR(t, "example.com. 300 IN A 192.0.2.1")}}
+	assertFallback("a wrapped builtin record", m)
 }
 
+// wrappedRR is the external-embedding shape the type admission must refuse:
+// every dns.RR method promotes, so nothing but the dynamic type gives it away.
+type wrappedRR struct{ dns.RR }
+
 // TestTryPackFallsBackOnPrivateRR keeps the caller-registered packing
-// protocol on the library path, whose sizing pass this one does not run.
+// protocol on the library path, whose sizing pass this one does not run —
+// bare, and hidden inside a wrapper, which is how it would sneak past a type
+// assertion.
 func TestTryPackFallsBackOnPrivateRR(t *testing.T) {
 	const privateType = 0xFF70
 	dns.PrivateHandle("TESTPRIV", privateType, func() dns.PrivateRdata {
@@ -415,17 +431,85 @@ func TestTryPackFallsBackOnPrivateRR(t *testing.T) {
 		},
 		Data: &testPrivateRdata{data: "abc"},
 	}
-	m := new(dns.Msg)
-	m.SetQuestion("example.com.", dns.TypeA)
-	m.Compress = true
-	m.Answer = []dns.RR{mustPackRR(t, "example.com. 300 IN A 192.0.2.1"), rr}
-
-	handled, err := TryPack(m, func([]byte) error { return nil })
-	if handled || err != nil {
-		t.Fatalf("handled=%v err=%v, want a fallback for PrivateRR", handled, err)
+	for _, tc := range []struct {
+		name   string
+		record dns.RR
+	}{
+		{"bare", rr},
+		{"wrapped", wrappedRR{rr}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := new(dns.Msg)
+			m.SetQuestion("example.com.", dns.TypeA)
+			m.Compress = true
+			m.Answer = []dns.RR{
+				mustPackRR(t, "example.com. 300 IN A 192.0.2.1"), tc.record,
+			}
+			handled, err := TryPack(m, func([]byte) error { return nil })
+			if handled || err != nil {
+				t.Fatalf("handled=%v err=%v, want a fallback", handled, err)
+			}
+			if _, err := m.Pack(); err != nil {
+				t.Fatalf("fixture is wrong: the library cannot pack it "+
+					"either: %v", err)
+			}
+		})
 	}
-	if _, err := m.Pack(); err != nil {
-		t.Fatalf("fixture is wrong: the library cannot pack it either: %v", err)
+
+	// The registry snapshot must not have admitted the private type even
+	// though registration put it in dns.TypeToRR.
+	if _, admitted := builtinRR[reflect.TypeOf(rr)]; admitted {
+		t.Fatal("*dns.PrivateRR is in the admission set")
+	}
+}
+
+// TestTryPackHandlesEveryRegisteredType sweeps the library's whole registry:
+// every record type the library defines, packed through both paths. Where
+// the library packs a zero-value record, this must produce the same bytes;
+// where it errors, this must have fallen back or errored the same way.
+func TestTryPackHandlesEveryRegisteredType(t *testing.T) {
+	handledCount := 0
+	for rrtype, newRR := range dns.TypeToRR {
+		rr := newRR()
+		if _, private := rr.(*dns.PrivateRR); private {
+			continue
+		}
+		hdr := rr.Header()
+		hdr.Name = "example.com."
+		hdr.Rrtype = rrtype
+		hdr.Class = dns.ClassINET
+		hdr.Ttl = 300
+
+		m := new(dns.Msg)
+		m.SetQuestion("example.com.", dns.TypeA)
+		m.Compress = true
+		m.Answer = []dns.RR{rr}
+
+		want, wantErr := libraryPack(t, m)
+		var got []byte
+		handled, err := TryPack(m, func(body []byte) error {
+			got = append([]byte(nil), body...)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("type %d: consume error: %v", rrtype, err)
+		}
+		if !handled {
+			continue
+		}
+		handledCount++
+		if wantErr != nil {
+			t.Fatalf("type %d: handled a record the library rejects: %v",
+				rrtype, wantErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("type %d: bytes differ from the library", rrtype)
+		}
+	}
+	// The sweep is meaningless if everything fell back.
+	if handledCount < len(dns.TypeToRR)/2 {
+		t.Fatalf("only %d of %d registered types were handled",
+			handledCount, len(dns.TypeToRR))
 	}
 }
 
@@ -637,6 +721,8 @@ func TestTryPackConsumerContract(t *testing.T) {
 	packStatePool.Put(state)
 
 	// After GC empties the pools, everything still works and still matches.
+	// Twice: sync.Pool keeps a victim cache that survives one collection.
+	runtime.GC()
 	runtime.GC()
 	want, err := libraryPack(t, msg)
 	if err != nil {
@@ -645,6 +731,59 @@ func TestTryPackConsumerContract(t *testing.T) {
 	got, handled := tryPackBytes(t, msg)
 	if !handled || !bytes.Equal(got, want) {
 		t.Fatal("bytes differ across a GC")
+	}
+}
+
+// TestPackCloneFallbackDoesNotMutate pins the fallback's half of the
+// immutability promise. The library's Pack writes the extended rcode into the
+// caller's OPT; a message too large for the pooled buffer takes that path,
+// and it must not be the one place the promise breaks — nor a data race when
+// the message is shared.
+func TestPackCloneFallbackDoesNotMutate(t *testing.T) {
+	big := sizedMessage(t, packBufferSize+200)
+	big.Rcode = dns.RcodeBadVers
+	opt := new(dns.OPT)
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(1232)
+	opt.Hdr.Ttl |= 0xAB << 24 // stale extended bits the pack would rewrite
+	big.Extra = []dns.RR{opt}
+
+	if handled, _ := TryPack(big, func([]byte) error { return nil }); handled {
+		t.Fatal("fixture is wrong: the oversized message did not fall back")
+	}
+
+	before := messageFingerprint(big)
+	want, err := libraryPack(t, big)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 8)
+	for range 8 {
+		go func() {
+			for range 50 {
+				got, err := PackClone(big)
+				if err != nil {
+					done <- err
+					return
+				}
+				if !bytes.Equal(got, want) {
+					done <- fmt.Errorf("fallback clone differs from the library")
+					return
+				}
+			}
+			done <- nil
+		}()
+	}
+	for range 8 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := messageFingerprint(big); after != before {
+		t.Fatalf("the fallback modified the message\nbefore: %s\nafter:  %s",
+			before, after)
 	}
 }
 
