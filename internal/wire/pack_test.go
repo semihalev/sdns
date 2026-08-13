@@ -3,7 +3,6 @@ package wire
 import (
 	"bytes"
 	"fmt"
-	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -449,6 +448,182 @@ func TestTryPackFallsBack(t *testing.T) {
 // every dns.RR method promotes, so nothing but the dynamic type gives it away.
 type wrappedRR struct{ dns.RR }
 
+// wrappedEDNS0 and wrappedSVCBValue are the same shape one level down: the
+// library's two interface-valued record fields, satisfied by promotion.
+type wrappedEDNS0 struct{ dns.EDNS0 }
+
+type wrappedSVCBValue struct{ dns.SVCBKeyValue }
+
+// TestTryPackFallsBackOnNestedExtensions pins the nested half of admission.
+// A record can be the library's own while carrying external code inside it —
+// an EDNS0 option or an SVCB value — and that code runs during the library's
+// sizing pass as well as during packing, so a stateful implementation can
+// make the two disagree. Nothing foreign may run at all: the fallback has to
+// happen before the size probe, which already executes nested len methods.
+func TestTryPackFallsBackOnNestedExtensions(t *testing.T) {
+	assertFallback := func(what string, m *dns.Msg) {
+		t.Helper()
+		handled, err := TryPack(m, func([]byte) error {
+			t.Fatalf("%s: consume ran on a fallback", what)
+			return nil
+		})
+		if handled || err != nil {
+			t.Fatalf("%s: handled=%v err=%v, want an untouched fallback",
+				what, handled, err)
+		}
+	}
+
+	withOption := func(option dns.EDNS0) *dns.Msg {
+		m := new(dns.Msg)
+		m.SetQuestion("example.com.", dns.TypeA)
+		m.Answer = []dns.RR{mustPackRR(t, "example.com. 300 IN A 192.0.2.1")}
+		opt := new(dns.OPT)
+		opt.Hdr.Name = "."
+		opt.Hdr.Rrtype = dns.TypeOPT
+		opt.SetUDPSize(1232)
+		opt.Option = []dns.EDNS0{option}
+		m.Extra = []dns.RR{opt}
+		return m
+	}
+	assertFallback("a wrapped EDNS0 option", withOption(wrappedEDNS0{
+		&dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: "24"},
+	}))
+	assertFallback("a typed-nil EDNS0 option", withOption((*dns.EDNS0_EDE)(nil)))
+	assertFallback("a nil EDNS0 option", withOption(nil))
+
+	for _, tc := range []struct {
+		name   string
+		record dns.RR
+	}{
+		{"SVCB", &dns.SVCB{
+			Hdr: dns.RR_Header{
+				Name: "example.com.", Rrtype: dns.TypeSVCB,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Priority: 1, Target: ".",
+			Value: []dns.SVCBKeyValue{wrappedSVCBValue{
+				&dns.SVCBAlpn{Alpn: []string{"h2"}},
+			}},
+		}},
+		{"HTTPS", &dns.HTTPS{SVCB: dns.SVCB{
+			Hdr: dns.RR_Header{
+				Name: "example.com.", Rrtype: dns.TypeHTTPS,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Priority: 1, Target: ".",
+			Value: []dns.SVCBKeyValue{wrappedSVCBValue{
+				&dns.SVCBAlpn{Alpn: []string{"h2"}},
+			}},
+		}}},
+	} {
+		m := new(dns.Msg)
+		m.SetQuestion("example.com.", dns.TypeHTTPS)
+		m.Answer = []dns.RR{tc.record}
+		assertFallback("a wrapped SVCB value in "+tc.name, m)
+	}
+
+	// The library-owned versions of the same shapes stay handled: the gate
+	// is provenance, not the presence of options or values.
+	native := withOption(&dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: "24"})
+	native.Compress = true
+	want, err := libraryPack(t, native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, handled := tryPackBytes(t, native)
+	if !handled || !bytes.Equal(got, want) {
+		t.Fatalf("a native option fell back or diverged: handled=%v", handled)
+	}
+}
+
+// countingSVCBValue counts how often external code inside an admissible-
+// looking record actually runs.
+type countingSVCBValue struct {
+	dns.SVCBKeyValue
+	calls *int
+}
+
+func (c countingSVCBValue) Key() dns.SVCBKey {
+	*c.calls++
+	return c.SVCBKeyValue.Key()
+}
+
+func (c countingSVCBValue) String() string {
+	*c.calls++
+	return c.SVCBKeyValue.String()
+}
+
+// TestTryPackNeverRunsForeignCode pins that a foreign implementation's
+// methods are not invoked on the custom path. The counter can only cover the
+// exported surface — the library's sizing and packing call unexported
+// methods, which promote to the embedded value and cannot be intercepted
+// from outside its package — so the load-bearing guarantee is the admission
+// rejection itself, mutation-checked in TestTryPackFallsBackOnNestedExtensions;
+// this is the belt over those braces.
+func TestTryPackNeverRunsForeignCode(t *testing.T) {
+	calls := 0
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeHTTPS)
+	m.Answer = []dns.RR{&dns.HTTPS{SVCB: dns.SVCB{
+		Hdr: dns.RR_Header{
+			Name: "example.com.", Rrtype: dns.TypeHTTPS,
+			Class: dns.ClassINET, Ttl: 300,
+		},
+		Priority: 1, Target: ".",
+		Value: []dns.SVCBKeyValue{countingSVCBValue{
+			SVCBKeyValue: &dns.SVCBAlpn{Alpn: []string{"h2"}},
+			calls:        &calls,
+		}},
+	}}}
+
+	handled, err := TryPack(m, func([]byte) error { return nil })
+	if handled || err != nil {
+		t.Fatalf("handled=%v err=%v, want a fallback", handled, err)
+	}
+	if calls != 0 {
+		t.Fatalf("foreign code ran %d times on the custom path", calls)
+	}
+}
+
+// TestTryPackCapsTheCallbackSlice pins that consume cannot read past its own
+// payload. The pooled buffer behind it still holds the tail of whatever was
+// packed before, and a full slice expression is what keeps a resliced
+// body[:cap(body)] from reaching it.
+func TestTryPackCapsTheCallbackSlice(t *testing.T) {
+	long := new(dns.Msg)
+	long.SetQuestion("example.com.", dns.TypeTXT)
+	long.Compress = true
+	for range 12 {
+		long.Answer = append(long.Answer, mustPackRR(t,
+			`example.com. 300 IN TXT "`+strings.Repeat("Z", 120)+`"`))
+	}
+	short := new(dns.Msg)
+	short.SetQuestion("example.com.", dns.TypeA)
+	short.Compress = true
+	short.Answer = []dns.RR{mustPackRR(t, "example.com. 300 IN A 192.0.2.1")}
+
+	// Long first, so the pool holds a buffer full of Z-heavy payload; the
+	// short pack that follows must expose none of it.
+	for round := range 10 {
+		if _, handled := tryPackBytes(t, long); !handled {
+			t.Fatal("the long message fell back")
+		}
+		handled, err := TryPack(short, func(body []byte) error {
+			if cap(body) != len(body) {
+				return fmt.Errorf("round %d: capacity %d exceeds length %d",
+					round, cap(body), len(body))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !handled {
+			t.Fatal("the short message fell back")
+		}
+	}
+}
+
 // TestTryPackFallsBackOnPrivateRR keeps the caller-registered packing
 // protocol on the library path, whose sizing pass this one does not run —
 // bare, and hidden inside a wrapper, which is how it would sneak past a type
@@ -492,10 +667,10 @@ func TestTryPackFallsBackOnPrivateRR(t *testing.T) {
 		})
 	}
 
-	// The registry snapshot must not have admitted the private type even
-	// though registration put it in dns.TypeToRR.
-	if _, admitted := builtinRR[reflect.TypeFor[*dns.PrivateRR]()]; admitted {
-		t.Fatal("*dns.PrivateRR is in the admission set")
+	// Provenance alone would admit PrivateRR — it is declared in the
+	// library — so the by-name refusal has to hold on its own.
+	if admissibleRR(rr) {
+		t.Fatal("*dns.PrivateRR passed admission")
 	}
 }
 

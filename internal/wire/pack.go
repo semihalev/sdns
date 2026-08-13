@@ -8,31 +8,80 @@ import (
 	"github.com/miekg/dns"
 )
 
-// builtinRR is the set of record types this path will pack: exactly the
-// concrete pointer types the library itself defines, snapshotted from its
-// public registry at init.
+// libraryPkg is the one package whose types this path will pack. Admission
+// is by provenance of the dynamic type, not by interface assertion or by a
+// registry snapshot: an external type embedding a library interface
+// satisfies it through promotion and slips past any single-type assertion,
+// and the library's public registry is mutable at runtime — checking where a
+// type is declared depends on neither.
+const libraryPkg = "github.com/miekg/dns"
+
+// admissibleRR reports whether a record is one this path may pack: a non-nil
+// pointer to a type the library declares, with nothing foreign nested inside
+// it.
 //
-// The check has to be on the dynamic type, not an interface assertion. An
-// external type embedding dns.RR satisfies the interface through promotion
-// and slips past any single-type assertion — including one for *dns.PrivateRR,
-// whose registrant-defined packing runs a sizing pass this path does not.
-// A wrapper is not a library record however it packs, so only the library's
-// own types are admitted and everything else falls back.
+// The nesting matters as much as the record. OPT carries []dns.EDNS0 and
+// SVCB/HTTPS carry []dns.SVCBKeyValue — the library's only interface-valued
+// record fields — and an external implementation behind either is code this
+// path does not control. It runs during the library's sizing pass as well as
+// during packing, so a stateful one can change between the two and make this
+// path succeed where the library errors, or the reverse. Every nested value
+// must therefore be library-owned too, and the check runs before the size
+// probe, because the probe already executes the nested len methods.
 //
-// RFC3597, the unknown-type representation Unpack produces, is added
-// explicitly: it has no entry in the registry because it has no own type code.
-var builtinRR = func() map[reflect.Type]struct{} {
-	allowed := make(map[reflect.Type]struct{}, len(dns.TypeToRR)+1)
-	for _, newRR := range dns.TypeToRR {
-		rr := newRR()
-		if _, private := rr.(*dns.PrivateRR); private {
-			continue
-		}
-		allowed[reflect.TypeOf(rr)] = struct{}{}
+// PrivateRR is the one library type refused by name: its packing is
+// registrant code by design.
+func admissibleRR(rr dns.RR) bool {
+	if rr == nil {
+		return false
 	}
-	allowed[reflect.TypeFor[*dns.RFC3597]()] = struct{}{}
-	return allowed
-}()
+	if _, private := rr.(*dns.PrivateRR); private {
+		return false
+	}
+	if !libraryOwned(rr) {
+		return false
+	}
+	switch v := rr.(type) {
+	case *dns.OPT:
+		for _, option := range v.Option {
+			if option == nil || !libraryOwned(option) {
+				return false
+			}
+		}
+	case *dns.SVCB:
+		return admissibleSVCBValues(v.Value)
+	case *dns.HTTPS:
+		return admissibleSVCBValues(v.Value)
+	}
+	return true
+}
+
+func admissibleSVCBValues(values []dns.SVCBKeyValue) bool {
+	for _, value := range values {
+		if value == nil || !libraryOwned(value) {
+			return false
+		}
+	}
+	return true
+}
+
+// libraryOwned reports whether v's dynamic type is declared in the library:
+// a non-nil pointer (or a plain value) whose type's package is libraryPkg.
+// A typed-nil pointer is refused — it would carry the right provenance into
+// a method call that dereferences nothing.
+func libraryOwned(v any) bool {
+	t := reflect.TypeOf(v)
+	if t == nil {
+		return false
+	}
+	if t.Kind() == reflect.Pointer {
+		if reflect.ValueOf(v).IsNil() {
+			return false
+		}
+		t = t.Elem()
+	}
+	return t.PkgPath() == libraryPkg
+}
 
 // TryPack encodes msg into wire format inside pooled storage and hands the
 // bytes to consume. It exists because the library's Pack builds a compression
@@ -64,8 +113,10 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	}
 
 	// Everything that decides handled-or-not runs before any byte is
-	// written, so a message this path cannot finish is never half-packed
-	// and then packed again in full by the fallback.
+	// written — and before the size probe, whose Len walk already executes
+	// nested option code — so a message this path cannot finish is never
+	// half-packed, probed, or mutated, and then handed to the fallback in a
+	// different state than it arrived in.
 	//
 	// Admission also runs before anything walks Extra looking for the OPT:
 	// IsEdns0 dereferences each record's header and type-asserts the match,
@@ -73,10 +124,7 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	// is what turns those into a clean fallback instead.
 	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
-			if rr == nil {
-				return false, nil
-			}
-			if _, ok := builtinRR[reflect.TypeOf(rr)]; !ok {
+			if !admissibleRR(rr) {
 				return false, nil
 			}
 		}
@@ -123,7 +171,10 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	if !ok {
 		return false, nil
 	}
-	return true, consume(state.buf[:off])
+	// The full slice expression pins capacity to length: the buffer behind
+	// the payload still holds the tail of whatever was packed before, and a
+	// callback that reslices to capacity must find nothing there to read.
+	return true, consume(state.buf[:off:off])
 }
 
 // PackClone packs msg and returns an exact-size copy the caller owns. It is
@@ -209,10 +260,7 @@ func libraryPackImmutable(msg *dns.Msg) ([]byte, error) {
 	}
 	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
-			if rr == nil {
-				return msg.Pack()
-			}
-			if _, ok := builtinRR[reflect.TypeOf(rr)]; !ok {
+			if !admissibleRR(rr) {
 				return msg.Pack()
 			}
 		}
