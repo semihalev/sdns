@@ -111,6 +111,13 @@ func TestDedupeAuthorityServers(t *testing.T) {
 				t.Fatalf("at %d servers: linear kept %d, indexed kept %d",
 					count, len(linear), len(indexed))
 			}
+			// Length before contents: a wrapper that dropped nothing would
+			// still match on every position the shorter result has.
+			if len(chosen) != len(linear) {
+				t.Fatalf("at %d servers: the threshold kept %d, both "+
+					"implementations kept %d",
+					count, len(chosen), len(linear))
+			}
 			for i := range linear {
 				if linear[i] != indexed[i] {
 					t.Fatalf("at %d servers, position %d: linear %q, "+
