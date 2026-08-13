@@ -80,29 +80,30 @@ type resolutionAttemptEntry struct {
 // maps atomic across resolver fan-out.
 type ResolutionAttemptGuard struct {
 	mu sync.Mutex
-	// table holds the first few tuples without a map. A request tree that
-	// resolves normally records a handful of attempts and then goes away,
-	// and building and growing a map for them was the guard's whole cost.
-	//
-	// It hangs off a pointer rather than sitting in the struct because most
-	// requests are answered from cache and record no attempt at all; those
-	// must not carry the table's weight for a tuple they never had. The
-	// map takes the overflow, for the trees that fan out.
-	table                 *resolutionAttemptTable
-	attempts              map[resolutionAttemptKey]uint8
+	// attempts holds the tree's recorded tuples. It hangs off a pointer
+	// because most requests are answered from cache and record none; those
+	// must not carry storage for a tuple they never had.
+	attempts              *resolutionAttemptStore
 	localFailureResponses map[*dns.Msg]error
 }
 
-// resolutionAttemptOverflowHint sizes the map the moment the inline table is
-// full, so a tree that fans out grows it once instead of rehashing its way up
-// from nothing.
+// resolutionAttemptOverflowHint sizes the overflow map the moment the slots
+// are full, so a tree that fans out grows it once instead of rehashing its way
+// up from nothing.
 const resolutionAttemptOverflowHint = 8
 
-// resolutionAttemptTable is the guard's inline storage: allocated on the
-// tree's first attempt and never grown, since the map takes over from there.
-type resolutionAttemptTable struct {
-	len   int
-	slots [8]resolutionAttemptEntry
+// resolutionAttemptStore is the guard's storage: a fixed set of slots for the
+// tuples a request tree normally records, and a map for the trees that fan out
+// past them.
+//
+// The two live together under one pointer rather than beside each other in the
+// guard. The guard is embedded in the request tree's ledgers, so a second
+// pointer there is eight bytes on every request that resolves anything, while
+// here it lands inside the allocation the slots already needed.
+type resolutionAttemptStore struct {
+	len      int
+	slots    [8]resolutionAttemptEntry
+	overflow map[resolutionAttemptKey]uint8
 }
 
 // NewResolutionAttemptGuard returns an empty request-tree retry guard.
@@ -148,42 +149,42 @@ func (g *ResolutionAttemptGuard) begin(key resolutionAttemptKey) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// A tuple lives in exactly one of the two stores, so a hit in the table
-	// is conclusive and the map is never consulted for it.
-	if g.table != nil {
-		for i := range g.table.len {
-			entry := &g.table.slots[i]
-			if entry.key != key {
-				continue
-			}
-			if entry.count >= maxResolutionAttempts {
-				return key.limitError()
-			}
-			entry.count++
-			return nil
+	if g.attempts == nil {
+		g.attempts = new(resolutionAttemptStore)
+	}
+	store := g.attempts
+
+	// A tuple lives in exactly one place, so a hit in the slots is
+	// conclusive and the overflow map is never consulted for it.
+	for i := range store.len {
+		entry := &store.slots[i]
+		if entry.key != key {
+			continue
 		}
+		if entry.count >= maxResolutionAttempts {
+			return key.limitError()
+		}
+		entry.count++
+		return nil
 	}
 
-	if count, recorded := g.attempts[key]; recorded {
+	if count, recorded := store.overflow[key]; recorded {
 		if count >= maxResolutionAttempts {
 			return key.limitError()
 		}
-		g.attempts[key] = count + 1
+		store.overflow[key] = count + 1
 		return nil
 	}
 
-	if g.table == nil {
-		g.table = new(resolutionAttemptTable)
-	}
-	if g.table.len < len(g.table.slots) {
-		g.table.slots[g.table.len] = resolutionAttemptEntry{key: key, count: 1}
-		g.table.len++
+	if store.len < len(store.slots) {
+		store.slots[store.len] = resolutionAttemptEntry{key: key, count: 1}
+		store.len++
 		return nil
 	}
-	if g.attempts == nil {
-		g.attempts = make(map[resolutionAttemptKey]uint8, resolutionAttemptOverflowHint)
+	if store.overflow == nil {
+		store.overflow = make(map[resolutionAttemptKey]uint8, resolutionAttemptOverflowHint)
 	}
-	g.attempts[key] = 1
+	store.overflow[key] = 1
 	return nil
 }
 

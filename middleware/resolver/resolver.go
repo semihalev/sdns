@@ -1528,47 +1528,42 @@ func dedupeAuthorityServersLinear(servers []*authority.Server) []*authority.Serv
 }
 
 func dedupeAuthorityServersIndexed(servers []*authority.Server) []*authority.Server {
-	seen := make(map[netip.AddrPort]struct{}, len(servers))
-	var seenSpelled map[string]struct{}
+	seen := make(map[string]struct{}, len(servers))
 	result := servers[:0]
 	for _, server := range servers {
 		if server == nil {
 			continue
 		}
-		if endpoint := server.Endpoint; endpoint.IsValid() {
-			if _, ok := seen[endpoint]; ok {
-				continue
-			}
-			seen[endpoint] = struct{}{}
-			result = append(result, server)
+		key := resolutionEndpointIdentity(server)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		// Not an IP:port literal: identity is the canonical spelling, and
-		// it is kept apart so a decoded address is never compared against
-		// a printed one.
-		key := middleware.CanonicalResolutionEndpoint(server.Addr)
-		if _, ok := seenSpelled[key]; ok {
-			continue
-		}
-		if seenSpelled == nil {
-			seenSpelled = make(map[string]struct{})
-		}
-		seenSpelled[key] = struct{}{}
+		seen[key] = struct{}{}
 		result = append(result, server)
 	}
 	return result
 }
 
-// sameResolutionEndpoint reports whether two servers name the same upstream.
-// A decoded address compares as a value; anything else falls back to the
-// canonical spelling, and the two kinds never match each other because a
-// literal is exactly what the spelling path cannot produce.
-func sameResolutionEndpoint(a, b *authority.Server) bool {
-	if a.Endpoint.IsValid() || b.Endpoint.IsValid() {
-		return a.Endpoint == b.Endpoint
+// resolutionEndpointIdentity returns the spelling that identifies a server's
+// upstream. A server built from a decoded address already holds it; anything
+// else has to be normalized, and normalization is what produces a string.
+func resolutionEndpointIdentity(server *authority.Server) string {
+	if addr, canonical := server.CanonicalAddr(); canonical {
+		return addr
 	}
-	return middleware.CanonicalResolutionEndpoint(a.Addr) ==
-		middleware.CanonicalResolutionEndpoint(b.Addr)
+	return middleware.CanonicalResolutionEndpoint(server.Addr)
+}
+
+// sameResolutionEndpoint reports whether two servers name the same upstream.
+// Two canonical spellings compare directly; anything else is normalized
+// first, which only the servers whose address never was a literal reach.
+func sameResolutionEndpoint(a, b *authority.Server) bool {
+	aAddr, aCanonical := a.CanonicalAddr()
+	bAddr, bCanonical := b.CanonicalAddr()
+	if aCanonical && bCanonical {
+		return aAddr == bAddr
+	}
+	return resolutionEndpointIdentity(a) == resolutionEndpointIdentity(b)
 }
 
 // lookupResult bundles a single per-server query outcome for the
@@ -1722,8 +1717,8 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	// again would parse that string and print an identical one back.
 	// A server whose address never was a literal has no such promise.
 	attemptErr := error(nil)
-	if server.Endpoint.IsValid() {
-		attemptErr = middleware.BeginResolutionAttemptCanonical(ctx, q, server.Addr, proto)
+	if addr, canonical := server.CanonicalAddr(); canonical {
+		attemptErr = middleware.BeginResolutionAttemptCanonical(ctx, q, addr, proto)
 	} else {
 		attemptErr = middleware.BeginResolutionAttempt(ctx, q, server.Addr, proto)
 	}

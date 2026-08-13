@@ -6,9 +6,23 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestServerLayoutStaysSmall pins that knowing an address is canonical costs
+// nothing. There is one Server per authority per delegation and they are
+// allocated as the resolver reads referrals, so a field that pushes this into
+// the next size class is paid for continuously. canonical fits in the padding
+// IPVersion already leaves.
+func TestServerLayoutStaysSmall(t *testing.T) {
+	const want = 48
+	if got := unsafe.Sizeof(Server{}); got != want {
+		t.Fatalf("Server is %d B, want %d; a new field left the padding "+
+			"IPVersion shares", got, want)
+	}
+}
 
 func Test_TrySort(t *testing.T) {
 	s := &Servers{

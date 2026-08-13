@@ -3,7 +3,10 @@ package middleware
 import (
 	"errors"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"github.com/miekg/dns"
 )
@@ -99,7 +102,7 @@ func TestBeginCanonicalReportsTheEndpoint(t *testing.T) {
 func TestGuardCostsNothingWithoutAnAttempt(t *testing.T) {
 	allocs := testing.AllocsPerRun(200, func() {
 		var guard ResolutionAttemptGuard
-		if guard.table != nil {
+		if guard.attempts != nil {
 			t.Fatal("a guard allocated storage before recording an attempt")
 		}
 	})
@@ -146,8 +149,8 @@ func TestBeginCanonicalCostsOneAllocationForATypicalRecursion(t *testing.T) {
 // would either lose its count or double it.
 func TestResolutionAttemptGuardCountsAcrossTheOverflow(t *testing.T) {
 	trace := resolutionAttemptTrace(4, 4)
-	if len(trace) <= len(new(resolutionAttemptTable).slots) {
-		t.Fatal("fixture is wrong: the trace does not overflow the inline table")
+	if len(trace) <= len(new(resolutionAttemptStore).slots) {
+		t.Fatal("fixture is wrong: the trace does not overflow the slots")
 	}
 	guard := NewResolutionAttemptGuard()
 
@@ -163,6 +166,56 @@ func TestResolutionAttemptGuardCountsAcrossTheOverflow(t *testing.T) {
 		if err := guard.BeginCanonical(step.q, step.endpoint, "udp"); err == nil {
 			t.Fatalf("tuple %d admitted attempt %d", i, maxResolutionAttempts+1)
 		}
+	}
+}
+
+// TestResolutionAttemptGuardConcurrentOverflow drives the slots-to-map
+// boundary from many goroutines at once. The transition mutates the store's
+// shape, so a tuple recorded while it happens is where a lost or doubled count
+// would appear.
+func TestResolutionAttemptGuardConcurrentOverflow(t *testing.T) {
+	trace := resolutionAttemptTrace(4, 4)
+	if len(trace) <= len(new(resolutionAttemptStore).slots) {
+		t.Fatal("fixture is wrong: the trace does not overflow the slots")
+	}
+	guard := NewResolutionAttemptGuard()
+
+	// Every tuple is offered one more time than the limit allows, from its
+	// own goroutine; exactly maxResolutionAttempts must be admitted.
+	const offers = maxResolutionAttempts + 1
+	admitted := make([]atomic.Int32, len(trace))
+	var wg sync.WaitGroup
+	for i, step := range trace {
+		for range offers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := guard.BeginCanonical(step.q, step.endpoint, "udp"); err == nil {
+					admitted[i].Add(1)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+
+	for i := range trace {
+		if got := admitted[i].Load(); got != maxResolutionAttempts {
+			t.Fatalf("tuple %d admitted %d attempts, want %d",
+				i, got, maxResolutionAttempts)
+		}
+	}
+}
+
+// TestGuardLayoutStaysSmall pins what this change is for. The guard is
+// embedded in every request tree's ledgers, so a field added here is bytes on
+// every request that resolves anything — including the ones that never record
+// an attempt. The store's own size matters far less: it is allocated once per
+// resolving tree, and only for those.
+func TestGuardLayoutStaysSmall(t *testing.T) {
+	const wantGuard = 24 // a mutex and two pointers
+	if got := unsafe.Sizeof(ResolutionAttemptGuard{}); got != wantGuard {
+		t.Fatalf("ResolutionAttemptGuard is %d B, want %d; a field here is "+
+			"carried by every request tree", got, wantGuard)
 	}
 }
 

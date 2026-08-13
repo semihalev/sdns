@@ -18,24 +18,34 @@ type Server struct {
 	Addr      string
 	IPVersion IPVersion
 
+	// canonical records that Addr was printed from a decoded address and is
+	// therefore already the identity spelling — what duplicate suppression
+	// compares and what the retry guard keys on. Deriving that identity by
+	// parsing Addr and printing it back produced a string per server per
+	// lookup, for a string this constructor had just built.
+	//
+	// It sits next to IPVersion so it lands in the padding those two share,
+	// and knowing this costs the Server nothing. False only when Addr was
+	// never an IP:port literal, where the spelling is not the identity and
+	// callers must normalize.
+	canonical bool
+
 	// UDPAddr is Addr pre-parsed as *net.UDPAddr so the upstream
 	// exchange path can use net.DialUDP directly instead of going
 	// through Dialer.DialContext's string-parsing + dialParallel
 	// machinery. Nil only if Addr failed to parse — callers fall
 	// back to the string path in that case.
 	UDPAddr *net.UDPAddr
+}
 
-	// Endpoint is this server's identity as a comparable value: the same
-	// address Addr spells, before it was spelled. Duplicate suppression and
-	// the retry guard both key on the endpoint, and deriving that key by
-	// parsing Addr and printing it back produced a string per server per
-	// lookup — for a string the constructor had just built from this very
-	// value.
-	//
-	// Zero when Addr is not an IP:port literal, which is the only case
-	// where the spelling is the identity; callers fall back to canonical
-	// normalization there.
-	Endpoint netip.AddrPort
+// CanonicalAddr returns Addr together with whether it is already in the
+// canonical spelling. A caller that keys on the endpoint can use the string
+// as-is when this reports true, and must normalize it otherwise.
+func (a *Server) CanonicalAddr() (string, bool) {
+	if a == nil {
+		return "", false
+	}
+	return a.Addr, a.canonical
 }
 
 // IPVersion type.
@@ -89,7 +99,7 @@ func NewServerFromAddrPort(ap netip.AddrPort) *Server {
 		Addr:      ap.String(),
 		IPVersion: version,
 		UDPAddr:   net.UDPAddrFromAddrPort(ap),
-		Endpoint:  ap,
+		canonical: true,
 	}
 }
 

@@ -79,6 +79,33 @@ func TestDedupeAuthorityServers(t *testing.T) {
 		}
 	})
 
+	t.Run("across the linear/indexed threshold", func(t *testing.T) {
+		// The two implementations must agree, and the boundary is where a
+		// disagreement would hide.
+		for _, count := range []int{
+			linearDedupeLimit - 1, linearDedupeLimit, linearDedupeLimit + 1,
+		} {
+			servers := authorityServers(t, count)
+			// Every server twice: the result must be the originals, in
+			// order, whichever side of the threshold the input lands on.
+			doubled := make([]*authority.Server, 0, count*2)
+			doubled = append(doubled, servers...)
+			doubled = append(doubled, servers...)
+
+			got := serverAddrs(dedupeAuthorityServers(doubled))
+			if len(got) != count {
+				t.Fatalf("%d duplicated servers deduped to %d, want %d",
+					count*2, len(got), count)
+			}
+			for i, server := range servers {
+				if got[i] != server.Addr {
+					t.Fatalf("at %d servers, position %d is %q, want %q",
+						count, i, got[i], server.Addr)
+				}
+			}
+		}
+	})
+
 	t.Run("empty and single", func(t *testing.T) {
 		if got := dedupeAuthorityServers(nil); len(got) != 0 {
 			t.Fatalf("nil deduped to %d servers", len(got))
@@ -133,17 +160,14 @@ func TestServerAddrIsAlreadyCanonical(t *testing.T) {
 			authority.NewServer(spelling, authority.IPv4),
 			mustServerFromSpelling(t, spelling),
 		} {
-			if !server.Endpoint.IsValid() {
-				t.Fatalf("%q produced no decoded endpoint", spelling)
+			addr, canonical := server.CanonicalAddr()
+			if !canonical {
+				t.Fatalf("%q was not recognized as a canonical address", spelling)
 			}
-			if got := middleware.CanonicalResolutionEndpoint(server.Addr); got != server.Addr {
+			if got := middleware.CanonicalResolutionEndpoint(addr); got != addr {
 				t.Fatalf("%q stored Addr %q, which canonicalizes to %q; the "+
 					"guard's fast path would key it under two identities",
-					spelling, server.Addr, got)
-			}
-			if server.Addr != server.Endpoint.String() {
-				t.Fatalf("%q stored Addr %q but Endpoint %q",
-					spelling, server.Addr, server.Endpoint)
+					spelling, addr, got)
 			}
 		}
 	}
