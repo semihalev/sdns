@@ -1,6 +1,10 @@
 package dnssec
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -49,7 +53,9 @@ func dsDigestTestKeys(tb testing.TB) []*dns.DNSKEY {
 // without building a DS record: for every key, algorithm and digest type, it
 // must accept exactly the digest dns.DNSKEY.ToDS produces and nothing else.
 func TestDSDigestMatchesLibrary(t *testing.T) {
-	digestTypes := []uint8{dns.SHA1, dns.SHA256, dns.SHA384, dns.SHA512}
+	// Type 5 is GOST R 34.11-2012 by IANA, not SHA-512, and this resolver
+	// does not compute it; see dsDigestHash.
+	digestTypes := []uint8{dns.SHA1, dns.SHA256, dns.SHA384}
 	keys := dsDigestTestKeys(t)
 
 	for _, key := range keys {
@@ -109,8 +115,8 @@ func TestDSDigestRejectsWhatTheLibraryRejects(t *testing.T) {
 		t.Fatalf("library digest is not hexadecimal: %v", err)
 	}
 
-	// Reserved, GOST (which the library declines to compute), and a code no
-	// registry assigns. SHA-512 is 5 and is supported, so it is not here.
+	// Reserved, GOST-94, and a code no registry assigns: the library refuses
+	// these too.
 	for _, digestType := range []uint8{0, dns.GOST94, 200} {
 		if key.ToDS(digestType) != nil {
 			t.Fatalf("fixture is wrong: the library accepts digest type %d",
@@ -119,6 +125,26 @@ func TestDSDigestRejectsWhatTheLibraryRejects(t *testing.T) {
 		if dsDigestMatches(key, digestType, want) {
 			t.Fatalf("accepted unsupported digest type %d", digestType)
 		}
+	}
+
+	// Digest type 5 is the one deliberate divergence. miekg computes it as
+	// SHA-512, following an expired draft; IANA assigns 5 to GOST R
+	// 34.11-2012 (RFC 9558), and this resolver's IsSupportedDSDigest admits
+	// only 1, 2 and 4. Treating a GOST digest as a SHA-512 one is the error
+	// worth refusing, so this is stricter than the library on purpose.
+	if key.ToDS(5) == nil {
+		t.Fatal("fixture is wrong: the library no longer computes digest type 5")
+	}
+	if IsSupportedDSDigest(5) {
+		t.Fatal("the resolver now admits digest type 5; this test and " +
+			"dsDigestHash have to be revisited together")
+	}
+	library5, err := hex.DecodeString(key.ToDS(5).Digest)
+	if err != nil {
+		t.Fatalf("library digest is not hexadecimal: %v", err)
+	}
+	if dsDigestMatches(key, 5, library5) {
+		t.Fatal("computed digest type 5 as SHA-512, which IANA assigns to GOST")
 	}
 
 	broken := *key
@@ -133,6 +159,86 @@ func TestDSDigestRejectsWhatTheLibraryRejects(t *testing.T) {
 	if dsDigestMatches(key, dns.SHA256, nil) {
 		t.Fatal("accepted a missing digest")
 	}
+}
+
+// TestDSDigestKeepsTheLibraryEnvelope pins the acceptance boundary. The
+// library packs the key into a fixed buffer to build a DS, so a key larger
+// than that buffer holds produces no DS and can never match. Computing the
+// digest directly has no ceiling of its own, and gaining one silently would
+// let a key the library refuses become a chain of trust.
+func TestDSDigestKeepsTheLibraryEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		material int
+	}{
+		{"the largest key the library packs", maxDSKeyMaterial},
+		{"one octet past it", maxDSKeyMaterial + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := &dns.DNSKEY{
+				Hdr: dns.RR_Header{
+					Name: "example.com.", Rrtype: dns.TypeDNSKEY,
+					Class: dns.ClassINET, Ttl: 3600,
+				},
+				Flags: 257, Protocol: 3, Algorithm: dns.RSASHA256,
+				PublicKey: base64.StdEncoding.EncodeToString(
+					bytes.Repeat([]byte{0x5a}, tc.material)),
+			}
+
+			reference := key.ToDS(dns.SHA256)
+			if tc.material > maxDSKeyMaterial {
+				if reference != nil {
+					t.Fatalf("fixture is wrong: the library packed %d octets "+
+						"of key material", tc.material)
+				}
+				// Nothing the library would produce, so nothing may match:
+				// the digest such a key would have if it were packable is
+				// exactly what must be refused.
+				digest := sha256.Sum256(oversizedDigestInput(t, key))
+				if dsDigestMatches(key, dns.SHA256, digest[:]) {
+					t.Fatal("accepted a key the library cannot turn into a DS")
+				}
+				return
+			}
+
+			if reference == nil {
+				t.Fatalf("fixture is wrong: the library refused %d octets of "+
+					"key material", tc.material)
+			}
+			want, err := hex.DecodeString(reference.Digest)
+			if err != nil {
+				t.Fatalf("library digest is not hexadecimal: %v", err)
+			}
+			if !dsDigestMatches(key, dns.SHA256, want) {
+				t.Fatal("refused the largest key the library accepts")
+			}
+		})
+	}
+}
+
+// oversizedDigestInput builds what the digest over key would be if the
+// library could pack it, so the test compares against the one value that
+// could plausibly be accepted rather than an arbitrary one.
+func oversizedDigestInput(tb testing.TB, key *dns.DNSKEY) []byte {
+	tb.Helper()
+	name := dns.CanonicalName(key.Hdr.Name)
+	owner := make([]byte, 255)
+	end, err := dns.PackDomainName(name, owner, 0, nil, false)
+	if err != nil {
+		tb.Fatalf("PackDomainName: %v", err)
+	}
+	public, err := base64.StdEncoding.DecodeString(key.PublicKey)
+	if err != nil {
+		tb.Fatalf("key material is not base64: %v", err)
+	}
+
+	input := append([]byte(nil), owner[:end]...)
+	var rdata [4]byte
+	binary.BigEndian.PutUint16(rdata[0:2], key.Flags)
+	rdata[2] = key.Protocol
+	rdata[3] = key.Algorithm
+	input = append(input, rdata[:]...)
+	return append(input, public...)
 }
 
 // TestDSDigestNameFolding pins that the owner name is canonicalized the way

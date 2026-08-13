@@ -9,8 +9,22 @@ import (
 	"github.com/miekg/dns"
 )
 
+// maxDSKeyMaterial is how much decoded public key a DS digest may cover.
+//
+// The library packs the key into a 4096-octet buffer behind the four octets
+// of flags, protocol and algorithm, so anything larger fails to pack and no
+// DS is produced — a key that could never match. Computing the digest
+// directly has no such ceiling of its own, and gaining one silently would
+// widen what this resolver accepts as a chain of trust.
+const maxDSKeyMaterial = 4096 - 4
+
 // dsDigestHash maps a DS digest type to its hash, reporting whether this
 // resolver will compute it at all.
+//
+// Digest type 5 is deliberately absent. miekg/dns names its constant SHA512,
+// but IANA assigns 5 to GOST R 34.11-2012 (RFC 9558); the resolver's own
+// IsSupportedDSDigest admits only 1, 2 and 4, and this must not disagree with
+// it by treating a GOST digest as a SHA-512 one.
 func dsDigestHash(digestType uint8) (crypto.Hash, bool) {
 	switch digestType {
 	case dns.SHA1:
@@ -19,8 +33,6 @@ func dsDigestHash(digestType uint8) (crypto.Hash, bool) {
 		return crypto.SHA256, true
 	case dns.SHA384:
 		return crypto.SHA384, true
-	case dns.SHA512:
-		return crypto.SHA512, true
 	default:
 		return 0, false
 	}
@@ -46,7 +58,7 @@ func dsDigestMatches(key *dns.DNSKEY, digestType uint8, want []byte) bool {
 	// The public key travels as base64 in the record, so this decode is what
 	// the digest is actually over.
 	public, err := base64.StdEncoding.DecodeString(key.PublicKey)
-	if err != nil || len(public) == 0 {
+	if err != nil || len(public) == 0 || len(public) > maxDSKeyMaterial {
 		return false
 	}
 

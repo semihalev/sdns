@@ -67,9 +67,13 @@ func verifySignature(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 	if err != nil {
 		return err
 	}
+	// A signature that does not decode, or does not have the shape its
+	// algorithm requires, is a bad signature — the key it names is present
+	// and fine. The distinction is wire-visible: it decides which EDE the
+	// client is told.
 	signature, err := fromBase64([]byte(sig.Signature))
 	if err != nil {
-		return ErrMissingSigned
+		return dns.ErrSig
 	}
 
 	switch sig.Algorithm {
@@ -141,8 +145,11 @@ func verifyECDSASignature(k *dns.DNSKEY, algorithm uint8, signed, signature []by
 		return ErrMissingDNSKEY
 	}
 	size := (curve.Params().BitSize + 7) / 8
-	if len(public) != 2*size || len(signature) != 2*size {
+	if len(public) != 2*size {
 		return ErrMissingDNSKEY
+	}
+	if len(signature) != 2*size {
+		return dns.ErrSig
 	}
 
 	x := new(big.Int).SetBytes(public[:size])
@@ -161,9 +168,11 @@ func verifyECDSASignature(k *dns.DNSKEY, algorithm uint8, signed, signature []by
 func verifyEd25519Signature(k *dns.DNSKEY, signed, signature []byte) error {
 	// RFC 8080 §2: Ed25519 signs the message itself, not a digest of it.
 	public, err := fromBase64([]byte(k.PublicKey))
-	if err != nil || len(public) != ed25519.PublicKeySize ||
-		len(signature) != ed25519.SignatureSize {
+	if err != nil || len(public) != ed25519.PublicKeySize {
 		return ErrMissingDNSKEY
+	}
+	if len(signature) != ed25519.SignatureSize {
+		return dns.ErrSig
 	}
 	if !ed25519.Verify(ed25519.PublicKey(public), signed, signature) {
 		return dns.ErrSig

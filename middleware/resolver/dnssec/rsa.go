@@ -215,6 +215,34 @@ func rrsigSignedData(sig *dns.RRSIG, rrset []dns.RR) ([]byte, error) {
 	return append(buf, wire...), nil
 }
 
+// wireRdataOffset returns where a packed record's RDATA begins: past the
+// owner name, and past the ten octets of type, class, TTL and RDLENGTH that
+// follow it. The name is walked rather than unpacked — nothing here needs the
+// name itself, only its length, and these records were packed without
+// compression so the labels run to a terminating zero.
+func wireRdataOffset(wire []byte) (int, bool) {
+	off := 0
+	for {
+		if off >= len(wire) {
+			return 0, false
+		}
+		length := int(wire[off])
+		off++
+		if length == 0 {
+			break
+		}
+		if length > 63 || off+length > len(wire) {
+			return 0, false
+		}
+		off += length
+	}
+	const fixedHeader = 10 // type, class, TTL, RDLENGTH
+	if off+fixedHeader > len(wire) {
+		return 0, false
+	}
+	return off + fixedHeader, true
+}
+
 // canonicalRRset returns the concatenated canonical wire form of rrset as
 // required for signing/verification: each RR copied with its TTL set to the
 // RRSIG's original TTL, wildcard owners restored, owner and (where RFC 4034
@@ -241,8 +269,27 @@ func canonicalRRset(rrset []dns.RR, s *dns.RRSIG) ([]byte, error) {
 		wires[i] = wire[:n]
 	}
 
+	// RFC 4034 §6.3 orders an RRset by RDATA and by nothing before it. Every
+	// record here shares an owner, type and class, but RDLENGTH sits between
+	// them and the data — so comparing whole records sorts by length first,
+	// and a set whose lengths and contents disagree hashes in an order the
+	// signer never used.
+	//
+	// One offset serves the whole set: the records share an owner name, and
+	// canonicalization has already given them the same spelling of it. It is
+	// found by walking the label lengths, which costs nothing — unpacking the
+	// name would build a string per record to measure it.
+	rdataOffset, ok := wireRdataOffset(wires[0])
+	if !ok {
+		return nil, ErrMissingSigned
+	}
+	for _, wire := range wires {
+		if len(wire) < rdataOffset {
+			return nil, ErrMissingSigned
+		}
+	}
 	sort.Slice(wires, func(i, j int) bool {
-		return bytes.Compare(wires[i], wires[j]) < 0
+		return bytes.Compare(wires[i][rdataOffset:], wires[j][rdataOffset:]) < 0
 	})
 
 	var buf []byte
