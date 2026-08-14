@@ -48,7 +48,7 @@ func TestParseWireAccessors(t *testing.T) {
 		t.Fatalf("unpack: %v", err)
 	}
 
-	if r.Msg() != nil {
+	if !r.Undecoded() {
 		t.Fatal("wire-born request must start undecoded")
 	}
 	if got, want := r.ID(), decoded.Id; got != want {
@@ -153,7 +153,7 @@ type materializeProbe struct {
 func (p *materializeProbe) Name() string { return "materialize-probe" }
 
 func (p *materializeProbe) ServeDNS(ctx context.Context, ch *Chain) {
-	p.sawWire = ch.Request.Msg() == nil
+	p.sawWire = ch.Request.Undecoded()
 	ctx, req := ch.Materialize(ctx)
 	p.detached, p.msg = ctx, req
 	if req == nil {
@@ -187,6 +187,9 @@ func TestMaterializeTransition(t *testing.T) {
 	if probe.msg == nil || ch.Request.Msg() != probe.msg {
 		t.Fatal("materialization did not latch the decoded request")
 	}
+	if ch.Request.Undecoded() {
+		t.Fatal("a materialized request must not report itself undecoded")
+	}
 	if probe.detached == context.Background() {
 		t.Fatal("materialization must hand back a detached context")
 	}
@@ -196,6 +199,14 @@ func TestMaterializeTransition(t *testing.T) {
 	if ch.detachCleanup == nil {
 		t.Fatal("chain does not own the detach cleanup")
 	}
+
+	// Idempotent while the serve is live: a second materialization returns
+	// the same message and leaves the caller's context alone.
+	ctx2, again := ch.Materialize(context.Background())
+	if again != probe.msg || ctx2 != context.Background() {
+		t.Fatal("second materialization must be a no-op")
+	}
+
 	ch.finishDetach()
 	if ch.detachCleanup != nil {
 		t.Fatal("finishDetach must clear the cleanup")
@@ -206,13 +217,67 @@ func TestMaterializeTransition(t *testing.T) {
 	if w.Msg().Id != r.ID() {
 		t.Fatalf("reply ID %d, want %d", w.Msg().Id, r.ID())
 	}
+}
 
-	// Idempotent: a second Materialize returns the same message and the
-	// caller's context untouched.
-	ctx2, again := ch.Materialize(context.Background())
-	if again != probe.msg || ctx2 != context.Background() {
-		t.Fatal("second materialization must be a no-op")
+// lazyMsgHandler is the shape a middleware written against the old
+// *dns.Msg API takes after the mechanical migration: it reads
+// ch.Request.Msg() and calls Next, never mentioning Materialize.
+type lazyMsgHandler struct {
+	name string
+	saw  *dns.Msg
+}
+
+func (h *lazyMsgHandler) Name() string { return h.name }
+
+func (h *lazyMsgHandler) ServeDNS(ctx context.Context, ch *Chain) {
+	h.saw = ch.Request.Msg()
+	ch.Next(ctx)
+}
+
+// downstreamProbe records the context its predecessor handed it.
+type downstreamProbe struct{ got context.Context }
+
+func (p *downstreamProbe) Name() string { return "downstream-probe" }
+
+func (p *downstreamProbe) ServeDNS(ctx context.Context, ch *Chain) {
+	p.got = ctx
+	ch.Cancel()
+}
+
+// TestLazyMsgMigrationIsSafe pins the migration contract for middleware
+// written against the old API: reading ch.Request.Msg() on a wire-born
+// request decodes instead of returning nil, and the chain — not the
+// handler — detaches before anything downstream runs on the job carrier.
+func TestLazyMsgMigrationIsSafe(t *testing.T) {
+	lazy := &lazyMsgHandler{name: "lazy-msg"}
+	down := &downstreamProbe{}
+	ch := NewChain([]Handler{lazy, down})
+
+	raw := packQuery(t, "lazy.example.", dns.TypeA, true)
+	r := new(Request)
+	if !r.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("eligible query refused")
 	}
+	carrier := context.Background()
+	ch.ResetWire(mock.NewWriter("udp", "203.0.113.12:4242"), r)
+	ch.Next(carrier)
+
+	if lazy.saw == nil {
+		t.Fatal("Msg() returned nil to a handler; the migration would panic")
+	}
+	if len(lazy.saw.Question) != 1 || lazy.saw.Question[0].Name != "lazy.example." {
+		t.Fatalf("decoded request is wrong: %v", lazy.saw.Question)
+	}
+	if down.got == nil || down.got == carrier {
+		t.Fatal("downstream ran on the job carrier; the chain must detach after a lazy decode")
+	}
+	if _, ok := down.got.Deadline(); !ok {
+		t.Fatal("detached context carries no deadline")
+	}
+	if ch.detachCleanup == nil {
+		t.Fatal("chain does not own the detach lifecycle")
+	}
+	ch.finishDetach()
 }
 
 // TestCancelWithRcodeWireBorn pins the terminal rcode reply on an

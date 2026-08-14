@@ -49,7 +49,7 @@ func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// A wire-born request takes the non-arpa fast path without decoding:
 	// one case-folded suffix compare on the wire name. A false positive
 	// only materializes and re-checks below.
-	if ch.Request.Msg() == nil && !wireNameHasArpaSuffix(ch.Request.WireName()) {
+	if ch.Request.Undecoded() && !wireNameHasArpaSuffix(ch.Request.WireName()) {
 		ch.Next(ctx)
 		return
 	}

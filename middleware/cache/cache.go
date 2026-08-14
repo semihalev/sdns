@@ -393,7 +393,7 @@ func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 // falls through to materialization and the ordinary body with every gate
 // and lookup it has today.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if ch.Request.Msg() == nil && c.serveWire(ctx, ch) {
+	if ch.Request.Undecoded() && c.serveWire(ctx, ch) {
 		return
 	}
 

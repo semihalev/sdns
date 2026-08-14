@@ -108,7 +108,7 @@ type ResponseWriter struct {
 // protocol errors (foreign opcode, BADVERS) and message-born requests take
 // the decoded body.
 func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if r := ch.Request; r.Msg() == nil &&
+	if r := ch.Request; r.Undecoded() &&
 		r.Opcode() == 0 && (!r.HasOPT() || r.EDNSVersion() == 0) {
 		e.serveWire(ctx, ch)
 		return

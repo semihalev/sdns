@@ -787,7 +787,7 @@ func (ch *Chain) Next(ctx context.Context) {
 		// no recursive work, and the ledger lifecycle for a miss begins
 		// whole on the detached context at materialization — never split
 		// between the recycled job carrier and a later context.
-		wireOnly := ch.Request != nil && ch.Request.Msg() == nil
+		wireOnly := ch.Request != nil && ch.Request.decoded() == nil
 		meta := ResponseMetaFrom(ctx)
 		ownsMeta := meta == nil
 		lazyOwner := false
@@ -832,6 +832,18 @@ func (ch *Chain) Next(ctx context.Context) {
 	h := ch.handlers[ch.pos]
 	ch.pos++
 	ch.count--
+
+	// A wire-born request that decoded through Request.Msg carries no
+	// detached context yet: the handler that decoded it may still be
+	// holding the job carrier. Downstream handlers must not — the carrier
+	// is recycled with the job and cannot host request-tree state — so the
+	// transition completes here, once, before the next handler runs.
+	// Chain.Materialize callers already own theirs and skip this.
+	if ch.detachCleanup == nil && ch.Request != nil &&
+		ch.Request.decoded() != nil && ch.Request.wireBorn() {
+		ctx, ch.detachCleanup = ch.detachStrictContext(ctx)
+	}
+
 	h.ServeDNS(ctx, ch)
 }
 
@@ -844,17 +856,25 @@ func (ch *Chain) Next(ctx context.Context) {
 // the serve completes. A nil message means the packet failed decoding; the
 // chain is canceled and the caller must stop without calling Next.
 func (ch *Chain) Materialize(ctx context.Context) (context.Context, *dns.Msg) {
-	if m := ch.Request.Msg(); m != nil {
-		return ctx, m
-	}
-	m := ch.Request.materialize()
-	if m == nil {
-		ch.Cancel()
+	// decoded, not Msg: the probe must not be the thing that decodes, or
+	// the transition below would be skipped for the request it just built.
+	if ch.Request == nil {
 		return ctx, nil
 	}
-	detached, cleanup := ch.detachStrictContext(ctx)
-	ch.detachCleanup = cleanup
-	return detached, m
+	m := ch.Request.decoded()
+	if m == nil {
+		if m = ch.Request.materialize(); m == nil {
+			ch.Cancel()
+			return ctx, nil
+		}
+	}
+	// A request decoded earlier through Request.Msg reaches here without a
+	// detached context; it gets one now, so the caller's own downstream
+	// work never rides the job carrier either.
+	if ch.detachCleanup == nil && ch.Request.wireBorn() {
+		ctx, ch.detachCleanup = ch.detachStrictContext(ctx)
+	}
+	return ctx, m
 }
 
 // finishDetach runs a pending strict-detach cleanup exactly once.

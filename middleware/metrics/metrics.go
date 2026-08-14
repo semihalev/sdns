@@ -83,7 +83,7 @@ func (m *Metrics) ClientOnly() bool { return true }
 // and are documented as disabling the zero guarantee.
 func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	req := ch.Request
-	if m.domainMetricsEnabled && req.Msg() == nil {
+	if m.domainMetricsEnabled && req.Undecoded() {
 		var decoded *dns.Msg
 		ctx, decoded = ch.Materialize(ctx)
 		if decoded == nil {

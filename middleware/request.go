@@ -82,9 +82,35 @@ func NewRequest(m *dns.Msg) *Request {
 	return r
 }
 
-// Msg returns the decoded request, or nil while the request is wire-only.
-// Handlers that need it call Chain.Materialize instead of decoding.
-func (r *Request) Msg() *dns.Msg { return r.msg }
+// Msg returns the decoded request, decoding a wire-born one on first
+// call. It never returns nil for a request the chain accepted, so the
+// mechanical migration from the old `ch.Request` (a *dns.Msg) is safe:
+// reading the message costs a decode, it does not panic.
+//
+// The decode alone is not the whole transition, though. A handler that
+// goes on to call Next must not hand the job carrier to downstream
+// handlers — Chain.Next detects a request materialized this way and
+// detaches for them. A handler that needs the detached context for its
+// own work (it starts recursion, derives a deadline, pins request-tree
+// state) asks for both at once with Chain.Materialize.
+func (r *Request) Msg() *dns.Msg {
+	if r.msg == nil {
+		return r.materialize()
+	}
+	return r.msg
+}
+
+// Undecoded reports whether the request is still wire-only — no message
+// has been built for it. It is the gate a handler puts in front of its
+// wire branch: reading it never triggers a decode, where Msg does.
+func (r *Request) Undecoded() bool { return r.msg == nil }
+
+// decoded returns the decoded message without triggering a decode: the
+// chain's own probe for "has this request left the wire path yet".
+func (r *Request) decoded() *dns.Msg { return r.msg }
+
+// wireBorn reports whether this request entered as raw bytes.
+func (r *Request) wireBorn() bool { return r.raw != nil }
 
 // Raw returns the raw packet, or nil for a message-born request.
 func (r *Request) Raw() []byte { return r.raw }
