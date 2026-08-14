@@ -10,7 +10,6 @@ import (
 	"hash"
 	"math/big"
 	"sort"
-	"strings"
 
 	"github.com/miekg/dns"
 )
@@ -254,9 +253,22 @@ func canonicalRRset(rrset []dns.RR, s *dns.RRSIG) ([]byte, error) {
 		r1 := dns.Copy(r)
 		h := r1.Header()
 		h.Ttl = s.OrigTtl
-		labels := dns.SplitDomainName(h.Name)
-		if len(labels) > int(s.Labels) {
-			h.Name = "*." + strings.Join(labels[len(labels)-int(s.Labels):], ".") + "."
+		// RFC 4035 §5.3.2 wildcard reconstruction: the owner shrinks to its
+		// last Labels labels behind a *. The suffix is sliced from the name
+		// rather than split and joined back.
+		//
+		// The Fqdn is not decoration. For Labels=0 the suffix is empty, and
+		// the old join produced "*.." — a name the packer rejects, so such
+		// signatures failed verification, in this package and in the
+		// library alike. A bare "*." would verify a root-wildcard signature
+		// instead, which is the RFC's own arithmetic but a wider acceptance
+		// than the library's; this package promises never to be wider, so
+		// the empty suffix is rooted into the same rejected spelling. For
+		// every real Labels value the suffix is already rooted and Fqdn
+		// returns it untouched.
+		if dns.CountLabel(h.Name) > int(s.Labels) {
+			prev, _ := dns.PrevLabel(h.Name, int(s.Labels))
+			h.Name = "*." + dns.Fqdn(h.Name[prev:])
 		}
 		h.Name = dns.CanonicalName(h.Name)
 		canonicalizeRdataNames(r1)
