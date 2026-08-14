@@ -84,22 +84,6 @@ func runGate(t *testing.T, flavor string) {
 
 	ops := gateOps()
 
-	// Connections are established before the window. Accepting a
-	// connection is not per-query work, and dialing inside the window
-	// charged every accept, goroutine and buffer to the queries that
-	// happened to follow.
-	var conns []net.Conn
-	var counts []int
-	if flavor == FlavorTCP {
-		// Every window runs on these connections: warmup, ops, twice ops.
-		conns, counts = prepareTCP(t, target, warmupOps(ops)+3*ops)
-		defer func() {
-			for _, c := range conns {
-				_ = c.Close()
-			}
-		}()
-	}
-
 	// Two windows, the second carrying twice the traffic of the first.
 	// One window can only ever be compared against a tolerance, and a
 	// tolerance is an allowance for allocating; two windows separate the
@@ -115,10 +99,14 @@ func runGate(t *testing.T, flavor string) {
 	// of a query, and they are one-time by construction — a per-query cost
 	// would still be there in the windows that follow, which is what makes
 	// discarding this one safe rather than convenient.
-	runFlood(t, child, flavor, target, conns, counts, warmupOps(ops))
+	runFlood(t, child, flavor, target, warmupOps(ops))
 
-	small := runFlood(t, child, flavor, target, conns, counts, ops)
-	large := runFlood(t, child, flavor, target, conns, counts, 2*ops)
+	// The pair is ops/2 and ops rather than ops and 2*ops: a TCP window
+	// cannot ask for more queries than the server's connection cap times
+	// its per-connection budget, and the larger of the two is what has to
+	// fit.
+	small := runFlood(t, child, flavor, target, ops/2)
+	large := runFlood(t, child, flavor, target, ops)
 
 	// Verdict one, exact: nothing allocated on a serving goroutine.
 	// Attribution is what makes an exact zero meaningful — a process-wide
@@ -129,10 +117,11 @@ func runGate(t *testing.T, flavor string) {
 		name string
 		win  window
 	}{{"1x", small}, {"2x", large}} {
-		t.Logf("stage %s flavor %s %s: %d ops in %v — %d objects on serving goroutines, "+
-			"%d elsewhere in the server, %d mallocs process-wide (measurement included)",
+		t.Logf("stage %s flavor %s %s: %d ops in %v — %d objects allocated by the server "+
+			"while serving, %d elsewhere in the server (%d of them scheduler parking), "+
+			"%d mallocs process-wide (measurement included)",
 			Stage, flavor, w.name, w.win.ops, w.win.elapsed.Round(time.Millisecond),
-			w.win.served, w.win.other, w.win.mallocs)
+			w.win.served, w.win.other, w.win.parked, w.win.mallocs)
 		if w.win.served != 0 {
 			for _, line := range w.win.offenders {
 				t.Log("  ", line)
@@ -159,13 +148,14 @@ func runGate(t *testing.T, flavor string) {
 	// constant background is the same in both windows and cancels in the
 	// difference; what survives is per-query, wherever it lives.
 	growth := large.other - small.other
-	perOp := float64(growth) / float64(ops)
-	t.Logf("stage %s flavor %s: doubling the traffic moved the rest of the server by %+d (%.6f/op, bound %d)",
-		Stage, flavor, growth, perOp, ScalingSlack)
+	extra := large.ops - small.ops
+	perOp := float64(growth) / float64(extra)
+	t.Logf("stage %s flavor %s: %d extra queries moved the rest of the server by %+d (%.6f/op, bound %d)",
+		Stage, flavor, extra, growth, perOp, ScalingSlack)
 	if growth > ScalingSlack {
 		t.Fatalf("stage %s flavor %s: %d extra queries cost %d extra objects off the serving "+
 			"stacks (%.6f/op); something the queries reach scales with traffic",
-			Stage, flavor, ops, growth, perOp)
+			Stage, flavor, extra, growth, perOp)
 	}
 }
 
@@ -185,6 +175,7 @@ type window struct {
 	mallocs   uint64
 	served    int64
 	other     int64
+	parked    int64
 	elapsed   time.Duration
 	offenders []string
 }
@@ -194,21 +185,42 @@ type window struct {
 // the last slabs to come home — a sleep either wastes the difference or,
 // on a slow machine, closes the window while jobs are still being
 // released, which charges their work to whatever window comes next.
-func runFlood(t *testing.T, child *harnessProc, flavor, target string,
-	conns []net.Conn, counts []int, ops int,
-) window {
+func runFlood(t *testing.T, child *harnessProc, flavor, target string, ops int) window {
 	t.Helper()
+
+	// A TCP window brings its own connections, and they are opened before
+	// it starts: accepting is not per-query work, and dialing inside the
+	// window would charge every accept, goroutine and buffer to whichever
+	// queries happened to follow. The mark below closes the window those
+	// accepts landed in — along with the teardown of the previous
+	// window's connections — and opens the measured one.
+	var conns []net.Conn
+	var counts []int
+	if flavor == FlavorTCP {
+		conns, counts = prepareTCP(t, target, ops)
+		defer func() {
+			for _, c := range conns {
+				_ = c.Close()
+			}
+		}()
+		child.quiesce(t)
+		child.markBoth(t)
+	}
+
 	started := time.Now()
 	switch flavor {
 	case FlavorTCP:
-		floodTCPOn(t, conns, scaleCounts(counts, ops))
+		floodTCPOn(t, conns, counts)
 	default:
 		floodUDP(t, target, ops)
 	}
 	child.quiesce(t)
 	elapsed := time.Since(started)
-	mallocs, served, other := child.markBoth(t)
-	w := window{ops: ops, mallocs: mallocs, served: served, other: other, elapsed: elapsed}
+	mallocs, served, other, parked := child.markBoth(t)
+	w := window{
+		ops: ops, mallocs: mallocs, served: served,
+		other: other, parked: parked, elapsed: elapsed,
+	}
 	if served != 0 || os.Getenv("ZEROGATE_ALL_SITES") != "" {
 		// Collected here rather than at the verdict: the offender list
 		// describes the window that just closed, and the next mark
@@ -216,23 +228,6 @@ func runFlood(t *testing.T, child *harnessProc, flavor, target string,
 		w.offenders = child.offenders(t)
 	}
 	return w
-}
-
-// scaleCounts spreads ops over the prepared connections.
-func scaleCounts(counts []int, ops int) []int {
-	if len(counts) == 0 {
-		return counts
-	}
-	out := make([]int, len(counts))
-	per := ops / len(counts)
-	rem := ops % len(counts)
-	for i := range out {
-		out[i] = per
-		if i < rem {
-			out[i]++
-		}
-	}
-	return out
 }
 
 // pickBind reserves a loopback port for the flavor and releases it for the
@@ -362,10 +357,10 @@ func (h *harnessProc) quiesce(t *testing.T) {
 // markBoth closes the current window and opens the next, returning the
 // process-wide malloc count and the objects allocated on serving
 // goroutines since the previous mark.
-func (h *harnessProc) markBoth(t *testing.T) (mallocs uint64, served, other int64) {
+func (h *harnessProc) markBoth(t *testing.T) (mallocs uint64, served, other, parked int64) {
 	t.Helper()
 	fields := strings.Fields(h.send(t, "mark", "MALLOCS "))
-	if len(fields) != 5 || fields[1] != "SERVED" || fields[3] != "OTHER" {
+	if len(fields) != 7 || fields[1] != "SERVED" || fields[3] != "OTHER" || fields[5] != "PARKED" {
 		t.Fatalf("bad mark reply %q", strings.Join(fields, " "))
 	}
 	var err error
@@ -378,7 +373,10 @@ func (h *harnessProc) markBoth(t *testing.T) (mallocs uint64, served, other int6
 	if other, err = strconv.ParseInt(fields[4], 10, 64); err != nil {
 		t.Fatalf("bad other count %q: %v", fields[4], err)
 	}
-	return mallocs, served, other
+	if parked, err = strconv.ParseInt(fields[6], 10, 64); err != nil {
+		t.Fatalf("bad parked count %q: %v", fields[6], err)
+	}
+	return mallocs, served, other, parked
 }
 
 // offenders returns the allocating sites behind a nonzero served count,

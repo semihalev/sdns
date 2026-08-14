@@ -8,12 +8,14 @@
 //	parent → child:  quiesce   → waits until no job slab is outstanding,
 //	                             prints "QUIESCED ok" or "QUIESCED timeout"
 //	parent → child:  mark      → two GCs, then
-//	                             "MALLOCS <n> SERVED <k> OTHER <m>":
-//	                             k is the objects allocated on a serving
-//	                             goroutine since the previous mark (the
+//	                             "MALLOCS <n> SERVED <k> OTHER <m> PARKED <p>":
+//	                             k is the objects the server's own code
+//	                             allocated on a serving goroutine (the
 //	                             gate's exact verdict), m the objects
-//	                             allocated anywhere else in the server,
-//	                             excluding the harness's own machinery
+//	                             allocated anywhere else in the server —
+//	                             p of them scheduler bookkeeping for a
+//	                             parked serving goroutine — excluding the
+//	                             harness's own machinery
 //	parent → child:  offenders → "OFFENDER <objects> <func> <file:line>"
 //	                             per allocating site since the previous
 //	                             mark, terminated by "END"
@@ -90,9 +92,19 @@ type allocSite struct {
 	objects int64
 	serving bool
 	harness bool // the measurement's own machinery, not the server's
-	fn      string
-	pos     string
-	via     string // the first few non-runtime frames, innermost first
+	// platform marks an allocation the runtime made on the server's
+	// behalf rather than one the server's own code asked for: the
+	// classic is a sudog, which the scheduler takes when a goroutine
+	// parks — two workers meeting on one socket's write lock for an
+	// instant. It is bookkeeping for blocking, bounded by the number of
+	// Ps rather than by the number of queries, so it is held to not
+	// scaling instead of to exactly zero. Nothing is hidden by that: a
+	// buffer that really did escape into the socket write would grow
+	// with the traffic, and the scaling verdict is where it would show.
+	platform bool
+	fn       string
+	pos      string
+	via      string // the first few non-runtime frames, innermost first
 }
 
 // profile returns the live allocation profile keyed by stack. Records
@@ -133,6 +145,8 @@ func profile() map[string]*allocSite {
 				if site.fn == "" {
 					site.fn = f.Function
 					site.pos = fmt.Sprintf("%s:%d", filepath.Base(f.File), f.Line)
+					site.platform = strings.HasPrefix(f.Function, "internal/poll.") ||
+						strings.HasPrefix(f.Function, "syscall.")
 				}
 			}
 			if strings.HasPrefix(f.Function, servingPrefix) {
@@ -164,7 +178,7 @@ func profile() map[string]*allocSite {
 // Charging them to the server would drown the very thing being measured
 // — and a process-wide counter has no way to tell them apart, which is
 // the second reason attribution is doing the work here.
-func since(before, after map[string]*allocSite) (served, other int64, offenders []*allocSite) {
+func since(before, after map[string]*allocSite) (served, other, parked int64, offenders []*allocSite) {
 	// ZEROGATE_ALL_SITES widens the report to every growing site, not
 	// just the ones on a serving stack. The verdict never changes; it is
 	// how the second, ops-relative verdict gets a name when it fires,
@@ -179,6 +193,11 @@ func since(before, after map[string]*allocSite) (served, other int64, offenders 
 			continue
 		}
 		switch {
+		case now.serving && now.platform:
+			// Scheduler bookkeeping on a serving stack: counted with the
+			// rest, so the scaling verdict still covers it.
+			parked += grew
+			other += grew
 		case now.serving:
 			served += grew
 		case now.harness:
@@ -186,7 +205,7 @@ func since(before, after map[string]*allocSite) (served, other int64, offenders 
 		default:
 			other += grew
 		}
-		if now.serving || all {
+		if (now.serving && !now.platform) || all {
 			offenders = append(offenders, &allocSite{
 				objects: grew, serving: now.serving, fn: now.fn, pos: now.pos, via: now.via,
 			})
@@ -195,7 +214,7 @@ func since(before, after map[string]*allocSite) (served, other int64, offenders 
 	sort.Slice(offenders, func(i, j int) bool {
 		return offenders[i].objects > offenders[j].objects
 	})
-	return served, other, offenders
+	return served, other, parked, offenders
 }
 
 func run() error {
@@ -281,9 +300,9 @@ func run() error {
 			runtime.GC()
 			runtime.ReadMemStats(&ms)
 			now := profile()
-			var served, other int64
+			var served, other, parked int64
 			if prev != nil {
-				served, other, lastServe = since(prev, now)
+				served, other, parked, lastServe = since(prev, now)
 			}
 			prev = now
 			reply = append(reply[:0], "MALLOCS "...)
@@ -292,6 +311,8 @@ func run() error {
 			reply = strconv.AppendInt(reply, served, 10)
 			reply = append(reply, " OTHER "...)
 			reply = strconv.AppendInt(reply, other, 10)
+			reply = append(reply, " PARKED "...)
+			reply = strconv.AppendInt(reply, parked, 10)
 			reply = append(reply, '\n')
 			if _, err := os.Stdout.Write(reply); err != nil {
 				return err

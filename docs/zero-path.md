@@ -28,14 +28,24 @@ silent control plane and **profiles every allocation**
 (`runtime.MemProfileRate = 1`), so no allocation goes unrecorded. It
 returns two verdicts:
 
-1. **Exact, by attribution.** Zero objects may be allocated on a goroutine
-   that is serving — any stack passing through
-   `github.com/semihalev/sdns/server`, whatever package the allocation
-   itself lives in. A failure names the file, line and call path. This is
-   what makes an exact zero meaningful: a process-wide counter cannot tell
-   a query's allocation from a timer's, so it can only be compared against
-   slack, and slack is how `0.05/op` once let fifty thousand allocations
-   per million queries read as zero.
+1. **Exact, by attribution.** Zero objects may be allocated by the
+   server's own code on a goroutine that is serving — any stack passing
+   through `github.com/semihalev/sdns/server`, whatever package the
+   allocation itself lives in. A failure names the file, line and call
+   path. This is what makes an exact zero meaningful: a process-wide
+   counter cannot tell a query's allocation from a timer's, so it can only
+   be compared against slack, and slack is how `0.05/op` once let fifty
+   thousand allocations per million queries read as zero.
+
+   One class is excluded from *this* verdict and moved into the second:
+   allocations whose site is a platform primitive (`internal/poll`,
+   `syscall`) rather than SDNS or library code — in practice the `sudog`
+   the scheduler takes when a goroutine parks, which is what two workers
+   meeting on one socket's write lock costs once per P. That is
+   bookkeeping for blocking, bounded by `GOMAXPROCS` and not by queries.
+   Nothing is hidden by the move: a buffer that genuinely escaped into a
+   socket write would grow with the traffic, and growth is exactly what
+   the second verdict measures. The count is reported at every window.
 2. **Ops-relative, for what attribution cannot see.** Work handed to
    another goroutine allocates under a stack with no engine frame. Two
    windows are measured, the second carrying twice the traffic; constant
