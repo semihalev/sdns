@@ -200,6 +200,31 @@ func (m *ResponseMeta) ensureLedgerHost() *requestLedgers {
 	}
 }
 
+// detachedCopy returns a heap ResponseMeta carrying this one's state, for
+// a context that will outlive the storage the original lives in.
+//
+// The original is a field of the transport job's Chain, so it is reset
+// and reused the moment the request finishes. A context is not a value
+// the request can call back: a handler may hold one past its own return
+// — an upstream query still unwinding, a goroutine draining — and a
+// context still pointing at the job's meta would then read, and worse
+// write, the next request's state. What transfers is the delegation cut
+// and, if a request tree established one, the ledger host itself, which
+// lives on the heap and outlives either meta.
+func (m *ResponseMeta) detachedCopy() *ResponseMeta {
+	if m == nil {
+		return nil
+	}
+	out := &ResponseMeta{workPolicy: m.workPolicy}
+	m.cutMu.Lock()
+	out.cut = m.cut
+	m.cutMu.Unlock()
+	if host := m.ledgerHost(); host != nil {
+		out.ledgers.Store(host)
+	}
+	return out
+}
+
 // ForkCut returns a meta that shares this one's request-tree state — work
 // ledger, retry guard, failure and proof provenance — but accumulates its own
 // delegation-cut deadline.
@@ -1018,7 +1043,7 @@ func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func
 	}
 
 	cleanup := func() { real.Cancel() }
-	if meta := ResponseMetaFrom(ctx); meta != nil {
+	if meta := ResponseMetaFrom(ctx).detachedCopy(); meta != nil {
 		var lazyMeta bool
 		detached, lazyMeta = withResponseMeta(detached, meta)
 		if lazyMeta && beginLazyRecursionWorkOwner(detached) {
