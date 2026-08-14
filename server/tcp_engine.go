@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/binary"
 	"errors"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -53,6 +52,7 @@ const (
 type tcpJob struct {
 	engine   *tcpEngine
 	conn     net.Conn
+	stream   *tcpStream
 	rx       [tcpJobBufSize]byte
 	tx       [dnsclient.FramePrefixLen + tcpJobBufSize]byte
 	written  bool
@@ -78,18 +78,22 @@ func (j *tcpJob) LeaseWire(capacity int) []byte {
 	return j.tx[dnsclient.FramePrefixLen:dnsclient.FramePrefixLen]
 }
 
-// Write sends pooled or foreign bytes as one frame: copied behind the
-// job's prefix headroom, one syscall, no gather, no allocation.
+// Write stages pooled or foreign bytes as one frame on the connection's
+// drain buffer. The bytes leave when the connection is about to block for
+// more input, so a burst of pipelined replies costs one write syscall and
+// a lone reply costs exactly one too.
 func (j *tcpJob) Write(b []byte) (int, error) {
 	if len(b) > tcpJobBufSize {
 		return 0, dnsclient.ErrFrameTooLarge
 	}
 	j.written = true
-	n := copy(j.tx[dnsclient.FramePrefixLen:], b)
-	return dnsclient.WriteFramePrefixed(j.conn, j.tx[:], n)
+	if err := j.stream.stage(b); err != nil {
+		return 0, err
+	}
+	return dnsclient.FramePrefixLen + len(b), nil
 }
 
-// WriteMsg packs directly into the TX payload region and frames it.
+// WriteMsg packs into the TX payload region and stages the frame.
 func (j *tcpJob) WriteMsg(m *dns.Msg) error {
 	out, err := m.PackBuffer(j.tx[dnsclient.FramePrefixLen:dnsclient.FramePrefixLen])
 	if err != nil {
@@ -99,14 +103,7 @@ func (j *tcpJob) WriteMsg(m *dns.Msg) error {
 	if len(out) > tcpJobBufSize {
 		return dnsclient.ErrFrameTooLarge
 	}
-	if &out[0] == &j.tx[dnsclient.FramePrefixLen] {
-		_, err = dnsclient.WriteFramePrefixed(j.conn, j.tx[:], len(out))
-		return err
-	}
-	// PackBuffer outgrew the slab (pathological size): frame the escape
-	// buffer with a gather write.
-	_, err = dnsclient.WriteFrameFrom(j.conn, out)
-	return err
+	return j.stream.stage(out)
 }
 
 func (j *tcpJob) LocalAddr() net.Addr  { return j.conn.LocalAddr() }
@@ -122,6 +119,11 @@ type tcpEngine struct {
 
 	free    chan *tcpJob
 	closing chan struct{}
+	// streams are per-connection framing buffers. Unlike the job ring
+	// they are not strict-path state — a connection holds one for its
+	// whole life — so a pool is the right shape: an idle server keeps
+	// none, and a busy one reuses what its connection churn frees.
+	streams sync.Pool
 
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -141,6 +143,7 @@ func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
 		closing:  make(chan struct{}),
 		conns:    make(map[net.Conn]struct{}),
 	}
+	e.streams.New = func() any { return new(tcpStream) }
 	for i := 0; i < defaultTCPJobs; i++ {
 		e.free <- &tcpJob{engine: e}
 	}
@@ -201,38 +204,69 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		e.unregister(conn)
 	}()
 
-	var prefix [dnsclient.FramePrefixLen]byte
-	wait := tcpFirstReadWait
-	for served := 0; served < tcpQueryBudget; served++ {
-		_ = conn.SetReadDeadline(time.Now().Add(wait))
-		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
+	stream := e.streams.Get().(*tcpStream)
+	stream.reset(conn)
+	defer func() {
+		_ = stream.flush()
+		stream.reset(nil)
+		e.streams.Put(stream)
+	}()
+
+	// The job is held for a burst, not for a frame. Handing one back to
+	// the ring between the frames a client already sent was the loop's
+	// remaining cost once the syscalls were batched away — two channel
+	// operations per query across every connection goroutine. It is
+	// still released before the connection blocks, so the property that
+	// pays for the ring is intact: an idle connection pins no slab.
+	var job *tcpJob
+	release := func() {
+		if job == nil {
 			return
 		}
-		length := int(binary.BigEndian.Uint16(prefix[:]))
-		if length < minTCPFrame {
+		job.conn = nil
+		job.stream = nil
+		e.free <- job
+		job = nil
+	}
+	defer release()
+
+	wait := tcpFirstReadWait
+	for served := 0; served < tcpQueryBudget; served++ {
+		if !stream.buffered() {
+			// About to block: the client's replies go out, the slab goes
+			// back, and only then does the connection wait.
+			release()
+			if err := stream.beforeRead(wait); err != nil {
+				return
+			}
+		}
+
+		prefix, err := stream.next(dnsclient.FramePrefixLen)
+		if err != nil {
+			return
+		}
+		length := int(binary.BigEndian.Uint16(prefix))
+		if length < minTCPFrame || length > tcpJobBufSize {
 			// Sub-header frames end the session (library parity: the
 			// message layer rejects, and rejection on a stream is fatal).
 			return
 		}
 
-		var j *tcpJob
-		select {
-		case j = <-e.free:
-		case <-e.closing:
+		if job == nil {
+			select {
+			case job = <-e.free:
+			case <-e.closing:
+				return
+			}
+		}
+		if err := stream.body(job.rx[:length]); err != nil {
 			return
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(tcpIdleWait))
-		if _, err := io.ReadFull(conn, j.rx[:length]); err != nil {
-			e.free <- j
-			return
-		}
-		j.conn = conn
-		j.written = false
-		j.readTime = time.Now()
-		ok := e.serveFrame(j, length)
-		j.conn = nil
-		e.free <- j
-		if !ok {
+		job.conn = conn
+		job.stream = stream
+		job.written = false
+		job.readTime = time.Now()
+		if !e.serveFrame(job, length) {
 			return
 		}
 		wait = tcpIdleWait
@@ -283,7 +317,7 @@ func (j *tcpJob) rejectInPlace(verdict acceptVerdict, _ int) {
 	out[2] = 0x80 | (opcode << 3) | (j.rx[2] & 0x01)
 	out[3] = rcode
 	j.written = true
-	_, _ = dnsclient.WriteFramePrefixed(j.conn, j.tx[:], wire.HeaderLen)
+	_ = j.stream.stage(out)
 }
 
 // shutdown is the engine's barrier half: the caller already closed the
