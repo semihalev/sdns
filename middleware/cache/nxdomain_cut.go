@@ -45,6 +45,15 @@ type nxDomainCutEntry struct {
 	zoneKey    nxDomainCutZoneKey
 	globalElem *list.Element
 	zoneElem   *list.Element
+
+	// Wire-serving state, packed once at record time: the proof authority
+	// section behind a template question (the denied name), full and
+	// DNSSEC-stripped, plus the canonical hash the wire lookup probes.
+	// wireFull == nil means this cut serves through the Msg path only.
+	wireFull     []byte
+	wireStripped []byte
+	wireDNSSEC   bool
+	hash         uint64
 }
 
 type nxDomainCutZoneState struct {
@@ -69,8 +78,13 @@ type nxDomainCutCache struct {
 	mu sync.RWMutex
 
 	entries map[nxDomainCutID]*nxDomainCutEntry
-	zones   map[nxDomainCutZoneKey]*nxDomainCutZoneState
-	fifo    list.List
+	// byHash is the wire lookup's accelerator: canonical-hash → entry,
+	// last write wins. The string map stays the truth — a hash collision
+	// fails the fold verification at lookup and simply declines to the
+	// Msg path.
+	byHash map[uint64]*nxDomainCutEntry
+	zones  map[nxDomainCutZoneKey]*nxDomainCutZoneState
+	fifo   list.List
 
 	maxEntries        int
 	maxEntriesPerZone int
@@ -132,6 +146,7 @@ func newNXDomainCutCacheWithConfig(cfg nxDomainCutCacheConfig) *nxDomainCutCache
 
 	return &nxDomainCutCache{
 		entries:           make(map[nxDomainCutID]*nxDomainCutEntry),
+		byHash:            make(map[uint64]*nxDomainCutEntry),
 		zones:             make(map[nxDomainCutZoneKey]*nxDomainCutZoneState),
 		maxEntries:        cfg.MaxEntries,
 		maxEntriesPerZone: cfg.MaxEntriesPerZone,
@@ -221,6 +236,7 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 	}
 	entry.id = nxDomainCutID{deniedName: deniedName, qclass: entry.qclass}
 	entry.zoneKey = nxDomainCutZoneKey{zone: zone, qclass: entry.qclass}
+	entry.prepareWire()
 
 	// Preserve a current usable cut if its replacement cannot fit even in an
 	// otherwise-empty cache or zone.
@@ -245,6 +261,9 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 	entry.globalElem = c.fifo.PushBack(entry)
 	entry.zoneElem = zoneState.fifo.PushBack(entry)
 	c.entries[entry.id] = entry
+	if entry.wireFull != nil {
+		c.byHash[entry.hash] = entry
+	}
 	c.totalBytes += entry.wireBytes
 	zoneState.wireBytes += entry.wireBytes
 
@@ -513,6 +532,9 @@ func (c *nxDomainCutCache) removeEntryLocked(entry *nxDomainCutEntry) {
 		return
 	}
 	delete(c.entries, entry.id)
+	if c.byHash[entry.hash] == entry {
+		delete(c.byHash, entry.hash)
+	}
 	if entry.globalElem != nil {
 		c.fifo.Remove(entry.globalElem)
 		entry.globalElem = nil

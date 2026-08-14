@@ -52,14 +52,16 @@ var (
 	// Serving bytes is what keeps a hit from decoding and re-encoding a
 	// message it already holds, so which gate turns hits away decides where
 	// widening it would pay.
-	wireSkipInternal = wireFastPath.Register("skip_internal")
-	wireSkipEntry    = wireFastPath.Register("skip_entry")
-	wireSkipWriter   = wireFastPath.Register("skip_writer")
-	wireSkipDNSSEC   = wireFastPath.Register("skip_dnssec")
-	wireSkipSize     = wireFastPath.Register("skip_size")
-	wireSkipBuild    = wireFastPath.Register("skip_build")
-	wireSkipChase    = wireFastPath.Register("skip_chase")
-	wireChaseServed  = wireFastPath.Register("chase_served")
+	wireSkipInternal  = wireFastPath.Register("skip_internal")
+	wireSkipEntry     = wireFastPath.Register("skip_entry")
+	wireSkipWriter    = wireFastPath.Register("skip_writer")
+	wireSkipDNSSEC    = wireFastPath.Register("skip_dnssec")
+	wireSkipSize      = wireFastPath.Register("skip_size")
+	wireSkipBuild     = wireFastPath.Register("skip_build")
+	wireSkipChase     = wireFastPath.Register("skip_chase")
+	wireChaseServed   = wireFastPath.Register("chase_served")
+	wireCutServed     = wireFastPath.Register("cut_served")
+	wireFailureServed = wireFastPath.Register("failure_served")
 
 	nxDomainCutHits = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "nxdomain_cut_hits_total",

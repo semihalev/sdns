@@ -168,7 +168,7 @@ through accessors; *ctx-clean* = no ordinary ctx primitives.
 | as112 | active | needs a wire suffix check ("arpa.") | yes | yes | non-arpa fast path is one suffix compare |
 | kubernetes | stub | yes (nil check) | yes | yes | |
 | dns64 | not registered | — | — | — | |
-| cache | active | Z1's core work | — | yes | |
+| cache | active | Z1's core work | — | yes | exact entries, cache-contained chases, RFC 8020 cuts and RFC 9520 failures serve from bytes; **RFC 8198 aggressive denial is the one composite residual** — while its proof index holds any entry, a candidate wire query materializes so the Msg-path evaluators answer in order (their per-lookup allocations are the #558 successor work) |
 | failover (post-cache) | passthrough writer | n/a on hits | n/a | no (`EnsureResolutionAttemptGuard` may derive) | hits never reach it once the strict path answers before the chain proceeds |
 | prefetch (feature) | off (prefetch 0) | — | — | — | enabled: claim-time `req.Copy()` must move off the hit path (copy-on-claim already; audit at Z2) |
 

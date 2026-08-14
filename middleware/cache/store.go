@@ -261,6 +261,36 @@ func (s *Store) LookupNXDomainCut(req *dns.Msg) (*nxDomainCutEntry, bool) {
 	return s.nxDomainCuts.lookup(req.Question[0])
 }
 
+// LookupNXDomainCutWire is LookupNXDomainCut for a wire-born question:
+// same store, same walk, no decoded message. CD gating is the caller's —
+// the wire path mirrors the Msg entry's bypass conditions inline.
+func (s *Store) LookupNXDomainCutWire(name []byte, qclass uint16) (*nxDomainCutEntry, bool) {
+	if s == nil || s.nxDomainCuts == nil || s.sharedDenialDisabled {
+		return nil, false
+	}
+	return s.nxDomainCuts.lookupWire(name, qclass)
+}
+
+// LookupFailureWire is LookupFailure for a wire-born question without an
+// ECS scope.
+func (s *Store) LookupFailureWire(name []byte, qtype, qclass uint16, cd bool) (FailureHit, bool) {
+	if s == nil || s.failureCacheDisabled || s.failure == nil {
+		return FailureHit{}, false
+	}
+	return s.failure.LookupWire(name, qtype, qclass, cd)
+}
+
+// DenialProofsIdle reports that no RFC 8198 aggressive answer can exist
+// right now — the feature is off or the proof index is empty. The wire
+// path consults it so a possible shared denial answer always falls to the
+// Msg path's evaluators, preserving the lookup order.
+func (s *Store) DenialProofsIdle() bool {
+	if s == nil || s.rfc8198Disabled || s.sharedDenialDisabled || s.denialProofs == nil {
+		return true
+	}
+	return s.denialProofs.entryCount() == 0
+}
+
 // RecordNXDomainCut stores a locally validated terminal NXDOMAIN proof.
 // deniedName is the exact authoritative query cycle that returned NXDOMAIN;
 // it must never be inferred from the SOA owner.

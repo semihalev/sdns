@@ -220,6 +220,23 @@ func TestServeRawHitClasses(t *testing.T) {
 			}),
 		},
 		{
+			// An RFC 9520 cached failure: the first serve records, the
+			// warm ones synthesize the EDE-13 SERVFAIL from bytes.
+			name: "failure-cache",
+			query: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("broken.zero.test.", dns.TypeA)
+				m.SetEdns0(1232, false)
+				return m
+			},
+			reply: func(req *dns.Msg) *dns.Msg {
+				resp := new(dns.Msg)
+				resp.SetRcode(req, dns.RcodeServerFailure)
+				resp.RecursionAvailable = true
+				return resp
+			},
+		},
+		{
 			// An MX terminal carries a compressible rdata name: the
 			// composer declines and the Msg path answers, unchanged.
 			name: "cname-chase-mx-fallback",

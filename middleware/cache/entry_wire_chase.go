@@ -97,6 +97,7 @@ func (c *Cache) serveChaseHit(
 		for i := range n {
 			boundRequestToEntryLifetime(ctx, segs[i].entry)
 		}
+		c.metrics.Hit()
 		wireChaseServed.Inc()
 		ch.Cancel()
 		return true
@@ -107,6 +108,7 @@ func (c *Cache) serveChaseHit(
 		for i := range n {
 			boundRequestToEntryLifetime(ctx, segs[i].entry)
 		}
+		c.metrics.Hit()
 		ch.Cancel()
 		return true
 	}
@@ -157,7 +159,7 @@ func (c *Cache) collectWireChase(
 		hasQtype, lastCNAMERData := false, -1
 		for range int(header.ANCount) {
 			rr, ok := wire.ParseRR(body, off)
-			if !ok || !wireChaseComposable(rr.Type) {
+			if !ok || !wireRecomposable(rr.Type) {
 				return 0, false
 			}
 			if rr.Type == qtype {
@@ -219,21 +221,6 @@ func (c *Cache) collectWireChase(
 	}
 }
 
-// wireChaseComposable reports whether the composer can re-encode a record
-// of this type: aliases are rewritten, and everything else is copied
-// verbatim — which is only sound when its rdata cannot carry a compressed
-// name. RRSIG qualifies because its signer name is packed uncompressed
-// (RFC 4034 §6.2, and miekg's packer honors it). A terminal outside this
-// list declines to the Msg path: its rdata may embed compressed names the
-// verbatim copy would corrupt.
-func wireChaseComposable(rrtype uint16) bool {
-	switch rrtype {
-	case dns.TypeCNAME, dns.TypeA, dns.TypeAAAA, dns.TypeTXT, dns.TypeRRSIG:
-		return true
-	}
-	return false
-}
-
 // composeWireChase writes the composed reply into dst. Every append is
 // capacity-guarded; false means the lease was too small or a segment was
 // malformed, and nothing was sent.
@@ -281,44 +268,9 @@ func composeWireChase(
 			if !parsed {
 				return nil, middleware.WireInfo{}, false
 			}
-			// Owner, uncompressed — echoed in the client's spelling when
-			// it is the question name.
-			ownerStart := len(body)
-			body, ok = wire.AppendName(body, seg.body, rr.NameOff)
+			body, ok = appendRecomposedRR(body, seg.body, rr, seg.ttl, clientName)
 			if !ok {
 				return nil, middleware.WireInfo{}, false
-			}
-			if foldWireNamesEqual(body[ownerStart:], clientName) {
-				copy(body[ownerStart:], clientName)
-			}
-			// TYPE and CLASS verbatim, this segment's remaining TTL.
-			nameEnd := rr.TTLOff - 4
-			if body, ok = appendCapped(body, seg.body[nameEnd:nameEnd+4]); !ok {
-				return nil, middleware.WireInfo{}, false
-			}
-			if len(body)+4 > cap(body) {
-				return nil, middleware.WireInfo{}, false
-			}
-			body = binary.BigEndian.AppendUint32(body, seg.ttl)
-
-			rdataOff := rr.End - rr.RDLen
-			if rr.Type == dns.TypeCNAME {
-				// Re-encoded target: reserve the RDLENGTH, decompress, fix.
-				if len(body)+2 > cap(body) {
-					return nil, middleware.WireInfo{}, false
-				}
-				rdlenOff := len(body)
-				body = append(body, 0, 0)
-				body, ok = wire.AppendName(body, seg.body, rdataOff)
-				if !ok {
-					return nil, middleware.WireInfo{}, false
-				}
-				binary.BigEndian.PutUint16(body[rdlenOff:], uint16(len(body)-rdlenOff-2)) //nolint:gosec // a name is at most 255 octets
-			} else {
-				// RDLENGTH and rdata verbatim.
-				if body, ok = appendCapped(body, seg.body[rdataOff-2:rr.End]); !ok {
-					return nil, middleware.WireInfo{}, false
-				}
 			}
 			off = rr.End
 		}

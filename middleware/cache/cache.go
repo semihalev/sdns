@@ -1040,18 +1040,39 @@ func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain) bool {
 	if !ok {
 		return false
 	}
-	entry := c.checkCache(key)
-	if entry == nil {
-		return false
-	}
 	// Full-preimage collision verification on the wire: name
 	// (case-insensitive), type, class, CD, and the shared/scoped
 	// partition. A mismatch is a miss, exactly as at the Msg-path
-	// chokepoint.
-	if !entryMatchesWire(entry, req) {
-		return false
+	// chokepoint. An exact hit that declines materializes — the Msg body
+	// re-runs its whole ladder in order, prefetch claims included.
+	if entry := c.checkCache(key); entry != nil && entryMatchesWire(entry, req) {
+		return c.serveHitFromWire(ctx, ch, entry)
 	}
-	return c.serveHitFromWire(ctx, ch, entry)
+	return c.serveCompositeFromWire(ctx, ch)
+}
+
+// serveCompositeFromWire walks the Msg path's composite ladder — RFC 8020
+// subtree cut, RFC 8198 aggressive denial, RFC 9520 failure state — in
+// its exact order for a wire-born request. Each rung either answers from
+// bytes or sends the request to the decoded body, never to a later rung
+// it might shadow.
+func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain) bool {
+	req := ch.Request
+	cd := req.CD()
+	if !cd {
+		if cut, ok := c.store.LookupNXDomainCutWire(req.WireName(), req.Qclass()); ok {
+			return c.serveCutHitFromWire(ctx, ch, cut)
+		}
+		if !c.store.DenialProofsIdle() {
+			// A shared denial answer may exist; RFC 8198 evaluation stays
+			// on the Msg path until its evaluators are allocation-free.
+			return false
+		}
+	}
+	if _, ok := c.store.LookupFailureWire(req.WireName(), req.Qtype(), req.Qclass(), cd); ok {
+		return c.serveFailureFromWire(ch)
+	}
+	return false
 }
 
 // entryMatchesWire is entryMatchesQuestion plus the preimage dimensions
@@ -1134,6 +1155,7 @@ func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entr
 	switch err := leaser.CommitWire(body, info); {
 	case err == nil:
 		boundRequestToEntryLifetime(ctx, entry)
+		c.metrics.Hit()
 		wireFastServed.Inc()
 		ch.Cancel()
 		return true
@@ -1144,6 +1166,7 @@ func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entr
 		// Transport-level failure after commit: the bytes left the
 		// process; the response counts as written (Msg-path parity).
 		boundRequestToEntryLifetime(ctx, entry)
+		c.metrics.Hit()
 		ch.Cancel()
 		return true
 	}

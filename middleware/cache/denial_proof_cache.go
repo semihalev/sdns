@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -22,6 +23,15 @@ const (
 	maxDenialProofTTL         = 3 * time.Hour
 	maxDenialProofNSEC3Groups = 2
 )
+
+// entryCount is the lock-free mirror of len(byID), for the wire path's
+// emptiness gate.
+func (c *denialProofCache) entryCount() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.count.Load()
+}
 
 type denialProofKind uint8
 
@@ -141,7 +151,10 @@ type denialProofCache struct {
 
 	totalBytes int64
 	sequence   uint64
-	stopped    bool
+	// count mirrors len(byID) for lock-free emptiness checks on the wire
+	// path; maintained under the write lock at every byID mutation.
+	count   atomic.Int64
+	stopped bool
 
 	// A locally validated tuple that presents two different RDATA values at
 	// one owner hash is ambiguous until both observations expire. Tombstones
@@ -366,6 +379,7 @@ func (c *denialProofCache) recordWithKind(
 		entry.sequence = c.sequence
 		entry.queue = c.fifo.PushBack(entry)
 		c.byID[entry.id] = entry
+		c.count.Store(int64(len(c.byID)))
 		c.totalBytes += entry.wireBytes
 
 		c.zoneEntriesLocked(entry.zoneKey)[entry.id] = entry
@@ -1128,6 +1142,7 @@ func (c *denialProofCache) detachEntryLocked(entry *denialProofEntry) bool {
 		return false
 	}
 	delete(c.byID, entry.id)
+	c.count.Store(int64(len(c.byID)))
 	if entry.queue != nil {
 		c.fifo.Remove(entry.queue)
 	}

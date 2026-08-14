@@ -234,6 +234,27 @@ func AppendName(dst, src []byte, off int) ([]byte, bool) {
 	}
 }
 
+// SetRcode overwrites the header's 4-bit RCODE field.
+func SetRcode(body []byte, rcode int) {
+	if len(body) >= HeaderLen {
+		body[3] = body[3]&0xF0 | byte(rcode&0x0F) //nolint:gosec // masked to the 4-bit field
+	}
+}
+
+// SetRA sets the recursion-available bit.
+func SetRA(body []byte) {
+	if len(body) >= HeaderLen {
+		body[3] |= 0x80
+	}
+}
+
+// SetAD sets the authenticated-data bit.
+func SetAD(body []byte) {
+	if len(body) >= HeaderLen {
+		body[3] |= 0x20
+	}
+}
+
 // SetTTL stamps a TTL value at a previously recorded offset.
 func SetTTL(body []byte, ttlOff int, ttl uint32) {
 	if ttlOff >= 0 && ttlOff+4 <= len(body) {
