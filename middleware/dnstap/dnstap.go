@@ -3,6 +3,7 @@ package dnstap
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net"
 	"os"
 	"sync"
@@ -310,12 +311,21 @@ func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Ms
 	d.enqueue(msg)
 }
 
-// logWire is logMessage for a response that already exists as wire bytes:
-// the tap keeps an owned copy of them instead of packing the message a
-// second time. The body is borrowed pooled storage, valid only for this
-// call, and the queue is asynchronous — the copy is not an optimization
+// prepareWireTap is logMessage's assembly for a response that already exists
+// as wire bytes: the tap keeps an owned copy of them instead of packing the
+// message a second time. The body is borrowed pooled storage, valid only for
+// this call, and the queue is asynchronous — the copy is not an optimization
 // choice but the ownership rule.
-func (d *Dnstap) logWire(w middleware.ResponseWriter, query *dns.Msg, body []byte, timestamp time.Time) {
+//
+// It prepares without enqueueing, because whether this response was actually
+// served as bytes is the downstream's answer, and the caller only has it
+// after the write.
+func (d *Dnstap) prepareWireTap(
+	w middleware.ResponseWriter,
+	query *dns.Msg,
+	body []byte,
+	timestamp time.Time,
+) *DnstapMessage {
 	msg := d.newTapMessage(w, timestamp, false)
 
 	if query != nil {
@@ -323,8 +333,7 @@ func (d *Dnstap) logWire(w middleware.ResponseWriter, query *dns.Msg, body []byt
 		msg.QueryMessage = data
 	}
 	msg.ResponseMsg = append([]byte(nil), body...)
-
-	d.enqueue(msg)
+	return msg
 }
 
 func (d *Dnstap) newTapMessage(w middleware.ResponseWriter, timestamp time.Time, isQuery bool) *DnstapMessage {
@@ -400,15 +409,22 @@ func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 	return next.WireReady()
 }
 
-// WriteWire taps the response and forwards the bytes. The tap is enqueued
-// before the downstream write, exactly where WriteMsg logs — an observer
-// must not learn a different order from a different serving path — and it
-// keeps an owned copy, because the queue outlives the borrowed body.
+// WriteWire taps the response and forwards the bytes. The tap is prepared
+// before the downstream write — the body is borrowed and valid only for
+// this call — but committed after it, and only if the chain did not decline:
+// on ErrWireFallback the cache retakes the Msg path and WriteMsg taps that
+// serve, so enqueueing here would log the same response twice. A terminal
+// transport error still commits — the response left, or partially left, the
+// process, which is exactly what a tap records.
 func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
 	next, ok := rw.ResponseWriter.(middleware.WireWriter)
 	if !ok {
 		return middleware.ErrWireFallback
 	}
-	rw.dnstap.logWire(rw.ResponseWriter, rw.query, body, time.Now())
-	return next.WriteWire(body, info)
+	tap := rw.dnstap.prepareWireTap(rw.ResponseWriter, rw.query, body, time.Now())
+	err := next.WriteWire(body, info)
+	if !errors.Is(err, middleware.ErrWireFallback) {
+		rw.dnstap.enqueue(tap)
+	}
+	return err
 }

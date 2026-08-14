@@ -18,7 +18,7 @@ type wireSink struct {
 	*mock.Writer
 	capability middleware.WireCapability
 	bodies     [][]byte
-	writeSeen  func()
+	wireErr    error
 }
 
 func (s *wireSink) WireReady() (middleware.WireCapability, bool) {
@@ -26,8 +26,8 @@ func (s *wireSink) WireReady() (middleware.WireCapability, bool) {
 }
 
 func (s *wireSink) WriteWire(body []byte, _ middleware.WireInfo) error {
-	if s.writeSeen != nil {
-		s.writeSeen()
+	if s.wireErr != nil {
+		return s.wireErr
 	}
 	s.bodies = append(s.bodies, append([]byte(nil), body...))
 	return nil
@@ -105,22 +105,53 @@ func TestDnstapPassesTheBytePathThrough(t *testing.T) {
 	}
 }
 
-// TestDnstapTapsBeforeTheTransportWrite pins the order: an observer must not
-// learn a different sequence from a different serving path, and WriteMsg
-// taps before it forwards.
-func TestDnstapTapsBeforeTheTransportWrite(t *testing.T) {
-	d := tapForTest()
-	sink := &wireSink{Writer: mock.NewWriter("udp", "203.0.113.9:5353")}
-	sink.writeSeen = func() {
-		if len(d.messageQueue) == 0 {
-			t.Error("the transport write ran before the tap was enqueued")
-		}
-	}
-	rw := tapWrapped(sink, d)
+// TestDnstapTapsOncePerServe pins the fallback contract review demonstrated
+// the violation of: WriteWire's side effect commits only when the chain
+// actually served the bytes. On ErrWireFallback the cache retakes the Msg
+// path and WriteMsg taps that serve — a tap enqueued before the downstream
+// answered would log the same response twice. A terminal transport error is
+// the opposite case: bytes left the process, and the tap records exactly
+// that.
+func TestDnstapTapsOncePerServe(t *testing.T) {
+	t.Run("fallback then retry taps once", func(t *testing.T) {
+		d := tapForTest()
+		sink := &wireSink{Writer: mock.NewWriter("udp", "203.0.113.9:5353")}
+		sink.wireErr = middleware.ErrWireFallback
+		rw := tapWrapped(sink, d)
 
-	if err := rw.WriteWire([]byte{0x12, 0x34}, middleware.WireInfo{}); err != nil {
-		t.Fatal(err)
-	}
+		if err := rw.WriteWire([]byte{0x12, 0x34}, middleware.WireInfo{}); !errors.Is(err, middleware.ErrWireFallback) {
+			t.Fatalf("WriteWire = %v, want the fallback through", err)
+		}
+		if len(d.messageQueue) != 0 {
+			t.Fatal("a declined write enqueued a tap; the Msg retry will tap " +
+				"it again")
+		}
+
+		// The cache's retry, exactly as it happens in production.
+		resp := new(dns.Msg)
+		resp.SetQuestion("example.com.", dns.TypeA)
+		if err := rw.WriteMsg(resp); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(d.messageQueue); got != 1 {
+			t.Fatalf("the served response was tapped %d times, want 1", got)
+		}
+	})
+
+	t.Run("terminal transport error still taps", func(t *testing.T) {
+		d := tapForTest()
+		sink := &wireSink{Writer: mock.NewWriter("udp", "203.0.113.9:5353")}
+		sink.wireErr = errors.New("transport failed")
+		rw := tapWrapped(sink, d)
+
+		if err := rw.WriteWire([]byte{0x12, 0x34}, middleware.WireInfo{}); !errors.Is(err, sink.wireErr) {
+			t.Fatalf("WriteWire = %v, want the transport's error", err)
+		}
+		if got := len(d.messageQueue); got != 1 {
+			t.Fatalf("an errored serve was tapped %d times, want 1 — the "+
+				"bytes left the process", got)
+		}
+	})
 }
 
 // TestDnstapWireFallsBackOverAPlainWriter pins the chain rule.

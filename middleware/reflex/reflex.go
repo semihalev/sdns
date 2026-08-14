@@ -15,6 +15,7 @@ package reflex
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -270,11 +271,21 @@ func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 // len(body) is the response's true wire length at this layer — WriteMsg has
 // to settle for res.Len(), an estimate that builds a compression dictionary
 // to answer.
+//
+// The observation is recorded after the downstream write, and only if the
+// chain did not decline: on ErrWireFallback the cache retakes the Msg path
+// and WriteMsg records that serve, so counting here too would credit the
+// source with the same response twice and inflate its amplification score.
+// A terminal transport error still records — bytes left the process.
 func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
 	next, ok := rw.ResponseWriter.(middleware.WireWriter)
 	if !ok {
 		return middleware.ErrWireFallback
 	}
-	rw.tracker.RecordResponse(rw.ip, rw.request.Len(), len(body))
-	return next.WriteWire(body, info)
+	size := len(body)
+	err := next.WriteWire(body, info)
+	if !errors.Is(err, middleware.ErrWireFallback) {
+		rw.tracker.RecordResponse(rw.ip, rw.request.Len(), size)
+	}
+	return err
 }
