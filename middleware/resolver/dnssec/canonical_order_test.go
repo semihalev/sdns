@@ -137,6 +137,40 @@ func libraryCanonicalRRset(tb testing.TB, rrset []dns.RR, sig *dns.RRSIG) []byte
 	return buf
 }
 
+// TestCanonicalRRsetLabelsZeroStaysRejected pins the acceptance boundary
+// review caught this construction drifting across. For Labels=0 the RFC's
+// wildcard arithmetic yields "*.", a name that would verify a root-wildcard
+// signature — but the library's construction yields "*.." and the packer
+// rejects it, so such signatures have always failed verification, there and
+// here. Accepting them may well be the RFC's intent; it is also a wider
+// acceptance than the library's, and this package promises never to be
+// wider. Root-wildcard support, if ever wanted, is a deliberate change with
+// its own cryptographic and denial-proof tests — not a side effect of an
+// allocation rewrite.
+func TestCanonicalRRsetLabelsZeroStaysRejected(t *testing.T) {
+	rrset := []dns.RR{mustSignatureRR(t, "foo. 300 IN A 192.0.2.1")}
+
+	for _, labels := range []uint8{0, 1} {
+		sig := &dns.RRSIG{
+			Hdr: dns.RR_Header{
+				Name: "foo.", Rrtype: dns.TypeRRSIG,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			TypeCovered: dns.TypeA, Algorithm: dns.RSASHA256, Labels: labels,
+			OrigTtl: 300, Expiration: 2000000000, Inception: 1000000000,
+			KeyTag: 1234, SignerName: ".",
+		}
+		_, err := canonicalRRset(rrset, sig)
+		if labels == 0 && err == nil {
+			t.Fatal("a Labels=0 reconstruction was accepted; the library " +
+				"rejects the *.. spelling it produces")
+		}
+		if labels == 1 && err != nil {
+			t.Fatalf("an exact-owner signature was rejected: %v", err)
+		}
+	}
+}
+
 func sortByRdata(tb testing.TB, wires [][]byte) {
 	tb.Helper()
 	rdata := func(wire []byte) []byte {
