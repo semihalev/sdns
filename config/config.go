@@ -125,8 +125,9 @@ type Config struct {
 	// fan-out semaphore. In-flight jobs are derived: queue depth + one per
 	// worker + one per reader — never configured independently, so the
 	// three can't disagree.
-	IngressWorkers int // Fixed handler workers per listener (default: GOMAXPROCS, clamped 2..64)
-	IngressQueue   int // Ready-queue depth before UDP load-shedding (default 512)
+	IngressWorkers  int // Fixed handler workers per listener (default: GOMAXPROCS, clamped 2..64)
+	IngressQueue    int // Ready-queue depth before UDP load-shedding (default 512)
+	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default 512)
 
 	// Reflex: DNS amplification/reflection attack detection
 	ReflexEnabled      bool    // Enable amplification attack detection

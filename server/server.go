@@ -51,10 +51,10 @@ func New(cfg *config.Config) *Server {
 	direct := directHandler{srv: s}
 	s.listeners = []Listener{
 		newUDPListener(cfg.Bind, direct, timeout, cfg.IngressWorkers, cfg.IngressQueue),
-		newTCPListener(cfg.Bind, direct, timeout),
+		newTCPListener(cfg.Bind, direct, timeout, cfg.IngressTCPConns),
 	}
 	if cfg.BindTLS != "" {
-		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, direct, s, timeout))
+		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, direct, s, timeout, cfg.IngressTCPConns))
 	}
 	if cfg.BindDOH != "" {
 		s.listeners = append(s.listeners,
