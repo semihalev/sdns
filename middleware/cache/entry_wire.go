@@ -88,13 +88,6 @@ func (e *CacheEntry) wireEligibleFor(req *dns.Msg) bool {
 		req != nil && len(req.Question) == 1
 }
 
-// wireEligibleForView is wireEligibleFor for the strict path: the view's
-// eligibility already guaranteed exactly one question.
-func (e *CacheEntry) wireEligibleForView() bool {
-	const ready = wireEligible | wireChaseSafe
-	return e != nil && e.wireServe&ready == ready
-}
-
 // wireFitsChain is the second half: the facts only the writer chain knows —
 // the client's real DO bit and the transport's size ceiling. Both halves
 // are allocation-free and complete, so no body is ever built for a request

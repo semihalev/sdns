@@ -193,6 +193,47 @@ func ParseRR(body []byte, off int) (RR, bool) {
 	}, true
 }
 
+// AppendName appends the uncompressed wire form of the (possibly
+// compressed) name starting at off in src. ok is false on malformed
+// input, a name exceeding 255 octets, or insufficient dst capacity — the
+// append never grows dst's backing array, so a caller composing into a
+// fixed lease can treat false as a clean refusal.
+func AppendName(dst, src []byte, off int) ([]byte, bool) {
+	const maxJumps = 32
+	written, jumps := 0, 0
+	for {
+		if off < 0 || off >= len(src) {
+			return dst, false
+		}
+		c := int(src[off])
+		switch {
+		case c == 0:
+			if written+1 > 255 || len(dst)+1 > cap(dst) {
+				return dst, false
+			}
+			return append(dst, 0), true
+		case c&0xC0 == 0xC0:
+			if off+1 >= len(src) {
+				return dst, false
+			}
+			jumps++
+			if jumps > maxJumps {
+				return dst, false
+			}
+			off = int(src[off]&0x3F)<<8 | int(src[off+1])
+		case c&0xC0 != 0:
+			return dst, false
+		default:
+			if off+1+c > len(src) || written+1+c > 255 || len(dst)+1+c > cap(dst) {
+				return dst, false
+			}
+			dst = append(dst, src[off:off+1+c]...)
+			written += 1 + c
+			off += 1 + c
+		}
+	}
+}
+
 // SetTTL stamps a TTL value at a previously recorded offset.
 func SetTTL(body []byte, ttlOff int, ttl uint32) {
 	if ttlOff >= 0 && ttlOff+4 <= len(body) {

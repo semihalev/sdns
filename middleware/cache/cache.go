@@ -1085,7 +1085,7 @@ func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entr
 	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
 		return false
 	}
-	if !entry.wireEligibleForView() {
+	if entry == nil || entry.wireServe&wireEligible == 0 {
 		wireSkipEntry.Inc()
 		return false
 	}
@@ -1099,13 +1099,20 @@ func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entr
 		wireSkipWriter.Inc()
 		return false
 	}
-	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
-		mismatch.Inc()
-		return false
-	}
 	leaser, ok := ww.(middleware.WireBodyLeaser)
 	if !ok {
 		wireSkipWriter.Inc()
+		return false
+	}
+	if entry.wireServe&wireChaseSafe == 0 {
+		// An alias without its terminal: the one exact-entry shape whose
+		// reply is composed rather than copied. Fully cache-contained
+		// chains serve here; anything else declines to the Msg path,
+		// which runs the complete chase machinery.
+		return c.serveChaseHit(ctx, ch, entry, capability, leaser)
+	}
+	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
+		mismatch.Inc()
 		return false
 	}
 	stored, _ := entry.wireBodyFor(capability.DO)

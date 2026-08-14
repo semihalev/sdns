@@ -58,6 +58,8 @@ var (
 	wireSkipDNSSEC   = wireFastPath.Register("skip_dnssec")
 	wireSkipSize     = wireFastPath.Register("skip_size")
 	wireSkipBuild    = wireFastPath.Register("skip_build")
+	wireSkipChase    = wireFastPath.Register("skip_chase")
+	wireChaseServed  = wireFastPath.Register("chase_served")
 
 	nxDomainCutHits = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "nxdomain_cut_hits_total",

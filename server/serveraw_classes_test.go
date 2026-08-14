@@ -37,11 +37,38 @@ func classSigned(name string, qtype uint16) []dns.RR {
 	return []dns.RR{a, sig}
 }
 
+func cnameRR(owner, target string) dns.RR {
+	return &dns.CNAME{
+		Hdr:    dns.RR_Header{Name: owner, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+		Target: target,
+	}
+}
+
+func aRR(owner string, b byte) dns.RR {
+	return &dns.A{
+		Hdr: dns.RR_Header{Name: owner, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.IPv4(192, 0, 2, b),
+	}
+}
+
+// chaseStub answers per question name so the resolver stand-in can store
+// alias-only entries and their targets as separate cache entries.
+func chaseStub(answers map[string][]dns.RR) func(req *dns.Msg) *dns.Msg {
+	return func(req *dns.Msg) *dns.Msg {
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.RecursionAvailable = true
+		resp.Answer = answers[req.Question[0].Name]
+		return resp
+	}
+}
+
 func TestServeRawHitClasses(t *testing.T) {
 	classes := []struct {
-		name  string
-		query func() *dns.Msg
-		reply func(req *dns.Msg) *dns.Msg
+		name        string
+		query       func() *dns.Msg
+		reply       func(req *dns.Msg) *dns.Msg
+		msgFallback bool // class not yet wire-served; only parity is gated
 	}{
 		{
 			// Real additional records survive admission and the TTL walk.
@@ -148,6 +175,70 @@ func TestServeRawHitClasses(t *testing.T) {
 				return resp
 			},
 		},
+		{
+			// A cache-contained alias: the composer walks the target entry
+			// and answers without a decoded message.
+			name: "cname-chase",
+			query: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("chase.zero.test.", dns.TypeA)
+				m.SetEdns0(1232, false)
+				return m
+			},
+			reply: chaseStub(map[string][]dns.RR{
+				"chase.zero.test.":  {cnameRR("chase.zero.test.", "target.zero.test.")},
+				"target.zero.test.": {aRR("target.zero.test.", 61)},
+			}),
+		},
+		{
+			name: "cname-chase-2hop",
+			query: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("hop.zero.test.", dns.TypeA)
+				m.SetEdns0(1232, false)
+				return m
+			},
+			reply: chaseStub(map[string][]dns.RR{
+				"hop.zero.test.": {cnameRR("hop.zero.test.", "mid.zero.test.")},
+				"mid.zero.test.": {cnameRR("mid.zero.test.", "end.zero.test.")},
+				"end.zero.test.": {aRR("end.zero.test.", 62)},
+			}),
+		},
+		{
+			// A signed chain for a DO client: RRSIGs are copied verbatim
+			// (their signer names are never compressed).
+			name: "cname-chase-signed",
+			query: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("schase.zero.test.", dns.TypeA)
+				m.SetEdns0(1232, true)
+				return m
+			},
+			reply: chaseStub(map[string][]dns.RR{
+				"schase.zero.test.":  {cnameRR("schase.zero.test.", "starget.zero.test.")},
+				"starget.zero.test.": classSigned("starget.zero.test.", dns.TypeA),
+			}),
+		},
+		{
+			// An MX terminal carries a compressible rdata name: the
+			// composer declines and the Msg path answers, unchanged.
+			name: "cname-chase-mx-fallback",
+			query: func() *dns.Msg {
+				m := new(dns.Msg)
+				m.SetQuestion("mxchase.zero.test.", dns.TypeMX)
+				m.SetEdns0(1232, false)
+				return m
+			},
+			reply: chaseStub(map[string][]dns.RR{
+				"mxchase.zero.test.": {cnameRR("mxchase.zero.test.", "mxend.zero.test.")},
+				"mxend.zero.test.": {&dns.MX{
+					Hdr:        dns.RR_Header{Name: "mxend.zero.test.", Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 300},
+					Preference: 5,
+					Mx:         "mail.zero.test.",
+				}},
+			}),
+			msgFallback: true,
+		},
 	}
 
 	for _, tc := range classes {
@@ -186,6 +277,9 @@ func TestServeRawHitClasses(t *testing.T) {
 					tc.name, diff, wireResp, msgResp)
 			}
 
+			if tc.msgFallback {
+				return
+			}
 			// The class gate: the warm wire hit allocates nothing.
 			if allocs := testing.AllocsPerRun(100, func() {
 				if !s.ServeRaw(job, raw, time.Now()) {
