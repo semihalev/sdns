@@ -10,7 +10,6 @@ import (
 	"hash"
 	"math/big"
 	"sort"
-	"strings"
 
 	"github.com/miekg/dns"
 )
@@ -254,9 +253,13 @@ func canonicalRRset(rrset []dns.RR, s *dns.RRSIG) ([]byte, error) {
 		r1 := dns.Copy(r)
 		h := r1.Header()
 		h.Ttl = s.OrigTtl
-		labels := dns.SplitDomainName(h.Name)
-		if len(labels) > int(s.Labels) {
-			h.Name = "*." + strings.Join(labels[len(labels)-int(s.Labels):], ".") + "."
+		// RFC 4035 §5.3.2 wildcard reconstruction: the owner shrinks to its
+		// last Labels labels behind a *. The suffix is sliced from the name
+		// rather than split and joined back; CanonicalName roots the result
+		// either way, exactly as it rooted the join.
+		if dns.CountLabel(h.Name) > int(s.Labels) {
+			prev, _ := dns.PrevLabel(h.Name, int(s.Labels))
+			h.Name = "*." + h.Name[prev:]
 		}
 		h.Name = dns.CanonicalName(h.Name)
 		canonicalizeRdataNames(r1)

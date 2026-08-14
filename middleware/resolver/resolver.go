@@ -792,7 +792,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 			i, _ := dns.PrevLabel(qname, level)
 
-			if dns.CompareDomainName(name, qname[i:]) < level {
+			if dnsname.CompareSuffix(name, qname[i:]) < level {
 				// we cannot trust that glue, it doesn't cover in the origin name.
 				continue
 			}
