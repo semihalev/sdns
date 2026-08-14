@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
+	"github.com/semihalev/zlog/v2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -243,4 +244,31 @@ func Test_filterToZone_NSECNextDomain(t *testing.T) {
 	got := dnsutil.FilterRRsToZone([]dns.RR{crossZone, inZone}, "example.com.")
 	assert.Len(t, got, 1, "NSEC with cross-zone NextDomain must be filtered out")
 	assert.Equal(t, "!.example.com.", got[0].Header().Name)
+}
+
+func Test_debugLogEnabled(t *testing.T) {
+	old := zlog.Default().GetLevel()
+	defer zlog.SetLevel(old)
+
+	zlog.SetLevel(zlog.LevelInfo)
+	assert.False(t, debugLogEnabled())
+	zlog.SetLevel(zlog.LevelDebug)
+	assert.True(t, debugLogEnabled())
+}
+
+// Test_debugLogEnabled_GuardAllocsNothing pins what the guard is for: with
+// debug off, a guarded call site must not format the question or box the
+// arguments. Unguarded, this pattern allocated on every query in production.
+func Test_debugLogEnabled_GuardAllocsNothing(t *testing.T) {
+	old := zlog.Default().GetLevel()
+	defer zlog.SetLevel(old)
+	zlog.SetLevel(zlog.LevelInfo)
+
+	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	allocs := testing.AllocsPerRun(100, func() {
+		if debugLogEnabled() {
+			zlog.Debug("Query inserted", "query", dnsutil.FormatQuestion(q))
+		}
+	})
+	assert.Zero(t, allocs, "guarded debug call site must be free when debug is off")
 }

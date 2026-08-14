@@ -82,7 +82,7 @@ func (pq *PrefetchQueue) Add(req PrefetchRequest) bool {
 		return true
 	default:
 		// Queue is full, drop the request
-		zlog.Debug("Prefetch queue full, dropping request", "query", formatQuestion(req.Request.Question[0]))
+		zlog.Debug("Prefetch queue full, dropping request", "query", dnsutil.FormatQuestion(req.Request.Question[0]))
 		return false
 	}
 }
@@ -130,7 +130,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 		ctx = middleware.MarkClientECS(ctx)
 	}
 
-	zlog.Debug("Processing prefetch", "query", formatQuestion(req.Request.Question[0]))
+	zlog.Debug("Processing prefetch", "query", dnsutil.FormatQuestion(req.Request.Question[0]))
 
 	// Copy the original client request so upstream mutations
 	// (CD bit, EDNS options) don't bleed into the shared Request
@@ -166,7 +166,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// apply; metrics/dnstap/accesslog do not.
 	resp, err := req.Cache.prefetchExchange(ctx, prefetchReq)
 	if err != nil {
-		zlog.Debug("Prefetch failed", "query", formatQuestion(req.Request.Question[0]), "error", err.Error())
+		zlog.Debug("Prefetch failed", "query", dnsutil.FormatQuestion(req.Request.Question[0]), "error", err.Error())
 		return
 	}
 	if resp == nil {
@@ -187,7 +187,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// prefetch may be replaced.
 	cutUntil, cutKey := meta.Cut()
 	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cutUntil, cutKey) {
-		zlog.Debug("Prefetch dropped, entry superseded", "query", formatQuestion(req.Request.Question[0]))
+		zlog.Debug("Prefetch dropped, entry superseded", "query", dnsutil.FormatQuestion(req.Request.Question[0]))
 		return
 	}
 	// The cache-less prefetch pipeline bypasses ResponseWriter.WriteMsg, so a
@@ -230,9 +230,9 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 				minTTL = rr.Header().Ttl
 			}
 		}
-		zlog.Debug("Prefetch stored in cache", "query", formatQuestion(req.Request.Question[0]), "answers", len(resp.Answer), "minTTL", minTTL)
+		zlog.Debug("Prefetch stored in cache", "query", dnsutil.FormatQuestion(req.Request.Question[0]), "answers", len(resp.Answer), "minTTL", minTTL)
 	} else {
-		zlog.Debug("Prefetch completed", "query", formatQuestion(req.Request.Question[0]), "rcode", dns.RcodeToString[resp.Rcode])
+		zlog.Debug("Prefetch completed", "query", dnsutil.FormatQuestion(req.Request.Question[0]), "rcode", dns.RcodeToString[resp.Rcode])
 	}
 }
 
@@ -243,9 +243,4 @@ func releasePrefetchClaim(entry *CacheEntry) {
 	if entry != nil {
 		entry.prefetch.Store(false)
 	}
-}
-
-// formatQuestion formats a DNS question for logging.
-func formatQuestion(q dns.Question) string {
-	return q.Name + " " + dns.TypeToString[q.Qtype] + " " + dns.ClassToString[q.Qclass]
 }

@@ -284,10 +284,10 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			if errors.Is(err, dnsclient.ErrQuestion) {
 				forwarderResponseMismatch.Inc()
 				zlog.Info("forwarder dropped response with mismatched question",
-					"query", formatQuestion(req.Question[0]))
+					"query", dnsutil.FormatQuestion(req.Question[0]))
 			} else {
 				forwarderFailures.Inc()
-				zlog.Info("forwarder query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
+				zlog.Info("forwarder query failed", "query", dnsutil.FormatQuestion(req.Question[0]), "error", err.Error())
 			}
 			continue
 		}
@@ -348,10 +348,6 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 	ch.CancelWithRcode(dns.RcodeServerFailure, true)
-}
-
-func formatQuestion(q dns.Question) string {
-	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
 }
 
 const name = "forwarder"

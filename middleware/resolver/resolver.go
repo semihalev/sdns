@@ -424,7 +424,9 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	// Current default minimize level 5, if we down to level 3, performance gain 20%
 	minReq, minimized := r.minimize(rs.req, rs.level, rs.nomin)
 
-	zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rs.servers.Zone, "query", formatQuestion(minReq.Question[0]), "cd", rs.req.CheckingDisabled, "qname-minimize", minimized)
+	if debugLogEnabled() {
+		zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rs.servers.Zone, "query", dnsutil.FormatQuestion(minReq.Question[0]), "cd", rs.req.CheckingDisabled, "qname-minimize", minimized)
+	}
 
 	resp, err := r.groupLookup(ctx, rs, minReq, rs.servers)
 	if err != nil {
@@ -1001,7 +1003,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 				// the unsigned data only if an insecure delegation between
 				// zone and qname is cryptographically proven.
 				if !r.provenInsecureDelegation(ctx, zone, q.Name, parentDS) {
-					zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", dnssec.ErrNoSignatures.Error())
+					zlog.Warn("DNSSEC verify failed (answer)", "query", dnsutil.FormatQuestion(q), "error", dnssec.ErrNoSignatures.Error())
 					return nil, dnssec.ErrNoSignatures
 				}
 			}
@@ -1063,7 +1065,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 						r.dnssecWork(ctx),
 					)
 					if werr != nil {
-						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", formatQuestion(q), "error", werr.Error())
+						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", dnsutil.FormatQuestion(q), "error", werr.Error())
 						return nil, werr
 					}
 					ok = wildcardSecure
@@ -1076,7 +1078,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 				if lastErr == nil {
 					lastErr = dnssec.ErrNoSignatures
 				}
-				zlog.Warn("DNSSEC verify failed (answer)", "query", formatQuestion(q), "error", lastErr.Error())
+				zlog.Warn("DNSSEC verify failed (answer)", "query", dnsutil.FormatQuestion(q), "error", lastErr.Error())
 				return nil, lastErr
 			}
 		}
@@ -1163,7 +1165,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				// shared-authority, no-referral case).
 				if !r.provenInsecureDelegation(ctx, zone, q.Name, parentDS) {
 					err := dnssec.ErrNoSignatures
-					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 					return nil, err
 				}
 			}
@@ -1214,7 +1216,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				if lastErr == nil {
 					lastErr = dnssec.ErrNoSignatures
 				}
-				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", lastErr.Error())
+				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", lastErr.Error())
 				return nil, lastErr
 			}
 
@@ -1256,7 +1258,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 								r.dnssecWork(ctx),
 							)
 							if denialErr != nil {
-								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", denialErr.Error())
+								zlog.Warn("NSEC3 verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", denialErr.Error())
 								return nil, denialErr
 							}
 						} else {
@@ -1267,7 +1269,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 								r.dnssecWork(ctx),
 							)
 							if denialErr != nil {
-								zlog.Warn("NSEC3 verify failed (NODATA)", "query", formatQuestion(q), "error", denialErr.Error())
+								zlog.Warn("NSEC3 verify failed (NODATA)", "query", dnsutil.FormatQuestion(q), "error", denialErr.Error())
 								return nil, denialErr
 							}
 						}
@@ -1287,19 +1289,19 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 								// so any evaluator miss only withholds shared
 								// provenance.
 								zlog.Debug("NSEC3 proof not eligible for aggressive reuse",
-									"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
+									"query", dnsutil.FormatQuestion(q), "error", err, "classified_rcode", result.Rcode)
 							}
 						}
 					case len(nsecSet) > 0:
 						proofKind = middleware.ValidatedNegativeProofNSEC
 						if resp.Rcode == dns.RcodeNameError {
 							if err := dnssec.VerifyNameErrorNSEC(resp, nsecSet); err != nil {
-								zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", formatQuestion(q), "error", err.Error())
+								zlog.Warn("NSEC verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 								return nil, err
 							}
 						} else {
 							if err := dnssec.VerifyNODATANSEC(resp, nsecSet); err != nil {
-								zlog.Warn("NSEC verify failed (NODATA)", "query", formatQuestion(q), "error", err.Error())
+								zlog.Warn("NSEC verify failed (NODATA)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 								return nil, err
 							}
 						}
@@ -1309,10 +1311,10 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 							aggressiveEligible = true
 						} else {
 							zlog.Debug("NSEC proof not eligible for aggressive reuse",
-								"query", formatQuestion(q), "error", err, "classified_rcode", result.Rcode)
+								"query", dnsutil.FormatQuestion(q), "error", err, "classified_rcode", result.Rcode)
 						}
 					default:
-						zlog.Warn("Negative answer missing NSEC/NSEC3 denial proof", "query", formatQuestion(q), "rcode", dns.RcodeToString[resp.Rcode])
+						zlog.Warn("Negative answer missing NSEC/NSEC3 denial proof", "query", dnsutil.FormatQuestion(q), "rcode", dns.RcodeToString[resp.Rcode])
 						return nil, dnssec.ErrNSECMissingCoverage
 					}
 				}
@@ -1382,7 +1384,7 @@ mainloop:
 		if activeQueries > maxQueries*9/10 { // Over 90% capacity
 			zlog.Warn("Approaching max concurrent DNS queries limit",
 				"active", activeQueries, "max", maxQueries,
-				"query", formatQuestion(req.Question[0]))
+				"query", dnsutil.FormatQuestion(req.Question[0]))
 		}
 
 		// Make a copy for this server before launching goroutine
@@ -1794,7 +1796,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		// the allocation noise on every upstream query.
 		co.Conn, err = r.dialUDP(server)
 		if err != nil {
-			zlog.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+			zlog.Debug("Dial failed to upstream server", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 				"net", proto, "error", err.Error(), "retried", retried)
 			ReleaseConn(co)
 			return nil, err
@@ -1805,7 +1807,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		co.Conn, err = d.DialContext(ctx, proto, dialAddr)
 		releaseDialer(d)
 		if err != nil {
-			zlog.Debug("Dial failed to upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+			zlog.Debug("Dial failed to upstream server", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 				"net", proto, "error", err.Error(), "retried", retried)
 			ReleaseConn(co)
 			return nil, err
@@ -1830,7 +1832,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 		err = ctxErr
 	}
 	if err != nil {
-		zlog.Debug("Exchange failed for upstream server", "query", formatQuestion(q), "upstream", server.Addr,
+		zlog.Debug("Exchange failed for upstream server", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 			"net", proto, "rtt", rtt.Round(time.Millisecond).String(), "error", err.Error(), "retried", retried)
 
 		// Don't return connection to pool on error
@@ -1868,7 +1870,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 
 	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > dnsutil.DefaultMsgSize {
 		// If response is too large, switch to TCP
-		zlog.Debug("Response too large, switching to TCP", "query", formatQuestion(q), "upstream", server.Addr,
+		zlog.Debug("Response too large, switching to TCP", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 			"size", resp.Len(), "maxSize", dnsutil.DefaultMsgSize, "retried", retried)
 		return r.exchange(ctx, rs, "tcp", req, server, retried)
 	}
@@ -2034,7 +2036,9 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 			q.Name = origin
 			return r.searchCache(q, cd, origin)
 		}
-		zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
+		if debugLogEnabled() {
+			zlog.Debug("Nameserver cache hit", "key", key, "query", dnsutil.FormatQuestion(q), "cd", cd)
+		}
 		return delegationMatch{
 			servers:  ns.Servers,
 			parentDS: ns.DSSet,
@@ -2630,7 +2634,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
 		if loop {
 			if _, ok := r.getIPv4Cache(name); !ok {
-				zlog.Debug("Looping during ns ipv4 lookup", "query", formatQuestion(q), "ns", name)
+				zlog.Debug("Looping during ns ipv4 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
 				continue
 			}
 		}
@@ -2669,10 +2673,10 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 				// hostname must not prevent trying the delegation's other
 				// hostnames.
 				lastAttemptLimit = err
-				zlog.Debug("Lookup NS ipv4 address reached attempt limit", "query", formatQuestion(q), "ns", name)
+				zlog.Debug("Lookup NS ipv4 address reached attempt limit", "query", dnsutil.FormatQuestion(q), "ns", name)
 				continue
 			}
-			zlog.Debug("Lookup NS ipv4 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+			zlog.Debug("Lookup NS ipv4 address failed", "query", dnsutil.FormatQuestion(q), "ns", name, "error", err.Error())
 			continue
 		}
 
@@ -2745,7 +2749,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 		ctx, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
 		if loop {
 			if _, ok := r.getIPv6Cache(name); !ok {
-				zlog.Debug("Looping during ns ipv6 lookup", "query", formatQuestion(q), "ns", name)
+				zlog.Debug("Looping during ns ipv6 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
 				continue
 			}
 		}
@@ -2762,7 +2766,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 			// limited) must not prevent subsequent NSs in the
 			// delegation from contributing IPv6 addresses. The IPv4
 			// path in lookupV4Nss uses the same continue semantic.
-			zlog.Debug("Lookup NS ipv6 address failed", "query", formatQuestion(q), "ns", name, "error", err.Error())
+			zlog.Debug("Lookup NS ipv6 address failed", "query", dnsutil.FormatQuestion(q), "ns", name, "error", err.Error())
 			continue
 		}
 
@@ -2953,7 +2957,9 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return false, nil
 	}
 
-	zlog.Debug("DNSSEC verified", "signer", signer, "signed", signed, "query", formatQuestion(resp.Question[0]))
+	if debugLogEnabled() {
+		zlog.Debug("DNSSEC verified", "signer", signer, "signed", signed, "query", dnsutil.FormatQuestion(resp.Question[0]))
+	}
 
 	return true, nil
 }
@@ -3132,7 +3138,7 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolve
 			return nil, err
 		}
 
-		zlog.Debug("Received network error from all servers", "query", formatQuestion(minReq.Question[0]))
+		zlog.Debug("Received network error from all servers", "query", dnsutil.FormatQuestion(minReq.Question[0]))
 
 		if atomic.AddUint32(&rs.servers.ErrorCount, 1) == 5 {
 			if ok := r.checkHosts(ctx, rs.servers); ok {
@@ -3455,7 +3461,9 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		return r.resolveWithCachedNameservers(ctx, rs, cached, key, q, cd)
 	}
 
-	zlog.Debug("Nameserver cache not found", "key", key, "query", formatQuestion(q), "cd", cd)
+	if debugLogEnabled() {
+		zlog.Debug("Nameserver cache not found", "key", key, "query", dnsutil.FormatQuestion(q), "cd", cd)
+	}
 
 	// Check glue records and perform lookups
 	authservers, foundv4, foundv6 := r.checkGlueRR(resp, nsInfo.hosts, rs.level)
@@ -3483,7 +3491,9 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		// Store the absolute (inherited) deadline verbatim. A past deadline
 		// is not cached (SetUntil skips it).
 		r.delegations.SetUntil(key, rs.parentDS, authservers, childDeadline)
-		zlog.Debug("Nameserver cache insert", "key", key, "query", formatQuestion(q), "cd", cd)
+		if debugLogEnabled() {
+			zlog.Debug("Nameserver cache insert", "key", key, "query", dnsutil.FormatQuestion(q), "cd", cd)
+		}
 	}
 
 	// Start IPv6 lookups in background, bounded by a fixed
@@ -3630,7 +3640,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		}
 		newDSRR, _, err := r.authenticatedDelegationDS(ctx, parentSigner, q.Name, effectiveParentDS)
 		if err != nil {
-			zlog.Warn("DNSSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+			zlog.Warn("DNSSEC verify failed (delegation)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 			return nil, err
 		}
 		return newDSRR, nil
@@ -3727,7 +3737,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			nsec3Set,
 			r.dnssecWork(ctx),
 		); err != nil {
-			zlog.Warn("NSEC3 verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+			zlog.Warn("NSEC3 verify failed (delegation)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 			return nil, err
 		}
 		return []dns.RR{}, nil
@@ -3735,19 +3745,21 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 
 	if nsecSet := dnsutil.FilterRRsToZone(dnsutil.ExtractRRSet(resp.Ns, "", dns.TypeNSEC), chosenSigner); len(nsecSet) > 0 {
 		if err := dnssec.VerifyDelegationNSEC(q.Name, nsecSet); err != nil {
-			zlog.Warn("NSEC verify failed (delegation)", "query", formatQuestion(q), "error", err.Error())
+			zlog.Warn("NSEC verify failed (delegation)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 			return nil, err
 		}
 		return []dns.RR{}, nil
 	}
 
-	zlog.Warn("Delegation missing DS and NSEC/NSEC3 proof", "query", formatQuestion(q))
+	zlog.Warn("Delegation missing DS and NSEC/NSEC3 proof", "query", dnsutil.FormatQuestion(q))
 	return nil, dnssec.ErrNSECMissingCoverage
 }
 
 // resolveWithCachedNameservers handles resolution with cached nameservers.
 func (r *Resolver) resolveWithCachedNameservers(ctx context.Context, rs *resolveState, cached *authority.Delegation, key uint64, q dns.Question, cd bool) (*dns.Msg, error) {
-	zlog.Debug("Nameserver cache hit", "key", key, "query", formatQuestion(q), "cd", cd)
+	if debugLogEnabled() {
+		zlog.Debug("Nameserver cache hit", "key", key, "query", dnsutil.FormatQuestion(q), "cd", cd)
+	}
 
 	if r.equalServers(cached.Servers, rs.servers) {
 		// Potential loop, decrease depth faster

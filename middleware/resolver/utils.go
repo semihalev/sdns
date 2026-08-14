@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/miekg/dns"
@@ -25,14 +24,14 @@ func init() {
 	}
 }
 
-func formatQuestion(q dns.Question) string {
-	var sb strings.Builder
-	sb.WriteString(strings.ToLower(q.Name))
-	sb.WriteByte(' ')
-	sb.WriteString(dns.ClassToString[q.Qclass])
-	sb.WriteByte(' ')
-	sb.WriteString(dns.TypeToString[q.Qtype])
-	return sb.String()
+// debugLogEnabled reports whether debug logging is on. zlog.Debug drops
+// disabled records, but only after the caller has evaluated its arguments —
+// per-query call sites format the question and box it into ...any on every
+// query regardless, which showed up at ~2% of all allocated objects in
+// production with debug off. Sites on the normal query path check this
+// first; rare paths (dial failures, loop detection) are not worth the noise.
+func debugLogEnabled() bool {
+	return zlog.Default().GetLevel() <= zlog.LevelDebug
 }
 
 func shuffleStr(vals []string) []string {
