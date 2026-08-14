@@ -254,3 +254,27 @@ func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 	}
 	return rw.ResponseWriter.WriteMsg(res)
 }
+
+// WireReady passes the byte path through: this layer only observes sizes, so
+// its presence must not push a cache hit back onto the Msg path — which is
+// what wrapping without these two methods did.
+func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
+	next, ok := rw.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.WireCapability{}, false
+	}
+	return next.WireReady()
+}
+
+// WriteWire records the amplification observation and forwards the bytes.
+// len(body) is the response's true wire length at this layer — WriteMsg has
+// to settle for res.Len(), an estimate that builds a compression dictionary
+// to answer.
+func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+	next, ok := rw.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.ErrWireFallback
+	}
+	rw.tracker.RecordResponse(rw.ip, rw.request.Len(), len(body))
+	return next.WriteWire(body, info)
+}

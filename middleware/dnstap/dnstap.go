@@ -295,6 +295,39 @@ func (d *Dnstap) encodeMessage(msg *DnstapMessage) []byte {
 }
 
 func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Msg, timestamp time.Time, isQuery bool) {
+	msg := d.newTapMessage(w, timestamp, isQuery)
+
+	// Set message data
+	if query != nil {
+		data, _ := query.Pack()
+		msg.QueryMessage = data
+	}
+	if response != nil {
+		data, _ := response.Pack()
+		msg.ResponseMsg = data
+	}
+
+	d.enqueue(msg)
+}
+
+// logWire is logMessage for a response that already exists as wire bytes:
+// the tap keeps an owned copy of them instead of packing the message a
+// second time. The body is borrowed pooled storage, valid only for this
+// call, and the queue is asynchronous — the copy is not an optimization
+// choice but the ownership rule.
+func (d *Dnstap) logWire(w middleware.ResponseWriter, query *dns.Msg, body []byte, timestamp time.Time) {
+	msg := d.newTapMessage(w, timestamp, false)
+
+	if query != nil {
+		data, _ := query.Pack()
+		msg.QueryMessage = data
+	}
+	msg.ResponseMsg = append([]byte(nil), body...)
+
+	d.enqueue(msg)
+}
+
+func (d *Dnstap) newTapMessage(w middleware.ResponseWriter, timestamp time.Time, isQuery bool) *DnstapMessage {
 	msg := &DnstapMessage{
 		Identity: d.identity,
 		Version:  d.version,
@@ -319,18 +352,10 @@ func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Ms
 		msg.QueryPort = uint16(addr.Port) //nolint:gosec // G115 - port is 0-65535
 		msg.Protocol = "TCP"
 	}
+	return msg
+}
 
-	// Set message data
-	if query != nil {
-		data, _ := query.Pack()
-		msg.QueryMessage = data
-	}
-	if response != nil {
-		data, _ := response.Pack()
-		msg.ResponseMsg = data
-	}
-
-	// Send to queue
+func (d *Dnstap) enqueue(msg *DnstapMessage) {
 	select {
 	case d.messageQueue <- msg:
 	default:
@@ -362,4 +387,28 @@ func (w *responseWriter) Size() int {
 func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 	rw.dnstap.logMessage(rw.ResponseWriter, rw.query, res, time.Now(), false)
 	return rw.ResponseWriter.WriteMsg(res)
+}
+
+// WireReady passes the byte path through: this layer only observes
+// responses, so its presence must not push a cache hit back onto the Msg
+// path — which is what wrapping without these two methods did.
+func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
+	next, ok := rw.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.WireCapability{}, false
+	}
+	return next.WireReady()
+}
+
+// WriteWire taps the response and forwards the bytes. The tap is enqueued
+// before the downstream write, exactly where WriteMsg logs — an observer
+// must not learn a different order from a different serving path — and it
+// keeps an owned copy, because the queue outlives the borrowed body.
+func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+	next, ok := rw.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.ErrWireFallback
+	}
+	rw.dnstap.logWire(rw.ResponseWriter, rw.query, body, time.Now())
+	return next.WriteWire(body, info)
 }
