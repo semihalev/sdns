@@ -69,6 +69,49 @@ jobs:
         env:
           ZEROGATE_OPS: "1000000"
 
+  release-targets:
+    # The release ships architectures no test job builds for. A transport
+    # written against 64-bit kernel descriptors compiles cleanly on the
+    # runner and breaks the release, which is exactly what happened once
+    # already — so every published target is compiled here.
+    name: Release targets build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Cross-compile published targets
+        run: |
+          set -euo pipefail
+          fail=0
+          build() {
+            if ! out=$(GOOS="$1" GOARCH="$2" GOARM="${3:-}" go build ./... 2>&1); then
+              echo "::error::build failed for $1/$2${3:+v$3}"
+              echo "$out"
+              fail=1
+            else
+              echo "ok $1/$2${3:+v$3}"
+            fi
+          }
+          build linux amd64
+          build linux arm64
+          build linux arm 5
+          build linux arm 6
+          build linux arm 7
+          build linux mips
+          build linux mipsle
+          build linux mips64
+          build linux mips64le
+          build darwin amd64
+          build darwin arm64
+          build windows amd64
+          build freebsd amd64
+          exit $fail
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

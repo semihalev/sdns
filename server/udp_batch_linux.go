@@ -1,8 +1,9 @@
-//go:build linux
+//go:build linux && (amd64 || arm64)
 
 package server
 
 import (
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"syscall"
@@ -29,12 +30,26 @@ import (
 // counters, which only show the group's aggregate.
 var udpReaderPollErr = udpIngressDrops.Register("pollerr")
 
-// mmsgHdr mirrors struct mmsghdr (linux/socket.h).
+// mmsgHdr mirrors struct mmsghdr (linux/socket.h): a msghdr followed by
+// the received length, padded to the struct's alignment.
+//
+// The layout is why this file is built only for the architectures named
+// in its constraint. The padding below is the 64-bit one, and the
+// descriptors it hands the kernel (Iovec.Len, Controllen) are 64-bit
+// fields there; a 32-bit target has neither, and would read every
+// message in a batch at the wrong offset rather than fail loudly. Every
+// other target takes the portable reader instead.
 type mmsgHdr struct {
 	hdr  unix.Msghdr
 	dlen uint32
 	_    [4]byte
 }
+
+// The stride the kernel walks must be exactly this struct's size. A
+// mismatch would corrupt every message after the first, which no test
+// could be relied on to catch, so it is checked where it cannot be
+// ignored: a negative array length is a compile error.
+var _ [unsafe.Sizeof(mmsgHdr{}) - unsafe.Sizeof(unix.Msghdr{}) - 8]byte
 
 // startBatched arms one batch reader per socket. The send handles were
 // resolved at construction; an engine without them takes the portable
@@ -239,7 +254,10 @@ func (j *udpJob) setRemoteRaw(sa []byte) bool {
 	if len(sa) < 2 {
 		return false
 	}
-	family := uint16(sa[0]) | uint16(sa[1])<<8
+	// The family is a host-order field; the port that follows it is
+	// network order. Reading either with the wrong one silently rejects
+	// or misroutes, so both are spelled out.
+	family := binary.NativeEndian.Uint16(sa[0:2])
 	switch family {
 	case unix.AF_INET:
 		if len(sa) < unix.SizeofSockaddrInet4 {

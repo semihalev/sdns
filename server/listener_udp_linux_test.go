@@ -30,7 +30,10 @@ func TestUDPListener_ZeroPortFanoutSharesOnePort(t *testing.T) {
 	require.NoError(t, l.Bind(context.Background()))
 	t.Cleanup(func() { _ = l.Shutdown(context.Background()) })
 
-	require.Len(t, l.pcs, l.workers, "one PacketConn per worker")
+	// One PacketConn per socket. The engine's handler workers are a
+	// separate, independently sized pool — asserting against them was a
+	// leftover from when the two counts were the same field.
+	require.Len(t, l.pcs, l.sockets, "one PacketConn per socket")
 
 	want := l.pcs[0].LocalAddr().String()
 	require.NotContains(t, want, ":0", "kernel should have assigned a real port")

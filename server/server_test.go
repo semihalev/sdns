@@ -34,9 +34,11 @@ func TestMain(m *testing.M) {
 	logger.SetWriter(zlog.StdoutTerminal())
 	logger.SetLevel(zlog.LevelDebug)
 	zlog.SetDefault(logger)
-	m.Run()
 
-	os.Exit(0)
+	// The run's verdict is the process's. Discarding it made this
+	// package's tests advisory: a failing test still exited 0, so both
+	// local runs and CI reported success over real failures.
+	os.Exit(m.Run())
 }
 
 func publicKey(priv any) any {
