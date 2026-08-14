@@ -53,7 +53,7 @@ func pktinfoControl(network string, v6 bool) func(network, address string, c sys
 func preparePktinfoReply(oob []byte, j *udpJob) bool {
 	for len(oob) >= unix.SizeofCmsghdr {
 		h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0])) //nolint:gosec // bounded cmsg walk
-		l := int(h.Len)
+		l := int(h.Len)                               //nolint:gosec // G115 — validated against the buffer bound on the next line
 		if l < unix.SizeofCmsghdr || l > len(oob) {
 			return false
 		}

@@ -103,7 +103,7 @@ func newUDPBatchReader(e *udpEngine, pc *net.UDPConn, rc syscall.RawConn, s *udp
 			unix.SYS_RECVMMSG,
 			fd,
 			uintptr(unsafe.Pointer(&r.hdrs[0])), //nolint:gosec // preallocated array armed for exactly this call
-			uintptr(r.armed),
+			uintptr(r.armed),                    //nolint:gosec // G115 — armed is 1..udpBatchSize
 			0, 0, 0,
 		)
 		if errno != 0 {
@@ -113,7 +113,7 @@ func newUDPBatchReader(e *udpEngine, pc *net.UDPConn, rc syscall.RawConn, s *udp
 			r.received, r.rerr = 0, errno
 			return true
 		}
-		r.received, r.rerr = int(n), nil
+		r.received, r.rerr = int(n), nil //nolint:gosec // G115 — the kernel returns at most vlen
 		return true
 	}
 	return r
@@ -317,7 +317,7 @@ func newUDPBatchSender(e *udpEngine, rc syscall.RawConn) *udpBatchSender {
 			unix.SYS_SENDMMSG,
 			fd,
 			uintptr(unsafe.Pointer(&s.hdrs[s.start])), //nolint:gosec // preallocated array armed for exactly this call
-			uintptr(s.count-s.start),
+			uintptr(s.count-s.start),                  //nolint:gosec // G115 — a positive remainder of a 1..udpBatchSize batch
 			0, 0, 0,
 		)
 		if errno != 0 {
@@ -327,7 +327,7 @@ func newUDPBatchSender(e *udpEngine, rc syscall.RawConn) *udpBatchSender {
 			s.sent, s.werr = 0, errno
 			return true
 		}
-		s.sent, s.werr = int(n), nil
+		s.sent, s.werr = int(n), nil //nolint:gosec // G115 — the kernel returns at most vlen
 		return true
 	}
 	return s
