@@ -122,17 +122,28 @@ func (l *udpListener) Bind(ctx context.Context) error {
 }
 
 func (l *udpListener) Serve(_ context.Context) error {
+	// The start/shutdown handshake is atomic under the listener lock:
+	// either the engine starts whole — every reader, worker and sender
+	// registered — before Shutdown's drain can observe it, or Shutdown got
+	// there first and Serve never arms an engine over closed sockets. A
+	// half-started engine under a concurrent drain waits on coordinators
+	// whose queues the drain never learned to close.
 	l.mu.Lock()
 	engine := l.engine
 	done := l.done
-	l.mu.Unlock()
 	if engine == nil {
+		l.mu.Unlock()
 		return errListenerNotBound
 	}
+	if l.closing.Load() {
+		l.mu.Unlock()
+		return nil
+	}
+	engine.start()
+	l.mu.Unlock()
 
 	zlog.Info("DNS server listening", "net", "udp", "addr", l.addr,
 		"sockets", len(engine.pcs), "workers", engine.workers)
-	engine.start()
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
@@ -170,8 +181,11 @@ func (l *udpListener) Shutdown(_ context.Context) error {
 		zlog.Info("DNS server stopping", "net", "udp", "addr", l.addr)
 
 		// Admission stops now; readers waking on closed sockets are the
-		// intended path, not a failure.
+		// intended path, not a failure. The closing flag flips under the
+		// listener lock so it serializes against Serve's start decision.
+		l.mu.Lock()
 		l.closing.Store(true)
+		l.mu.Unlock()
 		for _, pc := range pcs {
 			if err := pc.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 				l.drainErr = errors.Join(l.drainErr, err)

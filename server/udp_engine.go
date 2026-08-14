@@ -72,6 +72,17 @@ type udpJob struct {
 	carrier    jobCarrier
 	ednsWriter edns.ResponseWriter
 
+	// Batched-I/O state (Linux recvmmsg/sendmmsg; see udp_batch_linux.go).
+	// rawSA holds the client's kernel sockaddr verbatim so the batched
+	// reply needs no address re-encoding — scoped IPv6 sources included.
+	// txDone is the park-until-send completion slot: buffered one, written
+	// exactly once per parked send.
+	rawSA    [28]byte //nolint:unused // Linux batch path (udp_batch_linux.go)
+	rawSALen uint32   //nolint:unused // Linux batch path
+	txData   []byte   //nolint:unused // Linux batch path
+	txDone   chan error
+	sender   *udpBatchSender
+
 	written bool
 	state   uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
 }
@@ -113,6 +124,11 @@ func (j *udpJob) RemoteAddr() net.Addr { return &j.remote }
 
 func (j *udpJob) Write(b []byte) (int, error) {
 	j.written = true
+	if j.sender != nil {
+		// The batched path: park until the coordinator's sendmmsg carries
+		// this reply, with the send's real result.
+		return j.sender.send(j, b)
+	}
 	if j.pktinfoLen > 0 {
 		n, _, err := j.pc.WriteMsgUDPAddrPort(b, j.pktinfo[:j.pktinfoLen], j.raddr)
 		return n, err
@@ -164,6 +180,10 @@ type udpEngine struct {
 	workers int
 	readers sync.WaitGroup
 	workerG sync.WaitGroup
+
+	// Batched-TX coordinators, one per socket (Linux; empty elsewhere).
+	senders []*udpBatchSender //nolint:unused // Linux batch path (udp_batch_linux.go)
+	senderG sync.WaitGroup    //nolint:unused // Linux batch path
 }
 
 // defaultIngressWorkers sizes the fixed pool when the config is silent.
@@ -180,6 +200,13 @@ func defaultIngressWorkers() int {
 
 const defaultIngressQueue = 512
 
+// udpBatchSize is how many datagrams one recvmmsg/sendmmsg carries at
+// most (Linux batch path). It also sizes the job ring: every reader must
+// be able to arm a full batch, or a jobless reader would sit out its
+// socket's share of the load. Declared portably because the ring formula
+// is.
+const udpBatchSize = 16
+
 func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers, queue int) *udpEngine {
 	if workers <= 0 {
 		workers = defaultIngressWorkers()
@@ -194,13 +221,14 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		workers:  workers,
 	}
 	// Capacity equation (zero-path §7): in-flight jobs = queue depth +
-	// one per busy worker + one in each reader's hand. The ring holds
-	// exactly that many slabs; MaxInboundInFlight is this derived bound.
-	inFlight := queue + workers + len(pcs)
+	// one per busy worker + a full batch in each reader's hand (the
+	// portable reader arms one of its batch). The ring holds exactly that
+	// many slabs; MaxInboundInFlight is this derived bound.
+	inFlight := queue + workers + len(pcs)*udpBatchSize
 	e.free = make(chan *udpJob, inFlight)
 	e.ready = make(chan *udpJob, queue)
 	for i := 0; i < inFlight; i++ {
-		e.free <- &udpJob{engine: e}
+		e.free <- &udpJob{engine: e, txDone: make(chan error, 1)}
 	}
 	return e
 }
@@ -210,6 +238,12 @@ func (e *udpEngine) start() {
 	for i := 0; i < e.workers; i++ {
 		e.workerG.Add(1)
 		go e.worker()
+	}
+	// Linux takes the batched recvmmsg/sendmmsg path; everywhere else —
+	// and on any socket that refuses its raw descriptor — the portable
+	// single-datagram reader serves.
+	if e.startBatched() {
+		return
 	}
 	for _, pc := range e.pcs {
 		e.readers.Add(1)
@@ -232,8 +266,14 @@ func (e *udpEngine) stopAndDrain(deadline time.Time) error {
 	}
 	select {
 	case <-done:
+		// Every worker has returned, so no send can be in flight or
+		// arrive later: the sender queues can close safely.
+		e.stopBatchSenders()
 		return nil
 	case <-time.After(wait):
+		// Workers may still be parked on sends; closing a queue they
+		// could still write would turn a slow drain into a panic. The
+		// coordinators die with the process instead.
 		return errDrainTimeout
 	}
 }
