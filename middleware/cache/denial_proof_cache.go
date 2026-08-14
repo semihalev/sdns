@@ -840,11 +840,12 @@ func denialProofNSEC3Identity(
 		!dnsname.Sub(zone, owner) {
 		return denialProofNSEC3Params{}, "", "", false
 	}
-	next, end := dns.NextLabel(owner, 0)
-	if end {
-		return denialProofNSEC3Params{}, "", "", false
-	}
-
+	// NextLabel's end answer is not a validity verdict here: a root-zone
+	// NSEC3 owner is the single label <hash>., for which end is true and
+	// next still lands past the root dot — owner[:next-1] is the hash label
+	// either way. The count and containment checks above already proved the
+	// shape; refusing on end rejected every root-zone proof.
+	next, _ := dns.NextLabel(owner, 0)
 	ownerHash, ok := denialProofCanonicalNSEC3Hash(owner[:next-1])
 	if !ok {
 		return denialProofNSEC3Params{}, "", "", false
