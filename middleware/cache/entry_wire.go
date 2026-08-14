@@ -126,9 +126,29 @@ func (e *CacheEntry) wireBodyFor(do bool) ([]byte, wireServeFlags) {
 // bytes with this reply's header, the client's question spelling, and the
 // remaining TTL written at every record. The TTL walk reuses the packed
 // message's own structure rather than a stored offset table.
+//
+// Exactly the capacity the chain reported it needs is allocated: no slack
+// to carry per hit, and no second buffer for the OPT append. Callers that
+// hold a writer lease build into it with serveWireInto instead.
 func (e *CacheEntry) serveWire(
 	req *dns.Msg,
 	reserve int,
+	do bool,
+) ([]byte, middleware.WireInfo, bool) {
+	stored, _ := e.wireBodyFor(do)
+	if stored == nil {
+		return nil, middleware.WireInfo{}, false
+	}
+	return e.serveWireInto(make([]byte, 0, len(stored)+reserve), req, do)
+}
+
+// serveWireInto is serveWire building into caller-owned storage: dst must
+// have capacity for the stored body (the caller sized it from the entry via
+// wireChainMismatch/wireBodyFor, plus the chain's reserve). The returned
+// slice aliases dst. Insufficient capacity refuses rather than allocates.
+func (e *CacheEntry) serveWireInto(
+	dst []byte,
+	req *dns.Msg,
 	do bool,
 ) ([]byte, middleware.WireInfo, bool) {
 	remaining := e.remaining(time.Now())
@@ -137,7 +157,7 @@ func (e *CacheEntry) serveWire(
 	}
 
 	stored, flags := e.wireBodyFor(do)
-	if stored == nil {
+	if stored == nil || cap(dst) < len(stored) {
 		return nil, middleware.WireInfo{}, false
 	}
 
@@ -162,9 +182,7 @@ func (e *CacheEntry) serveWire(
 	name := req.Question[0].Name
 	rewrite := name != e.question.Name
 
-	// Exactly the capacity the chain reported it needs: no slack to carry
-	// per hit, and no second buffer for the OPT append.
-	body := make([]byte, len(stored), len(stored)+reserve)
+	body := dst[:len(stored)]
 	copy(body, stored)
 
 	if rewrite {

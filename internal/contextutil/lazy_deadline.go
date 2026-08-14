@@ -19,10 +19,6 @@ var lazyDeadlineClosed = func() chan struct{} {
 	return ch
 }()
 
-type lazyDeadlineCarrierKeyType struct{}
-
-var lazyDeadlineCarrierKey = &lazyDeadlineCarrierKeyType{}
-
 // ValueProvider supplies request-local context values without adding another
 // context.WithValue wrapper to a LazyDeadline. Providers are installed before
 // the context is published to middleware and must be safe for concurrent use.
@@ -143,8 +139,8 @@ func (c *LazyDeadline) Err() error {
 // lets context.WithCancel/WithDeadline recognize its private parent fast path
 // instead of spawning a propagation goroutine.
 func (c *LazyDeadline) Value(key any) any {
-	if key == lazyDeadlineCarrierKey {
-		return c
+	if v, ok := CarrierLookup(c, key); ok {
+		return v
 	}
 	if provider, _ := c.valueProvider.Load().(ValueProvider); provider != nil {
 		if value, ok := provider.ContextValue(key); ok {
@@ -166,58 +162,42 @@ func (c *LazyDeadline) Value(key any) any {
 	return c.parent.Value(key)
 }
 
-// TrySetValueProvider installs provider directly on the LazyDeadline reachable
-// through ctx. It returns false for ordinary contexts or when a provider was
-// already installed.
-func TrySetValueProvider(ctx context.Context, provider ValueProvider) bool {
-	if ctx == nil || provider == nil {
+// TrySetProvider implements Carrier. A second install fails.
+func (c *LazyDeadline) TrySetProvider(provider ValueProvider) bool {
+	if provider == nil {
 		return false
 	}
-	lazy, _ := ctx.Value(lazyDeadlineCarrierKey).(*LazyDeadline)
-	if lazy == nil {
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	if c.valueProvider.Load() != nil {
 		return false
 	}
-
-	lazy.pinMu.Lock()
-	defer lazy.pinMu.Unlock()
-	if lazy.valueProvider.Load() != nil {
-		return false
-	}
-	lazy.valueProvider.Store(provider)
+	c.valueProvider.Store(provider)
 	return true
 }
 
-// TryPinValue stores one internal request-lifetime control value directly on
-// the LazyDeadline reachable through ctx. The pin survives pooled metadata
-// reuse without allocating a context.WithValue node. It is deliberately not
-// exposed through Context.Value: callers must use PinnedValue, keeping the
-// ordinary context value chain immutable. Re-pinning a key that is already
-// pinned fails, as does pinning into a full table.
-func TryPinValue(ctx context.Context, key, value any) bool {
-	if ctx == nil || key == nil || value == nil {
+// TryPin implements Carrier. Re-pinning a key that is already pinned fails,
+// as does pinning into a full table.
+func (c *LazyDeadline) TryPin(key, value any) bool {
+	if key == nil || value == nil {
 		return false
 	}
-	lazy, _ := ctx.Value(lazyDeadlineCarrierKey).(*LazyDeadline)
-	if lazy == nil {
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	if c.pin(key) != nil {
 		return false
 	}
-
-	lazy.pinMu.Lock()
-	defer lazy.pinMu.Unlock()
-	if lazy.pin(key) != nil {
-		return false
-	}
-	if lazy.pin0.value.Load() == nil {
-		lazy.pin0.key = key
-		lazy.pin0.value.Store(value)
+	if c.pin0.value.Load() == nil {
+		c.pin0.key = key
+		c.pin0.value.Store(value)
 		return true
 	}
-	overflow := lazy.pinOverflow.Load()
+	overflow := c.pinOverflow.Load()
 	if overflow == nil {
 		// Safe to publish empty: every slot reads as free until its value
 		// store, which is what publishes the slot's key.
 		overflow = new(lazyDeadlineOverflow)
-		lazy.pinOverflow.Store(overflow)
+		c.pinOverflow.Store(overflow)
 	}
 	for i := range overflow {
 		if overflow[i].value.Load() == nil {
@@ -229,18 +209,13 @@ func TryPinValue(ctx context.Context, key, value any) bool {
 	return false
 }
 
-// PinnedValue returns the exact value stored in the LazyDeadline's
-// request-lifetime slot for key. Unlike ctx.Value, it never falls through to
-// a value provider or parent context.
-func PinnedValue(ctx context.Context, key any) (any, bool) {
-	if ctx == nil || key == nil {
+// Pinned implements Carrier: it returns the exact value stored in the
+// request-lifetime slot for key, lock-free.
+func (c *LazyDeadline) Pinned(key any) (any, bool) {
+	if key == nil {
 		return nil, false
 	}
-	lazy, _ := ctx.Value(lazyDeadlineCarrierKey).(*LazyDeadline)
-	if lazy == nil {
-		return nil, false
-	}
-	if pin := lazy.pin(key); pin != nil {
+	if pin := c.pin(key); pin != nil {
 		return pin.value.Load(), true
 	}
 	return nil, false
@@ -263,44 +238,32 @@ func (c *LazyDeadline) pin(key any) *lazyDeadlinePin {
 	return nil
 }
 
-// TryUpdatePinnedValueLocked computes and installs a replacement while holding
-// the LazyDeadline's request-lifetime lock. It is intended for transitions
-// whose initialization must complete before a concurrent request owner can
-// close and recycle adjacent pooled state.
-//
-// update must be bounded and must not call the pin mutation APIs recursively
-// on ctx (or a context derived from it): pinMu is deliberately non-reentrant.
-// Cancellation methods use a separate lock, so update may safely inspect Done,
-// Err or context.AfterFunc. The Locked suffix exposes the callback contract at
-// each call site.
-func TryUpdatePinnedValueLocked[T comparable](
-	ctx context.Context,
+// UpdatePinLocked implements Carrier: update runs with the current slot
+// value while pinMu is held, and its return value is stored when ok. See
+// the Carrier contract for the reentrancy and non-nil rules.
+func (c *LazyDeadline) UpdatePinLocked(
 	key any,
-	old T,
-	update func() T,
-) (T, bool) {
-	var zero T
-	if ctx == nil || key == nil || update == nil {
-		return zero, false
+	update func(current any) (next any, ok bool),
+) (any, bool) {
+	if key == nil || update == nil {
+		return nil, false
 	}
-	lazy, _ := ctx.Value(lazyDeadlineCarrierKey).(*LazyDeadline)
-	if lazy == nil {
-		return zero, false
-	}
-
-	lazy.pinMu.Lock()
-	defer lazy.pinMu.Unlock()
-	pin := lazy.pin(key)
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	pin := c.pin(key)
 	if pin == nil {
-		return zero, false
+		return nil, false
 	}
-	current, typeOK := pin.value.Load().(T)
-	if !typeOK || current != old {
+	current := pin.value.Load()
+	next, ok := update(current)
+	if !ok {
 		return current, false
 	}
-	value := update()
-	pin.value.Store(value)
-	return value, true
+	if next == nil {
+		return current, false
+	}
+	pin.value.Store(next)
+	return next, true
 }
 
 // Cancel releases an armed timer/parent registration, or records a terminal

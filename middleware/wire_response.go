@@ -58,6 +58,26 @@ type WireWriter interface {
 	WriteWire(body []byte, info WireInfo) error
 }
 
+// WireBodyLeaser is the pre-build lease contract: a caller that knows the
+// response size asks the writer for the buffer the body will be built in,
+// so the bytes are born where the transport wants them (the server's job
+// slab on the strict path) instead of being allocated by the producer.
+//
+// BeginWire returns a zero-length slice with capacity size+reserve, or nil
+// when the writer cannot lease (the caller falls back to building its own
+// body for WriteWire). Exactly one of CommitWire or AbortWire must follow
+// every successful BeginWire, before any other write on this writer.
+// CommitWire has WriteWire's semantics — including the lazy post-write
+// Msg() retention, which is why the lease belongs to the writer until the
+// request finishes, never returning to any pool at commit time (the #558
+// lesson). AbortWire releases the lease without a send; the caller may then
+// still answer through the ordinary Msg path.
+type WireBodyLeaser interface {
+	BeginWire(size, reserve int) []byte
+	CommitWire(body []byte, info WireInfo) error
+	AbortWire()
+}
+
 // ClearWireAD clears the AD bit in a packed message header in place.
 func ClearWireAD(body []byte) {
 	wire.ClearAD(body)
@@ -137,6 +157,28 @@ func (w *responseWriter) WriteWire(body []byte, info WireInfo) error {
 	w.size = 0
 	return err
 }
+
+// BeginWire on the base response writer leases a fresh buffer. The server's
+// strict-path writer overrides the backing with its job slab; here the lease
+// semantics are what matters: the body is built in a buffer the writer
+// handed out, and the writer keeps it after CommitWire for the lazy
+// post-write Msg() contract.
+func (w *responseWriter) BeginWire(size, reserve int) []byte {
+	if w.Written() {
+		return nil
+	}
+	return make([]byte, 0, size+reserve)
+}
+
+// CommitWire sends a body obtained from BeginWire; it has WriteWire's exact
+// semantics, retention included.
+func (w *responseWriter) CommitWire(body []byte, info WireInfo) error {
+	return w.WriteWire(body, info)
+}
+
+// AbortWire releases a BeginWire lease without a send. The base writer's
+// lease is garbage-collected storage, so there is nothing to return.
+func (w *responseWriter) AbortWire() {}
 
 // Msg returns the written message. After a wire-path write the packed
 // bytes are decoded on first use — post-write readers (DoH assembly,

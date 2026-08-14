@@ -45,6 +45,30 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  allocgate:
+    name: Allocation gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # Pinned deliberately: allocation counts are toolchain-sensitive,
+          # and the hard-zero gate's verdict must not drift with "stable".
+          # Keep in lockstep with go.mod's toolchain directive.
+          go-version: '1.26.5'
+
+      # The main test job runs with -race on every OS, which skips every
+      # !race-tagged allocation pin. This job is where they actually run.
+      - name: Allocation pins (no race)
+        run: go test -count=1 -run 'Alloc' ./...
+
+      - name: Zero gate
+        run: go test -count=1 -tags zerogate -run TestZeroGate -timeout 20m -v ./internal/zerogate/
+        env:
+          ZEROGATE_OPS: "1000000"
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
