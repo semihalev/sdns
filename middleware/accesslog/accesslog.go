@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
 )
@@ -66,7 +67,7 @@ func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		record := []string{
 			w.RemoteIP().String() + " -",
 			"[" + time.Now().Format("02/Jan/2006:15:04:05 -0700") + "]",
-			formatQuestion(ch.Request.Question[0]),
+			"\"" + dnsutil.FormatQuestion(ch.Request.Question[0]) + "\"",
 			w.Proto(),
 			cd,
 			dns.RcodeToString[w.Rcode()],
@@ -78,10 +79,6 @@ func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			zlog.Error("Access log write failed", "error", strings.Trim(err.Error(), "\n"))
 		}
 	}
-}
-
-func formatQuestion(q dns.Question) string {
-	return "\"" + strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype] + "\""
 }
 
 const name = "accesslog"

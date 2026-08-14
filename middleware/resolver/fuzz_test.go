@@ -50,7 +50,7 @@ func FuzzFormatQuestion(f *testing.F) {
 			Qtype:  qtype,
 			Qclass: qclass,
 		}
-		_ = formatQuestion(q)
+		_ = dnsutil.FormatQuestion(q)
 	})
 }
 

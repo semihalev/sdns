@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -168,7 +167,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 				return w.writeRecursionWorkFailure(m, err)
 			}
-			zlog.Info("Failover query failed", "query", formatQuestion(req.Question[0]), "error", err.Error())
+			zlog.Info("Failover query failed", "query", dnsutil.FormatQuestion(req.Question[0]), "error", err.Error())
 			continue
 		}
 
@@ -218,10 +217,6 @@ func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg, workErr er
 		edeCode,
 		edeText,
 	))
-}
-
-func formatQuestion(q dns.Question) string {
-	return strings.ToLower(q.Name) + " " + dns.ClassToString[q.Qclass] + " " + dns.TypeToString[q.Qtype]
 }
 
 const name = "failover"
