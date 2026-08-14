@@ -144,8 +144,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	// Set query timeout
-	deadline := time.Now().Add(h.cfg.QueryTimeout.Duration)
-	ctx, cancel := context.WithDeadline(ctx, deadline)
+	ctx, cancel := withQueryDeadline(ctx, h.cfg.QueryTimeout.Duration)
 	defer cancel()
 
 	// Start recursive resolution from root servers
@@ -189,6 +188,24 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	return resp
+}
+
+// noopCancel is returned by withQueryDeadline when the parent context needs
+// no child; a shared value keeps the call-site's defer allocation-free.
+var noopCancel context.CancelFunc = func() {}
+
+// withQueryDeadline bounds ctx by the configured query timeout. The server
+// bounds every request context the same way on entry, so on the ordinary
+// path the parent's deadline is this one shifted earlier by the queueing
+// delay — deriving a child context there would allocate a cancelCtx whose
+// deadline can never fire first. Only a context that arrives unbounded, or
+// bounded later than the timeout, gets a child.
+func withQueryDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(timeout)
+	if parent, ok := ctx.Deadline(); ok && !parent.After(deadline) {
+		return ctx, noopCancel
+	}
+	return context.WithDeadline(ctx, deadline)
 }
 
 func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
