@@ -5,10 +5,8 @@ package dnsname
 import "testing"
 
 // TestWalkersDoNotAllocate is the reason this package exists: every answer
-// out of a forward walk, nothing materialized. CanonicalCompare's offset
-// buffers must stay on the stack — an array pointer that escaped would put
-// two kilobytes on the heap per comparison and quietly cancel the whole
-// point.
+// out of a forward walk, nothing materialized — CanonicalCompare included,
+// whose escape decoding happens octet by octet as the labels are read.
 func TestWalkersDoNotAllocate(t *testing.T) {
 	allocs := testing.AllocsPerRun(200, func() {
 		if CompareSuffix("www.miek.nl.", "miek.nl.") != 2 {
