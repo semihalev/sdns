@@ -5,9 +5,11 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsclient"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
@@ -72,16 +74,15 @@ type udpJob struct {
 	carrier    jobCarrier
 	ednsWriter edns.ResponseWriter
 
-	// Batched-I/O state (Linux recvmmsg/sendmmsg; see udp_batch_linux.go).
-	// rawSA holds the client's kernel sockaddr verbatim so the batched
+	// TX-burst state. The reply is staged in tx and sent with the
+	// worker's burst, so a job stays owned from read to send and nothing
+	// on the reply path is copied twice or handed between goroutines.
+	// rawSA holds the client's kernel sockaddr verbatim, so a batched
 	// reply needs no address re-encoding — scoped IPv6 sources included.
-	// txDone is the park-until-send completion slot: buffered one, written
-	// exactly once per parked send.
 	rawSA    [28]byte //nolint:unused // Linux batch path (udp_batch_linux.go)
 	rawSALen uint32   //nolint:unused // Linux batch path
-	txData   []byte   //nolint:unused // Linux batch path
-	txDone   chan error
-	sender   *udpBatchSender
+	txLen    int
+	burst    *udpTXBurst
 
 	written bool
 	state   uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
@@ -122,12 +123,29 @@ func (j *udpJob) setRemote(ap netip.AddrPort) {
 func (j *udpJob) LocalAddr() net.Addr  { return j.pc.LocalAddr() }
 func (j *udpJob) RemoteAddr() net.Addr { return &j.remote }
 
+// Write stages the reply in the job's own TX buffer and leaves the send
+// to the worker's burst. Bytes that already live there — the wire path
+// builds its body in the lease this buffer backs — are staged by their
+// length alone; anything else is copied in, because a caller's buffer
+// (the packer's pooled scratch, most of all) is only valid until it
+// returns.
+//
+// The syscall's result therefore arrives after this call. A datagram
+// transport has no delivery semantics to preserve here, and the byte
+// path's own error handling already treats a failed send as "the
+// response left the process"; a send that fails is counted (tx_error)
+// rather than returned.
 func (j *udpJob) Write(b []byte) (int, error) {
 	j.written = true
-	if j.sender != nil {
-		// The batched path: park until the coordinator's sendmmsg carries
-		// this reply, with the send's real result.
-		return j.sender.send(j, b)
+	if len(b) > len(j.tx) {
+		return 0, dnsclient.ErrFrameTooLarge
+	}
+	if j.burst != nil {
+		if len(b) > 0 && &b[0] != &j.tx[0] {
+			copy(j.tx[:], b)
+		}
+		j.txLen = len(b)
+		return len(b), nil
 	}
 	if j.pktinfoLen > 0 {
 		n, _, err := j.pc.WriteMsgUDPAddrPort(b, j.pktinfo[:j.pktinfoLen], j.raddr)
@@ -135,6 +153,24 @@ func (j *udpJob) Write(b []byte) (int, error) {
 	}
 	n, _, err := j.pc.WriteMsgUDPAddrPort(b, nil, j.raddr)
 	return n, err
+}
+
+// sendDirect sends the job's staged reply on its own. It is the send for
+// a transport with no batching underneath it, and the fallback for a
+// socket the batch path never armed.
+func (j *udpJob) sendDirect() {
+	if j.txLen == 0 {
+		return
+	}
+	var err error
+	if j.pktinfoLen > 0 {
+		_, _, err = j.pc.WriteMsgUDPAddrPort(j.tx[:j.txLen], j.pktinfo[:j.pktinfoLen], j.raddr)
+	} else {
+		_, _, err = j.pc.WriteMsgUDPAddrPort(j.tx[:j.txLen], nil, j.raddr)
+	}
+	if err != nil {
+		udpTXError.Add(1)
+	}
 }
 
 func (j *udpJob) WriteMsg(m *dns.Msg) error {
@@ -181,9 +217,11 @@ type udpEngine struct {
 	readers sync.WaitGroup
 	workerG sync.WaitGroup
 
-	// Batched-TX coordinators, one per socket (Linux; empty elsewhere).
-	senders []*udpBatchSender //nolint:unused // Linux batch path (udp_batch_linux.go)
-	senderG sync.WaitGroup    //nolint:unused // Linux batch path
+	// Per-worker send state and the raw handles their sends go through
+	// (Linux; both inert elsewhere). Indexed by worker, never shared, so
+	// a send needs no lock and no allocation.
+	txSenders []udpTXSender
+	txConns   map[*net.UDPConn]syscall.RawConn
 }
 
 // defaultIngressWorkers sizes the fixed pool when the config is silent.
@@ -219,6 +257,24 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		pcs:      pcs,
 		wildcard: wildcard,
 		workers:  workers,
+		txConns:  make(map[*net.UDPConn]syscall.RawConn, len(pcs)),
+	}
+	e.txSenders = make([]udpTXSender, workers)
+	for i := range e.txSenders {
+		newUDPTXSender(&e.txSenders[i])
+	}
+	// The send handles are resolved here, before a single goroutine
+	// exists, so nothing ever writes this map while a worker reads it. A
+	// socket that will not surrender its descriptor takes the whole
+	// engine down the portable path — mixed modes would split the job
+	// ring's assumptions.
+	for _, pc := range pcs {
+		rc, err := pc.SyscallConn()
+		if err != nil {
+			e.txConns = nil
+			break
+		}
+		e.txConns[pc] = rc
 	}
 	// Capacity equation (zero-path §7): in-flight jobs = queue depth +
 	// one per busy worker + a full batch in each reader's hand (the
@@ -228,7 +284,7 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 	e.free = make(chan *udpJob, inFlight)
 	e.ready = make(chan *udpJob, queue)
 	for i := 0; i < inFlight; i++ {
-		e.free <- &udpJob{engine: e, txDone: make(chan error, 1)}
+		e.free <- &udpJob{engine: e}
 	}
 	return e
 }
@@ -237,7 +293,7 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 func (e *udpEngine) start() {
 	for i := 0; i < e.workers; i++ {
 		e.workerG.Add(1)
-		go e.worker()
+		go e.worker(i)
 	}
 	// Linux takes the batched recvmmsg/sendmmsg path; everywhere else —
 	// and on any socket that refuses its raw descriptor — the portable
@@ -266,14 +322,8 @@ func (e *udpEngine) stopAndDrain(deadline time.Time) error {
 	}
 	select {
 	case <-done:
-		// Every worker has returned, so no send can be in flight or
-		// arrive later: the sender queues can close safely.
-		e.stopBatchSenders()
 		return nil
 	case <-time.After(wait):
-		// Workers may still be parked on sends; closing a queue they
-		// could still write would turn a slow drain into a panic. The
-		// coordinators die with the process instead.
 		return errDrainTimeout
 	}
 }
@@ -361,21 +411,59 @@ func (j *udpJob) release(from uint8) {
 	j.engine.free <- j
 }
 
-func (e *udpEngine) worker() {
+// worker serves ready jobs and sends their replies in bursts. A reply is
+// staged in its own job's TX buffer while the chain unwinds, and the
+// staged set leaves together the moment the worker would block for more
+// work — the same shape the stream path uses, for the same reason: under
+// load the syscall is amortized across whatever arrived together, and
+// with nothing else to serve there is nothing to wait for, so a lone
+// query still leaves immediately.
+//
+// Dispatch stays per job rather than per batch on purpose. A cache miss
+// occupies its worker for the whole resolution; handing a worker a batch
+// would put every query behind the slowest one in it.
+func (e *udpEngine) worker(slot int) {
 	defer e.workerG.Done()
-	for j := range e.ready {
-		e.serve(j)
+	burst := udpTXBurst{slot: slot}
+	for {
+		select {
+		case j, ok := <-e.ready:
+			if !ok {
+				e.flushTX(&burst)
+				return
+			}
+			e.serve(j, &burst)
+			if burst.full() {
+				e.flushTX(&burst)
+			}
+		default:
+			e.flushTX(&burst)
+			j, ok := <-e.ready
+			if !ok {
+				return
+			}
+			e.serve(j, &burst)
+		}
 	}
 }
 
-// serve runs one job to a terminal and releases it exactly once.
-func (e *udpEngine) serve(j *udpJob) {
+// serve runs one job to a terminal. A job whose reply is staged for the
+// burst stays owned until the send; every other terminal releases it here,
+// exactly once.
+func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 	j.transition(udpJobQueued, udpJobServing)
+	j.burst = burst
 	defer func() {
 		if r := recover(); r != nil {
 			// A panic outside the chain (the chain's recovery middleware
 			// handles its own) is an abort terminal.
 			udpDropPanic.Inc()
+		}
+		j.burst = nil
+		if j.txLen > 0 {
+			// The reply leaves with the burst; the burst releases the job.
+			burst.add(j)
+			return
 		}
 		j.release(udpJobServing)
 	}()

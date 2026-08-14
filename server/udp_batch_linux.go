@@ -14,14 +14,14 @@ import (
 )
 
 // The batched UDP I/O layer: raw recvmmsg/sendmmsg over preallocated
-// mmsghdr/iovec/sockaddr/OOB arrays, with the iovecs pointing straight
-// into the job ring's RX buffers and replies parked until the
-// coordinator's sendmmsg carries them. Every descriptor-referenced fact —
+// mmsghdr/iovec/sockaddr/OOB arrays. The receive iovecs point straight
+// into the job ring's RX buffers, and every descriptor-referenced fact —
 // sockaddr, control message, flags — is copied into the job before the
-// arrays are re-armed for the next cycle. The netpoller callbacks are
-// bound once per reader/sender, so a quiet socket costs a parked
-// goroutine and a busy one amortizes syscalls across the batch without
-// allocating per packet.
+// arrays are re-armed for the next cycle. Sends are armed from the jobs
+// of a worker's burst, so a reply is never copied between goroutines and
+// never waits on one. The netpoller callbacks are bound once per reader
+// and per worker, so a quiet socket costs a parked goroutine and a busy
+// one amortizes syscalls without allocating per packet.
 
 // udpReaderPollErr counts poller failures a batch reader survived. A
 // reader is its socket's only consumer, so this rate is the signal that
@@ -36,41 +36,23 @@ type mmsgHdr struct {
 	_    [4]byte
 }
 
-// startBatched arms one batch reader and one batch sender per socket.
-// Any socket that refuses its raw descriptor sends the whole engine down
-// the portable path — mixed modes would split the job ring's assumptions.
+// startBatched arms one batch reader per socket. The send handles were
+// resolved at construction; an engine without them takes the portable
+// path.
 func (e *udpEngine) startBatched() bool {
-	type pair struct {
-		rc syscall.RawConn
-		pc *net.UDPConn
+	if e.txConns == nil {
+		return false
 	}
-	pairs := make([]pair, 0, len(e.pcs))
 	for _, pc := range e.pcs {
-		rc, err := pc.SyscallConn()
-		if err != nil {
+		rc := e.txConns[pc]
+		if rc == nil {
 			return false
 		}
-		pairs = append(pairs, pair{rc: rc, pc: pc})
-	}
-	for _, p := range pairs {
-		s := newUDPBatchSender(e, p.rc)
-		e.senders = append(e.senders, s)
-		e.senderG.Add(1)
-		go s.run()
-
-		r := newUDPBatchReader(e, p.pc, p.rc, s)
+		r := newUDPBatchReader(e, pc, rc)
 		e.readers.Add(1)
 		go r.run()
 	}
 	return true
-}
-
-// stopBatchSenders closes the coordinators once no worker can send.
-func (e *udpEngine) stopBatchSenders() {
-	for _, s := range e.senders {
-		close(s.queue)
-	}
-	e.senderG.Wait()
 }
 
 // --- reader ---
@@ -79,7 +61,6 @@ type udpBatchReader struct {
 	engine *udpEngine
 	pc     *net.UDPConn
 	rc     syscall.RawConn
-	sender *udpBatchSender
 
 	jobs  [udpBatchSize]*udpJob
 	hdrs  [udpBatchSize]mmsgHdr
@@ -96,8 +77,8 @@ type udpBatchReader struct {
 	rerr     error
 }
 
-func newUDPBatchReader(e *udpEngine, pc *net.UDPConn, rc syscall.RawConn, s *udpBatchSender) *udpBatchReader {
-	r := &udpBatchReader{engine: e, pc: pc, rc: rc, sender: s}
+func newUDPBatchReader(e *udpEngine, pc *net.UDPConn, rc syscall.RawConn) *udpBatchReader {
+	r := &udpBatchReader{engine: e, pc: pc, rc: rc}
 	r.readFn = func(fd uintptr) bool {
 		n, _, errno := unix.Syscall6(
 			unix.SYS_RECVMMSG,
@@ -230,7 +211,6 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 	j.rxLen = int(h.dlen)
 	j.readTime = now
 	j.pc = r.pc
-	j.sender = r.sender
 	j.pktinfoLen = 0
 	if r.engine.wildcard {
 		if h.hdr.Flags&unix.MSG_CTRUNC != 0 ||
@@ -283,21 +263,15 @@ func (j *udpJob) setRemoteRaw(sa []byte) bool {
 	return false
 }
 
-// --- sender ---
+// --- send ---
 
-// udpBatchSender is the park-until-send coordinator for one socket:
-// workers enqueue their finished jobs and park on the job's completion
-// slot; the coordinator drains what is queued right now into one
-// sendmmsg, retries partial sends, and wakes every parked job exactly
-// once with its send's result.
-type udpBatchSender struct {
-	engine *udpEngine
-	rc     syscall.RawConn
-	queue  chan *udpJob
-
-	batch [udpBatchSize]*udpJob
-	hdrs  [udpBatchSize]mmsgHdr
-	iovs  [udpBatchSize]unix.Iovec
+// udpTXSender is a worker's sendmmsg state: preallocated headers and
+// iovecs, armed from the jobs of one burst. It lives on the worker (via
+// the engine's per-worker slot) so a send costs no allocation and no
+// handoff — the worker owns every job it is sending for.
+type udpTXSender struct {
+	hdrs [udpTXMax]mmsgHdr
+	iovs [udpTXMax]unix.Iovec
 
 	writeFn func(fd uintptr) bool
 	start   int
@@ -306,18 +280,91 @@ type udpBatchSender struct {
 	werr    error
 }
 
-func newUDPBatchSender(e *udpEngine, rc syscall.RawConn) *udpBatchSender {
-	s := &udpBatchSender{
-		engine: e,
-		rc:     rc,
-		queue:  make(chan *udpJob, udpBatchSize),
+// flushTX sends every staged reply in the burst and releases its jobs.
+// Replies are grouped by socket, since one sendmmsg carries one socket's
+// datagrams; a reuseport group's traffic normally arrives from one socket
+// per burst, so the common case is a single call.
+func (e *udpEngine) flushTX(b *udpTXBurst) {
+	if b.n == 0 {
+		return
 	}
+	s := &e.txSenders[b.slot]
+	for start := 0; start < b.n; {
+		pc := b.jobs[start].pc
+		end := start + 1
+		for end < b.n && b.jobs[end].pc == pc {
+			end++
+		}
+		e.sendGroup(s, b.jobs[start:end], pc)
+		start = end
+	}
+	b.release()
+}
+
+// sendGroup arms and sends one socket's datagrams, retrying from the
+// unsent index on a partial send. A send that fails is counted: the byte
+// path already treats a completed Write as "the response left the
+// process", and a datagram transport has no delivery contract to unwind.
+func (e *udpEngine) sendGroup(s *udpTXSender, jobs []*udpJob, pc *net.UDPConn) {
+	rc := e.txConns[pc]
+	if rc == nil {
+		// A socket that never armed the batch path (or a job that arrived
+		// before it did): send the ordinary way.
+		for _, j := range jobs {
+			j.sendDirect()
+		}
+		return
+	}
+	k := 0
+	for _, j := range jobs {
+		if j.txLen == 0 {
+			continue
+		}
+		s.iovs[k] = unix.Iovec{Base: &j.tx[0], Len: uint64(j.txLen)} //nolint:gosec // G115 — txLen is a staged reply length, bounded by the TX buffer
+		h := &s.hdrs[k]
+		h.dlen = 0
+		h.hdr = unix.Msghdr{
+			Name:    &j.rawSA[0],
+			Namelen: j.rawSALen,
+			Iov:     &s.iovs[k],
+			Iovlen:  1,
+		}
+		if j.pktinfoLen > 0 {
+			h.hdr.Control = &j.pktinfo[0]
+			h.hdr.SetControllen(j.pktinfoLen)
+		}
+		k++
+	}
+	if k == 0 {
+		return
+	}
+
+	done := 0
+	for done < k {
+		s.start, s.count = done, k
+		err := rc.Write(s.writeFn)
+		if err == nil {
+			err = s.werr
+		}
+		if err != nil {
+			udpTXError.Add(int64(k - done))
+			return
+		}
+		if s.sent <= 0 {
+			udpTXError.Add(int64(k - done))
+			return
+		}
+		done += s.sent
+	}
+}
+
+func newUDPTXSender(s *udpTXSender) {
 	s.writeFn = func(fd uintptr) bool {
 		n, _, errno := unix.Syscall6(
 			unix.SYS_SENDMMSG,
 			fd,
 			uintptr(unsafe.Pointer(&s.hdrs[s.start])), //nolint:gosec // preallocated array armed for exactly this call
-			uintptr(s.count-s.start),                  //nolint:gosec // G115 — a positive remainder of a 1..udpBatchSize batch
+			uintptr(s.count-s.start),                  //nolint:gosec // G115 — a positive remainder of a 1..udpTXMax burst
 			0, 0, 0,
 		)
 		if errno != 0 {
@@ -329,82 +376,5 @@ func newUDPBatchSender(e *udpEngine, rc syscall.RawConn) *udpBatchSender {
 		}
 		s.sent, s.werr = int(n), nil //nolint:gosec // G115 — the kernel returns at most vlen
 		return true
-	}
-	return s
-}
-
-// send parks the caller until the coordinator has carried b. b must stay
-// valid until send returns — on this path it always lives in the job's
-// own TX storage.
-func (s *udpBatchSender) send(j *udpJob, b []byte) (int, error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
-	j.txData = b
-	s.queue <- j
-	err := <-j.txDone
-	j.txData = nil
-	if err != nil {
-		return 0, err
-	}
-	return len(b), nil
-}
-
-func (s *udpBatchSender) run() {
-	defer s.engine.senderG.Done()
-	for first := range s.queue {
-		s.batch[0] = first
-		k := 1
-	fill:
-		for k < udpBatchSize {
-			select {
-			case j, ok := <-s.queue:
-				if !ok {
-					break fill
-				}
-				s.batch[k] = j
-				k++
-			default:
-				break fill
-			}
-		}
-
-		for i := range k {
-			j := s.batch[i]
-			s.iovs[i] = unix.Iovec{Base: &j.txData[0], Len: uint64(len(j.txData))}
-			h := &s.hdrs[i]
-			h.dlen = 0
-			h.hdr = unix.Msghdr{
-				Name:    &j.rawSA[0],
-				Namelen: j.rawSALen,
-				Iov:     &s.iovs[i],
-				Iovlen:  1,
-			}
-			if j.pktinfoLen > 0 {
-				h.hdr.Control = &j.pktinfo[0]
-				h.hdr.SetControllen(j.pktinfoLen)
-			}
-		}
-
-		done := 0
-		for done < k {
-			s.start, s.count = done, k
-			err := s.rc.Write(s.writeFn)
-			if err == nil {
-				err = s.werr
-			}
-			if err != nil {
-				// The socket is unusable (shutdown among the causes):
-				// every remaining parked job learns it and unwinds.
-				for i := done; i < k; i++ {
-					s.batch[i].txDone <- err
-				}
-				break
-			}
-			for i := done; i < done+s.sent; i++ {
-				s.batch[i].txDone <- nil
-			}
-			done += s.sent
-		}
 	}
 }

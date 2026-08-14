@@ -32,4 +32,8 @@ var (
 	udpDropIgnored   = udpIngressDrops.Register("ignored")
 	udpDropError     = udpIngressDrops.Register("error")
 	udpDropPanic     = udpIngressDrops.Register("panic")
+	// tx_error counts replies the transport refused. The send happens
+	// after the middleware has unwound, so this counter — not a WriteMsg
+	// error — is where a failed datagram becomes visible.
+	udpTXError = udpIngressDrops.Register("tx_error")
 )

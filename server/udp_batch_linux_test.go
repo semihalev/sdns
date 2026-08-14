@@ -85,11 +85,11 @@ func TestUDPBatchEndToEnd(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	l.mu.Lock()
-	senders := len(l.engine.senders)
+	senders := len(l.engine.txConns)
 	addr := l.pcs[0].LocalAddr().String()
 	l.mu.Unlock()
 	if senders == 0 {
-		t.Fatal("batched senders not armed on linux")
+		t.Fatal("batched send handles not armed on linux")
 	}
 
 	const clients, perClient = 8, 25
