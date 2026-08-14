@@ -998,14 +998,16 @@ func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 	if len(snapshot.nsecPrepared) != 0 {
 		// A set that fails validation stays nil: per-query evaluation of
 		// the prepared slice fails the same checks and falls through to
-		// NSEC3 and ordinary resolution, exactly as before.
+		// NSEC3 and ordinary resolution, exactly as before. The owner index
+		// exists only for the validated fast path, so it is not built for a
+		// set that will never take it.
 		if set, err := dnssec.NewAggressiveNSECSet(snapshot.nsecPrepared, key.zone); err == nil {
 			snapshot.nsecSet = set
-		}
-		snapshot.nsecOwners = make(map[dns.RR]*denialProofEntry)
-		for _, entry := range snapshot.nsec {
-			for _, rr := range entry.data {
-				snapshot.nsecOwners[rr] = entry
+			snapshot.nsecOwners = make(map[dns.RR]*denialProofEntry)
+			for _, entry := range snapshot.nsec {
+				for _, rr := range entry.data {
+					snapshot.nsecOwners[rr] = entry
+				}
 			}
 		}
 	}
