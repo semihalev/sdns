@@ -84,127 +84,89 @@ func Suffixes(name string) iter.Seq[int] {
 	}
 }
 
-// maxWireLabels is the most labels a name that fits DNS wire format can
-// carry: 127 one-octet labels in a 255-octet name. A presentation string
-// long enough to exceed it cannot have come off the wire; CanonicalCompare
-// falls back to an allocating walk for those rather than answer wrongly.
-const maxWireLabels = 127
-
-// CanonicalCompare orders a and b per RFC 4034 §6.1: labels compared
-// right to left, case-insensitively, with the name that runs out of labels
-// first sorting first. It is the ordering every NSEC coverage proof stands
-// on, and the previous implementation lowercased, rooted and split both
-// names to compute it.
+// CanonicalCompare orders a and b per RFC 4034 §6.3: the canonical DNS name
+// order — labels compared right to left as the octets they decode to,
+// ASCII-folded, with the name that runs out of labels first sorting first.
+// It is the ordering every NSEC coverage proof stands on.
 //
-// The fold is ASCII, which is both what the RFC's canonical form specifies
-// and what the library's own comparisons do. (The implementation this
-// replaces folded through strings.ToLower, whose non-ASCII case mappings
-// have no business in DNS names; names that reach this function come from
-// packed messages, whose presentation form escapes non-ASCII bytes.)
+// The octets, not the spelling. A presentation label is an encoding — `\065`
+// is the octet 0x41, the same label as `a`; `\.` inside a label is the octet
+// 0x2E, which sorts before `0` — and the comparison this replaces ordered
+// the escape text instead, so wire-equal names compared unequal and names
+// around the escapes could invert. Every escape is decoded as it is read —
+// exactly as the library's packer decodes it, wrap quirk included (see
+// decodeOctet) — and nothing is materialized. A dangling backslash, which
+// no valid name contains, decodes as a literal one, keeping the order total
+// for inputs only a hand can construct.
 //
-// A second deliberate divergence, also unreachable from a packed message: a
-// raw multi-byte rune directly before a backslash run at the end of a name
-// trips a rune-versus-byte miscount in the library's IsFqdn, which the old
-// implementation inherited through Fqdn — it declared such names unrooted,
-// rooted them a second time, and compared a phantom empty label. This walk
-// counts bytes and does not.
+// The fold is ASCII, which is what the RFC's canonical form specifies. (The
+// old implementation folded through strings.ToLower, whose non-ASCII case
+// mappings have no business in DNS names.)
 //
-// Rooted and unrooted spellings compare equal — the labels are read without
-// their separators, so the trailing root dot contributes nothing. The
-// previous implementation rooted both names first for the same effect.
+// Rooted and unrooted spellings compare equal: labels are read without
+// their separators, so the trailing root dot contributes nothing.
+//
+// The walk is forward, in label lockstep after aligning the starts, and the
+// verdict is the rightmost pair that differed — right-to-left order without
+// offset arrays, so the frame stays flat instead of carrying two of them.
 func CanonicalCompare(a, b string) int {
-	// A name ending in an unescaped backslash is a quirk the fuzzer found:
-	// the rooting dot the old implementation appended lands behind the
-	// backslash and becomes a literal, changing the final label. No packed
-	// message can produce the shape — a literal backslash presents as \\ —
-	// but parity is the contract, so it keeps the old walk.
-	if escapedTail(a, len(a)) || escapedTail(b, len(b)) {
-		return canonicalCompareSlow(a, b)
+	ca, cb := canonicalLabelCount(a), canonicalLabelCount(b)
+	offA, offB := 0, 0
+	for i := ca; i > cb; i-- {
+		offA, _ = dns.NextLabel(a, offA)
+	}
+	for i := cb; i > ca; i-- {
+		offB, _ = dns.NextLabel(b, offB)
 	}
 
-	var bufA, bufB [maxWireLabels]int
-	na, okA := labelOffsets(a, &bufA)
-	nb, okB := labelOffsets(b, &bufB)
-	if !okA || !okB {
-		// Beyond any wire-legal name: correctness over thrift. The rooted
-		// canonical walk the old implementation did, for the inputs only a
-		// hand can construct.
-		return canonicalCompareSlow(a, b)
-	}
-
-	i, j := na-1, nb-1
-	for i >= 0 && j >= 0 {
-		if c := compareFold(labelAt(a, &bufA, na, i), labelAt(b, &bufB, nb, j)); c != 0 {
-			return c
+	// Rightmost difference wins: labels are compared left to right and the
+	// last nonzero verdict kept, which is the same answer a right-to-left
+	// walk stops at.
+	verdict := 0
+	for i := min(ca, cb); i > 0; i-- {
+		var labelA, labelB string
+		labelA, offA = canonicalLabel(a, offA, i == 1)
+		labelB, offB = canonicalLabel(b, offB, i == 1)
+		if c := compareDecodedFold(labelA, labelB); c != 0 {
+			verdict = c
 		}
-		i--
-		j--
+	}
+	if verdict != 0 {
+		return verdict
 	}
 	switch {
-	case na < nb:
+	case ca < cb:
 		return -1
-	case na > nb:
+	case ca > cb:
 		return 1
 	}
 	return 0
 }
 
-// canonicalCompareSlow is CanonicalCompare for names carrying more labels
-// than wire format allows: the allocating split, kept off the ordinary path.
-func canonicalCompareSlow(a, b string) int {
-	al := dns.SplitDomainName(dns.Fqdn(a))
-	bl := dns.SplitDomainName(dns.Fqdn(b))
-	i, j := len(al)-1, len(bl)-1
-	for i >= 0 && j >= 0 {
-		if c := compareFold(al[i], bl[j]); c != 0 {
-			return c
-		}
-		i--
-		j--
+// canonicalLabelCount is the label count CanonicalCompare walks: the
+// library's, except that the empty string counts as the root, which is what
+// rooting it first — as the old implementation did — made of it.
+func canonicalLabelCount(name string) int {
+	if name == "" || name == "." {
+		return 0
 	}
-	switch {
-	case len(al) < len(bl):
-		return -1
-	case len(al) > len(bl):
-		return 1
-	}
-	return 0
+	return dns.CountLabel(name)
 }
 
-// labelOffsets writes the label start offsets of name into buf, reporting
-// how many and whether they fit. The buffer travels as an array pointer that
-// is never retained, which is what keeps it on the caller's stack.
-func labelOffsets(name string, buf *[maxWireLabels]int) (n int, ok bool) {
-	if name == "." || name == "" {
-		return 0, true
+// canonicalLabel returns the label starting at off, without its separator,
+// and the offset of the next one. The final label sheds a trailing root dot
+// if it has one; NextLabel decided the boundary, so the dot before a
+// returned offset is never an escaped one.
+func canonicalLabel(name string, off int, last bool) (string, int) {
+	if !last {
+		next, _ := dns.NextLabel(name, off)
+		return name[off : next-1], next
 	}
-	off := 0
-	for {
-		if n == len(buf) {
-			return n, false
-		}
-		buf[n] = off
-		n++
-		next, end := dns.NextLabel(name, off)
-		if end {
-			return n, true
-		}
-		off = next
+	label := name[off:]
+	if len(label) > 1 && label[len(label)-1] == '.' && !escapedTail(label, len(label)-1) {
+		label = label[:len(label)-1]
 	}
-}
-
-// labelAt returns the i-th of n labels without its separator: the trailing
-// dot for a middle label, the root dot for a rooted final one.
-func labelAt(name string, buf *[maxWireLabels]int, n, i int) string {
-	start := buf[i]
-	if i+1 < n {
-		return name[start : buf[i+1]-1]
-	}
-	label := name[start:]
-	if len(label) > 0 && label[len(label)-1] == '.' && !escapedTail(name, len(name)-1) {
-		return label[:len(label)-1]
-	}
-	return label
+	return label, len(name)
 }
 
 // escapedTail reports whether the byte at i is escaped: preceded by an odd
@@ -216,6 +178,55 @@ func escapedTail(s string, i int) bool {
 	}
 	return backslashes%2 == 1
 }
+
+// compareDecodedFold orders two presentation labels as the octet strings
+// they decode to, ASCII-folded: RFC 4034 §6.3's within-label order.
+func compareDecodedFold(a, b string) int {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		var octA, octB byte
+		octA, i = decodeOctet(a, i)
+		octB, j = decodeOctet(b, j)
+		if octA >= 'A' && octA <= 'Z' {
+			octA |= 'a' - 'A'
+		}
+		if octB >= 'A' && octB <= 'Z' {
+			octB |= 'a' - 'A'
+		}
+		switch {
+		case octA < octB:
+			return -1
+		case octA > octB:
+			return 1
+		}
+	}
+	switch {
+	case i < len(a):
+		return 1
+	case j < len(b):
+		return -1
+	}
+	return 0
+}
+
+// decodeOctet reads one octet of a presentation label: a plain byte, an
+// escaped one (`\.`), or a decimal escape (`\046`). The decoding is the
+// library's, quirk included: its dddToByte computes `\DDD` in byte
+// arithmetic, so a value past 255 wraps modulo 256 rather than erroring —
+// no valid name carries one, and matching the authoritative decoder is what
+// keeps the order aligned with the wire for the names that do.
+func decodeOctet(s string, i int) (byte, int) {
+	c := s[i]
+	if c != '\\' || i+1 >= len(s) {
+		return c, i + 1
+	}
+	if isDigit(s[i+1]) && i+3 < len(s) && isDigit(s[i+2]) && isDigit(s[i+3]) {
+		return (s[i+1]-'0')*100 + (s[i+2]-'0')*10 + (s[i+3] - '0'), i + 4
+	}
+	return s[i+1], i + 2
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 // equalFold is the library's own label equality: same length, ASCII case
 // folded, nothing else.
@@ -236,31 +247,4 @@ func equalFold(a, b string) bool {
 		}
 	}
 	return true
-}
-
-// compareFold orders two labels byte-wise under the same ASCII fold.
-func compareFold(a, b string) int {
-	n := min(len(a), len(b))
-	for i := range n {
-		ai, bi := a[i], b[i]
-		if ai >= 'A' && ai <= 'Z' {
-			ai |= 'a' - 'A'
-		}
-		if bi >= 'A' && bi <= 'Z' {
-			bi |= 'a' - 'A'
-		}
-		switch {
-		case ai < bi:
-			return -1
-		case ai > bi:
-			return 1
-		}
-	}
-	switch {
-	case len(a) < len(b):
-		return -1
-	case len(a) > len(b):
-		return 1
-	}
-	return 0
 }
