@@ -144,11 +144,14 @@ xxhash collision must not cross ECS audiences or CD partitions.
 ## 6. Default-chain handler matrix
 
 Verdicts for the strict path (default configuration; from the front-door
-audit). *view-capable* = can serve from the request view without a decoded
-Msg; *post-Next safe* = its after-`Next` reads survive the view→Msg
-transition through accessors; *ctx-clean* = no ordinary ctx primitives.
+audit). There is one handler contract — `ServeDNS(ctx, ch)` over the
+unified `middleware.Request` — so *wire-capable* means the handler's body
+reads only parsed request facts (accessors) on the wire branch and calls
+`ch.Materialize` only when it genuinely needs the decoded message;
+*post-Next safe* = its after-`Next` reads survive the wire→Msg transition
+through accessors; *ctx-clean* = no ordinary ctx primitives.
 
-| Handler | Default state | view-capable | post-Next safe | ctx-clean | Notes |
+| Handler | Default state | wire-capable | post-Next safe | ctx-clean | Notes |
 |---|---|---|---|---|---|
 | recovery | active | yes | yes (panic path only) | yes | deferred recover only |
 | metrics | active | needs qtype/rcode accessors | yes | yes | label lookup must take the direct-counter path (its two-label pool is not strict-eligible) |

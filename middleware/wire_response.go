@@ -153,19 +153,25 @@ func (w *responseWriter) WriteWire(body []byte, info WireInfo) error {
 
 	// Size comes from len(w.wire); the transport's count would include a
 	// stream length prefix. A zero here only marks the response written.
-	_, err := w.ResponseWriter.Write(body)
+	_, err := w.Transport.Write(body)
 	w.size = 0
 	return err
 }
 
-// BeginWire on the base response writer leases a fresh buffer. The server's
-// strict-path writer overrides the backing with its job slab; here the lease
-// semantics are what matters: the body is built in a buffer the writer
-// handed out, and the writer keeps it after CommitWire for the lazy
-// post-write Msg() contract.
+// BeginWire on the base response writer leases from the transport's
+// job-owned storage when it offers any (WireTransportLeaser), else a fresh
+// buffer. Either way the lease semantics hold: the body is built in a
+// buffer the writer handed out, and the writer keeps it after CommitWire
+// for the lazy post-write Msg() contract — a job-backed lease stays valid
+// until the job releases, which is after the middleware unwind completes.
 func (w *responseWriter) BeginWire(size, reserve int) []byte {
 	if w.Written() {
 		return nil
+	}
+	if leaser, ok := w.Transport.(WireTransportLeaser); ok {
+		if buf := leaser.LeaseWire(size + reserve); buf != nil {
+			return buf
+		}
 	}
 	return make([]byte, 0, size+reserve)
 }

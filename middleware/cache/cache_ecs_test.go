@@ -109,7 +109,7 @@ func (h *echoHandler) ServeDNS(_ context.Context, ch *middleware.Chain) {
 	h.lastClient = ch.Writer.RemoteAddr().String()
 	h.mu.Unlock()
 
-	resp := reply(ch.Request, h.aRecord, h.scopeBits)
+	resp := reply(ch.Request.Msg(), h.aRecord, h.scopeBits)
 	_ = ch.Writer.WriteMsg(resp)
 }
 

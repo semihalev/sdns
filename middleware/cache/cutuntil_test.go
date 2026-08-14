@@ -367,7 +367,7 @@ func TestWriteMsg_CutUntilSeam(t *testing.T) {
 	resolver := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		middleware.ResponseMetaFrom(ctx).BoundCutFor(cut, cutKey)
 		resp := cutTestMsg("seam.example.", dns.RcodeSuccess, 300)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = cutTestMsg("seam.example.", dns.RcodeSuccess, 300).Answer
 		_ = ch.Writer.WriteMsg(resp)
 		ch.Cancel()
@@ -406,7 +406,7 @@ func TestWriteMsg_CNAMEChainUsesShortestCut(t *testing.T) {
 	targetHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		middleware.ResponseMetaFrom(ctx).BoundCutFor(shortCut, shortKey)
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.A{
 			Hdr: dns.RR_Header{Name: "target.short.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
 			A:   []byte{192, 0, 2, 44},
@@ -419,7 +419,7 @@ func TestWriteMsg_CNAMEChainUsesShortestCut(t *testing.T) {
 	outerHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		middleware.ResponseMetaFrom(ctx).BoundCutFor(longCut, longKey)
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.CNAME{
 			Hdr:    dns.RR_Header{Name: "alias.long.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
 			Target: "target.short.",
@@ -464,12 +464,12 @@ func TestWriteMsg_ForwarderAndLocalAnswersRemainUnbounded(t *testing.T) {
 
 	boundedCut := time.Now().Add(time.Minute)
 	h := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-		if ch.Request.Question[0].Name == "bounded.example." {
+		if ch.Request.Msg().Question[0].Name == "bounded.example." {
 			middleware.ResponseMetaFrom(ctx).BoundCutFor(boundedCut, 0x501)
 		}
-		resp := cutTestMsg(ch.Request.Question[0].Name, dns.RcodeSuccess, 300)
-		resp.SetReply(ch.Request)
-		resp.Answer = cutTestMsg(ch.Request.Question[0].Name, dns.RcodeSuccess, 300).Answer
+		resp := cutTestMsg(ch.Request.Msg().Question[0].Name, dns.RcodeSuccess, 300)
+		resp.SetReply(ch.Request.Msg())
+		resp.Answer = cutTestMsg(ch.Request.Msg().Question[0].Name, dns.RcodeSuccess, 300).Answer
 		_ = ch.Writer.WriteMsg(resp)
 		ch.Cancel()
 	})

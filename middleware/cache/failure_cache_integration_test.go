@@ -57,7 +57,7 @@ func TestFailureCacheFirstResponseThenEDE13Hit(t *testing.T) {
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		calls.Add(1)
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Rcode = dns.RcodeServerFailure
 		resp.AuthenticatedData = true
 		resp.SetEdns0(1232, true)
@@ -152,7 +152,7 @@ func TestFailureProbeFollowersRegroupAfterRequestLocalLeader(t *testing.T) {
 		}
 
 		resp := new(dns.Msg)
-		resp.SetRcode(ch.Request, dns.RcodeServerFailure)
+		resp.SetRcode(ch.Request.Msg(), dns.RcodeServerFailure)
 		ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 		middleware.MarkRequestLocalFailureResponse(
 			ctx,
@@ -301,7 +301,7 @@ func TestFailureProbeRegroupCanPublishRecovery(t *testing.T) {
 		if call == 1 {
 			<-releaseFirst
 			resp := new(dns.Msg)
-			resp.SetRcode(ch.Request, dns.RcodeServerFailure)
+			resp.SetRcode(ch.Request.Msg(), dns.RcodeServerFailure)
 			ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 			middleware.MarkRequestLocalFailureResponse(
 				ctx,
@@ -318,10 +318,10 @@ func TestFailureProbeRegroupCanPublishRecovery(t *testing.T) {
 		}
 
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.A{
 			Hdr: dns.RR_Header{
-				Name:   ch.Request.Question[0].Name,
+				Name:   ch.Request.Msg().Question[0].Name,
 				Rrtype: dns.TypeA,
 				Class:  dns.ClassINET,
 				Ttl:    60,
@@ -414,7 +414,7 @@ func TestFailureProbeRegroupDoesNotSpinOnExpiredWaitGeneration(t *testing.T) {
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		calls.Add(1)
 		resp := new(dns.Msg)
-		resp.SetRcode(ch.Request, dns.RcodeServerFailure)
+		resp.SetRcode(ch.Request.Msg(), dns.RcodeServerFailure)
 		ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 		middleware.MarkRequestLocalFailureResponse(
 			ctx,

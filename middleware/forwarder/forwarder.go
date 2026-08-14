@@ -167,7 +167,11 @@ func (f *Forwarder) Name() string { return name }
 
 // (*Forwarder).ServeDNS serveDNS implements the Handle interface.
 func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	if len(req.Question) == 0 || len(f.servers) == 0 {
 		ch.CancelWithRcode(dns.RcodeServerFailure, true)

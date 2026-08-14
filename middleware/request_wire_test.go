@@ -1,0 +1,237 @@
+package middleware
+
+import (
+	"context"
+	"encoding/binary"
+	"testing"
+	"time"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/mock"
+)
+
+// packQuery packs a one-question query, optionally with an OPT carrying
+// the given options, and returns the wire bytes.
+func packQuery(t *testing.T, name string, qtype uint16, edns bool, opts ...dns.EDNS0) []byte {
+	t.Helper()
+	m := new(dns.Msg)
+	m.SetQuestion(name, qtype)
+	if edns {
+		m.SetEdns0(1232, true)
+		if len(opts) > 0 {
+			m.IsEdns0().Option = append(m.IsEdns0().Option, opts...)
+		}
+	}
+	raw, err := m.Pack()
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	return raw
+}
+
+// TestParseWireAccessors pins that a wire-born Request reports exactly the
+// facts the decoded form would.
+func TestParseWireAccessors(t *testing.T) {
+	cookie := &dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: "0123456789abcdef"}
+	nsid := &dns.EDNS0_NSID{Code: dns.EDNS0NSID}
+	raw := packQuery(t, "WWW.Example.COM.", dns.TypeAAAA, true, cookie, nsid)
+
+	readTime := time.Now()
+	slot := &struct{ tag string }{tag: "slot"}
+	r := new(Request)
+	if !r.ParseWire(raw, readTime, slot) {
+		t.Fatal("eligible query refused")
+	}
+
+	decoded := new(dns.Msg)
+	if err := decoded.Unpack(raw); err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+
+	if r.Msg() != nil {
+		t.Fatal("wire-born request must start undecoded")
+	}
+	if got, want := r.ID(), decoded.Id; got != want {
+		t.Fatalf("ID %d, want %d", got, want)
+	}
+	if got, want := r.Qtype(), decoded.Question[0].Qtype; got != want {
+		t.Fatalf("Qtype %d, want %d", got, want)
+	}
+	if got, want := r.Qclass(), decoded.Question[0].Qclass; got != want {
+		t.Fatalf("Qclass %d, want %d", got, want)
+	}
+	if got, want := r.RD(), decoded.RecursionDesired; got != want {
+		t.Fatalf("RD %v, want %v", got, want)
+	}
+	if got, want := r.CD(), decoded.CheckingDisabled; got != want {
+		t.Fatalf("CD %v, want %v", got, want)
+	}
+	if r.Opcode() != dns.OpcodeQuery {
+		t.Fatalf("Opcode %d, want query", r.Opcode())
+	}
+	if !r.HasOPT() || !r.DO() || r.UDPSize() != 1232 || r.EDNSVersion() != 0 {
+		t.Fatalf("OPT facts diverge: hasOPT=%v do=%v size=%d version=%d",
+			r.HasOPT(), r.DO(), r.UDPSize(), r.EDNSVersion())
+	}
+	if !r.HasNSID() || r.HasECS() {
+		t.Fatalf("option flags diverge: nsid=%v ecs=%v", r.HasNSID(), r.HasECS())
+	}
+	if got := r.ClientCookie(); len(got) != 8 ||
+		binary.BigEndian.Uint64(got) != 0x0123456789abcdef {
+		t.Fatalf("client cookie %x", got)
+	}
+	// The wire name is the client's exact spelling.
+	wantName := []byte("\x03WWW\x07Example\x03COM\x00")
+	if string(r.WireName()) != string(wantName) {
+		t.Fatalf("wire name %q, want %q", r.WireName(), wantName)
+	}
+	if !r.ReadTime().Equal(readTime) {
+		t.Fatal("read time not carried")
+	}
+	if r.EDNSWriterSlot() != any(slot) {
+		t.Fatal("edns writer slot not carried")
+	}
+}
+
+// TestParseWireEligibility pins the conservative refusal set: everything a
+// wire-born request cannot express takes the decoded entry instead.
+func TestParseWireEligibility(t *testing.T) {
+	base := packQuery(t, "example.com.", dns.TypeA, false)
+
+	mutate := func(f func(b []byte) []byte) []byte {
+		b := append([]byte(nil), base...)
+		return f(b)
+	}
+
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{"response bit", mutate(func(b []byte) []byte { b[2] |= 0x80; return b })},
+		{"foreign opcode", mutate(func(b []byte) []byte { b[2] |= byte(dns.OpcodeNotify) << 3; return b })},
+		{"qdcount 2", mutate(func(b []byte) []byte { binary.BigEndian.PutUint16(b[4:6], 2); return b })},
+		{"ancount 1", mutate(func(b []byte) []byte { binary.BigEndian.PutUint16(b[6:8], 1); return b })},
+		{"nscount 1", mutate(func(b []byte) []byte { binary.BigEndian.PutUint16(b[8:10], 1); return b })},
+		{"arcount 2", mutate(func(b []byte) []byte { binary.BigEndian.PutUint16(b[10:12], 2); return b })},
+		{"compressed name", func() []byte {
+			b := append([]byte(nil), base[:12]...)
+			b = append(b, 0xC0, 0x0C) // pointer where a name must be literal
+			b = append(b, base[12+len("example.com.")+1:]...)
+			return b
+		}()},
+		{"trailing bytes", append(append([]byte(nil), base...), 0x00)},
+		{"truncated question", base[:14]},
+		{"arcount without record", mutate(func(b []byte) []byte { binary.BigEndian.PutUint16(b[10:12], 1); return b })},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := new(Request)
+			if r.ParseWire(tc.raw, time.Now(), nil) {
+				t.Fatal("ineligible packet accepted")
+			}
+		})
+	}
+
+	// Extended-rcode and bad-version OPTs also refuse.
+	withOPT := packQuery(t, "example.com.", dns.TypeA, true)
+	optOff := len(withOPT) - 11 // fixed OPT: root + type + class + ttl + rdlen(0)
+	extRcode := append([]byte(nil), withOPT...)
+	extRcode[optOff+5] = 1
+	r := new(Request)
+	if r.ParseWire(extRcode, time.Now(), nil) {
+		t.Fatal("extended-rcode query accepted")
+	}
+}
+
+// materializeProbe drives Chain.Materialize from inside a handler.
+type materializeProbe struct {
+	sawWire  bool
+	detached context.Context
+	msg      *dns.Msg
+}
+
+func (p *materializeProbe) Name() string { return "materialize-probe" }
+
+func (p *materializeProbe) ServeDNS(ctx context.Context, ch *Chain) {
+	p.sawWire = ch.Request.Msg() == nil
+	ctx, req := ch.Materialize(ctx)
+	p.detached, p.msg = ctx, req
+	if req == nil {
+		return
+	}
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+}
+
+// TestMaterializeTransition pins the one-way wire→Msg transition: the
+// handler that needs the decoded request gets it exactly once, on a
+// detached deadline context, and the chain closes the detach lifecycle.
+func TestMaterializeTransition(t *testing.T) {
+	probe := &materializeProbe{}
+	ch := NewChain([]Handler{probe})
+
+	raw := packQuery(t, "example.com.", dns.TypeA, true)
+	r := new(Request)
+	if !r.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("eligible query refused")
+	}
+	w := mock.NewWriter("udp", "203.0.113.10:4242")
+	ch.ResetWire(w, r)
+	ch.Next(context.Background())
+
+	if !probe.sawWire {
+		t.Fatal("handler did not observe the wire-born request")
+	}
+	if probe.msg == nil || ch.Request.Msg() != probe.msg {
+		t.Fatal("materialization did not latch the decoded request")
+	}
+	if probe.detached == context.Background() {
+		t.Fatal("materialization must hand back a detached context")
+	}
+	if _, ok := probe.detached.Deadline(); !ok {
+		t.Fatal("detached context carries no deadline")
+	}
+	if ch.detachCleanup == nil {
+		t.Fatal("chain does not own the detach cleanup")
+	}
+	ch.finishDetach()
+	if ch.detachCleanup != nil {
+		t.Fatal("finishDetach must clear the cleanup")
+	}
+	if !w.Written() {
+		t.Fatal("reply never reached the transport")
+	}
+	if w.Msg().Id != r.ID() {
+		t.Fatalf("reply ID %d, want %d", w.Msg().Id, r.ID())
+	}
+
+	// Idempotent: a second Materialize returns the same message and the
+	// caller's context untouched.
+	ctx2, again := ch.Materialize(context.Background())
+	if again != probe.msg || ctx2 != context.Background() {
+		t.Fatal("second materialization must be a no-op")
+	}
+}
+
+// TestCancelWithRcodeWireBorn pins the terminal rcode reply on an
+// undecoded request: it decodes for the reply shape but detaches nothing.
+func TestCancelWithRcodeWireBorn(t *testing.T) {
+	ch := NewChain(nil)
+	raw := packQuery(t, "example.com.", dns.TypeA, true)
+	r := new(Request)
+	if !r.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("eligible query refused")
+	}
+	w := mock.NewWriter("udp", "203.0.113.11:4242")
+	ch.ResetWire(w, r)
+
+	ch.CancelWithRcode(dns.RcodeRefused, true)
+	if !w.Written() || w.Rcode() != dns.RcodeRefused {
+		t.Fatalf("rcode reply missing: written=%v rcode=%d", w.Written(), w.Rcode())
+	}
+	if ch.detachCleanup != nil {
+		t.Fatal("a terminal reply must not establish a detach lifecycle")
+	}
+}

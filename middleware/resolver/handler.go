@@ -82,7 +82,11 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	w, req := ch.Writer, ch.Request
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	// Ensure request ID is in context for tracking. It is request-lifetime
 	// state, so pin it to the deadline carrier when there is one; a foreign

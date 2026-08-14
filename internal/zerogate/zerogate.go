@@ -46,17 +46,18 @@ const (
 
 // Stage names the currently active budget row. It moves forward as stages
 // land; budgets only ever tighten.
-const Stage = "G0"
+const Stage = "Z1"
 
 // PerOpBudget is the per-operation malloc ceiling for the active stage, by
-// flavor. G0 measures the miekg-based server as it stands — the ceiling is
-// a regression tripwire, not a target. S1a replaces the server layer,
-// Z1 removes the request decode and context, Z2b pins zero (delta == 0,
-// not a rounded per-op figure).
+// flavor. The ceiling is a regression tripwire, not a target. G0 measured
+// the miekg-based server (~16/op UDP, ~13/op TCP); S1a/S1b's owned engines
+// brought both to ~10/op; Z1's wire-born request and job carrier serve a
+// hit at ~1/op — the row leaves headroom for platform variance, and Z2b
+// pins zero (delta == 0, not a rounded per-op figure).
 var PerOpBudget = map[string]map[string]float64{
-	"G0": {
-		FlavorUDP4Specific: 100,
-		FlavorTCP:          130,
+	"Z1": {
+		FlavorUDP4Specific: 3,
+		FlavorTCP:          3,
 	},
 }
 

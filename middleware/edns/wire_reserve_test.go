@@ -38,6 +38,7 @@ func TestWireOPTLenMatchesPackedOPT(t *testing.T) {
 			w.opt.Hdr.Name = "."
 			w.opt.Hdr.Rrtype = dns.TypeOPT
 			w.opt.SetUDPSize(dnsutil.DefaultMsgSize)
+			w.respUDPSize = dnsutil.DefaultMsgSize
 
 			predicted, ok := w.wireOPTLen()
 			if !ok {
@@ -71,6 +72,7 @@ func TestWireReadyAllocatesNothing(t *testing.T) {
 	w.opt.Hdr.Name = "."
 	w.opt.Hdr.Rrtype = dns.TypeOPT
 	w.opt.SetUDPSize(dnsutil.DefaultMsgSize)
+	w.respUDPSize = dnsutil.DefaultMsgSize
 
 	if allocs := testing.AllocsPerRun(200, func() {
 		if _, ok := w.WireReady(); !ok {
@@ -138,6 +140,7 @@ func TestAppendWireOPTMatchesLibraryPacking(t *testing.T) {
 			w.opt.Hdr.Name = "."
 			w.opt.Hdr.Rrtype = dns.TypeOPT
 			w.opt.SetUDPSize(tc.udpSize)
+			w.respUDPSize = tc.udpSize
 
 			ours, ok := w.appendWireOPT(nil)
 			if !ok {
@@ -190,6 +193,7 @@ func TestServeWireOPTAllocatesNothing(t *testing.T) {
 	w.opt.Hdr.Name = "."
 	w.opt.Hdr.Rrtype = dns.TypeOPT
 	w.opt.SetUDPSize(dnsutil.DefaultMsgSize)
+	w.respUDPSize = dnsutil.DefaultMsgSize
 
 	reserve, _ := w.wireOPTLen()
 	body := make([]byte, 0, reserve)

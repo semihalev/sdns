@@ -144,7 +144,7 @@ func Test_Forwarder(t *testing.T) {
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)

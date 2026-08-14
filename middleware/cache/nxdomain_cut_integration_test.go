@@ -187,14 +187,14 @@ func TestNXDomainCutIntegrationExactAndDescendantBoundaries(t *testing.T) {
 	calls := 0
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		calls++
-		if ch.Request.Question[0].Name == nxCutDeniedName {
-			resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+		if ch.Request.Msg().Question[0].Name == nxCutDeniedName {
+			resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 			nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 			_ = ch.Writer.WriteMsg(resp)
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 
@@ -242,7 +242,7 @@ func TestNXDomainCutIntegrationDO0SeedRetainsProofForDO1Hit(t *testing.T) {
 	calls := 0
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		calls++
-		resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+		resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 		nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 		_ = ch.Writer.WriteMsg(resp)
 		ch.Cancel()
@@ -269,14 +269,14 @@ func TestNXDomainCutIntegrationRejectsUnmarkedAD(t *testing.T) {
 	calls := 0
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		calls++
-		if ch.Request.Question[0].Name == denied {
+		if ch.Request.Msg().Question[0].Name == denied {
 			// Proof-shaped AD=1 input from an untrusted forwarder/plugin must
 			// remain an ordinary exact NXDOMAIN cache entry.
-			_ = ch.Writer.WriteMsg(nxCutValidatedResponse(ch.Request, denied, nxCutZone))
+			_ = ch.Writer.WriteMsg(nxCutValidatedResponse(ch.Request.Msg(), denied, nxCutZone))
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 
@@ -307,14 +307,14 @@ func TestNXDomainCutIntegrationBypassesCDAndECS(t *testing.T) {
 		calls := 0
 		downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			calls++
-			if ch.Request.Question[0].Name == nxCutDeniedName {
-				resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+			if ch.Request.Msg().Question[0].Name == nxCutDeniedName {
+				resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 				nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 				_ = ch.Writer.WriteMsg(resp)
 				ch.Cancel()
 				return
 			}
-			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 			ch.Cancel()
 		})
 
@@ -341,15 +341,15 @@ func TestNXDomainCutIntegrationBypassesCDAndECS(t *testing.T) {
 		calls := 0
 		downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			calls++
-			if ch.Request.Question[0].Name == nxCutDeniedName {
-				resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+			if ch.Request.Msg().Question[0].Name == nxCutDeniedName {
+				resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 				resp.CheckingDisabled = false
 				nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 				_ = ch.Writer.WriteMsg(resp)
 				ch.Cancel()
 				return
 			}
-			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 			ch.Cancel()
 		})
 
@@ -386,14 +386,14 @@ func TestNXDomainCutIntegrationBypassesCDAndECS(t *testing.T) {
 		calls := 0
 		downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			calls++
-			if ch.Request.Question[0].Name == nxCutDeniedName {
-				resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+			if ch.Request.Msg().Question[0].Name == nxCutDeniedName {
+				resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 				nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 				_ = ch.Writer.WriteMsg(resp)
 				ch.Cancel()
 				return
 			}
-			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 			ch.Cancel()
 		})
 
@@ -424,14 +424,14 @@ func TestNXDomainCutIntegrationBypassesCDAndECS(t *testing.T) {
 		calls := 0
 		downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			calls++
-			if ch.Request.Question[0].Name == nxCutDeniedName {
-				resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+			if ch.Request.Msg().Question[0].Name == nxCutDeniedName {
+				resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 				nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 				_ = ch.Writer.WriteMsg(resp)
 				ch.Cancel()
 				return
 			}
-			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 			ch.Cancel()
 		})
 
@@ -464,14 +464,14 @@ func TestNXDomainCutIntegrationLookupPrecedence(t *testing.T) {
 		calls := 0
 		downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			calls++
-			if ch.Request.Question[0].Name == nxCutDeniedName {
-				resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+			if ch.Request.Msg().Question[0].Name == nxCutDeniedName {
+				resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 				nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 				_ = ch.Writer.WriteMsg(resp)
 				ch.Cancel()
 				return
 			}
-			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 			ch.Cancel()
 		})
 
@@ -499,7 +499,7 @@ func TestNXDomainCutIntegrationLookupPrecedence(t *testing.T) {
 		calls := 0
 		downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			calls++
-			resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+			resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 			nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 			_ = ch.Writer.WriteMsg(resp)
 			ch.Cancel()
@@ -671,9 +671,9 @@ func TestNXDomainCutIntegrationCNAMETransfersTerminalProvenance(t *testing.T) {
 	downstreamCalls := 0
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		downstreamCalls++
-		if ch.Request.Question[0].Name == alias {
+		if ch.Request.Msg().Question[0].Name == alias {
 			resp := new(dns.Msg)
-			resp.SetReply(ch.Request)
+			resp.SetReply(ch.Request.Msg())
 			resp.RecursionAvailable = true
 			resp.Answer = []dns.RR{&dns.CNAME{
 				Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
@@ -683,7 +683,7 @@ func TestNXDomainCutIntegrationCNAMETransfersTerminalProvenance(t *testing.T) {
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(nxCutPositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 

@@ -209,7 +209,7 @@ func TestChainResponseMetaOwnsResolutionAttemptGuardWhenNeeded(t *testing.T) {
 		}
 		ch.Cancel()
 	})})
-	ch.Request = new(dns.Msg)
+	ch.Request = NewRequest(new(dns.Msg))
 	ch.Next(context.Background())
 
 	if got == nil {

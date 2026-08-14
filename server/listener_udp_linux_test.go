@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +20,7 @@ import (
 // every subsequent worker binds to that same port via SO_REUSEPORT —
 // so all PacketConns report the same LocalAddr.
 func TestUDPListener_ZeroPortFanoutSharesOnePort(t *testing.T) {
-	h := dns.HandlerFunc(func(dns.ResponseWriter, *dns.Msg) {})
+	h := rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool { return true })
 	l := newUDPListener("127.0.0.1:0", h, time.Second, 0, 0)
 	// Force multi-socket even on single-CPU runners.
 	if l.sockets < 2 {
@@ -47,10 +48,15 @@ func TestUDPListener_ZeroPortFanoutSharesOnePort(t *testing.T) {
 // client socket (a connected UDP socket discards replies from any other
 // source, so receipt itself is the source-address assertion).
 func TestUDPWildcardReplySourceAddress(t *testing.T) {
-	h := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+	h := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		r := new(dns.Msg)
+		if err := r.Unpack(raw); err != nil {
+			return false
+		}
 		m := new(dns.Msg)
 		m.SetReply(r)
 		_ = w.WriteMsg(m)
+		return true
 	})
 	l := newUDPListener("0.0.0.0:0", h, time.Second, 2, 16)
 	if err := l.Bind(context.Background()); err != nil {

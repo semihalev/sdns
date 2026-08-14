@@ -85,6 +85,9 @@ type ResponseWriter struct {
 	middleware.ResponseWriter
 	*EDNS
 
+	// opt is the request's (mutated) OPT on the Msg path. On the strict
+	// path there is no request message and opt stays nil; respUDPSize and
+	// the raw cookie carry the facts instead.
 	opt    *dns.OPT
 	size   int
 	do     bool
@@ -92,11 +95,30 @@ type ResponseWriter struct {
 	nsid   bool
 	noedns bool
 	noad   bool
+
+	// Strict-path facts, valid whether or not opt exists.
+	respUDPSize  uint16
+	cookieRaw    [8]byte
+	hasCookieRaw bool
+	pooled       bool
 }
 
-// (*EDNS).ServeDNS serveDNS implements the Handle interface.
+// (*EDNS).ServeDNS serveDNS implements the Handle interface. A wire-born
+// request is served from its parsed OPT facts without decoding; cold
+// protocol errors (foreign opcode, BADVERS) and message-born requests take
+// the decoded body.
 func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	if r := ch.Request; r.Msg() == nil &&
+		r.Opcode() == 0 && (!r.HasOPT() || r.EDNSVersion() == 0) {
+		e.serveWire(ctx, ch)
+		return
+	}
+
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	if req.Opcode > 0 {
 		ednsErrorOpcodeUnsupp.Inc()
@@ -143,6 +165,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	rw := responseWriterPool.Get().(*ResponseWriter)
+	rw.pooled = true
 	rw.ResponseWriter = w
 	rw.EDNS = e
 	rw.opt = opt
@@ -151,6 +174,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.cookie = cookie
 	rw.noedns = noedns
 	rw.nsid = nsid
+	rw.respUDPSize = opt.UDPSize()
 	// Clear AD unless the client signalled it wants validation state (DO
 	// or AD bit set) AND did not set CD. RFC 4035 §3.2.3 / RFC 6840 §5.7:
 	// a CD=1 client opted out of trusting our validation, so AD must
@@ -167,6 +191,70 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Writer = w
 		*rw = ResponseWriter{}
 		responseWriterPool.Put(rw)
+	}()
+	ch.Next(ctx)
+}
+
+// serveWire is the wire branch: every client-facing fact (advertised
+// size, DO, cookie, NSID, AD discipline) comes from the request's
+// wire-parsed OPT — no message exists and nothing is mutated. The
+// normalization the decoded path applies through SetEdns0 is recorded on
+// the request instead, so a later materialization produces the identical
+// upstream shape (wire → normalized → Msg, one-way).
+func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
+	req := ch.Request
+	w := ch.Writer
+
+	if req.HasECS() {
+		ctx = middleware.MarkClientECS(ctx)
+	}
+	clientAddr, _ := netip.AddrFromSlice(w.RemoteIP())
+	if clientAddr.Is4In6() {
+		clientAddr = clientAddr.Unmap()
+	}
+
+	noedns := !req.HasOPT()
+	size := min(max(int(req.UDPSize()), dns.MinMsgSize), dnsutil.DefaultMsgSize)
+	switch w.Proto() {
+	case "tcp", "doq", "doh":
+		size = dns.MaxMsgSize
+	}
+	if noedns {
+		size = dns.MinMsgSize
+	}
+
+	var rw *ResponseWriter
+	if slot, ok := req.EDNSWriterSlot().(*ResponseWriter); ok && slot != nil {
+		rw = slot
+	} else {
+		rw = responseWriterPool.Get().(*ResponseWriter)
+		rw.pooled = true
+	}
+	rw.ResponseWriter = w
+	rw.EDNS = e
+	rw.size = size
+	rw.do = req.DO()
+	rw.noedns = noedns
+	rw.nsid = req.HasNSID()
+	rw.respUDPSize = dnsutil.DefaultMsgSize
+	if cookie := req.ClientCookie(); len(cookie) >= 8 {
+		copy(rw.cookieRaw[:], cookie[:8])
+		rw.hasCookieRaw = true
+	}
+	// AD discipline from the raw flags: CD=1 clients never receive AD,
+	// and a client that asserted neither DO nor AD gets it cleared.
+	rw.noad = req.CD() || (!req.AD() && !req.DO())
+
+	req.RecordEDNSNormalization(e.ecsPolicy, clientAddr)
+
+	ch.Writer = rw
+	defer func() {
+		ch.Writer = w
+		pooled := rw.pooled
+		*rw = ResponseWriter{}
+		if pooled {
+			responseWriterPool.Put(rw)
+		}
 	}()
 	ch.Next(ctx)
 }
@@ -199,23 +287,30 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		// Get or create OPT record
 		opt := m.IsEdns0()
 		if opt == nil {
-			// No OPT in response, use ours
+			// No OPT in response, use ours; the strict path carries no
+			// request OPT, so a fresh one stands in.
+			if w.opt == nil {
+				w.opt = new(dns.OPT)
+				w.opt.Hdr.Name = "."
+				w.opt.Hdr.Rrtype = dns.TypeOPT
+			}
 			opt = w.opt
 			m.Extra = append(m.Extra, opt)
 		}
 
 		// Set common OPT parameters
 		opt.SetDo(w.do)
-		opt.SetUDPSize(w.opt.UDPSize())
+		opt.SetUDPSize(w.respUDPSize)
 
 		// Add server options if not already present
 		w.setCookie()
 		w.setNSID()
 
 		// Only add our options if they're not already in the response OPT
-		if opt == w.opt {
+		switch {
+		case opt == w.opt:
 			// This is our OPT, options already added by setCookie/setNSID
-		} else {
+		case w.opt != nil:
 			// This is response OPT, need to merge our options
 			opt.Option = append(opt.Option, w.opt.Option...)
 		}
@@ -275,8 +370,12 @@ func (w *ResponseWriter) setCookie() {
 
 // cookieOption builds the per-client server cookie without mutating any
 // writer state, so the wire path can compose an OPT and still fall back to
-// the Msg path without double-appending.
+// the Msg path without double-appending. A strict-path writer carries the
+// client half as raw bytes; the Msg path derives the text form on demand.
 func (w *ResponseWriter) cookieOption() (dns.EDNS0, bool) {
+	if w.cookie == "" && w.hasCookieRaw {
+		w.cookie = hex.EncodeToString(w.cookieRaw[:])
+	}
 	if w.cookie == "" {
 		return nil, false
 	}

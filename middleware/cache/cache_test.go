@@ -73,7 +73,7 @@ func TestCachePurge(t *testing.T) {
 
 	// Create a mock handler that returns a response for CHAOS queries
 	mockHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-		w, req := ch.Writer, ch.Request
+		w, req := ch.Writer, ch.Request.Msg()
 		if len(req.Question) == 0 {
 			ch.Cancel()
 			return

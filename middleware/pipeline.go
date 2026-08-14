@@ -116,6 +116,10 @@ func (p *Pipeline) PutChain(ch *Chain) {
 	if p == nil || ch == nil {
 		return
 	}
+	// A wire-born request that materialized mid-chain owns a detached
+	// context and a recursion-work boundary; the serve is over, close them
+	// before the chain can be reused.
+	ch.finishDetach()
 	p.chainPool.Put(ch)
 }
 

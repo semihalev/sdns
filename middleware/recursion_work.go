@@ -604,36 +604,7 @@ func EnsureRecursionWork(ctx context.Context, policy RecursionWorkPolicy) (conte
 		case recursionWorkLedgerClosed:
 			return ctx, recursionWorkClosed
 		case recursionWorkLedgerPending:
-			meta := ResponseMetaFrom(ctx)
-			if meta == nil {
-				return ctx, nil
-			}
-			if meta.workPolicy.Enabled() {
-				policy = meta.workPolicy
-			}
-
-			value, _ := contextutil.TryUpdatePinnedValueLocked(
-				ctx,
-				recursionWorkKey,
-				recursionWorkPending,
-				func() *RecursionWorkLedger {
-					if ledger := meta.RecursionWork(); ledger != nil {
-						return ledger
-					}
-					if !policy.Enabled() {
-						return recursionWorkPending
-					}
-					return meta.ensureRecursionWork(policy)
-				},
-			)
-			switch value {
-			case recursionWorkClosed:
-				return ctx, recursionWorkClosed
-			case recursionWorkPending, nil:
-				return ctx, nil
-			default:
-				return ctx, value
-			}
+			return ensurePendingRecursionWork(ctx, policy)
 		default:
 			return ctx, pinned
 		}
@@ -725,6 +696,49 @@ func beginLazyRecursionWorkOwner(ctx context.Context) bool {
 	return contextutil.TryPinValue(ctx, recursionWorkKey, recursionWorkPending)
 }
 
+// ensurePendingRecursionWork is EnsureRecursionWork's pending→ledger
+// transition, split out so its closure — which crosses the carrier
+// interface and therefore heap-allocates its capture — is paid only when
+// the transition actually runs, not in the prologue of every
+// EnsureRecursionWork call (the closure captures this function's
+// parameters; keeping it inline made every caller allocate the capture
+// cell up front).
+func ensurePendingRecursionWork(
+	ctx context.Context,
+	policy RecursionWorkPolicy,
+) (context.Context, *RecursionWorkLedger) {
+	meta := ResponseMetaFrom(ctx)
+	if meta == nil {
+		return ctx, nil
+	}
+	if meta.workPolicy.Enabled() {
+		policy = meta.workPolicy
+	}
+
+	value, _ := contextutil.TryUpdatePinnedValueLocked(
+		ctx,
+		recursionWorkKey,
+		recursionWorkPending,
+		func() *RecursionWorkLedger {
+			if ledger := meta.RecursionWork(); ledger != nil {
+				return ledger
+			}
+			if !policy.Enabled() {
+				return recursionWorkPending
+			}
+			return meta.ensureRecursionWork(policy)
+		},
+	)
+	switch value {
+	case recursionWorkClosed:
+		return ctx, recursionWorkClosed
+	case recursionWorkPending, nil:
+		return ctx, nil
+	default:
+		return ctx, value
+	}
+}
+
 // finishLazyRecursionWork completes the root-owned ledger, if one was ever
 // materialized, and returns it so the caller can attach request identity to
 // its final state. Control-ledger outcomes return nil.
@@ -738,17 +752,7 @@ func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) *Recursion
 		case recursionWorkClosed:
 			return nil
 		case recursionWorkPending:
-			next, _ := contextutil.TryUpdatePinnedValueLocked(
-				ctx,
-				recursionWorkKey,
-				recursionWorkPending,
-				func() *RecursionWorkLedger {
-					if ledger := meta.RecursionWork(); ledger != nil {
-						return ledger
-					}
-					return recursionWorkClosed
-				},
-			)
+			next := finishPendingRecursionWork(ctx, meta)
 			if next == recursionWorkPending {
 				continue
 			}
@@ -762,6 +766,24 @@ func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) *Recursion
 			return pinned
 		}
 	}
+}
+
+// finishPendingRecursionWork is the pending→closed (or pending→ledger)
+// half of finishLazyRecursionWork, split out for the same
+// closure-capture-in-prologue reason as ensurePendingRecursionWork.
+func finishPendingRecursionWork(ctx context.Context, meta *ResponseMeta) *RecursionWorkLedger {
+	next, _ := contextutil.TryUpdatePinnedValueLocked(
+		ctx,
+		recursionWorkKey,
+		recursionWorkPending,
+		func() *RecursionWorkLedger {
+			if ledger := meta.RecursionWork(); ledger != nil {
+				return ledger
+			}
+			return recursionWorkClosed
+		},
+	)
+	return next
 }
 
 // recursionWorkExhaustionLogGate rate-limits the exhaustion breadcrumb to one

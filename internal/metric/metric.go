@@ -300,6 +300,40 @@ func (cv *CounterVec) WithLabelValues(values ...string) *Counter {
 	return cv.create(realKey, values)
 }
 
+// With2 is WithLabelValues for a two-label vector with caller-owned key
+// scratch: the encoded lookup key lives in scratch (a stack array at the
+// observation site), so the hot hit path touches neither the buffer pool
+// nor the allocator — the pool's contents are collectable, which the
+// zero-path gates count. scratch needs room for both values plus their
+// uvarint length prefixes; too small falls back to the pooled path.
+func (cv *CounterVec) With2(scratch []byte, v1, v2 string) *Counter {
+	if cv.arity != 2 {
+		panic("metric: With2 called on a vec not declared with two labels")
+	}
+	if cap(scratch) < len(v1)+len(v2)+2*binary.MaxVarintLen64 {
+		return cv.WithLabelValues(v1, v2)
+	}
+	key := scratch[:0]
+	key = encodeKeyPair(key, v1, v2)
+	keyView := unsafe.String(unsafe.SliceData(key), len(key)) //nolint:gosec // bounded: never escapes on the hit path
+	m := cv.m.Load()
+	if c, ok := (*m)[keyView]; ok {
+		return c
+	}
+	return cv.create(string(key), []string{v1, v2})
+}
+
+func encodeKeyPair(b []byte, v1, v2 string) []byte {
+	var lb [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(lb[:], uint64(len(v1)))
+	b = append(b, lb[:n]...)
+	b = append(b, v1...)
+	n = binary.PutUvarint(lb[:], uint64(len(v2)))
+	b = append(b, lb[:n]...)
+	b = append(b, v2...)
+	return b
+}
+
 func (cv *CounterVec) create(key string, values []string) *Counter {
 	cv.writeMu.Lock()
 	defer cv.writeMu.Unlock()

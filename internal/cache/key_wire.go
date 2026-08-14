@@ -136,6 +136,76 @@ func (h *wireKeyHasher) writeWireName(wireName []byte) bool {
 	return true
 }
 
+// WireNameEqualsPresentation reports whether an uncompressed wire-form name
+// decodes to the same DNS name a stored presentation-format string spells,
+// under the cache's folding rule (ASCII A–Z only). It walks the wire name
+// emitting the presentation form byte-for-byte — the same escape mapping as
+// the hasher — and compares as it goes, so the full-preimage collision
+// verification never allocates. A malformed wire name compares unequal.
+func WireNameEqualsPresentation(wireName []byte, name string) bool {
+	if len(wireName) == 0 || len(wireName) > maxWireNameOctets {
+		return false
+	}
+	fold := func(b byte) byte {
+		if b >= 'A' && b <= 'Z' {
+			return b + 'a' - 'A'
+		}
+		return b
+	}
+	si := 0
+	emit := func(c byte) bool {
+		if si >= len(name) || fold(name[si]) != fold(c) {
+			return false
+		}
+		si++
+		return true
+	}
+
+	off := 0
+	wroteLabel := false
+	for {
+		if off >= len(wireName) {
+			return false
+		}
+		c := int(wireName[off])
+		off++
+		if c == 0 {
+			break
+		}
+		if c&0xC0 != 0 || off+c > len(wireName) {
+			return false
+		}
+		for _, b := range wireName[off : off+c] {
+			switch {
+			case isPresentationSpecial(b):
+				if !emit('\\') || !emit(b) {
+					return false
+				}
+			case b < ' ' || b > '~':
+				if !emit('\\') || !emit('0'+b/100) || !emit('0'+b/10%10) || !emit('0'+b%10) {
+					return false
+				}
+			default:
+				if !emit(b) {
+					return false
+				}
+			}
+		}
+		if !emit('.') {
+			return false
+		}
+		off += c
+		wroteLabel = true
+	}
+	if off != len(wireName) {
+		return false
+	}
+	if !wroteLabel && !emit('.') {
+		return false
+	}
+	return si == len(name)
+}
+
 // KeyWire computes Key/KeyString's hash from an uncompressed wire-form
 // question name. ok is false when the name is not a plain, exactly-consumed
 // uncompressed name — the caller falls back to the decoded path.

@@ -221,12 +221,6 @@ func TestMockResponseWriter(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
-	if err := w.TsigStatus(); err != nil {
-		t.Errorf("TsigStatus: %v", err)
-	}
-	w.TsigTimersOnly(true)
-	w.Hijack()
-	w.Reset(nil)
 }
 
 // TestStaleSliceAggregationCleanup reproduces the regression where

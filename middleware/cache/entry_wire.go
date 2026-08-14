@@ -85,6 +85,13 @@ func (e *CacheEntry) wireEligibleFor(req *dns.Msg) bool {
 		req != nil && len(req.Question) == 1
 }
 
+// wireEligibleForView is wireEligibleFor for the strict path: the view's
+// eligibility already guaranteed exactly one question.
+func (e *CacheEntry) wireEligibleForView() bool {
+	const ready = wireEligible | wireChaseSafe
+	return e != nil && e.wireServe&ready == ready
+}
+
 // wireFitsChain is the second half: the facts only the writer chain knows —
 // the client's real DO bit and the transport's size ceiling. Both halves
 // are allocation-free and complete, so no body is ever built for a request
@@ -222,6 +229,74 @@ func (e *CacheEntry) serveWireInto(
 
 	authData := header.AD()
 	if req.CheckingDisabled && authData {
+		wire.ClearAD(body)
+		authData = false
+	}
+
+	return body, middleware.WireInfo{
+		Rcode:             header.Rcode(),
+		AuthenticatedData: authData,
+		HasDNSSEC:         flags&wireHasDNSSEC != 0,
+	}, true
+}
+
+// serveWireIntoRequest is serveWireInto for a wire-born request: every
+// reply fact comes from the parsed request, and the 0x20 spelling echo
+// copies the client's wire-form name straight over the stored question —
+// the lookup key already proved the names fold equal, so the lengths match
+// by construction (checked anyway; a mismatch drops the body).
+func (e *CacheEntry) serveWireIntoRequest(
+	dst []byte,
+	req *middleware.Request,
+	do bool,
+) ([]byte, middleware.WireInfo, bool) {
+	remaining := e.remaining(time.Now())
+	if remaining <= 0 {
+		return nil, middleware.WireInfo{}, false
+	}
+
+	stored, flags := e.wireBodyFor(do)
+	if stored == nil || cap(dst) < len(stored) {
+		return nil, middleware.WireInfo{}, false
+	}
+
+	header, ok := wire.ParseHeader(stored)
+	if !ok {
+		return nil, middleware.WireInfo{}, false
+	}
+	question, ok := wire.ParseQuestion(stored, wire.HeaderLen)
+	if !ok {
+		return nil, middleware.WireInfo{}, false
+	}
+
+	body := dst[:len(stored)]
+	copy(body, stored)
+
+	clientName := req.WireName()
+	if len(clientName) != question.NameLen {
+		return nil, middleware.WireInfo{}, false
+	}
+	// Echo the client's exact spelling. When it matches the stored bytes
+	// the copy is a no-op-shaped overwrite; when only the case differs it
+	// is the whole rewrite — no re-encoding, the client's wire name IS
+	// the encoding.
+	copy(body[wire.HeaderLen:wire.HeaderLen+question.NameLen], clientName)
+
+	wire.ApplyReply(body, req.ID(), req.Opcode(), req.RD(), req.CD())
+
+	ttl := uint32(remaining.Seconds())
+	off := question.End
+	for range int(header.ANCount) + int(header.NSCount) {
+		rr, ok := wire.ParseRR(body, off)
+		if !ok {
+			return nil, middleware.WireInfo{}, false
+		}
+		wire.SetTTL(body, rr.TTLOff, ttl)
+		off = rr.End
+	}
+
+	authData := header.AD()
+	if req.CD() && authData {
 		wire.ClearAD(body)
 		authData = false
 	}

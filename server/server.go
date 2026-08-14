@@ -44,17 +44,16 @@ func New(cfg *config.Config) *Server {
 	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline()}
 
 	timeout := cfg.QueryTimeout.Duration
-	// The classic transports get the direct handler: their miekg writers
-	// send raw bytes unchanged, so responses may be packed in pooled
-	// storage. DoH and DoQ keep the public entry — one reshapes bytes and
-	// the other rewrites the reply ID, so neither is a raw sink.
-	direct := directHandler{srv: s}
+	// The owned transports feed ServeRaw: raw bytes in, and the server —
+	// not the transport — decides eligibility, decode, and context. DoH
+	// and DoQ enter through ServeMsg with a decoded message — one reshapes
+	// bytes and the other rewrites the reply ID, so neither is a raw sink.
 	s.listeners = []Listener{
-		newUDPListener(cfg.Bind, direct, timeout, cfg.IngressWorkers, cfg.IngressQueue),
-		newTCPListener(cfg.Bind, direct, timeout, cfg.IngressTCPConns),
+		newUDPListener(cfg.Bind, s, timeout, cfg.IngressWorkers, cfg.IngressQueue),
+		newTCPListener(cfg.Bind, s, timeout, cfg.IngressTCPConns),
 	}
 	if cfg.BindTLS != "" {
-		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, direct, s, timeout, cfg.IngressTCPConns))
+		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, s, s, timeout, cfg.IngressTCPConns))
 	}
 	if cfg.BindDOH != "" {
 		s.listeners = append(s.listeners,
@@ -69,33 +68,18 @@ func New(cfg *config.Config) *Server {
 	return s
 }
 
-// (*Server).ServeDNS serveDNS implements the Handle interface.
-func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	s.ServeDNSContext(context.Background(), w, r)
+// ServeMsg serves one decoded DNS request under the transport's lifetime
+// and the configured end-to-end middleware/resolution timeout. It is the
+// entry for transports that already hold a message — DNS-over-HTTP and
+// DNS-over-QUIC supply client-aware parents — and for embedders. Its
+// writers made no byte-sink promise, so they never receive raw packed
+// bytes; the owned raw transports enter through ServeRaw instead, which is
+// the one road to the direct-pack capability.
+func (s *Server) ServeMsg(parent context.Context, w middleware.Transport, r *dns.Msg) {
+	s.serveMsg(parent, w, r, false)
 }
 
-// directHandler is the dns.Handler the SDNS-owned UDP, TCP and DoT listeners
-// are constructed with. It is the one road to the direct-pack capability:
-// embedded or plugin callers reach the server through the public ServeDNS and
-// ServeDNSContext, whose writers made no byte-sink promise and therefore
-// never receive raw packed bytes — however much their addresses or proto
-// strings resemble a datagram transport.
-type directHandler struct{ srv *Server }
-
-func (h directHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	h.srv.serveDNSContext(context.Background(), w, r, true)
-}
-
-// ServeDNSContext serves one decoded DNS request under the transport's
-// lifetime and the configured end-to-end middleware/resolution timeout.
-// DNS-over-HTTP and DNS-over-QUIC supply client-aware parents; classic
-// dns.Handler transports start from a background parent but still receive the
-// same pipeline-ingress deadline.
-func (s *Server) ServeDNSContext(parent context.Context, w dns.ResponseWriter, r *dns.Msg) {
-	s.serveDNSContext(parent, w, r, false)
-}
-
-func (s *Server) serveDNSContext(parent context.Context, w dns.ResponseWriter, r *dns.Msg, directPack bool) {
+func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns.Msg, directPack bool) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -148,7 +132,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handle := func(req *dns.Msg) *dns.Msg {
 		mw := mock.NewWriter("doh", r.RemoteAddr)
-		s.ServeDNSContext(r.Context(), mw, req)
+		s.ServeMsg(r.Context(), mw, req)
 		if !mw.Written() {
 			return nil
 		}

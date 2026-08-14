@@ -175,7 +175,7 @@ func Test_Server(t *testing.T) {
 	req.SetQuestion("test.com.", dns.TypeA)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	s.ServeDNS(mw, req)
+	s.ServeMsg(context.Background(), mw, req)
 
 	assert.True(t, mw.Written())
 	if assert.NotNil(t, mw.Msg()) {
@@ -227,7 +227,7 @@ func Test_ServerEmptyQuestion(t *testing.T) {
 	req.Id = dns.Id()
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 
-	assert.NotPanics(t, func() { s.ServeDNS(mw, req) })
+	assert.NotPanics(t, func() { s.ServeMsg(context.Background(), mw, req) })
 	assert.True(t, mw.Written())
 	if assert.NotNil(t, mw.Msg()) {
 		assert.Equal(t, dns.RcodeFormatError, mw.Msg().Rcode)

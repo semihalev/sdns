@@ -17,7 +17,7 @@ func (directPackStub) Name() string { return "direct-pack-stub" }
 
 func (directPackStub) ServeDNS(_ context.Context, ch *middleware.Chain) {
 	resp := new(dns.Msg)
-	resp.SetReply(ch.Request)
+	resp.SetReply(ch.Request.Msg())
 	resp.Compress = true
 	rr, err := dns.NewRR("e2e.example. 300 IN A 192.0.2.77")
 	if err == nil {

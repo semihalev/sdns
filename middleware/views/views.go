@@ -96,7 +96,12 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	q := ch.Request.Question[0]
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+
+	q := req.Question[0]
 	qname := dns.CanonicalName(q.Name)
 
 	for _, cv := range v.views {
@@ -154,7 +159,7 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		}
 
 		msg := new(dns.Msg)
-		msg.SetReply(ch.Request)
+		msg.SetReply(req)
 		msg.Authoritative = true
 		msg.RecursionAvailable = true
 		msg.Answer = answers

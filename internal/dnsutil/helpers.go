@@ -188,7 +188,7 @@ func isDNSSEC(rr dns.RR) bool {
 }
 
 // NotSupported response to writer an empty notimplemented message.
-func NotSupported(w dns.ResponseWriter, req *dns.Msg) error {
+func NotSupported(w interface{ WriteMsg(*dns.Msg) error }, req *dns.Msg) error {
 	return w.WriteMsg(&dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			Rcode:             dns.RcodeNotImplemented,

@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -18,7 +17,7 @@ import (
 // large-class ring.
 type tcpListener struct {
 	addr     string
-	handler  dns.Handler
+	handler  rawHandler
 	maxConns int
 	timeout  time.Duration
 
@@ -32,7 +31,7 @@ type tcpListener struct {
 	serving  atomic.Bool
 }
 
-func newTCPListener(addr string, h dns.Handler, timeout time.Duration, maxConns int) *tcpListener {
+func newTCPListener(addr string, h rawHandler, timeout time.Duration, maxConns int) *tcpListener {
 	return &tcpListener{addr: addr, handler: h, timeout: timeout, maxConns: maxConns}
 }
 

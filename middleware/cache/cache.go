@@ -12,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
@@ -384,8 +385,23 @@ func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 }
 
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
+// A wire-born request first tries the wire fast path — the exact-entry
+// lookup on the wire question through the canonical key, served through
+// the writer lease without a decoded request. Everything else — misses,
+// composite candidates (NXDOMAIN cut, aggressive denial, failure cache),
+// scoped/ECS traffic, prefetch-due entries, Msg-path-only hit shapes —
+// falls through to materialization and the ordinary body with every gate
+// and lookup it has today.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	if ch.Request.Msg() == nil && c.serveWire(ctx, ch) {
+		return
+	}
+
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	if len(req.Question) == 0 {
 		ch.Cancel()
@@ -679,7 +695,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// sub-query. The field is cleared on release so a pooled
 	// writer doesn't leak a ctx reference between uses.
 	rw.ctx = ctx
-	rw.req = ch.Request
+	rw.req = ch.Request.Msg()
 	rw.requestCD = requestCD
 	rw.requestHasECS = requestHasECS
 	rw.requestTreeBypassesSharedDenial = requestTreeBypassesSharedDenial
@@ -744,7 +760,7 @@ func (c *Cache) writeRequestLocalFailure(
 	edeText string,
 ) {
 	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
-	resp := cleanRequestLocalFailureResponse(ch.Request, edeCode, edeText)
+	resp := cleanRequestLocalFailureResponse(ch.Request.Msg(), edeCode, edeText)
 	middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
 	_ = ch.Writer.WriteMsg(resp)
 	ch.Cancel()
@@ -942,7 +958,7 @@ func (c *Cache) handleNXDomainCutHit(
 	ch *middleware.Chain,
 	entry *nxDomainCutEntry,
 ) bool {
-	resp := entry.response(ch.Request)
+	resp := entry.response(ch.Request.Msg())
 	if resp == nil {
 		return false
 	}
@@ -994,7 +1010,7 @@ func (c *Cache) handleDenialProofHit(
 }
 
 func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit FailureHit) {
-	resp := hit.Response(ch.Request)
+	resp := hit.Response(ch.Request.Msg())
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		release := meta.MarkCachedFailureResponse(resp)
 		defer release()
@@ -1003,10 +1019,133 @@ func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit 
 	ch.Cancel()
 }
 
+// serveWire is the wire fast path: the exact-entry lookup on the wire
+// question through the canonical key, and a verified, wire-eligible hit
+// answered through the writer lease without a decoded request. A false
+// return is the composite-miss transition point — the caller materializes
+// and runs the ordinary body.
+func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain) bool {
+	req := ch.Request
+	if !req.RD() || req.HasECS() {
+		return false
+	}
+	if _, ok := dns.TypeToString[req.Qtype()]; !ok {
+		return false
+	}
+	if _, ok := dns.ClassToString[req.Qclass()]; !ok {
+		return false
+	}
+
+	key, ok := internalcache.KeyWire(req.WireName(), req.Qtype(), req.Qclass(), req.CD())
+	if !ok {
+		return false
+	}
+	entry := c.checkCache(key)
+	if entry == nil {
+		return false
+	}
+	// Full-preimage collision verification on the wire: name
+	// (case-insensitive), type, class, CD, and the shared/scoped
+	// partition. A mismatch is a miss, exactly as at the Msg-path
+	// chokepoint.
+	if !entryMatchesWire(entry, req) {
+		return false
+	}
+	return c.serveHitFromWire(ctx, ch, entry)
+}
+
+// entryMatchesWire is entryMatchesQuestion plus the preimage dimensions
+// the wire path verifies explicitly: CD and the scope partition.
+func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
+	if entry == nil || entry.question.Name == "" || entry.scoped {
+		return false
+	}
+	if entry.cd != req.CD() {
+		return false
+	}
+	eq := entry.question
+	return eq.Qtype == req.Qtype() && eq.Qclass == req.Qclass() &&
+		internalcache.WireNameEqualsPresentation(req.WireName(), eq.Name)
+}
+
+// serveHitFromWire serves one verified exact hit as bytes built in the
+// writer's lease. Anything the byte path cannot express declines to the
+// ordinary body rather than half-serving.
+func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entry *CacheEntry) bool {
+	w := ch.Writer
+	if w.Internal() {
+		return false
+	}
+	if limiter := entry.GetRateLimiter(); limiter != nil && !limiter.Allow() {
+		ch.Cancel()
+		return true
+	}
+	// A prefetch-due hit needs a decoded request copy for the refresh
+	// queue; the ordinary body claims it.
+	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
+		return false
+	}
+	if !entry.wireEligibleForView() {
+		wireSkipEntry.Inc()
+		return false
+	}
+	ww, ok := w.(middleware.WireWriter)
+	if !ok {
+		wireSkipWriter.Inc()
+		return false
+	}
+	capability, ready := ww.WireReady()
+	if !ready {
+		wireSkipWriter.Inc()
+		return false
+	}
+	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
+		mismatch.Inc()
+		return false
+	}
+	leaser, ok := ww.(middleware.WireBodyLeaser)
+	if !ok {
+		wireSkipWriter.Inc()
+		return false
+	}
+	stored, _ := entry.wireBodyFor(capability.DO)
+	if stored == nil {
+		wireSkipDNSSEC.Inc()
+		return false
+	}
+	dst := leaser.BeginWire(len(stored), capability.Reserve)
+	if dst == nil {
+		wireSkipWriter.Inc()
+		return false
+	}
+	body, info, built := entry.serveWireIntoRequest(dst, ch.Request, capability.DO)
+	if !built {
+		leaser.AbortWire()
+		wireSkipBuild.Inc()
+		return false
+	}
+	switch err := leaser.CommitWire(body, info); {
+	case err == nil:
+		boundRequestToEntryLifetime(ctx, entry)
+		wireFastServed.Inc()
+		ch.Cancel()
+		return true
+	case errors.Is(err, middleware.ErrWireFallback):
+		wireFastFallback.Inc()
+		return false
+	default:
+		// Transport-level failure after commit: the bytes left the
+		// process; the response counts as written (Msg-path parity).
+		boundRequestToEntryLifetime(ctx, entry)
+		ch.Cancel()
+		return true
+	}
+}
+
 // handleCacheHit processes a cache hit.
 func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry *CacheEntry, key uint64) bool {
 	w := ch.Writer
-	req := ch.Request
+	req := ch.Request.Msg()
 
 	// Full-key verification (defends against xxhash64 key collisions).
 	// The cache key is a non-cryptographic 64-bit hash of the query

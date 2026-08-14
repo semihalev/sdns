@@ -109,14 +109,20 @@ func New(cfg *config.Config) *Kubernetes {
 // Name returns the middleware name.
 func (k *Kubernetes) Name() string { return "kubernetes" }
 
-// ServeDNS handles DNS queries.
+// ServeDNS handles DNS queries. The default stub has no registry and
+// passes a wire-born request through with one check; a configured cluster
+// needs the decoded question and materializes.
 func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
-
 	if k.registry == nil {
 		ch.Next(ctx)
 		return
 	}
+
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	atomic.AddUint64(&k.queries, 1)
 	kubernetesQueries.Inc()

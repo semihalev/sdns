@@ -263,7 +263,7 @@ func BenchmarkRateLimitServeDNS(b *testing.B) {
 
 			ch := &middleware.Chain{
 				Writer:  w,
-				Request: req,
+				Request: middleware.NewRequest(req),
 			}
 
 			ctx := context.Background()

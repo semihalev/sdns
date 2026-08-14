@@ -32,7 +32,7 @@ func Test_Cache_Stats(t *testing.T) {
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	mockHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		msg := new(dns.Msg)
-		msg.SetReply(ch.Request)
+		msg.SetReply(ch.Request.Msg())
 		msg.Answer = append(msg.Answer, &dns.A{
 			Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
 			A:   []byte{8, 8, 8, 8},

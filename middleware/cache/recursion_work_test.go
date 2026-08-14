@@ -335,7 +335,7 @@ func TestRequestLocalFailureDoesNotPoisonIndependentRequest(t *testing.T) {
 					localErr = markerCtx.Err()
 				}
 				resp := new(dns.Msg)
-				resp.SetRcode(ch.Request, dns.RcodeServerFailure)
+				resp.SetRcode(ch.Request.Msg(), dns.RcodeServerFailure)
 				middleware.MarkRequestLocalFailureResponse(markerCtx, resp, localErr)
 				_ = ch.Writer.WriteMsg(resp)
 				ch.Cancel()
@@ -370,7 +370,7 @@ func TestRequestLocalFailureDoesNotPoisonIndependentRequest(t *testing.T) {
 			success := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 				downstreamCalls++
 				resp := new(dns.Msg)
-				resp.SetReply(ch.Request)
+				resp.SetReply(ch.Request.Msg())
 				resp.Answer = []dns.RR{&dns.A{
 					Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
 					A:   []byte{192, 0, 2, 80},
@@ -461,7 +461,7 @@ func TestCNAMEChaseRequestLocalFailureDoesNotEnterFailureCache(t *testing.T) {
 
 			outer := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 				resp := new(dns.Msg)
-				resp.SetReply(ch.Request)
+				resp.SetReply(ch.Request.Msg())
 				resp.SetEdns0(dnsutil.DefaultMsgSize, true)
 				resp.Answer = []dns.RR{&dns.CNAME{
 					Hdr: dns.RR_Header{
@@ -507,15 +507,15 @@ func TestCNAMEChaseSharedFailureEntersFailureCache(t *testing.T) {
 	req.SetQuestion("loop.example.", dns.TypeA)
 	outer := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.CNAME{
 			Hdr: dns.RR_Header{
-				Name:   ch.Request.Question[0].Name,
+				Name:   ch.Request.Msg().Question[0].Name,
 				Rrtype: dns.TypeCNAME,
 				Class:  dns.ClassINET,
 				Ttl:    300,
 			},
-			Target: ch.Request.Question[0].Name,
+			Target: ch.Request.Msg().Question[0].Name,
 		}}
 		_ = ch.Writer.WriteMsg(resp)
 		ch.Cancel()

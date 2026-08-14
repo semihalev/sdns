@@ -21,7 +21,6 @@ func Test_Writer(t *testing.T) {
 	assert.Equal(t, mw.LocalAddr().String(), "127.0.0.1:53")
 	assert.Equal(t, mw.RemoteAddr().String(), "127.0.0.1:0")
 	assert.Nil(t, mw.Close())
-	assert.Nil(t, mw.TsigStatus())
 
 	mw = NewWriter("tcp", "127.0.0.255:0")
 	assert.False(t, mw.Written())

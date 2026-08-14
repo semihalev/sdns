@@ -21,12 +21,11 @@ import (
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/semihalev/sdns/internal/mock"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/stretchr/testify/assert"
 )
 
-type dummyHandler struct {
-	dns.Handler
-}
+type dummyHandler struct{}
 
 type doqContextKeyType struct{}
 
@@ -34,15 +33,11 @@ type contextAwareHandler struct {
 	got any
 }
 
-func (h *contextAwareHandler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+func (h *contextAwareHandler) ServeMsg(ctx context.Context, w middleware.Transport, req *dns.Msg) {
+	h.got = ctx.Value(doqContextKeyType{})
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	_ = w.WriteMsg(resp)
-}
-
-func (h *contextAwareHandler) ServeDNSContext(ctx context.Context, w dns.ResponseWriter, req *dns.Msg) {
-	h.got = ctx.Value(doqContextKeyType{})
-	h.ServeDNS(w, req)
 }
 
 func makeRR(data string) dns.RR {
@@ -51,7 +46,7 @@ func makeRR(data string) dns.RR {
 	return r
 }
 
-func (h *dummyHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+func (h *dummyHandler) ServeMsg(_ context.Context, w middleware.Transport, r *dns.Msg) {
 	msg := new(dns.Msg)
 	msg.SetReply(r)
 	msg.Answer = append(msg.Answer, makeRR("example.com.		1800	IN	A	0.0.0.0"))
@@ -256,7 +251,7 @@ func TestServerDispatchesStreamContextToAwareHandler(t *testing.T) {
 	writer := mock.NewWriter("udp", "192.0.2.1:53000")
 	ctx := context.WithValue(context.Background(), doqContextKeyType{}, "stream")
 
-	s.serveDNS(ctx, writer, req)
+	s.Handler.ServeMsg(ctx, writer, req)
 
 	if handler.got != "stream" {
 		t.Fatalf("handler context value = %v, want stream", handler.got)

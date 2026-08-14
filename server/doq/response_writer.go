@@ -8,10 +8,8 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// ResponseWriter implements dns.ResponseWriter for DNS-over-QUIC.
+// ResponseWriter is the middleware.Transport for DNS-over-QUIC.
 type ResponseWriter struct {
-	dns.ResponseWriter
-
 	Conn   *quic.Conn
 	Stream *quic.Stream
 }
@@ -28,10 +26,8 @@ func (w *ResponseWriter) Close() error {
 	return w.Stream.Close()
 }
 
-// (*ResponseWriter).Hijack hijack implements dns.ResponseWriter.Hijack.
-func (w *ResponseWriter) Hijack() {
-	// No-op for QUIC as connection management is handled differently
-}
+// Proto names the transport for the chain's base writer.
+func (w *ResponseWriter) Proto() string { return "doq" }
 
 func (w *ResponseWriter) Write(m []byte) (int, error) {
 	return w.Stream.Write(addPrefixLen(m))

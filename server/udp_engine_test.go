@@ -8,11 +8,20 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware"
 )
+
+// rawHandlerFunc adapts a func to the server's rawHandler interface for
+// test stubs. Shared by every in-package test that feeds the engines.
+type rawHandlerFunc func(middleware.Transport, []byte, time.Time) bool
+
+func (f rawHandlerFunc) ServeRaw(w middleware.Transport, raw []byte, t time.Time) bool {
+	return f(w, raw, t)
+}
 
 // startEngine binds an owned UDP listener around handler and returns the
 // client-facing address and a shutdown func.
-func startEngine(t *testing.T, handler dns.Handler, workers, queue int) (string, func()) {
+func startEngine(t *testing.T, handler rawHandler, workers, queue int) (string, func()) {
 	t.Helper()
 	l := newUDPListener("127.0.0.1:0", handler, time.Second, workers, queue)
 	if err := l.Bind(context.Background()); err != nil {
@@ -44,8 +53,12 @@ func startEngine(t *testing.T, handler dns.Handler, workers, queue int) (string,
 	}
 }
 
-func echoHandler() dns.Handler {
-	return dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+func echoHandler() rawHandler {
+	return rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		r := new(dns.Msg)
+		if err := r.Unpack(raw); err != nil {
+			return false
+		}
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Answer = append(m.Answer, &dns.A{
@@ -54,6 +67,7 @@ func echoHandler() dns.Handler {
 			A: net.IPv4(192, 0, 2, 1),
 		})
 		_ = w.WriteMsg(m)
+		return true
 	})
 }
 
@@ -97,11 +111,16 @@ func TestUDPEngineServes(t *testing.T) {
 // bodies — with ID, opcode, and RD echoed on rejects.
 func TestUDPEngineAcceptParity(t *testing.T) {
 	handlerCalled := make(chan struct{}, 16)
-	addr, stop := startEngine(t, dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+	addr, stop := startEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		r := new(dns.Msg)
+		if err := r.Unpack(raw); err != nil {
+			return false
+		}
 		handlerCalled <- struct{}{}
 		m := new(dns.Msg)
 		m.SetReply(r)
 		_ = w.WriteMsg(m)
+		return true
 	}), 2, 16)
 	defer stop()
 
@@ -224,11 +243,16 @@ func TestUDPEngineAcceptParity(t *testing.T) {
 // reader keeps consuming — and the engine drains cleanly afterwards.
 func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 	release := make(chan struct{})
-	addr, stop := startEngine(t, dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+	addr, stop := startEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		r := new(dns.Msg)
+		if err := r.Unpack(raw); err != nil {
+			return false
+		}
 		<-release
 		m := new(dns.Msg)
 		m.SetReply(r)
 		_ = w.WriteMsg(m)
+		return true
 	}), 2, 4)
 
 	conn, err := net.Dial("udp", addr)

@@ -125,7 +125,12 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	w, req := ch.Writer, ch.Request
+	// The hosts lookup is keyed on the presentation-form name.
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	if len(req.Question) == 0 {
 		ch.Next(ctx)

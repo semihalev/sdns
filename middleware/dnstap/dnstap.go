@@ -101,13 +101,20 @@ func (d *Dnstap) Name() string {
 func (d *Dnstap) ClientOnly() bool { return true }
 
 // (*Dnstap).ServeDNS serveDNS logs DNS messages in dnstap format.
+// Disconnected dnstap is a read-lock check and a wire-born request passes
+// undecoded; a connected tap packs the request and materializes (enabling
+// it is documented as disabling the zero guarantee).
 func (d *Dnstap) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
-
 	if !d.isEnabled() {
 		ch.Next(ctx)
 		return
 	}
+
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	// Capture query time
 	queryTime := time.Now()
@@ -401,6 +408,25 @@ func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 // WireReady passes the byte path through: this layer only observes
 // responses, so its presence must not push a cache hit back onto the Msg
 // path — which is what wrapping without these two methods did.
+// BeginWire/CommitWire/AbortWire pass the body lease through; the commit
+// flows through WriteWire so the tap still observes (and copies) the body.
+func (rw *responseWriter) BeginWire(size, reserve int) []byte {
+	if leaser, ok := rw.ResponseWriter.(middleware.WireBodyLeaser); ok {
+		return leaser.BeginWire(size, reserve)
+	}
+	return nil
+}
+
+func (rw *responseWriter) CommitWire(body []byte, info middleware.WireInfo) error {
+	return rw.WriteWire(body, info)
+}
+
+func (rw *responseWriter) AbortWire() {
+	if leaser, ok := rw.ResponseWriter.(middleware.WireBodyLeaser); ok {
+		leaser.AbortWire()
+	}
+}
+
 func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 	next, ok := rw.ResponseWriter.(middleware.WireWriter)
 	if !ok {

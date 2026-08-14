@@ -15,7 +15,7 @@ import (
 type dummy struct{}
 
 func (d *dummy) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	w, req := ch.Writer, ch.Request.Msg()
 
 	m := new(dns.Msg)
 	m.SetReply(req)
@@ -114,14 +114,14 @@ type optCapture struct {
 }
 
 func (c *optCapture) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if opt := ch.Request.IsEdns0(); opt != nil {
+	if opt := ch.Request.Msg().IsEdns0(); opt != nil {
 		if sub := findSubnet(opt); sub != nil {
 			snap := *sub
 			c.ecs = &snap
 		}
 	}
 	m := new(dns.Msg)
-	m.SetReply(ch.Request)
+	m.SetReply(ch.Request.Msg())
 	_ = ch.Writer.WriteMsg(m)
 }
 
@@ -213,7 +213,7 @@ func TestEDNS_ResponseDoesNotLeakForwardedECS(t *testing.T) {
 	// re-attaches the request OPT — possibly mutated by SetEdns0 to
 	// include the forwarded ECS — onto its response message.
 	leak := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-		req := ch.Request
+		req := ch.Request.Msg()
 		resp := new(dns.Msg)
 		resp.SetReply(req)
 		if opt := req.IsEdns0(); opt != nil {
@@ -308,7 +308,7 @@ type adSetter struct{}
 
 func (a *adSetter) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	m := new(dns.Msg)
-	m.SetReply(ch.Request)
+	m.SetReply(ch.Request.Msg())
 	m.AuthenticatedData = true
 	_ = ch.Writer.WriteMsg(m)
 }

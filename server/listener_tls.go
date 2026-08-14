@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -24,7 +23,7 @@ type certProvider interface {
 // read deadline on the tls.Conn.
 type tlsListener struct {
 	addr     string
-	handler  dns.Handler
+	handler  rawHandler
 	certs    certProvider
 	maxConns int
 	timeout  time.Duration
@@ -39,7 +38,7 @@ type tlsListener struct {
 	serving  atomic.Bool
 }
 
-func newTLSListener(addr string, h dns.Handler, certs certProvider, timeout time.Duration, maxConns int) *tlsListener {
+func newTLSListener(addr string, h rawHandler, certs certProvider, timeout time.Duration, maxConns int) *tlsListener {
 	return &tlsListener{addr: addr, handler: h, certs: certs, timeout: timeout, maxConns: maxConns}
 }
 

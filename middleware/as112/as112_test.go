@@ -35,7 +35,7 @@ func Test_AS112(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("10.in-addr.arpa.", dns.TypeSOA)
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw

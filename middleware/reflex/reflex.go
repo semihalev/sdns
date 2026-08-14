@@ -100,9 +100,13 @@ func (r *Reflex) Name() string {
 // internal sub-queries don't trip detection heuristics.
 func (r *Reflex) ClientOnly() bool { return true }
 
-// ServeDNS processes queries for amplification attack detection.
+// ServeDNS processes queries for amplification attack detection. The
+// scoring facts — qtype and request wire length — come from the parsed
+// request, so a wire-born query is scored without decoding; only the
+// suspicious path materializes (for its logs and the BADCOOKIE-style
+// refusal).
 func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	w := ch.Writer
 
 	// Skip internal/loopback/TCP (can't spoof TCP)
 	if w.Internal() || w.RemoteIP() == nil || w.RemoteIP().IsLoopback() {
@@ -122,19 +126,19 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	if len(req.Question) == 0 {
+	qtype, reqLen, ok := requestFacts(ch.Request)
+	if !ok {
 		ch.Next(ctx)
 		return
 	}
 
-	q := req.Question[0]
 	ip := w.RemoteIP().String()
 
 	// Calculate amplification potential
-	ampFactor := getAmpFactor(q.Qtype)
+	ampFactor := getAmpFactor(qtype)
 
 	// Record this query
-	score := r.tracker.RecordQuery(ip, q.Qtype, ampFactor, req.Len())
+	score := r.tracker.RecordQuery(ip, qtype, ampFactor, reqLen)
 
 	// Check if IP exceeds threshold
 	threshold := r.threshold()
@@ -152,7 +156,7 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		orig := ch.Writer
 		ch.Writer = &responseWriter{
 			ResponseWriter: w,
-			request:        req,
+			reqLen:         reqLen,
 			tracker:        r.tracker,
 			ip:             ip,
 		}
@@ -162,9 +166,24 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ch.Next(ctx)
 }
 
+// requestFacts returns the question type and the request's wire length —
+// exact for a wire-born request, the library's estimate otherwise.
+func requestFacts(req *middleware.Request) (qtype uint16, size int, ok bool) {
+	if m := req.Msg(); m != nil {
+		if len(m.Question) == 0 {
+			return 0, 0, false
+		}
+		return m.Question[0].Qtype, m.Len(), true
+	}
+	return req.Qtype(), len(req.Raw()), true
+}
+
 // handleSuspicious handles a suspicious IP.
 func (r *Reflex) handleSuspicious(ctx context.Context, ch *middleware.Chain, ip string, score float64) {
-	req := ch.Request
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
 	q := req.Question[0]
 
 	ReflexDetections.WithLabelValues(dns.TypeToString[q.Qtype]).Inc()
@@ -236,7 +255,7 @@ func getAmpFactor(qtype uint16) float64 {
 // responseWriter wraps ResponseWriter to track response sizes.
 type responseWriter struct {
 	middleware.ResponseWriter
-	request *dns.Msg
+	reqLen  int
 	tracker *IPTracker
 	ip      string
 }
@@ -251,7 +270,7 @@ func (w *responseWriter) Size() int {
 func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 	// Record response size for amplification tracking
 	if res != nil {
-		rw.tracker.RecordResponse(rw.ip, rw.request.Len(), res.Len())
+		rw.tracker.RecordResponse(rw.ip, rw.reqLen, res.Len())
 	}
 	return rw.ResponseWriter.WriteMsg(res)
 }
@@ -259,6 +278,25 @@ func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 // WireReady passes the byte path through: this layer only observes sizes, so
 // its presence must not push a cache hit back onto the Msg path — which is
 // what wrapping without these two methods did.
+// BeginWire/CommitWire/AbortWire pass the body lease through; the commit
+// flows through WriteWire so amplification tracking still records sizes.
+func (rw *responseWriter) BeginWire(size, reserve int) []byte {
+	if leaser, ok := rw.ResponseWriter.(middleware.WireBodyLeaser); ok {
+		return leaser.BeginWire(size, reserve)
+	}
+	return nil
+}
+
+func (rw *responseWriter) CommitWire(body []byte, info middleware.WireInfo) error {
+	return rw.WriteWire(body, info)
+}
+
+func (rw *responseWriter) AbortWire() {
+	if leaser, ok := rw.ResponseWriter.(middleware.WireBodyLeaser); ok {
+		leaser.AbortWire()
+	}
+}
+
 func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 	next, ok := rw.ResponseWriter.(middleware.WireWriter)
 	if !ok {
@@ -285,7 +323,7 @@ func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error
 	size := len(body)
 	err := next.WriteWire(body, info)
 	if !errors.Is(err, middleware.ErrWireFallback) {
-		rw.tracker.RecordResponse(rw.ip, rw.request.Len(), size)
+		rw.tracker.RecordResponse(rw.ip, rw.reqLen, size)
 	}
 	return err
 }

@@ -14,6 +14,8 @@ import (
 	"github.com/semihalev/sdns/internal/dnsclient"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/wire"
+	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/edns"
 )
 
 // The owned TCP/DoT engine. Per the zero-path contract:
@@ -49,11 +51,31 @@ const (
 // tcpJob is the large-class slab: RX for one frame's payload, TX with
 // prefix headroom for one plain-write reply.
 type tcpJob struct {
-	engine  *tcpEngine
-	conn    net.Conn
-	rx      [tcpJobBufSize]byte
-	tx      [dnsclient.FramePrefixLen + tcpJobBufSize]byte
-	written bool
+	engine   *tcpEngine
+	conn     net.Conn
+	rx       [tcpJobBufSize]byte
+	tx       [dnsclient.FramePrefixLen + tcpJobBufSize]byte
+	written  bool
+	readTime time.Time
+
+	// Strict-path state, job-owned (see strict.go).
+	req        middleware.Request
+	carrier    jobCarrier
+	ednsWriter edns.ResponseWriter
+}
+
+// StrictSlots hands ServeRaw the job-owned strict-path storage.
+func (j *tcpJob) StrictSlots() (*middleware.Request, *jobCarrier, *edns.ResponseWriter) {
+	return &j.req, &j.carrier, &j.ednsWriter
+}
+
+// LeaseWire hands out the TX payload region behind the frame-prefix
+// headroom, so a committed body is one plain framed write.
+func (j *tcpJob) LeaseWire(capacity int) []byte {
+	if capacity > tcpJobBufSize {
+		return nil
+	}
+	return j.tx[dnsclient.FramePrefixLen:dnsclient.FramePrefixLen]
 }
 
 // Write sends pooled or foreign bytes as one frame: copied behind the
@@ -90,14 +112,11 @@ func (j *tcpJob) WriteMsg(m *dns.Msg) error {
 func (j *tcpJob) LocalAddr() net.Addr  { return j.conn.LocalAddr() }
 func (j *tcpJob) RemoteAddr() net.Addr { return j.conn.RemoteAddr() }
 func (j *tcpJob) Close() error         { return j.conn.Close() }
-func (j *tcpJob) TsigStatus() error    { return nil }
-func (j *tcpJob) TsigTimersOnly(bool)  {}
-func (j *tcpJob) Hijack()              {}
 
 // tcpEngine owns one listener's accept loop, connection registry, and
 // job ring.
 type tcpEngine struct {
-	handler  dns.Handler
+	handler  rawHandler
 	proto    string // "tcp" or "tls", for metrics
 	maxConns int64
 
@@ -110,7 +129,7 @@ type tcpEngine struct {
 	wg     sync.WaitGroup
 }
 
-func newTCPEngine(handler dns.Handler, proto string, maxConns int) *tcpEngine {
+func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
 	if maxConns <= 0 {
 		maxConns = defaultTCPConns
 	}
@@ -209,6 +228,7 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		}
 		j.conn = conn
 		j.written = false
+		j.readTime = time.Now()
 		ok := e.serveFrame(j, length)
 		j.conn = nil
 		e.free <- j
@@ -237,12 +257,13 @@ func (e *tcpEngine) serveFrame(j *tcpJob, length int) bool {
 		j.rejectInPlace(verdict, length)
 		return true
 	}
-	req := new(dns.Msg)
-	if err := req.Unpack(j.rx[:length]); err != nil {
+
+	// The one ingress: the server decides eligibility, decode, and
+	// context. A false return means an undecodable body — FORMERR,
+	// library parity, session continues.
+	if !e.handler.ServeRaw(j, j.rx[:length], j.readTime) {
 		j.rejectInPlace(acceptFormatError, length)
-		return true
 	}
-	e.handler.ServeDNS(j, req)
 	return true
 }
 

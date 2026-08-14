@@ -82,9 +82,11 @@ func (w *ResponseWriter) wireOPTLen() (int, bool) {
 		}
 		return 0, false
 	}
-	if w.cookie != "" {
-		if len(w.cookie) != clientCookieHexLen ||
-			maxTextualAddrLen+len(w.cookie)+len(w.cookiesecret) > cookiePreimageMax {
+	if w.cookie != "" || w.hasCookieRaw {
+		if !w.hasCookieRaw && len(w.cookie) != clientCookieHexLen {
+			return 0, false
+		}
+		if maxTextualAddrLen+clientCookieHexLen+len(w.cookiesecret) > cookiePreimageMax {
 			return 0, false
 		}
 		length += wire.OPTOptionHdrLen + serverCookieLen
@@ -95,14 +97,36 @@ func (w *ResponseWriter) wireOPTLen() (int, bool) {
 	return length, true
 }
 
+// BeginWire delegates the pre-build lease down the writer chain; edns has
+// no buffer of its own — its OPT lands in the reserve the lease carries.
+func (w *ResponseWriter) BeginWire(size, reserve int) []byte {
+	if leaser, ok := w.ResponseWriter.(middleware.WireBodyLeaser); ok {
+		return leaser.BeginWire(size, reserve)
+	}
+	return nil
+}
+
+// CommitWire sends a leased body through this layer's WriteWire, so the
+// per-client OPT is appended exactly as on the unleased wire path.
+func (w *ResponseWriter) CommitWire(body []byte, info middleware.WireInfo) error {
+	return w.WriteWire(body, info)
+}
+
+// AbortWire releases the lease without a send.
+func (w *ResponseWriter) AbortWire() {
+	if leaser, ok := w.ResponseWriter.(middleware.WireBodyLeaser); ok {
+		leaser.AbortWire()
+	}
+}
+
 // appendWireOPT encodes the per-client OPT — the same record WriteMsg
 // attaches — directly into the reply's reserved tail. Nothing is
 // materialized: no OPT record, no option objects, and no text form for
 // options the library holds as hex only to decode again while packing.
 func (w *ResponseWriter) appendWireOPT(body []byte) ([]byte, bool) {
-	body, rdlenOff := wire.AppendOPTHeader(body, w.opt.UDPSize(), w.do)
+	body, rdlenOff := wire.AppendOPTHeader(body, w.respUDPSize, w.do)
 
-	if w.cookie != "" {
+	if w.cookie != "" || w.hasCookieRaw {
 		var cookie [serverCookieLen]byte
 		if !w.serverCookie(cookie[:]) {
 			return nil, false
@@ -120,16 +144,34 @@ func (w *ResponseWriter) appendWireOPT(body []byte) ([]byte, bool) {
 // exactly what dnsutil.GenerateServerCookie derives — the same digest over
 // the same preimage — without materializing that value's hex form.
 func (w *ResponseWriter) serverCookie(dst []byte) bool {
-	if len(dst) < serverCookieLen || len(w.cookie) != clientCookieHexLen {
+	if len(dst) < serverCookieLen {
 		return false
 	}
-	for i := range serverCookieLen - sha256.Size {
-		hi, hiOK := hexNibble(w.cookie[i*2])
-		lo, loOK := hexNibble(w.cookie[i*2+1])
-		if !hiOK || !loOK {
-			return false
+	// The client half and its canonical hex text, from whichever form the
+	// writer carries: the strict path holds raw wire bytes, the Msg path a
+	// hex string. The digest preimage always uses the text form —
+	// GenerateServerCookie's exact contract.
+	var cookieText [clientCookieHexLen]byte
+	switch {
+	case w.hasCookieRaw:
+		copy(dst[:8], w.cookieRaw[:])
+		const hexDigits = "0123456789abcdef"
+		for i, b := range w.cookieRaw {
+			cookieText[i*2] = hexDigits[b>>4]
+			cookieText[i*2+1] = hexDigits[b&0x0F]
 		}
-		dst[i] = hi<<4 | lo
+	case len(w.cookie) == clientCookieHexLen:
+		for i := range serverCookieLen - sha256.Size {
+			hi, hiOK := hexNibble(w.cookie[i*2])
+			lo, loOK := hexNibble(w.cookie[i*2+1])
+			if !hiOK || !loOK {
+				return false
+			}
+			dst[i] = hi<<4 | lo
+		}
+		copy(cookieText[:], w.cookie)
+	default:
+		return false
 	}
 
 	addr, ok := netip.AddrFromSlice(w.RemoteIP())
@@ -138,10 +180,10 @@ func (w *ResponseWriter) serverCookie(dst []byte) bool {
 	}
 	var preimage [cookiePreimageMax]byte
 	buf := addr.Unmap().AppendTo(preimage[:0])
-	if len(buf)+len(w.cookie)+len(w.cookiesecret) > len(preimage) {
+	if len(buf)+len(cookieText)+len(w.cookiesecret) > len(preimage) {
 		return false
 	}
-	buf = append(buf, w.cookie...)
+	buf = append(buf, cookieText[:]...)
 	buf = append(buf, w.cookiesecret...)
 
 	digest := sha256.Sum256(buf)

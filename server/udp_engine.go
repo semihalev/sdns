@@ -9,6 +9,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/wire"
+	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/edns"
 )
 
 // The owned UDP engine replaces the library server's read loop. Its shape
@@ -38,8 +40,8 @@ import (
 // by the kernel and dropped by policy.
 const udpJobBufSize = 4096
 
-// udpJob is one preallocated per-request slab. It is also the transport
-// dns.ResponseWriter the pipeline writes through: the classic address
+// udpJob is one preallocated per-request slab. It is also the
+// middleware.Transport the pipeline writes through: the classic address
 // views are cached in the slab and rewritten per packet, so nothing on
 // the reply path materializes addresses.
 type udpJob struct {
@@ -63,6 +65,12 @@ type udpJob struct {
 	// (zero-path contract §2).
 	remote    net.UDPAddr
 	ipScratch [16]byte
+
+	// Strict-path state, all job-owned: the wire-born request, the context
+	// carrier, and the edns writer wrapper's storage.
+	req        middleware.Request
+	carrier    jobCarrier
+	ednsWriter edns.ResponseWriter
 
 	written bool
 	state   uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
@@ -97,7 +105,7 @@ func (j *udpJob) setRemote(ap netip.AddrPort) {
 	j.remote.Zone = addr.Zone()
 }
 
-// dns.ResponseWriter — the transport half. The middleware chain's base
+// middleware.Transport — the transport half. The middleware chain's base
 // writer wraps this and derives proto/remote identity from RemoteAddr.
 
 func (j *udpJob) LocalAddr() net.Addr  { return j.pc.LocalAddr() }
@@ -125,15 +133,28 @@ func (j *udpJob) WriteMsg(m *dns.Msg) error {
 	return err
 }
 
-func (j *udpJob) Close() error        { return nil }
-func (j *udpJob) TsigStatus() error   { return nil }
-func (j *udpJob) TsigTimersOnly(bool) {}
-func (j *udpJob) Hijack()             {}
+func (j *udpJob) Close() error { return nil }
+
+// StrictSlots hands ServeRaw the job-owned strict-path storage.
+func (j *udpJob) StrictSlots() (*middleware.Request, *jobCarrier, *edns.ResponseWriter) {
+	return &j.req, &j.carrier, &j.ednsWriter
+}
+
+// LeaseWire hands out the job's TX buffer for the response-body lease: the
+// reply is born where the send happens. The lease lives until the job
+// releases — after the middleware unwind — satisfying the post-write
+// retention contract.
+func (j *udpJob) LeaseWire(capacity int) []byte {
+	if capacity > len(j.tx) {
+		return nil
+	}
+	return j.tx[:0]
+}
 
 // udpEngine owns the sockets' read loops, the job ring, and the worker
 // pool for one listener.
 type udpEngine struct {
-	handler  dns.Handler
+	handler  rawHandler
 	pcs      []*net.UDPConn
 	wildcard bool
 
@@ -159,7 +180,7 @@ func defaultIngressWorkers() int {
 
 const defaultIngressQueue = 512
 
-func newUDPEngine(handler dns.Handler, pcs []*net.UDPConn, wildcard bool, workers, queue int) *udpEngine {
+func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers, queue int) *udpEngine {
 	if workers <= 0 {
 		workers = defaultIngressWorkers()
 	}
@@ -336,13 +357,12 @@ func (e *udpEngine) serve(j *udpJob) {
 		return
 	}
 
-	req := new(dns.Msg)
-	if err := req.Unpack(j.rx[:j.rxLen]); err != nil {
-		// Accepted header, undecodable body: FORMERR, library parity.
+	// The one ingress: the server decides eligibility, decode, and
+	// context. A false return means the accepted header hid an
+	// undecodable body — FORMERR, library parity.
+	if !e.handler.ServeRaw(j, j.rx[:j.rxLen], j.readTime) {
 		j.rejectInPlace(acceptFormatError)
-		return
 	}
-	e.handler.ServeDNS(j, req)
 }
 
 // Header-level accept verdicts, mirroring the library's default accept

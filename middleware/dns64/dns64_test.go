@@ -48,8 +48,8 @@ func (s *stubAnswerer) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 	resp := s.msg.Copy()
-	resp.Id = ch.Request.Id
-	resp.Question = ch.Request.Question
+	resp.Id = ch.Request.Msg().Id
+	resp.Question = ch.Request.Msg().Question
 	resp.Response = true
 	_ = ch.Writer.WriteMsg(resp)
 	ch.Cancel()
@@ -894,7 +894,7 @@ func TestRequestLocalFailurePassesThroughWithoutALookup(t *testing.T) {
 			var marked *dns.Msg
 			downstream := middleware.HandlerFunc(func(handlerCtx context.Context, ch *middleware.Chain) {
 				marked = new(dns.Msg)
-				marked.SetReply(ch.Request)
+				marked.SetReply(ch.Request.Msg())
 				marked.Rcode = dns.RcodeServerFailure
 				middleware.MarkRequestLocalFailureResponse(handlerCtx, marked, tt.err)
 				_ = ch.Writer.WriteMsg(marked)
@@ -1426,7 +1426,7 @@ func TestPTR_NoMatchFallsThrough(t *testing.T) {
 		answered = true
 		// Emulate a normal NXDOMAIN from the real zone.
 		nxd := new(dns.Msg)
-		nxd.SetRcode(ch.Request, dns.RcodeNameError)
+		nxd.SetRcode(ch.Request.Msg(), dns.RcodeNameError)
 		nxd.Response = true
 		_ = ch.Writer.WriteMsg(nxd)
 		ch.Cancel()

@@ -46,7 +46,19 @@ func (a *AS112) Name() string { return name }
 
 // (*AS112).ServeDNS serveDNS implements the Handle interface.
 func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	// A wire-born request takes the non-arpa fast path without decoding:
+	// one case-folded suffix compare on the wire name. A false positive
+	// only materializes and re-checks below.
+	if ch.Request.Msg() == nil && !wireNameHasArpaSuffix(ch.Request.WireName()) {
+		ch.Next(ctx)
+		return
+	}
+
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	q := req.Question[0]
 
@@ -246,4 +258,27 @@ var defaultZones = map[string]bool{
 }
 
 const rootzone = "."
+
+// arpaSuffixWire is "arpa." in wire form: one 4-byte label + root.
+var arpaSuffixWire = []byte{4, 'a', 'r', 'p', 'a', 0}
+
+// wireNameHasArpaSuffix reports whether the wire-form name ends in
+// "arpa." under ASCII case folding.
+func wireNameHasArpaSuffix(name []byte) bool {
+	if len(name) < len(arpaSuffixWire) {
+		return false
+	}
+	tail := name[len(name)-len(arpaSuffixWire):]
+	for i, b := range arpaSuffixWire {
+		got := tail[i]
+		if got >= 'A' && got <= 'Z' {
+			got += 'a' - 'A'
+		}
+		if got != b {
+			return false
+		}
+	}
+	return true
+}
+
 const name = "as112"

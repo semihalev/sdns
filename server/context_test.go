@@ -44,7 +44,7 @@ func TestServeDNSStartsQueryTimeoutAtIngress(t *testing.T) {
 	writer := mock.NewWriter("udp", "192.0.2.1:53000")
 	done := make(chan struct{})
 	go func() {
-		s.ServeDNS(writer, req)
+		s.ServeMsg(context.Background(), writer, req)
 		close(done)
 	}()
 
@@ -83,7 +83,7 @@ func TestServeDNSContextPreservesTransportCancellation(t *testing.T) {
 	writer := mock.NewWriter("udp", "192.0.2.1:53000")
 	done := make(chan struct{})
 	go func() {
-		s.ServeDNSContext(parent, writer, req)
+		s.ServeMsg(parent, writer, req)
 		close(done)
 	}()
 
@@ -112,7 +112,7 @@ func TestServeHTTPPropagatesRequestContext(t *testing.T) {
 	handler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		gotValue = ctx.Value(serverContextKey)
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		_ = ch.Writer.WriteMsg(resp)
 		ch.Cancel()
 	})

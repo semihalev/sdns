@@ -155,7 +155,7 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 	return w.Msg(), nil
 }
 
-// BufferWriter is the dns.ResponseWriter used inside Queryer.Query.
+// BufferWriter is the Transport used inside Queryer.Query.
 // It captures the response in memory and presents itself as a TCP
 // connection so edns.ServeDNS picks the TCP-sized (MaxMsgSize) EDNS
 // buffer rather than truncating internal replies at 512 bytes.
@@ -197,10 +197,10 @@ func putBufferWriter(w *BufferWriter) {
 	bufferWriterPool.Put(w)
 }
 
-// LocalAddr satisfies dns.ResponseWriter.
+// LocalAddr satisfies Transport.
 func (w *BufferWriter) LocalAddr() net.Addr { return w.local }
 
-// RemoteAddr satisfies dns.ResponseWriter.
+// RemoteAddr satisfies Transport.
 func (w *BufferWriter) RemoteAddr() net.Addr { return w.remote }
 
 // WriteMsg captures m as the recorded response.
@@ -219,17 +219,8 @@ func (w *BufferWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Close satisfies dns.ResponseWriter.
+// Close satisfies Transport.
 func (w *BufferWriter) Close() error { return nil }
-
-// TsigStatus satisfies dns.ResponseWriter.
-func (w *BufferWriter) TsigStatus() error { return nil }
-
-// TsigTimersOnly satisfies dns.ResponseWriter.
-func (w *BufferWriter) TsigTimersOnly(bool) {}
-
-// Hijack satisfies dns.ResponseWriter.
-func (w *BufferWriter) Hijack() {}
 
 // Msg returns the captured response (nil if the sub-pipeline never
 // wrote).

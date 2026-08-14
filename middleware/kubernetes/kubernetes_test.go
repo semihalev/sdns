@@ -113,7 +113,7 @@ func TestKubernetesMiddleware(t *testing.T) {
 
 					ch := &middleware.Chain{
 						Writer:  w,
-						Request: req,
+						Request: middleware.NewRequest(req),
 					}
 
 					k8s.ServeDNS(ctx, ch)

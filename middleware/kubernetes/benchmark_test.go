@@ -39,7 +39,7 @@ func BenchmarkServeDNS(b *testing.B) {
 		req.SetQuestion(q.name, q.qtype)
 		ch := &middleware.Chain{
 			Writer:  &mockResponseWriter{},
-			Request: req,
+			Request: middleware.NewRequest(req),
 		}
 		k.ServeDNS(context.Background(), ch)
 	}

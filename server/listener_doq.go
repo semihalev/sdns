@@ -7,7 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
 	"github.com/semihalev/sdns/server/doq"
 	"github.com/semihalev/zlog/v2"
@@ -16,7 +15,7 @@ import (
 // doqListener serves DNS-over-QUIC (RFC 9250). Non-critical.
 type doqListener struct {
 	addr    string
-	handler dns.Handler
+	handler doq.Handler
 	certs   certProvider
 
 	mu      sync.Mutex
@@ -25,7 +24,7 @@ type doqListener struct {
 	serving atomic.Bool
 }
 
-func newDOQListener(addr string, h dns.Handler, certs certProvider) *doqListener {
+func newDOQListener(addr string, h doq.Handler, certs certProvider) *doqListener {
 	return &doqListener{addr: addr, handler: h, certs: certs}
 }
 

@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -25,7 +24,7 @@ import (
 // replies leave from the address the query arrived on.
 type udpListener struct {
 	addr    string
-	handler dns.Handler
+	handler rawHandler
 	sockets int
 	workers int
 	queue   int
@@ -41,7 +40,7 @@ type udpListener struct {
 	serving  atomic.Bool
 }
 
-func newUDPListener(addr string, h dns.Handler, timeout time.Duration, workers, queue int) *udpListener {
+func newUDPListener(addr string, h rawHandler, timeout time.Duration, workers, queue int) *udpListener {
 	return &udpListener{
 		addr:    addr,
 		handler: h,

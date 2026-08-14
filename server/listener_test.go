@@ -11,9 +11,16 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// noopMsgHandler is a doq.Handler stub for listeners that are only
+// bound and shut down, never served.
+type noopMsgHandler struct{}
+
+func (noopMsgHandler) ServeMsg(context.Context, middleware.Transport, *dns.Msg) {}
 
 // fakeListener is a test Listener whose Bind / Shutdown outcome is
 // configurable, used to verify bindAll's cleanup contract without
@@ -99,7 +106,7 @@ func TestBindAll_NonCriticalFailureDoesNotAbort(t *testing.T) {
 // the workaround (each listener now closes its own socket).
 func TestListenerShutdownBeforeServeReleasesSocket(t *testing.T) {
 	certs := &fakeCerts{cfg: minimalTLSConfig(t)}
-	handler := dns.HandlerFunc(func(dns.ResponseWriter, *dns.Msg) {})
+	handler := rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool { return true })
 	httpHandler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 
 	cases := []struct {
@@ -111,7 +118,7 @@ func TestListenerShutdownBeforeServeReleasesSocket(t *testing.T) {
 		{"tls", func(addr string) Listener { return newTLSListener(addr, handler, certs, time.Second, 0) }},
 		{"doh", func(addr string) Listener { return newDOHListener(addr, httpHandler, certs, time.Second) }},
 		{"doh3", func(addr string) Listener { return newDOH3Listener(addr, httpHandler, certs) }},
-		{"doq", func(addr string) Listener { return newDOQListener(addr, handler, certs) }},
+		{"doq", func(addr string) Listener { return newDOQListener(addr, noopMsgHandler{}, certs) }},
 	}
 
 	for _, tc := range cases {

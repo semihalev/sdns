@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware"
 )
 
-func startTCPEngine(t *testing.T, handler dns.Handler, maxConns int) (string, *tcpListener, func()) {
+func startTCPEngine(t *testing.T, handler rawHandler, maxConns int) (string, *tcpListener, func()) {
 	t.Helper()
 	l := newTCPListener("127.0.0.1:0", handler, time.Second, maxConns)
 	if err := l.Bind(context.Background()); err != nil {
@@ -127,11 +128,16 @@ func TestTCPEnginePrefixFirstHoldsNoJob(t *testing.T) {
 
 func TestTCPEngineConnectionCap(t *testing.T) {
 	release := make(chan struct{})
-	addr, _, stop := startTCPEngine(t, dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+	addr, _, stop := startTCPEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		r := new(dns.Msg)
+		if err := r.Unpack(raw); err != nil {
+			return false
+		}
 		<-release
 		m := new(dns.Msg)
 		m.SetReply(r)
 		_ = w.WriteMsg(m)
+		return true
 	}), 4)
 	defer stop()
 	defer close(release)

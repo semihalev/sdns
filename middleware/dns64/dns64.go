@@ -138,12 +138,14 @@ func (d *DNS64) SetQueryer(q middleware.Queryer) { d.queryer = q }
 func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
-	if len(req.Question) != 1 {
+	// The gates below read parsed request facts, so an ineligible
+	// wire-born query (the overwhelming majority) passes through without
+	// decoding; only a real synthesis candidate materializes for its name.
+	if m := req.Msg(); m != nil && len(m.Question) != 1 {
 		ch.Next(ctx)
 		return
 	}
-	q := req.Question[0]
-	if q.Qclass != dns.ClassINET {
+	if req.Qclass() != dns.ClassINET {
 		ch.Next(ctx)
 		return
 	}
@@ -152,7 +154,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Next(ctx)
 		return
 	}
-	if !req.RecursionDesired {
+	if !req.RD() {
 		// RD=0 clients are asking for a non-recursive response.
 		// DNS64 inherently issues a recursive secondary lookup
 		// (A for AAAA synthesis, in-addr.arpa PTR for ip6.arpa),
@@ -165,7 +167,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Next(ctx)
 		return
 	}
-	if req.CheckingDisabled {
+	if req.CD() {
 		// RFC 6147 §5.5 — a CD=1 client has opted to validate
 		// itself; do not synthesise. Symmetric for PTR: the
 		// CNAME we'd synthesise points at an unsigned name we
@@ -179,6 +181,19 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Next(ctx)
 		return
 	}
+	qtype := req.Qtype()
+	if qtype != dns.TypeAAAA && qtype != dns.TypePTR {
+		ch.Next(ctx)
+		return
+	}
+
+	// A synthesis candidate: the remaining gates and the wrap need the
+	// presentation-form name.
+	ctx, m := ch.Materialize(ctx)
+	if m == nil {
+		return
+	}
+	q := m.Question[0]
 	qname := strings.ToLower(dns.CanonicalName(q.Name))
 
 	// PTR translation per RFC 6147 §5.3.1. If the qname falls in
@@ -188,18 +203,14 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// malformed encoding, exclusion under the well-known prefix)
 	// falls through to normal recursion so the resolver can answer
 	// real ip6.arpa zones.
-	if q.Qtype == dns.TypePTR && strings.HasSuffix(qname, ".ip6.arpa.") {
-		if d.handlePTR(ctx, ch, qname) {
+	if qtype == dns.TypePTR {
+		if strings.HasSuffix(qname, ".ip6.arpa.") && d.handlePTR(ctx, ch, qname) {
 			return
 		}
 		ch.Next(ctx)
 		return
 	}
 
-	if q.Qtype != dns.TypeAAAA {
-		ch.Next(ctx)
-		return
-	}
 	if d.cfg.zoneExcluded(qname) {
 		passthroughZoneExcluded.Inc()
 		ch.Next(ctx)
@@ -211,7 +222,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.d = d
 	rw.ctx = ctx
 	rw.qname = qname
-	rw.req = req
+	rw.req = m
 	ch.Writer = rw
 	defer func() {
 		ch.Writer = w
@@ -262,10 +273,13 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 		return false
 	}
 
+	// ServeDNS materialized before dispatching here.
+	req := ch.Request.Msg()
+
 	target := inAddrArpa(v4)
 	cname := &dns.CNAME{
 		Hdr: dns.RR_Header{
-			Name:   ch.Request.Question[0].Name,
+			Name:   req.Question[0].Name,
 			Rrtype: dns.TypeCNAME,
 			Class:  dns.ClassINET,
 			Ttl:    ptrSynthTTL,
@@ -286,11 +300,11 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
 			do := false
-			if opt := ch.Request.IsEdns0(); opt != nil {
+			if opt := req.IsEdns0(); opt != nil {
 				do = opt.Do()
 			}
 			out := dnsutil.SetRcodeWithEDE(
-				ch.Request,
+				req,
 				dns.RcodeServerFailure,
 				do,
 				edeCode,
@@ -303,11 +317,11 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 		if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 			edeCode, edeText := dnsutil.ErrorToEDE(err)
 			do := false
-			if opt := ch.Request.IsEdns0(); opt != nil {
+			if opt := req.IsEdns0(); opt != nil {
 				do = opt.Do()
 			}
 			out := dnsutil.SetRcodeWithEDE(
-				ch.Request,
+				req,
 				dns.RcodeServerFailure,
 				do,
 				edeCode,
@@ -328,13 +342,13 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 	}
 
 	out := new(dns.Msg)
-	out.SetReply(ch.Request)
+	out.SetReply(req)
 	out.RecursionAvailable = true
 	out.Rcode = dns.RcodeSuccess
 	out.Answer = answers
-	if len(ch.Request.Extra) > 0 {
-		out.Extra = make([]dns.RR, len(ch.Request.Extra))
-		copy(out.Extra, ch.Request.Extra)
+	if len(req.Extra) > 0 {
+		out.Extra = make([]dns.RR, len(req.Extra))
+		copy(out.Extra, req.Extra)
 	}
 
 	PTRTranslated.Inc()
