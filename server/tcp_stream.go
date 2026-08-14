@@ -72,6 +72,12 @@ type tcpStream struct {
 	// never pays for arming one.
 	deadline time.Time
 	armed    time.Time
+
+	// wait bounds the one place a connection blocks on the server rather
+	// than on its peer: waiting for a slab when the ring is empty. It is
+	// built at most once per connection and reused, because saturation —
+	// the only time it is needed — is the worst moment to be allocating.
+	wait *time.Timer
 }
 
 func (s *tcpStream) reset(conn net.Conn) {
@@ -80,6 +86,23 @@ func (s *tcpStream) reset(conn net.Conn) {
 	s.held = 0
 	s.werr = nil
 	s.deadline, s.armed = time.Time{}, time.Time{}
+	if s.wait != nil {
+		s.wait.Stop()
+	}
+}
+
+// waitFor arms the connection's wait timer for d and returns its channel.
+// Reset after Stop is safe to reuse without draining: since Go 1.23 a
+// timer's channel is unbuffered, so neither can deliver a stale firing
+// from the previous wait.
+func (s *tcpStream) waitFor(d time.Duration) <-chan time.Time {
+	if s.wait == nil {
+		s.wait = time.NewTimer(d)
+		return s.wait.C
+	}
+	s.wait.Stop()
+	s.wait.Reset(d)
+	return s.wait.C
 }
 
 // arm puts the current deadline on the connection. One SetDeadline and
@@ -109,7 +132,14 @@ func (s *tcpStream) beforeWrite() error {
 // buffered reports whether the fill buffer already holds bytes — the
 // signal that another frame is in hand and the replies may keep
 // accumulating.
-func (s *tcpStream) buffered() bool { return s.start < s.end }
+// framePrefixBuffered reports whether a whole length prefix is already in
+// hand — which is the question the loop actually has, and not the same as
+// whether any bytes are buffered at all. A single buffered byte is half a
+// prefix: reading the other half blocks on the client exactly as an empty
+// buffer does.
+func (s *tcpStream) framePrefixBuffered() bool {
+	return s.end-s.start >= dnsclient.FramePrefixLen
+}
 
 // fillMore reads once into the fill buffer, compacting first. It is the
 // only place a stream blocks on the client.
@@ -157,8 +187,13 @@ func (s *tcpStream) body(dst []byte) error {
 		// The frame announced more than the read delivered, so this is
 		// where the connection blocks for the rest of it. That wait is the
 		// query's, not the session's: a client that announces a frame it
-		// never sends is holding a slab, not sitting idle.
+		// never sends is holding a slab, not sitting idle — and whatever
+		// this burst has already answered leaves before the wait, for the
+		// same reason it does at the top of the loop.
 		if err := s.arm(); err != nil {
+			return err
+		}
+		if err := s.flush(); err != nil {
 			return err
 		}
 	}
@@ -251,7 +286,11 @@ func (s *tcpStream) flush() error {
 // the other place a client that never reads would park the connection,
 // and the read below inherits the same bound at no extra cost.
 func (s *tcpStream) beforeRead(d time.Duration) error {
-	if s.buffered() {
+	// A partial prefix is not a served frame waiting, it is a read about
+	// to block — and blocking with replies still staged is a deadlock in
+	// the making: the client waits for answers it has already earned
+	// while the server waits for the byte that would release them.
+	if s.framePrefixBuffered() {
 		return nil
 	}
 	s.deadline = time.Now().Add(d)

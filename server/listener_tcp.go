@@ -40,6 +40,13 @@ func (l *tcpListener) Addr() string   { return l.addr }
 func (l *tcpListener) Critical() bool { return true }
 func (l *tcpListener) Serving() bool  { return l.serving.Load() }
 
+// Quiesced reports whether the engine holds no in-flight work.
+func (l *tcpListener) Quiesced() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.engine == nil || l.engine.quiesced()
+}
+
 func (l *tcpListener) Bind(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -69,13 +76,12 @@ func (l *tcpListener) Serve(_ context.Context) error {
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
-	go func() {
-		engine.acceptLoop(ln)
+	engine.startAccepting(ln, func() {
 		if !l.closing.Load() {
 			zlog.Error("TCP accept loop exited outside shutdown", "addr", l.addr)
 			recordListenerErr("tcp")
 		}
-	}()
+	})
 
 	<-done
 	return l.drainErr

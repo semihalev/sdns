@@ -219,6 +219,28 @@ func (s *Server) queryTimeout() time.Duration {
 // and DoQ do their real QUIC bring-up inside Serve, so checking only
 // membership in s.active can report success even when the transport
 // never started. Asking the listener via Serving() gives the truth.
+// Quiesced reports whether every owned transport has all of its job
+// slabs back in the ring: nothing is being read into, served, or staged
+// for a send.
+//
+// It is the completion barrier a measurement needs. A client holding its
+// last reply proves the bytes left, not that the slab that carried them
+// was released — the release runs after the send, on the server's own
+// goroutine — so anything that samples the process at that moment (an
+// allocation gate, a leak check, a drain assertion) is otherwise reduced
+// to sleeping and hoping. Transports that own no slabs are quiescent by
+// construction and answer for themselves.
+func (s *Server) Quiesced() bool {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	for _, l := range s.active {
+		if q, ok := l.(interface{ Quiesced() bool }); ok && !q.Quiesced() {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) HasListener(proto string) bool {
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()

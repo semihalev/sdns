@@ -140,6 +140,11 @@ type tcpEngine struct {
 	conns  map[net.Conn]struct{}
 	active atomic.Int64
 	wg     sync.WaitGroup
+	// acceptG joins the accept loops (one per listener sharing this
+	// engine — plain TCP and DoT each have their own). It is a separate
+	// barrier from wg because it has to be waited on first: an accept
+	// loop is what puts new members into wg.
+	acceptG sync.WaitGroup
 }
 
 func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
@@ -159,6 +164,24 @@ func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
 		e.free <- &tcpJob{engine: e}
 	}
 	return e
+}
+
+// quiesced reports whether every slab is back in the ring. Idle
+// connections hold none — a slab is taken only once a frame's length
+// prefix has arrived — so this is true whenever no frame is mid-flight.
+func (e *tcpEngine) quiesced() bool { return len(e.free) == cap(e.free) }
+
+// startAccepting runs the accept loop on its own goroutine, joining it to
+// the accept barrier before that goroutine exists. Joining from inside it
+// would be too late: a shutdown that began first would wait on an empty
+// barrier and miss the loop entirely.
+func (e *tcpEngine) startAccepting(ln net.Listener, onExit func()) {
+	e.acceptG.Add(1)
+	go func() {
+		defer e.acceptG.Done()
+		e.acceptLoop(ln)
+		onExit()
+	}()
 }
 
 // acceptLoop admits connections until the listener closes.
@@ -252,9 +275,15 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 
 	wait := tcpFirstReadWait
 	for served := 0; served < tcpQueryBudget; served++ {
-		if !stream.buffered() {
+		if !stream.framePrefixBuffered() {
 			// About to block: the client's replies go out, the slab goes
 			// back, and only then does the connection wait.
+			//
+			// The test is for a whole length prefix, not for any bytes at
+			// all. A single buffered byte is half a prefix: reading the
+			// other half blocks exactly like an empty buffer does, so
+			// treating it as pending input would keep the slab and strand
+			// the burst's replies until the deadline expired.
 			release()
 			if err := stream.beforeRead(wait); err != nil {
 				return
@@ -279,7 +308,7 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		stream.deadline = readTime.Add(tcpQueryWait)
 
 		if job == nil {
-			if job = e.acquire(stream.deadline); job == nil {
+			if job = e.acquire(stream, stream.deadline); job == nil {
 				return
 			}
 		}
@@ -305,18 +334,22 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 // shutdown to wake it. A connection that cannot be served inside its own
 // budget is dropped instead, so the slab it never took stays in the ring
 // for someone who can use it.
-func (e *tcpEngine) acquire(deadline time.Time) *tcpJob {
+// The wait is bounded by the connection's own reusable timer: a slab
+// runs out exactly when the server is saturated, and a timer built per
+// wait would put an allocation on the path that decides whether a queued
+// query is served or dropped — under the load the ring exists to absorb.
+func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time) *tcpJob {
 	select {
 	case j := <-e.free:
 		return j
 	default:
 	}
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
+	waited := s.waitFor(time.Until(deadline))
+	defer s.wait.Stop()
 	select {
 	case j := <-e.free:
 		return j
-	case <-timer.C:
+	case <-waited:
 		tcpDropJobWait.Inc()
 		return nil
 	case <-e.closing:
@@ -376,6 +409,15 @@ func (j *tcpJob) rejectInPlace(verdict acceptVerdict, _ int) {
 // force-close the survivors and join.
 func (e *tcpEngine) shutdown(deadline time.Time) error {
 	close(e.closing)
+
+	// The accept loop is joined before the connections are, because it is
+	// the only thing that can still join the connection barrier. A
+	// connection admitted while that barrier is being waited on is a
+	// member added after the wait began: the drain would return without
+	// it, and the request it is in the middle of would be cut off by the
+	// close that follows.
+	e.acceptG.Wait()
+
 	done := make(chan struct{})
 	go func() { e.wg.Wait(); close(done) }()
 

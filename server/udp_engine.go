@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -217,6 +218,19 @@ type udpEngine struct {
 	free  chan *udpJob
 	ready chan *udpJob
 
+	// inFlight counts the slabs between the ready queue and their
+	// release: queued, being served, or staged for a send. Slabs parked
+	// in a reader are excluded — the readers hold one each by design, so
+	// counting them would mean an idle server never reads as settled.
+	inFlight atomic.Int64
+
+	// closing is the readers' shutdown signal. The portable reader never
+	// blocks on the ring, but the batched one waits for its first slab —
+	// and a wait whose only wake-up is another goroutine returning a slab
+	// is a wait that shutdown cannot bound.
+	closing   chan struct{}
+	closeOnce sync.Once
+
 	workers int
 	readers sync.WaitGroup
 	workerG sync.WaitGroup
@@ -262,6 +276,7 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		wildcard: wildcard,
 		workers:  workers,
 		txConns:  make(map[*net.UDPConn]syscall.RawConn, len(pcs)),
+		closing:  make(chan struct{}),
 	}
 	e.txSenders = make([]udpTXSender, workers)
 	for i := range e.txSenders {
@@ -316,6 +331,7 @@ func (e *udpEngine) start() {
 // woken); this joins the readers, closes the ready queue, and waits for
 // the workers to drain within the deadline.
 func (e *udpEngine) stopAndDrain(deadline time.Time) error {
+	e.closeOnce.Do(func() { close(e.closing) })
 	e.readers.Wait()
 	close(e.ready)
 	done := make(chan struct{})
@@ -393,25 +409,54 @@ func (e *udpEngine) reader(pc *net.UDPConn) {
 			}
 		}
 
-		// The state write must precede the send: the channel gives the
-		// worker its happens-before for every job field.
-		j.state = udpJobQueued
-		select {
-		case e.ready <- j:
-		default:
-			j.state = udpJobReading
-			j.release(udpJobReading)
-			udpDropQueue.Inc()
-		}
+		e.enqueue(j)
 	}
 }
 
+// enqueue hands a filled slab to the workers, or drops it when the queue
+// is full.
+//
+// The state write must precede the send: the channel gives the worker its
+// happens-before for every job field.
+func (e *udpEngine) enqueue(j *udpJob) {
+	// Counted from here rather than from the read: a slab parked in a
+	// reader waiting for a packet is idle, not outstanding, and a
+	// quiescence check that could not tell the two apart would never see
+	// an idle server settle.
+	e.inFlight.Add(1)
+	j.state = udpJobQueued
+	select {
+	case e.ready <- j:
+	default:
+		e.inFlight.Add(-1)
+		j.state = udpJobReading
+		j.release(udpJobReading)
+		udpDropQueue.Inc()
+	}
+}
+
+// quiesced reports whether every slab is back in the ring: nothing is
+// being read into, served, or staged for a send. It is the completion
+// barrier a measurement needs — the last reply reaching a client says
+// nothing about the slab that produced it having been released.
+func (e *udpEngine) quiesced() bool { return e.inFlight.Load() == 0 }
+
 // release returns a job to the ring from any owned state.
 func (j *udpJob) release(from uint8) {
+	if from == udpJobQueued || from == udpJobServing {
+		j.engine.inFlight.Add(-1)
+	}
 	j.transition(from, udpJobFree)
 	j.written = false
 	j.rxLen = 0
 	j.pktinfoLen = 0
+	// The staged reply dies with the request that produced it. txLen is
+	// what the worker reads to decide whether a served job has something
+	// to send, so a slab that kept a stale length would answer the next
+	// request the chain decided in silence — a malformed packet, an
+	// ignored opcode, a panic — with the previous client's bytes, to the
+	// new client's address.
+	j.txLen = 0
 	j.engine.free <- j
 }
 

@@ -124,10 +124,16 @@ func (r *udpBatchReader) run() {
 		// transient exhaustion the reader waits for its first job — the
 		// kernel's receive buffer is the queue meanwhile — rather than
 		// consuming its socket's share of the load just to discard it.
-		// Shutdown unblocks this wait: draining workers release their
-		// jobs back to the ring, and the next arm fails on the closed
-		// socket.
-		j0 := <-e.free
+		// Shutdown unblocks this wait directly rather than through a slab
+		// coming back: whether one ever does depends on what the other
+		// readers and workers are holding, and a drain deadline cannot be
+		// honoured by a wait that answers to nothing but them.
+		var j0 *udpJob
+		select {
+		case j0 = <-e.free:
+		case <-e.closing:
+			return
+		}
 		j0.transition(udpJobFree, udpJobReading)
 		r.arm(j0, 0)
 		k := 1
@@ -236,14 +242,7 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 		}
 	}
 
-	j.state = udpJobQueued
-	select {
-	case r.engine.ready <- j:
-	default:
-		j.state = udpJobReading
-		j.release(udpJobReading)
-		udpDropQueue.Inc()
-	}
+	r.engine.enqueue(j)
 }
 
 // setRemoteRaw rewrites the cached classic views from a kernel sockaddr.

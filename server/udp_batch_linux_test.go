@@ -141,3 +141,53 @@ func TestUDPBatchEndToEnd(t *testing.T) {
 }
 
 var errBadReply = &net.AddrError{Err: "bad reply", Addr: "batch"}
+
+// TestUDPBatchReaderWakesOnShutdown pins the batched reader's one blocking
+// wait against the drain deadline.
+//
+// The reader takes its first slab before it can arm a batch, and with the
+// ring empty that take blocks. What refills the ring is other readers and
+// workers releasing what they hold — so a wait that answers only to them
+// is a wait shutdown cannot bound, and the drain would run out its
+// deadline waiting for a goroutine that is not going to return.
+func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
+	handler := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		return true
+	})
+
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1)
+	if !e.startBatched() {
+		_ = pc.Close()
+		t.Skip("batched receive unavailable on this kernel")
+	}
+
+	// Starve the ring: every slab is held here, so the reader is parked on
+	// its first take with nothing on the way.
+	held := make([]*udpJob, 0, cap(e.free))
+	deadline := time.Now().Add(2 * time.Second)
+	for len(held) < cap(e.free) && time.Now().Before(deadline) {
+		select {
+		case j := <-e.free:
+			held = append(held, j)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- e.stopAndDrain(time.Now().Add(3 * time.Second)) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("drain returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("drain never returned: the batched reader is still parked " +
+			"on a slab that shutdown has no way to hand it")
+	}
+	_ = pc.Close()
+}

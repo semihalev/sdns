@@ -83,13 +83,12 @@ func (l *tlsListener) Serve(_ context.Context) error {
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
-	go func() {
-		engine.acceptLoop(ln)
+	engine.startAccepting(ln, func() {
 		if !l.closing.Load() {
 			zlog.Error("DoT accept loop exited outside shutdown", "addr", l.addr)
 			recordListenerErr("tls")
 		}
-	}()
+	})
 
 	<-done
 	return l.drainErr

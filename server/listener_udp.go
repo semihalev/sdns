@@ -56,6 +56,13 @@ func (l *udpListener) Addr() string   { return l.addr }
 func (l *udpListener) Critical() bool { return true }
 func (l *udpListener) Serving() bool  { return l.serving.Load() }
 
+// Quiesced reports whether the engine holds no in-flight work.
+func (l *udpListener) Quiesced() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.engine == nil || l.engine.quiesced()
+}
+
 // bindWildcard reports whether addr's host is absent or unspecified —
 // the binds that need destination-address recovery on replies.
 func bindWildcard(addr string) (wildcard, v6 bool) {
