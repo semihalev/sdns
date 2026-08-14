@@ -281,3 +281,182 @@ func TestPrepareAggressiveNSECIsAllocatedOnce(t *testing.T) {
 	}
 	t.Logf("allocations per evaluation: records=%.0f prepared=%.0f", fromRecords, fromPrepared)
 }
+
+// TestEvaluateAggressiveNSECSetMatchesPrepared is the contract that lets the
+// denial-proof cache validate a stored set once at publish instead of on
+// every lookup: a set the constructor accepts must evaluate exactly as the
+// per-query path evaluates the same prepared records, and a set it refuses
+// must be refused for the same reason the per-query path refuses it. The one
+// deliberate route difference is class: construction accepts any uniform
+// class and evaluation refuses the mismatch with the query, so the final
+// verdict is unchanged.
+func TestEvaluateAggressiveNSECSetMatchesPrepared(t *testing.T) {
+	const zone = "example.com."
+
+	cases := []struct {
+		name    string
+		q       dns.Question
+		records []dns.RR
+	}{
+		{
+			name: "nxdomain between two owners",
+			q:    dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			records: []dns.RR{
+				nsecRecord("a.example.com.", "c.example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC),
+				nsecRecord("example.com.", "a.example.com.", dns.TypeSOA, dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC),
+			},
+		},
+		{
+			name: "nodata at an existing owner",
+			q:    dns.Question{Name: "a.example.com.", Qtype: dns.TypeAAAA, Qclass: dns.ClassINET},
+			records: []dns.RR{
+				nsecRecord("a.example.com.", "c.example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC),
+			},
+		},
+		{
+			name: "question outside the signer zone",
+			q:    dns.Question{Name: "b.example.org.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			records: []dns.RR{
+				nsecRecord("a.example.com.", "c.example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC),
+			},
+		},
+		{
+			name: "unsupported question class",
+			q:    dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassANY},
+			records: []dns.RR{
+				nsecRecord("a.example.com.", "c.example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC),
+			},
+		},
+		{
+			name: "conflicting owners are refused",
+			q:    dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			records: []dns.RR{
+				nsecRecord("a.example.com.", "c.example.com.", dns.TypeA),
+				nsecRecord("a.example.com.", "d.example.com.", dns.TypeA),
+			},
+		},
+		{
+			name: "record crossing the signer zone is refused",
+			q:    dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			records: []dns.RR{
+				nsecRecord("a.example.org.", "c.example.org.", dns.TypeA),
+			},
+		},
+		{
+			name: "non-apex singleton interval is refused",
+			q:    dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			records: []dns.RR{
+				nsecRecord("a.example.com.", "a.example.com.", dns.TypeA),
+			},
+		},
+		{
+			name: "foreign class is refused at evaluation",
+			q:    dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			records: []dns.RR{
+				nsecRecordClass("a.example.com.", "c.example.com.", dns.ClassCHAOS, dns.TypeA),
+			},
+		},
+		{
+			name:    "empty set is refused",
+			q:       dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
+			records: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prepared := make([]PreparedNSEC, 0, len(tc.records))
+			for _, rr := range tc.records {
+				p, err := PrepareAggressiveNSEC(rr.(*dns.NSEC))
+				if err != nil {
+					t.Fatalf("PrepareAggressiveNSEC: %v", err)
+				}
+				prepared = append(prepared, p)
+			}
+
+			wantResult, wantErr := EvaluateAggressiveNSECPrepared(tc.q, zone, prepared)
+
+			set, buildErr := NewAggressiveNSECSet(prepared, zone)
+			if buildErr != nil {
+				if wantErr == nil {
+					t.Fatalf("construction refused (%v) what the per-query path accepts", buildErr)
+				}
+				if buildErr.Error() != wantErr.Error() {
+					t.Fatalf("refusal differs:\n  construction: %v\n  per-query:    %v", buildErr, wantErr)
+				}
+				return
+			}
+
+			gotResult, gotErr := EvaluateAggressiveNSECSet(tc.q, set)
+			switch {
+			case wantErr == nil && gotErr != nil:
+				t.Fatalf("per-query path succeeded but set path failed: %v", gotErr)
+			case wantErr != nil && gotErr == nil:
+				t.Fatalf("per-query path failed (%v) but set path succeeded", wantErr)
+			case wantErr != nil && gotErr != nil:
+				if wantErr.Error() != gotErr.Error() {
+					t.Fatalf("refusal differs:\n  per-query: %v\n  set:       %v", wantErr, gotErr)
+				}
+				return
+			}
+
+			if gotResult.Rcode != wantResult.Rcode {
+				t.Fatalf("rcode %d, want %d", gotResult.Rcode, wantResult.Rcode)
+			}
+			if len(gotResult.Proof) != len(wantResult.Proof) {
+				t.Fatalf("proof has %d records, want %d", len(gotResult.Proof), len(wantResult.Proof))
+			}
+			for i := range wantResult.Proof {
+				if gotResult.Proof[i] != wantResult.Proof[i] {
+					t.Fatalf("proof[%d] is not the same record instance", i)
+				}
+			}
+		})
+	}
+
+	if _, err := EvaluateAggressiveNSECSet(
+		dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}, nil,
+	); err == nil {
+		t.Fatal("a nil set was accepted")
+	}
+}
+
+// TestEvaluateAggressiveNSECSetAllocations pins the point of the set: the
+// per-query cost is canonicalizing the question, not rebuilding the table.
+func TestEvaluateAggressiveNSECSetAllocations(t *testing.T) {
+	const zone = "example.com."
+	records := []*dns.NSEC{
+		nsecRecord("example.com.", "a.example.com.", dns.TypeSOA, dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC),
+		nsecRecord("a.example.com.", "c.example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC),
+		nsecRecord("c.example.com.", "example.com.", dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC),
+	}
+	prepared := make([]PreparedNSEC, 0, len(records))
+	for _, rr := range records {
+		p, err := PrepareAggressiveNSEC(rr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared = append(prepared, p)
+	}
+	set, err := NewAggressiveNSECSet(prepared, zone)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := dns.Question{Name: "b.example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	fromPrepared := testing.AllocsPerRun(200, func() {
+		if _, err := EvaluateAggressiveNSECPrepared(q, zone, prepared); err != nil {
+			t.Fatal(err)
+		}
+	})
+	fromSet := testing.AllocsPerRun(200, func() {
+		if _, err := EvaluateAggressiveNSECSet(q, set); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if fromSet >= fromPrepared {
+		t.Fatalf("set evaluation allocates %.0f, per-query path %.0f; "+
+			"the stored validation is not actually being reused", fromSet, fromPrepared)
+	}
+	t.Logf("allocations per evaluation: prepared=%.0f set=%.0f", fromPrepared, fromSet)
+}

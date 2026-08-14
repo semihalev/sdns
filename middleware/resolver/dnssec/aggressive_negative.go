@@ -104,6 +104,63 @@ func EvaluateAggressiveNSECPrepared(
 	return evaluateAggressiveNSECEntries(q, qname, signer, entries)
 }
 
+// AggressiveNSECSet is a prepared NSEC collection whose set-level invariants
+// — class homogeneity, signer containment, interval conflicts — were checked
+// once at construction. Those checks are static properties of the stored
+// set; re-running them per query rebuilt the entry slice on every negative
+// answer, which was the resolver's single largest allocator under
+// NXDOMAIN-heavy load.
+type AggressiveNSECSet struct {
+	entries []aggressiveNSECEntry
+	signer  aggressiveCanonicalName
+	qclass  uint16
+}
+
+// NewAggressiveNSECSet validates prepared as one aggressive-answer set for
+// zone. The checks are exactly EvaluateAggressiveNSECPrepared's set-level
+// checks — a set rejected here would be rejected on every evaluation.
+func NewAggressiveNSECSet(prepared []PreparedNSEC, zone string) (*AggressiveNSECSet, error) {
+	if len(prepared) == 0 {
+		return nil, ErrNSECMissingCoverage
+	}
+	signer, err := newAggressiveCanonicalName(zone)
+	if err != nil {
+		return nil, err
+	}
+	first := prepared[0].entry.rr
+	if first == nil {
+		return nil, aggressiveFallback("NSEC set is not homogeneous")
+	}
+	qclass := first.Header().Class
+	entries, err := aggressiveNSECEntriesFromPrepared(prepared, qclass, signer)
+	if err != nil {
+		return nil, err
+	}
+	return &AggressiveNSECSet{entries: entries, signer: signer, qclass: qclass}, nil
+}
+
+// EvaluateAggressiveNSECSet is EvaluateAggressiveNSECPrepared over a
+// pre-validated set: per query only the question is canonicalized and
+// classified; the entry table is used as stored.
+func EvaluateAggressiveNSECSet(
+	q dns.Question,
+	set *AggressiveNSECSet,
+) (AggressiveNegativeResult, error) {
+	if set == nil || len(set.entries) == 0 {
+		return AggressiveNegativeResult{}, ErrNSECMissingCoverage
+	}
+	qname, err := validateAggressiveQuestionSigner(q, set.signer)
+	if err != nil {
+		return AggressiveNegativeResult{}, err
+	}
+	if q.Qclass != set.qclass {
+		// The stored records' class is uniform; a query in another class
+		// fails the same homogeneity check the per-query path applies.
+		return AggressiveNegativeResult{}, aggressiveFallback("NSEC set is not homogeneous")
+	}
+	return evaluateAggressiveNSECEntries(q, qname, set.signer, set.entries)
+}
+
 func evaluateAggressiveNSECEntries(
 	q dns.Question,
 	qname aggressiveCanonicalName,
@@ -486,26 +543,37 @@ func validateAggressiveQuestion(
 	q dns.Question,
 	zone string,
 ) (aggressiveCanonicalName, aggressiveCanonicalName, error) {
-	if q.Qtype == dns.TypeNone ||
-		q.Qclass == 0 ||
-		q.Qclass == dns.ClassANY ||
-		q.Qclass == dns.ClassNONE {
-		return aggressiveCanonicalName{}, aggressiveCanonicalName{},
-			aggressiveFallback("unsupported question")
-	}
-	qname, err := newAggressiveCanonicalName(q.Name)
-	if err != nil {
-		return aggressiveCanonicalName{}, aggressiveCanonicalName{}, err
-	}
 	signer, err := newAggressiveCanonicalName(zone)
 	if err != nil {
 		return aggressiveCanonicalName{}, aggressiveCanonicalName{}, err
 	}
-	if !qname.isSubdomainOf(signer) {
-		return aggressiveCanonicalName{}, aggressiveCanonicalName{},
-			aggressiveFallback("question is outside signer zone")
+	qname, err := validateAggressiveQuestionSigner(q, signer)
+	if err != nil {
+		return aggressiveCanonicalName{}, aggressiveCanonicalName{}, err
 	}
 	return qname, signer, nil
+}
+
+// validateAggressiveQuestionSigner is validateAggressiveQuestion for a caller
+// that already holds the signer's canonical form.
+func validateAggressiveQuestionSigner(
+	q dns.Question,
+	signer aggressiveCanonicalName,
+) (aggressiveCanonicalName, error) {
+	if q.Qtype == dns.TypeNone ||
+		q.Qclass == 0 ||
+		q.Qclass == dns.ClassANY ||
+		q.Qclass == dns.ClassNONE {
+		return aggressiveCanonicalName{}, aggressiveFallback("unsupported question")
+	}
+	qname, err := newAggressiveCanonicalName(q.Name)
+	if err != nil {
+		return aggressiveCanonicalName{}, err
+	}
+	if !qname.isSubdomainOf(signer) {
+		return aggressiveCanonicalName{}, aggressiveFallback("question is outside signer zone")
+	}
+	return qname, nil
 }
 
 func aggressiveNODATAType(qtype uint16) bool {

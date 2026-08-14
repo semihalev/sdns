@@ -90,9 +90,19 @@ type denialProofZoneSnapshot struct {
 	// order. Readers treat it as immutable, as they do the rest of the
 	// snapshot.
 	nsecPrepared []dnssec.PreparedNSEC
-	nsec3        map[denialProofNSEC3Params][]*denialProofEntry
-	nsec3Order   []denialProofNSEC3Params
-	wireBytes    int64
+	// nsecSet is nsecPrepared validated once as an aggressive-answer set,
+	// nil when the set does not validate. A lookup that finds nothing
+	// expired evaluates it directly; re-validating per query rebuilt the
+	// entry table on every negative answer.
+	nsecSet *dnssec.AggressiveNSECSet
+	// nsecOwners maps each published NSEC record to its entry, for proof
+	// selection without building the same map per query. Valid only while
+	// every snapshot entry is live — an expired subset selects through its
+	// own filtered map.
+	nsecOwners map[dns.RR]*denialProofEntry
+	nsec3      map[denialProofNSEC3Params][]*denialProofEntry
+	nsec3Order []denialProofNSEC3Params
+	wireBytes  int64
 }
 
 type denialProofCacheConfig struct {
@@ -985,6 +995,22 @@ func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 			entry.preparedNSEC...,
 		)
 	}
+	if len(snapshot.nsecPrepared) != 0 {
+		// A set that fails validation stays nil: per-query evaluation of
+		// the prepared slice fails the same checks and falls through to
+		// NSEC3 and ordinary resolution, exactly as before. The owner index
+		// exists only for the validated fast path, so it is not built for a
+		// set that will never take it.
+		if set, err := dnssec.NewAggressiveNSECSet(snapshot.nsecPrepared, key.zone); err == nil {
+			snapshot.nsecSet = set
+			snapshot.nsecOwners = make(map[dns.RR]*denialProofEntry)
+			for _, entry := range snapshot.nsec {
+				for _, rr := range entry.data {
+					snapshot.nsecOwners[rr] = entry
+				}
+			}
+		}
+	}
 	snapshot.nsec3Order = make(
 		[]denialProofNSEC3Params,
 		0,
@@ -1409,9 +1435,22 @@ func denialProofEvaluate(
 		prune = denialProofPruneExpired
 	}
 	if len(nsecPrepared) != 0 {
-		result, err := dnssec.EvaluateAggressiveNSECPrepared(q, zone.zone, nsecPrepared)
+		var result dnssec.AggressiveNegativeResult
+		var err error
+		owners := snapshot.nsecOwners
+		if snapshot.nsecSet != nil && len(nsecEntries) == len(snapshot.nsec) {
+			// Nothing expired: the published, pre-validated set is exactly
+			// the live set. This is the per-query allocation-free path.
+			result, err = dnssec.EvaluateAggressiveNSECSet(q, snapshot.nsecSet)
+		} else {
+			// An expired subset (or a set that never validated) takes the
+			// per-query path over the filtered records, with a filtered
+			// owner map to match.
+			owners = nil
+			result, err = dnssec.EvaluateAggressiveNSECPrepared(q, zone.zone, nsecPrepared)
+		}
 		if err == nil {
-			entries, selected := denialProofSelectedEntries(result.Proof, nsecEntries)
+			entries, selected := denialProofSelectedEntries(result.Proof, nsecEntries, owners)
 			if selected {
 				return result, entries, prune, true
 			}
@@ -1434,7 +1473,7 @@ func denialProofEvaluate(
 			}
 			continue
 		}
-		selectedEntries, selected := denialProofSelectedEntries(result.Proof, entries)
+		selectedEntries, selected := denialProofSelectedEntries(result.Proof, entries, nil)
 		if selected {
 			return result, selectedEntries, prune, true
 		}
@@ -1497,28 +1536,34 @@ func denialProofLiveRecords(
 func denialProofSelectedEntries(
 	proof []dns.RR,
 	entries []*denialProofEntry,
+	owners map[dns.RR]*denialProofEntry,
 ) ([]*denialProofEntry, bool) {
 	if len(proof) == 0 {
 		return nil, false
 	}
-	owners := make(map[dns.RR]*denialProofEntry)
-	for _, entry := range entries {
-		for _, rr := range entry.data {
-			owners[rr] = entry
+	if owners == nil {
+		owners = make(map[dns.RR]*denialProofEntry)
+		for _, entry := range entries {
+			for _, rr := range entry.data {
+				owners[rr] = entry
+			}
 		}
 	}
 
 	selected := make([]*denialProofEntry, 0, len(proof))
-	seen := make(map[denialProofID]struct{}, len(proof))
+proof:
 	for _, rr := range proof {
 		entry := owners[rr]
 		if entry == nil {
 			return nil, false
 		}
-		if _, duplicate := seen[entry.id]; duplicate {
-			continue
+		// A proof holds a handful of records; scanning what was already
+		// selected beats allocating a set per query.
+		for _, previous := range selected {
+			if previous.id == entry.id {
+				continue proof
+			}
 		}
-		seen[entry.id] = struct{}{}
 		selected = append(selected, entry)
 	}
 	return selected, len(selected) != 0
