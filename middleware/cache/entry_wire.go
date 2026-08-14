@@ -23,33 +23,36 @@ const (
 )
 
 // prepareWireServe records the byte-serving verdict. Admission strips OPT,
-// so an eligible body has ARCOUNT==0; RRSIG questions are excluded because
-// the DO=0 Msg path treats them specially, and EDE-bearing entries stay on
-// the path that knows how to re-attach the option.
-func prepareWireServe(body []byte, ede *dns.EDNS0_EDE) wireServeFlags {
+// so any additional records in an eligible body are real RRs the TTL walk
+// covers. The DNSSEC flag is taken from the answer and authority sections
+// only — ClearDNSSEC never filters the additional section, and mirroring
+// that keeps the DO=0 wire body identical to the Msg path's. An explicit
+// RRSIG question is eligible too: its signatures are the payload, which
+// ClearDNSSEC leaves untouched for any DO.
+func prepareWireServe(body []byte) wireServeFlags {
 	var flags wireServeFlags
-	if ede != nil {
-		return 0
-	}
 	header, ok := wire.ParseHeader(body)
-	if !ok || header.QDCount != 1 || header.ARCount != 0 {
+	if !ok || header.QDCount != 1 {
 		return 0
 	}
 	question, ok := wire.ParseQuestion(body, wire.HeaderLen)
-	if !ok || question.Qtype == dns.TypeRRSIG {
+	if !ok {
 		return 0
 	}
 
 	off := question.End
+	answered := int(header.ANCount) + int(header.NSCount)
 	hasQtypeAnswer, hasCNAMEAnswer := false, false
-	for i := range int(header.ANCount) + int(header.NSCount) {
+	for i := range answered + int(header.ARCount) {
 		rr, ok := wire.ParseRR(body, off)
 		if !ok {
 			return 0
 		}
-		switch rr.Type {
-		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
-			flags |= wireHasDNSSEC
+		if i < answered {
+			switch rr.Type {
+			case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
+				flags |= wireHasDNSSEC
+			}
 		}
 		if i < int(header.ANCount) {
 			if rr.Type == question.Qtype {
@@ -109,18 +112,31 @@ func (e *CacheEntry) wireChainMismatch(
 	if body == nil {
 		return wireSkipDNSSEC
 	}
-	if capability.MaxSize > 0 && len(body)+capability.Reserve > capability.MaxSize {
+	if capability.MaxSize > 0 &&
+		len(body)+capability.Reserve+e.wireEDEReserve() > capability.MaxSize {
 		return wireSkipSize
 	}
 	return nil
+}
+
+// wireEDEReserve is the encoded length of the entry's Extended DNS Error
+// option, zero without one. It rides the lease reserve so the edns layer
+// appends the option into existing capacity.
+func (e *CacheEntry) wireEDEReserve() int {
+	if e.ede == nil {
+		return 0
+	}
+	return wire.OPTOptionHdrLen + 2 + len(e.ede.ExtraText)
 }
 
 // wireBodyFor returns the stored body this client may be served, and the
 // verdict that goes with it. A client that asked for DNSSEC gets the stored
 // message; one that did not gets the stripped form, which is nil when the
 // entry has none — that client keeps the Msg path, which strips as it goes.
+// An explicit RRSIG question serves the stored message for any DO, exactly
+// as ClearDNSSEC leaves such a response untouched.
 func (e *CacheEntry) wireBodyFor(do bool) ([]byte, wireServeFlags) {
-	if do || e.wireServe&wireHasDNSSEC == 0 {
+	if do || e.wireServe&wireHasDNSSEC == 0 || e.question.Qtype == dns.TypeRRSIG {
 		return e.wire, e.wireServe
 	}
 	if e.stripped == nil {
@@ -146,7 +162,8 @@ func (e *CacheEntry) serveWire(
 	if stored == nil {
 		return nil, middleware.WireInfo{}, false
 	}
-	return e.serveWireInto(make([]byte, 0, len(stored)+reserve), req, do)
+	return e.serveWireInto(
+		make([]byte, 0, len(stored)+reserve+e.wireEDEReserve()), req, do)
 }
 
 // serveWireInto is serveWire building into caller-owned storage: dst must
@@ -218,7 +235,7 @@ func (e *CacheEntry) serveWireInto(
 
 	ttl := uint32(remaining.Seconds())
 	off := question.End
-	for range int(header.ANCount) + int(header.NSCount) {
+	for range int(header.ANCount) + int(header.NSCount) + int(header.ARCount) {
 		rr, ok := wire.ParseRR(body, off)
 		if !ok {
 			return nil, middleware.WireInfo{}, false
@@ -233,11 +250,30 @@ func (e *CacheEntry) serveWireInto(
 		authData = false
 	}
 
-	return body, middleware.WireInfo{
+	return body, e.wireInfoFor(header, flags, authData), true
+}
+
+// wireInfoFor assembles the reply facts the writer chain acts on. The
+// DNSSEC bit is suppressed for an explicit RRSIG question — its
+// signatures are the payload, and the edns layer must not divert such a
+// DO=0 reply back to the Msg path. The entry's Extended DNS Error rides
+// along for the OPT append.
+func (e *CacheEntry) wireInfoFor(
+	header wire.Header,
+	flags wireServeFlags,
+	authData bool,
+) middleware.WireInfo {
+	info := middleware.WireInfo{
 		Rcode:             header.Rcode(),
 		AuthenticatedData: authData,
-		HasDNSSEC:         flags&wireHasDNSSEC != 0,
-	}, true
+		HasDNSSEC:         flags&wireHasDNSSEC != 0 && e.question.Qtype != dns.TypeRRSIG,
+	}
+	if e.ede != nil {
+		info.HasEDE = true
+		info.EDECode = e.ede.InfoCode
+		info.EDEText = e.ede.ExtraText
+	}
+	return info
 }
 
 // serveWireIntoRequest is serveWireInto for a wire-born request: every
@@ -286,7 +322,7 @@ func (e *CacheEntry) serveWireIntoRequest(
 
 	ttl := uint32(remaining.Seconds())
 	off := question.End
-	for range int(header.ANCount) + int(header.NSCount) {
+	for range int(header.ANCount) + int(header.NSCount) + int(header.ARCount) {
 		rr, ok := wire.ParseRR(body, off)
 		if !ok {
 			return nil, middleware.WireInfo{}, false
@@ -301,9 +337,5 @@ func (e *CacheEntry) serveWireIntoRequest(
 		authData = false
 	}
 
-	return body, middleware.WireInfo{
-		Rcode:             header.Rcode(),
-		AuthenticatedData: authData,
-		HasDNSSEC:         flags&wireHasDNSSEC != 0,
-	}, true
+	return body, e.wireInfoFor(header, flags, authData), true
 }

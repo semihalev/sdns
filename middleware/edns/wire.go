@@ -128,7 +128,9 @@ func (w *ResponseWriter) AbortWire() {
 // attaches — directly into the reply's reserved tail. Nothing is
 // materialized: no OPT record, no option objects, and no text form for
 // options the library holds as hex only to decode again while packing.
-func (w *ResponseWriter) appendWireOPT(body []byte) ([]byte, bool) {
+// An Extended DNS Error carried by info (a cached entry's provenance)
+// rides the same record, sized into the lease by the cache.
+func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([]byte, bool) {
 	body, rdlenOff := wire.AppendOPTHeader(body, w.respUDPSize, w.do)
 
 	if w.cookie != "" || w.hasCookieRaw {
@@ -140,6 +142,9 @@ func (w *ResponseWriter) appendWireOPT(body []byte) ([]byte, bool) {
 	}
 	if w.nsidstr != "" && w.nsid {
 		body = wire.AppendOptionString(body, dns.EDNS0NSID, w.nsidstr)
+	}
+	if info.HasEDE {
+		body = wire.AppendOptionEDE(body, info.EDECode, info.EDEText)
 	}
 
 	return wire.FinishOPT(body, rdlenOff), true
@@ -233,9 +238,16 @@ func (w *ResponseWriter) WriteWire(body []byte, info middleware.WireInfo) error 
 		return next.WriteWire(body, info)
 	}
 
+	// The stored body may carry real additional records; the OPT joins
+	// them rather than replacing the count.
+	header, ok := wire.ParseHeader(body)
+	if !ok {
+		return middleware.ErrWireFallback
+	}
+
 	// The caller sized the body with WireReady's reserve, so this appends
 	// into the existing capacity.
-	withOPT, ok := w.appendWireOPT(body)
+	withOPT, ok := w.appendWireOPT(body, info)
 	if !ok {
 		return middleware.ErrWireFallback
 	}
@@ -243,7 +255,7 @@ func (w *ResponseWriter) WriteWire(body []byte, info middleware.WireInfo) error 
 	if w.Proto() == "udp" && len(withOPT) > w.size {
 		return middleware.ErrWireFallback
 	}
-	wire.SetARCount(withOPT, 1)
+	wire.SetARCount(withOPT, header.ARCount+1)
 
 	return next.WriteWire(withOPT, info)
 }

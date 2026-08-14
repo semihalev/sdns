@@ -251,6 +251,19 @@ func AppendOptionString(dst []byte, code uint16, data string) []byte {
 	return append(dst, data...)
 }
 
+// optCodeEDE is the RFC 8914 Extended DNS Error option code.
+const optCodeEDE = 15
+
+// AppendOptionEDE writes an RFC 8914 Extended DNS Error option — the
+// two-byte info code followed by the extra text — without materializing a
+// payload buffer or a library option object.
+func AppendOptionEDE(dst []byte, infoCode uint16, text string) []byte {
+	dst = binary.BigEndian.AppendUint16(dst, optCodeEDE)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(2+len(text))) //nolint:gosec // callers bound option data to the message size
+	dst = binary.BigEndian.AppendUint16(dst, infoCode)
+	return append(dst, text...)
+}
+
 // FinishOPT records the RDLENGTH of the options written since
 // AppendOPTHeader returned rdlenOff.
 func FinishOPT(dst []byte, rdlenOff int) []byte {

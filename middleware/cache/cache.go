@@ -1113,7 +1113,7 @@ func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entr
 		wireSkipDNSSEC.Inc()
 		return false
 	}
-	dst := leaser.BeginWire(len(stored), capability.Reserve)
+	dst := leaser.BeginWire(len(stored), capability.Reserve+entry.wireEDEReserve())
 	if dst == nil {
 		wireSkipWriter.Inc()
 		return false

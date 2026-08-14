@@ -24,24 +24,30 @@ import (
 
 // benchAnswerStub is the terminal in place of the resolver: the warm-up
 // miss materializes and answers a cacheable record; the measured loop
-// never reaches it.
-type benchAnswerStub struct{}
+// never reaches it. A class test installs its own respond hook.
+type benchAnswerStub struct {
+	respond func(req *dns.Msg) *dns.Msg
+}
 
 func (benchAnswerStub) Name() string { return "bench-answer-stub" }
 
-func (benchAnswerStub) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+func (s benchAnswerStub) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	ctx, req := ch.Materialize(ctx)
 	if req == nil {
 		return
 	}
 	_ = ctx
-	resp := new(dns.Msg)
-	resp.SetReply(req)
-	resp.RecursionAvailable = true
-	resp.Authoritative = false
-	rr, err := dns.NewRR(req.Question[0].Name + " 300 IN A 192.0.2.77")
-	if err == nil {
-		resp.Answer = []dns.RR{rr}
+	var resp *dns.Msg
+	if s.respond != nil {
+		resp = s.respond(req)
+	} else {
+		resp = new(dns.Msg)
+		resp.SetReply(req)
+		resp.RecursionAvailable = true
+		rr, err := dns.NewRR(req.Question[0].Name + " 300 IN A 192.0.2.77")
+		if err == nil {
+			resp.Answer = []dns.RR{rr}
+		}
 	}
 	_ = ch.Writer.WriteMsg(resp)
 	ch.Cancel()
@@ -50,6 +56,10 @@ func (benchAnswerStub) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 // newHitChainServer builds a server over the default hit-path chain with
 // the resolver replaced by the terminal stub.
 func newHitChainServer(tb testing.TB) *Server {
+	return newHitChainServerWith(tb, nil)
+}
+
+func newHitChainServerWith(tb testing.TB, respond func(req *dns.Msg) *dns.Msg) *Server {
 	tb.Helper()
 	middleware.Reset()
 	tb.Cleanup(middleware.Reset)
@@ -64,7 +74,7 @@ func newHitChainServer(tb testing.TB) *Server {
 	middleware.Register("as112", func(cfg *config.Config) middleware.Handler { return as112.New(cfg) })
 	middleware.Register("kubernetes", func(cfg *config.Config) middleware.Handler { return kubernetes.New(cfg) })
 	middleware.Register("cache", func(cfg *config.Config) middleware.Handler { return cache.New(cfg) })
-	middleware.Register("bench-answer-stub", func(*config.Config) middleware.Handler { return benchAnswerStub{} })
+	middleware.Register("bench-answer-stub", func(*config.Config) middleware.Handler { return benchAnswerStub{respond: respond} })
 
 	cfg := &config.Config{ //nolint:gosec // G101 — the cookie secret is a test fixture, not a credential
 		Bind:         "127.0.0.1:0",

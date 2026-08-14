@@ -21,9 +21,17 @@ type WireInfo struct {
 	Rcode int
 	// AuthenticatedData mirrors the AD bit currently set in the body.
 	AuthenticatedData bool
-	// HasDNSSEC reports whether the body carries RRSIG/NSEC/NSEC3
-	// records — the fact the edns layer needs for its DO=0 decision.
+	// HasDNSSEC reports whether the body carries DNSSEC records the
+	// client did not ask for — the fact the edns layer needs for its
+	// DO=0 decision. An explicit RRSIG query's answer is its payload,
+	// not augmentation, and travels with this unset.
 	HasDNSSEC bool
+	// HasEDE carries an RFC 8914 Extended DNS Error for the edns layer
+	// to append to the reply OPT. A client without EDNS never receives
+	// it — exactly the Msg path's re-attach behavior.
+	HasEDE  bool
+	EDECode uint16
+	EDEText string
 }
 
 // WireCapability is what the writer chain reports about serving bytes for

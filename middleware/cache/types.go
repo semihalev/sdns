@@ -183,8 +183,8 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	if len(msg.Question) > 0 {
 		entry.question = msg.Question[0]
 	}
-	entry.wireServe = prepareWireServe(wire, ede)
-	entry.prepareStripped(msgCopy, ede)
+	entry.wireServe = prepareWireServe(wire)
+	entry.prepareStripped(msgCopy)
 
 	return entry
 }
@@ -200,8 +200,11 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 // the stored bytes per hit: name compression makes the sections' offsets
 // interdependent, so records cannot be cut out of a packed message without
 // re-encoding it.
-func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg, ede *dns.EDNS0_EDE) {
-	if e.wireServe&wireHasDNSSEC == 0 {
+func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg) {
+	// An explicit RRSIG question keeps its signatures for any DO —
+	// ClearDNSSEC would return the message unchanged, so the stripped
+	// body would only duplicate the stored one.
+	if e.wireServe&wireHasDNSSEC == 0 || e.question.Qtype == dns.TypeRRSIG {
 		return
 	}
 
@@ -220,7 +223,7 @@ func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg, ede *dns.EDNS0_EDE) {
 		return
 	}
 
-	flags := prepareWireServe(body, ede)
+	flags := prepareWireServe(body)
 	// Byte serving is all-or-nothing per body: an entry whose stripped form
 	// is not servable simply keeps the Msg path for its DO=0 hits.
 	const ready = wireEligible | wireChaseSafe
