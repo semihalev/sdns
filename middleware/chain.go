@@ -847,3 +847,20 @@ func (ch *Chain) Reset(w dns.ResponseWriter, r *dns.Msg) {
 	ch.pos = 0
 	ch.count = len(ch.handlers)
 }
+
+// AllowDirectPack declares that the transport beneath this chain's writer is
+// an SDNS-owned UDP, TCP or DoT sink whose Write sends raw wire bytes
+// unchanged, so WriteMsg may pack in pooled storage and skip the library's
+// per-message allocations.
+//
+// It is a declaration with one intended caller — the server's owned-listener
+// ingress, immediately after Reset — never an inference from address types
+// or proto strings, which plugin writers can share without sharing the
+// byte-sink property. Reset clears it, so a pooled chain cannot carry the
+// capability to the next request. A chain whose writer was replaced by a
+// custom ResponseWriter implementation is left alone.
+func (ch *Chain) AllowDirectPack() {
+	if w, ok := ch.Writer.(*responseWriter); ok {
+		w.directPack = true
+	}
+}
