@@ -116,17 +116,17 @@ func (s *Store) Lookup(req *dns.Msg) (*CacheEntry, bool) {
 	if len(req.Question) == 0 {
 		return nil, false
 	}
-	q := req.Question[0]
-	return s.LookupByKeyVerified(CacheKey{Question: q, CD: req.CheckingDisabled}.Hash(), q)
+	want := CacheKey{Question: req.Question[0], CD: req.CheckingDisabled}
+	return s.LookupByKeyVerified(want.Hash(), want)
 }
 
 // LookupByKey is the pre-keyed form of Lookup, used by hot paths
 // inside the cache middleware that already computed the key.
 //
-// Callers MUST verify the returned entry's question against the request
-// (use LookupByKeyVerified, or compare via entryMatchesQuestion): the map
-// key is a non-cryptographic 64-bit xxhash of the key preimage, so a hash
-// collision would otherwise serve one query's answer to another.
+// Callers MUST verify the returned entry against the preimage they keyed
+// with (use LookupByKeyVerified, or entryMatchesKey / entryMatchesWire):
+// the map key is a non-cryptographic 64-bit xxhash of that preimage, so a
+// hash collision would otherwise serve one query's answer to another.
 func (s *Store) LookupByKey(key uint64) (*CacheEntry, bool) {
 	if entry, ok := s.positive.Get(key); ok {
 		return entry, true
@@ -138,27 +138,48 @@ func (s *Store) LookupByKey(key uint64) (*CacheEntry, bool) {
 }
 
 // LookupByKeyVerified is LookupByKey plus a full-key check: it confirms the
-// stored entry's question matches q before returning it. Without this, two
-// distinct questions whose preimages collide under xxhash64 would silently
-// serve each other's answers — and because qnames are attacker-chosen, a
-// collision can be searched for offline and used to poison the cache.
-func (s *Store) LookupByKeyVerified(key uint64, q dns.Question) (*CacheEntry, bool) {
+// stored entry was admitted under exactly the preimage want describes before
+// returning it. Without this, two distinct preimages that collide under
+// xxhash64 would silently serve each other's answers — and because qnames
+// are attacker-chosen, a collision can be searched for offline and used to
+// poison the cache.
+func (s *Store) LookupByKeyVerified(key uint64, want CacheKey) (*CacheEntry, bool) {
 	entry, ok := s.LookupByKey(key)
-	if !ok || !entryMatchesQuestion(entry, q) {
+	if !ok || !entryMatchesKey(entry, want) {
 		return nil, false
 	}
 	return entry, true
 }
 
-// entryMatchesQuestion reports whether entry's stored question equals q:
-// type and class exactly, name case-insensitively (RFC 4343 — matching the
-// key hash, which lowercases the name in its preimage).
-func entryMatchesQuestion(entry *CacheEntry, q dns.Question) bool {
+// entryMatchesKey is the Msg-path collision verifier: the shared preimage
+// check plus the qname in presentation form.
+func entryMatchesKey(entry *CacheEntry, want CacheKey) bool {
+	return entryMatchesPreimage(entry, want.Question.Qtype, want.Question.Qclass, want.CD, want.Scope) &&
+		equalNameASCIIFold(entry.question.Name, want.Question.Name)
+}
+
+// entryMatchesWireQuestion is the wire-path collision verifier: the same
+// preimage check, with the qname compared straight off the wire so a hit
+// never builds a presentation name. Byte serving covers shared entries
+// only, hence the shared scope.
+func entryMatchesWireQuestion(entry *CacheEntry, wireName []byte, qtype, qclass uint16, cd bool) bool {
+	return entryMatchesPreimage(entry, qtype, qclass, cd, netip.Prefix{}) &&
+		cache.WireNameEqualsPresentation(wireName, entry.question.Name)
+}
+
+// entryMatchesPreimage compares every dimension the cache key is built from
+// except the qname, which each path compares in the form it already holds.
+// Both verifiers route through here so neither can quietly stop checking a
+// dimension the other still does: a 64-bit hash match is not evidence that
+// the entry belongs to this question, this CD partition, or this ECS
+// audience — only the preimage is.
+func entryMatchesPreimage(entry *CacheEntry, qtype, qclass uint16, cd bool, scope netip.Prefix) bool {
 	if entry == nil || entry.question.Name == "" {
 		return false
 	}
 	eq := entry.question
-	return eq.Qtype == q.Qtype && eq.Qclass == q.Qclass && equalNameASCIIFold(eq.Name, q.Name)
+	return eq.Qtype == qtype && eq.Qclass == qclass &&
+		entry.cd == cd && entry.scope == normalizeKeyScope(scope)
 }
 
 // equalNameASCIIFold reports whether two DNS names are equal under
@@ -482,7 +503,7 @@ func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.
 	s.setFromResponseWithKey(
 		CacheKey{Question: q, CD: keyCD}.Hash(),
 		resp,
-		false,
+		netip.Prefix{},
 		cutUntil,
 		cutKey,
 		keyCD,
@@ -492,22 +513,27 @@ func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
 func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, false, cutUntil, cutKey, resp.CheckingDisabled)
+	s.setFromResponseWithKey(key, resp, netip.Prefix{}, cutUntil, cutKey, resp.CheckingDisabled)
 }
 
 // SetFromResponseScoped is SetFromResponseWithKey for entries that
-// were keyed under an ECS scope (RFC 7871 §7.1.2). The entry's
-// PrefetchEligible is false — the prefetch worker has no client IP
-// to derive ECS from, so refreshing a scoped entry would lose its
-// scope and store the wrong-audience answer.
-func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, true, cutUntil, cutKey, resp.CheckingDisabled)
+// were keyed under an ECS scope (RFC 7871 §7.1.2). scope must be the
+// prefix key was computed from: the entry carries it, and the hit-path
+// verifier compares the two so a colliding key cannot cross ECS
+// audiences. The entry's PrefetchEligible is false — the prefetch worker
+// has no client IP to derive ECS from, so refreshing a scoped entry would
+// lose its scope and store the wrong-audience answer.
+func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, scope netip.Prefix, cutUntil time.Time, cutKey uint64) {
+	s.setFromResponseWithKey(key, resp, scope, cutUntil, cutKey, resp.CheckingDisabled)
 }
 
-func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, cutUntil time.Time, cutKey uint64, keyCD bool) {
+func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Prefix, cutUntil time.Time, cutKey uint64, keyCD bool) {
 	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
+
+	scope = normalizeKeyScope(scope)
+	scoped := scope.IsValid()
 
 	// Scoped (ECS) entries get an additional cap: geo answers go
 	// stale faster than the resolver's normal MaxTTL would allow,
@@ -525,7 +551,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 	newEntry := func(msg *dns.Msg, ttl time.Duration) *CacheEntry {
 		var e *CacheEntry
 		if scoped {
-			e = NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit)
+			e = NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit, scope)
 		} else {
 			e = NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
 		}
@@ -536,6 +562,12 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scoped bool, c
 		if scoped {
 			e.rateLimKey = key
 		}
+		// The entry's identity is the key's, not the message's: callers
+		// name the CD partition they keyed with, and a hit is verified
+		// against that. resp.CheckingDisabled is the same bit on every
+		// in-tree path, but an entry filed under a CD the response no
+		// longer carries would be unreachable rather than merely misfiled.
+		e.cd = keyCD
 		e.cutUntil = cutUntil
 		e.cutKey = cutKey
 		return e
@@ -591,22 +623,33 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 	filtered := filterCacheableAnswer(resp)
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
+	// A replacement takes over the key expected occupies, so it inherits
+	// that key's CD partition and ECS scope. A refresh that carried the
+	// response's own CD bit instead would be verified against the key it
+	// was stored under and silently declined on every later hit.
+	inherit := func(entry *CacheEntry) *CacheEntry {
+		if entry == nil {
+			return nil
+		}
+		entry.cd = expected.cd
+		entry.scope = expected.scope
+		entry.cutUntil = cutUntil
+		entry.cutKey = cutKey
+		return entry
+	}
+
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
-		entry := NewCacheEntryWithKey(filtered, s.positive.ttl.Calculate(msgTTL), s.cfg.RateLimit, key)
+		entry := inherit(NewCacheEntryWithKey(filtered, s.positive.ttl.Calculate(msgTTL), s.cfg.RateLimit, key))
 		if entry == nil {
 			return false
 		}
-		entry.cutUntil = cutUntil
-		entry.cutKey = cutKey
 		return s.positive.cache.CompareAndSwap(key, expected, entry)
 	case dnsutil.TypeServerFailure:
-		entry := NewCacheEntryWithKey(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key)
+		entry := inherit(NewCacheEntryWithKey(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key))
 		if entry == nil {
 			return false
 		}
-		entry.cutUntil = cutUntil
-		entry.cutKey = cutKey
 		return s.negative.cache.CompareAndSwap(key, expected, entry)
 	}
 	return false
@@ -668,7 +711,7 @@ func (s *Store) Purge(q dns.Question) {
 	}
 	var hits []located
 	s.ForEach(func(positive bool, key uint64, e *CacheEntry) bool {
-		if e == nil || !e.scoped || e.question.Name == "" {
+		if e == nil || !e.scoped() || e.question.Name == "" {
 			return true
 		}
 		eq := e.question

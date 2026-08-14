@@ -202,10 +202,11 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 
 	t.Run("ECS scoped", func(t *testing.T) {
 		resp := cutTestMsg("ecs.example.", dns.RcodeSuccess, 300)
-		key := CacheKey{Question: resp.Question[0], CD: false, Scope: netip.MustParsePrefix("192.0.2.0/24")}.Hash()
+		scope := netip.MustParsePrefix("192.0.2.0/24")
+		key := CacheKey{Question: resp.Question[0], CD: false, Scope: scope}.Hash()
 		cut := time.Now().Add(2 * time.Second)
 		const cutKey = uint64(0x301)
-		s.SetFromResponseScoped(key, resp, cut, cutKey)
+		s.SetFromResponseScoped(key, resp, scope, cut, cutKey)
 		entry, ok := s.LookupByKey(key)
 		if !ok {
 			t.Fatal("ECS-scoped entry missing")
@@ -213,7 +214,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 		if !entry.cutUntil.Equal(cut) || entry.cutKey != cutKey {
 			t.Fatalf("ECS cut = (%v, %#x), want (%v, %#x)", entry.cutUntil, entry.cutKey, cut, cutKey)
 		}
-		s.SetFromResponseScoped(key, resp, time.Now().Add(-time.Millisecond), cutKey)
+		s.SetFromResponseScoped(key, resp, scope, time.Now().Add(-time.Millisecond), cutKey)
 		if _, ok := s.LookupByKey(key); ok {
 			t.Fatal("ECS-scoped entry survived past its delegation cut")
 		}

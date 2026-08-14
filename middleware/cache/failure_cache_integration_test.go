@@ -741,7 +741,7 @@ func TestFailureCacheScopedSuccessDoesNotResetGlobalAudience(t *testing.T) {
 		A:   []byte{192, 0, 2, 20},
 	}}
 	scopedKey := CacheKey{Question: req.Question[0], Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(scopedKey, scoped, time.Time{}, 0)
+	c.store.SetFromResponseScoped(scopedKey, scoped, scope, time.Time{}, 0)
 
 	if hit, ok := c.store.LookupFailure(req, netip.Prefix{}); !ok || hit.Provenance != "global" {
 		t.Fatalf("scoped success reset global failure audience: %#v, %v", hit, ok)

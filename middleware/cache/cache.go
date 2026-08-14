@@ -476,9 +476,9 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// carrying traffic (non-ECS lookups are already counted by
 	// dns_cache_hits_total / dns_cache_misses_total).
 	if clientScope.IsValid() {
-		if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
+		if entry, scopedKey, scope := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 			ecsLookupHitScoped.Inc()
-			if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+			if c.handleCacheHit(ctx, ch, entry, scopedKey, scope) {
 				c.metrics.Hit()
 				return
 			}
@@ -488,7 +488,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if clientScope.IsValid() {
 			ecsLookupHitShared.Inc()
 		}
-		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+		if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}) {
 			c.metrics.Hit()
 			return
 		}
@@ -601,15 +601,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// shared-key check would miss it), or a SCOPE=0
 			// shared entry (a scoped check alone would miss it).
 			if clientScope.IsValid() {
-				if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
-					if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+				if entry, scopedKey, scope := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
+					if c.handleCacheHit(ctx, ch, entry, scopedKey, scope) {
 						c.metrics.Hit()
 						return
 					}
 				}
 			}
 			if entry := c.checkCache(cacheKey); entry != nil {
-				if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+				if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}) {
 					c.metrics.Hit()
 					return
 				}
@@ -866,8 +866,10 @@ func hasEDNSClientSubnet(req *dns.Msg) bool {
 }
 
 // scopedLookup probes the cache for the longest scope match that
-// covers `clientPrefix`. Returns the entry + the key it was found
-// under, or (nil, 0) on miss. The shared-key fallback is the
+// covers `clientPrefix`. Returns the entry, the key it was found
+// under, and the scope that key was built from — the hit chokepoint
+// needs the scope to verify the entry against the full preimage.
+// Returns (nil, 0, zero) on miss. The shared-key fallback is the
 // caller's responsibility — a scoped probe that misses should still
 // try the unscoped key in case the authority returned SCOPE=0
 // (cached shared) or the entry predates Stage 2.
@@ -887,9 +889,9 @@ func hasEDNSClientSubnet(req *dns.Msg) bool {
 // ~128 for IPv6. Each probe is one hash compute + one map lookup
 // — ~100 ns total — well below the cost of an upstream lookup
 // or a single GC sweep.
-func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64) {
+func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64, netip.Prefix) {
 	if !clientPrefix.IsValid() {
-		return nil, 0
+		return nil, 0, netip.Prefix{}
 	}
 	for bits := clientPrefix.Bits(); bits >= 1; bits-- {
 		scope, err := clientPrefix.Addr().Prefix(bits)
@@ -898,10 +900,10 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 		}
 		key := CacheKey{Question: q, CD: cd, Scope: scope}.Hash()
 		if entry, ok := c.store.LookupByKey(key); ok {
-			return entry, key
+			return entry, key, scope
 		}
 	}
-	return nil, 0
+	return nil, 0, netip.Prefix{}
 }
 
 // lookupNXDomainCut checks the RFC 8020 subtree index after an exact answer
@@ -1075,18 +1077,11 @@ func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain
 	return false
 }
 
-// entryMatchesWire is entryMatchesQuestion plus the preimage dimensions
-// the wire path verifies explicitly: CD and the scope partition.
+// entryMatchesWire is the wire fast path's collision check: the same
+// full-preimage verification the Msg chokepoint runs, with the question
+// read from the parsed wire view rather than a decoded message.
 func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
-	if entry == nil || entry.question.Name == "" || entry.scoped {
-		return false
-	}
-	if entry.cd != req.CD() {
-		return false
-	}
-	eq := entry.question
-	return eq.Qtype == req.Qtype() && eq.Qclass == req.Qclass() &&
-		internalcache.WireNameEqualsPresentation(req.WireName(), eq.Name)
+	return entryMatchesWireQuestion(entry, req.WireName(), req.Qtype(), req.Qclass(), req.CD())
 }
 
 // serveHitFromWire serves one verified exact hit as bytes built in the
@@ -1172,18 +1167,33 @@ func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entr
 	}
 }
 
-// handleCacheHit processes a cache hit.
-func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry *CacheEntry, key uint64) bool {
+// handleCacheHit processes a cache hit. scope is the ECS scope the lookup
+// keyed with — zero for the shared key — and is part of what the hit is
+// verified against.
+func (c *Cache) handleCacheHit(
+	ctx context.Context,
+	ch *middleware.Chain,
+	entry *CacheEntry,
+	key uint64,
+	scope netip.Prefix,
+) bool {
 	w := ch.Writer
 	req := ch.Request.Msg()
 
-	// Full-key verification (defends against xxhash64 key collisions).
+	// Full-preimage verification (defends against xxhash64 key collisions).
 	// The cache key is a non-cryptographic 64-bit hash of the query
 	// preimage, so a collision — accidental, or attacker-searched on a
-	// chosen qname — would otherwise serve one query's answer to another.
-	// Returning false treats it as a miss so the chain resolves normally.
-	// This is the single chokepoint for every hit (scoped and shared).
-	if len(req.Question) == 0 || !entryMatchesQuestion(entry, req.Question[0]) {
+	// chosen qname — would otherwise serve one query's answer to another:
+	// across qnames, but equally across the CD partition and the ECS
+	// audience, which is why every dimension is compared and not just the
+	// question. Returning false treats it as a miss so the chain resolves
+	// normally. This is the single chokepoint for every hit (scoped and
+	// shared).
+	if len(req.Question) == 0 || !entryMatchesKey(entry, CacheKey{
+		Question: req.Question[0],
+		CD:       req.CheckingDisabled,
+		Scope:    scope,
+	}) {
 		return false
 	}
 
@@ -1597,7 +1607,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		if respScope, ok := ecs.ReadResponseScope(res); ok {
 			clamped := w.cache.ecsPolicy.ClampScope(respScope, w.clientScope)
 			scopedKey := CacheKey{Question: q, CD: res.CheckingDisabled, Scope: clamped}.Hash()
-			w.cache.store.SetFromResponseScoped(scopedKey, res, cutUntil, cutKey)
+			w.cache.store.SetFromResponseScoped(scopedKey, res, clamped, cutUntil, cutKey)
 		} else {
 			// No SCOPE in response (or SCOPE=0): authority says
 			// "global"; cache shared so future non-ECS clients hit.

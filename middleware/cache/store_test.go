@@ -1,6 +1,8 @@
 package cache
 
 import (
+	"net/netip"
+	"os"
 	"testing"
 	"time"
 
@@ -50,15 +52,15 @@ func TestLookupByKeyVerifiedRejectsCollision(t *testing.T) {
 	qA := dns.Question{Name: "a.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	qB := dns.Question{Name: "b.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 
-	if _, ok := s.LookupByKeyVerified(collidingKey, qB); ok {
+	if _, ok := s.LookupByKeyVerified(collidingKey, CacheKey{Question: qB}); ok {
 		t.Fatal("collision: mismatched question must be a miss")
 	}
-	if _, ok := s.LookupByKeyVerified(collidingKey, qA); !ok {
+	if _, ok := s.LookupByKeyVerified(collidingKey, CacheKey{Question: qA}); !ok {
 		t.Fatal("matching question must hit")
 	}
 	// Name comparison is case-insensitive (RFC 4343), matching the key hash.
 	qAUpper := dns.Question{Name: "A.EXAMPLE.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	if _, ok := s.LookupByKeyVerified(collidingKey, qAUpper); !ok {
+	if _, ok := s.LookupByKeyVerified(collidingKey, CacheKey{Question: qAUpper}); !ok {
 		t.Fatal("name match must be case-insensitive")
 	}
 	// Type and class must match exactly.
@@ -66,10 +68,103 @@ func TestLookupByKeyVerifiedRejectsCollision(t *testing.T) {
 		{Name: "a.example.", Qtype: dns.TypeAAAA, Qclass: dns.ClassINET},
 		{Name: "a.example.", Qtype: dns.TypeA, Qclass: dns.ClassCHAOS},
 	} {
-		if _, ok := s.LookupByKeyVerified(collidingKey, q); ok {
+		if _, ok := s.LookupByKeyVerified(collidingKey, CacheKey{Question: q}); ok {
 			t.Fatalf("mismatched %v must be a miss", q)
 		}
 	}
+}
+
+// TestCacheHitRejectsCollisionAcrossScopeAndCD plants an entry under a key
+// its own preimage does not hash to — a deterministic stand-in for the
+// xxhash64 collision an attacker can search for offline on a chosen qname —
+// and pins that the hit chokepoint declines it instead of serving one ECS
+// audience's (or CD partition's) answer to a client that belongs to
+// neither. Verifying the question alone would let both through.
+func TestCacheHitRejectsCollisionAcrossScopeAndCD(t *testing.T) {
+	t.Run("scoped entry under the shared key", func(t *testing.T) {
+		cfg := makeTestConfig()
+		defer os.RemoveAll(cfg.Directory)
+		c := New(cfg)
+		defer c.Stop()
+
+		req := new(dns.Msg)
+		req.SetQuestion("collide.example.", dns.TypeA)
+		scope := netip.MustParsePrefix("203.0.113.0/24")
+
+		// The entry belongs to 203.0.113.0/24; the key is the one a
+		// plain, ECS-less client computes.
+		sharedKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
+		c.store.SetFromResponseScoped(sharedKey, reply(req, "10.9.9.9", 24), scope, time.Time{}, 0)
+
+		if _, ok := c.store.LookupByKeyVerified(sharedKey, CacheKey{Question: req.Question[0]}); ok {
+			t.Fatal("shared-key lookup accepted an entry scoped to another audience")
+		}
+
+		h := &echoHandler{aRecord: "10.0.0.1"}
+		resp := sendAndExpect(t, c, h, req, "198.51.100.7")
+		if got := answerA(resp); got != "10.0.0.1" {
+			t.Fatalf("answer = %q, want the upstream answer 10.0.0.1", got)
+		}
+		if h.Calls() != 1 {
+			t.Fatalf("upstream calls = %d, want 1 (the collision must read as a miss)", h.Calls())
+		}
+
+		// The decline is a miss, not a broken cache: the answer the miss
+		// stored serves the next identical query.
+		resp = sendAndExpect(t, c, h, req, "198.51.100.7")
+		if got := answerA(resp); got != "10.0.0.1" || h.Calls() != 1 {
+			t.Fatalf("second query: answer %q after %d upstream calls, want 10.0.0.1 after 1", got, h.Calls())
+		}
+	})
+
+	t.Run("CD=1 entry under the CD=0 key", func(t *testing.T) {
+		cfg := makeTestConfig()
+		defer os.RemoveAll(cfg.Directory)
+		c := New(cfg)
+		defer c.Stop()
+
+		req := new(dns.Msg)
+		req.SetQuestion("cdcollide.example.", dns.TypeA)
+
+		// A checking-disabled answer — unvalidated by definition — planted
+		// under the key a validating (CD=0) client computes.
+		cdResp := reply(req, "10.9.9.9", 0)
+		cdResp.CheckingDisabled = true
+		sharedKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
+		c.store.SetFromResponseWithKey(sharedKey, cdResp, time.Time{}, 0)
+
+		if _, ok := c.store.LookupByKeyVerified(sharedKey, CacheKey{Question: req.Question[0]}); ok {
+			t.Fatal("CD=0 lookup accepted an entry admitted under CD=1")
+		}
+
+		h := &echoHandler{aRecord: "10.0.0.1"}
+		resp := sendAndExpect(t, c, h, req, "198.51.100.7")
+		if got := answerA(resp); got != "10.0.0.1" {
+			t.Fatalf("answer = %q, want the upstream answer 10.0.0.1", got)
+		}
+		if h.Calls() != 1 {
+			t.Fatalf("upstream calls = %d, want 1 (the collision must read as a miss)", h.Calls())
+		}
+	})
+
+	t.Run("wire verification stays allocation-free", func(t *testing.T) {
+		// The wire path verifies the same dimensions on the strict path,
+		// where a single allocation is a contract break (docs/zero-path.md):
+		// the qname is compared against the stored presentation name in
+		// place, never rebuilt.
+		entry := NewCacheEntry(newTestSuccessResp("wirecheck.example."), time.Minute, 0)
+		wireReq, _ := wireTestRequest(t, "wirecheck.example.", dns.TypeA, false)
+		if !entryMatchesWire(entry, wireReq) {
+			t.Fatal("the entry under test does not verify")
+		}
+		if allocs := testing.AllocsPerRun(200, func() {
+			if !entryMatchesWire(entry, wireReq) {
+				t.Fatal("verification flapped")
+			}
+		}); allocs != 0 {
+			t.Fatalf("wire verification allocated %.2f objects per hit", allocs)
+		}
+	})
 }
 
 // TestStoreGetLookupRoundTrip covers Store.Lookup and Store.Get via

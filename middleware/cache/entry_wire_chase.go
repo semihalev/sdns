@@ -211,10 +211,8 @@ func (c *Cache) collectWireChase(
 		visited[n-1] = key
 
 		next := c.checkCache(key)
-		if next == nil || next.scoped || next.cd != cd ||
-			next.wireServe&wireEligible == 0 ||
-			next.question.Qtype != qtype || next.question.Qclass != qclass ||
-			!internalcache.WireNameEqualsPresentation(target, next.question.Name) {
+		if next == nil || next.wireServe&wireEligible == 0 ||
+			!entryMatchesWireQuestion(next, target, qtype, qclass, cd) {
 			return 0, false
 		}
 		entry = next

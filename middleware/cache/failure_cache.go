@@ -540,20 +540,13 @@ func (c *FailureCache) loadEntry(hash uint64) (*failureEntry, bool) {
 
 func normalizeFailureQuestionKey(key FailureQuestionKey) FailureQuestionKey {
 	key.Question.Name = dns.CanonicalName(key.Question.Name)
-	key.Scope = normalizeFailureScope(key.Scope)
+	key.Scope = normalizeKeyScope(key.Scope)
 	return key
 }
 
 func normalizeFailureZoneKey(key FailureZoneKey) FailureZoneKey {
 	key.Zone = dns.CanonicalName(key.Zone)
 	return key
-}
-
-func normalizeFailureScope(scope netip.Prefix) netip.Prefix {
-	if !scope.IsValid() || scope.Bits() == 0 {
-		return netip.Prefix{}
-	}
-	return scope.Masked()
 }
 
 func failureQuestionHash(key FailureQuestionKey) uint64 {
