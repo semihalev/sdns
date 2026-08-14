@@ -358,13 +358,17 @@ func (d *Dnstap) newTapMessage(w middleware.ResponseWriter, timestamp time.Time,
 		msg.ResponseTime = timestamp
 	}
 
-	// Set addresses
+	// Set addresses. The IP is copied, never aliased: an owned transport
+	// keeps the client's address in its job slab and rewrites it for the
+	// next packet, while this message travels to a queue another goroutine
+	// drains later. Sharing the slice would log one client's query against
+	// another's address, and race with the rewrite while doing it.
 	if addr, ok := w.RemoteAddr().(*net.UDPAddr); ok {
-		msg.QueryAddress = addr.IP
+		msg.QueryAddress = append(net.IP(nil), addr.IP...)
 		msg.QueryPort = uint16(addr.Port) //nolint:gosec // G115 - port is 0-65535
 		msg.Protocol = "UDP"
 	} else if addr, ok := w.RemoteAddr().(*net.TCPAddr); ok {
-		msg.QueryAddress = addr.IP
+		msg.QueryAddress = append(net.IP(nil), addr.IP...)
 		msg.QueryPort = uint16(addr.Port) //nolint:gosec // G115 - port is 0-65535
 		msg.Protocol = "TCP"
 	}

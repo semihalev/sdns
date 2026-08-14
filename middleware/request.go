@@ -122,137 +122,159 @@ func (r *Request) ReadTime() time.Time { return r.readTime }
 // the transport offered one.
 func (r *Request) EDNSWriterSlot() any { return r.ednsWriterSlot }
 
+// The accessors below answer from the parsed facts whenever the request
+// came in as bytes, and from the message otherwise. The precedence is the
+// point: materializing a wire-born request normalizes it — SetEdns0
+// attaches an OPT, forces DO, clamps the advertised size — so reading the
+// message back would tell a handler that a client which sent no OPT had
+// asked for DNSSEC. The parsed facts are what the client actually sent,
+// and they never change.
+
 // ID returns the request's DNS message ID.
 func (r *Request) ID() uint16 {
+	if r.wireBorn() {
+		return r.id
+	}
 	if r.msg != nil {
 		return r.msg.Id
 	}
-	return r.id
+	return 0
 }
 
 // Qtype returns the question type.
 func (r *Request) Qtype() uint16 {
-	if r.msg != nil {
-		if len(r.msg.Question) > 0 {
-			return r.msg.Question[0].Qtype
-		}
-		return 0
+	if r.wireBorn() {
+		return r.qtype
 	}
-	return r.qtype
+	if r.msg != nil && len(r.msg.Question) > 0 {
+		return r.msg.Question[0].Qtype
+	}
+	return 0
 }
 
 // Qclass returns the question class.
 func (r *Request) Qclass() uint16 {
-	if r.msg != nil {
-		if len(r.msg.Question) > 0 {
-			return r.msg.Question[0].Qclass
-		}
-		return 0
+	if r.wireBorn() {
+		return r.qclass
 	}
-	return r.qclass
+	if r.msg != nil && len(r.msg.Question) > 0 {
+		return r.msg.Question[0].Qclass
+	}
+	return 0
 }
 
 // RD reports the recursion-desired bit.
 func (r *Request) RD() bool {
-	if r.msg != nil {
-		return r.msg.RecursionDesired
+	if r.wireBorn() {
+		return r.flags&0x0100 != 0
 	}
-	return r.flags&0x0100 != 0
+	return r.msg != nil && r.msg.RecursionDesired
 }
 
 // CD reports the checking-disabled bit.
 func (r *Request) CD() bool {
-	if r.msg != nil {
-		return r.msg.CheckingDisabled
+	if r.wireBorn() {
+		return r.flags&0x0010 != 0
 	}
-	return r.flags&0x0010 != 0
+	return r.msg != nil && r.msg.CheckingDisabled
 }
 
 // AD reports the authenticated-data bit as the client sent it.
 func (r *Request) AD() bool {
-	if r.msg != nil {
-		return r.msg.AuthenticatedData
+	if r.wireBorn() {
+		return r.flags&0x0020 != 0
 	}
-	return r.flags&0x0020 != 0
+	return r.msg != nil && r.msg.AuthenticatedData
 }
 
 // Opcode extracts the opcode.
 func (r *Request) Opcode() int {
+	if r.wireBorn() {
+		return int(r.flags>>11) & 0xF
+	}
 	if r.msg != nil {
 		return r.msg.Opcode
 	}
-	return int(r.flags>>11) & 0xF
+	return 0
 }
 
 // HasOPT reports whether the request carried an OPT record.
 func (r *Request) HasOPT() bool {
-	if r.msg != nil {
-		return r.msg.IsEdns0() != nil
+	if r.wireBorn() {
+		return r.hasOPT
 	}
-	return r.hasOPT
+	return r.msg != nil && r.msg.IsEdns0() != nil
 }
 
 // UDPSize returns the client's advertised EDNS UDP size (0 without OPT).
 func (r *Request) UDPSize() uint16 {
+	if r.wireBorn() {
+		return r.udpSize
+	}
 	if r.msg != nil {
 		if opt := r.msg.IsEdns0(); opt != nil {
 			return opt.UDPSize()
 		}
-		return 0
 	}
-	return r.udpSize
+	return 0
 }
 
 // DO reports the client's DNSSEC-OK bit.
 func (r *Request) DO() bool {
+	if r.wireBorn() {
+		return r.do
+	}
 	if r.msg != nil {
 		if opt := r.msg.IsEdns0(); opt != nil {
 			return opt.Do()
 		}
-		return false
 	}
-	return r.do
+	return false
 }
 
 // EDNSVersion returns the OPT version field (meaningful only with HasOPT).
 func (r *Request) EDNSVersion() uint8 {
+	if r.wireBorn() {
+		return r.version
+	}
 	if r.msg != nil {
 		if opt := r.msg.IsEdns0(); opt != nil {
 			return opt.Version()
 		}
-		return 0
 	}
-	return r.version
+	return 0
 }
 
 // HasECS reports whether the request carried an EDNS client-subnet option.
 func (r *Request) HasECS() bool {
-	if r.msg != nil {
-		if opt := r.msg.IsEdns0(); opt != nil {
-			for _, o := range opt.Option {
-				if o.Option() == dns.EDNS0SUBNET {
-					return true
-				}
-			}
-		}
-		return false
+	if r.wireBorn() {
+		return r.hasECS
 	}
-	return r.hasECS
+	return r.msgHasOption(dns.EDNS0SUBNET)
 }
 
 // HasNSID reports whether the request asked for NSID.
 func (r *Request) HasNSID() bool {
-	if r.msg != nil {
-		if opt := r.msg.IsEdns0(); opt != nil {
-			for _, o := range opt.Option {
-				if o.Option() == dns.EDNS0NSID {
-					return true
-				}
-			}
-		}
+	if r.wireBorn() {
+		return r.hasNSID
+	}
+	return r.msgHasOption(dns.EDNS0NSID)
+}
+
+func (r *Request) msgHasOption(code uint16) bool {
+	if r.msg == nil {
 		return false
 	}
-	return r.hasNSID
+	opt := r.msg.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, o := range opt.Option {
+		if o.Option() == code {
+			return true
+		}
+	}
+	return false
 }
 
 // WireName returns the question name's wire bytes (borrowed from Raw).
@@ -429,7 +451,49 @@ func (r *Request) parseWireOPT(off int) bool {
 		case dns.EDNS0NSID:
 			r.hasNSID = true
 		case dns.EDNS0SUBNET:
+			// The library refuses a malformed subnet option, and this
+			// parser decides whether a packet may be answered without it:
+			// accepting one it would reject means serving a cache hit
+			// where the client is owed a FORMERR. The checks below are
+			// its checks (EDNS0_SUBNET.unpack).
+			if optLen < 4 {
+				return false
+			}
+			family := binary.BigEndian.Uint16(raw[off : off+2])
+			netmask, scope := raw[off+2], raw[off+3]
+			switch family {
+			case 0:
+				// dig sends family 0 with a zero netmask; anything else
+				// under family 0 is malformed.
+				if netmask != 0 {
+					return false
+				}
+			case 1:
+				if netmask > 32 || scope > 32 {
+					return false
+				}
+			case 2:
+				if netmask > 128 || scope > 128 {
+					return false
+				}
+			default:
+				return false
+			}
 			r.hasECS = true
+		case dns.EDNS0PADDING:
+			// Any payload; the library validates nothing either.
+		case dns.EDNS0TCPKEEPALIVE:
+			// RFC 7828: a query carries either no timeout or one word.
+			if optLen != 0 && optLen != 2 {
+				return false
+			}
+		default:
+			// An option this parser does not validate is a packet it must
+			// not admit. The library checks each option's payload as it
+			// decodes, and a shape it rejects owes the client a FORMERR —
+			// which cannot happen if this path has already answered from
+			// cache. Declining costs such a query a decode, nothing more.
+			return false
 		}
 		off += optLen
 	}

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/binary"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -278,6 +279,51 @@ func TestLazyMsgMigrationIsSafe(t *testing.T) {
 		t.Fatal("chain does not own the detach lifecycle")
 	}
 	ch.finishDetach()
+}
+
+// TestAccessorsSurviveMaterialization pins whose facts the accessors
+// report. Materializing a wire-born request normalizes it — SetEdns0
+// attaches an OPT and forces DO — and a handler asking what the client
+// sent must still be told the truth afterwards.
+func TestAccessorsSurviveMaterialization(t *testing.T) {
+	// A plain query: no OPT, so no DO, no advertised size, no options.
+	raw := packQuery(t, "plain.example.", dns.TypeA, false)
+	r := new(Request)
+	if !r.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("eligible query refused")
+	}
+	// The edns layer records the normalization it would apply, exactly as
+	// its wire branch does before handing the request on.
+	r.RecordEDNSNormalization(nil, netip.Addr{})
+
+	before := map[string]any{
+		"hasOPT": r.HasOPT(), "do": r.DO(), "udpSize": r.UDPSize(),
+		"hasECS": r.HasECS(), "hasNSID": r.HasNSID(), "ad": r.AD(),
+		"cd": r.CD(), "rd": r.RD(), "id": r.ID(), "qtype": r.Qtype(),
+	}
+	if before["hasOPT"] != false || before["do"] != false {
+		t.Fatalf("parsed facts wrong before materialization: %v", before)
+	}
+
+	msg := r.Msg()
+	if msg == nil {
+		t.Fatal("materialization failed")
+	}
+	if msg.IsEdns0() == nil {
+		t.Fatal("this test is pointless unless materialization normalizes the message")
+	}
+
+	after := map[string]any{
+		"hasOPT": r.HasOPT(), "do": r.DO(), "udpSize": r.UDPSize(),
+		"hasECS": r.HasECS(), "hasNSID": r.HasNSID(), "ad": r.AD(),
+		"cd": r.CD(), "rd": r.RD(), "id": r.ID(), "qtype": r.Qtype(),
+	}
+	for k, want := range before {
+		if after[k] != want {
+			t.Fatalf("%s changed under materialization: %v → %v (the client sent neither)",
+				k, want, after[k])
+		}
+	}
 }
 
 // TestCancelWithRcodeWireBorn pins the terminal rcode reply on an
