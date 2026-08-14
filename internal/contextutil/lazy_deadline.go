@@ -57,6 +57,12 @@ type lazyDeadlinePin struct {
 	value atomic.Value
 }
 
+// lazyDeadlineOverflow holds every pin beyond the first. It is allocated only
+// when a second distinct key is pinned, so a request that pins one value — a
+// terminal cache hit carries just the recursion-work ledger — pays no extra
+// LazyDeadline footprint for the table.
+type lazyDeadlineOverflow [lazyDeadlinePins - 1]lazyDeadlinePin
+
 type LazyDeadline struct {
 	parent   context.Context
 	deadline time.Time
@@ -67,7 +73,8 @@ type LazyDeadline struct {
 	active atomic.Pointer[lazyDeadlineHolder]
 
 	valueProvider atomic.Value
-	pins          [lazyDeadlinePins]lazyDeadlinePin
+	pin0          lazyDeadlinePin
+	pinOverflow   atomic.Pointer[lazyDeadlineOverflow]
 	pinCount      atomic.Int32
 }
 
@@ -189,17 +196,27 @@ func TryPinValue(ctx context.Context, key, value any) bool {
 
 	lazy.pinMu.Lock()
 	defer lazy.pinMu.Unlock()
-	n := lazy.pinCount.Load()
-	for i := int32(0); i < n; i++ {
-		if lazy.pins[i].key == key {
-			return false
-		}
+	if lazy.pin(key) != nil {
+		return false
 	}
+	n := lazy.pinCount.Load()
 	if n == lazyDeadlinePins {
 		return false
 	}
-	lazy.pins[n].key = key
-	lazy.pins[n].value.Store(value)
+	if n == 0 {
+		lazy.pin0.key = key
+		lazy.pin0.value.Store(value)
+	} else {
+		overflow := lazy.pinOverflow.Load()
+		if overflow == nil {
+			overflow = new(lazyDeadlineOverflow)
+			// Published before the count store below, so a reader that
+			// observes a count above one also observes this pointer.
+			lazy.pinOverflow.Store(overflow)
+		}
+		overflow[n-1].key = key
+		overflow[n-1].value.Store(value)
+	}
 	lazy.pinCount.Store(n + 1)
 	return true
 }
@@ -222,12 +239,22 @@ func PinnedValue(ctx context.Context, key any) (any, bool) {
 }
 
 // pin returns the slot pinned under key, or nil. Safe without the lock: the
-// pin-count store publishes each slot's key, which never changes afterwards.
+// pin-count store publishes each slot's key and the overflow pointer, and
+// neither changes afterwards.
 func (c *LazyDeadline) pin(key any) *lazyDeadlinePin {
-	n := int(c.pinCount.Load())
-	for i := 0; i < n; i++ {
-		if c.pins[i].key == key {
-			return &c.pins[i]
+	n := c.pinCount.Load()
+	if n == 0 {
+		return nil
+	}
+	if c.pin0.key == key {
+		return &c.pin0
+	}
+	if n > 1 {
+		overflow := c.pinOverflow.Load()
+		for i := int32(0); i < n-1; i++ {
+			if overflow[i].key == key {
+				return &overflow[i]
+			}
 		}
 	}
 	return nil

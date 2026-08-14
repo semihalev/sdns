@@ -291,6 +291,60 @@ func TestEnsureResolutionAttemptGuardForeignContextFallsBack(t *testing.T) {
 	}
 }
 
+// TestResolutionAttemptGuardShadowingWinsOverPin pins the anchor precedence:
+// a derived value node must shadow the request's pinned guard for its
+// subtree, exactly as it did when every anchor was a value node — otherwise
+// custom or forked flows would account retries against the wrong guard.
+func TestResolutionAttemptGuardShadowingWinsOverPin(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer lazy.Cancel()
+	ctx, first := EnsureResolutionAttemptGuard(WithResponseMeta(lazy, new(ResponseMeta)))
+
+	second := new(ResponseMeta).EnsureResolutionAttemptGuard()
+	if second == first {
+		t.Fatal("fixture guards must differ")
+	}
+	shadowed := WithResolutionAttemptGuard(ctx, second)
+	if shadowed == ctx {
+		t.Fatal("anchoring a different guard over the pin must derive a context")
+	}
+	if got := ResolutionAttemptGuardFrom(shadowed); got != second {
+		t.Fatalf("subtree sees the pinned guard instead of its shadowing anchor")
+	}
+	if got := ResolutionAttemptGuardFrom(ctx); got != first {
+		t.Fatal("the outer context lost its pinned guard")
+	}
+
+	// Shadowing back to the pinned guard inside the subtree works too.
+	back := WithResolutionAttemptGuard(shadowed, first)
+	if got := ResolutionAttemptGuardFrom(back); got != first {
+		t.Fatal("re-shadowing the pinned guard was hidden")
+	}
+}
+
+// TestWithForkedCutHonorsAnchoredGuards pins that a forked cut selects the
+// anchored guard through the same helper as every other consumer: the pin on
+// the ordinary path, and a shadowing value node when one is nearer.
+func TestWithForkedCutHonorsAnchoredGuards(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer lazy.Cancel()
+	ctx, guard := EnsureResolutionAttemptGuard(WithResponseMeta(lazy, new(ResponseMeta)))
+
+	forked, meta := WithForkedCut(ctx)
+	if meta == nil {
+		t.Fatal("no meta to fork")
+	}
+	if got := ResolutionAttemptGuardFrom(forked); got != guard {
+		t.Fatal("forked cut did not adopt the pinned guard")
+	}
+
+	shadow := new(ResponseMeta).EnsureResolutionAttemptGuard()
+	forkedShadow, _ := WithForkedCut(WithResolutionAttemptGuard(ctx, shadow))
+	if got := ResolutionAttemptGuardFrom(forkedShadow); got != shadow {
+		t.Fatal("forked cut ignored the nearest shadowing anchor")
+	}
+}
+
 func TestEnsureResolutionAttemptGuardReestablishAllocsNothing(t *testing.T) {
 	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
 	defer lazy.Cancel()

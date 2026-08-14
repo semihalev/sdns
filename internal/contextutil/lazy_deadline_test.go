@@ -194,6 +194,42 @@ func TestLazyDeadlinePinTableHoldsDistinctKeysUpToItsBound(t *testing.T) {
 	}
 }
 
+// pinShapeKeys are package-level so key boxing costs nothing in the
+// allocation-shape assertions below.
+var pinShapeKeys = [lazyDeadlinePins]*int{new(int), new(int), new(int), new(int)}
+
+// TestLazyDeadlinePinAllocationShape pins the overflow contract: a request
+// pinning a single value carries it inline, and the overflow block is
+// allocated exactly once when a second distinct key arrives.
+func TestLazyDeadlinePinAllocationShape(t *testing.T) {
+	// One allocation per run: the LazyDeadline itself. The single pin is inline.
+	single := testing.AllocsPerRun(100, func() {
+		ctx := WithLazyTimeout(context.Background(), time.Minute)
+		if !TryPinValue(ctx, pinShapeKeys[0], "v") {
+			t.Fatal("pin failed")
+		}
+		ctx.Cancel()
+	})
+	if single != 1 {
+		t.Fatalf("single-pin request allocated %.0f times, want 1 (the LazyDeadline alone)", single)
+	}
+
+	// A second distinct key costs exactly the one overflow block; the third
+	// and fourth reuse it.
+	full := testing.AllocsPerRun(100, func() {
+		ctx := WithLazyTimeout(context.Background(), time.Minute)
+		for _, key := range pinShapeKeys {
+			if !TryPinValue(ctx, key, "v") {
+				t.Fatal("pin failed")
+			}
+		}
+		ctx.Cancel()
+	})
+	if full != 2 {
+		t.Fatalf("four-pin request allocated %.0f times, want 2 (LazyDeadline + one overflow block)", full)
+	}
+}
+
 func TestLazyDeadlinePinnedValueAllocsNothing(t *testing.T) {
 	ctx := WithLazyTimeout(context.Background(), time.Minute)
 	defer ctx.Cancel()

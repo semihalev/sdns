@@ -252,12 +252,13 @@ var resolutionAttemptContextKey = &resolutionAttemptKeyType{}
 
 // WithResolutionAttemptGuard anchors guard to ctx. Anchoring is required for
 // detached work because its originating ResponseMeta can be reset and reused.
-// The request tree carries exactly one guard, so a request-lifetime pin on
-// the deadline carrier is the preferred anchor — every internal sub-query
-// then finds it without deriving a context. A foreign context (detached
-// work, tests) falls back to an ordinary value node.
+// The first anchor of a request tree lands in the deadline carrier's
+// request-lifetime pin — every internal sub-query then finds it without
+// deriving a context. Anchoring a different guard over an existing pin, or
+// anchoring on a foreign context, derives an ordinary value node, which
+// shadows the pin for that subtree.
 func WithResolutionAttemptGuard(ctx context.Context, guard *ResolutionAttemptGuard) context.Context {
-	if pinned, ok := contextutil.PinnedValue(ctx, resolutionAttemptContextKey); ok && pinned == guard {
+	if resolutionAttemptGuardAnchored(ctx) == guard {
 		return ctx
 	}
 	if contextutil.TryPinValue(ctx, resolutionAttemptContextKey, guard) {
@@ -266,8 +267,7 @@ func WithResolutionAttemptGuard(ctx context.Context, guard *ResolutionAttemptGua
 	return context.WithValue(ctx, resolutionAttemptContextKey, guard)
 }
 
-// ResolutionAttemptGuardFrom returns the request tree's retry guard. The pin
-// is read first: the tree has one guard, so a pinned answer is never stale.
+// ResolutionAttemptGuardFrom returns the request tree's retry guard.
 func ResolutionAttemptGuardFrom(ctx context.Context) *ResolutionAttemptGuard {
 	if guard := resolutionAttemptGuardAnchored(ctx); guard != nil {
 		return guard
@@ -278,16 +278,20 @@ func ResolutionAttemptGuardFrom(ctx context.Context) *ResolutionAttemptGuard {
 	return nil
 }
 
-// resolutionAttemptGuardAnchored returns the guard anchored directly to ctx
-// (pin or value node), without the ResponseMeta fallback.
+// resolutionAttemptGuardAnchored returns the guard anchored to ctx, without
+// the ResponseMeta fallback. The ordinary value chain is read before the
+// request-lifetime pin: a derived context may deliberately shadow the pinned
+// guard (forked cuts, custom flows), and the nearest anchor must win exactly
+// as it did when every anchor was a value node.
 func resolutionAttemptGuardAnchored(ctx context.Context) *ResolutionAttemptGuard {
-	if pinned, ok := contextutil.PinnedValue(ctx, resolutionAttemptContextKey); ok {
-		if guard, _ := pinned.(*ResolutionAttemptGuard); guard != nil {
-			return guard
-		}
+	if guard, _ := ctx.Value(resolutionAttemptContextKey).(*ResolutionAttemptGuard); guard != nil {
+		return guard
 	}
-	guard, _ := ctx.Value(resolutionAttemptContextKey).(*ResolutionAttemptGuard)
-	return guard
+	if pinned, ok := contextutil.PinnedValue(ctx, resolutionAttemptContextKey); ok {
+		guard, _ := pinned.(*ResolutionAttemptGuard)
+		return guard
+	}
+	return nil
 }
 
 // EnsureResolutionAttemptGuard establishes and anchors the request tree's
