@@ -155,8 +155,60 @@ func TestLazyDeadlineCarriesProviderAndInternalPinWithoutMaterializing(t *testin
 	if ctx.active.Load() != nil {
 		t.Fatal("request-local values materialized the deadline context")
 	}
-	if TryPinValue(wrapped, new(int), "second") {
-		t.Fatal("second distinct request-local pin unexpectedly succeeded")
+	if TryPinValue(wrapped, pinnedKey, "again") {
+		t.Fatal("re-pinning an already-pinned key unexpectedly succeeded")
+	}
+}
+
+func TestLazyDeadlinePinTableHoldsDistinctKeysUpToItsBound(t *testing.T) {
+	ctx := WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+
+	keys := make([]*int, lazyDeadlinePins)
+	for i := range keys {
+		keys[i] = new(int)
+		if !TryPinValue(ctx, keys[i], i) {
+			t.Fatalf("pin %d of %d failed with free slots left", i+1, lazyDeadlinePins)
+		}
+	}
+	if TryPinValue(ctx, new(int), "overflow") {
+		t.Fatal("a pin beyond the table bound unexpectedly succeeded")
+	}
+	for i, key := range keys {
+		got, ok := PinnedValue(ctx, key)
+		if !ok || got != i {
+			t.Fatalf("pin %d read back %v, %v; want %d, true", i, got, ok, i)
+		}
+	}
+
+	// Each slot updates independently under its own key.
+	value, updated := TryUpdatePinnedValueLocked(ctx, keys[1], 1, func() int { return 100 })
+	if !updated || value != 100 {
+		t.Fatalf("slot update = %v, %v; want 100, true", value, updated)
+	}
+	if got, _ := PinnedValue(ctx, keys[0]); got != 0 {
+		t.Fatalf("neighbouring slot changed to %v", got)
+	}
+	if _, updated := TryUpdatePinnedValueLocked(ctx, new(int), 0, func() int { return 1 }); updated {
+		t.Fatal("an update under an unpinned key unexpectedly succeeded")
+	}
+}
+
+func TestLazyDeadlinePinnedValueAllocsNothing(t *testing.T) {
+	ctx := WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+
+	key := new(int)
+	if !TryPinValue(ctx, key, "pinned") {
+		t.Fatal("pin failed")
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, ok := PinnedValue(ctx, key); !ok {
+			t.Fatal("pinned value lost")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("PinnedValue allocated %.0f times per read, want 0", allocs)
 	}
 }
 

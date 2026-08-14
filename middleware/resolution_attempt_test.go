@@ -6,8 +6,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/contextutil"
 )
 
 func TestResolutionAttemptGuardCanonicalTupleLimit(t *testing.T) {
@@ -228,5 +230,79 @@ func TestCanonicalResolutionEndpoint(t *testing.T) {
 		if got := CanonicalResolutionEndpoint(input); got != want {
 			t.Errorf("CanonicalResolutionEndpoint(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+// TestEnsureResolutionAttemptGuardPinsOnDeadlineCarrier pins the anchoring
+// contract on the ordinary request path: the guard lands in the deadline
+// carrier's request-lifetime slot, so establishing and re-establishing it
+// derives no context, and every sub-query sees the same guard.
+func TestEnsureResolutionAttemptGuardPinsOnDeadlineCarrier(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer lazy.Cancel()
+	meta := new(ResponseMeta)
+	ctx := WithResponseMeta(lazy, meta)
+
+	got, guard := EnsureResolutionAttemptGuard(ctx)
+	if guard == nil {
+		t.Fatal("no guard established")
+	}
+	if got != ctx {
+		t.Fatal("anchoring the guard on a deadline-carried request derived a context")
+	}
+	if meta.ResolutionAttemptGuard() != guard {
+		t.Fatal("guard is not the request meta's guard")
+	}
+
+	again, guard2 := EnsureResolutionAttemptGuard(got)
+	if again != got || guard2 != guard {
+		t.Fatal("re-establishing the guard was not the identity")
+	}
+	if ResolutionAttemptGuardFrom(got) != guard {
+		t.Fatal("guard not readable back through the pin")
+	}
+
+	// The anchor must survive meta reuse: a reader holding only the context
+	// still sees the original guard after the pooled meta was reset.
+	meta.Reset()
+	if ResolutionAttemptGuardFrom(got) != guard {
+		t.Fatal("guard lost after the originating ResponseMeta was reset")
+	}
+}
+
+func TestEnsureResolutionAttemptGuardForeignContextFallsBack(t *testing.T) {
+	meta := new(ResponseMeta)
+	ctx := WithResponseMeta(context.Background(), meta)
+
+	got, guard := EnsureResolutionAttemptGuard(ctx)
+	if guard == nil {
+		t.Fatal("no guard established")
+	}
+	if got == ctx {
+		t.Fatal("a foreign context cannot anchor without deriving a value node")
+	}
+	if ResolutionAttemptGuardFrom(got) != guard {
+		t.Fatal("guard not readable from the derived context")
+	}
+
+	again, guard2 := EnsureResolutionAttemptGuard(got)
+	if again != got || guard2 != guard {
+		t.Fatal("re-establishing on the derived context was not the identity")
+	}
+}
+
+func TestEnsureResolutionAttemptGuardReestablishAllocsNothing(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer lazy.Cancel()
+	ctx, guard := EnsureResolutionAttemptGuard(WithResponseMeta(lazy, new(ResponseMeta)))
+
+	allocs := testing.AllocsPerRun(100, func() {
+		got, g := EnsureResolutionAttemptGuard(ctx)
+		if got != ctx || g != guard {
+			t.Fatal("re-establish diverged")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("re-establishing the pinned guard allocated %.0f times, want 0", allocs)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"sync"
 	"sync/atomic"
+
+	"github.com/semihalev/sdns/internal/contextutil"
 )
 
 // A request tree cannot legitimately need an unbounded number of distinct
@@ -191,16 +193,18 @@ type nsec3HashMemoContextState struct {
 // EnsureNSEC3HashMemo attaches one bounded memo to ctx unless the request tree
 // already carries one. Cache and resolver entrypoints both call this helper,
 // which keeps cache-less pipelines safe and makes nested Queryer pipelines
-// inherit the same digest results.
+// inherit the same digest results. The memo state is request-lifetime, so a
+// pin on the deadline carrier is preferred over deriving a value context; a
+// foreign context (detached enrichment, tests) falls back to a value node.
 func EnsureNSEC3HashMemo(ctx context.Context) context.Context {
 	if ctx == nil || NSEC3HashMemoFromContext(ctx) != nil {
 		return ctx
 	}
-	return context.WithValue(
-		ctx,
-		nsec3HashMemoContextKey,
-		new(nsec3HashMemoContextState),
-	)
+	state := new(nsec3HashMemoContextState)
+	if contextutil.TryPinValue(ctx, nsec3HashMemoContextKey, state) {
+		return ctx
+	}
+	return context.WithValue(ctx, nsec3HashMemoContextKey, state)
 }
 
 // NSEC3HashMemoFromContext returns the request tree's memo, if installed.
@@ -216,7 +220,7 @@ func NSEC3HashMemoFromContextScope(
 	if ctx == nil {
 		return nil
 	}
-	value := ctx.Value(nsec3HashMemoContextKey)
+	value := nsec3HashMemoStateFrom(ctx)
 	if state, ok := value.(*nsec3HashMemoContextState); ok &&
 		scope < nsec3HashMemoScopeCount {
 		return &state.memos[scope]
@@ -230,16 +234,25 @@ func NSEC3HashMemoFromContextScope(
 	return nil
 }
 
+// nsec3HashMemoStateFrom reads the memo state wherever the request anchored
+// it: the request-lifetime pin first, then the ordinary value chain.
+func nsec3HashMemoStateFrom(ctx context.Context) any {
+	if value, ok := contextutil.PinnedValue(ctx, nsec3HashMemoContextKey); ok {
+		return value
+	}
+	return ctx.Value(nsec3HashMemoContextKey)
+}
+
 // InheritNSEC3HashMemos copies only the opaque request-tree memo state from
 // parent into ctx. Detached-but-retained resolver enrichment uses this instead
 // of inheriting the full parent context, which would also leak cancellation,
 // response metadata, and unrelated request values into background work.
 func InheritNSEC3HashMemos(ctx, parent context.Context) context.Context {
 	if ctx == nil || parent == nil ||
-		ctx.Value(nsec3HashMemoContextKey) != nil {
+		nsec3HashMemoStateFrom(ctx) != nil {
 		return ctx
 	}
-	state := parent.Value(nsec3HashMemoContextKey)
+	state := nsec3HashMemoStateFrom(parent)
 	if state == nil {
 		return ctx
 	}

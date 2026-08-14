@@ -251,6 +251,27 @@ func Test_withQueryDeadline(t *testing.T) {
 	assert.True(t, gotDeadline.Before(looseDeadline), "a later-bounded parent must be tightened")
 }
 
+func Test_requestIDFromContext(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Second)
+	defer lazy.Cancel()
+
+	if !contextutil.TryPinValue(lazy, contextKeyRequestID, uint16(0xBEEF)) {
+		t.Fatal("pin failed")
+	}
+	if got := requestIDFromContext(lazy); got != uint16(0xBEEF) {
+		t.Fatalf("pinned request ID = %v, want 0xBEEF", got)
+	}
+
+	// A detached context carries the ID as an ordinary value node.
+	detached := context.WithValue(context.Background(), contextKeyRequestID, uint16(0xCAFE))
+	if got := requestIDFromContext(detached); got != uint16(0xCAFE) {
+		t.Fatalf("value-carried request ID = %v, want 0xCAFE", got)
+	}
+	if got := requestIDFromContext(context.Background()); got != nil {
+		t.Fatalf("empty context yielded %v", got)
+	}
+}
+
 // Test_withQueryDeadline_LazyParentAllocsNothing pins the point of the guard:
 // the server bounds every request with a LazyDeadline at entry, so the
 // handler's per-request query-timeout derivation must be free on that path.

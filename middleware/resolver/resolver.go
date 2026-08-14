@@ -381,7 +381,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority
 	}
 
 	reqid := req.Id
-	if v := ctx.Value(contextKeyRequestID); v != nil {
+	if v := requestIDFromContext(ctx); v != nil {
 		if id, ok := v.(uint16); ok {
 			reqid = id
 		}
@@ -2493,7 +2493,7 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	req.AuthenticatedData = false
 
 	reqid := req.Id
-	if v := ctx.Value(contextKeyRequestID); v != nil {
+	if v := requestIDFromContext(ctx); v != nil {
 		if id, ok := v.(uint16); ok {
 			reqid = id
 		}
@@ -3511,7 +3511,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// used to leak goroutines and mutate authservers long
 	// after the query returned.
 	if r.cfg.IPv6Access {
-		reqid := ctx.Value(contextKeyRequestID)
+		reqid := requestIDFromContext(ctx)
 		work := rs.work
 		attemptGuard := middleware.ResolutionAttemptGuardFrom(ctx)
 		var releaseWork func()

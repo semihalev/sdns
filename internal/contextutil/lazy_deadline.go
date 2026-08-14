@@ -43,6 +43,20 @@ type lazyDeadlineHolder struct {
 // while preserving the same deadline for cache misses, child contexts and
 // blocking transport operations. A LazyDeadline must not be reused across
 // requests: child contexts and cancellation callbacks may retain it.
+// lazyDeadlinePins bounds the request-lifetime value slots. The size mirrors
+// the in-tree pinners (recursion-work ledger, resolution-attempt guard,
+// request ID, NSEC3 hash memo); a pin that finds the table full falls back to
+// an ordinary context.WithValue at the call site.
+const lazyDeadlinePins = 4
+
+// lazyDeadlinePin is one request-lifetime slot. The key is written under
+// pinMu and published by the pin-count store, after which it never changes;
+// lock-free readers see it only through the count's acquire load.
+type lazyDeadlinePin struct {
+	key   any
+	value atomic.Value
+}
+
 type LazyDeadline struct {
 	parent   context.Context
 	deadline time.Time
@@ -53,9 +67,8 @@ type LazyDeadline struct {
 	active atomic.Pointer[lazyDeadlineHolder]
 
 	valueProvider atomic.Value
-	pinnedKey     any
-	pinnedValue   atomic.Value
-	pinned        atomic.Bool
+	pins          [lazyDeadlinePins]lazyDeadlinePin
+	pinCount      atomic.Int32
 }
 
 // WithLazyTimeout returns a LazyDeadline whose deadline is no later than the
@@ -163,7 +176,8 @@ func TrySetValueProvider(ctx context.Context, provider ValueProvider) bool {
 // the LazyDeadline reachable through ctx. The pin survives pooled metadata
 // reuse without allocating a context.WithValue node. It is deliberately not
 // exposed through Context.Value: callers must use PinnedValue, keeping the
-// ordinary context value chain immutable. A second distinct pin fails.
+// ordinary context value chain immutable. Re-pinning a key that is already
+// pinned fails, as does pinning into a full table.
 func TryPinValue(ctx context.Context, key, value any) bool {
 	if ctx == nil || key == nil || value == nil {
 		return false
@@ -175,27 +189,48 @@ func TryPinValue(ctx context.Context, key, value any) bool {
 
 	lazy.pinMu.Lock()
 	defer lazy.pinMu.Unlock()
-	if lazy.pinned.Load() {
+	n := lazy.pinCount.Load()
+	for i := int32(0); i < n; i++ {
+		if lazy.pins[i].key == key {
+			return false
+		}
+	}
+	if n == lazyDeadlinePins {
 		return false
 	}
-	lazy.pinnedKey = key
-	lazy.pinnedValue.Store(value)
-	lazy.pinned.Store(true)
+	lazy.pins[n].key = key
+	lazy.pins[n].value.Store(value)
+	lazy.pinCount.Store(n + 1)
 	return true
 }
 
 // PinnedValue returns the exact value stored in the LazyDeadline's
-// request-lifetime slot. Unlike ctx.Value, it never falls through to a value
-// provider or parent context.
+// request-lifetime slot for key. Unlike ctx.Value, it never falls through to
+// a value provider or parent context.
 func PinnedValue(ctx context.Context, key any) (any, bool) {
 	if ctx == nil || key == nil {
 		return nil, false
 	}
 	lazy, _ := ctx.Value(lazyDeadlineCarrierKey).(*LazyDeadline)
-	if lazy == nil || !lazy.pinned.Load() || key != lazy.pinnedKey {
+	if lazy == nil {
 		return nil, false
 	}
-	return lazy.pinnedValue.Load(), true
+	if pin := lazy.pin(key); pin != nil {
+		return pin.value.Load(), true
+	}
+	return nil, false
+}
+
+// pin returns the slot pinned under key, or nil. Safe without the lock: the
+// pin-count store publishes each slot's key, which never changes afterwards.
+func (c *LazyDeadline) pin(key any) *lazyDeadlinePin {
+	n := int(c.pinCount.Load())
+	for i := 0; i < n; i++ {
+		if c.pins[i].key == key {
+			return &c.pins[i]
+		}
+	}
+	return nil
 }
 
 // TryUpdatePinnedValueLocked computes and installs a replacement while holding
@@ -225,12 +260,16 @@ func TryUpdatePinnedValueLocked[T comparable](
 
 	lazy.pinMu.Lock()
 	defer lazy.pinMu.Unlock()
-	current, typeOK := lazy.pinnedValue.Load().(T)
-	if !lazy.pinned.Load() || key != lazy.pinnedKey || !typeOK || current != old {
+	pin := lazy.pin(key)
+	if pin == nil {
+		return zero, false
+	}
+	current, typeOK := pin.value.Load().(T)
+	if !typeOK || current != old {
 		return current, false
 	}
 	value := update()
-	lazy.pinnedValue.Store(value)
+	pin.value.Store(value)
 	return value, true
 }
 
