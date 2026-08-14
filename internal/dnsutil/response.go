@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 )
 
 // ResponseType represents the classification of a DNS response.
@@ -113,7 +114,7 @@ func isDelegation(msg *dns.Msg) bool {
 	for _, rr := range msg.Ns {
 		if ns, ok := rr.(*dns.NS); ok {
 			// It's a delegation if the NS record is for a subdomain
-			if dns.IsSubDomain(ns.Header().Name, msg.Question[0].Name) {
+			if dnsname.Sub(ns.Header().Name, msg.Question[0].Name) {
 				return true
 			}
 		}
