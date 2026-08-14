@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -176,5 +178,68 @@ func TestTCPStreamOversizedFrame(t *testing.T) {
 		if dst[i] != payload[i] {
 			t.Fatalf("oversized frame corrupted at %d", i)
 		}
+	}
+}
+
+// TestTCPStreamBeforeReadBoundsWrites pins the choice of SetDeadline over
+// SetReadDeadline at the block point. Two writes hide behind that read:
+// the flush of the staged replies, and — on a DoT connection — the
+// handshake the read itself triggers, which writes as much as it reads.
+// A read-only deadline leaves both of them unbounded.
+func TestTCPStreamBeforeReadBoundsWrites(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	s := new(tcpStream)
+	s.reset(server)
+	if err := s.beforeRead(200 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err := server.Write(make([]byte, 16))
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("write error %v, want a deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("write blocked for %v", elapsed)
+	}
+}
+
+// TestTCPStreamWriteDeadline pins the bound where it is armed: a peer
+// that never reads must not be able to park a write, and the bound has
+// to reach the direct write an oversized reply takes as well as the
+// drain buffer's own flush. net.Pipe never absorbs a byte the peer has
+// not asked for, so the block is the one a full socket buffer produces.
+func TestTCPStreamWriteDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"drain", make([]byte, 512)},           // fits: flushes from the drain buffer
+		{"direct", make([]byte, tcpDrainSize)}, // too large: written on its own
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+
+			s := new(tcpStream)
+			s.reset(server)
+
+			start := time.Now()
+			var err error
+			for err == nil && time.Since(start) < tcpWriteWait+5*time.Second {
+				// Small replies only block once the drain buffer overflows.
+				err = s.stage(tc.payload)
+			}
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("stage error %v, want a deadline", err)
+			}
+			if elapsed := time.Since(start); elapsed > tcpWriteWait+2*time.Second {
+				t.Fatalf("stage blocked for %v", elapsed)
+			}
+		})
 	}
 }

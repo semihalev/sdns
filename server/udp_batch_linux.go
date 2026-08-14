@@ -158,7 +158,7 @@ func (r *udpBatchReader) run() {
 			// socket with no reader, which the engine cannot detect
 			// until every other reader has exited too.
 			if err != nil {
-				if isClosedNetErr(err) {
+				if isAdmissionStopErr(err) {
 					return
 				}
 				udpReaderPollErr.Inc()

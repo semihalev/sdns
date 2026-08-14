@@ -14,12 +14,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/miekg/dns"
@@ -93,19 +95,35 @@ func run() error {
 
 	fmt.Printf("READY %s\n", bind)
 
+	// The control protocol is on the measured side of the fence: a reply
+	// formatted after the snapshot allocates inside the window that
+	// snapshot opens, and those allocations are then charged to the
+	// traffic. Reading and answering therefore borrow no allocator —
+	// the command is compared as bytes, and the reply is appended into a
+	// buffer that outlives every mark.
 	scanner := bufio.NewScanner(os.Stdin)
-	var ms runtime.MemStats
+	var (
+		ms    runtime.MemStats
+		reply = make([]byte, 0, 32)
+		mark  = []byte("mark")
+		quit  = []byte("quit")
+	)
 	for scanner.Scan() {
-		switch scanner.Text() {
-		case "mark":
+		switch cmd := scanner.Bytes(); {
+		case bytes.Equal(cmd, mark):
 			// Two GCs: the first moves sync.Pool contents to the victim
 			// cache, the second empties it — a mark must not credit pooled
 			// storage that the collector could reclaim mid-window.
 			runtime.GC()
 			runtime.GC()
 			runtime.ReadMemStats(&ms)
-			fmt.Printf("MALLOCS %d\n", ms.Mallocs)
-		case "quit":
+			reply = append(reply[:0], "MALLOCS "...)
+			reply = strconv.AppendUint(reply, ms.Mallocs, 10)
+			reply = append(reply, '\n')
+			if _, err := os.Stdout.Write(reply); err != nil {
+				return err
+			}
+		case bytes.Equal(cmd, quit):
 			return nil
 		}
 	}
@@ -145,6 +163,18 @@ func harnessConfig(bind, authorityAddr string) (*config.Config, error) {
 	cfg.Bind = bind
 	cfg.RootServers = []string{authorityAddr}
 	cfg.Root6Servers = nil
+	// The shipped default. A prefetch-due hit deliberately leaves the byte
+	// path (it needs a request copy for the refresh queue), so a gate that
+	// disabled prefetching would be measuring a configuration nobody runs.
+	// The corpus answers carry an hour's TTL, so a measurement window
+	// never reaches the refresh threshold — what is measured is the hit,
+	// with the feature that reshapes it enabled.
+	cfg.Prefetch = 10
+	// Validation stays off: the harness resolves against a loopback
+	// authority that no real trust anchor covers, so "on" would fail every
+	// warmup rather than exercise anything. What DNSSEC changes on the hit
+	// path — the DO/no-DO body split — is measured directly by the cache's
+	// own class tests instead.
 	cfg.DNSSEC = "off"
 	cfg.Maxdepth = 30
 	cfg.Expire = 600

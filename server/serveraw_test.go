@@ -22,6 +22,7 @@ type strictTestJob struct {
 	tx     [4096]byte
 
 	req        middleware.Request
+	chain      middleware.Chain
 	carrier    jobCarrier
 	ednsWriter edns.ResponseWriter
 }
@@ -55,8 +56,8 @@ func (j *strictTestJob) WriteMsg(m *dns.Msg) error {
 	return err
 }
 
-func (j *strictTestJob) StrictSlots() (*middleware.Request, *jobCarrier, *edns.ResponseWriter) {
-	return &j.req, &j.carrier, &j.ednsWriter
+func (j *strictTestJob) StrictSlots() (*middleware.Request, *middleware.Chain, *jobCarrier, *edns.ResponseWriter) {
+	return &j.req, &j.chain, &j.carrier, &j.ednsWriter
 }
 
 // rawAnswerStub materializes (the composite-miss shape) and answers with a

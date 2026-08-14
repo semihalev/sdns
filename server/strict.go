@@ -140,8 +140,17 @@ type rawHandler interface {
 // job-owned storage for the request, the context carrier, and the edns
 // writer wrapper.
 type strictSlots interface {
-	StrictSlots() (*middleware.Request, *jobCarrier, *edns.ResponseWriter)
+	StrictSlots() (*middleware.Request, *middleware.Chain, *jobCarrier, *edns.ResponseWriter)
 }
+
+// The owned transports must satisfy it. The match is structural, so a
+// signature change would otherwise drop them onto the decoding path in
+// silence — no compile error, no test failure until an allocation gate
+// notices, which is how it was found the first time.
+var (
+	_ strictSlots = (*udpJob)(nil)
+	_ strictSlots = (*tcpJob)(nil)
+)
 
 // ServeRaw is the single raw-transport ingress. An eligible packet on a
 // job transport enters the chain as a wire-born request on the job carrier
@@ -150,10 +159,10 @@ type strictSlots interface {
 // owned transports are raw byte sinks).
 func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool {
 	if job, ok := w.(strictSlots); ok {
-		req, carrier, ednsSlot := job.StrictSlots()
+		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {
 			carrier.reset(readTime.Add(s.queryTimeout()))
-			s.serveWire(carrier, w, req)
+			s.serveWire(carrier, w, req, chain)
 			return true
 		}
 	}
@@ -171,15 +180,23 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 // carrier. No deadline context, no decoded message — the composite-miss
 // transition inside the chain builds both when, and only when, they are
 // needed.
-func (s *Server) serveWire(ctx context.Context, w middleware.Transport, req *middleware.Request) {
+func (s *Server) serveWire(
+	ctx context.Context,
+	w middleware.Transport,
+	req *middleware.Request,
+	ch *middleware.Chain,
+) {
 	if s.pipeline == nil {
 		return
 	}
 	if contextutil.EffectiveError(ctx) != nil {
 		return
 	}
-	ch := s.pipeline.NewChain()
-	defer s.pipeline.PutChain(ch)
+	// The chain is the transport's own storage; binding restates the
+	// pipeline's immutable handler list over it, and Finish closes what
+	// a mid-chain materialization opened. Nothing here is pooled.
+	s.pipeline.BindChain(ch)
+	defer ch.Finish()
 
 	ch.ResetWire(w, req)
 	ch.AllowDirectPack()

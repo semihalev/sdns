@@ -119,8 +119,19 @@ func (p *Pipeline) PutChain(ch *Chain) {
 	// A wire-born request that materialized mid-chain owns a detached
 	// context and a recursion-work boundary; the serve is over, close them
 	// before the chain can be reused.
-	ch.finishDetach()
+	ch.Finish()
 	p.chainPool.Put(ch)
+}
+
+// BindChain prepares caller-owned storage as a chain over this
+// pipeline's handlers, so a transport can keep the chain in its own job
+// slab instead of drawing one from the pool. The strict path uses this;
+// everything else keeps NewChain/PutChain.
+func (p *Pipeline) BindChain(ch *Chain) {
+	if p == nil || ch == nil {
+		return
+	}
+	ch.Bind(p.handlers, p.workPolicy)
 }
 
 // Purgers returns every enabled handler that implements Purger, in

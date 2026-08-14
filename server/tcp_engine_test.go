@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -123,6 +124,249 @@ func TestTCPEnginePrefixFirstHoldsNoJob(t *testing.T) {
 	var r dns.Msg
 	if err := r.Unpack(readFrame(t, idle[7])); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// waitForRing blocks until the ring is back to full, which is the shape
+// every slow-client assertion here takes: the slab has to come back on
+// the server's own budget, with the client doing nothing to help.
+func waitForRing(t *testing.T, e *tcpEngine, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for len(e.free) < defaultTCPJobs && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if free := len(e.free); free != defaultTCPJobs {
+		t.Fatalf("%d slabs free after %v, want %d", free, within, defaultTCPJobs)
+	}
+}
+
+// TestTCPEngineStalledPrefixReleasesRing pins the slow-client bound: a
+// client that announces a frame and then goes quiet owns its slab for one
+// query budget, not for as long as it keeps the socket open. Enough of
+// them to own the whole ring is the availability case — before the bound,
+// they held it for free.
+func TestTCPEngineStalledPrefixReleasesRing(t *testing.T) {
+	addr, l, stop := startTCPEngine(t, echoHandler(), defaultTCPJobs*4)
+	defer stop()
+
+	for i := 0; i < defaultTCPJobs; i++ {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		// A frame announced and never delivered.
+		if _, err := conn.Write([]byte{0, 30}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	drained := time.Now().Add(3 * time.Second)
+	for len(l.engine.free) > 0 && time.Now().Before(drained) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if free := len(l.engine.free); free != 0 {
+		t.Fatalf("%d slabs still free; the stall never took the ring", free)
+	}
+
+	waitForRing(t, l.engine, tcpQueryWait+3*time.Second)
+
+	// And the engine serves normally on the ring it got back.
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	q := new(dns.Msg)
+	q.SetQuestion("after-stall.example.", dns.TypeA)
+	wireQ, _ := q.Pack()
+	writeFrame(t, conn, wireQ)
+	var r dns.Msg
+	if err := r.Unpack(readFrame(t, conn)); err != nil || len(r.Answer) != 1 {
+		t.Fatalf("post-stall query: %v", err)
+	}
+}
+
+// TestTCPEngineJobWaitBounded pins the other end of the same budget: with
+// every slab out, a connection arriving behind them waits inside its own
+// query budget and is dropped when it runs out. An unbounded wait here is
+// what turns a held ring into a wedged listener — nothing but shutdown
+// would ever wake the connections queued on it.
+func TestTCPEngineJobWaitBounded(t *testing.T) {
+	release := make(chan struct{})
+	addr, l, stop := startTCPEngine(t, rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool {
+		<-release
+		return true
+	}), defaultTCPJobs*4)
+	defer stop()
+	defer close(release)
+
+	q := new(dns.Msg)
+	q.SetQuestion("held.example.", dns.TypeA)
+	wireQ, _ := q.Pack()
+	for i := 0; i < defaultTCPJobs; i++ {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		writeFrame(t, conn, wireQ)
+	}
+	drained := time.Now().Add(5 * time.Second)
+	for len(l.engine.free) > 0 && time.Now().Before(drained) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if free := len(l.engine.free); free != 0 {
+		t.Fatalf("%d slabs still free; the handlers did not take the ring", free)
+	}
+
+	late, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer late.Close()
+	before := tcpDropJobWait.Value()
+	writeFrame(t, late, wireQ)
+
+	start := time.Now()
+	_ = late.SetReadDeadline(time.Now().Add(tcpQueryWait + 5*time.Second))
+	var b [1]byte
+	_, err = late.Read(b[:])
+	if err == nil {
+		t.Fatal("late connection was answered off an owned ring")
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatalf("late connection still parked in the job wait after %v", time.Since(start))
+	}
+	if tcpDropJobWait.Value() <= before {
+		t.Fatal("the job wait ended without counting a drop")
+	}
+}
+
+// TestTCPEngineSilentClientReleasesJob pins the write half: a client that
+// pipelines queries and then stops reading fills the socket buffers, and
+// every reply the engine writes into them is written with a slab in hand.
+// Without a write bound that slab is gone for as long as the client cares
+// to hold the socket open.
+func TestTCPEngineSilentClientReleasesJob(t *testing.T) {
+	// A reply larger than the drain buffer goes out on its own, which is
+	// the write made under a held slab.
+	big := make([]byte, 60000)
+	addr, l, stop := startTCPEngine(t, rawHandlerFunc(func(w middleware.Transport, _ []byte, _ time.Time) bool {
+		_, _ = w.Write(big)
+		return true
+	}), 8)
+	defer stop()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if tc, ok := conn.(*net.TCPConn); ok {
+		// A pinned receive window stalls the server after a few megabytes
+		// instead of letting autotuning swallow the whole burst.
+		_ = tc.SetReadBuffer(4096)
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion("silent.example.", dns.TypeA)
+	wireQ, _ := q.Pack()
+	var out []byte
+	for i := 0; i < 100; i++ {
+		var prefix [2]byte
+		binary.BigEndian.PutUint16(prefix[:], uint16(len(wireQ))) //nolint:gosec // bounded fixture
+		out = append(out, prefix[:]...)
+		out = append(out, wireQ...)
+	}
+	// One burst, so the slab is held across every reply — and not a byte
+	// of them is ever read.
+	if _, err := conn.Write(out); err != nil {
+		t.Fatal(err)
+	}
+
+	pinned := time.Now().Add(3 * time.Second)
+	for len(l.engine.free) == defaultTCPJobs && time.Now().Before(pinned) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if len(l.engine.free) == defaultTCPJobs {
+		t.Fatal("the silent client never took a slab")
+	}
+	// Parked, not merely busy: six megabytes of replies cannot move into a
+	// pinned receive window nobody reads from, so the slab is still out.
+	time.Sleep(500 * time.Millisecond)
+	if len(l.engine.free) == defaultTCPJobs {
+		t.Fatal("the replies drained without the client reading; the write never blocked")
+	}
+
+	waitForRing(t, l.engine, tcpWriteWait+10*time.Second)
+
+	// A client that does read is still served.
+	reader, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	writeFrame(t, reader, wireQ)
+	if got := readFrame(t, reader); len(got) != len(big) {
+		t.Fatalf("reply %d bytes, want %d", len(got), len(big))
+	}
+}
+
+// TestTCPEnginePanicReturnsSlab pins the abnormal exit: a handler that
+// panics takes its connection down, not a slab. A slab lost to a panic is
+// lost for the life of the process, so more panics than the ring is deep
+// would drain it outright.
+func TestTCPEnginePanicReturnsSlab(t *testing.T) {
+	echo := echoHandler()
+	handler := rawHandlerFunc(func(w middleware.Transport, raw []byte, readTime time.Time) bool {
+		m := new(dns.Msg)
+		if err := m.Unpack(raw); err == nil && len(m.Question) == 1 &&
+			m.Question[0].Name == "boom.example." {
+			panic("handler exploded")
+		}
+		return echo.ServeRaw(w, raw, readTime)
+	})
+	addr, l, stop := startTCPEngine(t, handler, 32)
+	defer stop()
+
+	before := tcpDropPanic.Value()
+	q := new(dns.Msg)
+	q.SetQuestion("boom.example.", dns.TypeA)
+	wireQ, _ := q.Pack()
+	for i := 0; i < defaultTCPJobs*2; i++ {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFrame(t, conn, wireQ)
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var b [1]byte
+		if _, err := conn.Read(b[:]); err == nil {
+			t.Fatal("connection survived a panicking handler")
+		}
+		_ = conn.Close()
+	}
+	if tcpDropPanic.Value() <= before {
+		t.Fatal("panic counter never moved; the handler was not the one panicking")
+	}
+
+	waitForRing(t, l.engine, 3*time.Second)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ok := new(dns.Msg)
+	ok.SetQuestion("fine.example.", dns.TypeA)
+	wireOK, _ := ok.Pack()
+	writeFrame(t, conn, wireOK)
+	var r dns.Msg
+	if err := r.Unpack(readFrame(t, conn)); err != nil || len(r.Answer) != 1 {
+		t.Fatalf("engine stopped serving after panics: %v", err)
 	}
 }
 

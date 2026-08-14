@@ -68,9 +68,13 @@ type udpJob struct {
 	remote    net.UDPAddr
 	ipScratch [16]byte
 
-	// Strict-path state, all job-owned: the wire-born request, the context
-	// carrier, and the edns writer wrapper's storage.
+	// Strict-path state, all job-owned: the wire-born request, the chain
+	// that walks it, the context carrier, and the edns writer wrapper's
+	// storage. The chain lives here rather than in the pipeline's pool
+	// because the collector empties pools, and a hit that allocates after
+	// two GCs is not a hard-zero path.
 	req        middleware.Request
+	chain      middleware.Chain
 	carrier    jobCarrier
 	ednsWriter edns.ResponseWriter
 
@@ -188,8 +192,8 @@ func (j *udpJob) WriteMsg(m *dns.Msg) error {
 func (j *udpJob) Close() error { return nil }
 
 // StrictSlots hands ServeRaw the job-owned strict-path storage.
-func (j *udpJob) StrictSlots() (*middleware.Request, *jobCarrier, *edns.ResponseWriter) {
-	return &j.req, &j.carrier, &j.ednsWriter
+func (j *udpJob) StrictSlots() (*middleware.Request, *middleware.Chain, *jobCarrier, *edns.ResponseWriter) {
+	return &j.req, &j.chain, &j.carrier, &j.ednsWriter
 }
 
 // LeaseWire hands out the job's TX buffer for the response-body lease: the
@@ -345,7 +349,7 @@ func (e *udpEngine) reader(pc *net.UDPConn) {
 			// on the ring — a deep queue only converts drops to timeouts.
 			_, _, _, _, err := pc.ReadMsgUDPAddrPort(discard[:], nil)
 			if err != nil {
-				if isClosedNetErr(err) {
+				if isAdmissionStopErr(err) {
 					return
 				}
 				continue
@@ -358,7 +362,7 @@ func (e *udpEngine) reader(pc *net.UDPConn) {
 		n, oobn, flags, raddr, err := pc.ReadMsgUDPAddrPort(j.rx[:], oobBuf)
 		if err != nil {
 			j.release(udpJobReading)
-			if isClosedNetErr(err) {
+			if isAdmissionStopErr(err) {
 				return
 			}
 			// Transient errors (including truncation reported as an

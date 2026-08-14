@@ -35,14 +35,17 @@ func TestZeroGate(t *testing.T) {
 	}
 	for _, flavor := range flavors {
 		t.Run(flavor, func(t *testing.T) {
-			budget, gated := Budget(flavor)
-			if !gated {
+			if !Gated(flavor) {
 				t.Skipf("flavor %s is not gated at stage %s yet", flavor, Stage)
 			}
-			runGate(t, flavor, budget)
+			runGate(t, flavor)
 		})
 	}
 }
+
+// settleWait covers the gap between a client seeing its last reply and
+// the server releasing the job that produced it.
+const settleWait = 200 * time.Millisecond
 
 func gateOps() int {
 	if s := os.Getenv("ZEROGATE_OPS"); s != "" {
@@ -53,7 +56,7 @@ func gateOps() int {
 	return 200_000
 }
 
-func runGate(t *testing.T, flavor string, perOpBudget float64) {
+func runGate(t *testing.T, flavor string) {
 	t.Helper()
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -84,28 +87,53 @@ func runGate(t *testing.T, flavor string, perOpBudget float64) {
 	warm(t, target)
 
 	ops := gateOps()
+
+	// Connections are established before the window. Accepting a
+	// connection is not per-query work, and dialing inside the window
+	// charged every accept, goroutine and buffer to the queries that
+	// happened to follow.
+	var conns []net.Conn
+	var counts []int
+	if flavor == FlavorTCP {
+		conns, counts = prepareTCP(t, target, ops)
+		defer func() {
+			for _, c := range conns {
+				_ = c.Close()
+			}
+		}()
+	}
+
 	m0 := child.mark(t)
+	started := time.Now()
 	switch flavor {
 	case FlavorTCP:
-		floodTCP(t, target, ops)
+		floodTCPOn(t, conns, counts)
 	default:
 		floodUDP(t, target, ops)
 	}
+	// The reply reaching the client precedes the job's release by a few
+	// instructions; without this the last of them land in the ambient
+	// window instead of the traffic one.
+	time.Sleep(settleWait)
 	m1 := child.mark(t)
+	loadWindow := time.Since(started)
+
+	// An idle window of the same length measures what the process
+	// allocates on its own — metric flushers, timers, the runtime — so
+	// the verdict below is about the traffic and nothing else.
+	a0 := child.mark(t)
+	time.Sleep(loadWindow)
+	a1 := child.mark(t)
+	ambient := a1 - a0
 
 	delta := m1 - m0
-	perOp := float64(delta) / float64(ops)
-	t.Logf("stage %s flavor %s: %d ops, malloc delta %d (%.2f/op), budget %.2f/op",
-		Stage, flavor, ops, delta, perOp, perOpBudget)
-	if perOpBudget == 0 {
-		if delta != 0 {
-			t.Fatalf("hard-zero gate: malloc delta %d over %d ops, want exactly 0", delta, ops)
-		}
-		return
-	}
-	if perOp > perOpBudget {
-		t.Fatalf("allocation budget exceeded: %.2f/op > %.2f/op (delta %d over %d ops)",
-			perOp, perOpBudget, delta, ops)
+	traffic := int64(delta) - int64(ambient)
+	t.Logf("stage %s flavor %s: %d ops in %v — window %d mallocs, idle window %d, traffic %+d (slack %d)",
+		Stage, flavor, ops, loadWindow.Round(time.Millisecond), delta, ambient, traffic, AmbientSlack)
+	if traffic > AmbientSlack {
+		t.Fatalf("stage %s flavor %s: %d ops added %d mallocs over an idle window of the same length "+
+			"(%.4f/op); the served path must add none",
+			Stage, flavor, ops, traffic, float64(traffic)/float64(ops))
 	}
 }
 
@@ -350,40 +378,44 @@ func floodUDP(t *testing.T, target string, ops int) {
 	wg.Wait()
 }
 
-// floodTCP pre-opens enough connections that the per-connection query
-// budget (2048) covers the whole window without a redial, then pipelines.
-func floodTCP(t *testing.T, target string, ops int) {
+// prepareTCP opens enough connections that the per-connection query
+// budget (2048) covers the whole window without a redial, and returns how
+// many queries each one carries.
+func prepareTCP(t *testing.T, target string, ops int) ([]net.Conn, []int) {
 	t.Helper()
 	const perConn = 2000 // safety margin under the server's 2048 budget
-	const window = 32
-	conns := (ops + perConn - 1) / perConn
+	n := (ops + perConn - 1) / perConn
 
-	type task struct{ count int }
-	tasks := make([]task, conns)
+	conns := make([]net.Conn, 0, n)
+	counts := make([]int, 0, n)
 	left := ops
-	for i := range tasks {
-		n := perConn
-		if left < n {
-			n = left
+	for range n {
+		conn, err := net.Dial("tcp", target)
+		if err != nil {
+			t.Fatalf("dial %s: %v", target, err)
 		}
-		tasks[i] = task{count: n}
-		left -= n
+		conns = append(conns, conn)
+		c := perConn
+		if left < c {
+			c = left
+		}
+		counts = append(counts, c)
+		left -= c
 	}
+	return conns, counts
+}
+
+// floodTCPOn pipelines the prepared connections.
+func floodTCPOn(t *testing.T, conns []net.Conn, counts []int) {
+	t.Helper()
+	const window = 32
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 64) // cap concurrent conns
-	for ci, tk := range tasks {
+	for ci := range conns {
 		wg.Add(1)
 		go func(ci, count int) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			conn, err := net.Dial("tcp", target)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			defer conn.Close()
+			conn := conns[ci]
 			queries := make([][]byte, CorpusSize)
 			for i := range queries {
 				w := corpusQuery(i, 0)
@@ -420,7 +452,7 @@ func floodTCP(t *testing.T, target string, ops int) {
 				inflight--
 				got++
 			}
-		}(ci, tk.count)
+		}(ci, counts[ci])
 	}
 	wg.Wait()
 }

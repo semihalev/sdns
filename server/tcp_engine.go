@@ -27,7 +27,8 @@ import (
 //     length scratch and acquires a large-class job only after a frame
 //     announces itself, so idle connections pin no slab. Acquisition
 //     blocks — for a stream transport, waiting is the correct
-//     backpressure — but wakes on shutdown.
+//     backpressure — but only inside the announcing query's own budget,
+//     and it wakes on shutdown.
 //   - The TX buffer carries prefix headroom, so a reply is one plain
 //     write with no gather and no allocation.
 //
@@ -36,9 +37,16 @@ import (
 // per connection, then close; a sub-header frame closes the connection.
 
 const (
-	tcpJobBufSize      = dns.MaxMsgSize
-	tcpFirstReadWait   = 2 * time.Second
-	tcpIdleWait        = 8 * time.Second
+	tcpJobBufSize    = dns.MaxMsgSize
+	tcpFirstReadWait = 2 * time.Second
+	tcpIdleWait      = 8 * time.Second
+	// tcpQueryWait is the absolute budget a query gets from the moment its
+	// prefix lands: the wait for a free slab and the read of the body that
+	// prefix announced both run inside it. Announcing a frame buys no more
+	// time than announcing it did, which is why this is the first-read
+	// allowance and not the idle timeout — staying silent is a client's
+	// right, holding a shared slab while it does so is not.
+	tcpQueryWait       = tcpFirstReadWait
 	tcpQueryBudget     = 2048
 	defaultTCPConns    = 512
 	defaultTCPJobs     = 64
@@ -58,15 +66,18 @@ type tcpJob struct {
 	written  bool
 	readTime time.Time
 
-	// Strict-path state, job-owned (see strict.go).
+	// Strict-path state, job-owned (see strict.go). The chain is here for
+	// the same reason as everything else in this struct: the strict path
+	// takes nothing from a pool.
 	req        middleware.Request
+	chain      middleware.Chain
 	carrier    jobCarrier
 	ednsWriter edns.ResponseWriter
 }
 
 // StrictSlots hands ServeRaw the job-owned strict-path storage.
-func (j *tcpJob) StrictSlots() (*middleware.Request, *jobCarrier, *edns.ResponseWriter) {
-	return &j.req, &j.carrier, &j.ednsWriter
+func (j *tcpJob) StrictSlots() (*middleware.Request, *middleware.Chain, *jobCarrier, *edns.ResponseWriter) {
+	return &j.req, &j.chain, &j.carrier, &j.ednsWriter
 }
 
 // LeaseWire hands out the TX payload region behind the frame-prefix
@@ -207,7 +218,13 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 	stream := e.streams.Get().(*tcpStream)
 	stream.reset(conn)
 	defer func() {
-		_ = stream.flush()
+		if stream.held > 0 {
+			// Whatever is still staged has to leave, and the client on the
+			// other end may be exactly the one that never reads.
+			if err := stream.beforeWrite(); err == nil {
+				_ = stream.flush()
+			}
+		}
 		stream.reset(nil)
 		e.streams.Put(stream)
 	}()
@@ -228,6 +245,9 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		e.free <- job
 		job = nil
 	}
+	// Deferred last so it unwinds first: the slab goes back before the
+	// recover above ever sees the panic. A slab lost to one is lost for
+	// the life of the process.
 	defer release()
 
 	wait := tcpFirstReadWait
@@ -252,10 +272,14 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 			return
 		}
 
+		// The query's clock starts where its frame announced itself, and
+		// the stream carries it from here: the wait for a slab and the read
+		// of the announced body are both spent inside it.
+		readTime := time.Now()
+		stream.deadline = readTime.Add(tcpQueryWait)
+
 		if job == nil {
-			select {
-			case job = <-e.free:
-			case <-e.closing:
+			if job = e.acquire(stream.deadline); job == nil {
 				return
 			}
 		}
@@ -265,11 +289,38 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		job.conn = conn
 		job.stream = stream
 		job.written = false
-		job.readTime = time.Now()
+		job.readTime = readTime
 		if !e.serveFrame(job, length) {
 			return
 		}
 		wait = tcpIdleWait
+	}
+}
+
+// acquire takes a slab from the ring within the announcing query's
+// budget. Waiting is the right backpressure for a stream transport;
+// waiting forever is not. defaultTCPJobs clients that announce frames
+// they never send would otherwise own the ring outright, and every
+// connection behind them would park in this select with nothing but
+// shutdown to wake it. A connection that cannot be served inside its own
+// budget is dropped instead, so the slab it never took stays in the ring
+// for someone who can use it.
+func (e *tcpEngine) acquire(deadline time.Time) *tcpJob {
+	select {
+	case j := <-e.free:
+		return j
+	default:
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case j := <-e.free:
+		return j
+	case <-timer.C:
+		tcpDropJobWait.Inc()
+		return nil
+	case <-e.closing:
+		return nil
 	}
 }
 
@@ -362,4 +413,5 @@ var (
 	tcpDropConnCap = tcpIngressDrops.Register("conncap")
 	tcpDropIgnored = tcpIngressDrops.Register("ignored")
 	tcpDropPanic   = tcpIngressDrops.Register("panic")
+	tcpDropJobWait = tcpIngressDrops.Register("jobwait")
 )

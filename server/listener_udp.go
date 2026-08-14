@@ -161,9 +161,15 @@ func (l *udpListener) Serve(_ context.Context) error {
 	return l.drainErr
 }
 
-// Shutdown is the listener-scope barrier: stop admission by closing the
-// sockets (blocked reads wake with net.ErrClosed), join the readers,
-// close the ready queue, and drain the workers within the deadline.
+// Shutdown is the listener-scope barrier: stop admission by expiring the
+// read deadline (blocked reads wake, no new datagram is accepted), join
+// the readers, close the ready queue, drain the workers — and only then
+// close the sockets.
+//
+// The order is the point. Closing first stops admission just as well, but
+// it also takes away the socket the workers still have to answer through,
+// so every request already in flight was dropped instead of served. The
+// deadline stops the reads without touching the send side.
 func (l *udpListener) Shutdown(_ context.Context) error {
 	l.mu.Lock()
 	engine := l.engine
@@ -180,19 +186,27 @@ func (l *udpListener) Shutdown(_ context.Context) error {
 		}
 		zlog.Info("DNS server stopping", "net", "udp", "addr", l.addr)
 
-		// Admission stops now; readers waking on closed sockets are the
-		// intended path, not a failure. The closing flag flips under the
-		// listener lock so it serializes against Serve's start decision.
+		// Admission stops now; readers waking on an expired deadline are
+		// the intended path, not a failure. The closing flag flips under
+		// the listener lock so it serializes against Serve's start
+		// decision.
 		l.mu.Lock()
 		l.closing.Store(true)
 		l.mu.Unlock()
 		for _, pc := range pcs {
-			if err := pc.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			if err := pc.SetReadDeadline(time.Now()); err != nil && !errors.Is(err, net.ErrClosed) {
 				l.drainErr = errors.Join(l.drainErr, err)
 			}
 		}
 		if err := engine.stopAndDrain(time.Now().Add(timeout)); err != nil {
 			l.drainErr = errors.Join(l.drainErr, err)
+		}
+		// The drain is over — served or not, nothing more will be written
+		// through these sockets.
+		for _, pc := range pcs {
+			if err := pc.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				l.drainErr = errors.Join(l.drainErr, err)
+			}
 		}
 		close(l.done)
 	})

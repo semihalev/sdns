@@ -26,6 +26,13 @@ import (
 // Sizes are per connection and bounded: the fill buffer holds a burst of
 // queries, the drain buffer a burst of replies, and anything larger than
 // either falls back to a direct read or write rather than growing.
+//
+// Every point where the connection can block is bounded, and bounded
+// lazily. The deadline is a field the engine updates per query and a
+// syscall only where something is really about to block, so a burst
+// answered out of the fill buffer arms nothing and the property the
+// buffers exist for — one read and one write for the whole burst —
+// survives the bound.
 
 const (
 	// tcpFillSize holds a burst of pipelined queries (~30 bytes each);
@@ -34,6 +41,15 @@ const (
 	// tcpDrainSize holds a burst of replies. A reply that does not fit
 	// flushes first and, if it still does not fit, goes out on its own.
 	tcpDrainSize = 8 << 10
+	// tcpWriteWait bounds a write the connection makes on its own: an
+	// oversized reply going out alone, the staged burst that reply
+	// displaces, and the last flush on the way out. A client that never
+	// reads fills the socket buffers, and every one of those writes is
+	// made with a job slab in hand. It is measured from the write rather
+	// than from the query's prefix because the handler in between is the
+	// resolver, whose own budget is ten seconds: charging that latency to
+	// the reply would drop answers that were merely slow to produce.
+	tcpWriteWait = 2 * time.Second
 )
 
 // tcpStream is one connection's framing state: the fill buffer it reads
@@ -48,6 +64,14 @@ type tcpStream struct {
 	drain [tcpDrainSize]byte
 	held  int // bytes staged in drain
 	werr  error
+
+	// deadline is the bound for whatever the connection does next; armed
+	// is the bound it already carries. They are kept apart so a burst
+	// stays free: the engine hands over a fresh deadline for every frame,
+	// but a frame served out of the fill buffer blocks nowhere, so it
+	// never pays for arming one.
+	deadline time.Time
+	armed    time.Time
 }
 
 func (s *tcpStream) reset(conn net.Conn) {
@@ -55,6 +79,31 @@ func (s *tcpStream) reset(conn net.Conn) {
 	s.start, s.end = 0, 0
 	s.held = 0
 	s.werr = nil
+	s.deadline, s.armed = time.Time{}, time.Time{}
+}
+
+// arm puts the current deadline on the connection. One SetDeadline and
+// not two: reads and writes share the bound, and on a DoT connection it
+// is also what covers the handshake, which runs inside the first read and
+// writes as much as it reads.
+func (s *tcpStream) arm() error {
+	if s.armed.Equal(s.deadline) {
+		return nil
+	}
+	if err := s.conn.SetDeadline(s.deadline); err != nil {
+		return err
+	}
+	s.armed = s.deadline
+	return nil
+}
+
+// beforeWrite bounds a write the connection makes with a job slab still
+// in hand. Without it a client that stops reading parks the connection in
+// the write, slab and all, for as long as it cares to keep the socket
+// open.
+func (s *tcpStream) beforeWrite() error {
+	s.deadline = time.Now().Add(tcpWriteWait)
+	return s.arm()
 }
 
 // buffered reports whether the fill buffer already holds bytes — the
@@ -104,6 +153,15 @@ func (s *tcpStream) next(n int) ([]byte, error) {
 // buffer cannot hold is read straight into dst — the buffer speeds up
 // small frames, it never limits what the transport accepts.
 func (s *tcpStream) body(dst []byte) error {
+	if s.end-s.start < len(dst) {
+		// The frame announced more than the read delivered, so this is
+		// where the connection blocks for the rest of it. That wait is the
+		// query's, not the session's: a client that announces a frame it
+		// never sends is holding a slab, not sitting idle.
+		if err := s.arm(); err != nil {
+			return err
+		}
+	}
 	if len(dst) <= len(s.fill) {
 		b, err := s.next(len(dst))
 		if err != nil {
@@ -135,6 +193,9 @@ func (s *tcpStream) stage(payload []byte) error {
 	}
 	need := dnsclient.FramePrefixLen + len(payload)
 	if need > len(s.drain) {
+		if err := s.beforeWrite(); err != nil {
+			return err
+		}
 		if err := s.flush(); err != nil {
 			return err
 		}
@@ -145,6 +206,9 @@ func (s *tcpStream) stage(payload []byte) error {
 		return err
 	}
 	if s.held+need > len(s.drain) {
+		if err := s.beforeWrite(); err != nil {
+			return err
+		}
 		if err := s.flush(); err != nil {
 			return err
 		}
@@ -164,6 +228,10 @@ func (s *tcpStream) flush() error {
 	if s.held == 0 {
 		return nil
 	}
+	if err := s.arm(); err != nil {
+		s.werr = err
+		return err
+	}
 	_, err := s.conn.Write(s.drain[:s.held])
 	s.held = 0
 	if err != nil {
@@ -174,16 +242,21 @@ func (s *tcpStream) flush() error {
 
 // beforeRead prepares the connection for the next frame. While the fill
 // buffer still holds one, that is all it does — the frames of a burst are
-// already in hand, so neither the staged replies nor the read deadline
-// need touching. When the buffer is empty the connection is about to
-// block: the replies go out first, so a waiting client is never held by
-// the server's own idle timeout, and the deadline is armed for the wait.
+// already in hand, so neither the staged replies nor the deadline need
+// touching. When the buffer is empty the connection is about to block:
+// the replies go out first, so a waiting client is never held by the
+// server's own idle timeout, and the deadline covers the wait.
+//
+// The bound goes on before the replies leave, not after: that write is
+// the other place a client that never reads would park the connection,
+// and the read below inherits the same bound at no extra cost.
 func (s *tcpStream) beforeRead(d time.Duration) error {
 	if s.buffered() {
 		return nil
 	}
-	if err := s.flush(); err != nil {
+	s.deadline = time.Now().Add(d)
+	if err := s.arm(); err != nil {
 		return err
 	}
-	return s.conn.SetReadDeadline(time.Now().Add(d))
+	return s.flush()
 }

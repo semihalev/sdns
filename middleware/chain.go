@@ -728,6 +728,12 @@ type Chain struct {
 	Writer  ResponseWriter
 	Request *Request
 
+	// base is the chain's own response writer. Middleware wrap it and
+	// restore it on the way out; Writer points here whenever nothing has
+	// wrapped it, so binding a chain — pooled or job-owned — allocates
+	// no writer.
+	base responseWriter
+
 	// reqStorage backs message-born requests (Reset) so rebinding a pooled
 	// chain allocates nothing. Wire-born requests (ResetWire) live in
 	// transport-job storage instead.
@@ -761,14 +767,32 @@ func NewChain(handlers []Handler) *Chain {
 }
 
 func newChain(handlers []Handler, workPolicy RecursionWorkPolicy) *Chain {
-	ch := &Chain{
-		Writer:     &responseWriter{},
-		handlers:   handlers,
-		count:      len(handlers),
-		workPolicy: workPolicy,
-	}
-	ch.Meta.workPolicy = workPolicy
+	ch := new(Chain)
+	ch.Bind(handlers, workPolicy)
 	return ch
+}
+
+// Bind prepares caller-owned storage as a chain over handlers. It is how
+// a transport gives its job slab a chain of its own: the strict path must
+// not draw one from a pool, whose contents the collector empties on the
+// second GC — precisely the state the hard-zero measurement fences for.
+//
+// It is idempotent and cheap enough to call per request; the pipeline's
+// handler list is immutable, so re-binding only restates it.
+func (ch *Chain) Bind(handlers []Handler, workPolicy RecursionWorkPolicy) {
+	ch.Writer = &ch.base
+	ch.handlers = handlers
+	ch.count = len(handlers)
+	ch.workPolicy = workPolicy
+	ch.Meta.workPolicy = workPolicy
+}
+
+// Finish closes a served request's remaining lifecycle: the detached
+// context and the recursion-work boundary a mid-chain materialization
+// established. A pooled chain gets this through PutChain; a job-owned
+// one is finished by its transport.
+func (ch *Chain) Finish() {
+	ch.finishDetach()
 }
 
 // Next invokes the next handler in the chain. Each handler is responsible
@@ -937,7 +961,10 @@ func (ch *Chain) Reset(w Transport, r *dns.Msg) {
 func (ch *Chain) rebindWriter(w Transport) {
 	base, ok := ch.Writer.(*responseWriter)
 	if !ok {
-		base = &responseWriter{}
+		// A wrapper is still in place — a middleware panicked past its
+		// restore — or a test installed its own writer. Either way the
+		// chain's own writer is the one to rebind.
+		base = &ch.base
 		ch.Writer = base
 	}
 	base.Reset(w)

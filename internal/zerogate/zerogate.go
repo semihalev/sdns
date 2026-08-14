@@ -44,34 +44,32 @@ const (
 	FlavorTCP          = "tcp"
 )
 
-// Stage names the currently active budget row. It moves forward as stages
-// land; budgets only ever tighten.
+// Stage names the currently gated row. It moves forward as stages land;
+// the set of gated flavors only ever grows.
 const Stage = "Z1"
 
-// PerOpBudget is the per-operation malloc ceiling for the active stage, by
-// flavor. The ceiling is a regression tripwire, not a target. G0 measured
-// the miekg-based server (~16/op UDP, ~13/op TCP); S1a/S1b's owned engines
-// brought both to ~10/op; Z1's wire-born request and job carrier serve a
-// hit at ~1/op — the row leaves headroom for platform variance, and Z2b
-// pins zero (delta == 0, not a rounded per-op figure).
-var PerOpBudget = map[string]map[string]float64{
+// gated lists the flavors whose served traffic must add no allocations.
+var gated = map[string]map[string]bool{
 	"Z1": {
-		// The warm exact-entry hit is allocation-free; what remains in a
-		// measurement window is ambient (scheduler wakeups, stream
-		// reconnect churn in the flood itself), well under 0.01/op. The
-		// ceiling leaves room for platform variance only.
-		FlavorUDP4Specific: 0.05,
-		FlavorTCP:          0.05,
+		FlavorUDP4Specific: true,
+		FlavorTCP:          true,
 	},
 }
 
-// Budget returns the active ceiling for flavor, and whether the flavor is
-// gated at the active stage at all.
-func Budget(flavor string) (float64, bool) {
-	stage, ok := PerOpBudget[Stage]
-	if !ok {
-		return 0, false
-	}
-	b, ok := stage[flavor]
-	return b, ok
-}
+// Gated reports whether flavor is gated at the active stage.
+func Gated(flavor string) bool { return gated[Stage][flavor] }
+
+// AmbientSlack is how far a traffic window may exceed an idle window of
+// the same length before the gate calls it a regression.
+//
+// The verdict is deliberately not a per-operation budget. A per-op
+// ceiling scales with the run: 0.05/op reads like zero and permits fifty
+// thousand allocations over a million queries, which is how a served hit
+// that allocated a Chain from a pool passed for "0.00/op". What is
+// measured instead is the difference between a window carrying traffic
+// and an idle window of the same duration — the process's own background
+// work (metric flushers, timers, the runtime) cancels out, and what
+// remains is what the queries cost. That number must be zero, up to the
+// jitter between two such windows, which is what this constant is: an
+// absolute count, independent of how many queries ran.
+const AmbientSlack = 256
