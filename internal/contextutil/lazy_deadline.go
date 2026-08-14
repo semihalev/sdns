@@ -49,18 +49,27 @@ type lazyDeadlineHolder struct {
 // an ordinary context.WithValue at the call site.
 const lazyDeadlinePins = 4
 
-// lazyDeadlinePin is one request-lifetime slot. The key is written under
-// pinMu and published by the pin-count store, after which it never changes;
-// lock-free readers see it only through the count's acquire load.
+// lazyDeadlinePin is one request-lifetime slot. The non-nil value is both
+// the occupancy sentinel and the publication barrier: the key is written
+// first, under pinMu, and becomes visible through the value's release store.
+// A reader may look at a slot's key only after observing a non-nil value.
+// Pinned values are never a bare nil interface (TryPinValue rejects it), so
+// an occupied slot cannot read as free.
 type lazyDeadlinePin struct {
 	key   any
 	value atomic.Value
 }
 
+// match reports whether the slot is occupied under key, in the only order
+// the publication protocol allows.
+func (p *lazyDeadlinePin) match(key any) bool {
+	return p.value.Load() != nil && p.key == key
+}
+
 // lazyDeadlineOverflow holds every pin beyond the first. It is allocated only
 // when a second distinct key is pinned, so a request that pins one value — a
-// terminal cache hit carries just the recursion-work ledger — pays no extra
-// LazyDeadline footprint for the table.
+// terminal cache hit carries just the recursion-work ledger — keeps the
+// LazyDeadline in its original size and allocation class (gated by test).
 type lazyDeadlineOverflow [lazyDeadlinePins - 1]lazyDeadlinePin
 
 type LazyDeadline struct {
@@ -75,7 +84,6 @@ type LazyDeadline struct {
 	valueProvider atomic.Value
 	pin0          lazyDeadlinePin
 	pinOverflow   atomic.Pointer[lazyDeadlineOverflow]
-	pinCount      atomic.Int32
 }
 
 // WithLazyTimeout returns a LazyDeadline whose deadline is no later than the
@@ -199,26 +207,26 @@ func TryPinValue(ctx context.Context, key, value any) bool {
 	if lazy.pin(key) != nil {
 		return false
 	}
-	n := lazy.pinCount.Load()
-	if n == lazyDeadlinePins {
-		return false
-	}
-	if n == 0 {
+	if lazy.pin0.value.Load() == nil {
 		lazy.pin0.key = key
 		lazy.pin0.value.Store(value)
-	} else {
-		overflow := lazy.pinOverflow.Load()
-		if overflow == nil {
-			overflow = new(lazyDeadlineOverflow)
-			// Published before the count store below, so a reader that
-			// observes a count above one also observes this pointer.
-			lazy.pinOverflow.Store(overflow)
-		}
-		overflow[n-1].key = key
-		overflow[n-1].value.Store(value)
+		return true
 	}
-	lazy.pinCount.Store(n + 1)
-	return true
+	overflow := lazy.pinOverflow.Load()
+	if overflow == nil {
+		// Safe to publish empty: every slot reads as free until its value
+		// store, which is what publishes the slot's key.
+		overflow = new(lazyDeadlineOverflow)
+		lazy.pinOverflow.Store(overflow)
+	}
+	for i := range overflow {
+		if overflow[i].value.Load() == nil {
+			overflow[i].key = key
+			overflow[i].value.Store(value)
+			return true
+		}
+	}
+	return false
 }
 
 // PinnedValue returns the exact value stored in the LazyDeadline's
@@ -238,21 +246,16 @@ func PinnedValue(ctx context.Context, key any) (any, bool) {
 	return nil, false
 }
 
-// pin returns the slot pinned under key, or nil. Safe without the lock: the
-// pin-count store publishes each slot's key and the overflow pointer, and
-// neither changes afterwards.
+// pin returns the slot pinned under key, or nil. Safe without the lock: an
+// occupied slot's key was published by its value store and neither changes
+// afterwards.
 func (c *LazyDeadline) pin(key any) *lazyDeadlinePin {
-	n := c.pinCount.Load()
-	if n == 0 {
-		return nil
-	}
-	if c.pin0.key == key {
+	if c.pin0.match(key) {
 		return &c.pin0
 	}
-	if n > 1 {
-		overflow := c.pinOverflow.Load()
-		for i := int32(0); i < n-1; i++ {
-			if overflow[i].key == key {
+	if overflow := c.pinOverflow.Load(); overflow != nil {
+		for i := range overflow {
+			if overflow[i].match(key) {
 				return &overflow[i]
 			}
 		}

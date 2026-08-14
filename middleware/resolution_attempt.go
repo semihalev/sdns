@@ -252,16 +252,19 @@ var resolutionAttemptContextKey = &resolutionAttemptKeyType{}
 
 // WithResolutionAttemptGuard anchors guard to ctx. Anchoring is required for
 // detached work because its originating ResponseMeta can be reset and reused.
-// The first anchor of a request tree lands in the deadline carrier's
+// The request tree's first anchor lands in the deadline carrier's
 // request-lifetime pin — every internal sub-query then finds it without
-// deriving a context. Anchoring a different guard over an existing pin, or
-// anchoring on a foreign context, derives an ordinary value node, which
-// shadows the pin for that subtree.
+// deriving a context. Anchoring over any existing, different anchor always
+// derives an ordinary value node instead: the pin lives on the carrier the
+// whole tree shares, so pinning an override would hand the new guard to the
+// base and sibling contexts while the target subtree kept its nearer anchor
+// — the exact opposite of the caller's intent.
 func WithResolutionAttemptGuard(ctx context.Context, guard *ResolutionAttemptGuard) context.Context {
-	if resolutionAttemptGuardAnchored(ctx) == guard {
+	anchored := resolutionAttemptGuardAnchored(ctx)
+	if anchored == guard {
 		return ctx
 	}
-	if contextutil.TryPinValue(ctx, resolutionAttemptContextKey, guard) {
+	if anchored == nil && contextutil.TryPinValue(ctx, resolutionAttemptContextKey, guard) {
 		return ctx
 	}
 	return context.WithValue(ctx, resolutionAttemptContextKey, guard)

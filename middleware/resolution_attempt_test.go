@@ -322,6 +322,40 @@ func TestResolutionAttemptGuardShadowingWinsOverPin(t *testing.T) {
 	}
 }
 
+// TestGuardOverrideStaysOnItsSubtree pins the P1 review finding: overriding
+// a value- or fork-anchored guard while the shared carrier has no guard pin
+// must scope the override to the target subtree. Pinning it instead hands
+// the override to the base and sibling contexts — RFC 9520 attempt
+// accounting split across scopes — while the target keeps its old guard.
+func TestGuardOverrideStaysOnItsSubtree(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer lazy.Cancel()
+	base := WithResponseMeta(lazy, new(ResponseMeta))
+
+	// The forked cut exposes the host guard through its own Value hook; the
+	// carrier's pin table stays guard-free.
+	forked, meta := WithForkedCut(base)
+	if meta == nil {
+		t.Fatal("no meta to fork")
+	}
+	hostGuard := ResolutionAttemptGuardFrom(forked)
+	if hostGuard == nil {
+		t.Fatal("forked cut carries no guard")
+	}
+
+	override := new(ResponseMeta).EnsureResolutionAttemptGuard()
+	overridden := WithResolutionAttemptGuard(forked, override)
+	if got := ResolutionAttemptGuardFrom(overridden); got != override {
+		t.Fatal("the target subtree did not receive its override")
+	}
+	if got := ResolutionAttemptGuardFrom(forked); got != hostGuard {
+		t.Fatal("the forked context lost its own guard")
+	}
+	if got := ResolutionAttemptGuardFrom(base); got != hostGuard {
+		t.Fatal("the override leaked through the shared carrier to the base context")
+	}
+}
+
 // TestWithForkedCutHonorsAnchoredGuards pins that a forked cut selects the
 // anchored guard through the same helper as every other consumer: the pin on
 // the ordinary path, and a shadowing value node when one is nearer.

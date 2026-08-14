@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 type lazyDeadlineKey struct{}
@@ -197,6 +198,47 @@ func TestLazyDeadlinePinTableHoldsDistinctKeysUpToItsBound(t *testing.T) {
 // pinShapeKeys are package-level so key boxing costs nothing in the
 // allocation-shape assertions below.
 var pinShapeKeys = [lazyDeadlinePins]*int{new(int), new(int), new(int), new(int)}
+
+// TestLazyDeadlineSizeGate keeps the pin machinery out of the struct's
+// allocation class: at 128 bytes a LazyDeadline sits exactly on a size-class
+// boundary, and one more word moves every request into the next class. The
+// allocation-count tests cannot see that, so the size is gated directly.
+func TestLazyDeadlineSizeGate(t *testing.T) {
+	if size := unsafe.Sizeof(LazyDeadline{}); size > 128 {
+		t.Fatalf("LazyDeadline is %d bytes; 128 is the allocation-class boundary", size)
+	}
+}
+
+// TestLazyDeadlinePinPublicationRace exercises the sentinel protocol under
+// the race detector: slot keys are plain fields published by the value's
+// release store, and lock-free readers must only touch a key after observing
+// a non-nil value.
+func TestLazyDeadlinePinPublicationRace(t *testing.T) {
+	ctx := WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+
+	var wg sync.WaitGroup
+	for _, key := range pinShapeKeys {
+		wg.Add(2)
+		go func(key *int) {
+			defer wg.Done()
+			TryPinValue(ctx, key, "v")
+		}(key)
+		go func(key *int) {
+			defer wg.Done()
+			for range 100 {
+				PinnedValue(ctx, key)
+			}
+		}(key)
+	}
+	wg.Wait()
+
+	for _, key := range pinShapeKeys {
+		if got, ok := PinnedValue(ctx, key); !ok || got != "v" {
+			t.Fatalf("pin lost after concurrent publication: %v, %v", got, ok)
+		}
+	}
+}
 
 // TestLazyDeadlinePinAllocationShape pins the overflow contract: a request
 // pinning a single value carries it inline, and the overflow block is
