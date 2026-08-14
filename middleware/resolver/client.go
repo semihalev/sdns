@@ -22,3 +22,10 @@ var (
 	AcquireBuf = dnsclient.AcquireBuf
 	ReleaseBuf = dnsclient.ReleaseBuf
 )
+
+// InterruptGroup shares one cancellation registration across a lookup's
+// exchanges instead of paying context.AfterFunc per upstream attempt.
+type InterruptGroup = dnsclient.InterruptGroup
+
+// NewInterruptGroup registers the lookup's cancellation domain.
+var NewInterruptGroup = dnsclient.NewInterruptGroup

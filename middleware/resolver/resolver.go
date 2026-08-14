@@ -381,7 +381,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority
 	}
 
 	reqid := req.Id
-	if v := ctx.Value(contextKeyRequestID); v != nil {
+	if v := requestIDFromContext(ctx); v != nil {
 		if id, ok := v.(uint16); ok {
 			reqid = id
 		}
@@ -1368,6 +1368,13 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	left := len(serversList)
 
 	ctx, cancel := context.WithCancel(ctx)
+	// One cancellation registration for every exchange this lookup fans
+	// out, instead of a context.AfterFunc per upstream attempt. Deferred
+	// before cancel so cancel runs first (LIFO): the exit cancellation
+	// still interrupts straggler reads through the group, and only then
+	// is the registration detached.
+	interrupts := NewInterruptGroup(ctx)
+	defer interrupts.Close()
 	defer cancel()
 
 	// Start queries to top 2 servers immediately for faster response
@@ -1395,7 +1402,7 @@ mainloop:
 		select {
 		case r.maxConcurrent <- struct{}{}:
 			// Got a slot, start the query
-			go r.queryServer(ctx, rs, originalID, serverReq, server, results)
+			go r.queryServer(ctx, rs, interrupts, originalID, serverReq, server, results)
 		case <-ctx.Done():
 			// Context cancelled while waiting for slot —
 			// return the pre-copied pooled message before
@@ -1582,7 +1589,7 @@ type lookupResult struct {
 // launching the goroutine, and the pooled reqCopy buffer; both are
 // released before the result send so the main loop can keep launching
 // workers while we queue.
-func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, originalID uint16, reqCopy *dns.Msg, server *authority.Server, results chan<- lookupResult) {
+func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts *InterruptGroup, originalID uint16, reqCopy *dns.Msg, server *authority.Server, results chan<- lookupResult) {
 	defer ReleaseMsg(reqCopy)
 
 	// releaseSlot frees the semaphore slot acquired by the main
@@ -1611,7 +1618,7 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, originalID
 		return
 	default:
 		reqCopy.Id = dns.Id() // anti-spoofing
-		resp, err := r.exchange(ctx, rs, "udp", reqCopy, server, 0)
+		resp, err := r.exchange(ctx, rs, interrupts, "udp", reqCopy, server, 0)
 		if resp != nil {
 			resp.Id = originalID
 		}
@@ -1710,7 +1717,7 @@ func pickFallbackResponse(responseErrors, configErrors []*dns.Msg, fatalErrors [
 	return nil, fatalError(errNoRootServers)
 }
 
-func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string, req *dns.Msg, server *authority.Server, retried int) (*dns.Msg, error) {
+func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *InterruptGroup, proto string, req *dns.Msg, server *authority.Server, retried int) (*dns.Msg, error) {
 	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
 		return nil, ctxErr
 	}
@@ -1826,7 +1833,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	}
 	_ = co.SetDeadline(deadline)
 
-	resp, rtt, err = co.ExchangeContext(ctx, req)
+	resp, rtt, err = co.ExchangeInterruptible(ctx, interrupts, req)
 	if ctxErr := contextutil.EffectiveError(ctx); ctxErr != nil {
 		resp = nil
 		err = ctxErr
@@ -1847,7 +1854,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 			}
 			// retry
 			retried++
-			return r.exchange(ctx, rs, proto, req, server, retried)
+			return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 		}
 
 		return nil, err
@@ -1865,20 +1872,20 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, proto string,
 	ReleaseConn(co)
 
 	if resp != nil && resp.Truncated && proto == "udp" {
-		return r.exchange(ctx, rs, "tcp", req, server, retried)
+		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
 	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > dnsutil.DefaultMsgSize {
 		// If response is too large, switch to TCP
 		zlog.Debug("Response too large, switching to TCP", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 			"size", resp.Len(), "maxSize", dnsutil.DefaultMsgSize, "retried", retried)
-		return r.exchange(ctx, rs, "tcp", req, server, retried)
+		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
-		return r.exchange(ctx, rs, proto, req, server, retried)
+		return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 	}
 
 	return resp, nil
@@ -2486,7 +2493,7 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	req.AuthenticatedData = false
 
 	reqid := req.Id
-	if v := ctx.Value(contextKeyRequestID); v != nil {
+	if v := requestIDFromContext(ctx); v != nil {
 		if id, ok := v.(uint16); ok {
 			reqid = id
 		}
@@ -3504,7 +3511,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// used to leak goroutines and mutate authservers long
 	// after the query returned.
 	if r.cfg.IPv6Access {
-		reqid := ctx.Value(contextKeyRequestID)
+		reqid := requestIDFromContext(ctx)
 		work := rs.work
 		attemptGuard := middleware.ResolutionAttemptGuardFrom(ctx)
 		var releaseWork func()

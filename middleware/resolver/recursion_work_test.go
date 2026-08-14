@@ -273,7 +273,7 @@ func TestRecursionWorkOutboundCapAppliesWithCD(t *testing.T) {
 			rs := &resolveState{req: req, requestID: req.Id, work: ledger}
 
 			before := wire.count()
-			resp, err := r.exchange(context.Background(), rs, "udp", req, server, 0)
+			resp, err := r.exchange(context.Background(), rs, nil, "udp", req, server, 0)
 			if err != nil {
 				t.Fatalf("first exchange error = %v", err)
 			}
@@ -281,7 +281,7 @@ func TestRecursionWorkOutboundCapAppliesWithCD(t *testing.T) {
 				t.Fatalf("first exchange response = %v, want success", resp)
 			}
 
-			_, err = r.exchange(context.Background(), rs, "udp", req, server, 0)
+			_, err = r.exchange(context.Background(), rs, nil, "udp", req, server, 0)
 			if !errors.Is(err, middleware.ErrRecursionWorkLimit) {
 				t.Fatalf("second exchange error = %v, want recursion work limit", err)
 			}
@@ -328,7 +328,7 @@ func TestRecursionWorkOutboundRetryCap(t *testing.T) {
 	server := authority.NewServer(packet.LocalAddr().String(), authority.IPv4)
 	rs := &resolveState{req: req, requestID: req.Id, work: ledger}
 
-	_, err = r.exchange(context.Background(), rs, "udp", req, server, 0)
+	_, err = r.exchange(context.Background(), rs, nil, "udp", req, server, 0)
 	if !errors.Is(err, middleware.ErrRecursionWorkLimit) {
 		t.Fatalf("retry exchange error = %v, want recursion work limit", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/contextutil"
 )
 
 // RFC 9520 section 3.1 limits a single resolution to three attempts for the
@@ -249,15 +250,29 @@ type resolutionAttemptKeyType struct{}
 
 var resolutionAttemptContextKey = &resolutionAttemptKeyType{}
 
-// WithResolutionAttemptGuard pins guard into ctx. Pinning is required for
+// WithResolutionAttemptGuard anchors guard to ctx. Anchoring is required for
 // detached work because its originating ResponseMeta can be reset and reused.
+// The request tree's first anchor lands in the deadline carrier's
+// request-lifetime pin — every internal sub-query then finds it without
+// deriving a context. Anchoring over any existing, different anchor always
+// derives an ordinary value node instead: the pin lives on the carrier the
+// whole tree shares, so pinning an override would hand the new guard to the
+// base and sibling contexts while the target subtree kept its nearer anchor
+// — the exact opposite of the caller's intent.
 func WithResolutionAttemptGuard(ctx context.Context, guard *ResolutionAttemptGuard) context.Context {
+	anchored := resolutionAttemptGuardAnchored(ctx)
+	if anchored == guard {
+		return ctx
+	}
+	if anchored == nil && contextutil.TryPinValue(ctx, resolutionAttemptContextKey, guard) {
+		return ctx
+	}
 	return context.WithValue(ctx, resolutionAttemptContextKey, guard)
 }
 
 // ResolutionAttemptGuardFrom returns the request tree's retry guard.
 func ResolutionAttemptGuardFrom(ctx context.Context) *ResolutionAttemptGuard {
-	if guard, _ := ctx.Value(resolutionAttemptContextKey).(*ResolutionAttemptGuard); guard != nil {
+	if guard := resolutionAttemptGuardAnchored(ctx); guard != nil {
 		return guard
 	}
 	if meta := ResponseMetaFrom(ctx); meta != nil {
@@ -266,11 +281,28 @@ func ResolutionAttemptGuardFrom(ctx context.Context) *ResolutionAttemptGuard {
 	return nil
 }
 
-// EnsureResolutionAttemptGuard establishes and pins the request tree's retry
-// guard. Unlike recursion-work accounting, this RFC safeguard is always on.
+// resolutionAttemptGuardAnchored returns the guard anchored to ctx, without
+// the ResponseMeta fallback. The ordinary value chain is read before the
+// request-lifetime pin: a derived context may deliberately shadow the pinned
+// guard (forked cuts, custom flows), and the nearest anchor must win exactly
+// as it did when every anchor was a value node.
+func resolutionAttemptGuardAnchored(ctx context.Context) *ResolutionAttemptGuard {
+	if guard, _ := ctx.Value(resolutionAttemptContextKey).(*ResolutionAttemptGuard); guard != nil {
+		return guard
+	}
+	if pinned, ok := contextutil.PinnedValue(ctx, resolutionAttemptContextKey); ok {
+		guard, _ := pinned.(*ResolutionAttemptGuard)
+		return guard
+	}
+	return nil
+}
+
+// EnsureResolutionAttemptGuard establishes and anchors the request tree's
+// retry guard. Unlike recursion-work accounting, this RFC safeguard is
+// always on.
 func EnsureResolutionAttemptGuard(ctx context.Context) (context.Context, *ResolutionAttemptGuard) {
 	if guard := ResolutionAttemptGuardFrom(ctx); guard != nil {
-		if pinned, _ := ctx.Value(resolutionAttemptContextKey).(*ResolutionAttemptGuard); pinned != guard {
+		if resolutionAttemptGuardAnchored(ctx) != guard {
 			ctx = WithResolutionAttemptGuard(ctx, guard)
 		}
 		return ctx, guard

@@ -11,6 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
@@ -215,4 +216,73 @@ func Test_HandlerServe(t *testing.T) {
 
 	h.ServeDNS(context.Background(), ch)
 	assert.Equal(t, true, ch.Writer.Written())
+}
+
+func Test_withQueryDeadline(t *testing.T) {
+	timeout := 10 * time.Second
+
+	// A parent already bounded at or before the timeout is returned as is:
+	// a child there could never fire first.
+	bounded, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, gotCancel := withQueryDeadline(bounded, timeout)
+	assert.Equal(t, bounded, got, "an earlier-bounded parent must not grow a child")
+	parentDeadline, _ := bounded.Deadline()
+	gotDeadline, ok := got.Deadline()
+	assert.True(t, ok)
+	assert.Equal(t, parentDeadline, gotDeadline)
+	gotCancel()
+	assert.NoError(t, bounded.Err(), "the no-op cancel must not cancel the parent")
+
+	// An unbounded parent gets the timeout.
+	got, gotCancel = withQueryDeadline(context.Background(), timeout)
+	defer gotCancel()
+	gotDeadline, ok = got.Deadline()
+	assert.True(t, ok, "an unbounded parent must gain a deadline")
+	assert.InDelta(t, time.Until(gotDeadline).Seconds(), timeout.Seconds(), 1.0)
+
+	// A parent bounded later than the timeout is tightened.
+	loose, cancel2 := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel2()
+	got, gotCancel = withQueryDeadline(loose, timeout)
+	defer gotCancel()
+	gotDeadline, _ = got.Deadline()
+	looseDeadline, _ := loose.Deadline()
+	assert.True(t, gotDeadline.Before(looseDeadline), "a later-bounded parent must be tightened")
+}
+
+func Test_requestIDFromContext(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Second)
+	defer lazy.Cancel()
+
+	if !contextutil.TryPinValue(lazy, contextKeyRequestID, uint16(0xBEEF)) {
+		t.Fatal("pin failed")
+	}
+	if got := requestIDFromContext(lazy); got != uint16(0xBEEF) {
+		t.Fatalf("pinned request ID = %v, want 0xBEEF", got)
+	}
+
+	// A detached context carries the ID as an ordinary value node.
+	detached := context.WithValue(context.Background(), contextKeyRequestID, uint16(0xCAFE))
+	if got := requestIDFromContext(detached); got != uint16(0xCAFE) {
+		t.Fatalf("value-carried request ID = %v, want 0xCAFE", got)
+	}
+	if got := requestIDFromContext(context.Background()); got != nil {
+		t.Fatalf("empty context yielded %v", got)
+	}
+}
+
+// Test_withQueryDeadline_LazyParentAllocsNothing pins the point of the guard:
+// the server bounds every request with a LazyDeadline at entry, so the
+// handler's per-request query-timeout derivation must be free on that path.
+func Test_withQueryDeadline_LazyParentAllocsNothing(t *testing.T) {
+	parent := contextutil.WithLazyTimeout(context.Background(), time.Second)
+	defer parent.Cancel()
+
+	allocs := testing.AllocsPerRun(100, func() {
+		ctx, cancel := withQueryDeadline(parent, 10*time.Second)
+		cancel()
+		_ = ctx
+	})
+	assert.Zero(t, allocs, "deriving the query deadline under a server-bounded parent must not allocate")
 }

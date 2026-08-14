@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 type lazyDeadlineKey struct{}
@@ -155,8 +156,137 @@ func TestLazyDeadlineCarriesProviderAndInternalPinWithoutMaterializing(t *testin
 	if ctx.active.Load() != nil {
 		t.Fatal("request-local values materialized the deadline context")
 	}
-	if TryPinValue(wrapped, new(int), "second") {
-		t.Fatal("second distinct request-local pin unexpectedly succeeded")
+	if TryPinValue(wrapped, pinnedKey, "again") {
+		t.Fatal("re-pinning an already-pinned key unexpectedly succeeded")
+	}
+}
+
+func TestLazyDeadlinePinTableHoldsDistinctKeysUpToItsBound(t *testing.T) {
+	ctx := WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+
+	keys := make([]*int, lazyDeadlinePins)
+	for i := range keys {
+		keys[i] = new(int)
+		if !TryPinValue(ctx, keys[i], i) {
+			t.Fatalf("pin %d of %d failed with free slots left", i+1, lazyDeadlinePins)
+		}
+	}
+	if TryPinValue(ctx, new(int), "overflow") {
+		t.Fatal("a pin beyond the table bound unexpectedly succeeded")
+	}
+	for i, key := range keys {
+		got, ok := PinnedValue(ctx, key)
+		if !ok || got != i {
+			t.Fatalf("pin %d read back %v, %v; want %d, true", i, got, ok, i)
+		}
+	}
+
+	// Each slot updates independently under its own key.
+	value, updated := TryUpdatePinnedValueLocked(ctx, keys[1], 1, func() int { return 100 })
+	if !updated || value != 100 {
+		t.Fatalf("slot update = %v, %v; want 100, true", value, updated)
+	}
+	if got, _ := PinnedValue(ctx, keys[0]); got != 0 {
+		t.Fatalf("neighbouring slot changed to %v", got)
+	}
+	if _, updated := TryUpdatePinnedValueLocked(ctx, new(int), 0, func() int { return 1 }); updated {
+		t.Fatal("an update under an unpinned key unexpectedly succeeded")
+	}
+}
+
+// pinShapeKeys are package-level so key boxing costs nothing in the
+// allocation-shape assertions below.
+var pinShapeKeys = [lazyDeadlinePins]*int{new(int), new(int), new(int), new(int)}
+
+// TestLazyDeadlineSizeGate keeps the pin machinery out of the struct's
+// allocation class: at 128 bytes a LazyDeadline sits exactly on a size-class
+// boundary, and one more word moves every request into the next class. The
+// allocation-count tests cannot see that, so the size is gated directly.
+func TestLazyDeadlineSizeGate(t *testing.T) {
+	if size := unsafe.Sizeof(LazyDeadline{}); size > 128 {
+		t.Fatalf("LazyDeadline is %d bytes; 128 is the allocation-class boundary", size)
+	}
+}
+
+// TestLazyDeadlinePinPublicationRace exercises the sentinel protocol under
+// the race detector: slot keys are plain fields published by the value's
+// release store, and lock-free readers must only touch a key after observing
+// a non-nil value.
+func TestLazyDeadlinePinPublicationRace(t *testing.T) {
+	ctx := WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+
+	var wg sync.WaitGroup
+	for _, key := range pinShapeKeys {
+		wg.Add(2)
+		go func(key *int) {
+			defer wg.Done()
+			TryPinValue(ctx, key, "v")
+		}(key)
+		go func(key *int) {
+			defer wg.Done()
+			for range 100 {
+				PinnedValue(ctx, key)
+			}
+		}(key)
+	}
+	wg.Wait()
+
+	for _, key := range pinShapeKeys {
+		if got, ok := PinnedValue(ctx, key); !ok || got != "v" {
+			t.Fatalf("pin lost after concurrent publication: %v, %v", got, ok)
+		}
+	}
+}
+
+// TestLazyDeadlinePinAllocationShape pins the overflow contract: a request
+// pinning a single value carries it inline, and the overflow block is
+// allocated exactly once when a second distinct key arrives.
+func TestLazyDeadlinePinAllocationShape(t *testing.T) {
+	// One allocation per run: the LazyDeadline itself. The single pin is inline.
+	single := testing.AllocsPerRun(100, func() {
+		ctx := WithLazyTimeout(context.Background(), time.Minute)
+		if !TryPinValue(ctx, pinShapeKeys[0], "v") {
+			t.Fatal("pin failed")
+		}
+		ctx.Cancel()
+	})
+	if single != 1 {
+		t.Fatalf("single-pin request allocated %.0f times, want 1 (the LazyDeadline alone)", single)
+	}
+
+	// A second distinct key costs exactly the one overflow block; the third
+	// and fourth reuse it.
+	full := testing.AllocsPerRun(100, func() {
+		ctx := WithLazyTimeout(context.Background(), time.Minute)
+		for _, key := range pinShapeKeys {
+			if !TryPinValue(ctx, key, "v") {
+				t.Fatal("pin failed")
+			}
+		}
+		ctx.Cancel()
+	})
+	if full != 2 {
+		t.Fatalf("four-pin request allocated %.0f times, want 2 (LazyDeadline + one overflow block)", full)
+	}
+}
+
+func TestLazyDeadlinePinnedValueAllocsNothing(t *testing.T) {
+	ctx := WithLazyTimeout(context.Background(), time.Minute)
+	defer ctx.Cancel()
+
+	key := new(int)
+	if !TryPinValue(ctx, key, "pinned") {
+		t.Fatal("pin failed")
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, ok := PinnedValue(ctx, key); !ok {
+			t.Fatal("pinned value lost")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("PinnedValue allocated %.0f times per read, want 0", allocs)
 	}
 }
 

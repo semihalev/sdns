@@ -585,12 +585,14 @@ func WithForkedCut(ctx context.Context) (context.Context, *ResponseMeta) {
 	}
 	host := parent.ensureLedgerHost()
 
-	// The tree's own guard, unless one is already pinned — a detached or
+	// The tree's own guard, unless one is already anchored — a detached or
 	// custom context can carry a guard this meta does not own, and shadowing
-	// it would silently move that sub-query's accounting somewhere else.
+	// it would silently move that sub-query's accounting somewhere else. The
+	// anchor is read through the same selection helper as every other guard
+	// consumer, so a pinned anchor counts too.
 	guard := &host.guard
-	if pinned, _ := ctx.Value(resolutionAttemptContextKey).(*ResolutionAttemptGuard); pinned != nil {
-		guard = pinned
+	if anchored := resolutionAttemptGuardAnchored(ctx); anchored != nil {
+		guard = anchored
 	}
 
 	forked := &forkedCutContext{Context: ctx, guard: guard}

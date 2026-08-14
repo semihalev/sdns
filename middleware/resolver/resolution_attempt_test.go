@@ -46,7 +46,7 @@ func TestResolverResolutionAttemptGuardClosesEDNSRetryEscape(t *testing.T) {
 	ctx, _ := middleware.EnsureResolutionAttemptGuard(context.Background())
 	ctx = middleware.WithRecursionWork(ctx, ledger)
 
-	_, err := r.exchange(ctx, rs, "tcp", req, server, 0)
+	_, err := r.exchange(ctx, rs, nil, "tcp", req, server, 0)
 	if !errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 		t.Fatalf("exchange error = %v, want ErrResolutionAttemptLimit", err)
 	}

@@ -7,8 +7,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/contextutil"
 )
 
 var errNSEC3MemoTestWork = errors.New("test NSEC3 memo work failure")
@@ -398,5 +400,60 @@ func TestNSEC3HashMemoCanonicalNamesCoalesceAndTupleChangesPartition(t *testing.
 	}
 	if got, want := work.calls.Load(), uint32(7); got != want {
 		t.Fatalf("partitioned ring hash debits = %d, want %d", got, want)
+	}
+}
+
+// TestEnsureNSEC3HashMemoPinsOnDeadlineCarrier pins the anchoring contract:
+// on a deadline-carried request the memo state lives in the request-lifetime
+// pin, so ensuring it derives no context and repeated ensures are free.
+func TestEnsureNSEC3HashMemoPinsOnDeadlineCarrier(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer lazy.Cancel()
+
+	ctx := EnsureNSEC3HashMemo(lazy)
+	if ctx != context.Context(lazy) {
+		t.Fatal("ensuring the memo on a deadline-carried request derived a context")
+	}
+	memo := NSEC3HashMemoFromContext(ctx)
+	if memo == nil {
+		t.Fatal("memo not readable back through the pin")
+	}
+	for scope := NSEC3HashMemoScope(0); scope < nsec3HashMemoScopeCount; scope++ {
+		if NSEC3HashMemoFromContextScope(ctx, scope) == nil {
+			t.Fatalf("scope %d compartment missing", scope)
+		}
+	}
+	if again := EnsureNSEC3HashMemo(ctx); again != ctx {
+		t.Fatal("re-ensuring the memo was not the identity")
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if EnsureNSEC3HashMemo(ctx) != ctx {
+			t.Fatal("re-ensure diverged")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("re-ensuring the pinned memo allocated %.0f times, want 0", allocs)
+	}
+}
+
+func TestInheritNSEC3HashMemosReadsThePinnedParent(t *testing.T) {
+	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
+	defer lazy.Cancel()
+	parent := EnsureNSEC3HashMemo(lazy)
+	memo := NSEC3HashMemoFromContext(parent)
+	if memo == nil {
+		t.Fatal("parent memo missing")
+	}
+
+	detached := InheritNSEC3HashMemos(context.Background(), parent)
+	if got := NSEC3HashMemoFromContext(detached); got != memo {
+		t.Fatal("detached context did not inherit the pinned memo state")
+	}
+
+	// A context already carrying state must keep its own.
+	own := EnsureNSEC3HashMemo(context.Background())
+	if InheritNSEC3HashMemos(own, parent) != own {
+		t.Fatal("inherit overwrote a context that already carries memo state")
 	}
 }
