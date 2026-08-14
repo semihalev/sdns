@@ -120,6 +120,14 @@ type Config struct {
 	// Resolver concurrency limits
 	MaxConcurrentQueries int // Maximum concurrent DNS queries (default 10000)
 
+	// Server ingress bounds (zero-path front door). These are deliberately
+	// separate from MaxConcurrentQueries, which is the resolver's upstream
+	// fan-out semaphore. In-flight jobs are derived: queue depth + one per
+	// worker + one per reader — never configured independently, so the
+	// three can't disagree.
+	IngressWorkers int // Fixed handler workers per listener (default: GOMAXPROCS, clamped 2..64)
+	IngressQueue   int // Ready-queue depth before UDP load-shedding (default 512)
+
 	// Reflex: DNS amplification/reflection attack detection
 	ReflexEnabled      bool    // Enable amplification attack detection
 	ReflexBlockMode    bool    // If false, only log but don't block

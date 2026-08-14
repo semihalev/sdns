@@ -106,7 +106,7 @@ func TestListenerShutdownBeforeServeReleasesSocket(t *testing.T) {
 		name  string
 		build func(addr string) Listener
 	}{
-		{"udp", func(addr string) Listener { return newUDPListener(addr, handler, time.Second) }},
+		{"udp", func(addr string) Listener { return newUDPListener(addr, handler, time.Second, 0, 0) }},
 		{"tcp", func(addr string) Listener { return newTCPListener(addr, handler, time.Second) }},
 		{"tls", func(addr string) Listener { return newTLSListener(addr, handler, certs, time.Second) }},
 		{"doh", func(addr string) Listener { return newDOHListener(addr, httpHandler, certs, time.Second) }},

@@ -50,7 +50,7 @@ func New(cfg *config.Config) *Server {
 	// the other rewrites the reply ID, so neither is a raw sink.
 	direct := directHandler{srv: s}
 	s.listeners = []Listener{
-		newUDPListener(cfg.Bind, direct, timeout),
+		newUDPListener(cfg.Bind, direct, timeout, cfg.IngressWorkers, cfg.IngressQueue),
 		newTCPListener(cfg.Bind, direct, timeout),
 	}
 	if cfg.BindTLS != "" {

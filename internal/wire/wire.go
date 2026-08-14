@@ -43,6 +43,12 @@ func (h Header) Rcode() int { return int(h.Flags & 0x0F) }
 // AD reports the authenticated-data bit.
 func (h Header) AD() bool { return h.Flags&FlagAD != 0 }
 
+// QR reports the response bit.
+func (h Header) QR() bool { return h.Flags&0x8000 != 0 }
+
+// Opcode extracts the operation code from the flags word.
+func (h Header) Opcode() int { return int(h.Flags>>11) & 0xF }
+
 // ParseHeader reads the fixed header. ok is false when the body is short.
 func ParseHeader(body []byte) (Header, bool) {
 	if len(body) < HeaderLen {
