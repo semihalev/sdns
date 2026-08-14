@@ -68,19 +68,24 @@ func (w *ResponseWriter) WireReady() (middleware.WireCapability, bool) {
 }
 
 // wireOPTLen is the exact encoded length of the OPT this layer appends.
-// SetEdns0 has already stripped every client option except a possibly
-// forwarded ECS, which a reply never carries; any other option is one this
-// layer has no encoder for, so it declines rather than guess.
+// On the Msg path SetEdns0 has already stripped every client option except
+// a possibly forwarded ECS, which a reply never carries; any other
+// leftover option is one this layer has no encoder for, so it declines
+// rather than guess. On the wire branch there is no mutated request OPT at
+// all (opt stays nil): the reply carries exactly what this layer appends,
+// and the cookie/NSID flags below are the complete inventory.
 func (w *ResponseWriter) wireOPTLen() (int, bool) {
 	if w.noedns {
 		return 0, true
 	}
 	length := wire.OPTFixedLen
-	for _, option := range w.opt.Option {
-		if _, isECS := option.(*dns.EDNS0_SUBNET); isECS {
-			continue
+	if w.opt != nil {
+		for _, option := range w.opt.Option {
+			if _, isECS := option.(*dns.EDNS0_SUBNET); isECS {
+				continue
+			}
+			return 0, false
 		}
-		return 0, false
 	}
 	if w.cookie != "" || w.hasCookieRaw {
 		if !w.hasCookieRaw && len(w.cookie) != clientCookieHexLen {

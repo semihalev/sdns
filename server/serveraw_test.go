@@ -19,10 +19,20 @@ import (
 type strictTestJob struct {
 	remote net.UDPAddr
 	wrote  []byte
+	tx     [4096]byte
 
 	req        middleware.Request
 	carrier    jobCarrier
 	ednsWriter edns.ResponseWriter
+}
+
+// LeaseWire mirrors the real jobs' body lease so the wire fast path runs
+// exactly as it does on the owned transports.
+func (j *strictTestJob) LeaseWire(capacity int) []byte {
+	if capacity > len(j.tx) {
+		return nil
+	}
+	return j.tx[:0]
 }
 
 func (j *strictTestJob) LocalAddr() net.Addr {

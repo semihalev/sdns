@@ -56,8 +56,12 @@ const Stage = "Z1"
 // pins zero (delta == 0, not a rounded per-op figure).
 var PerOpBudget = map[string]map[string]float64{
 	"Z1": {
-		FlavorUDP4Specific: 3,
-		FlavorTCP:          3,
+		// The warm exact-entry hit is allocation-free; what remains in a
+		// measurement window is ambient (scheduler wakeups, stream
+		// reconnect churn in the flood itself), well under 0.01/op. The
+		// ceiling leaves room for platform variance only.
+		FlavorUDP4Specific: 0.05,
+		FlavorTCP:          0.05,
 	},
 }
 

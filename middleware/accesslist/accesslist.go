@@ -23,16 +23,23 @@ var accessDenied = metric.NewCounter(nil, prometheus.CounterOpts{
 // List type.
 type List struct {
 	ranger cidranger.Ranger
+
+	// allowAll marks the default open configuration. The ranger lookup
+	// converts the client IP on every query (an allocation on the hottest
+	// path), and an operator who configured no list at all asked for no
+	// filtering — so the default answers without touching the ranger.
+	allowAll bool
 }
 
 // New return accesslist.
 func New(cfg *config.Config) *List {
+	a := new(List)
 	if len(cfg.AccessList) == 0 {
 		cfg.AccessList = append(cfg.AccessList, "0.0.0.0/0")
 		cfg.AccessList = append(cfg.AccessList, "::0/0")
+		a.allowAll = true
 	}
 
-	a := new(List)
 	a.ranger = cidranger.NewPCTrieRanger()
 	for _, cidr := range cfg.AccessList {
 		_, ipnet, err := net.ParseCIDR(cidr)
@@ -59,7 +66,7 @@ func (a *List) ClientOnly() bool { return true }
 
 // (*List).ServeDNS serveDNS implements the Handle interface.
 func (a *List) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if ch.Writer.Internal() {
+	if a.allowAll || ch.Writer.Internal() {
 		ch.Next(ctx)
 		return
 	}
