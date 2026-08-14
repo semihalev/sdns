@@ -642,23 +642,38 @@ func startTruncatingForwarderServers(t *testing.T) (
 		resp.Truncated = true
 		_ = w.WriteMsg(resp)
 	})
-	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen UDP: %v", err)
+	// The forwarder retries TCP against the same server address, so the TCP
+	// listener must take exactly the port the UDP socket drew from :0. The
+	// kernel only promised that port for UDP — on Windows an ephemeral port
+	// can sit inside an excluded range for the other protocol and the TCP
+	// bind fails with a permission error — so a pair that does not bind is
+	// redrawn rather than fatal.
+	var (
+		packet   net.PacketConn
+		listener net.Listener
+	)
+	for attempt := 1; ; attempt++ {
+		var err error
+		packet, err = net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen UDP: %v", err)
+		}
+		host, port, err := net.SplitHostPort(packet.LocalAddr().String())
+		if err != nil {
+			_ = packet.Close()
+			t.Fatalf("split UDP address: %v", err)
+		}
+		listener, err = net.Listen("tcp", net.JoinHostPort(host, port))
+		if err == nil {
+			break
+		}
+		_ = packet.Close()
+		if attempt == 10 {
+			t.Fatalf("listen TCP on UDP port after %d attempts: %v", attempt, err)
+		}
 	}
 	udpServer := &dns.Server{Net: "udp", PacketConn: packet, Handler: udpMux}
 	go func() { _ = udpServer.ActivateAndServe() }()
-
-	host, port, err := net.SplitHostPort(packet.LocalAddr().String())
-	if err != nil {
-		_ = udpServer.Shutdown()
-		t.Fatalf("split UDP address: %v", err)
-	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, port))
-	if err != nil {
-		_ = udpServer.Shutdown()
-		t.Fatalf("listen TCP on UDP port: %v", err)
-	}
 	tcpMux := dns.NewServeMux()
 	tcpMux.HandleFunc(".", func(w dns.ResponseWriter, req *dns.Msg) {
 		tcpCalls.Add(1)
