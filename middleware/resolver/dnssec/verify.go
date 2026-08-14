@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
@@ -802,7 +803,7 @@ func isSynthesizedCNAME(cname *dns.CNAME, dnames []*dns.DNAME) bool {
 		if dnameLabels == 0 || ownerLabels <= dnameLabels {
 			continue
 		}
-		n := dns.CompareDomainName(d.Header().Name, owner)
+		n := dnsname.CompareSuffix(d.Header().Name, owner)
 		if n != dnameLabels {
 			continue
 		}

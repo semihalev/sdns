@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -170,7 +171,7 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 	// The signer-zone apex cannot be absent while its SOA exists. Rejecting
 	// this impossible provenance locally prevents it becoming a zone-wide cut.
 	if deniedName == "." || deniedName == zone ||
-		!dns.IsSubDomain(zone, deniedName) {
+		!dnsname.Sub(zone, deniedName) {
 		return false
 	}
 
@@ -286,7 +287,7 @@ func nxDomainCutProof(msg *dns.Msg, deniedName, zone string) (*dns.Msg, *dns.SOA
 	useNSEC3 := false
 	for _, rr := range msg.Ns {
 		nsec3, ok := rr.(*dns.NSEC3)
-		if !ok || !dns.IsSubDomain(zone, dns.CanonicalName(nsec3.Hdr.Name)) {
+		if !ok || !dnsname.Sub(zone, dns.CanonicalName(nsec3.Hdr.Name)) {
 			continue
 		}
 		useNSEC3 = true
@@ -320,7 +321,7 @@ func nxDomainCutProof(msg *dns.Msg, deniedName, zone string) (*dns.Msg, *dns.SOA
 
 	for _, rr := range msg.Ns {
 		owner := dns.CanonicalName(rr.Header().Name)
-		if !dns.IsSubDomain(zone, owner) || rr.Header().Class != soa.Hdr.Class {
+		if !dnsname.Sub(zone, owner) || rr.Header().Class != soa.Hdr.Class {
 			continue
 		}
 
@@ -339,7 +340,7 @@ func nxDomainCutProof(msg *dns.Msg, deniedName, zone string) (*dns.Msg, *dns.SOA
 			// Filtering just this RDATA would leave the retained RRSIG
 			// covering a different RRset. Fail closed for shared cut
 			// admission instead; the exact negative answer remains cached.
-			if !dns.IsSubDomain(zone, next) {
+			if !dnsname.Sub(zone, next) {
 				return nil, nil, false
 			}
 			key = rrsetKey{owner: owner, rtype: dns.TypeNSEC, qclass: record.Hdr.Class}
@@ -356,7 +357,7 @@ func nxDomainCutProof(msg *dns.Msg, deniedName, zone string) (*dns.Msg, *dns.SOA
 		retained[key] = struct{}{}
 	}
 
-	if len(proofKeys) == 0 || !dns.IsSubDomain(zone, deniedName) {
+	if len(proofKeys) == 0 || !dnsname.Sub(zone, deniedName) {
 		return nil, nil, false
 	}
 
@@ -436,7 +437,7 @@ func (c *nxDomainCutCache) lookup(q dns.Question) (*nxDomainCutEntry, bool) {
 
 	name := dns.CanonicalName(q.Name)
 	now := time.Now()
-	for _, offset := range dns.Split(name) {
+	for offset := range dnsname.Suffixes(name) {
 		candidate := name[offset:]
 		id := nxDomainCutID{deniedName: candidate, qclass: q.Qclass}
 
@@ -498,7 +499,7 @@ func (c *nxDomainCutCache) purge(q dns.Question) {
 	name := dns.CanonicalName(q.Name)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, offset := range dns.Split(name) {
+	for offset := range dnsname.Suffixes(name) {
 		candidate := name[offset:]
 		id := nxDomainCutID{deniedName: candidate, qclass: q.Qclass}
 		if entry := c.entries[id]; entry != nil {

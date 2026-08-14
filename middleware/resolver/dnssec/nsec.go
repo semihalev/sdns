@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
@@ -89,18 +90,16 @@ func VerifyNameErrorNSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 // §3.1.3.2, the result must be a proper ancestor of qname.
 func closestEncloserFromNSEC(qname string, nsec *dns.NSEC) string {
 	qn := strings.ToLower(dns.Fqdn(qname))
-	qLabels := dns.SplitDomainName(qn)
+	qLabelCount := dns.CountLabel(qn)
 
+	// CompareSuffix folds case on its own, so only qn needs lowering — the
+	// result is a slice of it. An unrooted owner or next is rooted first,
+	// exactly as the old label split did; names off the wire already are.
 	shared := func(other string) int {
-		ol := dns.SplitDomainName(strings.ToLower(dns.Fqdn(other)))
-		count := 0
-		for i, j := len(qLabels)-1, len(ol)-1; i >= 0 && j >= 0; i, j = i-1, j-1 {
-			if qLabels[i] != ol[j] {
-				break
-			}
-			count++
+		if !dns.IsFqdn(other) {
+			other = dns.Fqdn(other)
 		}
-		return count
+		return dnsname.CompareSuffix(qn, other)
 	}
 
 	n := shared(nsec.Header().Name)
@@ -108,16 +107,19 @@ func closestEncloserFromNSEC(qname string, nsec *dns.NSEC) string {
 		n = s
 	}
 	// The closest encloser is a proper ancestor of qname, so cap at
-	// len(qLabels)-1 even if owner or next happens to share all labels
+	// qLabelCount-1 even if owner or next happens to share all labels
 	// (which would only occur for a malformed NSEC covering its own
 	// name).
-	if n >= len(qLabels) {
-		n = len(qLabels) - 1
+	if n >= qLabelCount {
+		n = qLabelCount - 1
 	}
 	if n <= 0 {
 		return "."
 	}
-	return dns.Fqdn(strings.Join(qLabels[len(qLabels)-n:], "."))
+	// The encloser is qn's last n labels: a suffix of a rooted, lowered
+	// name, sliced instead of joined back together.
+	prev, _ := dns.PrevLabel(qn, n)
+	return qn[prev:]
 }
 
 // VerifyNODATANSEC verifies NODATA using NSEC records (RFC 4035 §3.1.3.1).
@@ -214,24 +216,12 @@ func VerifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 // disagrees with this order for names like "example.com." vs
 // "a.example.com.", so any proof built on byte-wise compares produces
 // both false positives and false negatives.
+//
+// The ordering itself lives in dnsname, which computes it out of a forward
+// walk; this used to lower, root and split both names per comparison, for
+// every NSEC of every aggressive-cache probe.
 func canonicalNameCompare(a, b string) int {
-	aLabels := dns.SplitDomainName(strings.ToLower(dns.Fqdn(a)))
-	bLabels := dns.SplitDomainName(strings.ToLower(dns.Fqdn(b)))
-	i, j := len(aLabels)-1, len(bLabels)-1
-	for i >= 0 && j >= 0 {
-		if c := strings.Compare(aLabels[i], bLabels[j]); c != 0 {
-			return c
-		}
-		i--
-		j--
-	}
-	switch {
-	case len(aLabels) < len(bLabels):
-		return -1
-	case len(aLabels) > len(bLabels):
-		return 1
-	}
-	return 0
+	return dnsname.CanonicalCompare(a, b)
 }
 
 // nsecCovers reports whether an NSEC whose owner is `owner` and whose

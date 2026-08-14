@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 )
 
 // ExtractRRSet returns every RR in `in` whose owner equals `name`
@@ -170,7 +171,7 @@ func DnameTarget(msg *dns.Msg) string {
 			// labels than qname — neither can apply.
 			return ""
 		}
-		if dns.CompareDomainName(dname.Header().Name, q.Name) != ownerLabels {
+		if dnsname.CompareSuffix(dname.Header().Name, q.Name) != ownerLabels {
 			// Shared trailing-label count is less than the DNAME
 			// owner's full name, meaning the owner is a cousin or
 			// unrelated sibling, not an ancestor of qname.

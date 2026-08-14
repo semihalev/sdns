@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
@@ -365,12 +366,14 @@ func findClosestEncloserWithWork(
 	name string,
 	evaluator *nsec3RingEvaluator,
 ) (nsec3ClosestEncloserProof, error) {
-	labelIndices := dns.Split(name)
 	nc := name
 
-	// RFC 5155 Section 7.2.1: Start from the full name and work up
-	for i := 0; i < len(labelIndices); i++ {
-		z := name[labelIndices[i]:]
+	// RFC 5155 Section 7.2.1: Start from the full name and work up. The
+	// walk carries the previous label's offset instead of materializing the
+	// index slice the old dns.Split call built per proof.
+	prev := -1
+	for offset := range dnsname.Suffixes(name) {
+		z := name[offset:]
 
 		// Check if this ancestor has a matching NSEC3
 		types, err := findMatchingWithWork(z, evaluator)
@@ -378,12 +381,13 @@ func findClosestEncloserWithWork(
 			if err != ErrNSECMissingCoverage {
 				return nsec3ClosestEncloserProof{}, err
 			}
+			prev = offset
 			continue
 		}
 
 		// Found a matching NSEC3 for this ancestor
-		if i != 0 {
-			nc = name[labelIndices[i-1]:]
+		if prev >= 0 {
+			nc = name[prev:]
 		}
 
 		// Return the closest encloser and next closer name

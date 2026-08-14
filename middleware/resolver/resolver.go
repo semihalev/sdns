@@ -19,6 +19,7 @@ import (
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/contextutil"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
@@ -758,7 +759,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 				i, _ := dns.PrevLabel(qname, level)
 
-				if dns.CompareDomainName(name, qname[i:]) < level {
+				if dnsname.CompareSuffix(name, qname[i:]) < level {
 					// we cannot trust that glue, out of bailiwick.
 					continue
 				}
@@ -2037,7 +2038,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 		return delegationMatch{
 			servers:  ns.Servers,
 			parentDS: ns.DSSet,
-			level:    dns.CompareDomainName(origin, q.Name),
+			level:    dnsname.CompareSuffix(origin, q.Name),
 			deadline: ns.ExpiresAt,
 			key:      key,
 		}
@@ -2144,11 +2145,20 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []
 
 		if signer == "" {
 			// generally auth server directly return answer without DS records
-			n := dns.CompareDomainName(dsname, qname)
-			nsplit := dns.SplitDomainName(qname)
+			n := dnsname.CompareSuffix(dsname, qname)
+			qnameLabels := dns.CountLabel(qname)
 
-			for len(nsplit)-n > 0 {
-				candidate := dns.Fqdn(strings.Join(nsplit[len(nsplit)-n-1:], "."))
+			for qnameLabels-n > 0 {
+				// The candidate is qname's last n+1 labels — a suffix of a
+				// name that is already rooted, so it is sliced rather than
+				// split, joined and rooted again. The rooting guard costs a
+				// byte check and keeps an unrooted caller, if one ever
+				// appears, on the old behavior.
+				prev, _ := dns.PrevLabel(qname, n+1)
+				candidate := qname[prev:]
+				if !dns.IsFqdn(candidate) {
+					candidate = dns.Fqdn(candidate)
+				}
 
 				dsResp, err := r.lookupDS(ctx, candidate, cd)
 				if err != nil {
@@ -2160,7 +2170,7 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []
 					break
 				}
 
-				n = dns.CompareDomainName(candidate, qname)
+				n = dnsname.CompareSuffix(candidate, qname)
 			}
 
 		} else if dsname != signer {
@@ -2219,10 +2229,15 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentDS []dn
 	// zone cuts (RFC 4034 §5 — DS only exists at delegation points).
 	probeName := zone
 	if probeName == "" {
-		// No zone info available; fall back to probing the parent of qname.
+		// No zone info available; fall back to probing the parent of qname:
+		// everything past the first label, sliced rather than split and
+		// rejoined.
 		probeName = qname
-		if labels := dns.SplitDomainName(qname); len(labels) > 1 {
-			probeName = dns.Fqdn(strings.Join(labels[1:], "."))
+		if off, end := dns.NextLabel(qname, 0); !end {
+			probeName = qname[off:]
+			if !dns.IsFqdn(probeName) {
+				probeName = dns.Fqdn(probeName)
+			}
 		}
 	}
 
@@ -2264,14 +2279,16 @@ func (r *Resolver) provenInsecureDelegation(ctx context.Context, zone, qname str
 		return false
 	}
 
-	labels := dns.SplitDomainName(qname)
+	qnameLabels := dns.CountLabel(qname)
 	zoneCount := dns.CountLabel(zone)
 	curDS := parentDS
 	curSigner := zone
 
-	// Candidates from just below `zone` (least specific) toward qname.
-	for n := zoneCount + 1; n <= len(labels); n++ {
-		candidate := dns.Fqdn(strings.Join(labels[len(labels)-n:], "."))
+	// Candidates from just below `zone` (least specific) toward qname:
+	// each is a suffix of qname, which is already canonical and rooted.
+	for n := zoneCount + 1; n <= qnameLabels; n++ {
+		prev, _ := dns.PrevLabel(qname, n)
+		candidate := qname[prev:]
 
 		dsset, insecure, err := r.authenticatedDelegationDS(ctx, curSigner, candidate, curDS)
 		if err != nil {
@@ -3304,13 +3321,13 @@ func minRRSetTTL(rrs []dns.RR) uint32 {
 // rejected, so a former child cannot reinsert its own delegation and an
 // off-path server cannot inject one (GHSA-mqfw-f48p-2vc8).
 func progressingReferral(referral, authZone, qname string) bool {
-	if !dns.IsSubDomain(authZone, referral) {
+	if !dnsname.Sub(authZone, referral) {
 		return false // out of bailiwick
 	}
 	if strings.EqualFold(dns.CanonicalName(referral), dns.CanonicalName(authZone)) {
 		return false // same zone — not strictly below the authority
 	}
-	return dns.IsSubDomain(referral, qname) // must be on the path to qname
+	return dnsname.Sub(referral, qname) // must be on the path to qname
 }
 
 // validReferral applies one coherent rule at both lookup winner selection and

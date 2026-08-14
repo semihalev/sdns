@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -147,7 +148,7 @@ func sortHosts(hosts hostSet, qname string) []string {
 
 	slices.Sort(list)
 	slices.SortFunc(list, func(a, b string) int {
-		return dns.CompareDomainName(qname, b) - dns.CompareDomainName(qname, a)
+		return dnsname.CompareSuffix(qname, b) - dnsname.CompareSuffix(qname, a)
 	})
 
 	return list

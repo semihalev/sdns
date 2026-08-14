@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
@@ -463,7 +464,7 @@ func (c *denialProofCache) extract(
 		return nil, false
 	}
 	if q.Qclass == 0 || q.Qclass == dns.ClassANY || q.Qclass == dns.ClassNONE ||
-		!dns.IsSubDomain(zone, qname) {
+		!dnsname.Sub(zone, qname) {
 		return nil, false
 	}
 
@@ -507,12 +508,12 @@ func (c *denialProofCache) extract(
 
 		case *dns.NSEC:
 			if record == nil || record.Hdr.Rrtype != dns.TypeNSEC ||
-				!dns.IsSubDomain(zone, owner) {
+				!dnsname.Sub(zone, owner) {
 				continue
 			}
 			next := dns.CanonicalName(record.NextDomain)
 			if _, valid := dns.IsDomainName(next); !valid ||
-				!dns.IsSubDomain(zone, next) {
+				!dnsname.Sub(zone, next) {
 				return nil, false
 			}
 			sawNSEC = true
@@ -538,7 +539,7 @@ func (c *denialProofCache) extract(
 
 		case *dns.NSEC3:
 			if record == nil || record.Hdr.Rrtype != dns.TypeNSEC3 ||
-				!dns.IsSubDomain(zone, owner) {
+				!dnsname.Sub(zone, owner) {
 				continue
 			}
 			params, ownerHash, nextHash, valid := denialProofNSEC3Identity(record, zone)
@@ -600,7 +601,7 @@ func (c *denialProofCache) extract(
 		}
 		owner := dns.CanonicalName(sig.Hdr.Name)
 		if _, valid := dns.IsDomainName(owner); !valid ||
-			!dns.IsSubDomain(zone, owner) {
+			!dnsname.Sub(zone, owner) {
 			continue
 		}
 
@@ -832,14 +833,19 @@ func denialProofNSEC3Identity(
 		return denialProofNSEC3Params{}, "", "", false
 	}
 	owner := dns.CanonicalName(record.Hdr.Name)
-	ownerLabels := dns.SplitDomainName(owner)
-	zoneLabels := dns.SplitDomainName(zone)
-	if len(ownerLabels) != len(zoneLabels)+1 ||
-		!dns.IsSubDomain(zone, owner) {
+	// One label below the zone, checked by count rather than by splitting
+	// both names into label slices — the counts and the first label's end
+	// come out of the same forward walk the split would have done.
+	if dns.CountLabel(owner) != dns.CountLabel(zone)+1 ||
+		!dnsname.Sub(zone, owner) {
+		return denialProofNSEC3Params{}, "", "", false
+	}
+	next, end := dns.NextLabel(owner, 0)
+	if end {
 		return denialProofNSEC3Params{}, "", "", false
 	}
 
-	ownerHash, ok := denialProofCanonicalNSEC3Hash(ownerLabels[0])
+	ownerHash, ok := denialProofCanonicalNSEC3Hash(owner[:next-1])
 	if !ok {
 		return denialProofNSEC3Params{}, "", "", false
 	}
