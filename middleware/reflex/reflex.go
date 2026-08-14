@@ -15,6 +15,7 @@ package reflex
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -253,4 +254,38 @@ func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 		rw.tracker.RecordResponse(rw.ip, rw.request.Len(), res.Len())
 	}
 	return rw.ResponseWriter.WriteMsg(res)
+}
+
+// WireReady passes the byte path through: this layer only observes sizes, so
+// its presence must not push a cache hit back onto the Msg path — which is
+// what wrapping without these two methods did.
+func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
+	next, ok := rw.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.WireCapability{}, false
+	}
+	return next.WireReady()
+}
+
+// WriteWire records the amplification observation and forwards the bytes.
+// len(body) is the response's true wire length at this layer — WriteMsg has
+// to settle for res.Len(), an estimate that builds a compression dictionary
+// to answer.
+//
+// The observation is recorded after the downstream write, and only if the
+// chain did not decline: on ErrWireFallback the cache retakes the Msg path
+// and WriteMsg records that serve, so counting here too would credit the
+// source with the same response twice and inflate its amplification score.
+// A terminal transport error still records — bytes left the process.
+func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+	next, ok := rw.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.ErrWireFallback
+	}
+	size := len(body)
+	err := next.WriteWire(body, info)
+	if !errors.Is(err, middleware.ErrWireFallback) {
+		rw.tracker.RecordResponse(rw.ip, rw.request.Len(), size)
+	}
+	return err
 }
