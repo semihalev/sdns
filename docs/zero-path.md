@@ -23,20 +23,47 @@ The envelope is the full job lifecycle: **immediately before job acquire →
 RX → dispatch/middleware → TX → observer unwind → Finish → immediately
 after slot release**. Wrapper-internal allocations are inside the envelope.
 
-The gate (`internal/zerogate`) measures it process-wide: the server runs as
-a separate subprocess (allocation counters are process-global) with a fully
-silent control plane; marks are taken after **two** forced GCs (the second
-empties `sync.Pool` victim caches); the verdict over ≥1M served operations
-is `MallocsAfter − MallocsBefore` compared with the active stage's budget —
-and equal to **zero**, not a rounded per-op figure, once a flavor's stage
-pins it. End-of-window accounting identity: replies == operations, zero
-client-observed drops/errors; TCP windows pre-open enough connections that
-the per-connection query budget covers the run without a redial.
+The gate (`internal/zerogate`) runs the server as a subprocess with a
+silent control plane and **profiles every allocation**
+(`runtime.MemProfileRate = 1`), so no allocation goes unrecorded. It
+returns two verdicts:
 
-Flavors gated separately: UDP IPv4/IPv6 × specific/wildcard bind, TCP
-persistent. Hit-class corpora from Z2a: NOERROR, NODATA, NXDOMAIN,
-CNAME (cache-contained), DNSSEC DO/no-DO, EDE/failure, ECS/CD,
-oversized/TC, additional-section, QTYPE=RRSIG.
+1. **Exact, by attribution.** Zero objects may be allocated on a goroutine
+   that is serving — any stack passing through
+   `github.com/semihalev/sdns/server`, whatever package the allocation
+   itself lives in. A failure names the file, line and call path. This is
+   what makes an exact zero meaningful: a process-wide counter cannot tell
+   a query's allocation from a timer's, so it can only be compared against
+   slack, and slack is how `0.05/op` once let fifty thousand allocations
+   per million queries read as zero.
+2. **Ops-relative, for what attribution cannot see.** Work handed to
+   another goroutine allocates under a stack with no engine frame. Two
+   windows are measured, the second carrying twice the traffic; constant
+   background cancels in the difference, and what survives is per-query.
+   `ScalingSlack` (64 objects) bounds that difference — at a million
+   queries, below 10⁻⁴ objects per query.
+
+Window boundaries are the server's own completion barrier
+(`Server.Quiesced`: every job slab back in its ring), not a sleep — the
+last reply reaching a client says the bytes left, not that the slab which
+carried them was released. Marks take **two** forced GCs (the second
+empties `sync.Pool` victim caches; the profile is also only current as of
+the last collection). A discarded warm-up window precedes the measured
+ones: the first packet through a path also builds an itab and grows a
+worker's stack, which are properties of starting, not of a query — and a
+per-query cost would still be present in the windows that follow.
+End-of-window accounting identity: replies == operations, zero
+client-observed drops/errors; TCP windows pre-open enough connections that
+the per-connection query budget covers every window without a redial.
+
+**Coverage today** (Stage Z1): `udp4-specific` and `tcp`, corpus of plain
+A hits. `udp4-wildcard` and both IPv6 flavors are declared and skipped
+until their stage. The hit-class corpora from Z2a/Z2b — NODATA, NXDOMAIN,
+CNAME chases, DO/no-DO, EDE/failure, NX-cut, aggressive denial — are gated
+in-process instead (`TestServeRawHitClasses`,
+`middleware/cache/composite_wire_test.go`), and ECS, prefetch-due and
+aggressive-denial candidates are Msg-path classes by construction (§6), so
+they are not in the subprocess corpus. DoT has no budget gate yet.
 
 CI: the `allocgate` job — non-race (the `-race` matrix cannot run
 `!race`-tagged allocation pins), Go version pinned in lockstep with

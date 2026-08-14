@@ -5,7 +5,18 @@
 // Protocol (line-oriented):
 //
 //	child → parent:  READY <udp-bound-addr>
-//	parent → child:  mark      → child runs two GCs, prints "MALLOCS <n>"
+//	parent → child:  quiesce   → waits until no job slab is outstanding,
+//	                             prints "QUIESCED ok" or "QUIESCED timeout"
+//	parent → child:  mark      → two GCs, then
+//	                             "MALLOCS <n> SERVED <k> OTHER <m>":
+//	                             k is the objects allocated on a serving
+//	                             goroutine since the previous mark (the
+//	                             gate's exact verdict), m the objects
+//	                             allocated anywhere else in the server,
+//	                             excluding the harness's own machinery
+//	parent → child:  offenders → "OFFENDER <objects> <func> <file:line>"
+//	                             per allocating site since the previous
+//	                             mark, terminated by "END"
 //	parent → child:  quit      → child exits 0
 //
 // Environment: ZEROGATE_BIND is the listener bind address (parent-chosen
@@ -20,8 +31,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -52,11 +66,136 @@ import (
 	"github.com/semihalev/sdns/middleware/views"
 )
 
+// Every allocation is profiled, not one in every 512KB. The gate's
+// question is not how much was allocated but whether the serving path
+// allocated at all, and that question is only answerable if no
+// allocation goes unrecorded. It has to be set before anything runs.
+func init() { runtime.MemProfileRate = 1 }
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "harness:", err)
 		os.Exit(1)
 	}
+}
+
+// servingPrefix marks the goroutines that carry a query. An allocation
+// with one of these frames on its stack was made while serving —
+// whatever package it happens to live in, and however deep in the chain
+// it is — which is exactly the thing the zero path claims not to do.
+const servingPrefix = "github.com/semihalev/sdns/server."
+
+// allocSite is one allocating stack, keyed by its program counters.
+type allocSite struct {
+	objects int64
+	serving bool
+	harness bool // the measurement's own machinery, not the server's
+	fn      string
+	pos     string
+	via     string // the first few non-runtime frames, innermost first
+}
+
+// profile returns the live allocation profile keyed by stack. Records
+// include fully freed objects: the claim is about allocating, not about
+// retaining.
+func profile() map[string]*allocSite {
+	n, _ := runtime.MemProfile(nil, true)
+	var records []runtime.MemProfileRecord
+	for {
+		records = make([]runtime.MemProfileRecord, n+64)
+		var ok bool
+		n, ok = runtime.MemProfile(records, true)
+		if ok {
+			records = records[:n]
+			break
+		}
+	}
+
+	sites := make(map[string]*allocSite, len(records))
+	var key strings.Builder
+	for i := range records {
+		r := &records[i]
+		stack := r.Stack()
+		key.Reset()
+		for _, pc := range stack {
+			fmt.Fprintf(&key, "%x,", pc)
+		}
+		site := &allocSite{objects: r.AllocObjects}
+		frames := runtime.CallersFrames(stack)
+		var trail []string
+		for {
+			f, more := frames.Next()
+			// The allocating frame is always runtime.mallocgc and its
+			// helpers; what identifies a site is the first frame that is
+			// ours, with a little of its caller for context.
+			if !strings.HasPrefix(f.Function, "runtime.") && len(trail) < 3 {
+				trail = append(trail, f.Function)
+				if site.fn == "" {
+					site.fn = f.Function
+					site.pos = fmt.Sprintf("%s:%d", filepath.Base(f.File), f.Line)
+				}
+			}
+			if strings.HasPrefix(f.Function, servingPrefix) {
+				site.serving = true
+			}
+			if strings.HasPrefix(f.Function, "main.") {
+				site.harness = true
+			}
+			if !more {
+				break
+			}
+		}
+		if site.fn == "" {
+			site.fn, site.pos = "runtime", "?"
+		}
+		site.via = strings.Join(trail, " ← ")
+		sites[key.String()] = site
+	}
+	return sites
+}
+
+// since totals what was allocated between two profiles, split three ways:
+// served (on a serving goroutine), other (anywhere else in the server),
+// and the harness's own measurement machinery, which is dropped.
+//
+// The measurement has to be excluded by name because it is not free:
+// profiling every allocation means each snapshot walks thousands of
+// records, and those allocations land in the window the snapshot opens.
+// Charging them to the server would drown the very thing being measured
+// — and a process-wide counter has no way to tell them apart, which is
+// the second reason attribution is doing the work here.
+func since(before, after map[string]*allocSite) (served, other int64, offenders []*allocSite) {
+	// ZEROGATE_ALL_SITES widens the report to every growing site, not
+	// just the ones on a serving stack. The verdict never changes; it is
+	// how the second, ops-relative verdict gets a name when it fires,
+	// since what it catches is by definition off the serving stacks.
+	all := os.Getenv("ZEROGATE_ALL_SITES") != ""
+	for key, now := range after {
+		grew := now.objects
+		if was, ok := before[key]; ok {
+			grew -= was.objects
+		}
+		if grew <= 0 {
+			continue
+		}
+		switch {
+		case now.serving:
+			served += grew
+		case now.harness:
+			continue
+		default:
+			other += grew
+		}
+		if now.serving || all {
+			offenders = append(offenders, &allocSite{
+				objects: grew, serving: now.serving, fn: now.fn, pos: now.pos, via: now.via,
+			})
+		}
+	}
+	sort.Slice(offenders, func(i, j int) bool {
+		return offenders[i].objects > offenders[j].objects
+	})
+	return served, other, offenders
 }
 
 func run() error {
@@ -103,24 +242,67 @@ func run() error {
 	// buffer that outlives every mark.
 	scanner := bufio.NewScanner(os.Stdin)
 	var (
-		ms    runtime.MemStats
-		reply = make([]byte, 0, 32)
-		mark  = []byte("mark")
-		quit  = []byte("quit")
+		ms        runtime.MemStats
+		reply     = make([]byte, 0, 64)
+		mark      = []byte("mark")
+		quiesce   = []byte("quiesce")
+		offenders = []byte("offenders")
+		quit      = []byte("quit")
+
+		prev      map[string]*allocSite
+		lastServe []*allocSite
 	)
 	for scanner.Scan() {
 		switch cmd := scanner.Bytes(); {
+		case bytes.Equal(cmd, quiesce):
+			// The barrier the measurement is taken at: every job slab
+			// back in its ring. A client's last reply says the bytes
+			// left, not that the slab which carried them was released,
+			// and the release is where the request's state is cleared.
+			verdict := "timeout"
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if srv.Quiesced() {
+					verdict = "ok"
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if _, err := fmt.Printf("QUIESCED %s\n", verdict); err != nil {
+				return err
+			}
 		case bytes.Equal(cmd, mark):
 			// Two GCs: the first moves sync.Pool contents to the victim
 			// cache, the second empties it — a mark must not credit pooled
-			// storage that the collector could reclaim mid-window.
+			// storage that the collector could reclaim mid-window. The
+			// profile is only current as of the last collection, which is
+			// the other reason they come first.
 			runtime.GC()
 			runtime.GC()
 			runtime.ReadMemStats(&ms)
+			now := profile()
+			var served, other int64
+			if prev != nil {
+				served, other, lastServe = since(prev, now)
+			}
+			prev = now
 			reply = append(reply[:0], "MALLOCS "...)
 			reply = strconv.AppendUint(reply, ms.Mallocs, 10)
+			reply = append(reply, " SERVED "...)
+			reply = strconv.AppendInt(reply, served, 10)
+			reply = append(reply, " OTHER "...)
+			reply = strconv.AppendInt(reply, other, 10)
 			reply = append(reply, '\n')
 			if _, err := os.Stdout.Write(reply); err != nil {
+				return err
+			}
+		case bytes.Equal(cmd, offenders):
+			for _, o := range lastServe {
+				if _, err := fmt.Printf("OFFENDER %d %s (%s)\n", o.objects, o.pos, o.via); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Println("END"); err != nil {
 				return err
 			}
 		case bytes.Equal(cmd, quit):

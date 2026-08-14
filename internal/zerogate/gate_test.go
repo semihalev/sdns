@@ -43,10 +43,6 @@ func TestZeroGate(t *testing.T) {
 	}
 }
 
-// settleWait covers the gap between a client seeing its last reply and
-// the server releasing the job that produced it.
-const settleWait = 200 * time.Millisecond
-
 func gateOps() int {
 	if s := os.Getenv("ZEROGATE_OPS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
@@ -95,7 +91,8 @@ func runGate(t *testing.T, flavor string) {
 	var conns []net.Conn
 	var counts []int
 	if flavor == FlavorTCP {
-		conns, counts = prepareTCP(t, target, ops)
+		// Every window runs on these connections: warmup, ops, twice ops.
+		conns, counts = prepareTCP(t, target, warmupOps(ops)+3*ops)
 		defer func() {
 			for _, c := range conns {
 				_ = c.Close()
@@ -103,38 +100,139 @@ func runGate(t *testing.T, flavor string) {
 		}()
 	}
 
-	m0 := child.mark(t)
+	// Two windows, the second carrying twice the traffic of the first.
+	// One window can only ever be compared against a tolerance, and a
+	// tolerance is an allowance for allocating; two windows separate the
+	// process's constant background from anything that scales with
+	// queries, because only the latter doubles.
+	child.quiesce(t)
+	child.markBoth(t) // opens the first window; its own counts are the baseline
+
+	// A discarded window first. The claim is about serving, and serving
+	// steadily: the first packet through a path also builds the itab the
+	// runtime looks a method up in, grows a worker's stack, and touches
+	// each slab for the first time. Those are properties of starting, not
+	// of a query, and they are one-time by construction — a per-query cost
+	// would still be there in the windows that follow, which is what makes
+	// discarding this one safe rather than convenient.
+	runFlood(t, child, flavor, target, conns, counts, warmupOps(ops))
+
+	small := runFlood(t, child, flavor, target, conns, counts, ops)
+	large := runFlood(t, child, flavor, target, conns, counts, 2*ops)
+
+	// Verdict one, exact: nothing allocated on a serving goroutine.
+	// Attribution is what makes an exact zero meaningful — a process-wide
+	// count cannot tell a query's allocation from a timer's, so it can
+	// only ever be compared against slack, while a stack either passes
+	// through the engines or it does not.
+	for _, w := range []struct {
+		name string
+		win  window
+	}{{"1x", small}, {"2x", large}} {
+		t.Logf("stage %s flavor %s %s: %d ops in %v — %d objects on serving goroutines, "+
+			"%d elsewhere in the server, %d mallocs process-wide (measurement included)",
+			Stage, flavor, w.name, w.win.ops, w.win.elapsed.Round(time.Millisecond),
+			w.win.served, w.win.other, w.win.mallocs)
+		if w.win.served != 0 {
+			for _, line := range w.win.offenders {
+				t.Log("  ", line)
+			}
+			t.Fatalf("stage %s flavor %s: %d objects allocated while serving %d queries; "+
+				"the served path must allocate none",
+				Stage, flavor, w.win.served, w.win.ops)
+		}
+	}
+
+	if os.Getenv("ZEROGATE_ALL_SITES") != "" {
+		for i, line := range large.offenders {
+			if i == 12 {
+				break
+			}
+			t.Log("  2x site:", line)
+		}
+	}
+
+	// Verdict two, ops-relative: doubling the traffic must not move what
+	// the rest of the server allocates. Serving hands work to goroutines
+	// whose stacks carry no engine frame — a prefetch refresh, a metric
+	// flush, a log line — and attribution alone would not see them. Their
+	// constant background is the same in both windows and cancels in the
+	// difference; what survives is per-query, wherever it lives.
+	growth := large.other - small.other
+	perOp := float64(growth) / float64(ops)
+	t.Logf("stage %s flavor %s: doubling the traffic moved the rest of the server by %+d (%.6f/op, bound %d)",
+		Stage, flavor, growth, perOp, ScalingSlack)
+	if growth > ScalingSlack {
+		t.Fatalf("stage %s flavor %s: %d extra queries cost %d extra objects off the serving "+
+			"stacks (%.6f/op); something the queries reach scales with traffic",
+			Stage, flavor, ops, growth, perOp)
+	}
+}
+
+// warmupOps sizes the discarded window: enough traffic for every slab in
+// every ring to have been served at least once, and cheap next to the
+// measured ones.
+func warmupOps(ops int) int {
+	if ops < 25_000 {
+		return ops
+	}
+	return 25_000
+}
+
+// window is one measured traffic window.
+type window struct {
+	ops       int
+	mallocs   uint64
+	served    int64
+	other     int64
+	elapsed   time.Duration
+	offenders []string
+}
+
+// runFlood measures one window: traffic, then the server's own completion
+// barrier, then the mark. The barrier replaces waiting a fixed time for
+// the last slabs to come home — a sleep either wastes the difference or,
+// on a slow machine, closes the window while jobs are still being
+// released, which charges their work to whatever window comes next.
+func runFlood(t *testing.T, child *harnessProc, flavor, target string,
+	conns []net.Conn, counts []int, ops int,
+) window {
+	t.Helper()
 	started := time.Now()
 	switch flavor {
 	case FlavorTCP:
-		floodTCPOn(t, conns, counts)
+		floodTCPOn(t, conns, scaleCounts(counts, ops))
 	default:
 		floodUDP(t, target, ops)
 	}
-	// The reply reaching the client precedes the job's release by a few
-	// instructions; without this the last of them land in the ambient
-	// window instead of the traffic one.
-	time.Sleep(settleWait)
-	m1 := child.mark(t)
-	loadWindow := time.Since(started)
-
-	// An idle window of the same length measures what the process
-	// allocates on its own — metric flushers, timers, the runtime — so
-	// the verdict below is about the traffic and nothing else.
-	a0 := child.mark(t)
-	time.Sleep(loadWindow)
-	a1 := child.mark(t)
-	ambient := a1 - a0
-
-	delta := m1 - m0
-	traffic := int64(delta) - int64(ambient)
-	t.Logf("stage %s flavor %s: %d ops in %v — window %d mallocs, idle window %d, traffic %+d (slack %d)",
-		Stage, flavor, ops, loadWindow.Round(time.Millisecond), delta, ambient, traffic, AmbientSlack)
-	if traffic > AmbientSlack {
-		t.Fatalf("stage %s flavor %s: %d ops added %d mallocs over an idle window of the same length "+
-			"(%.4f/op); the served path must add none",
-			Stage, flavor, ops, traffic, float64(traffic)/float64(ops))
+	child.quiesce(t)
+	elapsed := time.Since(started)
+	mallocs, served, other := child.markBoth(t)
+	w := window{ops: ops, mallocs: mallocs, served: served, other: other, elapsed: elapsed}
+	if served != 0 || os.Getenv("ZEROGATE_ALL_SITES") != "" {
+		// Collected here rather than at the verdict: the offender list
+		// describes the window that just closed, and the next mark
+		// replaces it.
+		w.offenders = child.offenders(t)
 	}
+	return w
+}
+
+// scaleCounts spreads ops over the prepared connections.
+func scaleCounts(counts []int, ops int) []int {
+	if len(counts) == 0 {
+		return counts
+	}
+	out := make([]int, len(counts))
+	per := ops / len(counts)
+	rem := ops % len(counts)
+	for i := range out {
+		out[i] = per
+		if i < rem {
+			out[i]++
+		}
+	}
+	return out
 }
 
 // pickBind reserves a loopback port for the flavor and releases it for the
@@ -231,26 +329,80 @@ func (h *harnessProc) clientTarget(flavor string) string {
 	}
 }
 
-func (h *harnessProc) mark(t *testing.T) uint64 {
+// send writes one command and returns the first reply line carrying
+// prefix.
+func (h *harnessProc) send(t *testing.T, cmd, prefix string) string {
 	t.Helper()
-	if _, err := h.stdin.WriteString("mark\n"); err != nil {
+	if _, err := h.stdin.WriteString(cmd + "\n"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.stdin.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	for h.stdout.Scan() {
-		line := h.stdout.Text()
-		if strings.HasPrefix(line, "MALLOCS ") {
-			v, err := strconv.ParseUint(strings.TrimPrefix(line, "MALLOCS "), 10, 64)
-			if err != nil {
-				t.Fatalf("bad mark line %q: %v", line, err)
-			}
-			return v
+		if line := h.stdout.Text(); strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
 		}
 	}
-	t.Fatalf("harness closed before mark reply: %v", h.stdout.Err())
-	return 0
+	t.Fatalf("harness closed before %s reply: %v", cmd, h.stdout.Err())
+	return ""
+}
+
+// quiesce blocks until the server holds no job slab. It is the window
+// boundary: the point where every reply has left and every slab that
+// carried one has been released.
+func (h *harnessProc) quiesce(t *testing.T) {
+	t.Helper()
+	if v := h.send(t, "quiesce", "QUIESCED "); v != "ok" {
+		t.Fatalf("server did not quiesce (%s): slabs are still outstanding, "+
+			"so a window boundary cannot be placed here", v)
+	}
+}
+
+// markBoth closes the current window and opens the next, returning the
+// process-wide malloc count and the objects allocated on serving
+// goroutines since the previous mark.
+func (h *harnessProc) markBoth(t *testing.T) (mallocs uint64, served, other int64) {
+	t.Helper()
+	fields := strings.Fields(h.send(t, "mark", "MALLOCS "))
+	if len(fields) != 5 || fields[1] != "SERVED" || fields[3] != "OTHER" {
+		t.Fatalf("bad mark reply %q", strings.Join(fields, " "))
+	}
+	var err error
+	if mallocs, err = strconv.ParseUint(fields[0], 10, 64); err != nil {
+		t.Fatalf("bad malloc count %q: %v", fields[0], err)
+	}
+	if served, err = strconv.ParseInt(fields[2], 10, 64); err != nil {
+		t.Fatalf("bad served count %q: %v", fields[2], err)
+	}
+	if other, err = strconv.ParseInt(fields[4], 10, 64); err != nil {
+		t.Fatalf("bad other count %q: %v", fields[4], err)
+	}
+	return mallocs, served, other
+}
+
+// offenders returns the allocating sites behind a nonzero served count,
+// so a failure names the code that has to change.
+func (h *harnessProc) offenders(t *testing.T) []string {
+	t.Helper()
+	if _, err := h.stdin.WriteString("offenders\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.stdin.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for h.stdout.Scan() {
+		line := h.stdout.Text()
+		if line == "END" {
+			return out
+		}
+		if strings.HasPrefix(line, "OFFENDER ") {
+			out = append(out, strings.TrimPrefix(line, "OFFENDER "))
+		}
+	}
+	t.Fatalf("harness closed before offender list: %v", h.stdout.Err())
+	return nil
 }
 
 func (h *harnessProc) stop(t *testing.T) {

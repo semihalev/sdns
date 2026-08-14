@@ -59,17 +59,25 @@ var gated = map[string]map[string]bool{
 // Gated reports whether flavor is gated at the active stage.
 func Gated(flavor string) bool { return gated[Stage][flavor] }
 
-// AmbientSlack is how far a traffic window may exceed an idle window of
-// the same length before the gate calls it a regression.
+// The gate returns two verdicts, and neither of them is a budget for
+// allocating while serving.
 //
-// The verdict is deliberately not a per-operation budget. A per-op
-// ceiling scales with the run: 0.05/op reads like zero and permits fifty
-// thousand allocations over a million queries, which is how a served hit
-// that allocated a Chain from a pool passed for "0.00/op". What is
-// measured instead is the difference between a window carrying traffic
-// and an idle window of the same duration — the process's own background
-// work (metric flushers, timers, the runtime) cancels out, and what
-// remains is what the queries cost. That number must be zero, up to the
-// jitter between two such windows, which is what this constant is: an
-// absolute count, independent of how many queries ran.
-const AmbientSlack = 256
+// The first is exact and carries the claim: with every allocation
+// profiled, no object may be allocated on a goroutine that is serving a
+// query. Attribution by stack is what makes an exact zero meaningful —
+// a process-wide counter cannot tell a query's allocation from a
+// timer's, so it can only ever be compared against slack, and slack is
+// how "0.05/op" once let fifty thousand allocations per million queries
+// read as zero.
+//
+// The second covers what attribution cannot see: work a serving
+// goroutine hands to another goroutine, which allocates under a stack
+// with no engine frame on it. Two windows are measured, the second
+// carrying twice the traffic of the first. Constant background — metric
+// flushers, timers, the runtime — is the same in both and cancels in the
+// difference, so what survives is per-query. ScalingSlack bounds that
+// difference; it is not an allowance per query but the jitter between
+// two windows, and it divides by the operation count, so at a million
+// queries it holds the per-query cost below one ten-thousandth of an
+// object.
+const ScalingSlack = 64
