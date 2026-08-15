@@ -3,6 +3,8 @@
 package server
 
 import (
+	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -36,7 +38,15 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 	})
 
 	e := newTCPEngine(echo, "tcp", 1)
-	stream := new(tcpStream)
+
+	// A stream as a connection gets one: through reset, which is where
+	// connection setup happens and where anything the connection owns for
+	// the life of the session has to be built.
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	stream := e.streams.Get().(*tcpStream)
+	stream.reset(server)
 
 	// Empty the ring, so every acquisition below takes the waiting path.
 	held := make([]*tcpJob, 0, len(e.free))
@@ -48,6 +58,26 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 			e.free <- j
 		}
 	}()
+
+	// The cold one first, and measured raw. AllocsPerRun runs the body
+	// once before it starts counting, so anything a connection builds on
+	// its first contended wait is created inside that unmeasured call and
+	// never appears — which is exactly how a timer allocated on this path
+	// stayed hidden. The first wait a connection ever makes is a served
+	// query like any other.
+	runtime.GC()
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if j := e.acquire(stream, time.Now()); j != nil {
+		t.Fatal("acquired a slab from an empty ring")
+	}
+	runtime.ReadMemStats(&after)
+	if cold := after.Mallocs - before.Mallocs; cold != 0 {
+		t.Fatalf("a connection's first contended acquisition allocated %d objects; "+
+			"the wait state belongs to connection setup, not to the query that "+
+			"first has to wait", cold)
+	}
 
 	allocs := testing.AllocsPerRun(200, func() {
 		// An already-passed deadline: the wait resolves immediately and

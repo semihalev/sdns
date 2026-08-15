@@ -86,6 +86,15 @@ func (s *tcpStream) reset(conn net.Conn) {
 	s.held = 0
 	s.werr = nil
 	s.deadline, s.armed = time.Time{}, time.Time{}
+	if s.wait == nil && conn != nil {
+		// Built here, at connection setup, and never inside a query. A
+		// connection's first contended acquire is a served query like any
+		// other, and the envelope opens before its slab is taken — so a
+		// timer created lazily on that path is an allocation inside it,
+		// however few connections ever reach it. It is stopped rather
+		// than armed; every wait Resets it.
+		s.wait = time.NewTimer(time.Hour)
+	}
 	if s.wait != nil {
 		s.wait.Stop()
 	}
@@ -97,6 +106,8 @@ func (s *tcpStream) reset(conn net.Conn) {
 // from the previous wait.
 func (s *tcpStream) waitFor(d time.Duration) <-chan time.Time {
 	if s.wait == nil {
+		// Only a stream that never saw reset(conn) — a unit test driving
+		// the layer directly. Connections always arrive with one.
 		s.wait = time.NewTimer(d)
 		return s.wait.C
 	}

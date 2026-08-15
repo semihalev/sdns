@@ -443,9 +443,6 @@ func (e *udpEngine) quiesced() bool { return e.inFlight.Load() == 0 }
 
 // release returns a job to the ring from any owned state.
 func (j *udpJob) release(from uint8) {
-	if from == udpJobQueued || from == udpJobServing {
-		j.engine.inFlight.Add(-1)
-	}
 	j.transition(from, udpJobFree)
 	j.written = false
 	j.rxLen = 0
@@ -458,6 +455,17 @@ func (j *udpJob) release(from uint8) {
 	// new client's address.
 	j.txLen = 0
 	j.engine.free <- j
+
+	// Counted down last, after the slab is cleared and back in the ring.
+	// Quiescence is what a measurement takes as the end of the request,
+	// and clearing a slab is inside the request, not after it: decrement
+	// any earlier and the window can close while this job is still being
+	// wiped. The count may briefly read high — the slab can be taken and
+	// queued again before this line runs — which is the safe direction
+	// for a barrier: it delays quiescence, it never claims it early.
+	if from == udpJobQueued || from == udpJobServing {
+		j.engine.inFlight.Add(-1)
+	}
 }
 
 // worker serves ready jobs and sends their replies in bursts. A reply is
