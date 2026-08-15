@@ -198,13 +198,19 @@ func (s *tcpStream) body(dst []byte) error {
 		// The frame announced more than the read delivered, so this is
 		// where the connection blocks for the rest of it. That wait is the
 		// query's, not the session's: a client that announces a frame it
-		// never sends is holding a slab, not sitting idle — and whatever
-		// this burst has already answered leaves before the wait, for the
-		// same reason it does at the top of the loop.
+		// never sends is holding a slab, not sitting idle, and the bound
+		// says how long that may last.
+		//
+		// The staged replies deliberately stay staged. Flushing here was
+		// tried and cost two fifths of this path's throughput: a body that
+		// spans two reads is ordinary for a client that streams, and each
+		// split turned the burst's single write into another syscall. It
+		// also protects nobody. The drain buffer holds this connection's
+		// own replies, so a client that stalls mid-frame delays only
+		// itself — unlike a stall between frames, where a correct client
+		// is waiting for those very replies before it sends more, and the
+		// two of us would wait for each other.
 		if err := s.arm(); err != nil {
-			return err
-		}
-		if err := s.flush(); err != nil {
 			return err
 		}
 	}
