@@ -245,18 +245,23 @@ type udpEngine struct {
 // defaultIngressWorkers sizes the fixed pool when the config is silent.
 //
 // Not GOMAXPROCS. A worker is not a CPU here: it runs the whole chain
-// inline, and for anything that is not a cache hit that means holding the
-// worker for the length of an upstream resolution — hundreds of
-// milliseconds of waiting, not of computing. Sized by cores, the pool
-// therefore caps a resolver at cores/latency: measured at four workers
-// and a 50ms handler, exactly four queries were ever in flight and the
-// server answered 78 a second. The old server gave every packet its own
-// goroutine and had no such ceiling.
+// inline, so anything that is not a cache hit holds one for the length of
+// an upstream resolution — hundreds of milliseconds of waiting, not of
+// computing. Sized by cores, the pool caps a resolver at cores over
+// latency, which a unit probe shows exactly: four workers and a 50ms
+// handler put precisely four queries in flight and answered 78 a second.
+// The server this replaced gave every packet its own goroutine and had no
+// such ceiling.
 //
-// So the pool is sized for concurrency: enough waiting queries in flight
-// to keep upstream busy, which is hundreds. Idle workers cost a stack
-// each and nothing else, and their stacks stay grown — which is the
-// reason to have a pool rather than a goroutine per packet.
+// So it is sized for concurrency instead. Idle workers cost a stack each
+// and keep those stacks grown, which is the reason to have a pool at all
+// rather than a goroutine per packet.
+//
+// A smaller pool was tried on the theory that fuller send bursts would
+// serve hits better. The box it was measured on gave the same build
+// anywhere between 127k and 197k hits a second depending on what else was
+// running, so the theory is neither confirmed nor refuted — and an
+// unmeasurable gain is not a reason to reintroduce a measured ceiling.
 func defaultIngressWorkers() int {
 	n := runtime.GOMAXPROCS(0) * 16
 	if n < 256 {
