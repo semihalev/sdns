@@ -19,10 +19,15 @@ import (
 // msgTrunc is the kernel's datagram-truncation flag.
 const msgTrunc = unix.MSG_TRUNC
 
-// pktinfoSpace bounds one pktinfo control message: the cmsg header (16
-// bytes on 64-bit, 12 on 32-bit) plus the v6 pktinfo payload (20 bytes),
-// aligned. 64 covers every Linux ABI with room to spare.
-const pktinfoSpace = 64
+// pktinfoSpace bounds the control data a datagram can carry, and it has
+// to hold *both* pktinfo messages: a dual-stack socket armed for each
+// family delivers an IPv4 one (16 + 12, aligned to 32) and an IPv6 one
+// (16 + 20, aligned to 40) for the same v4-mapped datagram. Sized for one
+// of them, the kernel truncates the control data, sets MSG_CTRUNC — and
+// the wildcard path drops every datagram it cannot place. 128 covers both
+// on every Linux ABI with room to spare, and costs a job slab nothing
+// worth counting.
+const pktinfoSpace = 128
 
 // pktinfoControl returns the ListenConfig control hook enabling receive
 // pktinfo on a wildcard socket, composed with the reuse-port hook.
@@ -66,6 +71,13 @@ func pktinfoControl(network string) func(network, address string, c syscall.RawC
 // query's destination address. Unknown or truncated control data refuses —
 // the caller drops rather than misattribute.
 func preparePktinfoReply(oob []byte, j *udpJob) bool {
+	// Both may be present, and then the IPv4 one is used: a v4-mapped
+	// datagram arriving on a dual-stack socket is answered from an IPv4
+	// source, which is the shape that was already proven on the wire.
+	// The walk therefore completes rather than returning at the first
+	// match, remembering an IPv6 candidate only until an IPv4 one turns
+	// up.
+	var v6 *unix.Inet6Pktinfo
 	for len(oob) >= unix.SizeofCmsghdr {
 		h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0])) //nolint:gosec // bounded cmsg walk
 		l := int(h.Len)                               //nolint:gosec // G115 — validated against the buffer bound on the next line
@@ -83,20 +95,22 @@ func preparePktinfoReply(oob []byte, j *udpJob) bool {
 			return true
 		case h.Level == unix.IPPROTO_IPV6 && h.Type == unix.IPV6_PKTINFO &&
 			len(data) >= unix.SizeofInet6Pktinfo:
-			recv := (*unix.Inet6Pktinfo)(unsafe.Pointer(&data[0])) //nolint:gosec // size-checked above
-			out := buildCmsg(j, unix.IPPROTO_IPV6, unix.IPV6_PKTINFO, unix.SizeofInet6Pktinfo)
-			info := (*unix.Inet6Pktinfo)(unsafe.Pointer(&out[0])) //nolint:gosec // scratch-owned
-			// Link-local scopes need the interface pinned; global scopes
-			// tolerate it, and echoing the receive interface matches the
-			// reply route the client used.
-			*info = unix.Inet6Pktinfo{Addr: recv.Addr, Ifindex: recv.Ifindex}
-			return true
+			v6 = (*unix.Inet6Pktinfo)(unsafe.Pointer(&data[0])) //nolint:gosec // size-checked above
 		}
 		adv := cmsgAlign(l)
 		if adv <= 0 || adv > len(oob) {
 			return false
 		}
 		oob = oob[adv:]
+	}
+	if v6 != nil {
+		out := buildCmsg(j, unix.IPPROTO_IPV6, unix.IPV6_PKTINFO, unix.SizeofInet6Pktinfo)
+		info := (*unix.Inet6Pktinfo)(unsafe.Pointer(&out[0])) //nolint:gosec // scratch-owned
+		// Link-local scopes need the interface pinned; global scopes
+		// tolerate it, and echoing the receive interface matches the
+		// reply route the client used.
+		*info = unix.Inet6Pktinfo{Addr: v6.Addr, Ifindex: v6.Ifindex}
+		return true
 	}
 	// No recognizable pktinfo: on a wildcard bind the destination is
 	// unknowable.
