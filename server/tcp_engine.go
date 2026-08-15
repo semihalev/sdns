@@ -38,12 +38,15 @@ import (
 
 const (
 	tcpJobBufSize = dns.MaxMsgSize
-	// tcpSmallFrame is the frame size the small slab class covers. A
-	// query or reply larger than this is rare enough to be worth a slab
-	// twenty times its size; everything else is the ordinary traffic a
-	// resolver serves, and giving it a 64KB pair each is what made the
-	// ring small enough to run out.
-	tcpSmallFrame    = 4 << 10
+	// The small class is sized by what each side actually carries, which
+	// is not the same number. A query is small — a few hundred bytes, and
+	// 2KB is already generous — while its reply can be several times that
+	// once it is signed. Sizing both at the protocol maximum is what made
+	// the ring small enough to run out; sizing them equally would either
+	// waste the receive side or push ordinary signed replies off the byte
+	// path and into a packing buffer.
+	tcpSmallFrame    = 2 << 10
+	tcpSmallReply    = 16 << 10
 	tcpFirstReadWait = 2 * time.Second
 	tcpIdleWait      = 8 * time.Second
 	// tcpQueryWait is the absolute budget a query gets from the moment its
@@ -200,7 +203,7 @@ func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
 		e.freeSmall <- &tcpJob{
 			engine: e,
 			rx:     make([]byte, tcpSmallFrame),
-			tx:     make([]byte, dnsclient.FramePrefixLen+tcpSmallFrame),
+			tx:     make([]byte, dnsclient.FramePrefixLen+tcpSmallReply),
 		}
 	}
 	for i := 0; i < defaultTCPLargeJobs; i++ {
