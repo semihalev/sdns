@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"net"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -315,6 +317,18 @@ func TestServeRawHitClasses(t *testing.T) {
 				}
 			})
 			if allocs != 0 {
+				// Say where, not just how many. The outcome counters
+				// separate "the byte path declined" from "the byte path
+				// served and allocated"; the sites say which line did it,
+				// which is the difference between a report and a lead.
+				sites := allocSites(20, func() {
+					if !s.ServeRaw(job, raw, time.Now()) {
+						t.Fatal("hit serve not handled")
+					}
+				})
+				for _, line := range sites {
+					t.Log("   ", line)
+				}
 				t.Fatalf("class %s: warm wire hit allocated %.2f objects per serve; "+
 					"byte-path outcomes over the measurement: %s",
 					tc.name, allocs, wireOutcomeDelta(before))
@@ -430,4 +444,107 @@ func wireOutcomeDelta(before map[string]float64) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, " ")
+}
+
+// allocSites re-runs fn with every allocation profiled and returns the
+// sites that allocated, largest first.
+//
+// It exists because a class gate that fails says only how many objects
+// were allocated, and the interesting question is always which line. The
+// profiler is left off until it is needed: enabling it for the whole
+// binary would slow every test to buy something only a failure uses.
+func allocSites(runs int, fn func()) []string {
+	prevRate := runtime.MemProfileRate
+	runtime.MemProfileRate = 1
+	defer func() { runtime.MemProfileRate = prevRate }()
+
+	runtime.GC()
+	before := allocProfile()
+	for range runs {
+		fn()
+	}
+	runtime.GC()
+
+	type site struct {
+		objects int64
+		where   string
+	}
+	var grown []site
+	for key, now := range allocProfile() {
+		if now.measuring {
+			// The snapshot walks thousands of records and allocates while
+			// doing it. Left in, it buries the site being looked for
+			// under its own — which is exactly what it did the first time
+			// this ran.
+			continue
+		}
+		if delta := now.objects - before[key].objects; delta > 0 {
+			grown = append(grown, site{delta, now.where})
+		}
+	}
+	sort.Slice(grown, func(i, j int) bool { return grown[i].objects > grown[j].objects })
+
+	out := make([]string, 0, len(grown))
+	for i, s := range grown {
+		if i == 8 {
+			break
+		}
+		out = append(out, fmt.Sprintf("%d× %s", s.objects, s.where))
+	}
+	return out
+}
+
+type profiledSite struct {
+	objects   int64
+	where     string
+	measuring bool // allocated by this diagnostic rather than by the server
+}
+
+// allocProfile snapshots the live allocation profile keyed by stack,
+// naming each site by its first few frames outside the runtime.
+func allocProfile() map[string]profiledSite {
+	n, _ := runtime.MemProfile(nil, true)
+	var records []runtime.MemProfileRecord
+	for {
+		records = make([]runtime.MemProfileRecord, n+64)
+		var ok bool
+		if n, ok = runtime.MemProfile(records, true); ok {
+			records = records[:n]
+			break
+		}
+	}
+
+	sites := make(map[string]profiledSite, len(records))
+	for i := range records {
+		stack := records[i].Stack()
+		var key strings.Builder
+		for _, pc := range stack {
+			fmt.Fprintf(&key, "%x,", pc)
+		}
+		var trail []string
+		var measuring bool
+		frames := runtime.CallersFrames(stack)
+		for {
+			f, more := frames.Next()
+			switch {
+			case strings.HasSuffix(f.Function, ".allocProfile"):
+				// Only the snapshot itself. Filtering on the driver too
+				// would remove everything, since the work being measured
+				// is called from it.
+				measuring = true
+			case !strings.HasPrefix(f.Function, "runtime.") && len(trail) < 3:
+				trail = append(trail, fmt.Sprintf("%s (%s:%d)",
+					f.Function, filepath.Base(f.File), f.Line))
+			}
+			if !more {
+				break
+			}
+		}
+		sites[key.String()] = profiledSite{
+			objects:   records[i].AllocObjects,
+			where:     strings.Join(trail, " ← "),
+			measuring: measuring,
+		}
+	}
+	return sites
 }
