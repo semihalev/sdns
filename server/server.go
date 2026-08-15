@@ -304,8 +304,20 @@ func (s *Server) GetTLSConfig() *tls.Config {
 	return cm.GetTLSConfig()
 }
 
-// Stopped reports whether every Serve goroutine has exited.
-// Used by sdns.go for graceful-shutdown polling.
+// Stopped reports whether every Serve goroutine has exited, which is the
+// question a caller polling for shutdown actually has: each listener
+// closes its sockets inside Shutdown, before the Serve it unblocks
+// returns, so once this is true the addresses are free and the process
+// may exit or rebind them. Both of those are pinned by tests, because the
+// ordering is what makes the answer worth anything.
+//
+// It does not mean nothing is running. A handler that outlasts its
+// listener's drain deadline is force-closed and left to finish on its own
+// — the alternative is a shutdown that a single stuck request can hang
+// forever — so work can outlive this by as long as that handler takes.
+// Process exit is the backstop for that, and an in-process restart is
+// safe from the socket's point of view but not a guarantee that the old
+// server's last requests have unwound.
 func (s *Server) Stopped() bool {
 	return s.running.Load() == 0
 }
