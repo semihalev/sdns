@@ -393,7 +393,12 @@ func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 // falls through to materialization and the ordinary body with every gate
 // and lookup it has today.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if ch.Request.Undecoded() && c.serveWire(ctx, ch) {
+	// spent carries the rate-limit permit this query already paid on the
+	// byte path, if any: the wire path and the Msg body below are the
+	// same call, so a plain local is enough to keep one question from
+	// costing two tokens.
+	var spent *CacheEntry
+	if ch.Request.Undecoded() && c.serveWire(ctx, ch, &spent) {
 		return
 	}
 
@@ -478,7 +483,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if clientScope.IsValid() {
 		if entry, scopedKey, scope := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 			ecsLookupHitScoped.Inc()
-			if c.handleCacheHit(ctx, ch, entry, scopedKey, scope) {
+			if c.handleCacheHit(ctx, ch, entry, scopedKey, scope, spent) {
 				c.metrics.Hit()
 				return
 			}
@@ -488,7 +493,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if clientScope.IsValid() {
 			ecsLookupHitShared.Inc()
 		}
-		if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}) {
+		if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}, spent) {
 			c.metrics.Hit()
 			return
 		}
@@ -602,14 +607,14 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// shared entry (a scoped check alone would miss it).
 			if clientScope.IsValid() {
 				if entry, scopedKey, scope := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
-					if c.handleCacheHit(ctx, ch, entry, scopedKey, scope) {
+					if c.handleCacheHit(ctx, ch, entry, scopedKey, scope, spent) {
 						c.metrics.Hit()
 						return
 					}
 				}
 			}
 			if entry := c.checkCache(cacheKey); entry != nil {
-				if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}) {
+				if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}, spent) {
 					c.metrics.Hit()
 					return
 				}
@@ -1026,7 +1031,7 @@ func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit 
 // answered through the writer lease without a decoded request. A false
 // return is the composite-miss transition point — the caller materializes
 // and runs the ordinary body.
-func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain) bool {
+func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **CacheEntry) bool {
 	req := ch.Request
 	if !req.RD() || req.HasECS() {
 		return false
@@ -1048,7 +1053,7 @@ func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain) bool {
 	// chokepoint. An exact hit that declines materializes — the Msg body
 	// re-runs its whole ladder in order, prefetch claims included.
 	if entry := c.checkCache(key); entry != nil && entryMatchesWire(entry, req) {
-		return c.serveHitFromWire(ctx, ch, entry)
+		return c.serveHitFromWire(ctx, ch, entry, spent)
 	}
 	return c.serveCompositeFromWire(ctx, ch)
 }
@@ -1087,14 +1092,28 @@ func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
 // serveHitFromWire serves one verified exact hit as bytes built in the
 // writer's lease. Anything the byte path cannot express declines to the
 // ordinary body rather than half-serving.
-func (c *Cache) serveHitFromWire(ctx context.Context, ch *middleware.Chain, entry *CacheEntry) bool {
+func (c *Cache) serveHitFromWire(
+	ctx context.Context, ch *middleware.Chain, entry *CacheEntry, spent **CacheEntry,
+) bool {
 	w := ch.Writer
 	if w.Internal() {
 		return false
 	}
-	if limiter := entry.GetRateLimiter(); limiter != nil && !limiter.Allow() {
-		ch.Cancel()
-		return true
+	if limiter := entry.GetRateLimiter(); limiter != nil {
+		if !limiter.Allow() {
+			ch.Cancel()
+			return true
+		}
+		// Spent, and remembered. Everything below this line can still
+		// decline to the Msg body — a prefetch-due entry, a writer
+		// without the lease, a body the capability cannot express — and
+		// that body checks the same limiter again. One question would
+		// then cost two tokens, and at a small limit the second check
+		// cancels a hit the client was entitled to. The permit rides a
+		// local through the one call that owns both paths, keyed by the
+		// entry it was spent on: an entry replaced underneath us is a
+		// different entry, and pays for itself.
+		*spent = entry
 	}
 	// A prefetch-due hit needs a decoded request copy for the refresh
 	// queue; the ordinary body claims it.
@@ -1176,6 +1195,7 @@ func (c *Cache) handleCacheHit(
 	entry *CacheEntry,
 	key uint64,
 	scope netip.Prefix,
+	spent *CacheEntry,
 ) bool {
 	w := ch.Writer
 	req := ch.Request.Msg()
@@ -1206,8 +1226,12 @@ func (c *Cache) handleCacheHit(
 	// ctx.Value walk, kept on the hot path for throughput;
 	// middleware.IsInternal(ctx) remains available for code paths
 	// without a writer in scope.
+	// spent is the entry the byte path already paid a token for on this
+	// same query, before declining to here. Keyed by entry rather than
+	// by "some permit was taken": an entry replaced underneath us is a
+	// different entry with its own limiter, and pays for itself.
 	limiter := entry.GetRateLimiter()
-	if !w.Internal() && limiter != nil && !limiter.Allow() {
+	if !w.Internal() && limiter != nil && entry != spent && !limiter.Allow() {
 		ch.Cancel()
 		return true
 	}
