@@ -31,6 +31,12 @@ type Server struct {
 	listenersMu sync.Mutex
 	listeners   []Listener
 	active      []Listener
+	// shutdownDone closes when the shutdown supervisor has finished with
+	// every listener. Serve goroutines exiting is not the same event: a
+	// QUIC listener's accept loop returns the moment its server stops
+	// accepting, while the socket it was handed is closed a few
+	// statements later, by the supervisor.
+	shutdownDone chan struct{}
 
 	running atomic.Int32
 }
@@ -184,8 +190,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
+	done := make(chan struct{})
 	s.listenersMu.Lock()
 	s.active = active
+	s.shutdownDone = done
 	s.listenersMu.Unlock()
 
 	for _, l := range active {
@@ -201,11 +209,12 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Supervisor: on ctx cancellation, shut every active listener down.
-	go s.superviseShutdown(ctx, active) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
+	go s.superviseShutdown(ctx, active, done) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
 	return nil
 }
 
-func (s *Server) superviseShutdown(ctx context.Context, active []Listener) {
+func (s *Server) superviseShutdown(ctx context.Context, active []Listener, done chan struct{}) {
+	defer close(done)
 	<-ctx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout())
@@ -304,12 +313,20 @@ func (s *Server) GetTLSConfig() *tls.Config {
 	return cm.GetTLSConfig()
 }
 
-// Stopped reports whether every Serve goroutine has exited, which is the
-// question a caller polling for shutdown actually has: each listener
-// closes its sockets inside Shutdown, before the Serve it unblocks
-// returns, so once this is true the addresses are free and the process
-// may exit or rebind them. Both of those are pinned by tests, because the
-// ordering is what makes the answer worth anything.
+// Stopped reports whether the shutdown is complete: every Serve goroutine
+// has exited *and* the supervisor has finished with every listener. That
+// is the question a caller polling for shutdown actually has, because the
+// only use for the answer is doing something else with what the server
+// held — exiting, or binding the same addresses again.
+//
+// Both halves are needed. The plain UDP and TCP listeners close their
+// sockets inside Shutdown before the Serve they unblock returns, so for
+// them the goroutine count alone would do. QUIC does not work that way:
+// http3 and DoQ hand their accept loop a PacketConn they do not own, so
+// Serve returns as soon as the server stops accepting while the socket
+// stays open until the supervisor closes it a few statements later. A
+// caller that rebound on the goroutine count alone met "address already
+// in use", rarely for DoH3 and often for DoQ.
 //
 // It does not mean nothing is running. A handler that outlasts its
 // listener's drain deadline is force-closed and left to finish on its own
@@ -319,7 +336,23 @@ func (s *Server) GetTLSConfig() *tls.Config {
 // safe from the socket's point of view but not a guarantee that the old
 // server's last requests have unwound.
 func (s *Server) Stopped() bool {
-	return s.running.Load() == 0
+	if s.running.Load() != 0 {
+		return false
+	}
+	s.listenersMu.Lock()
+	done := s.shutdownDone
+	s.listenersMu.Unlock()
+	if done == nil {
+		// Run never got as far as arming a supervisor: nothing was ever
+		// bound, so nothing is held.
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 // Stop releases long-lived resources (currently just the cert manager).
