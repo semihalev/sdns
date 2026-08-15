@@ -185,3 +185,11 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 
 // (*responseWriter).Internal internal func.
 func (w *responseWriter) Internal() bool { return w.internal }
+
+// release drops this writer's references to the request's response.
+// Called from Chain.Finish, once the reply has left and every observer
+// has run: what is held after that is held for nobody.
+func (w *responseWriter) release() {
+	w.msg = nil
+	w.wire = nil
+}

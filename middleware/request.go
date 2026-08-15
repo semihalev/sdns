@@ -507,3 +507,11 @@ func (r *Request) parseWireOPT(off int) bool {
 type WireTransportLeaser interface {
 	LeaseWire(capacity int) []byte
 }
+
+// release drops the decoded message this request materialized, if any.
+// The parsed wire facts survive — they are offsets into storage the
+// transport owns — so a wire-born request stays fully readable through
+// its accessors; what goes is the heap graph a decode built.
+func (r *Request) release() {
+	r.msg = nil
+}

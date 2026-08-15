@@ -818,6 +818,20 @@ func (ch *Chain) Bind(handlers []Handler, workPolicy RecursionWorkPolicy) {
 // one is finished by its transport.
 func (ch *Chain) Finish() {
 	ch.finishDetach()
+
+	// And drop what this request left behind. Resetting at the *start* of
+	// the next request is enough for correctness — nothing reads these
+	// after Finish — but it means a slab keeps one request's decoded
+	// message and one response graph reachable until another client
+	// happens to arrive on that slab. On a quiet server that is
+	// unbounded in time, and every slab in the ring holds a set.
+	ch.Meta.Reset()
+	if ch.Request != nil {
+		ch.Request.release()
+	}
+	if base, ok := ch.Writer.(*responseWriter); ok {
+		base.release()
+	}
 }
 
 // Next invokes the next handler in the chain. Each handler is responsible
