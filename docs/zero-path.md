@@ -37,15 +37,21 @@ returns two verdicts:
    be compared against slack, and slack is how `0.05/op` once let fifty
    thousand allocations per million queries read as zero.
 
+   The verdict is **fail-closed**. A profile record holds 32 program
+   counters and keeps the innermost ones, so a deep enough stack loses
+   the frames that say which goroutine it was on. Those sites are counted
+   as unclassifiable and fail the verdict: an allocation that cannot be
+   shown to be off the serving path counts as on it.
+
    One class is excluded from *this* verdict and moved into the second:
-   allocations whose site is a platform primitive (`internal/poll`,
-   `syscall`) rather than SDNS or library code — in practice the `sudog`
-   the scheduler takes when a goroutine parks, which is what two workers
-   meeting on one socket's write lock costs once per P. That is
-   bookkeeping for blocking, bounded by `GOMAXPROCS` and not by queries.
-   Nothing is hidden by the move: a buffer that genuinely escaped into a
-   socket write would grow with the traffic, and growth is exactly what
-   the second verdict measures. The count is reported at every window.
+   the `sudog` the scheduler takes when a goroutine parks, which is what
+   two workers meeting on one socket's write lock costs once per P. That
+   is bookkeeping for blocking, bounded by `GOMAXPROCS` and not by
+   queries. The exemption is by *primitive* (`Semacquire`, `Semrelease`,
+   `notifyListWait`), never by package: exempting `internal/poll` or
+   `syscall` wholesale would take a buffer that genuinely escaped into a
+   socket write out of the verdict with it. The count is reported at
+   every window, and the rule is pinned by `TestParkPrimitiveIsNarrow`.
 2. **Ops-relative, for what attribution cannot see.** Work handed to
    another goroutine allocates under a stack with no engine frame. Two
    windows are measured, the second carrying twice the traffic; constant
@@ -53,10 +59,19 @@ returns two verdicts:
    `ScalingSlack` (64 objects) bounds that difference — at a million
    queries, below 10⁻⁴ objects per query.
 
+Both verdicts are themselves tested, by injecting allocations in the two
+shapes attribution is weakest against
+(`TestZeroGateCatchesInjectedAllocations`): one made on the serving
+goroutine but too deep to classify, which the exact verdict must refuse
+as unclassifiable, and one handed to a goroutine that was already
+running, which only the ops-relative verdict can see.
+
 Window boundaries are the server's own completion barrier
 (`Server.Quiesced`: every job slab back in its ring), not a sleep — the
 last reply reaching a client says the bytes left, not that the slab which
-carried them was released. Marks take **two** forced GCs (the second
+carried them was released, and the release is where the request's state
+is cleared. The in-flight count therefore drops *after* the slab is wiped
+and back in the ring, so a window cannot close mid-wipe. Marks take **two** forced GCs (the second
 empties `sync.Pool` victim caches; the profile is also only current as of
 the last collection). A discarded warm-up window precedes the measured
 ones: the first packet through a path also builds an itab and grows a

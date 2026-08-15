@@ -54,6 +54,86 @@ func gateOps() int {
 
 func runGate(t *testing.T, flavor string) {
 	t.Helper()
+	small, large := measure(t, flavor, gateOps(), nil)
+
+	// Verdict one, exact: the server allocated nothing while serving.
+	// Attribution is what makes an exact zero meaningful — a process-wide
+	// count cannot tell a query's allocation from a timer's, so it can
+	// only ever be compared against slack, while a stack either passes
+	// through the engines or it does not.
+	for _, w := range []struct {
+		name string
+		win  window
+	}{{"1x", small}, {"2x", large}} {
+		t.Logf("stage %s flavor %s %s: %d ops in %v — %d objects allocated by the server "+
+			"while serving, %d unclassifiable, %d elsewhere in the server "+
+			"(%d of them scheduler parking), %d mallocs process-wide (measurement included)",
+			Stage, flavor, w.name, w.win.ops, w.win.elapsed.Round(time.Millisecond),
+			w.win.served, w.win.unknown, w.win.other, w.win.parked, w.win.mallocs)
+		if err := exactVerdict(w.win); err != nil {
+			for _, line := range w.win.offenders {
+				t.Log("  ", line)
+			}
+			t.Fatalf("stage %s flavor %s: %v", Stage, flavor, err)
+		}
+	}
+
+	if os.Getenv("ZEROGATE_ALL_SITES") != "" {
+		for i, line := range large.offenders {
+			if i == 12 {
+				break
+			}
+			t.Log("  2x site:", line)
+		}
+	}
+
+	// Verdict two, ops-relative: more traffic must not move what the rest
+	// of the server allocates. Serving hands work to goroutines whose
+	// stacks carry no engine frame — a prefetch refresh, a metric flush, a
+	// log line — and attribution alone would not see them. Their constant
+	// background is the same in both windows and cancels in the
+	// difference; what survives is per-query, wherever it lives.
+	growth := large.other - small.other
+	extra := large.ops - small.ops
+	t.Logf("stage %s flavor %s: %d extra queries moved the rest of the server by %+d (%.6f/op, bound %d)",
+		Stage, flavor, extra, growth, float64(growth)/float64(extra), ScalingSlack)
+	if err := scalingVerdict(small, large); err != nil {
+		t.Fatalf("stage %s flavor %s: %v", Stage, flavor, err)
+	}
+}
+
+// exactVerdict is the hard one: the server's own code allocated nothing
+// on a serving goroutine, and nothing was too deep to classify.
+func exactVerdict(w window) error {
+	if w.served != 0 {
+		return fmt.Errorf("%d objects allocated while serving %d queries; "+
+			"the served path must allocate none", w.served, w.ops)
+	}
+	if w.unknown != 0 {
+		return fmt.Errorf("%d objects allocated on stacks too deep to classify over "+
+			"%d queries; an allocation that cannot be shown to be off the serving "+
+			"path counts as on it", w.unknown, w.ops)
+	}
+	return nil
+}
+
+// scalingVerdict is the ops-relative one: nothing off the serving stacks
+// grows with the traffic.
+func scalingVerdict(small, large window) error {
+	growth := large.other - small.other
+	extra := large.ops - small.ops
+	if growth > ScalingSlack {
+		return fmt.Errorf("%d extra queries cost %d extra objects off the serving "+
+			"stacks (%.6f/op); something the queries reach scales with traffic",
+			extra, growth, float64(growth)/float64(extra))
+	}
+	return nil
+}
+
+// measure runs the harness through a warm-up window and two measured
+// ones, the second carrying twice the traffic of the first.
+func measure(t *testing.T, flavor string, ops int, env []string) (window, window) {
+	t.Helper()
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +149,7 @@ func runGate(t *testing.T, flavor string) {
 	var child *harnessProc
 	for attempt := 0; attempt < 5 && child == nil; attempt++ {
 		bind := pickBind(t, flavor)
-		child, err = startHarness(bin, bind)
+		child, err = startHarness(bin, bind, env)
 		if err != nil {
 			t.Logf("harness start (bind %s): %v — retrying", bind, err)
 		}
@@ -81,8 +161,6 @@ func runGate(t *testing.T, flavor string) {
 
 	target := child.clientTarget(flavor)
 	warm(t, target)
-
-	ops := gateOps()
 
 	// Two windows, the second carrying twice the traffic of the first.
 	// One window can only ever be compared against a tolerance, and a
@@ -107,56 +185,49 @@ func runGate(t *testing.T, flavor string) {
 	// fit.
 	small := runFlood(t, child, flavor, target, ops/2)
 	large := runFlood(t, child, flavor, target, ops)
+	return small, large
+}
 
-	// Verdict one, exact: nothing allocated on a serving goroutine.
-	// Attribution is what makes an exact zero meaningful — a process-wide
-	// count cannot tell a query's allocation from a timer's, so it can
-	// only ever be compared against slack, while a stack either passes
-	// through the engines or it does not.
-	for _, w := range []struct {
-		name string
-		win  window
-	}{{"1x", small}, {"2x", large}} {
-		t.Logf("stage %s flavor %s %s: %d ops in %v — %d objects allocated by the server "+
-			"while serving, %d elsewhere in the server (%d of them scheduler parking), "+
-			"%d mallocs process-wide (measurement included)",
-			Stage, flavor, w.name, w.win.ops, w.win.elapsed.Round(time.Millisecond),
-			w.win.served, w.win.other, w.win.parked, w.win.mallocs)
-		if w.win.served != 0 {
-			for _, line := range w.win.offenders {
-				t.Log("  ", line)
-			}
-			t.Fatalf("stage %s flavor %s: %d objects allocated while serving %d queries; "+
-				"the served path must allocate none",
-				Stage, flavor, w.win.served, w.win.ops)
+// TestZeroGateCatchesInjectedAllocations tests the gate rather than the
+// server. A verdict nobody has ever seen fail is a verdict nobody knows
+// the shape of, and both of these shapes were chosen because they are the
+// ones attribution is weakest against.
+//
+// It runs at a fraction of the gate's traffic: the injected allocations
+// are per query, so they are unmissable long before a million of them.
+func TestZeroGateCatchesInjectedAllocations(t *testing.T) {
+	const ops = 20_000
+
+	t.Run("deep serving allocation", func(t *testing.T) {
+		// Allocated on the serving goroutine, but far enough down the
+		// stack that the engine's frames fall off the end of a profile
+		// record. Attribution cannot see what it is; the exact verdict
+		// must still refuse it.
+		small, large := measure(t, FlavorUDP4Specific, ops, []string{"ZEROGATE_INJECT=deep"})
+		t.Logf("caught as: served %d/%d, unclassifiable %d/%d over %d/%d queries",
+			small.served, large.served, small.unknown, large.unknown, small.ops, large.ops)
+		if exactVerdict(small) == nil && exactVerdict(large) == nil {
+			t.Fatalf("a deep serving allocation passed the exact verdict "+
+				"(served %d/%d, unclassifiable %d/%d)",
+				small.served, large.served, small.unknown, large.unknown)
 		}
-	}
+	})
 
-	if os.Getenv("ZEROGATE_ALL_SITES") != "" {
-		for i, line := range large.offenders {
-			if i == 12 {
-				break
-			}
-			t.Log("  2x site:", line)
+	t.Run("allocation handed to another goroutine", func(t *testing.T) {
+		// Nothing allocates on the serving stack: the handler passes a
+		// token to a goroutine that was already running. Attribution is
+		// blind to this by construction, which is the whole reason the
+		// second verdict exists.
+		small, large := measure(t, FlavorUDP4Specific, ops, []string{"ZEROGATE_INJECT=async"})
+		t.Logf("caught as: %d → %d objects off the serving stacks over %d → %d queries "+
+			"(exact verdict saw served %d/%d)",
+			small.other, large.other, small.ops, large.ops, small.served, large.served)
+		if err := scalingVerdict(small, large); err == nil {
+			t.Fatalf("an allocation handed to another goroutine passed the scaling "+
+				"verdict (other %d → %d over %d → %d queries)",
+				small.other, large.other, small.ops, large.ops)
 		}
-	}
-
-	// Verdict two, ops-relative: doubling the traffic must not move what
-	// the rest of the server allocates. Serving hands work to goroutines
-	// whose stacks carry no engine frame — a prefetch refresh, a metric
-	// flush, a log line — and attribution alone would not see them. Their
-	// constant background is the same in both windows and cancels in the
-	// difference; what survives is per-query, wherever it lives.
-	growth := large.other - small.other
-	extra := large.ops - small.ops
-	perOp := float64(growth) / float64(extra)
-	t.Logf("stage %s flavor %s: %d extra queries moved the rest of the server by %+d (%.6f/op, bound %d)",
-		Stage, flavor, extra, growth, perOp, ScalingSlack)
-	if growth > ScalingSlack {
-		t.Fatalf("stage %s flavor %s: %d extra queries cost %d extra objects off the serving "+
-			"stacks (%.6f/op); something the queries reach scales with traffic",
-			Stage, flavor, extra, growth, perOp)
-	}
+	})
 }
 
 // warmupOps sizes the discarded window: enough traffic for every slab in
@@ -176,6 +247,7 @@ type window struct {
 	served    int64
 	other     int64
 	parked    int64
+	unknown   int64
 	elapsed   time.Duration
 	offenders []string
 }
@@ -228,12 +300,12 @@ func runFlood(t *testing.T, child *harnessProc, flavor, target string, ops int) 
 	}
 	child.quiesce(t)
 	elapsed := time.Since(started)
-	mallocs, served, other, parked := child.markBoth(t)
+	mallocs, m := child.markBoth(t)
 	w := window{
-		ops: ops, mallocs: mallocs, served: served,
-		other: other, parked: parked, elapsed: elapsed,
+		ops: ops, mallocs: mallocs, served: m.served,
+		other: m.other, parked: m.parked, unknown: m.unknown, elapsed: elapsed,
 	}
-	if served != 0 || os.Getenv("ZEROGATE_ALL_SITES") != "" {
+	if m.served != 0 || m.unknown != 0 || os.Getenv("ZEROGATE_ALL_SITES") != "" {
 		// Collected here rather than at the verdict: the offender list
 		// describes the window that just closed, and the next mark
 		// replaces it.
@@ -274,9 +346,10 @@ type harnessProc struct {
 	bind   string
 }
 
-func startHarness(bin, bind string) (*harnessProc, error) {
+func startHarness(bin, bind string, extra []string) (*harnessProc, error) {
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(), "ZEROGATE_BIND="+bind)
+	cmd.Env = append(cmd.Env, extra...)
 	cmd.Stderr = os.Stderr
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -369,26 +442,43 @@ func (h *harnessProc) quiesce(t *testing.T) {
 // markBoth closes the current window and opens the next, returning the
 // process-wide malloc count and the objects allocated on serving
 // goroutines since the previous mark.
-func (h *harnessProc) markBoth(t *testing.T) (mallocs uint64, served, other, parked int64) {
+func (h *harnessProc) markBoth(t *testing.T) (uint64, marks) {
 	t.Helper()
 	fields := strings.Fields(h.send(t, "mark", "MALLOCS "))
-	if len(fields) != 7 || fields[1] != "SERVED" || fields[3] != "OTHER" || fields[5] != "PARKED" {
+	if len(fields) != 9 || fields[1] != "SERVED" || fields[3] != "OTHER" ||
+		fields[5] != "PARKED" || fields[7] != "UNKNOWN" {
 		t.Fatalf("bad mark reply %q", strings.Join(fields, " "))
 	}
-	var err error
-	if mallocs, err = strconv.ParseUint(fields[0], 10, 64); err != nil {
+	mallocs, err := strconv.ParseUint(fields[0], 10, 64)
+	if err != nil {
 		t.Fatalf("bad malloc count %q: %v", fields[0], err)
 	}
-	if served, err = strconv.ParseInt(fields[2], 10, 64); err != nil {
-		t.Fatalf("bad served count %q: %v", fields[2], err)
+	var m marks
+	for _, f := range []struct {
+		name string
+		at   int
+		into *int64
+	}{
+		{"served", 2, &m.served},
+		{"other", 4, &m.other},
+		{"parked", 6, &m.parked},
+		{"unknown", 8, &m.unknown},
+	} {
+		v, err := strconv.ParseInt(fields[f.at], 10, 64)
+		if err != nil {
+			t.Fatalf("bad %s count %q: %v", f.name, fields[f.at], err)
+		}
+		*f.into = v
 	}
-	if other, err = strconv.ParseInt(fields[4], 10, 64); err != nil {
-		t.Fatalf("bad other count %q: %v", fields[4], err)
-	}
-	if parked, err = strconv.ParseInt(fields[6], 10, 64); err != nil {
-		t.Fatalf("bad parked count %q: %v", fields[6], err)
-	}
-	return mallocs, served, other, parked
+	return mallocs, m
+}
+
+// marks is one mark's classification of the window that just closed.
+type marks struct {
+	served  int64 // the server's own code, on a serving goroutine
+	other   int64 // anywhere else in the server
+	parked  int64 // of other: scheduler bookkeeping for a parked serving goroutine
+	unknown int64 // stacks too deep to classify at all
 }
 
 // offenders returns the allocating sites behind a nonzero served count,

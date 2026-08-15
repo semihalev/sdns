@@ -8,7 +8,8 @@
 //	parent → child:  quiesce   → waits until no job slab is outstanding,
 //	                             prints "QUIESCED ok" or "QUIESCED timeout"
 //	parent → child:  mark      → two GCs, then
-//	                             "MALLOCS <n> SERVED <k> OTHER <m> PARKED <p>":
+//	                             "MALLOCS <n> SERVED <k> OTHER <m> PARKED <p>
+//	                             UNKNOWN <u>":
 //	                             k is the objects the server's own code
 //	                             allocated on a serving goroutine (the
 //	                             gate's exact verdict), m the objects
@@ -43,6 +44,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/zerogate"
+	"github.com/semihalev/sdns/internal/zerogate/inject"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/server"
 	"github.com/semihalev/zlog/v2"
@@ -102,9 +104,36 @@ type allocSite struct {
 	// buffer that really did escape into the socket write would grow
 	// with the traffic, and the scaling verdict is where it would show.
 	platform bool
-	fn       string
-	pos      string
-	via      string // the first few non-runtime frames, innermost first
+	// truncated marks a stack that filled the profile record. A record
+	// holds 32 program counters and keeps the innermost ones, so a deeper
+	// stack loses its outer frames — including the goroutine's entry,
+	// which is what says whether it was serving. Such a site cannot be
+	// classified, and an unclassifiable allocation counts against the
+	// exact verdict rather than falling into the residue: a gate that
+	// answers "not proven" with "fine" is not a gate.
+	truncated bool
+	fn        string
+	pos       string
+	via       string // the first few non-runtime frames, innermost first
+}
+
+// profileStackDepth is the number of program counters runtime.MemProfile
+// records per site (runtime.MemProfileRecord.Stack0).
+const profileStackDepth = 32
+
+// parkPrimitive reports whether fn is the runtime's park machinery — the
+// semaphore and notification entry points a goroutine blocks in. An
+// allocation here is a sudog: the bookkeeping of blocking, not of the
+// request.
+//
+// The test is deliberately this narrow. Exempting whole packages —
+// internal/poll, syscall — would take a buffer that genuinely escaped
+// into a socket write out of the exact verdict along with it, and that is
+// a real regression wearing a platform frame.
+func parkPrimitive(fn string) bool {
+	return strings.Contains(fn, "Semacquire") ||
+		strings.Contains(fn, "Semrelease") ||
+		strings.Contains(fn, "notifyListWait")
 }
 
 // profile returns the live allocation profile keyed by stack. Records
@@ -132,7 +161,10 @@ func profile() map[string]*allocSite {
 		for _, pc := range stack {
 			fmt.Fprintf(&key, "%x,", pc)
 		}
-		site := &allocSite{objects: r.AllocObjects}
+		site := &allocSite{
+			objects:   r.AllocObjects,
+			truncated: len(stack) >= profileStackDepth,
+		}
 		frames := runtime.CallersFrames(stack)
 		var trail []string
 		for {
@@ -145,8 +177,7 @@ func profile() map[string]*allocSite {
 				if site.fn == "" {
 					site.fn = f.Function
 					site.pos = fmt.Sprintf("%s:%d", filepath.Base(f.File), f.Line)
-					site.platform = strings.HasPrefix(f.Function, "internal/poll.") ||
-						strings.HasPrefix(f.Function, "syscall.")
+					site.platform = parkPrimitive(f.Function)
 				}
 			}
 			if strings.HasPrefix(f.Function, servingPrefix) {
@@ -178,7 +209,7 @@ func profile() map[string]*allocSite {
 // Charging them to the server would drown the very thing being measured
 // — and a process-wide counter has no way to tell them apart, which is
 // the second reason attribution is doing the work here.
-func since(before, after map[string]*allocSite) (served, other, parked int64, offenders []*allocSite) {
+func since(before, after map[string]*allocSite) (served, other, parked, unknown int64, offenders []*allocSite) {
 	// ZEROGATE_ALL_SITES widens the report to every growing site, not
 	// just the ones on a serving stack. The verdict never changes; it is
 	// how the second, ops-relative verdict gets a name when it fires,
@@ -193,6 +224,8 @@ func since(before, after map[string]*allocSite) (served, other, parked int64, of
 			continue
 		}
 		switch {
+		case now.harness:
+			continue
 		case now.serving && now.platform:
 			// Scheduler bookkeeping on a serving stack: counted with the
 			// rest, so the scaling verdict still covers it.
@@ -200,12 +233,16 @@ func since(before, after map[string]*allocSite) (served, other, parked int64, of
 			other += grew
 		case now.serving:
 			served += grew
-		case now.harness:
-			continue
+		case now.truncated:
+			// Too deep to classify: the frames that would say whether
+			// this was serving fell off the end of the record. Counted
+			// against the exact verdict, because the alternative is to
+			// let anything deep enough walk past it.
+			unknown += grew
 		default:
 			other += grew
 		}
-		if (now.serving && !now.platform) || all {
+		if (now.serving && !now.platform) || now.truncated && !now.serving || all {
 			offenders = append(offenders, &allocSite{
 				objects: grew, serving: now.serving, fn: now.fn, pos: now.pos, via: now.via,
 			})
@@ -214,7 +251,7 @@ func since(before, after map[string]*allocSite) (served, other, parked int64, of
 	sort.Slice(offenders, func(i, j int) bool {
 		return offenders[i].objects > offenders[j].objects
 	})
-	return served, other, parked, offenders
+	return served, other, parked, unknown, offenders
 }
 
 func run() error {
@@ -300,9 +337,9 @@ func run() error {
 			runtime.GC()
 			runtime.ReadMemStats(&ms)
 			now := profile()
-			var served, other, parked int64
+			var served, other, parked, unknown int64
 			if prev != nil {
-				served, other, parked, lastServe = since(prev, now)
+				served, other, parked, unknown, lastServe = since(prev, now)
 			}
 			prev = now
 			reply = append(reply[:0], "MALLOCS "...)
@@ -313,6 +350,8 @@ func run() error {
 			reply = strconv.AppendInt(reply, other, 10)
 			reply = append(reply, " PARKED "...)
 			reply = strconv.AppendInt(reply, parked, 10)
+			reply = append(reply, " UNKNOWN "...)
+			reply = strconv.AppendInt(reply, unknown, 10)
 			reply = append(reply, '\n')
 			if _, err := os.Stdout.Write(reply); err != nil {
 				return err
@@ -336,6 +375,13 @@ func run() error {
 // registerDefaultChain mirrors the generated registry.go exactly: the named
 // default configuration is the default chain, in the default order.
 func registerDefaultChain() {
+	// The gate's negative controls, when asked for: middleware that
+	// allocates on purpose, in the shapes attribution is weakest against.
+	// It lives in its own package so the measurement's own exclusion does
+	// not swallow it.
+	if h := inject.New(os.Getenv("ZEROGATE_INJECT")); h != nil {
+		middleware.Register("zerogateinject", func(*config.Config) middleware.Handler { return h })
+	}
 	middleware.Register("recovery", func(cfg *config.Config) middleware.Handler { return recovery.New(cfg) })
 	middleware.Register("metrics", func(cfg *config.Config) middleware.Handler { return metrics.New(cfg) })
 	middleware.Register("dnstap", dnstap.New)
