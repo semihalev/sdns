@@ -57,16 +57,6 @@ const (
 	// right, holding a shared slab while it does so is not.
 	tcpQueryWait   = tcpFirstReadWait
 	tcpQueryBudget = 2048
-	// defaultTCPConns is the admission cap, and it is deliberately well
-	// above what one busy client population needs. It was 512, which cost
-	// more than it protected: measured against the server this replaces,
-	// 600 concurrent connections served 92k queries a second at 512 and
-	// 204k at this number — because the cap also sizes the small ring, and
-	// connections that arrive with nowhere to go are refused rather than
-	// queued. What it guards is a connection flood, and a goroutine and a
-	// pooled stream per connection is a far cheaper thing to bound than
-	// the slab ring is: the ring stays capped at maxSmallJobs regardless.
-	defaultTCPConns = 4096
 	// defaultTCPLargeJobs bounds the big class. Large frames are rare, so
 	// this exists to serve them without letting them define the ring's
 	// memory: the small class is what a busy server actually runs on.
@@ -187,7 +177,14 @@ type tcpEngine struct {
 
 func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
 	if maxConns <= 0 {
-		maxConns = defaultTCPConns
+		// The admission cap guards against a connection flood, and what
+		// it is allowed to spend is what the machine can spare — see
+		// ingress_bounds.go. It was 512, which cost more than it
+		// protected: 600 concurrent connections served a third of the
+		// queries a second that a cap above them does, because the cap
+		// also sizes the small ring and connections arriving with
+		// nowhere to go are refused rather than queued.
+		maxConns = tcpConnBound()
 	}
 	// One small slab per admissible connection, up to a ceiling: a server
 	// cannot have more frames in flight than it has connections, so at

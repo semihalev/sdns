@@ -72,7 +72,8 @@ func (l *tcpListener) Serve(_ context.Context) error {
 		return errListenerNotBound
 	}
 
-	zlog.Info("DNS server listening", "net", "tcp", "addr", l.addr)
+	zlog.Info("DNS server listening", "net", "tcp", "addr", l.addr,
+		"maxconns", engine.maxConns, "slabs", cap(engine.freeSmall))
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 

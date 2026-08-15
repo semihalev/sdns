@@ -300,17 +300,6 @@ func defaultIngressWorkers() int {
 // absorb the burst instead, and they start serving immediately.
 const defaultIngressQueue = 64
 
-// maxSpareSlabs bounds how far the ring may stretch. The front door
-// admits no more work than the resolver behind it can have in flight —
-// MaxConcurrentQueries defaults to 10000 — and past that a query would
-// only be queued to time out somewhere else. Reached only under
-// saturation, and the slabs go back to the collector once it passes.
-//
-// A var so a test can lower it and reach the shedding path without
-// standing up eight thousand blocked requests; never written while an
-// engine is running.
-var maxSpareSlabs int64 = 8192
-
 // udpBatchSize is how many datagrams one recvmmsg/sendmmsg carries at
 // most (Linux batch path). It also sizes the job ring: every reader must
 // be able to arm a full batch, or a jobless reader would sit out its
@@ -381,7 +370,7 @@ func (e *udpEngine) take() *udpJob {
 	}
 	for {
 		n := e.borrowed.Load()
-		if n >= maxSpareSlabs {
+		if n >= spareSlabBound {
 			return nil
 		}
 		if e.borrowed.CompareAndSwap(n, n+1) {

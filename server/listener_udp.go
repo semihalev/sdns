@@ -153,8 +153,12 @@ func (l *udpListener) Serve(_ context.Context) error {
 	engine.start()
 	l.mu.Unlock()
 
+	// The derived bounds are logged because they are derived: an operator
+	// watching a canary needs to know what this machine decided before
+	// reading the counters that report hitting it.
 	zlog.Info("DNS server listening", "net", "udp", "addr", l.addr,
-		"sockets", len(engine.pcs), "workers", engine.workers)
+		"sockets", len(engine.pcs), "workers", engine.workers,
+		"slabs", cap(engine.free), "maxspare", spareSlabBound)
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 

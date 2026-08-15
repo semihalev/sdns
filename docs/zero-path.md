@@ -297,11 +297,19 @@ through accessors; *ctx-clean* = no ordinary ctx primitives.
   ring size over resolution latency — measured, on a 32-core box: 65k
   queries a second with a fixed ring against 185k with the ring allowed to
   stretch, at the same offered concurrency. When the ring is empty a
-  reader takes a *pooled spare* instead, bounded by `maxSpareSlabs` (8192,
-  the resolver's own in-flight bound) and returned to the collector once
+  reader takes a *pooled spare* instead, returned to the collector once
   the burst passes. Same shape as the ready queue: pool first, and the
   overflow path exists so the bound is on memory rather than on
   concurrency.
+- The burst bounds — how far the ring may stretch, and how many
+  connections the stream engines admit — are **derived at startup**, not
+  compiled in (`server/ingress_bounds.go`). A number chosen once is a
+  guess about hardware its author never saw: too small on the server it
+  was meant to protect, an out-of-memory kill on the 128MB router it was
+  never considered for. Each is a share of the memory the process may
+  actually use — the machine's, narrowed by a cgroup limit or GOMEMLIMIT
+  when either binds first — clamped at both ends, and logged at startup
+  next to the counters that report reaching them.
 - UDP load shedding: no slot in the ring *and* the stretch at its bound ⇒
   per-reader reserved discard buffer, drop, count. Both readers shed the
   same way; the batched one drains a whole batch into scratch memory,

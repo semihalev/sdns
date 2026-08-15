@@ -244,11 +244,11 @@ func TestUDPEngineAcceptParity(t *testing.T) {
 // drains cleanly afterwards.
 func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 	// Saturation is the ring and the stretch together, so the bound is
-	// lowered here rather than standing up thousands of blocked requests
-	// to reach the real one. Set before the engine exists and restored
-	// after it is gone: nothing reads it in between.
-	defer func(n int64) { maxSpareSlabs = n }(maxSpareSlabs)
-	maxSpareSlabs = 2
+	// lowered here rather than standing up as many blocked requests as
+	// this machine's memory allows. Set before the engine exists and
+	// restored after it is gone: nothing reads it in between.
+	defer func(n int64) { spareSlabBound = n }(spareSlabBound)
+	spareSlabBound = 2
 
 	release := make(chan struct{})
 	addr, stop := startEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {

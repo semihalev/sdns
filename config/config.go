@@ -126,10 +126,10 @@ type Config struct {
 	// queue depth + one per worker + one per reader, never configured
 	// independently, so the three can't disagree — and it sizes the steady
 	// state rather than capping it: under saturation the ring stretches
-	// into pooled spares, up to the resolver's own in-flight bound.
+	// into pooled spares, as far as this machine's memory allows.
 	IngressWorkers  int // Fixed handler workers per listener (default: GOMAXPROCS*16, clamped 256..1024)
 	IngressQueue    int // Ready-queue depth before a job is served on its own goroutine (default 64)
-	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default 4096)
+	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default: derived from available memory)
 
 	// Reflex: DNS amplification/reflection attack detection
 	ReflexEnabled      bool    // Enable amplification attack detection
