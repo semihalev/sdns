@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -559,5 +560,105 @@ func TestTCPEngineShutdownForcesBlockedConns(t *testing.T) {
 	_ = l.Shutdown(context.Background())
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("shutdown took %v; force phase did not fire", elapsed)
+	}
+}
+
+// TestSmallSlabCarriesASignedSizedReply pins the small class against the
+// replies it exists to carry.
+//
+// The class is sized by what each side actually holds: a query is small,
+// its reply is not, and a signed answer of several kilobytes is ordinary
+// rather than exceptional. When the reply side was briefly sized like the
+// receive side, every one of those answers declined the byte path and was
+// packed into a buffer instead — an allocation on the path whose whole
+// point is not to have one, and invisible to a gate whose corpus is A
+// records.
+//
+// The lease is where that decision is actually made, so that is what this
+// asks. Watching which ring a slab came from would not have caught it: a
+// reply too big for its slab does not take a bigger slab, it quietly
+// leaves the byte path.
+func TestSmallSlabCarriesASignedSizedReply(t *testing.T) {
+	e := newTCPEngine(echoHandler(), "tcp", 8)
+	job := <-e.freeSmall
+	defer func() { e.freeSmall <- job }()
+
+	// A signed answer of a few kilobytes is the case this class is for.
+	for _, size := range []int{512, 2 << 10, 6 << 10, tcpSmallReply} {
+		if job.LeaseWire(size) == nil {
+			t.Fatalf("the small class refused a %d-byte reply; an ordinary "+
+				"signed answer would leave the byte path and be packed into "+
+				"a buffer instead", size)
+		}
+	}
+
+	// And it still declines what it genuinely cannot hold, so the Msg body
+	// takes over rather than the reply being truncated into the slab.
+	if job.LeaseWire(tcpSmallReply+1) != nil {
+		t.Fatal("the small class accepted a reply larger than it can hold")
+	}
+
+	large := <-e.freeLarge
+	defer func() { e.freeLarge <- large }()
+	if large.LeaseWire(tcpJobBufSize) == nil {
+		t.Fatal("the large class refused a protocol-maximum reply")
+	}
+}
+
+// TestSmallSlabServesASignedSizedReplyEndToEnd is the same property over a
+// real connection: the reply arrives whole and unchanged.
+func TestSmallSlabServesASignedSizedReplyEndToEnd(t *testing.T) {
+	const replySize = 6 << 10
+
+	big := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		r := new(dns.Msg)
+		if err := r.Unpack(raw); err != nil {
+			return false
+		}
+		m := new(dns.Msg)
+		m.SetReply(r)
+		txt := make([]string, 0, replySize/255+1)
+		for len(txt)*255 < replySize {
+			txt = append(txt, strings.Repeat("s", 255))
+		}
+		m.Answer = []dns.RR{&dns.TXT{
+			Hdr: dns.RR_Header{
+				Name: r.Question[0].Name, Rrtype: dns.TypeTXT,
+				Class: dns.ClassINET, Ttl: 30,
+			},
+			Txt: txt,
+		}}
+		_ = w.WriteMsg(m)
+		return true
+	})
+
+	addr, _, stop := startTCPEngine(t, big, 8)
+	defer stop()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	q := new(dns.Msg)
+	q.SetQuestion("signed-sized.example.", dns.TypeTXT)
+	wireQ, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFrame(t, conn, wireQ)
+
+	var resp dns.Msg
+	if err := resp.Unpack(readFrame(t, conn)); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("answer %v", resp.Answer)
+	}
+	if got := resp.Len(); got < replySize {
+		t.Fatalf("reply is %d bytes, want at least %d — the fixture no longer "+
+			"exercises the size this pins", got, replySize)
 	}
 }
