@@ -37,7 +37,13 @@ import (
 // per connection, then close; a sub-header frame closes the connection.
 
 const (
-	tcpJobBufSize    = dns.MaxMsgSize
+	tcpJobBufSize = dns.MaxMsgSize
+	// tcpSmallFrame is the frame size the small slab class covers. A
+	// query or reply larger than this is rare enough to be worth a slab
+	// twenty times its size; everything else is the ordinary traffic a
+	// resolver serves, and giving it a 64KB pair each is what made the
+	// ring small enough to run out.
+	tcpSmallFrame    = 4 << 10
 	tcpFirstReadWait = 2 * time.Second
 	tcpIdleWait      = 8 * time.Second
 	// tcpQueryWait is the absolute budget a query gets from the moment its
@@ -46,10 +52,15 @@ const (
 	// time than announcing it did, which is why this is the first-read
 	// allowance and not the idle timeout — staying silent is a client's
 	// right, holding a shared slab while it does so is not.
-	tcpQueryWait       = tcpFirstReadWait
-	tcpQueryBudget     = 2048
-	defaultTCPConns    = 512
-	defaultTCPJobs     = 64
+	tcpQueryWait    = tcpFirstReadWait
+	tcpQueryBudget  = 2048
+	defaultTCPConns = 512
+	// defaultTCPLargeJobs bounds the big class. Large frames are rare, so
+	// this exists to serve them without letting them define the ring's
+	// memory: the small class is what a busy server actually runs on.
+	defaultTCPLargeJobs = 16
+	// maxSmallJobs caps the small ring at 8MB of slabs.
+	maxSmallJobs       = 1024
 	tcpAcceptErrPause  = 5 * time.Millisecond
 	minTCPFrame        = wire.HeaderLen
 	tcpShutdownForceIn = time.Millisecond
@@ -58,11 +69,16 @@ const (
 // tcpJob is the large-class slab: RX for one frame's payload, TX with
 // prefix headroom for one plain-write reply.
 type tcpJob struct {
-	engine   *tcpEngine
-	conn     net.Conn
-	stream   *tcpStream
-	rx       [tcpJobBufSize]byte
-	tx       [dnsclient.FramePrefixLen + tcpJobBufSize]byte
+	engine *tcpEngine
+	conn   net.Conn
+	stream *tcpStream
+	// rx and tx are sized by the slab's class and never resized. A
+	// connection takes the class its announced frame needs, which the
+	// length prefix has already told it — prefix-first acquisition was
+	// worth having for backpressure and turns out to pay twice.
+	rx       []byte
+	tx       []byte
+	large    bool
 	written  bool
 	readTime time.Time
 
@@ -83,7 +99,10 @@ func (j *tcpJob) StrictSlots() (*middleware.Request, *middleware.Chain, *jobCarr
 // LeaseWire hands out the TX payload region behind the frame-prefix
 // headroom, so a committed body is one plain framed write.
 func (j *tcpJob) LeaseWire(capacity int) []byte {
-	if capacity > tcpJobBufSize {
+	if capacity > len(j.tx)-dnsclient.FramePrefixLen {
+		// This slab cannot hold the reply. Declining sends the request to
+		// the Msg body, which packs into a buffer of its own — the same
+		// road every other byte-path decline takes.
 		return nil
 	}
 	return j.tx[dnsclient.FramePrefixLen:dnsclient.FramePrefixLen]
@@ -105,6 +124,9 @@ func (j *tcpJob) Write(b []byte) (int, error) {
 }
 
 // WriteMsg packs into the TX payload region and stages the frame.
+// WriteMsg packs into the TX payload region when the reply fits it, and
+// PackBuffer allocates when it does not — a reply larger than this slab's
+// class is rare and correctness comes first.
 func (j *tcpJob) WriteMsg(m *dns.Msg) error {
 	out, err := m.PackBuffer(j.tx[dnsclient.FramePrefixLen:dnsclient.FramePrefixLen])
 	if err != nil {
@@ -128,8 +150,12 @@ type tcpEngine struct {
 	proto    string // "tcp" or "tls", for metrics
 	maxConns int64
 
-	free    chan *tcpJob
-	closing chan struct{}
+	// Two rings, by frame size. One ring of 64KB pairs was 8MB that ran
+	// out at 64 concurrent frames — measured: contention starts exactly
+	// where connections reach slabs, and the connection cap is 512.
+	freeSmall chan *tcpJob
+	freeLarge chan *tcpJob
+	closing   chan struct{}
 	// streams are per-connection framing buffers. Unlike the job ring
 	// they are not strict-path state — a connection holds one for its
 	// whole life — so a pool is the right shape: an idle server keeps
@@ -151,25 +177,66 @@ func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
 	if maxConns <= 0 {
 		maxConns = defaultTCPConns
 	}
+	// One small slab per admissible connection, up to a ceiling: a server
+	// cannot have more frames in flight than it has connections, so at
+	// this size the ordinary path stops queueing altogether. The ceiling
+	// keeps a very large connection cap from turning into a very large
+	// resident set; past it, the bounded wait does its job.
+	small := maxConns
+	if small > maxSmallJobs {
+		small = maxSmallJobs
+	}
 	e := &tcpEngine{
-		handler:  handler,
-		proto:    proto,
-		maxConns: int64(maxConns),
-		free:     make(chan *tcpJob, defaultTCPJobs),
-		closing:  make(chan struct{}),
-		conns:    make(map[net.Conn]struct{}),
+		handler:   handler,
+		proto:     proto,
+		maxConns:  int64(maxConns),
+		freeSmall: make(chan *tcpJob, small),
+		freeLarge: make(chan *tcpJob, defaultTCPLargeJobs),
+		closing:   make(chan struct{}),
+		conns:     make(map[net.Conn]struct{}),
 	}
 	e.streams.New = func() any { return new(tcpStream) }
-	for i := 0; i < defaultTCPJobs; i++ {
-		e.free <- &tcpJob{engine: e}
+	for i := 0; i < small; i++ {
+		e.freeSmall <- &tcpJob{
+			engine: e,
+			rx:     make([]byte, tcpSmallFrame),
+			tx:     make([]byte, dnsclient.FramePrefixLen+tcpSmallFrame),
+		}
+	}
+	for i := 0; i < defaultTCPLargeJobs; i++ {
+		e.freeLarge <- &tcpJob{
+			engine: e,
+			large:  true,
+			rx:     make([]byte, tcpJobBufSize),
+			tx:     make([]byte, dnsclient.FramePrefixLen+tcpJobBufSize),
+		}
 	}
 	return e
+}
+
+// ring returns the class a frame of this length needs.
+func (e *tcpEngine) ring(length int) chan *tcpJob {
+	if length > tcpSmallFrame {
+		return e.freeLarge
+	}
+	return e.freeSmall
+}
+
+// put returns a slab to the class it came from.
+func (e *tcpEngine) put(j *tcpJob) {
+	if j.large {
+		e.freeLarge <- j
+		return
+	}
+	e.freeSmall <- j
 }
 
 // quiesced reports whether every slab is back in the ring. Idle
 // connections hold none — a slab is taken only once a frame's length
 // prefix has arrived — so this is true whenever no frame is mid-flight.
-func (e *tcpEngine) quiesced() bool { return len(e.free) == cap(e.free) }
+func (e *tcpEngine) quiesced() bool {
+	return len(e.freeSmall) == cap(e.freeSmall) && len(e.freeLarge) == cap(e.freeLarge)
+}
 
 // startAccepting runs the accept loop on its own goroutine, joining it to
 // the accept barrier before that goroutine exists. Joining from inside it
@@ -265,7 +332,7 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		}
 		job.conn = nil
 		job.stream = nil
-		e.free <- job
+		e.put(job)
 		job = nil
 	}
 	// Deferred last so it unwinds first: the slab goes back before the
@@ -307,8 +374,14 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		readTime := time.Now()
 		stream.deadline = readTime.Add(tcpQueryWait)
 
+		// A burst that started small and met a large frame hands the small
+		// slab back rather than trying to read into it: the class is the
+		// frame's, not the connection's.
+		if job != nil && length > len(job.rx) {
+			release()
+		}
 		if job == nil {
-			if job = e.acquire(stream, stream.deadline); job == nil {
+			if job = e.acquire(stream, stream.deadline, length); job == nil {
 				return
 			}
 		}
@@ -338,16 +411,17 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 // runs out exactly when the server is saturated, and a timer built per
 // wait would put an allocation on the path that decides whether a queued
 // query is served or dropped — under the load the ring exists to absorb.
-func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time) *tcpJob {
+func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time, length int) *tcpJob {
+	free := e.ring(length)
 	select {
-	case j := <-e.free:
+	case j := <-free:
 		return j
 	default:
 	}
 	waited := s.waitFor(time.Until(deadline))
 	defer s.wait.Stop()
 	select {
-	case j := <-e.free:
+	case j := <-free:
 		return j
 	case <-waited:
 		tcpDropJobWait.Inc()

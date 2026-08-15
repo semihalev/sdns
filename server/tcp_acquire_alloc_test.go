@@ -49,13 +49,13 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 	stream.reset(server)
 
 	// Empty the ring, so every acquisition below takes the waiting path.
-	held := make([]*tcpJob, 0, len(e.free))
-	for len(e.free) > 0 {
-		held = append(held, <-e.free)
+	held := make([]*tcpJob, 0, len(e.freeSmall))
+	for len(e.freeSmall) > 0 {
+		held = append(held, <-e.freeSmall)
 	}
 	defer func() {
 		for _, j := range held {
-			e.free <- j
+			e.freeSmall <- j
 		}
 	}()
 
@@ -69,7 +69,7 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	if j := e.acquire(stream, time.Now()); j != nil {
+	if j := e.acquire(stream, time.Now(), 64); j != nil {
 		t.Fatal("acquired a slab from an empty ring")
 	}
 	runtime.ReadMemStats(&after)
@@ -83,7 +83,7 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 		// An already-passed deadline: the wait resolves immediately and
 		// deterministically, exercising the allocation site without
 		// spending the wall-clock a real contended wait would.
-		if j := e.acquire(stream, time.Now()); j != nil {
+		if j := e.acquire(stream, time.Now(), 64); j != nil {
 			t.Fatal("acquired a slab from an empty ring")
 		}
 	})

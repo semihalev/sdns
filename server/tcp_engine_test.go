@@ -113,8 +113,11 @@ func TestTCPEnginePrefixFirstHoldsNoJob(t *testing.T) {
 		t.Fatalf("admitted %d conns, want 32", got)
 	}
 	// Every job is still in the ring: idle connections acquired nothing.
-	if free := len(l.engine.free); free != defaultTCPJobs {
-		t.Fatalf("%d jobs free, want %d — idle connections pinned slabs", free, defaultTCPJobs)
+	if free, want := len(l.engine.freeSmall), cap(l.engine.freeSmall); free != want {
+		t.Fatalf("%d small jobs free, want %d — idle connections pinned slabs", free, want)
+	}
+	if free, want := len(l.engine.freeLarge), cap(l.engine.freeLarge); free != want {
+		t.Fatalf("%d large jobs free, want %d — idle connections pinned slabs", free, want)
 	}
 	// And they still serve.
 	q := new(dns.Msg)
@@ -132,14 +135,21 @@ func TestTCPEnginePrefixFirstHoldsNoJob(t *testing.T) {
 // the server's own budget, with the client doing nothing to help.
 func waitForRing(t *testing.T, e *tcpEngine, within time.Duration) {
 	t.Helper()
+	want := cap(e.freeSmall)
 	deadline := time.Now().Add(within)
-	for len(e.free) < defaultTCPJobs && time.Now().Before(deadline) {
+	for len(e.freeSmall) < want && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if free := len(e.free); free != defaultTCPJobs {
-		t.Fatalf("%d slabs free after %v, want %d", free, within, defaultTCPJobs)
+	if free := len(e.freeSmall); free != want {
+		t.Fatalf("%d slabs free after %v, want %d", free, within, want)
 	}
 }
+
+// ringSize is the small-slab ring these tests exhaust. It is the
+// connection cap, because a server cannot have more frames in flight
+// than connections — so the number of stalled clients it takes to own
+// the ring is the number the cap admits.
+const ringSize = 8
 
 // TestTCPEngineStalledPrefixReleasesRing pins the slow-client bound: a
 // client that announces a frame and then goes quiet owns its slab for one
@@ -147,10 +157,10 @@ func waitForRing(t *testing.T, e *tcpEngine, within time.Duration) {
 // them to own the whole ring is the availability case — before the bound,
 // they held it for free.
 func TestTCPEngineStalledPrefixReleasesRing(t *testing.T) {
-	addr, l, stop := startTCPEngine(t, echoHandler(), defaultTCPJobs*4)
+	addr, l, stop := startTCPEngine(t, echoHandler(), ringSize)
 	defer stop()
 
-	for i := 0; i < defaultTCPJobs; i++ {
+	for i := 0; i < ringSize; i++ {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			t.Fatal(err)
@@ -163,10 +173,10 @@ func TestTCPEngineStalledPrefixReleasesRing(t *testing.T) {
 	}
 
 	drained := time.Now().Add(3 * time.Second)
-	for len(l.engine.free) > 0 && time.Now().Before(drained) {
+	for len(l.engine.freeSmall) > 0 && time.Now().Before(drained) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if free := len(l.engine.free); free != 0 {
+	if free := len(l.engine.freeSmall); free != 0 {
 		t.Fatalf("%d slabs still free; the stall never took the ring", free)
 	}
 
@@ -198,14 +208,23 @@ func TestTCPEngineJobWaitBounded(t *testing.T) {
 	addr, l, stop := startTCPEngine(t, rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool {
 		<-release
 		return true
-	}), defaultTCPJobs*4)
+	}), defaultTCPLargeJobs*4)
 	defer stop()
 	defer close(release)
 
+	// Large frames, because the small ring cannot be exhausted: it holds
+	// one slab per admissible connection, and a connection serves one
+	// frame at a time. The bounded wait exists for the class that can run
+	// out, which is the large one.
 	q := new(dns.Msg)
 	q.SetQuestion("held.example.", dns.TypeA)
-	wireQ, _ := q.Pack()
-	for i := 0; i < defaultTCPJobs; i++ {
+	packed, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireQ := make([]byte, tcpSmallFrame+1)
+	copy(wireQ, packed)
+	for i := 0; i < defaultTCPLargeJobs; i++ {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			t.Fatal(err)
@@ -214,11 +233,11 @@ func TestTCPEngineJobWaitBounded(t *testing.T) {
 		writeFrame(t, conn, wireQ)
 	}
 	drained := time.Now().Add(5 * time.Second)
-	for len(l.engine.free) > 0 && time.Now().Before(drained) {
+	for len(l.engine.freeLarge) > 0 && time.Now().Before(drained) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if free := len(l.engine.free); free != 0 {
-		t.Fatalf("%d slabs still free; the handlers did not take the ring", free)
+	if free := len(l.engine.freeLarge); free != 0 {
+		t.Fatalf("%d large slabs still free; the handlers did not take the ring", free)
 	}
 
 	late, err := net.Dial("tcp", addr)
@@ -288,16 +307,16 @@ func TestTCPEngineSilentClientReleasesJob(t *testing.T) {
 	}
 
 	pinned := time.Now().Add(3 * time.Second)
-	for len(l.engine.free) == defaultTCPJobs && time.Now().Before(pinned) {
+	for len(l.engine.freeSmall) == cap(l.engine.freeSmall) && time.Now().Before(pinned) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if len(l.engine.free) == defaultTCPJobs {
+	if len(l.engine.freeSmall) == cap(l.engine.freeSmall) {
 		t.Fatal("the silent client never took a slab")
 	}
 	// Parked, not merely busy: six megabytes of replies cannot move into a
 	// pinned receive window nobody reads from, so the slab is still out.
 	time.Sleep(500 * time.Millisecond)
-	if len(l.engine.free) == defaultTCPJobs {
+	if len(l.engine.freeSmall) == cap(l.engine.freeSmall) {
 		t.Fatal("the replies drained without the client reading; the write never blocked")
 	}
 
@@ -336,7 +355,7 @@ func TestTCPEnginePanicReturnsSlab(t *testing.T) {
 	q := new(dns.Msg)
 	q.SetQuestion("boom.example.", dns.TypeA)
 	wireQ, _ := q.Pack()
-	for i := 0; i < defaultTCPJobs*2; i++ {
+	for i := 0; i < ringSize*2; i++ {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			t.Fatal(err)
