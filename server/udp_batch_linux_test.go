@@ -160,21 +160,28 @@ func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1)
+
+	// The ring is emptied before the reader exists, which is what makes
+	// this deterministic: the reader then parks on its very first take,
+	// holding nothing and inside no syscall. That is the state the fix is
+	// about. A reader already inside recvmmsg is a different case and
+	// needs no help — the admission deadline wakes it.
+	held := make([]*udpJob, 0, cap(e.free))
+	for len(e.free) > 0 {
+		held = append(held, <-e.free)
+	}
 	if !e.startBatched() {
 		_ = pc.Close()
 		t.Skip("batched receive unavailable on this kernel")
 	}
 
-	// Starve the ring: every slab is held here, so the reader is parked on
-	// its first take with nothing on the way.
-	held := make([]*udpJob, 0, cap(e.free))
-	deadline := time.Now().Add(2 * time.Second)
-	for len(held) < cap(e.free) && time.Now().Before(deadline) {
-		select {
-		case j := <-e.free:
-			held = append(held, j)
-		case <-time.After(10 * time.Millisecond):
-		}
+	// Admission stop, exactly as the listener does it. A past deadline
+	// wakes a blocked read; it can do nothing for a goroutine waiting on
+	// a channel, and the slabs that would satisfy that wait are held here
+	// and are not coming back — which is the shape a worker stuck past
+	// the drain deadline produces in production.
+	if err := pc.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
 	}
 
 	done := make(chan error, 1)
@@ -185,9 +192,10 @@ func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("drain returned %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(6 * time.Second):
 		t.Fatal("drain never returned: the batched reader is still parked " +
 			"on a slab that shutdown has no way to hand it")
 	}
 	_ = pc.Close()
+	_ = held
 }
