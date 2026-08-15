@@ -33,8 +33,18 @@ var (
 		Help: "UDP packets dropped before the handler, by reason",
 	}, []string{"reason"})
 
+	// udpOverflowServed counts jobs served on their own goroutine because
+	// no worker was free. It is the signal that the pool is too small for
+	// the shape of the traffic — a resolver serving misses spends most of
+	// its time here, and that is fine; a server that is supposed to be
+	// serving hits should see it near zero.
+	udpOverflow = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_udp_ingress_overflow_total",
+		Help: "UDP queries served outside the fixed worker pool",
+	}, []string{"kind"})
+	udpOverflowServed = udpOverflow.Register("served")
+
 	udpDropFull      = udpIngressDrops.Register("full")
-	udpDropQueue     = udpIngressDrops.Register("queue")
 	udpDropTrunc     = udpIngressDrops.Register("trunc")
 	udpDropCtrunc    = udpIngressDrops.Register("ctrunc")
 	udpDropMalformed = udpIngressDrops.Register("malformed")

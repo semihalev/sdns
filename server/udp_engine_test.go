@@ -261,12 +261,16 @@ func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 	}
 	defer conn.Close()
 
-	before := udpDropFull.Value() + udpDropQueue.Value()
+	before := udpDropFull.Value()
 	q := new(dns.Msg)
 	q.SetQuestion("flood.example.", dns.TypeA)
 	wire, _ := q.Pack()
-	// 2 workers hold jobs, queue holds 4, readers hold 1 — everything
-	// beyond saturates and must shed rather than block the reader.
+	// The ring is what bounds this: two workers, four queued, a batch in
+	// the reader's hand. A packet arriving with no slab left must be shed
+	// rather than block the reader — saturation costs drops, never the
+	// socket. (Queue-full is no longer a drop: a job the pool cannot take
+	// is served on its own goroutine, which is what a miss-heavy resolver
+	// needs and what the fixed pool used to cap.)
 	for i := 0; i < 200; i++ {
 		binary.BigEndian.PutUint16(wire[0:2], uint16(i+1))
 		if _, err := conn.Write(wire); err != nil {
@@ -274,10 +278,10 @@ func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 		}
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	for udpDropFull.Value()+udpDropQueue.Value() == before && time.Now().Before(deadline) {
+	for udpDropFull.Value() == before && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if udpDropFull.Value()+udpDropQueue.Value() == before {
+	if udpDropFull.Value() == before {
 		t.Fatal("saturation produced no shed drops")
 	}
 

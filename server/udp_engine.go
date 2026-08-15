@@ -243,18 +243,37 @@ type udpEngine struct {
 }
 
 // defaultIngressWorkers sizes the fixed pool when the config is silent.
+//
+// Not GOMAXPROCS. A worker is not a CPU here: it runs the whole chain
+// inline, and for anything that is not a cache hit that means holding the
+// worker for the length of an upstream resolution — hundreds of
+// milliseconds of waiting, not of computing. Sized by cores, the pool
+// therefore caps a resolver at cores/latency: measured at four workers
+// and a 50ms handler, exactly four queries were ever in flight and the
+// server answered 78 a second. The old server gave every packet its own
+// goroutine and had no such ceiling.
+//
+// So the pool is sized for concurrency: enough waiting queries in flight
+// to keep upstream busy, which is hundreds. Idle workers cost a stack
+// each and nothing else, and their stacks stay grown — which is the
+// reason to have a pool rather than a goroutine per packet.
 func defaultIngressWorkers() int {
-	n := runtime.GOMAXPROCS(0)
-	if n < 2 {
-		n = 2
+	n := runtime.GOMAXPROCS(0) * 16
+	if n < 256 {
+		n = 256
 	}
-	if n > 64 {
-		n = 64
+	if n > 1024 {
+		n = 1024
 	}
 	return n
 }
 
-const defaultIngressQueue = 512
+// defaultIngressQueue is deliberately shallow. Depth here is not
+// absorption, it is delay: a job queued behind a pool that is blocked on
+// upstream work waits for a worker to come back, and every slot of depth
+// is one more slab held by a query nobody is serving. Overflow goroutines
+// absorb the burst instead, and they start serving immediately.
+const defaultIngressQueue = 64
 
 // udpBatchSize is how many datagrams one recvmmsg/sendmmsg carries at
 // most (Linux batch path). It also sizes the job ring: every reader must
@@ -425,16 +444,30 @@ func (e *udpEngine) enqueue(j *udpJob) {
 	// an idle server settle.
 	e.inFlight.Add(1)
 	j.state = udpJobQueued
+
+	// The pool first, while it can keep up. A served hit is microseconds,
+	// so the queue is empty in the ordinary case and the reply rides the
+	// worker's send burst — which is what keeps the hit path free of both
+	// syscalls and allocations.
 	select {
 	case e.ready <- j:
+		return
 	default:
-		// Released from the queued state, not walked back to reading:
-		// the in-flight count then falls where every other terminal
-		// drops it — after the slab is cleared and back in the ring —
-		// instead of before a release that has not happened yet.
-		j.release(udpJobQueued)
-		udpDropQueue.Inc()
 	}
+
+	// The queue is full, so the pool is not momentarily busy — it is
+	// behind. A miss holds its worker for the whole recursion, hundreds
+	// of milliseconds, so a fixed pool caps concurrency at the number of
+	// workers: measured at exactly four queries in flight with four
+	// workers and a 50ms handler, and 78 answers a second. The old server
+	// gave every packet its own goroutine and had no such ceiling; this
+	// gives one to the packets the pool cannot take, which restores the
+	// ceiling without giving up the burst on the path that has one.
+	//
+	// It is still bounded — by the ring, which this job came out of and
+	// which is the memory bound the design already states.
+	udpOverflowServed.Inc()
+	go e.serve(j, nil)
 }
 
 // quiesced reports whether every slab is back in the ring: nothing is
