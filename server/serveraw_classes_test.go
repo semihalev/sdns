@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/mock"
 )
 
@@ -298,12 +301,23 @@ func TestServeRawHitClasses(t *testing.T) {
 				return
 			}
 			// The class gate: the warm wire hit allocates nothing.
-			if allocs := testing.AllocsPerRun(100, func() {
+			//
+			// The outcome counters are read around the measurement so a
+			// failure says which decision was taken, not just that the
+			// cost was wrong. A wire hit that quietly starts taking the
+			// Msg path costs about a hundred objects and looks identical
+			// to a regression in the byte path itself; the counters are
+			// the difference between the two.
+			before := wireOutcomes()
+			allocs := testing.AllocsPerRun(100, func() {
 				if !s.ServeRaw(job, raw, time.Now()) {
 					t.Fatal("hit serve not handled")
 				}
-			}); allocs != 0 {
-				t.Fatalf("class %s: warm wire hit allocated %.2f objects per serve", tc.name, allocs)
+			})
+			if allocs != 0 {
+				t.Fatalf("class %s: warm wire hit allocated %.2f objects per serve; "+
+					"byte-path outcomes over the measurement: %s",
+					tc.name, allocs, wireOutcomeDelta(before))
 			}
 		})
 	}
@@ -375,4 +389,45 @@ func optionSetKey(opt *dns.OPT) string {
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n")
+}
+
+// wireOutcomes reads the cache's byte-path outcome counters out of the
+// default prometheus registry. The counters live in another package and
+// are unexported there; the registry is the seam that is already public,
+// and a test that can name the decline is worth the gather.
+func wireOutcomes() map[string]float64 {
+	metric.FlushAll()
+	out := map[string]float64{}
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		return out
+	}
+	for _, f := range families {
+		if f.GetName() != "dns_cache_wire_fastpath_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "outcome" {
+					out[l.GetValue()] = m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return out
+}
+
+// wireOutcomeDelta renders what changed since before.
+func wireOutcomeDelta(before map[string]float64) string {
+	var parts []string
+	for outcome, now := range wireOutcomes() {
+		if d := now - before[outcome]; d != 0 {
+			parts = append(parts, fmt.Sprintf("%s=%.0f", outcome, d))
+		}
+	}
+	if len(parts) == 0 {
+		return "none recorded"
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
 }

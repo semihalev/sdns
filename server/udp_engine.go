@@ -428,9 +428,11 @@ func (e *udpEngine) enqueue(j *udpJob) {
 	select {
 	case e.ready <- j:
 	default:
-		e.inFlight.Add(-1)
-		j.state = udpJobReading
-		j.release(udpJobReading)
+		// Released from the queued state, not walked back to reading:
+		// the in-flight count then falls where every other terminal
+		// drops it — after the slab is cleared and back in the ring —
+		// instead of before a release that has not happened yet.
+		j.release(udpJobQueued)
 		udpDropQueue.Inc()
 	}
 }
