@@ -93,10 +93,10 @@ func runGate(t *testing.T, flavor string) {
 	// log line — and attribution alone would not see them. Their constant
 	// background is the same in both windows and cancels in the
 	// difference; what survives is per-query, wherever it lives.
-	growth := large.other - small.other
 	extra := large.ops - small.ops
-	t.Logf("stage %s flavor %s: %d extra queries moved the rest of the server by %+d (%.6f/op, bound %d)",
-		Stage, flavor, extra, growth, float64(growth)/float64(extra), ScalingSlack)
+	t.Logf("stage %s flavor %s: %d extra queries moved the rest of the server by %+d "+
+		"and the process's exact malloc count by %+d (bound %d)",
+		Stage, flavor, extra, large.other-small.other, large.exact-small.exact, ScalingSlack)
 	if err := scalingVerdict(small, large); err != nil {
 		t.Fatalf("stage %s flavor %s: %v", Stage, flavor, err)
 	}
@@ -117,15 +117,41 @@ func exactVerdict(w window) error {
 	return nil
 }
 
-// scalingVerdict is the ops-relative one: nothing off the serving stacks
-// grows with the traffic.
+// scalingVerdict is the ops-relative one, and it is a bound rather than a
+// zero. Two things live under it that attribution cannot settle:
+//
+// Work handed to another goroutine allocates under a stack with no engine
+// frame, so only its growth with traffic gives it away.
+//
+// And the profile itself is not complete. Go's tiny allocator batches
+// pointer-free objects of 16 bytes or less into a shared block and
+// returns before the sampling code runs, so only the block that opens a
+// batch is recorded — measured here at exactly one record per sixteen
+// one-byte objects. A per-query tiny allocation is therefore still caught
+// (a million queries would leave ~62k records on the serving stacks, and
+// the exact verdict fails on one), but a handful landing in a block
+// somebody else opened can leave no record at all.
+//
+// So this verdict is taken twice: once over what attribution attributed,
+// and once over MemStats.Mallocs, which counts every logical allocation
+// including the tiny ones and needs no attribution to do it. The second
+// is what closes the tiny-allocator gap for anything per-query. What
+// neither closes is a bounded, non-scaling handful of tiny objects; that
+// residue is documented rather than claimed away.
 func scalingVerdict(small, large window) error {
-	growth := large.other - small.other
 	extra := large.ops - small.ops
-	if growth > ScalingSlack {
-		return fmt.Errorf("%d extra queries cost %d extra objects off the serving "+
-			"stacks (%.6f/op); something the queries reach scales with traffic",
-			extra, growth, float64(growth)/float64(extra))
+	for _, v := range []struct {
+		what   string
+		growth int64
+	}{
+		{"objects off the serving stacks", large.other - small.other},
+		{"logical allocations process-wide", large.exact - small.exact},
+	} {
+		if v.growth > ScalingSlack {
+			return fmt.Errorf("%d extra queries cost %d extra %s (%.6f/op); "+
+				"something the queries reach scales with traffic",
+				extra, v.growth, v.what, float64(v.growth)/float64(extra))
+		}
 	}
 	return nil
 }
@@ -168,7 +194,7 @@ func measure(t *testing.T, flavor string, ops int, env []string) (window, window
 	// process's constant background from anything that scales with
 	// queries, because only the latter doubles.
 	child.quiesce(t)
-	child.markBoth(t) // opens the first window; its own counts are the baseline
+	_, base := child.markBoth(t) // opens the first window; its counts are the baseline
 
 	// A discarded window first. The claim is about serving, and serving
 	// steadily: the first packet through a path also builds the itab the
@@ -177,14 +203,14 @@ func measure(t *testing.T, flavor string, ops int, env []string) (window, window
 	// of a query, and they are one-time by construction — a per-query cost
 	// would still be there in the windows that follow, which is what makes
 	// discarding this one safe rather than convenient.
-	runFlood(t, child, flavor, target, warmupOps(ops))
+	warmed := runFlood(t, child, flavor, target, warmupOps(ops), base.open)
 
 	// The pair is ops/2 and ops rather than ops and 2*ops: a TCP window
 	// cannot ask for more queries than the server's connection cap times
 	// its per-connection budget, and the larger of the two is what has to
 	// fit.
-	small := runFlood(t, child, flavor, target, ops/2)
-	large := runFlood(t, child, flavor, target, ops)
+	small := runFlood(t, child, flavor, target, ops/2, warmed.open)
+	large := runFlood(t, child, flavor, target, ops, small.open)
 	return small, large
 }
 
@@ -210,6 +236,25 @@ func TestZeroGateCatchesInjectedAllocations(t *testing.T) {
 			t.Fatalf("a deep serving allocation passed the exact verdict "+
 				"(served %d/%d, unclassifiable %d/%d)",
 				small.served, large.served, small.unknown, large.unknown)
+		}
+	})
+
+	t.Run("tiny allocation the profiler batches", func(t *testing.T) {
+		// One byte per query, pointer-free: sixteen of these share a
+		// block and only the block is profiled. Batching hides the
+		// count, not the cost — the exact verdict still sees a record
+		// every sixteenth query, and the malloc counter sees all of them.
+		small, large := measure(t, FlavorUDP4Specific, ops, []string{"ZEROGATE_INJECT=tiny"})
+		t.Logf("caught as: served %d/%d over %d/%d queries; exact malloc growth %+d",
+			small.served, large.served, small.ops, large.ops, large.exact-small.exact)
+		if exactVerdict(small) == nil && exactVerdict(large) == nil {
+			t.Fatal("a per-query tiny allocation passed the exact verdict; " +
+				"the profiler's batching is hiding a real cost")
+		}
+		if err := scalingVerdict(small, large); err == nil {
+			t.Fatal("a per-query tiny allocation did not move the exact malloc " +
+				"count; the counter that is supposed to see every logical " +
+				"allocation is not seeing these")
 		}
 	})
 
@@ -248,6 +293,8 @@ type window struct {
 	other     int64
 	parked    int64
 	unknown   int64
+	exact     int64  // process-wide mallocs, measurement excluded
+	open      uint64 // where the next window starts counting
 	elapsed   time.Duration
 	offenders []string
 }
@@ -257,7 +304,7 @@ type window struct {
 // the last slabs to come home — a sleep either wastes the difference or,
 // on a slow machine, closes the window while jobs are still being
 // released, which charges their work to whatever window comes next.
-func runFlood(t *testing.T, child *harnessProc, flavor, target string, ops int) window {
+func runFlood(t *testing.T, child *harnessProc, flavor, target string, ops int, origin uint64) window {
 	t.Helper()
 
 	// A TCP window brings its own connections, and they are opened before
@@ -288,7 +335,8 @@ func runFlood(t *testing.T, child *harnessProc, flavor, target string, ops int) 
 		floodTCPOn(t, conns, settle)
 
 		child.quiesce(t)
-		child.markBoth(t)
+		_, accepted := child.markBoth(t)
+		origin = accepted.open
 	}
 
 	started := time.Now()
@@ -303,7 +351,8 @@ func runFlood(t *testing.T, child *harnessProc, flavor, target string, ops int) 
 	mallocs, m := child.markBoth(t)
 	w := window{
 		ops: ops, mallocs: mallocs, served: m.served,
-		other: m.other, parked: m.parked, unknown: m.unknown, elapsed: elapsed,
+		other: m.other, parked: m.parked, unknown: m.unknown,
+		exact: int64(mallocs - origin), open: m.open, elapsed: elapsed,
 	}
 	if m.served != 0 || m.unknown != 0 || os.Getenv("ZEROGATE_ALL_SITES") != "" {
 		// Collected here rather than at the verdict: the offender list
@@ -445,8 +494,8 @@ func (h *harnessProc) quiesce(t *testing.T) {
 func (h *harnessProc) markBoth(t *testing.T) (uint64, marks) {
 	t.Helper()
 	fields := strings.Fields(h.send(t, "mark", "MALLOCS "))
-	if len(fields) != 9 || fields[1] != "SERVED" || fields[3] != "OTHER" ||
-		fields[5] != "PARKED" || fields[7] != "UNKNOWN" {
+	if len(fields) != 11 || fields[1] != "OPEN" || fields[3] != "SERVED" ||
+		fields[5] != "OTHER" || fields[7] != "PARKED" || fields[9] != "UNKNOWN" {
 		t.Fatalf("bad mark reply %q", strings.Join(fields, " "))
 	}
 	mallocs, err := strconv.ParseUint(fields[0], 10, 64)
@@ -454,15 +503,18 @@ func (h *harnessProc) markBoth(t *testing.T) (uint64, marks) {
 		t.Fatalf("bad malloc count %q: %v", fields[0], err)
 	}
 	var m marks
+	if m.open, err = strconv.ParseUint(fields[2], 10, 64); err != nil {
+		t.Fatalf("bad open count %q: %v", fields[2], err)
+	}
 	for _, f := range []struct {
 		name string
 		at   int
 		into *int64
 	}{
-		{"served", 2, &m.served},
-		{"other", 4, &m.other},
-		{"parked", 6, &m.parked},
-		{"unknown", 8, &m.unknown},
+		{"served", 4, &m.served},
+		{"other", 6, &m.other},
+		{"parked", 8, &m.parked},
+		{"unknown", 10, &m.unknown},
 	} {
 		v, err := strconv.ParseInt(fields[f.at], 10, 64)
 		if err != nil {
@@ -475,10 +527,11 @@ func (h *harnessProc) markBoth(t *testing.T) (uint64, marks) {
 
 // marks is one mark's classification of the window that just closed.
 type marks struct {
-	served  int64 // the server's own code, on a serving goroutine
-	other   int64 // anywhere else in the server
-	parked  int64 // of other: scheduler bookkeeping for a parked serving goroutine
-	unknown int64 // stacks too deep to classify at all
+	open    uint64 // process-wide malloc count after the snapshot: the next window's origin
+	served  int64  // the server's own code, on a serving goroutine
+	other   int64  // anywhere else in the server
+	parked  int64  // of other: scheduler bookkeeping for a parked serving goroutine
+	unknown int64  // stacks too deep to classify at all
 }
 
 // offenders returns the allocating sites behind a nonzero served count,

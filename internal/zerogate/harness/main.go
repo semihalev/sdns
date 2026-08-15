@@ -8,8 +8,12 @@
 //	parent → child:  quiesce   → waits until no job slab is outstanding,
 //	                             prints "QUIESCED ok" or "QUIESCED timeout"
 //	parent → child:  mark      → two GCs, then
-//	                             "MALLOCS <n> SERVED <k> OTHER <m> PARKED <p>
-//	                             UNKNOWN <u>":
+//	                             "MALLOCS <close> OPEN <open> SERVED <k>
+//	                             OTHER <m> PARKED <p> UNKNOWN <u>":
+//	                             close/open bracket the snapshot, so a
+//	                             window's exact malloc delta (close minus
+//	                             the previous open) excludes the
+//	                             measurement's own cost;
 //	                             k is the objects the server's own code
 //	                             allocated on a serving goroutine (the
 //	                             gate's exact verdict), m the objects
@@ -335,6 +339,25 @@ func run() error {
 				}
 				time.Sleep(time.Millisecond)
 			}
+			// Slabs being home says the engines are done; it says nothing
+			// about work they handed to someone else. Wait for the
+			// process to stop allocating as well, so a refresh, a flush
+			// or a log line that trails the traffic lands in the window
+			// that caused it rather than in the next one. Best effort and
+			// bounded: a process with a periodic background will never go
+			// perfectly still, and the ops-relative verdicts are what
+			// cover that.
+			var prev, cur runtime.MemStats
+			runtime.ReadMemStats(&prev)
+			for still, tries := 0, 0; still < 3 && tries < 100; tries++ {
+				time.Sleep(2 * time.Millisecond)
+				runtime.ReadMemStats(&cur)
+				if cur.Mallocs == prev.Mallocs {
+					still++
+					continue
+				}
+				still, prev = 0, cur
+			}
 			if _, err := fmt.Printf("QUIESCED %s\n", verdict); err != nil {
 				return err
 			}
@@ -347,13 +370,26 @@ func run() error {
 			runtime.GC()
 			runtime.GC()
 			runtime.ReadMemStats(&ms)
+			// Read once to close the window and once to open the next,
+			// with the snapshot between them. MemStats.Mallocs counts
+			// every logical allocation — including the tiny ones the
+			// profiler never sees, because an object that fits the
+			// current 16-byte tiny block is returned before the sampling
+			// code runs. It is the exact signal; it just cannot say who
+			// allocated. Bracketing the snapshot keeps the measurement's
+			// own cost out of both windows, which is what makes the
+			// number usable at all.
+			closeMallocs := ms.Mallocs
 			now := profile()
 			var served, other, parked, unknown int64
 			if prev != nil {
 				served, other, parked, unknown, lastServe = since(prev, now)
 			}
 			prev = now
+			runtime.ReadMemStats(&ms)
 			reply = append(reply[:0], "MALLOCS "...)
+			reply = strconv.AppendUint(reply, closeMallocs, 10)
+			reply = append(reply, " OPEN "...)
 			reply = strconv.AppendUint(reply, ms.Mallocs, 10)
 			reply = append(reply, " SERVED "...)
 			reply = strconv.AppendInt(reply, served, 10)

@@ -26,6 +26,14 @@ const (
 	// through as residue.
 	ModeDeep = "deep"
 
+	// ModeTiny allocates a one-byte pointer-free object per query, which
+	// is the shape Go's tiny allocator batches: sixteen of them share a
+	// block, and only the block that opens a batch is ever profiled. It
+	// is here to show that batching hides the count, not the cost — a
+	// per-query tiny allocation still leaves a record every sixteenth
+	// query, and the exact malloc counter sees every single one.
+	ModeTiny = "tiny"
+
 	// ModeAsync hands a token to a goroutine that is already running,
 	// which allocates. Nothing allocates on the serving stack at all, so
 	// attribution is blind by construction and the ops-relative verdict
@@ -53,6 +61,8 @@ func (h *Handler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	switch h.mode {
 	case ModeDeep:
 		deepAlloc(48)
+	case ModeTiny:
+		tinyAlloc()
 	case ModeAsync:
 		select {
 		case asyncWork <- struct{}{}:
@@ -74,6 +84,16 @@ func deepAlloc(depth int) {
 	}
 	b := make([]byte, 32)
 	sink.Store(&b)
+}
+
+// tinySink is byte-sized and pointer-free: the tiny allocator's own case.
+var tinySink atomic.Pointer[byte]
+
+//go:noinline
+func tinyAlloc() {
+	b := new(byte)
+	*b = 1
+	tinySink.Store(b)
 }
 
 var asyncWork = make(chan struct{}, 4096)

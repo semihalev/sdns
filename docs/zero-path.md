@@ -58,26 +58,51 @@ returns two verdicts:
    escaped into a socket write out of the verdict with it. The count is
    reported at every window; the rule is pinned by
    `TestParkBookkeepingIsTheAllocatingFrame`.
-2. **Ops-relative, for what attribution cannot see.** Work handed to
-   another goroutine allocates under a stack with no engine frame. Two
-   windows are measured, the second carrying twice the traffic; constant
-   background cancels in the difference, and what survives is per-query.
-   `ScalingSlack` (64 objects) bounds that difference — at a million
-   queries, below 10⁻⁴ objects per query.
+2. **Ops-relative, for what attribution cannot see** — a bound, not a
+   zero. Two windows are measured, the second carrying twice the traffic;
+   constant background cancels in the difference and what survives is
+   per-query. `ScalingSlack` (64 objects) bounds it — at a million
+   queries, below 10⁻⁴ objects per query. Two things live under it:
 
-Both verdicts are themselves tested, by injecting allocations in the two
-shapes attribution is weakest against
+   *Work handed to another goroutine* allocates under a stack with no
+   engine frame, so only its growth with traffic gives it away.
+
+   *The profile is not complete.* Go's tiny allocator batches pointer-free
+   objects of ≤16 bytes into a shared block and returns before the
+   sampling code runs (`runtime/malloc.go`, `mallocgcTiny`), so only the
+   block that opens a batch is recorded — measured at exactly one record
+   per sixteen one-byte objects. A per-query tiny allocation is therefore
+   still caught by verdict 1 (a million queries leave ~62k records on the
+   serving stacks, and one is enough to fail), but a handful landing in a
+   block somebody else opened can leave no record at all. So this verdict
+   is taken twice: over what attribution attributed, and over
+   `MemStats.Mallocs`, which counts every logical allocation including the
+   tiny ones. The second closes the gap for anything per-query. What
+   neither closes is a bounded, non-scaling handful of tiny objects.
+
+   Marks bracket their own snapshot with two malloc reads, so the
+   measurement's cost — thousands of objects per snapshot, with every
+   allocation profiled — is excluded from both windows rather than
+   charged to the traffic that follows.
+
+Both verdicts are themselves tested, by injecting allocations in the
+three shapes they are weakest against
 (`TestZeroGateCatchesInjectedAllocations`): one made on the serving
 goroutine but too deep to classify, which the exact verdict must refuse
-as unclassifiable, and one handed to a goroutine that was already
-running, which only the ops-relative verdict can see.
+as unclassifiable; one pointer-free byte per query, which the profiler
+batches sixteen-to-one and both verdicts must still catch; and one handed
+to a goroutine that was already running, which only the ops-relative
+verdict can see.
 
 Window boundaries are the server's own completion barrier
 (`Server.Quiesced`: every job slab back in its ring), not a sleep — the
 last reply reaching a client says the bytes left, not that the slab which
 carried them was released, and the release is where the request's state
 is cleared. The in-flight count therefore drops *after* the slab is wiped
-and back in the ring, so a window cannot close mid-wipe. Marks take **two** forced GCs (the second
+and back in the ring, so a window cannot close mid-wipe. The barrier then
+waits for the process's malloc count to go still, bounded and best
+effort, so work the engines handed elsewhere lands in the window that
+caused it rather than the next one. Marks take **two** forced GCs (the second
 empties `sync.Pool` victim caches; the profile is also only current as of
 the last collection). A discarded warm-up window precedes the measured
 ones: the first packet through a path also builds an itab and grows a
