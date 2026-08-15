@@ -2,14 +2,13 @@ package accesslist
 
 import (
 	"context"
-	"net"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/ipset"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
-	"github.com/yl2chen/cidranger"
 )
 
 // accessDenied counts queries dropped because the client IP isn't in
@@ -22,35 +21,22 @@ var accessDenied = metric.NewCounter(nil, prometheus.CounterOpts{
 
 // List type.
 type List struct {
-	ranger cidranger.Ranger
-
-	// allowAll marks the default open configuration. The ranger lookup
-	// converts the client IP on every query (an allocation on the hottest
-	// path), and an operator who configured no list at all asked for no
-	// filtering — so the default answers without touching the ranger.
-	allowAll bool
+	allowed *ipset.Set
 }
 
 // New return accesslist.
 func New(cfg *config.Config) *List {
-	a := new(List)
 	if len(cfg.AccessList) == 0 {
 		cfg.AccessList = append(cfg.AccessList, "0.0.0.0/0")
 		cfg.AccessList = append(cfg.AccessList, "::0/0")
-		a.allowAll = true
 	}
 
-	a.ranger = cidranger.NewPCTrieRanger()
-	for _, cidr := range cfg.AccessList {
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err != nil {
-			zlog.Error("Access list parse cidr failed", "error", err.Error())
-			continue
-		}
-
-		_ = a.ranger.Insert(cidranger.NewBasicRangerEntry(*ipnet))
-
+	a := new(List)
+	set, bad := ipset.New(cfg.AccessList)
+	for _, entry := range bad {
+		zlog.Error("Access list parse cidr failed", "cidr", entry.CIDR, "error", entry.Err.Error())
 	}
+	a.allowed = set
 
 	return a
 }
@@ -66,14 +52,16 @@ func (a *List) ClientOnly() bool { return true }
 
 // (*List).ServeDNS serveDNS implements the Handle interface.
 func (a *List) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if a.allowAll || ch.Writer.Internal() {
+	if ch.Writer.Internal() {
 		ch.Next(ctx)
 		return
 	}
 
-	allowed, _ := a.ranger.Contains(ch.Writer.RemoteIP())
-
-	if !allowed {
+	// This runs before the cache, so it runs on every query the server
+	// answers: the lookup is a binary search over compiled ranges and
+	// allocates nothing, which is why the open default no longer needs a
+	// flag to skip it.
+	if !a.allowed.ContainsIP(ch.Writer.RemoteIP()) {
 		accessDenied.Inc()
 		// no reply to client
 		ch.Cancel()

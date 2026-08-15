@@ -12,14 +12,13 @@ package views
 
 import (
 	"context"
-	"net"
 	"strings"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/ipset"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
-	"github.com/yl2chen/cidranger"
 )
 
 // Views is the configured set of per-CIDR static-answer views,
@@ -29,9 +28,9 @@ type Views struct {
 }
 
 type compiledView struct {
-	zone    string
-	ranger  cidranger.Ranger
-	answers []dns.RR
+	zone     string
+	networks *ipset.Set
+	answers  []dns.RR
 }
 
 // New parses cfg.Views into compiled in-memory tables. Malformed
@@ -42,17 +41,13 @@ type compiledView struct {
 func New(cfg *config.Config) *Views {
 	v := &Views{}
 	for _, vc := range cfg.Views {
-		cv := &compiledView{
-			zone:   vc.Zone,
-			ranger: cidranger.NewPCTrieRanger(),
+		networks, bad := ipset.New(vc.Networks)
+		for _, entry := range bad {
+			zlog.Error("View network CIDR parse failed", "view", vc.Zone, "cidr", entry.CIDR, "error", entry.Err.Error())
 		}
-		for _, cidr := range vc.Networks {
-			_, ipnet, err := net.ParseCIDR(cidr)
-			if err != nil {
-				zlog.Error("View network CIDR parse failed", "view", vc.Zone, "cidr", cidr, "error", err.Error())
-				continue
-			}
-			_ = cv.ranger.Insert(cidranger.NewBasicRangerEntry(*ipnet))
+		cv := &compiledView{
+			zone:     vc.Zone,
+			networks: networks,
 		}
 		for _, rr := range vc.Answers {
 			parsed, err := dns.NewRR(rr)
@@ -105,8 +100,7 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	qname := dns.CanonicalName(q.Name)
 
 	for _, cv := range v.views {
-		ok, _ := cv.ranger.Contains(clientIP)
-		if !ok {
+		if !cv.networks.ContainsIP(clientIP) {
 			continue
 		}
 

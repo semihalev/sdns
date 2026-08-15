@@ -54,3 +54,26 @@ func Test_Accesslist(t *testing.T) {
 	ch.Writer = mw
 	a.ServeDNS(context.Background(), ch)
 }
+
+// The access list runs before the cache, so it runs on every query the
+// server answers — and the shipped configuration spells the open default
+// out as "0.0.0.0/0" and "::0/0" rather than leaving the list empty. That
+// is the configuration almost every deployment runs, and under it this
+// middleware used to convert the client address into a freshly allocated
+// slice per query, which a profile of a loaded server found at the top of
+// the allocation list.
+func Test_AccesslistServesWithoutAllocating(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.AccessList = []string{"0.0.0.0/0", "::0/0"}
+	a := New(cfg)
+
+	ch := middleware.NewChain([]middleware.Handler{})
+	ch.Writer = mock.NewWriter("udp", "192.0.2.44:53")
+	ctx := context.Background()
+
+	if allocs := testing.AllocsPerRun(200, func() {
+		a.ServeDNS(ctx, ch)
+	}); allocs != 0 {
+		t.Fatalf("the access list allocated %.2f objects per query", allocs)
+	}
+}
