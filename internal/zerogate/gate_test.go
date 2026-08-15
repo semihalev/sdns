@@ -203,6 +203,18 @@ func runFlood(t *testing.T, child *harnessProc, flavor, target string, ops int) 
 				_ = c.Close()
 			}
 		}()
+		// One query per connection before the window opens. Dialing
+		// returns when the handshake completes, which says nothing about
+		// the server having reached its Accept — and an accept that lands
+		// inside the window bills a connection's socket, buffers and
+		// goroutine to whichever queries happen to follow it. A served
+		// reply is proof the connection is fully up.
+		settle := make([]int, len(conns))
+		for i := range settle {
+			settle[i] = 1
+		}
+		floodTCPOn(t, conns, settle)
+
 		child.quiesce(t)
 		child.markBoth(t)
 	}
