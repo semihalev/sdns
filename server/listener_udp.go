@@ -65,16 +65,20 @@ func (l *udpListener) Quiesced() bool {
 
 // bindWildcard reports whether addr's host is absent or unspecified —
 // the binds that need destination-address recovery on replies.
-func bindWildcard(addr string) (wildcard, v6 bool) {
+//
+// The family is deliberately not inferred here. A bind with no host is
+// one dual-stack socket carrying both, so there is no single answer, and
+// the receive options are armed for both families instead.
+func bindWildcard(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil || host == "" {
-		return true, false
+		return true
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return false, false
+		return false
 	}
-	return ip.IsUnspecified(), ip.To4() == nil
+	return ip.IsUnspecified()
 }
 
 func (l *udpListener) Bind(ctx context.Context) error {
@@ -84,10 +88,10 @@ func (l *udpListener) Bind(ctx context.Context) error {
 		return errors.New("udp listener: Bind called twice")
 	}
 
-	wildcard, v6 := bindWildcard(l.addr)
+	wildcard := bindWildcard(l.addr)
 	control := reusePortControl
 	if wildcard {
-		control = pktinfoControl("udp", v6)
+		control = pktinfoControl("udp")
 	}
 	lc := net.ListenConfig{Control: control}
 

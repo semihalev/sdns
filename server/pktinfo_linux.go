@@ -26,23 +26,38 @@ const pktinfoSpace = 64
 
 // pktinfoControl returns the ListenConfig control hook enabling receive
 // pktinfo on a wildcard socket, composed with the reuse-port hook.
-func pktinfoControl(network string, v6 bool) func(network, address string, c syscall.RawConn) error {
+// Both families are armed, and the socket decides which one applies.
+// Guessing from the bind string does not work: a plain ":53" asks Go for
+// a dual-stack socket, which carries IPv6 datagrams as well as
+// v4-mapped ones, and a socket armed for IPv4 alone hands those v6
+// datagrams over with no control message at all. The reply path cannot
+// know which local address they arrived on, so it refuses them — and
+// IPv6 service disappears on the most ordinary configuration there is,
+// counted as a drop and otherwise silent.
+//
+// Arming the option a socket does not support fails harmlessly, so the
+// bind succeeds when at least one applies: IPv4-only sockets take
+// IP_PKTINFO, IPv6-only take IPV6_RECVPKTINFO, dual-stack take both.
+func pktinfoControl(network string) func(network, address string, c syscall.RawConn) error {
 	return func(net, addr string, c syscall.RawConn) error {
 		if err := reusePortControl(net, addr, c); err != nil {
 			return err
 		}
-		var serr error
-		err := c.Control(func(fd uintptr) {
-			if v6 {
-				serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_RECVPKTINFO, 1) //nolint:gosec // fd from RawConn
-			} else {
-				serr = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1) //nolint:gosec // fd from RawConn
-			}
-		})
-		if err != nil {
+		var v4err, v6err error
+		if err := c.Control(func(fd uintptr) {
+			v4err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1)         //nolint:gosec // fd from RawConn
+			v6err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_RECVPKTINFO, 1) //nolint:gosec // fd from RawConn
+		}); err != nil {
 			return err
 		}
-		return serr
+		if v4err != nil && v6err != nil {
+			// Neither family took it: this socket cannot tell us where a
+			// datagram landed, and a wildcard bind that cannot answer
+			// from the right source address is worse than one that
+			// refuses to start.
+			return v4err
+		}
+		return nil
 	}
 }
 

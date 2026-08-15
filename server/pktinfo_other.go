@@ -16,7 +16,7 @@ const msgTrunc = 0
 
 const pktinfoSpace = 32
 
-func pktinfoControl(_ string, _ bool) func(network, address string, c syscall.RawConn) error {
+func pktinfoControl(_ string) func(network, address string, c syscall.RawConn) error {
 	return reusePortControl
 }
 

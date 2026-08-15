@@ -172,7 +172,7 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 		// Accepted header, undecodable body: engine-side FORMERR parity.
 		return false
 	}
-	s.serveMsg(context.Background(), w, m, true)
+	s.serveMsgBy(context.Background(), w, m, true, readTime.Add(s.queryTimeout()))
 	return true
 }
 

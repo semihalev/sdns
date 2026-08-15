@@ -80,10 +80,25 @@ func (s *Server) ServeMsg(parent context.Context, w middleware.Transport, r *dns
 }
 
 func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns.Msg, directPack bool) {
+	s.serveMsgBy(parent, w, r, directPack, time.Now().Add(s.queryTimeout()))
+}
+
+// serveMsgBy is serveMsg with the deadline stated rather than started
+// here. The raw ingress passes one anchored at the packet's arrival, so
+// a query that has already spent part of its budget waiting for a slab
+// does not get a fresh full budget the moment it leaves the byte path —
+// under saturation that is exactly the query that would hold a worker
+// and an upstream lookup longest, and precisely when neither can spare
+// it. Callers with no arrival time (the decoded-message API) start the
+// clock at the call.
+func (s *Server) serveMsgBy(
+	parent context.Context, w middleware.Transport, r *dns.Msg,
+	directPack bool, deadline time.Time,
+) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx := contextutil.WithLazyTimeout(parent, s.queryTimeout())
+	ctx := contextutil.WithLazyDeadline(parent, deadline)
 	defer ctx.Cancel()
 	if contextutil.EffectiveError(ctx) != nil {
 		return
@@ -195,12 +210,25 @@ func (s *Server) superviseShutdown(ctx context.Context, active []Listener) {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout())
 	defer cancel()
+
+	// All at once, on one shared deadline. Taken in turn, every listener
+	// after the first keeps admitting work — new connections, new queries
+	// — for as long as the ones ahead of it take to drain, which is the
+	// opposite of what a shutdown is for. Each listener stops its own
+	// admission before it drains, so starting them together closes the
+	// door everywhere first.
+	var wg sync.WaitGroup
 	for _, l := range active {
-		if err := l.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
-			zlog.Error("listener shutdown failed",
-				"proto", l.Proto(), "addr", l.Addr(), "error", err.Error())
-		}
+		wg.Add(1)
+		go func(l Listener) {
+			defer wg.Done()
+			if err := l.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+				zlog.Error("listener shutdown failed",
+					"proto", l.Proto(), "addr", l.Addr(), "error", err.Error())
+			}
+		}(l)
 	}
+	wg.Wait()
 }
 
 func (s *Server) shutdownTimeout() time.Duration {
