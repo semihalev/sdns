@@ -55,9 +55,18 @@ const (
 	// time than announcing it did, which is why this is the first-read
 	// allowance and not the idle timeout — staying silent is a client's
 	// right, holding a shared slab while it does so is not.
-	tcpQueryWait    = tcpFirstReadWait
-	tcpQueryBudget  = 2048
-	defaultTCPConns = 512
+	tcpQueryWait   = tcpFirstReadWait
+	tcpQueryBudget = 2048
+	// defaultTCPConns is the admission cap, and it is deliberately well
+	// above what one busy client population needs. It was 512, which cost
+	// more than it protected: measured against the server this replaces,
+	// 600 concurrent connections served 92k queries a second at 512 and
+	// 204k at this number — because the cap also sizes the small ring, and
+	// connections that arrive with nowhere to go are refused rather than
+	// queued. What it guards is a connection flood, and a goroutine and a
+	// pooled stream per connection is a far cheaper thing to bound than
+	// the slab ring is: the ring stays capped at maxSmallJobs regardless.
+	defaultTCPConns = 4096
 	// defaultTCPLargeJobs bounds the big class. Large frames are rare, so
 	// this exists to serve them without letting them define the ring's
 	// memory: the small class is what a busy server actually runs on.
@@ -217,9 +226,12 @@ func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
 	return e
 }
 
+// largeClass reports whether a frame of this length needs the large class.
+func largeClass(length int) bool { return length > tcpSmallFrame }
+
 // ring returns the class a frame of this length needs.
 func (e *tcpEngine) ring(length int) chan *tcpJob {
-	if length > tcpSmallFrame {
+	if largeClass(length) {
 		return e.freeLarge
 	}
 	return e.freeSmall
@@ -377,10 +389,20 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 		readTime := time.Now()
 		stream.deadline = readTime.Add(tcpQueryWait)
 
-		// A burst that started small and met a large frame hands the small
-		// slab back rather than trying to read into it: the class is the
-		// frame's, not the connection's.
-		if job != nil && length > len(job.rx) {
+		// The class belongs to the frame, not to the connection — and that
+		// cuts both ways. Growing is the obvious half: a small slab cannot
+		// hold a large frame, so it goes back rather than being read into.
+		// Shrinking is the half that decides whether the server stays up.
+		// The large ring is defaultTCPLargeJobs deep because large frames
+		// are rare; a burst that met one and then went back to ordinary
+		// queries would hold one of those few for the rest of the
+		// connection, and that many connections own the class outright.
+		// The next client to announce a large frame then waits its whole
+		// budget and is dropped — with a ring full of slabs no one needs.
+		// Handing it back costs two channel operations on a transition that
+		// is rare by construction, and the small class it swaps into has a
+		// slab per admissible connection.
+		if job != nil && job.large != largeClass(length) {
 			release()
 		}
 		if job == nil {

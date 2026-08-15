@@ -90,7 +90,11 @@ type udpJob struct {
 	burst    *udpTXBurst
 
 	written bool
-	state   uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
+	// spare marks a slab that came from the pool the ring stretches into
+	// rather than from the ring itself, so release sends it back where it
+	// came from. Set once, when the slab is made.
+	spare bool
+	state uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
 }
 
 const (
@@ -224,16 +228,32 @@ type udpEngine struct {
 	// counting them would mean an idle server never reads as settled.
 	inFlight atomic.Int64
 
-	// closing is the readers' shutdown signal. The portable reader never
-	// blocks on the ring, but the batched one waits for its first slab —
-	// and a wait whose only wake-up is another goroutine returning a slab
-	// is a wait that shutdown cannot bound.
-	closing   chan struct{}
-	closeOnce sync.Once
+	// spare is where the ring stretches to. A slab is held for the whole
+	// request, so on a hit it comes back in microseconds and the ring is
+	// never short — but a miss holds one for an upstream resolution, and
+	// with a fixed ring the number of slabs is then a hard ceiling on how
+	// many queries the server can have in flight at once. Cold traffic
+	// runs straight into it: throughput settles at ring size over
+	// resolution latency, no matter how many clients are asking.
+	//
+	// So the ring is the steady state, not the limit. When it is empty a
+	// reader takes a spare instead of shedding a query the resolver could
+	// still answer. Spares are pooled rather than kept, so a burst leaves
+	// no permanent resident set behind; borrowed is bounded by
+	// maxSpareSlabs.
+	spare    sync.Pool
+	borrowed atomic.Int64
 
 	workers int
 	readers sync.WaitGroup
 	workerG sync.WaitGroup
+	// overflowG joins the goroutines that serve what the pool could not
+	// take. A query served off the pool is still a query the shutdown
+	// deadline promised an answer to, and the sockets are closed the
+	// moment the drain returns. Members are added only from a reader, and
+	// the readers are joined before this barrier is waited on, so nothing
+	// can join it after the wait has begun.
+	overflowG sync.WaitGroup
 
 	// Per-worker send state and the raw handles their sends go through
 	// (Linux; both inert elsewhere). Indexed by worker, never shared, so
@@ -280,6 +300,17 @@ func defaultIngressWorkers() int {
 // absorb the burst instead, and they start serving immediately.
 const defaultIngressQueue = 64
 
+// maxSpareSlabs bounds how far the ring may stretch. The front door
+// admits no more work than the resolver behind it can have in flight —
+// MaxConcurrentQueries defaults to 10000 — and past that a query would
+// only be queued to time out somewhere else. Reached only under
+// saturation, and the slabs go back to the collector once it passes.
+//
+// A var so a test can lower it and reach the shedding path without
+// standing up eight thousand blocked requests; never written while an
+// engine is running.
+var maxSpareSlabs int64 = 8192
+
 // udpBatchSize is how many datagrams one recvmmsg/sendmmsg carries at
 // most (Linux batch path). It also sizes the job ring: every reader must
 // be able to arm a full batch, or a jobless reader would sit out its
@@ -300,7 +331,6 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		wildcard: wildcard,
 		workers:  workers,
 		txConns:  make(map[*net.UDPConn]syscall.RawConn, len(pcs)),
-		closing:  make(chan struct{}),
 	}
 	e.txSenders = make([]udpTXSender, workers)
 	for i := range e.txSenders {
@@ -329,7 +359,35 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 	for i := 0; i < inFlight; i++ {
 		e.free <- &udpJob{engine: e}
 	}
+	e.spare.New = func() any { return &udpJob{engine: e, spare: true} }
 	return e
+}
+
+// take returns a slab to read into: from the ring first, and from the
+// spare pool when the ring is empty. A nil return is the shedding case —
+// the ring is empty and the stretch is already at its bound.
+//
+// The ring is sized for the steady state, where a slab is held for
+// microseconds. It is not a limit on how many queries may be in flight:
+// a miss holds its slab for an upstream resolution, and capping in-flight
+// work at the ring's size would cap the server at ring over latency —
+// which is what cold traffic measures, and what the server this replaced
+// (a goroutine and a buffer per packet) had no equivalent of.
+func (e *udpEngine) take() *udpJob {
+	select {
+	case j := <-e.free:
+		return j
+	default:
+	}
+	for {
+		n := e.borrowed.Load()
+		if n >= maxSpareSlabs {
+			return nil
+		}
+		if e.borrowed.CompareAndSwap(n, n+1) {
+			return e.spare.Get().(*udpJob)
+		}
+	}
 }
 
 // start launches the fixed workers and one reader per socket.
@@ -351,15 +409,25 @@ func (e *udpEngine) start() {
 }
 
 // stopAndDrain is the listener-scope half of the shutdown barrier: the
-// caller has already closed the sockets (admission stopped, blocked reads
-// woken); this joins the readers, closes the ready queue, and waits for
-// the workers to drain within the deadline.
+// caller has already stopped admission (an expired read deadline wakes
+// every blocked read); this joins the readers, closes the ready queue,
+// and waits for the drain within the deadline.
+//
+// No separate wake-up signal is needed: a reader either holds a slab and
+// is in a read, or has none and is in a read it made to shed. Both end on
+// the deadline the caller already set.
 func (e *udpEngine) stopAndDrain(deadline time.Time) error {
-	e.closeOnce.Do(func() { close(e.closing) })
 	e.readers.Wait()
 	close(e.ready)
 	done := make(chan struct{})
-	go func() { e.workerG.Wait(); close(done) }()
+	go func() {
+		e.workerG.Wait()
+		// The pool is only half the drain. Whatever the queue could not
+		// take is being served on its own goroutine, and it writes through
+		// the same sockets the caller closes as soon as this returns.
+		e.overflowG.Wait()
+		close(done)
+	}()
 	wait := time.Until(deadline)
 	if wait <= 0 {
 		wait = time.Millisecond
@@ -381,12 +449,11 @@ func (e *udpEngine) reader(pc *net.UDPConn) {
 		oobBuf = nil
 	}
 	for {
-		var j *udpJob
-		select {
-		case j = <-e.free:
-		default:
-			// Ring exhausted: consume and shed. The reader never blocks
-			// on the ring — a deep queue only converts drops to timeouts.
+		j := e.take()
+		if j == nil {
+			// Ring empty and the stretch at its bound: consume and shed.
+			// The reader never blocks for a slab — a deep queue only
+			// converts drops to timeouts.
 			_, _, _, _, err := pc.ReadMsgUDPAddrPort(discard[:], nil)
 			if err != nil {
 				if isAdmissionStopErr(err) {
@@ -472,7 +539,16 @@ func (e *udpEngine) enqueue(j *udpJob) {
 	// It is still bounded — by the ring, which this job came out of and
 	// which is the memory bound the design already states.
 	udpOverflowServed.Inc()
-	go e.serve(j, nil)
+	e.overflowG.Add(1)
+	go e.serveOverflow(j)
+}
+
+// serveOverflow runs one overflow job and leaves the drain barrier when
+// it is done. Started as a method rather than a closure so the go
+// statement copies its argument instead of allocating one.
+func (e *udpEngine) serveOverflow(j *udpJob) {
+	defer e.overflowG.Done()
+	e.serve(j, nil)
 }
 
 // quiesced reports whether every slab is back in the ring: nothing is
@@ -494,7 +570,16 @@ func (j *udpJob) release(from uint8) {
 	// ignored opcode, a panic — with the previous client's bytes, to the
 	// new client's address.
 	j.txLen = 0
-	j.engine.free <- j
+	// Read before the slab leaves: once it is back in the ring or the
+	// pool it belongs to whoever takes it next, and nothing here may
+	// touch it again.
+	e, spare := j.engine, j.spare
+	if spare {
+		e.spare.Put(j)
+		e.borrowed.Add(-1)
+	} else {
+		e.free <- j
+	}
 
 	// Counted down last, after the slab is cleared and back in the ring.
 	// Quiescence is what a measurement takes as the end of the request,

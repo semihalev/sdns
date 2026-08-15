@@ -122,12 +122,14 @@ type Config struct {
 
 	// Server ingress bounds (zero-path front door). These are deliberately
 	// separate from MaxConcurrentQueries, which is the resolver's upstream
-	// fan-out semaphore. In-flight jobs are derived: queue depth + one per
-	// worker + one per reader — never configured independently, so the
-	// three can't disagree.
-	IngressWorkers  int // Fixed handler workers per listener (default: GOMAXPROCS, clamped 2..64)
-	IngressQueue    int // Ready-queue depth before UDP load-shedding (default 512)
-	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default 512)
+	// fan-out semaphore. The preallocated slab ring is derived from them —
+	// queue depth + one per worker + one per reader, never configured
+	// independently, so the three can't disagree — and it sizes the steady
+	// state rather than capping it: under saturation the ring stretches
+	// into pooled spares, up to the resolver's own in-flight bound.
+	IngressWorkers  int // Fixed handler workers per listener (default: GOMAXPROCS*16, clamped 256..1024)
+	IngressQueue    int // Ready-queue depth before a job is served on its own goroutine (default 64)
+	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default 4096)
 
 	// Reflex: DNS amplification/reflection attack detection
 	ReflexEnabled      bool    // Enable amplification attack detection

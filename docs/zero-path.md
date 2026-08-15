@@ -291,9 +291,24 @@ through accessors; *ctx-clean* = no ordinary ctx primitives.
   TCP/DoT large ≤65,535B, **prefix-first acquisition**: the 2-byte length
   is read into connection-owned scratch and validated before a large job is
   taken) to startup RSS.
-- UDP load shedding: no slot ⇒ per-reader reserved discard buffer, drop,
-  count. `MSG_TRUNC` ⇒ drop+count. `MSG_CTRUNC`: specific bind continues;
-  wildcard bind drops+counts (the destination address is unknowable).
+- The preallocated ring sizes the steady state; it is not the ceiling on
+  in-flight work. A hit returns its slab in microseconds, but a miss holds
+  one for an upstream resolution, so a fixed ring would cap the server at
+  ring size over resolution latency — measured, on a 32-core box: 65k
+  queries a second with a fixed ring against 185k with the ring allowed to
+  stretch, at the same offered concurrency. When the ring is empty a
+  reader takes a *pooled spare* instead, bounded by `maxSpareSlabs` (8192,
+  the resolver's own in-flight bound) and returned to the collector once
+  the burst passes. Same shape as the ready queue: pool first, and the
+  overflow path exists so the bound is on memory rather than on
+  concurrency.
+- UDP load shedding: no slot in the ring *and* the stretch at its bound ⇒
+  per-reader reserved discard buffer, drop, count. Both readers shed the
+  same way; the batched one drains a whole batch into scratch memory,
+  because a reader that waits for a slab instead leaves its socket unread
+  and the loss moves into the kernel queue, off our counters and onto the
+  oldest packets. `MSG_TRUNC` ⇒ drop+count. `MSG_CTRUNC`: specific bind
+  continues; wildcard bind drops+counts (the destination is unknowable).
 - Workers are fixed for the server's lifetime — no per-N retirement. The
   "stacks stay grown" assumption is measured (stack-growth proxy) at every
   gate, not assumed.

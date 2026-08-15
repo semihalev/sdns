@@ -82,6 +82,8 @@ type udpBatchReader struct {
 	iovs  [udpBatchSize]unix.Iovec
 	names [udpBatchSize][unix.SizeofSockaddrInet6]byte
 	oobs  [udpBatchSize][pktinfoSpace]byte
+	// scrap absorbs the datagrams shed while the ring is empty.
+	scrap [udpJobBufSize]byte
 
 	// readFn is the netpoller callback, bound once so the poll loop does
 	// not allocate a closure per cycle. armed/received/rerr carry its
@@ -120,19 +122,21 @@ func (r *udpBatchReader) run() {
 	defer e.readers.Done()
 
 	for {
-		// The ring is sized so every reader can arm a full batch; under
-		// transient exhaustion the reader waits for its first job — the
-		// kernel's receive buffer is the queue meanwhile — rather than
-		// consuming its socket's share of the load just to discard it.
-		// Shutdown unblocks this wait directly rather than through a slab
-		// coming back: whether one ever does depends on what the other
-		// readers and workers are holding, and a drain deadline cannot be
-		// honoured by a wait that answers to nothing but them.
-		var j0 *udpJob
-		select {
-		case j0 = <-e.free:
-		case <-e.closing:
-			return
+		// The ring is sized so every reader can arm a full batch. When it
+		// is empty anyway the reader consumes and sheds, exactly as the
+		// portable one does: waiting for a slab instead leaves the socket
+		// unread, and what overflows then is dropped by the kernel, off
+		// our counters and invisible to the operator watching for
+		// saturation. It also arrives late — the packets that survive a
+		// backed-up receive queue are the oldest ones, whose clients have
+		// often stopped waiting. Shedding keeps the loss ours to report
+		// and keeps what is served fresh.
+		j0 := e.take()
+		if j0 == nil {
+			if !r.shed() {
+				return
+			}
+			continue
 		}
 		j0.transition(udpJobFree, udpJobReading)
 		r.arm(j0, 0)
@@ -188,6 +192,48 @@ func (r *udpBatchReader) run() {
 			r.jobs[i].release(udpJobReading)
 		}
 	}
+}
+
+// shed drains a batch into scratch memory and counts what it dropped, so
+// saturation on this path reads the same as on the portable one. It
+// returns false when the socket is finished, which is the only reason a
+// reader stops.
+func (r *udpBatchReader) shed() bool {
+	for i := range r.hdrs {
+		r.armScrap(i)
+	}
+	r.armed = udpBatchSize
+	err := r.rc.Read(r.readFn)
+	if err != nil {
+		if isAdmissionStopErr(err) {
+			return false
+		}
+		udpReaderPollErr.Inc()
+		zlog.Error("UDP batch reader poll failed while shedding",
+			"error", err.Error())
+		return true
+	}
+	if r.rerr != nil {
+		if r.rerr == unix.EBADF { //nolint:errorlint // raw errno from the syscall above
+			return false
+		}
+		udpDropError.Inc()
+		return true
+	}
+	udpDropFull.Add(int64(r.received))
+	return true
+}
+
+// armScrap points slot i at the shed buffer. Every slot shares it: the
+// bytes are on their way to being discarded, so the kernel overwriting
+// one message with the next costs nothing. No sockaddr and no control
+// data are collected — nothing here is going to be answered.
+func (r *udpBatchReader) armScrap(i int) {
+	r.jobs[i] = nil
+	r.iovs[i] = unix.Iovec{Base: &r.scrap[0], Len: uint64(len(r.scrap))}
+	h := &r.hdrs[i]
+	h.dlen = 0
+	h.hdr = unix.Msghdr{Iov: &r.iovs[i], Iovlen: 1}
 }
 
 // arm points slot i's iovec and sockaddr/OOB storage at job j and resets

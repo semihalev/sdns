@@ -239,9 +239,17 @@ func TestUDPEngineAcceptParity(t *testing.T) {
 }
 
 // TestUDPEngineShedsWhenSaturated pins the load-shedding contract: with a
-// blocked handler and a full ring, excess packets are dropped while the
-// reader keeps consuming — and the engine drains cleanly afterwards.
+// blocked handler, an empty ring and the stretch at its bound, excess
+// packets are dropped while the reader keeps consuming — and the engine
+// drains cleanly afterwards.
 func TestUDPEngineShedsWhenSaturated(t *testing.T) {
+	// Saturation is the ring and the stretch together, so the bound is
+	// lowered here rather than standing up thousands of blocked requests
+	// to reach the real one. Set before the engine exists and restored
+	// after it is gone: nothing reads it in between.
+	defer func(n int64) { maxSpareSlabs = n }(maxSpareSlabs)
+	maxSpareSlabs = 2
+
 	release := make(chan struct{})
 	addr, stop := startEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
 		r := new(dns.Msg)
@@ -265,12 +273,13 @@ func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 	q := new(dns.Msg)
 	q.SetQuestion("flood.example.", dns.TypeA)
 	wire, _ := q.Pack()
-	// The ring is what bounds this: two workers, four queued, a batch in
-	// the reader's hand. A packet arriving with no slab left must be shed
-	// rather than block the reader — saturation costs drops, never the
-	// socket. (Queue-full is no longer a drop: a job the pool cannot take
-	// is served on its own goroutine, which is what a miss-heavy resolver
-	// needs and what the fixed pool used to cap.)
+	// What bounds this is the ring plus the stretch: two workers, four
+	// queued, a batch in the reader's hand, and the spares above. A packet
+	// arriving with no slab left anywhere must be shed rather than block
+	// the reader — saturation costs drops, never the socket. (Neither a
+	// full queue nor an empty ring is a drop on its own: the first is
+	// served on its own goroutine and the second borrows a spare, which is
+	// what a miss-heavy resolver needs and what a fixed ring used to cap.)
 	for i := 0; i < 200; i++ {
 		binary.BigEndian.PutUint16(wire[0:2], uint16(i+1))
 		if _, err := conn.Write(wire); err != nil {
