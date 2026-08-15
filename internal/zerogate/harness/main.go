@@ -121,19 +121,29 @@ type allocSite struct {
 // records per site (runtime.MemProfileRecord.Stack0).
 const profileStackDepth = 32
 
-// parkPrimitive reports whether fn is the runtime's park machinery — the
-// semaphore and notification entry points a goroutine blocks in. An
-// allocation here is a sudog: the bookkeeping of blocking, not of the
-// request.
+// sudogAlloc is the runtime function that allocates a sudog: the record
+// the scheduler keeps for a goroutine while it is parked on a channel, a
+// select or a semaphore. Every park path in the runtime reaches it, and
+// nothing else does.
+const sudogAlloc = "runtime.acquireSudog"
+
+// parkBookkeeping reports whether a stack is the scheduler recording a
+// park rather than the server allocating. The frame itself is the test.
 //
-// The test is deliberately this narrow. Exempting whole packages —
-// internal/poll, syscall — would take a buffer that genuinely escaped
-// into a socket write out of the exact verdict along with it, and that is
-// a real regression wearing a platform frame.
-func parkPrimitive(fn string) bool {
-	return strings.Contains(fn, "Semacquire") ||
-		strings.Contains(fn, "Semrelease") ||
-		strings.Contains(fn, "notifyListWait")
+// Naming the allocating frame is what makes this narrow enough to be
+// honest. Classifying by the caller instead does not work in either
+// direction: a park on a channel shows the blocking function as its
+// first non-runtime frame — server code, so a real park would be charged
+// to the server — while exempting the packages parks tend to appear in,
+// internal/poll and syscall, would take a buffer that genuinely escaped
+// into a socket write out of the exact verdict along with them.
+func parkBookkeeping(frames []string) bool {
+	for _, fn := range frames {
+		if fn == sudogAlloc {
+			return true
+		}
+	}
+	return false
 }
 
 // profile returns the live allocation profile keyed by stack. Records
@@ -166,9 +176,10 @@ func profile() map[string]*allocSite {
 			truncated: len(stack) >= profileStackDepth,
 		}
 		frames := runtime.CallersFrames(stack)
-		var trail []string
+		var trail, all []string
 		for {
 			f, more := frames.Next()
+			all = append(all, f.Function)
 			// The allocating frame is always runtime.mallocgc and its
 			// helpers; what identifies a site is the first frame that is
 			// ours, with a little of its caller for context.
@@ -177,7 +188,6 @@ func profile() map[string]*allocSite {
 				if site.fn == "" {
 					site.fn = f.Function
 					site.pos = fmt.Sprintf("%s:%d", filepath.Base(f.File), f.Line)
-					site.platform = parkPrimitive(f.Function)
 				}
 			}
 			if strings.HasPrefix(f.Function, servingPrefix) {
@@ -193,6 +203,7 @@ func profile() map[string]*allocSite {
 		if site.fn == "" {
 			site.fn, site.pos = "runtime", "?"
 		}
+		site.platform = parkBookkeeping(all)
 		site.via = strings.Join(trail, " ← ")
 		sites[key.String()] = site
 	}

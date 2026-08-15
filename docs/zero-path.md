@@ -44,14 +44,20 @@ returns two verdicts:
    shown to be off the serving path counts as on it.
 
    One class is excluded from *this* verdict and moved into the second:
-   the `sudog` the scheduler takes when a goroutine parks, which is what
-   two workers meeting on one socket's write lock costs once per P. That
-   is bookkeeping for blocking, bounded by `GOMAXPROCS` and not by
-   queries. The exemption is by *primitive* (`Semacquire`, `Semrelease`,
-   `notifyListWait`), never by package: exempting `internal/poll` or
-   `syscall` wholesale would take a buffer that genuinely escaped into a
-   socket write out of the verdict with it. The count is reported at
-   every window, and the rule is pinned by `TestParkPrimitiveIsNarrow`.
+   the `sudog` the scheduler records while a goroutine is parked — a
+   worker waiting on the ready queue, two writers meeting on a socket's
+   write lock. That is bookkeeping for blocking, bounded by how many
+   goroutines can be parked at once and not by queries.
+
+   The exemption is by *allocating frame* — `runtime.acquireSudog`, which
+   every park path reaches and nothing else does — never by caller and
+   never by package. Both of the alternatives were tried and both were
+   wrong, each caught by the gate on real traffic: classifying by the
+   caller charges a channel park to the server code that blocked, and
+   exempting `internal/poll`/`syscall` would take a buffer that genuinely
+   escaped into a socket write out of the verdict with it. The count is
+   reported at every window; the rule is pinned by
+   `TestParkBookkeepingIsTheAllocatingFrame`.
 2. **Ops-relative, for what attribution cannot see.** Work handed to
    another goroutine allocates under a stack with no engine frame. Two
    windows are measured, the second carrying twice the traffic; constant

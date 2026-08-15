@@ -2,38 +2,69 @@ package main
 
 import "testing"
 
-// TestParkPrimitiveIsNarrow pins the one exemption the exact verdict
-// makes.
+// TestParkBookkeepingIsTheAllocatingFrame pins the one exemption the
+// exact verdict makes.
 //
-// A sudog taken when a goroutine blocks is bookkeeping for blocking, not
-// for the request, and it is bounded by the number of Ps rather than by
-// traffic. Exempting it is defensible; exempting the packages it happens
-// to live in is not — internal/poll and syscall are also where a buffer
-// that genuinely escaped into a socket write would appear, and that is a
-// regression wearing a platform frame.
-func TestParkPrimitiveIsNarrow(t *testing.T) {
+// A sudog is what the scheduler records while a goroutine is parked. It
+// is bookkeeping for blocking, bounded by how many goroutines can be
+// parked at once rather than by traffic, so it is held to not scaling
+// instead of to zero. What makes that exemption safe is naming the frame
+// that allocates it: every park path in the runtime reaches
+// acquireSudog, and nothing else does.
+//
+// The two rules this replaced were wrong in opposite directions, and both
+// were caught by the gate on real traffic rather than by reasoning: a
+// park on a channel shows *server* code as its first non-runtime frame,
+// so classifying by the caller charged a real park to the server; and
+// exempting the packages parks appear in — internal/poll, syscall —
+// would have taken a buffer that genuinely escaped into a socket write
+// out of the verdict along with them.
+func TestParkBookkeepingIsTheAllocatingFrame(t *testing.T) {
 	for _, tc := range []struct {
-		fn     string
+		name   string
+		frames []string
 		parked bool
 	}{
-		// The park machinery: what the profile showed when two workers
-		// met on one socket's write lock.
-		{"internal/poll.runtime_Semacquire", true},
-		{"sync.runtime_SemacquireMutex", true},
-		{"sync.runtime_Semrelease", true},
-		{"sync.runtime_notifyListWait", true},
-
-		// The same packages doing actual work. An allocation here is the
-		// server's, however deep in the platform it happens.
-		{"internal/poll.(*FD).WriteMsg", false},
-		{"internal/poll.(*FD).ReadMsg", false},
-		{"syscall.SendmsgN", false},
-		{"syscall.anyToSockaddr", false},
-		{"net.(*UDPConn).WriteMsgUDPAddrPort", false},
-		{"github.com/semihalev/sdns/server.(*udpEngine).serve", false},
+		{
+			name: "worker parked on the ready queue",
+			frames: []string{
+				"runtime.mallocgc", "runtime.newobject", sudogAlloc,
+				"runtime.chanrecv", "runtime.chanrecv2",
+				"github.com/semihalev/sdns/server.(*udpEngine).worker",
+			},
+			parked: true,
+		},
+		{
+			name: "two writers meeting on a socket's write lock",
+			frames: []string{
+				"runtime.mallocgc", sudogAlloc, "runtime.semacquire1",
+				"internal/poll.runtime_Semacquire", "internal/poll.(*fdMutex).rwlock",
+				"internal/poll.(*FD).writeLock",
+				"github.com/semihalev/sdns/server.(*udpEngine).sendGroup",
+			},
+			parked: true,
+		},
+		{
+			name: "a buffer escaping into the socket write",
+			frames: []string{
+				"runtime.mallocgc", "runtime.makeslice",
+				"internal/poll.(*FD).WriteMsg", "syscall.SendmsgN",
+				"github.com/semihalev/sdns/server.(*udpJob).sendDirect",
+			},
+			parked: false,
+		},
+		{
+			name: "the server allocating on its own",
+			frames: []string{
+				"runtime.mallocgc", "runtime.newobject",
+				"github.com/semihalev/sdns/server.(*Server).ServeRaw",
+				"github.com/semihalev/sdns/server.(*udpEngine).serve",
+			},
+			parked: false,
+		},
 	} {
-		if got := parkPrimitive(tc.fn); got != tc.parked {
-			t.Errorf("parkPrimitive(%q) = %v, want %v", tc.fn, got, tc.parked)
+		if got := parkBookkeeping(tc.frames); got != tc.parked {
+			t.Errorf("%s: parkBookkeeping = %v, want %v", tc.name, got, tc.parked)
 		}
 	}
 }
