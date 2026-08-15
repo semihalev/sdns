@@ -95,8 +95,10 @@ func runGate(t *testing.T, flavor string) {
 	// difference; what survives is per-query, wherever it lives.
 	extra := large.ops - small.ops
 	t.Logf("stage %s flavor %s: %d extra queries moved the rest of the server by %+d "+
-		"and the process's exact malloc count by %+d (bound %d)",
-		Stage, flavor, extra, large.other-small.other, large.exact-small.exact, ScalingSlack)
+		"and the process's exact malloc count by %+d — a bound of %d objects, "+
+		"which resolves a per-query cost to %.2e and no finer",
+		Stage, flavor, extra, large.other-small.other, large.exact-small.exact,
+		ScalingSlack, float64(ScalingSlack)/float64(extra))
 	if err := scalingVerdict(small, large); err != nil {
 		t.Fatalf("stage %s flavor %s: %v", Stage, flavor, err)
 	}

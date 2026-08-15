@@ -349,14 +349,25 @@ func run() error {
 			// cover that.
 			var prev, cur runtime.MemStats
 			runtime.ReadMemStats(&prev)
-			for still, tries := 0, 0; still < 3 && tries < 100; tries++ {
+			settled := false
+			for still, tries := 0, 0; tries < 100; tries++ {
 				time.Sleep(2 * time.Millisecond)
 				runtime.ReadMemStats(&cur)
 				if cur.Mallocs == prev.Mallocs {
-					still++
+					if still++; still == 3 {
+						settled = true
+						break
+					}
 					continue
 				}
 				still, prev = 0, cur
+			}
+			if verdict == "ok" && !settled {
+				// Said plainly rather than swallowed. The window would
+				// otherwise close over a process that is still allocating,
+				// and whatever it is doing would be charged to the next
+				// window instead of this one.
+				verdict = "unsettled"
 			}
 			if _, err := fmt.Printf("QUIESCED %s\n", verdict); err != nil {
 				return err

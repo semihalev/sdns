@@ -9,6 +9,21 @@ against pinned budgets, not zero (stock `crypto/tls` draws record buffers
 from a global pool the server cannot own). Other platforms run the same
 gates with functional expectations.
 
+**What "hard zero" is a claim about.** It is verdict 1 in §1: no object
+allocated by the server's own code on a goroutine that is serving, exactly
+zero, fail-closed on anything the profiler cannot classify. That is the
+claim, and it is literal.
+
+It is *not* a claim that the process allocates nothing while traffic
+flows. Background work exists — timers, metric bookkeeping, the runtime's
+own — and verdict 2 bounds it rather than proving it away: it requires
+that doubling the traffic not move the count by more than
+`ScalingSlack` (64 objects), which at the gate's CI size resolves a
+per-query cost down to 64/500,000 ≈ 1.3 × 10⁻⁴ objects per query and no
+further. A rarer cost than that — a handful of tiny allocations in a
+window, a background allocation that happens to cancel one — is below
+what this instrument can see, and is not claimed to be absent.
+
 The claim is staged: Z1 covers strict-wire-eligible exact hits; Z2a extends
 to every exact-entry hit class; Z2b covers composite answers (NXDOMAIN cut,
 failure cache, aggressive denial) and opens the headline rule:
@@ -61,8 +76,10 @@ returns two verdicts:
 2. **Ops-relative, for what attribution cannot see** — a bound, not a
    zero. Two windows are measured, the second carrying twice the traffic;
    constant background cancels in the difference and what survives is
-   per-query. `ScalingSlack` (64 objects) bounds it — at a million
-   queries, below 10⁻⁴ objects per query. Two things live under it:
+   per-query. `ScalingSlack` (64 objects) bounds it: with the CI pair of
+   500k and 1M queries the difference is over 500k extra queries, so the
+   resolution is 64/500,000 ≈ 1.3 × 10⁻⁴ objects per query — a bound, and
+   the number the gate prints alongside it. Two things live under it:
 
    *Work handed to another goroutine* allocates under a stack with no
    engine frame, so only its growth with traffic gives it away.
@@ -93,6 +110,16 @@ as unclassifiable; one pointer-free byte per query, which the profiler
 batches sixteen-to-one and both verdicts must still catch; and one handed
 to a goroutine that was already running, which only the ops-relative
 verdict can see.
+
+The barrier's limits are stated where it is used rather than implied: it
+proves the slabs are home and that the process went still for three
+consecutive samples, and it says `unsettled` — failing the gate — when it
+did not. It does not prove that work a query triggered somewhere else has
+finished; nothing short of per-request accounting through every async
+handoff would. In the gated configuration there is no such work by
+construction (prefetch never fires on the corpus, the tap and the access
+log are inert), and the injected async control is what covers the general
+case.
 
 Window boundaries are the server's own completion barrier
 (`Server.Quiesced`: every job slab back in its ring), not a sleep — the
