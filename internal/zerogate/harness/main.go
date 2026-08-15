@@ -50,28 +50,9 @@ import (
 	"github.com/semihalev/sdns/internal/zerogate"
 	"github.com/semihalev/sdns/internal/zerogate/inject"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/defaults"
 	"github.com/semihalev/sdns/server"
 	"github.com/semihalev/zlog/v2"
-
-	"github.com/semihalev/sdns/middleware/accesslist"
-	"github.com/semihalev/sdns/middleware/accesslog"
-	"github.com/semihalev/sdns/middleware/as112"
-	"github.com/semihalev/sdns/middleware/blocklist"
-	"github.com/semihalev/sdns/middleware/cache"
-	"github.com/semihalev/sdns/middleware/chaos"
-	"github.com/semihalev/sdns/middleware/dns64"
-	"github.com/semihalev/sdns/middleware/dnstap"
-	"github.com/semihalev/sdns/middleware/edns"
-	"github.com/semihalev/sdns/middleware/failover"
-	"github.com/semihalev/sdns/middleware/forwarder"
-	"github.com/semihalev/sdns/middleware/hostsfile"
-	"github.com/semihalev/sdns/middleware/kubernetes"
-	"github.com/semihalev/sdns/middleware/metrics"
-	"github.com/semihalev/sdns/middleware/ratelimit"
-	"github.com/semihalev/sdns/middleware/recovery"
-	"github.com/semihalev/sdns/middleware/reflex"
-	"github.com/semihalev/sdns/middleware/resolver"
-	"github.com/semihalev/sdns/middleware/views"
 )
 
 // Every allocation is profiled, not one in every 512KB. The gate's
@@ -430,8 +411,9 @@ func run() error {
 	return scanner.Err()
 }
 
-// registerDefaultChain mirrors the generated registry.go exactly: the named
-// default configuration is the default chain, in the default order.
+// registerDefaultChain registers the named default configuration — the
+// generated chain itself, so the gate cannot end up measuring a chain
+// nobody runs.
 func registerDefaultChain() {
 	// The gate's negative controls, when asked for: middleware that
 	// allocates on purpose, in the shapes attribution is weakest against.
@@ -440,25 +422,7 @@ func registerDefaultChain() {
 	if h := inject.New(os.Getenv("ZEROGATE_INJECT")); h != nil {
 		middleware.Register("zerogateinject", func(*config.Config) middleware.Handler { return h })
 	}
-	middleware.Register("recovery", func(cfg *config.Config) middleware.Handler { return recovery.New(cfg) })
-	middleware.Register("metrics", func(cfg *config.Config) middleware.Handler { return metrics.New(cfg) })
-	middleware.Register("dnstap", dnstap.New)
-	middleware.Register("accesslist", func(cfg *config.Config) middleware.Handler { return accesslist.New(cfg) })
-	middleware.Register("ratelimit", func(cfg *config.Config) middleware.Handler { return ratelimit.New(cfg) })
-	middleware.Register("reflex", func(cfg *config.Config) middleware.Handler { return reflex.New(cfg) })
-	middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })
-	middleware.Register("accesslog", func(cfg *config.Config) middleware.Handler { return accesslog.New(cfg) })
-	middleware.Register("chaos", func(cfg *config.Config) middleware.Handler { return chaos.New(cfg) })
-	middleware.Register("hostsfile", func(cfg *config.Config) middleware.Handler { return hostsfile.New(cfg) })
-	middleware.Register("views", func(cfg *config.Config) middleware.Handler { return views.New(cfg) })
-	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
-	middleware.Register("as112", func(cfg *config.Config) middleware.Handler { return as112.New(cfg) })
-	middleware.Register("kubernetes", func(cfg *config.Config) middleware.Handler { return kubernetes.New(cfg) })
-	middleware.Register("dns64", func(cfg *config.Config) middleware.Handler { return dns64.New(cfg) })
-	middleware.Register("cache", func(cfg *config.Config) middleware.Handler { return cache.New(cfg) })
-	middleware.Register("failover", func(cfg *config.Config) middleware.Handler { return failover.New(cfg) })
-	middleware.Register("resolver", func(cfg *config.Config) middleware.Handler { return resolver.New(cfg) })
-	middleware.Register("forwarder", func(cfg *config.Config) middleware.Handler { return forwarder.New(cfg) })
+	defaults.Register()
 }
 
 func harnessConfig(bind, authorityAddr string) (*config.Config, error) {

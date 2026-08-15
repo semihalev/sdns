@@ -9,17 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/semihalev/sdns/middleware/accesslist"
-	"github.com/semihalev/sdns/middleware/as112"
-	"github.com/semihalev/sdns/middleware/blocklist"
-	"github.com/semihalev/sdns/middleware/cache"
-	"github.com/semihalev/sdns/middleware/chaos"
-	"github.com/semihalev/sdns/middleware/edns"
-	"github.com/semihalev/sdns/middleware/kubernetes"
-	"github.com/semihalev/sdns/middleware/metrics"
-	"github.com/semihalev/sdns/middleware/ratelimit"
-	"github.com/semihalev/sdns/middleware/recovery"
-	"github.com/semihalev/sdns/middleware/views"
+	"github.com/semihalev/sdns/middleware/defaults"
 )
 
 // benchAnswerStub is the terminal in place of the resolver: the warm-up
@@ -63,17 +53,12 @@ func newHitChainServerWith(tb testing.TB, respond func(req *dns.Msg) *dns.Msg) *
 	tb.Helper()
 	middleware.Reset()
 	tb.Cleanup(middleware.Reset)
-	middleware.Register("recovery", func(cfg *config.Config) middleware.Handler { return recovery.New(cfg) })
-	middleware.Register("metrics", func(cfg *config.Config) middleware.Handler { return metrics.New(cfg) })
-	middleware.Register("accesslist", func(cfg *config.Config) middleware.Handler { return accesslist.New(cfg) })
-	middleware.Register("ratelimit", func(cfg *config.Config) middleware.Handler { return ratelimit.New(cfg) })
-	middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })
-	middleware.Register("chaos", func(cfg *config.Config) middleware.Handler { return chaos.New(cfg) })
-	middleware.Register("views", func(cfg *config.Config) middleware.Handler { return views.New(cfg) })
-	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
-	middleware.Register("as112", func(cfg *config.Config) middleware.Handler { return as112.New(cfg) })
-	middleware.Register("kubernetes", func(cfg *config.Config) middleware.Handler { return kubernetes.New(cfg) })
-	middleware.Register("cache", func(cfg *config.Config) middleware.Handler { return cache.New(cfg) })
+	// The real chain, up to the resolver — which the stub below stands in
+	// for. Taking it from the generated list rather than repeating it here
+	// is the difference between benchmarking what production runs and
+	// benchmarking a list that was accurate when it was written: this one
+	// had already lost dnstap, accesslog, hostsfile, dns64 and failover.
+	defaults.RegisterUpTo("resolver")
 	middleware.Register("bench-answer-stub", func(*config.Config) middleware.Handler { return benchAnswerStub{respond: respond} })
 
 	cfg := &config.Config{ //nolint:gosec // G101 — the cookie secret is a test fixture, not a credential
