@@ -21,6 +21,7 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
+	"golang.org/x/time/rate"
 )
 
 var debugns bool
@@ -396,8 +397,11 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// spent carries the rate-limit permit this query already paid on the
 	// byte path, if any: the wire path and the Msg body below are the
 	// same call, so a plain local is enough to keep one question from
-	// costing two tokens.
-	var spent *CacheEntry
+	// costing two tokens. It holds the limiter itself rather than the
+	// entry, because a refresh replacing the entry under the same key
+	// shares that same limiter — charging the replacement would drop a
+	// question that had already paid.
+	var spent *rate.Limiter
 	if ch.Request.Undecoded() && c.serveWire(ctx, ch, &spent) {
 		return
 	}
@@ -1031,7 +1035,7 @@ func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit 
 // answered through the writer lease without a decoded request. A false
 // return is the composite-miss transition point — the caller materializes
 // and runs the ordinary body.
-func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **CacheEntry) bool {
+func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rate.Limiter) bool {
 	req := ch.Request
 	if !req.RD() || req.HasECS() {
 		return false
@@ -1093,7 +1097,7 @@ func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
 // writer's lease. Anything the byte path cannot express declines to the
 // ordinary body rather than half-serving.
 func (c *Cache) serveHitFromWire(
-	ctx context.Context, ch *middleware.Chain, entry *CacheEntry, spent **CacheEntry,
+	ctx context.Context, ch *middleware.Chain, entry *CacheEntry, spent **rate.Limiter,
 ) bool {
 	w := ch.Writer
 	if w.Internal() {
@@ -1111,9 +1115,11 @@ func (c *Cache) serveHitFromWire(
 		// then cost two tokens, and at a small limit the second check
 		// cancels a hit the client was entitled to. The permit rides a
 		// local through the one call that owns both paths, keyed by the
-		// entry it was spent on: an entry replaced underneath us is a
-		// different entry, and pays for itself.
-		*spent = entry
+		// limiter it was spent on: a refresh that replaces the entry
+		// under the same key shares this limiter and must not be charged
+		// again for the same question, while an entry answering to a
+		// different limiter still pays.
+		*spent = limiter
 	}
 	// A prefetch-due hit needs a decoded request copy for the refresh
 	// queue; the ordinary body claims it.
@@ -1195,7 +1201,7 @@ func (c *Cache) handleCacheHit(
 	entry *CacheEntry,
 	key uint64,
 	scope netip.Prefix,
-	spent *CacheEntry,
+	spent *rate.Limiter,
 ) bool {
 	w := ch.Writer
 	req := ch.Request.Msg()
@@ -1226,12 +1232,13 @@ func (c *Cache) handleCacheHit(
 	// ctx.Value walk, kept on the hot path for throughput;
 	// middleware.IsInternal(ctx) remains available for code paths
 	// without a writer in scope.
-	// spent is the entry the byte path already paid a token for on this
-	// same query, before declining to here. Keyed by entry rather than
-	// by "some permit was taken": an entry replaced underneath us is a
-	// different entry with its own limiter, and pays for itself.
+	// spent is the limiter the byte path already paid a token to on this
+	// same query, before declining to here. Compared by limiter and not
+	// by entry: a refresh replaces the entry but keeps the limiter, and
+	// one question must cost one token however many entry objects it
+	// passed through.
 	limiter := entry.GetRateLimiter()
-	if !w.Internal() && limiter != nil && entry != spent && !limiter.Allow() {
+	if !w.Internal() && limiter != nil && limiter != spent && !limiter.Allow() {
 		ch.Cancel()
 		return true
 	}

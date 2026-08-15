@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
+	"golang.org/x/time/rate"
 )
 
 // TestWireDeclineDoesNotSpendTheLimiterTwice pins one question to one
@@ -50,6 +51,7 @@ func TestWireDeclineDoesNotSpendTheLimiterTwice(t *testing.T) {
 	if limiter == nil {
 		t.Fatal("entry carries no rate limiter; the test would prove nothing")
 	}
+	awaitToken(t, limiter)
 
 	// Age it into the refresh window: 29s left of 300 is inside the 10%
 	// threshold, so the byte path declines and the Msg body serves.
@@ -74,15 +76,18 @@ func TestWireDeclineDoesNotSpendTheLimiterTwice(t *testing.T) {
 	}
 }
 
-// TestReplacedEntryPaysItsOwnLimiter pins the other half of the rule: the
-// permit is remembered against the entry it was spent on, not against the
-// query.
+// TestReplacedEntryStillCostsOneToken pins what the permit is keyed by.
 //
-// An entry replaced under the same key between the byte path and the Msg
-// body is a different entry sharing the same limiter. Carrying the permit
-// to it would let the replacement serve free of charge, so the identity
-// has to be the entry and not "a permit was taken somewhere".
-func TestReplacedEntryPaysItsOwnLimiter(t *testing.T) {
+// A refresh can replace the entry under the same key while a query is in
+// flight between the byte path and the Msg body. The entry object is a
+// different one; the limiter it answers to is the same, because that is
+// keyed by the entry's rate-limit key and not by its address. Keying the
+// permit on the entry pointer therefore recreated the very bug it was
+// added to fix, one race narrower: the same question paid twice and the
+// second payment cancelled it.
+//
+// One question, one token — however many entry objects it passed through.
+func TestReplacedEntryStillCostsOneToken(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.RateLimit = 1
 	defer os.RemoveAll(cfg.Directory)
@@ -105,7 +110,7 @@ func TestReplacedEntryPaysItsOwnLimiter(t *testing.T) {
 		return entry
 	}
 
-	serve := func(entry, spent *CacheEntry) bool {
+	serve := func(entry *CacheEntry, spent *rate.Limiter) bool {
 		w := mock.NewWriter("udp", "198.51.100.7:0")
 		ch := middleware.NewChain([]middleware.Handler{c})
 		ch.Reset(w, q.Copy())
@@ -114,16 +119,46 @@ func TestReplacedEntryPaysItsOwnLimiter(t *testing.T) {
 	}
 
 	first := store("192.0.2.1")
-	if !serve(first, nil) {
-		t.Fatal("the first query spent the only token and should have been served")
+	limiter := first.GetRateLimiter()
+	if limiter == nil {
+		t.Fatal("entry carries no rate limiter; the test would prove nothing")
+	}
+	awaitToken(t, limiter)
+
+	// The byte path spends the query's token and declines.
+	if !limiter.Allow() {
+		t.Fatal("the limiter had no token to spend")
 	}
 
+	// A refresh replaces the entry under the same key while the query is
+	// still in flight.
 	second := store("192.0.2.2")
 	if second == first {
 		t.Skip("the store reused the entry object; this test needs a replacement")
 	}
-	if serve(second, first) {
-		t.Fatal("a replaced entry was served on the permit spent for the entry it " +
-			"replaced; the limiter they share was never charged")
+	if second.GetRateLimiter() != limiter {
+		t.Fatal("the replacement answers to a different limiter; the race this " +
+			"pins needs the shared one")
+	}
+
+	// The Msg body now serves the replacement. The question already paid.
+	if !serve(second, limiter) {
+		t.Fatal("a question that had already paid was cancelled because the entry " +
+			"it was answered from had been replaced underneath it")
+	}
+}
+
+// awaitToken waits until the shared limiter has a token, so a test that
+// needs to spend exactly one is not defeated by the previous run of the
+// same test: the limiters are process-global and keyed by rate and entry
+// key, which is precisely how they are shared in production.
+func awaitToken(t *testing.T, limiter *rate.Limiter) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for limiter.Tokens() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the shared limiter never refilled")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
