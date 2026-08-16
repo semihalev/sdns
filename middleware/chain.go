@@ -1064,13 +1064,24 @@ func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func
 	if !ok {
 		deadline = time.Now().Add(10 * time.Second)
 	}
+	// Parenting on Background is deliberate: background work the
+	// resolver spawns (prefetch, serve-stale refresh) captures the
+	// detached context past this request's life, and the strict carrier
+	// underneath ctx is recycled the moment the job completes — so
+	// custom context VALUES do not cross this boundary by design; the
+	// request-scoped semantics the server owns (deadline, ECS,
+	// ResponseMeta) are carried explicitly. Cancellation does cross: a
+	// middleware that wrapped the strict context with its own cancel
+	// must still be able to stop the slow work it now waits on. The
+	// carrier itself has no Done channel, so the hook is free there.
 	real := contextutil.WithLazyDeadline(context.Background(), deadline)
+	stopCancel := context.AfterFunc(ctx, real.Cancel)
 	var detached context.Context = real
 	if HasClientECS(ctx) {
 		detached = MarkClientECS(detached)
 	}
 
-	cleanup := func() { real.Cancel() }
+	cleanup := func() { stopCancel(); real.Cancel() }
 	if meta := ResponseMetaFrom(ctx).detachedCopy(); meta != nil {
 		var lazyMeta bool
 		detached, lazyMeta = withResponseMeta(detached, meta)
@@ -1080,6 +1091,7 @@ func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func
 				if finished := finishLazyRecursionWork(captured, meta); finished != nil {
 					logRecursionWorkExhaustion(finished, ch.Request.Msg())
 				}
+				stopCancel()
 				real.Cancel()
 			}
 		}
