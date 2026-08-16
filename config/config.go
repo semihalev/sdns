@@ -1112,14 +1112,19 @@ func Load(cfgfile, version string) (*Config, error) {
 	config := new(Config)
 
 	if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
+		// Compatibility for the old default conf file name — only when
+		// the caller asked for the default, never for an explicit path.
 		if filepath.Base(cfgfile) == "sdns.conf" {
-			// compatibility for old default conf file
-			if _, err := os.Stat("sdns.toml"); os.IsNotExist(err) {
-				if err := generateConfig(cfgfile); err != nil {
-					return nil, err
-				}
-			} else {
+			if _, err := os.Stat("sdns.toml"); err == nil {
 				cfgfile = "sdns.toml"
+			}
+		}
+		// A missing config is generated whatever it is called: the -c
+		// flag promises exactly that, and gating it on the default name
+		// turned every custom path into a load error instead.
+		if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
+			if err := generateConfig(cfgfile); err != nil {
+				return nil, err
 			}
 		}
 	}

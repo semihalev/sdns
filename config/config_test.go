@@ -81,13 +81,16 @@ func TestLoad(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "non-existent config file",
+			// A missing config is generated wherever the -c flag points;
+			// what still fails is a path whose directory cannot be
+			// written, and it fails at generation, not at load.
+			name: "config path in a directory that does not exist",
 			setupFunc: func() (string, func()) {
 				return "/non/existent/path/config.toml", func() {}
 			},
 			version:     "1.4.0",
 			wantErr:     true,
-			errContains: "could not load config",
+			errContains: "could not generate config",
 		},
 		{
 			name: "invalid toml config",
@@ -1072,5 +1075,30 @@ func TestCookieSecretGenerated(t *testing.T) {
 	}
 	if _, err := hex.DecodeString(cfg.CookieSecret); err != nil {
 		t.Fatalf("CookieSecret is not valid hex: %v", err)
+	}
+}
+
+// The -c flag promises "if it doesn't exist, a new one will be
+// generated" — for whatever the file is called. The generation used to
+// be gated on the default name, so every custom path was a load error
+// instead of a fresh config.
+func TestLoadGeneratesAConfigAtACustomPath(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	cfg, err := Load("my-resolver.conf", "test")
+	if err != nil {
+		t.Fatalf("load with a custom missing path: %v", err)
+	}
+	if cfg.Version != configver {
+		t.Fatalf("generated config carries version %q, want %q", cfg.Version, configver)
+	}
+	if _, err := os.Stat("my-resolver.conf"); err != nil {
+		t.Fatalf("the config file was not written: %v", err)
+	}
+
+	// And loading it again reads the generated file rather than
+	// regenerating.
+	if _, err := Load("my-resolver.conf", "test"); err != nil {
+		t.Fatalf("reload: %v", err)
 	}
 }
