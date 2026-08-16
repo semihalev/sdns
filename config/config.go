@@ -18,7 +18,7 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-const configver = "1.7.4"
+const configver = "1.8.0"
 
 // Config type.
 type Config struct {
@@ -699,8 +699,23 @@ prefetch = 10
 maxdepth = 30
 
 # ============================
-# Memory
+# Server Resources
 # ============================
+
+# The serving bounds — worker pool, in-flight query cap, TCP/DoT
+# connection cap — are derived at startup from this machine's memory,
+# CPUs and file-descriptor limit, and logged as each listener starts.
+# The keys below override the derived defaults; leave them unset unless
+# a measurement says otherwise.
+
+# Fixed handler workers per listener
+# ingressworkers = 256
+
+# Ready-queue depth before a query is served on its own goroutine
+# ingressqueue = 64
+
+# Concurrent inbound TCP/DoT connection cap
+# ingresstcpconns = 1024
 
 # Return a traffic burst's memory to the operating system after a long
 # idle (several minutes quiescent). The trim is one synchronous GC over
