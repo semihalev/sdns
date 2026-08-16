@@ -195,6 +195,13 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 		// Accepted header, undecodable body: engine-side FORMERR parity.
 		return false
 	}
+	// The decoded fallback is the slow lane by definition — the same
+	// reason a strict materialization flushes applies from the first
+	// instruction here: replies already staged on this transport must
+	// not wait out this query's resolution.
+	if f, ok := w.(middleware.StagedFlusher); ok {
+		f.FlushStaged()
+	}
 	s.serveMsgBy(context.Background(), w, m, true, readTime.Add(s.queryTimeout()))
 	return true
 }

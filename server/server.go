@@ -117,6 +117,23 @@ func (s *Server) ServeMsg(parent context.Context, w middleware.Transport, r *dns
 	s.serveMsg(parent, w, r, false)
 }
 
+// ServeDNS keeps *Server a dns.Handler for embedders: the rewrite moved
+// the owned transports off this entry, but code that mounts a Server
+// under the library's mux did not change. A dns.ResponseWriter is a
+// Transport already; nothing here is on the serving path.
+func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	s.ServeMsg(context.Background(), w, r)
+}
+
+// ServeDNSContext is ServeDNS with a caller-owned parent context, kept
+// for the same embedders.
+func (s *Server) ServeDNSContext(parent context.Context, w dns.ResponseWriter, r *dns.Msg) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	s.ServeMsg(parent, w, r)
+}
+
 func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns.Msg, directPack bool) {
 	if s.trimEnabled {
 		s.served.Add(1)
