@@ -272,6 +272,12 @@ func (s *Server) superviseShutdown(ctx context.Context, active []Listener, done 
 		}(l)
 	}
 	wg.Wait()
+
+	// The certificate watcher belongs to the run it served: a cancelled
+	// context must tear it down with the listeners, or every restart
+	// leaves a file watcher rescanning a directory nobody serves from.
+	// Stop is idempotent through the nil check it makes under its lock.
+	s.Stop()
 }
 
 func (s *Server) shutdownTimeout() time.Duration {

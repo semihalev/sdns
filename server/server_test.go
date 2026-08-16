@@ -171,7 +171,15 @@ func Test_Server(t *testing.T) {
 	blocklist.Set("test.com.")
 
 	s := New(cfg)
-	_ = s.Run(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = s.Run(ctx)
+	t.Cleanup(func() {
+		cancel()
+		deadline := time.Now().Add(5 * time.Second)
+		for !s.Stopped() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
