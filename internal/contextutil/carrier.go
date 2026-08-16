@@ -36,6 +36,14 @@ type Carrier interface {
 	TryPin(key, value any) bool
 	Pinned(key any) (any, bool)
 	UpdatePinLocked(key any, update func(current any) (next any, ok bool)) (any, bool)
+
+	// UpdatePinTransitionLocked is UpdatePinLocked with the transition
+	// carried as an interface value instead of a closure. A closure
+	// forces its captures to the heap at every call site; a transition
+	// implemented on state the caller already owns rides its existing
+	// pointer and costs nothing. Same lock, same reentrancy and non-nil
+	// rules.
+	UpdatePinTransitionLocked(key any, t PinTransition) (any, bool)
 	TrySetProvider(provider ValueProvider) bool
 }
 
@@ -95,6 +103,30 @@ func PinnedValue(ctx context.Context, key any) (any, bool) {
 		return nil, false
 	}
 	return carrier.Pinned(key)
+}
+
+// PinTransition computes a pinned value's replacement while the pin lock
+// is held. NextLocked follows UpdatePinLocked's callback contract: it
+// must be bounded, must not touch the pin APIs reentrantly, and a false
+// return leaves the current value in place.
+type PinTransition interface {
+	NextLocked(current any) (next any, ok bool)
+}
+
+// UpdatePinnedTransitionLocked runs t against the carrier reachable
+// through ctx. It exists for hot transitions: the closure-based
+// TryUpdatePinnedValueLocked allocates its adapter and captures on every
+// call, which a live profile priced at two objects per materialized
+// request.
+func UpdatePinnedTransitionLocked(ctx context.Context, key any, t PinTransition) (any, bool) {
+	if key == nil || t == nil {
+		return nil, false
+	}
+	carrier := CarrierFrom(ctx)
+	if carrier == nil {
+		return nil, false
+	}
+	return carrier.UpdatePinTransitionLocked(key, t)
 }
 
 // TryUpdatePinnedValueLocked computes and installs a replacement while

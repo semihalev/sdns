@@ -72,6 +72,10 @@ func (j *jobCarrier) Pinned(key any) (any, bool) {
 	return nil, false
 }
 
+func (j *jobCarrier) UpdatePinTransitionLocked(key any, t contextutil.PinTransition) (any, bool) {
+	return j.UpdatePinLocked(key, t.NextLocked)
+}
+
 func (j *jobCarrier) UpdatePinLocked(key any, update func(any) (any, bool)) (any, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()

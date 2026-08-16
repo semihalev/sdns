@@ -715,20 +715,28 @@ func ensurePendingRecursionWork(
 		policy = meta.workPolicy
 	}
 
-	value, _ := contextutil.TryUpdatePinnedValueLocked(
-		ctx,
-		recursionWorkKey,
-		recursionWorkPending,
-		func() *RecursionWorkLedger {
-			if ledger := meta.RecursionWork(); ledger != nil {
-				return ledger
-			}
-			if !policy.Enabled() {
-				return recursionWorkPending
-			}
-			return meta.ensureRecursionWork(policy)
-		},
-	)
+	var next any
+	if meta.workPolicy.Enabled() {
+		// The zero-alloc transition: the op is the meta pointer, and
+		// NextLocked reads meta.workPolicy under the carrier lock.
+		// Staging a resolved policy on the meta first was a data race —
+		// concurrent first debits share the meta and wrote it
+		// unsynchronized.
+		next, _ = contextutil.UpdatePinnedTransitionLocked(
+			ctx, recursionWorkKey, (*ensureRecursionWorkOp)(meta))
+	} else {
+		// An explicit policy with the meta's own disabled: rare enough
+		// that the closure's capture cost is acceptable.
+		next, _ = contextutil.TryUpdatePinnedValueLocked(
+			ctx, recursionWorkKey, recursionWorkPending,
+			func() *RecursionWorkLedger {
+				if ledger := meta.RecursionWork(); ledger != nil {
+					return ledger
+				}
+				return meta.ensureRecursionWork(policy)
+			})
+	}
+	value, _ := next.(*RecursionWorkLedger)
 	switch value {
 	case recursionWorkClosed:
 		return ctx, recursionWorkClosed
@@ -772,18 +780,50 @@ func finishLazyRecursionWork(ctx context.Context, meta *ResponseMeta) *Recursion
 // half of finishLazyRecursionWork, split out for the same
 // closure-capture-in-prologue reason as ensurePendingRecursionWork.
 func finishPendingRecursionWork(ctx context.Context, meta *ResponseMeta) *RecursionWorkLedger {
-	next, _ := contextutil.TryUpdatePinnedValueLocked(
-		ctx,
-		recursionWorkKey,
-		recursionWorkPending,
-		func() *RecursionWorkLedger {
-			if ledger := meta.RecursionWork(); ledger != nil {
-				return ledger
-			}
-			return recursionWorkClosed
-		},
-	)
-	return next
+	next, _ := contextutil.UpdatePinnedTransitionLocked(
+		ctx, recursionWorkKey, (*finishRecursionWorkOp)(meta))
+	ledger, _ := next.(*RecursionWorkLedger)
+	return ledger
+}
+
+// The two pin transitions, typed over ResponseMeta so the interface value
+// handed to the carrier is the meta pointer itself — no closure, no
+// captures, nothing new on the heap. A live profile priced the closure
+// shape at two objects and 48 bytes per materialized request, times every
+// miss the server resolves.
+
+type ensureRecursionWorkOp ResponseMeta
+
+// NextLocked implements contextutil.PinTransition: pending becomes the
+// meta's ledger — existing, or newly ensured under meta.workPolicy, which
+// is set before the request serves and stable after (staging a resolved
+// policy on the meta per call was a data race between concurrent first
+// debits). The caller guarantees the policy is enabled.
+func (o *ensureRecursionWorkOp) NextLocked(current any) (any, bool) {
+	if current != any(recursionWorkPending) {
+		return nil, false
+	}
+	meta := (*ResponseMeta)(o)
+	if ledger := meta.RecursionWork(); ledger != nil {
+		return ledger, true
+	}
+	return meta.ensureRecursionWork(meta.workPolicy), true
+}
+
+type finishRecursionWorkOp ResponseMeta
+
+// NextLocked implements contextutil.PinTransition: pending closes — to
+// the meta's ledger when one was materialized, else to the closed
+// sentinel.
+func (o *finishRecursionWorkOp) NextLocked(current any) (any, bool) {
+	if current != any(recursionWorkPending) {
+		return nil, false
+	}
+	meta := (*ResponseMeta)(o)
+	if ledger := meta.RecursionWork(); ledger != nil {
+		return ledger, true
+	}
+	return recursionWorkClosed, true
 }
 
 // recursionWorkExhaustionLogGate rate-limits the exhaustion breadcrumb to one

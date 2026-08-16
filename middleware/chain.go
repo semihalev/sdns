@@ -940,6 +940,10 @@ func (ch *Chain) Materialize(ctx context.Context) (context.Context, *dns.Msg) {
 	return ctx, m
 }
 
+// baseWriter returns the transport beneath the chain's own base writer,
+// for capabilities that belong to the transport rather than any wrapper.
+func (ch *Chain) baseWriter() Transport { return ch.base.Transport }
+
 // finishDetach runs a pending strict-detach cleanup exactly once.
 func (ch *Chain) finishDetach() {
 	if ch.detachCleanup != nil {
@@ -1046,6 +1050,16 @@ func (ch *Chain) AllowDirectPack() {
 // deadline context, mirroring what the chain entry does for ordinary
 // requests at pos==0.
 func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func()) {
+	// Leaving the strict path means slow work ahead — an upstream
+	// resolution, a materialized composite — and any replies already
+	// staged on this transport's batch must not wait behind it. A cache
+	// hit staged a moment ago would otherwise sit in the burst for the
+	// whole recursion of the unrelated query that followed it. Hits stay
+	// batched (they never come through here); the flush costs the slow
+	// path one syscall it cannot feel.
+	if f, ok := ch.baseWriter().(StagedFlusher); ok {
+		f.FlushStaged()
+	}
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(10 * time.Second)

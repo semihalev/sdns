@@ -266,6 +266,28 @@ func (c *LazyDeadline) UpdatePinLocked(
 	return next, true
 }
 
+// UpdatePinTransitionLocked implements Carrier; see the interface
+// contract. The body mirrors UpdatePinLocked with the transition on an
+// interface instead of a closure.
+func (c *LazyDeadline) UpdatePinTransitionLocked(key any, t PinTransition) (any, bool) {
+	if key == nil || t == nil {
+		return nil, false
+	}
+	c.pinMu.Lock()
+	defer c.pinMu.Unlock()
+	pin := c.pin(key)
+	if pin == nil {
+		return nil, false
+	}
+	current := pin.value.Load()
+	next, ok := t.NextLocked(current)
+	if !ok || next == nil {
+		return current, false
+	}
+	pin.value.Store(next)
+	return next, true
+}
+
 // Cancel releases an armed timer/parent registration, or records a terminal
 // cause without arming one when the request completed on the fast path.
 func (c *LazyDeadline) Cancel() {

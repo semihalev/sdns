@@ -115,6 +115,26 @@ func (c *jobCarrier) UpdatePinLocked(key any, update func(any) (any, bool)) (any
 	return nil, false
 }
 
+// UpdatePinTransitionLocked implements contextutil.Carrier; the body
+// mirrors UpdatePinLocked with the transition on an interface instead of
+// a closure.
+func (c *jobCarrier) UpdatePinTransitionLocked(key any, t contextutil.PinTransition) (any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.keys {
+		if c.keys[i] != key {
+			continue
+		}
+		next, ok := t.NextLocked(c.vals[i])
+		if !ok || next == nil {
+			return c.vals[i], false
+		}
+		c.vals[i] = next
+		return next, true
+	}
+	return nil, false
+}
+
 func (c *jobCarrier) TrySetProvider(p contextutil.ValueProvider) bool {
 	if p == nil {
 		return false
