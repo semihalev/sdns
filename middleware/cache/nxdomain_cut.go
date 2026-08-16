@@ -237,6 +237,17 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 	entry.id = nxDomainCutID{deniedName: deniedName, qclass: entry.qclass}
 	entry.zoneKey = nxDomainCutZoneKey{zone: zone, qclass: entry.qclass}
 	entry.prepareWire()
+	// The wire templates are retained alongside the decoded proof, so
+	// they are bytes this entry costs. Counting only the proof let a
+	// signed zone hold roughly three bodies per entry against a budget
+	// that believed it held one — live heap profiles showed the cut
+	// cache among the largest resident owners while its accounting said
+	// it was well inside its bound. The stripped body only counts when
+	// it is its own buffer; for unsigned proofs it aliases the full one.
+	entry.wireBytes += int64(len(entry.wireFull))
+	if len(entry.wireStripped) > 0 && &entry.wireStripped[0] != &entry.wireFull[0] {
+		entry.wireBytes += int64(len(entry.wireStripped))
+	}
 
 	// Preserve a current usable cut if its replacement cannot fit even in an
 	// otherwise-empty cache or zone.
@@ -502,7 +513,10 @@ func (e *nxDomainCutEntry) response(req *dns.Msg) *dns.Msg {
 		rr.Header().Ttl = ttl
 	}
 
-	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
+	// An explicit RRSIG query keeps the signatures regardless of DO —
+	// the client named the DNSSEC type it wants (same exception the
+	// exact-entry serve applies).
+	if opt := req.IsEdns0(); (opt == nil || !opt.Do()) && req.Question[0].Qtype != dns.TypeRRSIG {
 		resp = dnsutil.ClearDNSSEC(resp)
 	}
 	return resp

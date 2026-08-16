@@ -125,7 +125,7 @@ func (e *nxDomainCutEntry) serveWireInto(
 		return nil, false
 	}
 	tmpl := e.wireFull
-	if !do {
+	if !do && req.Qtype() != dns.TypeRRSIG {
 		tmpl = e.wireStripped
 	}
 	if tmpl == nil || cap(dst) < wire.HeaderLen {
@@ -208,8 +208,10 @@ func (c *Cache) serveCutHitFromWire(
 		return false
 	}
 
+	// The DO test mirrors serveWireInto's, RRSIG exception included, so
+	// this precheck never rejects a template the composer would pick.
 	tmpl := cut.wireFull
-	if !capability.DO {
+	if !capability.DO && ch.Request.Qtype() != dns.TypeRRSIG {
 		tmpl = cut.wireStripped
 	}
 	if tmpl == nil {
@@ -285,7 +287,13 @@ func (c *Cache) serveFailureFromWire(ch *middleware.Chain) bool {
 	req := ch.Request
 	qlen := req.WireQuestionEnd() - wire.HeaderLen
 	size := wire.HeaderLen + qlen
-	dst := leaser.BeginWire(size, capability.Reserve)
+	// The reserve must carry the EDE this reply commits below: the edns
+	// layer's share covers its own options, and a caller-supplied EDE is
+	// the caller's bytes to reserve. Leasing without it went unnoticed
+	// while a lease exposed the whole slab; a capacity-exact lease turns
+	// the shortfall into a reallocation on a path that must not have one.
+	const failureEDEReserve = wire.OPTOptionHdrLen + 2 + len(failureCacheEDEText)
+	dst := leaser.BeginWire(size, capability.Reserve+failureEDEReserve)
 	if dst == nil || cap(dst) < size {
 		if dst != nil {
 			leaser.AbortWire()

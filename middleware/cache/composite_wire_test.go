@@ -77,6 +77,16 @@ func TestNXDomainCutWireServeParity(t *testing.T) {
 	if entry.deniedName != "gone.zone.test." {
 		t.Fatalf("wrong cut: %s", entry.deniedName)
 	}
+	// A signed proof retains three bodies: the decoded proof and two wire
+	// templates. The budget must be charged for all of them.
+	wantBytes := int64(entry.msg.Len()) + int64(len(entry.wireFull)) + int64(len(entry.wireStripped))
+	if len(entry.wireFull) == 0 || len(entry.wireStripped) == 0 ||
+		&entry.wireStripped[0] == &entry.wireFull[0] {
+		t.Fatal("fixture expected distinct full and stripped templates")
+	}
+	if entry.wireBytes != wantBytes {
+		t.Fatalf("wireBytes %d does not cover retained bodies (want %d)", entry.wireBytes, wantBytes)
+	}
 
 	dst := make([]byte, 0, 1024)
 	body, built := entry.serveWireInto(dst, req, true)
@@ -133,6 +143,22 @@ func TestNXDomainCutWireServeParity(t *testing.T) {
 	}
 	if strippedResp.Ns[0].Header().Rrtype != dns.TypeSOA {
 		t.Fatalf("stripped authority kept %v", strippedResp.Ns[0])
+	}
+
+	// An explicit RRSIG query names the DNSSEC type it wants: DO=0 still
+	// gets the full proof, on both paths.
+	reqRRSIG, qRRSIG := wireTestRequest(t, "d.gone.zone.test.", dns.TypeRRSIG, false)
+	bodyRRSIG, built := entry.serveWireInto(dst, reqRRSIG, false)
+	if !built {
+		t.Fatal("explicit-RRSIG wire synthesis refused")
+	}
+	rrsigResp := new(dns.Msg)
+	if err := rrsigResp.Unpack(bodyRRSIG); err != nil {
+		t.Fatalf("explicit-RRSIG body unpack: %v", err)
+	}
+	msgRRSIG := entry.response(qRRSIG)
+	if len(rrsigResp.Ns) != len(proof.Ns) || len(msgRRSIG.Ns) != len(proof.Ns) {
+		t.Fatalf("explicit RRSIG query lost the signatures: wire %v msg %v", rrsigResp.Ns, msgRRSIG.Ns)
 	}
 
 	if allocs := testing.AllocsPerRun(200, func() {
