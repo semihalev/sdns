@@ -55,6 +55,11 @@ type Server struct {
 	trimEnabled bool
 
 	running atomic.Int32
+
+	// certStopped marks the certificate provider closed: Stop has run,
+	// and no caller may lazily create a new manager (and its watcher).
+	// Guarded by certMu.
+	certStopped bool
 }
 
 // New return new server.
@@ -345,6 +350,13 @@ func (s *Server) GetTLSConfig() *tls.Config {
 		return s.certManager.GetTLSConfig()
 	}
 
+	// The lazy creation below is for startup. After Stop it would leave
+	// a file watcher alive behind a Stopped() that already said true —
+	// the defence in depth for any caller still holding this provider.
+	if s.certStopped {
+		return nil
+	}
+
 	if s.cfg.TLSCertificate == "" || s.cfg.TLSPrivateKey == "" {
 		return nil
 	}
@@ -412,6 +424,7 @@ func (s *Server) Stopped() bool {
 func (s *Server) Stop() {
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
+	s.certStopped = true
 	if s.certManager != nil {
 		s.certManager.Stop()
 		s.certManager = nil

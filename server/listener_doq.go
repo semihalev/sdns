@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"sync"
@@ -21,6 +22,7 @@ type doqListener struct {
 	mu      sync.Mutex
 	srv     *doq.Server
 	pc      net.PacketConn
+	tls     *tls.Config
 	serving atomic.Bool
 }
 
@@ -42,9 +44,17 @@ func (d *doqListener) Bind(ctx context.Context) error {
 	if d.certs == nil {
 		return errors.New("no TLS certificate configured")
 	}
-	if d.certs.GetTLSConfig() == nil {
+	// Taken once, here, and used by Serve. Fetching again at serve time
+	// raced shutdown: a late Serve after the supervisor had stopped the
+	// certificate manager would make the provider build a fresh one,
+	// leaving a watcher alive behind a Stopped() that already said true.
+	// The config carries a GetCertificate callback, so reloads still
+	// flow through it.
+	tlsConfig := d.certs.GetTLSConfig()
+	if tlsConfig == nil {
 		return errors.New("TLS certificate not available")
 	}
+	d.tls = tlsConfig
 
 	var lc net.ListenConfig
 	pc, err := lc.ListenPacket(ctx, "udp", d.addr)
@@ -58,7 +68,7 @@ func (d *doqListener) Bind(ctx context.Context) error {
 
 func (d *doqListener) Serve(_ context.Context) error {
 	d.mu.Lock()
-	srv, pc, certs := d.srv, d.pc, d.certs
+	srv, pc, tlsConfig := d.srv, d.pc, d.tls
 	d.mu.Unlock()
 	if srv == nil {
 		return errListenerNotBound
@@ -67,7 +77,7 @@ func (d *doqListener) Serve(_ context.Context) error {
 	zlog.Info("DNS server listening", "net", "doq", "addr", d.addr)
 	d.serving.Store(true)
 	defer d.serving.Store(false)
-	err := srv.Serve(pc, certs.GetTLSConfig())
+	err := srv.Serve(pc, tlsConfig)
 	if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, quic.ErrServerClosed) {
 		return err
 	}

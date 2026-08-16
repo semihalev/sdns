@@ -84,13 +84,17 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
+          # This list mirrors .goreleaser.yml exactly — targets and env
+          # both. The MIPS release ships softfloat only, so that is the
+          # variant compiled here; a hardfloat-only pass would be a gate
+          # that never guards what ships.
           build() {
-            if ! out=$(GOOS="$1" GOARCH="$2" GOARM="${3:-}" go build ./... 2>&1); then
-              echo "::error::build failed for $1/$2${3:+v$3}"
+            if ! out=$(GOOS="$1" GOARCH="$2" GOARM="${3:-}" GOMIPS="${GOMIPS:-}" GOMIPS64="${GOMIPS64:-}" go build ./... 2>&1); then
+              echo "::error::build failed for $1/$2${3:+v$3}${GOMIPS:+_$GOMIPS}"
               echo "$out"
               fail=1
             else
-              echo "ok $1/$2${3:+v$3}"
+              echo "ok $1/$2${3:+v$3}${GOMIPS:+_$GOMIPS}"
             fi
           }
           build linux amd64
@@ -98,14 +102,16 @@ jobs:
           build linux arm 5
           build linux arm 6
           build linux arm 7
-          build linux mips
-          build linux mipsle
-          build linux mips64
-          build linux mips64le
+          GOMIPS=softfloat build linux mips
+          GOMIPS=softfloat build linux mipsle
+          GOMIPS64=softfloat build linux mips64
+          GOMIPS64=softfloat build linux mips64le
           build darwin amd64
           build darwin arm64
           build windows amd64
           build freebsd amd64
+          build openbsd amd64
+          build netbsd amd64
           exit $fail
 
   lint:

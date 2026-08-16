@@ -120,13 +120,12 @@ type Config struct {
 	// Resolver concurrency limits
 	MaxConcurrentQueries int // Maximum concurrent DNS queries (default 10000)
 
-	// Server ingress bounds (zero-path front door). These are deliberately
-	// separate from MaxConcurrentQueries, which is the resolver's upstream
-	// fan-out semaphore. The preallocated slab ring is derived from them —
-	// queue depth + one per worker + one per reader, never configured
-	// independently, so the three can't disagree — and it sizes the steady
-	// state rather than capping it: under saturation the ring stretches
-	// into pooled spares, as far as this machine's memory allows.
+	// Server ingress bounds. These are deliberately separate from
+	// MaxConcurrentQueries, which is the resolver's upstream fan-out
+	// semaphore. Left at zero, each derives from the machine's resource
+	// plan (memory, CPUs, descriptor limit); nothing is preallocated —
+	// admission is capped, slabs are created on demand and parked in an
+	// idle cache between requests.
 	IngressWorkers  int // Fixed handler workers per listener (default: derived from CPUs and memory)
 	IngressQueue    int // Ready-queue depth before a job is served on its own goroutine (default 64)
 	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default: derived from available memory)
