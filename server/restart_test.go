@@ -12,6 +12,31 @@ import (
 	"github.com/semihalev/sdns/config"
 )
 
+// dualStackFreeAddr picks a loopback address that both transports will
+// take. The server binds UDP and TCP on one address, but only one of
+// them assigns the ephemeral port — and on Windows a port handed out for
+// UDP can fall inside a range excluded for TCP, so the bind fails on the
+// fixture instead of on the property under test.
+func dualStackFreeAddr(t *testing.T) string {
+	t.Helper()
+	for range 20 {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			continue
+		}
+		addr := pc.LocalAddr().String()
+		ln, err := net.Listen("tcp", addr)
+		_ = pc.Close()
+		if err != nil {
+			continue // this port is spoken for on the other transport
+		}
+		_ = ln.Close()
+		return addr
+	}
+	t.Fatal("no loopback port both transports would accept")
+	return ""
+}
+
 // TestStoppedMeansTheAddressIsFree pins what Stopped() is used for.
 //
 // sdns.go polls it to decide that a shutdown is complete. The only thing
@@ -21,14 +46,7 @@ import (
 // restart fails on "address already in use", and it fails intermittently,
 // which is the worst way for it to fail.
 func TestStoppedMeansTheAddressIsFree(t *testing.T) {
-	probe, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := probe.LocalAddr().String()
-	if err := probe.Close(); err != nil {
-		t.Fatal(err)
-	}
+	addr := dualStackFreeAddr(t)
 
 	cfg := new(config.Config)
 	cfg.Bind = addr
@@ -67,14 +85,7 @@ func TestStoppedMeansTheAddressIsFree(t *testing.T) {
 // the moment the server calls itself stopped, both of its addresses must
 // be bindable by somebody else.
 func TestStoppedIsNotAheadOfTheSockets(t *testing.T) {
-	probe, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := probe.LocalAddr().String()
-	if err := probe.Close(); err != nil {
-		t.Fatal(err)
-	}
+	addr := dualStackFreeAddr(t)
 
 	cfg := new(config.Config)
 	cfg.Bind = addr

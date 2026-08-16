@@ -81,14 +81,14 @@ func TestCgroupLimitFoundOnThisProcessCgroup(t *testing.T) {
 			mount := t.TempDir()
 			for name, content := range tc.files {
 				full := filepath.Join(mount, name)
-				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if got := cgroupMemoryLimit(mount, tc.cgroup, "", ""); got != tc.want {
+			if got := cgroupMemoryLimit(cgroupMount{point: mount, root: "/"}, tc.cgroup, cgroupMount{}, ""); got != tc.want {
 				t.Fatalf("v2 limit = %d, want %d", got, tc.want)
 			}
 		})
@@ -100,13 +100,14 @@ func TestCgroupLimitFoundOnThisProcessCgroup(t *testing.T) {
 func TestCgroupV1Limit(t *testing.T) {
 	mount := t.TempDir()
 	dir := filepath.Join(mount, "docker", "abc123")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "memory.limit_in_bytes"), []byte("134217728\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := cgroupMemoryLimit("", "", mount, "/docker/abc123"); got != 128<<20 {
+	v1 := cgroupMount{point: mount, root: "/"}
+	if got := cgroupMemoryLimit(cgroupMount{}, "", v1, "/docker/abc123"); got != 128<<20 {
 		t.Fatalf("v1 limit = %d, want %d", got, 128<<20)
 	}
 
@@ -114,7 +115,7 @@ func TestCgroupV1Limit(t *testing.T) {
 		[]byte("9223372036854771712\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := cgroupMemoryLimit("", "", mount, "/docker/abc123"); got != 0 {
+	if got := cgroupMemoryLimit(cgroupMount{}, "", v1, "/docker/abc123"); got != 0 {
 		t.Fatalf("the v1 unlimited sentinel was read as a %d byte limit", got)
 	}
 }
@@ -125,11 +126,11 @@ func TestParseCgroupMountsAndPaths(t *testing.T) {
 32 25 0:27 / /sys/fs/cgroup/memory rw,nosuid - cgroup cgroup rw,memory
 33 25 0:28 / /sys/fs/cgroup/cpu rw,nosuid - cgroup cgroup rw,cpu,cpuacct`
 	v2, v1 := parseCgroupMounts(mountinfo)
-	if v2 != "/sys/fs/cgroup" {
-		t.Fatalf("v2 mount = %q", v2)
+	if v2.point != "/sys/fs/cgroup" || v2.root != "/" {
+		t.Fatalf("v2 mount = %+v", v2)
 	}
-	if v1 != "/sys/fs/cgroup/memory" {
-		t.Fatalf("v1 memory mount = %q", v1)
+	if v1.point != "/sys/fs/cgroup/memory" || v1.root != "/" {
+		t.Fatalf("v1 memory mount = %+v", v1)
 	}
 
 	procCgroup := `12:cpu,cpuacct:/system.slice/sdns.service
@@ -149,5 +150,83 @@ func TestThisProcessCgroupLimitIsSane(t *testing.T) {
 	t.Logf("cgroup limit for this process: %d bytes", limit)
 	if limit != 0 && limit < 8<<20 {
 		t.Fatalf("read a %d byte limit for this process, which cannot be right", limit)
+	}
+}
+
+// A cgroup mount does not have to expose the whole hierarchy. Delegated
+// and bind-mounted setups show a subtree, and then the path in
+// /proc/self/cgroup is written in the hierarchy's terms while the
+// directory that exists is written in the mount's. Appending the first
+// to the second names nothing, the limit reads as absent, and the server
+// sizes itself for the host's memory inside a service that cannot have
+// it — the exact failure this file is here to prevent.
+func TestCgroupLimitUnderASubtreeRootedMount(t *testing.T) {
+	mount := t.TempDir()
+	// The mount exposes /system.slice, so this process's cgroup —
+	// /system.slice/sdns.service — is simply "sdns.service" here.
+	dir := filepath.Join(mount, "sdns.service")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory.max"), []byte("134217728\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A limit on the exposed root binds as well, and is looser here, so
+	// the leaf's has to win.
+	if err := os.WriteFile(filepath.Join(mount, "memory.max"), []byte("1073741824\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	v2 := cgroupMount{point: mount, root: "/system.slice"}
+	if got := cgroupMemoryLimit(v2, "/system.slice/sdns.service", cgroupMount{}, ""); got != 128<<20 {
+		t.Fatalf("limit = %d, want %d; the mount's root prefix has to come off "+
+			"the cgroup path before it names a directory", got, 128<<20)
+	}
+}
+
+// A path outside what the mount exposes cannot be read at all — a
+// namespace describing itself in terms this mount does not share. The
+// mount point is then the closest readable thing, and its limit still
+// binds.
+func TestCgroupPathOutsideTheMountFallsBackToItsRoot(t *testing.T) {
+	mount := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mount, "memory.max"), []byte("134217728\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v2 := cgroupMount{point: mount, root: "/system.slice"}
+	if got := cgroupMemoryLimit(v2, "/user.slice/session-3.scope", cgroupMount{}, ""); got != 128<<20 {
+		t.Fatalf("limit = %d, want the mount root's %d", got, 128<<20)
+	}
+}
+
+func TestCgroupRelPath(t *testing.T) {
+	cases := []struct{ root, cgroup, want string }{
+		{"/", "/system.slice/sdns.service", "/system.slice/sdns.service"},
+		{"/", "/", "/"},
+		{"/system.slice", "/system.slice/sdns.service", "/sdns.service"},
+		{"/system.slice", "/system.slice", "/"},
+		{"/system.slice", "/user.slice/other", "/"},
+		{"/kubepods/burstable/podabc", "/kubepods/burstable/podabc/container1", "/container1"},
+		{"", "/system.slice", "/system.slice"},
+	}
+	for _, tc := range cases {
+		if got := cgroupRelPath(cgroupMount{point: "/mnt", root: tc.root}, tc.cgroup); got != tc.want {
+			t.Fatalf("cgroupRelPath(root=%q, cgroup=%q) = %q, want %q",
+				tc.root, tc.cgroup, got, tc.want)
+		}
+	}
+}
+
+// mountinfo carries the root and the mount point in separate fields, and
+// a subtree-rooted mount is exactly where confusing them shows.
+func TestParseCgroupMountsKeepsTheFilesystemRoot(t *testing.T) {
+	mountinfo := `31 25 0:26 /system.slice /sys/fs/cgroup rw,nosuid - cgroup2 cgroup2 rw,nsdelegate
+32 25 0:27 /docker/abc /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory`
+	v2, v1 := parseCgroupMounts(mountinfo)
+	if v2.point != "/sys/fs/cgroup" || v2.root != "/system.slice" {
+		t.Fatalf("v2 mount = %+v", v2)
+	}
+	if v1.point != "/sys/fs/cgroup/memory" || v1.root != "/docker/abc" {
+		t.Fatalf("v1 mount = %+v", v1)
 	}
 }

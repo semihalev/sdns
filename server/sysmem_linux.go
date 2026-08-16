@@ -17,8 +17,10 @@ func systemMemoryBytes() uint64 {
 	}
 	// Totalram is uint32 on 32-bit targets and uint64 on 64-bit ones, so
 	// both operands are widened rather than assumed: this is the field
-	// that has to compile for the ARM and MIPS builds as well.
-	return uint64(si.Totalram) * uint64(si.Unit)
+	// that has to compile for the ARM and MIPS builds as well. The
+	// conversion is redundant only on the 64-bit target the linter reads
+	// it on.
+	return uint64(si.Totalram) * uint64(si.Unit) //nolint:unconvert // required on 32-bit targets
 }
 
 // containerMemoryLimit is what this process is actually allowed to use,
@@ -43,9 +45,20 @@ func containerMemoryLimit() uint64 {
 	return cgroupMemoryLimit(v2Mount, v2Path, v1Mount, v1Path)
 }
 
+// cgroupMount is one hierarchy as this process can reach it: where it is
+// visible, and which part of the hierarchy that mount exposes. The second
+// half is not decoration — a delegated or bind-mounted cgroup shows a
+// subtree, so a path read from /proc/self/cgroup is written in the
+// hierarchy's terms and has to be translated into the mount's before it
+// names a directory that exists.
+type cgroupMount struct {
+	point string
+	root  string
+}
+
 // cgroupMemoryLimit is containerMemoryLimit with the lookup already done,
 // so the walk can be checked against a hierarchy built for the purpose.
-func cgroupMemoryLimit(v2Mount, v2Path, v1Mount, v1Path string) uint64 {
+func cgroupMemoryLimit(v2 cgroupMount, v2Path string, v1 cgroupMount, v1Path string) uint64 {
 	var limit uint64
 	narrow := func(v uint64) {
 		if v > 0 && (limit == 0 || v < limit) {
@@ -54,33 +67,67 @@ func cgroupMemoryLimit(v2Mount, v2Path, v1Mount, v1Path string) uint64 {
 	}
 
 	// v2: memory.max, from this cgroup up to the mount root.
-	if v2Mount != "" {
-		for _, dir := range ancestors(v2Mount, v2Path) {
+	if v2.point != "" {
+		for _, dir := range ancestors(v2.point, cgroupRelPath(v2, v2Path)) {
 			narrow(readMemoryLimit(path.Join(dir, "memory.max")))
 		}
 	}
 	// v1: memory.limit_in_bytes, same walk.
-	if v1Mount != "" {
-		for _, dir := range ancestors(v1Mount, v1Path) {
+	if v1.point != "" {
+		for _, dir := range ancestors(v1.point, cgroupRelPath(v1, v1Path)) {
 			narrow(readMemoryLimit(path.Join(dir, "memory.limit_in_bytes")))
 		}
 	}
 	return limit
 }
 
+// cgroupRelPath translates a hierarchy path into a path under the mount
+// that exposes it.
+//
+// A mount rooted at "/" shows the whole hierarchy and the two are the
+// same. A mount rooted at a subtree shows only what is below it, so the
+// root prefix has to come off — appending the full path there would name
+// a directory that does not exist, the limit would read as absent, and
+// the bounds would come from the host's memory inside a service that
+// cannot have it.
+//
+// A path outside what this mount exposes cannot be reached at all: that
+// is a cgroup namespace describing itself in terms this mount does not
+// share, and the mount point is then the closest thing to the process's
+// own cgroup that is actually readable.
+func cgroupRelPath(m cgroupMount, cgroupPath string) string {
+	root := path.Clean("/" + m.root)
+	full := path.Clean("/" + cgroupPath)
+	switch {
+	case root == "/":
+		return full
+	case full == root:
+		return "/"
+	case strings.HasPrefix(full, root+"/"):
+		return strings.TrimPrefix(full, root)
+	default:
+		return "/"
+	}
+}
+
 // cgroupMounts returns where the v2 hierarchy and the v1 memory
-// controller are mounted.
-func cgroupMounts() (v2, v1 string) {
+// controller are mounted, and which part of each this process sees.
+func cgroupMounts() (v2, v1 cgroupMount) {
 	data, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return "", ""
+		return cgroupMount{}, cgroupMount{}
 	}
 	return parseCgroupMounts(string(data))
 }
 
-func parseCgroupMounts(mountinfo string) (v2, v1 string) {
+func parseCgroupMounts(mountinfo string) (v2, v1 cgroupMount) {
 	for line := range strings.SplitSeq(mountinfo, "\n") {
-		// ... <mount point> ... - <fstype> <source> <super options>
+		// id parent major:minor <root> <mount point> options... - <fstype> <source> <super options>
+		//                        (4)      (5)
+		// The root and the mount point are different questions: the first
+		// is which part of the filesystem this mount exposes, the second
+		// is where it appears. A cgroup mount is regularly rooted at a
+		// subtree, and then only their difference names a directory.
 		sep := strings.Index(line, " - ")
 		if sep < 0 {
 			continue
@@ -90,15 +137,15 @@ func parseCgroupMounts(mountinfo string) (v2, v1 string) {
 		if len(fields) < 5 || len(rest) < 3 {
 			continue
 		}
-		mountPoint := fields[4]
+		mount := cgroupMount{point: fields[4], root: fields[3]}
 		switch rest[0] {
 		case "cgroup2":
-			if v2 == "" {
-				v2 = mountPoint
+			if v2.point == "" {
+				v2 = mount
 			}
 		case "cgroup":
-			if v1 == "" && hasOption(rest[2], "memory") {
-				v1 = mountPoint
+			if v1.point == "" && hasOption(rest[2], "memory") {
+				v1 = mount
 			}
 		}
 	}
