@@ -117,6 +117,13 @@ func cgroupMemoryLimit(v2Mounts []cgroupMount, v2Path string, v1Mounts []cgroupM
 // is still returned, because with no better mount anywhere it is the
 // closest readable thing — but the caller prefers a mount that maps.
 func cgroupRelPath(m cgroupMount, cgroupPath string) (string, bool) {
+	// A path that climbs is a namespace naming a cgroup above its own
+	// root — outside anything a mount in this namespace exposes. Clean
+	// would silently rewrite it into a sibling that exists but is not
+	// this process, and the sibling's limit is not ours to read.
+	if hasDotDot(cgroupPath) {
+		return "/", false
+	}
 	root := path.Clean("/" + m.root)
 	full := path.Clean("/" + cgroupPath)
 	switch {
@@ -158,7 +165,10 @@ func parseCgroupMounts(mountinfo string) (v2, v1 []cgroupMount) {
 		if len(fields) < 5 || len(rest) < 3 {
 			continue
 		}
-		mount := cgroupMount{point: fields[4], root: fields[3]}
+		mount := cgroupMount{
+			point: unescapeMountField(fields[4]),
+			root:  unescapeMountField(fields[3]),
+		}
 		switch rest[0] {
 		case "cgroup2":
 			v2 = append(v2, mount)
@@ -169,6 +179,41 @@ func parseCgroupMounts(mountinfo string) (v2, v1 []cgroupMount) {
 		}
 	}
 	return v2, v1
+}
+
+func hasDotDot(p string) bool {
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// unescapeMountField decodes the octal escapes mountinfo uses for the
+// characters that would break its whitespace-separated format: \040
+// space, \011 tab, \012 newline, \134 backslash. A mount path with a
+// space in it is otherwise read with the escape still inside — it names
+// no directory, the limit reads as absent, and the bounds fall back to
+// the host's memory.
+func unescapeMountField(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			d0, d1, d2 := s[i+1], s[i+2], s[i+3]
+			if d0 >= '0' && d0 <= '3' && d1 >= '0' && d1 <= '7' && d2 >= '0' && d2 <= '7' {
+				b.WriteByte((d0-'0')<<6 | (d1-'0')<<3 | (d2 - '0'))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func hasOption(options, want string) bool {
