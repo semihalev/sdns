@@ -416,6 +416,14 @@ func (e *udpEngine) sendGroup(s *udpTXSender, jobs []*udpJob, pc *net.UDPConn) {
 		if j.txLen == 0 {
 			continue
 		}
+		if j.rawSALen == 0 {
+			// No raw sockaddr was armed for this job: it was read by the
+			// portable reader (a socket that fell back off recvmmsg stays
+			// in txConns). sendmmsg would send it nowhere — or, on a
+			// recycled slab, to the previous client.
+			j.sendDirect()
+			continue
+		}
 		s.iovs[k] = unix.Iovec{Base: &j.tx[0], Len: uint64(j.txLen)} //nolint:gosec // G115 — txLen is a staged reply length, bounded by the TX buffer
 		h := &s.hdrs[k]
 		h.dlen = 0

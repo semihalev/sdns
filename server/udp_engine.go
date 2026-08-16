@@ -448,6 +448,11 @@ func (e *udpEngine) reader(pc *net.UDPConn) {
 		j.setRemote(raddr)
 		j.pc = pc
 		j.pktinfoLen = 0
+		// A recycled slab may carry the previous client's raw sockaddr
+		// from a batched read. This read armed none, and the send path
+		// keys direct-vs-batched on exactly this: a stale nonzero length
+		// would hand the reply to sendmmsg addressed at the old client.
+		j.rawSALen = 0
 		if e.wildcard && oobn > 0 {
 			if !preparePktinfoReply(oob[:oobn], j) {
 				// Control truncation or an unknown shape on a wildcard
