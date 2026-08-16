@@ -1636,7 +1636,12 @@ func denialProofResponse(
 	for _, rr := range response.Ns {
 		rr.Header().Ttl = ttl
 	}
-	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
+	// An explicit RRSIG query keeps the signatures regardless of DO —
+	// the same exception the exact-entry and subtree-cut serves apply,
+	// so the answer does not change body depending on which rung of the
+	// negative ladder holds the state.
+	if opt := req.IsEdns0(); (opt == nil || !opt.Do()) &&
+		(len(req.Question) == 0 || req.Question[0].Qtype != dns.TypeRRSIG) {
 		kept := response.Ns[:0]
 		for _, rr := range response.Ns {
 			switch rr.Header().Rrtype {

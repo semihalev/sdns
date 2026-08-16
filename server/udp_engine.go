@@ -183,8 +183,10 @@ func (j *udpJob) sendDirect() {
 func (j *udpJob) WriteMsg(m *dns.Msg) error {
 	// The byte fast path arrives through Write; this is the Msg-path
 	// fallback. Packing into the job's TX buffer keeps the ordinary case
-	// allocation-stable; an oversized response lets PackBuffer grow.
-	out, err := m.PackBuffer(j.tx[:0])
+	// allocation-stable; an oversized response lets PackBuffer grow. The
+	// full-length slice matters: PackBuffer selects the caller's buffer
+	// by len, not cap, so a zero-length slice allocated every reply.
+	out, err := m.PackBuffer(j.tx[:])
 	if err != nil {
 		return err
 	}

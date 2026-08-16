@@ -129,6 +129,13 @@ func (l *tlsListener) Shutdown(_ context.Context) error {
 	return l.drainErr
 }
 
+// Quiesced reports whether the engine holds no in-flight work.
+func (l *tlsListener) Quiesced() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.engine == nil || l.engine.quiesced()
+}
+
 // TrimIdleMemory drops the engine's parked slabs (see trim.go).
 func (l *tlsListener) TrimIdleMemory() int {
 	l.mu.Lock()

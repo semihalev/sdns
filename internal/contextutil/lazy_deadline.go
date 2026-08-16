@@ -41,9 +41,12 @@ type lazyDeadlineHolder struct {
 // requests: child contexts and cancellation callbacks may retain it.
 // lazyDeadlinePins bounds the request-lifetime value slots. The size mirrors
 // the in-tree pinners (recursion-work ledger, resolution-attempt guard,
-// request ID, NSEC3 hash memo); a pin that finds the table full falls back to
-// an ordinary context.WithValue at the call site.
-const lazyDeadlinePins = 4
+// request ID, NSEC3 hash memo, client-ECS marker); a pin that finds the
+// table full falls back to an ordinary context.WithValue at the call site.
+// The inventory once said four and left the ECS marker out, so every
+// ECS-marked miss overflowed the table and the last pinner — the NSEC3
+// memo — lost exactly the cross-subquery sharing pinning exists for.
+const lazyDeadlinePins = 5
 
 // lazyDeadlinePin is one request-lifetime slot. The non-nil value is both
 // the occupancy sentinel and the publication barrier: the key is written

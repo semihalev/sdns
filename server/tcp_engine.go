@@ -144,7 +144,10 @@ func (j *tcpJob) Write(b []byte) (int, error) {
 // PackBuffer allocates when it does not — a reply larger than this slab's
 // class is rare and correctness comes first.
 func (j *tcpJob) WriteMsg(m *dns.Msg) error {
-	out, err := m.PackBuffer(j.tx[dnsclient.FramePrefixLen:dnsclient.FramePrefixLen])
+	// The full-length slice matters: PackBuffer selects the caller's
+	// buffer by len, not cap, so a zero-length slice allocated every
+	// Msg-path reply while the slab sat idle.
+	out, err := m.PackBuffer(j.tx[dnsclient.FramePrefixLen:])
 	if err != nil {
 		return err
 	}
@@ -531,6 +534,17 @@ func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time, length int) *tcpJo
 	select {
 	case <-tokens:
 	default:
+		// Parking for a token with replies still staged is the deadlock
+		// beforeRead guards against, one seam over: the frame that needs
+		// this class was already buffered, so no flush ran on the way
+		// here, and the client may be waiting on exactly these replies
+		// while its next frame waits on another tenant's token. The
+		// uncontended path above never pays this check.
+		if s.held > 0 {
+			if err := s.beforeWrite(); err == nil {
+				_ = s.flush()
+			}
+		}
 		waited := s.waitFor(time.Until(deadline))
 		defer s.wait.Stop()
 		select {

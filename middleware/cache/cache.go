@@ -1105,6 +1105,11 @@ func (c *Cache) serveHitFromWire(
 	}
 	if limiter := entry.GetRateLimiter(); limiter != nil {
 		if !limiter.Allow() {
+			// The Msg path counts a rate-limited hit as a hit (the
+			// caller records it on every true return); the byte path
+			// answers the same question the same way, so the metric
+			// must not depend on which path the query took.
+			c.metrics.Hit()
 			ch.Cancel()
 			return true
 		}
