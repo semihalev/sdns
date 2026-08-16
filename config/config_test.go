@@ -181,6 +181,29 @@ func TestLoad(t *testing.T) {
 			version: "1.4.0",
 			wantErr: false,
 		},
+		{
+			// The removed fallback loaded the literal cwd sdns.toml
+			// whenever the basename was sdns.conf — explicit -c paths
+			// included. The upgrade warning probes that historical
+			// location too; either way the asked-for file is generated.
+			name: "explicit path with a leftover cwd sdns.toml still generates",
+			setupFunc: func() (string, func()) {
+				tmpDir := t.TempDir()
+				confDir := t.TempDir()
+				oldPwd, _ := os.Getwd()
+				os.Chdir(tmpDir) //nolint:gosec // G104 - test chdir
+
+				if err := os.WriteFile("sdns.toml", []byte("version = \"0.0.1\"\ndirectory = \"db\"\n"), 0644); err != nil { //nolint:gosec // G306 - test file
+					t.Fatal(err)
+				}
+
+				return filepath.Join(confDir, "sdns.conf"), func() {
+					os.Chdir(oldPwd) //nolint:gosec // G104 - test cleanup
+				}
+			},
+			version: "1.4.0",
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -1118,11 +1118,21 @@ func Load(cfgfile, version string) (*Config, error) {
 	if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
 		// An operator upgrading across the fallback's removal would
 		// otherwise get a silent fresh default while their old file sits
-		// ignored next to it.
-		legacy := filepath.Join(filepath.Dir(cfgfile), "sdns.toml")
-		if _, err := os.Stat(legacy); err == nil {
-			zlog.Warn("Found a legacy sdns.toml, but it is no longer loaded; generating a new config instead. Migrate your settings manually.",
-				zlog.String("legacy", legacy), zlog.String("path", cfgfile))
+		// ignored. The location the removed fallback actually loaded was
+		// the literal "sdns.toml" in the process working directory,
+		// whenever the requested basename was sdns.conf — so that is the
+		// path that must be probed; the sibling of an explicit -c path is
+		// checked as a courtesy on top.
+		legacies := []string{filepath.Join(filepath.Dir(cfgfile), "sdns.toml")}
+		if filepath.Base(cfgfile) == "sdns.conf" && filepath.Clean(legacies[0]) != "sdns.toml" {
+			legacies = append(legacies, "sdns.toml")
+		}
+		for _, legacy := range legacies {
+			if _, err := os.Stat(legacy); err == nil {
+				zlog.Warn("Found a legacy sdns.toml, but it is no longer loaded; generating a new config instead. Migrate your settings manually.",
+					zlog.String("legacy", legacy), zlog.String("path", cfgfile))
+				break
+			}
 		}
 		if err := generateConfig(cfgfile); err != nil {
 			return nil, err
