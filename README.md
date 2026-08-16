@@ -544,7 +544,7 @@ This is useful when:
 *   QNAME minimization for privacy (RFC 7816)
 *   Automatic DNSSEC trust anchor updates (RFC 5011)
 *   Zero-allocation cache operations for improved performance
-*   **Owned UDP/TCP/DoT serving engine: cache hits answered from raw bytes — allocation-free per query on UDP and TCP (DoT rides the same path; TLS record buffers are the runtime's) — with batched `recvmmsg`/`sendmmsg` I/O on Linux**
+*   **Owned UDP/TCP/DoT serving engine: wire-eligible warm cache hits answered from raw bytes, allocation-free per query on UDP and TCP (DoT rides the same path; TLS record buffers are the runtime's), with batched `recvmmsg`/`sendmmsg` I/O on Linux — composite answers that need message shaping take the ordinary path**
 *   **Self-sizing serving bounds derived from the machine's memory (cgroup and GOMEMLIMIT aware) — the same binary fits a 32-core server and a 128MB router**
 *   TCP connection pooling for persistent connections
 *   **Kubernetes DNS integration with a 256-way sharded registry and zero-allocation lookups**

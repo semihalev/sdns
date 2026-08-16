@@ -87,9 +87,12 @@ jobs:
           # This list mirrors .goreleaser.yml exactly — targets and env
           # both. The MIPS release ships softfloat only, so that is the
           # variant compiled here; a hardfloat-only pass would be a gate
-          # that never guards what ships.
+          # that never guards what ships. CGO_ENABLED=0 for the same
+          # reason: the release builds every artifact without cgo, and
+          # the native linux/amd64 step would otherwise gate a linkage
+          # the release never uses.
           build() {
-            if ! out=$(GOOS="$1" GOARCH="$2" GOARM="${3:-}" GOMIPS="${GOMIPS:-}" GOMIPS64="${GOMIPS64:-}" go build ./... 2>&1); then
+            if ! out=$(CGO_ENABLED=0 GOOS="$1" GOARCH="$2" GOARM="${3:-}" GOMIPS="${GOMIPS:-}" GOMIPS64="${GOMIPS64:-}" go build ./... 2>&1); then
               echo "::error::build failed for $1/$2${3:+v$3}${GOMIPS:+_$GOMIPS}"
               echo "$out"
               fail=1
