@@ -733,6 +733,13 @@ func ensurePendingRecursionWork(
 				if ledger := meta.RecursionWork(); ledger != nil {
 					return ledger
 				}
+				if !policy.Enabled() {
+					// The pin stays pending: materializing returns nil
+					// for a disabled policy, and a typed-nil ledger in
+					// the pin slot panics the next reader — the miss
+					// path with the firewall off hit exactly that.
+					return recursionWorkPending
+				}
 				return meta.ensureRecursionWork(policy)
 			})
 	}
