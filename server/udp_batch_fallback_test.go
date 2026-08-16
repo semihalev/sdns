@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -105,5 +106,70 @@ func TestUDPPortableFallbackReplyAddressing(t *testing.T) {
 	_ = victim.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 	if n, _ := victim.Read(buf); n > 0 {
 		t.Fatalf("reply misdirected to the previous client (%d bytes)", n)
+	}
+}
+
+// TestUDPBatchTXRetirementServesDirect pins the send half of syscall
+// degradation: with batch TX retired — the state a permanent sendmmsg
+// errno leaves behind — every reply must still reach its client through
+// the direct sender. Without retirement, a seccomp policy permitting
+// recvmmsg but not sendmmsg was a server that read every query and
+// answered none.
+func TestUDPBatchTXRetirementServesDirect(t *testing.T) {
+	echo := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
+		r := new(dns.Msg)
+		if err := r.Unpack(raw); err != nil {
+			return false
+		}
+		m := new(dns.Msg)
+		m.SetReply(r)
+		_ = w.WriteMsg(m)
+		return true
+	})
+
+	l := newUDPListener("127.0.0.1:0", echo, time.Second, 4, 64, defaultResourcePlan(1))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := l.Bind(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(l.engine.txConns) == 0 {
+		t.Skip("batch TX unavailable on this system")
+	}
+	l.engine.txRetired.Store(true)
+	go func() { _ = l.Serve(ctx) }()
+	t.Cleanup(func() {
+		sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer scancel()
+		_ = l.Shutdown(sctx)
+	})
+
+	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	q := new(dns.Msg)
+	q.SetQuestion("retired.example.com.", dns.TypeA)
+	raw, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WriteToUDP(raw, l.pcs[0].LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 512)
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, err := client.Read(buf)
+	if err != nil {
+		t.Fatalf("no reply with batch TX retired: %v", err)
+	}
+	resp := new(dns.Msg)
+	if err := resp.Unpack(buf[:n]); err != nil {
+		t.Fatalf("reply unpack: %v", err)
+	}
+	if resp.Id != q.Id {
+		t.Fatalf("reply id %d, want %d", resp.Id, q.Id)
 	}
 }

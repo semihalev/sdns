@@ -368,6 +368,9 @@ func (j *udpJob) setRemoteRaw(sa []byte) bool {
 type udpTXSender struct {
 	hdrs [udpTXMax]mmsgHdr
 	iovs [udpTXMax]unix.Iovec
+	// jobs mirrors hdrs slot for slot, so a batch the syscall refuses
+	// can be retried job by job through the direct sender.
+	jobs [udpTXMax]*udpJob
 
 	writeFn func(fd uintptr) bool
 	start   int
@@ -403,9 +406,10 @@ func (e *udpEngine) flushTX(b *udpTXBurst) {
 // process", and a datagram transport has no delivery contract to unwind.
 func (e *udpEngine) sendGroup(s *udpTXSender, jobs []*udpJob, pc *net.UDPConn) {
 	rc := e.txConns[pc]
-	if rc == nil {
+	if rc == nil || e.txRetired.Load() {
 		// A socket that never armed the batch path (or a job that arrived
-		// before it did): send the ordinary way.
+		// before it did), or a system whose sendmmsg proved permanently
+		// unusable: send the ordinary way.
 		for _, j := range jobs {
 			j.sendDirect()
 		}
@@ -425,6 +429,7 @@ func (e *udpEngine) sendGroup(s *udpTXSender, jobs []*udpJob, pc *net.UDPConn) {
 			continue
 		}
 		s.iovs[k] = unix.Iovec{Base: &j.tx[0], Len: uint64(j.txLen)} //nolint:gosec // G115 — txLen is a staged reply length, bounded by the TX buffer
+		s.jobs[k] = j
 		h := &s.hdrs[k]
 		h.dlen = 0
 		h.hdr = unix.Msghdr{
@@ -450,15 +455,32 @@ func (e *udpEngine) sendGroup(s *udpTXSender, jobs []*udpJob, pc *net.UDPConn) {
 		if err == nil {
 			err = s.werr
 		}
-		if err != nil {
-			udpTXError.Add(int64(k - done))
-			return
-		}
-		if s.sent <= 0 {
-			udpTXError.Add(int64(k - done))
-			return
+		if err != nil || s.sent <= 0 {
+			// A batch the syscall refuses falls through to the direct
+			// sender, job by job. That isolates a poisoned destination —
+			// sendmmsg stops the whole batch at the first refused message
+			// (a netfilter EPERM for one client used to drop everyone
+			// behind it) — and it is what keeps replies flowing when the
+			// syscall itself is denied. An errno retries cannot fix
+			// retires batch TX outright; without that, a seccomp policy
+			// that permits recvmmsg but not sendmmsg was a server that
+			// read every query and answered none, forever.
+			switch err { //nolint:errorlint // raw errno from the syscall
+			case unix.ENOSYS, unix.EOPNOTSUPP:
+				if !e.txRetired.Swap(true) {
+					zlog.Error("UDP batched send unsupported on this system, "+
+						"switching to direct replies", "errno", err.Error())
+				}
+			}
+			for i := done; i < k; i++ {
+				s.jobs[i].sendDirect()
+			}
+			break
 		}
 		done += s.sent
+	}
+	for i := range k {
+		s.jobs[i] = nil
 	}
 }
 

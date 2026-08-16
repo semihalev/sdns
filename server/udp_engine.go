@@ -266,6 +266,10 @@ type udpEngine struct {
 	// a send needs no lock and no allocation.
 	txSenders []udpTXSender
 	txConns   map[*net.UDPConn]syscall.RawConn
+	// txRetired flips once when sendmmsg proves permanently unusable
+	// (ENOSYS/EOPNOTSUPP); every send after that goes direct. The map
+	// above stays untouched — it is read without a lock.
+	txRetired atomic.Bool //nolint:unused // Linux batch path (udp_batch_linux.go)
 }
 
 // defaultIngressQueue is deliberately shallow. Depth here is not
