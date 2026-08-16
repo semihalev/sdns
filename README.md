@@ -45,7 +45,7 @@ $ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:latest
 Pin to a specific version (recommended for production):
 
 ```shell
-$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.0
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.0-rc1
 ```
 
 #### Docker Compose
@@ -97,7 +97,7 @@ $ make test
 
 | Flag              | Description                                                                    |
 | ----------------- | ------------------------------------------------------------------------------ |
-| -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated. Default: /sdns.conf  |
+| -c, --config PATH | Location of the config file. If it doesn't exist, a new one is generated at that path. Default: sdns.conf (working directory) |
 | -t, --test        | Test configuration file and exit. Returns exit code 0 if valid, 1 if invalid  |
 | -v, --version     | Show the SDNS version                                                          |
 | -h, --help        | Show help information and exit                                                 |
