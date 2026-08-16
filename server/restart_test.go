@@ -107,7 +107,14 @@ func TestStoppedIsNotAheadOfTheSockets(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 		cancel()
+		// Bounded, because the thing being tested is a barrier: a
+		// regression that never lifts it is a hung CI job rather than a
+		// failure with a name on it.
+		deadline = time.Now().Add(10 * time.Second)
 		for !srv.Stopped() {
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: Stopped() never became true after the context was cancelled", i)
+			}
 			time.Sleep(time.Millisecond)
 		}
 		srv.Stop()
@@ -206,7 +213,11 @@ func TestQUICListenersReleasePortsBeforeStopped(t *testing.T) {
 				}
 
 				cancel()
+				deadline = time.Now().Add(10 * time.Second)
 				for !srv.Stopped() {
+					if time.Now().After(deadline) {
+						t.Fatalf("round %d: %s never reported stopped", i, tc.proto)
+					}
 					runtime.Gosched()
 				}
 				srv.Stop()

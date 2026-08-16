@@ -58,7 +58,15 @@ type cgroupMount struct {
 
 // cgroupMemoryLimit is containerMemoryLimit with the lookup already done,
 // so the walk can be checked against a hierarchy built for the purpose.
-func cgroupMemoryLimit(v2 cgroupMount, v2Path string, v1 cgroupMount, v1Path string) uint64 {
+//
+// Every mount of a hierarchy is a candidate, not just the first one seen.
+// A machine regularly has several views of the same cgroups — a bind
+// mount, a container's own view, a namespace's — and only some of them
+// expose the subtree this process is in. Stopping at the first one and
+// falling back to its root when it does not match is how a process reads
+// a loose limit from a mount that does not describe it while the mount
+// that does sits further down the list.
+func cgroupMemoryLimit(v2Mounts []cgroupMount, v2Path string, v1Mounts []cgroupMount, v1Path string) uint64 {
 	var limit uint64
 	narrow := func(v uint64) {
 		if v > 0 && (limit == 0 || v < limit) {
@@ -66,18 +74,30 @@ func cgroupMemoryLimit(v2 cgroupMount, v2Path string, v1 cgroupMount, v1Path str
 		}
 	}
 
-	// v2: memory.max, from this cgroup up to the mount root.
-	if v2.point != "" {
-		for _, dir := range ancestors(v2.point, cgroupRelPath(v2, v2Path)) {
-			narrow(readMemoryLimit(path.Join(dir, "memory.max")))
+	walk := func(mounts []cgroupMount, cgroupPath, file string) {
+		// A mount that actually exposes this process's cgroup answers the
+		// question; one that does not can only be read at its root, which
+		// is a guess. So the guesses are used only when nothing maps.
+		mapped := false
+		for _, m := range mounts {
+			if _, ok := cgroupRelPath(m, cgroupPath); ok {
+				mapped = true
+				break
+			}
+		}
+		for _, m := range mounts {
+			rel, ok := cgroupRelPath(m, cgroupPath)
+			if mapped && !ok {
+				continue
+			}
+			for _, dir := range ancestors(m.point, rel) {
+				narrow(readMemoryLimit(path.Join(dir, file)))
+			}
 		}
 	}
-	// v1: memory.limit_in_bytes, same walk.
-	if v1.point != "" {
-		for _, dir := range ancestors(v1.point, cgroupRelPath(v1, v1Path)) {
-			narrow(readMemoryLimit(path.Join(dir, "memory.limit_in_bytes")))
-		}
-	}
+
+	walk(v2Mounts, v2Path, "memory.max")
+	walk(v1Mounts, v1Path, "memory.limit_in_bytes")
 	return limit
 }
 
@@ -91,36 +111,37 @@ func cgroupMemoryLimit(v2 cgroupMount, v2Path string, v1 cgroupMount, v1Path str
 // the bounds would come from the host's memory inside a service that
 // cannot have it.
 //
-// A path outside what this mount exposes cannot be reached at all: that
-// is a cgroup namespace describing itself in terms this mount does not
-// share, and the mount point is then the closest thing to the process's
-// own cgroup that is actually readable.
-func cgroupRelPath(m cgroupMount, cgroupPath string) string {
+// The second return says whether the mount exposes this path at all. A
+// path outside it cannot be reached here: that is a cgroup namespace
+// describing itself in terms this mount does not share. The mount point
+// is still returned, because with no better mount anywhere it is the
+// closest readable thing — but the caller prefers a mount that maps.
+func cgroupRelPath(m cgroupMount, cgroupPath string) (string, bool) {
 	root := path.Clean("/" + m.root)
 	full := path.Clean("/" + cgroupPath)
 	switch {
 	case root == "/":
-		return full
+		return full, true
 	case full == root:
-		return "/"
+		return "/", true
 	case strings.HasPrefix(full, root+"/"):
-		return strings.TrimPrefix(full, root)
+		return strings.TrimPrefix(full, root), true
 	default:
-		return "/"
+		return "/", false
 	}
 }
 
 // cgroupMounts returns where the v2 hierarchy and the v1 memory
 // controller are mounted, and which part of each this process sees.
-func cgroupMounts() (v2, v1 cgroupMount) {
+func cgroupMounts() (v2, v1 []cgroupMount) {
 	data, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return cgroupMount{}, cgroupMount{}
+		return nil, nil
 	}
 	return parseCgroupMounts(string(data))
 }
 
-func parseCgroupMounts(mountinfo string) (v2, v1 cgroupMount) {
+func parseCgroupMounts(mountinfo string) (v2, v1 []cgroupMount) {
 	for line := range strings.SplitSeq(mountinfo, "\n") {
 		// id parent major:minor <root> <mount point> options... - <fstype> <source> <super options>
 		//                        (4)      (5)
@@ -140,12 +161,10 @@ func parseCgroupMounts(mountinfo string) (v2, v1 cgroupMount) {
 		mount := cgroupMount{point: fields[4], root: fields[3]}
 		switch rest[0] {
 		case "cgroup2":
-			if v2.point == "" {
-				v2 = mount
-			}
+			v2 = append(v2, mount)
 		case "cgroup":
-			if v1.point == "" && hasOption(rest[2], "memory") {
-				v1 = mount
+			if hasOption(rest[2], "memory") {
+				v1 = append(v1, mount)
 			}
 		}
 	}
