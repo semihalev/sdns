@@ -1116,6 +1116,14 @@ func Load(cfgfile, version string) (*Config, error) {
 	// it also made an explicit path load an unrelated file from the
 	// working directory, and the releases it served are long gone.)
 	if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
+		// An operator upgrading across the fallback's removal would
+		// otherwise get a silent fresh default while their old file sits
+		// ignored next to it.
+		legacy := filepath.Join(filepath.Dir(cfgfile), "sdns.toml")
+		if _, err := os.Stat(legacy); err == nil {
+			zlog.Warn("Found a legacy sdns.toml, but it is no longer loaded; generating a new config instead. Migrate your settings manually.",
+				zlog.String("legacy", legacy), zlog.String("path", cfgfile))
+		}
 		if err := generateConfig(cfgfile); err != nil {
 			return nil, err
 		}
