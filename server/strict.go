@@ -158,7 +158,9 @@ var (
 // the ordinary lazy-deadline entry with the direct-pack capability (the
 // owned transports are raw byte sinks).
 func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool {
-	s.served.Add(1)
+	if s.trimEnabled {
+		s.served.Add(1)
+	}
 	if job, ok := w.(strictSlots); ok {
 		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {

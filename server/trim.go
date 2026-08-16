@@ -54,7 +54,12 @@ type trimGate struct {
 	lastTrim     time.Time
 }
 
-// observe records one sample and reports whether a trim should fire.
+// observe records one sample and reports whether a trim may fire. The
+// cooldown clock is not touched here — only a trim that actually
+// dropped something starts it (committed), because an empty firing
+// costs nothing and must not spend the budget: a server that idles
+// first and bursts after would otherwise find its memory untrimmable
+// for the whole cooldown.
 func (g *trimGate) observe(now time.Time, quiesced bool, admitted uint64) bool {
 	if !quiesced || admitted != g.lastAdmitted {
 		g.idleSamples = 0
@@ -66,9 +71,11 @@ func (g *trimGate) observe(now time.Time, quiesced bool, admitted uint64) bool {
 		return false
 	}
 	g.idleSamples = 0
-	g.lastTrim = now
 	return true
 }
+
+// committed records that a firing really trimmed, starting the cooldown.
+func (g *trimGate) committed(now time.Time) { g.lastTrim = now }
 
 // trimLoop is started by Run when the configuration asks for it.
 func (s *Server) trimLoop(ctx context.Context) {
@@ -103,6 +110,7 @@ func (s *Server) trimLoop(ctx context.Context) {
 		if dropped == 0 {
 			continue
 		}
+		gate.committed(time.Now())
 		// Shutdown may have begun while the caches were drained; the
 		// collection is the expensive half, and it must not land inside
 		// the drain deadline.

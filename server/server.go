@@ -48,8 +48,11 @@ type Server struct {
 	// DoH3 and DoQ through ServeMsg. The trimmer reads it to prove a
 	// window carried no traffic at all: the engines' own counters see
 	// only their transports, and a trim under active DoH traffic is a
-	// collection the client pays for.
-	served atomic.Uint64
+	// collection the client pays for. Counted only when the trimmer —
+	// its one reader — exists, so the default configuration pays not
+	// even the atomic.
+	served      atomic.Uint64
+	trimEnabled bool
 
 	running atomic.Int32
 }
@@ -60,7 +63,7 @@ func New(cfg *config.Config) *Server {
 		cfg.Bind = ":53"
 	}
 
-	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline()}
+	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline(), trimEnabled: cfg.MemoryTrim}
 
 	// One resource plan for every listener, derived before any exists:
 	// the stream engines share a budget, so the plan has to know how
@@ -109,7 +112,9 @@ func (s *Server) ServeMsg(parent context.Context, w middleware.Transport, r *dns
 }
 
 func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns.Msg, directPack bool) {
-	s.served.Add(1)
+	if s.trimEnabled {
+		s.served.Add(1)
+	}
 	s.serveMsgBy(parent, w, r, directPack, time.Now().Add(s.queryTimeout()))
 }
 

@@ -28,7 +28,7 @@ func TestTrimGateNeedsARealIdleWindow(t *testing.T) {
 		}
 	})
 
-	t.Run("a real idle window trims once, then cools down", func(t *testing.T) {
+	t.Run("a real trim starts the cooldown", func(t *testing.T) {
 		var g trimGate
 		const admitted = 1000
 		fired := 0
@@ -37,13 +37,34 @@ func TestTrimGateNeedsARealIdleWindow(t *testing.T) {
 			if g.observe(at(sample), true, admitted) {
 				fired++
 				firedAt = sample
+				// The caller found slabs to drop and trimmed.
+				g.committed(at(sample))
 			}
 		}
 		if fired != 1 {
-			t.Fatalf("fired %d times over a long idle, want exactly once (cooldown)", fired)
+			t.Fatalf("fired %d times after a committed trim, want exactly once (cooldown)", fired)
 		}
 		if firedAt < trimAfterIdle-1 {
 			t.Fatalf("fired at sample %d, before the idle window was proven", firedAt)
+		}
+	})
+
+	t.Run("an empty firing does not spend the cooldown", func(t *testing.T) {
+		var g trimGate
+		const admitted = 1000
+		// The caches are empty: the gate fires, the caller finds nothing
+		// to drop and never commits. A burst arrives, the server idles
+		// again — and the trim must be available immediately, not ten
+		// minutes after a firing that did nothing.
+		fired := 0
+		for sample := 0; sample < 10; sample++ {
+			if g.observe(at(sample), true, admitted) {
+				fired++
+			}
+		}
+		if fired < 2 {
+			t.Fatalf("fired %d times with nothing ever committed; an empty "+
+				"firing consumed the cooldown", fired)
 		}
 	})
 
