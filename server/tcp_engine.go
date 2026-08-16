@@ -168,6 +168,10 @@ type tcpEngine struct {
 	conns  map[net.Conn]struct{}
 	active atomic.Int64
 	wg     sync.WaitGroup
+	// stopped is set under mu once shutdown is about to wait on the
+	// accept barrier, so a listener that starts accepting concurrently
+	// either joins before the wait or is refused — never both.
+	stopped bool
 	// acceptG joins the accept loops (one per listener sharing this
 	// engine — plain TCP and DoT each have their own). It is a separate
 	// barrier from wg because it has to be waited on first: an accept
@@ -254,13 +258,30 @@ func (e *tcpEngine) quiesced() bool {
 // the accept barrier before that goroutine exists. Joining from inside it
 // would be too late: a shutdown that began first would wait on an empty
 // barrier and miss the loop entirely.
-func (e *tcpEngine) startAccepting(ln net.Listener, onExit func()) {
+//
+// Joining and the shutdown that waits on the barrier are serialized by
+// the engine lock, because a WaitGroup gives no ordering of its own: an
+// Add racing a Wait is a race whether or not the counter happens to be
+// zero, and at zero it is also a loop the drain never sees. Starting
+// after shutdown is refused rather than joined — the listener goes back
+// to the caller closed, which is the same state it would have reached a
+// moment later anyway.
+func (e *tcpEngine) startAccepting(ln net.Listener, onExit func()) bool {
+	e.mu.Lock()
+	if e.stopped {
+		e.mu.Unlock()
+		_ = ln.Close()
+		return false
+	}
 	e.acceptG.Add(1)
+	e.mu.Unlock()
+
 	go func() {
 		defer e.acceptG.Done()
 		e.acceptLoop(ln)
 		onExit()
 	}()
+	return true
 }
 
 // acceptLoop admits connections until the listener closes.
@@ -505,6 +526,13 @@ func (j *tcpJob) rejectInPlace(verdict acceptVerdict, _ int) {
 // force-close the survivors and join.
 func (e *tcpEngine) shutdown(deadline time.Time) error {
 	close(e.closing)
+
+	// Close the door on late joiners before waiting on the barrier: from
+	// here a listener that has not started accepting yet is refused, so
+	// no Add can happen while this Wait runs.
+	e.mu.Lock()
+	e.stopped = true
+	e.mu.Unlock()
 
 	// The accept loop is joined before the connections are, because it is
 	// the only thing that can still join the connection barrier. A

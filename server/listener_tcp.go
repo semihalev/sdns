@@ -77,12 +77,18 @@ func (l *tcpListener) Serve(_ context.Context) error {
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
-	engine.startAccepting(ln, func() {
+	if !engine.startAccepting(ln, func() {
 		if !l.closing.Load() {
 			zlog.Error("TCP accept loop exited outside shutdown", "addr", l.addr)
 			recordListenerErr("tcp")
 		}
-	})
+	}) {
+		// Shutdown got here first and the engine refused the loop rather
+		// than joining a barrier that is already being waited on. The
+		// listener is closed; there is nothing to serve.
+		<-done
+		return l.drainErr
+	}
 
 	<-done
 	return l.drainErr
