@@ -80,6 +80,7 @@ func serveThrough(
 	})
 	ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
 	ch.Reset(writer, req.Copy())
+	ch.AllowDirectPack()
 	if forceMsgPath {
 		ch.Writer = &msgPathShim{ResponseWriter: ch.Writer}
 	}
@@ -418,6 +419,7 @@ func BenchmarkWireFastPath(b *testing.B) {
 		// replacing it, so re-wrapping per iteration would nest shims and
 		// turn Reset into an O(depth) walk.
 		ch.Reset(writer, req)
+		ch.AllowDirectPack()
 		if forceMsg {
 			ch.Writer = &msgPathShim{ResponseWriter: ch.Writer}
 		}
@@ -446,6 +448,8 @@ func BenchmarkWireFastPath(b *testing.B) {
 			freshOPT()
 			ch.Writer = shim
 			ch.Reset(writer, req)
+			ch.AllowDirectPack()
+			ch.AllowDirectPack()
 			ch.Next(context.Background())
 		}
 	}
@@ -556,6 +560,7 @@ func TestWireFastPathExcludesNonByteTransports(t *testing.T) {
 		})
 		ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
 		ch.Reset(writer, req)
+		ch.AllowDirectPack()
 
 		servedBefore := wireFastServed.Value()
 		ch.Next(context.Background())
@@ -622,6 +627,7 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 		// Wrapped once: the shim is what removes the byte path, and building
 		// it inside the loop would charge one side work the other avoids.
 		ch.Reset(writer, req)
+		ch.AllowDirectPack()
 		if forceMsg {
 			ch.Writer = &msgPathShim{ResponseWriter: ch.Writer}
 		}
@@ -637,6 +643,8 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 			req.SetEdns0(dns.MinMsgSize, false)
 			ch.Writer = shim
 			ch.Reset(writer, req)
+			ch.AllowDirectPack()
+			ch.AllowDirectPack()
 			ch.Next(context.Background())
 		}
 

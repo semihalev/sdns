@@ -91,18 +91,35 @@ func ClearWireAD(body []byte) {
 	wire.ClearAD(body)
 }
 
-// WireReady reports whether this transport is a true byte sink. DoQ needs
-// its reply ID normalized to zero (RFC 9250 §4.2.1), a rewrite its raw
-// Write does not perform, and the DoH assembly path unpacks whatever bytes
-// it is handed only to pack them again — both are excluded until they can
-// carry bytes natively.
+// WireReady reports whether this transport is a true byte sink. It
+// requires the declared capability, never the proto inference: a caller
+// embedding the server through ServeMsg supplies its own transport, and
+// one whose RemoteAddr merely looks like a datagram socket would
+// otherwise receive raw wire bytes on cache hits and packed messages on
+// misses — a split its Write may not survive. The owned listeners
+// declare the capability at ingress (AllowDirectPack); DoQ additionally
+// needs its reply ID normalized to zero (RFC 9250 §4.2.1) and the DoH
+// assembly path reshapes bytes, so neither declares it.
 func (w *responseWriter) WireReady() (WireCapability, bool) {
+	if !w.directPack {
+		return WireCapability{}, false
+	}
 	switch w.proto {
 	case "udp", "tcp":
 		return WireCapability{}, true
 	default:
 		return WireCapability{}, false
 	}
+}
+
+// StagedFlusher is implemented by transports that stage replies for a
+// batched send. The chain flushes them at the strict-path detach — the
+// moment slow work is certain — so a reply already staged never waits
+// behind an unrelated recursion.
+type StagedFlusher interface {
+	// FlushStaged sends everything staged so far. Must only be called
+	// from the goroutine that serves this transport's requests.
+	FlushStaged()
 }
 
 // ResponseSizer is implemented by writers that can report a response's wire
@@ -176,12 +193,22 @@ func (w *responseWriter) BeginWire(size, reserve int) []byte {
 	if w.Written() {
 		return nil
 	}
+	need := size + reserve
 	if leaser, ok := w.Transport.(WireTransportLeaser); ok {
-		if buf := leaser.LeaseWire(size + reserve); buf != nil {
-			return buf
+		if buf := leaser.LeaseWire(need); buf != nil {
+			// The contract is cap == size+reserve, not "whatever the
+			// slab holds": a transport-backed lease is a reused buffer
+			// whose tail still carries the previous response, and a
+			// wrapper reading past its declared capacity — or appending
+			// past the reserve — must find a boundary, not another
+			// client's bytes.
+			if cap(buf) < need {
+				return nil
+			}
+			return buf[:0:need]
 		}
 	}
-	return make([]byte, 0, size+reserve)
+	return make([]byte, 0, need)
 }
 
 // CommitWire sends a body obtained from BeginWire; it has WriteWire's exact

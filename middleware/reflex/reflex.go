@@ -169,13 +169,19 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 // requestFacts returns the question type and the request's wire length —
 // exact for a wire-born request, the library's estimate otherwise.
 func requestFacts(req *middleware.Request) (qtype uint16, size int, ok bool) {
-	if m := req.Msg(); m != nil {
-		if len(m.Question) == 0 {
-			return 0, 0, false
-		}
-		return m.Question[0].Qtype, m.Len(), true
+	// The wire branch first, and by Undecoded rather than by calling
+	// Msg: Msg decodes on demand, so probing with it materialized every
+	// request this middleware analyzed — reflex sits before the cache,
+	// which put the whole byte path behind a decode whenever it was
+	// enabled.
+	if req.Undecoded() {
+		return req.Qtype(), len(req.Raw()), true
 	}
-	return req.Qtype(), len(req.Raw()), true
+	m := req.Msg()
+	if m == nil || len(m.Question) == 0 {
+		return 0, 0, false
+	}
+	return m.Question[0].Qtype, m.Len(), true
 }
 
 // handleSuspicious handles a suspicious IP.

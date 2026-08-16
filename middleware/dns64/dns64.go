@@ -140,10 +140,15 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// The gates below read parsed request facts, so an ineligible
 	// wire-born query (the overwhelming majority) passes through without
-	// decoding; only a real synthesis candidate materializes for its name.
-	if m := req.Msg(); m != nil && len(m.Question) != 1 {
-		ch.Next(ctx)
-		return
+	// decoding; only a real synthesis candidate materializes for its
+	// name. The question-count probe therefore runs on the decoded form
+	// only — Msg decodes on demand, and calling it here made line one
+	// defeat everything this comment promises.
+	if !req.Undecoded() {
+		if m := req.Msg(); m != nil && len(m.Question) != 1 {
+			ch.Next(ctx)
+			return
+		}
 	}
 	if req.Qclass() != dns.ClassINET {
 		ch.Next(ctx)
