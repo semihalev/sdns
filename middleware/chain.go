@@ -1041,6 +1041,10 @@ func (ch *Chain) AllowDirectPack() {
 	}
 }
 
+// noopStop stands in for the stop of a cancellation hook that was never
+// registered.
+func noopStop() bool { return false }
+
 // detachStrictContext builds the context the post-materialization chain
 // runs on: a fresh lazy deadline parented on a stable context — never the
 // recycled job carrier — carrying the deadline as a scalar copy, the ECS
@@ -1075,7 +1079,14 @@ func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func
 	// must still be able to stop the slow work it now waits on. The
 	// carrier itself has no Done channel, so the hook is free there.
 	real := contextutil.WithLazyDeadline(context.Background(), deadline)
-	stopCancel := context.AfterFunc(ctx, real.Cancel)
+	// The hook only exists for a parent that can actually cancel. The
+	// strict carrier's Done is nil — AfterFunc could never fire — yet
+	// registering still allocates, and a live profile priced that dead
+	// registration as the largest single allocator in the process.
+	stopCancel := noopStop
+	if ctx.Done() != nil {
+		stopCancel = context.AfterFunc(ctx, real.Cancel)
+	}
 	var detached context.Context = real
 	if HasClientECS(ctx) {
 		detached = MarkClientECS(detached)
