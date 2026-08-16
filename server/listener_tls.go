@@ -26,6 +26,7 @@ type tlsListener struct {
 	handler  rawHandler
 	certs    certProvider
 	maxConns int
+	plan     resourcePlan
 	timeout  time.Duration
 
 	mu       sync.Mutex
@@ -38,8 +39,8 @@ type tlsListener struct {
 	serving  atomic.Bool
 }
 
-func newTLSListener(addr string, h rawHandler, certs certProvider, timeout time.Duration, maxConns int) *tlsListener {
-	return &tlsListener{addr: addr, handler: h, certs: certs, timeout: timeout, maxConns: maxConns}
+func newTLSListener(addr string, h rawHandler, certs certProvider, timeout time.Duration, maxConns int, plan resourcePlan) *tlsListener {
+	return &tlsListener{addr: addr, handler: h, certs: certs, timeout: timeout, maxConns: maxConns, plan: plan}
 }
 
 func (l *tlsListener) Proto() string  { return "tls" }
@@ -66,7 +67,7 @@ func (l *tlsListener) Bind(ctx context.Context) error {
 		return err
 	}
 	l.ln = tls.NewListener(ln, tlsConfig)
-	l.engine = newTCPEngine(l.handler, "tls", l.maxConns)
+	l.engine = newTCPEngine(l.handler, "tls", l.maxConns, l.plan)
 	l.done = make(chan struct{})
 	return nil
 }
@@ -126,6 +127,18 @@ func (l *tlsListener) Shutdown(_ context.Context) error {
 		close(l.done)
 	})
 	return l.drainErr
+}
+
+// AdmissionCount reports how many queries this listener has admitted
+// (see trim.go).
+func (l *tlsListener) AdmissionCount() uint64 {
+	l.mu.Lock()
+	engine := l.engine
+	l.mu.Unlock()
+	if engine == nil {
+		return 0
+	}
+	return engine.admissions()
 }
 
 // TrimIdleMemory drops the engine's parked slabs (see trim.go).

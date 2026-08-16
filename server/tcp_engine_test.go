@@ -17,7 +17,7 @@ import (
 
 func startTCPEngine(t *testing.T, handler rawHandler, maxConns int) (string, *tcpListener, func()) {
 	t.Helper()
-	l := newTCPListener("127.0.0.1:0", handler, time.Second, maxConns)
+	l := newTCPListener("127.0.0.1:0", handler, time.Second, maxConns, defaultResourcePlan(1))
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +506,7 @@ func TestDoTEngineRoundTrip(t *testing.T) {
 	}
 	defer cm.Stop()
 
-	l := newTLSListener("127.0.0.1:0", echoHandler(), cm, time.Second, 8)
+	l := newTLSListener("127.0.0.1:0", echoHandler(), cm, time.Second, 8, defaultResourcePlan(1))
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +579,7 @@ func TestTCPEngineShutdownForcesBlockedConns(t *testing.T) {
 // reply too big for its slab does not take a bigger slab, it quietly
 // leaves the byte path.
 func TestSmallSlabCarriesASignedSizedReply(t *testing.T) {
-	e := newTCPEngine(echoHandler(), "tcp", 8)
+	e := newTCPEngine(echoHandler(), "tcp", 8, defaultResourcePlan(1))
 	job := newTCPJob(e, false)
 
 	// A signed answer of a few kilobytes is the case this class is for.

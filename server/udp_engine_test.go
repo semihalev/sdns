@@ -21,9 +21,13 @@ func (f rawHandlerFunc) ServeRaw(w middleware.Transport, raw []byte, t time.Time
 
 // startEngine binds an owned UDP listener around handler and returns the
 // client-facing address and a shutdown func.
-func startEngine(t *testing.T, handler rawHandler, workers, queue int) (string, func()) {
+func startEngine(t *testing.T, handler rawHandler, workers, queue int, plans ...resourcePlan) (string, func()) {
 	t.Helper()
-	l := newUDPListener("127.0.0.1:0", handler, time.Second, workers, queue)
+	plan := defaultResourcePlan(1)
+	if len(plans) > 0 {
+		plan = plans[0]
+	}
+	l := newUDPListener("127.0.0.1:0", handler, time.Second, workers, queue, plan)
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -245,10 +249,9 @@ func TestUDPEngineAcceptParity(t *testing.T) {
 func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 	// Saturation is the whole lease cap, so the plan's headroom is
 	// lowered here rather than standing up as many blocked requests as
-	// this machine's memory allows. Set before the engine exists and
-	// restored after it is gone: nothing reads it in between.
-	defer func(p resourcePlan) { activePlan = p }(activePlan)
-	activePlan.udpSpareSlabs = 2
+	// this machine's memory allows. The plan is a value the test owns.
+	plan := defaultResourcePlan(1)
+	plan.udpSpareSlabs = 2
 
 	release := make(chan struct{})
 	addr, stop := startEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
@@ -261,7 +264,7 @@ func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 		m.SetReply(r)
 		_ = w.WriteMsg(m)
 		return true
-	}), 2, 4)
+	}), 2, 4, plan)
 
 	conn, err := net.Dial("udp", addr)
 	if err != nil {

@@ -35,7 +35,7 @@ func TestTCPPipelinedBurst(t *testing.T) {
 		return true
 	})
 
-	l := newTCPListener("127.0.0.1:0", echo, time.Second, 8)
+	l := newTCPListener("127.0.0.1:0", echo, time.Second, 8, defaultResourcePlan(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := l.Bind(ctx); err != nil {
@@ -265,7 +265,7 @@ func TestTCPPartialPrefixStillFlushes(t *testing.T) {
 		return true
 	})
 
-	l := newTCPListener("127.0.0.1:0", echo, time.Second, 8)
+	l := newTCPListener("127.0.0.1:0", echo, time.Second, 8, defaultResourcePlan(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := l.Bind(ctx); err != nil {

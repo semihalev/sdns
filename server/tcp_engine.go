@@ -176,7 +176,10 @@ type tcpEngine struct {
 	largeTokens chan struct{}
 	smallCache  slabCache[tcpJob]
 	largeCache  slabCache[tcpJob]
-	closing     chan struct{}
+	// admitted counts token grants ever made, for the trimmer's idle
+	// detection (see the UDP engine's twin field).
+	admitted atomic.Uint64
+	closing  chan struct{}
 	// streams are per-connection framing buffers. Unlike the job ring
 	// they are not strict-path state — a connection holds one for its
 	// whole life — so a pool is the right shape: an idle server keeps
@@ -198,15 +201,15 @@ type tcpEngine struct {
 	acceptG sync.WaitGroup
 }
 
-func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
-	small, large := activePlan.tcpSmallJobs, activePlan.tcpLargeJobs
+func newTCPEngine(handler rawHandler, proto string, maxConns int, plan resourcePlan) *tcpEngine {
+	small, large := plan.tcpSmallJobs, plan.tcpLargeJobs
 	if maxConns <= 0 {
 		// The admission cap guards against a connection flood, and what
 		// it is allowed to spend is what the machine can spare — see
 		// ingress_bounds.go. Connections arriving past it are refused
 		// rather than queued, and a goroutine plus a pooled stream is a
 		// far cheaper thing to bound than the slabs are.
-		maxConns = activePlan.tcpConns
+		maxConns = plan.tcpConns
 	} else {
 		// An explicit cap also sizes the small class, the way it always
 		// did: a server cannot have more frames in flight than it has
@@ -293,6 +296,9 @@ func (e *tcpEngine) quiesced() bool {
 func (e *tcpEngine) trimIdle() int {
 	return e.smallCache.trim() + e.largeCache.trim()
 }
+
+// admissions reports how many token grants have ever been made.
+func (e *tcpEngine) admissions() uint64 { return e.admitted.Load() }
 
 // startAccepting runs the accept loop on its own goroutine, joining it to
 // the accept barrier before that goroutine exists. Joining from inside it
@@ -512,6 +518,7 @@ func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time, length int) *tcpJo
 		}
 	}
 
+	e.admitted.Add(1)
 	large := largeClass(length)
 	cache := &e.smallCache
 	if large {

@@ -51,8 +51,13 @@ func New(cfg *config.Config) *Server {
 
 	// One resource plan for every listener, derived before any exists:
 	// the stream engines share a budget, so the plan has to know how
-	// many there are.
-	configureResourcePlan(cfg)
+	// many there are. The plan is a value on this Server — a second
+	// Server in the same process lives inside its own arithmetic.
+	engines := 1
+	if cfg.BindTLS != "" {
+		engines = 2
+	}
+	plan := defaultResourcePlan(engines)
 
 	timeout := cfg.QueryTimeout.Duration
 	// The owned transports feed ServeRaw: raw bytes in, and the server —
@@ -60,11 +65,11 @@ func New(cfg *config.Config) *Server {
 	// and DoQ enter through ServeMsg with a decoded message — one reshapes
 	// bytes and the other rewrites the reply ID, so neither is a raw sink.
 	s.listeners = []Listener{
-		newUDPListener(cfg.Bind, s, timeout, cfg.IngressWorkers, cfg.IngressQueue),
-		newTCPListener(cfg.Bind, s, timeout, cfg.IngressTCPConns),
+		newUDPListener(cfg.Bind, s, timeout, cfg.IngressWorkers, cfg.IngressQueue, plan),
+		newTCPListener(cfg.Bind, s, timeout, cfg.IngressTCPConns, plan),
 	}
 	if cfg.BindTLS != "" {
-		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, s, s, timeout, cfg.IngressTCPConns))
+		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, s, s, timeout, cfg.IngressTCPConns, plan))
 	}
 	if cfg.BindDOH != "" {
 		s.listeners = append(s.listeners,

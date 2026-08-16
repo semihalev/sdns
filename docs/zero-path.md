@@ -207,17 +207,22 @@ through accessors; *ctx-clean* = no ordinary ctx primitives.
   hard ceiling of slab-count over resolution latency. Nothing is
   preallocated: a slab exists because a query needed it, parks in the
   idle cache for the next one, and leaves on trim.
-- Every bound — the UDP lease cap, worker count, stream connections and
-  slab classes — comes from one **resource plan derived at startup**, not
-  compiled in (`server/ingress_bounds.go`). A number chosen once is a
-  guess about hardware its author never saw: too small on the server it
-  was meant to protect, an out-of-memory kill on the 128MB router it was
-  never considered for. The plan divides a share of the memory the
-  process may actually use — the machine's, narrowed by a cgroup limit or
-  GOMEMLIMIT when either binds first — among the subsystems, splits the
-  stream budget across TCP and DoT, respects the descriptor allowance,
-  clamps everything at both ends, and is logged where each listener
-  starts.
+- Every bound — the UDP lease cap, worker and socket counts, stream
+  connections and slab classes — comes from one **resource plan derived
+  per Server**, not compiled in (`server/ingress_bounds.go`). A number
+  chosen once is a guess about hardware its author never saw: too small
+  on the server it was meant to protect, an out-of-memory kill on the
+  128MB router it was never considered for. The plan divides a share of
+  the memory the process may actually use — the machine's, narrowed by a
+  cgroup limit or GOMEMLIMIT when either binds first — among the
+  subsystems, **charging each slab class its real allocator-size cost**
+  (the 128KB large pairs included); splits the stream budget across TCP
+  and DoT; treats the descriptor allowance as a hard cap no floor may
+  exceed; fixes workers and fan-out on the low-memory tiers so a small
+  cgroup on a many-core host is sized by its memory, not its cores; and
+  is logged where each listener starts. The plan is a value handed down
+  to the engines — no global, so two Servers in one process each live
+  inside their own arithmetic.
 - UDP load shedding: lease cap reached ⇒ per-reader reserved discard
   buffer, drop, count. Both readers shed the same way; the batched one
   drains a whole batch into scratch memory, because a reader that waits

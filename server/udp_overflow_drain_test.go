@@ -52,7 +52,7 @@ func TestUDPDrainWaitsForOverflow(t *testing.T) {
 	// One worker and one queue slot, so what lands where is not a guess:
 	// the first query occupies the worker, the second fills the queue, the
 	// third has nowhere to go but a goroutine of its own.
-	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1)
+	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1, defaultResourcePlan(1))
 	e.start()
 
 	client, err := net.Dial("udp", pc.LocalAddr().String())

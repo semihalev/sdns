@@ -64,7 +64,7 @@ func TestUDPBatchEndToEnd(t *testing.T) {
 		return true
 	})
 
-	l := newUDPListener("127.0.0.1:0", echo, time.Second, 4, 64)
+	l := newUDPListener("127.0.0.1:0", echo, time.Second, 4, 64, defaultResourcePlan(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := l.Bind(ctx); err != nil {
@@ -161,7 +161,7 @@ func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1)
+	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1, defaultResourcePlan(1))
 
 	// The cap is exhausted before the reader exists — the state a burst
 	// of slow queries leaves behind, with every slab held by a request

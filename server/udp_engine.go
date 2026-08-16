@@ -239,6 +239,10 @@ type udpEngine struct {
 	leased  atomic.Int64
 	slabCap int64
 	cache   slabCache[udpJob]
+	// admitted counts leases ever granted. The trimmer reads it to tell
+	// a genuinely idle window from light-but-steady traffic: quiescence
+	// is an instant, this is a history.
+	admitted atomic.Uint64
 
 	workers int
 	readers sync.WaitGroup
@@ -272,16 +276,16 @@ const defaultIngressQueue = 64
 // is.
 const udpBatchSize = 16
 
-func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers, queue int) *udpEngine {
+func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers, queue int, plan resourcePlan) *udpEngine {
 	if workers <= 0 {
 		// Sized for concurrency, not CPUs (see ingress_bounds.go): a
 		// worker runs the chain inline, and a miss holds one for the
 		// length of an upstream resolution. A pool of cores over latency
 		// was measured as exactly that ceiling.
-		workers = activePlan.udpWorkers
+		workers = plan.udpWorkers
 	}
 	if queue <= 0 {
-		queue = activePlan.udpQueue
+		queue = plan.udpQueue
 	}
 	e := &udpEngine{
 		handler:  handler,
@@ -315,7 +319,7 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 	// allocated here: slabs are made when a query needs one and parked
 	// in the cache between requests.
 	e.slabCap = int64(queue + workers + len(pcs)*udpReaderReserve)
-	e.slabCap += activePlan.udpSpareSlabs
+	e.slabCap += plan.udpSpareSlabs
 	e.ready = make(chan *udpJob, queue)
 	return e
 }
@@ -333,6 +337,7 @@ func (e *udpEngine) take() *udpJob {
 			break
 		}
 	}
+	e.admitted.Add(1)
 	if j := e.cache.get(); j != nil {
 		return j
 	}
@@ -504,6 +509,9 @@ func (e *udpEngine) serveOverflow(j *udpJob) {
 // The lease cap is untouched: admission does not change, only what the
 // next admissions will have to allocate.
 func (e *udpEngine) trimIdle() int { return e.cache.trim() }
+
+// admissions reports how many leases have ever been granted.
+func (e *udpEngine) admissions() uint64 { return e.admitted.Load() }
 
 // quiesced reports whether every slab is back in the ring: nothing is
 // being read into, served, or staged for a send. It is the completion

@@ -37,7 +37,7 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 		return true
 	})
 
-	e := newTCPEngine(echo, "tcp", 1)
+	e := newTCPEngine(echo, "tcp", 1, defaultResourcePlan(1))
 
 	// A stream as a connection gets one: through reset, which is where
 	// connection setup happens and where anything the connection owns for

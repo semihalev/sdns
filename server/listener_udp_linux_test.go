@@ -21,7 +21,7 @@ import (
 // so all PacketConns report the same LocalAddr.
 func TestUDPListener_ZeroPortFanoutSharesOnePort(t *testing.T) {
 	h := rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool { return true })
-	l := newUDPListener("127.0.0.1:0", h, time.Second, 0, 0)
+	l := newUDPListener("127.0.0.1:0", h, time.Second, 0, 0, defaultResourcePlan(1))
 	// Force multi-socket even on single-CPU runners.
 	if l.sockets < 2 {
 		l.sockets = 4
@@ -61,7 +61,7 @@ func TestUDPWildcardReplySourceAddress(t *testing.T) {
 		_ = w.WriteMsg(m)
 		return true
 	})
-	l := newUDPListener("0.0.0.0:0", h, time.Second, 2, 16)
+	l := newUDPListener("0.0.0.0:0", h, time.Second, 2, 16, defaultResourcePlan(1))
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestUDPDualStackBindServesIPv6(t *testing.T) {
 
 	// No host: the shipped shape, and the one that yields a dual-stack
 	// socket rather than a family the bind string names.
-	l := newUDPListener(":0", h, time.Second, 2, 16)
+	l := newUDPListener(":0", h, time.Second, 2, 16, defaultResourcePlan(1))
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}

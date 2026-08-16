@@ -18,7 +18,7 @@ import (
 // loop that is still admitting connections.
 func TestListenerServeShutdownRace(t *testing.T) {
 	for i := 0; i < 200; i++ {
-		tcp := newTCPListener("127.0.0.1:0", echoHandler(), time.Second, 8)
+		tcp := newTCPListener("127.0.0.1:0", echoHandler(), time.Second, 8, defaultResourcePlan(1))
 		if err := tcp.Bind(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -40,7 +40,7 @@ func TestListenerServeShutdownRace(t *testing.T) {
 // after the drain has begun must be refused rather than joined, because
 // the barrier it would join is already being waited on.
 func TestAcceptRefusedAfterShutdown(t *testing.T) {
-	e := newTCPEngine(echoHandler(), "tcp", 8)
+	e := newTCPEngine(echoHandler(), "tcp", 8, defaultResourcePlan(1))
 	if err := e.shutdown(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}

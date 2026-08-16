@@ -19,6 +19,7 @@ type tcpListener struct {
 	addr     string
 	handler  rawHandler
 	maxConns int
+	plan     resourcePlan
 	timeout  time.Duration
 
 	mu       sync.Mutex
@@ -31,8 +32,8 @@ type tcpListener struct {
 	serving  atomic.Bool
 }
 
-func newTCPListener(addr string, h rawHandler, timeout time.Duration, maxConns int) *tcpListener {
-	return &tcpListener{addr: addr, handler: h, timeout: timeout, maxConns: maxConns}
+func newTCPListener(addr string, h rawHandler, timeout time.Duration, maxConns int, plan resourcePlan) *tcpListener {
+	return &tcpListener{addr: addr, handler: h, timeout: timeout, maxConns: maxConns, plan: plan}
 }
 
 func (l *tcpListener) Proto() string  { return "tcp" }
@@ -59,7 +60,7 @@ func (l *tcpListener) Bind(ctx context.Context) error {
 		return err
 	}
 	l.ln = ln
-	l.engine = newTCPEngine(l.handler, "tcp", l.maxConns)
+	l.engine = newTCPEngine(l.handler, "tcp", l.maxConns, l.plan)
 	l.done = make(chan struct{})
 	return nil
 }
@@ -119,6 +120,18 @@ func (l *tcpListener) Shutdown(_ context.Context) error {
 		close(l.done)
 	})
 	return l.drainErr
+}
+
+// AdmissionCount reports how many queries this listener has admitted
+// (see trim.go).
+func (l *tcpListener) AdmissionCount() uint64 {
+	l.mu.Lock()
+	engine := l.engine
+	l.mu.Unlock()
+	if engine == nil {
+		return 0
+	}
+	return engine.admissions()
 }
 
 // TrimIdleMemory drops the engine's parked slabs (see trim.go).

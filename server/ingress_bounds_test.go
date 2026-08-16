@@ -4,77 +4,75 @@ import (
 	"testing"
 )
 
+const (
+	mib = 1 << 20
+	gib = 1 << 30
+)
+
 // The plan is derived because the machines differ. This checks the curve
 // at both ends — the router the author never saw and the server the
 // numbers were originally measured on — rather than the one value this
 // build happens to compute here.
 func TestResourcePlanFollowsTheMachine(t *testing.T) {
-	const (
-		mib = 1 << 20
-		gib = 1 << 30
-	)
 	cases := []struct {
 		name string
 		in   planInputs
 
-		workersAtMost, workersAtLeast int
-		spareAtMost, spareAtLeast     int64
-		connsAtMost, connsAtLeast     int
-		largeJobs                     int
+		workers   int
+		largeJobs int
+
+		spareAtLeast, spareAtMost int64
+		connsAtLeast, connsAtMost int
 	}{
 		{
-			name: "128MB router, 4 cores",
-			in:   planInputs{budget: 128 * mib, cpus: 4, streamEngines: 2},
-			// The front door has to leave a 128MB device a resolver:
-			// modest workers, a few hundred slabs, tens of connections.
-			workersAtLeast: 64, workersAtMost: 64,
-			spareAtLeast: minSpareSlabs, spareAtMost: 512,
-			connsAtLeast: minTCPConns, connsAtMost: 256,
-			largeJobs: defaultTCPLargeJobs / 2,
+			name:    "128MB router, 4 cores",
+			in:      planInputs{budget: 128 * mib, cpus: 4, streamEngines: 2, sockets: 4},
+			workers: 64, largeJobs: 4,
+			spareAtLeast: 64, spareAtMost: 512,
+			connsAtLeast: 8, connsAtMost: 128,
 		},
 		{
 			// The container case: the cgroup is small, the host is not.
-			// The tier follows the memory, never the cores — measured on a
-			// 32-core box, where a 128MB scope was otherwise given 512
-			// workers and a slab cap to match.
-			name:           "128MB cgroup on a 32-core host",
-			in:             planInputs{budget: 128 * mib, cpus: 32, streamEngines: 1},
-			workersAtLeast: 64, workersAtMost: 64,
-			spareAtLeast: minSpareSlabs, spareAtMost: 512,
-			connsAtLeast: minTCPConns, connsAtMost: 512,
-			largeJobs: defaultTCPLargeJobs / 2,
+			// Workers and sockets follow the memory, never the cores —
+			// measured on a 32-core box, where a 128MB scope was otherwise
+			// given 512 workers and a slab cap to match.
+			name:    "128MB cgroup on a 32-core host",
+			in:      planInputs{budget: 128 * mib, cpus: 32, streamEngines: 1, sockets: 16},
+			workers: 64, largeJobs: 4,
+			spareAtLeast: 64, spareAtMost: 512,
+			connsAtLeast: 8, connsAtMost: 256,
 		},
 		{
-			name:           "512MB appliance, 2 cores",
-			in:             planInputs{budget: 512 * mib, cpus: 2, streamEngines: 1},
-			workersAtLeast: 128, workersAtMost: 128,
+			name:    "512MB appliance, 2 cores",
+			in:      planInputs{budget: 512 * mib, cpus: 2, streamEngines: 1, sockets: 2},
+			workers: 128, largeJobs: defaultTCPLargeJobs / 2,
 			spareAtLeast: 512, spareAtMost: 2048,
-			connsAtLeast: 256, connsAtMost: 1024,
-			largeJobs: defaultTCPLargeJobs,
+			connsAtLeast: 128, connsAtMost: 1024,
 		},
 		{
-			name:           "32GB server, 32 cores",
-			in:             planInputs{budget: 32 * gib, cpus: 32, streamEngines: 1},
-			workersAtLeast: 512, workersAtMost: 512,
+			name:    "32GB server, 32 cores",
+			in:      planInputs{budget: 32 * gib, cpus: 32, streamEngines: 1, sockets: 16},
+			workers: 512, largeJobs: defaultTCPLargeJobs,
 			spareAtLeast: maxSpareSlabs, spareAtMost: maxSpareSlabs,
 			connsAtLeast: maxTCPConns, connsAtMost: maxTCPConns,
-			largeJobs: defaultTCPLargeJobs,
 		},
 		{
-			name:           "unknown platform is treated as modest",
-			in:             planInputs{budget: 0, cpus: 8, streamEngines: 1},
-			workersAtLeast: 128, workersAtMost: 128,
+			name:    "unknown platform is treated as modest",
+			in:      planInputs{budget: 0, cpus: 8, streamEngines: 1, sockets: 1},
+			workers: 128, largeJobs: defaultTCPLargeJobs / 2,
 			spareAtLeast: 512, spareAtMost: 2048,
-			connsAtLeast: 256, connsAtMost: 1024,
-			largeJobs: defaultTCPLargeJobs,
+			connsAtLeast: 128, connsAtMost: 1024,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := computeResourcePlan(tc.in)
-			if p.udpWorkers < tc.workersAtLeast || p.udpWorkers > tc.workersAtMost {
-				t.Fatalf("workers = %d, want within [%d,%d]", p.udpWorkers, tc.workersAtLeast, tc.workersAtMost)
+			if p.udpWorkers != tc.workers {
+				t.Fatalf("workers = %d, want %d", p.udpWorkers, tc.workers)
+			}
+			if p.tcpLargeJobs != tc.largeJobs {
+				t.Fatalf("large jobs = %d, want %d", p.tcpLargeJobs, tc.largeJobs)
 			}
 			if p.udpSpareSlabs < tc.spareAtLeast || p.udpSpareSlabs > tc.spareAtMost {
 				t.Fatalf("spare slabs = %d, want within [%d,%d]", p.udpSpareSlabs, tc.spareAtLeast, tc.spareAtMost)
@@ -82,8 +80,8 @@ func TestResourcePlanFollowsTheMachine(t *testing.T) {
 			if p.tcpConns < tc.connsAtLeast || p.tcpConns > tc.connsAtMost {
 				t.Fatalf("conns = %d, want within [%d,%d]", p.tcpConns, tc.connsAtLeast, tc.connsAtMost)
 			}
-			if p.tcpLargeJobs != tc.largeJobs {
-				t.Fatalf("large jobs = %d, want %d", p.tcpLargeJobs, tc.largeJobs)
+			if p.tcpSmallJobs > p.tcpConns && p.tcpConns >= 1 {
+				t.Fatalf("small jobs %d exceed conns %d", p.tcpSmallJobs, p.tcpConns)
 			}
 			if p.udpQueue != defaultIngressQueue {
 				t.Fatalf("queue = %d, want %d", p.udpQueue, defaultIngressQueue)
@@ -92,74 +90,146 @@ func TestResourcePlanFollowsTheMachine(t *testing.T) {
 	}
 }
 
-// The stream engines share one budget: enabling DoT must halve what each
-// engine assumes, not double what the process spends.
-func TestStreamEnginesShareTheBudget(t *testing.T) {
-	alone := computeResourcePlan(planInputs{budget: 4 << 30, cpus: 8, streamEngines: 1})
-	shared := computeResourcePlan(planInputs{budget: 4 << 30, cpus: 8, streamEngines: 2})
-	if shared.tcpConns >= alone.tcpConns {
-		t.Fatalf("conns alone=%d, with DoT=%d; two engines each assuming the "+
-			"full budget is the failure this input exists to prevent",
-			alone.tcpConns, shared.tcpConns)
+// The budget is charged what the bounds can actually cost — every slab
+// class at its real allocator size, the large pairs included, both
+// stream engines counted. The old arithmetic priced only spares and
+// connections and understated a 64MiB TCP+DoT deployment by more than
+// half.
+func TestBudgetChargesRealCosts(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      planInputs
+		atMost  int64 // worst case, real prices
+		comment string
+	}{
+		{
+			name:   "64MiB with TCP and DoT",
+			in:     planInputs{budget: 64 * mib, cpus: 4, streamEngines: 2, sockets: 4},
+			atMost: 10 * mib, // floors dominate here; stated, not hidden
+		},
+		{
+			name:   "128MiB with TCP and DoT",
+			in:     planInputs{budget: 128 * mib, cpus: 4, streamEngines: 2, sockets: 4},
+			atMost: 16 * mib,
+		},
+		{
+			name:   "512MiB single engine",
+			in:     planInputs{budget: 512 * mib, cpus: 4, streamEngines: 1, sockets: 4},
+			atMost: 40 * mib,
+		},
+		{
+			name:   "32GiB server",
+			in:     planInputs{budget: 32 * gib, cpus: 32, streamEngines: 2, sockets: 16},
+			atMost: 512 * mib,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := computeResourcePlan(tc.in)
+			worst := p.worstCaseBytes(tc.in.streamEngines)
+			if worst > tc.atMost {
+				t.Fatalf("worst case %d bytes (%.1f MiB) exceeds %d", worst,
+					float64(worst)/mib, tc.atMost)
+			}
+			// Above the floor regime the worst case must stay inside the
+			// front door's documented share of the budget.
+			if tc.in.budget >= 512*mib {
+				share := int64(tc.in.budget) / (ingressMemoryShare / 4) //nolint:gosec // test budgets are small
+				if worst > share {
+					t.Fatalf("worst case %d exceeds an eighth of the budget %d", worst, tc.in.budget)
+				}
+			}
+		})
 	}
 }
 
-// A connection is an open descriptor, so the descriptor allowance binds
-// admission the same way memory does.
-func TestDescriptorLimitBindsConnections(t *testing.T) {
-	p := computeResourcePlan(planInputs{budget: 32 << 30, cpus: 8, streamEngines: 2, fd: 512})
+// The descriptor allowance is a hard cap: no floor rises above it,
+// because a connection the kernel refuses with EMFILE is worse than one
+// the server never admitted.
+func TestDescriptorLimitIsAHardCap(t *testing.T) {
+	p := computeResourcePlan(planInputs{budget: 32 * gib, cpus: 8, streamEngines: 2, fd: 512, sockets: 4})
 	perEngine := (512 - fdReserve) / 2
 	if p.tcpConns != perEngine {
 		t.Fatalf("conns = %d, want the descriptor bound %d", p.tcpConns, perEngine)
 	}
-	// And a tiny allowance still leaves a server rather than nothing.
-	p = computeResourcePlan(planInputs{budget: 32 << 30, cpus: 8, streamEngines: 2, fd: 160})
-	if p.tcpConns < minTCPConns {
-		t.Fatalf("conns = %d under a tiny fd limit, want at least %d", p.tcpConns, minTCPConns)
+
+	// Two usable descriptors across two engines: one connection each,
+	// and every job class shrinks with it. The old floor pushed this to
+	// 16 connections a side and let the kernel break the promise.
+	p = computeResourcePlan(planInputs{budget: 32 * gib, cpus: 8, streamEngines: 2, fd: fdReserve + 2, sockets: 4})
+	if p.tcpConns != 1 {
+		t.Fatalf("conns = %d with 2 usable descriptors, want 1", p.tcpConns)
+	}
+	if p.tcpSmallJobs != 1 || p.tcpLargeJobs != 1 {
+		t.Fatalf("job classes small=%d large=%d for a single-connection engine, want 1/1",
+			p.tcpSmallJobs, p.tcpLargeJobs)
 	}
 }
 
-// However strange the inputs, every bound stays inside its floor and
-// ceiling: a server with no room is still a server, and a machine that
-// reports something absurd does not get an absurd bound.
+// Two Servers in one process each live inside their own plan. The plan
+// used to be a package global, and a probe against two servers read one
+// server's connection cap from the other's arithmetic.
+func TestPlanIsServerLocal(t *testing.T) {
+	small := defaultResourcePlan(1)
+	small.udpSpareSlabs = 4
+	small.tcpConns = 3
+	small.tcpSmallJobs = 3
+	small.tcpLargeJobs = 1
+	big := defaultResourcePlan(1)
+	big.udpSpareSlabs = 4096
+	big.tcpConns = 300
+	big.tcpSmallJobs = 300
+	big.tcpLargeJobs = 8
+
+	eSmall := newTCPEngine(echoHandler(), "tcp", 0, small)
+	eBig := newTCPEngine(echoHandler(), "tcp", 0, big)
+	if cap(eSmall.smallTokens) != 3 || cap(eBig.smallTokens) != 300 {
+		t.Fatalf("token caps %d/%d, want 3/300 — the engines are reading a shared plan",
+			cap(eSmall.smallTokens), cap(eBig.smallTokens))
+	}
+	if eSmall.maxConns != 3 || eBig.maxConns != 300 {
+		t.Fatalf("conn caps %d/%d, want 3/300", eSmall.maxConns, eBig.maxConns)
+	}
+
+	uSmall := newUDPEngine(echoHandler(), nil, false, 1, 1, small)
+	uBig := newUDPEngine(echoHandler(), nil, false, 1, 1, big)
+	if uSmall.slabCap >= uBig.slabCap {
+		t.Fatalf("slab caps %d/%d, want the small server's below the big one's",
+			uSmall.slabCap, uBig.slabCap)
+	}
+}
+
+// However strange the inputs, every bound stays inside sane limits: a
+// server with no room is still a server, and a machine that reports
+// something absurd does not get an absurd bound.
 func TestResourcePlanStaysWithinLimits(t *testing.T) {
-	budgets := []uint64{0, 1, 4 << 10, 64 << 20, 1 << 40, ^uint64(0)}
+	budgets := []uint64{0, 1, 4 << 10, 64 * mib, 1 << 40, ^uint64(0)}
 	cpuCounts := []int{0, 1, 4, 128}
 	for _, budget := range budgets {
 		for _, cpus := range cpuCounts {
 			for _, engines := range []int{0, 1, 2} {
-				p := computeResourcePlan(planInputs{budget: budget, cpus: cpus, streamEngines: engines})
-				if p.udpSpareSlabs < minSpareSlabs || p.udpSpareSlabs > maxSpareSlabs {
-					t.Fatalf("budget %d: spare slabs %d outside [%d,%d]", budget, p.udpSpareSlabs, minSpareSlabs, maxSpareSlabs)
-				}
-				if p.tcpConns < minTCPConns || p.tcpConns > maxTCPConns {
-					t.Fatalf("budget %d: conns %d outside [%d,%d]", budget, p.tcpConns, minTCPConns, maxTCPConns)
-				}
-				if p.udpWorkers < 64 || p.udpWorkers > 1024 {
-					t.Fatalf("budget %d cpus %d: workers %d outside [64,1024]", budget, cpus, p.udpWorkers)
-				}
-				if p.tcpSmallJobs < 64 || p.tcpSmallJobs > maxSmallJobs {
-					t.Fatalf("small jobs %d outside [64,%d]", p.tcpSmallJobs, maxSmallJobs)
-				}
-				if p.tcpLargeJobs < 1 {
-					t.Fatalf("large jobs %d", p.tcpLargeJobs)
+				for _, fd := range []uint64{0, 64, 1 << 20} {
+					p := computeResourcePlan(planInputs{budget: budget, cpus: cpus, streamEngines: engines, fd: fd, sockets: 16})
+					if p.udpSpareSlabs < 1 || p.udpSpareSlabs > maxSpareSlabs {
+						t.Fatalf("budget %d: spare slabs %d", budget, p.udpSpareSlabs)
+					}
+					if p.tcpConns < 1 || p.tcpConns > maxTCPConns {
+						t.Fatalf("budget %d fd %d: conns %d", budget, fd, p.tcpConns)
+					}
+					if p.udpWorkers < 64 || p.udpWorkers > 1024 {
+						t.Fatalf("budget %d cpus %d: workers %d", budget, cpus, p.udpWorkers)
+					}
+					if p.tcpSmallJobs < 1 || p.tcpSmallJobs > maxSmallJobs {
+						t.Fatalf("small jobs %d", p.tcpSmallJobs)
+					}
+					if p.tcpLargeJobs < 1 {
+						t.Fatalf("large jobs %d", p.tcpLargeJobs)
+					}
+					if p.udpSockets < 1 || p.udpSockets > 16 {
+						t.Fatalf("sockets %d", p.udpSockets)
+					}
 				}
 			}
-		}
-	}
-}
-
-// The worst case the bounds allow has to stay a fraction of what the
-// process may use — that is the whole point of deriving them.
-func TestIngressWorstCaseFitsTheBudget(t *testing.T) {
-	for _, budget := range []uint64{128 << 20, 512 << 20, 2 << 30, 32 << 30} {
-		p := computeResourcePlan(planInputs{budget: budget, cpus: 8, streamEngines: 2})
-		worst := uint64(p.udpSpareSlabs)*udpSlabBytes + //nolint:gosec // clamped positives
-			uint64(2*p.tcpConns)*tcpConnBytes //nolint:gosec // clamped positives
-		if share := float64(worst) / float64(budget); share > 0.15 {
-			t.Fatalf("on %d bytes the front door could reach %d bytes (%.0f%%); "+
-				"the cache, the resolver and the runtime need the rest",
-				budget, worst, share*100)
 		}
 	}
 }
@@ -167,13 +237,14 @@ func TestIngressWorstCaseFitsTheBudget(t *testing.T) {
 // What this machine decided, for the record: a failure here is a machine
 // the derivation has not been thought about on, not a broken build.
 func TestResourcePlanOnThisMachine(t *testing.T) {
-	p := computeResourcePlan(autoPlanInputs(1))
-	t.Logf("memory budget %d bytes -> workers=%d spare=%d conns=%d small=%d large=%d",
-		memoryBudget(), p.udpWorkers, p.udpSpareSlabs, p.tcpConns, p.tcpSmallJobs, p.tcpLargeJobs)
-	if p.udpSpareSlabs < minSpareSlabs || p.udpSpareSlabs > maxSpareSlabs {
-		t.Fatalf("spare bound %d outside [%d,%d]", p.udpSpareSlabs, minSpareSlabs, maxSpareSlabs)
+	p := defaultResourcePlan(1)
+	t.Logf("memory budget %d bytes -> sockets=%d workers=%d spare=%d conns=%d small=%d large=%d worst=%.1fMiB",
+		memoryBudget(), p.udpSockets, p.udpWorkers, p.udpSpareSlabs, p.tcpConns,
+		p.tcpSmallJobs, p.tcpLargeJobs, float64(p.worstCaseBytes(1))/mib)
+	if p.udpSpareSlabs < 1 || p.udpSpareSlabs > maxSpareSlabs {
+		t.Fatalf("spare bound %d", p.udpSpareSlabs)
 	}
-	if p.tcpConns < minTCPConns || p.tcpConns > maxTCPConns {
-		t.Fatalf("connection bound %d outside [%d,%d]", p.tcpConns, minTCPConns, maxTCPConns)
+	if p.tcpConns < 1 || p.tcpConns > maxTCPConns {
+		t.Fatalf("connection bound %d", p.tcpConns)
 	}
 }

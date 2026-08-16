@@ -28,6 +28,7 @@ type udpListener struct {
 	sockets int
 	workers int
 	queue   int
+	plan    resourcePlan
 	timeout time.Duration
 
 	mu       sync.Mutex
@@ -40,13 +41,14 @@ type udpListener struct {
 	serving  atomic.Bool
 }
 
-func newUDPListener(addr string, h rawHandler, timeout time.Duration, workers, queue int) *udpListener {
+func newUDPListener(addr string, h rawHandler, timeout time.Duration, workers, queue int, plan resourcePlan) *udpListener {
 	return &udpListener{
 		addr:    addr,
 		handler: h,
-		sockets: defaultUDPWorkers(),
+		sockets: plan.udpSockets,
 		workers: workers,
 		queue:   queue,
+		plan:    plan,
 		timeout: timeout,
 	}
 }
@@ -127,7 +129,7 @@ func (l *udpListener) Bind(ctx context.Context) error {
 		}
 	}
 
-	l.engine = newUDPEngine(l.handler, l.pcs, wildcard, l.workers, l.queue)
+	l.engine = newUDPEngine(l.handler, l.pcs, wildcard, l.workers, l.queue, l.plan)
 	l.done = make(chan struct{})
 	return nil
 }
@@ -226,6 +228,18 @@ func (l *udpListener) Shutdown(_ context.Context) error {
 		close(l.done)
 	})
 	return l.drainErr
+}
+
+// AdmissionCount reports how many queries this listener has admitted
+// (see trim.go).
+func (l *udpListener) AdmissionCount() uint64 {
+	l.mu.Lock()
+	engine := l.engine
+	l.mu.Unlock()
+	if engine == nil {
+		return 0
+	}
+	return engine.admissions()
 }
 
 // TrimIdleMemory drops the engine's parked slabs (see trim.go).

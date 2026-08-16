@@ -142,7 +142,7 @@ func TestTCPLargeSlabReturnsWhenTheBurstShrinks(t *testing.T) {
 		return w.WriteMsg(m) == nil
 	})
 
-	e := newTCPEngine(handler, "tcp", 64)
+	e := newTCPEngine(handler, "tcp", 64, defaultResourcePlan(1))
 
 	burst := append(framed(paddedQuery(t, "big.", 2500)), framed(plainQuery(t, "hold."))...)
 	conns := make([]*scriptedConn, cap(e.largeTokens))

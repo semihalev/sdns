@@ -125,7 +125,7 @@ func TestTCPBurstCostsOneWrite(t *testing.T) {
 		return true
 	})
 
-	e := newTCPEngine(echo, "tcp", 8)
+	e := newTCPEngine(echo, "tcp", 8, defaultResourcePlan(1))
 	conn := newCountingConn(frames)
 
 	done := make(chan struct{})

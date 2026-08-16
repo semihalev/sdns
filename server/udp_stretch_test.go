@@ -23,9 +23,10 @@ import (
 // outlives the formula.
 func TestUDPAdmissionOutlivesTheSteadyState(t *testing.T) {
 	// A small, known headroom: the point is admission past the formula,
-	// not standing up thousands of blocked requests.
-	defer func(p resourcePlan) { activePlan = p }(activePlan)
-	activePlan.udpSpareSlabs = 8
+	// not standing up thousands of blocked requests. The plan is a
+	// value, so the test simply builds its own.
+	plan := defaultResourcePlan(1)
+	plan.udpSpareSlabs = 8
 
 	var inHandler atomic.Int64
 	block := make(chan struct{})
@@ -52,7 +53,7 @@ func TestUDPAdmissionOutlivesTheSteadyState(t *testing.T) {
 		workers = 1
 		queue   = 1
 	)
-	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, workers, queue)
+	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, workers, queue, plan)
 	steady := int64(queue + workers + udpReaderReserve)
 	if e.slabCap != steady+8 {
 		t.Fatalf("slab cap = %d, want steady %d plus the headroom 8", e.slabCap, steady)
@@ -104,7 +105,7 @@ func TestUDPAdmissionOutlivesTheSteadyState(t *testing.T) {
 // demand, reuse from the cache, and an explicit trim that empties it.
 func TestUDPSlabsParkInTheCache(t *testing.T) {
 	e := newUDPEngine(rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool { return true }),
-		nil, false, 1, 1)
+		nil, false, 1, 1, defaultResourcePlan(1))
 
 	// Nothing exists until a query needs it.
 	if got := e.cache.size(); got != 0 {
