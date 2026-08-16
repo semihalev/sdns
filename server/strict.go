@@ -14,7 +14,7 @@ import (
 // The strict path: eligible packets enter the chain as a wire-born
 // middleware.Request on the job carrier — no decoded message, no
 // per-request context allocation. Eligibility (Request.ParseWire) is
-// conservative (zero-path §Z1): exactly one question over an uncompressed
+// conservative: exactly one question over an uncompressed
 // name, empty answer/authority, at most one well-formed root OPT, plain
 // query opcode. Anything else decodes and takes the ordinary entry, which
 // allocates freely.

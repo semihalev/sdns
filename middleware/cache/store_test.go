@@ -149,7 +149,7 @@ func TestCacheHitRejectsCollisionAcrossScopeAndCD(t *testing.T) {
 
 	t.Run("wire verification stays allocation-free", func(t *testing.T) {
 		// The wire path verifies the same dimensions on the strict path,
-		// where a single allocation is a contract break (docs/zero-path.md):
+		// where a single allocation is a contract break:
 		// the qname is compared against the stored presentation name in
 		// place, never rebuilt.
 		entry := NewCacheEntry(newTestSuccessResp("wirecheck.example."), time.Minute, 0)

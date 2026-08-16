@@ -116,7 +116,7 @@ func TestFrameOversizeWriteRefused(t *testing.T) {
 // The framing layer owns every buffer it touches, so what is measured
 // below is the runtime's socket path. On Windows that path allocates on
 // its own (each read and write composes a WSA message from pooled
-// state), which the zero-path contract accounts for by scoping the hard
+// state), which the allocation contract accounts for by scoping the hard
 // guarantee to the platforms it is measured on — the assertion follows
 // the contract rather than pretending the property holds everywhere.
 func TestFramePrefixedAllocsNothing(t *testing.T) {

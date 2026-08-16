@@ -17,7 +17,7 @@ import (
 	"github.com/semihalev/sdns/middleware/edns"
 )
 
-// The owned TCP/DoT engine. Per the zero-path contract:
+// The owned TCP/DoT engine. Its contract:
 //
 //   - The handler runs inline on the connection goroutine — connections
 //     already amortize goroutine and stack costs, queries on one

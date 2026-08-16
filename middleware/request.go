@@ -21,7 +21,7 @@ import (
 //
 // Raw borrows the transport job's receive buffer: it is valid until the job
 // is released, which happens only after the middleware unwind completes.
-// Nothing may retain it (zero-path contract §2).
+// Nothing may retain it: the storage is reused for the next request.
 //
 // Accessors report the client's original request facts. Materialization is
 // one-way — wire → normalized → Msg — and never rewrites the parsed facts,

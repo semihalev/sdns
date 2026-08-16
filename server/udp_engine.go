@@ -15,8 +15,8 @@ import (
 	"github.com/semihalev/sdns/middleware/edns"
 )
 
-// The owned UDP engine replaces the library server's read loop. Its shape
-// follows the zero-path contract (docs/zero-path.md):
+// The owned UDP engine replaces the library server's read loop. Its
+// contract:
 //
 //   - Jobs are leased slabs: the reader takes one against the admission
 //     cap and reads the datagram directly into it. Slabs are created on
@@ -67,7 +67,7 @@ type udpJob struct {
 
 	// Cached classic views handed to the middleware chain. RemoteAddr's
 	// IP always points into ipScratch; observers must copy, never retain
-	// (zero-path contract §2).
+	// — the slab is reused for the next request.
 	remote    net.UDPAddr
 	ipScratch [16]byte
 
@@ -307,7 +307,7 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		}
 		e.txConns[pc] = rc
 	}
-	// Capacity equation (zero-path §7): the admission cap is the
+	// Capacity equation: the admission cap is the
 	// steady-state formula — queue depth + one per busy worker + what
 	// each reader may arm — plus the plan's burst headroom, which is
 	// what lets a miss-heavy burst run at the offered concurrency
