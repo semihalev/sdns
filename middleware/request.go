@@ -41,14 +41,15 @@ type Request struct {
 	questionEnd int
 
 	// OPT facts (zero-valued when the request carried no OPT).
-	hasOPT    bool
-	udpSize   uint16
-	do        bool
-	version   uint8
-	hasECS    bool
-	hasNSID   bool
-	cookieOff int // raw client cookie bytes within raw; 0 when absent
-	cookieLen int
+	hasOPT       bool
+	udpSize      uint16
+	do           bool
+	version      uint8
+	hasECS       bool
+	hasNSID      bool
+	hasKeepalive bool
+	cookieOff    int // raw client cookie bytes within raw; 0 when absent
+	cookieLen    int
 
 	// readTime is when the transport read the packet; the effective
 	// deadline is readTime + the query timeout, carried by the job carrier.
@@ -251,6 +252,16 @@ func (r *Request) HasECS() bool {
 		return r.hasECS
 	}
 	return r.msgHasOption(dns.EDNS0SUBNET)
+}
+
+// HasTCPKeepalive reports whether the request carried the RFC 7828
+// edns-tcp-keepalive option. Whether that means anything is the edns
+// layer's call — the option is only honoured on a stream transport.
+func (r *Request) HasTCPKeepalive() bool {
+	if r.wireBorn() {
+		return r.hasKeepalive
+	}
+	return r.msgHasOption(dns.EDNS0TCPKEEPALIVE)
 }
 
 // HasNSID reports whether the request asked for NSID.
@@ -487,6 +498,7 @@ func (r *Request) parseWireOPT(off int) bool {
 			if optLen != 0 && optLen != 2 {
 				return false
 			}
+			r.hasKeepalive = true
 		default:
 			// An option this parser does not validate is a packet it must
 			// not admit. The library checks each option's payload as it

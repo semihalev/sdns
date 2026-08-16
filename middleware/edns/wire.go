@@ -2,7 +2,9 @@ package edns
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"net/netip"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/wire"
@@ -12,6 +14,17 @@ import (
 // maxTextualAddrLen bounds an address's text form: an IPv6 address with an
 // embedded IPv4 suffix is the longest shape.
 const maxTextualAddrLen = len("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255")
+
+// TCPKeepaliveTimeout is the idle timeout this server advertises to
+// stream clients that sent the RFC 7828 edns-tcp-keepalive option. It
+// must state what the engine actually enforces — the server package's
+// per-connection idle wait — and a test over there pins the two
+// together, since neither package can import the other's constant.
+const TCPKeepaliveTimeout = 8 * time.Second
+
+// tcpKeepaliveUnits is the same timeout in the option's wire unit of
+// 100 milliseconds.
+const tcpKeepaliveUnits = uint16(TCPKeepaliveTimeout / (100 * time.Millisecond))
 
 const (
 	// serverCookieLen is the width of the cookie this server emits: the
@@ -99,6 +112,9 @@ func (w *ResponseWriter) wireOPTLen() (int, bool) {
 	if w.nsidstr != "" && w.nsid {
 		length += wire.OPTOptionHdrLen + len(w.nsidstr)
 	}
+	if w.keepalive {
+		length += wire.OPTOptionHdrLen + 2
+	}
 	return length, true
 }
 
@@ -142,6 +158,11 @@ func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([
 	}
 	if w.nsidstr != "" && w.nsid {
 		body = wire.AppendOptionString(body, dns.EDNS0NSID, w.nsidstr)
+	}
+	if w.keepalive {
+		var timeout [2]byte
+		binary.BigEndian.PutUint16(timeout[:], tcpKeepaliveUnits)
+		body = wire.AppendOption(body, dns.EDNS0TCPKEEPALIVE, timeout[:])
 	}
 	if info.HasEDE {
 		body = wire.AppendOptionEDE(body, info.EDECode, info.EDEText)

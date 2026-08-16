@@ -100,7 +100,13 @@ type ResponseWriter struct {
 	respUDPSize  uint16
 	cookieRaw    [8]byte
 	hasCookieRaw bool
-	pooled       bool
+	// keepalive marks a stream-transport client that sent the RFC 7828
+	// edns-tcp-keepalive option; the response advertises the server's
+	// idle timeout back. Never set for datagram transports — the option
+	// is forbidden over UDP in both directions, and DoQ forbids it
+	// entirely (RFC 9250 §5.5.2).
+	keepalive bool
+	pooled    bool
 }
 
 // (*EDNS).ServeDNS serveDNS implements the Handle interface. A wire-born
@@ -129,6 +135,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	noedns := req.IsEdns0() == nil
+	keepalive := hasClientKeepalive(req)
 	if hasClientECS(req) {
 		// Preserve the ingress fact before SetEdns0 applies the forwarding
 		// policy. A disabled policy or an allow-list miss strips ECS from the
@@ -174,6 +181,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.cookie = cookie
 	rw.noedns = noedns
 	rw.nsid = nsid
+	rw.keepalive = keepalive && w.Proto() == "tcp"
 	rw.respUDPSize = opt.UDPSize()
 	// Clear AD unless the client signalled it wants validation state (DO
 	// or AD bit set) AND did not set CD. RFC 4035 §3.2.3 / RFC 6840 §5.7:
@@ -236,6 +244,7 @@ func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
 	rw.do = req.DO()
 	rw.noedns = noedns
 	rw.nsid = req.HasNSID()
+	rw.keepalive = req.HasTCPKeepalive() && w.Proto() == "tcp"
 	rw.respUDPSize = dnsutil.DefaultMsgSize
 	if cookie := req.ClientCookie(); len(cookie) >= 8 {
 		copy(rw.cookieRaw[:], cookie[:8])
@@ -257,6 +266,22 @@ func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
 		}
 	}()
 	ch.Next(ctx)
+}
+
+func hasClientKeepalive(req *dns.Msg) bool {
+	if req == nil {
+		return false
+	}
+	opt := req.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, option := range opt.Option {
+		if _, ok := option.(*dns.EDNS0_TCP_KEEPALIVE); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func hasClientECS(req *dns.Msg) bool {
@@ -329,6 +354,20 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		// below edns in the writer chain so it still reads the
 		// upstream's response ECS before this strip happens.
 		opt.Option = stripECS(opt.Option)
+
+		// The same closure for RFC 7828: an upstream's keepalive answer
+		// (its idle timeout, negotiated on our pooled connection) is a
+		// hop-by-hop fact that must never reach the client — least of
+		// all over UDP, where the option is forbidden outright. The
+		// server's own advertisement is appended after the strip, for
+		// stream clients that asked.
+		opt.Option = stripKeepalive(opt.Option)
+		if w.keepalive {
+			opt.Option = append(opt.Option, &dns.EDNS0_TCP_KEEPALIVE{
+				Code:    dns.EDNS0TCPKEEPALIVE,
+				Timeout: tcpKeepaliveUnits,
+			})
+		}
 	} else {
 		// EDNS disabled, remove all OPT records
 		m = dnsutil.ClearOPT(m)
@@ -355,6 +394,17 @@ func stripECS(opts []dns.EDNS0) []dns.EDNS0 {
 	keep := opts[:0]
 	for _, o := range opts {
 		if _, isECS := o.(*dns.EDNS0_SUBNET); isECS {
+			continue
+		}
+		keep = append(keep, o)
+	}
+	return keep
+}
+
+func stripKeepalive(opts []dns.EDNS0) []dns.EDNS0 {
+	keep := opts[:0]
+	for _, o := range opts {
+		if _, isKA := o.(*dns.EDNS0_TCP_KEEPALIVE); isKA {
 			continue
 		}
 		keep = append(keep, o)
