@@ -314,12 +314,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		if opt == nil {
 			// No OPT in response, use ours; the strict path carries no
 			// request OPT, so a fresh one stands in.
-			if w.opt == nil {
-				w.opt = new(dns.OPT)
-				w.opt.Hdr.Name = "."
-				w.opt.Hdr.Rrtype = dns.TypeOPT
-			}
-			opt = w.opt
+			opt = w.ensureOpt()
 			m.Extra = append(m.Extra, opt)
 		}
 
@@ -412,9 +407,25 @@ func stripKeepalive(opts []dns.EDNS0) []dns.EDNS0 {
 	return keep
 }
 
+// ensureOpt returns the writer-owned OPT, building it on first use. A
+// wire-born request carries no decoded request OPT, so w.opt is nil
+// until a server option needs somewhere to live; appending through a
+// nil OPT was a panic the recovery middleware ate on every cold miss a
+// cookie-sending stream client caused (found by a plain dig against a
+// fresh instance).
+func (w *ResponseWriter) ensureOpt() *dns.OPT {
+	if w.opt == nil {
+		w.opt = new(dns.OPT)
+		w.opt.Hdr.Name = "."
+		w.opt.Hdr.Rrtype = dns.TypeOPT
+	}
+	return w.opt
+}
+
 func (w *ResponseWriter) setCookie() {
 	if option, ok := w.cookieOption(); ok {
-		w.opt.Option = append(w.opt.Option, option)
+		opt := w.ensureOpt()
+		opt.Option = append(opt.Option, option)
 	}
 }
 
@@ -437,7 +448,8 @@ func (w *ResponseWriter) cookieOption() (dns.EDNS0, bool) {
 
 func (w *ResponseWriter) setNSID() {
 	if option, ok := w.nsidOption(); ok {
-		w.opt.Option = append(w.opt.Option, option)
+		opt := w.ensureOpt()
+		opt.Option = append(opt.Option, option)
 	}
 }
 
