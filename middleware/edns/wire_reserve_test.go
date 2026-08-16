@@ -6,6 +6,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -14,15 +15,18 @@ import (
 // and copy in WriteWire; over-reserving would waste bytes on every hit.
 func TestWireOPTLenMatchesPackedOPT(t *testing.T) {
 	cases := []struct {
-		name    string
-		cookie  string
-		nsidStr string
-		nsid    bool
+		name      string
+		cookie    string
+		nsidStr   string
+		nsid      bool
+		keepalive bool
 	}{
 		{name: "bare"},
 		{name: "cookie", cookie: "0123456789abcdef"},
 		{name: "nsid", nsidStr: "sdns-node-1", nsid: true},
 		{name: "cookie+nsid", cookie: "0123456789abcdef", nsidStr: "sdns-node-1", nsid: true},
+		{name: "keepalive", keepalive: true},
+		{name: "cookie+keepalive", cookie: "0123456789abcdef", keepalive: true},
 	}
 
 	for _, tc := range cases {
@@ -34,16 +38,18 @@ func TestWireOPTLenMatchesPackedOPT(t *testing.T) {
 				do:             true,
 				cookie:         tc.cookie,
 				nsid:           tc.nsid,
+				keepalive:      tc.keepalive,
 			}
 			w.opt.Hdr.Name = "."
 			w.opt.Hdr.Rrtype = dns.TypeOPT
 			w.opt.SetUDPSize(dnsutil.DefaultMsgSize)
+			w.respUDPSize = dnsutil.DefaultMsgSize
 
 			predicted, ok := w.wireOPTLen()
 			if !ok {
 				t.Fatal("reservation refused for an ordinary client")
 			}
-			encoded, ok := w.appendWireOPT(nil)
+			encoded, ok := w.appendWireOPT(nil, middleware.WireInfo{})
 			if !ok {
 				t.Fatal("OPT encoding refused")
 			}
@@ -71,6 +77,7 @@ func TestWireReadyAllocatesNothing(t *testing.T) {
 	w.opt.Hdr.Name = "."
 	w.opt.Hdr.Rrtype = dns.TypeOPT
 	w.opt.SetUDPSize(dnsutil.DefaultMsgSize)
+	w.respUDPSize = dnsutil.DefaultMsgSize
 
 	if allocs := testing.AllocsPerRun(200, func() {
 		if _, ok := w.WireReady(); !ok {
@@ -113,18 +120,32 @@ func (w *wireCountingWriter) RemoteIP() net.IP { return remoteIP }
 // indistinguishable on the wire.
 func TestAppendWireOPTMatchesLibraryPacking(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		cookie  string
-		nsidStr string
-		nsid    bool
-		do      bool
-		udpSize uint16
+		name      string
+		cookie    string
+		nsidStr   string
+		nsid      bool
+		do        bool
+		udpSize   uint16
+		edeCode   uint16
+		edeText   string
+		hasEDE    bool
+		keepalive bool
 	}{
+		// RFC 7828: a stream client that asked is told the idle timeout,
+		// and the encoding must be byte-identical to the library's.
+		{name: "keepalive", do: true, udpSize: 1232, keepalive: true},
+		{name: "keepalive+cookie+ede", cookie: "0123456789abcdef", do: true,
+			udpSize: 1232, keepalive: true, hasEDE: true,
+			edeCode: dns.ExtendedErrorCodeStaleAnswer, edeText: "stale"},
 		{name: "bare", do: true, udpSize: 1232},
 		{name: "no_do", udpSize: 512},
 		{name: "cookie", cookie: "0123456789abcdef", do: true, udpSize: 1232},
 		{name: "nsid", nsidStr: "sdns-node-1", nsid: true, do: true, udpSize: 4096},
 		{name: "cookie+nsid", cookie: "AABBCCDD00112233", nsidStr: "n", nsid: true, do: true, udpSize: 1232},
+		{name: "ede", do: true, udpSize: 1232, hasEDE: true,
+			edeCode: dns.ExtendedErrorCodeDNSBogus, edeText: "signature expired"},
+		{name: "cookie+ede", cookie: "0123456789abcdef", do: true, udpSize: 1232, hasEDE: true,
+			edeCode: dns.ExtendedErrorCodeStaleAnswer, edeText: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &ResponseWriter{
@@ -134,12 +155,19 @@ func TestAppendWireOPTMatchesLibraryPacking(t *testing.T) {
 				do:             tc.do,
 				cookie:         tc.cookie,
 				nsid:           tc.nsid,
+				keepalive:      tc.keepalive,
 			}
 			w.opt.Hdr.Name = "."
 			w.opt.Hdr.Rrtype = dns.TypeOPT
 			w.opt.SetUDPSize(tc.udpSize)
+			w.respUDPSize = tc.udpSize
 
-			ours, ok := w.appendWireOPT(nil)
+			info := middleware.WireInfo{
+				HasEDE:  tc.hasEDE,
+				EDECode: tc.edeCode,
+				EDEText: tc.edeText,
+			}
+			ours, ok := w.appendWireOPT(nil, info)
 			if !ok {
 				t.Fatal("encoding refused")
 			}
@@ -154,6 +182,18 @@ func TestAppendWireOPTMatchesLibraryPacking(t *testing.T) {
 			}
 			if option, has := w.nsidOption(); has {
 				reference.Option = append(reference.Option, option)
+			}
+			if tc.keepalive {
+				reference.Option = append(reference.Option, &dns.EDNS0_TCP_KEEPALIVE{
+					Code:    dns.EDNS0TCPKEEPALIVE,
+					Timeout: tcpKeepaliveUnits,
+				})
+			}
+			if tc.hasEDE {
+				reference.Option = append(reference.Option, &dns.EDNS0_EDE{
+					InfoCode:  tc.edeCode,
+					ExtraText: tc.edeText,
+				})
 			}
 			buf := make([]byte, dns.Len(reference)+16)
 			n, err := dns.PackRR(reference, buf, 0, nil, false)
@@ -190,11 +230,18 @@ func TestServeWireOPTAllocatesNothing(t *testing.T) {
 	w.opt.Hdr.Name = "."
 	w.opt.Hdr.Rrtype = dns.TypeOPT
 	w.opt.SetUDPSize(dnsutil.DefaultMsgSize)
+	w.respUDPSize = dnsutil.DefaultMsgSize
 
 	reserve, _ := w.wireOPTLen()
-	body := make([]byte, 0, reserve)
+	const edeText = "stale answer served from cache"
+	info := middleware.WireInfo{
+		HasEDE:  true,
+		EDECode: dns.ExtendedErrorCodeStaleAnswer,
+		EDEText: edeText,
+	}
+	body := make([]byte, 0, reserve+wire.OPTOptionHdrLen+2+len(edeText))
 	if allocs := testing.AllocsPerRun(200, func() {
-		if _, ok := w.appendWireOPT(body); !ok {
+		if _, ok := w.appendWireOPT(body, info); !ok {
 			t.Fatal("encoding refused")
 		}
 	}); allocs != 0 {

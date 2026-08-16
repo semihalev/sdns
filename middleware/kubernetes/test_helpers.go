@@ -43,17 +43,13 @@ func (m *mockResponseWriter) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
-func (m *mockResponseWriter) Close() error        { return nil }
-func (m *mockResponseWriter) TsigStatus() error   { return nil }
-func (m *mockResponseWriter) TsigTimersOnly(bool) {}
-func (m *mockResponseWriter) Hijack()             {}
+func (m *mockResponseWriter) Close() error { return nil }
 
 // middleware.ResponseWriter methods
-func (m *mockResponseWriter) Msg() *dns.Msg              { return m.msg }
-func (m *mockResponseWriter) Rcode() int                 { return m.rcode }
-func (m *mockResponseWriter) Written() bool              { return m.written }
-func (m *mockResponseWriter) Reset(w dns.ResponseWriter) {}
-func (m *mockResponseWriter) Proto() string              { return "udp" }
+func (m *mockResponseWriter) Msg() *dns.Msg { return m.msg }
+func (m *mockResponseWriter) Rcode() int    { return m.rcode }
+func (m *mockResponseWriter) Written() bool { return m.written }
+func (m *mockResponseWriter) Proto() string { return "udp" }
 func (m *mockResponseWriter) RemoteIP() net.IP {
 	if addr, ok := m.RemoteAddr().(*net.UDPAddr); ok {
 		return addr.IP

@@ -98,11 +98,10 @@ func TestBufferWriterWriteUnpacks(t *testing.T) {
 }
 
 // TestBufferWriterInterfaceMethods covers the remaining
-// dns.ResponseWriter satisfiers (LocalAddr, Close, TsigStatus,
-// TsigTimersOnly, Hijack). They are no-ops/stubs in our
-// in-memory writer; exercising them ensures the interface is
-// actually satisfied and guards against accidental signature
-// drift.
+// interface satisfiers (LocalAddr, Close). They are
+// no-ops/stubs in our in-memory writer; exercising them
+// ensures the interface is actually satisfied and guards
+// against accidental signature drift.
 func TestBufferWriterInterfaceMethods(t *testing.T) {
 	w := getBufferWriter()
 
@@ -115,12 +114,6 @@ func TestBufferWriterInterfaceMethods(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close returned %v, want nil (no-op on in-memory writer)", err)
 	}
-	if err := w.TsigStatus(); err != nil {
-		t.Fatalf("TsigStatus returned %v, want nil", err)
-	}
-	// TsigTimersOnly + Hijack return nothing; just confirm no panic.
-	w.TsigTimersOnly(true)
-	w.Hijack()
 }
 
 // recordingHandler captures the ctx it was invoked with and writes a
@@ -137,7 +130,7 @@ func (h *recordingHandler) Name() string { return h.name }
 func (h *recordingHandler) ServeDNS(ctx context.Context, ch *Chain) {
 	h.sawCtx = ctx
 	reply := new(dns.Msg)
-	reply.SetReply(ch.Request)
+	reply.SetReply(ch.Request.Msg())
 	reply.Rcode = h.rcode
 	_ = ch.Writer.WriteMsg(reply)
 }
@@ -150,7 +143,7 @@ type requestLocalResponseHandler struct {
 func (h *requestLocalResponseHandler) Name() string { return h.name }
 func (h *requestLocalResponseHandler) ServeDNS(ctx context.Context, ch *Chain) {
 	reply := new(dns.Msg)
-	reply.SetReply(ch.Request)
+	reply.SetReply(ch.Request.Msg())
 	reply.Rcode = dns.RcodeServerFailure
 	if h.err != nil {
 		MarkRequestLocalFailureResponse(ctx, reply, h.err)
@@ -297,7 +290,7 @@ func (h *reentrantHandler) ServeDNS(ctx context.Context, ch *Chain) {
 	// response instead of ErrNoResponse — the point of the test
 	// is the inner cap fires, not the outer one.
 	reply := new(dns.Msg)
-	reply.SetReply(ch.Request)
+	reply.SetReply(ch.Request.Msg())
 	_ = ch.Writer.WriteMsg(reply)
 }
 

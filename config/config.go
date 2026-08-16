@@ -18,7 +18,7 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-const configver = "1.7.4"
+const configver = "1.8.0"
 
 // Config type.
 type Config struct {
@@ -119,6 +119,24 @@ type Config struct {
 
 	// Resolver concurrency limits
 	MaxConcurrentQueries int // Maximum concurrent DNS queries (default 10000)
+
+	// Server ingress bounds. These are deliberately separate from
+	// MaxConcurrentQueries, which is the resolver's upstream fan-out
+	// semaphore. Left at zero, each derives from the machine's resource
+	// plan (memory, CPUs, descriptor limit); nothing is preallocated —
+	// admission is capped, slabs are created on demand and parked in an
+	// idle cache between requests.
+	IngressWorkers  int // Fixed handler workers per listener (default: derived from CPUs and memory)
+	IngressQueue    int // Ready-queue depth before a job is served on its own goroutine (default 64)
+	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default: derived from available memory)
+
+	// MemoryTrim returns a burst's slab memory to the operating system
+	// after a long idle. Off by default: the trim is one synchronous GC
+	// over the whole process, which a busy or big-memory server never
+	// needs and a single small core feels. Meant for memory-constrained
+	// devices (containers on routers, small VPSes) where resident memory
+	// after a traffic burst matters more than an idle-time pause.
+	MemoryTrim bool
 
 	// Reflex: DNS amplification/reflection attack detection
 	ReflexEnabled      bool    // Enable amplification attack detection
@@ -680,6 +698,31 @@ prefetch = 10
 maxdepth = 30
 
 # ============================
+# Server Resources
+# ============================
+
+# The serving bounds — worker pool, in-flight query cap, TCP/DoT
+# connection cap — are derived at startup from this machine's memory,
+# CPUs and file-descriptor limit, and logged as each listener starts.
+# The keys below override the derived defaults; leave them unset unless
+# a measurement says otherwise.
+
+# Fixed handler workers per listener
+# ingressworkers = 256
+
+# Ready-queue depth before a query is served on its own goroutine
+# ingressqueue = 64
+
+# Concurrent inbound TCP/DoT connection cap
+# ingresstcpconns = 1024
+
+# Return a traffic burst's memory to the operating system after a long
+# idle (several minutes quiescent). The trim is one synchronous GC over
+# the whole process, so it is meant for memory-constrained devices —
+# containers on routers, small VPSes — not for busy servers.
+# memorytrim = true
+
+# ============================
 # Rate Limiting
 # ============================
 
@@ -1067,16 +1110,32 @@ failure_cache_max_ttl = "5m"
 func Load(cfgfile, version string) (*Config, error) {
 	config := new(Config)
 
+	// A missing config is generated whatever it is called and wherever
+	// it points: the -c flag promises exactly that. (An sdns.toml
+	// fallback lived here once, for configs from the earliest releases;
+	// it also made an explicit path load an unrelated file from the
+	// working directory, and the releases it served are long gone.)
 	if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
-		if filepath.Base(cfgfile) == "sdns.conf" {
-			// compatibility for old default conf file
-			if _, err := os.Stat("sdns.toml"); os.IsNotExist(err) {
-				if err := generateConfig(cfgfile); err != nil {
-					return nil, err
-				}
-			} else {
-				cfgfile = "sdns.toml"
+		// An operator upgrading across the fallback's removal would
+		// otherwise get a silent fresh default while their old file sits
+		// ignored. The location the removed fallback actually loaded was
+		// the literal "sdns.toml" in the process working directory,
+		// whenever the requested basename was sdns.conf — so that is the
+		// path that must be probed; the sibling of an explicit -c path is
+		// checked as a courtesy on top.
+		legacies := []string{filepath.Join(filepath.Dir(cfgfile), "sdns.toml")}
+		if filepath.Base(cfgfile) == "sdns.conf" && filepath.Clean(legacies[0]) != "sdns.toml" {
+			legacies = append(legacies, "sdns.toml")
+		}
+		for _, legacy := range legacies {
+			if _, err := os.Stat(legacy); err == nil {
+				zlog.Warn("Found a legacy sdns.toml, but it is no longer loaded; generating a new config instead. Migrate your settings manually.",
+					zlog.String("legacy", legacy), zlog.String("path", cfgfile))
+				break
 			}
+		}
+		if err := generateConfig(cfgfile); err != nil {
+			return nil, err
 		}
 	}
 

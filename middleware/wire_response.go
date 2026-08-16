@@ -21,9 +21,17 @@ type WireInfo struct {
 	Rcode int
 	// AuthenticatedData mirrors the AD bit currently set in the body.
 	AuthenticatedData bool
-	// HasDNSSEC reports whether the body carries RRSIG/NSEC/NSEC3
-	// records — the fact the edns layer needs for its DO=0 decision.
+	// HasDNSSEC reports whether the body carries DNSSEC records the
+	// client did not ask for — the fact the edns layer needs for its
+	// DO=0 decision. An explicit RRSIG query's answer is its payload,
+	// not augmentation, and travels with this unset.
 	HasDNSSEC bool
+	// HasEDE carries an RFC 8914 Extended DNS Error for the edns layer
+	// to append to the reply OPT. A client without EDNS never receives
+	// it — exactly the Msg path's re-attach behavior.
+	HasEDE  bool
+	EDECode uint16
+	EDEText string
 }
 
 // WireCapability is what the writer chain reports about serving bytes for
@@ -58,23 +66,60 @@ type WireWriter interface {
 	WriteWire(body []byte, info WireInfo) error
 }
 
+// WireBodyLeaser is the pre-build lease contract: a caller that knows the
+// response size asks the writer for the buffer the body will be built in,
+// so the bytes are born where the transport wants them (the server's job
+// slab on the strict path) instead of being allocated by the producer.
+//
+// BeginWire returns a zero-length slice with capacity size+reserve, or nil
+// when the writer cannot lease (the caller falls back to building its own
+// body for WriteWire). Exactly one of CommitWire or AbortWire must follow
+// every successful BeginWire, before any other write on this writer.
+// CommitWire has WriteWire's semantics — including the lazy post-write
+// Msg() retention, which is why the lease belongs to the writer until the
+// request finishes, never returning to any pool at commit time (the #558
+// lesson). AbortWire releases the lease without a send; the caller may then
+// still answer through the ordinary Msg path.
+type WireBodyLeaser interface {
+	BeginWire(size, reserve int) []byte
+	CommitWire(body []byte, info WireInfo) error
+	AbortWire()
+}
+
 // ClearWireAD clears the AD bit in a packed message header in place.
 func ClearWireAD(body []byte) {
 	wire.ClearAD(body)
 }
 
-// WireReady reports whether this transport is a true byte sink. DoQ needs
-// its reply ID normalized to zero (RFC 9250 §4.2.1), a rewrite its raw
-// Write does not perform, and the DoH assembly path unpacks whatever bytes
-// it is handed only to pack them again — both are excluded until they can
-// carry bytes natively.
+// WireReady reports whether this transport is a true byte sink. It
+// requires the declared capability, never the proto inference: a caller
+// embedding the server through ServeMsg supplies its own transport, and
+// one whose RemoteAddr merely looks like a datagram socket would
+// otherwise receive raw wire bytes on cache hits and packed messages on
+// misses — a split its Write may not survive. The owned listeners
+// declare the capability at ingress (AllowDirectPack); DoQ additionally
+// needs its reply ID normalized to zero (RFC 9250 §4.2.1) and the DoH
+// assembly path reshapes bytes, so neither declares it.
 func (w *responseWriter) WireReady() (WireCapability, bool) {
+	if !w.directPack {
+		return WireCapability{}, false
+	}
 	switch w.proto {
 	case "udp", "tcp":
 		return WireCapability{}, true
 	default:
 		return WireCapability{}, false
 	}
+}
+
+// StagedFlusher is implemented by transports that stage replies for a
+// batched send. The chain flushes them at the strict-path detach — the
+// moment slow work is certain — so a reply already staged never waits
+// behind an unrelated recursion.
+type StagedFlusher interface {
+	// FlushStaged sends everything staged so far. Must only be called
+	// from the goroutine that serves this transport's requests.
+	FlushStaged()
 }
 
 // ResponseSizer is implemented by writers that can report a response's wire
@@ -133,10 +178,48 @@ func (w *responseWriter) WriteWire(body []byte, info WireInfo) error {
 
 	// Size comes from len(w.wire); the transport's count would include a
 	// stream length prefix. A zero here only marks the response written.
-	_, err := w.ResponseWriter.Write(body)
+	_, err := w.Transport.Write(body)
 	w.size = 0
 	return err
 }
+
+// BeginWire on the base response writer leases from the transport's
+// job-owned storage when it offers any (WireTransportLeaser), else a fresh
+// buffer. Either way the lease semantics hold: the body is built in a
+// buffer the writer handed out, and the writer keeps it after CommitWire
+// for the lazy post-write Msg() contract — a job-backed lease stays valid
+// until the job releases, which is after the middleware unwind completes.
+func (w *responseWriter) BeginWire(size, reserve int) []byte {
+	if w.Written() {
+		return nil
+	}
+	need := size + reserve
+	if leaser, ok := w.Transport.(WireTransportLeaser); ok {
+		if buf := leaser.LeaseWire(need); buf != nil {
+			// The contract is cap == size+reserve, not "whatever the
+			// slab holds": a transport-backed lease is a reused buffer
+			// whose tail still carries the previous response, and a
+			// wrapper reading past its declared capacity — or appending
+			// past the reserve — must find a boundary, not another
+			// client's bytes.
+			if cap(buf) < need {
+				return nil
+			}
+			return buf[:0:need]
+		}
+	}
+	return make([]byte, 0, need)
+}
+
+// CommitWire sends a body obtained from BeginWire; it has WriteWire's exact
+// semantics, retention included.
+func (w *responseWriter) CommitWire(body []byte, info WireInfo) error {
+	return w.WriteWire(body, info)
+}
+
+// AbortWire releases a BeginWire lease without a send. The base writer's
+// lease is garbage-collected storage, so there is nothing to return.
+func (w *responseWriter) AbortWire() {}
 
 // Msg returns the written message. After a wire-path write the packed
 // bytes are decoded on first use — post-write readers (DoH assembly,

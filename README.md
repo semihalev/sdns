@@ -45,7 +45,7 @@ $ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:latest
 Pin to a specific version (recommended for production):
 
 ```shell
-$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.7.4
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.0-rc2
 ```
 
 #### Docker Compose
@@ -97,7 +97,7 @@ $ make test
 
 | Flag              | Description                                                                    |
 | ----------------- | ------------------------------------------------------------------------------ |
-| -c, --config PATH | Location of the config file. If it doesn't exist, a new one will be generated. Default: /sdns.conf  |
+| -c, --config PATH | Location of the config file. If it doesn't exist, a new one is generated at that path. Default: sdns.conf (working directory) |
 | -t, --test        | Test configuration file and exit. Returns exit code 0 if valid, 1 if invalid  |
 | -v, --version     | Show the SDNS version                                                          |
 | -h, --help        | Show help information and exit                                                 |
@@ -136,7 +136,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.7.4)
+## Configuration (v1.8.0)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -202,6 +202,10 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **dnstaplogresponses** | Log DNS responses via dnstap. Default: true                                                                        |
 | **dnstapflushinterval** | Dnstap message flush interval in seconds. Default: 5                                                             |
 | **views**            | Per-client static-answer rules. Each entry has `zone` (label), `networks` (CIDRs), and `answers` (zone-file RRs). See the Views middleware section below for shape and examples |
+| **ingressworkers**   | Fixed handler workers per listener. Default: derived from this machine's CPUs and memory                            |
+| **ingressqueue**     | Ready-queue depth before a query is served on its own goroutine. Default: 64                                        |
+| **ingresstcpconns**  | Concurrent inbound TCP/DoT connection cap. Default: derived from this machine's memory and file-descriptor limit    |
+| **memorytrim**       | Return a traffic burst's memory to the OS after a long idle. Off by default; meant for memory-constrained devices   |
 
 ## Middleware Configuration
 
@@ -540,6 +544,8 @@ This is useful when:
 *   QNAME minimization for privacy (RFC 7816)
 *   Automatic DNSSEC trust anchor updates (RFC 5011)
 *   Zero-allocation cache operations for improved performance
+*   **Owned UDP/TCP/DoT serving engine: wire-eligible warm cache hits answered from raw bytes, allocation-free per query on UDP and TCP (DoT rides the same path; TLS record buffers are the runtime's), with batched `recvmmsg`/`sendmmsg` I/O on Linux — composite answers that need message shaping take the ordinary path**
+*   **Self-sizing serving bounds derived from the machine's memory (cgroup and GOMEMLIMIT aware) — the same binary fits a 32-core server and a 128MB router**
 *   TCP connection pooling for persistent connections
 *   **Kubernetes DNS integration with a 256-way sharded registry and zero-allocation lookups**
 *   **Automatic TLS certificate reloading without downtime**

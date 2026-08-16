@@ -148,7 +148,7 @@ func TestRFC9520KillSwitchDoesNotShareSERVFAILBetweenRequests(t *testing.T) {
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		calls++
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Rcode = dns.RcodeServerFailure
 		resp.SetEdns0(dnsutil.DefaultMsgSize, false)
 		dnsutil.SetEDE(resp, dns.ExtendedErrorCodeNetworkError, "upstream failure")

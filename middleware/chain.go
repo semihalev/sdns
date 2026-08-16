@@ -200,6 +200,31 @@ func (m *ResponseMeta) ensureLedgerHost() *requestLedgers {
 	}
 }
 
+// detachedCopy returns a heap ResponseMeta carrying this one's state, for
+// a context that will outlive the storage the original lives in.
+//
+// The original is a field of the transport job's Chain, so it is reset
+// and reused the moment the request finishes. A context is not a value
+// the request can call back: a handler may hold one past its own return
+// — an upstream query still unwinding, a goroutine draining — and a
+// context still pointing at the job's meta would then read, and worse
+// write, the next request's state. What transfers is the delegation cut
+// and, if a request tree established one, the ledger host itself, which
+// lives on the heap and outlives either meta.
+func (m *ResponseMeta) detachedCopy() *ResponseMeta {
+	if m == nil {
+		return nil
+	}
+	out := &ResponseMeta{workPolicy: m.workPolicy}
+	m.cutMu.Lock()
+	out.cut = m.cut
+	m.cutMu.Unlock()
+	if host := m.ledgerHost(); host != nil {
+		out.ledgers.Store(host)
+	}
+	return out
+}
+
 // ForkCut returns a meta that shares this one's request-tree state — work
 // ledger, retry guard, failure and proof provenance — but accumulates its own
 // delegation-cut deadline.
@@ -723,10 +748,21 @@ func PropagateValidatedNegativeProofResponse(ctx context.Context, from, to *dns.
 
 // Chain carries per-request state through the middleware pipeline.
 // Instances are reused via a sync.Pool: NewChain allocates the fixed
-// pipeline reference, Reset rebinds the per-request writer + message.
+// pipeline reference, Reset rebinds the per-request writer + request.
 type Chain struct {
 	Writer  ResponseWriter
-	Request *dns.Msg
+	Request *Request
+
+	// base is the chain's own response writer. Middleware wrap it and
+	// restore it on the way out; Writer points here whenever nothing has
+	// wrapped it, so binding a chain — pooled or job-owned — allocates
+	// no writer.
+	base responseWriter
+
+	// reqStorage backs message-born requests (Reset) so rebinding a pooled
+	// chain allocates nothing. Wire-born requests (ResetWire) live in
+	// transport-job storage instead.
+	reqStorage Request
 
 	// Meta is the pooled backing storage for the request's
 	// ResponseMeta. The first middleware that needs a meta sink and
@@ -740,6 +776,12 @@ type Chain struct {
 	count    int // handlers remaining; goes to 0 on Cancel
 
 	workPolicy RecursionWorkPolicy
+
+	// detachCleanup closes a wire-born request's post-materialization
+	// lifecycle — the recursion-work completion boundary and the detached
+	// lazy deadline. Established by Materialize, run exactly once after the
+	// serve completes (PutChain, or the next rebind as a backstop).
+	detachCleanup func()
 }
 
 // NewChain returns a Chain bound to the given handler pipeline. The slice
@@ -750,14 +792,46 @@ func NewChain(handlers []Handler) *Chain {
 }
 
 func newChain(handlers []Handler, workPolicy RecursionWorkPolicy) *Chain {
-	ch := &Chain{
-		Writer:     &responseWriter{},
-		handlers:   handlers,
-		count:      len(handlers),
-		workPolicy: workPolicy,
-	}
-	ch.Meta.workPolicy = workPolicy
+	ch := new(Chain)
+	ch.Bind(handlers, workPolicy)
 	return ch
+}
+
+// Bind prepares caller-owned storage as a chain over handlers. It is how
+// a transport gives its job slab a chain of its own: the strict path must
+// not draw one from a pool, whose contents the collector empties on the
+// second GC — precisely the state the hard-zero measurement fences for.
+//
+// It is idempotent and cheap enough to call per request; the pipeline's
+// handler list is immutable, so re-binding only restates it.
+func (ch *Chain) Bind(handlers []Handler, workPolicy RecursionWorkPolicy) {
+	ch.Writer = &ch.base
+	ch.handlers = handlers
+	ch.count = len(handlers)
+	ch.workPolicy = workPolicy
+	ch.Meta.workPolicy = workPolicy
+}
+
+// Finish closes a served request's remaining lifecycle: the detached
+// context and the recursion-work boundary a mid-chain materialization
+// established. A pooled chain gets this through PutChain; a job-owned
+// one is finished by its transport.
+func (ch *Chain) Finish() {
+	ch.finishDetach()
+
+	// And drop what this request left behind. Resetting at the *start* of
+	// the next request is enough for correctness — nothing reads these
+	// after Finish — but it means a slab keeps one request's decoded
+	// message and one response graph reachable until another client
+	// happens to arrive on that slab. On a quiet server that is
+	// unbounded in time, and every slab in the ring holds a set.
+	ch.Meta.Reset()
+	if ch.Request != nil {
+		ch.Request.release()
+	}
+	if base, ok := ch.Writer.(*responseWriter); ok {
+		base.release()
+	}
 }
 
 // Next invokes the next handler in the chain. Each handler is responsible
@@ -771,6 +845,12 @@ func (ch *Chain) Next(ctx context.Context) {
 	// ledger's completion boundary. Nested Queryer pipelines inherit both
 	// pointers, so retries and child lookups cannot reset their budgets.
 	if ch.pos == 0 {
+		// While the request is wire-born and undecoded the recursion-work
+		// owner is deliberately NOT established here: a served hit performs
+		// no recursive work, and the ledger lifecycle for a miss begins
+		// whole on the detached context at materialization — never split
+		// between the recycled job carrier and a later context.
+		wireOnly := ch.Request != nil && ch.Request.decoded() == nil
 		meta := ResponseMetaFrom(ctx)
 		ownsMeta := meta == nil
 		lazyOwner := false
@@ -778,19 +858,19 @@ func (ch *Chain) Next(ctx context.Context) {
 			meta = &ch.Meta
 			var lazyMeta bool
 			ctx, lazyMeta = withResponseMeta(ctx, meta)
-			if lazyMeta && beginLazyRecursionWorkOwner(ctx) {
+			if !wireOnly && lazyMeta && beginLazyRecursionWorkOwner(ctx) {
 				lazyOwner = true
 				// The server request context owns exact request-lifetime
 				// state. Delay ledger creation until real recursive work and
 				// close the pin before pooled metadata can be reused.
 				defer func() {
 					if finished := finishLazyRecursionWork(ctx, meta); finished != nil {
-						logRecursionWorkExhaustion(finished, ch.Request)
+						logRecursionWorkExhaustion(finished, ch.Request.Msg())
 					}
 				}()
 			}
 		}
-		if ch.workPolicy.Enabled() {
+		if !wireOnly && ch.workPolicy.Enabled() {
 			switch {
 			case ownsMeta && lazyOwner:
 				// The deferred owner above publishes a ledger only if work
@@ -805,7 +885,7 @@ func (ch *Chain) Next(ctx context.Context) {
 				if !hadLedger && ledger != nil {
 					defer func() {
 						ledger.finish()
-						logRecursionWorkExhaustion(ledger, ch.Request)
+						logRecursionWorkExhaustion(ledger, ch.Request.Msg())
 					}()
 				}
 			}
@@ -815,7 +895,61 @@ func (ch *Chain) Next(ctx context.Context) {
 	h := ch.handlers[ch.pos]
 	ch.pos++
 	ch.count--
+
+	// A wire-born request that decoded through Request.Msg carries no
+	// detached context yet: the handler that decoded it may still be
+	// holding the job carrier. Downstream handlers must not — the carrier
+	// is recycled with the job and cannot host request-tree state — so the
+	// transition completes here, once, before the next handler runs.
+	// Chain.Materialize callers already own theirs and skip this.
+	if ch.detachCleanup == nil && ch.Request != nil &&
+		ch.Request.decoded() != nil && ch.Request.wireBorn() {
+		ctx, ch.detachCleanup = ch.detachStrictContext(ctx)
+	}
+
 	h.ServeDNS(ctx, ch)
+}
+
+// Materialize returns the decoded request, decoding a wire-born request on
+// first call. That first decode is the one-way transition off the strict
+// path: the remaining handlers must run on the returned context — a fresh
+// lazy deadline parented on a stable context (never the recycled job
+// carrier), carrying the ECS marker, the same ResponseMeta, and a fresh
+// recursion-work completion boundary whose lifecycle the chain closes when
+// the serve completes. A nil message means the packet failed decoding; the
+// chain is canceled and the caller must stop without calling Next.
+func (ch *Chain) Materialize(ctx context.Context) (context.Context, *dns.Msg) {
+	// decoded, not Msg: the probe must not be the thing that decodes, or
+	// the transition below would be skipped for the request it just built.
+	if ch.Request == nil {
+		return ctx, nil
+	}
+	m := ch.Request.decoded()
+	if m == nil {
+		if m = ch.Request.materialize(); m == nil {
+			ch.Cancel()
+			return ctx, nil
+		}
+	}
+	// A request decoded earlier through Request.Msg reaches here without a
+	// detached context; it gets one now, so the caller's own downstream
+	// work never rides the job carrier either.
+	if ch.detachCleanup == nil && ch.Request.wireBorn() {
+		ctx, ch.detachCleanup = ch.detachStrictContext(ctx)
+	}
+	return ctx, m
+}
+
+// baseWriter returns the transport beneath the chain's own base writer,
+// for capabilities that belong to the transport rather than any wrapper.
+func (ch *Chain) baseWriter() Transport { return ch.base.Transport }
+
+// finishDetach runs a pending strict-detach cleanup exactly once.
+func (ch *Chain) finishDetach() {
+	if ch.detachCleanup != nil {
+		ch.detachCleanup()
+		ch.detachCleanup = nil
+	}
 }
 
 // Cancel stops the chain without writing a response. Subsequent Next
@@ -827,9 +961,18 @@ func (ch *Chain) Cancel() {
 // CancelWithRcode writes a reply with the given rcode and stops the
 // chain. do controls the DO bit in the response's OPT record.
 func (ch *Chain) CancelWithRcode(rcode int, do bool) {
+	req := ch.Request.Msg()
+	if req == nil {
+		// The rcode reply needs the decoded form, but it is terminal — no
+		// handler runs after it — so no detached context is established.
+		if req = ch.Request.materialize(); req == nil {
+			ch.count = 0
+			return
+		}
+	}
 	m := new(dns.Msg)
-	m.Extra = ch.Request.Extra
-	m.SetRcode(ch.Request, rcode)
+	m.Extra = req.Extra
+	m.SetRcode(req, rcode)
 	m.RecursionAvailable = true
 	m.RecursionDesired = true
 
@@ -841,9 +984,40 @@ func (ch *Chain) CancelWithRcode(rcode int, do bool) {
 	ch.count = 0
 }
 
-// Reset rebinds the chain to a fresh writer + request for pool reuse.
-func (ch *Chain) Reset(w dns.ResponseWriter, r *dns.Msg) {
-	ch.Writer.Reset(w)
+// Reset rebinds the chain to a fresh writer + decoded request for pool
+// reuse. The internal sub-pipeline, DoH/DoQ and embedders enter here; the
+// server's raw ingress enters through ResetWire.
+func (ch *Chain) Reset(w Transport, r *dns.Msg) {
+	ch.finishDetach()
+	ch.rebindWriter(w)
+	ch.reqStorage.SetMsg(r)
+	ch.Request = &ch.reqStorage
+	ch.Meta.Reset()
+	ch.pos = 0
+	ch.count = len(ch.handlers)
+}
+
+// rebindWriter points the chain's pooled base writer at the next
+// transport. A chain whose Writer was replaced by a custom implementation
+// (tests do this) gets a fresh base writer rather than a silent no-op on
+// the foreign one.
+func (ch *Chain) rebindWriter(w Transport) {
+	base, ok := ch.Writer.(*responseWriter)
+	if !ok {
+		// A wrapper is still in place — a middleware panicked past its
+		// restore — or a test installed its own writer. Either way the
+		// chain's own writer is the one to rebind.
+		base = &ch.base
+		ch.Writer = base
+	}
+	base.Reset(w)
+}
+
+// ResetWire rebinds the chain to a wire-born request living in transport
+// job storage. No decoded message exists until a handler materializes one.
+func (ch *Chain) ResetWire(w Transport, r *Request) {
+	ch.finishDetach()
+	ch.rebindWriter(w)
 	ch.Request = r
 	ch.Meta.Reset()
 	ch.pos = 0
@@ -865,4 +1039,73 @@ func (ch *Chain) AllowDirectPack() {
 	if w, ok := ch.Writer.(*responseWriter); ok {
 		w.directPack = true
 	}
+}
+
+// noopStop stands in for the stop of a cancellation hook that was never
+// registered.
+func noopStop() bool { return false }
+
+// detachStrictContext builds the context the post-materialization chain
+// runs on: a fresh lazy deadline parented on a stable context — never the
+// recycled job carrier — carrying the deadline as a scalar copy, the ECS
+// marker re-pinned, the same ResponseMeta re-provided, and a fresh
+// recursion-work completion boundary. The returned cleanup runs once the
+// serve completes: it closes the work ledger's lifecycle and releases the
+// deadline context, mirroring what the chain entry does for ordinary
+// requests at pos==0.
+func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func()) {
+	// Leaving the strict path means slow work ahead — an upstream
+	// resolution, a materialized composite — and any replies already
+	// staged on this transport's batch must not wait behind it. A cache
+	// hit staged a moment ago would otherwise sit in the burst for the
+	// whole recursion of the unrelated query that followed it. Hits stay
+	// batched (they never come through here); the flush costs the slow
+	// path one syscall it cannot feel.
+	if f, ok := ch.baseWriter().(StagedFlusher); ok {
+		f.FlushStaged()
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(10 * time.Second)
+	}
+	// Parenting on Background is deliberate: background work the
+	// resolver spawns (prefetch, serve-stale refresh) captures the
+	// detached context past this request's life, and the strict carrier
+	// underneath ctx is recycled the moment the job completes — so
+	// custom context VALUES do not cross this boundary by design; the
+	// request-scoped semantics the server owns (deadline, ECS,
+	// ResponseMeta) are carried explicitly. Cancellation does cross: a
+	// middleware that wrapped the strict context with its own cancel
+	// must still be able to stop the slow work it now waits on. The
+	// carrier itself has no Done channel, so the hook is free there.
+	real := contextutil.WithLazyDeadline(context.Background(), deadline)
+	// The hook only exists for a parent that can actually cancel. The
+	// strict carrier's Done is nil — AfterFunc could never fire — yet
+	// registering still allocates, and a live profile priced that dead
+	// registration as the largest single allocator in the process.
+	stopCancel := noopStop
+	if ctx.Done() != nil {
+		stopCancel = context.AfterFunc(ctx, real.Cancel)
+	}
+	var detached context.Context = real
+	if HasClientECS(ctx) {
+		detached = MarkClientECS(detached)
+	}
+
+	cleanup := func() { stopCancel(); real.Cancel() }
+	if meta := ResponseMetaFrom(ctx).detachedCopy(); meta != nil {
+		var lazyMeta bool
+		detached, lazyMeta = withResponseMeta(detached, meta)
+		if lazyMeta && beginLazyRecursionWorkOwner(detached) {
+			captured := detached
+			cleanup = func() {
+				if finished := finishLazyRecursionWork(captured, meta); finished != nil {
+					logRecursionWorkExhaustion(finished, ch.Request.Msg())
+				}
+				stopCancel()
+				real.Cancel()
+			}
+		}
+	}
+	return detached, cleanup
 }

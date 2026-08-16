@@ -107,6 +107,9 @@ func TestLogsWireSizeThroughEDNSWrapper(t *testing.T) {
 	transport := &countingWriter{Writer: mock.NewWriter("udp", "192.0.2.9:40000")}
 	ch := middleware.NewChain([]middleware.Handler{e, logger, responder})
 	ch.Reset(transport, req)
+	// The fixture stands in for an owned transport, which is what declares
+	// the direct-pack capability WireReady now requires.
+	ch.AllowDirectPack()
 	ch.Next(context.Background())
 
 	if transport.wrote == 0 {

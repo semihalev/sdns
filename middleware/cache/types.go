@@ -63,12 +63,19 @@ type CacheEntry struct {
 	rateLimKey uint64         // Key for shared rate limiter lookup
 	ede        *dns.EDNS0_EDE // Preserved EDE information
 
-	// scoped is true when this entry was keyed under an ECS scope
-	// rather than the shared key. The prefetch worker can't
-	// resynthesise the client IP a scoped query implied, so scoped
-	// entries are not eligible for background refresh — they just
-	// expire normally. PrefetchEligible() reflects this.
-	scoped bool
+	// scope is the ECS prefix this entry was keyed under, normalized the
+	// way the key preimage folds it in (masked address; /0 and invalid
+	// both mean "shared"). The hit-path verifier compares it against the
+	// scope the lookup probed: the key is a 64-bit xxhash, so an entry
+	// that only remembered *that* it was scoped could still be handed to
+	// a different ECS audience through a collision.
+	//
+	// The zero value means the shared key. A scoped entry is also not
+	// eligible for background refresh — the prefetch worker can't
+	// resynthesise the client IP a scoped query implied, so a refresh
+	// would store the wrong audience's answer under the scoped key.
+	// PrefetchEligible() reflects this.
+	scope netip.Prefix
 
 	// cutUntil bounds the entry's effective lifetime to the
 	// delegation cut that produced the answer (GHSA-mqfw-f48p-2vc8,
@@ -105,22 +112,29 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 }
 
 // NewScopedCacheEntry creates a cache entry that's been keyed under
-// an ECS scope. The flag suppresses prefetch (the worker has no
-// client IP to derive the scope from on refresh).
-func NewScopedCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
+// an ECS scope. scope MUST be the prefix the entry's key was computed
+// from — the hit-path verifier compares the two exactly, so an entry
+// admitted under a scope it does not carry is unreachable. A /0 or
+// invalid scope leaves the entry shared, matching CacheKey.Hash, which
+// collapses /0 to the unscoped key.
+func NewScopedCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int, scope netip.Prefix) *CacheEntry {
 	e := NewCacheEntryWithKey(msg, ttl, rateLimit, 0)
 	if e == nil {
 		return nil
 	}
-	e.scoped = true
+	e.scope = normalizeKeyScope(scope)
 	return e
 }
+
+// scoped reports whether this entry was admitted under an ECS scope
+// rather than the shared key.
+func (e *CacheEntry) scoped() bool { return e.scope.IsValid() }
 
 // PrefetchEligible reports whether the prefetch worker may refresh
 // this entry. Scoped entries are skipped because the worker has no
 // client IP, so a refresh would lose the ECS scope and create a
 // shared-key entry instead — wrong answer for the wrong audience.
-func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped }
+func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped() }
 
 // NewCacheEntryWithKey creates a new cache entry with a specific key for rate
 // limiting. A message that cannot be packed returns nil — such a response was
@@ -183,8 +197,8 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	if len(msg.Question) > 0 {
 		entry.question = msg.Question[0]
 	}
-	entry.wireServe = prepareWireServe(wire, ede)
-	entry.prepareStripped(msgCopy, ede)
+	entry.wireServe = prepareWireServe(wire)
+	entry.prepareStripped(msgCopy)
 
 	return entry
 }
@@ -200,8 +214,11 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 // the stored bytes per hit: name compression makes the sections' offsets
 // interdependent, so records cannot be cut out of a packed message without
 // re-encoding it.
-func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg, ede *dns.EDNS0_EDE) {
-	if e.wireServe&wireHasDNSSEC == 0 {
+func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg) {
+	// An explicit RRSIG question keeps its signatures for any DO —
+	// ClearDNSSEC would return the message unchanged, so the stripped
+	// body would only duplicate the stored one.
+	if e.wireServe&wireHasDNSSEC == 0 || e.question.Qtype == dns.TypeRRSIG {
 		return
 	}
 
@@ -220,7 +237,7 @@ func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg, ede *dns.EDNS0_EDE) {
 		return
 	}
 
-	flags := prepareWireServe(body, ede)
+	flags := prepareWireServe(body)
 	// Byte serving is all-or-nothing per body: an entry whose stripped form
 	// is not servable simply keeps the Msg path for its DO=0 hits.
 	const ready = wireEligible | wireChaseSafe
@@ -388,6 +405,18 @@ func (k CacheKey) Hash() uint64 {
 		return cache.Key(k.Question, k.CD)
 	}
 	return cache.KeyWithPrefix(k.Question, k.CD, k.Scope)
+}
+
+// normalizeKeyScope reduces a scope to the single form the key preimage
+// stands for, so that the value an entry carries and the value a lookup
+// probes with can be compared for equality: /0 and invalid both mean the
+// shared key (Hash routes them to cache.Key), and the host bits below the
+// prefix length are never part of the preimage.
+func normalizeKeyScope(scope netip.Prefix) netip.Prefix {
+	if !scope.IsValid() || scope.Bits() == 0 {
+		return netip.Prefix{}
+	}
+	return scope.Masked()
 }
 
 // CacheConfig holds cache configuration with validation.

@@ -436,3 +436,39 @@ func BenchmarkStandardDeadlineFastPath(b *testing.B) {
 		cancel()
 	}
 }
+
+// pinBumpOp is a PinTransition on state the caller already owns — the
+// shape the primitive exists for. Its values are pre-boxed: what the
+// hot callers pass through here are pointers, which box for free, and
+// the test must not charge the primitive for its own fixture's string
+// boxing.
+type pinBumpOp struct{ expect, next any }
+
+func (o *pinBumpOp) NextLocked(current any) (any, bool) {
+	if current != o.expect {
+		return nil, false
+	}
+	return o.next, true
+}
+
+// TestPinTransitionAllocatesNothing pins why the primitive exists: the
+// closure-based update allocates its adapter and captures on every call
+// — a live profile priced it at two objects per materialized request —
+// while a transition riding a pointer the caller already holds costs
+// nothing.
+func TestPinTransitionAllocatesNothing(t *testing.T) {
+	ctx := WithLazyDeadline(context.Background(), time.Now().Add(time.Minute))
+	key := new(int)
+	var pinned any = "pinned"
+	if !TryPinValue(ctx, key, pinned) {
+		t.Fatal("pin failed")
+	}
+	op := &pinBumpOp{expect: pinned, next: pinned} // self-transition, repeatable
+	if allocs := testing.AllocsPerRun(200, func() {
+		if _, ok := UpdatePinnedTransitionLocked(ctx, key, op); !ok {
+			t.Fatal("transition refused")
+		}
+	}); allocs != 0 {
+		t.Fatalf("the transition primitive allocated %.1f objects per call", allocs)
+	}
+}

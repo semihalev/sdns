@@ -76,27 +76,40 @@ func (m *Metrics) Name() string { return name }
 // internal sub-queries don't inflate per-query counters.
 func (m *Metrics) ClientOnly() bool { return true }
 
-// (*Metrics).ServeDNS serveDNS implements the Handle interface.
+// (*Metrics).ServeDNS serveDNS implements the Handle interface. The
+// per-query counter reads the parsed qtype, so a wire-born request is
+// observed without a decoded message; domain metrics (unbounded
+// cardinality, allocating) need the decoded name, force materialization,
+// and are documented as disabling the zero guarantee.
 func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	req := ch.Request
+	if m.domainMetricsEnabled && req.Undecoded() {
+		var decoded *dns.Msg
+		ctx, decoded = ch.Materialize(ctx)
+		if decoded == nil {
+			return
+		}
+	}
+
 	ch.Next(ctx)
 
 	if !ch.Writer.Written() {
 		return
 	}
 
-	question := ch.Request.Question[0]
-
-	// Hot path: single WithLabelValues lookup against the COW map,
-	// per-CPU sharded atomic add. ~12 ns/op under 8-core contention.
-	queries.WithLabelValues(
-		dns.TypeToString[question.Qtype],
-		dns.RcodeToString[ch.Writer.Rcode()],
-	).Inc()
+	m.observe(req.Qtype(), ch.Writer.Rcode())
 
 	// Update domain metrics if enabled
 	if m.domainMetricsEnabled {
-		m.recordDomainQuery(question.Name)
+		m.recordDomainQuery(req.Msg().Question[0].Name)
 	}
+}
+
+// observe records one response with caller-stack key scratch — no pool,
+// no allocation on the series-hit path (zero-path handler matrix).
+func (m *Metrics) observe(qtype uint16, rcode int) {
+	var scratch [64]byte
+	queries.With2(scratch[:], dns.TypeToString[qtype], dns.RcodeToString[rcode]).Inc()
 }
 
 // recordDomainQuery records a query for a specific domain.

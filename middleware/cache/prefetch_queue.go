@@ -199,7 +199,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// original request's CD/ECS isolation too: middleware may clear CD on the
 	// response, and an ECS client can prefetch a shared SCOPE=0 entry.
 	requestCD := req.Request != nil && req.Request.CheckingDisabled
-	if !req.Entry.scoped && !requestCD && !req.RequestHadECS &&
+	if !req.Entry.scoped() && !requestCD && !req.RequestHadECS &&
 		!hasEDNSClientSubnet(req.Request) &&
 		!resp.CheckingDisabled {
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&

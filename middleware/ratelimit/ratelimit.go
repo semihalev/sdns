@@ -69,7 +69,7 @@ func (r *RateLimit) ClientOnly() bool { return true }
 
 // (*RateLimit).ServeDNS serveDNS implements the Handle interface.
 func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	w := ch.Writer
 
 	if w.Internal() {
 		ch.Next(ctx)
@@ -86,6 +86,12 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	} else if w.RemoteIP().IsLoopback() {
 		ch.Next(ctx)
+		return
+	}
+
+	// An active limit needs the request's cookie options.
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
 		return
 	}
 

@@ -335,7 +335,7 @@ func TestResponseWriter(t *testing.T) {
 	mw := mock.NewWriter("udp", ip+":12345")
 	rw := &responseWriter{
 		ResponseWriter: mw,
-		request:        req,
+		reqLen:         req.Len(),
 		tracker:        tracker,
 		ip:             ip,
 	}
@@ -370,7 +370,7 @@ func TestResponseWriter_NilResponse(t *testing.T) {
 	mw := mock.NewWriter("udp", ip+":12345")
 	rw := &responseWriter{
 		ResponseWriter: mw,
-		request:        req,
+		reqLen:         req.Len(),
 		tracker:        tracker,
 		ip:             ip,
 	}

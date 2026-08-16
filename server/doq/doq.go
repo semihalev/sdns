@@ -12,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/quic-go/quic-go"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -25,17 +26,19 @@ const (
 	tlsMinVersion    = tls.VersionTLS13 // DoQ requires TLS 1.3+
 )
 
+// Handler serves one decoded DoQ request through the server's message
+// entry — SDNS's own contract, not the miekg handler machinery.
+type Handler interface {
+	ServeMsg(ctx context.Context, w middleware.Transport, m *dns.Msg)
+}
+
 // Server implements DNS-over-QUIC server.
 type Server struct {
 	Addr    string
-	Handler dns.Handler
+	Handler Handler
 
 	mu sync.RWMutex
 	ln *quic.Listener
-}
-
-type contextHandler interface {
-	ServeDNSContext(context.Context, dns.ResponseWriter, *dns.Msg)
 }
 
 // Message pool for better memory management.
@@ -227,13 +230,5 @@ func (s *Server) handleStream(conn *quic.Conn, stream *quic.Stream) {
 	req.Id = dns.Id()
 
 	w := &ResponseWriter{Conn: conn, Stream: stream}
-	s.serveDNS(stream.Context(), w, req)
-}
-
-func (s *Server) serveDNS(ctx context.Context, w dns.ResponseWriter, req *dns.Msg) {
-	if handler, ok := s.Handler.(contextHandler); ok {
-		handler.ServeDNSContext(ctx, w, req)
-		return
-	}
-	s.Handler.ServeDNS(w, req)
+	s.Handler.ServeMsg(stream.Context(), w, req)
 }

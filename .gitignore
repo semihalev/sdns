@@ -11,3 +11,6 @@ vendor
 CLAUDE.md
 log/*
 .claude/
+
+# Built by hand when driving the zerogate harness directly.
+/harness

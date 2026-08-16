@@ -12,6 +12,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
@@ -20,6 +21,7 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
+	"golang.org/x/time/rate"
 )
 
 var debugns bool
@@ -384,8 +386,31 @@ func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 }
 
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
+// A wire-born request first tries the wire fast path — the exact-entry
+// lookup on the wire question through the canonical key, served through
+// the writer lease without a decoded request. Everything else — misses,
+// composite candidates (NXDOMAIN cut, aggressive denial, failure cache),
+// scoped/ECS traffic, prefetch-due entries, Msg-path-only hit shapes —
+// falls through to materialization and the ordinary body with every gate
+// and lookup it has today.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	w, req := ch.Writer, ch.Request
+	// spent carries the rate-limit permit this query already paid on the
+	// byte path, if any: the wire path and the Msg body below are the
+	// same call, so a plain local is enough to keep one question from
+	// costing two tokens. It holds the limiter itself rather than the
+	// entry, because a refresh replacing the entry under the same key
+	// shares that same limiter — charging the replacement would drop a
+	// question that had already paid.
+	var spent *rate.Limiter
+	if ch.Request.Undecoded() && c.serveWire(ctx, ch, &spent) {
+		return
+	}
+
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	if len(req.Question) == 0 {
 		ch.Cancel()
@@ -460,9 +485,9 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// carrying traffic (non-ECS lookups are already counted by
 	// dns_cache_hits_total / dns_cache_misses_total).
 	if clientScope.IsValid() {
-		if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
+		if entry, scopedKey, scope := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
 			ecsLookupHitScoped.Inc()
-			if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+			if c.handleCacheHit(ctx, ch, entry, scopedKey, scope, spent) {
 				c.metrics.Hit()
 				return
 			}
@@ -472,7 +497,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if clientScope.IsValid() {
 			ecsLookupHitShared.Inc()
 		}
-		if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+		if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}, spent) {
 			c.metrics.Hit()
 			return
 		}
@@ -585,15 +610,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// shared-key check would miss it), or a SCOPE=0
 			// shared entry (a scoped check alone would miss it).
 			if clientScope.IsValid() {
-				if entry, scopedKey := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
-					if c.handleCacheHit(ctx, ch, entry, scopedKey) {
+				if entry, scopedKey, scope := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
+					if c.handleCacheHit(ctx, ch, entry, scopedKey, scope, spent) {
 						c.metrics.Hit()
 						return
 					}
 				}
 			}
 			if entry := c.checkCache(cacheKey); entry != nil {
-				if c.handleCacheHit(ctx, ch, entry, cacheKey) {
+				if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}, spent) {
 					c.metrics.Hit()
 					return
 				}
@@ -679,7 +704,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// sub-query. The field is cleared on release so a pooled
 	// writer doesn't leak a ctx reference between uses.
 	rw.ctx = ctx
-	rw.req = ch.Request
+	rw.req = ch.Request.Msg()
 	rw.requestCD = requestCD
 	rw.requestHasECS = requestHasECS
 	rw.requestTreeBypassesSharedDenial = requestTreeBypassesSharedDenial
@@ -744,7 +769,7 @@ func (c *Cache) writeRequestLocalFailure(
 	edeText string,
 ) {
 	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
-	resp := cleanRequestLocalFailureResponse(ch.Request, edeCode, edeText)
+	resp := cleanRequestLocalFailureResponse(ch.Request.Msg(), edeCode, edeText)
 	middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
 	_ = ch.Writer.WriteMsg(resp)
 	ch.Cancel()
@@ -850,8 +875,10 @@ func hasEDNSClientSubnet(req *dns.Msg) bool {
 }
 
 // scopedLookup probes the cache for the longest scope match that
-// covers `clientPrefix`. Returns the entry + the key it was found
-// under, or (nil, 0) on miss. The shared-key fallback is the
+// covers `clientPrefix`. Returns the entry, the key it was found
+// under, and the scope that key was built from — the hit chokepoint
+// needs the scope to verify the entry against the full preimage.
+// Returns (nil, 0, zero) on miss. The shared-key fallback is the
 // caller's responsibility — a scoped probe that misses should still
 // try the unscoped key in case the authority returned SCOPE=0
 // (cached shared) or the entry predates Stage 2.
@@ -871,9 +898,9 @@ func hasEDNSClientSubnet(req *dns.Msg) bool {
 // ~128 for IPv6. Each probe is one hash compute + one map lookup
 // — ~100 ns total — well below the cost of an upstream lookup
 // or a single GC sweep.
-func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64) {
+func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64, netip.Prefix) {
 	if !clientPrefix.IsValid() {
-		return nil, 0
+		return nil, 0, netip.Prefix{}
 	}
 	for bits := clientPrefix.Bits(); bits >= 1; bits-- {
 		scope, err := clientPrefix.Addr().Prefix(bits)
@@ -882,10 +909,10 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 		}
 		key := CacheKey{Question: q, CD: cd, Scope: scope}.Hash()
 		if entry, ok := c.store.LookupByKey(key); ok {
-			return entry, key
+			return entry, key, scope
 		}
 	}
-	return nil, 0
+	return nil, 0, netip.Prefix{}
 }
 
 // lookupNXDomainCut checks the RFC 8020 subtree index after an exact answer
@@ -942,7 +969,7 @@ func (c *Cache) handleNXDomainCutHit(
 	ch *middleware.Chain,
 	entry *nxDomainCutEntry,
 ) bool {
-	resp := entry.response(ch.Request)
+	resp := entry.response(ch.Request.Msg())
 	if resp == nil {
 		return false
 	}
@@ -994,7 +1021,7 @@ func (c *Cache) handleDenialProofHit(
 }
 
 func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit FailureHit) {
-	resp := hit.Response(ch.Request)
+	resp := hit.Response(ch.Request.Msg())
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		release := meta.MarkCachedFailureResponse(resp)
 		defer release()
@@ -1003,18 +1030,201 @@ func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit 
 	ch.Cancel()
 }
 
-// handleCacheHit processes a cache hit.
-func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry *CacheEntry, key uint64) bool {
-	w := ch.Writer
+// serveWire is the wire fast path: the exact-entry lookup on the wire
+// question through the canonical key, and a verified, wire-eligible hit
+// answered through the writer lease without a decoded request. A false
+// return is the composite-miss transition point — the caller materializes
+// and runs the ordinary body.
+func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rate.Limiter) bool {
 	req := ch.Request
+	if !req.RD() || req.HasECS() {
+		return false
+	}
+	if _, ok := dns.TypeToString[req.Qtype()]; !ok {
+		return false
+	}
+	if _, ok := dns.ClassToString[req.Qclass()]; !ok {
+		return false
+	}
 
-	// Full-key verification (defends against xxhash64 key collisions).
+	key, ok := internalcache.KeyWire(req.WireName(), req.Qtype(), req.Qclass(), req.CD())
+	if !ok {
+		return false
+	}
+	// Full-preimage collision verification on the wire: name
+	// (case-insensitive), type, class, CD, and the shared/scoped
+	// partition. A mismatch is a miss, exactly as at the Msg-path
+	// chokepoint. An exact hit that declines materializes — the Msg body
+	// re-runs its whole ladder in order, prefetch claims included.
+	if entry := c.checkCache(key); entry != nil && entryMatchesWire(entry, req) {
+		return c.serveHitFromWire(ctx, ch, entry, spent)
+	}
+	return c.serveCompositeFromWire(ctx, ch)
+}
+
+// serveCompositeFromWire walks the Msg path's composite ladder — RFC 8020
+// subtree cut, RFC 8198 aggressive denial, RFC 9520 failure state — in
+// its exact order for a wire-born request. Each rung either answers from
+// bytes or sends the request to the decoded body, never to a later rung
+// it might shadow.
+func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain) bool {
+	req := ch.Request
+	cd := req.CD()
+	if !cd {
+		if cut, ok := c.store.LookupNXDomainCutWire(req.WireName(), req.Qclass()); ok {
+			return c.serveCutHitFromWire(ctx, ch, cut)
+		}
+		if !c.store.DenialProofsIdle() {
+			// A shared denial answer may exist; RFC 8198 evaluation stays
+			// on the Msg path until its evaluators are allocation-free.
+			return false
+		}
+	}
+	if _, ok := c.store.LookupFailureWire(req.WireName(), req.Qtype(), req.Qclass(), cd); ok {
+		return c.serveFailureFromWire(ch)
+	}
+	return false
+}
+
+// entryMatchesWire is the wire fast path's collision check: the same
+// full-preimage verification the Msg chokepoint runs, with the question
+// read from the parsed wire view rather than a decoded message.
+func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
+	return entryMatchesWireQuestion(entry, req.WireName(), req.Qtype(), req.Qclass(), req.CD())
+}
+
+// serveHitFromWire serves one verified exact hit as bytes built in the
+// writer's lease. Anything the byte path cannot express declines to the
+// ordinary body rather than half-serving.
+func (c *Cache) serveHitFromWire(
+	ctx context.Context, ch *middleware.Chain, entry *CacheEntry, spent **rate.Limiter,
+) bool {
+	w := ch.Writer
+	if w.Internal() {
+		return false
+	}
+	if limiter := entry.GetRateLimiter(); limiter != nil {
+		if !limiter.Allow() {
+			// The Msg path counts a rate-limited hit as a hit (the
+			// caller records it on every true return); the byte path
+			// answers the same question the same way, so the metric
+			// must not depend on which path the query took.
+			c.metrics.Hit()
+			ch.Cancel()
+			return true
+		}
+		// Spent, and remembered. Everything below this line can still
+		// decline to the Msg body — a prefetch-due entry, a writer
+		// without the lease, a body the capability cannot express — and
+		// that body checks the same limiter again. One question would
+		// then cost two tokens, and at a small limit the second check
+		// cancels a hit the client was entitled to. The permit rides a
+		// local through the one call that owns both paths, keyed by the
+		// limiter it was spent on: a refresh that replaces the entry
+		// under the same key shares this limiter and must not be charged
+		// again for the same question, while an entry answering to a
+		// different limiter still pays.
+		*spent = limiter
+	}
+	// A prefetch-due hit needs a decoded request copy for the refresh
+	// queue; the ordinary body claims it.
+	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
+		return false
+	}
+	if entry == nil || entry.wireServe&wireEligible == 0 {
+		wireSkipEntry.Inc()
+		return false
+	}
+	ww, ok := w.(middleware.WireWriter)
+	if !ok {
+		wireSkipWriter.Inc()
+		return false
+	}
+	capability, ready := ww.WireReady()
+	if !ready {
+		wireSkipWriter.Inc()
+		return false
+	}
+	leaser, ok := ww.(middleware.WireBodyLeaser)
+	if !ok {
+		wireSkipWriter.Inc()
+		return false
+	}
+	if entry.wireServe&wireChaseSafe == 0 {
+		// An alias without its terminal: the one exact-entry shape whose
+		// reply is composed rather than copied. Fully cache-contained
+		// chains serve here; anything else declines to the Msg path,
+		// which runs the complete chase machinery.
+		return c.serveChaseHit(ctx, ch, entry, capability, leaser)
+	}
+	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
+		mismatch.Inc()
+		return false
+	}
+	stored, _ := entry.wireBodyFor(capability.DO)
+	if stored == nil {
+		wireSkipDNSSEC.Inc()
+		return false
+	}
+	dst := leaser.BeginWire(len(stored), capability.Reserve+entry.wireEDEReserve())
+	if dst == nil {
+		wireSkipWriter.Inc()
+		return false
+	}
+	body, info, built := entry.serveWireIntoRequest(dst, ch.Request, capability.DO)
+	if !built {
+		leaser.AbortWire()
+		wireSkipBuild.Inc()
+		return false
+	}
+	switch err := leaser.CommitWire(body, info); {
+	case err == nil:
+		boundRequestToEntryLifetime(ctx, entry)
+		c.metrics.Hit()
+		wireFastServed.Inc()
+		ch.Cancel()
+		return true
+	case errors.Is(err, middleware.ErrWireFallback):
+		wireFastFallback.Inc()
+		return false
+	default:
+		// Transport-level failure after commit: the bytes left the
+		// process; the response counts as written (Msg-path parity).
+		boundRequestToEntryLifetime(ctx, entry)
+		c.metrics.Hit()
+		ch.Cancel()
+		return true
+	}
+}
+
+// handleCacheHit processes a cache hit. scope is the ECS scope the lookup
+// keyed with — zero for the shared key — and is part of what the hit is
+// verified against.
+func (c *Cache) handleCacheHit(
+	ctx context.Context,
+	ch *middleware.Chain,
+	entry *CacheEntry,
+	key uint64,
+	scope netip.Prefix,
+	spent *rate.Limiter,
+) bool {
+	w := ch.Writer
+	req := ch.Request.Msg()
+
+	// Full-preimage verification (defends against xxhash64 key collisions).
 	// The cache key is a non-cryptographic 64-bit hash of the query
 	// preimage, so a collision — accidental, or attacker-searched on a
-	// chosen qname — would otherwise serve one query's answer to another.
-	// Returning false treats it as a miss so the chain resolves normally.
-	// This is the single chokepoint for every hit (scoped and shared).
-	if len(req.Question) == 0 || !entryMatchesQuestion(entry, req.Question[0]) {
+	// chosen qname — would otherwise serve one query's answer to another:
+	// across qnames, but equally across the CD partition and the ECS
+	// audience, which is why every dimension is compared and not just the
+	// question. Returning false treats it as a miss so the chain resolves
+	// normally. This is the single chokepoint for every hit (scoped and
+	// shared).
+	if len(req.Question) == 0 || !entryMatchesKey(entry, CacheKey{
+		Question: req.Question[0],
+		CD:       req.CheckingDisabled,
+		Scope:    scope,
+	}) {
 		return false
 	}
 
@@ -1027,8 +1237,13 @@ func (c *Cache) handleCacheHit(ctx context.Context, ch *middleware.Chain, entry 
 	// ctx.Value walk, kept on the hot path for throughput;
 	// middleware.IsInternal(ctx) remains available for code paths
 	// without a writer in scope.
+	// spent is the limiter the byte path already paid a token to on this
+	// same query, before declining to here. Compared by limiter and not
+	// by entry: a refresh replaces the entry but keeps the limiter, and
+	// one question must cost one token however many entry objects it
+	// passed through.
 	limiter := entry.GetRateLimiter()
-	if !w.Internal() && limiter != nil && !limiter.Allow() {
+	if !w.Internal() && limiter != nil && limiter != spent && !limiter.Allow() {
 		ch.Cancel()
 		return true
 	}
@@ -1428,7 +1643,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		if respScope, ok := ecs.ReadResponseScope(res); ok {
 			clamped := w.cache.ecsPolicy.ClampScope(respScope, w.clientScope)
 			scopedKey := CacheKey{Question: q, CD: res.CheckingDisabled, Scope: clamped}.Hash()
-			w.cache.store.SetFromResponseScoped(scopedKey, res, cutUntil, cutKey)
+			w.cache.store.SetFromResponseScoped(scopedKey, res, clamped, cutUntil, cutKey)
 		} else {
 			// No SCOPE in response (or SCOPE=0): authority says
 			// "global"; cache shared so future non-ECS clients hit.

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/semihalev/sdns/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -423,4 +424,32 @@ func TestReloadWithRetry(t *testing.T) {
 	err = cm.reloadWithRetry()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed after 3 attempts")
+}
+
+// A stopped Server must never grow a new certificate manager: the DoQ
+// listener used to fetch its TLS config at serve time, and a Serve
+// goroutine racing a fast start-then-cancel could ask the provider
+// after Stop had already torn the manager down — a fresh file watcher
+// behind a Stopped() that had said true.
+func TestGetTLSConfigRefusedAfterStop(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := dir+"/cert.pem", dir+"/key.pem"
+	cert, key := generateTestCert(t, "stop.test")
+	writeCertAndKey(t, certPath, keyPath, cert, key)
+
+	s := New(&config.Config{Bind: "127.0.0.1:0", TLSCertificate: certPath, TLSPrivateKey: keyPath})
+
+	if s.GetTLSConfig() == nil {
+		t.Fatal("provider refused a valid certificate before stop")
+	}
+	s.Stop()
+	if s.GetTLSConfig() != nil {
+		t.Fatal("a stopped provider built a TLS config — and the manager and watcher behind it")
+	}
+	s.certMu.Lock()
+	cm := s.certManager
+	s.certMu.Unlock()
+	if cm != nil {
+		t.Fatal("a certificate manager exists after Stop")
+	}
 }

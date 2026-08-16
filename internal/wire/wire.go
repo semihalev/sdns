@@ -43,6 +43,12 @@ func (h Header) Rcode() int { return int(h.Flags & 0x0F) }
 // AD reports the authenticated-data bit.
 func (h Header) AD() bool { return h.Flags&FlagAD != 0 }
 
+// QR reports the response bit.
+func (h Header) QR() bool { return h.Flags&0x8000 != 0 }
+
+// Opcode extracts the operation code from the flags word.
+func (h Header) Opcode() int { return int(h.Flags>>11) & 0xF }
+
 // ParseHeader reads the fixed header. ok is false when the body is short.
 func ParseHeader(body []byte) (Header, bool) {
 	if len(body) < HeaderLen {
@@ -56,13 +62,6 @@ func ParseHeader(body []byte) (Header, bool) {
 		NSCount: binary.BigEndian.Uint16(body[8:10]),
 		ARCount: binary.BigEndian.Uint16(body[10:12]),
 	}, true
-}
-
-// SetID stamps a message ID in place.
-func SetID(body []byte, id uint16) {
-	if len(body) >= 2 {
-		binary.BigEndian.PutUint16(body[0:2], id)
-	}
 }
 
 // SetARCount stamps the additional-section count in place.
@@ -187,6 +186,68 @@ func ParseRR(body []byte, off int) (RR, bool) {
 	}, true
 }
 
+// AppendName appends the uncompressed wire form of the (possibly
+// compressed) name starting at off in src. ok is false on malformed
+// input, a name exceeding 255 octets, or insufficient dst capacity — the
+// append never grows dst's backing array, so a caller composing into a
+// fixed lease can treat false as a clean refusal.
+func AppendName(dst, src []byte, off int) ([]byte, bool) {
+	const maxJumps = 32
+	written, jumps := 0, 0
+	for {
+		if off < 0 || off >= len(src) {
+			return dst, false
+		}
+		c := int(src[off])
+		switch {
+		case c == 0:
+			if written+1 > 255 || len(dst)+1 > cap(dst) {
+				return dst, false
+			}
+			return append(dst, 0), true
+		case c&0xC0 == 0xC0:
+			if off+1 >= len(src) {
+				return dst, false
+			}
+			jumps++
+			if jumps > maxJumps {
+				return dst, false
+			}
+			off = int(src[off]&0x3F)<<8 | int(src[off+1])
+		case c&0xC0 != 0:
+			return dst, false
+		default:
+			if off+1+c > len(src) || written+1+c > 255 || len(dst)+1+c > cap(dst) {
+				return dst, false
+			}
+			dst = append(dst, src[off:off+1+c]...)
+			written += 1 + c
+			off += 1 + c
+		}
+	}
+}
+
+// SetRcode overwrites the header's 4-bit RCODE field.
+func SetRcode(body []byte, rcode int) {
+	if len(body) >= HeaderLen {
+		body[3] = body[3]&0xF0 | byte(rcode&0x0F) //nolint:gosec // masked to the 4-bit field
+	}
+}
+
+// SetRA sets the recursion-available bit.
+func SetRA(body []byte) {
+	if len(body) >= HeaderLen {
+		body[3] |= 0x80
+	}
+}
+
+// SetAD sets the authenticated-data bit.
+func SetAD(body []byte) {
+	if len(body) >= HeaderLen {
+		body[3] |= 0x20
+	}
+}
+
 // SetTTL stamps a TTL value at a previously recorded offset.
 func SetTTL(body []byte, ttlOff int, ttl uint32) {
 	if ttlOff >= 0 && ttlOff+4 <= len(body) {
@@ -243,6 +304,19 @@ func AppendOptionString(dst []byte, code uint16, data string) []byte {
 	dst = binary.BigEndian.AppendUint16(dst, code)
 	dst = binary.BigEndian.AppendUint16(dst, uint16(len(data))) //nolint:gosec // callers bound option data to the message size
 	return append(dst, data...)
+}
+
+// optCodeEDE is the RFC 8914 Extended DNS Error option code.
+const optCodeEDE = 15
+
+// AppendOptionEDE writes an RFC 8914 Extended DNS Error option — the
+// two-byte info code followed by the extra text — without materializing a
+// payload buffer or a library option object.
+func AppendOptionEDE(dst []byte, infoCode uint16, text string) []byte {
+	dst = binary.BigEndian.AppendUint16(dst, optCodeEDE)
+	dst = binary.BigEndian.AppendUint16(dst, uint16(2+len(text))) //nolint:gosec // callers bound option data to the message size
+	dst = binary.BigEndian.AppendUint16(dst, infoCode)
+	return append(dst, text...)
 }
 
 // FinishOPT records the RDLENGTH of the options written since

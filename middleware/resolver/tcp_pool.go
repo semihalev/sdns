@@ -146,11 +146,23 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 	if msg != nil && msg.IsEdns0() != nil {
 		for _, opt := range msg.IsEdns0().Option {
 			if ka, ok := opt.(*dns.EDNS0_TCP_KEEPALIVE); ok {
+				// A timeout of zero is the server saying "close now"
+				// (RFC 7828 §3.2.2): no further queries may go out on
+				// this connection, so pooling it would spend the next
+				// query on a socket the server is about to hang up —
+				// observed as exactly that, a send into the dead
+				// connection and a retry.
+				if ka.Timeout == 0 {
+					conn.Close() //nolint:gosec // G104 - server asked for the close
+					zlog.Debug("TCP connection not pooled, server sent keepalive timeout 0",
+						"server", server)
+					return
+				}
 				pooled.supportsKA = true
 				pooled.kaTimeout = ka.Timeout
 				// Use server's suggested timeout if reasonable
 				serverTimeout := time.Duration(ka.Timeout) * 100 * time.Millisecond
-				if serverTimeout > 0 && serverTimeout < pooled.idleTime {
+				if serverTimeout < pooled.idleTime {
 					pooled.idleTime = serverTimeout
 				}
 				break

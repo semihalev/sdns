@@ -54,7 +54,7 @@ func TestKubernetesDisabled(t *testing.T) {
 	mockNext := &mockHandler{}
 	ch := middleware.NewChain([]middleware.Handler{mockNext})
 	ch.Writer = w
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	// This should not panic and should pass through
 	k.ServeDNS(context.Background(), ch)
@@ -92,7 +92,7 @@ func TestKubernetesNilConfig(t *testing.T) {
 	mockNext := &mockHandler{}
 	ch := middleware.NewChain([]middleware.Handler{mockNext})
 	ch.Writer = w
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	k.ServeDNS(context.Background(), ch)
 

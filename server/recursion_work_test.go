@@ -23,7 +23,7 @@ func (p *recursionWorkProbe) ServeDNS(ctx context.Context, ch *middleware.Chain)
 	p.ledger = middleware.RecursionWorkFrom(ctx)
 
 	resp := new(dns.Msg)
-	resp.SetReply(ch.Request)
+	resp.SetReply(ch.Request.Msg())
 	_ = ch.Writer.WriteMsg(resp)
 	ch.Cancel()
 }
@@ -55,7 +55,7 @@ func TestServeDNSUsesPipelineRecursionWorkPolicy(t *testing.T) {
 	req.SetQuestion("entrypoint.example.", dns.TypeA)
 	req.RecursionDesired = true
 	writer := mock.NewWriter("udp", "192.0.2.1:53000")
-	s.ServeDNS(writer, req)
+	s.ServeMsg(context.Background(), writer, req)
 
 	if probe.err != nil {
 		t.Fatalf("probe debit failed: %v", probe.err)
@@ -101,7 +101,7 @@ func TestServeDNSNoRecursiveWorkSkipsLedgerAndFanoutObservation(t *testing.T) {
 	beforeCount, beforeSum := recursionFanoutHistogram(t)
 	req := new(dns.Msg)
 	req.SetQuestion("local-hit.example.", dns.TypeA)
-	s.ServeDNS(mock.NewWriter("udp", "192.0.2.1:53000"), req)
+	s.ServeMsg(context.Background(), mock.NewWriter("udp", "192.0.2.1:53000"), req)
 	afterCount, afterSum := recursionFanoutHistogram(t)
 
 	if ledger != nil {

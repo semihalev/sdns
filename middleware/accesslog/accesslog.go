@@ -46,13 +46,25 @@ func (a *Log) Name() string { return name }
 // sub-pipelines so access logs reflect real client queries only.
 func (a *Log) ClientOnly() bool { return true }
 
-// (*Log).ServeDNS implements the Handle interface.
+// (*Log).ServeDNS implements the Handle interface. With no log file the
+// handler is inert and a wire-born request passes undecoded; with one it
+// needs the decoded question for every line, which forces materialization
+// and — documented in the zero-path matrix — disables the zero guarantee
+// while enabled.
 func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	if a.logFile != nil {
+		var req *dns.Msg
+		ctx, req = ch.Materialize(ctx)
+		if req == nil {
+			return
+		}
+	}
+
 	ch.Next(ctx)
 
 	w := ch.Writer
 
-	if a.logFile != nil && w.Written() && !w.Internal() && len(ch.Request.Question) > 0 {
+	if a.logFile != nil && w.Written() && !w.Internal() && len(ch.Request.Msg().Question) > 0 {
 		// Read the log's facts from the request and the writer rather than
 		// from a parsed response: a response served as bytes would have to
 		// be decoded just to be logged, and a message decoded from bytes
@@ -60,14 +72,14 @@ func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// Compress. A reply's CD is the request's (RFC 1035 §4.1.1), and
 		// its question is the one asked.
 		cd := "-cd"
-		if ch.Request.CheckingDisabled {
+		if ch.Request.CD() {
 			cd = "+cd"
 		}
 
 		record := []string{
 			w.RemoteIP().String() + " -",
 			"[" + time.Now().Format("02/Jan/2006:15:04:05 -0700") + "]",
-			"\"" + dnsutil.FormatQuestion(ch.Request.Question[0]) + "\"",
+			"\"" + dnsutil.FormatQuestion(ch.Request.Msg().Question[0]) + "\"",
 			w.Proto(),
 			cd,
 			dns.RcodeToString[w.Rcode()],

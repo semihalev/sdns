@@ -23,7 +23,7 @@ func (d *dummy) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	w, req := ch.Writer, ch.Request
 
 	m := new(dns.Msg)
-	m.SetRcode(req, dns.RcodeServerFailure)
+	m.SetRcode(req.Msg(), dns.RcodeServerFailure)
 
 	_ = w.WriteMsg(m)
 }
@@ -66,7 +66,7 @@ func Test_Failover(t *testing.T) {
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
@@ -351,7 +351,7 @@ func TestFailoverIncomingRequestLocalProvenanceFollowsSelectedResponse(t *testin
 				ResponseWriter: writer,
 				f:              &Failover{servers: []string{addr}},
 				ctx:            ctx,
-				req:            req,
+				req:            middleware.NewRequest(req),
 			}
 			if err := responseWriter.WriteMsg(incoming); err != nil {
 				t.Fatalf("WriteMsg: %v", err)
@@ -461,7 +461,7 @@ func TestFailoverFailureProbeLimitIsTerminal(t *testing.T) {
 		ResponseWriter: writer,
 		f:              &Failover{servers: []string{addr}},
 		ctx:            ctx,
-		req:            req,
+		req:            middleware.NewRequest(req),
 	}
 	if err := responseWriter.WriteMsg(incoming); err != nil {
 		t.Fatalf("WriteMsg: %v", err)
@@ -518,7 +518,7 @@ func TestFailoverInFlightAttemptHonorsIngressDeadline(t *testing.T) {
 			goodAddr,
 		}},
 		ctx: ctx,
-		req: req,
+		req: middleware.NewRequest(req),
 	}
 
 	start := time.Now()

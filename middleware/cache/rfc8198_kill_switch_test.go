@@ -70,7 +70,7 @@ func TestP6RFC8198KillSwitchDisablesAdmissionAndSynthesis(t *testing.T) {
 	downstreamCalls := 0
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		downstreamCalls++
-		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 	got := aggressiveNegativeExchange(t, context.Background(), cache, downstream, req)

@@ -208,6 +208,68 @@ func (c *FailureCache) Lookup(key FailureQuestionKey) (FailureHit, bool) {
 	return hit, found
 }
 
+// LookupWire is Lookup for a wire-born question without an ECS scope: the
+// same exact-question probe and ancestor-zone walk, keyed through the
+// canonical wire hashes (bit-identical to the presentation ones) and
+// verified by fold comparison — no strings, no allocation. Scoped entries
+// never match: the wire path carries no client scope, and scope is part
+// of both the hash and the verification.
+func (c *FailureCache) LookupWire(name []byte, qtype, qclass uint16, cd bool) (FailureHit, bool) {
+	if c == nil || c.entries.Len() == 0 {
+		return FailureHit{}, false
+	}
+	now := c.now()
+
+	if hash, ok := internalcache.KeyWire(name, qtype, qclass, cd); ok {
+		if entry, ok := c.loadEntry(hash ^ failureQuestionHashSalt); ok &&
+			entry.kind == FailureKindQuestion &&
+			!entry.question.Scope.IsValid() &&
+			entry.question.Question.Qtype == qtype &&
+			entry.question.Question.Qclass == qclass &&
+			entry.question.CD == cd &&
+			internalcache.WireNameEqualsPresentation(name, entry.question.Question.Name) &&
+			now.Before(entry.retryAfter) {
+			return entry.hit(), true
+		}
+	}
+
+	var hit FailureHit
+	found := false
+	walkWireSuffixes(name, func(zone []byte) bool {
+		hash, ok := internalcache.KeyWire(zone, dns.TypeSOA, qclass, false)
+		if !ok {
+			return true
+		}
+		entry, ok := c.loadEntry(hash ^ failureZoneHashSalt)
+		if !ok || entry.kind != FailureKindZone ||
+			entry.zone.Qclass != qclass ||
+			!internalcache.WireNameEqualsPresentation(zone, entry.zone.Zone) ||
+			!now.Before(entry.retryAfter) {
+			return true
+		}
+		hit = entry.hit()
+		found = true
+		return false
+	})
+	return hit, found
+}
+
+// walkWireSuffixes calls visit for every suffix of the uncompressed wire
+// name, from the full name down to the root, mirroring walkFailureZones.
+func walkWireSuffixes(name []byte, visit func(zone []byte) bool) {
+	off := 0
+	for {
+		if off >= len(name) || !visit(name[off:]) {
+			return
+		}
+		c := int(name[off])
+		if c == 0 || c > 63 || off+1+c > len(name) {
+			return
+		}
+		off += 1 + c
+	}
+}
+
 // RetryKey returns a stable singleflight key for a matching expired failure
 // generation. An active exact or ancestor-zone state returns false because it
 // should be consumed through Lookup instead. Closest-zone history takes
@@ -478,20 +540,13 @@ func (c *FailureCache) loadEntry(hash uint64) (*failureEntry, bool) {
 
 func normalizeFailureQuestionKey(key FailureQuestionKey) FailureQuestionKey {
 	key.Question.Name = dns.CanonicalName(key.Question.Name)
-	key.Scope = normalizeFailureScope(key.Scope)
+	key.Scope = normalizeKeyScope(key.Scope)
 	return key
 }
 
 func normalizeFailureZoneKey(key FailureZoneKey) FailureZoneKey {
 	key.Zone = dns.CanonicalName(key.Zone)
 	return key
-}
-
-func normalizeFailureScope(scope netip.Prefix) netip.Prefix {
-	if !scope.IsValid() || scope.Bits() == 0 {
-		return netip.Prefix{}
-	}
-	return scope.Masked()
 }
 
 func failureQuestionHash(key FailureQuestionKey) uint64 {

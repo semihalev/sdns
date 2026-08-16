@@ -485,7 +485,7 @@ func TestP6NSEC3BudgetMissFallsThroughWithoutClientError(t *testing.T) {
 	downstreamCalls := 0
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		downstreamCalls++
-		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 
@@ -524,16 +524,16 @@ func TestP6NSEC3CDAndECSBypassBeforeHashing(t *testing.T) {
 	downstreamCalls := 0
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		downstreamCalls++
-		if ch.Request.Question[0].Qtype == dns.TypeTXT &&
+		if ch.Request.Msg().Question[0].Qtype == dns.TypeTXT &&
 			!middleware.HasClientECS(ctx) {
 			t.Error("cache-only raw ECS request lost the central tree marker")
 		}
-		if ch.Request.Question[0].Qtype == dns.TypeAAAA {
-			_ = ch.Writer.WriteMsg(aggressiveNegativeNSEC3Response(t, ctx, ch.Request))
+		if ch.Request.Msg().Question[0].Qtype == dns.TypeAAAA {
+			_ = ch.Writer.WriteMsg(aggressiveNegativeNSEC3Response(t, ctx, ch.Request.Msg()))
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 
@@ -577,7 +577,7 @@ func TestP6NSEC3ForwarderADCannotPublishSharedProof(t *testing.T) {
 	downstreamCalls := 0
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		downstreamCalls++
-		if ch.Request.Question[0].Qtype == dns.TypeAAAA {
+		if ch.Request.Msg().Question[0].Qtype == dns.TypeAAAA {
 			fixture := newDenialProofNSEC3Fixture(
 				t,
 				time.Now().UTC(),
@@ -592,7 +592,7 @@ func TestP6NSEC3ForwarderADCannotPublishSharedProof(t *testing.T) {
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 
@@ -620,7 +620,7 @@ func TestP6NSEC3RawECSSeedCannotPublishSharedProof(t *testing.T) {
 	downstreamCalls := 0
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		downstreamCalls++
-		if ch.Request.Question[0].Qtype == dns.TypeAAAA {
+		if ch.Request.Msg().Question[0].Qtype == dns.TypeAAAA {
 			fixture := newDenialProofNSEC3Fixture(
 				t,
 				time.Now().UTC(),
@@ -642,7 +642,7 @@ func TestP6NSEC3RawECSSeedCannotPublishSharedProof(t *testing.T) {
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 

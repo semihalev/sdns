@@ -5,25 +5,35 @@ import (
 	"net"
 
 	"github.com/miekg/dns"
-	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/internal/wire"
-	"github.com/semihalev/sdns/server/doq"
 )
 
-// ResponseWriter implement of dns.ResponseWriter.
+// Transport is the transport-side writer contract: the surface a DNS
+// transport — the SDNS-owned UDP/TCP/DoT jobs, the DoH and DoQ writers,
+// mocks and buffer sinks — offers the chain. It is SDNS's own contract;
+// the server does not serve through the miekg handler machinery.
+type Transport interface {
+	LocalAddr() net.Addr
+	RemoteAddr() net.Addr
+	WriteMsg(*dns.Msg) error
+	Write([]byte) (int, error)
+	Close() error
+}
+
+// ResponseWriter is the chain-side writer: the pooled wrapper every
+// middleware sees, layered over a Transport.
 type ResponseWriter interface {
-	dns.ResponseWriter
+	Transport
 	Msg() *dns.Msg
 	Rcode() int
 	Written() bool
-	Reset(dns.ResponseWriter)
 	Proto() string
 	RemoteIP() net.IP
 	Internal() bool
 }
 
 type responseWriter struct {
-	dns.ResponseWriter
+	Transport
 	msg      *dns.Msg
 	wire     []byte
 	size     int
@@ -54,8 +64,8 @@ var errAlreadyWritten = errors.New("msg already written")
 // net.IP.String and allocates ~32 bytes per query.
 var internalIP = net.IPv4(127, 0, 0, 255)
 
-func (w *responseWriter) Reset(rw dns.ResponseWriter) {
-	w.ResponseWriter = rw
+func (w *responseWriter) Reset(rw Transport) {
+	w.Transport = rw
 	w.size = -1
 	w.msg = nil
 	w.wire = nil
@@ -76,11 +86,12 @@ func (w *responseWriter) Reset(rw dns.ResponseWriter) {
 		w.internal = a.Port == 0 && a.IP.Equal(internalIP)
 	}
 
-	switch writer := rw.(type) {
-	case *mock.Writer:
-		w.proto = writer.Proto()
-	case *doq.ResponseWriter:
-		w.proto = "doq"
+	// A transport that knows its own protocol name (DoH/DoQ writers, mocks)
+	// overrides the address-derived guess.
+	if p, ok := rw.(interface{ Proto() string }); ok {
+		if proto := p.Proto(); proto != "" {
+			w.proto = proto
+		}
 	}
 
 	// Propagate an Internal() signal from any writer that exposes it.
@@ -124,7 +135,7 @@ func (w *responseWriter) Write(m []byte) (int, error) {
 	}
 	w.rcode = w.msg.Rcode
 
-	n, err := w.ResponseWriter.Write(m)
+	n, err := w.Transport.Write(m)
 	// Record the DNS payload's own length, not the transport's return
 	// value: stream transports prepend a two-byte length prefix and count
 	// it, which would overstate every TCP and DoQ response. Measuring the
@@ -157,7 +168,7 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 			w.msg = m
 			w.rcode = m.Rcode
 			w.size = len(body)
-			_, werr := w.ResponseWriter.Write(body)
+			_, werr := w.Transport.Write(body)
 			return werr
 		})
 		if handled {
@@ -169,8 +180,16 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	w.rcode = m.Rcode
 	w.size = 0
 
-	return w.ResponseWriter.WriteMsg(m)
+	return w.Transport.WriteMsg(m)
 }
 
 // (*responseWriter).Internal internal func.
 func (w *responseWriter) Internal() bool { return w.internal }
+
+// release drops this writer's references to the request's response.
+// Called from Chain.Finish, once the reply has left and every observer
+// has run: what is held after that is held for nobody.
+func (w *responseWriter) release() {
+	w.msg = nil
+	w.wire = nil
+}

@@ -46,7 +46,7 @@ type ResponseWriter struct {
 
 	f   *Failover
 	ctx context.Context //nolint:containedctx // response writer is request-scoped and used synchronously
-	req *dns.Msg
+	req *middleware.Request
 }
 
 // New return failover.
@@ -201,7 +201,13 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 }
 
 func (w *ResponseWriter) writeRecursionWorkFailure(fallback *dns.Msg, workErr error) error {
-	req := w.req
+	// The decoded request, when one exists: a wire-born request that never
+	// materialized cannot have produced recursion work, so the fallback
+	// (the failing response itself) supplies the reply shape.
+	var req *dns.Msg
+	if w.req != nil {
+		req = w.req.Msg()
+	}
 	if req == nil {
 		req = fallback
 	}

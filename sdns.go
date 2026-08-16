@@ -15,12 +15,13 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/defaults"
 	"github.com/semihalev/sdns/server"
 	"github.com/semihalev/zlog/v2"
 	"github.com/spf13/cobra"
 )
 
-const version = "1.7.4"
+const version = "1.8.0-rc2"
 
 var (
 	cfgPath    string
@@ -84,6 +85,7 @@ func setup() error {
 	// Set as default logger for global log calls
 	zlog.SetDefault(logger)
 
+	defaults.Register()
 	middleware.Setup(cfg)
 
 	return nil

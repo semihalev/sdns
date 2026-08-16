@@ -61,15 +61,20 @@ func (c *Chaos) Name() string { return name }
 
 // (*Chaos).ServeDNS serveDNS handles CHAOS class queries with extended information.
 func (c *Chaos) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if !c.enabled {
+	// The class check reads a parsed scalar, so a wire-born request passes
+	// through without decoding; only a CHAOS query materializes.
+	if !c.enabled || ch.Request.Qclass() != dns.ClassCHAOS {
 		ch.Next(ctx)
 		return
 	}
 
-	w, req := ch.Writer, ch.Request
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
-	// We only handle CHAOS TXT queries
-	if len(req.Question) == 0 || req.Question[0].Qclass != dns.ClassCHAOS {
+	if len(req.Question) == 0 {
 		ch.Next(ctx)
 		return
 	}

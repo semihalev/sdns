@@ -152,7 +152,11 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	w, req := ch.Writer, ch.Request
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	w := ch.Writer
 
 	q := req.Question[0]
 

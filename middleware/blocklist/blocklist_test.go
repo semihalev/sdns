@@ -44,7 +44,7 @@ func Test_BlockList(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
@@ -53,13 +53,13 @@ func Test_BlockList(t *testing.T) {
 	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
 
 	req.SetQuestion("test.com.", dns.TypeAAAA)
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	blocklist.ServeDNS(context.Background(), ch)
 	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
 
 	req.SetQuestion("test.com.", dns.TypeNS)
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	blocklist.ServeDNS(context.Background(), ch)
 	assert.Equal(t, true, len(mw.Msg().Ns) > 0)
@@ -136,7 +136,7 @@ func Test_BlockList_Wildcard(t *testing.T) {
 	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
 	req.SetQuestion("test.blocked.com.", dns.TypeA)
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
@@ -203,7 +203,7 @@ func Test_BlockList_FastPath(t *testing.T) {
 	ch := middleware.NewChain([]middleware.Handler{})
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
-	ch.Request = req
+	ch.Request = middleware.NewRequest(req)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw

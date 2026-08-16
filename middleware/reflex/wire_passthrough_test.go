@@ -41,7 +41,7 @@ func reflexWrapped(next middleware.ResponseWriter) (*responseWriter, *IPTracker)
 	tracker.RecordQuery("203.0.113.9", dns.TypeANY, getAmpFactor(dns.TypeANY), req.Len())
 	return &responseWriter{
 		ResponseWriter: next,
-		request:        req,
+		reqLen:         req.Len(),
 		tracker:        tracker,
 		ip:             "203.0.113.9",
 	}, tracker

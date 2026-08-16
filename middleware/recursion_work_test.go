@@ -1235,7 +1235,7 @@ func TestLazyOuterChainOwnsQueryerLedgerUntilReturn(t *testing.T) {
 	policy := defaultRecursionWorkPolicyForTest(RecursionWorkShadow)
 	subHandler := HandlerFunc(func(_ context.Context, ch *Chain) {
 		reply := new(dns.Msg)
-		reply.SetReply(ch.Request)
+		reply.SetReply(ch.Request.Msg())
 		_ = ch.Writer.WriteMsg(reply)
 		ch.Cancel()
 	})
@@ -1350,7 +1350,7 @@ func TestPipelineQueryerDebitsInternalWorkAndRejectsAtCap(t *testing.T) {
 	handler := HandlerFunc(func(_ context.Context, ch *Chain) {
 		calls++
 		reply := new(dns.Msg)
-		reply.SetReply(ch.Request)
+		reply.SetReply(ch.Request.Msg())
 		_ = ch.Writer.WriteMsg(reply)
 	})
 	pipe := newPipeline(
@@ -1414,7 +1414,7 @@ func TestPipelineQueryerPropagatesEnforcementAfterSubPipeline(t *testing.T) {
 		calls++
 		_ = DebitRecursionWork(ctx, RecursionWorkOutboundQuery)
 		reply := new(dns.Msg)
-		reply.SetReply(ch.Request)
+		reply.SetReply(ch.Request.Msg())
 		_ = ch.Writer.WriteMsg(reply)
 	})
 	pipe := newPipeline(

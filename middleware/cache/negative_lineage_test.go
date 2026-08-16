@@ -72,7 +72,7 @@ func assertChainInheritsTargetLifetime(
 	// end of its negative TTL would hand out.
 	targetHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Rcode = dns.RcodeNameError
 		resp.Ns = []dns.RR{&dns.SOA{
 			Hdr: dns.RR_Header{
@@ -112,7 +112,7 @@ func assertChainInheritsTargetLifetime(
 	c.SetQueryer(newQueryer([]middleware.Handler{c, targetHandler}))
 	outerHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.CNAME{
 			Hdr: dns.RR_Header{
 				Name: alias, Rrtype: dns.TypeCNAME,
@@ -216,7 +216,7 @@ func TestStoreGetWithContextBindsEntryLifetime(t *testing.T) {
 	const name = "ds.lineage."
 	handler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.A{
 			Hdr: dns.RR_Header{
 				Name: name, Rrtype: dns.TypeA,
@@ -317,7 +317,7 @@ func TestChildEntryKeepsItsOwnLifetime(t *testing.T) {
 	// The target is resolved fresh, with a long lifetime of its own.
 	targetHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.A{
 			Hdr: dns.RR_Header{
 				Name: target, Rrtype: dns.TypeA,
@@ -332,7 +332,7 @@ func TestChildEntryKeepsItsOwnLifetime(t *testing.T) {
 	// The alias is cached and nearly expired when the client asks for it.
 	aliasHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.CNAME{
 			Hdr: dns.RR_Header{
 				Name: alias, Rrtype: dns.TypeCNAME,
@@ -410,7 +410,7 @@ func TestUnusedSubQueryLineageIsNotInherited(t *testing.T) {
 
 	aliasHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.CNAME{
 			Hdr: dns.RR_Header{
 				Name: alias, Rrtype: dns.TypeCNAME,

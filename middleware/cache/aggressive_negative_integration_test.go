@@ -219,7 +219,7 @@ func TestAggressiveNegativeIntegrationRequiresExplicitProvenance(t *testing.T) {
 	calls := 0
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		calls++
-		if ch.Request.Question[0].Qtype == dns.TypeAAAA {
+		if ch.Request.Msg().Question[0].Qtype == dns.TypeAAAA {
 			// AD=1 and proof-shaped authority data are intentionally
 			// insufficient. Only the resolver-local pointer-identity mark may
 			// publish material into the shared RFC 8198 index.
@@ -237,7 +237,7 @@ func TestAggressiveNegativeIntegrationRequiresExplicitProvenance(t *testing.T) {
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 
@@ -273,7 +273,7 @@ func TestAggressiveNegativeIntegrationNODATAAndNXDOMAIN(t *testing.T) {
 			_ = ch.Writer.WriteMsg(aggressiveNegativeNSECResponse(
 				t,
 				ctx,
-				ch.Request,
+				ch.Request.Msg(),
 				dns.RcodeSuccess,
 				[2]string{aggressiveNegativeOwner, "z." + aggressiveNegativeZone},
 			))
@@ -305,7 +305,7 @@ func TestAggressiveNegativeIntegrationNODATAAndNXDOMAIN(t *testing.T) {
 			_ = ch.Writer.WriteMsg(aggressiveNegativeNSECResponse(
 				t,
 				ctx,
-				ch.Request,
+				ch.Request.Msg(),
 				dns.RcodeNameError,
 				[2]string{"a." + aggressiveNegativeZone, "z." + aggressiveNegativeZone},
 				[2]string{aggressiveNegativeZone, "a." + aggressiveNegativeZone},
@@ -338,18 +338,18 @@ func TestAggressiveNegativeIntegrationCDAndRawECSBypass(t *testing.T) {
 		calls := 0
 		downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			calls++
-			if ch.Request.Question[0].Qtype == dns.TypeAAAA {
+			if ch.Request.Msg().Question[0].Qtype == dns.TypeAAAA {
 				_ = ch.Writer.WriteMsg(aggressiveNegativeNSECResponse(
 					t,
 					ctx,
-					ch.Request,
+					ch.Request.Msg(),
 					dns.RcodeSuccess,
 					[2]string{aggressiveNegativeOwner, "z." + aggressiveNegativeZone},
 				))
 				ch.Cancel()
 				return
 			}
-			_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 			ch.Cancel()
 		})
 
@@ -418,11 +418,11 @@ func TestAggressiveNegativeIntegrationCDAndRawECSBypass(t *testing.T) {
 			calls := 0
 			downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 				calls++
-				if ch.Request.Question[0].Qtype == dns.TypeAAAA {
+				if ch.Request.Msg().Question[0].Qtype == dns.TypeAAAA {
 					resp := aggressiveNegativeNSECResponse(
 						t,
 						ctx,
-						ch.Request,
+						ch.Request.Msg(),
 						dns.RcodeSuccess,
 						[2]string{aggressiveNegativeOwner, "z." + aggressiveNegativeZone},
 					)
@@ -434,7 +434,7 @@ func TestAggressiveNegativeIntegrationCDAndRawECSBypass(t *testing.T) {
 					ch.Cancel()
 					return
 				}
-				_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+				_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 				ch.Cancel()
 			})
 
@@ -466,12 +466,12 @@ func TestAggressiveNegativeIntegrationNSEC3LimiterSaturationFailsOpen(t *testing
 	calls := 0
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		calls++
-		if ch.Request.Question[0].Qtype == dns.TypeAAAA {
-			_ = ch.Writer.WriteMsg(aggressiveNegativeNSEC3Response(t, ctx, ch.Request))
+		if ch.Request.Msg().Question[0].Qtype == dns.TypeAAAA {
+			_ = ch.Writer.WriteMsg(aggressiveNegativeNSEC3Response(t, ctx, ch.Request.Msg()))
 			ch.Cancel()
 			return
 		}
-		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+		_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		ch.Cancel()
 	})
 
@@ -518,7 +518,7 @@ func TestAggressiveNegativeIntegrationDO0StripsDNSSECAndMarksMetadata(t *testing
 		_ = ch.Writer.WriteMsg(aggressiveNegativeNSECResponse(
 			t,
 			ctx,
-			ch.Request,
+			ch.Request.Msg(),
 			dns.RcodeSuccess,
 			[2]string{aggressiveNegativeOwner, "z." + aggressiveNegativeZone},
 		))
@@ -584,21 +584,21 @@ func TestAggressiveNegativeIntegrationOuterECSBypassesAliasTargetProof(t *testin
 	)
 	var seedCalls, aliasCalls, targetCalls int
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-		q := ch.Request.Question[0]
+		q := ch.Request.Msg().Question[0]
 		switch {
 		case q.Name == target && q.Qtype == dns.TypeAAAA:
 			seedCalls++
 			_ = ch.Writer.WriteMsg(aggressiveNegativeNSECResponse(
 				t,
 				ctx,
-				ch.Request,
+				ch.Request.Msg(),
 				dns.RcodeSuccess,
 				[2]string{target, "z." + aggressiveNegativeZone},
 			))
 		case q.Name == alias:
 			aliasCalls++
 			resp := new(dns.Msg)
-			resp.SetReply(ch.Request)
+			resp.SetReply(ch.Request.Msg())
 			resp.RecursionAvailable = true
 			resp.Answer = []dns.RR{&dns.CNAME{
 				Hdr: dns.RR_Header{
@@ -609,7 +609,7 @@ func TestAggressiveNegativeIntegrationOuterECSBypassesAliasTargetProof(t *testin
 			_ = ch.Writer.WriteMsg(resp)
 		case q.Name == target:
 			targetCalls++
-			_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		default:
 			t.Fatalf("unexpected downstream question: %v", q)
 		}
@@ -656,21 +656,21 @@ func TestAggressiveNegativeIntegrationOuterCDBypassesAliasTargetProof(t *testing
 	)
 	var seedCalls, aliasCalls, targetCalls int
 	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-		q := ch.Request.Question[0]
+		q := ch.Request.Msg().Question[0]
 		switch {
 		case q.Name == target && q.Qtype == dns.TypeAAAA:
 			seedCalls++
 			_ = ch.Writer.WriteMsg(aggressiveNegativeNSECResponse(
 				t,
 				ctx,
-				ch.Request,
+				ch.Request.Msg(),
 				dns.RcodeSuccess,
 				[2]string{target, "z." + aggressiveNegativeZone},
 			))
 		case q.Name == alias:
 			aliasCalls++
 			resp := new(dns.Msg)
-			resp.SetReply(ch.Request)
+			resp.SetReply(ch.Request.Msg())
 			// Simulate a non-conforming upstream or intervening response
 			// writer clearing CD. The incoming client bit remains pinned in
 			// the request-tree context and must govern the target lookup.
@@ -685,7 +685,7 @@ func TestAggressiveNegativeIntegrationOuterCDBypassesAliasTargetProof(t *testing
 			_ = ch.Writer.WriteMsg(resp)
 		case q.Name == target:
 			targetCalls++
-			_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+			_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 		default:
 			t.Fatalf("unexpected downstream question: %v", q)
 		}

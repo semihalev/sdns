@@ -34,9 +34,11 @@ func TestMain(m *testing.M) {
 	logger.SetWriter(zlog.StdoutTerminal())
 	logger.SetLevel(zlog.LevelDebug)
 	zlog.SetDefault(logger)
-	m.Run()
 
-	os.Exit(0)
+	// The run's verdict is the process's. Discarding it made this
+	// package's tests advisory: a failing test still exited 0, so both
+	// local runs and CI reported success over real failures.
+	os.Exit(m.Run())
 }
 
 func publicKey(priv any) any {
@@ -169,13 +171,21 @@ func Test_Server(t *testing.T) {
 	blocklist.Set("test.com.")
 
 	s := New(cfg)
-	_ = s.Run(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = s.Run(ctx)
+	t.Cleanup(func() {
+		cancel()
+		deadline := time.Now().Add(5 * time.Second)
+		for !s.Stopped() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
 
 	req := new(dns.Msg)
 	req.SetQuestion("test.com.", dns.TypeA)
 
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
-	s.ServeDNS(mw, req)
+	s.ServeMsg(context.Background(), mw, req)
 
 	assert.True(t, mw.Written())
 	if assert.NotNil(t, mw.Msg()) {
@@ -227,7 +237,7 @@ func Test_ServerEmptyQuestion(t *testing.T) {
 	req.Id = dns.Id()
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 
-	assert.NotPanics(t, func() { s.ServeDNS(mw, req) })
+	assert.NotPanics(t, func() { s.ServeMsg(context.Background(), mw, req) })
 	assert.True(t, mw.Written())
 	if assert.NotNil(t, mw.Msg()) {
 		assert.Equal(t, dns.RcodeFormatError, mw.Msg().Rcode)

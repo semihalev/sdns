@@ -102,13 +102,13 @@ func TestClientECSMarkerSurvivesEDNSStripAndBypassesSharedDenial(t *testing.T) {
 			var downstreamCalls atomic.Int32
 			downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 				downstreamCalls.Add(1)
-				if hasEDNSClientSubnet(ch.Request) {
+				if hasEDNSClientSubnet(ch.Request.Msg()) {
 					t.Error("EDNS forwarding policy did not strip client ECS")
 				}
 				if !middleware.HasClientECS(ctx) {
 					t.Error("raw client ECS marker did not reach cache downstream")
 				}
-				_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request))
+				_ = ch.Writer.WriteMsg(aggressiveNegativePositiveResponse(ch.Request.Msg()))
 				ch.Cancel()
 			})
 
@@ -145,14 +145,14 @@ func TestClientECSMarkerSurvivesEDNSStripAndBlocksSharedDenialAdmission(t *testi
 			defer cache.Stop()
 
 			downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-				if hasEDNSClientSubnet(ch.Request) {
+				if hasEDNSClientSubnet(ch.Request.Msg()) {
 					t.Error("EDNS forwarding policy did not strip client ECS")
 				}
 				if !middleware.HasClientECS(ctx) {
 					t.Error("raw client ECS marker did not reach cache downstream")
 				}
 
-				resp := nxCutValidatedResponse(ch.Request, nxCutDeniedName, nxCutZone)
+				resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
 				nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
 				_ = ch.Writer.WriteMsg(resp)
 				ch.Cancel()

@@ -81,13 +81,16 @@ func TestLoad(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "non-existent config file",
+			// A missing config is generated wherever the -c flag points;
+			// what still fails is a path whose directory cannot be
+			// written, and it fails at generation, not at load.
+			name: "config path in a directory that does not exist",
 			setupFunc: func() (string, func()) {
 				return "/non/existent/path/config.toml", func() {}
 			},
 			version:     "1.4.0",
 			wantErr:     true,
-			errContains: "could not load config",
+			errContains: "could not generate config",
 		},
 		{
 			name: "invalid toml config",
@@ -157,21 +160,45 @@ func TestLoad(t *testing.T) {
 			errContains: "error creating working directory",
 		},
 		{
-			name: "default sdns.conf with existing sdns.toml",
+			// The sdns.toml fallback is gone with the releases that used
+			// it: a leftover sdns.toml in the working directory must not
+			// hijack the load — least of all for an explicit path.
+			name: "leftover sdns.toml is ignored, the asked-for file is generated",
 			setupFunc: func() (string, func()) {
 				tmpDir := t.TempDir()
 				oldPwd, _ := os.Getwd()
 				os.Chdir(tmpDir) //nolint:gosec // G104 - test chdir
 
-				// Create sdns.toml
-				tomlConfig := fmt.Sprintf(defaultConfig, configver)
-				if err := os.WriteFile("sdns.toml", []byte(tomlConfig), 0644); err != nil { //nolint:gosec // G306 - test file
+				if err := os.WriteFile("sdns.toml", []byte("version = \"0.0.1\"\ndirectory = \"db\"\n"), 0644); err != nil { //nolint:gosec // G306 - test file
 					t.Fatal(err)
 				}
 
 				return "sdns.conf", func() {
 					os.Chdir(oldPwd)     //nolint:gosec // G104 - test cleanup
 					os.RemoveAll(tmpDir) //nolint:gosec // G104 - test cleanup
+				}
+			},
+			version: "1.4.0",
+			wantErr: false,
+		},
+		{
+			// The removed fallback loaded the literal cwd sdns.toml
+			// whenever the basename was sdns.conf — explicit -c paths
+			// included. The upgrade warning probes that historical
+			// location too; either way the asked-for file is generated.
+			name: "explicit path with a leftover cwd sdns.toml still generates",
+			setupFunc: func() (string, func()) {
+				tmpDir := t.TempDir()
+				confDir := t.TempDir()
+				oldPwd, _ := os.Getwd()
+				os.Chdir(tmpDir) //nolint:gosec // G104 - test chdir
+
+				if err := os.WriteFile("sdns.toml", []byte("version = \"0.0.1\"\ndirectory = \"db\"\n"), 0644); err != nil { //nolint:gosec // G306 - test file
+					t.Fatal(err)
+				}
+
+				return filepath.Join(confDir, "sdns.conf"), func() {
+					os.Chdir(oldPwd) //nolint:gosec // G104 - test cleanup
 				}
 			},
 			version: "1.4.0",
@@ -1072,5 +1099,30 @@ func TestCookieSecretGenerated(t *testing.T) {
 	}
 	if _, err := hex.DecodeString(cfg.CookieSecret); err != nil {
 		t.Fatalf("CookieSecret is not valid hex: %v", err)
+	}
+}
+
+// The -c flag promises "if it doesn't exist, a new one will be
+// generated" — for whatever the file is called. The generation used to
+// be gated on the default name, so every custom path was a load error
+// instead of a fresh config.
+func TestLoadGeneratesAConfigAtACustomPath(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	cfg, err := Load("my-resolver.conf", "test")
+	if err != nil {
+		t.Fatalf("load with a custom missing path: %v", err)
+	}
+	if cfg.Version != configver {
+		t.Fatalf("generated config carries version %q, want %q", cfg.Version, configver)
+	}
+	if _, err := os.Stat("my-resolver.conf"); err != nil {
+		t.Fatalf("the config file was not written: %v", err)
+	}
+
+	// And loading it again reads the generated file rather than
+	// regenerating.
+	if _, err := Load("my-resolver.conf", "test"); err != nil {
+		t.Fatalf("reload: %v", err)
 	}
 }

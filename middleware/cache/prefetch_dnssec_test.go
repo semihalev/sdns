@@ -27,7 +27,7 @@ func (q *ednsPrefetchQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg
 	// authenticated answer (A + its covering RRSIG, AD=1).
 	terminal := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.AuthenticatedData = true
 		resp.Answer = []dns.RR{
 			&dns.A{

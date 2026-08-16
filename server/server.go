@@ -31,8 +31,35 @@ type Server struct {
 	listenersMu sync.Mutex
 	listeners   []Listener
 	active      []Listener
+	// shutdownDone closes when the shutdown supervisor has finished with
+	// every listener. Serve goroutines exiting is not the same event: a
+	// QUIC listener's accept loop returns the moment its server stops
+	// accepting, while the socket it was handed is closed a few
+	// statements later, by the supervisor.
+	shutdownDone chan struct{}
+	// trimDone closes when the opt-in trimmer goroutine has exited; nil
+	// when it was never started. Stopped waits on it — a trim is a
+	// process-wide collection, and "stopped" must not be true while one
+	// may still be running.
+	trimDone chan struct{}
+
+	// served counts queries entering either serve entry point, whatever
+	// transport carried them — the owned engines through ServeRaw, DoH,
+	// DoH3 and DoQ through ServeMsg. The trimmer reads it to prove a
+	// window carried no traffic at all: the engines' own counters see
+	// only their transports, and a trim under active DoH traffic is a
+	// collection the client pays for. Counted only when the trimmer —
+	// its one reader — exists, so the default configuration pays not
+	// even the atomic.
+	served      atomic.Uint64
+	trimEnabled bool
 
 	running atomic.Int32
+
+	// certStopped marks the certificate provider closed: Stop has run,
+	// and no caller may lazily create a new manager (and its watcher).
+	// Guarded by certMu.
+	certStopped bool
 }
 
 // New return new server.
@@ -41,20 +68,30 @@ func New(cfg *config.Config) *Server {
 		cfg.Bind = ":53"
 	}
 
-	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline()}
+	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline(), trimEnabled: cfg.MemoryTrim}
+
+	// One resource plan for every listener, derived before any exists:
+	// the stream engines share a budget, so the plan has to know how
+	// many there are. The plan is a value on this Server — a second
+	// Server in the same process lives inside its own arithmetic.
+	engines := 1
+	if cfg.BindTLS != "" {
+		engines = 2
+	}
+	plan := defaultResourcePlan(engines)
+	plan.publish()
 
 	timeout := cfg.QueryTimeout.Duration
-	// The classic transports get the direct handler: their miekg writers
-	// send raw bytes unchanged, so responses may be packed in pooled
-	// storage. DoH and DoQ keep the public entry — one reshapes bytes and
-	// the other rewrites the reply ID, so neither is a raw sink.
-	direct := directHandler{srv: s}
+	// The owned transports feed ServeRaw: raw bytes in, and the server —
+	// not the transport — decides eligibility, decode, and context. DoH
+	// and DoQ enter through ServeMsg with a decoded message — one reshapes
+	// bytes and the other rewrites the reply ID, so neither is a raw sink.
 	s.listeners = []Listener{
-		newUDPListener(cfg.Bind, direct, timeout),
-		newTCPListener(cfg.Bind, direct, timeout),
+		newUDPListener(cfg.Bind, s, timeout, cfg.IngressWorkers, cfg.IngressQueue, plan),
+		newTCPListener(cfg.Bind, s, timeout, cfg.IngressTCPConns, plan),
 	}
 	if cfg.BindTLS != "" {
-		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, direct, s, timeout))
+		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, s, s, timeout, cfg.IngressTCPConns, plan))
 	}
 	if cfg.BindDOH != "" {
 		s.listeners = append(s.listeners,
@@ -69,37 +106,57 @@ func New(cfg *config.Config) *Server {
 	return s
 }
 
-// (*Server).ServeDNS serveDNS implements the Handle interface.
+// ServeMsg serves one decoded DNS request under the transport's lifetime
+// and the configured end-to-end middleware/resolution timeout. It is the
+// entry for transports that already hold a message — DNS-over-HTTP and
+// DNS-over-QUIC supply client-aware parents — and for embedders. Its
+// writers made no byte-sink promise, so they never receive raw packed
+// bytes; the owned raw transports enter through ServeRaw instead, which is
+// the one road to the direct-pack capability.
+func (s *Server) ServeMsg(parent context.Context, w middleware.Transport, r *dns.Msg) {
+	s.serveMsg(parent, w, r, false)
+}
+
+// ServeDNS keeps *Server a dns.Handler for embedders: the rewrite moved
+// the owned transports off this entry, but code that mounts a Server
+// under the library's mux did not change. A dns.ResponseWriter is a
+// Transport already; nothing here is on the serving path.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	s.ServeDNSContext(context.Background(), w, r)
+	s.ServeMsg(context.Background(), w, r)
 }
 
-// directHandler is the dns.Handler the SDNS-owned UDP, TCP and DoT listeners
-// are constructed with. It is the one road to the direct-pack capability:
-// embedded or plugin callers reach the server through the public ServeDNS and
-// ServeDNSContext, whose writers made no byte-sink promise and therefore
-// never receive raw packed bytes — however much their addresses or proto
-// strings resemble a datagram transport.
-type directHandler struct{ srv *Server }
-
-func (h directHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	h.srv.serveDNSContext(context.Background(), w, r, true)
-}
-
-// ServeDNSContext serves one decoded DNS request under the transport's
-// lifetime and the configured end-to-end middleware/resolution timeout.
-// DNS-over-HTTP and DNS-over-QUIC supply client-aware parents; classic
-// dns.Handler transports start from a background parent but still receive the
-// same pipeline-ingress deadline.
+// ServeDNSContext is ServeDNS with a caller-owned parent context, kept
+// for the same embedders.
 func (s *Server) ServeDNSContext(parent context.Context, w dns.ResponseWriter, r *dns.Msg) {
-	s.serveDNSContext(parent, w, r, false)
-}
-
-func (s *Server) serveDNSContext(parent context.Context, w dns.ResponseWriter, r *dns.Msg, directPack bool) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx := contextutil.WithLazyTimeout(parent, s.queryTimeout())
+	s.ServeMsg(parent, w, r)
+}
+
+func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns.Msg, directPack bool) {
+	if s.trimEnabled {
+		s.served.Add(1)
+	}
+	s.serveMsgBy(parent, w, r, directPack, time.Now().Add(s.queryTimeout()))
+}
+
+// serveMsgBy is serveMsg with the deadline stated rather than started
+// here. The raw ingress passes one anchored at the packet's arrival, so
+// a query that has already spent part of its budget waiting for a slab
+// does not get a fresh full budget the moment it leaves the byte path —
+// under saturation that is exactly the query that would hold a worker
+// and an upstream lookup longest, and precisely when neither can spare
+// it. Callers with no arrival time (the decoded-message API) start the
+// clock at the call.
+func (s *Server) serveMsgBy(
+	parent context.Context, w middleware.Transport, r *dns.Msg,
+	directPack bool, deadline time.Time,
+) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx := contextutil.WithLazyDeadline(parent, deadline)
 	defer ctx.Cancel()
 	if contextutil.EffectiveError(ctx) != nil {
 		return
@@ -148,7 +205,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handle := func(req *dns.Msg) *dns.Msg {
 		mw := mock.NewWriter("doh", r.RemoteAddr)
-		s.ServeDNSContext(r.Context(), mw, req)
+		s.ServeMsg(r.Context(), mw, req)
 		if !mw.Written() {
 			return nil
 		}
@@ -185,8 +242,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
+	done := make(chan struct{})
 	s.listenersMu.Lock()
 	s.active = active
+	s.shutdownDone = done
 	s.listenersMu.Unlock()
 
 	for _, l := range active {
@@ -202,21 +261,51 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Supervisor: on ctx cancellation, shut every active listener down.
-	go s.superviseShutdown(ctx, active) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
+	go s.superviseShutdown(ctx, active, done) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
+	if s.cfg.MemoryTrim {
+		trimDone := make(chan struct{})
+		s.listenersMu.Lock()
+		s.trimDone = trimDone
+		s.listenersMu.Unlock()
+		go func() { //nolint:gosec // G118 — same lifecycle context
+			defer close(trimDone)
+			s.trimLoop(ctx)
+		}()
+	}
 	return nil
 }
 
-func (s *Server) superviseShutdown(ctx context.Context, active []Listener) {
+func (s *Server) superviseShutdown(ctx context.Context, active []Listener, done chan struct{}) {
+	defer close(done)
 	<-ctx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout())
 	defer cancel()
+
+	// All at once, on one shared deadline. Taken in turn, every listener
+	// after the first keeps admitting work — new connections, new queries
+	// — for as long as the ones ahead of it take to drain, which is the
+	// opposite of what a shutdown is for. Each listener stops its own
+	// admission before it drains, so starting them together closes the
+	// door everywhere first.
+	var wg sync.WaitGroup
 	for _, l := range active {
-		if err := l.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
-			zlog.Error("listener shutdown failed",
-				"proto", l.Proto(), "addr", l.Addr(), "error", err.Error())
-		}
+		wg.Add(1)
+		go func(l Listener) {
+			defer wg.Done()
+			if err := l.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+				zlog.Error("listener shutdown failed",
+					"proto", l.Proto(), "addr", l.Addr(), "error", err.Error())
+			}
+		}(l)
 	}
+	wg.Wait()
+
+	// The certificate watcher belongs to the run it served: a cancelled
+	// context must tear it down with the listeners, or every restart
+	// leaves a file watcher rescanning a directory nobody serves from.
+	// Stop is idempotent through the nil check it makes under its lock.
+	s.Stop()
 }
 
 func (s *Server) shutdownTimeout() time.Duration {
@@ -235,6 +324,28 @@ func (s *Server) queryTimeout() time.Duration {
 // and DoQ do their real QUIC bring-up inside Serve, so checking only
 // membership in s.active can report success even when the transport
 // never started. Asking the listener via Serving() gives the truth.
+// Quiesced reports whether every owned transport has all of its job
+// slabs back in the ring: nothing is being read into, served, or staged
+// for a send.
+//
+// It is the completion barrier a measurement needs. A client holding its
+// last reply proves the bytes left, not that the slab that carried them
+// was released — the release runs after the send, on the server's own
+// goroutine — so anything that samples the process at that moment (an
+// allocation gate, a leak check, a drain assertion) is otherwise reduced
+// to sleeping and hoping. Transports that own no slabs are quiescent by
+// construction and answer for themselves.
+func (s *Server) Quiesced() bool {
+	s.listenersMu.Lock()
+	defer s.listenersMu.Unlock()
+	for _, l := range s.active {
+		if q, ok := l.(interface{ Quiesced() bool }); ok && !q.Quiesced() {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) HasListener(proto string) bool {
 	s.listenersMu.Lock()
 	defer s.listenersMu.Unlock()
@@ -257,6 +368,13 @@ func (s *Server) GetTLSConfig() *tls.Config {
 		return s.certManager.GetTLSConfig()
 	}
 
+	// The lazy creation below is for startup. After Stop it would leave
+	// a file watcher alive behind a Stopped() that already said true —
+	// the defence in depth for any caller still holding this provider.
+	if s.certStopped {
+		return nil
+	}
+
 	if s.cfg.TLSCertificate == "" || s.cfg.TLSPrivateKey == "" {
 		return nil
 	}
@@ -270,16 +388,61 @@ func (s *Server) GetTLSConfig() *tls.Config {
 	return cm.GetTLSConfig()
 }
 
-// Stopped reports whether every Serve goroutine has exited.
-// Used by sdns.go for graceful-shutdown polling.
+// Stopped reports whether the shutdown is complete: every Serve goroutine
+// has exited *and* the supervisor has finished with every listener. That
+// is the question a caller polling for shutdown actually has, because the
+// only use for the answer is doing something else with what the server
+// held — exiting, or binding the same addresses again.
+//
+// Both halves are needed. The plain UDP and TCP listeners close their
+// sockets inside Shutdown before the Serve they unblock returns, so for
+// them the goroutine count alone would do. QUIC does not work that way:
+// http3 and DoQ hand their accept loop a PacketConn they do not own, so
+// Serve returns as soon as the server stops accepting while the socket
+// stays open until the supervisor closes it a few statements later. A
+// caller that rebound on the goroutine count alone met "address already
+// in use", rarely for DoH3 and often for DoQ.
+//
+// It does not mean nothing is running. A handler that outlasts its
+// listener's drain deadline is force-closed and left to finish on its own
+// — the alternative is a shutdown that a single stuck request can hang
+// forever — so work can outlive this by as long as that handler takes.
+// Process exit is the backstop for that, and an in-process restart is
+// safe from the socket's point of view but not a guarantee that the old
+// server's last requests have unwound.
 func (s *Server) Stopped() bool {
-	return s.running.Load() == 0
+	if s.running.Load() != 0 {
+		return false
+	}
+	s.listenersMu.Lock()
+	done := s.shutdownDone
+	trimDone := s.trimDone
+	s.listenersMu.Unlock()
+	if trimDone != nil {
+		select {
+		case <-trimDone:
+		default:
+			return false
+		}
+	}
+	if done == nil {
+		// Run never got as far as arming a supervisor: nothing was ever
+		// bound, so nothing is held.
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 // Stop releases long-lived resources (currently just the cert manager).
 func (s *Server) Stop() {
 	s.certMu.Lock()
 	defer s.certMu.Unlock()
+	s.certStopped = true
 	if s.certManager != nil {
 		s.certManager.Stop()
 		s.certManager = nil

@@ -25,7 +25,7 @@ func BenchmarkServeDNSPipelineOverhead(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		s.ServeDNS(writer, req)
+		s.ServeMsg(context.Background(), writer, req)
 	}
 }
 
@@ -43,10 +43,10 @@ func BenchmarkServeDNSPositiveCacheHit(b *testing.B) {
 	backend := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 		backendCalls.Add(1)
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = []dns.RR{&dns.A{
 			Hdr: dns.RR_Header{
-				Name:   ch.Request.Question[0].Name,
+				Name:   ch.Request.Msg().Question[0].Name,
 				Rrtype: dns.TypeA,
 				Class:  dns.ClassINET,
 				Ttl:    300,
@@ -65,7 +65,7 @@ func BenchmarkServeDNSPositiveCacheHit(b *testing.B) {
 	req := new(dns.Msg)
 	req.SetQuestion("cached.example.", dns.TypeA)
 	writer := mock.NewWriter("udp", "192.0.2.1:53000")
-	s.ServeDNS(writer, req)
+	s.ServeMsg(context.Background(), writer, req)
 	if got := backendCalls.Load(); got != 1 {
 		b.Fatalf("cache prime called backend %d times, want 1", got)
 	}
@@ -73,7 +73,7 @@ func BenchmarkServeDNSPositiveCacheHit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		s.ServeDNS(writer, req)
+		s.ServeMsg(context.Background(), writer, req)
 	}
 	b.StopTimer()
 	if got := backendCalls.Load(); got != 1 {

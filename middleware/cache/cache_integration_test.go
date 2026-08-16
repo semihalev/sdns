@@ -43,7 +43,7 @@ func TestCache_Integration_Basic(t *testing.T) {
 			called = true
 			// Simulate response - this is what resolver would do
 			resp := new(dns.Msg)
-			resp.SetReply(ch.Request)
+			resp.SetReply(ch.Request.Msg())
 			resp.Answer = append(resp.Answer, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   "example.com.",
@@ -139,10 +139,10 @@ func TestCache_Metrics(t *testing.T) {
 		// First request - cache miss
 		nextHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 			resp := new(dns.Msg)
-			resp.SetReply(ch.Request)
+			resp.SetReply(ch.Request.Msg())
 			resp.Answer = append(resp.Answer, &dns.A{
 				Hdr: dns.RR_Header{
-					Name:   ch.Request.Question[0].Name,
+					Name:   ch.Request.Msg().Question[0].Name,
 					Rrtype: dns.TypeA,
 					Class:  dns.ClassINET,
 					Ttl:    300,
@@ -284,7 +284,7 @@ func TestCache_CNAMEChain(t *testing.T) {
 
 	nextHandler := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 
 		// Return CNAME pointing to example.com
 		resp.Answer = append(resp.Answer, &dns.CNAME{
@@ -313,7 +313,7 @@ func TestCache_CNAMEChain(t *testing.T) {
 
 	nextHandler2 := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		resp := new(dns.Msg)
-		resp.SetReply(ch.Request)
+		resp.SetReply(ch.Request.Msg())
 		resp.Answer = append(resp.Answer, &dns.A{
 			Hdr: dns.RR_Header{
 				Name:   "example.com.",

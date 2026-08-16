@@ -113,26 +113,14 @@ func (w *Writer) RemoteIP() net.IP { return w.remoteip }
 // (*Writer).Proto proto func.
 func (w *Writer) Proto() string { return w.proto }
 
-// (*Writer).Reset reset func.
-func (w *Writer) Reset(rw dns.ResponseWriter) {}
-
 // (*Writer).Close close func.
 func (w *Writer) Close() error { return nil }
-
-// (*Writer).Hijack hijack func.
-func (w *Writer) Hijack() {}
 
 // (*Writer).LocalAddr localAddr func.
 func (w *Writer) LocalAddr() net.Addr { return w.localAddr }
 
 // (*Writer).RemoteAddr remoteAddr func.
 func (w *Writer) RemoteAddr() net.Addr { return w.remoteAddr }
-
-// (*Writer).TsigStatus tsigStatus func.
-func (w *Writer) TsigStatus() error { return nil }
-
-// (*Writer).TsigTimersOnly tsigTimersOnly func.
-func (w *Writer) TsigTimersOnly(ok bool) {}
 
 // (*Writer).Internal internal func.
 func (w *Writer) Internal() bool { return w.internal }

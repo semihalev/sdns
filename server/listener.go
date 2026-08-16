@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/semihalev/zlog/v2"
@@ -59,24 +58,6 @@ type Listener interface {
 
 // errListenerNotBound is returned from Serve when called before Bind.
 var errListenerNotBound = errors.New("listener: Serve called before Bind")
-
-// ignoreShutdownErr reports whether a dns.Server.ShutdownContext error
-// is benign and should be dropped. miekg/dns returns "server not
-// started" when Shutdown runs before ActivateAndServe — this is the
-// bind-but-not-serve path exercised by bindAll's partial-failure
-// cleanup — and net.ErrClosed happens when we race our own explicit
-// socket Close with the server's internal close.
-func ignoreShutdownErr(err error) bool {
-	if err == nil {
-		return true
-	}
-	if errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	// miekg/dns doesn't export this as a sentinel; match on the
-	// exact string it produces.
-	return err.Error() == "dns: server not started"
-}
 
 // bindAll runs Bind on every listener and collects the outcome.
 // Non-critical bind failures disable that listener (its Serve becomes

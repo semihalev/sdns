@@ -45,7 +45,7 @@ func TestHeadlessServiceEndpoints(t *testing.T) {
 		w := &mockResponseWriter{}
 		ch := &middleware.Chain{
 			Writer:  w,
-			Request: req,
+			Request: middleware.NewRequest(req),
 		}
 
 		k.ServeDNS(ctx, ch)
@@ -129,7 +129,7 @@ func TestHeadlessServiceNoEndpoints(t *testing.T) {
 	w := &mockResponseWriter{}
 	ch := &middleware.Chain{
 		Writer:  w,
-		Request: req,
+		Request: middleware.NewRequest(req),
 	}
 
 	k.ServeDNS(ctx, ch)

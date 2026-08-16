@@ -126,6 +126,34 @@ func TestTCPConnPoolKeepalive(t *testing.T) {
 	assert.Equal(t, 2*time.Second, pooledConn.idleTime)
 }
 
+// A keepalive timeout of zero is the server saying "close now"
+// (RFC 7828 §3.2.2): no further queries may go out on that connection.
+// Pooling it used to spend the next query on a socket the server was
+// hanging up, observed as a send into the dead connection and a retry.
+func TestTCPConnPoolRefusesKeepaliveZero(t *testing.T) {
+	pool := NewTCPConnPool(5*time.Second, 10*time.Second, 10)
+	defer pool.Close()
+
+	msg := new(dns.Msg)
+	msg.SetEdns0(4096, false)
+	msg.IsEdns0().Option = append(msg.IsEdns0().Option, &dns.EDNS0_TCP_KEEPALIVE{
+		Code:    dns.EDNS0TCPKEEPALIVE,
+		Timeout: 0,
+	})
+
+	conn := &mockNetConn{remoteAddr: "192.5.5.241:53"}
+	pool.Put(&dns.Conn{Conn: conn}, "192.5.5.241:53", true, false, msg)
+
+	pool.mu.RLock()
+	pooled := pool.rootConns["192.5.5.241:53"]
+	active := pool.active
+	pool.mu.RUnlock()
+
+	assert.Nil(t, pooled, "a connection the server asked to close was pooled")
+	assert.True(t, conn.closed, "the connection was neither pooled nor closed — leaked")
+	assert.Equal(t, 0, active)
+}
+
 func TestTCPConnPoolCleanup(t *testing.T) {
 	pool := NewTCPConnPool(50*time.Millisecond, 100*time.Millisecond, 10)
 	defer pool.Close()

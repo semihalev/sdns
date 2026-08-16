@@ -8,42 +8,47 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/semihalev/zlog/v2"
 )
 
-// udpListener spreads UDP receive work across N goroutines. The split
-// strategy is platform-dependent (see reuseport_*.go):
+// udpListener runs the owned UDP engine (udp_engine.go) over one or more
+// sockets. The socket strategy is platform-dependent (see reuseport_*.go):
 //
 //   - When kernelLoadBalances is true (Linux), N sockets are opened on
 //     the same port with SO_REUSEPORT; the kernel distributes datagrams
-//     across them by 4-tuple hash and each goroutine owns its own
-//     dns.Server + socket.
-//   - When kernelLoadBalances is false (Darwin / BSDs / Windows), one
-//     socket is shared by N dns.Server goroutines. Go's netpoller lets
-//     concurrent ReadFrom callers each pick off a packet as it lands
-//     in the kernel queue, which parallelises the syscall + copy +
-//     goroutine-spawn cost across cores without needing kernel support.
+//     across them by 4-tuple hash and each socket gets one reader.
+//   - Otherwise a single socket carries a single reader; parallelism
+//     comes from the engine's fixed worker pool either way.
 //
-// Either way the number of receive goroutines is the same, and callers
-// don't need to know which path is active.
+// A wildcard bind arms the pktinfo machinery (pktinfo_linux.go) so
+// replies leave from the address the query arrived on.
 type udpListener struct {
 	addr    string
-	handler dns.Handler
+	handler rawHandler
+	sockets int
 	workers int
+	queue   int
+	plan    resourcePlan
 	timeout time.Duration
 
-	mu      sync.Mutex
-	pcs     []net.PacketConn
-	srvs    []*dns.Server
-	serving atomic.Bool
+	mu       sync.Mutex
+	pcs      []*net.UDPConn
+	engine   *udpEngine
+	done     chan struct{}
+	shutdown sync.Once
+	closing  atomic.Bool
+	drainErr error
+	serving  atomic.Bool
 }
 
-func newUDPListener(addr string, h dns.Handler, timeout time.Duration) *udpListener {
+func newUDPListener(addr string, h rawHandler, timeout time.Duration, workers, queue int, plan resourcePlan) *udpListener {
 	return &udpListener{
 		addr:    addr,
 		handler: h,
-		workers: defaultUDPWorkers(),
+		sockets: plan.udpSockets,
+		workers: workers,
+		queue:   queue,
+		plan:    plan,
 		timeout: timeout,
 	}
 }
@@ -53,140 +58,185 @@ func (l *udpListener) Addr() string   { return l.addr }
 func (l *udpListener) Critical() bool { return true }
 func (l *udpListener) Serving() bool  { return l.serving.Load() }
 
+// Quiesced reports whether the engine holds no in-flight work.
+func (l *udpListener) Quiesced() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.engine == nil || l.engine.quiesced()
+}
+
+// bindWildcard reports whether addr's host is absent or unspecified —
+// the binds that need destination-address recovery on replies.
+//
+// The family is deliberately not inferred here. A bind with no host is
+// one dual-stack socket carrying both, so there is no single answer, and
+// the receive options are armed for both families instead.
+func bindWildcard(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsUnspecified()
+}
+
 func (l *udpListener) Bind(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.srvs) != 0 {
+	if l.engine != nil {
 		return errors.New("udp listener: Bind called twice")
 	}
 
-	if kernelLoadBalances {
-		return l.bindPerWorker(ctx)
+	wildcard := bindWildcard(l.addr)
+	control := reusePortControl
+	if wildcard {
+		control = pktinfoControl("udp")
 	}
-	return l.bindShared(ctx)
-}
+	lc := net.ListenConfig{Control: control}
 
-// bindPerWorker opens one SO_REUSEPORT socket per worker. Linux path.
-//
-// After the first socket is bound, subsequent workers bind to that
-// socket's resolved LocalAddr rather than the configured string. This
-// matters when l.addr ends in ":0" — otherwise each ListenPacket
-// would pick its own ephemeral port and the workers would live on
-// unrelated ports instead of sharing one endpoint (which is the
-// whole point of the SO_REUSEPORT fan-out and is expected behaviour
-// for dynamic-port tests / embedded callers).
-func (l *udpListener) bindPerWorker(ctx context.Context) error {
-	lc := net.ListenConfig{Control: reusePortControl}
+	sockets := 1
+	if kernelLoadBalances {
+		sockets = l.sockets
+	}
 	addr := l.addr
-	for i := 0; i < l.workers; i++ {
+	for i := 0; i < sockets; i++ {
 		pc, err := lc.ListenPacket(ctx, "udp", addr)
 		if err != nil {
 			for _, open := range l.pcs {
 				_ = open.Close()
 			}
 			l.pcs = nil
-			l.srvs = nil
 			return err
 		}
-		l.pcs = append(l.pcs, pc)
-		l.srvs = append(l.srvs, &dns.Server{
-			PacketConn: pc,
-			Net:        "udp",
-			Handler:    l.handler,
-		})
+		udpConn, ok := pc.(*net.UDPConn)
+		if !ok {
+			_ = pc.Close()
+			for _, open := range l.pcs {
+				_ = open.Close()
+			}
+			l.pcs = nil
+			return errors.New("udp listener: unexpected packet conn type")
+		}
+		l.pcs = append(l.pcs, udpConn)
 		if i == 0 {
-			// Lock subsequent workers to the kernel-assigned port so
-			// every worker joins the same SO_REUSEPORT group.
+			// Lock subsequent sockets to the kernel-assigned port so
+			// every socket joins the same SO_REUSEPORT group when the
+			// configured address ends in ":0".
 			addr = pc.LocalAddr().String()
 		}
 	}
-	return nil
-}
 
-// bindShared opens a single socket that every worker reads from.
-// Non-Linux path — SO_REUSEPORT wouldn't distribute anyway.
-func (l *udpListener) bindShared(ctx context.Context) error {
-	var lc net.ListenConfig
-	pc, err := lc.ListenPacket(ctx, "udp", l.addr)
-	if err != nil {
-		return err
-	}
-	l.pcs = []net.PacketConn{pc}
-	for i := 0; i < l.workers; i++ {
-		l.srvs = append(l.srvs, &dns.Server{
-			PacketConn: pc,
-			Net:        "udp",
-			Handler:    l.handler,
-		})
-	}
+	l.engine = newUDPEngine(l.handler, l.pcs, wildcard, l.workers, l.queue, l.plan)
+	l.done = make(chan struct{})
 	return nil
 }
 
 func (l *udpListener) Serve(_ context.Context) error {
+	// The start/shutdown handshake is atomic under the listener lock:
+	// either the engine starts whole — every reader, worker and sender
+	// registered — before Shutdown's drain can observe it, or Shutdown got
+	// there first and Serve never arms an engine over closed sockets. A
+	// half-started engine under a concurrent drain waits on coordinators
+	// whose queues the drain never learned to close.
 	l.mu.Lock()
-	srvs := append([]*dns.Server(nil), l.srvs...)
-	l.mu.Unlock()
-	if len(srvs) == 0 {
+	engine := l.engine
+	done := l.done
+	if engine == nil {
+		l.mu.Unlock()
 		return errListenerNotBound
 	}
+	if l.closing.Load() {
+		l.mu.Unlock()
+		return nil
+	}
+	engine.start()
+	l.mu.Unlock()
 
-	zlog.Info("DNS server listening", "net", "udp", "addr", l.addr, "workers", len(srvs))
+	// The derived bounds are logged because they are derived: an operator
+	// watching a canary needs to know what this machine decided before
+	// reading the counters that report hitting it.
+	zlog.Info("DNS server listening", "net", "udp", "addr", l.addr,
+		"sockets", len(engine.pcs), "workers", engine.workers,
+		"slabcap", engine.slabCap)
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
-	errs := make(chan error, len(srvs))
-	var wg sync.WaitGroup
-	for _, srv := range srvs {
-		wg.Add(1)
-		go func(srv *dns.Server) {
-			defer wg.Done()
-			if err := srv.ActivateAndServe(); err != nil && !errors.Is(err, net.ErrClosed) {
-				errs <- err
-			}
-		}(srv)
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			return err
+	// Readers exit only when their sockets close. If that happens outside
+	// Shutdown the listener is dead; make it loud instead of silent.
+	go func() {
+		engine.readers.Wait()
+		if !l.closing.Load() {
+			zlog.Error("UDP readers exited outside shutdown", "addr", l.addr)
+			recordListenerErr("udp")
 		}
-	}
-	return nil
+	}()
+
+	<-done
+	return l.drainErr
 }
 
+// Shutdown is the listener-scope barrier: stop admission by expiring the
+// read deadline (blocked reads wake, no new datagram is accepted), join
+// the readers, close the ready queue, drain the workers — and only then
+// close the sockets.
+//
+// The order is the point. Closing first stops admission just as well, but
+// it also takes away the socket the workers still have to answer through,
+// so every request already in flight was dropped instead of served. The
+// deadline stops the reads without touching the send side.
 func (l *udpListener) Shutdown(_ context.Context) error {
 	l.mu.Lock()
-	srvs := append([]*dns.Server(nil), l.srvs...)
-	pcs := append([]net.PacketConn(nil), l.pcs...)
+	engine := l.engine
+	pcs := append([]*net.UDPConn(nil), l.pcs...)
 	l.mu.Unlock()
-	if len(srvs) == 0 {
+	if engine == nil {
 		return nil
 	}
 
-	timeout := l.timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	zlog.Info("DNS server stopping", "net", "udp", "addr", l.addr)
-
-	// Always close our own PacketConns: miekg/dns's ShutdownContext
-	// is a no-op when Serve hasn't started, which is exactly the
-	// bind-without-serve path that bindAll's cleanup runs.
-	var joined []error
-	for _, srv := range srvs {
-		if err := srv.ShutdownContext(shutdownCtx); err != nil && !ignoreShutdownErr(err) {
-			joined = append(joined, err)
+	l.shutdown.Do(func() {
+		timeout := l.timeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
 		}
-	}
-	for _, pc := range pcs {
-		if err := pc.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			joined = append(joined, err)
+		zlog.Info("DNS server stopping", "net", "udp", "addr", l.addr)
+
+		// Admission stops now; readers waking on an expired deadline are
+		// the intended path, not a failure. The closing flag flips under
+		// the listener lock so it serializes against Serve's start
+		// decision.
+		l.mu.Lock()
+		l.closing.Store(true)
+		l.mu.Unlock()
+		for _, pc := range pcs {
+			if err := pc.SetReadDeadline(time.Now()); err != nil && !errors.Is(err, net.ErrClosed) {
+				l.drainErr = errors.Join(l.drainErr, err)
+			}
 		}
+		if err := engine.stopAndDrain(time.Now().Add(timeout)); err != nil {
+			l.drainErr = errors.Join(l.drainErr, err)
+		}
+		// The drain is over — served or not, nothing more will be written
+		// through these sockets.
+		for _, pc := range pcs {
+			if err := pc.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				l.drainErr = errors.Join(l.drainErr, err)
+			}
+		}
+		close(l.done)
+	})
+	return l.drainErr
+}
+
+// TrimIdleMemory drops the engine's parked slabs (see trim.go).
+func (l *udpListener) TrimIdleMemory() int {
+	l.mu.Lock()
+	engine := l.engine
+	l.mu.Unlock()
+	if engine == nil {
+		return 0
 	}
-	return errors.Join(joined...)
+	return engine.trimIdle()
 }
