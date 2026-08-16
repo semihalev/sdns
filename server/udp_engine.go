@@ -239,10 +239,6 @@ type udpEngine struct {
 	leased  atomic.Int64
 	slabCap int64
 	cache   slabCache[udpJob]
-	// admitted counts leases ever granted. The trimmer reads it to tell
-	// a genuinely idle window from light-but-steady traffic: quiescence
-	// is an instant, this is a history.
-	admitted atomic.Uint64
 
 	workers int
 	readers sync.WaitGroup
@@ -337,7 +333,6 @@ func (e *udpEngine) take() *udpJob {
 			break
 		}
 	}
-	e.admitted.Add(1)
 	if j := e.cache.get(); j != nil {
 		return j
 	}
@@ -509,9 +504,6 @@ func (e *udpEngine) serveOverflow(j *udpJob) {
 // The lease cap is untouched: admission does not change, only what the
 // next admissions will have to allocate.
 func (e *udpEngine) trimIdle() int { return e.cache.trim() }
-
-// admissions reports how many leases have ever been granted.
-func (e *udpEngine) admissions() uint64 { return e.admitted.Load() }
 
 // quiesced reports whether every slab is back in the ring: nothing is
 // being read into, served, or staged for a send. It is the completion

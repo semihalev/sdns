@@ -160,15 +160,16 @@ func TestLoad(t *testing.T) {
 			errContains: "error creating working directory",
 		},
 		{
-			name: "default sdns.conf with existing sdns.toml",
+			// The sdns.toml fallback is gone with the releases that used
+			// it: a leftover sdns.toml in the working directory must not
+			// hijack the load — least of all for an explicit path.
+			name: "leftover sdns.toml is ignored, the asked-for file is generated",
 			setupFunc: func() (string, func()) {
 				tmpDir := t.TempDir()
 				oldPwd, _ := os.Getwd()
 				os.Chdir(tmpDir) //nolint:gosec // G104 - test chdir
 
-				// Create sdns.toml
-				tomlConfig := fmt.Sprintf(defaultConfig, configver)
-				if err := os.WriteFile("sdns.toml", []byte(tomlConfig), 0644); err != nil { //nolint:gosec // G306 - test file
+				if err := os.WriteFile("sdns.toml", []byte("version = \"0.0.1\"\ndirectory = \"db\"\n"), 0644); err != nil { //nolint:gosec // G306 - test file
 					t.Fatal(err)
 				}
 

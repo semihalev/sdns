@@ -37,6 +37,19 @@ type Server struct {
 	// accepting, while the socket it was handed is closed a few
 	// statements later, by the supervisor.
 	shutdownDone chan struct{}
+	// trimDone closes when the opt-in trimmer goroutine has exited; nil
+	// when it was never started. Stopped waits on it — a trim is a
+	// process-wide collection, and "stopped" must not be true while one
+	// may still be running.
+	trimDone chan struct{}
+
+	// served counts queries entering either serve entry point, whatever
+	// transport carried them — the owned engines through ServeRaw, DoH,
+	// DoH3 and DoQ through ServeMsg. The trimmer reads it to prove a
+	// window carried no traffic at all: the engines' own counters see
+	// only their transports, and a trim under active DoH traffic is a
+	// collection the client pays for.
+	served atomic.Uint64
 
 	running atomic.Int32
 }
@@ -96,6 +109,7 @@ func (s *Server) ServeMsg(parent context.Context, w middleware.Transport, r *dns
 }
 
 func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns.Msg, directPack bool) {
+	s.served.Add(1)
 	s.serveMsgBy(parent, w, r, directPack, time.Now().Add(s.queryTimeout()))
 }
 
@@ -221,7 +235,14 @@ func (s *Server) Run(ctx context.Context) error {
 	// Supervisor: on ctx cancellation, shut every active listener down.
 	go s.superviseShutdown(ctx, active, done) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
 	if s.cfg.MemoryTrim {
-		go s.trimLoop(ctx) //nolint:gosec // G118 — same lifecycle context
+		trimDone := make(chan struct{})
+		s.listenersMu.Lock()
+		s.trimDone = trimDone
+		s.listenersMu.Unlock()
+		go func() { //nolint:gosec // G118 — same lifecycle context
+			defer close(trimDone)
+			s.trimLoop(ctx)
+		}()
 	}
 	return nil
 }
@@ -354,7 +375,15 @@ func (s *Server) Stopped() bool {
 	}
 	s.listenersMu.Lock()
 	done := s.shutdownDone
+	trimDone := s.trimDone
 	s.listenersMu.Unlock()
+	if trimDone != nil {
+		select {
+		case <-trimDone:
+		default:
+			return false
+		}
+	}
 	if done == nil {
 		// Run never got as far as arming a supervisor: nothing was ever
 		// bound, so nothing is held.

@@ -224,12 +224,18 @@ func computeResourcePlan(in planInputs) resourcePlan {
 
 	// The descriptor allowance is a hard cap, applied after every floor:
 	// admission above it is a promise the kernel will break with EMFILE.
-	if in.fd > fdReserve {
-		if fdCap := int((in.fd - fdReserve) / uint64(engines)); conns > fdCap { //nolint:gosec // engines >= 1
-			conns = fdCap
+	// An allowance at or below the reserve is the severest case, not an
+	// exemption — the process barely has descriptors for itself, and
+	// each engine gets one connection, never the memory-derived count.
+	if in.fd > 0 {
+		fdCap := 1
+		if in.fd > fdReserve {
+			if usable := int((in.fd - fdReserve) / uint64(engines)); usable > 1 { //nolint:gosec // engines >= 1
+				fdCap = usable
+			}
 		}
-		if conns < 1 {
-			conns = 1
+		if conns > fdCap {
+			conns = fdCap
 		}
 	}
 

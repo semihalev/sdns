@@ -44,10 +44,6 @@ const (
 type memoryTrimmer interface {
 	// TrimIdleMemory drops parked slabs and reports how many went.
 	TrimIdleMemory() int
-	// AdmissionCount reports how many queries have ever been admitted;
-	// the trimmer compares it across samples to prove a window carried
-	// no traffic at all.
-	AdmissionCount() uint64
 }
 
 // trimGate decides when an idle window is real. Separated from the loop
@@ -87,20 +83,17 @@ func (s *Server) trimLoop(ctx context.Context) {
 		case <-ticker.C:
 		}
 
-		s.listenersMu.Lock()
-		active := append([]Listener(nil), s.active...)
-		s.listenersMu.Unlock()
-
-		var admitted uint64
-		for _, l := range active {
-			if t, ok := l.(memoryTrimmer); ok {
-				admitted += t.AdmissionCount()
-			}
-		}
-		if !gate.observe(time.Now(), s.Quiesced(), admitted) {
+		// The served counter sees every transport — the owned engines
+		// through ServeRaw, DoH/DoH3/DoQ through ServeMsg — where the
+		// engines' own counters see only theirs, and a trim under active
+		// DoH traffic would be a collection the client pays for.
+		if !gate.observe(time.Now(), s.Quiesced(), s.served.Load()) {
 			continue
 		}
 
+		s.listenersMu.Lock()
+		active := append([]Listener(nil), s.active...)
+		s.listenersMu.Unlock()
 		dropped := 0
 		for _, l := range active {
 			if t, ok := l.(memoryTrimmer); ok {
@@ -109,6 +102,14 @@ func (s *Server) trimLoop(ctx context.Context) {
 		}
 		if dropped == 0 {
 			continue
+		}
+		// Shutdown may have begun while the caches were drained; the
+		// collection is the expensive half, and it must not land inside
+		// the drain deadline.
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 		start := time.Now()
 		debug.FreeOSMemory()

@@ -1111,21 +1111,14 @@ failure_cache_max_ttl = "5m"
 func Load(cfgfile, version string) (*Config, error) {
 	config := new(Config)
 
+	// A missing config is generated whatever it is called and wherever
+	// it points: the -c flag promises exactly that. (An sdns.toml
+	// fallback lived here once, for configs from the earliest releases;
+	// it also made an explicit path load an unrelated file from the
+	// working directory, and the releases it served are long gone.)
 	if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
-		// Compatibility for the old default conf file name — only when
-		// the caller asked for the default, never for an explicit path.
-		if filepath.Base(cfgfile) == "sdns.conf" {
-			if _, err := os.Stat("sdns.toml"); err == nil {
-				cfgfile = "sdns.toml"
-			}
-		}
-		// A missing config is generated whatever it is called: the -c
-		// flag promises exactly that, and gating it on the default name
-		// turned every custom path into a load error instead.
-		if _, err := os.Stat(cfgfile); os.IsNotExist(err) {
-			if err := generateConfig(cfgfile); err != nil {
-				return nil, err
-			}
+		if err := generateConfig(cfgfile); err != nil {
+			return nil, err
 		}
 	}
 

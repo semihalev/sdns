@@ -230,18 +230,6 @@ func (l *udpListener) Shutdown(_ context.Context) error {
 	return l.drainErr
 }
 
-// AdmissionCount reports how many queries this listener has admitted
-// (see trim.go).
-func (l *udpListener) AdmissionCount() uint64 {
-	l.mu.Lock()
-	engine := l.engine
-	l.mu.Unlock()
-	if engine == nil {
-		return 0
-	}
-	return engine.admissions()
-}
-
 // TrimIdleMemory drops the engine's parked slabs (see trim.go).
 func (l *udpListener) TrimIdleMemory() int {
 	l.mu.Lock()

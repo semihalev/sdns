@@ -164,6 +164,17 @@ func TestDescriptorLimitIsAHardCap(t *testing.T) {
 		t.Fatalf("job classes small=%d large=%d for a single-connection engine, want 1/1",
 			p.tcpSmallJobs, p.tcpLargeJobs)
 	}
+
+	// An allowance at or below the reserve is the severest case, not an
+	// exemption: the cap check used to be inside `fd > reserve`, so a
+	// ulimit of 64 skipped it entirely and kept the memory-derived
+	// thousands.
+	for _, fd := range []uint64{1, 64, fdReserve} {
+		p = computeResourcePlan(planInputs{budget: 32 * gib, cpus: 8, streamEngines: 2, fd: fd, sockets: 4})
+		if p.tcpConns != 1 {
+			t.Fatalf("conns = %d with RLIMIT_NOFILE=%d, want 1", p.tcpConns, fd)
+		}
+	}
 }
 
 // Two Servers in one process each live inside their own plan. The plan

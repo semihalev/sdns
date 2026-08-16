@@ -70,23 +70,23 @@ func TestTrimGateNeedsARealIdleWindow(t *testing.T) {
 	})
 }
 
-// The listeners expose the counters the gate needs: admissions move when
-// queries are served, and trim empties the caches those queries filled.
-func TestListenerAdmissionCountMoves(t *testing.T) {
+// Trim empties the caches queries filled, and admission is untouched:
+// trim costs the next queries an allocation, never an answer.
+func TestTrimDropsParkedSlabsOnly(t *testing.T) {
 	e := newUDPEngine(echoHandler(), nil, false, 1, 1, defaultResourcePlan(1))
-	if e.admissions() != 0 {
-		t.Fatalf("fresh engine reports %d admissions", e.admissions())
-	}
 	j := e.take()
 	if j == nil {
 		t.Fatal("lease refused")
-	}
-	if e.admissions() != 1 {
-		t.Fatalf("admissions = %d after one lease, want 1", e.admissions())
 	}
 	j.state = udpJobReading
 	j.release(udpJobReading)
 	if got := e.trimIdle(); got != 1 {
 		t.Fatalf("trim dropped %d slabs, want the parked one", got)
+	}
+	if j2 := e.take(); j2 == nil {
+		t.Fatal("a lease was refused after trim; trim must only cost an allocation")
+	} else {
+		j2.state = udpJobReading
+		j2.release(udpJobReading)
 	}
 }
