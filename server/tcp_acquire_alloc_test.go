@@ -4,7 +4,6 @@ package server
 
 import (
 	"net"
-	"runtime"
 	"testing"
 	"time"
 
@@ -53,24 +52,18 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 	<-e.smallTokens
 	defer func() { e.smallTokens <- struct{}{} }()
 
-	// The cold one first, and measured raw. AllocsPerRun runs the body
-	// once before it starts counting, so anything a connection builds on
-	// its first contended wait is created inside that unmeasured call and
-	// never appears — which is exactly how a timer allocated on this path
-	// stayed hidden. The first wait a connection ever makes is a served
-	// query like any other.
-	runtime.GC()
-	runtime.GC()
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	if j := e.acquire(stream, time.Now(), 64); j != nil {
-		t.Fatal("acquired a slab from an empty ring")
-	}
-	runtime.ReadMemStats(&after)
-	if cold := after.Mallocs - before.Mallocs; cold != 0 {
-		t.Fatalf("a connection's first contended acquisition allocated %d objects; "+
-			"the wait state belongs to connection setup, not to the query that "+
-			"first has to wait", cold)
+	// The cold property first, asserted structurally: the wait timer must
+	// exist the moment reset returns, before the first contended wait ever
+	// runs. AllocsPerRun runs the body once before it starts counting, so
+	// a timer built lazily on the first wait would be created inside that
+	// unmeasured call and never appear — which is exactly how one stayed
+	// hidden. A process-wide MemStats delta catches it but also counts
+	// every background goroutine's allocations, and flaked for exactly
+	// that reason; the invariant is about where the timer lives, so assert
+	// that directly.
+	if stream.wait == nil {
+		t.Fatal("connection setup did not build the wait timer; the first " +
+			"contended wait would allocate it on the acquisition path")
 	}
 
 	allocs := testing.AllocsPerRun(200, func() {

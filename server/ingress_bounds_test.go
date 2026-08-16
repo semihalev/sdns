@@ -175,6 +175,17 @@ func TestDescriptorLimitIsAHardCap(t *testing.T) {
 			t.Fatalf("conns = %d with RLIMIT_NOFILE=%d, want 1", p.tcpConns, fd)
 		}
 	}
+
+	// The socket fan-out is descriptors too: sixteen reuseport sockets
+	// under a ulimit of sixteen is a bind-time EMFILE, although one
+	// socket and one listener would have fit comfortably.
+	p = computeResourcePlan(planInputs{budget: 32 * gib, cpus: 32, streamEngines: 1, fd: 16, sockets: 16})
+	if p.udpSockets > 2 {
+		t.Fatalf("sockets = %d with RLIMIT_NOFILE=16, want the fan-out bound by descriptors", p.udpSockets)
+	}
+	if p.udpSockets < 1 {
+		t.Fatalf("sockets = %d, a server needs one", p.udpSockets)
+	}
 }
 
 // Two Servers in one process each live inside their own plan. The plan

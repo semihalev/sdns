@@ -4,6 +4,8 @@ import (
 	"math"
 	"runtime"
 	"runtime/debug"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // The front door's bounds — how many queries may hold a slab at once,
@@ -79,6 +81,36 @@ const (
 	// unknown machine is the failure this whole file exists to avoid.
 	unknownMemoryBudget = 512 << 20
 )
+
+// ingressPlanGauge publishes the derived bounds where an operator can
+// read them at any time. The startup log line carries the same numbers,
+// but it lands in the middle of the startup burst — measured on a
+// canary, journald's throttle dropped exactly that line — and a bound
+// nobody can observe might as well be a constant. One process, one
+// plan: with several Servers in a process the last one published wins,
+// which the metric help states.
+var ingressPlanGauge = func() *prometheus.GaugeVec {
+	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dns_ingress_plan",
+		Help: "Derived serving bounds for this process (last Server started wins)",
+	}, []string{"bound"})
+	prometheus.MustRegister(g)
+	return g
+}()
+
+// publish exposes the plan's decisions as gauges.
+func (p resourcePlan) publish() {
+	set := func(bound string, v int64) {
+		ingressPlanGauge.WithLabelValues(bound).Set(float64(v))
+	}
+	set("udp_sockets", int64(p.udpSockets))
+	set("udp_workers", int64(p.udpWorkers))
+	set("udp_queue", int64(p.udpQueue))
+	set("udp_spare_slabs", p.udpSpareSlabs)
+	set("tcp_conns", int64(p.tcpConns))
+	set("tcp_small_jobs", int64(p.tcpSmallJobs))
+	set("tcp_large_jobs", int64(p.tcpLargeJobs))
+}
 
 // resourcePlan is the one set of derived bounds a Server's engines read.
 // It is plain data, computed once in New and passed by value.
@@ -161,13 +193,24 @@ func computeResourcePlan(in planInputs) resourcePlan {
 
 	// Socket fan-out follows the same logic: each reader can hold a
 	// batch of slabs, so sockets are slots in the slab cap too, and a
-	// small budget throttles throughput long before fan-out does.
+	// small budget throttles throughput long before fan-out does. The
+	// descriptor allowance binds here as well — every socket is an open
+	// descriptor, and a fan-out the kernel answers with EMFILE at bind
+	// is a listener that never comes up at all.
 	sockets := in.sockets
 	if sockets < 1 {
 		sockets = 1
 	}
 	if lowTier && sockets > 4 {
 		sockets = 4
+	}
+	if in.fd > 0 {
+		if fdCap := int(in.fd / 8); sockets > fdCap { //nolint:gosec // bounded small
+			sockets = fdCap
+		}
+		if sockets < 1 {
+			sockets = 1
+		}
 	}
 
 	// UDP: the steady state (queue + workers + a reader's arming reserve

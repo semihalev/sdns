@@ -194,6 +194,16 @@ func (j *udpJob) WriteMsg(m *dns.Msg) error {
 
 func (j *udpJob) Close() error { return nil }
 
+// FlushStaged sends the worker's staged burst — the replies of requests
+// served before this one — so they never wait behind this request's slow
+// path. Runs on the worker goroutine that owns the burst; the overflow
+// path has no burst and nothing staged.
+func (j *udpJob) FlushStaged() {
+	if j.burst != nil {
+		j.engine.flushTX(j.burst)
+	}
+}
+
 // StrictSlots hands ServeRaw the job-owned strict-path storage.
 func (j *udpJob) StrictSlots() (*middleware.Request, *middleware.Chain, *jobCarrier, *edns.ResponseWriter) {
 	return &j.req, &j.chain, &j.carrier, &j.ednsWriter

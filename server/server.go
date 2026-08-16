@@ -79,6 +79,7 @@ func New(cfg *config.Config) *Server {
 		engines = 2
 	}
 	plan := defaultResourcePlan(engines)
+	plan.publish()
 
 	timeout := cfg.QueryTimeout.Duration
 	// The owned transports feed ServeRaw: raw bytes in, and the server —

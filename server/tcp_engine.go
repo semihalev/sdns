@@ -154,6 +154,19 @@ func (j *tcpJob) WriteMsg(m *dns.Msg) error {
 	return j.stream.stage(out)
 }
 
+// FlushStaged writes the connection's drain buffer — replies of
+// pipelined frames served before this one — so they never wait behind
+// this request's slow path. Runs on the connection goroutine that owns
+// the stream.
+func (j *tcpJob) FlushStaged() {
+	if j.stream == nil {
+		return
+	}
+	if err := j.stream.beforeWrite(); err == nil {
+		_ = j.stream.flush()
+	}
+}
+
 func (j *tcpJob) LocalAddr() net.Addr  { return j.conn.LocalAddr() }
 func (j *tcpJob) RemoteAddr() net.Addr { return j.conn.RemoteAddr() }
 func (j *tcpJob) Close() error         { return j.conn.Close() }
@@ -415,6 +428,15 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 
 	wait := tcpFirstReadWait
 	for served := 0; served < tcpQueryBudget; served++ {
+		// Shutdown between frames, before any buffered prefix keeps the
+		// burst alive: a connection with pipelined frames in its fill
+		// buffer never blocks on the socket, so the closed socket alone
+		// cannot stop it.
+		select {
+		case <-e.closing:
+			return
+		default:
+		}
 		if !stream.framePrefixBuffered() {
 			// About to block: the client's replies go out, the slab goes
 			// back, and only then does the connection wait.
@@ -606,11 +628,16 @@ func (e *tcpEngine) shutdown(deadline time.Time) error {
 	case <-time.After(wait):
 	}
 
-	// Force phase: a past deadline wakes every blocked read; the
-	// connection loops exit on the error.
+	// Force phase: close the survivors outright. A past deadline was
+	// tried here once and lost the race it was meant to win — the
+	// connection loop re-arms deadlines per operation, and a loop with a
+	// pipelined frame already buffered never touches the deadline at
+	// all, so a chatty client could keep being served after Stopped()
+	// said true. Close is not raceable: every read and write on the
+	// connection fails from here on, and the loops exit on the error.
 	e.mu.Lock()
 	for conn := range e.conns {
-		_ = conn.SetDeadline(time.Now())
+		_ = conn.Close()
 	}
 	e.mu.Unlock()
 	select {

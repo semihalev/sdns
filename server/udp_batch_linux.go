@@ -77,6 +77,12 @@ type udpBatchReader struct {
 	pc     *net.UDPConn
 	rc     syscall.RawConn
 
+	// permanentErrs counts consecutive errnos that no retry will fix. A
+	// seccomp profile that filters recvmmsg answers EPERM or ENOSYS on
+	// every call, and a reader that retries forever is a spinning core
+	// serving nothing — with shutdown hung behind it in readers.Wait().
+	permanentErrs int
+
 	jobs  [udpBatchSize]*udpJob
 	hdrs  [udpBatchSize]mmsgHdr
 	iovs  [udpBatchSize]unix.Iovec
@@ -175,9 +181,13 @@ func (r *udpBatchReader) run() {
 			if r.rerr == unix.EBADF {
 				return
 			}
+			if r.permanentRerr() {
+				return
+			}
 			udpDropError.Inc()
 			continue
 		}
+		r.permanentErrs = 0
 
 		n := r.received
 		now := time.Now()
@@ -213,6 +223,9 @@ func (r *udpBatchReader) shed() bool {
 		if r.rerr == unix.EBADF { //nolint:errorlint // raw errno from the syscall above
 			return false
 		}
+		if r.permanentRerr() {
+			return false
+		}
 		udpDropError.Inc()
 		return true
 	}
@@ -230,6 +243,30 @@ func (r *udpBatchReader) armScrap(i int) {
 	h := &r.hdrs[i]
 	h.dlen = 0
 	h.hdr = unix.Msghdr{Iov: &r.iovs[i], Iovlen: 1}
+}
+
+// permanentRerr recognizes an errno retries cannot fix and hands the
+// socket to the portable reader before returning true. The handoff keeps
+// the socket served: exiting alone would silently orphan it, and the
+// portable reader uses plain ReadMsgUDPAddrPort, which no recvmmsg
+// filter touches.
+func (r *udpBatchReader) permanentRerr() bool {
+	switch r.rerr { //nolint:errorlint // raw errnos from the syscall
+	case unix.ENOSYS, unix.EPERM, unix.EOPNOTSUPP:
+	default:
+		return false
+	}
+	r.permanentErrs++
+	if r.permanentErrs < 3 {
+		return false
+	}
+	zlog.Error("UDP batched receive unsupported on this system, "+
+		"switching this socket to the portable reader",
+		"errno", r.rerr.Error())
+	e := r.engine
+	e.readers.Add(1)
+	go e.reader(r.pc)
+	return true
 }
 
 // arm points slot i's iovec and sockaddr/OOB storage at job j and resets
