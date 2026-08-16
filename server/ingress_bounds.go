@@ -123,6 +123,11 @@ type resourcePlan struct {
 	tcpConns     int
 	tcpSmallJobs int
 	tcpLargeJobs int
+	// tcpConnsFD is the descriptor-derived half of the connection cap on
+	// its own (0 when no descriptor bound applies). An explicit operator
+	// cap may override the memory heuristics but never this: admission
+	// past it is EMFILE at accept.
+	tcpConnsFD int
 }
 
 type planInputs struct {
@@ -267,18 +272,30 @@ func computeResourcePlan(in planInputs) resourcePlan {
 
 	// The descriptor allowance is a hard cap, applied after every floor:
 	// admission above it is a promise the kernel will break with EMFILE.
-	// An allowance at or below the reserve is the severest case, not an
-	// exemption — the process barely has descriptors for itself, and
-	// each engine gets one connection, never the memory-derived count.
+	// What is already spoken for — the reserve, the UDP sockets, one
+	// accept descriptor per stream engine — comes off the top first, so
+	// the same descriptor is never promised twice; an allowance at or
+	// below that is the severest case, not an exemption, and each engine
+	// gets one connection. The arithmetic stays in uint64 until the
+	// ceiling brings it into range: an unlimited rlimit pushed through an
+	// int conversion wraps negative, and this cap once read that as "one
+	// connection per engine".
+	fdConnCap := 0
 	if in.fd > 0 {
-		fdCap := 1
-		if in.fd > fdReserve {
-			if usable := int((in.fd - fdReserve) / uint64(engines)); usable > 1 { //nolint:gosec // engines >= 1
+		fdCap := uint64(1)
+		fixed := uint64(fdReserve) + uint64(sockets) + uint64(engines) //nolint:gosec // small positive counts
+		if in.fd > fixed {
+			usable := (in.fd - fixed) / uint64(engines) //nolint:gosec // engines >= 1
+			if usable > maxTCPConns {
+				usable = maxTCPConns
+			}
+			if usable > 1 {
 				fdCap = usable
 			}
 		}
-		if conns > fdCap {
-			conns = fdCap
+		fdConnCap = int(fdCap) //nolint:gosec // capped at maxTCPConns above
+		if conns > fdConnCap {
+			conns = fdConnCap
 		}
 	}
 
@@ -312,6 +329,7 @@ func computeResourcePlan(in planInputs) resourcePlan {
 		tcpConns:      conns,
 		tcpSmallJobs:  smallJobs,
 		tcpLargeJobs:  largeJobs,
+		tcpConnsFD:    fdConnCap,
 	}
 }
 

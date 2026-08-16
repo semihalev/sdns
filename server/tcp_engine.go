@@ -15,6 +15,7 @@ import (
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
+	"github.com/semihalev/zlog/v2"
 )
 
 // The owned TCP/DoT engine. Its contract:
@@ -221,6 +222,14 @@ func newTCPEngine(handler rawHandler, proto string, maxConns int, plan resourceP
 		// far cheaper thing to bound than the slabs are.
 		maxConns = plan.tcpConns
 	} else {
+		// An explicit cap overrides the memory heuristics, never the
+		// descriptor allowance: a connection past what the kernel will
+		// grant is EMFILE at accept, not capacity.
+		if plan.tcpConnsFD > 0 && maxConns > plan.tcpConnsFD {
+			zlog.Warn("Configured ingress TCP connection cap exceeds the descriptor allowance, clamping",
+				"proto", proto, "configured", maxConns, "allowance", plan.tcpConnsFD)
+			maxConns = plan.tcpConnsFD
+		}
 		// An explicit cap also sizes the small class, the way it always
 		// did: a server cannot have more frames in flight than it has
 		// connections.

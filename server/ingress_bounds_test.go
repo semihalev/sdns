@@ -148,9 +148,31 @@ func TestBudgetChargesRealCosts(t *testing.T) {
 // the server never admitted.
 func TestDescriptorLimitIsAHardCap(t *testing.T) {
 	p := computeResourcePlan(planInputs{budget: 32 * gib, cpus: 8, streamEngines: 2, fd: 512, sockets: 4})
-	perEngine := (512 - fdReserve) / 2
+	// What is already spoken for comes off the top: the reserve, the UDP
+	// sockets, one accept descriptor per engine. Dividing fd-reserve
+	// alone promised the UDP sockets' descriptors twice.
+	perEngine := (512 - fdReserve - p.udpSockets - 2) / 2
 	if p.tcpConns != perEngine {
 		t.Fatalf("conns = %d, want the descriptor bound %d", p.tcpConns, perEngine)
+	}
+	if p.tcpConnsFD != perEngine {
+		t.Fatalf("tcpConnsFD = %d, want %d", p.tcpConnsFD, perEngine)
+	}
+	if total := p.udpSockets + 2*p.tcpConns + fdReserve + 2; total > 512 {
+		t.Fatalf("aggregate descriptor promise %d exceeds RLIMIT_NOFILE 512", total)
+	}
+
+	// An unlimited rlimit is no bound at all. Pushed through an int
+	// conversion it wrapped negative, and a single-engine plan on an
+	// unlimited host derived one connection.
+	unlimited := computeResourcePlan(planInputs{budget: 32 * gib, cpus: 8, streamEngines: 1, fd: ^uint64(0), sockets: 4})
+	unbounded := computeResourcePlan(planInputs{budget: 32 * gib, cpus: 8, streamEngines: 1, fd: 0, sockets: 4})
+	if unlimited.tcpConns != unbounded.tcpConns {
+		t.Fatalf("conns = %d under an unlimited rlimit, want the memory-derived %d",
+			unlimited.tcpConns, unbounded.tcpConns)
+	}
+	if unbounded.tcpConnsFD != 0 {
+		t.Fatalf("tcpConnsFD = %d with no descriptor bound, want 0", unbounded.tcpConnsFD)
 	}
 
 	// Two usable descriptors across two engines: one connection each,
@@ -174,6 +196,18 @@ func TestDescriptorLimitIsAHardCap(t *testing.T) {
 		if p.tcpConns != 1 {
 			t.Fatalf("conns = %d with RLIMIT_NOFILE=%d, want 1", p.tcpConns, fd)
 		}
+	}
+
+	// An explicit operator cap overrides the memory heuristics, never
+	// the descriptor allowance: the configured value used to replace the
+	// plan's limit entirely.
+	clampPlan := computeResourcePlan(planInputs{budget: 32 * gib, cpus: 8, streamEngines: 2, fd: 512, sockets: 4})
+	if e := newTCPEngine(echoHandler(), "tcp", 100000, clampPlan); e.maxConns != int64(clampPlan.tcpConnsFD) {
+		t.Fatalf("explicit cap 100000 admitted %d conns, want the descriptor allowance %d",
+			e.maxConns, clampPlan.tcpConnsFD)
+	}
+	if e := newTCPEngine(echoHandler(), "tcp", 10, clampPlan); e.maxConns != 10 {
+		t.Fatalf("explicit cap 10 became %d, the operator's lower choice must stand", e.maxConns)
 	}
 
 	// The socket fan-out is descriptors too: sixteen reuseport sockets
