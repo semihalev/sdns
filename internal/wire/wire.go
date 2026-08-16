@@ -64,13 +64,6 @@ func ParseHeader(body []byte) (Header, bool) {
 	}, true
 }
 
-// SetID stamps a message ID in place.
-func SetID(body []byte, id uint16) {
-	if len(body) >= 2 {
-		binary.BigEndian.PutUint16(body[0:2], id)
-	}
-}
-
 // SetARCount stamps the additional-section count in place.
 func SetARCount(body []byte, n uint16) {
 	if len(body) >= HeaderLen {

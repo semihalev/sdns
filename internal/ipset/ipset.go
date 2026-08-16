@@ -75,18 +75,6 @@ func New(cidrs []string) (*Set, []BadEntry) {
 	return s, bad
 }
 
-// NewFromPrefixes compiles already-parsed prefixes.
-func NewFromPrefixes(prefixes []netip.Prefix) *Set {
-	s := new(Set)
-	for _, p := range prefixes {
-		if p.IsValid() {
-			s.add(p)
-		}
-	}
-	s.compile()
-	return s
-}
-
 func (s *Set) add(p netip.Prefix) {
 	p = p.Masked()
 	lo, hi := bounds(p)
