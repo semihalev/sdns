@@ -45,7 +45,7 @@ $ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:latest
 Pin to a specific version (recommended for production):
 
 ```shell
-$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.0-rc1
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.0-rc2
 ```
 
 #### Docker Compose
