@@ -1,166 +1,75 @@
 # The Zero Path — contract
 
 This document is the normative contract for SDNS's allocation-free serve
-path ("the strict path"). Code and gates implement it; changes to the rules
-land here first. Scope, initially: hard zero **Go heap-object** allocation
-for served cache hits on **UDP and TCP**, in the **default middleware
-chain**, on **linux/amd64 with the pinned toolchain**. DoT is measured
-against pinned budgets, not zero (stock `crypto/tls` draws record buffers
-from a global pool the server cannot own). Other platforms run the same
-gates with functional expectations.
+path ("the strict path"). Code and tests implement it; changes to the
+rules land here first.
 
-**What "hard zero" is a claim about.** It is verdict 1 in §1: no object
-allocated by the server's own code on a goroutine that is serving, exactly
-zero, fail-closed on anything the profiler cannot classify. That is the
-claim, and it is literal.
+**The claim.** In the compatible default configuration, on the warm
+serving path, a cache hit allocates no Go heap objects in the server's
+own code: the slab that carried the query carries the reply, and every
+piece of per-request state lives in it. DoT rides the same slabs but is
+not zero (stock `crypto/tls` draws record buffers from a global pool the
+server cannot own). The claim is a *steady-state* one by design:
 
-It is *not* a claim that the process allocates nothing while traffic
-flows. Background work exists — timers, metric bookkeeping, the runtime's
-own — and verdict 2 bounds it rather than proving it away: it requires
-that doubling the traffic not move the count by more than
-`ScalingSlack` (64 objects), which at the gate's CI size resolves a
-per-query cost down to 64/500,000 ≈ 1.3 × 10⁻⁴ objects per query and no
-further. A rarer cost than that — a handful of tiny allocations in a
-window, a background allocation that happens to cancel one — is below
-what this instrument can see, and is not claimed to be absent.
+- **Warm, not resident.** Slabs are created on demand, parked in an
+  explicit idle cache between requests, and dropped by trim. The first
+  queries after start (or after a trim) allocate their slabs; the
+  requests that follow reuse them. "Zero" describes the reusing state,
+  which is where a server spends its life.
+- **Admission is the memory authority.** A lease counter (UDP) or token
+  channel (TCP/DoT, per class) bounds how many queries may hold a slab;
+  the caches and the collector hold no authority. The bounds derive from
+  the machine (ingress_bounds.go) and are logged at startup.
+- **Bursts are returnable.** Trim drops the idle caches and returns the
+  memory with a single collection (`memorytrim`, opt-in) — measured to
+  matter, because freed-to-heap is not returned-to-OS on any timescale
+  an operator would call prompt.
 
-The claim is staged: Z1 covers strict-wire-eligible exact hits; Z2a extends
-to every exact-entry hit class; Z2b covers composite answers (NXDOMAIN cut,
-failure cache, aggressive denial) and opens the headline rule:
+The headline rule stands:
 
 > In the compatible default configuration, a cache hit is answered through
 > job-backed `CommitWire`, or it is a policy no-response terminal. There is
 > no Msg/Pack/Unpack fallback for hits. (`cache_hit_msg_fallback == 0`)
 
-## 1. Measurement envelope
+## 1. How the claim is verified
 
-The envelope is the full job lifecycle: **immediately before job acquire →
-RX → dispatch/middleware → TX → observer unwind → Finish → immediately
-after slot release**. Wrapper-internal allocations are inside the envelope.
+The claim is pinned in-process, per hit class, where a failure names the
+allocation site:
 
-The gate (`internal/zerogate`) runs the server as a subprocess with a
-silent control plane and **profiles every allocation**
-(`runtime.MemProfileRate = 1`), so no allocation goes unrecorded. It
-returns two verdicts:
+- `server/serveraw_classes_test.go` (`TestServeRawHitClasses`) walks
+  every exact-entry hit class through the strict ingress and requires
+  zero allocations per query, printing the allocation sites when there
+  are any.
+- `middleware/cache/composite_wire_test.go` covers the composite classes
+  (NXDOMAIN cut, failure cache, aggressive denial).
+- `BenchmarkServeRawWireHit` is the profiling twin: precise enough to
+  attribute a single allocation with `-memprofile`.
+- CI runs the `Alloc`-named pins in a non-race job (the `-race` matrix
+  cannot run `!race`-tagged allocation tests), with the Go version pinned
+  in lockstep with `go.mod` — allocation counts are toolchain-sensitive.
 
-1. **Exact, by attribution.** Zero objects may be allocated by the
-   server's own code on a goroutine that is serving — any stack passing
-   through `github.com/semihalev/sdns/server`, whatever package the
-   allocation itself lives in. A failure names the file, line and call
-   path. This is what makes an exact zero meaningful: a process-wide
-   counter cannot tell a query's allocation from a timer's, so it can only
-   be compared against slack, and slack is how `0.05/op` once let fifty
-   thousand allocations per million queries read as zero.
-
-   The verdict is **fail-closed**. A profile record holds 32 program
-   counters and keeps the innermost ones, so a deep enough stack loses
-   the frames that say which goroutine it was on. Those sites are counted
-   as unclassifiable and fail the verdict: an allocation that cannot be
-   shown to be off the serving path counts as on it.
-
-   One class is excluded from *this* verdict and moved into the second:
-   the `sudog` the scheduler records while a goroutine is parked — a
-   worker waiting on the ready queue, two writers meeting on a socket's
-   write lock. That is bookkeeping for blocking, bounded by how many
-   goroutines can be parked at once and not by queries.
-
-   The exemption is by *allocating frame* — `runtime.acquireSudog`, which
-   every park path reaches and nothing else does — never by caller and
-   never by package. Both of the alternatives were tried and both were
-   wrong, each caught by the gate on real traffic: classifying by the
-   caller charges a channel park to the server code that blocked, and
-   exempting `internal/poll`/`syscall` would take a buffer that genuinely
-   escaped into a socket write out of the verdict with it. The count is
-   reported at every window; the rule is pinned by
-   `TestParkBookkeepingIsTheAllocatingFrame`.
-2. **Ops-relative, for what attribution cannot see** — a bound, not a
-   zero. Two windows are measured, the second carrying twice the traffic;
-   constant background cancels in the difference and what survives is
-   per-query. `ScalingSlack` (64 objects) bounds it: with the CI pair of
-   500k and 1M queries the difference is over 500k extra queries, so the
-   resolution is 64/500,000 ≈ 1.3 × 10⁻⁴ objects per query — a bound, and
-   the number the gate prints alongside it. Two things live under it:
-
-   *Work handed to another goroutine* allocates under a stack with no
-   engine frame, so only its growth with traffic gives it away.
-
-   *The profile is not complete.* Go's tiny allocator batches pointer-free
-   objects of ≤16 bytes into a shared block and returns before the
-   sampling code runs (`runtime/malloc.go`, `mallocgcTiny`), so only the
-   block that opens a batch is recorded — measured at exactly one record
-   per sixteen one-byte objects. A per-query tiny allocation is therefore
-   still caught by verdict 1 (a million queries leave ~62k records on the
-   serving stacks, and one is enough to fail), but a handful landing in a
-   block somebody else opened can leave no record at all. So this verdict
-   is taken twice: over what attribution attributed, and over
-   `MemStats.Mallocs`, which counts every logical allocation including the
-   tiny ones. The second closes the gap for anything per-query. What
-   neither closes is a bounded, non-scaling handful of tiny objects.
-
-   Marks bracket their own snapshot with two malloc reads, so the
-   measurement's cost — thousands of objects per snapshot, with every
-   allocation profiled — is excluded from both windows rather than
-   charged to the traffic that follows.
-
-Both verdicts are themselves tested, by injecting allocations in the
-three shapes they are weakest against
-(`TestZeroGateCatchesInjectedAllocations`): one made on the serving
-goroutine but too deep to classify, which the exact verdict must refuse
-as unclassifiable; one pointer-free byte per query, which the profiler
-batches sixteen-to-one and both verdicts must still catch; and one handed
-to a goroutine that was already running, which only the ops-relative
-verdict can see.
-
-The barrier's limits are stated where it is used rather than implied: it
-proves the slabs are home and that the process went still for three
-consecutive samples, and it says `unsettled` — failing the gate — when it
-did not. It does not prove that work a query triggered somewhere else has
-finished; nothing short of per-request accounting through every async
-handoff would. In the gated configuration there is no such work by
-construction (prefetch never fires on the corpus, the tap and the access
-log are inert), and the injected async control is what covers the general
-case.
-
-Window boundaries are the server's own completion barrier
-(`Server.Quiesced`: every job slab back in its ring), not a sleep — the
-last reply reaching a client says the bytes left, not that the slab which
-carried them was released, and the release is where the request's state
-is cleared. The in-flight count therefore drops *after* the slab is wiped
-and back in the ring, so a window cannot close mid-wipe. The barrier then
-waits for the process's malloc count to go still, bounded and best
-effort, so work the engines handed elsewhere lands in the window that
-caused it rather than the next one. Marks take **two** forced GCs (the second
-empties `sync.Pool` victim caches; the profile is also only current as of
-the last collection). A discarded warm-up window precedes the measured
-ones: the first packet through a path also builds an itab and grows a
-worker's stack, which are properties of starting, not of a query — and a
-per-query cost would still be present in the windows that follow.
-End-of-window accounting identity: replies == operations, zero
-client-observed drops/errors; TCP windows pre-open enough connections that
-the per-connection query budget covers every window without a redial.
-
-**Coverage today** (Stage Z1): `udp4-specific` and `tcp`, corpus of plain
-A hits. `udp4-wildcard` and both IPv6 flavors are declared and skipped
-until their stage. The hit-class corpora from Z2a/Z2b — NODATA, NXDOMAIN,
-CNAME chases, DO/no-DO, EDE/failure, NX-cut, aggressive denial — are gated
-in-process instead (`TestServeRawHitClasses`,
-`middleware/cache/composite_wire_test.go`), and ECS, prefetch-due and
-aggressive-denial candidates are Msg-path classes by construction (§6), so
-they are not in the subprocess corpus. DoT has no budget gate yet.
-
-CI: the `allocgate` job — non-race (the `-race` matrix cannot run
-`!race`-tagged allocation pins), Go version pinned in lockstep with
-`go.mod`'s toolchain directive.
+A subprocess flood gate (`internal/zerogate`) enforced a literal,
+fail-closed zero over real sockets during the rewrite and caught five
+bugs reviews had missed. It was development instrumentation, not a
+production contract, and was retired once the paths it guarded were
+pinned in-process; its two lessons are kept here: a process-wide counter
+compared against slack is not a zero (it once let fifty thousand
+allocations per million queries read as zero), and Go's tiny allocator
+batches ≤16-byte pointer-free objects sixteen-to-one, so
+`MemStats.Mallocs` — not the profile — is the count that sees them.
 
 ## 2. Ownership: the job slab
 
-The unit of ownership is the **job**: one preallocated, ring-managed slab
-carrying all per-request strict-path state — RX/TX buffers, the request
-view, chain cursor, writer state (absorbing the chain pool, the edns writer
-pool, and framing buffers for strict use), address + pktinfo scratch with a
-cached classic address view, the noalloc context carrier, canonical-hash
-scratch, and TX completion state. Nothing on the strict path comes from a
-`sync.Pool`: GC empties pools, and the gate counts every malloc.
+The unit of ownership is the **job**: one leased slab carrying all
+per-request strict-path state — RX/TX buffers, the request view, chain
+cursor, writer state (absorbing the chain pool, the edns writer pool, and
+framing buffers for strict use), address + pktinfo scratch with a cached
+classic address view, the noalloc context carrier, canonical-hash
+scratch, and TX completion state. Between requests a slab parks in its
+engine's explicit idle cache — never a `sync.Pool`: the collector empties
+pools on its own schedule, which both breaks the warm steady state (a
+refill at the next GC) and defeats trim (a pool's victim generation kept
+a full burst resident through `FreeOSMemory`, measured).
 
 Rules:
 
@@ -291,32 +200,31 @@ through accessors; *ctx-clean* = no ordinary ctx primitives.
   TCP/DoT large ≤65,535B, **prefix-first acquisition**: the 2-byte length
   is read into connection-owned scratch and validated before a large job is
   taken) to startup RSS.
-- The preallocated ring sizes the steady state; it is not the ceiling on
-  in-flight work. A hit returns its slab in microseconds, but a miss holds
-  one for an upstream resolution, so a fixed ring would cap the server at
-  ring size over resolution latency — measured, on a 32-core box: 65k
-  queries a second with a fixed ring against 185k with the ring allowed to
-  stretch, at the same offered concurrency. When the ring is empty a
-  reader takes a *pooled spare* instead, returned to the collector once
-  the burst passes. Same shape as the ready queue: pool first, and the
-  overflow path exists so the bound is on memory rather than on
-  concurrency.
-- The burst bounds — how far the ring may stretch, and how many
-  connections the stream engines admit — are **derived at startup**, not
+- Admission bounds in-flight work; memory follows it. A hit returns its
+  slab in microseconds, but a miss holds one for an upstream resolution,
+  so the caps are sized for concurrency (steady-state formula plus burst
+  headroom) — a cap at the steady-state formula alone was measured as a
+  hard ceiling of slab-count over resolution latency. Nothing is
+  preallocated: a slab exists because a query needed it, parks in the
+  idle cache for the next one, and leaves on trim.
+- Every bound — the UDP lease cap, worker count, stream connections and
+  slab classes — comes from one **resource plan derived at startup**, not
   compiled in (`server/ingress_bounds.go`). A number chosen once is a
   guess about hardware its author never saw: too small on the server it
   was meant to protect, an out-of-memory kill on the 128MB router it was
-  never considered for. Each is a share of the memory the process may
-  actually use — the machine's, narrowed by a cgroup limit or GOMEMLIMIT
-  when either binds first — clamped at both ends, and logged at startup
-  next to the counters that report reaching them.
-- UDP load shedding: no slot in the ring *and* the stretch at its bound ⇒
-  per-reader reserved discard buffer, drop, count. Both readers shed the
-  same way; the batched one drains a whole batch into scratch memory,
-  because a reader that waits for a slab instead leaves its socket unread
-  and the loss moves into the kernel queue, off our counters and onto the
-  oldest packets. `MSG_TRUNC` ⇒ drop+count. `MSG_CTRUNC`: specific bind
-  continues; wildcard bind drops+counts (the destination is unknowable).
+  never considered for. The plan divides a share of the memory the
+  process may actually use — the machine's, narrowed by a cgroup limit or
+  GOMEMLIMIT when either binds first — among the subsystems, splits the
+  stream budget across TCP and DoT, respects the descriptor allowance,
+  clamps everything at both ends, and is logged where each listener
+  starts.
+- UDP load shedding: lease cap reached ⇒ per-reader reserved discard
+  buffer, drop, count. Both readers shed the same way; the batched one
+  drains a whole batch into scratch memory, because a reader that waits
+  for a slab instead leaves its socket unread and the loss moves into the
+  kernel queue, off our counters and onto the oldest packets. `MSG_TRUNC`
+  ⇒ drop+count. `MSG_CTRUNC`: specific bind continues; wildcard bind
+  drops+counts (the destination is unknowable).
 - Workers are fixed for the server's lifetime — no per-N retirement. The
   "stacks stay grown" assumption is measured (stack-growth proxy) at every
   gate, not assumed.

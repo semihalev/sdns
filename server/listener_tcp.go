@@ -73,7 +73,7 @@ func (l *tcpListener) Serve(_ context.Context) error {
 	}
 
 	zlog.Info("DNS server listening", "net", "tcp", "addr", l.addr,
-		"maxconns", engine.maxConns, "slabs", cap(engine.freeSmall))
+		"maxconns", engine.maxConns, "smalljobs", cap(engine.smallTokens), "largejobs", cap(engine.largeTokens))
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
@@ -119,4 +119,15 @@ func (l *tcpListener) Shutdown(_ context.Context) error {
 		close(l.done)
 	})
 	return l.drainErr
+}
+
+// TrimIdleMemory drops the engine's parked slabs (see trim.go).
+func (l *tcpListener) TrimIdleMemory() int {
+	l.mu.Lock()
+	engine := l.engine
+	l.mu.Unlock()
+	if engine == nil {
+		return 0
+	}
+	return engine.trimIdle()
 }

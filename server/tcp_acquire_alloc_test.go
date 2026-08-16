@@ -48,16 +48,10 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 	stream := e.streams.Get().(*tcpStream)
 	stream.reset(server)
 
-	// Empty the ring, so every acquisition below takes the waiting path.
-	held := make([]*tcpJob, 0, len(e.freeSmall))
-	for len(e.freeSmall) > 0 {
-		held = append(held, <-e.freeSmall)
-	}
-	defer func() {
-		for _, j := range held {
-			e.freeSmall <- j
-		}
-	}()
+	// Take the class's one token, so every acquisition below takes the
+	// waiting path.
+	<-e.smallTokens
+	defer func() { e.smallTokens <- struct{}{} }()
 
 	// The cold one first, and measured raw. AllocsPerRun runs the body
 	// once before it starts counting, so anything a connection builds on

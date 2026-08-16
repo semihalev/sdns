@@ -91,53 +91,53 @@ func TestUDPSilentTerminalDoesNotResendAStaleReply(t *testing.T) {
 	}
 }
 
-// TestUDPQuiescenceTrailsTheRingReturn pins the barrier against the
+// TestUDPQuiescenceTrailsTheParkedSlab pins the barrier against the
 // envelope it closes.
 //
 // Clearing a slab is inside the request, not after it: the reply has
 // left, but the writer state, the buffers and the staged reply length
 // are still being wiped, and that work is precisely what an allocation
-// measurement is trying to include. So the in-flight count has to drop
-// after the slab is home, not as the reply goes out — otherwise a window
-// can close mid-wipe and charge the rest to whatever comes next.
+// measurement is trying to include. So the counts have to drop after the
+// slab is scrubbed and parked, not as the reply goes out — otherwise a
+// window can close mid-wipe and charge the rest to whatever comes next.
 //
-// The ordering is made observable by filling the ring first: the release
-// then blocks on the way back, and an engine that decremented early
-// would call itself idle while a slab is still in hand.
-func TestUDPQuiescenceTrailsTheRingReturn(t *testing.T) {
-	e := &udpEngine{free: make(chan *udpJob, 1)}
-	e.free <- &udpJob{engine: e} // ring full: the return below blocks
+// A watcher races the release: the moment the engine calls itself idle,
+// the slab must already be in the cache, scrubbed. An engine that
+// decremented early has a window in which it is "idle" with the slab
+// still in hand, and the spinning watcher is built to land in it.
+func TestUDPQuiescenceTrailsTheParkedSlab(t *testing.T) {
+	for range 200 {
+		e := &udpEngine{slabCap: 1}
+		j := &udpJob{engine: e, state: udpJobServing, rxLen: 40, txLen: 64, written: true}
+		e.leased.Add(1)
+		e.inFlight.Add(1)
 
-	j := &udpJob{engine: e, state: udpJobServing}
-	e.inFlight.Add(1)
+		start := make(chan struct{})
+		released := make(chan struct{})
+		go func() {
+			<-start
+			j.release(udpJobServing)
+			close(released)
+		}()
 
-	released := make(chan struct{})
-	go func() {
-		j.release(udpJobServing)
-		close(released)
-	}()
-
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if e.quiesced() {
-			t.Fatal("the engine called itself idle while a slab was still on " +
-				"its way back to the ring; a measurement would close its " +
-				"window before the request had finished with the slab")
+		close(start)
+		for !e.quiesced() {
+			runtime.Gosched()
 		}
-		runtime.Gosched()
-	}
-
-	<-e.free // make room; the release completes
-	select {
-	case <-released:
-	case <-time.After(2 * time.Second):
-		t.Fatal("release never completed")
-	}
-	if !e.quiesced() {
-		t.Fatal("the slab is home and cleared, but the engine still reports work in flight")
-	}
-	if j.txLen != 0 || j.rxLen != 0 || j.written {
-		t.Fatalf("slab returned uncleared: txLen=%d rxLen=%d written=%v",
-			j.txLen, j.rxLen, j.written)
+		// Idle just became true; everything the request owed must already
+		// be done.
+		if got := e.cache.size(); got != 1 {
+			t.Fatal("the engine called itself idle before the slab was parked; " +
+				"a measurement would close its window before the request had " +
+				"finished with the slab")
+		}
+		<-released
+		if e.leased.Load() != 0 {
+			t.Fatalf("leased = %d after release", e.leased.Load())
+		}
+		if j.txLen != 0 || j.rxLen != 0 || j.written {
+			t.Fatalf("slab parked uncleared: txLen=%d rxLen=%d written=%v",
+				j.txLen, j.rxLen, j.written)
+		}
 	}
 }

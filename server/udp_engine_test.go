@@ -243,12 +243,12 @@ func TestUDPEngineAcceptParity(t *testing.T) {
 // packets are dropped while the reader keeps consuming — and the engine
 // drains cleanly afterwards.
 func TestUDPEngineShedsWhenSaturated(t *testing.T) {
-	// Saturation is the ring and the stretch together, so the bound is
+	// Saturation is the whole lease cap, so the plan's headroom is
 	// lowered here rather than standing up as many blocked requests as
 	// this machine's memory allows. Set before the engine exists and
 	// restored after it is gone: nothing reads it in between.
-	defer func(n int64) { spareSlabBound = n }(spareSlabBound)
-	spareSlabBound = 2
+	defer func(p resourcePlan) { activePlan = p }(activePlan)
+	activePlan.udpSpareSlabs = 2
 
 	release := make(chan struct{})
 	addr, stop := startEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {

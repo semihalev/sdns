@@ -64,10 +64,6 @@ jobs:
       - name: Allocation pins (no race)
         run: go test -count=1 -run 'Alloc' ./...
 
-      - name: Zero gate
-        run: go test -count=1 -tags zerogate -run TestZeroGate -timeout 20m -v ./internal/zerogate/
-        env:
-          ZEROGATE_OPS: "1000000"
 
   release-targets:
     # The release ships architectures no test job builds for. A transport

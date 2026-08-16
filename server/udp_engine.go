@@ -3,7 +3,6 @@ package server
 import (
 	"net"
 	"net/netip"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -19,10 +18,13 @@ import (
 // The owned UDP engine replaces the library server's read loop. Its shape
 // follows the zero-path contract (docs/zero-path.md):
 //
-//   - Jobs are preallocated slabs in a ring; the reader acquires a slot
-//     first and reads the datagram directly into it. No slot ⇒ the packet
-//     is consumed into a reserved discard buffer and dropped, counted —
-//     the reader never blocks on the ring and never stalls the socket.
+//   - Jobs are leased slabs: the reader takes one against the admission
+//     cap and reads the datagram directly into it. Slabs are created on
+//     demand and parked in an explicit idle cache between requests, so
+//     resident memory follows traffic while the cap bounds it. Cap
+//     reached ⇒ the packet is consumed into a reserved discard buffer
+//     and dropped, counted — the reader never blocks for a slab and
+//     never stalls the socket.
 //   - Workers are fixed for the server's lifetime and serve from the ready
 //     queue, so their stacks stay grown across requests instead of paying
 //     the per-goroutine growth tax on every packet.
@@ -43,7 +45,7 @@ import (
 // by the kernel and dropped by policy.
 const udpJobBufSize = 4096
 
-// udpJob is one preallocated per-request slab. It is also the
+// udpJob is one per-request slab. It is also the
 // middleware.Transport the pipeline writes through: the classic address
 // views are cached in the slab and rewritten per packet, so nothing on
 // the reply path materializes addresses.
@@ -90,11 +92,7 @@ type udpJob struct {
 	burst    *udpTXBurst
 
 	written bool
-	// spare marks a slab that came from the pool the ring stretches into
-	// rather than from the ring itself, so release sends it back where it
-	// came from. Set once, when the slab is made.
-	spare bool
-	state uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
+	state   uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
 }
 
 const (
@@ -212,37 +210,35 @@ func (j *udpJob) LeaseWire(capacity int) []byte {
 	return j.tx[:0]
 }
 
-// udpEngine owns the sockets' read loops, the job ring, and the worker
-// pool for one listener.
+// udpEngine owns the sockets' read loops, the slab lease, and the
+// worker pool for one listener.
 type udpEngine struct {
 	handler  rawHandler
 	pcs      []*net.UDPConn
 	wildcard bool
 
-	free  chan *udpJob
 	ready chan *udpJob
 
 	// inFlight counts the slabs between the ready queue and their
 	// release: queued, being served, or staged for a send. Slabs parked
 	// in a reader are excluded — the readers hold one each by design, so
 	// counting them would mean an idle server never reads as settled.
+	// It is the quiescence barrier, deliberately separate from leased:
+	// admission and settlement answer different questions.
 	inFlight atomic.Int64
 
-	// spare is where the ring stretches to. A slab is held for the whole
-	// request, so on a hit it comes back in microseconds and the ring is
-	// never short — but a miss holds one for an upstream resolution, and
-	// with a fixed ring the number of slabs is then a hard ceiling on how
-	// many queries the server can have in flight at once. Cold traffic
-	// runs straight into it: throughput settles at ring size over
-	// resolution latency, no matter how many clients are asking.
-	//
-	// So the ring is the steady state, not the limit. When it is empty a
-	// reader takes a spare instead of shedding a query the resolver could
-	// still answer. Spares are pooled rather than kept, so a burst leaves
-	// no permanent resident set behind; borrowed is bounded by
-	// maxSpareSlabs.
-	spare    sync.Pool
-	borrowed atomic.Int64
+	// leased is the admission authority: how many queries hold a slab
+	// right now, capped at slabCap. Nothing else bounds memory here —
+	// not the cache, which is only where scrubbed slabs wait for reuse,
+	// and never the collector. A slab is held for the whole request, so
+	// a hit returns it in microseconds while a miss holds it for an
+	// upstream resolution; the cap is therefore sized for concurrency
+	// (the steady-state formula plus the plan's burst headroom), not for
+	// the steady state alone — a fixed steady-state ring was measured as
+	// a hard ceiling of ring-size over resolution latency.
+	leased  atomic.Int64
+	slabCap int64
+	cache   slabCache[udpJob]
 
 	workers int
 	readers sync.WaitGroup
@@ -262,37 +258,6 @@ type udpEngine struct {
 	txConns   map[*net.UDPConn]syscall.RawConn
 }
 
-// defaultIngressWorkers sizes the fixed pool when the config is silent.
-//
-// Not GOMAXPROCS. A worker is not a CPU here: it runs the whole chain
-// inline, so anything that is not a cache hit holds one for the length of
-// an upstream resolution — hundreds of milliseconds of waiting, not of
-// computing. Sized by cores, the pool caps a resolver at cores over
-// latency, which a unit probe shows exactly: four workers and a 50ms
-// handler put precisely four queries in flight and answered 78 a second.
-// The server this replaced gave every packet its own goroutine and had no
-// such ceiling.
-//
-// So it is sized for concurrency instead. Idle workers cost a stack each
-// and keep those stacks grown, which is the reason to have a pool at all
-// rather than a goroutine per packet.
-//
-// A smaller pool was tried on the theory that fuller send bursts would
-// serve hits better. The box it was measured on gave the same build
-// anywhere between 127k and 197k hits a second depending on what else was
-// running, so the theory is neither confirmed nor refuted — and an
-// unmeasurable gain is not a reason to reintroduce a measured ceiling.
-func defaultIngressWorkers() int {
-	n := runtime.GOMAXPROCS(0) * 16
-	if n < 256 {
-		n = 256
-	}
-	if n > 1024 {
-		n = 1024
-	}
-	return n
-}
-
 // defaultIngressQueue is deliberately shallow. Depth here is not
 // absorption, it is delay: a job queued behind a pool that is blocked on
 // upstream work waits for a worker to come back, and every slot of depth
@@ -309,10 +274,14 @@ const udpBatchSize = 16
 
 func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers, queue int) *udpEngine {
 	if workers <= 0 {
-		workers = defaultIngressWorkers()
+		// Sized for concurrency, not CPUs (see ingress_bounds.go): a
+		// worker runs the chain inline, and a miss holds one for the
+		// length of an upstream resolution. A pool of cores over latency
+		// was measured as exactly that ceiling.
+		workers = activePlan.udpWorkers
 	}
 	if queue <= 0 {
-		queue = defaultIngressQueue
+		queue = activePlan.udpQueue
 	}
 	e := &udpEngine{
 		handler:  handler,
@@ -338,45 +307,36 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		}
 		e.txConns[pc] = rc
 	}
-	// Capacity equation (zero-path §7): in-flight jobs = queue depth +
-	// one per busy worker + a full batch in each reader's hand (the
-	// portable reader arms one of its batch). The ring holds exactly that
-	// many slabs; MaxInboundInFlight is this derived bound.
-	inFlight := queue + workers + len(pcs)*udpBatchSize
-	e.free = make(chan *udpJob, inFlight)
+	// Capacity equation (zero-path §7): the admission cap is the
+	// steady-state formula — queue depth + one per busy worker + what
+	// each reader may arm — plus the plan's burst headroom, which is
+	// what lets a miss-heavy burst run at the offered concurrency
+	// instead of at slab-count over resolution latency. Nothing is
+	// allocated here: slabs are made when a query needs one and parked
+	// in the cache between requests.
+	e.slabCap = int64(queue + workers + len(pcs)*udpReaderReserve)
+	e.slabCap += activePlan.udpSpareSlabs
 	e.ready = make(chan *udpJob, queue)
-	for i := 0; i < inFlight; i++ {
-		e.free <- &udpJob{engine: e}
-	}
-	e.spare.New = func() any { return &udpJob{engine: e, spare: true} }
 	return e
 }
 
-// take returns a slab to read into: from the ring first, and from the
-// spare pool when the ring is empty. A nil return is the shedding case —
-// the ring is empty and the stretch is already at its bound.
-//
-// The ring is sized for the steady state, where a slab is held for
-// microseconds. It is not a limit on how many queries may be in flight:
-// a miss holds its slab for an upstream resolution, and capping in-flight
-// work at the ring's size would cap the server at ring over latency —
-// which is what cold traffic measures, and what the server this replaced
-// (a goroutine and a buffer per packet) had no equivalent of.
+// take leases a slab to read into. A nil return is the shedding case:
+// the admission cap is reached, and the cap — not the cache, not the
+// collector — is the memory authority here.
 func (e *udpEngine) take() *udpJob {
-	select {
-	case j := <-e.free:
-		return j
-	default:
-	}
 	for {
-		n := e.borrowed.Load()
-		if n >= spareSlabBound {
+		n := e.leased.Load()
+		if n >= e.slabCap {
 			return nil
 		}
-		if e.borrowed.CompareAndSwap(n, n+1) {
-			return e.spare.Get().(*udpJob)
+		if e.leased.CompareAndSwap(n, n+1) {
+			break
 		}
 	}
+	if j := e.cache.get(); j != nil {
+		return j
+	}
+	return &udpJob{engine: e}
 }
 
 // start launches the fixed workers and one reader per socket.
@@ -540,6 +500,11 @@ func (e *udpEngine) serveOverflow(j *udpJob) {
 	e.serve(j, nil)
 }
 
+// trimIdle drops the parked slabs, so a burst's memory is collectable.
+// The lease cap is untouched: admission does not change, only what the
+// next admissions will have to allocate.
+func (e *udpEngine) trimIdle() int { return e.cache.trim() }
+
 // quiesced reports whether every slab is back in the ring: nothing is
 // being read into, served, or staged for a send. It is the completion
 // barrier a measurement needs — the last reply reaching a client says
@@ -559,18 +524,15 @@ func (j *udpJob) release(from uint8) {
 	// ignored opcode, a panic — with the previous client's bytes, to the
 	// new client's address.
 	j.txLen = 0
-	// Read before the slab leaves: once it is back in the ring or the
-	// pool it belongs to whoever takes it next, and nothing here may
-	// touch it again.
-	e, spare := j.engine, j.spare
-	if spare {
-		e.spare.Put(j)
-		e.borrowed.Add(-1)
-	} else {
-		e.free <- j
-	}
+	// Read before the slab leaves: once it is in the cache it belongs to
+	// whoever takes it next, and nothing here may touch it again. The
+	// lease is released after the slab is parked — count down earlier
+	// and the cap could admit a query the cache cannot yet serve.
+	e := j.engine
+	e.cache.put(j)
+	e.leased.Add(-1)
 
-	// Counted down last, after the slab is cleared and back in the ring.
+	// Counted down last, after the slab is scrubbed and parked.
 	// Quiescence is what a measurement takes as the end of the request,
 	// and clearing a slab is inside the request, not after it: decrement
 	// any earlier and the window can close while this job is still being
@@ -578,7 +540,7 @@ func (j *udpJob) release(from uint8) {
 	// queued again before this line runs — which is the safe direction
 	// for a barrier: it delays quiescence, it never claims it early.
 	if from == udpJobQueued || from == udpJobServing {
-		j.engine.inFlight.Add(-1)
+		e.inFlight.Add(-1)
 	}
 }
 

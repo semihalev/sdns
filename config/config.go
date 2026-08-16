@@ -127,9 +127,17 @@ type Config struct {
 	// independently, so the three can't disagree — and it sizes the steady
 	// state rather than capping it: under saturation the ring stretches
 	// into pooled spares, as far as this machine's memory allows.
-	IngressWorkers  int // Fixed handler workers per listener (default: GOMAXPROCS*16, clamped 256..1024)
+	IngressWorkers  int // Fixed handler workers per listener (default: derived from CPUs and memory)
 	IngressQueue    int // Ready-queue depth before a job is served on its own goroutine (default 64)
 	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default: derived from available memory)
+
+	// MemoryTrim returns a burst's slab memory to the operating system
+	// after a long idle. Off by default: the trim is one synchronous GC
+	// over the whole process, which a busy or big-memory server never
+	// needs and a single small core feels. Meant for memory-constrained
+	// devices (containers on routers, small VPSes) where resident memory
+	// after a traffic burst matters more than an idle-time pause.
+	MemoryTrim bool
 
 	// Reflex: DNS amplification/reflection attack detection
 	ReflexEnabled      bool    // Enable amplification attack detection
@@ -689,6 +697,16 @@ prefetch = 10
 # Maximum recursion depth for queries
 # Prevents infinite loops in resolution
 maxdepth = 30
+
+# ============================
+# Memory
+# ============================
+
+# Return a traffic burst's memory to the operating system after a long
+# idle (several minutes quiescent). The trim is one synchronous GC over
+# the whole process, so it is meant for memory-constrained devices —
+# containers on routers, small VPSes — not for busy servers.
+# memorytrim = true
 
 # ============================
 # Rate Limiting

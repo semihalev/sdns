@@ -113,12 +113,12 @@ func TestTCPEnginePrefixFirstHoldsNoJob(t *testing.T) {
 	if got := l.engine.active.Load(); got != 32 {
 		t.Fatalf("admitted %d conns, want 32", got)
 	}
-	// Every job is still in the ring: idle connections acquired nothing.
-	if free, want := len(l.engine.freeSmall), cap(l.engine.freeSmall); free != want {
-		t.Fatalf("%d small jobs free, want %d — idle connections pinned slabs", free, want)
+	// Every token is still home: idle connections acquired nothing.
+	if free, want := len(l.engine.smallTokens), cap(l.engine.smallTokens); free != want {
+		t.Fatalf("%d small tokens free, want %d — idle connections pinned slabs", free, want)
 	}
-	if free, want := len(l.engine.freeLarge), cap(l.engine.freeLarge); free != want {
-		t.Fatalf("%d large jobs free, want %d — idle connections pinned slabs", free, want)
+	if free, want := len(l.engine.largeTokens), cap(l.engine.largeTokens); free != want {
+		t.Fatalf("%d large tokens free, want %d — idle connections pinned slabs", free, want)
 	}
 	// And they still serve.
 	q := new(dns.Msg)
@@ -131,18 +131,18 @@ func TestTCPEnginePrefixFirstHoldsNoJob(t *testing.T) {
 	}
 }
 
-// waitForRing blocks until the ring is back to full, which is the shape
+// waitForRing blocks until every small token is home, which is the shape
 // every slow-client assertion here takes: the slab has to come back on
 // the server's own budget, with the client doing nothing to help.
 func waitForRing(t *testing.T, e *tcpEngine, within time.Duration) {
 	t.Helper()
-	want := cap(e.freeSmall)
+	want := cap(e.smallTokens)
 	deadline := time.Now().Add(within)
-	for len(e.freeSmall) < want && time.Now().Before(deadline) {
+	for len(e.smallTokens) < want && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if free := len(e.freeSmall); free != want {
-		t.Fatalf("%d slabs free after %v, want %d", free, within, want)
+	if free := len(e.smallTokens); free != want {
+		t.Fatalf("%d tokens free after %v, want %d", free, within, want)
 	}
 }
 
@@ -174,11 +174,11 @@ func TestTCPEngineStalledPrefixReleasesRing(t *testing.T) {
 	}
 
 	drained := time.Now().Add(3 * time.Second)
-	for len(l.engine.freeSmall) > 0 && time.Now().Before(drained) {
+	for len(l.engine.smallTokens) > 0 && time.Now().Before(drained) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if free := len(l.engine.freeSmall); free != 0 {
-		t.Fatalf("%d slabs still free; the stall never took the ring", free)
+	if free := len(l.engine.smallTokens); free != 0 {
+		t.Fatalf("%d tokens still free; the stall never took the class", free)
 	}
 
 	waitForRing(t, l.engine, tcpQueryWait+3*time.Second)
@@ -234,11 +234,11 @@ func TestTCPEngineJobWaitBounded(t *testing.T) {
 		writeFrame(t, conn, wireQ)
 	}
 	drained := time.Now().Add(5 * time.Second)
-	for len(l.engine.freeLarge) > 0 && time.Now().Before(drained) {
+	for len(l.engine.largeTokens) > 0 && time.Now().Before(drained) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if free := len(l.engine.freeLarge); free != 0 {
-		t.Fatalf("%d large slabs still free; the handlers did not take the ring", free)
+	if free := len(l.engine.largeTokens); free != 0 {
+		t.Fatalf("%d large tokens still free; the handlers did not take the class", free)
 	}
 
 	late, err := net.Dial("tcp", addr)
@@ -308,16 +308,16 @@ func TestTCPEngineSilentClientReleasesJob(t *testing.T) {
 	}
 
 	pinned := time.Now().Add(3 * time.Second)
-	for len(l.engine.freeSmall) == cap(l.engine.freeSmall) && time.Now().Before(pinned) {
+	for len(l.engine.smallTokens) == cap(l.engine.smallTokens) && time.Now().Before(pinned) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if len(l.engine.freeSmall) == cap(l.engine.freeSmall) {
+	if len(l.engine.smallTokens) == cap(l.engine.smallTokens) {
 		t.Fatal("the silent client never took a slab")
 	}
 	// Parked, not merely busy: six megabytes of replies cannot move into a
 	// pinned receive window nobody reads from, so the slab is still out.
 	time.Sleep(500 * time.Millisecond)
-	if len(l.engine.freeSmall) == cap(l.engine.freeSmall) {
+	if len(l.engine.smallTokens) == cap(l.engine.smallTokens) {
 		t.Fatal("the replies drained without the client reading; the write never blocked")
 	}
 
@@ -580,8 +580,7 @@ func TestTCPEngineShutdownForcesBlockedConns(t *testing.T) {
 // leaves the byte path.
 func TestSmallSlabCarriesASignedSizedReply(t *testing.T) {
 	e := newTCPEngine(echoHandler(), "tcp", 8)
-	job := <-e.freeSmall
-	defer func() { e.freeSmall <- job }()
+	job := newTCPJob(e, false)
 
 	// A signed answer of a few kilobytes is the case this class is for.
 	for _, size := range []int{512, 2 << 10, 6 << 10, tcpSmallReply} {
@@ -598,8 +597,7 @@ func TestSmallSlabCarriesASignedSizedReply(t *testing.T) {
 		t.Fatal("the small class accepted a reply larger than it can hold")
 	}
 
-	large := <-e.freeLarge
-	defer func() { e.freeLarge <- large }()
+	large := newTCPJob(e, true)
 	if large.LeaseWire(tcpJobBufSize) == nil {
 		t.Fatal("the large class refused a protocol-maximum reply")
 	}

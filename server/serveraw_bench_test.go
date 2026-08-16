@@ -113,10 +113,9 @@ func TestServeRawWarmHitWithEDNS(t *testing.T) {
 
 // BenchmarkServeRawWireHit measures the warm exact-entry hit through the
 // strict ingress against the default hit-path chain (resolver replaced by
-// a terminal stub the warm loop never reaches). This is the in-process
-// twin of the zerogate flood, precise enough to attribute single
-// allocations with -memprofile. Run per flavor: with and without a client
-// OPT.
+// a terminal stub the warm loop never reaches). Precise enough to
+// attribute single allocations with -memprofile. Run per flavor: with and
+// without a client OPT.
 func BenchmarkServeRawWireHit(b *testing.B) {
 	for _, withEDNS := range []bool{false, true} {
 		name := "noopt"

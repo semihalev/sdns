@@ -158,7 +158,7 @@ func (l *udpListener) Serve(_ context.Context) error {
 	// reading the counters that report hitting it.
 	zlog.Info("DNS server listening", "net", "udp", "addr", l.addr,
 		"sockets", len(engine.pcs), "workers", engine.workers,
-		"slabs", cap(engine.free), "maxspare", spareSlabBound)
+		"slabcap", engine.slabCap)
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
@@ -226,4 +226,15 @@ func (l *udpListener) Shutdown(_ context.Context) error {
 		close(l.done)
 	})
 	return l.drainErr
+}
+
+// TrimIdleMemory drops the engine's parked slabs (see trim.go).
+func (l *udpListener) TrimIdleMemory() int {
+	l.mu.Lock()
+	engine := l.engine
+	l.mu.Unlock()
+	if engine == nil {
+		return 0
+	}
+	return engine.trimIdle()
 }

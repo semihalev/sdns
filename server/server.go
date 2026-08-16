@@ -49,6 +49,11 @@ func New(cfg *config.Config) *Server {
 
 	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline()}
 
+	// One resource plan for every listener, derived before any exists:
+	// the stream engines share a budget, so the plan has to know how
+	// many there are.
+	configureResourcePlan(cfg)
+
 	timeout := cfg.QueryTimeout.Duration
 	// The owned transports feed ServeRaw: raw bytes in, and the server —
 	// not the transport — decides eligibility, decode, and context. DoH
@@ -210,6 +215,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Supervisor: on ctx cancellation, shut every active listener down.
 	go s.superviseShutdown(ctx, active, done) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
+	if s.cfg.MemoryTrim {
+		go s.trimLoop(ctx) //nolint:gosec // G118 — same lifecycle context
+	}
 	return nil
 }
 

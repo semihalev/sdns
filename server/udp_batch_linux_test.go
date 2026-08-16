@@ -142,14 +142,16 @@ func TestUDPBatchEndToEnd(t *testing.T) {
 
 var errBadReply = &net.AddrError{Err: "bad reply", Addr: "batch"}
 
-// TestUDPBatchReaderWakesOnShutdown pins the batched reader's one blocking
-// wait against the drain deadline.
+// TestUDPBatchReaderWakesOnShutdown pins the exhausted reader's exit
+// against the drain deadline.
 //
-// The reader takes its first slab before it can arm a batch, and with the
-// ring empty that take blocks. What refills the ring is other readers and
-// workers releasing what they hold — so a wait that answers only to them
-// is a wait shutdown cannot bound, and the drain would run out its
-// deadline waiting for a goroutine that is not going to return.
+// With the lease cap reached the reader gets no slab, so it sheds: it
+// keeps consuming the socket into scratch memory, counting the loss.
+// The only thing that ends a shedding reader is its socket — which is
+// exactly what shutdown provides through the expired read deadline. A
+// reader that waited for a slab instead would be waiting on workers
+// releasing what they hold, and a worker stuck past the drain deadline
+// would hold the whole shutdown hostage with it.
 func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
 	handler := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
 		return true
@@ -161,25 +163,17 @@ func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
 	}
 	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1)
 
-	// The ring is emptied before the reader exists, which is what makes
-	// this deterministic: the reader then parks on its very first take,
-	// holding nothing and inside no syscall. That is the state the fix is
-	// about. A reader already inside recvmmsg is a different case and
-	// needs no help — the admission deadline wakes it.
-	held := make([]*udpJob, 0, cap(e.free))
-	for len(e.free) > 0 {
-		held = append(held, <-e.free)
-	}
+	// The cap is exhausted before the reader exists — the state a burst
+	// of slow queries leaves behind, with every slab held by a request
+	// that is not coming back before the deadline.
+	e.leased.Store(e.slabCap)
 	if !e.startBatched() {
 		_ = pc.Close()
 		t.Skip("batched receive unavailable on this kernel")
 	}
 
-	// Admission stop, exactly as the listener does it. A past deadline
-	// wakes a blocked read; it can do nothing for a goroutine waiting on
-	// a channel, and the slabs that would satisfy that wait are held here
-	// and are not coming back — which is the shape a worker stuck past
-	// the drain deadline produces in production.
+	// Admission stop, exactly as the listener does it: the expired
+	// deadline wakes the reader's shed read, and nothing else has to.
 	if err := pc.SetReadDeadline(time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -193,9 +187,9 @@ func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
 			t.Fatalf("drain returned %v", err)
 		}
 	case <-time.After(6 * time.Second):
-		t.Fatal("drain never returned: the batched reader is still parked " +
-			"on a slab that shutdown has no way to hand it")
+		t.Fatal("drain never returned: the exhausted batched reader had no " +
+			"way out of its shed loop")
 	}
 	_ = pc.Close()
-	_ = held
+	e.leased.Store(0)
 }

@@ -145,7 +145,7 @@ func TestTCPLargeSlabReturnsWhenTheBurstShrinks(t *testing.T) {
 	e := newTCPEngine(handler, "tcp", 64)
 
 	burst := append(framed(paddedQuery(t, "big.", 2500)), framed(plainQuery(t, "hold."))...)
-	conns := make([]*scriptedConn, defaultTCPLargeJobs)
+	conns := make([]*scriptedConn, cap(e.largeTokens))
 	for i := range conns {
 		conns[i] = newScriptedConn(burst)
 		e.register(conns[i])
@@ -168,8 +168,8 @@ func TestTCPLargeSlabReturnsWhenTheBurstShrinks(t *testing.T) {
 		}
 	}
 
-	if got, want := len(e.freeLarge), cap(e.freeLarge); got != want {
-		t.Fatalf("%d of %d large slabs free while every connection is on a small "+
+	if got, want := len(e.largeTokens), cap(e.largeTokens); got != want {
+		t.Fatalf("%d of %d large tokens free while every connection is on a small "+
 			"frame; a burst that shrinks must hand the large slab back, or this "+
 			"many connections own the class for as long as they stay busy", got, want)
 	}

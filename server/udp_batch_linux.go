@@ -122,15 +122,15 @@ func (r *udpBatchReader) run() {
 	defer e.readers.Done()
 
 	for {
-		// The ring is sized so every reader can arm a full batch. When it
-		// is empty anyway the reader consumes and sheds, exactly as the
-		// portable one does: waiting for a slab instead leaves the socket
-		// unread, and what overflows then is dropped by the kernel, off
-		// our counters and invisible to the operator watching for
-		// saturation. It also arrives late — the packets that survive a
-		// backed-up receive queue are the oldest ones, whose clients have
-		// often stopped waiting. Shedding keeps the loss ours to report
-		// and keeps what is served fresh.
+		// The lease cap reserves a batch per reader. When it is reached
+		// anyway the reader consumes and sheds, exactly as the portable
+		// one does: waiting for a slab instead leaves the socket unread,
+		// and what overflows then is dropped by the kernel, off our
+		// counters and invisible to the operator watching for saturation.
+		// It also arrives late — the packets that survive a backed-up
+		// receive queue are the oldest ones, whose clients have often
+		// stopped waiting. Shedding keeps the loss ours to report and
+		// keeps what is served fresh.
 		j0 := e.take()
 		if j0 == nil {
 			if !r.shed() {
@@ -142,11 +142,7 @@ func (r *udpBatchReader) run() {
 		r.arm(j0, 0)
 		k := 1
 		for k < udpBatchSize {
-			var j *udpJob
-			select {
-			case j = <-e.free:
-			default:
-			}
+			j := e.take()
 			if j == nil {
 				break
 			}

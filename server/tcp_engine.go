@@ -45,8 +45,15 @@ const (
 	// the ring small enough to run out; sizing them equally would either
 	// waste the receive side or push ordinary signed replies off the byte
 	// path and into a packing buffer.
-	tcpSmallFrame    = 2 << 10
-	tcpSmallReply    = 16 << 10
+	tcpSmallFrame = 2 << 10
+	// tcpSmallReply is two bytes short of 16KB so the TX buffer — reply
+	// plus its frame prefix — lands exactly on the allocator's 16,384B
+	// size class. At 16KB even, the prefix pushed every small TX into
+	// the 18,432B class: two waste kilobytes per slab, times the whole
+	// class. A reply of exactly 16,383 or 16,384 bytes declines the
+	// lease and packs into its own buffer, as every oversized reply
+	// already does.
+	tcpSmallReply    = 16<<10 - dnsclient.FramePrefixLen
 	tcpFirstReadWait = 2 * time.Second
 	tcpIdleWait      = 8 * time.Second
 	// tcpQueryWait is the absolute budget a query gets from the moment its
@@ -83,6 +90,12 @@ type tcpJob struct {
 	large    bool
 	written  bool
 	readTime time.Time
+
+	// leased is the double-release guard: set when the job is acquired,
+	// cleared exactly once when it is returned. A slab released twice is
+	// two connections writing into one buffer, so the second release is
+	// a panic, not a counter skew.
+	leased atomic.Bool
 
 	// Strict-path state, job-owned (see strict.go). The chain is here for
 	// the same reason as everything else in this struct: the strict path
@@ -152,12 +165,18 @@ type tcpEngine struct {
 	proto    string // "tcp" or "tls", for metrics
 	maxConns int64
 
-	// Two rings, by frame size. One ring of 64KB pairs was 8MB that ran
-	// out at 64 concurrent frames — measured: contention starts exactly
-	// where connections reach slabs, and the connection cap is 512.
-	freeSmall chan *tcpJob
-	freeLarge chan *tcpJob
-	closing   chan struct{}
+	// Two classes by frame size, each with its own admission tokens and
+	// its own idle cache. The tokens are the authority — how many frames
+	// of the class may hold a slab at once, and what acquire waits on
+	// under saturation — while the cache is only where scrubbed slabs
+	// wait for reuse. Separate classes because one shared bound would
+	// let the rare 128KB pairs starve the 18KB ones that a busy server
+	// actually runs on.
+	smallTokens chan struct{}
+	largeTokens chan struct{}
+	smallCache  slabCache[tcpJob]
+	largeCache  slabCache[tcpJob]
+	closing     chan struct{}
 	// streams are per-connection framing buffers. Unlike the job ring
 	// they are not strict-path state — a connection holds one for its
 	// whole life — so a pool is the right shape: an idle server keeps
@@ -180,78 +199,99 @@ type tcpEngine struct {
 }
 
 func newTCPEngine(handler rawHandler, proto string, maxConns int) *tcpEngine {
+	small, large := activePlan.tcpSmallJobs, activePlan.tcpLargeJobs
 	if maxConns <= 0 {
 		// The admission cap guards against a connection flood, and what
 		// it is allowed to spend is what the machine can spare — see
-		// ingress_bounds.go. It was 512, which cost more than it
-		// protected: 600 concurrent connections served a third of the
-		// queries a second that a cap above them does, because the cap
-		// also sizes the small ring and connections arriving with
-		// nowhere to go are refused rather than queued.
-		maxConns = tcpConnBound()
+		// ingress_bounds.go. Connections arriving past it are refused
+		// rather than queued, and a goroutine plus a pooled stream is a
+		// far cheaper thing to bound than the slabs are.
+		maxConns = activePlan.tcpConns
+	} else {
+		// An explicit cap also sizes the small class, the way it always
+		// did: a server cannot have more frames in flight than it has
+		// connections.
+		small = maxConns
+		if small > maxSmallJobs {
+			small = maxSmallJobs
+		}
 	}
-	// One small slab per admissible connection, up to a ceiling: a server
-	// cannot have more frames in flight than it has connections, so at
-	// this size the ordinary path stops queueing altogether. The ceiling
-	// keeps a very large connection cap from turning into a very large
-	// resident set; past it, the bounded wait does its job.
-	small := maxConns
-	if small > maxSmallJobs {
-		small = maxSmallJobs
+	if large < 1 {
+		large = 1
 	}
 	e := &tcpEngine{
-		handler:   handler,
-		proto:     proto,
-		maxConns:  int64(maxConns),
-		freeSmall: make(chan *tcpJob, small),
-		freeLarge: make(chan *tcpJob, defaultTCPLargeJobs),
-		closing:   make(chan struct{}),
-		conns:     make(map[net.Conn]struct{}),
+		handler:     handler,
+		proto:       proto,
+		maxConns:    int64(maxConns),
+		smallTokens: make(chan struct{}, small),
+		largeTokens: make(chan struct{}, large),
+		closing:     make(chan struct{}),
+		conns:       make(map[net.Conn]struct{}),
+	}
+	for i := 0; i < small; i++ {
+		e.smallTokens <- struct{}{}
+	}
+	for i := 0; i < large; i++ {
+		e.largeTokens <- struct{}{}
 	}
 	e.streams.New = func() any { return new(tcpStream) }
-	for i := 0; i < small; i++ {
-		e.freeSmall <- &tcpJob{
-			engine: e,
-			rx:     make([]byte, tcpSmallFrame),
-			tx:     make([]byte, dnsclient.FramePrefixLen+tcpSmallReply),
-		}
-	}
-	for i := 0; i < defaultTCPLargeJobs; i++ {
-		e.freeLarge <- &tcpJob{
-			engine: e,
-			large:  true,
-			rx:     make([]byte, tcpJobBufSize),
-			tx:     make([]byte, dnsclient.FramePrefixLen+tcpJobBufSize),
-		}
-	}
 	return e
+}
+
+// newTCPJob allocates one slab of the given class. Called only with the
+// class's token held; the slab parks in the class cache between
+// requests.
+func newTCPJob(e *tcpEngine, large bool) *tcpJob {
+	j := &tcpJob{engine: e, large: large}
+	if large {
+		j.rx = make([]byte, tcpJobBufSize)
+		j.tx = make([]byte, dnsclient.FramePrefixLen+tcpJobBufSize)
+		return j
+	}
+	j.rx = make([]byte, tcpSmallFrame)
+	j.tx = make([]byte, dnsclient.FramePrefixLen+tcpSmallReply)
+	return j
 }
 
 // largeClass reports whether a frame of this length needs the large class.
 func largeClass(length int) bool { return length > tcpSmallFrame }
 
-// ring returns the class a frame of this length needs.
-func (e *tcpEngine) ring(length int) chan *tcpJob {
+// tokens returns the admission tokens for a frame of this length.
+func (e *tcpEngine) tokens(length int) chan struct{} {
 	if largeClass(length) {
-		return e.freeLarge
+		return e.largeTokens
 	}
-	return e.freeSmall
+	return e.smallTokens
 }
 
-// put returns a slab to the class it came from.
+// put returns a slab: parked in its class cache first, and only then the
+// token back — the other order could admit a frame the cache cannot yet
+// serve, which is a needless allocation.
 func (e *tcpEngine) put(j *tcpJob) {
+	if !j.leased.CompareAndSwap(true, false) {
+		panic("server: tcp job released twice")
+	}
 	if j.large {
-		e.freeLarge <- j
+		e.largeCache.put(j)
+		e.largeTokens <- struct{}{}
 		return
 	}
-	e.freeSmall <- j
+	e.smallCache.put(j)
+	e.smallTokens <- struct{}{}
 }
 
-// quiesced reports whether every slab is back in the ring. Idle
+// quiesced reports whether every admission token is home. Idle
 // connections hold none — a slab is taken only once a frame's length
 // prefix has arrived — so this is true whenever no frame is mid-flight.
 func (e *tcpEngine) quiesced() bool {
-	return len(e.freeSmall) == cap(e.freeSmall) && len(e.freeLarge) == cap(e.freeLarge)
+	return len(e.smallTokens) == cap(e.smallTokens) && len(e.largeTokens) == cap(e.largeTokens)
+}
+
+// trimIdle drops both classes' parked slabs, so a burst's memory is
+// collectable. The tokens are untouched: admission does not change,
+// only what the next admissions will have to allocate.
+func (e *tcpEngine) trimIdle() int {
+	return e.smallCache.trim() + e.largeCache.trim()
 }
 
 // startAccepting runs the accept loop on its own goroutine, joining it to
@@ -442,36 +482,47 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 	}
 }
 
-// acquire takes a slab from the ring within the announcing query's
-// budget. Waiting is the right backpressure for a stream transport;
-// waiting forever is not. defaultTCPJobs clients that announce frames
-// they never send would otherwise own the ring outright, and every
-// connection behind them would park in this select with nothing but
-// shutdown to wake it. A connection that cannot be served inside its own
-// budget is dropped instead, so the slab it never took stays in the ring
-// for someone who can use it.
-// The wait is bounded by the connection's own reusable timer: a slab
-// runs out exactly when the server is saturated, and a timer built per
-// wait would put an allocation on the path that decides whether a queued
-// query is served or dropped — under the load the ring exists to absorb.
+// acquire takes an admission token within the announcing query's budget,
+// then a slab: from the class cache when one is parked there, allocated
+// when not. Waiting — on the token, never on memory — is the right
+// backpressure for a stream transport; waiting forever is not. A class's
+// worth of clients that announce frames they never send would otherwise
+// own it outright, and every connection behind them would park in this
+// select with nothing but shutdown to wake it. A connection that cannot
+// be served inside its own budget is dropped instead, so the token it
+// never took stays free for someone who can use it.
+// The wait is bounded by the connection's own reusable timer: tokens run
+// out exactly when the server is saturated, and a timer built per wait
+// would put an allocation on the path that decides whether a queued
+// query is served or dropped — under the load the bound exists to absorb.
 func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time, length int) *tcpJob {
-	free := e.ring(length)
+	tokens := e.tokens(length)
 	select {
-	case j := <-free:
-		return j
+	case <-tokens:
 	default:
+		waited := s.waitFor(time.Until(deadline))
+		defer s.wait.Stop()
+		select {
+		case <-tokens:
+		case <-waited:
+			tcpDropJobWait.Inc()
+			return nil
+		case <-e.closing:
+			return nil
+		}
 	}
-	waited := s.waitFor(time.Until(deadline))
-	defer s.wait.Stop()
-	select {
-	case j := <-free:
-		return j
-	case <-waited:
-		tcpDropJobWait.Inc()
-		return nil
-	case <-e.closing:
-		return nil
+
+	large := largeClass(length)
+	cache := &e.smallCache
+	if large {
+		cache = &e.largeCache
 	}
+	j := cache.get()
+	if j == nil {
+		j = newTCPJob(e, large)
+	}
+	j.leased.Store(true)
+	return j
 }
 
 // serveFrame runs one query inline. The header-accept verdicts mirror the

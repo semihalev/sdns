@@ -10,15 +10,23 @@ import (
 	"github.com/semihalev/sdns/middleware"
 )
 
-// TestUDPRingStretchesPastItself pins what the ring is and is not.
+// TestUDPAdmissionOutlivesTheSteadyState pins what the lease cap is and
+// is not.
 //
-// A slab is held for the whole request. On a hit that is microseconds and
-// the ring is never short — but a miss holds one for an upstream
-// resolution, so a ring that could not stretch would be a hard ceiling on
-// how many queries the server can have in flight, and throughput would
-// settle at ring size over resolution latency no matter how many clients
-// were asking. That ceiling is what cold traffic measures.
-func TestUDPRingStretchesPastItself(t *testing.T) {
+// A slab is held for the whole request. On a hit that is microseconds —
+// but a miss holds one for an upstream resolution, so a cap at the
+// steady-state formula (queue + workers + readers) would be a hard
+// ceiling on how many queries the server can have in flight, and
+// throughput would settle at slab-count over resolution latency no
+// matter how many clients were asking. That ceiling is what cold
+// traffic measures. The plan's burst headroom exists so admission
+// outlives the formula.
+func TestUDPAdmissionOutlivesTheSteadyState(t *testing.T) {
+	// A small, known headroom: the point is admission past the formula,
+	// not standing up thousands of blocked requests.
+	defer func(p resourcePlan) { activePlan = p }(activePlan)
+	activePlan.udpSpareSlabs = 8
+
 	var inHandler atomic.Int64
 	block := make(chan struct{})
 	handler := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
@@ -45,7 +53,10 @@ func TestUDPRingStretchesPastItself(t *testing.T) {
 		queue   = 1
 	)
 	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, workers, queue)
-	ring := cap(e.free)
+	steady := int64(queue + workers + udpReaderReserve)
+	if e.slabCap != steady+8 {
+		t.Fatalf("slab cap = %d, want steady %d plus the headroom 8", e.slabCap, steady)
+	}
 	e.start()
 	defer func() {
 		close(block)
@@ -59,74 +70,83 @@ func TestUDPRingStretchesPastItself(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Every one of these is stuck in the handler, so each holds its slab
-	// for as long as the test wants it to — an upstream resolution, in
-	// miniature.
-	want := ring * 2
+	// Every one of these sticks in the handler, holding its slab the way
+	// an upstream resolution would.
 	q := new(dns.Msg)
 	q.SetQuestion("stuck.example.", dns.TypeA)
 	raw, err := q.Pack()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < want; i++ {
+	for range e.slabCap * 2 {
 		if _, err := client.Write(raw); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// More than the ring holds must be in flight at once. UDP on loopback
-	// may still lose a datagram under its own buffer, so the bar is above
-	// the ring rather than at everything sent.
-	target := int64(ring + ring/2)
+	// More queries than the steady-state formula must be in flight at
+	// once. UDP on loopback may still lose a datagram under its own
+	// buffer, so the bar is between the formula and the cap.
 	deadline := time.Now().Add(5 * time.Second)
-	for inHandler.Load() < target && time.Now().Before(deadline) {
+	for inHandler.Load() <= steady && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if got := inHandler.Load(); got < target {
-		t.Fatalf("%d queries in flight with a ring of %d; the ring sizes the "+
-			"steady state, it does not cap how many queries may be resolving "+
-			"at once", got, ring)
+	if got := inHandler.Load(); got <= steady {
+		t.Fatalf("%d queries in flight with a steady-state formula of %d; "+
+			"admission must not be capped at the formula", got, steady)
 	}
-	if borrowed := e.borrowed.Load(); borrowed == 0 {
-		t.Fatal("nothing was borrowed, so the ring cannot have been the thing that ran out")
+	if leased := e.leased.Load(); leased > e.slabCap {
+		t.Fatalf("leased %d slabs past the cap %d", leased, e.slabCap)
 	}
 }
 
-// TestUDPSpareSlabsReturnToThePool pins the other half: the stretch is
-// borrowed, not kept. A spare that stayed out would turn a single burst
-// into a permanent resident set.
-func TestUDPSpareSlabsReturnToThePool(t *testing.T) {
+// TestUDPSlabsParkInTheCache pins the ownership loop: allocation on
+// demand, reuse from the cache, and an explicit trim that empties it.
+func TestUDPSlabsParkInTheCache(t *testing.T) {
 	e := newUDPEngine(rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool { return true }),
 		nil, false, 1, 1)
 
-	held := make([]*udpJob, 0, cap(e.free))
-	for len(e.free) > 0 {
-		held = append(held, <-e.free)
+	// Nothing exists until a query needs it.
+	if got := e.cache.size(); got != 0 {
+		t.Fatalf("a fresh engine parked %d slabs before any query", got)
 	}
 
 	j := e.take()
 	if j == nil {
-		t.Fatal("an empty ring with the stretch untouched handed out nothing")
+		t.Fatal("an idle engine refused a lease")
 	}
-	if !j.spare {
-		t.Fatal("an empty ring handed out a ring slab")
-	}
-	if got := e.borrowed.Load(); got != 1 {
-		t.Fatalf("borrowed = %d, want 1", got)
+	if got := e.leased.Load(); got != 1 {
+		t.Fatalf("leased = %d, want 1", got)
 	}
 
 	j.state = udpJobReading
 	j.release(udpJobReading)
-	if got := e.borrowed.Load(); got != 0 {
-		t.Fatalf("borrowed = %d after release, want 0; a spare that is never "+
-			"given back is a leak the bound cannot see", got)
+	if got := e.leased.Load(); got != 0 {
+		t.Fatalf("leased = %d after release, want 0", got)
 	}
-	if len(e.free) != 0 {
-		t.Fatal("a spare went back into the ring, which would grow it past its size")
+	if got := e.cache.size(); got != 1 {
+		t.Fatalf("cache holds %d slabs after release, want the released one", got)
 	}
 
-	for _, j := range held {
-		e.free <- j
+	// The next lease reuses the parked slab rather than allocating.
+	j2 := e.take()
+	if j2 != j {
+		t.Fatal("a parked slab was not reused")
 	}
+	j2.state = udpJobReading
+	j2.release(udpJobReading)
+
+	// Trim drops the parked slab; admission is untouched.
+	if dropped := e.trimIdle(); dropped != 1 {
+		t.Fatalf("trim dropped %d slabs, want 1", dropped)
+	}
+	if got := e.cache.size(); got != 0 {
+		t.Fatalf("cache holds %d slabs after trim", got)
+	}
+	j3 := e.take()
+	if j3 == nil {
+		t.Fatal("a lease was refused after trim; trim must only cost an allocation")
+	}
+	j3.state = udpJobReading
+	j3.release(udpJobReading)
 }
