@@ -62,7 +62,7 @@ jobs:
       # The main test job runs with -race on every OS, which skips every
       # !race-tagged allocation pin. This job is where they actually run.
       - name: Allocation pins (no race)
-        run: go test -count=1 -run 'Alloc' ./...
+        run: go test -count=1 -run 'Alloc|ServeRawHitClasses' ./...
 
 
   release-targets:
