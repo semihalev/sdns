@@ -416,6 +416,7 @@ func TestRecursionWorkSingleflightFollowersRegroupOnLeaderLimit(t *testing.T) {
 			&resolveState{req: req, requestID: req.Id, work: leaderLedger},
 			req,
 			servers,
+			false,
 		)
 		leaderDone <- lookupOutcome{resp: resp, err: err}
 	}()
@@ -446,6 +447,7 @@ func TestRecursionWorkSingleflightFollowersRegroupOnLeaderLimit(t *testing.T) {
 				&resolveState{req: request, requestID: request.Id, work: ledger},
 				request,
 				servers,
+				false,
 			)
 			followerDone <- lookupOutcome{index: index, id: request.Id, resp: resp, err: err}
 		}(i, followerCtx, followerReq, followerLedgers[i])
@@ -573,6 +575,7 @@ func TestRecursionWorkSingleflightHealthyFollowerRegroupsPastLowBudgetLeader(t *
 			&resolveState{req: baseReq, requestID: baseReq.Id, work: firstLedger},
 			baseReq,
 			servers,
+			false,
 		)
 		firstDone <- lookupOutcome{resp: resp, err: err}
 	}()
@@ -599,6 +602,7 @@ func TestRecursionWorkSingleflightHealthyFollowerRegroupsPastLowBudgetLeader(t *
 			&resolveState{req: healthyReq, requestID: healthyReq.Id, work: healthyLedger},
 			healthyReq,
 			servers,
+			false,
 		)
 		healthyDone <- lookupOutcome{resp: resp, err: err}
 	}()
@@ -622,6 +626,7 @@ func TestRecursionWorkSingleflightHealthyFollowerRegroupsPastLowBudgetLeader(t *
 			&resolveState{req: lowReq, requestID: lowReq.Id, work: lowLedger},
 			lowReq,
 			servers,
+			false,
 		)
 		lowDone <- lookupOutcome{resp: resp, err: err}
 	}()

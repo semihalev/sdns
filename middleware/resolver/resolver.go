@@ -428,7 +428,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rs.servers.Zone, "query", dnsutil.FormatQuestion(minReq.Question[0]), "cd", rs.req.CheckingDisabled, "qname-minimize", minimized)
 	}
 
-	resp, err := r.groupLookup(ctx, rs, minReq, rs.servers)
+	resp, err := r.groupLookup(ctx, rs, minReq, rs.servers, minimized)
 	if err != nil {
 		return r.handleLookupError(ctx, err, rs, minReq, minimized)
 	}
@@ -496,7 +496,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	return m, nil
 }
 
-func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authority.Servers) (resp *dns.Msg, err error) {
+func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authority.Servers, owned bool) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 
 	// Key by question, CD flag, AND a fingerprint of the
@@ -526,12 +526,20 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	// The leader closure can outlive this caller: TimedDoChan returns on this
 	// caller's timeout/cancel while the shared generation remains registered
 	// until its closure finishes (or bounded stuck cleanup retires it). After
-	// we return, req resumes its lifecycle upstack — the response re-attaches
-	// the request OPT and the edns writer mutates it in place — so an
-	// abandoned leader copying req (lookup's per-server CopyTo) would race on
-	// caller-owned memory. Hand the closure its own private copy, made here
-	// while we still exclusively own req.
-	leaderReq := req.Copy()
+	// we return, a shared req resumes its lifecycle upstack — the response
+	// re-attaches the request OPT and the edns writer mutates it in place —
+	// so an abandoned leader copying req (lookup's per-server CopyTo) would
+	// race on caller-owned memory. Hand the closure its own private copy,
+	// made here while we still exclusively own req.
+	//
+	// An owned req (a minimized copy) needs no second copy: the leader only
+	// reads it — per-server CopyTo sources from it, queryServer mutates the
+	// copies — and after we return its only touch upstack is a read in
+	// handleLookupError's debug log before it is dropped.
+	leaderReq := req
+	if !owned {
+		leaderReq = req.Copy()
+	}
 
 	for {
 		// Use TimedDoChan for automatic timeout handling. When a follower
@@ -868,23 +876,26 @@ func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool
 
 	q := req.Question[0]
 
-	minReq := req.Copy()
-	minimized := false
-
-	if level < r.qnameMinLevel && q.Name != rootzone {
-		prev, end := dns.PrevLabel(q.Name, level+1)
-		if !end {
-			minimized = true
-			minReq.Question[0].Name = q.Name[prev:]
-			if minReq.Question[0].Name == q.Name {
-				minimized = false
-			} else {
-				minReq.Question[0].Qtype = req.Question[0].Qtype
-			}
-		}
+	if level >= r.qnameMinLevel || q.Name == rootzone {
+		return req, false
 	}
 
-	return minReq, minimized
+	prev, end := dns.PrevLabel(q.Name, level+1)
+	if end {
+		return req, false
+	}
+	minName := q.Name[prev:]
+	if minName == q.Name {
+		return req, false
+	}
+
+	// Only the outcome that queries a different name pays for a private
+	// copy; every other path hands the caller's request back untouched,
+	// exactly as the nomin/disabled entries above already do. The copy is
+	// what makes the returned request lookup-owned — see groupLookup.
+	minReq := req.Copy()
+	minReq.Question[0].Name = minName
+	return minReq, true
 }
 
 func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
@@ -1394,9 +1405,10 @@ mainloop:
 				"query", dnsutil.FormatQuestion(req.Question[0]))
 		}
 
-		// Make a copy for this server before launching goroutine
-		// We do this serially to avoid concurrent CopyTo() which is not thread-safe
-		serverReq := req.CopyTo(AcquireMsg())
+		// A pooled per-attempt view of the leader request: own slice
+		// backings, shared records. Built serially so every attempt reads
+		// the leader before anything downstream could touch it.
+		serverReq := acquireAttemptReq(req)
 
 		// Acquire semaphore slot before starting goroutine
 		select {
@@ -1823,6 +1835,10 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 	// Add EDNS-Keepalive option if using TCP pooling
 	if proto == "tcp" && r.tcpPool != nil && r.cfg.TCPKeepalive && (isRoot || isTLD) {
+		// The attempt shares the leader's OPT; the keepalive append below
+		// is the one OPT write on this path, so it pays for a private OPT
+		// here, on the rare TCP leg.
+		privatizeOPT(req)
 		SetEDNSKeepalive(req, 0) // Request keepalive with no specific timeout
 	}
 

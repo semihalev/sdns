@@ -179,14 +179,17 @@ func ReleaseMsg(req *dns.Msg) {
 	req.CheckingDisabled = false
 	req.Rcode = 0
 	req.Compress = false
+	// clear zeroes the elements — no released message pins records for the
+	// GC — while the trim keeps the backing arrays, so a recycled shell
+	// rebuilds its sections without reallocating them.
 	clear(req.Question)
 	clear(req.Answer)
 	clear(req.Ns)
 	clear(req.Extra)
-	req.Question = nil
-	req.Answer = nil
-	req.Ns = nil
-	req.Extra = nil
+	req.Question = req.Question[:0]
+	req.Answer = req.Answer[:0]
+	req.Ns = req.Ns[:0]
+	req.Extra = req.Extra[:0]
 
 	reqPool.Put(req)
 }
