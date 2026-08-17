@@ -127,6 +127,78 @@ func TestWireLabelCount(t *testing.T) {
 	}
 }
 
+// TestAppendCanonicalLabels pins the canonical spelling against
+// dns.CanonicalName and the recorded offsets against real label-aligned
+// suffixes.
+func TestAppendCanonicalLabels(t *testing.T) {
+	for _, name := range []string{
+		"WWW.Example.COM.",
+		"1.0.0.10.IN-ADDR.ARPA.",
+		`Sp\ ACE.Mixed.CASE.`,
+		"a.",
+	} {
+		wire := packName(t, name)
+		var offs [MaxLabels]int
+		canon, n, ok := AppendCanonicalLabels(nil, wire, offs[:])
+		if !ok {
+			t.Fatalf("%q refused", name)
+		}
+		pres, _, err := dns.UnpackDomainName(wire, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := dns.CanonicalName(pres); string(canon) != want {
+			t.Fatalf("%q: canonical %q, want %q", name, canon, want)
+		}
+		if want := dns.CountLabel(pres); n != want {
+			t.Fatalf("%q: labels = %d, want %d", name, n, want)
+		}
+		// Every recorded offset must land on a label start: the suffix
+		// from there equals the canonical form of the wire tail.
+		off := 0
+		for i := 0; i < n; i++ {
+			tail, tailN, ok := AppendCanonicalLabels(nil, wire[off:], nil)
+			if !ok || tailN != n-i {
+				t.Fatalf("%q label %d: tail walk failed", name, i)
+			}
+			if string(canon[offs[i]:]) != string(tail) {
+				t.Fatalf("%q label %d: suffix %q, want %q", name, i, canon[offs[i]:], tail)
+			}
+			off += int(wire[off]) + 1
+		}
+	}
+}
+
+// TestAppendCanonicalLabelsOffsCapacity pins the offs contract: a name
+// with more labels than offs holds refuses with dst truncated back, the
+// root fits a zero-length offs, and a maximal 127-label name fills
+// exactly MaxLabels entries.
+func TestAppendCanonicalLabelsOffsCapacity(t *testing.T) {
+	wire := packName(t, "a.b.c.")
+	var two [2]int
+	if out, _, ok := AppendCanonicalLabels([]byte("keep"), wire, two[:]); ok || string(out) != "keep" {
+		t.Fatalf("3 labels into 2 offs: ok=%v out=%q, want refusal with dst truncated", ok, out)
+	}
+
+	if _, n, ok := AppendCanonicalLabels(nil, []byte{0}, []int{}); !ok || n != 0 {
+		t.Fatalf("root with zero-length offs: n=%d ok=%v, want 0/true", n, ok)
+	}
+	if _, _, ok := AppendCanonicalLabels(nil, packName(t, "a."), []int{}); ok {
+		t.Fatal("1 label into zero-length offs must refuse")
+	}
+
+	// 127 one-octet labels: exactly 255 wire octets, the legal maximum.
+	max := make([]byte, 0, 255)
+	for i := 0; i < 127; i++ {
+		max = append(max, 1, 'a')
+	}
+	max = append(max, 0)
+	var offs [MaxLabels]int
+	if _, n, ok := AppendCanonicalLabels(nil, max, offs[:]); !ok || n != MaxLabels {
+		t.Fatalf("127-label maximum: n=%d ok=%v, want %d/true", n, ok, MaxLabels)
+	}
+}
+
 // TestWireWalkersAllocateNothing pins the zero-allocation contract with a
 // stack destination.
 func TestWireWalkersAllocateNothing(t *testing.T) {

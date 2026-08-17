@@ -6,6 +6,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
 )
@@ -28,7 +29,10 @@ func New(cfg *config.Config) *AS112 {
 				continue
 			}
 
-			zones[dns.Fqdn(zone)] = true
+			// Canonical, not merely rooted: both lookup paths probe with
+			// canonical lowercase names, so a mixed-case configured zone
+			// stored verbatim would be a dead key that never serves.
+			zones[dns.CanonicalName(zone)] = true
 		}
 
 		if len(zones) > 0 {
@@ -44,25 +48,30 @@ func New(cfg *config.Config) *AS112 {
 // (*AS112).Name name return middleware name.
 func (a *AS112) Name() string { return name }
 
-// (*AS112).ServeDNS serveDNS implements the Handle interface.
+// (*AS112).ServeDNS serveDNS implements the Handle interface. A wire-born
+// request never decodes here: non-arpa names pass on one case-folded
+// suffix compare, arpa names that miss the empty zones — every legitimate
+// reverse lookup — pass after a zero-allocation canonical suffix walk, and
+// an empty-zone hit builds its response from parsed scalars.
 func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	// A wire-born request takes the non-arpa fast path without decoding:
-	// one case-folded suffix compare on the wire name. A false positive
-	// only materializes and re-checks below.
-	if ch.Request.Undecoded() && !wireNameHasArpaSuffix(ch.Request.WireName()) {
-		ch.Next(ctx)
+	if ch.Request.Undecoded() {
+		if !wireNameHasArpaSuffix(ch.Request.WireName()) {
+			ch.Next(ctx)
+			return
+		}
+		a.serveWire(ctx, ch)
 		return
 	}
 
-	ctx, req := ch.Materialize(ctx)
-	if req == nil {
-		return
-	}
+	req := ch.Request.Msg()
 	w := ch.Writer
 
 	q := req.Question[0]
 
-	if !strings.HasSuffix(q.Name, "arpa.") {
+	// Case-insensitively, like every other name comparison here: the old
+	// case-sensitive suffix check let 10.IN-ADDR.ARPA.-style spellings
+	// leak past the empty zones to recursion.
+	if n := len(q.Name); n < 5 || !strings.EqualFold(q.Name[n-5:], "arpa.") {
 		ch.Next(ctx)
 		return
 	}
@@ -131,6 +140,130 @@ func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	_ = w.WriteMsg(msg)
 
 	ch.Cancel()
+}
+
+// serveWire answers or passes a wire-born arpa query without decoding it.
+// The canonical form and its label offsets come from one stack-buffered
+// walk, so the suffix probe against the zone set — Match's loop — indexes
+// the map without building a string. The overwhelmingly common outcome, a
+// reverse lookup under a delegated zone, continues down the chain
+// undecoded; only an empty-zone hit builds strings, for the response it is
+// about to write.
+func (a *AS112) serveWire(ctx context.Context, ch *middleware.Chain) {
+	req := ch.Request
+
+	var buf [dnsname.MaxPresentationLength]byte
+	var offs [dnsname.MaxLabels]int
+	canon, n, ok := dnsname.AppendCanonicalLabels(buf[:0], req.WireName(), offs[:])
+	if !ok {
+		ch.Next(ctx)
+		return
+	}
+
+	// Match strips the owner label for DS: the record lives at the parent.
+	start := 0
+	if req.Qtype() == dns.TypeDS {
+		if n < 2 {
+			ch.Next(ctx)
+			return
+		}
+		start = 1
+	}
+
+	// An empty-zone hit finally pays for its string; misses index the map
+	// straight off the stack buffer. wholeZone mirrors the decoded body's
+	// zone == qname: the match began at the first unstripped label.
+	zone := ""
+	wholeZone := false
+	for i := start; i < n; i++ {
+		if suffix := canon[offs[i]:]; hasKey(a.zones, suffix) {
+			zone = string(suffix)
+			wholeZone = i == 0 && start == 0
+			break
+		}
+	}
+	if zone == "" {
+		ch.Next(ctx)
+		return
+	}
+
+	// Unreachable refusal: the same bytes already passed the canonical
+	// walk, and presentation rendering shares its acceptance.
+	pres, ok := dnsname.AppendPresentation(buf[:0], req.WireName())
+	if !ok {
+		ch.Next(ctx)
+		return
+	}
+	qname := string(pres)
+
+	msg := new(dns.Msg)
+	msg.MsgHdr = dns.MsgHdr{
+		Id:                 req.ID(),
+		Response:           true,
+		Opcode:             req.Opcode(),
+		Authoritative:      true,
+		RecursionDesired:   req.RD(),
+		RecursionAvailable: true,
+		CheckingDisabled:   req.CD(),
+	}
+	msg.Question = []dns.Question{{Name: qname, Qtype: req.Qtype(), Qclass: req.Qclass()}}
+
+	soa := &dns.SOA{
+		Hdr: dns.RR_Header{
+			Name:   qname,
+			Rrtype: dns.TypeSOA,
+			Class:  dns.ClassINET,
+			Ttl:    86400,
+		},
+		Ns:      zone,
+		Mbox:    rootzone,
+		Serial:  0,
+		Refresh: 28800,
+		Retry:   7200,
+		Expire:  604800,
+		Minttl:  86400,
+	}
+
+	switch req.Qtype() {
+	case dns.TypeNS:
+		if wholeZone {
+			msg.Answer = append(msg.Answer, &dns.NS{
+				Hdr: dns.RR_Header{
+					Name:   qname,
+					Rrtype: dns.TypeNS,
+					Class:  dns.ClassINET,
+					Ttl:    0,
+				},
+				Ns: zone,
+			})
+		} else {
+			msg.Ns = append(msg.Ns, soa)
+		}
+	case dns.TypeSOA:
+		if wholeZone {
+			msg.Answer = append(msg.Answer, soa)
+		} else {
+			msg.Ns = append(msg.Ns, soa)
+		}
+	default:
+		msg.Ns = append(msg.Ns, soa)
+	}
+
+	if !wholeZone {
+		msg.Rcode = dns.RcodeNameError
+	}
+
+	_ = ch.Writer.WriteMsg(msg)
+	ch.Cancel()
+}
+
+// hasKey is Match's presence probe over a stack-buffered suffix: the map
+// index conversion is allocation-free, and testing presence rather than
+// the stored value keeps the two paths' semantics identical by
+// construction.
+func hasKey(zones map[string]bool, suffix []byte) bool {
+	_, ok := zones[string(suffix)]
+	return ok
 }
 
 // (*AS112).Match match returns whether or not a name contains in the zones.

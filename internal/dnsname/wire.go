@@ -42,15 +42,20 @@ func isPresentationSpecial(b byte) bool {
 // dst comes back truncated to its original length in that case (a grown
 // append may have moved it to a new backing array, so callers must use the
 // returned slice, never the original).
-func appendWireName(dst, wire []byte, fold, rooted bool) ([]byte, bool) {
+//
+// A non-nil offs additionally records each label's start offset within the
+// appended region; the int return is how many entries were filled, and a
+// name with more labels than offs holds refuses.
+func appendWireName(dst, wire []byte, fold, rooted bool, offs []int) ([]byte, int, bool) {
 	if len(wire) == 0 || len(wire) > maxWireNameOctets {
-		return dst, false
+		return dst, 0, false
 	}
 	mark := len(dst)
+	n := 0
 	off := 0
 	for {
 		if off >= len(wire) {
-			return dst[:mark], false
+			return dst[:mark], 0, false
 		}
 		c := int(wire[off])
 		off++
@@ -58,8 +63,15 @@ func appendWireName(dst, wire []byte, fold, rooted bool) ([]byte, bool) {
 			break
 		}
 		if c&0xC0 != 0 || off+c > len(wire) {
-			return dst[:mark], false
+			return dst[:mark], 0, false
 		}
+		if offs != nil {
+			if n == len(offs) {
+				return dst[:mark], 0, false
+			}
+			offs[n] = len(dst) - mark
+		}
+		n++
 		for _, b := range wire[off : off+c] {
 			switch {
 			case isPresentationSpecial(b):
@@ -77,7 +89,7 @@ func appendWireName(dst, wire []byte, fold, rooted bool) ([]byte, bool) {
 		off += c
 	}
 	if off != len(wire) {
-		return dst[:mark], false
+		return dst[:mark], 0, false
 	}
 	switch {
 	case len(dst) == mark:
@@ -87,14 +99,15 @@ func appendWireName(dst, wire []byte, fold, rooted bool) ([]byte, bool) {
 	case !rooted:
 		dst = dst[:len(dst)-1]
 	}
-	return dst, true
+	return dst, n, true
 }
 
 // AppendPresentation appends the presentation form of an uncompressed
 // wire-form name to dst — byte-identical to what dns.UnpackDomainName
 // returns for the same bytes, trailing dot included, case preserved.
 func AppendPresentation(dst, wire []byte) ([]byte, bool) {
-	return appendWireName(dst, wire, false, true)
+	out, _, ok := appendWireName(dst, wire, false, true, nil)
+	return out, ok
 }
 
 // AppendFoldedKey appends the lookup-key form: the presentation form with
@@ -102,7 +115,24 @@ func AppendPresentation(dst, wire []byte) ([]byte, bool) {
 // This is the spelling hostsfile keys its database with and domain metrics
 // tracks, so a stack-buffered key indexes those maps with zero allocation.
 func AppendFoldedKey(dst, wire []byte) ([]byte, bool) {
-	return appendWireName(dst, wire, true, false)
+	out, _, ok := appendWireName(dst, wire, true, false, nil)
+	return out, ok
+}
+
+// MaxLabels bounds the label count of any legal wire name: every label
+// needs a length byte plus one octet inside the 255-octet wire bound.
+const MaxLabels = 127
+
+// AppendCanonicalLabels appends the canonical spelling — the presentation
+// form with ASCII A–Z lowered and the trailing dot kept, dns.CanonicalName's
+// answer — and records where each label starts inside the appended region.
+// offs needs capacity MaxLabels; the returned count says how many entries
+// were filled, and its contents are undefined on refusal. Suffix matching
+// against canonical zone keys then indexes a map with canon[offs[i]:]
+// without ever building a string — a recipe that assumes an empty dst,
+// since the offsets are relative to the appended region, not the slice.
+func AppendCanonicalLabels(dst, wire []byte, offs []int) ([]byte, int, bool) {
+	return appendWireName(dst, wire, true, true, offs)
 }
 
 // WireLabelCount returns the number of labels in an uncompressed wire-form
