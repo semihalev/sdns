@@ -16,6 +16,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -187,27 +188,63 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 }
 
 // serveWire answers a wire-born request from the hosts database without
-// decoding it. The lookup key is the presentation-form name, which
-// UnpackDomainName produces straight from the wire question.
+// decoding it — and, on the miss that is this handler's whole life, without
+// allocating: the folded lookup key is written into a stack buffer and
+// indexes the database directly. Only a hit builds strings, for the
+// response it is about to write anyway. PTR keeps the presentation form
+// because the reverse-IP parser wants the spelling the client sent.
 func (h *Hostsfile) serveWire(ctx context.Context, ch *middleware.Chain) {
 	req := ch.Request
 
-	qname, _, err := dns.UnpackDomainName(req.WireName(), 0)
-	if err != nil {
-		ch.Next(ctx)
-		return
-	}
+	var buf [dnsname.MaxPresentationLength]byte
+	var answer []dns.RR
+	var found bool
+	var qname string
 
 	db := h.getDB()
 
-	atomic.AddUint64(&db.stats.lookups, 1)
-	hostsfileLookups.Inc()
+	if req.Qtype() == dns.TypePTR {
+		pres, ok := dnsname.AppendPresentation(buf[:0], req.WireName())
+		if !ok {
+			ch.Next(ctx)
+			return
+		}
+		qname = string(pres)
 
-	answer, found := h.lookup(db, qname, req.Qtype())
+		atomic.AddUint64(&db.stats.lookups, 1)
+		hostsfileLookups.Inc()
+
+		answer, found = h.lookupPTR(db, qname)
+	} else {
+		key, ok := dnsname.AppendFoldedKey(buf[:0], req.WireName())
+		if !ok {
+			ch.Next(ctx)
+			return
+		}
+
+		atomic.AddUint64(&db.stats.lookups, 1)
+		hostsfileLookups.Inc()
+
+		answer, found = lookupKeyed(h, db, key, req.Qtype())
+	}
 
 	if !found {
 		ch.Next(ctx)
 		return
+	}
+
+	// A hit finally pays for its strings: the echoed question wants the
+	// client's exact spelling, case included. The key is spent, so the
+	// buffer is reused. Derived before the hit counters so a refusal —
+	// unreachable while AppendFoldedKey and AppendPresentation share
+	// acceptance — could never count a hit it does not serve.
+	if qname == "" {
+		pres, ok := dnsname.AppendPresentation(buf[:0], req.WireName())
+		if !ok {
+			ch.Next(ctx)
+			return
+		}
+		qname = string(pres)
 	}
 
 	atomic.AddUint64(&db.stats.hits, 1)
@@ -254,46 +291,74 @@ func (h *Hostsfile) lookup(db *HostsDB, qname string, qtype uint16) ([]dns.RR, b
 	}
 }
 
-// lookupA finds A records for a hostname.
-func (h *Hostsfile) lookupA(db *HostsDB, name string) ([]dns.RR, bool) {
+// lookupKeyed answers every hosts-database question except PTR from a
+// pre-derived lookup key. The key type is generic so the wire path can
+// pass a stack buffer — string(key) at a map index costs nothing for
+// either instantiation — and the decoded path its lookupKey string.
+// Wildcard fallback still builds RRs at query time because the owner name
+// depends on the query; wildcards are uncommon in practice, so the
+// conversion and allocation there are acceptable.
+func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, key K, qtype uint16) ([]dns.RR, bool) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	key := lookupKey(name)
-
-	// Direct lookup — return the pre-built shared slice.
-	if entry, ok := db.hosts[key]; ok && len(entry.aRRs) > 0 {
-		return entry.aRRs, true
-	}
-
-	// Wildcard fallback still builds RRs at query time because the
-	// owner name depends on the query. Wildcards are uncommon in
-	// practice, so the allocation here is acceptable.
-	for _, wc := range db.wildcards {
-		if matchWildcard(wc.Pattern, key) && len(wc.IPv4) > 0 {
-			return buildARRs(key, wc.IPv4, h.ttl), true
+	switch qtype {
+	case dns.TypeA:
+		if entry, ok := db.hosts[string(key)]; ok && len(entry.aRRs) > 0 {
+			return entry.aRRs, true
 		}
+		if len(db.wildcards) > 0 {
+			k := string(key)
+			for _, wc := range db.wildcards {
+				if matchWildcard(wc.Pattern, k) && len(wc.IPv4) > 0 {
+					return buildARRs(k, wc.IPv4, h.ttl), true
+				}
+			}
+		}
+		return nil, false
+	case dns.TypeAAAA:
+		if entry, ok := db.hosts[string(key)]; ok && len(entry.aaaaRRs) > 0 {
+			return entry.aaaaRRs, true
+		}
+		if len(db.wildcards) > 0 {
+			k := string(key)
+			for _, wc := range db.wildcards {
+				if matchWildcard(wc.Pattern, k) && len(wc.IPv6) > 0 {
+					return buildAAAARRs(k, wc.IPv6, h.ttl), true
+				}
+			}
+		}
+		return nil, false
+	case dns.TypeCNAME:
+		if entry, ok := db.hosts[string(key)]; ok && entry.cnameRR != nil {
+			return []dns.RR{entry.cnameRR}, true
+		}
+		return nil, false
+	default:
+		// For other types, bare existence turns into NODATA upstream.
+		if _, ok := db.hosts[string(key)]; ok {
+			return nil, true
+		}
+		if len(db.wildcards) > 0 {
+			k := string(key)
+			for _, wc := range db.wildcards {
+				if matchWildcard(wc.Pattern, k) {
+					return nil, true
+				}
+			}
+		}
+		return nil, false
 	}
-	return nil, false
+}
+
+// lookupA finds A records for a hostname.
+func (h *Hostsfile) lookupA(db *HostsDB, name string) ([]dns.RR, bool) {
+	return lookupKeyed(h, db, lookupKey(name), dns.TypeA)
 }
 
 // lookupAAAA finds AAAA records for a hostname.
 func (h *Hostsfile) lookupAAAA(db *HostsDB, name string) ([]dns.RR, bool) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	key := lookupKey(name)
-
-	if entry, ok := db.hosts[key]; ok && len(entry.aaaaRRs) > 0 {
-		return entry.aaaaRRs, true
-	}
-
-	for _, wc := range db.wildcards {
-		if matchWildcard(wc.Pattern, key) && len(wc.IPv6) > 0 {
-			return buildAAAARRs(key, wc.IPv6, h.ttl), true
-		}
-	}
-	return nil, false
+	return lookupKeyed(h, db, lookupKey(name), dns.TypeAAAA)
 }
 
 // lookupPTR finds PTR records for an IP address.
@@ -316,32 +381,13 @@ func (h *Hostsfile) lookupPTR(db *HostsDB, name string) ([]dns.RR, bool) {
 
 // lookupCNAME finds CNAME records (aliases).
 func (h *Hostsfile) lookupCNAME(db *HostsDB, name string) ([]dns.RR, bool) {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	key := lookupKey(name)
-
-	if entry, ok := db.hosts[key]; ok && entry.cnameRR != nil {
-		return []dns.RR{entry.cnameRR}, true
-	}
-	return nil, false
+	return lookupKeyed(h, db, lookupKey(name), dns.TypeCNAME)
 }
 
 // hostExists checks if a hostname exists in the database.
 func (h *Hostsfile) hostExists(db *HostsDB, name string) bool {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	key := lookupKey(name)
-	if _, ok := db.hosts[key]; ok {
-		return true
-	}
-	for _, wc := range db.wildcards {
-		if matchWildcard(wc.Pattern, key) {
-			return true
-		}
-	}
-	return false
+	_, ok := lookupKeyed(h, db, lookupKey(name), dns.TypeNone)
+	return ok
 }
 
 // load reads and parses the hosts file.

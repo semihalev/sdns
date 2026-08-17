@@ -11,6 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -121,6 +122,30 @@ func TestHostsfileWireHitParity(t *testing.T) {
 	}
 	if a, ok := got.Answer[0].(*dns.A); !ok || !a.A.Equal(net.ParseIP("127.0.0.1")) {
 		t.Fatalf("answer = %v, want probe.test A 127.0.0.1", got.Answer[0])
+	}
+}
+
+// TestHostsfileWireLookupAllocatesNothing pins the point of the wire
+// branch: deriving the key and asking the database costs zero heap
+// allocations, hit and miss alike.
+func TestHostsfileWireLookupAllocatesNothing(t *testing.T) {
+	h := wireHostsfile(t)
+	db := h.getDB()
+
+	hit := wireHostsRequest(t, "Probe.Test.", dns.TypeA)
+	miss := wireHostsRequest(t, "other.example.", dns.TypeA)
+
+	if n := testing.AllocsPerRun(100, func() {
+		var buf [dnsname.MaxPresentationLength]byte
+		for _, req := range []*middleware.Request{hit, miss} {
+			key, ok := dnsname.AppendFoldedKey(buf[:0], req.WireName())
+			if !ok {
+				t.Fatal("refused")
+			}
+			lookupKeyed(h, db, key, dns.TypeA)
+		}
+	}); n != 0 {
+		t.Fatalf("allocs = %v, want 0", n)
 	}
 }
 
