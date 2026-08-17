@@ -60,10 +60,13 @@ func (e *ResolutionAttemptLimitError) Unwrap() error { return ErrResolutionAttem
 // slot, in a store allocated for every request tree that resolves anything.
 // The guard is request-tree-local, so a crafted hash collision can only
 // merge two of the attacker's own tuples and trip their own limit early;
-// no cross-request state exists to poison. The name hashes in its
-// dns.CanonicalName spelling — ASCII A-Z folded, rooted — without building
-// it, and every component is length-framed so tuple boundaries cannot
-// alias.
+// no cross-request state exists to poison. That locality is the entire
+// security argument — the hash is seedless, so collisions are offline
+// precomputable, and a refactor that ever shared one guard across
+// different clients' request trees would turn them into cross-client
+// attempt exhaustion. The name hashes in its dns.CanonicalName spelling —
+// ASCII A-Z folded, rooted — without building it, and every component is
+// length-framed so tuple boundaries cannot alias.
 func resolutionAttemptHash(q dns.Question, endpoint, transport string) uint64 {
 	var h xxhash.Digest
 	h.Reset()

@@ -50,7 +50,10 @@ func CheckReverseName(name string) int {
 // of real traffic, so this parses and formats by hand — one allocation,
 // the returned string — where Split/Join/ParseIP/String paid six. The
 // accepted shape is the RFC 1035 one: exactly four decimal labels, each
-// 0-255 with no leading zero, reversed.
+// 0-255 with no leading zero, reversed. Deliberate tightening: the old
+// join-then-ParseIP incidentally accepted colon-form garbage whose labels
+// reassembled into an IPv6 literal; those shapes now refuse, which
+// downstream treats as an ordinary miss.
 func parseIPv4PTR(name string) string {
 	s := strings.TrimSuffix(name, ReverseDomainV4)
 
@@ -133,5 +136,8 @@ func parseIPv6PTR(name string) string {
 		}
 	}
 
-	return netip.AddrFrom16(addr).String()
+	// Unmap keeps byte parity with the old net.IP.String, which renders a
+	// v4-mapped address in dotted-quad form — the spelling the hostsfile
+	// load side keys its reverse map with.
+	return netip.AddrFrom16(addr).Unmap().String()
 }

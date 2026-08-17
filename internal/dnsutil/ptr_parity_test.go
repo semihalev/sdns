@@ -60,13 +60,19 @@ func TestParsePTRParity(t *testing.T) {
 		}
 	}
 
-	// The RFC 3596 shape: 32 single-hex-digit labels.
+	// The RFC 3596 shape: 32 single-hex-digit labels. The v4-mapped
+	// vector pins the Unmap: net.IP.String rendered ::ffff:1.2.3.4 as a
+	// dotted quad, and the hostsfile reverse map is keyed on that
+	// spelling.
 	full := "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2"
+	v4mapped := "4.0.3.0.2.0.1.0.f.f.f.f" + strings.Repeat(".0", 20)
 	v6 := []string{
 		full + ReverseDomainV6,
 		strings.ToUpper(full) + ReverseDomainV6,
 		strings.Repeat("0.", 31) + "0" + ReverseDomainV6,
 		strings.Repeat("f.", 31) + "f" + ReverseDomainV6,
+		v4mapped + ReverseDomainV6,
+		"" + ReverseDomainV6,
 	}
 	for _, name := range v6 {
 		if got, want := parseIPv6PTR(name), referenceIPv6PTR(name); got != want {
@@ -81,9 +87,24 @@ func TestParsePTRParity(t *testing.T) {
 		strings.Repeat("0.", 30) + "1" + ReverseDomainV6,         // 31 nibbles
 		"ab." + strings.Repeat("0.", 29) + "1" + ReverseDomainV6, // multi-digit label
 		"g." + strings.Repeat("0.", 30) + "1" + ReverseDomainV6,  // non-hex
+		// Exactly 63 bytes with a displaced dot: survives the length
+		// gate and dies on the separator-position check itself.
+		"ab." + strings.Repeat("0.", 30) + ReverseDomainV6,
 	} {
 		if got := parseIPv6PTR(name); got != "" {
 			t.Fatalf("v6 %q: got %q, want refusal", name, got)
+		}
+	}
+
+	// v4's own tightening: the old join-then-ParseIP reassembled these
+	// colon-form garbage names into IPv6 literals and answered for them.
+	for _, name := range []string{
+		"::ffff:102:304" + ReverseDomainV4,
+		"4.3.2.0:0:0:0:0:ffff:1" + ReverseDomainV4,
+		"00.0.0.10" + ReverseDomainV4,
+	} {
+		if got := parseIPv4PTR(name); got != "" {
+			t.Fatalf("v4 %q: got %q, want refusal", name, got)
 		}
 	}
 }
@@ -96,5 +117,14 @@ func TestParsePTRAllocs(t *testing.T) {
 		}
 	}); n != 1 {
 		t.Fatalf("v4 allocs = %v, want 1 (the result string)", n)
+	}
+
+	v6 := "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2" + ReverseDomainV6
+	if n := testing.AllocsPerRun(200, func() {
+		if parseIPv6PTR(v6) == "" {
+			t.Fatal("refused")
+		}
+	}); n > 2 {
+		t.Fatalf("v6 allocs = %v, want at most netip's formatting pair", n)
 	}
 }
