@@ -181,28 +181,49 @@ func (r *RateLimit) serveWire(ctx context.Context, ch *middleware.Chain) {
 		}
 
 		if w.Proto() == "udp" {
+			// Mirror the decoded body's ordering: the request and its
+			// cookie option are in hand before any token is consumed or
+			// state stored, so a refused decode mutates nothing.
+			mctx, req := ch.Materialize(ctx)
+			if req == nil {
+				return
+			}
+			var cookieOpt *dns.EDNS0_COOKIE
+			if opt := req.IsEdns0(); opt != nil {
+				for _, option := range opt.Option {
+					if option.Option() == dns.EDNS0COOKIE {
+						cookieOpt = option.(*dns.EDNS0_COOKIE)
+						break
+					}
+				}
+			}
+			if cookieOpt != nil {
+				if !l.rl.Allow() {
+					rateLimitExceeded.Inc()
+					ch.Cancel()
+					return
+				}
+
+				l.cookie.Store(servercookie)
+				cookieOpt.Cookie = servercookie
+
+				ch.CancelWithRcode(dns.RcodeBadCookie, false)
+				return
+			}
+
+			// No cookie option in the decoded form — unreachable while
+			// ratelimit precedes edns in the chain, but the decoded body
+			// would take the plain limiter, so take it here too, on the
+			// materialized context.
 			if !l.rl.Allow() {
 				rateLimitExceeded.Inc()
 				ch.Cancel()
 				return
 			}
 
+			ch.Next(mctx)
+
 			l.cookie.Store(servercookie)
-
-			_, req := ch.Materialize(ctx)
-			if req == nil {
-				return
-			}
-			if opt := req.IsEdns0(); opt != nil {
-				for _, option := range opt.Option {
-					if option.Option() == dns.EDNS0COOKIE {
-						option.(*dns.EDNS0_COOKIE).Cookie = servercookie
-						break
-					}
-				}
-			}
-
-			ch.CancelWithRcode(dns.RcodeBadCookie, false)
 			return
 		}
 

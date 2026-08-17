@@ -39,7 +39,9 @@ func isPresentationSpecial(b byte) bool {
 // trailing dot and renders the root name empty — the lookup-key spelling.
 //
 // A name that is not a plain, exactly-consumed uncompressed name refuses;
-// dst is returned unchanged in that case.
+// dst comes back truncated to its original length in that case (a grown
+// append may have moved it to a new backing array, so callers must use the
+// returned slice, never the original).
 func appendWireName(dst, wire []byte, fold, rooted bool) ([]byte, bool) {
 	if len(wire) == 0 || len(wire) > maxWireNameOctets {
 		return dst, false

@@ -233,12 +233,11 @@ func (h *Hostsfile) serveWire(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	atomic.AddUint64(&db.stats.hits, 1)
-	hostsfileHits.Inc()
-
 	// A hit finally pays for its strings: the echoed question wants the
 	// client's exact spelling, case included. The key is spent, so the
-	// buffer is reused.
+	// buffer is reused. Derived before the hit counters so a refusal —
+	// unreachable while AppendFoldedKey and AppendPresentation share
+	// acceptance — could never count a hit it does not serve.
 	if qname == "" {
 		pres, ok := dnsname.AppendPresentation(buf[:0], req.WireName())
 		if !ok {
@@ -247,6 +246,9 @@ func (h *Hostsfile) serveWire(ctx context.Context, ch *middleware.Chain) {
 		}
 		qname = string(pres)
 	}
+
+	atomic.AddUint64(&db.stats.hits, 1)
+	hostsfileHits.Inc()
 
 	// Header discipline matches the decoded body below; the question is
 	// rebuilt from parsed scalars instead of aliasing a decoded one.
@@ -305,9 +307,12 @@ func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, ke
 		if entry, ok := db.hosts[string(key)]; ok && len(entry.aRRs) > 0 {
 			return entry.aRRs, true
 		}
-		for _, wc := range db.wildcards {
-			if k := string(key); matchWildcard(wc.Pattern, k) && len(wc.IPv4) > 0 {
-				return buildARRs(k, wc.IPv4, h.ttl), true
+		if len(db.wildcards) > 0 {
+			k := string(key)
+			for _, wc := range db.wildcards {
+				if matchWildcard(wc.Pattern, k) && len(wc.IPv4) > 0 {
+					return buildARRs(k, wc.IPv4, h.ttl), true
+				}
 			}
 		}
 		return nil, false
@@ -315,9 +320,12 @@ func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, ke
 		if entry, ok := db.hosts[string(key)]; ok && len(entry.aaaaRRs) > 0 {
 			return entry.aaaaRRs, true
 		}
-		for _, wc := range db.wildcards {
-			if k := string(key); matchWildcard(wc.Pattern, k) && len(wc.IPv6) > 0 {
-				return buildAAAARRs(k, wc.IPv6, h.ttl), true
+		if len(db.wildcards) > 0 {
+			k := string(key)
+			for _, wc := range db.wildcards {
+				if matchWildcard(wc.Pattern, k) && len(wc.IPv6) > 0 {
+					return buildAAAARRs(k, wc.IPv6, h.ttl), true
+				}
 			}
 		}
 		return nil, false
@@ -331,9 +339,12 @@ func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, ke
 		if _, ok := db.hosts[string(key)]; ok {
 			return nil, true
 		}
-		for _, wc := range db.wildcards {
-			if matchWildcard(wc.Pattern, string(key)) {
-				return nil, true
+		if len(db.wildcards) > 0 {
+			k := string(key)
+			for _, wc := range db.wildcards {
+				if matchWildcard(wc.Pattern, k) {
+					return nil, true
+				}
 			}
 		}
 		return nil, false

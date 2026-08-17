@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -120,6 +121,87 @@ func TestRateLimitWireBadCookie(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("reply cookie = %q, want %q", got, want)
+	}
+}
+
+// TestRateLimitWireTCPMismatchFallsThrough pins the spoof-proof-transport
+// leg: a stale cookie over TCP takes the plain limiter, continues down the
+// chain undecoded, and still refreshes the stored server cookie afterward.
+func TestRateLimitWireTCPMismatchFallsThrough(t *testing.T) {
+	r := New(&config.Config{ClientRateLimit: 100, CookieSecret: "secret"})
+
+	var passed, sawUndecoded bool
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		passed = true
+		sawUndecoded = ch.Request.Undecoded()
+		ch.Cancel()
+	})
+
+	serve := func() *mock.Writer {
+		req := wireRequest(t, wireTestCookie)
+		w := mock.NewWriter("tcp", "10.0.0.5:0")
+		ch := middleware.NewChain([]middleware.Handler{r, next})
+		ch.ResetWire(w, req)
+		ch.Next(context.Background())
+		return w
+	}
+
+	serve() // primes the stored server cookie; the bare echo now mismatches
+
+	l := r.getLimiter(net.ParseIP("10.0.0.5"))
+	stored := l.cookie.Load().(string)
+	if stored == "" {
+		t.Fatal("first serve stored no cookie")
+	}
+
+	passed, sawUndecoded = false, false
+	if w := serve(); w.Written() {
+		t.Fatal("TCP mismatch must not be answered by the limiter")
+	}
+	if !passed || !sawUndecoded {
+		t.Fatalf("TCP mismatch: passed=%v undecoded=%v, want both true", passed, sawUndecoded)
+	}
+	if refreshed := l.cookie.Load().(string); refreshed == "" {
+		t.Fatal("post-Next cookie store was dropped")
+	}
+}
+
+// TestRateLimitWireFullEchoMatch pins the recovery leg of the BADCOOKIE
+// cycle: a client echoing the stored full cookie — client half plus server
+// half, the 40-byte maximum — verifies and passes undecoded.
+func TestRateLimitWireFullEchoMatch(t *testing.T) {
+	r := New(&config.Config{ClientRateLimit: 100, CookieSecret: "secret"})
+
+	var passed, sawUndecoded bool
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		passed = true
+		sawUndecoded = ch.Request.Undecoded()
+		ch.Cancel()
+	})
+
+	req := wireRequest(t, wireTestCookie)
+	w := mock.NewWriter("udp", "10.0.0.6:0")
+	ch := middleware.NewChain([]middleware.Handler{r, next})
+	ch.ResetWire(w, req)
+	ch.Next(context.Background())
+
+	stored := r.getLimiter(net.ParseIP("10.0.0.6")).cookie.Load().(string)
+	if len(stored) != 80 {
+		t.Fatalf("stored cookie length = %d hex chars, want 80 (8+32 bytes)", len(stored))
+	}
+
+	passed, sawUndecoded = false, false
+	req = wireRequest(t, stored)
+	w = mock.NewWriter("udp", "10.0.0.6:0")
+	ch = middleware.NewChain([]middleware.Handler{r, next})
+	ch.ResetWire(w, req)
+	ch.Next(context.Background())
+
+	if w.Written() {
+		t.Fatal("a verifying full echo must not be answered by the limiter")
+	}
+	if !passed || !sawUndecoded {
+		t.Fatalf("full echo: passed=%v undecoded=%v, want both true", passed, sawUndecoded)
 	}
 }
 
