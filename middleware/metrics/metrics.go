@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -96,23 +97,28 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Update domain metrics if enabled
 	if m.domainMetricsEnabled {
-		m.recordDomainQuery(questionName(req))
+		if req.Undecoded() {
+			m.recordWireDomain(req.WireName())
+		} else {
+			m.recordDomainQuery(req.Msg().Question[0].Name)
+		}
 	}
 }
 
-// questionName returns the query name without forcing a wire-born
-// request to materialize. ParseWire admits exactly one uncompressed
-// question name, so unpacking from offset zero is total; a name the
-// library cannot render counts as no domain at all.
-func questionName(req *middleware.Request) string {
-	if req.Undecoded() {
-		name, _, err := dns.UnpackDomainName(req.WireName(), 0)
-		if err != nil {
-			return ""
-		}
-		return name
+// recordWireDomain tracks a wire-born request's domain without building
+// intermediate strings: the label filter reads the wire directly, and the
+// normalized tracking key — lowercase, no trailing dot — is written into a
+// stack buffer, so the one allocation left is the key recordDomain keeps.
+func (m *Metrics) recordWireDomain(wire []byte) {
+	if n, ok := dnsname.WireLabelCount(wire); !ok || n < 2 {
+		return
 	}
-	return req.Msg().Question[0].Name
+	var buf [dnsname.MaxPresentationLength]byte
+	key, ok := dnsname.AppendFoldedKey(buf[:0], wire)
+	if !ok {
+		return
+	}
+	m.recordDomain(string(key))
 }
 
 // observe records one response with caller-stack key scratch — no pool,
@@ -130,8 +136,11 @@ func (m *Metrics) recordDomainQuery(qname string) {
 	}
 
 	// Normalize domain name (lowercase and remove trailing dot)
-	domain := strings.ToLower(strings.TrimSuffix(qname, "."))
+	m.recordDomain(strings.ToLower(strings.TrimSuffix(qname, ".")))
+}
 
+// recordDomain tracks one query against a normalized domain key.
+func (m *Metrics) recordDomain(domain string) {
 	// Fast path: increment if already tracking
 	if _, exists := m.domainTracker.Load(domain); exists {
 		// Domain already tracked, just increment

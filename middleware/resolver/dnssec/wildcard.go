@@ -1,6 +1,10 @@
 package dnssec
 
-import "github.com/miekg/dns"
+import (
+	"github.com/miekg/dns"
+
+	"github.com/semihalev/sdns/internal/dnsname"
+)
 
 // VerifyWildcardAnswer enforces the RFC 4035 §5.3.4 / RFC 5155 §8.8
 // requirement for positive answers synthesized from a wildcard.
@@ -80,13 +84,12 @@ func VerifyWildcardAnswerForZoneWithWork(
 		// canonicalization and can alias distinct octet names (for example,
 		// Kelvin sign and ASCII "k").
 		nextCloserName := owner.suffix(int(sig.Labels) + 1)
-		nextCloser, end, unpackErr := dns.UnpackDomainName(
-			nextCloserName.wire,
-			0,
-		)
-		if unpackErr != nil || end != len(nextCloserName.wire) {
+		var nb [dnsname.MaxPresentationLength]byte
+		pres, ok := dnsname.AppendPresentation(nb[:0], nextCloserName.wire)
+		if !ok {
 			return false, aggressiveFallback("invalid wildcard next-closer name")
 		}
+		nextCloser := string(pres)
 		denied, authenticated, err := nextCloserDeniedWithWork(
 			nextCloser,
 			signer,
