@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
@@ -33,6 +34,12 @@ type API struct {
 	bearerToken string
 	router      *Router
 	blocklist   *blocklist.BlockList
+	// metricsHandler is built once: promhttp.Handler() constructs a new
+	// instrumented handler per call, and its default gzip pays a fresh
+	// ~34KB deflate window per scrape — measured at 1% of process
+	// allocation under a frequent scraper. Metrics text is small and
+	// local; compression buys nothing here.
+	metricsHandler http.Handler
 }
 
 var debugpprof bool
@@ -51,9 +58,12 @@ func New(cfg *config.Config) *API {
 	}
 
 	a := &API{
-		addr:        cfg.API,
-		blocklist:   bl,
-		router:      NewRouter(),
+		addr:      cfg.API,
+		blocklist: bl,
+		router:    NewRouter(),
+		metricsHandler: promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+			DisableCompression: true,
+		}),
 		bearerToken: cfg.BearerToken,
 	}
 
@@ -178,7 +188,7 @@ func (a *API) metrics(ctx *Context) {
 		return
 	}
 
-	promhttp.Handler().ServeHTTP(ctx.Writer, ctx.Request)
+	a.metricsHandler.ServeHTTP(ctx.Writer, ctx.Request)
 }
 
 func (a *API) purge(ctx *Context) {

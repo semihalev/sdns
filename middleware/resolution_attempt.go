@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/contextutil"
 )
@@ -54,25 +55,68 @@ func (e *ResolutionAttemptLimitError) Error() string {
 // Unwrap lets callers classify a limit error with errors.Is.
 func (e *ResolutionAttemptLimitError) Unwrap() error { return ErrResolutionAttemptLimit }
 
-type resolutionAttemptKey struct {
-	qname     string
-	endpoint  string
-	transport string
-	qtype     uint16
-	qclass    uint16
-}
+// resolutionAttemptHash folds one RFC 9520 tuple to a 64-bit key. The old
+// key held the tuple's strings — five words plus two retained strings per
+// slot, in a store allocated for every request tree that resolves anything.
+// The guard is request-tree-local, so a crafted hash collision can only
+// merge two of the attacker's own tuples and trip their own limit early;
+// no cross-request state exists to poison. The name hashes in its
+// dns.CanonicalName spelling — ASCII A-Z folded, rooted — without building
+// it, and every component is length-framed so tuple boundaries cannot
+// alias.
+func resolutionAttemptHash(q dns.Question, endpoint, transport string) uint64 {
+	var h xxhash.Digest
+	h.Reset()
 
-func (k resolutionAttemptKey) limitError() error {
-	return &ResolutionAttemptLimitError{
-		Question:  dns.Question{Name: k.qname, Qtype: k.qtype, Qclass: k.qclass},
-		Endpoint:  k.endpoint,
-		Transport: k.transport,
+	// An unrooted spelling counts and hashes its implicit root, exactly
+	// as dns.Fqdn would have added it. IsFqdn is escape-aware.
+	nameLen := len(q.Name)
+	rootless := !dns.IsFqdn(q.Name)
+	if rootless {
+		nameLen++
 	}
+
+	// Hash-input framing: byte truncation is deliberate and harmless here.
+	var scratch [8]byte
+	scratch[0] = byte(q.Qtype >> 8)
+	scratch[1] = byte(q.Qtype & 0xFF)
+	scratch[2] = byte(q.Qclass >> 8)
+	scratch[3] = byte(q.Qclass & 0xFF)
+	scratch[4] = byte((len(endpoint) >> 8) & 0xFF)
+	scratch[5] = byte(len(endpoint) & 0xFF)
+	scratch[6] = byte(len(transport) & 0xFF)
+	scratch[7] = byte(nameLen & 0xFF)
+	_, _ = h.Write(scratch[:])
+	_, _ = h.WriteString(endpoint)
+	_, _ = h.WriteString(transport)
+
+	var folded [64]byte
+	n := 0
+	for i := 0; i < len(q.Name); i++ {
+		c := q.Name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		folded[n] = c
+		n++
+		if n == len(folded) {
+			_, _ = h.Write(folded[:])
+			n = 0
+		}
+	}
+	if rootless {
+		folded[n] = '.'
+		n++
+	}
+	if n > 0 {
+		_, _ = h.Write(folded[:n])
+	}
+	return h.Sum64()
 }
 
 // resolutionAttemptEntry is one recorded tuple in the guard's inline table.
 type resolutionAttemptEntry struct {
-	key   resolutionAttemptKey
+	hash  uint64
 	count uint8
 }
 
@@ -104,7 +148,7 @@ const resolutionAttemptOverflowHint = 8
 type resolutionAttemptStore struct {
 	len      int
 	slots    [8]resolutionAttemptEntry
-	overflow map[resolutionAttemptKey]uint8
+	overflow map[uint64]uint8
 }
 
 // NewResolutionAttemptGuard returns an empty request-tree retry guard.
@@ -121,7 +165,7 @@ func (g *ResolutionAttemptGuard) Begin(q dns.Question, endpoint, transport strin
 		return nil
 	}
 
-	return g.BeginCanonical(q, CanonicalResolutionEndpoint(endpoint), transport)
+	return g.beginTuple(q, CanonicalResolutionEndpoint(endpoint), transport)
 }
 
 // BeginCanonical is Begin for a caller whose endpoint is already spelled the
@@ -137,16 +181,25 @@ func (g *ResolutionAttemptGuard) BeginCanonical(q dns.Question, endpoint, transp
 	if g == nil {
 		return nil
 	}
-	return g.begin(resolutionAttemptKey{
-		qname:     dns.CanonicalName(q.Name),
-		qtype:     q.Qtype,
-		qclass:    q.Qclass,
-		endpoint:  endpoint,
-		transport: canonicalResolutionTransport(transport),
-	})
+	return g.beginTuple(q, endpoint, transport)
 }
 
-func (g *ResolutionAttemptGuard) begin(key resolutionAttemptKey) error {
+// beginTuple records one attempt against the tuple's hash. Only the rare
+// rejection pays for a detailed error; the admitted path carries nothing
+// but the hash.
+func (g *ResolutionAttemptGuard) beginTuple(q dns.Question, endpoint, transport string) error {
+	transport = canonicalResolutionTransport(transport)
+	if g.begin(resolutionAttemptHash(q, endpoint, transport)) {
+		return nil
+	}
+	return &ResolutionAttemptLimitError{
+		Question:  dns.Question{Name: dns.CanonicalName(q.Name), Qtype: q.Qtype, Qclass: q.Qclass},
+		Endpoint:  endpoint,
+		Transport: transport,
+	}
+}
+
+func (g *ResolutionAttemptGuard) begin(hash uint64) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -159,34 +212,34 @@ func (g *ResolutionAttemptGuard) begin(key resolutionAttemptKey) error {
 	// conclusive and the overflow map is never consulted for it.
 	for i := range store.len {
 		entry := &store.slots[i]
-		if entry.key != key {
+		if entry.hash != hash {
 			continue
 		}
 		if entry.count >= maxResolutionAttempts {
-			return key.limitError()
+			return false
 		}
 		entry.count++
-		return nil
+		return true
 	}
 
-	if count, recorded := store.overflow[key]; recorded {
+	if count, recorded := store.overflow[hash]; recorded {
 		if count >= maxResolutionAttempts {
-			return key.limitError()
+			return false
 		}
-		store.overflow[key] = count + 1
-		return nil
+		store.overflow[hash] = count + 1
+		return true
 	}
 
 	if store.len < len(store.slots) {
-		store.slots[store.len] = resolutionAttemptEntry{key: key, count: 1}
+		store.slots[store.len] = resolutionAttemptEntry{hash: hash, count: 1}
 		store.len++
-		return nil
+		return true
 	}
 	if store.overflow == nil {
-		store.overflow = make(map[resolutionAttemptKey]uint8, resolutionAttemptOverflowHint)
+		store.overflow = make(map[uint64]uint8, resolutionAttemptOverflowHint)
 	}
-	store.overflow[key] = 1
-	return nil
+	store.overflow[hash] = 1
+	return true
 }
 
 // CanonicalResolutionEndpoint normalizes endpoint spellings before they are
@@ -194,7 +247,15 @@ func (g *ResolutionAttemptGuard) begin(key resolutionAttemptKey) error {
 func CanonicalResolutionEndpoint(endpoint string) string {
 	endpoint = strings.TrimSpace(endpoint)
 	if addrPort, err := netip.ParseAddrPort(endpoint); err == nil {
-		return addrPort.String()
+		// Most spellings arrive canonical already; rendering into a stack
+		// buffer first hands the input back without allocating when they
+		// match, and this runs per upstream attempt.
+		var buf [64]byte
+		out := addrPort.AppendTo(buf[:0])
+		if string(out) == endpoint {
+			return endpoint
+		}
+		return string(out)
 	}
 
 	if parsed, err := url.Parse(endpoint); err == nil && parsed.Scheme != "" && parsed.Host != "" {

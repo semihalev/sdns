@@ -2,7 +2,8 @@
 package dnsutil
 
 import (
-	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 )
 
@@ -45,57 +46,92 @@ func CheckReverseName(name string) int {
 	}
 }
 
-// parseIPv4PTR converts IPv4 PTR name to IP address.
+// parseIPv4PTR converts IPv4 PTR name to IP address. PTR is a large slice
+// of real traffic, so this parses and formats by hand — one allocation,
+// the returned string — where Split/Join/ParseIP/String paid six. The
+// accepted shape is the RFC 1035 one: exactly four decimal labels, each
+// 0-255 with no leading zero, reversed.
 func parseIPv4PTR(name string) string {
-	// Remove the suffix
-	parts := strings.TrimSuffix(name, ReverseDomainV4)
+	s := strings.TrimSuffix(name, ReverseDomainV4)
 
-	// Split into octets
-	octets := strings.Split(parts, ".")
-
-	// Reverse the octets
-	for i, j := 0, len(octets)-1; i < j; i, j = i+1, j-1 {
-		octets[i], octets[j] = octets[j], octets[i]
+	var octets [4]int
+	label := 0
+	val, digits := 0, 0
+	for i := 0; i <= len(s); i++ {
+		if i < len(s) && s[i] != '.' {
+			c := s[i]
+			if c < '0' || c > '9' || digits == 3 {
+				return ""
+			}
+			val = val*10 + int(c-'0')
+			digits++
+			continue
+		}
+		// Label boundary (or end): validate the finished octet. Leading
+		// zeros are refused, matching net.ParseIP.
+		if digits == 0 || val > 255 || (digits > 1 && s[i-digits] == '0') || label == 4 {
+			return ""
+		}
+		octets[label] = val
+		label++
+		val, digits = 0, 0
 	}
-
-	// Parse and validate
-	ip := net.ParseIP(strings.Join(octets, "."))
-	if ip == nil || ip.To4() == nil {
+	if label != 4 {
 		return ""
 	}
 
-	return ip.String()
+	// The PTR labels spell the address reversed.
+	var buf [15]byte
+	out := buf[:0]
+	for i := 3; i >= 0; i-- {
+		out = strconv.AppendInt(out, int64(octets[i]), 10)
+		if i > 0 {
+			out = append(out, '.')
+		}
+	}
+	return string(out)
 }
 
-// parseIPv6PTR converts IPv6 PTR name to IP address.
+// parseIPv6PTR converts IPv6 PTR name to IP address. The accepted shape is
+// the RFC 3596 one — exactly 32 single-hex-digit labels, reversed — parsed
+// straight into the address bytes; canonical formatting is the only
+// allocation. The old Split/Join/ParseIP path incidentally admitted some
+// truncated or multi-digit spellings no resolver emits; those now refuse,
+// which downstream treats as an ordinary miss.
 func parseIPv6PTR(name string) string {
-	// Remove the suffix
-	parts := strings.TrimSuffix(name, ReverseDomainV6)
+	s := strings.TrimSuffix(name, ReverseDomainV6)
 
-	// Split into nibbles (single hex digits)
-	nibbles := strings.Split(parts, ".")
-
-	// Reverse the nibbles
-	for i, j := 0, len(nibbles)-1; i < j; i, j = i+1, j-1 {
-		nibbles[i], nibbles[j] = nibbles[j], nibbles[i]
-	}
-
-	// Group nibbles into 16-bit segments
-	var segments []string
-	for i := 0; i < len(nibbles); i += 4 {
-		end := i + 4
-		if end > len(nibbles) {
-			end = len(nibbles)
-		}
-		segment := strings.Join(nibbles[i:end], "")
-		segments = append(segments, segment)
-	}
-
-	// Parse and validate
-	ip := net.ParseIP(strings.Join(segments, ":"))
-	if ip == nil || ip.To16() == nil {
+	// 32 nibbles separated by dots: 63 bytes exactly.
+	if len(s) != 63 {
 		return ""
 	}
+	var addr [16]byte
+	for i := 0; i < 32; i++ {
+		pos := i * 2
+		if pos > 0 && s[pos-1] != '.' {
+			return ""
+		}
+		c := s[pos]
+		var v byte
+		switch {
+		case c >= '0' && c <= '9':
+			v = c - '0'
+		case c >= 'a' && c <= 'f':
+			v = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			v = c - 'A' + 10
+		default:
+			return ""
+		}
+		// The labels spell the address reversed, low nibble first: label i
+		// is nibble 31-i of the address.
+		nibble := 31 - i
+		if nibble%2 == 0 {
+			addr[nibble/2] |= v << 4
+		} else {
+			addr[nibble/2] |= v
+		}
+	}
 
-	return ip.String()
+	return netip.AddrFrom16(addr).String()
 }
