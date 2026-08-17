@@ -1,12 +1,12 @@
 package cache
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/stretchr/testify/assert"
 )
 
 // Test_Prefetch_Stores_Response tests that prefetch actually stores responses in cache.
@@ -47,7 +47,9 @@ func Test_Prefetch_Stores_Response(t *testing.T) {
 
 	// Verify entry is in cache
 	retrieved := c.checkCache(cacheKey)
-	assert.NotNil(t, retrieved)
+	if retrieved == nil {
+		t.Fatalf("retrieved is nil")
+	}
 
 	// Test that prefetch request has the cache reference
 	if c.prefetchQueue != nil {
@@ -58,8 +60,12 @@ func Test_Prefetch_Stores_Response(t *testing.T) {
 		}
 
 		// Verify the cache reference is set
-		assert.NotNil(t, req.Cache)
-		assert.Equal(t, c, req.Cache)
+		if req.Cache == nil {
+			t.Fatalf("req.Cache is nil")
+		}
+		if !reflect.DeepEqual(c, req.Cache) {
+			t.Errorf("req.Cache = %v, want %v", req.Cache, c)
+		}
 
 		// In real execution, processPrefetch:
 		//   1. Calls req.Cache.prefetchExchange(ctx, req.Request)

@@ -2,13 +2,13 @@ package ratelimit
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_RateLimit(t *testing.T) {
@@ -24,7 +24,9 @@ func Test_RateLimit(t *testing.T) {
 
 	r := middleware.Get("ratelimit").(*RateLimit)
 
-	assert.Equal(t, "ratelimit", r.Name())
+	if !reflect.DeepEqual("ratelimit", r.Name()) {
+		t.Errorf("r.Name() = %v, want %v", r.Name(), "ratelimit")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{})
 
@@ -46,8 +48,10 @@ func Test_RateLimit(t *testing.T) {
 	ch.Reset(mw, req)
 	r.ServeDNS(context.Background(), ch)
 	r.ServeDNS(context.Background(), ch)
-	if assert.True(t, mw.Written()) {
-		assert.Equal(t, dns.RcodeBadCookie, mw.Rcode())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	} else if !reflect.DeepEqual(dns.RcodeBadCookie, mw.Rcode()) {
+		t.Errorf("mw.Rcode() = %v, want %v", mw.Rcode(), dns.RcodeBadCookie)
 	}
 
 	opt.Option = nil
@@ -59,20 +63,26 @@ func Test_RateLimit(t *testing.T) {
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
 	ch.Reset(mw, req)
 	r.ServeDNS(context.Background(), ch)
-	assert.False(t, mw.Written())
+	if mw.Written() {
+		t.Errorf("mw.Written() is true")
+	}
 
 	mw = mock.NewWriter("tcp", "10.0.0.2:0")
 	ch.Reset(mw, req)
 	r.ServeDNS(context.Background(), ch)
 	r.ServeDNS(context.Background(), ch)
-	assert.False(t, mw.Written())
+	if mw.Written() {
+		t.Errorf("mw.Written() is true")
+	}
 
 	opt.Option = nil
 	mw = mock.NewWriter("udp", "10.0.0.1:0")
 	ch.Reset(mw, req)
 	r.ServeDNS(context.Background(), ch)
 	r.ServeDNS(context.Background(), ch)
-	assert.False(t, mw.Written())
+	if mw.Written() {
+		t.Errorf("mw.Written() is true")
+	}
 
 	mw = mock.NewWriter("udp", "0.0.0.0:0")
 	ch.Reset(mw, req)

@@ -4,14 +4,15 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestUDPListener_ZeroPortFanoutSharesOnePort pins the fix for
@@ -27,21 +28,28 @@ func TestUDPListener_ZeroPortFanoutSharesOnePort(t *testing.T) {
 		l.sockets = 4
 	}
 
-	require.NoError(t, l.Bind(context.Background()))
+	if err := l.Bind(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	t.Cleanup(func() { _ = l.Shutdown(context.Background()) })
 
 	// One PacketConn per socket. The engine's handler workers are a
 	// separate, independently sized pool — asserting against them was a
 	// leftover from when the two counts were the same field.
-	require.Len(t, l.pcs, l.sockets, "one PacketConn per socket")
+	if len(l.pcs) != l.sockets {
+		t.Fatalf("%s: len(l.pcs) = %d, want %d", "one PacketConn per socket", len(l.pcs), l.sockets)
+	}
 
 	want := l.pcs[0].LocalAddr().String()
-	require.NotContains(t, want, ":0", "kernel should have assigned a real port")
+	if strings.Contains(want, ":0") {
+		t.Fatalf("%s: %q contains %q", "kernel should have assigned a real port", want, ":0")
+	}
 
 	for i, pc := range l.pcs[1:] {
 		got := pc.LocalAddr().String()
-		assert.Equalf(t, want, got,
-			"worker %d bound to %s, expected shared %s", i+1, got, want)
+		if !reflect.DeepEqual(want, got) {
+			t.Errorf("%s: got = %v, want %v", fmt.Sprintf("worker %d bound to %s, expected shared %s", i+1, got, want), got, want)
+		}
 	}
 }
 

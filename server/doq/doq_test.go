@@ -22,7 +22,6 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 type dummyHandler struct{}
@@ -134,7 +133,9 @@ func generateCertificate() error {
 
 func Test_doq(t *testing.T) {
 	err := generateCertificate()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	cert := filepath.Join(os.TempDir(), "test.cert")
 	privkey := filepath.Join(os.TempDir(), "test.key")
@@ -161,7 +162,9 @@ func Test_doq(t *testing.T) {
 		if err == quic.ErrServerClosed {
 			return
 		}
-		assert.NoError(t, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
 	}()
 
 	time.Sleep(time.Second)
@@ -171,76 +174,118 @@ func Test_doq(t *testing.T) {
 		NextProtos:         []string{"doq"},
 	}
 	conn, err := quic.DialAddr(context.Background(), s.Addr, tlsConf, nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	stream, err := conn.OpenStreamSync(context.Background())
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
 	req.Id = 0
 
 	buf, err := req.Pack()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	n, err := stream.Write(addPrefixLen(buf))
-	assert.NoError(t, err)
-	assert.Greater(t, n, 17)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if n <= 17 {
+		t.Errorf("n = %v, want > %v", n, 17)
+	}
 
 	err = stream.Close()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	data, err := io.ReadAll(stream)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	msg := new(dns.Msg)
 	err = msg.Unpack(data[2:])
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	stream, err = conn.OpenStreamSync(context.Background())
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	time.Sleep(6 * time.Second)
 
 	_, err = stream.Write([]byte{0, 0})
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 
 	conn, err = quic.DialAddr(context.Background(), s.Addr, tlsConf, nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	stream, err = conn.OpenStreamSync(context.Background())
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	_, err = stream.Write([]byte{0, 0})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	err = stream.Close()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	_, err = io.ReadAll(stream)
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 
 	conn, err = quic.DialAddr(context.Background(), s.Addr, tlsConf, nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	stream, err = conn.OpenStreamSync(context.Background())
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	msg = new(dns.Msg)
 	msg.SetEdns0(512, true)
 	buf, _ = msg.Pack()
 
 	_, err = stream.Write(buf)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	err = stream.Close()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	_, err = io.ReadAll(stream)
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 
 	err = s.Shutdown()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
 
 func TestServerDispatchesStreamContextToAwareHandler(t *testing.T) {

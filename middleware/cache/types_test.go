@@ -1,12 +1,11 @@
 package cache
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestEDEPreservation(t *testing.T) {
@@ -42,16 +41,28 @@ func TestEDEPreservation(t *testing.T) {
 				return m
 			}(),
 			expected: func(t *testing.T, original, restored *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, restored.Rcode)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, restored.Rcode) {
+					t.Errorf("restored.Rcode = %v, want %v", restored.Rcode, dns.RcodeServerFailure)
+				}
 
 				opt := restored.IsEdns0()
-				require.NotNil(t, opt)
-				require.Len(t, opt.Option, 1)
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
+				if len(opt.Option) != 1 {
+					t.Fatalf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				require.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeNetworkError, ede.InfoCode)
-				assert.Equal(t, "Network unreachable", ede.ExtraText)
+				if !(ok) {
+					t.Fatalf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeNetworkError, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeNetworkError)
+				}
+				if !reflect.DeepEqual("Network unreachable", ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, "Network unreachable")
+				}
 			},
 		},
 		{
@@ -80,16 +91,28 @@ func TestEDEPreservation(t *testing.T) {
 				return m
 			}(),
 			expected: func(t *testing.T, original, restored *dns.Msg) {
-				assert.Equal(t, dns.RcodeNameError, restored.Rcode)
+				if !reflect.DeepEqual(dns.RcodeNameError, restored.Rcode) {
+					t.Errorf("restored.Rcode = %v, want %v", restored.Rcode, dns.RcodeNameError)
+				}
 
 				opt := restored.IsEdns0()
-				require.NotNil(t, opt)
-				require.Len(t, opt.Option, 1)
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
+				if len(opt.Option) != 1 {
+					t.Fatalf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				require.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeStaleNXDOMAINAnswer, ede.InfoCode)
-				assert.Equal(t, "Stale NXDOMAIN response", ede.ExtraText)
+				if !(ok) {
+					t.Fatalf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeStaleNXDOMAINAnswer, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeStaleNXDOMAINAnswer)
+				}
+				if !reflect.DeepEqual("Stale NXDOMAIN response", ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, "Stale NXDOMAIN response")
+				}
 			},
 		},
 		{
@@ -129,17 +152,31 @@ func TestEDEPreservation(t *testing.T) {
 				return m
 			}(),
 			expected: func(t *testing.T, original, restored *dns.Msg) {
-				assert.Equal(t, dns.RcodeSuccess, restored.Rcode)
-				assert.Len(t, restored.Answer, 1)
+				if !reflect.DeepEqual(dns.RcodeSuccess, restored.Rcode) {
+					t.Errorf("restored.Rcode = %v, want %v", restored.Rcode, dns.RcodeSuccess)
+				}
+				if len(restored.Answer) != 1 {
+					t.Errorf("len(restored.Answer) = %d, want %d", len(restored.Answer), 1)
+				}
 
 				opt := restored.IsEdns0()
-				require.NotNil(t, opt)
-				require.Len(t, opt.Option, 1)
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
+				if len(opt.Option) != 1 {
+					t.Fatalf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				require.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeStaleAnswer, ede.InfoCode)
-				assert.Equal(t, "Stale data served", ede.ExtraText)
+				if !(ok) {
+					t.Fatalf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeStaleAnswer, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeStaleAnswer)
+				}
+				if !reflect.DeepEqual("Stale data served", ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, "Stale data served")
+				}
 			},
 		},
 		{
@@ -174,16 +211,26 @@ func TestEDEPreservation(t *testing.T) {
 				return m
 			}(),
 			expected: func(t *testing.T, original, restored *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, restored.Rcode)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, restored.Rcode) {
+					t.Errorf("restored.Rcode = %v, want %v", restored.Rcode, dns.RcodeServerFailure)
+				}
 
 				opt := restored.IsEdns0()
-				require.NotNil(t, opt)
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
 				// Should only preserve the first EDE
-				require.Len(t, opt.Option, 1)
+				if len(opt.Option) != 1 {
+					t.Fatalf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				require.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeDNSSECIndeterminate, ede.InfoCode)
+				if !(ok) {
+					t.Fatalf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSSECIndeterminate, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeDNSSECIndeterminate)
+				}
 			},
 		},
 		{
@@ -212,9 +259,13 @@ func TestEDEPreservation(t *testing.T) {
 				return m
 			}(),
 			expected: func(t *testing.T, original, restored *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, restored.Rcode)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, restored.Rcode) {
+					t.Errorf("restored.Rcode = %v, want %v", restored.Rcode, dns.RcodeServerFailure)
+				}
 				// No EDE should be added if request doesn't have EDNS
-				assert.Nil(t, restored.IsEdns0())
+				if restored.IsEdns0() != nil {
+					t.Errorf("restored.IsEdns0() = %v, want nil", restored.IsEdns0())
+				}
 			},
 		},
 		{
@@ -243,16 +294,28 @@ func TestEDEPreservation(t *testing.T) {
 				return m
 			}(),
 			expected: func(t *testing.T, original, restored *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, restored.Rcode)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, restored.Rcode) {
+					t.Errorf("restored.Rcode = %v, want %v", restored.Rcode, dns.RcodeServerFailure)
+				}
 
 				opt := restored.IsEdns0()
-				require.NotNil(t, opt)
-				require.Len(t, opt.Option, 1)
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
+				if len(opt.Option) != 1 {
+					t.Fatalf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				require.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeOther, ede.InfoCode)
-				assert.Equal(t, "", ede.ExtraText)
+				if !(ok) {
+					t.Fatalf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeOther, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeOther)
+				}
+				if !reflect.DeepEqual("", ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, "")
+				}
 			},
 		},
 		{
@@ -291,16 +354,26 @@ func TestEDEPreservation(t *testing.T) {
 				return m
 			}(),
 			expected: func(t *testing.T, original, restored *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, restored.Rcode)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, restored.Rcode) {
+					t.Errorf("restored.Rcode = %v, want %v", restored.Rcode, dns.RcodeServerFailure)
+				}
 
 				opt := restored.IsEdns0()
-				require.NotNil(t, opt)
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
 				// Should only have EDE, not the cookie
-				require.Len(t, opt.Option, 1)
+				if len(opt.Option) != 1 {
+					t.Fatalf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				require.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeNetworkError, ede.InfoCode)
+				if !(ok) {
+					t.Fatalf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeNetworkError, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeNetworkError)
+				}
 			},
 		},
 	}
@@ -309,11 +382,15 @@ func TestEDEPreservation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create cache entry
 			entry := NewCacheEntry(tt.msg, 300*time.Second, 0)
-			require.NotNil(t, entry)
+			if entry == nil {
+				t.Fatalf("entry is nil")
+			}
 
 			// Convert back to message
 			restored := entry.ToMsg(tt.req)
-			require.NotNil(t, restored)
+			if restored == nil {
+				t.Fatalf("restored is nil")
+			}
 
 			// Verify expectations
 			tt.expected(t, tt.msg, restored)
@@ -336,8 +413,12 @@ func TestCacheEntryWithoutEDE(t *testing.T) {
 	})
 
 	entry := NewCacheEntry(msg, 300*time.Second, 0)
-	require.NotNil(t, entry)
-	assert.Nil(t, entry.ede)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
+	if entry.ede != nil {
+		t.Errorf("entry.ede = %v, want nil", entry.ede)
+	}
 
 	// Restore with EDNS request
 	req := new(dns.Msg)
@@ -345,7 +426,13 @@ func TestCacheEntryWithoutEDE(t *testing.T) {
 	req.SetEdns0(512, true)
 
 	restored := entry.ToMsg(req)
-	require.NotNil(t, restored)
-	assert.Len(t, restored.Answer, 1)
-	assert.Nil(t, restored.IsEdns0()) // No OPT should be added
+	if restored == nil {
+		t.Fatalf("restored is nil")
+	}
+	if len(restored.Answer) != 1 {
+		t.Errorf("len(restored.Answer) = %d, want %d", len(restored.Answer), 1)
+	}
+	if restored.IsEdns0() != nil {
+		t.Errorf("restored.IsEdns0() = %v, want nil", restored.IsEdns0())
+	} // No OPT should be added
 }

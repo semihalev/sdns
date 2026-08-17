@@ -2,12 +2,12 @@ package cache
 
 import (
 	"net/netip"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestResolutionFailuresUseDedicatedCache(t *testing.T) {
@@ -92,9 +92,15 @@ func TestResolutionFailureRcodeClassification(t *testing.T) {
 			req.SetQuestion(msg.Question[0].Name, msg.Question[0].Qtype)
 			_, inFailure := c.store.LookupFailure(req, netip.Prefix{})
 
-			assert.False(t, inLegacyNegative, "legacy negative cache must remain empty")
-			assert.Equal(t, tt.wantFailure, inFailure)
-			assert.Equal(t, !tt.wantFailure, inPositive)
+			if inLegacyNegative {
+				t.Errorf("%s: inLegacyNegative is true", "legacy negative cache must remain empty")
+			}
+			if !reflect.DeepEqual(tt.wantFailure, inFailure) {
+				t.Errorf("inFailure = %v, want %v", inFailure, tt.wantFailure)
+			}
+			if !reflect.DeepEqual(!tt.wantFailure, inPositive) {
+				t.Errorf("inPositive = %v, want %v", inPositive, !tt.wantFailure)
+			}
 		})
 	}
 }

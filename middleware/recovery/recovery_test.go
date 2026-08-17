@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -10,7 +11,6 @@ import (
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_Recovery(t *testing.T) {
@@ -27,7 +27,9 @@ func Test_Recovery(t *testing.T) {
 
 	r := middleware.Get("recovery").(*Recovery)
 
-	assert.Equal(t, "recovery", r.Name())
+	if !reflect.DeepEqual("recovery", r.Name()) {
+		t.Errorf("r.Name() = %v, want %v", r.Name(), "recovery")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{r, nil})
 
@@ -39,7 +41,9 @@ func Test_Recovery(t *testing.T) {
 
 	r.ServeDNS(context.Background(), ch)
 
-	assert.Equal(t, dns.RcodeServerFailure, mw.Msg().Rcode)
+	if !reflect.DeepEqual(dns.RcodeServerFailure, mw.Msg().Rcode) {
+		t.Errorf("mw.Msg().Rcode = %v, want %v", mw.Msg().Rcode, dns.RcodeServerFailure)
+	}
 
 	ch = middleware.NewChain([]middleware.Handler{r})
 	ch.Reset(mw, req)

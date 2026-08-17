@@ -1,13 +1,13 @@
 package resolver
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_ClientTimeout(t *testing.T) {
@@ -20,21 +20,31 @@ func Test_ClientTimeout(t *testing.T) {
 	// DNS server on the same machine (e.g. a live sdns), which turned this
 	// timeout test into a successful live query.
 	blackhole, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	defer func() { _ = blackhole.Close() }()
 
 	dialer := &net.Dialer{Deadline: time.Now().Add(2 * time.Second)}
 	co := &Conn{}
 
 	co.Conn, err = dialer.Dial("udp4", blackhole.LocalAddr().String())
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	err = co.SetDeadline(time.Now().Add(2 * time.Second))
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	_, _, err = co.Exchange(req)
-	assert.Error(t, err)
-	assert.NoError(t, co.Close())
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
+	if err := co.Close(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
 
 func Test_Client(t *testing.T) {
@@ -53,14 +63,22 @@ func Test_Client(t *testing.T) {
 
 	var err error
 	co.Conn, err = dialer.Dial("udp4", addr)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	err = co.SetDeadline(time.Now().Add(2 * time.Second))
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	r, _, err := co.Exchange(req)
-	assert.NoError(t, err)
-	assert.NotNil(t, r)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if r == nil {
+		t.Fatalf("r is nil")
+	}
 }
 
 // startMismatchedQuestionServer returns a UDP server that always replies with
@@ -102,18 +120,24 @@ func Test_Client_RejectsMismatchedQuestion(t *testing.T) {
 
 	var err error
 	co.Conn, err = dialer.Dial("udp", addr)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	defer func() { _ = co.Close() }()
 
 	err = co.SetDeadline(time.Now().Add(2 * time.Second))
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	// The upstream returns a response whose question is victim.test. but the
 	// outstanding request asked for attacker.test. — Exchange must surface
 	// this as an error rather than handing the unrelated message back to the
 	// caller (which would otherwise cache it under victim.test.).
 	_, _, err = co.Exchange(req)
-	assert.ErrorIs(t, err, ErrQuestion)
+	if !errors.Is(err, ErrQuestion) {
+		t.Errorf("error = %v, want %v", err, ErrQuestion)
+	}
 }
 
 // startEchoingQuestionServer answers every query with the question it was

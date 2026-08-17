@@ -1,11 +1,11 @@
 package dnsutil
 
 import (
+	"math"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
@@ -154,8 +154,9 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 
 			// Allow small time difference due to execution time
 			delta := time.Second
-			assert.InDelta(t, tt.expectedTTL.Seconds(), ttl.Seconds(), delta.Seconds(),
-				"TTL should be approximately %v but got %v", tt.expectedTTL, ttl)
+			if math.Abs(ttl.Seconds()-tt.expectedTTL.Seconds()) > delta.Seconds() {
+				t.Errorf("TTL should be approximately %v but got %v", tt.expectedTTL, ttl)
+			}
 		})
 	}
 }
@@ -206,8 +207,9 @@ func TestGetRRSIGTTL(t *testing.T) {
 
 			// Allow small time difference due to execution time
 			delta := time.Second
-			assert.InDelta(t, tt.expectedTTL.Seconds(), ttl.Seconds(), delta.Seconds(),
-				"TTL should be approximately %v but got %v", tt.expectedTTL, ttl)
+			if math.Abs(ttl.Seconds()-tt.expectedTTL.Seconds()) > delta.Seconds() {
+				t.Errorf("TTL should be approximately %v but got %v", tt.expectedTTL, ttl)
+			}
 		})
 	}
 }

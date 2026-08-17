@@ -2,12 +2,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/semihalev/sdns/config"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestServerGracefulDegradation(t *testing.T) {
@@ -25,21 +24,37 @@ func TestServerGracefulDegradation(t *testing.T) {
 	}
 
 	s := New(cfg)
-	require.NotNil(t, s)
+	if s == nil {
+		t.Fatalf("s is nil")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	require.NoError(t, s.Run(ctx))
+	if err := s.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 
-	assert.True(t, s.HasListener("udp"), "UDP should be active")
-	assert.True(t, s.HasListener("tcp"), "TCP should be active")
+	if !(s.HasListener("udp")) {
+		t.Errorf("%s: s.HasListener('udp') is false", "UDP should be active")
+	}
+	if !(s.HasListener("tcp")) {
+		t.Errorf("%s: s.HasListener('tcp') is false", "TCP should be active")
+	}
 
-	assert.False(t, s.HasListener("tls"), "TLS should be disabled")
-	assert.False(t, s.HasListener("doh"), "DoH should be disabled")
-	assert.False(t, s.HasListener("doh3"), "DoH3 should be disabled")
-	assert.False(t, s.HasListener("doq"), "DoQ should be disabled")
+	if s.HasListener("tls") {
+		t.Errorf("%s: s.HasListener('tls') is true", "TLS should be disabled")
+	}
+	if s.HasListener("doh") {
+		t.Errorf("%s: s.HasListener('doh') is true", "DoH should be disabled")
+	}
+	if s.HasListener("doh3") {
+		t.Errorf("%s: s.HasListener('doh3') is true", "DoH3 should be disabled")
+	}
+	if s.HasListener("doq") {
+		t.Errorf("%s: s.HasListener('doq') is true", "DoQ should be disabled")
+	}
 
 	cancel()
 
@@ -70,21 +85,35 @@ func TestServerWithValidCertificate(t *testing.T) {
 	}
 
 	s := New(cfg)
-	require.NotNil(t, s)
+	if s == nil {
+		t.Fatalf("s is nil")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	require.NoError(t, s.Run(ctx))
+	if err := s.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	time.Sleep(200 * time.Millisecond)
 
-	assert.True(t, s.HasListener("udp"), "UDP should be active")
-	assert.True(t, s.HasListener("tcp"), "TCP should be active")
-	assert.True(t, s.HasListener("tls"), "TLS should be active")
-	assert.True(t, s.HasListener("doh"), "DoH should be active")
+	if !(s.HasListener("udp")) {
+		t.Errorf("%s: s.HasListener('udp') is false", "UDP should be active")
+	}
+	if !(s.HasListener("tcp")) {
+		t.Errorf("%s: s.HasListener('tcp') is false", "TCP should be active")
+	}
+	if !(s.HasListener("tls")) {
+		t.Errorf("%s: s.HasListener('tls') is false", "TLS should be active")
+	}
+	if !(s.HasListener("doh")) {
+		t.Errorf("%s: s.HasListener('doh') is false", "DoH should be active")
+	}
 	// DoH3 can fail on constrained CI runners (UDP buffer size, QUIC
 	// features); leave it unchecked. DoQ reuses the same certificate.
-	assert.True(t, s.HasListener("doq"), "DoQ should be active")
+	if !(s.HasListener("doq")) {
+		t.Errorf("%s: s.HasListener('doq') is false", "DoQ should be active")
+	}
 
 	cancel()
 	time.Sleep(100 * time.Millisecond)
@@ -113,10 +142,14 @@ func TestServerHasListenerReflectsServeState(t *testing.T) {
 	}
 
 	s := New(cfg)
-	require.NotNil(t, s)
+	if s == nil {
+		t.Fatalf("s is nil")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	require.NoError(t, s.Run(ctx))
+	if err := s.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Before Serve has had a chance to run, HasListener may be
 	// false; give goroutines time to start.
@@ -129,11 +162,21 @@ func TestServerHasListenerReflectsServeState(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	assert.True(t, s.HasListener("udp"))
-	assert.True(t, s.HasListener("tcp"))
-	assert.True(t, s.HasListener("doh"))
-	assert.True(t, s.HasListener("doh3"))
-	assert.True(t, s.HasListener("doq"))
+	if !(s.HasListener("udp")) {
+		t.Errorf("s.HasListener('udp') is false")
+	}
+	if !(s.HasListener("tcp")) {
+		t.Errorf("s.HasListener('tcp') is false")
+	}
+	if !(s.HasListener("doh")) {
+		t.Errorf("s.HasListener('doh') is false")
+	}
+	if !(s.HasListener("doh3")) {
+		t.Errorf("s.HasListener('doh3') is false")
+	}
+	if !(s.HasListener("doq")) {
+		t.Errorf("s.HasListener('doq') is false")
+	}
 
 	// Stop the server — every listener's Serve goroutine exits and
 	// HasListener must flip back to false.
@@ -145,11 +188,21 @@ func TestServerHasListenerReflectsServeState(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	assert.False(t, s.HasListener("udp"), "UDP should no longer be serving")
-	assert.False(t, s.HasListener("tcp"))
-	assert.False(t, s.HasListener("doh"))
-	assert.False(t, s.HasListener("doh3"))
-	assert.False(t, s.HasListener("doq"))
+	if s.HasListener("udp") {
+		t.Errorf("%s: s.HasListener('udp') is true", "UDP should no longer be serving")
+	}
+	if s.HasListener("tcp") {
+		t.Errorf("s.HasListener('tcp') is true")
+	}
+	if s.HasListener("doh") {
+		t.Errorf("s.HasListener('doh') is true")
+	}
+	if s.HasListener("doh3") {
+		t.Errorf("s.HasListener('doh3') is true")
+	}
+	if s.HasListener("doq") {
+		t.Errorf("s.HasListener('doq') is true")
+	}
 }
 
 // TestServerRestartReleasesSockets reproduces the graceful-restart case
@@ -175,14 +228,22 @@ func TestServerRestartReleasesSockets(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		s := New(cfg)
-		require.NotNil(t, s, "cycle %d: New", i)
+		if s == nil {
+			t.Fatalf("%s: s is nil", fmt.Sprintf("cycle %d: New", i))
+		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		require.NoError(t, s.Run(ctx), "cycle %d: Run", i)
+		if err := s.Run(ctx); err != nil {
+			t.Fatalf("%s: unexpected error: %v", fmt.Sprintf("cycle %d: Run", i), err)
+		}
 
 		time.Sleep(100 * time.Millisecond)
-		require.True(t, s.HasListener("doh3"), "cycle %d: DoH3 should bind on a fresh socket", i)
-		require.True(t, s.HasListener("doq"), "cycle %d: DoQ should bind on a fresh socket", i)
+		if !(s.HasListener("doh3")) {
+			t.Fatalf("%s: s.HasListener('doh3') is false", fmt.Sprintf("cycle %d: DoH3 should bind on a fresh socket", i))
+		}
+		if !(s.HasListener("doq")) {
+			t.Fatalf("%s: s.HasListener('doq') is false", fmt.Sprintf("cycle %d: DoQ should bind on a fresh socket", i))
+		}
 
 		cancel()
 

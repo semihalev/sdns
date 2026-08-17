@@ -2,6 +2,8 @@ package waitgroup
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,8 +11,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func Test_WaitGroupWait(t *testing.T) {
@@ -24,12 +24,16 @@ func Test_WaitGroupWait(t *testing.T) {
 	wg.Add(key)
 
 	count := wg.Get(key)
-	assert.Equal(t, 1, count)
+	if !reflect.DeepEqual(1, count) {
+		t.Errorf("count = %v, want %v", count, 1)
+	}
 
 	key2 := cache.Key(dns.Question{Name: "none.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	count = wg.Get(key2)
-	assert.Equal(t, 0, count)
+	if !reflect.DeepEqual(0, count) {
+		t.Errorf("count = %v, want %v", count, 0)
+	}
 
 	wg.Wait(key2)
 
@@ -61,7 +65,9 @@ func Test_WaitGroupWait(t *testing.T) {
 	mu.RLock()
 	defer mu.RUnlock()
 	for _, w := range workers {
-		assert.Equal(t, *w, "stopped")
+		if !reflect.DeepEqual(*w, "stopped") {
+			t.Errorf("'stopped' = %v, want %v", "stopped", *w)
+		}
 	}
 }
 
@@ -77,7 +83,9 @@ func Test_JoinLeaderWakesFollowers(t *testing.T) {
 
 	// Leader.
 	wait := wg.Join(key)
-	require.Nil(t, wait, "first Join must return nil (leader)")
+	if wait != nil {
+		t.Fatalf("%s: wait = %v, want nil", "first Join must return nil (leader)", wait)
+	}
 
 	// Followers.
 	const followers = 3
@@ -86,7 +94,13 @@ func Test_JoinLeaderWakesFollowers(t *testing.T) {
 	for range followers {
 		go func() {
 			w := wg.Join(key)
-			require.NotNil(t, w, "subsequent Join must return a channel (follower)")
+			if w == nil {
+				// Errorf, not Fatalf: FailNow must not run off the test
+				// goroutine, and the collector below still needs its done.
+				t.Errorf("subsequent Join must return a channel (follower)")
+				done <- struct{}{}
+				return
+			}
 			<-w
 			woken.Add(1)
 			done <- struct{}{}
@@ -96,7 +110,9 @@ func Test_JoinLeaderWakesFollowers(t *testing.T) {
 	// Give followers time to block on the channel before the leader
 	// calls Done — that's the case the regression would mishandle.
 	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, int32(0), woken.Load(), "followers must wait for leader's Done")
+	if !reflect.DeepEqual(int32(0), woken.Load()) {
+		t.Errorf("%s: woken.Load() = %v, want %v", "followers must wait for leader's Done", woken.Load(), int32(0))
+	}
 
 	// Leader finishes. All followers should wake well before the
 	// 5s wait timeout would expire.
@@ -110,7 +126,9 @@ func Test_JoinLeaderWakesFollowers(t *testing.T) {
 			t.Fatalf("follower still blocked %v after leader Done", time.Since(start))
 		}
 	}
-	assert.Equal(t, int32(followers), woken.Load())
+	if !reflect.DeepEqual(int32(followers), woken.Load()) {
+		t.Errorf("woken.Load() = %v, want %v", woken.Load(), int32(followers))
+	}
 }
 
 func Test_RegroupPinsLateFollowersToOneNextGeneration(t *testing.T) {
@@ -118,15 +136,23 @@ func Test_RegroupPinsLateFollowersToOneNextGeneration(t *testing.T) {
 	key := cache.Key(dns.Question{Name: "regroup.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	first, leader := wg.JoinGeneration(key)
-	require.True(t, leader)
+	if !(leader) {
+		t.Fatalf("leader is false")
+	}
 	follower, leader := wg.JoinGeneration(key)
-	require.False(t, leader)
-	require.Same(t, first, follower)
+	if leader {
+		t.Fatalf("leader is true")
+	}
+	if first != follower {
+		t.Fatalf("%p and %p are not the same pointer", first, follower)
+	}
 	wg.DoneGeneration(key, first)
 	<-first.Done()
 
 	second, leader := wg.Regroup(key, first)
-	require.True(t, leader)
+	if !(leader) {
+		t.Fatalf("leader is false")
+	}
 	wg.DoneGeneration(key, second)
 	<-second.Done()
 
@@ -134,8 +160,12 @@ func Test_RegroupPinsLateFollowersToOneNextGeneration(t *testing.T) {
 	// first cohort must still observe that exact token instead of becoming a
 	// third leader.
 	late, leader := wg.Regroup(key, follower)
-	require.False(t, leader)
-	require.Same(t, second, late)
+	if leader {
+		t.Fatalf("leader is true")
+	}
+	if second != late {
+		t.Fatalf("%p and %p are not the same pointer", second, late)
+	}
 }
 
 func Test_DoneGenerationCannotDeleteNewerRegroup(t *testing.T) {
@@ -143,19 +173,27 @@ func Test_DoneGenerationCannotDeleteNewerRegroup(t *testing.T) {
 	key := cache.Key(dns.Question{Name: "stale.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	first, leader := wg.JoinGeneration(key)
-	require.True(t, leader)
+	if !(leader) {
+		t.Fatalf("leader is false")
+	}
 	wg.DoneGeneration(key, first)
 	<-first.Done()
 
 	second, leader := wg.Regroup(key, first)
-	require.True(t, leader)
+	if !(leader) {
+		t.Fatalf("leader is false")
+	}
 
 	// The abandoned first leader finally returns. Its token-specific Done
 	// must not erase the current second generation.
 	wg.DoneGeneration(key, first)
 	current, leader := wg.JoinGeneration(key)
-	require.False(t, leader)
-	require.Same(t, second, current)
+	if leader {
+		t.Fatalf("leader is true")
+	}
+	if second != current {
+		t.Fatalf("%p and %p are not the same pointer", second, current)
+	}
 
 	wg.DoneGeneration(key, second)
 }
@@ -165,21 +203,37 @@ func Test_TimedOutGenerationRemainsTombstoneUntilLeaderDone(t *testing.T) {
 	key := cache.Key(dns.Question{Name: "timeout.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	first, leader := wg.JoinGeneration(key)
-	require.True(t, leader)
+	if !(leader) {
+		t.Fatalf("leader is false")
+	}
 	<-first.Done()
-	require.ErrorIs(t, first.Err(), context.DeadlineExceeded)
+	if !errors.Is(first.Err(), context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want %v", first.Err(), context.DeadlineExceeded)
+	}
 
 	regrouped, leader := wg.Regroup(key, first)
-	require.False(t, leader)
-	require.Same(t, first, regrouped)
+	if leader {
+		t.Fatalf("leader is true")
+	}
+	if first != regrouped {
+		t.Fatalf("%p and %p are not the same pointer", first, regrouped)
+	}
 	current, leader := wg.JoinGeneration(key)
-	require.False(t, leader)
-	require.Same(t, first, current)
+	if leader {
+		t.Fatalf("leader is true")
+	}
+	if first != current {
+		t.Fatalf("%p and %p are not the same pointer", first, current)
+	}
 
 	wg.DoneGeneration(key, first)
 	next, leader := wg.JoinGeneration(key)
-	require.True(t, leader)
-	require.NotSame(t, first, next)
+	if !(leader) {
+		t.Fatalf("leader is false")
+	}
+	if first == next {
+		t.Fatalf("%p is the same pointer", first)
+	}
 	wg.DoneGeneration(key, next)
 }
 
@@ -188,7 +242,9 @@ func Test_ConcurrentRegroupElectsOneSharedLeader(t *testing.T) {
 	key := cache.Key(dns.Question{Name: "concurrent.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 	first, leader := wg.JoinGeneration(key)
-	require.True(t, leader)
+	if !(leader) {
+		t.Fatalf("leader is false")
+	}
 	wg.DoneGeneration(key, first)
 	<-first.Done()
 
@@ -219,11 +275,13 @@ func Test_ConcurrentRegroupElectsOneSharedLeader(t *testing.T) {
 		}
 		if next == nil {
 			next = got.generation
-		} else {
-			require.Same(t, next, got.generation)
+		} else if next != got.generation {
+			t.Fatalf("%p and %p are not the same pointer", next, got.generation)
 		}
 	}
-	require.Equal(t, 1, leaders)
+	if !reflect.DeepEqual(1, leaders) {
+		t.Fatalf("leaders = %v, want %v", leaders, 1)
+	}
 	wg.DoneGeneration(key, next)
 }
 
@@ -232,7 +290,9 @@ func Test_JoinAndRegroupRaceAdoptsOneGeneration(t *testing.T) {
 		wg := New(5 * time.Second)
 		key := cache.Key(dns.Question{Name: "adopt.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 		first, leader := wg.JoinGeneration(key)
-		require.True(t, leader)
+		if !(leader) {
+			t.Fatalf("leader is false")
+		}
 		wg.DoneGeneration(key, first)
 		<-first.Done()
 
@@ -256,8 +316,12 @@ func Test_JoinAndRegroupRaceAdoptsOneGeneration(t *testing.T) {
 
 		a := <-results
 		b := <-results
-		require.Same(t, a.generation, b.generation)
-		require.NotEqual(t, a.leader, b.leader)
+		if a.generation != b.generation {
+			t.Fatalf("%p and %p are not the same pointer", a.generation, b.generation)
+		}
+		if reflect.DeepEqual(a.leader, b.leader) {
+			t.Fatalf("b.leader = %v, want a different value", b.leader)
+		}
 		wg.DoneGeneration(key, a.generation)
 	}
 }

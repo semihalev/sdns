@@ -3,12 +3,12 @@ package dnsutil
 import (
 	"net"
 	"net/netip"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/mock"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestSetEdns0(t *testing.T) {
@@ -154,15 +154,27 @@ func TestSetEdns0(t *testing.T) {
 			// matching the pre-7871 contract this test was written for.
 			opt, size, cookie, nsid, origDo := SetEdns0(tt.req, nil, netip.Addr{})
 
-			assert.NotNil(t, opt)
-			assert.Equal(t, tt.expectedSize, size)
-			assert.Equal(t, tt.expectedCookie, cookie)
-			assert.Equal(t, tt.expectedNsid, nsid)
-			assert.Equal(t, tt.expectedOrigDo, origDo)
+			if opt == nil {
+				t.Fatalf("opt is nil")
+			}
+			if !reflect.DeepEqual(tt.expectedSize, size) {
+				t.Errorf("size = %v, want %v", size, tt.expectedSize)
+			}
+			if !reflect.DeepEqual(tt.expectedCookie, cookie) {
+				t.Errorf("cookie = %v, want %v", cookie, tt.expectedCookie)
+			}
+			if !reflect.DeepEqual(tt.expectedNsid, nsid) {
+				t.Errorf("nsid = %v, want %v", nsid, tt.expectedNsid)
+			}
+			if !reflect.DeepEqual(tt.expectedOrigDo, origDo) {
+				t.Errorf("origDo = %v, want %v", origDo, tt.expectedOrigDo)
+			}
 
 			// Verify OPT record is now in request
 			reqOpt := tt.req.IsEdns0()
-			assert.NotNil(t, reqOpt)
+			if reqOpt == nil {
+				t.Fatalf("reqOpt is nil")
+			}
 		})
 	}
 }
@@ -305,16 +317,24 @@ func TestGenerateServerCookie(t *testing.T) {
 			result := GenerateServerCookie(tt.secret, tt.remoteip, tt.cookie)
 
 			// Cookie should start with the original cookie
-			assert.True(t, len(result) > len(tt.cookie))
-			assert.Equal(t, tt.cookie, result[:len(tt.cookie)])
+			if len(result) <= len(tt.cookie) {
+				t.Errorf("len(result) = %d, want > %d", len(result), len(tt.cookie))
+			}
+			if !reflect.DeepEqual(tt.cookie, result[:len(tt.cookie)]) {
+				t.Errorf("result[:len(tt.cookie)] = %v, want %v", result[:len(tt.cookie)], tt.cookie)
+			}
 
 			// Generate same cookie with same parameters should be identical
 			result2 := GenerateServerCookie(tt.secret, tt.remoteip, tt.cookie)
-			assert.Equal(t, result, result2)
+			if !reflect.DeepEqual(result, result2) {
+				t.Errorf("result2 = %v, want %v", result2, result)
+			}
 
 			// Different parameters should produce different results
 			result3 := GenerateServerCookie(tt.secret+"x", tt.remoteip, tt.cookie)
-			assert.NotEqual(t, result, result3)
+			if reflect.DeepEqual(result, result3) {
+				t.Errorf("result3 = %v, want a different value", result3)
+			}
 		})
 	}
 }
@@ -364,9 +384,13 @@ func TestClearOPT(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ClearOPT(tt.msg)
 
-			assert.Equal(t, tt.expectedExtra, len(result.Extra))
+			if !reflect.DeepEqual(tt.expectedExtra, len(result.Extra)) {
+				t.Errorf("len(result.Extra) = %v, want %v", len(result.Extra), tt.expectedExtra)
+			}
 			// Verify no OPT records remain
-			assert.Nil(t, result.IsEdns0())
+			if result.IsEdns0() != nil {
+				t.Errorf("result.IsEdns0() = %v, want nil", result.IsEdns0())
+			}
 		})
 	}
 }
@@ -472,8 +496,12 @@ func TestClearDNSSEC(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ClearDNSSEC(tt.msg)
 
-			assert.Equal(t, tt.expectedAnswer, len(result.Answer))
-			assert.Equal(t, tt.expectedNs, len(result.Ns))
+			if !reflect.DeepEqual(tt.expectedAnswer, len(result.Answer)) {
+				t.Errorf("len(result.Answer) = %v, want %v", len(result.Answer), tt.expectedAnswer)
+			}
+			if !reflect.DeepEqual(tt.expectedNs, len(result.Ns)) {
+				t.Errorf("len(result.Ns) = %v, want %v", len(result.Ns), tt.expectedNs)
+			}
 		})
 	}
 }
@@ -487,15 +515,29 @@ func TestNotSupported(t *testing.T) {
 	w := mock.NewWriter("tcp", "127.0.0.1:0")
 
 	err := NotSupported(w, req)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	msg := w.Msg()
-	assert.NotNil(t, msg)
-	assert.Equal(t, dns.RcodeNotImplemented, msg.Rcode)
-	assert.Equal(t, req.Id, msg.Id)
-	assert.True(t, msg.Response)
-	assert.True(t, msg.RecursionDesired)
-	assert.True(t, msg.AuthenticatedData)
+	if msg == nil {
+		t.Fatalf("msg is nil")
+	}
+	if !reflect.DeepEqual(dns.RcodeNotImplemented, msg.Rcode) {
+		t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, dns.RcodeNotImplemented)
+	}
+	if !reflect.DeepEqual(req.Id, msg.Id) {
+		t.Errorf("msg.Id = %v, want %v", msg.Id, req.Id)
+	}
+	if !(msg.Response) {
+		t.Errorf("msg.Response is false")
+	}
+	if !(msg.RecursionDesired) {
+		t.Errorf("msg.RecursionDesired is false")
+	}
+	if !(msg.AuthenticatedData) {
+		t.Errorf("msg.AuthenticatedData is false")
+	}
 }
 
 func TestSetRcode(t *testing.T) {
@@ -541,14 +583,24 @@ func TestSetRcode(t *testing.T) {
 
 			msg := SetRcode(req, tt.rcode, tt.do)
 
-			assert.Equal(t, tt.expectedRc, msg.Rcode)
-			assert.True(t, msg.RecursionAvailable)
-			assert.True(t, msg.RecursionDesired)
+			if !reflect.DeepEqual(tt.expectedRc, msg.Rcode) {
+				t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, tt.expectedRc)
+			}
+			if !(msg.RecursionAvailable) {
+				t.Errorf("msg.RecursionAvailable is false")
+			}
+			if !(msg.RecursionDesired) {
+				t.Errorf("msg.RecursionDesired is false")
+			}
 
 			opt := msg.IsEdns0()
 			if tt.expectedEdns {
-				assert.NotNil(t, opt)
-				assert.Equal(t, tt.expectedDo, opt.Do())
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
+				if !reflect.DeepEqual(tt.expectedDo, opt.Do()) {
+					t.Errorf("opt.Do() = %v, want %v", opt.Do(), tt.expectedDo)
+				}
 			}
 		})
 	}

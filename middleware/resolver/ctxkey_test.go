@@ -2,10 +2,10 @@ package resolver
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 // Test_checkLoop_DnameDepthNoCollision guards the context-key layout.
@@ -24,21 +24,31 @@ func Test_checkLoop_DnameDepthNoCollision(t *testing.T) {
 
 	// IPv4 NS lookup path: checkLoop with qtype A must not read that int
 	// as a []string.
-	assert.NotPanics(t, func() {
+	if func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
 		ctx, _ = r.checkLoop(ctx, "ns1.example.com.", dns.TypeA)
-	})
+		return
+	}() {
+		t.Error("checkLoop panicked")
+	}
 
 	// The DNAME depth is untouched — the two keys are distinct.
 	depth, _ := ctx.Value(contextKeyDnameDepth).(int)
-	assert.Equal(t, 3, depth)
+	if !reflect.DeepEqual(3, depth) {
+		t.Errorf("depth = %v, want %v", depth, 3)
+	}
 
 	// Loop detection still works for A queries: a qname seen a third time
 	// trips the guard.
 	var loop bool
 	ctx, loop = r.checkLoop(ctx, "ns1.example.com.", dns.TypeA)
-	assert.False(t, loop)
+	if loop {
+		t.Errorf("loop is true")
+	}
 	_, loop = r.checkLoop(ctx, "ns1.example.com.", dns.TypeA)
-	assert.True(t, loop)
+	if !(loop) {
+		t.Errorf("loop is false")
+	}
 }
 
 // Test_checkLoop_KeyNoFixedCollision asserts that no qtype maps a derived

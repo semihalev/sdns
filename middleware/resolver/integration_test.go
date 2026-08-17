@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -12,7 +13,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/dnsutil"
-	"github.com/stretchr/testify/assert"
 )
 
 // TestCircuitBreakerIntegration tests circuit breaker with real failing servers
@@ -41,22 +41,29 @@ func TestCircuitBreakerIntegration(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			_, err := r.lookup(ctx, &resolveState{requestID: req.Id}, req, servers)
-			assert.Error(t, err, "Query %d should fail", n)
+			if err == nil {
+				t.Errorf("%s: expected an error, got nil", fmt.Sprintf("Query %d should fail", n))
+			}
 		}(i)
 		time.Sleep(10 * time.Millisecond) // Small delay between queries
 	}
 	wg.Wait()
 
 	// After 5 failures, circuit breaker should be tripped
-	assert.False(t, r.circuitBreaker.canQuery(badServer.Addr),
-		"Circuit breaker should be tripped after failures")
+	if r.circuitBreaker.canQuery(badServer.Addr) {
+		t.Errorf("%s: r.circuitBreaker.canQuery(badServer.Addr) is true", "Circuit breaker should be tripped after failures")
+	}
 
 	// Verify the server is in failed state
 	r.circuitBreaker.mu.RLock()
 	sf, exists := r.circuitBreaker.failures[badServer.Addr]
 	r.circuitBreaker.mu.RUnlock()
-	assert.True(t, exists, "Server should be tracked in failures")
-	assert.True(t, sf.disabled.Load(), "Server should be disabled")
+	if !(exists) {
+		t.Errorf("%s: exists is false", "Server should be tracked in failures")
+	}
+	if !(sf.disabled.Load()) {
+		t.Errorf("%s: sf.disabled.Load() is false", "Server should be disabled")
+	}
 }
 
 // TestGoroutineLimitUnderLoad tests that goroutine limit prevents runaway growth
@@ -129,8 +136,9 @@ func TestGoroutineLimitUnderLoad(t *testing.T) {
 	// Since we're starting 100 goroutines but only allow 20 concurrent,
 	// we expect to see all 100 trying to acquire (which is what we measure)
 	// but only 20 will be actively running queries at once
-	assert.LessOrEqual(t, int(maxObserved), 100,
-		"Should track the goroutines we started")
+	if int(maxObserved) > 100 {
+		t.Errorf("%s: int(maxObserved) = %v, want <= %v", "Should track the goroutines we started", int(maxObserved), 100)
+	}
 }
 
 // TestCircuitBreakerRecovery tests that circuit breaker recovers after timeout
@@ -149,8 +157,9 @@ func TestCircuitBreakerRecovery(t *testing.T) {
 		r.circuitBreaker.recordFailure(server)
 	}
 
-	assert.False(t, r.circuitBreaker.canQuery(server),
-		"Circuit breaker should be tripped")
+	if r.circuitBreaker.canQuery(server) {
+		t.Errorf("%s: r.circuitBreaker.canQuery(server) is true", "Circuit breaker should be tripped")
+	}
 
 	// Manually set last failure to 31 seconds ago
 	r.circuitBreaker.mu.RLock()
@@ -159,17 +168,20 @@ func TestCircuitBreakerRecovery(t *testing.T) {
 	sf.lastFailure.Store(time.Now().Add(-31 * time.Second).Unix())
 
 	// Should be queryable again
-	assert.True(t, r.circuitBreaker.canQuery(server),
-		"Circuit breaker should reset after timeout")
+	if !(r.circuitBreaker.canQuery(server)) {
+		t.Errorf("%s: r.circuitBreaker.canQuery(server) is false", "Circuit breaker should reset after timeout")
+	}
 
 	// Record a success to fully reset
 	r.circuitBreaker.recordSuccess(server)
 
 	// Verify it's fully reset
-	assert.Equal(t, int32(0), sf.count.Load(),
-		"Failure count should be reset")
-	assert.False(t, sf.disabled.Load(),
-		"Server should not be disabled")
+	if !reflect.DeepEqual(int32(0), sf.count.Load()) {
+		t.Errorf("%s: sf.count.Load() = %v, want %v", "Failure count should be reset", sf.count.Load(), int32(0))
+	}
+	if sf.disabled.Load() {
+		t.Errorf("%s: sf.disabled.Load() is true", "Server should not be disabled")
+	}
 }
 
 // TestNoGoroutineLeaks verifies that goroutines are properly cleaned up
@@ -220,8 +232,9 @@ func TestNoGoroutineLeaks(t *testing.T) {
 		initialGoroutines, finalGoroutines, leaked)
 
 	// Allow some variance for background tasks
-	assert.LessOrEqual(t, leaked, 10,
-		"Should not leak many goroutines")
+	if leaked > 10 {
+		t.Errorf("%s: leaked = %v, want <= %v", "Should not leak many goroutines", leaked, 10)
+	}
 }
 
 // TestCircuitBreakerWithMixedServers tests behavior with both good and bad servers
@@ -271,12 +284,14 @@ func TestCircuitBreakerWithMixedServers(t *testing.T) {
 	wg.Wait()
 
 	// Should have some successes from the good server
-	assert.Greater(t, int(successes.Load()), 0,
-		"Should have some successful queries from good server")
+	if int(successes.Load()) <= 0 {
+		t.Errorf("%s: int(successes.Load()) = %v, want > %v", "Should have some successful queries from good server", int(successes.Load()), 0)
+	}
 
 	// Bad servers should be in circuit breaker
-	assert.True(t, r.circuitBreaker.canQuery(goodAddr),
-		"Good server should still be queryable")
+	if !(r.circuitBreaker.canQuery(goodAddr)) {
+		t.Errorf("%s: r.circuitBreaker.canQuery(goodAddr) is false", "Good server should still be queryable")
+	}
 }
 
 // TestHighLoadWithCircuitBreaker simulates the exact Google scenario
@@ -387,8 +402,9 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	// Growth should be controlled by MaxConcurrentQueries
 	// Note: Since queries spawn goroutines that then acquire semaphore,
 	// we may temporarily exceed the limit while goroutines wait for slots
-	assert.LessOrEqual(t, goroutineGrowth, cfg.MaxConcurrentQueries*3,
-		"Goroutine growth should be limited by MaxConcurrentQueries")
+	if goroutineGrowth > cfg.MaxConcurrentQueries*3 {
+		t.Errorf("%s: goroutineGrowth = %v, want <= %v", "Goroutine growth should be limited by MaxConcurrentQueries", goroutineGrowth, cfg.MaxConcurrentQueries*3)
+	}
 
 	// Wait for cleanup, but only as long as it actually takes: the test is
 	// about the goroutines going away, not about how long we are willing to
@@ -408,8 +424,9 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 		finalGoroutines, startGoroutines)
 
 	// Should return close to initial count
-	assert.LessOrEqual(t, finalGoroutines-startGoroutines, 20,
-		"Goroutines should be cleaned up after load stops")
+	if finalGoroutines-startGoroutines > 20 {
+		t.Errorf("%s: finalGoroutines-startGoroutines = %v, want <= %v", "Goroutines should be cleaned up after load stops", finalGoroutines-startGoroutines, 20)
+	}
 }
 
 // TestConcurrentCircuitBreakerOperations tests thread safety

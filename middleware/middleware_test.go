@@ -2,12 +2,12 @@ package middleware
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/stretchr/testify/assert"
 )
 
 type dummy struct{}
@@ -26,22 +26,42 @@ func Test_DefaultRegistry_Setup(t *testing.T) {
 
 	Register("dummy", func(*config.Config) Handler { return &dummy{} })
 
-	assert.Nil(t, Get("dummy"), "Get before Setup must return nil")
-	assert.False(t, Ready())
+	if Get("dummy") != nil {
+		t.Errorf("%s: Get('dummy') = %v, want nil", "Get before Setup must return nil", Get("dummy"))
+	}
+	if Ready() {
+		t.Errorf("Ready() is true")
+	}
 
 	Setup(&config.Config{})
 
-	assert.True(t, Ready())
-	assert.Panics(t, func() { Setup(&config.Config{}) }, "double Setup must panic")
+	if !(Ready()) {
+		t.Errorf("Ready() is false")
+	}
+	if !func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+		Setup(&config.Config{})
+		return
+	}() {
+		t.Error("double Setup must panic")
+	}
 
-	assert.Equal(t, []string{"dummy"}, List())
-	assert.Equal(t, 1, len(Handlers()))
+	if !reflect.DeepEqual([]string{"dummy"}, List()) {
+		t.Errorf("List() = %v, want %v", List(), []string{"dummy"})
+	}
+	if !reflect.DeepEqual(1, len(Handlers())) {
+		t.Errorf("len(Handlers()) = %v, want %v", len(Handlers()), 1)
+	}
 
 	d := Get("dummy")
-	if assert.NotNil(t, d) {
-		assert.Equal(t, "dummy", d.Name())
+	if d == nil {
+		t.Error("d is nil")
+	} else if !reflect.DeepEqual("dummy", d.Name()) {
+		t.Errorf("d.Name() = %v, want %v", d.Name(), "dummy")
 	}
-	assert.Nil(t, Get("none"))
+	if Get("none") != nil {
+		t.Errorf("Get('none') = %v, want nil", Get("none"))
+	}
 }
 
 // Test_Get_SkipsDisabled guards against a regression where disabled
@@ -59,15 +79,25 @@ func Test_Get_SkipsDisabled(t *testing.T) {
 
 	Setup(&config.Config{})
 
-	assert.Equal(t, 2, len(Handlers()))
-	assert.Equal(t, []string{"first", "disabled", "second"}, List())
-
-	if h := Get("first"); assert.NotNil(t, h) {
-		assert.Equal(t, "first", h.Name())
+	if !reflect.DeepEqual(2, len(Handlers())) {
+		t.Errorf("len(Handlers()) = %v, want %v", len(Handlers()), 2)
 	}
-	assert.Nil(t, Get("disabled"))
-	if h := Get("second"); assert.NotNil(t, h) {
-		assert.Equal(t, "second", h.Name())
+	if !reflect.DeepEqual([]string{"first", "disabled", "second"}, List()) {
+		t.Errorf("List() = %v, want %v", List(), []string{"first", "disabled", "second"})
+	}
+
+	if h := Get("first"); h == nil {
+		t.Error("h is nil")
+	} else if !reflect.DeepEqual("first", h.Name()) {
+		t.Errorf("h.Name() = %v, want %v", h.Name(), "first")
+	}
+	if Get("disabled") != nil {
+		t.Errorf("Get('disabled') = %v, want nil", Get("disabled"))
+	}
+	if h := Get("second"); h == nil {
+		t.Error("h is nil")
+	} else if !reflect.DeepEqual("second", h.Name()) {
+		t.Errorf("h.Name() = %v, want %v", h.Name(), "second")
 	}
 }
 
@@ -78,20 +108,38 @@ func Test_Registry_RegisterAt(t *testing.T) {
 	r.RegisterAt("dummy2", func(*config.Config) Handler { return &dummy{} }, 0)
 	r.RegisterBefore("dummy3", func(*config.Config) Handler { return &dummy{} }, "dummy")
 
-	assert.Equal(t, []string{"dummy2", "dummy3", "dummy"}, r.List())
+	if !reflect.DeepEqual([]string{"dummy2", "dummy3", "dummy"}, r.List()) {
+		t.Errorf("r.List() = %v, want %v", r.List(), []string{"dummy2", "dummy3", "dummy"})
+	}
 
-	assert.Panics(t, func() {
+	if !func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
 		r.RegisterAt("tooHigh", func(*config.Config) Handler { return &dummy{} }, 99)
-	})
-	assert.Panics(t, func() {
+		return
+	}() {
+		t.Error("RegisterAt above the end must panic")
+	}
+	if !func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
 		r.RegisterAt("tooLow", func(*config.Config) Handler { return &dummy{} }, -1)
-	})
-	assert.Panics(t, func() {
+		return
+	}() {
+		t.Error("RegisterAt below zero must panic")
+	}
+	if !func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
 		r.RegisterBefore("orphan", func(*config.Config) Handler { return &dummy{} }, "nope")
-	})
-	assert.Panics(t, func() {
+		return
+	}() {
+		t.Error("RegisterBefore an unknown name must panic")
+	}
+	if !func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
 		r.Register("dummy", func(*config.Config) Handler { return &dummy{} })
-	}, "duplicate Register must panic")
+		return
+	}() {
+		t.Error("duplicate Register must panic")
+	}
 }
 
 func Test_Registry_Build_ConcurrentReads(t *testing.T) {
@@ -119,12 +167,24 @@ func Test_Registry_Build_ConcurrentReads(t *testing.T) {
 
 func Test_Pipeline_NilSafe(t *testing.T) {
 	var p *Pipeline
-	assert.Nil(t, p.Handlers())
-	assert.Nil(t, p.Get("anything"))
-	assert.Nil(t, p.List())
-	assert.Nil(t, p.SubPipeline("x"))
-	assert.Nil(t, p.NewChain())
-	assert.Nil(t, p.Purgers())
+	if p.Handlers() != nil {
+		t.Errorf("p.Handlers() = %v, want nil", p.Handlers())
+	}
+	if p.Get("anything") != nil {
+		t.Errorf("p.Get('anything') = %v, want nil", p.Get("anything"))
+	}
+	if p.List() != nil {
+		t.Errorf("p.List() = %v, want nil", p.List())
+	}
+	if p.SubPipeline("x") != nil {
+		t.Errorf("p.SubPipeline('x') = %v, want nil", p.SubPipeline("x"))
+	}
+	if p.NewChain() != nil {
+		t.Errorf("p.NewChain() = %v, want nil", p.NewChain())
+	}
+	if p.Purgers() != nil {
+		t.Errorf("p.Purgers() = %v, want nil", p.Purgers())
+	}
 }
 
 // purgerHandler implements both Handler and Purger; used to verify
@@ -149,14 +209,24 @@ func Test_Pipeline_SubPipeline_FiltersByName(t *testing.T) {
 	Setup(&config.Config{})
 
 	sub := GlobalPipeline().SubPipeline("b")
-	assert.Equal(t, 2, len(sub.Handlers()))
-	assert.Equal(t, "a", sub.Handlers()[0].Name())
-	assert.Equal(t, "c", sub.Handlers()[1].Name())
-	assert.Nil(t, sub.Get("b"), "filtered handler must not be reachable via Get")
+	if !reflect.DeepEqual(2, len(sub.Handlers())) {
+		t.Errorf("len(sub.Handlers()) = %v, want %v", len(sub.Handlers()), 2)
+	}
+	if !reflect.DeepEqual("a", sub.Handlers()[0].Name()) {
+		t.Errorf("sub.Handlers()[0].Name() = %v, want %v", sub.Handlers()[0].Name(), "a")
+	}
+	if !reflect.DeepEqual("c", sub.Handlers()[1].Name()) {
+		t.Errorf("sub.Handlers()[1].Name() = %v, want %v", sub.Handlers()[1].Name(), "c")
+	}
+	if sub.Get("b") != nil {
+		t.Errorf("%s: sub.Get('b') = %v, want nil", "filtered handler must not be reachable via Get", sub.Get("b"))
+	}
 
 	// Skipping a name that isn't in the pipeline is a no-op.
 	sub2 := GlobalPipeline().SubPipeline("nope")
-	assert.Equal(t, 3, len(sub2.Handlers()))
+	if !reflect.DeepEqual(3, len(sub2.Handlers())) {
+		t.Errorf("len(sub2.Handlers()) = %v, want %v", len(sub2.Handlers()), 3)
+	}
 }
 
 func Test_Pipeline_NewChain_IsFreshPerCall(t *testing.T) {
@@ -169,9 +239,15 @@ func Test_Pipeline_NewChain_IsFreshPerCall(t *testing.T) {
 	p := GlobalPipeline()
 	c1 := p.NewChain()
 	c2 := p.NewChain()
-	assert.NotNil(t, c1)
-	assert.NotNil(t, c2)
-	assert.NotSame(t, c1, c2, "each NewChain call must return a distinct instance")
+	if c1 == nil {
+		t.Fatalf("c1 is nil")
+	}
+	if c2 == nil {
+		t.Fatalf("c2 is nil")
+	}
+	if c1 == c2 {
+		t.Errorf("%s: %p is the same pointer", "each NewChain call must return a distinct instance", c1)
+	}
 }
 
 func Test_Pipeline_Purgers_EnumeratesOnlyPurgerHandlers(t *testing.T) {
@@ -187,12 +263,18 @@ func Test_Pipeline_Purgers_EnumeratesOnlyPurgerHandlers(t *testing.T) {
 	Setup(&config.Config{})
 
 	pp := GlobalPipeline().Purgers()
-	assert.Equal(t, 2, len(pp), "non-Purger handlers must be excluded")
+	if !reflect.DeepEqual(2, len(pp)) {
+		t.Errorf("%s: len(pp) = %v, want %v", "non-Purger handlers must be excluded", len(pp), 2)
+	}
 
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	for _, pr := range pp {
 		pr.Purge(q)
 	}
-	assert.Equal(t, []string{"example.com."}, p1.purgedQ)
-	assert.Equal(t, []string{"example.com."}, p2.purgedQ)
+	if !reflect.DeepEqual([]string{"example.com."}, p1.purgedQ) {
+		t.Errorf("p1.purgedQ = %v, want %v", p1.purgedQ, []string{"example.com."})
+	}
+	if !reflect.DeepEqual([]string{"example.com."}, p2.purgedQ) {
+		t.Errorf("p2.purgedQ = %v, want %v", p2.purgedQ, []string{"example.com."})
+	}
 }

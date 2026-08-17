@@ -10,18 +10,21 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/semihalev/sdns/config"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestCertManager(t *testing.T) {
 	// Create temp directory for test certificates
 	tmpDir, err := os.MkdirTemp("", "certmanager-test")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	certPath := filepath.Join(tmpDir, "test.crt")
@@ -33,21 +36,33 @@ func TestCertManager(t *testing.T) {
 
 	// Create certificate manager
 	cm, err := NewCertManager(certPath, keyPath)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer cm.Stop()
 
 	// Verify initial certificate
 	tlsConfig := cm.GetTLSConfig()
-	require.NotNil(t, tlsConfig)
+	if tlsConfig == nil {
+		t.Fatalf("tlsConfig is nil")
+	}
 
 	cert, err := cm.GetCertificate(&tls.ClientHelloInfo{})
-	require.NoError(t, err)
-	require.NotNil(t, cert)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cert == nil {
+		t.Fatalf("cert is nil")
+	}
 
 	// Verify certificate subject
 	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
-	require.NoError(t, err)
-	assert.Equal(t, "test1.example.com", x509Cert.Subject.CommonName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual("test1.example.com", x509Cert.Subject.CommonName) {
+		t.Errorf("x509Cert.Subject.CommonName = %v, want %v", x509Cert.Subject.CommonName, "test1.example.com")
+	}
 
 	// Generate new certificate
 	cert2, key2 := generateTestCert(t, "test2.example.com")
@@ -64,11 +79,17 @@ func TestCertManager(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		cert, err = cm.GetCertificate(&tls.ClientHelloInfo{})
-		require.NoError(t, err)
-		require.NotNil(t, cert)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cert == nil {
+			t.Fatalf("cert is nil")
+		}
 
 		x509Cert, err = x509.ParseCertificate(cert.Certificate[0])
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		if x509Cert.Subject.CommonName == "test2.example.com" {
 			break
@@ -79,13 +100,17 @@ func TestCertManager(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, "test2.example.com", x509Cert.Subject.CommonName)
+	if !reflect.DeepEqual("test2.example.com", x509Cert.Subject.CommonName) {
+		t.Errorf("x509Cert.Subject.CommonName = %v, want %v", x509Cert.Subject.CommonName, "test2.example.com")
+	}
 }
 
 func TestCertManagerReload(t *testing.T) {
 	// Create temp directory for test certificates
 	tmpDir, err := os.MkdirTemp("", "certmanager-reload-test")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	certPath := filepath.Join(tmpDir, "test.crt")
@@ -97,7 +122,9 @@ func TestCertManagerReload(t *testing.T) {
 
 	// Create certificate manager
 	cm, err := NewCertManager(certPath, keyPath)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer cm.Stop()
 
 	// Generate new certificate
@@ -106,22 +133,34 @@ func TestCertManagerReload(t *testing.T) {
 
 	// Force reload
 	err = cm.Reload()
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Verify certificate was reloaded
 	cert, err := cm.GetCertificate(&tls.ClientHelloInfo{})
-	require.NoError(t, err)
-	require.NotNil(t, cert)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cert == nil {
+		t.Fatalf("cert is nil")
+	}
 
 	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
-	require.NoError(t, err)
-	assert.Equal(t, "reload2.example.com", x509Cert.Subject.CommonName)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual("reload2.example.com", x509Cert.Subject.CommonName) {
+		t.Errorf("x509Cert.Subject.CommonName = %v, want %v", x509Cert.Subject.CommonName, "reload2.example.com")
+	}
 }
 
 func generateTestCert(t *testing.T, commonName string) ([]byte, []byte) {
 	// Generate private key
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Create certificate template
 	template := x509.Certificate{
@@ -138,7 +177,9 @@ func generateTestCert(t *testing.T, commonName string) ([]byte, []byte) {
 
 	// Create certificate
 	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Encode certificate
 	certPEM := pem.EncodeToMemory(&pem.Block{
@@ -148,7 +189,9 @@ func generateTestCert(t *testing.T, commonName string) ([]byte, []byte) {
 
 	// Encode private key
 	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	keyPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "PRIVATE KEY",
@@ -160,22 +203,32 @@ func generateTestCert(t *testing.T, commonName string) ([]byte, []byte) {
 
 func writeCertAndKey(t *testing.T, certPath, keyPath string, cert, key []byte) {
 	err := os.WriteFile(certPath, cert, 0644) //nolint:gosec // G306 - test file
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	err = os.WriteFile(keyPath, key, 0600)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 func TestCertManagerErrors(t *testing.T) {
 	t.Run("NonExistentFiles", func(t *testing.T) {
 		cm, err := NewCertManager("/nonexistent/cert.pem", "/nonexistent/key.pem")
-		assert.Error(t, err)
-		assert.Nil(t, cm)
+		if err == nil {
+			t.Errorf("expected an error, got nil")
+		}
+		if cm != nil {
+			t.Errorf("cm = %v, want nil", cm)
+		}
 	})
 
 	t.Run("InvalidCertificate", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "certmanager-error-test")
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		defer os.RemoveAll(tmpDir)
 
 		certPath := filepath.Join(tmpDir, "invalid.crt")
@@ -183,18 +236,28 @@ func TestCertManagerErrors(t *testing.T) {
 
 		// Write invalid certificate data
 		err = os.WriteFile(certPath, []byte("invalid cert data"), 0644) //nolint:gosec // G306 - test file
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		err = os.WriteFile(keyPath, []byte("invalid key data"), 0600)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		cm, err := NewCertManager(certPath, keyPath)
-		assert.Error(t, err)
-		assert.Nil(t, cm)
+		if err == nil {
+			t.Errorf("expected an error, got nil")
+		}
+		if cm != nil {
+			t.Errorf("cm = %v, want nil", cm)
+		}
 	})
 
 	t.Run("ExpiredCertificate", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "certmanager-expired-test")
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		defer os.RemoveAll(tmpDir)
 
 		certPath := filepath.Join(tmpDir, "expired.crt")
@@ -202,7 +265,9 @@ func TestCertManagerErrors(t *testing.T) {
 
 		// Generate expired certificate
 		priv, err := rsa.GenerateKey(rand.Reader, 2048)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		template := x509.Certificate{
 			SerialNumber: big.NewInt(1),
@@ -217,7 +282,9 @@ func TestCertManagerErrors(t *testing.T) {
 		}
 
 		certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		certPEM := pem.EncodeToMemory(&pem.Block{
 			Type:  "CERTIFICATE",
@@ -225,7 +292,9 @@ func TestCertManagerErrors(t *testing.T) {
 		})
 
 		keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		keyPEM := pem.EncodeToMemory(&pem.Block{
 			Type:  "PRIVATE KEY",
@@ -235,14 +304,22 @@ func TestCertManagerErrors(t *testing.T) {
 		writeCertAndKey(t, certPath, keyPath, certPEM, keyPEM)
 
 		cm, err := NewCertManager(certPath, keyPath)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "certificate expired")
-		assert.Nil(t, cm)
+		if err == nil {
+			t.Errorf("expected an error, got nil")
+		}
+		if !strings.Contains(err.Error(), "certificate expired") {
+			t.Errorf("%q does not contain %q", err.Error(), "certificate expired")
+		}
+		if cm != nil {
+			t.Errorf("cm = %v, want nil", cm)
+		}
 	})
 
 	t.Run("NotYetValidCertificate", func(t *testing.T) {
 		tmpDir, err := os.MkdirTemp("", "certmanager-notyet-test")
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		defer os.RemoveAll(tmpDir)
 
 		certPath := filepath.Join(tmpDir, "notyet.crt")
@@ -250,7 +327,9 @@ func TestCertManagerErrors(t *testing.T) {
 
 		// Generate not yet valid certificate
 		priv, err := rsa.GenerateKey(rand.Reader, 2048)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		template := x509.Certificate{
 			SerialNumber: big.NewInt(1),
@@ -265,7 +344,9 @@ func TestCertManagerErrors(t *testing.T) {
 		}
 
 		certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		certPEM := pem.EncodeToMemory(&pem.Block{
 			Type:  "CERTIFICATE",
@@ -273,7 +354,9 @@ func TestCertManagerErrors(t *testing.T) {
 		})
 
 		keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-		require.NoError(t, err)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		keyPEM := pem.EncodeToMemory(&pem.Block{
 			Type:  "PRIVATE KEY",
@@ -283,16 +366,24 @@ func TestCertManagerErrors(t *testing.T) {
 		writeCertAndKey(t, certPath, keyPath, certPEM, keyPEM)
 
 		cm, err := NewCertManager(certPath, keyPath)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "certificate not yet valid")
-		assert.Nil(t, cm)
+		if err == nil {
+			t.Errorf("expected an error, got nil")
+		}
+		if !strings.Contains(err.Error(), "certificate not yet valid") {
+			t.Errorf("%q does not contain %q", err.Error(), "certificate not yet valid")
+		}
+		if cm != nil {
+			t.Errorf("cm = %v, want nil", cm)
+		}
 	})
 }
 
 func TestCertManagerWatcherErrors(t *testing.T) {
 	// Test directory watch failure
 	tmpDir, err := os.MkdirTemp("", "certmanager-watcher-test")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	certPath := filepath.Join(tmpDir, "test.crt")
@@ -302,7 +393,9 @@ func TestCertManagerWatcherErrors(t *testing.T) {
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 
 	cm, err := NewCertManager(certPath, keyPath)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer cm.Stop()
 
 	// Remove the directory to cause stat errors
@@ -313,8 +406,12 @@ func TestCertManagerWatcherErrors(t *testing.T) {
 
 	// Certificate should still be accessible
 	tlsCert, err := cm.GetCertificate(nil)
-	assert.NoError(t, err)
-	assert.NotNil(t, tlsCert)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if tlsCert == nil {
+		t.Fatalf("tlsCert is nil")
+	}
 }
 
 func TestCertManagerConcurrency(t *testing.T) {
@@ -323,7 +420,9 @@ func TestCertManagerConcurrency(t *testing.T) {
 	}
 
 	tmpDir, err := os.MkdirTemp("", "certmanager-concurrent-test")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	certPath := filepath.Join(tmpDir, "test.crt")
@@ -333,7 +432,9 @@ func TestCertManagerConcurrency(t *testing.T) {
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 
 	cm, err := NewCertManager(certPath, keyPath)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer cm.Stop()
 
 	// Run concurrent operations
@@ -344,23 +445,40 @@ func TestCertManagerConcurrency(t *testing.T) {
 		go func() {
 			for j := 0; j < 100; j++ {
 				cert, err := cm.GetCertificate(nil)
-				assert.NoError(t, err)
-				assert.NotNil(t, cert)
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if cert == nil {
+					// Errorf, not Fatalf: FailNow must not run off the
+					// test goroutine.
+					t.Errorf("cert is nil")
+					break
+				}
 			}
 			done <- true
 		}()
 	}
 
-	// Concurrent reloads
+	// Concurrent reloads. The write+reload pairs are serialized against
+	// each other: two goroutines rewriting the same PEM files can hand
+	// Reload a torn certificate, which is a bug in the test, not in the
+	// manager — the concurrency under test is readers racing reloads,
+	// and that stays fully concurrent. (This flaked ~1 run in 10 on an
+	// untouched tree too; it just went unnoticed.)
+	var reloadMu sync.Mutex
 	for i := 0; i < 3; i++ {
 		go func(id int) {
 			for j := 0; j < 10; j++ {
+				reloadMu.Lock()
 				// Generate new cert for each reload
 				cert, key := generateTestCert(t, "concurrent-reload.example.com")
 				writeCertAndKey(t, certPath, keyPath, cert, key)
 
 				err := cm.Reload()
-				assert.NoError(t, err)
+				reloadMu.Unlock()
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
 				time.Sleep(time.Millisecond)
 			}
 			done <- true
@@ -375,7 +493,9 @@ func TestCertManagerConcurrency(t *testing.T) {
 
 func TestGetTLSConfigFreshness(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "certmanager-config-test")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	certPath := filepath.Join(tmpDir, "test.crt")
@@ -385,7 +505,9 @@ func TestGetTLSConfigFreshness(t *testing.T) {
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 
 	cm, err := NewCertManager(certPath, keyPath)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer cm.Stop()
 
 	// Get multiple TLS configs
@@ -393,18 +515,30 @@ func TestGetTLSConfigFreshness(t *testing.T) {
 	config2 := cm.GetTLSConfig()
 
 	// Should return fresh configs each time
-	assert.NotSame(t, config1, config2)
+	if config1 == config2 {
+		t.Errorf("%p is the same pointer", config1)
+	}
 
 	// Both should work correctly
-	assert.NotNil(t, config1.GetCertificate)
-	assert.NotNil(t, config2.GetCertificate)
-	assert.Equal(t, uint16(tls.VersionTLS12), config1.MinVersion)
-	assert.Equal(t, uint16(tls.VersionTLS12), config2.MinVersion)
+	if config1.GetCertificate == nil {
+		t.Fatalf("config1.GetCertificate is nil")
+	}
+	if config2.GetCertificate == nil {
+		t.Fatalf("config2.GetCertificate is nil")
+	}
+	if !reflect.DeepEqual(uint16(tls.VersionTLS12), config1.MinVersion) {
+		t.Errorf("config1.MinVersion = %v, want %v", config1.MinVersion, uint16(tls.VersionTLS12))
+	}
+	if !reflect.DeepEqual(uint16(tls.VersionTLS12), config2.MinVersion) {
+		t.Errorf("config2.MinVersion = %v, want %v", config2.MinVersion, uint16(tls.VersionTLS12))
+	}
 }
 
 func TestReloadWithRetry(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "certmanager-retry-test")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	certPath := filepath.Join(tmpDir, "test.crt")
@@ -414,7 +548,9 @@ func TestReloadWithRetry(t *testing.T) {
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 
 	cm, err := NewCertManager(certPath, keyPath)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer cm.Stop()
 
 	// Remove certificate to cause reload failure
@@ -422,8 +558,12 @@ func TestReloadWithRetry(t *testing.T) {
 
 	// This should fail after retries
 	err = cm.reloadWithRetry()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed after 3 attempts")
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed after 3 attempts") {
+		t.Errorf("%q does not contain %q", err.Error(), "failed after 3 attempts")
+	}
 }
 
 // A stopped Server must never grow a new certificate manager: the DoQ

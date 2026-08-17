@@ -2,12 +2,13 @@ package resolver
 
 import (
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestEDEError(t *testing.T) {
@@ -18,48 +19,80 @@ func TestEDEError(t *testing.T) {
 		Message: "network failed",
 		Err:     wrapped,
 	}
-	assert.Contains(t, err.Error(), "network failed")
-	assert.Contains(t, err.Error(), "wrapped error")
+	if !strings.Contains(err.Error(), "network failed") {
+		t.Errorf("%q does not contain %q", err.Error(), "network failed")
+	}
+	if !strings.Contains(err.Error(), "wrapped error") {
+		t.Errorf("%q does not contain %q", err.Error(), "wrapped error")
+	}
 
 	// Test Error() without wrapped error
 	errNoWrap := &dnsutil.EDEError{
 		Code:    dns.ExtendedErrorCodeDNSBogus,
 		Message: "bogus response",
 	}
-	assert.Equal(t, "bogus response", errNoWrap.Error())
+	if !reflect.DeepEqual("bogus response", errNoWrap.Error()) {
+		t.Errorf("errNoWrap.Error() = %v, want %v", errNoWrap.Error(), "bogus response")
+	}
 
 	// Test Unwrap()
-	assert.Equal(t, wrapped, err.Unwrap())
-	assert.Nil(t, errNoWrap.Unwrap())
+	if !reflect.DeepEqual(wrapped, err.Unwrap()) {
+		t.Errorf("err.Unwrap() = %v, want %v", err.Unwrap(), wrapped)
+	}
+	if errNoWrap.Unwrap() != nil {
+		t.Errorf("errNoWrap.Unwrap() = %v, want nil", errNoWrap.Unwrap())
+	}
 
 	// Test EDECode()
-	assert.Equal(t, dns.ExtendedErrorCodeNetworkError, err.EDECode())
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeNetworkError, err.EDECode()) {
+		t.Errorf("err.EDECode() = %v, want %v", err.EDECode(), dns.ExtendedErrorCodeNetworkError)
+	}
 }
 
 func TestNewNetworkError(t *testing.T) {
 	wrapped := errors.New("connection refused")
 	err := NewNetworkError(wrapped)
 
-	assert.Equal(t, dns.ExtendedErrorCodeNetworkError, err.Code)
-	assert.Equal(t, "network error", err.Message)
-	assert.Equal(t, wrapped, err.Err)
-	assert.Contains(t, err.Error(), "connection refused")
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeNetworkError, err.Code) {
+		t.Errorf("err.Code = %v, want %v", err.Code, dns.ExtendedErrorCodeNetworkError)
+	}
+	if !reflect.DeepEqual("network error", err.Message) {
+		t.Errorf("err.Message = %v, want %v", err.Message, "network error")
+	}
+	if !reflect.DeepEqual(wrapped, err.Err) {
+		t.Errorf("err.Err = %v, want %v", err.Err, wrapped)
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("%q does not contain %q", err.Error(), "connection refused")
+	}
 }
 
 func TestNewNoReachableAuthorityError(t *testing.T) {
 	err := NewNoReachableAuthorityError("all servers timed out")
 
-	assert.Equal(t, dns.ExtendedErrorCodeNoReachableAuthority, err.Code)
-	assert.Equal(t, "all servers timed out", err.Message)
-	assert.Nil(t, err.Err)
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeNoReachableAuthority, err.Code) {
+		t.Errorf("err.Code = %v, want %v", err.Code, dns.ExtendedErrorCodeNoReachableAuthority)
+	}
+	if !reflect.DeepEqual("all servers timed out", err.Message) {
+		t.Errorf("err.Message = %v, want %v", err.Message, "all servers timed out")
+	}
+	if err.Err != nil {
+		t.Errorf("err.Err = %v, want nil", err.Err)
+	}
 }
 
 func TestNoReachableAuthAtZone(t *testing.T) {
 	err := NoReachableAuthAtZone("example.com.")
 
-	assert.Equal(t, dns.ExtendedErrorCodeNoReachableAuthority, err.Code)
-	assert.Contains(t, err.Message, "example.com.")
-	assert.Contains(t, err.Message, "delegation")
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeNoReachableAuthority, err.Code) {
+		t.Errorf("err.Code = %v, want %v", err.Code, dns.ExtendedErrorCodeNoReachableAuthority)
+	}
+	if !strings.Contains(err.Message, "example.com.") {
+		t.Errorf("%q does not contain %q", err.Message, "example.com.")
+	}
+	if !strings.Contains(err.Message, "delegation") {
+		t.Errorf("%q does not contain %q", err.Message, "delegation")
+	}
 }
 
 func TestEDEErrorWithContext(t *testing.T) {
@@ -70,26 +103,46 @@ func TestEDEErrorWithContext(t *testing.T) {
 
 	withCtx := original.WithContext("zone %s", "example.com.")
 
-	assert.Equal(t, dns.ExtendedErrorCodeDNSBogus, withCtx.Code)
-	assert.Contains(t, withCtx.Message, "validation failed")
-	assert.Contains(t, withCtx.Message, "example.com.")
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSBogus, withCtx.Code) {
+		t.Errorf("withCtx.Code = %v, want %v", withCtx.Code, dns.ExtendedErrorCodeDNSBogus)
+	}
+	if !strings.Contains(withCtx.Message, "validation failed") {
+		t.Errorf("%q does not contain %q", withCtx.Message, "validation failed")
+	}
+	if !strings.Contains(withCtx.Message, "example.com.") {
+		t.Errorf("%q does not contain %q", withCtx.Message, "example.com.")
+	}
 }
 
 func TestDNSKEYMissingForZone(t *testing.T) {
 	err := dnssec.DNSKEYMissingForZone("secure.example.com.")
 
-	assert.Equal(t, dns.ExtendedErrorCodeDNSKEYMissing, err.Code)
-	assert.Contains(t, err.Message, "secure.example.com.")
-	assert.Contains(t, err.Message, "DNSKEY")
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSKEYMissing, err.Code) {
+		t.Errorf("err.Code = %v, want %v", err.Code, dns.ExtendedErrorCodeDNSKEYMissing)
+	}
+	if !strings.Contains(err.Message, "secure.example.com.") {
+		t.Errorf("%q does not contain %q", err.Message, "secure.example.com.")
+	}
+	if !strings.Contains(err.Message, "DNSKEY") {
+		t.Errorf("%q does not contain %q", err.Message, "DNSKEY")
+	}
 }
 
 func TestSignatureExpiredForRRset(t *testing.T) {
 	err := dnssec.SignatureExpiredForRRset("A", "example.com.")
 
-	assert.Equal(t, dns.ExtendedErrorCodeSignatureExpired, err.Code)
-	assert.Contains(t, err.Message, "A")
-	assert.Contains(t, err.Message, "example.com.")
-	assert.Contains(t, err.Message, "expired")
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeSignatureExpired, err.Code) {
+		t.Errorf("err.Code = %v, want %v", err.Code, dns.ExtendedErrorCodeSignatureExpired)
+	}
+	if !strings.Contains(err.Message, "A") {
+		t.Errorf("%q does not contain %q", err.Message, "A")
+	}
+	if !strings.Contains(err.Message, "example.com.") {
+		t.Errorf("%q does not contain %q", err.Message, "example.com.")
+	}
+	if !strings.Contains(err.Message, "expired") {
+		t.Errorf("%q does not contain %q", err.Message, "expired")
+	}
 }
 
 func TestPredefinedEDEErrors(t *testing.T) {
@@ -110,8 +163,12 @@ func TestPredefinedEDEErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.code, tt.err.EDECode())
-			assert.NotEmpty(t, tt.err.Error())
+			if !reflect.DeepEqual(tt.code, tt.err.EDECode()) {
+				t.Errorf("tt.err.EDECode() = %v, want %v", tt.err.EDECode(), tt.code)
+			}
+			if len(tt.err.Error()) == 0 {
+				t.Errorf("tt.err.Error() is empty")
+			}
 		})
 	}
 }

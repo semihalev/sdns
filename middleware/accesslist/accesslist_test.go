@@ -2,13 +2,13 @@ package accesslist
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_AccesslistDefaults(t *testing.T) {
@@ -42,7 +42,9 @@ func Test_Accesslist(t *testing.T) {
 	middleware.Setup(cfg)
 
 	a := middleware.Get("accesslist").(*List)
-	assert.Equal(t, "accesslist", a.Name())
+	if !reflect.DeepEqual("accesslist", a.Name()) {
+		t.Errorf("a.Name() = %v, want %v", a.Name(), "accesslist")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{})
 

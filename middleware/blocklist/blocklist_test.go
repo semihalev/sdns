@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_BlockList(t *testing.T) {
@@ -37,7 +37,9 @@ func Test_BlockList(t *testing.T) {
 
 	blocklist := middleware.Get("blocklist").(*BlockList)
 
-	assert.Equal(t, "blocklist", blocklist.Name())
+	if !reflect.DeepEqual("blocklist", blocklist.Name()) {
+		t.Errorf("blocklist.Name() = %v, want %v", blocklist.Name(), "blocklist")
+	}
 	blocklist.Set(testDomain)
 
 	ch := middleware.NewChain([]middleware.Handler{})
@@ -50,33 +52,49 @@ func Test_BlockList(t *testing.T) {
 	ch.Writer = mw
 
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	if !reflect.DeepEqual(true, len(mw.Msg().Answer) > 0) {
+		t.Errorf("len(mw.Msg().Answer) > 0 = %v, want %v", len(mw.Msg().Answer) > 0, true)
+	}
 
 	req.SetQuestion("test.com.", dns.TypeAAAA)
 	ch.Request = middleware.NewRequest(req)
 
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	if !reflect.DeepEqual(true, len(mw.Msg().Answer) > 0) {
+		t.Errorf("len(mw.Msg().Answer) > 0 = %v, want %v", len(mw.Msg().Answer) > 0, true)
+	}
 
 	req.SetQuestion("test.com.", dns.TypeNS)
 	ch.Request = middleware.NewRequest(req)
 
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.Equal(t, true, len(mw.Msg().Ns) > 0)
+	if !reflect.DeepEqual(true, len(mw.Msg().Ns) > 0) {
+		t.Errorf("len(mw.Msg().Ns) > 0 = %v, want %v", len(mw.Msg().Ns) > 0, true)
+	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
 	req.SetQuestion("test2.com.", dns.TypeA)
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.Nil(t, mw.Msg())
+	if mw.Msg() != nil {
+		t.Errorf("mw.Msg() = %v, want nil", mw.Msg())
+	}
 
-	assert.Equal(t, blocklist.Exists(testDomain), true)
-	assert.Equal(t, blocklist.Exists(strings.ToUpper(testDomain)), true)
+	if !reflect.DeepEqual(blocklist.Exists(testDomain), true) {
+		t.Errorf("true = %v, want %v", true, blocklist.Exists(testDomain))
+	}
+	if !reflect.DeepEqual(blocklist.Exists(strings.ToUpper(testDomain)), true) {
+		t.Errorf("true = %v, want %v", true, blocklist.Exists(strings.ToUpper(testDomain)))
+	}
 
 	_, err := blocklist.Get(testDomain)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
-	assert.Equal(t, blocklist.Length(), 1)
+	if !reflect.DeepEqual(blocklist.Length(), 1) {
+		t.Errorf("1 = %v, want %v", 1, blocklist.Length())
+	}
 
 	if exists := blocklist.Exists(fmt.Sprintf("%sfuzz", testDomain)); exists {
 		t.Error("fuzz existed in block blocklist")
@@ -87,10 +105,14 @@ func Test_BlockList(t *testing.T) {
 	}
 
 	blocklist.Remove(testDomain)
-	assert.Equal(t, blocklist.Exists(testDomain), false)
+	if !reflect.DeepEqual(blocklist.Exists(testDomain), false) {
+		t.Errorf("false = %v, want %v", false, blocklist.Exists(testDomain))
+	}
 
 	_, err = blocklist.Get(testDomain)
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 
 	blocklist.Set(testDomain)
 }
@@ -107,30 +129,56 @@ func Test_BlockList_Wildcard(t *testing.T) {
 	blocklist.Set("*.blocked.com.")
 
 	// These should all be blocked
-	assert.True(t, blocklist.Exists("subdomain.blocked.com."))
-	assert.True(t, blocklist.Exists("deep.subdomain.blocked.com."))
-	assert.True(t, blocklist.Exists("very.deep.subdomain.blocked.com."))
+	if !(blocklist.Exists("subdomain.blocked.com.")) {
+		t.Errorf("blocklist.Exists('subdomain.blocked.com.') is false")
+	}
+	if !(blocklist.Exists("deep.subdomain.blocked.com.")) {
+		t.Errorf("blocklist.Exists('deep.subdomain.blocked.com.') is false")
+	}
+	if !(blocklist.Exists("very.deep.subdomain.blocked.com.")) {
+		t.Errorf("blocklist.Exists('very.deep.subdomain.blocked.com.') is false")
+	}
 
 	// The base domain should not be blocked (only subdomains)
-	assert.False(t, blocklist.Exists("blocked.com."))
+	if blocklist.Exists("blocked.com.") {
+		t.Errorf("blocklist.Exists('blocked.com.') is true")
+	}
 
 	// Other domains should not be blocked
-	assert.False(t, blocklist.Exists("notblocked.com."))
-	assert.False(t, blocklist.Exists("subdomain.notblocked.com."))
+	if blocklist.Exists("notblocked.com.") {
+		t.Errorf("blocklist.Exists('notblocked.com.') is true")
+	}
+	if blocklist.Exists("subdomain.notblocked.com.") {
+		t.Errorf("blocklist.Exists('subdomain.notblocked.com.') is true")
+	}
 
 	// A bare domain blocks the name itself and every subdomain
 	// (matches Pi-hole/AdGuard/dnsmasq; see issue #478).
 	blocklist.Set("exact.com.")
-	assert.True(t, blocklist.Exists("exact.com."))
-	assert.True(t, blocklist.Exists("subdomain.exact.com."))
-	assert.True(t, blocklist.Exists("deep.subdomain.exact.com."))
+	if !(blocklist.Exists("exact.com.")) {
+		t.Errorf("blocklist.Exists('exact.com.') is false")
+	}
+	if !(blocklist.Exists("subdomain.exact.com.")) {
+		t.Errorf("blocklist.Exists('subdomain.exact.com.') is false")
+	}
+	if !(blocklist.Exists("deep.subdomain.exact.com.")) {
+		t.Errorf("blocklist.Exists('deep.subdomain.exact.com.') is false")
+	}
 
 	// Test multiple wildcard levels
 	blocklist.Set("*.subdomain.multi.com.")
-	assert.True(t, blocklist.Exists("test.subdomain.multi.com."))
-	assert.True(t, blocklist.Exists("deep.test.subdomain.multi.com."))
-	assert.False(t, blocklist.Exists("subdomain.multi.com."))
-	assert.False(t, blocklist.Exists("multi.com."))
+	if !(blocklist.Exists("test.subdomain.multi.com.")) {
+		t.Errorf("blocklist.Exists('test.subdomain.multi.com.') is false")
+	}
+	if !(blocklist.Exists("deep.test.subdomain.multi.com.")) {
+		t.Errorf("blocklist.Exists('deep.test.subdomain.multi.com.') is false")
+	}
+	if blocklist.Exists("subdomain.multi.com.") {
+		t.Errorf("blocklist.Exists('subdomain.multi.com.') is true")
+	}
+	if blocklist.Exists("multi.com.") {
+		t.Errorf("blocklist.Exists('multi.com.') is true")
+	}
 
 	// Test with ServeDNS
 	ch := middleware.NewChain([]middleware.Handler{})
@@ -142,19 +190,29 @@ func Test_BlockList_Wildcard(t *testing.T) {
 	ch.Writer = mw
 
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.NotNil(t, mw.Msg())
-	assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	if mw.Msg() == nil {
+		t.Fatalf("mw.Msg() is nil")
+	}
+	if !reflect.DeepEqual(true, len(mw.Msg().Answer) > 0) {
+		t.Errorf("len(mw.Msg().Answer) > 0 = %v, want %v", len(mw.Msg().Answer) > 0, true)
+	}
 
 	// Test non-blocked domain
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Writer = mw
 	req.SetQuestion("allowed.com.", dns.TypeA)
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.Nil(t, mw.Msg())
+	if mw.Msg() != nil {
+		t.Errorf("mw.Msg() = %v, want nil", mw.Msg())
+	}
 
 	// Test case insensitivity
-	assert.True(t, blocklist.Exists("TEST.BLOCKED.COM."))
-	assert.True(t, blocklist.Exists("Test.Blocked.Com."))
+	if !(blocklist.Exists("TEST.BLOCKED.COM.")) {
+		t.Errorf("blocklist.Exists('TEST.BLOCKED.COM.') is false")
+	}
+	if !(blocklist.Exists("Test.Blocked.Com.")) {
+		t.Errorf("blocklist.Exists('Test.Blocked.Com.') is false")
+	}
 }
 
 // Test_BlockList_Issue478 loads a plain-domain list (hagezi
@@ -163,12 +221,18 @@ func Test_BlockList_Wildcard(t *testing.T) {
 // actually query — are blocked, not just the apex.
 func Test_BlockList_Issue478(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "sdns_temp_issue478")
-	assert.NoError(t, os.RemoveAll(dir))
-	assert.NoError(t, os.MkdirAll(dir, 0750))
+	if err := os.RemoveAll(dir); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	onlyDomains := "# Syntax: Domains (without subdomains)\nmiui.net\nkuyun.com\n"
-	assert.NoError(t, os.WriteFile(filepath.Join(dir, "xiaomi-onlydomains.txt"), []byte(onlyDomains), 0600))
+	if err := os.WriteFile(filepath.Join(dir, "xiaomi-onlydomains.txt"), []byte(onlyDomains), 0600); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	cfg := new(config.Config)
 	cfg.Nullroute = "0.0.0.0"
@@ -178,17 +242,31 @@ func Test_BlockList_Issue478(t *testing.T) {
 	blocklist := New(cfg)
 
 	// Apex names are blocked.
-	assert.True(t, blocklist.Exists("miui.net."))
-	assert.True(t, blocklist.Exists("kuyun.com."))
+	if !(blocklist.Exists("miui.net.")) {
+		t.Errorf("blocklist.Exists('miui.net.') is false")
+	}
+	if !(blocklist.Exists("kuyun.com.")) {
+		t.Errorf("blocklist.Exists('kuyun.com.') is false")
+	}
 
 	// Subdomains are blocked too — the actual fix for #478.
-	assert.True(t, blocklist.Exists("tracking.miui.net."))
-	assert.True(t, blocklist.Exists("api.kuyun.com."))
-	assert.True(t, blocklist.Exists("a.b.kuyun.com."))
+	if !(blocklist.Exists("tracking.miui.net.")) {
+		t.Errorf("blocklist.Exists('tracking.miui.net.') is false")
+	}
+	if !(blocklist.Exists("api.kuyun.com.")) {
+		t.Errorf("blocklist.Exists('api.kuyun.com.') is false")
+	}
+	if !(blocklist.Exists("a.b.kuyun.com.")) {
+		t.Errorf("blocklist.Exists('a.b.kuyun.com.') is false")
+	}
 
 	// Unrelated names and sibling apexes stay unblocked.
-	assert.False(t, blocklist.Exists("notblocked.com."))
-	assert.False(t, blocklist.Exists("miui.net.evil.com."))
+	if blocklist.Exists("notblocked.com.") {
+		t.Errorf("blocklist.Exists('notblocked.com.') is true")
+	}
+	if blocklist.Exists("miui.net.evil.com.") {
+		t.Errorf("blocklist.Exists('miui.net.evil.com.') is true")
+	}
 }
 
 func Test_BlockList_FastPath(t *testing.T) {
@@ -210,13 +288,17 @@ func Test_BlockList_FastPath(t *testing.T) {
 
 	// With empty blocklist, ServeDNS should call Next and not write any response
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.Nil(t, mw.Msg(), "No response should be written for empty blocklist")
+	if mw.Msg() != nil {
+		t.Errorf("%s: mw.Msg() = %v, want nil", "No response should be written for empty blocklist", mw.Msg())
+	}
 
 	// Now add an entry and verify it blocks
 	blocklist.Set("blocked.com.")
 	req.SetQuestion("blocked.com.", dns.TypeA)
 	blocklist.ServeDNS(context.Background(), ch)
-	assert.NotNil(t, mw.Msg(), "Response should be written for blocked domain")
+	if mw.Msg() == nil {
+		t.Errorf("%s: mw.Msg() is nil", "Response should be written for blocked domain")
+	}
 }
 
 func Test_BlockList_Remove(t *testing.T) {
@@ -229,15 +311,25 @@ func Test_BlockList_Remove(t *testing.T) {
 
 	// Test removing a wildcard entry
 	blocklist.Set("*.wildcard.com.")
-	assert.True(t, blocklist.Exists("sub.wildcard.com."))
-	assert.True(t, blocklist.Remove("*.wildcard.com."))
-	assert.False(t, blocklist.Exists("sub.wildcard.com."))
+	if !(blocklist.Exists("sub.wildcard.com.")) {
+		t.Errorf("blocklist.Exists('sub.wildcard.com.') is false")
+	}
+	if !(blocklist.Remove("*.wildcard.com.")) {
+		t.Errorf("blocklist.Remove('*.wildcard.com.') is false")
+	}
+	if blocklist.Exists("sub.wildcard.com.") {
+		t.Errorf("blocklist.Exists('sub.wildcard.com.') is true")
+	}
 
 	// Test removing a non-existent entry
-	assert.False(t, blocklist.Remove("nonexistent.com."))
+	if blocklist.Remove("nonexistent.com.") {
+		t.Errorf("blocklist.Remove('nonexistent.com.') is true")
+	}
 
 	// Test removing a non-existent wildcard
-	assert.False(t, blocklist.Remove("*.nonexistent.com."))
+	if blocklist.Remove("*.nonexistent.com.") {
+		t.Errorf("blocklist.Remove('*.nonexistent.com.') is true")
+	}
 }
 
 func Test_BlockList_Batch(t *testing.T) {
@@ -260,26 +352,46 @@ func Test_BlockList_Batch(t *testing.T) {
 	// reach the map; setLocked returns true for each. The count is
 	// "calls that took effect" rather than "unique keys", which is
 	// fine for the API caller — they get what they asked for.
-	assert.Equal(t, 4, added)
-	assert.True(t, bl.Exists("a.example."))
-	assert.True(t, bl.Exists("sub.evil.com."))
-	assert.Equal(t, 3, bl.Length()) // map dedups: a.example, b.example, evil.com.
+	if !reflect.DeepEqual(4, added) {
+		t.Errorf("added = %v, want %v", added, 4)
+	}
+	if !(bl.Exists("a.example.")) {
+		t.Errorf("bl.Exists('a.example.') is false")
+	}
+	if !(bl.Exists("sub.evil.com.")) {
+		t.Errorf("bl.Exists('sub.evil.com.') is false")
+	}
+	if !reflect.DeepEqual(3, bl.Length()) {
+		t.Errorf("bl.Length() = %v, want %v", bl.Length(), 3)
+	} // map dedups: a.example, b.example, evil.com.
 
 	// Whitelist takes precedence: a key on the whitelist contributes
 	// 0 to the added count.
 	bl.w[dns.CanonicalName("safe.example.")] = true
 	added = bl.SetBatch([]string{"safe.example.", "next.example."})
-	assert.Equal(t, 1, added)
+	if !reflect.DeepEqual(1, added) {
+		t.Errorf("added = %v, want %v", added, 1)
+	}
 
 	// Empty batch is a no-op (no I/O, no count).
-	assert.Equal(t, 0, bl.SetBatch(nil))
-	assert.Equal(t, 0, bl.RemoveBatch(nil))
+	if !reflect.DeepEqual(0, bl.SetBatch(nil)) {
+		t.Errorf("bl.SetBatch(nil) = %v, want %v", bl.SetBatch(nil), 0)
+	}
+	if !reflect.DeepEqual(0, bl.RemoveBatch(nil)) {
+		t.Errorf("bl.RemoveBatch(nil) = %v, want %v", bl.RemoveBatch(nil), 0)
+	}
 
 	// Bulk remove.
 	removed := bl.RemoveBatch([]string{"a.example.", "*.evil.com.", "missing.example."})
-	assert.Equal(t, 2, removed)
-	assert.False(t, bl.Exists("a.example."))
-	assert.False(t, bl.Exists("sub.evil.com."))
+	if !reflect.DeepEqual(2, removed) {
+		t.Errorf("removed = %v, want %v", removed, 2)
+	}
+	if bl.Exists("a.example.") {
+		t.Errorf("bl.Exists('a.example.') is true")
+	}
+	if bl.Exists("sub.evil.com.") {
+		t.Errorf("bl.Exists('sub.evil.com.') is true")
+	}
 }
 
 // Test_BlockList_NoStallDuringSave proves the property the GitHub
@@ -334,23 +446,37 @@ func Test_BlockList_WhitelistHierarchy(t *testing.T) {
 	b := New(cfg)
 
 	b.Set("*.example.com.")
-	assert.True(t, b.Exists("sub.example.com."), "subdomain blocked before whitelist")
+	if !(b.Exists("sub.example.com.")) {
+		t.Errorf("%s: b.Exists('sub.example.com.') is false", "subdomain blocked before whitelist")
+	}
 
 	// Whitelist the parent — subtree is now exempt.
 	b.w[dns.CanonicalName("example.com.")] = true
-	assert.False(t, b.Exists("sub.example.com."), "parent whitelist must exempt subdomain")
-	assert.False(t, b.Exists("deep.sub.example.com."), "parent whitelist must exempt deep subdomain")
-	assert.False(t, b.Exists("example.com."), "whitelisted name itself exempt")
+	if b.Exists("sub.example.com.") {
+		t.Errorf("%s: b.Exists('sub.example.com.') is true", "parent whitelist must exempt subdomain")
+	}
+	if b.Exists("deep.sub.example.com.") {
+		t.Errorf("%s: b.Exists('deep.sub.example.com.') is true", "parent whitelist must exempt deep subdomain")
+	}
+	if b.Exists("example.com.") {
+		t.Errorf("%s: b.Exists('example.com.') is true", "whitelisted name itself exempt")
+	}
 
 	// A different blocked subtree is unaffected by the whitelist.
 	b.Set("*.other.com.")
-	assert.True(t, b.Exists("x.other.com."), "unrelated subtree still blocked")
+	if !(b.Exists("x.other.com.")) {
+		t.Errorf("%s: b.Exists('x.other.com.') is false", "unrelated subtree still blocked")
+	}
 
 	// Set must refuse a block the whitelist hierarchically shadows, rather
 	// than persist a block that can never take effect (Exists exempts it
 	// anyway). Symmetric with the hierarchical Exists whitelist match.
-	assert.False(t, b.Set("sub.example.com."), "Set must refuse a hierarchically-whitelisted name")
-	assert.False(t, b.Exists("sub.example.com."), "shadowed name stays exempt")
+	if b.Set("sub.example.com.") {
+		t.Errorf("%s: b.Set('sub.example.com.') is true", "Set must refuse a hierarchically-whitelisted name")
+	}
+	if b.Exists("sub.example.com.") {
+		t.Errorf("%s: b.Exists('sub.example.com.') is true", "shadowed name stays exempt")
+	}
 }
 
 // Test_BlockList_PersistOrdering pins the ordering guarantee of the
@@ -381,7 +507,9 @@ func Test_BlockList_PersistOrdering(t *testing.T) {
 	high := bl.snapshotLocked() // newer version
 	bl.mu.Unlock()
 
-	assert.Greater(t, high.version, low.version, "later snapshot must carry a higher version")
+	if high.version <= low.version {
+		t.Errorf("%s: high.version = %v, want > %v", "later snapshot must carry a higher version", high.version, low.version)
+	}
 
 	// Persist out of order: newer first, then the stale older one
 	// races in behind it.
@@ -389,11 +517,16 @@ func Test_BlockList_PersistOrdering(t *testing.T) {
 	bl.persist(low)
 
 	data, err := os.ReadFile(filepath.Join(cfg.BlockListDir, "local"))
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	got := string(data)
-	assert.Contains(t, got, "a.example.")
-	assert.Contains(t, got, "b.example.",
-		"stale snapshot overwrote newer on-disk state: persist rolled backwards")
+	if !strings.Contains(got, "a.example.") {
+		t.Errorf("%q does not contain %q", got, "a.example.")
+	}
+	if !strings.Contains(got, "b.example.") {
+		t.Errorf("%s: %q does not contain %q", "stale snapshot overwrote newer on-disk state: persist rolled backwards", got, "b.example.")
+	}
 
 	// A brand-new, newer snapshot still writes normally.
 	bl.mu.Lock()
@@ -403,8 +536,12 @@ func Test_BlockList_PersistOrdering(t *testing.T) {
 	bl.persist(next)
 
 	data, err = os.ReadFile(filepath.Join(cfg.BlockListDir, "local"))
-	assert.NoError(t, err)
-	assert.Contains(t, string(data), "c.example.", "a newer snapshot must still persist")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(data), "c.example.") {
+		t.Errorf("%s: %q does not contain %q", "a newer snapshot must still persist", string(data), "c.example.")
+	}
 }
 
 // Test_BlockList_EntriesGauge pins dns_blocklist_entries to the live map
@@ -433,17 +570,24 @@ func Test_BlockList_EntriesGauge(t *testing.T) {
 		return float64((*fn)())
 	}
 
-	assert.Equal(t, float64(0), read(), "a fresh blocklist reports zero entries")
+	if !reflect.DeepEqual(float64(0), read()) {
+		t.Errorf("%s: read() = %v, want %v", "a fresh blocklist reports zero entries", read(), float64(0))
+	}
 
 	bl.Set("one.example.")
 	bl.Set("two.example.")
 	bl.Set("*.three.example.")
-	assert.Equal(t, float64(3), read(),
-		"gauge must count exact names plus wildcard suffixes")
-	assert.Equal(t, float64(bl.Length()), read(), "gauge must track Length()")
+	if !reflect.DeepEqual(float64(3), read()) {
+		t.Errorf("%s: read() = %v, want %v", "gauge must count exact names plus wildcard suffixes", read(), float64(3))
+	}
+	if !reflect.DeepEqual(float64(bl.Length()), read()) {
+		t.Errorf("%s: read() = %v, want %v", "gauge must track Length()", read(), float64(bl.Length()))
+	}
 
 	bl.Remove("one.example.")
-	assert.Equal(t, float64(2), read(), "gauge must follow removals, not just adds")
+	if !reflect.DeepEqual(float64(2), read()) {
+		t.Errorf("%s: read() = %v, want %v", "gauge must follow removals, not just adds", read(), float64(2))
+	}
 
 	// A second instance takes over the published accessor, mirroring what
 	// happens when the middleware is rebuilt; the gauge must follow the
@@ -458,5 +602,7 @@ func Test_BlockList_EntriesGauge(t *testing.T) {
 	}
 	bl2 := New(cfg2)
 	bl2.Set("only.example.")
-	assert.Equal(t, float64(1), read(), "gauge must follow the newest instance")
+	if !reflect.DeepEqual(float64(1), read()) {
+		t.Errorf("%s: read() = %v, want %v", "gauge must follow the newest instance", read(), float64(1))
+	}
 }

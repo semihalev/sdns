@@ -1,11 +1,12 @@
 package reflex
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestIPTracker_Basic(t *testing.T) {
@@ -13,9 +14,13 @@ func TestIPTracker_Basic(t *testing.T) {
 
 	// First few queries should have zero score
 	score := tracker.RecordQuery("192.168.1.1", dns.TypeA, 1.0, 50)
-	assert.Equal(t, 0.0, score, "first query should have zero score")
+	if !reflect.DeepEqual(0.0, score) {
+		t.Errorf("%s: score = %v, want %v", "first query should have zero score", score, 0.0)
+	}
 
-	assert.Equal(t, 1, tracker.Count())
+	if !reflect.DeepEqual(1, tracker.Count()) {
+		t.Errorf("tracker.Count() = %v, want %v", tracker.Count(), 1)
+	}
 }
 
 func TestIPTracker_NormalQueries(t *testing.T) {
@@ -28,11 +33,17 @@ func TestIPTracker_NormalQueries(t *testing.T) {
 	}
 
 	entry := tracker.GetEntry(ip)
-	assert.NotNil(t, entry)
-	assert.True(t, entry.HasNormalQ)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
+	if !(entry.HasNormalQ) {
+		t.Errorf("entry.HasNormalQ is false")
+	}
 
 	score := tracker.calculateScore(entry)
-	assert.Less(t, score, 0.5, "normal queries should have low score")
+	if score >= 0.5 {
+		t.Errorf("%s: score = %v, want < %v", "normal queries should have low score", score, 0.5)
+	}
 	t.Logf("Normal traffic score: %.2f", score)
 }
 
@@ -46,15 +57,23 @@ func TestIPTracker_HighAmpQueries(t *testing.T) {
 	}
 
 	entry := tracker.GetEntry(ip)
-	assert.NotNil(t, entry)
-	assert.False(t, entry.HasNormalQ)
-	assert.Equal(t, uint32(20), entry.HighAmpQueries)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
+	if entry.HasNormalQ {
+		t.Errorf("entry.HasNormalQ is true")
+	}
+	if !reflect.DeepEqual(uint32(20), entry.HighAmpQueries) {
+		t.Errorf("entry.HighAmpQueries = %v, want %v", entry.HighAmpQueries, uint32(20))
+	}
 
 	score := tracker.calculateScore(entry)
 	// Score is 0.45: high-amp ratio (0.25) + no normal queries (0.15) + single type (0.05)
 	// This is below blocking threshold (0.7) which is correct -
 	// need HIGH RATE to block, not just high-amp types
-	assert.Greater(t, score, 0.3, "high-amp only queries should have elevated score")
+	if score <= 0.3 {
+		t.Errorf("%s: score = %v, want > %v", "high-amp only queries should have elevated score", score, 0.3)
+	}
 	t.Logf("High-amp traffic score: %.2f", score)
 }
 
@@ -76,8 +95,12 @@ func TestIPTracker_TCPClearsScore(t *testing.T) {
 	entry = tracker.GetEntry(ip)
 	scoreAfter := tracker.calculateScore(entry)
 
-	assert.Greater(t, scoreBefore, 0.3, "should have elevated score before TCP")
-	assert.Equal(t, 0.0, scoreAfter, "TCP should clear score")
+	if scoreBefore <= 0.3 {
+		t.Errorf("%s: scoreBefore = %v, want > %v", "should have elevated score before TCP", scoreBefore, 0.3)
+	}
+	if !reflect.DeepEqual(0.0, scoreAfter) {
+		t.Errorf("%s: scoreAfter = %v, want %v", "TCP should clear score", scoreAfter, 0.0)
+	}
 }
 
 func TestIPTracker_RecordResponse(t *testing.T) {
@@ -88,8 +111,12 @@ func TestIPTracker_RecordResponse(t *testing.T) {
 	tracker.RecordResponse(ip, 50, 500) // 10x amplification
 
 	entry := tracker.GetEntry(ip)
-	assert.Equal(t, uint64(50), entry.TotalRequestBytes)
-	assert.Equal(t, uint64(500), entry.TotalResponseBytes)
+	if !reflect.DeepEqual(uint64(50), entry.TotalRequestBytes) {
+		t.Errorf("entry.TotalRequestBytes = %v, want %v", entry.TotalRequestBytes, uint64(50))
+	}
+	if !reflect.DeepEqual(uint64(500), entry.TotalResponseBytes) {
+		t.Errorf("entry.TotalResponseBytes = %v, want %v", entry.TotalResponseBytes, uint64(500))
+	}
 }
 
 func TestIPTracker_AmplificationRatio(t *testing.T) {
@@ -106,7 +133,9 @@ func TestIPTracker_AmplificationRatio(t *testing.T) {
 	score := tracker.calculateScore(entry)
 
 	t.Logf("High amplification ratio score: %.2f", score)
-	assert.Greater(t, score, 0.4, "high amplification should increase score")
+	if score <= 0.4 {
+		t.Errorf("%s: score = %v, want > %v", "high amplification should increase score", score, 0.4)
+	}
 }
 
 func TestIPTracker_BoundedMemory(t *testing.T) {
@@ -119,7 +148,9 @@ func TestIPTracker_BoundedMemory(t *testing.T) {
 		tracker.RecordQuery(ip, dns.TypeA, 1.0, 50)
 	}
 
-	assert.LessOrEqual(t, tracker.Count(), maxSize)
+	if tracker.Count() > maxSize {
+		t.Errorf("tracker.Count() = %v, want <= %v", tracker.Count(), maxSize)
+	}
 }
 
 func TestIPTracker_Cleanup(t *testing.T) {
@@ -130,7 +161,9 @@ func TestIPTracker_Cleanup(t *testing.T) {
 	tracker.RecordQuery("192.168.1.2", dns.TypeA, 1.0, 50)
 	tracker.RecordQuery("192.168.1.3", dns.TypeA, 1.0, 50)
 
-	assert.Equal(t, 3, tracker.Count())
+	if !reflect.DeepEqual(3, tracker.Count()) {
+		t.Errorf("tracker.Count() = %v, want %v", tracker.Count(), 3)
+	}
 
 	// Age one entry
 	tracker.mu.Lock()
@@ -140,7 +173,9 @@ func TestIPTracker_Cleanup(t *testing.T) {
 	tracker.mu.Unlock()
 
 	tracker.Cleanup()
-	assert.Equal(t, 2, tracker.Count())
+	if !reflect.DeepEqual(2, tracker.Count()) {
+		t.Errorf("tracker.Count() = %v, want %v", tracker.Count(), 2)
+	}
 }
 
 func TestIPTracker_QueryTypeDiversity(t *testing.T) {
@@ -154,7 +189,9 @@ func TestIPTracker_QueryTypeDiversity(t *testing.T) {
 
 	entry := tracker.GetEntry(ip)
 	typeCount := popcount16(entry.QueryTypes)
-	assert.Equal(t, 1, typeCount)
+	if !reflect.DeepEqual(1, typeCount) {
+		t.Errorf("typeCount = %v, want %v", typeCount, 1)
+	}
 
 	score := tracker.calculateScore(entry)
 	t.Logf("Single type score: %.2f", score)
@@ -174,20 +211,36 @@ func TestIPTracker_MixedTypes(t *testing.T) {
 
 	entry := tracker.GetEntry(ip)
 	typeCount := popcount16(entry.QueryTypes)
-	assert.GreaterOrEqual(t, typeCount, 3)
-	assert.True(t, entry.HasNormalQ)
+	if typeCount < 3 {
+		t.Errorf("typeCount = %v, want >= %v", typeCount, 3)
+	}
+	if !(entry.HasNormalQ) {
+		t.Errorf("entry.HasNormalQ is false")
+	}
 
 	score := tracker.calculateScore(entry)
 	t.Logf("Mixed types score: %.2f", score)
-	assert.Less(t, score, 0.5, "mixed types with normal queries should be less suspicious")
+	if score >= 0.5 {
+		t.Errorf("%s: score = %v, want < %v", "mixed types with normal queries should be less suspicious", score, 0.5)
+	}
 }
 
 func TestPopcount16(t *testing.T) {
-	assert.Equal(t, 0, popcount16(0))
-	assert.Equal(t, 1, popcount16(1))
-	assert.Equal(t, 1, popcount16(2))
-	assert.Equal(t, 2, popcount16(3))
-	assert.Equal(t, 16, popcount16(0xFFFF))
+	if !reflect.DeepEqual(0, popcount16(0)) {
+		t.Errorf("popcount16(0) = %v, want %v", popcount16(0), 0)
+	}
+	if !reflect.DeepEqual(1, popcount16(1)) {
+		t.Errorf("popcount16(1) = %v, want %v", popcount16(1), 1)
+	}
+	if !reflect.DeepEqual(1, popcount16(2)) {
+		t.Errorf("popcount16(2) = %v, want %v", popcount16(2), 1)
+	}
+	if !reflect.DeepEqual(2, popcount16(3)) {
+		t.Errorf("popcount16(3) = %v, want %v", popcount16(3), 2)
+	}
+	if !reflect.DeepEqual(16, popcount16(0xFFFF)) {
+		t.Errorf("popcount16(0xFFFF) = %v, want %v", popcount16(0xFFFF), 16)
+	}
 }
 
 func TestQtypeToBit(t *testing.T) {
@@ -216,7 +269,9 @@ func TestQtypeToBit(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		assert.Equal(t, tt.expected, qtypeToBit(tt.qtype), "qtype %d", tt.qtype)
+		if !reflect.DeepEqual(tt.expected, qtypeToBit(tt.qtype)) {
+			t.Errorf("%s: qtypeToBit(tt.qtype) = %v, want %v", fmt.Sprintf("qtype %d", tt.qtype), qtypeToBit(tt.qtype), tt.expected)
+		}
 	}
 }
 
@@ -234,7 +289,9 @@ func TestCalculateScore_EdgeCases(t *testing.T) {
 		entry := tracker.GetEntry(ip)
 		score := tracker.calculateScore(entry)
 		t.Logf("High rate attack score: %.2f", score)
-		assert.GreaterOrEqual(t, score, 0.7, "high rate attack should have high score")
+		if score < 0.7 {
+			t.Errorf("%s: score = %v, want >= %v", "high rate attack should have high score", score, 0.7)
+		}
 	})
 
 	t.Run("moderate rate only high amp", func(t *testing.T) {

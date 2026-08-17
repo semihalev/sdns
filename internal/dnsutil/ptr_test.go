@@ -1,9 +1,8 @@
 package dnsutil
 
 import (
+	"reflect"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func TestIPFromReverseName(t *testing.T) {
@@ -57,7 +56,9 @@ func TestIPFromReverseName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := IPFromReverseName(tt.input)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -98,7 +99,9 @@ func TestCheckReverseName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := CheckReverseName(tt.input)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -139,7 +142,9 @@ func TestParseIPv4PTR(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := parseIPv4PTR(tt.input)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -175,7 +180,9 @@ func TestParseIPv6PTR(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := parseIPv6PTR(tt.input)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }

@@ -3,11 +3,11 @@ package cache
 import (
 	"fmt"
 	"net/netip"
+	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestKey(t *testing.T) {
@@ -68,11 +68,15 @@ func TestKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := Key(tt.question, tt.cd...)
-			assert.Equal(t, tt.want, got)
+			if !reflect.DeepEqual(tt.want, got) {
+				t.Errorf("got = %v, want %v", got, tt.want)
+			}
 
 			// Verify consistency
 			got2 := Key(tt.question, tt.cd...)
-			assert.Equal(t, got, got2, "Key should be consistent")
+			if !reflect.DeepEqual(got, got2) {
+				t.Errorf("%s: got2 = %v, want %v", "Key should be consistent", got2, got)
+			}
 		})
 	}
 }
@@ -213,7 +217,9 @@ func TestKeyLongDomainNames(t *testing.T) {
 	key1 := Key(q)
 	key2 := Key(q)
 
-	assert.Equal(t, key1, key2, "Keys for long domain names should be consistent")
+	if !reflect.DeepEqual(key1, key2) {
+		t.Errorf("%s: key2 = %v, want %v", "Keys for long domain names should be consistent", key2, key1)
+	}
 
 	// Test with mixed case
 	q2 := dns.Question{
@@ -223,7 +229,9 @@ func TestKeyLongDomainNames(t *testing.T) {
 	}
 
 	key3 := Key(q2)
-	assert.Equal(t, key1, key3, "Case should be normalized for long names")
+	if !reflect.DeepEqual(key1, key3) {
+		t.Errorf("%s: key3 = %v, want %v", "Case should be normalized for long names", key3, key1)
+	}
 }
 
 // Benchmarks
@@ -339,7 +347,9 @@ func TestKeyString(t *testing.T) {
 			// KeyString should produce consistent results
 			key1 := KeyString(tt.qname, tt.qtype, tt.qclass, tt.cd)
 			key2 := KeyString(tt.qname, tt.qtype, tt.qclass, tt.cd)
-			assert.Equal(t, key1, key2, "KeyString should be consistent")
+			if !reflect.DeepEqual(key1, key2) {
+				t.Errorf("%s: key2 = %v, want %v", "KeyString should be consistent", key2, key1)
+			}
 
 			// KeyString should match Key for equivalent queries
 			q := dns.Question{
@@ -348,7 +358,9 @@ func TestKeyString(t *testing.T) {
 				Qclass: tt.qclass,
 			}
 			keyFromQuestion := Key(q, tt.cd)
-			assert.Equal(t, keyFromQuestion, key1, "KeyString should match Key")
+			if !reflect.DeepEqual(keyFromQuestion, key1) {
+				t.Errorf("%s: key1 = %v, want %v", "KeyString should match Key", key1, keyFromQuestion)
+			}
 		})
 	}
 }
@@ -391,7 +403,9 @@ func TestKeySimple(t *testing.T) {
 			// KeySimple should produce same result as Key
 			keySimple := KeySimple(tt.question, tt.cd...)
 			keyPooled := Key(tt.question, tt.cd...)
-			assert.Equal(t, keyPooled, keySimple, "KeySimple should match Key")
+			if !reflect.DeepEqual(keyPooled, keySimple) {
+				t.Errorf("%s: keySimple = %v, want %v", "KeySimple should match Key", keySimple, keyPooled)
+			}
 		})
 	}
 }
@@ -413,9 +427,13 @@ func TestKeyVeryLongDomainName(t *testing.T) {
 	// Should not panic and should be consistent
 	key1 := Key(q)
 	key2 := Key(q)
-	assert.Equal(t, key1, key2)
+	if !reflect.DeepEqual(key1, key2) {
+		t.Errorf("key2 = %v, want %v", key2, key1)
+	}
 
 	// KeyString should also handle it
 	key3 := KeyString(longName, dns.TypeA, dns.ClassINET, false)
-	assert.Equal(t, key1, key3)
+	if !reflect.DeepEqual(key1, key3) {
+		t.Errorf("key3 = %v, want %v", key3, key1)
+	}
 }

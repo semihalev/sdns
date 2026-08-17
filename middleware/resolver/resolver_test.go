@@ -2,11 +2,11 @@ package resolver
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 // Resolution itself — an ordinary answer, QNAME minimisation, NXDOMAIN,
@@ -21,7 +21,9 @@ import (
 
 func Test_EqualServers(t *testing.T) {
 	r := newWiredTestResolver(makeTestConfig())
-	assert.Equal(t, true, r.equalServers(r.rootServers, r.rootServers))
+	if !reflect.DeepEqual(true, r.equalServers(r.rootServers, r.rootServers)) {
+		t.Errorf("r.equalServers(r.rootServers, r.rootServers) = %v, want %v", r.equalServers(r.rootServers, r.rootServers), true)
+	}
 }
 
 func Test_OutboundIPs(t *testing.T) {
@@ -34,8 +36,12 @@ func Test_OutboundIPs(t *testing.T) {
 	cfg.OutboundIP6s = []string{"::1", "1"}
 
 	r := newWiredTestResolver(cfg)
-	assert.Len(t, r.outboundIPv4, 1)
-	assert.Len(t, r.outboundIPv6, 1)
+	if len(r.outboundIPv4) != 1 {
+		t.Errorf("len(r.outboundIPv4) = %d, want %d", len(r.outboundIPv4), 1)
+	}
+	if len(r.outboundIPv6) != 1 {
+		t.Errorf("len(r.outboundIPv6) = %d, want %d", len(r.outboundIPv6), 1)
+	}
 
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
@@ -46,5 +52,7 @@ func Test_OutboundIPs(t *testing.T) {
 	defer cancel()
 
 	_, err := r.lookup(ctx, &resolveState{requestID: req.Id}, req, r.rootServers)
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 }

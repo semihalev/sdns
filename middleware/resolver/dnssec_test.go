@@ -2,10 +2,10 @@ package resolver
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 // TestADBitWithCDFlag verifies that AD bit is not set when CD flag is set.
@@ -35,7 +35,9 @@ func TestADBitWithCDFlag(t *testing.T) {
 		resp.AuthenticatedData = true
 	}
 
-	assert.True(t, resp.AuthenticatedData, "AD bit should be set when CD=0 and validation succeeds")
+	if !(resp.AuthenticatedData) {
+		t.Errorf("%s: resp.AuthenticatedData is false", "AD bit should be set when CD=0 and validation succeeds")
+	}
 
 	// Test case 2: CD=1, AD bit should never be set
 	req2 := new(dns.Msg)
@@ -61,7 +63,9 @@ func TestADBitWithCDFlag(t *testing.T) {
 		resp2.AuthenticatedData = false
 	}
 
-	assert.False(t, resp2.AuthenticatedData, "AD bit should not be set when CD=1")
+	if resp2.AuthenticatedData {
+		t.Errorf("%s: resp2.AuthenticatedData is true", "AD bit should not be set when CD=1")
+	}
 }
 
 // TestCDFlagPreservation verifies that CD flag is properly preserved in responses.
@@ -93,8 +97,9 @@ func TestCDFlagPreservation(t *testing.T) {
 			resp.SetReply(req)
 
 			// CD flag should be preserved from request
-			assert.Equal(t, tt.expectedRespCD, resp.CheckingDisabled,
-				"CD flag should be preserved from request to response")
+			if !reflect.DeepEqual(tt.expectedRespCD, resp.CheckingDisabled) {
+				t.Errorf("%s: resp.CheckingDisabled = %v, want %v", "CD flag should be preserved from request to response", resp.CheckingDisabled, tt.expectedRespCD)
+			}
 		})
 	}
 }
@@ -141,12 +146,17 @@ func TestDNSSECValidationSkippedWithCD(t *testing.T) {
 
 	// With CD=1, validation should be skipped and response should be returned
 	// without AD bit set
-	assert.True(t, req.CheckingDisabled, "CD flag should be set in request")
-	assert.False(t, resp.AuthenticatedData, "AD bit should not be set when CD=1")
+	if !(req.CheckingDisabled) {
+		t.Errorf("%s: req.CheckingDisabled is false", "CD flag should be set in request")
+	}
+	if resp.AuthenticatedData {
+		t.Errorf("%s: resp.AuthenticatedData is true", "AD bit should not be set when CD=1")
+	}
 
 	// The response should still be valid (not SERVFAIL) because validation was skipped
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode,
-		"Response should be successful when CD=1 even with invalid signatures")
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("%s: resp.Rcode = %v, want %v", "Response should be successful when CD=1 even with invalid signatures", resp.Rcode, dns.RcodeSuccess)
+	}
 }
 
 // makeDS creates a DS record for the given owner name.
@@ -263,7 +273,9 @@ func Test_isZoneSecure(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := r.isZoneSecure(ctx, tt.qname, tt.parentDS, tt.zone)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -323,15 +335,23 @@ func Test_isZoneSecureIntegration(t *testing.T) {
 			resp, err := hermeticResolve(t, r, tt.qname, dns.TypeA)
 
 			if tt.expectErr {
-				assert.Error(t, err)
+				if err == nil {
+					t.Errorf("expected an error, got nil")
+				}
 			} else {
-				assert.NoError(t, err)
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
 			}
 
 			if tt.expectNil {
-				assert.Nil(t, resp)
+				if resp != nil {
+					t.Errorf("resp = %v, want nil", resp)
+				}
 			} else {
-				assert.NotNil(t, resp)
+				if resp == nil {
+					t.Fatalf("resp is nil")
+				}
 			}
 		})
 	}

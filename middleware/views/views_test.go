@@ -2,13 +2,13 @@ package views
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 // makeChain wires up a single-handler chain pointed at the view
@@ -27,7 +27,9 @@ func TestViews_NoConfig_FallsThrough(t *testing.T) {
 	v := New(&config.Config{})
 	ch := makeChain(v, "8.8.8.8:0", "example.com.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
-	assert.False(t, ch.Writer.Written(), "no view configured: nothing should be written")
+	if ch.Writer.Written() {
+		t.Errorf("%s: ch.Writer.Written() is true", "no view configured: nothing should be written")
+	}
 }
 
 func TestViews_MatchesClientCIDRAndWildcard(t *testing.T) {
@@ -44,14 +46,26 @@ func TestViews_MatchesClientCIDRAndWildcard(t *testing.T) {
 	// Client inside the view's CIDR querying a wildcard-covered name.
 	ch := makeChain(v, "192.168.1.42:5353", "foo.birb.it.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
-	assert.True(t, ch.Writer.Written(), "matching view must write a reply")
+	if !(ch.Writer.Written()) {
+		t.Errorf("%s: ch.Writer.Written() is false", "matching view must write a reply")
+	}
 	resp := ch.Writer.Msg()
-	assert.Len(t, resp.Answer, 1)
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	}
 	a, ok := resp.Answer[0].(*dns.A)
-	assert.True(t, ok)
-	assert.Equal(t, "foo.birb.it.", a.Hdr.Name, "owner name in response must be the query name, not the wildcard")
-	assert.Equal(t, "192.168.1.3", a.A.String())
-	assert.True(t, resp.Authoritative)
+	if !(ok) {
+		t.Errorf("ok is false")
+	}
+	if !reflect.DeepEqual("foo.birb.it.", a.Hdr.Name) {
+		t.Errorf("%s: a.Hdr.Name = %v, want %v", "owner name in response must be the query name, not the wildcard", a.Hdr.Name, "foo.birb.it.")
+	}
+	if !reflect.DeepEqual("192.168.1.3", a.A.String()) {
+		t.Errorf("a.A.String() = %v, want %v", a.A.String(), "192.168.1.3")
+	}
+	if !(resp.Authoritative) {
+		t.Errorf("resp.Authoritative is false")
+	}
 }
 
 func TestViews_QtypeMissingFallsThrough(t *testing.T) {
@@ -68,7 +82,9 @@ func TestViews_QtypeMissingFallsThrough(t *testing.T) {
 	// over.
 	ch := makeChain(v, "192.168.1.42:5353", "foo.birb.it.", dns.TypeAAAA)
 	v.ServeDNS(context.Background(), ch)
-	assert.False(t, ch.Writer.Written(), "matched-view-but-no-record must fall through")
+	if ch.Writer.Written() {
+		t.Errorf("%s: ch.Writer.Written() is true", "matched-view-but-no-record must fall through")
+	}
 }
 
 func TestViews_ClientOutsideAllViewsFallsThrough(t *testing.T) {
@@ -80,7 +96,9 @@ func TestViews_ClientOutsideAllViewsFallsThrough(t *testing.T) {
 	v := New(cfg)
 	ch := makeChain(v, "8.8.8.8:5353", "foo.birb.it.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
-	assert.False(t, ch.Writer.Written())
+	if ch.Writer.Written() {
+		t.Errorf("ch.Writer.Written() is true")
+	}
 }
 
 func TestViews_FirstMatchWins(t *testing.T) {
@@ -102,7 +120,9 @@ func TestViews_FirstMatchWins(t *testing.T) {
 	v.ServeDNS(context.Background(), ch)
 	resp := ch.Writer.Msg()
 	a := resp.Answer[0].(*dns.A)
-	assert.Equal(t, "100.64.0.2", a.A.String(), "vpnnet view must have answered for a 100.64.0.0/24 client")
+	if !reflect.DeepEqual("100.64.0.2", a.A.String()) {
+		t.Errorf("%s: a.A.String() = %v, want %v", "vpnnet view must have answered for a 100.64.0.0/24 client", a.A.String(), "100.64.0.2")
+	}
 }
 
 func TestViews_ExactNameMatch(t *testing.T) {
@@ -116,12 +136,16 @@ func TestViews_ExactNameMatch(t *testing.T) {
 	ch := makeChain(v, "192.168.1.42:5353", "router.local.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
 	a := ch.Writer.Msg().Answer[0].(*dns.A)
-	assert.Equal(t, "192.168.1.1", a.A.String())
+	if !reflect.DeepEqual("192.168.1.1", a.A.String()) {
+		t.Errorf("a.A.String() = %v, want %v", a.A.String(), "192.168.1.1")
+	}
 
 	// Sub-name must NOT match a non-wildcard owner.
 	ch = makeChain(v, "192.168.1.42:5353", "sub.router.local.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
-	assert.False(t, ch.Writer.Written(), "non-wildcard owner must require an exact name match")
+	if ch.Writer.Written() {
+		t.Errorf("%s: ch.Writer.Written() is true", "non-wildcard owner must require an exact name match")
+	}
 }
 
 func TestViews_ExactOverridesWildcard(t *testing.T) {
@@ -141,15 +165,23 @@ func TestViews_ExactOverridesWildcard(t *testing.T) {
 	ch := makeChain(v, "192.168.1.42:5353", "router.example.lan.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
 	resp := ch.Writer.Msg()
-	assert.Len(t, resp.Answer, 1, "exact owner must suppress the covering wildcard")
-	assert.Equal(t, "192.168.1.1", resp.Answer[0].(*dns.A).A.String())
+	if len(resp.Answer) != 1 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "exact owner must suppress the covering wildcard", len(resp.Answer), 1)
+	}
+	if !reflect.DeepEqual("192.168.1.1", resp.Answer[0].(*dns.A).A.String()) {
+		t.Errorf("resp.Answer[0].(*dns.A).A.String() = %v, want %v", resp.Answer[0].(*dns.A).A.String(), "192.168.1.1")
+	}
 
 	// And a sibling under the wildcard still gets the wildcard answer.
 	ch = makeChain(v, "192.168.1.42:5353", "other.example.lan.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
 	resp = ch.Writer.Msg()
-	assert.Len(t, resp.Answer, 1)
-	assert.Equal(t, "192.168.1.3", resp.Answer[0].(*dns.A).A.String())
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	}
+	if !reflect.DeepEqual("192.168.1.3", resp.Answer[0].(*dns.A).A.String()) {
+		t.Errorf("resp.Answer[0].(*dns.A).A.String() = %v, want %v", resp.Answer[0].(*dns.A).A.String(), "192.168.1.3")
+	}
 }
 
 func TestViews_LongestWildcardWins(t *testing.T) {
@@ -171,15 +203,23 @@ func TestViews_LongestWildcardWins(t *testing.T) {
 	ch := makeChain(v, "192.168.1.42:5353", "host.sub.example.lan.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
 	resp := ch.Writer.Msg()
-	assert.Len(t, resp.Answer, 1, "only the longest-suffix wildcard should apply")
-	assert.Equal(t, "192.168.1.4", resp.Answer[0].(*dns.A).A.String())
+	if len(resp.Answer) != 1 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "only the longest-suffix wildcard should apply", len(resp.Answer), 1)
+	}
+	if !reflect.DeepEqual("192.168.1.4", resp.Answer[0].(*dns.A).A.String()) {
+		t.Errorf("resp.Answer[0].(*dns.A).A.String() = %v, want %v", resp.Answer[0].(*dns.A).A.String(), "192.168.1.4")
+	}
 
 	// host.example.lan. is only covered by the outer wildcard.
 	ch = makeChain(v, "192.168.1.42:5353", "host.example.lan.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
 	resp = ch.Writer.Msg()
-	assert.Len(t, resp.Answer, 1)
-	assert.Equal(t, "192.168.1.3", resp.Answer[0].(*dns.A).A.String())
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	}
+	if !reflect.DeepEqual("192.168.1.3", resp.Answer[0].(*dns.A).A.String()) {
+		t.Errorf("resp.Answer[0].(*dns.A).A.String() = %v, want %v", resp.Answer[0].(*dns.A).A.String(), "192.168.1.3")
+	}
 }
 
 func TestViews_BadCIDRsAndRecordsAreSkipped(t *testing.T) {
@@ -196,16 +236,30 @@ func TestViews_BadCIDRsAndRecordsAreSkipped(t *testing.T) {
 	// Bad inputs are skipped, the surviving CIDR + record still match.
 	ch := makeChain(v, "192.168.1.10:5353", "x.birb.it.", dns.TypeA)
 	v.ServeDNS(context.Background(), ch)
-	assert.True(t, ch.Writer.Written())
+	if !(ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() is false")
+	}
 }
 
 func TestViews_WildcardBoundary(t *testing.T) {
 	// "*.birb.it." must match "foo.birb.it." but NOT "birb.it." or
 	// any name that just happens to end with the suffix.
-	assert.True(t, nameMatches("*.birb.it.", "foo.birb.it."))
-	assert.True(t, nameMatches("*.birb.it.", "deep.path.birb.it."))
-	assert.False(t, nameMatches("*.birb.it.", "birb.it."))
-	assert.False(t, nameMatches("*.birb.it.", "notbirb.it."))
-	assert.True(t, nameMatches("router.local.", "router.local."))
-	assert.False(t, nameMatches("router.local.", "sub.router.local."))
+	if !(nameMatches("*.birb.it.", "foo.birb.it.")) {
+		t.Errorf("nameMatches('*.birb.it.', 'foo.birb.it.') is false")
+	}
+	if !(nameMatches("*.birb.it.", "deep.path.birb.it.")) {
+		t.Errorf("nameMatches('*.birb.it.', 'deep.path.birb.it.') is false")
+	}
+	if nameMatches("*.birb.it.", "birb.it.") {
+		t.Errorf("nameMatches('*.birb.it.', 'birb.it.') is true")
+	}
+	if nameMatches("*.birb.it.", "notbirb.it.") {
+		t.Errorf("nameMatches('*.birb.it.', 'notbirb.it.') is true")
+	}
+	if !(nameMatches("router.local.", "router.local.")) {
+		t.Errorf("nameMatches('router.local.', 'router.local.') is false")
+	}
+	if nameMatches("router.local.", "sub.router.local.") {
+		t.Errorf("nameMatches('router.local.', 'sub.router.local.') is true")
+	}
 }

@@ -2,28 +2,34 @@ package reflex
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
 	t.Run("disabled returns nil", func(t *testing.T) {
 		cfg := &config.Config{ReflexEnabled: false}
 		r := New(cfg)
-		assert.Nil(t, r)
+		if r != nil {
+			t.Errorf("r = %v, want nil", r)
+		}
 	})
 
 	t.Run("enabled returns instance", func(t *testing.T) {
 		cfg := &config.Config{ReflexEnabled: true}
 		r := New(cfg)
-		require.NotNil(t, r)
-		assert.Equal(t, "reflex", r.Name())
+		if r == nil {
+			t.Fatalf("r is nil")
+		}
+		if !reflect.DeepEqual("reflex", r.Name()) {
+			t.Errorf("r.Name() = %v, want %v", r.Name(), "reflex")
+		}
 		_ = r.Close()
 	})
 }
@@ -41,7 +47,9 @@ func TestServeDNS_SkipConditions(t *testing.T) {
 		ch.Reset(mw, req)
 
 		r.ServeDNS(context.Background(), ch)
-		assert.False(t, mw.Written())
+		if mw.Written() {
+			t.Errorf("mw.Written() is true")
+		}
 	})
 
 	t.Run("skip loopback", func(t *testing.T) {
@@ -52,7 +60,9 @@ func TestServeDNS_SkipConditions(t *testing.T) {
 		ch.Reset(mw, req)
 
 		r.ServeDNS(context.Background(), ch)
-		assert.False(t, mw.Written())
+		if mw.Written() {
+			t.Errorf("mw.Written() is true")
+		}
 	})
 
 	t.Run("TCP improves reputation", func(t *testing.T) {
@@ -63,12 +73,16 @@ func TestServeDNS_SkipConditions(t *testing.T) {
 		ch.Reset(mw, req)
 
 		r.ServeDNS(context.Background(), ch)
-		assert.False(t, mw.Written())
+		if mw.Written() {
+			t.Errorf("mw.Written() is true")
+		}
 
 		// Check that TCP was recorded
 		entry := r.tracker.GetEntry("192.168.1.100")
 		if entry != nil {
-			assert.True(t, entry.HasTCP)
+			if !(entry.HasTCP) {
+				t.Errorf("entry.HasTCP is false")
+			}
 		}
 	})
 }
@@ -87,7 +101,9 @@ func TestServeDNS_NormalTraffic(t *testing.T) {
 		ch.Reset(mw, req)
 
 		r.ServeDNS(context.Background(), ch)
-		assert.False(t, mw.Written(), "normal query %d should not be blocked", i)
+		if mw.Written() {
+			t.Errorf("%s: mw.Written() is true", fmt.Sprintf("normal query %d should not be blocked", i))
+		}
 	}
 }
 
@@ -117,7 +133,9 @@ func TestServeDNS_AmplificationAttack(t *testing.T) {
 	}
 
 	// Should eventually block
-	assert.Greater(t, blocked, 0, "amplification attack should be detected")
+	if blocked <= 0 {
+		t.Errorf("%s: blocked = %v, want > %v", "amplification attack should be detected", blocked, 0)
+	}
 	t.Logf("Blocked %d of 50 suspicious queries", blocked)
 }
 
@@ -185,7 +203,9 @@ func TestServeDNS_LegitimateHighAmpWithNormal(t *testing.T) {
 	}
 
 	// Should NOT block legitimate traffic
-	assert.Equal(t, 0, blocked, "legitimate mixed traffic should not be blocked")
+	if !reflect.DeepEqual(0, blocked) {
+		t.Errorf("%s: blocked = %v, want %v", "legitimate mixed traffic should not be blocked", blocked, 0)
+	}
 }
 
 func TestServeDNS_TCPClearsReputation(t *testing.T) {
@@ -224,7 +244,9 @@ func TestServeDNS_TCPClearsReputation(t *testing.T) {
 	ch2.Reset(mw2, req2)
 	r.ServeDNS(context.Background(), ch2)
 
-	assert.False(t, mw2.Written(), "after TCP, UDP should not be blocked")
+	if mw2.Written() {
+		t.Errorf("%s: mw2.Written() is true", "after TCP, UDP should not be blocked")
+	}
 }
 
 func TestServeDNS_LearningMode(t *testing.T) {
@@ -254,7 +276,9 @@ func TestServeDNS_LearningMode(t *testing.T) {
 	}
 
 	// Learning mode should NOT block
-	assert.Equal(t, 0, blocked, "learning mode should not block")
+	if !reflect.DeepEqual(0, blocked) {
+		t.Errorf("%s: blocked = %v, want %v", "learning mode should not block", blocked, 0)
+	}
 }
 
 func TestClose(t *testing.T) {
@@ -262,7 +286,9 @@ func TestClose(t *testing.T) {
 	r := New(cfg)
 
 	err := r.Close()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
 
 func TestServeDNS_CustomThreshold(t *testing.T) {
@@ -274,7 +300,9 @@ func TestServeDNS_CustomThreshold(t *testing.T) {
 	r := New(cfg)
 	defer func() { _ = r.Close() }()
 
-	assert.Equal(t, 0.5, r.threshold())
+	if !reflect.DeepEqual(0.5, r.threshold()) {
+		t.Errorf("r.threshold() = %v, want %v", r.threshold(), 0.5)
+	}
 }
 
 func TestServeDNS_MonitorMode(t *testing.T) {
@@ -286,7 +314,9 @@ func TestServeDNS_MonitorMode(t *testing.T) {
 	r := New(cfg)
 	defer func() { _ = r.Close() }()
 
-	assert.Equal(t, "monitor", r.mode())
+	if !reflect.DeepEqual("monitor", r.mode()) {
+		t.Errorf("r.mode() = %v, want %v", r.mode(), "monitor")
+	}
 
 	ip := "203.0.113.103"
 
@@ -305,7 +335,9 @@ func TestServeDNS_MonitorMode(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, 0, blocked, "monitor mode should not block")
+	if !reflect.DeepEqual(0, blocked) {
+		t.Errorf("%s: blocked = %v, want %v", "monitor mode should not block", blocked, 0)
+	}
 }
 
 func TestServeDNS_EmptyQuestion(t *testing.T) {
@@ -319,7 +351,9 @@ func TestServeDNS_EmptyQuestion(t *testing.T) {
 	ch.Reset(mw, req)
 
 	r.ServeDNS(context.Background(), ch)
-	assert.False(t, mw.Written())
+	if mw.Written() {
+		t.Errorf("mw.Written() is true")
+	}
 }
 
 func TestResponseWriter(t *testing.T) {
@@ -350,12 +384,18 @@ func TestResponseWriter(t *testing.T) {
 	})
 
 	err := rw.WriteMsg(res)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	// Check response was tracked
 	entry := tracker.GetEntry(ip)
-	assert.NotNil(t, entry)
-	assert.Greater(t, entry.TotalResponseBytes, uint64(0))
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
+	if entry.TotalResponseBytes == 0 {
+		t.Errorf("entry.TotalResponseBytes = 0, want > 0")
+	}
 }
 
 func TestResponseWriter_NilResponse(t *testing.T) {
@@ -377,7 +417,9 @@ func TestResponseWriter_NilResponse(t *testing.T) {
 
 	// Write nil response - should not panic
 	err := rw.WriteMsg(nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
 
 func BenchmarkServeDNS_NormalQuery(b *testing.B) {

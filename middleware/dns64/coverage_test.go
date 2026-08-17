@@ -4,19 +4,21 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 // TestName pins the registered middleware name so the gen.go entry
 // can't drift away from what the package reports.
 func TestName(t *testing.T) {
 	d := New(baseConfig())
-	assert.Equal(t, "dns64", d.Name())
+	if !reflect.DeepEqual("dns64", d.Name()) {
+		t.Errorf("d.Name() = %v, want %v", d.Name(), "dns64")
+	}
 }
 
 // TestSetQueryer covers the trivial setter used by middleware.Setup
@@ -46,7 +48,9 @@ func TestClassifyQueryErr(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, classifyQueryErr(tc.err))
+			if !reflect.DeepEqual(tc.want, classifyQueryErr(tc.err)) {
+				t.Errorf("classifyQueryErr(tc.err) = %v, want %v", classifyQueryErr(tc.err), tc.want)
+			}
 		})
 	}
 }
@@ -71,17 +75,37 @@ func TestCompileConfig_BadEntriesSkipped(t *testing.T) {
 	if c == nil {
 		t.Fatalf("compileConfig returned nil despite usable prefixes")
 	}
-	if assert.Len(t, c.prefixes, 2, "both valid prefixes are kept (well-known + operator)") {
-		assert.True(t, c.prefixes[0].net.IP.Equal(net.ParseIP("64:ff9b::")), "well-known appears first as configured")
-		assert.True(t, c.prefixes[0].wellKnown)
-		assert.True(t, c.prefixes[1].net.IP.Equal(net.ParseIP("2001:db8::")))
-		assert.False(t, c.prefixes[1].wellKnown)
+	if len(c.prefixes) != 2 {
+		t.Errorf("%s: len(c.prefixes) = %d, want %d", "both valid prefixes are kept (well-known + operator)", len(c.prefixes), 2)
+	} else {
+		if !(c.prefixes[0].net.IP.Equal(net.ParseIP("64:ff9b::"))) {
+			t.Errorf("%s: c.prefixes[0].net.IP.Equal(net.ParseIP('64:ff9b::')) is false", "well-known appears first as configured")
+		}
+		if !(c.prefixes[0].wellKnown) {
+			t.Errorf("c.prefixes[0].wellKnown is false")
+		}
+		if !(c.prefixes[1].net.IP.Equal(net.ParseIP("2001:db8::"))) {
+			t.Errorf("c.prefixes[1].net.IP.Equal(net.ParseIP('2001:db8::')) is false")
+		}
+		if c.prefixes[1].wellKnown {
+			t.Errorf("c.prefixes[1].wellKnown is true")
+		}
 	}
-	assert.True(t, c.hasWellKnown())
-	assert.Len(t, c.clientNetworks, 1, "bad CIDR dropped, good one kept")
-	assert.Len(t, c.excludeZones, 1, "empty zone entry dropped, good one kept and FQDN'd")
-	assert.Equal(t, "example.org.", c.excludeZones[0])
-	assert.Len(t, c.excludeAv4, 1, "bad and IPv6 exclude entries dropped")
+	if !(c.hasWellKnown()) {
+		t.Errorf("c.hasWellKnown() is false")
+	}
+	if len(c.clientNetworks) != 1 {
+		t.Errorf("%s: len(c.clientNetworks) = %d, want %d", "bad CIDR dropped, good one kept", len(c.clientNetworks), 1)
+	}
+	if len(c.excludeZones) != 1 {
+		t.Errorf("%s: len(c.excludeZones) = %d, want %d", "empty zone entry dropped, good one kept and FQDN'd", len(c.excludeZones), 1)
+	}
+	if !reflect.DeepEqual("example.org.", c.excludeZones[0]) {
+		t.Errorf("c.excludeZones[0] = %v, want %v", c.excludeZones[0], "example.org.")
+	}
+	if len(c.excludeAv4) != 1 {
+		t.Errorf("%s: len(c.excludeAv4) = %d, want %d", "bad and IPv6 exclude entries dropped", len(c.excludeAv4), 1)
+	}
 }
 
 // TestCompileConfig_NoUsablePrefixFallsBackToWellKnown pins
@@ -98,9 +122,15 @@ func TestCompileConfig_NoUsablePrefixFallsBackToWellKnown(t *testing.T) {
 	if c == nil {
 		t.Fatalf("compileConfig must default to well-known prefix, not return nil")
 	}
-	if assert.Len(t, c.prefixes, 1) {
-		assert.True(t, c.prefixes[0].wellKnown)
-		assert.True(t, c.prefixes[0].net.IP.Equal(net.ParseIP("64:ff9b::")))
+	if len(c.prefixes) != 1 {
+		t.Errorf("len(c.prefixes) = %d, want %d", len(c.prefixes), 1)
+	} else {
+		if !(c.prefixes[0].wellKnown) {
+			t.Errorf("c.prefixes[0].wellKnown is false")
+		}
+		if !(c.prefixes[0].net.IP.Equal(net.ParseIP("64:ff9b::"))) {
+			t.Errorf("c.prefixes[0].net.IP.Equal(net.ParseIP('64:ff9b::')) is false")
+		}
 	}
 }
 
@@ -129,7 +159,9 @@ func TestCompileConfig_DefaultExcludeAUnderWKP(t *testing.T) {
 	if c == nil {
 		t.Fatalf("compileConfig should not disable")
 	}
-	assert.NotEmpty(t, c.excludeAv4, "WKP + nil exclude list must apply runtime default")
+	if len(c.excludeAv4) == 0 {
+		t.Errorf("%s: c.excludeAv4 is empty", "WKP + nil exclude list must apply runtime default")
+	}
 	// Spot-check a couple of representative entries.
 	covers := func(ip string) bool {
 		for _, n := range c.excludeAv4 {
@@ -139,10 +171,18 @@ func TestCompileConfig_DefaultExcludeAUnderWKP(t *testing.T) {
 		}
 		return false
 	}
-	assert.True(t, covers("10.0.0.1"), "RFC 1918 must be excluded by default")
-	assert.True(t, covers("127.0.0.1"), "loopback must be excluded by default")
-	assert.True(t, covers("169.254.1.1"), "link-local must be excluded by default")
-	assert.True(t, covers("192.88.99.1"), "deprecated 6to4 anycast (RFC 7526) must be excluded")
+	if !(covers("10.0.0.1")) {
+		t.Errorf("%s: covers('10.0.0.1') is false", "RFC 1918 must be excluded by default")
+	}
+	if !(covers("127.0.0.1")) {
+		t.Errorf("%s: covers('127.0.0.1') is false", "loopback must be excluded by default")
+	}
+	if !(covers("169.254.1.1")) {
+		t.Errorf("%s: covers('169.254.1.1') is false", "link-local must be excluded by default")
+	}
+	if !(covers("192.88.99.1")) {
+		t.Errorf("%s: covers('192.88.99.1') is false", "deprecated 6to4 anycast (RFC 7526) must be excluded")
+	}
 }
 
 // TestCompileConfig_ExplicitEmptyExcludeAOptsOut confirms an
@@ -158,7 +198,9 @@ func TestCompileConfig_ExplicitEmptyExcludeAOptsOut(t *testing.T) {
 	if c == nil {
 		t.Fatalf("compileConfig should not disable")
 	}
-	assert.Empty(t, c.excludeAv4, "explicit [] must opt out of the runtime default")
+	if len(c.excludeAv4) != 0 {
+		t.Errorf("%s: c.excludeAv4 not empty: %v", "explicit [] must opt out of the runtime default", c.excludeAv4)
+	}
 }
 
 // TestCompileConfig_AcceptsIPv4MappedExcludeAAAA pins the fix
@@ -175,8 +217,10 @@ func TestCompileConfig_AcceptsIPv4MappedExcludeAAAA(t *testing.T) {
 	if c == nil {
 		t.Fatalf("compileConfig should not disable; ::ffff:0:0/96 is a valid IPv6 prefix")
 	}
-	if assert.Len(t, c.excludeAAAA, 1, "explicit ::ffff:0:0/96 must be retained") {
-		assert.True(t, c.excludeAAAA[0].IP.Equal(net.ParseIP("::ffff:0:0")))
+	if len(c.excludeAAAA) != 1 {
+		t.Errorf("%s: len(c.excludeAAAA) = %d, want %d", "explicit ::ffff:0:0/96 must be retained", len(c.excludeAAAA), 1)
+	} else if !(c.excludeAAAA[0].IP.Equal(net.ParseIP("::ffff:0:0"))) {
+		t.Errorf("c.excludeAAAA[0].IP.Equal(net.ParseIP('::ffff:0:0')) is false")
 	}
 }
 
@@ -193,8 +237,12 @@ func TestCompileConfig_OperatorPrefixSkipsExcludeA(t *testing.T) {
 	if c == nil {
 		t.Fatalf("expected non-nil compiled config")
 	}
-	assert.False(t, c.hasWellKnown(), "no well-known prefix configured")
-	assert.Empty(t, c.excludeAv4, "operator-only prefix list must not retain the exclude-A list")
+	if c.hasWellKnown() {
+		t.Errorf("%s: c.hasWellKnown() is true", "no well-known prefix configured")
+	}
+	if len(c.excludeAv4) != 0 {
+		t.Errorf("%s: c.excludeAv4 not empty: %v", "operator-only prefix list must not retain the exclude-A list", c.excludeAv4)
+	}
 }
 
 // TestClientEligible_NilIP covers the explicit nil-IP guard, which
@@ -204,7 +252,9 @@ func TestClientEligible_NilIP(t *testing.T) {
 	c := &compiled{
 		clientNetworks: []*net.IPNet{parseCIDR(t, "10.0.0.0/8")},
 	}
-	assert.False(t, c.clientEligible(nil))
+	if c.clientEligible(nil) {
+		t.Errorf("c.clientEligible(nil) is true")
+	}
 }
 
 // TestZoneExcluded covers exact-match, label-boundary suffix
@@ -212,14 +262,26 @@ func TestClientEligible_NilIP(t *testing.T) {
 // circuit.
 func TestZoneExcluded(t *testing.T) {
 	c := &compiled{excludeZones: []string{"example.org."}}
-	assert.True(t, c.zoneExcluded("example.org."), "exact match should be excluded")
-	assert.True(t, c.zoneExcluded("host.example.org."), "label-boundary suffix should be excluded")
-	assert.True(t, c.zoneExcluded("a.b.example.org."), "deeper label-boundary suffix should be excluded")
-	assert.False(t, c.zoneExcluded("badexample.org."), "label-fragment match must NOT trigger exclusion")
-	assert.False(t, c.zoneExcluded("other.example.com."))
+	if !(c.zoneExcluded("example.org.")) {
+		t.Errorf("%s: c.zoneExcluded('example.org.') is false", "exact match should be excluded")
+	}
+	if !(c.zoneExcluded("host.example.org.")) {
+		t.Errorf("%s: c.zoneExcluded('host.example.org.') is false", "label-boundary suffix should be excluded")
+	}
+	if !(c.zoneExcluded("a.b.example.org.")) {
+		t.Errorf("%s: c.zoneExcluded('a.b.example.org.') is false", "deeper label-boundary suffix should be excluded")
+	}
+	if c.zoneExcluded("badexample.org.") {
+		t.Errorf("%s: c.zoneExcluded('badexample.org.') is true", "label-fragment match must NOT trigger exclusion")
+	}
+	if c.zoneExcluded("other.example.com.") {
+		t.Errorf("c.zoneExcluded('other.example.com.') is true")
+	}
 
 	empty := &compiled{}
-	assert.False(t, empty.zoneExcluded("anything."))
+	if empty.zoneExcluded("anything.") {
+		t.Errorf("empty.zoneExcluded('anything.') is true")
+	}
 }
 
 // TestWriteMsg_Truncated_PassThrough pins the truncated-response
@@ -234,7 +296,9 @@ func TestWriteMsg_Truncated_PassThrough(t *testing.T) {
 
 	d.ServeDNS(context.Background(), ch)
 	resp := mw.Msg()
-	assert.True(t, resp.Truncated, "truncated reply must pass through untouched")
+	if !(resp.Truncated) {
+		t.Errorf("%s: resp.Truncated is false", "truncated reply must pass through untouched")
+	}
 }
 
 // TestWriteMsg_ServFail_AResponseIsBasis covers RFC 6147 §5.1.6:
@@ -262,12 +326,22 @@ func TestWriteMsg_ServFail_AResponseIsBasis(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode, "A NOERROR-NODATA must replace AAAA SERVFAIL per RFC 6147 §5.1.6")
-	assert.Empty(t, resp.Answer, "no answer records for an empty A response")
-	assert.Equal(t, dns.TypeAAAA, resp.Question[0].Qtype, "client must see its original AAAA question")
-	if assert.Len(t, resp.Ns, 1, "SOA from A response carried into Authority section") {
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("%s: resp.Rcode = %v, want %v", "A NOERROR-NODATA must replace AAAA SERVFAIL per RFC 6147 §5.1.6", resp.Rcode, dns.RcodeSuccess)
+	}
+	if len(resp.Answer) != 0 {
+		t.Errorf("%s: resp.Answer not empty: %v", "no answer records for an empty A response", resp.Answer)
+	}
+	if !reflect.DeepEqual(dns.TypeAAAA, resp.Question[0].Qtype) {
+		t.Errorf("%s: resp.Question[0].Qtype = %v, want %v", "client must see its original AAAA question", resp.Question[0].Qtype, dns.TypeAAAA)
+	}
+	if len(resp.Ns) != 1 {
+		t.Errorf("%s: len(resp.Ns) = %d, want %d", "SOA from A response carried into Authority section", len(resp.Ns), 1)
+	} else {
 		_, ok := resp.Ns[0].(*dns.SOA)
-		assert.True(t, ok)
+		if !(ok) {
+			t.Errorf("ok is false")
+		}
 	}
 }
 
@@ -282,7 +356,9 @@ func TestSynthesise_QueryerNotWired(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode, "original NODATA preserved")
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("%s: resp.Rcode = %v, want %v", "original NODATA preserved", resp.Rcode, dns.RcodeSuccess)
+	}
 	for _, rr := range resp.Answer {
 		if rr.Header().Rrtype == dns.TypeAAAA {
 			t.Fatalf("no Queryer wired → no synthesis")

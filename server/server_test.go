@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -26,7 +27,6 @@ import (
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestMain(m *testing.M) {
@@ -150,7 +150,9 @@ func Test_ServerBindFail(t *testing.T) {
 func Test_Server(t *testing.T) {
 	cfg := &config.Config{}
 	err := generateCertificate()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	cert := filepath.Join(os.TempDir(), "test.cert")
 	privkey := filepath.Join(os.TempDir(), "test.key")
@@ -187,39 +189,57 @@ func Test_Server(t *testing.T) {
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	s.ServeMsg(context.Background(), mw, req)
 
-	assert.True(t, mw.Written())
-	if assert.NotNil(t, mw.Msg()) {
-		assert.Equal(t, true, len(mw.Msg().Answer) > 0)
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
+	if mw.Msg() == nil {
+		t.Error("mw.Msg() is nil")
+	} else if !reflect.DeepEqual(true, len(mw.Msg().Answer) > 0) {
+		t.Errorf("len(mw.Msg().Answer) > 0 = %v, want %v", len(mw.Msg().Answer) > 0, true)
 	}
 
 	request, err := http.NewRequest("GET", "/dns-query?name=test.com", nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	hw := httptest.NewRecorder()
 
 	s.ServeHTTP(hw, request)
-	assert.Equal(t, 200, hw.Code)
+	if !reflect.DeepEqual(200, hw.Code) {
+		t.Errorf("hw.Code = %v, want %v", hw.Code, 200)
+	}
 
 	data, err := req.Pack()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	dq := base64.RawURLEncoding.EncodeToString(data)
 
 	request, err = http.NewRequest("GET", fmt.Sprintf("/dns-query?dns=%s", dq), nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	hw = httptest.NewRecorder()
 
 	s.ServeHTTP(hw, request)
-	assert.Equal(t, 200, hw.Code)
+	if !reflect.DeepEqual(200, hw.Code) {
+		t.Errorf("hw.Code = %v, want %v", hw.Code, 200)
+	}
 
 	request, err = http.NewRequest("GET", "/dns-query?name=example.com", nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	hw = httptest.NewRecorder()
 
 	s.ServeHTTP(hw, request)
-	assert.Equal(t, 400, hw.Code)
+	if !reflect.DeepEqual(400, hw.Code) {
+		t.Errorf("hw.Code = %v, want %v", hw.Code, 400)
+	}
 
 	time.Sleep(2 * time.Second)
 
@@ -237,9 +257,19 @@ func Test_ServerEmptyQuestion(t *testing.T) {
 	req.Id = dns.Id()
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 
-	assert.NotPanics(t, func() { s.ServeMsg(context.Background(), mw, req) })
-	assert.True(t, mw.Written())
-	if assert.NotNil(t, mw.Msg()) {
-		assert.Equal(t, dns.RcodeFormatError, mw.Msg().Rcode)
+	if func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+		s.ServeMsg(context.Background(), mw, req)
+		return
+	}() {
+		t.Error("ServeMsg panicked on an empty question")
+	}
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
+	if mw.Msg() == nil {
+		t.Error("mw.Msg() is nil")
+	} else if !reflect.DeepEqual(dns.RcodeFormatError, mw.Msg().Rcode) {
+		t.Errorf("mw.Msg().Rcode = %v, want %v", mw.Msg().Rcode, dns.RcodeFormatError)
 	}
 }

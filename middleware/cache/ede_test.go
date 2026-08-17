@@ -2,11 +2,11 @@ package cache
 
 import (
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestEDEPreservationInCache(t *testing.T) {
@@ -34,9 +34,15 @@ func TestEDEPreservationInCache(t *testing.T) {
 	entry := NewCacheEntry(msg, 30*time.Second, 0)
 
 	// Verify EDE was preserved
-	assert.NotNil(t, entry.ede)
-	assert.Equal(t, dns.ExtendedErrorCodeDNSBogus, entry.ede.InfoCode)
-	assert.Equal(t, "DNSSEC validation failed", entry.ede.ExtraText)
+	if entry.ede == nil {
+		t.Fatalf("entry.ede is nil")
+	}
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSBogus, entry.ede.InfoCode) {
+		t.Errorf("entry.ede.InfoCode = %v, want %v", entry.ede.InfoCode, dns.ExtendedErrorCodeDNSBogus)
+	}
+	if !reflect.DeepEqual("DNSSEC validation failed", entry.ede.ExtraText) {
+		t.Errorf("entry.ede.ExtraText = %v, want %v", entry.ede.ExtraText, "DNSSEC validation failed")
+	}
 
 	// Create a request
 	req := new(dns.Msg)
@@ -45,11 +51,15 @@ func TestEDEPreservationInCache(t *testing.T) {
 
 	// Get response from cache
 	resp := entry.ToMsg(req)
-	assert.NotNil(t, resp)
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	}
 
 	// Verify EDE is present in response
 	opt2 := resp.IsEdns0()
-	assert.NotNil(t, opt2)
+	if opt2 == nil {
+		t.Fatalf("opt2 is nil")
+	}
 
 	var foundEDE *dns.EDNS0_EDE
 	for _, option := range opt2.Option {
@@ -59,9 +69,15 @@ func TestEDEPreservationInCache(t *testing.T) {
 		}
 	}
 
-	assert.NotNil(t, foundEDE)
-	assert.Equal(t, dns.ExtendedErrorCodeDNSBogus, foundEDE.InfoCode)
-	assert.Equal(t, "DNSSEC validation failed", foundEDE.ExtraText)
+	if foundEDE == nil {
+		t.Fatalf("foundEDE is nil")
+	}
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSBogus, foundEDE.InfoCode) {
+		t.Errorf("foundEDE.InfoCode = %v, want %v", foundEDE.InfoCode, dns.ExtendedErrorCodeDNSBogus)
+	}
+	if !reflect.DeepEqual("DNSSEC validation failed", foundEDE.ExtraText) {
+		t.Errorf("foundEDE.ExtraText = %v, want %v", foundEDE.ExtraText, "DNSSEC validation failed")
+	}
 }
 
 func TestEDENotAddedForSuccessResponses(t *testing.T) {
@@ -86,7 +102,9 @@ func TestEDENotAddedForSuccessResponses(t *testing.T) {
 	entry := NewCacheEntry(msg, 30*time.Second, 0)
 
 	// Verify no EDE was preserved (success responses don't have EDE)
-	assert.Nil(t, entry.ede)
+	if entry.ede != nil {
+		t.Errorf("entry.ede = %v, want nil", entry.ede)
+	}
 
 	// Create a request
 	req := new(dns.Msg)
@@ -95,15 +113,21 @@ func TestEDENotAddedForSuccessResponses(t *testing.T) {
 
 	// Get response from cache
 	resp := entry.ToMsg(req)
-	assert.NotNil(t, resp)
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	}
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
 
 	// Verify no EDE is added
 	opt := resp.IsEdns0()
 	if opt != nil {
 		for _, option := range opt.Option {
 			_, isEDE := option.(*dns.EDNS0_EDE)
-			assert.False(t, isEDE, "EDE should not be present in success responses")
+			if isEDE {
+				t.Errorf("%s: isEDE is true", "EDE should not be present in success responses")
+			}
 		}
 	}
 }

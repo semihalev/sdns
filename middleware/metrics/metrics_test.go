@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_Metrics(t *testing.T) {
@@ -21,7 +21,9 @@ func Test_Metrics(t *testing.T) {
 
 	m := middleware.Get("metrics").(*Metrics)
 
-	assert.Equal(t, "metrics", m.Name())
+	if !reflect.DeepEqual("metrics", m.Name()) {
+		t.Errorf("m.Name() = %v, want %v", m.Name(), "metrics")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{})
 
@@ -32,13 +34,19 @@ func Test_Metrics(t *testing.T) {
 	ch.Reset(mw, req)
 
 	m.ServeDNS(context.Background(), ch)
-	assert.Equal(t, dns.RcodeServerFailure, mw.Rcode())
+	if !reflect.DeepEqual(dns.RcodeServerFailure, mw.Rcode()) {
+		t.Errorf("mw.Rcode() = %v, want %v", mw.Rcode(), dns.RcodeServerFailure)
+	}
 
 	_ = ch.Writer.WriteMsg(req)
-	assert.Equal(t, true, ch.Writer.Written())
+	if !reflect.DeepEqual(true, ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() = %v, want %v", ch.Writer.Written(), true)
+	}
 
 	m.ServeDNS(context.Background(), ch)
-	assert.Equal(t, dns.RcodeSuccess, mw.Rcode())
+	if !reflect.DeepEqual(dns.RcodeSuccess, mw.Rcode()) {
+		t.Errorf("mw.Rcode() = %v, want %v", mw.Rcode(), dns.RcodeSuccess)
+	}
 }
 
 func Test_DomainMetrics(t *testing.T) {
@@ -49,9 +57,15 @@ func Test_DomainMetrics(t *testing.T) {
 	}
 
 	m := New(cfg)
-	assert.NotNil(t, m.domainQueries)
-	assert.True(t, m.domainMetricsEnabled)
-	assert.Equal(t, 3, m.domainMetricsLimit)
+	if m.domainQueries == nil {
+		t.Fatalf("m.domainQueries is nil")
+	}
+	if !(m.domainMetricsEnabled) {
+		t.Errorf("m.domainMetricsEnabled is false")
+	}
+	if !reflect.DeepEqual(3, m.domainMetricsLimit) {
+		t.Errorf("m.domainMetricsLimit = %v, want %v", m.domainMetricsLimit, 3)
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{})
 
@@ -69,7 +83,9 @@ func Test_DomainMetrics(t *testing.T) {
 	}
 
 	// Check that only 3 domains are tracked due to limit
-	assert.Equal(t, int32(3), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(3), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(3))
+	}
 }
 
 func Test_DomainMetrics_Disabled(t *testing.T) {
@@ -79,8 +95,12 @@ func Test_DomainMetrics_Disabled(t *testing.T) {
 	}
 
 	m := New(cfg)
-	assert.Nil(t, m.domainQueries)
-	assert.False(t, m.domainMetricsEnabled)
+	if m.domainQueries != nil {
+		t.Errorf("m.domainQueries = %v, want nil", m.domainQueries)
+	}
+	if m.domainMetricsEnabled {
+		t.Errorf("m.domainMetricsEnabled is true")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{})
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
@@ -92,7 +112,9 @@ func Test_DomainMetrics_Disabled(t *testing.T) {
 	m.ServeDNS(context.Background(), ch)
 
 	// No domains should be tracked
-	assert.Equal(t, int32(0), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(0), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(0))
+	}
 }
 
 func Test_DomainMetrics_Unlimited(t *testing.T) {
@@ -103,8 +125,12 @@ func Test_DomainMetrics_Unlimited(t *testing.T) {
 	}
 
 	m := New(cfg)
-	assert.NotNil(t, m.domainQueries)
-	assert.Equal(t, 0, m.domainMetricsLimit)
+	if m.domainQueries == nil {
+		t.Fatalf("m.domainQueries is nil")
+	}
+	if !reflect.DeepEqual(0, m.domainMetricsLimit) {
+		t.Errorf("m.domainMetricsLimit = %v, want %v", m.domainMetricsLimit, 0)
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{})
 
@@ -120,7 +146,9 @@ func Test_DomainMetrics_Unlimited(t *testing.T) {
 	}
 
 	// All domains should be tracked (unlimited)
-	assert.Equal(t, int32(10), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(10), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(10))
+	}
 }
 
 func Test_DomainMetrics_TopDomains(t *testing.T) {
@@ -163,11 +191,15 @@ func Test_DomainMetrics_TopDomains(t *testing.T) {
 	}
 
 	// Should have tracked first 5 domains
-	assert.Equal(t, int32(5), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(5), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(5))
+	}
 
 	// The unpopular domain should have triggered cleanup but still not be tracked
 	_, exists := m.domainTracker.Load(strings.ToLower(strings.TrimSuffix("unpopular.com.", ".")))
-	assert.False(t, exists)
+	if exists {
+		t.Errorf("exists is true")
+	}
 }
 
 func Test_DomainMetrics_EvictionAfterCleanup(t *testing.T) {
@@ -195,7 +227,9 @@ func Test_DomainMetrics_EvictionAfterCleanup(t *testing.T) {
 	}
 
 	// Should have 3 domains
-	assert.Equal(t, int32(3), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(3), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(3))
+	}
 
 	// Try to add a new domain when at limit - it should not be tracked
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
@@ -206,17 +240,23 @@ func Test_DomainMetrics_EvictionAfterCleanup(t *testing.T) {
 	m.ServeDNS(context.Background(), ch)
 
 	// Should still have 3 domains (limit enforced)
-	assert.Equal(t, int32(3), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(3), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(3))
+	}
 
 	// The new domain should not be tracked
 	_, exists := m.domainTracker.Load(strings.ToLower(strings.TrimSuffix("newdomain.com.", ".")))
-	assert.False(t, exists, "newdomain.com should not be tracked when at limit")
+	if exists {
+		t.Errorf("%s: exists is true", "newdomain.com should not be tracked when at limit")
+	}
 
 	// Original domains should still be tracked
 	for i := 1; i <= 3; i++ {
 		domain := fmt.Sprintf("domain%d.com", i)
 		_, exists := m.domainTracker.Load(strings.ToLower(domain))
-		assert.True(t, exists, fmt.Sprintf("%s should still be tracked", domain))
+		if !(exists) {
+			t.Errorf("%s: exists is false", fmt.Sprintf("%s should still be tracked", domain))
+		}
 	}
 }
 
@@ -253,7 +293,9 @@ func Test_DomainMetrics_CleanupKeepsTopDomains(t *testing.T) {
 	}
 
 	// Should have 2 domains
-	assert.Equal(t, int32(2), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(2), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(2))
+	}
 
 	// Add two more domains to go over limit
 	newDomains := []struct {
@@ -281,21 +323,31 @@ func Test_DomainMetrics_CleanupKeepsTopDomains(t *testing.T) {
 	m.maybeCleanupDomains()
 
 	// Should be back to limit
-	assert.LessOrEqual(t, int(atomic.LoadInt32(&m.domainCount)), 3)
+	if int(atomic.LoadInt32(&m.domainCount)) > 3 {
+		t.Errorf("int(atomic.LoadInt32(&m.domainCount)) = %v, want <= %v", int(atomic.LoadInt32(&m.domainCount)), 3)
+	}
 
 	// Top 3 domains should be tracked (domain3, domain2, domain1)
 	_, exists := m.domainTracker.Load(strings.ToLower(strings.TrimSuffix("domain3.com.", ".")))
-	assert.True(t, exists, "domain3.com (30 queries) should be tracked")
+	if !(exists) {
+		t.Errorf("%s: exists is false", "domain3.com (30 queries) should be tracked")
+	}
 
 	_, exists = m.domainTracker.Load(strings.ToLower(strings.TrimSuffix("domain2.com.", ".")))
-	assert.True(t, exists, "domain2.com (20 queries) should be tracked")
+	if !(exists) {
+		t.Errorf("%s: exists is false", "domain2.com (20 queries) should be tracked")
+	}
 
 	_, exists = m.domainTracker.Load(strings.ToLower(strings.TrimSuffix("domain1.com.", ".")))
-	assert.True(t, exists, "domain1.com (10 queries) should be tracked")
+	if !(exists) {
+		t.Errorf("%s: exists is false", "domain1.com (10 queries) should be tracked")
+	}
 
 	// Lowest count domain should be evicted
 	_, exists = m.domainTracker.Load(strings.ToLower(strings.TrimSuffix("domain4.com.", ".")))
-	assert.False(t, exists, "domain4.com (5 queries) should have been evicted")
+	if exists {
+		t.Errorf("%s: exists is true", "domain4.com (5 queries) should have been evicted")
+	}
 }
 
 func Test_DomainMetrics_SingleLabelFiltering(t *testing.T) {
@@ -328,7 +380,9 @@ func Test_DomainMetrics_SingleLabelFiltering(t *testing.T) {
 	}
 
 	// No single-label domains should be tracked
-	assert.Equal(t, int32(0), atomic.LoadInt32(&m.domainCount))
+	if !reflect.DeepEqual(int32(0), atomic.LoadInt32(&m.domainCount)) {
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), int32(0))
+	}
 
 	// Test multi-label domains that should be tracked
 	multiLabelDomains := []string{
@@ -349,12 +403,16 @@ func Test_DomainMetrics_SingleLabelFiltering(t *testing.T) {
 	}
 
 	// All multi-label domains should be tracked
-	assert.Equal(t, int32(len(multiLabelDomains)), atomic.LoadInt32(&m.domainCount)) //nolint:gosec // G115 - test value
+	if want := int32(len(multiLabelDomains)); atomic.LoadInt32(&m.domainCount) != want { //nolint:gosec // G115 - test value
+		t.Errorf("atomic.LoadInt32(&m.domainCount) = %v, want %v", atomic.LoadInt32(&m.domainCount), want)
+	}
 
 	// Verify each multi-label domain is tracked
 	for _, domain := range multiLabelDomains {
 		normalized := strings.ToLower(strings.TrimSuffix(domain, "."))
 		_, exists := m.domainTracker.Load(normalized)
-		assert.True(t, exists, fmt.Sprintf("%s should be tracked", domain))
+		if !(exists) {
+			t.Errorf("%s: exists is false", fmt.Sprintf("%s should be tracked", domain))
+		}
 	}
 }

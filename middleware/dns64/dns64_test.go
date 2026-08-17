@@ -3,7 +3,9 @@ package dns64
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -12,7 +14,6 @@ import (
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	cachemw "github.com/semihalev/sdns/middleware/cache"
-	"github.com/stretchr/testify/assert"
 )
 
 // stubQueryer is a fixed-response Queryer used to drive the
@@ -86,15 +87,23 @@ func makeChain(t *testing.T, d *DNS64, downstream middleware.Handler, clientAddr
 
 func assertRecursionWorkLimitEDE(t *testing.T, resp *dns.Msg) {
 	t.Helper()
-	if !assert.NotNil(t, resp, "work-limit path must produce a response") {
+	if resp == nil {
+		t.Errorf("%s: resp is nil", "work-limit path must produce a response")
 		return
 	}
-	assert.Equal(t, dns.RcodeServerFailure, resp.Rcode)
+	if !reflect.DeepEqual(dns.RcodeServerFailure, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeServerFailure)
+	}
 	ede := dnsutil.GetEDE(resp)
-	if assert.NotNil(t, ede, "work-limit SERVFAIL must carry an EDE") {
-		assert.Equal(t, middleware.RecursionWorkEDECode, ede.InfoCode)
-		assert.Equal(t, "Recursion work budget exceeded", ede.ExtraText,
-			"EDE text is a stable wire-visible contract")
+	if ede == nil {
+		t.Errorf("%s: ede is nil", "work-limit SERVFAIL must carry an EDE")
+	} else {
+		if !reflect.DeepEqual(middleware.RecursionWorkEDECode, ede.InfoCode) {
+			t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, middleware.RecursionWorkEDECode)
+		}
+		if !reflect.DeepEqual("Recursion work budget exceeded", ede.ExtraText) {
+			t.Errorf("%s: ede.ExtraText = %v, want %v", "EDE text is a stable wire-visible contract", ede.ExtraText, "Recursion work budget exceeded")
+		}
 	}
 }
 
@@ -178,10 +187,14 @@ func TestServeDNS_NonAAAA_FallsThrough(t *testing.T) {
 	d.queryer = &stubQueryer{} // should not be invoked
 
 	d.ServeDNS(context.Background(), ch)
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 	resp := mw.Msg()
-	if assert.NotNil(t, resp) {
-		assert.Equal(t, dns.TypeA, resp.Answer[0].Header().Rrtype)
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	} else if !reflect.DeepEqual(dns.TypeA, resp.Answer[0].Header().Rrtype) {
+		t.Errorf("resp.Answer[0].Header().Rrtype = %v, want %v", resp.Answer[0].Header().Rrtype, dns.TypeA)
 	}
 }
 
@@ -201,13 +214,19 @@ func TestServeDNS_PassThrough_NonEmptyAAAA(t *testing.T) {
 	ch, mw := makeChain(t, d, downstream, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
 
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 	if q.last != nil {
 		t.Fatalf("non-empty AAAA must not trigger an A lookup; queryer was called with %+v", q.last)
 	}
 	resp := mw.Msg()
-	assert.Len(t, resp.Answer, 1)
-	assert.Equal(t, "2001:db8::1", resp.Answer[0].(*dns.AAAA).AAAA.String())
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	}
+	if !reflect.DeepEqual("2001:db8::1", resp.Answer[0].(*dns.AAAA).AAAA.String()) {
+		t.Errorf("resp.Answer[0].(*dns.AAAA).AAAA.String() = %v, want %v", resp.Answer[0].(*dns.AAAA).AAAA.String(), "2001:db8::1")
+	}
 }
 
 func TestServeDNS_Internal_NoSynth(t *testing.T) {
@@ -222,10 +241,14 @@ func TestServeDNS_Internal_NoSynth(t *testing.T) {
 	ch.Reset(mw, req)
 
 	d.ServeDNS(context.Background(), ch)
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 	resp := mw.Msg()
 	// Pass-through: original NODATA is preserved, no AAAA in answer.
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
 	for _, rr := range resp.Answer {
 		if rr.Header().Rrtype == dns.TypeAAAA {
 			t.Fatalf("internal query must not be synthesised, but got AAAA %s", rr)
@@ -247,7 +270,9 @@ func TestServeDNS_CDBit_NoSynth(t *testing.T) {
 	ch.Reset(mw, req)
 
 	d.ServeDNS(context.Background(), ch)
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 	if q.last != nil {
 		t.Fatalf("CD=1 must not trigger A lookup")
 	}
@@ -262,7 +287,9 @@ func TestServeDNS_ClientOutsideNetworks_NoSynth(t *testing.T) {
 
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noDataMsg("foo.example.org.", 300)}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 	if q.last != nil {
 		t.Fatalf("client outside client_networks must not trigger A lookup")
 	}
@@ -289,17 +316,31 @@ func TestSynthesise_NODATA_HasA(t *testing.T) {
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noDataMsg("foo.example.org.", 300)}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
 
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-	if assert.Len(t, resp.Answer, 1) {
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	} else {
 		aaaa, ok := resp.Answer[0].(*dns.AAAA)
-		if assert.True(t, ok) {
-			assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
+		if !(ok) {
+			t.Errorf("ok is false")
+		} else {
+			if !reflect.DeepEqual("64:ff9b::c000:221", aaaa.AAAA.String()) {
+				t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "64:ff9b::c000:221")
+			}
 			// SOA-min (300) is lower than A TTL (600), so the
 			// synth TTL is clamped to 300.
-			assert.Equal(t, uint32(300), aaaa.Hdr.Ttl)
-			assert.Equal(t, "foo.example.org.", aaaa.Hdr.Name)
+			if !reflect.DeepEqual(uint32(300), aaaa.Hdr.Ttl) {
+				t.Errorf("aaaa.Hdr.Ttl = %v, want %v", aaaa.Hdr.Ttl, uint32(300))
+			}
+			if !reflect.DeepEqual("foo.example.org.", aaaa.Hdr.Name) {
+				t.Errorf("aaaa.Hdr.Name = %v, want %v", aaaa.Hdr.Name, "foo.example.org.")
+			}
 		}
 	}
 }
@@ -318,7 +359,9 @@ func TestNXDOMAIN_PassesThrough(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeNameError, resp.Rcode, "NXDOMAIN must pass through unchanged per RFC 6147 §5.1.2")
+	if !reflect.DeepEqual(dns.RcodeNameError, resp.Rcode) {
+		t.Errorf("%s: resp.Rcode = %v, want %v", "NXDOMAIN must pass through unchanged per RFC 6147 §5.1.2", resp.Rcode, dns.RcodeNameError)
+	}
 	if q.last != nil {
 		t.Fatalf("NXDOMAIN must not trigger an A-record lookup; queryer was called")
 	}
@@ -342,10 +385,16 @@ func TestServFail_TriggersSynthesis(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-	if assert.Len(t, resp.Answer, 1) {
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	} else {
 		aaaa := resp.Answer[0].(*dns.AAAA)
-		assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
+		if !reflect.DeepEqual("64:ff9b::c000:221", aaaa.AAAA.String()) {
+			t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "64:ff9b::c000:221")
+		}
 	}
 }
 
@@ -402,11 +451,19 @@ func TestUpstreamPolicyEDEInShadowStillSynthesises(t *testing.T) {
 				t.Fatal("upstream policy EDE suppressed the DNS64 A lookup in shadow mode")
 			}
 			resp := mw.Msg()
-			if assert.Equal(t, dns.RcodeSuccess, resp.Rcode) && assert.Len(t, resp.Answer, 1) {
-				aaaa, ok := resp.Answer[0].(*dns.AAAA)
-				if assert.True(t, ok) {
-					assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
-				}
+			if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+				t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+				return
+			}
+			if len(resp.Answer) != 1 {
+				t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+				return
+			}
+			aaaa, ok := resp.Answer[0].(*dns.AAAA)
+			if !(ok) {
+				t.Errorf("ok is false")
+			} else if !reflect.DeepEqual("64:ff9b::c000:221", aaaa.AAAA.String()) {
+				t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "64:ff9b::c000:221")
 			}
 		})
 	}
@@ -421,7 +478,9 @@ func TestSynthesise_QueryerError_FallsBack(t *testing.T) {
 
 	resp := mw.Msg()
 	// Original NODATA preserved.
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
 	for _, rr := range resp.Answer {
 		if rr.Header().Rrtype == dns.TypeAAAA {
 			t.Fatalf("queryer error must not produce synthesised AAAA")
@@ -484,8 +543,10 @@ func TestSynthesise_RecursionWorkLimitReturnsPolicyEDE(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	assertRecursionWorkLimitEDE(t, mw.Msg())
-	if assert.NotNil(t, queryer.last, "secondary A query must be attempted") {
-		assert.Equal(t, dns.TypeA, queryer.last.Question[0].Qtype)
+	if queryer.last == nil {
+		t.Errorf("%s: queryer.last is nil", "secondary A query must be attempted")
+	} else if !reflect.DeepEqual(dns.TypeA, queryer.last.Question[0].Qtype) {
+		t.Errorf("queryer.last.Question[0].Qtype = %v, want %v", queryer.last.Question[0].Qtype, dns.TypeA)
 	}
 }
 
@@ -499,11 +560,15 @@ func TestSynthesise_AD_AddsEDE(t *testing.T) {
 
 	d.ServeDNS(context.Background(), ch)
 	resp := mw.Msg()
-	assert.False(t, resp.AuthenticatedData, "synthesised reply must clear AD")
+	if resp.AuthenticatedData {
+		t.Errorf("%s: resp.AuthenticatedData is true", "synthesised reply must clear AD")
+	}
 
 	ede := dnsutil.GetEDE(resp)
-	if assert.NotNil(t, ede, "EDE 4 should be attached when original was AD=1") {
-		assert.Equal(t, dns.ExtendedErrorCodeForgedAnswer, ede.InfoCode)
+	if ede == nil {
+		t.Errorf("%s: ede is nil", "EDE 4 should be attached when original was AD=1")
+	} else if !reflect.DeepEqual(dns.ExtendedErrorCodeForgedAnswer, ede.InfoCode) {
+		t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeForgedAnswer)
 	}
 }
 
@@ -514,7 +579,9 @@ func TestSynthesise_NoAD_NoEDE(t *testing.T) {
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noDataMsg("foo.example.org.", 300)}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
 	resp := mw.Msg()
-	assert.Nil(t, dnsutil.GetEDE(resp), "EDE must NOT be attached when original was AD=0")
+	if dnsutil.GetEDE(resp) != nil {
+		t.Errorf("%s: dnsutil.GetEDE(resp) = %v, want nil", "EDE must NOT be attached when original was AD=0", dnsutil.GetEDE(resp))
+	}
 }
 
 func TestSynthesise_PrivateA_WellKnownPrefix_AllExcluded(t *testing.T) {
@@ -525,7 +592,9 @@ func TestSynthesise_PrivateA_WellKnownPrefix_AllExcluded(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
 	for _, rr := range resp.Answer {
 		if rr.Header().Rrtype == dns.TypeAAAA {
 			t.Fatalf("RFC 6147 §5.1.4: private A under well-known prefix must not be synthesised")
@@ -544,9 +613,13 @@ func TestSynthesise_PrivateA_OperatorPrefix_Synth(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 1) {
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	} else {
 		aaaa := resp.Answer[0].(*dns.AAAA)
-		assert.Equal(t, "2001:db8:64::a00:1", aaaa.AAAA.String())
+		if !reflect.DeepEqual("2001:db8:64::a00:1", aaaa.AAAA.String()) {
+			t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "2001:db8:64::a00:1")
+		}
 	}
 }
 
@@ -559,7 +632,9 @@ func TestSynthesise_TTL_ATtlIsLower(t *testing.T) {
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noDataMsg("foo.example.org.", 7200)}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
 	aaaa := mw.Msg().Answer[0].(*dns.AAAA)
-	assert.Equal(t, uint32(30), aaaa.Hdr.Ttl)
+	if !reflect.DeepEqual(uint32(30), aaaa.Hdr.Ttl) {
+		t.Errorf("aaaa.Hdr.Ttl = %v, want %v", aaaa.Hdr.Ttl, uint32(30))
+	}
 }
 
 // TestSynthesise_TTL_NegativeIsLower covers the symmetric case:
@@ -570,7 +645,9 @@ func TestSynthesise_TTL_NegativeIsLower(t *testing.T) {
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noDataMsg("foo.example.org.", 120)}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
 	aaaa := mw.Msg().Answer[0].(*dns.AAAA)
-	assert.Equal(t, uint32(120), aaaa.Hdr.Ttl)
+	if !reflect.DeepEqual(uint32(120), aaaa.Hdr.Ttl) {
+		t.Errorf("aaaa.Hdr.Ttl = %v, want %v", aaaa.Hdr.Ttl, uint32(120))
+	}
 }
 
 // TestSynthesise_TTL_NoSOA_Caps600 pins RFC 6147 §5.1.7: when
@@ -590,7 +667,9 @@ func TestSynthesise_TTL_NoSOA_Caps600(t *testing.T) {
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noSOA}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
 	aaaa := mw.Msg().Answer[0].(*dns.AAAA)
-	assert.Equal(t, uint32(600), aaaa.Hdr.Ttl, "no-SOA AAAA must cap synth TTL at 600 per RFC 6147 §5.1.7")
+	if !reflect.DeepEqual(uint32(600), aaaa.Hdr.Ttl) {
+		t.Errorf("%s: aaaa.Hdr.Ttl = %v, want %v", "no-SOA AAAA must cap synth TTL at 600 per RFC 6147 §5.1.7", aaaa.Hdr.Ttl, uint32(600))
+	}
 }
 
 func TestSynthesise_CnameChain(t *testing.T) {
@@ -613,13 +692,23 @@ func TestSynthesise_CnameChain(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 2) {
+	if len(resp.Answer) != 2 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 2)
+	} else {
 		_, isCNAME := resp.Answer[0].(*dns.CNAME)
 		aaaa, isAAAA := resp.Answer[1].(*dns.AAAA)
-		assert.True(t, isCNAME, "first answer record must be the CNAME")
-		if assert.True(t, isAAAA) {
-			assert.Equal(t, "target.example.org.", aaaa.Hdr.Name, "synthesised AAAA must be owned by the CNAME target")
-			assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
+		if !(isCNAME) {
+			t.Errorf("%s: isCNAME is false", "first answer record must be the CNAME")
+		}
+		if !(isAAAA) {
+			t.Errorf("isAAAA is false")
+		} else {
+			if !reflect.DeepEqual("target.example.org.", aaaa.Hdr.Name) {
+				t.Errorf("%s: aaaa.Hdr.Name = %v, want %v", "synthesised AAAA must be owned by the CNAME target", aaaa.Hdr.Name, "target.example.org.")
+			}
+			if !reflect.DeepEqual("64:ff9b::c000:221", aaaa.AAAA.String()) {
+				t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "64:ff9b::c000:221")
+			}
 		}
 	}
 }
@@ -638,7 +727,9 @@ func TestSynthesise_MultipleAs_AllSynthesised(t *testing.T) {
 			count++
 		}
 	}
-	assert.Equal(t, 2, count, "every A record should produce a synthesised AAAA")
+	if !reflect.DeepEqual(2, count) {
+		t.Errorf("%s: count = %v, want %v", "every A record should produce a synthesised AAAA", count, 2)
+	}
 }
 
 // TestSynthesise_RetainsOPT pins the behaviour that lets EDE
@@ -650,7 +741,9 @@ func TestSynthesise_RetainsOPT(t *testing.T) {
 
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: noDataMsg("foo.example.org.", 300)}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
 	d.ServeDNS(context.Background(), ch)
-	assert.NotNil(t, mw.Msg().IsEdns0(), "synthesised response must carry OPT")
+	if mw.Msg().IsEdns0() == nil {
+		t.Errorf("%s: mw.Msg().IsEdns0() is nil", "synthesised response must carry OPT")
+	}
 }
 
 // TestExcludedAAAA_TriggersSynthesis pins RFC 6147 §5.1.4: an
@@ -674,9 +767,13 @@ func TestExcludedAAAA_TriggersSynthesis(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 1) {
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	} else {
 		aaaa := resp.Answer[0].(*dns.AAAA)
-		assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String(), "IPv4-mapped AAAA was excluded; synthesised AAAA used instead")
+		if !reflect.DeepEqual("64:ff9b::c000:221", aaaa.AAAA.String()) {
+			t.Errorf("%s: aaaa.AAAA.String() = %v, want %v", "IPv4-mapped AAAA was excluded; synthesised AAAA used instead", aaaa.AAAA.String(), "64:ff9b::c000:221")
+		}
 	}
 }
 
@@ -706,9 +803,13 @@ func TestExcludedAAAA_StripsButPassesThrough(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 1, "excluded AAAA must be stripped, routable one preserved") {
+	if len(resp.Answer) != 1 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "excluded AAAA must be stripped, routable one preserved", len(resp.Answer), 1)
+	} else {
 		aaaa := resp.Answer[0].(*dns.AAAA)
-		assert.Equal(t, "2001:db8::1", aaaa.AAAA.String())
+		if !reflect.DeepEqual("2001:db8::1", aaaa.AAAA.String()) {
+			t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "2001:db8::1")
+		}
 	}
 }
 
@@ -733,12 +834,15 @@ func TestExcludedAAAA_OptOutEmptyList(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 1) {
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	} else {
 		aaaa := resp.Answer[0].(*dns.AAAA)
 		// net.IP.String prints IPv4-mapped IPv6 in dotted form, so
 		// compare via Equal against the canonical 16-byte form.
-		assert.True(t, aaaa.AAAA.Equal(net.ParseIP("::ffff:c000:221")),
-			"with filter disabled, IPv4-mapped AAAA passes through; got %s", aaaa.AAAA)
+		if !(aaaa.AAAA.Equal(net.ParseIP("::ffff:c000:221"))) {
+			t.Errorf("%s: aaaa.AAAA.Equal(net.ParseIP('::ffff:c000:221')) is false", fmt.Sprintf("with filter disabled, IPv4-mapped AAAA passes through; got %s", aaaa.AAAA))
+		}
 	}
 }
 
@@ -760,9 +864,15 @@ func TestSynthesise_ANXDOMAIN_BecomesClientResponse(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeNameError, resp.Rcode, "client sees the A NXDOMAIN promoted to AAAA")
-	assert.Empty(t, resp.Answer)
-	assert.Equal(t, dns.TypeAAAA, resp.Question[0].Qtype)
+	if !reflect.DeepEqual(dns.RcodeNameError, resp.Rcode) {
+		t.Errorf("%s: resp.Rcode = %v, want %v", "client sees the A NXDOMAIN promoted to AAAA", resp.Rcode, dns.RcodeNameError)
+	}
+	if len(resp.Answer) != 0 {
+		t.Errorf("resp.Answer not empty: %v", resp.Answer)
+	}
+	if !reflect.DeepEqual(dns.TypeAAAA, resp.Question[0].Qtype) {
+		t.Errorf("resp.Question[0].Qtype = %v, want %v", resp.Question[0].Qtype, dns.TypeAAAA)
+	}
 }
 
 // TestSynthesise_AuthorityFromAResponse pins RFC 6147 §5.4: the
@@ -787,10 +897,14 @@ func TestSynthesise_AuthorityFromAResponse(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Ns, 1, "exactly one SOA from the A response") {
+	if len(resp.Ns) != 1 {
+		t.Errorf("%s: len(resp.Ns) = %d, want %d", "exactly one SOA from the A response", len(resp.Ns), 1)
+	} else {
 		soa, ok := resp.Ns[0].(*dns.SOA)
-		if assert.True(t, ok) {
-			assert.Equal(t, uint32(42), soa.Serial, "Authority SOA must come from the A response (serial 42), not original AAAA (serial 99)")
+		if !(ok) {
+			t.Errorf("ok is false")
+		} else if !reflect.DeepEqual(uint32(42), soa.Serial) {
+			t.Errorf("%s: soa.Serial = %v, want %v", "Authority SOA must come from the A response (serial 42), not original AAAA (serial 99)", soa.Serial, uint32(42))
 		}
 	}
 }
@@ -832,13 +946,17 @@ func TestDNSSECFailure_PassesThrough(t *testing.T) {
 			d.ServeDNS(context.Background(), ch)
 
 			resp := mw.Msg()
-			assert.Equal(t, dns.RcodeServerFailure, resp.Rcode, "DNSSEC failure must surface to client unchanged")
+			if !reflect.DeepEqual(dns.RcodeServerFailure, resp.Rcode) {
+				t.Errorf("%s: resp.Rcode = %v, want %v", "DNSSEC failure must surface to client unchanged", resp.Rcode, dns.RcodeServerFailure)
+			}
 			if q.last != nil {
 				t.Fatalf("DNSSEC failure must not trigger an A lookup; queryer was called")
 			}
 			ede := dnsutil.GetEDE(resp)
-			if assert.NotNil(t, ede, "EDE must reach the client") {
-				assert.Equal(t, code, ede.InfoCode)
+			if ede == nil {
+				t.Errorf("%s: ede is nil", "EDE must reach the client")
+			} else if !reflect.DeepEqual(code, ede.InfoCode) {
+				t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, code)
 			}
 		})
 	}
@@ -860,13 +978,17 @@ func TestCachedFailure_PassesThroughWithoutALookup(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeServerFailure, resp.Rcode)
+	if !reflect.DeepEqual(dns.RcodeServerFailure, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeServerFailure)
+	}
 	if q.last != nil {
 		t.Fatal("RFC 9520 cached failure triggered a DNS64 A lookup")
 	}
 	ede := dnsutil.GetEDE(resp)
-	if assert.NotNil(t, ede) {
-		assert.Equal(t, dns.ExtendedErrorCodeCachedError, ede.InfoCode)
+	if ede == nil {
+		t.Fatalf("ede is nil")
+	} else if !reflect.DeepEqual(dns.ExtendedErrorCodeCachedError, ede.InfoCode) {
+		t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeCachedError)
 	}
 }
 
@@ -1023,10 +1145,16 @@ func TestServFail_NonDNSSEC_StillSynthesises(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-	if assert.Len(t, resp.Answer, 1) {
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	} else {
 		aaaa := resp.Answer[0].(*dns.AAAA)
-		assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
+		if !reflect.DeepEqual("64:ff9b::c000:221", aaaa.AAAA.String()) {
+			t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "64:ff9b::c000:221")
+		}
 	}
 }
 
@@ -1056,8 +1184,12 @@ func TestRD0_PassesThrough(t *testing.T) {
 
 	d.ServeDNS(context.Background(), ch)
 
-	assert.True(t, answered, "RD=0 must reach the rest of the chain")
-	assert.Equal(t, dns.RcodeServerFailure, mw.Msg().Rcode, "downstream rejection passes through verbatim")
+	if !(answered) {
+		t.Errorf("%s: answered is false", "RD=0 must reach the rest of the chain")
+	}
+	if !reflect.DeepEqual(dns.RcodeServerFailure, mw.Msg().Rcode) {
+		t.Errorf("%s: mw.Msg().Rcode = %v, want %v", "downstream rejection passes through verbatim", mw.Msg().Rcode, dns.RcodeServerFailure)
+	}
 	if q.last != nil {
 		t.Fatalf("RD=0 must not trigger an A lookup; queryer was called")
 	}
@@ -1085,14 +1217,22 @@ func TestSynthesise_AResponseAsBasis_PreservesCNAME(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-	if assert.Len(t, resp.Answer, 1, "CNAME from A response must reach the client") {
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
+	if len(resp.Answer) != 1 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "CNAME from A response must reach the client", len(resp.Answer), 1)
+	} else {
 		c, ok := resp.Answer[0].(*dns.CNAME)
-		if assert.True(t, ok) {
-			assert.Equal(t, "target.example.org.", c.Target)
+		if !(ok) {
+			t.Errorf("ok is false")
+		} else if !reflect.DeepEqual("target.example.org.", c.Target) {
+			t.Errorf("c.Target = %v, want %v", c.Target, "target.example.org.")
 		}
 	}
-	assert.Equal(t, dns.TypeAAAA, resp.Question[0].Qtype, "client sees its original AAAA question")
+	if !reflect.DeepEqual(dns.TypeAAAA, resp.Question[0].Qtype) {
+		t.Errorf("%s: resp.Question[0].Qtype = %v, want %v", "client sees its original AAAA question", resp.Question[0].Qtype, dns.TypeAAAA)
+	}
 }
 
 // TestSynthesise_AdditionalARecordsPassThrough pins RFC 6147
@@ -1123,9 +1263,15 @@ func TestSynthesise_AdditionalARecordsPassThrough(t *testing.T) {
 			t.Fatalf("§5.3.2: Additional section must not contain a synthesised AAAA, got %s", rr)
 		}
 	}
-	if assert.NotNil(t, found, "extra-section A must be passed through unchanged") {
-		assert.Equal(t, "198.51.100.7", found.A.String())
-		assert.Equal(t, "ns.example.org.", found.Hdr.Name)
+	if found == nil {
+		t.Errorf("%s: found is nil", "extra-section A must be passed through unchanged")
+	} else {
+		if !reflect.DeepEqual("198.51.100.7", found.A.String()) {
+			t.Errorf("found.A.String() = %v, want %v", found.A.String(), "198.51.100.7")
+		}
+		if !reflect.DeepEqual("ns.example.org.", found.Hdr.Name) {
+			t.Errorf("found.Hdr.Name = %v, want %v", found.Hdr.Name, "ns.example.org.")
+		}
 	}
 }
 
@@ -1155,8 +1301,10 @@ func TestSynthesise_AuthorityARecordsPassThrough(t *testing.T) {
 			t.Fatalf("§5.3.2: Authority section must not contain a synthesised AAAA, got %s", rr)
 		}
 	}
-	if assert.NotNil(t, foundA) {
-		assert.Equal(t, "198.51.100.42", foundA.A.String())
+	if foundA == nil {
+		t.Fatalf("foundA is nil")
+	} else if !reflect.DeepEqual("198.51.100.42", foundA.A.String()) {
+		t.Errorf("foundA.A.String() = %v, want %v", foundA.A.String(), "198.51.100.42")
 	}
 }
 
@@ -1186,9 +1334,13 @@ func TestPassThrough_FilteredAAAAClearsAD(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.False(t, resp.AuthenticatedData, "AD must clear after RRset modification")
-	if ede := dnsutil.GetEDE(resp); assert.NotNil(t, ede, "EDE 4 should be attached when AD was set on the upstream") {
-		assert.Equal(t, dns.ExtendedErrorCodeForgedAnswer, ede.InfoCode)
+	if resp.AuthenticatedData {
+		t.Errorf("%s: resp.AuthenticatedData is true", "AD must clear after RRset modification")
+	}
+	if ede := dnsutil.GetEDE(resp); ede == nil {
+		t.Errorf("%s: ede is nil", "EDE 4 should be attached when AD was set on the upstream")
+	} else if !reflect.DeepEqual(dns.ExtendedErrorCodeForgedAnswer, ede.InfoCode) {
+		t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeForgedAnswer)
 	}
 }
 
@@ -1211,7 +1363,9 @@ func TestPassThrough_NoStripPreservesAD(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	assert.True(t, resp.AuthenticatedData, "AD must survive a clean pass-through")
+	if !(resp.AuthenticatedData) {
+		t.Errorf("%s: resp.AuthenticatedData is false", "AD must survive a clean pass-through")
+	}
 }
 
 // TestSynthesise_MultiPrefix pins RFC 6147 §5.2: multiple
@@ -1227,9 +1381,15 @@ func TestSynthesise_MultiPrefix(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 2, "one synthesised AAAA per configured prefix") {
-		assert.Equal(t, "64:ff9b::c000:221", resp.Answer[0].(*dns.AAAA).AAAA.String())
-		assert.Equal(t, "2001:db8:64::c000:221", resp.Answer[1].(*dns.AAAA).AAAA.String())
+	if len(resp.Answer) != 2 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "one synthesised AAAA per configured prefix", len(resp.Answer), 2)
+	} else {
+		if !reflect.DeepEqual("64:ff9b::c000:221", resp.Answer[0].(*dns.AAAA).AAAA.String()) {
+			t.Errorf("resp.Answer[0].(*dns.AAAA).AAAA.String() = %v, want %v", resp.Answer[0].(*dns.AAAA).AAAA.String(), "64:ff9b::c000:221")
+		}
+		if !reflect.DeepEqual("2001:db8:64::c000:221", resp.Answer[1].(*dns.AAAA).AAAA.String()) {
+			t.Errorf("resp.Answer[1].(*dns.AAAA).AAAA.String() = %v, want %v", resp.Answer[1].(*dns.AAAA).AAAA.String(), "2001:db8:64::c000:221")
+		}
 	}
 }
 
@@ -1247,8 +1407,10 @@ func TestSynthesise_MultiPrefix_PerPrefixExclusion(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 1, "private A excluded under well-known, kept under operator prefix") {
-		assert.Equal(t, "2001:db8:64::a00:1", resp.Answer[0].(*dns.AAAA).AAAA.String())
+	if len(resp.Answer) != 1 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "private A excluded under well-known, kept under operator prefix", len(resp.Answer), 1)
+	} else if !reflect.DeepEqual("2001:db8:64::a00:1", resp.Answer[0].(*dns.AAAA).AAAA.String()) {
+		t.Errorf("resp.Answer[0].(*dns.AAAA).AAAA.String() = %v, want %v", resp.Answer[0].(*dns.AAAA).AAAA.String(), "2001:db8:64::a00:1")
 	}
 }
 
@@ -1275,21 +1437,36 @@ func TestPTR_TranslatesUnderWellKnown(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if !assert.NotNil(t, resp, "PTR translation must produce a response") {
+	if resp == nil {
+		t.Errorf("%s: resp is nil", "PTR translation must produce a response")
 		return
 	}
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-	if assert.GreaterOrEqual(t, len(resp.Answer), 1) {
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
+	if len(resp.Answer) < 1 {
+		t.Errorf("len(resp.Answer) = %d, want >= %d", len(resp.Answer), 1)
+	} else {
 		cname, ok := resp.Answer[0].(*dns.CNAME)
-		if assert.True(t, ok, "first answer must be a CNAME") {
-			assert.Equal(t, qname, cname.Hdr.Name)
-			assert.Equal(t, "33.2.0.192.in-addr.arpa.", cname.Target)
+		if !(ok) {
+			t.Errorf("%s: ok is false", "first answer must be a CNAME")
+		} else {
+			if !reflect.DeepEqual(qname, cname.Hdr.Name) {
+				t.Errorf("cname.Hdr.Name = %v, want %v", cname.Hdr.Name, qname)
+			}
+			if !reflect.DeepEqual("33.2.0.192.in-addr.arpa.", cname.Target) {
+				t.Errorf("cname.Target = %v, want %v", cname.Target, "33.2.0.192.in-addr.arpa.")
+			}
 		}
 	}
-	if assert.Len(t, resp.Answer, 2, "chase result must be appended") {
+	if len(resp.Answer) != 2 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "chase result must be appended", len(resp.Answer), 2)
+	} else {
 		ptr, ok := resp.Answer[1].(*dns.PTR)
-		if assert.True(t, ok) {
-			assert.Equal(t, "target.example.com.", ptr.Ptr)
+		if !(ok) {
+			t.Errorf("ok is false")
+		} else if !reflect.DeepEqual("target.example.com.", ptr.Ptr) {
+			t.Errorf("ptr.Ptr = %v, want %v", ptr.Ptr, "target.example.com.")
 		}
 	}
 }
@@ -1308,9 +1485,15 @@ func TestPTR_RecursionWorkLimitReturnsPolicyEDE(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	assertRecursionWorkLimitEDE(t, mw.Msg())
-	if assert.NotNil(t, queryer.last, "secondary PTR query must be attempted") {
-		assert.Equal(t, dns.TypePTR, queryer.last.Question[0].Qtype)
-		assert.Equal(t, "33.2.0.192.in-addr.arpa.", queryer.last.Question[0].Name)
+	if queryer.last == nil {
+		t.Errorf("%s: queryer.last is nil", "secondary PTR query must be attempted")
+	} else {
+		if !reflect.DeepEqual(dns.TypePTR, queryer.last.Question[0].Qtype) {
+			t.Errorf("queryer.last.Question[0].Qtype = %v, want %v", queryer.last.Question[0].Qtype, dns.TypePTR)
+		}
+		if !reflect.DeepEqual("33.2.0.192.in-addr.arpa.", queryer.last.Question[0].Name) {
+			t.Errorf("queryer.last.Question[0].Name = %v, want %v", queryer.last.Question[0].Name, "33.2.0.192.in-addr.arpa.")
+		}
 	}
 }
 
@@ -1398,14 +1581,23 @@ func TestPTR_OrdinaryQueryerErrorKeepsCNAMEOnly(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if !assert.NotNil(t, resp) {
+	if resp == nil {
+		t.Fatalf("resp is nil")
 		return
 	}
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-	assert.Nil(t, dnsutil.GetEDE(resp))
-	if assert.Len(t, resp.Answer, 1, "ordinary chase errors retain the CNAME-only fallback") {
+	if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+	}
+	if dnsutil.GetEDE(resp) != nil {
+		t.Errorf("dnsutil.GetEDE(resp) = %v, want nil", dnsutil.GetEDE(resp))
+	}
+	if len(resp.Answer) != 1 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "ordinary chase errors retain the CNAME-only fallback", len(resp.Answer), 1)
+	} else {
 		_, ok := resp.Answer[0].(*dns.CNAME)
-		assert.True(t, ok, "fallback answer must be the synthesised CNAME")
+		if !(ok) {
+			t.Errorf("%s: ok is false", "fallback answer must be the synthesised CNAME")
+		}
 	}
 }
 
@@ -1434,8 +1626,12 @@ func TestPTR_NoMatchFallsThrough(t *testing.T) {
 	ch, mw := makeChain(t, d, downstream, "203.0.113.5:53", qname, dns.TypePTR)
 	d.ServeDNS(context.Background(), ch)
 
-	assert.True(t, answered, "downstream must run when PTR is not under a configured Pref64")
-	assert.Equal(t, dns.RcodeNameError, mw.Msg().Rcode)
+	if !(answered) {
+		t.Errorf("%s: answered is false", "downstream must run when PTR is not under a configured Pref64")
+	}
+	if !reflect.DeepEqual(dns.RcodeNameError, mw.Msg().Rcode) {
+		t.Errorf("mw.Msg().Rcode = %v, want %v", mw.Msg().Rcode, dns.RcodeNameError)
+	}
 }
 
 // TestPTR_ExcludedV4SkipsTranslation pins RFC 6147 §5.1.4
@@ -1457,8 +1653,12 @@ func TestPTR_ExcludedV4SkipsTranslation(t *testing.T) {
 	ch, mw := makeChain(t, d, downstream, "203.0.113.5:53", qname, dns.TypePTR)
 	d.ServeDNS(context.Background(), ch)
 
-	assert.True(t, answered, "excluded-v4 PTR must fall through to the rest of the chain")
-	assert.Equal(t, dns.RcodeServerFailure, mw.Msg().Rcode)
+	if !(answered) {
+		t.Errorf("%s: answered is false", "excluded-v4 PTR must fall through to the rest of the chain")
+	}
+	if !reflect.DeepEqual(dns.RcodeServerFailure, mw.Msg().Rcode) {
+		t.Errorf("mw.Msg().Rcode = %v, want %v", mw.Msg().Rcode, dns.RcodeServerFailure)
+	}
 }
 
 // TestPTR_OperatorPrefixTranslates confirms PTR translation works
@@ -1480,9 +1680,17 @@ func TestPTR_OperatorPrefixTranslates(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.NotNil(t, resp) && assert.Len(t, resp.Answer, 1) {
-		cname := resp.Answer[0].(*dns.CNAME)
-		assert.Equal(t, "1.0.0.10.in-addr.arpa.", cname.Target)
+	if resp == nil {
+		t.Fatalf("resp is nil")
+		return
+	}
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+		return
+	}
+	cname := resp.Answer[0].(*dns.CNAME)
+	if !reflect.DeepEqual("1.0.0.10.in-addr.arpa.", cname.Target) {
+		t.Errorf("cname.Target = %v, want %v", cname.Target, "1.0.0.10.in-addr.arpa.")
 	}
 }
 
@@ -1511,15 +1719,27 @@ func TestSynthesise_DNAMEChain(t *testing.T) {
 	d.ServeDNS(context.Background(), ch)
 
 	resp := mw.Msg()
-	if assert.Len(t, resp.Answer, 3, "DNAME + synthesised CNAME + synthesised AAAA must all be present") {
+	if len(resp.Answer) != 3 {
+		t.Errorf("%s: len(resp.Answer) = %d, want %d", "DNAME + synthesised CNAME + synthesised AAAA must all be present", len(resp.Answer), 3)
+	} else {
 		_, isDNAME := resp.Answer[0].(*dns.DNAME)
 		_, isCNAME := resp.Answer[1].(*dns.CNAME)
 		aaaa, isAAAA := resp.Answer[2].(*dns.AAAA)
-		assert.True(t, isDNAME, "first record must be the DNAME")
-		assert.True(t, isCNAME, "second record must be the synthesised CNAME")
-		if assert.True(t, isAAAA) {
-			assert.Equal(t, "alias.hosts.example.net.", aaaa.Hdr.Name, "synthesised AAAA owner must follow the chain to the A's terminal name")
-			assert.Equal(t, "64:ff9b::c000:221", aaaa.AAAA.String())
+		if !(isDNAME) {
+			t.Errorf("%s: isDNAME is false", "first record must be the DNAME")
+		}
+		if !(isCNAME) {
+			t.Errorf("%s: isCNAME is false", "second record must be the synthesised CNAME")
+		}
+		if !(isAAAA) {
+			t.Errorf("isAAAA is false")
+		} else {
+			if !reflect.DeepEqual("alias.hosts.example.net.", aaaa.Hdr.Name) {
+				t.Errorf("%s: aaaa.Hdr.Name = %v, want %v", "synthesised AAAA owner must follow the chain to the A's terminal name", aaaa.Hdr.Name, "alias.hosts.example.net.")
+			}
+			if !reflect.DeepEqual("64:ff9b::c000:221", aaaa.AAAA.String()) {
+				t.Errorf("aaaa.AAAA.String() = %v, want %v", aaaa.AAAA.String(), "64:ff9b::c000:221")
+			}
 		}
 	}
 }
