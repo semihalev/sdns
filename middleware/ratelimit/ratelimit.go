@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"encoding/hex"
 	"net"
 	"sync/atomic"
 	"time"
@@ -89,6 +90,14 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// A wire-born request carries its cookie as parsed offsets, so the
+	// limiter runs without decoding; only the BADCOOKIE reply needs the
+	// message. Everything else takes the decoded body below.
+	if ch.Request.Undecoded() {
+		r.serveWire(ctx, ch)
+		return
+	}
+
 	// An active limit needs the request's cookie options.
 	ctx, req := ch.Materialize(ctx)
 	if req == nil {
@@ -145,6 +154,79 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if servercookie != "" {
 		l.cookie.Store(servercookie)
 	}
+}
+
+// serveWire mirrors the decoded body over parsed wire facts. The cookie
+// comparison works on the hex form option.String() produces, so a request
+// whose cookie verifies — or that has no cookie and passes the limiter —
+// continues down the chain undecoded. The one branch that must write a
+// cookie back to the client, UDP BADCOOKIE, materializes; it is the
+// stale-cookie retry path, not the steady state.
+func (r *RateLimit) serveWire(ctx context.Context, ch *middleware.Chain) {
+	w := ch.Writer
+
+	l := r.getLimiter(w.RemoteIP())
+	cachedcookie := l.cookie.Load().(string)
+
+	if echo := ch.Request.CookieEcho(); echo != nil {
+		fullcookie := hex.EncodeToString(echo)
+		clientcookie := fullcookie[:cookieSize]
+		servercookie := dnsutil.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
+
+		if cachedcookie == "" || cachedcookie == fullcookie {
+			ch.Next(ctx)
+
+			l.cookie.Store(servercookie)
+			return
+		}
+
+		if w.Proto() == "udp" {
+			if !l.rl.Allow() {
+				rateLimitExceeded.Inc()
+				ch.Cancel()
+				return
+			}
+
+			l.cookie.Store(servercookie)
+
+			_, req := ch.Materialize(ctx)
+			if req == nil {
+				return
+			}
+			if opt := req.IsEdns0(); opt != nil {
+				for _, option := range opt.Option {
+					if option.Option() == dns.EDNS0COOKIE {
+						option.(*dns.EDNS0_COOKIE).Cookie = servercookie
+						break
+					}
+				}
+			}
+
+			ch.CancelWithRcode(dns.RcodeBadCookie, false)
+			return
+		}
+
+		// A mismatched cookie over a spoof-proof transport: like the
+		// decoded body, fall through to the plain limiter.
+		if !l.rl.Allow() {
+			rateLimitExceeded.Inc()
+			ch.Cancel()
+			return
+		}
+
+		ch.Next(ctx)
+
+		l.cookie.Store(servercookie)
+		return
+	}
+
+	if !l.rl.Allow() {
+		rateLimitExceeded.Inc()
+		ch.Cancel()
+		return
+	}
+
+	ch.Next(ctx)
 }
 
 func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {

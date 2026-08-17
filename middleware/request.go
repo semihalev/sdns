@@ -302,6 +302,16 @@ func (r *Request) ClientCookie() []byte {
 	if r.cookieLen == 0 {
 		return nil
 	}
+	return r.raw[r.cookieOff : r.cookieOff+8]
+}
+
+// CookieEcho returns the full cookie option bytes the client sent — the
+// client half plus any echoed server half — or nil. Valid only for
+// wire-born requests.
+func (r *Request) CookieEcho() []byte {
+	if r.cookieLen == 0 {
+		return nil
+	}
 	return r.raw[r.cookieOff : r.cookieOff+r.cookieLen]
 }
 
@@ -453,12 +463,15 @@ func (r *Request) parseWireOPT(off int) bool {
 		}
 		switch code {
 		case dns.EDNS0COOKIE:
-			// RFC 7873: client half is 8 bytes, full cookie 8..40.
-			if optLen < 8 || optLen > 40 {
+			// RFC 7873: client half is 8 bytes, full cookie 8..40. A
+			// packet with more than one cookie option is not a shape the
+			// strict path knows — the decoded entry keeps its option-loop
+			// semantics for it.
+			if optLen < 8 || optLen > 40 || r.cookieLen != 0 {
 				return false
 			}
 			r.cookieOff = off
-			r.cookieLen = 8
+			r.cookieLen = optLen
 		case dns.EDNS0NSID:
 			r.hasNSID = true
 		case dns.EDNS0SUBNET:

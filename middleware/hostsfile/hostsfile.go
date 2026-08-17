@@ -118,6 +118,10 @@ func (h *Hostsfile) Name() string {
 }
 
 // (*Hostsfile).ServeDNS serveDNS handles DNS queries using the hosts database.
+// A wire-born request is looked up by its wire question name — one string,
+// no decode — and on the overwhelmingly common miss continues down the
+// chain undecoded; a hit builds its response from parsed scalars, so this
+// handler never materializes anything.
 func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// Safety check for nil receiver
 	if h == nil {
@@ -125,11 +129,12 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// The hosts lookup is keyed on the presentation-form name.
-	ctx, req := ch.Materialize(ctx)
-	if req == nil {
+	if ch.Request.Undecoded() {
+		h.serveWire(ctx, ch)
 		return
 	}
+
+	req := ch.Request.Msg()
 	w := ch.Writer
 
 	if len(req.Question) == 0 {
@@ -144,25 +149,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	atomic.AddUint64(&db.stats.lookups, 1)
 	hostsfileLookups.Inc()
 
-	// Handle different query types
-	var answer []dns.RR
-	var found bool
-
-	switch q.Qtype {
-	case dns.TypeA:
-		answer, found = h.lookupA(db, q.Name)
-	case dns.TypeAAAA:
-		answer, found = h.lookupAAAA(db, q.Name)
-	case dns.TypePTR:
-		answer, found = h.lookupPTR(db, q.Name)
-	case dns.TypeCNAME:
-		answer, found = h.lookupCNAME(db, q.Name)
-	default:
-		// For other types, check if host exists to return NODATA
-		if h.hostExists(db, q.Name) {
-			found = true
-		}
-	}
+	answer, found := h.lookup(db, q.Name, q.Qtype)
 
 	if !found {
 		ch.Next(ctx)
@@ -197,6 +184,74 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	_ = w.WriteMsg(resp)
 	ch.Cancel()
+}
+
+// serveWire answers a wire-born request from the hosts database without
+// decoding it. The lookup key is the presentation-form name, which
+// UnpackDomainName produces straight from the wire question.
+func (h *Hostsfile) serveWire(ctx context.Context, ch *middleware.Chain) {
+	req := ch.Request
+
+	qname, _, err := dns.UnpackDomainName(req.WireName(), 0)
+	if err != nil {
+		ch.Next(ctx)
+		return
+	}
+
+	db := h.getDB()
+
+	atomic.AddUint64(&db.stats.lookups, 1)
+	hostsfileLookups.Inc()
+
+	answer, found := h.lookup(db, qname, req.Qtype())
+
+	if !found {
+		ch.Next(ctx)
+		return
+	}
+
+	atomic.AddUint64(&db.stats.hits, 1)
+	hostsfileHits.Inc()
+
+	// Header discipline matches the decoded body below; the question is
+	// rebuilt from parsed scalars instead of aliasing a decoded one.
+	resp := new(dns.Msg)
+	resp.MsgHdr = dns.MsgHdr{
+		Id:                 req.ID(),
+		Response:           true,
+		Opcode:             req.Opcode(),
+		Authoritative:      true,
+		RecursionDesired:   req.RD(),
+		RecursionAvailable: true,
+		CheckingDisabled:   req.CD(),
+	}
+	resp.Question = []dns.Question{{Name: qname, Qtype: req.Qtype(), Qclass: req.Qclass()}}
+	resp.Answer = answer
+
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
+}
+
+// lookup answers qname/qtype from db: A, AAAA, PTR, and CNAME get their
+// records; any other type reports bare existence, which the callers turn
+// into NODATA.
+func (h *Hostsfile) lookup(db *HostsDB, qname string, qtype uint16) ([]dns.RR, bool) {
+	switch qtype {
+	case dns.TypeA:
+		return h.lookupA(db, qname)
+	case dns.TypeAAAA:
+		return h.lookupAAAA(db, qname)
+	case dns.TypePTR:
+		return h.lookupPTR(db, qname)
+	case dns.TypeCNAME:
+		return h.lookupCNAME(db, qname)
+	default:
+		// For other types, check if host exists to return NODATA
+		if h.hostExists(db, qname) {
+			return nil, true
+		}
+		return nil, false
+	}
 }
 
 // lookupA finds A records for a hostname.
