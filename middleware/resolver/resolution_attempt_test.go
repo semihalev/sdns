@@ -716,6 +716,7 @@ func TestResolutionAttemptSingleflightFollowerRegroups(t *testing.T) {
 			&resolveState{req: req, requestID: req.Id},
 			req,
 			servers,
+			false,
 		)
 		leaderDone <- result{resp: resp, err: err}
 	}()
@@ -737,6 +738,7 @@ func TestResolutionAttemptSingleflightFollowerRegroups(t *testing.T) {
 			&resolveState{req: followerReq, requestID: followerReq.Id},
 			followerReq,
 			servers,
+			false,
 		)
 		followerDone <- result{resp: resp, err: err}
 	}()
@@ -802,6 +804,7 @@ func TestCanceledSingleflightLeaderDoesNotFailHealthyFollower(t *testing.T) {
 			&resolveState{req: req, requestID: req.Id},
 			req,
 			servers,
+			false,
 		)
 		leaderDone <- result{resp: resp, err: err}
 	}()
@@ -827,6 +830,7 @@ func TestCanceledSingleflightLeaderDoesNotFailHealthyFollower(t *testing.T) {
 			&resolveState{req: followerReq, requestID: followerReq.Id},
 			followerReq,
 			servers,
+			false,
 		)
 		followerDone <- result{resp: resp, err: err}
 	}()

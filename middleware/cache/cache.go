@@ -1741,25 +1741,42 @@ func filterCacheableAnswer(res *dns.Msg) *dns.Msg {
 		return res
 	}
 
-	filtered := res.Copy()
-	var answer []dns.RR
-
-	for _, r := range filtered.Answer {
+	keep := func(r dns.RR) bool {
 		if r.Header().Rrtype == dns.TypeDNAME ||
 			strings.EqualFold(res.Question[0].Name, r.Header().Name) {
-			answer = append(answer, r)
-			continue
+			return true
 		}
+		rrsig, ok := r.(*dns.RRSIG)
+		return ok && rrsig.TypeCovered == dns.TypeDNAME
+	}
 
-		if rrsig, ok := r.(*dns.RRSIG); ok {
-			if rrsig.TypeCovered == dns.TypeDNAME {
-				answer = append(answer, r)
-			}
+	// Every consumer reads the result synchronously and retains bytes, not
+	// records — NewCacheEntryWithKey builds its own shallow storable view,
+	// PackClones it on the spot, and value-copies the one option it keeps
+	// (the EDE) — so a deep copy duplicated every RR in every section for
+	// a reader that only wants a different Answer slice. The common shape,
+	// no chain tail to drop, passes through untouched.
+	drop := false
+	for _, r := range res.Answer {
+		if !keep(r) {
+			drop = true
+			break
+		}
+	}
+	if !drop {
+		return res
+	}
+
+	answer := make([]dns.RR, 0, len(res.Answer))
+	for _, r := range res.Answer {
+		if keep(r) {
+			answer = append(answer, r)
 		}
 	}
 
+	filtered := *res
 	filtered.Answer = answer
-	return filtered
+	return &filtered
 }
 
 // messagePool reduces allocations by reusing dns.Msg structs.
