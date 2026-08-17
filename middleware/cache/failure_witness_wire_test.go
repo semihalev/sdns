@@ -241,3 +241,55 @@ func TestWitnessThreadsThroughLadder(t *testing.T) {
 		t.Fatal("ladder-threaded witness did not let the byte path serve")
 	}
 }
+
+// TestWitnessCapturedAtRungNotAtRecord pins the timing half of the
+// capture contract: a proof admitted between the denial rung and the
+// SERVFAIL write-back must leave the recorded witness stale, so the
+// second pass declines to the Msg path. A witness re-derived at record
+// time would pin the fresh snapshot instead and wrongly serve from
+// bytes — the exact bug class the rung-time capture exists to prevent.
+func TestWitnessCapturedAtRungNotAtRecord(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 0
+	c := New(cfg)
+	defer c.Stop()
+	e := edns.New(cfg)
+
+	witnessTestProof(t, c.store, "sig.test.", "glib.sig.test.", "help.sig.test.")
+
+	servfail := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		// The failing resolution's window: denial state moves after the
+		// rung ran, before the failure is recorded.
+		witnessTestProof(t, c.store, "sig.test.", "mo.sig.test.", "mu.sig.test.")
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request.Msg())
+		resp.Rcode = dns.RcodeServerFailure
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	q := new(dns.Msg)
+	q.SetQuestion("racy.sig.test.", dns.TypeA)
+	q.RecursionDesired = true
+	raw, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := new(middleware.Request)
+	if !req.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("eligible query refused")
+	}
+	writer := mock.NewWriter("udp", "198.51.100.11:40000")
+	ch := middleware.NewChain([]middleware.Handler{e, c, servfail})
+	ch.ResetWire(writer, req)
+	ch.AllowDirectPack()
+	ch.Next(context.Background())
+	if !writer.Written() || writer.Rcode() != dns.RcodeServerFailure {
+		t.Fatalf("first pass rcode %d written=%v, want SERVFAIL", writer.Rcode(), writer.Written())
+	}
+
+	if serveFailureThrough(t, c, e, "racy.sig.test.", false) {
+		t.Fatal("mid-resolution admission did not invalidate the rung-time witness; " +
+			"a record-time re-derivation is masquerading as the capture")
+	}
+}
