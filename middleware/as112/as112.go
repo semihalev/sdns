@@ -29,7 +29,10 @@ func New(cfg *config.Config) *AS112 {
 				continue
 			}
 
-			zones[dns.Fqdn(zone)] = true
+			// Canonical, not merely rooted: both lookup paths probe with
+			// canonical lowercase names, so a mixed-case configured zone
+			// stored verbatim would be a dead key that never serves.
+			zones[dns.CanonicalName(zone)] = true
 		}
 
 		if len(zones) > 0 {
@@ -173,7 +176,7 @@ func (a *AS112) serveWire(ctx context.Context, ch *middleware.Chain) {
 	zone := ""
 	wholeZone := false
 	for i := start; i < n; i++ {
-		if suffix := canon[offs[i]:]; a.zones[string(suffix)] {
+		if suffix := canon[offs[i]:]; hasKey(a.zones, suffix) {
 			zone = string(suffix)
 			wholeZone = i == 0 && start == 0
 			break
@@ -184,6 +187,8 @@ func (a *AS112) serveWire(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// Unreachable refusal: the same bytes already passed the canonical
+	// walk, and presentation rendering shares its acceptance.
 	pres, ok := dnsname.AppendPresentation(buf[:0], req.WireName())
 	if !ok {
 		ch.Next(ctx)
@@ -250,6 +255,15 @@ func (a *AS112) serveWire(ctx context.Context, ch *middleware.Chain) {
 
 	_ = ch.Writer.WriteMsg(msg)
 	ch.Cancel()
+}
+
+// hasKey is Match's presence probe over a stack-buffered suffix: the map
+// index conversion is allocation-free, and testing presence rather than
+// the stored value keeps the two paths' semantics identical by
+// construction.
+func hasKey(zones map[string]bool, suffix []byte) bool {
+	_, ok := zones[string(suffix)]
+	return ok
 }
 
 // (*AS112).Match match returns whether or not a name contains in the zones.

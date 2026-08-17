@@ -176,6 +176,35 @@ func TestAS112WireEscapedDotNoFalseMatch(t *testing.T) {
 	}
 }
 
+// TestAS112ConfigZoneCaseNormalized: a mixed-case emptyzones entry must
+// serve — the old dns.Fqdn storage left it a dead key that neither path
+// could ever match.
+func TestAS112ConfigZoneCaseNormalized(t *testing.T) {
+	cfg := new(config.Config)
+	cfg.EmptyZones = []string{"10.In-Addr.ARPA"}
+	a := New(cfg)
+
+	req := wireAS112Request(t, "1.0.0.10.in-addr.arpa.", dns.TypePTR)
+	w := mock.NewWriter("udp", "192.0.2.5:40000")
+	ch := middleware.NewChain([]middleware.Handler{a})
+	ch.ResetWire(w, req)
+	ch.Next(context.Background())
+	if !w.Written() || w.Rcode() != dns.RcodeNameError {
+		t.Fatalf("configured mixed-case zone did not serve on wire: written=%v rcode=%v", w.Written(), w.Rcode())
+	}
+
+	// Decoded path too.
+	q := new(dns.Msg)
+	q.SetQuestion("1.0.0.10.in-addr.arpa.", dns.TypePTR)
+	wd := mock.NewWriter("udp", "192.0.2.5:40000")
+	chd := middleware.NewChain([]middleware.Handler{a})
+	chd.Reset(wd, q)
+	chd.Next(context.Background())
+	if !wd.Written() || wd.Rcode() != dns.RcodeNameError {
+		t.Fatalf("decoded path: written=%v rcode=%v", wd.Written(), wd.Rcode())
+	}
+}
+
 // TestAS112WireMissAllocatesNothing pins the fast path's cost: the suffix
 // probe for a delegated-zone reverse name is zero-allocation.
 func TestAS112WireMissAllocatesNothing(t *testing.T) {

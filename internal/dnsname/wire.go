@@ -127,8 +127,10 @@ const MaxLabels = 127
 // form with ASCII A–Z lowered and the trailing dot kept, dns.CanonicalName's
 // answer — and records where each label starts inside the appended region.
 // offs needs capacity MaxLabels; the returned count says how many entries
-// were filled. Suffix matching against canonical zone keys then indexes a
-// map with canon[offs[i]:] without ever building a string.
+// were filled, and its contents are undefined on refusal. Suffix matching
+// against canonical zone keys then indexes a map with canon[offs[i]:]
+// without ever building a string — a recipe that assumes an empty dst,
+// since the offsets are relative to the appended region, not the slice.
 func AppendCanonicalLabels(dst, wire []byte, offs []int) ([]byte, int, bool) {
 	return appendWireName(dst, wire, true, true, offs)
 }
