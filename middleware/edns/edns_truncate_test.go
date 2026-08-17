@@ -34,7 +34,7 @@ func (b *bulkResponder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 				Class:  dns.ClassINET,
 				Ttl:    60,
 			},
-			A: net.IPv4(192, 0, 2, byte(i%250+1)),
+			A: net.IPv4(192, 0, 2, byte(i%250+1)), //nolint:gosec // G115 - bounded by the modulo
 		}
 	}
 	for i := 0; i < b.answer; i++ {
