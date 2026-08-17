@@ -488,6 +488,13 @@ func (c *FailureCache) record(hash uint64, candidate *failureEntry) FailureHit {
 			next.streak++
 		}
 		next.provenance = candidate.provenance
+		// A renewal is itself a record-time proof: this generation exists
+		// because a fresh resolution just failed, so the candidate's
+		// witness supersedes the one from the entry's birth. Keeping the
+		// original would pin its replaced snapshots for the entry's whole
+		// backoff life and fail the pointer check forever after the first
+		// on-path admission.
+		next.witness = candidate.witness
 		next.retryAfter = now.Add(c.backoff(next.streak))
 		if c.entries.CompareAndSwap(hash, current, &next) {
 			return next.hit()

@@ -951,9 +951,21 @@ func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 		// zone's snapshot: under a hash collision the slot may belong to
 		// the other zone, and deleting it would make a cached zone
 		// invisible to the wire walk — the one direction the witness
-		// design cannot tolerate.
+		// design cannot tolerate. The same direction opens when this
+		// zone owned a contested slot: after the delete, any surviving
+		// zone that hashes to it must be restored, or it stays invisible
+		// until its own next republish. The rescan is O(zones) on the
+		// rare zone-emptying path, and which claimant wins is
+		// irrelevant — readers verify name and pointer, so a wrong
+		// claimant only sends a query to the Msg path.
 		if hash := denialZoneHash(key.zone, key.qclass); c.zoneWireIndex[hash] == c.zoneIndex[key] {
 			delete(c.zoneWireIndex, hash)
+			for other, snapshot := range c.zoneIndex {
+				if other != key && denialZoneHash(other.zone, other.qclass) == hash {
+					c.zoneWireIndex[hash] = snapshot
+					break
+				}
+			}
 		}
 		delete(c.zoneIndex, key)
 		delete(c.zoneEntries, key)

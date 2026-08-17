@@ -301,6 +301,14 @@ func (s *Store) LookupFailureWire(name []byte, qtype, qclass uint16, cd bool) (F
 	return s.failure.LookupWire(name, qtype, qclass, cd)
 }
 
+// sharedDenialImpossible reports that no RFC 8198 evaluation can ever
+// run in this process — construction-time configuration. With denial
+// impossible on every path, a zone-kind failure hit cannot be shadowed
+// by synthesis, so the wire gate may serve it without a witness.
+func (s *Store) sharedDenialImpossible() bool {
+	return s == nil || s.rfc8198Disabled || s.sharedDenialDisabled || s.denialProofs == nil
+}
+
 // RecordNXDomainCut stores a locally validated terminal NXDOMAIN proof.
 // deniedName is the exact authoritative query cycle that returned NXDOMAIN;
 // it must never be inferred from the SOA owner.
@@ -406,22 +414,33 @@ func (s *Store) FailureRetryKey(req *dns.Msg, scope netip.Prefix) (uint64, bool)
 }
 
 // RecordFailure records a question-specific terminal resolution failure.
-func (s *Store) RecordFailure(req *dns.Msg, scope netip.Prefix, provenance FailureProvenance) {
+// witness must be the miss witness captured at the moment the recording
+// request's denial rung ran and missed (Cache.ServeDNS stashes it on the
+// response writer), and nil from every path that never ran the rung — a
+// CD or client-ECS tree that bypassed it, a compatibility Set, a scoped
+// insert. A witness fabricated later would assert a miss nobody
+// established at a moment nobody checked.
+func (s *Store) RecordFailure(req *dns.Msg, scope netip.Prefix, provenance FailureProvenance, witness []denialWitnessPair) {
 	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
 		return
 	}
-	s.recordFailureQuestion(req.Question[0], req.CheckingDisabled, scope, provenance)
+	s.recordFailureQuestion(req.Question[0], req.CheckingDisabled, scope, provenance, witness)
 }
 
-func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefix, provenance FailureProvenance) {
+func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefix, provenance FailureProvenance, witness []denialWitnessPair) {
 	if s.failureCacheDisabled || s.failure == nil {
 		return
+	}
+	if cd {
+		// A CD entry serves CD lookups, which skip the gate entirely; a
+		// witness here could only ever mislead.
+		witness = nil
 	}
 	s.failure.RecordQuestion(FailureQuestionKey{
 		Question: q,
 		CD:       cd,
 		Scope:    scope,
-	}, provenance, s.failureMissWitness(q.Name, q.Qclass))
+	}, provenance, witness)
 }
 
 // failureMissWitness captures the denial-zone state a failing question
@@ -451,10 +470,13 @@ func (s *Store) RecordZoneFailure(q dns.Question, zone string) {
 	if s.failureCacheDisabled || s.failure == nil || zone == "" {
 		return
 	}
+	// Zone-kind hits answer descendant names the recording question never
+	// proved anything about, so they are excluded from witness serving
+	// (cache.go's gate) and carry none.
 	s.failure.RecordZone(FailureZoneKey{
 		Zone:   zone,
 		Qclass: q.Qclass,
-	}, FailureProvenance("authority"), s.failureMissWitness(q.Name, q.Qclass))
+	}, FailureProvenance("authority"), nil)
 }
 
 // ClearZoneFailure removes authority reachability history after the resolver
@@ -601,7 +623,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		// If a pre-keyed scoped caller reaches it, do not misfile that
 		// audience-specific failure as a global one without its prefix.
 		if !scoped {
-			s.recordFailureQuestion(resp.Question[0], keyCD, netip.Prefix{}, FailureProvenance("response"))
+			s.recordFailureQuestion(resp.Question[0], keyCD, netip.Prefix{}, FailureProvenance("response"), nil)
 		}
 	}
 }
@@ -681,7 +703,7 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 		}
 	case dnsutil.TypeServerFailure:
 		if entry != nil && entry.question.Name != "" {
-			s.recordFailureQuestion(entry.question, entry.cd, netip.Prefix{}, FailureProvenance("response"))
+			s.recordFailureQuestion(entry.question, entry.cd, netip.Prefix{}, FailureProvenance("response"), nil)
 		}
 	}
 }

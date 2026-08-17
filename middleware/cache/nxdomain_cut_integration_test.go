@@ -508,7 +508,7 @@ func TestNXDomainCutIntegrationLookupPrecedence(t *testing.T) {
 		_ = nxCutExchange(t, cache, downstream, nxCutRequest(nxCutDeniedName, dns.TypeA), "192.0.2.5:53000")
 
 		descendant := nxCutRequest("failed."+nxCutDeniedName, dns.TypeAAAA)
-		cache.store.RecordFailure(descendant, netip.Prefix{}, FailureProvenance("test"))
+		cache.store.RecordFailure(descendant, netip.Prefix{}, FailureProvenance("test"), nil)
 		got := nxCutExchange(t, cache, downstream, descendant, "192.0.2.5:53000")
 		assertNXCutResponse(t, got, descendant)
 		if ede := dnsutil.GetEDE(got); ede != nil && ede.InfoCode == dns.ExtendedErrorCodeCachedError {

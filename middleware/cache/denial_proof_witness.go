@@ -46,9 +46,16 @@ type denialWitnessPair struct {
 	snapshot *denialProofZoneSnapshot
 }
 
-// missWitness captures the denial zones on qname's ancestor path at
-// failure-record time. A nil result means no cached zone could deny the
-// name — the cheapest witness of all.
+// missWitness captures the denial zones on qname's ancestor path the
+// moment the denial rung misses. A nil result means no on-path zone was
+// cached — a state the wire gate can re-establish for itself at lookup
+// time, so nil is not a weaker witness, just a cheaper one.
+//
+// A path that crosses a zone holding NSEC3 state yields no witness at
+// all: NSEC3 evaluation draws on the shared DNSSEC crypto budget, so its
+// miss can be starvation rather than absence, and a witness must never
+// freeze a starved verdict into servable state. NSEC evaluation takes no
+// budget; only NSEC-backed paths are witnessable.
 func (c *denialProofCache) missWitness(qname string, qclass uint16) []denialWitnessPair {
 	if c == nil {
 		return nil
@@ -59,13 +66,19 @@ func (c *denialProofCache) missWitness(qname string, qclass uint16) []denialWitn
 	if !c.stopped && len(c.zoneIndex) > 0 {
 		for _, zone := range denialProofAncestors(qname, ancestorStorage[:0]) {
 			key := denialProofZoneKey{zone: zone, qclass: qclass}
-			if snapshot := c.zoneIndex[key]; snapshot != nil {
-				witness = append(witness, denialWitnessPair{
-					hash:     denialZoneHash(zone, qclass),
-					zone:     zone,
-					snapshot: snapshot,
-				})
+			snapshot := c.zoneIndex[key]
+			if snapshot == nil {
+				continue
 			}
+			if len(snapshot.nsec3) > 0 {
+				witness = nil
+				break
+			}
+			witness = append(witness, denialWitnessPair{
+				hash:     denialZoneHash(zone, qclass),
+				zone:     zone,
+				snapshot: snapshot,
+			})
 		}
 	}
 	c.mu.RUnlock()

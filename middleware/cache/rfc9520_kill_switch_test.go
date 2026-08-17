@@ -30,7 +30,7 @@ func TestRFC9520KillSwitchDisablesFailureState(t *testing.T) {
 		failure.SetRcode(req, dns.RcodeServerFailure)
 
 		c.Set(CacheKey{Question: req.Question[0]}.Hash(), failure)
-		c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("test"))
+		c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("test"), nil)
 		c.store.RecordZoneFailure(req.Question[0], "example.")
 
 		if got := c.failure.Len(); got != 0 {

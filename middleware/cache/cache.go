@@ -534,6 +534,25 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		dedupKey = retryKey
 		failureProbe = true
 	}
+	// This is the moment the miss witness describes: the denial rung just
+	// ran for this question and found nothing. Captured here — not when a
+	// failure is eventually recorded, seconds of timeouts later — so a
+	// proof admitted during the failing resolution can never be pinned as
+	// evidence of its own absence. Nil when the tree bypassed the rung.
+	//
+	// One accepted residual: the rung and this capture take the read lock
+	// separately, so an admission landing in the microseconds between
+	// them can be pinned although the rung never saw it. The wire path
+	// then keeps serving the RFC 9520 failure where a Msg evaluation
+	// would synthesize from the fresh proof — an RFC-legal answer (8198
+	// is SHOULD-level), bounded by the failure TTL, in a window the
+	// width of two lock acquisitions. Closing it means threading the
+	// rung's own candidate set through an exported lookup signature;
+	// not worth that surface.
+	var denialMissWitness []denialWitnessPair
+	if !requestTreeBypassesSharedDenial {
+		denialMissWitness = c.store.failureMissWitness(q.Name, q.Qclass)
+	}
 	c.metrics.Miss()
 	if clientScope.IsValid() {
 		ecsLookupMiss.Inc()
@@ -708,6 +727,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.requestCD = requestCD
 	rw.requestHasECS = requestHasECS
 	rw.requestTreeBypassesSharedDenial = requestTreeBypassesSharedDenial
+	rw.denialMissWitness = denialMissWitness
 	// Stash the client's request scope so WriteMsg can derive
 	// the insert key without re-reading the OPT (which by then
 	// may have been mutated by the edns wrapper on the response).
@@ -722,6 +742,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		rw.requestCD = false
 		rw.requestHasECS = false
 		rw.requestTreeBypassesSharedDenial = false
+		rw.denialMissWitness = nil
 		rw.meta = nil
 		c.writerPool.Put(rw)
 	}()
@@ -1080,12 +1101,17 @@ func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain
 		// state, and this rung preserves that order without evaluating
 		// anything: the failure entry carries a record-time proof that
 		// denial missed (the miss witness), and the serve happens only
-		// while that proof demonstrably still holds for this name. Any
+		// while that proof demonstrably still holds. The proof names one
+		// question — witness serving is therefore restricted to
+		// question-kind hits, where the lookup and the record coincide in
+		// name, type, class and CD; a zone-kind hit answers names the
+		// record never proved anything about, so it materializes. Any
 		// doubt — a replaced snapshot, a newly cached zone on the path, a
 		// pre-witness entry — falls to the Msg path, whose evaluators
 		// decide; the client's answer is identical either way. CD skips
 		// shared denial on the Msg path too, so it serves directly.
-		if cd || c.store.DenialMissHoldsWire(req.WireName(), req.Qclass(), hit) {
+		if cd || ((hit.Kind == FailureKindQuestion || c.store.sharedDenialImpossible()) &&
+			c.store.DenialMissHoldsWire(req.WireName(), req.Qclass(), hit)) {
 			return c.serveFailureFromWire(ch)
 		}
 	}
@@ -1457,7 +1483,8 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	filtered := filterCacheableAnswer(msg)
 	mt, _ := dnsutil.ClassifyResponse(filtered, time.Now().UTC())
 	if mt == dnsutil.TypeServerFailure {
-		c.store.RecordFailure(filtered, netip.Prefix{}, FailureProvenance("response"))
+		// A compatibility Set runs no ladder, so it can vouch for no miss.
+		c.store.RecordFailure(filtered, netip.Prefix{}, FailureProvenance("response"), nil)
 		return
 	}
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
@@ -1521,6 +1548,10 @@ type ResponseWriter struct {
 	// — that's how pre-Stage-2 traffic and SCOPE=0 responses keep
 	// the same cache shape they had before.
 	clientScope netip.Prefix
+	// denialMissWitness is the miss witness captured at the denial rung
+	// (see denial_proof_witness.go), carried to the failure record a
+	// SERVFAIL write-back files. Nil when the tree bypassed the rung.
+	denialMissWitness []denialWitnessPair
 	// Immutable snapshots captured before downstream middleware can mutate
 	// the request. Shared authenticated-denial state is never published from
 	// checking-disabled or audience-scoped traffic.
@@ -1566,7 +1597,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 			out = w.recursionWorkFailure(res)
 		}
 		if cacheableResolutionFailure(ctx, out) {
-			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"))
+			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"), w.denialMissWitness)
 		}
 		return w.ResponseWriter.WriteMsg(out)
 	}
@@ -1587,7 +1618,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 			out = w.recursionWorkFailure(res)
 		}
 		if cacheableResolutionFailure(ctx, out) {
-			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"))
+			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"), w.denialMissWitness)
 		}
 		return w.ResponseWriter.WriteMsg(out)
 	}
