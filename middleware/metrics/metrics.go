@@ -78,19 +78,14 @@ func (m *Metrics) ClientOnly() bool { return true }
 
 // (*Metrics).ServeDNS serveDNS implements the Handle interface. The
 // per-query counter reads the parsed qtype, so a wire-born request is
-// observed without a decoded message; domain metrics (unbounded
-// cardinality, allocating) need the decoded name, force materialization,
-// and are documented as disabling the zero guarantee.
+// observed without a decoded message. Domain metrics used to force
+// materialization up front — which parked the cache's byte path for
+// every query the moment the option was enabled, priced on a live
+// profile at a full decode per request, 18% of all allocation. The name
+// is now read from the wire directly after the serve: one string per
+// query, and the fast path stays a fast path.
 func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	req := ch.Request
-	if m.domainMetricsEnabled && req.Undecoded() {
-		var decoded *dns.Msg
-		ctx, decoded = ch.Materialize(ctx)
-		if decoded == nil {
-			return
-		}
-	}
-
 	ch.Next(ctx)
 
 	if !ch.Writer.Written() {
@@ -101,8 +96,23 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Update domain metrics if enabled
 	if m.domainMetricsEnabled {
-		m.recordDomainQuery(req.Msg().Question[0].Name)
+		m.recordDomainQuery(questionName(req))
 	}
+}
+
+// questionName returns the query name without forcing a wire-born
+// request to materialize. ParseWire admits exactly one uncompressed
+// question name, so unpacking from offset zero is total; a name the
+// library cannot render counts as no domain at all.
+func questionName(req *middleware.Request) string {
+	if req.Undecoded() {
+		name, _, err := dns.UnpackDomainName(req.WireName(), 0)
+		if err != nil {
+			return ""
+		}
+		return name
+	}
+	return req.Msg().Question[0].Name
 }
 
 // observe records one response with caller-stack key scratch — no pool,

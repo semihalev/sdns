@@ -178,7 +178,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **ratelimit**        | Global query rate limit per second. 0 disables. Default: 0                                                          |
 | **clientratelimit**  | Per-client rate limit per minute. 0 disables. Default: 0                                                            |
 | **domainmetrics**    | Enable per-domain query metrics collection. Default: false                                                          |
-| **domainmetricslimit** | Maximum number of domains to track in metrics. 0 = unlimited (use with caution). Default: 10000                  |
+| **domainmetricslimit** | Maximum number of domains to track in metrics. 0 = unlimited (use with caution). Default: 1000                  |
 | **blocklist**        | Manual domain blocklist. Domains listed here will be blocked                                                        |
 | **whitelist**        | Manual domain whitelist. Overrides blocklist matches                                                                |
 | **cookiesecret**     | DNS cookie secret (RFC 7873) for client verification. Auto-generated if not set                                     |
