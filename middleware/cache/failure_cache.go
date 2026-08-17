@@ -77,6 +77,7 @@ type FailureHit struct {
 	RetryAfter time.Time
 	Question   FailureQuestionKey
 	Zone       FailureZoneKey
+	witness    []denialWitnessPair
 }
 
 // Response builds a clean SERVFAIL response for a cached failure. EDE 13 is
@@ -125,6 +126,11 @@ type failureEntry struct {
 	retryAfter time.Time
 	question   FailureQuestionKey
 	zone       FailureZoneKey
+	// witness is the denial-zone state the record-time qname saw (see
+	// denial_proof_witness.go): resolution was attempted, so aggressive
+	// denial provably missed — the wire path may serve this failure
+	// without materializing while the witness still holds.
+	witness []denialWitnessPair
 }
 
 func (e *failureEntry) hit() FailureHit {
@@ -135,6 +141,7 @@ func (e *failureEntry) hit() FailureHit {
 		RetryAfter: e.retryAfter,
 		Question:   e.question,
 		Zone:       e.zone,
+		witness:    e.witness,
 	}
 }
 
@@ -331,26 +338,28 @@ func (c *FailureCache) RetryKey(key FailureQuestionKey) (uint64, bool) {
 // RecordQuestion records an exact failure. Repeated calls during an active
 // generation are idempotent. After expiry, concurrent recorders advance the
 // streak exactly once.
-func (c *FailureCache) RecordQuestion(key FailureQuestionKey, provenance FailureProvenance) FailureHit {
+func (c *FailureCache) RecordQuestion(key FailureQuestionKey, provenance FailureProvenance, witness []denialWitnessPair) FailureHit {
 	key = normalizeFailureQuestionKey(key)
 	hash := failureQuestionHash(key)
 	return c.record(hash, &failureEntry{
 		kind:       FailureKindQuestion,
 		provenance: provenance,
 		question:   key,
+		witness:    witness,
 	})
 }
 
 // RecordZone records a zone-wide reachability failure. Repeated calls during
 // an active generation are idempotent. Zone failures are not partitioned by CD
 // or ECS because authority transport reachability is shared.
-func (c *FailureCache) RecordZone(key FailureZoneKey, provenance FailureProvenance) FailureHit {
+func (c *FailureCache) RecordZone(key FailureZoneKey, provenance FailureProvenance, witness []denialWitnessPair) FailureHit {
 	key = normalizeFailureZoneKey(key)
 	hash := failureZoneHash(key)
 	return c.record(hash, &failureEntry{
 		kind:       FailureKindZone,
 		provenance: provenance,
 		zone:       key,
+		witness:    witness,
 	})
 }
 
@@ -479,6 +488,13 @@ func (c *FailureCache) record(hash uint64, candidate *failureEntry) FailureHit {
 			next.streak++
 		}
 		next.provenance = candidate.provenance
+		// A renewal is itself a record-time proof: this generation exists
+		// because a fresh resolution just failed, so the candidate's
+		// witness supersedes the one from the entry's birth. Keeping the
+		// original would pin its replaced snapshots for the entry's whole
+		// backoff life and fail the pointer check forever after the first
+		// on-path admission.
+		next.witness = candidate.witness
 		next.retryAfter = now.Add(c.backoff(next.streak))
 		if c.entries.CompareAndSwap(hash, current, &next) {
 			return next.hit()

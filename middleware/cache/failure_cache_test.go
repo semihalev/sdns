@@ -137,7 +137,7 @@ func TestFailureCacheBackoffExpiryAndCap(t *testing.T) {
 	}
 
 	for i, want := range wants {
-		hit := cache.RecordQuestion(key, FailureProvenance("transport"))
+		hit := cache.RecordQuestion(key, FailureProvenance("transport"), nil)
 		if hit.Streak != uint32(i+1) {
 			t.Fatalf("generation %d streak = %d, want %d", i+1, hit.Streak, i+1)
 		}
@@ -178,7 +178,7 @@ func TestFailureCacheInjectableBackoffBounds(t *testing.T) {
 
 	key := failureQuestion("www.example.", dns.TypeA)
 	for generation, want := range []time.Duration{2 * time.Second, 4 * time.Second, 7 * time.Second, 7 * time.Second} {
-		hit := cache.RecordQuestion(key, "timeout")
+		hit := cache.RecordQuestion(key, "timeout", nil)
 		if got := hit.RetryAfter.Sub(clock.Now()); got != want {
 			t.Fatalf("generation %d backoff = %v, want %v", generation+1, got, want)
 		}
@@ -191,9 +191,9 @@ func TestFailureCacheActiveDuplicateIsIdempotent(t *testing.T) {
 	cache := newFailureTestCache(t, 8, clock)
 	key := failureQuestion("www.example.", dns.TypeA)
 
-	first := cache.RecordQuestion(key, "first")
+	first := cache.RecordQuestion(key, "first", nil)
 	clock.Advance(time.Second)
-	duplicate := cache.RecordQuestion(key, "duplicate")
+	duplicate := cache.RecordQuestion(key, "duplicate", nil)
 	if duplicate.Streak != 1 {
 		t.Fatalf("duplicate streak = %d, want 1", duplicate.Streak)
 	}
@@ -205,8 +205,8 @@ func TestFailureCacheActiveDuplicateIsIdempotent(t *testing.T) {
 	}
 
 	zone := FailureZoneKey{Zone: "example.", Qclass: dns.ClassINET}
-	zoneFirst := cache.RecordZone(zone, "zone-first")
-	zoneDuplicate := cache.RecordZone(zone, "zone-duplicate")
+	zoneFirst := cache.RecordZone(zone, "zone-first", nil)
+	zoneDuplicate := cache.RecordZone(zone, "zone-duplicate", nil)
 	if zoneDuplicate.Streak != 1 || !zoneDuplicate.RetryAfter.Equal(zoneFirst.RetryAfter) {
 		t.Fatalf("zone duplicate = %#v, want unchanged first generation", zoneDuplicate)
 	}
@@ -217,15 +217,15 @@ func TestFailureCacheLongRecoveryResetsStreak(t *testing.T) {
 	cache := newFailureTestCache(t, 8, clock)
 	key := failureQuestion("www.example.", dns.TypeA)
 
-	first := cache.RecordQuestion(key, "first")
+	first := cache.RecordQuestion(key, "first", nil)
 	clock.Advance(first.RetryAfter.Sub(clock.Now()))
-	second := cache.RecordQuestion(key, "second")
+	second := cache.RecordQuestion(key, "second", nil)
 	if second.Streak != 2 {
 		t.Fatalf("second generation streak = %d, want 2", second.Streak)
 	}
 
 	clock.Advance(second.RetryAfter.Sub(clock.Now()) + cache.maxTTL)
-	restarted := cache.RecordQuestion(key, "after-recovery")
+	restarted := cache.RecordQuestion(key, "after-recovery", nil)
 	if restarted.Streak != 1 {
 		t.Fatalf("streak after long recovery = %d, want 1", restarted.Streak)
 	}
@@ -253,7 +253,7 @@ func TestFailureCacheConcurrentRecordAdvancesOnce(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				results <- cache.RecordQuestion(key, "timeout")
+				results <- cache.RecordQuestion(key, "timeout", nil)
 			}()
 		}
 		close(start)
@@ -280,7 +280,7 @@ func TestFailureCacheConcurrentZoneRecordAdvancesOnce(t *testing.T) {
 	clock := newFailureFakeClock()
 	cache := newFailureTestCache(t, 32, clock)
 	key := FailureZoneKey{Zone: "example.", Qclass: dns.ClassINET}
-	cache.RecordZone(key, "timeout")
+	cache.RecordZone(key, "timeout", nil)
 	clock.Advance(5 * time.Second)
 
 	const goroutines = 64
@@ -291,7 +291,7 @@ func TestFailureCacheConcurrentZoneRecordAdvancesOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			hit := cache.RecordZone(key, "timeout")
+			hit := cache.RecordZone(key, "timeout", nil)
 			if hit.Streak != 2 {
 				t.Errorf("concurrent RecordZone() streak = %d, want 2", hit.Streak)
 			}
@@ -310,7 +310,7 @@ func TestFailureCacheQuestionKeyIsolation(t *testing.T) {
 	clock := newFailureFakeClock()
 	cache := newFailureTestCache(t, 32, clock)
 	global := failureQuestion("WWW.Example", dns.TypeA)
-	cache.RecordQuestion(global, "global")
+	cache.RecordQuestion(global, "global", nil)
 
 	canonical := failureQuestion("www.example.", dns.TypeA)
 	if _, ok := cache.Lookup(canonical); !ok {
@@ -331,7 +331,7 @@ func TestFailureCacheQuestionKeyIsolation(t *testing.T) {
 
 	scoped := canonical
 	scoped.Scope = netip.MustParsePrefix("192.0.2.129/24")
-	cache.RecordQuestion(scoped, "scoped")
+	cache.RecordQuestion(scoped, "scoped", nil)
 	equivalentScope := canonical
 	equivalentScope.Scope = netip.MustParsePrefix("192.0.2.1/24")
 	if hit, ok := cache.Lookup(equivalentScope); !ok || hit.Provenance != "scoped" {
@@ -353,8 +353,8 @@ func TestFailureCacheQuestionKeyIsolation(t *testing.T) {
 func TestFailureCacheZoneClosestAncestorAndSharedReachability(t *testing.T) {
 	clock := newFailureFakeClock()
 	cache := newFailureTestCache(t, 32, clock)
-	cache.RecordZone(FailureZoneKey{Zone: "EXAMPLE", Qclass: dns.ClassINET}, "parent")
-	cache.RecordZone(FailureZoneKey{Zone: "Sub.Example.", Qclass: dns.ClassINET}, "child")
+	cache.RecordZone(FailureZoneKey{Zone: "EXAMPLE", Qclass: dns.ClassINET}, "parent", nil)
+	cache.RecordZone(FailureZoneKey{Zone: "Sub.Example.", Qclass: dns.ClassINET}, "child", nil)
 
 	tests := []struct {
 		name string
@@ -420,9 +420,9 @@ func TestFailureCacheRetryKeyGroupsExpiredZoneDescendants(t *testing.T) {
 	child := FailureZoneKey{Zone: "sub.example.", Qclass: dns.ClassINET}
 	parent := FailureZoneKey{Zone: "example.", Qclass: dns.ClassINET}
 
-	cache.RecordZone(child, "child")
+	cache.RecordZone(child, "child", nil)
 	clock.Advance(4 * time.Second)
-	cache.RecordZone(parent, "parent")
+	cache.RecordZone(parent, "parent", nil)
 	clock.Advance(time.Second)
 
 	queryOne := failureQuestion("r1.sub.example.", dns.TypeA)
@@ -451,8 +451,8 @@ func TestFailureCacheRetryKeyGroupsExpiredZoneDescendants(t *testing.T) {
 		t.Fatalf("zone retry key = %x, want closest ancestor key %x", keyOne, want)
 	}
 
-	cache.RecordQuestion(queryOne, "exact-one")
-	cache.RecordQuestion(queryTwo, "exact-two")
+	cache.RecordQuestion(queryOne, "exact-one", nil)
+	cache.RecordQuestion(queryTwo, "exact-two", nil)
 	clock.Advance(5 * time.Second)
 	groupedOne, ok := cache.RetryKey(queryOne)
 	if !ok {
@@ -483,12 +483,12 @@ func TestFailureCacheResetAndResetMatching(t *testing.T) {
 	clock := newFailureFakeClock()
 	cache := newFailureTestCache(t, 32, clock)
 	key := failureQuestion("www.sub.example.", dns.TypeA)
-	cache.RecordQuestion(key, "exact")
-	cache.RecordZone(FailureZoneKey{Zone: "sub.example.", Qclass: dns.ClassINET}, "child")
-	cache.RecordZone(FailureZoneKey{Zone: "example.", Qclass: dns.ClassINET}, "parent")
-	cache.RecordZone(FailureZoneKey{Zone: ".", Qclass: dns.ClassINET}, "root")
+	cache.RecordQuestion(key, "exact", nil)
+	cache.RecordZone(FailureZoneKey{Zone: "sub.example.", Qclass: dns.ClassINET}, "child", nil)
+	cache.RecordZone(FailureZoneKey{Zone: "example.", Qclass: dns.ClassINET}, "parent", nil)
+	cache.RecordZone(FailureZoneKey{Zone: ".", Qclass: dns.ClassINET}, "root", nil)
 	unrelated := failureQuestion("www.other.", dns.TypeA)
-	cache.RecordQuestion(unrelated, "unrelated")
+	cache.RecordQuestion(unrelated, "unrelated", nil)
 
 	if removed := cache.ResetMatching(key); removed != 4 {
 		t.Fatalf("ResetMatching() removed %d states, want 4", removed)
@@ -499,7 +499,7 @@ func TestFailureCacheResetAndResetMatching(t *testing.T) {
 	if hit, ok := cache.Lookup(unrelated); !ok || hit.Provenance != "unrelated" {
 		t.Fatalf("ResetMatching removed unrelated exact state: %#v, %v", hit, ok)
 	}
-	restarted := cache.RecordQuestion(key, "recovered-then-failed")
+	restarted := cache.RecordQuestion(key, "recovered-then-failed", nil)
 	if restarted.Streak != 1 {
 		t.Fatalf("record after reset streak = %d, want 1", restarted.Streak)
 	}
@@ -569,11 +569,11 @@ func TestFailureCacheBounded(t *testing.T) {
 	cache := newFailureTestCache(t, size, clock)
 
 	for i := range 500 {
-		cache.RecordQuestion(failureQuestion(fmt.Sprintf("q-%d.example.", i), dns.TypeA), "exact")
+		cache.RecordQuestion(failureQuestion(fmt.Sprintf("q-%d.example.", i), dns.TypeA), "exact", nil)
 		cache.RecordZone(FailureZoneKey{
 			Zone:   fmt.Sprintf("z-%d.example.", i),
 			Qclass: dns.ClassINET,
-		}, "zone")
+		}, "zone", nil)
 		if got := cache.Len(); got > size {
 			t.Fatalf("failure cache grew to %d entries, limit %d", got, size)
 		}

@@ -731,7 +731,7 @@ func TestFailureCacheScopedSuccessDoesNotResetGlobalAudience(t *testing.T) {
 
 	req := new(dns.Msg)
 	req.SetQuestion("geo.example.", dns.TypeA)
-	c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("global"))
+	c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("global"), nil)
 
 	scope := netip.MustParsePrefix("192.0.2.0/24")
 	scoped := new(dns.Msg)

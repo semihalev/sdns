@@ -287,7 +287,7 @@ func TestAggressiveNegativeIntegrationNODATAAndNXDOMAIN(t *testing.T) {
 		}
 
 		probe := aggressiveNegativeRequest(aggressiveNegativeOwner, dns.TypeMX, true)
-		cache.store.RecordFailure(probe, netip.Prefix{}, FailureProvenance("test"))
+		cache.store.RecordFailure(probe, netip.Prefix{}, FailureProvenance("test"), nil)
 		got := aggressiveNegativeExchange(t, context.Background(), cache, downstream, probe)
 		assertAggressiveNegativeProof(t, got, probe, dns.RcodeSuccess, dns.TypeNSEC)
 		if calls != 1 {

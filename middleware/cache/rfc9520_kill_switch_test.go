@@ -30,7 +30,7 @@ func TestRFC9520KillSwitchDisablesFailureState(t *testing.T) {
 		failure.SetRcode(req, dns.RcodeServerFailure)
 
 		c.Set(CacheKey{Question: req.Question[0]}.Hash(), failure)
-		c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("test"))
+		c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("test"), nil)
 		c.store.RecordZoneFailure(req.Question[0], "example.")
 
 		if got := c.failure.Len(); got != 0 {
@@ -66,11 +66,11 @@ func TestRFC9520KillSwitchDisablesFailureState(t *testing.T) {
 		req.SetQuestion("planted.example.", dns.TypeA)
 		c.failure.RecordQuestion(FailureQuestionKey{
 			Question: req.Question[0],
-		}, FailureProvenance("planted"))
+		}, FailureProvenance("planted"), nil)
 		c.failure.RecordZone(FailureZoneKey{
 			Zone:   "example.",
 			Qclass: dns.ClassINET,
-		}, FailureProvenance("planted"))
+		}, FailureProvenance("planted"), nil)
 		if got := c.failure.Len(); got != 2 {
 			t.Fatalf("lower-level planted failure entries = %d, want 2", got)
 		}

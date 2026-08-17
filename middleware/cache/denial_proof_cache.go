@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -23,15 +22,6 @@ const (
 	maxDenialProofTTL         = 3 * time.Hour
 	maxDenialProofNSEC3Groups = 2
 )
-
-// entryCount is the lock-free mirror of len(byID), for the wire path's
-// emptiness gate.
-func (c *denialProofCache) entryCount() int64 {
-	if c == nil {
-		return 0
-	}
-	return c.count.Load()
-}
 
 type denialProofKind uint8
 
@@ -134,6 +124,13 @@ type denialProofCache struct {
 	mu sync.RWMutex
 
 	zoneIndex map[denialProofZoneKey]*denialProofZoneSnapshot
+	// zoneWireIndex mirrors zoneIndex under the canonical wire-probeable
+	// hash (see denialZoneHash), so a wire-born suffix walk can find the
+	// zones that could deny a name without building a string per label.
+	// A hash collision is at worst a spurious pointer mismatch — the
+	// reader compares snapshot identity, so a collision can only send a
+	// query to the Msg path, never fabricate a witness match.
+	zoneWireIndex map[uint64]*denialProofZoneSnapshot
 	// zoneEntries is the writer's own index of what each zone holds. It is
 	// never published, so it can be mutated in place: a snapshot used to
 	// carry this map too, which meant admitting or evicting one entry
@@ -151,10 +148,7 @@ type denialProofCache struct {
 
 	totalBytes int64
 	sequence   uint64
-	// count mirrors len(byID) for lock-free emptiness checks on the wire
-	// path; maintained under the write lock at every byID mutation.
-	count   atomic.Int64
-	stopped bool
+	stopped    bool
 
 	// A locally validated tuple that presents two different RDATA values at
 	// one owner hash is ambiguous until both observations expire. Tombstones
@@ -217,6 +211,7 @@ func newDenialProofCacheWithConfig(cfg denialProofCacheConfig) *denialProofCache
 
 	return &denialProofCache{
 		zoneIndex:         make(map[denialProofZoneKey]*denialProofZoneSnapshot),
+		zoneWireIndex:     make(map[uint64]*denialProofZoneSnapshot),
 		zoneEntries:       make(map[denialProofZoneKey]map[denialProofID]*denialProofEntry),
 		byID:              make(map[denialProofID]*denialProofEntry),
 		maxEntries:        cfg.MaxEntries,
@@ -379,7 +374,6 @@ func (c *denialProofCache) recordWithKind(
 		entry.sequence = c.sequence
 		entry.queue = c.fifo.PushBack(entry)
 		c.byID[entry.id] = entry
-		c.count.Store(int64(len(c.byID)))
 		c.totalBytes += entry.wireBytes
 
 		c.zoneEntriesLocked(entry.zoneKey)[entry.id] = entry
@@ -953,6 +947,26 @@ func (c *denialProofCache) zoneEntriesLocked(
 func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 	entries := c.zoneEntries[key]
 	if len(entries) == 0 {
+		// The wire slot is removed only when it still points at this
+		// zone's snapshot: under a hash collision the slot may belong to
+		// the other zone, and deleting it would make a cached zone
+		// invisible to the wire walk — the one direction the witness
+		// design cannot tolerate. The same direction opens when this
+		// zone owned a contested slot: after the delete, any surviving
+		// zone that hashes to it must be restored, or it stays invisible
+		// until its own next republish. The rescan is O(zones) on the
+		// rare zone-emptying path, and which claimant wins is
+		// irrelevant — readers verify name and pointer, so a wrong
+		// claimant only sends a query to the Msg path.
+		if hash := denialZoneHash(key.zone, key.qclass); c.zoneWireIndex[hash] == c.zoneIndex[key] {
+			delete(c.zoneWireIndex, hash)
+			for other, snapshot := range c.zoneIndex {
+				if other != key && denialZoneHash(other.zone, other.qclass) == hash {
+					c.zoneWireIndex[hash] = snapshot
+					break
+				}
+			}
+		}
 		delete(c.zoneIndex, key)
 		delete(c.zoneEntries, key)
 		return
@@ -1053,6 +1067,7 @@ func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 		return left.salt < right.salt
 	})
 	c.zoneIndex[key] = snapshot
+	c.zoneWireIndex[denialZoneHash(key.zone, key.qclass)] = snapshot
 }
 
 // denialProofNameOrder is a name's canonical comparison form, derived exactly
@@ -1142,7 +1157,6 @@ func (c *denialProofCache) detachEntryLocked(entry *denialProofEntry) bool {
 		return false
 	}
 	delete(c.byID, entry.id)
-	c.count.Store(int64(len(c.byID)))
 	if entry.queue != nil {
 		c.fifo.Remove(entry.queue)
 	}
@@ -1741,6 +1755,7 @@ func (c *denialProofCache) stop() {
 	c.mu.Lock()
 	c.stopped = true
 	c.zoneIndex = make(map[denialProofZoneKey]*denialProofZoneSnapshot)
+	c.zoneWireIndex = make(map[uint64]*denialProofZoneSnapshot)
 	c.zoneEntries = make(map[denialProofZoneKey]map[denialProofID]*denialProofEntry)
 	c.byID = make(map[denialProofID]*denialProofEntry)
 	c.nsec3Conflicts = make(map[denialProofNSEC3ConflictKey]time.Time)
