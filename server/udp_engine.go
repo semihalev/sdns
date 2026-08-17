@@ -345,14 +345,14 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 // the admission cap is reached, and the cap — not the cache, not the
 // collector — is the memory authority here.
 func (e *udpEngine) take(shard int) *udpJob {
-	for {
-		n := e.leased.Load()
-		if n >= e.slabCap {
-			return nil
-		}
-		if e.leased.CompareAndSwap(n, n+1) {
-			break
-		}
+	// Add-then-rollback instead of a CAS loop: under wire-speed load
+	// sixteen readers spinning Load+CAS on one cache line burned more
+	// CPU retrying than serving. A fetch-add never retries; the counter
+	// may momentarily overshoot the cap by the number of concurrent
+	// takers, every one of which rolls back before returning.
+	if e.leased.Add(1) > e.slabCap {
+		e.leased.Add(-1)
+		return nil
 	}
 	if j := e.cache.get(shard); j != nil {
 		j.slabShard = uint8(shard & (slabShardCount - 1))
