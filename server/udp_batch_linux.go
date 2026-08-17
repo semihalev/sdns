@@ -58,12 +58,12 @@ func (e *udpEngine) startBatched() bool {
 	if e.txConns == nil {
 		return false
 	}
-	for _, pc := range e.pcs {
+	for i, pc := range e.pcs {
 		rc := e.txConns[pc]
 		if rc == nil {
 			return false
 		}
-		r := newUDPBatchReader(e, pc, rc)
+		r := newUDPBatchReader(e, i, pc, rc)
 		e.readers.Add(1)
 		go r.run()
 	}
@@ -74,8 +74,10 @@ func (e *udpEngine) startBatched() bool {
 
 type udpBatchReader struct {
 	engine *udpEngine
-	pc     *net.UDPConn
-	rc     syscall.RawConn
+	// idx is this socket's slab shard hint.
+	idx int
+	pc  *net.UDPConn
+	rc  syscall.RawConn
 
 	// permanentErrs counts consecutive errnos that no retry will fix. A
 	// seccomp profile that filters recvmmsg answers EPERM or ENOSYS on
@@ -100,8 +102,8 @@ type udpBatchReader struct {
 	rerr     error
 }
 
-func newUDPBatchReader(e *udpEngine, pc *net.UDPConn, rc syscall.RawConn) *udpBatchReader {
-	r := &udpBatchReader{engine: e, pc: pc, rc: rc}
+func newUDPBatchReader(e *udpEngine, idx int, pc *net.UDPConn, rc syscall.RawConn) *udpBatchReader {
+	r := &udpBatchReader{engine: e, idx: idx, pc: pc, rc: rc}
 	r.readFn = func(fd uintptr) bool {
 		n, _, errno := unix.Syscall6(
 			unix.SYS_RECVMMSG,
@@ -137,7 +139,7 @@ func (r *udpBatchReader) run() {
 		// receive queue are the oldest ones, whose clients have often
 		// stopped waiting. Shedding keeps the loss ours to report and
 		// keeps what is served fresh.
-		j0 := e.take()
+		j0 := e.take(r.idx)
 		if j0 == nil {
 			if !r.shed() {
 				return
@@ -148,7 +150,7 @@ func (r *udpBatchReader) run() {
 		r.arm(j0, 0)
 		k := 1
 		for k < udpBatchSize {
-			j := e.take()
+			j := e.take(r.idx)
 			if j == nil {
 				break
 			}
@@ -265,7 +267,7 @@ func (r *udpBatchReader) permanentRerr() bool {
 		"errno", r.rerr.Error())
 	e := r.engine
 	e.readers.Add(1)
-	go e.reader(r.pc)
+	go e.reader(r.idx, r.pc)
 	return true
 }
 

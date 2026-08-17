@@ -95,7 +95,7 @@ func TestTrimGateNeedsARealIdleWindow(t *testing.T) {
 // trim costs the next queries an allocation, never an answer.
 func TestTrimDropsParkedSlabsOnly(t *testing.T) {
 	e := newUDPEngine(echoHandler(), nil, false, 1, 1, defaultResourcePlan(1))
-	j := e.take()
+	j := e.take(0)
 	if j == nil {
 		t.Fatal("lease refused")
 	}
@@ -104,7 +104,7 @@ func TestTrimDropsParkedSlabsOnly(t *testing.T) {
 	if got := e.trimIdle(); got != 1 {
 		t.Fatalf("trim dropped %d slabs, want the parked one", got)
 	}
-	if j2 := e.take(); j2 == nil {
+	if j2 := e.take(0); j2 == nil {
 		t.Fatal("a lease was refused after trim; trim must only cost an allocation")
 	} else {
 		j2.state = udpJobReading

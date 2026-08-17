@@ -82,6 +82,9 @@ type tcpJob struct {
 	engine *tcpEngine
 	conn   net.Conn
 	stream *tcpStream
+	// slabShard is where this job's slab returns on release; TCP has no
+	// per-slot reader, so acquisition deals shards out round-robin.
+	slabShard uint8
 	// rx and tx are sized by the slab's class and never resized. A
 	// connection takes the class its announced frame needs, which the
 	// length prefix has already told it — prefix-first acquisition was
@@ -181,6 +184,10 @@ type tcpEngine struct {
 	handler  rawHandler
 	proto    string // "tcp" or "tls", for metrics
 	maxConns int64
+
+	// slabRotor deals slab shards to acquisitions; connections have no
+	// stable index the way the UDP readers do.
+	slabRotor atomic.Uint32
 
 	// Two classes by frame size, each with its own admission tokens and
 	// its own idle cache. The tokens are the authority — how many frames
@@ -297,11 +304,11 @@ func (e *tcpEngine) put(j *tcpJob) {
 		panic("server: tcp job released twice")
 	}
 	if j.large {
-		e.largeCache.put(j)
+		e.largeCache.put(int(j.slabShard), j)
 		e.largeTokens <- struct{}{}
 		return
 	}
-	e.smallCache.put(j)
+	e.smallCache.put(int(j.slabShard), j)
 	e.smallTokens <- struct{}{}
 }
 
@@ -562,10 +569,12 @@ func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time, length int) *tcpJo
 	if large {
 		cache = &e.largeCache
 	}
-	j := cache.get()
+	shard := int(e.slabRotor.Add(1))
+	j := cache.get(shard)
 	if j == nil {
 		j = newTCPJob(e, large)
 	}
+	j.slabShard = uint8(shard & (slabShardCount - 1))
 	j.leased.Store(true)
 	return j
 }

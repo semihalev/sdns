@@ -112,7 +112,7 @@ func TestUDPSlabsParkInTheCache(t *testing.T) {
 		t.Fatalf("a fresh engine parked %d slabs before any query", got)
 	}
 
-	j := e.take()
+	j := e.take(0)
 	if j == nil {
 		t.Fatal("an idle engine refused a lease")
 	}
@@ -130,7 +130,7 @@ func TestUDPSlabsParkInTheCache(t *testing.T) {
 	}
 
 	// The next lease reuses the parked slab rather than allocating.
-	j2 := e.take()
+	j2 := e.take(0)
 	if j2 != j {
 		t.Fatal("a parked slab was not reused")
 	}
@@ -144,7 +144,7 @@ func TestUDPSlabsParkInTheCache(t *testing.T) {
 	if got := e.cache.size(); got != 0 {
 		t.Fatalf("cache holds %d slabs after trim", got)
 	}
-	j3 := e.take()
+	j3 := e.take(0)
 	if j3 == nil {
 		t.Fatal("a lease was refused after trim; trim must only cost an allocation")
 	}

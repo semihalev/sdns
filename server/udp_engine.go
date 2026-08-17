@@ -53,6 +53,11 @@ type udpJob struct {
 	engine *udpEngine
 	pc     *net.UDPConn
 
+	// slabShard is where this job's slab goes back when released — the
+	// shard of the reader that took it, so slab traffic spreads with the
+	// socket fan-out instead of convoying on one lock.
+	slabShard uint8
+
 	rx       [udpJobBufSize]byte
 	rxLen    int
 	tx       [udpJobBufSize]byte
@@ -339,7 +344,7 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 // take leases a slab to read into. A nil return is the shedding case:
 // the admission cap is reached, and the cap — not the cache, not the
 // collector — is the memory authority here.
-func (e *udpEngine) take() *udpJob {
+func (e *udpEngine) take(shard int) *udpJob {
 	for {
 		n := e.leased.Load()
 		if n >= e.slabCap {
@@ -349,10 +354,11 @@ func (e *udpEngine) take() *udpJob {
 			break
 		}
 	}
-	if j := e.cache.get(); j != nil {
+	if j := e.cache.get(shard); j != nil {
+		j.slabShard = uint8(shard & (slabShardCount - 1))
 		return j
 	}
-	return &udpJob{engine: e}
+	return &udpJob{engine: e, slabShard: uint8(shard & (slabShardCount - 1))}
 }
 
 // start launches the fixed workers and one reader per socket.
@@ -367,9 +373,9 @@ func (e *udpEngine) start() {
 	if e.startBatched() {
 		return
 	}
-	for _, pc := range e.pcs {
+	for i, pc := range e.pcs {
 		e.readers.Add(1)
-		go e.reader(pc)
+		go e.reader(i, pc)
 	}
 }
 
@@ -405,7 +411,7 @@ func (e *udpEngine) stopAndDrain(deadline time.Time) error {
 	}
 }
 
-func (e *udpEngine) reader(pc *net.UDPConn) {
+func (e *udpEngine) reader(idx int, pc *net.UDPConn) {
 	defer e.readers.Done()
 	var discard [udpJobBufSize]byte
 	var oob [pktinfoSpace]byte
@@ -414,7 +420,7 @@ func (e *udpEngine) reader(pc *net.UDPConn) {
 		oobBuf = nil
 	}
 	for {
-		j := e.take()
+		j := e.take(idx)
 		if j == nil {
 			// Ring empty and the stretch at its bound: consume and shed.
 			// The reader never blocks for a slab — a deep queue only
@@ -550,7 +556,7 @@ func (j *udpJob) release(from uint8) {
 	// lease is released after the slab is parked — count down earlier
 	// and the cap could admit a query the cache cannot yet serve.
 	e := j.engine
-	e.cache.put(j)
+	e.cache.put(int(j.slabShard), j)
 	e.leased.Add(-1)
 
 	// Counted down last, after the slab is scrubbed and parked.

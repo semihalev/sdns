@@ -64,14 +64,14 @@ func TestUDPPortableFallbackReplyAddressing(t *testing.T) {
 	}
 	copy(poisoned.rawSA[:], sa[:])
 	poisoned.rawSALen = uint32(len(sa))
-	e.cache.put(poisoned)
+	e.cache.put(0, poisoned)
 
 	// The fallback shape: workers plus a portable reader on a socket the
 	// batch TX map still knows.
 	e.workerG.Add(1)
 	go e.worker(0)
 	e.readers.Add(1)
-	go e.reader(server)
+	go e.reader(0, server)
 	t.Cleanup(func() {
 		server.Close() //nolint:gosec // G104 - test socket teardown
 		_ = e.stopAndDrain(time.Now().Add(2 * time.Second))
