@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -16,8 +17,6 @@ import (
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func makeRR(data string) dns.RR {
@@ -54,11 +53,21 @@ func TestNew(t *testing.T) {
 	c := New(cfg)
 	defer c.Stop()
 
-	require.NotNil(t, c)
-	assert.Equal(t, "cache", c.Name())
-	assert.NotNil(t, c.positive)
-	assert.NotNil(t, c.negative)
-	assert.Equal(t, cfg.CacheSize, c.config.Size)
+	if c == nil {
+		t.Fatalf("c is nil")
+	}
+	if !reflect.DeepEqual("cache", c.Name()) {
+		t.Errorf("c.Name() = %v, want %v", c.Name(), "cache")
+	}
+	if c.positive == nil {
+		t.Fatalf("c.positive is nil")
+	}
+	if c.negative == nil {
+		t.Fatalf("c.negative is nil")
+	}
+	if !reflect.DeepEqual(cfg.CacheSize, c.config.Size) {
+		t.Errorf("c.config.Size = %v, want %v", c.config.Size, cfg.CacheSize)
+	}
 
 	// Clean up
 	os.RemoveAll(cfg.Directory) //nolint:gosec // G104 - test cleanup
@@ -109,8 +118,12 @@ func TestCachePurge(t *testing.T) {
 	ch.Reset(mw, req)
 
 	c.ServeDNS(context.Background(), ch)
-	assert.True(t, mw.Written())
-	assert.Len(t, mw.Msg().Extra, 1)
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
+	if len(mw.Msg().Extra) != 1 {
+		t.Errorf("len(mw.Msg().Extra) = %d, want %d", len(mw.Msg().Extra), 1)
+	}
 }
 
 func TestPositiveCache(t *testing.T) {
@@ -133,7 +146,9 @@ func TestPositiveCache(t *testing.T) {
 
 	// Check cache is empty initially
 	entry := c.checkCache(key)
-	assert.Nil(t, entry)
+	if entry != nil {
+		t.Errorf("entry = %v, want nil", entry)
+	}
 
 	// Create and cache a positive response
 	msg := new(dns.Msg)
@@ -144,16 +159,24 @@ func TestPositiveCache(t *testing.T) {
 
 	// Verify it's in cache
 	entry = c.checkCache(key)
-	require.NotNil(t, entry)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
 
 	// Serve from cache
 	ch.Reset(mw, req)
 	c.ServeDNS(context.Background(), ch)
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 
 	resp := mw.Msg()
-	require.Len(t, resp.Answer, 1)
-	assert.Equal(t, "test.com.", resp.Answer[0].Header().Name)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	}
+	if !reflect.DeepEqual("test.com.", resp.Answer[0].Header().Name) {
+		t.Errorf("resp.Answer[0].Header().Name = %v, want %v", resp.Answer[0].Header().Name, "test.com.")
+	}
 }
 
 func TestNegativeCache(t *testing.T) {
@@ -183,12 +206,18 @@ func TestNegativeCache(t *testing.T) {
 
 	// Verify it's in cache (NXDOMAIN goes to positive cache)
 	entry := c.checkCache(key)
-	require.NotNil(t, entry)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
 
 	// NXDOMAIN responses are stored in positive cache with ttl from SOA
 	posEntry, found := c.positive.Get(key)
-	assert.True(t, found)
-	assert.NotNil(t, posEntry)
+	if !(found) {
+		t.Errorf("found is false")
+	}
+	if posEntry == nil {
+		t.Fatalf("posEntry is nil")
+	}
 }
 
 func TestCacheTTL(t *testing.T) {
@@ -215,7 +244,9 @@ func TestCacheTTL(t *testing.T) {
 
 	// Should be in cache immediately
 	entry := c.checkCache(key)
-	require.NotNil(t, entry)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
 
 	// Age the entry past its TTL rather than waiting it out: expiry is
 	// derived from stored+ttl, so moving stored back is exactly equivalent
@@ -225,7 +256,9 @@ func TestCacheTTL(t *testing.T) {
 
 	// Should be expired
 	entry = c.checkCache(key)
-	assert.Nil(t, entry)
+	if entry != nil {
+		t.Errorf("entry = %v, want nil", entry)
+	}
 }
 
 func TestCacheDNSSEC(t *testing.T) {
@@ -252,11 +285,15 @@ func TestCacheDNSSEC(t *testing.T) {
 	// Query without CD bit should not find it
 	keyNoCD := cache.Key(q, false)
 	entry := c.checkCache(keyNoCD)
-	assert.Nil(t, entry)
+	if entry != nil {
+		t.Errorf("entry = %v, want nil", entry)
+	}
 
 	// Query with CD bit should find it
 	entry = c.checkCache(key)
-	assert.NotNil(t, entry)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
 }
 
 func TestCachePrefetch(t *testing.T) {
@@ -269,7 +306,9 @@ func TestCachePrefetch(t *testing.T) {
 
 	// Just verify prefetch is configured
 	if cfg.Prefetch > 0 {
-		assert.NotNil(t, c.prefetchQueue)
+		if c.prefetchQueue == nil {
+			t.Fatalf("c.prefetchQueue is nil")
+		}
 	}
 
 	// Test basic caching without waiting for prefetch
@@ -285,7 +324,9 @@ func TestCachePrefetch(t *testing.T) {
 
 	// Verify it's cached
 	entry := c.checkCache(key)
-	assert.NotNil(t, entry)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
 }
 
 func TestCacheConcurrency(t *testing.T) {
@@ -339,7 +380,9 @@ func TestCacheConcurrency(t *testing.T) {
 
 	// Verify cache has some entries
 	stats := c.Stats()
-	assert.Contains(t, stats, "positive_size")
+	if _, ok := stats["positive_size"]; !ok {
+		t.Errorf("stats %v missing %q", stats, "positive_size")
+	}
 }
 
 func TestCacheMetrics(t *testing.T) {
@@ -376,10 +419,11 @@ func TestCacheMetrics(t *testing.T) {
 
 	stats := c.Stats()
 
-	assert.Contains(t, stats, "positive_size")
-	assert.Contains(t, stats, "negative_size")
-	assert.Contains(t, stats, "hits")
-	assert.Contains(t, stats, "misses")
+	for _, key := range []string{"positive_size", "negative_size", "hits", "misses"} {
+		if _, ok := stats[key]; !ok {
+			t.Errorf("stats %v missing %q", stats, key)
+		}
+	}
 }
 
 func TestCacheInvalidation(t *testing.T) {
@@ -402,7 +446,9 @@ func TestCacheInvalidation(t *testing.T) {
 
 	// Verify it's cached
 	entry := c.checkCache(key)
-	require.NotNil(t, entry)
+	if entry == nil {
+		t.Fatalf("entry is nil")
+	}
 
 	// Clear cache by creating new instances. checkCache reads through
 	// c.store, so the swap has to update both the direct fields and
@@ -413,7 +459,9 @@ func TestCacheInvalidation(t *testing.T) {
 
 	// Should be gone
 	entry = c.checkCache(key)
-	assert.Nil(t, entry)
+	if entry != nil {
+		t.Errorf("entry = %v, want nil", entry)
+	}
 }
 
 func TestCacheEDNS(t *testing.T) {
@@ -429,7 +477,9 @@ func TestCacheEDNS(t *testing.T) {
 	req.SetEdns0(4096, false)
 
 	opt := req.IsEdns0()
-	require.NotNil(t, opt)
+	if opt == nil {
+		t.Fatalf("opt is nil")
+	}
 
 	msg := new(dns.Msg)
 	msg.SetReply(req)
@@ -448,11 +498,19 @@ func TestCacheEDNS(t *testing.T) {
 	ch.Reset(mw, req2)
 
 	c.ServeDNS(context.Background(), ch)
-	assert.True(t, mw.Written())
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
 
 	// Response should be valid
 	resp := mw.Msg()
-	require.NotNil(t, resp)
-	assert.Len(t, resp.Answer, 1)
-	assert.Equal(t, "edns.com.", resp.Answer[0].Header().Name)
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	}
+	if len(resp.Answer) != 1 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+	}
+	if !reflect.DeepEqual("edns.com.", resp.Answer[0].Header().Name) {
+		t.Errorf("resp.Answer[0].Header().Name = %v, want %v", resp.Answer[0].Header().Name, "edns.com.")
+	}
 }

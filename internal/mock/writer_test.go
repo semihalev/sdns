@@ -1,10 +1,10 @@
 package mock
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_Writer(t *testing.T) {
@@ -14,29 +14,63 @@ func Test_Writer(t *testing.T) {
 	m.SetQuestion("example.com.", dns.TypeA)
 	err := mw.WriteMsg(m)
 
-	assert.NoError(t, err)
-	assert.True(t, mw.Written())
-	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
-	assert.NotNil(t, mw.Msg())
-	assert.Equal(t, mw.LocalAddr().String(), "127.0.0.1:53")
-	assert.Equal(t, mw.RemoteAddr().String(), "127.0.0.1:0")
-	assert.Nil(t, mw.Close())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
+	if !reflect.DeepEqual(mw.Rcode(), dns.RcodeSuccess) {
+		t.Errorf("dns.RcodeSuccess = %v, want %v", dns.RcodeSuccess, mw.Rcode())
+	}
+	if mw.Msg() == nil {
+		t.Fatalf("mw.Msg() is nil")
+	}
+	if !reflect.DeepEqual(mw.LocalAddr().String(), "127.0.0.1:53") {
+		t.Errorf("'127.0.0.1:53' = %v, want %v", "127.0.0.1:53", mw.LocalAddr().String())
+	}
+	if !reflect.DeepEqual(mw.RemoteAddr().String(), "127.0.0.1:0") {
+		t.Errorf("'127.0.0.1:0' = %v, want %v", "127.0.0.1:0", mw.RemoteAddr().String())
+	}
+	if mw.Close() != nil {
+		t.Errorf("mw.Close() = %v, want nil", mw.Close())
+	}
 
 	mw = NewWriter("tcp", "127.0.0.255:0")
-	assert.False(t, mw.Written())
-	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
+	if mw.Written() {
+		t.Errorf("mw.Written() is true")
+	}
+	if !reflect.DeepEqual(mw.Rcode(), dns.RcodeServerFailure) {
+		t.Errorf("dns.RcodeServerFailure = %v, want %v", dns.RcodeServerFailure, mw.Rcode())
+	}
 
-	assert.Equal(t, "tcp", mw.Proto())
-	assert.Equal(t, "127.0.0.255", mw.RemoteIP().String())
+	if !reflect.DeepEqual("tcp", mw.Proto()) {
+		t.Errorf("mw.Proto() = %v, want %v", mw.Proto(), "tcp")
+	}
+	if !reflect.DeepEqual("127.0.0.255", mw.RemoteIP().String()) {
+		t.Errorf("mw.RemoteIP().String() = %v, want %v", mw.RemoteIP().String(), "127.0.0.255")
+	}
 
 	_, err = mw.Write([]byte{})
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 
 	data, err := m.Pack()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	_, err = mw.Write(data)
-	assert.NoError(t, err)
-	assert.True(t, mw.Written())
-	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
-	assert.True(t, mw.Internal())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
+	if !reflect.DeepEqual(mw.Rcode(), dns.RcodeSuccess) {
+		t.Errorf("dns.RcodeSuccess = %v, want %v", dns.RcodeSuccess, mw.Rcode())
+	}
+	if !(mw.Internal()) {
+		t.Errorf("mw.Internal() is false")
+	}
 }

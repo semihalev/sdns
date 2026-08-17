@@ -2,13 +2,13 @@ package resolver
 
 import (
 	"context"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
-	"github.com/stretchr/testify/assert"
 )
 
 // hermeticResolve runs one query through a resolver wired to net, starting
@@ -43,9 +43,14 @@ func TestHermeticResolve(t *testing.T) {
 
 	r := net.Resolver()
 	resp, err := hermeticResolve(t, r, "www.shop.test.", dns.TypeA)
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.True(t, len(resp.Answer) > 0)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	} else if len(resp.Answer) == 0 {
+		t.Errorf("len(resp.Answer) > 0 is false")
+	}
 
 	question := dns.Question{
 		Name: "www.shop.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET,
@@ -55,9 +60,12 @@ func TestHermeticResolve(t *testing.T) {
 		t.Fatal("the delegation used to answer was not cached")
 	}
 
-	assert.Equal(t, "shop.test.", match.servers.Zone)
-	assert.Equal(t, uint32(0), atomic.LoadUint32(&match.servers.ErrorCount),
-		"a delegation that answered should not be carrying failures")
+	if !reflect.DeepEqual("shop.test.", match.servers.Zone) {
+		t.Errorf("match.servers.Zone = %v, want %v", match.servers.Zone, "shop.test.")
+	}
+	if !reflect.DeepEqual(uint32(0), atomic.LoadUint32(&match.servers.ErrorCount)) {
+		t.Errorf("%s: atomic.LoadUint32(&match.servers.ErrorCount) = %v, want %v", "a delegation that answered should not be carrying failures", atomic.LoadUint32(&match.servers.ErrorCount), uint32(0))
+	}
 }
 
 // TestHermeticResolveMinimize walks a deep name with QNAME minimisation on,
@@ -74,9 +82,14 @@ func TestHermeticResolveMinimize(t *testing.T) {
 	resp, err := hermeticResolve(t, handler.resolver, "a.b.c.deep.test.", dns.TypeA,
 		func(m *dns.Msg) { m.CheckingDisabled = true })
 
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.True(t, len(resp.Answer) > 0)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	} else if len(resp.Answer) == 0 {
+		t.Errorf("len(resp.Answer) > 0 is false")
+	}
 }
 
 // TestHermeticResolveNXDOMAIN asks for a name the root does not delegate.
@@ -86,9 +99,14 @@ func TestHermeticResolveNXDOMAIN(t *testing.T) {
 
 	resp, err := hermeticResolve(t, net.Resolver(), "nothing-here.", dns.TypeNS)
 
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.Equal(t, dns.RcodeNameError, resp.Rcode)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	} else if !reflect.DeepEqual(dns.RcodeNameError, resp.Rcode) {
+		t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeNameError)
+	}
 }
 
 // TestHermeticResolveEmptyNonTerminal asks for a label that only exists
@@ -103,11 +121,18 @@ func TestHermeticResolveEmptyNonTerminal(t *testing.T) {
 
 	resp, err := hermeticResolve(t, net.Resolver(), "test.", dns.TypeA)
 
-	assert.NoError(t, err)
-	if assert.NotNil(t, resp) {
-		assert.Equal(t, dns.RcodeSuccess, resp.Rcode,
-			"a label above a delegation exists; denying it denies the subtree")
-		assert.Equal(t, 0, len(resp.Answer))
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Error("resp is nil")
+	} else {
+		if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+			t.Errorf("%s: resp.Rcode = %v, want %v", "a label above a delegation exists; denying it denies the subtree", resp.Rcode, dns.RcodeSuccess)
+		}
+		if !reflect.DeepEqual(0, len(resp.Answer)) {
+			t.Errorf("len(resp.Answer) = %v, want %v", len(resp.Answer), 0)
+		}
 	}
 }
 
@@ -120,10 +145,19 @@ func TestHermeticResolveNODATA(t *testing.T) {
 
 	resp, err := hermeticResolve(t, net.Resolver(), "host.nodata2.test.", dns.TypeAAAA)
 
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-	assert.Equal(t, 0, len(resp.Answer))
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	} else {
+		if !reflect.DeepEqual(dns.RcodeSuccess, resp.Rcode) {
+			t.Errorf("resp.Rcode = %v, want %v", resp.Rcode, dns.RcodeSuccess)
+		}
+		if !reflect.DeepEqual(0, len(resp.Answer)) {
+			t.Errorf("len(resp.Answer) = %v, want %v", len(resp.Answer), 0)
+		}
+	}
 }
 
 // TestHermeticResolveUnreachableAuthority pins that a zone whose authority
@@ -142,7 +176,9 @@ func TestHermeticResolveUnreachableAuthority(t *testing.T) {
 
 	_, err := hermeticResolve(t, r, "www.dead.test.", dns.TypeA)
 
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 }
 
 // TestHermeticResolveRootKeys pins that the root's own DNSKEY resolves,
@@ -152,7 +188,12 @@ func TestHermeticResolveRootKeys(t *testing.T) {
 
 	resp, err := hermeticResolve(t, net.Resolver(), ".", dns.TypeDNSKEY)
 
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.True(t, len(resp.Answer) > 0)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	} else if len(resp.Answer) == 0 {
+		t.Errorf("len(resp.Answer) > 0 is false")
+	}
 }

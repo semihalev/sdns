@@ -2,12 +2,12 @@ package middleware
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/stretchr/testify/assert"
 )
 
 // providerHandler implements Handler + StoreProvider (+ optional
@@ -95,13 +95,23 @@ func TestAutoWire_FullWiring(t *testing.T) {
 	// metrics is ClientOnly → must be missing from both sub-pipelines.
 	pipe := GlobalPipeline()
 	sub := pipe.SubPipeline("metrics")
-	assert.Nil(t, sub.Get("metrics"))
+	if sub.Get("metrics") != nil {
+		t.Errorf("sub.Get('metrics') = %v, want nil", sub.Get("metrics"))
+	}
 
 	// Setter got all three wiring calls.
-	assert.NotNil(t, setter.gotQ, "SetQueryer not called")
-	assert.NotNil(t, setter.gotPQ, "SetPrefetchQueryer not called")
-	assert.Equal(t, Store(st), setter.gotStr, "SetStore received wrong store")
-	assert.Equal(t, DNSSECCryptoLimiter(limiter), setter.gotLim, "crypto limiter was not shared")
+	if setter.gotQ == nil {
+		t.Errorf("%s: setter.gotQ is nil", "SetQueryer not called")
+	}
+	if setter.gotPQ == nil {
+		t.Errorf("%s: setter.gotPQ is nil", "SetPrefetchQueryer not called")
+	}
+	if !reflect.DeepEqual(Store(st), setter.gotStr) {
+		t.Errorf("%s: setter.gotStr = %v, want %v", "SetStore received wrong store", setter.gotStr, Store(st))
+	}
+	if !reflect.DeepEqual(DNSSECCryptoLimiter(limiter), setter.gotLim) {
+		t.Errorf("%s: setter.gotLim = %v, want %v", "crypto limiter was not shared", setter.gotLim, DNSSECCryptoLimiter(limiter))
+	}
 }
 
 // TestAutoWire_MultipleProviders covers the first-wins branch plus
@@ -121,7 +131,9 @@ func TestAutoWire_MultipleProviders(t *testing.T) {
 	Setup(&config.Config{})
 
 	// First-wins: setter's store must be from the first provider.
-	assert.Equal(t, first.store, setter.gotStr)
+	if !reflect.DeepEqual(first.store, setter.gotStr) {
+		t.Errorf("setter.gotStr = %v, want %v", setter.gotStr, first.store)
+	}
 }
 
 func TestAutoWire_TypedNilCryptoProviderDoesNotMaskUsableProvider(t *testing.T) {
@@ -140,7 +152,9 @@ func TestAutoWire_TypedNilCryptoProviderDoesNotMaskUsableProvider(t *testing.T) 
 
 	Setup(&config.Config{})
 
-	assert.Equal(t, DNSSECCryptoLimiter(usable), setter.gotLim)
+	if !reflect.DeepEqual(DNSSECCryptoLimiter(usable), setter.gotLim) {
+		t.Errorf("setter.gotLim = %v, want %v", setter.gotLim, DNSSECCryptoLimiter(usable))
+	}
 }
 
 // TestAutoWire_SetterWithoutProvider covers the
@@ -155,10 +169,16 @@ func TestAutoWire_SetterWithoutProvider(t *testing.T) {
 
 	Setup(&config.Config{})
 
-	assert.Nil(t, setter.gotStr, "SetStore must not be called without a StoreProvider")
+	if setter.gotStr != nil {
+		t.Errorf("%s: setter.gotStr = %v, want nil", "SetStore must not be called without a StoreProvider", setter.gotStr)
+	}
 	// But queryer setters still fire.
-	assert.NotNil(t, setter.gotQ)
-	assert.NotNil(t, setter.gotPQ)
+	if setter.gotQ == nil {
+		t.Fatalf("setter.gotQ is nil")
+	}
+	if setter.gotPQ == nil {
+		t.Fatalf("setter.gotPQ is nil")
+	}
 }
 
 // TestPutChain_NilSafe covers the early-return path on nil

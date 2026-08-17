@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,20 +18,22 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
 	// Test with empty config
 	cfg := &config.Config{}
 	h := New(cfg)
-	assert.Nil(t, h)
+	if h != nil {
+		t.Errorf("h = %v, want nil", h)
+	}
 
 	// Test with non-existent file
 	cfg.HostsFile = "/non/existent/file"
 	h = New(cfg)
-	assert.Nil(t, h)
+	if h != nil {
+		t.Errorf("h = %v, want nil", h)
+	}
 
 	// Test with valid file
 	tmpFile := createTempHostsFile(t, "127.0.0.1 localhost")
@@ -37,10 +41,18 @@ func TestNew(t *testing.T) {
 
 	cfg.HostsFile = tmpFile
 	h = New(cfg)
-	require.NotNil(t, h)
-	assert.Equal(t, tmpFile, h.path)
-	assert.Equal(t, uint32(600), h.ttl)
-	assert.Equal(t, "hostsfile", h.Name())
+	if h == nil {
+		t.Fatalf("h is nil")
+	}
+	if !reflect.DeepEqual(tmpFile, h.path) {
+		t.Errorf("h.path = %v, want %v", h.path, tmpFile)
+	}
+	if !reflect.DeepEqual(uint32(600), h.ttl) {
+		t.Errorf("h.ttl = %v, want %v", h.ttl, uint32(600))
+	}
+	if !reflect.DeepEqual("hostsfile", h.Name()) {
+		t.Errorf("h.Name() = %v, want %v", h.Name(), "hostsfile")
+	}
 }
 
 func TestServeDNS_Basic(t *testing.T) {
@@ -59,7 +71,9 @@ func TestServeDNS_Basic(t *testing.T) {
 		path: tmpFile,
 		ttl:  300,
 	}
-	require.NoError(t, h.load())
+	if err := h.load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	tests := []struct {
 		name     string
@@ -91,16 +105,24 @@ func TestServeDNS_Basic(t *testing.T) {
 			h.ServeDNS(context.Background(), ch)
 
 			if tt.found {
-				require.True(t, w.Written())
-				resp := w.Msg()
-				assert.Equal(t, tt.expected, len(resp.Answer))
-				if tt.expected > 0 {
-					assert.True(t, resp.Authoritative)
-					assert.True(t, resp.RecursionAvailable)
+				if !(w.Written()) {
+					t.Fatalf("w.Written() is false")
 				}
-			} else {
-				// Should pass through
-				assert.False(t, w.Written())
+				resp := w.Msg()
+				if !reflect.DeepEqual(tt.expected, len(resp.Answer)) {
+					t.Errorf("len(resp.Answer) = %v, want %v", len(resp.Answer), tt.expected)
+				}
+				if tt.expected > 0 {
+					if !(resp.Authoritative) {
+						t.Errorf("resp.Authoritative is false")
+					}
+					if !(resp.RecursionAvailable) {
+						t.Errorf("resp.RecursionAvailable is false")
+					}
+				}
+			} else if w.Written() {
+				// Should pass through unanswered.
+				t.Errorf("w.Written() is true")
 			}
 		})
 	}
@@ -117,7 +139,9 @@ func TestServeDNS_PreservesHeaderBits(t *testing.T) {
 	defer os.Remove(tmpFile)
 
 	h := &Hostsfile{path: tmpFile, ttl: 300}
-	require.NoError(t, h.load())
+	if err := h.load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	cases := []struct {
 		name string
@@ -141,14 +165,26 @@ func TestServeDNS_PreservesHeaderBits(t *testing.T) {
 			ch.Reset(w, req)
 			h.ServeDNS(context.Background(), ch)
 
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 			resp := w.Msg()
-			require.NotNil(t, resp)
+			if resp == nil {
+				t.Fatalf("resp is nil")
+			}
 
-			assert.Equal(t, tc.cd, resp.CheckingDisabled, "CheckingDisabled bit must round-trip")
-			assert.Equal(t, tc.rd, resp.RecursionDesired, "RecursionDesired bit must round-trip")
-			assert.True(t, resp.Response, "Response bit must be set")
-			assert.Equal(t, req.Id, resp.Id)
+			if !reflect.DeepEqual(tc.cd, resp.CheckingDisabled) {
+				t.Errorf("%s: resp.CheckingDisabled = %v, want %v", "CheckingDisabled bit must round-trip", resp.CheckingDisabled, tc.cd)
+			}
+			if !reflect.DeepEqual(tc.rd, resp.RecursionDesired) {
+				t.Errorf("%s: resp.RecursionDesired = %v, want %v", "RecursionDesired bit must round-trip", resp.RecursionDesired, tc.rd)
+			}
+			if !(resp.Response) {
+				t.Errorf("%s: resp.Response is false", "Response bit must be set")
+			}
+			if !reflect.DeepEqual(req.Id, resp.Id) {
+				t.Errorf("resp.Id = %v, want %v", resp.Id, req.Id)
+			}
 		})
 	}
 }
@@ -162,7 +198,9 @@ func TestServeDNS_EdgeCases(t *testing.T) {
 		path: tmpFile,
 		ttl:  300,
 	}
-	require.NoError(t, h.load())
+	if err := h.load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Test with empty question
 	req := new(dns.Msg)
@@ -171,7 +209,9 @@ func TestServeDNS_EdgeCases(t *testing.T) {
 	ch.Reset(w, req)
 
 	h.ServeDNS(context.Background(), ch)
-	assert.False(t, w.Written())
+	if w.Written() {
+		t.Errorf("w.Written() is true")
+	}
 }
 
 func TestLookupFunctions(t *testing.T) {
@@ -190,73 +230,131 @@ func TestLookupFunctions(t *testing.T) {
 		path: tmpFile,
 		ttl:  300,
 	}
-	require.NoError(t, h.load())
+	if err := h.load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	db := h.getDB()
 
 	// Test lookupA
 	t.Run("lookupA", func(t *testing.T) {
 		// Direct lookup
 		rrs, found := h.lookupA(db, "localhost")
-		assert.True(t, found)
-		assert.Len(t, rrs, 1)
-		assert.Equal(t, "127.0.0.1", rrs[0].(*dns.A).A.String())
+		if !(found) {
+			t.Errorf("found is false")
+		}
+		if len(rrs) != 1 {
+			t.Errorf("len(rrs) = %d, want %d", len(rrs), 1)
+		}
+		if !reflect.DeepEqual("127.0.0.1", rrs[0].(*dns.A).A.String()) {
+			t.Errorf("rrs[0].(*dns.A).A.String() = %v, want %v", rrs[0].(*dns.A).A.String(), "127.0.0.1")
+		}
 
 		// Wildcard lookup
 		rrs, found = h.lookupA(db, "test.wildcard.com")
-		assert.True(t, found)
-		assert.Len(t, rrs, 1)
-		assert.Equal(t, "10.0.0.1", rrs[0].(*dns.A).A.String())
+		if !(found) {
+			t.Errorf("found is false")
+		}
+		if len(rrs) != 1 {
+			t.Errorf("len(rrs) = %d, want %d", len(rrs), 1)
+		}
+		if !reflect.DeepEqual("10.0.0.1", rrs[0].(*dns.A).A.String()) {
+			t.Errorf("rrs[0].(*dns.A).A.String() = %v, want %v", rrs[0].(*dns.A).A.String(), "10.0.0.1")
+		}
 
 		// Not found
 		rrs, found = h.lookupA(db, "notfound.local")
-		assert.False(t, found)
-		assert.Nil(t, rrs)
+		if found {
+			t.Errorf("found is true")
+		}
+		if rrs != nil {
+			t.Errorf("rrs = %v, want nil", rrs)
+		}
 	})
 
 	// Test lookupAAAA
 	t.Run("lookupAAAA", func(t *testing.T) {
 		rrs, found := h.lookupAAAA(db, "localhost")
-		assert.True(t, found)
-		assert.Len(t, rrs, 1)
-		assert.Equal(t, "::1", rrs[0].(*dns.AAAA).AAAA.String())
+		if !(found) {
+			t.Errorf("found is false")
+		}
+		if len(rrs) != 1 {
+			t.Errorf("len(rrs) = %d, want %d", len(rrs), 1)
+		}
+		if !reflect.DeepEqual("::1", rrs[0].(*dns.AAAA).AAAA.String()) {
+			t.Errorf("rrs[0].(*dns.AAAA).AAAA.String() = %v, want %v", rrs[0].(*dns.AAAA).AAAA.String(), "::1")
+		}
 
 		rrs, found = h.lookupAAAA(db, "ipv6.host.com")
-		assert.True(t, found)
-		assert.Len(t, rrs, 1)
+		if !(found) {
+			t.Errorf("found is false")
+		}
+		if len(rrs) != 1 {
+			t.Errorf("len(rrs) = %d, want %d", len(rrs), 1)
+		}
 	})
 
 	// Test lookupPTR
 	t.Run("lookupPTR", func(t *testing.T) {
 		rrs, found := h.lookupPTR(db, "1.0.0.127.in-addr.arpa.")
-		assert.True(t, found)
-		assert.Len(t, rrs, 1)
-		assert.Equal(t, "localhost.", rrs[0].(*dns.PTR).Ptr)
+		if !(found) {
+			t.Errorf("found is false")
+		}
+		if len(rrs) != 1 {
+			t.Errorf("len(rrs) = %d, want %d", len(rrs), 1)
+		}
+		if !reflect.DeepEqual("localhost.", rrs[0].(*dns.PTR).Ptr) {
+			t.Errorf("rrs[0].(*dns.PTR).Ptr = %v, want %v", rrs[0].(*dns.PTR).Ptr, "localhost.")
+		}
 
 		// Invalid PTR
 		rrs, found = h.lookupPTR(db, "invalid.ptr")
-		assert.False(t, found)
-		assert.Nil(t, rrs)
+		if found {
+			t.Errorf("found is true")
+		}
+		if rrs != nil {
+			t.Errorf("rrs = %v, want nil", rrs)
+		}
 	})
 
 	// Test lookupCNAME
 	t.Run("lookupCNAME", func(t *testing.T) {
 		rrs, found := h.lookupCNAME(db, "local")
-		assert.True(t, found)
-		assert.Len(t, rrs, 1)
-		assert.Equal(t, "localhost.", rrs[0].(*dns.CNAME).Target)
+		if !(found) {
+			t.Errorf("found is false")
+		}
+		if len(rrs) != 1 {
+			t.Errorf("len(rrs) = %d, want %d", len(rrs), 1)
+		}
+		if !reflect.DeepEqual("localhost.", rrs[0].(*dns.CNAME).Target) {
+			t.Errorf("rrs[0].(*dns.CNAME).Target = %v, want %v", rrs[0].(*dns.CNAME).Target, "localhost.")
+		}
 
 		rrs, found = h.lookupCNAME(db, "alias2")
-		assert.True(t, found)
-		assert.Len(t, rrs, 1)
-		assert.Equal(t, "host2.local.", rrs[0].(*dns.CNAME).Target)
+		if !(found) {
+			t.Errorf("found is false")
+		}
+		if len(rrs) != 1 {
+			t.Errorf("len(rrs) = %d, want %d", len(rrs), 1)
+		}
+		if !reflect.DeepEqual("host2.local.", rrs[0].(*dns.CNAME).Target) {
+			t.Errorf("rrs[0].(*dns.CNAME).Target = %v, want %v", rrs[0].(*dns.CNAME).Target, "host2.local.")
+		}
 	})
 
 	// Test hostExists
 	t.Run("hostExists", func(t *testing.T) {
-		assert.True(t, h.hostExists(db, "localhost"))
-		assert.True(t, h.hostExists(db, "local"))             // alias
-		assert.True(t, h.hostExists(db, "test.wildcard.com")) // wildcard
-		assert.False(t, h.hostExists(db, "notfound.com"))
+		if !(h.hostExists(db, "localhost")) {
+			t.Errorf("h.hostExists(db, 'localhost') is false")
+		}
+		if !(h.hostExists(db, "local")) {
+			t.Errorf("h.hostExists(db, 'local') is false")
+		} // alias
+		if !(h.hostExists(db, "test.wildcard.com")) {
+			t.Errorf("h.hostExists(db, 'test.wildcard.com') is false")
+		} // wildcard
+		if h.hostExists(db, "notfound.com") {
+			t.Errorf("h.hostExists(db, 'notfound.com') is true")
+		}
 	})
 }
 
@@ -331,13 +429,25 @@ func TestParseLine(t *testing.T) {
 			ip, hosts, comment := parseLine(tt.line)
 
 			if tt.shouldParse {
-				require.NotNil(t, ip)
-				assert.Equal(t, tt.expectedIP, ip.String())
-				assert.Equal(t, tt.expectedHosts, hosts)
-				assert.Equal(t, tt.expectedComment, comment)
+				if ip == nil {
+					t.Fatalf("ip is nil")
+				}
+				if !reflect.DeepEqual(tt.expectedIP, ip.String()) {
+					t.Errorf("ip.String() = %v, want %v", ip.String(), tt.expectedIP)
+				}
+				if !reflect.DeepEqual(tt.expectedHosts, hosts) {
+					t.Errorf("hosts = %v, want %v", hosts, tt.expectedHosts)
+				}
+				if !reflect.DeepEqual(tt.expectedComment, comment) {
+					t.Errorf("comment = %v, want %v", comment, tt.expectedComment)
+				}
 			} else {
-				assert.Nil(t, ip)
-				assert.Nil(t, hosts)
+				if ip != nil {
+					t.Errorf("ip = %v, want nil", ip)
+				}
+				if hosts != nil {
+					t.Errorf("hosts = %v, want nil", hosts)
+				}
 			}
 		})
 	}
@@ -359,7 +469,9 @@ func TestMatchWildcard(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s matches %s", tt.pattern, tt.name), func(t *testing.T) {
-			assert.Equal(t, tt.match, matchWildcard(tt.pattern, tt.name))
+			if !reflect.DeepEqual(tt.match, matchWildcard(tt.pattern, tt.name)) {
+				t.Errorf("matchWildcard(tt.pattern, tt.name) = %v, want %v", matchWildcard(tt.pattern, tt.name), tt.match)
+			}
 		})
 	}
 }
@@ -382,20 +494,34 @@ invalid line
 	}
 
 	err := h.load()
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	db := h.getDB()
-	assert.Equal(t, int64(4), atomic.LoadInt64(&db.stats.entries)) // localhost, host1, alias1, alias2
-	assert.Equal(t, int64(1), atomic.LoadInt64(&db.stats.wildcards))
+	if !reflect.DeepEqual(int64(4), atomic.LoadInt64(&db.stats.entries)) {
+		t.Errorf("atomic.LoadInt64(&db.stats.entries) = %v, want %v", atomic.LoadInt64(&db.stats.entries), int64(4))
+	} // localhost, host1, alias1, alias2
+	if !reflect.DeepEqual(int64(1), atomic.LoadInt64(&db.stats.wildcards)) {
+		t.Errorf("atomic.LoadInt64(&db.stats.wildcards) = %v, want %v", atomic.LoadInt64(&db.stats.wildcards), int64(1))
+	}
 
 	// Check reverse mappings
-	assert.Contains(t, db.reverse["127.0.0.1"], "localhost")
-	assert.Contains(t, db.reverse["192.168.1.1"], "host1")
+	if !slices.Contains(db.reverse["127.0.0.1"], "localhost") {
+		t.Errorf("reverse[127.0.0.1] %v does not contain localhost", db.reverse["127.0.0.1"])
+	}
+	if !slices.Contains(db.reverse["192.168.1.1"], "host1") {
+		t.Errorf("reverse[192.168.1.1] %v does not contain host1", db.reverse["192.168.1.1"])
+	}
 
 	// Check aliases
 	entry := db.hosts["host1"]
-	assert.Contains(t, entry.Aliases, "alias1")
-	assert.Contains(t, entry.Aliases, "alias2")
+	if !slices.Contains(entry.Aliases, "alias1") {
+		t.Errorf("aliases %v do not contain alias1", entry.Aliases)
+	}
+	if !slices.Contains(entry.Aliases, "alias2") {
+		t.Errorf("aliases %v do not contain alias2", entry.Aliases)
+	}
 }
 
 func TestFileWatcher(t *testing.T) {
@@ -410,12 +536,18 @@ func TestFileWatcher(t *testing.T) {
 
 	cfg := &config.Config{HostsFile: tmpFile}
 	h := New(cfg)
-	require.NotNil(t, h)
-	require.NotNil(t, h.watcher)
+	if h == nil {
+		t.Fatalf("h is nil")
+	}
+	if h.watcher == nil {
+		t.Fatalf("h.watcher is nil")
+	}
 
 	// Initial state
 	db := h.getDB()
-	assert.Equal(t, int64(1), atomic.LoadInt64(&db.stats.entries))
+	if !reflect.DeepEqual(int64(1), atomic.LoadInt64(&db.stats.entries)) {
+		t.Errorf("atomic.LoadInt64(&db.stats.entries) = %v, want %v", atomic.LoadInt64(&db.stats.entries), int64(1))
+	}
 
 	// Update file
 	newContent := `
@@ -423,7 +555,9 @@ func TestFileWatcher(t *testing.T) {
 192.168.1.1 newhost
 `
 	err := os.WriteFile(tmpFile, []byte(newContent), 0644) //nolint:gosec // G306 - test file
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Wait for reload with timeout
 	timeout := time.After(2 * time.Second)
@@ -457,7 +591,9 @@ func TestStats(t *testing.T) {
 		path: tmpFile,
 		ttl:  300,
 	}
-	require.NoError(t, h.load())
+	if err := h.load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Simulate some lookups
 	db := h.getDB()
@@ -465,11 +601,21 @@ func TestStats(t *testing.T) {
 	atomic.AddUint64(&db.stats.hits, 75)
 
 	stats := h.Stats()
-	assert.Equal(t, int64(2), stats["entries"])
-	assert.Equal(t, int64(1), stats["wildcards"])
-	assert.Equal(t, uint64(100), stats["lookups"])
-	assert.Equal(t, uint64(75), stats["hits"])
-	assert.NotEmpty(t, stats["reload_time"])
+	if !reflect.DeepEqual(int64(2), stats["entries"]) {
+		t.Errorf("stats['entries'] = %v, want %v", stats["entries"], int64(2))
+	}
+	if !reflect.DeepEqual(int64(1), stats["wildcards"]) {
+		t.Errorf("stats['wildcards'] = %v, want %v", stats["wildcards"], int64(1))
+	}
+	if !reflect.DeepEqual(uint64(100), stats["lookups"]) {
+		t.Errorf("stats['lookups'] = %v, want %v", stats["lookups"], uint64(100))
+	}
+	if !reflect.DeepEqual(uint64(75), stats["hits"]) {
+		t.Errorf("stats['hits'] = %v, want %v", stats["hits"], uint64(75))
+	}
+	if s, _ := stats["reload_time"].(string); s == "" {
+		t.Errorf("stats['reload_time'] is empty")
+	}
 }
 
 func TestConcurrentAccess(t *testing.T) {
@@ -484,7 +630,9 @@ func TestConcurrentAccess(t *testing.T) {
 		path: tmpFile,
 		ttl:  300,
 	}
-	require.NoError(t, h.load())
+	if err := h.load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Concurrent lookups
 	var wg sync.WaitGroup
@@ -505,7 +653,9 @@ func TestConcurrentAccess(t *testing.T) {
 			ch.Reset(w, req)
 
 			h.ServeDNS(context.Background(), ch)
-			assert.True(t, w.Written())
+			if !(w.Written()) {
+				t.Errorf("w.Written() is false")
+			}
 		}(i)
 	}
 
@@ -515,7 +665,9 @@ func TestConcurrentAccess(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 10; i++ {
 			err := h.load()
-			assert.NoError(t, err)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
@@ -526,7 +678,9 @@ func TestConcurrentAccess(t *testing.T) {
 	db := h.getDB()
 	// Since we do concurrent reloads, the DB might have been replaced
 	// Just verify we have the expected number of entries
-	assert.Equal(t, int64(2), atomic.LoadInt64(&db.stats.entries))
+	if !reflect.DeepEqual(int64(2), atomic.LoadInt64(&db.stats.entries)) {
+		t.Errorf("atomic.LoadInt64(&db.stats.entries) = %v, want %v", atomic.LoadInt64(&db.stats.entries), int64(2))
+	}
 }
 
 func TestMultipleIPs(t *testing.T) {
@@ -543,7 +697,9 @@ func TestMultipleIPs(t *testing.T) {
 		path: tmpFile,
 		ttl:  300,
 	}
-	require.NoError(t, h.load())
+	if err := h.load(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// Test A records
 	req := new(dns.Msg)
@@ -554,10 +710,14 @@ func TestMultipleIPs(t *testing.T) {
 	ch.Reset(w, req)
 
 	h.ServeDNS(context.Background(), ch)
-	require.True(t, w.Written())
+	if !(w.Written()) {
+		t.Fatalf("w.Written() is false")
+	}
 
 	resp := w.Msg()
-	assert.Len(t, resp.Answer, 2)
+	if len(resp.Answer) != 2 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 2)
+	}
 
 	// Test AAAA records
 	req.SetQuestion("multi.local.", dns.TypeAAAA)
@@ -565,10 +725,14 @@ func TestMultipleIPs(t *testing.T) {
 	ch.Reset(w, req)
 
 	h.ServeDNS(context.Background(), ch)
-	require.True(t, w.Written())
+	if !(w.Written()) {
+		t.Fatalf("w.Written() is false")
+	}
 
 	resp = w.Msg()
-	assert.Len(t, resp.Answer, 2)
+	if len(resp.Answer) != 2 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 2)
+	}
 }
 
 // Helper function to create temporary hosts file.
@@ -582,7 +746,9 @@ func createTempHostsFile(t *testing.T, content string) string {
 	}
 
 	err := os.WriteFile(tmpFile, []byte(content), 0644) //nolint:gosec // G306 - test file
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	return tmpFile
 }

@@ -4,16 +4,16 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // noopMsgHandler is a doq.Handler stub for listeners that are only
@@ -65,15 +65,31 @@ func TestBindAll_CriticalFailureUnwindsSuccessfulBinds(t *testing.T) {
 
 	active, err := bindAll(context.Background(), []Listener{udp, tcp, tls})
 
-	require.Error(t, err, "bindAll must surface critical bind errors")
-	assert.Nil(t, active, "no listeners should be returned on critical failure")
-	assert.Contains(t, err.Error(), "bind: address already in use")
+	if err == nil {
+		t.Fatalf("%s: expected an error, got nil", "bindAll must surface critical bind errors")
+	}
+	if active != nil {
+		t.Errorf("%s: active = %v, want nil", "no listeners should be returned on critical failure", active)
+	}
+	if !strings.Contains(err.Error(), "bind: address already in use") {
+		t.Errorf("%q does not contain %q", err.Error(), "bind: address already in use")
+	}
 
-	assert.True(t, udp.bound.Load(), "UDP should have bound")
-	assert.True(t, udp.shutdown.Load(), "UDP must be shut down to release the socket")
-	assert.False(t, tcp.bound.Load(), "TCP should not have bound")
-	assert.True(t, tls.bound.Load(), "non-critical TLS should have bound")
-	assert.True(t, tls.shutdown.Load(), "non-critical TLS must also be shut down")
+	if !(udp.bound.Load()) {
+		t.Errorf("%s: udp.bound.Load() is false", "UDP should have bound")
+	}
+	if !(udp.shutdown.Load()) {
+		t.Errorf("%s: udp.shutdown.Load() is false", "UDP must be shut down to release the socket")
+	}
+	if tcp.bound.Load() {
+		t.Errorf("%s: tcp.bound.Load() is true", "TCP should not have bound")
+	}
+	if !(tls.bound.Load()) {
+		t.Errorf("%s: tls.bound.Load() is false", "non-critical TLS should have bound")
+	}
+	if !(tls.shutdown.Load()) {
+		t.Errorf("%s: tls.shutdown.Load() is false", "non-critical TLS must also be shut down")
+	}
 }
 
 func TestBindAll_NonCriticalFailureDoesNotAbort(t *testing.T) {
@@ -85,15 +101,29 @@ func TestBindAll_NonCriticalFailureDoesNotAbort(t *testing.T) {
 
 	active, err := bindAll(context.Background(), []Listener{udp, tcp, tls})
 
-	require.NoError(t, err)
-	assert.Len(t, active, 2)
-	assert.True(t, udp.bound.Load())
-	assert.True(t, tcp.bound.Load())
-	assert.False(t, tls.bound.Load())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(active) != 2 {
+		t.Errorf("len(active) = %d, want %d", len(active), 2)
+	}
+	if !(udp.bound.Load()) {
+		t.Errorf("udp.bound.Load() is false")
+	}
+	if !(tcp.bound.Load()) {
+		t.Errorf("tcp.bound.Load() is false")
+	}
+	if tls.bound.Load() {
+		t.Errorf("tls.bound.Load() is true")
+	}
 	// Nothing should be shut down — everything currently bound is
 	// still serving.
-	assert.False(t, udp.shutdown.Load())
-	assert.False(t, tcp.shutdown.Load())
+	if udp.shutdown.Load() {
+		t.Errorf("udp.shutdown.Load() is true")
+	}
+	if tcp.shutdown.Load() {
+		t.Errorf("tcp.shutdown.Load() is true")
+	}
 }
 
 // TestListenerShutdownBeforeServeReleasesSocket verifies that every
@@ -130,11 +160,15 @@ func TestListenerShutdownBeforeServeReleasesSocket(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			l := tc.build("127.0.0.1:0")
-			require.NoError(t, l.Bind(context.Background()), "Bind")
+			if err := l.Bind(context.Background()); err != nil {
+				t.Fatalf("%s: unexpected error: %v", "Bind", err)
+			}
 
 			// Capture the bound port so we can try to re-bind it.
 			addr := boundAddr(t, l)
-			require.NoError(t, l.Shutdown(context.Background()), "Shutdown")
+			if err := l.Shutdown(context.Background()); err != nil {
+				t.Fatalf("%s: unexpected error: %v", "Shutdown", err)
+			}
 
 			// If Shutdown actually released the FD, we can open a
 			// fresh socket on the same port immediately. Use the
@@ -164,22 +198,34 @@ func boundAddr(t *testing.T, l Listener) string {
 	t.Helper()
 	switch v := l.(type) {
 	case *udpListener:
-		require.NotEmpty(t, v.pcs, "udp listener must have at least one PacketConn")
+		if len(v.pcs) == 0 {
+			t.Fatalf("%s: v.pcs is empty", "udp listener must have at least one PacketConn")
+		}
 		return v.pcs[0].LocalAddr().String()
 	case *tcpListener:
-		require.NotNil(t, v.ln, "tcp listener must have a net.Listener")
+		if v.ln == nil {
+			t.Fatalf("%s: v.ln is nil", "tcp listener must have a net.Listener")
+		}
 		return v.ln.Addr().String()
 	case *tlsListener:
-		require.NotNil(t, v.ln, "tls listener must have a net.Listener")
+		if v.ln == nil {
+			t.Fatalf("%s: v.ln is nil", "tls listener must have a net.Listener")
+		}
 		return v.ln.Addr().String()
 	case *dohListener:
-		require.NotNil(t, v.ln, "doh listener must have a net.Listener")
+		if v.ln == nil {
+			t.Fatalf("%s: v.ln is nil", "doh listener must have a net.Listener")
+		}
 		return v.ln.Addr().String()
 	case *doh3Listener:
-		require.NotNil(t, v.pc, "doh3 listener must have a PacketConn")
+		if v.pc == nil {
+			t.Fatalf("%s: v.pc is nil", "doh3 listener must have a PacketConn")
+		}
 		return v.pc.LocalAddr().String()
 	case *doqListener:
-		require.NotNil(t, v.pc, "doq listener must have a PacketConn")
+		if v.pc == nil {
+			t.Fatalf("%s: v.pc is nil", "doq listener must have a PacketConn")
+		}
 		return v.pc.LocalAddr().String()
 	default:
 		t.Fatalf("unsupported listener type %T", l)
@@ -190,18 +236,26 @@ func boundAddr(t *testing.T, l Listener) string {
 func probeUDP(t *testing.T, addr string) {
 	t.Helper()
 	ua, err := net.ResolveUDPAddr("udp", addr)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	pc, err := net.ListenUDP("udp", ua)
-	require.NoError(t, err, "port %s must be free after Shutdown", addr)
+	if err != nil {
+		t.Fatalf("%s: unexpected error: %v", fmt.Sprintf("port %s must be free after Shutdown", addr), err)
+	}
 	_ = pc.Close()
 }
 
 func probeTCP(t *testing.T, addr string) {
 	t.Helper()
 	ta, err := net.ResolveTCPAddr("tcp", addr)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	ln, err := net.ListenTCP("tcp", ta)
-	require.NoError(t, err, "port %s must be free after Shutdown", addr)
+	if err != nil {
+		t.Fatalf("%s: unexpected error: %v", fmt.Sprintf("port %s must be free after Shutdown", addr), err)
+	}
 	_ = ln.Close()
 }
 
@@ -219,7 +273,9 @@ func minimalTLSConfig(t *testing.T) *tls.Config {
 	t.Helper()
 	cert, key := generateTestCert(t, "listener-test.local")
 	tlsCert, err := tls.X509KeyPair(cert, key)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
 		MinVersion:   tls.VersionTLS12,

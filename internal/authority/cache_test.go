@@ -1,12 +1,12 @@
 package authority
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_Cache(t *testing.T) {
@@ -22,29 +22,43 @@ func Test_Cache(t *testing.T) {
 	servers := &Servers{List: []*Server{a}}
 
 	_, err := nscache.Get(key)
-	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "cache not found")
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
+	if !reflect.DeepEqual(err.Error(), "cache not found") {
+		t.Errorf("'cache not found' = %v, want %v", "cache not found", err.Error())
+	}
 
 	nscache.Set(key, nil, servers, time.Hour)
 
 	_, err = nscache.Get(key)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	nscache.now = func() time.Time {
 		return time.Now().Add(30 * time.Minute)
 	}
 	_, err = nscache.Get(key)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	nscache.now = func() time.Time {
 		return time.Now().Add(2 * time.Hour)
 	}
 	_, err = nscache.Get(key)
-	assert.Error(t, err)
-	assert.Equal(t, err.Error(), "cache expired")
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
+	if !reflect.DeepEqual(err.Error(), "cache expired") {
+		t.Errorf("'cache expired' = %v, want %v", "cache expired", err.Error())
+	}
 
 	_, err = nscache.Get(key)
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 
 	nscache.Remove(key)
 }

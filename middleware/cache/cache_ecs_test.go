@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +15,6 @@ import (
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // makeECSTestConfig builds a config with ECS enabled at /24 IPv4
@@ -148,7 +147,9 @@ func sendAndExpect(t *testing.T, c *Cache, h middleware.Handler, req *dns.Msg, c
 	ch := middleware.NewChain([]middleware.Handler{c, h})
 	ch.Reset(mw, req)
 	ch.Next(context.Background())
-	require.True(t, mw.Written(), "writer was not written")
+	if !(mw.Written()) {
+		t.Fatalf("%s: mw.Written() is false", "writer was not written")
+	}
 	return mw.Msg()
 }
 
@@ -168,8 +169,12 @@ func TestECSCache_NoCrossContamination(t *testing.T) {
 	// First: client A in 203.0.113.0/24 gets 10.20.30.40 (cached
 	// under scope 203.0.113.0/24).
 	respA := sendAndExpect(t, c, h, reqWithECS("cdn.example.", 1, 24, "203.0.113.0"), "203.0.113.5")
-	assert.Equal(t, "10.20.30.40", answerA(respA), "client A first lookup")
-	require.Equal(t, 1, h.Calls(), "upstream called once for client A")
+	if !reflect.DeepEqual("10.20.30.40", answerA(respA)) {
+		t.Errorf("%s: answerA(respA) = %v, want %v", "client A first lookup", answerA(respA), "10.20.30.40")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Fatalf("%s: h.Calls() = %v, want %v", "upstream called once for client A", h.Calls(), 1)
+	}
 
 	// Authority now answers a different address for the next miss.
 	h.aRecord = "10.20.30.99"
@@ -178,14 +183,22 @@ func TestECSCache_NoCrossContamination(t *testing.T) {
 	// cached answer (#417 regression). The cache miss falls through
 	// to the upstream which serves the new audience-B answer.
 	respB := sendAndExpect(t, c, h, reqWithECS("cdn.example.", 1, 24, "198.51.100.0"), "198.51.100.5")
-	assert.Equal(t, "10.20.30.99", answerA(respB), "client B must NOT inherit client A's cached answer")
-	require.Equal(t, 2, h.Calls(), "upstream called once for client B (no cache cross-contamination)")
+	if !reflect.DeepEqual("10.20.30.99", answerA(respB)) {
+		t.Errorf("%s: answerA(respB) = %v, want %v", "client B must NOT inherit client A's cached answer", answerA(respB), "10.20.30.99")
+	}
+	if !reflect.DeepEqual(2, h.Calls()) {
+		t.Fatalf("%s: h.Calls() = %v, want %v", "upstream called once for client B (no cache cross-contamination)", h.Calls(), 2)
+	}
 
 	// Third: client A again. Must hit the cache (no third upstream
 	// call), still serving 10.20.30.40.
 	respA2 := sendAndExpect(t, c, h, reqWithECS("cdn.example.", 1, 24, "203.0.113.0"), "203.0.113.5")
-	assert.Equal(t, "10.20.30.40", answerA(respA2), "client A second lookup hits scoped cache")
-	assert.Equal(t, 2, h.Calls(), "no extra upstream call for client A's cache hit")
+	if !reflect.DeepEqual("10.20.30.40", answerA(respA2)) {
+		t.Errorf("%s: answerA(respA2) = %v, want %v", "client A second lookup hits scoped cache", answerA(respA2), "10.20.30.40")
+	}
+	if !reflect.DeepEqual(2, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "no extra upstream call for client A's cache hit", h.Calls(), 2)
+	}
 }
 
 // TestECSCache_SharedKeyOnGlobalScope verifies that a SCOPE=0
@@ -203,15 +216,23 @@ func TestECSCache_SharedKeyOnGlobalScope(t *testing.T) {
 	// ECS client populates the cache under the shared key (because
 	// the response had SCOPE=0).
 	respECS := sendAndExpect(t, c, h, reqWithECS("global.example.", 1, 24, "203.0.113.0"), "203.0.113.5")
-	assert.Equal(t, "10.0.0.1", answerA(respECS))
-	require.Equal(t, 1, h.Calls())
+	if !reflect.DeepEqual("10.0.0.1", answerA(respECS)) {
+		t.Errorf("answerA(respECS) = %v, want %v", answerA(respECS), "10.0.0.1")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Fatalf("h.Calls() = %v, want %v", h.Calls(), 1)
+	}
 
 	// Plain (non-ECS) client must hit the same entry.
 	plain := new(dns.Msg)
 	plain.SetQuestion("global.example.", dns.TypeA)
 	respPlain := sendAndExpect(t, c, h, plain, "10.0.0.2")
-	assert.Equal(t, "10.0.0.1", answerA(respPlain), "non-ECS client must hit the SCOPE=0 shared entry")
-	assert.Equal(t, 1, h.Calls(), "no extra upstream — shared-key hit")
+	if !reflect.DeepEqual("10.0.0.1", answerA(respPlain)) {
+		t.Errorf("%s: answerA(respPlain) = %v, want %v", "non-ECS client must hit the SCOPE=0 shared entry", answerA(respPlain), "10.0.0.1")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "no extra upstream — shared-key hit", h.Calls(), 1)
+	}
 }
 
 // TestECSCache_PreStage2EntriesStillHit pins migration safety: a
@@ -236,8 +257,12 @@ func TestECSCache_PreStage2EntriesStillHit(t *testing.T) {
 	// Plain client lookup hits without an upstream call.
 	h := &echoHandler{aRecord: "should-not-be-used", scopeBits: 0}
 	resp := sendAndExpect(t, c, h, req, "10.0.0.7")
-	assert.Equal(t, "192.0.2.50", answerA(resp))
-	assert.Equal(t, 0, h.Calls(), "pre-Stage-2 entry must hit without upstream")
+	if !reflect.DeepEqual("192.0.2.50", answerA(resp)) {
+		t.Errorf("answerA(resp) = %v, want %v", answerA(resp), "192.0.2.50")
+	}
+	if !reflect.DeepEqual(0, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "pre-Stage-2 entry must hit without upstream", h.Calls(), 0)
+	}
 }
 
 // TestECSCache_SupernetHit covers the longest-prefix-match fallback:
@@ -257,7 +282,9 @@ func TestECSCache_SupernetHit(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("super.example.", dns.TypeA)
 	scope, err := netip.ParsePrefix("203.0.112.0/22")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
 	c.store.SetFromResponseScoped(key, reply(req, "10.1.1.1", 22), scope, time.Time{}, 0)
 
@@ -266,8 +293,12 @@ func TestECSCache_SupernetHit(t *testing.T) {
 	// /22 (hit).
 	h := &echoHandler{aRecord: "should-not-be-used", scopeBits: 0}
 	resp := sendAndExpect(t, c, h, reqWithECS("super.example.", 1, 24, "203.0.113.0"), "203.0.113.42")
-	assert.Equal(t, "10.1.1.1", answerA(resp))
-	assert.Equal(t, 0, h.Calls(), "supernet probe must hit without upstream")
+	if !reflect.DeepEqual("10.1.1.1", answerA(resp)) {
+		t.Errorf("answerA(resp) = %v, want %v", answerA(resp), "10.1.1.1")
+	}
+	if !reflect.DeepEqual(0, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "supernet probe must hit without upstream", h.Calls(), 0)
+	}
 }
 
 // TestECSCache_PolicyOffBypassesEverything: even an ECS-laden
@@ -286,13 +317,21 @@ func TestECSCache_PolicyOffBypassesEverything(t *testing.T) {
 	// see the same cached answer — because policy is off and the
 	// cache keys both under the shared key.
 	respA := sendAndExpect(t, c, h, reqWithECS("nopolicy.example.", 1, 24, "203.0.113.0"), "203.0.113.5")
-	assert.Equal(t, "10.10.10.10", answerA(respA))
-	require.Equal(t, 1, h.Calls())
+	if !reflect.DeepEqual("10.10.10.10", answerA(respA)) {
+		t.Errorf("answerA(respA) = %v, want %v", answerA(respA), "10.10.10.10")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Fatalf("h.Calls() = %v, want %v", h.Calls(), 1)
+	}
 
 	h.aRecord = "10.10.10.99" // never observed because cache hits
 	respB := sendAndExpect(t, c, h, reqWithECS("nopolicy.example.", 1, 24, "198.51.100.0"), "198.51.100.5")
-	assert.Equal(t, "10.10.10.10", answerA(respB), "policy off → client B sees client A's cached answer (today's behaviour)")
-	assert.Equal(t, 1, h.Calls(), "policy off → no extra upstream call")
+	if !reflect.DeepEqual("10.10.10.10", answerA(respB)) {
+		t.Errorf("%s: answerA(respB) = %v, want %v", "policy off → client B sees client A's cached answer (today's behaviour)", answerA(respB), "10.10.10.10")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "policy off → no extra upstream call", h.Calls(), 1)
+	}
 }
 
 // TestECSCache_ScopedEntryNotPrefetched: a scoped entry's
@@ -380,8 +419,12 @@ func TestECSCache_BroaderScopeOnNormalClientHits(t *testing.T) {
 	respA := sendAndExpect(t, c, h,
 		reqWithECS("broad-scope.example.", 1, 24, "203.0.112.0"),
 		"203.0.112.5")
-	assert.Equal(t, "10.1.2.3", answerA(respA))
-	require.Equal(t, 1, h.Calls())
+	if !reflect.DeepEqual("10.1.2.3", answerA(respA)) {
+		t.Errorf("answerA(respA) = %v, want %v", answerA(respA), "10.1.2.3")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Fatalf("h.Calls() = %v, want %v", h.Calls(), 1)
+	}
 
 	// Second /24 query from the same client must HIT — same source
 	// prefix, the stored /20 entry covers it.
@@ -389,19 +432,24 @@ func TestECSCache_BroaderScopeOnNormalClientHits(t *testing.T) {
 	respB := sendAndExpect(t, c, h,
 		reqWithECS("broad-scope.example.", 1, 24, "203.0.112.0"),
 		"203.0.112.5")
-	assert.Equal(t, "10.1.2.3", answerA(respB),
-		"second /24 query missed the /20 entry the first query inserted")
-	assert.Equal(t, 1, h.Calls(),
-		"second /24 query went upstream instead of hitting the broader cached entry")
+	if !reflect.DeepEqual("10.1.2.3", answerA(respB)) {
+		t.Errorf("%s: answerA(respB) = %v, want %v", "second /24 query missed the /20 entry the first query inserted", answerA(respB), "10.1.2.3")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "second /24 query went upstream instead of hitting the broader cached entry", h.Calls(), 1)
+	}
 
 	// A different /24 *within* the same /20 must also hit — that's
 	// the whole point of caching at a broader SCOPE.
 	respC := sendAndExpect(t, c, h,
 		reqWithECS("broad-scope.example.", 1, 24, "203.0.113.0"),
 		"203.0.113.42")
-	assert.Equal(t, "10.1.2.3", answerA(respC),
-		"sibling /24 within the same /20 missed the broader entry")
-	assert.Equal(t, 1, h.Calls(), "sibling /24 went upstream needlessly")
+	if !reflect.DeepEqual("10.1.2.3", answerA(respC)) {
+		t.Errorf("%s: answerA(respC) = %v, want %v", "sibling /24 within the same /20 missed the broader entry", answerA(respC), "10.1.2.3")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "sibling /24 went upstream needlessly", h.Calls(), 1)
+	}
 }
 
 // TestECSCache_BroaderThanMinClientScopeHits pins the fourth-round
@@ -429,14 +477,22 @@ func TestECSCache_BroaderThanMinClientScopeHits(t *testing.T) {
 	// First request inserts the /20 entry.
 	req := reqWithECS("broad.example.", 1, 20, "203.0.96.0")
 	respA := sendAndExpect(t, c, h, req, "203.0.96.5")
-	assert.Equal(t, "10.20.30.40", answerA(respA))
-	require.Equal(t, 1, h.Calls())
+	if !reflect.DeepEqual("10.20.30.40", answerA(respA)) {
+		t.Errorf("answerA(respA) = %v, want %v", answerA(respA), "10.20.30.40")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Fatalf("h.Calls() = %v, want %v", h.Calls(), 1)
+	}
 
 	// Second request from the same /20 must HIT the cache.
 	h.aRecord = "should-not-be-used"
 	respB := sendAndExpect(t, c, h, reqWithECS("broad.example.", 1, 20, "203.0.96.0"), "203.0.96.5")
-	assert.Equal(t, "10.20.30.40", answerA(respB), "second /20 query missed the /20 entry just inserted")
-	assert.Equal(t, 1, h.Calls(), "second /20 query went upstream instead of hitting the cache")
+	if !reflect.DeepEqual("10.20.30.40", answerA(respB)) {
+		t.Errorf("%s: answerA(respB) = %v, want %v", "second /20 query missed the /20 entry just inserted", answerA(respB), "10.20.30.40")
+	}
+	if !reflect.DeepEqual(1, h.Calls()) {
+		t.Errorf("%s: h.Calls() = %v, want %v", "second /20 query went upstream instead of hitting the cache", h.Calls(), 1)
+	}
 }
 
 // TestECSCache_LookupsMetricCountsOnlyECSPaths pins the sixth-round
@@ -528,14 +584,17 @@ func TestECSCache_BuildPolicyFailClosed(t *testing.T) {
 	plain := new(dns.Msg)
 	plain.SetQuestion("disabled-policy.example.", dns.TypeA)
 	resp := sendAndExpect(t, c, h, plain, "10.0.0.7")
-	assert.Equal(t, "10.0.0.1", answerA(resp))
+	if !reflect.DeepEqual("10.0.0.1", answerA(resp)) {
+		t.Errorf("answerA(resp) = %v, want %v", answerA(resp), "10.0.0.1")
+	}
 
 	// And an ECS-bearing request goes through the shared-key path
 	// because requestScope short-circuits on c.ecsPolicy == nil.
 	ecs := reqWithECS("disabled-policy.example.", 1, 24, "203.0.113.0")
 	resp2 := sendAndExpect(t, c, h, ecs, "203.0.113.5")
-	assert.Equal(t, "10.0.0.1", answerA(resp2),
-		"ECS request with disabled policy must hit the shared-key entry")
+	if !reflect.DeepEqual("10.0.0.1", answerA(resp2)) {
+		t.Errorf("%s: answerA(resp2) = %v, want %v", "ECS request with disabled policy must hit the shared-key entry", answerA(resp2), "10.0.0.1")
+	}
 }
 
 // TestECSCache_RequestScopeMalformedReturnsZero covers the
@@ -623,8 +682,9 @@ func TestECSCache_PurgeIsCaseInsensitive(t *testing.T) {
 	scope := netip.MustParsePrefix("203.0.113.0/24")
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
 	c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24), scope, time.Time{}, 0)
-	require.Truef(t, func() bool { _, ok := c.store.LookupByKey(key); return ok }(),
-		"seed did not land in cache")
+	if !(func() bool { _, ok := c.store.LookupByKey(key); return ok }()) {
+		t.Fatalf("%s: func() bool { _, ok := c.store.LookupByKey(key); return ok }() is false", "seed did not land in cache")
+	}
 
 	// Operator purges via the canonical lowercase FQDN.
 	c.store.Purge(dns.Question{
@@ -670,7 +730,9 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 	c.store.SetFromResponseScoped(key, resp, scope, time.Time{}, 0)
 
 	entry, ok := c.store.LookupByKey(key)
-	require.True(t, ok, "scoped seed did not land in cache")
+	if !(ok) {
+		t.Fatalf("%s: ok is false", "scoped seed did not land in cache")
+	}
 	if entry.ttl > cfg.ECS.CacheLimitTTL.Duration {
 		t.Errorf("scoped TTL %s exceeded cache_limit_ttl cap %s",
 			entry.ttl, cfg.ECS.CacheLimitTTL.Duration)
@@ -681,7 +743,9 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 	plainKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
 	c.store.SetFromResponseWithKey(plainKey, resp, time.Time{}, 0)
 	plain, ok := c.store.LookupByKey(plainKey)
-	require.True(t, ok)
+	if !(ok) {
+		t.Fatalf("ok is false")
+	}
 	if plain.ttl <= cfg.ECS.CacheLimitTTL.Duration {
 		t.Errorf("unscoped TTL %s was capped at %s (should not be)",
 			plain.ttl, cfg.ECS.CacheLimitTTL.Duration)

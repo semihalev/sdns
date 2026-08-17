@@ -1,13 +1,12 @@
 package resolver
 
 import (
+	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestCircuitBreaker_Basic(t *testing.T) {
@@ -15,21 +14,29 @@ func TestCircuitBreaker_Basic(t *testing.T) {
 	server := "8.8.8.8:53"
 
 	// Initially, server should be queryable
-	assert.True(t, cb.canQuery(server))
+	if !(cb.canQuery(server)) {
+		t.Errorf("cb.canQuery(server) is false")
+	}
 
 	// Record 4 failures - should still be queryable
 	for i := 0; i < 4; i++ {
 		cb.recordFailure(server)
-		assert.True(t, cb.canQuery(server), "Should be queryable after %d failures", i+1)
+		if !(cb.canQuery(server)) {
+			t.Errorf("%s: cb.canQuery(server) is false", fmt.Sprintf("Should be queryable after %d failures", i+1))
+		}
 	}
 
 	// 5th failure should trip the circuit breaker
 	cb.recordFailure(server)
-	assert.False(t, cb.canQuery(server), "Circuit breaker should be tripped after 5 failures")
+	if cb.canQuery(server) {
+		t.Errorf("%s: cb.canQuery(server) is true", "Circuit breaker should be tripped after 5 failures")
+	}
 
 	// Success should reset the circuit breaker
 	cb.recordSuccess(server)
-	assert.True(t, cb.canQuery(server), "Circuit breaker should be reset after success")
+	if !(cb.canQuery(server)) {
+		t.Errorf("%s: cb.canQuery(server) is false", "Circuit breaker should be reset after success")
+	}
 }
 
 func TestCircuitBreaker_Timeout(t *testing.T) {
@@ -40,7 +47,9 @@ func TestCircuitBreaker_Timeout(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		cb.recordFailure(server)
 	}
-	assert.False(t, cb.canQuery(server))
+	if cb.canQuery(server) {
+		t.Errorf("cb.canQuery(server) is true")
+	}
 
 	// Manually set last failure time to 31 seconds ago
 	cb.mu.RLock()
@@ -49,7 +58,9 @@ func TestCircuitBreaker_Timeout(t *testing.T) {
 	sf.lastFailure.Store(time.Now().Add(-31 * time.Second).Unix())
 
 	// Should be queryable again after timeout
-	assert.True(t, cb.canQuery(server), "Circuit breaker should reset after 30 second timeout")
+	if !(cb.canQuery(server)) {
+		t.Errorf("%s: cb.canQuery(server) is false", "Circuit breaker should reset after 30 second timeout")
+	}
 }
 
 func TestCircuitBreaker_ConcurrentAccess(t *testing.T) {
@@ -107,17 +118,25 @@ func TestCircuitBreaker_MultipleServers(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		cb.recordFailure(server1)
 	}
-	assert.False(t, cb.canQuery(server1))
+	if cb.canQuery(server1) {
+		t.Errorf("cb.canQuery(server1) is true")
+	}
 
 	// server2 should still be queryable
-	assert.True(t, cb.canQuery(server2))
+	if !(cb.canQuery(server2)) {
+		t.Errorf("cb.canQuery(server2) is false")
+	}
 
 	// Record failures for server2
 	for i := 0; i < 3; i++ {
 		cb.recordFailure(server2)
 	}
-	assert.True(t, cb.canQuery(server2), "Server2 should still be queryable with 3 failures")
-	assert.False(t, cb.canQuery(server1), "Server1 should still be disabled")
+	if !(cb.canQuery(server2)) {
+		t.Errorf("%s: cb.canQuery(server2) is false", "Server2 should still be queryable with 3 failures")
+	}
+	if cb.canQuery(server1) {
+		t.Errorf("%s: cb.canQuery(server1) is true", "Server1 should still be disabled")
+	}
 }
 
 func TestCircuitBreaker_ResetBehavior(t *testing.T) {
@@ -135,12 +154,16 @@ func TestCircuitBreaker_ResetBehavior(t *testing.T) {
 	// Should need 5 more failures to trip
 	for i := 0; i < 4; i++ {
 		cb.recordFailure(server)
-		assert.True(t, cb.canQuery(server), "Should be queryable after reset + %d failures", i+1)
+		if !(cb.canQuery(server)) {
+			t.Errorf("%s: cb.canQuery(server) is false", fmt.Sprintf("Should be queryable after reset + %d failures", i+1))
+		}
 	}
 
 	// 5th failure after reset should trip
 	cb.recordFailure(server)
-	assert.False(t, cb.canQuery(server))
+	if cb.canQuery(server) {
+		t.Errorf("cb.canQuery(server) is true")
+	}
 }
 
 func TestCircuitBreaker_CleanupOldEntries(t *testing.T) {
@@ -157,11 +180,15 @@ func TestCircuitBreaker_CleanupOldEntries(t *testing.T) {
 	cb.mu.RLock()
 	_, exists := cb.failures[server]
 	cb.mu.RUnlock()
-	assert.True(t, exists)
+	if !(exists) {
+		t.Errorf("exists is false")
+	}
 
 	// Cleanup happens every 5 minutes in background
 	// For testing, we just verify the structure is correct
-	assert.NotNil(t, cb.failures)
+	if cb.failures == nil {
+		t.Fatalf("cb.failures is nil")
+	}
 }
 
 func TestResolverWithCircuitBreaker(t *testing.T) {
@@ -171,10 +198,14 @@ func TestResolverWithCircuitBreaker(t *testing.T) {
 	r := newWiredTestResolver(cfg)
 
 	// Verify circuit breaker is initialized
-	require.NotNil(t, r.circuitBreaker)
+	if r.circuitBreaker == nil {
+		t.Fatalf("r.circuitBreaker is nil")
+	}
 
 	// Verify max concurrent channel has correct capacity
-	assert.Equal(t, 100, cap(r.maxConcurrent))
+	if !reflect.DeepEqual(100, cap(r.maxConcurrent)) {
+		t.Errorf("cap(r.maxConcurrent) = %v, want %v", cap(r.maxConcurrent), 100)
+	}
 }
 
 func TestResolverGoroutineLimiting(t *testing.T) {
@@ -227,7 +258,9 @@ cleanup:
 done:
 
 	// Just verify the semaphore mechanism works
-	assert.True(t, cap(r.maxConcurrent) == 50, "Semaphore should have correct capacity")
+	if cap(r.maxConcurrent) != 50 {
+		t.Errorf("%s: cap(r.maxConcurrent) = %d, want 50", "Semaphore should have correct capacity", cap(r.maxConcurrent))
+	}
 }
 
 func TestResolverConcurrentQueryLimit(t *testing.T) {
@@ -269,8 +302,9 @@ func TestResolverConcurrentQueryLimit(t *testing.T) {
 	wg.Wait()
 
 	// Verify we never exceeded the limit
-	assert.LessOrEqual(t, int(maxObserved.Load()), 10,
-		"Should never exceed MaxConcurrentQueries limit")
+	if int(maxObserved.Load()) > 10 {
+		t.Errorf("%s: int(maxObserved.Load()) = %v, want <= %v", "Should never exceed MaxConcurrentQueries limit", int(maxObserved.Load()), 10)
+	}
 }
 
 func BenchmarkCircuitBreaker_CanQuery(b *testing.B) {
@@ -357,7 +391,9 @@ func TestCircuitBreaker_CleanupEvictsIdleWithFailures(t *testing.T) {
 	cb.mu.RLock()
 	_, exists := cb.failures[server]
 	cb.mu.RUnlock()
-	assert.False(t, exists, "idle entry with count>0 must be evicted")
+	if exists {
+		t.Errorf("%s: exists is true", "idle entry with count>0 must be evicted")
+	}
 
 	// A recently-failed entry must survive.
 	cb.recordFailure(server)
@@ -365,5 +401,7 @@ func TestCircuitBreaker_CleanupEvictsIdleWithFailures(t *testing.T) {
 	cb.mu.RLock()
 	_, exists = cb.failures[server]
 	cb.mu.RUnlock()
-	assert.True(t, exists, "recently-failed entry must be kept")
+	if !(exists) {
+		t.Errorf("%s: exists is false", "recently-failed entry must be kept")
+	}
 }

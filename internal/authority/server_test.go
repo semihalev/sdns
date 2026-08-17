@@ -5,11 +5,11 @@ import (
 	"math/rand"
 	"net"
 	"net/netip"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
-
-	"github.com/stretchr/testify/assert"
 )
 
 // serverWithoutCanonical is Server as it stood before it recorded whether its
@@ -56,14 +56,24 @@ func Test_TrySort(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, int64(1), s.List[0].Count)
+	if !reflect.DeepEqual(int64(1), s.List[0].Count) {
+		t.Errorf("s.List[0].Count = %v, want %v", s.List[0].Count, int64(1))
+	}
 }
 
 func Test_VersionString(t *testing.T) {
-	assert.Equal(t, "IPv4", IPv4.String())
-	assert.Equal(t, "IPv6", IPv6.String())
-	assert.Equal(t, "Unknown", IPVersion(0).String())
-	assert.Equal(t, "Unknown", IPVersion(99).String())
+	if !reflect.DeepEqual("IPv4", IPv4.String()) {
+		t.Errorf("IPv4.String() = %v, want %v", IPv4.String(), "IPv4")
+	}
+	if !reflect.DeepEqual("IPv6", IPv6.String()) {
+		t.Errorf("IPv6.String() = %v, want %v", IPv6.String(), "IPv6")
+	}
+	if !reflect.DeepEqual("Unknown", IPVersion(0).String()) {
+		t.Errorf("IPVersion(0).String() = %v, want %v", IPVersion(0).String(), "Unknown")
+	}
+	if !reflect.DeepEqual("Unknown", IPVersion(99).String()) {
+		t.Errorf("IPVersion(99).String() = %v, want %v", IPVersion(99).String(), "Unknown")
+	}
 }
 
 // Test_Servers_FingerprintInvalidation pins the contract that
@@ -74,10 +84,14 @@ func Test_Servers_FingerprintInvalidation(t *testing.T) {
 	s := &Servers{}
 	s.List = append(s.List, NewServer("1.1.1.1:53", IPv4))
 	first := s.Fingerprint()
-	assert.NotZero(t, first)
+	if first == 0 {
+		t.Error("first is zero")
+	}
 
 	// Same state → same fingerprint.
-	assert.Equal(t, first, s.Fingerprint())
+	if !reflect.DeepEqual(first, s.Fingerprint()) {
+		t.Errorf("s.Fingerprint() = %v, want %v", s.Fingerprint(), first)
+	}
 
 	// Mutate and invalidate; new fingerprint must differ.
 	s.Lock()
@@ -85,7 +99,9 @@ func Test_Servers_FingerprintInvalidation(t *testing.T) {
 	s.InvalidateFingerprint()
 	s.Unlock()
 	second := s.Fingerprint()
-	assert.NotEqual(t, first, second)
+	if reflect.DeepEqual(first, second) {
+		t.Errorf("second = %v, want a different value", second)
+	}
 }
 
 // Test_Servers_FingerprintMutationRace simulates the interleaving
@@ -115,28 +131,40 @@ func Test_Servers_FingerprintMutationRace(t *testing.T) {
 	}
 
 	got := s.Fingerprint()
-	assert.NotEqual(t, staleFP, got, "stale fingerprint must not be served after mutation")
+	if reflect.DeepEqual(staleFP, got) {
+		t.Errorf("%s: got = %v, want a different value", "stale fingerprint must not be served after mutation", got)
+	}
 }
 
 func Test_ServerString(t *testing.T) {
 	// Test UNKNOWN health (Rtt <= 0)
 	s := NewServer("1.2.3.4:53", IPv4)
 	str := s.String()
-	assert.Contains(t, str, "IPv4")
-	assert.Contains(t, str, "1.2.3.4:53")
-	assert.Contains(t, str, "UNKNOWN")
+	if !strings.Contains(str, "IPv4") {
+		t.Errorf("%q does not contain %q", str, "IPv4")
+	}
+	if !strings.Contains(str, "1.2.3.4:53") {
+		t.Errorf("%q does not contain %q", str, "1.2.3.4:53")
+	}
+	if !strings.Contains(str, "UNKNOWN") {
+		t.Errorf("%q does not contain %q", str, "UNKNOWN")
+	}
 
 	// Test GOOD health (0 < Rtt < 1 second)
 	s.Rtt = int64(100 * time.Millisecond)
 	s.Count = 1
 	str = s.String()
-	assert.Contains(t, str, "GOOD")
+	if !strings.Contains(str, "GOOD") {
+		t.Errorf("%q does not contain %q", str, "GOOD")
+	}
 
 	// Test POOR health (Rtt >= 1 second)
 	s.Rtt = int64(2 * time.Second)
 	s.Count = 1
 	str = s.String()
-	assert.Contains(t, str, "POOR")
+	if !strings.Contains(str, "POOR") {
+		t.Errorf("%q does not contain %q", str, "POOR")
+	}
 }
 
 // TestNewServerCanonicalizes directly pins the canonical Addr contract every

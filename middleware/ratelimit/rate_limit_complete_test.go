@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 // TestRateLimitEnforcement verifies rate limiting works correctly
@@ -49,11 +49,15 @@ func TestRateLimitEnforcement(t *testing.T) {
 
 		// First 5 should be allowed (burst size)
 		for i := 0; i < 5; i++ {
-			assert.True(t, testRequest(ip), "Request %d should be allowed", i+1)
+			if !(testRequest(ip)) {
+				t.Errorf("%s: testRequest(ip) is false", fmt.Sprintf("Request %d should be allowed", i+1))
+			}
 		}
 
 		// 6th should be blocked
-		assert.False(t, testRequest(ip), "6th request should be blocked")
+		if testRequest(ip) {
+			t.Errorf("%s: testRequest(ip) is true", "6th request should be blocked")
+		}
 	})
 
 	// Test different IPs have separate limits
@@ -64,11 +68,15 @@ func TestRateLimitEnforcement(t *testing.T) {
 
 			// Each IP should get 5 requests
 			for j := 0; j < 5; j++ {
-				assert.True(t, testRequest(ip), "IP %s request %d should be allowed", ip, j+1)
+				if !(testRequest(ip)) {
+					t.Errorf("%s: testRequest(ip) is false", fmt.Sprintf("IP %s request %d should be allowed", ip, j+1))
+				}
 			}
 
 			// 6th should be blocked
-			assert.False(t, testRequest(ip), "IP %s 6th request should be blocked", ip)
+			if testRequest(ip) {
+				t.Errorf("%s: testRequest(ip) is true", fmt.Sprintf("IP %s 6th request should be blocked", ip))
+			}
 		}
 	})
 
@@ -97,17 +105,25 @@ func TestRateLimitEnforcement(t *testing.T) {
 		}
 
 		for i := range perMinute {
-			assert.True(t, allow(), "Initial request %d should be allowed", i+1)
+			if !(allow()) {
+				t.Errorf("%s: allow() is false", fmt.Sprintf("Initial request %d should be allowed", i+1))
+			}
 		}
-		assert.False(t, allow(), "Should be rate limited after burst")
+		if allow() {
+			t.Errorf("%s: allow() is true", "Should be rate limited after burst")
+		}
 
 		// One token's worth, plus enough margin that a slow scheduler does
 		// not turn this into a flake — but well under the two seconds that
 		// would hand out a second token.
 		time.Sleep(1200 * time.Millisecond)
 
-		assert.True(t, allow(), "Should allow after token regeneration")
-		assert.False(t, allow(), "Should block again after using regenerated token")
+		if !(allow()) {
+			t.Errorf("%s: allow() is false", "Should allow after token regeneration")
+		}
+		if allow() {
+			t.Errorf("%s: allow() is true", "Should block again after using regenerated token")
+		}
 	})
 }
 
@@ -137,7 +153,9 @@ func TestRateLimitBypassConditions(t *testing.T) {
 			ch.Reset(mw, req)
 
 			rl.ServeDNS(context.Background(), ch)
-			assert.True(t, allowed, "Request %d with no IP should bypass rate limit", i+1)
+			if !(allowed) {
+				t.Errorf("%s: allowed is false", fmt.Sprintf("Request %d with no IP should bypass rate limit", i+1))
+			}
 		}
 	})
 
@@ -156,7 +174,9 @@ func TestRateLimitBypassConditions(t *testing.T) {
 			ch.Reset(mw, req)
 
 			rl.ServeDNS(context.Background(), ch)
-			assert.True(t, allowed, "Loopback request %d should not be rate limited", i+1)
+			if !(allowed) {
+				t.Errorf("%s: allowed is false", fmt.Sprintf("Loopback request %d should not be rate limited", i+1))
+			}
 		}
 	})
 
@@ -177,7 +197,9 @@ func TestRateLimitBypassConditions(t *testing.T) {
 			ch.Reset(mw, req)
 
 			rl.ServeDNS(context.Background(), ch)
-			assert.True(t, allowed, "Request %d should not be limited when rate=0", i+1)
+			if !(allowed) {
+				t.Errorf("%s: allowed is false", fmt.Sprintf("Request %d should not be limited when rate=0", i+1))
+			}
 		}
 
 		rl.rate = 1 // Re-enable for other tests
@@ -222,7 +244,9 @@ func TestRateLimitConcurrency(t *testing.T) {
 	}
 
 	wg.Wait()
-	assert.Equal(t, int32(0), errors.Load(), "Should handle concurrent access without errors")
+	if !reflect.DeepEqual(int32(0), errors.Load()) {
+		t.Errorf("%s: errors.Load() = %v, want %v", "Should handle concurrent access without errors", errors.Load(), int32(0))
+	}
 }
 
 // TestRateLimitStoreCleanup verifies old limiters are cleaned up
@@ -243,14 +267,18 @@ func TestRateLimitStoreCleanup(t *testing.T) {
 	}
 
 	initialCount := rl.store.Len()
-	assert.Equal(t, 100, initialCount, "Should have 100 limiters")
+	if !reflect.DeepEqual(100, initialCount) {
+		t.Errorf("%s: initialCount = %v, want %v", "Should have 100 limiters", initialCount, 100)
+	}
 
 	// Wait a bit and trigger cleanup
 	time.Sleep(100 * time.Millisecond)
 	rl.store.Cleanup(50 * time.Millisecond)
 
 	finalCount := rl.store.Len()
-	assert.Equal(t, 0, finalCount, "All limiters should be cleaned up")
+	if !reflect.DeepEqual(0, finalCount) {
+		t.Errorf("%s: finalCount = %v, want %v", "All limiters should be cleaned up", finalCount, 0)
+	}
 }
 
 // TestRateLimitPerformanceUnderAttack simulates attack conditions
@@ -280,10 +308,14 @@ func TestRateLimitPerformanceUnderAttack(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// Should handle 100k requests quickly even under attack
-	assert.Less(t, elapsed, 5*time.Second, "Should handle 100k requests in < 5 seconds")
+	if elapsed >= 5*time.Second {
+		t.Errorf("%s: elapsed = %v, want < %v", "Should handle 100k requests in < 5 seconds", elapsed, 5*time.Second)
+	}
 
 	// Cache should not exceed limit
-	assert.LessOrEqual(t, rl.store.Len(), cacheSize, "Cache should not exceed size limit")
+	if rl.store.Len() > cacheSize {
+		t.Errorf("%s: rl.store.Len() = %v, want <= %v", "Cache should not exceed size limit", rl.store.Len(), cacheSize)
+	}
 
 	t.Logf("Processed 100k attack requests in %v, cache size: %d", elapsed, rl.store.Len())
 }

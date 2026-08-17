@@ -1,9 +1,9 @@
 package cache
 
 import (
+	"reflect"
+	"slices"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func TestSegmentUInt64MapPutIfNotExists(t *testing.T) {
@@ -11,21 +11,39 @@ func TestSegmentUInt64MapPutIfNotExists(t *testing.T) {
 
 	// First insert should succeed
 	val, inserted := m.PutIfNotExists(1, "first")
-	assert.True(t, inserted)
-	assert.Equal(t, "first", val)
-	assert.Equal(t, int64(1), m.Len())
+	if !(inserted) {
+		t.Errorf("inserted is false")
+	}
+	if !reflect.DeepEqual("first", val) {
+		t.Errorf("val = %v, want %v", val, "first")
+	}
+	if !reflect.DeepEqual(int64(1), m.Len()) {
+		t.Errorf("m.Len() = %v, want %v", m.Len(), int64(1))
+	}
 
 	// Second insert with same key should fail
 	val, inserted = m.PutIfNotExists(1, "second")
-	assert.False(t, inserted)
-	assert.Equal(t, "first", val) // Should return existing value
-	assert.Equal(t, int64(1), m.Len())
+	if inserted {
+		t.Errorf("inserted is true")
+	}
+	if !reflect.DeepEqual("first", val) {
+		t.Errorf("val = %v, want %v", val, "first")
+	} // Should return existing value
+	if !reflect.DeepEqual(int64(1), m.Len()) {
+		t.Errorf("m.Len() = %v, want %v", m.Len(), int64(1))
+	}
 
 	// Insert different key should succeed
 	val, inserted = m.PutIfNotExists(2, "another")
-	assert.True(t, inserted)
-	assert.Equal(t, "another", val)
-	assert.Equal(t, int64(2), m.Len())
+	if !(inserted) {
+		t.Errorf("inserted is false")
+	}
+	if !reflect.DeepEqual("another", val) {
+		t.Errorf("val = %v, want %v", val, "another")
+	}
+	if !reflect.DeepEqual(int64(2), m.Len()) {
+		t.Errorf("m.Len() = %v, want %v", m.Len(), int64(2))
+	}
 }
 
 func TestSegmentUInt64MapAll(t *testing.T) {
@@ -42,10 +60,18 @@ func TestSegmentUInt64MapAll(t *testing.T) {
 		collected[k] = v
 	}
 
-	assert.Len(t, collected, 3)
-	assert.Equal(t, 100, collected[1])
-	assert.Equal(t, 200, collected[2])
-	assert.Equal(t, 300, collected[3])
+	if len(collected) != 3 {
+		t.Errorf("len(collected) = %d, want %d", len(collected), 3)
+	}
+	if !reflect.DeepEqual(100, collected[1]) {
+		t.Errorf("collected[1] = %v, want %v", collected[1], 100)
+	}
+	if !reflect.DeepEqual(200, collected[2]) {
+		t.Errorf("collected[2] = %v, want %v", collected[2], 200)
+	}
+	if !reflect.DeepEqual(300, collected[3]) {
+		t.Errorf("collected[3] = %v, want %v", collected[3], 300)
+	}
 }
 
 func TestSegmentUInt64MapKeys(t *testing.T) {
@@ -61,10 +87,14 @@ func TestSegmentUInt64MapKeys(t *testing.T) {
 		keys = append(keys, k)
 	}
 
-	assert.Len(t, keys, 3)
-	assert.Contains(t, keys, uint64(10))
-	assert.Contains(t, keys, uint64(20))
-	assert.Contains(t, keys, uint64(30))
+	if len(keys) != 3 {
+		t.Errorf("len(keys) = %d, want %d", len(keys), 3)
+	}
+	for _, want := range []uint64{10, 20, 30} {
+		if !slices.Contains(keys, want) {
+			t.Errorf("keys %v do not contain %d", keys, want)
+		}
+	}
 }
 
 func TestSegmentUInt64MapValues(t *testing.T) {
@@ -80,10 +110,14 @@ func TestSegmentUInt64MapValues(t *testing.T) {
 		values = append(values, v)
 	}
 
-	assert.Len(t, values, 3)
-	assert.Contains(t, values, "one")
-	assert.Contains(t, values, "two")
-	assert.Contains(t, values, "three")
+	if len(values) != 3 {
+		t.Errorf("len(values) = %d, want %d", len(values), 3)
+	}
+	for _, want := range []string{"one", "two", "three"} {
+		if !slices.Contains(values, want) {
+			t.Errorf("values %v do not contain %q", values, want)
+		}
+	}
 }
 
 func TestSegmentUInt64MapClear(t *testing.T) {
@@ -93,20 +127,30 @@ func TestSegmentUInt64MapClear(t *testing.T) {
 	m.Set(1, 100)
 	m.Set(2, 200)
 	m.Set(3, 300)
-	assert.Equal(t, int64(3), m.Len())
+	if !reflect.DeepEqual(int64(3), m.Len()) {
+		t.Errorf("m.Len() = %v, want %v", m.Len(), int64(3))
+	}
 
 	// Clear the map
 	m.Clear()
 
-	assert.Equal(t, int64(0), m.Len())
+	if !reflect.DeepEqual(int64(0), m.Len()) {
+		t.Errorf("m.Len() = %v, want %v", m.Len(), int64(0))
+	}
 
 	// Verify keys are gone
 	_, found := m.Get(1)
-	assert.False(t, found)
+	if found {
+		t.Errorf("found is true")
+	}
 	_, found = m.Get(2)
-	assert.False(t, found)
+	if found {
+		t.Errorf("found is true")
+	}
 	_, found = m.Get(3)
-	assert.False(t, found)
+	if found {
+		t.Errorf("found is true")
+	}
 }
 
 func TestSegmentUInt64MapStop(t *testing.T) {
@@ -119,8 +163,12 @@ func TestSegmentUInt64MapStop(t *testing.T) {
 
 	// Map should still work after Stop
 	val, found := m.Get(1)
-	assert.True(t, found)
-	assert.Equal(t, 100, val)
+	if !(found) {
+		t.Errorf("found is false")
+	}
+	if !reflect.DeepEqual(100, val) {
+		t.Errorf("val = %v, want %v", val, 100)
+	}
 }
 
 func TestSegmentUInt64MapForEachEarlyExit(t *testing.T) {
@@ -138,21 +186,29 @@ func TestSegmentUInt64MapForEachEarlyExit(t *testing.T) {
 		return count < 5 // Stop after 5 iterations
 	})
 
-	assert.Equal(t, 5, count)
+	if !reflect.DeepEqual(5, count) {
+		t.Errorf("count = %v, want %v", count, 5)
+	}
 }
 
 func TestSegmentUInt64MapSegmentPowerBounds(t *testing.T) {
 	// Test minimum segment power (should be clamped to 4)
 	m1 := NewSegmentUInt64Map[int](1, 100)
-	assert.Equal(t, 16, m1.SegmentCount()) // 2^4 = 16
+	if !reflect.DeepEqual(16, m1.SegmentCount()) {
+		t.Errorf("m1.SegmentCount() = %v, want %v", m1.SegmentCount(), 16)
+	} // 2^4 = 16
 
 	// Test maximum segment power (should be clamped to 8)
 	m2 := NewSegmentUInt64Map[int](10, 100)
-	assert.Equal(t, 256, m2.SegmentCount()) // 2^8 = 256
+	if !reflect.DeepEqual(256, m2.SegmentCount()) {
+		t.Errorf("m2.SegmentCount() = %v, want %v", m2.SegmentCount(), 256)
+	} // 2^8 = 256
 
 	// Test valid segment power
 	m3 := NewSegmentUInt64Map[int](6, 100)
-	assert.Equal(t, 64, m3.SegmentCount()) // 2^6 = 64
+	if !reflect.DeepEqual(64, m3.SegmentCount()) {
+		t.Errorf("m3.SegmentCount() = %v, want %v", m3.SegmentCount(), 64)
+	} // 2^6 = 64
 }
 
 func TestSegmentUInt64MapClearSegmentOutOfBounds(t *testing.T) {
@@ -166,6 +222,10 @@ func TestSegmentUInt64MapClearSegmentOutOfBounds(t *testing.T) {
 
 	// Original value should still exist
 	val, found := m.Get(1)
-	assert.True(t, found)
-	assert.Equal(t, 100, val)
+	if !(found) {
+		t.Errorf("found is false")
+	}
+	if !reflect.DeepEqual(100, val) {
+		t.Errorf("val = %v, want %v", val, 100)
+	}
 }

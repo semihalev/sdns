@@ -2,11 +2,12 @@ package resolver
 
 import (
 	"context"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 // The parallel lookup paths used to be exercised against www.github.com. and
@@ -50,26 +51,35 @@ func TestParallelLookupIntegration(t *testing.T) {
 	resp, err := r.Resolve(ctx, req, r.rootServers, true, 30, 0, false, nil)
 	elapsed := time.Since(start)
 
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 	// Both assertions together are what a serial implementation cannot
 	// satisfy. The answering nameserver was held until the silent one had
 	// been contacted, so an answer arriving at all means the two were in
 	// flight together; and it arrived well inside the budget, so nothing
 	// waited the silent one out first.
-	assert.Greater(t, zone.silentAsked("www.parallel.test.", dns.TypeA), 0,
-		"the second nameserver was never contacted, so nothing was raced")
-	assert.Less(t, elapsed, cfg.Timeout.Duration,
-		"the answer arrived only after the silent nameserver's budget expired")
+	if zone.silentAsked("www.parallel.test.", dns.TypeA) <= 0 {
+		t.Errorf("%s: zone.silentAsked('www.parallel.test.', dns.TypeA) = %v, want > %v", "the second nameserver was never contacted, so nothing was raced", zone.silentAsked("www.parallel.test.", dns.TypeA), 0)
+	}
+	if elapsed >= cfg.Timeout.Duration {
+		t.Errorf("%s: elapsed = %v, want < %v", "the answer arrived only after the silent nameserver's budget expired", elapsed, cfg.Timeout.Duration)
+	}
 
-	addresses := []string{}
-	for _, answer := range resp.Answer {
-		if a, ok := answer.(*dns.A); ok {
-			addresses = append(addresses, a.A.String())
+	if resp == nil {
+		t.Error("resp is nil")
+	} else {
+		addresses := []string{}
+		for _, answer := range resp.Answer {
+			if a, ok := answer.(*dns.A); ok {
+				addresses = append(addresses, a.A.String())
+			}
+		}
+		slices.Sort(addresses)
+		if want := []string{"192.0.2.71", "192.0.2.72"}; !reflect.DeepEqual(want, addresses) {
+			t.Errorf("addresses = %v, want %v", addresses, want)
 		}
 	}
-	assert.ElementsMatch(t, []string{"192.0.2.71", "192.0.2.72"}, addresses)
 }
 
 func TestParallelLookupIPv6(t *testing.T) {
@@ -92,8 +102,12 @@ func TestParallelLookupIPv6(t *testing.T) {
 
 	// The previous version logged whatever happened and asserted nothing,
 	// so an AAAA lookup that quietly stopped working looked like a pass.
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	}
 	// A signed answer carries its RRSIG alongside the data, so the records
 	// are selected by type rather than counted.
 	addresses := []string{}
@@ -102,7 +116,9 @@ func TestParallelLookupIPv6(t *testing.T) {
 			addresses = append(addresses, aaaa.AAAA.String())
 		}
 	}
-	assert.Equal(t, []string{"2001:db8::71"}, addresses)
+	if !reflect.DeepEqual([]string{"2001:db8::71"}, addresses) {
+		t.Errorf("addresses = %v, want %v", addresses, []string{"2001:db8::71"})
+	}
 }
 
 func BenchmarkParallelLookup(b *testing.B) {

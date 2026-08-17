@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -10,8 +11,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestResolverTCPPoolIntegration(t *testing.T) {
@@ -48,41 +47,63 @@ func TestResolverTCPPoolIntegration(t *testing.T) {
 	req.SetQuestion(".", dns.TypeNS)
 
 	resp, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, nil, "tcp", req, r.rootServers.List[0], 0)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	}
 
 	// Wait briefly for connection to be returned to pool
 	time.Sleep(10 * time.Millisecond)
 
 	// Check pool stats
 	hits, misses, active := r.tcpPool.Stats()
-	assert.Equal(t, int64(0), hits)
-	assert.Equal(t, int64(1), misses) // Get was called but missed
-	assert.Equal(t, 1, active)        // Connection should be pooled
+	if !reflect.DeepEqual(int64(0), hits) {
+		t.Errorf("hits = %v, want %v", hits, int64(0))
+	}
+	if !reflect.DeepEqual(int64(1), misses) {
+		t.Errorf("misses = %v, want %v", misses, int64(1))
+	} // Get was called but missed
+	if !reflect.DeepEqual(1, active) {
+		t.Errorf("active = %v, want %v", active, 1)
+	} // Connection should be pooled
 
 	// Test 2: Second query should reuse connection
 	resp2, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, nil, "tcp", req, r.rootServers.List[0], 0)
-	require.NoError(t, err)
-	require.NotNil(t, resp2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp2 == nil {
+		t.Fatalf("resp2 is nil")
+	}
 
 	// Wait for connection to be returned to pool again
 	time.Sleep(10 * time.Millisecond)
 
 	// Should have one hit now
 	hits, _, active = r.tcpPool.Stats()
-	assert.Equal(t, int64(1), hits)
-	assert.Equal(t, 1, active) // Connection should still be in pool
+	if !reflect.DeepEqual(int64(1), hits) {
+		t.Errorf("hits = %v, want %v", hits, int64(1))
+	}
+	if !reflect.DeepEqual(1, active) {
+		t.Errorf("active = %v, want %v", active, 1)
+	} // Connection should still be in pool
 
 	// Verify we made two requests total
 	server.mu.Lock()
 	reqCount := server.requests
 	server.mu.Unlock()
-	assert.Equal(t, 2, reqCount)
+	if !reflect.DeepEqual(2, reqCount) {
+		t.Errorf("reqCount = %v, want %v", reqCount, 2)
+	}
 
 	// The connection pool should have reused the connection,
 	// so we should still have just one active connection
 	_, _, active = r.tcpPool.Stats()
-	assert.Equal(t, 1, active)
+	if !reflect.DeepEqual(1, active) {
+		t.Errorf("active = %v, want %v", active, 1)
+	}
 }
 
 func TestResolverTCPPoolConcurrent(t *testing.T) {
@@ -135,12 +156,16 @@ func TestResolverTCPPoolConcurrent(t *testing.T) {
 
 	// Check for errors
 	for err := range errors {
-		assert.NoError(t, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
 	}
 
 	// Pool should be at max capacity
 	_, _, active := r.tcpPool.Stats()
-	assert.LessOrEqual(t, active, 2)
+	if active > 2 {
+		t.Errorf("active = %v, want <= %v", active, 2)
+	}
 }
 
 func TestResolverTCPPoolWithEDNSKeepalive(t *testing.T) {
@@ -174,11 +199,17 @@ func TestResolverTCPPoolWithEDNSKeepalive(t *testing.T) {
 	req.SetQuestion(".", dns.TypeNS)
 
 	resp, err := r.exchange(context.Background(), &resolveState{requestID: req.Id}, nil, "tcp", req, authServer, 0)
-	require.NoError(t, err)
-	require.NotNil(t, resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	}
 
 	// Check that EDNS-Keepalive was added to request
-	assert.NotNil(t, req.IsEdns0())
+	if req.IsEdns0() == nil {
+		t.Fatalf("req.IsEdns0() is nil")
+	}
 	hasKeepalive := false
 	for _, opt := range req.IsEdns0().Option {
 		if _, ok := opt.(*dns.EDNS0_TCP_KEEPALIVE); ok {
@@ -186,14 +217,18 @@ func TestResolverTCPPoolWithEDNSKeepalive(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, hasKeepalive)
+	if !(hasKeepalive) {
+		t.Errorf("hasKeepalive is false")
+	}
 
 	// Sleep briefly to allow connection to be returned to pool
 	time.Sleep(10 * time.Millisecond)
 
 	// Check pool stats instead of direct access
 	_, _, active := r.tcpPool.Stats()
-	assert.Equal(t, 1, active)
+	if !reflect.DeepEqual(1, active) {
+		t.Errorf("active = %v, want %v", active, 1)
+	}
 }
 
 // testDNSServer is a mock DNS server for testing.
@@ -245,7 +280,9 @@ func (s *testDNSServer) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 func startTestDNSServer(t *testing.T, handler dns.Handler) (string, func()) {
 	// Start on random port
 	pc, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	server := &dns.Server{
 		Net:      "tcp",

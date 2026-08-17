@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -10,7 +11,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/mock"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestWithResponseMetaKeepsBaseContextIsolated(t *testing.T) {
@@ -463,40 +463,72 @@ func Test_Chain(t *testing.T) {
 
 	req.Rcode = dns.RcodeSuccess
 	err := ch.Writer.WriteMsg(req)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	data, err := req.Pack()
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
-	assert.Equal(t, true, ch.Writer.Written())
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
+	if !reflect.DeepEqual(true, ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() = %v, want %v", ch.Writer.Written(), true)
+	}
+	if !reflect.DeepEqual(dns.RcodeSuccess, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeSuccess)
+	}
 
 	_, err = ch.Writer.Write(data)
-	assert.Equal(t, errAlreadyWritten, err)
+	if !reflect.DeepEqual(errAlreadyWritten, err) {
+		t.Errorf("err = %v, want %v", err, errAlreadyWritten)
+	}
 
 	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), req)
 	size, err := ch.Writer.Write(data)
-	assert.NoError(t, err)
-	assert.Equal(t, len(data), size)
-	assert.NotNil(t, ch.Writer.Msg())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(len(data), size) {
+		t.Errorf("size = %v, want %v", size, len(data))
+	}
+	if ch.Writer.Msg() == nil {
+		t.Fatalf("ch.Writer.Msg() is nil")
+	}
 
 	err = ch.Writer.WriteMsg(req)
-	assert.Equal(t, errAlreadyWritten, err)
+	if !reflect.DeepEqual(errAlreadyWritten, err) {
+		t.Errorf("err = %v, want %v", err, errAlreadyWritten)
+	}
 
 	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), req)
 	_, err = ch.Writer.Write([]byte{})
-	assert.Error(t, err)
+	if err == nil {
+		t.Errorf("expected an error, got nil")
+	}
 
-	assert.Equal(t, "tcp", ch.Writer.Proto())
-	assert.Equal(t, "127.0.0.1", ch.Writer.RemoteIP().String())
+	if !reflect.DeepEqual("tcp", ch.Writer.Proto()) {
+		t.Errorf("ch.Writer.Proto() = %v, want %v", ch.Writer.Proto(), "tcp")
+	}
+	if !reflect.DeepEqual("127.0.0.1", ch.Writer.RemoteIP().String()) {
+		t.Errorf("ch.Writer.RemoteIP().String() = %v, want %v", ch.Writer.RemoteIP().String(), "127.0.0.1")
+	}
 
 	ch.Cancel()
-	assert.Equal(t, 0, ch.count)
+	if !reflect.DeepEqual(0, ch.count) {
+		t.Errorf("ch.count = %v, want %v", ch.count, 0)
+	}
 
 	ch.Reset(mock.NewWriter("tcp", "127.0.0.1:0"), req)
 
 	ch.CancelWithRcode(dns.RcodeServerFailure, true)
-	assert.True(t, ch.Writer.Written())
-	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
-	assert.Equal(t, 0, ch.count)
+	if !(ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() is false")
+	}
+	if !reflect.DeepEqual(dns.RcodeServerFailure, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeServerFailure)
+	}
+	if !reflect.DeepEqual(0, ch.count) {
+		t.Errorf("ch.count = %v, want %v", ch.count, 0)
+	}
 }

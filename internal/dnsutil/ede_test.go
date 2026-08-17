@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestSetRcodeWithEDE(t *testing.T) {
@@ -33,16 +33,32 @@ func TestSetRcodeWithEDE(t *testing.T) {
 			edeCode: dns.ExtendedErrorCodeDNSSECIndeterminate,
 			edeText: "DNSSEC validation failure",
 			expected: func(t *testing.T, msg *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, msg.Rcode)
-				assert.Len(t, msg.Extra, 1)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, msg.Rcode) {
+					t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, dns.RcodeServerFailure)
+				}
+				if len(msg.Extra) != 1 {
+					t.Errorf("len(msg.Extra) = %d, want %d", len(msg.Extra), 1)
+				}
 				opt, ok := msg.Extra[0].(*dns.OPT)
-				assert.True(t, ok)
-				assert.True(t, opt.Do())
-				assert.Len(t, opt.Option, 1)
+				if !(ok) {
+					t.Errorf("ok is false")
+				}
+				if !(opt.Do()) {
+					t.Errorf("opt.Do() is false")
+				}
+				if len(opt.Option) != 1 {
+					t.Errorf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				assert.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeDNSSECIndeterminate, ede.InfoCode)
-				assert.Equal(t, "DNSSEC validation failure", ede.ExtraText)
+				if !(ok) {
+					t.Errorf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSSECIndeterminate, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeDNSSECIndeterminate)
+				}
+				if !reflect.DeepEqual("DNSSEC validation failure", ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, "DNSSEC validation failure")
+				}
 			},
 		},
 		{
@@ -58,11 +74,19 @@ func TestSetRcodeWithEDE(t *testing.T) {
 			edeCode: dns.ExtendedErrorCodeNetworkError,
 			edeText: "Network unreachable",
 			expected: func(t *testing.T, msg *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, msg.Rcode)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, msg.Rcode) {
+					t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, dns.RcodeServerFailure)
+				}
 				opt := msg.IsEdns0()
-				assert.NotNil(t, opt)
-				assert.False(t, opt.Do())
-				assert.Len(t, opt.Option, 1) // EDE is added for SERVFAIL
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
+				if opt.Do() {
+					t.Errorf("opt.Do() is true")
+				}
+				if len(opt.Option) != 1 {
+					t.Errorf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				} // EDE is added for SERVFAIL
 			},
 		},
 		{
@@ -78,11 +102,19 @@ func TestSetRcodeWithEDE(t *testing.T) {
 			edeCode: dns.ExtendedErrorCodeCachedError,
 			edeText: "Cached negative response",
 			expected: func(t *testing.T, msg *dns.Msg) {
-				assert.Equal(t, dns.RcodeNameError, msg.Rcode)
+				if !reflect.DeepEqual(dns.RcodeNameError, msg.Rcode) {
+					t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, dns.RcodeNameError)
+				}
 				opt := msg.IsEdns0()
-				assert.NotNil(t, opt)
-				assert.True(t, opt.Do())
-				assert.Len(t, opt.Option, 0) // No EDE for non-SERVFAIL
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
+				if !(opt.Do()) {
+					t.Errorf("opt.Do() is false")
+				}
+				if len(opt.Option) != 0 {
+					t.Errorf("len(opt.Option) = %d, want %d", len(opt.Option), 0)
+				} // No EDE for non-SERVFAIL
 			},
 		},
 		{
@@ -98,15 +130,29 @@ func TestSetRcodeWithEDE(t *testing.T) {
 			edeCode: dns.ExtendedErrorCodeOther,
 			edeText: "",
 			expected: func(t *testing.T, msg *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, msg.Rcode)
-				assert.Len(t, msg.Extra, 1)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, msg.Rcode) {
+					t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, dns.RcodeServerFailure)
+				}
+				if len(msg.Extra) != 1 {
+					t.Errorf("len(msg.Extra) = %d, want %d", len(msg.Extra), 1)
+				}
 				opt, ok := msg.Extra[0].(*dns.OPT)
-				assert.True(t, ok)
-				assert.Len(t, opt.Option, 1)
+				if !(ok) {
+					t.Errorf("ok is false")
+				}
+				if len(opt.Option) != 1 {
+					t.Errorf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 				ede, ok := opt.Option[0].(*dns.EDNS0_EDE)
-				assert.True(t, ok)
-				assert.Equal(t, dns.ExtendedErrorCodeOther, ede.InfoCode)
-				assert.Equal(t, "", ede.ExtraText)
+				if !(ok) {
+					t.Errorf("ok is false")
+				}
+				if !reflect.DeepEqual(dns.ExtendedErrorCodeOther, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeOther)
+				}
+				if !reflect.DeepEqual("", ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, "")
+				}
 			},
 		},
 		{
@@ -121,11 +167,19 @@ func TestSetRcodeWithEDE(t *testing.T) {
 			edeCode: dns.ExtendedErrorCodeNoReachableAuthority,
 			edeText: "All nameservers unreachable",
 			expected: func(t *testing.T, msg *dns.Msg) {
-				assert.Equal(t, dns.RcodeServerFailure, msg.Rcode)
-				assert.Len(t, msg.Extra, 1)
+				if !reflect.DeepEqual(dns.RcodeServerFailure, msg.Rcode) {
+					t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, dns.RcodeServerFailure)
+				}
+				if len(msg.Extra) != 1 {
+					t.Errorf("len(msg.Extra) = %d, want %d", len(msg.Extra), 1)
+				}
 				opt, ok := msg.Extra[0].(*dns.OPT)
-				assert.True(t, ok)
-				assert.Len(t, opt.Option, 1)
+				if !(ok) {
+					t.Errorf("ok is false")
+				}
+				if len(opt.Option) != 1 {
+					t.Errorf("len(opt.Option) = %d, want %d", len(opt.Option), 1)
+				}
 			},
 		},
 	}
@@ -192,8 +246,12 @@ func TestErrorToEDE(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			code, text := ErrorToEDE(tt.err)
-			assert.Equal(t, tt.expectedCode, code)
-			assert.Equal(t, tt.expectedText, text)
+			if !reflect.DeepEqual(tt.expectedCode, code) {
+				t.Errorf("code = %v, want %v", code, tt.expectedCode)
+			}
+			if !reflect.DeepEqual(tt.expectedText, text) {
+				t.Errorf("text = %v, want %v", text, tt.expectedText)
+			}
 		})
 	}
 }
@@ -285,11 +343,19 @@ func TestGetEDE(t *testing.T) {
 			ede := GetEDE(tt.msg)
 
 			if tt.expectNil {
-				assert.Nil(t, ede)
+				if ede != nil {
+					t.Errorf("ede = %v, want nil", ede)
+				}
 			} else {
-				assert.NotNil(t, ede)
-				assert.Equal(t, tt.expectedCode, ede.InfoCode)
-				assert.Equal(t, tt.expectedText, ede.ExtraText)
+				if ede == nil {
+					t.Fatalf("ede is nil")
+				}
+				if !reflect.DeepEqual(tt.expectedCode, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, tt.expectedCode)
+				}
+				if !reflect.DeepEqual(tt.expectedText, ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, tt.expectedText)
+				}
 			}
 		})
 	}
@@ -334,11 +400,17 @@ func TestSetEDE(t *testing.T) {
 
 			ede := GetEDE(tt.msg)
 			if tt.expectEDE {
-				assert.NotNil(t, ede)
-				assert.Equal(t, tt.code, ede.InfoCode)
-				assert.Equal(t, tt.text, ede.ExtraText)
-			} else {
-				assert.Nil(t, ede)
+				if ede == nil {
+					t.Fatalf("ede is nil")
+				}
+				if !reflect.DeepEqual(tt.code, ede.InfoCode) {
+					t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, tt.code)
+				}
+				if !reflect.DeepEqual(tt.text, ede.ExtraText) {
+					t.Errorf("ede.ExtraText = %v, want %v", ede.ExtraText, tt.text)
+				}
+			} else if ede != nil {
+				t.Errorf("ede = %v, want nil", ede)
 			}
 		})
 	}

@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_shuffleStr(t *testing.T) {
@@ -31,10 +31,14 @@ func Test_searchAddr(t *testing.T) {
 	m.SetQuestion(testDomain, dns.TypeA)
 
 	m.SetEdns0(512, true)
-	assert.Equal(t, isDO(m), true)
+	if !reflect.DeepEqual(isDO(m), true) {
+		t.Errorf("true = %v, want %v", true, isDO(m))
+	}
 
 	m.Extra = []dns.RR{}
-	assert.Equal(t, isDO(m), false)
+	if !reflect.DeepEqual(isDO(m), false) {
+		t.Errorf("false = %v, want %v", false, isDO(m))
+	}
 
 	a1 := &dns.A{
 		Hdr: dns.RR_Header{
@@ -59,10 +63,18 @@ func Test_searchAddr(t *testing.T) {
 	m.Answer = append(m.Answer, a2)
 
 	addrs, found := searchAddrs(m)
-	assert.Equal(t, len(addrs), 1)
-	assert.NotEqual(t, addrs[0], netip.MustParseAddr("127.0.0.1"))
-	assert.Equal(t, addrs[0], netip.MustParseAddr("192.0.2.1"))
-	assert.Equal(t, found, true)
+	if !reflect.DeepEqual(len(addrs), 1) {
+		t.Errorf("1 = %v, want %v", 1, len(addrs))
+	}
+	if reflect.DeepEqual(addrs[0], netip.MustParseAddr("127.0.0.1")) {
+		t.Errorf("netip.MustParseAddr('127.0.0.1') = %v, want a different value", netip.MustParseAddr("127.0.0.1"))
+	}
+	if !reflect.DeepEqual(addrs[0], netip.MustParseAddr("192.0.2.1")) {
+		t.Errorf("netip.MustParseAddr('192.0.2.1') = %v, want %v", netip.MustParseAddr("192.0.2.1"), addrs[0])
+	}
+	if !reflect.DeepEqual(found, true) {
+		t.Errorf("true = %v, want %v", true, found)
+	}
 }
 
 func Test_extractRRSet(t *testing.T) {
@@ -73,7 +85,9 @@ func Test_extractRRSet(t *testing.T) {
 	}
 
 	rre := dnsutil.ExtractRRSet(rr, "test.com.", dns.TypeA)
-	assert.Len(t, rre, 3)
+	if len(rre) != 3 {
+		t.Errorf("len(rre) = %d, want %d", len(rre), 3)
+	}
 }
 
 func Test_extractRRSetMultipleTypes(t *testing.T) {
@@ -85,15 +99,21 @@ func Test_extractRRSetMultipleTypes(t *testing.T) {
 
 	// Test with multiple types
 	rre := dnsutil.ExtractRRSet(rr, "test.com.", dns.TypeA, dns.TypeAAAA)
-	assert.Len(t, rre, 2)
+	if len(rre) != 2 {
+		t.Errorf("len(rre) = %d, want %d", len(rre), 2)
+	}
 
 	// Test with empty input
 	rre = dnsutil.ExtractRRSet(nil, "", dns.TypeA)
-	assert.Nil(t, rre)
+	if rre != nil {
+		t.Errorf("rre = %v, want nil", rre)
+	}
 
 	// Test with name filter mismatch
 	rre = dnsutil.ExtractRRSet(rr, "other.com.", dns.TypeA)
-	assert.Len(t, rre, 0)
+	if len(rre) != 0 {
+		t.Errorf("len(rre) = %d, want %d", len(rre), 0)
+	}
 }
 
 func Test_verifyNSEC(t *testing.T) {
@@ -113,12 +133,16 @@ func Test_verifyNSEC(t *testing.T) {
 
 	// Should find A type
 	typeMatch := dnssec.VerifyNSEC(q, []dns.RR{nsec})
-	assert.True(t, typeMatch)
+	if !(typeMatch) {
+		t.Errorf("typeMatch is false")
+	}
 
 	// Query for type not in bitmap
 	q2 := dns.Question{Name: "example.com.", Qtype: dns.TypeMX}
 	typeMatch = dnssec.VerifyNSEC(q2, []dns.RR{nsec})
-	assert.False(t, typeMatch)
+	if typeMatch {
+		t.Errorf("typeMatch is true")
+	}
 }
 
 func Test_getDnameTarget(t *testing.T) {
@@ -127,7 +151,9 @@ func Test_getDnameTarget(t *testing.T) {
 
 	// No DNAME record
 	target := dnsutil.DnameTarget(msg)
-	assert.Empty(t, target)
+	if len(target) != 0 {
+		t.Errorf("target not empty: %v", target)
+	}
 
 	// Exact-owner match: RFC 6672 §2.3 — the DNAME owner itself is
 	// *not* redirected, so no target is returned.
@@ -142,7 +168,9 @@ func Test_getDnameTarget(t *testing.T) {
 	}
 	msg.Answer = []dns.RR{dname}
 	target = dnsutil.DnameTarget(msg)
-	assert.Empty(t, target, "DNAME owner must not be redirected")
+	if len(target) != 0 {
+		t.Errorf("%s: target not empty: %v", "DNAME owner must not be redirected", target)
+	}
 
 	// Test with subdomain
 	msg.Question = []dns.Question{{Name: "deep.sub.example.com.", Qtype: dns.TypeA}}
@@ -157,7 +185,9 @@ func Test_getDnameTarget(t *testing.T) {
 	}
 	msg.Answer = []dns.RR{dname2}
 	target = dnsutil.DnameTarget(msg)
-	assert.Equal(t, "deep.newtarget.com.", target)
+	if !reflect.DeepEqual("deep.newtarget.com.", target) {
+		t.Errorf("target = %v, want %v", target, "deep.newtarget.com.")
+	}
 
 	// Cousin name: qname shares a suffix with the DNAME owner but is
 	// not a descendant. dns.CompareDomainName reports the shared
@@ -166,7 +196,9 @@ func Test_getDnameTarget(t *testing.T) {
 	msg.Question = []dns.Question{{Name: "other.example.com.", Qtype: dns.TypeA}}
 	msg.Answer = []dns.RR{dname2} // DNAME owner is sub.example.com.
 	target = dnsutil.DnameTarget(msg)
-	assert.Empty(t, target, "cousin of DNAME owner must not be redirected")
+	if len(target) != 0 {
+		t.Errorf("%s: target not empty: %v", "cousin of DNAME owner must not be redirected", target)
+	}
 }
 
 // Test_verifyRRSIG_RejectsForeignPiggyback pins the defense that
@@ -208,8 +240,12 @@ func Test_verifyRRSIG_RejectsForeignPiggyback(t *testing.T) {
 	msg := &dns.Msg{Answer: []dns.RR{a, sig, evil}}
 
 	ok, err := dnssec.VerifyRRSIG("example.com.", keys, msg)
-	assert.False(t, ok)
-	assert.Equal(t, dnssec.ErrMissingSigned, err, "foreign RRset must make the whole response bogus")
+	if ok {
+		t.Errorf("ok is true")
+	}
+	if !reflect.DeepEqual(dnssec.ErrMissingSigned, err) {
+		t.Errorf("%s: err = %v, want %v", "foreign RRset must make the whole response bogus", err, dnssec.ErrMissingSigned)
+	}
 }
 
 // Test_isSupportedDNSKEYAlgorithm_RSAMD5 locks in the RFC 8624 /
@@ -218,11 +254,18 @@ func Test_verifyRRSIG_RejectsForeignPiggyback(t *testing.T) {
 // would be treated as usable and then bogus at RRSIG.Verify time
 // instead of downgraded to insecure.
 func Test_isSupportedDNSKEYAlgorithm_RSAMD5(t *testing.T) {
-	assert.False(t, dnssec.IsSupportedDNSKEYAlgorithm(dns.RSAMD5),
-		"RSAMD5 must be treated as unsupported — miekg/dns RRSIG.Verify returns ErrAlg for it")
-	assert.True(t, dnssec.IsSupportedDNSKEYAlgorithm(dns.RSASHA256))
-	assert.True(t, dnssec.IsSupportedDNSKEYAlgorithm(dns.ECDSAP256SHA256))
-	assert.True(t, dnssec.IsSupportedDNSKEYAlgorithm(dns.ED25519))
+	if dnssec.IsSupportedDNSKEYAlgorithm(dns.RSAMD5) {
+		t.Errorf("%s: dnssec.IsSupportedDNSKEYAlgorithm(dns.RSAMD5) is true", "RSAMD5 must be treated as unsupported — miekg/dns RRSIG.Verify returns ErrAlg for it")
+	}
+	if !(dnssec.IsSupportedDNSKEYAlgorithm(dns.RSASHA256)) {
+		t.Errorf("dnssec.IsSupportedDNSKEYAlgorithm(dns.RSASHA256) is false")
+	}
+	if !(dnssec.IsSupportedDNSKEYAlgorithm(dns.ECDSAP256SHA256)) {
+		t.Errorf("dnssec.IsSupportedDNSKEYAlgorithm(dns.ECDSAP256SHA256) is false")
+	}
+	if !(dnssec.IsSupportedDNSKEYAlgorithm(dns.ED25519)) {
+		t.Errorf("dnssec.IsSupportedDNSKEYAlgorithm(dns.ED25519) is false")
+	}
 }
 
 // Test_filterToZone_NSECNextDomain pins the defense against the
@@ -242,8 +285,12 @@ func Test_filterToZone_NSECNextDomain(t *testing.T) {
 	}
 
 	got := dnsutil.FilterRRsToZone([]dns.RR{crossZone, inZone}, "example.com.")
-	assert.Len(t, got, 1, "NSEC with cross-zone NextDomain must be filtered out")
-	assert.Equal(t, "!.example.com.", got[0].Header().Name)
+	if len(got) != 1 {
+		t.Errorf("%s: len(got) = %d, want %d", "NSEC with cross-zone NextDomain must be filtered out", len(got), 1)
+	}
+	if !reflect.DeepEqual("!.example.com.", got[0].Header().Name) {
+		t.Errorf("got[0].Header().Name = %v, want %v", got[0].Header().Name, "!.example.com.")
+	}
 }
 
 func Test_debugLogEnabled(t *testing.T) {
@@ -251,9 +298,13 @@ func Test_debugLogEnabled(t *testing.T) {
 	defer zlog.SetLevel(old)
 
 	zlog.SetLevel(zlog.LevelInfo)
-	assert.False(t, debugLogEnabled())
+	if debugLogEnabled() {
+		t.Errorf("debugLogEnabled() is true")
+	}
 	zlog.SetLevel(zlog.LevelDebug)
-	assert.True(t, debugLogEnabled())
+	if !(debugLogEnabled()) {
+		t.Errorf("debugLogEnabled() is false")
+	}
 }
 
 // Test_debugLogEnabled_GuardAllocsNothing pins what the guard is for: with
@@ -270,5 +321,7 @@ func Test_debugLogEnabled_GuardAllocsNothing(t *testing.T) {
 			zlog.Debug("Query inserted", "query", dnsutil.FormatQuestion(q))
 		}
 	})
-	assert.Zero(t, allocs, "guarded debug call site must be free when debug is off")
+	if allocs != 0 {
+		t.Errorf("%s: allocs = %v, want 0", "guarded debug call site must be free when debug is off", allocs)
+	}
 }

@@ -3,13 +3,13 @@ package edns
 import (
 	"context"
 	"net"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 type dummy struct{}
@@ -46,7 +46,9 @@ func Test_EDNS(t *testing.T) {
 	middleware.Setup(cfg)
 
 	edns := middleware.Get("edns").(*EDNS)
-	assert.Equal(t, "edns", edns.Name())
+	if !reflect.DeepEqual("edns", edns.Name()) {
+		t.Errorf("edns.Name() = %v, want %v", edns.Name(), "edns")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{edns, &dummy{}})
 
@@ -57,9 +59,15 @@ func Test_EDNS(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(context.Background())
 
-	assert.True(t, ch.Writer.Written())
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
-	assert.Nil(t, ch.Writer.Msg().IsEdns0())
+	if !(ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() is false")
+	}
+	if !reflect.DeepEqual(dns.RcodeSuccess, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeSuccess)
+	}
+	if ch.Writer.Msg().IsEdns0() != nil {
+		t.Errorf("ch.Writer.Msg().IsEdns0() = %v, want nil", ch.Writer.Msg().IsEdns0())
+	}
 
 	req.SetEdns0(4096, true)
 	opt := req.IsEdns0()
@@ -69,8 +77,12 @@ func Test_EDNS(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(context.Background())
 
-	assert.True(t, ch.Writer.Written())
-	assert.Equal(t, dns.RcodeBadVers, ch.Writer.Rcode())
+	if !(ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() is false")
+	}
+	if !reflect.DeepEqual(dns.RcodeBadVers, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeBadVers)
+	}
 
 	opt = req.IsEdns0()
 	opt.SetVersion(0)
@@ -80,16 +92,20 @@ func Test_EDNS(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(context.Background())
 
-	if assert.True(t, ch.Writer.Written()) {
-		assert.False(t, ch.Writer.Msg().Truncated)
+	if !(ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() is false")
+	} else if ch.Writer.Msg().Truncated {
+		t.Errorf("ch.Writer.Msg().Truncated is true")
 	}
 
 	mw = mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Reset(mw, req)
 	ch.Next(context.Background())
 
-	if assert.True(t, ch.Writer.Written()) {
-		assert.True(t, ch.Writer.Msg().Truncated)
+	if !(ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() is false")
+	} else if !(ch.Writer.Msg().Truncated) {
+		t.Errorf("ch.Writer.Msg().Truncated is false")
 	}
 
 	opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
@@ -193,9 +209,15 @@ func TestEDNS_ForwardsECSClampedDownstream(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected ECS to be forwarded to downstream")
 	}
-	assert.Equal(t, uint8(24), got.SourceNetmask, "ceiling clamp")
-	assert.Equal(t, "203.0.113.0", got.Address.String(), "host bits zeroed")
-	assert.Equal(t, uint8(0), got.SourceScope, "outgoing SCOPE must be 0")
+	if !reflect.DeepEqual(uint8(24), got.SourceNetmask) {
+		t.Errorf("%s: got.SourceNetmask = %v, want %v", "ceiling clamp", got.SourceNetmask, uint8(24))
+	}
+	if !reflect.DeepEqual("203.0.113.0", got.Address.String()) {
+		t.Errorf("%s: got.Address.String() = %v, want %v", "host bits zeroed", got.Address.String(), "203.0.113.0")
+	}
+	if !reflect.DeepEqual(uint8(0), got.SourceScope) {
+		t.Errorf("%s: got.SourceScope = %v, want %v", "outgoing SCOPE must be 0", got.SourceScope, uint8(0))
+	}
 }
 
 // TestEDNS_ResponseDoesNotLeakForwardedECS pins the P2 fix from the
@@ -330,8 +352,12 @@ func TestEDNS_ClearsADForCheckingDisabled(t *testing.T) {
 	mw := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Reset(mw, req)
 	ch.Next(context.Background())
-	assert.True(t, mw.Written())
-	assert.False(t, mw.Msg().AuthenticatedData, "AD must be cleared for a CD=1 client")
+	if !(mw.Written()) {
+		t.Errorf("mw.Written() is false")
+	}
+	if mw.Msg().AuthenticatedData {
+		t.Errorf("%s: mw.Msg().AuthenticatedData is true", "AD must be cleared for a CD=1 client")
+	}
 
 	// Control: DO=1, CD=0 client keeps the validated AD bit.
 	req2 := new(dns.Msg)
@@ -340,5 +366,7 @@ func TestEDNS_ClearsADForCheckingDisabled(t *testing.T) {
 	mw2 := mock.NewWriter("udp", "127.0.0.1:0")
 	ch.Reset(mw2, req2)
 	ch.Next(context.Background())
-	assert.True(t, mw2.Msg().AuthenticatedData, "AD must survive for a DO=1, CD=0 client")
+	if !(mw2.Msg().AuthenticatedData) {
+		t.Errorf("%s: mw2.Msg().AuthenticatedData is false", "AD must survive for a DO=1, CD=0 client")
+	}
 }

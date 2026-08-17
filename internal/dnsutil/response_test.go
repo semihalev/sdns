@@ -1,11 +1,11 @@
 package dnsutil
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestClassifyResponse(t *testing.T) {
@@ -215,11 +215,17 @@ func TestClassifyResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			respType, opt := ClassifyResponse(tt.msg, now)
 
-			assert.Equal(t, tt.expectedType, respType)
+			if !reflect.DeepEqual(tt.expectedType, respType) {
+				t.Errorf("respType = %v, want %v", respType, tt.expectedType)
+			}
 			if tt.hasOpt {
-				assert.NotNil(t, opt)
+				if opt == nil {
+					t.Fatalf("opt is nil")
+				}
 			} else {
-				assert.Nil(t, opt)
+				if opt != nil {
+					t.Errorf("opt = %v, want nil", opt)
+				}
 			}
 		})
 	}
@@ -282,7 +288,9 @@ func TestIsDelegation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := isDelegation(tt.msg)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -333,7 +341,9 @@ func TestHasSOA(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := hasSOA(tt.msg)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -429,7 +439,9 @@ func TestHasExpiredSignatures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := hasExpiredSignatures(tt.msg, now)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -480,7 +492,9 @@ func TestShouldCache(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := shouldCache(tt.msg)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }

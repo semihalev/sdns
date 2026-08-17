@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 type dummy struct{}
@@ -54,7 +54,9 @@ func Test_Failover(t *testing.T) {
 	middleware.Setup(cfg)
 
 	f := middleware.Get("failover").(*Failover)
-	assert.Equal(t, "failover", f.Name())
+	if !reflect.DeepEqual("failover", f.Name()) {
+		t.Errorf("f.Name() = %v, want %v", f.Name(), "failover")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{f, &dummy{}})
 
@@ -71,21 +73,27 @@ func Test_Failover(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, dns.RcodeServerFailure, mw.Rcode())
+	if !reflect.DeepEqual(dns.RcodeServerFailure, mw.Rcode()) {
+		t.Errorf("mw.Rcode() = %v, want %v", mw.Rcode(), dns.RcodeServerFailure)
+	}
 
 	req.RecursionDesired = true
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, mw.Rcode(), dns.RcodeSuccess)
+	if !reflect.DeepEqual(mw.Rcode(), dns.RcodeSuccess) {
+		t.Errorf("dns.RcodeSuccess = %v, want %v", dns.RcodeSuccess, mw.Rcode())
+	}
 
 	f.servers = []string{}
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
+	if !reflect.DeepEqual(mw.Rcode(), dns.RcodeServerFailure) {
+		t.Errorf("dns.RcodeServerFailure = %v, want %v", dns.RcodeServerFailure, mw.Rcode())
+	}
 
 	// A refused port rather than a black hole: the assertion is that an
 	// unusable fallback yields SERVFAIL, not that we can wait out a timeout.
@@ -94,7 +102,9 @@ func Test_Failover(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, mw.Rcode(), dns.RcodeServerFailure)
+	if !reflect.DeepEqual(mw.Rcode(), dns.RcodeServerFailure) {
+		t.Errorf("dns.RcodeServerFailure = %v, want %v", dns.RcodeServerFailure, mw.Rcode())
+	}
 }
 
 func TestFailoverRecursionWorkBoundsFallbackPool(t *testing.T) {

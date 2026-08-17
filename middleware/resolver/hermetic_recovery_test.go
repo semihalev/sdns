@@ -2,13 +2,14 @@ package resolver
 
 import (
 	"net"
+	"reflect"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
-	"github.com/stretchr/testify/assert"
 )
 
 // TestHermeticResolveRefreshesStaleAuthority drives the recovery a resolver
@@ -38,8 +39,12 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 	r := world.handlerWithConfig(cfg).resolver
 
 	resp, err := hermeticResolve(t, r, "www.shop.test.", dns.TypeA)
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("resp is nil")
+	}
 
 	question := dns.Question{
 		Name: "www.shop.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET,
@@ -69,15 +74,21 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 
 	resp, err = hermeticResolve(t, r, "www.shop.test.", dns.TypeA)
 
-	assert.NoError(t, err, "the resolver did not recover from a stale authority")
-	if assert.NotNil(t, resp) {
+	if err != nil {
+		t.Errorf("%s: unexpected error: %v", "the resolver did not recover from a stale authority", err)
+	}
+	if resp == nil {
+		t.Error("resp is nil")
+	} else {
 		addresses := []string{}
 		for _, answer := range resp.Answer {
 			if a, ok := answer.(*dns.A); ok {
 				addresses = append(addresses, a.A.String())
 			}
 		}
-		assert.Equal(t, []string{"192.0.2.60"}, addresses)
+		if !reflect.DeepEqual([]string{"192.0.2.60"}, addresses) {
+			t.Errorf("addresses = %v, want %v", addresses, []string{"192.0.2.60"})
+		}
 	}
 
 	// The refresh is the point, and it shows in two places: the resolver
@@ -86,18 +97,22 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 	// refresh adds what works rather than pruning what does not — so this
 	// asks whether the working address is present, not whether the dead one
 	// is gone.
-	assert.Greater(t, helper.asked("ns1.helper.test.", dns.TypeA), lookupsBefore,
-		"the nameserver's address was never looked up again, so nothing was refreshed")
+	if helper.asked("ns1.helper.test.", dns.TypeA) <= lookupsBefore {
+		t.Errorf("%s: helper.asked('ns1.helper.test.', dns.TypeA) = %v, want > %v", "the nameserver's address was never looked up again, so nothing was refreshed", helper.asked("ns1.helper.test.", dns.TypeA), lookupsBefore)
+	}
 
 	working := net.JoinHostPort(shop.glue.String(), "53")
 	after := r.searchCache(question, false, "www.shop.test.")
-	if assert.NotNil(t, after.servers) {
+	if after.servers == nil {
+		t.Error("after.servers is nil")
+	} else {
 		addrs := make([]string, 0, len(after.servers.List))
 		for _, server := range after.servers.List {
 			addrs = append(addrs, server.Addr)
 		}
-		assert.Contains(t, addrs, working,
-			"the refreshed delegation does not carry the address that answers")
+		if !slices.Contains(addrs, working) {
+			t.Errorf("the refreshed delegation %v does not carry the address that answers (%s)", addrs, working)
+		}
 	}
 }
 

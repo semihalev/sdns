@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
 )
 
 // Test_Cache_Stats tests the Stats method.
@@ -54,17 +54,22 @@ func Test_Cache_Stats(t *testing.T) {
 	// Get stats
 	stats := c.Stats()
 
-	assert.NotNil(t, stats)
-	assert.Contains(t, stats, "hits")
-	assert.Contains(t, stats, "misses")
-	assert.Contains(t, stats, "evictions")
-	assert.Contains(t, stats, "prefetches")
-	assert.Contains(t, stats, "positive_size")
-	assert.Contains(t, stats, "negative_size")
-	assert.Contains(t, stats, "hit_rate")
+	if stats == nil {
+		t.Fatalf("stats is nil")
+	}
+	if _, ok := stats["hits"]; !ok {
+		t.Errorf("stats %v missing %q", stats, "hits")
+	}
+	for _, key := range []string{"misses", "evictions", "prefetches", "positive_size", "negative_size", "hit_rate"} {
+		if _, ok := stats[key]; !ok {
+			t.Errorf("stats %v missing %q", stats, key)
+		}
+	}
 
 	// Check positive size
-	assert.Equal(t, 1, stats["positive_size"])
+	if !reflect.DeepEqual(1, stats["positive_size"]) {
+		t.Errorf("stats['positive_size'] = %v, want %v", stats["positive_size"], 1)
+	}
 }
 
 // Test_Cache_Metrics_All tests all metric methods.
@@ -82,10 +87,18 @@ func Test_Cache_Metrics_All(t *testing.T) {
 
 	hits, misses, evictions, prefetches := m.Stats()
 
-	assert.Equal(t, int64(2), hits)
-	assert.Equal(t, int64(1), misses)
-	assert.Equal(t, int64(3), evictions)
-	assert.Equal(t, int64(1), prefetches)
+	if !reflect.DeepEqual(int64(2), hits) {
+		t.Errorf("hits = %v, want %v", hits, int64(2))
+	}
+	if !reflect.DeepEqual(int64(1), misses) {
+		t.Errorf("misses = %v, want %v", misses, int64(1))
+	}
+	if !reflect.DeepEqual(int64(3), evictions) {
+		t.Errorf("evictions = %v, want %v", evictions, int64(3))
+	}
+	if !reflect.DeepEqual(int64(1), prefetches) {
+		t.Errorf("prefetches = %v, want %v", prefetches, int64(1))
+	}
 }
 
 // Test_Cache_Len tests Len methods.
@@ -96,8 +109,12 @@ func Test_Cache_Len(t *testing.T) {
 	nc := NewNegativeCache(100, time.Minute, time.Hour, metrics)
 
 	// Initially empty
-	assert.Equal(t, 0, pc.Len())
-	assert.Equal(t, 0, nc.Len())
+	if !reflect.DeepEqual(0, pc.Len()) {
+		t.Errorf("pc.Len() = %v, want %v", pc.Len(), 0)
+	}
+	if !reflect.DeepEqual(0, nc.Len()) {
+		t.Errorf("nc.Len() = %v, want %v", nc.Len(), 0)
+	}
 
 	// Add entries
 	req := new(dns.Msg)
@@ -108,8 +125,12 @@ func Test_Cache_Len(t *testing.T) {
 	pc.Set(key, entry)
 	nc.Set(key, entry)
 
-	assert.Equal(t, 1, pc.Len())
-	assert.Equal(t, 1, nc.Len())
+	if !reflect.DeepEqual(1, pc.Len()) {
+		t.Errorf("pc.Len() = %v, want %v", pc.Len(), 1)
+	}
+	if !reflect.DeepEqual(1, nc.Len()) {
+		t.Errorf("nc.Len() = %v, want %v", nc.Len(), 1)
+	}
 }
 
 // Test_Cache_InvalidQueries tests handling of invalid queries.
@@ -131,7 +152,9 @@ func Test_Cache_InvalidQueries(t *testing.T) {
 	c.ServeDNS(context.Background(), ch)
 
 	// Should cancel the request
-	assert.False(t, mw.Written())
+	if mw.Written() {
+		t.Errorf("mw.Written() is true")
+	}
 
 	// Test with invalid query type
 	req2 := new(dns.Msg)
@@ -144,7 +167,9 @@ func Test_Cache_InvalidQueries(t *testing.T) {
 	c.ServeDNS(context.Background(), ch2)
 
 	// Should cancel the request
-	assert.False(t, mw2.Written())
+	if mw2.Written() {
+		t.Errorf("mw2.Written() is true")
+	}
 }
 
 // Test_TTL_Manager tests TTL calculation edge cases.
@@ -152,13 +177,19 @@ func Test_TTL_Manager(t *testing.T) {
 	ttl := NewTTLManager(time.Minute, time.Hour)
 
 	// Test below minimum
-	assert.Equal(t, time.Minute, ttl.Calculate(30*time.Second))
+	if !reflect.DeepEqual(time.Minute, ttl.Calculate(30*time.Second)) {
+		t.Errorf("ttl.Calculate(30*time.Second) = %v, want %v", ttl.Calculate(30*time.Second), time.Minute)
+	}
 
 	// Test above maximum
-	assert.Equal(t, time.Hour, ttl.Calculate(2*time.Hour))
+	if !reflect.DeepEqual(time.Hour, ttl.Calculate(2*time.Hour)) {
+		t.Errorf("ttl.Calculate(2*time.Hour) = %v, want %v", ttl.Calculate(2*time.Hour), time.Hour)
+	}
 
 	// Test within range
-	assert.Equal(t, 30*time.Minute, ttl.Calculate(30*time.Minute))
+	if !reflect.DeepEqual(30*time.Minute, ttl.Calculate(30*time.Minute)) {
+		t.Errorf("ttl.Calculate(30*time.Minute) = %v, want %v", ttl.Calculate(30*time.Minute), 30*time.Minute)
+	}
 }
 
 // Test_Cache_Entry_Edge_Cases tests CacheEntry edge cases.
@@ -170,17 +201,27 @@ func Test_Cache_Entry_Edge_Cases(t *testing.T) {
 	entry := NewCacheEntry(req, 1*time.Millisecond, 0)
 	time.Sleep(2 * time.Millisecond)
 
-	assert.True(t, entry.IsExpired())
-	assert.Equal(t, 0, entry.TTL())
-	assert.Nil(t, entry.ToMsg(req))
+	if !(entry.IsExpired()) {
+		t.Errorf("entry.IsExpired() is false")
+	}
+	if !reflect.DeepEqual(0, entry.TTL()) {
+		t.Errorf("entry.TTL() = %v, want %v", entry.TTL(), 0)
+	}
+	if entry.ToMsg(req) != nil {
+		t.Errorf("entry.ToMsg(req) = %v, want nil", entry.ToMsg(req))
+	}
 
 	// Test ShouldPrefetch with threshold 0
 	entry2 := NewCacheEntry(req, time.Hour, 0)
-	assert.False(t, entry2.ShouldPrefetch(0))
+	if entry2.ShouldPrefetch(0) {
+		t.Errorf("entry2.ShouldPrefetch(0) is true")
+	}
 
 	// Test ShouldPrefetch when already prefetching
 	entry2.prefetch.Store(true)
-	assert.False(t, entry2.ShouldPrefetch(50))
+	if entry2.ShouldPrefetch(50) {
+		t.Errorf("entry2.ShouldPrefetch(50) is true")
+	}
 }
 
 // Test_Prefetch_Queue_Full tests prefetch queue when full.
@@ -198,13 +239,17 @@ func Test_Prefetch_Queue_Full(t *testing.T) {
 
 	// Add first request - should succeed
 	added := queue.Add(PrefetchRequest{Request: req, Key: 1})
-	assert.True(t, added)
+	if !(added) {
+		t.Errorf("added is false")
+	}
 
 	// Add second request immediately - queue should be full
 	req2 := new(dns.Msg)
 	req2.SetQuestion("test2.com.", dns.TypeA)
 	added = queue.Add(PrefetchRequest{Request: req2, Key: 2})
-	assert.False(t, added)
+	if added {
+		t.Errorf("added is true")
+	}
 }
 
 // Test_Release_Msg_Large tests ReleaseMsg with large message.
@@ -251,7 +296,9 @@ func Test_Handle_Special_Query_DebugNS(t *testing.T) {
 
 	c.ServeDNS(context.Background(), ch)
 
-	assert.True(t, called)
+	if !(called) {
+		t.Errorf("called is false")
+	}
 }
 
 // Test_WriteMsg_Truncated tests WriteMsg with truncated response.
@@ -271,7 +318,9 @@ func Test_WriteMsg_Truncated(t *testing.T) {
 	res.Truncated = true
 
 	err := w.WriteMsg(res)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	// Empty question should pass through
 	res2 := new(dns.Msg)
@@ -279,7 +328,9 @@ func Test_WriteMsg_Truncated(t *testing.T) {
 	res2.Question = []dns.Question{}
 
 	err = w.WriteMsg(res2)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 }
 
 // Test_Negative_Cache_Eviction tests negative cache with eviction.
@@ -297,7 +348,9 @@ func Test_Negative_Cache_Eviction(t *testing.T) {
 
 	// Some entries should have been evicted
 	// The exact number depends on the cache implementation
-	assert.LessOrEqual(t, nc.Len(), 10)
+	if nc.Len() > 10 {
+		t.Errorf("nc.Len() = %v, want <= %v", nc.Len(), 10)
+	}
 }
 
 // Test_Config_Edge_Cases tests configuration edge cases.
@@ -312,8 +365,12 @@ func Test_Config_Edge_Cases(t *testing.T) {
 	c := New(cfg)
 	defer c.Stop()
 
-	assert.NotNil(t, c)
-	assert.Equal(t, 10, c.config.Prefetch)
+	if c == nil {
+		t.Fatalf("c is nil")
+	}
+	if !reflect.DeepEqual(10, c.config.Prefetch) {
+		t.Errorf("c.config.Prefetch = %v, want %v", c.config.Prefetch, 10)
+	}
 
 	// Test with prefetch > 90
 	cfg2 := &config.Config{
@@ -326,5 +383,7 @@ func Test_Config_Edge_Cases(t *testing.T) {
 	defer c2.Stop()
 
 	// Should trigger validation warning but continue
-	assert.NotNil(t, c2)
+	if c2 == nil {
+		t.Fatalf("c2 is nil")
+	}
 }

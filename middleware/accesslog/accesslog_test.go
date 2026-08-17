@@ -3,6 +3,7 @@ package accesslog
 import (
 	"context"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -10,7 +11,6 @@ import (
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_accesslog(t *testing.T) {
@@ -27,8 +27,12 @@ func Test_accesslog(t *testing.T) {
 	middleware.Setup(cfg)
 	a := middleware.Get("accesslog").(*Log)
 
-	assert.Equal(t, "accesslog", a.Name())
-	assert.NotNil(t, a.logFile)
+	if !reflect.DeepEqual("accesslog", a.Name()) {
+		t.Errorf("a.Name() = %v, want %v", a.Name(), "accesslog")
+	}
+	if a.logFile == nil {
+		t.Fatalf("a.logFile is nil")
+	}
 
 	ch := middleware.NewChain([]middleware.Handler{a})
 
@@ -46,16 +50,24 @@ func Test_accesslog(t *testing.T) {
 
 	a.ServeDNS(context.Background(), ch)
 
-	assert.Equal(t, dns.RcodeServerFailure, mw.Msg().Rcode)
+	if !reflect.DeepEqual(dns.RcodeServerFailure, mw.Msg().Rcode) {
+		t.Errorf("mw.Msg().Rcode = %v, want %v", mw.Msg().Rcode, dns.RcodeServerFailure)
+	}
 
 	resp.CheckingDisabled = true
 	a.ServeDNS(context.Background(), ch)
 
-	assert.True(t, resp.CheckingDisabled)
+	if !(resp.CheckingDisabled) {
+		t.Errorf("resp.CheckingDisabled is false")
+	}
 
-	assert.NoError(t, a.logFile.Close())
+	if err := a.logFile.Close(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 
 	a.ServeDNS(context.Background(), ch)
 
-	assert.NoError(t, os.Remove(cfg.AccessLog))
+	if err := os.Remove(cfg.AccessLog); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
 }

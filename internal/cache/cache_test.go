@@ -3,12 +3,10 @@ package cache
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestCacheAddAndGet(t *testing.T) {
@@ -16,35 +14,51 @@ func TestCacheAddAndGet(t *testing.T) {
 	c.Add(1, 1)
 
 	value, found := c.Get(1)
-	require.True(t, found, "Failed to find inserted record")
-	assert.Equal(t, 1, value)
+	if !(found) {
+		t.Fatalf("%s: found is false", "Failed to find inserted record")
+	}
+	if !reflect.DeepEqual(1, value) {
+		t.Errorf("value = %v, want %v", value, 1)
+	}
 }
 
 func TestCacheLen(t *testing.T) {
 	c := New(4)
 
 	c.Add(1, 1)
-	assert.Equal(t, 1, c.Len(), "Cache should have 1 item")
+	if !reflect.DeepEqual(1, c.Len()) {
+		t.Errorf("%s: c.Len() = %v, want %v", "Cache should have 1 item", c.Len(), 1)
+	}
 
 	// Adding same key shouldn't increase size
 	c.Add(1, 1)
-	assert.Equal(t, 1, c.Len(), "Cache should still have 1 item")
+	if !reflect.DeepEqual(1, c.Len()) {
+		t.Errorf("%s: c.Len() = %v, want %v", "Cache should still have 1 item", c.Len(), 1)
+	}
 
 	c.Add(2, 2)
-	assert.Equal(t, 2, c.Len(), "Cache should have 2 items")
+	if !reflect.DeepEqual(2, c.Len()) {
+		t.Errorf("%s: c.Len() = %v, want %v", "Cache should have 2 items", c.Len(), 2)
+	}
 }
 
 func TestCacheRemove(t *testing.T) {
 	c := New(4)
 
 	c.Add(1, 1)
-	assert.Equal(t, 1, c.Len(), "Cache should have 1 item")
+	if !reflect.DeepEqual(1, c.Len()) {
+		t.Errorf("%s: c.Len() = %v, want %v", "Cache should have 1 item", c.Len(), 1)
+	}
 
 	c.Remove(1)
-	assert.Equal(t, 0, c.Len(), "Cache should be empty after removal")
+	if !reflect.DeepEqual(0, c.Len()) {
+		t.Errorf("%s: c.Len() = %v, want %v", "Cache should be empty after removal", c.Len(), 0)
+	}
 
 	_, found := c.Get(1)
-	assert.False(t, found, "Item should not be found after removal")
+	if found {
+		t.Errorf("%s: found is true", "Item should not be found after removal")
+	}
 }
 
 func TestCacheConditionalReplaceAndDelete(t *testing.T) {
@@ -89,13 +103,17 @@ func TestCacheLRUEviction(t *testing.T) {
 
 	c.Add(1, "one")
 	c.Add(2, "two")
-	assert.LessOrEqual(t, c.Len(), 2)
+	if c.Len() > 2 {
+		t.Errorf("c.Len() = %v, want <= %v", c.Len(), 2)
+	}
 
 	// Adding third item should trigger eviction
 	c.Add(3, "three")
 
 	// RadicalCache may clear entire segments, so we just verify size limit
-	assert.LessOrEqual(t, c.Len(), 3, "Cache should not grow unbounded")
+	if c.Len() > 3 {
+		t.Errorf("%s: c.Len() = %v, want <= %v", "Cache should not grow unbounded", c.Len(), 3)
+	}
 }
 
 func TestCacheLRUBehavior(t *testing.T) {
@@ -115,7 +133,9 @@ func TestCacheLRUBehavior(t *testing.T) {
 	c.Add(4, "four")
 
 	// Should have at most 4 items (allows slight overshoot for performance)
-	assert.LessOrEqual(t, c.Len(), 4, "Cache should maintain reasonable bounds")
+	if c.Len() > 4 {
+		t.Errorf("%s: c.Len() = %v, want <= %v", "Cache should maintain reasonable bounds", c.Len(), 4)
+	}
 }
 
 func TestCacheConcurrency(t *testing.T) {
@@ -147,7 +167,9 @@ func TestCacheConcurrency(t *testing.T) {
 
 	// Verify cache still functions correctly
 	// Allow up to 10% overshoot for concurrent operations with 256 segments
-	assert.LessOrEqual(t, c.Len(), 1100, "Cache should not exceed capacity by more than 10%")
+	if c.Len() > 1100 {
+		t.Errorf("%s: c.Len() = %v, want <= %v", "Cache should not exceed capacity by more than 10%", c.Len(), 1100)
+	}
 }
 
 func TestCacheRemoveConcurrency(t *testing.T) {
@@ -157,7 +179,7 @@ func TestCacheRemoveConcurrency(t *testing.T) {
 
 	// Pre-populate cache
 	for i := 0; i < numGoroutines*keysPerGoroutine; i++ {
-		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop //nolint:gosec // G115 - test loop
+		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
 	var wg sync.WaitGroup
@@ -176,7 +198,9 @@ func TestCacheRemoveConcurrency(t *testing.T) {
 
 	wg.Wait()
 
-	assert.Equal(t, 0, c.Len(), "All items should be removed")
+	if !reflect.DeepEqual(0, c.Len()) {
+		t.Errorf("%s: c.Len() = %v, want %v", "All items should be removed", c.Len(), 0)
+	}
 }
 
 func TestCacheZeroCapacity(t *testing.T) {
@@ -184,10 +208,14 @@ func TestCacheZeroCapacity(t *testing.T) {
 
 	// Zero capacity becomes 1 (minimum)
 	c.Add(1, "one")
-	assert.LessOrEqual(t, c.Len(), 1)
+	if c.Len() > 1 {
+		t.Errorf("c.Len() = %v, want <= %v", c.Len(), 1)
+	}
 
 	_, found := c.Get(1)
-	assert.True(t, found, "Should find item in minimum capacity cache")
+	if !(found) {
+		t.Errorf("%s: found is false", "Should find item in minimum capacity cache")
+	}
 }
 
 func TestCacheUpdateExisting(t *testing.T) {
@@ -195,17 +223,27 @@ func TestCacheUpdateExisting(t *testing.T) {
 
 	c.Add(1, "original")
 	val, found := c.Get(1)
-	require.True(t, found)
-	assert.Equal(t, "original", val)
+	if !(found) {
+		t.Fatalf("found is false")
+	}
+	if !reflect.DeepEqual("original", val) {
+		t.Errorf("val = %v, want %v", val, "original")
+	}
 
 	// Update with new value
 	c.Add(1, "updated")
 	val, found = c.Get(1)
-	require.True(t, found)
-	assert.Equal(t, "updated", val)
+	if !(found) {
+		t.Fatalf("found is false")
+	}
+	if !reflect.DeepEqual("updated", val) {
+		t.Errorf("val = %v, want %v", val, "updated")
+	}
 
 	// Size should remain 1
-	assert.Equal(t, 1, c.Len())
+	if !reflect.DeepEqual(1, c.Len()) {
+		t.Errorf("c.Len() = %v, want %v", c.Len(), 1)
+	}
 }
 
 func TestCacheCapacity(t *testing.T) {
@@ -217,21 +255,27 @@ func TestCacheCapacity(t *testing.T) {
 	}
 
 	// Verify size
-	assert.Equal(t, 50, c.Len())
+	if !reflect.DeepEqual(50, c.Len()) {
+		t.Errorf("c.Len() = %v, want %v", c.Len(), 50)
+	}
 
 	// Add more items up to capacity
 	for i := 50; i < 100; i++ {
 		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
-	assert.Equal(t, 100, c.Len())
+	if !reflect.DeepEqual(100, c.Len()) {
+		t.Errorf("c.Len() = %v, want %v", c.Len(), 100)
+	}
 
 	// Adding more should maintain capacity
 	for i := 100; i < 150; i++ {
 		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
 
-	assert.LessOrEqual(t, c.Len(), 100, "Cache should not exceed capacity")
+	if c.Len() > 100 {
+		t.Errorf("%s: c.Len() = %v, want <= %v", "Cache should not exceed capacity", c.Len(), 100)
+	}
 }
 
 // Benchmarks.
@@ -279,7 +323,7 @@ func BenchmarkCacheMixed(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			if i%2 == 0 {
-				c.Get(uint64(i % 10000)) //nolint:gosec // G115 - test loop //nolint:gosec // G115 - test loop
+				c.Get(uint64(i % 10000)) //nolint:gosec // G115 - test loop
 			} else {
 				c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 			}
@@ -309,7 +353,9 @@ func TestCacheMemoryUsage(t *testing.T) {
 	}
 
 	t.Logf("Found %d items out of 100 checked", found)
-	assert.Greater(t, found, 0, "Should find some cached items")
+	if found <= 0 {
+		t.Errorf("%s: found = %v, want > %v", "Should find some cached items", found, 0)
+	}
 }
 
 func TestCacheTTL(t *testing.T) {
@@ -330,19 +376,29 @@ func TestCacheTTL(t *testing.T) {
 
 	// Should find immediately
 	val, found := c.Get(1)
-	require.True(t, found)
+	if !(found) {
+		t.Fatalf("found is false")
+	}
 	tv := val.(timedValue)
-	assert.Equal(t, "test", tv.value)
-	assert.False(t, time.Now().After(tv.expiry))
+	if !reflect.DeepEqual("test", tv.value) {
+		t.Errorf("tv.value = %v, want %v", tv.value, "test")
+	}
+	if time.Now().After(tv.expiry) {
+		t.Errorf("time.Now().After(tv.expiry) is true")
+	}
 
 	// Wait for expiry
 	time.Sleep(1100 * time.Millisecond)
 
 	// Can still get from cache, but caller should check expiry
 	val, found = c.Get(1)
-	require.True(t, found)
+	if !(found) {
+		t.Fatalf("found is false")
+	}
 	tv = val.(timedValue)
-	assert.True(t, time.Now().After(tv.expiry), "Item should be expired")
+	if !(time.Now().After(tv.expiry)) {
+		t.Errorf("%s: time.Now().After(tv.expiry) is false", "Item should be expired")
+	}
 }
 
 func TestCacheStop(t *testing.T) {
@@ -356,8 +412,12 @@ func TestCacheStop(t *testing.T) {
 
 	// Cache should still work after Stop (no-op)
 	val, found := c.Get(1)
-	assert.True(t, found)
-	assert.Equal(t, "one", val)
+	if !(found) {
+		t.Errorf("found is false")
+	}
+	if !reflect.DeepEqual("one", val) {
+		t.Errorf("val = %v, want %v", val, "one")
+	}
 }
 
 func TestCacheNewSizeBranches(t *testing.T) {
@@ -377,13 +437,19 @@ func TestCacheNewSizeBranches(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := New(tt.size)
-			assert.NotNil(t, c)
+			if c == nil {
+				t.Fatalf("c is nil")
+			}
 
 			// Add and verify
 			c.Add(1, "test")
 			val, found := c.Get(1)
-			assert.True(t, found)
-			assert.Equal(t, "test", val)
+			if !(found) {
+				t.Errorf("found is false")
+			}
+			if !reflect.DeepEqual("test", val) {
+				t.Errorf("val = %v, want %v", val, "test")
+			}
 		})
 	}
 }

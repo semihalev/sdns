@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,6 @@ import (
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 func startTestDNSServer(t *testing.T, network string) (addr string, stop func()) {
@@ -129,7 +129,9 @@ func Test_Forwarder(t *testing.T) {
 	middleware.Setup(cfg)
 
 	f := middleware.Get("forwarder").(*Forwarder)
-	assert.Equal(t, "forwarder", f.Name())
+	if !reflect.DeepEqual("forwarder", f.Name()) {
+		t.Errorf("f.Name() = %v, want %v", f.Name(), "forwarder")
+	}
 	// Test TLS forwarding against a local server using a self-signed cert.
 	// In production, users should provide a validating TLS configuration.
 	f.tlsConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only
@@ -149,21 +151,27 @@ func Test_Forwarder(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
+	if !reflect.DeepEqual(dns.RcodeSuccess, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeSuccess)
+	}
 
 	req.RecursionDesired = true
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
+	if !reflect.DeepEqual(dns.RcodeSuccess, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeSuccess)
+	}
 
 	f.servers = []*server{}
 
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
+	if !reflect.DeepEqual(dns.RcodeServerFailure, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeServerFailure)
+	}
 
 	srv := &server{Addr: vacantLoopbackAddr(t), Proto: "udp"}
 	f.servers = []*server{srv}
@@ -171,7 +179,9 @@ func Test_Forwarder(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
+	if !reflect.DeepEqual(dns.RcodeServerFailure, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeServerFailure)
+	}
 
 	srv = &server{Addr: tlsAddr, Proto: "tcp-tls"}
 	f.servers = []*server{srv}
@@ -179,7 +189,9 @@ func Test_Forwarder(t *testing.T) {
 	ch.Reset(mw, req)
 	ch.Next(ctx)
 
-	assert.Equal(t, dns.RcodeSuccess, ch.Writer.Rcode())
+	if !reflect.DeepEqual(dns.RcodeSuccess, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeSuccess)
+	}
 }
 
 // startMismatchedQuestionServer returns a UDP server that always replies with
@@ -226,7 +238,9 @@ func Test_Forwarder_RejectsMismatchedQuestion(t *testing.T) {
 	// Every upstream returns a mismatched question, so the forwarder must
 	// drop the response and report SERVFAIL rather than letting an unrelated
 	// answer through to the client (and the cache).
-	assert.Equal(t, dns.RcodeServerFailure, ch.Writer.Rcode())
+	if !reflect.DeepEqual(dns.RcodeServerFailure, ch.Writer.Rcode()) {
+		t.Errorf("ch.Writer.Rcode() = %v, want %v", ch.Writer.Rcode(), dns.RcodeServerFailure)
+	}
 }
 
 func TestForwarderResolutionAttemptGuardBoundsDuplicateEndpoints(t *testing.T) {

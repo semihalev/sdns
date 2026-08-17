@@ -2,9 +2,11 @@ package resolver
 
 import (
 	"context"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -16,7 +18,6 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 func makeTestConfig() *config.Config {
@@ -144,16 +145,24 @@ func Test_handler(t *testing.T) {
 
 	ctx := context.Background()
 	handler := New(cfg)
-	assert.Equal(t, "resolver", handler.Name())
+	if !reflect.DeepEqual("resolver", handler.Name()) {
+		t.Errorf("handler.Name() = %v, want %v", handler.Name(), "resolver")
+	}
 
 	m := new(dns.Msg)
 	m.SetQuestion("www.test.", dns.TypeA)
 	r := handler.handle(ctx, m)
-	assert.Equal(t, dns.RcodeSuccess, r.Rcode)
-	if assert.Equal(t, 1, len(r.Answer)) {
-		assert.Equal(t, "192.0.2.10", r.Answer[0].(*dns.A).A.String())
+	if !reflect.DeepEqual(dns.RcodeSuccess, r.Rcode) {
+		t.Errorf("r.Rcode = %v, want %v", r.Rcode, dns.RcodeSuccess)
 	}
-	assert.Equal(t, 1, queries("www.test."), "the answer must come off the wire once")
+	if len(r.Answer) != 1 {
+		t.Errorf("len(r.Answer) = %v, want %v", len(r.Answer), 1)
+	} else if !reflect.DeepEqual("192.0.2.10", r.Answer[0].(*dns.A).A.String()) {
+		t.Errorf("r.Answer[0].(*dns.A).A.String() = %v, want %v", r.Answer[0].(*dns.A).A.String(), "192.0.2.10")
+	}
+	if !reflect.DeepEqual(1, queries("www.test.")) {
+		t.Errorf("%s: queries('www.test.') = %v, want %v", "the answer must come off the wire once", queries("www.test."), 1)
+	}
 
 	// The same question again. Answers are cached by the cache middleware,
 	// which this chain does not carry, so the resolver asks again — one
@@ -161,28 +170,42 @@ func Test_handler(t *testing.T) {
 	m = new(dns.Msg)
 	m.SetQuestion("www.test.", dns.TypeA)
 	r = handler.handle(ctx, m)
-	assert.Equal(t, dns.RcodeSuccess, r.Rcode)
-	assert.Equal(t, 1, len(r.Answer))
-	assert.Equal(t, 2, queries("www.test."), "the repeat must cost exactly one more query")
+	if !reflect.DeepEqual(dns.RcodeSuccess, r.Rcode) {
+		t.Errorf("r.Rcode = %v, want %v", r.Rcode, dns.RcodeSuccess)
+	}
+	if !reflect.DeepEqual(1, len(r.Answer)) {
+		t.Errorf("len(r.Answer) = %v, want %v", len(r.Answer), 1)
+	}
+	if !reflect.DeepEqual(2, queries("www.test.")) {
+		t.Errorf("%s: queries('www.test.') = %v, want %v", "the repeat must cost exactly one more query", queries("www.test."), 2)
+	}
 
 	// A name the authority denies.
 	m = new(dns.Msg)
 	m.SetQuestion("absent.test.", dns.TypeA)
 	r = handler.handle(ctx, m)
-	assert.Equal(t, dns.RcodeNameError, r.Rcode)
-	assert.Equal(t, 0, len(r.Answer))
+	if !reflect.DeepEqual(dns.RcodeNameError, r.Rcode) {
+		t.Errorf("r.Rcode = %v, want %v", r.Rcode, dns.RcodeNameError)
+	}
+	if !reflect.DeepEqual(0, len(r.Answer)) {
+		t.Errorf("len(r.Answer) = %v, want %v", len(r.Answer), 0)
+	}
 
 	// Questions the handler answers on its own, without asking anyone.
 	m = new(dns.Msg)
 	m.SetQuestion(".", dns.TypeANY)
 	r = handler.handle(ctx, m)
-	assert.Equal(t, dns.RcodeNotImplemented, r.Rcode)
+	if !reflect.DeepEqual(dns.RcodeNotImplemented, r.Rcode) {
+		t.Errorf("r.Rcode = %v, want %v", r.Rcode, dns.RcodeNotImplemented)
+	}
 
 	m = new(dns.Msg)
 	m.SetQuestion(".", dns.TypeNS)
 	m.RecursionDesired = false
 	r = handler.handle(ctx, m)
-	assert.NotEqual(t, dns.RcodeServerFailure, r.Rcode)
+	if reflect.DeepEqual(dns.RcodeServerFailure, r.Rcode) {
+		t.Errorf("r.Rcode = %v, want a different value", r.Rcode)
+	}
 }
 
 func Test_HandlerHINFO(t *testing.T) {
@@ -197,7 +220,9 @@ func Test_HandlerHINFO(t *testing.T) {
 	debugns = true
 	resp := handler.handle(ctx, m)
 
-	assert.Equal(t, true, len(resp.Ns) > 0)
+	if !reflect.DeepEqual(true, len(resp.Ns) > 0) {
+		t.Errorf("len(resp.Ns) > 0 = %v, want %v", len(resp.Ns) > 0, true)
+	}
 }
 
 func Test_HandlerServe(t *testing.T) {
@@ -215,7 +240,9 @@ func Test_HandlerServe(t *testing.T) {
 	ch.Reset(mw, req)
 
 	h.ServeDNS(context.Background(), ch)
-	assert.Equal(t, true, ch.Writer.Written())
+	if !reflect.DeepEqual(true, ch.Writer.Written()) {
+		t.Errorf("ch.Writer.Written() = %v, want %v", ch.Writer.Written(), true)
+	}
 }
 
 func Test_withQueryDeadline(t *testing.T) {
@@ -226,20 +253,32 @@ func Test_withQueryDeadline(t *testing.T) {
 	bounded, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	got, gotCancel := withQueryDeadline(bounded, timeout)
-	assert.Equal(t, bounded, got, "an earlier-bounded parent must not grow a child")
+	if !reflect.DeepEqual(bounded, got) {
+		t.Errorf("%s: got = %v, want %v", "an earlier-bounded parent must not grow a child", got, bounded)
+	}
 	parentDeadline, _ := bounded.Deadline()
 	gotDeadline, ok := got.Deadline()
-	assert.True(t, ok)
-	assert.Equal(t, parentDeadline, gotDeadline)
+	if !(ok) {
+		t.Errorf("ok is false")
+	}
+	if !reflect.DeepEqual(parentDeadline, gotDeadline) {
+		t.Errorf("gotDeadline = %v, want %v", gotDeadline, parentDeadline)
+	}
 	gotCancel()
-	assert.NoError(t, bounded.Err(), "the no-op cancel must not cancel the parent")
+	if err := bounded.Err(); err != nil {
+		t.Errorf("%s: unexpected error: %v", "the no-op cancel must not cancel the parent", err)
+	}
 
 	// An unbounded parent gets the timeout.
 	got, gotCancel = withQueryDeadline(context.Background(), timeout)
 	defer gotCancel()
 	gotDeadline, ok = got.Deadline()
-	assert.True(t, ok, "an unbounded parent must gain a deadline")
-	assert.InDelta(t, time.Until(gotDeadline).Seconds(), timeout.Seconds(), 1.0)
+	if !(ok) {
+		t.Errorf("%s: ok is false", "an unbounded parent must gain a deadline")
+	}
+	if diff := math.Abs(time.Until(gotDeadline).Seconds() - timeout.Seconds()); diff > 1.0 {
+		t.Errorf("deadline is %v seconds away, want within 1.0 of %v", time.Until(gotDeadline).Seconds(), timeout.Seconds())
+	}
 
 	// A parent bounded later than the timeout is tightened.
 	loose, cancel2 := context.WithTimeout(context.Background(), time.Hour)
@@ -248,7 +287,9 @@ func Test_withQueryDeadline(t *testing.T) {
 	defer gotCancel()
 	gotDeadline, _ = got.Deadline()
 	looseDeadline, _ := loose.Deadline()
-	assert.True(t, gotDeadline.Before(looseDeadline), "a later-bounded parent must be tightened")
+	if !(gotDeadline.Before(looseDeadline)) {
+		t.Errorf("%s: gotDeadline.Before(looseDeadline) is false", "a later-bounded parent must be tightened")
+	}
 }
 
 func Test_requestIDFromContext(t *testing.T) {
@@ -284,5 +325,7 @@ func Test_withQueryDeadline_LazyParentAllocsNothing(t *testing.T) {
 		cancel()
 		_ = ctx
 	})
-	assert.Zero(t, allocs, "deriving the query deadline under a server-bounded parent must not allocate")
+	if allocs != 0 {
+		t.Errorf("%s: allocs = %v, want 0", "deriving the query deadline under a server-bounded parent must not allocate", allocs)
+	}
 }

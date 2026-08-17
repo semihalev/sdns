@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestCacheADBitHandling(t *testing.T) {
@@ -33,8 +32,12 @@ func TestCacheADBitHandling(t *testing.T) {
 	req1.CheckingDisabled = false
 
 	resp1 := entry.ToMsg(req1)
-	assert.NotNil(t, resp1)
-	assert.True(t, resp1.AuthenticatedData, "AD bit should be preserved when CD=0")
+	if resp1 == nil {
+		t.Fatalf("resp1 is nil")
+	}
+	if !(resp1.AuthenticatedData) {
+		t.Errorf("%s: resp1.AuthenticatedData is false", "AD bit should be preserved when CD=0")
+	}
 
 	// Test 2: Request with CD=1 should clear AD bit
 	req2 := new(dns.Msg)
@@ -42,11 +45,17 @@ func TestCacheADBitHandling(t *testing.T) {
 	req2.CheckingDisabled = true
 
 	resp2 := entry.ToMsg(req2)
-	assert.NotNil(t, resp2)
-	assert.False(t, resp2.AuthenticatedData, "AD bit should be cleared when CD=1")
+	if resp2 == nil {
+		t.Fatalf("resp2 is nil")
+	}
+	if resp2.AuthenticatedData {
+		t.Errorf("%s: resp2.AuthenticatedData is true", "AD bit should be cleared when CD=1")
+	}
 
 	// Verify original entry is not modified
-	assert.True(t, msg.AuthenticatedData, "Original message should not be modified")
+	if !(msg.AuthenticatedData) {
+		t.Errorf("%s: msg.AuthenticatedData is false", "Original message should not be modified")
+	}
 }
 
 func TestCacheEntryWithoutAD(t *testing.T) {
@@ -75,8 +84,11 @@ func TestCacheEntryWithoutAD(t *testing.T) {
 		req.CheckingDisabled = cd
 
 		resp := entry.ToMsg(req)
-		assert.NotNil(t, resp)
-		assert.False(t, resp.AuthenticatedData,
-			"AD bit should remain false when original had AD=0")
+		if resp == nil {
+			t.Fatalf("resp is nil")
+		}
+		if resp.AuthenticatedData {
+			t.Errorf("%s: resp.AuthenticatedData is true", "AD bit should remain false when original had AD=0")
+		}
 	}
 }

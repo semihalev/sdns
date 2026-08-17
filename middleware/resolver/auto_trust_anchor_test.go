@@ -15,7 +15,6 @@ import (
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/middleware/resolver"
 	"github.com/semihalev/zlog/v2"
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -163,9 +162,15 @@ func Test_autota(t *testing.T) {
 
 	resp, err := r.Resolve(context.Background(), req, rootServers, true, 30, 0, false, nil)
 
-	assert.True(t, resp.AuthenticatedData)
-	assert.NoError(t, err)
-	assert.Len(t, resp.Answer, 4)
+	if !(resp.AuthenticatedData) {
+		t.Errorf("resp.AuthenticatedData is false")
+	}
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(resp.Answer) != 4 {
+		t.Errorf("len(resp.Answer) = %d, want %d", len(resp.Answer), 4)
+	}
 
 	_ = os.Remove(filepath.Join(cfg.Directory, "trust-anchor.db")) //nolint:gosec // G104 - cleanup best effort
 }

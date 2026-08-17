@@ -12,8 +12,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // testConfig creates a config with the given version for testing.
@@ -35,14 +33,30 @@ func TestNew(t *testing.T) {
 	cfg := testConfig(true, "1.5.0")
 
 	c := New(cfg)
-	require.NotNil(t, c)
-	assert.True(t, c.enabled)
-	assert.Equal(t, "1.5.0", c.version)
-	assert.NotEmpty(t, c.identity)
-	assert.NotEmpty(t, c.platform)
-	assert.NotEmpty(t, c.fingerprint)
-	assert.Equal(t, 16, len(c.fingerprint)) // SHA256 truncated to 16 chars
-	assert.Equal(t, "chaos", c.Name())
+	if c == nil {
+		t.Fatalf("c is nil")
+	}
+	if !(c.enabled) {
+		t.Errorf("c.enabled is false")
+	}
+	if !reflect.DeepEqual("1.5.0", c.version) {
+		t.Errorf("c.version = %v, want %v", c.version, "1.5.0")
+	}
+	if len(c.identity) == 0 {
+		t.Errorf("c.identity is empty")
+	}
+	if len(c.platform) == 0 {
+		t.Errorf("c.platform is empty")
+	}
+	if len(c.fingerprint) == 0 {
+		t.Errorf("c.fingerprint is empty")
+	}
+	if !reflect.DeepEqual(16, len(c.fingerprint)) {
+		t.Errorf("len(c.fingerprint) = %v, want %v", len(c.fingerprint), 16)
+	} // SHA256 truncated to 16 chars
+	if !reflect.DeepEqual("chaos", c.Name()) {
+		t.Errorf("c.Name() = %v, want %v", c.Name(), "chaos")
+	}
 }
 
 func TestServeDNS_NotEnabled(t *testing.T) {
@@ -59,7 +73,9 @@ func TestServeDNS_NotEnabled(t *testing.T) {
 	ch.Reset(w, req)
 
 	c.ServeDNS(context.Background(), ch)
-	assert.False(t, w.Written())
+	if w.Written() {
+		t.Errorf("w.Written() is true")
+	}
 }
 
 func TestServeDNS_NonChaosClass(t *testing.T) {
@@ -76,7 +92,9 @@ func TestServeDNS_NonChaosClass(t *testing.T) {
 	ch.Reset(w, req)
 
 	c.ServeDNS(context.Background(), ch)
-	assert.False(t, w.Written())
+	if w.Written() {
+		t.Errorf("w.Written() is true")
+	}
 }
 
 func TestServeDNS_NonTXTType(t *testing.T) {
@@ -93,7 +111,9 @@ func TestServeDNS_NonTXTType(t *testing.T) {
 	ch.Reset(w, req)
 
 	c.ServeDNS(context.Background(), ch)
-	assert.False(t, w.Written())
+	if w.Written() {
+		t.Errorf("w.Written() is true")
+	}
 }
 
 func TestServeDNS_Version(t *testing.T) {
@@ -114,18 +134,34 @@ func TestServeDNS_Version(t *testing.T) {
 			ch.Reset(w, req)
 
 			c.ServeDNS(context.Background(), ch)
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 
 			resp := w.Msg()
-			require.Len(t, resp.Answer, 1)
+			if len(resp.Answer) != 1 {
+				t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+			}
 
 			txt := resp.Answer[0].(*dns.TXT)
-			assert.Equal(t, qname, txt.Header().Name)
-			assert.Equal(t, uint16(dns.ClassCHAOS), txt.Header().Class)
-			assert.Equal(t, uint32(0), txt.Header().Ttl)
-			assert.Len(t, txt.Txt, 1)
-			assert.Equal(t, "SDNS v1.5.0", txt.Txt[0])
-			assert.True(t, resp.Authoritative)
+			if !reflect.DeepEqual(qname, txt.Header().Name) {
+				t.Errorf("txt.Header().Name = %v, want %v", txt.Header().Name, qname)
+			}
+			if !reflect.DeepEqual(uint16(dns.ClassCHAOS), txt.Header().Class) {
+				t.Errorf("txt.Header().Class = %v, want %v", txt.Header().Class, uint16(dns.ClassCHAOS))
+			}
+			if !reflect.DeepEqual(uint32(0), txt.Header().Ttl) {
+				t.Errorf("txt.Header().Ttl = %v, want %v", txt.Header().Ttl, uint32(0))
+			}
+			if len(txt.Txt) != 1 {
+				t.Errorf("len(txt.Txt) = %d, want %d", len(txt.Txt), 1)
+			}
+			if !reflect.DeepEqual("SDNS v1.5.0", txt.Txt[0]) {
+				t.Errorf("txt.Txt[0] = %v, want %v", txt.Txt[0], "SDNS v1.5.0")
+			}
+			if !(resp.Authoritative) {
+				t.Errorf("resp.Authoritative is false")
+			}
 		})
 	}
 }
@@ -148,15 +184,25 @@ func TestServeDNS_Identity(t *testing.T) {
 			ch.Reset(w, req)
 
 			c.ServeDNS(context.Background(), ch)
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 
 			resp := w.Msg()
-			require.Len(t, resp.Answer, 1)
+			if len(resp.Answer) != 1 {
+				t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+			}
 
 			txt := resp.Answer[0].(*dns.TXT)
-			assert.Equal(t, qname, txt.Header().Name)
-			assert.Len(t, txt.Txt, 1)
-			assert.NotEmpty(t, txt.Txt[0])
+			if !reflect.DeepEqual(qname, txt.Header().Name) {
+				t.Errorf("txt.Header().Name = %v, want %v", txt.Header().Name, qname)
+			}
+			if len(txt.Txt) != 1 {
+				t.Errorf("len(txt.Txt) = %d, want %d", len(txt.Txt), 1)
+			}
+			if len(txt.Txt[0]) == 0 {
+				t.Errorf("txt.Txt[0] is empty")
+			}
 		})
 	}
 }
@@ -180,19 +226,35 @@ func TestServeDNS_Uptime(t *testing.T) {
 			ch.Reset(w, req)
 
 			c.ServeDNS(context.Background(), ch)
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 
 			resp := w.Msg()
-			require.Len(t, resp.Answer, 1)
+			if len(resp.Answer) != 1 {
+				t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+			}
 
 			txt := resp.Answer[0].(*dns.TXT)
-			assert.Equal(t, qname, txt.Header().Name)
-			assert.Len(t, txt.Txt, 1)
+			if !reflect.DeepEqual(qname, txt.Header().Name) {
+				t.Errorf("txt.Header().Name = %v, want %v", txt.Header().Name, qname)
+			}
+			if len(txt.Txt) != 1 {
+				t.Errorf("len(txt.Txt) = %d, want %d", len(txt.Txt), 1)
+			}
 			// Should contain days, hours, minutes, seconds format
-			assert.Contains(t, txt.Txt[0], "d")
-			assert.Contains(t, txt.Txt[0], "h")
-			assert.Contains(t, txt.Txt[0], "m")
-			assert.Contains(t, txt.Txt[0], "s")
+			if !strings.Contains(txt.Txt[0], "d") {
+				t.Errorf("%q does not contain %q", txt.Txt[0], "d")
+			}
+			if !strings.Contains(txt.Txt[0], "h") {
+				t.Errorf("%q does not contain %q", txt.Txt[0], "h")
+			}
+			if !strings.Contains(txt.Txt[0], "m") {
+				t.Errorf("%q does not contain %q", txt.Txt[0], "m")
+			}
+			if !strings.Contains(txt.Txt[0], "s") {
+				t.Errorf("%q does not contain %q", txt.Txt[0], "s")
+			}
 		})
 	}
 }
@@ -215,16 +277,26 @@ func TestServeDNS_Platform(t *testing.T) {
 			ch.Reset(w, req)
 
 			c.ServeDNS(context.Background(), ch)
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 
 			resp := w.Msg()
-			require.Len(t, resp.Answer, 1)
+			if len(resp.Answer) != 1 {
+				t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+			}
 
 			txt := resp.Answer[0].(*dns.TXT)
-			assert.Equal(t, qname, txt.Header().Name)
-			assert.Len(t, txt.Txt, 1)
+			if !reflect.DeepEqual(qname, txt.Header().Name) {
+				t.Errorf("txt.Header().Name = %v, want %v", txt.Header().Name, qname)
+			}
+			if len(txt.Txt) != 1 {
+				t.Errorf("len(txt.Txt) = %d, want %d", len(txt.Txt), 1)
+			}
 			// Should contain OS/ARCH format
-			assert.Contains(t, txt.Txt[0], "/")
+			if !strings.Contains(txt.Txt[0], "/") {
+				t.Errorf("%q does not contain %q", txt.Txt[0], "/")
+			}
 		})
 	}
 }
@@ -247,15 +319,25 @@ func TestServeDNS_Fingerprint(t *testing.T) {
 			ch.Reset(w, req)
 
 			c.ServeDNS(context.Background(), ch)
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 
 			resp := w.Msg()
-			require.Len(t, resp.Answer, 1)
+			if len(resp.Answer) != 1 {
+				t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+			}
 
 			txt := resp.Answer[0].(*dns.TXT)
-			assert.Equal(t, qname, txt.Header().Name)
-			assert.Len(t, txt.Txt, 1)
-			assert.Equal(t, 16, len(txt.Txt[0]))
+			if !reflect.DeepEqual(qname, txt.Header().Name) {
+				t.Errorf("txt.Header().Name = %v, want %v", txt.Header().Name, qname)
+			}
+			if len(txt.Txt) != 1 {
+				t.Errorf("len(txt.Txt) = %d, want %d", len(txt.Txt), 1)
+			}
+			if !reflect.DeepEqual(16, len(txt.Txt[0])) {
+				t.Errorf("len(txt.Txt[0]) = %v, want %v", len(txt.Txt[0]), 16)
+			}
 		})
 	}
 }
@@ -278,17 +360,29 @@ func TestServeDNS_Stats(t *testing.T) {
 			ch.Reset(w, req)
 
 			c.ServeDNS(context.Background(), ch)
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 
 			resp := w.Msg()
-			require.Len(t, resp.Answer, 1)
+			if len(resp.Answer) != 1 {
+				t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+			}
 
 			txt := resp.Answer[0].(*dns.TXT)
-			assert.Equal(t, qname, txt.Header().Name)
-			assert.Len(t, txt.Txt, 1)
+			if !reflect.DeepEqual(qname, txt.Header().Name) {
+				t.Errorf("txt.Header().Name = %v, want %v", txt.Header().Name, qname)
+			}
+			if len(txt.Txt) != 1 {
+				t.Errorf("len(txt.Txt) = %d, want %d", len(txt.Txt), 1)
+			}
 			// Should contain queries and uptime
-			assert.Contains(t, txt.Txt[0], "queries:")
-			assert.Contains(t, txt.Txt[0], "uptime:")
+			if !strings.Contains(txt.Txt[0], "queries:") {
+				t.Errorf("%q does not contain %q", txt.Txt[0], "queries:")
+			}
+			if !strings.Contains(txt.Txt[0], "uptime:") {
+				t.Errorf("%q does not contain %q", txt.Txt[0], "uptime:")
+			}
 		})
 	}
 }
@@ -307,7 +401,9 @@ func TestServeDNS_UnknownQuery(t *testing.T) {
 	ch.Reset(w, req)
 
 	c.ServeDNS(context.Background(), ch)
-	assert.False(t, w.Written())
+	if w.Written() {
+		t.Errorf("w.Written() is true")
+	}
 }
 
 func TestServeDNS_EmptyQuestion(t *testing.T) {
@@ -323,7 +419,9 @@ func TestServeDNS_EmptyQuestion(t *testing.T) {
 	ch.Reset(w, req)
 
 	c.ServeDNS(context.Background(), ch)
-	assert.False(t, w.Written())
+	if w.Written() {
+		t.Errorf("w.Written() is true")
+	}
 }
 
 func TestQueryCounting(t *testing.T) {
@@ -359,7 +457,9 @@ func TestQueryCounting(t *testing.T) {
 	count := c.queryCount
 	c.mu.RUnlock()
 
-	assert.Equal(t, uint64(queries), count) //nolint:gosec // G115 - test value, queries is small
+	if !reflect.DeepEqual(uint64(queries), count) {
+		t.Errorf("count = %v, want %v", count, uint64(queries))
+	} //nolint:gosec // G115 - test value, queries is small
 }
 
 func TestUptimeFormatting(t *testing.T) {
@@ -392,18 +492,30 @@ func TestUptimeFormatting(t *testing.T) {
 			ch.Reset(w, req)
 
 			c.ServeDNS(context.Background(), ch)
-			require.True(t, w.Written())
+			if !(w.Written()) {
+				t.Fatalf("w.Written() is false")
+			}
 
 			resp := w.Msg()
-			require.Len(t, resp.Answer, 1)
+			if len(resp.Answer) != 1 {
+				t.Fatalf("len(resp.Answer) = %d, want %d", len(resp.Answer), 1)
+			}
 
 			txt := resp.Answer[0].(*dns.TXT)
 			// Check that the format matches expected pattern
 			uptimeStr := txt.Txt[0]
-			assert.True(t, strings.HasSuffix(uptimeStr, "s"))
-			assert.Contains(t, uptimeStr, "d")
-			assert.Contains(t, uptimeStr, "h")
-			assert.Contains(t, uptimeStr, "m")
+			if !(strings.HasSuffix(uptimeStr, "s")) {
+				t.Errorf("strings.HasSuffix(uptimeStr, 's') is false")
+			}
+			if !strings.Contains(uptimeStr, "d") {
+				t.Errorf("%q does not contain %q", uptimeStr, "d")
+			}
+			if !strings.Contains(uptimeStr, "h") {
+				t.Errorf("%q does not contain %q", uptimeStr, "h")
+			}
+			if !strings.Contains(uptimeStr, "m") {
+				t.Errorf("%q does not contain %q", uptimeStr, "m")
+			}
 		})
 	}
 }

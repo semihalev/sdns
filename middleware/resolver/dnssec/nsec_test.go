@@ -1,10 +1,10 @@
 package dnssec
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/miekg/dns"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestNSECCovers(t *testing.T) {
@@ -69,7 +69,9 @@ func TestNSECCovers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := nsecCovers(tt.owner, tt.next, tt.qname)
-			assert.Equal(t, tt.expected, result)
+			if !reflect.DeepEqual(tt.expected, result) {
+				t.Errorf("result = %v, want %v", result, tt.expected)
+			}
 		})
 	}
 }
@@ -92,27 +94,37 @@ func TestVerifyNODATANSEC(t *testing.T) {
 	}
 
 	err := VerifyNODATANSEC(msg, []dns.RR{nsec})
-	assert.NoError(t, err, "Valid NODATA should verify successfully")
+	if err != nil {
+		t.Errorf("%s: unexpected error: %v", "Valid NODATA should verify successfully", err)
+	}
 
 	// Test case 2: Invalid - type exists
 	nsec.TypeBitMap = []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeNS, dns.TypeSOA}
 	err = VerifyNODATANSEC(msg, []dns.RR{nsec})
-	assert.Equal(t, ErrNSECTypeExists, err, "Should fail when type exists")
+	if !reflect.DeepEqual(ErrNSECTypeExists, err) {
+		t.Errorf("%s: err = %v, want %v", "Should fail when type exists", err, ErrNSECTypeExists)
+	}
 
 	// Test case 3: DS query at delegation point
 	msg.SetQuestion("example.com.", dns.TypeDS)
 	nsec.TypeBitMap = []uint16{dns.TypeNS} // Delegation point (has NS, no SOA)
 	err = VerifyNODATANSEC(msg, []dns.RR{nsec})
-	assert.NoError(t, err, "Valid DS NODATA at delegation should verify")
+	if err != nil {
+		t.Errorf("%s: unexpected error: %v", "Valid DS NODATA at delegation should verify", err)
+	}
 
 	// Test case 4: Invalid DS - has SOA (not a delegation)
 	nsec.TypeBitMap = []uint16{dns.TypeNS, dns.TypeSOA}
 	err = VerifyNODATANSEC(msg, []dns.RR{nsec})
-	assert.Equal(t, ErrNSECBadDelegation, err, "Should fail when SOA exists at delegation")
+	if !reflect.DeepEqual(ErrNSECBadDelegation, err) {
+		t.Errorf("%s: err = %v, want %v", "Should fail when SOA exists at delegation", err, ErrNSECBadDelegation)
+	}
 
 	// Test case 5: No NSEC records
 	err = VerifyNODATANSEC(msg, []dns.RR{})
-	assert.Equal(t, ErrNSECMissingCoverage, err, "Should fail with no NSEC records")
+	if !reflect.DeepEqual(ErrNSECMissingCoverage, err) {
+		t.Errorf("%s: err = %v, want %v", "Should fail with no NSEC records", err, ErrNSECMissingCoverage)
+	}
 }
 
 func TestVerifyNameErrorNSEC(t *testing.T) {
@@ -146,7 +158,9 @@ func TestVerifyNameErrorNSEC(t *testing.T) {
 	}
 
 	err := VerifyNameErrorNSEC(msg, []dns.RR{nsec1, nsec2})
-	assert.NoError(t, err, "Valid NXDOMAIN should verify successfully")
+	if err != nil {
+		t.Errorf("%s: unexpected error: %v", "Valid NXDOMAIN should verify successfully", err)
+	}
 
 	// Test case 2: No covering NSEC
 	nsecNoCover := &dns.NSEC{
@@ -161,11 +175,15 @@ func TestVerifyNameErrorNSEC(t *testing.T) {
 	}
 
 	err = VerifyNameErrorNSEC(msg, []dns.RR{nsecNoCover})
-	assert.Equal(t, ErrNSECMissingCoverage, err, "Should fail when no NSEC covers the name")
+	if !reflect.DeepEqual(ErrNSECMissingCoverage, err) {
+		t.Errorf("%s: err = %v, want %v", "Should fail when no NSEC covers the name", err, ErrNSECMissingCoverage)
+	}
 
 	// Test case 3: No NSEC records
 	err = VerifyNameErrorNSEC(msg, []dns.RR{})
-	assert.Equal(t, ErrNSECMissingCoverage, err, "Should fail with no NSEC records")
+	if !reflect.DeepEqual(ErrNSECMissingCoverage, err) {
+		t.Errorf("%s: err = %v, want %v", "Should fail with no NSEC records", err, ErrNSECMissingCoverage)
+	}
 }
 
 // TestVerifyNODATANSEC_Wildcard locks in the RFC 4035 §3.1.3.4 wildcard
@@ -188,7 +206,9 @@ func TestVerifyNODATANSEC_Wildcard(t *testing.T) {
 		TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
 	}
 	err := VerifyNODATANSEC(msg, []dns.RR{covering, wildcard})
-	assert.NoError(t, err, "Wildcard NODATA proof should verify")
+	if err != nil {
+		t.Errorf("%s: unexpected error: %v", "Wildcard NODATA proof should verify", err)
+	}
 
 	// Same shape but wildcard bitmap *does* include the queried type —
 	// must be rejected because the wildcard could synthesize an answer.
@@ -198,5 +218,7 @@ func TestVerifyNODATANSEC_Wildcard(t *testing.T) {
 		TypeBitMap: []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeRRSIG, dns.TypeNSEC},
 	}
 	err = VerifyNODATANSEC(msg, []dns.RR{covering, wildcardWithType})
-	assert.Equal(t, ErrNSECTypeExists, err)
+	if !reflect.DeepEqual(ErrNSECTypeExists, err) {
+		t.Errorf("err = %v, want %v", err, ErrNSECTypeExists)
+	}
 }
