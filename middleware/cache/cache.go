@@ -1751,10 +1751,11 @@ func filterCacheableAnswer(res *dns.Msg) *dns.Msg {
 	}
 
 	// Every consumer reads the result synchronously and retains bytes, not
-	// records — NewCacheEntryWithKey builds its own shallow storable view
-	// and PackClones it on the spot — so a deep copy duplicated every RR in
-	// every section for a reader that only wants a different Answer slice.
-	// The common shape, no chain tail to drop, passes through untouched.
+	// records — NewCacheEntryWithKey builds its own shallow storable view,
+	// PackClones it on the spot, and value-copies the one option it keeps
+	// (the EDE) — so a deep copy duplicated every RR in every section for
+	// a reader that only wants a different Answer slice. The common shape,
+	// no chain tail to drop, passes through untouched.
 	drop := false
 	for _, r := range res.Answer {
 		if !keep(r) {

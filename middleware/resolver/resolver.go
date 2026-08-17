@@ -496,6 +496,13 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	return m, nil
 }
 
+// groupLookup collapses concurrent identical lookups onto one leader
+// through singleflight. owned declares the request handed over: the leader
+// closure may retain and read it past this call's return, so owned=true is
+// only correct when nothing upstack mutates req afterward — today that is
+// exactly minimize's private copy, which handleLookupError at most reads.
+// A shared request (rs.req) must pass owned=false so the leader gets its
+// own copy, made while the caller still exclusively owns the memory.
 func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.Msg, servers *authority.Servers, owned bool) (resp *dns.Msg, err error) {
 	q := req.Question[0]
 

@@ -10,6 +10,11 @@ func leaderWithOPT() *dns.Msg {
 	m := new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeA)
 	m.SetEdns0(1232, true)
+	// Spare capacity behind an existing option: the shape where an
+	// unprivatized keepalive append would land in shared backing.
+	opt := m.IsEdns0()
+	opt.Option = make([]dns.EDNS0, 1, 4)
+	opt.Option[0] = &dns.EDNS0_NSID{Code: dns.EDNS0NSID}
 	return m
 }
 
@@ -35,6 +40,9 @@ func TestAcquireAttemptReqSharesRecordsOwnsBackings(t *testing.T) {
 	if attOpt.Hdr != leaderOpt.Hdr || attOpt.UDPSize() != leaderOpt.UDPSize() || attOpt.Do() != leaderOpt.Do() {
 		t.Fatal("OPT shell contents must carry over")
 	}
+	if len(attOpt.Option) != 1 || attOpt.Option[0] != leaderOpt.Option[0] {
+		t.Fatal("options must be shared by pointer")
+	}
 	attOpt.SetExtendedRcode(0xFF0)
 	if leaderOpt.Hdr.Ttl == attOpt.Hdr.Ttl {
 		t.Fatal("extended-rcode write leaked into the leader's OPT")
@@ -44,6 +52,32 @@ func TestAcquireAttemptReqSharesRecordsOwnsBackings(t *testing.T) {
 	att.Question[0].Name = "other.test."
 	if leader.Id == 42 || leader.Question[0].Name != "example.com." {
 		t.Fatal("attempt mutation leaked into the leader")
+	}
+}
+
+// TestAcquireAttemptReqCarriesSections pins section parity with the deep
+// copy it replaced: a leader carrying answer/authority/other-extra records
+// hands them to the attempt shared by pointer.
+func TestAcquireAttemptReqCarriesSections(t *testing.T) {
+	leader := leaderWithOPT()
+	a := &dns.A{Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET}}
+	soa := &dns.SOA{Hdr: dns.RR_Header{Name: "com.", Rrtype: dns.TypeSOA, Class: dns.ClassINET}, Ns: "a.", Mbox: "."}
+	txt := &dns.TXT{Hdr: dns.RR_Header{Name: "x.", Rrtype: dns.TypeTXT, Class: dns.ClassINET}, Txt: []string{"y"}}
+	leader.Answer = []dns.RR{a}
+	leader.Ns = []dns.RR{soa}
+	leader.Extra = append(leader.Extra, txt)
+
+	att := acquireAttemptReq(leader)
+	defer ReleaseMsg(att)
+
+	if len(att.Answer) != 1 || att.Answer[0] != dns.RR(a) {
+		t.Fatal("answer section must carry over shared")
+	}
+	if len(att.Ns) != 1 || att.Ns[0] != dns.RR(soa) {
+		t.Fatal("authority section must carry over shared")
+	}
+	if len(att.Extra) != 2 || att.Extra[1] != dns.RR(txt) {
+		t.Fatal("non-OPT extra must carry over shared")
 	}
 }
 
@@ -59,13 +93,20 @@ func TestPrivatizeOPTIsolatesKeepalive(t *testing.T) {
 	if att.Extra[0] == leader.Extra[0] {
 		t.Fatal("privatizeOPT must replace the shared OPT")
 	}
+	if att.IsEdns0().Option[0] == leader.IsEdns0().Option[0] {
+		t.Fatal("privatizeOPT must deep-copy the options")
+	}
+
+	// The leader's option backing has spare capacity behind its one
+	// option — exactly where an unprivatized append would land.
+	spare := leader.IsEdns0().Option[:2]
 
 	SetEDNSKeepalive(att, 0)
-	if len(att.IsEdns0().Option) != 1 {
+	if len(att.IsEdns0().Option) != 2 {
 		t.Fatal("keepalive not appended to the attempt's OPT")
 	}
-	if len(leader.IsEdns0().Option) != 0 {
-		t.Fatal("keepalive contaminated the leader's OPT")
+	if len(leader.IsEdns0().Option) != 1 || spare[1] != nil {
+		t.Fatal("keepalive contaminated the leader's OPT backing")
 	}
 	if !leader.IsEdns0().Do() {
 		t.Fatal("leader OPT flags disturbed")

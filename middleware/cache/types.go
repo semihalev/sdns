@@ -155,10 +155,13 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 		extra := make([]dns.RR, 0, len(msg.Extra))
 		for _, rr := range msg.Extra {
 			if opt, ok := rr.(*dns.OPT); ok {
-				// Extract EDE from OPT record if present
+				// Extract EDE from OPT record if present. By value: the
+				// long-lived entry must not alias an option inside the
+				// caller's live message.
 				for _, option := range opt.Option {
 					if e, ok := option.(*dns.EDNS0_EDE); ok {
-						ede = e
+						private := *e
+						ede = &private
 						break
 					}
 				}

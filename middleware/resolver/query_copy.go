@@ -3,8 +3,8 @@ package resolver
 import "github.com/miekg/dns"
 
 // acquireAttemptReq builds the per-server view of a lookup's immutable
-// leader request from the message pool: header by value, question and
-// extra re-appended into the shell's own backings, records shared by
+// leader request from the message pool: header by value, every section
+// re-appended into the shell's own backings, records shared by
 // pointer — except the OPT, which gets a private shell. PackBuffer
 // writes the extended rcode into the OPT header on every pack (miekg
 // msg.go, "set extended rcode unconditionally"), so concurrent attempts
@@ -18,8 +18,8 @@ func acquireAttemptReq(leader *dns.Msg) *dns.Msg {
 	dst.MsgHdr = leader.MsgHdr
 	dst.Compress = leader.Compress
 	dst.Question = append(dst.Question[:0], leader.Question...)
-	dst.Answer = dst.Answer[:0]
-	dst.Ns = dst.Ns[:0]
+	dst.Answer = append(dst.Answer[:0], leader.Answer...)
+	dst.Ns = append(dst.Ns[:0], leader.Ns...)
 	dst.Extra = dst.Extra[:0]
 	for _, rr := range leader.Extra {
 		if opt, ok := rr.(*dns.OPT); ok {
@@ -31,13 +31,15 @@ func acquireAttemptReq(leader *dns.Msg) *dns.Msg {
 	return dst
 }
 
-// privatizeOPT replaces req's OPT with a deep copy so a subsequent
-// in-place OPT edit stays private to this attempt. No-op without an OPT.
+// privatizeOPT replaces req's OPT records with deep copies so a subsequent
+// in-place OPT edit stays private to this attempt. Every OPT is covered
+// because SetEDNSKeepalive appends to the LAST one (miekg's IsEdns0 scans
+// backward), and stopping at the first would leave a multi-OPT decoded
+// request's edit target on shared state. No-op without an OPT.
 func privatizeOPT(req *dns.Msg) {
 	for i, rr := range req.Extra {
 		if opt, ok := rr.(*dns.OPT); ok {
 			req.Extra[i] = dns.Copy(opt)
-			return
 		}
 	}
 }

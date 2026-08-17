@@ -58,4 +58,17 @@ func TestFilterCacheableAnswerShallow(t *testing.T) {
 	if len(got.Answer) != 2 {
 		t.Fatalf("DNAME+RRSIG must survive, tail must drop: %v", got.Answer)
 	}
+
+	// A foreign-owner RRSIG covering a non-DNAME type drops with its tail.
+	tailSig := &dns.RRSIG{Hdr: dns.RR_Header{Name: "tail.example.net.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 60}, TypeCovered: dns.TypeA}
+	res.Answer = []dns.RR{a, tail, tailSig}
+	if got = filterCacheableAnswer(res); len(got.Answer) != 1 {
+		t.Fatalf("foreign RRSIG over non-DNAME must drop: %v", got.Answer)
+	}
+
+	// Everything dropping leaves an empty — but servable — answer section.
+	res.Answer = []dns.RR{tail, tailSig}
+	if got = filterCacheableAnswer(res); len(got.Answer) != 0 || got == res {
+		t.Fatalf("all-dropped must yield an empty answer in a new view: %v", got.Answer)
+	}
 }
