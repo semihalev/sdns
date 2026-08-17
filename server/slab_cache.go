@@ -29,6 +29,10 @@ import "sync"
 // or socket index); a job returns to the shard it was taken from, so
 // steady-state traffic spreads as wide as the socket fan-out.
 type slabCache[T any] struct {
+	// Leading pad: shard zero's mutex must not share a cache line with
+	// whatever hot field the embedding struct keeps just before the
+	// cache — the UDP engine's lease counter sits exactly there.
+	_      [64]byte
 	shards [slabShardCount]slabShard[T]
 }
 
@@ -45,12 +49,25 @@ type slabShard[T any] struct {
 	_    [32]byte
 }
 
-// get pops an idle slab from the hinted shard, or returns nil when the
-// caller should allocate. A miss does not search other shards: allocation
-// is cheap, bounded by the engine's lease cap, and the put side refills
-// this shard on the very next completion of its own traffic.
+// get pops an idle slab for the hinted shard, or returns nil when the
+// caller should allocate. A dry hinted shard sweeps the others before
+// giving up: the slab design's memory contract is that live slabs never
+// exceed the admission cap, and allocating while a neighbor parks idle
+// slabs would break that bound the moment traffic skews across shards —
+// a reuseport flow-hash concentrating on one socket, or the TCP rotor
+// walking sequentially. The sweep costs spare-shard locks only on the
+// path that was about to allocate anyway.
 func (c *slabCache[T]) get(shard int) *T {
-	s := &c.shards[shard&(slabShardCount-1)]
+	for i := 0; i < slabShardCount; i++ {
+		if x := c.shards[(shard+i)&(slabShardCount-1)].pop(); x != nil {
+			return x
+		}
+	}
+	return nil
+}
+
+// pop takes one idle slab, or nil.
+func (s *slabShard[T]) pop() *T {
 	s.mu.Lock()
 	n := len(s.idle)
 	if n == 0 {

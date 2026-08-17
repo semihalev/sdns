@@ -127,7 +127,25 @@ func newUDPBatchReader(e *udpEngine, idx int, pc *net.UDPConn, rc syscall.RawCon
 
 func (r *udpBatchReader) run() {
 	e := r.engine
-	defer e.readers.Done()
+	// held counts the armed jobs that persist across cycles. A batch
+	// rarely fills: the kernel hands back what the queue holds, and the
+	// old shape released every unfilled slot just to take it again on
+	// the next spin — a full take/release round trip (lease atomics,
+	// shard traffic, state transitions) per slot per cycle, priced at
+	// wire speed. A job the kernel did not fill stays armed; only what
+	// was consumed is re-taken, and every exit path below releases the
+	// holdover before returning.
+	held := 0
+	releaseHeld := func() {
+		for i := range held {
+			r.jobs[i].release(udpJobReading)
+		}
+		held = 0
+	}
+	defer func() {
+		releaseHeld()
+		e.readers.Done()
+	}()
 
 	for {
 		// The lease cap reserves a batch per reader. When it is reached
@@ -139,32 +157,26 @@ func (r *udpBatchReader) run() {
 		// receive queue are the oldest ones, whose clients have often
 		// stopped waiting. Shedding keeps the loss ours to report and
 		// keeps what is served fresh.
-		j0 := e.take(r.idx)
-		if j0 == nil {
-			if !r.shed() {
-				return
-			}
-			continue
-		}
-		j0.transition(udpJobFree, udpJobReading)
-		r.arm(j0, 0)
-		k := 1
-		for k < udpBatchSize {
+		for held < udpBatchSize {
 			j := e.take(r.idx)
 			if j == nil {
 				break
 			}
 			j.transition(udpJobFree, udpJobReading)
-			r.arm(j, k)
-			k++
+			r.arm(j, held)
+			held++
+		}
+		if held == 0 {
+			if !r.shed() {
+				return
+			}
+			continue
 		}
 
-		r.armed = k
+		r.armed = held
 		err := r.rc.Read(r.readFn)
 		if err != nil || r.rerr != nil {
-			for i := range k {
-				r.jobs[i].release(udpJobReading)
-			}
+			releaseHeld()
 			// A reader is the only consumer of its socket: it exits when
 			// the socket is gone and for nothing else. A transient errno
 			// drops the cycle, and a poller error that is not a closed
@@ -177,7 +189,7 @@ func (r *udpBatchReader) run() {
 				}
 				udpReaderPollErr.Inc()
 				zlog.Error("UDP batch reader poll failed",
-					"error", err.Error(), "armed", k)
+					"error", err.Error(), "armed", r.armed)
 				continue
 			}
 			if r.rerr == unix.EBADF {
@@ -196,9 +208,15 @@ func (r *udpBatchReader) run() {
 		for i := range n {
 			r.finishRecv(i, now)
 		}
-		for i := n; i < k; i++ {
-			r.jobs[i].release(udpJobReading)
+		// The kernel filled slots 0..n-1; the survivors compact to the
+		// front and stay armed for the next cycle. arm rebinds the slot's
+		// descriptors; the job itself is untouched.
+		m := 0
+		for i := n; i < held; i++ {
+			r.arm(r.jobs[i], m)
+			m++
 		}
+		held = m
 	}
 }
 

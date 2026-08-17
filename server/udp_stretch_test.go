@@ -96,8 +96,11 @@ func TestUDPAdmissionOutlivesTheSteadyState(t *testing.T) {
 		t.Fatalf("%d queries in flight with a steady-state formula of %d; "+
 			"admission must not be capped at the formula", got, steady)
 	}
-	if leased := e.leased.Load(); leased > e.slabCap {
-		t.Fatalf("leased %d slabs past the cap %d", leased, e.slabCap)
+	// Fetch-add admission may transiently overshoot by the number of
+	// concurrent takers — each rolls back before returning — so the
+	// at-rest bound only holds with the reader slack added.
+	if leased, slack := e.leased.Load(), int64(len(e.pcs)); leased > e.slabCap+slack {
+		t.Fatalf("leased %d slabs past the cap %d (+%d reader slack)", leased, e.slabCap, slack)
 	}
 }
 
