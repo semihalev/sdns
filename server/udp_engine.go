@@ -234,7 +234,7 @@ type udpEngine struct {
 	pcs      []*net.UDPConn
 	wildcard bool
 
-	ready chan *udpJob
+	ready chan udpJobBatch
 
 	// inFlight counts the slabs between the ready queue and their
 	// release: queued, being served, or staged for a send. Slabs parked
@@ -337,7 +337,14 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 	// in the cache between requests.
 	e.slabCap = int64(queue + workers + len(pcs)*udpReaderReserve)
 	e.slabCap += plan.udpSpareSlabs
-	e.ready = make(chan *udpJob, queue)
+	// The ring carries reader cycles, not jobs: its depth is kept
+	// job-equivalent so the overflow threshold — the memory bound the
+	// design states — means what it always meant.
+	batches := queue / udpBatchSize
+	if batches < 1 {
+		batches = 1
+	}
+	e.ready = make(chan udpJobBatch, batches)
 	return e
 }
 
@@ -485,20 +492,41 @@ func (e *udpEngine) reader(idx int, pc *net.UDPConn) {
 //
 // The state write must precede the send: the channel gives the worker its
 // happens-before for every job field.
+// udpJobBatch is one reader cycle's admitted jobs, carried through the
+// ready ring as a single unit. The channel copies the value — no heap —
+// and one send wakes one worker for the whole cycle where the per-job
+// ring paid a scheduler wake per packet: at wire speed those wakes and
+// the runqueue churn behind them were the largest cost left in the
+// profile after the slab locks fell.
+type udpJobBatch struct {
+	jobs [udpBatchSize]*udpJob
+	n    int
+}
+
+// enqueue hands a single job to the workers — the portable reader's unit.
 func (e *udpEngine) enqueue(j *udpJob) {
+	var b udpJobBatch
+	b.jobs[0] = j
+	b.n = 1
+	e.enqueueBatch(&b)
+}
+
+func (e *udpEngine) enqueueBatch(b *udpJobBatch) {
 	// Counted from here rather than from the read: a slab parked in a
 	// reader waiting for a packet is idle, not outstanding, and a
 	// quiescence check that could not tell the two apart would never see
 	// an idle server settle.
-	e.inFlight.Add(1)
-	j.state = udpJobQueued
+	e.inFlight.Add(int64(b.n))
+	for i := 0; i < b.n; i++ {
+		b.jobs[i].state = udpJobQueued
+	}
 
 	// The pool first, while it can keep up. A served hit is microseconds,
 	// so the queue is empty in the ordinary case and the reply rides the
 	// worker's send burst — which is what keeps the hit path free of both
 	// syscalls and allocations.
 	select {
-	case e.ready <- j:
+	case e.ready <- *b:
 		return
 	default:
 	}
@@ -512,11 +540,13 @@ func (e *udpEngine) enqueue(j *udpJob) {
 	// gives one to the packets the pool cannot take, which restores the
 	// ceiling without giving up the burst on the path that has one.
 	//
-	// It is still bounded — by the ring, which this job came out of and
+	// It is still bounded — by the ring, which these jobs came out of and
 	// which is the memory bound the design already states.
-	udpOverflowServed.Inc()
-	e.overflowG.Add(1)
-	go e.serveOverflow(j)
+	for i := 0; i < b.n; i++ {
+		udpOverflowServed.Inc()
+		e.overflowG.Add(1)
+		go e.serveOverflow(b.jobs[i])
+	}
 }
 
 // serveOverflow runs one overflow job and leaves the drain barrier when
@@ -587,22 +617,30 @@ func (e *udpEngine) worker(slot int) {
 	burst := udpTXBurst{slot: slot}
 	for {
 		select {
-		case j, ok := <-e.ready:
+		case b, ok := <-e.ready:
 			if !ok {
 				e.flushTX(&burst)
 				return
 			}
-			e.serve(j, &burst)
-			if burst.full() {
-				e.flushTX(&burst)
-			}
+			e.serveBatch(&b, &burst)
 		default:
 			e.flushTX(&burst)
-			j, ok := <-e.ready
+			b, ok := <-e.ready
 			if !ok {
 				return
 			}
-			e.serve(j, &burst)
+			e.serveBatch(&b, &burst)
+		}
+	}
+}
+
+// serveBatch runs one reader cycle's jobs back to back; the burst flushes
+// whenever it fills, so a cycle larger than the TX window still sends.
+func (e *udpEngine) serveBatch(b *udpJobBatch, burst *udpTXBurst) {
+	for i := 0; i < b.n; i++ {
+		e.serve(b.jobs[i], burst)
+		if burst.full() {
+			e.flushTX(burst)
 		}
 	}
 }

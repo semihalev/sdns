@@ -100,6 +100,10 @@ type udpBatchReader struct {
 	armed    int
 	received int
 	rerr     error
+
+	// pending gathers a cycle's admitted jobs so the ring gets one send —
+	// one worker wake — per cycle instead of one per packet.
+	pending udpJobBatch
 }
 
 func newUDPBatchReader(e *udpEngine, idx int, pc *net.UDPConn, rc syscall.RawConn) *udpBatchReader {
@@ -205,8 +209,12 @@ func (r *udpBatchReader) run() {
 
 		n := r.received
 		now := time.Now()
+		r.pending.n = 0
 		for i := range n {
 			r.finishRecv(i, now)
+		}
+		if r.pending.n > 0 {
+			e.enqueueBatch(&r.pending)
 		}
 		// The kernel filled slots 0..n-1; the survivors compact to the
 		// front and stay armed for the next cycle. arm rebinds the slot's
@@ -341,7 +349,8 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 		}
 	}
 
-	r.engine.enqueue(j)
+	r.pending.jobs[r.pending.n] = j
+	r.pending.n++
 }
 
 // setRemoteRaw rewrites the cached classic views from a kernel sockaddr.
