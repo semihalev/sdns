@@ -744,8 +744,7 @@ domainmetrics = false
 
 # Maximum number of domains to track in metrics
 # 0 = unlimited (use with caution - may consume memory)
-# Recommended: 10000-100000 for production
-domainmetricslimit = 10000
+domainmetricslimit = 1000
 
 # ============================
 # Custom Lists
