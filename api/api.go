@@ -34,11 +34,14 @@ type API struct {
 	bearerToken string
 	router      *Router
 	blocklist   *blocklist.BlockList
-	// metricsHandler is built once: promhttp.Handler() constructs a new
-	// instrumented handler per call, and its default gzip pays a fresh
-	// ~34KB deflate window per scrape — measured at 1% of process
-	// allocation under a frequent scraper. Metrics text is small and
-	// local; compression buys nothing here.
+	// metricsHandler is built once: promhttp.Handler() constructed a new
+	// instrumented handler per call — fresh collectors and a registry
+	// registration attempt per scrape — and its gzip writers, though
+	// pooled, were drained by GC between scrapes on a busy heap, so each
+	// scrape paid a ~34KB deflate window in practice; together 1% of
+	// process allocation under a frequent scraper. Compression stays off:
+	// metrics text is small and scraped locally. Deliberate delta: the
+	// promhttp_metric_handler_* self-instrumentation series are gone.
 	metricsHandler http.Handler
 }
 
