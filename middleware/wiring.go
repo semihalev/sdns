@@ -23,17 +23,24 @@ type ClientOnly interface {
 	ClientOnly() bool
 }
 
-// OncePerQuery marks a Handler whose ServeDNS entry has side effects that
-// must happen exactly once per client query — a rate-limit token, a
-// per-query score, an emitted tap frame. The server's inline fast path
-// runs the full chain on the transport reader and replays the query on a
-// worker when the cache cannot answer without blocking; handlers carrying
-// this marker are excluded from the replay so their entry effect is not
-// doubled. Handlers whose effects key off the response — metrics and
-// accesslog gate on Written() — need no marker: the inline pass leaves a
-// handed-off query unwritten, so they fire exactly once, on the replay.
-type OncePerQuery interface {
-	OncePerQuery() bool
+// InlineBarrier marks the Handler that makes a pipeline safe to run on a
+// transport reader: it honors Chain.InlineOnly by declining blocking work
+// — an upstream resolution, a queue wait — with MarkHandoff instead of
+// running it. The cache is the barrier in the standard pipeline. The
+// server enables the inline fast path only when some handler declares
+// this; a pipeline without a barrier would carry a reader all the way
+// into the resolver, and a reader that blocks for a resolution stalls
+// every packet behind it on that socket.
+//
+// Handlers whose ServeDNS entry has side effects that must happen exactly
+// once per client query — a rate-limit token, a scored query, a tap's
+// query frame, a per-query statistic — check Chain.Replay and skip the
+// effect on the worker pass that finishes a handed-off query; their
+// response-side writer wrappers install on both passes, because only the
+// pass that writes will trip them. Handlers keying purely off the
+// response — metrics and accesslog gate on Written() — need no check.
+type InlineBarrier interface {
+	InlineBarrier() bool
 }
 
 // Store is the minimum cache facade a resolver sub-query needs.

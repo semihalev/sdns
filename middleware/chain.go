@@ -784,10 +784,14 @@ type Chain struct {
 	detachCleanup func()
 
 	// inlineOnly marks a serve running on a transport reader that must
-	// not block; handoff records that a handler declined blocking work.
-	// Both reset with the chain.
+	// not block; handoff records that a handler declined blocking work;
+	// replay marks the worker pass that finishes a handed-off query, so
+	// a handler whose entry effect already fired on the inline pass can
+	// skip it while still installing its response-side observers. All
+	// three reset with the chain.
 	inlineOnly bool
 	handoff    bool
+	replay     bool
 }
 
 // NewChain returns a Chain bound to the given handler pipeline. The slice
@@ -1003,6 +1007,7 @@ func (ch *Chain) Reset(w Transport, r *dns.Msg) {
 	ch.count = len(ch.handlers)
 	ch.inlineOnly = false
 	ch.handoff = false
+	ch.replay = false
 }
 
 // rebindWriter points the chain's pooled base writer at the next
@@ -1032,6 +1037,7 @@ func (ch *Chain) ResetWire(w Transport, r *Request) {
 	ch.count = len(ch.handlers)
 	ch.inlineOnly = false
 	ch.handoff = false
+	ch.replay = false
 }
 
 // SetInlineOnly declares that this serve runs on a transport reader that
@@ -1049,6 +1055,19 @@ func (ch *Chain) MarkHandoff() { ch.handoff = true }
 
 // Handoff reports whether a handler declined blocking work this serve.
 func (ch *Chain) Handoff() bool { return ch.handoff }
+
+// SetReplay declares that this serve finishes a query an inline pass
+// handed off: the full pipeline ran once on the transport reader up to
+// the handoff point, so every entry effect — a limiter token, a scored
+// query, a tap's query frame, a per-query statistic — has already
+// happened. A handler with such an effect checks Replay and skips it;
+// its response-side observers (writer wrappers) install as always,
+// because this pass is the one that writes.
+func (ch *Chain) SetReplay() { ch.replay = true }
+
+// Replay reports whether this serve is the worker pass after an inline
+// handoff.
+func (ch *Chain) Replay() bool { return ch.replay }
 
 // AllowDirectPack declares that the transport beneath this chain's writer is
 // an SDNS-owned UDP, TCP or DoT sink whose Write sends raw wire bytes

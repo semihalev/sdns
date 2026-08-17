@@ -319,8 +319,13 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		txConns:  make(map[*net.UDPConn]syscall.RawConn, len(pcs)),
 	}
 	// The fast path is optional on the handler; without it every query
-	// keeps to the ring exactly as before.
-	e.inline, _ = handler.(inlineRawHandler)
+	// keeps to the ring exactly as before. InlineReady gates on the
+	// pipeline: a handler whose chain has no inline barrier would carry
+	// the reader into the resolver, so it declines the fast path even
+	// though it implements the interface.
+	if ih, ok := handler.(inlineRawHandler); ok && ih.InlineReady() {
+		e.inline = ih
+	}
 	// One send-state slot per worker, plus one per reader: an inline
 	// serve stages its replies on the reader's own burst and sends the
 	// receive batch back as one transmit batch.
@@ -504,6 +509,15 @@ func (e *udpEngine) enqueue(j *udpJob) {
 	// quiescence check that could not tell the two apart would never see
 	// an idle server settle.
 	e.inFlight.Add(1)
+	e.enqueueCounted(j)
+}
+
+// enqueueCounted is enqueue for a job whose in-flight count is already
+// carried: serveInline counts a job when it takes it into serving, and a
+// handoff keeps that count — decrementing across the hand-back would let
+// the counter dip through zero with the job still owned, and a quiescence
+// barrier could close over it.
+func (e *udpEngine) enqueueCounted(j *udpJob) {
 	j.state = udpJobQueued
 
 	// The pool first, while it can keep up. A served hit is microseconds,
@@ -679,11 +693,16 @@ func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 // carries the inline-only mark, and a query it cannot finish comes back
 // unserved for the ring. done reports whether the job reached a terminal
 // here; false hands ownership back to the caller with the job returned to
-// the reading state and marked for replay.
+// the reading state, marked for replay, and its in-flight count carried —
+// the caller continues with enqueueCounted.
 //
 //nolint:unused // Linux batch path (udp_batch_linux.go)
 func (e *udpEngine) serveInline(j *udpJob, burst *udpTXBurst) (done bool) {
 	j.transition(udpJobReading, udpJobServing)
+	// Outstanding from here: the ring path counts a job at enqueue, and
+	// this is the inline path's equivalent moment. Every terminal below
+	// releases from Serving, which is what counts it back down.
+	e.inFlight.Add(1)
 	j.burst = burst
 	done = true
 	defer func() {
@@ -692,13 +711,24 @@ func (e *udpEngine) serveInline(j *udpJob, burst *udpTXBurst) (done bool) {
 			done = true
 		}
 		j.burst = nil
-		if !done {
-			j.replay = true
-			j.transition(udpJobServing, udpJobReading)
+		if j.txLen > 0 {
+			// A staged reply is terminal even when a handler also marked
+			// handoff: these bytes answer this query, and a replay after
+			// them could only resolve a question the client already has
+			// an answer to — or transmit a stale reply if the replay
+			// declined to write.
+			done = true
+			udpInlineServed.Inc()
+			if burst.full() {
+				e.flushTX(burst)
+			}
+			burst.add(j)
 			return
 		}
-		if j.txLen > 0 {
-			burst.add(j)
+		if !done {
+			udpInlineHandoff.Inc()
+			j.replay = true
+			j.transition(udpJobServing, udpJobReading)
 			return
 		}
 		j.release(udpJobServing)

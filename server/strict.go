@@ -158,10 +158,14 @@ type rawHandler interface {
 
 // inlineRawHandler is the optional fast-path contract: a handler that can
 // run a query on the transport reader without blocking, handing off what
-// needs a worker. Engines type-assert it once at construction; a handler
-// without it (test stubs) simply keeps every query on the ring.
+// needs a worker. Engines type-assert it once at construction and consult
+// InlineReady — a handler whose pipeline carries no middleware.InlineBarrier
+// must not serve inline, or the reader would block in the resolver. A
+// handler without the interface (test stubs) simply keeps every query on
+// the ring.
 type inlineRawHandler interface {
 	rawHandler
+	InlineReady() bool
 	ServeRawInline(w middleware.Transport, raw []byte, readTime time.Time) bool
 	ServeRawReplay(w middleware.Transport, raw []byte, readTime time.Time) bool
 }
@@ -248,10 +252,14 @@ func (s *Server) ServeRawInline(w middleware.Transport, raw []byte, readTime tim
 	return false
 }
 
-// ServeRawReplay finishes a query the inline pass handed off. The chain
-// is the pipeline minus every OncePerQuery handler: entry effects fired
-// on the inline pass, and the middlewares that key off the response fire
-// here, once, when this pass writes.
+// InlineReady reports whether the pipeline carries an inline barrier; the
+// engines enable the reader fast path only when it does.
+func (s *Server) InlineReady() bool { return s.inlineReady }
+
+// ServeRawReplay finishes a query the inline pass handed off. The full
+// pipeline runs with the replay mark: handlers whose entry effects fired
+// on the inline pass skip them, and the middlewares that key off the
+// response fire here, once, when this pass writes.
 func (s *Server) ServeRawReplay(w middleware.Transport, raw []byte, readTime time.Time) bool {
 	// No served count here for the strict branch: the inline pass already
 	// counted this query. The decoded fallback below never ran inline.
@@ -259,16 +267,17 @@ func (s *Server) ServeRawReplay(w middleware.Transport, raw []byte, readTime tim
 		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {
 			carrier.reset(readTime.Add(s.queryTimeout()))
-			if s.replay == nil {
+			if s.pipeline == nil {
 				return true
 			}
 			if contextutil.EffectiveError(carrier) != nil {
 				return true
 			}
-			s.replay.BindChain(chain)
+			s.pipeline.BindChain(chain)
 			defer chain.Finish()
 			chain.ResetWire(w, req)
 			chain.AllowDirectPack()
+			chain.SetReplay()
 			chain.Next(carrier)
 			return true
 		}

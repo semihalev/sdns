@@ -100,10 +100,6 @@ func (r *Reflex) Name() string {
 // internal sub-queries don't trip detection heuristics.
 func (r *Reflex) ClientOnly() bool { return true }
 
-// (*Reflex).OncePerQuery: scoring happens at entry, so the serve replay
-// after an inline handoff must not score the query twice.
-func (r *Reflex) OncePerQuery() bool { return true }
-
 // ServeDNS processes queries for amplification attack detection. The
 // scoring facts — qtype and request wire length — come from the parsed
 // request, so a wire-born query is scored without decoding; only the
@@ -114,6 +110,20 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Skip internal/loopback/TCP (can't spoof TCP)
 	if w.Internal() || w.RemoteIP() == nil || w.RemoteIP().IsLoopback() {
+		ch.Next(ctx)
+		return
+	}
+
+	// The replay pass finishes a query the inline pass already scored;
+	// recording it again would double its contribution and could tip a
+	// legitimate client over the threshold. What this pass owns is the
+	// response — the inline pass handed off unwritten — so only the
+	// response-size wrapper installs, and the tracker still learns the
+	// amplification the resolution actually achieved.
+	if ch.Replay() {
+		if qtype, reqLen, ok := requestFacts(ch.Request); ok && getAmpFactor(qtype) > 1.0 {
+			defer r.wrapAmpTracking(ch, w.RemoteIP().String(), reqLen)()
+		}
 		ch.Next(ctx)
 		return
 	}
@@ -153,21 +163,26 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Only wrap response writer for high-amp queries to track amplification.
 	// Normal queries (ampFactor <= 1.0) skip wrapping for better performance.
-	// Chains come from a sync.Pool, so the wrapper must be removed before
-	// returning — otherwise a later request starts with a stale reflex
-	// wrapper that tracks responses against an unrelated source IP.
 	if ampFactor > 1.0 {
-		orig := ch.Writer
-		ch.Writer = &responseWriter{
-			ResponseWriter: w,
-			reqLen:         reqLen,
-			tracker:        r.tracker,
-			ip:             ip,
-		}
-		defer func() { ch.Writer = orig }()
+		defer r.wrapAmpTracking(ch, ip, reqLen)()
 	}
 
 	ch.Next(ctx)
+}
+
+// wrapAmpTracking installs the response-size wrapper and returns the
+// restore. Chains come from a sync.Pool, so the wrapper must be removed
+// before returning — otherwise a later request starts with a stale reflex
+// wrapper that tracks responses against an unrelated source IP.
+func (r *Reflex) wrapAmpTracking(ch *middleware.Chain, ip string, reqLen int) func() {
+	orig := ch.Writer
+	ch.Writer = &responseWriter{
+		ResponseWriter: orig,
+		reqLen:         reqLen,
+		tracker:        r.tracker,
+		ip:             ip,
+	}
+	return func() { ch.Writer = orig }
 }
 
 // requestFacts returns the question type and the request's wire length —

@@ -100,32 +100,45 @@ func (d *Dnstap) Name() string {
 // dnstap streams reflect real client queries only.
 func (d *Dnstap) ClientOnly() bool { return true }
 
-// (*Dnstap).OncePerQuery: the query frame is emitted at entry, so the
-// serve replay after an inline handoff must not tap the query twice.
-func (d *Dnstap) OncePerQuery() bool { return true }
-
 // (*Dnstap).ServeDNS serveDNS logs DNS messages in dnstap format.
 // Disconnected dnstap is a read-lock check and a wire-born request passes
-// undecoded; a connected tap packs the request and materializes (enabling
-// it is documented as disabling the zero guarantee).
+// undecoded. A connected tap stays on the byte path too: a dnstap frame
+// carries wire bytes, and a wire-born request already is wire bytes — an
+// owned copy taps it without decoding, so the cache's wire ladder (and
+// the inline fast path behind it) keeps working with the tap on. Only a
+// request that arrived decoded (DoH, internal entries) packs.
 func (d *Dnstap) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if !d.isEnabled() {
 		ch.Next(ctx)
 		return
 	}
 
-	ctx, req := ch.Materialize(ctx)
-	if req == nil {
-		return
-	}
 	w := ch.Writer
 
 	// Capture query time
 	queryTime := time.Now()
 
-	// Log query if enabled
-	if d.logQueries {
-		d.logMessage(w, req, nil, queryTime, true)
+	// The copy is the ownership rule, not an optimization: the raw view
+	// is transport job storage, rewritten by the next packet, while the
+	// frame travels to a queue another goroutine drains later.
+	var query *dns.Msg
+	var queryWire []byte
+	if ch.Request.Undecoded() && ch.Request.Raw() != nil {
+		queryWire = append([]byte(nil), ch.Request.Raw()...)
+	} else {
+		var req *dns.Msg
+		ctx, req = ch.Materialize(ctx)
+		if req == nil {
+			return
+		}
+		query = req
+	}
+
+	// The replay pass finishes a query the inline pass already tapped; a
+	// second query frame would double it. The response wrapper below
+	// still installs, because this pass is the one that writes.
+	if d.logQueries && !ch.Replay() {
+		d.logMessage(w, query, queryWire, nil, queryTime, true)
 	}
 
 	// Create response writer wrapper to capture response.
@@ -137,7 +150,8 @@ func (d *Dnstap) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		orig := ch.Writer
 		ch.Writer = &responseWriter{
 			ResponseWriter: w,
-			query:          req,
+			query:          query,
+			queryWire:      queryWire,
 			queryTime:      queryTime,
 			dnstap:         d,
 		}
@@ -306,20 +320,31 @@ func (d *Dnstap) encodeMessage(msg *DnstapMessage) []byte {
 	return buf
 }
 
-func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Msg, timestamp time.Time, isQuery bool) {
+func (d *Dnstap) logMessage(w middleware.ResponseWriter, query *dns.Msg, queryWire []byte, response *dns.Msg, timestamp time.Time, isQuery bool) {
 	msg := d.newTapMessage(w, timestamp, isQuery)
 
-	// Set message data
-	if query != nil {
-		data, _ := query.Pack()
-		msg.QueryMessage = data
-	}
+	fillQuery(msg, query, queryWire)
 	if response != nil {
 		data, _ := response.Pack()
 		msg.ResponseMsg = data
 	}
 
 	d.enqueue(msg)
+}
+
+// fillQuery sets the frame's query bytes from whichever form the request
+// had: an owned wire copy verbatim, or a pack of the decoded message. The
+// wire copy is shared between the query frame and the response wrapper —
+// both only read it, and the frame encoder copies on write.
+func fillQuery(msg *DnstapMessage, query *dns.Msg, queryWire []byte) {
+	if queryWire != nil {
+		msg.QueryMessage = queryWire
+		return
+	}
+	if query != nil {
+		data, _ := query.Pack()
+		msg.QueryMessage = data
+	}
 }
 
 // prepareWireTap is logMessage's assembly for a response that already exists
@@ -334,15 +359,13 @@ func (d *Dnstap) logMessage(w middleware.ResponseWriter, query, response *dns.Ms
 func (d *Dnstap) prepareWireTap(
 	w middleware.ResponseWriter,
 	query *dns.Msg,
+	queryWire []byte,
 	body []byte,
 	timestamp time.Time,
 ) *DnstapMessage {
 	msg := d.newTapMessage(w, timestamp, false)
 
-	if query != nil {
-		data, _ := query.Pack()
-		msg.QueryMessage = data
-	}
+	fillQuery(msg, query, queryWire)
 	msg.ResponseMsg = append([]byte(nil), body...)
 	return msg
 }
@@ -397,6 +420,7 @@ func (d *Dnstap) Close() error {
 type responseWriter struct {
 	middleware.ResponseWriter
 	query     *dns.Msg
+	queryWire []byte
 	queryTime time.Time
 	dnstap    *Dnstap
 }
@@ -409,7 +433,7 @@ func (w *responseWriter) Size() int {
 }
 
 func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
-	rw.dnstap.logMessage(rw.ResponseWriter, rw.query, res, time.Now(), false)
+	rw.dnstap.logMessage(rw.ResponseWriter, rw.query, rw.queryWire, res, time.Now(), false)
 	return rw.ResponseWriter.WriteMsg(res)
 }
 
@@ -455,7 +479,7 @@ func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error
 	if !ok {
 		return middleware.ErrWireFallback
 	}
-	tap := rw.dnstap.prepareWireTap(rw.ResponseWriter, rw.query, body, time.Now())
+	tap := rw.dnstap.prepareWireTap(rw.ResponseWriter, rw.query, rw.queryWire, body, time.Now())
 	err := next.WriteWire(body, info)
 	if !errors.Is(err, middleware.ErrWireFallback) {
 		rw.dnstap.enqueue(tap)

@@ -146,9 +146,12 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	q := req.Question[0]
 	db := h.getDB()
 
-	// Increment lookup counter
-	atomic.AddUint64(&db.stats.lookups, 1)
-	hostsfileLookups.Inc()
+	// Increment lookup counter — once per query: the replay pass after an
+	// inline handoff walks this handler again for the same question.
+	if !ch.Replay() {
+		atomic.AddUint64(&db.stats.lookups, 1)
+		hostsfileLookups.Inc()
+	}
 
 	answer, found := h.lookup(db, q.Name, q.Qtype)
 
@@ -211,8 +214,10 @@ func (h *Hostsfile) serveWire(ctx context.Context, ch *middleware.Chain) {
 		}
 		qname = string(pres)
 
-		atomic.AddUint64(&db.stats.lookups, 1)
-		hostsfileLookups.Inc()
+		if !ch.Replay() {
+			atomic.AddUint64(&db.stats.lookups, 1)
+			hostsfileLookups.Inc()
+		}
 
 		answer, found = h.lookupPTR(db, qname)
 	} else {
@@ -222,8 +227,10 @@ func (h *Hostsfile) serveWire(ctx context.Context, ch *middleware.Chain) {
 			return
 		}
 
-		atomic.AddUint64(&db.stats.lookups, 1)
-		hostsfileLookups.Inc()
+		if !ch.Replay() {
+			atomic.AddUint64(&db.stats.lookups, 1)
+			hostsfileLookups.Inc()
+		}
 
 		answer, found = lookupKeyed(h, db, key, req.Qtype())
 	}

@@ -24,12 +24,11 @@ import (
 type Server struct {
 	cfg      *config.Config
 	pipeline *middleware.Pipeline
-	// replay is the pipeline minus every OncePerQuery handler: the chain
-	// a worker runs for a query the inline pass admitted, guarded, and
-	// then handed off unwritten. Entry-effect middlewares already fired
-	// on the inline pass; response-keyed ones fire here, once, when the
-	// replay writes.
-	replay *middleware.Pipeline
+	// inlineReady records that some handler in the pipeline declares
+	// middleware.InlineBarrier: it will stop an inline pass before
+	// blocking work. Without one, ServeRawInline would carry a transport
+	// reader into the resolver, so the engines leave the fast path off.
+	inlineReady bool
 
 	certManager *CertManager
 	certMu      sync.Mutex
@@ -76,13 +75,12 @@ func New(cfg *config.Config) *Server {
 
 	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline(), trimEnabled: cfg.MemoryTrim}
 	if s.pipeline != nil {
-		var once []string
 		for _, h := range s.pipeline.Handlers() {
-			if o, ok := h.(middleware.OncePerQuery); ok && o.OncePerQuery() {
-				once = append(once, h.Name())
+			if b, ok := h.(middleware.InlineBarrier); ok && b.InlineBarrier() {
+				s.inlineReady = true
+				break
 			}
 		}
-		s.replay = s.pipeline.SubPipeline(once...)
 	}
 
 	// One resource plan for every listener, derived before any exists:

@@ -357,13 +357,13 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 
 	// The inline pass first: a hit finishes here and its reply rides the
 	// cycle's transmit batch — no ring, no worker wake, no lone send. A
-	// handoff (or a handler without the fast path) takes the ring.
+	// handoff continues on the ring with its in-flight count carried; a
+	// handler without the fast path takes the counted enqueue.
 	if e := r.engine; e.inline != nil {
-		if e.serveInline(j, &r.txBurst) {
-			udpInlineServed.Inc()
-			return
+		if !e.serveInline(j, &r.txBurst) {
+			e.enqueueCounted(j)
 		}
-		udpInlineHandoff.Inc()
+		return
 	}
 	r.engine.enqueue(j)
 }

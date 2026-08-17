@@ -68,12 +68,18 @@ func (r *RateLimit) Name() string { return name }
 // limiter bucket attributed to its outer client.
 func (r *RateLimit) ClientOnly() bool { return true }
 
-// (*RateLimit).OncePerQuery: a token is consumed at entry, so the serve
-// replay after an inline handoff must not run the limiter again.
-func (r *RateLimit) OncePerQuery() bool { return true }
-
 // (*RateLimit).ServeDNS serveDNS implements the Handle interface.
 func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	// The replay pass finishes a query the inline pass admitted: its
+	// token was consumed and its cookie checked there, and a second
+	// charge would bill one question twice. The limiter is pure entry
+	// effect — nothing here observes the response — so the replay just
+	// passes through.
+	if ch.Replay() {
+		ch.Next(ctx)
+		return
+	}
+
 	w := ch.Writer
 
 	if w.Internal() {
