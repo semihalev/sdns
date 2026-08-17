@@ -373,13 +373,35 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	}
 
 	if w.Proto() == "udp" && udpOverflow(m, w.size) {
+		// A truncated response is a retry signal, not a partial answer
+		// (RFC 2181 §9): the client must discard the content and ask
+		// again over TCP, so everything but the question and the OPT
+		// goes. The OPT survives per RFC 6891 — the EDNS negotiation
+		// state stays visible. Extra in particular must not ride along:
+		// it can be the very section that overflowed, and keeping it
+		// used to send a TC=1 message still larger than the buffer the
+		// client advertised.
 		m.Truncated = true
 		m.Answer = []dns.RR{}
 		m.Ns = []dns.RR{}
+		m.Extra = keepOPTOnly(m.Extra)
 		m.AuthenticatedData = false
 	}
 
 	return w.ResponseWriter.WriteMsg(m)
+}
+
+// keepOPTOnly returns just the OPT record from extra, or nil without one —
+// the additional section a minimal truncated response is allowed to carry.
+// A fresh slice, not an in-place filter: the message's sections may still
+// be referenced by upstream writer layers.
+func keepOPTOnly(extra []dns.RR) []dns.RR {
+	for _, rr := range extra {
+		if opt, ok := rr.(*dns.OPT); ok {
+			return []dns.RR{opt}
+		}
+	}
+	return nil
 }
 
 // stripECS returns opts with every EDNS0_SUBNET entry removed.
