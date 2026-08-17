@@ -66,11 +66,11 @@ func TestRFC9520KillSwitchDisablesFailureState(t *testing.T) {
 		req.SetQuestion("planted.example.", dns.TypeA)
 		c.failure.RecordQuestion(FailureQuestionKey{
 			Question: req.Question[0],
-		}, FailureProvenance("planted"))
+		}, FailureProvenance("planted"), nil)
 		c.failure.RecordZone(FailureZoneKey{
 			Zone:   "example.",
 			Qclass: dns.ClassINET,
-		}, FailureProvenance("planted"))
+		}, FailureProvenance("planted"), nil)
 		if got := c.failure.Len(); got != 2 {
 			t.Fatalf("lower-level planted failure entries = %d, want 2", got)
 		}

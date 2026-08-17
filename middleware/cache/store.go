@@ -301,17 +301,6 @@ func (s *Store) LookupFailureWire(name []byte, qtype, qclass uint16, cd bool) (F
 	return s.failure.LookupWire(name, qtype, qclass, cd)
 }
 
-// DenialProofsIdle reports that no RFC 8198 aggressive answer can exist
-// right now — the feature is off or the proof index is empty. The wire
-// path consults it so a possible shared denial answer always falls to the
-// Msg path's evaluators, preserving the lookup order.
-func (s *Store) DenialProofsIdle() bool {
-	if s == nil || s.rfc8198Disabled || s.sharedDenialDisabled || s.denialProofs == nil {
-		return true
-	}
-	return s.denialProofs.entryCount() == 0
-}
-
 // RecordNXDomainCut stores a locally validated terminal NXDOMAIN proof.
 // deniedName is the exact authoritative query cycle that returned NXDOMAIN;
 // it must never be inferred from the SOA owner.
@@ -432,7 +421,28 @@ func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefi
 		Question: q,
 		CD:       cd,
 		Scope:    scope,
-	}, provenance)
+	}, provenance, s.failureMissWitness(q.Name, q.Qclass))
+}
+
+// failureMissWitness captures the denial-zone state a failing question
+// saw (denial_proof_witness.go). With RFC 8198 handling disabled the
+// witness is moot — the wire gate treats disabled the same way.
+func (s *Store) failureMissWitness(qname string, qclass uint16) []denialWitnessPair {
+	if s == nil || s.rfc8198Disabled || s.sharedDenialDisabled || s.denialProofs == nil {
+		return nil
+	}
+	return s.denialProofs.missWitness(dns.CanonicalName(qname), qclass)
+}
+
+// DenialMissHoldsWire reports whether a failure entry's record-time
+// proof that aggressive denial does not apply is still valid for this
+// wire-born name — the condition under which the wire path may serve
+// the failure without materializing.
+func (s *Store) DenialMissHoldsWire(name []byte, qclass uint16, hit FailureHit) bool {
+	if s == nil || s.rfc8198Disabled || s.sharedDenialDisabled || s.denialProofs == nil {
+		return true
+	}
+	return s.denialProofs.missWitnessHoldsWire(name, qclass, hit.witness)
 }
 
 // RecordZoneFailure implements middleware.ResolutionFailureStore. Zone-wide
@@ -444,7 +454,7 @@ func (s *Store) RecordZoneFailure(q dns.Question, zone string) {
 	s.failure.RecordZone(FailureZoneKey{
 		Zone:   zone,
 		Qclass: q.Qclass,
-	}, FailureProvenance("authority"))
+	}, FailureProvenance("authority"), s.failureMissWitness(q.Name, q.Qclass))
 }
 
 // ClearZoneFailure removes authority reachability history after the resolver

@@ -184,8 +184,8 @@ func TestFailureCacheLookupWireParity(t *testing.T) {
 	qKey := FailureQuestionKey{
 		Question: dns.Question{Name: "down.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET},
 	}
-	c.RecordQuestion(qKey, FailureProvenance("response"))
-	c.RecordZone(FailureZoneKey{Zone: "lame.test.", Qclass: dns.ClassINET}, FailureProvenance("authority"))
+	c.RecordQuestion(qKey, FailureProvenance("response"), nil)
+	c.RecordZone(FailureZoneKey{Zone: "lame.test.", Qclass: dns.ClassINET}, FailureProvenance("authority"), nil)
 
 	// Exact question, spelled differently.
 	reqExact, _ := wireTestRequest(t, "DOWN.test.", dns.TypeA, false)

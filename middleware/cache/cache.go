@@ -1074,14 +1074,20 @@ func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain
 		if cut, ok := c.store.LookupNXDomainCutWire(req.WireName(), req.Qclass()); ok {
 			return c.serveCutHitFromWire(ctx, ch, cut)
 		}
-		if !c.store.DenialProofsIdle() {
-			// A shared denial answer may exist; RFC 8198 evaluation stays
-			// on the Msg path until its evaluators are allocation-free.
-			return false
-		}
 	}
-	if _, ok := c.store.LookupFailureWire(req.WireName(), req.Qtype(), req.Qclass(), cd); ok {
-		return c.serveFailureFromWire(ch)
+	if hit, ok := c.store.LookupFailureWire(req.WireName(), req.Qtype(), req.Qclass(), cd); ok {
+		// The Msg ladder consults RFC 8198 denial before RFC 9520 failure
+		// state, and this rung preserves that order without evaluating
+		// anything: the failure entry carries a record-time proof that
+		// denial missed (the miss witness), and the serve happens only
+		// while that proof demonstrably still holds for this name. Any
+		// doubt — a replaced snapshot, a newly cached zone on the path, a
+		// pre-witness entry — falls to the Msg path, whose evaluators
+		// decide; the client's answer is identical either way. CD skips
+		// shared denial on the Msg path too, so it serves directly.
+		if cd || c.store.DenialMissHoldsWire(req.WireName(), req.Qclass(), hit) {
+			return c.serveFailureFromWire(ch)
+		}
 	}
 	return false
 }
