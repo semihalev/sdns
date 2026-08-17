@@ -782,6 +782,12 @@ type Chain struct {
 	// lazy deadline. Established by Materialize, run exactly once after the
 	// serve completes (PutChain, or the next rebind as a backstop).
 	detachCleanup func()
+
+	// inlineOnly marks a serve running on a transport reader that must
+	// not block; handoff records that a handler declined blocking work.
+	// Both reset with the chain.
+	inlineOnly bool
+	handoff    bool
 }
 
 // NewChain returns a Chain bound to the given handler pipeline. The slice
@@ -995,6 +1001,8 @@ func (ch *Chain) Reset(w Transport, r *dns.Msg) {
 	ch.Meta.Reset()
 	ch.pos = 0
 	ch.count = len(ch.handlers)
+	ch.inlineOnly = false
+	ch.handoff = false
 }
 
 // rebindWriter points the chain's pooled base writer at the next
@@ -1022,7 +1030,25 @@ func (ch *Chain) ResetWire(w Transport, r *Request) {
 	ch.Meta.Reset()
 	ch.pos = 0
 	ch.count = len(ch.handlers)
+	ch.inlineOnly = false
+	ch.handoff = false
 }
+
+// SetInlineOnly declares that this serve runs on a transport reader that
+// must not block: a handler that would start an upstream resolution marks
+// the chain for handoff instead and returns unwritten. The transport then
+// replays the query on a worker.
+func (ch *Chain) SetInlineOnly() { ch.inlineOnly = true }
+
+// InlineOnly reports whether the current serve refuses to block.
+func (ch *Chain) InlineOnly() bool { return ch.inlineOnly }
+
+// MarkHandoff records that the serve stopped short of blocking work and
+// the query needs a full pass on a worker.
+func (ch *Chain) MarkHandoff() { ch.handoff = true }
+
+// Handoff reports whether a handler declined blocking work this serve.
+func (ch *Chain) Handoff() bool { return ch.handoff }
 
 // AllowDirectPack declares that the transport beneath this chain's writer is
 // an SDNS-owned UDP, TCP or DoT sink whose Write sends raw wire bytes

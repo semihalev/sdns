@@ -100,6 +100,10 @@ func (d *Dnstap) Name() string {
 // dnstap streams reflect real client queries only.
 func (d *Dnstap) ClientOnly() bool { return true }
 
+// (*Dnstap).OncePerQuery: the query frame is emitted at entry, so the
+// serve replay after an inline handoff must not tap the query twice.
+func (d *Dnstap) OncePerQuery() bool { return true }
+
 // (*Dnstap).ServeDNS serveDNS logs DNS messages in dnstap format.
 // Disconnected dnstap is a read-lock check and a wire-born request passes
 // undecoded; a connected tap packs the request and materializes (enabling

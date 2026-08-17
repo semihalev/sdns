@@ -24,6 +24,12 @@ import (
 type Server struct {
 	cfg      *config.Config
 	pipeline *middleware.Pipeline
+	// replay is the pipeline minus every OncePerQuery handler: the chain
+	// a worker runs for a query the inline pass admitted, guarded, and
+	// then handed off unwritten. Entry-effect middlewares already fired
+	// on the inline pass; response-keyed ones fire here, once, when the
+	// replay writes.
+	replay *middleware.Pipeline
 
 	certManager *CertManager
 	certMu      sync.Mutex
@@ -69,6 +75,15 @@ func New(cfg *config.Config) *Server {
 	}
 
 	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline(), trimEnabled: cfg.MemoryTrim}
+	if s.pipeline != nil {
+		var once []string
+		for _, h := range s.pipeline.Handlers() {
+			if o, ok := h.(middleware.OncePerQuery); ok && o.OncePerQuery() {
+				once = append(once, h.Name())
+			}
+		}
+		s.replay = s.pipeline.SubPipeline(once...)
+	}
 
 	// One resource plan for every listener, derived before any exists:
 	// the stream engines share a budget, so the plan has to know how

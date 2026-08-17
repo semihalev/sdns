@@ -406,6 +406,16 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// An inline serve runs on a transport reader that must not block.
+	// The wire ladder above was its whole budget: everything from here
+	// down materializes, may consult the Msg-path cache, and on a miss
+	// starts an upstream resolution — none of which a reader can wait
+	// out. Decline, unwritten; the transport replays on a worker.
+	if ch.InlineOnly() {
+		ch.MarkHandoff()
+		return
+	}
+
 	ctx, req := ch.Materialize(ctx)
 	if req == nil {
 		return

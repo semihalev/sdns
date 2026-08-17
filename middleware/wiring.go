@@ -23,6 +23,19 @@ type ClientOnly interface {
 	ClientOnly() bool
 }
 
+// OncePerQuery marks a Handler whose ServeDNS entry has side effects that
+// must happen exactly once per client query — a rate-limit token, a
+// per-query score, an emitted tap frame. The server's inline fast path
+// runs the full chain on the transport reader and replays the query on a
+// worker when the cache cannot answer without blocking; handlers carrying
+// this marker are excluded from the replay so their entry effect is not
+// doubled. Handlers whose effects key off the response — metrics and
+// accesslog gate on Written() — need no marker: the inline pass leaves a
+// handed-off query unwritten, so they fire exactly once, on the replay.
+type OncePerQuery interface {
+	OncePerQuery() bool
+}
+
 // Store is the minimum cache facade a resolver sub-query needs.
 // Satisfied by cache.Store; declared here so middleware.Setup can
 // wire it from one handler into another without either importing

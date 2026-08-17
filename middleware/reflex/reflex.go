@@ -100,6 +100,10 @@ func (r *Reflex) Name() string {
 // internal sub-queries don't trip detection heuristics.
 func (r *Reflex) ClientOnly() bool { return true }
 
+// (*Reflex).OncePerQuery: scoring happens at entry, so the serve replay
+// after an inline handoff must not score the query twice.
+func (r *Reflex) OncePerQuery() bool { return true }
+
 // ServeDNS processes queries for amplification attack detection. The
 // scoring facts — qtype and request wire length — come from the parsed
 // request, so a wire-born query is scored without decoding; only the

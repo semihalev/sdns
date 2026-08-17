@@ -97,7 +97,11 @@ type udpJob struct {
 	burst    *udpTXBurst
 
 	written bool
-	state   uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
+	// replay marks a job the inline pass admitted and handed off: the
+	// worker finishes it on the replay pipeline, whose entry-effect
+	// middlewares already fired inline.
+	replay bool
+	state  uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
 }
 
 const (
@@ -230,7 +234,10 @@ func (j *udpJob) LeaseWire(capacity int) []byte {
 // udpEngine owns the sockets' read loops, the slab lease, and the
 // worker pool for one listener.
 type udpEngine struct {
-	handler  rawHandler
+	handler rawHandler
+	// inline is handler's fast-path contract when it offers one; nil
+	// keeps every query on the ring, which is what test stubs get.
+	inline   inlineRawHandler
 	pcs      []*net.UDPConn
 	wildcard bool
 
@@ -311,7 +318,13 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		workers:  workers,
 		txConns:  make(map[*net.UDPConn]syscall.RawConn, len(pcs)),
 	}
-	e.txSenders = make([]udpTXSender, workers)
+	// The fast path is optional on the handler; without it every query
+	// keeps to the ring exactly as before.
+	e.inline, _ = handler.(inlineRawHandler)
+	// One send-state slot per worker, plus one per reader: an inline
+	// serve stages its replies on the reader's own burst and sends the
+	// receive batch back as one transmit batch.
+	e.txSenders = make([]udpTXSender, workers+len(pcs))
 	for i := range e.txSenders {
 		newUDPTXSender(&e.txSenders[i])
 	}
@@ -551,6 +564,7 @@ func (j *udpJob) release(from uint8) {
 	// ignored opcode, a panic — with the previous client's bytes, to the
 	// new client's address.
 	j.txLen = 0
+	j.replay = false
 	// Read before the slab leaves: once it is in the cache it belongs to
 	// whoever takes it next, and nothing here may touch it again. The
 	// lease is released after the slab is parked — count down earlier
@@ -647,10 +661,65 @@ func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 
 	// The one ingress: the server decides eligibility, decode, and
 	// context. A false return means the accepted header hid an
-	// undecodable body — FORMERR, library parity.
+	// undecodable body — FORMERR, library parity. A replayed job
+	// finishes on the replay contract: its entry-effect middlewares
+	// already fired on the inline pass.
+	if j.replay {
+		if !e.inline.ServeRawReplay(j, j.rx[:j.rxLen], j.readTime) {
+			j.rejectInPlace(acceptFormatError)
+		}
+		return
+	}
 	if !e.handler.ServeRaw(j, j.rx[:j.rxLen], j.readTime) {
 		j.rejectInPlace(acceptFormatError)
 	}
+}
+
+// serveInline runs one job on its reader, refusing to block: the chain
+// carries the inline-only mark, and a query it cannot finish comes back
+// unserved for the ring. done reports whether the job reached a terminal
+// here; false hands ownership back to the caller with the job returned to
+// the reading state and marked for replay.
+//
+//nolint:unused // Linux batch path (udp_batch_linux.go)
+func (e *udpEngine) serveInline(j *udpJob, burst *udpTXBurst) (done bool) {
+	j.transition(udpJobReading, udpJobServing)
+	j.burst = burst
+	done = true
+	defer func() {
+		if r := recover(); r != nil {
+			udpDropPanic.Inc()
+			done = true
+		}
+		j.burst = nil
+		if !done {
+			j.replay = true
+			j.transition(udpJobServing, udpJobReading)
+			return
+		}
+		if j.txLen > 0 {
+			burst.add(j)
+			return
+		}
+		j.release(udpJobServing)
+	}()
+
+	header, ok := wire.ParseHeader(j.rx[:j.rxLen])
+	if !ok {
+		udpDropMalformed.Inc()
+		return true
+	}
+	switch verdict := acceptHeader(header); verdict {
+	case acceptOK:
+	case acceptIgnore:
+		udpDropIgnored.Inc()
+		return true
+	case acceptNotImplemented, acceptFormatError:
+		j.rejectInPlace(verdict)
+		return true
+	}
+
+	return e.inline.ServeRawInline(j, j.rx[:j.rxLen], j.readTime)
 }
 
 // Header-level accept verdicts, mirroring the library's default accept

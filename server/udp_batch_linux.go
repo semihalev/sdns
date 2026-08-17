@@ -100,10 +100,16 @@ type udpBatchReader struct {
 	armed    int
 	received int
 	rerr     error
+
+	// txBurst stages the replies of inline-served jobs; the receive
+	// batch flushes back as one transmit batch at the end of the cycle.
+	// Its sender slot lives past the workers' range.
+	txBurst udpTXBurst
 }
 
 func newUDPBatchReader(e *udpEngine, idx int, pc *net.UDPConn, rc syscall.RawConn) *udpBatchReader {
 	r := &udpBatchReader{engine: e, idx: idx, pc: pc, rc: rc}
+	r.txBurst.slot = e.workers + idx
 	r.readFn = func(fd uintptr) bool {
 		n, _, errno := unix.Syscall6(
 			unix.SYS_RECVMMSG,
@@ -143,6 +149,9 @@ func (r *udpBatchReader) run() {
 		held = 0
 	}
 	defer func() {
+		// Staged inline replies leave before the holdover is released;
+		// the burst releases its jobs on send.
+		e.flushTX(&r.txBurst)
 		releaseHeld()
 		e.readers.Done()
 	}()
@@ -207,6 +216,11 @@ func (r *udpBatchReader) run() {
 		now := time.Now()
 		for i := range n {
 			r.finishRecv(i, now)
+		}
+		// The receive batch goes back out as one transmit batch: every
+		// inline-served reply of this cycle in a single send.
+		if r.txBurst.n > 0 {
+			e.flushTX(&r.txBurst)
 		}
 		// The kernel filled slots 0..n-1; the survivors compact to the
 		// front and stay armed for the next cycle. arm rebinds the slot's
@@ -341,6 +355,16 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 		}
 	}
 
+	// The inline pass first: a hit finishes here and its reply rides the
+	// cycle's transmit batch — no ring, no worker wake, no lone send. A
+	// handoff (or a handler without the fast path) takes the ring.
+	if e := r.engine; e.inline != nil {
+		if e.serveInline(j, &r.txBurst) {
+			udpInlineServed.Inc()
+			return
+		}
+		udpInlineHandoff.Inc()
+	}
 	r.engine.enqueue(j)
 }
 

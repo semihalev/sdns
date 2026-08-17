@@ -156,6 +156,16 @@ type rawHandler interface {
 	ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool
 }
 
+// inlineRawHandler is the optional fast-path contract: a handler that can
+// run a query on the transport reader without blocking, handing off what
+// needs a worker. Engines type-assert it once at construction; a handler
+// without it (test stubs) simply keeps every query on the ring.
+type inlineRawHandler interface {
+	rawHandler
+	ServeRawInline(w middleware.Transport, raw []byte, readTime time.Time) bool
+	ServeRawReplay(w middleware.Transport, raw []byte, readTime time.Time) bool
+}
+
 // strictSlots is what an SDNS-owned transport job offers ServeRaw:
 // job-owned storage for the request, the context carrier, and the edns
 // writer wrapper.
@@ -199,6 +209,78 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 	// reason a strict materialization flushes applies from the first
 	// instruction here: replies already staged on this transport must
 	// not wait out this query's resolution.
+	if f, ok := w.(middleware.StagedFlusher); ok {
+		f.FlushStaged()
+	}
+	s.serveMsgBy(context.Background(), w, m, true, readTime.Add(s.queryTimeout()))
+	return true
+}
+
+// ServeRawInline is ServeRaw for a transport reader that must not block:
+// the full chain runs with the inline-only mark, and the cache — the one
+// handler whose downstream can block on the network — declines a query it
+// cannot answer from its wire ladder, unwritten. handled reports whether
+// the query reached a terminal here; a false return with handoff true
+// means the caller owns an admitted, guarded, unanswered job it must
+// replay on a worker with ServeRawReplay. A packet the strict path cannot
+// carry is a handoff outright: the decoded fallback resolves, and
+// resolving blocks.
+func (s *Server) ServeRawInline(w middleware.Transport, raw []byte, readTime time.Time) (handled bool) {
+	if job, ok := w.(strictSlots); ok {
+		req, chain, carrier, ednsSlot := job.StrictSlots()
+		if req.ParseWire(raw, readTime, ednsSlot) {
+			if s.trimEnabled {
+				s.served.Add(1)
+			}
+			carrier.reset(readTime.Add(s.queryTimeout()))
+			if s.pipeline == nil || contextutil.EffectiveError(carrier) != nil {
+				return true
+			}
+			s.pipeline.BindChain(chain)
+			defer chain.Finish()
+			chain.ResetWire(w, req)
+			chain.AllowDirectPack()
+			chain.SetInlineOnly()
+			chain.Next(carrier)
+			return !chain.Handoff()
+		}
+	}
+	return false
+}
+
+// ServeRawReplay finishes a query the inline pass handed off. The chain
+// is the pipeline minus every OncePerQuery handler: entry effects fired
+// on the inline pass, and the middlewares that key off the response fire
+// here, once, when this pass writes.
+func (s *Server) ServeRawReplay(w middleware.Transport, raw []byte, readTime time.Time) bool {
+	// No served count here for the strict branch: the inline pass already
+	// counted this query. The decoded fallback below never ran inline.
+	if job, ok := w.(strictSlots); ok {
+		req, chain, carrier, ednsSlot := job.StrictSlots()
+		if req.ParseWire(raw, readTime, ednsSlot) {
+			carrier.reset(readTime.Add(s.queryTimeout()))
+			if s.replay == nil {
+				return true
+			}
+			if contextutil.EffectiveError(carrier) != nil {
+				return true
+			}
+			s.replay.BindChain(chain)
+			defer chain.Finish()
+			chain.ResetWire(w, req)
+			chain.AllowDirectPack()
+			chain.Next(carrier)
+			return true
+		}
+	}
+
+	if s.trimEnabled {
+		s.served.Add(1)
+	}
+	m := new(dns.Msg)
+	if err := m.Unpack(raw); err != nil {
+		return false
+	}
 	if f, ok := w.(middleware.StagedFlusher); ok {
 		f.FlushStaged()
 	}
