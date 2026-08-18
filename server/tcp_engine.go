@@ -63,8 +63,7 @@ const (
 	// time than announcing it did, which is why this is the first-read
 	// allowance and not the idle timeout — staying silent is a client's
 	// right, holding a shared slab while it does so is not.
-	tcpQueryWait   = tcpFirstReadWait
-	tcpQueryBudget = 2048
+	tcpQueryWait = tcpFirstReadWait
 	// defaultTCPLargeJobs bounds the big class. Large frames are rare, so
 	// this exists to serve them without letting them define the ring's
 	// memory: the small class is what a busy server actually runs on.
@@ -445,8 +444,16 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 	// the life of the process.
 	defer release()
 
+	// A session serves until its client leaves. There is deliberately no
+	// per-connection query cap here: fairness is enforced where slabs are
+	// admitted (a token per announced frame), session count where
+	// connections are (the engine's conncap), and RFC 7766 tells clients
+	// to hold their connections open. A cap did exist once, and a busy
+	// pipelined client burned through it in under a second — every expiry
+	// a server-forced reconnect, and the reconnect storm cost the stream
+	// path half its throughput.
 	wait := tcpFirstReadWait
-	for served := 0; served < tcpQueryBudget; served++ {
+	for {
 		// Shutdown between frames, before any buffered prefix keeps the
 		// burst alive: a connection with pipelined frames in its fill
 		// buffer never blocks on the socket, so the closed socket alone
