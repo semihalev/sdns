@@ -44,6 +44,17 @@ var (
 	}, []string{"kind"})
 	udpOverflowServed = udpOverflow.Register("served")
 
+	// udpInline splits the reader fast path from the ring: "served" is a
+	// query that finished on its reader — reply on the cycle's transmit
+	// batch, no worker wake — and "handoff" is one the inline pass
+	// admitted and guarded but a worker had to finish.
+	udpInline = metric.NewCounterVec(nil, prometheus.CounterOpts{ //nolint:unused // Linux batch path
+		Name: "dns_udp_inline_total",
+		Help: "UDP queries attempted on the reader's inline fast path, by outcome",
+	}, []string{"outcome"})
+	udpInlineServed  = udpInline.Register("served")  //nolint:unused // Linux batch path
+	udpInlineHandoff = udpInline.Register("handoff") //nolint:unused // Linux batch path
+
 	udpDropFull      = udpIngressDrops.Register("full")
 	udpDropTrunc     = udpIngressDrops.Register("trunc")
 	udpDropCtrunc    = udpIngressDrops.Register("ctrunc")

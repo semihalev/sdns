@@ -96,8 +96,11 @@ func TestUDPAdmissionOutlivesTheSteadyState(t *testing.T) {
 		t.Fatalf("%d queries in flight with a steady-state formula of %d; "+
 			"admission must not be capped at the formula", got, steady)
 	}
-	if leased := e.leased.Load(); leased > e.slabCap {
-		t.Fatalf("leased %d slabs past the cap %d", leased, e.slabCap)
+	// Fetch-add admission may transiently overshoot by the number of
+	// concurrent takers — each rolls back before returning — so the
+	// at-rest bound only holds with the reader slack added.
+	if leased, slack := e.leased.Load(), int64(len(e.pcs)); leased > e.slabCap+slack {
+		t.Fatalf("leased %d slabs past the cap %d (+%d reader slack)", leased, e.slabCap, slack)
 	}
 }
 
@@ -112,7 +115,7 @@ func TestUDPSlabsParkInTheCache(t *testing.T) {
 		t.Fatalf("a fresh engine parked %d slabs before any query", got)
 	}
 
-	j := e.take()
+	j := e.take(0)
 	if j == nil {
 		t.Fatal("an idle engine refused a lease")
 	}
@@ -130,7 +133,7 @@ func TestUDPSlabsParkInTheCache(t *testing.T) {
 	}
 
 	// The next lease reuses the parked slab rather than allocating.
-	j2 := e.take()
+	j2 := e.take(0)
 	if j2 != j {
 		t.Fatal("a parked slab was not reused")
 	}
@@ -144,7 +147,7 @@ func TestUDPSlabsParkInTheCache(t *testing.T) {
 	if got := e.cache.size(); got != 0 {
 		t.Fatalf("cache holds %d slabs after trim", got)
 	}
-	j3 := e.take()
+	j3 := e.take(0)
 	if j3 == nil {
 		t.Fatal("a lease was refused after trim; trim must only cost an allocation")
 	}

@@ -10,6 +10,7 @@ import (
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
+	"golang.org/x/time/rate"
 )
 
 // The cache-contained CNAME chase on the wire: an alias entry whose answer
@@ -51,13 +52,19 @@ type wireChaseSegment struct {
 }
 
 // serveChaseHit answers a chase-unsafe exact hit from cache-contained
-// state. A false return took nothing and wrote nothing.
+// state. A false return took nothing and wrote nothing — including the
+// per-entry rate-limit token: a chase declines routinely (an uncached or
+// expired hop, a non-recomposable rrtype, an oversized composition), and
+// every decline before the commit must leave the limiter untouched, or
+// the Msg path — or the replay after an inline handoff — would charge
+// the same question a second time.
 func (c *Cache) serveChaseHit(
 	ctx context.Context,
 	ch *middleware.Chain,
 	alias *CacheEntry,
 	capability middleware.WireCapability,
 	leaser middleware.WireBodyLeaser,
+	spent **rate.Limiter,
 ) bool {
 	var segs [maxWireChaseHops]wireChaseSegment
 	n, ok := c.collectWireChase(ch.Request, alias, capability.DO, segs[:])
@@ -87,6 +94,14 @@ func (c *Cache) serveChaseHit(
 		leaser.AbortWire()
 		wireSkipSize.Inc()
 		return false
+	}
+
+	// The last gate before the commit: a refusal here drops the query
+	// with Msg-path parity (counted as a hit, cancelled), and a granted
+	// token is spent on a serve that no longer declines.
+	if !c.chargeEntryLimiter(ch, alias, spent) {
+		leaser.AbortWire()
+		return true
 	}
 
 	switch err := leaser.CommitWire(body, info); {

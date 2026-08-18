@@ -85,10 +85,13 @@ func (c *Chaos) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Increment query counter
-	c.mu.Lock()
-	c.queryCount++
-	c.mu.Unlock()
+	// Increment query counter — once per query: the replay pass after an
+	// inline handoff walks this handler again for the same question.
+	if !ch.Replay() {
+		c.mu.Lock()
+		c.queryCount++
+		c.mu.Unlock()
+	}
 
 	var answer *dns.TXT
 

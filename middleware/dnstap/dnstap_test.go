@@ -321,7 +321,7 @@ func TestLogMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := mock.NewWriter(tt.proto, tt.addr)
 
-			d.logMessage(w, tt.query, tt.response, time.Now(), tt.isQuery)
+			d.logMessage(w, tt.query, nil, tt.response, time.Now(), tt.isQuery)
 
 			select {
 			case msg := <-d.messageQueue:
@@ -358,7 +358,7 @@ func TestLogMessage_QueueFull(t *testing.T) {
 	w := mock.NewWriter("udp", "127.0.0.1:53")
 
 	// This should not block
-	d.logMessage(w, req, nil, time.Now(), true)
+	d.logMessage(w, req, nil, nil, time.Now(), true)
 
 	// Verify queue still has only 1 message
 	if len(d.messageQueue) != 1 {

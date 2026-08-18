@@ -53,6 +53,11 @@ type udpJob struct {
 	engine *udpEngine
 	pc     *net.UDPConn
 
+	// slabShard is where this job's slab goes back when released — the
+	// shard of the reader that took it, so slab traffic spreads with the
+	// socket fan-out instead of convoying on one lock.
+	slabShard uint8
+
 	rx       [udpJobBufSize]byte
 	rxLen    int
 	tx       [udpJobBufSize]byte
@@ -92,7 +97,11 @@ type udpJob struct {
 	burst    *udpTXBurst
 
 	written bool
-	state   uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
+	// replay marks a job the inline pass admitted and handed off: the
+	// worker finishes it on the replay pipeline, whose entry-effect
+	// middlewares already fired inline.
+	replay bool
+	state  uint8 // udpJobFree → udpJobReading → udpJobQueued → udpJobServing → free
 }
 
 const (
@@ -225,7 +234,10 @@ func (j *udpJob) LeaseWire(capacity int) []byte {
 // udpEngine owns the sockets' read loops, the slab lease, and the
 // worker pool for one listener.
 type udpEngine struct {
-	handler  rawHandler
+	handler rawHandler
+	// inline is handler's fast-path contract when it offers one; nil
+	// keeps every query on the ring, which is what test stubs get.
+	inline   inlineRawHandler
 	pcs      []*net.UDPConn
 	wildcard bool
 
@@ -306,7 +318,18 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		workers:  workers,
 		txConns:  make(map[*net.UDPConn]syscall.RawConn, len(pcs)),
 	}
-	e.txSenders = make([]udpTXSender, workers)
+	// The fast path is optional on the handler; without it every query
+	// keeps to the ring exactly as before. InlineReady gates on the
+	// pipeline: a handler whose chain has no inline barrier would carry
+	// the reader into the resolver, so it declines the fast path even
+	// though it implements the interface.
+	if ih, ok := handler.(inlineRawHandler); ok && ih.InlineReady() {
+		e.inline = ih
+	}
+	// One send-state slot per worker, plus one per reader: an inline
+	// serve stages its replies on the reader's own burst and sends the
+	// receive batch back as one transmit batch.
+	e.txSenders = make([]udpTXSender, workers+len(pcs))
 	for i := range e.txSenders {
 		newUDPTXSender(&e.txSenders[i])
 	}
@@ -339,20 +362,21 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 // take leases a slab to read into. A nil return is the shedding case:
 // the admission cap is reached, and the cap — not the cache, not the
 // collector — is the memory authority here.
-func (e *udpEngine) take() *udpJob {
-	for {
-		n := e.leased.Load()
-		if n >= e.slabCap {
-			return nil
-		}
-		if e.leased.CompareAndSwap(n, n+1) {
-			break
-		}
+func (e *udpEngine) take(shard int) *udpJob {
+	// Add-then-rollback instead of a CAS loop: under wire-speed load
+	// sixteen readers spinning Load+CAS on one cache line burned more
+	// CPU retrying than serving. A fetch-add never retries; the counter
+	// may momentarily overshoot the cap by the number of concurrent
+	// takers, every one of which rolls back before returning.
+	if e.leased.Add(1) > e.slabCap {
+		e.leased.Add(-1)
+		return nil
 	}
-	if j := e.cache.get(); j != nil {
+	if j := e.cache.get(shard); j != nil {
+		j.slabShard = uint8(shard & (slabShardCount - 1))
 		return j
 	}
-	return &udpJob{engine: e}
+	return &udpJob{engine: e, slabShard: uint8(shard & (slabShardCount - 1))}
 }
 
 // start launches the fixed workers and one reader per socket.
@@ -367,9 +391,9 @@ func (e *udpEngine) start() {
 	if e.startBatched() {
 		return
 	}
-	for _, pc := range e.pcs {
+	for i, pc := range e.pcs {
 		e.readers.Add(1)
-		go e.reader(pc)
+		go e.reader(i, pc)
 	}
 }
 
@@ -405,7 +429,7 @@ func (e *udpEngine) stopAndDrain(deadline time.Time) error {
 	}
 }
 
-func (e *udpEngine) reader(pc *net.UDPConn) {
+func (e *udpEngine) reader(idx int, pc *net.UDPConn) {
 	defer e.readers.Done()
 	var discard [udpJobBufSize]byte
 	var oob [pktinfoSpace]byte
@@ -414,7 +438,7 @@ func (e *udpEngine) reader(pc *net.UDPConn) {
 		oobBuf = nil
 	}
 	for {
-		j := e.take()
+		j := e.take(idx)
 		if j == nil {
 			// Ring empty and the stretch at its bound: consume and shed.
 			// The reader never blocks for a slab — a deep queue only
@@ -485,6 +509,15 @@ func (e *udpEngine) enqueue(j *udpJob) {
 	// quiescence check that could not tell the two apart would never see
 	// an idle server settle.
 	e.inFlight.Add(1)
+	e.enqueueCounted(j)
+}
+
+// enqueueCounted is enqueue for a job whose in-flight count is already
+// carried: serveInline counts a job when it takes it into serving, and a
+// handoff keeps that count — decrementing across the hand-back would let
+// the counter dip through zero with the job still owned, and a quiescence
+// barrier could close over it.
+func (e *udpEngine) enqueueCounted(j *udpJob) {
 	j.state = udpJobQueued
 
 	// The pool first, while it can keep up. A served hit is microseconds,
@@ -545,12 +578,13 @@ func (j *udpJob) release(from uint8) {
 	// ignored opcode, a panic — with the previous client's bytes, to the
 	// new client's address.
 	j.txLen = 0
+	j.replay = false
 	// Read before the slab leaves: once it is in the cache it belongs to
 	// whoever takes it next, and nothing here may touch it again. The
 	// lease is released after the slab is parked — count down earlier
 	// and the cap could admit a query the cache cannot yet serve.
 	e := j.engine
-	e.cache.put(j)
+	e.cache.put(int(j.slabShard), j)
 	e.leased.Add(-1)
 
 	// Counted down last, after the slab is scrubbed and parked.
@@ -641,10 +675,81 @@ func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 
 	// The one ingress: the server decides eligibility, decode, and
 	// context. A false return means the accepted header hid an
-	// undecodable body — FORMERR, library parity.
+	// undecodable body — FORMERR, library parity. A replayed job
+	// finishes on the replay contract: its entry-effect middlewares
+	// already fired on the inline pass.
+	if j.replay {
+		if !e.inline.ServeRawReplay(j, j.rx[:j.rxLen], j.readTime) {
+			j.rejectInPlace(acceptFormatError)
+		}
+		return
+	}
 	if !e.handler.ServeRaw(j, j.rx[:j.rxLen], j.readTime) {
 		j.rejectInPlace(acceptFormatError)
 	}
+}
+
+// serveInline runs one job on its reader, refusing to block: the chain
+// carries the inline-only mark, and a query it cannot finish comes back
+// unserved for the ring. done reports whether the job reached a terminal
+// here; false hands ownership back to the caller with the job returned to
+// the reading state, marked for replay, and its in-flight count carried —
+// the caller continues with enqueueCounted.
+//
+//nolint:unused // Linux batch path (udp_batch_linux.go)
+func (e *udpEngine) serveInline(j *udpJob, burst *udpTXBurst) (done bool) {
+	j.transition(udpJobReading, udpJobServing)
+	// Outstanding from here: the ring path counts a job at enqueue, and
+	// this is the inline path's equivalent moment. Every terminal below
+	// releases from Serving, which is what counts it back down.
+	e.inFlight.Add(1)
+	j.burst = burst
+	done = true
+	defer func() {
+		if r := recover(); r != nil {
+			udpDropPanic.Inc()
+			done = true
+		}
+		j.burst = nil
+		if j.txLen > 0 {
+			// A staged reply is terminal even when a handler also marked
+			// handoff: these bytes answer this query, and a replay after
+			// them could only resolve a question the client already has
+			// an answer to — or transmit a stale reply if the replay
+			// declined to write.
+			done = true
+			udpInlineServed.Inc()
+			if burst.full() {
+				e.flushTX(burst)
+			}
+			burst.add(j)
+			return
+		}
+		if !done {
+			udpInlineHandoff.Inc()
+			j.replay = true
+			j.transition(udpJobServing, udpJobReading)
+			return
+		}
+		j.release(udpJobServing)
+	}()
+
+	header, ok := wire.ParseHeader(j.rx[:j.rxLen])
+	if !ok {
+		udpDropMalformed.Inc()
+		return true
+	}
+	switch verdict := acceptHeader(header); verdict {
+	case acceptOK:
+	case acceptIgnore:
+		udpDropIgnored.Inc()
+		return true
+	case acceptNotImplemented, acceptFormatError:
+		j.rejectInPlace(verdict)
+		return true
+	}
+
+	return e.inline.ServeRawInline(j, j.rx[:j.rxLen], j.readTime)
 }
 
 // Header-level accept verdicts, mirroring the library's default accept

@@ -124,8 +124,12 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	w := ch.Writer
 
-	atomic.AddUint64(&k.queries, 1)
-	kubernetesQueries.Inc()
+	// Once per query: the replay pass after an inline handoff walks this
+	// handler again for the same question.
+	if !ch.Replay() {
+		atomic.AddUint64(&k.queries, 1)
+		kubernetesQueries.Inc()
+	}
 
 	if len(req.Question) == 0 {
 		ch.Next(ctx)

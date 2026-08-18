@@ -63,8 +63,7 @@ const (
 	// time than announcing it did, which is why this is the first-read
 	// allowance and not the idle timeout — staying silent is a client's
 	// right, holding a shared slab while it does so is not.
-	tcpQueryWait   = tcpFirstReadWait
-	tcpQueryBudget = 2048
+	tcpQueryWait = tcpFirstReadWait
 	// defaultTCPLargeJobs bounds the big class. Large frames are rare, so
 	// this exists to serve them without letting them define the ring's
 	// memory: the small class is what a busy server actually runs on.
@@ -82,6 +81,9 @@ type tcpJob struct {
 	engine *tcpEngine
 	conn   net.Conn
 	stream *tcpStream
+	// slabShard is where this job's slab returns on release; TCP has no
+	// per-slot reader, so acquisition deals shards out round-robin.
+	slabShard uint8
 	// rx and tx are sized by the slab's class and never resized. A
 	// connection takes the class its announced frame needs, which the
 	// length prefix has already told it — prefix-first acquisition was
@@ -181,6 +183,10 @@ type tcpEngine struct {
 	handler  rawHandler
 	proto    string // "tcp" or "tls", for metrics
 	maxConns int64
+
+	// slabRotor deals slab shards to acquisitions; connections have no
+	// stable index the way the UDP readers do.
+	slabRotor atomic.Uint32
 
 	// Two classes by frame size, each with its own admission tokens and
 	// its own idle cache. The tokens are the authority — how many frames
@@ -297,11 +303,11 @@ func (e *tcpEngine) put(j *tcpJob) {
 		panic("server: tcp job released twice")
 	}
 	if j.large {
-		e.largeCache.put(j)
+		e.largeCache.put(int(j.slabShard), j)
 		e.largeTokens <- struct{}{}
 		return
 	}
-	e.smallCache.put(j)
+	e.smallCache.put(int(j.slabShard), j)
 	e.smallTokens <- struct{}{}
 }
 
@@ -438,8 +444,16 @@ func (e *tcpEngine) serveConn(conn net.Conn) {
 	// the life of the process.
 	defer release()
 
+	// A session serves until its client leaves. There is deliberately no
+	// per-connection query cap here: fairness is enforced where slabs are
+	// admitted (a token per announced frame), session count where
+	// connections are (the engine's conncap), and RFC 7766 tells clients
+	// to hold their connections open. A cap did exist once, and a busy
+	// pipelined client burned through it in under a second — every expiry
+	// a server-forced reconnect, and the reconnect storm cost the stream
+	// path half its throughput.
 	wait := tcpFirstReadWait
-	for served := 0; served < tcpQueryBudget; served++ {
+	for {
 		// Shutdown between frames, before any buffered prefix keeps the
 		// burst alive: a connection with pipelined frames in its fill
 		// buffer never blocks on the socket, so the closed socket alone
@@ -562,10 +576,12 @@ func (e *tcpEngine) acquire(s *tcpStream, deadline time.Time, length int) *tcpJo
 	if large {
 		cache = &e.largeCache
 	}
-	j := cache.get()
+	shard := int(e.slabRotor.Add(1))
+	j := cache.get(shard)
 	if j == nil {
 		j = newTCPJob(e, large)
 	}
+	j.slabShard = uint8(shard & (slabShardCount - 1))
 	j.leased.Store(true)
 	return j
 }

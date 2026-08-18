@@ -58,12 +58,12 @@ func (e *udpEngine) startBatched() bool {
 	if e.txConns == nil {
 		return false
 	}
-	for _, pc := range e.pcs {
+	for i, pc := range e.pcs {
 		rc := e.txConns[pc]
 		if rc == nil {
 			return false
 		}
-		r := newUDPBatchReader(e, pc, rc)
+		r := newUDPBatchReader(e, i, pc, rc)
 		e.readers.Add(1)
 		go r.run()
 	}
@@ -74,8 +74,10 @@ func (e *udpEngine) startBatched() bool {
 
 type udpBatchReader struct {
 	engine *udpEngine
-	pc     *net.UDPConn
-	rc     syscall.RawConn
+	// idx is this socket's slab shard hint.
+	idx int
+	pc  *net.UDPConn
+	rc  syscall.RawConn
 
 	// permanentErrs counts consecutive errnos that no retry will fix. A
 	// seccomp profile that filters recvmmsg answers EPERM or ENOSYS on
@@ -98,10 +100,16 @@ type udpBatchReader struct {
 	armed    int
 	received int
 	rerr     error
+
+	// txBurst stages the replies of inline-served jobs; the receive
+	// batch flushes back as one transmit batch at the end of the cycle.
+	// Its sender slot lives past the workers' range.
+	txBurst udpTXBurst
 }
 
-func newUDPBatchReader(e *udpEngine, pc *net.UDPConn, rc syscall.RawConn) *udpBatchReader {
-	r := &udpBatchReader{engine: e, pc: pc, rc: rc}
+func newUDPBatchReader(e *udpEngine, idx int, pc *net.UDPConn, rc syscall.RawConn) *udpBatchReader {
+	r := &udpBatchReader{engine: e, idx: idx, pc: pc, rc: rc}
+	r.txBurst.slot = e.workers + idx
 	r.readFn = func(fd uintptr) bool {
 		n, _, errno := unix.Syscall6(
 			unix.SYS_RECVMMSG,
@@ -125,7 +133,28 @@ func newUDPBatchReader(e *udpEngine, pc *net.UDPConn, rc syscall.RawConn) *udpBa
 
 func (r *udpBatchReader) run() {
 	e := r.engine
-	defer e.readers.Done()
+	// held counts the armed jobs that persist across cycles. A batch
+	// rarely fills: the kernel hands back what the queue holds, and the
+	// old shape released every unfilled slot just to take it again on
+	// the next spin — a full take/release round trip (lease atomics,
+	// shard traffic, state transitions) per slot per cycle, priced at
+	// wire speed. A job the kernel did not fill stays armed; only what
+	// was consumed is re-taken, and every exit path below releases the
+	// holdover before returning.
+	held := 0
+	releaseHeld := func() {
+		for i := range held {
+			r.jobs[i].release(udpJobReading)
+		}
+		held = 0
+	}
+	defer func() {
+		// Staged inline replies leave before the holdover is released;
+		// the burst releases its jobs on send.
+		e.flushTX(&r.txBurst)
+		releaseHeld()
+		e.readers.Done()
+	}()
 
 	for {
 		// The lease cap reserves a batch per reader. When it is reached
@@ -137,32 +166,26 @@ func (r *udpBatchReader) run() {
 		// receive queue are the oldest ones, whose clients have often
 		// stopped waiting. Shedding keeps the loss ours to report and
 		// keeps what is served fresh.
-		j0 := e.take()
-		if j0 == nil {
+		for held < udpBatchSize {
+			j := e.take(r.idx)
+			if j == nil {
+				break
+			}
+			j.transition(udpJobFree, udpJobReading)
+			r.arm(j, held)
+			held++
+		}
+		if held == 0 {
 			if !r.shed() {
 				return
 			}
 			continue
 		}
-		j0.transition(udpJobFree, udpJobReading)
-		r.arm(j0, 0)
-		k := 1
-		for k < udpBatchSize {
-			j := e.take()
-			if j == nil {
-				break
-			}
-			j.transition(udpJobFree, udpJobReading)
-			r.arm(j, k)
-			k++
-		}
 
-		r.armed = k
+		r.armed = held
 		err := r.rc.Read(r.readFn)
 		if err != nil || r.rerr != nil {
-			for i := range k {
-				r.jobs[i].release(udpJobReading)
-			}
+			releaseHeld()
 			// A reader is the only consumer of its socket: it exits when
 			// the socket is gone and for nothing else. A transient errno
 			// drops the cycle, and a poller error that is not a closed
@@ -175,7 +198,7 @@ func (r *udpBatchReader) run() {
 				}
 				udpReaderPollErr.Inc()
 				zlog.Error("UDP batch reader poll failed",
-					"error", err.Error(), "armed", k)
+					"error", err.Error(), "armed", r.armed)
 				continue
 			}
 			if r.rerr == unix.EBADF {
@@ -194,9 +217,20 @@ func (r *udpBatchReader) run() {
 		for i := range n {
 			r.finishRecv(i, now)
 		}
-		for i := n; i < k; i++ {
-			r.jobs[i].release(udpJobReading)
+		// The receive batch goes back out as one transmit batch: every
+		// inline-served reply of this cycle in a single send.
+		if r.txBurst.n > 0 {
+			e.flushTX(&r.txBurst)
 		}
+		// The kernel filled slots 0..n-1; the survivors compact to the
+		// front and stay armed for the next cycle. arm rebinds the slot's
+		// descriptors; the job itself is untouched.
+		m := 0
+		for i := n; i < held; i++ {
+			r.arm(r.jobs[i], m)
+			m++
+		}
+		held = m
 	}
 }
 
@@ -265,7 +299,7 @@ func (r *udpBatchReader) permanentRerr() bool {
 		"errno", r.rerr.Error())
 	e := r.engine
 	e.readers.Add(1)
-	go e.reader(r.pc)
+	go e.reader(r.idx, r.pc)
 	return true
 }
 
@@ -321,6 +355,16 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 		}
 	}
 
+	// The inline pass first: a hit finishes here and its reply rides the
+	// cycle's transmit batch — no ring, no worker wake, no lone send. A
+	// handoff continues on the ring with its in-flight count carried; a
+	// handler without the fast path takes the counted enqueue.
+	if e := r.engine; e.inline != nil {
+		if !e.serveInline(j, &r.txBurst) {
+			e.enqueueCounted(j)
+		}
+		return
+	}
 	r.engine.enqueue(j)
 }
 

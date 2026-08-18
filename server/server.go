@@ -24,6 +24,11 @@ import (
 type Server struct {
 	cfg      *config.Config
 	pipeline *middleware.Pipeline
+	// inlineReady records that some handler in the pipeline declares
+	// middleware.InlineBarrier: it will stop an inline pass before
+	// blocking work. Without one, ServeRawInline would carry a transport
+	// reader into the resolver, so the engines leave the fast path off.
+	inlineReady bool
 
 	certManager *CertManager
 	certMu      sync.Mutex
@@ -69,6 +74,14 @@ func New(cfg *config.Config) *Server {
 	}
 
 	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline(), trimEnabled: cfg.MemoryTrim}
+	if s.pipeline != nil {
+		for _, h := range s.pipeline.Handlers() {
+			if b, ok := h.(middleware.InlineBarrier); ok && b.InlineBarrier() {
+				s.inlineReady = true
+				break
+			}
+		}
+	}
 
 	// One resource plan for every listener, derived before any exists:
 	// the stream engines share a budget, so the plan has to know how

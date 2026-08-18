@@ -154,8 +154,13 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.Next(ctx)
 		return
 	}
+	// The passthrough diagnostics count once per query: the replay pass
+	// after an inline handoff walks this handler again.
+	firstPass := !ch.Replay()
 	if w.Internal() {
-		passthroughInternal.Inc()
+		if firstPass {
+			passthroughInternal.Inc()
+		}
 		ch.Next(ctx)
 		return
 	}
@@ -168,7 +173,9 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// DNS64 would interpret that SERVFAIL as "no AAAA",
 		// firing a recursive A query that bypasses the
 		// non-recursion intent.
-		passthroughNoRD.Inc()
+		if firstPass {
+			passthroughNoRD.Inc()
+		}
 		ch.Next(ctx)
 		return
 	}
@@ -177,12 +184,16 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// itself; do not synthesise. Symmetric for PTR: the
 		// CNAME we'd synthesise points at an unsigned name we
 		// fabricated, so respect the bit.
-		passthroughCDBit.Inc()
+		if firstPass {
+			passthroughCDBit.Inc()
+		}
 		ch.Next(ctx)
 		return
 	}
 	if !d.cfg.clientEligible(w.RemoteIP()) {
-		passthroughClientExcluded.Inc()
+		if firstPass {
+			passthroughClientExcluded.Inc()
+		}
 		ch.Next(ctx)
 		return
 	}

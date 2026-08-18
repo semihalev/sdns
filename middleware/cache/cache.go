@@ -263,6 +263,13 @@ func New(cfg *config.Config) *Cache {
 // (*Cache).Name name returns middleware name.
 func (c *Cache) Name() string { return name }
 
+// InlineBarrier declares that the cache honors Chain.InlineOnly: an
+// inline pass gets the wire ladder and nothing below it — everything
+// past the ladder can materialize, wait, or resolve, and a transport
+// reader can afford none of those. Its presence is what lets the server
+// turn the reader fast path on at all.
+func (c *Cache) InlineBarrier() bool { return true }
+
 // buildCacheECSPolicy parses [ecs] config the same way
 // middleware/edns does, so the cache and the forwarder agree on
 // who is in the allow-list, what the source-prefix ceiling is, and
@@ -401,8 +408,23 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// entry, because a refresh replacing the entry under the same key
 	// shares that same limiter — charging the replacement would drop a
 	// question that had already paid.
+	// The replay pass skips the ladder outright: the inline pass ran it
+	// microseconds ago and declined, the Msg body below carries the full
+	// capability set the decline fell back for, and a second ladder walk
+	// would double the decline diagnostics and the per-entry limiter
+	// charge for the same client question.
 	var spent *rate.Limiter
-	if ch.Request.Undecoded() && c.serveWire(ctx, ch, &spent) {
+	if ch.Request.Undecoded() && !ch.Replay() && c.serveWire(ctx, ch, &spent) {
+		return
+	}
+
+	// An inline serve runs on a transport reader that must not block.
+	// The wire ladder above was its whole budget: everything from here
+	// down materializes, may consult the Msg-path cache, and on a miss
+	// starts an upstream resolution — none of which a reader can wait
+	// out. Decline, unwritten; the transport replays on a worker.
+	if ch.InlineOnly() {
+		ch.MarkHandoff()
 		return
 	}
 
@@ -1125,6 +1147,37 @@ func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
 	return entryMatchesWireQuestion(entry, req.WireName(), req.Qtype(), req.Qclass(), req.CD())
 }
 
+// chargeEntryLimiter pays the per-entry rate-limit token immediately
+// before a wire serve commits to answering. A false return means the
+// token was refused: the query is cancelled and counted as a hit — the
+// Msg path counts a rate-limited hit as a hit, and the byte path must
+// answer the same question the same way.
+//
+// The permit is remembered in spent, keyed by the limiter it was spent
+// on: the declines that remain past this point — a lease the writer
+// cannot grant, a body that fails to build, a transport fallback — fall
+// to the Msg body of the same call, which checks the same limiter again
+// and must not charge the same question twice. (A refresh replacing the
+// entry under the same key shares the limiter, so the memo survives it.)
+// Across the inline/replay boundary no local can carry the permit, which
+// is why both serve branches — the flat copy and the chase composition —
+// check every decline they can before this charge; what stays past it
+// are commit-time backstops, and an inline query dropped there pays a
+// second token on the replay, accepted as the rare case.
+func (c *Cache) chargeEntryLimiter(ch *middleware.Chain, entry *CacheEntry, spent **rate.Limiter) bool {
+	limiter := entry.GetRateLimiter()
+	if limiter == nil || *spent == limiter {
+		return true
+	}
+	if !limiter.Allow() {
+		c.metrics.Hit()
+		ch.Cancel()
+		return false
+	}
+	*spent = limiter
+	return true
+}
+
 // serveHitFromWire serves one verified exact hit as bytes built in the
 // writer's lease. Anything the byte path cannot express declines to the
 // ordinary body rather than half-serving.
@@ -1135,29 +1188,13 @@ func (c *Cache) serveHitFromWire(
 	if w.Internal() {
 		return false
 	}
-	if limiter := entry.GetRateLimiter(); limiter != nil {
-		if !limiter.Allow() {
-			// The Msg path counts a rate-limited hit as a hit (the
-			// caller records it on every true return); the byte path
-			// answers the same question the same way, so the metric
-			// must not depend on which path the query took.
-			c.metrics.Hit()
-			ch.Cancel()
-			return true
-		}
-		// Spent, and remembered. Everything below this line can still
-		// decline to the Msg body — a prefetch-due entry, a writer
-		// without the lease, a body the capability cannot express — and
-		// that body checks the same limiter again. One question would
-		// then cost two tokens, and at a small limit the second check
-		// cancels a hit the client was entitled to. The permit rides a
-		// local through the one call that owns both paths, keyed by the
-		// limiter it was spent on: a refresh that replaces the entry
-		// under the same key shares this limiter and must not be charged
-		// again for the same question, while an entry answering to a
-		// different limiter still pays.
-		*spent = limiter
-	}
+	// The deterministic declines run before the limiter spends anything:
+	// a prefetch-due entry, an ineligible body, a writer without the
+	// lease all fall to the Msg path (or, inline, to the replay), and a
+	// token paid here would be paid again there — the exact double
+	// charge the spent memo below exists to prevent within one pass, and
+	// which no local can prevent across the inline/replay boundary.
+	//
 	// A prefetch-due hit needs a decoded request copy for the refresh
 	// queue; the ordinary body claims it.
 	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
@@ -1186,8 +1223,9 @@ func (c *Cache) serveHitFromWire(
 		// An alias without its terminal: the one exact-entry shape whose
 		// reply is composed rather than copied. Fully cache-contained
 		// chains serve here; anything else declines to the Msg path,
-		// which runs the complete chase machinery.
-		return c.serveChaseHit(ctx, ch, entry, capability, leaser)
+		// which runs the complete chase machinery. The limiter charge
+		// lives inside, past the chase's own decline gates.
+		return c.serveChaseHit(ctx, ch, entry, capability, leaser, spent)
 	}
 	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
 		mismatch.Inc()
@@ -1197,6 +1235,9 @@ func (c *Cache) serveHitFromWire(
 	if stored == nil {
 		wireSkipDNSSEC.Inc()
 		return false
+	}
+	if !c.chargeEntryLimiter(ch, entry, spent) {
+		return true
 	}
 	dst := leaser.BeginWire(len(stored), capability.Reserve+entry.wireEDEReserve())
 	if dst == nil {
