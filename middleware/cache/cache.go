@@ -1160,7 +1160,10 @@ func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
 // and must not charge the same question twice. (A refresh replacing the
 // entry under the same key shares the limiter, so the memo survives it.)
 // Across the inline/replay boundary no local can carry the permit, which
-// is why every deterministic decline is checked before this charge.
+// is why both serve branches — the flat copy and the chase composition —
+// check every decline they can before this charge; what stays past it
+// are commit-time backstops, and an inline query dropped there pays a
+// second token on the replay, accepted as the rare case.
 func (c *Cache) chargeEntryLimiter(ch *middleware.Chain, entry *CacheEntry, spent **rate.Limiter) bool {
 	limiter := entry.GetRateLimiter()
 	if limiter == nil || *spent == limiter {
@@ -1220,11 +1223,9 @@ func (c *Cache) serveHitFromWire(
 		// An alias without its terminal: the one exact-entry shape whose
 		// reply is composed rather than copied. Fully cache-contained
 		// chains serve here; anything else declines to the Msg path,
-		// which runs the complete chase machinery.
-		if !c.chargeEntryLimiter(ch, entry, spent) {
-			return true
-		}
-		return c.serveChaseHit(ctx, ch, entry, capability, leaser)
+		// which runs the complete chase machinery. The limiter charge
+		// lives inside, past the chase's own decline gates.
+		return c.serveChaseHit(ctx, ch, entry, capability, leaser, spent)
 	}
 	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
 		mismatch.Inc()
