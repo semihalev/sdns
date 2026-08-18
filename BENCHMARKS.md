@@ -86,30 +86,46 @@ answers (NXDOMAIN from cached denial) 409k, cached SERVFAIL 399k.
 | Unbound 1.24.2 | 136k | 149k |
 | PowerDNS Recursor 5.4.1 | 56k | 57k |
 
-### Efficiency: server-process CPU per query
+### Efficiency and scaling: server-process CPU per query
 
-During separate UDP runs of the same shape, each server process's own CPU time
-was read from `/proc` (utime+stime deltas across the 20-second run) — so the
-load generator's cost, which every loopback number otherwise includes, is
-excluded here by construction:
+Each server process's own CPU time was read from `/proc` (utime+stime deltas
+across each 20-second run) — so the load generator's cost, which every
+loopback number otherwise includes, is excluded here by construction. All
+rows below come from the same harness cycle (`contrib/bench/resolver_bench.py`:
+readiness gate, verified warm, throwaway run, 3×20 s).
 
-| resolver | qps | busy cores | qps per busy core |
+**Equal budget (~8 cores).** sdns pinned to the same core budget the C
+daemons configure (`GOMAXPROCS=8` vs `threads=8`):
+
+| resolver | median qps | busy cores | qps per busy core |
 |---|---|---|---|
-| sdns 1.8.0 | 429–446k | ~14.1 | ~31k |
-| PowerDNS Recursor 5.4.1 | 371–380k | ~6.6 | ~56k |
-| Unbound 1.24.2 | 331–338k | ~6.0 | ~55k |
-| Knot Resolver 6.2.0 (8 workers) | 177–189k | ~6.7 | ~27k |
+| **sdns 1.8.0 @ GOMAXPROCS=8** | **394k** | 7.9 | ~50k |
+| PowerDNS Recursor 5.4.1, 8 threads | 371k | 6.6 | ~56k |
+| Unbound 1.24.2, 16 threads | 362k | 8.0 | ~45k |
+| Unbound 1.24.2, 8 threads | 343k | 6.0 | ~55k |
+| Knot Resolver 6.2.0, 8 workers | 191k | 6.7 | ~27k |
 
-Read the per-core column carefully: it is a property of each resolver *at its
-benchmark configuration*, not an intrinsic constant. PowerDNS and Unbound are
-capped at 8 threads by their own configurations and measured near their sweet
-spot; sdns runs uncapped and spends ~14 of the host's 32 cores to take the
-throughput lead, with the rest feeding the load generator. PowerDNS's packet
-cache also does the least work per query of the four — per-core efficiency
-rewards exactly that. One datum on how workers trade against efficiency:
-doubling Knot to 16 instances lifted its throughput to ~242k while its
-per-core efficiency fell by roughly a quarter. Scaling buys throughput at
-declining efficiency for every design here, sdns included.
+**Scaled up.** Each resolver allowed more workers:
+
+| resolver | median qps | best qps | busy cores | qps per busy core |
+|---|---|---|---|---|
+| **sdns @ GOMAXPROCS=16** | **462k** | 475k | 13.3 | ~35k |
+| sdns @ GOMAXPROCS=12 | 439k | **487k** | 11.1 | ~40k |
+| PowerDNS Recursor, 16 threads | 441k | 474k | 9.2 | ~48k |
+| sdns, runtime default (32) | 418k | 446k | 13.8 | ~30k |
+| Knot Resolver, 16 instances | 253k | 253k | 11.6 | ~22k |
+
+Three findings worth stating plainly. First, at an equal core budget sdns
+leads while running its full middleware chain against PowerDNS's packet
+echo. Second, per-core efficiency is a property of each configuration, not
+an intrinsic constant — PowerDNS's echo does the least work per query of
+the four and earns the best per-core number for it. Third, sdns's own
+scaling curve bends: ~50k qps/core at 8 procs falling to ~30k at the
+runtime default of 32 on this dual-socket host, which makes the default
+*worse* than a bounded `GOMAXPROCS` (418k vs 462k median). On multi-socket
+machines, capping `GOMAXPROCS` near the physical core count of one socket
+region is measurably better; flattening that curve (shared-counter and
+NUMA effects) is tracked as future engine work.
 
 ### Run-to-run spread
 
