@@ -45,7 +45,7 @@ $ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:latest
 Pin to a specific version (recommended for production):
 
 ```shell
-$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.0-rc2
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.0
 ```
 
 #### Docker Compose
@@ -572,39 +572,10 @@ This is useful when:
 
 ## Performance
 
-### Benchmark Environment
-
-*   **Server Specifications:**
-    *   Processor: Apple M1 Pro
-    *   Memory: 16GB
-
-### Benchmarking Tool
-
-*   **Tool:** [DNS-OARC dnsperf](https://www.dns-oarc.net/tools/dnsperf)
-*   **Configuration:**
-    *   Query volume: 50,000 sample queries
-    *   Test date: June 2025
-
-### Benchmark Comparisons
-
-Tests were performed on the following DNS resolvers: SDNS 1.6.5, PowerDNS Recursor 5.4.1, BIND 9.19.12, and Unbound 1.17.1.
-
-### Benchmark Results
-
-| Resolver | Version | QPS    | Avg Latency | Lost Queries | Runtime  | Response Codes                                      |
-| -------- | ------- | ------ | ----------- | ------------ | -------- | --------------------------------------------------- |
-| SDNS     | 1.6.5   | 708/s  | 134ms       | 1 (0.00%)    | 70.5s    | NOERROR: 66.87%, SERVFAIL: 1.71%, NXDOMAIN: 31.43% |
-| PowerDNS | 5.4.1   | 617/s  | 147ms       | 17 (0.03%)   | 80.9s    | NOERROR: 66.87%, SERVFAIL: 1.69%, NXDOMAIN: 31.44% |
-| BIND     | 9.19.12 | 405/s  | 200ms       | 156 (0.31%)  | 123.0s   | NOERROR: 67.84%, SERVFAIL: 1.62%, NXDOMAIN: 30.54% |
-| Unbound  | 1.17.1  | 338/s  | 237ms       | 263 (0.53%)  | 147.0s   | NOERROR: 68.20%, SERVFAIL: 1.20%, NXDOMAIN: 30.60% |
-
-### Performance Summary
-
-SDNS demonstrates superior performance across all key metrics:
-- **Highest throughput**: 708 queries per second (15% faster than PowerDNS, 75% faster than BIND, 109% faster than Unbound)
-- **Lowest latency**: 134ms average (9-43% lower than competitors)
-- **Best reliability**: Only 1 lost query out of 50,000 (99.998% success rate)
-- **Fastest completion**: 70.5 seconds total runtime
+Throughput measurements, methodology, resolver comparisons and their caveats
+live in [BENCHMARKS.md](BENCHMARKS.md) — measured with dnsperf against
+PowerDNS Recursor, Unbound and Knot Resolver under identical load, most
+recently for the 1.8.0 serving-path work.
 
 For Kubernetes DNS, the registry is the hot path:
 
