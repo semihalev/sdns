@@ -86,6 +86,31 @@ answers (NXDOMAIN from cached denial) 409k, cached SERVFAIL 399k.
 | Unbound 1.24.2 | 136k | 149k |
 | PowerDNS Recursor 5.4.1 | 56k | 57k |
 
+### Efficiency: server-process CPU per query
+
+During separate UDP runs of the same shape, each server process's own CPU time
+was read from `/proc` (utime+stime deltas across the 20-second run) — so the
+load generator's cost, which every loopback number otherwise includes, is
+excluded here by construction:
+
+| resolver | qps | busy cores | qps per busy core |
+|---|---|---|---|
+| sdns 1.8.0 | 429–446k | ~14.1 | ~31k |
+| PowerDNS Recursor 5.4.1 | 371–380k | ~6.6 | ~56k |
+| Unbound 1.24.2 | 331–338k | ~6.0 | ~55k |
+| Knot Resolver 6.2.0 (8 workers) | 177–189k | ~6.7 | ~27k |
+
+Read the per-core column carefully: it is a property of each resolver *at its
+benchmark configuration*, not an intrinsic constant. PowerDNS and Unbound are
+capped at 8 threads by their own configurations and measured near their sweet
+spot; sdns runs uncapped and spends ~14 of the host's 32 cores to take the
+throughput lead, with the rest feeding the load generator. PowerDNS's packet
+cache also does the least work per query of the four — per-core efficiency
+rewards exactly that. One datum on how workers trade against efficiency:
+doubling Knot to 16 instances lifted its throughput to ~242k while its
+per-core efficiency fell by roughly a quarter. Scaling buys throughput at
+declining efficiency for every design here, sdns included.
+
 ### Run-to-run spread
 
 20-second runs on a busy OS have real variance; the full series behind the
