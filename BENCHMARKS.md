@@ -94,16 +94,21 @@ loopback number otherwise includes, is excluded here by construction. All
 rows below come from the same harness cycle (`contrib/bench/resolver_bench.py`:
 readiness gate, verified warm, throwaway run, 3×20 s).
 
-**Equal budget (~8 cores).** sdns pinned to the same core budget the C
-daemons configure (`GOMAXPROCS=8` vs `threads=8`):
+**The 8-way concurrency class.** sdns run with `GOMAXPROCS=8` to match the
+8-worker configurations of the C daemons. This bounds how many threads Go
+executes simultaneously — it is a concurrency limit, not CPU pinning; no
+process here is bound to specific cores:
 
 | resolver | median qps | busy cores | qps per busy core |
 |---|---|---|---|
 | **sdns 1.8.0 @ GOMAXPROCS=8** | **394k** | 7.9 | ~50k |
 | PowerDNS Recursor 5.4.1, 8 threads | 371k | 6.6 | ~56k |
-| Unbound 1.24.2, 16 threads | 362k | 8.0 | ~45k |
 | Unbound 1.24.2, 8 threads | 343k | 6.0 | ~55k |
 | Knot Resolver 6.2.0, 8 workers | 191k | 6.7 | ~27k |
+
+(Unbound configured with 16 threads still consumed only ~8 busy cores and
+reached 362k / ~45k per core — its observed CPU envelope stays in this
+class even when its configuration leaves it.)
 
 **Scaled up.** Each resolver allowed more workers:
 
@@ -115,17 +120,22 @@ daemons configure (`GOMAXPROCS=8` vs `threads=8`):
 | sdns, runtime default (32) | 418k | 446k | 13.8 | ~30k |
 | Knot Resolver, 16 instances | 253k | 253k | 11.6 | ~22k |
 
-Three findings worth stating plainly. First, at an equal core budget sdns
-leads while running its full middleware chain against PowerDNS's packet
-echo. Second, per-core efficiency is a property of each configuration, not
-an intrinsic constant — PowerDNS's echo does the least work per query of
-the four and earns the best per-core number for it. Third, sdns's own
-scaling curve bends: ~50k qps/core at 8 procs falling to ~30k at the
-runtime default of 32 on this dual-socket host, which makes the default
-*worse* than a bounded `GOMAXPROCS` (418k vs 462k median). On multi-socket
-machines, capping `GOMAXPROCS` near the physical core count of one socket
-region is measurably better; flattening that curve (shared-counter and
-NUMA effects) is tracked as future engine work.
+Three findings worth stating plainly. First, in the same concurrency
+class sdns leads while running its full middleware chain against
+PowerDNS's packet echo. Second, per-core efficiency is a property of each
+configuration, not an intrinsic constant — PowerDNS's echo does the least
+work per query of the four and earns the best per-core number for it.
+Third, sdns's own scaling curve bends: ~50k qps/core at 8 procs falling
+to ~30k at the runtime default of 32, and doubling the concurrency from
+8 to 16 buys only ~17% more throughput. What the measurements establish
+is precisely this: on this dual-socket, 32-logical-CPU host, bounding
+Go's parallelism below the runtime default materially improves throughput
+(418k median at the default vs 462k at `GOMAXPROCS=16`). The shape is
+consistent with scheduler, shared-state and cache-coherence costs; an
+affinity-controlled check (the process bound to one NUMA node with
+`numactl`) measured no improvement over the unbound runs, so memory
+placement alone does not explain the bend. Flattening the curve is
+tracked as future engine work.
 
 ### Run-to-run spread
 
