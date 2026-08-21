@@ -1775,11 +1775,21 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	// server outranks every server that has answered.
 	start := time.Now()
 	var rtt = r.netTimeout
+	// observed is set where an attempt is recorded before this frame
+	// returns. A retry recurses into exchange, and the inner frame's
+	// record runs first — so a frame that hands its work to a retry must
+	// write its own outcome before doing so, or the failure it is
+	// reporting lands after the success that followed it and leaves a
+	// recovered server marked failing.
+	observed := false
 	defer func() {
+		if observed {
+			return
+		}
 		switch {
 		case contextutil.EffectiveError(ctx) != nil:
 			// Cancellation is not the authority's fault; the silence up
-			// to this point is still a lower bound on its latency.
+			// to this point is still a floor under its latency.
 			server.ObserveAtLeast(time.Since(start))
 		case err != nil:
 			server.ObserveFailure(rtt)
@@ -1884,7 +1894,10 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			if retried == 1 && proto == "udp" {
 				proto = "tcp"
 			}
-			// retry
+			// This attempt failed and the retry is about to run; record
+			// it now so the retry's outcome is the last word.
+			server.ObserveFailure(rtt)
+			observed = true
 			retried++
 			return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 		}

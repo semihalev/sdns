@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,16 +56,17 @@ func TestExchangeCancellationInterruptsInFlightUDPRead(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("resolver UDP read ignored context cancellation")
 	}
-	// A cancellation is not the authority's fault, but it is not nothing
-	// either: the server was still silent when the caller gave up, and
-	// that lower bound is what the ranking records. Discarding it was how
-	// a server that never wins a race stayed unmeasured — and unmeasured
-	// used to rank ahead of every server that had answered.
-	if got := atomic.LoadInt64(&server.Count); got != 1 {
-		t.Fatalf("canceled exchange recorded %d samples, want the lower bound", got)
-	}
+	// What a cancellation may leave behind: nothing that flatters the
+	// server. It is not a failure — the authority did nothing wrong — and
+	// the floor under its latency is whatever had elapsed, which here is
+	// milliseconds and says less than the ranking already assumes about a
+	// server nobody has measured. What must never happen is the reverse:
+	// a quick cancellation reading as a quick server.
 	if got := server.Fails(); got != 0 {
 		t.Fatalf("canceled exchange counted %d failures against the server", got)
+	}
+	if got := server.Score(); got < 300*time.Millisecond {
+		t.Fatalf("canceled exchange made an unmeasured server look fast: %v", got)
 	}
 }
 
@@ -119,15 +119,16 @@ func TestExchangeCancellationInterruptsThroughGroup(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("group-armed resolver UDP read ignored context cancellation")
 	}
-	// A cancellation is not the authority's fault, but it is not nothing
-	// either: the server was still silent when the caller gave up, and
-	// that lower bound is what the ranking records. Discarding it was how
-	// a server that never wins a race stayed unmeasured — and unmeasured
-	// used to rank ahead of every server that had answered.
-	if got := atomic.LoadInt64(&server.Count); got != 1 {
-		t.Fatalf("canceled exchange recorded %d samples, want the lower bound", got)
-	}
+	// What a cancellation may leave behind: nothing that flatters the
+	// server. It is not a failure — the authority did nothing wrong — and
+	// the floor under its latency is whatever had elapsed, which here is
+	// milliseconds and says less than the ranking already assumes about a
+	// server nobody has measured. What must never happen is the reverse:
+	// a quick cancellation reading as a quick server.
 	if got := server.Fails(); got != 0 {
 		t.Fatalf("canceled exchange counted %d failures against the server", got)
+	}
+	if got := server.Score(); got < 300*time.Millisecond {
+		t.Fatalf("canceled exchange made an unmeasured server look fast: %v", got)
 	}
 }

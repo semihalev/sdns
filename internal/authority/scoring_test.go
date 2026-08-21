@@ -112,13 +112,17 @@ func TestLowerBoundObservationRanksTheLoser(t *testing.T) {
 	list := []*Server{loser, winner}
 	for range 3 {
 		// The resolver cancels the loser after the winner answers; all it
-		// knows is that the loser was still silent at that point.
-		loser.ObserveAtLeast(120 * time.Millisecond)
-		Sort(list)
+		// knows is that the loser was still silent at that point. A floor
+		// past the seed is a floor that says something.
+		loser.ObserveAtLeast(400 * time.Millisecond)
+		withRandValue(0, func() { Sort(list) })
 	}
 
 	if list[0] != winner {
 		t.Fatalf("the perpetual loser still leads: %v", addrsOf(list))
+	}
+	if got := loser.Score(); got <= time.Duration(rttUnknownSeed) {
+		t.Fatalf("the floor taught the ranking nothing: %v", got)
 	}
 	// A lower bound must not improve a server's standing either.
 	before := winner.Rtt
@@ -310,6 +314,47 @@ func withRandValue(v int, f func()) {
 	}
 	defer func() { randN = old }()
 	f()
+}
+
+// A cancellation arrives when the peer that won was fast, so the floor it
+// leaves behind is usually a small number. Reading that as a measurement
+// let a server which has answered nothing look quicker than the servers
+// that have — the exact inversion this ranking exists to prevent.
+func TestLowerBoundCannotMakeAGuessLookFast(t *testing.T) {
+	fast := measured("192.0.2.1:53", 12*time.Millisecond, 4)
+	unknown := unmeasured("192.0.2.9:53")
+	list := []*Server{unknown, fast}
+
+	// The peer answered in 10ms; the unknown was cancelled at that point
+	// having said nothing at all.
+	unknown.ObserveAtLeast(10 * time.Millisecond)
+
+	if got := unknown.Score(); got < time.Duration(rttUnknownSeed) {
+		t.Fatalf("a cancelled attempt improved an unmeasured server to %v", got)
+	}
+	withRandValue(0, func() { Sort(list) })
+	if list[0] != fast {
+		t.Fatalf("the guess took the lead: %v", addrsOf(list))
+	}
+}
+
+// The seed prices a guess at 300ms, which is the right expectation to rank
+// on — but the query itself should not be an experiment while a server
+// that has actually answered is available, however slowly. The guess
+// belongs in the hedge slot, which is where it gets probed.
+func TestUnmeasuredIsHedgedNeverLed(t *testing.T) {
+	slow := measured("192.0.2.1:53", 400*time.Millisecond, 4) // worse than the seed
+	unknown := unmeasured("192.0.2.9:53")
+	list := []*Server{unknown, slow}
+
+	withRandValue(0, func() { Sort(list) })
+
+	if list[0] != slow {
+		t.Fatalf("an unmeasured server took the query: %v", addrsOf(list))
+	}
+	if list[1] != unknown {
+		t.Fatalf("the guess was not hedged: %v", addrsOf(list))
+	}
 }
 
 // The record path runs once per upstream attempt, so it is priced too.

@@ -109,15 +109,25 @@ func (s *Server) ObserveFailure(d time.Duration) {
 
 // ObserveAtLeast records what a cancelled attempt proves. When a peer
 // answers first the resolver cancels the rest, and the cancelled server's
-// elapsed time is not its latency — but its silence up to that point is a
-// lower bound, and discarding it entirely is what let a server that never
-// wins a race stay unmeasured, and therefore ranked first, forever.
+// elapsed time is not its latency — it is a floor under it: the server had
+// not answered by then.
 //
-// It only ever moves a server down: a cancellation is not evidence that an
-// authority is fast, and it is never counted as a failure.
+// A floor may only ever move a server down. That is the whole contract,
+// and it has a sharp edge: the cancellation usually arrives fast, because
+// the peer that won was fast, so treating that short interval as a
+// measurement would let a server which has never answered anything look
+// quicker than the servers that have. A floor below what is already
+// assumed teaches nothing, so it is dropped.
 func (s *Server) ObserveAtLeast(d time.Duration) {
 	sample := int64(d)
-	if atomic.LoadInt64(&s.Count) > 0 && sample <= atomic.LoadInt64(&s.Rtt) {
+	if atomic.LoadInt64(&s.Count) == 0 {
+		// Nothing is known, so the standing assumption is the seed. Only
+		// a floor above it says anything, and what it says is "worse than
+		// a guess" — never "as good as one".
+		if sample <= rttUnknownSeed {
+			return
+		}
+	} else if sample <= atomic.LoadInt64(&s.Rtt) {
 		return
 	}
 	s.blend(sample)
@@ -230,6 +240,20 @@ func hedge(list []*Server, scores []int64) {
 	n := len(list)
 	if n < 2 {
 		return
+	}
+	// The seed prices a guess at 300ms, which is the right expectation to
+	// rank on — but it also means a guess outranks an authority measured
+	// slower than that, and the query itself should not be an experiment.
+	// A measured server leads; the guess moves to the hedge slot, which is
+	// where unknowns are meant to be probed.
+	if atomic.LoadInt64(&list[0].Count) == 0 {
+		for i := 1; i < n; i++ {
+			if atomic.LoadInt64(&list[i].Count) > 0 {
+				list[0], list[i] = list[i], list[0]
+				scores[0], scores[i] = scores[i], scores[0]
+				break
+			}
+		}
 	}
 	if randN(exploreOdds) == 0 {
 		for i := 1; i < n; i++ {
