@@ -122,9 +122,9 @@ func TestLowerBoundObservationRanksTheLoser(t *testing.T) {
 		t.Fatalf("the floor taught the ranking nothing: %v", got)
 	}
 	// A lower bound must not improve a server's standing either.
-	before := winner.Rtt
+	before := winner.SmoothedRTT()
 	winner.ObserveAtLeast(time.Microsecond)
-	if winner.Rtt < before {
+	if winner.SmoothedRTT() < before {
 		t.Fatal("a lower-bound observation improved a measured server's score")
 	}
 }
@@ -366,8 +366,8 @@ func TestFloorIsNotAnAnswer(t *testing.T) {
 	silent := unmeasured("192.0.2.9:53")
 	silent.ObserveAtLeast(400 * time.Millisecond)
 
-	if silent.Count != 0 {
-		t.Fatalf("a floor counted as an answer: Count = %d", silent.Count)
+	if _, evidence := silent.estimate(); evidence {
+		t.Fatal("a floor counted as an answer")
 	}
 	if got := silent.Score(); got <= 400*time.Millisecond {
 		t.Fatalf("the floor did not reach the score: %v", got)
@@ -417,12 +417,12 @@ func TestConcurrentFloorsKeepTheStrongest(t *testing.T) {
 		start.Done()
 		done.Wait()
 
-		if got := atomic.LoadInt64(&s.Rtt); got != want {
+		if got, _ := s.estimate(); got != want {
 			t.Fatalf("concurrent floors settled at %v, want the strongest at %v",
 				time.Duration(got), time.Duration(want))
 		}
-		if s.Count != 0 {
-			t.Fatalf("a floor counted as an answer under contention: Count = %d", s.Count)
+		if _, evidence := s.estimate(); evidence {
+			t.Fatal("a floor counted as an answer under contention")
 		}
 	}
 }
@@ -518,12 +518,51 @@ func TestConcurrentSamplesAreNotLost(t *testing.T) {
 		gate.Done()
 		done.Wait()
 
-		if got := atomic.LoadInt64(&s.Rtt); got > worst {
+		if got, _ := s.estimate(); got > worst {
 			t.Fatalf("estimate settled at %v after %d identical samples, want %v or better — samples were dropped",
 				time.Duration(got), writers, time.Duration(worst))
 		}
-		if got := atomic.LoadInt64(&s.Count); got != writers+1 {
+		if got := s.Samples(); got != writers+1 {
 			t.Fatalf("counted %d samples, want %d", got, writers+1)
+		}
+	}
+}
+
+// The window a fresh server opens is the narrowest one here and the one
+// that mattered: two lookups sampling a delegation nobody has used yet.
+// While the estimate and "something has answered" were separate words, a
+// sample could land, and the next could read the server as untouched
+// before the first had said otherwise — replacing a measurement instead
+// of folding into it. Two samples must always average, whichever order
+// they arrive in, which makes the expected value exact.
+func TestFirstSamplesOnAFreshServerAreNotLost(t *testing.T) {
+	const rounds = 200
+	const first, second = 100 * time.Millisecond, 300 * time.Millisecond
+	want := int64(first+second) / 2
+
+	for range rounds {
+		s := unmeasured("192.0.2.1:53")
+
+		var gate, done sync.WaitGroup
+		gate.Add(1)
+		for _, sample := range []time.Duration{first, second} {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				gate.Wait()
+				s.Observe(sample)
+			}()
+		}
+		gate.Done()
+		done.Wait()
+
+		got, evidence := s.estimate()
+		if !evidence {
+			t.Fatal("two answers left the server unmeasured")
+		}
+		if got != want {
+			t.Fatalf("estimate settled at %v, want the average at %v — one of the two replaced the other",
+				time.Duration(got), time.Duration(want))
 		}
 	}
 }

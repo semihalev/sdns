@@ -22,8 +22,8 @@ import (
 // claim survives a change of ABI — and so the next field to arrive has to
 // be added here, deliberately, next to the ones that earned their space.
 type serverReference struct {
-	Rtt       int64
-	Count     int64
+	State     int64
+	Samples   int64
 	LastNs    int64
 	Addr      string
 	Fails     int32
@@ -169,17 +169,15 @@ func Test_ServerString(t *testing.T) {
 		t.Errorf("%q does not contain %q", str, "UNKNOWN")
 	}
 
-	// Test GOOD health (0 < Rtt < 1 second)
-	s.Rtt = int64(100 * time.Millisecond)
-	s.Count = 1
+	// Test GOOD health (a measured, sub-second latency)
+	s.Observe(100 * time.Millisecond)
 	str = s.String()
 	if !strings.Contains(str, "GOOD") {
 		t.Errorf("%q does not contain %q", str, "GOOD")
 	}
 
-	// Test POOR health (Rtt >= 1 second)
-	s.Rtt = int64(2 * time.Second)
-	s.Count = 1
+	// Test POOR health (a measured latency past a second)
+	s.Observe(4 * time.Second) // blends with the 100ms above, past 1s
 	str = s.String()
 	if !strings.Contains(str, "POOR") {
 		t.Errorf("%q does not contain %q", str, "POOR")

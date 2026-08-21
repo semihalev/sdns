@@ -1681,23 +1681,25 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 // before racing the next candidate. With no RTT samples the result is a
 // conservative 100ms; otherwise it is 2× the observed RTT clamped to
 // [25ms, 300ms] so a single slow outlier can't stall the whole fan-out.
-// upstreamUnusable reports the rcodes that mean the authority did not
-// answer the question, however quickly it said so: it failed, it refused
-// us, it is not the authority we were sent to, or it does not implement
-// what was asked. NXDOMAIN and an empty NOERROR are answers — negative
-// ones, but the server did its job, and a resolver that scored them as
-// failures would learn to avoid the zones that mostly say no.
+// answeredTheQuestion reports the two rcodes that mean the authority did
+// the job it was asked to do: the name exists and here it is, or the name
+// does not exist. Everything else — it failed, it refused us, it is not
+// the authority we were sent to, it cannot parse what we sent, it answered
+// about a zone we did not ask about — is a server that did not answer,
+// however quickly it said so.
 //
-// FORMERR is deliberately absent: against an EDNS query it means the
-// server cannot parse EDNS, which the exchange handles by asking again
-// without it, and a server that works perfectly well that way should not
-// be marked for the shape of our first attempt.
-func upstreamUnusable(rcode int) bool {
-	switch rcode {
-	case dns.RcodeServerFailure, dns.RcodeRefused, dns.RcodeNotAuth, dns.RcodeNotImplemented:
-		return true
-	}
-	return false
+// A list of what counts rather than a list of what does not, because the
+// failure mode is asymmetric: a rcode nobody thought about lands in the
+// default, and the safe default is "this did not answer my question", not
+// "this server is healthy".
+//
+// The EDNS FORMERR case never reaches here. It means the server cannot
+// parse EDNS, which the exchange handles by asking again without it, and
+// that attempt records itself before handing over — a server that works
+// perfectly well without EDNS is not marked for the shape of our first
+// attempt.
+func answeredTheQuestion(rcode int) bool {
+	return rcode == dns.RcodeSuccess || rcode == dns.RcodeNameError
 }
 
 func adaptiveServerTimeout(server *authority.Server) time.Duration {
@@ -1812,8 +1814,8 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			server.ObserveAtLeast(time.Since(start))
 		case err != nil:
 			server.ObserveFailure(rtt)
-		case resp != nil && upstreamUnusable(resp.Rcode):
-			// An answer arrived, and it says the server did not do the
+		case resp != nil && !answeredTheQuestion(resp.Rcode):
+			// Something arrived, and it says the server did not do the
 			// job. Counting it as health would rank a refusal above every
 			// authority that actually resolves — a refusal is the fastest
 			// answer there is, and the ranking would learn to prefer it.

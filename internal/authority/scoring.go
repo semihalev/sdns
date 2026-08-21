@@ -93,10 +93,31 @@ const (
 // can pin an order rather than chase one.
 var randN = rand.IntN
 
+// estimate unpacks the latency and whether anything has come back from
+// this server at all. Every decision in this file is taken on one read of
+// the packed word, and every update writes one back, so no decision can
+// be made against a half-updated server.
+func (s *Server) estimate() (rtt int64, evidence bool) {
+	w := atomic.LoadInt64(&s.state)
+	return w >> 1, w&1 == 1
+}
+
+func packState(rtt int64, evidence bool) int64 {
+	w := rtt << 1
+	if evidence {
+		w |= 1
+	}
+	return w
+}
+
+// Samples is how many exchanges with this server have completed —
+// answers and failures alike. Nothing is decided on it.
+func (s *Server) Samples() int64 { return atomic.LoadInt64(&s.samples) }
+
 // Observe records a completed exchange: the server answered, and this is
 // how long it took.
 func (s *Server) Observe(d time.Duration) {
-	s.blend(int64(d))
+	s.record(int64(d))
 	atomic.StoreInt32(&s.fails, 0)
 }
 
@@ -105,7 +126,7 @@ func (s *Server) Observe(d time.Duration) {
 // blends into the latency (a timeout is genuinely slow), and the failure
 // counter carries what the latency cannot: that there was no answer.
 func (s *Server) ObserveFailure(d time.Duration) {
-	s.blend(int64(d))
+	s.record(int64(d))
 	atomic.AddInt32(&s.fails, 1)
 }
 
@@ -122,28 +143,15 @@ func (s *Server) ObserveFailure(d time.Duration) {
 // assumed teaches nothing, so it is dropped.
 func (s *Server) ObserveAtLeast(d time.Duration) {
 	sample := int64(d)
-	// Raising only is a contract, not an approximation, so it is written
-	// as one. A read followed by a write is neither: two lookups cancel
-	// attempts on the same server at the same moment, both read the same
-	// estimate, and the weaker floor lands last — leaving the server
-	// looking better than the stronger floor had already proven it to be.
-	// The compare-and-swap makes the decision and the write the same
-	// event, and re-reads whatever the loser of the race left behind.
-	//
-	// Count is never touched here. It is what the ranking reads to mean
-	// "this server has answered something", and a cancelled attempt is
-	// exactly the case where nothing was answered: a 400ms floor on a
-	// silent server is not a 400ms server, it is a guess that is at best
-	// 400ms — hedgeable, never worth leading with.
 	for {
-		answered := atomic.LoadInt64(&s.Count) > 0
-		current := atomic.LoadInt64(&s.Rtt)
+		w := atomic.LoadInt64(&s.state)
+		current, evidence := w>>1, w&1 == 1
 
-		next := sample
+		var next int64
 		switch {
-		case answered:
-			// Something has answered, so there is an estimate to blend
-			// against rather than replace.
+		case evidence:
+			// Something has answered, so there is an estimate to raise
+			// rather than replace.
 			if sample <= current {
 				return
 			}
@@ -154,43 +162,47 @@ func (s *Server) ObserveAtLeast(d time.Duration) {
 			if sample <= rttUnknownSeed || sample <= current {
 				return
 			}
+			next = sample
 		}
 
-		if atomic.CompareAndSwapInt64(&s.Rtt, current, next) {
+		// The evidence bit is carried through unchanged — a floor is not
+		// an answer, and writing the word as a whole is what keeps it
+		// from becoming one under a concurrent update.
+		if atomic.CompareAndSwapInt64(&s.state, w, packState(next, evidence)) {
 			atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
 			return
 		}
-		// Someone moved the estimate underneath us — including, possibly,
-		// a real answer that just landed. Decide again against what they
-		// left rather than against what we read.
 	}
 }
 
-// blend folds a sample into the smoothed latency. The first sample
-// replaces the seedless zero outright; later ones are averaged with what
-// is already known, which halves the weight of every older sample.
+// record folds a completed exchange into the estimate. The first one
+// replaces whatever assumption was standing — a seedless zero, or a floor
+// left by a cancelled attempt, neither of which is a measurement — and
+// every one after is averaged with what is known, which halves the weight
+// of each older sample.
 //
-// Read, halve, write is three steps and one server is sampled by many
-// lookups at once — a root address is in flight from several of them most
-// of the time. Left as separate steps, two samples landing together keep
-// only the one that stored last: the other is counted and then discarded,
-// and it can just as easily discard a floor that was written with a
-// compare-and-swap precisely so it would not be discarded. The loop makes
-// each sample's arithmetic and its write one event, so every sample that
-// is counted is a sample that moved the estimate.
-func (s *Server) blend(sample int64) {
+// The loop exists because a server is sampled by many lookups at once: a
+// root address is in flight from several of them most of the time. Read,
+// decide, write as separate steps kept only whichever store landed last,
+// and inside the same window a second sample could read the server as
+// never-measured and replace a measurement instead of folding into it.
+// The compare-and-swap carries the estimate and its evidence bit
+// together, so a sample that is counted is a sample that moved the
+// estimate.
+func (s *Server) record(sample int64) {
 	for {
-		current := atomic.LoadInt64(&s.Rtt)
+		w := atomic.LoadInt64(&s.state)
+		current, evidence := w>>1, w&1 == 1
 		next := sample
-		if atomic.LoadInt64(&s.Count) > 0 {
+		if evidence {
 			next = (current + sample) / 2
 		}
-		if atomic.CompareAndSwapInt64(&s.Rtt, current, next) {
+		if atomic.CompareAndSwapInt64(&s.state, w, packState(next, true)) {
 			break
 		}
 		// Another sample or a floor landed first; fold into what it left.
 	}
-	atomic.AddInt64(&s.Count, 1)
+	atomic.AddInt64(&s.samples, 1)
 	atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
 }
 
@@ -204,10 +216,11 @@ func (s *Server) Fails() int32 { return atomic.LoadInt32(&s.fails) }
 // ranking score: a timeout should follow how fast the server is, not how
 // far the ranking has pushed it down.
 func (s *Server) SmoothedRTT() time.Duration {
-	if atomic.LoadInt64(&s.Count) == 0 {
+	rtt, evidence := s.estimate()
+	if !evidence {
 		return 0
 	}
-	return time.Duration(atomic.LoadInt64(&s.Rtt))
+	return time.Duration(rtt)
 }
 
 // Score is what the ranking sorts on, at this instant.
@@ -218,8 +231,8 @@ func (s *Server) Score() time.Duration {
 // score is Score against a clock the caller already read — the ranking
 // reads it once for a whole list rather than once per server.
 func (s *Server) score(nowNs int64) int64 {
-	base := atomic.LoadInt64(&s.Rtt)
-	if atomic.LoadInt64(&s.Count) == 0 {
+	base, evidence := s.estimate()
+	if !evidence {
 		// Nothing answered: the seed is what a guess is worth, unless a
 		// floor from a cancelled attempt has already proven it is worse
 		// than that. The extra nanosecond is the tie-break — a server
@@ -291,7 +304,8 @@ func rank(list []*Server, scores []int64, now int64) {
 // must not be promoted over a server nobody has tried — the failure is
 // what we know about it, and it is worse than not knowing.
 func leadable(s *Server) bool {
-	return atomic.LoadInt64(&s.Count) > 0 && atomic.LoadInt32(&s.fails) == 0
+	_, evidence := s.estimate()
+	return evidence && atomic.LoadInt32(&s.fails) == 0
 }
 
 // hedge chooses what the second parallel query is spent on. The leader is
@@ -324,14 +338,14 @@ func hedge(list []*Server, scores []int64) {
 		// forever and leave the rest of a delegation permanently unknown.
 		candidates := 0
 		for i := 1; i < n; i++ {
-			if atomic.LoadInt64(&list[i].Count) == 0 {
+			if _, evidence := list[i].estimate(); !evidence {
 				candidates++
 			}
 		}
 		if candidates > 0 {
 			pick := randN(candidates)
 			for i := 1; i < n; i++ {
-				if atomic.LoadInt64(&list[i].Count) != 0 {
+				if _, evidence := list[i].estimate(); evidence {
 					continue
 				}
 				if pick == 0 {

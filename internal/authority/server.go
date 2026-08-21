@@ -14,8 +14,20 @@ import (
 // Server type.
 type Server struct {
 	// place atomic members at the start to fix alignment for ARM32
-	Rtt   int64
-	Count int64
+	//
+	// state is the smoothed latency and the fact that an exchange has
+	// completed, packed into one word: [estimate ns : 63][evidence : 1].
+	// They are packed because they have to change together. Held apart,
+	// every update was two decisions — read one, decide on the other,
+	// write back — and a second sample landing inside that window read a
+	// server as fresh when it was not, and replaced a measurement instead
+	// of folding into it. One word means one compare-and-swap, and the
+	// window has nowhere to open.
+	state int64
+	// samples counts completed exchanges. Nothing decides on it; it is
+	// what an operator reads to tell a server that has answered a hundred
+	// times from one that answered once.
+	samples int64
 	// lastNs is when Rtt was last refreshed, in Unix nanoseconds. It is
 	// the one word this struct grew for the scoring model, and it buys
 	// what a periodic wipe of every server's statistics used to fake:
@@ -129,7 +141,7 @@ func (v IPVersion) String() string {
 }
 
 func (a *Server) String() string {
-	measured := atomic.LoadInt64(&a.Count) > 0
+	rn, measured := a.estimate()
 	fails := atomic.LoadInt32(&a.fails)
 
 	var health string
@@ -138,7 +150,7 @@ func (a *Server) String() string {
 		health = "UNKNOWN"
 	case fails > 0:
 		health = "FAILING"
-	case atomic.LoadInt64(&a.Rtt) >= int64(time.Second):
+	case rn >= int64(time.Second):
 		health = "POOR"
 	default:
 		health = "GOOD"
@@ -146,11 +158,12 @@ func (a *Server) String() string {
 
 	rtt := "unknown"
 	if measured {
-		rtt = time.Duration(atomic.LoadInt64(&a.Rtt)).Round(time.Millisecond).String()
+		rtt = time.Duration(rn).Round(time.Millisecond).String()
 	}
 
 	out := a.IPVersion.String() + ":" + a.Addr + " rtt:" + rtt +
-		" rank:" + a.Score().Round(time.Millisecond).String()
+		" rank:" + a.Score().Round(time.Millisecond).String() +
+		" seen:" + strconv.FormatInt(a.Samples(), 10)
 	if fails > 0 {
 		out += " fails:" + strconv.Itoa(int(fails))
 	}

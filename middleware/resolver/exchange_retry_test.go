@@ -69,7 +69,7 @@ func TestSuccessfulRetryLeavesNoFailureMark(t *testing.T) {
 	}
 	// Both attempts are still on the record — the failure happened, and
 	// the latency it cost is part of what this server is worth.
-	if got := server.Count; got != 2 {
+	if got := server.Samples(); got != 2 {
 		t.Fatalf("attempts recorded = %d, want the failure and the success", got)
 	}
 }
@@ -194,6 +194,9 @@ func TestRcodeDecidesWhetherAnAnswerCounts(t *testing.T) {
 		{"refused", dns.RcodeRefused, true},
 		{"servfail", dns.RcodeServerFailure, true},
 		{"not authoritative", dns.RcodeNotAuth, true},
+		{"not implemented", dns.RcodeNotImplemented, true},
+		{"format error", dns.RcodeFormatError, true},
+		{"not zone", dns.RcodeNotZone, true},
 		{"nxdomain", dns.RcodeNameError, false},
 		{"noerror", dns.RcodeSuccess, false},
 	} {
