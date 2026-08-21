@@ -486,6 +486,48 @@ func withRand2(src func(int) int, f func()) {
 	f()
 }
 
+// A sample that is counted has to be a sample that moved the estimate.
+// One server is sampled by many lookups at once, and read-halve-write
+// keeps only whichever store landed last: the rest are counted and thrown
+// away, which is how a ranking drifts away from what the network is
+// actually doing under exactly the load that makes ranking matter.
+//
+// Identical samples make the outcome exact rather than probable: each one
+// halves the distance to its own value, so eight of them must land the
+// estimate within a two-hundred-and-fifty-sixth of where it started,
+// however they interleave.
+func TestConcurrentSamplesAreNotLost(t *testing.T) {
+	const rounds, writers = 50, 8
+	const start, sample = time.Second, 100 * time.Millisecond
+
+	worst := int64(sample) + (int64(start)-int64(sample))/256
+	for range rounds {
+		s := measured("192.0.2.1:53", start)
+
+		var gate sync.WaitGroup
+		var done sync.WaitGroup
+		gate.Add(1)
+		for range writers {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				gate.Wait()
+				s.Observe(sample)
+			}()
+		}
+		gate.Done()
+		done.Wait()
+
+		if got := atomic.LoadInt64(&s.Rtt); got > worst {
+			t.Fatalf("estimate settled at %v after %d identical samples, want %v or better — samples were dropped",
+				time.Duration(got), writers, time.Duration(worst))
+		}
+		if got := atomic.LoadInt64(&s.Count); got != writers+1 {
+			t.Fatalf("counted %d samples, want %d", got, writers+1)
+		}
+	}
+}
+
 // The record path runs once per upstream attempt, so it is priced too.
 func BenchmarkObserve(b *testing.B) {
 	s := NewServer("192.0.2.1:53", IPv4)

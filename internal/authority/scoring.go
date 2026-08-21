@@ -169,11 +169,26 @@ func (s *Server) ObserveAtLeast(d time.Duration) {
 // blend folds a sample into the smoothed latency. The first sample
 // replaces the seedless zero outright; later ones are averaged with what
 // is already known, which halves the weight of every older sample.
+//
+// Read, halve, write is three steps and one server is sampled by many
+// lookups at once — a root address is in flight from several of them most
+// of the time. Left as separate steps, two samples landing together keep
+// only the one that stored last: the other is counted and then discarded,
+// and it can just as easily discard a floor that was written with a
+// compare-and-swap precisely so it would not be discarded. The loop makes
+// each sample's arithmetic and its write one event, so every sample that
+// is counted is a sample that moved the estimate.
 func (s *Server) blend(sample int64) {
-	if atomic.LoadInt64(&s.Count) == 0 {
-		atomic.StoreInt64(&s.Rtt, sample)
-	} else {
-		atomic.StoreInt64(&s.Rtt, (atomic.LoadInt64(&s.Rtt)+sample)/2)
+	for {
+		current := atomic.LoadInt64(&s.Rtt)
+		next := sample
+		if atomic.LoadInt64(&s.Count) > 0 {
+			next = (current + sample) / 2
+		}
+		if atomic.CompareAndSwapInt64(&s.Rtt, current, next) {
+			break
+		}
+		// Another sample or a floor landed first; fold into what it left.
 	}
 	atomic.AddInt64(&s.Count, 1)
 	atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
