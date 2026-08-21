@@ -1916,7 +1916,14 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 	ReleaseConn(co)
 
+	// The fallbacks below hand this query to another exchange, and that
+	// one recurses — so it returns, and records, before this frame does.
+	// This attempt answered; writing that down here keeps it in front of
+	// whatever the fallback finds, instead of landing after a failure the
+	// fallback recorded and clearing it.
 	if resp != nil && resp.Truncated && proto == "udp" {
+		server.Observe(rtt)
+		observed = true
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
@@ -1924,12 +1931,16 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 		// If response is too large, switch to TCP
 		zlog.Debug("Response too large, switching to TCP", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 			"size", resp.Len(), "maxSize", dnsutil.DefaultMsgSize, "retried", retried)
+		server.Observe(rtt)
+		observed = true
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
+		server.Observe(rtt)
+		observed = true
 		return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 	}
 

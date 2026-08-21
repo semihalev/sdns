@@ -73,3 +73,77 @@ func TestSuccessfulRetryLeavesNoFailureMark(t *testing.T) {
 		t.Fatalf("attempts recorded = %d, want the failure and the success", got)
 	}
 }
+
+// The fallbacks hand a query to another exchange rather than return, and
+// that one recurses — so the frame that answered returns last. Leaving
+// its outcome to the defer wrote a success after the failure the fallback
+// had just found, which cleared the failure counter and left an authority
+// that had stopped answering over TCP looking freshly healthy.
+func TestFallbackFailureSurvivesTheAnswerBeforeIt(t *testing.T) {
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packet.Close()
+
+	// The same address over TCP: accepted, then silence. The fallback
+	// gets a connection and no answer, which is the failure under test.
+	stream, err := net.Listen("tcp", packet.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			conn, acceptErr := stream.Accept()
+			if acceptErr != nil {
+				return
+			}
+			held = append(held, conn)
+		}
+	}()
+
+	// Over UDP the server answers, truncated — the referral to TCP.
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, addr, readErr := packet.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			req := new(dns.Msg)
+			if req.Unpack(buf[:n]) != nil {
+				continue
+			}
+			reply := new(dns.Msg)
+			reply.SetReply(req)
+			reply.Truncated = true
+			out, packErr := reply.Pack()
+			if packErr != nil {
+				continue
+			}
+			_, _ = packet.WriteTo(out, addr)
+		}
+	}()
+
+	r := &Resolver{
+		cfg:        new(config.Config),
+		netTimeout: 150 * time.Millisecond,
+	}
+	server := authority.NewServer(packet.LocalAddr().String(), authority.IPv4)
+	req := new(dns.Msg)
+	req.SetQuestion("fallback.example.", dns.TypeA)
+
+	if _, err := r.exchange(context.Background(), &resolveState{}, nil, "udp", req, server, 0); err == nil {
+		t.Fatal("the silent TCP fallback returned success")
+	}
+	if got := server.Fails(); got == 0 {
+		t.Fatal("the TCP failure was erased by the truncated answer that preceded it")
+	}
+}
