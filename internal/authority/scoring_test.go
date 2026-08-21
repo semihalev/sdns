@@ -2,6 +2,7 @@ package authority
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -154,12 +155,49 @@ func TestSortDoesNotAllocate(t *testing.T) {
 	}
 }
 
+// A delegation's address set is written by whoever runs the zone, so its
+// size is not ours to choose. The ranking answers that with three paths —
+// the stack, the heap, and a general sort for a set the insertion pass
+// would price quadratically — and every one of them has to produce the
+// same ranking. The sizes here are the first one past each threshold,
+// which is where a boundary is got wrong.
+func TestEveryRankingPathAgrees(t *testing.T) {
+	for _, n := range []int{2, sortStackServers, sortStackServers + 1, sortInsertionMax + 1} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			// Speeds are spread wider than the selection band so the whole
+			// order is decided by the sort: no two servers are
+			// interchangeable, and the hedge has nothing to spread across.
+			want := make([]string, 0, n)
+			list := make([]*Server, 0, n)
+			for i := range n {
+				s := measured(fmt.Sprintf("192.0.2.1:%d", i+1), time.Duration(10+i*40)*time.Millisecond)
+				want = append(want, s.Addr)
+				list = append(list, s)
+			}
+			// Reversed: the worst case for an insertion pass, and an
+			// ordinary one for a set the resolver did not order.
+			for i, j := 0, n-1; i < j; i, j = i+1, j-1 {
+				list[i], list[j] = list[j], list[i]
+			}
+
+			withRandValue(1, func() { Sort(list) })
+
+			if got := addrsOf(list); !slices.Equal(got, want) {
+				t.Fatalf("a %d-address delegation ranked as %v, want %v", n, got, want)
+			}
+		})
+	}
+}
+
 // benchServers builds a deterministic address set with spread-out speeds,
 // shaped like a root or TLD set: a few fast, a few far, one never measured.
+// The port carries the identity rather than the last octet: past 254 an
+// address built that way stops being an address, and NewServer would hand
+// the spelling to the resolver instead of parsing it.
 func benchServers(n int) []*Server {
 	list := make([]*Server, 0, n)
 	for i := range n {
-		s := NewServer(fmt.Sprintf("192.0.2.%d:53", i+1), IPv4)
+		s := NewServer(fmt.Sprintf("192.0.2.1:%d", i+1), IPv4)
 		if i%7 != 0 {
 			s.Observe(time.Duration(10+i*7) * time.Millisecond)
 		}
@@ -168,9 +206,12 @@ func benchServers(n int) []*Server {
 	return list
 }
 
-// The production shape: the list was sorted on the previous lookup and the
-// scores have barely moved, so what is measured is a re-sort of a nearly
-// ordered set — once per cache miss, per delegation step.
+// The production shape is the unordered one: every lookup takes a fresh
+// copy of the delegation, so the ranking always sees the order the
+// delegation is stored in rather than the order it last produced. The
+// ordered variants are the floor — what the pass costs when there is
+// nothing left to move — and the pair of them together is what says
+// whether a size is priced by the scoring or by the sort.
 func benchmarkSort(b *testing.B, n int, shuffle bool) {
 	src := benchServers(n)
 	list := make([]*Server, n)
@@ -186,12 +227,21 @@ func benchmarkSort(b *testing.B, n int, shuffle bool) {
 	}
 }
 
-func BenchmarkSortNearlyOrdered2(b *testing.B)  { benchmarkSort(b, 2, false) }
-func BenchmarkSortNearlyOrdered8(b *testing.B)  { benchmarkSort(b, 8, false) }
-func BenchmarkSortNearlyOrdered13(b *testing.B) { benchmarkSort(b, 13, false) }
-func BenchmarkSortNearlyOrdered26(b *testing.B) { benchmarkSort(b, 26, false) }
-func BenchmarkSortUnordered13(b *testing.B)     { benchmarkSort(b, 13, true) }
-func BenchmarkSortUnordered26(b *testing.B)     { benchmarkSort(b, 26, true) }
+func BenchmarkSortOrdered2(b *testing.B)    { benchmarkSort(b, 2, false) }
+func BenchmarkSortOrdered8(b *testing.B)    { benchmarkSort(b, 8, false) }
+func BenchmarkSortOrdered13(b *testing.B)   { benchmarkSort(b, 13, false) }
+func BenchmarkSortOrdered26(b *testing.B)   { benchmarkSort(b, 26, false) }
+func BenchmarkSortUnordered13(b *testing.B) { benchmarkSort(b, 13, true) }
+func BenchmarkSortUnordered26(b *testing.B) { benchmarkSort(b, 26, true) }
+
+// The sizes a delegation reaches only when someone means it to. 64 and 256
+// are the heap-backed insertion pass, 512 and 1024 the general sort — the
+// point of pricing all four is the step between the second and the third,
+// which is the bound the threshold exists to put on an oversized referral.
+func BenchmarkSortUnordered64(b *testing.B)   { benchmarkSort(b, 64, true) }
+func BenchmarkSortUnordered256(b *testing.B)  { benchmarkSort(b, 256, true) }
+func BenchmarkSortUnordered512(b *testing.B)  { benchmarkSort(b, 512, true) }
+func BenchmarkSortUnordered1024(b *testing.B) { benchmarkSort(b, 1024, true) }
 
 // withRand pins the ranking's randomness so a test can state an order.
 func withRand(t *testing.T, f func(int) int) {
@@ -366,7 +416,7 @@ func TestFloorIsNotAnAnswer(t *testing.T) {
 	silent := unmeasured("192.0.2.9:53")
 	silent.ObserveAtLeast(400 * time.Millisecond)
 
-	if _, evidence := silent.estimate(); evidence {
+	if _, _, evidence := silent.estimate(); evidence {
 		t.Fatal("a floor counted as an answer")
 	}
 	if got := silent.Score(); got <= 400*time.Millisecond {
@@ -417,11 +467,12 @@ func TestConcurrentFloorsKeepTheStrongest(t *testing.T) {
 		start.Done()
 		done.Wait()
 
-		if got, _ := s.estimate(); got != want {
+		got, _, evidence := s.estimate()
+		if got != want {
 			t.Fatalf("concurrent floors settled at %v, want the strongest at %v",
 				time.Duration(got), time.Duration(want))
 		}
-		if _, evidence := s.estimate(); evidence {
+		if evidence {
 			t.Fatal("a floor counted as an answer under contention")
 		}
 	}
@@ -518,7 +569,7 @@ func TestConcurrentSamplesAreNotLost(t *testing.T) {
 		gate.Done()
 		done.Wait()
 
-		if got, _ := s.estimate(); got > worst {
+		if got, _, _ := s.estimate(); got > worst {
 			t.Fatalf("estimate settled at %v after %d identical samples, want %v or better — samples were dropped",
 				time.Duration(got), writers, time.Duration(worst))
 		}
@@ -556,13 +607,54 @@ func TestFirstSamplesOnAFreshServerAreNotLost(t *testing.T) {
 		gate.Done()
 		done.Wait()
 
-		got, evidence := s.estimate()
+		got, _, evidence := s.estimate()
 		if !evidence {
 			t.Fatal("two answers left the server unmeasured")
 		}
 		if got != want {
 			t.Fatalf("estimate settled at %v, want the average at %v — one of the two replaced the other",
 				time.Duration(got), time.Duration(want))
+		}
+	}
+}
+
+// The failure run now shares a word with the estimate, which is what
+// makes an exchange land as one fact — and it also means the run is no
+// longer incremented by an atomic add. It is read, raised and written
+// back, and a counter maintained that way loses every update that lands
+// inside the window unless the write is conditional on what was read.
+//
+// A server that is failing is failing for every lookup at once, so the
+// concurrency here is the ordinary case rather than a contrived one: an
+// authority that stops answering times out on all of them, and a run that
+// counts eight of sixty-four is a penalty that never reaches the size the
+// scoring intends.
+func TestConcurrentFailuresAreAllCounted(t *testing.T) {
+	const rounds, writers = 50, 64
+
+	for range rounds {
+		s := unmeasured("192.0.2.1:53")
+
+		var gate, done sync.WaitGroup
+		gate.Add(1)
+		for range writers {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				gate.Wait()
+				s.ObserveFailure(500 * time.Millisecond)
+			}()
+		}
+		gate.Done()
+		done.Wait()
+
+		if got := s.Fails(); got != writers {
+			t.Fatalf("%d concurrent failures counted as %d", writers, got)
+		}
+		// And one answer ends the run, however long it had grown.
+		s.Observe(10 * time.Millisecond)
+		if got := s.Fails(); got != 0 {
+			t.Fatalf("an answer left %d failures standing", got)
 		}
 	}
 }

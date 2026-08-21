@@ -26,7 +26,6 @@ type serverReference struct {
 	Samples   int64
 	LastNs    int64
 	Addr      string
-	Fails     int32
 	IPVersion IPVersion
 	Canonical bool
 	UDPAddr   *net.UDPAddr
@@ -37,11 +36,12 @@ type serverReference struct {
 // retained for as long as the delegation is cached, so a field that pushes
 // it into the next size class is paid continuously and at scale.
 //
-// Two of the scoring fields are free: canonical and fails both ride in the
-// padding IPVersion already leaves. lastNs is the one word the ranking
-// bought, and it replaced a periodic wipe of every server's statistics —
-// evidence that ages per server instead of a moment where the whole set
-// reads as unmeasured at once.
+// Most of the scoring costs nothing: the latency, the failure run and the
+// evidence bit share one word, and canonical rides in the padding
+// IPVersion already leaves. lastNs is the one word the ranking bought, and
+// it replaced a periodic wipe of every server's statistics — evidence that
+// ages per server instead of a moment where the whole set reads as
+// unmeasured at once.
 func TestServerLayoutStaysSmall(t *testing.T) {
 	want := unsafe.Sizeof(serverReference{})
 	if got := unsafe.Sizeof(Server{}); got != want {

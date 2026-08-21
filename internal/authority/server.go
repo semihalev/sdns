@@ -15,14 +15,19 @@ import (
 type Server struct {
 	// place atomic members at the start to fix alignment for ARM32
 	//
-	// state is the smoothed latency and the fact that an exchange has
-	// completed, packed into one word: [estimate ns : 63][evidence : 1].
+	// state is everything an observation says about this server, packed
+	// into one word:
+	//
+	//	[ estimate ns : 55 ][ consecutive failures : 8 ][ evidence : 1 ]
+	//
+	// scoring.go owns the layout and the arithmetic.
+	//
 	// They are packed because they have to change together. Held apart,
-	// every update was two decisions — read one, decide on the other,
-	// write back — and a second sample landing inside that window read a
-	// server as fresh when it was not, and replaced a measurement instead
-	// of folding into it. One word means one compare-and-swap, and the
-	// window has nowhere to open.
+	// every update was two or three decisions — read one, decide on the
+	// other, write back — and a concurrent exchange landing inside that
+	// window read a server as fresh when it was not, or applied its
+	// failure after a later success had already cleared it. One word means
+	// one compare-and-swap, and the window has nowhere to open.
 	state int64
 	// samples counts completed exchanges. Nothing decides on it; it is
 	// what an operator reads to tell a server that has answered a hundred
@@ -35,10 +40,7 @@ type Server struct {
 	// the whole set is unmeasured at once.
 	lastNs int64
 
-	Addr string
-	// fails counts consecutive failures; it rides in the padding
-	// IPVersion and canonical already share, so knowing it is free.
-	fails     int32
+	Addr      string
 	IPVersion IPVersion
 
 	// canonical records that Addr was printed from a decoded address and is
@@ -141,8 +143,7 @@ func (v IPVersion) String() string {
 }
 
 func (a *Server) String() string {
-	rn, measured := a.estimate()
-	fails := atomic.LoadInt32(&a.fails)
+	rn, fails, measured := a.estimate()
 
 	var health string
 	switch {
@@ -165,7 +166,7 @@ func (a *Server) String() string {
 		" rank:" + a.Score().Round(time.Millisecond).String() +
 		" seen:" + strconv.FormatInt(a.Samples(), 10)
 	if fails > 0 {
-		out += " fails:" + strconv.Itoa(int(fails))
+		out += " fails:" + strconv.FormatInt(fails, 10)
 	}
 	return out + " health:[" + health + "]"
 }
