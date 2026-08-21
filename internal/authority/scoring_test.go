@@ -348,6 +348,101 @@ func TestHedgeExploresUnmeasured(t *testing.T) {
 	}
 }
 
+// One dropped packet used to retire an authority. The failure penalty puts
+// it behind its healthy peers, the resolver starts only the top two of a
+// delegation in parallel, and nothing but an exchange clears a failure — so
+// a server sitting third behind two healthy peers was never queried again,
+// and the query that would have proven it fine never happened. The trap is
+// the same shape as ranking an unmeasured server first: a state that needs
+// evidence to leave, held by a server that can no longer collect any.
+func TestAFailingServerIsProbedAgain(t *testing.T) {
+	fast := measured("192.0.2.1:53", 10*time.Millisecond)
+	second := measured("192.0.2.2:53", 12*time.Millisecond)
+	flaky := measured("192.0.2.9:53", 15*time.Millisecond)
+	flaky.ObserveFailure(2 * time.Second)
+	list := []*Server{fast, second, flaky}
+
+	// Straight after the failure it is left alone: a retry inside the same
+	// incident learns nothing that the failure has not just said.
+	withRand(t, func(int) int { return 0 }) // the explore roll hits
+	Sort(list)
+	if list[1] == flaky {
+		t.Fatalf("a server that failed a moment ago was probed immediately: %v", addrsOf(list))
+	}
+
+	// Once the backoff has passed, the hedge is willing to find out.
+	atomic.StoreInt64(&flaky.lastNs, time.Now().Add(-2*time.Duration(probeBackoff)).UnixNano())
+	Sort(list)
+	if list[1] != flaky {
+		t.Fatalf("a failing server was never retried: %v", addrsOf(list))
+	}
+
+	// And the probe is enough to restore it: one answer clears the run,
+	// which is what puts it back in front of a slower healthy peer.
+	flaky.Observe(10 * time.Millisecond)
+	withRandValue(0, func() { Sort(list) })
+	if list[0] != flaky && list[0] != fast {
+		t.Fatalf("a recovered server did not return to the front: %v", addrsOf(list))
+	}
+	if flaky.Fails() != 0 {
+		t.Fatalf("the answer left %d failures standing", flaky.Fails())
+	}
+}
+
+// The backoff grows with the failure run, so a server that is genuinely
+// down is not probed at the rate of one that lost a packet — and no run,
+// however long, pushes the retry past the point where nothing about the
+// server is trusted anyway.
+func TestTheRetryWaitGrowsWithTheFailures(t *testing.T) {
+	s := measured("192.0.2.1:53", 10*time.Millisecond)
+	now := time.Now().UnixNano()
+
+	for run := 1; run <= 3; run++ {
+		s.ObserveFailure(2 * time.Second)
+		if got := s.Fails(); got != int64(run) {
+			t.Fatalf("failure run = %d, want %d", got, run)
+		}
+		wait := int64(run) * probeBackoff
+		atomic.StoreInt64(&s.lastNs, now-wait+int64(time.Second))
+		if probeable(s, now) {
+			t.Fatalf("run of %d: probed after %v, which is inside its wait of %v",
+				run, time.Duration(wait-int64(time.Second)), time.Duration(wait))
+		}
+		atomic.StoreInt64(&s.lastNs, now-wait-int64(time.Second))
+		if !probeable(s, now) {
+			t.Fatalf("run of %d: not probed after %v, past its wait of %v",
+				run, time.Duration(wait+int64(time.Second)), time.Duration(wait))
+		}
+	}
+
+	// A long run is capped: nothing waits longer than staleAfter, because
+	// past that a probe is the only thing that can settle anything.
+	for range 250 {
+		s.ObserveFailure(2 * time.Second)
+	}
+	atomic.StoreInt64(&s.lastNs, now-staleAfter-int64(time.Second))
+	if !probeable(s, now) {
+		t.Fatalf("a run of %d put the retry past staleAfter", s.Fails())
+	}
+}
+
+// Evidence that nobody has refreshed is not evidence to act on. A healthy
+// server whose last exchange has aged out is worth a probe for the same
+// reason its score drifts back toward the seed: the path may have changed,
+// and only a query can say.
+func TestStaleEvidenceIsProbed(t *testing.T) {
+	s := measured("192.0.2.1:53", 10*time.Millisecond)
+	now := time.Now().UnixNano()
+
+	if probeable(s, now) {
+		t.Fatal("a server measured a moment ago was probed")
+	}
+	atomic.StoreInt64(&s.lastNs, now-staleAfter-int64(time.Second))
+	if !probeable(s, now) {
+		t.Fatal("a measurement older than staleAfter was still trusted")
+	}
+}
+
 // withRandValue runs f with a randomness source that answers a fixed
 // value, without the explore roll firing.
 func withRandValue(v int, f func()) {

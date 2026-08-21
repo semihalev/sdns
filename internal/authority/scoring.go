@@ -47,10 +47,11 @@ import (
 //
 // Ranking is not the same as choosing. The fastest server always leads,
 // but the hedge slot behind it is picked at random from the peers that are
-// just as good, and occasionally spent probing a server nobody has
-// measured. Without that, a delegation's slower-but-fine addresses are
-// never sampled and the ranking narrows onto whatever answered first, in
-// the beginning, forever.
+// just as good, and occasionally spent probing a server whose standing is
+// out of date — never measured, or measured badly long enough ago that it
+// deserves another chance. Without that, a delegation's slower-but-fine
+// addresses are never sampled and the ranking narrows onto whatever
+// answered first, in the beginning, forever.
 
 const (
 	// rttUnknownSeed is what "no data" is worth. Zero — the value a fresh
@@ -80,13 +81,20 @@ const (
 	// hedges against nothing.
 	selectionBand = int64(30 * time.Millisecond)
 
+	// probeBackoff is how long a failing server is left alone per failure
+	// in its run before the hedge will spend a probe on it. One failure is
+	// usually one lost packet, and half a minute is long enough that a
+	// retry is not part of the same incident; a run of them is a server
+	// that is actually down, and the wait grows with it up to staleAfter.
+	probeBackoff = int64(30 * time.Second)
+
 	// exploreOdds is the reciprocal probability of spending the hedge slot
-	// on a server nothing is known about. A fast delegation's unmeasured
-	// members sit outside the band and would otherwise never be sampled,
-	// leaving the ranking built on whichever subset happened to answer
-	// first. One in thirty-two lookups is enough to measure them within a
-	// handful of misses, and it costs nothing that the hedge was not
-	// already spending.
+	// on a server whose standing is out of date. A fast delegation's
+	// unmeasured and penalised members sit outside the band and would
+	// otherwise never be sampled, leaving the ranking built on whichever
+	// subset happened to answer first. One in thirty-two lookups is enough
+	// to measure them within a handful of misses, and it costs nothing that
+	// the hedge was not already spending.
 	exploreOdds = 32
 
 	// sortStackServers is the largest address set ranked without touching
@@ -366,7 +374,7 @@ func rankInsertion(list []*Server, scores []int64, now int64) {
 		}
 		scores[j+1], list[j+1] = score, server
 	}
-	hedge(list, scores)
+	hedge(list, scores, now)
 }
 
 // rankSorted is the same ranking for a set too big to insertion-sort. Each
@@ -387,7 +395,7 @@ func rankSorted(list []*Server, now int64) {
 	for i, p := range pairs {
 		scores[i], list[i] = p.score, p.server
 	}
-	hedge(list, scores)
+	hedge(list, scores, now)
 }
 
 // leadable reports whether a server has earned the query itself: an
@@ -400,11 +408,48 @@ func leadable(s *Server) bool {
 	return evidence && fails == 0
 }
 
+// probeable reports whether the hedge should be willing to spend a query
+// finding out what this server is worth now. Three states qualify, and
+// they are the same state seen from different sides: nothing has ever
+// answered, the last exchange failed, or the last exchange is old enough
+// that it no longer describes the path.
+//
+// The failure case is the one that matters, because it is the one that
+// cannot fix itself. The resolver starts the top two of a delegation in
+// parallel and reaches the rest only when those do not answer, so a
+// server carrying a failure penalty behind two healthy peers is never
+// queried again — and the only thing that clears a failure is an
+// exchange. One dropped packet was enough to retire an authority for the
+// lifetime of the delegation.
+//
+// The wait before a retry grows with the failure run, so a server that
+// lost one packet is tried again within the minute while one that has
+// been down all afternoon is tried rarely, and it is capped at
+// staleAfter: past that nothing here is trusted anyway, and a probe is
+// the only thing that can settle it.
+func probeable(s *Server, nowNs int64) bool {
+	_, fails, evidence := s.estimate()
+	if !evidence {
+		return true
+	}
+	last := atomic.LoadInt64(&s.lastNs)
+	if last == 0 {
+		return true
+	}
+	wait := staleAfter
+	if fails > 0 {
+		if wait = fails * probeBackoff; wait > staleAfter {
+			wait = staleAfter
+		}
+	}
+	return nowNs-last > wait
+}
+
 // hedge chooses what the second parallel query is spent on. The leader is
 // left alone — the fastest server answers the query — and the slot behind
-// it either probes something unmeasured or spreads across the peers that
-// are just as fast.
-func hedge(list []*Server, scores []int64) {
+// it either probes a server whose standing is out of date or spreads
+// across the peers that are just as fast.
+func hedge(list []*Server, scores []int64, now int64) {
 	n := len(list)
 	if n < 2 {
 		return
@@ -430,14 +475,14 @@ func hedge(list []*Server, scores []int64) {
 		// forever and leave the rest of a delegation permanently unknown.
 		candidates := 0
 		for i := 1; i < n; i++ {
-			if _, _, evidence := list[i].estimate(); !evidence {
+			if probeable(list[i], now) {
 				candidates++
 			}
 		}
 		if candidates > 0 {
 			pick := randN(candidates)
 			for i := 1; i < n; i++ {
-				if _, _, evidence := list[i].estimate(); evidence {
+				if !probeable(list[i], now) {
 					continue
 				}
 				if pick == 0 {
