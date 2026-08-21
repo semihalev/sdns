@@ -122,30 +122,48 @@ func (s *Server) ObserveFailure(d time.Duration) {
 // assumed teaches nothing, so it is dropped.
 func (s *Server) ObserveAtLeast(d time.Duration) {
 	sample := int64(d)
-	if atomic.LoadInt64(&s.Count) == 0 {
-		// Nothing has been answered, so the standing assumption is the
-		// seed. Only a floor above it says anything, and what it says is
-		// "worse than a guess" — never "as good as one".
-		//
-		// The floor raises the estimate without touching Count, because
-		// Count is what the ranking reads to mean "this server has
-		// actually answered something". A floor of 400ms on a server that
-		// has never replied is not a 400ms server: it is an unknown that
-		// is at best 400ms, and it must not be led with just because the
-		// measured alternative is slower.
-		if sample <= rttUnknownSeed {
+	// Raising only is a contract, not an approximation, so it is written
+	// as one. A read followed by a write is neither: two lookups cancel
+	// attempts on the same server at the same moment, both read the same
+	// estimate, and the weaker floor lands last — leaving the server
+	// looking better than the stronger floor had already proven it to be.
+	// The compare-and-swap makes the decision and the write the same
+	// event, and re-reads whatever the loser of the race left behind.
+	//
+	// Count is never touched here. It is what the ranking reads to mean
+	// "this server has answered something", and a cancelled attempt is
+	// exactly the case where nothing was answered: a 400ms floor on a
+	// silent server is not a 400ms server, it is a guess that is at best
+	// 400ms — hedgeable, never worth leading with.
+	for {
+		answered := atomic.LoadInt64(&s.Count) > 0
+		current := atomic.LoadInt64(&s.Rtt)
+
+		next := sample
+		switch {
+		case answered:
+			// Something has answered, so there is an estimate to blend
+			// against rather than replace.
+			if sample <= current {
+				return
+			}
+			next = (current + sample) / 2
+		default:
+			// Nothing has answered: the standing assumption is the seed,
+			// and only a floor past it says anything at all.
+			if sample <= rttUnknownSeed || sample <= current {
+				return
+			}
+		}
+
+		if atomic.CompareAndSwapInt64(&s.Rtt, current, next) {
+			atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
 			return
 		}
-		if sample > atomic.LoadInt64(&s.Rtt) {
-			atomic.StoreInt64(&s.Rtt, sample)
-			atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
-		}
-		return
+		// Someone moved the estimate underneath us — including, possibly,
+		// a real answer that just landed. Decide again against what they
+		// left rather than against what we read.
 	}
-	if sample <= atomic.LoadInt64(&s.Rtt) {
-		return
-	}
-	s.blend(sample)
 }
 
 // blend folds a sample into the smoothed latency. The first sample

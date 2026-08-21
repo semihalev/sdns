@@ -2,6 +2,7 @@ package authority
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -379,6 +380,50 @@ func TestFloorIsNotAnAnswer(t *testing.T) {
 	}
 	if list[1] != silent {
 		t.Fatalf("the silent server was not hedged: %v", addrsOf(list))
+	}
+}
+
+// Raising only has to hold when two lookups cancel attempts on the same
+// server at the same moment. A read followed by a write does not: both
+// see the same estimate and the weaker floor lands last, leaving the
+// server looking better than the stronger floor had already proven. The
+// race detector cannot see it — every individual access is atomic — so
+// the contract is checked by outcome, over enough rounds that a lost
+// update cannot hide.
+func TestConcurrentFloorsKeepTheStrongest(t *testing.T) {
+	const rounds, writers = 200, 8
+
+	for range rounds {
+		s := unmeasured("192.0.2.9:53")
+
+		var start sync.WaitGroup
+		var done sync.WaitGroup
+		start.Add(1)
+		want := int64(0)
+		for w := range writers {
+			// Descending samples: the first goroutine carries the
+			// strongest floor, the last the weakest.
+			sample := time.Duration(rttUnknownSeed) + time.Duration(writers-w)*time.Millisecond
+			if int64(sample) > want {
+				want = int64(sample)
+			}
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				start.Wait()
+				s.ObserveAtLeast(sample)
+			}()
+		}
+		start.Done()
+		done.Wait()
+
+		if got := atomic.LoadInt64(&s.Rtt); got != want {
+			t.Fatalf("concurrent floors settled at %v, want the strongest at %v",
+				time.Duration(got), time.Duration(want))
+		}
+		if s.Count != 0 {
+			t.Fatalf("a floor counted as an answer under contention: Count = %d", s.Count)
+		}
 	}
 }
 
