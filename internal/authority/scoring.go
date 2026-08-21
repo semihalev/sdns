@@ -26,9 +26,11 @@ import (
 //     ranking immediately, which is what a resolver needs when an
 //     authority starts to fail. A gentler average would keep sending
 //     queries into a server that has already gone bad.
-//   - Count separates "measured" from "never answered". Zero is not a
-//     latency; a server nobody has timed is scored at rttUnknownSeed, so
-//     it is tryable but never preferred over a server measured faster.
+//   - Count is how many exchanges actually completed. It separates a
+//     measurement from a guess: zero means nothing has ever answered, and
+//     such a server is priced at rttUnknownSeed (or worse, if a cancelled
+//     attempt has proven a floor above it) and may be hedged but never led
+//     with. A floor raises the estimate without ever touching this.
 //   - fails counts consecutive failures. A timeout is not a slow answer,
 //     it is an absence, and an average cannot express that: the penalty
 //     grows per failure and one success clears it, so a server drops out
@@ -121,13 +123,26 @@ func (s *Server) ObserveFailure(d time.Duration) {
 func (s *Server) ObserveAtLeast(d time.Duration) {
 	sample := int64(d)
 	if atomic.LoadInt64(&s.Count) == 0 {
-		// Nothing is known, so the standing assumption is the seed. Only
-		// a floor above it says anything, and what it says is "worse than
-		// a guess" — never "as good as one".
+		// Nothing has been answered, so the standing assumption is the
+		// seed. Only a floor above it says anything, and what it says is
+		// "worse than a guess" — never "as good as one".
+		//
+		// The floor raises the estimate without touching Count, because
+		// Count is what the ranking reads to mean "this server has
+		// actually answered something". A floor of 400ms on a server that
+		// has never replied is not a 400ms server: it is an unknown that
+		// is at best 400ms, and it must not be led with just because the
+		// measured alternative is slower.
 		if sample <= rttUnknownSeed {
 			return
 		}
-	} else if sample <= atomic.LoadInt64(&s.Rtt) {
+		if sample > atomic.LoadInt64(&s.Rtt) {
+			atomic.StoreInt64(&s.Rtt, sample)
+			atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
+		}
+		return
+	}
+	if sample <= atomic.LoadInt64(&s.Rtt) {
 		return
 	}
 	s.blend(sample)
@@ -172,10 +187,15 @@ func (s *Server) Score() time.Duration {
 func (s *Server) score(nowNs int64) int64 {
 	base := atomic.LoadInt64(&s.Rtt)
 	if atomic.LoadInt64(&s.Count) == 0 {
-		// The extra nanosecond is the tie-break: a server measured at
-		// exactly the seed is still a measurement, and a guess must not
-		// share the front of the list with it.
-		base = rttUnknownSeed + 1
+		// Nothing answered: the seed is what a guess is worth, unless a
+		// floor from a cancelled attempt has already proven it is worse
+		// than that. The extra nanosecond is the tie-break — a server
+		// measured at exactly this price is still a measurement, and a
+		// guess must not share the front of the list with it.
+		if base < rttUnknownSeed {
+			base = rttUnknownSeed
+		}
+		base++
 	}
 	if f := int64(atomic.LoadInt32(&s.fails)); f > 0 {
 		penalty := f * failurePenaltyStep

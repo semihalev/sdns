@@ -13,12 +13,12 @@ import (
 // must have — and the benchmarks price the ranking itself, because a sort
 // that allocates is a sort that allocates once per miss.
 
-// measured builds a server that has already answered count times with the
-// given average, in the shape the recorder leaves behind.
-func measured(addr string, avg time.Duration, count int64) *Server {
+// measured builds a server that has answered, through the same call the
+// resolver makes — a fixture that hand-writes the fields tests the shape
+// of the fields rather than the behaviour of the model.
+func measured(addr string, rtt time.Duration) *Server {
 	s := NewServer(addr, IPv4)
-	s.Rtt = int64(avg) * count
-	s.Count = count
+	s.Observe(rtt)
 	return s
 }
 
@@ -41,7 +41,7 @@ func addrsOf(list []*Server) []string {
 // list, and with the resolver starting its top two in parallel, that is a
 // guaranteed query to the one server whose speed nobody has established.
 func TestUnmeasuredDoesNotOutrankMeasured(t *testing.T) {
-	fast := measured("192.0.2.1:53", 10*time.Millisecond, 4)
+	fast := measured("192.0.2.1:53", 10*time.Millisecond)
 	unknown := unmeasured("192.0.2.2:53")
 
 	list := []*Server{unknown, fast}
@@ -57,8 +57,8 @@ func TestUnmeasuredDoesNotOutrankMeasured(t *testing.T) {
 // a dozen samples to notice an authority going bad would keep sending
 // queries into it — so it is pinned here against future softening.
 func TestDegradationSinksWithinTwoSamples(t *testing.T) {
-	degrading := measured("192.0.2.1:53", 10*time.Millisecond, 4)
-	steady := measured("192.0.2.2:53", 50*time.Millisecond, 4)
+	degrading := measured("192.0.2.1:53", 10*time.Millisecond)
+	steady := measured("192.0.2.2:53", 50*time.Millisecond)
 
 	list := []*Server{degrading, steady}
 	Sort(list)
@@ -66,15 +66,13 @@ func TestDegradationSinksWithinTwoSamples(t *testing.T) {
 		t.Fatal("the fast server should lead before it degrades")
 	}
 
-	// Two upstream timeouts, recorded the way the resolver records them.
-	for range 2 {
-		degrading.Rtt += int64(2 * time.Second)
-		degrading.Count++
-		Sort(list)
-	}
+	// One slow answer is enough: the blend is half and half, so the new
+	// sample outweighs everything before it on the spot.
+	degrading.Observe(2 * time.Second)
+	Sort(list)
 
 	if list[0] != steady {
-		t.Fatalf("degraded server still leads after two timeout samples: %v", addrsOf(list))
+		t.Fatalf("degraded server still leads after a slow answer: %v", addrsOf(list))
 	}
 }
 
@@ -83,16 +81,14 @@ func TestDegradationSinksWithinTwoSamples(t *testing.T) {
 // aging that the average does not already do, while it does throw every
 // server back to "unmeasured" at once.
 func TestRankingSurvivesLongRuns(t *testing.T) {
-	fast := measured("192.0.2.1:53", 10*time.Millisecond, 1)
-	slow := measured("192.0.2.2:53", 200*time.Millisecond, 1)
+	fast := measured("192.0.2.1:53", 10*time.Millisecond)
+	slow := measured("192.0.2.2:53", 200*time.Millisecond)
 	list := []*Server{fast, slow}
 
 	for i := 1; i <= 2500; i++ {
 		// Both keep answering at their established speeds.
-		fast.Rtt += int64(10 * time.Millisecond)
-		fast.Count++
-		slow.Rtt += int64(200 * time.Millisecond)
-		slow.Count++
+		fast.Observe(10 * time.Millisecond)
+		slow.Observe(200 * time.Millisecond)
 		Sort(list)
 
 		if list[0] != fast {
@@ -106,7 +102,7 @@ func TestRankingSurvivesLongRuns(t *testing.T) {
 // "did not answer within d" must be able to move a server down, and must
 // never make one look better than it has proven to be.
 func TestLowerBoundObservationRanksTheLoser(t *testing.T) {
-	winner := measured("192.0.2.1:53", 10*time.Millisecond, 4)
+	winner := measured("192.0.2.1:53", 10*time.Millisecond)
 	loser := unmeasured("192.0.2.2:53")
 
 	list := []*Server{loser, winner}
@@ -136,7 +132,7 @@ func TestLowerBoundObservationRanksTheLoser(t *testing.T) {
 // the server something is known about, so the parallel head of the list is
 // not two guesses.
 func TestTieBreakPrefersMeasured(t *testing.T) {
-	known := measured("192.0.2.1:53", time.Duration(rttUnknownSeed), 1)
+	known := measured("192.0.2.1:53", time.Duration(rttUnknownSeed))
 	unknown := unmeasured("192.0.2.2:53")
 
 	list := []*Server{unknown, known}
@@ -164,8 +160,7 @@ func benchServers(n int) []*Server {
 	for i := range n {
 		s := NewServer(fmt.Sprintf("192.0.2.%d:53", i+1), IPv4)
 		if i%7 != 0 {
-			s.Rtt = int64(time.Duration(10+i*7) * time.Millisecond)
-			s.Count = 1
+			s.Observe(time.Duration(10+i*7) * time.Millisecond)
 		}
 		list = append(list, s)
 	}
@@ -210,8 +205,8 @@ func withRand(t *testing.T, f func(int) int) {
 // latency alone would still rank it ahead — and a success must lift the
 // penalty in one step, so a recovered authority is not serving a sentence.
 func TestFailurePenaltyAndRecovery(t *testing.T) {
-	flaky := measured("192.0.2.1:53", 10*time.Millisecond, 4)
-	steady := measured("192.0.2.2:53", 50*time.Millisecond, 4)
+	flaky := measured("192.0.2.1:53", 10*time.Millisecond)
+	steady := measured("192.0.2.2:53", 50*time.Millisecond)
 	list := []*Server{flaky, steady}
 
 	flaky.ObserveFailure(2 * time.Second)
@@ -240,7 +235,7 @@ func TestFailurePenaltyAndRecovery(t *testing.T) {
 // toward "unknown" rather than hold the lead on a path that may no longer
 // exist — this is what replaced wiping every server's statistics at once.
 func TestStaleEvidenceDrifts(t *testing.T) {
-	s := measured("192.0.2.1:53", 10*time.Millisecond, 4)
+	s := measured("192.0.2.1:53", 10*time.Millisecond)
 	fresh := s.Score()
 
 	atomic.StoreInt64(&s.lastNs, time.Now().Add(-time.Hour).UnixNano())
@@ -259,10 +254,10 @@ func TestStaleEvidenceDrifts(t *testing.T) {
 // the band it moves — while the fastest server keeps leading.
 func TestHedgeSpreadsAcrossTheBand(t *testing.T) {
 	list := []*Server{
-		measured("192.0.2.1:53", 10*time.Millisecond, 4),
-		measured("192.0.2.2:53", 12*time.Millisecond, 4),
-		measured("192.0.2.3:53", 15*time.Millisecond, 4),
-		measured("192.0.2.4:53", 900*time.Millisecond, 4),
+		measured("192.0.2.1:53", 10*time.Millisecond),
+		measured("192.0.2.2:53", 12*time.Millisecond),
+		measured("192.0.2.3:53", 15*time.Millisecond),
+		measured("192.0.2.4:53", 900*time.Millisecond),
 	}
 	best := list[0]
 
@@ -286,8 +281,8 @@ func TestHedgeSpreadsAcrossTheBand(t *testing.T) {
 // without deliberate exploration it is never sampled and never ranks
 // honestly. The hedge spends one lookup in thirty-two proving it.
 func TestHedgeExploresUnmeasured(t *testing.T) {
-	fast := measured("192.0.2.1:53", 10*time.Millisecond, 4)
-	second := measured("192.0.2.2:53", 12*time.Millisecond, 4)
+	fast := measured("192.0.2.1:53", 10*time.Millisecond)
+	second := measured("192.0.2.2:53", 12*time.Millisecond)
 	unknown := unmeasured("192.0.2.9:53")
 	list := []*Server{fast, second, unknown}
 
@@ -321,7 +316,7 @@ func withRandValue(v int, f func()) {
 // let a server which has answered nothing look quicker than the servers
 // that have — the exact inversion this ranking exists to prevent.
 func TestLowerBoundCannotMakeAGuessLookFast(t *testing.T) {
-	fast := measured("192.0.2.1:53", 12*time.Millisecond, 4)
+	fast := measured("192.0.2.1:53", 12*time.Millisecond)
 	unknown := unmeasured("192.0.2.9:53")
 	list := []*Server{unknown, fast}
 
@@ -343,7 +338,7 @@ func TestLowerBoundCannotMakeAGuessLookFast(t *testing.T) {
 // that has actually answered is available, however slowly. The guess
 // belongs in the hedge slot, which is where it gets probed.
 func TestUnmeasuredIsHedgedNeverLed(t *testing.T) {
-	slow := measured("192.0.2.1:53", 400*time.Millisecond, 4) // worse than the seed
+	slow := measured("192.0.2.1:53", 400*time.Millisecond) // worse than the seed
 	unknown := unmeasured("192.0.2.9:53")
 	list := []*Server{unknown, slow}
 
@@ -354,6 +349,36 @@ func TestUnmeasuredIsHedgedNeverLed(t *testing.T) {
 	}
 	if list[1] != unknown {
 		t.Fatalf("the guess was not hedged: %v", addrsOf(list))
+	}
+}
+
+// A floor is not an answer. A cancelled attempt can prove a server is at
+// least 400ms slow, which is worse than the seed and belongs in its score
+// — but it still has not answered anything, and a server that has answered
+// slower than that is the one the query should go to.
+func TestFloorIsNotAnAnswer(t *testing.T) {
+	// Known and honest about it: answered at 800ms, then at 400ms.
+	known := measured("192.0.2.1:53", 800*time.Millisecond)
+	known.Observe(400 * time.Millisecond) // blended: 600ms
+
+	// Never answered; cancelled at 400ms, which only proves a floor.
+	silent := unmeasured("192.0.2.9:53")
+	silent.ObserveAtLeast(400 * time.Millisecond)
+
+	if silent.Count != 0 {
+		t.Fatalf("a floor counted as an answer: Count = %d", silent.Count)
+	}
+	if got := silent.Score(); got <= 400*time.Millisecond {
+		t.Fatalf("the floor did not reach the score: %v", got)
+	}
+
+	list := []*Server{silent, known}
+	withRandValue(0, func() { Sort(list) })
+	if list[0] != known {
+		t.Fatalf("a server that never answered took the query: %v", addrsOf(list))
+	}
+	if list[1] != silent {
+		t.Fatalf("the silent server was not hedged: %v", addrsOf(list))
 	}
 }
 
