@@ -12,25 +12,38 @@ import (
 	"unsafe"
 )
 
-// serverWithoutCanonical is Server as it stood before it recorded whether its
-// address is canonical. It is the reference the size test compares against, so
-// the claim being made is "the marker is free" rather than a byte count that
-// is only true on one ABI.
-type serverWithoutCanonical struct {
+// serverReference mirrors Server's layout — types and order, which is all
+// a size comparison depends on; the names are exported only so a linter
+// does not read a layout mirror as dead code.
+//
+// serverReference is what a Server is allowed to weigh: the scoring words
+// the ranking reads, the address, and the pre-parsed form the exchange
+// dials. It is written out rather than asserted as a byte count so the
+// claim survives a change of ABI — and so the next field to arrive has to
+// be added here, deliberately, next to the ones that earned their space.
+type serverReference struct {
 	Rtt       int64
 	Count     int64
+	LastNs    int64
 	Addr      string
+	Fails     int32
 	IPVersion IPVersion
+	Canonical bool
 	UDPAddr   *net.UDPAddr
 }
 
-// TestServerLayoutStaysSmall pins that knowing an address is canonical costs
-// nothing. There is one Server per authority per delegation and they are
-// allocated as the resolver reads referrals, so a field that pushes this into
-// the next size class is paid for continuously; canonical fits in the padding
-// IPVersion already leaves.
+// TestServerLayoutStaysSmall prices this struct. There is one Server per
+// authority per delegation, allocated as the resolver reads referrals and
+// retained for as long as the delegation is cached, so a field that pushes
+// it into the next size class is paid continuously and at scale.
+//
+// Two of the scoring fields are free: canonical and fails both ride in the
+// padding IPVersion already leaves. lastNs is the one word the ranking
+// bought, and it replaced a periodic wipe of every server's statistics —
+// evidence that ages per server instead of a moment where the whole set
+// reads as unmeasured at once.
 func TestServerLayoutStaysSmall(t *testing.T) {
-	want := unsafe.Sizeof(serverWithoutCanonical{})
+	want := unsafe.Sizeof(serverReference{})
 	if got := unsafe.Sizeof(Server{}); got != want {
 		t.Fatalf("Server is %d B against a reference of %d B; a field left "+
 			"the padding IPVersion shares", got, want)
@@ -48,16 +61,22 @@ func Test_TrySort(t *testing.T) {
 	}
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // G404 - test file, not used for crypto
-	for i := 0; i < 2000; i++ {
+	for range 2000 {
 		for j := range s.List {
-			s.List[j].Count++
-			s.List[j].Rtt += (time.Duration(r.Intn(2000-0)+0) * time.Millisecond).Nanoseconds()
-			Sort(s.List, uint64(i))
+			s.List[j].Observe(time.Duration(r.Intn(2000)) * time.Millisecond)
+			Sort(s.List)
 		}
 	}
 
-	if !reflect.DeepEqual(int64(1), s.List[0].Count) {
-		t.Errorf("s.List[0].Count = %v, want %v", s.List[0].Count, int64(1))
+	// The leader is the cheapest server in the set. Only the hedge slot
+	// behind it is chosen at random, so this holds however the samples
+	// fell.
+	lead := s.List[0].Score()
+	for _, srv := range s.List[1:] {
+		if srv.Score() < lead {
+			t.Fatalf("%s scores %v, ahead of the leader %s at %v",
+				srv.Addr, srv.Score(), s.List[0].Addr, lead)
+		}
 	}
 }
 

@@ -1364,7 +1364,7 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
-	authority.Sort(serversList, atomic.AddUint64(&servers.Called, 1)) // sort by RTT and failure rate
+	authority.Sort(serversList) // fastest first, hedge slot behind it
 	serversList = dedupeAuthorityServers(serversList)
 
 	responseErrors := []*dns.Msg{}
@@ -1496,8 +1496,7 @@ mainloop:
 						// bogus delegation, not the current loop index —
 						// results arrive out of order from parallel
 						// goroutines, so `server` can be a later peer.
-						atomic.AddInt64(&res.server.Rtt, 2*time.Second.Nanoseconds())
-						atomic.AddInt64(&res.server.Count, 1)
+						res.server.ObserveFailure(2 * time.Second)
 
 						if left > 0 && len(serversList)-1 == index {
 							continue fallbackloop
@@ -1683,7 +1682,7 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 // conservative 100ms; otherwise it is 2× the observed RTT clamped to
 // [25ms, 300ms] so a single slow outlier can't stall the whole fan-out.
 func adaptiveServerTimeout(server *authority.Server) time.Duration {
-	rtt := time.Duration(atomic.LoadInt64(&server.Rtt))
+	rtt := server.SmoothedRTT()
 	if rtt <= 0 {
 		return 100 * time.Millisecond
 	}
@@ -1769,14 +1768,24 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	var resp *dns.Msg
 	var err error
 
-	// Track RTT for adaptive timeouts
+	// What this attempt teaches the ranking. The clock starts here
+	// because a cancelled attempt still proves something: this server had
+	// not answered by the time a peer did. Discarding that was what let a
+	// server which never wins a race stay unmeasured — and an unmeasured
+	// server outranks every server that has answered.
+	start := time.Now()
 	var rtt = r.netTimeout
 	defer func() {
-		if contextutil.EffectiveError(ctx) != nil {
-			return
+		switch {
+		case contextutil.EffectiveError(ctx) != nil:
+			// Cancellation is not the authority's fault; the silence up
+			// to this point is still a lower bound on its latency.
+			server.ObserveAtLeast(time.Since(start))
+		case err != nil:
+			server.ObserveFailure(rtt)
+		default:
+			server.Observe(rtt)
 		}
-		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
-		atomic.AddInt64(&server.Count, 1)
 	}()
 
 	// Check if we should use TCP connection pooling

@@ -57,8 +57,16 @@ func TestExchangeCancellationInterruptsInFlightUDPRead(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("resolver UDP read ignored context cancellation")
 	}
-	if got := atomic.LoadInt64(&server.Count); got != 0 {
-		t.Fatalf("canceled exchange updated RTT sample count to %d", got)
+	// A cancellation is not the authority's fault, but it is not nothing
+	// either: the server was still silent when the caller gave up, and
+	// that lower bound is what the ranking records. Discarding it was how
+	// a server that never wins a race stayed unmeasured — and unmeasured
+	// used to rank ahead of every server that had answered.
+	if got := atomic.LoadInt64(&server.Count); got != 1 {
+		t.Fatalf("canceled exchange recorded %d samples, want the lower bound", got)
+	}
+	if got := server.Fails(); got != 0 {
+		t.Fatalf("canceled exchange counted %d failures against the server", got)
 	}
 }
 
@@ -111,7 +119,15 @@ func TestExchangeCancellationInterruptsThroughGroup(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("group-armed resolver UDP read ignored context cancellation")
 	}
-	if got := atomic.LoadInt64(&server.Count); got != 0 {
-		t.Fatalf("canceled exchange updated RTT sample count to %d", got)
+	// A cancellation is not the authority's fault, but it is not nothing
+	// either: the server was still silent when the caller gave up, and
+	// that lower bound is what the ranking records. Discarding it was how
+	// a server that never wins a race stayed unmeasured — and unmeasured
+	// used to rank ahead of every server that had answered.
+	if got := atomic.LoadInt64(&server.Count); got != 1 {
+		t.Fatalf("canceled exchange recorded %d samples, want the lower bound", got)
+	}
+	if got := server.Fails(); got != 0 {
+		t.Fatalf("canceled exchange counted %d failures against the server", got)
 	}
 }

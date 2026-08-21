@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,9 +14,19 @@ import (
 // Server type.
 type Server struct {
 	// place atomic members at the start to fix alignment for ARM32
-	Rtt       int64
-	Count     int64
-	Addr      string
+	Rtt   int64
+	Count int64
+	// lastNs is when Rtt was last refreshed, in Unix nanoseconds. It is
+	// the one word this struct grew for the scoring model, and it buys
+	// what a periodic wipe of every server's statistics used to fake:
+	// evidence that ages on its own, per server, without a moment where
+	// the whole set is unmeasured at once.
+	lastNs int64
+
+	Addr string
+	// fails counts consecutive failures; it rides in the padding
+	// IPVersion and canonical already share, so knowing it is free.
+	fails     int32
 	IPVersion IPVersion
 
 	// canonical records that Addr was printed from a decoded address and is
@@ -118,26 +129,32 @@ func (v IPVersion) String() string {
 }
 
 func (a *Server) String() string {
-	count := atomic.LoadInt64(&a.Count)
-	rn := atomic.LoadInt64(&a.Rtt)
-
-	if count == 0 {
-		count = 1
-	}
+	measured := atomic.LoadInt64(&a.Count) > 0
+	fails := atomic.LoadInt32(&a.fails)
 
 	var health string
 	switch {
-	case rn >= int64(time.Second):
-		health = "POOR"
-	case rn > 0:
-		health = "GOOD"
-	default:
+	case !measured:
 		health = "UNKNOWN"
+	case fails > 0:
+		health = "FAILING"
+	case atomic.LoadInt64(&a.Rtt) >= int64(time.Second):
+		health = "POOR"
+	default:
+		health = "GOOD"
 	}
 
-	rtt := (time.Duration(rn) / time.Duration(count)).Round(time.Millisecond)
+	rtt := "unknown"
+	if measured {
+		rtt = time.Duration(atomic.LoadInt64(&a.Rtt)).Round(time.Millisecond).String()
+	}
 
-	return a.IPVersion.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
+	out := a.IPVersion.String() + ":" + a.Addr + " rtt:" + rtt +
+		" rank:" + a.Score().Round(time.Millisecond).String()
+	if fails > 0 {
+		out += " fails:" + strconv.Itoa(int(fails))
+	}
+	return out + " health:[" + health + "]"
 }
 
 // fpEntry caches a Fingerprint() result along with the generation
@@ -155,7 +172,6 @@ type fpEntry struct {
 type Servers struct {
 	sync.RWMutex
 	// place atomic members at the start to fix alignment for ARM32
-	Called     uint64
 	ErrorCount uint32
 
 	// gen is bumped on every List mutation by InvalidateFingerprint.
@@ -219,29 +235,4 @@ func (a *Servers) Fingerprint() uint64 {
 // critical section.
 func (a *Servers) InvalidateFingerprint() {
 	a.gen.Add(1)
-}
-
-// Sort sort servers by rtt.
-func Sort(serversList []*Server, called uint64) {
-	for _, s := range serversList {
-		// clear stats and re-start again
-		if called%1e3 == 0 {
-			atomic.StoreInt64(&s.Rtt, 0)
-			atomic.StoreInt64(&s.Count, 0)
-
-			continue
-		}
-
-		rtt := atomic.LoadInt64(&s.Rtt)
-		count := atomic.LoadInt64(&s.Count)
-
-		if count > 0 {
-			// average rtt
-			atomic.StoreInt64(&s.Rtt, rtt/count)
-			atomic.StoreInt64(&s.Count, 1)
-		}
-	}
-	sort.Slice(serversList, func(i, j int) bool {
-		return atomic.LoadInt64(&serversList[i].Rtt) < atomic.LoadInt64(&serversList[j].Rtt)
-	})
 }
