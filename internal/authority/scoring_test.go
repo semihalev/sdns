@@ -713,6 +713,91 @@ func TestFirstSamplesOnAFreshServerAreNotLost(t *testing.T) {
 	}
 }
 
+// A compare-and-swap makes a write atomic, not ordered. Two lookups
+// sample one root address at the same moment routinely, and whichever
+// swap loses the race re-reads and writes second — so the word left
+// standing is the one the scheduler favoured, not the exchange that
+// finished last. A timeout that lost the race and wrote after the answer
+// that superseded it left a healthy authority marked failing, carrying
+// the penalty until something queried it again.
+//
+// Each exchange takes a ticket when it finishes, so the state can tell a
+// current verdict from an overtaken one. Passing the tickets in states
+// the interleaving instead of racing for it — the window is nanoseconds
+// wide, and a test that has to win it is a test that mostly does not run.
+func TestAnOvertakenFailureDoesNotMarkAServerThatAnswered(t *testing.T) {
+	s := measured("192.0.2.1:53", 10*time.Millisecond)
+
+	// The answer finished second and wrote first; the timeout that
+	// finished first writes last.
+	s.recordAt(2, int64(12*time.Millisecond), false)
+	s.recordAt(1, int64(2*time.Second), true)
+
+	if got := s.Fails(); got != 0 {
+		t.Fatalf("a server whose last exchange answered is marked with %d failures", got)
+	}
+	if !leadable(s) {
+		t.Fatal("a server whose last exchange answered cannot lead")
+	}
+}
+
+// The rule has to hold the other way round too, or it trades one wrong
+// verdict for another: an answer that finished before a timeout must not
+// wipe out that timeout just because it wrote afterwards.
+func TestAnOvertakenAnswerDoesNotClearAFailure(t *testing.T) {
+	s := measured("192.0.2.1:53", 10*time.Millisecond)
+
+	s.recordAt(2, int64(2*time.Second), true)
+	s.recordAt(1, int64(12*time.Millisecond), false)
+
+	if got := s.Fails(); got != 1 {
+		t.Fatalf("failures = %d, want the timeout that finished last to stand", got)
+	}
+}
+
+// A failure still counts when a newer exchange has already written, as
+// long as the run it belongs to is still open. Without that, an outage
+// that times out on every lookup at once would register as one failure —
+// whichever wrote first — and the penalty would never reach the length of
+// the outage.
+func TestAFailureBehindANewerFailureStillCounts(t *testing.T) {
+	s := measured("192.0.2.1:53", 10*time.Millisecond)
+
+	s.recordAt(3, int64(2*time.Second), true)
+	s.recordAt(1, int64(2*time.Second), true)
+	s.recordAt(2, int64(2*time.Second), true)
+
+	if got := s.Fails(); got != 3 {
+		t.Fatalf("failures = %d, want all three counted whatever order they wrote in", got)
+	}
+}
+
+// The ticket is the low bits of a counter that only rises, so the
+// comparison has to survive the wrap. It does, as long as two observations
+// of one server are never half the counter apart while both are in flight
+// — which is thirty thousand exchanges to a single address inside one
+// scheduling window.
+func TestTicketOrderSurvivesTheWrap(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		ticket, stored int64
+		want           bool
+	}{
+		{"the next one", 2, 1, true},
+		{"the previous one", 1, 2, false},
+		{"the first against a fresh server", 1, 0, true},
+		{"across the wrap", stateSeqMax + 1, stateSeqMax, true},
+		{"behind, across the wrap", stateSeqMax, stateSeqMax + 1, false},
+		{"a whole lap ahead", stateSeqMax + 2, 1, false}, // indistinguishable, by design
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := newerThan(tc.ticket, tc.stored); got != tc.want {
+				t.Fatalf("newerThan(%d, %d) = %v, want %v", tc.ticket, tc.stored, got, tc.want)
+			}
+		})
+	}
+}
+
 // The failure run now shares a word with the estimate, which is what
 // makes an exchange land as one fact — and it also means the run is no
 // longer incremented by an atomic add. It is read, raised and written

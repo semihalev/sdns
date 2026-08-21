@@ -131,23 +131,34 @@ var randN = rand.IntN
 // that same shape, so the state is one 64-bit word and an observation is
 // one compare-and-swap.
 //
-//	[ estimate ns : 55 ][ consecutive failures : 8 ][ evidence : 1 ]
+//	[ estimate ns : 39 ][ ticket : 16 ][ consecutive failures : 8 ][ evidence : 1 ]
 //
-// The estimate keeps the top fifty-five bits and is clamped to
-// fifty-four of them, so a wild sample cannot shift into the sign bit and
-// come back as a negative latency. Fifty-four bits of nanoseconds is two
-// hundred days, against estimates that live in milliseconds; the failure
-// count saturates at 255, long past where the penalty stops growing.
+// The ticket says which exchange the failure run belongs to. Making the
+// write atomic is not the same as making it ordered: whichever swap loses
+// the race re-reads and writes second, so the last word written is the one
+// the scheduler favoured and not the one that happened last. The ticket is
+// taken when the exchange finishes, so the state can tell a verdict that
+// is current from one that has been overtaken.
+//
+// The estimate keeps the top thirty-nine bits and is clamped to
+// thirty-eight of them, so a wild sample cannot shift into the sign bit
+// and come back as a negative latency. That is two hundred seconds against
+// estimates that live in milliseconds and samples an upstream timeout
+// already bounds; the failure count saturates at 255, long past where the
+// penalty stops growing.
 const (
 	stateEvidence  = 1
 	stateFailShift = 1
 	stateFailMax   = 1<<8 - 1
 	stateFailMask  = int64(stateFailMax) << stateFailShift
-	stateRTTShift  = 9
+	stateSeqShift  = 9
+	stateSeqMax    = 1<<16 - 1
+	stateSeqMask   = int64(stateSeqMax) << stateSeqShift
+	stateRTTShift  = 25
 	// stateRTTMax keeps a wild sample from shifting into the sign bit. A
 	// duration this large is not a latency, it is a bug somewhere else,
 	// and the ranking should record "very slow" rather than a negative.
-	stateRTTMax = int64(1)<<54 - 1
+	stateRTTMax = int64(1)<<38 - 1
 )
 
 // estimate unpacks the whole state: the latency, the consecutive failures
@@ -159,7 +170,7 @@ func (s *Server) estimate() (rtt int64, fails int64, evidence bool) {
 	return w >> stateRTTShift, (w & stateFailMask) >> stateFailShift, w&stateEvidence == 1
 }
 
-func packState(rtt, fails int64, evidence bool) int64 {
+func packState(rtt, seq, fails int64, evidence bool) int64 {
 	if rtt > stateRTTMax {
 		rtt = stateRTTMax
 	}
@@ -169,11 +180,23 @@ func packState(rtt, fails int64, evidence bool) int64 {
 	if fails > stateFailMax {
 		fails = stateFailMax
 	}
-	w := rtt<<stateRTTShift | fails<<stateFailShift
+	w := rtt<<stateRTTShift | (seq&stateSeqMax)<<stateSeqShift | fails<<stateFailShift
 	if evidence {
 		w |= stateEvidence
 	}
 	return w
+}
+
+// newerThan orders two observations by the ticket each took on the way in.
+// The ticket is the low bits of a counter that only ever rises, so the
+// comparison is the modular one: a difference that reads as positive in
+// signed sixteen-bit arithmetic means ahead, and the counter may wrap
+// underneath it without the answer changing. It holds as long as two
+// observations of one server are never thirty thousand exchanges apart
+// while both are still in flight, which is not a state a network can
+// produce.
+func newerThan(ticket, stored int64) bool {
+	return int16(uint16(ticket&stateSeqMax)-uint16(stored&stateSeqMax)) > 0
 }
 
 // Samples is how many exchanges with this server have completed —
@@ -208,7 +231,8 @@ func (s *Server) ObserveAtLeast(d time.Duration) {
 	sample := int64(d)
 	for {
 		w := atomic.LoadInt64(&s.state)
-		current, fails, evidence := w>>stateRTTShift, (w&stateFailMask)>>stateFailShift, w&stateEvidence == 1
+		current, evidence := w>>stateRTTShift, w&stateEvidence == 1
+		seq, fails := (w&stateSeqMask)>>stateSeqShift, (w&stateFailMask)>>stateFailShift
 
 		var next int64
 		switch {
@@ -228,11 +252,11 @@ func (s *Server) ObserveAtLeast(d time.Duration) {
 			next = sample
 		}
 
-		// The evidence bit and the failure run are carried through
-		// unchanged — a floor is not an answer and not a failure, and
-		// writing the word whole is what keeps it from becoming either
-		// under a concurrent update.
-		if atomic.CompareAndSwapInt64(&s.state, w, packState(next, fails, evidence)) {
+		// The evidence bit, the failure run and the ticket that owns it are
+		// carried through unchanged — a floor is not an answer and not a
+		// failure, so it settles nothing about either, and writing the word
+		// whole is what keeps it from appearing to.
+		if atomic.CompareAndSwapInt64(&s.state, w, packState(next, seq, fails, evidence)) {
 			atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
 			return
 		}
@@ -245,33 +269,68 @@ func (s *Server) ObserveAtLeast(d time.Duration) {
 // every one after is averaged with what is known, which halves the weight
 // of each older sample.
 //
-// The loop exists because a server is sampled by many lookups at once: a
-// root address is in flight from several of them most of the time. Read,
-// decide, write as separate steps kept only whichever store landed last,
-// and inside the same window a second sample could read the server as
-// never-measured and replace a measurement instead of folding into it.
-// The compare-and-swap carries the estimate, the failure run and the
-// evidence bit together, so an exchange lands as one fact: the sample that
-// moved the estimate is the sample whose outcome the failure count shows.
+// The ticket is taken here, on the way in, because a compare-and-swap
+// orders the writes and not the exchanges behind them. Two lookups sample
+// one root address at the same moment all the time; whichever loses the
+// swap re-reads and writes second, and that is decided by which goroutine
+// the scheduler favours rather than by which exchange finished last. The
+// counter of completed exchanges is already monotone and already
+// incremented once per call, so it costs nothing to read the order out of
+// it.
 func (s *Server) record(sample int64, failed bool) {
+	s.recordAt(atomic.AddInt64(&s.samples, 1), sample, failed)
+}
+
+// recordAt is record with the order made explicit, which is what lets a
+// test state an interleaving instead of racing for one.
+//
+// The loop exists because a server is sampled by many lookups at once.
+// Read, decide, write as separate steps kept only whichever store landed
+// last, and inside the same window a second sample could read the server
+// as never-measured and replace a measurement instead of folding into it.
+// The compare-and-swap carries the estimate, the failure run and the
+// evidence bit together, so an exchange lands as one fact.
+//
+// The ticket settles what the swap cannot, and the two halves of the
+// verdict need different rules for it:
+//
+//   - A success is a claim that the run is over, and only the newest
+//     exchange is entitled to make it. An answer that finished before a
+//     failure must not wipe out that failure just for writing later.
+//   - A failure is a thing that happened, and it counts even when a newer
+//     exchange has already written — that is how a run reaches the length
+//     of the outage rather than the length of one write. It counts unless
+//     the run has been cleared since, which is the case this rule exists
+//     for: a failure landing after the success that superseded it leaves
+//     a healthy authority marked failing until something else queries it.
+func (s *Server) recordAt(ticket, sample int64, failed bool) {
 	for {
 		w := atomic.LoadInt64(&s.state)
-		current, fails, evidence := w>>stateRTTShift, (w&stateFailMask)>>stateFailShift, w&stateEvidence == 1
+		current, evidence := w>>stateRTTShift, w&stateEvidence == 1
+		seq, fails := (w&stateSeqMask)>>stateSeqShift, (w&stateFailMask)>>stateFailShift
+
 		next := sample
 		if evidence {
 			next = (current + sample) / 2
 		}
-		if failed {
+		newest := newerThan(ticket, seq)
+		switch {
+		case !failed:
+			if newest {
+				fails = 0
+			}
+		case newest || fails > 0:
 			fails++
-		} else {
-			fails = 0
 		}
-		if atomic.CompareAndSwapInt64(&s.state, w, packState(next, fails, true)) {
+		if newest {
+			seq = ticket
+		}
+
+		if atomic.CompareAndSwapInt64(&s.state, w, packState(next, seq, fails, true)) {
 			break
 		}
 		// Another sample or a floor landed first; fold into what it left.
 	}
-	atomic.AddInt64(&s.samples, 1)
 	atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
 }
 

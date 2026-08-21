@@ -18,7 +18,7 @@ type Server struct {
 	// state is everything an observation says about this server, packed
 	// into one word:
 	//
-	//	[ estimate ns : 55 ][ consecutive failures : 8 ][ evidence : 1 ]
+	//	[ estimate ns : 39 ][ ticket : 16 ][ consecutive failures : 8 ][ evidence : 1 ]
 	//
 	// scoring.go owns the layout and the arithmetic.
 	//
