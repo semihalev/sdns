@@ -199,6 +199,11 @@ func TestRcodeDecidesWhetherAnAnswerCounts(t *testing.T) {
 		{"not zone", dns.RcodeNotZone, true},
 		{"nxdomain", dns.RcodeNameError, false},
 		{"noerror", dns.RcodeSuccess, false},
+		// RFC 6672 §2.2: an ordinary query whose DNAME substitution would
+		// build a name past 255 octets is answered YXDOMAIN. It reads like
+		// an UPDATE prerequisite failure and is not one — the authority
+		// answered, and the answer is that the question cannot have one.
+		{"yxdomain", dns.RcodeYXDomain, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			addr := answeringUpstream(t, tc.rcode)

@@ -1677,21 +1677,24 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 	}
 }
 
-// adaptiveServerTimeout picks how long lookup waits on a single server
-// before racing the next candidate. With no RTT samples the result is a
-// conservative 100ms; otherwise it is 2× the observed RTT clamped to
-// [25ms, 300ms] so a single slow outlier can't stall the whole fan-out.
-// answeredTheQuestion reports the two rcodes that mean the authority did
-// the job it was asked to do: the name exists and here it is, or the name
-// does not exist. Everything else — it failed, it refused us, it is not
-// the authority we were sent to, it cannot parse what we sent, it answered
-// about a zone we did not ask about — is a server that did not answer,
-// however quickly it said so.
+// answeredTheQuestion reports the rcodes that mean the authority did the
+// job it was asked to do: the name exists and here it is, the name does
+// not exist, or answering would have required a name that cannot exist.
+// Everything else — it failed, it refused us, it is not the authority we
+// were sent to, it cannot parse what we sent, it answered about a zone we
+// did not ask about — is a server that did not answer, however quickly it
+// said so.
 //
 // A list of what counts rather than a list of what does not, because the
 // failure mode is asymmetric: a rcode nobody thought about lands in the
 // default, and the safe default is "this did not answer my question", not
 // "this server is healthy".
+//
+// YXDOMAIN belongs here despite reading like an UPDATE prerequisite
+// failure. RFC 6672 §2.2 requires an authority to return it for an
+// ordinary query when following a DNAME would build a name past 255
+// octets: the answer is that the question has no answer it could ever
+// give, which is a server working exactly as specified.
 //
 // The EDNS FORMERR case never reaches here. It means the server cannot
 // parse EDNS, which the exchange handles by asking again without it, and
@@ -1699,9 +1702,15 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 // perfectly well without EDNS is not marked for the shape of our first
 // attempt.
 func answeredTheQuestion(rcode int) bool {
-	return rcode == dns.RcodeSuccess || rcode == dns.RcodeNameError
+	return rcode == dns.RcodeSuccess ||
+		rcode == dns.RcodeNameError ||
+		rcode == dns.RcodeYXDomain
 }
 
+// adaptiveServerTimeout picks how long lookup waits on a single server
+// before racing the next candidate. With no RTT samples the result is a
+// conservative 100ms; otherwise it is 2× the observed RTT clamped to
+// [25ms, 300ms] so a single slow outlier can't stall the whole fan-out.
 func adaptiveServerTimeout(server *authority.Server) time.Duration {
 	rtt := server.SmoothedRTT()
 	if rtt <= 0 {
