@@ -427,6 +427,65 @@ func TestConcurrentFloorsKeepTheStrongest(t *testing.T) {
 	}
 }
 
+// A first attempt that timed out completed an exchange without answering
+// anything. Reading that as "this server has answered" promoted it over a
+// server nobody had tried yet — and the failure is worse news than no
+// news, so the promotion made the query strictly worse.
+func TestAFailedFirstAttemptDoesNotTakeTheQuery(t *testing.T) {
+	broken := unmeasured("192.0.2.1:53")
+	broken.ObserveFailure(5 * time.Second) // the first attempt timed out
+	fresh := unmeasured("192.0.2.9:53")
+
+	list := []*Server{broken, fresh}
+	withRandValue(0, func() { Sort(list) })
+
+	if list[0] != fresh {
+		t.Fatalf("a server whose only exchange failed took the query: %v", addrsOf(list))
+	}
+}
+
+// Exploration has to reach the whole delegation. The unmeasured all carry
+// the same score and the sort is stable, so spending the hedge on the
+// first of them probes one address forever while the rest stay unknown —
+// which is the state this ranking exists to get servers out of.
+func TestExplorationReachesEveryUnknown(t *testing.T) {
+	best := measured("192.0.2.1:53", 10*time.Millisecond)
+	list := []*Server{
+		best,
+		unmeasured("192.0.2.7:53"),
+		unmeasured("192.0.2.8:53"),
+		unmeasured("192.0.2.9:53"),
+	}
+
+	seen := map[string]bool{}
+	for pick := range 6 {
+		// The explore roll fires; the pick rotates through the candidates.
+		withRand2(func(n int) int {
+			if n == exploreOdds {
+				return 0
+			}
+			return pick % n
+		}, func() { Sort(list) })
+
+		if list[0] != best {
+			t.Fatalf("exploration displaced the leader: %v", addrsOf(list))
+		}
+		seen[list[1].Addr] = true
+	}
+	if len(seen) < 3 {
+		t.Fatalf("exploration only ever reached %v", seen)
+	}
+}
+
+// withRand2 runs f with a given randomness source, without needing a
+// *testing.T to hang the cleanup on.
+func withRand2(src func(int) int, f func()) {
+	old := randN
+	randN = src
+	defer func() { randN = old }()
+	f()
+}
+
 // The record path runs once per upstream attempt, so it is priced too.
 func BenchmarkObserve(b *testing.B) {
 	s := NewServer("192.0.2.1:53", IPv4)

@@ -270,6 +270,15 @@ func rank(list []*Server, scores []int64, now int64) {
 	hedge(list, scores)
 }
 
+// leadable reports whether a server has earned the query itself: an
+// exchange completed and the last one was not a failure. A first attempt
+// that timed out completes an exchange without answering anything, and it
+// must not be promoted over a server nobody has tried — the failure is
+// what we know about it, and it is worse than not knowing.
+func leadable(s *Server) bool {
+	return atomic.LoadInt64(&s.Count) > 0 && atomic.LoadInt32(&s.fails) == 0
+}
+
 // hedge chooses what the second parallel query is spent on. The leader is
 // left alone — the fastest server answers the query — and the slot behind
 // it either probes something unmeasured or spreads across the peers that
@@ -282,11 +291,11 @@ func hedge(list []*Server, scores []int64) {
 	// The seed prices a guess at 300ms, which is the right expectation to
 	// rank on — but it also means a guess outranks an authority measured
 	// slower than that, and the query itself should not be an experiment.
-	// A measured server leads; the guess moves to the hedge slot, which is
-	// where unknowns are meant to be probed.
-	if atomic.LoadInt64(&list[0].Count) == 0 {
+	// A server that has earned the query takes it; the guess moves to the
+	// hedge slot, which is where unknowns are meant to be probed.
+	if !leadable(list[0]) {
 		for i := 1; i < n; i++ {
-			if atomic.LoadInt64(&list[i].Count) > 0 {
+			if leadable(list[i]) {
 				list[0], list[i] = list[i], list[0]
 				scores[0], scores[i] = scores[i], scores[0]
 				break
@@ -294,10 +303,27 @@ func hedge(list []*Server, scores []int64) {
 		}
 	}
 	if randN(exploreOdds) == 0 {
+		// Any of them, not the first of them. The unmeasured all carry
+		// the same score, the sort is stable, and a floor below the seed
+		// changes nothing — so taking the first would probe one address
+		// forever and leave the rest of a delegation permanently unknown.
+		candidates := 0
 		for i := 1; i < n; i++ {
 			if atomic.LoadInt64(&list[i].Count) == 0 {
-				list[1], list[i] = list[i], list[1]
-				return
+				candidates++
+			}
+		}
+		if candidates > 0 {
+			pick := randN(candidates)
+			for i := 1; i < n; i++ {
+				if atomic.LoadInt64(&list[i].Count) != 0 {
+					continue
+				}
+				if pick == 0 {
+					list[1], list[i] = list[i], list[1]
+					return
+				}
+				pick--
 			}
 		}
 	}
