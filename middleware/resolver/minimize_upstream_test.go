@@ -1,10 +1,49 @@
 package resolver
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
+	internalcache "github.com/semihalev/sdns/internal/cache"
 )
+
+// probeStore is the smallest thing that satisfies middleware.Store. Probes
+// resolve through the internal cache-first path, so a resolver without a store
+// re-derives the DS and DNSKEY chain for every one of them and exhausts the
+// request's attempt budget. Production always has the cache middleware wired
+// here; what this test needs from it is only that a question asked twice is
+// resolved once.
+type probeStore struct {
+	mu sync.Mutex
+	m  map[uint64]*dns.Msg
+}
+
+func newProbeStore() *probeStore { return &probeStore{m: make(map[uint64]*dns.Msg)} }
+
+func (s *probeStore) Get(req *dns.Msg) (*dns.Msg, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.m[internalcache.Key(req.Question[0], req.CheckingDisabled)]
+	if !ok {
+		return nil, false
+	}
+	out := msg.Copy()
+	out.Id = req.Id
+	return out, true
+}
+
+func (s *probeStore) SetFromResponse(resp *dns.Msg, keyCD bool, _ time.Time) {
+	if resp == nil || len(resp.Question) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[internalcache.Key(resp.Question[0], keyCD)] = resp.Copy()
+}
 
 // TestMinimizeUpstreamQueryCount measures what minimization costs upstream,
 // which is the only place this code shows: the serving path never reaches it,
@@ -40,7 +79,10 @@ func TestMinimizeUpstreamQueryCount(t *testing.T) {
 		cfg := net.Config()
 		cfg.QnameMaxMinimizeCount = maxCount
 		cfg.QnameMinimizeOneLabel = oneLabel
-		return zone, net.handlerWithConfig(cfg)
+		handler := net.handlerWithConfig(cfg)
+
+		handler.SetStore(newProbeStore())
+		return zone, handler
 	}
 
 	resolve := func(t *testing.T, h *DNSHandler, name string) {

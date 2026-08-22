@@ -134,16 +134,17 @@ type resolveState struct {
 	// expose, and stop minimizing exactly where the remaining labels are the
 	// private ones.
 	minSteps int
-	// minExposed is how many labels the last minimized query carried. A
-	// grouped query exposes more than one label at a time, so advancing by
-	// one would re-send a name shorter than the one already on the wire.
-	minExposed int
-	nomin      bool
-	parentDS   []dns.RR
-	isRoot     bool
-	extra      []bool
-	requestID  uint16
-	work       *middleware.RecursionWorkLedger
+	// stopAtCut ends the resolution the moment a delegation is established
+	// and cached, without descending into it. A minimization probe only
+	// wants to know where the zone cut is; resolving its name the rest of
+	// the way would be work the walk throws away.
+	stopAtCut bool
+	nomin     bool
+	parentDS  []dns.RR
+	isRoot    bool
+	extra     []bool
+	requestID uint16
+	work      *middleware.RecursionWorkLedger
 
 	// cutDeadline is the absolute expiry of the shallowest delegation on
 	// the path descended so far (zero = unbounded, at/above root). A newly
@@ -152,19 +153,6 @@ type resolveState struct {
 	// (T2) protection (GHSA-mqfw-f48p-2vc8).
 	cutDeadline time.Time
 	cutKey      uint64
-}
-
-// advance moves past what the query just answered exposed: the labels the
-// minimized query actually carried, or one more label when the full name went
-// out. The two agree whenever minimization added a single label, which is
-// every name shallower than the grouping threshold.
-func (rs *resolveState) advance(minimized bool) {
-	if minimized {
-		rs.level = rs.minExposed
-		return
-	}
-
-	rs.level++
 }
 
 // minNonZero returns the earlier of two deadlines, treating a zero time as
@@ -474,21 +462,20 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	// RFC 9156 query minimization, bounded by qnameMinCount probes per
-	// request. Lowering that bound is a privacy/latency trade: past it the
-	// full name goes out, so every remaining delegation sees all of it.
-	minReq, minExposed, minimized := r.minimize(rs.req, rs.level, rs.minSteps, rs.nomin)
-	if minimized {
-		rs.minSteps++
-		rs.minExposed = minExposed
+	// request. A probe is its own question and its own resolution: it returns
+	// through qmProbe and never reaches the code below, so everything from
+	// here handles the name the client actually asked for.
+	if child, exposed, ok := r.minimize(rs.req, rs.level, rs.minSteps, rs.nomin); ok {
+		return r.probeCut(ctx, rs, child, exposed)
 	}
 
 	if debugLogEnabled() {
-		zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rs.servers.Zone, "query", dnsutil.FormatQuestion(minReq.Question[0]), "cd", rs.req.CheckingDisabled, "qname-minimize", minimized)
+		zlog.Debug("Query inserted", "reqid", rs.req.Id, "zone", rs.servers.Zone, "query", dnsutil.FormatQuestion(rs.req.Question[0]), "cd", rs.req.CheckingDisabled)
 	}
 
-	resp, err := r.groupLookup(ctx, rs, minReq, rs.servers, minimized)
+	resp, err := r.groupLookup(ctx, rs, rs.req, rs.servers, false)
 	if err != nil {
-		return r.handleLookupError(ctx, err, rs, minReq, minimized)
+		return r.handleLookupError(ctx, err, rs, rs.req)
 	}
 
 	resp = r.setTags(rs.req, resp)
@@ -499,11 +486,6 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
-		if minimized {
-			rs.advance(minimized)
-			rs.isRoot = false
-			return r.resolve(ctx, rs)
-		}
 		if serverFailureResponse {
 			r.recordResolutionZoneFailure(ctx, rs.req.Question[0], rs.servers.Zone, nil)
 		} else {
@@ -512,7 +494,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		return resp, nil
 	}
 
-	if !minimized && len(resp.Answer) > 0 {
+	if len(resp.Answer) > 0 {
 		// this is like auth server external cname error but this can be recover.
 		if len(resp.Answer) > 0 && (resp.Rcode == dns.RcodeServerFailure || resp.Rcode == dns.RcodeNameError) {
 			resp.Rcode = dns.RcodeSuccess
@@ -533,14 +515,8 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		return result, resultErr
 	}
 
-	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		rs.advance(minimized)
-		rs.isRoot = false
-		return r.resolve(ctx, rs)
-	}
-
 	if len(resp.Ns) > 0 {
-		return r.processAuthoritySection(ctx, rs, minReq, resp, minimized) // handle delegation or authority data
+		return r.processAuthoritySection(ctx, rs, resp) // handle delegation or authority data
 	}
 
 	// no answer, no authority. create new msg safer, sometimes received weird responses
@@ -934,20 +910,29 @@ func (r *Resolver) removeIPv6Cache(name string) {
 	r.glueV6.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
-// minimize shortens req to the labels the resolution has reached so far.
-// level is how many labels are already exposed, steps how many minimized
-// queries this request has spent — the budget RFC 9156 section 2.3 bounds. The
-// returned count is the labels this query exposes, which the caller carries
-// forward as the next level.
-func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Msg, int, bool) {
+// errStoppedAtCut ends a stop-at-cut resolution once the delegation it was
+// after is established and cached. It is not a failure and never reaches a
+// client: the only caller that sets resolveState.stopAtCut treats this as the
+// successful outcome, and every other path leaves the flag false.
+var errStoppedAtCut = errors.New("resolver: stopped at delegation")
+
+// minimize names the next probe: the shortest prefix of the query name that
+// the resolution has not exposed yet. level is how many labels are already
+// exposed, steps how many probes this request has spent — the budget RFC 9156
+// section 2.3 bounds. It returns the name to ask about and the label count that
+// asking exposes; ok is false once there is nothing left worth hiding.
+//
+// It builds no message. A probe is not the client's question with a shorter
+// name — it is a question of its own, and probeCut constructs it.
+func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (string, int, bool) {
 	if r.qnameMinCount == 0 || nomin {
-		return req, level, false
+		return "", level, false
 	}
 
 	q := req.Question[0]
 
 	if steps >= r.qnameMinCount || q.Name == rootzone {
-		return req, level, false
+		return "", level, false
 	}
 
 	// RFC 9156 section 2.3: the first qnameMinOneLabel queries add a single
@@ -966,20 +951,106 @@ func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Ms
 
 	prev, end := dns.PrevLabel(q.Name, level+add)
 	if end {
-		return req, level, false
+		return "", level, false
 	}
 	minName := q.Name[prev:]
 	if minName == q.Name {
-		return req, level, false
+		// Nothing is hidden any more, so the next query is the real one.
+		return "", level, false
 	}
 
-	// Only the outcome that queries a different name pays for a private
-	// copy; every other path hands the caller's request back untouched,
-	// exactly as the nomin/disabled entries above already do. The copy is
-	// what makes the returned request lookup-owned — see groupLookup.
-	minReq := req.Copy()
-	minReq.Question[0].Name = minName
-	return minReq, level + add, true
+	return minName, level + add, true
+}
+
+// probeCut asks where the next zone cut is without asking for the name the
+// client wants.
+//
+// The question goes through the internal cache-first path rather than straight
+// to the wire, which is the difference that matters: a prefix another
+// resolution has already asked about costs nothing, and what this one learns is
+// kept for the next. Nothing is read from the answer — the point of the probe
+// is the delegation it establishes on the way, which lands in the delegation
+// cache. The walk then re-reads that cache instead of trusting its own count.
+func (r *Resolver) probeCut(ctx context.Context, rs *resolveState, child string, exposed int) (*dns.Msg, error) {
+	rs.minSteps++
+
+	probe := new(dns.Msg)
+	probe.SetQuestion(child, dns.TypeA)
+	probe.SetEdns0(dnsutil.DefaultMsgSize, true)
+	probe.CheckingDisabled = rs.req.CheckingDisabled
+
+	if debugLogEnabled() {
+		zlog.Debug("Minimization probe", "reqid", rs.requestID, "zone", rs.servers.Zone,
+			"query", dnsutil.FormatQuestion(probe.Question[0]), "step", rs.minSteps)
+	}
+
+	resp, err := r.subQueryWith(ctx, probe, true, &subQueryOrigin{
+		servers:  rs.servers,
+		level:    rs.level,
+		parentDS: rs.parentDS,
+		deadline: rs.cutDeadline,
+		cutKey:   rs.cutKey,
+	})
+	switch {
+	case err == nil, errors.Is(err, errStoppedAtCut):
+		// Either the probe found the cut and stopped, or the name resolved
+		// inside the zone already known. Both leave behind what was learned.
+	case errors.Is(err, middleware.ErrRecursionWorkLimit),
+		errors.Is(err, middleware.ErrMaxRecursion),
+		errors.Is(err, middleware.ErrResolutionAttemptLimit):
+		return nil, err
+	default:
+		// A prefix that cannot be resolved is not a reason to fail the query
+		// the client asked. Stop hiding labels and go ask for the name.
+		rs.nomin = true
+		return r.resolve(ctx, rs)
+	}
+
+	// RFC 8020: an authenticated denial at the probed name denies everything
+	// below it, so the client's longer name is denied too and no further query
+	// can change that. The guard is the same one the walk has always applied —
+	// an unvalidated denial here would let an on-path answer erase a subtree.
+	if resp != nil && resp.Rcode == dns.RcodeNameError {
+		if answer, ok := r.deniedByProbe(ctx, rs, resp); ok {
+			return answer, nil
+		}
+	}
+
+	// The probe may have established a cut several labels deeper than the one
+	// it asked about, and other resolutions may have cached one meanwhile.
+	// Re-read, and never move backwards.
+	q := rs.req.Question[0]
+	if m := r.searchCache(q, rs.req.CheckingDisabled, q.Name); m.level > rs.level {
+		rs.servers, rs.parentDS, rs.level = m.servers, m.parentDS, m.level
+		rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, m.deadline, m.key)
+		noteCut(ctx, rs.cutDeadline, rs.cutKey)
+	}
+	if exposed > rs.level {
+		rs.level = exposed
+	}
+	rs.isRoot = false
+
+	return r.resolve(ctx, rs)
+}
+
+// deniedByProbe reports whether a probe's NXDOMAIN is a locally validated,
+// non-opt-out denial — the only kind that may stand in for the client's own
+// query. The response is rebound to the client's question; provenance keeps the
+// name that was actually denied.
+func (r *Resolver) deniedByProbe(ctx context.Context, rs *resolveState, resp *dns.Msg) (*dns.Msg, bool) {
+	negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, resp)
+	if !secure || !negative.Aggressive || negative.Proof == nil ||
+		negative.Proof.Rcode != dns.RcodeNameError ||
+		dnsutil.HasNSEC3OptOut(resp.Ns, negative.Zone) {
+		return nil, false
+	}
+
+	// The probe's own resolution already validated this and set its flags;
+	// setTags would clear the AD bit that validation just earned. Only the
+	// client-visible Question is rebound — provenance keeps the denied name.
+	resp.Question = append([]dns.Question(nil), rs.req.Question...)
+	r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+	return resp, true
 }
 
 func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
@@ -2762,6 +2833,27 @@ func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg
 // deployments construct a Resolver without one. In that case only
 // the direct-upstream path runs; nothing is cached or read.
 func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+	return r.subQueryWith(ctx, req, false, nil)
+}
+
+// subQueryOrigin starts an internal lookup at a delegation the caller has
+// already reached and validated, instead of at the root. A minimization probe
+// knows exactly which servers to ask; sending it back to the root would make it
+// re-derive every DS and DNSKEY the walk has just been through — work the cache
+// mostly absorbs, but not the per-request attempt budget.
+type subQueryOrigin struct {
+	servers  *authority.Servers
+	level    int
+	parentDS []dns.RR
+	deadline time.Time
+	cutKey   uint64
+}
+
+// subQueryWith is subQuery with the resolution shaped by the caller. A
+// minimization probe wants the walk to end at the first delegation rather than
+// carry on to an answer it would discard, and it must not minimize again —
+// probing a probe would recurse forever.
+func (r *Resolver) subQueryWith(ctx context.Context, req *dns.Msg, stopAtCut bool, from *subQueryOrigin) (*dns.Msg, error) {
 	store := r.store.Load()
 	if store != nil {
 		var (
@@ -2822,12 +2914,24 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 		servers:   r.rootServers,
 		depth:     depth,
 		level:     0,
-		nomin:     false,
+		nomin:     stopAtCut,
+		stopAtCut: stopAtCut,
 		parentDS:  nil,
 		isRoot:    true,
 		extra:     nil,
 		requestID: reqid,
 		work:      middleware.RecursionWorkFrom(ctx),
+	}
+	if from != nil {
+		// isRoot stays false: the caller has already consulted the delegation
+		// cache and holds the deepest cut it knows about, so re-reading it here
+		// would only reset level and lose the position.
+		child.servers = from.servers
+		child.level = from.level
+		child.parentDS = from.parentDS
+		child.isRoot = false
+		child.cutDeadline = from.deadline
+		child.cutKey = from.cutKey
 	}
 	resp, err := r.resolve(ctx, child)
 	if child.work != nil {
@@ -3423,19 +3527,15 @@ func (r *Resolver) run() {
 	}
 }
 
-// handleLookupError processes errors from groupLookup.
-func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolveState, minReq *dns.Msg, minimized bool) (*dns.Msg, error) {
+// handleLookupError processes errors from groupLookup. Only the client's own
+// question reaches it — a probe that fails is handled by probeCut, which gives
+// up on hiding labels rather than failing the query.
+func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolveState, req *dns.Msg) (*dns.Msg, error) {
 	if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
 		errors.Is(err, middleware.ErrMaxRecursion) {
 		return nil, err
 	}
 
-	if minimized {
-		// retry without minimization
-		rs.nomin = true
-		rs.isRoot = false
-		return r.resolve(ctx, rs)
-	}
 	if errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 		return nil, err
 	}
@@ -3446,7 +3546,7 @@ func (r *Resolver) handleLookupError(ctx context.Context, err error, rs *resolve
 			return nil, err
 		}
 
-		zlog.Debug("Received network error from all servers", "query", dnsutil.FormatQuestion(minReq.Question[0]))
+		zlog.Debug("Received network error from all servers", "query", dnsutil.FormatQuestion(req.Question[0]))
 
 		if atomic.AddUint32(&rs.servers.ErrorCount, 1) == 5 {
 			if ok := r.checkHosts(ctx, rs.servers); ok {
@@ -3496,52 +3596,12 @@ func (r *Resolver) clearResolutionZoneFailure(q dns.Question, zone string) {
 }
 
 // processAuthoritySection handles the authority section of the response.
-func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
-	if minimized {
-		// RFC 8020: a locally authenticated NXDOMAIN at a minimized name
-		// denies that exact subtree, so there is no reason to continue
-		// querying progressively longer names. Validate the real
-		// authoritative query cycle first. Unsigned and checking-disabled
-		// answers keep the historical deeper walk; bogus signed proofs fail
-		// closed through authority().
-		if resp.Rcode == dns.RcodeNameError {
-			hasSOA := false
-			for _, rr := range resp.Ns {
-				if _, ok := rr.(*dns.SOA); ok {
-					hasSOA = true
-					break
-				}
-			}
-			if hasSOA {
-				result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
-				if err != nil {
-					return nil, err
-				}
-				negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, result)
-				if secure && negative.Aggressive &&
-					negative.Proof != nil &&
-					negative.Proof.Rcode == dns.RcodeNameError &&
-					!dnsutil.HasNSEC3OptOut(result.Ns, negative.Zone) {
-					// Provenance keeps minReq's denied name. Only the
-					// client-visible Question is rebound to the original
-					// full QNAME.
-					result.Question = append([]dns.Question(nil), rs.req.Question...)
-					r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
-					return result, nil
-				}
-			}
-		}
-
-		// Check if we need to continue with minimization
-		for _, rr := range resp.Ns {
-			switch rr.(type) {
-			case *dns.SOA, *dns.CNAME:
-				rs.advance(minimized)
-				rs.isRoot = false
-				return r.resolve(ctx, rs)
-			}
-		}
-	}
+// processAuthoritySection handles a response that carries authority data but
+// no answer. Only the client's own question reaches it: a probe's authority
+// section is consumed by the probe's own resolution, and its RFC 8020 denial is
+// recognised in probeCut.
+func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, resp *dns.Msg) (*dns.Msg, error) {
+	minReq := rs.req
 
 	// Extract nameserver information
 	nsInfo := r.extractDelegationInfo(resp)
@@ -3564,7 +3624,7 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 	}
 
 	// Process delegation
-	return r.processDelegation(ctx, rs, resp, nsInfo, minimized)
+	return r.processDelegation(ctx, rs, resp, nsInfo)
 }
 
 // delegationInfo holds extracted nameserver information.
@@ -3667,7 +3727,7 @@ func (r *Resolver) filterAuthorityRecords(nsRecords []dns.RR) []dns.RR {
 }
 
 // processDelegation handles delegation processing.
-func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp *dns.Msg, nsInfo delegationInfo, minimized bool) (*dns.Msg, error) {
+func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp *dns.Msg, nsInfo delegationInfo) (*dns.Msg, error) {
 	nsrr := nsInfo.nsRecord
 	q := dns.Question{Name: nsrr.Header().Name, Qtype: nsrr.Header().Rrtype, Qclass: nsrr.Header().Class}
 	// Delegation identity is keyed on the client's CD bit, matching
@@ -3783,11 +3843,6 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	}
 
 	if len(authservers.List) == 0 {
-		if minimized && rs.level < nlevel {
-			rs.advance(minimized)
-			rs.isRoot = false
-			return r.resolve(ctx, rs)
-		}
 		r.recordResolutionZoneFailure(ctx, rs.req.Question[0], q.Name, errNoReachableAuth)
 		return nil, errNoReachableAuth
 	}
@@ -3882,6 +3937,13 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	rs.depth--
 	if rs.depth <= 0 {
 		return nil, errMaxDepth
+	}
+
+	// A probe wanted the cut, and the cut is now established and cached.
+	// Descending into it would resolve a name the walk is going to throw
+	// away — the caller re-reads the delegation cache instead.
+	if rs.stopAtCut {
+		return nil, errStoppedAtCut
 	}
 
 	// Continue resolution with new servers. Descend the inherited cut
