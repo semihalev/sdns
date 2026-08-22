@@ -69,9 +69,14 @@ type Resolver struct {
 	// resurrected from the mutable copy on the next refresh.
 	configuredRootKeys []dns.RR
 
-	qnameMinLevel int
-	netTimeout    time.Duration
-	workPolicy    middleware.RecursionWorkPolicy
+	// qnameMinCount is RFC 9156's MAX_MINIMISE_COUNT and qnameMinOneLabel
+	// its MINIMISE_ONE_LAB. Resolve them through
+	// config.QnameMinimizeParams so a directly built Resolver cannot end up
+	// grouping from the first query.
+	qnameMinCount    int
+	qnameMinOneLabel int
+	netTimeout       time.Duration
+	workPolicy       middleware.RecursionWorkPolicy
 
 	sfGroup *SingleflightWrapper
 
@@ -128,13 +133,17 @@ type resolveState struct {
 	// a warm resolver a budget already consumed by labels it never had to
 	// expose, and stop minimizing exactly where the remaining labels are the
 	// private ones.
-	minSteps  int
-	nomin     bool
-	parentDS  []dns.RR
-	isRoot    bool
-	extra     []bool
-	requestID uint16
-	work      *middleware.RecursionWorkLedger
+	minSteps int
+	// minExposed is how many labels the last minimized query carried. A
+	// grouped query exposes more than one label at a time, so advancing by
+	// one would re-send a name shorter than the one already on the wire.
+	minExposed int
+	nomin      bool
+	parentDS   []dns.RR
+	isRoot     bool
+	extra      []bool
+	requestID  uint16
+	work       *middleware.RecursionWorkLedger
 
 	// cutDeadline is the absolute expiry of the shallowest delegation on
 	// the path descended so far (zero = unbounded, at/above root). A newly
@@ -143,6 +152,19 @@ type resolveState struct {
 	// (T2) protection (GHSA-mqfw-f48p-2vc8).
 	cutDeadline time.Time
 	cutKey      uint64
+}
+
+// advance moves past what the query just answered exposed: the labels the
+// minimized query actually carried, or one more label when the full name went
+// out. The two agree whenever minimization added a single label, which is
+// every name shallower than the grouping threshold.
+func (rs *resolveState) advance(minimized bool) {
+	if minimized {
+		rs.level = rs.minExposed
+		return
+	}
+
+	rs.level++
 }
 
 // minNonZero returns the earlier of two deadlines, treating a zero time as
@@ -257,13 +279,14 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		dnssec: cfg.DNSSEC == "on",
 
-		qnameMinLevel:  cfg.QnameMinLevel,
 		netTimeout:     defaultTimeout,
 		workPolicy:     workPolicy,
 		sfGroup:        NewSingleflightWrapper(),
 		circuitBreaker: newCircuitBreaker(),
 		cryptoLimiter:  dnssec.NewCryptoLimiter(workPolicy.MaxConcurrentCrypto),
 	}
+
+	r.qnameMinCount, r.qnameMinOneLabel = cfg.QnameMinimizeParams()
 
 	// Set default for MaxConcurrentQueries if not configured
 	maxConcurrent := cfg.MaxConcurrentQueries
@@ -450,12 +473,13 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		noteCut(ctx, rs.cutDeadline, rs.cutKey)
 	}
 
-	// RFC 9156 query minimization, bounded by qnameMinLevel probes per
+	// RFC 9156 query minimization, bounded by qnameMinCount probes per
 	// request. Lowering that bound is a privacy/latency trade: past it the
 	// full name goes out, so every remaining delegation sees all of it.
-	minReq, minimized := r.minimize(rs.req, rs.level, rs.minSteps, rs.nomin)
+	minReq, minExposed, minimized := r.minimize(rs.req, rs.level, rs.minSteps, rs.nomin)
 	if minimized {
 		rs.minSteps++
+		rs.minExposed = minExposed
 	}
 
 	if debugLogEnabled() {
@@ -476,7 +500,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if minimized {
-			rs.level++
+			rs.advance(minimized)
 			rs.isRoot = false
 			return r.resolve(ctx, rs)
 		}
@@ -510,7 +534,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		rs.level++
+		rs.advance(minimized)
 		rs.isRoot = false
 		return r.resolve(ctx, rs)
 	}
@@ -910,29 +934,43 @@ func (r *Resolver) removeIPv6Cache(name string) {
 	r.glueV6.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
-// minimize shortens req to the labels the current delegation point already
-// justifies. level is the label depth of that delegation and decides the name;
-// steps is how many minimized queries this request has already spent and
-// decides whether to keep going, capped at qnameMinLevel (RFC 9156 section
-// 2.3's per-request query limit).
-func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Msg, bool) {
-	if r.qnameMinLevel == 0 || nomin {
-		return req, false
+// minimize shortens req to the labels the resolution has reached so far.
+// level is how many labels are already exposed, steps how many minimized
+// queries this request has spent — the budget RFC 9156 section 2.3 bounds. The
+// returned count is the labels this query exposes, which the caller carries
+// forward as the next level.
+func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Msg, int, bool) {
+	if r.qnameMinCount == 0 || nomin {
+		return req, level, false
 	}
 
 	q := req.Question[0]
 
-	if steps >= r.qnameMinLevel || q.Name == rootzone {
-		return req, false
+	if steps >= r.qnameMinCount || q.Name == rootzone {
+		return req, level, false
 	}
 
-	prev, end := dns.PrevLabel(q.Name, level+1)
+	// RFC 9156 section 2.3: the first qnameMinOneLabel queries add a single
+	// label, then whatever is still hidden is divided over the queries left,
+	// the remainder falling to the last of them. Recomputing the quotient per
+	// query reproduces that distribution — 18 labels under 10/4 gives
+	// 1,1,1,1,2,2,2,2,3,3 — without carrying a schedule between calls.
+	add := 1
+	if steps >= r.qnameMinOneLabel {
+		if left := r.qnameMinCount - steps; left > 0 {
+			if grouped := (dns.CountLabel(q.Name) - level) / left; grouped > add {
+				add = grouped
+			}
+		}
+	}
+
+	prev, end := dns.PrevLabel(q.Name, level+add)
 	if end {
-		return req, false
+		return req, level, false
 	}
 	minName := q.Name[prev:]
 	if minName == q.Name {
-		return req, false
+		return req, level, false
 	}
 
 	// Only the outcome that queries a different name pays for a private
@@ -941,7 +979,7 @@ func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Ms
 	// what makes the returned request lookup-owned — see groupLookup.
 	minReq := req.Copy()
 	minReq.Question[0].Name = minName
-	return minReq, true
+	return minReq, level + add, true
 }
 
 func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
@@ -3498,7 +3536,7 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 		for _, rr := range resp.Ns {
 			switch rr.(type) {
 			case *dns.SOA, *dns.CNAME:
-				rs.level++
+				rs.advance(minimized)
 				rs.isRoot = false
 				return r.resolve(ctx, rs)
 			}
@@ -3689,7 +3727,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// Check for parent detection
 	nlevel := dns.CountLabel(q.Name)
 	if rs.level > nlevel {
-		if r.qnameMinLevel > 0 && !rs.nomin {
+		if r.qnameMinCount > 0 && !rs.nomin {
 			// Try without minimization
 			newRS := &resolveState{
 				req:       rs.req,
@@ -3746,7 +3784,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 
 	if len(authservers.List) == 0 {
 		if minimized && rs.level < nlevel {
-			rs.level++
+			rs.advance(minimized)
 			rs.isRoot = false
 			return r.resolve(ctx, rs)
 		}

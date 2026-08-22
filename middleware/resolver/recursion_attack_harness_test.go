@@ -244,7 +244,7 @@ func newAttackHarnessResolver(root *authority.Servers) *Resolver {
 		rootServers:     root,
 		glueV4:          internalcache.New(defaultCacheSize),
 		dnssec:          false,
-		qnameMinLevel:   0,
+		qnameMinCount:   0,
 		netTimeout:      time.Second,
 		sfGroup:         NewSingleflightWrapper(),
 		circuitBreaker:  newCircuitBreaker(),

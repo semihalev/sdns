@@ -111,7 +111,7 @@ func newOutageResolver(root *authority.Servers, maxConcurrent int) *Resolver {
 		glueV4:          internalcache.New(defaultCacheSize),
 		glueV6:          internalcache.New(defaultCacheSize),
 		dnssec:          false,
-		qnameMinLevel:   0,
+		qnameMinCount:   0,
 		netTimeout:      500 * time.Millisecond,
 		sfGroup:         NewSingleflightWrapper(),
 		circuitBreaker:  newCircuitBreaker(),
