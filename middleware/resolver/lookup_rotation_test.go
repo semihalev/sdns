@@ -12,6 +12,16 @@ import (
 	"github.com/semihalev/sdns/internal/authority"
 )
 
+// allMeasured reports whether every one of these has a latency on record.
+func allMeasured(list []*authority.Server) bool {
+	for _, s := range list {
+		if s.SmoothedRTT() == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // countingUpstream is a loopback authority that records how many queries
 // reached it. When answer is false it reads and drops, which is what an
 // address slower than the leader looks like from here: the lookup returns
@@ -153,9 +163,12 @@ func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
 	const answering, silentCount, lookups = 2, 8, 100
 
 	servers := &authority.Servers{Zone: "example."}
+	answered := make([]*authority.Server, 0, answering)
 	for range answering {
 		addr, _ := countingUpstream(t, true)
-		servers.List = append(servers.List, authority.NewServer(addr, authority.IPv4))
+		s := authority.NewServer(addr, authority.IPv4)
+		answered = append(answered, s)
+		servers.List = append(servers.List, s)
 	}
 	silent := make(map[string]*atomic.Int64, silentCount)
 	for range silentCount {
@@ -180,18 +193,21 @@ func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
 		}
 	}
 
-	// Let it settle the way production settles, then measure from there.
-	for range 20 {
+	// Settle the delegation the way production settles it: both of the
+	// authorities that answer are measured, so the second slot is no
+	// longer level with anything and the rotation has nothing to rotate.
+	// That is the state this test is about.
+	//
+	// Waited for rather than counted out in lookups. Which of the two
+	// answering addresses takes the second slot is a random choice, so a
+	// fixed warm-up leaves the other one unmeasured about one run in
+	// seven — a coin this test has no reason to be flipping.
+	settled := time.Now().Add(5 * time.Second)
+	for !allMeasured(answered) && time.Now().Before(settled) {
 		runLookup()
 	}
-	measured := 0
-	for _, s := range servers.List {
-		if s.SmoothedRTT() != 0 {
-			measured++
-		}
-	}
-	if measured != answering {
-		t.Fatalf("the delegation settled on %d measured addresses, want the %d that answer", measured, answering)
+	if !allMeasured(answered) {
+		t.Fatal("the authorities that answer never got measured")
 	}
 	for _, hits := range silent {
 		hits.Store(0)

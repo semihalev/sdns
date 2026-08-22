@@ -1635,6 +1635,39 @@ type lookupResult struct {
 // launching the goroutine, and the pooled reqCopy buffer; both are
 // released before the result send so the main loop can keep launching
 // workers while we queue.
+// probeMode marks an attempt as a measurement probe, and rides on the
+// probe's own detached context — the one thing already scoped to a single
+// attempt, so it cannot reach another one. What it turns off is the retry
+// and the fallbacks to TCP: those exist to get an answer, and a probe's
+// answer has no reader once the lookup it was born in has returned. One
+// exchange is what a probe is for, and one exchange is what it costs.
+type probeMode struct{}
+
+func withProbeMode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, probeMode{}, true)
+}
+
+func isProbe(ctx context.Context) bool {
+	on, _ := ctx.Value(probeMode{}).(bool)
+	return on
+}
+
+// retainForProbe holds the request tree's work ledger open across an
+// attempt that outlives the lookup, the same way the detached IPv6
+// enrichment holds it. Detaching the context carries the ledger through
+// but does not keep it alive: once the tree completes, a debit against it
+// comes back as an error, and this path would read that as the authority
+// failing and trip its circuit breaker for the resolver's own bookkeeping.
+//
+// It reports false when the tree is already finished, which is when
+// starting detached work would escape the tree's aggregate cap.
+func retainForProbe(rs *resolveState) (release func(), ok bool) {
+	if rs == nil || rs.work == nil {
+		return func() {}, true
+	}
+	return rs.work.Retain()
+}
+
 // queryServer runs one upstream attempt and reports it back to lookup.
 //
 // probing marks the attempt the ranking chose to spend on a server whose
@@ -1659,36 +1692,40 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 	// read it.
 	exchangeCtx := ctx
 	if probing {
-		select {
-		case r.probeSlots <- struct{}{}:
-			defer func() { <-r.probeSlots }()
+		if releaseWork, retained := retainForProbe(rs); retained {
+			select {
+			case r.probeSlots <- struct{}{}:
+				defer func() { <-r.probeSlots }()
+				defer releaseWork()
 
-			// Detached, so the winner's cancellation does not reach it.
-			// Values are carried through, so the request tree still meters
-			// this query as its own.
-			//
-			// The deadline is one exchange window and a grace, because one
-			// exchange is all a probe is for: nobody will read its answer,
-			// so the retry and the fallback to TCP an ordinary attempt is
-			// entitled to would be work for a reply with no reader. The
-			// grace is there so the socket deadline is what ends a silent
-			// server, which is the difference between recording a failure
-			// and recording nothing. A probe therefore lives no longer than
-			// any other attempt.
-			var release context.CancelFunc
-			exchangeCtx, release = context.WithTimeout(context.WithoutCancel(ctx), r.netTimeout+probeGrace)
-			defer release()
+				// Detached, so the winner's cancellation does not reach it.
+				// Values are carried through, so the request tree still
+				// meters this query as its own — and the retain above is
+				// what keeps that ledger open long enough to be metered
+				// against.
+				//
+				// The deadline is one exchange window and a grace. The
+				// grace is there so the socket deadline is what ends a
+				// silent server, which is the difference between recording
+				// a failure and recording nothing. A probe therefore lives
+				// no longer than any other attempt.
+				var release context.CancelFunc
+				exchangeCtx, release = context.WithTimeout(context.WithoutCancel(ctx), r.netTimeout+probeGrace)
+				defer release()
+				exchangeCtx = withProbeMode(exchangeCtx)
 
-			// The interrupt group belongs to the lookup and fires with it,
-			// so a probe registered there would be cut down anyway. Nil
-			// leaves the exchange on its own context, which is the detached
-			// one.
-			interrupts = nil
-		default:
-			// The probe pool is full. Shedding a measurement is free, and
-			// the attempt goes ahead as the hedge it would have been:
-			// exchangeCtx is still the lookup's, so the winner cancels it
-			// like any other.
+				// The interrupt group belongs to the lookup and fires with
+				// it, so a probe registered there would be cut down anyway.
+				// Nil leaves the exchange on its own context, which is the
+				// detached one.
+				interrupts = nil
+			default:
+				// The probe pool is full. Shedding a measurement is free,
+				// and the attempt goes ahead as the hedge it would have
+				// been: exchangeCtx is still the lookup's, so the winner
+				// cancels it like any other.
+				releaseWork()
+			}
 		}
 	}
 
@@ -2002,7 +2039,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 		if contextutil.EffectiveError(ctx) != nil {
 			return nil, err
 		}
-		if retried < 2 {
+		if retried < 2 && !isProbe(ctx) {
 			if retried == 1 && proto == "udp" {
 				proto = "tcp"
 			}
@@ -2026,12 +2063,16 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 	ReleaseConn(co)
 
-	if resp != nil && resp.Truncated && proto == "udp" {
+	// A probe stops here on every one of these. The fallbacks exist to get
+	// an answer, and by the time a probe has one the lookup it was born in
+	// has returned and nobody is left to read it; the UDP exchange it just
+	// completed is the measurement it was sent for.
+	if resp != nil && resp.Truncated && proto == "udp" && !isProbe(ctx) {
 		record()
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
-	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > dnsutil.DefaultMsgSize {
+	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > dnsutil.DefaultMsgSize && !isProbe(ctx) {
 		// If response is too large, switch to TCP
 		zlog.Debug("Response too large, switching to TCP", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 			"size", resp.Len(), "maxSize", dnsutil.DefaultMsgSize, "retried", retried)
@@ -2040,13 +2081,18 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
-		// try again without edns tags, some weird servers didn't implement that
-		req = dnsutil.ClearOPT(req)
 		// A server that cannot parse EDNS is not a server that failed to
 		// answer: this attempt is being replaced, not scored. Marking it
 		// observed keeps the defer from pricing our own choice of query
-		// shape as the authority's fault.
+		// shape as the authority's fault — which is as true for a probe,
+		// which stops here rather than asking again, as for a lookup that
+		// goes on to.
 		observed = true
+		if isProbe(ctx) {
+			return resp, nil
+		}
+		// try again without edns tags, some weird servers didn't implement that
+		req = dnsutil.ClearOPT(req)
 		return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 	}
 
