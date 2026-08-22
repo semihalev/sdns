@@ -13,8 +13,17 @@ import (
 // Server type.
 type Server struct {
 	// place atomic members at the start to fix alignment for ARM32
-	Rtt       int64
-	Count     int64
+	//
+	// state is the smoothed latency and the fact that an exchange has
+	// completed, in one word: [estimate ns : 63][measured : 1]. They are
+	// packed because they have to change together — a sample that lands
+	// between reading one and writing the other could otherwise replace a
+	// measurement instead of folding into it.
+	state int64
+	// lastNs is when state was last refreshed, in Unix nanoseconds. It is
+	// what ages a measurement per server, replacing a periodic wipe that
+	// aged the whole set at once.
+	lastNs    int64
 	Addr      string
 	IPVersion IPVersion
 
@@ -118,26 +127,30 @@ func (v IPVersion) String() string {
 }
 
 func (a *Server) String() string {
-	count := atomic.LoadInt64(&a.Count)
-	rn := atomic.LoadInt64(&a.Rtt)
-
-	if count == 0 {
-		count = 1
-	}
+	measured := a.SmoothedRTT()
 
 	var health string
 	switch {
-	case rn >= int64(time.Second):
-		health = "POOR"
-	case rn > 0:
-		health = "GOOD"
-	default:
+	case measured == 0:
 		health = "UNKNOWN"
+	case measured >= time.Second:
+		health = "POOR"
+	default:
+		health = "GOOD"
 	}
 
-	rtt := (time.Duration(rn) / time.Duration(count)).Round(time.Millisecond)
+	rtt := "unknown"
+	if measured != 0 {
+		rtt = measured.Round(time.Millisecond).String()
+	}
 
-	return a.IPVersion.String() + ":" + a.Addr + " rtt:" + rtt.String() + " health:[" + health + "]"
+	// The score is what the ranking actually sorts on, and it is not the
+	// latency: an unmeasured server is priced at the seed, and an old
+	// measurement drifts back toward it. Printing both is what makes the
+	// order this reports explicable.
+	return a.IPVersion.String() + ":" + a.Addr + " rtt:" + rtt +
+		" rank:" + a.Score().Round(time.Millisecond).String() +
+		" health:[" + health + "]"
 }
 
 // fpEntry caches a Fingerprint() result along with the generation
@@ -221,27 +234,119 @@ func (a *Servers) InvalidateFingerprint() {
 	a.gen.Add(1)
 }
 
-// Sort sort servers by rtt.
-func Sort(serversList []*Server, called uint64) {
-	for _, s := range serversList {
-		// clear stats and re-start again
-		if called%1e3 == 0 {
-			atomic.StoreInt64(&s.Rtt, 0)
-			atomic.StoreInt64(&s.Count, 0)
+const (
+	// rttUnknownSeed is what "no data" is worth. Zero — the value a fresh
+	// Server carries — ranked no-data as instant, which handed the head of
+	// the list to whichever address had never answered; with the resolver
+	// starting its top two in parallel, that spent one of every miss's two
+	// queries on the one server whose speed nobody had established. The
+	// seed sits above a healthy authority and below a sick one: an
+	// unmeasured server is worth trying, never worth preferring.
+	rttUnknownSeed = int64(300 * time.Millisecond)
 
-			continue
+	// staleAfter is when a measurement stops counting as fresh evidence.
+	// It replaces clearing every server's statistics every thousandth
+	// sort, which aged the whole set at once and returned all of them to
+	// the unmeasured state the ranking treated as fastest.
+	staleAfter = int64(5 * time.Minute)
+
+	// sortStackServers is the largest address set ranked without touching
+	// the heap. The root names thirteen; a delegation past this is rare
+	// enough to pay for a slice.
+	sortStackServers = 32
+)
+
+// Observe records a completed exchange: how long this server took to
+// answer. The estimate is blended half and half with each new sample, so
+// one bad sample is visible in the ranking immediately — which is what a
+// resolver needs when an authority starts to degrade. A running average
+// over every sample ever taken needed dozens of them to notice.
+//
+// The loop is there because a root address is in flight from several
+// lookups at once. Read, decide, write as separate steps kept only
+// whichever store landed last; the compare-and-swap carries the estimate
+// and its measured bit together, so a sample that is counted is a sample
+// that moved the estimate.
+func (s *Server) Observe(d time.Duration) {
+	sample := int64(d)
+	if sample < 0 {
+		sample = 0
+	}
+	for {
+		w := atomic.LoadInt64(&s.state)
+		next := sample
+		if w&1 == 1 {
+			next = (w>>1 + sample) / 2
 		}
-
-		rtt := atomic.LoadInt64(&s.Rtt)
-		count := atomic.LoadInt64(&s.Count)
-
-		if count > 0 {
-			// average rtt
-			atomic.StoreInt64(&s.Rtt, rtt/count)
-			atomic.StoreInt64(&s.Count, 1)
+		if atomic.CompareAndSwapInt64(&s.state, w, next<<1|1) {
+			break
 		}
 	}
-	sort.Slice(serversList, func(i, j int) bool {
-		return atomic.LoadInt64(&serversList[i].Rtt) < atomic.LoadInt64(&serversList[j].Rtt)
-	})
+	atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
+}
+
+// SmoothedRTT is the measured latency, or zero when nothing has answered.
+// The adaptive per-server timeout reads this rather than the ranking
+// score: a timeout should follow how fast the server is, not how far the
+// ranking has priced it down.
+func (s *Server) SmoothedRTT() time.Duration {
+	w := atomic.LoadInt64(&s.state)
+	if w&1 == 0 {
+		return 0
+	}
+	return time.Duration(w >> 1)
+}
+
+// Score is what the ranking sorts on, at this instant.
+func (s *Server) Score() time.Duration { return time.Duration(s.score(time.Now().UnixNano())) }
+
+func (s *Server) score(nowNs int64) int64 {
+	w := atomic.LoadInt64(&s.state)
+	base := w >> 1
+	if w&1 == 0 {
+		// Nothing has answered: a guess is priced at the seed. The extra
+		// nanosecond is the tie-break, so a server measured at exactly
+		// that price still outranks the guess.
+		base = rttUnknownSeed + 1
+	} else if last := atomic.LoadInt64(&s.lastNs); last != 0 && nowNs-last > staleAfter {
+		// Halfway back toward a guess: old evidence is weakened, not
+		// discarded, so a server that was fast an hour ago still outranks
+		// one that was slow an hour ago.
+		base = (base + rttUnknownSeed) / 2
+	}
+	return base
+}
+
+// Sort ranks a delegation's addresses in place, fastest first. It runs on
+// every cache miss, so it allocates nothing for the sets a resolver
+// actually meets: the scores are read once into a small array and the
+// pass over them is insertion, which is the cheapest thing for a handful
+// of addresses and does not need a closure the way sort.Slice does.
+func Sort(serversList []*Server) {
+	n := len(serversList)
+	if n < 2 {
+		return
+	}
+	now := time.Now().UnixNano()
+	if n <= sortStackServers {
+		var scores [sortStackServers]int64
+		rank(serversList, scores[:n], now)
+		return
+	}
+	rank(serversList, make([]int64, n), now)
+}
+
+func rank(list []*Server, scores []int64, now int64) {
+	for i, s := range list {
+		scores[i] = s.score(now)
+	}
+	for i := 1; i < len(list); i++ {
+		score, server := scores[i], list[i]
+		j := i - 1
+		for j >= 0 && scores[j] > score {
+			scores[j+1], list[j+1] = scores[j], list[j]
+			j--
+		}
+		scores[j+1], list[j+1] = score, server
+	}
 }

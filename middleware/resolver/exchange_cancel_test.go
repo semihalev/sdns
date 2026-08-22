@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,8 +56,8 @@ func TestExchangeCancellationInterruptsInFlightUDPRead(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("resolver UDP read ignored context cancellation")
 	}
-	if got := atomic.LoadInt64(&server.Count); got != 0 {
-		t.Fatalf("canceled exchange updated RTT sample count to %d", got)
+	if got := server.SmoothedRTT(); got != 0 {
+		t.Fatalf("canceled exchange measured the server at %v", got)
 	}
 }
 
@@ -111,7 +110,7 @@ func TestExchangeCancellationInterruptsThroughGroup(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("group-armed resolver UDP read ignored context cancellation")
 	}
-	if got := atomic.LoadInt64(&server.Count); got != 0 {
-		t.Fatalf("canceled exchange updated RTT sample count to %d", got)
+	if got := server.SmoothedRTT(); got != 0 {
+		t.Fatalf("canceled exchange measured the server at %v", got)
 	}
 }

@@ -261,7 +261,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 	copy(serversList, servers.List)
 	servers.RUnlock()
 
-	authority.Sort(serversList, 1)
+	authority.Sort(serversList)
 
 	rrHeader := dns.RR_Header{
 		Name:   name,

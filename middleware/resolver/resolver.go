@@ -1364,7 +1364,7 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
-	authority.Sort(serversList, atomic.AddUint64(&servers.Called, 1)) // sort by RTT and failure rate
+	authority.Sort(serversList) // fastest first
 	serversList = dedupeAuthorityServers(serversList)
 
 	responseErrors := []*dns.Msg{}
@@ -1496,8 +1496,7 @@ mainloop:
 						// bogus delegation, not the current loop index —
 						// results arrive out of order from parallel
 						// goroutines, so `server` can be a later peer.
-						atomic.AddInt64(&res.server.Rtt, 2*time.Second.Nanoseconds())
-						atomic.AddInt64(&res.server.Count, 1)
+						res.server.Observe(2 * time.Second)
 
 						if left > 0 && len(serversList)-1 == index {
 							continue fallbackloop
@@ -1678,12 +1677,27 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 	}
 }
 
+// answeredTheQuestion reports the rcodes that mean the authority did the
+// job it was asked to do: the name exists and here it is, the name does
+// not exist, or — RFC 6672 §2.2, a DNAME substitution that would exceed
+// 255 octets — the question can have no answer at all. Everything else is
+// a server that did not answer, however quickly it said so.
+//
+// A list of what counts rather than a list of what does not, because the
+// failure mode is asymmetric: a rcode nobody thought about lands in the
+// default, and the safe default is "this did not answer my question".
+func answeredTheQuestion(rcode int) bool {
+	return rcode == dns.RcodeSuccess ||
+		rcode == dns.RcodeNameError ||
+		rcode == dns.RcodeYXDomain
+}
+
 // adaptiveServerTimeout picks how long lookup waits on a single server
 // before racing the next candidate. With no RTT samples the result is a
 // conservative 100ms; otherwise it is 2× the observed RTT clamped to
 // [25ms, 300ms] so a single slow outlier can't stall the whole fan-out.
 func adaptiveServerTimeout(server *authority.Server) time.Duration {
-	rtt := time.Duration(atomic.LoadInt64(&server.Rtt))
+	rtt := server.SmoothedRTT()
 	if rtt <= 0 {
 		return 100 * time.Millisecond
 	}
@@ -1773,10 +1787,21 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	var rtt = r.netTimeout
 	defer func() {
 		if contextutil.EffectiveError(ctx) != nil {
+			// This attempt was cancelled because a peer answered first.
+			// What it took to get cancelled is not what this server is
+			// worth, and recording it would make a server nobody has heard
+			// from look like the fastest in the delegation.
 			return
 		}
-		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
-		atomic.AddInt64(&server.Count, 1)
+		sample := rtt
+		if resp != nil && !answeredTheQuestion(resp.Rcode) {
+			// A refusal is the fastest answer an authority can give, so
+			// scoring it by the clock teaches the ranking to prefer the
+			// servers that turn us away. It did not answer the question;
+			// price it as if it had not answered at all.
+			sample = r.netTimeout
+		}
+		server.Observe(sample)
 	}()
 
 	// Check if we should use TCP connection pooling

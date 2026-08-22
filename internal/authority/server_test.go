@@ -17,8 +17,8 @@ import (
 // the claim being made is "the marker is free" rather than a byte count that
 // is only true on one ABI.
 type serverWithoutCanonical struct {
-	Rtt       int64
-	Count     int64
+	State     int64
+	LastNs    int64
 	Addr      string
 	IPVersion IPVersion
 	UDPAddr   *net.UDPAddr
@@ -50,14 +50,21 @@ func Test_TrySort(t *testing.T) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // G404 - test file, not used for crypto
 	for i := 0; i < 2000; i++ {
 		for j := range s.List {
-			s.List[j].Count++
-			s.List[j].Rtt += (time.Duration(r.Intn(2000-0)+0) * time.Millisecond).Nanoseconds()
-			Sort(s.List, uint64(i))
+			s.List[j].Observe(time.Duration(r.Intn(2000)) * time.Millisecond)
+			Sort(s.List)
 		}
 	}
 
-	if !reflect.DeepEqual(int64(1), s.List[0].Count) {
-		t.Errorf("s.List[0].Count = %v, want %v", s.List[0].Count, int64(1))
+	// However the samples fell, the head of the list is the cheapest
+	// server in it. The old shape could not promise this: every thousandth
+	// sort wiped every server's statistics, and for the sorts that
+	// followed the whole set read as unmeasured — which it ranked first.
+	lead := s.List[0].Score()
+	for _, srv := range s.List[1:] {
+		if srv.Score() < lead {
+			t.Fatalf("%s scores %v, ahead of the leader %s at %v",
+				srv.Addr, srv.Score(), s.List[0].Addr, lead)
+		}
 	}
 }
 
@@ -150,17 +157,16 @@ func Test_ServerString(t *testing.T) {
 		t.Errorf("%q does not contain %q", str, "UNKNOWN")
 	}
 
-	// Test GOOD health (0 < Rtt < 1 second)
-	s.Rtt = int64(100 * time.Millisecond)
-	s.Count = 1
+	// Test GOOD health (a measured, sub-second latency)
+	s.Observe(100 * time.Millisecond)
 	str = s.String()
 	if !strings.Contains(str, "GOOD") {
 		t.Errorf("%q does not contain %q", str, "GOOD")
 	}
 
-	// Test POOR health (Rtt >= 1 second)
-	s.Rtt = int64(2 * time.Second)
-	s.Count = 1
+	// Test POOR health (a measured latency past a second). The blend is
+	// half and half, so this lands at 2.05s.
+	s.Observe(4 * time.Second)
 	str = s.String()
 	if !strings.Contains(str, "POOR") {
 		t.Errorf("%q does not contain %q", str, "POOR")
