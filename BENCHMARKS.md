@@ -189,13 +189,18 @@ changed the answer by more than the result itself:
   time out adaptively from measured RTT and have no equivalent single knob;
   Unbound's starting point for an unmeasured server is 376 ms, so it is
   already the more aggressive of the two policies.
-- **QNAME minimisation off in all four.** Every one of them implements it, and
-  every one of them uses a different step policy — RFC 9156 requires the extra
-  queries to be bounded but does not say by how much, so the counts are not
-  comparable in common units. Turning it off removes the variable. **This is
-  therefore not a configuration anyone should run:** minimisation is the
-  recommended default and disabling it is a privacy regression. It is
-  disabled here to compare resolution engines, not to recommend a setting.
+- **QNAME minimisation off in all four.** All four implement it and each
+  bounds it differently. RFC 9156 §2.3 does require a bound — *"Resolvers
+  supporting QNAME minimisation MUST implement a mechanism to limit the
+  number of outgoing queries per user request"* — and it names values:
+  MAX_MINIMISE_COUNT with a RECOMMENDED value of 10, and MINIMISE_ONE_LAB
+  with "a good value is 4". What the implementations do not share is the
+  knob: sdns exposes a label depth (`qname_min_level`, default 3), the
+  others expose a boolean or their own parameters, so the recommended
+  values cannot simply be dialled in on all four. Turning it off removes
+  the variable instead. **This is not a configuration to run in
+  production** — it is a privacy regression, and it is off here to compare
+  resolution engines rather than to recommend a setting.
 
 ### Results
 
@@ -231,6 +236,10 @@ lost column are where that shows up.
   this network from this host, and should not be read as a portable ranking.
 - The minimisation caveat above is not a footnote: with each resolver's own
   minimisation policy enabled, the numbers and possibly the ordering differ.
+  Measuring that would mean establishing what each one actually sends —
+  observable on the wire, since the minimised queries are visible in a
+  capture — rather than trusting four differently-named settings to mean the
+  same thing.
 
 ## What changed in 1.8.0
 
