@@ -379,21 +379,28 @@ func (s *Server) score(nowNs int64) (int64, bool) {
 // actually meets: the scores are read once into a small array and the
 // pass over them is insertion, which is the cheapest thing for a handful
 // of addresses and does not need a closure the way sort.Slice does.
-func Sort(serversList []*Server) {
+//
+// It returns the server the second slot is spending on an exploration
+// probe, or nil when that slot is an ordinary hedge. The caller has to
+// treat the two differently: a hedge is a spare answer, worth nothing
+// once the leader has answered, and cancelling it is right. A probe is
+// worth only the measurement it brings back, and cancelling it brings
+// none — which is what happens by default, every time, because the leader
+// is by construction the fastest server in the list.
+func Sort(serversList []*Server) *Server {
 	n := len(serversList)
 	if n < 2 {
-		return
+		return nil
 	}
 	now := time.Now().UnixNano()
 	if n <= sortStackServers {
 		var scores [sortStackServers]int64
-		rank(serversList, scores[:n], now)
-		return
+		return rank(serversList, scores[:n], now)
 	}
-	rank(serversList, make([]int64, n), now)
+	return rank(serversList, make([]int64, n), now)
 }
 
-func rank(list []*Server, scores []int64, now int64) {
+func rank(list []*Server, scores []int64, now int64) *Server {
 	// How much of this delegation is out of date falls out of the scoring
 	// pass, which has already read what it takes to know. The count is
 	// what sets the exploration rate: how much of the hedge is worth
@@ -416,7 +423,7 @@ func rank(list []*Server, scores []int64, now int64) {
 		}
 		scores[j+1], list[j+1] = score, server
 	}
-	hedge(list, scores, now, stale)
+	return hedge(list, scores, now, stale)
 }
 
 // randN is the ranking's only source of randomness, replaceable so a test
@@ -461,10 +468,10 @@ var randN = rand.IntN
 // five hundred misses to reach a given address of com., which on a real
 // delegation is hours, while the same rate on a zone with one unknown
 // left would spend every thirty-second hedge on that one address forever.
-func hedge(list []*Server, scores []int64, now int64, stale int) {
+func hedge(list []*Server, scores []int64, now int64, stale int) *Server {
 	n := len(list)
 	if n < 3 {
-		return
+		return nil
 	}
 
 	if stale > 0 && randN(n) < stale {
@@ -499,7 +506,7 @@ func hedge(list []*Server, scores []int64, now int64, stale int) {
 					copy(list[2:i+1], list[1:i])
 					copy(scores[2:i+1], scores[1:i])
 					list[1], scores[1] = probe, score
-					return
+					return probe
 				}
 				pick--
 			}
@@ -514,4 +521,5 @@ func hedge(list []*Server, scores []int64, now int64, stale int) {
 		j := 1 + randN(k-1)
 		list[1], list[j] = list[j], list[1]
 	}
+	return nil
 }

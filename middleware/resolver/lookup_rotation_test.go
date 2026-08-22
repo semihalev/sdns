@@ -57,6 +57,83 @@ func countingUpstream(t *testing.T, answer bool) (string, *atomic.Int64) {
 	return packet.LocalAddr().String(), hits
 }
 
+// The end of the arc, over real sockets: a delegation where every
+// address but the leader is slower than the leader. Those are the ones
+// exploring could never measure, because an explored address only ever
+// came back measured by winning its race — so the field showed a
+// delegation gaining one address a minute with seventeen waiting, and the
+// genuinely slower ones waiting for good.
+func TestSlowerAuthoritiesAreMeasuredNotJustExplored(t *testing.T) {
+	const slower, lookups = 6, 200
+
+	// A lookup against loopback costs a fraction of a millisecond and a
+	// probe to these costs eighty, so an unpaced loop starts probes
+	// hundreds of times faster than the pool can retire them and the pool
+	// sheds nearly all of them — correctly, that being what it is for.
+	// Real misses do not arrive at that rate. The pause keeps the test out
+	// of a regime it is not trying to measure.
+	const pace = 3 * time.Millisecond
+
+	fastAddr, _ := countingUpstream(t, true)
+	servers := &authority.Servers{Zone: "example."}
+	servers.List = append(servers.List, authority.NewServer(fastAddr, authority.IPv4))
+
+	slow := make([]*authority.Server, 0, slower)
+	for range slower {
+		// Far enough behind the leader that it never wins the race.
+		s := authority.NewServer(slowUpstream(t, 80*time.Millisecond), authority.IPv4)
+		slow = append(slow, s)
+		servers.List = append(servers.List, s)
+	}
+
+	cfg := &config.Config{
+		RootServers:          []string{"198.41.0.4:53"},
+		Timeout:              config.Duration{Duration: 2 * time.Second},
+		MaxConcurrentQueries: 100,
+	}
+	r := newWiredTestResolver(cfg)
+	req := new(dns.Msg)
+	req.SetQuestion("slower.example.", dns.TypeA)
+
+	for range lookups {
+		if _, err := r.lookup(context.Background(), &resolveState{requestID: req.Id}, req, servers); err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+		time.Sleep(pace)
+	}
+
+	// A probe outlives the lookup that sent it, which is the whole point,
+	// so the last ones are still in flight when the loop ends.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		done := true
+		for _, s := range slow {
+			if s.SmoothedRTT() == 0 {
+				done = false
+				break
+			}
+		}
+		if done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	unmeasured, rtts := 0, make([]time.Duration, 0, slower)
+	for _, s := range slow {
+		got := s.SmoothedRTT()
+		rtts = append(rtts, got.Round(time.Millisecond))
+		if got == 0 {
+			unmeasured++
+		}
+	}
+	t.Logf("latencies learned for addresses that never win a race: %v", rtts)
+	if unmeasured > 0 {
+		t.Fatalf("%d of %d addresses slower than the leader are still unmeasured after %d lookups: %v",
+			unmeasured, slower, lookups, rtts)
+	}
+}
+
 // The shape a delegation actually settles into, which is not the one
 // above: the parallel head is two, so two addresses get measured and
 // every other address in the zone is left behind the seed. Nothing is
