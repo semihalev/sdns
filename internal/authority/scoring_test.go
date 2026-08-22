@@ -866,6 +866,27 @@ func TestAStormOfFailuresLeavesTheServerFailing(t *testing.T) {
 	}
 }
 
+// The exploring branch is the ranking's worst case: it walks the list
+// twice asking what each server's standing is worth, on top of the sort
+// it already did. It runs on one lookup in thirty-two, and this is what
+// that one costs — measured against BenchmarkSortUnordered13, which is
+// the same list on the other thirty-one.
+func BenchmarkSortExploring(b *testing.B) {
+	src := benchServers(13)
+	list := make([]*Server, 13)
+
+	old := randN
+	randN = func(int) int { return 0 } // every roll explores
+	defer func() { randN = old }()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(list, src)
+		Sort(list)
+	}
+}
+
 // The record path runs once per upstream attempt, so it is priced too.
 func BenchmarkObserve(b *testing.B) {
 	s := NewServer("192.0.2.1:53", IPv4)

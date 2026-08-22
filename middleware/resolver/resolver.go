@@ -82,6 +82,7 @@ type Resolver struct {
 	circuitBreaker  *circuitBreaker
 	maxConcurrent   chan struct{} // Semaphore for limiting concurrent queries
 	v6LookupSlots   chan struct{} // Global cap on detached IPv6 NS enrichment jobs
+	probeSlots      chan struct{} // Global cap on exploration probes outliving their lookup
 	resolutionSlots chan struct{} // Hard ceiling on in-flight zone lookups; full → fail fast
 	zoneInflight    *zoneInflightLimiter
 	cryptoLimiter   *dnssec.CryptoLimiter
@@ -212,6 +213,24 @@ const (
 	maxUint16        = 1 << 16
 	defaultCacheSize = 1024 * 256
 	defaultTimeout   = 2 * time.Second
+
+	// maxInflightProbes caps the exploration probes that are allowed to
+	// outlive the lookup that started them. See probeSlots.
+	//
+	// Sixteen is chosen from what the slots turn over rather than from
+	// what a machine could carry: a probe to a server that answers is done
+	// in the time that server takes, so these sustain a hundred-odd
+	// measurements a second, against a delegation that needs a few dozen
+	// in its lifetime. Only a probe to something silent holds a slot for a
+	// whole timeout, and sixteen of those is a number nobody has to think
+	// about — which is the property being bought here.
+	maxInflightProbes = 16
+
+	// probeGrace is how much longer than one upstream timeout a probe's
+	// context lives, so that a silent server is ended by the socket
+	// deadline — a failure — rather than by the context, which would only
+	// be a floor.
+	probeGrace = 250 * time.Millisecond
 )
 
 // NewResolver return a resolver.
@@ -258,6 +277,16 @@ func NewResolver(cfg *config.Config) *Resolver {
 		// goroutines). Full slots shed the job instead of queueing it.
 		r.v6LookupSlots = make(chan struct{}, maxConcurrent)
 	}
+
+	// Exploration probes outlive the lookup that started them, so they are
+	// a detached pool and are capped like one — full slots shed the probe
+	// rather than queue it, and the probe then behaves as an ordinary
+	// hedge. A fixed cap rather than a share of the query budget: a probe
+	// lasts at most one timeout, so this many in flight sustains tens per
+	// second, which measures every address of every delegation a resolver
+	// touches many times over. What it must not do is grow with arrival
+	// rate, which is how a detached pool reached 1.4M goroutines once.
+	r.probeSlots = make(chan struct{}, maxInflightProbes)
 
 	if r.cfg.Timeout.Duration > 0 {
 		r.netTimeout = r.cfg.Timeout.Duration
@@ -1364,7 +1393,10 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
-	authority.Sort(serversList) // fastest first, hedge slot behind it
+	// probing is the server the hedge slot is spending on an exploration
+	// probe, if it is spending it on one. It is carried as the server
+	// rather than the position because dedupe runs next and can move it.
+	probing := authority.Sort(serversList) // fastest first, hedge slot behind it
 	serversList = dedupeAuthorityServers(serversList)
 
 	responseErrors := []*dns.Msg{}
@@ -1421,7 +1453,7 @@ mainloop:
 		select {
 		case r.maxConcurrent <- struct{}{}:
 			// Got a slot, start the query
-			go r.queryServer(ctx, rs, interrupts, originalID, serverReq, server, results)
+			go r.queryServer(ctx, rs, interrupts, originalID, serverReq, server, results, server == probing)
 		case <-ctx.Done():
 			// Context cancelled while waiting for slot —
 			// return the pre-copied pooled message before
@@ -1607,8 +1639,63 @@ type lookupResult struct {
 // launching the goroutine, and the pooled reqCopy buffer; both are
 // released before the result send so the main loop can keep launching
 // workers while we queue.
-func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts *InterruptGroup, originalID uint16, reqCopy *dns.Msg, server *authority.Server, results chan<- lookupResult) {
+// queryServer runs one upstream attempt and reports it back to lookup.
+//
+// probing marks the attempt the ranking chose to spend on a server whose
+// standing is out of date. That attempt is the same query as any other,
+// but its worth is the opposite: an ordinary attempt is worth the answer
+// it may bring and nothing once the leader has answered, while a probe is
+// worth only the measurement, and there is no measurement until the
+// server replies. Cancelling it at the moment the leader answers — which
+// is what happens to every other attempt, and what happened to this one
+// until now — cancels it before it can say anything, every time, because
+// the leader is by construction the fastest server in the list. The
+// exchange it left behind recorded a floor of a few milliseconds, below
+// the seed, which teaches nothing and is dropped. A delegation's
+// unmeasured addresses stayed unmeasured for the life of the process.
+//
+// So a probe runs on a context detached from the lookup's, and the query
+// itself is one that was being sent anyway.
+func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts *InterruptGroup, originalID uint16, reqCopy *dns.Msg, server *authority.Server, results chan<- lookupResult, probing bool) {
 	defer ReleaseMsg(reqCopy)
+
+	// exchangeCtx is what the attempt runs under; ctx stays the lookup's,
+	// because the result is only wanted while the lookup is still there to
+	// read it.
+	exchangeCtx := ctx
+	if probing {
+		select {
+		case r.probeSlots <- struct{}{}:
+			defer func() { <-r.probeSlots }()
+
+			// Detached, so the winner's cancellation does not reach it —
+			// values are carried through, so the request tree still meters
+			// this query as its own.
+			//
+			// The deadline is one exchange window and a grace, because one
+			// exchange is all a probe is for: nobody will read its answer,
+			// so the retry and the fallback to TCP that an ordinary attempt
+			// is entitled to would be work for a reply with no reader. The
+			// grace is there so the socket deadline is what ends a silent
+			// server, which is the difference between recording a failure
+			// and recording a floor. A probe therefore lives no longer than
+			// any other attempt, which is what keeps a pool of them from
+			// being something to think about.
+			var release context.CancelFunc
+			exchangeCtx, release = context.WithTimeout(context.WithoutCancel(ctx), r.netTimeout+probeGrace)
+			defer release()
+
+			// The interrupt group belongs to the lookup and fires with it,
+			// so a probe registered there would be cut down anyway. Passing
+			// nil leaves the exchange on its own context, which is the
+			// detached one.
+			interrupts = nil
+		default:
+			// The probe pool is full. Shedding a measurement is free; the
+			// attempt goes ahead as an ordinary hedge.
+			probing = false
+		}
+	}
 
 	// releaseSlot frees the semaphore slot acquired by the main
 	// loop before this goroutine was launched. We must release
@@ -1636,7 +1723,7 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 		return
 	default:
 		reqCopy.Id = dns.Id() // anti-spoofing
-		resp, err := r.exchange(ctx, rs, interrupts, "udp", reqCopy, server, 0)
+		resp, err := r.exchange(exchangeCtx, rs, interrupts, "udp", reqCopy, server, 0)
 		if resp != nil {
 			resp.Id = originalID
 		}
@@ -1645,7 +1732,11 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 			errors.Is(err, middleware.ErrResolutionAttemptLimit),
 			errors.Is(err, middleware.ErrFailureProbeLimit),
 			errors.Is(err, middleware.ErrMaxRecursion),
-			contextutil.EffectiveError(ctx) != nil:
+			// The context the attempt ran under, which for a probe is not
+			// the lookup's: by the time a probe finishes the lookup has
+			// usually returned and cancelled its own, and reading that one
+			// would throw away the health evidence the probe went to get.
+			contextutil.EffectiveError(exchangeCtx) != nil:
 			// Local policy exhaustion says nothing about the
 			// authority's health; neither does cancellation of this request
 			// tree. Do not use errors.Is(err, context.DeadlineExceeded) here:

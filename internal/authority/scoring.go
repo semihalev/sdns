@@ -403,6 +403,14 @@ func (s *Server) score(nowNs int64) int64 {
 // hedge slot, then the rest. It allocates nothing for the sets a resolver
 // actually meets.
 //
+// It returns the server the hedge slot is spending on an exploration
+// probe, or nil when that slot is an ordinary hedge. The caller has to
+// treat the two differently: a hedge is a spare answer, worth nothing
+// once the leader has answered, and cancelling it is right. A probe is
+// worth only the measurement it brings back, and cancelling it brings
+// none — which is what happens by default, every time, because the leader
+// is by construction the fastest server in the list.
+//
 // The caller hands over a fresh copy of the delegation each lookup, so
 // this is a sort of an arbitrary order rather than a re-sort of the last
 // ranking. Insertion still wins it at these sizes — the comparison is two
@@ -412,24 +420,24 @@ func (s *Server) score(nowNs int64) int64 {
 // set is written by whoever runs the zone. Past sortInsertionMax the
 // ranking hands the set to a general sort, which is what keeps an
 // oversized referral from costing more than it should.
-func Sort(list []*Server) {
+func Sort(list []*Server) *Server {
 	n := len(list)
 	if n < 2 {
-		return
+		return nil
 	}
 	now := time.Now().UnixNano()
 	switch {
 	case n <= sortStackServers:
 		var scores [sortStackServers]int64
-		rankInsertion(list, scores[:n], now)
+		return rankInsertion(list, scores[:n], now)
 	case n <= sortInsertionMax:
-		rankInsertion(list, make([]int64, n), now)
+		return rankInsertion(list, make([]int64, n), now)
 	default:
-		rankSorted(list, now)
+		return rankSorted(list, now)
 	}
 }
 
-func rankInsertion(list []*Server, scores []int64, now int64) {
+func rankInsertion(list []*Server, scores []int64, now int64) *Server {
 	for i, s := range list {
 		scores[i] = s.score(now)
 	}
@@ -442,14 +450,14 @@ func rankInsertion(list []*Server, scores []int64, now int64) {
 		}
 		scores[j+1], list[j+1] = score, server
 	}
-	hedge(list, scores, now)
+	return hedge(list, scores, now)
 }
 
 // rankSorted is the same ranking for a set too big to insertion-sort. Each
 // score is read once and carried next to its server, so the comparator
 // never re-reads an atomic mid-sort: a concurrent observation would
 // otherwise change the order underneath the sort that is using it.
-func rankSorted(list []*Server, now int64) {
+func rankSorted(list []*Server, now int64) *Server {
 	type ranked struct {
 		score  int64
 		server *Server
@@ -463,7 +471,7 @@ func rankSorted(list []*Server, now int64) {
 	for i, p := range pairs {
 		scores[i], list[i] = p.score, p.server
 	}
-	hedge(list, scores, now)
+	return hedge(list, scores, now)
 }
 
 // leadable reports whether a server has earned the query itself: an
@@ -517,10 +525,17 @@ func probeable(s *Server, nowNs int64) bool {
 // left alone — the fastest server answers the query — and the slot behind
 // it either probes a server whose standing is out of date or spreads
 // across the peers that are just as fast.
-func hedge(list []*Server, scores []int64, now int64) {
+//
+// It returns the server the slot is probing, and nil when the slot is an
+// ordinary hedge. The difference matters to the caller: a hedge is a
+// spare answer and is worth nothing once the leader has answered, while a
+// probe is worth only the measurement it brings back, and it brings none
+// if it is cancelled the moment the leader wins. Which it always is,
+// because the leader is the fastest server in the list.
+func hedge(list []*Server, scores []int64, now int64) *Server {
 	n := len(list)
 	if n < 2 {
-		return
+		return nil
 	}
 	// The seed prices a guess at 300ms, which is the right expectation to
 	// rank on — but it also means a guess outranks an authority measured
@@ -555,7 +570,7 @@ func hedge(list []*Server, scores []int64, now int64) {
 				}
 				if pick == 0 {
 					list[1], list[i] = list[i], list[1]
-					return
+					return list[1]
 				}
 				pick--
 			}
@@ -570,4 +585,5 @@ func hedge(list []*Server, scores []int64, now int64) {
 		j := 1 + randN(k-1)
 		list[1], list[j] = list[j], list[1]
 	}
+	return nil
 }
