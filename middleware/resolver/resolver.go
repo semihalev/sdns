@@ -1794,11 +1794,15 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			return
 		}
 		sample := rtt
-		if resp != nil && !answeredTheQuestion(resp.Rcode) {
-			// A refusal is the fastest answer an authority can give, so
-			// scoring it by the clock teaches the ranking to prefer the
-			// servers that turn us away. It did not answer the question;
-			// price it as if it had not answered at all.
+		if err != nil || resp == nil || !answeredTheQuestion(resp.Rcode) {
+			// Only an answer is worth what it took. Everything else here
+			// is fast for the wrong reason: a refusal is the quickest
+			// reply an authority can send, and a refused connection comes
+			// back in microseconds — quicker than any authority on earth.
+			// The exchange reports elapsed time whatever the outcome, so
+			// scoring these by the clock made the one address in a
+			// delegation that serves nothing into its permanent leader.
+			// Not answering is worth a timeout.
 			sample = r.netTimeout
 		}
 		server.Observe(sample)
