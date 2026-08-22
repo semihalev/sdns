@@ -949,6 +949,19 @@ func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (string,
 		}
 	}
 
+	// RFC 9156 section 2.3: a label starting with an underscore is a service
+	// tag — _tcp, _dmarc, a DKIM selector — not an administrative boundary, so
+	// no zone cut hides behind it and asking about it separately buys nothing.
+	// Take the whole run of them in this step. PrevLabel's end flag bounds the
+	// loop, so the name is never counted.
+	for {
+		next, end := dns.PrevLabel(q.Name, level+add+1)
+		if end || q.Name[next] != '_' {
+			break
+		}
+		add++
+	}
+
 	prev, end := dns.PrevLabel(q.Name, level+add)
 	if end {
 		return "", level, false
@@ -2910,11 +2923,16 @@ func (r *Resolver) subQueryWith(ctx context.Context, req *dns.Msg, stopAtCut boo
 	}
 
 	child := &resolveState{
-		req:       req,
-		servers:   r.rootServers,
-		depth:     depth,
-		level:     0,
-		nomin:     stopAtCut,
+		req:     req,
+		servers: r.rootServers,
+		depth:   depth,
+		level:   0,
+		// Minimization hides the client's name. Everything reaching here is
+		// the resolver's own bookkeeping — a DS or DNSKEY at a delegation
+		// point the parent already serves, or a probe that is itself a step of
+		// the walk — so there is nothing left to hide and a nested walk would
+		// multiply the probe budget by every internal lookup that takes one.
+		nomin:     true,
 		stopAtCut: stopAtCut,
 		parentDS:  nil,
 		isRoot:    true,

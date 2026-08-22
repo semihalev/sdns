@@ -112,6 +112,35 @@ func TestMinimizeOneLabelAtATime(t *testing.T) {
 	}
 }
 
+// TestMinimizeTakesUnderscoreLabelsTogether covers RFC 9156 section 2.3's
+// underscore rule with the example the RFC itself gives: no zone cut hides
+// behind a service tag, so probing _tcp on its own and then _25 spends a query
+// to hide nothing.
+func TestMinimizeTakesUnderscoreLabelsTogether(t *testing.T) {
+	r := &Resolver{qnameMinCount: 10, qnameMinOneLabel: 4}
+
+	req := new(dns.Msg)
+	req.SetQuestion("_25._tcp.mail.example.org.", dns.TypeA)
+
+	// mail.example.org. is known, so the step would ordinarily expose _tcp
+	// alone. Both underscore labels belong to the same query.
+	child, exposed, ok := r.minimize(req, 3, 1, false)
+	if ok {
+		t.Fatalf("probed %q, want the run of underscore labels to reach the query itself", child)
+	}
+	if exposed != 3 {
+		t.Fatalf("exposed = %d, want the level unchanged at 3", exposed)
+	}
+
+	// A non-underscore label above them still gets its own step: the rule is
+	// about service tags, not about giving up on the walk.
+	req.SetQuestion("sel._domainkey.example.com.", dns.TypeA)
+	child, _, ok = r.minimize(req, 2, 1, false)
+	if !ok || child != "_domainkey.example.com." {
+		t.Fatalf("probe = %q ok=%v, want _domainkey.example.com.", child, ok)
+	}
+}
+
 // TestMinimizeGroupsRemainingLabels reproduces the worked example in RFC 9156
 // section 2.3: 18 labels under MAX_MINIMISE_COUNT 10 and MINIMISE_ONE_LAB 4 are
 // added 1,1,1,1,2,2,2,2,3,3. Without the grouping a resolution spends its first
