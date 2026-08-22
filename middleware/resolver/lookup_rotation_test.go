@@ -69,11 +69,11 @@ func countingUpstream(t *testing.T, answer bool) (string, *atomic.Int64) {
 // case the exploration exists for. Without it, all eight take zero
 // queries across two hundred lookups.
 func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
-	// The lookup count is set by the odds, not by taste: exploration fires
-	// on one lookup in thirty-two and then picks among the eight, so this
-	// is about fifteen turns each. Enough that a zero is not something
-	// this test will ever see by luck.
-	const answering, silentCount, lookups = 2, 8, 4000
+	// Eight of ten addresses are unmeasured, so exploration fires on about
+	// eight lookups in ten and picks among those eight: roughly one turn
+	// each per ten lookups. A hundred is about eighty turns apiece, which
+	// is not a number this test will ever see a zero under.
+	const answering, silentCount, lookups = 2, 8, 100
 
 	servers := &authority.Servers{Zone: "example."}
 	for range answering {

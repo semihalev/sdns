@@ -15,10 +15,10 @@ import (
 type Server struct {
 	// place atomic members at the start to fix alignment for ARM32
 	//
-	// state is the smoothed latency and the fact that an exchange has
-	// completed, in one word: [estimate ns : 63][measured : 1]. They are
-	// packed because they have to change together — a sample that lands
-	// between reading one and writing the other could otherwise replace a
+	// state is what one exchange says about this server, in one word:
+	// [estimate ns : 62][answered : 1][measured : 1]. They are packed
+	// because they have to change together — a sample that lands between
+	// reading one and writing the other could otherwise replace a
 	// measurement instead of folding into it.
 	state int64
 	// lastNs is when state was last refreshed, in Unix nanoseconds. It is
@@ -175,7 +175,6 @@ type fpEntry struct {
 type Servers struct {
 	sync.RWMutex
 	// place atomic members at the start to fix alignment for ARM32
-	Called     uint64
 	ErrorCount uint32
 
 	// gen is bumped on every List mutation by InvalidateFingerprint.
@@ -339,23 +338,40 @@ func (s *Server) SmoothedRTT() time.Duration {
 }
 
 // Score is what the ranking sorts on, at this instant.
-func (s *Server) Score() time.Duration { return time.Duration(s.score(time.Now().UnixNano())) }
+func (s *Server) Score() time.Duration {
+	score, _ := s.score(time.Now().UnixNano())
+	return time.Duration(score)
+}
 
-func (s *Server) score(nowNs int64) int64 {
+// score also reports whether what is known about this server is out of
+// date — nothing has answered, or what did answer is old enough that it
+// no longer describes the path. It comes back from here because the
+// scoring pass has already paid for both loads, and the ranking needs the
+// count to decide how much of the hedge to spend on finding out.
+func (s *Server) score(nowNs int64) (int64, bool) {
 	w := atomic.LoadInt64(&s.state)
 	base := w >> stateRTTShift
 	if w&stateMeasured == 0 {
 		// Nothing has answered: a guess is priced at the seed. The extra
 		// nanosecond is the tie-break, so a server measured at exactly
 		// that price still outranks the guess.
-		base = rttUnknownSeed + 1
-	} else if last := atomic.LoadInt64(&s.lastNs); last != 0 && nowNs-last > staleAfter {
+		return rttUnknownSeed + 1, true
+	}
+	if last := atomic.LoadInt64(&s.lastNs); last != 0 && nowNs-last > staleAfter {
 		// Halfway back toward a guess: old evidence is weakened, not
 		// discarded, so a server that was fast an hour ago still outranks
 		// one that was slow an hour ago.
-		base = (base + rttUnknownSeed) / 2
+		//
+		// And it is worth asking about again. A first impression can be
+		// very wrong — an address that timed out once while the resolver
+		// was walking a cold delegation carries that timeout for a long
+		// time, and it is priced below the guesses, so nothing would ever
+		// query it again. Measured on a production resolver: five of com.'s
+		// addresses sitting at 535ms, all of them answering in under 60ms
+		// when finally asked.
+		return (base + rttUnknownSeed) / 2, true
 	}
-	return base
+	return base, false
 }
 
 // Sort ranks a delegation's addresses in place, fastest first. It runs on
@@ -378,14 +394,18 @@ func Sort(serversList []*Server) {
 }
 
 func rank(list []*Server, scores []int64, now int64) {
-	// Whether anything here is unmeasured falls out of the scoring pass:
-	// a guess is priced at exactly the seed. Knowing it costs a comparison
-	// per server and saves the exploration roll on every delegation that
-	// has none — which, once a zone has settled, is most of them.
-	unknown := false
+	// How much of this delegation is out of date falls out of the scoring
+	// pass, which has already read what it takes to know. The count is
+	// what sets the exploration rate: how much of the hedge is worth
+	// spending on finding out is exactly how much there is left to find
+	// out.
+	stale := 0
 	for i, s := range list {
-		scores[i] = s.score(now)
-		unknown = unknown || scores[i] == rttUnknownSeed+1
+		var old bool
+		scores[i], old = s.score(now)
+		if old {
+			stale++
+		}
 	}
 	for i := 1; i < len(list); i++ {
 		score, server := scores[i], list[i]
@@ -396,7 +416,7 @@ func rank(list []*Server, scores []int64, now int64) {
 		}
 		scores[j+1], list[j+1] = score, server
 	}
-	hedge(list, scores, unknown)
+	hedge(list, scores, now, stale)
 }
 
 // randN is the ranking's only source of randomness, replaceable so a test
@@ -428,38 +448,57 @@ var randN = rand.IntN
 // addresses of a TLD are never contacted again. Measured on a production
 // resolver: two of thirteen in use for com., net. and org. alike.
 //
-// So the slot is occasionally spent on an address nothing is known about,
-// which is the only way one can stop being unknown. One lookup in
-// exploreOdds is enough to work through a delegation within a few hundred
-// misses, and it costs nothing the hedge was not already spending — the
-// query goes out either way; this only decides where.
-const exploreOdds = 32
-
-func hedge(list []*Server, scores []int64, unknown bool) {
+// So the slot goes to an address whose worth is out of date, which is the
+// only way one can stop being out of date. It costs nothing the hedge was
+// not already spending: the second query goes out either way, and this
+// only decides where.
+//
+// How often is set by how much there is left to learn — the share of the
+// delegation that is unmeasured or stale. A zone the resolver has just
+// met explores on most lookups, because most of what it could know it
+// does not; a settled one barely explores at all, because there is
+// nothing to find. A fixed rate cannot be both: one in thirty-two took
+// five hundred misses to reach a given address of com., which on a real
+// delegation is hours, while the same rate on a zone with one unknown
+// left would spend every thirty-second hedge on that one address forever.
+func hedge(list []*Server, scores []int64, now int64, stale int) {
 	n := len(list)
 	if n < 3 {
 		return
 	}
 
-	if unknown && randN(exploreOdds) == 0 {
+	if stale > 0 && randN(n) < stale {
 		// Any of them, not the first of them: the unmeasured all carry the
 		// same price, so taking the first would probe one address forever
 		// and leave the rest of the delegation permanently unknown — which
 		// is the shape this exists to break.
 		candidates := 0
 		for i := 1; i < n; i++ {
-			if list[i].SmoothedRTT() == 0 {
+			if _, old := list[i].score(now); old {
 				candidates++
 			}
 		}
 		if candidates > 0 {
 			pick := randN(candidates)
 			for i := 1; i < n; i++ {
-				if list[i].SmoothedRTT() != 0 {
+				if _, old := list[i].score(now); !old {
 					continue
 				}
 				if pick == 0 {
-					list[1], list[i] = list[i], list[1]
+					// Moved into the slot, not traded for it. A swap would
+					// fling the genuine runner-up down to wherever the
+					// guess came from, and the order behind the first two
+					// is not decoration: it is what the resolver walks when
+					// the leader does not answer, waiting out an adaptive
+					// timeout at each step. Trading a known-good second for
+					// a guess would put every other guess in the delegation
+					// ahead of it, which on a twenty-six address zone is
+					// seconds of waiting before reaching a server already
+					// known to be fast.
+					probe, score := list[i], scores[i]
+					copy(list[2:i+1], list[1:i])
+					copy(scores[2:i+1], scores[1:i])
+					list[1], scores[1] = probe, score
 					return
 				}
 				pick--

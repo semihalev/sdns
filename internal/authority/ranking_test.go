@@ -2,6 +2,7 @@ package authority
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -158,6 +159,51 @@ func TestRotationLeavesTheOrderedServersAlone(t *testing.T) {
 
 	if got := addrsOf(list); got[0] != fast.Addr || got[1] != mid.Addr || got[2] != slow.Addr {
 		t.Fatalf("distinct scores were reordered: %v", got)
+	}
+}
+
+// The order behind the first two is not decoration: it is what the
+// resolver walks when the leader does not answer, waiting out an adaptive
+// timeout at every step. So exploration moves its candidate into the
+// second slot rather than trading places with whoever held it — a trade
+// would fling the genuine runner-up down to wherever the guess came from,
+// putting every other guess in the delegation ahead of a server already
+// known to be fast.
+func TestExplorationDoesNotDemoteTheRunnerUp(t *testing.T) {
+	leader := measured("192.0.2.1:53", 10*time.Millisecond)
+	runnerUp := measured("192.0.2.2:53", 20*time.Millisecond)
+	list := []*Server{leader, runnerUp}
+	for i := range 6 {
+		list = append(list, NewServer(fmt.Sprintf("192.0.2.9:%d", i+1), IPv4))
+	}
+	last := list[len(list)-1]
+
+	// Explore — the roll is randN(len) < staleCount, so zero always
+	// explores — and take the furthest candidate on offer.
+	withRand(t, func(n int) int {
+		if n == len(list) {
+			return 0
+		}
+		return n - 1
+	})
+	Sort(list)
+
+	if list[1] != last {
+		t.Fatalf("exploration did not reach the last unmeasured address: %v", addrsOf(list))
+	}
+	if list[0] != leader {
+		t.Fatalf("exploration displaced the leader: %v", addrsOf(list))
+	}
+	if list[2] != runnerUp {
+		t.Fatalf("the runner-up was demoted to position %d of %d; the resolver "+
+			"would time out on every guess before reaching it: %v",
+			slices.Index(list, runnerUp), len(list), addrsOf(list))
+	}
+	// And what the ranking sorted on still describes what it holds.
+	for i := 1; i < len(list); i++ {
+		if i > 2 && list[i].Score() < list[i-1].Score() {
+			t.Fatalf("the tail came out of order: %v", addrsOf(list))
+		}
 	}
 }
 
