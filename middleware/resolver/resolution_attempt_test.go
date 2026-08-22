@@ -410,6 +410,7 @@ func TestHandleLookupErrorRecordsOnlyTerminalAuthorityFailure(t *testing.T) {
 		fatalError(errConnectionFailed),
 		rs,
 		req,
+		false,
 	)
 	if err == nil {
 		t.Fatal("handleLookupError unexpectedly swallowed terminal network failure")
@@ -426,6 +427,7 @@ func TestHandleLookupErrorRecordsOnlyTerminalAuthorityFailure(t *testing.T) {
 		ordinaryErr,
 		rs,
 		req,
+		false,
 	)
 	if !errors.Is(gotErr, ordinaryErr) {
 		t.Fatalf("ordinary error = %v, want %v", gotErr, ordinaryErr)
@@ -444,6 +446,7 @@ func TestHandleLookupErrorRecordsOnlyTerminalAuthorityFailure(t *testing.T) {
 		fatalError(errConnectionFailed),
 		rs,
 		req,
+		false,
 	)
 	records, _ = recorder.counts()
 	if records != 1 {
@@ -559,7 +562,7 @@ func TestProcessDelegationRecordsUnreachableChildZone(t *testing.T) {
 		parentDS: nil,
 	}
 
-	_, err := r.processDelegation(context.Background(), rs, resp, info)
+	_, err := r.processDelegation(context.Background(), rs, resp, info, false)
 	if !errors.Is(err, errNoReachableAuth) {
 		t.Fatalf("processDelegation error = %v, want errNoReachableAuth", err)
 	}
@@ -983,7 +986,7 @@ func TestProcessDelegationRejectsMixedOwnerFallback(t *testing.T) {
 		servers: &authority.Servers{Zone: "example."},
 	}
 
-	_, err := r.processDelegation(context.Background(), rs, resp, info)
+	_, err := r.processDelegation(context.Background(), rs, resp, info, false)
 	if !errors.Is(err, errParentDetection) {
 		t.Fatalf("processDelegation error = %v, want errParentDetection", err)
 	}

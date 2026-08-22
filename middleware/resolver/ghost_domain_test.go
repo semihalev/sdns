@@ -257,7 +257,7 @@ func TestProcessDelegation_RejectsNonProgressingReferral(t *testing.T) {
 		nsTTL:    30,
 	}
 
-	_, err := r.processDelegation(context.Background(), rs, resp, nsInfo)
+	_, err := r.processDelegation(context.Background(), rs, resp, nsInfo, false)
 	if !errors.Is(err, errParentDetection) {
 		t.Fatalf("non-progressing self-referral must be rejected with errParentDetection, got %v", err)
 	}
