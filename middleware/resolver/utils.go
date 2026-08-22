@@ -1,7 +1,6 @@
 package resolver
 
 import (
-	"math/rand/v2"
 	"net"
 	"net/netip"
 	"slices"
@@ -32,14 +31,6 @@ func init() {
 // first; rare paths (dial failures, loop detection) are not worth the noise.
 func debugLogEnabled() bool {
 	return zlog.Default().GetLevel() <= zlog.LevelDebug
-}
-
-func shuffleStr(vals []string) []string {
-	ret := slices.Clone(vals)
-	rand.Shuffle(len(ret), func(i, j int) {
-		ret[i], ret[j] = ret[j], ret[i]
-	})
-	return ret
 }
 
 // searchAddrs collects usable NS addresses from an answer as heap-free

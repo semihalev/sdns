@@ -82,6 +82,7 @@ type Resolver struct {
 	circuitBreaker  *circuitBreaker
 	maxConcurrent   chan struct{} // Semaphore for limiting concurrent queries
 	v6LookupSlots   chan struct{} // Global cap on detached IPv6 NS enrichment jobs
+	probeSlots      chan struct{} // Global cap on exploration probes outliving their lookup
 	resolutionSlots chan struct{} // Hard ceiling on in-flight zone lookups; full → fail fast
 	zoneInflight    *zoneInflightLimiter
 	cryptoLimiter   *dnssec.CryptoLimiter
@@ -212,6 +213,25 @@ const (
 	maxUint16        = 1 << 16
 	defaultCacheSize = 1024 * 256
 	defaultTimeout   = 2 * time.Second
+
+	// maxInflightProbes caps the exploration probes allowed to outlive the
+	// lookup that started them.
+	//
+	// Sixteen is chosen from what the slots turn over rather than from what
+	// a machine could carry: a probe to a server that answers is done in
+	// the time that server takes, so these sustain a hundred-odd
+	// measurements a second against a delegation that needs a few dozen in
+	// its lifetime. Only a probe to something silent holds a slot for a
+	// whole timeout, and sixteen of those is a number nobody has to think
+	// about. What it must not do is grow with arrival rate, which is how a
+	// detached pool in this file once reached 1.4M goroutines.
+	maxInflightProbes = 16
+
+	// probeGrace is how much longer than one upstream timeout a probe's
+	// context lives, so a silent server is ended by the socket deadline —
+	// which records a failure — rather than by the context, which would
+	// only record a cancellation.
+	probeGrace = 250 * time.Millisecond
 )
 
 // NewResolver return a resolver.
@@ -258,6 +278,8 @@ func NewResolver(cfg *config.Config) *Resolver {
 		// goroutines). Full slots shed the job instead of queueing it.
 		r.v6LookupSlots = make(chan struct{}, maxConcurrent)
 	}
+
+	r.probeSlots = make(chan struct{}, maxInflightProbes)
 
 	if r.cfg.Timeout.Duration > 0 {
 		r.netTimeout = r.cfg.Timeout.Duration
@@ -1364,7 +1386,10 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	level := dns.CountLabel(servers.Zone)
 	servers.RUnlock()
 
-	authority.Sort(serversList, atomic.AddUint64(&servers.Called, 1)) // sort by RTT and failure rate
+	// probing is the server the second slot is spending on an exploration
+	// probe, if it is spending it on one. It is carried as the server
+	// rather than the position because dedupe runs next and can move it.
+	probing := authority.Sort(serversList) // fastest first
 	serversList = dedupeAuthorityServers(serversList)
 
 	responseErrors := []*dns.Msg{}
@@ -1421,7 +1446,7 @@ mainloop:
 		select {
 		case r.maxConcurrent <- struct{}{}:
 			// Got a slot, start the query
-			go r.queryServer(ctx, rs, interrupts, originalID, serverReq, server, results)
+			go r.queryServer(ctx, rs, interrupts, originalID, serverReq, server, results, server == probing)
 		case <-ctx.Done():
 			// Context cancelled while waiting for slot —
 			// return the pre-copied pooled message before
@@ -1496,8 +1521,10 @@ mainloop:
 						// bogus delegation, not the current loop index —
 						// results arrive out of order from parallel
 						// goroutines, so `server` can be a later peer.
-						atomic.AddInt64(&res.server.Rtt, 2*time.Second.Nanoseconds())
-						atomic.AddInt64(&res.server.Count, 1)
+						// It replied, but with a delegation it had no
+						// business sending, which is not an answer to the
+						// question we asked.
+						res.server.ObserveNoAnswer(2 * time.Second)
 
 						if left > 0 && len(serversList)-1 == index {
 							continue fallbackloop
@@ -1608,8 +1635,99 @@ type lookupResult struct {
 // launching the goroutine, and the pooled reqCopy buffer; both are
 // released before the result send so the main loop can keep launching
 // workers while we queue.
-func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts *InterruptGroup, originalID uint16, reqCopy *dns.Msg, server *authority.Server, results chan<- lookupResult) {
+// probeMode marks an attempt as a measurement probe, and rides on the
+// probe's own detached context — the one thing already scoped to a single
+// attempt, so it cannot reach another one. What it turns off is the retry
+// and the fallbacks to TCP: those exist to get an answer, and a probe's
+// answer has no reader once the lookup it was born in has returned. One
+// exchange is what a probe is for, and one exchange is what it costs.
+type probeMode struct{}
+
+func withProbeMode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, probeMode{}, true)
+}
+
+func isProbe(ctx context.Context) bool {
+	on, _ := ctx.Value(probeMode{}).(bool)
+	return on
+}
+
+// retainForProbe holds the request tree's work ledger open across an
+// attempt that outlives the lookup, the same way the detached IPv6
+// enrichment holds it. Detaching the context carries the ledger through
+// but does not keep it alive: once the tree completes, a debit against it
+// comes back as an error, and this path would read that as the authority
+// failing and trip its circuit breaker for the resolver's own bookkeeping.
+//
+// It reports false when the tree is already finished, which is when
+// starting detached work would escape the tree's aggregate cap.
+func retainForProbe(rs *resolveState) (release func(), ok bool) {
+	if rs == nil || rs.work == nil {
+		return func() {}, true
+	}
+	return rs.work.Retain()
+}
+
+// queryServer runs one upstream attempt and reports it back to lookup.
+//
+// probing marks the attempt the ranking chose to spend on a server whose
+// worth is out of date. It is the same query as any other, but what it is
+// worth is the opposite: an ordinary attempt is worth the answer it may
+// bring and nothing once the leader has answered, while a probe is worth
+// only the measurement, and there is no measurement until the server
+// replies. Cancelling it the moment the leader answers — which is what
+// happens to every other attempt — cancels it before it can say anything,
+// every time, because the leader is by construction the fastest server in
+// the list. Exploring at any rate then measures only the addresses quick
+// enough to win outright, which on a production delegation was one new
+// address a minute against seventeen waiting.
+//
+// So a probe runs on a context detached from the lookup's. The query
+// itself is one that was being sent anyway.
+func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts *InterruptGroup, originalID uint16, reqCopy *dns.Msg, server *authority.Server, results chan<- lookupResult, probing bool) {
 	defer ReleaseMsg(reqCopy)
+
+	// exchangeCtx is what the attempt runs under; ctx stays the lookup's,
+	// because the result is only wanted while the lookup is still there to
+	// read it.
+	exchangeCtx := ctx
+	if probing {
+		if releaseWork, retained := retainForProbe(rs); retained {
+			select {
+			case r.probeSlots <- struct{}{}:
+				defer func() { <-r.probeSlots }()
+				defer releaseWork()
+
+				// Detached, so the winner's cancellation does not reach it.
+				// Values are carried through, so the request tree still
+				// meters this query as its own — and the retain above is
+				// what keeps that ledger open long enough to be metered
+				// against.
+				//
+				// The deadline is one exchange window and a grace. The
+				// grace is there so the socket deadline is what ends a
+				// silent server, which is the difference between recording
+				// a failure and recording nothing. A probe therefore lives
+				// no longer than any other attempt.
+				var release context.CancelFunc
+				exchangeCtx, release = context.WithTimeout(context.WithoutCancel(ctx), r.netTimeout+probeGrace)
+				defer release()
+				exchangeCtx = withProbeMode(exchangeCtx)
+
+				// The interrupt group belongs to the lookup and fires with
+				// it, so a probe registered there would be cut down anyway.
+				// Nil leaves the exchange on its own context, which is the
+				// detached one.
+				interrupts = nil
+			default:
+				// The probe pool is full. Shedding a measurement is free,
+				// and the attempt goes ahead as the hedge it would have
+				// been: exchangeCtx is still the lookup's, so the winner
+				// cancels it like any other.
+				releaseWork()
+			}
+		}
+	}
 
 	// releaseSlot frees the semaphore slot acquired by the main
 	// loop before this goroutine was launched. We must release
@@ -1633,11 +1751,17 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 	switch {
 	case !r.circuitBreaker.canQuery(server.Addr):
 		res.err = fatalError(errConnectionFailed)
-	case contextutil.EffectiveError(ctx) != nil:
+	case contextutil.EffectiveError(exchangeCtx) != nil:
+		// The context this attempt would run under, which for a probe is
+		// not the lookup's. Reading the lookup's here undid the admission
+		// that had just been granted: a probe took a slot and retained the
+		// ledger, and then returned without reaching the wire because a
+		// fast leader had cancelled in the meantime — which is precisely
+		// the case it exists for.
 		return
 	default:
 		reqCopy.Id = dns.Id() // anti-spoofing
-		resp, err := r.exchange(ctx, rs, interrupts, "udp", reqCopy, server, 0)
+		resp, err := r.exchange(exchangeCtx, rs, interrupts, "udp", reqCopy, server, 0)
 		if resp != nil {
 			resp.Id = originalID
 		}
@@ -1646,7 +1770,11 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 			errors.Is(err, middleware.ErrResolutionAttemptLimit),
 			errors.Is(err, middleware.ErrFailureProbeLimit),
 			errors.Is(err, middleware.ErrMaxRecursion),
-			contextutil.EffectiveError(ctx) != nil:
+			// The context the attempt ran under, which for a probe is not
+			// the lookup's: by the time a probe finishes the lookup has
+			// usually returned and cancelled its own, and reading that one
+			// would throw away the health evidence the probe went to get.
+			contextutil.EffectiveError(exchangeCtx) != nil:
 			// Local policy exhaustion says nothing about the
 			// authority's health; neither does cancellation of this request
 			// tree. Do not use errors.Is(err, context.DeadlineExceeded) here:
@@ -1678,12 +1806,27 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 	}
 }
 
+// answeredTheQuestion reports the rcodes that mean the authority did the
+// job it was asked to do: the name exists and here it is, the name does
+// not exist, or — RFC 6672 §2.2, a DNAME substitution that would exceed
+// 255 octets — the question can have no answer at all. Everything else is
+// a server that did not answer, however quickly it said so.
+//
+// A list of what counts rather than a list of what does not, because the
+// failure mode is asymmetric: a rcode nobody thought about lands in the
+// default, and the safe default is "this did not answer my question".
+func answeredTheQuestion(rcode int) bool {
+	return rcode == dns.RcodeSuccess ||
+		rcode == dns.RcodeNameError ||
+		rcode == dns.RcodeYXDomain
+}
+
 // adaptiveServerTimeout picks how long lookup waits on a single server
 // before racing the next candidate. With no RTT samples the result is a
 // conservative 100ms; otherwise it is 2× the observed RTT clamped to
 // [25ms, 300ms] so a single slow outlier can't stall the whole fan-out.
 func adaptiveServerTimeout(server *authority.Server) time.Duration {
-	rtt := time.Duration(atomic.LoadInt64(&server.Rtt))
+	rtt := server.SmoothedRTT()
 	if rtt <= 0 {
 		return 100 * time.Millisecond
 	}
@@ -1771,13 +1914,60 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 	// Track RTT for adaptive timeouts
 	var rtt = r.netTimeout
-	defer func() {
-		if contextutil.EffectiveError(ctx) != nil {
+
+	// record files this attempt's outcome with the ranking, once.
+	//
+	// It is called explicitly before this frame hands its work to a retry
+	// or a fallback, because those recurse: the frame that answered
+	// returns before the frame that failed, so leaving both to the defer
+	// delivered them backwards. A server that timed out and then answered
+	// on the retry had the timeout recorded last, and a blend that halves
+	// with each sample put it near the timeout — a server that had just
+	// answered, priced as one that had not.
+	observed := false
+	record := func() {
+		if observed {
 			return
 		}
-		atomic.AddInt64(&server.Rtt, rtt.Nanoseconds())
-		atomic.AddInt64(&server.Count, 1)
-	}()
+		if contextutil.EffectiveError(ctx) != nil {
+			// This attempt was cancelled because a peer answered first.
+			// What it took to get cancelled is not what this server is
+			// worth, and recording it would make a server nobody has heard
+			// from look like the fastest in the delegation.
+			return
+		}
+		observed = true
+		switch {
+		case err != nil || resp == nil:
+			// Nothing came back. Only an answer is worth what it took, and
+			// the ways of not answering are fast for the wrong reason: a
+			// refused connection comes back in microseconds, quicker than
+			// any authority on earth. The exchange reports elapsed time
+			// whatever the outcome, so scoring these by the clock made the
+			// one address in a delegation that serves nothing into its
+			// permanent leader. Not answering is worth a timeout.
+			server.ObserveNoAnswer(r.netTimeout)
+
+		case answeredTheQuestion(resp.Rcode):
+			server.Observe(rtt)
+
+		case isProbe(ctx) && resp.Rcode == dns.RcodeFormatError:
+			// The one rcode a probe reads differently. It says the server
+			// dislikes the shape of our query, not that it failed to
+			// answer — the lookup path replies to it by asking again
+			// without EDNS, and prices the attempt at nothing. A probe
+			// cannot price it at nothing: recording nothing leaves the
+			// address as out of date as it was, so it is a candidate
+			// again, so it is probed again, for as long as the server
+			// keeps saying it. The round trip is what a probe went to find
+			// out, and this server did make one.
+			server.Observe(rtt)
+
+		default:
+			server.ObserveNoAnswer(r.netTimeout)
+		}
+	}
+	defer record()
 
 	// Check if we should use TCP connection pooling
 	var pooledConn *dns.Conn
@@ -1871,12 +2061,13 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 		if contextutil.EffectiveError(ctx) != nil {
 			return nil, err
 		}
-		if retried < 2 {
+		if retried < 2 && !isProbe(ctx) {
 			if retried == 1 && proto == "udp" {
 				proto = "tcp"
 			}
 			// retry
 			retried++
+			record()
 			return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 		}
 
@@ -1894,18 +2085,50 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 	ReleaseConn(co)
 
-	if resp != nil && resp.Truncated && proto == "udp" {
+	// A probe stops here on both of these, and what it records is the UDP
+	// round trip it completed — deliberately, not by omission. The
+	// fallbacks exist to get an answer, and by the time a probe has one
+	// the lookup it was born in has returned and nobody is left to read
+	// it.
+	//
+	// That does understate an authority whose TCP is slow or broken:
+	// truncation sends the real lookup to TCP, and the probe's number
+	// covers only the UDP leg. The alternative is worse. Pricing a
+	// truncated reply as a failure would mark a server that answered
+	// promptly and correctly, and truncation is a property of the answer's
+	// size rather than of the server, so it would fall on whichever
+	// addresses happened to be probed with a large question. A server
+	// whose TCP is genuinely broken is caught where the evidence actually
+	// exists: the first real lookup that needs TCP records a failure
+	// against it, and the estimate halves toward the timeout at once.
+	if resp != nil && resp.Truncated && proto == "udp" && !isProbe(ctx) {
+		record()
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
-	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > dnsutil.DefaultMsgSize {
+	if resp != nil && !resp.Truncated && proto == "udp" && resp.Len() > dnsutil.DefaultMsgSize && !isProbe(ctx) {
 		// If response is too large, switch to TCP
 		zlog.Debug("Response too large, switching to TCP", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 			"size", resp.Len(), "maxSize", dnsutil.DefaultMsgSize, "retried", retried)
+		record()
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
+		if isProbe(ctx) {
+			// A probe stops here, and it has to leave a measurement behind.
+			// Recording nothing left the address exactly as it was — out of
+			// date, so a candidate again, so probed again, for as long as
+			// the server keeps refusing our EDNS. The round trip is what a
+			// probe went to find out and the server did make it; that it
+			// dislikes the shape of the query is a fact about the query.
+			return resp, nil
+		}
+		// A server that cannot parse EDNS is not a server that failed to
+		// answer: this attempt is being replaced, not scored. Marking it
+		// observed keeps the defer from pricing our own choice of query
+		// shape as the authority's fault.
+		observed = true
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
 		return r.exchange(ctx, rs, interrupts, proto, req, server, retried)

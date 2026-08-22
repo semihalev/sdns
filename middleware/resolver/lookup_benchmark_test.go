@@ -26,14 +26,22 @@ func BenchmarkLookupPerformance(b *testing.B) {
 	req.SetQuestion("example.com.", dns.TypeA)
 	req.RecursionDesired = true
 
-	// Create mock servers with different RTTs
-	servers := &authority.Servers{
-		Zone: "com.",
-		List: []*authority.Server{
-			{Addr: "192.0.2.1:53", Rtt: int64(20 * time.Millisecond)},  // Fast server
-			{Addr: "192.0.2.2:53", Rtt: int64(100 * time.Millisecond)}, // Medium server
-			{Addr: "192.0.2.3:53", Rtt: int64(200 * time.Millisecond)}, // Slow server
-		},
+	// Mock servers with different RTTs, recorded the way the resolver
+	// records them rather than written into the fields: a fixture that
+	// sets state directly tests the shape of the fields instead of the
+	// behaviour of the model.
+	servers := &authority.Servers{Zone: "com."}
+	for _, m := range []struct {
+		addr string
+		rtt  time.Duration
+	}{
+		{"192.0.2.1:53", 20 * time.Millisecond},  // Fast server
+		{"192.0.2.2:53", 100 * time.Millisecond}, // Medium server
+		{"192.0.2.3:53", 200 * time.Millisecond}, // Slow server
+	} {
+		s := authority.NewServer(m.addr, authority.IPv4)
+		s.Observe(m.rtt)
+		servers.List = append(servers.List, s)
 	}
 
 	b.ResetTimer()

@@ -13,17 +13,6 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-func Test_shuffleStr(t *testing.T) {
-
-	vals := make([]string, 1)
-
-	rr := shuffleStr(vals)
-
-	if len(rr) != 1 {
-		t.Error("invalid array length")
-	}
-}
-
 func Test_searchAddr(t *testing.T) {
 	testDomain := "google.com."
 

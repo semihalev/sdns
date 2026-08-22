@@ -77,8 +77,12 @@ func (d *doqListener) Serve(_ context.Context) error {
 	zlog.Info("DNS server listening", "net", "doq", "addr", d.addr)
 	d.serving.Store(true)
 	defer d.serving.Store(false)
+	// Serve returns only by failing — it either cannot listen or its accept
+	// loop breaks — so there is no nil to check for. Shutting down is one
+	// of those failures, and the two errors it arrives as are the ones this
+	// swallows.
 	err := srv.Serve(pc, tlsConfig)
-	if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, quic.ErrServerClosed) {
+	if !errors.Is(err, net.ErrClosed) && !errors.Is(err, quic.ErrServerClosed) {
 		return err
 	}
 	return nil

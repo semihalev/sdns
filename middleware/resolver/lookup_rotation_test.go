@@ -1,0 +1,338 @@
+package resolver
+
+import (
+	"context"
+	"net"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/authority"
+)
+
+// allMeasured reports whether every one of these has a latency on record.
+func allMeasured(list []*authority.Server) bool {
+	for _, s := range list {
+		if s.SmoothedRTT() == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// countingUpstream is a loopback authority that records how many queries
+// reached it. When answer is false it reads and drops, which is what an
+// address slower than the leader looks like from here: the lookup returns
+// on the leader's answer and cancels this attempt before it could reply.
+func countingUpstream(t *testing.T, answer bool) (string, *atomic.Int64) {
+	t.Helper()
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = packet.Close() })
+
+	hits := new(atomic.Int64)
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, addr, readErr := packet.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			hits.Add(1)
+			if !answer {
+				continue
+			}
+			req := new(dns.Msg)
+			if req.Unpack(buf[:n]) != nil {
+				continue
+			}
+			reply := new(dns.Msg)
+			reply.SetReply(req)
+			reply.Answer = append(reply.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA,
+					Class: dns.ClassINET, Ttl: 5},
+				A: net.IPv4(192, 0, 2, 1),
+			})
+			out, packErr := reply.Pack()
+			if packErr != nil {
+				continue
+			}
+			_, _ = packet.WriteTo(out, addr)
+		}
+	}()
+	return packet.LocalAddr().String(), hits
+}
+
+// The end of the arc, over real sockets: a delegation where every
+// address but the leader is slower than the leader. Those are the ones
+// exploring could never measure, because an explored address only ever
+// came back measured by winning its race — so the field showed a
+// delegation gaining one address a minute with seventeen waiting, and the
+// genuinely slower ones waiting for good.
+func TestSlowerAuthoritiesAreMeasuredNotJustExplored(t *testing.T) {
+	const slower, lookups = 6, 200
+
+	// A lookup against loopback costs a fraction of a millisecond and a
+	// probe to these costs eighty, so an unpaced loop starts probes
+	// hundreds of times faster than the pool can retire them and the pool
+	// sheds nearly all of them — correctly, that being what it is for.
+	// Real misses do not arrive at that rate. The pause keeps the test out
+	// of a regime it is not trying to measure.
+	const pace = 3 * time.Millisecond
+
+	fastAddr, _ := countingUpstream(t, true)
+	servers := &authority.Servers{Zone: "example."}
+	servers.List = append(servers.List, authority.NewServer(fastAddr, authority.IPv4))
+
+	slow := make([]*authority.Server, 0, slower)
+	for range slower {
+		// Far enough behind the leader that it never wins the race.
+		s := authority.NewServer(slowUpstream(t, 80*time.Millisecond), authority.IPv4)
+		slow = append(slow, s)
+		servers.List = append(servers.List, s)
+	}
+
+	cfg := &config.Config{
+		RootServers:          []string{"198.41.0.4:53"},
+		Timeout:              config.Duration{Duration: 2 * time.Second},
+		MaxConcurrentQueries: 100,
+	}
+	r := newWiredTestResolver(cfg)
+	req := new(dns.Msg)
+	req.SetQuestion("slower.example.", dns.TypeA)
+
+	for range lookups {
+		if _, err := r.lookup(context.Background(), &resolveState{requestID: req.Id}, req, servers); err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+		time.Sleep(pace)
+	}
+
+	// A probe outlives the lookup that sent it, which is the whole point,
+	// so the last ones are still in flight when the loop ends.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		done := true
+		for _, s := range slow {
+			if s.SmoothedRTT() == 0 {
+				done = false
+				break
+			}
+		}
+		if done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	unmeasured, rtts := 0, make([]time.Duration, 0, slower)
+	for _, s := range slow {
+		got := s.SmoothedRTT()
+		rtts = append(rtts, got.Round(time.Millisecond))
+		if got == 0 {
+			unmeasured++
+		}
+	}
+	t.Logf("latencies learned for addresses that never win a race: %v", rtts)
+	if unmeasured > 0 {
+		t.Fatalf("%d of %d addresses slower than the leader are still unmeasured after %d lookups: %v",
+			unmeasured, slower, lookups, rtts)
+	}
+}
+
+// The shape a delegation actually settles into, which is not the one
+// above: the parallel head is two, so two addresses get measured and
+// every other address in the zone is left behind the seed. Nothing is
+// then level with the second slot, so rotation has nothing to rotate, and
+// a TLD's remaining ten or eleven authorities are never contacted again.
+//
+// Measured on a production resolver running this branch: two of thirteen
+// in use for com., net. and org. alike. This is that, in a fixture — two
+// authorities answering at similar speeds, eight silent — and it is the
+// case the exploration exists for. Without it, all eight take zero
+// queries across two hundred lookups.
+func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
+	// Eight of ten addresses are unmeasured, so exploration fires on about
+	// eight lookups in ten and picks among those eight: roughly one turn
+	// each per ten lookups. A hundred is about eighty turns apiece, which
+	// is not a number this test will ever see a zero under.
+	const answering, silentCount, lookups = 2, 8, 100
+
+	servers := &authority.Servers{Zone: "example."}
+	answered := make([]*authority.Server, 0, answering)
+	for range answering {
+		addr, _ := countingUpstream(t, true)
+		s := authority.NewServer(addr, authority.IPv4)
+		answered = append(answered, s)
+		servers.List = append(servers.List, s)
+	}
+	silent := make(map[string]*atomic.Int64, silentCount)
+	for range silentCount {
+		addr, hits := countingUpstream(t, false)
+		silent[addr] = hits
+		servers.List = append(servers.List, authority.NewServer(addr, authority.IPv4))
+	}
+
+	cfg := &config.Config{
+		RootServers:          []string{"198.41.0.4:53"},
+		Timeout:              config.Duration{Duration: 2 * time.Second},
+		MaxConcurrentQueries: 100,
+	}
+	r := newWiredTestResolver(cfg)
+	req := new(dns.Msg)
+	req.SetQuestion("settled.example.", dns.TypeA)
+
+	runLookup := func() {
+		t.Helper()
+		if _, err := r.lookup(context.Background(), &resolveState{requestID: req.Id}, req, servers); err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+	}
+
+	// Settle the delegation the way production settles it: both of the
+	// authorities that answer are measured, so the second slot is no
+	// longer level with anything and the rotation has nothing to rotate.
+	// That is the state this test is about.
+	//
+	// Waited for rather than counted out in lookups. Which of the two
+	// answering addresses takes the second slot is a random choice, so a
+	// fixed warm-up leaves the other one unmeasured about one run in
+	// seven — a coin this test has no reason to be flipping.
+	settled := time.Now().Add(5 * time.Second)
+	for !allMeasured(answered) && time.Now().Before(settled) {
+		runLookup()
+	}
+	if !allMeasured(answered) {
+		t.Fatal("the authorities that answer never got measured")
+	}
+	for _, hits := range silent {
+		hits.Store(0)
+	}
+
+	for range lookups {
+		runLookup()
+	}
+
+	untried, counts := 0, make([]int64, 0, silentCount)
+	for _, hits := range silent {
+		got := hits.Load()
+		counts = append(counts, got)
+		if got == 0 {
+			untried++
+		}
+	}
+	t.Logf("exploration queries across %d unmeasured addresses in %d lookups: %v",
+		silentCount, lookups, counts)
+	if untried > 0 {
+		t.Fatalf("%d of %d addresses behind a settled delegation were never explored: %v",
+			untried, silentCount, counts)
+	}
+}
+
+// The ranking's decision has to reach the wire, and this is the shape it
+// reaches it in: a delegation of ten addresses where one answers and the
+// rest are unmeasured. The resolver starts the top two of every lookup in
+// parallel, so each miss sends exactly one query to an unmeasured address
+// — and that query is cancelled the moment the leader answers, so the
+// address never comes back measured and stays tied with its peers.
+//
+// Which is the whole point. Nine addresses sharing one price is nine
+// addresses the ranking has no reason to choose between, and the sort's
+// stability chose the same one anyway: it took every one of those queries
+// and the other eight were never contacted at all, for the life of the
+// process. This drives real lookups against real sockets and counts what
+// each address actually received.
+func TestEveryUnmeasuredAuthorityIsEventuallyQueried(t *testing.T) {
+	const unmeasured = 9
+	const lookups = 200
+
+	leaderAddr, leaderHits := countingUpstream(t, true)
+
+	servers := &authority.Servers{Zone: "example."}
+	silent := make(map[string]*atomic.Int64, unmeasured)
+	for range unmeasured {
+		addr, hits := countingUpstream(t, false)
+		silent[addr] = hits
+		servers.List = append(servers.List, authority.NewServer(addr, authority.IPv4))
+	}
+	// The leader goes in last, so the order it ends up in is the ranking's
+	// doing rather than the order it was handed.
+	servers.List = append(servers.List, authority.NewServer(leaderAddr, authority.IPv4))
+
+	cfg := &config.Config{
+		// Roots this test never reaches, but a resolver built without any
+		// treats an empty list as a fatal misconfiguration and takes the
+		// process down with it.
+		RootServers:          []string{"198.41.0.4:53"},
+		Timeout:              config.Duration{Duration: 2 * time.Second},
+		MaxConcurrentQueries: 100,
+	}
+	r := newWiredTestResolver(cfg)
+
+	req := new(dns.Msg)
+	req.SetQuestion("rotate.example.", dns.TypeA)
+
+	runLookup := func() {
+		t.Helper()
+		resp, err := r.lookup(context.Background(), &resolveState{requestID: req.Id}, req, servers)
+		if err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+		if resp == nil || len(resp.Answer) == 0 {
+			t.Fatal("lookup returned no answer")
+		}
+	}
+
+	// One lookup to establish a leader. On the first one nothing is
+	// measured, so the whole delegation is tied and the resolver walks
+	// down it until something answers — which contacts every address once
+	// and says nothing about how the slot behind the leader is chosen.
+	runLookup()
+	for _, hits := range silent {
+		hits.Store(0)
+	}
+	leaderHits.Store(0)
+
+	for range lookups {
+		runLookup()
+	}
+
+	// The measured server leads every lookup, so it takes one query each.
+	if got := leaderHits.Load(); got < lookups {
+		t.Fatalf("the measured leader received %d of %d lookups", got, lookups)
+	}
+
+	// And the second slot has to have reached all of its equals. Without
+	// rotation exactly one of these is at ~200 and the other eight are at
+	// zero.
+	untried := 0
+	counts := make([]int64, 0, unmeasured)
+	for _, hits := range silent {
+		got := hits.Load()
+		counts = append(counts, got)
+		if got == 0 {
+			untried++
+		}
+	}
+	t.Logf("second-slot queries across %d unmeasured addresses: %v", unmeasured, counts)
+	if untried > 0 {
+		t.Fatalf("%d of %d unmeasured addresses were never queried across %d lookups: %v",
+			untried, unmeasured, lookups, counts)
+	}
+
+	// None of them may be measured either — every one of those attempts
+	// was cancelled when the leader answered, and what an attempt took to
+	// be cancelled is not what the server is worth.
+	for _, s := range servers.List {
+		if s.Addr == leaderAddr {
+			continue
+		}
+		if got := s.SmoothedRTT(); got != 0 {
+			t.Fatalf("a cancelled attempt measured %s at %v", s.Addr, got)
+		}
+	}
+}

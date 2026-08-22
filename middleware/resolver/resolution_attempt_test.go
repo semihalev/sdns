@@ -937,7 +937,9 @@ func TestLookupRejectsBadReferralAndKeepsHealthyAuthority(t *testing.T) {
 				case got := <-done:
 					t.Fatalf("lookup accepted bad referral before healthy response: resp:%#v err:%v", got.resp, got.err)
 				case <-ticker.C:
-					if atomic.LoadInt64(&badServer.Count) >= 2 {
+					// The penalty is a two-second sample, so the estimate
+					// crossing a second is the mark landing.
+					if badServer.SmoothedRTT() >= time.Second {
 						break waitForPenalty
 					}
 				case <-deadline.C:
