@@ -2,6 +2,7 @@ package authority
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -157,6 +158,38 @@ func TestRotationLeavesTheOrderedServersAlone(t *testing.T) {
 
 	if got := addrsOf(list); got[0] != fast.Addr || got[1] != mid.Addr || got[2] != slow.Addr {
 		t.Fatalf("distinct scores were reordered: %v", got)
+	}
+}
+
+// An operator reading a delegation has to be able to tell a slow
+// authority from one that is not replying, and the price cannot say it: a
+// server that does not answer is charged a timeout, and a timeout is also
+// what a very slow server costs. So the state carries whether the last
+// exchange came back, and the health line reports it. Nothing is ranked
+// on it.
+func TestHealthSeparatesSlowFromSilent(t *testing.T) {
+	slow := NewServer("192.0.2.1:53", IPv4)
+	slow.Observe(2 * time.Second)
+
+	silent := NewServer("192.0.2.2:53", IPv4)
+	silent.ObserveNoAnswer(2 * time.Second)
+
+	if got := slow.String(); !strings.Contains(got, "[POOR]") {
+		t.Fatalf("a slow but answering authority reports %q", got)
+	}
+	if got := silent.String(); !strings.Contains(got, "[FAILING]") {
+		t.Fatalf("an authority that did not reply reports %q", got)
+	}
+	// Both are priced the same, which is the whole reason the bit exists.
+	if slow.Score() != silent.Score() {
+		t.Fatalf("the two are ranked differently: %v against %v", slow.Score(), silent.Score())
+	}
+
+	// And one answer clears it, in the same write that folds in the
+	// latency.
+	silent.Observe(10 * time.Millisecond)
+	if !silent.Answering() {
+		t.Fatal("an authority that answered still reports as failing")
 	}
 }
 

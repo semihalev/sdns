@@ -1496,7 +1496,10 @@ mainloop:
 						// bogus delegation, not the current loop index —
 						// results arrive out of order from parallel
 						// goroutines, so `server` can be a later peer.
-						res.server.Observe(2 * time.Second)
+						// It replied, but with a delegation it had no
+						// business sending, which is not an answer to the
+						// question we asked.
+						res.server.ObserveNoAnswer(2 * time.Second)
 
 						if left > 0 && len(serversList)-1 == index {
 							continue fallbackloop
@@ -1808,7 +1811,6 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			return
 		}
 		observed = true
-		sample := rtt
 		if err != nil || resp == nil || !answeredTheQuestion(resp.Rcode) {
 			// Only an answer is worth what it took. Everything else here
 			// is fast for the wrong reason: a refusal is the quickest
@@ -1818,9 +1820,10 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			// scoring these by the clock made the one address in a
 			// delegation that serves nothing into its permanent leader.
 			// Not answering is worth a timeout.
-			sample = r.netTimeout
+			server.ObserveNoAnswer(r.netTimeout)
+			return
 		}
-		server.Observe(sample)
+		server.Observe(rtt)
 	}
 	defer record()
 

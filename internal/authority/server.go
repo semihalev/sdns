@@ -130,10 +130,16 @@ func (v IPVersion) String() string {
 func (a *Server) String() string {
 	measured := a.SmoothedRTT()
 
+	// FAILING comes before POOR because it says something the latency
+	// cannot: a server that does not reply is charged a timeout, and a
+	// timeout is also what a very slow server costs, so priced alone the
+	// two are indistinguishable to whoever is reading this.
 	var health string
 	switch {
 	case measured == 0:
 		health = "UNKNOWN"
+	case !a.Answering():
+		health = "FAILING"
 	case measured >= time.Second:
 		health = "POOR"
 	default:
@@ -257,18 +263,41 @@ const (
 	sortStackServers = 32
 )
 
+// The state word: [ estimate ns : 62 ][ answered : 1 ][ measured : 1 ].
+//
+// measured says an exchange has completed, which is what separates an
+// estimate from the seed. answered says the last one came back with an
+// answer, and nothing is decided on it — it is there so an operator
+// reading the delegation can tell a slow authority from one that is not
+// replying at all. Priced by the ranking the two look alike, because a
+// server that does not answer is charged a timeout, and a timeout is
+// also what a very slow server costs.
+const (
+	stateMeasured = 1
+	stateAnswered = 2
+	stateRTTShift = 2
+)
+
 // Observe records a completed exchange: how long this server took to
 // answer. The estimate is blended half and half with each new sample, so
 // one bad sample is visible in the ranking immediately — which is what a
 // resolver needs when an authority starts to degrade. A running average
 // over every sample ever taken needed dozens of them to notice.
+func (s *Server) Observe(d time.Duration) { s.record(d, true) }
+
+// ObserveNoAnswer records an exchange that came back with no answer — a
+// timeout, a transport error, a refusal. The caller prices it, and prices
+// it as a timeout; this only adds that the authority did not reply.
+func (s *Server) ObserveNoAnswer(d time.Duration) { s.record(d, false) }
+
+// record folds a sample into the estimate.
 //
 // The loop is there because a root address is in flight from several
 // lookups at once. Read, decide, write as separate steps kept only
 // whichever store landed last; the compare-and-swap carries the estimate
-// and its measured bit together, so a sample that is counted is a sample
+// and both its bits together, so a sample that is counted is a sample
 // that moved the estimate.
-func (s *Server) Observe(d time.Duration) {
+func (s *Server) record(d time.Duration, answered bool) {
 	sample := int64(d)
 	if sample < 0 {
 		sample = 0
@@ -276,14 +305,25 @@ func (s *Server) Observe(d time.Duration) {
 	for {
 		w := atomic.LoadInt64(&s.state)
 		next := sample
-		if w&1 == 1 {
-			next = (w>>1 + sample) / 2
+		if w&stateMeasured != 0 {
+			next = (w>>stateRTTShift + sample) / 2
 		}
-		if atomic.CompareAndSwapInt64(&s.state, w, next<<1|1) {
+		packed := next<<stateRTTShift | stateMeasured
+		if answered {
+			packed |= stateAnswered
+		}
+		if atomic.CompareAndSwapInt64(&s.state, w, packed) {
 			break
 		}
 	}
 	atomic.StoreInt64(&s.lastNs, time.Now().UnixNano())
+}
+
+// Answering reports whether the last completed exchange came back with an
+// answer. Unmeasured servers report true: nothing has failed yet.
+func (s *Server) Answering() bool {
+	w := atomic.LoadInt64(&s.state)
+	return w&stateMeasured == 0 || w&stateAnswered != 0
 }
 
 // SmoothedRTT is the measured latency, or zero when nothing has answered.
@@ -292,10 +332,10 @@ func (s *Server) Observe(d time.Duration) {
 // ranking has priced it down.
 func (s *Server) SmoothedRTT() time.Duration {
 	w := atomic.LoadInt64(&s.state)
-	if w&1 == 0 {
+	if w&stateMeasured == 0 {
 		return 0
 	}
-	return time.Duration(w >> 1)
+	return time.Duration(w >> stateRTTShift)
 }
 
 // Score is what the ranking sorts on, at this instant.
@@ -303,8 +343,8 @@ func (s *Server) Score() time.Duration { return time.Duration(s.score(time.Now()
 
 func (s *Server) score(nowNs int64) int64 {
 	w := atomic.LoadInt64(&s.state)
-	base := w >> 1
-	if w&1 == 0 {
+	base := w >> stateRTTShift
+	if w&stateMeasured == 0 {
 		// Nothing has answered: a guess is priced at the seed. The extra
 		// nanosecond is the tie-break, so a server measured at exactly
 		// that price still outranks the guess.
@@ -338,8 +378,14 @@ func Sort(serversList []*Server) {
 }
 
 func rank(list []*Server, scores []int64, now int64) {
+	// Whether anything here is unmeasured falls out of the scoring pass:
+	// a guess is priced at exactly the seed. Knowing it costs a comparison
+	// per server and saves the exploration roll on every delegation that
+	// has none — which, once a zone has settled, is most of them.
+	unknown := false
 	for i, s := range list {
 		scores[i] = s.score(now)
+		unknown = unknown || scores[i] == rttUnknownSeed+1
 	}
 	for i := 1; i < len(list); i++ {
 		score, server := scores[i], list[i]
@@ -350,7 +396,7 @@ func rank(list []*Server, scores []int64, now int64) {
 		}
 		scores[j+1], list[j+1] = score, server
 	}
-	hedge(list, scores)
+	hedge(list, scores, unknown)
 }
 
 // randN is the ranking's only source of randomness, replaceable so a test
@@ -375,11 +421,52 @@ var randN = rand.IntN
 // measurable — only an attempt that outlives the winner can do that — but
 // it does give every tied candidate its turn at the one thing that can
 // measure it, which is winning the race outright.
-func hedge(list []*Server, scores []int64) {
+// A delegation settles on two measured addresses and stops there without
+// this. The parallel head is two, so two addresses get measured and rank
+// ahead of the seed; from then on nothing else is level with the second
+// slot, rotation has nothing to rotate, and the remaining ten or eleven
+// addresses of a TLD are never contacted again. Measured on a production
+// resolver: two of thirteen in use for com., net. and org. alike.
+//
+// So the slot is occasionally spent on an address nothing is known about,
+// which is the only way one can stop being unknown. One lookup in
+// exploreOdds is enough to work through a delegation within a few hundred
+// misses, and it costs nothing the hedge was not already spending — the
+// query goes out either way; this only decides where.
+const exploreOdds = 32
+
+func hedge(list []*Server, scores []int64, unknown bool) {
 	n := len(list)
 	if n < 3 {
 		return
 	}
+
+	if unknown && randN(exploreOdds) == 0 {
+		// Any of them, not the first of them: the unmeasured all carry the
+		// same price, so taking the first would probe one address forever
+		// and leave the rest of the delegation permanently unknown — which
+		// is the shape this exists to break.
+		candidates := 0
+		for i := 1; i < n; i++ {
+			if list[i].SmoothedRTT() == 0 {
+				candidates++
+			}
+		}
+		if candidates > 0 {
+			pick := randN(candidates)
+			for i := 1; i < n; i++ {
+				if list[i].SmoothedRTT() != 0 {
+					continue
+				}
+				if pick == 0 {
+					list[1], list[i] = list[i], list[1]
+					return
+				}
+				pick--
+			}
+		}
+	}
+
 	k := 2
 	for k < n && scores[k] == scores[1] {
 		k++

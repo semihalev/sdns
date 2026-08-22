@@ -57,6 +57,89 @@ func countingUpstream(t *testing.T, answer bool) (string, *atomic.Int64) {
 	return packet.LocalAddr().String(), hits
 }
 
+// The shape a delegation actually settles into, which is not the one
+// above: the parallel head is two, so two addresses get measured and
+// every other address in the zone is left behind the seed. Nothing is
+// then level with the second slot, so rotation has nothing to rotate, and
+// a TLD's remaining ten or eleven authorities are never contacted again.
+//
+// Measured on a production resolver running this branch: two of thirteen
+// in use for com., net. and org. alike. This is that, in a fixture — two
+// authorities answering at similar speeds, eight silent — and it is the
+// case the exploration exists for. Without it, all eight take zero
+// queries across two hundred lookups.
+func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
+	// The lookup count is set by the odds, not by taste: exploration fires
+	// on one lookup in thirty-two and then picks among the eight, so this
+	// is about fifteen turns each. Enough that a zero is not something
+	// this test will ever see by luck.
+	const answering, silentCount, lookups = 2, 8, 4000
+
+	servers := &authority.Servers{Zone: "example."}
+	for range answering {
+		addr, _ := countingUpstream(t, true)
+		servers.List = append(servers.List, authority.NewServer(addr, authority.IPv4))
+	}
+	silent := make(map[string]*atomic.Int64, silentCount)
+	for range silentCount {
+		addr, hits := countingUpstream(t, false)
+		silent[addr] = hits
+		servers.List = append(servers.List, authority.NewServer(addr, authority.IPv4))
+	}
+
+	cfg := &config.Config{
+		RootServers:          []string{"198.41.0.4:53"},
+		Timeout:              config.Duration{Duration: 2 * time.Second},
+		MaxConcurrentQueries: 100,
+	}
+	r := newWiredTestResolver(cfg)
+	req := new(dns.Msg)
+	req.SetQuestion("settled.example.", dns.TypeA)
+
+	runLookup := func() {
+		t.Helper()
+		if _, err := r.lookup(context.Background(), &resolveState{requestID: req.Id}, req, servers); err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+	}
+
+	// Let it settle the way production settles, then measure from there.
+	for range 20 {
+		runLookup()
+	}
+	measured := 0
+	for _, s := range servers.List {
+		if s.SmoothedRTT() != 0 {
+			measured++
+		}
+	}
+	if measured != answering {
+		t.Fatalf("the delegation settled on %d measured addresses, want the %d that answer", measured, answering)
+	}
+	for _, hits := range silent {
+		hits.Store(0)
+	}
+
+	for range lookups {
+		runLookup()
+	}
+
+	untried, counts := 0, make([]int64, 0, silentCount)
+	for _, hits := range silent {
+		got := hits.Load()
+		counts = append(counts, got)
+		if got == 0 {
+			untried++
+		}
+	}
+	t.Logf("exploration queries across %d unmeasured addresses in %d lookups: %v",
+		silentCount, lookups, counts)
+	if untried > 0 {
+		t.Fatalf("%d of %d addresses behind a settled delegation were never explored: %v",
+			untried, silentCount, counts)
+	}
+}
+
 // The ranking's decision has to reach the wire, and this is the shape it
 // reaches it in: a delegation of ten addresses where one answers and the
 // rest are unmeasured. The resolver starts the top two of every lookup in
