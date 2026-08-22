@@ -1751,7 +1751,13 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 	switch {
 	case !r.circuitBreaker.canQuery(server.Addr):
 		res.err = fatalError(errConnectionFailed)
-	case contextutil.EffectiveError(ctx) != nil:
+	case contextutil.EffectiveError(exchangeCtx) != nil:
+		// The context this attempt would run under, which for a probe is
+		// not the lookup's. Reading the lookup's here undid the admission
+		// that had just been granted: a probe took a slot and retained the
+		// ledger, and then returned without reaching the wire because a
+		// fast leader had cancelled in the meantime — which is precisely
+		// the case it exists for.
 		return
 	default:
 		reqCopy.Id = dns.Id() // anti-spoofing
@@ -1931,19 +1937,35 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			return
 		}
 		observed = true
-		if err != nil || resp == nil || !answeredTheQuestion(resp.Rcode) {
-			// Only an answer is worth what it took. Everything else here
-			// is fast for the wrong reason: a refusal is the quickest
-			// reply an authority can send, and a refused connection comes
-			// back in microseconds — quicker than any authority on earth.
-			// The exchange reports elapsed time whatever the outcome, so
-			// scoring these by the clock made the one address in a
-			// delegation that serves nothing into its permanent leader.
-			// Not answering is worth a timeout.
+		switch {
+		case err != nil || resp == nil:
+			// Nothing came back. Only an answer is worth what it took, and
+			// the ways of not answering are fast for the wrong reason: a
+			// refused connection comes back in microseconds, quicker than
+			// any authority on earth. The exchange reports elapsed time
+			// whatever the outcome, so scoring these by the clock made the
+			// one address in a delegation that serves nothing into its
+			// permanent leader. Not answering is worth a timeout.
 			server.ObserveNoAnswer(r.netTimeout)
-			return
+
+		case answeredTheQuestion(resp.Rcode):
+			server.Observe(rtt)
+
+		case isProbe(ctx) && resp.Rcode == dns.RcodeFormatError:
+			// The one rcode a probe reads differently. It says the server
+			// dislikes the shape of our query, not that it failed to
+			// answer — the lookup path replies to it by asking again
+			// without EDNS, and prices the attempt at nothing. A probe
+			// cannot price it at nothing: recording nothing leaves the
+			// address as out of date as it was, so it is a candidate
+			// again, so it is probed again, for as long as the server
+			// keeps saying it. The round trip is what a probe went to find
+			// out, and this server did make one.
+			server.Observe(rtt)
+
+		default:
+			server.ObserveNoAnswer(r.netTimeout)
 		}
-		server.Observe(rtt)
 	}
 	defer record()
 
@@ -2063,10 +2085,22 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 	ReleaseConn(co)
 
-	// A probe stops here on every one of these. The fallbacks exist to get
-	// an answer, and by the time a probe has one the lookup it was born in
-	// has returned and nobody is left to read it; the UDP exchange it just
-	// completed is the measurement it was sent for.
+	// A probe stops here on both of these, and what it records is the UDP
+	// round trip it completed — deliberately, not by omission. The
+	// fallbacks exist to get an answer, and by the time a probe has one
+	// the lookup it was born in has returned and nobody is left to read
+	// it.
+	//
+	// That does understate an authority whose TCP is slow or broken:
+	// truncation sends the real lookup to TCP, and the probe's number
+	// covers only the UDP leg. The alternative is worse. Pricing a
+	// truncated reply as a failure would mark a server that answered
+	// promptly and correctly, and truncation is a property of the answer's
+	// size rather than of the server, so it would fall on whichever
+	// addresses happened to be probed with a large question. A server
+	// whose TCP is genuinely broken is caught where the evidence actually
+	// exists: the first real lookup that needs TCP records a failure
+	// against it, and the estimate halves toward the timeout at once.
 	if resp != nil && resp.Truncated && proto == "udp" && !isProbe(ctx) {
 		record()
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
@@ -2081,16 +2115,20 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
+		if isProbe(ctx) {
+			// A probe stops here, and it has to leave a measurement behind.
+			// Recording nothing left the address exactly as it was — out of
+			// date, so a candidate again, so probed again, for as long as
+			// the server keeps refusing our EDNS. The round trip is what a
+			// probe went to find out and the server did make it; that it
+			// dislikes the shape of the query is a fact about the query.
+			return resp, nil
+		}
 		// A server that cannot parse EDNS is not a server that failed to
 		// answer: this attempt is being replaced, not scored. Marking it
 		// observed keeps the defer from pricing our own choice of query
-		// shape as the authority's fault — which is as true for a probe,
-		// which stops here rather than asking again, as for a lookup that
-		// goes on to.
+		// shape as the authority's fault.
 		observed = true
-		if isProbe(ctx) {
-			return resp, nil
-		}
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
 		return r.exchange(ctx, rs, interrupts, proto, req, server, retried)

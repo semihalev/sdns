@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/dnsutil"
 )
 
 // slowUpstream answers every query after delay, and reports its address.
@@ -61,9 +62,20 @@ func probeResolver(probeCap int) *Resolver {
 // the moment a leader would have answered.
 func runAttempt(t *testing.T, r *Resolver, server *authority.Server, probing bool, leaderAnswersIn time.Duration) {
 	t.Helper()
+	runAttemptWith(t, r, server, probing, leaderAnswersIn, false)
+}
+
+// runAttemptWith is runAttempt with a say in whether the query carries
+// EDNS, which is what decides whether a FORMERR reaches the fallback that
+// strips it.
+func runAttemptWith(t *testing.T, r *Resolver, server *authority.Server, probing bool, leaderAnswersIn time.Duration, edns bool) {
+	t.Helper()
 
 	req := new(dns.Msg)
 	req.SetQuestion("probe.example.", dns.TypeA)
+	if edns {
+		req.SetEdns0(dnsutil.DefaultMsgSize, false)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -146,6 +158,84 @@ func TestAProbeIsShedWhenThePoolIsFull(t *testing.T) {
 
 	if got := server.SmoothedRTT(); got != 0 {
 		t.Fatalf("a shed probe measured %v — it outlived its lookup without a slot", got)
+	}
+}
+
+// rcodeUpstream answers every query with the given rcode, optionally
+// truncated, and reports its address.
+func rcodeUpstream(t *testing.T, rcode int, truncated bool) string {
+	t.Helper()
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = packet.Close() })
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, addr, readErr := packet.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			req := new(dns.Msg)
+			if req.Unpack(buf[:n]) != nil {
+				continue
+			}
+			reply := new(dns.Msg)
+			reply.SetRcode(req, rcode)
+			reply.Truncated = truncated
+			out, packErr := reply.Pack()
+			if packErr != nil {
+				continue
+			}
+			_, _ = packet.WriteTo(out, addr)
+		}
+	}()
+	return packet.LocalAddr().String()
+}
+
+// A probe stops before the fallbacks, so whatever it leaves behind is the
+// whole record of that address until the next one. Leaving nothing is the
+// case to watch: the address stays exactly as out of date as it was, so
+// it is a candidate again, so it is probed again, and the loop has no end
+// while the server keeps giving the same reply.
+//
+// FORMERR is where that bites. The lookup path answers it by asking again
+// without EDNS and prices the first attempt at nothing, which is right
+// there and wrong here.
+func TestAProbeAlwaysLeavesAMeasurement(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rcode     int
+		truncated bool
+		fast      bool
+	}{
+		// It answered, and the answer says to come back over TCP. What the
+		// probe measured is the round trip it made.
+		{"truncated", dns.RcodeSuccess, true, true},
+		// It answered, and the answer says it dislikes our EDNS. Also a
+		// round trip, and not the authority's failing.
+		{"format error", dns.RcodeFormatError, false, true},
+		// It did not answer the question, and no fallback would have
+		// helped. That is worth a timeout.
+		{"refused", dns.RcodeRefused, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := rcodeUpstream(t, tc.rcode, tc.truncated)
+			server := authority.NewServer(addr, authority.IPv4)
+			// With EDNS on the query, so a FORMERR reaches the fallback
+			// that would otherwise strip it and ask again.
+			runAttemptWith(t, probeResolver(1), server, true, 10*time.Millisecond, true)
+
+			got := server.SmoothedRTT()
+			if got == 0 {
+				t.Fatal("the probe recorded nothing; this address will be probed again forever")
+			}
+			if fast := got < 100*time.Millisecond; fast != tc.fast {
+				t.Fatalf("%s measured %v, which reads as %s", tc.name, got,
+					map[bool]string{true: "a prompt answer", false: "a timeout"}[fast])
+			}
+		})
 	}
 }
 
