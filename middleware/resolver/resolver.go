@@ -997,13 +997,14 @@ func (r *Resolver) probeCut(ctx context.Context, rs *resolveState, child string,
 			"query", dnsutil.FormatQuestion(probe.Question[0]), "step", rs.minSteps)
 	}
 
-	resp, err := r.subQueryWith(ctx, probe, true, &subQueryOrigin{
+	at := &probePosition{
 		servers:  rs.servers,
 		level:    rs.level,
 		parentDS: rs.parentDS,
 		deadline: rs.cutDeadline,
 		cutKey:   rs.cutKey,
-	})
+	}
+	resp, err := r.subQueryWith(ctx, probe, true, at)
 	switch {
 	case err == nil, errors.Is(err, errStoppedAtCut):
 		// Either the probe found the cut and stopped, or the name resolved
@@ -1029,15 +1030,13 @@ func (r *Resolver) probeCut(ctx context.Context, rs *resolveState, child string,
 		}
 	}
 
-	// The probe may have established a cut several labels deeper than the one
-	// it asked about, and other resolutions may have cached one meanwhile.
-	// Re-read, and never move backwards.
-	q := rs.req.Question[0]
-	if m := r.searchCache(q, rs.req.CheckingDisabled, q.Name); m.level > rs.level {
-		rs.servers, rs.parentDS, rs.level = m.servers, m.parentDS, m.level
-		rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, m.deadline, m.key)
-		noteCut(ctx, rs.cutDeadline, rs.cutKey)
-	}
+	// Take the position the probe reached. A cached probe answer carries no
+	// new cut and leaves it where it started, which is right: the delegation
+	// cache was already consulted for the whole name before the walk began.
+	rs.servers, rs.parentDS = at.servers, at.parentDS
+	rs.level = at.level
+	rs.cutDeadline, rs.cutKey = at.deadline, at.cutKey
+	noteCut(ctx, rs.cutDeadline, rs.cutKey)
 	if exposed > rs.level {
 		rs.level = exposed
 	}
@@ -2849,12 +2848,14 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	return r.subQueryWith(ctx, req, false, nil)
 }
 
-// subQueryOrigin starts an internal lookup at a delegation the caller has
-// already reached and validated, instead of at the root. A minimization probe
-// knows exactly which servers to ask; sending it back to the root would make it
-// re-derive every DS and DNSKEY the walk has just been through — work the cache
-// mostly absorbs, but not the per-request attempt budget.
-type subQueryOrigin struct {
+// probePosition carries a walk's position into an internal lookup and back out
+// again: in, the delegation to start from; out, the one that was reached.
+//
+// Going in, it keeps a probe from being sent back to the root to re-derive
+// every DS and DNSKEY the walk has just been through. Coming out, it saves the
+// caller a second suffix walk over the delegation cache to rediscover what the
+// probe already knows.
+type probePosition struct {
 	servers  *authority.Servers
 	level    int
 	parentDS []dns.RR
@@ -2866,7 +2867,7 @@ type subQueryOrigin struct {
 // minimization probe wants the walk to end at the first delegation rather than
 // carry on to an answer it would discard, and it must not minimize again —
 // probing a probe would recurse forever.
-func (r *Resolver) subQueryWith(ctx context.Context, req *dns.Msg, stopAtCut bool, from *subQueryOrigin) (*dns.Msg, error) {
+func (r *Resolver) subQueryWith(ctx context.Context, req *dns.Msg, stopAtCut bool, at *probePosition) (*dns.Msg, error) {
 	store := r.store.Load()
 	if store != nil {
 		var (
@@ -2940,18 +2941,25 @@ func (r *Resolver) subQueryWith(ctx context.Context, req *dns.Msg, stopAtCut boo
 		requestID: reqid,
 		work:      middleware.RecursionWorkFrom(ctx),
 	}
-	if from != nil {
+	if at != nil {
 		// isRoot stays false: the caller has already consulted the delegation
 		// cache and holds the deepest cut it knows about, so re-reading it here
 		// would only reset level and lose the position.
-		child.servers = from.servers
-		child.level = from.level
-		child.parentDS = from.parentDS
+		child.servers = at.servers
+		child.level = at.level
+		child.parentDS = at.parentDS
 		child.isRoot = false
-		child.cutDeadline = from.deadline
-		child.cutKey = from.cutKey
+		child.cutDeadline = at.deadline
+		child.cutKey = at.cutKey
 	}
 	resp, err := r.resolve(ctx, child)
+	if at != nil {
+		// Hand the reached delegation back even when the lookup ended in the
+		// stop-at-cut sentinel: that outcome is precisely the one whose whole
+		// point is the position.
+		at.servers, at.level, at.parentDS = child.servers, child.level, child.parentDS
+		at.deadline, at.cutKey = child.cutDeadline, child.cutKey
+	}
 	if child.work != nil {
 		if workErr := child.work.EnforcementError(); workErr != nil {
 			return nil, workErr
@@ -3957,13 +3965,6 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		return nil, errMaxDepth
 	}
 
-	// A probe wanted the cut, and the cut is now established and cached.
-	// Descending into it would resolve a name the walk is going to throw
-	// away — the caller re-reads the delegation cache instead.
-	if rs.stopAtCut {
-		return nil, errStoppedAtCut
-	}
-
 	// Continue resolution with new servers. Descend the inherited cut
 	// deadline so any deeper delegation is bounded by this one.
 	rs.servers = authservers
@@ -3971,6 +3972,14 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	rs.isRoot = false
 	rs.cutDeadline = childDeadline
 	rs.cutKey = childKey
+
+	// A probe wanted the cut, and the cut is now established, cached, and
+	// recorded on the state its caller reads back. Descending into it would
+	// resolve a name the walk is going to throw away.
+	if rs.stopAtCut {
+		return nil, errStoppedAtCut
+	}
+
 	return r.resolve(ctx, rs)
 }
 
