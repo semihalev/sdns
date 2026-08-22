@@ -207,6 +207,29 @@ func TestExplorationDoesNotDemoteTheRunnerUp(t *testing.T) {
 	}
 }
 
+// An exchange that completed faster than the clock can see is still an
+// exchange that completed. The estimate and "nothing has answered" are
+// told apart by the estimate being zero, so recording a zero makes a
+// measurement report itself as the absence of one: priced at the seed,
+// explored forever, and never allowed to lead however fast it is.
+// Windows' timer produces exactly this for a loopback exchange — it is
+// where CI found it — and a LAN authority on any platform is one clock
+// granularity away from it.
+func TestAnInstantAnswerIsStillAnAnswer(t *testing.T) {
+	s := NewServer("192.0.2.1:53", IPv4)
+	s.Observe(0)
+
+	if s.SmoothedRTT() == 0 {
+		t.Fatal("an exchange the clock could not resolve reads as never having happened")
+	}
+	if got := s.Score(); got >= time.Duration(rttUnknownSeed) {
+		t.Fatalf("the fastest possible answer is priced at %v, the price of a guess", got)
+	}
+	if !s.Answering() {
+		t.Fatal("an answer that arrived instantly is not counted as an answer")
+	}
+}
+
 // An operator reading a delegation has to be able to tell a slow
 // authority from one that is not replying, and the price cannot say it: a
 // server that does not answer is charged a timeout, and a timeout is also

@@ -297,9 +297,17 @@ func (s *Server) ObserveNoAnswer(d time.Duration) { s.record(d, false) }
 // and both its bits together, so a sample that is counted is a sample
 // that moved the estimate.
 func (s *Server) record(d time.Duration, answered bool) {
+	// A completed exchange took some time, whatever the clock managed to
+	// see. Recording a zero would make it unreadable: the estimate and
+	// "nothing has answered" are told apart by the estimate being zero, so
+	// a sample of zero is a measurement that reports itself as the absence
+	// of one — priced at the seed, explored forever, and never allowed to
+	// lead however fast it actually is. Windows' coarse timer produces it
+	// for a loopback exchange; a LAN authority on any platform is one
+	// clock granularity away from it.
 	sample := int64(d)
-	if sample < 0 {
-		sample = 0
+	if sample < 1 {
+		sample = 1
 	}
 	for {
 		w := atomic.LoadInt64(&s.state)
