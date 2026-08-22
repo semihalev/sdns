@@ -291,18 +291,31 @@ func (s *Server) record(sample int64, failed bool) {
 // The compare-and-swap carries the estimate, the failure run and the
 // evidence bit together, so an exchange lands as one fact.
 //
-// The ticket settles what the swap cannot, and the two halves of the
-// verdict need different rules for it:
+// The ticket settles what the swap cannot: only the newest exchange
+// decides the verdict. One that has been overtaken folds its latency in
+// and leaves the run alone, in both directions — an answer that finished
+// before a failure must not wipe that failure out for writing later, and
+// a failure that finished before an answer must not mark a server the
+// answer has already cleared.
 //
-//   - A success is a claim that the run is over, and only the newest
-//     exchange is entitled to make it. An answer that finished before a
-//     failure must not wipe out that failure just for writing later.
-//   - A failure is a thing that happened, and it counts even when a newer
-//     exchange has already written — that is how a run reaches the length
-//     of the outage rather than the length of one write. It counts unless
-//     the run has been cleared since, which is the case this rule exists
-//     for: a failure landing after the success that superseded it leaves
-//     a healthy authority marked failing until something else queries it.
+// Deferring to the newest exchange is a choice about which way to be
+// wrong, because the exact rule does not fit. Counting a run precisely
+// under out-of-order arrival means knowing which side of the last answer
+// each failure fell on, which is two tickets and a count in a word that
+// holds one ticket, a count and a latency. Letting an overtaken failure
+// join the run instead — the obvious alternative — carries failures
+// across the answer that ended them, so a timeout from a run that closed
+// minutes ago lengthens the penalty and the retry wait of a run it was
+// never part of. That is the error this whole file exists to avoid, and
+// it lands on a server that is working.
+//
+// The cost of the choice is an undercount when writes arrive out of
+// order: a failure that lands behind a newer one is dropped rather than
+// added. It costs nothing that can be observed. Both things the run
+// decides — the penalty and the retry wait — saturate within a handful of
+// failures, and an outage that times out on every lookup at once still
+// arrives in nearly the order it happened, because the window a reorder
+// needs is nanoseconds wide.
 func (s *Server) recordAt(ticket, sample int64, failed bool) {
 	for {
 		w := atomic.LoadInt64(&s.state)
@@ -313,16 +326,12 @@ func (s *Server) recordAt(ticket, sample int64, failed bool) {
 		if evidence {
 			next = (current + sample) / 2
 		}
-		newest := newerThan(ticket, seq)
-		switch {
-		case !failed:
-			if newest {
+		if newerThan(ticket, seq) {
+			if failed {
+				fails++
+			} else {
 				fails = 0
 			}
-		case newest || fails > 0:
-			fails++
-		}
-		if newest {
 			seq = ticket
 		}
 

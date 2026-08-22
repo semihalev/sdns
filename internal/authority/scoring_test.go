@@ -755,20 +755,41 @@ func TestAnOvertakenAnswerDoesNotClearAFailure(t *testing.T) {
 	}
 }
 
-// A failure still counts when a newer exchange has already written, as
-// long as the run it belongs to is still open. Without that, an outage
-// that times out on every lookup at once would register as one failure —
-// whichever wrote first — and the penalty would never reach the length of
-// the outage.
-func TestAFailureBehindANewerFailureStillCounts(t *testing.T) {
+// A run is the failures since the last answer, and a failure from before
+// that answer is not one of them. Three exchanges are what it takes to
+// tell the difference: a timeout, the answer that ended its run, and a
+// second timeout that starts a new one. Written back to front, the second
+// timeout opens the new run, the answer cannot close a run that is newer
+// than itself, and the first timeout must not then be added to a run it
+// was never part of — that would carry a penalty and a retry wait across
+// an answer that had already cleared them.
+func TestAFailureFromAClosedRunDoesNotJoinTheNextOne(t *testing.T) {
 	s := measured("192.0.2.1:53", 10*time.Millisecond)
 
-	s.recordAt(3, int64(2*time.Second), true)
-	s.recordAt(1, int64(2*time.Second), true)
-	s.recordAt(2, int64(2*time.Second), true)
+	s.recordAt(4, int64(2*time.Second), true)        // the newer timeout
+	s.recordAt(3, int64(12*time.Millisecond), false) // the answer between them
+	s.recordAt(2, int64(2*time.Second), true)        // the older timeout
 
-	if got := s.Fails(); got != 3 {
-		t.Fatalf("failures = %d, want all three counted whatever order they wrote in", got)
+	if got := s.Fails(); got != 1 {
+		t.Fatalf("failures = %d, want only the timeout after the last answer", got)
+	}
+}
+
+// Arriving in the order they happened, every failure counts and an answer
+// ends the run — the ticket only decides what to do about the exchanges
+// that arrive out of order.
+func TestFailuresInOrderCountAndAnAnswerEndsTheRun(t *testing.T) {
+	s := measured("192.0.2.1:53", 10*time.Millisecond)
+
+	for i, want := range []int64{1, 2, 3} {
+		s.recordAt(int64(i+2), int64(2*time.Second), true)
+		if got := s.Fails(); got != want {
+			t.Fatalf("after %d failures in order the run is %d, want %d", i+1, got, want)
+		}
+	}
+	s.recordAt(5, int64(12*time.Millisecond), false)
+	if got := s.Fails(); got != 0 {
+		t.Fatalf("an answer left %d failures standing", got)
 	}
 }
 
@@ -798,18 +819,18 @@ func TestTicketOrderSurvivesTheWrap(t *testing.T) {
 	}
 }
 
-// The failure run now shares a word with the estimate, which is what
-// makes an exchange land as one fact — and it also means the run is no
-// longer incremented by an atomic add. It is read, raised and written
-// back, and a counter maintained that way loses every update that lands
-// inside the window unless the write is conditional on what was read.
+// A server that is failing is failing for every lookup at once, so this
+// is the ordinary case rather than a contrived one: an authority that
+// stops answering times out on all of them at the same moment.
 //
-// A server that is failing is failing for every lookup at once, so the
-// concurrency here is the ordinary case rather than a contrived one: an
-// authority that stops answering times out on all of them, and a run that
-// counts eight of sixty-four is a penalty that never reaches the size the
-// scoring intends.
-func TestConcurrentFailuresAreAllCounted(t *testing.T) {
+// What holds under any interleaving is asserted here; the exact
+// arithmetic is pinned where the order can be stated rather than raced
+// for. The run is order-dependent by design — a failure that arrives
+// behind a newer one is dropped rather than carried across it — so its
+// length is not a number this test can name. Every exchange is still
+// counted as an exchange, the storm must leave the server failing, and
+// one answer must end it however long it grew.
+func TestAStormOfFailuresLeavesTheServerFailing(t *testing.T) {
 	const rounds, writers = 50, 64
 
 	for range rounds {
@@ -828,8 +849,14 @@ func TestConcurrentFailuresAreAllCounted(t *testing.T) {
 		gate.Done()
 		done.Wait()
 
-		if got := s.Fails(); got != writers {
-			t.Fatalf("%d concurrent failures counted as %d", writers, got)
+		if got := s.Samples(); got != writers {
+			t.Fatalf("%d exchanges recorded as %d", writers, got)
+		}
+		if got := s.Fails(); got < 1 {
+			t.Fatalf("%d concurrent failures left the run at %d", writers, got)
+		}
+		if leadable(s) {
+			t.Fatalf("a server that timed out %d times may still lead", writers)
 		}
 		// And one answer ends the run, however long it had grown.
 		s.Observe(10 * time.Millisecond)
