@@ -117,10 +117,18 @@ type Resolver struct {
 // inherit the outer client's spread through the shared ctx), with req.Id
 // as a fallback for direct callers.
 type resolveState struct {
-	req       *dns.Msg
-	servers   *authority.Servers
-	depth     int
-	level     int
+	req     *dns.Msg
+	servers *authority.Servers
+	depth   int
+	level   int
+	// minSteps counts the minimized queries already sent for this request.
+	// RFC 9156 section 2.3 bounds outgoing queries per user request, so the
+	// budget is spent by probes actually sent — not by how deep the closest
+	// cached delegation happens to sit. Capping on level instead would hand
+	// a warm resolver a budget already consumed by labels it never had to
+	// expose, and stop minimizing exactly where the remaining labels are the
+	// private ones.
+	minSteps  int
 	nomin     bool
 	parentDS  []dns.RR
 	isRoot    bool
@@ -442,9 +450,13 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		noteCut(ctx, rs.cutDeadline, rs.cutKey)
 	}
 
-	// RFC 7816 query minimization. There are some concerns in RFC.
-	// Current default minimize level 5, if we down to level 3, performance gain 20%
-	minReq, minimized := r.minimize(rs.req, rs.level, rs.nomin)
+	// RFC 9156 query minimization, bounded by qnameMinLevel probes per
+	// request. Lowering that bound is a privacy/latency trade: past it the
+	// full name goes out, so every remaining delegation sees all of it.
+	minReq, minimized := r.minimize(rs.req, rs.level, rs.minSteps, rs.nomin)
+	if minimized {
+		rs.minSteps++
+	}
 
 	if debugLogEnabled() {
 		zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rs.servers.Zone, "query", dnsutil.FormatQuestion(minReq.Question[0]), "cd", rs.req.CheckingDisabled, "qname-minimize", minimized)
@@ -898,14 +910,19 @@ func (r *Resolver) removeIPv6Cache(name string) {
 	r.glueV6.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
-func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool) {
+// minimize shortens req to the labels the current delegation point already
+// justifies. level is the label depth of that delegation and decides the name;
+// steps is how many minimized queries this request has already spent and
+// decides whether to keep going, capped at qnameMinLevel (RFC 9156 section
+// 2.3's per-request query limit).
+func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Msg, bool) {
 	if r.qnameMinLevel == 0 || nomin {
 		return req, false
 	}
 
 	q := req.Question[0]
 
-	if level >= r.qnameMinLevel || q.Name == rootzone {
+	if steps >= r.qnameMinLevel || q.Name == rootzone {
 		return req, false
 	}
 
