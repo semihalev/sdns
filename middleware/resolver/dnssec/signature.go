@@ -177,18 +177,37 @@ func verifyECDSASignature(k *dns.DNSKEY, algorithm uint8, signed, signature []by
 		return dns.ErrSig
 	}
 
-	x := new(big.Int).SetBytes(public[:size])
-	y := new(big.Int).SetBytes(public[size:])
+	// RFC 6605 §4 carries the two coordinates bare; the parser wants them
+	// behind the uncompressed-point marker. Built on the stack because the
+	// largest curve here is P-384, so the point is 97 bytes and this runs
+	// once per signature.
+	//
+	// Parsing rather than assembling a PublicKey from its coordinates is
+	// what crypto/ecdsa now asks for, and it is stricter in a way that
+	// suits a validator: a point that is not on the curve is rejected here
+	// rather than carried into the verification.
+	var point [1 + 2*ecdsaMaxCoordinate]byte
+	point[0] = 4
+	copy(point[1:], public)
+	pub, err := ecdsa.ParseUncompressedPublicKey(curve, point[:1+len(public)])
+	if err != nil {
+		return ErrMissingDNSKEY
+	}
+
 	hasher.Write(signed)
 	hashed := hasher.Sum(nil)
 
 	r := new(big.Int).SetBytes(signature[:size])
 	s := new(big.Int).SetBytes(signature[size:])
-	if !ecdsa.Verify(&ecdsa.PublicKey{Curve: curve, X: x, Y: y}, hashed, r, s) {
+	if !ecdsa.Verify(pub, hashed, r, s) {
 		return dns.ErrSig
 	}
 	return nil
 }
+
+// ecdsaMaxCoordinate is one coordinate of the widest curve this validator
+// accepts, which is P-384.
+const ecdsaMaxCoordinate = 48
 
 func verifyEd25519Signature(k *dns.DNSKEY, signed, signature []byte) error {
 	// RFC 8080 §2: Ed25519 signs the message itself, not a digest of it.
