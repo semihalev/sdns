@@ -189,18 +189,27 @@ changed the answer by more than the result itself:
   time out adaptively from measured RTT and have no equivalent single knob;
   Unbound's starting point for an unmeasured server is 376 ms, so it is
   already the more aggressive of the two policies.
-- **QNAME minimisation off in all four.** All four implement it and each
-  bounds it differently. RFC 9156 §2.3 does require a bound — *"Resolvers
+- **QNAME minimisation off in all four**, because their defaults do not
+  implement the same policy. RFC 9156 §2.3 requires a bound — *"Resolvers
   supporting QNAME minimisation MUST implement a mechanism to limit the
-  number of outgoing queries per user request"* — and it names values:
-  MAX_MINIMISE_COUNT with a RECOMMENDED value of 10, and MINIMISE_ONE_LAB
-  with "a good value is 4". What the implementations do not share is the
-  knob: sdns exposes a label depth (`qname_min_level`, default 3), the
-  others expose a boolean or their own parameters, so the recommended
-  values cannot simply be dialled in on all four. Turning it off removes
-  the variable instead. **This is not a configuration to run in
-  production** — it is a privacy regression, and it is off here to compare
-  resolution engines rather than to recommend a setting.
+  number of outgoing queries per user request"* — and names values:
+  MAX_MINIMISE_COUNT with a RECOMMENDED value of 10, MINIMISE_ONE_LAB with
+  "a good value is 4". Read from the installed builds:
+
+  | | default | step bound |
+  |---|---|---|
+  | sdns 1.8.0 | on, `qname_min_level = 3` | 3 levels, then the full name |
+  | PowerDNS 5.4.1 | `qname_minimization: true` | `qname_max_minimize_count: 10`, `qname_minimize_one_label: 4` |
+  | Unbound 1.24.2 | `qname-minimisation: yes`, strict `no` | the RFC's parameter names are Unbound's own: 10 and 4 |
+  | Knot 6.2.0 | on | label by label |
+
+  PowerDNS and Unbound ship the values the RFC recommends. **sdns stops at
+  three**, so its default sends fewer minimised queries than the others' —
+  cheaper, and less private. Left on, that difference would show up in this
+  table as an engine result, which it is not. Turning it off in all four
+  removes it. **The result is not a configuration to run in production:**
+  disabling minimisation is a privacy regression, and it is off here to
+  compare resolution engines rather than to recommend a setting.
 
 ### Results
 
