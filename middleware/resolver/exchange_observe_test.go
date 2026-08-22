@@ -63,6 +63,70 @@ func TestAServerThatAnswersIsMeasuredByItsLatency(t *testing.T) {
 	}
 }
 
+// A retry recurses into exchange, so the frame that failed returns after
+// the frame that succeeded. Leaving both outcomes to the defer delivered
+// them backwards: the timeout was recorded last, and a blend that halves
+// with each sample left a server that had just answered priced near the
+// timeout it had already recovered from.
+func TestASuccessfulRetryIsNotPricedAsATimeout(t *testing.T) {
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packet.Close()
+
+	// An upstream that swallows the first query and answers the second.
+	go func() {
+		buf := make([]byte, 1024)
+		for attempt := 0; ; attempt++ {
+			n, addr, readErr := packet.ReadFrom(buf)
+			if readErr != nil {
+				return
+			}
+			if attempt == 0 {
+				continue
+			}
+			req := new(dns.Msg)
+			if req.Unpack(buf[:n]) != nil {
+				continue
+			}
+			reply := new(dns.Msg)
+			reply.SetReply(req)
+			out, packErr := reply.Pack()
+			if packErr != nil {
+				continue
+			}
+			_, _ = packet.WriteTo(out, addr)
+		}
+	}()
+
+	r := &Resolver{cfg: new(config.Config), netTimeout: 200 * time.Millisecond}
+	server := authority.NewServer(packet.LocalAddr().String(), authority.IPv4)
+	// A server with a history, which is what makes the order visible: on a
+	// fresh one the first sample replaces and the second blends half and
+	// half, so two samples land on the same number either way round.
+	server.Observe(10 * time.Millisecond)
+
+	req := new(dns.Msg)
+	req.SetQuestion("retry.example.", dns.TypeA)
+
+	resp, err := r.exchange(context.Background(), &resolveState{}, nil, "udp", req, server, 0)
+	if err != nil || resp == nil {
+		t.Fatalf("the retry never succeeded: resp=%v err=%v", resp, err)
+	}
+
+	// Both attempts are on the record — the timeout happened and cost what
+	// it cost — but the answer came last, so it is what the estimate leans
+	// toward: (10ms, 200ms) blends to 105ms and the answer halves it to
+	// ~52ms. Delivered backwards the answer is absorbed first and the
+	// timeout lands on top, which leaves ~102ms: twice the price, for a
+	// server that is answering.
+	if got := server.SmoothedRTT(); got > 75*time.Millisecond {
+		t.Fatalf("a server that answered on the retry is estimated at %v, "+
+			"as though the timeout were the last thing it did", got)
+	}
+}
+
 // answeringUpstream starts a UDP server that replies to every query with
 // the given rcode, and returns its address.
 func answeringUpstream(t *testing.T, rcode int) string {

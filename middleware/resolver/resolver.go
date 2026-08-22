@@ -1785,7 +1785,21 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 	// Track RTT for adaptive timeouts
 	var rtt = r.netTimeout
-	defer func() {
+
+	// record files this attempt's outcome with the ranking, once.
+	//
+	// It is called explicitly before this frame hands its work to a retry
+	// or a fallback, because those recurse: the frame that answered
+	// returns before the frame that failed, so leaving both to the defer
+	// delivered them backwards. A server that timed out and then answered
+	// on the retry had the timeout recorded last, and a blend that halves
+	// with each sample put it near the timeout — a server that had just
+	// answered, priced as one that had not.
+	observed := false
+	record := func() {
+		if observed {
+			return
+		}
 		if contextutil.EffectiveError(ctx) != nil {
 			// This attempt was cancelled because a peer answered first.
 			// What it took to get cancelled is not what this server is
@@ -1793,6 +1807,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			// from look like the fastest in the delegation.
 			return
 		}
+		observed = true
 		sample := rtt
 		if err != nil || resp == nil || !answeredTheQuestion(resp.Rcode) {
 			// Only an answer is worth what it took. Everything else here
@@ -1806,7 +1821,8 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			sample = r.netTimeout
 		}
 		server.Observe(sample)
-	}()
+	}
+	defer record()
 
 	// Check if we should use TCP connection pooling
 	var pooledConn *dns.Conn
@@ -1906,6 +1922,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 			}
 			// retry
 			retried++
+			record()
 			return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 		}
 
@@ -1924,6 +1941,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	ReleaseConn(co)
 
 	if resp != nil && resp.Truncated && proto == "udp" {
+		record()
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
@@ -1931,12 +1949,18 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 		// If response is too large, switch to TCP
 		zlog.Debug("Response too large, switching to TCP", "query", dnsutil.FormatQuestion(q), "upstream", server.Addr,
 			"size", resp.Len(), "maxSize", dnsutil.DefaultMsgSize, "retried", retried)
+		record()
 		return r.exchange(ctx, rs, interrupts, "tcp", req, server, retried)
 	}
 
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		// try again without edns tags, some weird servers didn't implement that
 		req = dnsutil.ClearOPT(req)
+		// A server that cannot parse EDNS is not a server that failed to
+		// answer: this attempt is being replaced, not scored. Marking it
+		// observed keeps the defer from pricing our own choice of query
+		// shape as the authority's fault.
+		observed = true
 		return r.exchange(ctx, rs, interrupts, proto, req, server, retried)
 	}
 
