@@ -2,6 +2,7 @@ package authority
 
 import (
 	"hash/fnv"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"sort"
@@ -348,5 +349,43 @@ func rank(list []*Server, scores []int64, now int64) {
 			j--
 		}
 		scores[j+1], list[j+1] = score, server
+	}
+	hedge(list, scores)
+}
+
+// randN is the ranking's only source of randomness, replaceable so a test
+// can pin an order rather than chase one.
+var randN = rand.IntN
+
+// hedge decides which of the servers tied for second place takes the
+// second slot. The leader is left alone — the fastest server answers the
+// query — but everything level with the runner-up is, by definition,
+// something the ranking has no reason to choose between.
+//
+// Leaving that to the sort's stability meant the same address took the
+// slot on every single lookup, forever. That matters most where the tie
+// is widest: a delegation's unmeasured addresses all carry the same
+// price, so one of them was queried on every cache miss and the rest were
+// never tried at all — and since the query is cancelled the moment the
+// leader answers, the one that was tried never came back measured
+// either. Eighteen unmeasured addresses, one of them getting all of the
+// chances and none of them getting measured.
+//
+// Rotating the slot does not make a server slower than the leader
+// measurable — only an attempt that outlives the winner can do that — but
+// it does give every tied candidate its turn at the one thing that can
+// measure it, which is winning the race outright.
+func hedge(list []*Server, scores []int64) {
+	n := len(list)
+	if n < 3 {
+		return
+	}
+	k := 2
+	for k < n && scores[k] == scores[1] {
+		k++
+	}
+	if k > 2 {
+		j := 1 + randN(k-1)
+		list[1], list[j] = list[j], list[1]
 	}
 }

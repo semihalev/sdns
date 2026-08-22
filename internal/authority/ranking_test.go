@@ -108,6 +108,58 @@ func TestStaleEvidenceDrifts(t *testing.T) {
 	}
 }
 
+// withRand pins the ranking's randomness so a test can state an order.
+func withRand(t *testing.T, f func(int) int) {
+	t.Helper()
+	old := randN
+	randN = f
+	t.Cleanup(func() { randN = old })
+}
+
+// The leader answers the query; the slot behind it goes to whichever
+// server is level with the runner-up, and the sort's stability meant that
+// was the same address on every lookup, forever. It matters most where
+// the tie is widest: a delegation's unmeasured addresses all carry the
+// same price, so one of them was queried on every cache miss and the
+// other seventeen were never tried at all.
+func TestTheSecondSlotRotatesAmongEquals(t *testing.T) {
+	fast := measured("192.0.2.1:53", 10*time.Millisecond)
+	list := []*Server{fast}
+	for i := range 8 {
+		list = append(list, NewServer(fmt.Sprintf("192.0.2.9:%d", i+1), IPv4))
+	}
+
+	seen := map[string]int{}
+	for range 2000 {
+		Sort(list)
+		if list[0] != fast {
+			t.Fatalf("the leader lost its slot to a guess: %v", addrsOf(list))
+		}
+		seen[list[1].Addr]++
+	}
+
+	if len(seen) != 8 {
+		t.Fatalf("the second slot reached %d of 8 unmeasured addresses: %v", len(seen), seen)
+	}
+}
+
+// Rotation may not touch the leader, and may not reach past the servers
+// that are actually level with the runner-up.
+func TestRotationLeavesTheOrderedServersAlone(t *testing.T) {
+	fast := measured("192.0.2.1:53", 10*time.Millisecond)
+	mid := measured("192.0.2.2:53", 50*time.Millisecond)
+	slow := measured("192.0.2.3:53", 90*time.Millisecond)
+	list := []*Server{slow, fast, mid}
+
+	// A source that would swap the furthest thing it is offered.
+	withRand(t, func(n int) int { return n - 1 })
+	Sort(list)
+
+	if got := addrsOf(list); got[0] != fast.Addr || got[1] != mid.Addr || got[2] != slow.Addr {
+		t.Fatalf("distinct scores were reordered: %v", got)
+	}
+}
+
 // The ranking runs once per cache miss, so an allocation here is an
 // allocation per miss on the path that already carries the resolver's
 // heaviest work. sort.Slice cost two, for the reflection it needs.
@@ -179,6 +231,25 @@ func benchmarkSort(b *testing.B, n int) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		copy(list, src) // restore the unordered set; copying pointers allocates nothing
+		Sort(list)
+	}
+}
+
+// A delegation the resolver has just read is entirely unmeasured, so
+// every address ties and the rotation has the widest set to scan and pick
+// from. This is that shape, against benchmarkSort's mostly-distinct one.
+func BenchmarkSortAllUnmeasured(b *testing.B) {
+	const n = 13
+	src := make([]*Server, 0, n)
+	for i := range n {
+		src = append(src, NewServer(fmt.Sprintf("192.0.2.9:%d", i+1), IPv4))
+	}
+	list := make([]*Server, n)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(list, src)
 		Sort(list)
 	}
 }
