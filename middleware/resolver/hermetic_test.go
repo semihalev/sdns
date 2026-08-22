@@ -496,6 +496,31 @@ func (z *hermeticZone) ServeUnsigned(rrs ...dns.RR) {
 	z.server.serve(hdr.Name, hdr.Rrtype, rrs...)
 }
 
+// ServeEmptyNonTerminals publishes the interior labels of a name the way a
+// real zone holds them: they exist and carry no records. delegate() does this
+// for the labels above a cut; a deep name needs it below one too.
+//
+// Without them a minimized query for an interior label draws a signed
+// NXDOMAIN, and RFC 8020 ends the resolution there — so a fixture missing them
+// can only be resolved with validation switched off, which quietly tests
+// something else.
+func (z *hermeticZone) ServeEmptyNonTerminals(name string) {
+	z.tb.Helper()
+	name = dns.Fqdn(name)
+
+	z.server.mu.Lock()
+	defer z.server.mu.Unlock()
+	for n := dns.CountLabel(z.name) + 1; n < dns.CountLabel(name); n++ {
+		idx, end := dns.PrevLabel(name, n)
+		if end {
+			break
+		}
+		ent := name[idx:]
+		z.server.names[ent] = true
+		z.server.rebuildNODATAProofLocked(ent)
+	}
+}
+
 func (z *hermeticZone) asked(name string, qtype uint16) int {
 	return z.server.asked(name, qtype)
 }
