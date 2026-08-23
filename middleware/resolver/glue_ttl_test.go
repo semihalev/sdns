@@ -1,11 +1,13 @@
 package resolver
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
 )
 
@@ -51,4 +53,43 @@ func TestGlueCacheHonorsTTL(t *testing.T) {
 			t.Fatal("expired glue left in the cache after the miss")
 		}
 	})
+}
+
+// TestGlueCacheHitDoesNotRenewHorizon reproduces the renewal leak: an entry
+// five seconds from expiry is read through the full lookupV4Nss flow, which
+// used to feed the remaining TTL straight back through the 30-second floor —
+// so every read of a nearly-expired address bought it another 30 seconds,
+// indefinitely. A hit is not new information; the stored horizon must survive
+// the read untouched.
+func TestGlueCacheHitDoesNotRenewHorizon(t *testing.T) {
+	r := newWiredTestResolver(makeTestConfig())
+
+	const host = "ns.renew.example."
+	key := cache.Key(dns.Question{Name: host, Qtype: dns.TypeA, Qclass: dns.ClassINET})
+	expiresAt := time.Now().Add(5 * time.Second).UnixNano()
+	r.glueV4.Add(key, &glueEntry{addrs: []netip.Addr{netip.MustParseAddr("192.0.2.10")}, expiresAt: expiresAt})
+
+	authservers := &authority.Servers{Zone: "renew.example."}
+	hosts := hostSet{host: struct{}{}}
+	q := dns.Question{Name: "www.renew.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+
+	if err := r.lookupV4Nss(context.Background(), q, authservers, 1, nil, hostSet{}, hosts, true, time.Time{}); err != nil {
+		t.Fatalf("lookupV4Nss: %v", err)
+	}
+
+	authservers.RLock()
+	servers := len(authservers.List)
+	authservers.RUnlock()
+	if servers != 1 {
+		t.Fatalf("cached glue did not reach the server list: %d entries", servers)
+	}
+
+	v, ok := r.glueV4.Get(key)
+	if !ok {
+		t.Fatal("glue entry vanished on a hit")
+	}
+	if got := v.(*glueEntry).expiresAt; got != expiresAt {
+		t.Fatalf("hit renewed the horizon: expiry moved %+ds",
+			(got-expiresAt)/int64(time.Second))
+	}
 }

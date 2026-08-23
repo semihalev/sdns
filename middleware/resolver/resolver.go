@@ -753,7 +753,7 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 		r.removeIPv4Cache(name)
 
 		g.Go(func() error {
-			addrs, ttl, err := r.lookupNSAddrV4(ctx, name, cd)
+			addrs, ttl, _, err := r.lookupNSAddrV4(ctx, name, cd)
 			if err == nil && len(addrs) > 0 {
 				select {
 				case results <- lookupResult{name: name, addrs: addrs, ttl: ttl, isIPv6: false}:
@@ -771,7 +771,7 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 			r.removeIPv6Cache(name)
 
 			g.Go(func() error {
-				addrs, ttl, err := r.lookupNSAddrV6(ctx, name, cd)
+				addrs, ttl, _, err := r.lookupNSAddrV6(ctx, name, cd)
 				if err == nil && len(addrs) > 0 {
 					select {
 					case results <- lookupResult{name: name, addrs: addrs, ttl: ttl, isIPv6: true}:
@@ -2973,11 +2973,11 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	return resp, nil
 }
 
-func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, err error) {
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, fromCache bool, err error) {
 	zlog.Debug("Lookup NS ipv4 address", "qname", qname)
 
 	if addrs, ttl, ok := r.getIPv4Cache(qname); ok {
-		return addrs, ttl, nil
+		return addrs, ttl, true, nil
 	}
 
 	ctx = context.WithValue(ctx, contextKeyNSL, struct{}{})
@@ -2989,26 +2989,26 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return nil, 0, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
+		return nil, 0, false, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
 	}
 
 	if addrs, ttl, ok := searchAddrs(nsres); ok {
-		return addrs, ttl, nil
+		return addrs, ttl, false, nil
 	}
 
 	// try look glue cache
 	if addrs, ttl, ok := r.getIPv4Cache(qname); ok {
-		return addrs, ttl, nil
+		return addrs, ttl, true, nil
 	}
 
-	return nil, 0, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
+	return nil, 0, false, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, err error) {
+func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, fromCache bool, err error) {
 	zlog.Debug("Lookup NS ipv6 address", "qname", qname)
 
 	if addrs, ttl, ok := r.getIPv6Cache(qname); ok {
-		return addrs, ttl, nil
+		return addrs, ttl, true, nil
 	}
 
 	ctx = context.WithValue(ctx, contextKeyNSL, struct{}{})
@@ -3020,19 +3020,19 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return nil, 0, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
+		return nil, 0, false, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
 	}
 
 	if addrs, ttl, ok := searchAddrs(nsres); ok {
-		return addrs, ttl, nil
+		return addrs, ttl, false, nil
 	}
 
 	// try look glue cache
 	if addrs, ttl, ok := r.getIPv6Cache(qname); ok {
-		return addrs, ttl, nil
+		return addrs, ttl, true, nil
 	}
 
-	return nil, 0, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
+	return nil, 0, false, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
 func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) error {
@@ -3080,7 +3080,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
 		}
 
-		addrs, ttl, err := r.lookupNSAddrV4(ctx, name, cd)
+		addrs, ttl, fromCache, err := r.lookupNSAddrV4(ctx, name, cd)
 		nsipv4 := make(map[string]nsAddrs)
 
 		if err != nil {
@@ -3106,7 +3106,12 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			continue
 		}
 
-		nsipv4[name] = nsAddrs{addrs: addrs, ttl: ttl}
+		if !fromCache {
+			// A hit is not new information: re-adding what was just read
+			// would restamp the entry through the TTL floor and let a
+			// frequently read address outlive its records horizon.
+			nsipv4[name] = nsAddrs{addrs: addrs, ttl: ttl}
+		}
 
 		authservers.Lock()
 		before := len(authservers.List)
@@ -3176,7 +3181,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 			}
 		}
 
-		addrs, ttl, err := r.lookupNSAddrV6(ctx, name, cd)
+		addrs, ttl, fromCache, err := r.lookupNSAddrV6(ctx, name, cd)
 		nsipv6 := make(map[string]nsAddrs)
 
 		if err != nil {
@@ -3196,7 +3201,10 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 			continue
 		}
 
-		nsipv6[name] = nsAddrs{addrs: addrs, ttl: ttl}
+		if !fromCache {
+			// Same as the v4 side: a hit must not renew its own horizon.
+			nsipv6[name] = nsAddrs{addrs: addrs, ttl: ttl}
+		}
 
 		authservers.Lock()
 		before := len(authservers.List)
