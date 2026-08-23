@@ -543,7 +543,7 @@ This is useful when:
 *   Empty zones support (RFC 1918)
 *   External plugin support
 *   Binary DNS logging via dnstap protocol (RFC 6742)
-*   QNAME minimization for privacy (RFC 7816)
+*   QNAME minimization for privacy (RFC 9156)
 *   Automatic DNSSEC trust anchor updates (RFC 5011)
 *   Zero-allocation cache operations for improved performance
 *   **Owned UDP/TCP/DoT serving engine: wire-eligible warm cache hits answered from raw bytes, allocation-free per query on UDP and TCP (DoT rides the same path; TLS record buffers are the runtime's), with batched `recvmmsg`/`sendmmsg` I/O on Linux — composite answers that need message shaping take the ordinary path**
@@ -565,7 +565,7 @@ This is useful when:
 *   \[x] Access list
 *   \[x] Periodic priming queries described at RFC 8109
 *   \[x] Full IPv6 support (server<->server communication)
-*   \[x] Query name minimization to improve privacy described at RFC 7816
+*   \[x] Query name minimization to improve privacy described at RFC 9156
 *   \[x] DNAME Redirection in the DNS described at RFC 6672
 *   \[x] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 *   \[x] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
