@@ -509,11 +509,11 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	// Deciding on sections instead of the RCODE let the dressed shapes
 	// slip past the fallback and back into the label walk.
 	//
-	// The relaxed exit is PowerDNS's policy, not RFC 9156's: the RFC's own
-	// algorithm keeps walking through an unprovable denial and tries other
-	// servers on other errors. Relaxed pays one query where the walk paid
-	// one per remaining label, and the full name's answer is the client's
-	// answer either way.
+	// The relaxed exit is a deliberate departure from RFC 9156's own
+	// algorithm, which keeps walking through an unprovable denial and tries
+	// other servers on other errors. Relaxed pays one query where the walk
+	// paid one per remaining label, and the full name's answer is the
+	// client's answer either way.
 	if minimized && resp.Rcode != dns.RcodeSuccess {
 		if resp.Rcode == dns.RcodeNameError {
 			answer, denied, err := r.minimizedDenialCut(ctx, rs, minReq, resp)

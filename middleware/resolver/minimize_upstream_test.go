@@ -103,9 +103,8 @@ func TestMinimizeUpstreamQueryCount(t *testing.T) {
 // nothing verifiable about the subtree, and the walk used to keep exposing
 // labels one at a time — collecting one unprovable denial per label from the
 // same servers. What the client's answer depends on is the full name, so that
-// is the next and last question (RFC 9156 section 3 step 6; PowerDNS does the
-// same). The securely proven denial keeps its early RFC 8020 cut and is
-// covered by the nxdomain_cut tests.
+// is the next and last question. The securely proven denial keeps its early
+// RFC 8020 cut and is covered by the nxdomain_cut tests.
 func TestMinimizeNXDOMAINFallsBackToFullName(t *testing.T) {
 	const full = "a.b.c.d.e.deep.test."
 
