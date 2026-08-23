@@ -3247,20 +3247,22 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 	}
 
 	// A referral's glue is the parent zone telling us where its child
-	// lives, and it is enough to walk on: when any address is already in
-	// hand, every remaining host resolution is roster work, not critical
-	// path. The roster still gets completed — deterministically, from our
-	// own resolutions, on the bounded lane — the walk just stops standing
-	// behind it.
-	if len(foundv4) > 0 {
-		r.enqueueV4Enrich(ctx, q, authservers, key, parentDS, missing, cd, cutDeadline)
-		return nil
-	}
+	// lives, and it is enough to start walking on — but one host is one
+	// point of failure, and a query that exhausts it dies before the lane
+	// can finish the roster. So the walk holds out for two distinct hosts
+	// (or every host the delegation has, when there are fewer): with a
+	// failover candidate in hand, a lame leader costs a retry, not the
+	// query. Everything beyond the second host is roster work — completed
+	// deterministically, from our own resolutions, on the bounded lane.
+	need := min(2, len(hosts))
+	satisfied := len(foundv4)
 
-	// No glue at all: the walk cannot proceed without one address, so
-	// resolve synchronously until one host answers, and defer the rest.
 	var lastAttemptLimit error
 	for i, name := range missing {
+		if satisfied >= need {
+			r.enqueueV4Enrich(ctx, q, authservers, key, parentDS, missing[i:], cd, cutDeadline)
+			return nil
+		}
 		grew, err := r.resolveV4Host(ctx, q, authservers, key, parentDS, name, cd, cutDeadline)
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
@@ -3281,10 +3283,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			continue
 		}
 		if grew {
-			if rest := missing[i+1:]; len(rest) > 0 {
-				r.enqueueV4Enrich(ctx, q, authservers, key, parentDS, rest, cd, cutDeadline)
-			}
-			return nil
+			satisfied++
 		}
 	}
 

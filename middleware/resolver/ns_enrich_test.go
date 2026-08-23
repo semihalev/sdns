@@ -27,10 +27,12 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 		Zone: q.Name,
 		List: []*authority.Server{authority.NewServer("192.0.2.9:53", authority.IPv4)},
 	}
-	foundv4 := hostSet{"glued.child.example.": {}}
+	foundv4 := hostSet{"glued.child.example.": {}, "glued2.child.example.": {}}
 	hosts := hostSet{
-		"glued.child.example.":   {},
-		"healthy.child.example.": {},
+		"glued.child.example.":    {},
+		"glued2.child.example.":   {},
+		"healthy.child.example.":  {},
+		"deferred.child.example.": {},
 	}
 
 	err := r.lookupV4Nss(context.Background(), q, servers, internalcache.Key(q), nil,
@@ -49,7 +51,7 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		servers.RLock()
-		grew := len(servers.List) == 2
+		grew := len(servers.List) >= 2
 		servers.RUnlock()
 		if grew {
 			break
@@ -60,8 +62,10 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, _, ok := r.getIPv4Cache("healthy.child.example."); !ok {
-		t.Fatal("deferred resolution did not land in the glue cache")
+	for _, host := range []string{"healthy.child.example.", "deferred.child.example."} {
+		if _, _, ok := r.getIPv4Cache(host); !ok {
+			t.Fatalf("deferred resolution of %s did not land in the glue cache", host)
+		}
 	}
 }
 
@@ -79,8 +83,8 @@ func TestEnrichShedsWithoutPools(t *testing.T) {
 		List: []*authority.Server{authority.NewServer("192.0.2.9:53", authority.IPv4)},
 	}
 	err := r.lookupV4Nss(context.Background(), q, servers, internalcache.Key(q), nil,
-		hostSet{"glued.child.example.": {}},
-		hostSet{"glued.child.example.": {}, "healthy.child.example.": {}},
+		hostSet{"glued.child.example.": {}, "glued2.child.example.": {}},
+		hostSet{"glued.child.example.": {}, "glued2.child.example.": {}, "healthy.child.example.": {}},
 		false, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("lookupV4Nss: %v", err)

@@ -100,13 +100,16 @@ func TestRecursionWorkNXNSInternalBudget(t *testing.T) {
 	}
 
 	// The NXNS shape: one referral naming many glue-less hosts. The walk
-	// resolves synchronously only until one host yields an address, so a
-	// roster that resolves costs the request exactly one internal query —
-	// the rest is lane work that never touches this request's budget.
-	t.Run("a resolving roster costs one synchronous query", func(t *testing.T) {
+	// resolves synchronously only until two hosts yield addresses — the
+	// failover floor — so a roster that resolves costs the request two
+	// internal queries; the rest is lane work that never touches this
+	// request's budget.
+	t.Run("a resolving roster costs the two-host floor", func(t *testing.T) {
 		addresses := make(map[string]net.IP, nsCount)
+		i := byte(1)
 		for name := range hosts {
-			addresses[name] = net.IPv4(192, 0, 2, 7)
+			addresses[name] = net.IPv4(192, 0, 2, i)
+			i++
 		}
 		r := newAttackHarnessResolver(&authority.Servers{Zone: "."})
 		oracle := &attackAddressOracle{answers: addresses, record: true}
@@ -122,11 +125,11 @@ func TestRecursionWorkNXNSInternalBudget(t *testing.T) {
 		if err != nil {
 			t.Fatalf("lookupV4Nss error = %v, want one cheap success", err)
 		}
-		if got := oracle.count(); got != 1 {
-			t.Fatalf("synchronous NS-address queries = %d, want 1", got)
+		if got := oracle.count(); got != 2 {
+			t.Fatalf("synchronous NS-address queries = %d, want the two-host floor", got)
 		}
-		if snapshot := ledger.Snapshot(); snapshot.InternalQueries != 1 {
-			t.Fatalf("internal ledger snapshot = %+v, want one query charged", snapshot)
+		if snapshot := ledger.Snapshot(); snapshot.InternalQueries != 2 {
+			t.Fatalf("internal ledger snapshot = %+v, want two queries charged", snapshot)
 		}
 	})
 
