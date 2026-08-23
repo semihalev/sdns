@@ -108,7 +108,7 @@ func FuzzSearchAddrs(f *testing.F) {
 			})
 		}
 
-		_, _ = searchAddrs(msg)
+		_, _, _ = searchAddrs(msg)
 	})
 }
 

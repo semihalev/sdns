@@ -277,7 +277,7 @@ func TestCheckGlueRRDeduplicatesEndpointsWithoutDroppingHostCache(t *testing.T) 
 		t.Fatalf("found glue hosts = %v, want both NS owners", foundV4)
 	}
 	for name := range hosts {
-		addrs, ok := r.getIPv4Cache(name)
+		addrs, _, ok := r.getIPv4Cache(name)
 		if !ok || len(addrs) != 1 || addrs[0] != netip.MustParseAddr("192.0.2.70") {
 			t.Fatalf("cached glue for %s = %v, %v; want one address", name, addrs, ok)
 		}

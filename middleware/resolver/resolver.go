@@ -742,6 +742,7 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 	type lookupResult struct {
 		name   string
 		addrs  []netip.Addr
+		ttl    uint32
 		isIPv6 bool
 	}
 	results := make(chan lookupResult, len(hostsToCheck)*2)
@@ -752,10 +753,10 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 		r.removeIPv4Cache(name)
 
 		g.Go(func() error {
-			addrs, err := r.lookupNSAddrV4(ctx, name, cd)
+			addrs, ttl, err := r.lookupNSAddrV4(ctx, name, cd)
 			if err == nil && len(addrs) > 0 {
 				select {
-				case results <- lookupResult{name: name, addrs: addrs, isIPv6: false}:
+				case results <- lookupResult{name: name, addrs: addrs, ttl: ttl, isIPv6: false}:
 				case <-ctx.Done():
 				}
 			}
@@ -770,10 +771,10 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 			r.removeIPv6Cache(name)
 
 			g.Go(func() error {
-				addrs, err := r.lookupNSAddrV6(ctx, name, cd)
+				addrs, ttl, err := r.lookupNSAddrV6(ctx, name, cd)
 				if err == nil && len(addrs) > 0 {
 					select {
-					case results <- lookupResult{name: name, addrs: addrs, isIPv6: true}:
+					case results <- lookupResult{name: name, addrs: addrs, ttl: ttl, isIPv6: true}:
 					case <-ctx.Done():
 					}
 				}
@@ -789,18 +790,18 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 	}()
 
 	// Collect results
-	nsipv4 := make(map[string][]netip.Addr)
-	nsipv6 := make(map[string][]netip.Addr)
+	nsipv4 := make(map[string]nsAddrs)
+	nsipv6 := make(map[string]nsAddrs)
 	var newServers []*authority.Server
 
 	for result := range results {
 		if result.isIPv6 {
-			nsipv6[result.name] = result.addrs
+			nsipv6[result.name] = nsAddrs{addrs: result.addrs, ttl: result.ttl}
 			for _, addr := range result.addrs {
 				newServers = append(newServers, authority.NewServerFromAddrPort(netip.AddrPortFrom(addr, 53)))
 			}
 		} else {
-			nsipv4[result.name] = result.addrs
+			nsipv4[result.name] = nsAddrs{addrs: result.addrs, ttl: result.ttl}
 			for _, addr := range result.addrs {
 				newServers = append(newServers, authority.NewServerFromAddrPort(netip.AddrPortFrom(addr, 53)))
 			}
@@ -849,7 +850,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 	foundv6 := make(hostSet)
 
 	if r.cfg.IPv6Access {
-		nsipv6 := make(map[string][]netip.Addr)
+		nsipv6 := make(map[string]nsAddrs)
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.AAAA); ok {
 				name := strings.ToLower(extra.Header().Name)
@@ -870,7 +871,12 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 					foundv6[name] = struct{}{}
 
-					nsipv6[name] = appendUniqueAddr(nsipv6[name], addr)
+					set := nsipv6[name]
+					if len(set.addrs) == 0 || extra.Hdr.Ttl < set.ttl {
+						set.ttl = extra.Hdr.Ttl
+					}
+					set.addrs = appendUniqueAddr(set.addrs, addr)
+					nsipv6[name] = set
 					endpoint := netip.AddrPortFrom(addr, 53)
 					if _, ok := seenServers[endpoint]; !ok {
 						seenServers[endpoint] = struct{}{}
@@ -882,7 +888,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 		r.addIPv6Cache(nsipv6)
 	}
 
-	nsipv4 := make(map[string][]netip.Addr)
+	nsipv4 := make(map[string]nsAddrs)
 	for _, a := range resp.Extra {
 		if extra, ok := a.(*dns.A); ok {
 			name := strings.ToLower(extra.Header().Name)
@@ -903,7 +909,12 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 				foundv4[name] = struct{}{}
 
-				nsipv4[name] = appendUniqueAddr(nsipv4[name], addr)
+				set := nsipv4[name]
+				if len(set.addrs) == 0 || extra.Hdr.Ttl < set.ttl {
+					set.ttl = extra.Hdr.Ttl
+				}
+				set.addrs = appendUniqueAddr(set.addrs, addr)
+				nsipv4[name] = set
 				endpoint := netip.AddrPortFrom(addr, 53)
 				if _, ok := seenServers[endpoint]; !ok {
 					seenServers[endpoint] = struct{}{}
@@ -917,40 +928,92 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 	return authservers, foundv4, foundv6
 }
 
-func (r *Resolver) addIPv4Cache(nsipv4 map[string][]netip.Addr) {
-	for name, addrs := range nsipv4 {
+// nsAddrs is one nameserver host's addresses on their way into the glue
+// cache, carrying the smallest TTL of the records they came from.
+type nsAddrs struct {
+	addrs []netip.Addr
+	ttl   uint32
+}
+
+// glueEntry is what the glue caches hold: the addresses and the absolute
+// horizon their source records granted. The caches themselves keep entries
+// until eviction pressure, so without the horizon a nameserver's address
+// survived renumbering indefinitely — served for as long as nothing
+// happened to push it out.
+type glueEntry struct {
+	addrs     []netip.Addr
+	expiresAt int64
+}
+
+const (
+	// glueTTLFloor keeps a zero- or near-zero-TTL record from turning every
+	// delegation touch into a re-resolution of its nameservers.
+	glueTTLFloor = 30 * time.Second
+	// glueTTLCap bounds how long a renumbered nameserver's old address can
+	// keep being handed out, whatever its zone published. TTLs are honored
+	// downward only, matching how delegation leases are handled.
+	glueTTLCap = 6 * time.Hour
+)
+
+func glueExpiry(ttl uint32) int64 {
+	d := time.Duration(ttl) * time.Second
+	if d < glueTTLFloor {
+		d = glueTTLFloor
+	}
+	if d > glueTTLCap {
+		d = glueTTLCap
+	}
+	return time.Now().Add(d).UnixNano()
+}
+
+// glueGet reads one entry, expiring it lazily: a stale read deletes only
+// the exact entry it saw, so a fresh value published meanwhile survives.
+// The remaining TTL comes back with the addresses so a caller re-adding
+// them cannot stretch the original horizon.
+func glueGet(c *cache.Cache, key uint64) ([]netip.Addr, uint32, bool) {
+	v, ok := c.Get(key)
+	if !ok {
+		return nil, 0, false
+	}
+	entry := v.(*glueEntry)
+	remaining := entry.expiresAt - time.Now().UnixNano()
+	if remaining <= 0 {
+		c.CompareAndDelete(key, entry)
+		return nil, 0, false
+	}
+	secs := remaining / int64(time.Second)
+	if secs > int64(glueTTLCap/time.Second) {
+		// Entries are stamped through glueExpiry, so the horizon is already
+		// capped; the clamp makes the narrowing conversion provably safe.
+		secs = int64(glueTTLCap / time.Second)
+	}
+	return entry.addrs, uint32(secs), true //nolint:gosec // G115 - clamped to glueTTLCap just above
+}
+
+func (r *Resolver) addIPv4Cache(nsipv4 map[string]nsAddrs) {
+	for name, set := range nsipv4 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-		r.glueV4.Add(key, addrs)
+		r.glueV4.Add(key, &glueEntry{addrs: set.addrs, expiresAt: glueExpiry(set.ttl)})
 	}
 }
 
-func (r *Resolver) getIPv4Cache(name string) ([]netip.Addr, bool) {
-	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-	if v, ok := r.glueV4.Get(key); ok {
-		return v.([]netip.Addr), ok
-	}
-
-	return nil, false
+func (r *Resolver) getIPv4Cache(name string) ([]netip.Addr, uint32, bool) {
+	return glueGet(r.glueV4, cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) removeIPv4Cache(name string) {
 	r.glueV4.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
-func (r *Resolver) addIPv6Cache(nsipv6 map[string][]netip.Addr) {
-	for name, addrs := range nsipv6 {
+func (r *Resolver) addIPv6Cache(nsipv6 map[string]nsAddrs) {
+	for name, set := range nsipv6 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-		r.glueV6.Add(key, addrs)
+		r.glueV6.Add(key, &glueEntry{addrs: set.addrs, expiresAt: glueExpiry(set.ttl)})
 	}
 }
 
-func (r *Resolver) getIPv6Cache(name string) ([]netip.Addr, bool) {
-	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-	if v, ok := r.glueV6.Get(key); ok {
-		return v.([]netip.Addr), ok
-	}
-
-	return nil, false
+func (r *Resolver) getIPv6Cache(name string) ([]netip.Addr, uint32, bool) {
+	return glueGet(r.glueV6, cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) removeIPv6Cache(name string) {
@@ -2910,11 +2973,11 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	return resp, nil
 }
 
-func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, err error) {
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, err error) {
 	zlog.Debug("Lookup NS ipv4 address", "qname", qname)
 
-	if addrs, ok := r.getIPv4Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv4Cache(qname); ok {
+		return addrs, ttl, nil
 	}
 
 	ctx = context.WithValue(ctx, contextKeyNSL, struct{}{})
@@ -2926,26 +2989,26 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
+		return nil, 0, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
 	}
 
-	if addrs, ok := searchAddrs(nsres); ok {
-		return addrs, nil
+	if addrs, ttl, ok := searchAddrs(nsres); ok {
+		return addrs, ttl, nil
 	}
 
 	// try look glue cache
-	if addrs, ok := r.getIPv4Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv4Cache(qname); ok {
+		return addrs, ttl, nil
 	}
 
-	return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
+	return nil, 0, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, err error) {
+func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, err error) {
 	zlog.Debug("Lookup NS ipv6 address", "qname", qname)
 
-	if addrs, ok := r.getIPv6Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv6Cache(qname); ok {
+		return addrs, ttl, nil
 	}
 
 	ctx = context.WithValue(ctx, contextKeyNSL, struct{}{})
@@ -2957,19 +3020,19 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
+		return nil, 0, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
 	}
 
-	if addrs, ok := searchAddrs(nsres); ok {
-		return addrs, nil
+	if addrs, ttl, ok := searchAddrs(nsres); ok {
+		return addrs, ttl, nil
 	}
 
 	// try look glue cache
-	if addrs, ok := r.getIPv6Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv6Cache(qname); ok {
+		return addrs, ttl, nil
 	}
 
-	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
+	return nil, 0, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
 func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) error {
@@ -2992,7 +3055,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 
 		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
 		if loop {
-			if _, ok := r.getIPv4Cache(name); !ok {
+			if _, _, ok := r.getIPv4Cache(name); !ok {
 				zlog.Debug("Looping during ns ipv4 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
 				continue
 			}
@@ -3017,8 +3080,8 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
 		}
 
-		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
-		nsipv4 := make(map[string][]netip.Addr)
+		addrs, ttl, err := r.lookupNSAddrV4(ctx, name, cd)
+		nsipv4 := make(map[string]nsAddrs)
 
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
@@ -3043,7 +3106,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			continue
 		}
 
-		nsipv4[name] = addrs
+		nsipv4[name] = nsAddrs{addrs: addrs, ttl: ttl}
 
 		authservers.Lock()
 		before := len(authservers.List)
@@ -3107,14 +3170,14 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 
 		ctx, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
 		if loop {
-			if _, ok := r.getIPv6Cache(name); !ok {
+			if _, _, ok := r.getIPv6Cache(name); !ok {
 				zlog.Debug("Looping during ns ipv6 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
 				continue
 			}
 		}
 
-		addrs, err := r.lookupNSAddrV6(ctx, name, cd)
-		nsipv6 := make(map[string][]netip.Addr)
+		addrs, ttl, err := r.lookupNSAddrV6(ctx, name, cd)
+		nsipv6 := make(map[string]nsAddrs)
 
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
@@ -3133,7 +3196,7 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 			continue
 		}
 
-		nsipv6[name] = addrs
+		nsipv6[name] = nsAddrs{addrs: addrs, ttl: ttl}
 
 		authservers.Lock()
 		before := len(authservers.List)
