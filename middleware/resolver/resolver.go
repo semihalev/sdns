@@ -498,18 +498,38 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		serverFailureResponse = responseType == dnsutil.TypeServerFailure
 	}
 
-	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
-		if minimized {
-			// A hidden prefix drew an error the walk cannot read — REFUSED,
-			// FORMERR, an empty SERVFAIL. Asking progressively longer
-			// prefixes would collect the same error once per label from the
-			// same servers; ask for the name itself from this delegation
-			// instead, as handleLookupError already does for transport
-			// errors and RFC 9156 section 3 step 6 prescribes.
-			rs.nomin = true
-			rs.isRoot = false
-			return r.resolve(ctx, rs)
+	// Everything a hidden prefix can draw is decided here, on the RCODE,
+	// before any section shape is looked at. NOERROR flows on to the walk
+	// below: a NODATA prefix exists and carries nothing, which is
+	// minimization working. An NXDOMAIN whose proof locally validates for
+	// the whole subtree ends the resolution (RFC 8020). Every other
+	// non-NOERROR outcome — an unprovable denial, a SERVFAIL or REFUSED
+	// with or without a SOA, a denial dressed in a CNAME answer — stops
+	// hiding labels and asks for the full name from this delegation.
+	// Deciding on sections instead of the RCODE let the dressed shapes
+	// slip past the fallback and back into the label walk.
+	//
+	// The relaxed exit is PowerDNS's policy, not RFC 9156's: the RFC's own
+	// algorithm keeps walking through an unprovable denial and tries other
+	// servers on other errors. Relaxed pays one query where the walk paid
+	// one per remaining label, and the full name's answer is the client's
+	// answer either way.
+	if minimized && resp.Rcode != dns.RcodeSuccess {
+		if resp.Rcode == dns.RcodeNameError {
+			answer, denied, err := r.minimizedDenialCut(ctx, rs, minReq, resp)
+			if err != nil {
+				return nil, err
+			}
+			if denied {
+				return answer, nil
+			}
 		}
+		rs.nomin = true
+		rs.isRoot = false
+		return r.resolve(ctx, rs)
+	}
+
+	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if serverFailureResponse {
 			r.recordResolutionZoneFailure(ctx, rs.req.Question[0], rs.servers.Zone, nil)
 		} else {
@@ -3529,58 +3549,52 @@ func (r *Resolver) clearResolutionZoneFailure(q dns.Question, zone string) {
 	}
 }
 
+// minimizedDenialCut applies RFC 8020 to an NXDOMAIN drawn by a hidden
+// prefix: a locally validated, non-Opt-Out denial of the prefix denies every
+// name under it, the client's included, so no longer name needs asking.
+// denied reports whether the proof held. A denial that fails validation
+// outright fails the resolution closed — unsigned and checking-disabled
+// answers simply do not produce a proof and come back denied=false, which
+// sends the walk to its full-name fallback.
+func (r *Resolver) minimizedDenialCut(ctx context.Context, rs *resolveState, minReq, resp *dns.Msg) (answer *dns.Msg, denied bool, err error) {
+	hasSOA := false
+	for _, rr := range resp.Ns {
+		if _, ok := rr.(*dns.SOA); ok {
+			hasSOA = true
+			break
+		}
+	}
+	if !hasSOA {
+		return nil, false, nil
+	}
+
+	result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+	if err != nil {
+		return nil, false, err
+	}
+	negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, result)
+	if !secure || !negative.Aggressive ||
+		negative.Proof == nil ||
+		negative.Proof.Rcode != dns.RcodeNameError ||
+		dnsutil.HasNSEC3OptOut(result.Ns, negative.Zone) {
+		return nil, false, nil
+	}
+
+	// Provenance keeps minReq's denied name. Only the client-visible
+	// Question is rebound to the original full QNAME.
+	result.Question = append([]dns.Question(nil), rs.req.Question...)
+	r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+	return result, true, nil
+}
+
 // processAuthoritySection handles the authority section of the response.
 func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
 	if minimized {
-		// RFC 8020: a locally authenticated NXDOMAIN at a minimized name
-		// denies that exact subtree, so there is no reason to continue
-		// querying progressively longer names. Validate the real
-		// authoritative query cycle first. Unsigned and checking-disabled
-		// answers keep the historical deeper walk; bogus signed proofs fail
-		// closed through authority().
-		if resp.Rcode == dns.RcodeNameError {
-			hasSOA := false
-			for _, rr := range resp.Ns {
-				if _, ok := rr.(*dns.SOA); ok {
-					hasSOA = true
-					break
-				}
-			}
-			if hasSOA {
-				result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
-				if err != nil {
-					return nil, err
-				}
-				negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, result)
-				if secure && negative.Aggressive &&
-					negative.Proof != nil &&
-					negative.Proof.Rcode == dns.RcodeNameError &&
-					!dnsutil.HasNSEC3OptOut(result.Ns, negative.Zone) {
-					// Provenance keeps minReq's denied name. Only the
-					// client-visible Question is rebound to the original
-					// full QNAME.
-					result.Question = append([]dns.Question(nil), rs.req.Question...)
-					r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
-					return result, nil
-				}
-			}
-
-			// The denial could not stand for the subtree: an unsigned zone,
-			// an NSEC3 Opt-Out span, a checking-disabled query. RFC 8020
-			// has nothing to say here, and a name below an Opt-Out span or
-			// behind a broken empty non-terminal may exist even though its
-			// prefix drew NXDOMAIN — so the walk used to ask every longer
-			// prefix in turn, collecting one unprovable denial per label
-			// from the same servers. The full name's answer is the client's
-			// answer whatever the prefixes would have said; ask for it.
-			rs.nomin = true
-			rs.isRoot = false
-			return r.resolve(ctx, rs)
-		}
-
-		// NODATA at a hidden prefix is the walk working as designed: the
-		// prefix exists and carries nothing, so expose more labels. A CNAME
-		// in the authority keeps the historical advance as well.
+		// Only NOERROR reaches here for a hidden prefix — resolve() settles
+		// every other RCODE before any section shape is looked at. NODATA
+		// is the walk working as designed: the prefix exists and carries
+		// nothing, so expose more labels. A CNAME in the authority keeps
+		// the historical advance as well.
 		for _, rr := range resp.Ns {
 			switch rr.(type) {
 			case *dns.SOA, *dns.CNAME:
