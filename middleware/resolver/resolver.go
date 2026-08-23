@@ -3203,6 +3203,10 @@ func (r *Resolver) enqueueV4Enrich(ctx context.Context, q dns.Question, authserv
 	enqueueEnrich(r.v4Enrich, nsEnrichJob{
 		base: detachedBase,
 		run: func(jobCtx context.Context) {
+			// The roster is optional work like the v6 side: it stops at the
+			// shared cap, and its rejected debits must not poison the
+			// required resolution path's failure state.
+			jobCtx = middleware.WithBestEffortRecursionWork(jobCtx)
 			if guard != nil {
 				jobCtx = middleware.WithResolutionAttemptGuard(jobCtx, guard)
 			}
@@ -3247,23 +3251,30 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 	}
 
 	// A referral's glue is the parent zone telling us where its child
-	// lives, and it is enough to start walking on — but one host is one
+	// lives, and it is enough to start walking on — but one endpoint is one
 	// point of failure, and a query that exhausts it dies before the lane
-	// can finish the roster. So the walk holds out for two distinct hosts
-	// (or every host the delegation has, when there are fewer): with a
-	// failover candidate in hand, a lame leader costs a retry, not the
-	// query. Everything beyond the second host is roster work — completed
+	// can finish the roster. So the walk holds out for two dialable
+	// endpoints: with a failover candidate in hand, a lame leader costs a
+	// retry, not the query. The floor counts what the racing lookup
+	// actually spends — deduped endpoints in the server list — not host
+	// names: two names glued to one address are still one point of
+	// failure, and one host with two addresses is already a pair. The
+	// count is re-read after every resolution for the same reason.
+	// Everything past the floor is roster work — completed
 	// deterministically, from our own resolutions, on the bounded lane.
-	need := min(2, len(hosts))
-	satisfied := len(foundv4)
+	endpoints := func() int {
+		authservers.RLock()
+		defer authservers.RUnlock()
+		return len(authservers.List)
+	}
 
 	var lastAttemptLimit error
 	for i, name := range missing {
-		if satisfied >= need {
+		if endpoints() >= 2 {
 			r.enqueueV4Enrich(ctx, q, authservers, key, parentDS, missing[i:], cd, cutDeadline)
 			return nil
 		}
-		grew, err := r.resolveV4Host(ctx, q, authservers, key, parentDS, name, cd, cutDeadline)
+		_, err := r.resolveV4Host(ctx, q, authservers, key, parentDS, name, cd, cutDeadline)
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
 				errors.Is(err, middleware.ErrMaxRecursion) ||
@@ -3281,9 +3292,6 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			}
 			zlog.Debug("Lookup NS ipv4 address failed", "query", dnsutil.FormatQuestion(q), "ns", name, "error", err.Error())
 			continue
-		}
-		if grew {
-			satisfied++
 		}
 	}
 

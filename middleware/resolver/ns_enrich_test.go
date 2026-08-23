@@ -10,12 +10,12 @@ import (
 	internalcache "github.com/semihalev/sdns/internal/cache"
 )
 
-// TestLookupV4NssDefersRosterBehindGlue pins the referral contract: glue is
-// the parent telling us where the child lives, and one address in hand is
-// enough to walk on. The remaining hosts are roster work — completed
-// deterministically by the bounded lane, never gambled on and never stood
-// behind. The walk used to resolve every glue-less host inline, one full
-// recursion each, before taking a single step into the delegation.
+// TestLookupV4NssDefersRosterBehindGlue pins the endpoint floor: the walk
+// defers the roster only once it holds two dialable endpoints, counted on
+// the deduped server list — not on host names, because two names glued to
+// one address are still one point of failure. Past the floor the roster is
+// lane work: completed deterministically, never gambled on, never stood
+// behind.
 func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 	r := newAttackHarnessResolver(&authority.Servers{Zone: "example."})
 	r.startEnrichPools()
@@ -41,31 +41,29 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 		t.Fatalf("lookupV4Nss: %v", err)
 	}
 
-	// The walk did not wait for anything: no synchronous NS-address lookup
-	// happened before lookupV4Nss returned.
-	if calls := queryer.calls.Load(); calls != 0 {
-		t.Fatalf("walk stood behind %d synchronous lookups despite glue in hand", calls)
+	// Two glued NAMES behind one endpoint are one point of failure, so the
+	// floor demands exactly one more synchronous resolution — and not one
+	// more than that.
+	if calls := queryer.calls.Load(); calls != 1 {
+		t.Fatalf("synchronous lookups = %d, want exactly one to reach the endpoint floor", calls)
 	}
 
 	// The lane completes the roster shortly after, from our own resolution.
+	// The queryer hands every host the same address, so the server list
+	// dedupes — the proof of completion is the glue cache, which keeps a
+	// per-host entry either way.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		servers.RLock()
-		grew := len(servers.List) >= 2
-		servers.RUnlock()
-		if grew {
+		_, _, healthyOK := r.getIPv4Cache("healthy.child.example.")
+		_, _, deferredOK := r.getIPv4Cache("deferred.child.example.")
+		if healthyOK && deferredOK {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("deferred roster never completed: calls=%d servers=%d",
-				queryer.calls.Load(), len(servers.List))
+			t.Fatalf("deferred roster never completed: calls=%d healthy=%v deferred=%v",
+				queryer.calls.Load(), healthyOK, deferredOK)
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	for _, host := range []string{"healthy.child.example.", "deferred.child.example."} {
-		if _, _, ok := r.getIPv4Cache(host); !ok {
-			t.Fatalf("deferred resolution of %s did not land in the glue cache", host)
-		}
 	}
 }
 
@@ -80,7 +78,10 @@ func TestEnrichShedsWithoutPools(t *testing.T) {
 	q := dns.Question{Name: "child.example.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 	servers := &authority.Servers{
 		Zone: q.Name,
-		List: []*authority.Server{authority.NewServer("192.0.2.9:53", authority.IPv4)},
+		List: []*authority.Server{
+			authority.NewServer("192.0.2.9:53", authority.IPv4),
+			authority.NewServer("192.0.2.10:53", authority.IPv4),
+		},
 	}
 	err := r.lookupV4Nss(context.Background(), q, servers, internalcache.Key(q), nil,
 		hostSet{"glued.child.example.": {}, "glued2.child.example.": {}},
