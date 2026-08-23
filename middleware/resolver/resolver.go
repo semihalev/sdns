@@ -992,6 +992,17 @@ func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Ms
 	// what makes the returned request lookup-owned — see groupLookup.
 	minReq := req.Copy()
 	minReq.Question[0].Name = minName
+
+	// RFC 9156 section 2.1: a probe may only carry a type whose authority
+	// lies below the zone cut — never DS, NSEC, NSEC3, ANY, AXFR, IXFR and
+	// the rest, whose authority is elsewhere or which are not questions a
+	// zone answers for a name it does not hold. A is the type the RFC
+	// recommends, and asking it for every client makes one probe serve them
+	// all: the name is the whole point of the query, the type is not.
+	// The client's own type goes out on the final query, which is the one
+	// that is not minimized.
+	minReq.Question[0].Qtype = dns.TypeA
+
 	return minReq, level + add, true
 }
 

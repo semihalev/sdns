@@ -83,6 +83,40 @@ func TestMinimizeOneLabelAtATime(t *testing.T) {
 	}
 }
 
+// TestMinimizeProbesWithA pins the probe's query type. RFC 9156 section 2.1
+// allows only types whose authority lies below the zone cut, which rules out
+// DS, NSEC, NSEC3, ANY, AXFR, IXFR and the rest; A is the type it recommends,
+// and one A probe serves clients of every type instead of one per type.
+//
+// This drifted once already: the probe was built with A in 2020, changed to the
+// client's type in 2023 with no reason recorded, and a later refactor removed
+// the line entirely because Copy() already carried the type — so nothing showed
+// the change. The old test asked its question as A, which made it pass either
+// way. This one does not.
+func TestMinimizeProbesWithA(t *testing.T) {
+	r := &Resolver{qnameMinCount: 10, qnameMinOneLabel: 4}
+
+	for _, qtype := range []uint16{dns.TypeMX, dns.TypePTR, dns.TypeDS, dns.TypeNSEC} {
+		req := new(dns.Msg)
+		req.SetQuestion("www.deep.example.com.", qtype)
+
+		got, _, min := r.minimize(req, 1, 0, false)
+		if !min {
+			t.Fatalf("%s: no probe produced", dns.TypeToString[qtype])
+		}
+		if got.Question[0].Qtype != dns.TypeA {
+			t.Errorf("%s: probe type = %s, want A",
+				dns.TypeToString[qtype], dns.TypeToString[got.Question[0].Qtype])
+		}
+		// The client's own question is untouched: its type rides the final
+		// query, which is the one that is not minimized.
+		if req.Question[0].Qtype != qtype {
+			t.Errorf("%s: client question rewritten to %s",
+				dns.TypeToString[qtype], dns.TypeToString[req.Question[0].Qtype])
+		}
+	}
+}
+
 // TestMinimizeTakesUnderscoreLabelsTogether covers RFC 9156 section 2.3's
 // underscore rule with the example the RFC itself gives: no zone cut hides
 // behind a service tag, so probing _tcp on its own and then _25 spends a query
