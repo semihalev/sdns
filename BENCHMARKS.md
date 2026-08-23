@@ -1,6 +1,6 @@
 # Benchmarks
 
-Measured 2026-08-18 at commit `8b36b91` (the 1.8.0 serving-path work, PR #572).
+Measured at commit `8b36b91` (the 1.8.0 serving-path work, PR #572).
 This document exists to make one set of claims precisely, with the method and
 configurations needed to check them — not to advertise a bigger number than the
 method supports.
@@ -12,9 +12,9 @@ traffic mixes hits with misses, and a miss is bound by upstream latency, not by
 the serving engine. What a resolver's engine controls is the hit path; that is
 what this measures.
 
-The miss path is measured separately in [Cold cache](#cold-cache-resolution-rather-than-serving),
-added 2026-08-22. The two sections answer different questions and their numbers
-are not comparable to each other.
+The miss path is measured separately in [Cold cache](#cold-cache-resolution-rather-than-serving).
+The two sections answer different questions and their numbers are not
+comparable to each other.
 
 ## Environment
 
@@ -154,7 +154,7 @@ cache. It is a different question, and the answer belongs to a different part
 of the code: how quickly the resolver walks root → TLD → zone, and which
 upstream it picks at each step.
 
-Measured 2026-08-23 at commit `42d06f3`, on the same host as above, in both
+Measured at commit `42d06f3`, on the same host as above, in both
 minimisation modes: once with QNAME minimisation disabled in all four, which
 isolates the resolution engines, and once with every resolver on its shipped
 minimisation defaults, which is what a deployment actually runs.
