@@ -156,7 +156,10 @@ cache. It is a different question, and the answer belongs to a different part
 of the code: how quickly the resolver walks root → TLD → zone, and which
 upstream it picks at each step.
 
-Measured 2026-08-22 at commit `676ac14`, on the same host as above.
+Measured 2026-08-23 at commit `42d06f3`, on the same host as above, in both
+minimisation modes: once with QNAME minimisation disabled in all four, which
+isolates the resolution engines, and once with every resolver on its shipped
+minimisation defaults, which is what a deployment actually runs.
 
 ### Method
 
@@ -189,46 +192,66 @@ changed the answer by more than the result itself:
   time out adaptively from measured RTT and have no equivalent single knob;
   Unbound's starting point for an unmeasured server is 376 ms, so it is
   already the more aggressive of the two policies.
-- **QNAME minimisation off in all four**, because their defaults do not
-  implement the same policy. RFC 9156 §2.3 requires a bound — *"Resolvers
-  supporting QNAME minimisation MUST implement a mechanism to limit the
-  number of outgoing queries per user request"* — and names values:
-  MAX_MINIMISE_COUNT with a RECOMMENDED value of 10, MINIMISE_ONE_LAB with
-  "a good value is 4". Read from the installed builds:
+- **Address family: every resolver on its shipped dual-stack default.** An
+  earlier revision of this section pinned PowerDNS to one IPv4 address,
+  switched Unbound's IPv6 off and bound Knot to IPv4 — none of which is that
+  resolver's default — while sdns ran dual-stack. On this host the root
+  answers in 1 ms over IPv4 and ~49 ms over IPv6, so those pins handed three
+  resolvers the fast path exclusively. The pins are gone; all four now run
+  the dual stack they ship with, and the numbers below replace the earlier
+  ones.
+- **QNAME minimisation: measured both ways.** RFC 9156 §2.3 requires a bound
+  — *"Resolvers supporting QNAME minimisation MUST implement a mechanism to
+  limit the number of outgoing queries per user request"* — and names
+  values: MAX_MINIMISE_COUNT with a RECOMMENDED value of 10,
+  MINIMISE_ONE_LAB with "a good value is 4". Read from the installed builds:
 
   | | default | step bound |
   |---|---|---|
-  | sdns 1.8.0 | on, `qname_min_level = 3` | 3 levels, then the full name |
+  | sdns 1.8.0 | on, `qname_max_minimize_count = 10`, `qname_minimize_one_label = 4` | RFC 9156's recommended values |
   | PowerDNS 5.4.1 | `qname_minimization: true` | `qname_max_minimize_count: 10`, `qname_minimize_one_label: 4` |
   | Unbound 1.24.2 | `qname-minimisation: yes`, strict `no` | the RFC's parameter names are Unbound's own: 10 and 4 |
   | Knot 6.2.0 | on | label by label |
 
-  PowerDNS and Unbound ship the values the RFC recommends. **sdns stops at
-  three**, so its default sends fewer minimised queries than the others' —
-  cheaper, and less private. Left on, that difference would show up in this
-  table as an engine result, which it is not. Turning it off in all four
-  removes it. **The result is not a configuration to run in production:**
-  disabling minimisation is a privacy regression, and it is off here to
-  compare resolution engines rather than to recommend a setting.
+  Three of the four ship the values the RFC recommends, which makes the
+  as-shipped comparison meaningful; Knot minimises label by label, the
+  deepest policy of the four, and its as-shipped number carries that choice.
+  The minimisation-off run isolates the engines from the policies. Disabled
+  minimisation is a privacy regression and not a configuration to run in
+  production; it is off in that run to compare resolution engines, not to
+  recommend a setting.
 
 ### Results
 
-Medians of three rounds:
+Medians of three rounds. First with minimisation disabled in all four — the
+engine comparison:
 
-| | queries/sec | avg latency | unanswered | lost | spread |
+| minimisation off | queries/sec | avg latency | unanswered | lost | spread |
 |---|---|---|---|---|---|
-| **sdns 1.8.0** | **868** | **0.111 s** | 869 (1.74%) | **0 / 0 / 0** | 3.2% |
-| PowerDNS Recursor 5.4.1 | 799 | 0.118 s | 882 (1.76%) | 1 / 0 / 0 | 2.0% |
-| Knot Resolver 6.2.0 | 583 | 0.121 s | 884 (1.77%) | 234 / 203 / 188 | 6.4% |
-| Unbound 1.24.2 | 447 | 0.127 s | 874 (1.75%) | 526 / 489 / 473 | 5.3% |
+| **sdns 1.8.0** | **905** | **0.107 s** | 883 (1.77%) | **0 / 0 / 0** | 1.9% |
+| PowerDNS Recursor 5.4.1 | 799 | 0.118 s | 860 (1.72%) | 0 / 0 / 0 | 1.5% |
+| Knot Resolver 6.2.0 | 534 | 0.135 s | 910 (1.82%) | 218 / 206 / 236 | 5.3% |
+| Unbound 1.24.2 | 399 | 0.137 s | 905 (1.81%) | 567 / 581 / 554 | 2.4% |
+
+And as shipped — every resolver on its own minimisation defaults:
+
+| as shipped | queries/sec | avg latency | unanswered | lost | spread |
+|---|---|---|---|---|---|
+| **sdns 1.8.0** | **658** | **0.145 s** | 898 (1.80%) | **2 / 1 / 1** | 3.9% |
+| PowerDNS Recursor 5.4.1 | 636 | 0.149 s | 912 (1.82%) | 0 / 0 / 0 | 5.0% |
+| Knot Resolver 6.2.0 | 436 | 0.173 s | 928 (1.86%) | 248 / 245 / 235 | 4.3% |
+| Unbound 1.24.2 | 243 | 0.188 s | 1424 (2.85%) | 1106 / 1067 / 1152 | 5.8% |
 
 **"Unanswered" counts SERVFAIL and lost queries together**, and it is the
 column that makes the rest readable. Counting SERVFAIL alone puts Unbound
-first at 0.78% — but it left 489 queries with no answer at all, which from a
-client is worse than a SERVFAIL, not better. Summed, all four land between
-1.74% and 1.77%: they resolved the same corpus to the same outcomes, and the
-residue is names that genuinely do not resolve. That is what makes this a
-like-for-like comparison rather than four different amounts of work.
+first at 0.7% — but it left over five hundred queries with no answer at all,
+which from a client is worse than a SERVFAIL, not better. Summed, the
+minimisation-off run lands all four between 1.72% and 1.82%: they resolved
+the same corpus to the same outcomes, and the residue is names that genuinely
+do not resolve. That is what makes it a like-for-like comparison rather than
+four different amounts of work. In the as-shipped run three of the four hold
+that band; Unbound's unanswered rises to 2.85%, which is its own minimisation
+policy's cost on this corpus, reported rather than corrected.
 
 Average latency is reported for completed queries only, so a resolver that
 abandons a query improves its own average by doing so; the wall clock and the
@@ -243,12 +266,11 @@ lost column are where that shows up.
 - Cold-cache throughput is dominated by upstream latency, not by the local
   machine. These numbers describe how well each resolver walks the tree on
   this network from this host, and should not be read as a portable ranking.
-- The minimisation caveat above is not a footnote: with each resolver's own
-  minimisation policy enabled, the numbers and possibly the ordering differ.
-  Measuring that would mean establishing what each one actually sends —
-  observable on the wire, since the minimised queries are visible in a
-  capture — rather than trusting four differently-named settings to mean the
-  same thing.
+- The two tables answer different questions and neither replaces the other:
+  minimisation-off ranks the engines, as-shipped ranks the deployments. The
+  as-shipped gap between them is what each resolver's minimisation policy
+  costs on this corpus — visible on the wire, since minimised queries show
+  up in a capture, and stated per resolver in the defaults table above.
 
 ## What changed in 1.8.0
 
