@@ -22,21 +22,31 @@ func TestQnameMinimizeParams(t *testing.T) {
 		},
 		{
 			name:     "current key alone takes the suggested one-label count",
-			cfg:      Config{QnameMaxMinimizeCount: 10},
+			cfg:      Config{QnameMaxMinimizeCount: new(10)},
 			maxCount: 10,
 			oneLabel: 4,
 		},
 		{
 			name:     "both current keys are honoured",
-			cfg:      Config{QnameMaxMinimizeCount: 10, QnameMinimizeOneLabel: 6},
+			cfg:      Config{QnameMaxMinimizeCount: new(10), QnameMinimizeOneLabel: 6},
 			maxCount: 10,
 			oneLabel: 6,
 		},
 		{
 			name:     "current key wins over the deprecated one",
-			cfg:      Config{QnameMinLevel: 3, QnameMaxMinimizeCount: 10},
+			cfg:      Config{QnameMinLevel: 3, QnameMaxMinimizeCount: new(10)},
 			maxCount: 10,
 			oneLabel: 4,
+		},
+		{
+			// The case that demands the pointer: an operator switching
+			// minimization off while the deprecated key is still in the file.
+			// Treating the written zero as "unset" would silently re-enable it
+			// from qname_min_level.
+			name:     "explicit zero disables even with the deprecated key present",
+			cfg:      Config{QnameMinLevel: 3, QnameMaxMinimizeCount: new(0)},
+			maxCount: 0,
+			oneLabel: 0,
 		},
 		{
 			name:     "neither key disables minimization",
@@ -46,7 +56,7 @@ func TestQnameMinimizeParams(t *testing.T) {
 		},
 		{
 			name:     "negative counts disable rather than underflow",
-			cfg:      Config{QnameMaxMinimizeCount: -1, QnameMinimizeOneLabel: -1},
+			cfg:      Config{QnameMaxMinimizeCount: new(-1), QnameMinimizeOneLabel: -1},
 			maxCount: 0,
 			oneLabel: 0,
 		},

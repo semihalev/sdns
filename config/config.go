@@ -70,8 +70,12 @@ type Config struct {
 	QnameMinLevel int `toml:"qname_min_level"`
 	// QnameMaxMinimizeCount is RFC 9156's MAX_MINIMISE_COUNT: the total
 	// minimized queries one lookup may spend before the full name goes
-	// out. 0 disables minimization entirely.
-	QnameMaxMinimizeCount int `toml:"qname_max_minimize_count"`
+	// out. 0 disables minimization entirely. A pointer because an explicit
+	// zero and an absent key mean different things: written zero is the
+	// operator switching minimization off, and it must win even when the
+	// deprecated qname_min_level is still in the file; only an absent key
+	// falls back to it.
+	QnameMaxMinimizeCount *int `toml:"qname_max_minimize_count"`
 	// QnameMinimizeOneLabel is RFC 9156's MINIMISE_ONE_LAB: how many of
 	// those queries add a single label before the remaining labels are
 	// grouped over the queries left. 0 selects the RFC's suggested 4;
@@ -1143,8 +1147,11 @@ const defaultQnameMinimizeOneLabel = 4
 // idempotent, so a Config built in code — tests, embedders — reaches the same
 // values Load produces.
 func (c *Config) QnameMinimizeParams() (maxCount, oneLabel int) {
-	maxCount = c.QnameMaxMinimizeCount
-	if maxCount == 0 {
+	if c.QnameMaxMinimizeCount != nil {
+		// Written is written: an explicit zero switches minimization off
+		// and must not fall back to a deprecated key still in the file.
+		maxCount = *c.QnameMaxMinimizeCount
+	} else {
 		maxCount = c.QnameMinLevel
 	}
 	if maxCount < 0 {
@@ -1165,12 +1172,13 @@ func (c *Config) QnameMinimizeParams() (maxCount, oneLabel int) {
 // normalizeQnameMinimize settles the minimization parameters on the loaded
 // config and says so once when a config is still on the deprecated key.
 func (c *Config) normalizeQnameMinimize() {
-	if c.QnameMaxMinimizeCount == 0 && c.QnameMinLevel > 0 {
+	if c.QnameMaxMinimizeCount == nil && c.QnameMinLevel > 0 {
 		zlog.Warn("Config qname_min_level is deprecated, use qname_max_minimize_count",
 			zlog.Int("qname_min_level", c.QnameMinLevel))
 	}
 
-	c.QnameMaxMinimizeCount, c.QnameMinimizeOneLabel = c.QnameMinimizeParams()
+	maxCount, oneLabel := c.QnameMinimizeParams()
+	c.QnameMaxMinimizeCount, c.QnameMinimizeOneLabel = &maxCount, oneLabel
 }
 
 // Load loads the given config file.

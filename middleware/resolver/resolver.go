@@ -500,7 +500,13 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
 		if minimized {
-			rs.advance(minimized)
+			// A hidden prefix drew an error the walk cannot read — REFUSED,
+			// FORMERR, an empty SERVFAIL. Asking progressively longer
+			// prefixes would collect the same error once per label from the
+			// same servers; ask for the name itself from this delegation
+			// instead, as handleLookupError already does for transport
+			// errors and RFC 9156 section 3 step 6 prescribes.
+			rs.nomin = true
 			rs.isRoot = false
 			return r.resolve(ctx, rs)
 		}
@@ -3558,9 +3564,23 @@ func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState
 					return result, nil
 				}
 			}
+
+			// The denial could not stand for the subtree: an unsigned zone,
+			// an NSEC3 Opt-Out span, a checking-disabled query. RFC 8020
+			// has nothing to say here, and a name below an Opt-Out span or
+			// behind a broken empty non-terminal may exist even though its
+			// prefix drew NXDOMAIN — so the walk used to ask every longer
+			// prefix in turn, collecting one unprovable denial per label
+			// from the same servers. The full name's answer is the client's
+			// answer whatever the prefixes would have said; ask for it.
+			rs.nomin = true
+			rs.isRoot = false
+			return r.resolve(ctx, rs)
 		}
 
-		// Check if we need to continue with minimization
+		// NODATA at a hidden prefix is the walk working as designed: the
+		// prefix exists and carries nothing, so expose more labels. A CNAME
+		// in the authority keeps the historical advance as well.
 		for _, rr := range resp.Ns {
 			switch rr.(type) {
 			case *dns.SOA, *dns.CNAME:

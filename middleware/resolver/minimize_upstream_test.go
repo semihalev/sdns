@@ -38,7 +38,7 @@ func TestMinimizeUpstreamQueryCount(t *testing.T) {
 		}
 
 		cfg := net.Config()
-		cfg.QnameMaxMinimizeCount = maxCount
+		cfg.QnameMaxMinimizeCount = &maxCount
 		cfg.QnameMinimizeOneLabel = oneLabel
 		return zone, net.handlerWithConfig(cfg)
 	}
@@ -96,4 +96,46 @@ func TestMinimizeUpstreamQueryCount(t *testing.T) {
 		// The label the tight budget never got to.
 		check(t, zone, []string{"w.x.y.z.deep.test."}, nil)
 	})
+}
+
+// TestMinimizeNXDOMAINFallsBackToFullName pins the walk's answer to a denial
+// it cannot prove. In an unsigned zone an NXDOMAIN for a hidden prefix says
+// nothing verifiable about the subtree, and the walk used to keep exposing
+// labels one at a time — collecting one unprovable denial per label from the
+// same servers. What the client's answer depends on is the full name, so that
+// is the next and last question (RFC 9156 section 3 step 6; PowerDNS does the
+// same). The securely proven denial keeps its early RFC 8020 cut and is
+// covered by the nxdomain_cut tests.
+func TestMinimizeNXDOMAINFallsBackToFullName(t *testing.T) {
+	const full = "a.b.c.d.e.deep.test."
+
+	net := newHermeticNet(t)
+	zone := net.DelegateInsecure("deep.test.")
+	zone.Serve(mustRR(t, "exists.deep.test. 300 IN A 192.0.2.11"))
+
+	maxCount, oneLabel := 10, 4
+	cfg := net.Config()
+	cfg.QnameMaxMinimizeCount = &maxCount
+	cfg.QnameMinimizeOneLabel = oneLabel
+	handler := net.handlerWithConfig(cfg)
+
+	resp, err := hermeticResolve(t, handler.resolver, full, dns.TypeA)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", full, err)
+	}
+	if resp == nil || resp.Rcode != dns.RcodeNameError {
+		t.Fatalf("resolve %s: rcode = %v, want NXDOMAIN", full, resp)
+	}
+
+	if zone.asked("e.deep.test.", dns.TypeA) == 0 {
+		t.Error("the first hidden prefix was never probed")
+	}
+	if zone.asked(full, dns.TypeA) == 0 {
+		t.Error("the full name was never asked after the unprovable denial")
+	}
+	for _, interior := range []string{"d.e.deep.test.", "c.d.e.deep.test.", "b.c.d.e.deep.test."} {
+		if n := zone.asked(interior, dns.TypeA); n != 0 {
+			t.Errorf("%s was asked %d times, want the label walk abandoned", interior, n)
+		}
+	}
 }
