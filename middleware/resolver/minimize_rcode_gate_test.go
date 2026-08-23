@@ -116,3 +116,43 @@ func TestMinimizedRcodeGateFallsBack(t *testing.T) {
 		})
 	}
 }
+
+// TestMinimizedDenialCutRefusesAliasAnswers pins RFC 2308 section 2.1 onto the
+// prefix cut: an NXDOMAIN that carries a CNAME or DNAME answer denies the end
+// of the alias chain, not the probed name, so it must never be validated as a
+// denial of the prefix — judging the proof against the wrong owner fails a
+// legitimately signed chain closed, or blesses a denial of the alias target as
+// though it covered the prefix.
+//
+// The response's echoed Question deliberately mismatches minReq: consulting
+// the validator with it errors out, so an error here is the proof that the
+// alias guard did not fire first.
+func TestMinimizedDenialCutRefusesAliasAnswers(t *testing.T) {
+	r := newWiredTestResolver(makeTestConfig())
+
+	req := new(dns.Msg)
+	req.SetQuestion("a.b.c.deep.test.", dns.TypeA)
+	minReq := new(dns.Msg)
+	minReq.SetQuestion("c.deep.test.", dns.TypeA)
+	rs := &resolveState{req: req, servers: &authority.Servers{Zone: "deep.test."}}
+
+	aliases := []dns.RR{
+		mustRR(t, "c.deep.test. 60 IN CNAME target.deep.test."),
+		mustRR(t, "c.deep.test. 60 IN DNAME target.test."),
+	}
+	for _, alias := range aliases {
+		resp := new(dns.Msg)
+		resp.SetQuestion("mismatch.deep.test.", dns.TypeA)
+		resp.Rcode = dns.RcodeNameError
+		resp.Answer = []dns.RR{alias}
+		resp.Ns = []dns.RR{mustRR(t, "deep.test. 60 IN SOA ns.deep.test. h.deep.test. 1 60 60 60 60")}
+
+		answer, denied, err := r.minimizedDenialCut(context.Background(), rs, minReq, resp)
+		if err != nil {
+			t.Fatalf("%s: the alias reached validation: %v", dns.TypeToString[alias.Header().Rrtype], err)
+		}
+		if denied || answer != nil {
+			t.Fatalf("%s: denied=%v answer=%v, want the full-name fallback", dns.TypeToString[alias.Header().Rrtype], denied, answer)
+		}
+	}
+}

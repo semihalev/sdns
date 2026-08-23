@@ -492,11 +492,6 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	resp = r.setTags(rs.req, resp)
-	serverFailureResponse := false
-	if resp.Rcode != dns.RcodeSuccess {
-		responseType, _ := dnsutil.ClassifyResponse(resp, time.Now())
-		serverFailureResponse = responseType == dnsutil.TypeServerFailure
-	}
 
 	// Everything a hidden prefix can draw is decided here, on the RCODE,
 	// before any section shape is looked at. NOERROR flows on to the walk
@@ -530,7 +525,9 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
-		if serverFailureResponse {
+		// Classified here rather than up top: this is its only consumer, and
+		// the minimized paths above return without ever needing it.
+		if responseType, _ := dnsutil.ClassifyResponse(resp, time.Now()); responseType == dnsutil.TypeServerFailure {
 			r.recordResolutionZoneFailure(ctx, rs.req.Question[0], rs.servers.Zone, nil)
 		} else {
 			r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
@@ -3557,6 +3554,20 @@ func (r *Resolver) clearResolutionZoneFailure(q dns.Question, zone string) {
 // answers simply do not produce a proof and come back denied=false, which
 // sends the walk to its full-name fallback.
 func (r *Resolver) minimizedDenialCut(ctx context.Context, rs *resolveState, minReq, resp *dns.Msg) (answer *dns.Msg, denied bool, err error) {
+	// An NXDOMAIN that carries an alias in its answer denies the end of the
+	// chain, not the name that was asked (RFC 2308 section 2.1), so it can
+	// never prove the probed prefix's subtree away. Validating it here would
+	// judge the proof against the wrong owner — failing a legitimately
+	// signed chain closed, or blessing a denial of the alias target as
+	// though it covered the prefix. Leave it to the full-name fallback,
+	// which resolves the alias the ordinary way.
+	for _, rr := range resp.Answer {
+		switch rr.(type) {
+		case *dns.CNAME, *dns.DNAME:
+			return nil, false, nil
+		}
+	}
+
 	hasSOA := false
 	for _, rr := range resp.Ns {
 		if _, ok := rr.(*dns.SOA); ok {
