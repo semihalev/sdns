@@ -205,11 +205,12 @@ func TestDenialProofLookupReportsEarliestExpiry(t *testing.T) {
 	}
 }
 
-// TestStoreGetWithContextBindsEntryLifetime pins the lineage rule on the
-// resolver-private path. DS and DNSKEY lookups come through here, and what
-// they return is folded into whatever the resolver is validating — so the
-// answer's own lifetime has to bound the request tree.
-func TestStoreGetWithContextBindsEntryLifetime(t *testing.T) {
+// TestStoreGetWithContextLeavesPositiveUnbound pins the lineage line on the
+// resolver-private path. DS and DNSKEY lookups come through here; a denial
+// binds the request tree to its own lifetime, but a positive answer is a
+// validation input, not lineage — binding it collapsed every fresh answer's
+// served TTL to the oldest key consulted on the walk.
+func TestStoreGetWithContextLeavesPositiveUnbound(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
 
@@ -236,8 +237,7 @@ func TestStoreGetWithContextBindsEntryLifetime(t *testing.T) {
 	primeChain.Next(context.Background())
 
 	key := CacheKey{Question: primeReq.Question[0], CD: false}.Hash()
-	entry, ok := c.store.LookupByKey(key)
-	if !ok {
+	if _, ok := c.store.LookupByKey(key); !ok {
 		t.Fatal("the answer was not cached")
 	}
 
@@ -247,9 +247,8 @@ func TestStoreGetWithContextBindsEntryLifetime(t *testing.T) {
 		t.Fatal("the resolver-private lookup missed")
 	}
 
-	got, _ := meta.Cut()
-	if want := entryExpiry(entry); !got.Equal(want) {
-		t.Fatalf("request tree bound to %v, want the entry's expiry %v", got, want)
+	if got, _ := meta.Cut(); !got.IsZero() {
+		t.Fatalf("positive consult bound the request tree to %v", got)
 	}
 }
 
