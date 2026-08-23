@@ -222,3 +222,67 @@ func TestVerifyNODATANSEC_Wildcard(t *testing.T) {
 		t.Errorf("err = %v, want %v", err, ErrNSECTypeExists)
 	}
 }
+
+// TestVerifyNODATANSECEmptyNonTerminal pins the proof shape an interior label
+// draws: an existing name with descendants but no RRsets owns no NSEC, so a
+// signed zone answers NODATA for it with the covering NSEC alone, whose
+// NextDomain lies strictly below the query name. Both fixtures are shapes
+// captured from live signed zones — an interior service label and an interior
+// reverse-tree label — that the validator used to reject as incomplete,
+// costing a wasted walk per query that touched them.
+func TestVerifyNODATANSECEmptyNonTerminal(t *testing.T) {
+	cases := []struct {
+		name  string
+		qname string
+		qtype uint16
+		owner string
+		next  string
+		types []uint16
+	}{
+		{
+			name:  "interior service label",
+			qname: "weather.noaa.example.",
+			qtype: dns.TypeA,
+			owner: "wdtd.noaa.example.",
+			next:  "_100775d3ef8a182e1f064f5053980e64.weather.noaa.example.",
+			types: []uint16{dns.TypeNS, dns.TypeDS, dns.TypeRRSIG, dns.TypeNSEC},
+		},
+		{
+			name:  "interior reverse-tree label",
+			qname: "149.83.in-addr.arpa.",
+			qtype: dns.TypeA,
+			owner: "99.148.83.in-addr.arpa.",
+			next:  "0.149.83.in-addr.arpa.",
+			types: []uint16{dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := new(dns.Msg)
+			msg.SetQuestion(tc.qname, tc.qtype)
+			nsec := &dns.NSEC{
+				Hdr:        dns.RR_Header{Name: tc.owner, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+				NextDomain: tc.next,
+				TypeBitMap: tc.types,
+			}
+			if err := VerifyNODATANSEC(msg, []dns.RR{nsec}); err != nil {
+				t.Fatalf("empty non-terminal NODATA rejected: %v", err)
+			}
+		})
+	}
+
+	// Strictness: a NextDomain beside the query name rather than below it
+	// proves nothing about it, and without a wildcard NSEC the proof stays
+	// incomplete.
+	msg := new(dns.Msg)
+	msg.SetQuestion("weather.noaa.example.", dns.TypeA)
+	sibling := &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: "wdtd.noaa.example.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+		NextDomain: "zzz.noaa.example.",
+		TypeBitMap: []uint16{dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC},
+	}
+	if err := VerifyNODATANSEC(msg, []dns.RR{sibling}); !reflect.DeepEqual(err, ErrNSECMissingCoverage) {
+		t.Fatalf("sibling NextDomain accepted as an empty-non-terminal proof: %v", err)
+	}
+}

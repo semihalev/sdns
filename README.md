@@ -184,7 +184,9 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **cookiesecret**     | DNS cookie secret (RFC 7873) for client verification. Auto-generated if not set                                     |
 | **nsid**             | DNS server identifier (RFC 5001) for identifying this instance. Leave empty to disable                              |
 | **chaos**            | Enable responses to version.bind and hostname.bind chaos queries. Default: true                                     |
-| **qname_min_level**  | QNAME minimization level (RFC 7816). 0 disables. Higher values increase privacy but may impact performance         |
+| **qname_max_minimize_count** | QNAME minimization (RFC 9156): minimized queries one lookup may spend before the full name goes out. 0 disables. Default: 10 |
+| **qname_minimize_one_label** | How many of those queries add a single label before the rest are grouped. 0 selects the RFC's suggested 4. Default: 4 |
+| **qname_min_level**  | Deprecated. Counted delegation depth instead of queries spent; still read when **qname_max_minimize_count** is unset |
 | **emptyzones**       | Enable local authoritative responses for RFC 1918 zones. See http://as112.net/ for details                         |
 | **tcpkeepalive**     | Enable TCP connection pooling for root and TLD servers. Improves performance by reusing connections. Default: false |
 | **roottcptimeout**   | TCP idle timeout for root server connections. Default: "5s"                                                          |
@@ -541,7 +543,7 @@ This is useful when:
 *   Empty zones support (RFC 1918)
 *   External plugin support
 *   Binary DNS logging via dnstap protocol (RFC 6742)
-*   QNAME minimization for privacy (RFC 7816)
+*   QNAME minimization for privacy (RFC 9156)
 *   Automatic DNSSEC trust anchor updates (RFC 5011)
 *   Zero-allocation cache operations for improved performance
 *   **Owned UDP/TCP/DoT serving engine: wire-eligible warm cache hits answered from raw bytes, allocation-free per query on UDP and TCP (DoT rides the same path; TLS record buffers are the runtime's), with batched `recvmmsg`/`sendmmsg` I/O on Linux — composite answers that need message shaping take the ordinary path**
@@ -563,7 +565,7 @@ This is useful when:
 *   \[x] Access list
 *   \[x] Periodic priming queries described at RFC 8109
 *   \[x] Full IPv6 support (server<->server communication)
-*   \[x] Query name minimization to improve privacy described at RFC 7816
+*   \[x] Query name minimization to improve privacy described at RFC 9156
 *   \[x] DNAME Redirection in the DNS described at RFC 6672
 *   \[x] Automated Updates DNSSEC Trust Anchors described at RFC 5011
 *   \[x] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147

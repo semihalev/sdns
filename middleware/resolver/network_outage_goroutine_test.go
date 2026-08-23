@@ -104,22 +104,26 @@ func newOutageResolver(root *authority.Servers, maxConcurrent int) *Resolver {
 		IPv6Access:           true,
 		Timeout:              config.Duration{Duration: 500 * time.Millisecond},
 	}
-	return &Resolver{
+	r := &Resolver{
 		cfg:             cfg,
 		delegations:     authority.NewCache(),
 		rootServers:     root,
 		glueV4:          internalcache.New(defaultCacheSize),
 		glueV6:          internalcache.New(defaultCacheSize),
 		dnssec:          false,
-		qnameMinLevel:   0,
+		qnameMinCount:   0,
 		netTimeout:      500 * time.Millisecond,
 		sfGroup:         NewSingleflightWrapper(),
 		circuitBreaker:  newCircuitBreaker(),
 		maxConcurrent:   make(chan struct{}, maxConcurrent),
 		resolutionSlots: make(chan struct{}, maxConcurrent),
-		v6LookupSlots:   make(chan struct{}, maxConcurrent),
 		zoneInflight:    newZoneInflightLimiter(max(maxConcurrent/16, 16)),
 	}
+	// The enrichment lanes are a fixed number of workers, so they belong to
+	// the pre-load baseline this test subtracts — what it measures is
+	// whether anything still scales with the outage.
+	r.startEnrichPools()
+	return r
 }
 
 // outageSample is one observation of the system under load. Raw
@@ -521,7 +525,15 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	// resolver-internal backlog beyond a small multiple of the healthy arm
 	// under identical offered load. Comparing arms makes the bound
 	// independent of the harness's own caller goroutines.
-	if limit := healthy.backlog*3 + maxConcurrent; outage.backlog > limit {
+	//
+	// The enrichment lanes add a constant envelope on top: during an outage
+	// every worker grinds a resolution against dead upstreams, and each such
+	// resolution transiently holds a lookup, its racing exchange pair and
+	// their reads. That envelope scales with the fixed worker count — never
+	// with the offered load, which is the property this test defends.
+	const perWorkerEnvelope = 6
+	enrichEnvelope := 2 * nsEnrichWorkers * perWorkerEnvelope
+	if limit := healthy.backlog*3 + maxConcurrent + enrichEnvelope; outage.backlog > limit {
 		t.Errorf("outage grows internal goroutine backlog: healthy=%d, outage=%d, want <= %d "+
 			"(goroutines=%d, inflight=%d); work accumulates faster than timeouts retire it",
 			healthy.backlog, outage.backlog, limit, outage.goroutines, outage.inflight)

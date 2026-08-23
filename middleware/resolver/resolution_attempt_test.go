@@ -277,7 +277,7 @@ func TestCheckGlueRRDeduplicatesEndpointsWithoutDroppingHostCache(t *testing.T) 
 		t.Fatalf("found glue hosts = %v, want both NS owners", foundV4)
 	}
 	for name := range hosts {
-		addrs, ok := r.getIPv4Cache(name)
+		addrs, _, ok := r.getIPv4Cache(name)
 		if !ok || len(addrs) != 1 || addrs[0] != netip.MustParseAddr("192.0.2.70") {
 			t.Fatalf("cached glue for %s = %v, %v; want one address", name, addrs, ok)
 		}
@@ -322,7 +322,7 @@ type selectiveNSAddressQueryer struct {
 
 func (q *selectiveNSAddressQueryer) Query(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
 	q.calls.Add(1)
-	if q.failAll || req.Question[0].Name == "limited.child.example." {
+	if q.failAll || req.Question[0].Name == "a-limited.child.example." {
 		return nil, middleware.ErrResolutionAttemptLimit
 	}
 	resp := new(dns.Msg)
@@ -589,8 +589,8 @@ func TestLookupV4NssAttemptLimitRemainsTupleLocal(t *testing.T) {
 	q := dns.Question{Name: "child.example.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 	servers := &authority.Servers{Zone: q.Name}
 	hosts := hostSet{
-		"limited.child.example.": {},
-		"healthy.child.example.": {},
+		"a-limited.child.example.": {},
+		"healthy.child.example.":   {},
 	}
 
 	err := r.lookupV4Nss(

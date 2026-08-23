@@ -51,7 +51,7 @@ func Test_searchAddr(t *testing.T) {
 
 	m.Answer = append(m.Answer, a2)
 
-	addrs, found := searchAddrs(m)
+	addrs, _, found := searchAddrs(m)
 	if !reflect.DeepEqual(len(addrs), 1) {
 		t.Errorf("1 = %v, want %v", 1, len(addrs))
 	}

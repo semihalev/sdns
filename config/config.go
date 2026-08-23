@@ -62,8 +62,27 @@ type Config struct {
 	Blocklist        []string
 	Whitelist        []string
 	Chaos            bool
-	QnameMinLevel    int `toml:"qname_min_level"`
-	EmptyZones       []string
+	// QnameMinLevel is deprecated and retained so older configs keep
+	// parsing. It capped minimization by delegation depth rather than by
+	// the queries a lookup spends, which is what RFC 9156 section 2.3
+	// bounds. A non-zero value here is folded onto QnameMaxMinimizeCount
+	// when that is unset. Remove it from new configs.
+	QnameMinLevel int `toml:"qname_min_level"`
+	// QnameMaxMinimizeCount is RFC 9156's MAX_MINIMISE_COUNT: the total
+	// minimized queries one lookup may spend before the full name goes
+	// out. 0 disables minimization entirely. A pointer because an explicit
+	// zero and an absent key mean different things: written zero is the
+	// operator switching minimization off, and it must win even when the
+	// deprecated qname_min_level is still in the file; only an absent key
+	// falls back to it.
+	QnameMaxMinimizeCount *int `toml:"qname_max_minimize_count"`
+	// QnameMinimizeOneLabel is RFC 9156's MINIMISE_ONE_LAB: how many of
+	// those queries add a single label before the remaining labels are
+	// grouped over the queries left. 0 selects the RFC's suggested 4;
+	// grouping from the first query would expose a deep name almost at
+	// once, so it is not an available setting.
+	QnameMinimizeOneLabel int `toml:"qname_minimize_one_label"`
+	EmptyZones            []string
 
 	// Views are per-client static answers, evaluated in order. A
 	// query whose source IP falls in a view's Sources gets that
@@ -779,10 +798,21 @@ nsid = ""
 # Responds to: version.bind, version.server, hostname.bind, id.server
 chaos = true
 
-# QNAME minimization level (RFC 7816)
-# Higher values increase privacy but may impact performance
-# 0 = disabled, 3 = recommended
-qname_min_level = 3
+# QNAME minimization (RFC 9156)
+# Sends upstream servers only the labels the current delegation already
+# justifies, instead of the whole query name. Past the budget the full name
+# goes out, so every delegation below that point sees all of it.
+#
+# qname_max_minimize_count: minimized queries one lookup may spend.
+#                           0 disables minimization. RFC recommends 10.
+# qname_minimize_one_label: how many of those add a single label before the
+#                           remaining labels are grouped over the queries
+#                           left. 0 selects the RFC's suggested 4.
+#
+# Replaces qname_min_level, which counted delegation depth rather than
+# queries; it is still read when qname_max_minimize_count is unset.
+qname_max_minimize_count = 10
+qname_minimize_one_label = 4
 
 # Empty zones (AS112 - RFC 7534)
 # Prevents queries for private IP reverse zones from leaking
@@ -1105,6 +1135,52 @@ failure_cache_max_ttl = "5m"
 #     config = {key_1 = "value_1", key_2 = 2, key_3 = true}
 `
 
+// defaultQnameMinimizeOneLabel is RFC 9156 section 2.3's suggested
+// MINIMISE_ONE_LAB. It stands in for an unset qname_minimize_one_label
+// because the alternative reading of zero — group from the very first
+// query — hands a deep name to the first server almost whole.
+const defaultQnameMinimizeOneLabel = 4
+
+// QnameMinimizeParams resolves the RFC 9156 minimization parameters: the
+// deprecated qname_min_level is folded in when the current key is unset, and
+// the pair is clamped into a shape the resolver can use. It is pure and
+// idempotent, so a Config built in code — tests, embedders — reaches the same
+// values Load produces.
+func (c *Config) QnameMinimizeParams() (maxCount, oneLabel int) {
+	if c.QnameMaxMinimizeCount != nil {
+		// Written is written: an explicit zero switches minimization off
+		// and must not fall back to a deprecated key still in the file.
+		maxCount = *c.QnameMaxMinimizeCount
+	} else {
+		maxCount = c.QnameMinLevel
+	}
+	if maxCount < 0 {
+		maxCount = 0
+	}
+
+	oneLabel = c.QnameMinimizeOneLabel
+	if oneLabel <= 0 {
+		oneLabel = defaultQnameMinimizeOneLabel
+	}
+	if oneLabel > maxCount {
+		oneLabel = maxCount
+	}
+
+	return maxCount, oneLabel
+}
+
+// normalizeQnameMinimize settles the minimization parameters on the loaded
+// config and says so once when a config is still on the deprecated key.
+func (c *Config) normalizeQnameMinimize() {
+	if c.QnameMaxMinimizeCount == nil && c.QnameMinLevel > 0 {
+		zlog.Warn("Config qname_min_level is deprecated, use qname_max_minimize_count",
+			zlog.Int("qname_min_level", c.QnameMinLevel))
+	}
+
+	maxCount, oneLabel := c.QnameMinimizeParams()
+	c.QnameMaxMinimizeCount, c.QnameMinimizeOneLabel = &maxCount, oneLabel
+}
+
 // Load loads the given config file.
 func Load(cfgfile, version string) (*Config, error) {
 	config := new(Config)
@@ -1147,6 +1223,8 @@ func Load(cfgfile, version string) (*Config, error) {
 	if config.Version != configver {
 		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
+
+	config.normalizeQnameMinimize()
 
 	config.RecursionFirewall.Normalize()
 	if err := config.RecursionFirewall.Validate(); err != nil {

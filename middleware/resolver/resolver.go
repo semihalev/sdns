@@ -69,9 +69,14 @@ type Resolver struct {
 	// resurrected from the mutable copy on the next refresh.
 	configuredRootKeys []dns.RR
 
-	qnameMinLevel int
-	netTimeout    time.Duration
-	workPolicy    middleware.RecursionWorkPolicy
+	// qnameMinCount is RFC 9156's MAX_MINIMISE_COUNT and qnameMinOneLabel
+	// its MINIMISE_ONE_LAB. Resolve them through
+	// config.QnameMinimizeParams so a directly built Resolver cannot end up
+	// grouping from the first query.
+	qnameMinCount    int
+	qnameMinOneLabel int
+	netTimeout       time.Duration
+	workPolicy       middleware.RecursionWorkPolicy
 
 	sfGroup *SingleflightWrapper
 
@@ -80,10 +85,11 @@ type Resolver struct {
 
 	// Circuit breaker and goroutine limiter
 	circuitBreaker  *circuitBreaker
-	maxConcurrent   chan struct{} // Semaphore for limiting concurrent queries
-	v6LookupSlots   chan struct{} // Global cap on detached IPv6 NS enrichment jobs
-	probeSlots      chan struct{} // Global cap on exploration probes outliving their lookup
-	resolutionSlots chan struct{} // Hard ceiling on in-flight zone lookups; full → fail fast
+	maxConcurrent   chan struct{}    // Semaphore for limiting concurrent queries
+	v4Enrich        chan nsEnrichJob // Queued IPv4 NS-address enrichment, drained by a fixed pool
+	v6Enrich        chan nsEnrichJob // Queued IPv6 NS-address enrichment, independent of the v4 lane
+	probeSlots      chan struct{}    // Global cap on exploration probes outliving their lookup
+	resolutionSlots chan struct{}    // Hard ceiling on in-flight zone lookups; full → fail fast
 	zoneInflight    *zoneInflightLimiter
 	cryptoLimiter   *dnssec.CryptoLimiter
 
@@ -117,16 +123,28 @@ type Resolver struct {
 // inherit the outer client's spread through the shared ctx), with req.Id
 // as a fallback for direct callers.
 type resolveState struct {
-	req       *dns.Msg
-	servers   *authority.Servers
-	depth     int
-	level     int
-	nomin     bool
-	parentDS  []dns.RR
-	isRoot    bool
-	extra     []bool
-	requestID uint16
-	work      *middleware.RecursionWorkLedger
+	req     *dns.Msg
+	servers *authority.Servers
+	depth   int
+	level   int
+	// minSteps counts the minimized queries already sent for this request.
+	// RFC 9156 section 2.3 bounds outgoing queries per user request, so the
+	// budget is spent by probes actually sent — not by how deep the closest
+	// cached delegation happens to sit. Capping on level instead would hand
+	// a warm resolver a budget already consumed by labels it never had to
+	// expose, and stop minimizing exactly where the remaining labels are the
+	// private ones.
+	minSteps int
+	// minExposed is how many labels the last minimized query carried. A
+	// grouped query exposes more than one label at a time, so advancing by
+	// one would re-send a name shorter than the one already on the wire.
+	minExposed int
+	nomin      bool
+	parentDS   []dns.RR
+	isRoot     bool
+	extra      []bool
+	requestID  uint16
+	work       *middleware.RecursionWorkLedger
 
 	// cutDeadline is the absolute expiry of the shallowest delegation on
 	// the path descended so far (zero = unbounded, at/above root). A newly
@@ -135,6 +153,19 @@ type resolveState struct {
 	// (T2) protection (GHSA-mqfw-f48p-2vc8).
 	cutDeadline time.Time
 	cutKey      uint64
+}
+
+// advance moves past what the query just answered exposed: the labels the
+// minimized query actually carried, or one more label when the full name went
+// out. The two agree whenever minimization added a single label, which is
+// every name shallower than the grouping threshold.
+func (rs *resolveState) advance(minimized bool) {
+	if minimized {
+		rs.level = rs.minExposed
+		return
+	}
+
+	rs.level++
 }
 
 // minNonZero returns the earlier of two deadlines, treating a zero time as
@@ -249,13 +280,14 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		dnssec: cfg.DNSSEC == "on",
 
-		qnameMinLevel:  cfg.QnameMinLevel,
 		netTimeout:     defaultTimeout,
 		workPolicy:     workPolicy,
 		sfGroup:        NewSingleflightWrapper(),
 		circuitBreaker: newCircuitBreaker(),
 		cryptoLimiter:  dnssec.NewCryptoLimiter(workPolicy.MaxConcurrentCrypto),
 	}
+
+	r.qnameMinCount, r.qnameMinOneLabel = cfg.QnameMinimizeParams()
 
 	// Set default for MaxConcurrentQueries if not configured
 	maxConcurrent := cfg.MaxConcurrentQueries
@@ -272,12 +304,13 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 	if r.cfg.IPv6Access {
 		r.glueV6 = cache.New(defaultCacheSize)
-		// Detached V6 enrichment shares the query budget's scale: during a
-		// network incident every referral wants one of these jobs, and an
-		// uncapped pool grows at arrival-rate × timeout (2026-07-28: 1.4M
-		// goroutines). Full slots shed the job instead of queueing it.
-		r.v6LookupSlots = make(chan struct{}, maxConcurrent)
 	}
+
+	// Enrichment used to gate one goroutine per referral behind a semaphore
+	// the size of the whole query budget (2026-07-28: 1.4M goroutines when
+	// even that shape queued). The fixed pools replace the per-job
+	// goroutines outright; the bounded queues shed under pressure.
+	r.startEnrichPools()
 
 	r.probeSlots = make(chan struct{}, maxInflightProbes)
 
@@ -442,9 +475,14 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		noteCut(ctx, rs.cutDeadline, rs.cutKey)
 	}
 
-	// RFC 7816 query minimization. There are some concerns in RFC.
-	// Current default minimize level 5, if we down to level 3, performance gain 20%
-	minReq, minimized := r.minimize(rs.req, rs.level, rs.nomin)
+	// RFC 9156 query minimization, bounded by qnameMinCount probes per
+	// request. Lowering that bound is a privacy/latency trade: past it the
+	// full name goes out, so every remaining delegation sees all of it.
+	minReq, minExposed, minimized := r.minimize(rs.req, rs.level, rs.minSteps, rs.nomin)
+	if minimized {
+		rs.minSteps++
+		rs.minExposed = minExposed
+	}
 
 	if debugLogEnabled() {
 		zlog.Debug("Query inserted", "reqid", minReq.Id, "zone", rs.servers.Zone, "query", dnsutil.FormatQuestion(minReq.Question[0]), "cd", rs.req.CheckingDisabled, "qname-minimize", minimized)
@@ -456,19 +494,42 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	resp = r.setTags(rs.req, resp)
-	serverFailureResponse := false
-	if resp.Rcode != dns.RcodeSuccess {
-		responseType, _ := dnsutil.ClassifyResponse(resp, time.Now())
-		serverFailureResponse = responseType == dnsutil.TypeServerFailure
+
+	// Everything a hidden prefix can draw is decided here, on the RCODE,
+	// before any section shape is looked at. NOERROR flows on to the walk
+	// below: a NODATA prefix exists and carries nothing, which is
+	// minimization working. An NXDOMAIN whose proof locally validates for
+	// the whole subtree ends the resolution (RFC 8020). Every other
+	// non-NOERROR outcome — an unprovable denial, a SERVFAIL or REFUSED
+	// with or without a SOA, a denial dressed in a CNAME answer — stops
+	// hiding labels and asks for the full name from this delegation.
+	// Deciding on sections instead of the RCODE let the dressed shapes
+	// slip past the fallback and back into the label walk.
+	//
+	// The relaxed exit is a deliberate departure from RFC 9156's own
+	// algorithm, which keeps walking through an unprovable denial and tries
+	// other servers on other errors. Relaxed pays one query where the walk
+	// paid one per remaining label, and the full name's answer is the
+	// client's answer either way.
+	if minimized && resp.Rcode != dns.RcodeSuccess {
+		if resp.Rcode == dns.RcodeNameError {
+			answer, denied, err := r.minimizedDenialCut(ctx, rs, minReq, resp)
+			if err != nil {
+				return nil, err
+			}
+			if denied {
+				return answer, nil
+			}
+		}
+		rs.nomin = true
+		rs.isRoot = false
+		return r.resolve(ctx, rs)
 	}
 
 	if resp.Rcode != dns.RcodeSuccess && len(resp.Answer) == 0 && len(resp.Ns) == 0 {
-		if minimized {
-			rs.level++
-			rs.isRoot = false
-			return r.resolve(ctx, rs)
-		}
-		if serverFailureResponse {
+		// Classified here rather than up top: this is its only consumer, and
+		// the minimized paths above return without ever needing it.
+		if responseType, _ := dnsutil.ClassifyResponse(resp, time.Now()); responseType == dnsutil.TypeServerFailure {
 			r.recordResolutionZoneFailure(ctx, rs.req.Question[0], rs.servers.Zone, nil)
 		} else {
 			r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
@@ -498,7 +559,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	}
 
 	if minimized && (len(resp.Answer) == 0 && len(resp.Ns) == 0) || len(resp.Answer) > 0 {
-		rs.level++
+		rs.advance(minimized)
 		rs.isRoot = false
 		return r.resolve(ctx, rs)
 	}
@@ -683,6 +744,7 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 	type lookupResult struct {
 		name   string
 		addrs  []netip.Addr
+		ttl    uint32
 		isIPv6 bool
 	}
 	results := make(chan lookupResult, len(hostsToCheck)*2)
@@ -693,10 +755,10 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 		r.removeIPv4Cache(name)
 
 		g.Go(func() error {
-			addrs, err := r.lookupNSAddrV4(ctx, name, cd)
+			addrs, ttl, _, err := r.lookupNSAddrV4(ctx, name, cd)
 			if err == nil && len(addrs) > 0 {
 				select {
-				case results <- lookupResult{name: name, addrs: addrs, isIPv6: false}:
+				case results <- lookupResult{name: name, addrs: addrs, ttl: ttl, isIPv6: false}:
 				case <-ctx.Done():
 				}
 			}
@@ -711,10 +773,10 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 			r.removeIPv6Cache(name)
 
 			g.Go(func() error {
-				addrs, err := r.lookupNSAddrV6(ctx, name, cd)
+				addrs, ttl, _, err := r.lookupNSAddrV6(ctx, name, cd)
 				if err == nil && len(addrs) > 0 {
 					select {
-					case results <- lookupResult{name: name, addrs: addrs, isIPv6: true}:
+					case results <- lookupResult{name: name, addrs: addrs, ttl: ttl, isIPv6: true}:
 					case <-ctx.Done():
 					}
 				}
@@ -730,18 +792,18 @@ func (r *Resolver) checkHosts(ctx context.Context, servers *authority.Servers) (
 	}()
 
 	// Collect results
-	nsipv4 := make(map[string][]netip.Addr)
-	nsipv6 := make(map[string][]netip.Addr)
+	nsipv4 := make(map[string]nsAddrs)
+	nsipv6 := make(map[string]nsAddrs)
 	var newServers []*authority.Server
 
 	for result := range results {
 		if result.isIPv6 {
-			nsipv6[result.name] = result.addrs
+			nsipv6[result.name] = nsAddrs{addrs: result.addrs, ttl: result.ttl}
 			for _, addr := range result.addrs {
 				newServers = append(newServers, authority.NewServerFromAddrPort(netip.AddrPortFrom(addr, 53)))
 			}
 		} else {
-			nsipv4[result.name] = result.addrs
+			nsipv4[result.name] = nsAddrs{addrs: result.addrs, ttl: result.ttl}
 			for _, addr := range result.addrs {
 				newServers = append(newServers, authority.NewServerFromAddrPort(netip.AddrPortFrom(addr, 53)))
 			}
@@ -790,7 +852,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 	foundv6 := make(hostSet)
 
 	if r.cfg.IPv6Access {
-		nsipv6 := make(map[string][]netip.Addr)
+		nsipv6 := make(map[string]nsAddrs)
 		for _, a := range resp.Extra {
 			if extra, ok := a.(*dns.AAAA); ok {
 				name := strings.ToLower(extra.Header().Name)
@@ -811,7 +873,12 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 					foundv6[name] = struct{}{}
 
-					nsipv6[name] = appendUniqueAddr(nsipv6[name], addr)
+					set := nsipv6[name]
+					if len(set.addrs) == 0 || extra.Hdr.Ttl < set.ttl {
+						set.ttl = extra.Hdr.Ttl
+					}
+					set.addrs = appendUniqueAddr(set.addrs, addr)
+					nsipv6[name] = set
 					endpoint := netip.AddrPortFrom(addr, 53)
 					if _, ok := seenServers[endpoint]; !ok {
 						seenServers[endpoint] = struct{}{}
@@ -823,7 +890,7 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 		r.addIPv6Cache(nsipv6)
 	}
 
-	nsipv4 := make(map[string][]netip.Addr)
+	nsipv4 := make(map[string]nsAddrs)
 	for _, a := range resp.Extra {
 		if extra, ok := a.(*dns.A); ok {
 			name := strings.ToLower(extra.Header().Name)
@@ -844,7 +911,12 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 
 				foundv4[name] = struct{}{}
 
-				nsipv4[name] = appendUniqueAddr(nsipv4[name], addr)
+				set := nsipv4[name]
+				if len(set.addrs) == 0 || extra.Hdr.Ttl < set.ttl {
+					set.ttl = extra.Hdr.Ttl
+				}
+				set.addrs = appendUniqueAddr(set.addrs, addr)
+				nsipv4[name] = set
 				endpoint := netip.AddrPortFrom(addr, 53)
 				if _, ok := seenServers[endpoint]; !ok {
 					seenServers[endpoint] = struct{}{}
@@ -858,64 +930,226 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 	return authservers, foundv4, foundv6
 }
 
-func (r *Resolver) addIPv4Cache(nsipv4 map[string][]netip.Addr) {
-	for name, addrs := range nsipv4 {
-		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-		r.glueV4.Add(key, addrs)
+const (
+	// nsEnrichWorkers is the fixed size of each enrichment pool. Enrichment
+	// used to spawn one goroutine per referral, capped only by a global
+	// semaphore the size of the whole query budget — under a partial outage
+	// that is a thousand goroutines each living out a full timeout. A fixed
+	// pool makes the goroutine count a constant however the load looks.
+	nsEnrichWorkers = 8
+	// nsEnrichQueue bounds each lane's backlog. A full queue sheds the job:
+	// enrichment is optional work, and the outage lesson stands — a queue
+	// that grows at arrival-rate times timeout never drains.
+	nsEnrichQueue = 1024
+)
+
+// nsEnrichJob is one delegation's deferred nameserver-address work: resolve
+// the hosts the referral did not carry addresses for, and grow the very
+// server list the walk is already using. The job is fully self-contained:
+// it holds no retention on the originating request tree, because a queued
+// job can wait out an outage, and anything the queue holds per arrival is
+// something an outage accumulates. Its work runs under its own ledger,
+// bounded by the fixed workers, the per-job timeout and the queue cap.
+type nsEnrichJob struct {
+	base context.Context
+	run  func(ctx context.Context)
+}
+
+// The lanes are process-wide and started exactly once: a lane is
+// infrastructure, like the GC's workers, and tying its lifetime to a
+// Resolver instance would leak one fixed pool per construction — a test
+// suite builds hundreds of resolvers, and goroutine accounting must see a
+// constant, not a multiple. They are separate lanes on purpose: v4
+// addresses are what the walk falls back on when a leader dies, v6 is
+// opportunistic reach — a flood of one must not starve the other.
+var (
+	enrichPoolsOnce sync.Once
+	enrichV4Lane    chan nsEnrichJob
+	enrichV6Lane    chan nsEnrichJob
+)
+
+func ensureEnrichPools() (v4, v6 chan nsEnrichJob) {
+	enrichPoolsOnce.Do(func() {
+		enrichV4Lane = make(chan nsEnrichJob, nsEnrichQueue)
+		enrichV6Lane = make(chan nsEnrichJob, nsEnrichQueue)
+		for _, lane := range []chan nsEnrichJob{enrichV4Lane, enrichV6Lane} {
+			for range nsEnrichWorkers {
+				go func(jobs chan nsEnrichJob) {
+					for job := range jobs {
+						ctx, cancel := context.WithTimeout(job.base, 30*time.Second)
+						job.run(ctx)
+						cancel()
+					}
+				}(lane)
+			}
+		}
+	})
+	return enrichV4Lane, enrichV6Lane
+}
+
+// startEnrichPools points this resolver at the shared lanes. A bare Resolver
+// literal that never calls it keeps nil lanes, and its enrichment sheds.
+func (r *Resolver) startEnrichPools() {
+	r.v4Enrich, r.v6Enrich = ensureEnrichPools()
+}
+
+// enqueueEnrich offers a job to a lane without ever blocking the walk. A nil
+// lane (bare test resolvers) and a full queue both shed: the job's ledger
+// retention is released and the addresses are simply not learned this time.
+func enqueueEnrich(lane chan nsEnrichJob, job nsEnrichJob) bool {
+	if lane == nil {
+		return false
+	}
+	select {
+	case lane <- job:
+		return true
+	default:
+		return false
 	}
 }
 
-func (r *Resolver) getIPv4Cache(name string) ([]netip.Addr, bool) {
-	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-	if v, ok := r.glueV4.Get(key); ok {
-		return v.([]netip.Addr), ok
-	}
+// nsAddrs is one nameserver host's addresses on their way into the glue
+// cache, carrying the smallest TTL of the records they came from.
+type nsAddrs struct {
+	addrs []netip.Addr
+	ttl   uint32
+}
 
-	return nil, false
+// glueEntry is what the glue caches hold: the addresses and the absolute
+// horizon their source records granted. The caches themselves keep entries
+// until eviction pressure, so without the horizon a nameserver's address
+// survived renumbering indefinitely — served for as long as nothing
+// happened to push it out.
+type glueEntry struct {
+	addrs     []netip.Addr
+	expiresAt int64
+}
+
+const (
+	// glueTTLFloor keeps a zero- or near-zero-TTL record from turning every
+	// delegation touch into a re-resolution of its nameservers.
+	glueTTLFloor = 30 * time.Second
+	// glueTTLCap bounds how long a renumbered nameserver's old address can
+	// keep being handed out, whatever its zone published. TTLs are honored
+	// downward only, matching how delegation leases are handled.
+	glueTTLCap = 6 * time.Hour
+)
+
+func glueExpiry(ttl uint32) int64 {
+	d := time.Duration(ttl) * time.Second
+	if d < glueTTLFloor {
+		d = glueTTLFloor
+	}
+	if d > glueTTLCap {
+		d = glueTTLCap
+	}
+	return time.Now().Add(d).UnixNano()
+}
+
+// glueGet reads one entry, expiring it lazily: a stale read deletes only
+// the exact entry it saw, so a fresh value published meanwhile survives.
+// The remaining TTL comes back with the addresses so a caller re-adding
+// them cannot stretch the original horizon.
+func glueGet(c *cache.Cache, key uint64) ([]netip.Addr, uint32, bool) {
+	v, ok := c.Get(key)
+	if !ok {
+		return nil, 0, false
+	}
+	entry := v.(*glueEntry)
+	remaining := entry.expiresAt - time.Now().UnixNano()
+	if remaining <= 0 {
+		c.CompareAndDelete(key, entry)
+		return nil, 0, false
+	}
+	secs := remaining / int64(time.Second)
+	if secs > int64(glueTTLCap/time.Second) {
+		// Entries are stamped through glueExpiry, so the horizon is already
+		// capped; the clamp makes the narrowing conversion provably safe.
+		secs = int64(glueTTLCap / time.Second)
+	}
+	return entry.addrs, uint32(secs), true //nolint:gosec // G115 - clamped to glueTTLCap just above
+}
+
+func (r *Resolver) addIPv4Cache(nsipv4 map[string]nsAddrs) {
+	for name, set := range nsipv4 {
+		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
+		r.glueV4.Add(key, &glueEntry{addrs: set.addrs, expiresAt: glueExpiry(set.ttl)})
+	}
+}
+
+func (r *Resolver) getIPv4Cache(name string) ([]netip.Addr, uint32, bool) {
+	return glueGet(r.glueV4, cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) removeIPv4Cache(name string) {
 	r.glueV4.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}))
 }
 
-func (r *Resolver) addIPv6Cache(nsipv6 map[string][]netip.Addr) {
-	for name, addrs := range nsipv6 {
+func (r *Resolver) addIPv6Cache(nsipv6 map[string]nsAddrs) {
+	for name, set := range nsipv6 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-		r.glueV6.Add(key, addrs)
+		r.glueV6.Add(key, &glueEntry{addrs: set.addrs, expiresAt: glueExpiry(set.ttl)})
 	}
 }
 
-func (r *Resolver) getIPv6Cache(name string) ([]netip.Addr, bool) {
-	key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-	if v, ok := r.glueV6.Get(key); ok {
-		return v.([]netip.Addr), ok
-	}
-
-	return nil, false
+func (r *Resolver) getIPv6Cache(name string) ([]netip.Addr, uint32, bool) {
+	return glueGet(r.glueV6, cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
 func (r *Resolver) removeIPv6Cache(name string) {
 	r.glueV6.Remove(cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}))
 }
 
-func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool) {
-	if r.qnameMinLevel == 0 || nomin {
-		return req, false
+// minimize shortens req to the labels the resolution has reached so far.
+// level is how many labels are already exposed, steps how many minimized
+// queries this request has spent — the budget RFC 9156 section 2.3 bounds. The
+// returned count is the labels this query exposes, which the caller carries
+// forward as the next level.
+func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Msg, int, bool) {
+	if r.qnameMinCount == 0 || nomin {
+		return req, level, false
 	}
 
 	q := req.Question[0]
 
-	if level >= r.qnameMinLevel || q.Name == rootzone {
-		return req, false
+	if steps >= r.qnameMinCount || q.Name == rootzone {
+		return req, level, false
 	}
 
-	prev, end := dns.PrevLabel(q.Name, level+1)
+	// RFC 9156 section 2.3: the first qnameMinOneLabel queries add a single
+	// label, then whatever is still hidden is divided over the queries left,
+	// the remainder falling to the last of them. Recomputing the quotient per
+	// query reproduces that distribution — 18 labels under 10/4 gives
+	// 1,1,1,1,2,2,2,2,3,3 — without carrying a schedule between calls.
+	add := 1
+	if steps >= r.qnameMinOneLabel {
+		if left := r.qnameMinCount - steps; left > 0 {
+			if grouped := (dns.CountLabel(q.Name) - level) / left; grouped > add {
+				add = grouped
+			}
+		}
+	}
+
+	// RFC 9156 section 2.3: a label starting with an underscore is a service
+	// tag — _tcp, _dmarc, a DKIM selector — not an administrative boundary, so
+	// no zone cut hides behind it and asking about it separately buys nothing.
+	// Take the whole run of them in this step. PrevLabel's end flag bounds the
+	// loop, so the name is never counted.
+	for {
+		next, end := dns.PrevLabel(q.Name, level+add+1)
+		if end || q.Name[next] != '_' {
+			break
+		}
+		add++
+	}
+
+	prev, end := dns.PrevLabel(q.Name, level+add)
 	if end {
-		return req, false
+		return req, level, false
 	}
 	minName := q.Name[prev:]
 	if minName == q.Name {
-		return req, false
+		return req, level, false
 	}
 
 	// Only the outcome that queries a different name pays for a private
@@ -924,7 +1158,18 @@ func (r *Resolver) minimize(req *dns.Msg, level int, nomin bool) (*dns.Msg, bool
 	// what makes the returned request lookup-owned — see groupLookup.
 	minReq := req.Copy()
 	minReq.Question[0].Name = minName
-	return minReq, true
+
+	// RFC 9156 section 2.1: a probe may only carry a type whose authority
+	// lies below the zone cut — never DS, NSEC, NSEC3, ANY, AXFR, IXFR and
+	// the rest, whose authority is elsewhere or which are not questions a
+	// zone answers for a name it does not hold. A is the type the RFC
+	// recommends, and asking it for every client makes one probe serve them
+	// all: the name is the whole point of the query, the type is not.
+	// The client's own type goes out on the final query, which is the one
+	// that is not minimized.
+	minReq.Question[0].Qtype = dns.TypeA
+
+	return minReq, level + add, true
 }
 
 func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
@@ -2763,11 +3008,15 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	}
 
 	child := &resolveState{
-		req:       req,
-		servers:   r.rootServers,
-		depth:     depth,
-		level:     0,
-		nomin:     false,
+		req:     req,
+		servers: r.rootServers,
+		depth:   depth,
+		level:   0,
+		// Minimization hides the client's name. What reaches here is the
+		// resolver's own bookkeeping — a DS or DNSKEY at a delegation point
+		// the parent already serves — so there is nothing left to hide, and
+		// minimizing it let every internal lookup start a walk of its own.
+		nomin:     true,
 		parentDS:  nil,
 		isRoot:    true,
 		extra:     nil,
@@ -2804,11 +3053,11 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	return resp, nil
 }
 
-func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, err error) {
+func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, fromCache bool, err error) {
 	zlog.Debug("Lookup NS ipv4 address", "qname", qname)
 
-	if addrs, ok := r.getIPv4Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv4Cache(qname); ok {
+		return addrs, ttl, true, nil
 	}
 
 	ctx = context.WithValue(ctx, contextKeyNSL, struct{}{})
@@ -2820,26 +3069,26 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
+		return nil, 0, false, fmt.Errorf("nameserver ipv4 address lookup failed for %s: %w", qname, err)
 	}
 
-	if addrs, ok := searchAddrs(nsres); ok {
-		return addrs, nil
+	if addrs, ttl, ok := searchAddrs(nsres); ok {
+		return addrs, ttl, false, nil
 	}
 
 	// try look glue cache
-	if addrs, ok := r.getIPv4Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv4Cache(qname); ok {
+		return addrs, ttl, true, nil
 	}
 
-	return addrs, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
+	return nil, 0, false, fmt.Errorf("nameserver ipv4 address lookup failed for %s", qname)
 }
 
-func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, err error) {
+func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (addrs []netip.Addr, ttl uint32, fromCache bool, err error) {
 	zlog.Debug("Lookup NS ipv6 address", "qname", qname)
 
-	if addrs, ok := r.getIPv6Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv6Cache(qname); ok {
+		return addrs, ttl, true, nil
 	}
 
 	ctx = context.WithValue(ctx, contextKeyNSL, struct{}{})
@@ -2851,24 +3100,134 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 
 	nsres, err := r.internalExchange(ctx, nsReq)
 	if err != nil {
-		return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
+		return nil, 0, false, fmt.Errorf("nameserver ipv6 address lookup failed for %s: %w", qname, err)
 	}
 
-	if addrs, ok := searchAddrs(nsres); ok {
-		return addrs, nil
+	if addrs, ttl, ok := searchAddrs(nsres); ok {
+		return addrs, ttl, false, nil
 	}
 
 	// try look glue cache
-	if addrs, ok := r.getIPv6Cache(qname); ok {
-		return addrs, nil
+	if addrs, ttl, ok := r.getIPv6Cache(qname); ok {
+		return addrs, ttl, true, nil
 	}
 
-	return addrs, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
+	return nil, 0, false, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
+}
+
+// resolveV4Host resolves one nameserver host's IPv4 addresses and folds them
+// into the delegation's server list and the glue cache. It reports whether
+// the list actually grew; the caller decides what a failure means.
+func (r *Resolver) resolveV4Host(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, name string, cd bool, cutDeadline time.Time) (bool, error) {
+	ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
+	if loop {
+		if _, _, ok := r.getIPv4Cache(name); !ok {
+			zlog.Debug("Looping during ns ipv4 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
+			return false, nil
+		}
+	}
+
+	authservers.RLock()
+	hasList := len(authservers.List) > 0
+	authservers.RUnlock()
+	if hasList && (!r.dnssec || r.hasTrustAnchors()) {
+		// Temporary cache before lookup. Skip when trust anchors
+		// are unavailable: the DS set could be empty because the
+		// DNSSEC chain was short-circuited, and caching that empty-DS
+		// entry would make a signed zone look insecure after recovery.
+		//
+		// Bound this provisional entry by the (inherited) cut deadline,
+		// stored as an absolute expiry — a flat one-minute route, or a
+		// lease restarted across several NS lookups, would outlive a
+		// 1-4s parent referral and keep a withdrawn child reachable
+		// (GHSA-mqfw-f48p-2vc8). Cap it at one minute so a long-lived cut
+		// still refreshes the provisional set promptly. A past deadline
+		// is not cached (SetUntil skips it).
+		r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
+	}
+
+	addrs, ttl, fromCache, err := r.lookupNSAddrV4(ctx, name, cd)
+	if err != nil {
+		return false, err
+	}
+	if len(addrs) == 0 {
+		return false, nil
+	}
+
+	nsipv4 := make(map[string]nsAddrs)
+	if !fromCache {
+		// A hit is not new information: re-adding what was just read
+		// would restamp the entry through the TTL floor and let a
+		// frequently read address outlive its records horizon.
+		nsipv4[name] = nsAddrs{addrs: addrs, ttl: ttl}
+	}
+
+	authservers.Lock()
+	before := len(authservers.List)
+addrsloop:
+	for _, addr := range addrs {
+		endpoint := netip.AddrPortFrom(addr, 53)
+		for _, s := range authservers.List {
+			if s.UDPAddr != nil && s.UDPAddr.AddrPort() == endpoint {
+				continue addrsloop
+			}
+		}
+		authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
+	}
+	grew := len(authservers.List) != before
+	if grew {
+		// Invalidate *before* releasing the write lock: after
+		// Unlock() a reader could observe the mutated List with
+		// fpValid still true and get a stale cached hash.
+		authservers.InvalidateFingerprint()
+	}
+	authservers.Unlock()
+	r.addIPv4Cache(nsipv4)
+	return grew, nil
+}
+
+// enqueueV4Enrich defers the rest of a delegation's IPv4 host resolutions to
+// the v4 lane. Nothing here gambles — every address still comes from a
+// resolution of our own; only the walk stops waiting for them. The job holds
+// nothing of the originating request: a queued job can wait out an outage,
+// so it runs under its own work ledger, and only the attempt guard rides
+// along to keep RFC 9520 tuple accounting coherent.
+func (r *Resolver) enqueueV4Enrich(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, names []string, cd bool, cutDeadline time.Time) {
+	guard := middleware.ResolutionAttemptGuardFrom(ctx)
+	reqid := requestIDFromContext(ctx)
+	detachedBase := dnssec.InheritNSEC3HashMemos(context.Background(), ctx)
+	if middleware.HasClientECS(ctx) {
+		detachedBase = middleware.MarkClientECS(detachedBase)
+	}
+
+	enqueueEnrich(r.v4Enrich, nsEnrichJob{
+		base: detachedBase,
+		run: func(jobCtx context.Context) {
+			// The roster is optional work like the v6 side: it stops at the
+			// shared cap, and its rejected debits must not poison the
+			// required resolution path's failure state.
+			jobCtx = middleware.WithBestEffortRecursionWork(jobCtx)
+			if guard != nil {
+				jobCtx = middleware.WithResolutionAttemptGuard(jobCtx, guard)
+			}
+			jobCtx = context.WithValue(jobCtx, contextKeyRequestID, reqid)
+			for _, name := range names {
+				if _, err := r.resolveV4Host(jobCtx, q, authservers, key, parentDS, name, cd, cutDeadline); err != nil {
+					if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+						errors.Is(err, middleware.ErrMaxRecursion) ||
+						errors.Is(err, context.Canceled) ||
+						errors.Is(err, context.DeadlineExceeded) {
+						return
+					}
+					zlog.Debug("Deferred NS ipv4 enrichment failed", "query", dnsutil.FormatQuestion(q), "ns", name, "error", err.Error())
+				}
+			}
+		},
+	})
 }
 
 func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) error {
 	list := sortHosts(hosts, q.Name)
-	var lastAttemptLimit error
 
 	for _, name := range list {
 		// Hosts is copied by readers (checkHosts) under RLock once
@@ -2879,41 +3238,43 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		authservers.Lock()
 		authservers.Hosts = append(authservers.Hosts, name)
 		authservers.Unlock()
+	}
 
-		if _, ok := foundv4[name]; ok {
-			continue
+	missing := make([]string, 0, len(list))
+	for _, name := range list {
+		if _, ok := foundv4[name]; !ok {
+			missing = append(missing, name)
 		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
 
-		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
-		if loop {
-			if _, ok := r.getIPv4Cache(name); !ok {
-				zlog.Debug("Looping during ns ipv4 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
-				continue
-			}
-		}
-
+	// A referral's glue is the parent zone telling us where its child
+	// lives, and it is enough to start walking on — but one endpoint is one
+	// point of failure, and a query that exhausts it dies before the lane
+	// can finish the roster. So the walk holds out for two dialable
+	// endpoints: with a failover candidate in hand, a lame leader costs a
+	// retry, not the query. The floor counts what the racing lookup
+	// actually spends — deduped endpoints in the server list — not host
+	// names: two names glued to one address are still one point of
+	// failure, and one host with two addresses is already a pair. The
+	// count is re-read after every resolution for the same reason.
+	// Everything past the floor is roster work — completed
+	// deterministically, from our own resolutions, on the bounded lane.
+	endpoints := func() int {
 		authservers.RLock()
-		hasList := len(authservers.List) > 0
-		authservers.RUnlock()
-		if hasList && (!r.dnssec || r.hasTrustAnchors()) {
-			// Temporary cache before lookup. Skip when trust anchors
-			// are unavailable: the DS set could be empty because the
-			// DNSSEC chain was short-circuited, and caching that empty-DS
-			// entry would make a signed zone look insecure after recovery.
-			//
-			// Bound this provisional entry by the (inherited) cut deadline,
-			// stored as an absolute expiry — a flat one-minute route, or a
-			// lease restarted across several NS lookups, would outlive a
-			// 1-4s parent referral and keep a withdrawn child reachable
-			// (GHSA-mqfw-f48p-2vc8). Cap it at one minute so a long-lived cut
-			// still refreshes the provisional set promptly. A past deadline
-			// is not cached (SetUntil skips it).
-			r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
+		defer authservers.RUnlock()
+		return len(authservers.List)
+	}
+
+	var lastAttemptLimit error
+	for i, name := range missing {
+		if endpoints() >= 2 {
+			r.enqueueV4Enrich(ctx, q, authservers, key, parentDS, missing[i:], cd, cutDeadline)
+			return nil
 		}
-
-		addrs, err := r.lookupNSAddrV4(ctx, name, cd)
-		nsipv4 := make(map[string][]netip.Addr)
-
+		_, err := r.resolveV4Host(ctx, q, authservers, key, parentDS, name, cd, cutDeadline)
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
 				errors.Is(err, middleware.ErrMaxRecursion) ||
@@ -2932,33 +3293,6 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			zlog.Debug("Lookup NS ipv4 address failed", "query", dnsutil.FormatQuestion(q), "ns", name, "error", err.Error())
 			continue
 		}
-
-		if len(addrs) == 0 {
-			continue
-		}
-
-		nsipv4[name] = addrs
-
-		authservers.Lock()
-		before := len(authservers.List)
-	addrsloop:
-		for _, addr := range addrs {
-			endpoint := netip.AddrPortFrom(addr, 53)
-			for _, s := range authservers.List {
-				if s.UDPAddr != nil && s.UDPAddr.AddrPort() == endpoint {
-					continue addrsloop
-				}
-			}
-			authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
-		}
-		if len(authservers.List) != before {
-			// Invalidate *before* releasing the write lock: after
-			// Unlock() a reader could observe the mutated List with
-			// fpValid still true and get a stale cached hash.
-			authservers.InvalidateFingerprint()
-		}
-		authservers.Unlock()
-		r.addIPv4Cache(nsipv4)
 	}
 
 	if lastAttemptLimit != nil {
@@ -3001,14 +3335,14 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 
 		ctx, loop := r.checkLoop(ctx, name, dns.TypeAAAA)
 		if loop {
-			if _, ok := r.getIPv6Cache(name); !ok {
+			if _, _, ok := r.getIPv6Cache(name); !ok {
 				zlog.Debug("Looping during ns ipv6 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
 				continue
 			}
 		}
 
-		addrs, err := r.lookupNSAddrV6(ctx, name, cd)
-		nsipv6 := make(map[string][]netip.Addr)
+		addrs, ttl, fromCache, err := r.lookupNSAddrV6(ctx, name, cd)
+		nsipv6 := make(map[string]nsAddrs)
 
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
@@ -3027,7 +3361,10 @@ func (r *Resolver) lookupV6Nss(ctx context.Context, q dns.Question, authservers 
 			continue
 		}
 
-		nsipv6[name] = addrs
+		if !fromCache {
+			// Same as the v4 side: a hit must not renew its own horizon.
+			nsipv6[name] = nsAddrs{addrs: addrs, ttl: ttl}
+		}
 
 		authservers.Lock()
 		before := len(authservers.List)
@@ -3440,48 +3777,70 @@ func (r *Resolver) clearResolutionZoneFailure(q dns.Question, zone string) {
 	}
 }
 
+// minimizedDenialCut applies RFC 8020 to an NXDOMAIN drawn by a hidden
+// prefix: a locally validated, non-Opt-Out denial of the prefix denies every
+// name under it, the client's included, so no longer name needs asking.
+// denied reports whether the proof held. A denial that fails validation
+// outright fails the resolution closed — unsigned and checking-disabled
+// answers simply do not produce a proof and come back denied=false, which
+// sends the walk to its full-name fallback.
+func (r *Resolver) minimizedDenialCut(ctx context.Context, rs *resolveState, minReq, resp *dns.Msg) (answer *dns.Msg, denied bool, err error) {
+	// An NXDOMAIN that carries an alias in its answer denies the end of the
+	// chain, not the name that was asked (RFC 2308 section 2.1), so it can
+	// never prove the probed prefix's subtree away. Validating it here would
+	// judge the proof against the wrong owner — failing a legitimately
+	// signed chain closed, or blessing a denial of the alias target as
+	// though it covered the prefix. Leave it to the full-name fallback,
+	// which resolves the alias the ordinary way.
+	for _, rr := range resp.Answer {
+		switch rr.(type) {
+		case *dns.CNAME, *dns.DNAME:
+			return nil, false, nil
+		}
+	}
+
+	hasSOA := false
+	for _, rr := range resp.Ns {
+		if _, ok := rr.(*dns.SOA); ok {
+			hasSOA = true
+			break
+		}
+	}
+	if !hasSOA {
+		return nil, false, nil
+	}
+
+	result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
+	if err != nil {
+		return nil, false, err
+	}
+	negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, result)
+	if !secure || !negative.Aggressive ||
+		negative.Proof == nil ||
+		negative.Proof.Rcode != dns.RcodeNameError ||
+		dnsutil.HasNSEC3OptOut(result.Ns, negative.Zone) {
+		return nil, false, nil
+	}
+
+	// Provenance keeps minReq's denied name. Only the client-visible
+	// Question is rebound to the original full QNAME.
+	result.Question = append([]dns.Question(nil), rs.req.Question...)
+	r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
+	return result, true, nil
+}
+
 // processAuthoritySection handles the authority section of the response.
 func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
 	if minimized {
-		// RFC 8020: a locally authenticated NXDOMAIN at a minimized name
-		// denies that exact subtree, so there is no reason to continue
-		// querying progressively longer names. Validate the real
-		// authoritative query cycle first. Unsigned and checking-disabled
-		// answers keep the historical deeper walk; bogus signed proofs fail
-		// closed through authority().
-		if resp.Rcode == dns.RcodeNameError {
-			hasSOA := false
-			for _, rr := range resp.Ns {
-				if _, ok := rr.(*dns.SOA); ok {
-					hasSOA = true
-					break
-				}
-			}
-			if hasSOA {
-				result, err := r.authority(ctx, minReq, resp, rs.parentDS, rs.servers.Zone)
-				if err != nil {
-					return nil, err
-				}
-				negative, secure := middleware.ValidatedNegativeProofForResponse(ctx, result)
-				if secure && negative.Aggressive &&
-					negative.Proof != nil &&
-					negative.Proof.Rcode == dns.RcodeNameError &&
-					!dnsutil.HasNSEC3OptOut(result.Ns, negative.Zone) {
-					// Provenance keeps minReq's denied name. Only the
-					// client-visible Question is rebound to the original
-					// full QNAME.
-					result.Question = append([]dns.Question(nil), rs.req.Question...)
-					r.clearResolutionZoneFailure(rs.req.Question[0], rs.servers.Zone)
-					return result, nil
-				}
-			}
-		}
-
-		// Check if we need to continue with minimization
+		// Only NOERROR reaches here for a hidden prefix — resolve() settles
+		// every other RCODE before any section shape is looked at. NODATA
+		// is the walk working as designed: the prefix exists and carries
+		// nothing, so expose more labels. A CNAME in the authority keeps
+		// the historical advance as well.
 		for _, rr := range resp.Ns {
 			switch rr.(type) {
 			case *dns.SOA, *dns.CNAME:
-				rs.level++
+				rs.advance(minimized)
 				rs.isRoot = false
 				return r.resolve(ctx, rs)
 			}
@@ -3672,7 +4031,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// Check for parent detection
 	nlevel := dns.CountLabel(q.Name)
 	if rs.level > nlevel {
-		if r.qnameMinLevel > 0 && !rs.nomin {
+		if r.qnameMinCount > 0 && !rs.nomin {
 			// Try without minimization
 			newRS := &resolveState{
 				req:       rs.req,
@@ -3729,7 +4088,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 
 	if len(authservers.List) == 0 {
 		if minimized && rs.level < nlevel {
-			rs.level++
+			rs.advance(minimized)
 			rs.isRoot = false
 			return r.resolve(ctx, rs)
 		}
@@ -3758,70 +4117,31 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// after the query returned.
 	if r.cfg.IPv6Access {
 		reqid := requestIDFromContext(ctx)
-		work := rs.work
 		attemptGuard := middleware.ResolutionAttemptGuardFrom(ctx)
-		var releaseWork func()
-		if work != nil {
-			var retained bool
-			releaseWork, retained = work.Retain()
-			if !retained {
-				// The request tree has already completed. Starting work now
-				// would escape its aggregate cap, so skip this optional
-				// enrichment job.
-				work = nil
-			}
+		detachedBase := dnssec.InheritNSEC3HashMemos(
+			context.Background(),
+			ctx,
+		)
+		if middleware.HasClientECS(ctx) {
+			detachedBase = middleware.MarkClientECS(detachedBase)
 		}
-		spawn := rs.work == nil || work != nil
-		if spawn && r.v6LookupSlots != nil {
-			// Non-blocking slot acquire. The pool caps detached V6 jobs
-			// GLOBALLY: a partial upstream outage makes every job live out
-			// its full timeout while fresh referrals keep arriving, and an
-			// unbounded pool then grows at arrival-rate × timeout. This is
-			// optional enrichment — shedding it under pressure is strictly
-			// better than becoming the pressure. A nil pool (bare test
-			// resolvers) disables the cap.
-			select {
-			case r.v6LookupSlots <- struct{}{}:
-			default:
-				spawn = false
-				if releaseWork != nil {
-					releaseWork()
-				}
-			}
-		}
-		if spawn {
-			detachedBase := dnssec.InheritNSEC3HashMemos(
-				context.Background(),
-				ctx,
-			)
-			if middleware.HasClientECS(ctx) {
-				detachedBase = middleware.MarkClientECS(detachedBase)
-			}
-			go func() { //nolint:gosec // G118 - intentionally detached and bounded by the timeout below
-				defer func() {
-					if r.v6LookupSlots != nil {
-						<-r.v6LookupSlots
-					}
-				}()
-				if releaseWork != nil {
-					defer releaseWork()
-				}
-				v6ctx, cancel := context.WithTimeout(detachedBase, 30*time.Second)
-				defer cancel()
-				// Retain and pin the originating request-tree ledger before
-				// detaching. Every referral job then shares one aggregate
-				// cap, and the final metric snapshot waits for these jobs
-				// without delaying the client response.
-				if work != nil {
-					v6ctx = middleware.WithRecursionWork(v6ctx, work)
-				}
+		// The job is self-contained: it holds no retention on the
+		// originating request tree, because a queued job can wait out an
+		// outage and anything held per arrival is something an outage
+		// accumulates. Its work runs under its own ledger; only the
+		// attempt guard rides along for RFC 9520 tuple accounting. A full
+		// lane sheds the job — enrichment is optional work, and shedding
+		// it under pressure is strictly better than becoming the pressure.
+		enqueueEnrich(r.v6Enrich, nsEnrichJob{
+			base: detachedBase,
+			run: func(jobCtx context.Context) {
 				if attemptGuard != nil {
-					v6ctx = middleware.WithResolutionAttemptGuard(v6ctx, attemptGuard)
+					jobCtx = middleware.WithResolutionAttemptGuard(jobCtx, attemptGuard)
 				}
-				v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
-				r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.hosts, cd)
-			}()
-		}
+				jobCtx = context.WithValue(jobCtx, contextKeyRequestID, reqid)
+				r.lookupV6Nss(jobCtx, q, authservers, foundv6, nsInfo.hosts, cd)
+			},
+		})
 	}
 
 	rs.depth--

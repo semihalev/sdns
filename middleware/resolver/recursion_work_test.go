@@ -94,44 +94,70 @@ func TestRecursionWorkNXNSInternalBudget(t *testing.T) {
 	)
 
 	hosts := make(hostSet, nsCount)
-	addresses := make(map[string]net.IP, nsCount)
 	for i := 0; i < nsCount; i++ {
 		name := dns.Fqdn("ns" + string(rune('a'+i)) + ".budget.test")
 		hosts[name] = struct{}{}
-		addresses[name] = net.IPv4(192, 0, 2, byte(i+1))
 	}
 
-	r := newAttackHarnessResolver(&authority.Servers{Zone: "."})
-	oracle := &attackAddressOracle{answers: addresses, record: true}
-	installAttackQueryer(r, recursionDebitingQueryer{next: oracle})
+	// The NXNS shape: one referral naming many glue-less hosts. The walk
+	// resolves synchronously only until two hosts yield addresses — the
+	// failover floor — so a roster that resolves costs the request two
+	// internal queries; the rest is lane work that never touches this
+	// request's budget.
+	t.Run("a resolving roster costs the two-host floor", func(t *testing.T) {
+		addresses := make(map[string]net.IP, nsCount)
+		i := byte(1)
+		for name := range hosts {
+			addresses[name] = net.IPv4(192, 0, 2, i)
+			i++
+		}
+		r := newAttackHarnessResolver(&authority.Servers{Zone: "."})
+		oracle := &attackAddressOracle{answers: addresses, record: true}
+		installAttackQueryer(r, recursionDebitingQueryer{next: oracle})
 
-	ledger := enforceWorkLedger(128, cap)
-	ctx := middleware.WithRecursionWork(context.Background(), ledger)
-	q := dns.Question{Name: "victim.test.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
-	authservers := &authority.Servers{Zone: "victim.test.", CheckingDisable: true}
+		ledger := enforceWorkLedger(128, cap)
+		ctx := middleware.WithRecursionWork(context.Background(), ledger)
+		q := dns.Question{Name: "victim.test.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+		authservers := &authority.Servers{Zone: "victim.test.", CheckingDisable: true}
 
-	err := r.lookupV4Nss(
-		ctx,
-		q,
-		authservers,
-		internalcache.Key(q, true),
-		nil,
-		make(hostSet),
-		hosts,
-		true,
-		time.Now().Add(time.Minute),
-	)
-	if !errors.Is(err, middleware.ErrRecursionWorkLimit) {
-		t.Fatalf("lookupV4Nss error = %v, want recursion work limit", err)
-	}
-	if got := oracle.count(); got != cap {
-		t.Fatalf("accepted NS-address child queries = %d, want exact cap %d", got, cap)
-	}
+		err := r.lookupV4Nss(ctx, q, authservers, internalcache.Key(q, true), nil,
+			make(hostSet), hosts, true, time.Now().Add(time.Minute))
+		if err != nil {
+			t.Fatalf("lookupV4Nss error = %v, want one cheap success", err)
+		}
+		if got := oracle.count(); got != 2 {
+			t.Fatalf("synchronous NS-address queries = %d, want the two-host floor", got)
+		}
+		if snapshot := ledger.Snapshot(); snapshot.InternalQueries != 2 {
+			t.Fatalf("internal ledger snapshot = %+v, want two queries charged", snapshot)
+		}
+	})
 
-	snapshot := ledger.Snapshot()
-	if snapshot.InternalQueries != cap || !snapshot.InternalExhausted {
-		t.Fatalf("internal ledger snapshot = %+v, want used=%d exhausted=true", snapshot, cap)
-	}
+	// A roster that never yields an address keeps the walk resolving
+	// synchronously, and the request budget still terminates it at the cap.
+	t.Run("a barren roster still trips the request budget", func(t *testing.T) {
+		r := newAttackHarnessResolver(&authority.Servers{Zone: "."})
+		oracle := &attackAddressOracle{answers: map[string]net.IP{}, record: true}
+		installAttackQueryer(r, recursionDebitingQueryer{next: oracle})
+
+		ledger := enforceWorkLedger(128, cap)
+		ctx := middleware.WithRecursionWork(context.Background(), ledger)
+		q := dns.Question{Name: "victim.test.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+		authservers := &authority.Servers{Zone: "victim.test.", CheckingDisable: true}
+
+		err := r.lookupV4Nss(ctx, q, authservers, internalcache.Key(q, true), nil,
+			make(hostSet), hosts, true, time.Now().Add(time.Minute))
+		if !errors.Is(err, middleware.ErrRecursionWorkLimit) {
+			t.Fatalf("lookupV4Nss error = %v, want recursion work limit", err)
+		}
+		if got := oracle.count(); got != cap {
+			t.Fatalf("accepted NS-address child queries = %d, want exact cap %d", got, cap)
+		}
+		snapshot := ledger.Snapshot()
+		if snapshot.InternalQueries != cap || !snapshot.InternalExhausted {
+			t.Fatalf("internal ledger snapshot = %+v, want used=%d exhausted=true", snapshot, cap)
+		}
+	})
 }
 
 func TestRecursionWorkDetachedIPv6JobHasSharedBudget(t *testing.T) {

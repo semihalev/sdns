@@ -34,11 +34,20 @@ func debugLogEnabled() bool {
 }
 
 // searchAddrs collects usable NS addresses from an answer as heap-free
-// netip values. Address strings are deliberately never materialized here:
-// the whole downstream pipeline (glue caches, Server construction, dedup)
-// is netip-native and derives its one canonical string per Server.
-func searchAddrs(msg *dns.Msg) (addrs []netip.Addr, found bool) {
+// netip values, together with the smallest TTL among the records it
+// accepted — the horizon the whole set may be cached to. Address strings
+// are deliberately never materialized here: the whole downstream pipeline
+// (glue caches, Server construction, dedup) is netip-native and derives
+// its one canonical string per Server.
+func searchAddrs(msg *dns.Msg) (addrs []netip.Addr, minTTL uint32, found bool) {
 	found = false
+
+	accept := func(hdr *dns.RR_Header) {
+		if !found || hdr.Ttl < minTTL {
+			minTTL = hdr.Ttl
+		}
+		found = true
+	}
 
 	for _, rr := range msg.Answer {
 		if r, ok := rr.(*dns.A); ok {
@@ -47,14 +56,14 @@ func searchAddrs(msg *dns.Msg) (addrs []netip.Addr, found bool) {
 				continue
 			}
 			addrs = append(addrs, addr)
-			found = true
+			accept(r.Header())
 		} else if r, ok := rr.(*dns.AAAA); ok {
 			addr, valid := usableAddr(r.AAAA)
 			if !valid {
 				continue
 			}
 			addrs = append(addrs, addr)
-			found = true
+			accept(r.Header())
 		}
 	}
 
