@@ -66,6 +66,15 @@ func (c *Cache) Remove(key uint64) {
 	c.data.Del(key)
 }
 
+// AddIfAbsent adds the item only if the key is not already present, paying
+// the same self-eviction toll as Add when the insert pushes the map over
+// capacity. The existence check and the insert run under the key's segment
+// write lock, so a concurrent Add cannot land between them. Returns whether
+// value was stored.
+func (c *Cache) AddIfAbsent(key uint64, value any) bool {
+	return c.data.data.PutIfNotExistsWithCap(key, value, c.maxSize)
+}
+
 // CompareAndSwap stores value under key only if the value currently
 // stored is identical (==, i.e. pointer identity for pointer-typed
 // values) to old. Returns false — storing nothing — when the key is

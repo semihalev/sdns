@@ -96,6 +96,46 @@ func (n *Cache) SetUntil(key uint64, dsSet []dns.RR, servers *Servers, expiresAt
 	n.store(key, dsSet, servers, expiresAt)
 }
 
+// (*Cache).SetUntilIfAbsent is SetUntil for provisional writers: it stores
+// only when the key holds no live delegation — absent, or present but past
+// its expiry. A live entry always wins, atomically: the absent case inserts
+// under the segment write lock (AddIfAbsent), and the expired case replaces
+// exactly the expired value it examined (CompareAndSwap), so a real lease
+// published by a concurrent walk can never be displaced by the provisional
+// one racing it.
+func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) {
+	now := n.now()
+	if !expiresAt.After(now) {
+		return
+	}
+	if ceiling := now.Add(maximumTTL); expiresAt.After(ceiling) {
+		expiresAt = ceiling
+	}
+
+	d := &Delegation{
+		Servers:   servers,
+		DSSet:     dsSet,
+		ExpiresAt: expiresAt,
+	}
+	for {
+		cur, ok := n.cache.Get(key)
+		if !ok {
+			if n.cache.AddIfAbsent(key, d) {
+				return
+			}
+			// Lost the insert race; re-examine what landed.
+			continue
+		}
+		if n.now().Before(cur.(*Delegation).ExpiresAt) {
+			return
+		}
+		if n.cache.CompareAndSwap(key, cur, d) {
+			return
+		}
+		// The expired value was replaced under us; re-examine the newer one.
+	}
+}
+
 func (n *Cache) store(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) {
 	n.cache.Add(key, &Delegation{
 		Servers:   servers,

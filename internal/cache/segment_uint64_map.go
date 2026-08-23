@@ -133,15 +133,47 @@ func (m *SegmentUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) {
 	}
 	segment.rwlock.Unlock()
 
-	if deficit <= 0 {
-		return
-	}
+	m.collectRemainingToll(segIdx, offset, deficit, key, capacity)
+}
 
-	// The writer's own segment couldn't cover the toll — it happens when
-	// entries are sparse relative to the segment count (small caches).
-	// Collect the remainder from the following segments, one lock at a
-	// time and never nested, so two writers can never hold each other's
-	// segment. Stop as soon as the map is back under capacity.
+// PutIfNotExistsWithCap adds the key-value pair only if the key doesn't
+// already exist, paying the same self-eviction toll as SetWithCap when the
+// insert pushes the map over capacity. The existence check and the insert
+// run under the segment write lock, so a concurrent writer cannot land
+// between them. Returns whether value was inserted.
+func (m *SegmentUInt64Map[V]) PutIfNotExistsWithCap(key uint64, value V, capacity int64) bool {
+	segIdx := m.getSegmentIndex(key)
+	segment := m.segments[segIdx]
+	offset := int((key * 0xff51afd7ed558ccd) >> 40) //nolint:gosec // G115 - masked to bucket range by EvictKeysAt
+
+	segment.rwlock.Lock()
+	_, inserted := segment.data.PutIfNotExists(key, value)
+	if !inserted {
+		segment.rwlock.Unlock()
+		return false
+	}
+	m.count.Add(1)
+	deficit := 0
+	if m.count.Load() > capacity {
+		d := segment.data.EvictKeysAt(offset, 2, key)
+		if d > 0 {
+			m.count.Add(int64(-d))
+		}
+		deficit = 2 - d
+	}
+	segment.rwlock.Unlock()
+
+	m.collectRemainingToll(segIdx, offset, deficit, key, capacity)
+	return true
+}
+
+// collectRemainingToll finishes an over-capacity insert's eviction toll when
+// the writer's own segment couldn't cover it — it happens when entries are
+// sparse relative to the segment count (small caches). Collect the remainder
+// from the following segments, one lock at a time and never nested, so two
+// writers can never hold each other's segment. Stop as soon as the map is
+// back under capacity.
+func (m *SegmentUInt64Map[V]) collectRemainingToll(segIdx uint, offset, deficit int, key uint64, capacity int64) {
 	for i := uint(1); i < uint(len(m.segments)) && deficit > 0; i++ {
 		if m.count.Load() <= capacity {
 			return

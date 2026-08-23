@@ -179,3 +179,67 @@ func Test_CacheSetUntil(t *testing.T) {
 		t.Fatalf("ExpiresAt = %v, want ceiling %v", d.ExpiresAt, want)
 	}
 }
+
+// TestSetUntilIfAbsent pins the provisional writer's contract: a live lease
+// always survives it, an absent or expired slot accepts it. The concurrent
+// leg hammers provisional writes against a live lease — the guard runs under
+// the segment lock, so none of them may displace it.
+func TestSetUntilIfAbsent(t *testing.T) {
+	nscache := NewCache()
+	servers := &Servers{List: []*Server{NewServer("192.0.2.1:53", IPv4)}}
+	provisional := &Servers{List: []*Server{NewServer("192.0.2.2:53", IPv4)}}
+	const key = uint64(0x1234)
+
+	t.Run("absent slot accepts the provisional", func(t *testing.T) {
+		nscache.SetUntilIfAbsent(key, nil, provisional, time.Now().Add(time.Minute))
+		d, err := nscache.Get(key)
+		if err != nil {
+			t.Fatalf("provisional not stored: %v", err)
+		}
+		if d.Servers != provisional {
+			t.Fatal("stored someone else's servers")
+		}
+	})
+
+	t.Run("a live lease survives provisional writers", func(t *testing.T) {
+		lease := time.Now().Add(time.Hour)
+		nscache.SetUntil(key, nil, servers, lease)
+
+		done := make(chan struct{})
+		for i := 0; i < 8; i++ {
+			go func() {
+				defer func() { done <- struct{}{} }()
+				for j := 0; j < 200; j++ {
+					nscache.SetUntilIfAbsent(key, nil, provisional, time.Now().Add(time.Minute))
+				}
+			}()
+		}
+		for i := 0; i < 8; i++ {
+			<-done
+		}
+
+		d, err := nscache.Get(key)
+		if err != nil {
+			t.Fatalf("lease vanished: %v", err)
+		}
+		if d.Servers != servers || !d.ExpiresAt.Equal(lease) {
+			t.Fatalf("live lease displaced: servers=%v expires=%v", d.Servers == servers, d.ExpiresAt)
+		}
+	})
+
+	t.Run("an expired slot accepts the provisional", func(t *testing.T) {
+		past := time.Now().Add(-2 * time.Hour)
+		nscache.now = func() time.Time { return past }
+		nscache.SetUntil(key, nil, servers, past.Add(time.Minute))
+		nscache.now = time.Now
+
+		nscache.SetUntilIfAbsent(key, nil, provisional, time.Now().Add(time.Minute))
+		d, err := nscache.Get(key)
+		if err != nil {
+			t.Fatalf("expired slot not replaced: %v", err)
+		}
+		if d.Servers != provisional {
+			t.Fatal("the expired lease survived the provisional writer")
+		}
+	})
+}

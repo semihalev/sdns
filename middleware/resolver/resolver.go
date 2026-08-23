@@ -3150,10 +3150,10 @@ func (r *Resolver) resolveV4Host(ctx context.Context, q dns.Question, authserver
 		// hours-long lease with the one-minute cap — capping the served
 		// TTL of every answer under the delegation with it. A live entry
 		// already satisfies what this store is for: giving the address
-		// lookup a delegation to find.
-		if _, err := r.delegations.Get(key); err != nil {
-			r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
-		}
+		// lookup a delegation to find. The guard is atomic (a plain
+		// Get-then-SetUntil would let a real lease land in between and
+		// still be displaced).
+		r.delegations.SetUntilIfAbsent(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
 	}
 
 	addrs, ttl, fromCache, err := r.lookupNSAddrV4(ctx, name, cd)
