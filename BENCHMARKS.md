@@ -131,10 +131,8 @@ configuration, not an intrinsic constant — PowerDNS's echo does the least
 work per query of the four and earns the best per-core number for it.
 Third, sdns's own scaling curve bends: ~50k qps/core at 8 procs falling
 to ~30k at the runtime default of 32, and doubling the concurrency from
-8 to 16 buys only ~17% more throughput. What the measurements establish
-is precisely this: on this dual-socket, 32-logical-CPU host, bounding
-Go's parallelism below the runtime default materially improves throughput
-(418k median at the default vs 462k at `GOMAXPROCS=16`). The shape is
+8 to 16 buys only ~17% more throughput — on this host, bounding Go's
+parallelism below the runtime default is a material win. The shape is
 consistent with scheduler, shared-state and cache-coherence costs; an
 affinity-controlled check (the process bound to one NUMA node with
 `numactl`) measured no improvement over the unbound runs, so memory
@@ -200,26 +198,25 @@ changed the answer by more than the result itself:
   resolvers the fast path exclusively. The pins are gone; all four now run
   the dual stack they ship with, and the numbers below replace the earlier
   ones.
-- **QNAME minimisation: measured both ways.** RFC 9156 §2.3 requires a bound
-  — *"Resolvers supporting QNAME minimisation MUST implement a mechanism to
-  limit the number of outgoing queries per user request"* — and names
-  values: MAX_MINIMISE_COUNT with a RECOMMENDED value of 10,
-  MINIMISE_ONE_LAB with "a good value is 4". Read from the installed builds:
 
-  | | default | step bound |
-  |---|---|---|
-  | sdns 1.8.0 | on, `qname_max_minimize_count = 10`, `qname_minimize_one_label = 4` | RFC 9156's recommended values |
-  | PowerDNS 5.4.1 | `qname_minimization: true` | `qname_max_minimize_count: 10`, `qname_minimize_one_label: 4` |
-  | Unbound 1.24.2 | `qname-minimisation: yes`, strict `no` | the RFC's parameter names are Unbound's own: 10 and 4 |
-  | Knot 6.2.0 | on | label by label |
+QNAME minimisation was not equalised — it was measured both ways. RFC 9156
+§2.3 requires a bound — *"Resolvers supporting QNAME minimisation MUST
+implement a mechanism to limit the number of outgoing queries per user
+request"* — and names values: MAX_MINIMISE_COUNT with a RECOMMENDED value of
+10, MINIMISE_ONE_LAB with "a good value is 4". Read from the installed builds:
 
-  Three of the four ship the values the RFC recommends, which makes the
-  as-shipped comparison meaningful; Knot minimises label by label, the
-  deepest policy of the four, and its as-shipped number carries that choice.
-  The minimisation-off run isolates the engines from the policies. Disabled
-  minimisation is a privacy regression and not a configuration to run in
-  production; it is off in that run to compare resolution engines, not to
-  recommend a setting.
+| | default | step bound |
+|---|---|---|
+| sdns 1.8.0 | on, `qname_max_minimize_count = 10`, `qname_minimize_one_label = 4` | RFC 9156's recommended values |
+| PowerDNS 5.4.1 | `qname_minimization: true` | `qname_max_minimize_count: 10`, `qname_minimize_one_label: 4` |
+| Unbound 1.24.2 | `qname-minimisation: yes`, strict `no` | the RFC's parameter names are Unbound's own: 10 and 4 |
+| Knot 6.2.0 | on | label by label |
+
+Three of the four ship the values the RFC recommends, which makes the
+as-shipped comparison meaningful; Knot minimises label by label, the deepest
+policy of the four, and its as-shipped number carries that choice. Disabled
+minimisation is a privacy regression, not a recommended configuration; it is
+off in one run only to compare engines.
 
 ### Results
 
