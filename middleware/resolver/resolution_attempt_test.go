@@ -322,7 +322,7 @@ type selectiveNSAddressQueryer struct {
 
 func (q *selectiveNSAddressQueryer) Query(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
 	q.calls.Add(1)
-	if q.failAll || req.Question[0].Name == "limited.child.example." {
+	if q.failAll || req.Question[0].Name == "a-limited.child.example." {
 		return nil, middleware.ErrResolutionAttemptLimit
 	}
 	resp := new(dns.Msg)
@@ -589,8 +589,8 @@ func TestLookupV4NssAttemptLimitRemainsTupleLocal(t *testing.T) {
 	q := dns.Question{Name: "child.example.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}
 	servers := &authority.Servers{Zone: q.Name}
 	hosts := hostSet{
-		"limited.child.example.": {},
-		"healthy.child.example.": {},
+		"a-limited.child.example.": {},
+		"healthy.child.example.":   {},
 	}
 
 	err := r.lookupV4Nss(

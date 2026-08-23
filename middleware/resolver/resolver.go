@@ -85,10 +85,11 @@ type Resolver struct {
 
 	// Circuit breaker and goroutine limiter
 	circuitBreaker  *circuitBreaker
-	maxConcurrent   chan struct{} // Semaphore for limiting concurrent queries
-	v6LookupSlots   chan struct{} // Global cap on detached IPv6 NS enrichment jobs
-	probeSlots      chan struct{} // Global cap on exploration probes outliving their lookup
-	resolutionSlots chan struct{} // Hard ceiling on in-flight zone lookups; full → fail fast
+	maxConcurrent   chan struct{}    // Semaphore for limiting concurrent queries
+	v4Enrich        chan nsEnrichJob // Queued IPv4 NS-address enrichment, drained by a fixed pool
+	v6Enrich        chan nsEnrichJob // Queued IPv6 NS-address enrichment, independent of the v4 lane
+	probeSlots      chan struct{}    // Global cap on exploration probes outliving their lookup
+	resolutionSlots chan struct{}    // Hard ceiling on in-flight zone lookups; full → fail fast
 	zoneInflight    *zoneInflightLimiter
 	cryptoLimiter   *dnssec.CryptoLimiter
 
@@ -303,12 +304,13 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 	if r.cfg.IPv6Access {
 		r.glueV6 = cache.New(defaultCacheSize)
-		// Detached V6 enrichment shares the query budget's scale: during a
-		// network incident every referral wants one of these jobs, and an
-		// uncapped pool grows at arrival-rate × timeout (2026-07-28: 1.4M
-		// goroutines). Full slots shed the job instead of queueing it.
-		r.v6LookupSlots = make(chan struct{}, maxConcurrent)
 	}
+
+	// Enrichment used to gate one goroutine per referral behind a semaphore
+	// the size of the whole query budget (2026-07-28: 1.4M goroutines when
+	// even that shape queued). The fixed pools replace the per-job
+	// goroutines outright; the bounded queues shed under pressure.
+	r.startEnrichPools()
 
 	r.probeSlots = make(chan struct{}, maxInflightProbes)
 
@@ -926,6 +928,84 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 	r.addIPv4Cache(nsipv4)
 
 	return authservers, foundv4, foundv6
+}
+
+const (
+	// nsEnrichWorkers is the fixed size of each enrichment pool. Enrichment
+	// used to spawn one goroutine per referral, capped only by a global
+	// semaphore the size of the whole query budget — under a partial outage
+	// that is a thousand goroutines each living out a full timeout. A fixed
+	// pool makes the goroutine count a constant however the load looks.
+	nsEnrichWorkers = 8
+	// nsEnrichQueue bounds each lane's backlog. A full queue sheds the job:
+	// enrichment is optional work, and the outage lesson stands — a queue
+	// that grows at arrival-rate times timeout never drains.
+	nsEnrichQueue = 1024
+)
+
+// nsEnrichJob is one delegation's deferred nameserver-address work: resolve
+// the hosts the referral did not carry addresses for, and grow the very
+// server list the walk is already using. The job is fully self-contained:
+// it holds no retention on the originating request tree, because a queued
+// job can wait out an outage, and anything the queue holds per arrival is
+// something an outage accumulates. Its work runs under its own ledger,
+// bounded by the fixed workers, the per-job timeout and the queue cap.
+type nsEnrichJob struct {
+	base context.Context
+	run  func(ctx context.Context)
+}
+
+// The lanes are process-wide and started exactly once: a lane is
+// infrastructure, like the GC's workers, and tying its lifetime to a
+// Resolver instance would leak one fixed pool per construction — a test
+// suite builds hundreds of resolvers, and goroutine accounting must see a
+// constant, not a multiple. They are separate lanes on purpose: v4
+// addresses are what the walk falls back on when a leader dies, v6 is
+// opportunistic reach — a flood of one must not starve the other.
+var (
+	enrichPoolsOnce sync.Once
+	enrichV4Lane    chan nsEnrichJob
+	enrichV6Lane    chan nsEnrichJob
+)
+
+func ensureEnrichPools() (v4, v6 chan nsEnrichJob) {
+	enrichPoolsOnce.Do(func() {
+		enrichV4Lane = make(chan nsEnrichJob, nsEnrichQueue)
+		enrichV6Lane = make(chan nsEnrichJob, nsEnrichQueue)
+		for _, lane := range []chan nsEnrichJob{enrichV4Lane, enrichV6Lane} {
+			for range nsEnrichWorkers {
+				go func(jobs chan nsEnrichJob) {
+					for job := range jobs {
+						ctx, cancel := context.WithTimeout(job.base, 30*time.Second)
+						job.run(ctx)
+						cancel()
+					}
+				}(lane)
+			}
+		}
+	})
+	return enrichV4Lane, enrichV6Lane
+}
+
+// startEnrichPools points this resolver at the shared lanes. A bare Resolver
+// literal that never calls it keeps nil lanes, and its enrichment sheds.
+func (r *Resolver) startEnrichPools() {
+	r.v4Enrich, r.v6Enrich = ensureEnrichPools()
+}
+
+// enqueueEnrich offers a job to a lane without ever blocking the walk. A nil
+// lane (bare test resolvers) and a full queue both shed: the job's ledger
+// retention is released and the addresses are simply not learned this time.
+func enqueueEnrich(lane chan nsEnrichJob, job nsEnrichJob) bool {
+	if lane == nil {
+		return false
+	}
+	select {
+	case lane <- job:
+		return true
+	default:
+		return false
+	}
 }
 
 // nsAddrs is one nameserver host's addresses on their way into the glue
@@ -3035,9 +3115,115 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	return nil, 0, false, fmt.Errorf("nameserver ipv6 address lookup failed for %s", qname)
 }
 
+// resolveV4Host resolves one nameserver host's IPv4 addresses and folds them
+// into the delegation's server list and the glue cache. It reports whether
+// the list actually grew; the caller decides what a failure means.
+func (r *Resolver) resolveV4Host(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, name string, cd bool, cutDeadline time.Time) (bool, error) {
+	ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
+	if loop {
+		if _, _, ok := r.getIPv4Cache(name); !ok {
+			zlog.Debug("Looping during ns ipv4 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
+			return false, nil
+		}
+	}
+
+	authservers.RLock()
+	hasList := len(authservers.List) > 0
+	authservers.RUnlock()
+	if hasList && (!r.dnssec || r.hasTrustAnchors()) {
+		// Temporary cache before lookup. Skip when trust anchors
+		// are unavailable: the DS set could be empty because the
+		// DNSSEC chain was short-circuited, and caching that empty-DS
+		// entry would make a signed zone look insecure after recovery.
+		//
+		// Bound this provisional entry by the (inherited) cut deadline,
+		// stored as an absolute expiry — a flat one-minute route, or a
+		// lease restarted across several NS lookups, would outlive a
+		// 1-4s parent referral and keep a withdrawn child reachable
+		// (GHSA-mqfw-f48p-2vc8). Cap it at one minute so a long-lived cut
+		// still refreshes the provisional set promptly. A past deadline
+		// is not cached (SetUntil skips it).
+		r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
+	}
+
+	addrs, ttl, fromCache, err := r.lookupNSAddrV4(ctx, name, cd)
+	if err != nil {
+		return false, err
+	}
+	if len(addrs) == 0 {
+		return false, nil
+	}
+
+	nsipv4 := make(map[string]nsAddrs)
+	if !fromCache {
+		// A hit is not new information: re-adding what was just read
+		// would restamp the entry through the TTL floor and let a
+		// frequently read address outlive its records horizon.
+		nsipv4[name] = nsAddrs{addrs: addrs, ttl: ttl}
+	}
+
+	authservers.Lock()
+	before := len(authservers.List)
+addrsloop:
+	for _, addr := range addrs {
+		endpoint := netip.AddrPortFrom(addr, 53)
+		for _, s := range authservers.List {
+			if s.UDPAddr != nil && s.UDPAddr.AddrPort() == endpoint {
+				continue addrsloop
+			}
+		}
+		authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
+	}
+	grew := len(authservers.List) != before
+	if grew {
+		// Invalidate *before* releasing the write lock: after
+		// Unlock() a reader could observe the mutated List with
+		// fpValid still true and get a stale cached hash.
+		authservers.InvalidateFingerprint()
+	}
+	authservers.Unlock()
+	r.addIPv4Cache(nsipv4)
+	return grew, nil
+}
+
+// enqueueV4Enrich defers the rest of a delegation's IPv4 host resolutions to
+// the v4 lane. Nothing here gambles — every address still comes from a
+// resolution of our own; only the walk stops waiting for them. The job holds
+// nothing of the originating request: a queued job can wait out an outage,
+// so it runs under its own work ledger, and only the attempt guard rides
+// along to keep RFC 9520 tuple accounting coherent.
+func (r *Resolver) enqueueV4Enrich(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, names []string, cd bool, cutDeadline time.Time) {
+	guard := middleware.ResolutionAttemptGuardFrom(ctx)
+	reqid := requestIDFromContext(ctx)
+	detachedBase := dnssec.InheritNSEC3HashMemos(context.Background(), ctx)
+	if middleware.HasClientECS(ctx) {
+		detachedBase = middleware.MarkClientECS(detachedBase)
+	}
+
+	enqueueEnrich(r.v4Enrich, nsEnrichJob{
+		base: detachedBase,
+		run: func(jobCtx context.Context) {
+			if guard != nil {
+				jobCtx = middleware.WithResolutionAttemptGuard(jobCtx, guard)
+			}
+			jobCtx = context.WithValue(jobCtx, contextKeyRequestID, reqid)
+			for _, name := range names {
+				if _, err := r.resolveV4Host(jobCtx, q, authservers, key, parentDS, name, cd, cutDeadline); err != nil {
+					if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
+						errors.Is(err, middleware.ErrMaxRecursion) ||
+						errors.Is(err, context.Canceled) ||
+						errors.Is(err, context.DeadlineExceeded) {
+						return
+					}
+					zlog.Debug("Deferred NS ipv4 enrichment failed", "query", dnsutil.FormatQuestion(q), "ns", name, "error", err.Error())
+				}
+			}
+		},
+	})
+}
+
 func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers *authority.Servers, key uint64, parentDS []dns.RR, foundv4, hosts hostSet, cd bool, cutDeadline time.Time) error {
 	list := sortHosts(hosts, q.Name)
-	var lastAttemptLimit error
 
 	for _, name := range list {
 		// Hosts is copied by readers (checkHosts) under RLock once
@@ -3048,41 +3234,34 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 		authservers.Lock()
 		authservers.Hosts = append(authservers.Hosts, name)
 		authservers.Unlock()
+	}
 
-		if _, ok := foundv4[name]; ok {
-			continue
+	missing := make([]string, 0, len(list))
+	for _, name := range list {
+		if _, ok := foundv4[name]; !ok {
+			missing = append(missing, name)
 		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
 
-		ctx, loop := r.checkLoop(ctx, name, dns.TypeA)
-		if loop {
-			if _, _, ok := r.getIPv4Cache(name); !ok {
-				zlog.Debug("Looping during ns ipv4 lookup", "query", dnsutil.FormatQuestion(q), "ns", name)
-				continue
-			}
-		}
+	// A referral's glue is the parent zone telling us where its child
+	// lives, and it is enough to walk on: when any address is already in
+	// hand, every remaining host resolution is roster work, not critical
+	// path. The roster still gets completed — deterministically, from our
+	// own resolutions, on the bounded lane — the walk just stops standing
+	// behind it.
+	if len(foundv4) > 0 {
+		r.enqueueV4Enrich(ctx, q, authservers, key, parentDS, missing, cd, cutDeadline)
+		return nil
+	}
 
-		authservers.RLock()
-		hasList := len(authservers.List) > 0
-		authservers.RUnlock()
-		if hasList && (!r.dnssec || r.hasTrustAnchors()) {
-			// Temporary cache before lookup. Skip when trust anchors
-			// are unavailable: the DS set could be empty because the
-			// DNSSEC chain was short-circuited, and caching that empty-DS
-			// entry would make a signed zone look insecure after recovery.
-			//
-			// Bound this provisional entry by the (inherited) cut deadline,
-			// stored as an absolute expiry — a flat one-minute route, or a
-			// lease restarted across several NS lookups, would outlive a
-			// 1-4s parent referral and keep a withdrawn child reachable
-			// (GHSA-mqfw-f48p-2vc8). Cap it at one minute so a long-lived cut
-			// still refreshes the provisional set promptly. A past deadline
-			// is not cached (SetUntil skips it).
-			r.delegations.SetUntil(key, parentDS, authservers, minNonZero(cutDeadline, time.Now().Add(time.Minute)))
-		}
-
-		addrs, ttl, fromCache, err := r.lookupNSAddrV4(ctx, name, cd)
-		nsipv4 := make(map[string]nsAddrs)
-
+	// No glue at all: the walk cannot proceed without one address, so
+	// resolve synchronously until one host answers, and defer the rest.
+	var lastAttemptLimit error
+	for i, name := range missing {
+		grew, err := r.resolveV4Host(ctx, q, authservers, key, parentDS, name, cd, cutDeadline)
 		if err != nil {
 			if errors.Is(err, middleware.ErrRecursionWorkLimit) ||
 				errors.Is(err, middleware.ErrMaxRecursion) ||
@@ -3101,38 +3280,12 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 			zlog.Debug("Lookup NS ipv4 address failed", "query", dnsutil.FormatQuestion(q), "ns", name, "error", err.Error())
 			continue
 		}
-
-		if len(addrs) == 0 {
-			continue
-		}
-
-		if !fromCache {
-			// A hit is not new information: re-adding what was just read
-			// would restamp the entry through the TTL floor and let a
-			// frequently read address outlive its records horizon.
-			nsipv4[name] = nsAddrs{addrs: addrs, ttl: ttl}
-		}
-
-		authservers.Lock()
-		before := len(authservers.List)
-	addrsloop:
-		for _, addr := range addrs {
-			endpoint := netip.AddrPortFrom(addr, 53)
-			for _, s := range authservers.List {
-				if s.UDPAddr != nil && s.UDPAddr.AddrPort() == endpoint {
-					continue addrsloop
-				}
+		if grew {
+			if rest := missing[i+1:]; len(rest) > 0 {
+				r.enqueueV4Enrich(ctx, q, authservers, key, parentDS, rest, cd, cutDeadline)
 			}
-			authservers.List = append(authservers.List, authority.NewServerFromAddrPort(endpoint))
+			return nil
 		}
-		if len(authservers.List) != before {
-			// Invalidate *before* releasing the write lock: after
-			// Unlock() a reader could observe the mutated List with
-			// fpValid still true and get a stale cached hash.
-			authservers.InvalidateFingerprint()
-		}
-		authservers.Unlock()
-		r.addIPv4Cache(nsipv4)
 	}
 
 	if lastAttemptLimit != nil {
@@ -3957,70 +4110,31 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// after the query returned.
 	if r.cfg.IPv6Access {
 		reqid := requestIDFromContext(ctx)
-		work := rs.work
 		attemptGuard := middleware.ResolutionAttemptGuardFrom(ctx)
-		var releaseWork func()
-		if work != nil {
-			var retained bool
-			releaseWork, retained = work.Retain()
-			if !retained {
-				// The request tree has already completed. Starting work now
-				// would escape its aggregate cap, so skip this optional
-				// enrichment job.
-				work = nil
-			}
+		detachedBase := dnssec.InheritNSEC3HashMemos(
+			context.Background(),
+			ctx,
+		)
+		if middleware.HasClientECS(ctx) {
+			detachedBase = middleware.MarkClientECS(detachedBase)
 		}
-		spawn := rs.work == nil || work != nil
-		if spawn && r.v6LookupSlots != nil {
-			// Non-blocking slot acquire. The pool caps detached V6 jobs
-			// GLOBALLY: a partial upstream outage makes every job live out
-			// its full timeout while fresh referrals keep arriving, and an
-			// unbounded pool then grows at arrival-rate × timeout. This is
-			// optional enrichment — shedding it under pressure is strictly
-			// better than becoming the pressure. A nil pool (bare test
-			// resolvers) disables the cap.
-			select {
-			case r.v6LookupSlots <- struct{}{}:
-			default:
-				spawn = false
-				if releaseWork != nil {
-					releaseWork()
-				}
-			}
-		}
-		if spawn {
-			detachedBase := dnssec.InheritNSEC3HashMemos(
-				context.Background(),
-				ctx,
-			)
-			if middleware.HasClientECS(ctx) {
-				detachedBase = middleware.MarkClientECS(detachedBase)
-			}
-			go func() { //nolint:gosec // G118 - intentionally detached and bounded by the timeout below
-				defer func() {
-					if r.v6LookupSlots != nil {
-						<-r.v6LookupSlots
-					}
-				}()
-				if releaseWork != nil {
-					defer releaseWork()
-				}
-				v6ctx, cancel := context.WithTimeout(detachedBase, 30*time.Second)
-				defer cancel()
-				// Retain and pin the originating request-tree ledger before
-				// detaching. Every referral job then shares one aggregate
-				// cap, and the final metric snapshot waits for these jobs
-				// without delaying the client response.
-				if work != nil {
-					v6ctx = middleware.WithRecursionWork(v6ctx, work)
-				}
+		// The job is self-contained: it holds no retention on the
+		// originating request tree, because a queued job can wait out an
+		// outage and anything held per arrival is something an outage
+		// accumulates. Its work runs under its own ledger; only the
+		// attempt guard rides along for RFC 9520 tuple accounting. A full
+		// lane sheds the job — enrichment is optional work, and shedding
+		// it under pressure is strictly better than becoming the pressure.
+		enqueueEnrich(r.v6Enrich, nsEnrichJob{
+			base: detachedBase,
+			run: func(jobCtx context.Context) {
 				if attemptGuard != nil {
-					v6ctx = middleware.WithResolutionAttemptGuard(v6ctx, attemptGuard)
+					jobCtx = middleware.WithResolutionAttemptGuard(jobCtx, attemptGuard)
 				}
-				v6ctx = context.WithValue(v6ctx, contextKeyRequestID, reqid)
-				r.lookupV6Nss(v6ctx, q, authservers, foundv6, nsInfo.hosts, cd)
-			}()
-		}
+				jobCtx = context.WithValue(jobCtx, contextKeyRequestID, reqid)
+				r.lookupV6Nss(jobCtx, q, authservers, foundv6, nsInfo.hosts, cd)
+			},
+		})
 	}
 
 	rs.depth--
