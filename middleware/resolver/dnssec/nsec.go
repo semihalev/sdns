@@ -188,6 +188,20 @@ func VerifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 	if covering == nil {
 		return ErrNSECMissingCoverage
 	}
+
+	// Empty non-terminal (RFC 4035 §3.1.3, RFC 4592 §2.2.2): a name with
+	// descendants but no RRsets of its own owns no NSEC, so its NODATA
+	// proof is the covering NSEC alone — recognisable by a NextDomain
+	// lying strictly below qname. Only a zone in which qname owns nothing
+	// can sign that record: had qname owned any RRset it would own an
+	// NSEC, and the chain would step through qname exactly rather than
+	// jump past it to a descendant. The name exists, so no wildcard could
+	// be synthesized for it and no wildcard NSEC is owed. Interior labels
+	// of reverse trees and service names take this shape constantly.
+	if next := covering.NextDomain; canonicalNameCompare(next, qname) != 0 && dns.IsSubDomain(qname, next) {
+		return nil
+	}
+
 	ce := closestEncloserFromNSEC(qname, covering)
 	if ce == "" {
 		return ErrNSECMissingCoverage
