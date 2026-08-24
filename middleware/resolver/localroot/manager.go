@@ -152,13 +152,20 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 				lastErr = err
 				continue
 			}
+			if serial != cur.serial && !serialNewer(cur.serial, serial) {
+				// A source advertising an older zone is skipped whole:
+				// nothing it transfers can be accepted (RFC 1982).
+				lastErr = errSerialRollback
+				continue
+			}
 			if serial == cur.serial {
-				// Current: touch nothing. The copy's expire horizon is
-				// anchored at its transfer; a probe is not a transfer.
-				// Transfer again once the copy has spent half its
-				// expire interval, so the horizon keeps moving on a
-				// healthy source well before it threatens.
-				if m.now().Sub(cur.loaded) < time.Duration(cur.soa.Expire)*time.Second/2 {
+				// Current: touch nothing. The copy's horizon — SOA expire
+				// or earliest signature expiration, whichever is nearer —
+				// is anchored at its transfer; a probe is not a transfer.
+				// Transfer again once the copy has spent half that
+				// horizon, so it keeps moving on a healthy source well
+				// before it threatens.
+				if m.now().Before(cur.loaded.Add(cur.expireAt.Sub(cur.loaded) / 2)) {
 					return nil
 				}
 			}
@@ -184,8 +191,10 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 
 // Load installs a zone copy obtained by any means, subject to the same
 // gate as a live transfer: full ZONEMD verification against the trust
-// anchors, then an atomic swap. There is no unverified path into the
-// active snapshot.
+// anchors, RFC 1982 serial acceptance against the live copy, then an
+// atomic swap. There is no unverified path into the active snapshot, and
+// no path backwards — a replayed older zone, however validly signed for
+// its day, cannot displace a newer copy or restart its expire horizon.
 func (m *Manager) Load(rrs []dns.RR) error {
 	if err := verifyZone(rrs, m.anchors()); err != nil {
 		metricTransfers.WithLabelValues("verify_error").Inc()
@@ -196,10 +205,21 @@ func (m *Manager) Load(rrs []dns.RR) error {
 		metricTransfers.WithLabelValues("build_error").Inc()
 		return err
 	}
+	if cur := m.snap.Load(); cur != nil &&
+		snap.serial != cur.serial && !serialNewer(cur.serial, snap.serial) {
+		metricTransfers.WithLabelValues("serial_rollback").Inc()
+		return errSerialRollback
+	}
 	m.snap.Store(snap)
 	metricTransfers.WithLabelValues("success").Inc()
 	zlog.Info("Local root zone updated", "serial", snap.serial, "records", len(rrs))
 	return nil
+}
+
+// serialNewer reports whether b is newer than a in RFC 1982 serial
+// arithmetic (the SOA serial's number space).
+func serialNewer(a, b uint32) bool {
+	return (b > a && b-a < 1<<31) || (b < a && a-b > 1<<31)
 }
 
 // jitter spreads d by ±10% so a fleet restarted together does not probe the

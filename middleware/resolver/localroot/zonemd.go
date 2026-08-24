@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsname"
@@ -19,6 +20,7 @@ var (
 	errDigestMismatch = errors.New("localroot: zone digest does not match ZONEMD")
 	errAnchorChain    = errors.New("localroot: DNSKEY set does not chain to a trust anchor")
 	errBadSignature   = errors.New("localroot: apex RRset signature did not verify")
+	errSerialRollback = errors.New("localroot: zone serial is older than the live copy")
 )
 
 const (
@@ -70,25 +72,38 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 		return errAnchorChain
 	}
 
+	if len(anchors) == 0 {
+		return errAnchorChain
+	}
+
+	// The chain order is the whole defense. First, only the keys that
+	// actually match a trust anchor DS may authenticate the DNSKEY RRset —
+	// handing that verification the full transferred set would let an
+	// attacker include the well-known real KSK for the anchor match while
+	// signing everything with a key of their own, also in the set. Only a
+	// DNSKEY RRset signed by an anchor-matched key promotes the rest of
+	// the set into keyMap for the SOA and ZONEMD checks.
+	anchorKeys := make(map[uint16][]*dns.DNSKEY)
+	for _, k := range dnskeys {
+		if dnskeyMatchesAnchor(k, anchors) {
+			tag := dnssec.KeyTag(k)
+			anchorKeys[tag] = append(anchorKeys[tag], k)
+		}
+	}
+	if len(anchorKeys) == 0 {
+		return errAnchorChain
+	}
+	if err := verifyApexRRset(anchorKeys, typedApexSet(dnskeys), apexSig); err != nil {
+		return errAnchorChain
+	}
+
 	keyMap := make(map[uint16][]*dns.DNSKEY, len(dnskeys))
 	for _, k := range dnskeys {
 		tag := dnssec.KeyTag(k)
 		keyMap[tag] = append(keyMap[tag], k)
 	}
 
-	if len(anchors) == 0 {
-		return errAnchorChain
-	}
-	// VerifyDS reports success as (false, nil): the bool is the resolver's
-	// "no supported digest, treat insecure" signal, and insecure is exactly
-	// what a local root copy must never be.
-	if insecure, err := dnssec.VerifyDS(keyMap, anchors); err != nil || insecure {
-		return errAnchorChain
-	}
-
-	// Each apex RRset the chain depends on must verify against the keys.
 	for _, set := range [][]dns.RR{
-		typedApexSet(dnskeys),
 		{soa},
 		typedApexSet(zonemds),
 	} {
@@ -126,6 +141,27 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 		return errDigestMismatch
 	}
 	return nil
+}
+
+// dnskeyMatchesAnchor reports whether key's DS, computed at each anchor's
+// own digest type, reproduces that anchor exactly — tag, algorithm and
+// digest alike.
+func dnskeyMatchesAnchor(key *dns.DNSKEY, anchors []dns.RR) bool {
+	for _, rr := range anchors {
+		ds, ok := rr.(*dns.DS)
+		if !ok || ds.Algorithm != key.Algorithm {
+			continue
+		}
+		computed, err := dnssec.DNSKEYToDSWithWork(key, ds.DigestType, nil)
+		if err != nil {
+			continue
+		}
+		if computed.KeyTag == ds.KeyTag &&
+			strings.EqualFold(computed.Digest, ds.Digest) {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyApexRRset verifies one apex RRset against the zone keys using the

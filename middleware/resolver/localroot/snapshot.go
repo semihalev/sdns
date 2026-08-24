@@ -48,9 +48,15 @@ func (s *Snapshot) Serial() uint32 { return s.serial }
 // Loaded returns when this copy was transferred.
 func (s *Snapshot) Loaded() time.Time { return s.loaded }
 
-// Expired reports whether the copy has outlived its SOA expire interval and
-// must no longer be served (RFC 1035 secondary semantics).
+// Expired reports whether the copy has outlived its horizon — the SOA
+// expire interval (RFC 1035 secondary semantics) or the earliest RRSIG
+// expiration in the zone, whichever comes first — and must no longer be
+// served.
 func (s *Snapshot) Expired(now time.Time) bool { return now.After(s.expireAt) }
+
+// ValidUntil is the copy's serving horizon; nothing derived from the copy
+// may claim a longer life.
+func (s *Snapshot) ValidUntil() time.Time { return s.expireAt }
 
 // SOA returns the apex SOA and its RRSIGs.
 func (s *Snapshot) SOA() (*dns.SOA, []dns.RR) { return s.soa, s.soaSig }
@@ -197,8 +203,23 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 	}
 	s.soa = soaSet[0].(*dns.SOA)
 	s.serial = s.soa.Serial
-	s.expireAt = now.Add(time.Duration(s.soa.Expire) * time.Second)
 	s.soaSig = sigsCovering(apex[dns.TypeRRSIG], dns.TypeSOA)
+
+	// The copy's lifetime is the earlier of the SOA expire interval and the
+	// earliest RRSIG expiration anywhere in the zone: past that instant the
+	// copy would be handing clients proofs whose signatures no longer
+	// verify, and an AD=1 answer built on an expired signature is exactly
+	// the lie the verification gate exists to prevent. (RRSIG Expiration is
+	// a uint32 UNIX instant; the root re-signs on a ~2-week window, so the
+	// serial-arithmetic wrap is not reachable while the maths below holds.)
+	s.expireAt = now.Add(time.Duration(s.soa.Expire) * time.Second)
+	for _, rr := range rrs {
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			if exp := time.Unix(int64(sig.Expiration), 0); exp.Before(s.expireAt) {
+				s.expireAt = exp
+			}
+		}
+	}
 
 	if nsecSet := apex[dns.TypeNSEC]; len(nsecSet) == 1 {
 		s.apexNSEC = nsecSet[0].(*dns.NSEC)

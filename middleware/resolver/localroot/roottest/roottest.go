@@ -15,7 +15,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Serial is the zone serial every built zone carries.
+// Serial is the zone serial every default-built zone carries.
 const Serial = 2026082401
 
 // Zone is one built test root.
@@ -26,24 +26,11 @@ type Zone struct {
 	Priv    crypto.PrivateKey
 }
 
-// Build generates a fresh key and assembles the sealed zone. digest is the
-// RFC 8976 computation to seal with — localroot.ComputeDigest in every real
-// caller; a parameter so this package does not import the one it exists to
-// test.
-func Build(digest func(rrs []dns.RR, apex string) ([]byte, error)) (*Zone, error) {
-	key := &dns.DNSKEY{
-		Hdr:       dns.RR_Header{Name: ".", Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 172800},
-		Flags:     257,
-		Protocol:  3,
-		Algorithm: dns.ECDSAP256SHA256,
-	}
-	priv, err := key.Generate(256)
-	if err != nil {
-		return nil, err
-	}
-
-	lines := []string{
-		". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+// DefaultLines is the default zone body: a signed com. delegation, an
+// unsigned org. delegation, and in-zone glue. serial lands in the SOA.
+func DefaultLines(serial uint32) []string {
+	return []string{
+		fmt.Sprintf(". 86400 IN SOA a.root-servers.test. nstld.test. %d 1800 900 604800 86400", serial),
 		". 518400 IN NS a.root-servers.test.",
 		". 86400 IN NSEC com. NS SOA RRSIG NSEC DNSKEY ZONEMD",
 		"com. 172800 IN NS ns.com.",
@@ -55,6 +42,42 @@ func Build(digest func(rrs []dns.RR, apex string) ([]byte, error)) (*Zone, error
 		"ns.com. 172800 IN AAAA 2001:db8::1",
 		"ns.org. 172800 IN A 198.51.100.2",
 	}
+}
+
+// Build generates a fresh key and assembles the sealed default zone. digest
+// is the RFC 8976 computation to seal with — localroot.ComputeDigest in
+// every real caller; a parameter so this package does not import the one it
+// exists to test.
+func Build(digest func(rrs []dns.RR, apex string) ([]byte, error)) (*Zone, error) {
+	return BuildZone(digest, DefaultLines(Serial), Serial)
+}
+
+// BuildZone assembles and seals a zone from the given body lines, whose SOA
+// must carry serial, under a freshly generated key.
+func BuildZone(digest func(rrs []dns.RR, apex string) ([]byte, error), lines []string, serial uint32) (*Zone, error) {
+	key := &dns.DNSKEY{
+		Hdr:       dns.RR_Header{Name: ".", Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 172800},
+		Flags:     257,
+		Protocol:  3,
+		Algorithm: dns.ECDSAP256SHA256,
+	}
+	priv, err := key.Generate(256)
+	if err != nil {
+		return nil, err
+	}
+	return BuildZoneWithKey(digest, lines, serial, key, priv)
+}
+
+// BuildZoneWithKey is BuildZone under an existing key, so a test can produce
+// two zones — different serials, different contents — that chain to the same
+// trust anchor.
+func BuildZoneWithKey(
+	digest func(rrs []dns.RR, apex string) ([]byte, error),
+	lines []string,
+	serial uint32,
+	key *dns.DNSKEY,
+	priv crypto.PrivateKey,
+) (*Zone, error) {
 	zone := make([]dns.RR, 0, len(lines)+8)
 	for _, l := range lines {
 		rr, err := dns.NewRR(l)
@@ -117,7 +140,7 @@ func Build(digest func(rrs []dns.RR, apex string) ([]byte, error)) (*Zone, error
 	}
 	zonemd := &dns.ZONEMD{
 		Hdr:    dns.RR_Header{Name: ".", Rrtype: dns.TypeZONEMD, Class: dns.ClassINET, Ttl: 86400},
-		Serial: Serial,
+		Serial: serial,
 		Scheme: 1,
 		Hash:   1,
 		Digest: hex.EncodeToString(sum),

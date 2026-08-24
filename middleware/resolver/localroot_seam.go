@@ -51,9 +51,9 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 
 	if ref, ok := snap.Referral(tld); ok {
 		if qname == tld && q.Qtype == dns.TypeDS {
-			return r.localRootDSAnswer(snap, tld, cd), true
+			return r.localRootDSAnswer(rs, snap, tld, cd), true
 		}
-		if r.installLocalRootReferral(ctx, rs, tld, ref, cd) {
+		if r.installLocalRootReferral(ctx, rs, snap, tld, ref, cd) {
 			localroot.CountReferral()
 			return nil, false
 		}
@@ -66,6 +66,25 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 	if !ok {
 		return nil, false
 	}
+
+	// The proof must independently classify as this exact NXDOMAIN under
+	// the strict RFC 8198 evaluator before anything is served from it: a
+	// chain gap the covering search cannot see — an NSEC whose span does
+	// not actually reach the name — must fall back to the real roots, not
+	// become an authenticated denial.
+	var nsecSet []dns.RR
+	for _, rr := range proof {
+		if rr.Header().Rrtype == dns.TypeNSEC {
+			nsecSet = append(nsecSet, rr)
+		}
+	}
+	evalQ := dns.Question{Name: qname, Qtype: q.Qtype, Qclass: dns.ClassINET}
+	result, err := dnssec.EvaluateAggressiveNSEC(evalQ, rootzone, nsecSet)
+	if err != nil || result.Rcode != dns.RcodeNameError {
+		localroot.CountFallback()
+		return nil, false
+	}
+
 	localroot.CountDenial()
 	return r.localRootDenial(ctx, rs, snap, qname, proof, cd), true
 }
@@ -77,6 +96,7 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 func (r *Resolver) installLocalRootReferral(
 	ctx context.Context,
 	rs *resolveState,
+	snap *localroot.Snapshot,
 	tld string,
 	ref localroot.Referral,
 	cd bool,
@@ -115,7 +135,13 @@ func (r *Resolver) installLocalRootReferral(
 		return false
 	}
 
+	// The lease is the earlier of the NS TTL and the copy's own serving
+	// horizon: nothing derived from the copy outlives the signatures and
+	// SOA expire that made it trustworthy.
 	deadline := time.Now().Add(time.Duration(minTTL) * time.Second)
+	if until := snap.ValidUntil(); until.Before(deadline) {
+		deadline = until
+	}
 	r.delegations.SetUntilIfAbsent(key, ref.DS, servers, deadline)
 	// Read back what won the store so racing walks share one identity.
 	if d, err := r.delegations.Get(key); err == nil {
@@ -133,12 +159,14 @@ func (r *Resolver) installLocalRootReferral(
 
 // localRootDSAnswer serves the parent-side DS question for a TLD from the
 // verified copy: the signed DS set, or the exact-owner NSEC NODATA proof
-// for an unsigned delegation.
-func (r *Resolver) localRootDSAnswer(snap *localroot.Snapshot, tld string, cd bool) *dns.Msg {
+// for an unsigned delegation. The reply is built on the live request so
+// the transaction ID and flags survive — this answer returns directly,
+// without the normalization the exchange path would apply.
+func (r *Resolver) localRootDSAnswer(rs *resolveState, snap *localroot.Snapshot, tld string, cd bool) *dns.Msg {
 	ds, dsSig, nsec, nsecSig, ok := snap.DSAnswer(tld)
 
 	resp := new(dns.Msg)
-	resp.SetRcode(reqForLocalRoot(tld, dns.TypeDS, cd), dns.RcodeSuccess)
+	resp.SetRcode(rs.req, dns.RcodeSuccess)
 	resp.Authoritative = false
 	resp.RecursionAvailable = true
 	if !ok {
@@ -187,35 +215,15 @@ func (r *Resolver) localRootDenial(
 	if cd {
 		return resp
 	}
+	// The caller's evaluator gate already classified this exact proof as
+	// the NXDOMAIN being served, so the provenance carries the aggressive
+	// bit outright — an unclassifiable proof never reaches this builder.
 	resp.AuthenticatedData = true
-
-	q := dns.Question{Name: qname, Qtype: rs.req.Question[0].Qtype, Qclass: dns.ClassINET}
-	var nsecSet []dns.RR
-	for _, rr := range resp.Ns {
-		if rr.Header().Rrtype == dns.TypeNSEC {
-			nsecSet = append(nsecSet, rr)
-		}
-	}
-	aggressive := false
-	if result, err := dnssec.EvaluateAggressiveNSEC(q, rootzone, nsecSet); err == nil &&
-		result.Rcode == dns.RcodeNameError {
-		aggressive = true
-	}
 	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
 		Subject:    qname,
 		Zone:       rootzone,
 		Kind:       middleware.ValidatedNegativeProofNSEC,
-		Aggressive: aggressive,
+		Aggressive: true,
 	})
 	return resp
-}
-
-// reqForLocalRoot builds the request shape SetRcode needs for a
-// resolver-synthesized parent-side answer.
-func reqForLocalRoot(name string, qtype uint16, cd bool) *dns.Msg {
-	m := new(dns.Msg)
-	m.SetQuestion(name, qtype)
-	m.CheckingDisabled = cd
-	m.RecursionDesired = false
-	return m
 }

@@ -74,10 +74,11 @@ func TestManagerLifecycle(t *testing.T) {
 		t.Fatal("a failed refresh withdrew a live copy")
 	}
 
-	// Past the SOA expire horizon the copy is withdrawn, not served stale.
-	now = now.Add(time.Duration(root.rrs[0].(*dns.SOA).Expire)*time.Second + time.Second)
+	// Past the horizon (here the signature window, the nearer bound) the
+	// copy is withdrawn, not served stale.
+	now = now.Add(2 * time.Hour)
 	if m.Active() != nil {
-		t.Fatal("a copy served past its SOA expire")
+		t.Fatal("a copy served past its horizon")
 	}
 }
 
@@ -104,10 +105,11 @@ func TestManagerReanchorsExpireHorizon(t *testing.T) {
 		t.Fatalf("first load: %v", err)
 	}
 
-	expire := time.Duration(root.rrs[0].(*dns.SOA).Expire) * time.Second
-	now = now.Add(expire/2 + time.Second)
+	// The horizon here is the one-hour signature window; half of it spent
+	// must trigger a fresh transfer even with the serial unchanged.
+	now = now.Add(31 * time.Minute)
 	if err := m.refreshOnce(context.Background()); err != nil {
-		t.Fatalf("half-expire refresh: %v", err)
+		t.Fatalf("half-horizon refresh: %v", err)
 	}
 	if transfers != 2 {
 		t.Fatalf("the half-expire horizon did not re-anchor (transfers=%d)", transfers)

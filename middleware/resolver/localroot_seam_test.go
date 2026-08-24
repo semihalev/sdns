@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
@@ -157,6 +158,109 @@ func TestLocalRootDSBranch(t *testing.T) {
 	}
 	if len(answer.Answer) != 0 || len(answer.Ns) == 0 {
 		t.Fatalf("org. DS answer = %d answers %d authority, want a NODATA proof", len(answer.Answer), len(answer.Ns))
+	}
+}
+
+// TestLocalRootAnswersCarryTheClientRequest pins what a directly returned
+// answer must keep: this reply skips the exchange path's normalization, so
+// the transaction ID, the question and RD have to come from the live
+// request or a client discards the answer as unsolicited.
+func TestLocalRootAnswersCarryTheClientRequest(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+
+	for _, tc := range []struct {
+		name  string
+		qname string
+		qtype uint16
+	}{
+		{"signed DS", "com.", dns.TypeDS},
+		{"unsigned DS", "org.", dns.TypeDS},
+		{"denial", "foo.nonexistent.", dns.TypeA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := middleware.WithResponseMeta(context.Background(), &middleware.ResponseMeta{})
+			rs := localRootState(tc.qname, tc.qtype, false)
+			rs.req.Id = 0x4242
+			rs.req.RecursionDesired = true
+
+			answer, handled := r.consultLocalRoot(ctx, rs)
+			if !handled || answer == nil {
+				t.Fatal("consult not handled")
+			}
+			if answer.Id != rs.req.Id {
+				t.Fatalf("answer ID = %#x, want the client's %#x", answer.Id, rs.req.Id)
+			}
+			if !answer.Response {
+				t.Fatal("answer is not marked as a response")
+			}
+			if !answer.RecursionDesired {
+				t.Fatal("answer dropped the client's RD bit")
+			}
+			if len(answer.Question) != 1 || answer.Question[0] != rs.req.Question[0] {
+				t.Fatalf("answer question = %v, want the client's %v", answer.Question, rs.req.Question)
+			}
+		})
+	}
+}
+
+// TestLocalRootDenialRequiresCoverage pins the evaluator gate: a copy whose
+// NSEC chain does not actually prove the name absent must fall back to the
+// real roots rather than synthesize an authenticated denial. The zone here
+// is sealed and verified — its chain is simply too short to cover, which is
+// exactly the case a structural covering search can miss.
+func TestLocalRootDenialRequiresCoverage(t *testing.T) {
+	// The chain stops at com.: the apex NSEC spans (., com.) and com. has
+	// no NSEC of its own, so nothing proves anything about names sorting
+	// after com. A structural "greatest owner below the name" search still
+	// hands back the apex NSEC — whose span does not reach — which is
+	// precisely the shape the evaluator has to catch.
+	lines := []string{
+		". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+		". 518400 IN NS a.root-servers.test.",
+		". 86400 IN NSEC com. NS SOA RRSIG NSEC DNSKEY ZONEMD",
+		"com. 172800 IN NS ns.com.",
+		"ns.com. 172800 IN A 198.51.100.1",
+	}
+	z, err := roottest.BuildZone(localroot.ComputeDigest, lines, roottest.Serial)
+	if err != nil {
+		t.Fatalf("build gapped zone: %v", err)
+	}
+	r := newWiredTestResolver(makeTestConfig())
+	mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
+	if err := mgr.Load(z.RRs); err != nil {
+		t.Fatalf("load gapped zone: %v", err)
+	}
+	r.localRoot.Store(mgr)
+
+	ctx := middleware.WithResponseMeta(context.Background(), &middleware.ResponseMeta{})
+	rs := localRootState("foo.nonexistent.", dns.TypeA, false)
+	answer, handled := r.consultLocalRoot(ctx, rs)
+	if handled || answer != nil {
+		t.Fatal("a denial was synthesized from a chain that does not cover the name")
+	}
+	if rs.level != 0 || !rs.isRoot {
+		t.Fatal("the failed denial disturbed the walk")
+	}
+}
+
+// TestLocalRootReferralLeaseBoundedByCopy pins that nothing derived from the
+// copy outlives it: the delegation lease cannot exceed the snapshot's own
+// horizon, however long the zone's NS TTL is.
+func TestLocalRootReferralLeaseBoundedByCopy(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+	rs := localRootState("www.example.com.", dns.TypeA, false)
+
+	if _, handled := r.consultLocalRoot(context.Background(), rs); handled {
+		t.Fatal("referral consult synthesized an answer")
+	}
+	snap := r.localRoot.Load().Active()
+	if rs.cutDeadline.After(snap.ValidUntil()) {
+		t.Fatalf("lease %v outlives the copy's horizon %v", rs.cutDeadline, snap.ValidUntil())
+	}
+	// The test zone's NS TTL is 172800s against a one-hour signature
+	// window, so the horizon must be what bounded it.
+	if rs.cutDeadline.After(time.Now().Add(2 * time.Hour)) {
+		t.Fatalf("lease %v ignores the signature window", rs.cutDeadline)
 	}
 }
 
