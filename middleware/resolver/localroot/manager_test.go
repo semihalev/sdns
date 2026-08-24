@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/middleware/resolver/localroot/roottest"
 )
 
 // TestManagerLifecycle drives refreshOnce through the states the RFC 8806
@@ -20,6 +21,23 @@ func TestManagerLifecycle(t *testing.T) {
 	transfers := 0
 	serial := root.serial
 	failing := false
+	// The source serves the zone it advertises: probe and transfer move
+	// together, as a healthy source's do.
+	served := map[uint32][]dns.RR{root.serial: root.rrs}
+	serve := func(s uint32) []dns.RR {
+		t.Helper()
+		if rrs, ok := served[s]; ok {
+			return rrs
+		}
+		z, err := roottest.BuildZoneWithKey(
+			ComputeDigest, roottest.DefaultLines(s), s, root.key, root.priv,
+		)
+		if err != nil {
+			t.Fatalf("zone %d: %v", s, err)
+		}
+		served[s] = z.RRs
+		return z.RRs
+	}
 
 	m := New(nil, func() []dns.RR { return root.anchors })
 	m.now = func() time.Time { return now }
@@ -34,7 +52,7 @@ func TestManagerLifecycle(t *testing.T) {
 			return nil, errors.New("transfer down")
 		}
 		transfers++
-		return root.rrs, nil
+		return serve(serial), nil
 	}
 
 	if m.Active() != nil {

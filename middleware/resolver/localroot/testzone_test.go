@@ -1,6 +1,7 @@
 package localroot
 
 import (
+	"crypto"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -15,6 +16,8 @@ type testRoot struct {
 	rrs     []dns.RR
 	anchors []dns.RR
 	serial  uint32
+	key     *dns.DNSKEY
+	priv    crypto.PrivateKey
 }
 
 func buildTestRoot(t *testing.T) *testRoot {
@@ -23,7 +26,13 @@ func buildTestRoot(t *testing.T) *testRoot {
 	if err != nil {
 		t.Fatalf("roottest.Build: %v", err)
 	}
-	return &testRoot{rrs: z.RRs, anchors: z.Anchors, serial: roottest.Serial}
+	return &testRoot{
+		rrs:     z.RRs,
+		anchors: z.Anchors,
+		serial:  roottest.Serial,
+		key:     z.Key,
+		priv:    z.Priv,
+	}
 }
 
 func rrsFromText(t *testing.T, lines ...string) []dns.RR {

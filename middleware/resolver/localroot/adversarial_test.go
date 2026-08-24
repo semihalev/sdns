@@ -450,3 +450,111 @@ func TestLoadPublishIsExclusive(t *testing.T) {
 			active.Serial(), newest)
 	}
 }
+
+// TestSnapshotHorizonIgnoresUnverifiedZONEMDSignature pins which signatures
+// may shorten a copy's life. RFC 8976 excludes the apex RRSIG(ZONEMD) from
+// the digest — it is written after the digest is computed — and apex
+// verification accepts an RRset when one covering signature validates. So
+// an appended, already-expired RRSIG(ZONEMD) is the one record in a
+// transfer that is neither authenticated by the digest nor rejected by
+// verification, and trusting its expiration would let anyone who can add a
+// record to a transfer expire a sound copy the moment it arrives.
+func TestSnapshotHorizonIgnoresUnverifiedZONEMDSignature(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	// An RRSIG(ZONEMD) that expired a year ago, signed by nobody in
+	// particular: the digest does not cover it and the sound sibling
+	// signature still carries the RRset through verification.
+	long, err := dns.NewRR(". 86400 IN RRSIG ZONEMD 13 0 86400 " +
+		"20250824000000 20250810000000 12345 . AAAA")
+	if err != nil {
+		t.Fatalf("NewRR: %v", err)
+	}
+	poisoned := make([]dns.RR, 0, len(z.RRs)+1)
+	poisoned = append(poisoned, z.RRs...)
+	poisoned = append(poisoned, long)
+
+	if err := verifyZone(poisoned, z.Anchors); err != nil {
+		t.Fatalf("the zone must still verify — the appended signature is not "+
+			"part of the digest and a sound one covers the RRset: %v", err)
+	}
+
+	now := time.Now()
+	snap, err := buildSnapshot(poisoned, now)
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	if snap.Expired(now) {
+		t.Fatal("an appended expired RRSIG(ZONEMD) expired a sound copy on arrival")
+	}
+	// The horizon still follows the signatures that are authenticated: the
+	// test zone signs with a one-hour window.
+	if snap.ValidUntil().After(now.Add(2 * time.Hour)) {
+		t.Fatalf("horizon %v ignores the authenticated signatures", snap.ValidUntil())
+	}
+}
+
+// TestRefreshRejectsTransferBehindProbe pins the source's own claim as part
+// of acceptance. A source that advertises N+1 and then hands back the
+// current N has not delivered the update; taking it would mark the refresh
+// successful and sleep a full refresh interval on a zone the source itself
+// called stale. The transfer must carry at least what the probe announced,
+// and a source that fails that is failed over rather than believed.
+func TestRefreshRejectsTransferBehindProbe(t *testing.T) {
+	root := buildTestRoot(t)
+
+	m := New([]string{"stale.test:53", "honest.test:53"}, func() []dns.RR { return root.anchors })
+	if err := m.Load(root.rrs); err != nil {
+		t.Fatalf("seed load: %v", err)
+	}
+
+	bumped, err := roottest.BuildZoneWithKey(
+		ComputeDigest,
+		roottest.DefaultLines(roottest.Serial+1),
+		roottest.Serial+1,
+		root.key, root.priv,
+	)
+	if err != nil {
+		t.Fatalf("bumped zone: %v", err)
+	}
+
+	// Both sources announce the bump; the first serves the old zone anyway.
+	var served []string
+	m.probeFn = func(_ context.Context, addr string, _ time.Duration) (uint32, error) {
+		return roottest.Serial + 1, nil
+	}
+	m.transferFn = func(_ context.Context, addr string, _ time.Duration) ([]dns.RR, error) {
+		served = append(served, addr)
+		if addr == "stale.test:53" {
+			return root.rrs, nil // the zone it just said was superseded
+		}
+		return bumped.RRs, nil
+	}
+
+	if err := m.refreshOnce(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if len(served) != 2 {
+		t.Fatalf("sources transferred from = %v, want the stale one to fail over", served)
+	}
+	if got := m.Active().Serial(); got != roottest.Serial+1 {
+		t.Fatalf("active serial = %d, want the announced %d", got, roottest.Serial+1)
+	}
+
+	// And with only the stale source, the refresh must fail rather than
+	// report success and sleep out the full interval.
+	m2 := New([]string{"stale.test:53"}, func() []dns.RR { return root.anchors })
+	if err := m2.Load(root.rrs); err != nil {
+		t.Fatalf("seed load: %v", err)
+	}
+	m2.probeFn = m.probeFn
+	m2.transferFn = func(context.Context, string, time.Duration) ([]dns.RR, error) {
+		return root.rrs, nil
+	}
+	if err := m2.refreshOnce(context.Background()); err == nil {
+		t.Fatal("a source that did not deliver what it announced reported success")
+	}
+}

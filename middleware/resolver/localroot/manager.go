@@ -18,6 +18,7 @@ import (
 var DefaultSources = []string{
 	"b.root-servers.net:53",
 	"c.root-servers.net:53",
+	"d.root-servers.net:53",
 	"f.root-servers.net:53",
 	"g.root-servers.net:53",
 	"k.root-servers.net:53",
@@ -160,12 +161,20 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 
 	var lastErr error
 	for _, addr := range m.sources {
+		// probed carries what this source announced into the acceptance
+		// check below, so the transfer is measured against the source's
+		// own claim and not only against what is already installed.
+		var (
+			probed     uint32
+			haveProbed bool
+		)
 		if cur != nil {
 			serial, err := m.probeFn(ctx, addr, m.timeout)
 			if err != nil {
 				lastErr = err
 				continue
 			}
+			probed, haveProbed = serial, true
 			if serial != cur.serial && !serialNewer(cur.serial, serial) {
 				// A source advertising an older zone is skipped whole:
 				// nothing it transfers can be accepted (RFC 1982).
@@ -191,7 +200,11 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 			metricTransfers.WithLabelValues("transfer_error").Inc()
 			continue
 		}
-		if err := m.Load(rrs); err != nil {
+		// A source that announced a serial must deliver it. Failing over
+		// to the next source is the point: the alternative is calling the
+		// refresh a success and sleeping through a full interval on a copy
+		// the source itself said was stale.
+		if err := m.load(rrs, probed, haveProbed); err != nil {
 			lastErr = err
 			continue
 		}
@@ -210,6 +223,15 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 // no path backwards — a replayed older zone, however validly signed for
 // its day, cannot displace a newer copy or restart its expire horizon.
 func (m *Manager) Load(rrs []dns.RR) error {
+	return m.load(rrs, 0, false)
+}
+
+// load is Load with the serial a probe advertised, when there was one.
+// The transfer must deliver at least the zone the source announced: a
+// source that advertises N+1 and then hands back N has not delivered the
+// update, and accepting it would mark the refresh successful and wait a
+// full refresh interval before asking anyone again.
+func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
 	if err := verifyZone(rrs, m.anchors()); err != nil {
 		metricTransfers.WithLabelValues("verify_error").Inc()
 		return err
@@ -218,6 +240,10 @@ func (m *Manager) Load(rrs []dns.RR) error {
 	if err != nil {
 		metricTransfers.WithLabelValues("build_error").Inc()
 		return err
+	}
+	if expected && snap.serial != expect && !serialNewer(expect, snap.serial) {
+		metricTransfers.WithLabelValues("serial_behind_probe").Inc()
+		return errSerialBehindProbe
 	}
 
 	m.publish.Lock()

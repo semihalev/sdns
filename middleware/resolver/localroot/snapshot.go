@@ -299,10 +299,26 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 	// serial-arithmetic wrap is not reachable while the maths below holds.)
 	s.expireAt = now.Add(time.Duration(s.soa.Expire) * time.Second)
 	for _, rr := range rrs {
-		if sig, ok := rr.(*dns.RRSIG); ok {
-			if exp := time.Unix(int64(sig.Expiration), 0); exp.Before(s.expireAt) {
-				s.expireAt = exp
-			}
+		sig, ok := rr.(*dns.RRSIG)
+		if !ok {
+			continue
+		}
+		// The apex RRSIG(ZONEMD) records are the one part of the zone the
+		// digest does not cover — RFC 8976 excludes them, because they are
+		// written after the digest is computed — and verification accepts
+		// the RRset as long as one covering signature validates. So an
+		// appended, already-expired RRSIG(ZONEMD) rides in unauthenticated,
+		// and trusting its expiration here would let anyone who can add a
+		// record to a transfer expire a sound copy on arrival. Nothing is
+		// served from these signatures either; every proof the copy hands
+		// out carries signatures the digest does authenticate, and those
+		// still bound the horizon below.
+		if sig.TypeCovered == dns.TypeZONEMD &&
+			dns.CanonicalName(sig.Header().Name) == "." {
+			continue
+		}
+		if exp := time.Unix(int64(sig.Expiration), 0); exp.Before(s.expireAt) {
+			s.expireAt = exp
 		}
 	}
 
