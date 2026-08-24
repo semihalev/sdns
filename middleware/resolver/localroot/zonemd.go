@@ -198,39 +198,78 @@ func dnskeyMatchesAnchor(key *dns.DNSKEY, anchors []dns.RR) bool {
 	return false
 }
 
+// maxApexSignatureAttempts bounds the public-key operations one apex RRset
+// may cost. A zone carrying more than a handful of signatures over one
+// RRset is already pathological — the root publishes one, a rollover a few
+// — and the cap cannot be used to hide a sound signature behind
+// higher-expiring forgeries in any meaningful sense: anyone able to add
+// records to a transfer can already deny the copy outright by disturbing a
+// digested record. What the cap removes is the amplification, which is a
+// capability they did not otherwise have.
+const maxApexSignatureAttempts = 16
+
 // verifyApexRRset verifies one apex RRset against the zone keys and returns
-// how long the result holds: the latest expiration among the signatures
-// that actually verified. Authentication is only as good as the signature
-// that carried it (RFC 4035 §5.3.3), and where several signatures verify,
-// the RRset stays authenticated until the last of them lapses.
-//
-// Candidates are tried one at a time rather than as a set, because the
-// caller needs to know which signature carried the verification and not
-// merely that one did — a sibling that fails to verify must not lend its
+// how long the result holds: the expiration of the signature that carried
+// it. Authentication is only as good as the signature behind it (RFC 4035
+// §5.3.3), so the answer must name a specific signature rather than the
+// RRset as a whole — a sibling that fails to verify cannot lend its
 // timestamps to the result.
+//
+// Candidates are deduplicated, ordered by descending expiration and tried
+// until one verifies. Order is what makes stopping correct: the first
+// signature to verify necessarily carries the latest expiration among those
+// that would, because everything longer-lived was tried before it. It is
+// also what keeps the work down — a sound zone verifies on the first
+// attempt — and the cap bounds the rest, since apex RRSIG(ZONEMD) records
+// sit outside the digest and can be appended freely.
 func verifyApexRRset(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sigs []dns.RR) (time.Time, error) {
 	covered := set[0].Header().Rrtype
 
-	var until time.Time
+	type sigID struct {
+		keyTag     uint16
+		algorithm  uint8
+		expiration uint32
+		inception  uint32
+		signature  string
+	}
+	seen := make(map[sigID]struct{})
+	candidates := make([]*dns.RRSIG, 0, 4)
 	for _, rr := range sigs {
 		sig, ok := rr.(*dns.RRSIG)
 		if !ok || sig.TypeCovered != covered {
 			continue
 		}
+		id := sigID{
+			keyTag:     sig.KeyTag,
+			algorithm:  sig.Algorithm,
+			expiration: sig.Expiration,
+			inception:  sig.Inception,
+			signature:  sig.Signature,
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		candidates = append(candidates, sig)
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Expiration > candidates[j].Expiration
+	})
+	if len(candidates) > maxApexSignatureAttempts {
+		candidates = candidates[:maxApexSignatureAttempts]
+	}
+
+	for _, sig := range candidates {
 		msg := new(dns.Msg)
 		msg.Answer = append(msg.Answer, set...)
 		msg.Answer = append(msg.Answer, sig)
 		if verified, err := dnssec.VerifyRRSIG(".", keys, msg); err != nil || !verified {
 			continue
 		}
-		if exp := time.Unix(int64(sig.Expiration), 0); exp.After(until) {
-			until = exp
-		}
+		return time.Unix(int64(sig.Expiration), 0), nil
 	}
-	if until.IsZero() {
-		return time.Time{}, errBadSignature
-	}
-	return until, nil
+	return time.Time{}, errBadSignature
 }
 
 func typedApexSet[T dns.RR](set []T) []dns.RR {

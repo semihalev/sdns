@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha512"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"strings"
 	"sync"
@@ -629,5 +631,143 @@ func TestHorizonFollowsTheVerifyingZONEMDSignature(t *testing.T) {
 	}
 	if !snap.Expired(now.Add(2 * time.Minute)) {
 		t.Fatal("the copy is still active past the ZONEMD signature's expiration")
+	}
+}
+
+// TestApexSignatureWorkIsBounded pins the cost of verifying an apex RRset.
+// Apex RRSIG(ZONEMD) records sit outside the digest, so a transfer can
+// carry any number of them, and verifying each in turn turns the generous
+// transfer limits into cryptographic work — the refresh worker stalls for
+// as long as an attacker cares to make it. Deduplication, descending
+// expiration order and a small attempt cap bound it, and a sound zone
+// still verifies on its first attempt.
+func TestApexSignatureWorkIsBounded(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	var (
+		base  []dns.RR
+		sound *dns.RRSIG
+	)
+	for _, rr := range z.RRs {
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == dns.TypeZONEMD {
+			sound = sig
+			continue
+		}
+		base = append(base, rr)
+	}
+	if sound == nil {
+		t.Fatal("built zone has no RRSIG(ZONEMD)")
+	}
+
+	// Thousands of forgeries, each claiming to outlive the sound signature
+	// so ordering cannot skip them, each distinct so deduplication cannot
+	// collapse them, and each the exact width RFC 6605 §4 gives a P-256
+	// signature — a wrong length is refused before any public-key
+	// operation, which would make this measure nothing at all.
+	const forgeries = 4096
+	flooded := make([]dns.RR, 0, len(base)+forgeries+1)
+	flooded = append(flooded, base...)
+	for i := range forgeries {
+		raw := make([]byte, 64)
+		binary.BigEndian.PutUint32(raw, uint32(i)+1) //nolint:gosec // bounded test index
+		raw[40] = 0x7f                               // keep both halves non-trivial
+		fake := dns.Copy(sound).(*dns.RRSIG)
+		fake.Expiration = sound.Expiration + uint32(i) + 1 //nolint:gosec // bounded test index
+		fake.Signature = base64.StdEncoding.EncodeToString(raw)
+		flooded = append(flooded, fake)
+	}
+	flooded = append(flooded, sound)
+
+	// The cap is in force: the sound signature sits below thousands of
+	// higher-expiring forgeries, so it never gets an attempt and the zone
+	// is refused. Denial is not a capability this hands anyone — whoever
+	// can append these records can already break a digested one — but it
+	// is the observable proof that the attempt window is bounded.
+	start := time.Now()
+	if _, err := verifyZone(flooded, z.Anchors); err == nil {
+		t.Fatal("every attempt went to a forgery, yet the zone verified — the window is not bounded")
+	}
+	// And the refusal is cheap. Bounded, this is a handful of public-key
+	// operations; unbounded it is one per forgery, which on this input
+	// takes hundreds of milliseconds and scales with whatever a transfer
+	// carries. The threshold is loose on purpose — it is a guard against
+	// the work scaling, not a benchmark.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("verification of %d appended signatures took %v — the work is not bounded",
+			forgeries, elapsed)
+	}
+}
+
+// TestApexSignatureOrderPicksTheLatestVerifying pins what the ordering buys
+// besides speed: stopping at the first signature that verifies is only
+// correct because everything longer-lived was tried before it, so the one
+// that stops the loop carries the latest expiration among those that would
+// have verified at all.
+func TestApexSignatureOrderPicksTheLatestVerifying(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	var (
+		base   []dns.RR
+		zonemd *dns.ZONEMD
+		sound  *dns.RRSIG
+	)
+	for _, rr := range z.RRs {
+		if md, ok := rr.(*dns.ZONEMD); ok {
+			zonemd = md
+			continue
+		}
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == dns.TypeZONEMD {
+			sound = sig
+			continue
+		}
+		base = append(base, rr)
+	}
+	if zonemd == nil || sound == nil {
+		t.Fatal("built zone is missing its ZONEMD or its signature")
+	}
+
+	// A second sound signature over the same RRset, valid for a day rather
+	// than the hour the first one carries. The copy must live to the later
+	// of the two, since either one authenticates it.
+	now := time.Now()
+	longer := &dns.RRSIG{
+		Hdr: dns.RR_Header{
+			Name: ".", Rrtype: dns.TypeRRSIG,
+			Class: dns.ClassINET, Ttl: zonemd.Hdr.Ttl,
+		},
+		TypeCovered: dns.TypeZONEMD,
+		Algorithm:   dns.ECDSAP256SHA256,
+		OrigTtl:     zonemd.Hdr.Ttl,
+		Expiration:  uint32(now.Add(24 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		Inception:   uint32(now.Add(-time.Hour).Unix()),     //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		KeyTag:      z.Key.KeyTag(),
+		SignerName:  ".",
+	}
+	if err := longer.Sign(z.Priv.(*ecdsa.PrivateKey), []dns.RR{zonemd}); err != nil {
+		t.Fatalf("sign the longer-lived signature: %v", err)
+	}
+
+	// The shorter one first in the slice, so only the ordering can find the
+	// longer — and a forgery claiming to outlive both, which must not.
+	forged := dns.Copy(longer).(*dns.RRSIG)
+	forged.Expiration = uint32(now.Add(72 * time.Hour).Unix()) //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+	forged.Signature = "AAAAAAAA"
+
+	both := make([]dns.RR, 0, len(base)+4)
+	both = append(both, base...)
+	both = append(both, zonemd, sound, forged, longer)
+
+	authUntil, err := verifyZone(both, z.Anchors)
+	if err != nil {
+		t.Fatalf("verifyZone: %v", err)
+	}
+	if want := time.Unix(int64(longer.Expiration), 0); !authUntil.Equal(want) {
+		t.Fatalf("authenticated until %v, want the longer sound signature's %v", authUntil, want)
 	}
 }
