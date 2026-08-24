@@ -1815,10 +1815,7 @@ func clampTTLsToCut(res *dns.Msg, cutUntil time.Time) {
 	if cutUntil.IsZero() {
 		return
 	}
-	lease := time.Until(cutUntil)
-	if lease < 0 {
-		lease = 0
-	}
+	lease := max(time.Until(cutUntil), 0)
 	leaseSecs := uint32(lease.Seconds())
 	clamp := func(rrs []dns.RR) {
 		for _, rr := range rrs {
