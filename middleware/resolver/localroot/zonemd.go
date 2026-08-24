@@ -14,13 +14,14 @@ import (
 )
 
 var (
-	errNoApex         = errors.New("localroot: zone has no usable apex")
-	errNoZONEMD       = errors.New("localroot: no supported ZONEMD at the apex")
-	errSerialMismatch = errors.New("localroot: ZONEMD serial does not match the SOA")
-	errDigestMismatch = errors.New("localroot: zone digest does not match ZONEMD")
-	errAnchorChain    = errors.New("localroot: DNSKEY set does not chain to a trust anchor")
-	errBadSignature   = errors.New("localroot: apex RRset signature did not verify")
-	errSerialRollback = errors.New("localroot: zone serial is older than the live copy")
+	errNoApex          = errors.New("localroot: zone has no usable apex")
+	errNoZONEMD        = errors.New("localroot: no supported ZONEMD at the apex")
+	errSerialMismatch  = errors.New("localroot: ZONEMD serial does not match the SOA")
+	errDigestMismatch  = errors.New("localroot: zone digest does not match ZONEMD")
+	errAnchorChain     = errors.New("localroot: DNSKEY set does not chain to a trust anchor")
+	errBadSignature    = errors.New("localroot: apex RRset signature did not verify")
+	errSerialRollback  = errors.New("localroot: zone serial is older than the live copy")
+	errDuplicateZONEMD = errors.New("localroot: apex carries a repeated ZONEMD scheme/hash tuple")
 )
 
 const (
@@ -113,6 +114,20 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 		if err := verifyApexRRset(keyMap, set, apexSig); err != nil {
 			return err
 		}
+	}
+
+	// RFC 8976 §4 step 4: "When multiple ZONEMD RRs are present, each MUST
+	// specify a unique Scheme and Hash Algorithm tuple." A repeated tuple
+	// is a malformed RRset, and picking the first match would let an
+	// attacker append a second digest of their own next to the real one.
+	// The check covers every tuple, not only the one this build uses.
+	seen := make(map[uint16]struct{}, len(zonemds))
+	for _, z := range zonemds {
+		tuple := uint16(z.Scheme)<<8 | uint16(z.Hash)
+		if _, dup := seen[tuple]; dup {
+			return errDuplicateZONEMD
+		}
+		seen[tuple] = struct{}{}
 	}
 
 	var chosen *dns.ZONEMD

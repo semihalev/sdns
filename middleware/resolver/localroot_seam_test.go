@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/localroot"
@@ -261,6 +262,120 @@ func TestLocalRootReferralLeaseBoundedByCopy(t *testing.T) {
 	// window, so the horizon must be what bounded it.
 	if rs.cutDeadline.After(time.Now().Add(2 * time.Hour)) {
 		t.Fatalf("lease %v ignores the signature window", rs.cutDeadline)
+	}
+}
+
+// TestLocalRootHandlerRestoresRD drives the production path. The handler
+// clears RD before resolution and setTags restores it on the way out, but a
+// local-root answer returns early and misses that restoration — a client
+// receiving RD=0 on its own recursive query may discard it. Calling
+// consultLocalRoot directly cannot see this; the handler must.
+func TestLocalRootHandlerRestoresRD(t *testing.T) {
+	z, err := roottest.Build(localroot.ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	cfg := makeTestConfig()
+	cfg.IPv6Access = false
+	handler := New(cfg)
+	mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
+	if err := mgr.Load(z.RRs); err != nil {
+		t.Fatalf("manager load: %v", err)
+	}
+	handler.resolver.localRoot.Store(mgr)
+
+	for _, tc := range []struct {
+		name  string
+		qname string
+		qtype uint16
+		rcode int
+	}{
+		{"signed DS", "com.", dns.TypeDS, dns.RcodeSuccess},
+		{"unsigned DS", "org.", dns.TypeDS, dns.RcodeSuccess},
+		{"denial", "foo.nonexistent.", dns.TypeA, dns.RcodeNameError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := new(dns.Msg)
+			m.SetQuestion(tc.qname, tc.qtype)
+			m.RecursionDesired = true
+			m.Id = 0x1234
+
+			resp := handler.handle(context.Background(), m)
+			if resp == nil {
+				t.Fatal("handler returned no response")
+			}
+			if resp.Rcode != tc.rcode {
+				t.Fatalf("rcode = %s, want %s",
+					dns.RcodeToString[resp.Rcode], dns.RcodeToString[tc.rcode])
+			}
+			if !resp.RecursionDesired {
+				t.Fatal("the client's RD bit did not survive the handler path")
+			}
+			if !resp.RecursionAvailable {
+				t.Fatal("RA missing on a recursive answer")
+			}
+			if resp.Id != m.Id {
+				t.Fatalf("answer ID = %#x, want the client's %#x", resp.Id, m.Id)
+			}
+		})
+	}
+}
+
+// TestLocalRootNonINQueryFallsBack pins the class gate. The copy is an IN
+// zone and every record built from it is IN; answering a CHAOS question
+// from it would pair the client's class with another class's records.
+func TestLocalRootNonINQueryFallsBack(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+
+	for _, qclass := range []uint16{dns.ClassCHAOS, dns.ClassHESIOD, dns.ClassANY} {
+		rs := localRootState("foo.nonexistent.", dns.TypeA, false)
+		rs.req.Question[0].Qclass = qclass
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if handled || answer != nil {
+			t.Fatalf("class %d answered from the IN copy", qclass)
+		}
+		if rs.level != 0 || !rs.isRoot {
+			t.Fatalf("class %d disturbed the walk", qclass)
+		}
+	}
+}
+
+// TestLocalRootReferralTakesTheWinningDelegationWhole pins the race
+// readback. When another walk wins the delegation store, this call must
+// adopt that entry's servers, DS set and lease together: taking the
+// winner's servers while keeping this copy's DS chain would validate
+// answers from one delegation against another's keys.
+func TestLocalRootReferralTakesTheWinningDelegationWhole(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+
+	// A delegation for com. published by "another walk", with servers and
+	// a DS set that differ from the copy's.
+	key := cache.Key(dns.Question{Name: "com.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}, false)
+	rival := &authority.Servers{Zone: "com."}
+	rival.List = append(rival.List, authority.NewServer("203.0.113.9:53", authority.IPv4))
+	rivalDS, err := dns.NewRR("com. 86400 IN DS 999 13 2 " +
+		"0000000000000000000000000000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatalf("rival DS: %v", err)
+	}
+	rivalDeadline := time.Now().Add(3 * time.Minute)
+	r.delegations.SetUntilIfAbsent(key, []dns.RR{rivalDS}, rival, rivalDeadline)
+
+	rs := localRootState("www.example.com.", dns.TypeA, false)
+	if _, handled := r.consultLocalRoot(context.Background(), rs); handled {
+		t.Fatal("referral consult synthesized an answer")
+	}
+
+	if rs.servers != rival {
+		t.Fatal("the walk did not adopt the winning servers")
+	}
+	if len(rs.parentDS) != 1 || rs.parentDS[0].(*dns.DS).KeyTag != 999 {
+		t.Fatalf("parentDS = %v, want the winning delegation's DS — a mixed "+
+			"delegation validates one zone's answers against another's keys", rs.parentDS)
+	}
+	if !rs.cutDeadline.Equal(rivalDeadline) {
+		t.Fatalf("lease = %v, want the winning entry's %v", rs.cutDeadline, rivalDeadline)
 	}
 }
 

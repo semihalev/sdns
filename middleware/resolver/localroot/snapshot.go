@@ -98,7 +98,10 @@ func (s *Snapshot) Referral(tld string) (Referral, bool) {
 // DSAnswer returns the material for an authoritative DS response at tld:
 // the DS set with its RRSIGs when the delegation is signed, or the TLD's
 // own NSEC with its RRSIGs as the exact-owner NODATA proof when it is not.
-// ok=false when the TLD does not exist.
+// ok=false when the TLD does not exist, or when the copy holds no NSEC
+// that actually proves the DS absent — the absence of a DS record in the
+// index is not itself a proof, and an answer that cannot be proven is left
+// to the real roots.
 func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns.RR, ok bool) {
 	sets, exists := s.owners[tld]
 	if !exists || len(sets[dns.TypeNS]) == 0 {
@@ -110,6 +113,22 @@ func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns
 	nsecSet := sets[dns.TypeNSEC]
 	if len(nsecSet) == 0 {
 		return nil, nil, nil, nil, false
+	}
+	// RFC 4035 §5.4: an exact-owner NSEC denies a type only when its type
+	// bitmap says so. A bitmap asserting DS contradicts the missing record
+	// — a truncated or tampered index, or a zone the copy did not fully
+	// hold — and a CNAME at the owner means the NSEC proves something else
+	// entirely. Neither may be dressed as an authenticated NODATA.
+	for _, rr := range nsecSet {
+		n, isNSEC := rr.(*dns.NSEC)
+		if !isNSEC {
+			return nil, nil, nil, nil, false
+		}
+		for _, t := range n.TypeBitMap {
+			if t == dns.TypeDS || t == dns.TypeCNAME {
+				return nil, nil, nil, nil, false
+			}
+		}
 	}
 	return nil, nil, nsecSet, sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC), true
 }

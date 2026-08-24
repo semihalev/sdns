@@ -3,7 +3,9 @@ package localroot
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha512"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,5 +183,119 @@ func TestSerialNewer(t *testing.T) {
 		if got := serialNewer(c.a, c.b); got != c.want {
 			t.Fatalf("serialNewer(%d, %d) = %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// TestVerifyZoneRefusesDuplicateZONEMDTuple pins RFC 8976 §4 step 4: "When
+// multiple ZONEMD RRs are present, each MUST specify a unique Scheme and
+// Hash Algorithm tuple." The duplicate here is validly signed as part of
+// the ZONEMD RRset and does not disturb the digest (apex ZONEMD records are
+// excluded from it), so nothing else in the chain can catch it — only the
+// uniqueness rule stands between a malformed RRset and a verifier that
+// takes whichever digest it happens to read first.
+func TestVerifyZoneRefusesDuplicateZONEMDTuple(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	var (
+		base  []dns.RR
+		first *dns.ZONEMD
+	)
+	for _, rr := range z.RRs {
+		if md, ok := rr.(*dns.ZONEMD); ok {
+			first = md
+			continue
+		}
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == dns.TypeZONEMD {
+			continue
+		}
+		base = append(base, rr)
+	}
+	if first == nil {
+		t.Fatal("built zone has no apex ZONEMD")
+	}
+
+	// A second record with the same scheme/hash tuple, carrying a digest an
+	// attacker (or a broken signer) chose.
+	second := dns.Copy(first).(*dns.ZONEMD)
+	second.Digest = strings.Repeat("ab", sha512.Size384)
+
+	set := []dns.RR{first, second}
+	now := time.Now()
+	sig := &dns.RRSIG{
+		Hdr: dns.RR_Header{
+			Name: ".", Rrtype: dns.TypeRRSIG,
+			Class: dns.ClassINET, Ttl: first.Hdr.Ttl,
+		},
+		TypeCovered: dns.TypeZONEMD,
+		Algorithm:   dns.ECDSAP256SHA256,
+		OrigTtl:     first.Hdr.Ttl,
+		Expiration:  uint32(now.Add(time.Hour).Unix()),  //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		Inception:   uint32(now.Add(-time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		KeyTag:      z.Key.KeyTag(),
+		SignerName:  ".",
+	}
+	if err := sig.Sign(z.Priv.(*ecdsa.PrivateKey), set); err != nil {
+		t.Fatalf("sign the two-record ZONEMD RRset: %v", err)
+	}
+
+	dup := make([]dns.RR, 0, len(base)+3)
+	dup = append(dup, base...)
+	dup = append(dup, first, second, sig)
+	if err := verifyZone(dup, z.Anchors); err == nil {
+		t.Fatal("a repeated ZONEMD scheme/hash tuple verified")
+	}
+
+	// Sanity: the same zone with the single original ZONEMD still verifies,
+	// so the refusal above is the duplicate rule and nothing else.
+	if err := verifyZone(z.RRs, z.Anchors); err != nil {
+		t.Fatalf("the unmodified zone must still verify: %v", err)
+	}
+}
+
+// TestDSAnswerRequiresProvableNODATA pins the unsigned-delegation proof: an
+// exact-owner NSEC denies DS only when its type bitmap says so. A bitmap
+// asserting DS contradicts the missing record — a truncated index, or a
+// zone the copy did not fully hold — and must not be dressed as an
+// authenticated NODATA.
+func TestDSAnswerRequiresProvableNODATA(t *testing.T) {
+	// org. has no DS record, but its NSEC claims the type exists.
+	lines := []string{
+		". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+		". 518400 IN NS a.root-servers.test.",
+		". 86400 IN NSEC org. NS SOA RRSIG NSEC DNSKEY ZONEMD",
+		"org. 172800 IN NS ns.org.",
+		"org. 86400 IN NSEC . NS DS RRSIG NSEC",
+		"ns.org. 172800 IN A 198.51.100.2",
+	}
+	z, err := roottest.BuildZone(ComputeDigest, lines, roottest.Serial)
+	if err != nil {
+		t.Fatalf("build zone: %v", err)
+	}
+	if err := verifyZone(z.RRs, z.Anchors); err != nil {
+		t.Fatalf("the zone itself must verify — the defect is semantic: %v", err)
+	}
+	snap, err := buildSnapshot(z.RRs, time.Now())
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+
+	if _, _, _, _, ok := snap.DSAnswer("org."); ok {
+		t.Fatal("an NSEC whose bitmap asserts DS was served as a DS NODATA proof")
+	}
+
+	// The honest shape still answers: bitmap without DS proves the absence.
+	honest, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+	honestSnap, err := buildSnapshot(honest.RRs, time.Now())
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	if _, _, nsec, _, ok := honestSnap.DSAnswer("org."); !ok || len(nsec) != 1 {
+		t.Fatalf("the honest unsigned delegation must prove NODATA: ok=%v nsec=%d", ok, len(nsec))
 	}
 }

@@ -40,6 +40,13 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 	}
 
 	q := rs.req.Question[0]
+	if q.Qclass != dns.ClassINET {
+		// The copy is an IN zone and every answer built from it — the
+		// delegation key, the NSEC question, the SOA — is IN. Answering a
+		// CHAOS or HESIOD question from it would pair the client's class
+		// with another class's records, so those go to the real roots.
+		return nil, false
+	}
 	qname := dns.CanonicalName(q.Name)
 	tld := localroot.TLDOf(qname)
 	if tld == "" {
@@ -103,16 +110,6 @@ func (r *Resolver) installLocalRootReferral(
 ) bool {
 	key := cache.Key(dns.Question{Name: tld, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, cd)
 
-	if d, err := r.delegations.Get(key); err == nil {
-		rs.servers = d.Servers
-		rs.parentDS = d.DSSet
-		rs.level = 1
-		rs.isRoot = false
-		rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, d.ExpiresAt, key)
-		noteCut(ctx, rs.cutDeadline, rs.cutKey)
-		return true
-	}
-
 	servers := &authority.Servers{Zone: tld}
 	var minTTL uint32
 	for _, nsRR := range ref.NS {
@@ -142,17 +139,22 @@ func (r *Resolver) installLocalRootReferral(
 	if until := snap.ValidUntil(); until.Before(deadline) {
 		deadline = until
 	}
-	r.delegations.SetUntilIfAbsent(key, ref.DS, servers, deadline)
-	// Read back what won the store so racing walks share one identity.
-	if d, err := r.delegations.Get(key); err == nil {
-		servers = d.Servers
+	// The store returns whatever is live under the key — this call's entry,
+	// or the one a racing walk published first — and the walk takes that
+	// delegation whole. Servers, DS set and lease belong to one entry:
+	// pairing a winner's servers with this call's DS chain would validate
+	// one delegation's answers against another's keys, so there is no
+	// separate readback to get wrong.
+	live := r.delegations.SetUntilIfAbsent(key, ref.DS, servers, deadline)
+	if live == nil {
+		return false
 	}
 
-	rs.servers = servers
-	rs.parentDS = ref.DS
+	rs.servers = live.Servers
+	rs.parentDS = live.DSSet
 	rs.level = 1
 	rs.isRoot = false
-	rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, deadline, key)
+	rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, live.ExpiresAt, key)
 	noteCut(ctx, rs.cutDeadline, rs.cutKey)
 	return true
 }
@@ -169,6 +171,9 @@ func (r *Resolver) localRootDSAnswer(rs *resolveState, snap *localroot.Snapshot,
 	resp.SetRcode(rs.req, dns.RcodeSuccess)
 	resp.Authoritative = false
 	resp.RecursionAvailable = true
+	// The handler clears RD before resolution and setTags restores it on
+	// the way out; this answer returns early, so it restores its own.
+	resp.RecursionDesired = true
 	if !ok {
 		// Unreachable behind a Referral hit, but never answer garbage.
 		resp.Rcode = dns.RcodeServerFailure
@@ -206,6 +211,8 @@ func (r *Resolver) localRootDenial(
 	resp := new(dns.Msg)
 	resp.SetRcode(rs.req, dns.RcodeNameError)
 	resp.RecursionAvailable = true
+	// As above: the early return misses setTags, so RD is restored here.
+	resp.RecursionDesired = true
 
 	soa, soaSig := snap.SOA()
 	resp.Ns = append(resp.Ns, soa)
