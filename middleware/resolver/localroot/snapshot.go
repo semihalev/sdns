@@ -115,17 +115,23 @@ func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns
 		return nil, nil, nil, nil, false
 	}
 	// RFC 4035 §5.4: an exact-owner NSEC denies a type only when its type
-	// bitmap says so. A bitmap asserting DS contradicts the missing record
-	// — a truncated or tampered index, or a zone the copy did not fully
-	// hold — and a CNAME at the owner means the NSEC proves something else
-	// entirely. Neither may be dressed as an authenticated NODATA.
+	// bitmap says so. Three bits disqualify it here, and the resolver's own
+	// VerifyNODATANSEC refuses the same shapes:
+	//
+	//   - DS, because a bitmap asserting the type contradicts the missing
+	//     record — a truncated or tampered index, or a zone the copy did
+	//     not fully hold;
+	//   - SOA, because DS non-existence is only provable on the parent
+	//     side: an NSEC carrying SOA is the child apex's own, and the
+	//     child cannot testify about its delegation;
+	//   - CNAME, because then the NSEC proves something else entirely.
 	for _, rr := range nsecSet {
 		n, isNSEC := rr.(*dns.NSEC)
 		if !isNSEC {
 			return nil, nil, nil, nil, false
 		}
 		for _, t := range n.TypeBitMap {
-			if t == dns.TypeDS || t == dns.TypeCNAME {
+			if t == dns.TypeDS || t == dns.TypeSOA || t == dns.TypeCNAME {
 				return nil, nil, nil, nil, false
 			}
 		}

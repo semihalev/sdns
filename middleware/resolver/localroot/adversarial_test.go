@@ -299,3 +299,71 @@ func TestDSAnswerRequiresProvableNODATA(t *testing.T) {
 		t.Fatalf("the honest unsigned delegation must prove NODATA: ok=%v nsec=%d", ok, len(nsec))
 	}
 }
+
+// TestVerifyZoneAcceptsUniqueTupleBesideDuplicates pins the scope of the
+// duplicate rule. RFC 8976 §4 disqualifies "those ZONEMD RRs" that repeat a
+// tuple — not the zone — and §4 step 5 adds that "a match using any one of
+// the recipient's supported Schemes and Hash Algorithms is sufficient to
+// verify the zone". So a zone carrying a repeated *unsupported* tuple
+// alongside a sound unique SIMPLE/SHA-384 record still verifies through the
+// latter; rejecting it outright would let a malformed record nobody uses
+// deny an otherwise valid zone.
+func TestVerifyZoneAcceptsUniqueTupleBesideDuplicates(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	var (
+		base   []dns.RR
+		simple *dns.ZONEMD
+	)
+	for _, rr := range z.RRs {
+		if md, ok := rr.(*dns.ZONEMD); ok {
+			simple = md
+			continue
+		}
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == dns.TypeZONEMD {
+			continue
+		}
+		base = append(base, rr)
+	}
+	if simple == nil {
+		t.Fatal("built zone has no apex ZONEMD")
+	}
+
+	// Two records sharing an unsupported tuple, beside the sound one.
+	unsupportedA := dns.Copy(simple).(*dns.ZONEMD)
+	unsupportedA.Scheme = 240 // private-use scheme this build does not implement
+	unsupportedA.Hash = 240
+	unsupportedA.Digest = strings.Repeat("11", sha512.Size384)
+	unsupportedB := dns.Copy(unsupportedA).(*dns.ZONEMD)
+	unsupportedB.Digest = strings.Repeat("22", sha512.Size384)
+
+	set := []dns.RR{simple, unsupportedA, unsupportedB}
+	now := time.Now()
+	sig := &dns.RRSIG{
+		Hdr: dns.RR_Header{
+			Name: ".", Rrtype: dns.TypeRRSIG,
+			Class: dns.ClassINET, Ttl: simple.Hdr.Ttl,
+		},
+		TypeCovered: dns.TypeZONEMD,
+		Algorithm:   dns.ECDSAP256SHA256,
+		OrigTtl:     simple.Hdr.Ttl,
+		Expiration:  uint32(now.Add(time.Hour).Unix()),  //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		Inception:   uint32(now.Add(-time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		KeyTag:      z.Key.KeyTag(),
+		SignerName:  ".",
+	}
+	if err := sig.Sign(z.Priv.(*ecdsa.PrivateKey), set); err != nil {
+		t.Fatalf("sign the ZONEMD RRset: %v", err)
+	}
+
+	mixed := make([]dns.RR, 0, len(base)+4)
+	mixed = append(mixed, base...)
+	mixed = append(mixed, simple, unsupportedA, unsupportedB, sig)
+
+	if err := verifyZone(mixed, z.Anchors); err != nil {
+		t.Fatalf("a sound unique tuple beside duplicated unsupported ones must verify: %v", err)
+	}
+}

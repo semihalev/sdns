@@ -379,6 +379,97 @@ func TestLocalRootReferralTakesTheWinningDelegationWhole(t *testing.T) {
 	}
 }
 
+// unprovableDSZoneLines is a sealed zone whose org. delegation carries an
+// NSEC with the SOA bit — the child apex's own NSEC, which cannot testify
+// about its delegation's DS. The zone verifies; only the DS proof is
+// unusable, which is the shape both new tests below need.
+func unprovableDSZoneLines() []string {
+	return []string{
+		". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+		". 518400 IN NS a.root-servers.test.",
+		". 86400 IN NSEC org. NS SOA RRSIG NSEC DNSKEY ZONEMD",
+		"org. 172800 IN NS ns.org.",
+		"org. 86400 IN NSEC . NS SOA RRSIG NSEC",
+		"ns.org. 172800 IN A 198.51.100.2",
+	}
+}
+
+// TestLocalRootUnprovableDSFallsBackOnTheWire pins the fallback contract at
+// the handler, where it matters: a copy that cannot prove the DS answer
+// must send the query to the real roots, not turn its own gap into a
+// client-visible SERVFAIL. The root here is a loopback authority that
+// counts what reaches the wire, so "fell back" is observable rather than
+// inferred.
+func TestLocalRootUnprovableDSFallsBackOnTheWire(t *testing.T) {
+	orgDS, err := dns.NewRR("org. 86400 IN DS 4321 13 2 " +
+		"1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("NewRR: %v", err)
+	}
+	addr, queries, stop := startTestAuthority(t, map[string][]dns.RR{
+		"org.": {orgDS},
+	})
+	defer stop()
+
+	z, err := roottest.BuildZone(localroot.ComputeDigest, unprovableDSZoneLines(), roottest.Serial)
+	if err != nil {
+		t.Fatalf("build zone: %v", err)
+	}
+
+	cfg := makeTestConfig()
+	cfg.RootServers = []string{addr}
+	cfg.Root6Servers = nil
+	cfg.IPv6Access = false
+	cfg.DNSSEC = "off"
+	handler := New(cfg)
+	mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
+	if err := mgr.Load(z.RRs); err != nil {
+		t.Fatalf("manager load: %v", err)
+	}
+	handler.resolver.localRoot.Store(mgr)
+
+	m := new(dns.Msg)
+	m.SetQuestion("org.", dns.TypeDS)
+	m.RecursionDesired = true
+	resp := handler.handle(context.Background(), m)
+
+	if resp == nil {
+		t.Fatal("handler returned no response")
+	}
+	if resp.Rcode == dns.RcodeServerFailure {
+		t.Fatal("an unprovable DS became a SERVFAIL instead of falling back to the roots")
+	}
+	if queries("org.") == 0 {
+		t.Fatal("the query never reached the wire — the copy answered from a proof it does not have")
+	}
+}
+
+// TestLocalRootDSNODATARequiresParentSideProof pins the bitmap rule the
+// resolver's own VerifyNODATANSEC enforces: DS non-existence is provable
+// only on the parent side, so an NSEC carrying SOA — the child apex's own —
+// cannot serve as the NODATA proof however well the zone verifies.
+func TestLocalRootDSNODATARequiresParentSideProof(t *testing.T) {
+	z, err := roottest.BuildZone(localroot.ComputeDigest, unprovableDSZoneLines(), roottest.Serial)
+	if err != nil {
+		t.Fatalf("build zone: %v", err)
+	}
+	r := newWiredTestResolver(makeTestConfig())
+	mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
+	if err := mgr.Load(z.RRs); err != nil {
+		t.Fatalf("manager load: %v", err)
+	}
+	r.localRoot.Store(mgr)
+
+	rs := localRootState("org.", dns.TypeDS, false)
+	answer, handled := r.consultLocalRoot(context.Background(), rs)
+	if handled || answer != nil {
+		t.Fatalf("a child-apex NSEC was served as a DS NODATA proof (handled=%v)", handled)
+	}
+	if rs.level != 0 || !rs.isRoot {
+		t.Fatal("the refused DS answer disturbed the walk")
+	}
+}
+
 // TestLocalRootFallbacks pins every path that must leave the walk exactly
 // as it was: no manager, no active copy, the apex itself.
 func TestLocalRootFallbacks(t *testing.T) {

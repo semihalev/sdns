@@ -116,28 +116,38 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 		}
 	}
 
-	// RFC 8976 §4 step 4: "When multiple ZONEMD RRs are present, each MUST
-	// specify a unique Scheme and Hash Algorithm tuple." A repeated tuple
-	// is a malformed RRset, and picking the first match would let an
-	// attacker append a second digest of their own next to the real one.
-	// The check covers every tuple, not only the one this build uses.
-	seen := make(map[uint16]struct{}, len(zonemds))
+	// RFC 8976 §4 step 4: "If the ZONEMD RRset contains more than one RR
+	// with the same Scheme and Hash Algorithm, digest verification for
+	// those ZONEMD RRs MUST NOT be considered successful." The
+	// disqualification is scoped to the repeated tuple — step 5 adds that
+	// "a match using any one of the recipient's supported Schemes and Hash
+	// Algorithms is sufficient to verify the zone" — so a zone carrying a
+	// duplicated tuple alongside a sound unique one still verifies through
+	// the latter. Counting first, then skipping only the duplicates, is
+	// what keeps an appended digest from being usable without letting it
+	// deny an otherwise valid zone.
+	tupleCount := make(map[uint16]int, len(zonemds))
 	for _, z := range zonemds {
-		tuple := uint16(z.Scheme)<<8 | uint16(z.Hash)
-		if _, dup := seen[tuple]; dup {
-			return errDuplicateZONEMD
-		}
-		seen[tuple] = struct{}{}
+		tupleCount[uint16(z.Scheme)<<8|uint16(z.Hash)]++
 	}
 
 	var chosen *dns.ZONEMD
+	duplicated := false
 	for _, z := range zonemds {
-		if z.Scheme == zonemdSchemeSimple && z.Hash == zonemdHashSHA384 {
-			chosen = z
-			break
+		if z.Scheme != zonemdSchemeSimple || z.Hash != zonemdHashSHA384 {
+			continue
 		}
+		if tupleCount[uint16(z.Scheme)<<8|uint16(z.Hash)] > 1 {
+			duplicated = true
+			continue
+		}
+		chosen = z
+		break
 	}
 	if chosen == nil {
+		if duplicated {
+			return errDuplicateZONEMD
+		}
 		return errNoZONEMD
 	}
 	if chosen.Serial != soa.Serial {

@@ -58,7 +58,16 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 
 	if ref, ok := snap.Referral(tld); ok {
 		if qname == tld && q.Qtype == dns.TypeDS {
-			return r.localRootDSAnswer(rs, snap, tld, cd), true
+			// A copy that cannot prove the answer does not answer: the
+			// real roots do. Handing back a SERVFAIL here would turn a
+			// gap in the copy into a client-visible failure, which is
+			// the opposite of what the fallback exists for.
+			answer := r.localRootDSAnswer(rs, snap, tld, cd)
+			if answer == nil {
+				localroot.CountFallback()
+				return nil, false
+			}
+			return answer, true
 		}
 		if r.installLocalRootReferral(ctx, rs, snap, tld, ref, cd) {
 			localroot.CountReferral()
@@ -161,11 +170,16 @@ func (r *Resolver) installLocalRootReferral(
 
 // localRootDSAnswer serves the parent-side DS question for a TLD from the
 // verified copy: the signed DS set, or the exact-owner NSEC NODATA proof
-// for an unsigned delegation. The reply is built on the live request so
-// the transaction ID and flags survive — this answer returns directly,
-// without the normalization the exchange path would apply.
+// for an unsigned delegation. It returns nil when the copy holds no proof
+// of either — the caller falls back to the real roots rather than inventing
+// a failure. The reply is built on the live request so the transaction ID
+// and flags survive, since this answer returns directly, without the
+// normalization the exchange path would apply.
 func (r *Resolver) localRootDSAnswer(rs *resolveState, snap *localroot.Snapshot, tld string, cd bool) *dns.Msg {
 	ds, dsSig, nsec, nsecSig, ok := snap.DSAnswer(tld)
+	if !ok {
+		return nil
+	}
 
 	resp := new(dns.Msg)
 	resp.SetRcode(rs.req, dns.RcodeSuccess)
@@ -174,11 +188,6 @@ func (r *Resolver) localRootDSAnswer(rs *resolveState, snap *localroot.Snapshot,
 	// The handler clears RD before resolution and setTags restores it on
 	// the way out; this answer returns early, so it restores its own.
 	resp.RecursionDesired = true
-	if !ok {
-		// Unreachable behind a Referral hit, but never answer garbage.
-		resp.Rcode = dns.RcodeServerFailure
-		return resp
-	}
 	localroot.CountDS()
 	if len(ds) > 0 {
 		resp.Answer = append(resp.Answer, ds...)
