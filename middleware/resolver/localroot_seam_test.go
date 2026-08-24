@@ -448,26 +448,51 @@ func TestLocalRootUnprovableDSFallsBackOnTheWire(t *testing.T) {
 // resolver's own VerifyNODATANSEC enforces: DS non-existence is provable
 // only on the parent side, so an NSEC carrying SOA — the child apex's own —
 // cannot serve as the NODATA proof however well the zone verifies.
+//
+// Both entries into the copy are covered, because they reach the same
+// unproven claim by different doors: the DS question asks for the proof
+// outright, while an ordinary name under the delegation gets there quietly,
+// installing an empty DS set that declares the child insecure.
 func TestLocalRootDSNODATARequiresParentSideProof(t *testing.T) {
 	z, err := roottest.BuildZone(localroot.ComputeDigest, unprovableDSZoneLines(), roottest.Serial)
 	if err != nil {
 		t.Fatalf("build zone: %v", err)
 	}
-	r := newWiredTestResolver(makeTestConfig())
-	mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
-	if err := mgr.Load(z.RRs); err != nil {
-		t.Fatalf("manager load: %v", err)
+	newResolver := func(t *testing.T) *Resolver {
+		t.Helper()
+		r := newWiredTestResolver(makeTestConfig())
+		mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
+		if err := mgr.Load(z.RRs); err != nil {
+			t.Fatalf("manager load: %v", err)
+		}
+		r.localRoot.Store(mgr)
+		return r
 	}
-	r.localRoot.Store(mgr)
 
-	rs := localRootState("org.", dns.TypeDS, false)
-	answer, handled := r.consultLocalRoot(context.Background(), rs)
-	if handled || answer != nil {
-		t.Fatalf("a child-apex NSEC was served as a DS NODATA proof (handled=%v)", handled)
-	}
-	if rs.level != 0 || !rs.isRoot {
-		t.Fatal("the refused DS answer disturbed the walk")
-	}
+	t.Run("the DS question", func(t *testing.T) {
+		r := newResolver(t)
+		rs := localRootState("org.", dns.TypeDS, false)
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if handled || answer != nil {
+			t.Fatalf("a child-apex NSEC was served as a DS NODATA proof (handled=%v)", handled)
+		}
+		if rs.level != 0 || !rs.isRoot {
+			t.Fatal("the refused DS answer disturbed the walk")
+		}
+	})
+
+	t.Run("an ordinary name under the delegation", func(t *testing.T) {
+		r := newResolver(t)
+		rs := localRootState("www.example.org.", dns.TypeA, false)
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if handled || answer != nil {
+			t.Fatalf("consult answered (handled=%v)", handled)
+		}
+		if rs.level != 0 || !rs.isRoot {
+			t.Fatal("a delegation was installed with an empty DS set on a proof " +
+				"the copy does not hold — the child would be treated as insecure")
+		}
+	})
 }
 
 // TestLocalRootLeaseBoundedBySecurityEvidence pins the bound the ordinary

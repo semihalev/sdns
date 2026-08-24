@@ -92,10 +92,13 @@ func (s *Snapshot) Referral(tld string) (Referral, bool) {
 	ref := Referral{NS: ns, DS: sets[dns.TypeDS], Glue: make(map[string][]dns.RR)}
 	if len(ref.DS) > 0 {
 		ref.SecurityTTL = minRRSetTTL(ref.DS)
-	} else {
-		// Unsigned: the evidence is the NSEC denying DS at this owner, and
-		// its lifetime is what bounds the claim.
-		ref.SecurityTTL = minRRSetTTL(sets[dns.TypeNSEC])
+	} else if nsec, _, ok := dsAbsenceProof(sets); ok {
+		// Unsigned: the evidence is the NSEC that actually denies DS at
+		// this owner, and its lifetime is what bounds the claim. An NSEC
+		// that does not deny it leaves SecurityTTL at zero — installing the
+		// delegation with an empty DS set would assert the child is
+		// insecure on a proof the copy does not hold.
+		ref.SecurityTTL = minRRSetTTL(nsec)
 	}
 	for _, rr := range ns {
 		host := dns.CanonicalName(rr.(*dns.NS).Ns)
@@ -125,33 +128,47 @@ func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns
 	if len(sets[dns.TypeDS]) > 0 {
 		return sets[dns.TypeDS], sigsCovering(sets[dns.TypeRRSIG], dns.TypeDS), nil, nil, true
 	}
-	nsecSet := sets[dns.TypeNSEC]
-	if len(nsecSet) == 0 {
+	nsec, nsecSig, ok = dsAbsenceProof(sets)
+	if !ok {
 		return nil, nil, nil, nil, false
 	}
-	// RFC 4035 §5.4: an exact-owner NSEC denies a type only when its type
-	// bitmap says so. Three bits disqualify it here, and the resolver's own
-	// VerifyNODATANSEC refuses the same shapes:
-	//
-	//   - DS, because a bitmap asserting the type contradicts the missing
-	//     record — a truncated or tampered index, or a zone the copy did
-	//     not fully hold;
-	//   - SOA, because DS non-existence is only provable on the parent
-	//     side: an NSEC carrying SOA is the child apex's own, and the
-	//     child cannot testify about its delegation;
-	//   - CNAME, because then the NSEC proves something else entirely.
+	return nil, nil, nsec, nsecSig, true
+}
+
+// dsAbsenceProof returns the exact-owner NSEC RRset that proves no DS exists
+// at this owner, with its RRSIGs, or ok=false when the records at the owner
+// prove no such thing. It is the single place that answers the question, so
+// the referral's security lifetime and the DS answer cannot disagree about
+// what counts as a proof.
+//
+// RFC 4035 §5.4: an exact-owner NSEC denies a type only when its type bitmap
+// says so. Three bits disqualify it, and the resolver's own
+// VerifyNODATANSEC refuses the same shapes:
+//
+//   - DS, because a bitmap asserting the type contradicts the missing
+//     record — a truncated or tampered index, or a zone the copy did not
+//     fully hold;
+//   - SOA, because DS non-existence is only provable on the parent side: an
+//     NSEC carrying SOA is the child apex's own, and the child cannot
+//     testify about its own delegation;
+//   - CNAME, because then the NSEC proves something else entirely.
+func dsAbsenceProof(sets map[uint16][]dns.RR) (nsec, nsecSig []dns.RR, ok bool) {
+	nsecSet := sets[dns.TypeNSEC]
+	if len(nsecSet) == 0 {
+		return nil, nil, false
+	}
 	for _, rr := range nsecSet {
 		n, isNSEC := rr.(*dns.NSEC)
 		if !isNSEC {
-			return nil, nil, nil, nil, false
+			return nil, nil, false
 		}
 		for _, t := range n.TypeBitMap {
 			if t == dns.TypeDS || t == dns.TypeSOA || t == dns.TypeCNAME {
-				return nil, nil, nil, nil, false
+				return nil, nil, false
 			}
 		}
 	}
-	return nil, nil, nsecSet, sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC), true
+	return nsecSet, sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC), true
 }
 
 // Denial returns the NSEC records proving name does not exist under the
