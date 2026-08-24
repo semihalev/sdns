@@ -495,6 +495,61 @@ func TestLocalRootDSNODATARequiresParentSideProof(t *testing.T) {
 	})
 }
 
+// TestLocalRootInsecureDelegationNeedsTheNSBit pins the other half of the
+// RFC 4035 §5.2 proof. An NSEC without the NS bit is not the parent's word
+// about a delegation, so treating it as one is the downgrade
+// VerifyDelegationNSEC exists to refuse: a stripped-DS bitmap would become
+// evidence that a signed child is insecure. In a local copy it is also an
+// internal contradiction — the owner's real NS RRset is right there, which
+// is how the referral was found in the first place.
+func TestLocalRootInsecureDelegationNeedsTheNSBit(t *testing.T) {
+	z, err := roottest.BuildZone(localroot.ComputeDigest, []string{
+		". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+		". 518400 IN NS a.root-servers.test.",
+		". 86400 IN NSEC org. NS SOA RRSIG NSEC DNSKEY ZONEMD",
+		"org. 172800 IN NS ns.org.",
+		// The delegation's own NSEC omits NS: no DS is asserted, but
+		// neither is the delegation.
+		"org. 86400 IN NSEC . RRSIG NSEC",
+		"ns.org. 172800 IN A 198.51.100.2",
+	}, roottest.Serial)
+	if err != nil {
+		t.Fatalf("build zone: %v", err)
+	}
+	newResolver := func(t *testing.T) *Resolver {
+		t.Helper()
+		r := newWiredTestResolver(makeTestConfig())
+		mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
+		if err := mgr.Load(z.RRs); err != nil {
+			t.Fatalf("manager load: %v", err)
+		}
+		r.localRoot.Store(mgr)
+		return r
+	}
+
+	t.Run("an ordinary name under the delegation", func(t *testing.T) {
+		r := newResolver(t)
+		rs := localRootState("www.example.org.", dns.TypeA, false)
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if handled || answer != nil {
+			t.Fatalf("consult answered (handled=%v)", handled)
+		}
+		if rs.level != 0 || !rs.isRoot {
+			t.Fatal("a delegation was installed as insecure on an NSEC that does " +
+				"not claim the delegation — a stripped DS would read as unsigned")
+		}
+	})
+
+	t.Run("the DS question", func(t *testing.T) {
+		r := newResolver(t)
+		rs := localRootState("org.", dns.TypeDS, false)
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if handled || answer != nil {
+			t.Fatalf("an NSEC without the NS bit was served as a DS NODATA proof (handled=%v)", handled)
+		}
+	})
+}
+
 // TestLocalRootLeaseBoundedBySecurityEvidence pins the bound the ordinary
 // delegation path applies and this one was missing: a delegation may be
 // held only as long as the evidence for its DNSSEC status lives. A DS with

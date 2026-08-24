@@ -141,17 +141,25 @@ func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns
 // the referral's security lifetime and the DS answer cannot disagree about
 // what counts as a proof.
 //
-// RFC 4035 §5.4: an exact-owner NSEC denies a type only when its type bitmap
-// says so. Three bits disqualify it, and the resolver's own
-// VerifyNODATANSEC refuses the same shapes:
+// RFC 4035 §5.2: the proof of an insecure delegation is an NSEC at the
+// delegation name whose bitmap carries NS but neither DS nor SOA. Both
+// halves matter, and the resolver's own VerifyDelegationNSEC requires
+// exactly the same:
 //
-//   - DS, because a bitmap asserting the type contradicts the missing
-//     record — a truncated or tampered index, or a zone the copy did not
-//     fully hold;
-//   - SOA, because DS non-existence is only provable on the parent side: an
-//     NSEC carrying SOA is the child apex's own, and the child cannot
-//     testify about its own delegation;
-//   - CNAME, because then the NSEC proves something else entirely.
+//   - NS must be present, because that is what makes the record the
+//     parent's word about a delegation. Without it, a stripped-DS bitmap
+//     would be taken as evidence that a signed child is insecure — the
+//     downgrade the requirement exists to prevent. Here it is also an
+//     internal contradiction: the copy holds the owner's real NS RRset, so
+//     a bitmap that omits NS disagrees with the zone it came from.
+//   - DS must be absent, because a bitmap asserting the type contradicts
+//     the missing record — a truncated or tampered index, or a zone the
+//     copy did not fully hold.
+//   - SOA must be absent, because DS non-existence is only provable on the
+//     parent side: an NSEC carrying SOA is the child apex's own, and the
+//     child cannot testify about its own delegation.
+//   - CNAME disqualifies too, because then the NSEC proves something else
+//     entirely.
 func dsAbsenceProof(sets map[uint16][]dns.RR) (nsec, nsecSig []dns.RR, ok bool) {
 	nsecSet := sets[dns.TypeNSEC]
 	if len(nsecSet) == 0 {
@@ -162,10 +170,17 @@ func dsAbsenceProof(sets map[uint16][]dns.RR) (nsec, nsecSig []dns.RR, ok bool) 
 		if !isNSEC {
 			return nil, nil, false
 		}
+		hasNS := false
 		for _, t := range n.TypeBitMap {
-			if t == dns.TypeDS || t == dns.TypeSOA || t == dns.TypeCNAME {
+			switch t {
+			case dns.TypeNS:
+				hasNS = true
+			case dns.TypeDS, dns.TypeSOA, dns.TypeCNAME:
 				return nil, nil, false
 			}
+		}
+		if !hasNS {
+			return nil, nil, false
 		}
 	}
 	return nsecSet, sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC), true
