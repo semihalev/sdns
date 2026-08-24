@@ -16,7 +16,7 @@ metrics and operational endpoints (blocklist management, cache purge).
   - Iterative recursive resolution with DNSSEC validation, NSEC/NSEC3
     denial-of-existence proofs, and RFC 5011 automatic root trust-anchor
     maintenance.
-  - QNAME minimization (RFC 7816) for query privacy.
+  - QNAME minimization (RFC 9156) for query privacy.
   - High-performance caching: positive and negative caches, prefetch of
     popular entries, and EDNS Client Subnet (ECS, RFC 7871) aware keying.
   - Forwarding to upstream resolvers over UDP, TCP, DoT, and DoH.
