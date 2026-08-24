@@ -221,16 +221,21 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 	if req == nil {
 		return nil, false
 	}
-	// Every answer handed out here is consumed by the resolver — DS and
-	// DNSKEY lookups above all — and folded into whatever it is validating.
-	// So each one binds the request tree to its own lifetime, exactly as the
-	// middleware hit paths do: a delegation held insecure by a cached DS
-	// denial must not outlive the proof that said so.
+	// Answers handed out here are consumed by the resolver — DS and DNSKEY
+	// lookups above all. Only denial shapes bind the request tree to their
+	// lifetime: a delegation held insecure by a cached DS denial must not
+	// outlive the proof that said so. A positive consult is a validation
+	// input, not part of the answer's lineage — folding its remaining life
+	// into the tree collapsed every fresh answer's served TTL to the oldest
+	// key consulted on the walk, and signature validity already bounds
+	// validated answers at admission.
 	entry, ok := s.Lookup(req)
 	if ok {
 		msg := entry.ToMsg(req)
 		if msg != nil {
-			boundRequestToEntryLifetime(ctx, entry)
+			if msg.Rcode != dns.RcodeSuccess || len(msg.Answer) == 0 {
+				boundRequestToEntryLifetime(ctx, entry)
+			}
 			return msg, true
 		}
 	}
