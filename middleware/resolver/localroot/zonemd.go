@@ -24,6 +24,7 @@ var (
 	errSerialRollback    = errors.New("localroot: zone serial is older than the live copy")
 	errSerialBehindProbe = errors.New("localroot: transferred zone is older than the serial the source announced")
 	errDuplicateZONEMD   = errors.New("localroot: apex carries a repeated ZONEMD scheme/hash tuple")
+	errApexTooLarge      = errors.New("localroot: apex carries an implausible number of keys or digests")
 )
 
 const (
@@ -78,6 +79,17 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) (authUntil time.Time, err error)
 	}
 	if len(dnskeys) == 0 {
 		return time.Time{}, errAnchorChain
+	}
+	// Refuse an implausible apex before any of it is hashed. Capping the
+	// number of candidate signatures is not enough on its own: each
+	// verification hashes the whole RRset it covers, and each key is
+	// digested once per anchor, so an inflated DNSKEY or ZONEMD RRset
+	// turns transfer bytes into cryptographic work regardless of how few
+	// signatures are tried. The root publishes a handful of keys and one
+	// or two digests; a zone claiming dozens is not one this should be
+	// spending anything on.
+	if len(dnskeys) > maxApexRecords || len(zonemds) > maxApexRecords {
+		return time.Time{}, errApexTooLarge
 	}
 
 	if len(anchors) == 0 {
@@ -198,15 +210,24 @@ func dnskeyMatchesAnchor(key *dns.DNSKEY, anchors []dns.RR) bool {
 	return false
 }
 
-// maxApexSignatureAttempts bounds the public-key operations one apex RRset
-// may cost. A zone carrying more than a handful of signatures over one
-// RRset is already pathological — the root publishes one, a rollover a few
-// — and the cap cannot be used to hide a sound signature behind
+// maxApexSignatureAttempts bounds how many public-key operations one apex
+// RRset may cost. A zone carrying more than a handful of signatures over
+// one RRset is already pathological — the root publishes one, a rollover a
+// few — and the cap cannot be used to hide a sound signature behind
 // higher-expiring forgeries in any meaningful sense: anyone able to add
 // records to a transfer can already deny the copy outright by disturbing a
 // digested record. What the cap removes is the amplification, which is a
 // capability they did not otherwise have.
+//
+// It bounds the count of operations only. What each one costs is bounded
+// separately by maxApexRecords, since a verification hashes the whole
+// RRset it covers.
 const maxApexSignatureAttempts = 16
+
+// maxApexRecords bounds how many records of one apex type verification will
+// look at. The real root publishes about four DNSKEYs and one ZONEMD; the
+// margin here is for a rollover, not for a zone that wants to be expensive.
+const maxApexRecords = 32
 
 // verifyApexRRset verifies one apex RRset against the zone keys and returns
 // how long the result holds: the expiration of the signature that carried

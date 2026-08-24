@@ -79,6 +79,12 @@ type Referral struct {
 	DS   []dns.RR
 	Glue map[string][]dns.RR // canonical NS host -> A/AAAA records
 
+	// NSTTL is the delegation's own lifetime: the smallest TTL among its NS
+	// records. Computed here, with the same helper as every other RRset
+	// lifetime, so callers do not each grow their own notion of what an
+	// empty or zero-TTL set means.
+	NSTTL uint32
+
 	// SecurityTTL is how long the delegation's DNSSEC status may be relied
 	// on: the DS RRset's own smallest TTL when the delegation is signed, or
 	// the TTL of the NSEC that proves no DS exists when it is not. A
@@ -99,7 +105,12 @@ func (s *Snapshot) Referral(tld string) (Referral, bool) {
 	if len(ns) == 0 {
 		return Referral{}, false
 	}
-	ref := Referral{NS: ns, DS: sets[dns.TypeDS], Glue: make(map[string][]dns.RR)}
+	ref := Referral{
+		NS:    ns,
+		DS:    sets[dns.TypeDS],
+		Glue:  make(map[string][]dns.RR),
+		NSTTL: minRRSetTTL(ns),
+	}
 	if len(ref.DS) > 0 {
 		ref.SecurityTTL = minRRSetTTL(ref.DS)
 	} else if nsec, _, ok := dsAbsenceProof(sets); ok {

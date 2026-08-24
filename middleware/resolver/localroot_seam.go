@@ -120,12 +120,8 @@ func (r *Resolver) installLocalRootReferral(
 	key := cache.Key(dns.Question{Name: tld, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, cd)
 
 	servers := &authority.Servers{Zone: tld}
-	var minTTL uint32
 	for _, nsRR := range ref.NS {
 		host := dns.CanonicalName(nsRR.(*dns.NS).Ns)
-		if minTTL == 0 || nsRR.Header().Ttl < minTTL {
-			minTTL = nsRR.Header().Ttl
-		}
 		for _, glue := range ref.Glue[host] {
 			switch g := glue.(type) {
 			case *dns.A:
@@ -158,7 +154,7 @@ func (r *Resolver) installLocalRootReferral(
 	// refuses it and the walk falls back rather than asserting an unproven
 	// status.
 	observedAt := time.Now()
-	deadline := observedAt.Add(time.Duration(minTTL) * time.Second)
+	deadline := observedAt.Add(time.Duration(ref.NSTTL) * time.Second)
 	if security := observedAt.Add(time.Duration(ref.SecurityTTL) * time.Second); security.Before(deadline) {
 		deadline = security
 	}

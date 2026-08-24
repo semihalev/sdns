@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -835,5 +836,80 @@ func TestApexSignatureDedupeKeepsDistinctSignatures(t *testing.T) {
 					"in %s was treated as the same signature: %v", tc.field, err)
 			}
 		})
+	}
+}
+
+// TestApexCardinalityIsBounded pins the other half of the work bound.
+// Capping how many signatures are tried does not cap what each attempt
+// costs: a verification hashes the entire RRset it covers, and every key is
+// digested once per trust anchor. So an inflated apex DNSKEY or ZONEMD
+// RRset turns transfer bytes into cryptographic work no matter how few
+// signatures are examined, and the refusal has to come before any of it.
+func TestApexCardinalityIsBounded(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		bulk func(base []dns.RR) []dns.RR
+	}{
+		{"DNSKEY", func(base []dns.RR) []dns.RR {
+			out := base
+			for i := range maxApexRecords + 1 {
+				k := &dns.DNSKEY{
+					Hdr: dns.RR_Header{
+						Name: ".", Rrtype: dns.TypeDNSKEY,
+						Class: dns.ClassINET, Ttl: 172800,
+					},
+					Flags:     256,
+					Protocol:  3,
+					Algorithm: dns.ECDSAP256SHA256,
+					PublicKey: base64.StdEncoding.EncodeToString(
+						append([]byte{byte(i)}, make([]byte, 63)...)),
+				}
+				out = append(out, k)
+			}
+			return out
+		}},
+		{"ZONEMD", func(base []dns.RR) []dns.RR {
+			out := base
+			for i := range maxApexRecords + 1 {
+				md := &dns.ZONEMD{
+					Hdr: dns.RR_Header{
+						Name: ".", Rrtype: dns.TypeZONEMD,
+						Class: dns.ClassINET, Ttl: 86400,
+					},
+					Serial: roottest.Serial,
+					Scheme: uint8(i%200) + 2, //nolint:gosec // bounded test index
+					Hash:   uint8(i%200) + 2, //nolint:gosec // bounded test index
+					Digest: strings.Repeat("ab", sha512.Size384),
+				}
+				out = append(out, md)
+			}
+			return out
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bloated := tc.bulk(append([]dns.RR(nil), z.RRs...))
+
+			// The assertion is *which* check refused it, not merely that
+			// something did. Such a zone fails several ways — a changed
+			// DNSKEY RRset breaks the digest, a changed ZONEMD RRset breaks
+			// its signature — and every one of those verdicts costs the
+			// cryptography this cap exists to avoid. Only errApexTooLarge
+			// says the refusal came from the size check, before any of it.
+			_, err := verifyZone(bloated, z.Anchors)
+			if !errors.Is(err, errApexTooLarge) {
+				t.Fatalf("oversized apex refused with %v, want the size check to "+
+					"refuse it before anything is hashed", err)
+			}
+		})
+	}
+
+	// And the sound zone is nowhere near the cap.
+	if _, err := verifyZone(z.RRs, z.Anchors); err != nil {
+		t.Fatalf("an ordinary zone must be well within the cap: %v", err)
 	}
 }
