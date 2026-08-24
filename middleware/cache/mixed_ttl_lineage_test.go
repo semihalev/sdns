@@ -126,7 +126,7 @@ func TestMixedTTLRecordsServeTheAnswersOwnHorizon(t *testing.T) {
 		}
 	})
 
-	t.Run("the delegation cut is the bound that still applies", func(t *testing.T) {
+	t.Run("the delegation cut bounds every response, the first included", func(t *testing.T) {
 		const name = "signed.cut.example."
 		cut := time.Now().Add(45 * time.Second)
 		first := query(name, middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
@@ -144,8 +144,12 @@ func TestMixedTTLRecordsServeTheAnswersOwnHorizon(t *testing.T) {
 			ch.Cancel()
 		}))
 
-		if got := answerTTL(first); got != 3600 {
-			t.Fatalf("first query A TTL = %d, want the authority's 3600", got)
+		// The ghost bound (GHSA-mqfw-f48p-2vc8) reaches the client on both
+		// responses: a downstream cache must never be invited to keep the
+		// answer past the parent-granted lease, and the uncached response
+		// must make the same promise the hits do.
+		if got := answerTTL(first); got > 45 || got < 40 {
+			t.Fatalf("first query A TTL = %d, want the 45s delegation lease", got)
 		}
 		if got := answerTTL(second); got > 45 || got < 30 {
 			t.Fatalf("second query A TTL = %d, want the 45s delegation lease", got)

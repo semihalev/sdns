@@ -601,8 +601,10 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// field load instead of a ctx.Value walk on every external
 	// client miss. middleware.IsInternal(ctx) remains the
 	// ctx-based successor for code paths without a writer in
-	// scope.
-	if !w.Internal() {
+	// scope. Read once and reused by the wrapping ResponseWriter:
+	// the answer cannot change within one request.
+	internal := w.Internal()
+	if !internal {
 		var (
 			previousGeneration   *waitgroup.Generation
 			failureProbeRegroups int
@@ -755,6 +757,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// may have been mutated by the edns wrapper on the response).
 	rw.clientScope = clientScope
 	rw.meta = meta
+	rw.internal = internal
 	ch.Writer = rw
 	defer func() {
 		ch.Writer = w
@@ -766,6 +769,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		rw.requestTreeBypassesSharedDenial = false
 		rw.denialMissWitness = nil
 		rw.meta = nil
+		rw.internal = false
 		c.writerPool.Put(rw)
 	}()
 
@@ -1605,6 +1609,12 @@ type ResponseWriter struct {
 	// the insert bounds the entry with that deadline. Nil when the
 	// writer is used outside ServeDNS.
 	meta *middleware.ResponseMeta
+	// internal is the wrapped writer's Internal() flag, read once in
+	// ServeDNS. WriteMsg needs it to scope the client-TTL clamp to real
+	// client writes, and must not re-query the wrapped writer: the flag
+	// cannot change within a request, and one call per request is a
+	// contract test doubles rely on.
+	internal bool
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ResponseWriter interface.
@@ -1738,6 +1748,32 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// restart at the initial interval on a later failure.
 	w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
 
+	// The delegation lease caps the TTL the client sees, on this uncached
+	// response exactly as remaining() caps it on every later hit. Without
+	// this the first response advertised the records' own TTL while hits
+	// advertised the lease remainder — two promises for the same records —
+	// and, worse than inconsistent, the first client's downstream cache
+	// could retain a withdrawn delegation's answer past the parent-granted
+	// lease the ghost fix (GHSA-mqfw-f48p-2vc8) bounds everything else to.
+	//
+	// Last, deliberately: every admission above must see the response as
+	// the resolver produced it. The negative-proof provenance fingerprint
+	// seals the authority section TTLs included, so clamping before
+	// ValidatedNegativeProofForResponse silently disqualified every
+	// NXDOMAIN/NODATA proof whose delegation lease ran shorter than its
+	// records — the entry stores are unaffected either way, since packing
+	// happens inside the Set calls and cutUntil bounds reads regardless.
+	//
+	// And external writers only: an internal write hands this same message
+	// back to a CNAME/DNAME caller that re-verifies the fingerprint before
+	// propagating the denial into the outer answer — mutating it here would
+	// lose short-lease provenance mid-chain. The outer response inherits
+	// the cut through the shared meta and is clamped at the real client
+	// write.
+	if !w.internal {
+		clampTTLsToCut(res, cutUntil)
+	}
+
 	return w.ResponseWriter.WriteMsg(res)
 }
 
@@ -1769,6 +1805,34 @@ func (w *ResponseWriter) recursionWorkFailure(fallback *dns.Msg) *dns.Msg {
 		edeCode,
 		edeText,
 	)
+}
+
+// clampTTLsToCut lowers every record TTL in res to the delegation lease's
+// remaining seconds. A zero cut leaves the response untouched; a past cut
+// clamps to zero — the answer is still delivered, but nothing downstream is
+// invited to keep it. OPT is hop metadata whose TTL field is not a TTL.
+func clampTTLsToCut(res *dns.Msg, cutUntil time.Time) {
+	if cutUntil.IsZero() {
+		return
+	}
+	lease := time.Until(cutUntil)
+	if lease < 0 {
+		lease = 0
+	}
+	leaseSecs := uint32(lease.Seconds())
+	clamp := func(rrs []dns.RR) {
+		for _, rr := range rrs {
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue
+			}
+			if rr.Header().Ttl > leaseSecs {
+				rr.Header().Ttl = leaseSecs
+			}
+		}
+	}
+	clamp(res.Answer)
+	clamp(res.Ns)
+	clamp(res.Extra)
 }
 
 // filterCacheableAnswer keeps only the records directly relevant to

@@ -721,3 +721,98 @@ func TestNXDomainCutIntegrationCNAMETransfersTerminalProvenance(t *testing.T) {
 		t.Fatalf("alias-child miss unexpectedly queried terminal target; queries = %d", targetQueryer.calls)
 	}
 }
+
+// TestNXDomainCutIntegrationShortCutClampsClientNotProof pins the ordering of
+// the client-TTL clamp against proof admission. The provenance fingerprint
+// seals the authority section TTLs included, so clamping the response before
+// ValidatedNegativeProofForResponse ran silently disqualified every validated
+// denial whose delegation lease was shorter than its records — the RFC
+// 8020/8198 stores stayed empty exactly when the lease said to be careful.
+// Admission sees the resolver's response untouched; the clamp applies to the
+// client write alone.
+func TestNXDomainCutIntegrationShortCutClampsClientNotProof(t *testing.T) {
+	cache := New(&config.Config{CacheSize: 1024, Expire: 300})
+	defer cache.Stop()
+
+	calls := 0
+	cut := time.Now().Add(30 * time.Second)
+	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+		calls++
+		resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
+		nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
+		middleware.ResponseMetaFrom(ctx).BoundCutFor(cut, 0x99)
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	seed := nxCutRequest(nxCutDeniedName, dns.TypeA)
+	seed.Id = 700
+	got := nxCutExchange(t, cache, downstream, seed, "192.0.2.9:53000")
+	if got.Rcode != dns.RcodeNameError {
+		t.Fatalf("seed rcode = %s, want NXDOMAIN", dns.RcodeToString[got.Rcode])
+	}
+	for _, rr := range got.Ns {
+		if ttl := rr.Header().Ttl; ttl > 30 {
+			t.Fatalf("client-visible %s TTL = %d, want clamped to the 30s lease",
+				dns.TypeToString[rr.Header().Rrtype], ttl)
+		}
+	}
+	if cache.store.NXDomainCutLen() != 1 {
+		t.Fatalf("cut entries = %d, want 1 — the clamp must not disqualify the proof",
+			cache.store.NXDomainCutLen())
+	}
+
+	descendant := nxCutRequest("deep."+nxCutDeniedName, dns.TypeMX)
+	descendant.Id = 701
+	assertNXCutResponse(t, nxCutExchange(t, cache, downstream, descendant, "192.0.2.9:53000"), descendant)
+	if calls != 1 {
+		t.Fatalf("descendant reached downstream past the admitted cut; calls = %d, want 1", calls)
+	}
+}
+
+// TestNXDomainCutIntegrationInternalWriteKeepsProvenance pins the internal
+// half of the clamp's placement: a sub-pipeline write (CNAME/DNAME target
+// resolution) hands the same dns.Msg back to its caller, which re-verifies
+// the provenance fingerprint before propagating the denial into the outer
+// answer. Clamping that message would break the fingerprint and lose
+// short-lease provenance mid-chain — the clamp belongs to the real client
+// write alone, and the outer response inherits the cut through the shared
+// meta.
+func TestNXDomainCutIntegrationInternalWriteKeepsProvenance(t *testing.T) {
+	cache := New(&config.Config{CacheSize: 1024, Expire: 300})
+	defer cache.Stop()
+
+	cut := time.Now().Add(30 * time.Second)
+	var meta middleware.ResponseMeta
+	ctx := middleware.WithResponseMeta(context.Background(), &meta)
+
+	downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+		resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
+		nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
+		middleware.ResponseMetaFrom(ctx).BoundCutFor(cut, 0x9A)
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	// The sentinel internal address: this is how subquery writers are
+	// tagged, and what w.Internal() reports true for.
+	writer := mock.NewWriter("udp", "127.0.0.255:0")
+	req := nxCutRequest(nxCutDeniedName, dns.TypeA)
+	ch := middleware.NewChain([]middleware.Handler{cache, downstream})
+	ch.Reset(writer, req)
+	ch.Next(ctx)
+	if !writer.Written() {
+		t.Fatal("internal pipeline wrote no response")
+	}
+	resp := writer.Msg()
+
+	for _, rr := range resp.Ns {
+		if ttl := rr.Header().Ttl; ttl != 300 {
+			t.Fatalf("internal %s TTL = %d, want the untouched 300 — the clamp leaked into the sub-pipeline",
+				dns.TypeToString[rr.Header().Rrtype], ttl)
+		}
+	}
+	if _, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); !ok {
+		t.Fatal("provenance fingerprint no longer matches the internally returned response")
+	}
+}
