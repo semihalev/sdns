@@ -58,6 +58,16 @@ func (s *Snapshot) Expired(now time.Time) bool { return now.After(s.expireAt) }
 // may claim a longer life.
 func (s *Snapshot) ValidUntil() time.Time { return s.expireAt }
 
+// BoundTo shortens the horizon to at most until. The caller uses it for a
+// bound the records themselves cannot express — the expiration of the
+// signature that authenticated the zone digest, which is what makes the
+// whole copy evidence in the first place.
+func (s *Snapshot) BoundTo(until time.Time) {
+	if until.Before(s.expireAt) {
+		s.expireAt = until
+	}
+}
+
 // SOA returns the apex SOA and its RRSIGs.
 func (s *Snapshot) SOA() (*dns.SOA, []dns.RR) { return s.soa, s.soaSig }
 
@@ -309,10 +319,10 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 		// the RRset as long as one covering signature validates. So an
 		// appended, already-expired RRSIG(ZONEMD) rides in unauthenticated,
 		// and trusting its expiration here would let anyone who can add a
-		// record to a transfer expire a sound copy on arrival. Nothing is
-		// served from these signatures either; every proof the copy hands
-		// out carries signatures the digest does authenticate, and those
-		// still bound the horizon below.
+		// record to a transfer expire a sound copy on arrival. They are
+		// skipped as a group; the one that actually carried verification is
+		// folded in separately by BoundTo, so the copy still cannot outlive
+		// the signature that authenticated it.
 		if sig.TypeCovered == dns.TypeZONEMD &&
 			dns.CanonicalName(sig.Header().Name) == "." {
 			continue

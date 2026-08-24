@@ -232,7 +232,8 @@ func (m *Manager) Load(rrs []dns.RR) error {
 // update, and accepting it would mark the refresh successful and wait a
 // full refresh interval before asking anyone again.
 func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
-	if err := verifyZone(rrs, m.anchors()); err != nil {
+	authUntil, err := verifyZone(rrs, m.anchors())
+	if err != nil {
 		metricTransfers.WithLabelValues("verify_error").Inc()
 		return err
 	}
@@ -241,6 +242,9 @@ func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
 		metricTransfers.WithLabelValues("build_error").Inc()
 		return err
 	}
+	// The digest is evidence only while the signature over it holds, so the
+	// copy cannot outlive that signature however long its records run.
+	snap.BoundTo(authUntil)
 	if expected && snap.serial != expect && !serialNewer(expect, snap.serial) {
 		metricTransfers.WithLabelValues("serial_behind_probe").Inc()
 		return errSerialBehindProbe

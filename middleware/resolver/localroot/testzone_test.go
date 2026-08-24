@@ -52,7 +52,7 @@ func TestVerifyZoneChain(t *testing.T) {
 	root := buildTestRoot(t)
 
 	t.Run("a sealed zone verifies against its anchor", func(t *testing.T) {
-		if err := verifyZone(root.rrs, root.anchors); err != nil {
+		if _, err := verifyZone(root.rrs, root.anchors); err != nil {
 			t.Fatalf("verifyZone: %v", err)
 		}
 	})
@@ -67,7 +67,7 @@ func TestVerifyZoneChain(t *testing.T) {
 				break
 			}
 		}
-		if err := verifyZone(tampered, root.anchors); err == nil {
+		if _, err := verifyZone(tampered, root.anchors); err == nil {
 			t.Fatal("a tampered glue record verified")
 		}
 	})
@@ -76,13 +76,13 @@ func TestVerifyZoneChain(t *testing.T) {
 		foreign := rrsFromText(t,
 			". 172800 IN DS 999 13 2 0000000000000000000000000000000000000000000000000000000000000000",
 		)
-		if err := verifyZone(root.rrs, foreign); err == nil {
+		if _, err := verifyZone(root.rrs, foreign); err == nil {
 			t.Fatal("zone verified against an anchor it does not chain to")
 		}
 	})
 
 	t.Run("no anchors means no verification", func(t *testing.T) {
-		if err := verifyZone(root.rrs, nil); err == nil {
+		if _, err := verifyZone(root.rrs, nil); err == nil {
 			t.Fatal("zone verified with no trust anchors at all")
 		}
 	})
@@ -98,7 +98,7 @@ func TestVerifyZoneChain(t *testing.T) {
 		}
 		// The ZONEMD content changed, so its signature fails first — either
 		// refusal is correct; what must not happen is acceptance.
-		if err := verifyZone(mangled, root.anchors); err == nil {
+		if _, err := verifyZone(mangled, root.anchors); err == nil {
 			t.Fatal("a ZONEMD serial mismatch verified")
 		}
 	})
@@ -114,7 +114,7 @@ func TestVerifyZoneChain(t *testing.T) {
 			}
 			stripped = append(stripped, rr)
 		}
-		if err := verifyZone(stripped, root.anchors); err == nil {
+		if _, err := verifyZone(stripped, root.anchors); err == nil {
 			t.Fatal("a zone with no ZONEMD verified")
 		}
 	})

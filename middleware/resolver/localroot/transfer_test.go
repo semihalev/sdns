@@ -79,7 +79,7 @@ func TestAXFRRoundTrip(t *testing.T) {
 	if len(got) != len(root.rrs) {
 		t.Fatalf("transfer carried %d records, want %d", len(got), len(root.rrs))
 	}
-	if err := verifyZone(got, root.anchors); err != nil {
+	if _, err := verifyZone(got, root.anchors); err != nil {
 		t.Fatalf("transferred zone does not verify: %v", err)
 	}
 

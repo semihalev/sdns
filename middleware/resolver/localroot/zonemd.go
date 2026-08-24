@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsname"
@@ -45,7 +46,12 @@ const (
 // The ZONEMD match authenticates the entire zone contents in one stroke;
 // individual RRSIGs elsewhere in the zone are carried for clients, not
 // re-verified here.
-func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
+//
+// authUntil is when that authentication lapses — the expiration of the
+// signature that carried the ZONEMD RRset through verification. The copy
+// may not be served past it: the digest is only evidence for as long as
+// the signature over it holds.
+func verifyZone(rrs []dns.RR, anchors []dns.RR) (authUntil time.Time, err error) {
 	var (
 		dnskeys []*dns.DNSKEY
 		zonemds []*dns.ZONEMD
@@ -68,14 +74,14 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 		}
 	}
 	if soa == nil {
-		return errNoApex
+		return time.Time{}, errNoApex
 	}
 	if len(dnskeys) == 0 {
-		return errAnchorChain
+		return time.Time{}, errAnchorChain
 	}
 
 	if len(anchors) == 0 {
-		return errAnchorChain
+		return time.Time{}, errAnchorChain
 	}
 
 	// The chain order is the whole defense. First, only the keys that
@@ -93,10 +99,10 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 		}
 	}
 	if len(anchorKeys) == 0 {
-		return errAnchorChain
+		return time.Time{}, errAnchorChain
 	}
-	if err := verifyApexRRset(anchorKeys, typedApexSet(dnskeys), apexSig); err != nil {
-		return errAnchorChain
+	if _, err := verifyApexRRset(anchorKeys, typedApexSet(dnskeys), apexSig); err != nil {
+		return time.Time{}, errAnchorChain
 	}
 
 	keyMap := make(map[uint16][]*dns.DNSKEY, len(dnskeys))
@@ -105,16 +111,18 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 		keyMap[tag] = append(keyMap[tag], k)
 	}
 
-	for _, set := range [][]dns.RR{
-		{soa},
-		typedApexSet(zonemds),
-	} {
-		if len(set) == 0 {
-			continue
-		}
-		if err := verifyApexRRset(keyMap, set, apexSig); err != nil {
-			return err
-		}
+	if _, err := verifyApexRRset(keyMap, []dns.RR{soa}, apexSig); err != nil {
+		return time.Time{}, err
+	}
+	if len(zonemds) == 0 {
+		return time.Time{}, errNoZONEMD
+	}
+	// The ZONEMD RRset's own signature is what makes the digest evidence,
+	// so its expiration is the authentication's, and the caller carries it
+	// into the copy's horizon.
+	authUntil, err = verifyApexRRset(keyMap, typedApexSet(zonemds), apexSig)
+	if err != nil {
+		return time.Time{}, err
 	}
 
 	// RFC 8976 §4 step 4: "If the ZONEMD RRset contains more than one RR
@@ -147,26 +155,26 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) error {
 	}
 	if chosen == nil {
 		if duplicated {
-			return errDuplicateZONEMD
+			return time.Time{}, errDuplicateZONEMD
 		}
-		return errNoZONEMD
+		return time.Time{}, errNoZONEMD
 	}
 	if chosen.Serial != soa.Serial {
-		return errSerialMismatch
+		return time.Time{}, errSerialMismatch
 	}
 
 	digest, err := ComputeDigest(rrs, ".")
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	want, err := hexDecode(chosen.Digest)
 	if err != nil || len(want) != sha512.Size384 {
-		return errDigestMismatch
+		return time.Time{}, errDigestMismatch
 	}
 	if subtle.ConstantTimeCompare(digest, want) != 1 {
-		return errDigestMismatch
+		return time.Time{}, errDigestMismatch
 	}
-	return nil
+	return authUntil, nil
 }
 
 // dnskeyMatchesAnchor reports whether key's DS, computed at each anchor's
@@ -190,24 +198,39 @@ func dnskeyMatchesAnchor(key *dns.DNSKEY, anchors []dns.RR) bool {
 	return false
 }
 
-// verifyApexRRset verifies one apex RRset against the zone keys using the
-// covering RRSIG from the apex signature pool.
-func verifyApexRRset(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sigs []dns.RR) error {
+// verifyApexRRset verifies one apex RRset against the zone keys and returns
+// how long the result holds: the latest expiration among the signatures
+// that actually verified. Authentication is only as good as the signature
+// that carried it (RFC 4035 §5.3.3), and where several signatures verify,
+// the RRset stays authenticated until the last of them lapses.
+//
+// Candidates are tried one at a time rather than as a set, because the
+// caller needs to know which signature carried the verification and not
+// merely that one did — a sibling that fails to verify must not lend its
+// timestamps to the result.
+func verifyApexRRset(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sigs []dns.RR) (time.Time, error) {
 	covered := set[0].Header().Rrtype
-	msg := new(dns.Msg)
-	msg.Answer = append(msg.Answer, set...)
+
+	var until time.Time
 	for _, rr := range sigs {
-		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == covered {
-			msg.Answer = append(msg.Answer, sig)
+		sig, ok := rr.(*dns.RRSIG)
+		if !ok || sig.TypeCovered != covered {
+			continue
+		}
+		msg := new(dns.Msg)
+		msg.Answer = append(msg.Answer, set...)
+		msg.Answer = append(msg.Answer, sig)
+		if verified, err := dnssec.VerifyRRSIG(".", keys, msg); err != nil || !verified {
+			continue
+		}
+		if exp := time.Unix(int64(sig.Expiration), 0); exp.After(until) {
+			until = exp
 		}
 	}
-	if len(msg.Answer) == len(set) {
-		return errBadSignature // no covering signature at all
+	if until.IsZero() {
+		return time.Time{}, errBadSignature
 	}
-	if ok, err := dnssec.VerifyRRSIG(".", keys, msg); err != nil || !ok {
-		return errBadSignature
-	}
-	return nil
+	return until, nil
 }
 
 func typedApexSet[T dns.RR](set []T) []dns.RR {

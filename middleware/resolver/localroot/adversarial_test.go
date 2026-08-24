@@ -103,7 +103,7 @@ func TestVerifyZoneRefusesForeignSignerWithRealKSKPresent(t *testing.T) {
 	// The anchor is the victim's DS, and the forged zone carries the key
 	// that matches it — the zone must still be refused, because that key
 	// signed nothing here.
-	if err := verifyZone(forged, victim.anchors); err == nil {
+	if _, err := verifyZone(forged, victim.anchors); err == nil {
 		t.Fatal("a zone signed by a foreign key was accepted because the anchor-matching key rode along unsigned")
 	}
 }
@@ -137,7 +137,7 @@ func TestManagerRefusesSerialRollback(t *testing.T) {
 	}
 	// Sanity: the older zone is itself perfectly valid — it is refused for
 	// being older, not for being unverifiable.
-	if err := verifyZone(older.RRs, newer.Anchors); err != nil {
+	if _, err := verifyZone(older.RRs, newer.Anchors); err != nil {
 		t.Fatalf("the older zone must verify on its own merits: %v", err)
 	}
 	if err := m.Load(older.RRs); err == nil {
@@ -246,13 +246,13 @@ func TestVerifyZoneRefusesDuplicateZONEMDTuple(t *testing.T) {
 	dup := make([]dns.RR, 0, len(base)+3)
 	dup = append(dup, base...)
 	dup = append(dup, first, second, sig)
-	if err := verifyZone(dup, z.Anchors); err == nil {
+	if _, err := verifyZone(dup, z.Anchors); err == nil {
 		t.Fatal("a repeated ZONEMD scheme/hash tuple verified")
 	}
 
 	// Sanity: the same zone with the single original ZONEMD still verifies,
 	// so the refusal above is the duplicate rule and nothing else.
-	if err := verifyZone(z.RRs, z.Anchors); err != nil {
+	if _, err := verifyZone(z.RRs, z.Anchors); err != nil {
 		t.Fatalf("the unmodified zone must still verify: %v", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestDSAnswerRequiresProvableNODATA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build zone: %v", err)
 	}
-	if err := verifyZone(z.RRs, z.Anchors); err != nil {
+	if _, err := verifyZone(z.RRs, z.Anchors); err != nil {
 		t.Fatalf("the zone itself must verify — the defect is semantic: %v", err)
 	}
 	snap, err := buildSnapshot(z.RRs, time.Now())
@@ -365,7 +365,7 @@ func TestVerifyZoneAcceptsUniqueTupleBesideDuplicates(t *testing.T) {
 	mixed = append(mixed, base...)
 	mixed = append(mixed, simple, unsupportedA, unsupportedB, sig)
 
-	if err := verifyZone(mixed, z.Anchors); err != nil {
+	if _, err := verifyZone(mixed, z.Anchors); err != nil {
 		t.Fatalf("a sound unique tuple beside duplicated unsupported ones must verify: %v", err)
 	}
 }
@@ -477,7 +477,7 @@ func TestSnapshotHorizonIgnoresUnverifiedZONEMDSignature(t *testing.T) {
 	poisoned = append(poisoned, z.RRs...)
 	poisoned = append(poisoned, long)
 
-	if err := verifyZone(poisoned, z.Anchors); err != nil {
+	if _, err := verifyZone(poisoned, z.Anchors); err != nil {
 		t.Fatalf("the zone must still verify — the appended signature is not "+
 			"part of the digest and a sound one covers the RRset: %v", err)
 	}
@@ -556,5 +556,78 @@ func TestRefreshRejectsTransferBehindProbe(t *testing.T) {
 	}
 	if err := m2.refreshOnce(context.Background()); err == nil {
 		t.Fatal("a source that did not deliver what it announced reported success")
+	}
+}
+
+// TestHorizonFollowsTheVerifyingZONEMDSignature is the other half of the
+// poisoning fix. Skipping every apex RRSIG(ZONEMD) keeps an appended
+// expired signature from expiring a sound copy, but the signature that
+// actually carried the ZONEMD RRset through verification is what makes the
+// digest evidence at all: authenticated data may not outlive the signature
+// that authenticated it (RFC 4035 §5.3.3, RFC 8976 §6.4). So a zone whose
+// real ZONEMD signature lapses in a minute must not be served for an hour
+// on the strength of its longer-lived record signatures.
+func TestHorizonFollowsTheVerifyingZONEMDSignature(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	// Re-sign the ZONEMD RRset with a one-minute validity, leaving every
+	// other signature in the zone at its original hour.
+	var (
+		base   []dns.RR
+		zonemd *dns.ZONEMD
+	)
+	for _, rr := range z.RRs {
+		if md, ok := rr.(*dns.ZONEMD); ok {
+			zonemd = md
+			continue
+		}
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == dns.TypeZONEMD {
+			continue
+		}
+		base = append(base, rr)
+	}
+	if zonemd == nil {
+		t.Fatal("built zone has no apex ZONEMD")
+	}
+
+	now := time.Now()
+	short := &dns.RRSIG{
+		Hdr: dns.RR_Header{
+			Name: ".", Rrtype: dns.TypeRRSIG,
+			Class: dns.ClassINET, Ttl: zonemd.Hdr.Ttl,
+		},
+		TypeCovered: dns.TypeZONEMD,
+		Algorithm:   dns.ECDSAP256SHA256,
+		OrigTtl:     zonemd.Hdr.Ttl,
+		Expiration:  uint32(now.Add(time.Minute).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		Inception:   uint32(now.Add(-time.Hour).Unix()),  //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		KeyTag:      z.Key.KeyTag(),
+		SignerName:  ".",
+	}
+	if err := short.Sign(z.Priv.(*ecdsa.PrivateKey), []dns.RR{zonemd}); err != nil {
+		t.Fatalf("sign ZONEMD: %v", err)
+	}
+
+	shortLived := make([]dns.RR, 0, len(base)+2)
+	shortLived = append(shortLived, base...)
+	shortLived = append(shortLived, zonemd, short)
+
+	m := New(nil, func() []dns.RR { return z.Anchors })
+	if err := m.Load(shortLived); err != nil {
+		t.Fatalf("the zone must verify — only its authentication is short: %v", err)
+	}
+	snap := m.Active()
+	if snap == nil {
+		t.Fatal("no copy active")
+	}
+	if got := snap.ValidUntil(); got.After(now.Add(2 * time.Minute)) {
+		t.Fatalf("horizon %v outlives the signature that authenticated the digest (%v)",
+			got, time.Unix(int64(short.Expiration), 0))
+	}
+	if !snap.Expired(now.Add(2 * time.Minute)) {
+		t.Fatal("the copy is still active past the ZONEMD signature's expiration")
 	}
 }
