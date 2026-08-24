@@ -3,6 +3,7 @@ package localroot
 import (
 	"context"
 	"math/rand/v2"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -64,12 +65,25 @@ type Manager struct {
 	timeout time.Duration
 
 	snap atomic.Pointer[Snapshot]
+	// publish serializes the serial check and the swap in Load. The atomic
+	// pointer keeps Active() lock-free on the read side, but the two steps
+	// together are one decision: without this, two loads that both observe
+	// an older serial can each pass the check and store in the opposite
+	// order, quietly rolling the copy backwards — a sequence no race
+	// detector reports, because every individual operation is legal.
+	publish sync.Mutex
 
 	// now/transferFn/probeFn are the test seams; production uses the
 	// package functions and the wall clock.
 	now        func() time.Time
 	transferFn func(ctx context.Context, addr string, timeout time.Duration) ([]dns.RR, error)
 	probeFn    func(ctx context.Context, addr string, timeout time.Duration) (uint32, error)
+	// afterSerialCheck runs between the rollback check and the swap, nil in
+	// production. The window it widens is a few instructions wide, which is
+	// exactly why the ordering bug it guards against is invisible to both
+	// the race detector and to volume testing: a test needs to hold the
+	// section open to prove the section is exclusive.
+	afterSerialCheck func()
 }
 
 // New builds a Manager over the given transfer sources (DefaultSources when
@@ -205,10 +219,16 @@ func (m *Manager) Load(rrs []dns.RR) error {
 		metricTransfers.WithLabelValues("build_error").Inc()
 		return err
 	}
+
+	m.publish.Lock()
+	defer m.publish.Unlock()
 	if cur := m.snap.Load(); cur != nil &&
 		snap.serial != cur.serial && !serialNewer(cur.serial, snap.serial) {
 		metricTransfers.WithLabelValues("serial_rollback").Inc()
 		return errSerialRollback
+	}
+	if m.afterSerialCheck != nil {
+		m.afterSerialCheck()
 	}
 	m.snap.Store(snap)
 	metricTransfers.WithLabelValues("success").Inc()

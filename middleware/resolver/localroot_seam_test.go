@@ -470,6 +470,91 @@ func TestLocalRootDSNODATARequiresParentSideProof(t *testing.T) {
 	}
 }
 
+// TestLocalRootLeaseBoundedBySecurityEvidence pins the bound the ordinary
+// delegation path applies and this one was missing: a delegation may be
+// held only as long as the evidence for its DNSSEC status lives. A DS with
+// a short TTL beside a long NS TTL must not let a withdrawn key be trusted
+// for the NS set's life; the same holds for the NSEC that evidences an
+// unsigned delegation, and a delegation with no evidence at all is not
+// installed from the copy at all.
+func TestLocalRootLeaseBoundedBySecurityEvidence(t *testing.T) {
+	load := func(t *testing.T, lines []string) *Resolver {
+		t.Helper()
+		z, err := roottest.BuildZone(localroot.ComputeDigest, lines, roottest.Serial)
+		if err != nil {
+			t.Fatalf("build zone: %v", err)
+		}
+		r := newWiredTestResolver(makeTestConfig())
+		mgr := localroot.New(nil, func() []dns.RR { return z.Anchors })
+		if err := mgr.Load(z.RRs); err != nil {
+			t.Fatalf("manager load: %v", err)
+		}
+		r.localRoot.Store(mgr)
+		return r
+	}
+
+	t.Run("a short DS TTL bounds a long NS TTL", func(t *testing.T) {
+		r := load(t, []string{
+			". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+			". 518400 IN NS a.root-servers.test.",
+			". 86400 IN NSEC com. NS SOA RRSIG NSEC DNSKEY ZONEMD",
+			"com. 172800 IN NS ns.com.",
+			"com. 60 IN DS 12345 13 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE58AB7A66C82AABE7A9E10F53",
+			"com. 86400 IN NSEC . NS DS RRSIG NSEC",
+			"ns.com. 172800 IN A 198.51.100.1",
+		})
+
+		rs := localRootState("www.example.com.", dns.TypeA, false)
+		if _, handled := r.consultLocalRoot(context.Background(), rs); handled {
+			t.Fatal("referral consult synthesized an answer")
+		}
+		if got := time.Until(rs.cutDeadline); got > 61*time.Second {
+			t.Fatalf("lease runs %v, want the DS RRset's 60s — a withdrawn key "+
+				"must not be trusted for the NS set's longer life", got.Round(time.Second))
+		}
+	})
+
+	t.Run("an unsigned delegation is bounded by its denying NSEC", func(t *testing.T) {
+		r := load(t, []string{
+			". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+			". 518400 IN NS a.root-servers.test.",
+			". 86400 IN NSEC org. NS SOA RRSIG NSEC DNSKEY ZONEMD",
+			"org. 172800 IN NS ns.org.",
+			"org. 90 IN NSEC . NS RRSIG NSEC",
+			"ns.org. 172800 IN A 198.51.100.2",
+		})
+
+		rs := localRootState("www.example.org.", dns.TypeA, false)
+		if _, handled := r.consultLocalRoot(context.Background(), rs); handled {
+			t.Fatal("referral consult synthesized an answer")
+		}
+		if got := time.Until(rs.cutDeadline); got > 91*time.Second {
+			t.Fatalf("lease runs %v, want the denying NSEC's 90s", got.Round(time.Second))
+		}
+	})
+
+	t.Run("no evidence means no local delegation", func(t *testing.T) {
+		// A delegation with neither a DS nor an NSEC: the copy cannot say
+		// whether it is signed, so it must not assert either.
+		r := load(t, []string{
+			". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
+			". 518400 IN NS a.root-servers.test.",
+			". 86400 IN NSEC net. NS SOA RRSIG NSEC DNSKEY ZONEMD",
+			"net. 172800 IN NS ns.net.",
+			"ns.net. 172800 IN A 198.51.100.3",
+		})
+
+		rs := localRootState("www.example.net.", dns.TypeA, false)
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if handled || answer != nil {
+			t.Fatal("a delegation with no security evidence was answered from the copy")
+		}
+		if rs.level != 0 || !rs.isRoot {
+			t.Fatal("the refused referral disturbed the walk")
+		}
+	})
+}
+
 // TestLocalRootFallbacks pins every path that must leave the walk exactly
 // as it was: no manager, no active copy, the apex itself.
 func TestLocalRootFallbacks(t *testing.T) {

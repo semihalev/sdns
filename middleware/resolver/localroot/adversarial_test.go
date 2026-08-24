@@ -6,6 +6,8 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,5 +367,86 @@ func TestVerifyZoneAcceptsUniqueTupleBesideDuplicates(t *testing.T) {
 
 	if err := verifyZone(mixed, z.Anchors); err != nil {
 		t.Fatalf("a sound unique tuple beside duplicated unsupported ones must verify: %v", err)
+	}
+}
+
+// TestLoadPublishIsExclusive pins the publish decision. The serial check and
+// the swap are one decision, not two: two loads that both observe the same
+// older copy can each pass the check and then store in the opposite order,
+// leaving the newer copy displaced by the older one. Every operation
+// involved is individually legal, so the race detector reports nothing, and
+// the window is a few instructions wide, so volume testing does not find it
+// either — the section has to be held open to prove it is exclusive.
+//
+// Held open: the first load pauses between its check and its swap while a
+// second load runs to completion with a newer serial. Under an exclusive
+// section the second load waits, sees the first one's copy, and its newer
+// serial wins. Without one, the paused load wakes and overwrites it.
+func TestLoadPublishIsExclusive(t *testing.T) {
+	base, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("base zone: %v", err)
+	}
+	// One key throughout, so all three copies chain to the same anchor and
+	// the only thing separating them is the serial.
+	zoneAt := func(serial uint32) []dns.RR {
+		t.Helper()
+		z, err := roottest.BuildZoneWithKey(
+			ComputeDigest, roottest.DefaultLines(serial), serial, base.Key, base.Priv,
+		)
+		if err != nil {
+			t.Fatalf("zone %d: %v", serial, err)
+		}
+		return z.RRs
+	}
+	const (
+		oldest = roottest.Serial
+		middle = roottest.Serial + 1
+		newest = roottest.Serial + 2
+	)
+
+	m := New(nil, func() []dns.RR { return base.Anchors })
+	if err := m.Load(zoneAt(oldest)); err != nil {
+		t.Fatalf("seed load: %v", err)
+	}
+
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	// Only the first load pauses, and later ones must pass straight
+	// through: sync.Once would block them inside the hook instead, which
+	// serializes the very overlap this test exists to create.
+	var first atomic.Bool
+	m.afterSerialCheck = func() {
+		if first.CompareAndSwap(false, true) {
+			close(paused)
+			<-release
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = m.Load(zoneAt(middle)) // pauses inside the section
+	}()
+
+	<-paused
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = m.Load(zoneAt(newest))
+	}()
+	// Give the newer load every chance to slip past an unguarded section.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	active := m.Active()
+	if active == nil {
+		t.Fatal("no copy active after the loads")
+	}
+	if active.Serial() != newest {
+		t.Fatalf("active serial = %d, want the newest %d — a paused load rolled the copy backwards",
+			active.Serial(), newest)
 	}
 }

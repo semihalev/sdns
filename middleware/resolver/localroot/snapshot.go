@@ -68,6 +68,14 @@ type Referral struct {
 	NS   []dns.RR
 	DS   []dns.RR
 	Glue map[string][]dns.RR // canonical NS host -> A/AAAA records
+
+	// SecurityTTL is how long the delegation's DNSSEC status may be relied
+	// on: the DS RRset's own smallest TTL when the delegation is signed, or
+	// the TTL of the NSEC that proves no DS exists when it is not. A
+	// delegation whose status the copy cannot evidence at all reports zero,
+	// which drives the caller's lease to zero and sends the walk to the
+	// real roots rather than asserting an unproven security status.
+	SecurityTTL uint32
 }
 
 // Referral returns the delegation for tld (a canonical, rooted, one-label
@@ -82,6 +90,13 @@ func (s *Snapshot) Referral(tld string) (Referral, bool) {
 		return Referral{}, false
 	}
 	ref := Referral{NS: ns, DS: sets[dns.TypeDS], Glue: make(map[string][]dns.RR)}
+	if len(ref.DS) > 0 {
+		ref.SecurityTTL = minRRSetTTL(ref.DS)
+	} else {
+		// Unsigned: the evidence is the NSEC denying DS at this owner, and
+		// its lifetime is what bounds the claim.
+		ref.SecurityTTL = minRRSetTTL(sets[dns.TypeNSEC])
+	}
 	for _, rr := range ns {
 		host := dns.CanonicalName(rr.(*dns.NS).Ns)
 		if hostSets, ok := s.owners[host]; ok {
@@ -184,6 +199,19 @@ func (s *Snapshot) coveringOwner(name string) (string, bool) {
 		return "", false
 	}
 	return owner, true
+}
+
+// minRRSetTTL returns the smallest TTL among rrs, or 0 when rrs is empty —
+// the same shape the resolver's delegation path uses, where "has records"
+// and "their TTL is positive" are deliberately separate questions.
+func minRRSetTTL(rrs []dns.RR) uint32 {
+	var minTTL uint32
+	for i, rr := range rrs {
+		if i == 0 || rr.Header().Ttl < minTTL {
+			minTTL = rr.Header().Ttl
+		}
+	}
+	return minTTL
 }
 
 // sigsCovering filters an owner's RRSIGs to those covering one type.

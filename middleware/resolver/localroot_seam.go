@@ -141,10 +141,27 @@ func (r *Resolver) installLocalRootReferral(
 		return false
 	}
 
-	// The lease is the earlier of the NS TTL and the copy's own serving
-	// horizon: nothing derived from the copy outlives the signatures and
-	// SOA expire that made it trustworthy.
-	deadline := time.Now().Add(time.Duration(minTTL) * time.Second)
+	// The lease is the earliest of three bounds, all measured from one
+	// observation instant so scheduling delay cannot re-inflate any of
+	// them (GHSA-mqfw-f48p-2vc8):
+	//
+	//   - the NS TTL, which is how long the delegation itself may be held;
+	//   - the delegation's security evidence — the DS RRset's TTL when
+	//     signed, the denying NSEC's when not — exactly as
+	//     processDelegation bounds a referral learned off the wire, so a
+	//     withdrawn DS cannot be trusted for the NS set's longer life;
+	//   - the copy's own serving horizon, since nothing derived from it may
+	//     outlive the signatures and SOA expire that made it trustworthy.
+	//
+	// A delegation whose security status the copy cannot evidence reports a
+	// zero SecurityTTL, which drives the lease into the past: the store
+	// refuses it and the walk falls back rather than asserting an unproven
+	// status.
+	observedAt := time.Now()
+	deadline := observedAt.Add(time.Duration(minTTL) * time.Second)
+	if security := observedAt.Add(time.Duration(ref.SecurityTTL) * time.Second); security.Before(deadline) {
+		deadline = security
+	}
 	if until := snap.ValidUntil(); until.Before(deadline) {
 		deadline = until
 	}
