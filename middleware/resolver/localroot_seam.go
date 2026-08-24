@@ -1,0 +1,221 @@
+package resolver
+
+import (
+	"context"
+	"time"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
+	"github.com/semihalev/sdns/middleware/resolver/localroot"
+)
+
+// consultLocalRoot is the one seam the local root copy (RFC 8806) has into
+// the walk: the root step, where nothing deeper is cached and the next
+// query would otherwise go to a real root server. Three shapes come back
+// from the verified copy:
+//
+//   - the TLD exists: its delegation is installed exactly as a root
+//     referral would have installed it, and the walk continues without a
+//     root query (answer=nil, handled=false, servers updated);
+//   - the query is the TLD's DS: the parent-side answer is served straight
+//     from the copy (handled=true);
+//   - the TLD does not exist: the zone's own signed NSEC proof synthesizes
+//     the NXDOMAIN (handled=true).
+//
+// No active verified copy — disabled, never transferred, or past its SOA
+// expire — reports consulted=false and the walk proceeds to the real roots
+// unchanged.
+func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answer *dns.Msg, handled bool) {
+	mgr := r.localRoot.Load()
+	if mgr == nil {
+		return nil, false
+	}
+	snap := mgr.Active()
+	if snap == nil {
+		localroot.CountFallback()
+		return nil, false
+	}
+
+	q := rs.req.Question[0]
+	qname := dns.CanonicalName(q.Name)
+	tld := localroot.TLDOf(qname)
+	if tld == "" {
+		// The apex itself (. SOA/NS/DNSKEY): rare, and the real roots
+		// answer it authoritatively; the copy stays out of it.
+		return nil, false
+	}
+	cd := rs.req.CheckingDisabled
+
+	if ref, ok := snap.Referral(tld); ok {
+		if qname == tld && q.Qtype == dns.TypeDS {
+			return r.localRootDSAnswer(snap, tld, cd), true
+		}
+		if r.installLocalRootReferral(ctx, rs, tld, ref, cd) {
+			localroot.CountReferral()
+			return nil, false
+		}
+		// A referral the walk cannot use (no glue at all): the real
+		// roots resolve it the ordinary way.
+		return nil, false
+	}
+
+	proof, ok := snap.Denial(qname)
+	if !ok {
+		return nil, false
+	}
+	localroot.CountDenial()
+	return r.localRootDenial(ctx, rs, snap, qname, proof, cd), true
+}
+
+// installLocalRootReferral stores the TLD's delegation as a root referral
+// would have and points the walk at it. The delegation entry persists in
+// the delegations cache so upstream RTT evidence accumulates on a stable
+// Servers identity across queries.
+func (r *Resolver) installLocalRootReferral(
+	ctx context.Context,
+	rs *resolveState,
+	tld string,
+	ref localroot.Referral,
+	cd bool,
+) bool {
+	key := cache.Key(dns.Question{Name: tld, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, cd)
+
+	if d, err := r.delegations.Get(key); err == nil {
+		rs.servers = d.Servers
+		rs.parentDS = d.DSSet
+		rs.level = 1
+		rs.isRoot = false
+		rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, d.ExpiresAt, key)
+		noteCut(ctx, rs.cutDeadline, rs.cutKey)
+		return true
+	}
+
+	servers := &authority.Servers{Zone: tld}
+	var minTTL uint32
+	for _, nsRR := range ref.NS {
+		host := dns.CanonicalName(nsRR.(*dns.NS).Ns)
+		if minTTL == 0 || nsRR.Header().Ttl < minTTL {
+			minTTL = nsRR.Header().Ttl
+		}
+		for _, glue := range ref.Glue[host] {
+			switch g := glue.(type) {
+			case *dns.A:
+				servers.List = append(servers.List, authority.NewServer(g.A.String()+":53", authority.IPv4))
+			case *dns.AAAA:
+				if r.cfg.IPv6Access {
+					servers.List = append(servers.List, authority.NewServer("["+g.AAAA.String()+"]:53", authority.IPv6))
+				}
+			}
+		}
+	}
+	if len(servers.List) == 0 {
+		return false
+	}
+
+	deadline := time.Now().Add(time.Duration(minTTL) * time.Second)
+	r.delegations.SetUntilIfAbsent(key, ref.DS, servers, deadline)
+	// Read back what won the store so racing walks share one identity.
+	if d, err := r.delegations.Get(key); err == nil {
+		servers = d.Servers
+	}
+
+	rs.servers = servers
+	rs.parentDS = ref.DS
+	rs.level = 1
+	rs.isRoot = false
+	rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, deadline, key)
+	noteCut(ctx, rs.cutDeadline, rs.cutKey)
+	return true
+}
+
+// localRootDSAnswer serves the parent-side DS question for a TLD from the
+// verified copy: the signed DS set, or the exact-owner NSEC NODATA proof
+// for an unsigned delegation.
+func (r *Resolver) localRootDSAnswer(snap *localroot.Snapshot, tld string, cd bool) *dns.Msg {
+	ds, dsSig, nsec, nsecSig, ok := snap.DSAnswer(tld)
+
+	resp := new(dns.Msg)
+	resp.SetRcode(reqForLocalRoot(tld, dns.TypeDS, cd), dns.RcodeSuccess)
+	resp.Authoritative = false
+	resp.RecursionAvailable = true
+	if !ok {
+		// Unreachable behind a Referral hit, but never answer garbage.
+		resp.Rcode = dns.RcodeServerFailure
+		return resp
+	}
+	localroot.CountDS()
+	if len(ds) > 0 {
+		resp.Answer = append(resp.Answer, ds...)
+		resp.Answer = append(resp.Answer, dsSig...)
+	} else {
+		soa, soaSig := snap.SOA()
+		resp.Ns = append(resp.Ns, soa)
+		resp.Ns = append(resp.Ns, soaSig...)
+		resp.Ns = append(resp.Ns, nsec...)
+		resp.Ns = append(resp.Ns, nsecSig...)
+	}
+	if !cd {
+		resp.AuthenticatedData = true
+	}
+	return resp
+}
+
+// localRootDenial synthesizes the NXDOMAIN a root server would return for a
+// name under an absent TLD, from the copy's own signed proof, and marks the
+// validated-denial provenance exactly as the live validation path does — the
+// RFC 8020 cut and RFC 8198 stores fill from it through their normal seams.
+func (r *Resolver) localRootDenial(
+	ctx context.Context,
+	rs *resolveState,
+	snap *localroot.Snapshot,
+	qname string,
+	proof []dns.RR,
+	cd bool,
+) *dns.Msg {
+	resp := new(dns.Msg)
+	resp.SetRcode(rs.req, dns.RcodeNameError)
+	resp.RecursionAvailable = true
+
+	soa, soaSig := snap.SOA()
+	resp.Ns = append(resp.Ns, soa)
+	resp.Ns = append(resp.Ns, soaSig...)
+	resp.Ns = append(resp.Ns, proof...)
+
+	if cd {
+		return resp
+	}
+	resp.AuthenticatedData = true
+
+	q := dns.Question{Name: qname, Qtype: rs.req.Question[0].Qtype, Qclass: dns.ClassINET}
+	var nsecSet []dns.RR
+	for _, rr := range resp.Ns {
+		if rr.Header().Rrtype == dns.TypeNSEC {
+			nsecSet = append(nsecSet, rr)
+		}
+	}
+	aggressive := false
+	if result, err := dnssec.EvaluateAggressiveNSEC(q, rootzone, nsecSet); err == nil &&
+		result.Rcode == dns.RcodeNameError {
+		aggressive = true
+	}
+	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
+		Subject:    qname,
+		Zone:       rootzone,
+		Kind:       middleware.ValidatedNegativeProofNSEC,
+		Aggressive: aggressive,
+	})
+	return resp
+}
+
+// reqForLocalRoot builds the request shape SetRcode needs for a
+// resolver-synthesized parent-side answer.
+func reqForLocalRoot(name string, qtype uint16, cd bool) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetQuestion(name, qtype)
+	m.CheckingDisabled = cd
+	m.RecursionDesired = false
+	return m
+}

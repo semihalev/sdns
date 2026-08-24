@@ -23,6 +23,7 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
+	"github.com/semihalev/sdns/middleware/resolver/localroot"
 	"github.com/semihalev/zlog/v2"
 	"golang.org/x/sync/errgroup"
 )
@@ -58,6 +59,13 @@ type Resolver struct {
 	// glue addrs cache
 	glueV4 *cache.Cache
 	glueV6 *cache.Cache
+
+	// localRoot serves TLD referrals, DS answers and NXDOMAIN proofs from
+	// a verified local root zone copy (RFC 8806); nil when disabled. Its
+	// consult sits at the walk's root step only. Atomic because tests (and
+	// any future reconfiguration) install a manager after the background
+	// run loop has started reading.
+	localRoot atomic.Pointer[localroot.Manager]
 
 	dnssec   bool
 	rootKeys []dns.RR
@@ -340,6 +348,16 @@ func NewResolver(cfg *config.Config) *Resolver {
 		)
 	}
 
+	if cfg.HyperlocalRoot {
+		r.localRoot.Store(localroot.New(cfg.HyperlocalRootSources, func() []dns.RR {
+			anchors, err := r.dsRRFromRootKeys(context.Background())
+			if err != nil {
+				return nil
+			}
+			return anchors
+		}))
+	}
+
 	go r.run()
 
 	return r
@@ -473,6 +491,17 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 		// delegation established below it inherits this bound.
 		rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, m.deadline, m.key)
 		noteCut(ctx, rs.cutDeadline, rs.cutKey)
+
+		// Nothing deeper is cached and the next query would go to a real
+		// root server: the verified local root copy (RFC 8806), when one
+		// is active, answers instead — a referral installed into rs, a
+		// parent-side DS answer, or a signed NXDOMAIN. No active copy
+		// changes nothing.
+		if rs.level == 0 {
+			if answer, handled := r.consultLocalRoot(ctx, rs); handled {
+				return answer, nil
+			}
+		}
 	}
 
 	// RFC 9156 query minimization, bounded by qnameMinCount probes per
@@ -3703,6 +3732,11 @@ func (r *Resolver) run() {
 	r.checkPriming() // update root server list from priming query
 	if r.dnssec {
 		r.AutoTA() // RFC 5011 automated trust anchor updates
+	}
+	if mgr := r.localRoot.Load(); mgr != nil {
+		// After AutoTA: the first transfer verifies against the loaded
+		// anchors. The manager owns its schedule from here.
+		go mgr.Run(context.Background())
 	}
 
 	ticker := time.NewTicker(12 * time.Hour)
