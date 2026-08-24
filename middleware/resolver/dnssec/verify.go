@@ -569,6 +569,17 @@ func rrsigID(sig *dns.RRSIG) rrsigIdentity {
 	}
 }
 
+// UniqueRRSIGs returns signatures with exact duplicates removed, in a
+// deterministic order. Identity spans every field a verification depends
+// on — owner, class, covered type, algorithm, labels, original TTL,
+// validity window, key tag, signer and the signature bytes — so two
+// records that differ anywhere that matters are kept apart. A caller
+// deduplicating on less can discard a sound signature as a copy of an
+// unsound one that merely resembles it.
+func UniqueRRSIGs(signatures []*dns.RRSIG) []*dns.RRSIG {
+	return uniqueSortedRRSIGs(signatures)
+}
+
 func uniqueSortedRRSIGs(signatures []*dns.RRSIG) []*dns.RRSIG {
 	if len(signatures) == 0 {
 		return signatures

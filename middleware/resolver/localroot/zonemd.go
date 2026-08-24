@@ -225,33 +225,17 @@ const maxApexSignatureAttempts = 16
 func verifyApexRRset(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sigs []dns.RR) (time.Time, error) {
 	covered := set[0].Header().Rrtype
 
-	type sigID struct {
-		keyTag     uint16
-		algorithm  uint8
-		expiration uint32
-		inception  uint32
-		signature  string
-	}
-	seen := make(map[sigID]struct{})
-	candidates := make([]*dns.RRSIG, 0, 4)
+	covering := make([]*dns.RRSIG, 0, 4)
 	for _, rr := range sigs {
-		sig, ok := rr.(*dns.RRSIG)
-		if !ok || sig.TypeCovered != covered {
-			continue
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == covered {
+			covering = append(covering, sig)
 		}
-		id := sigID{
-			keyTag:     sig.KeyTag,
-			algorithm:  sig.Algorithm,
-			expiration: sig.Expiration,
-			inception:  sig.Inception,
-			signature:  sig.Signature,
-		}
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-		candidates = append(candidates, sig)
 	}
+	// Deduplicate on the identity the verifier itself uses. Anything less
+	// can collapse a sound signature into an unsound one that merely
+	// resembles it — two records differing only in, say, original TTL sign
+	// different data, so one may verify where the other cannot.
+	candidates := dnssec.UniqueRRSIGs(covering)
 
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].Expiration > candidates[j].Expiration

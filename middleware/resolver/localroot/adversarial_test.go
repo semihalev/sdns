@@ -771,3 +771,69 @@ func TestApexSignatureOrderPicksTheLatestVerifying(t *testing.T) {
 		t.Fatalf("authenticated until %v, want the longer sound signature's %v", authUntil, want)
 	}
 }
+
+// TestApexSignatureDedupeKeepsDistinctSignatures pins what "the same
+// signature" means. Deduplication exists to keep a flood of identical
+// copies from spending the attempt budget, but every field an RRSIG signs
+// over is part of its identity: two records differing in one of them sign
+// different data, so one may verify where the other cannot. Dedupe on less
+// and a sound signature is discarded as a copy of the unsound sibling that
+// happened to arrive first — the flood then succeeds by resemblance where
+// it could not succeed by volume.
+func TestApexSignatureDedupeKeepsDistinctSignatures(t *testing.T) {
+	z, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("roottest.Build: %v", err)
+	}
+
+	var (
+		base  []dns.RR
+		sound *dns.RRSIG
+	)
+	for _, rr := range z.RRs {
+		if sig, ok := rr.(*dns.RRSIG); ok && sig.TypeCovered == dns.TypeZONEMD {
+			sound = sig
+			continue
+		}
+		base = append(base, rr)
+	}
+	if sound == nil {
+		t.Fatal("built zone has no RRSIG(ZONEMD)")
+	}
+
+	// One decoy per field that the previous, narrower identity ignored and
+	// that a decoy can actually vary here. Each carries the sound
+	// signature's bytes and window, so a dedupe key missing that field
+	// sees a duplicate and drops the sound record.
+	//
+	// The owner name is deliberately absent. Moving it off the apex takes
+	// the record out of the set this function is handed, and — because
+	// only apex RRSIG(ZONEMD) records are excluded from the digest — puts
+	// it into the digest instead, where the mismatch refuses the zone
+	// outright. That field is guarded by a different mechanism, not this
+	// one, and asserting it here would be asserting the wrong defense.
+	for _, tc := range []struct {
+		field  string
+		mangle func(*dns.RRSIG)
+	}{
+		{"OrigTtl", func(s *dns.RRSIG) { s.OrigTtl++ }},
+		{"Labels", func(s *dns.RRSIG) { s.Labels++ }},
+		{"SignerName", func(s *dns.RRSIG) { s.SignerName = "example." }},
+		{"class", func(s *dns.RRSIG) { s.Hdr.Class = dns.ClassCHAOS }},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			decoy := dns.Copy(sound).(*dns.RRSIG)
+			tc.mangle(decoy)
+
+			// The decoy first, so a collision would discard the sound one.
+			withDecoy := make([]dns.RR, 0, len(base)+2)
+			withDecoy = append(withDecoy, base...)
+			withDecoy = append(withDecoy, decoy, sound)
+
+			if _, err := verifyZone(withDecoy, z.Anchors); err != nil {
+				t.Fatalf("a sound zone was refused because a sibling differing only "+
+					"in %s was treated as the same signature: %v", tc.field, err)
+			}
+		})
+	}
+}
