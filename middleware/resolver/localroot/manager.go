@@ -38,6 +38,10 @@ var (
 		Name: "dns_localroot_copy_age_seconds",
 		Help: "Age of the active local root zone copy; -1 when none is active",
 	})
+	metricSerial = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "dns_localroot_serial",
+		Help: "SOA serial of the active local root zone copy; -1 when none is active",
+	})
 	metricTransfers = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dns_localroot_transfers_total",
 		Help: "Root zone transfer attempts by outcome",
@@ -49,10 +53,12 @@ var (
 )
 
 func init() {
-	// The gauge is registered whether or not the feature is enabled, and a
-	// Prometheus gauge starts at zero — which this one's own scale reads as
-	// "transferred this instant". Start it where it belongs: no copy.
+	// Both gauges are registered whether or not the feature is enabled, and a
+	// Prometheus gauge starts at zero — which on these scales reads as
+	// "transferred this instant" and "serial 0". Start them where they
+	// belong: no copy.
 	metricAge.Set(-1)
+	metricSerial.Set(-1)
 }
 
 // CountReferral, CountDenial, CountDS and CountFallback attribute walk
@@ -181,12 +187,23 @@ func (m *Manager) Run(ctx context.Context) {
 			next = refresh
 		}
 
-		if s := m.Active(); s != nil {
-			metricAge.Set(m.now().Sub(s.Loaded()).Seconds())
-		} else {
-			metricAge.Set(-1)
-		}
+		age, serial := m.observe()
+		metricAge.Set(age)
+		metricSerial.Set(serial)
 	}
+}
+
+// observe reports what the gauges should say about the copy right now: its
+// age in seconds and its SOA serial, or -1 for both when no copy is active.
+// The two travel together — an age without a serial cannot tell a fleet
+// whether its nodes converged on the same zone, and a serial without an age
+// cannot tell whether the copy behind it is still moving.
+func (m *Manager) observe() (age, serial float64) {
+	s := m.Active()
+	if s == nil {
+		return -1, -1
+	}
+	return m.now().Sub(s.Loaded()).Seconds(), float64(s.serial)
 }
 
 // refreshOnce probes for a serial change and transfers when one is seen (or

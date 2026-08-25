@@ -258,3 +258,37 @@ func TestNewDropsBlankSources(t *testing.T) {
 		t.Fatalf("sources = %v, want only the usable entry", got)
 	}
 }
+
+// TestObserveReportsSerialAndAge pins what the gauges say. A fleet watching
+// only the copy's age cannot tell whether its nodes settled on the same zone
+// version, which is the question a rollout actually asks.
+func TestObserveReportsSerialAndAge(t *testing.T) {
+	root := buildTestRoot(t)
+	now := time.Now()
+
+	m := New(nil, func() []dns.RR { return root.anchors })
+	m.now = func() time.Time { return now }
+
+	if age, serial := m.observe(); age != -1 || serial != -1 {
+		t.Fatalf("with no copy: age=%v serial=%v, want -1/-1", age, serial)
+	}
+
+	if err := m.Load(root.rrs); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	now = now.Add(90 * time.Second)
+	age, serial := m.observe()
+	if age != 90 {
+		t.Fatalf("age = %v, want 90 seconds since the transfer", age)
+	}
+	if serial != float64(root.serial) {
+		t.Fatalf("serial = %v, want the copy's %d", serial, root.serial)
+	}
+
+	// Past the horizon the copy is withdrawn, and the gauges must say so
+	// rather than freezing on the last serial they saw.
+	now = now.Add(24 * time.Hour)
+	if age, serial := m.observe(); age != -1 || serial != -1 {
+		t.Fatalf("past the horizon: age=%v serial=%v, want -1/-1", age, serial)
+	}
+}
