@@ -756,3 +756,112 @@ func TestLocalRootApexAnswers(t *testing.T) {
 		}
 	})
 }
+
+// TestLocalRootAnswersBoundedByCopyHorizon pins RFC 4035 §5.3.3 at the copy's
+// seam: an authenticated record must not be served with more TTL than the
+// signature over it has life left. The copy's horizon is the earliest RRSIG
+// expiration anywhere in the zone, so bounding by it satisfies the rule for
+// every RRset the copy serves.
+func TestLocalRootAnswersBoundedByCopyHorizon(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+	mgr := r.localRoot.Load()
+	snap := mgr.Active()
+	if snap == nil {
+		t.Fatal("no active copy to serve from")
+	}
+	horizon := uint32(time.Until(snap.ValidUntil())/time.Second) + 1 //nolint:gosec // test window is an hour.
+
+	// The test zone signs with a one-hour window while its shortest published
+	// TTL is a day, so every record served here has to be clamped for the
+	// assertions below to hold — without this the test could pass on a zone
+	// whose TTLs were already short enough.
+	if horizon >= 86400 {
+		t.Fatalf("copy horizon %ds does not bite against the zone's TTLs; the test proves nothing", horizon)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		qname   string
+		qtype   uint16
+		section func(*dns.Msg) []dns.RR
+	}{
+		{"apex", ".", dns.TypeNS, func(m *dns.Msg) []dns.RR { return m.Answer }},
+		{"ds", "com.", dns.TypeDS, func(m *dns.Msg) []dns.RR { return m.Answer }},
+		{"denial", "dev.", dns.TypeA, func(m *dns.Msg) []dns.RR { return m.Ns }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answer, handled := r.consultLocalRoot(context.Background(), localRootState(tc.qname, tc.qtype, false))
+			if !handled || answer == nil {
+				t.Fatalf("%s %s was not answered from the copy", tc.qname, dns.TypeToString[tc.qtype])
+			}
+			records := tc.section(answer)
+			if len(records) == 0 {
+				t.Fatalf("%s %s answered with no records to bound", tc.qname, dns.TypeToString[tc.qtype])
+			}
+			for _, rr := range records {
+				if rr.Header().Ttl > horizon {
+					t.Fatalf("%s %s: %s TTL %d outlives the copy horizon %d",
+						tc.qname, dns.TypeToString[tc.qtype],
+						dns.TypeToString[rr.Header().Rrtype], rr.Header().Ttl, horizon)
+				}
+			}
+		})
+	}
+}
+
+// TestLocalRootAnswersDoNotAliasTheCopy pins that an answer carries copies of
+// the zone's records rather than the records themselves. The Snapshot is
+// immutable and read by every goroutine serving from the copy, while
+// downstream TTL rewrites — clampTTLsToCut is one, and it writes in place —
+// would otherwise reach through an answer into the live copy and change what
+// every later answer says, from an arbitrary request goroutine.
+func TestLocalRootAnswersDoNotAliasTheCopy(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+
+	for _, tc := range []struct {
+		name    string
+		qname   string
+		qtype   uint16
+		section func(*dns.Msg) []dns.RR
+	}{
+		{"apex", ".", dns.TypeNS, func(m *dns.Msg) []dns.RR { return m.Answer }},
+		{"ds", "com.", dns.TypeDS, func(m *dns.Msg) []dns.RR { return m.Answer }},
+		{"denial", "dev.", dns.TypeA, func(m *dns.Msg) []dns.RR { return m.Ns }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first, handled := r.consultLocalRoot(context.Background(), localRootState(tc.qname, tc.qtype, false))
+			if !handled || first == nil {
+				t.Fatalf("%s %s was not answered from the copy", tc.qname, dns.TypeToString[tc.qtype])
+			}
+			records := tc.section(first)
+			if len(records) == 0 {
+				t.Fatalf("%s %s answered with no records", tc.qname, dns.TypeToString[tc.qtype])
+			}
+			before := records[0].Header().Ttl
+			if before <= 1 {
+				t.Fatalf("%s %s served TTL %d, too short to detect an overwrite",
+					tc.qname, dns.TypeToString[tc.qtype], before)
+			}
+			// Stand in for any downstream rewrite of the served message.
+			for _, rr := range records {
+				rr.Header().Ttl = 1
+			}
+
+			second, handled := r.consultLocalRoot(context.Background(), localRootState(tc.qname, tc.qtype, false))
+			if !handled || second == nil {
+				t.Fatalf("%s %s was not answered a second time", tc.qname, dns.TypeToString[tc.qtype])
+			}
+			for _, rr := range tc.section(second) {
+				// The horizon shrinks by the time between the two calls, so
+				// the second answer may be a little shorter — but not by the
+				// overwrite above.
+				if rr.Header().Ttl+5 < before {
+					t.Fatalf("%s %s: a rewrite of the served answer reached the shared copy — "+
+						"%s came back with TTL %d, was %d",
+						tc.qname, dns.TypeToString[tc.qtype],
+						dns.TypeToString[rr.Header().Rrtype], rr.Header().Ttl, before)
+				}
+			}
+		})
+	}
+}

@@ -106,6 +106,46 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 	return r.localRootDenial(ctx, rs, snap, qname, proof, cd), true
 }
 
+// boundToCopy finishes a response built from the local copy: every record is
+// replaced by a copy of itself whose TTL is bounded by the copy's serving
+// horizon. Both halves are requirements, not tidiness:
+//
+//   - RFC 4035 §5.3.3 caps an authenticated RRset's TTL at the remaining life
+//     of the signature that authenticates it. The horizon is the earliest
+//     RRSIG expiration anywhere in the zone, so bounding by it is at least as
+//     strict as the rule demands for every RRset served here. It is the same
+//     third bound installLocalRootReferral already applies to a delegation
+//     lease, applied now to the answers the copy serves directly — without
+//     it, an answer taken shortly before the horizon can advertise days of
+//     TTL for records whose signatures lapse within the hour.
+//   - The Snapshot is immutable and read by every goroutine serving from the
+//     copy. Handing out its records would let any downstream TTL rewrite —
+//     clampTTLsToCut is one, and it writes in place — reach into the live
+//     copy and silently change what every later answer says, from an
+//     arbitrary request goroutine.
+//
+// A horizon less than a second away yields TTL 0, which is the honest answer:
+// serve it, and tell the client not to hold it.
+func boundToCopy(resp *dns.Msg, snap *localroot.Snapshot) {
+	ttl := uint32(max(time.Until(snap.ValidUntil()), 0) / time.Second) //nolint:gosec // bounded above by the SOA expire interval.
+	resp.Answer = copyBoundedTTL(resp.Answer, ttl)
+	resp.Ns = copyBoundedTTL(resp.Ns, ttl)
+}
+
+// copyBoundedTTL replaces each record in rrs with a copy capped at ttl. The
+// slice itself belongs to the caller's freshly built response, so it is
+// rewritten in place; the records do not.
+func copyBoundedTTL(rrs []dns.RR, ttl uint32) []dns.RR {
+	for i, rr := range rrs {
+		c := dns.Copy(rr)
+		if c.Header().Ttl > ttl {
+			c.Header().Ttl = ttl
+		}
+		rrs[i] = c
+	}
+	return rrs
+}
+
 // localRootApexAnswer serves a question asked at the root's own name from
 // the copy: the signed RRset when the apex holds the type, the apex NSEC as
 // the NODATA proof when it does not. A copy that can evidence neither
@@ -153,6 +193,7 @@ func (r *Resolver) localRootApexAnswer(
 	if !cd {
 		resp.AuthenticatedData = true
 	}
+	boundToCopy(resp, snap)
 	localroot.CountApex()
 	return resp, true
 }
@@ -267,6 +308,7 @@ func (r *Resolver) localRootDSAnswer(rs *resolveState, snap *localroot.Snapshot,
 	if !cd {
 		resp.AuthenticatedData = true
 	}
+	boundToCopy(resp, snap)
 	return resp
 }
 
@@ -292,6 +334,10 @@ func (r *Resolver) localRootDenial(
 	resp.Ns = append(resp.Ns, soa)
 	resp.Ns = append(resp.Ns, soaSig...)
 	resp.Ns = append(resp.Ns, proof...)
+	// Before the provenance mark, never after: the fingerprint seals the
+	// authority section's TTLs, so a rewrite afterwards would disqualify the
+	// proof at the admission gate it exists to pass.
+	boundToCopy(resp, snap)
 
 	if cd {
 		return resp
