@@ -13,6 +13,12 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
+// initialTransferDelay is how long the first transfer holds off after
+// startup, before jitter widens it. Long enough for a cold resolver to
+// prime, refresh its anchors and answer its first queries without sharing
+// the link; short enough that the copy is serving within seconds.
+const initialTransferDelay = 10 * time.Second
+
 // DefaultSources are the root servers and ICANN hosts that publish the root
 // zone over AXFR (RFC 8806 appendix A).
 var DefaultSources = []string{
@@ -123,7 +129,14 @@ func (m *Manager) Run(ctx context.Context) {
 		fallbackRetry   = 15 * time.Minute
 	)
 
-	next := time.Duration(0) // immediate first attempt
+	// The first transfer waits out the resolver's own cold start rather
+	// than racing it. A couple of megabytes pulled over TCP while the
+	// priming query, the trust-anchor refresh and the first client queries
+	// are all in flight measurably slows them on a modest link — and the
+	// copy is an optimization, so it should yield to the path it exists to
+	// make faster. The jitter also keeps a fleet restarted together from
+	// asking one transfer source for the zone in the same second.
+	next := initialTransferDelay
 	for {
 		select {
 		case <-ctx.Done():

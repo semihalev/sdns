@@ -3,6 +3,7 @@ package localroot
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,5 +173,39 @@ func TestManagerRefusesUnverifiedSwap(t *testing.T) {
 	}
 	if m.Active() != good {
 		t.Fatal("a tampered transfer displaced the verified copy")
+	}
+}
+
+// TestRunDefersTheFirstTransfer pins that the copy yields to the resolver's
+// cold start. Pulling the zone the instant the process comes up shares the
+// link with the priming query, the trust-anchor refresh and the first
+// client queries — measurably slowing them on a modest connection, which is
+// the opposite of what the copy is for. The delay is generous compared to
+// the window this test watches, so a regression to an immediate transfer
+// shows up immediately rather than as a timing flake.
+func TestRunDefersTheFirstTransfer(t *testing.T) {
+	root := buildTestRoot(t)
+
+	var transfers atomic.Int32
+	m := New(nil, func() []dns.RR { return root.anchors })
+	m.probeFn = func(context.Context, string, time.Duration) (uint32, error) {
+		return root.serial, nil
+	}
+	m.transferFn = func(context.Context, string, time.Duration) ([]dns.RR, error) {
+		transfers.Add(1)
+		return root.rrs, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.Run(ctx)
+
+	time.Sleep(250 * time.Millisecond)
+	if got := transfers.Load(); got != 0 {
+		t.Fatalf("%d transfers within 250ms of start — the first one must wait out "+
+			"the resolver's cold start (%v)", got, initialTransferDelay)
+	}
+	if m.Active() != nil {
+		t.Fatal("a copy became active before any transfer")
 	}
 }
