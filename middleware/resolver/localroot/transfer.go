@@ -129,9 +129,20 @@ func normalizeZone(rrs []dns.RR) []dns.RR {
 			rtype:  hdr.Rrtype,
 			rclass: hdr.Class,
 		}
-		if hasDuplicate(seen[key], rr) {
+		if kept := firstDuplicate(seen[key], rr); kept != nil {
+			// RFC 2181 §5.2: a receiver holding records of one RRset with
+			// differing TTLs treats them as if all carried the lowest. The
+			// duplicate is dropped, but its TTL still has a say — otherwise
+			// the surviving record's lifetime depends on which copy the
+			// source happened to send first.
+			if rr.Header().Ttl < kept.Header().Ttl {
+				kept.Header().Ttl = rr.Header().Ttl
+			}
 			continue
 		}
+		// Copied, because the TTL above is rewritten in place and the caller
+		// still owns the records it handed us.
+		rr = dns.Copy(rr)
 		seen[key] = append(seen[key], rr)
 		out = append(out, rr)
 	}

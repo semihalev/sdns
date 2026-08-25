@@ -386,16 +386,18 @@ func minRRSetTTL(rrs []dns.RR) uint32 {
 	return minTTL
 }
 
-// hasDuplicate reports whether rrs already holds rr. The sets it searches are
+// firstDuplicate returns the record in rrs that rr duplicates, or nil when it
+// is new. Identity is owner, class, type and RDATA — dns.IsDuplicate excludes
+// the TTL, which is what RFC 8976 §3.3.1.1 asks for. The sets it searches are
 // one owner's records of one type — a delegation's NS set, an apex RRSIG set —
 // so they are small enough that a linear scan is the whole of it.
-func hasDuplicate(rrs []dns.RR, rr dns.RR) bool {
+func firstDuplicate(rrs []dns.RR, rr dns.RR) dns.RR {
 	for _, have := range rrs {
 		if dns.IsDuplicate(have, rr) {
-			return true
+			return have
 		}
 	}
-	return false
+	return nil
 }
 
 // sigsCovering filters an owner's RRSIGs to those covering one type.

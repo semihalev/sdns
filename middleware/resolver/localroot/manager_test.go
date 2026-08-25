@@ -364,3 +364,30 @@ func TestAnchorFingerprintIsOrderIndependent(t *testing.T) {
 		t.Fatal("an empty anchor set reported itself usable")
 	}
 }
+
+// TestAnchorFingerprintIgnoresTTL pins that a trust anchor's lifetime is not
+// part of its identity. The same key material re-read with a different TTL is
+// the same anchor, and a fingerprint that moved with it would withdraw a
+// sound copy and send the walk to the real roots over nothing.
+func TestAnchorFingerprintIgnoresTTL(t *testing.T) {
+	anchor := rrsFromText(t,
+		". 172800 IN DS 111 13 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE58AB7A66C82AABE7A9E10F53",
+	)[0]
+	retimed := dns.Copy(anchor)
+	retimed.Header().Ttl = 60
+
+	original, ok := anchorFingerprint([]dns.RR{anchor})
+	if !ok {
+		t.Fatal("a single-record anchor set is not usable")
+	}
+	moved, ok := anchorFingerprint([]dns.RR{retimed})
+	if !ok {
+		t.Fatal("the retimed anchor set is not usable")
+	}
+	if original != moved {
+		t.Fatal("the fingerprint follows the anchor's TTL, so a re-read would withdraw the copy")
+	}
+	if anchor.Header().Ttl != 172800 {
+		t.Fatal("fingerprinting mutated the anchor it was given")
+	}
+}

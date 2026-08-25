@@ -180,3 +180,35 @@ func TestAXFRRefusesNonZoneStream(t *testing.T) {
 	}
 	_ = addr // the well-formed server above stays for symmetry
 }
+
+// TestNormalizeZoneKeepsTheLowestTTL pins RFC 2181 §5.2 for the duplicates
+// normalization collapses: a receiver holding one RRset's records with
+// differing TTLs treats them as if all carried the lowest. Without it the
+// surviving record's lifetime would depend on which copy the source happened
+// to send first.
+func TestNormalizeZoneKeepsTheLowestTTL(t *testing.T) {
+	long := rrsFromText(t, "com. 86400 IN NS ns.com.")[0]
+	short := dns.Copy(long)
+	short.Header().Ttl = 300
+
+	for name, sent := range map[string][]dns.RR{
+		"longest first":  {long, short},
+		"shortest first": {short, long},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := normalizeZone(sent)
+			if len(out) != 1 {
+				t.Fatalf("normalized to %d records, want the duplicate collapsed", len(out))
+			}
+			if got := out[0].Header().Ttl; got != 300 {
+				t.Fatalf("surviving TTL = %d, want the lowest of the two (300)", got)
+			}
+		})
+	}
+
+	// Normalization rewrites TTLs, so it must not do so on the records the
+	// caller still holds.
+	if long.Header().Ttl != 86400 || short.Header().Ttl != 300 {
+		t.Fatalf("normalization mutated its input: %d / %d", long.Header().Ttl, short.Header().Ttl)
+	}
+}

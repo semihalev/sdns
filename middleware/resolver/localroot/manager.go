@@ -227,7 +227,14 @@ func anchorFingerprint(anchors []dns.RR) (fp [sha256.Size]byte, usable bool) {
 		if rr == nil {
 			continue
 		}
-		presentations = append(presentations, strings.ToLower(rr.String()))
+		// The TTL is not part of a trust anchor's identity — the same key
+		// material re-read with a different lifetime is the same anchor. It
+		// is zeroed rather than left in, because a fingerprint that moved
+		// with it would withdraw a sound copy and send the walk to the real
+		// roots over nothing.
+		identity := dns.Copy(rr)
+		identity.Header().Ttl = 0
+		presentations = append(presentations, strings.ToLower(identity.String()))
 	}
 	if len(presentations) == 0 {
 		return fp, false
