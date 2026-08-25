@@ -17,6 +17,9 @@ metrics and operational endpoints (blocklist management, cache purge).
     denial-of-existence proofs, and RFC 5011 automatic root trust-anchor
     maintenance.
   - QNAME minimization (RFC 9156) for query privacy.
+  - Hyperlocal root (RFC 8806): a local copy of the root zone, verified
+    against its ZONEMD digest (RFC 8976) and the root trust anchors, so
+    referrals and denials at the root cost no upstream query.
   - High-performance caching: positive and negative caches, prefetch of
     popular entries, and EDNS Client Subnet (ECS, RFC 7871) aware keying.
   - Forwarding to upstream resolvers over UDP, TCP, DoT, and DoH.

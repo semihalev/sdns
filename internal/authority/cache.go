@@ -103,10 +103,18 @@ func (n *Cache) SetUntil(key uint64, dsSet []dns.RR, servers *Servers, expiresAt
 // exactly the expired value it examined (CompareAndSwap), so a real lease
 // published by a concurrent walk can never be displaced by the provisional
 // one racing it.
-func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) {
+//
+// It returns the delegation that is live under the key afterwards — the one
+// it stored, or the one that beat it. Callers that go on to use the
+// delegation must use the returned value and not their own inputs: servers,
+// DS set and expiry belong to one entry, and pairing a winner's servers
+// with a loser's DS chain would validate one delegation's answers against
+// another's keys. A nil return means nothing is live (a past deadline is
+// not stored).
+func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) *Delegation {
 	now := n.now()
 	if !expiresAt.After(now) {
-		return
+		return nil
 	}
 	if ceiling := now.Add(maximumTTL); expiresAt.After(ceiling) {
 		expiresAt = ceiling
@@ -121,16 +129,17 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 		cur, ok := n.cache.Get(key)
 		if !ok {
 			if n.cache.AddIfAbsent(key, d) {
-				return
+				return d
 			}
 			// Lost the insert race; re-examine what landed.
 			continue
 		}
-		if n.now().Before(cur.(*Delegation).ExpiresAt) {
-			return
+		live := cur.(*Delegation)
+		if n.now().Before(live.ExpiresAt) {
+			return live
 		}
 		if n.cache.CompareAndSwap(key, cur, d) {
-			return
+			return d
 		}
 		// The expired value was replaced under us; re-examine the newer one.
 	}

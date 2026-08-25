@@ -45,7 +45,7 @@ $ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:latest
 Pin to a specific version (recommended for production):
 
 ```shell
-$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.1
+$ docker run -d --name sdns -p 53:53 -p 53:53/udp ghcr.io/semihalev/sdns:1.8.2
 ```
 
 #### Docker Compose
@@ -136,7 +136,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8f::53]:53 rtt:147ms health:[GOO
 example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOOD]"
 ```
 
-## Configuration (v1.8.1)
+## Configuration (v1.8.2)
 
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -187,6 +187,8 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **qname_max_minimize_count** | QNAME minimization (RFC 9156): minimized queries one lookup may spend before the full name goes out. 0 disables. Default: 10 |
 | **qname_minimize_one_label** | How many of those queries add a single label before the rest are grouped. 0 selects the RFC's suggested 4. Default: 4 |
 | **qname_min_level**  | Deprecated. Counted delegation depth instead of queries spent; still read when **qname_max_minimize_count** is unset |
+| **hyperlocal_root**  | Serve the root zone from a local copy (RFC 8806): AXFR from the root servers, ZONEMD-verified (RFC 8976) against the trust anchors, refreshed on the zone's SOA schedule. Root referrals, junk-TLD NXDOMAINs and questions at the root itself (`. NS`, `. SOA`, `. DNSKEY`) cost no upstream query. Default: false |
+| **hyperlocal_root_sources** | Transfer sources (host:port) for the local root copy. Empty selects the RFC 8806 appendix set |
 | **emptyzones**       | Enable local authoritative responses for RFC 1918 zones. See http://as112.net/ for details                         |
 | **tcpkeepalive**     | Enable TCP connection pooling for root and TLD servers. Improves performance by reusing connections. Default: false |
 | **roottcptimeout**   | TCP idle timeout for root server connections. Default: "5s"                                                          |

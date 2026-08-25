@@ -18,7 +18,7 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-const configver = "1.8.1"
+const configver = "1.8.2"
 
 // Config type.
 type Config struct {
@@ -82,7 +82,19 @@ type Config struct {
 	// grouping from the first query would expose a deep name almost at
 	// once, so it is not an available setting.
 	QnameMinimizeOneLabel int `toml:"qname_minimize_one_label"`
-	EmptyZones            []string
+
+	// HyperlocalRoot serves the root zone from a local copy (RFC 8806):
+	// transferred over AXFR from the root servers that publish it,
+	// verified against the ZONEMD digest (RFC 8976) chained to the root
+	// trust anchors, refreshed on the zone's own SOA schedule, and
+	// withdrawn past its SOA expire — the resolver then walks to the real
+	// root servers as if the copy never existed.
+	HyperlocalRoot bool `toml:"hyperlocal_root"`
+	// HyperlocalRootSources overrides the built-in transfer sources
+	// (host:port). Empty selects the RFC 8806 appendix set.
+	HyperlocalRootSources []string `toml:"hyperlocal_root_sources"`
+
+	EmptyZones []string
 
 	// Views are per-client static answers, evaluated in order. A
 	// query whose source IP falls in a view's Sources gets that
@@ -813,6 +825,18 @@ chaos = true
 # queries; it is still read when qname_max_minimize_count is unset.
 qname_max_minimize_count = 10
 qname_minimize_one_label = 4
+
+# Hyperlocal root (RFC 8806)
+# Serve the root zone from a local copy: transferred over AXFR from the root
+# servers that publish it, verified against the zone's ZONEMD digest
+# (RFC 8976) chained to the root trust anchors, and refreshed on the zone's
+# own SOA schedule. Root referrals, junk-TLD NXDOMAINs and questions asked
+# at the root itself then cost no upstream query and leak nothing to the
+# root servers. A copy that cannot be refreshed is withdrawn at its SOA
+# expire and resolution falls back to the real root servers unchanged.
+# hyperlocal_root_sources overrides the built-in transfer hosts (host:port).
+hyperlocal_root = false
+# hyperlocal_root_sources = ["b.root-servers.net:53", "k.root-servers.net:53"]
 
 # Empty zones (AS112 - RFC 7534)
 # Prevents queries for private IP reverse zones from leaking
