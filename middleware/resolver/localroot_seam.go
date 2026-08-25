@@ -55,7 +55,11 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 		// The root's own records — NS, SOA, DNSKEY — are in the copy, and
 		// asking a root server for an answer already held here is the one
 		// thing this package exists to stop doing.
-		return r.localRootApexAnswer(rs, snap, q.Qtype, cd)
+		answer, handled := r.localRootApexAnswer(rs, snap, q.Qtype, cd)
+		if handled {
+			noteCopyHorizon(ctx, snap)
+		}
+		return answer, handled
 	}
 
 	if ref, ok := snap.Referral(tld); ok {
@@ -69,6 +73,7 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 				localroot.CountFallback()
 				return nil, false
 			}
+			noteCopyHorizon(ctx, snap)
 			return answer, true
 		}
 		if r.installLocalRootReferral(ctx, rs, snap, tld, ref, cd) {
@@ -109,7 +114,26 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 	}
 
 	localroot.CountDenial()
+	noteCopyHorizon(ctx, snap)
 	return r.localRootDenial(ctx, rs, snap, qname, proof, cd), true
+}
+
+// noteCopyHorizon binds the request tree to the copy's serving horizon, so
+// the answer cache cannot outlive the copy it was built from.
+//
+// Bounding the wire TTLs is not enough on its own. The cache applies a
+// five-second floor to any TTL below it (dnsutil.MinCacheTTL), so an answer
+// taken in the last seconds of the horizon — TTL bounded to zero or one —
+// would still be admitted for five, and served from cache after Active() had
+// already withdrawn the copy. RFC 8806 asks for an immediate return to the
+// real root servers at that instant, not a few seconds later.
+//
+// The referral path bounds the tree the same way, through the delegation
+// lease. The key is zero because this deadline is an exact instant rather
+// than one a delegation entry supplied — the same shape the cache's own
+// boundRequestTo uses.
+func noteCopyHorizon(ctx context.Context, snap *localroot.Snapshot) {
+	noteCut(ctx, snap.ValidUntil(), 0)
 }
 
 // boundToCopy finishes a response built from the local copy: every record is
@@ -194,7 +218,7 @@ func (r *Resolver) localRootApexAnswer(
 		resp.Answer = append(resp.Answer, sigs...)
 		if qtype == dns.TypeNS {
 			// A root server answers ". NS" with the addresses of the servers
-			// it names (RFC 8109), and the copy holds them as glue. Without
+			// it names (RFC 9609), and the copy holds them as glue. Without
 			// them this answer names thirteen servers and gives no way to
 			// reach any of them — which is also what the resolver's own
 			// 12-hourly priming reads, so it would find no addresses and

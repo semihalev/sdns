@@ -510,6 +510,10 @@ func TestRefreshRejectsTransferBehindProbe(t *testing.T) {
 	root := buildTestRoot(t)
 
 	m := New([]string{"stale.test:53", "honest.test:53"}, func() []dns.RR { return root.anchors })
+	// Start the walk at the stale source: the refresh rotates its starting
+	// point across the list, and this test is about what happens when the
+	// dishonest one is reached, not about which one that is.
+	m.sourceOffset.Store(0)
 	if err := m.Load(root.rrs); err != nil {
 		t.Fatalf("seed load: %v", err)
 	}

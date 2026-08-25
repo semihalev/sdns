@@ -132,30 +132,45 @@ func TestSnapshotApexAnswerRefusesZONEMD(t *testing.T) {
 	}
 }
 
-func TestBuildSnapshotIgnoresDuplicateRRs(t *testing.T) {
+// TestLoadIgnoresDuplicateRRs drives the whole load path, because that is
+// where normalization sits: a doubled record must not survive into the index,
+// must not be digested twice, and must not read as a second ZONEMD tuple.
+func TestLoadIgnoresDuplicateRRs(t *testing.T) {
 	root := buildTestRoot(t)
 
 	// RFC 5936 §2.2: a source that double-sends a record must not put it in
-	// an answer twice. The twin differs only in TTL, which is outside the
-	// RFC 2181 §5.2 identity the rule is written against.
-	doubled := make([]dns.RR, 0, len(root.rrs)+1)
-	twinned := false
+	// an answer twice. The NS twin differs only in TTL, which is outside the
+	// RFC 8976 §3.3.1.1 identity the rule is written against; the ZONEMD
+	// twin is exact, the case that used to read as a repeated tuple and
+	// refuse the whole zone.
+	doubled := make([]dns.RR, 0, len(root.rrs)+2)
+	var twinnedNS, twinnedZONEMD bool
 	for _, rr := range root.rrs {
 		doubled = append(doubled, rr)
-		if ns, ok := rr.(*dns.NS); ok && dns.CanonicalName(ns.Hdr.Name) == "com." {
-			twin := dns.Copy(ns)
-			twin.Header().Ttl += 60
-			doubled = append(doubled, twin)
-			twinned = true
+		switch record := rr.(type) {
+		case *dns.NS:
+			if dns.CanonicalName(record.Hdr.Name) == "com." {
+				twin := dns.Copy(record)
+				twin.Header().Ttl += 60
+				doubled = append(doubled, twin)
+				twinnedNS = true
+			}
+		case *dns.ZONEMD:
+			doubled = append(doubled, dns.Copy(record))
+			twinnedZONEMD = true
 		}
 	}
-	if !twinned {
-		t.Fatal("test zone has no com. NS record to duplicate")
+	if !twinnedNS || !twinnedZONEMD {
+		t.Fatalf("test zone lacks records to duplicate: ns=%v zonemd=%v", twinnedNS, twinnedZONEMD)
 	}
 
-	snap, err := buildSnapshot(doubled, time.Now())
-	if err != nil {
-		t.Fatalf("buildSnapshot: %v", err)
+	m := New(nil, func() []dns.RR { return root.anchors })
+	if err := m.Load(doubled); err != nil {
+		t.Fatalf("a zone with duplicate records was refused: %v", err)
+	}
+	snap := m.Active()
+	if snap == nil {
+		t.Fatal("no active copy after load")
 	}
 	ref, ok := snap.Referral("com.")
 	if !ok {

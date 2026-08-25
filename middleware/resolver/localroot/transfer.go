@@ -99,6 +99,45 @@ func axfr(ctx context.Context, addr string, timeout time.Duration) ([]dns.RR, er
 	}
 }
 
+// rrKey identifies an RRset member for duplicate detection: everything RFC
+// 8976 §3.3.1.1 counts as identity except the RDATA, which dns.IsDuplicate
+// compares directly.
+type rrKey struct {
+	owner  string
+	rtype  uint16
+	rclass uint16
+}
+
+// normalizeZone drops duplicate RRs from a received zone, keeping the first
+// of each. RFC 5936 §2.2 requires an AXFR client to ignore duplicates, and
+// RFC 8976 §3.3.1.1 fixes the identity as owner, class, type and RDATA — the
+// TTL is not part of it.
+//
+// This runs once, before anything else reads the records, because every stage
+// downstream counts them: the apex cardinality bound, the ZONEMD scheme/hash
+// tuple check, the digest, and the index. A source that sends one record
+// twice must not look to any of them like a zone with two. Left to the tuple
+// check in particular, a doubled ZONEMD RR reads as a repeated tuple and
+// refuses a zone RFC 5936 says should simply have been deduplicated.
+func normalizeZone(rrs []dns.RR) []dns.RR {
+	seen := make(map[rrKey][]dns.RR, len(rrs))
+	out := make([]dns.RR, 0, len(rrs))
+	for _, rr := range rrs {
+		hdr := rr.Header()
+		key := rrKey{
+			owner:  dns.CanonicalName(hdr.Name),
+			rtype:  hdr.Rrtype,
+			rclass: hdr.Class,
+		}
+		if hasDuplicate(seen[key], rr) {
+			continue
+		}
+		seen[key] = append(seen[key], rr)
+		out = append(out, rr)
+	}
+	return out
+}
+
 // probeSerial asks addr for the root SOA over TCP and returns its serial.
 // TCP deliberately: the probe talks to the same transfer hosts the AXFR
 // will, so a host that cannot serve TCP is discovered at the probe.

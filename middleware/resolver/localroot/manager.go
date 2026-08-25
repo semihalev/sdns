@@ -2,7 +2,9 @@ package localroot
 
 import (
 	"context"
+	"crypto/sha256"
 	"math/rand/v2"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,14 +35,36 @@ var DefaultSources = []string{
 	"xfr.lax.dns.icann.org:53",
 }
 
+// serving is the manager driving the refresh loop, which is the one the
+// gauges below describe. Set when Run starts; nil in a process where the
+// feature is off, and in tests, which drive a manager directly.
+var serving atomic.Pointer[Manager]
+
+// observed reports what the live copy looks like at scrape time, or -1 when
+// there is nothing to describe. Reading at scrape rather than writing on
+// refresh is what keeps the age honest: the refresh loop wakes on the zone's
+// SOA schedule, so a pushed value would sit frozen for up to a refresh
+// interval and read as though the copy had just arrived.
+func observed(pick func(age, serial float64) float64) float64 {
+	m := serving.Load()
+	if m == nil {
+		return -1
+	}
+	return pick(m.observe())
+}
+
 var (
-	metricAge = promauto.NewGauge(prometheus.GaugeOpts{
+	_ = promauto.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "dns_localroot_copy_age_seconds",
 		Help: "Age of the active local root zone copy; -1 when none is active",
+	}, func() float64 {
+		return observed(func(age, _ float64) float64 { return age })
 	})
-	metricSerial = promauto.NewGauge(prometheus.GaugeOpts{
+	_ = promauto.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "dns_localroot_serial",
 		Help: "SOA serial of the active local root zone copy; -1 when none is active",
+	}, func() float64 {
+		return observed(func(_, serial float64) float64 { return serial })
 	})
 	metricTransfers = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dns_localroot_transfers_total",
@@ -51,15 +75,6 @@ var (
 		Help: "Walk consultations answered from the local root copy",
 	}, []string{"kind"})
 )
-
-func init() {
-	// Both gauges are registered whether or not the feature is enabled, and a
-	// Prometheus gauge starts at zero — which on these scales reads as
-	// "transferred this instant" and "serial 0". Start them where they
-	// belong: no copy.
-	metricAge.Set(-1)
-	metricSerial.Set(-1)
-}
 
 // CountReferral, CountDenial, CountDS and CountFallback attribute walk
 // consultations on the resolver side without exporting the metric vec.
@@ -91,6 +106,16 @@ type Manager struct {
 	timeout time.Duration
 
 	snap atomic.Pointer[Snapshot]
+	// anchorNow caches the last observation of the live trust anchor set,
+	// so Active can compare against it without rebuilding the DS set on
+	// every root consult.
+	anchorNow atomic.Pointer[anchorState]
+
+	// sourceOffset is where the next refresh starts in the source list. It
+	// begins at a random point so a fleet does not converge on one host, and
+	// advances per cycle so a single resolver spreads its own transfers too.
+	// Tests set it to make the walk deterministic.
+	sourceOffset atomic.Uint64
 	// publish serializes the serial check and the swap in Load. The atomic
 	// pointer keeps Active() lock-free on the read side, but the two steps
 	// together are one decision: without this, two loads that both observe
@@ -128,7 +153,7 @@ func New(sources []string, anchors func() []dns.RR) *Manager {
 	if len(sources) == 0 {
 		sources = DefaultSources
 	}
-	return &Manager{
+	m := &Manager{
 		sources:    sources,
 		anchors:    anchors,
 		timeout:    30 * time.Second,
@@ -136,16 +161,86 @@ func New(sources []string, anchors func() []dns.RR) *Manager {
 		transferFn: axfr,
 		probeFn:    probeSerial,
 	}
+	m.sourceOffset.Store(rand.Uint64()) //nolint:gosec // load spreading, not key material.
+	return m
+}
+
+// anchorRecheckInterval bounds how stale Active's view of the trust anchors
+// may be. Rebuilding the anchor DS set costs a lock and a hash per key, and
+// Active runs on every root consult, so the answer is reused for this long —
+// a second of staleness against an anchor change measured in years.
+const anchorRecheckInterval = time.Second
+
+// anchorState is one observation of the live trust anchor set.
+type anchorState struct {
+	fp        [sha256.Size]byte
+	usable    bool
+	checkedAt time.Time
 }
 
 // Active returns the verified snapshot to serve from, or nil when there is
-// none — never transferred, or the copy has outlived its SOA expire.
+// none — never transferred, the copy has outlived its horizon, or the trust
+// anchors that verified it are no longer the resolver's.
 func (m *Manager) Active() *Snapshot {
 	s := m.snap.Load()
 	if s == nil || s.Expired(m.now()) {
 		return nil
 	}
+	if !m.anchorsStillHold(s) {
+		return nil
+	}
 	return s
+}
+
+// anchorsStillHold reports whether the trust anchors that verified this copy
+// are still the ones the resolver holds.
+//
+// Expiry alone is not enough to decide a copy may still be served. RFC 8806
+// §2 requires the copy to be validated with an up-to-date root KSK, and RFC
+// 8976 §6.4 notes that a ZONEMD digest is only as good as the DNSSEC chain
+// behind it — once the anchors are gone, nothing here can be re-derived. So
+// an anchor set that AutoTA has emptied fail-closed, or one whose keys have
+// been replaced or revoked, withdraws the copy immediately rather than
+// letting days of horizon run on evidence that no longer exists. The walk
+// falls back to the real roots and the next refresh re-verifies the zone
+// under whatever anchors are current by then.
+func (m *Manager) anchorsStillHold(s *Snapshot) bool {
+	now := m.now()
+	cur := m.anchorNow.Load()
+	if cur == nil || now.Sub(cur.checkedAt) >= anchorRecheckInterval {
+		fp, usable := anchorFingerprint(m.anchors())
+		cur = &anchorState{fp: fp, usable: usable, checkedAt: now}
+		m.anchorNow.Store(cur)
+	}
+	return cur.usable && cur.fp == s.anchorFP
+}
+
+// anchorFingerprint identifies a trust anchor set independently of the order
+// its records arrive in. An empty set is not usable: it cannot verify
+// anything, so it cannot keep a copy alive either.
+func anchorFingerprint(anchors []dns.RR) (fp [sha256.Size]byte, usable bool) {
+	if len(anchors) == 0 {
+		return fp, false
+	}
+	presentations := make([]string, 0, len(anchors))
+	for _, rr := range anchors {
+		if rr == nil {
+			continue
+		}
+		presentations = append(presentations, strings.ToLower(rr.String()))
+	}
+	if len(presentations) == 0 {
+		return fp, false
+	}
+	sort.Strings(presentations)
+
+	h := sha256.New()
+	for _, p := range presentations {
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write([]byte{0})
+	}
+	h.Sum(fp[:0])
+	return fp, true
 }
 
 // Run drives the refresh loop until ctx is cancelled. The first transfer is
@@ -157,6 +252,10 @@ func (m *Manager) Run(ctx context.Context) {
 		fallbackRefresh = 30 * time.Minute
 		fallbackRetry   = 15 * time.Minute
 	)
+
+	// The manager that owns the refresh lifecycle is the one the gauges
+	// describe; they read it at scrape time.
+	serving.Store(m)
 
 	// The first transfer waits out the resolver's own cold start rather
 	// than racing it. A couple of megabytes pulled over TCP while the
@@ -187,9 +286,6 @@ func (m *Manager) Run(ctx context.Context) {
 			next = refresh
 		}
 
-		age, serial := m.observe()
-		metricAge.Set(age)
-		metricSerial.Set(serial)
 	}
 }
 
@@ -207,8 +303,13 @@ func (m *Manager) observe() (age, serial float64) {
 }
 
 // refreshOnce probes for a serial change and transfers when one is seen (or
-// when no copy exists yet). Sources rotate: the probe's source is the
-// transfer's source, so a host that cannot answer is skipped whole.
+// when no copy exists yet). The probe's source is the transfer's source, so a
+// host that cannot answer is skipped whole.
+//
+// Each cycle starts at a different source. Walking the list from the top
+// every time would send every healthy resolver in a fleet to the same first
+// host for every transfer it ever makes, which is the opposite of what a
+// list of eight equivalent sources is for.
 func (m *Manager) refreshOnce(ctx context.Context) error {
 	// Without anchors nothing this cycle transfers can be verified, and the
 	// refusal would come only after the zone was on the wire. Checking first
@@ -224,7 +325,12 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 	cur := m.snap.Load()
 
 	var lastErr error
-	for _, addr := range m.sources {
+	// The modulo happens in uint64: converting the counter to int first
+	// turns any value past MaxInt64 negative, and a negative remainder
+	// indexes backwards out of the slice.
+	start := int((m.sourceOffset.Add(1) - 1) % uint64(len(m.sources))) //nolint:gosec // the modulo bounds this below len(m.sources), an int.
+	for i := range m.sources {
+		addr := m.sources[(start+i)%len(m.sources)]
 		// probed carries what this source announced into the acceptance
 		// check below, so the transfer is measured against the source's
 		// own claim and not only against what is already installed.
@@ -296,7 +402,14 @@ func (m *Manager) Load(rrs []dns.RR) error {
 // update, and accepting it would mark the refresh successful and wait a
 // full refresh interval before asking anyone again.
 func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
-	authUntil, err := verifyZone(rrs, m.anchors())
+	// One normalization stage, ahead of every reader: see normalizeZone.
+	rrs = normalizeZone(rrs)
+
+	// One reading of the anchors for both the verification and the
+	// fingerprint stamped on the copy: taking them twice could verify
+	// against one set and record another.
+	anchors := m.anchors()
+	authUntil, err := verifyZone(rrs, anchors)
 	if err != nil {
 		metricTransfers.WithLabelValues("verify_error").Inc()
 		return err
@@ -309,6 +422,9 @@ func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
 	// The digest is evidence only while the signature over it holds, so the
 	// copy cannot outlive that signature however long its records run.
 	snap.BoundTo(authUntil)
+	// verifyZone refuses an empty anchor set, so usable is true here; the
+	// fingerprint is what Active later compares the live anchors against.
+	snap.anchorFP, _ = anchorFingerprint(anchors)
 	if expected && snap.serial != expect && !serialNewer(expect, snap.serial) {
 		metricTransfers.WithLabelValues("serial_behind_probe").Inc()
 		return errSerialBehindProbe

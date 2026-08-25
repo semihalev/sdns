@@ -870,7 +870,7 @@ func TestLocalRootAnswersDoNotAliasTheCopy(t *testing.T) {
 
 // TestLocalRootApexNSCarriesPrimingGlue pins the additional section of the
 // copy's answer to ". NS". A root server answers a priming query with the
-// addresses of the servers it names (RFC 8109), and the resolver's own
+// addresses of the servers it names (RFC 9609), and the resolver's own
 // 12-hourly checkPriming reads addresses from Extra and nowhere else — so an
 // answer without them leaves the root server list unrefreshed for the life of
 // the process, and a client asking ". NS" gets names it cannot reach.
@@ -908,4 +908,56 @@ func TestLocalRootApexNSCarriesPrimingGlue(t *testing.T) {
 	if len(reachable) == 0 {
 		t.Fatal(". NS carried no glue — root priming would find no addresses and abort")
 	}
+}
+
+// TestLocalRootAnswersBindTheRequestToTheCopy pins that every answer served
+// from the copy bounds the request tree at the copy's horizon. Bounding the
+// wire TTLs is not enough on its own: the answer cache applies a five-second
+// floor to any shorter TTL, so an answer taken at the edge of the horizon
+// would otherwise be served from cache after the copy had been withdrawn.
+func TestLocalRootAnswersBindTheRequestToTheCopy(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+	horizon := r.localRoot.Load().Active().ValidUntil()
+
+	for _, tc := range []struct {
+		name  string
+		qname string
+		qtype uint16
+	}{
+		{"apex", ".", dns.TypeNS},
+		{"ds", "com.", dns.TypeDS},
+		{"denial", "dev.", dns.TypeA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var meta middleware.ResponseMeta
+			ctx := middleware.WithResponseMeta(context.Background(), &meta)
+
+			answer, handled := r.consultLocalRoot(ctx, localRootState(tc.qname, tc.qtype, false))
+			if !handled || answer == nil {
+				t.Fatalf("%s %s was not answered from the copy", tc.qname, dns.TypeToString[tc.qtype])
+			}
+			cut, _ := meta.Cut()
+			if cut.IsZero() {
+				t.Fatalf("%s %s left the request tree unbounded", tc.qname, dns.TypeToString[tc.qtype])
+			}
+			if cut.After(horizon) {
+				t.Fatalf("%s %s bound the tree to %v, past the copy horizon %v",
+					tc.qname, dns.TypeToString[tc.qtype], cut, horizon)
+			}
+		})
+	}
+
+	// A consult the copy does not answer must leave the tree alone: the real
+	// roots' answer has its own lifetime and the copy has no claim on it.
+	t.Run("fallback binds nothing", func(t *testing.T) {
+		var meta middleware.ResponseMeta
+		ctx := middleware.WithResponseMeta(context.Background(), &meta)
+
+		if _, handled := r.consultLocalRoot(ctx, localRootState(".", dns.TypeZONEMD, false)); handled {
+			t.Fatal(". ZONEMD was answered from the copy")
+		}
+		if cut, _ := meta.Cut(); !cut.IsZero() {
+			t.Fatalf("a fallback bound the request tree to %v", cut)
+		}
+	})
 }

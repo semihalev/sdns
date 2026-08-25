@@ -10,6 +10,7 @@
 package localroot
 
 import (
+	"crypto/sha256"
 	"sort"
 	"time"
 
@@ -24,6 +25,12 @@ type Snapshot struct {
 	serial   uint32
 	loaded   time.Time
 	expireAt time.Time
+
+	// anchorFP identifies the trust anchor set this copy was verified
+	// against. The copy is evidence only for as long as those anchors are
+	// still the resolver's own: an anchor set that has been emptied or
+	// replaced withdraws the basis on which every answer here claims AD=1.
+	anchorFP [sha256.Size]byte
 
 	soa    *dns.SOA
 	soaSig []dns.RR // RRSIG(SOA) at the apex
@@ -125,7 +132,7 @@ func (s *Snapshot) ApexAnswer(qtype uint16) (rrs, sigs, nsec, nsecSig []dns.RR, 
 }
 
 // ApexGlue returns the address records the copy holds for the root's own NS
-// targets — the additional section of a priming response (RFC 8109). The
+// targets — the additional section of a priming response (RFC 9609). The
 // root zone carries these as glue below the delegation that owns them, so
 // they have no signatures of their own; the ZONEMD digest is what
 // authenticates them, and the additional section is outside what AD claims
@@ -420,15 +427,6 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 			s.owners[owner] = sets
 		}
 		t := rr.Header().Rrtype
-		// RFC 5936 §2.2: "AXFR clients MUST ignore any duplicate RRs
-		// received." The digest already tolerates them — equal records hash
-		// once — but the index is what answers are built from, so a source
-		// that double-sends a record would otherwise put it in an answer
-		// twice. Identity is owner, class, type and RDATA, excluding the
-		// TTL (RFC 2181 §5.2), which is what dns.IsDuplicate compares.
-		if hasDuplicate(sets[t], rr) {
-			continue
-		}
 		sets[t] = append(sets[t], rr)
 	}
 

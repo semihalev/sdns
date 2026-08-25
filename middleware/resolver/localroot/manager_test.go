@@ -292,3 +292,75 @@ func TestObserveReportsSerialAndAge(t *testing.T) {
 		t.Fatalf("past the horizon: age=%v serial=%v, want -1/-1", age, serial)
 	}
 }
+
+// TestActiveFollowsTheTrustAnchors pins that a copy stops being served the
+// moment the anchors that verified it stop being the resolver's. Expiry alone
+// is not enough: an anchor set emptied fail-closed, or one whose keys were
+// replaced, withdraws the basis on which every answer built from the copy
+// claims AD=1 — and days of horizon could otherwise run on evidence that no
+// longer exists.
+func TestActiveFollowsTheTrustAnchors(t *testing.T) {
+	root := buildTestRoot(t)
+	other, err := roottest.Build(ComputeDigest)
+	if err != nil {
+		t.Fatalf("second zone: %v", err)
+	}
+	now := time.Now()
+
+	anchors := root.anchors
+	m := New(nil, func() []dns.RR { return anchors })
+	m.now = func() time.Time { return now }
+	if err := m.Load(root.rrs); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if m.Active() == nil {
+		t.Fatal("a freshly verified copy is not being served")
+	}
+
+	// The observation is cached for anchorRecheckInterval, so move past it
+	// before each change — the staleness is deliberate and bounded.
+	advance := func() { now = now.Add(2 * anchorRecheckInterval) }
+
+	anchors = nil
+	advance()
+	if m.Active() != nil {
+		t.Fatal("the copy is still served with no trust anchors at all")
+	}
+
+	// A different anchor set is not this copy's anchor set: the key that
+	// signed what we hold is no longer one the resolver trusts.
+	anchors = other.Anchors
+	advance()
+	if m.Active() != nil {
+		t.Fatal("the copy is still served under a foreign anchor set")
+	}
+
+	// Restored anchors restore the copy — the snapshot never changed, only
+	// the basis for trusting it did.
+	anchors = root.anchors
+	advance()
+	if m.Active() == nil {
+		t.Fatal("the copy was not restored when its own anchors came back")
+	}
+}
+
+func TestAnchorFingerprintIsOrderIndependent(t *testing.T) {
+	rrs := rrsFromText(t,
+		". 172800 IN DS 111 13 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE58AB7A66C82AABE7A9E10F53",
+		". 172800 IN DS 222 8 2 0000000000000000000000000000000000000000000000000000000000000000",
+	)
+	forward, ok := anchorFingerprint(rrs)
+	if !ok {
+		t.Fatal("a two-record anchor set is not usable")
+	}
+	reversed, ok := anchorFingerprint([]dns.RR{rrs[1], rrs[0]})
+	if !ok {
+		t.Fatal("the reversed set is not usable")
+	}
+	if forward != reversed {
+		t.Fatal("the fingerprint depends on the order the anchors arrive in")
+	}
+	if _, ok := anchorFingerprint(nil); ok {
+		t.Fatal("an empty anchor set reported itself usable")
+	}
+}

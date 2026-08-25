@@ -338,15 +338,13 @@ func ComputeDigest(rrs []dns.RR, apex string) ([]byte, error) {
 		// Duplicate RRs digest once (RFC 8976 §3.3.1.1). Sorting makes them
 		// adjacent, so byte-equal canonical forms collapse here.
 		//
-		// The RFC's identity is owner, class, type and RDATA — it excludes
-		// the TTL, which the canonical form carries. Twins differing only in
-		// TTL are therefore digested twice here and the zone fails to
-		// verify, where the RFC would have collapsed them. That is the
-		// deliberate direction to err: such a zone is already a protocol
-		// error (RFC 2181 §5.2), the outcome is a refused copy and a walk to
-		// the real roots, and the alternative — collapsing on an identity
-		// looser than the bytes being hashed — would let an injected
-		// TTL-variant twin pass the digest and reach served data.
+		// The RFC's identity excludes the TTL, which the canonical form
+		// carries, so this pass alone would digest a TTL-variant twin twice.
+		// It does not have to catch that: normalizeZone has already reduced
+		// a transferred zone to one record per identity before verification
+		// begins. This stays as the backstop for callers that hash records
+		// directly — ComputeDigest is exported, and sealing a zone is not a
+		// transfer.
 		if prev != nil && bytes.Equal(prev, entries[i].wire) {
 			continue
 		}
