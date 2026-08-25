@@ -74,7 +74,20 @@ func axfr(ctx context.Context, addr string, timeout time.Duration) ([]dns.RR, er
 				continue
 			}
 			if isApexSOA {
-				// The closing duplicate: the zone is complete.
+				// RFC 5936 §2.2: the stream begins and ends with the same
+				// SOA record. A terminator that differs from the opener is a
+				// source whose zone moved under the transfer, so the records
+				// in between belong to no single version of it. Refusing
+				// here fails over to the next source and names the fault at
+				// the transfer; without the check the stream is accepted and
+				// the inconsistency surfaces later as a digest mismatch,
+				// blamed on verification.
+				if !dns.IsDuplicate(rrs[0], rr) {
+					return nil, errTransferShape
+				}
+				// The closing duplicate: the zone is complete. Anything the
+				// source appends after it is not part of the zone and is
+				// left unread.
 				return rrs, nil
 			}
 			total += dns.Len(rr)

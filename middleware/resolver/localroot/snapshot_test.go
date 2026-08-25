@@ -118,6 +118,82 @@ func TestSnapshotExpiry(t *testing.T) {
 	}
 }
 
+func TestSnapshotApexAnswerRefusesZONEMD(t *testing.T) {
+	snap := testSnapshot(t)
+
+	// Assert the zone actually holds the type: without this the refusal
+	// below would come from the NODATA branch and prove nothing.
+	if len(snap.owners["."][dns.TypeZONEMD]) == 0 {
+		t.Fatal("test zone has no apex ZONEMD, so its refusal cannot be tested here")
+	}
+	if _, _, _, _, ok := snap.ApexAnswer(dns.TypeZONEMD); ok {
+		t.Fatal("ZONEMD served from the copy: RFC 8976 leaves its signatures outside the digest, " +
+			"so serving the set would put unauthenticated records behind AD=1")
+	}
+}
+
+func TestBuildSnapshotIgnoresDuplicateRRs(t *testing.T) {
+	root := buildTestRoot(t)
+
+	// RFC 5936 §2.2: a source that double-sends a record must not put it in
+	// an answer twice. The twin differs only in TTL, which is outside the
+	// RFC 2181 §5.2 identity the rule is written against.
+	doubled := make([]dns.RR, 0, len(root.rrs)+1)
+	twinned := false
+	for _, rr := range root.rrs {
+		doubled = append(doubled, rr)
+		if ns, ok := rr.(*dns.NS); ok && dns.CanonicalName(ns.Hdr.Name) == "com." {
+			twin := dns.Copy(ns)
+			twin.Header().Ttl += 60
+			doubled = append(doubled, twin)
+			twinned = true
+		}
+	}
+	if !twinned {
+		t.Fatal("test zone has no com. NS record to duplicate")
+	}
+
+	snap, err := buildSnapshot(doubled, time.Now())
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	ref, ok := snap.Referral("com.")
+	if !ok {
+		t.Fatal("com. delegation missing")
+	}
+	if len(ref.NS) != 1 {
+		t.Fatalf("com. NS set = %d records, want the duplicate ignored", len(ref.NS))
+	}
+}
+
+func TestSnapshotDSAnswerRefusesUnsignedDS(t *testing.T) {
+	root := buildTestRoot(t)
+
+	// A DS set the copy cannot evidence must not be served: stripping its
+	// signatures leaves a delegation whose secure status is unproven, and
+	// asserting it under AD=1 is the downgrade the proof requirement exists
+	// to prevent.
+	stripped := make([]dns.RR, 0, len(root.rrs))
+	for _, rr := range root.rrs {
+		if sig, ok := rr.(*dns.RRSIG); ok &&
+			sig.TypeCovered == dns.TypeDS && dns.CanonicalName(sig.Hdr.Name) == "com." {
+			continue
+		}
+		stripped = append(stripped, rr)
+	}
+	if len(stripped) == len(root.rrs) {
+		t.Fatal("test zone has no RRSIG(DS) at com. to strip")
+	}
+
+	snap, err := buildSnapshot(stripped, time.Now())
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	if _, _, _, _, ok := snap.DSAnswer("com."); ok {
+		t.Fatal("an unsigned DS set was served from the copy")
+	}
+}
+
 func TestTLDOf(t *testing.T) {
 	for name, want := range map[string]string{
 		".":                "",

@@ -84,8 +84,14 @@ func (s *Snapshot) SOA() (*dns.SOA, []dns.RR) { return s.soa, s.soaSig }
 func (s *Snapshot) ApexAnswer(qtype uint16) (rrs, sigs, nsec, nsecSig []dns.RR, ok bool) {
 	// RRSIG and ANY are asked about the zone rather than answered from it:
 	// a bare RRSIG query has no RRset to cover, and ANY needs a composition
-	// this does not attempt. Both go to the real roots.
-	if qtype == dns.TypeRRSIG || qtype == dns.TypeANY {
+	// this does not attempt. ZONEMD joins them for a different reason: RFC
+	// 8976 excludes the apex ZONEMD RRset's own signatures from the digest,
+	// so an appended RRSIG(ZONEMD) rides into the transfer unauthenticated —
+	// harmless where it already is (verification accepts the RRset on one
+	// good signature, and the expiry fold skips the group), but serving the
+	// set to a client would put unauthenticated records behind AD=1. The
+	// real roots answer this one.
+	if qtype == dns.TypeRRSIG || qtype == dns.TypeANY || qtype == dns.TypeZONEMD {
 		return nil, nil, nil, nil, false
 	}
 	apex, exists := s.owners["."]
@@ -193,8 +199,15 @@ func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns
 	if !exists || len(sets[dns.TypeNS]) == 0 {
 		return nil, nil, nil, nil, false
 	}
-	if len(sets[dns.TypeDS]) > 0 {
-		return sets[dns.TypeDS], sigsCovering(sets[dns.TypeRRSIG], dns.TypeDS), nil, nil, true
+	if ds := sets[dns.TypeDS]; len(ds) > 0 {
+		// An unsigned DS set is not something the root publishes, and
+		// serving one would mean asserting a secure delegation the copy
+		// cannot evidence — the same refusal ApexAnswer makes.
+		dsSig = sigsCovering(sets[dns.TypeRRSIG], dns.TypeDS)
+		if len(dsSig) == 0 {
+			return nil, nil, nil, nil, false
+		}
+		return ds, dsSig, nil, nil, true
 	}
 	nsec, nsecSig, ok = dsAbsenceProof(sets)
 	if !ok {
@@ -314,6 +327,18 @@ func minRRSetTTL(rrs []dns.RR) uint32 {
 	return minTTL
 }
 
+// hasDuplicate reports whether rrs already holds rr. The sets it searches are
+// one owner's records of one type — a delegation's NS set, an apex RRSIG set —
+// so they are small enough that a linear scan is the whole of it.
+func hasDuplicate(rrs []dns.RR, rr dns.RR) bool {
+	for _, have := range rrs {
+		if dns.IsDuplicate(have, rr) {
+			return true
+		}
+	}
+	return false
+}
+
 // sigsCovering filters an owner's RRSIGs to those covering one type.
 func sigsCovering(sigs []dns.RR, covered uint16) []dns.RR {
 	var out []dns.RR
@@ -343,6 +368,15 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 			s.owners[owner] = sets
 		}
 		t := rr.Header().Rrtype
+		// RFC 5936 §2.2: "AXFR clients MUST ignore any duplicate RRs
+		// received." The digest already tolerates them — equal records hash
+		// once — but the index is what answers are built from, so a source
+		// that double-sends a record would otherwise put it in an answer
+		// twice. Identity is owner, class, type and RDATA, excluding the
+		// TTL (RFC 2181 §5.2), which is what dns.IsDuplicate compares.
+		if hasDuplicate(sets[t], rr) {
+			continue
+		}
 		sets[t] = append(sets[t], rr)
 	}
 

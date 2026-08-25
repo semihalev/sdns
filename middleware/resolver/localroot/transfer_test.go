@@ -2,6 +2,7 @@ package localroot
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -89,6 +90,59 @@ func TestAXFRRoundTrip(t *testing.T) {
 	}
 	if serial != root.serial {
 		t.Fatalf("probe serial = %d, want %d", serial, root.serial)
+	}
+}
+
+func TestAXFRRefusesMismatchedClosingSOA(t *testing.T) {
+	root := buildTestRoot(t)
+
+	var opening dns.RR
+	body := make([]dns.RR, 0, len(root.rrs))
+	for _, rr := range root.rrs {
+		if rr.Header().Rrtype == dns.TypeSOA && dns.CanonicalName(rr.Header().Name) == "." {
+			opening = rr
+			continue
+		}
+		body = append(body, rr)
+	}
+	if opening == nil {
+		t.Fatal("test zone has no apex SOA")
+	}
+	// RFC 5936 §2.2: the stream must end with the SOA it began with. This
+	// one announces a different zone version at the close, so the records in
+	// between belong to no single version of it.
+	closing := dns.Copy(opening).(*dns.SOA)
+	closing.Serial++
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		co := &dnsclient.Conn{Conn: c}
+		req, err := co.ReadMsg()
+		if err != nil {
+			return
+		}
+		reply := func(rrs []dns.RR) {
+			m := new(dns.Msg)
+			m.SetReply(req)
+			m.Answer = rrs
+			_ = co.WriteMsg(m)
+		}
+		reply(append([]dns.RR{opening}, body...))
+		reply([]dns.RR{closing})
+	}()
+
+	_, err = axfr(context.Background(), l.Addr().String(), 2*time.Second)
+	if !errors.Is(err, errTransferShape) {
+		t.Fatalf("mismatched closing SOA: err = %v, want errTransferShape", err)
 	}
 }
 
