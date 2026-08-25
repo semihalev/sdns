@@ -3,6 +3,7 @@ package localroot
 import (
 	"context"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,13 @@ var (
 	}, []string{"kind"})
 )
 
+func init() {
+	// The gauge is registered whether or not the feature is enabled, and a
+	// Prometheus gauge starts at zero — which this one's own scale reads as
+	// "transferred this instant". Start it where it belongs: no copy.
+	metricAge.Set(-1)
+}
+
 // CountReferral, CountDenial, CountDS and CountFallback attribute walk
 // consultations on the resolver side without exporting the metric vec.
 func CountReferral() { metricAnswers.WithLabelValues("referral").Inc() }
@@ -60,8 +68,10 @@ func CountDS() { metricAnswers.WithLabelValues("ds").Inc() }
 // CountApex counts a question at the root's own name answered from the copy.
 func CountApex() { metricAnswers.WithLabelValues("apex").Inc() }
 
-// CountFallback counts a root consult that fell back to the real root
-// servers because no verified copy was active.
+// CountFallback counts a root consult the copy did not answer, so the walk
+// went to the real root servers: no verified copy was active, or the copy
+// held no proof of the answer being asked for. Every consult is either an
+// answer of one kind or a fallback, so the kinds sum to the consults.
 func CountFallback() { metricAnswers.WithLabelValues("fallback").Inc() }
 
 // Manager owns the verified snapshot and its refresh lifecycle. Refresh
@@ -99,6 +109,16 @@ type Manager struct {
 // New builds a Manager over the given transfer sources (DefaultSources when
 // empty) and a trust-anchor supplier.
 func New(sources []string, anchors func() []dns.RR) *Manager {
+	// Blank entries are dropped before the emptiness test, so a config that
+	// sets the list to [""] falls back to the built-in sources instead of
+	// leaving one unusable address and silently disabling the feature.
+	usable := make([]string, 0, len(sources))
+	for _, addr := range sources {
+		if addr = strings.TrimSpace(addr); addr != "" {
+			usable = append(usable, addr)
+		}
+	}
+	sources = usable
 	if len(sources) == 0 {
 		sources = DefaultSources
 	}
@@ -173,6 +193,17 @@ func (m *Manager) Run(ctx context.Context) {
 // when no copy exists yet). Sources rotate: the probe's source is the
 // transfer's source, so a host that cannot answer is skipped whole.
 func (m *Manager) refreshOnce(ctx context.Context) error {
+	// Without anchors nothing this cycle transfers can be verified, and the
+	// refusal would come only after the zone was on the wire. Checking first
+	// costs one comparison and saves pulling a few megabytes from every
+	// source, every retry interval, for as long as the anchors stay empty —
+	// which is a state the resolver can hold indefinitely if the trust
+	// anchors fail closed.
+	if len(m.anchors()) == 0 {
+		metricTransfers.WithLabelValues("no_anchors").Inc()
+		return errNoAnchors
+	}
+
 	cur := m.snap.Load()
 
 	var lastErr error

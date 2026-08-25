@@ -38,6 +38,10 @@ func DefaultLines(serial uint32) []string {
 		"com. 86400 IN NSEC org. NS DS RRSIG NSEC",
 		"org. 172800 IN NS ns.org.",
 		"org. 86400 IN NSEC . NS RRSIG NSEC",
+		// Glue for the root's own NS target, as the real root zone carries
+		// it: unsigned, and the additional section of a priming answer.
+		"a.root-servers.test. 172800 IN A 198.51.100.53",
+		"a.root-servers.test. 172800 IN AAAA 2001:db8::53",
 		"ns.com. 172800 IN A 198.51.100.1",
 		"ns.com. 172800 IN AAAA 2001:db8::1",
 		"ns.org. 172800 IN A 198.51.100.2",

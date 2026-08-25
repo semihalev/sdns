@@ -45,6 +45,7 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 		// delegation key, the NSEC question, the SOA — is IN. Answering a
 		// CHAOS or HESIOD question from it would pair the client's class
 		// with another class's records, so those go to the real roots.
+		localroot.CountFallback()
 		return nil, false
 	}
 	qname := dns.CanonicalName(q.Name)
@@ -76,11 +77,16 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 		}
 		// A referral the walk cannot use (no glue at all): the real
 		// roots resolve it the ordinary way.
+		localroot.CountFallback()
 		return nil, false
 	}
 
 	proof, ok := snap.Denial(qname)
 	if !ok {
+		// The TLD is absent from the copy and the copy cannot prove it
+		// absent either. That is a gap in the chain worth seeing, not a
+		// silent walk to the roots.
+		localroot.CountFallback()
 		return nil, false
 	}
 
@@ -130,6 +136,9 @@ func boundToCopy(resp *dns.Msg, snap *localroot.Snapshot) {
 	ttl := uint32(max(time.Until(snap.ValidUntil()), 0) / time.Second) //nolint:gosec // bounded above by the SOA expire interval.
 	resp.Answer = copyBoundedTTL(resp.Answer, ttl)
 	resp.Ns = copyBoundedTTL(resp.Ns, ttl)
+	// Extra carries the priming glue; the OPT record is attached further
+	// down the writer stack, well after this.
+	resp.Extra = copyBoundedTTL(resp.Extra, ttl)
 }
 
 // copyBoundedTTL replaces each record in rrs with a copy capped at ttl. The
@@ -183,6 +192,15 @@ func (r *Resolver) localRootApexAnswer(
 	if len(rrs) > 0 {
 		resp.Answer = append(resp.Answer, rrs...)
 		resp.Answer = append(resp.Answer, sigs...)
+		if qtype == dns.TypeNS {
+			// A root server answers ". NS" with the addresses of the servers
+			// it names (RFC 8109), and the copy holds them as glue. Without
+			// them this answer names thirteen servers and gives no way to
+			// reach any of them — which is also what the resolver's own
+			// 12-hourly priming reads, so it would find no addresses and
+			// leave its root server list unrefreshed.
+			resp.Extra = append(resp.Extra, snap.ApexGlue()...)
+		}
 	} else {
 		soa, soaSig := snap.SOA()
 		resp.Ns = append(resp.Ns, soa)

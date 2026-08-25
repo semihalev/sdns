@@ -209,3 +209,52 @@ func TestRunDefersTheFirstTransfer(t *testing.T) {
 		t.Fatal("a copy became active before any transfer")
 	}
 }
+
+// TestRefreshWithoutAnchorsDoesNotTransfer pins the guard in front of the
+// wire. Trust anchors can fail closed and stay empty, and nothing transferred
+// in that state could ever verify — so pulling a few megabytes from every
+// source on every retry interval, indefinitely, is waste aimed at root
+// infrastructure.
+func TestRefreshWithoutAnchorsDoesNotTransfer(t *testing.T) {
+	var transfers, probes atomic.Int64
+
+	m := New(nil, func() []dns.RR { return nil })
+	m.transferFn = func(context.Context, string, time.Duration) ([]dns.RR, error) {
+		transfers.Add(1)
+		return nil, errors.New("transfer must not be reached")
+	}
+	m.probeFn = func(context.Context, string, time.Duration) (uint32, error) {
+		probes.Add(1)
+		return 0, errors.New("probe must not be reached")
+	}
+
+	if err := m.refreshOnce(context.Background()); !errors.Is(err, errNoAnchors) {
+		t.Fatalf("refreshOnce with no anchors = %v, want errNoAnchors", err)
+	}
+	if transfers.Load() != 0 || probes.Load() != 0 {
+		t.Fatalf("an anchorless refresh still reached the network: %d transfers, %d probes",
+			transfers.Load(), probes.Load())
+	}
+}
+
+// TestNewDropsBlankSources pins that a blank configured source cannot leave
+// the manager with one unusable address and the feature silently off.
+func TestNewDropsBlankSources(t *testing.T) {
+	anchors := func() []dns.RR { return nil }
+
+	for name, sources := range map[string][]string{
+		"a single empty entry": {""},
+		"only whitespace":      {"   ", "\t"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := New(sources, anchors).sources; len(got) != len(DefaultSources) {
+				t.Fatalf("sources = %v, want the built-in set", got)
+			}
+		})
+	}
+
+	got := New([]string{"", "example.test:53", "  "}, anchors).sources
+	if len(got) != 1 || got[0] != "example.test:53" {
+		t.Fatalf("sources = %v, want only the usable entry", got)
+	}
+}

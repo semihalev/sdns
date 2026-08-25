@@ -124,6 +124,37 @@ func (s *Snapshot) ApexAnswer(qtype uint16) (rrs, sigs, nsec, nsecSig []dns.RR, 
 	return nil, nil, []dns.RR{s.apexNSEC}, s.apexNSECSig, true
 }
 
+// ApexGlue returns the address records the copy holds for the root's own NS
+// targets — the additional section of a priming response (RFC 8109). The
+// root zone carries these as glue below the delegation that owns them, so
+// they have no signatures of their own; the ZONEMD digest is what
+// authenticates them, and the additional section is outside what AD claims
+// (RFC 4035 §3.2.3) exactly as it is in a real root server's answer.
+//
+// Without them the copy's answer to a root priming query names the servers
+// but gives no way to reach them, and the resolver's own 12-hourly priming
+// cannot refresh its root server list from it.
+func (s *Snapshot) ApexGlue() []dns.RR {
+	apex, ok := s.owners["."]
+	if !ok {
+		return nil
+	}
+	var glue []dns.RR
+	for _, rr := range apex[dns.TypeNS] {
+		ns, isNS := rr.(*dns.NS)
+		if !isNS {
+			continue
+		}
+		sets, held := s.owners[dns.CanonicalName(ns.Ns)]
+		if !held {
+			continue
+		}
+		glue = append(glue, sets[dns.TypeA]...)
+		glue = append(glue, sets[dns.TypeAAAA]...)
+	}
+	return glue
+}
+
 // Referral is the delegation material for one TLD: the NS set, the DS set
 // (empty for an unsigned delegation), and the glue addresses for each NS
 // target present in the zone.
@@ -264,7 +295,15 @@ func dsAbsenceProof(sets map[uint16][]dns.RR) (nsec, nsecSig []dns.RR, ok bool) 
 			return nil, nil, false
 		}
 	}
-	return nsecSet, sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC), true
+	// A proof needs the signature that makes it one. The records themselves
+	// are authentic — the digest covered them — but an answer built from an
+	// unsigned NSEC would carry AD=1 with nothing a client could check, and
+	// the same refusal already guards the apex NODATA branch and the DS set.
+	nsecSig = sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC)
+	if len(nsecSig) == 0 {
+		return nil, nil, false
+	}
+	return nsecSet, nsecSig, true
 }
 
 // Denial returns the NSEC records proving name does not exist under the
@@ -282,9 +321,22 @@ func (s *Snapshot) Denial(name string) (proof []dns.RR, ok bool) {
 	if len(covering) == 0 {
 		return nil, false
 	}
+	// As in dsAbsenceProof: an NSEC with no covering signature proves
+	// nothing a client can verify, so the denial goes to the real roots
+	// rather than being asserted here under AD=1.
+	coveringSig := sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC)
+	if len(coveringSig) == 0 {
+		return nil, false
+	}
 	proof = append(proof, covering...)
-	proof = append(proof, sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC)...)
-	if owner != "." && s.apexNSEC != nil {
+	proof = append(proof, coveringSig...)
+	if owner != "." {
+		// The wildcard denial is not optional for an NXDOMAIN, and it needs
+		// its signature for the same reason the covering NSEC does. Missing
+		// either one, the copy cannot prove the name absent and says so.
+		if s.apexNSEC == nil || len(s.apexNSECSig) == 0 {
+			return nil, false
+		}
 		proof = append(proof, s.apexNSEC)
 		proof = append(proof, s.apexNSECSig...)
 	}

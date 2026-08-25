@@ -206,3 +206,70 @@ func TestTLDOf(t *testing.T) {
 		}
 	}
 }
+
+func TestSnapshotApexGlue(t *testing.T) {
+	snap := testSnapshot(t)
+
+	glue := snap.ApexGlue()
+	if len(glue) == 0 {
+		t.Fatal("the root's own NS targets have no glue in the copy")
+	}
+	named := make(map[string]bool)
+	for _, rr := range snap.owners["."][dns.TypeNS] {
+		named[dns.CanonicalName(rr.(*dns.NS).Ns)] = true
+	}
+	for _, rr := range glue {
+		switch rr.(type) {
+		case *dns.A, *dns.AAAA:
+		default:
+			t.Fatalf("apex glue carries a %s record", dns.TypeToString[rr.Header().Rrtype])
+		}
+		if owner := dns.CanonicalName(rr.Header().Name); !named[owner] {
+			t.Fatalf("apex glue carries an address for %s, which the root's NS set does not name", owner)
+		}
+	}
+}
+
+// TestSnapshotProofsRequireTheirSignatures pins the rule the DS set and the
+// apex NODATA branch already follow: the copy may hold a record the digest
+// authenticated, but a denial served to a client under AD=1 needs the
+// signature that lets the client check it too.
+func TestSnapshotProofsRequireTheirSignatures(t *testing.T) {
+	root := buildTestRoot(t)
+
+	withoutNSECSig := func(owner string) *Snapshot {
+		t.Helper()
+		kept := make([]dns.RR, 0, len(root.rrs))
+		stripped := false
+		for _, rr := range root.rrs {
+			if sig, ok := rr.(*dns.RRSIG); ok &&
+				sig.TypeCovered == dns.TypeNSEC && dns.CanonicalName(sig.Hdr.Name) == owner {
+				stripped = true
+				continue
+			}
+			kept = append(kept, rr)
+		}
+		if !stripped {
+			t.Fatalf("test zone has no RRSIG(NSEC) at %s to strip", owner)
+		}
+		snap, err := buildSnapshot(kept, time.Now())
+		if err != nil {
+			t.Fatalf("buildSnapshot: %v", err)
+		}
+		return snap
+	}
+
+	// org. is the unsigned delegation, so its DS answer is the NSEC NODATA
+	// proof — which is a proof only while it is signed.
+	if _, _, _, _, ok := withoutNSECSig("org.").DSAnswer("org."); ok {
+		t.Fatal("a DS NODATA proof with no signature was served")
+	}
+	// dev. sorts inside com.'s NSEC span, so com.'s NSEC is what denies it.
+	if _, ok := withoutNSECSig("com.").Denial("dev."); ok {
+		t.Fatal("an NXDOMAIN was synthesized from an unsigned covering NSEC")
+	}
+	// The apex NSEC is the wildcard half of every NXDOMAIN.
+	if _, ok := withoutNSECSig(".").Denial("dev."); ok {
+		t.Fatal("an NXDOMAIN was synthesized without a signed wildcard proof")
+	}
+}

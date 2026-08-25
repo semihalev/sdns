@@ -786,6 +786,7 @@ func TestLocalRootAnswersBoundedByCopyHorizon(t *testing.T) {
 		section func(*dns.Msg) []dns.RR
 	}{
 		{"apex", ".", dns.TypeNS, func(m *dns.Msg) []dns.RR { return m.Answer }},
+		{"apex glue", ".", dns.TypeNS, func(m *dns.Msg) []dns.RR { return m.Extra }},
 		{"ds", "com.", dns.TypeDS, func(m *dns.Msg) []dns.RR { return m.Answer }},
 		{"denial", "dev.", dns.TypeA, func(m *dns.Msg) []dns.RR { return m.Ns }},
 	} {
@@ -825,6 +826,7 @@ func TestLocalRootAnswersDoNotAliasTheCopy(t *testing.T) {
 		section func(*dns.Msg) []dns.RR
 	}{
 		{"apex", ".", dns.TypeNS, func(m *dns.Msg) []dns.RR { return m.Answer }},
+		{"apex glue", ".", dns.TypeNS, func(m *dns.Msg) []dns.RR { return m.Extra }},
 		{"ds", "com.", dns.TypeDS, func(m *dns.Msg) []dns.RR { return m.Answer }},
 		{"denial", "dev.", dns.TypeA, func(m *dns.Msg) []dns.RR { return m.Ns }},
 	} {
@@ -863,5 +865,47 @@ func TestLocalRootAnswersDoNotAliasTheCopy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLocalRootApexNSCarriesPrimingGlue pins the additional section of the
+// copy's answer to ". NS". A root server answers a priming query with the
+// addresses of the servers it names (RFC 8109), and the resolver's own
+// 12-hourly checkPriming reads addresses from Extra and nowhere else — so an
+// answer without them leaves the root server list unrefreshed for the life of
+// the process, and a client asking ". NS" gets names it cannot reach.
+func TestLocalRootApexNSCarriesPrimingGlue(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+
+	answer, handled := r.consultLocalRoot(context.Background(), localRootState(".", dns.TypeNS, false))
+	if !handled || answer == nil {
+		t.Fatal(". NS was not answered from the copy")
+	}
+
+	named := make(map[string]bool)
+	for _, rr := range answer.Answer {
+		if ns, ok := rr.(*dns.NS); ok {
+			named[dns.CanonicalName(ns.Ns)] = true
+		}
+	}
+	if len(named) == 0 {
+		t.Fatal(". NS answered without naming any server")
+	}
+
+	reachable := make(map[string]bool)
+	for _, rr := range answer.Extra {
+		switch rr.(type) {
+		case *dns.A, *dns.AAAA:
+		default:
+			t.Fatalf("additional section carries a %s record", dns.TypeToString[rr.Header().Rrtype])
+		}
+		owner := dns.CanonicalName(rr.Header().Name)
+		if !named[owner] {
+			t.Fatalf("additional section carries an address for %s, which . NS does not name", owner)
+		}
+		reachable[owner] = true
+	}
+	if len(reachable) == 0 {
+		t.Fatal(". NS carried no glue — root priming would find no addresses and abort")
 	}
 }

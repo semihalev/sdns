@@ -20,6 +20,7 @@ var (
 	errSerialMismatch    = errors.New("localroot: ZONEMD serial does not match the SOA")
 	errDigestMismatch    = errors.New("localroot: zone digest does not match ZONEMD")
 	errAnchorChain       = errors.New("localroot: DNSKEY set does not chain to a trust anchor")
+	errNoAnchors         = errors.New("localroot: no trust anchors to verify a transfer against")
 	errBadSignature      = errors.New("localroot: apex RRset signature did not verify")
 	errSerialRollback    = errors.New("localroot: zone serial is older than the live copy")
 	errSerialBehindProbe = errors.New("localroot: transferred zone is older than the serial the source announced")
