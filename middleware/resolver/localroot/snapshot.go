@@ -71,6 +71,53 @@ func (s *Snapshot) BoundTo(until time.Time) {
 // SOA returns the apex SOA and its RRSIGs.
 func (s *Snapshot) SOA() (*dns.SOA, []dns.RR) { return s.soa, s.soaSig }
 
+// ApexAnswer returns what the copy holds at the root's own name for qtype:
+// the RRset with its signatures when the type exists there, or the apex
+// NSEC with its signatures as the NODATA proof when it does not. ok=false
+// when the copy can say neither — the caller then asks the real roots.
+//
+// The apex is the one part of the zone the copy is authoritative-shaped
+// about in the ordinary sense: NS, SOA, DNSKEY and the rest are the root's
+// own records, signed, and the copy carries them. Sending those questions
+// to a root server while holding a verified copy of the answer is the one
+// thing this whole package exists to stop doing.
+func (s *Snapshot) ApexAnswer(qtype uint16) (rrs, sigs, nsec, nsecSig []dns.RR, ok bool) {
+	// RRSIG and ANY are asked about the zone rather than answered from it:
+	// a bare RRSIG query has no RRset to cover, and ANY needs a composition
+	// this does not attempt. Both go to the real roots.
+	if qtype == dns.TypeRRSIG || qtype == dns.TypeANY {
+		return nil, nil, nil, nil, false
+	}
+	apex, exists := s.owners["."]
+	if !exists {
+		return nil, nil, nil, nil, false
+	}
+
+	if set := apex[qtype]; len(set) > 0 {
+		covering := sigsCovering(apex[dns.TypeRRSIG], qtype)
+		if len(covering) == 0 {
+			// Unsigned at the apex is not something the root publishes;
+			// serving it would mean asserting an answer the copy cannot
+			// evidence.
+			return nil, nil, nil, nil, false
+		}
+		return set, covering, nil, nil, true
+	}
+
+	// Absent: the apex NSEC denies it, provided its bitmap agrees. RFC 4035
+	// §5.4 — an NSEC listing the type proves the opposite of what is being
+	// claimed, and a copy that disagrees with itself answers nothing.
+	if s.apexNSEC == nil || len(s.apexNSECSig) == 0 {
+		return nil, nil, nil, nil, false
+	}
+	for _, t := range s.apexNSEC.TypeBitMap {
+		if t == qtype {
+			return nil, nil, nil, nil, false
+		}
+	}
+	return nil, nil, []dns.RR{s.apexNSEC}, s.apexNSECSig, true
+}
+
 // Referral is the delegation material for one TLD: the NS set, the DS set
 // (empty for an unsigned delegation), and the glue addresses for each NS
 // target present in the zone.

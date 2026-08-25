@@ -653,11 +653,106 @@ func TestLocalRootFallbacks(t *testing.T) {
 			t.Fatal("an empty manager touched the walk")
 		}
 	})
-	t.Run("the apex stays with the real roots", func(t *testing.T) {
+	t.Run("an apex type the copy cannot evidence", func(t *testing.T) {
+		// The copy answers the apex from what it holds; a type it can
+		// neither produce nor deny goes to the real roots. ANY is that
+		// case by construction — it needs a composition this does not
+		// attempt — so it stands in for the general shape here.
 		r, _ := localRootTestResolver(t)
-		rs := localRootState(".", dns.TypeNS, false)
+		rs := localRootState(".", dns.TypeANY, false)
 		if _, handled := r.consultLocalRoot(context.Background(), rs); handled || rs.level != 0 {
-			t.Fatal("an apex query was taken from the real roots")
+			t.Fatal("a question the copy cannot answer was taken from it anyway")
+		}
+	})
+}
+
+// TestLocalRootApexAnswers pins what the copy does with questions asked at
+// the root's own name. Holding a verified copy of the root zone and then
+// asking a root server for the root's own NS set is the contradiction this
+// closes: the records are right here, signed, and were verified before
+// anything was built from them.
+func TestLocalRootApexAnswers(t *testing.T) {
+	r, _ := localRootTestResolver(t)
+
+	t.Run("types the apex holds are answered from it", func(t *testing.T) {
+		for _, qtype := range []uint16{dns.TypeNS, dns.TypeSOA, dns.TypeDNSKEY} {
+			name := dns.TypeToString[qtype]
+			rs := localRootState(".", qtype, false)
+			rs.req.Id = 0x5151
+			rs.req.RecursionDesired = true
+
+			answer, handled := r.consultLocalRoot(context.Background(), rs)
+			if !handled || answer == nil {
+				t.Fatalf(". %s was not answered from the copy", name)
+			}
+			if answer.Rcode != dns.RcodeSuccess {
+				t.Fatalf(". %s rcode = %s, want NOERROR", name, dns.RcodeToString[answer.Rcode])
+			}
+			var records, sigs int
+			for _, rr := range answer.Answer {
+				if rr.Header().Rrtype == dns.TypeRRSIG {
+					sigs++
+					continue
+				}
+				if rr.Header().Rrtype != qtype {
+					t.Fatalf(". %s answer carries a %s record", name, dns.TypeToString[rr.Header().Rrtype])
+				}
+				records++
+			}
+			if records == 0 || sigs == 0 {
+				t.Fatalf(". %s answer = %d records %d signatures, want both", name, records, sigs)
+			}
+			if !answer.AuthenticatedData {
+				t.Fatalf(". %s served without AD", name)
+			}
+			if answer.Id != rs.req.Id || !answer.RecursionDesired {
+				t.Fatalf(". %s lost the client's request identity", name)
+			}
+			if rs.level != 0 || !rs.isRoot {
+				t.Fatalf(". %s disturbed the walk", name)
+			}
+		}
+	})
+
+	t.Run("a type the apex lacks is denied from its own NSEC", func(t *testing.T) {
+		// The test root's apex NSEC lists NS, SOA, RRSIG, NSEC, DNSKEY and
+		// ZONEMD — so MX is absent and provably so.
+		rs := localRootState(".", dns.TypeMX, false)
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if !handled || answer == nil {
+			t.Fatal(". MX was not answered from the copy")
+		}
+		if answer.Rcode != dns.RcodeSuccess || len(answer.Answer) != 0 {
+			t.Fatalf(". MX = %s with %d answers, want NODATA",
+				dns.RcodeToString[answer.Rcode], len(answer.Answer))
+		}
+		var soa, nsec, sigs int
+		for _, rr := range answer.Ns {
+			switch rr.Header().Rrtype {
+			case dns.TypeSOA:
+				soa++
+			case dns.TypeNSEC:
+				nsec++
+			case dns.TypeRRSIG:
+				sigs++
+			}
+		}
+		if soa != 1 || nsec != 1 || sigs == 0 {
+			t.Fatalf(". MX authority = soa:%d nsec:%d rrsig:%d, want a signed NODATA proof", soa, nsec, sigs)
+		}
+		if !answer.AuthenticatedData {
+			t.Fatal(". MX NODATA served without AD")
+		}
+	})
+
+	t.Run("CD leaves validation to the client", func(t *testing.T) {
+		rs := localRootState(".", dns.TypeNS, true)
+		answer, handled := r.consultLocalRoot(context.Background(), rs)
+		if !handled || answer == nil {
+			t.Fatal(". NS with CD was not answered from the copy")
+		}
+		if answer.AuthenticatedData {
+			t.Fatal("a CD query was answered with AD set")
 		}
 	})
 }

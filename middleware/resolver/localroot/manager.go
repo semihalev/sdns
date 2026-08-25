@@ -57,6 +57,9 @@ func CountDenial() { metricAnswers.WithLabelValues("denial").Inc() }
 // CountDS counts a DS answer served from the local copy.
 func CountDS() { metricAnswers.WithLabelValues("ds").Inc() }
 
+// CountApex counts a question at the root's own name answered from the copy.
+func CountApex() { metricAnswers.WithLabelValues("apex").Inc() }
+
 // CountFallback counts a root consult that fell back to the real root
 // servers because no verified copy was active.
 func CountFallback() { metricAnswers.WithLabelValues("fallback").Inc() }

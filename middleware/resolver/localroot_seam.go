@@ -48,13 +48,14 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 		return nil, false
 	}
 	qname := dns.CanonicalName(q.Name)
+	cd := rs.req.CheckingDisabled
 	tld := localroot.TLDOf(qname)
 	if tld == "" {
-		// The apex itself (. SOA/NS/DNSKEY): rare, and the real roots
-		// answer it authoritatively; the copy stays out of it.
-		return nil, false
+		// The root's own records — NS, SOA, DNSKEY — are in the copy, and
+		// asking a root server for an answer already held here is the one
+		// thing this package exists to stop doing.
+		return r.localRootApexAnswer(rs, snap, q.Qtype, cd)
 	}
-	cd := rs.req.CheckingDisabled
 
 	if ref, ok := snap.Referral(tld); ok {
 		if qname == tld && q.Qtype == dns.TypeDS {
@@ -103,6 +104,57 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 
 	localroot.CountDenial()
 	return r.localRootDenial(ctx, rs, snap, qname, proof, cd), true
+}
+
+// localRootApexAnswer serves a question asked at the root's own name from
+// the copy: the signed RRset when the apex holds the type, the apex NSEC as
+// the NODATA proof when it does not. A copy that can evidence neither
+// answers nothing and the walk goes to the real roots.
+//
+// This includes DNSKEY, which the RFC 5011 anchor refresh also asks for, so
+// that query is answered from the copy too. That is sound and deliberate:
+// the copy's DNSKEY RRset is the published one, transferred within the
+// refresh interval and verified under an anchor-matched key before
+// anything was built from it — a faithful observation of the zone, against
+// a hold-down measured in weeks. It is also fail-safe in the direction that
+// matters: a rollover the current anchors can no longer verify leaves no
+// copy at all, so the refresh falls back to querying the roots live, which
+// is exactly when it needs to.
+func (r *Resolver) localRootApexAnswer(
+	rs *resolveState,
+	snap *localroot.Snapshot,
+	qtype uint16,
+	cd bool,
+) (*dns.Msg, bool) {
+	rrs, sigs, nsec, nsecSig, ok := snap.ApexAnswer(qtype)
+	if !ok {
+		localroot.CountFallback()
+		return nil, false
+	}
+
+	resp := new(dns.Msg)
+	resp.SetRcode(rs.req, dns.RcodeSuccess)
+	resp.Authoritative = false
+	resp.RecursionAvailable = true
+	// The handler clears RD before resolution and setTags restores it on
+	// the way out; this answer returns early, so it restores its own.
+	resp.RecursionDesired = true
+
+	if len(rrs) > 0 {
+		resp.Answer = append(resp.Answer, rrs...)
+		resp.Answer = append(resp.Answer, sigs...)
+	} else {
+		soa, soaSig := snap.SOA()
+		resp.Ns = append(resp.Ns, soa)
+		resp.Ns = append(resp.Ns, soaSig...)
+		resp.Ns = append(resp.Ns, nsec...)
+		resp.Ns = append(resp.Ns, nsecSig...)
+	}
+	if !cd {
+		resp.AuthenticatedData = true
+	}
+	localroot.CountApex()
+	return resp, true
 }
 
 // installLocalRootReferral stores the TLD's delegation as a root referral

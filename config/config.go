@@ -830,7 +830,8 @@ qname_minimize_one_label = 4
 # Serve the root zone from a local copy: transferred over AXFR from the root
 # servers that publish it, verified against the zone's ZONEMD digest
 # (RFC 8976) chained to the root trust anchors, and refreshed on the zone's
-# own SOA schedule. Root referrals and junk-TLD NXDOMAINs then cost no
+# own SOA schedule. Root referrals, junk-TLD NXDOMAINs and questions asked
+# at the root itself then cost no
 # upstream query and leak nothing to the root servers. A copy that cannot be
 # refreshed is withdrawn at its SOA expire and resolution falls back to the
 # real root servers unchanged.
