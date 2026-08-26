@@ -118,6 +118,16 @@ func (c *Cache) writeStaleResponse(
 	clientScope netip.Prefix,
 	internal bool,
 ) (handled bool, err error) {
+	// The charge lands after the candidate walk, not before it as on the
+	// ordinary hit path, because the entry to charge is what the walk
+	// returns: which candidate wins is not known until completion has been
+	// attempted, and billing each one as it is tried would charge several
+	// entries for a single question. An accepted residual, on the same
+	// terms as the inline/replay double charge: a refused query has already
+	// paid for one alias completion. It is bounded on both legs — the
+	// resolution that made this answer eligible dominates the cost, and the
+	// chase's own sub-query records its failure under RFC 9520, so the
+	// repeat is a cached-failure hit rather than another walk to the wire.
 	resp, entry := c.staleResponse(ctx, req, requestCD, clientScope)
 	if resp == nil {
 		return false, nil
