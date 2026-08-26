@@ -35,10 +35,16 @@ func (c *Config) Validate() error {
 		add("dnssec = %q: must be \"on\" or \"off\"", c.DNSSEC)
 	}
 
+	// Exactly what startup accepts: the four levels, plus omission, which is
+	// filled in as "info" before the logger sees it. Anything else stops the
+	// server there, so a config test that disagreed would send the operator
+	// to production with a file that cannot start. "crit" was documented for
+	// years but never existed — the logger has no such level and startup
+	// rejects it.
 	switch c.LogLevel {
-	case "", "crit", "debug", "info", "warn", "error":
+	case "", "debug", "info", "warn", "error":
 	default:
-		add("loglevel = %q: must be one of crit, debug, info, warn, error", c.LogLevel)
+		add("loglevel = %q: must be one of debug, info, warn, error", c.LogLevel)
 	}
 
 	for _, bind := range []struct{ key, value string }{
@@ -81,30 +87,43 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	for i, entry := range c.AccessList {
-		if entry == "" {
-			add("accesslist entry %d is empty", i+1)
-			continue
-		}
-		if _, _, err := net.ParseCIDR(entry); err == nil {
-			continue
-		}
-		if net.ParseIP(entry) == nil {
-			add("accesslist %q: must be an IP address or CIDR block", entry)
+	for _, entry := range c.AccessList {
+		// The access list is parsed with netip.ParsePrefix and nothing else,
+		// so a bare address is dropped at startup. Accepting one here would
+		// pass a file whose only entry is discarded — leaving an empty allow
+		// set, which blocks every client.
+		if !validCIDR(entry) {
+			add("accesslist %q: must be a CIDR block, e.g. 192.0.2.0/24 or 192.0.2.1/32", entry)
 		}
 	}
 
+	// The resolver takes IPv4 from rootservers and IPv6 from root6servers,
+	// and silently drops anything in the wrong list. A misplaced address
+	// therefore leaves a shorter root set than the operator wrote, or an
+	// empty one.
 	for _, list := range []struct {
 		key    string
 		values []string
+		want   string // "4", "6", or "" for either
 	}{
-		{"rootservers", c.RootServers},
-		{"root6servers", c.Root6Servers},
-		{"fallbackservers", c.FallbackServers},
+		{"rootservers", c.RootServers, "4"},
+		{"root6servers", c.Root6Servers, "6"},
+		{"fallbackservers", c.FallbackServers, ""},
 	} {
 		for _, addr := range list.values {
-			if !validIPPort(addr) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil || port == "" {
 				add("%s %q: must be an IP address and port, e.g. 192.0.2.1:53", list.key, addr)
+				continue
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				add("%s %q: must be an IP address and port, e.g. 192.0.2.1:53", list.key, addr)
+				continue
+			}
+			is4 := ip.To4() != nil
+			if (list.want == "4" && !is4) || (list.want == "6" && is4) {
+				add("%s %q: must be an IPv%s address", list.key, addr, list.want)
 			}
 		}
 	}
@@ -165,17 +184,40 @@ func (c *Config) Validate() error {
 // validateTrustAndIdentity covers the settings that decide who this resolver
 // trusts and what address it speaks from.
 func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
+	// Syntax alone does not make a usable root anchor, and every way of
+	// getting it wrong fails somewhere the operator will not connect to
+	// this file: a malformed record is fatal at resolver construction, a
+	// record that is not a DNSKEY panics an unchecked type assertion during
+	// verification, and a key that is merely not a root KSK leaves the
+	// anchor set empty so every DNSSEC answer fails on unavailable anchors.
+	anchors := 0
 	for _, key := range c.RootKeys {
-		// A bad anchor is fatal at resolver construction, so without this
-		// the config test passes and the server then refuses to start.
 		rr, err := dns.NewRR(key)
 		if err != nil {
 			add("rootkeys %q: %v", key, err)
 			continue
 		}
-		if _, ok := rr.(*dns.DNSKEY); !ok {
+		dnskey, ok := rr.(*dns.DNSKEY)
+		if !ok {
 			add("rootkeys %q: must be a DNSKEY record", key)
+			continue
 		}
+		switch {
+		case dns.CanonicalName(dnskey.Hdr.Name) != ".":
+			add("rootkeys %q: must be owned by the root zone", key)
+		case dnskey.Hdr.Class != dns.ClassINET:
+			add("rootkeys %q: must be class IN", key)
+		case dnskey.Protocol != 3:
+			add("rootkeys %q: protocol must be 3 (RFC 4034 section 2.1.2)", key)
+		case dnskey.Flags != 257:
+			// Only key-signing keys enter the verification set.
+			add("rootkeys %q: must be a key-signing key (flags 257), not %d", key, dnskey.Flags)
+		default:
+			anchors++
+		}
+	}
+	if len(c.RootKeys) > 0 && anchors == 0 {
+		add("rootkeys: none of the configured keys is a usable root trust anchor")
 	}
 
 	for _, out := range []struct {
@@ -225,11 +267,11 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		}
 	}
 
-	// Prefetch is a percentage of the original TTL. Above 100 the refresh
-	// trigger sits beyond the whole lifetime, so every hit prefetches — the
-	// documented range is 10-90 and only the low end is clamped in code.
-	if c.Prefetch > 100 {
-		add("prefetch = %d: is a percentage, so it cannot exceed 100", c.Prefetch)
+	// The cache refuses anything above 90 and then disables prefetch
+	// entirely, so 91-100 passed this test and silently turned the feature
+	// off. The low end is clamped up to 10 rather than refused.
+	if c.Prefetch > 90 {
+		add("prefetch = %d: is a percentage of the original TTL and must not exceed 90", c.Prefetch)
 	}
 
 	if c.ReflexThreshold != 0 && (c.ReflexThreshold < 0 || c.ReflexThreshold > 1) {
@@ -310,10 +352,34 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 		}
 	}
 
+	// These are the rules middleware/dns64 applies at startup. A prefix that
+	// only looks like IPv6 is dropped there, and if it was the only one the
+	// resolver falls back to 64:ff9b::/96 — so a config test that accepted
+	// it would report success while traffic went to a different NAT64
+	// prefix than the file names.
+	//
+	// The family test is the mask length, not To4(): an IPv4-mapped range
+	// like ::ffff:0:0/96 has a non-nil To4() and is a legal Pref64 input.
+	validPrefixBits := map[int]bool{32: true, 40: true, 48: true, 56: true, 64: true, 96: true}
 	for _, prefix := range c.DNS64.Prefixes {
-		ip, _, err := net.ParseCIDR(prefix)
-		if err != nil || ip.To4() != nil {
-			add("dns64 prefix %q: must be an IPv6 CIDR block", prefix)
+		_, network, err := net.ParseCIDR(prefix)
+		if err != nil {
+			add("dns64 prefix %q: must be a CIDR block", prefix)
+			continue
+		}
+		if len(network.Mask) != net.IPv6len {
+			add("dns64 prefix %q: is IPv4, want IPv6", prefix)
+			continue
+		}
+		bits, _ := network.Mask.Size()
+		if !validPrefixBits[bits] {
+			add("dns64 prefix %q: length /%d invalid; must be /32, /40, /48, /56, /64, or /96", prefix, bits)
+			continue
+		}
+		// RFC 6052 §2.2 reserves byte 8; at /96 the operator's prefix
+		// already covers it.
+		if bits == 96 && len(network.IP) >= 9 && network.IP[8] != 0 {
+			add("dns64 prefix %q: byte 8 must be zero (RFC 6052 section 2.2 reserved)", prefix)
 		}
 	}
 	for _, list := range []struct {

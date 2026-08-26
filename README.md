@@ -166,7 +166,7 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **bearertoken**      | API bearer token for authorization. If set, Authorization header must be included in API requests                   |
 | **blocklists**       | URLs of remote blocklists to download and use for filtering                                                         |
 | **blocklistdir**     | \[DEPRECATED] Blocklist directory. Now automatically created in the working directory                               |
-| **loglevel**         | Logging verbosity level. Options: crit, error, warn, info, debug. Default: "info"                                  |
+| **loglevel**         | Logging verbosity level. Options: error, warn, info, debug. Default: "info"                                  |
 | **accesslog**        | Path to the access log file in Common Log Format. Leave empty to disable                                            |
 | **nullroute**        | IPv4 address returned for blocked A queries. Default: "0.0.0.0"                                                     |
 | **nullroutev6**      | IPv6 address returned for blocked AAAA queries. Default: "::0"                                                      |

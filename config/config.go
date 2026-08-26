@@ -798,7 +798,7 @@ api = "127.0.0.1:8080"
 # bearertoken = ""
 
 # Log verbosity level
-# Options: crit, error, warn, info, debug
+# Options: error, warn, info, debug
 loglevel = "info"
 
 # Query access log file path
