@@ -28,6 +28,22 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 			{Name: "corp.example.", Servers: []string{"nonsense"}},
 		}}, "forward_zone"},
 		{"negative size", Config{CacheSize: -1}, "cachesize"},
+		// A bad anchor is fatal at resolver construction, so -t passing here
+		// meant the server then refused to start.
+		{"root key", Config{RootKeys: []string{"this is not a DNSKEY"}}, "rootkeys"},
+		{"root key wrong type", Config{RootKeys: []string{". 172800 IN A 192.0.2.1"}}, "rootkeys"},
+		{"outbound family", Config{OutboundIPs: []string{"2001:db8::1"}}, "outboundips"},
+		{"api address", Config{API: "not an address"}, "api"},
+		{"hyperlocal source", Config{HyperlocalRootSources: []string{"no-port"}}, "hyperlocal_root_sources"},
+		// Out of range is silently replaced by the default, so the operator
+		// believes they set a threshold they did not.
+		{"reflex threshold", Config{ReflexThreshold: 42}, "reflexthreshold"},
+		{"prefetch percentage", Config{Prefetch: 250}, "prefetch"},
+		{"view network", Config{Views: []ViewConfig{{Zone: "a.", Networks: []string{"nope"}}}}, "network"},
+		{"view answer", Config{Views: []ViewConfig{{Zone: "a.", Answers: []string{"not an rr"}}}}, "answer"},
+		{"dns64 prefix", Config{DNS64: DNS64Config{Prefixes: []string{"192.0.2.0/24"}}}, "dns64 prefix"},
+		{"ecs scope", Config{ECS: ECSConfig{ForwardV4Max: 33}}, "ecs forward_v4"},
+		{"blocklist url", Config{BlockLists: []string{"not-a-url"}}, "blocklists"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.cfg.Validate()
