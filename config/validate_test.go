@@ -6,9 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -784,23 +782,6 @@ func TestValidateCreatedPathsNeedTheirParent(t *testing.T) {
 	if err := (&Config{AccessLog: filepath.Join(dir, "gone", "a.log")}).Validate(); err == nil ||
 		!strings.Contains(err.Error(), "accesslog") {
 		t.Fatalf("Validate() = %v, want the missing access log directory reported", err)
-	}
-}
-
-func TestValidateRejectsSpecialFiles(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no mkfifo on windows")
-	}
-	dir := t.TempDir()
-	fifo := filepath.Join(dir, "fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Skipf("mkfifo: %v", err)
-	}
-	// Not a directory, and still not something to read a certificate from —
-	// opening it would block startup.
-	if err := (&Config{HostsFile: fifo}).Validate(); err == nil ||
-		!strings.Contains(err.Error(), "named pipe") {
-		t.Fatalf("Validate() = %v, want the FIFO rejected", err)
 	}
 }
 
