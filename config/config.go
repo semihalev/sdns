@@ -240,6 +240,36 @@ type ForwardZoneConfig struct {
 	Servers []string `toml:"servers"`
 }
 
+// validateForwardZones refuses a forward zone the operator cannot have meant.
+//
+// An omitted name is the dangerous one: it canonicalizes to the root, and a
+// root forward zone matches every question — so a block that named only its
+// servers would silently turn the whole resolver into a forwarder and give up
+// local recursion and DNSSEC for everything. Forwarding the root is a real
+// choice, but it has to be written as one.
+//
+// A zone with no server is refused for the opposite reason: it would be
+// skipped at match time, so its subtree would resolve publicly. For an
+// internal zone that is not a harmless no-op, it is the leak the zone was
+// configured to prevent. Better to fail at startup, where it is visible.
+func (c *Config) validateForwardZones() error {
+	for i := range c.ForwardZones {
+		zone := &c.ForwardZones[i]
+		if strings.TrimSpace(zone.Name) == "" {
+			return fmt.Errorf(
+				"forward_zone %d has no name; use name = \".\" to forward every query", i+1,
+			)
+		}
+		if _, ok := dns.IsDomainName(zone.Name); !ok {
+			return fmt.Errorf("forward_zone %q is not a valid domain name", zone.Name)
+		}
+		if len(zone.Servers) == 0 {
+			return fmt.Errorf("forward_zone %q has no servers", zone.Name)
+		}
+	}
+	return nil
+}
+
 // ForwardZoneFor returns the most specific configured forward zone covering
 // qname, or nil when the query resolves normally. Most specific wins so a
 // narrower zone can be pointed somewhere else than the one containing it.
@@ -1357,6 +1387,9 @@ func Load(cfgfile, version string) (*Config, error) {
 	config.RecursionFirewall.Normalize()
 	if err := config.RecursionFirewall.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
+	}
+	if err := config.validateForwardZones(); err != nil {
+		return nil, err
 	}
 	if config.ServeStaleMaxTTL.Duration < 0 {
 		return nil, fmt.Errorf("serve_stale_max_ttl must not be negative")

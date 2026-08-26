@@ -1248,3 +1248,26 @@ func TestForwardZoneRootMatchesEverything(t *testing.T) {
 		t.Fatal("a root forward zone did not match")
 	}
 }
+
+func TestValidateForwardZones(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		zones   []ForwardZoneConfig
+		wantErr bool
+	}{
+		{"valid", []ForwardZoneConfig{{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}}}, false},
+		{"explicit root is allowed", []ForwardZoneConfig{{Name: ".", Servers: []string{"10.0.0.53:53"}}}, false},
+		// An omitted name canonicalizes to the root and would forward every
+		// query, silently giving up recursion and DNSSEC for everything.
+		{"missing name", []ForwardZoneConfig{{Servers: []string{"10.0.0.53:53"}}}, true},
+		{"blank name", []ForwardZoneConfig{{Name: "   ", Servers: []string{"10.0.0.53:53"}}}, true},
+		{"no servers", []ForwardZoneConfig{{Name: "corp.example."}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&Config{ForwardZones: tc.zones}).validateForwardZones()
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("validateForwardZones() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}

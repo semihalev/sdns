@@ -482,7 +482,9 @@ servers = ["10.0.1.53:53"]
 
 *   **The most specific zone wins.** A query for `host.lab.corp.example.` goes to `10.0.1.53`, not to the wider `corp.example.` upstreams.
 *   **Servers take the same formats as `forwarderservers`** — plain, `tls://`, and `https://` — so a zone can be forwarded over DoT or DoH.
-*   **A zone with no usable server is ignored**, and its subtree resolves normally. A configuration mistake costs you the forwarding, not the whole subtree.
+*   **A zone must name itself and at least one server.** Startup fails otherwise — an omitted `name` canonicalizes to the root, which would quietly forward *every* query and give up local recursion and DNSSEC for everything. Forwarding the root is a real choice, but it has to be written as `name = "."`.
+*   **A zone whose upstreams all turn out unusable fails its queries** rather than borrowing `forwarderservers`. Those are public upstreams, and sending an internal zone's questions there is exactly the leak the zone was configured to prevent.
+*   **Cached public denials do not shadow a forward zone.** An RFC 8020 subtree cut, aggressive denial or authority failure learned while the name resolved publicly is skipped for a forwarded zone — otherwise a name that does not exist publicly, which is the whole point of an internal zone, would stay NXDOMAIN until the cut expired.
 *   **Queries go out with RD=1.** This is forwarding as RFC 8499 §6 defines it: the upstream must be a recursive resolver that answers on your behalf, not the zone's authoritative servers.
 
 > **A forwarded zone is not validated here.** Answers carry whatever the upstream asserted, exactly as in whole-server forwarder mode, and they never enter the RFC 8020/8198 shared denial state — that admission requires proof this resolver validated itself. Pointing a signed public zone at an upstream therefore gives up local DNSSEC validation for it. The intended use is the opposite case: an internal zone the public namespace cannot resolve at all.

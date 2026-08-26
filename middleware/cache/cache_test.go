@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -512,5 +513,39 @@ func TestCacheEDNS(t *testing.T) {
 	}
 	if !reflect.DeepEqual("edns.com.", resp.Answer[0].Header().Name) {
 		t.Errorf("resp.Answer[0].Header().Name = %v, want %v", resp.Answer[0].Header().Name, "edns.com.")
+	}
+}
+
+// TestForwardZoneBypassesCoveringDenial pins the gate in front of covering
+// state. An NXDOMAIN cut is learned by resolving publicly and denies a whole
+// subtree; a forward zone says that subtree is answered elsewhere. Without the
+// gate the public denial answers first and the zone is unreachable for as long
+// as the cut lives — which is the split-horizon case the feature exists for.
+func TestForwardZoneBypassesCoveringDenial(t *testing.T) {
+	// The forward zone sits inside the denied subtree, so one cut covers both
+	// the control name and the forwarded one.
+	c := New(&config.Config{
+		CacheSize: 1024,
+		ForwardZones: []config.ForwardZoneConfig{
+			{Name: "lab.corp.example.", Servers: []string{"10.0.0.53:53"}},
+		},
+	})
+	defer c.Stop()
+
+	fixture := newNXDomainCutFixture(t, "corp.example.", "example.", dns.ClassINET)
+	if !c.store.RecordNXDomainCut(fixture.msg, "corp.example.", "example.", time.Time{}) {
+		t.Fatal("covering cut was not recorded")
+	}
+
+	// The cut is live: a name under it but outside the forward zone is still
+	// denied. Without this the assertion below would pass on an empty cache.
+	outside := newQuestionMsg("other.corp.example.", dns.TypeA, dns.ClassINET)
+	if cut := c.lookupNXDomainCut(context.Background(), outside, netip.Prefix{}); cut == nil {
+		t.Fatal("the covering cut does not deny a name it should")
+	}
+
+	inside := newQuestionMsg("host.lab.corp.example.", dns.TypeA, dns.ClassINET)
+	if cut := c.lookupNXDomainCut(context.Background(), inside, netip.Prefix{}); cut != nil {
+		t.Fatal("a public NXDOMAIN cut answered for a forwarded zone")
 	}
 }

@@ -186,15 +186,19 @@ func parseServers(list []string, dialTimeout, requestTimeout time.Duration, labe
 // match itself comes from the config so the resolver's decision to hand the
 // query over and this choice of where to send it cannot drift apart.
 func (f *Forwarder) serversFor(qname string) []*server {
-	if len(f.zones) == 0 {
+	if f.cfg == nil || len(f.cfg.ForwardZones) == 0 {
 		return f.servers
 	}
-	if zone := f.cfg.ForwardZoneFor(qname); zone != nil {
-		if servers, ok := f.zones[dns.CanonicalName(zone.Name)]; ok {
-			return servers
-		}
+	zone := f.cfg.ForwardZoneFor(qname)
+	if zone == nil {
+		return f.servers
 	}
-	return f.servers
+	// A matched zone whose upstreams all turned out unusable does not
+	// quietly borrow the whole-server list. Those are the public
+	// forwarders, and sending an internal zone's questions there is the
+	// leak configuring the zone was meant to prevent — so this returns
+	// nothing and the caller fails the query visibly instead.
+	return f.zones[dns.CanonicalName(zone.Name)]
 }
 
 // validForwarderAddr reports whether addr is a host:port string with

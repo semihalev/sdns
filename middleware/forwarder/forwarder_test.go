@@ -768,10 +768,11 @@ func TestServersForPicksTheZoneUpstreams(t *testing.T) {
 	if got := addrOf(f.serversFor("example.net.")); got != "192.0.2.1:53" {
 		t.Fatalf("unmatched name upstream = %s, want the whole-server list", got)
 	}
-	// A zone whose servers were all unusable is dropped at construction, so
-	// its subtree falls back to the whole-server list rather than to nothing.
-	if got := addrOf(f.serversFor("host.broken.example.")); got != "192.0.2.1:53" {
-		t.Fatalf("serverless zone upstream = %s, want the whole-server list", got)
+	// A zone whose servers were all unusable must not borrow the public
+	// whole-server list: that would send an internal zone's questions
+	// exactly where configuring the zone was meant to stop them going.
+	if servers := f.serversFor("host.broken.example."); len(servers) != 0 {
+		t.Fatalf("unusable zone fell back to %v, want no upstream at all", servers)
 	}
 }
 
