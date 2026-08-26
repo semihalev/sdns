@@ -39,9 +39,9 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		// /49 is a valid IPv6 CIDR and an invalid Pref64: the runtime drops
 		// it and falls back to 64:ff9b::/96, sending traffic somewhere else
 		// entirely than the file says.
-		{"dns64 prefix length", Config{DNS64: DNS64Config{Prefixes: []string{"2001:db8::/49"}}}, "dns64 prefix"},
+		{"dns64 prefix length", Config{DNS64: DNS64Config{Enabled: true, Prefixes: []string{"2001:db8::/49"}}}, "dns64 prefix"},
 		// Byte 8 is the high half of the fifth group, inside a /96.
-		{"dns64 reserved byte", Config{DNS64: DNS64Config{Prefixes: []string{"2001:db8:0:0:ff00::/96"}}}, "byte 8"},
+		{"dns64 reserved byte", Config{DNS64: DNS64Config{Enabled: true, Prefixes: []string{"2001:db8:0:0:ff00::/96"}}}, "byte 8"},
 		// 91-100 passed before and then silently disabled prefetch.
 		{"prefetch above the cache ceiling", Config{Prefetch: 95}, "prefetch"},
 		{"root server", Config{RootServers: []string{"hello world"}}, "rootservers"},
@@ -58,15 +58,15 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		{"root key wrong type", Config{RootKeys: []string{". 172800 IN A 192.0.2.1"}}, "rootkeys"},
 		{"outbound family", Config{OutboundIPs: []string{"2001:db8::1"}}, "outboundips"},
 		{"api address", Config{API: "not an address"}, "api"},
-		{"hyperlocal source", Config{HyperlocalRootSources: []string{"no-port"}}, "hyperlocal_root_sources"},
+		{"hyperlocal source", Config{HyperlocalRoot: true, HyperlocalRootSources: []string{"no-port"}}, "hyperlocal_root_sources"},
 		// Out of range is silently replaced by the default, so the operator
 		// believes they set a threshold they did not.
 		{"reflex threshold", Config{ReflexThreshold: 42}, "reflexthreshold"},
 		{"prefetch percentage", Config{Prefetch: 250}, "prefetch"},
 		{"view network", Config{Views: []ViewConfig{{Zone: "a.", Networks: []string{"nope"}}}}, "network"},
 		{"view answer", Config{Views: []ViewConfig{{Zone: "a.", Answers: []string{"not an rr"}}}}, "answer"},
-		{"dns64 prefix", Config{DNS64: DNS64Config{Prefixes: []string{"192.0.2.0/24"}}}, "dns64 prefix"},
-		{"ecs scope", Config{ECS: ECSConfig{ForwardV4Max: 33}}, "ecs forward_v4"},
+		{"dns64 prefix", Config{DNS64: DNS64Config{Enabled: true, Prefixes: []string{"192.0.2.0/24"}}}, "dns64 prefix"},
+		{"ecs scope", Config{ECS: ECSConfig{Enabled: true, ForwardV4Max: 33}}, "ecs forward_v4"},
 		{"blocklist url", Config{BlockLists: []string{"not-a-url"}}, "blocklists"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -210,9 +210,11 @@ func TestValidateFamilySpecificLists(t *testing.T) {
 		// The runtime keeps these by mask length and drops the wrong family
 		// with a log line, so the exclusion quietly does not apply.
 		{"exclude_a takes IPv4", Config{DNS64: DNS64Config{
+			Enabled:          true,
 			ExcludeANetworks: []string{"2001:db8::/32"},
 		}}, "exclude_a_networks"},
 		{"exclude_aaaa takes IPv6", Config{DNS64: DNS64Config{
+			Enabled:             true,
 			ExcludeAAAANetworks: []string{"192.0.2.0/24"},
 		}}, "exclude_aaaa_networks"},
 		// The updater fetches with an http.Client, so anything else never loads.
@@ -232,7 +234,7 @@ func TestValidateFamilySpecificLists(t *testing.T) {
 	}
 
 	// Both families are legal where the runtime accepts either.
-	both := &Config{DNS64: DNS64Config{ClientNetworks: []string{"192.0.2.0/24", "2001:db8::/32"}}}
+	both := &Config{DNS64: DNS64Config{Enabled: true, ClientNetworks: []string{"192.0.2.0/24", "2001:db8::/32"}}}
 	if err := both.Validate(); err != nil {
 		t.Fatalf("Validate() rejected a mixed-family client_networks list: %v", err)
 	}
@@ -240,6 +242,7 @@ func TestValidateFamilySpecificLists(t *testing.T) {
 
 func TestValidateNegativeECSCacheLimit(t *testing.T) {
 	cfg := &Config{}
+	cfg.ECS.Enabled = true
 	cfg.ECS.CacheLimitTTL.Duration = -time.Second
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cache_limit_ttl") {
 		t.Fatalf("Validate() = %v, want the negative ECS cache limit rejected", err)
@@ -410,20 +413,220 @@ func TestValidatePortRange(t *testing.T) {
 func TestValidateMirrorsRuntimeTrimming(t *testing.T) {
 	trimmed := &Config{
 		DNS64: DNS64Config{
+			Enabled:             true,
 			Prefixes:            []string{" 64:ff9b::/96 "},
 			ClientNetworks:      []string{" 192.0.2.0/24 "},
 			ExcludeANetworks:    []string{" 10.0.0.0/8 "},
 			ExcludeAAAANetworks: []string{" 2001:db8::/32 "},
 			ExcludeZones:        []string{" Example.COM ", ""},
 		},
+		HyperlocalRoot:        true,
 		HyperlocalRootSources: []string{" 192.0.2.1:53 ", ""},
 	}
 	if err := trimmed.Validate(); err != nil {
 		t.Fatalf("Validate() rejected values the runtime trims and uses: %v", err)
 	}
 
-	raw := &Config{ECS: ECSConfig{ClientNetworks: []string{" 192.0.2.0/24 "}}}
+	raw := &Config{ECS: ECSConfig{Enabled: true, ClientNetworks: []string{" 192.0.2.0/24 "}}}
 	if err := raw.Validate(); err == nil {
 		t.Fatal("Validate() accepted an untrimmed ecs network; ecs parses it raw and would fail")
+	}
+}
+
+// TestValidateSkipsDisabledFeatures pins the upgrade path. Both constructors
+// return before reading another field when the feature is off, so a stale
+// value under a disabled section has no effect — and refusing to start over it
+// would turn an upgrade into an outage.
+func TestValidateSkipsDisabledFeatures(t *testing.T) {
+	stale := &Config{
+		DNS64: DNS64Config{
+			Enabled:             false,
+			Prefixes:            []string{"not-a-prefix", "2001:db8::/49"},
+			ClientNetworks:      []string{"nonsense"},
+			ExcludeANetworks:    []string{"2001:db8::/32"},
+			ExcludeAAAANetworks: []string{"192.0.2.0/24"},
+			ExcludeZones:        []string{"\\"},
+		},
+		ECS: ECSConfig{
+			Enabled:        false,
+			ForwardV4Max:   99,
+			ClientNetworks: []string{"nonsense"},
+		},
+		HyperlocalRoot:        false,
+		HyperlocalRootSources: []string{"no-port-at-all"},
+	}
+	if err := stale.Validate(); err != nil {
+		t.Fatalf("Validate() refused a config whose broken values are all under disabled features: %v", err)
+	}
+
+	// Turning the feature on is what makes them count.
+	on := *stale
+	on.DNS64.Enabled = true
+	on.ECS.Enabled = true
+	on.HyperlocalRoot = true
+	err := on.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted broken values under enabled features")
+	}
+	for _, want := range []string{"dns64 prefix", "ecs forward_v4", "hyperlocal_root_sources"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() = %v\nmissing a problem for %q", err, want)
+		}
+	}
+}
+
+func TestValidatePathKinds(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A directory satisfies Stat and then fails at the read, taking the TLS
+	// listener down after this test reported success.
+	tlsCfg := &Config{
+		BindTLS:        ":853",
+		TLSCertificate: dir,
+		TLSPrivateKey:  dir,
+	}
+	err := tlsCfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("Validate() = %v, want the certificate directory rejected", err)
+	}
+
+	if err := (&Config{HostsFile: dir}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("Validate() = %v, want a directory rejected as hostsfile", err)
+	}
+
+	// Absent is fine — the server creates it — but a file at the path is not,
+	// because the Mkdir that follows fails on it.
+	if err := (&Config{Directory: filepath.Join(dir, "not-there")}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a directory the server would create: %v", err)
+	}
+	if err := (&Config{Directory: file}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "want a directory") {
+		t.Fatalf("Validate() = %v, want a file rejected as directory", err)
+	}
+
+	// Opened with O_CREATE, so absence is fine and a directory is not.
+	if err := (&Config{AccessLog: filepath.Join(dir, "new.log")}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected an access log the server would create: %v", err)
+	}
+	if err := (&Config{AccessLog: dir}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "accesslog") {
+		t.Fatalf("Validate() = %v, want a directory rejected as accesslog", err)
+	}
+
+	// Only read when the integration is on.
+	off := &Config{}
+	off.Kubernetes.Kubeconfig = filepath.Join(dir, "missing.yaml")
+	if err := off.Validate(); err != nil {
+		t.Fatalf("Validate() read kubeconfig with kubernetes disabled: %v", err)
+	}
+	on := *off
+	on.Kubernetes.Enabled = true
+	if err := on.Validate(); err == nil || !strings.Contains(err.Error(), "kubeconfig") {
+		t.Fatalf("Validate() = %v, want the missing kubeconfig reported", err)
+	}
+}
+
+func TestValidateNullrouteFamilies(t *testing.T) {
+	// Blocked names answer A from nullroute and AAAA from nullroutev6, so a
+	// swap produces a wrong answer rather than a failure.
+	if err := (&Config{Nullroute: "::1"}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "must be IPv4") {
+		t.Fatalf("Validate() = %v, want an IPv6 nullroute rejected", err)
+	}
+	if err := (&Config{Nullroutev6: "0.0.0.0"}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "must be IPv6") {
+		t.Fatalf("Validate() = %v, want an IPv4 nullroutev6 rejected", err)
+	}
+	// What the generated config ships.
+	if err := (&Config{Nullroute: "0.0.0.0", Nullroutev6: "::0"}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected the shipped null routes: %v", err)
+	}
+}
+
+func TestValidateSilentlyAdjustedNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want bool // accept?
+	}{
+		// The cache raises anything under 1024, so the file described a
+		// server that never ran.
+		{"cachesize below the floor", Config{CacheSize: 1}, false},
+		{"cachesize zero means default", Config{CacheSize: 0}, true},
+		{"cachesize at the floor", Config{CacheSize: 1024}, true},
+		// 1-9 is raised to 10, and above 90 turns prefetch off entirely.
+		{"prefetch below the floor", Config{Prefetch: 1}, false},
+		{"prefetch zero is off", Config{Prefetch: 0}, true},
+		{"prefetch at the floor", Config{Prefetch: 10}, true},
+		{"prefetch at the ceiling", Config{Prefetch: 90}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
+// TestLoadValidatesQnameBeforeNormalizing pins the ordering. Normalizing folds
+// a negative count to zero — which turns minimization off — so running it
+// first handed Validate the settled value and hid what the file said.
+func TestLoadValidatesQnameBeforeNormalizing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdns.conf")
+	body := fmt.Sprintf(
+		"version = %q\ndirectory = %q\nqname_max_minimize_count = -1\n",
+		configver, filepath.Join(dir, "db"),
+	)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, "test"); err == nil ||
+		!strings.Contains(err.Error(), "qname_max_minimize_count") {
+		t.Fatalf("Load() = %v, want the negative minimization count reported", err)
+	}
+}
+
+func TestValidateForwardZoneReportsNameAndServers(t *testing.T) {
+	err := (&Config{ForwardZones: []ForwardZoneConfig{{Name: ""}}}).Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted a forward zone with no name and no servers")
+	}
+	for _, want := range []string{"has no name", "has no servers"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() = %v\nmissing %q — one entry, one run", err, want)
+		}
+	}
+}
+
+func TestValidateURLsNeedAHostname(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		// Host is ":443" and Hostname is empty; the forwarder bootstraps
+		// Hostname and drops this at startup.
+		{"DoH without a hostname", Config{ForwarderServers: []string{"https://:443/dns-query"}}},
+		{"DoH port out of range", Config{ForwarderServers: []string{"https://example.com:99999/dns-query"}}},
+		{"blocklist without a hostname", Config{BlockLists: []string{"http://:80/list"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); err == nil {
+				t.Fatalf("Validate() accepted %+v", tc.cfg)
+			}
+		})
+	}
+
+	ok := &Config{
+		ForwarderServers: []string{"https://cloudflare-dns.com/dns-query", "https://1.1.1.1:443/dns-query"},
+		BlockLists:       []string{"https://example.com/list"},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("Validate() rejected usable URLs: %v", err)
 	}
 }

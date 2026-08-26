@@ -79,19 +79,37 @@ func (c *Config) Validate() error {
 				{"tlscertificate", c.TLSCertificate},
 				{"tlsprivatekey", c.TLSPrivateKey},
 			} {
-				if _, err := os.Stat(f.path); err != nil {
+				if err := regularFile(f.path); err != nil {
 					add("%s = %q: %v", f.key, f.path, err)
 				}
 			}
 		}
 	}
 
-	for _, ip := range []struct{ key, value string }{
-		{"nullroute", c.Nullroute},
-		{"nullroutev6", c.Nullroutev6},
+	// Blocked names answer A from the first and AAAA from the second. Swap
+	// them and the A record packs the IPv6 address's nil To4() as 0.0.0.0,
+	// while the AAAA carries an IPv4-mapped address — a wrong answer rather
+	// than a failure, so nothing downstream complains.
+	for _, ip := range []struct {
+		key, value string
+		want4      bool
+	}{
+		{"nullroute", c.Nullroute, true},
+		{"nullroutev6", c.Nullroutev6, false},
 	} {
-		if ip.value != "" && net.ParseIP(ip.value) == nil {
+		if ip.value == "" {
+			continue
+		}
+		parsed := net.ParseIP(ip.value)
+		switch {
+		case parsed == nil:
 			add("%s = %q: must be an IP address", ip.key, ip.value)
+		case (parsed.To4() != nil) != ip.want4:
+			family := "IPv6"
+			if ip.want4 {
+				family = "IPv4"
+			}
+			add("%s = %q: must be %s", ip.key, ip.value, family)
 		}
 	}
 
@@ -165,7 +183,6 @@ func (c *Config) Validate() error {
 		{"querytimeout", c.QueryTimeout},
 		{"roottcptimeout", c.RootTCPTimeout},
 		{"tldtcptimeout", c.TLDTCPTimeout},
-		{"ecs.cache_limit_ttl", c.ECS.CacheLimitTTL},
 	} {
 		if d.value.Duration < 0 {
 			add("%s = %q: must not be negative", d.key, d.value.Duration)
@@ -176,6 +193,8 @@ func (c *Config) Validate() error {
 		key   string
 		value int
 	}{
+		// Zero keeps its "use the default" meaning; a size the cache would
+		// silently raise is caught below.
 		{"cachesize", c.CacheSize},
 		{"maxdepth", c.Maxdepth},
 		{"ratelimit", c.RateLimit},
@@ -311,13 +330,47 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		}
 	}
 
+	// Both are created when absent, so only a plain file already sitting at
+	// the path is a problem — the Mkdir that follows would fail on it.
+	for _, dir := range []struct{ key, path string }{
+		{"directory", c.Directory},
+		{"blocklistdir", c.BlockListDir},
+	} {
+		if dir.path == "" {
+			continue
+		}
+		if err := writableDir(dir.path); err != nil {
+			add("%s = %q: %v", dir.key, dir.path, err)
+		}
+	}
+
+	// Opened with O_CREATE, so it need not exist; a directory at the path
+	// makes that open fail and takes the server down at startup.
+	if c.AccessLog != "" {
+		if info, err := os.Stat(c.AccessLog); err == nil && info.IsDir() {
+			add("accesslog = %q: is a directory, want a file", c.AccessLog)
+		}
+	}
+
+	if c.Kubernetes.Enabled && c.Kubernetes.Kubeconfig != "" {
+		if err := regularFile(c.Kubernetes.Kubeconfig); err != nil {
+			add("kubernetes.kubeconfig = %q: %v", c.Kubernetes.Kubeconfig, err)
+		}
+	}
+
 	if c.HostsFile != "" {
-		if _, err := os.Stat(c.HostsFile); err != nil {
+		if err := regularFile(c.HostsFile); err != nil {
 			add("hostsfile = %q: %v", c.HostsFile, err)
 		}
 	}
 
-	for _, raw := range c.HyperlocalRootSources {
+	// Only read when the feature is on, so a stale source left behind by an
+	// operator who turned hyperlocal off does not stop the server.
+	sources := c.HyperlocalRootSources
+	if !c.HyperlocalRoot {
+		sources = nil
+	}
+	for _, raw := range sources {
 		// The manager trims each source and drops the ones left empty,
 		// falling back to its built-in list, so neither surrounding space
 		// nor a blank entry is a problem to report.
@@ -341,8 +394,32 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// The cache refuses anything above 90 and then disables prefetch
 	// entirely, so 91-100 passed this test and silently turned the feature
 	// off. The low end is clamped up to 10 rather than refused.
-	if c.Prefetch > 90 {
-		add("prefetch = %d: is a percentage of the original TTL and must not exceed 90", c.Prefetch)
+	// Negatives here are settled away rather than refused: a negative
+	// minimization count folds to zero, which turns minimization off, and a
+	// negative one-label count falls back to the default. Both leave the
+	// server running something the file does not say.
+	if c.QnameMaxMinimizeCount != nil && *c.QnameMaxMinimizeCount < 0 {
+		add("qname_max_minimize_count = %d: must not be negative (0 turns minimization off)", *c.QnameMaxMinimizeCount)
+	}
+	if c.QnameMinLevel < 0 {
+		add("qname_min_level = %d: must not be negative", c.QnameMinLevel)
+	}
+	if c.QnameMinimizeOneLabel < 0 {
+		add("qname_minimize_one_label = %d: must not be negative", c.QnameMinimizeOneLabel)
+	}
+
+	// The cache raises anything under 1024 to 1024 without saying so, so a
+	// file naming a smaller cache does not describe the server that runs.
+	// Zero still means "use the default".
+	if c.CacheSize > 0 && c.CacheSize < 1024 {
+		add("cachesize = %d: must be 0 (default) or at least 1024", c.CacheSize)
+	}
+
+	// A percentage of the original TTL, and the cache moves anything outside
+	// 10..90 without saying so: above 90 it turns prefetch off entirely, and
+	// 1..9 it raises to 10. Zero is the documented way to disable it.
+	if c.Prefetch > 90 || (c.Prefetch > 0 && c.Prefetch < 10) {
+		add("prefetch = %d: is a percentage of the original TTL and must be 0 (off) or between 10 and 90", c.Prefetch)
 	}
 
 	if c.ReflexThreshold != 0 && (c.ReflexThreshold < 0 || c.ReflexThreshold > 1) {
@@ -356,7 +433,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("plugin %q has no path", name)
 			continue
 		}
-		if _, err := os.Stat(plugin.Path); err != nil {
+		if err := regularFile(plugin.Path); err != nil {
 			add("plugin %q path %q: %v", name, plugin.Path, err)
 		}
 	}
@@ -393,7 +470,9 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 	for _, u := range c.BlockLists {
 		parsed, err := url.Parse(u)
 		switch {
-		case err != nil || parsed.Host == "":
+		// Hostname, not Host: "http://:80/list" has the latter and nothing
+		// to connect to.
+		case err != nil || parsed.Hostname() == "":
 			add("blocklists %q: must be an http:// or https:// URL", u)
 		case parsed.Scheme != "http" && parsed.Scheme != "https":
 			// The updater fetches with an http.Client, so any other scheme
@@ -441,6 +520,21 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 	// server runs today. The ecs list below is parsed raw, so it is not
 	// trimmed here either — each list is judged the way its own reader reads
 	// it.
+	//
+	// All of it is gated on enabled, because both constructors return before
+	// reading another field when the feature is off. A config that has run
+	// for years with a stale value under a disabled section must keep
+	// starting; refusing it would turn an upgrade into an outage over a
+	// setting that has no effect either way.
+	c.validateDNS64(add)
+	c.validateECS(add)
+}
+
+func (c *Config) validateDNS64(add func(string, ...any)) {
+	if !c.DNS64.Enabled {
+		return
+	}
+
 	validPrefixBits := map[int]bool{32: true, 40: true, 48: true, 56: true, 64: true, 96: true}
 	for _, raw := range c.DNS64.Prefixes {
 		prefix := strings.TrimSpace(raw)
@@ -472,20 +566,15 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 	for _, list := range []struct {
 		key    string
 		values []string
-		mask   int  // 0 for either family
-		trim   bool // whether this list's reader trims before parsing
+		mask   int // 0 for either family
 	}{
-		{"dns64 client_networks", c.DNS64.ClientNetworks, 0, true},
-		{"dns64 exclude_a_networks", c.DNS64.ExcludeANetworks, net.IPv4len, true},
-		{"dns64 exclude_aaaa_networks", c.DNS64.ExcludeAAAANetworks, net.IPv6len, true},
-		{"ecs client_networks", c.ECS.ClientNetworks, 0, false},
+		{"dns64 client_networks", c.DNS64.ClientNetworks, 0},
+		{"dns64 exclude_a_networks", c.DNS64.ExcludeANetworks, net.IPv4len},
+		{"dns64 exclude_aaaa_networks", c.DNS64.ExcludeAAAANetworks, net.IPv6len},
 	} {
 		for _, raw := range list.values {
-			network := raw
-			if list.trim {
-				network = strings.TrimSpace(raw)
-			}
-			_, parsed, err := net.ParseCIDR(network)
+			// Every dns64 list is read through TrimSpace.
+			_, parsed, err := net.ParseCIDR(strings.TrimSpace(raw))
 			if err != nil {
 				add("%s %q: must be a CIDR block", list.key, raw)
 				continue
@@ -510,6 +599,20 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 			add("dns64 exclude_zones %q: not a valid domain name", raw)
 		}
 	}
+}
+
+func (c *Config) validateECS(add func(string, ...any)) {
+	if !c.ECS.Enabled {
+		return
+	}
+
+	// internal/ecs hands each entry straight to netip.ParsePrefix, so unlike
+	// the dns64 lists above this one is judged exactly as written.
+	for _, network := range c.ECS.ClientNetworks {
+		if !validCIDR(network) {
+			add("ecs client_networks %q: must be a CIDR block", network)
+		}
+	}
 
 	for _, bits := range []struct {
 		key   string
@@ -525,11 +628,47 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 			add("%s = %d: must not exceed %d", bits.key, bits.value, bits.max)
 		}
 	}
+
+	if c.ECS.CacheLimitTTL.Duration < 0 {
+		add("ecs.cache_limit_ttl = %q: must not be negative", c.ECS.CacheLimitTTL.Duration)
+	}
 }
 
 func validCIDR(s string) bool {
 	_, _, err := net.ParseCIDR(s)
 	return err == nil
+}
+
+// regularFile reports whether path is something the server can open and read.
+// Existence alone is not enough: a directory satisfies Stat and then fails at
+// the read, which for a certificate and key means the TLS listener stops
+// startup after this test has already reported success.
+func regularFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("is a directory, want a file")
+	}
+	return nil
+}
+
+// writableDir reports whether path can serve as a directory the server writes
+// into. Absence is fine — both callers create it — but a plain file sitting at
+// the path is not, because the Mkdir that would follow fails.
+func writableDir(path string) error {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("is a file, want a directory")
+	}
+	return nil
 }
 
 // anchorKeyProblem reports why this key cannot be verified with, or nil when
@@ -612,10 +751,17 @@ func validIPPort(addr string) bool {
 func validUpstream(addr string) error {
 	switch {
 	case strings.HasPrefix(addr, "https://"):
-		// DoH may name a host: it is bootstrapped once at startup.
+		// DoH may name a host: it is bootstrapped once at startup. What the
+		// forwarder actually uses is Hostname(), not Host — "https://:443/x"
+		// has a Host and no hostname, and is dropped during bootstrap.
 		u, err := url.Parse(addr)
-		if err != nil || u.Host == "" {
+		if err != nil || u.Hostname() == "" {
 			return fmt.Errorf("not a usable DoH URL")
+		}
+		if port := u.Port(); port != "" {
+			if err := usablePort(port); err != nil {
+				return err
+			}
 		}
 		return nil
 	case strings.HasPrefix(addr, "tls://"):

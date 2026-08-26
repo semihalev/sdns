@@ -264,12 +264,16 @@ type ForwardZoneConfig struct {
 func (c *Config) validateForwardZones(add func(string, ...any)) {
 	for i := range c.ForwardZones {
 		zone := &c.ForwardZones[i]
+		// The two name problems are alternatives, but a missing server list is
+		// independent of both — reporting only the first would send the
+		// operator back for a second run over the same entry.
 		switch {
 		case strings.TrimSpace(zone.Name) == "":
 			add("forward_zone %d has no name; use name = \".\" to forward every query", i+1)
 		case !validDomainName(zone.Name):
 			add("forward_zone %q is not a valid domain name", zone.Name)
-		case len(zone.Servers) == 0:
+		}
+		if len(zone.Servers) == 0 {
 			add("forward_zone %q has no servers", zone.Name)
 		}
 	}
@@ -1401,8 +1405,6 @@ func Load(cfgfile, version string) (*Config, error) {
 		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
 
-	config.normalizeQnameMinimize()
-
 	config.RecursionFirewall.Normalize()
 
 	// Keys the file carries that no field claims: a typo, or a setting an
@@ -1427,6 +1429,12 @@ func Load(cfgfile, version string) (*Config, error) {
 		}
 		return nil, err
 	}
+
+	// After the gate, not before: normalizing folds a negative minimization
+	// count to zero and a negative one-label count to the default, so running
+	// it first would hand Validate the settled value and hide what the file
+	// actually said.
+	config.normalizeQnameMinimize()
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {
 		if err := os.Mkdir(config.Directory, 0750); err != nil {
