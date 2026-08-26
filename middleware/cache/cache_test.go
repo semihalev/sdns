@@ -549,3 +549,50 @@ func TestForwardZoneBypassesCoveringDenial(t *testing.T) {
 		t.Fatal("a public NXDOMAIN cut answered for a forwarded zone")
 	}
 }
+
+// TestForwardZoneFailureKinds pins which cached failures a forwarded question
+// may still be answered from. The two kinds mean opposite things here: a
+// zone-kind failure records an authority zone that was unreachable while
+// resolving publicly, which says nothing about the zone's own upstream; a
+// question-kind failure for a forwarded name is what the forwarder recorded
+// when that upstream failed, and dropping it would retry a dead upstream on
+// every client query.
+func TestForwardZoneFailureKinds(t *testing.T) {
+	newCache := func() *Cache {
+		return New(&config.Config{
+			CacheSize: 1024,
+			ForwardZones: []config.ForwardZoneConfig{
+				{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}},
+			},
+		})
+	}
+
+	t.Run("question-kind backoff survives", func(t *testing.T) {
+		c := newCache()
+		defer c.Stop()
+		req := newQuestionMsg("host.corp.example.", dns.TypeA, dns.ClassINET)
+		c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("response"), nil)
+
+		hit, ok := c.lookupFailure(req, netip.Prefix{})
+		if !ok || hit.Kind != FailureKindQuestion {
+			t.Fatalf("forwarded question lost its own backoff: ok=%v kind=%v", ok, hit.Kind)
+		}
+	})
+
+	t.Run("zone-kind denial is bypassed", func(t *testing.T) {
+		c := newCache()
+		defer c.Stop()
+		outside := newQuestionMsg("other.example.", dns.TypeA, dns.ClassINET)
+		c.store.RecordZoneFailure(outside.Question[0], "example.")
+
+		// The zone failure is live for names it should still cover; without
+		// this the assertion below would pass on an empty failure cache.
+		if hit, ok := c.lookupFailure(outside, netip.Prefix{}); !ok || hit.Kind != FailureKindZone {
+			t.Fatalf("zone failure does not cover a public name: ok=%v kind=%v", ok, hit.Kind)
+		}
+		inside := newQuestionMsg("host.corp.example.", dns.TypeA, dns.ClassINET)
+		if _, ok := c.lookupFailure(inside, netip.Prefix{}); ok {
+			t.Fatal("a public zone failure answered for a forwarded zone")
+		}
+	})
+}

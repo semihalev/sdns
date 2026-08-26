@@ -120,8 +120,10 @@ func New(cfg *config.Config) *Forwarder {
 		zone := &cfg.ForwardZones[i]
 		servers := parseServers(zone.Servers, dialTimeout, requestTimeout, "forward zone "+zone.Name)
 		if len(servers) == 0 {
-			// ForwardZoneFor skips a serverless zone too, so the subtree
-			// resolves normally rather than failing wholesale.
+			// Left out of the map, so serversFor returns nothing for it and
+			// the query fails. It deliberately does not fall through to the
+			// whole-server list: those are public upstreams, and an internal
+			// zone's questions must not reach them.
 			zlog.Error("Forward zone has no usable server. Check your config.", "zone", zone.Name)
 			continue
 		}

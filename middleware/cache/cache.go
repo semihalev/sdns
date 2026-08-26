@@ -999,14 +999,26 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 // synthesis. ECS requests also bypass P4: a signed split-horizon denial can be
 // audience-specific, and P4 has no per-scope proof index. Failing open to
 // ordinary resolution is safer than sharing one audience's subtree cut.
-// lookupFailure is Store.LookupFailure with the forward-zone gate applied. An
-// RFC 9520 failure recorded while a name resolved publicly says nothing about
-// the upstream a forward zone now names.
+// lookupFailure is Store.LookupFailure with the forward-zone gate applied to
+// the one kind of failure that describes the public namespace.
+//
+// A zone-kind failure records that an authority zone was unreachable while
+// resolving from the root; it says nothing about the upstream a forward zone
+// names, and matching by ancestor it would deny the whole forwarded subtree.
+// A question-kind failure is the opposite: for a forwarded name it is what the
+// forwarder recorded when that zone's own upstream failed, and it is the RFC
+// 9520 backoff protecting a dead upstream from being retried by every client
+// query. Dropping both would leave that upstream hammered for as long as it
+// stayed down.
 func (c *Cache) lookupFailure(req *dns.Msg, clientScope netip.Prefix) (FailureHit, bool) {
+	hit, ok := c.store.LookupFailure(req, clientScope)
+	if !ok || hit.Kind != FailureKindZone {
+		return hit, ok
+	}
 	if req != nil && len(req.Question) > 0 && c.forwardedZoneQuestion(req.Question[0].Name) {
 		return FailureHit{}, false
 	}
-	return c.store.LookupFailure(req, clientScope)
+	return hit, ok
 }
 
 // forwardedZoneQuestion reports whether qname belongs to a forward zone.

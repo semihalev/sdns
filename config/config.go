@@ -274,9 +274,12 @@ func (c *Config) validateForwardZones() error {
 // qname, or nil when the query resolves normally. Most specific wins so a
 // narrower zone can be pointed somewhere else than the one containing it.
 //
-// A zone with no usable upstream is skipped rather than matched: a match with
-// nowhere to send the query would turn a configuration mistake into SERVFAIL
-// for the whole subtree, where falling through resolves it.
+// A zone carrying no servers at all is skipped, but only as a guard for a
+// Config built in code: validateForwardZones refuses one at startup, because
+// letting its subtree resolve publicly is the leak configuring the zone was
+// meant to prevent. A zone whose servers are configured but turn out
+// unusable still matches here, and the forwarder fails those queries rather
+// than sending them to the public upstreams.
 //
 // The scan is linear because a forward-zone list is a handful of entries an
 // operator wrote by hand; an index would cost more to keep honest than it
@@ -755,9 +758,12 @@ forwarderservers = [
 # resolves recursively. This is forwarding in the RFC 8499 sense — the query
 # goes out with RD=1 to a resolver that answers on our behalf — so the
 # upstreams must be recursive resolvers, not the zone's authoritative servers.
-# The most specific matching zone wins, and a zone with no usable server is
-# ignored rather than failing its whole subtree. Servers take the same forms
-# as forwarderservers, so DoT and DoH work per zone too.
+# The most specific matching zone wins. A zone must name itself and at least
+# one server or startup fails — an omitted name would forward every query —
+# and a zone whose upstreams all turn out unusable fails its queries rather
+# than borrowing forwarderservers, which would send an internal zone's
+# questions to public resolvers. Servers take the same forms as
+# forwarderservers, so DoT and DoH work per zone too.
 #
 # A forwarded zone is NOT validated here: answers carry whatever the upstream
 # asserted, exactly as in whole-server forwarder mode. Pointing a signed
