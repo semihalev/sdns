@@ -741,3 +741,46 @@ func vacantLoopbackAddr(t *testing.T) string {
 
 	return pc.LocalAddr().String()
 }
+
+func TestServersForPicksTheZoneUpstreams(t *testing.T) {
+	f := New(&config.Config{
+		ForwarderServers: []string{"192.0.2.1:53"},
+		ForwardZones: []config.ForwardZoneConfig{
+			{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}},
+			{Name: "lab.corp.example.", Servers: []string{"tls://10.0.1.53:853"}},
+			{Name: "broken.example.", Servers: []string{"not-an-address"}},
+		},
+	})
+
+	addrOf := func(servers []*server) string {
+		if len(servers) != 1 {
+			t.Fatalf("expected exactly one upstream, got %d", len(servers))
+		}
+		return servers[0].Addr
+	}
+
+	if got := addrOf(f.serversFor("host.corp.example.")); got != "10.0.0.53:53" {
+		t.Fatalf("corp zone upstream = %s", got)
+	}
+	if got := addrOf(f.serversFor("host.lab.corp.example.")); got != "10.0.1.53:853" {
+		t.Fatalf("most specific zone upstream = %s", got)
+	}
+	if got := addrOf(f.serversFor("example.net.")); got != "192.0.2.1:53" {
+		t.Fatalf("unmatched name upstream = %s, want the whole-server list", got)
+	}
+	// A zone whose servers were all unusable is dropped at construction, so
+	// its subtree falls back to the whole-server list rather than to nothing.
+	if got := addrOf(f.serversFor("host.broken.example.")); got != "192.0.2.1:53" {
+		t.Fatalf("serverless zone upstream = %s, want the whole-server list", got)
+	}
+}
+
+func TestServersForWithoutZonesIsTheGlobalList(t *testing.T) {
+	f := New(&config.Config{ForwarderServers: []string{"192.0.2.1:53"}})
+	if len(f.zones) != 0 {
+		t.Fatalf("zones = %v, want none", f.zones)
+	}
+	if servers := f.serversFor("anything.example."); len(servers) != 1 || servers[0].Addr != "192.0.2.1:53" {
+		t.Fatalf("serversFor = %v, want the whole-server list", servers)
+	}
+}

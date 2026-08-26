@@ -86,6 +86,18 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if req == nil {
 		return
 	}
+
+	// A forward zone hands its subtree to its own upstreams; everything else
+	// still resolves here. The question is needed to decide, so this sits
+	// after materialization rather than beside the whole-server check above —
+	// and the request was going to be materialized anyway, so a server with
+	// no forward zones pays only the length check.
+	if len(h.cfg.ForwardZones) > 0 && len(req.Question) > 0 &&
+		h.cfg.ForwardZoneFor(req.Question[0].Name) != nil {
+		ch.Next(ctx)
+		return
+	}
+
 	w := ch.Writer
 
 	// Ensure request ID is in context for tracking. It is request-lifetime

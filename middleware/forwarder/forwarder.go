@@ -59,6 +59,13 @@ type Forwarder struct {
 	dnssec    bool
 	tlsConfig *tls.Config
 
+	// zones holds the per-zone upstreams, keyed by canonical zone apex.
+	// Empty on a server that only uses the whole-server list.
+	zones map[string][]*server
+	// cfg supplies the zone matcher, so which zone a question belongs to is
+	// decided in exactly one place for both this and the resolver's handover.
+	cfg *config.Config
+
 	// queryTimeout caps the total time ServeDNS spends across every
 	// configured upstream — mirroring how the resolver handler
 	// enforces cfg.QueryTimeout. Without it, three slow upstreams
@@ -102,6 +109,34 @@ func New(cfg *config.Config) *Forwarder {
 		requestTimeout = 10 * time.Second
 	}
 
+	f := &Forwarder{
+		servers:      parseServers(cfg.ForwarderServers, dialTimeout, requestTimeout, "forwarder"),
+		dnssec:       cfg.DNSSEC == "on",
+		queryTimeout: requestTimeout,
+		dialTimeout:  dialTimeout,
+		cfg:          cfg,
+	}
+	for i := range cfg.ForwardZones {
+		zone := &cfg.ForwardZones[i]
+		servers := parseServers(zone.Servers, dialTimeout, requestTimeout, "forward zone "+zone.Name)
+		if len(servers) == 0 {
+			// ForwardZoneFor skips a serverless zone too, so the subtree
+			// resolves normally rather than failing wholesale.
+			zlog.Error("Forward zone has no usable server. Check your config.", "zone", zone.Name)
+			continue
+		}
+		if f.zones == nil {
+			f.zones = make(map[string][]*server, len(cfg.ForwardZones))
+		}
+		f.zones[dns.CanonicalName(zone.Name)] = servers
+	}
+	return f
+}
+
+// parseServers turns configured upstream strings into dialable endpoints,
+// dropping duplicates and anything unusable. label names the setting in log
+// lines so an operator can tell which list an error came from.
+func parseServers(list []string, dialTimeout, requestTimeout time.Duration, label string) []*server {
 	forwarderservers := []*server{}
 	seen := make(map[string]struct{})
 	appendServer := func(srv *server) {
@@ -116,12 +151,12 @@ func New(cfg *config.Config) *Forwarder {
 		seen[key] = struct{}{}
 		forwarderservers = append(forwarderservers, srv)
 	}
-	for _, s := range cfg.ForwarderServers {
+	for _, s := range list {
 		switch {
 		case strings.HasPrefix(s, "https://"):
 			srv, err := newDoHServer(s, dialTimeout, requestTimeout)
 			if err != nil {
-				zlog.Error("Forwarder DoH server not usable", "server", s, "error", err.Error())
+				zlog.Error("DoH server not usable", "list", label, "server", s, "error", err.Error())
 				continue
 			}
 			appendServer(srv)
@@ -129,26 +164,37 @@ func New(cfg *config.Config) *Forwarder {
 		case strings.HasPrefix(s, "tls://"):
 			addr := strings.TrimPrefix(s, "tls://")
 			if !validForwarderAddr(addr) {
-				zlog.Error("Forwarder server is not correct. Check your config.", "server", s)
+				zlog.Error("Server is not correct. Check your config.", "list", label, "server", s)
 				continue
 			}
 			appendServer(&server{Addr: addr, Proto: "tcp-tls"})
 
 		default:
 			if !validForwarderAddr(s) {
-				zlog.Error("Forwarder server is not correct. Check your config.", "server", s)
+				zlog.Error("Server is not correct. Check your config.", "list", label, "server", s)
 				continue
 			}
 			appendServer(&server{Addr: s, Proto: "udp"})
 		}
 	}
 
-	return &Forwarder{
-		servers:      forwarderservers,
-		dnssec:       cfg.DNSSEC == "on",
-		queryTimeout: requestTimeout,
-		dialTimeout:  dialTimeout,
+	return forwarderservers
+}
+
+// serversFor picks the upstreams for one question: those of the most specific
+// forward zone covering it, or the whole-server list when no zone does. The
+// match itself comes from the config so the resolver's decision to hand the
+// query over and this choice of where to send it cannot drift apart.
+func (f *Forwarder) serversFor(qname string) []*server {
+	if len(f.zones) == 0 {
+		return f.servers
 	}
+	if zone := f.cfg.ForwardZoneFor(qname); zone != nil {
+		if servers, ok := f.zones[dns.CanonicalName(zone.Name)]; ok {
+			return servers
+		}
+	}
+	return f.servers
 }
 
 // validForwarderAddr reports whether addr is a host:port string with
@@ -173,7 +219,12 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	w := ch.Writer
 
-	if len(req.Question) == 0 || len(f.servers) == 0 {
+	if len(req.Question) == 0 {
+		ch.CancelWithRcode(dns.RcodeServerFailure, true)
+		return
+	}
+	servers := f.serversFor(req.Question[0].Name)
+	if len(servers) == 0 {
 		ch.CancelWithRcode(dns.RcodeServerFailure, true)
 		return
 	}
@@ -212,7 +263,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		failureResponse *dns.Msg
 		requestLocalErr error
 	)
-	for _, server := range f.servers {
+	for _, server := range servers {
 		// Build a lightweight client per upstream. For DoH this
 		// references the reused, pinned-IP http.Client created at
 		// startup (never per query); for DoT it picks up the
