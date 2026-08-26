@@ -1264,9 +1264,10 @@ func TestValidateForwardZones(t *testing.T) {
 		{"no servers", []ForwardZoneConfig{{Name: "corp.example."}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := (&Config{ForwardZones: tc.zones}).validateForwardZones()
+			// Through Validate, which is the single gate the load path uses.
+			err := (&Config{ForwardZones: tc.zones}).Validate()
 			if tc.wantErr != (err != nil) {
-				t.Fatalf("validateForwardZones() error = %v, wantErr %v", err, tc.wantErr)
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
 	}

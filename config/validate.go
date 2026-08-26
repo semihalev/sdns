@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -150,6 +151,7 @@ func (c *Config) Validate() error {
 		{"querytimeout", c.QueryTimeout},
 		{"roottcptimeout", c.RootTCPTimeout},
 		{"tldtcptimeout", c.TLDTCPTimeout},
+		{"ecs.cache_limit_ttl", c.ECS.CacheLimitTTL},
 	} {
 		if d.value.Duration < 0 {
 			add("%s = %q: must not be negative", d.key, d.value.Duration)
@@ -165,12 +167,38 @@ func (c *Config) Validate() error {
 		{"ratelimit", c.RateLimit},
 		{"clientratelimit", c.ClientRateLimit},
 		{"maxconcurrentqueries", c.MaxConcurrentQueries},
+		// Each of these treats zero as "use the default", so a negative
+		// value is neither the default nor what was asked for: it leaves the
+		// TCP pool holding nothing, dnstap back on its default interval, and
+		// the metrics limit meaningless.
+		{"tcpmaxconnections", c.TCPMaxConnections},
+		{"dnstapflushinterval", c.DnstapFlushInterval},
+		{"domainmetricslimit", c.DomainMetricsLimit},
+		{"ingressworkers", c.IngressWorkers},
+		{"ingressqueue", c.IngressQueue},
+		{"ingresstcpconns", c.IngressTCPConns},
 	} {
 		if n.value < 0 {
 			add("%s = %d: must not be negative", n.key, n.value)
 		}
 	}
 
+	// Everything the load path used to check on its own runs here too, so one
+	// pass reports every problem in the file rather than one problem per run.
+	//
+	// An empty firewall mode is the operator omitting the section; Normalize
+	// fills it in before the load path reaches here, so only a mode that
+	// survived normalization is judged. Validating "" would fail every Config
+	// built in code rather than read from a file.
+	if c.RecursionFirewall.Mode != "" {
+		if err := c.RecursionFirewall.Validate(); err != nil {
+			add("invalid recursion firewall config: %v", err)
+		}
+	}
+	if c.ServeStaleMaxTTL.Duration < 0 {
+		add("serve_stale_max_ttl must not be negative (got %q)", c.ServeStaleMaxTTL.Duration)
+	}
+	c.validateForwardZones(add)
 	c.validateTrustAndIdentity(add)
 	c.validateNameLists(add)
 	c.validateSubTables(add)
@@ -212,6 +240,12 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		case dnskey.Flags != 257:
 			// Only key-signing keys enter the verification set.
 			add("rootkeys %q: must be a key-signing key (flags 257), not %d", key, dnskey.Flags)
+		case !verifiableAlgorithm(dnskey):
+			// Nothing rejects this at startup: the anchor is loaded, and
+			// then every signature made with it fails, so validation is off
+			// while the file still says it is on.
+			add("rootkeys %q: algorithm %d (%s) cannot be verified with",
+				key, dnskey.Algorithm, dns.AlgorithmToString[dnskey.Algorithm])
 		default:
 			anchors++
 		}
@@ -321,8 +355,13 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 
 	for _, u := range c.BlockLists {
 		parsed, err := url.Parse(u)
-		if err != nil || parsed.Host == "" || parsed.Scheme == "" {
-			add("blocklists %q: must be a URL", u)
+		switch {
+		case err != nil || parsed.Host == "":
+			add("blocklists %q: must be an http:// or https:// URL", u)
+		case parsed.Scheme != "http" && parsed.Scheme != "https":
+			// The updater fetches with an http.Client, so any other scheme
+			// fails on an unsupported protocol and the list never loads.
+			add("blocklists %q: scheme %q cannot be fetched; use http or https", u, parsed.Scheme)
 		}
 	}
 }
@@ -335,11 +374,10 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 		if label == "" {
 			label = fmt.Sprintf("#%d", i+1)
 		}
-		if view.Zone != "" {
-			if _, ok := dns.IsDomainName(view.Zone); !ok {
-				add("view %s: zone is not a valid domain name", label)
-			}
-		}
+		// zone is a free-form label. The middleware only carries it into log
+		// lines; matching is done by the networks and the answers' own owner
+		// names. Validating it as a domain would reject descriptive labels
+		// that work today and stop the server on upgrade.
 		for _, network := range view.Networks {
 			if !validCIDR(network) {
 				add("view %s network %q: must be a CIDR block", label, network)
@@ -382,18 +420,33 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 			add("dns64 prefix %q: byte 8 must be zero (RFC 6052 section 2.2 reserved)", prefix)
 		}
 	}
+	// The exclude lists are family-specific at runtime and the wrong family
+	// is dropped with a log line nobody reads, so the exclusion the operator
+	// wrote silently does not apply. Family is decided by mask length, not
+	// To4(): ParseCIDR returns a 4-byte mask for IPv4 and 16 for IPv6, and
+	// an IPv4-mapped IPv6 range would fool the address test.
 	for _, list := range []struct {
 		key    string
 		values []string
+		mask   int // 0 for either family
 	}{
-		{"dns64 client_networks", c.DNS64.ClientNetworks},
-		{"dns64 exclude_a_networks", c.DNS64.ExcludeANetworks},
-		{"dns64 exclude_aaaa_networks", c.DNS64.ExcludeAAAANetworks},
-		{"ecs client_networks", c.ECS.ClientNetworks},
+		{"dns64 client_networks", c.DNS64.ClientNetworks, 0},
+		{"dns64 exclude_a_networks", c.DNS64.ExcludeANetworks, net.IPv4len},
+		{"dns64 exclude_aaaa_networks", c.DNS64.ExcludeAAAANetworks, net.IPv6len},
+		{"ecs client_networks", c.ECS.ClientNetworks, 0},
 	} {
 		for _, network := range list.values {
-			if !validCIDR(network) {
+			_, parsed, err := net.ParseCIDR(network)
+			if err != nil {
 				add("%s %q: must be a CIDR block", list.key, network)
+				continue
+			}
+			if list.mask != 0 && len(parsed.Mask) != list.mask {
+				family := "IPv4"
+				if list.mask == net.IPv6len {
+					family = "IPv6"
+				}
+				add("%s %q: must be %s", list.key, network, family)
 			}
 		}
 	}
@@ -422,6 +475,26 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 func validCIDR(s string) bool {
 	_, _, err := net.ParseCIDR(s)
 	return err == nil
+}
+
+// verifiableAlgorithm reports whether signatures made with this key's algorithm
+// can be verified. The answer is asked of the DNSSEC library rather than kept
+// as a list here, because the set belongs to that library and moves with it —
+// a list written today would claim ED448 works, and it does not.
+//
+// A signature this throwaway fails for many reasons; only ErrAlg means the
+// algorithm itself is the problem, so every other outcome counts as usable.
+func verifiableAlgorithm(key *dns.DNSKEY) bool {
+	probe := &dns.RRSIG{
+		Hdr:         dns.RR_Header{Name: key.Hdr.Name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET},
+		TypeCovered: dns.TypeDNSKEY,
+		Algorithm:   key.Algorithm,
+		OrigTtl:     key.Hdr.Ttl,
+		KeyTag:      key.KeyTag(),
+		SignerName:  key.Hdr.Name,
+		Signature:   "AA==",
+	}
+	return !errors.Is(probe.Verify(key, []dns.RR{key}), dns.ErrAlg)
 }
 
 // validIPPort reports whether addr is an IP literal with a port. Authority and

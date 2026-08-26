@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateRejectsUnusableValues(t *testing.T) {
@@ -157,5 +158,125 @@ func TestLoadRejectsUnusableValues(t *testing.T) {
 		t.Fatal("Load() accepted a config with an unusable value")
 	} else if !strings.Contains(err.Error(), "nullroute") {
 		t.Fatalf("Load() = %v, want the problem to name nullroute", err)
+	}
+}
+
+// TestValidateReportsAcrossFormerlySeparateChecks pins the promise the README
+// makes. These four used to return one at a time from the load path, so a file
+// with several mistakes took several runs to fix.
+func TestValidateReportsAcrossFormerlySeparateChecks(t *testing.T) {
+	cfg := &Config{
+		DNSSEC:       "maybe",
+		ForwardZones: []ForwardZoneConfig{{Name: "corp.example."}},
+	}
+	cfg.RecursionFirewall.Mode = "sideways"
+	cfg.ServeStaleMaxTTL.Duration = -time.Second
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted four broken settings")
+	}
+	for _, want := range []string{
+		"dnssec", "forward_zone", "recursion firewall", "serve_stale_max_ttl",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() = %v\nmissing a problem for %q", err, want)
+		}
+	}
+}
+
+// TestValidateLeavesViewZoneAlone pins that the view label is not judged as a
+// domain name. The middleware only carries it into log lines, so validating it
+// would stop the server on upgrade for labels that work today.
+func TestValidateLeavesViewZoneAlone(t *testing.T) {
+	cfg := &Config{Views: []ViewConfig{{
+		Zone:     "office clients (floor 3)",
+		Networks: []string{"192.0.2.0/24"},
+		Answers:  []string{"printer.local. 300 IN A 192.0.2.10"},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a free-form view label: %v", err)
+	}
+}
+
+func TestValidateFamilySpecificLists(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		// The runtime keeps these by mask length and drops the wrong family
+		// with a log line, so the exclusion quietly does not apply.
+		{"exclude_a takes IPv4", Config{DNS64: DNS64Config{
+			ExcludeANetworks: []string{"2001:db8::/32"},
+		}}, "exclude_a_networks"},
+		{"exclude_aaaa takes IPv6", Config{DNS64: DNS64Config{
+			ExcludeAAAANetworks: []string{"192.0.2.0/24"},
+		}}, "exclude_aaaa_networks"},
+		// The updater fetches with an http.Client, so anything else never loads.
+		{"blocklist scheme", Config{BlockLists: []string{"ftp://example.com/list"}}, "http"},
+		{"negative tcp pool", Config{TCPMaxConnections: -1}, "tcpmaxconnections"},
+		{"negative dnstap interval", Config{DnstapFlushInterval: -1}, "dnstapflushinterval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate() accepted %+v", tc.cfg)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want a problem naming %q", err, tc.want)
+			}
+		})
+	}
+
+	// Both families are legal where the runtime accepts either.
+	both := &Config{DNS64: DNS64Config{ClientNetworks: []string{"192.0.2.0/24", "2001:db8::/32"}}}
+	if err := both.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a mixed-family client_networks list: %v", err)
+	}
+}
+
+func TestValidateNegativeECSCacheLimit(t *testing.T) {
+	cfg := &Config{}
+	cfg.ECS.CacheLimitTTL.Duration = -time.Second
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cache_limit_ttl") {
+		t.Fatalf("Validate() = %v, want the negative ECS cache limit rejected", err)
+	}
+}
+
+// TestValidateRootKeyAlgorithm pins that an anchor the verifier cannot use is
+// caught here. Nothing downstream rejects it: NewResolver only fails on a
+// record that will not parse, so an anchor like this loads and then silently
+// fails every signature it is asked to verify.
+func TestValidateRootKeyAlgorithm(t *testing.T) {
+	const material = "AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3"
+
+	for _, tc := range []struct {
+		name string
+		alg  string
+		want bool
+	}{
+		{"DSA is gone from the library", "3", false},
+		{"ECC-GOST is gone too", "12", false},
+		{"unassigned codepoint", "200", false},
+		// Asked of the library, not assumed: ED448 has a name and a number
+		// and still cannot be verified with.
+		{"ED448 has a name but no verifier", "16", false},
+		{"RSASHA256 is what the root uses", "8", true},
+		{"ECDSAP256SHA256 is the successor", "13", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{RootKeys: []string{
+				". 172800 IN DNSKEY 257 3 " + tc.alg + " " + material,
+			}}
+			err := cfg.Validate()
+			usable := err == nil
+			if usable != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", usable, tc.want, err)
+			}
+			if !tc.want && !strings.Contains(err.Error(), "cannot be verified with") {
+				t.Fatalf("Validate() = %v, want the algorithm named as the problem", err)
+			}
+		})
 	}
 }

@@ -261,22 +261,26 @@ type ForwardZoneConfig struct {
 // skipped at match time, so its subtree would resolve publicly. For an
 // internal zone that is not a harmless no-op, it is the leak the zone was
 // configured to prevent. Better to fail at startup, where it is visible.
-func (c *Config) validateForwardZones() error {
+func (c *Config) validateForwardZones(add func(string, ...any)) {
 	for i := range c.ForwardZones {
 		zone := &c.ForwardZones[i]
-		if strings.TrimSpace(zone.Name) == "" {
-			return fmt.Errorf(
-				"forward_zone %d has no name; use name = \".\" to forward every query", i+1,
-			)
-		}
-		if _, ok := dns.IsDomainName(zone.Name); !ok {
-			return fmt.Errorf("forward_zone %q is not a valid domain name", zone.Name)
-		}
-		if len(zone.Servers) == 0 {
-			return fmt.Errorf("forward_zone %q has no servers", zone.Name)
+		switch {
+		case strings.TrimSpace(zone.Name) == "":
+			add("forward_zone %d has no name; use name = \".\" to forward every query", i+1)
+		case !validDomainName(zone.Name):
+			add("forward_zone %q is not a valid domain name", zone.Name)
+		case len(zone.Servers) == 0:
+			add("forward_zone %q has no servers", zone.Name)
 		}
 	}
-	return nil
+}
+
+// validDomainName reports whether name is structurally a domain name. Its
+// character set is deliberately not judged: RFC 2181 section 11 makes a label
+// any binary string, so a name this package finds odd may still be legal.
+func validDomainName(name string) bool {
+	_, ok := dns.IsDomainName(name)
+	return ok
 }
 
 // ForwardZoneFor returns the most specific configured forward zone covering
@@ -1400,9 +1404,7 @@ func Load(cfgfile, version string) (*Config, error) {
 	config.normalizeQnameMinimize()
 
 	config.RecursionFirewall.Normalize()
-	if err := config.RecursionFirewall.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
-	}
+
 	// Keys the file carries that no field claims: a typo, or a setting an
 	// older SDNS understood and this one no longer does. Either way the
 	// operator wrote something that will not take effect, so it is recorded
@@ -1414,14 +1416,12 @@ func Load(cfgfile, version string) (*Config, error) {
 		zlog.Warn("Unknown config key, ignored", "key", key.String(), "path", cfgfile)
 	}
 
-	if err := config.validateForwardZones(); err != nil {
-		return nil, err
-	}
+	// One gate, so a file with several mistakes is fixed in one pass rather
+	// than one error per run. Recording the unknown keys above this point is
+	// deliberate for the same reason: they are reported even when a value
+	// elsewhere in the file is wrong.
 	if err := config.Validate(); err != nil {
 		return nil, err
-	}
-	if config.ServeStaleMaxTTL.Duration < 0 {
-		return nil, fmt.Errorf("serve_stale_max_ttl must not be negative")
 	}
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {
