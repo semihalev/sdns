@@ -1405,6 +1405,14 @@ func Load(cfgfile, version string) (*Config, error) {
 		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
 
+	// Before the gate, because omitting the key means validation is on: the
+	// coercion below used to run after it, so a file naming neither dnssec
+	// nor a trust anchor passed the anchor check as if validation were off
+	// and then ran with it on and nothing to anchor to.
+	if config.DNSSEC == "" {
+		config.DNSSEC = "on"
+	}
+
 	config.RecursionFirewall.Normalize()
 
 	// Keys the file carries that no field claims: a typo, or a setting an
@@ -1445,10 +1453,6 @@ func Load(cfgfile, version string) (*Config, error) {
 	zlog.Info("Working directory", zlog.String("path", config.Directory))
 
 	config.sVersion = version
-
-	if config.DNSSEC == "" || config.DNSSEC != "off" {
-		config.DNSSEC = "on"
-	}
 
 	if config.CookieSecret == "" {
 		// 16 random bytes (128-bit) hex-encoded to a 32-char secret.

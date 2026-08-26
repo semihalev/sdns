@@ -1,10 +1,14 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -61,7 +65,7 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		{"hyperlocal source", Config{HyperlocalRoot: true, HyperlocalRootSources: []string{"no-port"}}, "hyperlocal_root_sources"},
 		// Out of range is silently replaced by the default, so the operator
 		// believes they set a threshold they did not.
-		{"reflex threshold", Config{ReflexThreshold: 42}, "reflexthreshold"},
+		{"reflex threshold", Config{ReflexEnabled: true, ReflexThreshold: 42}, "reflexthreshold"},
 		{"prefetch percentage", Config{Prefetch: 250}, "prefetch"},
 		{"view network", Config{Views: []ViewConfig{{Zone: "a.", Networks: []string{"nope"}}}}, "network"},
 		{"view answer", Config{Views: []ViewConfig{{Zone: "a.", Answers: []string{"not an rr"}}}}, "answer"},
@@ -124,7 +128,7 @@ func TestLoadRecordsUndecodedKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
 	body := fmt.Sprintf(
-		"version = %q\ndirectory = %q\nforwardservers = [\"1.1.1.1:53\"]\nmaxdepth_old = 30\n",
+		"version = %q\ndirectory = %q\ndnssec = \"off\"\nforwardservers = [\"1.1.1.1:53\"]\nmaxdepth_old = 30\n",
 		configver, filepath.Join(dir, "db"),
 	)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -358,8 +362,11 @@ func TestValidateRequiresAnchorsWhenValidating(t *testing.T) {
 			ForwardZones: []ForwardZoneConfig{{Name: "corp.example.", Servers: []string{"1.1.1.1:53"}}},
 		}, false},
 		{"dnssec off needs no anchor", Config{DNSSEC: "off"}, true},
-		// Omitted means off: the resolver reads cfg.DNSSEC == "on".
-		{"dnssec omitted needs no anchor", Config{}, true},
+		// A bare Config is not what Load produces: Load fills the omitted
+		// value in as "on" before the gate, which TestLoadTreatsOmittedDNSSECAsOn
+		// covers. Here the empty string is left permissive so a Config built
+		// in code is still usable without a trust anchor.
+		{"dnssec omitted on a hand-built config", Config{}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.cfg.Validate()
@@ -628,5 +635,182 @@ func TestValidateURLsNeedAHostname(t *testing.T) {
 	}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("Validate() rejected usable URLs: %v", err)
+	}
+}
+
+// TestLoadTreatsOmittedDNSSECAsOn pins the effective value, not the written
+// one. Load fills an omitted dnssec in as "on", so a file naming neither it
+// nor a trust anchor runs with validation on and nothing to anchor to — every
+// validated answer then fails closed. The defaulting used to run after the
+// gate, which is how the anchor check saw "off" and let the file through.
+func TestLoadTreatsOmittedDNSSECAsOn(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sdns.conf")
+		content := fmt.Sprintf("version = %q\ndirectory = %q\n%s",
+			configver, filepath.Join(dir, "db"), body)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	if _, err := Load(write(t, ""), "test"); err == nil ||
+		!strings.Contains(err.Error(), "no usable root trust anchor") {
+		t.Fatalf("Load() = %v, want a file with neither dnssec nor rootkeys refused", err)
+	}
+
+	// Written off is honoured, and so is a file that carries an anchor.
+	if _, err := Load(write(t, "dnssec = \"off\"\n"), "test"); err != nil {
+		t.Fatalf("Load() refused a file that turns validation off: %v", err)
+	}
+}
+
+// TestValidateRootKeyOnCurve pins the gap the signature probe cannot see. A
+// throwaway signature decodes to r = s = 0 and ecdsa.Verify rejects that
+// before looking at the public point, so a curve key of the right length that
+// is not on the curve came back as a bad signature and looked usable.
+func TestValidateRootKeyOnCurve(t *testing.T) {
+	zeros := func(n int) string { return base64.StdEncoding.EncodeToString(make([]byte, n)) }
+
+	for _, tc := range []struct {
+		name string
+		alg  string
+		key  string
+	}{
+		{"P-256 right length, not on the curve", "13", zeros(64)},
+		{"P-384 right length, not on the curve", "14", zeros(96)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 " + tc.alg + " " + tc.key}}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "not usable") {
+				t.Fatalf("Validate() = %v, want the off-curve key rejected", err)
+			}
+		})
+	}
+
+	// A real key of the same algorithm must still pass.
+	const realP256 = "FS/jjwld5fQ2hD31w4Odohy65Je3eGSYDvJgKO0qBBEFRC5fa6GvcWdLyn0sj49unyBRv3nAHAH0UtAyYLZi7w=="
+	ok := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 13 " + realP256}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a real P-256 anchor: %v", err)
+	}
+}
+
+func TestValidateReflexGateAndNaN(t *testing.T) {
+	// reflex.New returns before reading the threshold when the feature is
+	// off, so a stale value there must not stop the server.
+	if err := (&Config{ReflexThreshold: 42}).Validate(); err != nil {
+		t.Fatalf("Validate() read the reflex threshold with the feature off: %v", err)
+	}
+	// Every comparison against NaN is false, including the middleware's own,
+	// so it lands on the silent default exactly like an out-of-range value.
+	nan := &Config{ReflexEnabled: true, ReflexThreshold: math.NaN()}
+	if err := nan.Validate(); err == nil || !strings.Contains(err.Error(), "not a number") {
+		t.Fatalf("Validate() = %v, want NaN rejected", err)
+	}
+	if err := (&Config{ReflexEnabled: true, ReflexThreshold: 0.7}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a usable threshold: %v", err)
+	}
+}
+
+func TestValidatePortZeroSpellings(t *testing.T) {
+	// LookupPort resolves "00" and "+0" to zero, so a comparison against the
+	// literal string "0" let them through.
+	for _, spelling := range []string{"0", "00", "+0"} {
+		cfg := &Config{RootServers: []string{"192.0.2.1:" + spelling}}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("Validate() accepted upstream port %q", spelling)
+		}
+	}
+	// The same spellings are fine on a listener, where zero asks the kernel
+	// for a free port.
+	for _, spelling := range []string{"0", "00"} {
+		if err := (&Config{Bind: ":" + spelling}).Validate(); err != nil {
+			t.Fatalf("Validate() rejected listener port %q: %v", spelling, err)
+		}
+	}
+}
+
+func TestValidateDNS64ExcludeANeedsWellKnownPrefix(t *testing.T) {
+	// exclude_a_networks is only consulted under the well-known prefix
+	// (RFC 6147 section 5.1.4); with a custom prefix the runtime never parses
+	// it, so a stale entry there must not stop the server.
+	custom := &Config{DNS64: DNS64Config{
+		Enabled:          true,
+		Prefixes:         []string{"2001:db8::/32"},
+		ExcludeANetworks: []string{"nonsense"},
+	}}
+	if err := custom.Validate(); err != nil {
+		t.Fatalf("Validate() read exclude_a_networks under a custom prefix: %v", err)
+	}
+
+	// With the well-known prefix in the set it is read, so it is judged.
+	wellKnown := &Config{DNS64: DNS64Config{
+		Enabled:          true,
+		Prefixes:         []string{"2001:db8::/32", "64:ff9b::/96"},
+		ExcludeANetworks: []string{"nonsense"},
+	}}
+	if err := wellKnown.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "exclude_a_networks") {
+		t.Fatalf("Validate() = %v, want the exclude list judged under the well-known prefix", err)
+	}
+
+	// No prefixes at all means the runtime falls back to the well-known one.
+	fallback := &Config{DNS64: DNS64Config{
+		Enabled:          true,
+		ExcludeANetworks: []string{"nonsense"},
+	}}
+	if err := fallback.Validate(); err == nil {
+		t.Fatal("Validate() skipped exclude_a_networks when the default prefix applies")
+	}
+}
+
+func TestValidateCreatedPathsNeedTheirParent(t *testing.T) {
+	dir := t.TempDir()
+
+	// Created with Mkdir, not MkdirAll: one missing level is made, two are not.
+	if err := (&Config{Directory: filepath.Join(dir, "one")}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a directory Mkdir would create: %v", err)
+	}
+	if err := (&Config{Directory: filepath.Join(dir, "one", "two")}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "parent") {
+		t.Fatalf("Validate() = %v, want the missing parent reported", err)
+	}
+
+	// The access log is created on open, but only inside an existing directory.
+	if err := (&Config{AccessLog: filepath.Join(dir, "gone", "a.log")}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "accesslog") {
+		t.Fatalf("Validate() = %v, want the missing access log directory reported", err)
+	}
+}
+
+func TestValidateRejectsSpecialFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no mkfifo on windows")
+	}
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	// Not a directory, and still not something to read a certificate from —
+	// opening it would block startup.
+	if err := (&Config{HostsFile: fifo}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "named pipe") {
+		t.Fatalf("Validate() = %v, want the FIFO rejected", err)
+	}
+}
+
+func TestValidateBlocklistPort(t *testing.T) {
+	for _, u := range []string{"http://example.com:99999/list", "http://example.com:0/list"} {
+		if err := (&Config{BlockLists: []string{u}}).Validate(); err == nil {
+			t.Fatalf("Validate() accepted %q", u)
+		}
+	}
+	if err := (&Config{BlockLists: []string{"http://example.com:8080/list"}}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a usable blocklist URL: %v", err)
 	}
 }

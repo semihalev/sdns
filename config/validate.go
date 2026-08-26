@@ -1,11 +1,15 @@
 package config
 
 import (
+	"crypto/ecdh"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -65,7 +69,7 @@ func (c *Config) Validate() error {
 			add("%s = %q: must be host:port", bind.key, bind.value)
 		default:
 			// Port 0 is legal here: it asks the kernel for a free one.
-			if err := usablePort(port); err != nil {
+			if _, err := usablePort(port); err != nil {
 				add("%s = %q: %v", bind.key, bind.value, err)
 			}
 		}
@@ -150,7 +154,7 @@ func (c *Config) Validate() error {
 			// Unlike a listener, an upstream cannot use port 0: nothing
 			// answers there, and the dial failure is per query rather than
 			// at startup.
-			if err := usablePort(port); err != nil || port == "0" {
+			if n, err := usablePort(port); err != nil || n == 0 {
 				add("%s %q: must have a port to reach, e.g. 192.0.2.1:53", list.key, addr)
 				continue
 			}
@@ -325,13 +329,18 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		port, err := hostPort(c.API)
 		if err != nil {
 			add("api = %q: must be host:port", c.API)
-		} else if err := usablePort(port); err != nil {
+		} else if _, err := usablePort(port); err != nil {
 			add("api = %q: %v", c.API, err)
 		}
 	}
 
 	// Both are created when absent, so only a plain file already sitting at
 	// the path is a problem — the Mkdir that follows would fail on it.
+	// An empty path is left alone. Load fails loudly on os.Mkdir("") a few
+	// lines further on, and Validate is also called on configurations built
+	// in code, which have no working directory to speak of — requiring one
+	// here would refuse every such caller to co-report a failure that is
+	// already impossible to miss.
 	for _, dir := range []struct{ key, path string }{
 		{"directory", c.Directory},
 		{"blocklistdir", c.BlockListDir},
@@ -347,8 +356,16 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// Opened with O_CREATE, so it need not exist; a directory at the path
 	// makes that open fail and takes the server down at startup.
 	if c.AccessLog != "" {
-		if info, err := os.Stat(c.AccessLog); err == nil && info.IsDir() {
+		switch info, err := os.Stat(c.AccessLog); {
+		case err == nil && info.IsDir():
 			add("accesslog = %q: is a directory, want a file", c.AccessLog)
+		case os.IsNotExist(err):
+			// It is created on open, but only inside a directory that is
+			// already there. The middleware logs the failure and carries on
+			// with access logging quietly switched off.
+			if err := existingDir(filepath.Dir(c.AccessLog)); err != nil {
+				add("accesslog = %q: %v", c.AccessLog, err)
+			}
 		}
 	}
 
@@ -385,8 +402,8 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		case err != nil || host == "" || port == "":
 			add("hyperlocal_root_sources %q: must be host:port", raw)
 		default:
-			if err := usablePort(port); err != nil {
-				add("hyperlocal_root_sources %q: %v", raw, err)
+			if n, err := usablePort(port); err != nil || n == 0 {
+				add("hyperlocal_root_sources %q: must have a port to reach", raw)
 			}
 		}
 	}
@@ -422,10 +439,23 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		add("prefetch = %d: is a percentage of the original TTL and must be 0 (off) or between 10 and 90", c.Prefetch)
 	}
 
-	if c.ReflexThreshold != 0 && (c.ReflexThreshold < 0 || c.ReflexThreshold > 1) {
-		// Out of range is silently replaced by the default, so an operator
-		// who wrote 42 believes they set a threshold they did not.
-		add("reflexthreshold = %v: must be between 0 and 1", c.ReflexThreshold)
+	// Only when the feature is on: reflex.New returns before reading the
+	// threshold otherwise, so a stale value under a disabled feature has no
+	// effect and must not stop the server.
+	//
+	// NaN is called out separately because it slips through a range test —
+	// every comparison against it is false, including the ones the middleware
+	// itself makes, so it lands on the same silent default as an out-of-range
+	// value.
+	if c.ReflexEnabled {
+		switch {
+		case math.IsNaN(float64(c.ReflexThreshold)):
+			add("reflexthreshold is not a number; must be between 0 and 1")
+		case c.ReflexThreshold != 0 && (c.ReflexThreshold < 0 || c.ReflexThreshold > 1):
+			// Out of range is silently replaced by the default, so an operator
+			// who wrote 42 believes they set a threshold they did not.
+			add("reflexthreshold = %v: must be between 0 and 1", c.ReflexThreshold)
+		}
 	}
 
 	for name, plugin := range c.Plugins {
@@ -478,6 +508,14 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 			// The updater fetches with an http.Client, so any other scheme
 			// fails on an unsupported protocol and the list never loads.
 			add("blocklists %q: scheme %q cannot be fetched; use http or https", u, parsed.Scheme)
+		default:
+			// An explicit port is dialled like any other; out of range or
+			// zero fails at connect and the list simply never loads.
+			if port := parsed.Port(); port != "" {
+				if n, err := usablePort(port); err != nil || n == 0 {
+					add("blocklists %q: port %q has nothing to connect to", u, port)
+				}
+			}
 		}
 	}
 }
@@ -536,6 +574,9 @@ func (c *Config) validateDNS64(add func(string, ...any)) {
 	}
 
 	validPrefixBits := map[int]bool{32: true, 40: true, 48: true, 56: true, 64: true, 96: true}
+	// Whether the prefix set the runtime ends up with contains the well-known
+	// one, which is what decides if exclude_a_networks is read at all.
+	wellKnown, usablePrefixes := false, 0
 	for _, raw := range c.DNS64.Prefixes {
 		prefix := strings.TrimSpace(raw)
 		_, network, err := net.ParseCIDR(prefix)
@@ -556,20 +597,38 @@ func (c *Config) validateDNS64(add func(string, ...any)) {
 		// already covers it.
 		if bits == 96 && len(network.IP) >= 9 && network.IP[8] != 0 {
 			add("dns64 prefix %q: byte 8 must be zero (RFC 6052 section 2.2 reserved)", prefix)
+			continue
 		}
+		usablePrefixes++
+		if network.String() == wellKnownPrefix {
+			wellKnown = true
+		}
+	}
+	// With no usable prefix the runtime falls back to the well-known one, so
+	// the exclude list is read either way.
+	if usablePrefixes == 0 {
+		wellKnown = true
 	}
 	// The exclude lists are family-specific at runtime and the wrong family
 	// is dropped with a log line nobody reads, so the exclusion the operator
 	// wrote silently does not apply. Family is decided by mask length, not
 	// To4(): ParseCIDR returns a 4-byte mask for IPv4 and 16 for IPv6, and
 	// an IPv4-mapped IPv6 range would fool the address test.
+	// Only consulted under the well-known prefix (RFC 6147 section 5.1.4):
+	// with a custom prefix the runtime skips the parse entirely, so a stale
+	// entry here has no effect and must not stop the server.
+	excludeA := c.DNS64.ExcludeANetworks
+	if !wellKnown {
+		excludeA = nil
+	}
+
 	for _, list := range []struct {
 		key    string
 		values []string
 		mask   int // 0 for either family
 	}{
 		{"dns64 client_networks", c.DNS64.ClientNetworks, 0},
-		{"dns64 exclude_a_networks", c.DNS64.ExcludeANetworks, net.IPv4len},
+		{"dns64 exclude_a_networks", excludeA, net.IPv4len},
 		{"dns64 exclude_aaaa_networks", c.DNS64.ExcludeAAAANetworks, net.IPv6len},
 	} {
 		for _, raw := range list.values {
@@ -600,6 +659,10 @@ func (c *Config) validateDNS64(add func(string, ...any)) {
 		}
 	}
 }
+
+// wellKnownPrefix is the NAT64 prefix from RFC 6052 section 2.1, in the
+// canonical spelling net.IPNet.String produces.
+const wellKnownPrefix = "64:ff9b::/96"
 
 func (c *Config) validateECS(add func(string, ...any)) {
 	if !c.ECS.Enabled {
@@ -651,7 +714,29 @@ func regularFile(path string) error {
 	if info.IsDir() {
 		return fmt.Errorf("is a directory, want a file")
 	}
+	// Not merely "not a directory": a FIFO passes that test and then blocks
+	// the reader, and a socket or device node fails it in its own way. Mode
+	// is checked rather than the file being opened, because a config test
+	// run by a different user than the service would read permissions that
+	// are not the ones that matter.
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("is a %s, want a regular file", fileKind(info.Mode()))
+	}
 	return nil
+}
+
+func fileKind(mode os.FileMode) string {
+	switch {
+	case mode&os.ModeNamedPipe != 0:
+		return "named pipe"
+	case mode&os.ModeSocket != 0:
+		return "socket"
+	case mode&os.ModeDevice != 0:
+		return "device"
+	case mode&os.ModeSymlink != 0:
+		return "symlink"
+	}
+	return "special file"
 }
 
 // writableDir reports whether path can serve as a directory the server writes
@@ -660,13 +745,27 @@ func regularFile(path string) error {
 func writableDir(path string) error {
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
-		return nil
+		// Created with Mkdir, not MkdirAll, so one missing level is made
+		// and two are not.
+		return existingDir(filepath.Dir(path))
 	}
 	if err != nil {
 		return err
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("is a file, want a directory")
+	}
+	return nil
+}
+
+// existingDir reports whether path is a directory that is already there.
+func existingDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("parent directory %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("parent %q is a file, want a directory", path)
 	}
 	return nil
 }
@@ -700,6 +799,38 @@ func anchorKeyProblem(key *dns.DNSKEY) error {
 	case errors.Is(err, dns.ErrKey):
 		return fmt.Errorf("public key is not usable for algorithm %d (%s)", key.Algorithm, name)
 	}
+
+	// The probe cannot see this on its own. A throwaway signature decodes to
+	// r = s = 0, and ecdsa.Verify rejects that before it ever looks at the
+	// public point — so a curve key of the right length that is not a point
+	// on the curve comes back as a bad signature and looks usable.
+	if curve := ecdhCurve(key.Algorithm); curve != nil {
+		raw, decodeErr := base64.StdEncoding.DecodeString(key.PublicKey)
+		if decodeErr != nil {
+			return fmt.Errorf("public key is not base64: %v", decodeErr)
+		}
+		// DNSKEY carries the coordinates bare (RFC 6605 section 4); the
+		// 0x04 tag is what NewPublicKey expects on an uncompressed point.
+		if _, err := curve.NewPublicKey(append([]byte{4}, raw...)); err != nil {
+			return fmt.Errorf("public key is not usable for algorithm %d (%s): %v", key.Algorithm, name, err)
+		}
+	}
+	return nil
+}
+
+// ecdhCurve returns the curve behind a DNSSEC ECDSA algorithm, or nil for
+// every other algorithm. crypto/ecdh is used only as a point checker here —
+// it validates on-curve-ness on parse, which is the part the signature probe
+// above cannot reach. Ed25519 and Ed448 have no equivalent parse-time test in
+// the standard library, so a non-canonical point there is still only caught
+// when a real signature is verified.
+func ecdhCurve(alg uint8) ecdh.Curve {
+	switch alg {
+	case dns.ECDSAP256SHA256:
+		return ecdh.P256()
+	case dns.ECDSAP384SHA384:
+		return ecdh.P384()
+	}
 	return nil
 }
 
@@ -715,20 +846,29 @@ func hostPort(addr string) (string, error) {
 	return port, nil
 }
 
-// usablePort reports whether the net package can turn this port into one it
-// will actually use. SplitHostPort only separates the halves — it never reads
+// usablePort resolves a port the way the net package does and returns the
+// number it lands on. SplitHostPort only separates the halves — it never reads
 // them — so ":65536" survives it and then fails at bind time, and an upstream
 // with a port that big fails on every dial instead.
 //
-// LookupPort is the same call the net package makes when it dials or listens,
-// which is why it is used here rather than a numeric range check: it also
-// accepts the service names ("domain", "https") that a plain number test would
-// wrongly reject, and ":domain" does listen on 53.
-func usablePort(port string) error {
-	if _, err := net.LookupPort("udp", port); err != nil {
-		return fmt.Errorf("port %q is not one this host can use", port)
+// LookupPort is the call the net package itself makes when it dials or
+// listens, which is why it is used here rather than a numeric range check: it
+// also accepts the service names ("domain", "https") that a plain number test
+// would wrongly reject, and ":domain" does listen on 53. Both protocols are
+// tried because sdns listens on each and the two tables can differ; accepting
+// a name either one knows can only avoid refusing a config that works.
+//
+// Callers that cannot use port 0 test the returned number rather than the
+// string: "00" and "+0" both resolve to zero and would slip past a comparison
+// against "0".
+func usablePort(port string) (int, error) {
+	n, err := net.LookupPort("udp", port)
+	if err != nil {
+		if n, err = net.LookupPort("tcp", port); err != nil {
+			return 0, fmt.Errorf("port %q is not one this host can use", port)
+		}
 	}
-	return nil
+	return n, nil
 }
 
 // validIPPort reports whether addr is an IP literal with a usable port.
@@ -736,10 +876,10 @@ func usablePort(port string) error {
 // would need a resolver this one may not have yet.
 func validIPPort(addr string) bool {
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil || port == "" || port == "0" {
+	if err != nil || port == "" {
 		return false
 	}
-	if err := usablePort(port); err != nil {
+	if n, err := usablePort(port); err != nil || n == 0 {
 		return false
 	}
 	return net.ParseIP(host) != nil
@@ -759,8 +899,12 @@ func validUpstream(addr string) error {
 			return fmt.Errorf("not a usable DoH URL")
 		}
 		if port := u.Port(); port != "" {
-			if err := usablePort(port); err != nil {
+			n, err := usablePort(port)
+			if err != nil {
 				return err
+			}
+			if n == 0 {
+				return fmt.Errorf("port 0 has nothing to connect to")
 			}
 		}
 		return nil

@@ -475,7 +475,8 @@ func TestIPv6ProbeDecidesAccess(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
-	content := fmt.Sprintf("version = %q\ndirectory = %q\n",
+	// Not a DNSSEC test, and this scaffold carries no trust anchor.
+	content := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n",
 		configver, filepath.Join(dir, "db"))
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -696,6 +697,9 @@ func TestLoadRFC8198Policy(t *testing.T) {
 			content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+# Not a DNSSEC test, and this scaffold carries no trust anchor; with
+# validation on and nothing to anchor to the config is refused.
+dnssec = "off"
 %s
 `, configver, workDir, tt.setting)
 			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
@@ -788,6 +792,9 @@ func TestLoadRFC9520Policy(t *testing.T) {
 			content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+# Not a DNSSEC test, and this scaffold carries no trust anchor; with
+# validation on and nothing to anchor to the config is refused.
+dnssec = "off"
 %s
 `, configver, workDir, tt.setting)
 			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
@@ -837,6 +844,7 @@ func TestLoadServeStalePolicy(t *testing.T) {
 			content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
 %s
 `, configver, workDir, tt.settings)
 			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
@@ -862,6 +870,7 @@ func TestLoadRejectsNegativeServeStaleTTL(t *testing.T) {
 	content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
 serve_stale = true
 serve_stale_max_ttl = "-1s"
 `, configver, workDir)
@@ -886,6 +895,7 @@ func TestLoadRecursionFirewallPolicy(t *testing.T) {
 		content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
 
 [recursion_firewall]
 mode = "enforce"
@@ -943,6 +953,7 @@ failure_cache_max_ttl = "2m"
 		content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
 
 [recursion_firewall]
 mode = "blocking"
