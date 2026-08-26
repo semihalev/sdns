@@ -802,10 +802,9 @@ func (c *Cache) stopCanceledRequest(
 	err := contextutil.EffectiveError(ctx)
 	if errors.Is(err, context.DeadlineExceeded) {
 		req := ch.Request.Msg()
-		if stale, entry := c.staleResponse(req, req.CheckingDisabled, clientScope); stale != nil {
-			boundRequestToStaleLifetime(ctx, entry, time.Now())
-			staleAnswers.Inc()
-			_ = ch.Writer.WriteMsg(stale)
+		if handled, _ := c.writeStaleResponse(
+			ctx, ch.Writer, req, req.CheckingDisabled, clientScope, ch.Writer.Internal(),
+		); handled {
 			ch.Cancel()
 			return
 		}
@@ -1100,10 +1099,9 @@ func (c *Cache) handleFailureHit(
 	clientScope netip.Prefix,
 	hit FailureHit,
 ) {
-	if resp, entry := c.staleResponse(ch.Request.Msg(), ch.Request.CD(), clientScope); resp != nil {
-		boundRequestToStaleLifetime(ctx, entry, time.Now())
-		staleAnswers.Inc()
-		_ = ch.Writer.WriteMsg(resp)
+	if handled, _ := c.writeStaleResponse(
+		ctx, ch.Writer, ch.Request.Msg(), ch.Request.CD(), clientScope, ch.Writer.Internal(),
+	); handled {
 		ch.Cancel()
 		return
 	}
@@ -1230,7 +1228,7 @@ func (c *Cache) serveHitFromWire(
 	ctx context.Context, ch *middleware.Chain, entry *CacheEntry, spent **rate.Limiter,
 ) bool {
 	w := ch.Writer
-	if w.Internal() {
+	if w.Internal() || isStaleAliasChase(ctx) {
 		return false
 	}
 	if entry == nil || entry.remaining(time.Now()) <= 0 {
@@ -1353,6 +1351,12 @@ func (c *Cache) handleCacheHit(
 	// entry rate-limit token so the later fallback is not charged twice (and
 	// cannot be suppressed by a token spent on a response we did not serve).
 	if entry.remaining(time.Now()) <= 0 {
+		return false
+	}
+	// A stale alias completion may consume a still-fresh target entry, but
+	// RFC 8767 does not allow originally zero-TTL data to become part of the
+	// stale response. Force this rare path through the inspected Msg body.
+	if isStaleAliasChase(ctx) && entry.hasOriginalZeroTTL() {
 		return false
 	}
 
@@ -1828,10 +1832,10 @@ func (w *ResponseWriter) writeResolutionFailure(ctx context.Context, res *dns.Ms
 		if req == nil {
 			req = res
 		}
-		if stale, entry := w.cache.staleResponse(req, w.requestCD, w.clientScope); stale != nil {
-			boundRequestToStaleLifetime(ctx, entry, time.Now())
-			staleAnswers.Inc()
-			return w.ResponseWriter.WriteMsg(stale)
+		if handled, err := w.cache.writeStaleResponse(
+			ctx, w.ResponseWriter, req, w.requestCD, w.clientScope, w.internal,
+		); handled {
+			return err
 		}
 	}
 	return w.ResponseWriter.WriteMsg(out)

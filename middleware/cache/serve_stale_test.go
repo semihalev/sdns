@@ -50,10 +50,22 @@ func seedStaleEntry(
 	staleFor time.Duration,
 	leaseRemaining time.Duration,
 ) *CacheEntry {
+	return seedStaleEntryWithRate(t, c, resp, scope, staleFor, leaseRemaining, 0)
+}
+
+func seedStaleEntryWithRate(
+	t *testing.T,
+	c *Cache,
+	resp *dns.Msg,
+	scope netip.Prefix,
+	staleFor time.Duration,
+	leaseRemaining time.Duration,
+	rateLimit int,
+) *CacheEntry {
 	t.Helper()
 	q := resp.Question[0]
 	want := CacheKey{Question: q, CD: resp.CheckingDisabled, Scope: scope}
-	entry := NewCacheEntryWithKey(resp, time.Minute, 0, want.Hash())
+	entry := NewCacheEntryWithKey(resp, time.Minute, rateLimit, want.Hash())
 	if entry == nil {
 		t.Fatal("failed to construct stale cache entry")
 	}
@@ -66,6 +78,19 @@ func seedStaleEntry(
 	return entry
 }
 
+func runStaleQueryWriter(
+	c *Cache,
+	req *dns.Msg,
+	downstream middleware.Handler,
+	ctx context.Context,
+) *mock.Writer {
+	writer := mock.NewWriter("udp", "192.0.2.1:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, downstream})
+	ch.Reset(writer, req)
+	ch.Next(ctx)
+	return writer
+}
+
 func runStaleQuery(
 	t *testing.T,
 	c *Cache,
@@ -74,10 +99,7 @@ func runStaleQuery(
 	ctx context.Context,
 ) *dns.Msg {
 	t.Helper()
-	writer := mock.NewWriter("udp", "192.0.2.1:53000")
-	ch := middleware.NewChain([]middleware.Handler{c, downstream})
-	ch.Reset(writer, req)
-	ch.Next(ctx)
+	writer := runStaleQueryWriter(c, req, downstream, ctx)
 	if !writer.Written() {
 		t.Fatal("query wrote no response")
 	}
@@ -129,6 +151,436 @@ func TestServeStaleOnFreshSERVFAIL(t *testing.T) {
 	}
 	if ede := dnsutil.GetEDE(resp); ede == nil || ede.InfoCode != dns.ExtendedErrorCodeStaleAnswer || ede.ExtraText != "Stale Answer" {
 		t.Fatalf("EDE = %+v, want code 3 Stale Answer", ede)
+	}
+}
+
+func TestServeStaleRateLimitsCachedFailureFallback(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true, RateLimit: 1})
+	defer c.Stop()
+	req := new(dns.Msg)
+	req.SetQuestion("rate-cached-failure.stale.example.", dns.TypeA)
+	entry := seedStaleEntryWithRate(
+		t, c, staleTestAnswer(req, "192.0.2.80"), netip.Prefix{}, time.Second, time.Hour, 1,
+	)
+	limiter := entry.GetRateLimiter()
+	if limiter == nil {
+		t.Fatal("stale entry carries no rate limiter")
+	}
+	awaitToken(t, limiter)
+
+	failure := new(dns.Msg)
+	failure.SetRcode(req, dns.RcodeServerFailure)
+	c.store.RecordFailure(failure, netip.Prefix{}, FailureProvenance("test"), nil)
+	downstreamCalls := 0
+	downstream := middleware.HandlerFunc(func(_ context.Context, _ *middleware.Chain) {
+		downstreamCalls++
+	})
+
+	first := runStaleQueryWriter(c, req.Copy(), downstream, context.Background())
+	if !first.Written() || first.Rcode() != dns.RcodeSuccess {
+		t.Fatalf("first cached-failure fallback = written %v, rcode %s; want stale success",
+			first.Written(), dns.RcodeToString[first.Rcode()])
+	}
+	second := runStaleQueryWriter(c, req.Copy(), downstream, context.Background())
+	if second.Written() {
+		t.Fatalf("rate-limited cached-failure fallback wrote %s; want silent drop",
+			dns.RcodeToString[second.Rcode()])
+	}
+	if downstreamCalls != 0 {
+		t.Fatalf("cached failure reached downstream %d times, want 0", downstreamCalls)
+	}
+}
+
+func TestServeStaleRateLimitsFreshSERVFAILFallback(t *testing.T) {
+	rfc9520Disabled := false
+	c := New(&config.Config{
+		CacheSize:  1024,
+		ServeStale: true,
+		RateLimit:  1,
+		RFC9520:    &rfc9520Disabled,
+	})
+	defer c.Stop()
+	req := new(dns.Msg)
+	req.SetQuestion("rate-fresh-failure.stale.example.", dns.TypeA)
+	entry := seedStaleEntryWithRate(
+		t, c, staleTestAnswer(req, "192.0.2.81"), netip.Prefix{}, time.Second, time.Hour, 1,
+	)
+	limiter := entry.GetRateLimiter()
+	if limiter == nil {
+		t.Fatal("stale entry carries no rate limiter")
+	}
+	awaitToken(t, limiter)
+
+	downstreamCalls := 0
+	downstream := servfailHandler(&downstreamCalls)
+	first := runStaleQueryWriter(c, req.Copy(), downstream, context.Background())
+	if !first.Written() || first.Rcode() != dns.RcodeSuccess {
+		t.Fatalf("first fresh-SERVFAIL fallback = written %v, rcode %s; want stale success",
+			first.Written(), dns.RcodeToString[first.Rcode()])
+	}
+	second := runStaleQueryWriter(c, req.Copy(), downstream, context.Background())
+	if second.Written() {
+		t.Fatalf("rate-limited fresh-SERVFAIL fallback wrote %s; want silent drop",
+			dns.RcodeToString[second.Rcode()])
+	}
+	if downstreamCalls != 2 {
+		t.Fatalf("fresh resolution calls = %d, want 2", downstreamCalls)
+	}
+}
+
+func TestServeStaleRateLimitsDeadlineFallback(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true, RateLimit: 1})
+	defer c.Stop()
+	req := new(dns.Msg)
+	req.SetQuestion("rate-deadline.stale.example.", dns.TypeA)
+	entry := seedStaleEntryWithRate(
+		t, c, staleTestAnswer(req, "192.0.2.82"), netip.Prefix{}, time.Second, time.Hour, 1,
+	)
+	limiter := entry.GetRateLimiter()
+	if limiter == nil {
+		t.Fatal("stale entry carries no rate limiter")
+	}
+	awaitToken(t, limiter)
+
+	downstreamCalls := 0
+	downstream := middleware.HandlerFunc(func(_ context.Context, _ *middleware.Chain) {
+		downstreamCalls++
+	})
+	deadlineCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	first := runStaleQueryWriter(c, req.Copy(), downstream, deadlineCtx)
+	if !first.Written() || first.Rcode() != dns.RcodeSuccess {
+		t.Fatalf("first deadline fallback = written %v, rcode %s; want stale success",
+			first.Written(), dns.RcodeToString[first.Rcode()])
+	}
+	second := runStaleQueryWriter(c, req.Copy(), downstream, deadlineCtx)
+	if second.Written() {
+		t.Fatalf("rate-limited deadline fallback wrote %s; want silent drop",
+			dns.RcodeToString[second.Rcode()])
+	}
+	if downstreamCalls != 0 {
+		t.Fatalf("expired requests reached downstream %d times, want 0", downstreamCalls)
+	}
+}
+
+func TestServeStaleCompletesAliasChains(t *testing.T) {
+	tests := []struct {
+		name      string
+		question  string
+		target    string
+		outer     func(*dns.Msg) *dns.Msg
+		wantCNAME int
+		wantDNAME int
+	}{
+		{
+			name:     "CNAME",
+			question: "alias.stale.example.",
+			target:   "target.stale.example.",
+			outer: func(req *dns.Msg) *dns.Msg {
+				resp := new(dns.Msg)
+				resp.SetReply(req)
+				resp.Answer = []dns.RR{&dns.CNAME{
+					Hdr:    dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+					Target: "target.stale.example.",
+				}}
+				return resp
+			},
+			wantCNAME: 1,
+		},
+		{
+			name:     "DNAME without synthesized CNAME",
+			question: "host.alias.stale.example.",
+			target:   "host.target.stale.example.",
+			outer: func(req *dns.Msg) *dns.Msg {
+				resp := new(dns.Msg)
+				resp.SetReply(req)
+				resp.Answer = []dns.RR{&dns.DNAME{
+					Hdr:    dns.RR_Header{Name: "alias.stale.example.", Rrtype: dns.TypeDNAME, Class: dns.ClassINET, Ttl: 300},
+					Target: "target.stale.example.",
+				}}
+				return resp
+			},
+			wantCNAME: 1,
+			wantDNAME: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+			defer c.Stop()
+			req := new(dns.Msg)
+			req.SetQuestion(tt.question, dns.TypeA)
+			req.SetEdns0(1232, false)
+
+			targetReq := new(dns.Msg)
+			targetReq.SetQuestion(tt.target, dns.TypeA)
+			target := staleTestAnswer(targetReq, "192.0.2.70")
+			target.Answer[0].Header().Ttl = 2
+			queryer := &stubQueryer{responses: map[string]*dns.Msg{tt.target: target}}
+			c.SetQueryer(queryer)
+			seedStaleEntry(t, c, tt.outer(req), netip.Prefix{}, time.Second, time.Hour)
+
+			calls := 0
+			resp := runStaleQuery(t, c, req, servfailHandler(&calls), context.Background())
+			if calls != 1 || queryer.calls != 1 {
+				t.Fatalf("calls = downstream %d, alias target %d; want 1 each", calls, queryer.calls)
+			}
+			if resp.Rcode != dns.RcodeSuccess || answerA(resp) != "192.0.2.70" {
+				t.Fatalf("completed stale alias = rcode %s, answer %q; want terminal A",
+					dns.RcodeToString[resp.Rcode], answerA(resp))
+			}
+			var cnames, dnames int
+			for _, rr := range resp.Answer {
+				switch rr.Header().Rrtype {
+				case dns.TypeCNAME:
+					cnames++
+				case dns.TypeDNAME:
+					dnames++
+				}
+				if ttl := rr.Header().Ttl; ttl == 0 || ttl > 2 {
+					t.Fatalf("completed stale alias TTL = %d, want 1..2", ttl)
+				}
+			}
+			if cnames != tt.wantCNAME || dnames != tt.wantDNAME {
+				t.Fatalf("completed aliases = %d CNAME/%d DNAME, want %d/%d; answer=%v",
+					cnames, dnames, tt.wantCNAME, tt.wantDNAME, resp.Answer)
+			}
+			if ede := dnsutil.GetEDE(resp); ede == nil || ede.InfoCode != dns.ExtendedErrorCodeStaleAnswer {
+				t.Fatalf("completed stale alias EDE = %+v, want stale-answer", ede)
+			}
+		})
+	}
+}
+
+func TestServeStaleRejectsIncompleteAlias(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+	defer c.Stop()
+	req := new(dns.Msg)
+	req.SetQuestion("incomplete.stale.example.", dns.TypeA)
+	req.SetEdns0(1232, false)
+	outer := new(dns.Msg)
+	outer.SetReply(req)
+	outer.Answer = []dns.RR{&dns.CNAME{
+		Hdr:    dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+		Target: "missing.stale.example.",
+	}}
+	queryer := &stubQueryer{responses: map[string]*dns.Msg{}}
+	c.SetQueryer(queryer)
+	seedStaleEntry(t, c, outer, netip.Prefix{}, time.Second, time.Hour)
+
+	calls := 0
+	resp := runStaleQuery(t, c, req, servfailHandler(&calls), context.Background())
+	if resp.Rcode != dns.RcodeServerFailure || len(resp.Answer) != 0 {
+		t.Fatalf("incomplete alias response = rcode %s, answer %v; want original SERVFAIL",
+			dns.RcodeToString[resp.Rcode], resp.Answer)
+	}
+	if queryer.calls != 1 {
+		t.Fatalf("alias target calls = %d, want 1", queryer.calls)
+	}
+}
+
+func TestServeStaleCompletesCNAMEFromStaleTarget(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+	defer c.Stop()
+	const alias, target = "alias-to-stale.example.", "stale-terminal.example."
+
+	targetReq := new(dns.Msg)
+	targetReq.SetQuestion(target, dns.TypeA)
+	targetEntry := seedStaleEntryWithRate(
+		t, c, staleTestAnswer(targetReq, "192.0.2.74"), netip.Prefix{}, time.Second, 3*time.Second, 1,
+	)
+	targetEntry.cutKey = 0x87670002
+	targetLimiter := targetEntry.GetRateLimiter()
+	if targetLimiter == nil {
+		t.Fatal("stale alias target carries no rate limiter")
+	}
+	awaitToken(t, targetLimiter)
+	if !targetLimiter.Allow() {
+		t.Fatal("failed to drain stale alias target limiter")
+	}
+	targetCalls := 0
+	c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, servfailHandler(&targetCalls)}})
+
+	req := new(dns.Msg)
+	req.SetQuestion(alias, dns.TypeA)
+	req.SetEdns0(1232, false)
+	outer := new(dns.Msg)
+	outer.SetReply(req)
+	outer.Answer = []dns.RR{&dns.CNAME{
+		Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+		Target: target,
+	}}
+	seedStaleEntry(t, c, outer, netip.Prefix{}, time.Second, time.Hour)
+
+	outerCalls := 0
+	writer := mock.NewWriter("udp", "192.0.2.1:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, servfailHandler(&outerCalls)})
+	ch.Reset(writer, req)
+	ch.Next(context.Background())
+	if !writer.Written() {
+		t.Fatal("stale-to-stale alias wrote no response")
+	}
+	resp := writer.Msg()
+	if outerCalls != 1 || targetCalls != 1 {
+		t.Fatalf("resolution calls = outer %d, target %d; want 1 each", outerCalls, targetCalls)
+	}
+	if resp.Rcode != dns.RcodeSuccess || answerA(resp) != "192.0.2.74" || len(resp.Answer) != 2 {
+		t.Fatalf("stale-to-stale alias response = rcode %s, answer %v; want CNAME + terminal A",
+			dns.RcodeToString[resp.Rcode], resp.Answer)
+	}
+	for _, rr := range resp.Answer {
+		if ttl := rr.Header().Ttl; ttl == 0 || ttl > 3 {
+			t.Fatalf("stale target lifetime was not folded into alias TTL: %d", ttl)
+		}
+	}
+	if cut, key := ch.Meta.Cut(); cut.IsZero() || cut.After(targetEntry.cutUntil) {
+		t.Fatalf("composed stale alias bound = (%v, %#x), must not outlive target (%v, %#x)",
+			cut, key, targetEntry.cutUntil, targetEntry.cutKey)
+	}
+}
+
+func TestServeStaleRejectsCNAMETerminatingInNODATA(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+	defer c.Stop()
+	const alias, target = "alias-to-nodata.example.", "nodata-terminal.example."
+
+	req := new(dns.Msg)
+	req.SetQuestion(alias, dns.TypeA)
+	req.SetEdns0(1232, false)
+	outer := new(dns.Msg)
+	outer.SetReply(req)
+	outer.Answer = []dns.RR{&dns.CNAME{
+		Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+		Target: target,
+	}}
+	seedStaleEntry(t, c, outer, netip.Prefix{}, time.Second, time.Hour)
+
+	targetReq := new(dns.Msg)
+	targetReq.SetQuestion(target, dns.TypeA)
+	nodata := new(dns.Msg)
+	nodata.SetReply(targetReq)
+	nodata.Ns = []dns.RR{&dns.SOA{
+		Hdr:     dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300},
+		Ns:      "ns.example.",
+		Mbox:    "hostmaster.example.",
+		Serial:  1,
+		Refresh: 3600,
+		Retry:   600,
+		Expire:  86400,
+		Minttl:  300,
+	}}
+	c.SetQueryer(&stubQueryer{responses: map[string]*dns.Msg{target: nodata}})
+
+	calls := 0
+	resp := runStaleQuery(t, c, req, servfailHandler(&calls), context.Background())
+	if resp.Rcode != dns.RcodeServerFailure || len(resp.Answer) != 0 {
+		t.Fatalf("stale alias NODATA response = rcode %s, answer %v; want original SERVFAIL",
+			dns.RcodeToString[resp.Rcode], resp.Answer)
+	}
+}
+
+func TestServeStaleRejectsOriginallyZeroTTL(t *testing.T) {
+	t.Run("retained answer", func(t *testing.T) {
+		c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+		defer c.Stop()
+		req := new(dns.Msg)
+		req.SetQuestion("zero.stale.example.", dns.TypeA)
+		req.SetEdns0(1232, false)
+		answer := staleTestAnswer(req, "192.0.2.71")
+		answer.Answer[0].Header().Ttl = 0
+		seedStaleEntry(t, c, answer, netip.Prefix{}, time.Second, time.Hour)
+
+		calls := 0
+		resp := runStaleQuery(t, c, req, servfailHandler(&calls), context.Background())
+		if resp.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("zero-TTL stale response rcode = %s, want SERVFAIL", dns.RcodeToString[resp.Rcode])
+		}
+	})
+
+	t.Run("alias terminal", func(t *testing.T) {
+		c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+		defer c.Stop()
+		req := new(dns.Msg)
+		req.SetQuestion("zero-target.stale.example.", dns.TypeA)
+		req.SetEdns0(1232, false)
+		outer := new(dns.Msg)
+		outer.SetReply(req)
+		outer.Answer = []dns.RR{&dns.CNAME{
+			Hdr:    dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+			Target: "terminal-zero.stale.example.",
+		}}
+		targetReq := new(dns.Msg)
+		targetReq.SetQuestion("terminal-zero.stale.example.", dns.TypeA)
+		target := staleTestAnswer(targetReq, "192.0.2.72")
+		target.Answer[0].Header().Ttl = 0
+		c.SetQueryer(&stubQueryer{responses: map[string]*dns.Msg{
+			"terminal-zero.stale.example.": target,
+		}})
+		seedStaleEntry(t, c, outer, netip.Prefix{}, time.Second, time.Hour)
+
+		calls := 0
+		resp := runStaleQuery(t, c, req, servfailHandler(&calls), context.Background())
+		if resp.Rcode != dns.RcodeServerFailure || len(resp.Answer) != 0 {
+			t.Fatalf("zero-TTL terminal response = rcode %s, answer %v; want original SERVFAIL",
+				dns.RcodeToString[resp.Rcode], resp.Answer)
+		}
+	})
+
+	t.Run("fresh cached alias terminal", func(t *testing.T) {
+		c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+		defer c.Stop()
+		const alias, targetName = "cached-zero-target.stale.example.", "cached-terminal-zero.stale.example."
+
+		targetReq := new(dns.Msg)
+		targetReq.SetQuestion(targetName, dns.TypeA)
+		target := staleTestAnswer(targetReq, "192.0.2.75")
+		target.Answer[0].Header().Ttl = 0
+		c.store.SetFromResponse(target, false, time.Time{})
+		targetKey := CacheKey{Question: targetReq.Question[0]}.Hash()
+		if entry, ok := c.store.LookupByKey(targetKey); !ok || entry.remaining(time.Now()) <= 0 {
+			t.Fatal("zero-TTL target was not admitted under the existing minimum TTL floor")
+		}
+		targetCalls := 0
+		c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, servfailHandler(&targetCalls)}})
+
+		req := new(dns.Msg)
+		req.SetQuestion(alias, dns.TypeA)
+		req.SetEdns0(1232, false)
+		outer := new(dns.Msg)
+		outer.SetReply(req)
+		outer.Answer = []dns.RR{&dns.CNAME{
+			Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+			Target: targetName,
+		}}
+		seedStaleEntry(t, c, outer, netip.Prefix{}, time.Second, time.Hour)
+
+		outerCalls := 0
+		resp := runStaleQuery(t, c, req, servfailHandler(&outerCalls), context.Background())
+		if resp.Rcode != dns.RcodeServerFailure || len(resp.Answer) != 0 {
+			t.Fatalf("cached zero-TTL terminal response = rcode %s, answer %v; want original SERVFAIL",
+				dns.RcodeToString[resp.Rcode], resp.Answer)
+		}
+		if targetCalls != 1 {
+			t.Fatalf("zero-TTL cached target reached fallback %d times, want 1", targetCalls)
+		}
+	})
+}
+
+func TestServeStaleRejectsSubsecondDelegationLease(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+	defer c.Stop()
+	req := new(dns.Msg)
+	req.SetQuestion("subsecond-lease.stale.example.", dns.TypeA)
+	req.SetEdns0(1232, false)
+	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.73"), netip.Prefix{}, time.Second, 500*time.Millisecond)
+
+	calls := 0
+	resp := runStaleQuery(t, c, req, servfailHandler(&calls), context.Background())
+	if resp.Rcode != dns.RcodeServerFailure || len(resp.Answer) != 0 {
+		t.Fatalf("subsecond-lease response = rcode %s, answer %v; want original SERVFAIL",
+			dns.RcodeToString[resp.Rcode], resp.Answer)
 	}
 }
 
@@ -411,7 +863,7 @@ func TestServeStalePreservesECSAudience(t *testing.T) {
 	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.50"), netip.Prefix{}, time.Second, time.Hour)
 	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.51"), scope, time.Second, time.Hour)
 
-	resp, _ := c.staleResponse(req, false, client)
+	resp, _ := c.staleResponse(context.Background(), req, false, client)
 	if resp == nil {
 		t.Fatal("scoped stale candidate was not selected")
 	}
@@ -449,7 +901,7 @@ func TestScopedLookupFreshWiderScopeBeatsExpiredNarrowScope(t *testing.T) {
 		t.Fatalf("scoped hit answer = %q, want fresh /24 answer 192.0.2.61", got)
 	}
 
-	if stale, _ := c.staleResponse(req, false, client); stale != nil {
+	if stale, _ := c.staleResponse(context.Background(), req, false, client); stale != nil {
 		t.Fatal("expired /26 was selected although a fresh /24 existed")
 	}
 }
@@ -604,7 +1056,7 @@ func TestServeStaleReadPreservesPrefetchCAS(t *testing.T) {
 	req.SetQuestion("refresh.example.", dns.TypeA)
 	entry := seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.53"), netip.Prefix{}, time.Second, time.Hour)
 
-	if resp, got := c.staleResponse(req, false, netip.Prefix{}); resp == nil || got != entry {
+	if resp, got := c.staleResponse(context.Background(), req, false, netip.Prefix{}); resp == nil || got != entry {
 		t.Fatal("stale read did not return the retained entry")
 	}
 	key := CacheKey{Question: req.Question[0], CD: false}.Hash()
