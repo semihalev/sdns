@@ -81,7 +81,14 @@ func (c *Cache) staleResponse(
 	// incomplete narrow alias that cannot be completed must not suppress a
 	// usable wider candidate.
 	for _, candidateEntry := range candidates {
-		candidate := c.staleResponseFromEntry(candidateEntry, req, requestCD, now)
+		// Each candidate is judged on the clock it is actually reached at,
+		// not the one the walk started on. Completing an earlier candidate's
+		// alias can spend real seconds on a failing sub-resolution, and the
+		// delegation lease is an absolute instant: reusing the opening
+		// timestamp would let a candidate whose lease ran out during that
+		// chase pass the ceiling check and be served after it expired, which
+		// is the revival the ceiling exists to prevent.
+		candidate := c.staleResponseFromEntry(candidateEntry, req, requestCD, time.Now())
 		if candidate.msg == nil {
 			continue
 		}

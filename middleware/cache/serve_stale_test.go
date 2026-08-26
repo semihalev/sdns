@@ -1074,3 +1074,58 @@ func TestServeStaleReadPreservesPrefetchCAS(t *testing.T) {
 		t.Fatal("successful refresh did not replace the stale entry")
 	}
 }
+
+// TestServeStaleReEvaluatesLeaseAfterASlowChase pins the clock each candidate
+// is judged on. Completing an earlier candidate's alias can spend real time on
+// a failing sub-resolution, and the delegation lease is an absolute instant —
+// so a later candidate must be re-checked against the time it is actually
+// reached at, or one whose lease ran out during that chase is served after the
+// ceiling that GHSA-mqfw-f48p-2vc8 put in place.
+func TestServeStaleReEvaluatesLeaseAfterASlowChase(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+	defer c.Stop()
+	const alias = "slow-chase.example."
+
+	req := new(dns.Msg)
+	req.SetQuestion(alias, dns.TypeA)
+	req.SetEdns0(1232, false)
+
+	client := netip.MustParsePrefix("203.0.113.130/32")
+	scope := netip.MustParsePrefix("203.0.113.0/24")
+
+	// The narrow candidate needs completion, and its chase will be slow and
+	// end in failure — so the loop moves on to the shared candidate.
+	aliasBody := new(dns.Msg)
+	aliasBody.SetReply(req)
+	aliasBody.Answer = []dns.RR{&dns.CNAME{
+		Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+		Target: "slow-target.example.",
+	}}
+	seedStaleEntry(t, c, aliasBody, scope, time.Second, time.Hour)
+
+	// The shared candidate is servable when the walk starts — its lease is
+	// over the one-second floor an advertised TTL needs — and is expired by
+	// the time the chase above returns.
+	const lease = 1200 * time.Millisecond
+	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.90"), netip.Prefix{}, time.Second, lease)
+
+	calls := 0
+	c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, middleware.HandlerFunc(
+		func(_ context.Context, ch *middleware.Chain) {
+			calls++
+			time.Sleep(lease + 300*time.Millisecond)
+			resp := new(dns.Msg)
+			resp.SetRcode(ch.Request.Msg(), dns.RcodeServerFailure)
+			_ = ch.Writer.WriteMsg(resp)
+			ch.Cancel()
+		},
+	)}})
+
+	resp, _ := c.staleResponse(context.Background(), req, false, client)
+	if calls == 0 {
+		t.Fatal("the alias chase never ran, so no time passed between the candidates")
+	}
+	if resp != nil {
+		t.Fatalf("served an answer whose delegation lease expired during the chase: %v", resp.Answer)
+	}
+}
