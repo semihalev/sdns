@@ -9,11 +9,16 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/miekg/dns"
 )
+
+// errZeroKeyTag reports that key generation kept producing the one tag value
+// a signer refuses. Reaching it means the generator is not random.
+var errZeroKeyTag = errors.New("roottest: could not generate a key with a non-zero tag")
 
 // Serial is the zone serial every default-built zone carries.
 const Serial = 2026082401
@@ -59,17 +64,29 @@ func Build(digest func(rrs []dns.RR, apex string) ([]byte, error)) (*Zone, error
 // BuildZone assembles and seals a zone from the given body lines, whose SOA
 // must carry serial, under a freshly generated key.
 func BuildZone(digest func(rrs []dns.RR, apex string) ([]byte, error), lines []string, serial uint32) (*Zone, error) {
-	key := &dns.DNSKEY{
-		Hdr:       dns.RR_Header{Name: ".", Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 172800},
-		Flags:     257,
-		Protocol:  3,
-		Algorithm: dns.ECDSAP256SHA256,
+	// A key tag is a checksum over the key's own bytes, so roughly one
+	// generated key in 65536 lands on zero — and miekg's signer rejects a
+	// zero tag outright ("dns: bad key"), which surfaced as a rare, entirely
+	// unrelated-looking test failure. Draw again rather than sign with it.
+	// The loop is bounded: it can only repeat if the generator keeps landing
+	// on that one value out of 65536.
+	for range 8 {
+		key := &dns.DNSKEY{
+			Hdr:       dns.RR_Header{Name: ".", Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 172800},
+			Flags:     257,
+			Protocol:  3,
+			Algorithm: dns.ECDSAP256SHA256,
+		}
+		priv, err := key.Generate(256)
+		if err != nil {
+			return nil, err
+		}
+		if key.KeyTag() == 0 {
+			continue
+		}
+		return BuildZoneWithKey(digest, lines, serial, key, priv)
 	}
-	priv, err := key.Generate(256)
-	if err != nil {
-		return nil, err
-	}
-	return BuildZoneWithKey(digest, lines, serial, key, priv)
+	return nil, errZeroKeyTag
 }
 
 // BuildZoneWithKey is BuildZone under an existing key, so a test can produce
