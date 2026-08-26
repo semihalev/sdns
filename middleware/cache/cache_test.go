@@ -596,3 +596,55 @@ func TestForwardZoneFailureKinds(t *testing.T) {
 		}
 	})
 }
+
+// TestForwardedSuccessKeepsPublicZoneBackoff pins the reset's scope. A
+// successful answer normally clears the exact failure and every ancestor zone
+// backoff, on the reasoning that recovery reached the client. For a forwarded
+// answer that reasoning does not carry: it proves the zone's own upstream is
+// answering and says nothing about the public authority chain above the name,
+// so wiping that backoff would send the next sibling query straight back to
+// hammering a broken authority.
+func TestForwardedSuccessKeepsPublicZoneBackoff(t *testing.T) {
+	c := New(&config.Config{
+		CacheSize: 1024,
+		ForwardZones: []config.ForwardZoneConfig{
+			{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}},
+		},
+	})
+	defer c.Stop()
+
+	sibling := newQuestionMsg("www.example.", dns.TypeA, dns.ClassINET)
+	c.store.RecordZoneFailure(sibling.Question[0], "example.")
+	if _, ok := c.lookupFailure(sibling, netip.Prefix{}); !ok {
+		t.Fatal("the public zone backoff was not recorded")
+	}
+
+	// A forwarded question answered successfully by its own upstream.
+	req := newQuestionMsg("host.corp.example.", dns.TypeA, dns.ClassINET)
+	req.SetEdns0(1232, false)
+	answered := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request.Msg())
+		resp.Answer = []dns.RR{makeRR("host.corp.example. 300 IN A 10.0.0.9")}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+	writer := mock.NewWriter("udp", "192.0.2.1:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, answered})
+	ch.Reset(writer, req)
+	ch.Next(context.Background())
+	if !writer.Written() || writer.Msg().Rcode != dns.RcodeSuccess {
+		t.Fatal("the forwarded question was not answered successfully")
+	}
+
+	if _, ok := c.lookupFailure(sibling, netip.Prefix{}); !ok {
+		t.Fatal("a forwarded success wiped the unrelated public zone backoff")
+	}
+
+	// Control: the entry was clearable all along, so its survival above is
+	// the forwarded gate and not an entry nothing could remove.
+	c.store.resetMatchingFailures(sibling.Question[0], false, netip.Prefix{})
+	if _, ok := c.lookupFailure(sibling, netip.Prefix{}); ok {
+		t.Fatal("the zone backoff outlived a matching reset")
+	}
+}

@@ -1842,7 +1842,18 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// A useful answer here means resolver/failover/forwarder recovery really
 	// reached the client path, so both exact and covering zone backoff can
 	// restart at the initial interval on a later failure.
-	w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
+	//
+	// A forwarded answer clears only its own question. It proves that zone's
+	// upstream is answering; it proves nothing about the public authority
+	// chain above the name, which is what the ancestor zone entries record.
+	// Clearing those would let one working internal zone wipe the backoff
+	// protecting a broken public authority, and the next query for a sibling
+	// name would go straight back to hammering it.
+	if w.cache.forwardedZoneQuestion(q.Name) {
+		w.cache.store.resetQuestionFailure(q, res.CheckingDisabled, w.clientScope)
+	} else {
+		w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
+	}
 
 	// The delegation lease caps the TTL the client sees, on this uncached
 	// response exactly as remaining() caps it on every later hit. Without
