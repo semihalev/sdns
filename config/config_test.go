@@ -1198,3 +1198,76 @@ func TestLoadGeneratesAConfigAtACustomPath(t *testing.T) {
 		t.Fatalf("reload: %v", err)
 	}
 }
+
+func TestForwardZoneFor(t *testing.T) {
+	cfg := &Config{ForwardZones: []ForwardZoneConfig{
+		{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}},
+		{Name: "lab.corp.example.", Servers: []string{"10.0.1.53:53"}},
+		{Name: "empty.example.", Servers: nil},
+	}}
+
+	for _, tc := range []struct {
+		name  string
+		qname string
+		want  string
+	}{
+		{"exact apex", "corp.example.", "corp.example."},
+		{"below the apex", "host.corp.example.", "corp.example."},
+		{"most specific zone wins", "host.lab.corp.example.", "lab.corp.example."},
+		{"case insensitive", "HOST.Corp.Example.", "corp.example."},
+		{"unrelated name", "example.net.", ""},
+		{"parent of a zone is not in it", "example.", ""},
+		// A zone with no usable upstream must not match: matching it would
+		// turn a config mistake into SERVFAIL for the whole subtree.
+		{"serverless zone is skipped", "host.empty.example.", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			zone := cfg.ForwardZoneFor(tc.qname)
+			got := ""
+			if zone != nil {
+				got = zone.Name
+			}
+			if got != tc.want {
+				t.Fatalf("ForwardZoneFor(%q) = %q, want %q", tc.qname, got, tc.want)
+			}
+		})
+	}
+
+	if (&Config{}).ForwardZoneFor("anything.") != nil {
+		t.Fatal("a config with no forward zones matched a name")
+	}
+}
+
+func TestForwardZoneRootMatchesEverything(t *testing.T) {
+	// A zone of "." is a legitimate way to say "forward all of it", and it
+	// must not be special-cased away.
+	cfg := &Config{ForwardZones: []ForwardZoneConfig{
+		{Name: ".", Servers: []string{"10.0.0.53:53"}},
+	}}
+	if cfg.ForwardZoneFor("anything.example.") == nil {
+		t.Fatal("a root forward zone did not match")
+	}
+}
+
+func TestValidateForwardZones(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		zones   []ForwardZoneConfig
+		wantErr bool
+	}{
+		{"valid", []ForwardZoneConfig{{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}}}, false},
+		{"explicit root is allowed", []ForwardZoneConfig{{Name: ".", Servers: []string{"10.0.0.53:53"}}}, false},
+		// An omitted name canonicalizes to the root and would forward every
+		// query, silently giving up recursion and DNSSEC for everything.
+		{"missing name", []ForwardZoneConfig{{Servers: []string{"10.0.0.53:53"}}}, true},
+		{"blank name", []ForwardZoneConfig{{Name: "   ", Servers: []string{"10.0.0.53:53"}}}, true},
+		{"no servers", []ForwardZoneConfig{{Name: "corp.example."}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&Config{ForwardZones: tc.zones}).validateForwardZones()
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("validateForwardZones() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}

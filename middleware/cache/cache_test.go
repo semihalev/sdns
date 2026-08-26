@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -512,5 +513,138 @@ func TestCacheEDNS(t *testing.T) {
 	}
 	if !reflect.DeepEqual("edns.com.", resp.Answer[0].Header().Name) {
 		t.Errorf("resp.Answer[0].Header().Name = %v, want %v", resp.Answer[0].Header().Name, "edns.com.")
+	}
+}
+
+// TestForwardZoneBypassesCoveringDenial pins the gate in front of covering
+// state. An NXDOMAIN cut is learned by resolving publicly and denies a whole
+// subtree; a forward zone says that subtree is answered elsewhere. Without the
+// gate the public denial answers first and the zone is unreachable for as long
+// as the cut lives — which is the split-horizon case the feature exists for.
+func TestForwardZoneBypassesCoveringDenial(t *testing.T) {
+	// The forward zone sits inside the denied subtree, so one cut covers both
+	// the control name and the forwarded one.
+	c := New(&config.Config{
+		CacheSize: 1024,
+		ForwardZones: []config.ForwardZoneConfig{
+			{Name: "lab.corp.example.", Servers: []string{"10.0.0.53:53"}},
+		},
+	})
+	defer c.Stop()
+
+	fixture := newNXDomainCutFixture(t, "corp.example.", "example.", dns.ClassINET)
+	if !c.store.RecordNXDomainCut(fixture.msg, "corp.example.", "example.", time.Time{}) {
+		t.Fatal("covering cut was not recorded")
+	}
+
+	// The cut is live: a name under it but outside the forward zone is still
+	// denied. Without this the assertion below would pass on an empty cache.
+	outside := newQuestionMsg("other.corp.example.", dns.TypeA, dns.ClassINET)
+	if cut := c.lookupNXDomainCut(context.Background(), outside, netip.Prefix{}); cut == nil {
+		t.Fatal("the covering cut does not deny a name it should")
+	}
+
+	inside := newQuestionMsg("host.lab.corp.example.", dns.TypeA, dns.ClassINET)
+	if cut := c.lookupNXDomainCut(context.Background(), inside, netip.Prefix{}); cut != nil {
+		t.Fatal("a public NXDOMAIN cut answered for a forwarded zone")
+	}
+}
+
+// TestForwardZoneFailureKinds pins which cached failures a forwarded question
+// may still be answered from. The two kinds mean opposite things here: a
+// zone-kind failure records an authority zone that was unreachable while
+// resolving publicly, which says nothing about the zone's own upstream; a
+// question-kind failure for a forwarded name is what the forwarder recorded
+// when that upstream failed, and dropping it would retry a dead upstream on
+// every client query.
+func TestForwardZoneFailureKinds(t *testing.T) {
+	newCache := func() *Cache {
+		return New(&config.Config{
+			CacheSize: 1024,
+			ForwardZones: []config.ForwardZoneConfig{
+				{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}},
+			},
+		})
+	}
+
+	t.Run("question-kind backoff survives", func(t *testing.T) {
+		c := newCache()
+		defer c.Stop()
+		req := newQuestionMsg("host.corp.example.", dns.TypeA, dns.ClassINET)
+		c.store.RecordFailure(req, netip.Prefix{}, FailureProvenance("response"), nil)
+
+		hit, ok := c.lookupFailure(req, netip.Prefix{})
+		if !ok || hit.Kind != FailureKindQuestion {
+			t.Fatalf("forwarded question lost its own backoff: ok=%v kind=%v", ok, hit.Kind)
+		}
+	})
+
+	t.Run("zone-kind denial is bypassed", func(t *testing.T) {
+		c := newCache()
+		defer c.Stop()
+		outside := newQuestionMsg("other.example.", dns.TypeA, dns.ClassINET)
+		c.store.RecordZoneFailure(outside.Question[0], "example.")
+
+		// The zone failure is live for names it should still cover; without
+		// this the assertion below would pass on an empty failure cache.
+		if hit, ok := c.lookupFailure(outside, netip.Prefix{}); !ok || hit.Kind != FailureKindZone {
+			t.Fatalf("zone failure does not cover a public name: ok=%v kind=%v", ok, hit.Kind)
+		}
+		inside := newQuestionMsg("host.corp.example.", dns.TypeA, dns.ClassINET)
+		if _, ok := c.lookupFailure(inside, netip.Prefix{}); ok {
+			t.Fatal("a public zone failure answered for a forwarded zone")
+		}
+	})
+}
+
+// TestForwardedSuccessKeepsPublicZoneBackoff pins the reset's scope. A
+// successful answer normally clears the exact failure and every ancestor zone
+// backoff, on the reasoning that recovery reached the client. For a forwarded
+// answer that reasoning does not carry: it proves the zone's own upstream is
+// answering and says nothing about the public authority chain above the name,
+// so wiping that backoff would send the next sibling query straight back to
+// hammering a broken authority.
+func TestForwardedSuccessKeepsPublicZoneBackoff(t *testing.T) {
+	c := New(&config.Config{
+		CacheSize: 1024,
+		ForwardZones: []config.ForwardZoneConfig{
+			{Name: "corp.example.", Servers: []string{"10.0.0.53:53"}},
+		},
+	})
+	defer c.Stop()
+
+	sibling := newQuestionMsg("www.example.", dns.TypeA, dns.ClassINET)
+	c.store.RecordZoneFailure(sibling.Question[0], "example.")
+	if _, ok := c.lookupFailure(sibling, netip.Prefix{}); !ok {
+		t.Fatal("the public zone backoff was not recorded")
+	}
+
+	// A forwarded question answered successfully by its own upstream.
+	req := newQuestionMsg("host.corp.example.", dns.TypeA, dns.ClassINET)
+	req.SetEdns0(1232, false)
+	answered := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request.Msg())
+		resp.Answer = []dns.RR{makeRR("host.corp.example. 300 IN A 10.0.0.9")}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+	writer := mock.NewWriter("udp", "192.0.2.1:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, answered})
+	ch.Reset(writer, req)
+	ch.Next(context.Background())
+	if !writer.Written() || writer.Msg().Rcode != dns.RcodeSuccess {
+		t.Fatal("the forwarded question was not answered successfully")
+	}
+
+	if _, ok := c.lookupFailure(sibling, netip.Prefix{}); !ok {
+		t.Fatal("a forwarded success wiped the unrelated public zone backoff")
+	}
+
+	// Control: the entry was clearable all along, so its survival above is
+	// the forwarded gate and not an entry nothing could remove.
+	c.store.resetMatchingFailures(sibling.Question[0], false, netip.Prefix{})
+	if _, ok := c.lookupFailure(sibling, netip.Prefix{}); ok {
+		t.Fatal("the zone backoff outlived a matching reset")
 	}
 }

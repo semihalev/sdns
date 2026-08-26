@@ -44,34 +44,38 @@ type Config struct {
 	RootKeys         []string
 	FallbackServers  []string
 	ForwarderServers []string
-	AccessList       []string
-	LogLevel         string
-	AccessLog        string
-	Bind             string
-	BindTLS          string
-	BindDOH          string
-	BindDOQ          string
-	TLSCertificate   string
-	TLSPrivateKey    string
-	API              string
-	BearerToken      string //nolint:gosec // G117 - not a hardcoded credential, loaded from config file
-	Nullroute        string
-	Nullroutev6      string
-	HostsFile        string
-	OutboundIPs      []string
-	OutboundIP6s     []string
-	Timeout          Duration
-	QueryTimeout     Duration
-	Expire           uint32
-	CacheSize        int
-	Prefetch         uint32
-	Maxdepth         int
-	RateLimit        int
-	ClientRateLimit  int
-	NSID             string
-	Blocklist        []string
-	Whitelist        []string
-	Chaos            bool
+	// ForwardZones route individual zones to their own upstreams. They are
+	// consulted before ForwarderServers, which remains the whole-server
+	// setting: a query matching no zone resolves normally.
+	ForwardZones    []ForwardZoneConfig `toml:"forward_zone"`
+	AccessList      []string
+	LogLevel        string
+	AccessLog       string
+	Bind            string
+	BindTLS         string
+	BindDOH         string
+	BindDOQ         string
+	TLSCertificate  string
+	TLSPrivateKey   string
+	API             string
+	BearerToken     string //nolint:gosec // G117 - not a hardcoded credential, loaded from config file
+	Nullroute       string
+	Nullroutev6     string
+	HostsFile       string
+	OutboundIPs     []string
+	OutboundIP6s    []string
+	Timeout         Duration
+	QueryTimeout    Duration
+	Expire          uint32
+	CacheSize       int
+	Prefetch        uint32
+	Maxdepth        int
+	RateLimit       int
+	ClientRateLimit int
+	NSID            string
+	Blocklist       []string
+	Whitelist       []string
+	Chaos           bool
 	// QnameMinLevel is deprecated and retained so older configs keep
 	// parsing. It capped minimization by delegation depth rather than by
 	// the queries a lookup spends, which is what RFC 9156 section 2.3
@@ -214,6 +218,96 @@ type ViewConfig struct {
 	Zone     string
 	Networks []string
 	Answers  []string
+}
+
+// ForwardZoneConfig sends one zone's queries to named recursive upstreams
+// instead of resolving them from the root.
+//
+// This is forwarding in the RFC 8499 §6 sense — the query goes out with RD=1
+// to a server that resolves on our behalf — not a stub zone, which points at
+// a zone's own authoritative servers with RD=0.
+//
+// A forwarded zone is not validated here. Answers carry whatever the upstream
+// asserted, exactly as in whole-server forwarder mode, so pointing a signed
+// public zone at an upstream silently gives up local DNSSEC validation for it.
+// The intended use is the opposite case: an internal zone the public namespace
+// cannot resolve at all.
+type ForwardZoneConfig struct {
+	// Name is the zone apex. Queries at or below it are forwarded.
+	Name string `toml:"name"`
+	// Servers are the upstreams, in the same forms as forwarderservers:
+	// "ip:port", "tls://ip:port", or an https:// URL.
+	Servers []string `toml:"servers"`
+}
+
+// validateForwardZones refuses a forward zone the operator cannot have meant.
+//
+// An omitted name is the dangerous one: it canonicalizes to the root, and a
+// root forward zone matches every question — so a block that named only its
+// servers would silently turn the whole resolver into a forwarder and give up
+// local recursion and DNSSEC for everything. Forwarding the root is a real
+// choice, but it has to be written as one.
+//
+// A zone with no server is refused for the opposite reason: it would be
+// skipped at match time, so its subtree would resolve publicly. For an
+// internal zone that is not a harmless no-op, it is the leak the zone was
+// configured to prevent. Better to fail at startup, where it is visible.
+func (c *Config) validateForwardZones() error {
+	for i := range c.ForwardZones {
+		zone := &c.ForwardZones[i]
+		if strings.TrimSpace(zone.Name) == "" {
+			return fmt.Errorf(
+				"forward_zone %d has no name; use name = \".\" to forward every query", i+1,
+			)
+		}
+		if _, ok := dns.IsDomainName(zone.Name); !ok {
+			return fmt.Errorf("forward_zone %q is not a valid domain name", zone.Name)
+		}
+		if len(zone.Servers) == 0 {
+			return fmt.Errorf("forward_zone %q has no servers", zone.Name)
+		}
+	}
+	return nil
+}
+
+// ForwardZoneFor returns the most specific configured forward zone covering
+// qname, or nil when the query resolves normally. Most specific wins so a
+// narrower zone can be pointed somewhere else than the one containing it.
+//
+// A zone carrying no servers at all is skipped, but only as a guard for a
+// Config built in code: validateForwardZones refuses one at startup, because
+// letting its subtree resolve publicly is the leak configuring the zone was
+// meant to prevent. A zone whose servers are configured but turn out
+// unusable still matches here, and the forwarder fails those queries rather
+// than sending them to the public upstreams.
+//
+// The scan is linear because a forward-zone list is a handful of entries an
+// operator wrote by hand; an index would cost more to keep honest than it
+// saves.
+func (c *Config) ForwardZoneFor(qname string) *ForwardZoneConfig {
+	if c == nil || len(c.ForwardZones) == 0 || qname == "" {
+		return nil
+	}
+	qname = dns.CanonicalName(qname)
+
+	var (
+		best     *ForwardZoneConfig
+		bestApex string
+	)
+	for i := range c.ForwardZones {
+		zone := &c.ForwardZones[i]
+		if len(zone.Servers) == 0 {
+			continue
+		}
+		apex := dns.CanonicalName(zone.Name)
+		if !dns.IsSubDomain(apex, qname) {
+			continue
+		}
+		if best == nil || dns.CountLabel(apex) > dns.CountLabel(bestApex) {
+			best, bestApex = zone, apex
+		}
+	}
+	return best
 }
 
 // KubernetesConfig holds Kubernetes middleware configuration
@@ -658,6 +752,28 @@ forwarderservers = [
     # "https://1.1.1.1/dns-query",           # DoH, IP literal
     # "https://cloudflare-dns.com/dns-query" # DoH, hostname (system-resolver bootstrap)
 ]
+
+# Per-zone forwarding
+# Sends one zone's queries to its own upstreams while everything else still
+# resolves recursively. This is forwarding in the RFC 8499 sense — the query
+# goes out with RD=1 to a resolver that answers on our behalf — so the
+# upstreams must be recursive resolvers, not the zone's authoritative servers.
+# The most specific matching zone wins. A zone must name itself and at least
+# one server or startup fails — an omitted name would forward every query —
+# and a zone whose upstreams all turn out unusable fails its queries rather
+# than borrowing forwarderservers, which would send an internal zone's
+# questions to public resolvers. Servers take the same forms as
+# forwarderservers, so DoT and DoH work per zone too.
+#
+# A forwarded zone is NOT validated here: answers carry whatever the upstream
+# asserted, exactly as in whole-server forwarder mode. Pointing a signed
+# public zone at an upstream therefore gives up local DNSSEC validation for
+# it. The intended use is the opposite case — an internal zone the public
+# namespace cannot resolve at all.
+#
+# [[forward_zone]]
+# name = "corp.example."
+# servers = ["10.0.0.53:53", "tls://10.0.0.54:853"]
 
 # ============================
 # API and Logging
@@ -1277,6 +1393,9 @@ func Load(cfgfile, version string) (*Config, error) {
 	config.RecursionFirewall.Normalize()
 	if err := config.RecursionFirewall.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
+	}
+	if err := config.validateForwardZones(); err != nil {
+		return nil, err
 	}
 	if config.ServeStaleMaxTTL.Duration < 0 {
 		return nil, fmt.Errorf("serve_stale_max_ttl must not be negative")

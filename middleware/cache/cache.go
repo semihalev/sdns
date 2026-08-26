@@ -96,6 +96,11 @@ type Cache struct {
 	negative *NegativeCache
 	failure  *FailureCache
 
+	// cfg supplies the forward-zone matcher. Covering denial and failure
+	// state is learned from public resolution, so it must not answer for a
+	// zone the operator has since pointed at its own upstreams.
+	cfg *config.Config
+
 	// store is the public-facing storage facade backed by the same
 	// answer caches and RFC 9520 failure cache. External callers (resolver
 	// sub-queries, queryer-driven prefetch, future API purge wiring)
@@ -219,6 +224,7 @@ func New(cfg *config.Config) *Cache {
 		positive: positive,
 		negative: negative,
 		failure:  failure,
+		cfg:      cfg,
 
 		store: store,
 
@@ -550,7 +556,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			return
 		}
 	}
-	if hit, ok := c.store.LookupFailure(req, clientScope); ok {
+	if hit, ok := c.lookupFailure(req, clientScope); ok {
 		c.metrics.Hit()
 		c.handleFailureHit(ctx, ch, clientScope, hit)
 		return
@@ -683,7 +689,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 					return
 				}
 			}
-			if hit, ok := c.store.LookupFailure(req, clientScope); ok {
+			if hit, ok := c.lookupFailure(req, clientScope); ok {
 				c.metrics.Hit()
 				c.handleFailureHit(ctx, ch, clientScope, hit)
 				return
@@ -993,6 +999,45 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 // synthesis. ECS requests also bypass P4: a signed split-horizon denial can be
 // audience-specific, and P4 has no per-scope proof index. Failing open to
 // ordinary resolution is safer than sharing one audience's subtree cut.
+// lookupFailure is Store.LookupFailure with the forward-zone gate applied to
+// the one kind of failure that describes the public namespace.
+//
+// A zone-kind failure records that an authority zone was unreachable while
+// resolving from the root; it says nothing about the upstream a forward zone
+// names, and matching by ancestor it would deny the whole forwarded subtree.
+// A question-kind failure is the opposite: for a forwarded name it is what the
+// forwarder recorded when that zone's own upstream failed, and it is the RFC
+// 9520 backoff protecting a dead upstream from being retried by every client
+// query. Dropping both would leave that upstream hammered for as long as it
+// stayed down.
+func (c *Cache) lookupFailure(req *dns.Msg, clientScope netip.Prefix) (FailureHit, bool) {
+	hit, ok := c.store.LookupFailure(req, clientScope)
+	if !ok || hit.Kind != FailureKindZone {
+		return hit, ok
+	}
+	if req != nil && len(req.Question) > 0 && c.forwardedZoneQuestion(req.Question[0].Name) {
+		return FailureHit{}, false
+	}
+	return hit, ok
+}
+
+// forwardedZoneQuestion reports whether qname belongs to a forward zone.
+//
+// Covering denial and failure state describes the public namespace — it was
+// learned by resolving from the root. A forward zone says that subtree is
+// answered somewhere else, so an NXDOMAIN cut, aggressive denial or authority
+// failure inherited from above it must not answer for it: a name that does
+// not exist publicly is precisely what an internal zone is for, and serving
+// the public denial would make the zone unreachable for as long as the cut
+// lives. Exact entries are deliberately left alone — those were admitted for
+// this very question, by whichever path answered it.
+func (c *Cache) forwardedZoneQuestion(qname string) bool {
+	if c == nil || c.cfg == nil || len(c.cfg.ForwardZones) == 0 {
+		return false
+	}
+	return c.cfg.ForwardZoneFor(qname) != nil
+}
+
 func (c *Cache) lookupNXDomainCut(
 	ctx context.Context,
 	req *dns.Msg,
@@ -1000,7 +1045,8 @@ func (c *Cache) lookupNXDomainCut(
 ) *nxDomainCutEntry {
 	if req == nil || len(req.Question) == 0 ||
 		req.CheckingDisabled || clientScope.IsValid() ||
-		sharedDenialBypass(ctx) {
+		sharedDenialBypass(ctx) ||
+		c.forwardedZoneQuestion(req.Question[0].Name) {
 		return nil
 	}
 	entry, _ := c.store.LookupNXDomainCut(req)
@@ -1021,7 +1067,8 @@ func (c *Cache) lookupDenialProof(
 	if req == nil || len(req.Question) != 1 ||
 		req.CheckingDisabled || clientScope.IsValid() ||
 		hasEDNSClientSubnet(req) || sharedDenialBypass(ctx) ||
-		c.store.rfc8198Disabled {
+		c.store.rfc8198Disabled ||
+		c.forwardedZoneQuestion(req.Question[0].Name) {
 		return nil, middleware.ValidatedNegativeProofUnknown, ""
 	}
 	msg, kind, zone, proofExpires, ok := c.store.lookupDenialProofWithExpiry(
@@ -1155,6 +1202,14 @@ func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rat
 // it might shadow.
 func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain) bool {
 	req := ch.Request
+	// Every rung below serves covering state, which a forward zone must not
+	// be answered from. Deciding that needs the question in presentation
+	// form, so a server with forward zones sends composites to the decoded
+	// body and lets the Msg path apply the gate per zone; a server without
+	// them pays one length check.
+	if c.cfg != nil && len(c.cfg.ForwardZones) > 0 {
+		return false
+	}
 	cd := req.CD()
 	if !cd {
 		if cut, ok := c.store.LookupNXDomainCutWire(req.WireName(), req.Qclass()); ok {
@@ -1787,7 +1842,18 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// A useful answer here means resolver/failover/forwarder recovery really
 	// reached the client path, so both exact and covering zone backoff can
 	// restart at the initial interval on a later failure.
-	w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
+	//
+	// A forwarded answer clears only its own question. It proves that zone's
+	// upstream is answering; it proves nothing about the public authority
+	// chain above the name, which is what the ancestor zone entries record.
+	// Clearing those would let one working internal zone wipe the backoff
+	// protecting a broken public authority, and the next query for a sibling
+	// name would go straight back to hammering it.
+	if w.cache.forwardedZoneQuestion(q.Name) {
+		w.cache.store.resetQuestionFailure(q, res.CheckingDisabled, w.clientScope)
+	} else {
+		w.cache.store.resetMatchingFailures(q, res.CheckingDisabled, w.clientScope)
+	}
 
 	// The delegation lease caps the TTL the client sees, on this uncached
 	// response exactly as remaining() caps it on every later hit. Without
