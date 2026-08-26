@@ -97,13 +97,25 @@ type CacheEntry struct {
 // remaining returns the entry's effective remaining lifetime at now:
 // the stored TTL minus elapsed time, further bounded by cutUntil.
 func (e *CacheEntry) remaining(now time.Time) time.Duration {
-	rem := e.ttl - now.Sub(e.stored)
+	rem, leaseRem := e.remainingBounds(now)
 	if !e.cutUntil.IsZero() {
-		if cutRem := e.cutUntil.Sub(now); cutRem < rem {
-			rem = cutRem
+		if leaseRem < rem {
+			rem = leaseRem
 		}
 	}
 	return rem
+}
+
+// remainingBounds returns the two independent lifetimes that remaining folds
+// together: the answer TTL and the delegation lease. A zero cutUntil is
+// unbounded and therefore returns zero for leaseRemaining; callers must check
+// cutUntil before interpreting that value as an expired lease.
+func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemaining time.Duration) {
+	ttlRemaining = e.ttl - now.Sub(e.stored)
+	if !e.cutUntil.IsZero() {
+		leaseRemaining = e.cutUntil.Sub(now)
+	}
+	return ttlRemaining, leaseRemaining
 }
 
 // NewCacheEntry creates a new cache entry from a DNS message.
@@ -431,6 +443,10 @@ type CacheConfig struct {
 	MinTTL      time.Duration
 	MaxTTL      time.Duration
 	RateLimit   int
+	ServeStale  bool
+	// ServeStaleMaxTTL is measured from the admitted answer TTL's expiry.
+	// Zero leaves cutUntil as the only stale lifetime bound.
+	ServeStaleMaxTTL time.Duration
 
 	// ECSMaxTTL caps the lifetime of cache entries keyed under an
 	// ECS scope. Geo-routed answers tend to go stale faster than
@@ -454,6 +470,9 @@ func (cc CacheConfig) Validate() error {
 	}
 	if cc.MaxTTL < cc.MinTTL {
 		return errors.New("maximum TTL must be greater than minimum TTL")
+	}
+	if cc.ServeStaleMaxTTL < 0 {
+		return errors.New("serve-stale maximum TTL cannot be negative")
 	}
 	return nil
 }

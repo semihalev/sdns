@@ -808,6 +808,76 @@ ipv6access = true
 	}
 }
 
+func TestLoadServeStalePolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		settings   string
+		wantEnable bool
+		wantMax    time.Duration
+	}{
+		{name: "omitted defaults off", wantMax: defaultServeStaleMaxTTL},
+		{
+			name:       "explicit zero keeps lease-only policy",
+			settings:   "serve_stale = true\nserve_stale_max_ttl = \"0s\"",
+			wantEnable: true,
+		},
+		{
+			name:       "explicitly enabled with ceiling",
+			settings:   "serve_stale = true\nserve_stale_max_ttl = \"36h\"",
+			wantEnable: true,
+			wantMax:    36 * time.Hour,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfgFile := filepath.Join(tmpDir, "sdns.conf")
+			workDir := filepath.Join(tmpDir, "db")
+			content := fmt.Sprintf(`version = %q
+directory = %q
+ipv6access = true
+%s
+`, configver, workDir, tt.settings)
+			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+				t.Fatal(err)
+			}
+
+			cfg, err := Load(cfgFile, "test")
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.ServeStale != tt.wantEnable || cfg.ServeStaleMaxTTL.Duration != tt.wantMax {
+				t.Fatalf("serve-stale config = (%v, %v), want (%v, %v)",
+					cfg.ServeStale, cfg.ServeStaleMaxTTL.Duration, tt.wantEnable, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNegativeServeStaleTTL(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "sdns.conf")
+	workDir := filepath.Join(tmpDir, "db")
+	content := fmt.Sprintf(`version = %q
+directory = %q
+ipv6access = true
+serve_stale = true
+serve_stale_max_ttl = "-1s"
+`, configver, workDir)
+	if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+		t.Fatal(err)
+	}
+
+	_, err := Load(cfgFile, "test")
+	if err == nil || !strings.Contains(err.Error(), "serve_stale_max_ttl must not be negative") {
+		t.Fatalf("Load() error = %v, want negative serve-stale TTL rejection", err)
+	}
+	if _, statErr := os.Stat(workDir); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid config created working directory: stat error = %v", statErr)
+	}
+}
+
 func TestLoadRecursionFirewallPolicy(t *testing.T) {
 	t.Run("explicit enforce values", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -903,6 +973,8 @@ func TestConfigDefaults(t *testing.T) {
 		"# DNSSEC Configuration",
 		"rfc8198 = true",
 		"rfc9520 = true",
+		"serve_stale = false",
+		"serve_stale_max_ttl = \"24h\"",
 		"# Upstream Servers",
 		"# API and Logging",
 		"# Filtering and Blocking",

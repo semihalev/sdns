@@ -40,6 +40,11 @@ var (
 		Help: "Total number of RFC 9520 cached resolution failures served",
 	})
 
+	staleAnswers = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "dns_cache_stale_answers_total",
+		Help: "Total number of expired positive answers served after a resolution failure",
+	})
+
 	wireFastPath = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_cache_wire_fastpath_total",
 		Help: "Cache hits attempted on the byte serving path, by outcome",

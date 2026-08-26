@@ -147,14 +147,16 @@ func New(cfg *config.Config) *Cache {
 
 	// Build cache configuration
 	cacheConfig := CacheConfig{
-		Size:        cfg.CacheSize,
-		Prefetch:    int(cfg.Prefetch),
-		PositiveTTL: maxTTL,
-		NegativeTTL: time.Duration(cfg.Expire) * time.Second,
-		MinTTL:      minTTL,
-		MaxTTL:      maxTTL,
-		RateLimit:   cfg.RateLimit,
-		ECSMaxTTL:   cfg.ECS.CacheLimitTTL.Duration,
+		Size:             cfg.CacheSize,
+		Prefetch:         int(cfg.Prefetch),
+		PositiveTTL:      maxTTL,
+		NegativeTTL:      time.Duration(cfg.Expire) * time.Second,
+		MinTTL:           minTTL,
+		MaxTTL:           maxTTL,
+		RateLimit:        cfg.RateLimit,
+		ECSMaxTTL:        cfg.ECS.CacheLimitTTL.Duration,
+		ServeStale:       cfg.ServeStale,
+		ServeStaleMaxTTL: cfg.ServeStaleMaxTTL.Duration,
 	}
 
 	// Validate configuration and actually apply defaults when
@@ -176,6 +178,9 @@ func New(cfg *config.Config) *Cache {
 		}
 		if cacheConfig.MaxTTL < cacheConfig.MinTTL {
 			cacheConfig.MaxTTL = maxTTL
+		}
+		if cacheConfig.ServeStaleMaxTTL < 0 {
+			cacheConfig.ServeStaleMaxTTL = 0
 		}
 	}
 
@@ -498,28 +503,28 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	//
 	// When the request carries ECS, probe scoped keys first
 	// (longest-prefix-match), then fall through to the shared key
-	// so SCOPE=0 / pre-Stage-2 entries still hit. checkCache
-	// records the generic Hit/Miss metric on the shared-key path;
-	// scopedLookup records its own Hit on the scoped path so we
-	// don't double-count or under-count. ecsLookups breaks ECS
+	// so SCOPE=0 / pre-Stage-2 entries still hit. Generic and ECS
+	// hit metrics are recorded only after handleCacheHit accepts and
+	// serves the entry, so retained expired candidates remain misses.
+	// ecsLookups breaks ECS
 	// requests down by which path served them — operators read it
 	// to see how much of the ECS-aware code path is actually
 	// carrying traffic (non-ECS lookups are already counted by
 	// dns_cache_hits_total / dns_cache_misses_total).
 	if clientScope.IsValid() {
 		if entry, scopedKey, scope := c.scopedLookup(q, req.CheckingDisabled, clientScope); entry != nil {
-			ecsLookupHitScoped.Inc()
 			if c.handleCacheHit(ctx, ch, entry, scopedKey, scope, spent) {
+				ecsLookupHitScoped.Inc()
 				c.metrics.Hit()
 				return
 			}
 		}
 	}
 	if entry := c.checkCache(cacheKey); entry != nil {
-		if clientScope.IsValid() {
-			ecsLookupHitShared.Inc()
-		}
 		if c.handleCacheHit(ctx, ch, entry, cacheKey, netip.Prefix{}, spent) {
+			if clientScope.IsValid() {
+				ecsLookupHitShared.Inc()
+			}
 			c.metrics.Hit()
 			return
 		}
@@ -547,8 +552,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	if hit, ok := c.store.LookupFailure(req, clientScope); ok {
 		c.metrics.Hit()
-		failureCacheHits.Inc()
-		c.handleFailureHit(ctx, ch, hit)
+		c.handleFailureHit(ctx, ch, clientScope, hit)
 		return
 	}
 	failureProbe := false
@@ -637,14 +641,14 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 				// Re-election can span several short-lived request-local
 				// probe generations. Do not retain a canceled client tree
 				// indefinitely while fresh followers keep winning leadership.
-				c.stopCanceledRequest(ctx, ch)
+				c.stopCanceledRequest(ctx, ch, clientScope)
 				return
 			}
 			// The leader completion and request deadline can become ready in
 			// the same scheduler turn. Prefer cancellation deterministically
 			// instead of letting select choose the wait branch and regroup.
 			if contextutil.EffectiveError(ctx) != nil {
-				c.stopCanceledRequest(ctx, ch)
+				c.stopCanceledRequest(ctx, ch, clientScope)
 				return
 			}
 
@@ -681,8 +685,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			}
 			if hit, ok := c.store.LookupFailure(req, clientScope); ok {
 				c.metrics.Hit()
-				failureCacheHits.Inc()
-				c.handleFailureHit(ctx, ch, hit)
+				c.handleFailureHit(ctx, ch, clientScope, hit)
 				return
 			}
 
@@ -717,7 +720,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// query budget expires. Never start downstream resolution for a request
 	// whose client tree is already canceled.
 	if contextutil.EffectiveError(ctx) != nil {
-		c.stopCanceledRequest(ctx, ch)
+		c.stopCanceledRequest(ctx, ch, clientScope)
 		return
 	}
 
@@ -791,9 +794,21 @@ func (c *Cache) writeFailureProbeLimit(ctx context.Context, ch *middleware.Chain
 	)
 }
 
-func (c *Cache) stopCanceledRequest(ctx context.Context, ch *middleware.Chain) {
+func (c *Cache) stopCanceledRequest(
+	ctx context.Context,
+	ch *middleware.Chain,
+	clientScope netip.Prefix,
+) {
 	err := contextutil.EffectiveError(ctx)
 	if errors.Is(err, context.DeadlineExceeded) {
+		req := ch.Request.Msg()
+		if stale, entry := c.staleResponse(req, req.CheckingDisabled, clientScope); stale != nil {
+			boundRequestToStaleLifetime(ctx, entry, time.Now())
+			staleAnswers.Inc()
+			_ = ch.Writer.WriteMsg(stale)
+			ch.Cancel()
+			return
+		}
 		c.writeRequestLocalFailure(
 			ctx,
 			ch,
@@ -921,14 +936,13 @@ func hasEDNSClientSubnet(req *dns.Msg) bool {
 	return false
 }
 
-// scopedLookup probes the cache for the longest scope match that
-// covers `clientPrefix`. Returns the entry, the key it was found
-// under, and the scope that key was built from — the hit chokepoint
-// needs the scope to verify the entry against the full preimage.
-// Returns (nil, 0, zero) on miss. The shared-key fallback is the
-// caller's responsibility — a scoped probe that misses should still
-// try the unscoped key in case the authority returned SCOPE=0
-// (cached shared) or the entry predates Stage 2.
+// scopedLookup probes the cache for the most-specific fresh scope that covers
+// clientPrefix. When serve-stale retention exposes expired positive entries,
+// the first such entry is remembered but does not stop the walk: a wider fresh
+// scope must win. If no fresh scoped entry exists, the most-specific expired
+// entry is returned so the ordinary hit path can treat it as a miss without
+// losing the retained stale candidate. The shared-key fallback remains the
+// caller's responsibility.
 //
 // Iteration runs from the client's source bits down to /1. The
 // upper bound is the client's own prefix because a stored prefix
@@ -949,17 +963,30 @@ func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix)
 	if !clientPrefix.IsValid() {
 		return nil, 0, netip.Prefix{}
 	}
+	var (
+		expiredEntry *CacheEntry
+		expiredKey   uint64
+		expiredScope netip.Prefix
+	)
+	now := time.Now()
 	for bits := clientPrefix.Bits(); bits >= 1; bits-- {
 		scope, err := clientPrefix.Addr().Prefix(bits)
 		if err != nil {
 			continue
 		}
 		key := CacheKey{Question: q, CD: cd, Scope: scope}.Hash()
-		if entry, ok := c.store.LookupByKey(key); ok {
+		entry, ok := c.store.LookupByKey(key)
+		if !ok || !entryMatchesKey(entry, CacheKey{Question: q, CD: cd, Scope: scope}) {
+			continue
+		}
+		if entry.remaining(now) > 0 {
 			return entry, key, scope
 		}
+		if expiredEntry == nil {
+			expiredEntry, expiredKey, expiredScope = entry, key, scope
+		}
 	}
-	return nil, 0, netip.Prefix{}
+	return expiredEntry, expiredKey, expiredScope
 }
 
 // lookupNXDomainCut checks the RFC 8020 subtree index after an exact answer
@@ -1067,7 +1094,21 @@ func (c *Cache) handleDenialProofHit(
 	return true
 }
 
-func (c *Cache) handleFailureHit(ctx context.Context, ch *middleware.Chain, hit FailureHit) {
+func (c *Cache) handleFailureHit(
+	ctx context.Context,
+	ch *middleware.Chain,
+	clientScope netip.Prefix,
+	hit FailureHit,
+) {
+	if resp, entry := c.staleResponse(ch.Request.Msg(), ch.Request.CD(), clientScope); resp != nil {
+		boundRequestToStaleLifetime(ctx, entry, time.Now())
+		staleAnswers.Inc()
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+		return
+	}
+
+	failureCacheHits.Inc()
 	resp := hit.Response(ch.Request.Msg())
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		release := meta.MarkCachedFailureResponse(resp)
@@ -1192,6 +1233,9 @@ func (c *Cache) serveHitFromWire(
 	if w.Internal() {
 		return false
 	}
+	if entry == nil || entry.remaining(time.Now()) <= 0 {
+		return false
+	}
 	// The deterministic declines run before the limiter spends anything:
 	// a prefetch-due entry, an ineligible body, a writer without the
 	// lease all fall to the Msg path (or, inline, to the replay), and a
@@ -1302,6 +1346,13 @@ func (c *Cache) handleCacheHit(
 		CD:       req.CheckingDisabled,
 		Scope:    scope,
 	}) {
+		return false
+	}
+	// Expired entries are misses until a downstream resolution failure makes
+	// them eligible for the serve-stale policy. Do this before spending an
+	// entry rate-limit token so the later fallback is not charged twice (and
+	// cannot be suppressed by a token spent on a response we did not serve).
+	if entry.remaining(time.Now()) <= 0 {
 		return false
 	}
 
@@ -1643,14 +1694,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// hit is synthesized as EDE 13.
 	mt, _ := dnsutil.ClassifyResponse(res, time.Now().UTC())
 	if mt == dnsutil.TypeServerFailure {
-		out := res
-		if res.Rcode == dns.RcodeServerFailure && middleware.RecursionWorkEnforcementError(ctx) != nil {
-			out = w.recursionWorkFailure(res)
-		}
-		if cacheableResolutionFailure(ctx, out) {
-			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"), w.denialMissWitness)
-		}
-		return w.ResponseWriter.WriteMsg(out)
+		return w.writeResolutionFailure(ctx, res)
 	}
 
 	// Complete any synchronous CNAME chase before reading ResponseMeta and
@@ -1664,14 +1708,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
 	}
 	if chasedType, _ := dnsutil.ClassifyResponse(res, time.Now().UTC()); chasedType == dnsutil.TypeServerFailure {
-		out := res
-		if res.Rcode == dns.RcodeServerFailure && middleware.RecursionWorkEnforcementError(ctx) != nil {
-			out = w.recursionWorkFailure(res)
-		}
-		if cacheableResolutionFailure(ctx, out) {
-			w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"), w.denialMissWitness)
-		}
-		return w.ResponseWriter.WriteMsg(out)
+		return w.writeResolutionFailure(ctx, res)
 	}
 
 	// Classify, filter, and store via Store. Key is derived from
@@ -1777,12 +1814,49 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	return w.ResponseWriter.WriteMsg(res)
 }
 
+func (w *ResponseWriter) writeResolutionFailure(ctx context.Context, res *dns.Msg) error {
+	out := res
+	if res.Rcode == dns.RcodeServerFailure && middleware.RecursionWorkEnforcementError(ctx) != nil {
+		out = w.recursionWorkFailure(res)
+	}
+
+	if cacheableResolutionFailure(ctx, out) {
+		w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"), w.denialMissWitness)
+	}
+	if out.Rcode == dns.RcodeServerFailure && staleEligibleResolutionFailure(ctx, out) {
+		req := w.req
+		if req == nil {
+			req = res
+		}
+		if stale, entry := w.cache.staleResponse(req, w.requestCD, w.clientScope); stale != nil {
+			boundRequestToStaleLifetime(ctx, entry, time.Now())
+			staleAnswers.Inc()
+			return w.ResponseWriter.WriteMsg(stale)
+		}
+	}
+	return w.ResponseWriter.WriteMsg(out)
+}
+
 // cacheableResolutionFailure admits only failures that describe shared
 // resolution state. Work-budget and attempt-limit rejections belong to one
 // request tree; optional enrichment, cancellation, and deadline paths likewise
 // cannot poison independent clients through the RFC 9520 cache.
 func cacheableResolutionFailure(ctx context.Context, res *dns.Msg) bool {
 	return contextutil.EffectiveError(ctx) == nil &&
+		!middleware.IsBestEffortRecursionWork(ctx) &&
+		middleware.RecursionWorkEnforcementError(ctx) == nil &&
+		middleware.RequestLocalFailureForResponse(ctx, res) == nil
+}
+
+// staleEligibleResolutionFailure is deliberately broader than shared failure
+// admission: a request deadline may use an already-retained answer, but it is
+// still request-local evidence and must never be published into RFC 9520 state.
+// Transport cancellation, optional recursion work, enforcement failures, and
+// explicitly marked request-local responses remain ineligible.
+func staleEligibleResolutionFailure(ctx context.Context, res *dns.Msg) bool {
+	err := contextutil.EffectiveError(ctx)
+	return (err == nil || errors.Is(err, context.DeadlineExceeded)) &&
+		!errors.Is(err, context.Canceled) &&
 		!middleware.IsBestEffortRecursionWork(ctx) &&
 		middleware.RecursionWorkEnforcementError(ctx) == nil &&
 		middleware.RequestLocalFailureForResponse(ctx, res) == nil
