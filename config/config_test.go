@@ -1057,7 +1057,10 @@ directory = "db"
 bind = ":53"
 rootservers = []
 root6servers = []
-dnssec = "on"
+# Off, because this scaffold carries no trust anchor, and validation with
+# nothing to anchor to is now refused rather than left to fail per query.
+# The version warning under test does not depend on it either way.
+dnssec = "off"
 rootkeys = []
 fallbackservers = []
 forwarderservers = []

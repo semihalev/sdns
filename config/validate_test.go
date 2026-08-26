@@ -250,34 +250,55 @@ func TestValidateNegativeECSCacheLimit(t *testing.T) {
 // caught here. Nothing downstream rejects it: NewResolver only fails on a
 // record that will not parse, so an anchor like this loads and then silently
 // fails every signature it is asked to verify.
+//
+// The accepted cases carry real key material. Truncated material is what an
+// earlier version of this test used, and it passed — the check was only
+// reading the algorithm, so a key of the right algorithm and the wrong shape
+// went through.
 func TestValidateRootKeyAlgorithm(t *testing.T) {
-	const material = "AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3"
+	// The live root KSK (key id 20326) and a generated P-256 key.
+	const (
+		rsaSHA256 = "AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8PzgCmr3EgVLrjyBxWezF0jLHwVN8efS3rCj/EWgvIWgb9tarpVUDK/b58Da+sqqls3eNbuv7pr+eoZG+SrDK6nWeL3c6H5Apxz7LjVc1uTIdsIXxuOLYA4/ilBmSVIzuDWfdRUfhHdY6+cn8HFRm+2hM8AnXGXws9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU="
+		ecdsaP256 = "FS/jjwld5fQ2hD31w4Odohy65Je3eGSYDvJgKO0qBBEFRC5fa6GvcWdLyn0sj49unyBRv3nAHAH0UtAyYLZi7w=="
+		truncated = "AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3"
+	)
 
 	for _, tc := range []struct {
-		name string
-		alg  string
-		want bool
+		name     string
+		alg      string
+		material string
+		want     string // substring of the expected problem, "" to accept
 	}{
-		{"DSA is gone from the library", "3", false},
-		{"ECC-GOST is gone too", "12", false},
-		{"unassigned codepoint", "200", false},
+		{"DSA is gone from the library", "3", truncated, "cannot be verified with"},
+		{"ECC-GOST is gone too", "12", truncated, "cannot be verified with"},
+		{"unassigned codepoint", "200", truncated, "cannot be verified with"},
 		// Asked of the library, not assumed: ED448 has a name and a number
 		// and still cannot be verified with.
-		{"ED448 has a name but no verifier", "16", false},
-		{"RSASHA256 is what the root uses", "8", true},
-		{"ECDSAP256SHA256 is the successor", "13", true},
+		{"ED448 has a name but no verifier", "16", truncated, "cannot be verified with"},
+		// A supported algorithm carrying material of the wrong shape. P-256
+		// wants 64 bytes; this is 42. The resolver loads it and then fails
+		// every signature, so it is no more usable than a dead algorithm.
+		{"P-256 with material of the wrong size", "13", truncated, "public key is not usable"},
+		{"RSASHA256 with a short modulus", "8", truncated, "public key is not usable"},
+		{"RSASHA256 is what the root uses", "8", rsaSHA256, ""},
+		{"ECDSAP256SHA256 is the successor", "13", ecdsaP256, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{RootKeys: []string{
-				". 172800 IN DNSKEY 257 3 " + tc.alg + " " + material,
+				". 172800 IN DNSKEY 257 3 " + tc.alg + " " + tc.material,
 			}}
 			err := cfg.Validate()
-			usable := err == nil
-			if usable != tc.want {
-				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", usable, tc.want, err)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("Validate() rejected a usable anchor: %v", err)
+				}
+				return
 			}
-			if !tc.want && !strings.Contains(err.Error(), "cannot be verified with") {
-				t.Fatalf("Validate() = %v, want the algorithm named as the problem", err)
+			if err == nil {
+				t.Fatalf("Validate() accepted an anchor nothing can verify with")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want a problem naming %q", err, tc.want)
 			}
 		})
 	}
@@ -307,5 +328,102 @@ func TestLoadReportsUnknownKeysAlongsideValueProblems(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Load() = %v\nmissing %q — the operator would need a second run", err, want)
 		}
+	}
+}
+
+// TestValidateRequiresAnchorsWhenValidating pins the case that has no symptom
+// until a query arrives. AutoTA needs a seed and refuses to take one from disk
+// when the live set is empty, so this does not heal: every validated answer
+// fails closed from the first query onward.
+func TestValidateRequiresAnchorsWhenValidating(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want bool // whether Validate should accept
+	}{
+		{"validating with nothing to anchor to", Config{DNSSEC: "on"}, false},
+		// A global forwarder skips the resolver entirely (handler.go returns
+		// before it materializes), so it needs no anchor of its own.
+		{"forwarder needs no anchor", Config{
+			DNSSEC:           "on",
+			ForwarderServers: []string{"1.1.1.1:53"},
+		}, true},
+		// A forward zone only hands over its own subtree; everything else
+		// still recurses here and still needs an anchor.
+		{"forward zone still recurses elsewhere", Config{
+			DNSSEC:       "on",
+			ForwardZones: []ForwardZoneConfig{{Name: "corp.example.", Servers: []string{"1.1.1.1:53"}}},
+		}, false},
+		{"dnssec off needs no anchor", Config{DNSSEC: "off"}, true},
+		// Omitted means off: the resolver reads cfg.DNSSEC == "on".
+		{"dnssec omitted needs no anchor", Config{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+			if !tc.want && !strings.Contains(err.Error(), "no usable root trust anchor") {
+				t.Fatalf("Validate() = %v, want the missing anchor named", err)
+			}
+		})
+	}
+}
+
+// TestValidatePortRange pins that a port is checked as a port. SplitHostPort
+// only separates the halves, so ":65536" reached the listener and failed at
+// bind time, and an upstream with such a port failed on every dial instead.
+func TestValidatePortRange(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{"listener port above range", Config{Bind: ":65536"}, false},
+		{"listener port negative", Config{Bind: ":-1"}, false},
+		{"api port above range", Config{API: "127.0.0.1:99999"}, false},
+		{"upstream port above range", Config{RootServers: []string{"192.0.2.1:99999"}}, false},
+		{"forwarder port above range", Config{ForwarderServers: []string{"1.1.1.1:70000"}}, false},
+		// Nothing answers on port 0, and the dial fails per query rather
+		// than at startup.
+		{"upstream port zero", Config{RootServers: []string{"192.0.2.1:0"}}, false},
+		// Asked of the net package, not of a number range: ":domain" really
+		// does listen on 53, so a numeric test here would refuse a config
+		// that works.
+		{"listener service name", Config{Bind: ":domain"}, true},
+		{"listener port zero asks for a free one", Config{Bind: ":0"}, true},
+		{"ordinary listener", Config{Bind: ":53"}, true},
+		{"ordinary upstream", Config{RootServers: []string{"192.0.2.1:53"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
+// TestValidateMirrorsRuntimeTrimming pins which lists tolerate surrounding
+// space. dns64 reads every list through TrimSpace and the hyperlocal manager
+// trims and drops blanks, so rejecting those would refuse configs the server
+// runs today. The ecs list is parsed raw, so it is judged raw.
+func TestValidateMirrorsRuntimeTrimming(t *testing.T) {
+	trimmed := &Config{
+		DNS64: DNS64Config{
+			Prefixes:            []string{" 64:ff9b::/96 "},
+			ClientNetworks:      []string{" 192.0.2.0/24 "},
+			ExcludeANetworks:    []string{" 10.0.0.0/8 "},
+			ExcludeAAAANetworks: []string{" 2001:db8::/32 "},
+			ExcludeZones:        []string{" Example.COM ", ""},
+		},
+		HyperlocalRootSources: []string{" 192.0.2.1:53 ", ""},
+	}
+	if err := trimmed.Validate(); err != nil {
+		t.Fatalf("Validate() rejected values the runtime trims and uses: %v", err)
+	}
+
+	raw := &Config{ECS: ECSConfig{ClientNetworks: []string{" 192.0.2.0/24 "}}}
+	if err := raw.Validate(); err == nil {
+		t.Fatal("Validate() accepted an untrimmed ecs network; ecs parses it raw and would fail")
 	}
 }

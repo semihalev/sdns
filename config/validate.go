@@ -59,8 +59,15 @@ func (c *Config) Validate() error {
 		}
 		// An empty host is how every listener is told "all interfaces", so
 		// only the port half is required.
-		if _, port, err := net.SplitHostPort(bind.value); err != nil || port == "" {
+		port, err := hostPort(bind.value)
+		switch {
+		case err != nil:
 			add("%s = %q: must be host:port", bind.key, bind.value)
+		default:
+			// Port 0 is legal here: it asks the kernel for a free one.
+			if err := usablePort(port); err != nil {
+				add("%s = %q: %v", bind.key, bind.value, err)
+			}
 		}
 	}
 
@@ -120,6 +127,13 @@ func (c *Config) Validate() error {
 			ip := net.ParseIP(host)
 			if ip == nil {
 				add("%s %q: must be an IP address and port, e.g. 192.0.2.1:53", list.key, addr)
+				continue
+			}
+			// Unlike a listener, an upstream cannot use port 0: nothing
+			// answers there, and the dial failure is per query rather than
+			// at startup.
+			if err := usablePort(port); err != nil || port == "0" {
+				add("%s %q: must have a port to reach, e.g. 192.0.2.1:53", list.key, addr)
 				continue
 			}
 			is4 := ip.To4() != nil
@@ -240,17 +254,25 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		case dnskey.Flags != 257:
 			// Only key-signing keys enter the verification set.
 			add("rootkeys %q: must be a key-signing key (flags 257), not %d", key, dnskey.Flags)
-		case !verifiableAlgorithm(dnskey):
-			// Nothing rejects this at startup: the anchor is loaded, and
-			// then every signature made with it fails, so validation is off
-			// while the file still says it is on.
-			add("rootkeys %q: algorithm %d (%s) cannot be verified with",
-				key, dnskey.Algorithm, dns.AlgorithmToString[dnskey.Algorithm])
 		default:
+			// Nothing rejects an unusable key at startup: the anchor is
+			// loaded, and then every signature it is asked to verify fails,
+			// so validation is off while the file still says it is on.
+			if problem := anchorKeyProblem(dnskey); problem != nil {
+				add("rootkeys %q: %v", key, problem)
+				continue
+			}
 			anchors++
 		}
 	}
-	if len(c.RootKeys) > 0 && anchors == 0 {
+	switch {
+	case anchors == 0 && c.DNSSEC == "on" && len(c.ForwarderServers) == 0:
+		// AutoTA needs a seed and will not take one from disk when the live
+		// set is empty, so this does not heal on its own: every iterative
+		// validation fails closed from the first query. A global forwarder
+		// skips the resolver entirely and so needs no anchor of its own.
+		add("rootkeys: dnssec is on with no usable root trust anchor, so every validated answer would fail")
+	case anchors == 0 && len(c.RootKeys) > 0:
 		add("rootkeys: none of the configured keys is a usable root trust anchor")
 	}
 
@@ -281,8 +303,11 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	}
 
 	if c.API != "" {
-		if _, port, err := net.SplitHostPort(c.API); err != nil || port == "" {
+		port, err := hostPort(c.API)
+		if err != nil {
 			add("api = %q: must be host:port", c.API)
+		} else if err := usablePort(port); err != nil {
+			add("api = %q: %v", c.API, err)
 		}
 	}
 
@@ -292,12 +317,24 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		}
 	}
 
-	for _, addr := range c.HyperlocalRootSources {
+	for _, raw := range c.HyperlocalRootSources {
+		// The manager trims each source and drops the ones left empty,
+		// falling back to its built-in list, so neither surrounding space
+		// nor a blank entry is a problem to report.
+		addr := strings.TrimSpace(raw)
+		if addr == "" {
+			continue
+		}
 		// Hostnames are expected here: the built-in sources are the root
 		// servers' names.
 		host, port, err := net.SplitHostPort(addr)
-		if err != nil || host == "" || port == "" {
-			add("hyperlocal_root_sources %q: must be host:port", addr)
+		switch {
+		case err != nil || host == "" || port == "":
+			add("hyperlocal_root_sources %q: must be host:port", raw)
+		default:
+			if err := usablePort(port); err != nil {
+				add("hyperlocal_root_sources %q: %v", raw, err)
+			}
 		}
 	}
 
@@ -398,11 +435,18 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 	//
 	// The family test is the mask length, not To4(): an IPv4-mapped range
 	// like ::ffff:0:0/96 has a non-nil To4() and is a legal Pref64 input.
+	//
+	// dns64 reads every one of its lists through TrimSpace, so surrounding
+	// space is not a problem there and rejecting it would refuse a config the
+	// server runs today. The ecs list below is parsed raw, so it is not
+	// trimmed here either — each list is judged the way its own reader reads
+	// it.
 	validPrefixBits := map[int]bool{32: true, 40: true, 48: true, 56: true, 64: true, 96: true}
-	for _, prefix := range c.DNS64.Prefixes {
+	for _, raw := range c.DNS64.Prefixes {
+		prefix := strings.TrimSpace(raw)
 		_, network, err := net.ParseCIDR(prefix)
 		if err != nil {
-			add("dns64 prefix %q: must be a CIDR block", prefix)
+			add("dns64 prefix %q: must be a CIDR block", raw)
 			continue
 		}
 		if len(network.Mask) != net.IPv6len {
@@ -428,17 +472,22 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 	for _, list := range []struct {
 		key    string
 		values []string
-		mask   int // 0 for either family
+		mask   int  // 0 for either family
+		trim   bool // whether this list's reader trims before parsing
 	}{
-		{"dns64 client_networks", c.DNS64.ClientNetworks, 0},
-		{"dns64 exclude_a_networks", c.DNS64.ExcludeANetworks, net.IPv4len},
-		{"dns64 exclude_aaaa_networks", c.DNS64.ExcludeAAAANetworks, net.IPv6len},
-		{"ecs client_networks", c.ECS.ClientNetworks, 0},
+		{"dns64 client_networks", c.DNS64.ClientNetworks, 0, true},
+		{"dns64 exclude_a_networks", c.DNS64.ExcludeANetworks, net.IPv4len, true},
+		{"dns64 exclude_aaaa_networks", c.DNS64.ExcludeAAAANetworks, net.IPv6len, true},
+		{"ecs client_networks", c.ECS.ClientNetworks, 0, false},
 	} {
-		for _, network := range list.values {
+		for _, raw := range list.values {
+			network := raw
+			if list.trim {
+				network = strings.TrimSpace(raw)
+			}
 			_, parsed, err := net.ParseCIDR(network)
 			if err != nil {
-				add("%s %q: must be a CIDR block", list.key, network)
+				add("%s %q: must be a CIDR block", list.key, raw)
 				continue
 			}
 			if list.mask != 0 && len(parsed.Mask) != list.mask {
@@ -446,13 +495,19 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 				if list.mask == net.IPv6len {
 					family = "IPv6"
 				}
-				add("%s %q: must be %s", list.key, network, family)
+				add("%s %q: must be %s", list.key, raw, family)
 			}
 		}
 	}
-	for _, zone := range c.DNS64.ExcludeZones {
+	for _, raw := range c.DNS64.ExcludeZones {
+		// Trimmed, lowercased, and given a trailing dot before use, and a
+		// blank entry is skipped — so none of those is worth reporting.
+		zone := strings.TrimSpace(strings.ToLower(raw))
+		if zone == "" {
+			continue
+		}
 		if _, ok := dns.IsDomainName(zone); !ok {
-			add("dns64 exclude_zones %q: not a valid domain name", zone)
+			add("dns64 exclude_zones %q: not a valid domain name", raw)
 		}
 	}
 
@@ -477,14 +532,17 @@ func validCIDR(s string) bool {
 	return err == nil
 }
 
-// verifiableAlgorithm reports whether signatures made with this key's algorithm
-// can be verified. The answer is asked of the DNSSEC library rather than kept
-// as a list here, because the set belongs to that library and moves with it —
-// a list written today would claim ED448 works, and it does not.
+// anchorKeyProblem reports why this key cannot be verified with, or nil when
+// it can. Both the set of usable algorithms and the shape each one demands of
+// its public key belong to the DNSSEC library, so the library is asked rather
+// than kept in step with by hand: a list written here would claim ED448 works,
+// and it does not.
 //
-// A signature this throwaway fails for many reasons; only ErrAlg means the
-// algorithm itself is the problem, so every other outcome counts as usable.
-func verifiableAlgorithm(key *dns.DNSKEY) bool {
+// A signature this throwaway fails for many reasons, and only these two are
+// about the key. Every other outcome — a crypto mismatch, a bad signature —
+// means the algorithm was recognised and the key parsed, which is all that is
+// being asked. Real keys of every supported algorithm reach those outcomes.
+func anchorKeyProblem(key *dns.DNSKEY) error {
 	probe := &dns.RRSIG{
 		Hdr:         dns.RR_Header{Name: key.Hdr.Name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET},
 		TypeCovered: dns.TypeDNSKEY,
@@ -494,15 +552,55 @@ func verifiableAlgorithm(key *dns.DNSKEY) bool {
 		SignerName:  key.Hdr.Name,
 		Signature:   "AA==",
 	}
-	return !errors.Is(probe.Verify(key, []dns.RR{key}), dns.ErrAlg)
+
+	err := probe.Verify(key, []dns.RR{key})
+	name := dns.AlgorithmToString[key.Algorithm]
+	switch {
+	case errors.Is(err, dns.ErrAlg):
+		return fmt.Errorf("algorithm %d (%s) cannot be verified with", key.Algorithm, name)
+	case errors.Is(err, dns.ErrKey):
+		return fmt.Errorf("public key is not usable for algorithm %d (%s)", key.Algorithm, name)
+	}
+	return nil
 }
 
-// validIPPort reports whether addr is an IP literal with a port. Authority and
-// fallback servers are dialled directly, so a hostname there would need a
-// resolver this one may not have yet.
+// hostPort splits addr and returns its port half, requiring one to be present.
+func hostPort(addr string) (string, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if port == "" {
+		return "", fmt.Errorf("no port")
+	}
+	return port, nil
+}
+
+// usablePort reports whether the net package can turn this port into one it
+// will actually use. SplitHostPort only separates the halves — it never reads
+// them — so ":65536" survives it and then fails at bind time, and an upstream
+// with a port that big fails on every dial instead.
+//
+// LookupPort is the same call the net package makes when it dials or listens,
+// which is why it is used here rather than a numeric range check: it also
+// accepts the service names ("domain", "https") that a plain number test would
+// wrongly reject, and ":domain" does listen on 53.
+func usablePort(port string) error {
+	if _, err := net.LookupPort("udp", port); err != nil {
+		return fmt.Errorf("port %q is not one this host can use", port)
+	}
+	return nil
+}
+
+// validIPPort reports whether addr is an IP literal with a usable port.
+// Authority and fallback servers are dialled directly, so a hostname there
+// would need a resolver this one may not have yet.
 func validIPPort(addr string) bool {
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil || port == "" {
+	if err != nil || port == "" || port == "0" {
+		return false
+	}
+	if err := usablePort(port); err != nil {
 		return false
 	}
 	return net.ParseIP(host) != nil
