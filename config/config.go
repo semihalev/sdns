@@ -18,19 +18,29 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-const configver = "1.8.2"
+const (
+	configver               = "1.8.2"
+	defaultServeStaleMaxTTL = 24 * time.Hour
+)
 
 // Config type.
 type Config struct {
-	Version          string
-	Directory        string
-	BlockLists       []string
-	BlockListDir     string
-	RootServers      []string
-	Root6Servers     []string
-	DNSSEC           string
-	RFC8198          *bool `toml:"rfc8198"` // nil is default-on for backward compatibility
-	RFC9520          *bool `toml:"rfc9520"` // nil is default-on; false is an emergency kill switch
+	Version      string
+	Directory    string
+	BlockLists   []string
+	BlockListDir string
+	RootServers  []string
+	Root6Servers []string
+	DNSSEC       string
+	RFC8198      *bool `toml:"rfc8198"` // nil is default-on for backward compatibility
+	RFC9520      *bool `toml:"rfc9520"` // nil is default-on; false is an emergency kill switch
+	ServeStale   bool  `toml:"serve_stale"`
+	// ServeStaleMaxTTL caps how long a positive answer may be reused after
+	// its admitted TTL expires. Omission defaults to 24 hours. An explicit
+	// zero leaves the delegation lease as the only bound; in forwarder mode,
+	// where no delegation cut is learned, that means retention until eviction.
+	// Serve-stale itself remains opt-in through ServeStale.
+	ServeStaleMaxTTL Duration `toml:"serve_stale_max_ttl"`
 	RootKeys         []string
 	FallbackServers  []string
 	ForwarderServers []string
@@ -578,6 +588,16 @@ rfc8198 = true
 # work limits, DNSSEC validation, and ordinary positive/NXDOMAIN caching remain
 # active.
 rfc9520 = true
+
+# Serve an expired positive answer as a last resort when resolution ends in
+# SERVFAIL (RFC 8767). A learned delegation lease remains a hard ceiling, so
+# this cannot revive data after a known parent-granted cut expires. The
+# optional duration is measured from the answer TTL's expiry. It defaults to
+# 24 hours. An explicit zero leaves the delegation lease as the only upper
+# bound; in forwarder mode, which has no learned delegation cut, zero permits
+# retention until cache eviction.
+serve_stale = false
+serve_stale_max_ttl = "24h"
 
 # DNSSEC root trust anchors
 # These are the public keys used to verify the DNS root zone
@@ -1240,8 +1260,12 @@ func Load(cfgfile, version string) (*Config, error) {
 
 	zlog.Info("Loading config file...", zlog.String("path", cfgfile))
 
-	if _, err := toml.DecodeFile(cfgfile, config); err != nil {
+	metadata, err := toml.DecodeFile(cfgfile, config)
+	if err != nil {
 		return nil, fmt.Errorf("could not load config: %s", err)
+	}
+	if !metadata.IsDefined("serve_stale_max_ttl") {
+		config.ServeStaleMaxTTL.Duration = defaultServeStaleMaxTTL
 	}
 
 	if config.Version != configver {
@@ -1253,6 +1277,9 @@ func Load(cfgfile, version string) (*Config, error) {
 	config.RecursionFirewall.Normalize()
 	if err := config.RecursionFirewall.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
+	}
+	if config.ServeStaleMaxTTL.Duration < 0 {
+		return nil, fmt.Errorf("serve_stale_max_ttl must not be negative")
 	}
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {

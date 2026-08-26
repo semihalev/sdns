@@ -155,6 +155,8 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **dnssec**           | Enable DNSSEC validation for secure DNS responses. Options: "on" or "off". Default: "on"                            |
 | **rfc8198**          | Aggressively reuse validated NSEC/NSEC3 proofs. Set false to stop RFC 8198 admission and synthesis without disabling DNSSEC, exact negative caching, or RFC 8020 cuts. Default: true |
 | **rfc9520**          | Cache shared recursive-resolution and failed-authority state. Emergency rollback switch; setting false means SERVFAIL responses and failed-authority state are not cached, which can increase upstream retry load. Per-server retry ceilings, request work limits, and ordinary DNS caching remain active. Default: true |
+| **serve_stale**      | Serve expired positive answers as a last resort after resolution ends in SERVFAIL (RFC 8767). A learned delegation lease remains a hard ceiling. Default: false |
+| **serve_stale_max_ttl** | Maximum time an answer may be served after its TTL expires (duration string). An explicit `0s` leaves the delegation lease as the only upper bound; because forwarder mode learns no delegation cut, `0s` there permits retention until cache eviction. Default: `24h` |
 | **[recursion_firewall]** | Request-tree work budgets (outbound/internal queries, DNSSEC operations) with off/shadow/enforce modes, plus RFC 9520 failure-cache tuning. See the Recursion Firewall section below |
 | **rootkeys**         | DNSSEC root zone trust anchors in DNSKEY format                                                                     |
 | **fallbackservers**  | Upstream DNS servers used when all others fail. Format: "IP:port" (e.g., "8.8.8.8:53")                             |
@@ -423,7 +425,8 @@ SDNS exports comprehensive cache metrics via the Prometheus `/metrics` endpoint 
 - `dns_cache_misses_total` - Total number of cache misses
 - `dns_cache_evictions_total` - Total number of cache evictions
 - `dns_cache_prefetches_total` - Total number of prefetch operations
-- `dns_cache_size{type="positive|negative"}` - Current number of entries in the cache
+- `dns_cache_stale_answers_total` - Expired positive answers served after a resolution failure
+- `dns_cache_size{type="positive|negative"}` - Current number of entries in the cache. With serve-stale enabled, the positive count includes expired entries retained as stale candidates until eviction
 - `dns_cache_hit_rate` - Cache hit rate percentage
 
 **Example Prometheus Queries:**

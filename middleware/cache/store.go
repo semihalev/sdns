@@ -128,7 +128,16 @@ func (s *Store) Lookup(req *dns.Msg) (*CacheEntry, bool) {
 // the map key is a non-cryptographic 64-bit xxhash of that preimage, so a
 // hash collision would otherwise serve one query's answer to another.
 func (s *Store) LookupByKey(key uint64) (*CacheEntry, bool) {
-	if entry, ok := s.positive.Get(key); ok {
+	var (
+		entry *CacheEntry
+		ok    bool
+	)
+	if s.cfg.ServeStale {
+		entry, ok = s.positive.retained(key)
+	} else {
+		entry, ok = s.positive.Get(key)
+	}
+	if ok {
 		return entry, true
 	}
 	if entry, ok := s.negative.Get(key); ok {
@@ -145,6 +154,17 @@ func (s *Store) LookupByKey(key uint64) (*CacheEntry, bool) {
 // poison the cache.
 func (s *Store) LookupByKeyVerified(key uint64, want CacheKey) (*CacheEntry, bool) {
 	entry, ok := s.LookupByKey(key)
+	if !ok || !entryMatchesKey(entry, want) {
+		return nil, false
+	}
+	return entry, true
+}
+
+// lookupRetainedPositiveVerified is the serve-stale view of the positive
+// cache. It deliberately bypasses freshness cleanup but still verifies the
+// complete key preimage; policy and response shaping remain the caller's job.
+func (s *Store) lookupRetainedPositiveVerified(key uint64, want CacheKey) (*CacheEntry, bool) {
+	entry, ok := s.positive.retained(key)
 	if !ok || !entryMatchesKey(entry, want) {
 		return nil, false
 	}

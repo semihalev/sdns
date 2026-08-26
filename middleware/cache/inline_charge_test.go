@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -108,5 +109,77 @@ func TestChaseDeclineDoesNotChargeEntryLimiter(t *testing.T) {
 	}
 	if !entry.GetRateLimiter().Allow() {
 		t.Fatal("declined chase consumed the entry's only token")
+	}
+}
+
+func TestExpiredWireHitDoesNotChargeEntryLimiter(t *testing.T) {
+	c := New(&config.Config{Expire: 600, CacheSize: 1024, RateLimit: 1, ServeStale: true})
+	defer c.Stop()
+
+	resp := new(dns.Msg)
+	resp.SetQuestion("expired-wire.zone.test.", dns.TypeA)
+	resp.Response = true
+	resp.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{Name: "expired-wire.zone.test.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   []byte{192, 0, 2, 63},
+	}}
+	entry := NewCacheEntryWithKey(resp, time.Minute, 1, 0x87670001)
+	entry.stored = time.Now().Add(-2 * time.Minute)
+	limiter := entry.GetRateLimiter()
+	if limiter == nil {
+		t.Fatal("test needs a rate-limited entry")
+	}
+	awaitToken(t, limiter)
+
+	req, _ := wireTestRequest(t, "expired-wire.zone.test.", dns.TypeA, false)
+	tr := &leaseTransport{Writer: mock.NewWriter("udp", "203.0.113.63:4242")}
+	ch := middleware.NewChain(nil)
+	ch.ResetWire(tr, req)
+	ch.AllowDirectPack()
+
+	var spent *rate.Limiter
+	if c.serveHitFromWire(context.Background(), ch, entry, &spent) {
+		t.Fatal("expired wire entry was served as a normal cache hit")
+	}
+	if spent != nil {
+		t.Fatal("expired wire hit recorded a spent limiter")
+	}
+	if !limiter.Allow() {
+		t.Fatal("expired wire hit consumed the entry's only token")
+	}
+}
+
+func TestExpiredMsgHitDoesNotChargeEntryLimiter(t *testing.T) {
+	c := New(&config.Config{Expire: 600, CacheSize: 1024, RateLimit: 1, ServeStale: true})
+	defer c.Stop()
+
+	req := new(dns.Msg)
+	req.SetQuestion("expired-msg.zone.test.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{Name: "expired-msg.zone.test.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   []byte{192, 0, 2, 64},
+	}}
+	key := CacheKey{Question: req.Question[0]}.Hash()
+	entry := NewCacheEntryWithKey(resp, time.Minute, 1, key)
+	entry.stored = time.Now().Add(-2 * time.Minute)
+	limiter := entry.GetRateLimiter()
+	if limiter == nil {
+		t.Fatal("test needs a rate-limited entry")
+	}
+	awaitToken(t, limiter)
+
+	writer := mock.NewWriter("udp", "203.0.113.64:4242")
+	ch := middleware.NewChain(nil)
+	ch.Reset(writer, req)
+	if c.handleCacheHit(context.Background(), ch, entry, key, netip.Prefix{}, nil) {
+		t.Fatal("expired Msg entry was served as a normal cache hit")
+	}
+	if writer.Written() {
+		t.Fatal("expired Msg entry wrote a normal cache response")
+	}
+	if !limiter.Allow() {
+		t.Fatal("expired Msg hit consumed the entry's only token")
 	}
 }

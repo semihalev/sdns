@@ -42,6 +42,18 @@ func (pc *PositiveCache) Get(key uint64) (*CacheEntry, bool) {
 	return entry, true
 }
 
+// retained returns an entry without applying expiry cleanup. Serve-stale is
+// the only production caller: it needs the immutable wire image after the
+// ordinary TTL has elapsed, while every public/fresh lookup keeps Get's
+// historical miss-and-delete behavior when the feature is disabled.
+func (pc *PositiveCache) retained(key uint64) (*CacheEntry, bool) {
+	v, ok := pc.cache.Get(key)
+	if !ok {
+		return nil, false
+	}
+	return v.(*CacheEntry), true
+}
+
 // (*PositiveCache).Set set stores an entry in the positive cache.
 func (pc *PositiveCache) Set(key uint64, entry *CacheEntry) {
 	pc.cache.Add(key, entry)

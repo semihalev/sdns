@@ -111,6 +111,30 @@ func TestCacheEntry_CutUntil(t *testing.T) {
 	}
 }
 
+func TestCacheEntryRemainingBoundsStayIndependent(t *testing.T) {
+	now := time.Now()
+	entry := NewCacheEntry(cutTestMsg("bounds.example.", dns.RcodeSuccess, 60), time.Minute, 0)
+	entry.stored = now.Add(-20 * time.Second)
+	entry.cutUntil = now.Add(10 * time.Second)
+
+	ttlRemaining, leaseRemaining := entry.remainingBounds(now)
+	if ttlRemaining != 40*time.Second {
+		t.Fatalf("TTL remaining = %v, want 40s", ttlRemaining)
+	}
+	if leaseRemaining != 10*time.Second {
+		t.Fatalf("lease remaining = %v, want 10s", leaseRemaining)
+	}
+	if remaining := entry.remaining(now); remaining != 10*time.Second {
+		t.Fatalf("effective remaining = %v, want lease-bounded 10s", remaining)
+	}
+
+	entry.cutUntil = time.Time{}
+	_, leaseRemaining = entry.remainingBounds(now)
+	if leaseRemaining != 0 {
+		t.Fatalf("unbounded lease remaining = %v, want zero sentinel", leaseRemaining)
+	}
+}
+
 // TestStore_CutUntil_OverridesMinTTLFloor: the configured MinTTL floor
 // (5s) inflates stored TTLs, which is exactly how a ghost answer under
 // a short cut would outlive its delegation. The cut bound is enforced
