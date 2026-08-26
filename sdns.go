@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -174,12 +175,14 @@ func validateConfiguration() error {
 		return err
 	}
 
-	// Validate log level
-	switch cfg.LogLevel {
-	case "", "debug", "info", "warn", "error":
-		// Valid log levels
-	default:
-		err := fmt.Errorf("log verbosity level unknown: %s", cfg.LogLevel)
+	// Load only warns about keys nothing claims, so a stale key cannot turn
+	// an upgrade into an outage. This command exists to answer whether the
+	// file is right, so here they are the answer.
+	if unknown := cfg.UndecodedKeys(); len(unknown) > 0 {
+		err := fmt.Errorf(
+			"unknown config keys (typo, or settings this version no longer has): %s",
+			strings.Join(unknown, ", "),
+		)
 		fmt.Fprintf(os.Stderr, "Configuration test failed: %v\n", err)
 		return err
 	}

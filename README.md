@@ -98,7 +98,7 @@ $ make test
 | Flag              | Description                                                                    |
 | ----------------- | ------------------------------------------------------------------------------ |
 | -c, --config PATH | Location of the config file. If it doesn't exist, a new one is generated at that path. Default: sdns.conf (working directory) |
-| -t, --test        | Test configuration file and exit. Returns exit code 0 if valid, 1 if invalid  |
+| -t, --test        | Test configuration file and exit. Returns exit code 0 if valid, 1 if invalid. Checks every setting it can judge — addresses, IPs, CIDRs, enumerated values, upstream formats, TLS files — and reports all problems at once. It also fails on keys the file carries that no setting claims: a typo, or a key an older SDNS understood. Startup only warns about those, so upgrading with a stale key does not become an outage |
 | -v, --version     | Show the SDNS version                                                          |
 | -h, --help        | Show help information and exit                                                 |
 

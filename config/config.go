@@ -190,7 +190,16 @@ type Config struct {
 	ReflexThreshold    float64 // Suspicion threshold (0.0-1.0, default: 0.7)
 
 	sVersion string
+
+	// undecodedKeys are the keys the config file carried that no field
+	// claimed. See Load for why they warn rather than fail there.
+	undecodedKeys []string
 }
+
+// UndecodedKeys returns the config keys that were present in the file and
+// matched no setting — typos, or settings a previous version understood.
+// They have no effect on this server.
+func (c *Config) UndecodedKeys() []string { return c.undecodedKeys }
 
 // RFC8198Enabled reports whether aggressive NSEC/NSEC3 denial synthesis is
 // enabled. Omission is default-on; an explicit false is the operational kill
@@ -1394,7 +1403,21 @@ func Load(cfgfile, version string) (*Config, error) {
 	if err := config.RecursionFirewall.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
 	}
+	// Keys the file carries that no field claims: a typo, or a setting an
+	// older SDNS understood and this one no longer does. Either way the
+	// operator wrote something that will not take effect, so it is recorded
+	// and logged. Startup only warns — refusing to run over a stale key
+	// would turn an upgrade into an outage — while `sdns -t`, whose whole
+	// job is to answer "is this file right", treats it as a failure.
+	for _, key := range metadata.Undecoded() {
+		config.undecodedKeys = append(config.undecodedKeys, key.String())
+		zlog.Warn("Unknown config key, ignored", "key", key.String(), "path", cfgfile)
+	}
+
 	if err := config.validateForwardZones(); err != nil {
+		return nil, err
+	}
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	if config.ServeStaleMaxTTL.Duration < 0 {
