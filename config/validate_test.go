@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,10 +123,10 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 func TestLoadRecordsUndecodedKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
-	body := "version = \"" + configver + "\"\n" +
-		"directory = \"" + filepath.Join(dir, "db") + "\"\n" +
-		"forwardservers = [\"1.1.1.1:53\"]\n" +
-		"maxdepth_old = 30\n"
+	body := fmt.Sprintf(
+		"version = %q\ndirectory = %q\nforwardservers = [\"1.1.1.1:53\"]\nmaxdepth_old = 30\n",
+		configver, filepath.Join(dir, "db"),
+	)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -147,9 +148,10 @@ func TestLoadRecordsUndecodedKeys(t *testing.T) {
 func TestLoadRejectsUnusableValues(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
-	body := "version = \"" + configver + "\"\n" +
-		"directory = \"" + filepath.Join(dir, "db") + "\"\n" +
-		"nullroute = \"not-an-ip\"\n"
+	body := fmt.Sprintf(
+		"version = %q\ndirectory = %q\nnullroute = \"not-an-ip\"\n",
+		configver, filepath.Join(dir, "db"),
+	)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -278,5 +280,32 @@ func TestValidateRootKeyAlgorithm(t *testing.T) {
 				t.Fatalf("Validate() = %v, want the algorithm named as the problem", err)
 			}
 		})
+	}
+}
+
+// TestLoadReportsUnknownKeysAlongsideValueProblems pins the second half of the
+// one-pass promise. The keys are recorded before the gate, but Load returns no
+// Config when validation fails — so without this they reached the operator
+// only as a log line, and fixing the value meant a second run to discover the
+// key.
+func TestLoadReportsUnknownKeysAlongsideValueProblems(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdns.conf")
+	body := fmt.Sprintf(
+		"version = %q\ndirectory = %q\nnullroute = \"not-an-ip\"\nmaxdepth_old = 30\n",
+		configver, filepath.Join(dir, "db"),
+	)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path, "test")
+	if err == nil {
+		t.Fatal("Load() accepted a config with an unusable value")
+	}
+	for _, want := range []string{"nullroute", "maxdepth_old"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load() = %v\nmissing %q — the operator would need a second run", err, want)
+		}
 	}
 }
