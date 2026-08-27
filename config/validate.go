@@ -513,16 +513,23 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("accesslog = %q: %v", c.AccessLog, err)
 		case info.IsDir():
 			add("accesslog = %q: is a directory, want a file", c.AccessLog)
-		default:
-			// Judged by opening it, not by its type. A character device is
-			// the usual container spelling — /dev/null, or /dev/stdout to
-			// fold the log into the container's own output — and os.OpenFile
-			// takes both. So does a pipe: /dev/stdout is one whenever the
-			// container's output is piped, and reopening it through /dev/fd
-			// waits for nobody.
+		case info.Mode()&os.ModeNamedPipe != 0:
+			// Left alone on purpose. Opening a pipe to see whether it can be
+			// opened is not a free question: a reader waiting on it — cat, a
+			// log collector, the container runtime behind /dev/stdout — sees
+			// EOF the moment the last writer closes, and a probe that opens
+			// and closes is exactly that. The reader exits, and the open the
+			// middleware makes a moment later then waits forever for it.
 			//
-			// What does wait is a FIFO on disk with no reader, and the open
-			// below refuses that rather than joining it.
+			// So this check would cause the hang it was looking for. Whether
+			// a reader is attached is a fact about the running system, not
+			// about the file, and it belongs to the runtime the same way
+			// whether an upstream answers does.
+
+		default:
+			// Judged by opening it, not by its type: a character device is
+			// the usual container spelling — /dev/null, or /dev/stdout when
+			// the output is a file — and os.OpenFile takes it.
 			if err := openable(c.AccessLog, os.O_WRONLY); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
@@ -1008,14 +1015,19 @@ func regularFile(path string) error {
 	return openable(path, os.O_RDONLY)
 }
 
+// openFile is os.OpenFile, as a variable so a test can record which paths this
+// package opens. What it does not open matters as much as what it does: a pipe
+// is left untouched, and only a recording of the calls can pin that.
+var openFile = os.OpenFile
+
 // openable reports whether path can be opened with the given flags, without
 // creating or truncating anything.
 func openable(path string, flag int) error {
 	// The path is the operator's own config value, opened to answer whether
-	// the server will be able to use it — and opened so that it never waits:
-	// a FIFO with no reader answers ENXIO here instead of holding the open
-	// until one arrives.
-	f, err := os.OpenFile(path, flag|nonBlockingOpen, 0) //nolint:gosec // G304 - the path under test is the input
+	// the server will be able to use it — and opened so that it never waits.
+	// Pipes do not reach here, but a character device can hold an open too:
+	// a serial line waits for carrier.
+	f, err := openFile(path, flag|nonBlockingOpen, 0) //nolint:gosec // G304 - the path under test is the input
 	if err != nil {
 		return err
 	}
@@ -1097,7 +1109,7 @@ func dirCheck(path, pending string, mustWrite bool) error {
 // blocklist middleware walks the directory and, when it cannot, logs once and
 // loads no local list at all.
 func readable(dir string) error {
-	f, err := os.Open(dir) //nolint:gosec // G304 - the path under test is the input
+	f, err := openFile(dir, os.O_RDONLY, 0) //nolint:gosec // G304 - the path under test is the input
 	if err != nil {
 		return err
 	}
