@@ -35,6 +35,9 @@ var (
 		Long: `SDNS is a high-performance, recursive DNS resolver server with DNSSEC support,
 focused on preserving privacy. For more information, visit https://sdns.dev`,
 		RunE: runServer,
+		// main prints what Execute returns, so cobra printing it too would
+		// say the same thing twice.
+		SilenceErrors: true,
 	}
 
 	versionCmd = &cobra.Command{
@@ -93,6 +96,12 @@ func setup() error {
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
+	// The flags parsed, so anything that fails from here is a problem with
+	// the configuration or the server, not with how the command was called —
+	// and the flag list is no help. Set here rather than on the command, so
+	// a genuine usage error still prints it.
+	cmd.SilenceUsage = true
+
 	// Handle config test mode
 	if testConfig {
 		return validateConfiguration()
@@ -171,7 +180,6 @@ func validateConfiguration() error {
 	var err error
 
 	if cfg, err = config.Load(cfgPath, version); err != nil {
-		fmt.Fprintf(os.Stderr, "Configuration test failed: %v\n", err)
 		return err
 	}
 
@@ -183,7 +191,6 @@ func validateConfiguration() error {
 			"unknown config keys (typo, or settings this version no longer has): %s",
 			strings.Join(unknown, ", "),
 		)
-		fmt.Fprintf(os.Stderr, "Configuration test failed: %v\n", err)
 		return err
 	}
 
