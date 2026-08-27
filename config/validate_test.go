@@ -1891,6 +1891,22 @@ func TestValidatePendingDirectoryKeepsPathRules(t *testing.T) {
 		t.Fatalf("Validate() refused a log under the pending directory: %v", err)
 	}
 
+	// The same place with a trailing separator on the directory. This has to
+	// hold for a path carrying "..", which is the spelling compared as
+	// written: mkdir and open both accept the separator, so dropping it is
+	// the difference between naming the same place and naming two.
+	if err := os.Mkdir(filepath.Join(dir, "there"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	viaDotDot := dir + sep + "there" + sep + ".." + sep + "db"
+	trailing := &Config{
+		Directory: viaDotDot + sep,
+		AccessLog: viaDotDot + sep + "access.log",
+	}
+	if err := trailing.Validate(); err != nil {
+		t.Fatalf("Validate() refused a directory written with a trailing separator: %v", err)
+	}
+
 	// Spelled through a component that is not there. Where components are
 	// walked, the open fails on it whatever the shortcut thinks; where ".."
 	// is collapsed first, it is the same place and fine.

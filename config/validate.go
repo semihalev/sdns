@@ -1055,7 +1055,19 @@ func readable(dir string) error {
 	}
 	defer f.Close() //nolint:errcheck // nothing was written
 
-	if _, err := f.ReadDir(1); err != nil && !errors.Is(err, io.EOF) {
+	entries, err := f.ReadDir(1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if len(entries) == 0 {
+		// Nothing to walk into, which is a fine state for a list directory.
+		return nil
+	}
+
+	// Listing is not walking. A directory carrying read but not execute
+	// hands back its entry names and then refuses to stat any of them —
+	// which is exactly where the middleware's walk stops, loading nothing.
+	if _, err := os.Lstat(filepath.Join(dir, entries[0].Name())); err != nil {
 		return err
 	}
 	return nil
@@ -1071,7 +1083,22 @@ func samePath(a, b string) bool {
 	if cleansPathComponents || (!hasDotDot(a) && !hasDotDot(b)) {
 		return filepath.Clean(a) == filepath.Clean(b)
 	}
-	return a == b
+	// Components as written, because a ".." among them only resolves once
+	// what precedes it exists. A trailing separator is not one of those
+	// components, though — mkdir and open both take a path with one — so it
+	// is dropped before the comparison rather than making two spellings of
+	// the same place look different.
+	return trimTrailingSeparators(a) == trimTrailingSeparators(b)
+}
+
+// trimTrailingSeparators drops the separators at the end of path, keeping a
+// lone root as itself.
+func trimTrailingSeparators(path string) string {
+	i := len(path)
+	for i > 1 && os.IsPathSeparator(path[i-1]) {
+		i--
+	}
+	return path[:i]
 }
 
 // hasDotDot reports whether path has a ".." among its components. Bytes, not

@@ -222,3 +222,40 @@ func TestValidateUnreadableBlocklistDir(t *testing.T) {
 		t.Fatalf("Validate() rejected a read-only blocklist directory: %v", err)
 	}
 }
+
+// TestValidateBlocklistDirMustBeTraversable pins the difference between
+// listing a directory and walking into it. A directory carrying read but not
+// execute hands back its entry names and then refuses to stat any of them,
+// which is where the middleware's walk stops — loading no list while every
+// name is visible.
+func TestValidateBlocklistDirMustBeTraversable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root traverses regardless of mode")
+	}
+	dir := t.TempDir()
+	lists := filepath.Join(dir, "lists")
+	if err := os.Mkdir(lists, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lists, "a.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lists, 0o400); err != nil { //nolint:gosec // G302 - read without execute is the point
+		t.Fatal(err)
+	}
+	defer os.Chmod(lists, 0o700) //nolint:errcheck,gosec // test cleanup
+
+	if err := (&Config{BlockListDir: lists}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a directory it can list but not walk into")
+	}
+
+	// An empty directory has nothing to walk into and is fine.
+	empty := filepath.Join(dir, "empty")
+	if err := os.Mkdir(empty, 0o500); err != nil { //nolint:gosec // G301 - read-only is the point
+		t.Fatal(err)
+	}
+	defer os.Chmod(empty, 0o700) //nolint:errcheck,gosec // test cleanup
+	if err := (&Config{BlockListDir: empty}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected an empty read-only blocklist directory: %v", err)
+	}
+}
