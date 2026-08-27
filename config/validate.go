@@ -422,7 +422,18 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			// Created on open, but only inside a directory already there —
 			// and for a symlink that is the target's directory, not the
 			// link's, since the open follows the link before creating.
-			if err := existingDir(filepath.Dir(filepath.Clean(accessLogTarget(c.AccessLog)))); err != nil {
+			target := accessLogTarget(c.AccessLog)
+
+			// A trailing separator says the path is a directory, and the
+			// open refuses it outright. Unlike a directory setting, where
+			// the separator means nothing and is cleaned away, here it
+			// changes what the name asks for — so it is reported as the
+			// wrong kind of name rather than as a missing parent.
+			if endsInSeparator(c.AccessLog) || endsInSeparator(target) {
+				add("accesslog = %q: names a directory, want a file", c.AccessLog)
+				break
+			}
+			if err := existingDir(filepath.Dir(filepath.Clean(target))); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
 		case err != nil:
@@ -949,6 +960,13 @@ func existingDir(path string) error {
 		return fmt.Errorf("parent directory %q: %w", path, err)
 	}
 	return nil
+}
+
+// endsInSeparator reports whether path is written as a directory. Both
+// spellings are checked because a config carried between platforms may use
+// either, and the open rejects the name on both.
+func endsInSeparator(path string) bool {
+	return strings.HasSuffix(path, "/") || strings.HasSuffix(path, string(os.PathSeparator))
 }
 
 // accessLogTarget resolves one level of symlink, so a dangling link is judged

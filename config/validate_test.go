@@ -1406,3 +1406,28 @@ func TestValidateEmptyZonesMustBeServedLocally(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateAccessLogTrailingSlash pins that a file path keeps the meaning
+// of its trailing separator. Cleaning it away — which a directory path wants —
+// took the parent from one level too high and passed a name os.OpenFile
+// refuses, leaving access logging quietly switched off.
+func TestValidateAccessLogTrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, suffix := range []string{"/", string(os.PathSeparator)} {
+		path := filepath.Join(dir, "new.log") + suffix
+		err := (&Config{AccessLog: path}).Validate()
+		if err == nil || !strings.Contains(err.Error(), "accesslog") {
+			t.Fatalf("Validate(%q) = %v, want the directory-shaped name refused", path, err)
+		}
+	}
+
+	// Without the separator the same target is fine: the open creates it.
+	if err := (&Config{AccessLog: filepath.Join(dir, "new.log")}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected an access log the server would create: %v", err)
+	}
+	// And a directory path still tolerates its own trailing separator.
+	if err := (&Config{Directory: filepath.Join(dir, "db") + "/"}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a directory written with a trailing slash: %v", err)
+	}
+}
