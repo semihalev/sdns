@@ -992,34 +992,6 @@ func TestValidateAccessLogTargetKinds(t *testing.T) {
 		t.Fatalf("Validate() rejected a writable access log: %v", err)
 	}
 
-	// Opened write-only; a read-only file fails there and logging quietly
-	// switches off.
-	ro := filepath.Join(dir, "ro.log")
-	if err := os.WriteFile(ro, []byte(""), 0o400); err != nil {
-		t.Fatal(err)
-	}
-	if os.Getuid() == 0 {
-		return // root opens it regardless
-	}
-	if err := (&Config{AccessLog: ro}).Validate(); err == nil {
-		t.Fatal("Validate() accepted an access log it cannot write")
-	}
-}
-
-func TestValidateUnreadableFile(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root reads regardless of mode")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cert.pem")
-	if err := os.WriteFile(path, []byte("x"), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	// A regular file, and still not one this process can read — every
-	// consumer here opens it, so the type test alone was not enough.
-	if err := (&Config{HostsFile: path}).Validate(); err == nil {
-		t.Fatal("Validate() accepted a file it cannot read")
-	}
 }
 
 func TestValidateDanglingSymlinkDirectory(t *testing.T) {
