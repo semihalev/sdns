@@ -259,3 +259,30 @@ func TestValidateBlocklistDirMustBeTraversable(t *testing.T) {
 		t.Fatalf("Validate() rejected an empty read-only blocklist directory: %v", err)
 	}
 }
+
+// TestValidateRemoteBlocklistNeedsAWritableDir pins the split. Local lists are
+// only read, so a read-only directory serves them; a remote list is downloaded
+// into that directory with os.Create, and on a read-only mount none of them
+// load while the config test says the file is fine.
+func TestValidateRemoteBlocklistNeedsAWritableDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes regardless of mode")
+	}
+	dir := t.TempDir()
+	lists := filepath.Join(dir, "lists")
+	if err := os.Mkdir(lists, 0o500); err != nil { //nolint:gosec // G301 - read-only is the point
+		t.Fatal(err)
+	}
+	defer os.Chmod(lists, 0o700) //nolint:errcheck,gosec // test cleanup
+
+	// Local lists only: reading is enough.
+	if err := (&Config{BlockListDir: lists}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a read-only directory serving local lists: %v", err)
+	}
+
+	// With something to download, it has to take the file.
+	remote := &Config{BlockListDir: lists, BlockLists: []string{"https://example.com/list"}}
+	if err := remote.Validate(); err == nil {
+		t.Fatal("Validate() accepted a read-only directory for a remote blocklist")
+	}
+}

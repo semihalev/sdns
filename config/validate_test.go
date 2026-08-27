@@ -1925,3 +1925,50 @@ func TestValidatePendingDirectoryKeepsPathRules(t *testing.T) {
 		t.Fatal("walking components: Validate() accepted a path through a missing component")
 	}
 }
+
+// TestValidateCIDRMatchesEachConsumer pins which parser judges which list.
+// The access list, the views and the ECS policy all reach netip.ParsePrefix,
+// which refuses a leading zero in the bits after the slash; dns64 parses with
+// net.ParseCIDR, which takes it. Judging them all the same way would either
+// pass an access-list entry the runtime drops — leaving an empty allow set
+// that blocks every client — or refuse a dns64 prefix that works.
+func TestValidateCIDRMatchesEachConsumer(t *testing.T) {
+	const leadingZero = "10.0.0.0/08"
+
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"accesslist", Config{AccessList: []string{leadingZero}}},
+		{"view network", Config{Views: []ViewConfig{{Zone: "a", Networks: []string{leadingZero}}}}},
+		{"ecs client_networks", Config{ECS: ECSConfig{Enabled: true, ClientNetworks: []string{leadingZero}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); err == nil {
+				t.Fatalf("Validate() accepted %q, which the runtime drops", leadingZero)
+			}
+		})
+	}
+
+	// dns64 reads its lists with net.ParseCIDR, so the same spelling works
+	// there and must not be refused.
+	dns64 := &Config{DNS64: DNS64Config{
+		Enabled:          true,
+		Prefixes:         []string{"64:ff9b::/96"},
+		ClientNetworks:   []string{leadingZero},
+		ExcludeANetworks: []string{leadingZero},
+	}}
+	if err := dns64.Validate(); err != nil {
+		t.Fatalf("Validate() refused a dns64 network its own parser takes: %v", err)
+	}
+
+	// And the ordinary spelling passes everywhere.
+	ok := &Config{
+		AccessList: []string{"10.0.0.0/8", "::0/0"},
+		Views:      []ViewConfig{{Zone: "a", Networks: []string{"192.0.2.0/24"}}},
+		ECS:        ECSConfig{Enabled: true, ClientNetworks: []string{"192.0.2.0/24"}},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("Validate() rejected ordinary prefixes: %v", err)
+	}
+}

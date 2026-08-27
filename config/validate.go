@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -448,15 +449,24 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// download into it, so a read-only mount carrying nothing but local
 	// lists is a working setup — and refusing it would stop a server that
 	// runs today.
+	//
+	// Whether it has to be written depends on what is being loaded into it:
+	// a remote list is downloaded into the directory with os.Create, so with
+	// one configured a read-only mount loads nothing at all.
+	dirCheck := usableDir
+	if len(c.BlockLists) > 0 {
+		dirCheck = writableDir
+	}
+
 	switch {
 	case c.BlockListDir != "":
-		if err := usableDir(c.BlockListDir, pending); err != nil {
+		if err := dirCheck(c.BlockListDir, pending); err != nil {
 			add("blocklistdir = %q: %v", c.BlockListDir, err)
 		}
 	case c.Directory != "":
 		derived := filepath.Join(c.Directory, "blacklists")
 		if _, err := os.Lstat(derived); err == nil {
-			if err := usableDir(derived, ""); err != nil {
+			if err := dirCheck(derived, ""); err != nil {
 				add("blocklistdir defaults to %q: %v", derived, err)
 			}
 		}
@@ -930,8 +940,17 @@ func localAddress(ip net.IP) bool {
 	return false
 }
 
+// validCIDR reports whether a prefix is one the access list, the views and
+// the ECS policy will take. All three reach netip.ParsePrefix — the first two
+// through internal/ipset — and it is stricter than net.ParseCIDR about the
+// bits after the slash: "10.0.0.0/08" parses there and not here, so accepting
+// it would pass a file whose only access-list entry is then dropped, leaving
+// an empty allow set that blocks every client.
+//
+// dns64 is not one of these callers. It parses with net.ParseCIDR and takes
+// the leading zero, so its lists are judged with that instead.
 func validCIDR(s string) bool {
-	_, _, err := net.ParseCIDR(s)
+	_, err := netip.ParsePrefix(s)
 	return err == nil
 }
 
