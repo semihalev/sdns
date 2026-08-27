@@ -406,7 +406,10 @@ func TestValidatePortRange(t *testing.T) {
 		// does listen on 53, so a numeric test here would refuse a config
 		// that works.
 		{"listener service name", Config{Bind: ":domain"}, true},
-		{"listener port zero asks for a free one", Config{Bind: ":0"}, true},
+		// bind opens UDP and TCP separately, so port 0 would land them on
+		// different ports; a single-transport listener is free to ask.
+		{"port zero on a two-transport listener", Config{Bind: ":0"}, false},
+
 		{"ordinary listener", Config{Bind: ":53"}, true},
 		{"ordinary upstream", Config{RootServers: []string{"192.0.2.1:53"}}, true},
 	} {
@@ -732,11 +735,12 @@ func TestValidatePortZeroSpellings(t *testing.T) {
 			t.Fatalf("Validate() accepted upstream port %q", spelling)
 		}
 	}
-	// The same spellings are fine on a listener, where zero asks the kernel
-	// for a free port.
-	for _, spelling := range []string{"0", "00"} {
-		if err := (&Config{Bind: ":" + spelling}).Validate(); err != nil {
-			t.Fatalf("Validate() rejected listener port %q: %v", spelling, err)
+	// A listener that opens one transport may still ask the kernel for a
+	// free port; one that opens two may not, since each socket asks
+	// separately and they would not agree.
+	for _, spelling := range []string{"0", "00", "+0"} {
+		if err := (&Config{Bind: ":" + spelling}).Validate(); err == nil {
+			t.Fatalf("Validate() accepted port %q on a two-transport listener", spelling)
 		}
 	}
 }
@@ -1968,6 +1972,78 @@ func TestValidateCIDRMatchesEachConsumer(t *testing.T) {
 		Views:      []ViewConfig{{Zone: "a", Networks: []string{"192.0.2.0/24"}}},
 		ECS:        ECSConfig{Enabled: true, ClientNetworks: []string{"192.0.2.0/24"}},
 	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("Validate() rejected ordinary prefixes: %v", err)
+	}
+}
+
+// TestValidatePortZeroFollowsTransportCount pins where asking the kernel for a
+// free port is safe. Each socket asks separately, so a setting that opens two
+// transports would get two different ports — a truncated UDP answer with no
+// TCP to fall back to, and DoH advertising ":0" as its HTTP/3 port. A setting
+// that opens one socket has nothing to disagree with.
+func TestValidatePortZeroFollowsTransportCount(t *testing.T) {
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "cert.pem")
+	key := filepath.Join(dir, "key.pem")
+	for _, p := range []string{cert, key} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{"bind opens udp and tcp", Config{Bind: ":0"}, false},
+		{"doh brings http/3 with it", Config{
+			BindDOH: ":0", TLSCertificate: cert, TLSPrivateKey: key,
+		}, false},
+		{"dot is tcp alone", Config{
+			BindTLS: ":0", TLSCertificate: cert, TLSPrivateKey: key,
+		}, true},
+		{"doq is udp alone", Config{
+			BindDOQ: ":0", TLSCertificate: cert, TLSPrivateKey: key,
+		}, true},
+		{"the api is tcp alone", Config{API: "127.0.0.1:0"}, true},
+		// A named port is fine everywhere.
+		{"bind with a real port", Config{Bind: ":53"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
+// TestValidateRejectsMappedPrefixes pins that an IPv4-mapped prefix is refused
+// where it would match nobody. internal/ipset files it under IPv6 while an
+// IPv4 client is unmapped and looked up under IPv4, and ECS compares prefix to
+// address where the families disagree — either way the rule is dead, and as
+// the only access-list entry it leaves an allow set that blocks everyone.
+func TestValidateRejectsMappedPrefixes(t *testing.T) {
+	const mapped = "::ffff:192.0.2.0/120"
+
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"accesslist", Config{AccessList: []string{mapped}}},
+		{"view network", Config{Views: []ViewConfig{{Zone: "a", Networks: []string{mapped}}}}},
+		{"ecs client_networks", Config{ECS: ECSConfig{Enabled: true, ClientNetworks: []string{mapped}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); err == nil {
+				t.Fatalf("Validate() accepted %q, which matches no client", mapped)
+			}
+		})
+	}
+
+	// The plain forms both work, including a genuine IPv6 prefix.
+	ok := &Config{AccessList: []string{"192.0.2.0/24", "2001:db8::/32", "::0/0"}}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("Validate() rejected ordinary prefixes: %v", err)
 	}

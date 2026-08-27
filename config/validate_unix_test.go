@@ -286,3 +286,44 @@ func TestValidateRemoteBlocklistNeedsAWritableDir(t *testing.T) {
 		t.Fatal("Validate() accepted a read-only directory for a remote blocklist")
 	}
 }
+
+// TestValidateEquivalentDotDotPaths pins the P3 case. With "there" present,
+// mkdir resolves "/tmp/there/../db" to "/tmp/db" and the log opens inside it —
+// so the two spellings name one place and the pending-directory shortcut has
+// to see that. Unix only: Windows collapses ".." lexically and never reaches
+// this comparison.
+func TestValidateEquivalentDotDotPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "there"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{
+		Directory: dir + "/there/../db",
+		AccessLog: filepath.Join(dir, "db", "access.log"),
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() missed that the two spellings are one place: %v", err)
+	}
+
+	// And the runtime agrees, in the order it does it.
+	if err := os.Mkdir(cfg.Directory, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, err := os.OpenFile(cfg.AccessLog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("the runtime could not open the log this config names: %v", err)
+	}
+	f.Close() //nolint:errcheck,gosec // nothing was written
+
+	// A component that is not there is still refused — and the working
+	// directory here is one the server could make, so the shortcut is the
+	// only thing that decides.
+	missing := &Config{
+		Directory: filepath.Join(dir, "db2"),
+		AccessLog: dir + "/gone/../db2/access.log",
+	}
+	if err := missing.Validate(); err == nil {
+		t.Fatal("Validate() accepted a log path through a component that is not there")
+	}
+}

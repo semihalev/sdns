@@ -86,9 +86,17 @@ func (c *Config) Validate() error {
 			// whether a name resolves is a runtime question of the same
 			// class as whether an upstream answers.
 			_ = host
-			// Port 0 is legal here: it asks the kernel for a free one.
-			if _, err := usablePort(port, bind.networks...); err != nil {
+			n, err := usablePort(port, bind.networks...)
+			switch {
+			case err != nil:
 				add("%s = %q: %v", bind.key, bind.value, err)
+			case n == 0 && len(bind.networks) > 1:
+				// Port 0 asks the kernel for a free one, and each socket
+				// asks separately: the two transports of this setting would
+				// land on different ports, so a truncated UDP answer has no
+				// TCP to fall back to — and DoH would advertise ":0" as its
+				// HTTP/3 port. Fine where the setting opens one socket.
+				add("%s = %q: port 0 gives each transport a different port; name one", bind.key, bind.value)
 			}
 		}
 	}
@@ -950,8 +958,18 @@ func localAddress(ip net.IP) bool {
 // dns64 is not one of these callers. It parses with net.ParseCIDR and takes
 // the leading zero, so its lists are judged with that instead.
 func validCIDR(s string) bool {
-	_, err := netip.ParsePrefix(s)
-	return err == nil
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		return false
+	}
+	// An IPv4-mapped prefix is filed under IPv6 by internal/ipset, while a
+	// client arriving over IPv4 is unmapped and looked up under IPv4 — so
+	// the entry sits in a table nothing searches. ECS compares prefix to
+	// address directly, where the families disagree just as flatly. Either
+	// way it is a rule that matches nobody, and as the only access-list
+	// entry it would leave an empty allow set. The operator wants the plain
+	// form: 192.0.2.0/24.
+	return !p.Addr().Is4In6()
 }
 
 // regularFile reports whether path is something the server can open and read.
@@ -1107,7 +1125,31 @@ func samePath(a, b string) bool {
 	// components, though — mkdir and open both take a path with one — so it
 	// is dropped before the comparison rather than making two spellings of
 	// the same place look different.
+	//
+	// Where the part before the last element does exist, though, the system
+	// resolves it and so does this: "/tmp/there/../db" and "/tmp/db" are one
+	// place when "there" is there, and the pending directory would otherwise
+	// be missed for one spelling of it.
+	if ra, ok := resolveParent(a); ok {
+		if rb, ok := resolveParent(b); ok {
+			return ra == rb
+		}
+	}
 	return trimTrailingSeparators(a) == trimTrailingSeparators(b)
+}
+
+// resolveParent rewrites path with everything before its last element
+// resolved through the filesystem, and reports whether that part exists. The
+// last element is left alone: it is the one that may not be there yet.
+func resolveParent(path string) (string, bool) {
+	trimmed := trimTrailingSeparators(path)
+	parent := literalParent(trimmed)
+
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(resolved, filepath.Base(trimmed)), true
 }
 
 // trimTrailingSeparators drops the separators at the end of path, keeping a
