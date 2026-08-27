@@ -293,11 +293,20 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// record that is not a DNSKEY panics an unchecked type assertion during
 	// verification, and a key that is merely not a root KSK leaves the
 	// anchor set empty so every DNSSEC answer fails on unavailable anchors.
+	// Every record is parsed whatever the settings — NewResolver stops the
+	// process on one that will not — but nothing looks at what a record
+	// means unless validation or the hyperlocal root asks it to. Judging the
+	// meaning regardless would refuse a stale key that has no effect.
+	anchorsUsed := c.DNSSEC == "on" || c.HyperlocalRoot
+
 	anchors := 0
 	for _, key := range c.RootKeys {
 		rr, err := dns.NewRR(key)
 		if err != nil {
 			add("rootkeys %q: %v", key, err)
+			continue
+		}
+		if !anchorsUsed {
 			continue
 		}
 		dnskey, ok := rr.(*dns.DNSKEY)
@@ -327,13 +336,15 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		}
 	}
 	switch {
-	case anchors == 0 && c.DNSSEC == "on" && len(c.ForwarderServers) == 0:
+	case anchors == 0 && c.DNSSEC == "on" && len(c.ForwarderServers) == 0 && !c.forwardsRoot():
 		// AutoTA needs a seed and will not take one from disk when the live
 		// set is empty, so this does not heal on its own: every iterative
 		// validation fails closed from the first query. A global forwarder
-		// skips the resolver entirely and so needs no anchor of its own.
+		// skips the resolver entirely and so needs no anchor of its own —
+		// and neither does a forward zone at the root, which hands every
+		// query to its upstreams by the same early return.
 		add("rootkeys: dnssec is on with no usable root trust anchor, so every validated answer would fail")
-	case anchors == 0 && len(c.RootKeys) > 0:
+	case anchorsUsed && anchors == 0 && len(c.RootKeys) > 0:
 		add("rootkeys: none of the configured keys is a usable root trust anchor")
 	}
 
@@ -345,6 +356,11 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		{"outboundips", c.OutboundIPs, true},
 		{"outboundip6s", c.OutboundIP6s, false},
 	} {
+		// Read only behind ipv6access, so on a host without v6 the whole
+		// list has no effect — not just the locality of its entries.
+		if !out.want4 && !c.IPv6Access {
+			continue
+		}
 		for _, addr := range out.values {
 			ip := net.ParseIP(addr)
 			if ip == nil {
@@ -364,11 +380,6 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			// The resolver binds its outbound sockets to these, and stops
 			// the process outright when one is not an address this machine
 			// holds — after this test has already reported success.
-			// IPv6 is only read when ipv6access is on, so it is only
-			// judged then.
-			if !out.want4 && !c.IPv6Access {
-				continue
-			}
 			if !localAddress(ip) {
 				add("%s %q: is not an address of this machine", out.key, addr)
 			}
@@ -395,15 +406,33 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// in code, which have no working directory to speak of — requiring one
 	// here would refuse every such caller to co-report a failure that is
 	// already impossible to miss.
-	for _, dir := range []struct{ key, path string }{
-		{"directory", c.Directory},
-		{"blocklistdir", c.BlockListDir},
-	} {
-		if dir.path == "" {
-			continue
+	if c.Directory != "" {
+		if err := writableDir(c.Directory); err != nil {
+			add("directory = %q: %v", c.Directory, err)
 		}
-		if err := writableDir(dir.path); err != nil {
-			add("%s = %q: %v", dir.key, dir.path, err)
+	}
+
+	// An empty blocklistdir is the normal case, not an unset one: the
+	// middleware fills it in under the working directory, and a plain file
+	// or an unwritable directory there leaves both the downloaded and the
+	// local lists quietly unloaded.
+	//
+	// Only what is already at the derived path can be judged, though. Load
+	// creates the working directory after this gate, so on a fresh install
+	// the parent of the default is legitimately not there yet — asking for
+	// it would refuse every first run. A blocklistdir the operator wrote
+	// themselves is nobody's to create, so that one is asked in full.
+	switch {
+	case c.BlockListDir != "":
+		if err := writableDir(c.BlockListDir); err != nil {
+			add("blocklistdir = %q: %v", c.BlockListDir, err)
+		}
+	case c.Directory != "":
+		derived := filepath.Join(c.Directory, "blacklists")
+		if _, err := os.Lstat(derived); err == nil {
+			if err := writableDir(derived); err != nil {
+				add("blocklistdir defaults to %q: %v", derived, err)
+			}
 		}
 	}
 
@@ -433,7 +462,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 				add("accesslog = %q: names a directory, want a file", c.AccessLog)
 				break
 			}
-			if err := existingDir(filepath.Dir(filepath.Clean(target))); err != nil {
+			if err := existingDir(literalParent(target)); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
 		case err != nil:
@@ -824,6 +853,20 @@ func (c *Config) validateECS(add func(string, ...any)) {
 	}
 }
 
+// forwardsRoot reports whether a forward zone takes every query. Matching is
+// the same test ForwardZoneFor makes — a canonical apex of "." covers every
+// name, and a zone with no servers is skipped there — so a name this says is
+// the root is one the handler will actually forward on.
+func (c *Config) forwardsRoot() bool {
+	for i := range c.ForwardZones {
+		zone := &c.ForwardZones[i]
+		if len(zone.Servers) > 0 && dns.CanonicalName(zone.Name) == "." {
+			return true
+		}
+	}
+	return false
+}
+
 // localAddress reports whether ip is one this machine holds. The resolver
 // makes the same test before binding an outbound socket to it and stops the
 // process when it fails, so a config test that skipped it would report success
@@ -917,10 +960,10 @@ func writableDir(path string) error {
 	// already there.
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		// Created with Mkdir, not MkdirAll, so one missing level is made
-		// and two are not. Clean first: Dir("/parent/db/") is "/parent/db",
-		// the path itself, which would look like a parent that is not there.
-		return existingDir(filepath.Dir(filepath.Clean(path)))
+		// Created with Mkdir, not MkdirAll, so one missing level is made and
+		// two are not — and Mkdir resolves every component on the way, so a
+		// "missing/../db" fails on the middle one however it cleans up.
+		return existingDir(literalParent(path))
 	}
 	if err != nil {
 		return err
@@ -960,6 +1003,31 @@ func existingDir(path string) error {
 		return fmt.Errorf("parent directory %q: %w", path, err)
 	}
 	return nil
+}
+
+// literalParent returns everything before the last element of path, with the
+// components left exactly as written.
+//
+// filepath.Dir cannot be used for this: it cleans, so "missing/../access.log"
+// comes back as "." and looks like it lives somewhere that exists — while the
+// open, which resolves each component in turn, fails on the "missing" that is
+// not there. Trailing separators are dropped first, so a path written as a
+// directory still yields its own parent rather than itself.
+func literalParent(path string) string {
+	i := len(path)
+	for i > 0 && os.IsPathSeparator(path[i-1]) {
+		i--
+	}
+	for i > 0 && !os.IsPathSeparator(path[i-1]) {
+		i--
+	}
+	for i > 1 && os.IsPathSeparator(path[i-1]) {
+		i--
+	}
+	if i == 0 {
+		return "."
+	}
+	return path[:i]
 }
 
 // endsInSeparator reports whether path is written as a directory. Both

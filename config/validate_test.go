@@ -35,10 +35,10 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		{"crit log level", Config{LogLevel: "crit"}, "loglevel"},
 		{"root server family", Config{RootServers: []string{"[2001:db8::1]:53"}}, "rootservers"},
 		{"root6 server family", Config{IPv6Access: true, Root6Servers: []string{"192.0.2.1:53"}}, "root6servers"},
-		{"root key not a KSK", Config{RootKeys: []string{
+		{"root key not a KSK", Config{DNSSEC: "on", RootKeys: []string{
 			". 172800 IN DNSKEY 256 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3",
 		}}, "key-signing key"},
-		{"root key wrong owner", Config{RootKeys: []string{
+		{"root key wrong owner", Config{DNSSEC: "on", RootKeys: []string{
 			"example. 172800 IN DNSKEY 257 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3",
 		}}, "root zone"},
 		// /49 is a valid IPv6 CIDR and an invalid Pref64: the runtime drops
@@ -60,7 +60,7 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		// A bad anchor is fatal at resolver construction, so -t passing here
 		// meant the server then refused to start.
 		{"root key", Config{RootKeys: []string{"this is not a DNSKEY"}}, "rootkeys"},
-		{"root key wrong type", Config{RootKeys: []string{". 172800 IN A 192.0.2.1"}}, "rootkeys"},
+		{"root key wrong type", Config{DNSSEC: "on", RootKeys: []string{". 172800 IN A 192.0.2.1"}}, "rootkeys"},
 		{"outbound family", Config{OutboundIPs: []string{"2001:db8::1"}}, "outboundips"},
 		{"api address", Config{API: "not an address"}, "api"},
 		{"hyperlocal source", Config{HyperlocalRoot: true, HyperlocalRootSources: []string{"no-port"}}, "hyperlocal_root_sources"},
@@ -292,7 +292,7 @@ func TestValidateRootKeyAlgorithm(t *testing.T) {
 		{"ECDSAP256SHA256 is the successor", "13", ecdsaP256, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{RootKeys: []string{
+			cfg := &Config{DNSSEC: "on", RootKeys: []string{
 				". 172800 IN DNSKEY 257 3 " + tc.alg + " " + tc.material,
 			}}
 			err := cfg.Validate()
@@ -684,7 +684,7 @@ func TestValidateRootKeyOnCurve(t *testing.T) {
 		{"P-384 right length, not on the curve", "14", zeros(96)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 " + tc.alg + " " + tc.key}}
+			cfg := &Config{DNSSEC: "on", RootKeys: []string{". 172800 IN DNSKEY 257 3 " + tc.alg + " " + tc.key}}
 			err := cfg.Validate()
 			if err == nil || !strings.Contains(err.Error(), "not usable") {
 				t.Fatalf("Validate() = %v, want the off-curve key rejected", err)
@@ -694,7 +694,7 @@ func TestValidateRootKeyOnCurve(t *testing.T) {
 
 	// A real key of the same algorithm must still pass.
 	const realP256 = "FS/jjwld5fQ2hD31w4Odohy65Je3eGSYDvJgKO0qBBEFRC5fa6GvcWdLyn0sj49unyBRv3nAHAH0UtAyYLZi7w=="
-	ok := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 13 " + realP256}}
+	ok := &Config{DNSSEC: "on", RootKeys: []string{". 172800 IN DNSKEY 257 3 13 " + realP256}}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("Validate() rejected a real P-256 anchor: %v", err)
 	}
@@ -816,14 +816,14 @@ func TestValidateRootKeyPolicyErrors(t *testing.T) {
 		return base64.StdEncoding.EncodeToString(append(buf, mod...))
 	}
 
-	small := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 8 " + rsaKey(64)}}
+	small := &Config{DNSSEC: "on", RootKeys: []string{". 172800 IN DNSKEY 257 3 8 " + rsaKey(64)}}
 	err := small.Validate()
 	if err == nil || !strings.Contains(err.Error(), "not usable") {
 		t.Fatalf("Validate() = %v, want the 512-bit RSA anchor rejected", err)
 	}
 
 	// A key of a size the crypto package will work with still passes.
-	big := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 8 " + rsaKey(256)}}
+	big := &Config{DNSSEC: "on", RootKeys: []string{". 172800 IN DNSKEY 257 3 8 " + rsaKey(256)}}
 	if err := big.Validate(); err != nil {
 		t.Fatalf("Validate() rejected a 2048-bit RSA anchor: %v", err)
 	}
@@ -1239,7 +1239,7 @@ func TestPortNetworksPerCaller(t *testing.T) {
 // separates them, so nothing but "the signature is wrong" is accepted here.
 func TestValidateEd25519Points(t *testing.T) {
 	anchor := func(raw []byte) *Config {
-		return &Config{RootKeys: []string{
+		return &Config{DNSSEC: "on", RootKeys: []string{
 			". 172800 IN DNSKEY 257 3 15 " + base64.StdEncoding.EncodeToString(raw),
 		}}
 	}
@@ -1499,5 +1499,144 @@ func TestValidateAccessLogSymlinkLoop(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Validate() did not return on a self-referencing symlink")
+	}
+}
+
+// TestValidateRootKeysOnlyWhereUsed pins that a record's meaning is judged
+// only where something reads it. NewResolver parses every rootkey whatever
+// the settings, but nothing asks what one means unless validation or the
+// hyperlocal root does — so a stale entry under dnssec = "off" has no effect
+// and must not stop the server.
+func TestValidateRootKeysOnlyWhereUsed(t *testing.T) {
+	stale := []string{". 172800 IN A 192.0.2.1"} // parses, and is not a DNSKEY
+
+	off := &Config{DNSSEC: "off", RootKeys: stale}
+	if err := off.Validate(); err != nil {
+		t.Fatalf("Validate() judged a rootkey nothing reads: %v", err)
+	}
+
+	// A record that will not parse is fatal at construction either way.
+	broken := &Config{DNSSEC: "off", RootKeys: []string{"this is not a record"}}
+	if err := broken.Validate(); err == nil {
+		t.Fatal("Validate() accepted a rootkey that will not parse")
+	}
+
+	// Both readers bring the meaning back into play.
+	for _, cfg := range []*Config{
+		{DNSSEC: "on", RootKeys: stale},
+		{DNSSEC: "off", HyperlocalRoot: true, RootKeys: stale},
+	} {
+		if err := cfg.Validate(); err == nil ||
+			!strings.Contains(err.Error(), "must be a DNSKEY") {
+			t.Fatalf("Validate() = %v, want the record judged when it is read", err)
+		}
+	}
+}
+
+// TestValidateRootForwardZoneNeedsNoAnchor pins the exemption. A forward zone
+// at the root covers every name — ForwardZoneFor matches on IsSubDomain, and
+// the handler hands the query on by the same early return a global forwarder
+// takes — so nothing validates locally and no anchor is needed.
+func TestValidateRootForwardZoneNeedsNoAnchor(t *testing.T) {
+	root := &Config{
+		DNSSEC:       "on",
+		ForwardZones: []ForwardZoneConfig{{Name: ".", Servers: []string{"1.1.1.1:53"}}},
+	}
+	if err := root.Validate(); err != nil {
+		t.Fatalf("Validate() asked a root forward zone for an anchor: %v", err)
+	}
+
+	// A zone below the root leaves the rest to recursion, which does need one.
+	partial := &Config{
+		DNSSEC:       "on",
+		ForwardZones: []ForwardZoneConfig{{Name: "corp.example.", Servers: []string{"1.1.1.1:53"}}},
+	}
+	if err := partial.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "no usable root trust anchor") {
+		t.Fatalf("Validate() = %v, want a subtree zone still to need an anchor", err)
+	}
+
+	// And a zone with no servers is skipped by ForwardZoneFor, so it forwards
+	// nothing and cannot stand in for one.
+	empty := &Config{
+		DNSSEC:       "on",
+		ForwardZones: []ForwardZoneConfig{{Name: ".", Servers: nil}},
+	}
+	if err := empty.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "no usable root trust anchor") {
+		t.Fatalf("Validate() = %v, want a serverless root zone not to exempt", err)
+	}
+}
+
+func TestValidateOutboundIPv6ListSkippedWhole(t *testing.T) {
+	// The runtime does not read this list at all without v6, so nothing in
+	// it — not even a value that is not an address — can matter.
+	stale := &Config{OutboundIP6s: []string{"stale-value", "192.0.2.1"}}
+	if err := stale.Validate(); err != nil {
+		t.Fatalf("Validate() read outboundip6s with ipv6access off: %v", err)
+	}
+
+	on := *stale
+	on.IPv6Access = true
+	if err := on.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "outboundip6s") {
+		t.Fatalf("Validate() = %v, want the list judged when v6 is in use", err)
+	}
+}
+
+func TestValidateDefaultBlocklistDir(t *testing.T) {
+	dir := t.TempDir()
+
+	// A fresh install: neither the working directory nor the default
+	// blocklist directory exists yet, and Load creates both in turn.
+	fresh := &Config{Directory: filepath.Join(dir, "db")}
+	if err := fresh.Validate(); err != nil {
+		t.Fatalf("Validate() refused a fresh working directory: %v", err)
+	}
+
+	// A plain file sitting where the default would go stops the middleware
+	// from creating it, and both list sources go quietly unloaded.
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "blacklists"), []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{Directory: work}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "blocklistdir") {
+		t.Fatalf("Validate() = %v, want the occupied default reported", err)
+	}
+}
+
+// TestValidatePathsKeepTheirComponents pins that a parent is taken from the
+// path as written. filepath.Dir cleans, so "missing/../x" comes back as "."
+// and looks like it lives somewhere that exists — while the open and the
+// mkdir both resolve each component and fail on the one that is not there.
+func TestValidatePathsKeepTheirComponents(t *testing.T) {
+	dir := t.TempDir()
+
+	// Built by hand: filepath.Join cleans too, so the components would not
+	// survive to be judged.
+	sep := string(filepath.Separator)
+	logPath := dir + sep + "missing" + sep + ".." + sep + "access.log"
+	if err := (&Config{AccessLog: logPath}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "accesslog") {
+		t.Fatalf("Validate() = %v, want the missing component reported", err)
+	}
+
+	dbPath := dir + sep + "missing" + sep + ".." + sep + "db"
+	if err := (&Config{Directory: dbPath}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "directory") {
+		t.Fatalf("Validate() = %v, want the missing component reported", err)
+	}
+
+	// The same shape with the component present is fine.
+	if err := os.Mkdir(filepath.Join(dir, "there"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	okPath := dir + sep + "there" + sep + ".." + sep + "db"
+	if err := (&Config{Directory: okPath}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a path whose components all exist: %v", err)
 	}
 }
