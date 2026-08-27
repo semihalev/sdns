@@ -155,9 +155,12 @@ func TestLoad(t *testing.T) {
 					os.RemoveAll(tmpDir)                            //nolint:gosec // G104 - test cleanup
 				}
 			},
-			version:     "1.4.0",
-			wantErr:     true,
-			errContains: "error creating working directory",
+			version: "1.4.0",
+			wantErr: true,
+			// Reported at the gate now, with everything else wrong in the
+			// file, rather than by the Mkdir that used to be the first
+			// thing to notice.
+			errContains: "parent directory",
 		},
 		{
 			// The sdns.toml fallback is gone with the releases that used
@@ -475,7 +478,9 @@ func TestIPv6ProbeDecidesAccess(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
-	content := fmt.Sprintf("version = %q\ndirectory = %q\n",
+	// Not a DNSSEC test, and this scaffold carries neither a trust anchor
+	// nor a root server, both of which a loaded file must have.
+	content := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\nrootservers = [\"192.5.5.241:53\"]\n",
 		configver, filepath.Join(dir, "db"))
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -696,6 +701,12 @@ func TestLoadRFC8198Policy(t *testing.T) {
 			content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+# Not a DNSSEC test, and this scaffold carries no trust anchor; with
+# validation on and nothing to anchor to the config is refused. A root
+# server is likewise required of a loaded file: with none, the resolver
+# stops the process on the first recursive query.
+dnssec = "off"
+rootservers = ["192.5.5.241:53"]
 %s
 `, configver, workDir, tt.setting)
 			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
@@ -788,6 +799,12 @@ func TestLoadRFC9520Policy(t *testing.T) {
 			content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+# Not a DNSSEC test, and this scaffold carries no trust anchor; with
+# validation on and nothing to anchor to the config is refused. A root
+# server is likewise required of a loaded file: with none, the resolver
+# stops the process on the first recursive query.
+dnssec = "off"
+rootservers = ["192.5.5.241:53"]
 %s
 `, configver, workDir, tt.setting)
 			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
@@ -837,6 +854,8 @@ func TestLoadServeStalePolicy(t *testing.T) {
 			content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
+rootservers = ["192.5.5.241:53"]
 %s
 `, configver, workDir, tt.settings)
 			if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
@@ -862,6 +881,8 @@ func TestLoadRejectsNegativeServeStaleTTL(t *testing.T) {
 	content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
+rootservers = ["192.5.5.241:53"]
 serve_stale = true
 serve_stale_max_ttl = "-1s"
 `, configver, workDir)
@@ -886,6 +907,8 @@ func TestLoadRecursionFirewallPolicy(t *testing.T) {
 		content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
+rootservers = ["192.5.5.241:53"]
 
 [recursion_firewall]
 mode = "enforce"
@@ -943,6 +966,8 @@ failure_cache_max_ttl = "2m"
 		content := fmt.Sprintf(`version = %q
 directory = %q
 ipv6access = true
+dnssec = "off"
+rootservers = ["192.5.5.241:53"]
 
 [recursion_firewall]
 mode = "blocking"
@@ -1055,9 +1080,12 @@ func TestConfigVersionMismatch(t *testing.T) {
 	minimalConfig := `version = "0.0.1"
 directory = "db"
 bind = ":53"
-rootservers = []
+rootservers = ["192.5.5.241:53"]
 root6servers = []
-dnssec = "on"
+# Off, because this scaffold carries no trust anchor, and validation with
+# nothing to anchor to is now refused rather than left to fail per query.
+# The version warning under test does not depend on it either way.
+dnssec = "off"
 rootkeys = []
 fallbackservers = []
 forwarderservers = []
@@ -1264,9 +1292,10 @@ func TestValidateForwardZones(t *testing.T) {
 		{"no servers", []ForwardZoneConfig{{Name: "corp.example."}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := (&Config{ForwardZones: tc.zones}).validateForwardZones()
+			// Through Validate, which is the single gate the load path uses.
+			err := (&Config{ForwardZones: tc.zones}).Validate()
 			if tc.wantErr != (err != nil) {
-				t.Fatalf("validateForwardZones() error = %v, wantErr %v", err, tc.wantErr)
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
 	}

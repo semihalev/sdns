@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +35,9 @@ var (
 		Long: `SDNS is a high-performance, recursive DNS resolver server with DNSSEC support,
 focused on preserving privacy. For more information, visit https://sdns.dev`,
 		RunE: runServer,
+		// main prints what Execute returns, so cobra printing it too would
+		// say the same thing twice.
+		SilenceErrors: true,
 	}
 
 	versionCmd = &cobra.Command{
@@ -92,6 +96,12 @@ func setup() error {
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
+	// The flags parsed, so anything that fails from here is a problem with
+	// the configuration or the server, not with how the command was called —
+	// and the flag list is no help. Set here rather than on the command, so
+	// a genuine usage error still prints it.
+	cmd.SilenceUsage = true
+
 	// Handle config test mode
 	if testConfig {
 		return validateConfiguration()
@@ -170,17 +180,17 @@ func validateConfiguration() error {
 	var err error
 
 	if cfg, err = config.Load(cfgPath, version); err != nil {
-		fmt.Fprintf(os.Stderr, "Configuration test failed: %v\n", err)
 		return err
 	}
 
-	// Validate log level
-	switch cfg.LogLevel {
-	case "", "debug", "info", "warn", "error":
-		// Valid log levels
-	default:
-		err := fmt.Errorf("log verbosity level unknown: %s", cfg.LogLevel)
-		fmt.Fprintf(os.Stderr, "Configuration test failed: %v\n", err)
+	// Load only warns about keys nothing claims, so a stale key cannot turn
+	// an upgrade into an outage. This command exists to answer whether the
+	// file is right, so here they are the answer.
+	if unknown := cfg.UndecodedKeys(); len(unknown) > 0 {
+		err := fmt.Errorf(
+			"unknown config keys (typo, or settings this version no longer has): %s",
+			strings.Join(unknown, ", "),
+		)
 		return err
 	}
 

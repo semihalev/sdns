@@ -190,7 +190,16 @@ type Config struct {
 	ReflexThreshold    float64 // Suspicion threshold (0.0-1.0, default: 0.7)
 
 	sVersion string
+
+	// undecodedKeys are the keys the config file carried that no field
+	// claimed. See Load for why they warn rather than fail there.
+	undecodedKeys []string
 }
+
+// UndecodedKeys returns the config keys that were present in the file and
+// matched no setting — typos, or settings a previous version understood.
+// They have no effect on this server.
+func (c *Config) UndecodedKeys() []string { return c.undecodedKeys }
 
 // RFC8198Enabled reports whether aggressive NSEC/NSEC3 denial synthesis is
 // enabled. Omission is default-on; an explicit false is the operational kill
@@ -252,22 +261,30 @@ type ForwardZoneConfig struct {
 // skipped at match time, so its subtree would resolve publicly. For an
 // internal zone that is not a harmless no-op, it is the leak the zone was
 // configured to prevent. Better to fail at startup, where it is visible.
-func (c *Config) validateForwardZones() error {
+func (c *Config) validateForwardZones(add func(string, ...any)) {
 	for i := range c.ForwardZones {
 		zone := &c.ForwardZones[i]
-		if strings.TrimSpace(zone.Name) == "" {
-			return fmt.Errorf(
-				"forward_zone %d has no name; use name = \".\" to forward every query", i+1,
-			)
-		}
-		if _, ok := dns.IsDomainName(zone.Name); !ok {
-			return fmt.Errorf("forward_zone %q is not a valid domain name", zone.Name)
+		// The two name problems are alternatives, but a missing server list is
+		// independent of both — reporting only the first would send the
+		// operator back for a second run over the same entry.
+		switch {
+		case strings.TrimSpace(zone.Name) == "":
+			add("forward_zone %d has no name; use name = \".\" to forward every query", i+1)
+		case !validDomainName(zone.Name):
+			add("forward_zone %q is not a valid domain name", zone.Name)
 		}
 		if len(zone.Servers) == 0 {
-			return fmt.Errorf("forward_zone %q has no servers", zone.Name)
+			add("forward_zone %q has no servers", zone.Name)
 		}
 	}
-	return nil
+}
+
+// validDomainName reports whether name is structurally a domain name. Its
+// character set is deliberately not judged: RFC 2181 section 11 makes a label
+// any binary string, so a name this package finds odd may still be legal.
+func validDomainName(name string) bool {
+	_, ok := dns.IsDomainName(name)
+	return ok
 }
 
 // ForwardZoneFor returns the most specific configured forward zone covering
@@ -789,7 +806,7 @@ api = "127.0.0.1:8080"
 # bearertoken = ""
 
 # Log verbosity level
-# Options: crit, error, warn, info, debug
+# Options: error, warn, info, debug
 loglevel = "info"
 
 # Query access log file path
@@ -1388,18 +1405,53 @@ func Load(cfgfile, version string) (*Config, error) {
 		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
 
-	config.normalizeQnameMinimize()
+	// Before the gate, like the DNSSEC default below, because the checks read
+	// the settled value: outboundip6s is only judged when v6 is in use, and
+	// root6servers only count as roots then too.
+	if !config.IPv6Access {
+		if err := ipv6Probe(); err == nil {
+			config.IPv6Access = true
+		}
+	}
+
+	// Before the gate, because omitting the key means validation is on: the
+	// coercion below used to run after it, so a file naming neither dnssec
+	// nor a trust anchor passed the anchor check as if validation were off
+	// and then ran with it on and nothing to anchor to.
+	if config.DNSSEC == "" {
+		config.DNSSEC = "on"
+	}
 
 	config.RecursionFirewall.Normalize()
-	if err := config.RecursionFirewall.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid recursion firewall config: %w", err)
+
+	// Keys the file carries that no field claims: a typo, or a setting an
+	// older SDNS understood and this one no longer does. Either way the
+	// operator wrote something that will not take effect, so it is recorded
+	// and logged. Startup only warns — refusing to run over a stale key
+	// would turn an upgrade into an outage — while `sdns -t`, whose whole
+	// job is to answer "is this file right", treats it as a failure.
+	for _, key := range metadata.Undecoded() {
+		config.undecodedKeys = append(config.undecodedKeys, key.String())
+		zlog.Warn("Unknown config key, ignored", "key", key.String(), "path", cfgfile)
 	}
-	if err := config.validateForwardZones(); err != nil {
+
+	// One gate, so a file with several mistakes is fixed in one pass rather
+	// than one error per run. When the file is failing anyway, the unknown
+	// keys join the report — they still never cause a failure on their own,
+	// but omitting them here would send the operator back for a second run.
+	if err := config.validateLoaded(); err != nil {
+		if len(config.undecodedKeys) > 0 {
+			return nil, fmt.Errorf("%w\n  - unknown keys (a typo, or settings this version no longer has): %s",
+				err, strings.Join(config.undecodedKeys, ", "))
+		}
 		return nil, err
 	}
-	if config.ServeStaleMaxTTL.Duration < 0 {
-		return nil, fmt.Errorf("serve_stale_max_ttl must not be negative")
-	}
+
+	// After the gate, not before: normalizing folds a negative minimization
+	// count to zero and a negative one-label count to the default, so running
+	// it first would hand Validate the settled value and hide what the file
+	// actually said.
+	config.normalizeQnameMinimize()
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {
 		if err := os.Mkdir(config.Directory, 0750); err != nil {
@@ -1410,10 +1462,6 @@ func Load(cfgfile, version string) (*Config, error) {
 	zlog.Info("Working directory", zlog.String("path", config.Directory))
 
 	config.sVersion = version
-
-	if config.DNSSEC == "" || config.DNSSEC != "off" {
-		config.DNSSEC = "on"
-	}
 
 	if config.CookieSecret == "" {
 		// 16 random bytes (128-bit) hex-encoded to a 32-char secret.
@@ -1426,13 +1474,6 @@ func Load(cfgfile, version string) (*Config, error) {
 			return nil, err
 		}
 		config.CookieSecret = hex.EncodeToString(secret)
-	}
-
-	if !config.IPv6Access {
-		err := ipv6Probe()
-		if err == nil {
-			config.IPv6Access = true
-		}
 	}
 
 	// Set TCP keepalive defaults
