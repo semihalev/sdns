@@ -337,6 +337,12 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		}
 	}
 	switch {
+	case anchors == 0 && c.HyperlocalRoot:
+		// The manager verifies every transfer against these and gives up on
+		// each refresh while there are none, so the feature never produces a
+		// snapshot at all. Forwarding does not excuse it: the manager runs
+		// whatever the query path does.
+		add("rootkeys: hyperlocal_root has no trust anchor to verify a transfer against, so it can never load the zone")
 	case anchors == 0 && c.DNSSEC == "on" && len(c.ForwarderServers) == 0 && !c.forwardsRoot():
 		// AutoTA needs a seed and will not take one from disk when the live
 		// set is empty, so this does not heal on its own: every iterative
@@ -1051,33 +1057,51 @@ func endsInSeparator(path string) bool {
 // link as absent, which read as an ordinary missing file and had the link's
 // own directory checked instead of the target's.
 //
-// The trailing separator is carried across each hop by hand. Join cleans it
-// away, and it is the whole difference between a name the open creates and one
-// it refuses — a relative "real.log/" would otherwise arrive here looking like
-// an ordinary file name.
+// The bound is above what any system will follow — Linux gives up at forty,
+// this machine at around thirty — so a chain that reaches it is one the stat
+// above has already refused with ELOOP. It is here to end the loop on a link
+// that points at itself, not to judge length.
 func accessLogTarget(path string) string {
-	// Deeper than any real layout, and bounded so a link that points at
-	// itself cannot spin.
-	for range 16 {
+	const maxHops = 64
+
+	for range maxHops {
 		info, err := os.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink == 0 {
 			return path
 		}
-		target, err := os.Readlink(path)
+		link, err := os.Readlink(path)
 		if err != nil {
 			return path
 		}
-		if filepath.IsAbs(target) {
-			path = target
+		if filepath.IsAbs(link) {
+			path = link
 			continue
 		}
-		next := filepath.Join(filepath.Dir(path), target)
-		if endsInSeparator(target) {
-			next += string(os.PathSeparator)
-		}
-		path = next
+		path = joinKeepingComponents(literalParent(path), link)
 	}
 	return path
+}
+
+// joinKeepingComponents puts a relative symlink target under the directory
+// holding the link.
+//
+// filepath.Join cleans, and on a system that resolves a path one component at
+// a time that loses the answer: a target of "missing/../real.log" becomes
+// "real.log" and looks like it lives somewhere that exists, while the open
+// follows the target as written and fails on the "missing" that is not there.
+// Windows collapses ".." itself, so cleaning is what it does and Join is
+// right there.
+func joinKeepingComponents(dir, target string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dir, target)
+	}
+	if dir == "" {
+		return target
+	}
+	if os.IsPathSeparator(dir[len(dir)-1]) {
+		return dir + target
+	}
+	return dir + string(os.PathSeparator) + target
 }
 
 // creatable reports whether this process can make an entry in dir. Mode bits

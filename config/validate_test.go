@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// testP256 is a generated ECDSAP256SHA256 public key, used wherever a test
+// needs an anchor that is actually usable rather than merely well-formed.
+const testP256 = "FS/jjwld5fQ2hD31w4Odohy65Je3eGSYDvJgKO0qBBEFRC5fa6GvcWdLyn0sj49unyBRv3nAHAH0UtAyYLZi7w=="
+
 func TestValidateRejectsUnusableValues(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -430,6 +434,8 @@ func TestValidateMirrorsRuntimeTrimming(t *testing.T) {
 		},
 		HyperlocalRoot:        true,
 		HyperlocalRootSources: []string{" 192.0.2.1:53 ", ""},
+		// Hyperlocal verifies every transfer against these, so it needs one.
+		RootKeys: []string{". 172800 IN DNSKEY 257 3 13 " + testP256},
 	}
 	if err := trimmed.Validate(); err != nil {
 		t.Fatalf("Validate() rejected values the runtime trims and uses: %v", err)
@@ -1623,5 +1629,73 @@ func TestValidateAcceptsPathsWhoseComponentsExist(t *testing.T) {
 	okPath := dir + sep + "there" + sep + ".." + sep + "db"
 	if err := (&Config{Directory: okPath}).Validate(); err != nil {
 		t.Fatalf("Validate() rejected a path whose components all exist: %v", err)
+	}
+}
+
+// TestValidateHyperlocalNeedsAnAnchor pins that hyperlocal is not covered by
+// the DNSSEC rule. The manager verifies every transfer against these keys and
+// gives up on each refresh while there are none, so with an empty set the
+// feature never loads the zone at all — whatever dnssec says.
+func TestValidateHyperlocalNeedsAnAnchor(t *testing.T) {
+	bare := &Config{DNSSEC: "off", HyperlocalRoot: true}
+	if err := bare.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "hyperlocal_root") {
+		t.Fatalf("Validate() = %v, want hyperlocal without an anchor reported", err)
+	}
+
+	// Forwarding does not excuse it: the manager runs whatever the query
+	// path does.
+	forwarded := *bare
+	forwarded.ForwarderServers = []string{"1.1.1.1:53"}
+	if err := forwarded.Validate(); err == nil {
+		t.Fatal("Validate() excused hyperlocal because a forwarder is configured")
+	}
+
+	withAnchor := *bare
+	withAnchor.RootKeys = []string{". 172800 IN DNSKEY 257 3 13 " + testP256}
+	if err := withAnchor.Validate(); err != nil {
+		t.Fatalf("Validate() rejected hyperlocal with a usable anchor: %v", err)
+	}
+
+	// And with hyperlocal off the same empty set is fine.
+	off := &Config{DNSSEC: "off"}
+	if err := off.Validate(); err != nil {
+		t.Fatalf("Validate() asked for an anchor nothing reads: %v", err)
+	}
+}
+
+func TestValidateAccessLogLongChain(t *testing.T) {
+	dir := t.TempDir()
+
+	// Twenty hops is well inside what a system follows, so Stat resolves the
+	// whole chain and reports the final target as absent — which means the
+	// chase here has to walk all twenty to find where the file would go. A
+	// shorter bound would stop partway and hand back a path that is itself
+	// another link, whose parent is this directory and exists.
+	prev := "gone/real.log"
+	for i := range 20 {
+		name := fmt.Sprintf("h%d.log", i)
+		if err := os.Symlink(prev, filepath.Join(dir, name)); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		prev = name
+	}
+	if err := (&Config{AccessLog: filepath.Join(dir, prev)}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "accesslog") {
+		t.Fatalf("Validate() = %v, want the missing directory at the end of the chain reported", err)
+	}
+
+	// A chain longer than any system follows is refused by the stat itself.
+	deep := t.TempDir()
+	prev = "end.log"
+	for i := range 80 {
+		name := fmt.Sprintf("h%d.log", i)
+		if err := os.Symlink(prev, filepath.Join(deep, name)); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		prev = name
+	}
+	if err := (&Config{AccessLog: filepath.Join(deep, prev)}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a chain no system will follow")
 	}
 }

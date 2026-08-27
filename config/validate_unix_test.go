@@ -124,3 +124,31 @@ func TestValidatePathsKeepTheirComponents(t *testing.T) {
 		t.Fatalf("Validate() = %v, want the missing component reported", err)
 	}
 }
+
+// TestValidateSymlinkTargetKeepsComponents pins the unix rule for a relative
+// target. filepath.Join would clean "missing/../real.log" down to
+// "real.log" — which looks like it lives somewhere that exists, while the
+// open follows the target as written and fails on the missing component.
+func TestValidateSymlinkTargetKeepsComponents(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "access.log")
+	if err := os.Symlink("missing/../real.log", link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if err := (&Config{AccessLog: link}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "accesslog") {
+		t.Fatalf("Validate() = %v, want the missing component in the target reported", err)
+	}
+
+	// The same shape with the component present is usable.
+	if err := os.Mkdir(filepath.Join(dir, "there"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	good := filepath.Join(dir, "ok.log")
+	if err := os.Symlink("there/../real.log", good); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{AccessLog: good}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a target whose components all exist: %v", err)
+	}
+}
