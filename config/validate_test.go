@@ -126,7 +126,7 @@ func TestLoadRecordsUndecodedKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
 	body := fmt.Sprintf(
-		"version = %q\ndirectory = %q\ndnssec = \"off\"\nforwardservers = [\"1.1.1.1:53\"]\nmaxdepth_old = 30\n",
+		"version = %q\ndirectory = %q\ndnssec = \"off\"\nrootservers = [\"192.5.5.241:53\"]\nforwardservers = [\"1.1.1.1:53\"]\nmaxdepth_old = 30\n",
 		configver, filepath.Join(dir, "db"),
 	)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -151,7 +151,7 @@ func TestLoadRejectsUnusableValues(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
 	body := fmt.Sprintf(
-		"version = %q\ndirectory = %q\nnullroute = \"not-an-ip\"\n",
+		"version = %q\ndirectory = %q\nrootservers = [\"192.5.5.241:53\"]\nnullroute = \"not-an-ip\"\n",
 		configver, filepath.Join(dir, "db"),
 	)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -221,7 +221,7 @@ func TestValidateFamilySpecificLists(t *testing.T) {
 		}}, "exclude_aaaa_networks"},
 		// The updater fetches with an http.Client, so anything else never loads.
 		{"blocklist scheme", Config{BlockLists: []string{"ftp://example.com/list"}}, "http"},
-		{"negative tcp pool", Config{TCPMaxConnections: -1}, "tcpmaxconnections"},
+		{"negative tcp pool", Config{TCPKeepalive: true, TCPMaxConnections: -1}, "tcpmaxconnections"},
 		{"negative dnstap interval", Config{DnstapFlushInterval: -1}, "dnstapflushinterval"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -318,7 +318,7 @@ func TestLoadReportsUnknownKeysAlongsideValueProblems(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
 	body := fmt.Sprintf(
-		"version = %q\ndirectory = %q\nnullroute = \"not-an-ip\"\nmaxdepth_old = 30\n",
+		"version = %q\ndirectory = %q\nrootservers = [\"192.5.5.241:53\"]\nnullroute = \"not-an-ip\"\nmaxdepth_old = 30\n",
 		configver, filepath.Join(dir, "db"),
 	)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -585,7 +585,7 @@ func TestLoadValidatesQnameBeforeNormalizing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
 	body := fmt.Sprintf(
-		"version = %q\ndirectory = %q\nqname_max_minimize_count = -1\n",
+		"version = %q\ndirectory = %q\ndnssec = \"off\"\nrootservers = [\"192.5.5.241:53\"]\nqname_max_minimize_count = -1\n",
 		configver, filepath.Join(dir, "db"),
 	)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -646,7 +646,7 @@ func TestLoadTreatsOmittedDNSSECAsOn(t *testing.T) {
 		t.Helper()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "sdns.conf")
-		content := fmt.Sprintf("version = %q\ndirectory = %q\n%s",
+		content := fmt.Sprintf("version = %q\ndirectory = %q\nrootservers = [\"192.5.5.241:53\"]\n%s",
 			configver, filepath.Join(dir, "db"), body)
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -793,5 +793,281 @@ func TestValidateBlocklistPort(t *testing.T) {
 	}
 	if err := (&Config{BlockLists: []string{"http://example.com:8080/list"}}).Validate(); err != nil {
 		t.Fatalf("Validate() rejected a usable blocklist URL: %v", err)
+	}
+}
+
+// TestValidateRootKeyPolicyErrors pins that a key the crypto packages refuse
+// for their own reasons is not mistaken for a signature mismatch. Go rejects
+// an RSA key under 1024 bits with a key-size policy error that is neither a
+// parse failure nor a verification failure, and an anchor like that fails
+// every real verification the same way.
+func TestValidateRootKeyPolicyErrors(t *testing.T) {
+	// RFC 3110 key material: exponent length, exponent, modulus.
+	rsaKey := func(modulusBytes int) string {
+		buf := []byte{3, 1, 0, 1}
+		mod := make([]byte, modulusBytes)
+		for i := range mod {
+			mod[i] = 0xff
+		}
+		mod[modulusBytes-1] = 0x8d
+		return base64.StdEncoding.EncodeToString(append(buf, mod...))
+	}
+
+	small := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 8 " + rsaKey(64)}}
+	err := small.Validate()
+	if err == nil || !strings.Contains(err.Error(), "not usable") {
+		t.Fatalf("Validate() = %v, want the 512-bit RSA anchor rejected", err)
+	}
+
+	// A key of a size the crypto package will work with still passes.
+	big := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 8 " + rsaKey(256)}}
+	if err := big.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a 2048-bit RSA anchor: %v", err)
+	}
+}
+
+func TestValidateOutboundAddressesMustBeLocal(t *testing.T) {
+	// The resolver stops the process when it cannot bind to one of these.
+	notMine := &Config{OutboundIPs: []string{"192.0.2.1"}}
+	if err := notMine.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "not an address of this machine") {
+		t.Fatalf("Validate() = %v, want a non-local outbound address rejected", err)
+	}
+
+	// Loopback is always here, and is what the check should accept.
+	mine := &Config{OutboundIPs: []string{"127.0.0.1"}}
+	if err := mine.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a local address: %v", err)
+	}
+
+	// The v6 list is only read when ipv6access is on.
+	off := &Config{OutboundIP6s: []string{"2001:db8::1"}}
+	if err := off.Validate(); err != nil {
+		t.Fatalf("Validate() read outboundip6s with ipv6access off: %v", err)
+	}
+	on := &Config{IPv6Access: true, OutboundIP6s: []string{"2001:db8::1"}}
+	if err := on.Validate(); err == nil {
+		t.Fatal("Validate() accepted a non-local outbound v6 address with ipv6access on")
+	}
+}
+
+// TestValidateShadowedQnameSetting pins that the deprecated key is judged only
+// when it is the one being read. With the new key set, QnameMinimizeParams
+// never consults it, so refusing a stale value there would stop a server whose
+// live setting is fine.
+func TestValidateShadowedQnameSetting(t *testing.T) {
+	zero := 0
+	shadowed := &Config{QnameMinLevel: -1, QnameMaxMinimizeCount: &zero}
+	if err := shadowed.Validate(); err != nil {
+		t.Fatalf("Validate() judged a shadowed deprecated setting: %v", err)
+	}
+
+	alone := &Config{QnameMinLevel: -1}
+	if err := alone.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "qname_min_level") {
+		t.Fatalf("Validate() = %v, want the live deprecated setting judged", err)
+	}
+}
+
+func TestValidateTCPPoolSettingsFollowKeepalive(t *testing.T) {
+	stale := &Config{TCPMaxConnections: -1}
+	stale.RootTCPTimeout.Duration = -time.Second
+	if err := stale.Validate(); err != nil {
+		t.Fatalf("Validate() read TCP pool settings with keepalive off: %v", err)
+	}
+
+	on := *stale
+	on.TCPKeepalive = true
+	err := on.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted negative TCP pool settings with keepalive on")
+	}
+	for _, want := range []string{"tcpmaxconnections", "roottcptimeout"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() = %v\nmissing %q", err, want)
+		}
+	}
+}
+
+func TestValidateKubernetesDemoCountsAsEnabled(t *testing.T) {
+	demo := &Config{}
+	demo.Kubernetes.Demo = true
+	demo.Kubernetes.ClusterDomain = "bad..domain"
+	if err := demo.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "cluster_domain") {
+		t.Fatalf("Validate() = %v, want the demo cluster domain judged", err)
+	}
+
+	off := &Config{}
+	off.Kubernetes.ClusterDomain = "bad..domain"
+	if err := off.Validate(); err != nil {
+		t.Fatalf("Validate() judged the cluster domain with kubernetes off: %v", err)
+	}
+
+	// Trailing dot and case are normalized before use, so both are fine.
+	ok := &Config{}
+	ok.Kubernetes.Enabled = true
+	ok.Kubernetes.ClusterDomain = "Cluster.Local."
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a normalizable cluster domain: %v", err)
+	}
+}
+
+// TestValidateLeavesListenerHostAlone pins a deliberate absence. A literal may
+// name an address this machine does not hold yet — that is how a floating
+// address is served, and rejecting it would refuse a working HA config — and
+// whether a name resolves is a runtime question of the same class as whether
+// an upstream answers.
+func TestValidateLeavesListenerHostAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{"empty host is every interface", Config{Bind: ":53"}, true},
+		{"IP literal", Config{Bind: "127.0.0.1:53"}, true},
+		{"IPv6 literal", Config{Bind: "[::1]:53"}, true},
+		{"an address not held yet", Config{Bind: "192.0.2.1:53"}, true},
+		{"a name is left to listen time", Config{Bind: "localhost:53"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
+// TestLoadRequiresWhatOnlyAFileNeeds pins the requirements that cannot live in
+// Validate, because a Config built in code legitimately leaves them empty.
+// They still have to reach the same report.
+func TestLoadRequiresWhatOnlyAFileNeeds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"no working directory", "directory = \"\"\nrootservers = [\"192.5.5.241:53\"]\n", "leaves it empty"},
+		{"nothing to recurse from", "rootservers = []\n", "no root server"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sdns.conf")
+			body := fmt.Sprintf("version = %q\ndnssec = \"off\"\n%s", configver, tc.body)
+			if !strings.Contains(tc.body, "directory = ") {
+				body = fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n%s",
+					configver, filepath.Join(dir, "db"), tc.body)
+			}
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path, "test")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() = %v, want a problem naming %q", err, tc.want)
+			}
+		})
+	}
+
+	// A forwarder takes every query before the resolver sees it, so it needs
+	// no root of its own.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdns.conf")
+	body := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\nforwarderservers = [\"1.1.1.1:53\"]\n",
+		configver, filepath.Join(dir, "db"))
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, "test"); err != nil {
+		t.Fatalf("Load() refused a forwarder-only config: %v", err)
+	}
+}
+
+func TestValidateAccessLogTargetKinds(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.log")
+	if err := os.WriteFile(file, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{AccessLog: file}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a writable access log: %v", err)
+	}
+
+	// Opened write-only; a read-only file fails there and logging quietly
+	// switches off.
+	ro := filepath.Join(dir, "ro.log")
+	if err := os.WriteFile(ro, []byte(""), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getuid() == 0 {
+		return // root opens it regardless
+	}
+	if err := (&Config{AccessLog: ro}).Validate(); err == nil {
+		t.Fatal("Validate() accepted an access log it cannot write")
+	}
+}
+
+func TestValidateUnreadableFile(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads regardless of mode")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cert.pem")
+	if err := os.WriteFile(path, []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file, and still not one this process can read — every
+	// consumer here opens it, so the type test alone was not enough.
+	if err := (&Config{HostsFile: path}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a file it cannot read")
+	}
+}
+
+func TestValidateDanglingSymlinkDirectory(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "db")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	// Stat calls this absent, but the directory entry is there, so the Mkdir
+	// that follows fails with EEXIST.
+	if err := (&Config{Directory: link}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Validate() = %v, want the dangling symlink reported", err)
+	}
+
+	// One that resolves to a directory is usable.
+	target := filepath.Join(dir, "real")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	good := filepath.Join(dir, "good")
+	if err := os.Symlink(target, good); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{Directory: good}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a symlink to a directory: %v", err)
+	}
+}
+
+// TestUsablePortUsesTheNetworksGiven pins that the protocols a caller passes
+// actually reach LookupPort. The service tables on this platform are not
+// partitioned by protocol, so no config-level test can tell "udp" from "tcp"
+// here; asking for a network that cannot exist proves the argument is used.
+func TestUsablePortUsesTheNetworksGiven(t *testing.T) {
+	if _, err := usablePort("53", "udp", "tcp"); err != nil {
+		t.Fatalf("usablePort() rejected 53 on udp and tcp: %v", err)
+	}
+	// A numeric port is network-independent and short-circuits, so the proof
+	// has to use a service name: looking one up needs a network that exists.
+	if _, err := usablePort("domain", "nonsense"); err == nil {
+		t.Fatal("usablePort() ignored the network it was given")
+	}
+	if _, err := usablePort("domain", "udp", "tcp"); err != nil {
+		t.Fatalf("usablePort() rejected a service name both protocols know: %v", err)
+	}
+	// No networks means nothing to check, which is not a silent pass for a
+	// port that cannot resolve — every caller names at least one.
+	if n, err := usablePort("65536", "udp"); err == nil {
+		t.Fatalf("usablePort() = %d, want an out-of-range port refused", n)
 	}
 }

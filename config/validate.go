@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/ecdh"
+	"crypto/rsa"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -52,24 +53,32 @@ func (c *Config) Validate() error {
 		add("loglevel = %q: must be one of debug, info, warn, error", c.LogLevel)
 	}
 
-	for _, bind := range []struct{ key, value string }{
-		{"bind", c.Bind},
-		{"bindtls", c.BindTLS},
-		{"binddoh", c.BindDOH},
-		{"binddoq", c.BindDOQ},
+	for _, bind := range []struct {
+		key, value string
+		networks   []string
+	}{
+		// The plain listener answers over both; the rest open one apiece.
+		{"bind", c.Bind, []string{"udp", "tcp"}},
+		{"bindtls", c.BindTLS, []string{"tcp"}},
+		{"binddoh", c.BindDOH, []string{"tcp"}},
+		{"binddoq", c.BindDOQ, []string{"udp"}},
 	} {
 		if bind.value == "" {
 			continue
 		}
-		// An empty host is how every listener is told "all interfaces", so
-		// only the port half is required.
-		port, err := hostPort(bind.value)
+		host, port, err := net.SplitHostPort(bind.value)
 		switch {
-		case err != nil:
+		case err != nil || port == "":
 			add("%s = %q: must be host:port", bind.key, bind.value)
 		default:
+			// The host half is deliberately not judged. Empty means every
+			// interface; a literal may name an address this machine does not
+			// hold yet, which is how a floating address is served; and
+			// whether a name resolves is a runtime question of the same
+			// class as whether an upstream answers.
+			_ = host
 			// Port 0 is legal here: it asks the kernel for a free one.
-			if _, err := usablePort(port); err != nil {
+			if _, err := usablePort(port, bind.networks...); err != nil {
 				add("%s = %q: %v", bind.key, bind.value, err)
 			}
 		}
@@ -154,7 +163,7 @@ func (c *Config) Validate() error {
 			// Unlike a listener, an upstream cannot use port 0: nothing
 			// answers there, and the dial failure is per query rather than
 			// at startup.
-			if n, err := usablePort(port); err != nil || n == 0 {
+			if n, err := usablePort(port, "udp"); err != nil || n == 0 {
 				add("%s %q: must have a port to reach, e.g. 192.0.2.1:53", list.key, addr)
 				continue
 			}
@@ -185,8 +194,6 @@ func (c *Config) Validate() error {
 	}{
 		{"timeout", c.Timeout},
 		{"querytimeout", c.QueryTimeout},
-		{"roottcptimeout", c.RootTCPTimeout},
-		{"tldtcptimeout", c.TLDTCPTimeout},
 	} {
 		if d.value.Duration < 0 {
 			add("%s = %q: must not be negative", d.key, d.value.Duration)
@@ -208,7 +215,6 @@ func (c *Config) Validate() error {
 		// value is neither the default nor what was asked for: it leaves the
 		// TCP pool holding nothing, dnstap back on its default interval, and
 		// the metrics limit meaningless.
-		{"tcpmaxconnections", c.TCPMaxConnections},
 		{"dnstapflushinterval", c.DnstapFlushInterval},
 		{"domainmetricslimit", c.DomainMetricsLimit},
 		{"ingressworkers", c.IngressWorkers},
@@ -217,6 +223,25 @@ func (c *Config) Validate() error {
 	} {
 		if n.value < 0 {
 			add("%s = %d: must not be negative", n.key, n.value)
+		}
+	}
+
+	// Only reachable behind tcpkeepalive: the pool is the only reader, and it
+	// is not built at all when the setting is off.
+	if c.TCPKeepalive {
+		for _, d := range []struct {
+			key   string
+			value Duration
+		}{
+			{"roottcptimeout", c.RootTCPTimeout},
+			{"tldtcptimeout", c.TLDTCPTimeout},
+		} {
+			if d.value.Duration < 0 {
+				add("%s = %q: must not be negative", d.key, d.value.Duration)
+			}
+		}
+		if c.TCPMaxConnections < 0 {
+			add("tcpmaxconnections = %d: must not be negative", c.TCPMaxConnections)
 		}
 	}
 
@@ -321,16 +346,32 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 					family = "IPv4"
 				}
 				add("%s %q: must be an %s address", out.key, addr, family)
+				continue
+			}
+			// The resolver binds its outbound sockets to these, and stops
+			// the process outright when one is not an address this machine
+			// holds — after this test has already reported success.
+			// IPv6 is only read when ipv6access is on, so it is only
+			// judged then.
+			if !out.want4 && !c.IPv6Access {
+				continue
+			}
+			if !localAddress(ip) {
+				add("%s %q: is not an address of this machine", out.key, addr)
 			}
 		}
 	}
 
 	if c.API != "" {
-		port, err := hostPort(c.API)
-		if err != nil {
+		host, port, err := net.SplitHostPort(c.API)
+		switch {
+		case err != nil || port == "":
 			add("api = %q: must be host:port", c.API)
-		} else if _, err := usablePort(port); err != nil {
-			add("api = %q: %v", c.API, err)
+		default:
+			_ = host
+			if _, err := usablePort(port, "tcp"); err != nil {
+				add("api = %q: %v", c.API, err)
+			}
 		}
 	}
 
@@ -355,23 +396,47 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 
 	// Opened with O_CREATE, so it need not exist; a directory at the path
 	// makes that open fail and takes the server down at startup.
+	// Opened write-only with O_CREATE. The middleware logs a failure there and
+	// carries on with access logging quietly switched off, so every way of
+	// getting this wrong is silent.
 	if c.AccessLog != "" {
-		switch info, err := os.Stat(c.AccessLog); {
-		case err == nil && info.IsDir():
-			add("accesslog = %q: is a directory, want a file", c.AccessLog)
+		info, err := os.Lstat(c.AccessLog)
+		switch {
 		case os.IsNotExist(err):
-			// It is created on open, but only inside a directory that is
-			// already there. The middleware logs the failure and carries on
-			// with access logging quietly switched off.
+			// Created on open, but only inside a directory already there.
 			if err := existingDir(filepath.Dir(c.AccessLog)); err != nil {
+				add("accesslog = %q: %v", c.AccessLog, err)
+			}
+		case err != nil:
+			add("accesslog = %q: %v", c.AccessLog, err)
+		case info.IsDir():
+			add("accesslog = %q: is a directory, want a file", c.AccessLog)
+		case !info.Mode().IsRegular():
+			// A FIFO would hold the open until a reader arrives, which is a
+			// hung startup rather than a logged failure.
+			add("accesslog = %q: is a %s, want a regular file", c.AccessLog, fileKind(info.Mode()))
+		default:
+			if err := openable(c.AccessLog, os.O_WRONLY); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
 		}
 	}
 
-	if c.Kubernetes.Enabled && c.Kubernetes.Kubeconfig != "" {
-		if err := regularFile(c.Kubernetes.Kubeconfig); err != nil {
-			add("kubernetes.kubeconfig = %q: %v", c.Kubernetes.Kubeconfig, err)
+	// Demo seeds the registry and switches the middleware on just as Enabled
+	// does, so both open the same settings.
+	if c.Kubernetes.Enabled || c.Kubernetes.Demo {
+		if c.Kubernetes.Enabled && c.Kubernetes.Kubeconfig != "" {
+			if err := regularFile(c.Kubernetes.Kubeconfig); err != nil {
+				add("kubernetes.kubeconfig = %q: %v", c.Kubernetes.Kubeconfig, err)
+			}
+		}
+		// Lowercased and stripped of a trailing dot, then used as the suffix
+		// every lookup is matched against. A name that cannot be one matches
+		// nothing, and the middleware answers for no query at all.
+		if domain := strings.TrimSuffix(strings.ToLower(c.Kubernetes.ClusterDomain), "."); domain != "" {
+			if !validDomainName(domain) {
+				add("kubernetes.cluster_domain = %q: is not a valid domain name", c.Kubernetes.ClusterDomain)
+			}
 		}
 	}
 
@@ -402,7 +467,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		case err != nil || host == "" || port == "":
 			add("hyperlocal_root_sources %q: must be host:port", raw)
 		default:
-			if n, err := usablePort(port); err != nil || n == 0 {
+			if n, err := usablePort(port, "tcp"); err != nil || n == 0 {
 				add("hyperlocal_root_sources %q: must have a port to reach", raw)
 			}
 		}
@@ -418,7 +483,10 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	if c.QnameMaxMinimizeCount != nil && *c.QnameMaxMinimizeCount < 0 {
 		add("qname_max_minimize_count = %d: must not be negative (0 turns minimization off)", *c.QnameMaxMinimizeCount)
 	}
-	if c.QnameMinLevel < 0 {
+	// Only when it is the value actually read: with the new key set, the
+	// deprecated one is never consulted, so judging it would refuse a config
+	// whose live setting is fine.
+	if c.QnameMaxMinimizeCount == nil && c.QnameMinLevel < 0 {
 		add("qname_min_level = %d: must not be negative", c.QnameMinLevel)
 	}
 	if c.QnameMinimizeOneLabel < 0 {
@@ -512,7 +580,7 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 			// An explicit port is dialled like any other; out of range or
 			// zero fails at connect and the list simply never loads.
 			if port := parsed.Port(); port != "" {
-				if n, err := usablePort(port); err != nil || n == 0 {
+				if n, err := usablePort(port, "tcp"); err != nil || n == 0 {
 					add("blocklists %q: port %q has nothing to connect to", u, port)
 				}
 			}
@@ -697,6 +765,32 @@ func (c *Config) validateECS(add func(string, ...any)) {
 	}
 }
 
+// localAddress reports whether ip is one this machine holds. The resolver
+// makes the same test before binding an outbound socket to it and stops the
+// process when it fails, so a config test that skipped it would report success
+// on a file the server refuses.
+func localAddress(ip net.IP) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		// Nothing to compare against; leave the judgement to the runtime
+		// rather than invent a failure.
+		return true
+	}
+	for _, a := range addrs {
+		switch v := a.(type) {
+		case *net.IPNet:
+			if v.IP.Equal(ip) {
+				return true
+			}
+		case *net.IPAddr:
+			if v.IP.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func validCIDR(s string) bool {
 	_, _, err := net.ParseCIDR(s)
 	return err == nil
@@ -722,7 +816,23 @@ func regularFile(path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("is a %s, want a regular file", fileKind(info.Mode()))
 	}
-	return nil
+	// Type alone does not make it readable, and every consumer here opens the
+	// file: a certificate, a hosts file and a plugin all fail later on a mode
+	// this test would have passed. Startup runs under the same identity, so
+	// the open answers the question that matters.
+	return openable(path, os.O_RDONLY)
+}
+
+// openable reports whether path can be opened with the given flags, without
+// creating or truncating anything.
+func openable(path string, flag int) error {
+	// The path is the operator's own config value, opened to answer whether
+	// the server will be able to use it.
+	f, err := os.OpenFile(path, flag, 0) //nolint:gosec // G304 - the path under test is the input
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func fileKind(mode os.FileMode) string {
@@ -743,7 +853,10 @@ func fileKind(mode os.FileMode) string {
 // into. Absence is fine — both callers create it — but a plain file sitting at
 // the path is not, because the Mkdir that would follow fails.
 func writableDir(path string) error {
-	info, err := os.Stat(path)
+	// Lstat, so a symlink is judged as itself: a dangling one looks absent to
+	// Stat, and then Mkdir fails on it with EEXIST because the entry is
+	// already there.
+	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		// Created with Mkdir, not MkdirAll, so one missing level is made
 		// and two are not.
@@ -751,6 +864,18 @@ func writableDir(path string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// A symlink that resolves to a directory is usable; one that does
+		// not is the case Mkdir cannot get past.
+		target, terr := os.Stat(path)
+		if terr != nil {
+			return fmt.Errorf("is a symlink that does not resolve: %w", terr)
+		}
+		if !target.IsDir() {
+			return fmt.Errorf("is a symlink to a file, want a directory")
+		}
+		return nil
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("is a file, want a directory")
@@ -796,8 +921,16 @@ func anchorKeyProblem(key *dns.DNSKEY) error {
 	switch {
 	case errors.Is(err, dns.ErrAlg):
 		return fmt.Errorf("algorithm %d (%s) cannot be verified with", key.Algorithm, name)
-	case errors.Is(err, dns.ErrKey):
-		return fmt.Errorf("public key is not usable for algorithm %d (%s)", key.Algorithm, name)
+	case err == nil, errors.Is(err, expectedProbeFailure(key.Algorithm)):
+		// The key was loaded and used, and only the throwaway signature was
+		// rejected — which is all this is asking.
+	default:
+		// Anything else means the key itself stopped the verifier. Listing
+		// the failures to reject would miss the ones the crypto packages add
+		// over time: Go now refuses an RSA key under 1024 bits with a policy
+		// error that is neither a parse failure nor a signature mismatch, and
+		// an anchor like that fails every real verification the same way.
+		return fmt.Errorf("public key is not usable for algorithm %d (%s): %v", key.Algorithm, name, err)
 	}
 
 	// The probe cannot see this on its own. A throwaway signature decodes to
@@ -818,6 +951,19 @@ func anchorKeyProblem(key *dns.DNSKEY) error {
 	return nil
 }
 
+// expectedProbeFailure is the one error a usable key of this algorithm may
+// produce against a signature that is deliberately wrong. Naming what success
+// looks like rather than enumerating failures keeps a key the crypto packages
+// reject for a new reason from passing as usable.
+func expectedProbeFailure(alg uint8) error {
+	switch alg {
+	case dns.RSAMD5, dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512:
+		return rsa.ErrVerification
+	}
+	// ECDSA and the Edwards curves fail a bad signature inside miekg itself.
+	return dns.ErrSig
+}
+
 // ecdhCurve returns the curve behind a DNSSEC ECDSA algorithm, or nil for
 // every other algorithm. crypto/ecdh is used only as a point checker here —
 // it validates on-curve-ness on parse, which is the part the signature probe
@@ -834,18 +980,6 @@ func ecdhCurve(alg uint8) ecdh.Curve {
 	return nil
 }
 
-// hostPort splits addr and returns its port half, requiring one to be present.
-func hostPort(addr string) (string, error) {
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", err
-	}
-	if port == "" {
-		return "", fmt.Errorf("no port")
-	}
-	return port, nil
-}
-
 // usablePort resolves a port the way the net package does and returns the
 // number it lands on. SplitHostPort only separates the halves — it never reads
 // them — so ":65536" survives it and then fails at bind time, and an upstream
@@ -858,17 +992,23 @@ func hostPort(addr string) (string, error) {
 // tried because sdns listens on each and the two tables can differ; accepting
 // a name either one knows can only avoid refusing a config that works.
 //
+// The networks a caller passes are the ones the endpoint actually opens, so a
+// service name is judged the way it will be looked up: bind serves UDP and TCP
+// both, DoQ is UDP, and the TLS, DoH and API listeners are TCP.
+//
 // Callers that cannot use port 0 test the returned number rather than the
 // string: "00" and "+0" both resolve to zero and would slip past a comparison
 // against "0".
-func usablePort(port string) (int, error) {
-	n, err := net.LookupPort("udp", port)
-	if err != nil {
-		if n, err = net.LookupPort("tcp", port); err != nil {
-			return 0, fmt.Errorf("port %q is not one this host can use", port)
+func usablePort(port string, networks ...string) (int, error) {
+	var resolved int
+	for _, network := range networks {
+		n, err := net.LookupPort(network, port)
+		if err != nil {
+			return 0, fmt.Errorf("port %q is not one this host can use for %s", port, network)
 		}
+		resolved = n
 	}
-	return n, nil
+	return resolved, nil
 }
 
 // validIPPort reports whether addr is an IP literal with a usable port.
@@ -879,7 +1019,7 @@ func validIPPort(addr string) bool {
 	if err != nil || port == "" {
 		return false
 	}
-	if n, err := usablePort(port); err != nil || n == 0 {
+	if n, err := usablePort(port, "udp"); err != nil || n == 0 {
 		return false
 	}
 	return net.ParseIP(host) != nil
@@ -899,7 +1039,7 @@ func validUpstream(addr string) error {
 			return fmt.Errorf("not a usable DoH URL")
 		}
 		if port := u.Port(); port != "" {
-			n, err := usablePort(port)
+			n, err := usablePort(port, "tcp")
 			if err != nil {
 				return err
 			}
@@ -919,4 +1059,55 @@ func validUpstream(addr string) error {
 		}
 		return nil
 	}
+}
+
+// validateLoaded is Validate plus the requirements that only a configuration
+// file has to meet. A Config built in code — a test, an embedder — supplies
+// what it needs directly and legitimately leaves the rest empty, so these
+// cannot live in Validate itself. They belong to the same report all the same:
+// finding them one run later is exactly what the single gate exists to avoid.
+func (c *Config) validateLoaded() error {
+	var problems []string
+	add := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf(format, args...))
+	}
+
+	// Load creates this directory and then works inside it; empty reaches
+	// os.Mkdir("") a few lines on and fails there, past the report.
+	if strings.TrimSpace(c.Directory) == "" {
+		add("directory: required, and this file leaves it empty")
+	}
+
+	// With no root to start from and nothing standing in for one, the
+	// resolver stops the process on the first recursive query rather than
+	// answering it. A global forwarder takes every query before the resolver
+	// sees it, and a forward zone for the root covers the same ground.
+	if len(c.RootServers) == 0 && len(c.Root6Servers) == 0 &&
+		len(c.ForwarderServers) == 0 && !c.forwardsRoot() {
+		add("rootservers: no root server, forwarder or root forward zone, so the first recursive query would stop the server")
+	}
+
+	if err := c.Validate(); err != nil {
+		if len(problems) == 0 {
+			return err
+		}
+		// One list, in the shape Validate already reports.
+		return fmt.Errorf("%w\n  - %s", err, strings.Join(problems, "\n  - "))
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(problems, "\n  - "))
+}
+
+// forwardsRoot reports whether a forward zone hands the whole namespace to its
+// own upstreams, which leaves nothing for the resolver to recurse for.
+func (c *Config) forwardsRoot() bool {
+	for i := range c.ForwardZones {
+		zone := &c.ForwardZones[i]
+		if dns.CanonicalName(strings.TrimSpace(zone.Name)) == "." && len(zone.Servers) > 0 {
+			return true
+		}
+	}
+	return false
 }

@@ -1430,7 +1430,7 @@ func Load(cfgfile, version string) (*Config, error) {
 	// than one error per run. When the file is failing anyway, the unknown
 	// keys join the report — they still never cause a failure on their own,
 	// but omitting them here would send the operator back for a second run.
-	if err := config.Validate(); err != nil {
+	if err := config.validateLoaded(); err != nil {
 		if len(config.undecodedKeys) > 0 {
 			return nil, fmt.Errorf("%w\n  - unknown keys (a typo, or settings this version no longer has): %s",
 				err, strings.Join(config.undecodedKeys, ", "))
