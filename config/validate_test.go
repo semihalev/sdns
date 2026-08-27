@@ -1736,23 +1736,26 @@ func TestPathHandlingOnBothPlatforms(t *testing.T) {
 // is that directory is one the server will be able to make — refusing it made
 // a fresh install impossible to start.
 func TestLoadAcceptsPathsUnderThePendingDirectory(t *testing.T) {
-	dir := t.TempDir()
-	work := filepath.Join(dir, "sdns") // does not exist yet
-
 	for _, tc := range []struct {
 		name string
-		body string
+		// key is filled in with the path to place under the pending
+		// directory. Built here rather than substituted into a prepared
+		// string: %q escapes a Windows path, so a later ReplaceAll on the
+		// raw form silently matches nothing.
+		key string
 	}{
-		{"access log", fmt.Sprintf("accesslog = %q\n", filepath.Join(work, "access.log"))},
-		{"explicit blocklistdir", fmt.Sprintf("blocklistdir = %q\n", filepath.Join(work, "lists"))},
+		{"access log", "accesslog"},
+		{"explicit blocklistdir", "blocklistdir"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d := t.TempDir()
-			w := filepath.Join(d, "sdns")
-			body := strings.ReplaceAll(tc.body, work, w)
-			path := filepath.Join(d, "sdns.conf")
+			dir := t.TempDir()
+			work := filepath.Join(dir, "sdns") // does not exist yet
+			inside := filepath.Join(work, "thing")
+
+			path := filepath.Join(dir, "sdns.conf")
 			content := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n"+
-				"rootservers = [\"192.5.5.241:53\"]\n%s", configver, w, body)
+				"rootservers = [\"192.5.5.241:53\"]\n%s = %q\n",
+				configver, work, tc.key, inside)
 			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -1764,6 +1767,8 @@ func TestLoadAcceptsPathsUnderThePendingDirectory(t *testing.T) {
 
 	// One level only: Load uses Mkdir, so a directory below that is nobody's
 	// to create.
+	dir := t.TempDir()
+	work := filepath.Join(dir, "sdns")
 	deep := &Config{Directory: work, AccessLog: filepath.Join(work, "sub", "access.log")}
 	if err := deep.Validate(); err == nil {
 		t.Fatal("Validate() accepted a path two levels below a directory that is not there")
