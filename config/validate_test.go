@@ -34,7 +34,7 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		// Documented for years, never implemented: startup rejects it.
 		{"crit log level", Config{LogLevel: "crit"}, "loglevel"},
 		{"root server family", Config{RootServers: []string{"[2001:db8::1]:53"}}, "rootservers"},
-		{"root6 server family", Config{Root6Servers: []string{"192.0.2.1:53"}}, "root6servers"},
+		{"root6 server family", Config{IPv6Access: true, Root6Servers: []string{"192.0.2.1:53"}}, "root6servers"},
 		{"root key not a KSK", Config{RootKeys: []string{
 			". 172800 IN DNSKEY 256 3 8 AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3",
 		}}, "key-signing key"},
@@ -1333,6 +1333,76 @@ func TestValidateLeavesNoProbeBehind(t *testing.T) {
 			if strings.HasPrefix(e.Name(), ".sdns-config-test-") {
 				t.Fatalf("probe file left behind in %s: %s", d, e.Name())
 			}
+		}
+	}
+}
+
+func TestValidateRoot6ServersFollowIPv6Access(t *testing.T) {
+	// The resolver reads this list only behind ipv6access, so a stale entry
+	// on a host without v6 has no effect and must not stop the server.
+	stale := &Config{RootServers: []string{"192.5.5.241:53"}, Root6Servers: []string{"nonsense"}}
+	if err := stale.Validate(); err != nil {
+		t.Fatalf("Validate() read root6servers with ipv6access off: %v", err)
+	}
+
+	on := *stale
+	on.IPv6Access = true
+	if err := on.Validate(); err == nil || !strings.Contains(err.Error(), "root6servers") {
+		t.Fatalf("Validate() = %v, want root6servers judged when v6 is in use", err)
+	}
+}
+
+// TestValidateWildcardBelongsToTheBlocklist pins which list reads the star.
+// set() strips "*." and files the rest as a wildcard block; the whitelist is
+// stored verbatim and matched up the hierarchy, so a star there is a literal
+// label no query produces — and the operator who wrote it, meaning to exempt
+// the subdomains, gets nothing.
+func TestValidateWildcardBelongsToTheBlocklist(t *testing.T) {
+	if err := (&Config{Blocklist: []string{"*.example.com"}}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a wildcard block: %v", err)
+	}
+
+	err := (&Config{Whitelist: []string{"*.example.com"}}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "blocklist syntax") {
+		t.Fatalf("Validate() = %v, want the wildcard whitelist entry rejected", err)
+	}
+
+	// The name itself is what works there, and it covers the subdomains.
+	if err := (&Config{Whitelist: []string{"example.com"}}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a plain whitelist entry: %v", err)
+	}
+}
+
+func TestValidateTrailingSlashDirectory(t *testing.T) {
+	dir := t.TempDir()
+	// Dir("/parent/db/") is "/parent/db" — the path itself, which read as a
+	// parent that is not there. os.Mkdir takes the trailing slash fine.
+	withSlash := filepath.Join(dir, "db") + string(filepath.Separator)
+	if err := (&Config{Directory: withSlash}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a directory written with a trailing slash: %v", err)
+	}
+	// And the real case still fails: two missing levels, one Mkdir.
+	if err := (&Config{Directory: filepath.Join(dir, "a", "b")}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a directory whose parent is missing")
+	}
+}
+
+func TestValidateEmptyZonesMustBeServedLocally(t *testing.T) {
+	// Outside the tree: the middleware drops it, and a list where every
+	// entry is dropped falls back to all of them.
+	outside := &Config{EmptyZones: []string{"example.com."}}
+	if err := outside.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "locally-served") {
+		t.Fatalf("Validate() = %v, want an unserved empty zone reported", err)
+	}
+
+	for _, zone := range []string{
+		"10.in-addr.arpa.",
+		"10.IN-ADDR.ARPA",      // canonicalized before the walk
+		"sub.10.in-addr.arpa.", // covered by its parent, as Match walks suffixes
+	} {
+		if err := (&Config{EmptyZones: []string{zone}}).Validate(); err != nil {
+			t.Fatalf("Validate() rejected %q: %v", zone, err)
 		}
 	}
 }

@@ -17,6 +17,8 @@ import (
 	"sync"
 
 	"github.com/miekg/dns"
+
+	"github.com/semihalev/sdns/internal/emptyzones"
 )
 
 // Validate reports what is wrong with a loaded configuration.
@@ -140,6 +142,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	root6 := c.Root6Servers
+	if !c.IPv6Access {
+		root6 = nil
+	}
+
 	// The resolver takes IPv4 from rootservers and IPv6 from root6servers,
 	// and silently drops anything in the wrong list. A misplaced address
 	// therefore leaves a shorter root set than the operator wrote, or an
@@ -150,7 +157,9 @@ func (c *Config) Validate() error {
 		want   string // "4", "6", or "" for either
 	}{
 		{"rootservers", c.RootServers, "4"},
-		{"root6servers", c.Root6Servers, "6"},
+		// Only read behind ipv6access, so a stale entry on a host without
+		// v6 has no effect and must not stop the server.
+		{"root6servers", root6, "6"},
 		{"fallbackservers", c.FallbackServers, ""},
 	} {
 		for _, addr := range list.values {
@@ -413,7 +422,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			// Created on open, but only inside a directory already there —
 			// and for a symlink that is the target's directory, not the
 			// link's, since the open follows the link before creating.
-			if err := existingDir(filepath.Dir(accessLogTarget(c.AccessLog))); err != nil {
+			if err := existingDir(filepath.Dir(filepath.Clean(accessLogTarget(c.AccessLog)))); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
 		case err != nil:
@@ -569,16 +578,23 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 		values   []string
 		wildcard bool
 	}{
+		// Only the blocklist reads the star: set() strips "*." and files the
+		// rest as a wildcard block. The whitelist is stored verbatim and
+		// matched up the hierarchy, so "*.example.com" there becomes a key
+		// with a literal star label that no query ever produces — and the
+		// operator who wrote it, meaning to exempt the subdomains, gets
+		// nothing. Whitelisting "example.com" already covers them.
 		{"blocklist", c.Blocklist, true},
-		{"whitelist", c.Whitelist, true},
+		{"whitelist", c.Whitelist, false},
 		{"emptyzones", c.EmptyZones, false},
 	} {
 		for _, entry := range list.values {
 			name := entry
-			// "*.example.com" blocks subdomains only; the star is the
-			// blocklist's own syntax, not part of the name.
 			if list.wildcard {
 				name = strings.TrimPrefix(name, "*.")
+			} else if strings.HasPrefix(name, "*.") {
+				add("%s %q: the leading \"*.\" is blocklist syntax and is not read here; write the name itself, which already covers its subdomains", list.key, entry)
+				continue
 			}
 			if name == "" {
 				add("%s entry %q is empty", list.key, entry)
@@ -586,6 +602,13 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 			}
 			if _, ok := dns.IsDomainName(name); !ok {
 				add("%s %q: not a valid domain name", list.key, entry)
+				continue
+			}
+			// An empty zone outside the locally-served tree is dropped, and
+			// a list where every entry is dropped falls back to all of them
+			// — so the operator gets the opposite of a narrowed list.
+			if list.key == "emptyzones" && !emptyzones.Covers(name) {
+				add("emptyzones %q: is not one of the locally-served zones (RFC 6303), so it is dropped", entry)
 			}
 		}
 	}
@@ -884,8 +907,9 @@ func writableDir(path string) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		// Created with Mkdir, not MkdirAll, so one missing level is made
-		// and two are not.
-		return existingDir(filepath.Dir(path))
+		// and two are not. Clean first: Dir("/parent/db/") is "/parent/db",
+		// the path itself, which would look like a parent that is not there.
+		return existingDir(filepath.Dir(filepath.Clean(path)))
 	}
 	if err != nil {
 		return err
