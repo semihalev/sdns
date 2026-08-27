@@ -513,11 +513,16 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("accesslog = %q: %v", c.AccessLog, err)
 		case info.IsDir():
 			add("accesslog = %q: is a directory, want a file", c.AccessLog)
-		case !info.Mode().IsRegular():
-			// A FIFO would hold the open until a reader arrives, which is a
-			// hung startup rather than a logged failure.
-			add("accesslog = %q: is a %s, want a regular file", c.AccessLog, fileKind(info.Mode()))
+		case info.Mode()&os.ModeNamedPipe != 0:
+			// The one kind that cannot be probed: opening a FIFO write-only
+			// waits for a reader, so asking would hang the config test the
+			// way it would hang startup.
+			add("accesslog = %q: is a named pipe, which the open would wait on", c.AccessLog)
 		default:
+			// Anything else is judged by opening it rather than by its type.
+			// A character device is the usual container spelling —
+			// /dev/null, or /dev/stdout to fold the log into the container's
+			// own output — and os.OpenFile takes both.
 			if err := openable(c.AccessLog, os.O_WRONLY); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
@@ -1121,25 +1126,29 @@ func readable(dir string) error {
 // it exists — so "missing/../db" is not the directory the server is about to
 // create, however it cleans up, and the two are compared as written.
 func samePath(a, b string) bool {
-	if cleansPathComponents || (!hasDotDot(a) && !hasDotDot(b)) {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	// Components as written, because a ".." among them only resolves once
-	// what precedes it exists. A trailing separator is not one of those
-	// components, though — mkdir and open both take a path with one — so it
-	// is dropped before the comparison rather than making two spellings of
-	// the same place look different.
-	//
-	// Where the part before the last element does exist, though, the system
-	// resolves it and so does this: "/tmp/there/../db" and "/tmp/db" are one
-	// place when "there" is there, and the pending directory would otherwise
-	// be missed for one spelling of it.
+	// Made absolute first, because a relative spelling resolves against the
+	// working directory of the process: nothing chdirs, so "db" and
+	// "<cwd>/db" are one place and were being called two.
+	a, b = absKeepingComponents(a), absKeepingComponents(b)
+
+	// Where the part before the last element is there, the system resolves
+	// it — through symlinks, through ".." — and so does this. It is what
+	// makes "/var/db" and "/private/var/db" one place on a Mac, and
+	// "there/../db" and "db" one place anywhere.
 	if ra, ok := resolveParent(a); ok {
 		if rb, ok := resolveParent(b); ok {
-			return ra == rb
+			return equalPaths(ra, rb)
 		}
 	}
-	return trimTrailingSeparators(a) == trimTrailingSeparators(b)
+
+	// Nothing to resolve against, so the spellings answer for themselves.
+	// Cleaning is right where the system cleans; where components are
+	// walked, a ".." among them has not resolved yet and the two are only
+	// the same if they are written the same.
+	if cleansPathComponents || (!hasDotDot(a) && !hasDotDot(b)) {
+		return equalPaths(filepath.Clean(a), filepath.Clean(b))
+	}
+	return equalPaths(trimTrailingSeparators(a), trimTrailingSeparators(b))
 }
 
 // resolveParent rewrites path with everything before its last element
@@ -1154,6 +1163,29 @@ func resolveParent(path string) (string, bool) {
 		return "", false
 	}
 	return filepath.Join(resolved, filepath.Base(trimmed)), true
+}
+
+// absKeepingComponents resolves a relative path against the working directory
+// without cleaning it. filepath.Abs cleans, and that would drop the ".."
+// components the comparison below still has to see.
+func absKeepingComponents(path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return path
+	}
+	return joinKeepingComponents(cwd, path)
+}
+
+// equalPaths compares two already-normalised paths the way the filesystem
+// does. Windows does not distinguish case, so neither does this there.
+func equalPaths(a, b string) bool {
+	if cleansPathComponents {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // trimTrailingSeparators drops the separators at the end of path, keeping a
@@ -1514,13 +1546,25 @@ func ecdhCurve(alg uint8) ecdh.Curve {
 var lookupPort = net.LookupPort
 
 func usablePort(port string, networks ...string) (int, error) {
-	var resolved int
+	resolved, first := 0, true
 	for _, network := range networks {
 		n, err := lookupPort(network, port)
 		if err != nil {
 			return 0, fmt.Errorf("port %q is not one this host can use for %s", port, network)
 		}
-		resolved = n
+		if first {
+			resolved, first = n, false
+			continue
+		}
+		if n != resolved {
+			// A service name can sit at different numbers in the two
+			// tables — "raid-am" is 2007 over UDP and 2013 over TCP on a
+			// Mac. A setting that opens both would answer on one and wait
+			// for the fallback on the other, which is the same split that
+			// makes port 0 unusable there.
+			return 0, fmt.Errorf("port %q resolves to %d for %s and %d for the other transport this setting opens; name a number",
+				port, n, network, resolved)
+		}
 	}
 	return resolved, nil
 }

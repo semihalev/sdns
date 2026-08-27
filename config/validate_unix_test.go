@@ -327,3 +327,26 @@ func TestValidateEquivalentDotDotPaths(t *testing.T) {
 		t.Fatal("Validate() accepted a log path through a component that is not there")
 	}
 }
+
+// TestValidateAccessLogDeviceTargets pins the container spelling. A character
+// device is not a regular file and os.OpenFile takes it anyway, so refusing
+// everything irregular stopped a setup that works. A named pipe stays refused:
+// opening it write-only waits for a reader.
+func TestValidateAccessLogDeviceTargets(t *testing.T) {
+	if _, err := os.Stat("/dev/null"); err != nil {
+		t.Skipf("no /dev/null: %v", err)
+	}
+	if err := (&Config{AccessLog: "/dev/null"}).Validate(); err != nil {
+		t.Fatalf("Validate() refused /dev/null as an access log: %v", err)
+	}
+
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	if err := (&Config{AccessLog: fifo}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "named pipe") {
+		t.Fatalf("Validate() = %v, want the named pipe refused", err)
+	}
+}

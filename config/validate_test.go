@@ -2070,3 +2070,72 @@ func TestValidateRejectsMappedPrefixes(t *testing.T) {
 		t.Fatalf("Validate() rejected ordinary prefixes: %v", err)
 	}
 }
+
+// TestValidatePortNameMustAgreeAcrossTransports pins the split a service name
+// can carry. "raid-am" is 2007 over UDP and 2013 over TCP on a Mac, so a
+// setting that opens both would answer on one number and wait for the
+// fallback on the other — the same break that makes port 0 unusable there.
+func TestValidatePortNameMustAgreeAcrossTransports(t *testing.T) {
+	original := lookupPort
+	defer func() { lookupPort = original }()
+
+	// Pinned rather than borrowed from this machine: which names disagree is
+	// a property of /etc/services, not of the rule under test.
+	lookupPort = func(network, port string) (int, error) {
+		if port != "split" {
+			return original(network, port)
+		}
+		if network == "udp" {
+			return 2007, nil
+		}
+		return 2013, nil
+	}
+
+	// bind opens both, so the disagreement matters.
+	if err := (&Config{Bind: ":split"}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a name that is a different port on each transport")
+	}
+
+	// DoQ opens UDP alone, so there is nothing to disagree with.
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "cert.pem")
+	key := filepath.Join(dir, "key.pem")
+	for _, p := range []string{cert, key} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	single := &Config{BindDOQ: ":split", TLSCertificate: cert, TLSPrivateKey: key}
+	if err := single.Validate(); err != nil {
+		t.Fatalf("Validate() refused a one-transport listener: %v", err)
+	}
+
+	// A name both tables agree on is fine everywhere.
+	if err := (&Config{Bind: ":domain"}).Validate(); err != nil {
+		t.Fatalf("Validate() refused a name both transports know: %v", err)
+	}
+}
+
+// TestValidateRelativeAndAbsoluteAreOnePlace pins that a relative working
+// directory and an absolute log path under it are recognised as the same
+// place. Nothing chdirs, so "db" resolves against the process's directory —
+// and on a first run the log's parent is one the server is about to make.
+func TestValidateRelativeAndAbsoluteAreOnePlace(t *testing.T) {
+	dir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd) //nolint:errcheck // restoring the test's own directory
+
+	cfg := &Config{
+		Directory: "db",
+		AccessLog: filepath.Join(dir, "db", "access.log"),
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() called two spellings of one directory different: %v", err)
+	}
+}
