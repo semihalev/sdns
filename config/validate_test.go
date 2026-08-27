@@ -1730,3 +1730,110 @@ func TestPathHandlingOnBothPlatforms(t *testing.T) {
 	}
 
 }
+
+// TestLoadAcceptsPathsUnderThePendingDirectory pins the first-run case. Load
+// creates the working directory just after this gate, so a path whose parent
+// is that directory is one the server will be able to make — refusing it made
+// a fresh install impossible to start.
+func TestLoadAcceptsPathsUnderThePendingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	work := filepath.Join(dir, "sdns") // does not exist yet
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"access log", fmt.Sprintf("accesslog = %q\n", filepath.Join(work, "access.log"))},
+		{"explicit blocklistdir", fmt.Sprintf("blocklistdir = %q\n", filepath.Join(work, "lists"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			w := filepath.Join(d, "sdns")
+			body := strings.ReplaceAll(tc.body, work, w)
+			path := filepath.Join(d, "sdns.conf")
+			content := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n"+
+				"rootservers = [\"192.5.5.241:53\"]\n%s", configver, w, body)
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path, "test"); err != nil {
+				t.Fatalf("Load() refused a path under the directory it creates: %v", err)
+			}
+		})
+	}
+
+	// One level only: Load uses Mkdir, so a directory below that is nobody's
+	// to create.
+	deep := &Config{Directory: work, AccessLog: filepath.Join(work, "sub", "access.log")}
+	if err := deep.Validate(); err == nil {
+		t.Fatal("Validate() accepted a path two levels below a directory that is not there")
+	}
+}
+
+func TestValidateBlocklistDirNeedNotBeWritable(t *testing.T) {
+	dir := t.TempDir()
+	lists := filepath.Join(dir, "lists")
+	if err := os.Mkdir(lists, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{BlockListDir: lists}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a usable blocklist directory: %v", err)
+	}
+
+	// It still has to be a directory.
+	file := filepath.Join(dir, "afile")
+	if err := os.WriteFile(file, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{BlockListDir: file}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a plain file as the blocklist directory")
+	}
+}
+
+// TestValidateRevokedAnchorIsAllowed pins RFC 5011 section 2.1 seeding. AutoTA
+// records an admin-configured revoked key as a tombstone so the revocation
+// survives a restart, and keeps it out of the active set — so it is a legal
+// entry that does not count as an anchor.
+func TestValidateRevokedAnchorIsAllowed(t *testing.T) {
+	const revoked = ". 172800 IN DNSKEY 385 3 13 " + testP256
+	const active = ". 172800 IN DNSKEY 257 3 13 " + testP256
+
+	both := &Config{DNSSEC: "on", RootKeys: []string{revoked, active}}
+	if err := both.Validate(); err != nil {
+		t.Fatalf("Validate() refused a config seeding a revoked key alongside an active one: %v", err)
+	}
+
+	// On its own it leaves nothing to validate with, which the anchor rule
+	// reports — the revoked key itself is not the problem.
+	alone := &Config{DNSSEC: "on", RootKeys: []string{revoked}}
+	err := alone.Validate()
+	if err == nil || !strings.Contains(err.Error(), "no usable root trust anchor") {
+		t.Fatalf("Validate() = %v, want the empty active set reported", err)
+	}
+	if strings.Contains(err.Error(), "key-signing key") {
+		t.Fatalf("Validate() = %v, want the revoked key itself accepted", err)
+	}
+}
+
+func TestValidateViewAnswerMustBeARecord(t *testing.T) {
+	for _, answer := range []string{"", "   ", "; a comment", "$TTL 300"} {
+		cfg := &Config{Views: []ViewConfig{{
+			Zone:     "office",
+			Networks: []string{"192.0.2.0/24"},
+			Answers:  []string{answer},
+		}}}
+		if err := cfg.Validate(); err == nil ||
+			!strings.Contains(err.Error(), "is not a record") {
+			t.Fatalf("Validate(%q) = %v, want a line holding no record reported", answer, err)
+		}
+	}
+
+	ok := &Config{Views: []ViewConfig{{
+		Zone:     "office",
+		Networks: []string{"192.0.2.0/24"},
+		Answers:  []string{"printer.local. 300 IN A 192.0.2.10"},
+	}}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("Validate() rejected a real record: %v", err)
+	}
+}

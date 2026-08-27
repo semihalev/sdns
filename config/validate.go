@@ -322,6 +322,11 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("rootkeys %q: must be class IN", key)
 		case dnskey.Protocol != 3:
 			add("rootkeys %q: protocol must be 3 (RFC 4034 section 2.1.2)", key)
+		case dnskey.Flags&dnsKeyFlagRevoke != 0:
+			// RFC 5011 section 2.1: an operator may seed a revoked key so
+			// the resolver remembers the revocation across a restart. AutoTA
+			// records it as a tombstone and keeps it out of the active set,
+			// which is exactly what not counting it here does.
 		case dnskey.Flags != 257:
 			// Only key-signing keys enter the verification set.
 			add("rootkeys %q: must be a key-signing key (flags 257), not %d", key, dnskey.Flags)
@@ -413,8 +418,11 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// in code, which have no working directory to speak of — requiring one
 	// here would refuse every such caller to co-report a failure that is
 	// already impossible to miss.
+	// The working directory is written for certain — the trust-anchor store
+	// lives there — so it has to take an entry.
+	pending := c.Directory
 	if c.Directory != "" {
-		if err := writableDir(c.Directory); err != nil {
+		if err := writableDir(c.Directory, ""); err != nil {
 			add("directory = %q: %v", c.Directory, err)
 		}
 	}
@@ -429,15 +437,21 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// the parent of the default is legitimately not there yet — asking for
 	// it would refuse every first run. A blocklistdir the operator wrote
 	// themselves is nobody's to create, so that one is asked in full.
+	//
+	// Write is not required of it, unlike the working directory. The
+	// middleware reads local lists from there and only logs when it cannot
+	// download into it, so a read-only mount carrying nothing but local
+	// lists is a working setup — and refusing it would stop a server that
+	// runs today.
 	switch {
 	case c.BlockListDir != "":
-		if err := writableDir(c.BlockListDir); err != nil {
+		if err := usableDir(c.BlockListDir, pending); err != nil {
 			add("blocklistdir = %q: %v", c.BlockListDir, err)
 		}
 	case c.Directory != "":
 		derived := filepath.Join(c.Directory, "blacklists")
 		if _, err := os.Lstat(derived); err == nil {
-			if err := writableDir(derived); err != nil {
+			if err := usableDir(derived, ""); err != nil {
 				add("blocklistdir defaults to %q: %v", derived, err)
 			}
 		}
@@ -469,7 +483,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 				add("accesslog = %q: names a directory, want a file", c.AccessLog)
 				break
 			}
-			if err := existingDir(literalParent(target)); err != nil {
+			if err := existingDir(literalParent(target), pending); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
 		case err != nil:
@@ -701,8 +715,16 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 			}
 		}
 		for _, answer := range view.Answers {
-			if _, err := dns.NewRR(answer); err != nil {
+			// NewRR reports no error for a line that holds no record —
+			// blank, a comment, a directive — and hands back nothing. The
+			// view then answers with one entry fewer than the file lists,
+			// or with none at all.
+			rr, err := dns.NewRR(answer)
+			switch {
+			case err != nil:
 				add("view %s answer %q: %v", label, answer, err)
+			case rr == nil:
+				add("view %s answer %q: is not a record, so the view would not serve it", label, answer)
 			}
 		}
 	}
@@ -860,6 +882,9 @@ func (c *Config) validateECS(add func(string, ...any)) {
 	}
 }
 
+// dnsKeyFlagRevoke is the REVOKE bit of RFC 5011 section 2.1.
+const dnsKeyFlagRevoke = 0x0080
+
 // forwardsRoot reports whether a forward zone takes every query. Matching is
 // the same test ForwardZoneFor makes — a canonical apex of "." covers every
 // name, and a zone with no servers is skipped there — so a name this says is
@@ -961,7 +986,19 @@ func fileKind(mode os.FileMode) string {
 // writableDir reports whether path can serve as a directory the server writes
 // into. Absence is fine — both callers create it — but a plain file sitting at
 // the path is not, because the Mkdir that would follow fails.
-func writableDir(path string) error {
+// pending is the working directory Load creates just after the gate. A parent
+// that is exactly it is treated as present: the server makes it, and then
+// makes what goes inside. Only that one level, because Load uses Mkdir.
+// usableDir is writableDir without asking whether an entry can be made in it.
+func usableDir(path, pending string) error {
+	return dirCheck(path, pending, false)
+}
+
+func writableDir(path, pending string) error {
+	return dirCheck(path, pending, true)
+}
+
+func dirCheck(path, pending string, mustWrite bool) error {
 	// Lstat, so a symlink is judged as itself: a dangling one looks absent to
 	// Stat, and then Mkdir fails on it with EEXIST because the entry is
 	// already there.
@@ -970,7 +1007,7 @@ func writableDir(path string) error {
 		// Created with Mkdir, not MkdirAll, so one missing level is made and
 		// two are not — and Mkdir resolves every component on the way, so a
 		// "missing/../db" fails on the middle one however it cleans up.
-		return existingDir(literalParent(path))
+		return existingDir(literalParent(path), pending)
 	}
 	if err != nil {
 		return err
@@ -988,17 +1025,31 @@ func writableDir(path string) error {
 		// Through the link, because that is the path the server writes to.
 		// Returning here without asking accepted a symlink to a directory
 		// that the same check refuses when it is named directly.
+		if !mustWrite {
+			return nil
+		}
 		return creatable(path)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("is a file, want a directory")
+	}
+	if !mustWrite {
+		return nil
 	}
 	return creatable(path)
 }
 
 // existingDir reports whether path is a directory that is already there and
 // can be written into.
-func existingDir(path string) error {
+func existingDir(path, pending string) error {
+	if pending != "" && filepath.Clean(path) == filepath.Clean(pending) {
+		// Not there yet, and about to be. Everything under it is created
+		// after that, in the order the server does it.
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return nil
+		}
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("parent directory %q: %w", path, err)

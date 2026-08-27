@@ -152,3 +152,34 @@ func TestValidateSymlinkTargetKeepsComponents(t *testing.T) {
 		t.Fatalf("Validate() rejected a target whose components all exist: %v", err)
 	}
 }
+
+// TestValidateReadOnlyBlocklistDir pins that a blocklist directory is read,
+// not necessarily written. The middleware loads local lists from it and only
+// logs when it cannot download into it, so a read-only mount carrying nothing
+// but local lists is a working setup. The working directory is different: the
+// trust-anchor store lives there, so that one has to take an entry.
+func TestValidateReadOnlyBlocklistDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes regardless of mode")
+	}
+	dir := t.TempDir()
+	lists := filepath.Join(dir, "lists")
+	if err := os.Mkdir(lists, 0o500); err != nil { //nolint:gosec // G301 - the point is a directory that cannot be written
+		t.Fatal(err)
+	}
+	defer os.Chmod(lists, 0o700) //nolint:errcheck,gosec // test cleanup
+
+	if err := (&Config{BlockListDir: lists}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a read-only blocklist directory: %v", err)
+	}
+
+	work := filepath.Join(dir, "work")
+	if err := os.Mkdir(work, 0o500); err != nil { //nolint:gosec // G301 - the point is a directory that cannot be written
+		t.Fatal(err)
+	}
+	defer os.Chmod(work, 0o700) //nolint:errcheck,gosec // test cleanup
+
+	if err := (&Config{Directory: work}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a working directory it cannot write in")
+	}
+}
