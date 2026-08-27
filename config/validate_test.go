@@ -1699,3 +1699,42 @@ func TestValidateAccessLogLongChain(t *testing.T) {
 		t.Fatal("Validate() accepted a chain no system will follow")
 	}
 }
+
+// TestPathHandlingOnBothPlatforms exercises the branch this platform does not
+// take. Path resolution differs — Windows collapses ".." before it touches
+// the filesystem, unix walks the components — and each rule has been wrong
+// once, caught only by the other platform's CI.
+func TestPathHandlingOnBothPlatforms(t *testing.T) {
+	original := cleansPathComponents
+	defer func() { cleansPathComponents = original }()
+
+	dir := t.TempDir()
+	sep := string(filepath.Separator)
+
+	// A relative symlink target that names a directory has to stay
+	// directory-shaped through the join, whichever way the join works.
+	link := filepath.Join(dir, "access.log")
+	if err := os.Symlink("real.log"+sep, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	for _, cleans := range []bool{false, true} {
+		cleansPathComponents = cleans
+		if err := (&Config{AccessLog: link}).Validate(); err == nil ||
+			!strings.Contains(err.Error(), "names a directory") {
+			t.Fatalf("cleansPathComponents=%v: Validate() = %v, want the shape kept", cleans, err)
+		}
+	}
+
+	// A path with a missing component: refused where components are walked,
+	// accepted where ".." is collapsed first — mirroring what open and mkdir
+	// do on each.
+	missing := dir + sep + "missing" + sep + ".." + sep + "db"
+	cleansPathComponents = false
+	if err := (&Config{Directory: missing}).Validate(); err == nil {
+		t.Fatal("walking components: Validate() accepted a missing component")
+	}
+	cleansPathComponents = true
+	if err := (&Config{Directory: missing}).Validate(); err != nil {
+		t.Fatalf("collapsing \"..\": Validate() = %v, want the path accepted", err)
+	}
+}

@@ -1012,6 +1012,17 @@ func existingDir(path string) error {
 	return nil
 }
 
+// cleansPathComponents is whether the system collapses ".." itself before it
+// touches the filesystem. Windows does; unix resolves a path one component at
+// a time.
+//
+// It is a variable rather than a check at each site so a test on either
+// platform can exercise both rules — this file has been wrong about the one
+// it does not run twice, and only Windows CI noticed. Which rule is the
+// default here cannot be tested locally, since any assertion would compare
+// this expression against itself; that half stays CI's job.
+var cleansPathComponents = runtime.GOOS == "windows"
+
 // literalParent returns everything before the last element of path.
 //
 // Which parent that is depends on how the system resolves a path. Unix walks
@@ -1025,7 +1036,7 @@ func existingDir(path string) error {
 // Trailing separators are dropped either way, so a path written as a
 // directory yields its own parent rather than itself.
 func literalParent(path string) string {
-	if runtime.GOOS == "windows" {
+	if cleansPathComponents {
 		return filepath.Dir(filepath.Clean(path))
 	}
 
@@ -1092,8 +1103,17 @@ func accessLogTarget(path string) string {
 // Windows collapses ".." itself, so cleaning is what it does and Join is
 // right there.
 func joinKeepingComponents(dir, target string) string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(dir, target)
+	if cleansPathComponents {
+		joined := filepath.Join(dir, target)
+		// Join cleans, and that takes the trailing separator with it — the
+		// one thing that says the target names a directory, which the open
+		// refuses. The unix branch below keeps it by not cleaning at all, so
+		// this is the only place it has to be put back, and Windows CI is
+		// the only thing that exercises it.
+		if endsInSeparator(target) && !endsInSeparator(joined) {
+			joined += string(os.PathSeparator)
+		}
+		return joined
 	}
 	if dir == "" {
 		return target
