@@ -962,14 +962,18 @@ func validCIDR(s string) bool {
 	if err != nil {
 		return false
 	}
-	// An IPv4-mapped prefix is filed under IPv6 by internal/ipset, while a
-	// client arriving over IPv4 is unmapped and looked up under IPv4 — so
-	// the entry sits in a table nothing searches. ECS compares prefix to
-	// address directly, where the families disagree just as flatly. Either
-	// way it is a rule that matches nobody, and as the only access-list
-	// entry it would leave an empty allow set. The operator wants the plain
-	// form: 192.0.2.0/24.
-	return !p.Addr().Is4In6()
+	// A prefix that stays inside the IPv4-mapped range once masked is filed
+	// under IPv6 by internal/ipset, while a client arriving over IPv4 is
+	// unmapped and looked up under IPv4 — so the entry sits in a table
+	// nothing searches. ECS compares prefix to address directly, where the
+	// families disagree just as flatly. Either way it matches nobody, and as
+	// the only access-list entry it would leave an empty allow set. The
+	// operator wants the plain form: 192.0.2.0/24.
+	//
+	// Masked, not as written: "::ffff:192.0.2.0/64" covers ::/64, which real
+	// IPv6 clients fall inside. Only /96 and narrower stay mapped, and only
+	// those are dead.
+	return !p.Masked().Addr().Is4In6()
 }
 
 // regularFile reports whether path is something the server can open and read.

@@ -2027,6 +2027,28 @@ func TestValidatePortZeroFollowsTransportCount(t *testing.T) {
 func TestValidateRejectsMappedPrefixes(t *testing.T) {
 	const mapped = "::ffff:192.0.2.0/120"
 
+	// Width decides it. A prefix wide enough to leave the mapped range is a
+	// real IPv6 rule that genuine clients fall inside, and refusing it would
+	// stop a config that works.
+	for _, tc := range []struct {
+		prefix string
+		want   bool // whether Validate should accept
+	}{
+		{"::ffff:192.0.2.0/120", false}, // stays ::ffff:192.0.2.0/120
+		{"::ffff:192.0.2.0/104", false}, // stays ::ffff:192.0.0.0/104
+		{"::ffff:192.0.2.0/96", false},  // stays ::ffff:0.0.0.0/96
+		{"::ffff:192.0.2.0/95", true},   // becomes ::fffe:0:0/95
+		{"::ffff:192.0.2.0/64", true},   // becomes ::/64, which holds ::1
+		{"::ffff:192.0.2.0/0", true},    // becomes ::/0
+	} {
+		t.Run(tc.prefix, func(t *testing.T) {
+			cfg := &Config{AccessList: []string{tc.prefix}}
+			if err := cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+
 	for _, tc := range []struct {
 		name string
 		cfg  Config
