@@ -183,3 +183,42 @@ func TestValidateReadOnlyBlocklistDir(t *testing.T) {
 		t.Fatal("Validate() accepted a working directory it cannot write in")
 	}
 }
+
+// TestValidateUnreadableBlocklistDir pins that a blocklist directory has to be
+// listable. Stat says nothing about that — a directory with no permission bits
+// satisfies it — while the middleware walks it and, when it cannot, logs once
+// and loads no local list at all.
+func TestValidateUnreadableBlocklistDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads regardless of mode")
+	}
+	dir := t.TempDir()
+	lists := filepath.Join(dir, "lists")
+	if err := os.Mkdir(lists, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(lists, 0o700) //nolint:errcheck,gosec // test cleanup
+
+	if err := (&Config{BlockListDir: lists}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a blocklist directory it cannot list")
+	}
+
+	// Through a symlink too, since that is the path the middleware walks.
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(lists, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if err := (&Config{BlockListDir: link}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a symlink to a directory it cannot list")
+	}
+
+	// Read-only is still fine: only writing is optional there.
+	ro := filepath.Join(dir, "ro")
+	if err := os.Mkdir(ro, 0o500); err != nil { //nolint:gosec // G301 - read-only is the point
+		t.Fatal(err)
+	}
+	defer os.Chmod(ro, 0o700) //nolint:errcheck,gosec // test cleanup
+	if err := (&Config{BlockListDir: ro}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a read-only blocklist directory: %v", err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/url"
@@ -322,11 +323,15 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("rootkeys %q: must be class IN", key)
 		case dnskey.Protocol != 3:
 			add("rootkeys %q: protocol must be 3 (RFC 4034 section 2.1.2)", key)
-		case dnskey.Flags&dnsKeyFlagRevoke != 0:
+		case dnskey.Flags&dnsKeyFlagRevoke != 0 && dnskey.Flags&^dnsKeyFlagRevoke == 257:
 			// RFC 5011 section 2.1: an operator may seed a revoked key so
 			// the resolver remembers the revocation across a restart. AutoTA
 			// records it as a tombstone and keeps it out of the active set,
 			// which is exactly what not counting it here does.
+			//
+			// The REVOKE bit rides on top of the key-signing flags; on its
+			// own it is not a KSK, and AutoTA drops such a record before it
+			// ever looks at the bit.
 		case dnskey.Flags != 257:
 			// Only key-signing keys enter the verification set.
 			add("rootkeys %q: must be a key-signing key (flags 257), not %d", key, dnskey.Flags)
@@ -1026,7 +1031,7 @@ func dirCheck(path, pending string, mustWrite bool) error {
 		// Returning here without asking accepted a symlink to a directory
 		// that the same check refuses when it is named directly.
 		if !mustWrite {
-			return nil
+			return readable(path)
 		}
 		return creatable(path)
 	}
@@ -1034,15 +1039,62 @@ func dirCheck(path, pending string, mustWrite bool) error {
 		return fmt.Errorf("is a file, want a directory")
 	}
 	if !mustWrite {
-		return nil
+		return readable(path)
 	}
 	return creatable(path)
+}
+
+// readable reports whether this process can list dir. Stat says nothing about
+// that — a directory with no permission bits at all satisfies it — while the
+// blocklist middleware walks the directory and, when it cannot, logs once and
+// loads no local list at all.
+func readable(dir string) error {
+	f, err := os.Open(dir) //nolint:gosec // G304 - the path under test is the input
+	if err != nil {
+		return err
+	}
+	defer f.Close() //nolint:errcheck // nothing was written
+
+	if _, err := f.ReadDir(1); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
+}
+
+// samePath reports whether two spellings name the same place.
+//
+// Cleaning answers that on Windows, which collapses ".." itself. Where the
+// components are walked instead, a ".." only resolves once what comes before
+// it exists — so "missing/../db" is not the directory the server is about to
+// create, however it cleans up, and the two are compared as written.
+func samePath(a, b string) bool {
+	if cleansPathComponents || (!hasDotDot(a) && !hasDotDot(b)) {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return a == b
+}
+
+// hasDotDot reports whether path has a ".." among its components. Bytes, not
+// runes: separators are ASCII, and narrowing a multi-byte rune to a byte can
+// land on one by accident.
+func hasDotDot(path string) bool {
+	start := 0
+	for i := 0; i <= len(path); i++ {
+		if i < len(path) && !os.IsPathSeparator(path[i]) {
+			continue
+		}
+		if path[start:i] == ".." {
+			return true
+		}
+		start = i + 1
+	}
+	return false
 }
 
 // existingDir reports whether path is a directory that is already there and
 // can be written into.
 func existingDir(path, pending string) error {
-	if pending != "" && filepath.Clean(path) == filepath.Clean(pending) {
+	if pending != "" && samePath(path, pending) {
 		// Not there yet, and about to be. Everything under it is created
 		// after that, in the order the server does it.
 		if _, err := os.Stat(path); os.IsNotExist(err) {

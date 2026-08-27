@@ -1842,3 +1842,70 @@ func TestValidateViewAnswerMustBeARecord(t *testing.T) {
 		t.Fatalf("Validate() rejected a real record: %v", err)
 	}
 }
+
+// TestValidateRevokedAnchorStillNeedsKSKFlags pins that the REVOKE bit rides
+// on top of the key-signing flags rather than replacing them. AutoTA drops a
+// record without the KSK bit before it ever looks at the bit, so accepting one
+// here would pass a key the resolver silently ignores.
+func TestValidateRevokedAnchorStillNeedsKSKFlags(t *testing.T) {
+	active := ". 172800 IN DNSKEY 257 3 13 " + testP256
+
+	for _, tc := range []struct {
+		name  string
+		flags string
+		want  bool // whether Validate should accept
+	}{
+		{"revoked key-signing key", "385", true},   // 257 | REVOKE
+		{"revoke bit on its own", "128", false},    // no KSK bit
+		{"revoked zone-signing key", "384", false}, // 256 | REVOKE
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{DNSSEC: "on", RootKeys: []string{
+				". 172800 IN DNSKEY " + tc.flags + " 3 13 " + testP256,
+				active,
+			}}
+			if err := cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+
+	// And an ordinary anchor still counts, which the flag arithmetic must
+	// not swallow.
+	if err := (&Config{DNSSEC: "on", RootKeys: []string{active}}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a plain key-signing key: %v", err)
+	}
+}
+
+// TestValidatePendingDirectoryKeepsPathRules pins that the shortcut for the
+// directory Load is about to create does not quietly equate two spellings
+// that the platform treats differently.
+func TestValidatePendingDirectoryKeepsPathRules(t *testing.T) {
+	dir := t.TempDir()
+	sep := string(filepath.Separator)
+	work := filepath.Join(dir, "sdns")
+
+	// Same place, spelled the same: the shortcut applies.
+	plain := &Config{Directory: work, AccessLog: filepath.Join(work, "access.log")}
+	if err := plain.Validate(); err != nil {
+		t.Fatalf("Validate() refused a log under the pending directory: %v", err)
+	}
+
+	// Spelled through a component that is not there. Where components are
+	// walked, the open fails on it whatever the shortcut thinks; where ".."
+	// is collapsed first, it is the same place and fine.
+	viaMissing := &Config{
+		Directory: work,
+		AccessLog: dir + sep + "sdns" + sep + "gone" + sep + ".." + sep + "access.log",
+	}
+	err := viaMissing.Validate()
+	if cleansPathComponents {
+		if err != nil {
+			t.Fatalf("collapsing \"..\": Validate() = %v, want it accepted", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("walking components: Validate() accepted a path through a missing component")
+	}
+}
