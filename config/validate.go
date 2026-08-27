@@ -2,11 +2,13 @@ package config
 
 import (
 	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/rsa"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net"
 	"net/url"
 	"os"
@@ -980,6 +982,12 @@ func anchorKeyProblem(key *dns.DNSKEY) error {
 	// r = s = 0, and ecdsa.Verify rejects that before it ever looks at the
 	// public point — so a curve key of the right length that is not a point
 	// on the curve comes back as a bad signature and looks usable.
+	if key.Algorithm == dns.ED25519 {
+		if err := edwardsCanonical(key.PublicKey); err != nil {
+			return fmt.Errorf("public key is not usable for algorithm %d (%s): %v", key.Algorithm, name, err)
+		}
+	}
+
 	if curve := ecdhCurve(key.Algorithm); curve != nil {
 		raw, decodeErr := base64.StdEncoding.DecodeString(key.PublicKey)
 		if decodeErr != nil {
@@ -1005,6 +1013,41 @@ func expectedProbeFailure(alg uint8) error {
 	}
 	// ECDSA and the Edwards curves fail a bad signature inside miekg itself.
 	return dns.ErrSig
+}
+
+// edwards25519P is 2^255 - 19, the field the curve is defined over.
+var edwards25519P = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+
+// edwardsCanonical reports whether an Ed25519 public key is encoded the way a
+// decoder will accept. RFC 8032 section 5.1.3 recovers the y-coordinate by
+// clearing the sign bit and fails when what is left is not less than p, so
+// this is the decoder's own rule rather than one invented here.
+//
+// It does not make the key valid: a canonical y that is not a point on the
+// curve still gets through, and the standard library exposes nothing that
+// would catch it — ed25519.Verify answers false for such a key exactly as it
+// does for a good key and a bad signature, which is why the probe above
+// cannot tell them apart. Catching that case needs Edwards arithmetic this
+// package has no business carrying.
+func edwardsCanonical(publicKey string) error {
+	raw, err := base64.StdEncoding.DecodeString(publicKey)
+	if err != nil {
+		return fmt.Errorf("not base64: %w", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return fmt.Errorf("is %d bytes, want %d", len(raw), ed25519.PublicKeySize)
+	}
+
+	// Little-endian, with the top bit carrying the sign of x.
+	y := make([]byte, len(raw))
+	for i := range raw {
+		y[len(raw)-1-i] = raw[i]
+	}
+	y[0] &= 0x7f
+	if new(big.Int).SetBytes(y).Cmp(edwards25519P) >= 0 {
+		return fmt.Errorf("y-coordinate is not below 2^255-19, so no decoder accepts it")
+	}
+	return nil
 }
 
 // ecdhCurve returns the curve behind a DNSSEC ECDSA algorithm, or nil for

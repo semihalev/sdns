@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -1228,5 +1229,32 @@ func TestPortNetworksPerCaller(t *testing.T) {
 				t.Fatalf("asked %v, want %v", asked, tc.want)
 			}
 		})
+	}
+}
+
+// TestValidateEd25519Encoding pins the part of Ed25519 key validity that can
+// be checked without Edwards arithmetic: RFC 8032 section 5.1.3 recovers y by
+// clearing the sign bit and fails unless what is left is below 2^255-19.
+// A canonical y that is not on the curve is still accepted, and the comment on
+// edwardsCanonical says so — the standard library offers nothing that would
+// catch it.
+func TestValidateEd25519Encoding(t *testing.T) {
+	// y = 2^255 - 1, which is above the field prime.
+	const nonCanonical = "7////////////////////////////////////////38="
+	cfg := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 15 " + nonCanonical}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "not usable") {
+		t.Fatalf("Validate() = %v, want the non-canonical Ed25519 key rejected", err)
+	}
+
+	// Every real key encodes a y below the prime, so none of these may trip.
+	for i := 0; i < 200; i++ {
+		pub, _, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := ". 172800 IN DNSKEY 257 3 15 " + base64.StdEncoding.EncodeToString(pub)
+		if err := (&Config{RootKeys: []string{key}}).Validate(); err != nil {
+			t.Fatalf("Validate() rejected a generated Ed25519 anchor: %v", err)
+		}
 	}
 }
