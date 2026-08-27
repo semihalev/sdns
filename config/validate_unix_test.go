@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestValidateRejectsSpecialFiles lives here because syscall.Mkfifo does not
@@ -345,8 +346,28 @@ func TestValidateAccessLogDeviceTargets(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
-	if err := (&Config{AccessLog: fifo}).Validate(); err == nil ||
-		!strings.Contains(err.Error(), "named pipe") {
-		t.Fatalf("Validate() = %v, want the named pipe refused", err)
+	// Refused, and without waiting: the open asks in non-blocking mode, so a
+	// FIFO nobody is reading answers straight away.
+	done := make(chan error, 1)
+	go func() { done <- (&Config{AccessLog: fifo}).Validate() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Validate() accepted a FIFO with no reader")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Validate() waited on a FIFO instead of reporting it")
+	}
+
+	// The same FIFO with a reader is usable, which is what /dev/stdout is
+	// in a container whose output is piped.
+	reader, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // G304 - this test made the path
+	if err != nil {
+		t.Skipf("open fifo for reading: %v", err)
+	}
+	defer reader.Close() //nolint:errcheck // nothing was written
+
+	if err := (&Config{AccessLog: fifo}).Validate(); err != nil {
+		t.Fatalf("Validate() refused a pipe somebody is reading: %v", err)
 	}
 }

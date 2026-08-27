@@ -513,16 +513,16 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("accesslog = %q: %v", c.AccessLog, err)
 		case info.IsDir():
 			add("accesslog = %q: is a directory, want a file", c.AccessLog)
-		case info.Mode()&os.ModeNamedPipe != 0:
-			// The one kind that cannot be probed: opening a FIFO write-only
-			// waits for a reader, so asking would hang the config test the
-			// way it would hang startup.
-			add("accesslog = %q: is a named pipe, which the open would wait on", c.AccessLog)
 		default:
-			// Anything else is judged by opening it rather than by its type.
-			// A character device is the usual container spelling —
-			// /dev/null, or /dev/stdout to fold the log into the container's
-			// own output — and os.OpenFile takes both.
+			// Judged by opening it, not by its type. A character device is
+			// the usual container spelling — /dev/null, or /dev/stdout to
+			// fold the log into the container's own output — and os.OpenFile
+			// takes both. So does a pipe: /dev/stdout is one whenever the
+			// container's output is piped, and reopening it through /dev/fd
+			// waits for nobody.
+			//
+			// What does wait is a FIFO on disk with no reader, and the open
+			// below refuses that rather than joining it.
 			if err := openable(c.AccessLog, os.O_WRONLY); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
@@ -1012,8 +1012,10 @@ func regularFile(path string) error {
 // creating or truncating anything.
 func openable(path string, flag int) error {
 	// The path is the operator's own config value, opened to answer whether
-	// the server will be able to use it.
-	f, err := os.OpenFile(path, flag, 0) //nolint:gosec // G304 - the path under test is the input
+	// the server will be able to use it — and opened so that it never waits:
+	// a FIFO with no reader answers ENXIO here instead of holding the open
+	// until one arrives.
+	f, err := os.OpenFile(path, flag|nonBlockingOpen, 0) //nolint:gosec // G304 - the path under test is the input
 	if err != nil {
 		return err
 	}
