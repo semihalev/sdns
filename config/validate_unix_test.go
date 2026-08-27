@@ -103,3 +103,24 @@ func TestValidateSymlinkToUnwritableDirectory(t *testing.T) {
 		t.Fatal("Validate() accepted a symlink to a directory it cannot write in")
 	}
 }
+
+// TestValidatePathsKeepTheirComponents pins the unix rule. A path is resolved
+// one component at a time here, so "missing/../x" fails on the "missing" that
+// is not there — while filepath.Dir cleans it away and would call the path
+// perfectly fine. Windows collapses ".." itself, so this is not its rule and
+// the test does not run there.
+func TestValidatePathsKeepTheirComponents(t *testing.T) {
+	dir := t.TempDir()
+	// Built by hand: filepath.Join cleans too.
+	logPath := dir + "/missing/../access.log"
+	if err := (&Config{AccessLog: logPath}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "accesslog") {
+		t.Fatalf("Validate() = %v, want the missing component reported", err)
+	}
+
+	dbPath := dir + "/missing/../db"
+	if err := (&Config{Directory: dbPath}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "directory") {
+		t.Fatalf("Validate() = %v, want the missing component reported", err)
+	}
+}

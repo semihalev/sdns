@@ -1609,32 +1609,17 @@ func TestValidateDefaultBlocklistDir(t *testing.T) {
 	}
 }
 
-// TestValidatePathsKeepTheirComponents pins that a parent is taken from the
-// path as written. filepath.Dir cleans, so "missing/../x" comes back as "."
-// and looks like it lives somewhere that exists — while the open and the
-// mkdir both resolve each component and fail on the one that is not there.
-func TestValidatePathsKeepTheirComponents(t *testing.T) {
+// TestValidateAcceptsPathsWhoseComponentsExist is the half that holds
+// everywhere. The ".." cases differ by platform and live in the unix file,
+// because Windows collapses ".." before it touches the filesystem.
+func TestValidateAcceptsPathsWhoseComponentsExist(t *testing.T) {
 	dir := t.TempDir()
-
-	// Built by hand: filepath.Join cleans too, so the components would not
-	// survive to be judged.
-	sep := string(filepath.Separator)
-	logPath := dir + sep + "missing" + sep + ".." + sep + "access.log"
-	if err := (&Config{AccessLog: logPath}).Validate(); err == nil ||
-		!strings.Contains(err.Error(), "accesslog") {
-		t.Fatalf("Validate() = %v, want the missing component reported", err)
-	}
-
-	dbPath := dir + sep + "missing" + sep + ".." + sep + "db"
-	if err := (&Config{Directory: dbPath}).Validate(); err == nil ||
-		!strings.Contains(err.Error(), "directory") {
-		t.Fatalf("Validate() = %v, want the missing component reported", err)
-	}
-
-	// The same shape with the component present is fine.
 	if err := os.Mkdir(filepath.Join(dir, "there"), 0o750); err != nil {
 		t.Fatal(err)
 	}
+	sep := string(filepath.Separator)
+	// Built by hand: filepath.Join cleans too, so the components would not
+	// survive to be judged.
 	okPath := dir + sep + "there" + sep + ".." + sep + "db"
 	if err := (&Config{Directory: okPath}).Validate(); err != nil {
 		t.Fatalf("Validate() rejected a path whose components all exist: %v", err)

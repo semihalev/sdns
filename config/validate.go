@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -1005,15 +1006,23 @@ func existingDir(path string) error {
 	return nil
 }
 
-// literalParent returns everything before the last element of path, with the
-// components left exactly as written.
+// literalParent returns everything before the last element of path.
 //
-// filepath.Dir cannot be used for this: it cleans, so "missing/../access.log"
-// comes back as "." and looks like it lives somewhere that exists — while the
-// open, which resolves each component in turn, fails on the "missing" that is
-// not there. Trailing separators are dropped first, so a path written as a
-// directory still yields its own parent rather than itself.
+// Which parent that is depends on how the system resolves a path. Unix walks
+// it one component at a time, so "missing/../access.log" fails on the
+// "missing" that is not there and the parent has to keep the components as
+// written — filepath.Dir cleans, and would answer "." for a path nothing can
+// open. Windows collapses ".." itself before touching the filesystem, so
+// there the cleaned parent is the one that decides, and keeping the
+// components would refuse a path the OS is perfectly happy with.
+//
+// Trailing separators are dropped either way, so a path written as a
+// directory yields its own parent rather than itself.
 func literalParent(path string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Dir(filepath.Clean(path))
+	}
+
 	i := len(path)
 	for i > 0 && os.IsPathSeparator(path[i-1]) {
 		i--
