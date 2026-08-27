@@ -969,22 +969,38 @@ func endsInSeparator(path string) bool {
 	return strings.HasSuffix(path, "/") || strings.HasSuffix(path, string(os.PathSeparator))
 }
 
-// accessLogTarget resolves one level of symlink, so a dangling link is judged
-// where the file would actually be made. Stat reports such a link as absent,
-// which read as an ordinary missing file and had the link's own directory
-// checked instead of the target's.
+// accessLogTarget resolves the symlink chain the open would follow, so a link
+// is judged where the file would actually be made. Stat reports a dangling
+// link as absent, which read as an ordinary missing file and had the link's
+// own directory checked instead of the target's.
+//
+// The trailing separator is carried across each hop by hand. Join cleans it
+// away, and it is the whole difference between a name the open creates and one
+// it refuses — a relative "real.log/" would otherwise arrive here looking like
+// an ordinary file name.
 func accessLogTarget(path string) string {
-	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return path
+	// Deeper than any real layout, and bounded so a link that points at
+	// itself cannot spin.
+	for range 16 {
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			return path
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return path
+		}
+		if filepath.IsAbs(target) {
+			path = target
+			continue
+		}
+		next := filepath.Join(filepath.Dir(path), target)
+		if endsInSeparator(target) {
+			next += string(os.PathSeparator)
+		}
+		path = next
 	}
-	target, err := os.Readlink(path)
-	if err != nil {
-		return path
-	}
-	if filepath.IsAbs(target) {
-		return target
-	}
-	return filepath.Join(filepath.Dir(path), target)
+	return path
 }
 
 // creatable reports whether this process can make an entry in dir. Mode bits

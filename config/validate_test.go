@@ -1431,3 +1431,73 @@ func TestValidateAccessLogTrailingSlash(t *testing.T) {
 		t.Fatalf("Validate() rejected a directory written with a trailing slash: %v", err)
 	}
 }
+
+// TestValidateAccessLogSymlinkShape pins the two ways a link can name a
+// directory without looking like one. Join cleans a trailing separator off a
+// relative target, and a chain hides the shape of its final hop — in both
+// cases os.OpenFile refuses the name and access logging silently goes off.
+func TestValidateAccessLogSymlinkShape(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		links [][2]string // link name -> target, in creation order
+		log   string
+	}{
+		{"relative target names a directory", [][2]string{
+			{"access.log", "real.log/"},
+		}, "access.log"},
+		{"chain ending in a directory-shaped hop", [][2]string{
+			{"mid.log", "end.log/"},
+			{"a.log", "mid.log"},
+		}, "a.log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, l := range tc.links {
+				if err := os.Symlink(l[1], filepath.Join(dir, l[0])); err != nil {
+					t.Skipf("symlink: %v", err)
+				}
+			}
+			path := filepath.Join(dir, tc.log)
+			if err := (&Config{AccessLog: path}).Validate(); err == nil ||
+				!strings.Contains(err.Error(), "accesslog") {
+				t.Fatalf("Validate() = %v, want the directory-shaped target refused", err)
+			}
+		})
+	}
+
+	// A chain that ends at a name the open can create is still fine.
+	dir := t.TempDir()
+	if err := os.Symlink("real.log", filepath.Join(dir, "mid.log")); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if err := os.Symlink("mid.log", filepath.Join(dir, "a.log")); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{AccessLog: filepath.Join(dir, "a.log")}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a chain whose target can be created: %v", err)
+	}
+}
+
+// TestValidateAccessLogSymlinkLoop pins the bound on the chase. A link that
+// points at itself would otherwise be followed forever.
+func TestValidateAccessLogSymlinkLoop(t *testing.T) {
+	dir := t.TempDir()
+	self := filepath.Join(dir, "loop.log")
+	if err := os.Symlink("loop.log", self); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- (&Config{AccessLog: self}).Validate() }()
+
+	select {
+	case err := <-done:
+		// Whatever it decides, it has to decide. The open cannot use this
+		// name either, so an error is the honest answer.
+		if err == nil {
+			t.Fatal("Validate() accepted a symlink pointing at itself")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Validate() did not return on a self-referencing symlink")
+	}
+}
