@@ -1700,10 +1700,14 @@ func TestValidateAccessLogLongChain(t *testing.T) {
 	}
 }
 
-// TestPathHandlingOnBothPlatforms exercises the branch this platform does not
-// take. Path resolution differs — Windows collapses ".." before it touches
-// the filesystem, unix walks the components — and each rule has been wrong
-// once, caught only by the other platform's CI.
+// TestPathHandlingOnBothPlatforms exercises the join branch this platform does
+// not take. It covers the part that is pure string handling — whether a
+// directory-shaped target stays directory-shaped — because that is the half a
+// flag can decide.
+//
+// What a missing component means cannot be simulated: the answer comes from
+// Stat, which collapses ".." on Windows however this package joins the path.
+// That half lives in the unix file, where it is the platform's own rule.
 func TestPathHandlingOnBothPlatforms(t *testing.T) {
 	original := cleansPathComponents
 	defer func() { cleansPathComponents = original }()
@@ -1725,16 +1729,4 @@ func TestPathHandlingOnBothPlatforms(t *testing.T) {
 		}
 	}
 
-	// A path with a missing component: refused where components are walked,
-	// accepted where ".." is collapsed first — mirroring what open and mkdir
-	// do on each.
-	missing := dir + sep + "missing" + sep + ".." + sep + "db"
-	cleansPathComponents = false
-	if err := (&Config{Directory: missing}).Validate(); err == nil {
-		t.Fatal("walking components: Validate() accepted a missing component")
-	}
-	cleansPathComponents = true
-	if err := (&Config{Directory: missing}).Validate(); err != nil {
-		t.Fatalf("collapsing \"..\": Validate() = %v, want the path accepted", err)
-	}
 }
