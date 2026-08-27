@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1232,29 +1233,106 @@ func TestPortNetworksPerCaller(t *testing.T) {
 	}
 }
 
-// TestValidateEd25519Encoding pins the part of Ed25519 key validity that can
-// be checked without Edwards arithmetic: RFC 8032 section 5.1.3 recovers y by
-// clearing the sign bit and fails unless what is left is below 2^255-19.
-// A canonical y that is not on the curve is still accepted, and the comment on
-// edwardsCanonical says so — the standard library offers nothing that would
-// catch it.
-func TestValidateEd25519Encoding(t *testing.T) {
-	// y = 2^255 - 1, which is above the field prime.
-	const nonCanonical = "7////////////////////////////////////////38="
-	cfg := &Config{RootKeys: []string{". 172800 IN DNSKEY 257 3 15 " + nonCanonical}}
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "not usable") {
-		t.Fatalf("Validate() = %v, want the non-canonical Ed25519 key rejected", err)
+// TestValidateEd25519Points pins that a key the verifier cannot work with is
+// refused. ed25519.Verify answers false for a bad key and a bad signature
+// alike, which is why the shared probe cannot tell them apart; VerifyWithOptions
+// separates them, so nothing but "the signature is wrong" is accepted here.
+func TestValidateEd25519Points(t *testing.T) {
+	anchor := func(raw []byte) *Config {
+		return &Config{RootKeys: []string{
+			". 172800 IN DNSKEY 257 3 15 " + base64.StdEncoding.EncodeToString(raw),
+		}}
+	}
+	// Little-endian y, sign bit clear.
+	yEncoding := func(y *big.Int) []byte {
+		be := y.Bytes()
+		raw := make([]byte, ed25519.PublicKeySize)
+		for i, b := range be {
+			raw[len(be)-1-i] = b
+		}
+		return raw
+	}
+	p := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+
+	for _, tc := range []struct {
+		name string
+		key  []byte
+	}{
+		// Below the field prime, so it decodes — and still not a point on
+		// the curve. This is the case a canonical-encoding test misses.
+		{"canonical y=2, not on the curve", yEncoding(big.NewInt(2))},
+		// p+2: above the prime, so no decoder accepts it.
+		{"non-canonical y=p+2", yEncoding(new(big.Int).Add(p, big.NewInt(2)))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := anchor(tc.key).Validate()
+			if err == nil || !strings.Contains(err.Error(), "not usable") {
+				t.Fatalf("Validate() = %v, want the key refused", err)
+			}
+		})
 	}
 
-	// Every real key encodes a y below the prime, so none of these may trip.
+	// Every real key must pass, so a check that were too strict shows here.
 	for i := 0; i < 200; i++ {
 		pub, _, err := ed25519.GenerateKey(nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		key := ". 172800 IN DNSKEY 257 3 15 " + base64.StdEncoding.EncodeToString(pub)
-		if err := (&Config{RootKeys: []string{key}}).Validate(); err != nil {
+		if err := anchor(pub).Validate(); err != nil {
 			t.Fatalf("Validate() rejected a generated Ed25519 anchor: %v", err)
+		}
+	}
+}
+
+func TestValidateAccessLogDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	// The link points into a directory that is not there, so the open that
+	// creates the file fails — but Stat calls the link itself absent, which
+	// read as an ordinary missing file.
+	link := filepath.Join(dir, "a.log")
+	if err := os.Symlink(filepath.Join(dir, "gone", "real.log"), link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if err := (&Config{AccessLog: link}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "accesslog") {
+		t.Fatalf("Validate() = %v, want the dangling access log symlink reported", err)
+	}
+
+	// One whose target directory exists is fine: the open creates it there.
+	good := filepath.Join(dir, "good.log")
+	if err := os.Symlink(filepath.Join(dir, "real.log"), good); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Config{AccessLog: good}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected a symlink whose target can be created: %v", err)
+	}
+}
+
+// TestValidateLeavesNoProbeBehind pins that the writability check undoes its
+// own side effect. It creates an entry to answer a question mode bits cannot,
+// and nothing it creates may outlive the call.
+func TestValidateLeavesNoProbeBehind(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "db")
+	if err := os.Mkdir(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 5; i++ {
+		if err := (&Config{Directory: target, AccessLog: filepath.Join(target, "a.log")}).Validate(); err != nil {
+			t.Fatalf("Validate() failed on a writable directory: %v", err)
+		}
+	}
+
+	for _, d := range []string{dir, target} {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".sdns-config-test-") {
+				t.Fatalf("probe file left behind in %s: %s", d, e.Name())
+			}
 		}
 	}
 }

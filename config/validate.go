@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rsa"
@@ -8,12 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/miekg/dns"
 )
@@ -409,8 +410,10 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		info, err := os.Stat(c.AccessLog)
 		switch {
 		case os.IsNotExist(err):
-			// Created on open, but only inside a directory already there.
-			if err := existingDir(filepath.Dir(c.AccessLog)); err != nil {
+			// Created on open, but only inside a directory already there —
+			// and for a symlink that is the target's directory, not the
+			// link's, since the open follows the link before creating.
+			if err := existingDir(filepath.Dir(accessLogTarget(c.AccessLog))); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
 		case err != nil:
@@ -897,7 +900,10 @@ func writableDir(path string) error {
 		if !target.IsDir() {
 			return fmt.Errorf("is a symlink to a file, want a directory")
 		}
-		return nil
+		// Through the link, because that is the path the server writes to.
+		// Returning here without asking accepted a symlink to a directory
+		// that the same check refuses when it is named directly.
+		return creatable(path)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("is a file, want a directory")
@@ -921,6 +927,24 @@ func existingDir(path string) error {
 	return nil
 }
 
+// accessLogTarget resolves one level of symlink, so a dangling link is judged
+// where the file would actually be made. Stat reports such a link as absent,
+// which read as an ordinary missing file and had the link's own directory
+// checked instead of the target's.
+func accessLogTarget(path string) string {
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return path
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return path
+	}
+	if filepath.IsAbs(target) {
+		return target
+	}
+	return filepath.Join(filepath.Dir(path), target)
+}
+
 // creatable reports whether this process can make an entry in dir. Mode bits
 // alone do not answer it — ownership, group membership and the mount's own
 // flags all decide — so the question is put the only portable way there is,
@@ -933,11 +957,15 @@ func creatable(dir string) error {
 	if err != nil {
 		return err
 	}
+	// Set up straight after creating it, so no later failure can leave the
+	// probe behind. Neither result changes the answer: the directory took an
+	// entry, which is the whole question.
 	name := f.Name()
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Remove(name)
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(name)
+	}()
+	return nil
 }
 
 // anchorKeyProblem reports why this key cannot be verified with, or nil when
@@ -983,7 +1011,7 @@ func anchorKeyProblem(key *dns.DNSKEY) error {
 	// public point — so a curve key of the right length that is not a point
 	// on the curve comes back as a bad signature and looks usable.
 	if key.Algorithm == dns.ED25519 {
-		if err := edwardsCanonical(key.PublicKey); err != nil {
+		if err := ed25519Usable(key.PublicKey); err != nil {
 			return fmt.Errorf("public key is not usable for algorithm %d (%s): %v", key.Algorithm, name, err)
 		}
 	}
@@ -1015,21 +1043,38 @@ func expectedProbeFailure(alg uint8) error {
 	return dns.ErrSig
 }
 
-// edwards25519P is 2^255 - 19, the field the curve is defined over.
-var edwards25519P = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
+// ed25519 probe inputs. The signature is deliberately wrong, so the only
+// question the verifier can answer is whether the key itself is usable.
+var (
+	ed25519ProbeMessage = []byte("sdns config test")
+	ed25519ProbeOptions = &ed25519.Options{Hash: crypto.Hash(0)}
+)
 
-// edwardsCanonical reports whether an Ed25519 public key is encoded the way a
-// decoder will accept. RFC 8032 section 5.1.3 recovers the y-coordinate by
-// clearing the sign bit and fails when what is left is not less than p, so
-// this is the decoder's own rule rather than one invented here.
-//
-// It does not make the key valid: a canonical y that is not a point on the
-// curve still gets through, and the standard library exposes nothing that
-// would catch it — ed25519.Verify answers false for such a key exactly as it
-// does for a good key and a bad signature, which is why the probe above
-// cannot tell them apart. Catching that case needs Edwards arithmetic this
-// package has no business carrying.
-func edwardsCanonical(publicKey string) error {
+// ed25519BadSignature is what VerifyWithOptions reports when the key is fine
+// and only the signature is wrong. It is measured from a key generated here
+// rather than written out as a string, so if a future Go release rewords it
+// both sides move together — a hardcoded message would turn this check too
+// strict, which is the failure worth avoiding.
+var ed25519BadSignature = sync.OnceValue(func() string {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return ""
+	}
+	e := ed25519.VerifyWithOptions(pub, ed25519ProbeMessage,
+		make([]byte, ed25519.SignatureSize), ed25519ProbeOptions)
+	if e == nil {
+		return ""
+	}
+	return e.Error()
+})
+
+// ed25519Usable reports whether an Ed25519 public key is one the verifier can
+// work with. Unlike ed25519.Verify, which answers false for a bad key and a
+// bad signature alike, VerifyWithOptions separates them: a key that is not a
+// point on the curve — or is encoded above the field prime — is reported as a
+// bad public key, while a usable key reports only that the signature is
+// wrong. Accepting nothing but the latter makes this fail closed.
+func ed25519Usable(publicKey string) error {
 	raw, err := base64.StdEncoding.DecodeString(publicKey)
 	if err != nil {
 		return fmt.Errorf("not base64: %w", err)
@@ -1038,14 +1083,16 @@ func edwardsCanonical(publicKey string) error {
 		return fmt.Errorf("is %d bytes, want %d", len(raw), ed25519.PublicKeySize)
 	}
 
-	// Little-endian, with the top bit carrying the sign of x.
-	y := make([]byte, len(raw))
-	for i := range raw {
-		y[len(raw)-1-i] = raw[i]
+	want := ed25519BadSignature()
+	if want == "" {
+		// Nothing to compare against; leave the judgement to the runtime
+		// rather than invent a failure.
+		return nil
 	}
-	y[0] &= 0x7f
-	if new(big.Int).SetBytes(y).Cmp(edwards25519P) >= 0 {
-		return fmt.Errorf("y-coordinate is not below 2^255-19, so no decoder accepts it")
+	e := ed25519.VerifyWithOptions(raw, ed25519ProbeMessage,
+		make([]byte, ed25519.SignatureSize), ed25519ProbeOptions)
+	if e != nil && e.Error() != want {
+		return e
 	}
 	return nil
 }

@@ -81,3 +81,25 @@ func TestValidateUnwritableExistingDirectory(t *testing.T) {
 		t.Fatal("Validate() accepted a working directory it cannot write in")
 	}
 }
+
+func TestValidateSymlinkToUnwritableDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes regardless of mode")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "db")
+	if err := os.Mkdir(target, 0o500); err != nil { //nolint:gosec // G301 - the point is a directory that cannot be written
+		t.Fatal(err)
+	}
+	defer os.Chmod(target, 0o700) //nolint:errcheck,gosec // test cleanup
+
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	// Named directly it is refused; through a link it has to be refused too,
+	// since that is the path the server writes to.
+	if err := (&Config{Directory: link}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a symlink to a directory it cannot write in")
+	}
+}
