@@ -61,3 +61,23 @@ func TestValidateUnwritableAccessLog(t *testing.T) {
 		t.Fatal("Validate() accepted an access log it cannot write")
 	}
 }
+
+func TestValidateUnwritableExistingDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes regardless of mode")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "db")
+	if err := os.Mkdir(target, 0o500); err != nil { //nolint:gosec // G301 - the point is a directory that cannot be written
+		t.Fatal(err)
+	}
+	// Put write back so t.TempDir can clean up.
+	defer os.Chmod(target, 0o700) //nolint:errcheck,gosec // test cleanup
+
+	// The directory is there and is a directory; mode bits alone do not say
+	// whether this process can write in it, so the check creates an entry and
+	// takes it back out.
+	if err := (&Config{Directory: target}).Validate(); err == nil {
+		t.Fatal("Validate() accepted a working directory it cannot write in")
+	}
+}

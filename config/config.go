@@ -1405,6 +1405,15 @@ func Load(cfgfile, version string) (*Config, error) {
 		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
 	}
 
+	// Before the gate, like the DNSSEC default below, because the checks read
+	// the settled value: outboundip6s is only judged when v6 is in use, and
+	// root6servers only count as roots then too.
+	if !config.IPv6Access {
+		if err := ipv6Probe(); err == nil {
+			config.IPv6Access = true
+		}
+	}
+
 	// Before the gate, because omitting the key means validation is on: the
 	// coercion below used to run after it, so a file naming neither dnssec
 	// nor a trust anchor passed the anchor check as if validation were off
@@ -1465,13 +1474,6 @@ func Load(cfgfile, version string) (*Config, error) {
 			return nil, err
 		}
 		config.CookieSecret = hex.EncodeToString(secret)
-	}
-
-	if !config.IPv6Access {
-		err := ipv6Probe()
-		if err == nil {
-			config.IPv6Access = true
-		}
 	}
 
 	// Set TCP keepalive defaults

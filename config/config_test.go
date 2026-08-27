@@ -155,9 +155,12 @@ func TestLoad(t *testing.T) {
 					os.RemoveAll(tmpDir)                            //nolint:gosec // G104 - test cleanup
 				}
 			},
-			version:     "1.4.0",
-			wantErr:     true,
-			errContains: "error creating working directory",
+			version: "1.4.0",
+			wantErr: true,
+			// Reported at the gate now, with everything else wrong in the
+			// file, rather than by the Mkdir that used to be the first
+			// thing to notice.
+			errContains: "parent directory",
 		},
 		{
 			// The sdns.toml fallback is gone with the releases that used

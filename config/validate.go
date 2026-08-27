@@ -60,7 +60,8 @@ func (c *Config) Validate() error {
 		// The plain listener answers over both; the rest open one apiece.
 		{"bind", c.Bind, []string{"udp", "tcp"}},
 		{"bindtls", c.BindTLS, []string{"tcp"}},
-		{"binddoh", c.BindDOH, []string{"tcp"}},
+		// DoH brings its HTTP/3 listener with it, on UDP at the same address.
+		{"binddoh", c.BindDOH, []string{"udp", "tcp"}},
 		{"binddoq", c.BindDOQ, []string{"udp"}},
 	} {
 		if bind.value == "" {
@@ -163,7 +164,7 @@ func (c *Config) Validate() error {
 			// Unlike a listener, an upstream cannot use port 0: nothing
 			// answers there, and the dial failure is per query rather than
 			// at startup.
-			if n, err := usablePort(port, "udp"); err != nil || n == 0 {
+			if n, err := usablePort(port, "udp", "tcp"); err != nil || n == 0 {
 				add("%s %q: must have a port to reach, e.g. 192.0.2.1:53", list.key, addr)
 				continue
 			}
@@ -400,7 +401,10 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// carries on with access logging quietly switched off, so every way of
 	// getting this wrong is silent.
 	if c.AccessLog != "" {
-		info, err := os.Lstat(c.AccessLog)
+		// Stat, not Lstat: OpenFile follows a symlink, so a link to a
+		// writable file is usable and rejecting it would refuse a setup that
+		// works today.
+		info, err := os.Stat(c.AccessLog)
 		switch {
 		case os.IsNotExist(err):
 			// Created on open, but only inside a directory already there.
@@ -433,8 +437,13 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		// Lowercased and stripped of a trailing dot, then used as the suffix
 		// every lookup is matched against. A name that cannot be one matches
 		// nothing, and the middleware answers for no query at all.
-		if domain := strings.TrimSuffix(strings.ToLower(c.Kubernetes.ClusterDomain), "."); domain != "" {
-			if !validDomainName(domain) {
+		//
+		// The runtime strips one trailing dot and then puts one back, so
+		// "cluster.local.." becomes a suffix with a doubled dot that no
+		// query can match. Judging the value after the same single strip
+		// would let that through, so the raw value is judged instead.
+		if raw := strings.ToLower(c.Kubernetes.ClusterDomain); raw != "" {
+			if !validDomainName(strings.TrimSuffix(raw, ".")) || strings.HasSuffix(raw, "..") {
 				add("kubernetes.cluster_domain = %q: is not a valid domain name", c.Kubernetes.ClusterDomain)
 			}
 		}
@@ -489,8 +498,19 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	if c.QnameMaxMinimizeCount == nil && c.QnameMinLevel < 0 {
 		add("qname_min_level = %d: must not be negative", c.QnameMinLevel)
 	}
-	if c.QnameMinimizeOneLabel < 0 {
-		add("qname_minimize_one_label = %d: must not be negative", c.QnameMinimizeOneLabel)
+	// One label at a time is only meaningful while minimization is on, and
+	// the runtime settles the pair together: a count above the maximum is
+	// quietly lowered to it, and with minimization off the field is not read
+	// at all. Judging the fields separately reported a value that has no
+	// effect and missed one that is silently changed.
+	if maxCount, _ := c.QnameMinimizeParams(); maxCount > 0 {
+		switch {
+		case c.QnameMinimizeOneLabel < 0:
+			add("qname_minimize_one_label = %d: must not be negative", c.QnameMinimizeOneLabel)
+		case c.QnameMinimizeOneLabel > maxCount:
+			add("qname_minimize_one_label = %d: must not exceed qname_max_minimize_count (%d), which is what it is lowered to",
+				c.QnameMinimizeOneLabel, maxCount)
+		}
 	}
 
 	// The cache raises anything under 1024 to 1024 without saying so, so a
@@ -880,10 +900,11 @@ func writableDir(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("is a file, want a directory")
 	}
-	return nil
+	return creatable(path)
 }
 
-// existingDir reports whether path is a directory that is already there.
+// existingDir reports whether path is a directory that is already there and
+// can be written into.
 func existingDir(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -892,7 +913,29 @@ func existingDir(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("parent %q is a file, want a directory", path)
 	}
+	if err := creatable(path); err != nil {
+		return fmt.Errorf("parent directory %q: %w", path, err)
+	}
 	return nil
+}
+
+// creatable reports whether this process can make an entry in dir. Mode bits
+// alone do not answer it — ownership, group membership and the mount's own
+// flags all decide — so the question is put the only portable way there is,
+// by creating something and taking it straight back out. The server creates
+// its working directory here anyway, and a check that skipped this passed a
+// read-only parent whose failure surfaces one run later for the working
+// directory, and not at all for the access log.
+func creatable(dir string) error {
+	f, err := os.CreateTemp(dir, ".sdns-config-test-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Remove(name)
 }
 
 // anchorKeyProblem reports why this key cannot be verified with, or nil when
@@ -999,10 +1042,17 @@ func ecdhCurve(alg uint8) ecdh.Curve {
 // Callers that cannot use port 0 test the returned number rather than the
 // string: "00" and "+0" both resolve to zero and would slip past a comparison
 // against "0".
+// lookupPort is net.LookupPort, as a variable so a test can record which
+// networks each caller asks about. The service tables on a developer machine
+// are not partitioned by protocol, so recording the question is the only way
+// to pin that a DoT upstream is judged over TCP and a listener over what it
+// actually opens.
+var lookupPort = net.LookupPort
+
 func usablePort(port string, networks ...string) (int, error) {
 	var resolved int
 	for _, network := range networks {
-		n, err := net.LookupPort(network, port)
+		n, err := lookupPort(network, port)
 		if err != nil {
 			return 0, fmt.Errorf("port %q is not one this host can use for %s", port, network)
 		}
@@ -1014,12 +1064,12 @@ func usablePort(port string, networks ...string) (int, error) {
 // validIPPort reports whether addr is an IP literal with a usable port.
 // Authority and fallback servers are dialled directly, so a hostname there
 // would need a resolver this one may not have yet.
-func validIPPort(addr string) bool {
+func validIPPort(addr string, networks ...string) bool {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || port == "" {
 		return false
 	}
-	if n, err := usablePort(port, "udp"); err != nil || n == 0 {
+	if n, err := usablePort(port, networks...); err != nil || n == 0 {
 		return false
 	}
 	return net.ParseIP(host) != nil
@@ -1049,12 +1099,14 @@ func validUpstream(addr string) error {
 		}
 		return nil
 	case strings.HasPrefix(addr, "tls://"):
-		if !validIPPort(strings.TrimPrefix(addr, "tls://")) {
+		if !validIPPort(strings.TrimPrefix(addr, "tls://"), "tcp") {
 			return fmt.Errorf("DoT needs an IP address and port, e.g. tls://192.0.2.1:853")
 		}
 		return nil
 	default:
-		if !validIPPort(addr) {
+		// Plain DNS asks over UDP and comes back over TCP when an answer
+		// does not fit, so the port has to work for both.
+		if !validIPPort(addr, "udp", "tcp") {
 			return fmt.Errorf("must be an IP address and port, a tls:// address, or an https:// URL")
 		}
 		return nil
@@ -1078,13 +1130,19 @@ func (c *Config) validateLoaded() error {
 		add("directory: required, and this file leaves it empty")
 	}
 
-	// With no root to start from and nothing standing in for one, the
-	// resolver stops the process on the first recursive query rather than
-	// answering it. A global forwarder takes every query before the resolver
-	// sees it, and a forward zone for the root covers the same ground.
-	if len(c.RootServers) == 0 && len(c.Root6Servers) == 0 &&
-		len(c.ForwarderServers) == 0 && !c.forwardsRoot() {
-		add("rootservers: no root server, forwarder or root forward zone, so the first recursive query would stop the server")
+	// A root server is required of every file, forwarders included. The
+	// resolver is constructed either way and its background goroutine primes
+	// the root as soon as the middleware is ready — an empty list stops the
+	// process there, before any query arrives. Forwarding only keeps the
+	// resolver out of the query path, not out of the process.
+	roots6 := len(c.Root6Servers)
+	if !c.IPv6Access {
+		// The resolver only takes the v6 list when v6 is in use, so a file
+		// carrying nothing else has an empty root set at runtime.
+		roots6 = 0
+	}
+	if len(c.RootServers) == 0 && roots6 == 0 {
+		add("rootservers: none configured, and priming an empty root list stops the server at startup")
 	}
 
 	if err := c.Validate(); err != nil {
@@ -1098,16 +1156,4 @@ func (c *Config) validateLoaded() error {
 		return nil
 	}
 	return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(problems, "\n  - "))
-}
-
-// forwardsRoot reports whether a forward zone hands the whole namespace to its
-// own upstreams, which leaves nothing for the resolver to recurse for.
-func (c *Config) forwardsRoot() bool {
-	for i := range c.ForwardZones {
-		zone := &c.ForwardZones[i]
-		if dns.CanonicalName(strings.TrimSpace(zone.Name)) == "." && len(zone.Servers) > 0 {
-			return true
-		}
-	}
-	return false
 }

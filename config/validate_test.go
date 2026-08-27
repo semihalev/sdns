@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -948,7 +949,7 @@ func TestLoadRequiresWhatOnlyAFileNeeds(t *testing.T) {
 		want string
 	}{
 		{"no working directory", "directory = \"\"\nrootservers = [\"192.5.5.241:53\"]\n", "leaves it empty"},
-		{"nothing to recurse from", "rootservers = []\n", "no root server"},
+		{"nothing to recurse from", "rootservers = []\n", "rootservers: none configured"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -968,8 +969,11 @@ func TestLoadRequiresWhatOnlyAFileNeeds(t *testing.T) {
 		})
 	}
 
-	// A forwarder takes every query before the resolver sees it, so it needs
-	// no root of its own.
+	// Forwarding is not an exemption. The resolver is built either way and
+	// its background goroutine primes the root as soon as the middleware is
+	// ready, so an empty list stops the process before a query arrives —
+	// keeping the resolver out of the query path is not keeping it out of
+	// the process.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
 	body := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\nforwarderservers = [\"1.1.1.1:53\"]\n",
@@ -977,8 +981,9 @@ func TestLoadRequiresWhatOnlyAFileNeeds(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path, "test"); err != nil {
-		t.Fatalf("Load() refused a forwarder-only config: %v", err)
+	if _, err := Load(path, "test"); err == nil ||
+		!strings.Contains(err.Error(), "rootservers") {
+		t.Fatalf("Load() = %v, want a forwarder-only config still to need a root", err)
 	}
 }
 
@@ -1041,5 +1046,187 @@ func TestUsablePortUsesTheNetworksGiven(t *testing.T) {
 	// port that cannot resolve — every caller names at least one.
 	if n, err := usablePort("65536", "udp"); err == nil {
 		t.Fatalf("usablePort() = %d, want an out-of-range port refused", n)
+	}
+}
+
+// TestLoadSettlesIPv6BeforeJudgingIt pins the ordering. The probe decides
+// whether the v6 lists are read at all, so running it after the gate meant
+// outboundip6s went unjudged on a host that then used it, and a file whose
+// only roots are v6 passed on a host that then had none.
+func TestLoadSettlesIPv6BeforeJudgingIt(t *testing.T) {
+	original := ipv6Probe
+	defer func() { ipv6Probe = original }()
+
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sdns.conf")
+		content := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n%s",
+			configver, filepath.Join(dir, "db"), body)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	// With v6 reachable the v6-only outbound address is read, and a
+	// non-local one stops the resolver.
+	ipv6Probe = func() error { return nil }
+	if _, err := Load(write(t, "rootservers = [\"192.5.5.241:53\"]\noutboundip6s = [\"2001:db8::1\"]\n"), "test"); err == nil {
+		t.Fatal("Load() accepted a non-local outbound v6 address on a v6 host")
+	}
+
+	// Without v6 the same file is fine, because nothing reads the list.
+	ipv6Probe = func() error { return errors.New("no v6") }
+	if _, err := Load(write(t, "rootservers = [\"192.5.5.241:53\"]\noutboundip6s = [\"2001:db8::1\"]\n"), "test"); err != nil {
+		t.Fatalf("Load() judged outboundip6s on a host without v6: %v", err)
+	}
+
+	// v6-only roots are the whole root set on a v6 host, and none of it
+	// without.
+	v6Only := "root6servers = [\"[2001:500:2f::f]:53\"]\n"
+	ipv6Probe = func() error { return nil }
+	if _, err := Load(write(t, v6Only), "test"); err != nil {
+		t.Fatalf("Load() refused v6-only roots on a v6 host: %v", err)
+	}
+	ipv6Probe = func() error { return errors.New("no v6") }
+	if _, err := Load(write(t, v6Only), "test"); err == nil ||
+		!strings.Contains(err.Error(), "rootservers") {
+		t.Fatalf("Load() = %v, want v6-only roots to leave nothing on a v4 host", err)
+	}
+}
+
+func TestValidateAccessLogFollowsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.log")
+	if err := os.WriteFile(target, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	// OpenFile follows the link, so a link to a writable file is usable and
+	// refusing it would stop a setup that runs today.
+	if err := (&Config{AccessLog: link}).Validate(); err != nil {
+		t.Fatalf("Validate() rejected an access log symlink to a writable file: %v", err)
+	}
+}
+
+func TestValidateClusterDomainTrailingDots(t *testing.T) {
+	for _, tc := range []struct {
+		domain string
+		want   bool
+	}{
+		{"cluster.local", true},
+		{"cluster.local.", true},
+		// One dot is stripped and one put back, so this becomes a suffix
+		// with a doubled dot that no query can match.
+		{"cluster.local..", false},
+		{"bad..domain", false},
+	} {
+		t.Run(tc.domain, func(t *testing.T) {
+			cfg := &Config{}
+			cfg.Kubernetes.Enabled = true
+			cfg.Kubernetes.ClusterDomain = tc.domain
+			if err := cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateQnameEffectivePair(t *testing.T) {
+	count := func(n int) *int { return &n }
+
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		// Quietly lowered to the maximum, so the file describes a server
+		// that never ran.
+		{"one-label above the maximum", Config{
+			QnameMaxMinimizeCount: count(3), QnameMinimizeOneLabel: 10,
+		}, false},
+		{"one-label at the maximum", Config{
+			QnameMaxMinimizeCount: count(3), QnameMinimizeOneLabel: 3,
+		}, true},
+		// With minimization off the field is never read, so a stale value
+		// there must not stop the server.
+		{"minimization off", Config{
+			QnameMaxMinimizeCount: count(0), QnameMinimizeOneLabel: -1,
+		}, true},
+		{"negative while on", Config{
+			QnameMaxMinimizeCount: count(5), QnameMinimizeOneLabel: -1,
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); (err == nil) != tc.want {
+				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateUpstreamProtocols(t *testing.T) {
+	// DoT is dialled over TCP only; plain DNS asks over UDP and retries over
+	// TCP when an answer does not fit, so both tables have to know the port.
+	ok := &Config{
+		RootServers:      []string{"192.5.5.241:domain"},
+		ForwarderServers: []string{"tls://1.1.1.1:853", "1.1.1.1:53"},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("Validate() rejected upstreams both tables know: %v", err)
+	}
+	// Port 0 has nothing to reach on either.
+	for _, cfg := range []Config{
+		{ForwarderServers: []string{"tls://1.1.1.1:0"}},
+		{ForwarderServers: []string{"1.1.1.1:0"}},
+	} {
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("Validate() accepted %+v", cfg.ForwarderServers)
+		}
+	}
+}
+
+// TestPortNetworksPerCaller pins which protocols each setting is judged over.
+// This platform's service tables answer the same for udp and tcp, so no value
+// can distinguish them; recording the question can.
+func TestPortNetworksPerCaller(t *testing.T) {
+	original := lookupPort
+	defer func() { lookupPort = original }()
+
+	var asked []string
+	lookupPort = func(network, port string) (int, error) {
+		asked = append(asked, network)
+		return original(network, port)
+	}
+
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want []string
+	}{
+		// The plain listener answers over both; DoH brings HTTP/3 with it.
+		{"bind", Config{Bind: ":53"}, []string{"udp", "tcp"}},
+		{"binddoh", Config{BindDOH: ":443", TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"udp", "tcp"}},
+		{"binddoq", Config{BindDOQ: ":853", TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"udp"}},
+		{"bindtls", Config{BindTLS: ":853", TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"tcp"}},
+		{"api", Config{API: "127.0.0.1:8080"}, []string{"tcp"}},
+		// Plain DNS retries over TCP when an answer does not fit.
+		{"rootservers", Config{RootServers: []string{"192.5.5.241:53"}}, []string{"udp", "tcp"}},
+		// DoT is TCP only.
+		{"DoT upstream", Config{ForwarderServers: []string{"tls://1.1.1.1:853"}}, []string{"tcp"}},
+		{"plain upstream", Config{ForwarderServers: []string{"1.1.1.1:53"}}, []string{"udp", "tcp"}},
+		{"blocklist", Config{BlockLists: []string{"http://example.com:8080/list"}}, []string{"tcp"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asked = nil
+			_ = tc.cfg.Validate()
+			if strings.Join(asked, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("asked %v, want %v", asked, tc.want)
+			}
+		})
 	}
 }
