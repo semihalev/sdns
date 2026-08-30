@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"math"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -144,11 +145,28 @@ func TestAcquireAttemptReqAllocatesNothing(t *testing.T) {
 	// inside binary.Read, a pre-existing per-attempt cost this test does
 	// not own. The one allocation left is the private OPT shell —
 	// packing writes into the OPT header, so attempts cannot share it.
-	if n := testing.AllocsPerRun(100, func() {
+	if n := minAllocsPerRun(5, 100, func() {
 		att := acquireAttemptReq(leader)
 		att.Id = 42
 		ReleaseMsg(att)
 	}); n != 1 {
 		t.Fatalf("allocs = %v, want exactly the OPT shell", n)
 	}
+}
+
+// minAllocsPerRun is testing.AllocsPerRun repeated, keeping the lowest count.
+//
+// Allocation noise is one-sided: something else in the process allocating
+// during a measurement can only raise the average, never lower it. So the
+// minimum across repeats is the count the code under test actually pays, and
+// a pin written against it goes red for a real regression rather than for a
+// busy machine. A regression still shows, because it raises every repeat.
+func minAllocsPerRun(repeats, runs int, f func()) float64 {
+	lowest := math.Inf(1)
+	for range repeats {
+		if n := testing.AllocsPerRun(runs, f); n < lowest {
+			lowest = n
+		}
+	}
+	return lowest
 }
