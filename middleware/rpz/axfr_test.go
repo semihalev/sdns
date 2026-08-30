@@ -564,14 +564,17 @@ func TestExpiredCopyWithdrawsBeforeTheRefresh(t *testing.T) {
 		}
 	}()
 	feed.source = l.Addr().String()
-	feed.timeout = 3 * time.Second
+	// The refresh hangs for this long; the poll window below must end
+	// well before it so a late (wrongly ordered) withdrawal can never be
+	// mistaken for the early one.
+	feed.timeout = 1500 * time.Millisecond
 	clock = clock.Add(87000 * time.Second) // past the 86400s expire
 
 	done := make(chan struct{})
 	go func() { defer close(done); feed.cycle(context.Background()) }()
 
 	withdrawn := false
-	for deadline := time.Now().Add(1500 * time.Millisecond); time.Now().Before(deadline); {
+	for deadline := time.Now().Add(750 * time.Millisecond); time.Now().Before(deadline); {
 		_, _, passed, err := serveQuiet(r, "blocked.example.com.")
 		if err != nil {
 			t.Fatal(err)
