@@ -61,10 +61,29 @@ func New(cfg *config.Config) *RPZ {
 	r.zones = cfg.RPZ.Zones
 	zones := make([]*rpz.Zone, 0, len(cfg.RPZ.Zones))
 	for _, zc := range cfg.RPZ.Zones {
+		if zc.Source != "" {
+			// An AXFR feed starts empty — it filters nothing until its
+			// first transfer lands — and its lifecycle goroutine owns it
+			// from here.
+			policy, _ := rpz.ParseOverride(zc.Policy)
+			target := ""
+			if zc.Cname != "" {
+				target = dns.CanonicalName(zc.Cname)
+			}
+			zones = append(zones, &rpz.Zone{Name: zc.Name, Policy: policy, CNAMETarget: target})
+			zoneSerial.WithLabelValues(zc.Name).Set(-1)
+			continue
+		}
 		zones = append(zones, loadZone(zc))
+		zoneSerial.WithLabelValues(zc.Name).Set(-1)
 	}
 	r.store.Store(&rpz.Store{Zones: zones})
 	r.watch()
+	for idx, zc := range cfg.RPZ.Zones {
+		if zc.Source != "" {
+			go newAXFRFeed(r, idx, zc).run(context.Background())
+		}
+	}
 
 	return r
 }

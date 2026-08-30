@@ -308,6 +308,48 @@ answers = [
 
 Views are evaluated in declaration order; the first whose `networks` contains the client IP wins. `zone` is a free-form label used in error logs — it doesn't have to be a DNS zone name.
 
+#### Response Policy Zones (RPZ)
+
+The RPZ middleware subscribes the resolver to policy zones — locally maintained files or vendor AXFR feeds in the standard RPZ encoding — that rewrite, deny, or drop answers for the names and client networks they list. Existing commercial feeds work unmodified.
+
+**Configuration:**
+```toml
+[rpz]
+enabled = true
+mode = "shadow"    # "shadow" counts and logs every match without rewriting; "enforce" acts
+
+# A file-fed zone: reloaded automatically when the file is replaced.
+[[rpz.zone]]
+name = "badlist"                       # label for metrics, logs and the EDE text
+file = "/var/lib/sdns/badlist.zone"
+policy = "given"                       # per-zone override, see below
+
+# An AXFR-fed zone: follows the feed's own SOA schedule.
+[[rpz.zone]]
+name = "vendorfeed"
+source = "203.0.113.5:53"              # the feed's primary (host:port)
+origin = "rpz.vendor.example."         # the policy zone's apex
+# tsig_key = "feedkey.:hmac-sha256.:BASE64SECRET"   # when the provider signs transfers
+```
+
+Zones are evaluated in the order written; the first zone with a match wins. Within a zone, a client-address (`rpz-client-ip`) match outranks a name match, and the longest prefix or most specific name wins.
+
+**Triggers:** QNAME rules (exact and `*.wildcard`) and CLIENT-IP rules (IPv4 and IPv6 prefixes, in the standard reversed-owner encoding). Triggers of other types in a feed (`rpz-ip`, `rpz-nsdname`, `rpz-nsip`) load without error and are counted as skipped.
+
+**Actions** (standard RPZ RDATA encodings): NXDOMAIN (`CNAME .`), NODATA (`CNAME *.`), PASSTHRU, DROP (no answer at all), TCP-Only (truncates UDP; encrypted transports pass), and Local Data — served as if authoritative for the query name, including CNAME chasing through the resolver.
+
+**Per-zone `policy` override:** `given` uses what each rule says; `passthru`, `nxdomain`, `nodata`, `drop`, `tcp-only` replace every action in the zone; `cname` rewrites every match to the `cname = "target."` walled garden; `disabled` only observes — a later zone still acts.
+
+**Operational behavior:**
+- Policy applies to client queries only (RD=1); the resolver's own internal lookups are never policy-checked.
+- Rewritten answers carry the policy zone's SOA in the additional section and Extended DNS Error 17 (Filtered), and never claim DNSSEC authenticity.
+- A file push that fails to parse — or parses but contains no rules — keeps the previous rules serving and is counted, never silently unprotected.
+- An AXFR feed probes the SOA on its refresh interval, transfers on serial change, refuses serial rollbacks (RFC 1982), and **withdraws its rules past SOA expire** — a feed that cannot be refreshed fails open rather than enforcing stale policy.
+- `sdns -t` validates the whole `[rpz]` block, parsing file-fed zones with the same loader the server uses.
+- A non-matching query costs zero heap allocations; a 2M-rule feed measured no serving-path regression.
+
+**Metrics:** `rpz_action_total{zone,trigger,action,outcome}` (`outcome="enforced"` for the acting match, `"observed"` for shadow mode and disabled zones), `rpz_zone_rules{zone,trigger}`, `rpz_zone_rules_skipped{zone,reason}`, `rpz_reload_errors_total{zone}`, `rpz_zone_serial{zone}` (-1 for file-fed or withdrawn zones).
+
 #### DNS64 (RFC 6147)
 
 The DNS64 middleware lets IPv6-only clients reach IPv4-only services. When a client AAAA query has no usable answer, the middleware issues a secondary A-record lookup and synthesises AAAA records by embedding each IPv4 address into a configured Pref64::/n IPv6 prefix (RFC 6052). The client receives addresses in a NAT64-routable subnet and can connect to the IPv4-only target through a paired NAT64 gateway.

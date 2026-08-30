@@ -134,6 +134,37 @@ func LoadZone(name string, r io.Reader, file string, policy Override, cnameTarge
 	return z, nil
 }
 
+// CompileRecords compiles an already-received record stream — an AXFR —
+// into a Zone, through exactly the classifier the file loader uses, so a
+// feed behaves identically whichever way it arrived. The stream must lead
+// with its apex SOA, which a strict transfer guarantees; the caller
+// normalizes duplicates first (zonetransfer.NormalizeZone), because the
+// Local Data merge accumulates records and a doubled record must not read
+// as two.
+func CompileRecords(name string, rrs []dns.RR, policy Override, cnameTarget string) (*Zone, error) {
+	if len(rrs) == 0 {
+		return nil, fmt.Errorf("rpz zone %q: empty transfer", name)
+	}
+	soa, ok := rrs[0].(*dns.SOA)
+	if !ok {
+		return nil, fmt.Errorf("rpz zone %q: transfer does not lead with its SOA", name)
+	}
+	z := &Zone{
+		Name:        name,
+		Origin:      dns.CanonicalName(soa.Hdr.Name),
+		SOA:         soa,
+		Policy:      policy,
+		CNAMETarget: cnameTarget,
+		exact:       make(map[string]*Rule),
+		wild:        make(map[string]*Rule),
+		Skipped:     make(map[string]int),
+	}
+	for _, rr := range rrs[1:] {
+		z.classify(rr)
+	}
+	return z, nil
+}
+
 // classify turns one record into a rule, or a counted skip.
 func (z *Zone) classify(rr dns.RR) {
 	hdr := rr.Header()

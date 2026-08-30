@@ -100,7 +100,7 @@ func TestValidateRPZ(t *testing.T) {
 	})
 
 	t.Run("file judged with the runtime's parser", func(t *testing.T) {
-		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed"}), "file is required")
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed"}), "either file or source is required")
 		// The OS names the missing file differently per platform ("no
 		// such file" vs "cannot find the file"), so the assertion holds
 		// onto the one part we control: the path in the error.
@@ -113,5 +113,46 @@ func TestValidateRPZ(t *testing.T) {
 		// which is never what an operator enabling RPZ meant.
 		empty := rpzZoneFile(t, "rpz.test. IN SOA ns. admin. 1 3600 900 604800 300\n")
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: empty}), "compiled no rules")
+	})
+}
+
+func TestValidateRPZSourceZones(t *testing.T) {
+	good := rpzZoneFile(t, validRPZZone)
+
+	t.Run("valid source zone passes", func(t *testing.T) {
+		c := rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5:53", Origin: "rpz.vendor.example."})
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("file and source are exclusive", func(t *testing.T) {
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: good, Source: "203.0.113.5:53", Origin: "z."}), "fed one way")
+	})
+
+	t.Run("source needs a well-formed address and origin", func(t *testing.T) {
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5", Origin: "z."}), "host:port")
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5:53"}), "needs an origin")
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5:53", Origin: "no-dot.example"}), "fully qualified")
+	})
+
+	t.Run("tsig shape judged with the runtime's parser", func(t *testing.T) {
+		base := RPZZone{Name: "feed", Source: "203.0.113.5:53", Origin: "z."}
+		bad := base
+		bad.TsigKey = "just-a-name"
+		wantRPZProblem(t, rpzConfig(bad), "tsig_key")
+		notB64 := base
+		notB64.TsigKey = "k.:hmac-sha256.:not!!base64"
+		wantRPZProblem(t, rpzConfig(notB64), "base64")
+		ok := base
+		ok.TsigKey = "k.:hmac-sha256.:c2VjcmV0"
+		if err := rpzConfig(ok).Validate(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("origin and tsig are refused on file zones", func(t *testing.T) {
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: good, Origin: "z."}), "file-fed")
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: good, TsigKey: "k.:a.:YQ=="}), "only transfers are signed")
 	})
 }
