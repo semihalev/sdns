@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/pprof"
-	"os"
 	"strings"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/debugenv"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/zlog/v2"
@@ -45,11 +45,7 @@ type API struct {
 	metricsHandler http.Handler
 }
 
-var debugpprof bool
-
-func init() {
-	_, debugpprof = os.LookupEnv("SDNS_PPROF")
-}
+var debugpprof = debugenv.PProf()
 
 // New return new api.
 func New(cfg *config.Config) *API {

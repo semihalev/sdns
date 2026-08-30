@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/miekg/dns"
@@ -10,6 +9,7 @@ import (
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/contextutil"
+	"github.com/semihalev/sdns/internal/debugenv"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -50,10 +50,7 @@ const contextKeyNSList contextKey = 1 << 16
 const maxDnameDepth = 10
 
 // debugns is initialized once at startup.
-var debugns = func() bool {
-	_, ok := os.LookupEnv("SDNS_DEBUGNS")
-	return ok
-}()
+var debugns = debugenv.DebugNS()
 
 // New returns a new Handler.
 func New(cfg *config.Config) *DNSHandler {
