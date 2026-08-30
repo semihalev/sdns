@@ -101,7 +101,10 @@ func TestValidateRPZ(t *testing.T) {
 
 	t.Run("file judged with the runtime's parser", func(t *testing.T) {
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed"}), "file is required")
-		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: filepath.Join(t.TempDir(), "absent.zone")}), "no such file")
+		// The OS names the missing file differently per platform ("no
+		// such file" vs "cannot find the file"), so the assertion holds
+		// onto the one part we control: the path in the error.
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: filepath.Join(t.TempDir(), "absent.zone")}), "absent.zone")
 
 		noSOA := rpzZoneFile(t, "bad.example.com.rpz.test. IN CNAME .\n")
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: noSOA}), "no SOA")
