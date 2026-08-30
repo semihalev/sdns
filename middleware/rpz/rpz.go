@@ -143,12 +143,24 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// A worker replay of an inline handoff walks this handler again with
+	// the same query, so everything that continued past rpz on the first
+	// pass — observations, shadow matches, enforce PASSTHRU — was already
+	// counted and logged there; a replay repeating them would count each
+	// match once or twice depending on the cache's state, which is not a
+	// metric, it is noise. The one replay that does count is the chase
+	// handoff below, which deferred its own action (and its count) to
+	// this very pass.
+	firstPass := !ch.Replay()
+
 	// Winner-bounded counting (design §5.5): the disabled zones met on
 	// the way to the winner are counted as what they would have done.
-	for _, m := range observed {
-		countMatch(m, outcomeObserved)
-		if debugLogEnabled() {
-			zlog.Debug("RPZ match observed", "zone", m.Zone.Name, "action", m.Effective().String())
+	if firstPass {
+		for _, m := range observed {
+			countMatch(m, outcomeObserved)
+			if debugLogEnabled() {
+				zlog.Debug("RPZ match observed", "zone", m.Zone.Name, "action", m.Effective().String())
+			}
 		}
 	}
 	if winner.Zone == nil {
@@ -157,16 +169,63 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	if !r.enforce {
-		countMatch(winner, outcomeObserved)
-		if debugLogEnabled() {
-			zlog.Debug("RPZ match in shadow", "zone", winner.Zone.Name, "action", winner.Effective().String())
+		if firstPass {
+			countMatch(winner, outcomeObserved)
+			if debugLogEnabled() {
+				zlog.Debug("RPZ match in shadow", "zone", winner.Zone.Name, "action", winner.Effective().String())
+			}
 		}
 		ch.Next(ctx)
 		return
 	}
 
-	countMatch(winner, outcomeEnforced)
-	r.act(ctx, ch, winner)
+	action := winner.Effective()
+	chase := action == rpz.ActionLocalData && r.chaseNeeded(winner, req.Qtype())
+
+	// A chase resolves the CNAME target through the sub-pipeline, and on
+	// a cache miss that is an upstream resolution — nothing a transport
+	// reader can wait out. Decline, unwritten, exactly as the cache does
+	// (middleware/cache/cache.go:433); the transport replays on a worker,
+	// where the branch below runs to completion. Every other action is
+	// pure synthesis and stays inline.
+	if chase && ch.InlineOnly() {
+		ch.MarkHandoff()
+		return
+	}
+
+	// Count when this pass is the one that acts: any non-replay pass, or
+	// the replay completing a chase this handler itself handed off (that
+	// inline pass returned above without counting). A replay reaching a
+	// non-chase action got here through someone else's handoff after a
+	// first pass that already counted — PASSTHRU and TCP-Only-over-TCP
+	// are the continuing cases.
+	if firstPass || chase {
+		countMatch(winner, outcomeEnforced)
+	}
+	r.act(ctx, ch, winner, action)
+}
+
+// chaseNeeded mirrors serveLocalData's fallback exactly: the rule holds no
+// RRset of the requested type, a CNAME stands in, and the sub-pipeline is
+// wired to resolve its target. QTYPE=ANY always has answers, and a CNAME
+// question is answered by the link itself.
+func (r *RPZ) chaseNeeded(winner rpz.ZoneMatch, qtype uint16) bool {
+	if r.queryer == nil || qtype == dns.TypeANY || qtype == dns.TypeCNAME {
+		return false
+	}
+	if winner.Zone.Policy == rpz.OverrideCNAME {
+		return true
+	}
+	hasCNAME := false
+	for _, rr := range winner.Rule.Local {
+		if rr.Header().Rrtype == qtype {
+			return false
+		}
+		if rr.Header().Rrtype == dns.TypeCNAME {
+			hasCNAME = true
+		}
+	}
+	return hasCNAME
 }
 
 // decodedKey builds the canonical-labels key for a decoded request by
@@ -189,9 +248,8 @@ func decodedKey(msg *dns.Msg, dst []byte, offs []int) ([]byte, int, bool) {
 }
 
 // act carries out the winning action in enforce mode.
-func (r *RPZ) act(ctx context.Context, ch *middleware.Chain, winner rpz.ZoneMatch) {
+func (r *RPZ) act(ctx context.Context, ch *middleware.Chain, winner rpz.ZoneMatch, action rpz.Action) {
 	w := ch.Writer
-	action := winner.Effective()
 
 	switch action {
 	case rpz.ActionPassthru:
@@ -268,6 +326,15 @@ func (r *RPZ) serveLocalData(ctx context.Context, ch *middleware.Chain, msg *dns
 	var cname *dns.CNAME
 	for _, rr := range records {
 		if q.Qtype == dns.TypeANY || rr.Header().Rrtype == q.Qtype {
+			// Every served CNAME goes through the expansion path, the
+			// direct type match included: a wildcarded target must never
+			// reach a client as spelled, whatever the QTYPE.
+			if c, ok := rr.(*dns.CNAME); ok {
+				if cp := expandCNAME(c, q.Name); cp != nil {
+					m.Answer = append(m.Answer, cp)
+				}
+				continue
+			}
 			cp := dns.Copy(rr)
 			cp.Header().Name = q.Name
 			m.Answer = append(m.Answer, cp)
@@ -329,7 +396,10 @@ func (r *RPZ) chase(ctx context.Context, m *dns.Msg, target string, qtype uint16
 		return
 	}
 	for _, rr := range resp.Answer {
-		if rr.Header().Rrtype == dns.TypeRRSIG {
+		// The whole DNSSEC family, not just RRSIGs: the same
+		// classification the parser bars from policy data, shared so the
+		// two cannot drift.
+		if rpz.IsDNSSECType(rr.Header().Rrtype) {
 			continue
 		}
 		m.Answer = append(m.Answer, rr)

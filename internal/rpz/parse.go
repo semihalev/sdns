@@ -40,11 +40,27 @@ const (
 // produced one this deep in is not a policy zone.
 const pendingLimit = 64
 
-// notActionData are the types the draft bars from being policy data.
-var notActionData = map[uint16]bool{
-	dns.TypeSOA: true, dns.TypeNS: true, dns.TypeDNAME: true,
-	dns.TypeRRSIG: true, dns.TypeNSEC: true, dns.TypeNSEC3: true,
-	dns.TypeNSEC3PARAM: true, dns.TypeDNSKEY: true, dns.TypeDS: true,
+// IsDNSSECType reports whether t is one of the DNSSEC record types. The
+// parser bars them from being policy data, and the middleware strips them
+// from chased answers — one classification, shared, so the two cannot
+// drift (a rewrite must never carry DNSSEC credibility, design C2).
+func IsDNSSECType(t uint16) bool {
+	switch t {
+	case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3, dns.TypeNSEC3PARAM,
+		dns.TypeDNSKEY, dns.TypeDS:
+		return true
+	}
+	return false
+}
+
+// notActionData reports the types the draft bars from being policy data:
+// zone housekeeping and the DNSSEC family.
+func notActionData(t uint16) bool {
+	switch t {
+	case dns.TypeSOA, dns.TypeNS, dns.TypeDNAME:
+		return true
+	}
+	return IsDNSSECType(t)
 }
 
 // triggerMarkers are the owner labels that select non-QNAME trigger
@@ -149,7 +165,7 @@ func (z *Zone) classify(rr dns.RR) {
 		}
 	}
 
-	if notActionData[hdr.Rrtype] {
+	if notActionData(hdr.Rrtype) {
 		z.skip(SkipNotActionData)
 		return
 	}

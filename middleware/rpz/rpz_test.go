@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
+	rpzengine "github.com/semihalev/sdns/internal/rpz"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -25,6 +27,7 @@ tcp.example.com.rpz.test.      300 IN CNAME rpz-tcp-only.
 walled.example.com.rpz.test.   300 IN A 192.0.2.1
 walled.example.com.rpz.test.   300 IN TXT "garden"
 alias.example.com.rpz.test.    300 IN CNAME garden.example.net.
+wildtarget.example.com.rpz.test. 300 IN CNAME *.garden.example.net.
 *.wild.example.com.rpz.test.   300 IN A 192.0.2.7
 `
 
@@ -369,5 +372,233 @@ func TestLocalDataCNAMEChasesThroughTheQueryer(t *testing.T) {
 	}
 	if w.Msg().AuthenticatedData {
 		t.Fatal("a rewrite may never carry AD")
+	}
+}
+
+// counterValue reads one rpz_action_total series without pulling in an
+// assertion or test-util dependency: client_model is already a direct
+// dependency, and a counter writes itself into its dto.
+func counterValue(t *testing.T, zone, action, outcome string) float64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := actionTotal.WithLabelValues(zone, "qname", action, outcome).Write(m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// TestReplayDoesNotDoubleCount pins the counting rule for the inline
+// handoff dance: a pass-through match counted on the first pass must not
+// count again when the worker replays the whole chain after a cache
+// handoff — otherwise the same query counts once or twice depending on
+// the cache's mood.
+func TestReplayDoesNotDoubleCount(t *testing.T) {
+	r := testRPZ(t, "shadow")
+	q := new(dns.Msg)
+	q.SetQuestion("nx.example.com.", dns.TypeA)
+	q.RecursionDesired = true
+	raw, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) { ch.Cancel() })
+
+	pass := func(replay bool) {
+		req := new(middleware.Request)
+		if !req.ParseWire(raw, time.Now(), nil) {
+			t.Fatal("refused")
+		}
+		ch := middleware.NewChain([]middleware.Handler{r, next})
+		ch.ResetWire(mock.NewWriter("udp", "192.0.2.1:40000"), req)
+		if replay {
+			ch.SetReplay()
+		}
+		ch.Next(context.Background())
+	}
+
+	before := counterValue(t, "test", "nxdomain", outcomeObserved)
+	pass(false) // the inline/worker first pass counts
+	pass(true)  // the replay of that same query must not
+	if got := counterValue(t, "test", "nxdomain", outcomeObserved) - before; got != 1 {
+		t.Fatalf("one query counted %.0f times across first pass + replay, want 1", got)
+	}
+}
+
+// TestChaseHandsOffTheInlinePass pins the reader-safety rule: a Local
+// Data match whose CNAME needs the sub-pipeline must decline an
+// inline-only pass unwritten (the cache's own discipline), act on the
+// worker replay instead, and count exactly once — on the pass that acted.
+func TestChaseHandsOffTheInlinePass(t *testing.T) {
+	r := testRPZ(t, "enforce")
+	r.SetQueryer(&chaseQueryer{})
+
+	q := new(dns.Msg)
+	q.SetQuestion("alias.example.com.", dns.TypeA)
+	q.RecursionDesired = true
+	raw, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) { ch.Cancel() })
+
+	before := counterValue(t, "test", "local-data", outcomeEnforced)
+
+	// Inline pass: no write, no count, handoff marked.
+	req := new(middleware.Request)
+	if !req.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("refused")
+	}
+	w := mock.NewWriter("udp", "192.0.2.1:40000")
+	ch := middleware.NewChain([]middleware.Handler{r, next})
+	ch.ResetWire(w, req)
+	ch.SetInlineOnly()
+	ch.Next(context.Background())
+	if w.Written() {
+		t.Fatal("a chase ran on the inline pass — that blocks the transport reader")
+	}
+	if !ch.Handoff() {
+		t.Fatal("the inline pass must mark a handoff for the worker replay")
+	}
+	if got := counterValue(t, "test", "local-data", outcomeEnforced) - before; got != 0 {
+		t.Fatalf("the declined inline pass counted %.0f times, want 0", got)
+	}
+
+	// Worker replay: the chase completes, and the count lands here, once.
+	req2 := new(middleware.Request)
+	if !req2.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("refused")
+	}
+	w2 := mock.NewWriter("udp", "192.0.2.1:40000")
+	ch2 := middleware.NewChain([]middleware.Handler{r, next})
+	ch2.ResetWire(w2, req2)
+	ch2.SetReplay()
+	ch2.Next(context.Background())
+	if !w2.Written() || len(w2.Msg().Answer) != 2 {
+		t.Fatalf("replay did not complete the chase: written=%v answers=%v", w2.Written(), w2.Msg().Answer)
+	}
+	if got := counterValue(t, "test", "local-data", outcomeEnforced) - before; got != 1 {
+		t.Fatalf("chase counted %.0f times across handoff + replay, want 1", got)
+	}
+
+	// And a Local Data match that needs no chase stays inline: records of
+	// the requested type are pure synthesis.
+	w3, _ := serve(t, r, "walled.example.com.", dns.TypeA, "udp", true)
+	if !w3.Written() {
+		t.Fatal("chase-free local data must serve inline")
+	}
+}
+
+func TestEmptyButValidReloadKeepsServing(t *testing.T) {
+	path := writeZone(t, testZone)
+	r := newRPZ(t, "enforce", config.RPZZone{Name: "test", File: path})
+
+	// A push that parses but compiles nothing: SOA/NS only.
+	if err := os.WriteFile(path, []byte(`
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 9 3600 900 604800 300
+rpz.test. IN NS ns.rpz.test.
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload(0)
+
+	if w, _ := serve(t, r, "nx.example.com.", dns.TypeA, "udp", true); !w.Written() || w.Rcode() != dns.RcodeNameError {
+		t.Fatal("an empty-but-valid push stripped the working policy")
+	}
+}
+
+func TestWildcardCNAMETargetExpandsForEveryQtype(t *testing.T) {
+	r := testRPZ(t, "enforce")
+	// wildtarget's rule is `CNAME *.garden.example.net.`; asked for the
+	// CNAME itself (the direct type-match branch), the wildcard must
+	// still expand — a `*.` target may never reach a client.
+	for _, qtype := range []uint16{dns.TypeCNAME, dns.TypeANY, dns.TypeA} {
+		w, _ := serve(t, r, "wildtarget.example.com.", qtype, "udp", true)
+		if len(w.Msg().Answer) == 0 {
+			t.Fatalf("qtype %d: no answer", qtype)
+		}
+		c, ok := w.Msg().Answer[0].(*dns.CNAME)
+		if !ok {
+			t.Fatalf("qtype %d: answer = %v", qtype, w.Msg().Answer[0])
+		}
+		if c.Target != "wildtarget.example.com.garden.example.net." {
+			t.Fatalf("qtype %d: target %q leaked unexpanded", qtype, c.Target)
+		}
+	}
+}
+
+// dnssecChaseQueryer answers with the whole DNSSEC family beside one real
+// record, so the strip filter is judged against every type it must catch.
+type dnssecChaseQueryer struct{}
+
+func (dnssecChaseQueryer) Query(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
+	name := req.Question[0].Name
+	hdr := func(t uint16) dns.RR_Header {
+		return dns.RR_Header{Name: name, Rrtype: t, Class: dns.ClassINET, Ttl: 60}
+	}
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Answer = []dns.RR{
+		&dns.DNSKEY{Hdr: hdr(dns.TypeDNSKEY), Flags: 256, Protocol: 3, Algorithm: dns.RSASHA256, PublicKey: "AwEAAa=="},
+		&dns.DS{Hdr: hdr(dns.TypeDS), KeyTag: 1, Algorithm: 8, DigestType: 2, Digest: "ab"},
+		&dns.NSEC{Hdr: hdr(dns.TypeNSEC), NextDomain: "z." + name, TypeBitMap: []uint16{dns.TypeA}},
+		&dns.RRSIG{Hdr: hdr(dns.TypeRRSIG), TypeCovered: dns.TypeDNSKEY, Algorithm: 8, SignerName: ".", Signature: "AA=="},
+		&dns.TXT{Hdr: hdr(dns.TypeTXT), Txt: []string{"clean"}},
+	}
+	return resp, nil
+}
+
+func TestChaseStripsTheWholeDNSSECFamily(t *testing.T) {
+	r := testRPZ(t, "enforce")
+	r.SetQueryer(dnssecChaseQueryer{})
+
+	// alias has only a CNAME; a DNSKEY question takes the chase path.
+	w, _ := serve(t, r, "alias.example.com.", dns.TypeDNSKEY, "udp", true)
+	for _, rr := range w.Msg().Answer {
+		if rpzengine.IsDNSSECType(rr.Header().Rrtype) {
+			t.Fatalf("chased %v leaked into the rewrite", dns.TypeToString[rr.Header().Rrtype])
+		}
+	}
+	// The non-DNSSEC record survived the filter.
+	found := false
+	for _, rr := range w.Msg().Answer {
+		if rr.Header().Rrtype == dns.TypeTXT {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the filter stripped more than the DNSSEC family")
+	}
+}
+
+func TestReloadZeroesDroppedSkipReasons(t *testing.T) {
+	// First load carries an unknown-action skip...
+	path := writeZone(t, `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 1 3600 900 604800 300
+keep.example.com.rpz.test. IN CNAME .
+odd.example.com.rpz.test. IN CNAME rpz-mystery-action.
+`)
+	r := newRPZ(t, "enforce", config.RPZZone{Name: "gauges", File: path})
+
+	read := func() float64 {
+		m := &dto.Metric{}
+		if err := zoneRulesSkipped.WithLabelValues("gauges", rpzengine.SkipUnknownAction).Write(m); err != nil {
+			t.Fatal(err)
+		}
+		return m.GetGauge().GetValue()
+	}
+	if read() != 1 {
+		t.Fatalf("skip gauge = %v after first load, want 1", read())
+	}
+
+	// ...and the cleaned-up push must read as zero, not linger.
+	if err := os.WriteFile(path, []byte(`
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 2 3600 900 604800 300
+keep.example.com.rpz.test. IN CNAME .
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload(0)
+	if read() != 0 {
+		t.Fatalf("skip gauge = %v after a clean reload, want 0", read())
 	}
 }

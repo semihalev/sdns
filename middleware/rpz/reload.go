@@ -89,6 +89,16 @@ func (r *RPZ) reload(idx int) {
 		zlog.Warn("RPZ zone reload failed; the previous rules keep serving", "zone", zc.Name, "error", err.Error())
 		return
 	}
+	// The same zero-rule semantic the config gate enforces: a push that
+	// parses but compiles nothing — SOA/NS only, or every record skipped —
+	// would silently strip a working policy. That is a broken push, not a
+	// smaller feed, and the previous generation keeps serving.
+	if z.Rules == 0 {
+		reloadErrors.WithLabelValues(zc.Name).Inc()
+		zlog.Warn("RPZ zone reload compiled no rules; the previous rules keep serving",
+			"zone", zc.Name, "skipped", len(z.Skipped))
+		return
+	}
 
 	old := r.store.Load()
 	zones := make([]*rpz.Zone, len(old.Zones))

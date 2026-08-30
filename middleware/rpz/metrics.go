@@ -44,9 +44,21 @@ func countMatch(m rpzengine.ZoneMatch, outcome string) {
 	actionTotal.WithLabelValues(m.Zone.Name, "qname", m.Effective().String(), outcome).Inc()
 }
 
+// skipReasons is every reason the engine can count, so a reload publishes
+// the full set — a reason that dropped to zero reads as zero, rather than
+// keeping the previous generation's value on the board.
+var skipReasons = []string{
+	rpzengine.SkipTrigger,
+	rpzengine.SkipUnknownAction,
+	rpzengine.SkipNotActionData,
+	rpzengine.SkipConflict,
+	rpzengine.SkipOutOfZone,
+	rpzengine.SkipApexData,
+}
+
 func publishZoneMetrics(z *rpzengine.Zone) {
 	zoneRules.WithLabelValues(z.Name, "qname").Set(float64(z.Rules))
-	for reason, n := range z.Skipped {
-		zoneRulesSkipped.WithLabelValues(z.Name, reason).Set(float64(n))
+	for _, reason := range skipReasons {
+		zoneRulesSkipped.WithLabelValues(z.Name, reason).Set(float64(z.Skipped[reason]))
 	}
 }
