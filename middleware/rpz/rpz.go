@@ -7,6 +7,7 @@ package rpz
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -135,7 +136,19 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	winner, observed := s.MatchQNAME(canon, offs[:], n)
+	// The client address enters the shared 128-bit key space only when
+	// some zone actually carries CLIENT-IP rules; a qname-only
+	// configuration never touches it. netip conversion is value math.
+	var client netip.Addr
+	if s.HasClientIP() {
+		if ip := w.RemoteIP(); ip != nil {
+			if a, ok := netip.AddrFromSlice(ip); ok {
+				client = rpz.CanonicalClient(a)
+			}
+		}
+	}
+
+	winner, observed := s.Match(canon, offs[:], n, client)
 	if winner.Zone == nil && observed == nil {
 		// The steady state: no rule anywhere named this query. Nothing
 		// above this line allocated.

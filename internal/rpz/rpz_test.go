@@ -1,6 +1,7 @@
 package rpz
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -68,13 +69,17 @@ func TestLoadZoneClassifiesEverything(t *testing.T) {
 	if z.SOA == nil || z.SOA.Serial != 2026083001 {
 		t.Fatal("apex SOA not captured")
 	}
-	// 6 action rules + local-data alias + wildcard-target alias + 2 wildcards.
-	if z.Rules != 10 {
-		t.Fatalf("Rules = %d, want 10 (skips: %v)", z.Rules, z.Skipped)
+	// 6 action rules + local-data alias + wildcard-target alias +
+	// 2 wildcards + (since phase 2) the client-ip rule.
+	if z.Rules != 11 {
+		t.Fatalf("Rules = %d, want 11 (skips: %v)", z.Rules, z.Skipped)
+	}
+	if z.RulesClientIP != 1 {
+		t.Fatalf("RulesClientIP = %d, want 1", z.RulesClientIP)
 	}
 
 	want := map[string]int{
-		SkipTrigger:       3,
+		SkipTrigger:       2, // rpz-ip + rpz-nsdname wait for their phases
 		SkipUnknownAction: 1,
 		SkipNotActionData: 3, // apex NS + in-zone NS + DS
 		SkipOutOfZone:     1,
@@ -139,7 +144,7 @@ func TestMatchQNAMEPrecedenceWithinZone(t *testing.T) {
 		{"x.sub.evil.example.com.", ActionPassthru, true},
 	} {
 		canon, offs, n := canonFor(t, tc.name)
-		winner, observed := s.MatchQNAME(canon, offs[:], n)
+		winner, observed := s.Match(canon, offs[:], n, netip.Addr{})
 		if winner.Zone == nil {
 			t.Fatalf("%s: no match", tc.name)
 		}
@@ -162,7 +167,7 @@ func TestWildcardMatchesSubdomainsOnly(t *testing.T) {
 	// evil.example.com. itself has no exact rule and must not match its
 	// own wildcard.
 	canon, offs, n := canonFor(t, "evil.example.com.")
-	if winner, _ := s.MatchQNAME(canon, offs[:], n); winner.Zone != nil {
+	if winner, _ := s.Match(canon, offs[:], n, netip.Addr{}); winner.Zone != nil {
 		t.Fatalf("apex of a wildcard matched: %+v", winner)
 	}
 }
@@ -186,13 +191,13 @@ victim.example.com.z2.test. IN CNAME .
 	}
 
 	canon, offs, n := canonFor(t, "victim.example.com.")
-	winner, _ := storeOf(first, second).MatchQNAME(canon, offs[:], n)
+	winner, _ := storeOf(first, second).Match(canon, offs[:], n, netip.Addr{})
 	if winner.Zone == nil || winner.Zone.Name != "first" || winner.Effective() != ActionPassthru {
 		t.Fatalf("winner = %+v, want first/passthru", winner)
 	}
 
 	// Reversed order, reversed outcome — the assertion that pins rule 1.
-	winner, _ = storeOf(second, first).MatchQNAME(canon, offs[:], n)
+	winner, _ = storeOf(second, first).Match(canon, offs[:], n, netip.Addr{})
 	if winner.Zone == nil || winner.Zone.Name != "second" || winner.Effective() != ActionNXDOMAIN {
 		t.Fatalf("winner = %+v, want second/nxdomain", winner)
 	}
@@ -210,7 +215,7 @@ nx.example.com.z2.test. IN CNAME rpz-drop.
 	}
 
 	canon, offs, n := canonFor(t, "nx.example.com.")
-	winner, observed := storeOf(disabled, enforcing).MatchQNAME(canon, offs[:], n)
+	winner, observed := storeOf(disabled, enforcing).Match(canon, offs[:], n, netip.Addr{})
 
 	// The disabled zone matched first and must not consume: the later
 	// enforcing zone's different action is the winner.
@@ -237,7 +242,7 @@ func TestOverridesReplaceTheRuleAction(t *testing.T) {
 	} {
 		z := loadFixture(t, tc.policy, "garden.example.net.")
 		canon, offs, n := canonFor(t, "drop.example.com.")
-		winner, _ := storeOf(z).MatchQNAME(canon, offs[:], n)
+		winner, _ := storeOf(z).Match(canon, offs[:], n, netip.Addr{})
 		if winner.Zone == nil {
 			t.Fatalf("policy %v: no match", tc.policy)
 		}
@@ -256,7 +261,7 @@ z.test. IN SOA ns. admin. 1 3600 900 604800 300
 		t.Fatal(err)
 	}
 	canon, offs, n := canonFor(t, "anything.at.all.example.")
-	if winner, _ := storeOf(z).MatchQNAME(canon, offs[:], n); winner.Zone == nil || winner.Effective() != ActionNXDOMAIN {
+	if winner, _ := storeOf(z).Match(canon, offs[:], n, netip.Addr{}); winner.Zone == nil || winner.Effective() != ActionNXDOMAIN {
 		t.Fatalf("bare * did not match: %+v", winner)
 	}
 }
@@ -282,7 +287,7 @@ func TestMatchQNAMEMissAllocatesNothing(t *testing.T) {
 		if !ok {
 			t.Fatal("refused")
 		}
-		winner, observed := s.MatchQNAME(canon, offs[:], n)
+		winner, observed := s.Match(canon, offs[:], n, netip.Addr{})
 		if winner.Zone != nil || observed != nil {
 			t.Fatal("unexpected match")
 		}
