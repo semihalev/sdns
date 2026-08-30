@@ -17,20 +17,28 @@ import (
 // them assigns the ephemeral port — and on Windows a port handed out for
 // UDP can fall inside a range excluded for TCP, so the bind fails on the
 // fixture instead of on the property under test.
+// dualStackFreeAddr finds a loopback port both transports will accept.
+//
+// TCP picks the port and UDP confirms it, not the other way round: Windows
+// keeps excluded ephemeral ranges that TCP must avoid and UDP need not, so a
+// port chosen for UDP can be one TCP is never allowed to bind, and every
+// attempt draws from the same forbidden pool. Asking the constrained
+// transport first means the retries are spent only on the genuine race — the
+// port going to another process between the two binds.
 func dualStackFreeAddr(t *testing.T) string {
 	t.Helper()
 	for range 20 {
-		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			continue
 		}
-		addr := pc.LocalAddr().String()
-		ln, err := net.Listen("tcp", addr)
-		_ = pc.Close()
+		addr := ln.Addr().String()
+		pc, err := net.ListenPacket("udp", addr)
+		_ = ln.Close()
 		if err != nil {
 			continue // this port is spoken for on the other transport
 		}
-		_ = ln.Close()
+		_ = pc.Close()
 		return addr
 	}
 	t.Fatal("no loopback port both transports would accept")
