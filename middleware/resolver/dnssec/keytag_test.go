@@ -142,17 +142,6 @@ func TestKeyTagDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// libraryKeyTag returns the library's tag, reporting separately when it
-// crashed instead of answering.
-func libraryKeyTag(key *dns.DNSKEY) (tag uint16, panicked bool) {
-	defer func() {
-		if recover() != nil {
-			panicked = true
-		}
-	}()
-	return key.KeyTag(), false
-}
-
 func rsamd5Key(publicKey string) *dns.DNSKEY {
 	return &dns.DNSKEY{
 		Hdr: dns.RR_Header{
@@ -178,46 +167,28 @@ func rsamd5Key(publicKey string) *dns.DNSKEY {
 // collision: zero is a tag a supported key can have, and the trust-anchor
 // state keeps one anchor per tag.
 func TestKeyTagDerivesRSAMD5(t *testing.T) {
-	// Where the library answers, the answers must agree.
+	// The tag is the two octets below the last, not the last two. The
+	// expectation is read straight off the fixture rather than from the
+	// library: v1.1.73 dropped Appendix B.1 for this algorithm, so the
+	// library is no longer an authority on what the tag should be.
 	for size := 3; size <= 300; size++ {
 		material := make([]byte, size)
 		for i := range material {
 			material[i] = byte(i*11 + 3)
 		}
 		key := rsamd5Key(base64.StdEncoding.EncodeToString(material))
-		want, panicked := libraryKeyTag(key)
-		if panicked {
-			t.Fatalf("%d octets: the library panicked where it should not", size)
-		}
+		want := uint16(material[size-3])<<8 | uint16(material[size-2])
 		if got := KeyTag(key); got != want {
-			t.Fatalf("%d octets: tag %d, library says %d", size, got, want)
-		}
-		// The tag is the two octets below the last, not the last two.
-		if want != uint16(material[size-3])<<8|uint16(material[size-2]) {
-			t.Fatalf("%d octets: fixture disagrees with RFC 4034 B.1", size)
+			t.Fatalf("%d octets: tag %d, RFC 4034 B.1 says %d", size, got, want)
 		}
 	}
 
-	// Below three octets there is no tag to derive. The library agrees at
-	// zero and one, and crashes at two.
+	// Below three octets there is no tag to derive.
 	for _, size := range []int{0, 1, 2} {
 		key := rsamd5Key(base64.StdEncoding.EncodeToString(
 			bytes.Repeat([]byte{0x30}, size)))
 		if got := KeyTag(key); got != 0 {
 			t.Fatalf("%d octets: tag %d, want 0", size, got)
-		}
-		want, panicked := libraryKeyTag(key)
-		switch size {
-		case 2:
-			if !panicked {
-				t.Log("the library no longer crashes on a two-octet RSAMD5 " +
-					"modulus")
-			}
-		default:
-			if panicked || want != 0 {
-				t.Fatalf("%d octets: library tag %d panicked=%v, want 0",
-					size, want, panicked)
-			}
 		}
 	}
 
@@ -229,13 +200,12 @@ func TestKeyTagDerivesRSAMD5(t *testing.T) {
 		flat := base64.StdEncoding.EncodeToString(material)
 		for cut := 1; cut < len(flat); cut++ {
 			key := rsamd5Key(flat[:cut] + wrap + flat[cut:])
-			want, panicked := libraryKeyTag(key)
-			if panicked {
-				t.Fatalf("%q at %d: the library panicked", wrap, cut)
-			}
+			// A wrapped key is the same key: the break must not move
+			// where the modulus ends.
+			want := uint16(material[len(material)-3])<<8 |
+				uint16(material[len(material)-2])
 			if got := KeyTag(key); got != want {
-				t.Fatalf("%q at %d: tag %d, library says %d",
-					wrap, cut, got, want)
+				t.Fatalf("%q at %d: tag %d, want %d", wrap, cut, got, want)
 			}
 		}
 	}

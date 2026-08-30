@@ -90,11 +90,14 @@ func KeyTag(key *dns.DNSKEY) uint16 {
 // its errata 193 do: from the two octets below the last one of the modulus,
 // rather than from the checksum every other algorithm uses.
 //
-// It is computed here rather than left to the library because the library
-// reads those three octets after checking only that the modulus has more than
-// one, so material that decodes to exactly two octets indexes below the start
-// of a slice and panics. The record is attacker-supplied and its tag is taken
-// before anything about it has been validated.
+// It is computed here rather than left to the library. The library used to
+// derive it and read those three octets after checking only that the modulus
+// had more than one, so material decoding to exactly two octets indexed below
+// the start of a slice and panicked on a record that is attacker-supplied and
+// whose tag is taken before anything about it has been validated. Since
+// v1.1.73 the library does not derive it at all — a deprecated algorithm's
+// special case, dropped — and answers with the checksum every other algorithm
+// uses, so delegating now would return a tag Appendix B.1 does not define.
 //
 // Returning zero for every RSAMD5 key instead would be its own defect: zero is
 // a tag a supported key can legitimately have, and the trust-anchor state
