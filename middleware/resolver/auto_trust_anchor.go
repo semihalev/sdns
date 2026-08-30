@@ -268,15 +268,22 @@ func (r *Resolver) AutoTA() {
 	}
 
 	for _, k := range candidate {
-		validTag := dnssec.KeyTag(k.(*dns.DNSKEY))
-		ok := false
+		key, ok := k.(*dns.DNSKEY)
+		if !ok {
+			continue
+		}
+		validTag := dnssec.KeyTag(key)
+		configured := false
 		for _, kv := range r.configuredRootKeys {
-			currTag := dnssec.KeyTag(kv.(*dns.DNSKEY))
-			if currTag == validTag {
-				ok = true
+			current, ok := kv.(*dns.DNSKEY)
+			if !ok {
+				continue
+			}
+			if dnssec.KeyTag(current) == validTag {
+				configured = true
 			}
 		}
-		if !ok {
+		if !configured {
 			zlog.Warn("Please update missing rootkeys in config", "keytag", validTag)
 		}
 	}
@@ -728,11 +735,12 @@ func verifyFetchedKeysWithWork(
 
 	currentKeys := make(map[uint16][]*dns.DNSKEY)
 	for _, r := range rootKeys {
-		dnskey := r.(*dns.DNSKEY)
-		if dnskey.Flags&DNSKEYFlagKSK != 0 {
-			tag := dnssec.KeyTag(dnskey)
-			currentKeys[tag] = append(currentKeys[tag], dnskey)
+		dnskey, ok := r.(*dns.DNSKEY)
+		if !ok || dnskey.Flags&DNSKEYFlagKSK == 0 {
+			continue
 		}
+		tag := dnssec.KeyTag(dnskey)
+		currentKeys[tag] = append(currentKeys[tag], dnskey)
 	}
 
 	if len(currentKeys) == 0 {
@@ -748,8 +756,8 @@ func verifyFetchedKeysWithWork(
 	// collides on tag.
 	revokedBootstrap := make(map[uint16][]*dns.DNSKEY)
 	for _, r := range fetchedkeys {
-		dnskey := r.(*dns.DNSKEY)
-		if dnskey.Flags&DNSKEYFlagRevoke == 0 {
+		dnskey, ok := r.(*dns.DNSKEY)
+		if !ok || dnskey.Flags&DNSKEYFlagRevoke == 0 {
 			continue
 		}
 		for _, candidate := range currentKeys[dnssec.KeyTag(dnskey)-DNSKEYFlagRevoke] {
