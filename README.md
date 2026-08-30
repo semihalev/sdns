@@ -563,6 +563,7 @@ This is useful when:
 *   Query-based rate limiting
 *   Client IP-based rate limiting
 *   IP-based access control lists
+*   Response Policy Zones (RPZ) with shadow mode, per-zone overrides, and automatic feed reload (see docs/rpz-design.md)
 *   Comprehensive access logging
 *   Prometheus metrics with optional per-domain tracking
 *   DNS sinkholing for malicious domains

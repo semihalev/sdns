@@ -33,6 +33,7 @@ import (
 	"github.com/semihalev/sdns/middleware/recovery"
 	"github.com/semihalev/sdns/middleware/reflex"
 	"github.com/semihalev/sdns/middleware/resolver"
+	"github.com/semihalev/sdns/middleware/rpz"
 	"github.com/semihalev/sdns/middleware/views"
 )
 
@@ -54,6 +55,7 @@ var chain = []entry{
 	{"hostsfile", func(cfg *config.Config) middleware.Handler { return hostsfile.New(cfg) }},
 	{"views", func(cfg *config.Config) middleware.Handler { return views.New(cfg) }},
 	{"blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) }},
+	{"rpz", func(cfg *config.Config) middleware.Handler { return rpz.New(cfg) }},
 	{"as112", func(cfg *config.Config) middleware.Handler { return as112.New(cfg) }},
 	{"kubernetes", func(cfg *config.Config) middleware.Handler { return kubernetes.New(cfg) }},
 	{"dns64", func(cfg *config.Config) middleware.Handler { return dns64.New(cfg) }},

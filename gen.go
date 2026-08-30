@@ -27,6 +27,11 @@ var middlewareList = []string{
 	"hostsfile",
 	"views",
 	"blocklist",
+	// rpz sits after blocklist (blocklist wins on overlap; RPZ PASSTHRU
+	// exempts from RPZ, not from the blocklist) and ahead of the cache, so
+	// policy applies to every client query, hits included, and a reload
+	// takes effect immediately. See RPZ-DESIGN.md §5.4.
+	"rpz",
 	"as112",
 	"kubernetes",
 	"dns64",

@@ -110,6 +110,12 @@ type Config struct {
 
 	EmptyZones []string
 
+	// RPZ subscribes the resolver to Response Policy Zones — operator- or
+	// vendor-fed zones that rewrite, deny, or drop answers for the names
+	// they list, in the standard RPZ encoding so existing feeds work
+	// unmodified. Off by default; design and semantics in RPZ-DESIGN.md.
+	RPZ RPZ `toml:"rpz"`
+
 	// Views are per-client static answers, evaluated in order. A
 	// query whose source IP falls in a view's Sources gets that
 	// view's Records as the response; non-matching queries fall
@@ -227,6 +233,34 @@ type ViewConfig struct {
 	Zone     string
 	Networks []string
 	Answers  []string
+}
+
+// RPZ is the [rpz] block: the global switch and mode, and the ordered
+// policy zone list. Order is evaluation order — the first zone with a
+// match wins, which is the draft's precedence rule 1.
+type RPZ struct {
+	Enabled bool `toml:"enabled"`
+	// Mode is "shadow" (the default: every match is counted and logged,
+	// nothing is rewritten) or "enforce". An operator turns a new feed on
+	// in shadow, watches the counters, then flips.
+	Mode  string    `toml:"mode"`
+	Zones []RPZZone `toml:"zone"`
+}
+
+// RPZZone is one [[rpz.zone]] entry.
+type RPZZone struct {
+	// Name labels the zone in metrics, logs, and the EDE text.
+	Name string `toml:"name"`
+	// File is the policy zone in standard zone-file format.
+	File string `toml:"file"`
+	// Policy overrides every action the zone's rules carry:
+	// given|passthru|nxdomain|nodata|drop|tcp-only|cname|disabled.
+	// "given" (or empty) uses what each rule says; "disabled" logs what
+	// would have happened and lets a later zone act.
+	Policy string `toml:"policy"`
+	// Cname is the rewrite target when Policy is "cname", the draft's
+	// walled-garden override. Required then, forbidden otherwise.
+	Cname string `toml:"cname"`
 }
 
 // ForwardZoneConfig sends one zone's queries to named recursive upstreams
@@ -998,6 +1032,23 @@ emptyzones = [
     # Example: "10.in-addr.arpa."
 ]
 
+# Response Policy Zones (RPZ). Policy zones -- local files in the standard
+# RPZ encoding, so commercial feeds work unmodified -- rewrite, deny, or
+# drop answers for the names they list. Zones are evaluated in the order
+# written here; the first zone with a match wins. mode = "shadow" counts
+# and logs every match without rewriting anything (watch rpz_action_total,
+# then switch to "enforce"). Per-zone policy overrides the feed's own
+# actions: given|passthru|nxdomain|nodata|drop|tcp-only|cname|disabled;
+# "cname" needs a cname target and rewrites every match to it, "disabled"
+# only observes. Files are reloaded automatically when replaced.
+# [rpz]
+# enabled = true
+# mode = "shadow"
+# [[rpz.zone]]
+# name = "badfeed"
+# file = "/var/lib/sdns/badfeed.zone"
+# policy = "given"
+
 # ============================
 # TCP Connection Pooling
 # ============================
@@ -1420,6 +1471,12 @@ func Load(cfgfile, version string) (*Config, error) {
 	// and then ran with it on and nothing to anchor to.
 	if config.DNSSEC == "" {
 		config.DNSSEC = "on"
+	}
+
+	// Also before the gate, for the same reason every effective value is:
+	// the mode check judges what will actually run.
+	if config.RPZ.Mode == "" {
+		config.RPZ.Mode = "shadow"
 	}
 
 	config.RecursionFirewall.Normalize()
