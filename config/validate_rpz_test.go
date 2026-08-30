@@ -144,6 +144,11 @@ func TestValidateRPZSourceZones(t *testing.T) {
 		notB64 := base
 		notB64.TsigKey = "k.:hmac-sha256.:not!!base64"
 		wantRPZProblem(t, rpzConfig(notB64), "base64")
+		// An algorithm the dns library cannot sign with must be refused
+		// here, not discovered at runtime as a feed that never transfers.
+		badAlgo := base
+		badAlgo.TsigKey = "k.:hmac-sha999.:c2VjcmV0"
+		wantRPZProblem(t, rpzConfig(badAlgo), "algorithm")
 		ok := base
 		ok.TsigKey = "k.:hmac-sha256.:c2VjcmV0"
 		if err := rpzConfig(ok).Validate(); err != nil {

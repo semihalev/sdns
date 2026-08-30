@@ -2,7 +2,10 @@ package rpz
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -296,5 +299,186 @@ func TestAXFRFeedTSIG(t *testing.T) {
 	_, unsigned := feedUnderTest(t, srv, "")
 	if err := unsigned.refreshOnce(context.Background()); err == nil {
 		t.Fatal("the TSIG primary accepted an unsigned transfer")
+	}
+}
+
+// TestWithdrawnFeedRestoresOnEqualSerial pins the review's first P1: a
+// source that comes back with the SAME serial after a withdrawal must be
+// re-transferred — the equal-serial short-circuit is "nothing to do" only
+// while the copy is actually serving.
+func TestWithdrawnFeedRestoresOnEqualSerial(t *testing.T) {
+	srv := startFeedServer(t, "", "")
+	r, feed := feedUnderTest(t, srv, "")
+	clock := time.Now()
+	feed.now = func() time.Time { return clock }
+
+	if err := feed.refreshOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The source goes dark past expire; the rules are withdrawn.
+	goodSource := feed.source
+	feed.source = "127.0.0.1:1"
+	clock = clock.Add(87000 * time.Second)
+	_ = feed.refreshOnce(context.Background())
+	feed.maybeWithdraw()
+	if _, passed := serve(t, r, "blocked.example.com.", dns.TypeA, "udp", true); !passed {
+		t.Fatal("withdrawal did not happen")
+	}
+
+	// The provider recovers — same serial, nothing changed on its side.
+	// The copy must be rebuilt anyway.
+	feed.source = goodSource
+	if err := feed.refreshOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w, passed := serve(t, r, "blocked.example.com.", dns.TypeA, "udp", true); passed || w.Rcode() != dns.RcodeNameError {
+		t.Fatal("a recovered equal-serial source left the zone empty forever")
+	}
+}
+
+// TestNextWakeBounds pins the schedule clamps: a degenerate SOA cannot
+// spin the loop, and a live copy's wake lands at its expire boundary.
+func TestNextWakeBounds(t *testing.T) {
+	base := time.Now()
+	f := &axfrFeed{now: func() time.Time { return base }}
+
+	// No copy yet: the initial retry pace, whatever the SOA said.
+	if got := f.nextWake(true); got != axfrInitialRetry {
+		t.Fatalf("no copy: %v", got)
+	}
+
+	// A zero refresh must not become a hot loop.
+	f.haveCopy = true
+	f.loaded = base
+	f.refresh, f.retry, f.expire = 0, 0, 86400*time.Second
+	if got := f.nextWake(false); got < minFeedInterval {
+		t.Fatalf("zero refresh spun: %v", got)
+	}
+	// A tiny retry is floored.
+	f.retry = time.Second
+	if got := f.nextWake(true); got != minFeedInterval {
+		t.Fatalf("tiny retry not floored: %v", got)
+	}
+
+	// The expire boundary caps the wake: with 10s of life left, a 900s
+	// retry must not sleep through the withdrawal.
+	f.retry = 900 * time.Second
+	f.loaded = base.Add(-f.expire + 10*time.Second)
+	if got := f.nextWake(true); got > 10*time.Second+expireGrace {
+		t.Fatalf("wake %v sleeps past the expire boundary", got)
+	}
+	// Withdrawn: the cap no longer applies (nothing left to withdraw);
+	// the feed keeps retrying at the SOA's own pace.
+	f.withdrawn = true
+	if got := f.nextWake(true); got != f.retry {
+		t.Fatalf("withdrawn wake: %v", got)
+	}
+}
+
+// startDripTSIGServer is a correctly signed primary that delivers one
+// envelope every interval, indefinitely. Each envelope arrives well inside
+// dns.Transfer's per-envelope read timeout, so only an absolute bound on
+// the whole attempt can stop the stream — the review's exact scenario.
+func startDripTSIGServer(t *testing.T, name, secret string, interval time.Duration) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	soa, err := dns.NewRR("feed.test. 300 IN SOA ns.feed.test. admin.feed.test. 1 3600 900 86400 300")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mux := dns.NewServeMux()
+	mux.HandleFunc("feed.test.", func(w dns.ResponseWriter, req *dns.Msg) {
+		if req.Question[0].Qtype != dns.TypeAXFR || req.IsTsig() == nil || w.TsigStatus() != nil {
+			return
+		}
+		tr := new(dns.Transfer)
+		ch := make(chan *dns.Envelope)
+		done := make(chan struct{})
+		go func() { defer close(done); _ = tr.Out(w, req, ch) }()
+		ch <- &dns.Envelope{RR: []dns.RR{soa}}
+		for i := 0; ; i++ {
+			rr, _ := dns.NewRR(fmt.Sprintf("drip%d.example.com.feed.test. 300 IN CNAME .", i))
+			select {
+			case ch <- &dns.Envelope{RR: []dns.RR{rr}}:
+				time.Sleep(interval)
+			case <-done:
+				return
+			}
+		}
+	})
+	server := &dns.Server{Listener: l, Handler: mux, TsigSecret: map[string]string{name: secret}}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown() })
+	return l.Addr().String()
+}
+
+// TestTSIGTransferHonorsItsDeadline pins the review's context finding: a
+// signed source dripping envelopes just inside the per-envelope read
+// timeout must not hold the attempt past its budget, and a cancelled
+// context must cut it short.
+func TestTSIGTransferHonorsItsDeadline(t *testing.T) {
+	addr := startDripTSIGServer(t, "k.", "c2VjcmV0", 100*time.Millisecond)
+	zc := config.RPZZone{Name: "drip", Source: addr, Origin: "feed.test.", TsigKey: "k.:hmac-sha256.:c2VjcmV0"}
+
+	t.Run("attempt budget", func(t *testing.T) {
+		f := newAXFRFeed(&RPZ{}, 0, zc)
+		f.timeout = 500 * time.Millisecond
+		start := time.Now()
+		_, err := f.transferTSIG(context.Background())
+		if elapsed := time.Since(start); err == nil || elapsed > 3*time.Second {
+			t.Fatalf("drip ran %v past a 500ms budget (err=%v)", elapsed, err)
+		}
+	})
+
+	t.Run("context cancellation", func(t *testing.T) {
+		f := newAXFRFeed(&RPZ{}, 0, zc)
+		f.timeout = time.Minute
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(200*time.Millisecond, cancel)
+		start := time.Now()
+		_, err := f.transferTSIG(ctx)
+		if elapsed := time.Since(start); err == nil || elapsed > 3*time.Second {
+			t.Fatalf("cancelled drip ran %v (err=%v)", elapsed, err)
+		}
+	})
+}
+
+// TestStaleReloadCannotOverwriteANewerOne pins the review's parse-race
+// finding: a reload claim that has been superseded while its parse ran
+// must not commit — the sequence check and the swap share the lock.
+func TestStaleReloadCannotOverwriteANewerOne(t *testing.T) {
+	path := writeZone(t, testZone)
+	r := newRPZ(t, "enforce", config.RPZZone{Name: "test", File: path})
+
+	// An old reload claims its sequence, and while "parsing", a newer
+	// push arrives and completes.
+	staleSeq := r.reloadSeq[0].Add(1)
+	if err := os.WriteFile(path, []byte(`
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 99 3600 900 604800 300
+newrule.example.com.rpz.test. IN CNAME .
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload(0)
+	if w, _ := serve(t, r, "newrule.example.com.", dns.TypeA, "udp", true); !w.Written() {
+		t.Fatal("the newer push did not install")
+	}
+
+	// The old parse finally finishes and tries to commit the old content.
+	oldZone, err := rpzengine.LoadZone("test", strings.NewReader(testZone), "old", rpzengine.OverrideGiven, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.commitReload(0, staleSeq, oldZone) {
+		t.Fatal("a superseded parse committed")
+	}
+	// The newer generation still serves.
+	if w, _ := serve(t, r, "newrule.example.com.", dns.TypeA, "udp", true); !w.Written() {
+		t.Fatal("the stale parse rolled the newer policy back")
 	}
 }

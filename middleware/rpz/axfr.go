@@ -3,10 +3,11 @@ package rpz
 import (
 	"context"
 	"fmt"
-	"github.com/semihalev/sdns/config"
+	"net"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/rpz"
 	"github.com/semihalev/sdns/internal/zonetransfer"
 	"github.com/semihalev/zlog/v2"
@@ -44,8 +45,10 @@ type axfrFeed struct {
 	cname  string
 	tsig   *rpz.TSIGKey
 
-	// now is the test seam for the expire clock.
-	now func() time.Time
+	// now is the test seam for the expire clock; timeout bounds one
+	// probe or transfer attempt (a test shrinks it).
+	now     func() time.Time
+	timeout time.Duration
 
 	// serial/loaded describe the installed copy; zero serial means none.
 	serial    uint32
@@ -65,15 +68,16 @@ func newAXFRFeed(r *RPZ, idx int, zc config.RPZZone) *axfrFeed {
 		target = dns.CanonicalName(zc.Cname)
 	}
 	return &axfrFeed{
-		r:      r,
-		idx:    idx,
-		name:   zc.Name,
-		origin: dns.CanonicalName(zc.Origin),
-		source: zc.Source,
-		policy: policy,
-		cname:  target,
-		tsig:   key,
-		now:    time.Now,
+		r:       r,
+		idx:     idx,
+		name:    zc.Name,
+		origin:  dns.CanonicalName(zc.Origin),
+		source:  zc.Source,
+		policy:  policy,
+		cname:   target,
+		tsig:    key,
+		now:     time.Now,
+		timeout: axfrTimeout,
 	}
 }
 
@@ -95,31 +99,59 @@ func (f *axfrFeed) run(ctx context.Context) {
 
 		if err := f.refreshOnce(ctx); err != nil {
 			f.maybeWithdraw()
-			next = f.retryInterval()
 			zlog.Warn("RPZ feed refresh failed", "zone", f.name, "source", f.source, "error", err.Error())
+			next = f.nextWake(true)
 		} else {
-			next = f.refresh
+			next = f.nextWake(false)
 		}
 		timer.Reset(zonetransfer.Jitter(next))
 	}
 }
 
-func (f *axfrFeed) retryInterval() time.Duration {
-	if f.haveCopy && f.retry > 0 {
-		return f.retry
+// Bounds on the schedule the feed's SOA dictates: a zero or tiny refresh
+// must not become a hot probe loop, and a wake must land at the expire
+// boundary so a copy is withdrawn when its time comes rather than a full
+// retry interval later.
+const (
+	minFeedInterval = 30 * time.Second
+	// expireGrace puts the boundary wake just past the horizon, so the
+	// withdrawal check it triggers sees the copy as expired rather than
+	// racing the exact instant.
+	expireGrace = time.Second
+)
+
+// nextWake is the interval to the next cycle: SOA retry after a failure,
+// SOA refresh after success, floored so a degenerate SOA cannot spin —
+// and, while a live copy is aging, capped at its remaining expire so the
+// loop is awake to withdraw it on time.
+func (f *axfrFeed) nextWake(afterFailure bool) time.Duration {
+	next := f.refresh
+	if afterFailure {
+		next = f.retry
 	}
-	return axfrInitialRetry
+	if !f.haveCopy || next <= 0 {
+		next = axfrInitialRetry
+	}
+	if next < minFeedInterval {
+		next = minFeedInterval
+	}
+	if f.haveCopy && !f.withdrawn && f.expire > 0 {
+		if remaining := f.loaded.Add(f.expire).Sub(f.now()) + expireGrace; remaining < next {
+			next = max(remaining, expireGrace)
+		}
+	}
+	return next
 }
 
 // refreshOnce probes for a serial change and transfers when one is seen
 // (or when no copy exists yet). A source advertising an older serial is
 // refused whole: nothing it transfers can be accepted (RFC 1982).
 func (f *axfrFeed) refreshOnce(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, axfrTimeout)
+	ctx, cancel := context.WithTimeout(ctx, f.timeout)
 	defer cancel()
 
 	if f.haveCopy {
-		serial, err := zonetransfer.ProbeSerial(ctx, f.source, f.origin, axfrTimeout)
+		serial, err := zonetransfer.ProbeSerial(ctx, f.source, f.origin, f.timeout)
 		switch {
 		case err != nil && f.tsig == nil:
 			return err
@@ -128,10 +160,13 @@ func (f *axfrFeed) refreshOnce(ctx context.Context) error {
 			// the SOA question. The signed transfer below then serves as
 			// the probe — dearer, but the alternative is a feed that can
 			// never refresh.
-		case serial == f.serial:
+		case serial == f.serial && !f.withdrawn:
 			f.loaded = f.now() // a healthy probe restarts the expire clock
-			f.withdrawn = false
 			return nil
+		case serial == f.serial:
+			// Withdrawn: the store holds an empty zone, so an equal
+			// serial is not "nothing to do" — the copy must be rebuilt.
+			// Fall through to the transfer.
 		case !zonetransfer.SerialNewer(f.serial, serial):
 			// A source advertising an older zone is refused whole:
 			// nothing it transfers can be accepted (RFC 1982).
@@ -199,7 +234,7 @@ func (f *axfrFeed) maybeWithdraw() {
 
 func (f *axfrFeed) transfer(ctx context.Context) ([]dns.RR, error) {
 	if f.tsig == nil {
-		return zonetransfer.AXFR(ctx, f.source, f.origin, axfrTimeout, feedTransferLimits)
+		return zonetransfer.AXFR(ctx, f.source, f.origin, f.timeout, feedTransferLimits)
 	}
 	return f.transferTSIG(ctx)
 }
@@ -214,10 +249,37 @@ func (f *axfrFeed) transferTSIG(ctx context.Context) ([]dns.RR, error) {
 	req.SetAxfr(f.origin)
 	req.SetTsig(f.tsig.Name, f.tsig.Algorithm, 300, time.Now().Unix())
 
+	// The connection is dialed here, not left to dns.Transfer: its read
+	// deadline restarts on every envelope, so a source dripping one
+	// envelope per interval could hold an attempt open indefinitely —
+	// past the attempt budget, past the caller's cancellation, and past
+	// the expire boundary the feed loop must be awake for. A deadline
+	// cannot bound the whole attempt (the per-envelope reset overwrites
+	// whatever is set on the socket); closing the socket can — a closed
+	// connection wakes the blocked read and refuses every one after it.
+	// The watchdog fires at the attempt budget, the AfterFunc on the
+	// caller's cancellation.
+	d := net.Dialer{Timeout: f.timeout}
+	conn, err := d.DialContext(ctx, "tcp", f.source)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	budget := f.timeout
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		if until := time.Until(ctxDeadline); until < budget {
+			budget = until
+		}
+	}
+	watchdog := time.AfterFunc(budget, func() { _ = conn.Close() })
+	defer watchdog.Stop()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+
+	secrets := map[string]string{f.tsig.Name: f.tsig.Secret}
 	tr := &dns.Transfer{
-		TsigSecret:  map[string]string{f.tsig.Name: f.tsig.Secret},
-		DialTimeout: axfrTimeout,
-		ReadTimeout: axfrTimeout,
+		Conn:       &dns.Conn{Conn: conn, TsigSecret: secrets},
+		TsigSecret: secrets,
 	}
 
 	env, err := tr.In(req, f.source)

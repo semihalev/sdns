@@ -41,10 +41,14 @@ type RPZ struct {
 	// client follows it.
 	queryer middleware.Queryer
 
-	// reloadMu serializes reloads; zones is the config list the watcher
-	// re-reads files from, index-aligned with the store's zones.
-	reloadMu sync.Mutex
-	zones    []config.RPZZone
+	// reloadMu serializes store swaps; zones is the config list the
+	// watcher re-reads files from, index-aligned with the store's zones.
+	// reloadSeq carries each zone's reload generation, claimed before a
+	// parse and checked at the commit, so a slow parse of an old push
+	// cannot write over a newer one.
+	reloadMu  sync.Mutex
+	reloadSeq []atomic.Uint64
+	zones     []config.RPZZone
 }
 
 // New builds the middleware from the config. A zone file that fails to
@@ -59,6 +63,7 @@ func New(cfg *config.Config) *RPZ {
 	}
 
 	r.zones = cfg.RPZ.Zones
+	r.reloadSeq = make([]atomic.Uint64, len(cfg.RPZ.Zones))
 	zones := make([]*rpz.Zone, 0, len(cfg.RPZ.Zones))
 	for _, zc := range cfg.RPZ.Zones {
 		if zc.Source != "" {
