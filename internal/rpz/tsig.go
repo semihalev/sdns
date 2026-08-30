@@ -31,6 +31,11 @@ func ParseTSIGKey(s string) (*TSIGKey, error) {
 	if _, err := base64.StdEncoding.DecodeString(parts[2]); err != nil {
 		return nil, fmt.Errorf("tsig_key secret is not base64: %w", err)
 	}
+	// The name travels in every signed request; one that cannot be
+	// packed would pass here and then fail the first transfer.
+	if _, ok := dns.IsDomainName(parts[0]); !ok {
+		return nil, fmt.Errorf("tsig_key name %q is not a valid domain name", parts[0])
+	}
 	algo := dns.CanonicalName(parts[1])
 	// Only the HMACs the dns library can actually sign with: anything
 	// else would pass `sdns -t` and then fail every transfer at runtime,

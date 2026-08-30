@@ -116,13 +116,14 @@ func (r *RPZ) reload(idx int) {
 		return
 	}
 
-	publishZoneMetrics(z)
 	zlog.Info("RPZ zone reloaded", "zone", zc.Name, "rules", z.Rules, "skipped", len(z.Skipped))
 }
 
 // commitReload installs a parsed zone only if seq is still the latest
 // claim for idx — the check and the swap share the lock, so a superseded
-// parse cannot slip between them.
+// parse cannot slip between them. The gauges are published inside the
+// same critical section: published after it, a commit that finished
+// first could write its counts over a newer generation's.
 func (r *RPZ) commitReload(idx int, seq uint64, z *rpz.Zone) bool {
 	r.reloadMu.Lock()
 	defer r.reloadMu.Unlock()
@@ -130,6 +131,7 @@ func (r *RPZ) commitReload(idx int, seq uint64, z *rpz.Zone) bool {
 		return false
 	}
 	r.swapZoneLocked(idx, z)
+	publishZoneMetrics(z)
 	return true
 }
 

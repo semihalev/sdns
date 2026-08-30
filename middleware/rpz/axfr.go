@@ -96,16 +96,24 @@ func (f *axfrFeed) run(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-
-		if err := f.refreshOnce(ctx); err != nil {
-			f.maybeWithdraw()
-			zlog.Warn("RPZ feed refresh failed", "zone", f.name, "source", f.source, "error", err.Error())
-			next = f.nextWake(true)
-		} else {
-			next = f.nextWake(false)
-		}
-		timer.Reset(zonetransfer.Jitter(next))
+		next = f.cycle(ctx)
+		timer.Reset(next)
 	}
+}
+
+// cycle is one wake of the feed: withdrawal first, then the refresh.
+// The order is the expire contract — a copy past its horizon stops
+// serving before the refresh attempt starts, not up to a transfer
+// timeout later; the next successful transfer rebuilds it.
+func (f *axfrFeed) cycle(ctx context.Context) time.Duration {
+	f.maybeWithdraw()
+	afterFailure := false
+	if err := f.refreshOnce(ctx); err != nil {
+		afterFailure = true
+		f.maybeWithdraw() // the attempt itself may have crossed the horizon
+		zlog.Warn("RPZ feed refresh failed", "zone", f.name, "source", f.source, "error", err.Error())
+	}
+	return f.sleepFor(afterFailure)
 }
 
 // Bounds on the schedule the feed's SOA dictates: a zero or tiny refresh
@@ -121,9 +129,7 @@ const (
 )
 
 // nextWake is the interval to the next cycle: SOA retry after a failure,
-// SOA refresh after success, floored so a degenerate SOA cannot spin —
-// and, while a live copy is aging, capped at its remaining expire so the
-// loop is awake to withdraw it on time.
+// SOA refresh after success, floored so a degenerate SOA cannot spin.
 func (f *axfrFeed) nextWake(afterFailure bool) time.Duration {
 	next := f.refresh
 	if afterFailure {
@@ -135,12 +141,30 @@ func (f *axfrFeed) nextWake(afterFailure bool) time.Duration {
 	if next < minFeedInterval {
 		next = minFeedInterval
 	}
-	if f.haveCopy && !f.withdrawn && f.expire > 0 {
-		if remaining := f.loaded.Add(f.expire).Sub(f.now()) + expireGrace; remaining < next {
-			next = max(remaining, expireGrace)
-		}
-	}
 	return next
+}
+
+// expireCap is the exact time left before the installed copy must be
+// withdrawn; ok is false when nothing is aging toward a horizon.
+func (f *axfrFeed) expireCap() (time.Duration, bool) {
+	if !f.haveCopy || f.withdrawn {
+		return 0, false
+	}
+	remaining := f.loaded.Add(f.expire).Sub(f.now()) + expireGrace
+	return max(remaining, expireGrace), true
+}
+
+// sleepFor is the actual sleep: the SOA-paced interval jittered so a
+// fleet does not probe in lockstep, then capped at the copy's remaining
+// expire. The cap is applied after the jitter and never jittered itself —
+// the expire boundary is a deadline, and a wake that must withdraw cannot
+// be allowed to drift past it.
+func (f *axfrFeed) sleepFor(afterFailure bool) time.Duration {
+	sleep := zonetransfer.Jitter(f.nextWake(afterFailure))
+	if boundary, ok := f.expireCap(); ok && boundary < sleep {
+		sleep = boundary
+	}
+	return sleep
 }
 
 // refreshOnce probes for a serial change and transfers when one is seen
@@ -189,6 +213,13 @@ func (f *axfrFeed) refreshOnce(ctx context.Context) error {
 	if z.Rules == 0 {
 		return fmt.Errorf("transfer compiled no rules (skipped: %v)", z.Skipped)
 	}
+	// An expire of zero would disable the withdrawal horizon outright:
+	// the source is declaring its copy trustworthy for no time at all,
+	// and a feed built on that would enforce stale rules forever the day
+	// the source disappears. That is a broken SOA, not a schedule.
+	if z.SOA.Expire == 0 {
+		return fmt.Errorf("transfer SOA declares expire 0; a copy that can never be trusted cannot be installed")
+	}
 	if f.haveCopy && z.SOA.Serial != f.serial && !zonetransfer.SerialNewer(f.serial, z.SOA.Serial) {
 		return fmt.Errorf("transfer delivered serial %d behind installed %d", z.SOA.Serial, f.serial)
 	}
@@ -218,7 +249,7 @@ func (f *axfrFeed) install(z *rpz.Zone) {
 // said how long it may be trusted without contact, and past that the
 // policy fails open on this zone rather than enforcing stale rules.
 func (f *axfrFeed) maybeWithdraw() {
-	if !f.haveCopy || f.withdrawn || f.expire <= 0 {
+	if !f.haveCopy || f.withdrawn {
 		return
 	}
 	if f.now().Before(f.loaded.Add(f.expire)) {
@@ -264,6 +295,19 @@ func (f *axfrFeed) transferTSIG(ctx context.Context) ([]dns.RR, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Deferred in this order so the drain runs after the close: closing
+	// the socket fails the producer's next read, but a producer already
+	// parked on the unbuffered envelope send needs a reader to get there.
+	// Without the drain, every early return below — shape, limit, even
+	// the terminator — can strand the transfer goroutine for good.
+	var env chan *dns.Envelope
+	defer func() {
+		if env == nil {
+			return
+		}
+		for range env { //nolint:revive // drained for the side effect
+		}
+	}()
 	defer func() { _ = conn.Close() }()
 	budget := f.timeout
 	if ctxDeadline, ok := ctx.Deadline(); ok {
@@ -282,9 +326,9 @@ func (f *axfrFeed) transferTSIG(ctx context.Context) ([]dns.RR, error) {
 		TsigSecret: secrets,
 	}
 
-	env, err := tr.In(req, f.source)
+	env, err = tr.In(req, f.source)
 	if err != nil {
-		return nil, err
+		return nil, err // In fails before spawning a producer; env stays nil
 	}
 
 	var (

@@ -2,18 +2,24 @@ package rpz
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsclient"
+	"github.com/semihalev/sdns/internal/mock"
 	rpzengine "github.com/semihalev/sdns/internal/rpz"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // feedServer is a loopback AXFR primary whose zone content and serial the
@@ -30,6 +36,8 @@ type feedServer struct {
 	// tsigSecret, when set, verifies the transfer request's TSIG and
 	// signs the response envelope.
 	tsigName, tsigSecret string
+	// expire is the SOA expire the server advertises.
+	expire atomic.Uint32
 }
 
 func (s *feedServer) soa() *dns.SOA {
@@ -38,7 +46,7 @@ func (s *feedServer) soa() *dns.SOA {
 		Ns:      "ns.feed.test.",
 		Mbox:    "admin.feed.test.",
 		Serial:  s.serial.Load(),
-		Refresh: 3600, Retry: 900, Expire: 86400, Minttl: 300,
+		Refresh: 3600, Retry: 900, Expire: s.expire.Load(), Minttl: 300,
 	}
 }
 
@@ -46,6 +54,7 @@ func startFeedServer(t *testing.T, tsigName, tsigSecret string) *feedServer {
 	t.Helper()
 	s := &feedServer{t: t, tsigName: tsigName, tsigSecret: tsigSecret}
 	s.serial.Store(1)
+	s.expire.Store(86400)
 	s.setRules("blocked.example.com.feed.test. 300 IN CNAME .")
 
 	if tsigSecret != "" {
@@ -337,11 +346,10 @@ func TestWithdrawnFeedRestoresOnEqualSerial(t *testing.T) {
 	}
 }
 
-// TestNextWakeBounds pins the schedule clamps: a degenerate SOA cannot
-// spin the loop, and a live copy's wake lands at its expire boundary.
+// TestNextWakeBounds pins the schedule floor: a degenerate SOA cannot
+// spin the loop.
 func TestNextWakeBounds(t *testing.T) {
-	base := time.Now()
-	f := &axfrFeed{now: func() time.Time { return base }}
+	f := &axfrFeed{}
 
 	// No copy yet: the initial retry pace, whatever the SOA said.
 	if got := f.nextWake(true); got != axfrInitialRetry {
@@ -350,29 +358,42 @@ func TestNextWakeBounds(t *testing.T) {
 
 	// A zero refresh must not become a hot loop.
 	f.haveCopy = true
-	f.loaded = base
-	f.refresh, f.retry, f.expire = 0, 0, 86400*time.Second
+	f.refresh, f.retry = 0, 0
 	if got := f.nextWake(false); got < minFeedInterval {
 		t.Fatalf("zero refresh spun: %v", got)
 	}
-	// A tiny retry is floored.
+	// A tiny retry is floored; a sane one rules.
 	f.retry = time.Second
 	if got := f.nextWake(true); got != minFeedInterval {
 		t.Fatalf("tiny retry not floored: %v", got)
 	}
-
-	// The expire boundary caps the wake: with 10s of life left, a 900s
-	// retry must not sleep through the withdrawal.
 	f.retry = 900 * time.Second
-	f.loaded = base.Add(-f.expire + 10*time.Second)
-	if got := f.nextWake(true); got > 10*time.Second+expireGrace {
-		t.Fatalf("wake %v sleeps past the expire boundary", got)
-	}
-	// Withdrawn: the cap no longer applies (nothing left to withdraw);
-	// the feed keeps retrying at the SOA's own pace.
-	f.withdrawn = true
 	if got := f.nextWake(true); got != f.retry {
-		t.Fatalf("withdrawn wake: %v", got)
+		t.Fatalf("sane retry overridden: %v", got)
+	}
+}
+
+// TestSleepNeverDriftsPastExpire pins the review's deadline finding: the
+// jitter applies to the SOA pace, never to the expire boundary — whatever
+// the draw, the wake that must withdraw lands at the horizon.
+func TestSleepNeverDriftsPastExpire(t *testing.T) {
+	base := time.Now()
+	f := &axfrFeed{
+		now: func() time.Time { return base }, haveCopy: true,
+		refresh: 3600 * time.Second, retry: 900 * time.Second, expire: 86400 * time.Second,
+	}
+	// 10s of life left against a 900s retry pace.
+	f.loaded = base.Add(-f.expire + 10*time.Second)
+	for range 200 {
+		if got := f.sleepFor(true); got > 10*time.Second+expireGrace {
+			t.Fatalf("sleep %v drifts past the expire boundary", got)
+		}
+	}
+	// Withdrawn there is nothing left to withdraw: the SOA pace rules,
+	// jitter included (±10% of 900s).
+	f.withdrawn = true
+	if got := f.sleepFor(true); got < 800*time.Second || got > 1000*time.Second {
+		t.Fatalf("withdrawn sleep: %v", got)
 	}
 }
 
@@ -477,8 +498,242 @@ newrule.example.com.rpz.test. IN CNAME .
 	if r.commitReload(0, staleSeq, oldZone) {
 		t.Fatal("a superseded parse committed")
 	}
-	// The newer generation still serves.
+	// The newer generation still serves, and its gauges stand: a refused
+	// commit publishes nothing — metrics travel with the store swap,
+	// inside the same critical section.
 	if w, _ := serve(t, r, "newrule.example.com.", dns.TypeA, "udp", true); !w.Written() {
 		t.Fatal("the stale parse rolled the newer policy back")
+	}
+	if got := testutil.ToFloat64(zoneRules.WithLabelValues("test", rpzengine.TriggerQNAME)); got != 1 {
+		t.Fatalf("zone_rules gauge = %v after a refused commit; the newer generation's count was 1", got)
+	}
+}
+
+// serveQuiet is serve without the testing plumbing, safe for concurrent
+// readers: it reports a torn outcome instead of failing the test itself.
+func serveQuiet(r *RPZ, qname string) (rcode int, written, passed bool, err error) {
+	q := new(dns.Msg)
+	q.SetQuestion(qname, dns.TypeA)
+	q.RecursionDesired = true
+	q.SetEdns0(1232, false)
+	raw, perr := q.Pack()
+	if perr != nil {
+		return 0, false, false, perr
+	}
+	req := new(middleware.Request)
+	if !req.ParseWire(raw, time.Now(), nil) {
+		return 0, false, false, errors.New("ParseWire refused an eligible query")
+	}
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		passed = true
+		ch.Cancel()
+	})
+	w := mock.NewWriter("udp", "192.0.2.1:40000")
+	ch := middleware.NewChain([]middleware.Handler{r, next})
+	ch.ResetWire(w, req)
+	ch.Next(context.Background())
+	return w.Rcode(), w.Written(), passed, nil
+}
+
+// TestExpiredCopyWithdrawsBeforeTheRefresh pins the cycle order: past the
+// horizon the rules stop serving when the wake fires, not up to a
+// transfer timeout later. The refresh here hangs against a silent
+// source, and the withdrawal must be observable while it still hangs.
+func TestExpiredCopyWithdrawsBeforeTheRefresh(t *testing.T) {
+	srv := startFeedServer(t, "", "")
+	r, feed := feedUnderTest(t, srv, "")
+	clock := time.Now()
+	feed.now = func() time.Time { return clock }
+	if err := feed.refreshOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// A source that accepts the connection and never answers.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() //nolint:revive // freed at listener close; the test is the scope
+		}
+	}()
+	feed.source = l.Addr().String()
+	feed.timeout = 3 * time.Second
+	clock = clock.Add(87000 * time.Second) // past the 86400s expire
+
+	done := make(chan struct{})
+	go func() { defer close(done); feed.cycle(context.Background()) }()
+
+	withdrawn := false
+	for deadline := time.Now().Add(1500 * time.Millisecond); time.Now().Before(deadline); {
+		_, _, passed, err := serveQuiet(r, "blocked.example.com.")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if passed {
+			withdrawn = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !withdrawn {
+		t.Fatal("stale rules kept enforcing while the refresh attempt was in flight")
+	}
+	select {
+	case <-done:
+		t.Fatal("the refresh attempt finished before the withdrawal was observed; the order is unproven")
+	default:
+	}
+	<-done
+}
+
+// TestZeroExpireTransferIsRefused pins the review's horizon finding: a
+// source declaring expire 0 would disable withdrawal outright, so the
+// transfer is refused and the zone stays empty rather than gaining rules
+// that could never be retired.
+func TestZeroExpireTransferIsRefused(t *testing.T) {
+	srv := startFeedServer(t, "", "")
+	srv.expire.Store(0)
+	r, feed := feedUnderTest(t, srv, "")
+
+	err := feed.refreshOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "expire 0") {
+		t.Fatalf("zero-expire transfer not refused: %v", err)
+	}
+	if _, passed := serve(t, r, "blocked.example.com.", dns.TypeA, "udp", true); !passed {
+		t.Fatal("a refused transfer installed rules")
+	}
+}
+
+// TestTSIGTransferDoesNotLeakTheProducer pins the drain: a stream whose
+// terminator SOA is not the last record of its envelope makes the
+// consumer return while the producer still has a send ahead of it —
+// without the drain, every such transfer strands the goroutine parked on
+// the unbuffered envelope channel.
+func TestTSIGTransferDoesNotLeakTheProducer(t *testing.T) {
+	const keyName, secret = "leakkey.", "c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0" //nolint:gosec // G101 - loopback test fixture, not a credential
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	soa, _ := dns.NewRR("feed.test. 300 IN SOA ns.feed.test. admin.feed.test. 1 3600 900 86400 300")
+	rule, _ := dns.NewRR("blocked.example.com.feed.test. 300 IN CNAME .")
+	junk, _ := dns.NewRR("trailing.example.com.feed.test. 300 IN CNAME .")
+
+	mux := dns.NewServeMux()
+	mux.HandleFunc("feed.test.", func(w dns.ResponseWriter, req *dns.Msg) {
+		if req.Question[0].Qtype != dns.TypeAXFR || req.IsTsig() == nil || w.TsigStatus() != nil {
+			return
+		}
+		tr := new(dns.Transfer)
+		ch := make(chan *dns.Envelope, 2)
+		// The closing SOA arrives mid-envelope: the consumer returns at
+		// it, the producer reads on and parks on its next send.
+		ch <- &dns.Envelope{RR: []dns.RR{soa, rule}}
+		ch <- &dns.Envelope{RR: []dns.RR{soa, junk}}
+		close(ch)
+		_ = tr.Out(w, req, ch)
+	})
+	server := &dns.Server{Listener: l, Handler: mux, TsigSecret: map[string]string{keyName: secret}}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown() })
+
+	zc := config.RPZZone{Name: "leak", Source: l.Addr().String(), Origin: "feed.test.", TsigKey: keyName + ":hmac-sha256.:" + secret}
+	f := newAXFRFeed(&RPZ{}, 0, zc)
+
+	before := runtime.NumGoroutine()
+	const rounds = 8
+	for range rounds {
+		rrs, err := f.transferTSIG(context.Background())
+		if err != nil || len(rrs) == 0 {
+			t.Fatalf("transfer failed: %v", err)
+		}
+	}
+	// Give stranded producers nothing to wait for; only a leak keeps the
+	// count elevated by the full round count.
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if runtime.NumGoroutine()-before < rounds {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("goroutines grew by %d over %d transfers; the producer is leaking", runtime.NumGoroutine()-before, rounds)
+}
+
+// TestConcurrentSwapAndServe is the phase's exit criterion in code: one
+// zone slot rewritten through both writer paths — the feed's swap and
+// the watcher's sequenced commit — while readers serve through the
+// middleware. Every response must be a whole generation (blocked by the
+// installed rule or passed clean); -race owns the memory-order proof.
+func TestConcurrentSwapAndServe(t *testing.T) {
+	r := newRPZ(t, "enforce", config.RPZZone{Name: "test", File: writeZone(t, testZone)})
+	const zoneX = `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 10 3600 900 604800 300
+xonly.example.com.rpz.test. IN CNAME .
+`
+	const zoneY = `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 11 3600 900 604800 300
+yonly.example.com.rpz.test. IN CNAME .
+`
+	zx, err := rpzengine.LoadZone("test", strings.NewReader(zoneX), "x", rpzengine.OverrideGiven, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zy, err := rpzengine.LoadZone("test", strings.NewReader(zoneY), "y", rpzengine.OverrideGiven, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	torn := make(chan string, 8)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(stop)
+		for start := time.Now(); time.Since(start) < 300*time.Millisecond; {
+			r.swapZone(0, zx) // the feed's path
+			seq := r.reloadSeq[0].Add(1)
+			r.commitReload(0, seq, zy) // the watcher's path
+		}
+	}()
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for served := 0; ; served++ {
+				select {
+				case <-stop:
+					if served == 0 {
+						torn <- "reader finished without serving a single query"
+					}
+					return
+				default:
+				}
+				for _, qname := range []string{"xonly.example.com.", "yonly.example.com."} {
+					rcode, _, passed, err := serveQuiet(r, qname)
+					if err != nil {
+						torn <- err.Error()
+						return
+					}
+					if !passed && rcode != dns.RcodeNameError {
+						torn <- fmt.Sprintf("%s: neither generation: passed=%v rcode=%d", qname, passed, rcode)
+						return
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	select {
+	case msg := <-torn:
+		t.Fatal(msg)
+	default:
 	}
 }

@@ -149,6 +149,11 @@ func TestValidateRPZSourceZones(t *testing.T) {
 		badAlgo := base
 		badAlgo.TsigKey = "k.:hmac-sha999.:c2VjcmV0"
 		wantRPZProblem(t, rpzConfig(badAlgo), "algorithm")
+		// A key name that cannot be packed would fail the first signed
+		// request at runtime; the gate refuses it here.
+		badName := base
+		badName.TsigKey = strings.Repeat("a", 64) + ".:hmac-sha256.:c2VjcmV0"
+		wantRPZProblem(t, rpzConfig(badName), "not a valid domain name")
 		ok := base
 		ok.TsigKey = "k.:hmac-sha256.:c2VjcmV0"
 		if err := rpzConfig(ok).Validate(); err != nil {
