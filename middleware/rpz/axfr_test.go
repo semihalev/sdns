@@ -787,10 +787,36 @@ func TestRefreshAttemptCannotOutliveTheHorizon(t *testing.T) {
 	began := time.Now()
 	feed.cycle(context.Background())
 	elapsed := time.Since(began)
-	if elapsed > 5*time.Second {
+	// The cut lands at the horizon itself: ~500ms, not 500ms plus the
+	// wake grace — the grace belongs to the timer, never to the attempt.
+	if elapsed > 1200*time.Millisecond {
 		t.Fatalf("the attempt ran %v with the horizon 500ms away", elapsed)
 	}
 	if _, _, passed, err := serveQuiet(r, "blocked.example.com."); err != nil || !passed {
 		t.Fatalf("rules still serving past the horizon (err=%v)", err)
+	}
+}
+
+// TestLateProbeCannotRenewAnExpiredCopy pins the grace hole the review
+// found: a probe that would succeed just past the horizon must not
+// refresh loaded and revalidate a copy that had already outlived its
+// trust — the attempt's clamp is dead by then, healthy source or not.
+func TestLateProbeCannotRenewAnExpiredCopy(t *testing.T) {
+	srv := startFeedServer(t, "", "")
+	r, feed := feedUnderTest(t, srv, "")
+	if err := feed.refreshOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// 200ms past the horizon, source alive and answering.
+	past := feed.loaded.Add(feed.expire).Add(200 * time.Millisecond)
+	feed.now = func() time.Time { return past }
+
+	if err := feed.refreshOnce(context.Background()); err == nil {
+		t.Fatal("a probe past the horizon renewed the expired copy")
+	}
+	feed.maybeWithdraw()
+	if _, _, passed, err := serveQuiet(r, "blocked.example.com."); err != nil || !passed {
+		t.Fatalf("expired copy kept serving after a late probe (err=%v)", err)
 	}
 }

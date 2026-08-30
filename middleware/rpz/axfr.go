@@ -145,24 +145,30 @@ func (f *axfrFeed) nextWake(afterFailure bool) time.Duration {
 }
 
 // expireCap is the exact time left before the installed copy must be
-// withdrawn; ok is false when nothing is aging toward a horizon.
+// withdrawn — no grace, no floor: the refresh clamp built on it has to
+// die at the horizon itself, or a probe succeeding just past it would
+// renew a copy that had already outlived its trust. ok is false when
+// nothing is aging toward a horizon.
 func (f *axfrFeed) expireCap() (time.Duration, bool) {
 	if !f.haveCopy || f.withdrawn {
 		return 0, false
 	}
-	remaining := f.loaded.Add(f.expire).Sub(f.now()) + expireGrace
-	return max(remaining, expireGrace), true
+	return f.loaded.Add(f.expire).Sub(f.now()), true
 }
 
 // sleepFor is the actual sleep: the SOA-paced interval jittered so a
 // fleet does not probe in lockstep, then capped at the copy's remaining
 // expire. The cap is applied after the jitter and never jittered itself —
 // the expire boundary is a deadline, and a wake that must withdraw cannot
-// be allowed to drift past it.
+// be allowed to drift past it. The grace belongs to this wake alone: it
+// puts the timer just past the horizon so the withdrawal check sees the
+// copy as expired rather than racing the exact instant.
 func (f *axfrFeed) sleepFor(afterFailure bool) time.Duration {
 	sleep := zonetransfer.Jitter(f.nextWake(afterFailure))
-	if boundary, ok := f.expireCap(); ok && boundary < sleep {
-		sleep = boundary
+	if remaining, ok := f.expireCap(); ok {
+		if boundary := remaining + expireGrace; boundary < sleep {
+			sleep = max(boundary, expireGrace)
+		}
 	}
 	return sleep
 }
