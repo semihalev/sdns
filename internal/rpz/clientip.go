@@ -11,10 +11,15 @@ import (
 // rpz-client-ip (draft §4.1.1): "prefix.B4.B3.B2.B1" for IPv4 — octets
 // reversed, IN-ADDR.ARPA style — and "prefix.W8...W1" for IPv6, the
 // 16-bit hextets reversed, with a single "zz" label standing for a run of
-// zero fields. Everything is carried internally in the 128-bit space:
-// IPv4 rules map to their 4-in-6 form with the prefix length shifted by
-// +96, so one structure serves both families and the client address is
-// canonicalized the same way at query time.
+// zero fields.
+//
+// The two families stay in SEPARATE tables, deliberately. Folding IPv4
+// into the ::ffff/96 corner of one 128-bit space read well and was wrong
+// twice over: a short IPv6 prefix — ::/0 above all — would swallow every
+// IPv4 client, applying a rule the feed wrote for one family to the
+// other; and an IPv6 ::ffff:0:0/96 rule collided with IPv4 0.0.0.0/0 in
+// the same slot. An encoding names its family, and the family is part of
+// what the rule means.
 
 // ipLPM is the action-carrying longest-prefix-match structure the design
 // calls for (§5.3). internal/ipset cannot serve here: its Contains answers
@@ -34,9 +39,9 @@ type ipLPM struct {
 
 // insert files a rule under its masked prefix. The bool reports whether
 // the slot was free; a second rule at the same prefix is the caller's
-// conflict to count.
+// conflict to count. A table holds one family; the caller routes.
 func (l *ipLPM) insert(p netip.Prefix, r *Rule) bool {
-	masked := canonical16(p.Masked().Addr())
+	masked := p.Masked().Addr()
 	for i, n := range l.lens {
 		if n != p.Bits() {
 			continue
@@ -69,7 +74,7 @@ func (l *ipLPM) lookupExact(p netip.Prefix) *Rule {
 	if l == nil {
 		return nil
 	}
-	masked := canonical16(p.Masked().Addr())
+	masked := p.Masked().Addr()
 	for i, n := range l.lens {
 		if n == p.Bits() {
 			return l.tables[i][masked]
@@ -79,9 +84,9 @@ func (l *ipLPM) lookupExact(p netip.Prefix) *Rule {
 }
 
 // lookup returns the longest-prefix rule containing addr, with the
-// matched prefix length, or nil. addr must already be canonical
-// (canonical16). Zero allocations: prefix masking is value math and the
-// map is keyed by a comparable value.
+// matched prefix length, or nil. addr must be in the table's own family
+// form (CanonicalClient's output). Zero allocations: prefix masking is
+// value math and the map is keyed by a comparable value.
 func (l *ipLPM) lookup(addr netip.Addr) (*Rule, int) {
 	if l == nil {
 		return nil, 0
@@ -95,15 +100,11 @@ func (l *ipLPM) lookup(addr netip.Addr) (*Rule, int) {
 	return nil, 0
 }
 
-// canonical16 lifts any address into the 16-byte form, so an IPv4 client
-// and an IPv4-encoded rule meet in the same key space as IPv6.
-func canonical16(a netip.Addr) netip.Addr {
-	return netip.AddrFrom16(a.As16())
-}
-
 // CanonicalClient is the query-time twin of the rule-side encoding: the
-// client's address in the shared 128-bit key space.
-func CanonicalClient(a netip.Addr) netip.Addr { return canonical16(a) }
+// client's address in its family's native form. Unmap matters — a
+// transport may hand an IPv4 client over as ::ffff:a.b.c.d, and that
+// spelling must meet the IPv4 rules, not the IPv6 ones.
+func CanonicalClient(a netip.Addr) netip.Addr { return a.Unmap() }
 
 // parseClientIPOwner decodes the owner labels ahead of the rpz-client-ip
 // marker into a 128-bit-space prefix. enc is the relative owner with the
@@ -125,7 +126,8 @@ func parseClientIPOwner(enc string) (netip.Prefix, bool) {
 	}
 	labels = labels[1:]
 
-	// IPv4: exactly four decimal octet labels, reversed.
+	// IPv4: exactly four decimal octet labels, reversed. The prefix
+	// stays in its own family — the family is part of what a rule means.
 	if len(labels) == 4 && isV4Octets(labels) {
 		if bits > 32 {
 			return netip.Prefix{}, false
@@ -135,8 +137,7 @@ func parseClientIPOwner(enc string) (netip.Prefix, bool) {
 			v, _ := strconv.Atoi(s)
 			b[3-i] = byte(v) //nolint:gosec // G115 - isV4Octets bounded v to 0..255
 		}
-		mapped := canonical16(netip.AddrFrom4(b))
-		return netip.PrefixFrom(mapped, bits+96), true
+		return netip.PrefixFrom(netip.AddrFrom4(b), bits), true
 	}
 
 	// IPv6: up to eight hextet labels, reversed, with one optional "zz"

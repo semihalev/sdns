@@ -27,7 +27,7 @@ func (s *Store) HasClientIP() bool {
 		return false
 	}
 	for _, z := range s.Zones {
-		if z.clientIP != nil {
+		if z.clientIP4 != nil || z.clientIP6 != nil {
 			return true
 		}
 	}
@@ -84,10 +84,16 @@ func (s *Store) Match(canon []byte, offs []int, n int, client netip.Addr) (winne
 	return
 }
 
-// match applies the within-zone trigger precedence: CLIENT-IP first.
+// match applies the within-zone trigger precedence: CLIENT-IP first. The
+// client's family selects its table — the other family's rules do not
+// exist for it.
 func (z *Zone) match(canon []byte, offs []int, n int, client netip.Addr) ZoneMatch {
-	if z.clientIP != nil && client.IsValid() {
-		if rule, bits := z.clientIP.lookup(client); rule != nil {
+	if client.IsValid() {
+		table := z.clientIP6
+		if client.Is4() {
+			table = z.clientIP4
+		}
+		if rule, bits := table.lookup(client); rule != nil {
 			return ZoneMatch{Rule: rule, Trigger: TriggerClientIP, PrefixBits: bits}
 		}
 	}

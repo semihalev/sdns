@@ -694,3 +694,38 @@ func TestClientIPCountsUnderItsOwnTriggerLabel(t *testing.T) {
 		t.Fatalf("client-ip trigger counted %.0f, want 1", got)
 	}
 }
+
+// TestOwnerEncodingSkipGaugePublishes pins the review's metric gap: a
+// malformed trigger encoding must be visible under
+// rpz_zone_rules_skipped, load and reload alike.
+func TestOwnerEncodingSkipGaugePublishes(t *testing.T) {
+	path := writeZone(t, `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 1 3600 900 604800 300
+keep.example.com.rpz.test. IN CNAME .
+999.0.2.0.192.rpz-client-ip.rpz.test. IN CNAME .
+`)
+	r := newRPZ(t, "enforce", config.RPZZone{Name: "encgauge", File: path})
+
+	read := func() float64 {
+		m := &dto.Metric{}
+		if err := zoneRulesSkipped.WithLabelValues("encgauge", rpzengine.SkipOwnerEncoding).Write(m); err != nil {
+			t.Fatal(err)
+		}
+		return m.GetGauge().GetValue()
+	}
+	if read() != 1 {
+		t.Fatalf("owner-encoding gauge = %v after load, want 1", read())
+	}
+
+	// The cleaned push reads back as zero.
+	if err := os.WriteFile(path, []byte(`
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 2 3600 900 604800 300
+keep.example.com.rpz.test. IN CNAME .
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload(0)
+	if read() != 0 {
+		t.Fatalf("owner-encoding gauge = %v after a clean reload, want 0", read())
+	}
+}

@@ -14,10 +14,10 @@ func TestParseClientIPOwner(t *testing.T) {
 		enc  string
 		want string
 	}{
-		// IPv4: prefix, then reversed octets, lifted to +96.
-		{"24.0.2.0.192", "::ffff:192.0.2.0/120"},
-		{"32.9.2.0.192", "::ffff:192.0.2.9/128"},
-		{"8.0.0.0.10", "::ffff:10.0.0.0/104"},
+		// IPv4: prefix, then reversed octets, family kept.
+		{"24.0.2.0.192", "192.0.2.0/24"},
+		{"32.9.2.0.192", "192.0.2.9/32"},
+		{"8.0.0.0.10", "10.0.0.0/8"},
 		// IPv6, no compression: eight reversed hextets.
 		{"128.1.0.0.0.0.0.db8.2001", "2001:db8::1/128"},
 		// zz covering one run.
@@ -28,29 +28,18 @@ func TestParseClientIPOwner(t *testing.T) {
 		// first run spelled out.
 		{"128.1.zz.1.0.0.db8.2001", "2001:db8:0:0:1::1/128"},
 		// Host bits under the prefix are masked, not refused.
-		{"24.99.2.0.192", "::ffff:192.0.2.0/120"},
+		{"24.99.2.0.192", "192.0.2.0/24"},
 	} {
 		p, ok := parseClientIPOwner(tc.enc)
 		if !ok {
 			t.Errorf("%q: refused", tc.enc)
 			continue
 		}
-		want := netip.MustParsePrefix(tc.want)
-		wantCanon := netip.PrefixFrom(canonical16(want.Masked().Addr()), prefixBitsIn128(want))
-		got := netip.PrefixFrom(canonical16(p.Masked().Addr()), p.Bits())
-		if got != wantCanon {
-			t.Errorf("%q: got %v, want %v", tc.enc, got, wantCanon)
+		want := netip.MustParsePrefix(tc.want).Masked()
+		if p.Masked() != want {
+			t.Errorf("%q: got %v, want %v", tc.enc, p.Masked(), want)
 		}
 	}
-}
-
-// prefixBitsIn128 lifts a v4 prefix's length into the shared space the
-// engine stores everything in.
-func prefixBitsIn128(p netip.Prefix) int {
-	if p.Addr().Is4() {
-		return p.Bits() + 96
-	}
-	return p.Bits()
 }
 
 func TestParseClientIPOwnerRefusesMalformed(t *testing.T) {
@@ -59,7 +48,6 @@ func TestParseClientIPOwnerRefusesMalformed(t *testing.T) {
 		"24",                         // prefix alone
 		"33.0.2.0.192",               // v4 prefix too long
 		"129.zz",                     // v6 prefix too long
-		"24.0.2.0.999",               // octet out of range... falls to v6 hex? 999 is not hex-only... 999 parses as hex! guard below
 		"128.zz.zz",                  // two zz
 		"128.1.2.3.4.5.6.7.8.9",      // nine fields
 		"128.xyz.zz",                 // not hex
@@ -126,14 +114,14 @@ func TestClientIPLongestPrefixWins(t *testing.T) {
 
 	exempt := CanonicalClient(netip.MustParseAddr("192.0.2.9"))
 	winner, _ := s.Match(canon, offs[:], n, exempt)
-	if winner.Effective() != ActionPassthru || winner.PrefixBits != 128 {
-		t.Fatalf("winner = %+v, want passthru at /128", winner)
+	if winner.Effective() != ActionPassthru || winner.PrefixBits != 32 {
+		t.Fatalf("winner = %+v, want passthru at /32", winner)
 	}
 
 	neighbor := CanonicalClient(netip.MustParseAddr("192.0.2.10"))
 	winner, _ = s.Match(canon, offs[:], n, neighbor)
-	if winner.Effective() != ActionDrop || winner.PrefixBits != 120 {
-		t.Fatalf("winner = %+v, want drop at /120", winner)
+	if winner.Effective() != ActionDrop || winner.PrefixBits != 24 {
+		t.Fatalf("winner = %+v, want drop at /24", winner)
 	}
 }
 
@@ -182,7 +170,7 @@ func BenchmarkClientIPAdversarialAllLengths(b *testing.B) {
 	z := &Zone{Name: "adversarial", Skipped: map[string]int{}}
 	base := netip.MustParseAddr("2001:db8::")
 	for bits := 1; bits <= 128; bits++ {
-		z.insertClientIP(netip.PrefixFrom(canonical16(base), bits), ActionNXDOMAIN, nil)
+		z.insertClientIP(netip.PrefixFrom(base, bits), ActionNXDOMAIN, nil)
 	}
 	if z.RulesClientIP != 128 {
 		b.Fatalf("fixture built %d lengths", z.RulesClientIP)
@@ -193,7 +181,7 @@ func BenchmarkClientIPAdversarialAllLengths(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		if r, _ := z.clientIP.lookup(client); r != nil {
+		if r, _ := z.clientIP6.lookup(client); r != nil {
 			b.Fatal("unexpected match")
 		}
 	}
@@ -208,12 +196,68 @@ func BenchmarkClientIPRealisticLengths(b *testing.B) {
 		addr[6] = byte(i)
 		z.insertClientIP(netip.PrefixFrom(netip.AddrFrom16(addr), bits), ActionDrop, nil)
 	}
-	client := CanonicalClient(netip.MustParseAddr("203.0.113.7"))
+	// A v6 client for the v6 table: after the family split, a lookup is
+	// always family-consistent — the router picks the table.
+	client := CanonicalClient(netip.MustParseAddr("fd00::7"))
 
 	b.ReportAllocs()
 	for b.Loop() {
-		if r, _ := z.clientIP.lookup(client); r != nil {
+		if r, _ := z.clientIP6.lookup(client); r != nil {
 			b.Fatal("unexpected match")
 		}
+	}
+}
+
+// TestClientIPFamiliesStaySeparate pins the review's merge blocker: an
+// IPv6 rule must never match an IPv4 client and the reverse — folding
+// IPv4 into the ::ffff/96 corner of one key space let ::/0 swallow every
+// v4 client and collided ::ffff:0:0/96 with 0.0.0.0/0.
+func TestClientIPFamiliesStaySeparate(t *testing.T) {
+	z, err := LoadZone("families", strings.NewReader(`
+rpz.test. IN SOA ns. admin. 1 3600 900 604800 300
+; the v6 catch-all and the two colliding-slot rules, different actions
+0.zz.rpz-client-ip.rpz.test.        IN CNAME .
+96.zz.ffff.0.rpz-client-ip.rpz.test. IN CNAME rpz-drop.
+0.0.0.0.0.rpz-client-ip.rpz.test.   IN CNAME rpz-tcp-only.
+`), "fam.zone", OverrideGiven, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All three compiled: the v6 ::ffff:0:0/96 and the v4 0.0.0.0/0 are
+	// different rules in different tables, not a conflict.
+	if z.RulesClientIP != 3 || z.Skipped[SkipConflict] != 0 {
+		t.Fatalf("rules=%d conflicts=%d, want 3/0", z.RulesClientIP, z.Skipped[SkipConflict])
+	}
+
+	s := storeOf(z)
+	canon, offs, n := canonFor(t, "x.example.")
+
+	// A v4 client meets only the v4 catch-all — tcp-only, never the v6
+	// ::/0 nxdomain or the ::ffff drop.
+	v4 := CanonicalClient(netip.MustParseAddr("198.51.100.7"))
+	if w, _ := s.Match(canon, offs[:], n, v4); w.Effective() != ActionTCPOnly {
+		t.Fatalf("v4 client got %v, want the v4 table's tcp-only", w.Effective())
+	}
+	// The same client arriving in mapped spelling is still a v4 client.
+	mapped := CanonicalClient(netip.MustParseAddr("::ffff:198.51.100.7"))
+	if w, _ := s.Match(canon, offs[:], n, mapped); w.Effective() != ActionTCPOnly {
+		t.Fatalf("mapped v4 client got %v, want the v4 table's tcp-only", w.Effective())
+	}
+	// An address spelled inside ::ffff:0:0/96 IS an IPv4 client — that is
+	// what mapped means, and CanonicalClient's Unmap enforces it — so it
+	// meets the v4 table, never the feed's v6 ::ffff rule. That rule
+	// stays compiled and distinct (asserted above) but no client can
+	// reach it, which is the correct fate for a v6 spelling of v4 space.
+	spelled := CanonicalClient(netip.MustParseAddr("::ffff:0:1"))
+	if !spelled.Is4() {
+		t.Fatal("Unmap did not classify a mapped spelling as v4")
+	}
+	if w, _ := s.Match(canon, offs[:], n, spelled); w.Effective() != ActionTCPOnly {
+		t.Fatalf("mapped-range client got %v, want the v4 table's tcp-only", w.Effective())
+	}
+	// A plain v6 client gets the v6 catch-all.
+	v6 := CanonicalClient(netip.MustParseAddr("2001:db8::1"))
+	if w, _ := s.Match(canon, offs[:], n, v6); w.Effective() != ActionNXDOMAIN {
+		t.Fatalf("v6 client got %v, want the v6 ::/0 nxdomain", w.Effective())
 	}
 }

@@ -210,12 +210,17 @@ func (z *Zone) classify(rr dns.RR) {
 
 // insertClientIP files a CLIENT-IP rule with the same merge semantics as
 // the name triggers: the first action class at a prefix stands, Local
-// Data accumulates, anything else is a conflict.
+// Data accumulates, anything else is a conflict. The prefix's family
+// picks the table.
 func (z *Zone) insertClientIP(prefix netip.Prefix, action Action, local dns.RR) {
-	if z.clientIP == nil {
-		z.clientIP = &ipLPM{}
+	table := &z.clientIP6
+	if prefix.Addr().Is4() {
+		table = &z.clientIP4
 	}
-	if existing := z.clientIP.lookupExact(prefix); existing != nil {
+	if *table == nil {
+		*table = &ipLPM{}
+	}
+	if existing := (*table).lookupExact(prefix); existing != nil {
 		if existing.Action == ActionLocalData && action == ActionLocalData {
 			existing.Local = append(existing.Local, local)
 			return
@@ -227,7 +232,7 @@ func (z *Zone) insertClientIP(prefix netip.Prefix, action Action, local dns.RR) 
 	if action == ActionLocalData {
 		rule.Local = []dns.RR{local}
 	}
-	z.clientIP.insert(prefix, rule)
+	(*table).insert(prefix, rule)
 	z.Rules++
 	z.RulesClientIP++
 }

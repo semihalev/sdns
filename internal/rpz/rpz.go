@@ -119,9 +119,12 @@ type Zone struct {
 	// matchAll is the rule of a bare "*" owner: any qname, subdomain
 	// walk included. Rare, so it is a field rather than a map probe.
 	matchAll *Rule
-	// clientIP holds the zone's CLIENT-IP trigger rules; nil when the
-	// feed carries none, so a qname-only zone pays one nil check.
-	clientIP *ipLPM
+	// clientIP4/clientIP6 hold the zone's CLIENT-IP trigger rules, one
+	// table per family — an IPv6 rule must never match an IPv4 client or
+	// the reverse. nil when the feed carries none, so a qname-only zone
+	// pays two nil checks.
+	clientIP4 *ipLPM
+	clientIP6 *ipLPM
 
 	// Rules counts all compiled rules; RulesClientIP the CLIENT-IP share
 	// (the per-trigger gauges want the split). Skipped counts what the

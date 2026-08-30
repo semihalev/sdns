@@ -49,6 +49,7 @@ func countMatch(m rpzengine.ZoneMatch, outcome string) {
 // keeping the previous generation's value on the board.
 var skipReasons = []string{
 	rpzengine.SkipTrigger,
+	rpzengine.SkipOwnerEncoding,
 	rpzengine.SkipUnknownAction,
 	rpzengine.SkipNotActionData,
 	rpzengine.SkipConflict,
