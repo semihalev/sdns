@@ -134,8 +134,15 @@ func parseClientIPOwner(enc string) (netip.Prefix, bool) {
 		}
 		var b [4]byte
 		for i, s := range labels {
-			v, _ := strconv.Atoi(s)
-			b[3-i] = byte(v) //nolint:gosec // G115 - isV4Octets bounded v to 0..255
+			// ParseUint's 8-bit cap makes the byte conversion's bound
+			// local and provable — isV4Octets already guaranteed it, but
+			// a guarantee an analyzer cannot see is one a reader has to
+			// chase too.
+			v, err := strconv.ParseUint(s, 10, 8)
+			if err != nil {
+				return netip.Prefix{}, false
+			}
+			b[3-i] = byte(v)
 		}
 		return netip.PrefixFrom(netip.AddrFrom4(b), bits), true
 	}
