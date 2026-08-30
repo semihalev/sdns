@@ -1,6 +1,7 @@
 package dnssec
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -118,13 +119,17 @@ func FuzzKeyTag(f *testing.F) {
 			PublicKey: publicKey,
 		}
 		if algorithm == dns.RSAMD5 {
-			// The library panics on part of this space, which is why the
-			// RSAMD5 tag is derived here; where it answers, the answers
-			// must match.
-			want, panicked := libraryKeyTag(key)
-			got := KeyTag(key)
-			if !panicked && got != want {
-				t.Fatalf("RSAMD5 key=%q: tag %d, library says %d",
+			// The library no longer derives this tag, so RFC 4034 B.1 is
+			// the oracle. Only material a single decode accepts has a tag
+			// the spec defines; for the rest the requirement is that the
+			// derivation returns at all, which reaching this line proves.
+			raw, err := base64.StdEncoding.DecodeString(publicKey)
+			if err != nil || len(raw) < 3 {
+				return
+			}
+			want := uint16(raw[len(raw)-3])<<8 | uint16(raw[len(raw)-2])
+			if got := KeyTag(key); got != want {
+				t.Fatalf("RSAMD5 key=%q: tag %d, RFC 4034 B.1 says %d",
 					publicKey, got, want)
 			}
 			return
