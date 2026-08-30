@@ -22,6 +22,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/semihalev/sdns/internal/emptyzones"
+	"github.com/semihalev/sdns/internal/rpz"
 )
 
 // Validate reports what is wrong with a loaded configuration.
@@ -288,6 +289,7 @@ func (c *Config) Validate() error {
 	c.validateTrustAndIdentity(add)
 	c.validateNameLists(add)
 	c.validateSubTables(add)
+	c.validateRPZ(add)
 
 	if len(problems) == 0 {
 		return nil
@@ -1678,4 +1680,80 @@ func (c *Config) validateLoaded() error {
 		return nil
 	}
 	return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(problems, "\n  - "))
+}
+
+// validateRPZ judges the [rpz] block, only when the feature is on: a stale
+// zone entry under a disabled section has no effect and must not refuse a
+// config that has run for years. Zone files are parsed with the same
+// loader the runtime uses, so `sdns -t` answers for the feed exactly as
+// startup would read it.
+func (c *Config) validateRPZ(add func(string, ...any)) {
+	if !c.RPZ.Enabled {
+		return
+	}
+
+	switch c.RPZ.Mode {
+	case "shadow", "enforce":
+	default:
+		// Load fills an omitted mode with "shadow" before this runs, so
+		// anything else here is a spelling that will stop startup.
+		add("rpz.mode = %q: must be \"shadow\" or \"enforce\"", c.RPZ.Mode)
+	}
+
+	if len(c.RPZ.Zones) == 0 {
+		add("rpz is enabled but lists no zones; either add a [[rpz.zone]] or disable it")
+		return
+	}
+	// The bound the sidecar observation lists are sized by (design §5.6);
+	// BIND's own response-policy limit is the same order.
+	if len(c.RPZ.Zones) > 64 {
+		add("rpz lists %d zones; at most 64 are supported", len(c.RPZ.Zones))
+		return
+	}
+
+	seen := make(map[string]int, len(c.RPZ.Zones))
+	for i, zc := range c.RPZ.Zones {
+		where := fmt.Sprintf("rpz.zone[%d]", i)
+		if zc.Name == "" {
+			add("%s: name is required; it labels the zone in metrics and logs", where)
+		} else if prev, dup := seen[zc.Name]; dup {
+			add("%s: name %q is already used by rpz.zone[%d]", where, zc.Name, prev)
+		} else {
+			seen[zc.Name] = i
+		}
+
+		policy, ok := rpz.ParseOverride(zc.Policy)
+		if !ok {
+			add("%s: policy = %q: must be one of given, passthru, nxdomain, nodata, drop, tcp-only, cname, disabled",
+				where, zc.Policy)
+		}
+
+		// The cname target is read exactly when the override is "cname":
+		// required there, and a mistake anywhere else (the runtime would
+		// silently ignore it, so the file says one thing and the server
+		// does another).
+		if policy == rpz.OverrideCNAME && ok {
+			if zc.Cname == "" {
+				add("%s: policy = \"cname\" needs a cname target", where)
+			} else if _, valid := dns.IsDomainName(zc.Cname); !valid || !dns.IsFqdn(zc.Cname) {
+				add("%s: cname = %q: must be a fully qualified domain name (with the trailing dot)", where, zc.Cname)
+			}
+		} else if zc.Cname != "" {
+			add("%s: cname is set but policy is %q; the target is only read with policy = \"cname\"", where, zc.Policy)
+		}
+
+		if zc.File == "" {
+			add("%s: file is required", where)
+			continue
+		}
+		z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, dns.CanonicalName(zc.Cname))
+		if err != nil {
+			add("%s: %v", where, err)
+			continue
+		}
+		if z.Rules == 0 {
+			add("%s: %s loaded but compiled no rules (skipped: %v); the zone would filter nothing",
+				where, zc.File, z.Skipped)
+		}
+	}
 }
