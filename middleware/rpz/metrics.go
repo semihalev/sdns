@@ -41,7 +41,7 @@ var (
 // countMatch runs on the match path only — the non-matching query touches
 // no counter (design §5.11).
 func countMatch(m rpzengine.ZoneMatch, outcome string) {
-	actionTotal.WithLabelValues(m.Zone.Name, "qname", m.Effective().String(), outcome).Inc()
+	actionTotal.WithLabelValues(m.Zone.Name, m.Trigger, m.Effective().String(), outcome).Inc()
 }
 
 // skipReasons is every reason the engine can count, so a reload publishes
@@ -57,7 +57,8 @@ var skipReasons = []string{
 }
 
 func publishZoneMetrics(z *rpzengine.Zone) {
-	zoneRules.WithLabelValues(z.Name, "qname").Set(float64(z.Rules))
+	zoneRules.WithLabelValues(z.Name, rpzengine.TriggerQNAME).Set(float64(z.Rules - z.RulesClientIP))
+	zoneRules.WithLabelValues(z.Name, rpzengine.TriggerClientIP).Set(float64(z.RulesClientIP))
 	for _, reason := range skipReasons {
 		zoneRulesSkipped.WithLabelValues(z.Name, reason).Set(float64(z.Skipped[reason]))
 	}

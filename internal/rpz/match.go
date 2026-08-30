@@ -1,26 +1,60 @@
 package rpz
 
-// ZoneMatch is one zone's best QNAME match for a query.
+import "net/netip"
+
+// Trigger labels for metrics and logs.
+const (
+	TriggerQNAME    = "qname"
+	TriggerClientIP = "client-ip"
+)
+
+// ZoneMatch is one zone's best match for a query. Trigger and PrefixBits
+// carry the rank information a later merge (or a log line) needs.
 type ZoneMatch struct {
-	ZoneIdx  int
-	Zone     *Zone
-	Rule     *Rule
-	Wildcard bool
+	ZoneIdx    int
+	Zone       *Zone
+	Rule       *Rule
+	Trigger    string
+	Wildcard   bool
+	PrefixBits int
 }
 
-// MatchQNAME walks the zones in configuration order and returns the first
+// HasClientIP reports whether any zone carries CLIENT-IP rules, so a
+// caller can skip canonicalizing the client address entirely on a
+// qname-only configuration.
+func (s *Store) HasClientIP() bool {
+	if s == nil {
+		return false
+	}
+	for _, z := range s.Zones {
+		if z.clientIP != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// Match walks the zones in configuration order and returns the first
 // enabled zone's match as the winner, together with the matches of any
 // disabled zones met on the way there. Zones past the winner are never
 // probed: precedence rule 1 says they cannot win, and the winner-bounded
 // counting semantic (design §5.5) says they are not counted either — so
 // not probing them is both correct and the cheap path.
 //
+// Within a zone, CLIENT-IP outranks QNAME (rule 2), and among CLIENT-IP
+// prefixes the longest wins (rule 4) — equal-length distinct prefixes
+// cannot both contain one address, so the client-side tie-break is
+// vacuous by construction. client is the query's source address in
+// canonical 128-bit form (CanonicalClient), or the zero Addr when no
+// zone carries CLIENT-IP rules.
+//
 // canon and offs are the query name in the canonical-labels form
 // dnsname.AppendCanonicalLabels produces: canon is the lowercase
 // presentation with the trailing dot, offs[i] the start of label i, n the
 // label count. Both live on the caller's stack; every probe here indexes a
 // map as m[string(bytes)], which Go performs without constructing the
-// string — the reason a non-matching query allocates nothing.
+// string — with the prefix masking being value math, the reason a
+// non-matching query allocates nothing.
 //
 // Within a zone the draft's rule 3 falls out of the walk order: the exact
 // probe first, then wildcard suffixes from the longest down (stripping one
@@ -30,16 +64,16 @@ type ZoneMatch struct {
 //
 // observed is nil unless a disabled zone matched, which keeps the miss
 // path and the ordinary single-zone hit allocation-free.
-func (s *Store) MatchQNAME(canon []byte, offs []int, n int) (winner ZoneMatch, observed []ZoneMatch) {
+func (s *Store) Match(canon []byte, offs []int, n int, client netip.Addr) (winner ZoneMatch, observed []ZoneMatch) {
 	if s == nil {
 		return
 	}
 	for idx, z := range s.Zones {
-		rule, wild := z.matchQNAME(canon, offs, n)
-		if rule == nil {
+		m := z.match(canon, offs, n, client)
+		if m.Rule == nil {
 			continue
 		}
-		m := ZoneMatch{ZoneIdx: idx, Zone: z, Rule: rule, Wildcard: wild}
+		m.ZoneIdx, m.Zone = idx, z
 		if z.Disabled() {
 			observed = append(observed, m)
 			continue
@@ -48,6 +82,19 @@ func (s *Store) MatchQNAME(canon []byte, offs []int, n int) (winner ZoneMatch, o
 		return
 	}
 	return
+}
+
+// match applies the within-zone trigger precedence: CLIENT-IP first.
+func (z *Zone) match(canon []byte, offs []int, n int, client netip.Addr) ZoneMatch {
+	if z.clientIP != nil && client.IsValid() {
+		if rule, bits := z.clientIP.lookup(client); rule != nil {
+			return ZoneMatch{Rule: rule, Trigger: TriggerClientIP, PrefixBits: bits}
+		}
+	}
+	if rule, wild := z.matchQNAME(canon, offs, n); rule != nil {
+		return ZoneMatch{Rule: rule, Trigger: TriggerQNAME, Wildcard: wild}
+	}
+	return ZoneMatch{}
 }
 
 func (z *Zone) matchQNAME(canon []byte, offs []int, n int) (rule *Rule, wildcard bool) {

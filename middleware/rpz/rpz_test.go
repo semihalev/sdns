@@ -602,3 +602,95 @@ keep.example.com.rpz.test. IN CNAME .
 		t.Fatalf("skip gauge = %v after a clean reload, want 0", read())
 	}
 }
+
+const clientIPTestZone = `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 5 3600 900 604800 300
+24.0.2.0.192.rpz-client-ip.rpz.test.  IN CNAME rpz-drop.
+32.9.2.0.192.rpz-client-ip.rpz.test.  IN CNAME rpz-passthru.
+16.0.0.0.10.rpz-client-ip.rpz.test.   IN A 192.0.2.99
+victim.example.com.rpz.test.          IN CNAME *.
+`
+
+// serveFrom is serve with the client address under test.
+func serveFrom(t *testing.T, r *RPZ, addr, qname string, qtype uint16) (*mock.Writer, bool) {
+	t.Helper()
+	q := new(dns.Msg)
+	q.SetQuestion(qname, qtype)
+	q.RecursionDesired = true
+	raw, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := new(middleware.Request)
+	if !req.ParseWire(raw, time.Now(), nil) {
+		t.Fatal("refused")
+	}
+	passed := false
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		passed = true
+		ch.Cancel()
+	})
+	w := mock.NewWriter("udp", addr)
+	ch := middleware.NewChain([]middleware.Handler{r, next})
+	ch.ResetWire(w, req)
+	ch.Next(context.Background())
+	return w, passed
+}
+
+func TestClientIPEndToEnd(t *testing.T) {
+	r := newRPZ(t, "enforce", config.RPZZone{Name: "cip", File: writeZone(t, clientIPTestZone)})
+
+	// A client in the dropped /24 gets nothing, whatever it asks.
+	if w, passed := serveFrom(t, r, "192.0.2.55:40000", "totally.unrelated.example.", dns.TypeA); passed || w.Written() {
+		t.Fatalf("dropped client answered: passed=%v written=%v", passed, w.Written())
+	}
+	// The /32 passthru inside it is exempt (longest prefix wins).
+	if _, passed := serveFrom(t, r, "192.0.2.9:40000", "victim.example.com.", dns.TypeA); !passed {
+		t.Fatal("the /32 passthru client was not exempted")
+	}
+	// A client outside every prefix falls to the QNAME rule.
+	if w, passed := serveFrom(t, r, "198.51.100.1:40000", "victim.example.com.", dns.TypeA); passed || w.Rcode() != dns.RcodeSuccess || len(w.Msg().Answer) != 0 {
+		t.Fatalf("outside client: passed=%v rcode=%v", passed, w.Rcode())
+	}
+	// And an unpolicied client + unpolicied name passes untouched.
+	if _, passed := serveFrom(t, r, "198.51.100.1:40000", "innocent.example.org.", dns.TypeA); !passed {
+		t.Fatal("clean query blocked")
+	}
+}
+
+// TestClientIPLocalDataOwnerIsTheQName is the phase 2 exit criterion from
+// the design, verbatim: an address-encoded trigger owner must never
+// appear in a response.
+func TestClientIPLocalDataOwnerIsTheQName(t *testing.T) {
+	r := newRPZ(t, "enforce", config.RPZZone{Name: "cip", File: writeZone(t, clientIPTestZone)})
+
+	w, _ := serveFrom(t, r, "10.0.12.13:40000", "some.name.example.", dns.TypeA)
+	answers := w.Msg().Answer
+	if len(answers) != 1 {
+		t.Fatalf("answers = %v", answers)
+	}
+	a, ok := answers[0].(*dns.A)
+	if !ok || a.A.String() != "192.0.2.99" {
+		t.Fatalf("answer = %v", answers[0])
+	}
+	if a.Hdr.Name != "some.name.example." {
+		t.Fatalf("owner %q leaked from the trigger encoding", a.Hdr.Name)
+	}
+}
+
+func TestClientIPCountsUnderItsOwnTriggerLabel(t *testing.T) {
+	r := newRPZ(t, "shadow", config.RPZZone{Name: "ciplabel", File: writeZone(t, clientIPTestZone)})
+
+	before := func(trigger string) float64 {
+		m := &dto.Metric{}
+		if err := actionTotal.WithLabelValues("ciplabel", trigger, "drop", outcomeObserved).Write(m); err != nil {
+			t.Fatal(err)
+		}
+		return m.GetCounter().GetValue()
+	}
+	b := before("client-ip")
+	serveFrom(t, r, "192.0.2.55:40000", "x.example.", dns.TypeA)
+	if got := before("client-ip") - b; got != 1 {
+		t.Fatalf("client-ip trigger counted %.0f, want 1", got)
+	}
+}
