@@ -171,7 +171,19 @@ func (f *axfrFeed) sleepFor(afterFailure bool) time.Duration {
 // (or when no copy exists yet). A source advertising an older serial is
 // refused whole: nothing it transfers can be accepted (RFC 1982).
 func (f *axfrFeed) refreshOnce(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, f.timeout)
+	timeout := f.timeout
+	// While a live copy is aging, the attempt itself is bounded by the
+	// copy's horizon: an attempt still running at expire is cancelled so
+	// its failure path withdraws at the boundary — otherwise a cycle
+	// starting just inside the horizon would keep stale rules serving
+	// for a full transfer timeout past it, and a probe succeeding late
+	// would renew a copy that had already outlived its trust. Withdrawn
+	// (or first-copy) attempts get the full budget: there is nothing
+	// left to protect, only a zone to rebuild.
+	if remaining, ok := f.expireCap(); ok && remaining < timeout {
+		timeout = remaining
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	if f.haveCopy {

@@ -134,6 +134,11 @@ func TestValidateRPZSourceZones(t *testing.T) {
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5", Origin: "z."}), "host:port")
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5:53"}), "needs an origin")
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5:53", Origin: "no-dot.example"}), "fully qualified")
+		// SplitHostPort alone waves these through; each builds a feed
+		// that fails every cycle.
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: ":53", Origin: "z."}), "host:port")
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5:", Origin: "z."}), "host:port")
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", Source: "203.0.113.5:0", Origin: "z."}), "port to reach")
 	})
 
 	t.Run("tsig shape judged with the runtime's parser", func(t *testing.T) {

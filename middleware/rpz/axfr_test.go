@@ -676,13 +676,19 @@ func TestTSIGTransferDoesNotLeakTheProducer(t *testing.T) {
 // installed rule or passed clean); -race owns the memory-order proof.
 func TestConcurrentSwapAndServe(t *testing.T) {
 	r := newRPZ(t, "enforce", config.RPZZone{Name: "test", File: writeZone(t, testZone)})
+	// The same name carries a different action in each generation, so a
+	// single response tells exactly which one answered: NXDOMAIN is X,
+	// a Local Data answer is Y, and anything else — a pass, a blend — is
+	// a torn store. Distinct per-generation names could not see that: a
+	// store wrongly carrying both rules would still produce individually
+	// valid outcomes.
 	const zoneX = `
 rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 10 3600 900 604800 300
-xonly.example.com.rpz.test. IN CNAME .
+probe.example.com.rpz.test. IN CNAME .
 `
 	const zoneY = `
 rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 11 3600 900 604800 300
-yonly.example.com.rpz.test. IN CNAME .
+probe.example.com.rpz.test. IN A 203.0.113.99
 `
 	zx, err := rpzengine.LoadZone("test", strings.NewReader(zoneX), "x", rpzengine.OverrideGiven, "")
 	if err != nil {
@@ -692,6 +698,10 @@ yonly.example.com.rpz.test. IN CNAME .
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// The probe name must resolve to a generation from the first query,
+	// so X is installed before any reader starts.
+	r.swapZone(0, zx)
 
 	stop := make(chan struct{})
 	torn := make(chan string, 8)
@@ -719,16 +729,14 @@ yonly.example.com.rpz.test. IN CNAME .
 					return
 				default:
 				}
-				for _, qname := range []string{"xonly.example.com.", "yonly.example.com."} {
-					rcode, _, passed, err := serveQuiet(r, qname)
-					if err != nil {
-						torn <- err.Error()
-						return
-					}
-					if !passed && rcode != dns.RcodeNameError {
-						torn <- fmt.Sprintf("%s: neither generation: passed=%v rcode=%d", qname, passed, rcode)
-						return
-					}
+				rcode, _, passed, err := serveQuiet(r, "probe.example.com.")
+				if err != nil {
+					torn <- err.Error()
+					return
+				}
+				if passed || (rcode != dns.RcodeNameError && rcode != dns.RcodeSuccess) {
+					torn <- fmt.Sprintf("neither generation answered: passed=%v rcode=%d", passed, rcode)
+					return
 				}
 			}
 		}()
@@ -738,5 +746,51 @@ yonly.example.com.rpz.test. IN CNAME .
 	case msg := <-torn:
 		t.Fatal(msg)
 	default:
+	}
+}
+
+// TestRefreshAttemptCannotOutliveTheHorizon pins the review's P1: a
+// cycle starting just inside the horizon must not let its refresh
+// attempt keep stale rules serving past expire. The attempt is bounded
+// by the copy's remaining trust — cancelled at the boundary, its failure
+// path withdraws there, not a full transfer timeout later.
+func TestRefreshAttemptCannotOutliveTheHorizon(t *testing.T) {
+	srv := startFeedServer(t, "", "")
+	r, feed := feedUnderTest(t, srv, "")
+	if err := feed.refreshOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// A source that accepts the connection and never answers.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() //nolint:revive // freed at listener close; the test is the scope
+		}
+	}()
+	feed.source = l.Addr().String()
+	feed.timeout = 30 * time.Second // the budget the horizon must beat
+
+	// ~500ms of trust left, and the clock keeps running from there so
+	// the horizon actually passes while the attempt is in flight.
+	offset := 86400*time.Second - 500*time.Millisecond
+	feed.now = func() time.Time { return time.Now().Add(offset) }
+
+	began := time.Now()
+	feed.cycle(context.Background())
+	elapsed := time.Since(began)
+	if elapsed > 5*time.Second {
+		t.Fatalf("the attempt ran %v with the horizon 500ms away", elapsed)
+	}
+	if _, _, passed, err := serveQuiet(r, "blocked.example.com."); err != nil || !passed {
+		t.Fatalf("rules still serving past the horizon (err=%v)", err)
 	}
 }

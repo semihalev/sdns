@@ -1750,8 +1750,19 @@ func (c *Config) validateRPZ(add func(string, ...any)) {
 			add("%s: file and source are both set; a zone is fed one way", where)
 			continue
 		case zc.Source != "":
-			if _, _, err := net.SplitHostPort(zc.Source); err != nil {
+			// The feed dials this with net.Dialer over TCP, so a hostname
+			// is fine — but the halves must both be there and the port
+			// reachable, exactly as the hyperlocal sources are judged.
+			// SplitHostPort alone waves ":53", "host:" and "host:0"
+			// through, and each builds a feed that fails every cycle.
+			host, port, err := net.SplitHostPort(zc.Source)
+			switch {
+			case err != nil || host == "" || port == "":
 				add("%s: source = %q: must be host:port", where, zc.Source)
+			default:
+				if n, err := usablePort(port, "tcp"); err != nil || n == 0 {
+					add("%s: source = %q: must have a port to reach", where, zc.Source)
+				}
 			}
 			if zc.Origin == "" {
 				add("%s: source needs an origin — the apex name the transfer asks for", where)
