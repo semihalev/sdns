@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +13,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/contextutil"
+	"github.com/semihalev/sdns/internal/debugenv"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/metric"
@@ -24,11 +24,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var debugns bool
-
-func init() {
-	_, debugns = os.LookupEnv("SDNS_DEBUGNS")
-}
+var debugns = debugenv.DebugNS()
 
 const (
 	name   = "cache"

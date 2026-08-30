@@ -57,7 +57,7 @@ jobs:
           # Pinned deliberately: allocation counts are toolchain-sensitive,
           # and the hard-zero gate's verdict must not drift with "stable".
           # Keep in lockstep with go.mod's toolchain directive.
-          go-version: '1.26.5'
+          go-version: '1.27.0'
 
       # The main test job runs with -race on every OS, which skips every
       # !race-tagged allocation pin. This job is where they actually run.

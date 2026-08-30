@@ -100,6 +100,8 @@ HTTP/1.1 400 Bad Request
 
 `SDNS_PPROF=1` in the sdns environment enables the standard `net/http/pprof` routes under `/debug/pprof/` (heap, goroutine, allocs, profile, symbol, trace). These bypass the bearer-token check; see Authentication.
 
+The value is read as a boolean, so `1` and `true` turn the routes on while an unset variable, `0`, `false`, or anything that is not a boolean leaves them off. Bind `api` to a loopback address whenever they are on.
+
 ## Server limits
 
 `ReadHeaderTimeout` is 10 s. Batch bodies are bounded by `MaxBytesReader` at 8 MiB. Graceful shutdown waits up to 10 s for in-flight requests when the parent context is cancelled.
