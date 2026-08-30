@@ -452,19 +452,3 @@ func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
 	zlog.Info("Local root zone updated", "serial", snap.serial, "records", len(rrs))
 	return nil
 }
-
-// serialNewer reports whether b is newer than a in RFC 1982 serial
-// arithmetic (the SOA serial's number space).
-func serialNewer(a, b uint32) bool {
-	return (b > a && b-a < 1<<31) || (b < a && a-b > 1<<31)
-}
-
-// jitter spreads d by ±10% so a fleet restarted together does not probe the
-// same source in the same second forever.
-func jitter(d time.Duration) time.Duration {
-	if d <= 0 {
-		return 0
-	}
-	spread := int64(d / 10)
-	return d - time.Duration(spread) + time.Duration(rand.Int64N(2*spread+1)) //nolint:gosec // schedule jitter, not key material.
-}
