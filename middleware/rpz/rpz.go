@@ -2,7 +2,7 @@
 // the internal/rpz engine. It matches client queries against the loaded
 // policy zones ahead of the cache, so policy applies to every client
 // query — cache hits included — and a reload takes effect immediately.
-// Semantics and invariants: RPZ-DESIGN.md.
+// Operator semantics: the README's Response Policy Zones section.
 package rpz
 
 import (

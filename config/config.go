@@ -113,7 +113,8 @@ type Config struct {
 	// RPZ subscribes the resolver to Response Policy Zones — operator- or
 	// vendor-fed zones that rewrite, deny, or drop answers for the names
 	// they list, in the standard RPZ encoding so existing feeds work
-	// unmodified. Off by default; design and semantics in RPZ-DESIGN.md.
+	// unmodified. Off by default; semantics in the README's Response
+	// Policy Zones section.
 	RPZ RPZ `toml:"rpz"`
 
 	// Views are per-client static answers, evaluated in order. A
