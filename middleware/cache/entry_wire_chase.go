@@ -31,6 +31,10 @@ import (
 // chase re-resolves and re-admits it — self-healing at the cost of one
 // decoded serve.
 
+// The chase depth must fit the sidecar chain the gate receives; a
+// negative constant here fails the build.
+const _ = uint(middleware.SidecarChainCap - maxWireChaseHops)
+
 const (
 	// maxWireChaseHops mirrors the Msg-path chase depth.
 	maxWireChaseHops = 10
@@ -76,18 +80,17 @@ func (c *Cache) serveChaseHit(
 	// The reply would compose every segment's records, so the gate sees
 	// every segment's sidecar, in chain order — the per-segment principle:
 	// a whole-chain verdict on the alias would go stale the moment a
-	// target entry refreshed under it. The slice is built only when a
-	// gate is wired: an unconditional array would escape through the
-	// interface call and cost every ungated chase an allocation the
-	// hit-class pins forbid.
+	// target entry refreshed under it. The chain travels by value: a
+	// slice here escapes through the interface call and puts a heap
+	// allocation on every gated chase hit, which the zero-allocation hit
+	// contract forbids with the gate wired no less than without it.
 	gate := c.wireHitGate
-	var scs []*middleware.Sidecar
+	var chain middleware.SidecarChain
 	if gate != nil {
-		scs = make([]*middleware.Sidecar, n)
 		for i := range n {
-			scs[i] = segs[i].entry.sidecar.Load()
+			chain.Append(segs[i].entry.sidecar.Load())
 		}
-		if gate.JudgeWireChase(scs) != middleware.WireHitServe {
+		if gate.JudgeWireChase(chain) != middleware.WireHitServe {
 			wireSkipPolicy.Inc()
 			return false
 		}
@@ -127,7 +130,7 @@ func (c *Cache) serveChaseHit(
 	switch err := leaser.CommitWire(body, info); {
 	case err == nil:
 		if gate != nil {
-			gate.CountWireChase(scs)
+			gate.CountWireChase(chain)
 		}
 		// The reply contains every segment's records, so the request
 		// inherits every segment's cache-lifetime bound — the wire twin of
@@ -144,7 +147,7 @@ func (c *Cache) serveChaseHit(
 		return false
 	default:
 		if gate != nil {
-			gate.CountWireChase(scs)
+			gate.CountWireChase(chain)
 		}
 		for i := range n {
 			boundRequestToEntryLifetime(ctx, segs[i].entry)

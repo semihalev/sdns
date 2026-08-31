@@ -45,6 +45,38 @@ const (
 	WireHitRestamp
 )
 
+// SidecarChainCap bounds a chase composition's segments; it mirrors the
+// wire chase depth (the cache asserts its own bound fits at compile
+// time).
+const SidecarChainCap = 10
+
+// SidecarChain carries one sidecar per chase segment, in chain order, as
+// a bounded value — never a slice. The gate methods receive it by value,
+// so a gated chase hit stays allocation-free: a slice here escapes
+// through the interface call and puts a heap allocation on every
+// cache-contained chase, which the zero-allocation hit contract forbids.
+type SidecarChain struct {
+	n   int
+	scs [SidecarChainCap]*Sidecar
+}
+
+// Append adds the next segment's sidecar; it reports false when the
+// chain is full (the caller's depth bound should make that impossible).
+func (c *SidecarChain) Append(sc *Sidecar) bool {
+	if c.n >= len(c.scs) {
+		return false
+	}
+	c.scs[c.n] = sc
+	c.n++
+	return true
+}
+
+// Len returns the number of segments carried.
+func (c *SidecarChain) Len() int { return c.n }
+
+// At returns segment i's sidecar; nil means that segment is unevaluated.
+func (c *SidecarChain) At(i int) *Sidecar { return c.scs[i] }
+
 // WireHitGate judges record-bearing byte serves. When a gate is wired,
 // the cache consults it before serving stored bytes for an exact hit or
 // a composed CNAME chase; any verdict but WireHitServe declines the byte
@@ -66,13 +98,13 @@ type WireHitGate interface {
 	JudgeWireHit(sc *Sidecar) WireHitVerdict
 	// JudgeWireChase judges a composed chase, one sidecar per segment in
 	// chain order. Any nil element is an unevaluated segment.
-	JudgeWireChase(sidecars []*Sidecar) WireHitVerdict
+	JudgeWireChase(sidecars SidecarChain) WireHitVerdict
 	// CountWireHit records the policy outcome of a byte-served exact
 	// hit. Called once, after the transport accepted the bytes; no later
 	// layer decodes them, so this is the only place the outcome exists.
 	CountWireHit(sc *Sidecar)
 	// CountWireChase is CountWireHit for a committed chase composition.
-	CountWireChase(sidecars []*Sidecar)
+	CountWireChase(sidecars SidecarChain)
 }
 
 // SidecarPolicyProvider is implemented by the handler that owns response

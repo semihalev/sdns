@@ -48,11 +48,19 @@ func (p *recordingPolicy) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHi
 	return p.verdict
 }
 
-func (p *recordingPolicy) JudgeWireChase(scs []*middleware.Sidecar) middleware.WireHitVerdict {
+func (p *recordingPolicy) JudgeWireChase(chain middleware.SidecarChain) middleware.WireHitVerdict {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.chases = append(p.chases, append([]*middleware.Sidecar(nil), scs...))
+	p.chases = append(p.chases, chainSidecars(chain))
 	return p.verdict
+}
+
+func chainSidecars(chain middleware.SidecarChain) []*middleware.Sidecar {
+	out := make([]*middleware.Sidecar, chain.Len())
+	for i := range out {
+		out[i] = chain.At(i)
+	}
+	return out
 }
 
 func (p *recordingPolicy) CountWireHit(sc *middleware.Sidecar) {
@@ -61,10 +69,10 @@ func (p *recordingPolicy) CountWireHit(sc *middleware.Sidecar) {
 	p.counted = append(p.counted, sc)
 }
 
-func (p *recordingPolicy) CountWireChase(scs []*middleware.Sidecar) {
+func (p *recordingPolicy) CountWireChase(chain middleware.SidecarChain) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.countedChase = append(p.countedChase, append([]*middleware.Sidecar(nil), scs...))
+	p.countedChase = append(p.countedChase, chainSidecars(chain))
 }
 
 func seamResponse(name string, answers ...dns.RR) *dns.Msg {
@@ -503,5 +511,86 @@ func TestRawFallbackAfterApprovalCountsNothing(t *testing.T) {
 	}
 	if len(p.counted) != before {
 		t.Fatal("a raw serve that fell back was counted as a byte hit")
+	}
+}
+
+// staticGate is an allocation-free Serve gate for the alloc pins: it
+// must not record anything, or the pin would measure the recorder.
+type staticGate struct{}
+
+func (staticGate) JudgeWireHit(*middleware.Sidecar) middleware.WireHitVerdict { //nolint:revive // interface
+	return middleware.WireHitServe
+}
+
+func (staticGate) JudgeWireChase(middleware.SidecarChain) middleware.WireHitVerdict {
+	return middleware.WireHitServe
+}
+
+func (staticGate) CountWireHit(*middleware.Sidecar)              {}
+func (staticGate) CountWireChase(middleware.SidecarChain)        {}
+func (staticGate) SidecarEvaluator() middleware.SidecarEvaluator { return nil }
+func (staticGate) WireHitGate() middleware.WireHitGate           { return staticGate{} }
+
+// sinkWriter is a mock transport whose Write discards without decoding,
+// so a serve loop under AllocsPerRun measures the serve, not the sink.
+type sinkWriter struct {
+	*mock.Writer
+	wrote int
+}
+
+func (s *sinkWriter) Write(b []byte) (int, error) {
+	s.wrote++
+	return len(b), nil
+}
+
+// gatedHitAllocs measures allocations per raw wire hit for qname against
+// a primed cache.
+func gatedHitAllocs(t *testing.T, c *Cache, qname string) float64 {
+	t.Helper()
+	req, _ := wireTestRequest(t, qname, dns.TypeA, false)
+	w := &sinkWriter{Writer: mock.NewWriter("udp", "192.0.2.9:53000")}
+	ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		ch.Cancel()
+	})})
+	allocs := testing.AllocsPerRun(200, func() {
+		ch.ResetWire(w, req)
+		ch.AllowDirectPack()
+		ch.Next(context.Background())
+	})
+	if w.wrote == 0 {
+		t.Fatalf("%s never served bytes; the pin measured nothing", qname)
+	}
+	return allocs
+}
+
+// TestGatedByteHitsAllocateNoMoreThanUngated pins the §5.11 half the CI
+// gates cannot see: with a Serve gate wired, the steady-state byte hit —
+// exact and chase alike — costs exactly what it costs without one. The
+// pin is baseline-relative so it measures the gate's addition, not the
+// harness.
+func TestGatedByteHitsAllocateNoMoreThanUngated(t *testing.T) {
+	prime := func(c *Cache) {
+		c.store.SetFromResponseWithCut(seamResponse("exact.pin.test.", seamA("exact.pin.test.")), false, time.Time{}, 0)
+		c.store.SetFromResponseWithCut(seamResponse("alias.pin.test.", &dns.CNAME{
+			Hdr:    dns.RR_Header{Name: "alias.pin.test.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+			Target: "exact.pin.test.",
+		}), false, time.Time{}, 0)
+	}
+
+	base := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer base.Stop()
+	prime(base)
+
+	gated := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer gated.Stop()
+	gated.SetSidecarPolicy(staticGate{})
+	prime(gated)
+
+	for _, qname := range []string{"exact.pin.test.", "alias.pin.test."} {
+		ungated := gatedHitAllocs(t, base, qname)
+		withGate := gatedHitAllocs(t, gated, qname)
+		if withGate > ungated {
+			t.Fatalf("%s: gated hit allocates %.1f vs %.1f ungated; the gate must be free on the byte path", qname, withGate, ungated)
+		}
 	}
 }
