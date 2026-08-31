@@ -1330,7 +1330,7 @@ func (c *Cache) serveHitFromWire(
 		// lives inside, past the chase's own decline gates.
 		return c.serveChaseHit(ctx, ch, entry, capability, leaser, spent)
 	}
-	gate := c.wireHitGate
+	gate := c.effectiveGate(w)
 	sc := entry.sidecar.Load()
 	if gate != nil && gate.JudgeWireHit(sc) != middleware.WireHitServe {
 		wireSkipPolicy.Inc()
@@ -1483,10 +1483,11 @@ func (c *Cache) handleCacheHit(
 	// segments through internal sub-queries, which is where a stale
 	// segment gets its restamp.
 	policyVerdict := middleware.WireHitServe
+	policyGate := c.effectiveGate(w)
 	var policySC *middleware.Sidecar
-	if g := c.wireHitGate; g != nil {
+	if policyGate != nil {
 		policySC = entry.sidecar.Load()
-		policyVerdict = g.JudgeWireHit(policySC)
+		policyVerdict = policyGate.JudgeWireHit(policySC)
 	} else if c.store.sidecarEvaluator != nil && entry.sidecar.Load() == nil {
 		// An evaluator without a gate still owes pre-wiring entries
 		// their stamp.
@@ -1526,8 +1527,8 @@ func (c *Cache) handleCacheHit(
 		}
 		switch err := ww.WriteWire(body, info); {
 		case err == nil:
-			if g := c.wireHitGate; g != nil {
-				g.CountWireHit(policySC)
+			if policyGate != nil {
+				policyGate.CountWireHit(policySC)
 			}
 			// The answer is out, so bind the request tree to this entry's
 			// lifetime. The byte path is normally reached only by external
@@ -1552,8 +1553,8 @@ func (c *Cache) handleCacheHit(
 			// still gets this entry's answer: it binds like any other
 			// terminal outcome. Only a fallback stays unbound, because
 			// there the message path binds instead.
-			if g := c.wireHitGate; g != nil {
-				g.CountWireHit(policySC)
+			if policyGate != nil {
+				policyGate.CountWireHit(policySC)
 			}
 			boundRequestToEntryLifetime(ctx, entry)
 			ch.Cancel()
@@ -1724,6 +1725,25 @@ func (c *Cache) SetSidecarPolicy(p middleware.SidecarPolicyProvider) {
 	}
 	c.store.SetSidecarEvaluator(p.SidecarEvaluator())
 	c.wireHitGate = p.WireHitGate()
+}
+
+// effectiveGate resolves the gate for one hit: the query's own, when the
+// policy layer's writer carries one (middleware.QueryPolicyGate — that
+// is how held candidates, an already-fallen decision, or an exemption
+// reach the byte-serve judgment), else the globally wired gate. Resolved
+// once per hit and used for the judge and the count alike, so a
+// per-query gate's memoized decision is counted by the same object that
+// judged it. Costs one type assertion, and only on the gated path.
+func (c *Cache) effectiveGate(w middleware.ResponseWriter) middleware.WireHitGate {
+	if c.wireHitGate == nil {
+		return nil
+	}
+	if p, ok := w.(middleware.QueryPolicyGate); ok {
+		if g := p.QueryWireHitGate(); g != nil {
+			return g
+		}
+	}
+	return c.wireHitGate
 }
 
 // (*Cache).Stats stats returns cache statistics.

@@ -180,7 +180,7 @@ func feedUnderTest(t *testing.T, srv *feedServer, tsig string) (*RPZ, *axfrFeed)
 	// hand instead, exactly as New lays it out.
 	r := &RPZ{enforce: true}
 	r.zones = cfg.RPZ.Zones
-	r.store.Store(&rpzengine.Store{Zones: []*rpzengine.Zone{{Name: "feed"}}})
+	r.publishStore(&rpzengine.Store{Zones: []*rpzengine.Zone{{Name: "feed"}}})
 	return r, newAXFRFeed(r, 0, zc)
 }
 

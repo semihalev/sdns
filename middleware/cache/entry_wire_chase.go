@@ -84,7 +84,7 @@ func (c *Cache) serveChaseHit(
 	// slice here escapes through the interface call and puts a heap
 	// allocation on every gated chase hit, which the zero-allocation hit
 	// contract forbids with the gate wired no less than without it.
-	gate := c.wireHitGate
+	gate := c.effectiveGate(ch.Writer)
 	var chain middleware.SidecarChain
 	if gate != nil {
 		for i := range n {

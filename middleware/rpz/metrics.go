@@ -63,8 +63,9 @@ var skipReasons = []string{
 }
 
 func publishZoneMetrics(z *rpzengine.Zone) {
-	zoneRules.WithLabelValues(z.Name, rpzengine.TriggerQNAME).Set(float64(z.Rules - z.RulesClientIP))
+	zoneRules.WithLabelValues(z.Name, rpzengine.TriggerQNAME).Set(float64(z.Rules - z.RulesClientIP - z.RulesResponseIP))
 	zoneRules.WithLabelValues(z.Name, rpzengine.TriggerClientIP).Set(float64(z.RulesClientIP))
+	zoneRules.WithLabelValues(z.Name, rpzengine.TriggerResponseIP).Set(float64(z.RulesResponseIP))
 	for _, reason := range skipReasons {
 		zoneRulesSkipped.WithLabelValues(z.Name, reason).Set(float64(z.Skipped[reason]))
 	}

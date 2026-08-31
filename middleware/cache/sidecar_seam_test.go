@@ -594,3 +594,62 @@ func TestGatedByteHitsAllocateNoMoreThanUngated(t *testing.T) {
 		}
 	}
 }
+
+// queryGateWriter carries a per-query gate the way a policy writer does.
+type queryGateWriter struct {
+	middleware.ResponseWriter
+	gate middleware.WireHitGate
+}
+
+func (w *queryGateWriter) QueryWireHitGate() middleware.WireHitGate { return w.gate }
+
+func (w *queryGateWriter) WireReady() (middleware.WireCapability, bool) {
+	if ww, ok := w.ResponseWriter.(middleware.WireWriter); ok {
+		return ww.WireReady()
+	}
+	return middleware.WireCapability{}, false
+}
+
+func (w *queryGateWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+	if ww, ok := w.ResponseWriter.(middleware.WireWriter); ok {
+		return ww.WriteWire(body, info)
+	}
+	return middleware.ErrWireFallback
+}
+
+// TestWriterGateOverridesTheGlobalGate pins the per-query channel: when
+// the writer carries a gate, the cache judges and counts through it and
+// never consults the globally wired one for that hit.
+func TestWriterGateOverridesTheGlobalGate(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+	global := &recordingPolicy{verdict: middleware.WireHitServe}
+	c.SetSidecarPolicy(global)
+
+	seamServe(t, c, "override.test.") // prime
+
+	perQuery := &recordingPolicy{verdict: middleware.WireHitServe}
+	q := new(dns.Msg)
+	q.SetQuestion("override.test.", dns.TypeA)
+	q.RecursionDesired = true
+	w := mock.NewWriter("udp", "192.0.2.9:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := seamResponse("override.test.", seamA("override.test."))
+		resp.SetReply(ch.Request.Msg())
+		resp.Answer = []dns.RR{seamA("override.test.")}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})})
+	ch.Reset(w, q)
+	ch.AllowDirectPack()
+	ch.Writer = &queryGateWriter{ResponseWriter: ch.Writer, gate: perQuery}
+	globalBefore, queryBefore := len(global.hits)+len(global.counted), len(perQuery.hits)+len(perQuery.counted)
+	ch.Next(context.Background())
+
+	if len(perQuery.hits)+len(perQuery.counted) == queryBefore {
+		t.Fatal("the writer-carried gate was never consulted")
+	}
+	if len(global.hits)+len(global.counted) != globalBefore {
+		t.Fatal("the global gate was consulted although the writer carried its own")
+	}
+}

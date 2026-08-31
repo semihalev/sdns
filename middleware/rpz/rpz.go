@@ -33,7 +33,10 @@ const localDataTTL = 300
 // reload; everything else is set at construction and read-only after.
 type RPZ struct {
 	enforce bool
-	store   atomic.Pointer[rpz.Store]
+	// enabled gates the sidecar seam: a disabled middleware returns nil
+	// provider halves so the cache stays entirely unwired.
+	enabled bool
+	store   atomic.Pointer[policyStore]
 
 	// queryer resolves a Local Data CNAME's target through the internal
 	// sub-pipeline, the same seam dns64 uses. Nil when no wiring exists
@@ -58,9 +61,10 @@ type RPZ struct {
 func New(cfg *config.Config) *RPZ {
 	r := &RPZ{enforce: cfg.RPZ.Mode == "enforce"}
 	if !cfg.RPZ.Enabled || len(cfg.RPZ.Zones) == 0 {
-		r.store.Store(&rpz.Store{})
+		r.publishStore(&rpz.Store{})
 		return r
 	}
+	r.enabled = true
 
 	r.zones = cfg.RPZ.Zones
 	r.reloadSeq = make([]atomic.Uint64, len(cfg.RPZ.Zones))
@@ -82,7 +86,7 @@ func New(cfg *config.Config) *RPZ {
 		zones = append(zones, loadZone(zc))
 		zoneSerial.WithLabelValues(zc.Name).Set(-1)
 	}
-	r.store.Store(&rpz.Store{Zones: zones})
+	r.publishStore(&rpz.Store{Zones: zones})
 	r.watch()
 	for idx, zc := range cfg.RPZ.Zones {
 		if zc.Source != "" {
@@ -173,11 +177,47 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	winner, observed := s.Match(canon, offs[:], n, client)
-	if winner.Zone == nil && observed == nil {
+	hasResp := s.HasResponseIP()
+	if winner.Zone == nil && observed == nil && !hasResp {
 		// The steady state: no rule anywhere named this query. Nothing
 		// above this line allocated.
 		ch.Next(ctx)
 		return
+	}
+
+	// §5.4: a query-time match in zone k is final immediately iff no
+	// zone before k carries response triggers; otherwise it is held as a
+	// candidate through resolution, and the serve-time merge in the
+	// response wrap owns the decision — and with it, every count for
+	// this query, winner-bounded against the merged winner.
+	if hasResp {
+		switch {
+		case winner.Zone != nil && s.ResponseTriggerBefore(winner.ZoneIdx):
+			// Held: an earlier zone's response triggers may displace
+			// this match. Everything decodes so the merge sees the
+			// message.
+			wrap, prev := r.installWrap(ctx, ch, winner, observed, wrapHold)
+			defer r.restoreWrap(ch, prev, wrap)
+			ch.Next(ctx)
+			return
+		case winner.Zone == nil:
+			// No final query decision: the response side may still
+			// match. The wrap's own gate judges byte serves with this
+			// query's context — the disabled query-time matches ride
+			// along and are counted winner-bounded on either path.
+			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, observed, wrapPoliced)
+			defer r.restoreWrap(ch, prev, wrap)
+			ch.Next(ctx)
+			return
+		default:
+			// A final winner with no response-trigger zone ahead of it:
+			// the decision falls in the flow below, and however the
+			// query continues — shadow, PASSTHRU, TCP-Only over TCP —
+			// the response side is silenced for it: zones past the
+			// winner count in neither mode.
+			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, nil, wrapBypass)
+			defer r.restoreWrap(ch, prev, wrap)
+		}
 	}
 
 	// A worker replay of an inline handoff walks this handler again with
@@ -240,6 +280,39 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		countMatch(winner, outcomeEnforced)
 	}
 	r.act(ctx, ch, winner, action)
+}
+
+// installWrap puts this query's response wrap — and with it the query's
+// own wire-hit gate — on the chain, returning the restore the caller
+// defers around its continuation, the way every writer wrapper in the
+// tree is scoped. The wrap installs on both the inline and replay
+// passes, and the pass that writes is the one that counts. It is
+// pooled: with response rules configured every query passes through
+// here, and the clean wire hit must not pay a heap allocation for a
+// wrapper that only delegates (§5.11). After the restore nothing can
+// reach the object — writes happen within the continuation or on a
+// replay pass that installs its own.
+func (r *RPZ) installWrap(ctx context.Context, ch *middleware.Chain, held rpz.ZoneMatch, heldObserved []rpz.ZoneMatch, mode wrapMode) (*responseWrap, middleware.ResponseWriter) {
+	w := ch.Writer
+	wrap := wrapPool.Get().(*responseWrap)
+	*wrap = responseWrap{
+		ResponseWriter: w,
+		r:              r,
+		ctx:            ctx,
+		mode:           mode,
+		held:           held,
+		heldObserved:   heldObserved,
+	}
+	ch.Writer = wrap
+	return wrap, w
+}
+
+// restoreWrap is installWrap's other half, deferred with plain arguments
+// so no closure escapes onto the clean path.
+func (r *RPZ) restoreWrap(ch *middleware.Chain, prev middleware.ResponseWriter, wrap *responseWrap) {
+	ch.Writer = prev
+	*wrap = responseWrap{}
+	wrapPool.Put(wrap)
 }
 
 // chaseNeeded mirrors serveLocalData's fallback exactly: the rule holds no
@@ -341,11 +414,20 @@ func (r *RPZ) act(ctx context.Context, ch *middleware.Chain, winner rpz.ZoneMatc
 	}
 }
 
-// serveLocalData synthesizes the rule's records as if the policy zone were
+// serveLocalData synthesizes the rule's records and writes them.
+func (r *RPZ) serveLocalData(ctx context.Context, ch *middleware.Chain, msg *dns.Msg, winner rpz.ZoneMatch, do bool) {
+	m := r.buildLocalData(ctx, msg, winner, do)
+	_ = ch.Writer.WriteMsg(m)
+	ch.Cancel()
+}
+
+// buildLocalData synthesizes the rule's records as if the policy zone were
 // authoritative for the client's qname: every answer owner is the qname,
 // only RDATA and TTL come from the rule (design §5.2 — an address-encoded
-// or wildcard trigger owner must never leak into a response).
-func (r *RPZ) serveLocalData(ctx context.Context, ch *middleware.Chain, msg *dns.Msg, winner rpz.ZoneMatch, do bool) {
+// or wildcard trigger owner must never leak into a response). msg supplies
+// the question and ID — the client's request, or on the response path the
+// truth being replaced, which carries the same pair.
+func (r *RPZ) buildLocalData(ctx context.Context, msg *dns.Msg, winner rpz.ZoneMatch, do bool) *dns.Msg {
 	q := msg.Question[0]
 	m := dnsutil.SetRcode(msg, dns.RcodeSuccess, do)
 	m.Authoritative = true
@@ -392,8 +474,7 @@ func (r *RPZ) serveLocalData(ctx context.Context, ch *middleware.Chain, msg *dns
 	}
 
 	stamp(m, winner)
-	_ = ch.Writer.WriteMsg(m)
-	ch.Cancel()
+	return m
 }
 
 // expandCNAME copies the rule's CNAME onto the qname, expanding a
@@ -464,4 +545,9 @@ func stamp(m *dns.Msg, winner rpz.ZoneMatch) {
 // first.
 func debugLogEnabled() bool {
 	return zlog.Default().GetLevel() <= zlog.LevelDebug
+}
+
+// debugMatch is the shared shadow/observed debug line.
+func debugMatch(msg string, m rpz.ZoneMatch) {
+	zlog.Debug(msg, "zone", m.Zone.Name, "trigger", m.Trigger, "action", m.Effective().String())
 }
