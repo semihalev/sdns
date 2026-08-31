@@ -3,6 +3,7 @@ package rpz
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -651,5 +652,88 @@ func TestExplicitNoneIsTheSharedSentinel(t *testing.T) {
 	}
 	if one != h.r.store.Load().none {
 		t.Fatal("the stamped none is not the published generation's own")
+	}
+}
+
+// TestVanishedRulesStillCountHeldObservations pins the review's P1: a
+// policed wrap installed while response triggers existed carries
+// disabled query-time observations; a reload that drops the last
+// response trigger before the judge must not shortcut past them — they
+// count under any generation, so the judge still produces the decision
+// token and the commit still counts exactly once.
+func TestVanishedRulesStillCountHeldObservations(t *testing.T) {
+	const disabledQnameZone = `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 8 3600 900 604800 300
+victim.example.com.rpz.test. IN CNAME *.
+`
+	// The zone is disabled; its QNAME match is an observation.
+	h := newSidecarHarness(t, "enforce", config.RPZZone{
+		Name: "obs", File: writeZone(t, disabledQnameZone), Policy: "disabled",
+	})
+	s := h.r.store.Load()
+	if s.HasResponseIP() {
+		t.Fatal("fixture must have no response rules at judge time")
+	}
+	held := rpzengine.ZoneMatch{
+		ZoneIdx: 0, Zone: s.Zones[0],
+		Rule: &rpzengine.Rule{Action: rpzengine.ActionNODATA}, Trigger: rpzengine.TriggerQNAME,
+	}
+	wrap := &responseWrap{r: h.r, mode: wrapPoliced, heldObserved: []rpzengine.ZoneMatch{held}}
+
+	counter := actionTotal.WithLabelValues("obs", rpzengine.TriggerQNAME, "nodata", "observed")
+	base := testutil.ToFloat64(counter)
+	if v := wrap.JudgeWireHit(nil); v != middleware.WireHitServe {
+		t.Fatalf("verdict = %v, want Serve", v)
+	}
+	wrap.CountWireHit(nil)
+	if d := testutil.ToFloat64(counter) - base; d != 1 {
+		t.Fatalf("the held observation was dropped with the vanished rules: counted %v times", d)
+	}
+	// Exactly once: a second commit without a new judge counts nothing.
+	wrap.CountWireHit(nil)
+	if d := testutil.ToFloat64(counter) - base; d != 1 {
+		t.Fatalf("the decision was counted twice: %v", d)
+	}
+}
+
+// TestAbandonedDecisionIsNotCountedLater pins the review's P2: a judge
+// that memoized a decision and was abandoned before its commit must not
+// leak that memo into a later judge's commit — every judge voids the
+// token first, and only its own Serve re-arms it.
+func TestAbandonedDecisionIsNotCountedLater(t *testing.T) {
+	h := newSidecarHarness(t, "shadow", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
+	s := h.r.store.Load()
+	sc := &middleware.Sidecar{Value: &rpzengine.ResponseMatches{
+		Gen:  s.Gen,
+		List: s.EvaluateResponseList([]dns.RR{testA("x.test.", "203.0.113.10")}),
+	}}
+	wrap := &responseWrap{r: h.r, mode: wrapPoliced}
+
+	// Judge 1 memoizes a shadow observation and is then abandoned.
+	if v := wrap.JudgeWireHit(sc); v != middleware.WireHitServe {
+		t.Fatalf("first verdict = %v, want Serve", v)
+	}
+
+	// The world changes: the reload drops every response rule.
+	const qnameOnly = `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 9 3600 900 604800 300
+victim.example.com.rpz.test. IN CNAME .
+`
+	z, err := rpzengine.LoadZone("resp", strings.NewReader(qnameOnly), "reload", rpzengine.OverrideGiven, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.r.publishStore(&rpzengine.Store{Zones: []*rpzengine.Zone{z}})
+
+	// Judge 2 finds nothing to decide; the commit after it must count
+	// nothing — never judge 1's stale memo.
+	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "observed")
+	base := testutil.ToFloat64(counter)
+	if v := wrap.JudgeWireHit(sc); v != middleware.WireHitServe {
+		t.Fatalf("second verdict = %v, want Serve", v)
+	}
+	wrap.CountWireHit(sc)
+	if d := testutil.ToFloat64(counter) - base; d != 0 {
+		t.Fatalf("an abandoned judge's decision was counted by a later commit: %v", d)
 	}
 }

@@ -185,8 +185,20 @@ func (w *responseWrap) QueryWireHitGate() middleware.WireHitGate { return w }
 // needs the decoded path. A bypass wrap serves everything and decides
 // nothing; a holding wrap never reaches here (its wire is withheld).
 func (w *responseWrap) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVerdict {
+	// A fresh judgment voids any earlier one: the cache may judge this
+	// gate again after a lease or transport fallback, and a commit must
+	// only ever count the decision of the judge it followed — never a
+	// memo an abandoned serve left behind.
+	w.decided = false
 	s := w.r.store.Load()
 	if !s.HasResponseIP() {
+		// A reload dropped the last response trigger under this query.
+		// The held disabled observations count under any generation, so
+		// they still enter the merge — an empty response side, not a
+		// skipped one.
+		if w.mode == wrapPoliced && len(w.heldObserved) > 0 {
+			return w.judgeList(s, nil)
+		}
 		return middleware.WireHitServe
 	}
 	rm, ok := sidecarMatches(sc)
@@ -203,8 +215,12 @@ func (w *responseWrap) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVe
 // must be evaluated and current, and the folded per-zone bests (§5.6
 // item 4's dedupe) enter the same merge.
 func (w *responseWrap) JudgeWireChase(chain middleware.SidecarChain) middleware.WireHitVerdict {
+	w.decided = false
 	s := w.r.store.Load()
 	if !s.HasResponseIP() {
+		if w.mode == wrapPoliced && len(w.heldObserved) > 0 {
+			return w.judgeList(s, nil)
+		}
 		return middleware.WireHitServe
 	}
 	lists := make([][]rpz.ResponseMatch, 0, middleware.SidecarChainCap)
