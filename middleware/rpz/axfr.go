@@ -120,13 +120,7 @@ func (f *axfrFeed) cycle(ctx context.Context) time.Duration {
 // must not become a hot probe loop, and a wake must land at the expire
 // boundary so a copy is withdrawn when its time comes rather than a full
 // retry interval later.
-const (
-	minFeedInterval = 30 * time.Second
-	// expireGrace puts the boundary wake just past the horizon, so the
-	// withdrawal check it triggers sees the copy as expired rather than
-	// racing the exact instant.
-	expireGrace = time.Second
-)
+const minFeedInterval = 30 * time.Second
 
 // nextWake is the interval to the next cycle: SOA retry after a failure,
 // SOA refresh after success, floored so a degenerate SOA cannot spin.
@@ -160,15 +154,13 @@ func (f *axfrFeed) expireCap() (time.Duration, bool) {
 // fleet does not probe in lockstep, then capped at the copy's remaining
 // expire. The cap is applied after the jitter and never jittered itself —
 // the expire boundary is a deadline, and a wake that must withdraw cannot
-// be allowed to drift past it. The grace belongs to this wake alone: it
-// puts the timer just past the horizon so the withdrawal check sees the
-// copy as expired rather than racing the exact instant.
+// be allowed to drift past it. Nor is there anything to add to it: a Go
+// timer never fires early, and the withdrawal check treats the exact
+// horizon as expired, so the wake lands at the boundary and withdraws.
 func (f *axfrFeed) sleepFor(afterFailure bool) time.Duration {
 	sleep := zonetransfer.Jitter(f.nextWake(afterFailure))
-	if remaining, ok := f.expireCap(); ok {
-		if boundary := remaining + expireGrace; boundary < sleep {
-			sleep = max(boundary, expireGrace)
-		}
+	if remaining, ok := f.expireCap(); ok && remaining < sleep {
+		sleep = remaining
 	}
 	return sleep
 }

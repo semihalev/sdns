@@ -382,11 +382,12 @@ func TestSleepNeverDriftsPastExpire(t *testing.T) {
 		now: func() time.Time { return base }, haveCopy: true,
 		refresh: 3600 * time.Second, retry: 900 * time.Second, expire: 86400 * time.Second,
 	}
-	// 10s of life left against a 900s retry pace.
+	// 10s of life left against a 900s retry pace: the cap is the exact
+	// remaining, whatever the jitter draws — not a second more.
 	f.loaded = base.Add(-f.expire + 10*time.Second)
 	for range 200 {
-		if got := f.sleepFor(true); got > 10*time.Second+expireGrace {
-			t.Fatalf("sleep %v drifts past the expire boundary", got)
+		if got := f.sleepFor(true); got != 10*time.Second {
+			t.Fatalf("sleep %v is not the exact expire boundary", got)
 		}
 	}
 	// Withdrawn there is nothing left to withdraw: the SOA pace rules,
