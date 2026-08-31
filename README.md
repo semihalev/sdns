@@ -158,6 +158,10 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **serve_stale**      | Serve expired positive answers as a last resort after resolution ends in SERVFAIL (RFC 8767). A learned delegation lease remains a hard ceiling. Default: false |
 | **serve_stale_max_ttl** | Maximum time an answer may be served after its TTL expires (duration string). An explicit `0s` leaves the delegation lease as the only upper bound; because forwarder mode learns no delegation cut, `0s` there permits retention until cache eviction. Default: `24h` |
 | **[recursion_firewall]** | Request-tree work budgets (outbound/internal queries, DNSSEC operations) with off/shadow/enforce modes, plus RFC 9520 failure-cache tuning. See the Recursion Firewall section below |
+| **[rpz]**            | Response Policy Zones: subscribe to policy feeds — local files or vendor AXFR, TSIG-signed if the provider requires it — that rewrite, deny, or drop answers by query name, client address, or answer address. `enabled`, `mode` ("shadow"/"enforce"), and one `[[rpz.zone]]` entry per zone. See [Response Policy Zones](#response-policy-zones-rpz) |
+| **[ecs]**            | EDNS Client Subnet (RFC 7871): forward truncated client prefixes upstream and cache answers per scope. See [EDNS Client Subnet](#edns-client-subnet-rfc-7871) |
+| **[dns64]**          | DNS64 synthesis for IPv6-only clients (RFC 6147) with per-network gating and exclusions. See [DNS64](#dns64-rfc-6147) |
+| **[kubernetes]**     | Kubernetes DNS: serve `cluster.local` services, pods, SRV, and PTR straight from the API server. See [Kubernetes DNS Middleware](#kubernetes-dns-middleware) |
 | **rootkeys**         | DNSSEC root zone trust anchors in DNSKEY format                                                                     |
 | **fallbackservers**  | Upstream DNS servers used when all others fail. Format: "IP:port" (e.g., "8.8.8.8:53")                             |
 | **[[forward_zone]]** | Per-zone forwarding: `name` plus `servers` sends that zone's queries to its own recursive upstreams while everything else resolves normally. Most specific zone wins. Servers accept the same formats as **forwarderservers**. A forwarded zone is not validated locally — see [Per-zone forwarding](#per-zone-forwarding) |
@@ -331,6 +335,18 @@ source = "203.0.113.5:53"              # the feed's primary (host:port)
 origin = "rpz.vendor.example."         # the policy zone's apex
 # tsig_key = "feedkey.:hmac-sha256.:BASE64SECRET"   # when the provider signs transfers
 ```
+
+Each `[[rpz.zone]]` entry (a zone is fed exactly one way — `file` or `source`):
+
+| Field        | Description |
+| ------------ | ----------- |
+| **name**     | Zone label used in metrics, logs, and the EDE text. Required, unique across zones |
+| **file**     | Path to a local policy zone file. Reloaded automatically when the file is replaced — the file's directory is watched, so atomic renames are caught. Best practice: deploy the file in its own directory |
+| **source**   | AXFR primary (`host:port`) of a vendor feed. The feed keeps itself current on the zone's own SOA schedule: probe on refresh, transfer on serial change, retry on retry, and withdraw past expire |
+| **origin**   | The policy zone's apex as an FQDN. Required with `source`; refused with `file` (the file's own SOA names the apex) |
+| **tsig_key** | `name:algorithm:base64-secret` for signed transfers. Algorithms: `hmac-sha1`, `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`. Only meaningful with `source` |
+| **policy**   | Per-zone action override; default `given`. See the override list below |
+| **cname**    | Walled-garden target FQDN; required exactly when `policy = "cname"` |
 
 Zones are evaluated in the order written; the first zone with a match wins. Within a zone, a client-address (`rpz-client-ip`) match outranks a name match, which outranks an answer-address (`rpz-ip`) match; the longest prefix or most specific name wins. Answer-address policy is judged against what a query actually resolved to — the cache keeps storing the unmodified answer, only the client's response is rewritten, so per-client exemptions keep working across cached entries and a reload re-evaluates already-cached answers on their next hit.
 
@@ -588,6 +604,7 @@ This is useful when:
 *   Full DNS RFC compatibility
 *   DNS queries using both IPv4 and IPv6 authoritative servers
 *   High-performance DNS caching with prefetch support
+*   Serve-stale as a last resort on resolution failure (RFC 8767), bounded by the learned delegation lease
 *   Full DNSSEC validation support with RFC 8914 Extended DNS Errors (EDE)
 *   DNS over TLS (DoT) support
 *   DNS over HTTPS (DoH) support with HTTP/3
@@ -597,7 +614,8 @@ This is useful when:
 *   RTT-based server prioritization with adaptive timeouts
 *   Parallel DNS lookups for improved performance
 *   Failover to backup servers on failure
-*   DNS forwarding support
+*   DNS forwarding support, including per-zone conditional forwarding
+*   EDNS Client Subnet forwarding with scoped caching (RFC 7871)
 *   EDNS Cookie support (RFC 7873)
 *   EDNS NSID support (RFC 5001)
 *   Extended DNS Errors (EDE) support (RFC 8914)
@@ -605,7 +623,7 @@ This is useful when:
 *   Query-based rate limiting
 *   Client IP-based rate limiting
 *   IP-based access control lists
-*   Response Policy Zones (RPZ) with shadow mode, per-zone overrides, and automatic feed reload (see docs/rpz-design.md)
+*   Response Policy Zones (RPZ): QNAME, client-address, and answer-address triggers; shadow mode; per-zone overrides; file and TSIG-signed AXFR feeds
 *   Comprehensive access logging
 *   Prometheus metrics with optional per-domain tracking
 *   DNS sinkholing for malicious domains
@@ -616,6 +634,9 @@ This is useful when:
 *   External plugin support
 *   Binary DNS logging via dnstap protocol (RFC 6742)
 *   QNAME minimization for privacy (RFC 9156)
+*   Hyperlocal root zone (RFC 8806) with ZONEMD verification (RFC 8976)
+*   Per-client views: static answers scoped to client networks
+*   Recursion work firewall: per-request-tree budgets on outbound queries, internal work, and DNSSEC operations, with shadow and enforce modes
 *   Automatic DNSSEC trust anchor updates (RFC 5011)
 *   Zero-allocation cache operations for improved performance
 *   **Owned UDP/TCP/DoT serving engine: wire-eligible warm cache hits answered from raw bytes, allocation-free per query on UDP and TCP (DoT rides the same path; TLS record buffers are the runtime's), with batched `recvmmsg`/`sendmmsg` I/O on Linux — composite answers that need message shaping take the ordinary path**
