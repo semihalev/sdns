@@ -315,3 +315,66 @@ func TestFoldResponseLists(t *testing.T) {
 		t.Fatalf("fold is order-sensitive: %+v", folded)
 	}
 }
+
+// TestInsertResponseIPSharedSemantics pins that the response trigger
+// inherited the address-rule filing discipline whole: Local Data merges
+// at one prefix, a conflicting action class is skipped, the bare marker
+// owns no address, and an unknown rpz-* action is skipped.
+func TestInsertResponseIPSharedSemantics(t *testing.T) {
+	z, err := LoadZone("sem", strings.NewReader(`
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 1 3600 900 604800 300
+24.0.2.0.192.rpz-ip.rpz.test. IN A 203.0.113.1
+24.0.2.0.192.rpz-ip.rpz.test. IN A 203.0.113.2
+24.0.2.0.192.rpz-ip.rpz.test. IN CNAME .
+rpz-ip.rpz.test.              IN CNAME .
+32.9.9.9.9.rpz-ip.rpz.test.   IN CNAME rpz-bogus.
+`), "sem.zone", OverrideGiven, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if z.RulesResponseIP != 1 {
+		t.Fatalf("RulesResponseIP = %d, want 1 (skips: %v)", z.RulesResponseIP, z.Skipped)
+	}
+	s := &Store{Zones: []*Zone{z}}
+	rm := s.EvaluateResponse([]dns.RR{answerA("192.0.2.9")})
+	if len(rm.List) != 1 || rm.List[0].Action != ActionLocalData || len(rm.List[0].Local) != 2 {
+		t.Fatalf("local-data merge broken: %+v", rm.List)
+	}
+	want := map[string]int{SkipConflict: 1, SkipOwnerEncoding: 1, SkipUnknownAction: 1}
+	for reason, n := range want {
+		if z.Skipped[reason] != n {
+			t.Fatalf("skip %s = %d, want %d (all: %v)", reason, z.Skipped[reason], n, z.Skipped)
+		}
+	}
+}
+
+// TestFoldOrdersAcrossZones pins the fold's ordering with more than one
+// zone: whatever order the segment lists arrive in, the folded output is
+// ascending by zone index — the shape Merge's single walk requires.
+func TestFoldOrdersAcrossZones(t *testing.T) {
+	z0 := loadResponseIPZone(t)
+	z1 := loadResponseIPZone(t)
+	s := &Store{Zones: []*Zone{z0, z1}}
+
+	both := s.EvaluateResponseList([]dns.RR{answerA("192.0.2.1")}) // matches zones 0 and 1
+	onlyLater := []ResponseMatch{both[1]}
+	onlyEarlier := []ResponseMatch{both[0]}
+
+	folded := FoldResponseLists(onlyLater, onlyEarlier)
+	if len(folded) != 2 || folded[0].ZoneIdx != 0 || folded[1].ZoneIdx != 1 {
+		t.Fatalf("fold output not ascending by zone: %+v", folded)
+	}
+}
+
+// TestTriggerRankOrdering pins precedence rule 2's ladder directly.
+func TestTriggerRankOrdering(t *testing.T) {
+	if triggerRank(TriggerClientIP) <= triggerRank(TriggerQNAME) {
+		t.Fatal("CLIENT-IP must outrank QNAME")
+	}
+	if triggerRank(TriggerQNAME) <= triggerRank(TriggerResponseIP) {
+		t.Fatal("QNAME must outrank IP")
+	}
+	if triggerRank(TriggerResponseIP) <= triggerRank("nonsense") {
+		t.Fatal("IP must outrank the unknown")
+	}
+}
