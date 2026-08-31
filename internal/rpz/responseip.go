@@ -175,6 +175,43 @@ func copyRecords(rrs []dns.RR) []dns.RR {
 	return out
 }
 
+// FoldResponseLists merges the per-segment match lists of one composed
+// chase, deduplicating per zone by the rank key: two segments matching
+// the same zone collapse to that zone's single rule-4 best, so one query
+// counts a zone exactly once (§5.6 item 4). Inputs and output are
+// ascending by zone index.
+func FoldResponseLists(lists ...[]ResponseMatch) []ResponseMatch {
+	var out []ResponseMatch
+	for _, list := range lists {
+		for _, m := range list {
+			pos := -1
+			for i := range out {
+				if out[i].ZoneIdx == m.ZoneIdx {
+					pos = i
+					break
+				}
+			}
+			if pos == -1 {
+				out = append(out, m)
+				continue
+			}
+			if m.betterThan(out[pos]) {
+				out[pos] = m
+			}
+		}
+	}
+	sortResponseMatches(out)
+	return out
+}
+
+func sortResponseMatches(list []ResponseMatch) {
+	for i := 1; i < len(list); i++ {
+		for j := i; j > 0 && list[j].ZoneIdx < list[j-1].ZoneIdx; j-- {
+			list[j], list[j-1] = list[j-1], list[j]
+		}
+	}
+}
+
 // asZoneMatch lifts a response candidate into the ZoneMatch shape the
 // action and counting layers already speak. The synthetic Rule carries
 // the candidate's own copied data, never a pointer into any store.

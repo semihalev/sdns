@@ -290,3 +290,28 @@ func TestOldGenerationIsCollectible(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestFoldResponseLists pins the chase fold's dedupe directly: two
+// segment lists matching one zone collapse to the rule-4 best, in zone
+// order. Terminal-only chains never exercise this in composition, but a
+// segment admitted with both alias and address records can — the fold
+// must hold whatever shape an admission produced.
+func TestFoldResponseLists(t *testing.T) {
+	s := &Store{Zones: []*Zone{loadResponseIPZone(t)}}
+	seg1 := s.EvaluateResponseList([]dns.RR{answerA("192.0.2.1")}) // /24 NXDOMAIN
+	seg2 := s.EvaluateResponseList([]dns.RR{answerA("192.0.2.9")}) // /32 NODATA
+
+	folded := FoldResponseLists(seg1, seg2)
+	if len(folded) != 1 {
+		t.Fatalf("one zone folded to %d entries", len(folded))
+	}
+	if folded[0].Action != ActionNODATA || folded[0].PrefixBits != 32+96 {
+		t.Fatalf("the fold kept the wrong rank: %+v", folded[0])
+	}
+
+	// Order-independent: the better match first folds the same.
+	folded = FoldResponseLists(seg2, seg1)
+	if len(folded) != 1 || folded[0].Action != ActionNODATA {
+		t.Fatalf("fold is order-sensitive: %+v", folded)
+	}
+}

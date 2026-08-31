@@ -85,13 +85,17 @@ func (c *SidecarChain) At(i int) *Sidecar { return c.scs[i] }
 // Composite denial classes (subtree cuts, failure state) carry no stored
 // records and are never gated.
 //
-// The Judge methods are pure decisions computed from the sidecars alone —
-// per-query policy state belongs to the policy middleware's own
-// query-time hold, which steers queries off the byte path entirely by
-// withholding its writer's wire capability. Accounting is separate: the
-// Count methods fire exactly once per byte-served hit, after the bytes
-// were committed to the transport — the only point where a byte serve
-// can no longer fall back to the decoded path and be counted twice.
+// The Judge methods are deterministic decisions over the sidecars and —
+// for a per-query gate obtained through QueryPolicyGate — that query's
+// own policy state. A per-query gate may memoize the decision it judged;
+// the matching Count method then records exactly that decision, which is
+// what keeps a judge/commit pair coherent across a concurrent policy
+// reload. Accounting fires exactly once per byte-served hit, after the
+// bytes were committed to the transport — the only point where a byte
+// serve can no longer fall back to the decoded path and be counted
+// twice. Queries whose policy work must all happen on the decoded path
+// are steered off the byte path by the policy writer withholding its
+// wire capability.
 type WireHitGate interface {
 	// JudgeWireHit judges a single-entry byte serve. sc is the entry's
 	// sidecar; nil means unevaluated.
@@ -105,6 +109,17 @@ type WireHitGate interface {
 	CountWireHit(sc *Sidecar)
 	// CountWireChase is CountWireHit for a committed chase composition.
 	CountWireChase(sidecars SidecarChain)
+}
+
+// QueryPolicyGate is implemented by a policy middleware's response
+// writer to carry this query's own gate — the channel through which
+// query-time state (held candidates, a decision that already fell, an
+// exemption) reaches the byte-serve judgment. When the writer offers
+// one, the cache consults it instead of the globally wired gate, judge
+// and count alike, for the whole hit. A nil return falls back to the
+// global gate.
+type QueryPolicyGate interface {
+	QueryWireHitGate() WireHitGate
 }
 
 // SidecarPolicyProvider is implemented by the handler that owns response

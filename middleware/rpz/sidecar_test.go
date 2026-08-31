@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/mock"
 	rpzengine "github.com/semihalev/sdns/internal/rpz"
 	"github.com/semihalev/sdns/middleware"
@@ -154,6 +156,33 @@ func (h *sidecarHarness) serve(t *testing.T, qname, clientAddr string, bytePath 
 	return w
 }
 
+// wireServed reads the cache's byte-fast-path counter for one outcome
+// ("served" for exact hits, "chase_served" for compositions) through the
+// prometheus registry — the only honest way to tell a byte serve from a
+// decoded one: on a direct-pack chain even decoded WriteMsg reaches the
+// transport as raw bytes, so the transport cannot testify.
+func wireServed(t *testing.T, outcome string) float64 {
+	t.Helper()
+	metric.FlushAll()
+	fams, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fams {
+		if f.GetName() != "dns_cache_wire_fastpath_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "outcome" && l.GetValue() == outcome {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
 // cacheStore reaches the concrete store behind the wiring interface.
 func (h *sidecarHarness) cacheStore() *cache.Store {
 	return h.c.Store().(*cache.Store)
@@ -206,20 +235,19 @@ func TestTruthInCacheRewriteToClient(t *testing.T) {
 }
 
 // TestNoneCandidatesServeBytes pins the fast-path half: a hit whose
-// sidecar matched nothing serves on the byte path — the commit-time
-// count is the proof it stayed there.
+// sidecar matched nothing serves on the byte path.
 func TestNoneCandidatesServeBytes(t *testing.T) {
 	h := newSidecarHarness(t, "enforce", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
 	h.truth["clean.test."] = "198.51.100.1"
 
 	h.serve(t, "clean.test.", "192.0.2.1:40000", true)
-	before := h.spy.countHits
+	before := wireServed(t, "served")
 	w := h.serve(t, "clean.test.", "192.0.2.1:40000", true)
 	if !w.Written() || len(w.Msg().Answer) != 1 {
 		t.Fatal("clean hit did not answer the truth")
 	}
-	if h.spy.countHits != before+1 {
-		t.Fatalf("clean hit did not serve bytes (count %d -> %d)", before, h.spy.countHits)
+	if wireServed(t, "served")-before != 1 {
+		t.Fatal("clean hit did not serve on the byte fast path")
 	}
 }
 
@@ -321,7 +349,11 @@ func TestAdmissionDoorsLeaveEvaluatedSidecars(t *testing.T) {
 
 // TestCountingParityAcrossPaths pins the §6 counting bullet: the same
 // query over the same entry counts the same zone, trigger, action and
-// outcome whether the byte path or the decoded path served it.
+// outcome whether the byte path or the decoded path served it — and the
+// byte leg is proven to actually BE the byte path: a matched PASSTHRU
+// hit serves raw bytes, counted through the gate's memoized decision at
+// the commit, with no decode anywhere (§5.6's field-reads-and-counters
+// serve flow).
 func TestCountingParityAcrossPaths(t *testing.T) {
 	h := newSidecarHarness(t, "enforce", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
 	h.truth["pass.test."] = "198.51.100.9" // the /32 PASSTHRU rule
@@ -330,12 +362,24 @@ func TestCountingParityAcrossPaths(t *testing.T) {
 	h.serve(t, "pass.test.", "192.0.2.1:40000", true) // miss: the wrap counts
 
 	base := testutil.ToFloat64(counter)
-	h.serve(t, "pass.test.", "192.0.2.1:40000", true) // byte-path hit
+	servedBase := wireServed(t, "served")
+	w := h.serve(t, "pass.test.", "192.0.2.1:40000", true)
 	byteDelta := testutil.ToFloat64(counter) - base
+	if wireServed(t, "served")-servedBase != 1 {
+		t.Fatal("the matched PASSTHRU hit decoded; §5.11 wants it on the wire path")
+	}
+	if !w.Written() || w.Rcode() != dns.RcodeSuccess || len(w.Msg().Answer) != 1 {
+		t.Fatal("byte-path hit did not serve the truth")
+	}
 
 	base = testutil.ToFloat64(counter)
-	h.serve(t, "pass.test.", "192.0.2.1:40000", false) // decoded hit
+	servedBase = wireServed(t, "served")
+	w = h.serve(t, "pass.test.", "192.0.2.1:40000", false) // decoded hit
 	decodedDelta := testutil.ToFloat64(counter) - base
+	if wireServed(t, "served")-servedBase != 0 {
+		t.Fatal("the decoded leg served bytes; the parity comparison measured nothing")
+	}
+	_ = w
 
 	if byteDelta != 1 || decodedDelta != 1 {
 		t.Fatalf("counting parity broken: byte=%v decoded=%v", byteDelta, decodedDelta)
@@ -396,8 +440,13 @@ func TestShadowObservesResponseMatches(t *testing.T) {
 	if w := h.serve(t, "bad.test.", "192.0.2.1:40000", true); w.Rcode() != dns.RcodeSuccess {
 		t.Fatalf("shadow rewrote: %d", w.Rcode())
 	}
-	if w := h.serve(t, "bad.test.", "192.0.2.1:40000", true); w.Rcode() != dns.RcodeSuccess {
+	servedBase := wireServed(t, "served")
+	w := h.serve(t, "bad.test.", "192.0.2.1:40000", true)
+	if w.Rcode() != dns.RcodeSuccess {
 		t.Fatalf("shadow rewrote the hit: %d", w.Rcode())
+	}
+	if wireServed(t, "served")-servedBase != 1 {
+		t.Fatal("shadow's matched hit decoded; observation must not cost the wire path")
 	}
 	if d := testutil.ToFloat64(counter) - base; d != 2 {
 		t.Fatalf("shadow observed %v matches over miss+hit, want 2", d)

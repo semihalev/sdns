@@ -196,20 +196,28 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// Held: an earlier zone's response triggers may displace
 			// this match. Everything decodes so the merge sees the
 			// message.
-			r.serveWrapped(ctx, ch, winner, observed, true)
+			wrap, prev := r.installWrap(ctx, ch, winner, observed, wrapHold)
+			defer r.restoreWrap(ch, prev, wrap)
+			ch.Next(ctx)
 			return
 		case winner.Zone == nil:
-			// No final query decision, but the response side may still
-			// match. Disabled query-time matches (if any) count only
-			// against the merged winner, which forces the decoded path
-			// for them too.
-			r.serveWrapped(ctx, ch, rpz.ZoneMatch{}, observed, len(observed) > 0)
+			// No final query decision: the response side may still
+			// match. The wrap's own gate judges byte serves with this
+			// query's context — the disabled query-time matches ride
+			// along and are counted winner-bounded on either path.
+			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, observed, wrapPoliced)
+			defer r.restoreWrap(ch, prev, wrap)
+			ch.Next(ctx)
 			return
+		default:
+			// A final winner with no response-trigger zone ahead of it:
+			// the decision falls in the flow below, and however the
+			// query continues — shadow, PASSTHRU, TCP-Only over TCP —
+			// the response side is silenced for it: zones past the
+			// winner count in neither mode.
+			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, nil, wrapBypass)
+			defer r.restoreWrap(ch, prev, wrap)
 		}
-		// A final winner with no response-trigger zone ahead of it:
-		// enforcement acts here (or shadow counts here), later zones are
-		// past the winner-bounded cut either way, and the flow below is
-		// phase 1's unchanged.
 	}
 
 	// A worker replay of an inline handoff walks this handler again with
@@ -274,33 +282,37 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	r.act(ctx, ch, winner, action)
 }
 
-// serveWrapped installs the response wrap for a query whose decision
-// waits on the serve-time merge, and continues the chain under it. The
-// wrap is restored around Next the way every writer wrapper in the tree
-// is; it installs on both the inline and replay passes, and the pass
-// that writes is the one that counts. The wrap itself is pooled: with
-// response rules configured every query passes through here, and the
-// clean wire hit must not pay a heap allocation for a wrapper that only
-// delegates (§5.11). After the restore nothing can reach the object —
-// writes happen within Next or on a replay pass that installs its own.
-func (r *RPZ) serveWrapped(ctx context.Context, ch *middleware.Chain, held rpz.ZoneMatch, heldObserved []rpz.ZoneMatch, holding bool) {
+// installWrap puts this query's response wrap — and with it the query's
+// own wire-hit gate — on the chain, returning the restore the caller
+// defers around its continuation, the way every writer wrapper in the
+// tree is scoped. The wrap installs on both the inline and replay
+// passes, and the pass that writes is the one that counts. It is
+// pooled: with response rules configured every query passes through
+// here, and the clean wire hit must not pay a heap allocation for a
+// wrapper that only delegates (§5.11). After the restore nothing can
+// reach the object — writes happen within the continuation or on a
+// replay pass that installs its own.
+func (r *RPZ) installWrap(ctx context.Context, ch *middleware.Chain, held rpz.ZoneMatch, heldObserved []rpz.ZoneMatch, mode wrapMode) (*responseWrap, middleware.ResponseWriter) {
 	w := ch.Writer
 	wrap := wrapPool.Get().(*responseWrap)
 	*wrap = responseWrap{
 		ResponseWriter: w,
 		r:              r,
 		ctx:            ctx,
+		mode:           mode,
 		held:           held,
 		heldObserved:   heldObserved,
-		holding:        holding,
 	}
 	ch.Writer = wrap
-	defer func() {
-		ch.Writer = w
-		*wrap = responseWrap{}
-		wrapPool.Put(wrap)
-	}()
-	ch.Next(ctx)
+	return wrap, w
+}
+
+// restoreWrap is installWrap's other half, deferred with plain arguments
+// so no closure escapes onto the clean path.
+func (r *RPZ) restoreWrap(ch *middleware.Chain, prev middleware.ResponseWriter, wrap *responseWrap) {
+	ch.Writer = prev
+	*wrap = responseWrap{}
+	wrapPool.Put(wrap)
 }
 
 // chaseNeeded mirrors serveLocalData's fallback exactly: the rule holds no

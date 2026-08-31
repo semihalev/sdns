@@ -81,37 +81,18 @@ func sidecarMatches(sc *middleware.Sidecar) (*rpz.ResponseMatches, bool) {
 	return rm, ok
 }
 
-// JudgeWireHit is the pure byte-serve decision over one entry's sidecar,
-// and it is deliberately blunt: bytes serve only when the entry matched
-// nothing. Any match — enforce or shadow, winner or loser — goes to the
-// decoded path, because only this query's response wrap knows the held
-// candidates and the §5.4 finality that make the winner-bounded count
-// (and the action) correct; a decoded serve on a query whose decision
-// already fell carries no wrap and stays silent, exactly as a zone past
-// the winner must. That bluntness is also what keeps this judgment free
-// of the judge/commit generation race: nothing countable ever rides the
-// byte path, so there is nothing for a commit-time reload to miscount.
+// The globally wired gate serves the queries rpz never wrapped — the
+// exempt ones its own ServeDNS gates out (internal, RD=0, non-INET) and
+// deployments without response rules. It is neutral: it keeps entries
+// healthy (a stale sidecar still restamps) and serves everything else as
+// bytes, counting nothing, because policy does not apply to those
+// queries at all. Every policed query carries its own gate on the
+// response wrap (middleware.QueryPolicyGate), which is how held
+// candidates and §5.4 finality reach the byte-serve judgment.
 func (r *RPZ) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVerdict {
-	s := r.store.Load()
-	if !s.HasResponseIP() {
-		return middleware.WireHitServe
-	}
-	rm, ok := sidecarMatches(sc)
-	if !ok || rm.Gen != s.Gen {
-		return middleware.WireHitRestamp
-	}
-	if len(rm.List) == 0 {
-		return middleware.WireHitServe
-	}
-	return middleware.WireHitDecode
+	return r.neutralJudge(sc)
 }
 
-// JudgeWireChase judges a composed chase: any unevaluated or stale
-// segment sends the hit to the decoded path to be restamped as it
-// re-chases; any matching segment sends it there for the merge. The
-// decoded chase composes the whole answer before the wrap evaluates it,
-// so two segments matching one zone collapse to that zone's single
-// rule-4 best by construction (§5.6 item 4).
 func (r *RPZ) JudgeWireChase(chain middleware.SidecarChain) middleware.WireHitVerdict {
 	s := r.store.Load()
 	if !s.HasResponseIP() {
@@ -122,20 +103,23 @@ func (r *RPZ) JudgeWireChase(chain middleware.SidecarChain) middleware.WireHitVe
 		if !ok || rm.Gen != s.Gen {
 			return middleware.WireHitRestamp
 		}
-		if len(rm.List) > 0 {
-			return middleware.WireHitDecode
-		}
 	}
 	return middleware.WireHitServe
 }
 
-// CountWireHit and CountWireChase are deliberately empty: the judge
-// above never lets a matching entry serve bytes, so a committed byte
-// serve is always a none — and none is counted as nothing. Every real
-// count happens in the response wrap, which alone holds the query-time
-// candidates the winner-bounded semantic is defined over.
 func (r *RPZ) CountWireHit(*middleware.Sidecar)       {}
 func (r *RPZ) CountWireChase(middleware.SidecarChain) {}
+
+func (r *RPZ) neutralJudge(sc *middleware.Sidecar) middleware.WireHitVerdict {
+	s := r.store.Load()
+	if !s.HasResponseIP() {
+		return middleware.WireHitServe
+	}
+	if rm, ok := sidecarMatches(sc); !ok || rm.Gen != s.Gen {
+		return middleware.WireHitRestamp
+	}
+	return middleware.WireHitServe
+}
 
 // wrapPool recycles response wraps: with response rules configured every
 // query installs one, and the clean wire hit must not pay a heap
@@ -144,27 +128,146 @@ func (r *RPZ) CountWireChase(middleware.SidecarChain) {}
 // so the put after the restore hands back an object nothing can reach.
 var wrapPool = sync.Pool{New: func() any { return new(responseWrap) }}
 
-// responseWrap is the response-side writer: it sees every decoded answer
-// leaving this query — cache hit or fresh resolution — evaluates its
-// records, merges them with the query-time candidates held under §5.4,
-// and applies (enforce) or counts (shadow) the winning action. Byte
-// serves pass through untouched: the gate admits only none entries.
+// wrapMode is what this query's wrap owes the response side.
+type wrapMode uint8
+
+const (
+	// wrapPoliced: no query-time winner; the byte path may serve, its
+	// gate judging and counting through this wrap, and every decoded
+	// answer runs the merge in WriteMsg.
+	wrapPoliced wrapMode = iota
+	// wrapHold: a query-time candidate is held under §5.4; the wire
+	// capability is withheld so the merge sees every answer decoded.
+	wrapHold
+	// wrapBypass: the query's decision already fell (a final winner
+	// continuing in shadow or under PASSTHRU); the response side serves
+	// bytes freely and counts nothing — zones past the winner stay
+	// silent in both modes.
+	wrapBypass
+)
+
+// responseWrap is the response-side writer and this query's own wire-hit
+// gate: it sees every decoded answer leaving the query — cache hit or
+// fresh resolution — evaluates its records, merges them with the
+// query-time candidates held under §5.4, and applies (enforce) or counts
+// (shadow) the winning action; on the byte path its gate judges the
+// entry's sidecar with the same merge and memoizes the decision, so the
+// count after the commit records exactly what was judged and served,
+// whatever a concurrent reload does in between.
 type responseWrap struct {
 	middleware.ResponseWriter
-	r   *RPZ
-	ctx context.Context
+	r    *RPZ
+	ctx  context.Context
+	mode wrapMode
 
 	// held is the enabled-zone query-time match §5.4 held; heldObserved
-	// the disabled-zone matches gathered on the way. holding hides the
-	// wire capability so every serve for this query is decoded — the
-	// merge needs the message.
+	// the disabled-zone matches gathered on the way.
 	held         rpz.ZoneMatch
 	heldObserved []rpz.ZoneMatch
-	holding      bool
+
+	// The decision token: the merge the gate judged Serve with, counted
+	// verbatim at the commit. Judge and commit run on one goroutine
+	// within one hit, and the wrap resets between queries.
+	decided         bool
+	decidedWinner   rpz.ZoneMatch
+	decidedObserved []rpz.ZoneMatch
+}
+
+// QueryWireHitGate hands the cache this query's own gate
+// (middleware.QueryPolicyGate).
+func (w *responseWrap) QueryWireHitGate() middleware.WireHitGate { return w }
+
+// JudgeWireHit is the byte-serve decision with the query's context: the
+// entry's matches merge with the held disabled observations, and any
+// outcome that leaves the stored answer intact — nothing matched, no
+// enabled winner, shadow, an enforcing PASSTHRU — serves bytes, with the
+// decision memoized for the commit-time count. Only an enforcing rewrite
+// needs the decoded path. A bypass wrap serves everything and decides
+// nothing; a holding wrap never reaches here (its wire is withheld).
+func (w *responseWrap) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVerdict {
+	s := w.r.store.Load()
+	if !s.HasResponseIP() {
+		return middleware.WireHitServe
+	}
+	rm, ok := sidecarMatches(sc)
+	if !ok || rm.Gen != s.Gen {
+		return middleware.WireHitRestamp
+	}
+	if w.mode != wrapPoliced {
+		return middleware.WireHitServe
+	}
+	return w.judgeList(s, rm.List)
+}
+
+// JudgeWireChase is JudgeWireHit over a composed chase: every segment
+// must be evaluated and current, and the folded per-zone bests (§5.6
+// item 4's dedupe) enter the same merge.
+func (w *responseWrap) JudgeWireChase(chain middleware.SidecarChain) middleware.WireHitVerdict {
+	s := w.r.store.Load()
+	if !s.HasResponseIP() {
+		return middleware.WireHitServe
+	}
+	lists := make([][]rpz.ResponseMatch, 0, middleware.SidecarChainCap)
+	for i := 0; i < chain.Len(); i++ {
+		rm, ok := sidecarMatches(chain.At(i))
+		if !ok || rm.Gen != s.Gen {
+			return middleware.WireHitRestamp
+		}
+		lists = append(lists, rm.List)
+	}
+	if w.mode != wrapPoliced {
+		return middleware.WireHitServe
+	}
+	return w.judgeList(s, rpz.FoldResponseLists(lists...))
+}
+
+func (w *responseWrap) judgeList(s *policyStore, list []rpz.ResponseMatch) middleware.WireHitVerdict {
+	if len(list) == 0 && len(w.heldObserved) == 0 {
+		// The steady state: nothing to merge, nothing to count.
+		return middleware.WireHitServe
+	}
+	winner, observed := s.Merge(rpz.ZoneMatch{}, w.heldObserved, list)
+	if winner.Zone != nil && w.r.enforce && winner.Effective() != rpz.ActionPassthru {
+		w.decided = false
+		return middleware.WireHitDecode
+	}
+	w.decided, w.decidedWinner, w.decidedObserved = true, winner, observed
+	return middleware.WireHitServe
+}
+
+// CountWireHit and CountWireChase record the memoized decision after the
+// bytes were committed — exactly once, exactly what was judged.
+func (w *responseWrap) CountWireHit(*middleware.Sidecar)       { w.countDecided() }
+func (w *responseWrap) CountWireChase(middleware.SidecarChain) { w.countDecided() }
+
+func (w *responseWrap) countDecided() {
+	if !w.decided {
+		return
+	}
+	w.decided = false
+	for _, o := range w.decidedObserved {
+		countMatch(o, outcomeObserved)
+	}
+	if w.decidedWinner.Zone == nil {
+		return
+	}
+	if w.r.enforce {
+		// A byte serve committed under an enforcing winner means the
+		// action was PASSTHRU — acting, by not acting.
+		countMatch(w.decidedWinner, outcomeEnforced)
+		return
+	}
+	countMatch(w.decidedWinner, outcomeObserved)
+	if debugLogEnabled() {
+		debugMatch("RPZ response match in shadow", w.decidedWinner)
+	}
 }
 
 // WriteMsg runs the serve-time merge on the outgoing decoded response.
 func (w *responseWrap) WriteMsg(m *dns.Msg) error {
+	if w.mode == wrapBypass {
+		return w.ResponseWriter.WriteMsg(m)
+	}
 	s := w.r.store.Load()
 	list := s.EvaluateResponseList(m.Answer)
 	winner, observed := s.Merge(w.held, w.heldObserved, list)
@@ -234,7 +337,7 @@ func hasDO(m *dns.Msg) bool {
 // candidates: a held query must be answered from the decoded path, where
 // the merge can see the message (§5.4).
 func (w *responseWrap) WireReady() (middleware.WireCapability, bool) {
-	if w.holding {
+	if w.mode == wrapHold {
 		return middleware.WireCapability{}, false
 	}
 	if ww, ok := w.ResponseWriter.(middleware.WireWriter); ok {
