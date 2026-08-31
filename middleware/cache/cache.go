@@ -121,6 +121,12 @@ type Cache struct {
 	// get a slot is a cache miss, never a client-visible error.
 	dnssecCryptoLimiter middleware.DNSSECCryptoLimiter
 
+	// wireHitGate is the serve half of the sidecar seam: consulted before
+	// any record-bearing byte serve with the sidecar(s) the reply would be
+	// built from. Wired at Setup alongside the store's evaluator; nil (no
+	// policy middleware registered) costs one field check per hit.
+	wireHitGate middleware.WireHitGate
+
 	config  CacheConfig
 	metrics *CacheMetrics
 
@@ -1324,6 +1330,12 @@ func (c *Cache) serveHitFromWire(
 		// lives inside, past the chase's own decline gates.
 		return c.serveChaseHit(ctx, ch, entry, capability, leaser, spent)
 	}
+	gate := c.wireHitGate
+	sc := entry.sidecar.Load()
+	if gate != nil && gate.JudgeWireHit(sc) != middleware.WireHitServe {
+		wireSkipPolicy.Inc()
+		return false
+	}
 	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
 		mismatch.Inc()
 		return false
@@ -1349,6 +1361,9 @@ func (c *Cache) serveHitFromWire(
 	}
 	switch err := leaser.CommitWire(body, info); {
 	case err == nil:
+		if gate != nil {
+			gate.CountWireHit(sc)
+		}
 		boundRequestToEntryLifetime(ctx, entry)
 		c.metrics.Hit()
 		wireFastServed.Inc()
@@ -1360,6 +1375,9 @@ func (c *Cache) serveHitFromWire(
 	default:
 		// Transport-level failure after commit: the bytes left the
 		// process; the response counts as written (Msg-path parity).
+		if gate != nil {
+			gate.CountWireHit(sc)
+		}
 		boundRequestToEntryLifetime(ctx, entry)
 		c.metrics.Hit()
 		ch.Cancel()
@@ -1457,6 +1475,24 @@ func (c *Cache) handleCacheHit(
 		}
 	}
 
+	// The policy verdict is judged once per hit, before the byte/decoded
+	// split, because both halves read it: the byte path serves only on
+	// WireHitServe, and the decoded fallback restamps on WireHitRestamp.
+	// It is judged for internal serves too — the verdict is a pure
+	// function of the stored state, and the Msg-path chase reaches its
+	// segments through internal sub-queries, which is where a stale
+	// segment gets its restamp.
+	policyVerdict := middleware.WireHitServe
+	var policySC *middleware.Sidecar
+	if g := c.wireHitGate; g != nil {
+		policySC = entry.sidecar.Load()
+		policyVerdict = g.JudgeWireHit(policySC)
+	} else if c.store.sidecarEvaluator != nil && entry.sidecar.Load() == nil {
+		// An evaluator without a gate still owes pre-wiring entries
+		// their stamp.
+		policyVerdict = middleware.WireHitRestamp
+	}
+
 	// Byte fast path: serve the stored wire directly. The entry-local gate
 	// runs first, then the writer chain's preflight — both allocation-free
 	// and together complete, so a request bound for the Msg path never
@@ -1469,6 +1505,9 @@ func (c *Cache) handleCacheHit(
 		}
 		if !entry.wireEligibleFor(req) {
 			return wireSkipEntry
+		}
+		if policyVerdict != middleware.WireHitServe {
+			return wireSkipPolicy
 		}
 		ww, ok := w.(middleware.WireWriter)
 		if !ok {
@@ -1487,6 +1526,9 @@ func (c *Cache) handleCacheHit(
 		}
 		switch err := ww.WriteWire(body, info); {
 		case err == nil:
+			if g := c.wireHitGate; g != nil {
+				g.CountWireHit(policySC)
+			}
 			// The answer is out, so bind the request tree to this entry's
 			// lifetime. The byte path is normally reached only by external
 			// clients, whose responses nothing derives from — but Queryer is
@@ -1510,6 +1552,9 @@ func (c *Cache) handleCacheHit(
 			// still gets this entry's answer: it binds like any other
 			// terminal outcome. Only a fallback stays unbound, because
 			// there the message path binds instead.
+			if g := c.wireHitGate; g != nil {
+				g.CountWireHit(policySC)
+			}
 			boundRequestToEntryLifetime(ctx, entry)
 			ch.Cancel()
 			served = true
@@ -1527,6 +1572,21 @@ func (c *Cache) handleCacheHit(
 	if msg == nil {
 		// Entry expired between check and use
 		return false
+	}
+
+	// The decoded serve is where an unusable sidecar gets replaced: the
+	// gate judged Restamp — unevaluated, or stamped under a generation it
+	// no longer accepts — and this message, TTL-adjusted but
+	// record-identical to the stored truth, before the chase below
+	// appends other entries' records, is exactly what the admission
+	// evaluator would have seen. The CAS is against the judged pointer,
+	// stale or nil alike, so the entry rejoins the byte path instead of
+	// decoding until eviction; losing the CAS means someone else already
+	// restamped the same records.
+	if policyVerdict == middleware.WireHitRestamp {
+		if ev := c.store.sidecarEvaluator; ev != nil {
+			entry.CompareAndStampSidecar(policySC, ev(msg))
+		}
 	}
 
 	// The message materialized, so the entry was live: bind the request tree
@@ -1649,8 +1709,21 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	if ttl > 0 {
 		entry.origTTL = uint32(ttl.Seconds())
 	}
+	c.store.stampSidecar(entry, filtered)
 
 	c.store.SetEntryWithKey(key, entry, mt)
+}
+
+// SetSidecarPolicy wires both halves of the sidecar seam
+// (middleware.SidecarPolicySetter, injected by Setup before the pipeline
+// publishes): the evaluator stamps entries at every admission door, the
+// gate judges record-bearing byte serves.
+func (c *Cache) SetSidecarPolicy(p middleware.SidecarPolicyProvider) {
+	if p == nil {
+		return
+	}
+	c.store.SetSidecarEvaluator(p.SidecarEvaluator())
+	c.wireHitGate = p.WireHitGate()
 }
 
 // (*Cache).Stats stats returns cache statistics.

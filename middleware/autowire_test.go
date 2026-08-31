@@ -193,3 +193,43 @@ func TestPutChain_NilSafe(t *testing.T) {
 	Setup(&config.Config{})
 	GlobalPipeline().PutChain(nil) // nil chain must not panic either
 }
+
+// sidecarPolicyHandler implements SidecarPolicyProvider.
+type sidecarPolicyHandler struct{ n string }
+
+func (h *sidecarPolicyHandler) Name() string                            { return h.n }
+func (h *sidecarPolicyHandler) ServeDNS(ctx context.Context, ch *Chain) { ch.Next(ctx) }
+func (h *sidecarPolicyHandler) SidecarEvaluator() SidecarEvaluator {
+	return func(*dns.Msg) *Sidecar { return nil }
+}
+func (h *sidecarPolicyHandler) WireHitGate() WireHitGate { return nil }
+
+// sidecarSetterHandler implements SidecarPolicySetter.
+type sidecarSetterHandler struct {
+	n   string
+	got SidecarPolicyProvider
+}
+
+func (h *sidecarSetterHandler) Name() string                             { return h.n }
+func (h *sidecarSetterHandler) ServeDNS(ctx context.Context, ch *Chain)  { ch.Next(ctx) }
+func (h *sidecarSetterHandler) SetSidecarPolicy(p SidecarPolicyProvider) { h.got = p }
+
+// TestAutoWire_SidecarPolicy pins the seam's wiring: the provider is
+// discovered and injected into the setter before the pipeline publishes,
+// and with no provider registered the setter is never called.
+func TestAutoWire_SidecarPolicy(t *testing.T) {
+	provider := &sidecarPolicyHandler{n: "policy"}
+	setter := &sidecarSetterHandler{n: "cache"}
+	p := &Pipeline{handlers: []Handler{provider, setter}}
+	p.autoWire()
+	if setter.got != SidecarPolicyProvider(provider) {
+		t.Fatal("the sidecar policy provider was not wired into the setter")
+	}
+
+	lone := &sidecarSetterHandler{n: "cache"}
+	p2 := &Pipeline{handlers: []Handler{lone}}
+	p2.autoWire()
+	if lone.got != nil {
+		t.Fatal("a setter was called with no provider registered")
+	}
+}
