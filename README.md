@@ -138,6 +138,16 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 
 ## Configuration (v1.8.2)
 
+Every setting lives in one TOML file (`sdns.conf`; a commented template is generated on first run). Simple keys are listed in the table below; the feature blocks each have their own section with examples:
+[**[rpz]**](#response-policy-zones-rpz) ·
+[**[recursion_firewall]**](#recursion-firewall) ·
+[**[ecs]**](#edns-client-subnet-rfc-7871) ·
+[**[dns64]**](#dns64-rfc-6147) ·
+[**[kubernetes]**](#kubernetes-dns-middleware) ·
+[**[[forward_zone]]**](#per-zone-forwarding) ·
+[**[[views]]**](#views-per-client-static-answers) ·
+[**[plugins]**](#external-plugins)
+
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **version**          | Configuration file version                                                                                          |
