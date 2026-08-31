@@ -27,6 +27,11 @@ func (r *RPZ) watch() {
 
 	dirs := make(map[string]bool)
 	for _, zc := range r.zones {
+		if zc.File == "" {
+			// AXFR-fed zones have no file to watch; their feed loop owns
+			// their freshness.
+			continue
+		}
 		dir := filepath.Dir(zc.File)
 		if dirs[dir] {
 			continue
@@ -52,7 +57,9 @@ func (r *RPZ) watchLoop(watcher *fsnotify.Watcher) {
 				continue
 			}
 			for i := range r.zones {
-				if filepath.Clean(event.Name) != filepath.Clean(r.zones[i].File) {
+				// Empty File is an AXFR feed; Clean("") is "." and must
+				// never match an event.
+				if r.zones[i].File == "" || filepath.Clean(event.Name) != filepath.Clean(r.zones[i].File) {
 					continue
 				}
 				idx := i
@@ -72,11 +79,15 @@ func (r *RPZ) watchLoop(watcher *fsnotify.Watcher) {
 
 // reload re-reads one zone and swaps a store carrying it. A failed parse
 // keeps the old zone serving and says so — a bad push never leaves the
-// resolver unprotected or half-loaded.
+// resolver unprotected or half-loaded. The parse runs outside the lock,
+// so a slow file never stalls an AXFR feed's install — which opens a
+// race the sequence below closes: a slow parse of the *previous* push
+// finishing after a fast parse of the next one must not write the old
+// generation back over the new. Each reload claims the zone's sequence
+// before parsing, and the commit refuses a claim that is no longer the
+// latest.
 func (r *RPZ) reload(idx int) {
-	r.reloadMu.Lock()
-	defer r.reloadMu.Unlock()
-
+	seq := r.reloadSeq[idx].Add(1)
 	zc := r.zones[idx]
 	policy, _ := rpz.ParseOverride(zc.Policy)
 	target := ""
@@ -100,12 +111,44 @@ func (r *RPZ) reload(idx int) {
 		return
 	}
 
+	if !r.commitReload(idx, seq, z) {
+		zlog.Debug("RPZ reload superseded by a newer push", "zone", zc.Name)
+		return
+	}
+
+	zlog.Info("RPZ zone reloaded", "zone", zc.Name, "rules", z.Rules, "skipped", len(z.Skipped))
+}
+
+// commitReload installs a parsed zone only if seq is still the latest
+// claim for idx — the check and the swap share the lock, so a superseded
+// parse cannot slip between them. The gauges are published inside the
+// same critical section: published after it, a commit that finished
+// first could write its counts over a newer generation's.
+func (r *RPZ) commitReload(idx int, seq uint64, z *rpz.Zone) bool {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+	if r.reloadSeq[idx].Load() != seq {
+		return false
+	}
+	r.swapZoneLocked(idx, z)
+	publishZoneMetrics(z)
+	return true
+}
+
+// swapZone publishes a new compiled zone at idx: a copied slice, a fresh
+// immutable store, one atomic swap. reloadMu serializes writers — the
+// file watcher and the AXFR feeds share it — so two swaps cannot build
+// from the same old slice and lose one another.
+func (r *RPZ) swapZone(idx int, z *rpz.Zone) {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+	r.swapZoneLocked(idx, z)
+}
+
+func (r *RPZ) swapZoneLocked(idx int, z *rpz.Zone) {
 	old := r.store.Load()
 	zones := make([]*rpz.Zone, len(old.Zones))
 	copy(zones, old.Zones)
 	zones[idx] = z
 	r.store.Store(&rpz.Store{Zones: zones})
-
-	publishZoneMetrics(z)
-	zlog.Info("RPZ zone reloaded", "zone", zc.Name, "rules", z.Rules, "skipped", len(z.Skipped))
 }

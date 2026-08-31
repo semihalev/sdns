@@ -247,12 +247,24 @@ type RPZ struct {
 	Zones []RPZZone `toml:"zone"`
 }
 
-// RPZZone is one [[rpz.zone]] entry.
+// RPZZone is one [[rpz.zone]] entry. A zone is fed exactly one way:
+// File for a local file, or Source+Origin for an AXFR secondary.
 type RPZZone struct {
 	// Name labels the zone in metrics, logs, and the EDE text.
 	Name string `toml:"name"`
 	// File is the policy zone in standard zone-file format.
 	File string `toml:"file"`
+	// Source is the AXFR primary (host:port). The zone then follows its
+	// own SOA schedule — probe on refresh, transfer on serial change,
+	// withdraw past expire — and File must be empty.
+	Source string `toml:"source"`
+	// Origin is the policy zone's apex, the name the AXFR asks for.
+	// Required with Source.
+	Origin string `toml:"origin"`
+	// TsigKey authenticates the transfer when the provider requires it:
+	// "name:algorithm:base64-secret", e.g.
+	// "feedkey.:hmac-sha256.:c2VjcmV0". Empty for an unsigned transfer.
+	TsigKey string `toml:"tsig_key"`
 	// Policy overrides every action the zone's rules carry:
 	// given|passthru|nxdomain|nodata|drop|tcp-only|cname|disabled.
 	// "given" (or empty) uses what each rule says; "disabled" logs what
@@ -1048,6 +1060,15 @@ emptyzones = [
 # name = "badfeed"
 # file = "/var/lib/sdns/badfeed.zone"
 # policy = "given"
+# An AXFR-fed zone instead names its primary and apex (and never a file);
+# it follows the feed's own SOA schedule and withdraws its rules past SOA
+# expire. tsig_key ("name:algorithm:base64-secret") signs the transfer
+# when the provider requires it.
+# [[rpz.zone]]
+# name = "vendorfeed"
+# source = "203.0.113.5:53"
+# origin = "rpz.vendor.example."
+# tsig_key = "feedkey.:hmac-sha256.:c2VjcmV0"
 
 # ============================
 # TCP Connection Pooling
