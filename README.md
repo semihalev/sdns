@@ -332,9 +332,9 @@ origin = "rpz.vendor.example."         # the policy zone's apex
 # tsig_key = "feedkey.:hmac-sha256.:BASE64SECRET"   # when the provider signs transfers
 ```
 
-Zones are evaluated in the order written; the first zone with a match wins. Within a zone, a client-address (`rpz-client-ip`) match outranks a name match, and the longest prefix or most specific name wins.
+Zones are evaluated in the order written; the first zone with a match wins. Within a zone, a client-address (`rpz-client-ip`) match outranks a name match, which outranks an answer-address (`rpz-ip`) match; the longest prefix or most specific name wins. Answer-address policy is judged against what a query actually resolved to — the cache keeps storing the unmodified answer, only the client's response is rewritten, so per-client exemptions keep working across cached entries and a reload re-evaluates already-cached answers on their next hit.
 
-**Triggers:** QNAME rules (exact and `*.wildcard`) and CLIENT-IP rules (IPv4 and IPv6 prefixes, in the standard reversed-owner encoding). Triggers of other types in a feed (`rpz-ip`, `rpz-nsdname`, `rpz-nsip`) load without error and are counted as skipped.
+**Triggers:** QNAME rules (exact and `*.wildcard`), CLIENT-IP rules, and IP (answer-address, `rpz-ip`) rules — the address triggers take IPv4 and IPv6 prefixes in the standard reversed-owner encoding. Triggers of other types in a feed (`rpz-nsdname`, `rpz-nsip`) load without error and are counted as skipped.
 
 **Actions** (standard RPZ RDATA encodings): NXDOMAIN (`CNAME .`), NODATA (`CNAME *.`), PASSTHRU, DROP (no answer at all), TCP-Only (truncates UDP; encrypted transports pass), and Local Data — served as if authoritative for the query name, including CNAME chasing through the resolver.
 

@@ -150,5 +150,5 @@ func (r *RPZ) swapZoneLocked(idx int, z *rpz.Zone) {
 	zones := make([]*rpz.Zone, len(old.Zones))
 	copy(zones, old.Zones)
 	zones[idx] = z
-	r.store.Store(&rpz.Store{Zones: zones})
+	r.publishStore(&rpz.Store{Zones: zones})
 }

@@ -125,14 +125,26 @@ type Zone struct {
 	// pays two nil checks.
 	clientIP4 *ipLPM
 	clientIP6 *ipLPM
+	// responseIP4/responseIP6 are the IP (response) trigger's tables,
+	// family-separated for the same reason: an answer's A record must
+	// never be judged by an IPv6 rule or the reverse.
+	responseIP4 *ipLPM
+	responseIP6 *ipLPM
 
-	// Rules counts all compiled rules; RulesClientIP the CLIENT-IP share
-	// (the per-trigger gauges want the split). Skipped counts what the
-	// load stepped over, by reason — all three feed the load-time gauges
-	// and the `sdns -t` report.
-	Rules         int
-	RulesClientIP int
-	Skipped       map[string]int
+	// Rules counts all compiled rules; RulesClientIP and RulesResponseIP
+	// the per-trigger shares (the per-trigger gauges want the split).
+	// Skipped counts what the load stepped over, by reason — all of them
+	// feed the load-time gauges and the `sdns -t` report.
+	Rules           int
+	RulesClientIP   int
+	RulesResponseIP int
+	Skipped         map[string]int
+}
+
+// hasResponseTriggers reports whether this zone carries any response
+// trigger — the bit §5.4's hold decision scans.
+func (z *Zone) hasResponseTriggers() bool {
+	return z.responseIP4 != nil || z.responseIP6 != nil
 }
 
 // Disabled reports whether the zone observes without consuming a match.
@@ -143,6 +155,11 @@ func (z *Zone) Disabled() bool { return z.Policy == OverrideDisabled }
 // is evaluation order (precedence rule 1).
 type Store struct {
 	Zones []*Zone
+	// Gen numbers this generation; the owner assigns it at every swap.
+	// A response-trigger candidate stamped beside a cache entry carries
+	// the Gen it was computed under, and a serve that finds another
+	// generation live re-evaluates instead of trusting it (§5.6 item 5).
+	Gen uint64
 }
 
 // Empty reports whether no zone carries any rule — the whole engine is

@@ -70,16 +70,20 @@ func TestLoadZoneClassifiesEverything(t *testing.T) {
 		t.Fatal("apex SOA not captured")
 	}
 	// 6 action rules + local-data alias + wildcard-target alias +
-	// 2 wildcards + (since phase 2) the client-ip rule.
-	if z.Rules != 11 {
-		t.Fatalf("Rules = %d, want 11 (skips: %v)", z.Rules, z.Skipped)
+	// 2 wildcards + (since phase 2) the client-ip rule + (since phase 4)
+	// the response-ip rule.
+	if z.Rules != 12 {
+		t.Fatalf("Rules = %d, want 12 (skips: %v)", z.Rules, z.Skipped)
 	}
 	if z.RulesClientIP != 1 {
 		t.Fatalf("RulesClientIP = %d, want 1", z.RulesClientIP)
 	}
+	if z.RulesResponseIP != 1 {
+		t.Fatalf("RulesResponseIP = %d, want 1", z.RulesResponseIP)
+	}
 
 	want := map[string]int{
-		SkipTrigger:       2, // rpz-ip + rpz-nsdname wait for their phases
+		SkipTrigger:       1, // rpz-nsdname waits for its phase
 		SkipUnknownAction: 1,
 		SkipNotActionData: 3, // apex NS + in-zone NS + DS
 		SkipOutOfZone:     1,

@@ -4,9 +4,24 @@ import "net/netip"
 
 // Trigger labels for metrics and logs.
 const (
-	TriggerQNAME    = "qname"
-	TriggerClientIP = "client-ip"
+	TriggerQNAME      = "qname"
+	TriggerClientIP   = "client-ip"
+	TriggerResponseIP = "ip"
 )
+
+// triggerRank orders trigger types within one zone (precedence rule 2):
+// CLIENT-IP > QNAME > IP.
+func triggerRank(trigger string) int {
+	switch trigger {
+	case TriggerClientIP:
+		return 3
+	case TriggerQNAME:
+		return 2
+	case TriggerResponseIP:
+		return 1
+	}
+	return 0
+}
 
 // ZoneMatch is one zone's best match for a query. Trigger and PrefixBits
 // carry the rank information a later merge (or a log line) needs.

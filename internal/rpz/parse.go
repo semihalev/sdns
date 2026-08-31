@@ -70,10 +70,14 @@ func notActionData(t uint16) bool {
 
 // triggerMarkers are the owner labels of trigger types later phases
 // evaluate; everything under them is that trigger's encoding, not a name.
-var triggerMarkers = []string{"rpz-ip", "rpz-nsdname", "rpz-nsip"}
+var triggerMarkers = []string{"rpz-nsdname", "rpz-nsip"}
 
 // clientIPMarker selects the CLIENT-IP trigger, evaluated since phase 2.
 const clientIPMarker = "rpz-client-ip"
+
+// responseIPMarker selects the IP (response) trigger, evaluated since
+// phase 4. The owner encoding is CLIENT-IP's exactly.
+const responseIPMarker = "rpz-ip"
 
 // LoadZoneFile parses one policy zone file into a compiled Zone. name is
 // the config label; policy and cnameTarget come from the zone's config
@@ -209,22 +213,19 @@ func (z *Zone) classify(rr dns.RR) {
 		return
 	}
 
-	// CLIENT-IP: the owner encodes an address block, not a name.
+	// CLIENT-IP and IP: the owner encodes an address block, not a name.
+	// The two triggers share one encoding and one merge semantic; only
+	// the tables differ — one pair judges the querier, the other the
+	// answer.
 	if enc, ok := strings.CutSuffix(rel, "."+clientIPMarker); ok {
-		prefix, valid := parseClientIPOwner(enc)
-		if !valid {
-			z.skip(SkipOwnerEncoding)
-			return
-		}
-		action, local := classifyAction(rr)
-		if action == ActionNone {
-			z.skip(SkipUnknownAction)
-			return
-		}
-		z.insertClientIP(prefix, action, local)
+		z.insertIPOwner(enc, rr, z.insertClientIP)
 		return
 	}
-	if rel == clientIPMarker {
+	if enc, ok := strings.CutSuffix(rel, "."+responseIPMarker); ok {
+		z.insertIPOwner(enc, rr, z.insertResponseIP)
+		return
+	}
+	if rel == clientIPMarker || rel == responseIPMarker {
 		// The bare marker owns no address.
 		z.skip(SkipOwnerEncoding)
 		return
@@ -239,14 +240,40 @@ func (z *Zone) classify(rr dns.RR) {
 	z.insert(rel, action, local)
 }
 
-// insertClientIP files a CLIENT-IP rule with the same merge semantics as
-// the name triggers: the first action class at a prefix stands, Local
-// Data accumulates, anything else is a conflict. The prefix's family
-// picks the table.
+// insertIPOwner decodes an address-encoded owner and hands the rule to
+// the trigger's own filing function.
+func (z *Zone) insertIPOwner(enc string, rr dns.RR, file func(netip.Prefix, Action, dns.RR)) {
+	prefix, valid := parseClientIPOwner(enc)
+	if !valid {
+		z.skip(SkipOwnerEncoding)
+		return
+	}
+	action, local := classifyAction(rr)
+	if action == ActionNone {
+		z.skip(SkipUnknownAction)
+		return
+	}
+	file(prefix, action, local)
+}
+
+// insertClientIP and insertResponseIP file an address rule into their
+// trigger's family tables.
 func (z *Zone) insertClientIP(prefix netip.Prefix, action Action, local dns.RR) {
-	table := &z.clientIP6
+	z.insertIP(prefix, action, local, &z.clientIP4, &z.clientIP6, &z.RulesClientIP)
+}
+
+func (z *Zone) insertResponseIP(prefix netip.Prefix, action Action, local dns.RR) {
+	z.insertIP(prefix, action, local, &z.responseIP4, &z.responseIP6, &z.RulesResponseIP)
+}
+
+// insertIP files an address rule with the same merge semantics as the
+// name triggers: the first action class at a prefix stands, Local Data
+// accumulates, anything else is a conflict. The prefix's family picks
+// the table.
+func (z *Zone) insertIP(prefix netip.Prefix, action Action, local dns.RR, t4, t6 **ipLPM, counter *int) {
+	table := t6
 	if prefix.Addr().Is4() {
-		table = &z.clientIP4
+		table = t4
 	}
 	if *table == nil {
 		*table = &ipLPM{}
@@ -265,7 +292,7 @@ func (z *Zone) insertClientIP(prefix netip.Prefix, action Action, local dns.RR) 
 	}
 	(*table).insert(prefix, rule)
 	z.Rules++
-	z.RulesClientIP++
+	*counter++
 }
 
 // insert files a rule under its relative owner. The first action class at
