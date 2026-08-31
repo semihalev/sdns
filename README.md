@@ -138,6 +138,16 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 
 ## Configuration (v1.8.2)
 
+Every setting lives in one TOML file (`sdns.conf`; a commented template is generated on first run). Simple keys are listed in the table below; the feature blocks each have their own section with examples:
+[**[rpz]**](#response-policy-zones-rpz) ·
+[**[recursion_firewall]**](#recursion-firewall) ·
+[**[ecs]**](#edns-client-subnet-rfc-7871) ·
+[**[dns64]**](#dns64-rfc-6147) ·
+[**[kubernetes]**](#kubernetes-dns-middleware) ·
+[**[[forward_zone]]**](#per-zone-forwarding) ·
+[**[[views]]**](#views-per-client-static-answers) ·
+[**[plugins]**](#external-plugins)
+
 | Key                  | Description                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **version**          | Configuration file version                                                                                          |
@@ -217,6 +227,8 @@ example.com.		0	CH	HINFO	"Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms health:[GOO
 | **ingressqueue**     | Ready-queue depth before a query is served on its own goroutine. Default: 64                                        |
 | **ingresstcpconns**  | Concurrent inbound TCP/DoT connection cap. Default: derived from this machine's memory and file-descriptor limit    |
 | **memorytrim**       | Return a traffic burst's memory to the OS after a long idle. Off by default; meant for memory-constrained devices   |
+| **ipv6access**       | Force IPv6 upstream access on. When unset, SDNS probes at startup and uses IPv6 authoritative servers only if the host actually has IPv6 transit — set true if the probe misjudges your network |
+| **[plugins]**        | External plugin configuration, one `[plugins.name]` block per plugin with `path` and free-form `config` keys. Loaded before the cache middleware, in declaration order. See [External Plugins](#external-plugins) |
 
 ## Middleware Configuration
 
@@ -244,10 +256,20 @@ The Kubernetes middleware provides full DNS integration for Kubernetes clusters,
 enabled = true
 cluster_domain = "cluster.local"  # Default: cluster.local
 # kubeconfig = "/path/to/kubeconfig"  # Optional, uses in-cluster config by default
+
+# Per-record-type TTLs (seconds) for the answers the middleware serves.
+[kubernetes.ttl]
+service = 30
+pod = 30
+srv = 30
+ptr = 30
 ```
 
 > The legacy `killer_mode` flag is accepted for backward compatibility
 > but has no effect — the middleware always uses the sharded registry.
+> A `demo` flag exists for development only: it fills the registry with
+> synthetic services so the middleware answers without a cluster — never
+> enable it in production.
 
 For detailed information, see the [Kubernetes middleware documentation](middleware/kubernetes/README.md).
 
@@ -646,24 +668,6 @@ This is useful when:
 *   **Automatic TLS certificate reloading without downtime**
 *   **DNS amplification/reflection attack detection (Reflex)**
 *   **DNS64 synthesis for IPv6-only clients (RFC 6147)**
-
-## TODO
-
-*   \[x] More tests
-*   \[x] Try lookup NS address better way
-*   \[x] DNS over TLS support
-*   \[x] DNS over HTTPS support
-*   \[x] Full DNSSEC support
-*   \[x] RTT optimization
-*   \[x] Access list
-*   \[x] Periodic priming queries described at RFC 8109
-*   \[x] Full IPv6 support (server<->server communication)
-*   \[x] Query name minimization to improve privacy described at RFC 9156
-*   \[x] DNAME Redirection in the DNS described at RFC 6672
-*   \[x] Automated Updates DNSSEC Trust Anchors described at RFC 5011
-*   \[x] DNS64 DNS Extensions for NAT from IPv6 Clients to IPv4 Servers described at RFC 6147
-*   \[x] DNS over QUIC support described at RFC 9250
-*   \[x] Kubernetes DNS integration
 
 ## Performance
 

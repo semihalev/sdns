@@ -6,7 +6,8 @@
 // The package deliberately knows nothing about middleware, config, or
 // serving: the middleware imports it for matching, and the config
 // validator imports it so `sdns -t` judges a policy file with exactly the
-// parser the runtime uses. Design and invariants: docs/rpz-design.md.
+// parser the runtime uses. Operator semantics: the README's Response
+// Policy Zones section.
 package rpz
 
 import (
