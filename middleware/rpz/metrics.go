@@ -36,6 +36,11 @@ var (
 		Name: "rpz_reload_errors_total",
 		Help: "Zone loads or reloads that failed; the previous store keeps serving",
 	}, []string{"zone"})
+
+	zoneSerial = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rpz_zone_serial",
+		Help: "SOA serial of an AXFR-fed zone's installed copy; -1 for file-sourced zones and for a feed whose rules are withdrawn",
+	}, []string{"zone"})
 )
 
 // countMatch runs on the match path only — the non-matching query touches

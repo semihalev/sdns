@@ -1742,9 +1742,48 @@ func (c *Config) validateRPZ(add func(string, ...any)) {
 			add("%s: cname is set but policy is %q; the target is only read with policy = \"cname\"", where, zc.Policy)
 		}
 
-		if zc.File == "" {
-			add("%s: file is required", where)
+		// A zone is fed exactly one way. The AXFR side is judged only on
+		// what is knowable offline — whether a source answers is a
+		// runtime question, and the feed loop owns it.
+		switch {
+		case zc.File != "" && zc.Source != "":
+			add("%s: file and source are both set; a zone is fed one way", where)
 			continue
+		case zc.Source != "":
+			// The feed dials this with net.Dialer over TCP, so a hostname
+			// is fine — but the halves must both be there and the port
+			// reachable, exactly as the hyperlocal sources are judged.
+			// SplitHostPort alone waves ":53", "host:" and "host:0"
+			// through, and each builds a feed that fails every cycle.
+			host, port, err := net.SplitHostPort(zc.Source)
+			switch {
+			case err != nil || host == "" || port == "":
+				add("%s: source = %q: must be host:port", where, zc.Source)
+			default:
+				if n, err := usablePort(port, "tcp"); err != nil || n == 0 {
+					add("%s: source = %q: must have a port to reach", where, zc.Source)
+				}
+			}
+			if zc.Origin == "" {
+				add("%s: source needs an origin — the apex name the transfer asks for", where)
+			} else if _, valid := dns.IsDomainName(zc.Origin); !valid || !dns.IsFqdn(zc.Origin) {
+				add("%s: origin = %q: must be a fully qualified domain name", where, zc.Origin)
+			}
+			if zc.TsigKey != "" {
+				if _, err := rpz.ParseTSIGKey(zc.TsigKey); err != nil {
+					add("%s: %v", where, err)
+				}
+			}
+			continue
+		case zc.File == "":
+			add("%s: either file or source is required", where)
+			continue
+		}
+		if zc.Origin != "" {
+			add("%s: origin is set but the zone is file-fed; the file's own SOA names the apex", where)
+		}
+		if zc.TsigKey != "" {
+			add("%s: tsig_key is set but the zone is file-fed; only transfers are signed", where)
 		}
 		z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, dns.CanonicalName(zc.Cname))
 		if err != nil {
