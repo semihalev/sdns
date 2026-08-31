@@ -121,6 +121,12 @@ type Cache struct {
 	// get a slot is a cache miss, never a client-visible error.
 	dnssecCryptoLimiter middleware.DNSSECCryptoLimiter
 
+	// wireHitGate is the serve half of the sidecar seam: consulted before
+	// any record-bearing byte serve with the sidecar(s) the reply would be
+	// built from. Wired at Setup alongside the store's evaluator; nil (no
+	// policy middleware registered) costs one field check per hit.
+	wireHitGate middleware.WireHitGate
+
 	config  CacheConfig
 	metrics *CacheMetrics
 
@@ -1324,6 +1330,10 @@ func (c *Cache) serveHitFromWire(
 		// lives inside, past the chase's own decline gates.
 		return c.serveChaseHit(ctx, ch, entry, capability, leaser, spent)
 	}
+	if g := c.wireHitGate; g != nil && !g.AllowWireHit(entry.sidecar.Load()) {
+		wireSkipPolicy.Inc()
+		return false
+	}
 	if mismatch := entry.wireChainMismatch(capability); mismatch != nil {
 		mismatch.Inc()
 		return false
@@ -1470,6 +1480,9 @@ func (c *Cache) handleCacheHit(
 		if !entry.wireEligibleFor(req) {
 			return wireSkipEntry
 		}
+		if g := c.wireHitGate; g != nil && !g.AllowWireHit(entry.sidecar.Load()) {
+			return wireSkipPolicy
+		}
 		ww, ok := w.(middleware.WireWriter)
 		if !ok {
 			return wireSkipWriter
@@ -1527,6 +1540,17 @@ func (c *Cache) handleCacheHit(
 	if msg == nil {
 		// Entry expired between check and use
 		return false
+	}
+
+	// The decoded serve is where an unevaluated entry gets its sidecar:
+	// the wire gate turned it away for being unknown, and this message —
+	// TTL-adjusted but record-identical to the stored truth, before the
+	// chase below appends other entries' records — is exactly what the
+	// admission evaluator would have seen. The CAS keeps a concurrent
+	// stamp from being overwritten; losing it means someone else already
+	// evaluated the same records.
+	if ev := c.store.sidecarEvaluator; ev != nil && entry.sidecar.Load() == nil {
+		entry.sidecar.CompareAndSwap(nil, ev(msg))
 	}
 
 	// The message materialized, so the entry was live: bind the request tree
@@ -1649,8 +1673,21 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	if ttl > 0 {
 		entry.origTTL = uint32(ttl.Seconds())
 	}
+	c.store.stampSidecar(entry, filtered)
 
 	c.store.SetEntryWithKey(key, entry, mt)
+}
+
+// SetSidecarPolicy wires both halves of the sidecar seam
+// (middleware.SidecarPolicySetter, injected by Setup before the pipeline
+// publishes): the evaluator stamps entries at every admission door, the
+// gate judges record-bearing byte serves.
+func (c *Cache) SetSidecarPolicy(p middleware.SidecarPolicyProvider) {
+	if p == nil {
+		return
+	}
+	c.store.SetSidecarEvaluator(p.SidecarEvaluator())
+	c.wireHitGate = p.WireHitGate()
 }
 
 // (*Cache).Stats stats returns cache statistics.

@@ -245,12 +245,20 @@ func (p *Pipeline) autoWire() {
 		cryptoProvider    string
 		cryptoProviders   []string
 		hasCryptoConsumer bool
+		sidecarPolicy     SidecarPolicyProvider
+		sidecarProviders  []string
 	)
 	for _, h := range p.handlers {
 		if sp, ok := h.(StoreProvider); ok {
 			providers = append(providers, h.Name())
 			if store == nil {
 				store = sp.Store()
+			}
+		}
+		if sp, ok := h.(SidecarPolicyProvider); ok {
+			sidecarProviders = append(sidecarProviders, h.Name())
+			if sidecarPolicy == nil {
+				sidecarPolicy = sp
 			}
 		}
 		if _, ok := h.(StoreSetter); ok {
@@ -282,6 +290,10 @@ func (p *Pipeline) autoWire() {
 	if isNilInterface(cryptoLimiter) && hasCryptoConsumer {
 		zlog.Warn("DNSSEC crypto limiter consumer present but no provider registered; optional cache-side DNSSEC work will fail open")
 	}
+	if len(sidecarProviders) > 1 {
+		zlog.Warn("Multiple SidecarPolicyProviders registered; first wins",
+			"first", sidecarProviders[0], "others", sidecarProviders[1:])
+	}
 
 	for _, h := range p.handlers {
 		if s, ok := h.(QueryerSetter); ok {
@@ -298,6 +310,11 @@ func (p *Pipeline) autoWire() {
 		if !isNilInterface(cryptoLimiter) {
 			if s, ok := h.(DNSSECCryptoLimiterSetter); ok {
 				s.SetDNSSECCryptoLimiter(cryptoLimiter)
+			}
+		}
+		if sidecarPolicy != nil {
+			if s, ok := h.(SidecarPolicySetter); ok {
+				s.SetSidecarPolicy(sidecarPolicy)
 			}
 		}
 	}

@@ -61,6 +61,7 @@ var (
 	wireSkipEntry     = wireFastPath.Register("skip_entry")
 	wireSkipWriter    = wireFastPath.Register("skip_writer")
 	wireSkipDNSSEC    = wireFastPath.Register("skip_dnssec")
+	wireSkipPolicy    = wireFastPath.Register("skip_policy")
 	wireSkipSize      = wireFastPath.Register("skip_size")
 	wireSkipBuild     = wireFastPath.Register("skip_build")
 	wireSkipChase     = wireFastPath.Register("skip_chase")

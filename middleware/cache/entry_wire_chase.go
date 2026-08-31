@@ -73,6 +73,21 @@ func (c *Cache) serveChaseHit(
 		return false
 	}
 
+	// The reply would compose every segment's records, so the gate sees
+	// every segment's sidecar, in chain order — the per-segment principle:
+	// a whole-chain verdict on the alias would go stale the moment a
+	// target entry refreshed under it.
+	if g := c.wireHitGate; g != nil {
+		var scs [maxWireChaseHops]*middleware.Sidecar
+		for i := range n {
+			scs[i] = segs[i].entry.sidecar.Load()
+		}
+		if !g.AllowWireChase(scs[:n]) {
+			wireSkipPolicy.Inc()
+			return false
+		}
+	}
+
 	size := wire.HeaderLen + (ch.Request.WireQuestionEnd() - wire.HeaderLen)
 	for i := range n {
 		size += len(segs[i].body) + segs[i].anCount*wireChaseHeadroom

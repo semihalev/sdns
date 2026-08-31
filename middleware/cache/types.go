@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 	// Aliased: this file's local "wire" is the packed body itself.
 	wirepack "github.com/semihalev/sdns/internal/wire"
 	"golang.org/x/time/rate"
@@ -92,6 +93,28 @@ type CacheEntry struct {
 	// It is retained for the optional Phase-3 generation design; Phase 1b
 	// enforcement depends only on cutUntil.
 	cutKey uint64
+
+	// sidecar is policy state stamped beside the immutable entry — the
+	// same shape as the prefetch claim above: a mutable atomic the entry
+	// carries without ever being copied. The cache never reads its Value;
+	// it is stamped at admission by the wired evaluator and handed to the
+	// wire-hit gate at serve time. nil means unevaluated — unknown, never
+	// clean (middleware.Sidecar's contract).
+	sidecar atomic.Pointer[middleware.Sidecar]
+}
+
+// Sidecar returns the entry's stamped policy state; nil means the entry
+// was never evaluated.
+func (e *CacheEntry) Sidecar() *middleware.Sidecar {
+	return e.sidecar.Load()
+}
+
+// CompareAndStampSidecar installs next if the entry still carries prev —
+// the restamp a serve performs when it finds a stale generation. The
+// generation lives inside the opaque value; the CAS only guarantees no
+// concurrent restamp is silently overwritten.
+func (e *CacheEntry) CompareAndStampSidecar(prev, next *middleware.Sidecar) bool {
+	return e.sidecar.CompareAndSwap(prev, next)
 }
 
 // remaining returns the entry's effective remaining lifetime at now:

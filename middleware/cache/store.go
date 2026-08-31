@@ -49,6 +49,30 @@ type Store struct {
 	// keep one stable shape, but no shared failure state is read or written.
 	failureCacheDisabled bool
 	cfg                  CacheConfig
+
+	// sidecarEvaluator, when wired, is called once per admitted entry with
+	// that entry's own stored message; its result is stamped as the
+	// entry's sidecar before publication. Every admission door funnels
+	// through a stamp — the seam's contract is that no entry reaches the
+	// positive cache unevaluated while an evaluator is wired. Written once
+	// at Setup, before the pipeline publishes; nil costs one field check.
+	sidecarEvaluator middleware.SidecarEvaluator
+}
+
+// SetSidecarEvaluator wires the admission half of the sidecar seam. Call
+// before the store serves traffic; the field is not synchronized.
+func (s *Store) SetSidecarEvaluator(ev middleware.SidecarEvaluator) {
+	s.sidecarEvaluator = ev
+}
+
+// stampSidecar evaluates msg — the entry's own stored records — and
+// stamps the result. Pre-publication entries are stamped with a plain
+// store; nothing else can hold them yet.
+func (s *Store) stampSidecar(e *CacheEntry, msg *dns.Msg) {
+	if e == nil || s.sidecarEvaluator == nil {
+		return
+	}
+	e.sidecar.Store(s.sidecarEvaluator(msg))
 }
 
 // NewStore returns a Store backed by the supplied sub-caches. The
@@ -627,6 +651,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		e.cd = keyCD
 		e.cutUntil = cutUntil
 		e.cutKey = cutKey
+		s.stampSidecar(e, msg)
 		return e
 	}
 
@@ -692,6 +717,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		entry.scope = expected.scope
 		entry.cutUntil = cutUntil
 		entry.cutKey = cutKey
+		s.stampSidecar(entry, filtered)
 		return entry
 	}
 
