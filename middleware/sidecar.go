@@ -24,27 +24,55 @@ type Sidecar struct {
 // refreshes, the cache writer) and must be safe for concurrent use.
 type SidecarEvaluator func(msg *dns.Msg) *Sidecar
 
+// WireHitVerdict is a gate's judgment of one byte serve.
+type WireHitVerdict uint8
+
+const (
+	// WireHitServe permits the byte serve. Nothing is counted here — a
+	// serve can still decline past the gate (writer readiness, build,
+	// transport fallback) and land on the decoded path, so accounting
+	// waits for the committed-bytes callback below.
+	WireHitServe WireHitVerdict = iota
+	// WireHitDecode sends the query to the decoded path because policy
+	// wants the full message there. The sidecar itself was usable; the
+	// cache changes nothing about it.
+	WireHitDecode
+	// WireHitRestamp sends the query to the decoded path because the
+	// sidecar is unusable — unevaluated, or stamped under a generation
+	// the gate no longer accepts. The decoded serve re-evaluates the
+	// entry's records and restamps over the judged pointer, so the entry
+	// rejoins the byte path instead of decoding until eviction.
+	WireHitRestamp
+)
+
 // WireHitGate judges record-bearing byte serves. When a gate is wired,
 // the cache consults it before serving stored bytes for an exact hit or
-// a composed CNAME chase; a false verdict declines the byte serve and the
-// same query is answered by the decoded path instead — where the policy
-// layer's own response writer sees a full message. Composite denial
-// classes (subtree cuts, failure state) carry no stored records and are
-// never gated.
+// a composed CNAME chase; any verdict but WireHitServe declines the byte
+// serve and the same query is answered by the decoded path instead —
+// where the policy layer's own response writer sees a full message.
+// Composite denial classes (subtree cuts, failure state) carry no stored
+// records and are never gated.
 //
-// The gate owns any per-hit accounting: a true verdict is the only place
-// a byte-served hit's policy outcome can be counted, because no later
-// layer decodes it. Verdicts must be computed from the sidecars alone —
+// The Judge methods are pure decisions computed from the sidecars alone —
 // per-query policy state belongs to the policy middleware's own
 // query-time hold, which steers queries off the byte path entirely by
-// withholding its writer's wire capability.
+// withholding its writer's wire capability. Accounting is separate: the
+// Count methods fire exactly once per byte-served hit, after the bytes
+// were committed to the transport — the only point where a byte serve
+// can no longer fall back to the decoded path and be counted twice.
 type WireHitGate interface {
-	// AllowWireHit judges a single-entry byte serve. sc is the entry's
+	// JudgeWireHit judges a single-entry byte serve. sc is the entry's
 	// sidecar; nil means unevaluated.
-	AllowWireHit(sc *Sidecar) bool
-	// AllowWireChase judges a composed chase, one sidecar per segment in
+	JudgeWireHit(sc *Sidecar) WireHitVerdict
+	// JudgeWireChase judges a composed chase, one sidecar per segment in
 	// chain order. Any nil element is an unevaluated segment.
-	AllowWireChase(sidecars []*Sidecar) bool
+	JudgeWireChase(sidecars []*Sidecar) WireHitVerdict
+	// CountWireHit records the policy outcome of a byte-served exact
+	// hit. Called once, after the transport accepted the bytes; no later
+	// layer decodes them, so this is the only place the outcome exists.
+	CountWireHit(sc *Sidecar)
+	// CountWireChase is CountWireHit for a committed chase composition.
+	CountWireChase(sidecars []*Sidecar)
 }
 
 // SidecarPolicyProvider is implemented by the handler that owns response

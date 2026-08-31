@@ -77,12 +77,13 @@ func (c *Cache) serveChaseHit(
 	// every segment's sidecar, in chain order — the per-segment principle:
 	// a whole-chain verdict on the alias would go stale the moment a
 	// target entry refreshed under it.
-	if g := c.wireHitGate; g != nil {
-		var scs [maxWireChaseHops]*middleware.Sidecar
+	gate := c.wireHitGate
+	var scs [maxWireChaseHops]*middleware.Sidecar
+	if gate != nil {
 		for i := range n {
 			scs[i] = segs[i].entry.sidecar.Load()
 		}
-		if !g.AllowWireChase(scs[:n]) {
+		if gate.JudgeWireChase(scs[:n]) != middleware.WireHitServe {
 			wireSkipPolicy.Inc()
 			return false
 		}
@@ -121,6 +122,9 @@ func (c *Cache) serveChaseHit(
 
 	switch err := leaser.CommitWire(body, info); {
 	case err == nil:
+		if gate != nil {
+			gate.CountWireChase(scs[:n])
+		}
 		// The reply contains every segment's records, so the request
 		// inherits every segment's cache-lifetime bound — the wire twin of
 		// the Msg chase's lineage inheritance.
@@ -135,6 +139,9 @@ func (c *Cache) serveChaseHit(
 		wireFastFallback.Inc()
 		return false
 	default:
+		if gate != nil {
+			gate.CountWireChase(scs[:n])
+		}
 		for i := range n {
 			boundRequestToEntryLifetime(ctx, segs[i].entry)
 		}

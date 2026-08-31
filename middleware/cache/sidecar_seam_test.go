@@ -13,14 +13,18 @@ import (
 )
 
 // recordingPolicy is a SidecarPolicyProvider that remembers what the seam
-// showed it: every message the evaluator saw and every sidecar set the
-// gate judged.
+// showed it: every message the evaluator saw, every sidecar set the gate
+// judged, and every committed serve it was asked to count.
 type recordingPolicy struct {
-	mu        sync.Mutex
-	evaluated []string
-	hits      []*middleware.Sidecar
-	chases    [][]*middleware.Sidecar
-	allow     bool
+	mu           sync.Mutex
+	evaluated    []string
+	hits         []*middleware.Sidecar
+	chases       [][]*middleware.Sidecar
+	counted      []*middleware.Sidecar
+	countedChase [][]*middleware.Sidecar
+	verdict      middleware.WireHitVerdict
+	// stamp overrides the evaluator's result value when set.
+	stamp string
 }
 
 func (p *recordingPolicy) SidecarEvaluator() middleware.SidecarEvaluator {
@@ -28,24 +32,39 @@ func (p *recordingPolicy) SidecarEvaluator() middleware.SidecarEvaluator {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.evaluated = append(p.evaluated, msg.Question[0].Name)
+		if p.stamp != "" {
+			return &middleware.Sidecar{Value: p.stamp}
+		}
 		return &middleware.Sidecar{Value: msg.Question[0].Name}
 	}
 }
 
 func (p *recordingPolicy) WireHitGate() middleware.WireHitGate { return p }
 
-func (p *recordingPolicy) AllowWireHit(sc *middleware.Sidecar) bool {
+func (p *recordingPolicy) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVerdict {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.hits = append(p.hits, sc)
-	return p.allow
+	return p.verdict
 }
 
-func (p *recordingPolicy) AllowWireChase(scs []*middleware.Sidecar) bool {
+func (p *recordingPolicy) JudgeWireChase(scs []*middleware.Sidecar) middleware.WireHitVerdict {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.chases = append(p.chases, append([]*middleware.Sidecar(nil), scs...))
-	return p.allow
+	return p.verdict
+}
+
+func (p *recordingPolicy) CountWireHit(sc *middleware.Sidecar) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.counted = append(p.counted, sc)
+}
+
+func (p *recordingPolicy) CountWireChase(scs []*middleware.Sidecar) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.countedChase = append(p.countedChase, append([]*middleware.Sidecar(nil), scs...))
 }
 
 func seamResponse(name string, answers ...dns.RR) *dns.Msg {
@@ -71,7 +90,7 @@ func seamA(name string) *dns.A {
 func TestEveryAdmissionDoorStampsTheSidecar(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
-	p := &recordingPolicy{allow: true}
+	p := &recordingPolicy{verdict: middleware.WireHitServe}
 	c.SetSidecarPolicy(p)
 
 	// Door 1: the SetFromResponse funnel (writer and resolver paths).
@@ -157,7 +176,7 @@ func seamServe(t *testing.T, c *Cache, name string) *mock.Writer {
 func TestWireGateDeclineFallsToTheDecodedPath(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
-	p := &recordingPolicy{allow: false}
+	p := &recordingPolicy{verdict: middleware.WireHitDecode}
 	c.SetSidecarPolicy(p)
 
 	seamServe(t, c, "gated.test.") // miss primes the entry
@@ -180,7 +199,7 @@ func TestWireGateDeclineFallsToTheDecodedPath(t *testing.T) {
 func TestWireGateApprovalServesBytes(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
-	p := &recordingPolicy{allow: true}
+	p := &recordingPolicy{verdict: middleware.WireHitServe}
 	c.SetSidecarPolicy(p)
 
 	seamServe(t, c, "open.test.")
@@ -199,7 +218,7 @@ func TestWireGateApprovalServesBytes(t *testing.T) {
 
 // TestDecodedServeStampsAnUnevaluatedEntry pins the unknown-never-clean
 // recovery: an entry admitted before the seam was wired carries no
-// sidecar, the gate turns its byte serve away, and the decoded serve that
+// sidecar, the gate judges it Restamp, and the decoded serve that
 // answers instead evaluates and stamps it — the next hit has a sidecar.
 func TestDecodedServeStampsAnUnevaluatedEntry(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -207,7 +226,7 @@ func TestDecodedServeStampsAnUnevaluatedEntry(t *testing.T) {
 
 	seamServe(t, c, "late.test.") // admitted with no evaluator wired
 
-	p := &recordingPolicy{allow: false}
+	p := &recordingPolicy{verdict: middleware.WireHitRestamp}
 	c.SetSidecarPolicy(p)
 	w := seamServe(t, c, "late.test.")
 	if !w.Written() {
@@ -231,7 +250,7 @@ func TestDecodedServeStampsAnUnevaluatedEntry(t *testing.T) {
 func TestChaseGateSeesEverySegmentInOrder(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
-	p := &recordingPolicy{allow: true}
+	p := &recordingPolicy{verdict: middleware.WireHitServe}
 	c.SetSidecarPolicy(p)
 
 	alias := seamResponse("alias.seam.test.", &dns.CNAME{
@@ -258,6 +277,10 @@ func TestChaseGateSeesEverySegmentInOrder(t *testing.T) {
 	if len(seen) != 2 || seen[0] == nil || seen[1] == nil ||
 		seen[0].Value != "alias.seam.test." || seen[1].Value != "target.seam.test." {
 		t.Fatalf("chase gate did not see every segment in order: %v", seen)
+	}
+	// The committed composition counts once, with the same segments.
+	if len(p.countedChase) != 1 || len(p.countedChase[0]) != 2 {
+		t.Fatalf("committed chase counted %d times", len(p.countedChase))
 	}
 }
 
@@ -289,7 +312,7 @@ func TestCompareAndStampSidecar(t *testing.T) {
 func TestRawPathGateKeepsADeclinedHitOffBytes(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
-	p := &recordingPolicy{allow: false}
+	p := &recordingPolicy{verdict: middleware.WireHitDecode}
 	c.SetSidecarPolicy(p)
 
 	resp := seamResponse("raw.seam.test.", seamA("raw.seam.test."))
@@ -313,5 +336,172 @@ func TestRawPathGateKeepsADeclinedHitOffBytes(t *testing.T) {
 	}
 	if len(p.hits) == 0 {
 		t.Fatal("the gate was never consulted")
+	}
+}
+
+// TestStaleSidecarIsRestampedNotStranded pins the review's first P1: a
+// non-nil sidecar the gate judges stale must be replaced by the decoded
+// serve — CAS over the judged pointer, not only over nil — or the entry
+// decodes on every hit until eviction after a policy reload.
+func TestStaleSidecarIsRestampedNotStranded(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+	p := &recordingPolicy{verdict: middleware.WireHitServe, stamp: "gen1"}
+	c.SetSidecarPolicy(p)
+
+	seamServe(t, c, "reload.test.") // admitted and stamped under gen1
+
+	// The policy reloads: gen1 stamps are now stale, fresh evaluations
+	// say gen2.
+	p.mu.Lock()
+	p.verdict = middleware.WireHitRestamp
+	p.stamp = "gen2"
+	p.mu.Unlock()
+
+	w := seamServe(t, c, "reload.test.")
+	if !w.Written() || len(w.Msg().Answer) != 1 {
+		t.Fatal("hit did not answer")
+	}
+	key := CacheKey{Question: dns.Question{Name: "reload.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET}, CD: false}.Hash()
+	entry, ok := c.store.LookupByKey(key)
+	if !ok {
+		t.Fatal("entry missing")
+	}
+	sc := entry.Sidecar()
+	if sc == nil || sc.Value != "gen2" {
+		t.Fatalf("stale sidecar not restamped: %v — the entry decodes until eviction", sc)
+	}
+}
+
+// TestFallbackAfterApprovalCountsNothing pins the review's second P1: a
+// Serve verdict is a pure decision, and a byte serve that still falls
+// back past it — writer fallback here — must count nothing; the decoded
+// path's own writer owns that outcome.
+func TestFallbackAfterApprovalCountsNothing(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+	p := &recordingPolicy{verdict: middleware.WireHitServe}
+	c.SetSidecarPolicy(p)
+
+	seamServe(t, c, "fallback.test.") // prime
+
+	q := new(dns.Msg)
+	q.SetQuestion("fallback.test.", dns.TypeA)
+	q.RecursionDesired = true
+	w := mock.NewWriter("udp", "192.0.2.9:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		ch.Cancel()
+	})})
+	ch.Reset(w, q)
+	ch.AllowDirectPack()
+	ch.Writer = &fallbackWireWriter{ResponseWriter: ch.Writer}
+	before := len(p.counted)
+	ch.Next(context.Background())
+
+	if !w.Written() || len(w.Msg().Answer) != 1 {
+		t.Fatal("fallback hit did not answer from the decoded path")
+	}
+	if len(p.counted) != before {
+		t.Fatal("a serve that fell back to the decoded path was counted as a byte hit")
+	}
+	if len(p.hits) == 0 {
+		t.Fatal("the gate was never consulted")
+	}
+}
+
+// TestCommittedByteServeCountsExactlyOnce is the positive half: bytes
+// out means one Count call carrying the judged sidecar — on the Msg-born
+// inline byte path and the wire-born exact hit alike.
+func TestCommittedByteServeCountsExactlyOnce(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+	p := &recordingPolicy{verdict: middleware.WireHitServe}
+	c.SetSidecarPolicy(p)
+
+	seamServe(t, c, "counted.test.")
+	before := len(p.counted)
+	seamServe(t, c, "counted.test.")
+	if got := len(p.counted) - before; got != 1 {
+		t.Fatalf("a committed byte serve counted %d times", got)
+	}
+	if sc := p.counted[len(p.counted)-1]; sc == nil || sc.Value != "counted.test." {
+		t.Fatalf("the count carried the wrong sidecar: %v", sc)
+	}
+
+	// The wire-born twin commits through the lease instead of WriteWire.
+	req, _ := wireTestRequest(t, "counted.test.", dns.TypeA, false)
+	w := mock.NewWriter("udp", "192.0.2.9:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		ch.Cancel()
+	})})
+	ch.ResetWire(w, req)
+	ch.AllowDirectPack()
+	before = len(p.counted)
+	ch.Next(context.Background())
+	if !w.Written() || len(w.Msg().Answer) != 1 {
+		t.Fatal("wire-born hit did not answer")
+	}
+	if got := len(p.counted) - before; got != 1 {
+		t.Fatalf("a committed wire-born serve counted %d times", got)
+	}
+}
+
+// fallbackWireWriter approves the wire preflight and then refuses the
+// bytes with the fallback sentinel, sending the serve to the decoded
+// path after the gate already said Serve.
+type fallbackWireWriter struct {
+	middleware.ResponseWriter
+}
+
+func (w *fallbackWireWriter) WireReady() (middleware.WireCapability, bool) {
+	next, ok := w.ResponseWriter.(middleware.WireWriter)
+	if !ok {
+		return middleware.WireCapability{}, false
+	}
+	return next.WireReady()
+}
+
+func (w *fallbackWireWriter) WriteWire([]byte, middleware.WireInfo) error {
+	return middleware.ErrWireFallback
+}
+
+func (w *fallbackWireWriter) BeginWire(size, reserve int) []byte {
+	return make([]byte, 0, size+reserve)
+}
+
+func (w *fallbackWireWriter) CommitWire([]byte, middleware.WireInfo) error {
+	return middleware.ErrWireFallback
+}
+
+func (w *fallbackWireWriter) AbortWire() {}
+
+// TestRawFallbackAfterApprovalCountsNothing is the wire-born twin of the
+// fallback pin: the raw exact hit's lease commits through CommitWire, and
+// a fallback there must leave the count untouched too.
+func TestRawFallbackAfterApprovalCountsNothing(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+	p := &recordingPolicy{verdict: middleware.WireHitServe}
+	c.SetSidecarPolicy(p)
+
+	resp := seamResponse("rawfall.test.", seamA("rawfall.test."))
+	c.store.SetFromResponseWithCut(resp, false, time.Time{}, 0)
+
+	req, _ := wireTestRequest(t, "rawfall.test.", dns.TypeA, false)
+	w := mock.NewWriter("udp", "192.0.2.9:53000")
+	ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		ch.Cancel()
+	})})
+	ch.ResetWire(w, req)
+	ch.AllowDirectPack()
+	ch.Writer = &fallbackWireWriter{ResponseWriter: ch.Writer}
+	before := len(p.counted)
+	ch.Next(context.Background())
+
+	if !w.Written() || len(w.Msg().Answer) != 1 {
+		t.Fatal("fallback hit did not answer from the decoded path")
+	}
+	if len(p.counted) != before {
+		t.Fatal("a raw serve that fell back was counted as a byte hit")
 	}
 }
