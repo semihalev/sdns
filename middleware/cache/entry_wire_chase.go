@@ -76,14 +76,18 @@ func (c *Cache) serveChaseHit(
 	// The reply would compose every segment's records, so the gate sees
 	// every segment's sidecar, in chain order — the per-segment principle:
 	// a whole-chain verdict on the alias would go stale the moment a
-	// target entry refreshed under it.
+	// target entry refreshed under it. The slice is built only when a
+	// gate is wired: an unconditional array would escape through the
+	// interface call and cost every ungated chase an allocation the
+	// hit-class pins forbid.
 	gate := c.wireHitGate
-	var scs [maxWireChaseHops]*middleware.Sidecar
+	var scs []*middleware.Sidecar
 	if gate != nil {
+		scs = make([]*middleware.Sidecar, n)
 		for i := range n {
 			scs[i] = segs[i].entry.sidecar.Load()
 		}
-		if gate.JudgeWireChase(scs[:n]) != middleware.WireHitServe {
+		if gate.JudgeWireChase(scs) != middleware.WireHitServe {
 			wireSkipPolicy.Inc()
 			return false
 		}
@@ -123,7 +127,7 @@ func (c *Cache) serveChaseHit(
 	switch err := leaser.CommitWire(body, info); {
 	case err == nil:
 		if gate != nil {
-			gate.CountWireChase(scs[:n])
+			gate.CountWireChase(scs)
 		}
 		// The reply contains every segment's records, so the request
 		// inherits every segment's cache-lifetime bound — the wire twin of
@@ -140,7 +144,7 @@ func (c *Cache) serveChaseHit(
 		return false
 	default:
 		if gate != nil {
-			gate.CountWireChase(scs[:n])
+			gate.CountWireChase(scs)
 		}
 		for i := range n {
 			boundRequestToEntryLifetime(ctx, segs[i].entry)
