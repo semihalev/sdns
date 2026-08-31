@@ -36,7 +36,7 @@ type RPZ struct {
 	// enabled gates the sidecar seam: a disabled middleware returns nil
 	// provider halves so the cache stays entirely unwired.
 	enabled bool
-	store   atomic.Pointer[rpz.Store]
+	store   atomic.Pointer[policyStore]
 
 	// queryer resolves a Local Data CNAME's target through the internal
 	// sub-pipeline, the same seam dns64 uses. Nil when no wiring exists
@@ -278,10 +278,15 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 // waits on the serve-time merge, and continues the chain under it. The
 // wrap is restored around Next the way every writer wrapper in the tree
 // is; it installs on both the inline and replay passes, and the pass
-// that writes is the one that counts.
+// that writes is the one that counts. The wrap itself is pooled: with
+// response rules configured every query passes through here, and the
+// clean wire hit must not pay a heap allocation for a wrapper that only
+// delegates (§5.11). After the restore nothing can reach the object —
+// writes happen within Next or on a replay pass that installs its own.
 func (r *RPZ) serveWrapped(ctx context.Context, ch *middleware.Chain, held rpz.ZoneMatch, heldObserved []rpz.ZoneMatch, holding bool) {
 	w := ch.Writer
-	ch.Writer = &responseWrap{
+	wrap := wrapPool.Get().(*responseWrap)
+	*wrap = responseWrap{
 		ResponseWriter: w,
 		r:              r,
 		ctx:            ctx,
@@ -289,7 +294,12 @@ func (r *RPZ) serveWrapped(ctx context.Context, ch *middleware.Chain, held rpz.Z
 		heldObserved:   heldObserved,
 		holding:        holding,
 	}
-	defer func() { ch.Writer = w }()
+	ch.Writer = wrap
+	defer func() {
+		ch.Writer = w
+		*wrap = responseWrap{}
+		wrapPool.Put(wrap)
+	}()
 	ch.Next(ctx)
 }
 

@@ -342,28 +342,45 @@ func TestCountingParityAcrossPaths(t *testing.T) {
 	}
 }
 
-// TestChaseFoldCountsAZoneOnce pins the fold: two segments matching the
-// same zone through different rules count that zone once, with the
-// rank-best match.
-func TestChaseFoldCountsAZoneOnce(t *testing.T) {
+// TestChaseCountsAZoneOnceWithTheRankBest pins §5.6 item 4 end to end: a
+// chase whose composed answer matches one zone through two competing
+// rules counts that zone exactly once, with the rule-4 best — the gate
+// sends any matching chase to the decoded path, whose composed answer
+// the wrap evaluates whole, so the dedupe holds by construction.
+func TestChaseCountsAZoneOnceWithTheRankBest(t *testing.T) {
 	h := newSidecarHarness(t, "enforce", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
-	s := h.r.store.Load()
 
-	seg1 := s.EvaluateResponse([]dns.RR{testA("a.test.", "203.0.113.1")})  // /24 NXDOMAIN
-	seg2 := s.EvaluateResponse([]dns.RR{testA("b.test.", "198.51.100.9")}) // /32 PASSTHRU
-	var chain middleware.SidecarChain
-	chain.Append(&middleware.Sidecar{Value: seg1})
-	chain.Append(&middleware.Sidecar{Value: seg2})
+	alias := new(dns.Msg)
+	alias.SetQuestion("alias.chase.test.", dns.TypeA)
+	alias.Response = true
+	cn, err := dns.NewRR("alias.chase.test. 300 IN CNAME t.chase.test.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias.Answer = []dns.RR{cn}
+	h.cacheStore().SetFromResponseWithCut(alias, false, time.Time{}, 0)
+
+	target := new(dns.Msg)
+	target.SetQuestion("t.chase.test.", dns.TypeA)
+	target.Response = true
+	// Two addresses under one zone's competing rules: the /24 says
+	// NXDOMAIN, the /32 says PASSTHRU — rule 4 picks the /32.
+	target.Answer = []dns.RR{testA("t.chase.test.", "203.0.113.5"), testA("t.chase.test.", "198.51.100.9")}
+	h.cacheStore().SetFromResponseWithCut(target, false, time.Time{}, 0)
 
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "passthru", "enforced")
 	other := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "enforced")
 	baseP, baseN := testutil.ToFloat64(counter), testutil.ToFloat64(other)
-	h.r.CountWireChase(chain)
+
+	w := h.serve(t, "alias.chase.test.", "192.0.2.1:40000", true)
+	if !w.Written() || w.Rcode() != dns.RcodeSuccess {
+		t.Fatalf("PASSTHRU chase did not serve the truth: rcode=%d", w.Rcode())
+	}
 	if d := testutil.ToFloat64(counter) - baseP; d != 1 {
-		t.Fatalf("rank-best (/32 passthru) counted %v times", d)
+		t.Fatalf("rank-best (/32 passthru) counted %v times, want 1", d)
 	}
 	if d := testutil.ToFloat64(other) - baseN; d != 0 {
-		t.Fatalf("the same zone was counted twice across segments (+%v nxdomain)", d)
+		t.Fatalf("the zone was counted twice across the chase (+%v nxdomain)", d)
 	}
 }
 
@@ -478,5 +495,112 @@ rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 9 3600 900 604800 300
 	case msg := <-torn:
 		t.Fatal(msg)
 	default:
+	}
+}
+
+// TestFinalWinnerSilencesLaterResponseZones pins the winner-bounded cut
+// across the phases' seam: a final query-time winner in zone 0 leaves
+// response zones after it uncounted — in shadow, where the query
+// continues, exactly as in enforce, where it never leaves rpz. Anything
+// else makes the two modes' counters incomparable.
+func TestFinalWinnerSilencesLaterResponseZones(t *testing.T) {
+	const qnameFirstZone = `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 6 3600 900 604800 300
+victim.example.com.rpz.test. IN CNAME .
+`
+	respAfter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "observed")
+
+	for _, mode := range []string{"shadow", "enforce"} {
+		h := newSidecarHarness(t, mode,
+			config.RPZZone{Name: "names", File: writeZone(t, qnameFirstZone)},
+			config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)},
+		)
+		h.truth["victim.example.com."] = "203.0.113.10" // matches zone 1's response rule
+
+		base := testutil.ToFloat64(respAfter)
+		h.serve(t, "victim.example.com.", "192.0.2.1:40000", true) // miss
+		h.serve(t, "victim.example.com.", "192.0.2.1:40000", true) // hit
+		if d := testutil.ToFloat64(respAfter) - base; d != 0 {
+			t.Fatalf("%s: a response zone past the final winner was counted %v times", mode, d)
+		}
+	}
+}
+
+// TestCleanServesAllocateNoMoreWithResponseRules pins §5.11 against the
+// two allocation regressions the review found: with response rules
+// configured, the all-candidates-none wire hit and the clean admission
+// must cost exactly what a qname-only configuration costs — the wrap is
+// pooled and the explicit none is the generation's shared sentinel.
+func TestCleanServesAllocateNoMoreWithResponseRules(t *testing.T) {
+	const qnameOnlyZone = `
+rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 7 3600 900 604800 300
+victim.example.com.rpz.test. IN CNAME .
+`
+	measure := func(h *sidecarHarness) (hit, admit float64) {
+		h.truth["clean.test."] = "198.51.100.1"
+		h.serve(t, "clean.test.", "192.0.2.1:40000", true) // prime
+
+		q := new(dns.Msg)
+		q.SetQuestion("clean.test.", dns.TypeA)
+		q.RecursionDesired = true
+		raw, err := q.Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := new(middleware.Request)
+		if !req.ParseWire(raw, time.Now(), nil) {
+			t.Fatal("refused")
+		}
+		w := mock.NewWriter("udp", "192.0.2.1:40000")
+		ch := middleware.NewChain([]middleware.Handler{h.r, h.c, h.authority()})
+		hit = testing.AllocsPerRun(200, func() {
+			ch.ResetWire(w, req)
+			ch.AllowDirectPack()
+			ch.Next(context.Background())
+		})
+
+		resp := new(dns.Msg)
+		resp.SetQuestion("admit.test.", dns.TypeA)
+		resp.Response = true
+		resp.Answer = []dns.RR{testA("admit.test.", "198.51.100.1")}
+		admit = testing.AllocsPerRun(200, func() {
+			h.cacheStore().SetFromResponseWithCut(resp, false, time.Time{}, 0)
+		})
+		return hit, admit
+	}
+
+	base := newSidecarHarness(t, "enforce", config.RPZZone{Name: "names", File: writeZone(t, qnameOnlyZone)})
+	baseHit, baseAdmit := measure(base)
+	resp := newSidecarHarness(t, "enforce", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
+	respHit, respAdmit := measure(resp)
+
+	if respHit > baseHit {
+		t.Fatalf("clean wire hit allocates %.1f with response rules vs %.1f without", respHit, baseHit)
+	}
+	if respAdmit > baseAdmit {
+		t.Fatalf("clean admission allocates %.1f with response rules vs %.1f without", respAdmit, baseAdmit)
+	}
+}
+
+// TestExplicitNoneIsTheSharedSentinel pins the none representation
+// directly: two clean admissions carry the same sidecar object — the
+// generation's sentinel — not one allocation each.
+func TestExplicitNoneIsTheSharedSentinel(t *testing.T) {
+	h := newSidecarHarness(t, "enforce", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
+
+	for _, name := range []string{"one.none.test.", "two.none.test."} {
+		resp := new(dns.Msg)
+		resp.SetQuestion(name, dns.TypeA)
+		resp.Response = true
+		resp.Answer = []dns.RR{testA(name, "198.51.100.1")}
+		h.cacheStore().SetFromResponseWithCut(resp, false, time.Time{}, 0)
+	}
+	one := h.storedEntry(t, "one.none.test.").Sidecar()
+	two := h.storedEntry(t, "two.none.test.").Sidecar()
+	if one == nil || one != two {
+		t.Fatal("clean admissions do not share the generation's none sentinel")
+	}
+	if one != h.r.store.Load().none {
+		t.Fatal("the stamped none is not the published generation's own")
 	}
 }

@@ -2,6 +2,7 @@ package rpz
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	"github.com/miekg/dns"
@@ -17,29 +18,47 @@ import (
 // generation, because both travel in the same *rpz.Store.
 var storeGen atomic.Uint64
 
+// policyStore is one published generation with its shared explicit-none
+// sidecar. The none sentinel rides the same pointer as the rules, so an
+// evaluator can never stamp one generation's none beside another's rules
+// — and because it is shared, an admission that matched nothing
+// allocates nothing per entry (§5.11's explicit-none clause).
+type policyStore struct {
+	*rpz.Store
+	none *middleware.Sidecar
+}
+
 // publishStore assigns the next generation and swaps the store in.
 // Every store swap in this package goes through here.
 func (r *RPZ) publishStore(s *rpz.Store) {
 	s.Gen = storeGen.Add(1)
-	r.store.Store(s)
+	r.store.Store(&policyStore{
+		Store: s,
+		none:  &middleware.Sidecar{Value: &rpz.ResponseMatches{Gen: s.Gen}},
+	})
 }
 
 // SidecarEvaluator implements middleware.SidecarPolicyProvider: the
 // admission half of the cache seam. It evaluates a stored answer's
-// records against the response-IP tables and returns the uniform
-// per-zone match list, stamped with the generation it read. nil when the
-// middleware is disabled, and a nil Sidecar when no zone carries
-// response rules — the seam then stays entirely off.
+// records against the response-IP tables and returns the per-zone match
+// list stamped with the generation it read — or the generation's shared
+// none, so the overwhelmingly common clean admission allocates nothing.
+// nil when the middleware is disabled, and a nil Sidecar when no zone
+// carries response rules — the seam then stays entirely off.
 func (r *RPZ) SidecarEvaluator() middleware.SidecarEvaluator {
 	if !r.enabled {
 		return nil
 	}
 	return func(msg *dns.Msg) *middleware.Sidecar {
-		rm := r.store.Load().EvaluateResponse(msg.Answer)
-		if rm == nil {
+		s := r.store.Load()
+		if !s.HasResponseIP() {
 			return nil
 		}
-		return &middleware.Sidecar{Value: rm}
+		list := s.EvaluateResponseList(msg.Answer)
+		if len(list) == 0 {
+			return s.none
+		}
+		return &middleware.Sidecar{Value: &rpz.ResponseMatches{Gen: s.Gen, List: list}}
 	}
 }
 
@@ -62,10 +81,16 @@ func sidecarMatches(sc *middleware.Sidecar) (*rpz.ResponseMatches, bool) {
 	return rm, ok
 }
 
-// JudgeWireHit is the pure byte-serve decision over one entry's sidecar.
-// Held query-time candidates never reach this path: a holding query's
-// writer withholds its wire capability, so the gate only ever judges the
-// response side (§5.6 item 6).
+// JudgeWireHit is the pure byte-serve decision over one entry's sidecar,
+// and it is deliberately blunt: bytes serve only when the entry matched
+// nothing. Any match — enforce or shadow, winner or loser — goes to the
+// decoded path, because only this query's response wrap knows the held
+// candidates and the §5.4 finality that make the winner-bounded count
+// (and the action) correct; a decoded serve on a query whose decision
+// already fell carries no wrap and stays silent, exactly as a zone past
+// the winner must. That bluntness is also what keeps this judgment free
+// of the judge/commit generation race: nothing countable ever rides the
+// byte path, so there is nothing for a commit-time reload to miscount.
 func (r *RPZ) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVerdict {
 	s := r.store.Load()
 	if !s.HasResponseIP() {
@@ -75,104 +100,55 @@ func (r *RPZ) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVerdict {
 	if !ok || rm.Gen != s.Gen {
 		return middleware.WireHitRestamp
 	}
-	return r.judgeList(s, rm.List)
-}
-
-// JudgeWireChase judges a composed chase: any unevaluated or stale
-// segment sends the whole hit to the decoded path, whose per-segment
-// internal serves restamp as they chase; otherwise the folded lists are
-// judged exactly like an exact hit.
-func (r *RPZ) JudgeWireChase(chain middleware.SidecarChain) middleware.WireHitVerdict {
-	s := r.store.Load()
-	if !s.HasResponseIP() {
-		return middleware.WireHitServe
-	}
-	folded, ok := r.foldChain(s, chain)
-	if !ok {
-		return middleware.WireHitRestamp
-	}
-	return r.judgeList(s, folded)
-}
-
-// judgeList maps a merge over the response candidates to a verdict:
-// no enabled winner serves the truth; in shadow everything serves (the
-// count happens at the commit); in enforce a PASSTHRU winner serves and
-// anything else needs the decoded path to synthesize.
-func (r *RPZ) judgeList(s *rpz.Store, list []rpz.ResponseMatch) middleware.WireHitVerdict {
-	if len(list) == 0 {
-		return middleware.WireHitServe
-	}
-	winner, _ := s.Merge(rpz.ZoneMatch{}, nil, list)
-	if winner.Zone == nil || !r.enforce {
-		return middleware.WireHitServe
-	}
-	if winner.Effective() == rpz.ActionPassthru {
+	if len(rm.List) == 0 {
 		return middleware.WireHitServe
 	}
 	return middleware.WireHitDecode
 }
 
-// CountWireHit records a committed byte serve's policy outcome under the
-// winner-bounded semantic — the byte path is the only place this hit's
-// outcome still exists (§5.5).
-func (r *RPZ) CountWireHit(sc *middleware.Sidecar) {
+// JudgeWireChase judges a composed chase: any unevaluated or stale
+// segment sends the hit to the decoded path to be restamped as it
+// re-chases; any matching segment sends it there for the merge. The
+// decoded chase composes the whole answer before the wrap evaluates it,
+// so two segments matching one zone collapse to that zone's single
+// rule-4 best by construction (§5.6 item 4).
+func (r *RPZ) JudgeWireChase(chain middleware.SidecarChain) middleware.WireHitVerdict {
 	s := r.store.Load()
-	rm, ok := sidecarMatches(sc)
-	if !ok || rm.Gen != s.Gen {
-		return
+	if !s.HasResponseIP() {
+		return middleware.WireHitServe
 	}
-	r.countList(s, rm.List)
-}
-
-// CountWireChase is CountWireHit over the folded chase.
-func (r *RPZ) CountWireChase(chain middleware.SidecarChain) {
-	s := r.store.Load()
-	folded, ok := r.foldChain(s, chain)
-	if !ok {
-		return
-	}
-	r.countList(s, folded)
-}
-
-func (r *RPZ) countList(s *rpz.Store, list []rpz.ResponseMatch) {
-	if len(list) == 0 {
-		return
-	}
-	winner, observed := s.Merge(rpz.ZoneMatch{}, nil, list)
-	for _, o := range observed {
-		countMatch(o, outcomeObserved)
-	}
-	if winner.Zone == nil {
-		return
-	}
-	if r.enforce {
-		// A byte serve committed under an enforcing winner means the
-		// action was PASSTHRU — acting, by not acting.
-		countMatch(winner, outcomeEnforced)
-		return
-	}
-	countMatch(winner, outcomeObserved)
-}
-
-// foldChain gen-checks every segment and folds their lists per zone by
-// the rank key. ok is false when any segment is unevaluated or stale.
-func (r *RPZ) foldChain(s *rpz.Store, chain middleware.SidecarChain) ([]rpz.ResponseMatch, bool) {
-	lists := make([][]rpz.ResponseMatch, 0, chain.Len())
 	for i := 0; i < chain.Len(); i++ {
 		rm, ok := sidecarMatches(chain.At(i))
 		if !ok || rm.Gen != s.Gen {
-			return nil, false
+			return middleware.WireHitRestamp
 		}
-		lists = append(lists, rm.List)
+		if len(rm.List) > 0 {
+			return middleware.WireHitDecode
+		}
 	}
-	return rpz.FoldResponseLists(lists...), true
+	return middleware.WireHitServe
 }
+
+// CountWireHit and CountWireChase are deliberately empty: the judge
+// above never lets a matching entry serve bytes, so a committed byte
+// serve is always a none — and none is counted as nothing. Every real
+// count happens in the response wrap, which alone holds the query-time
+// candidates the winner-bounded semantic is defined over.
+func (r *RPZ) CountWireHit(*middleware.Sidecar)       {}
+func (r *RPZ) CountWireChase(middleware.SidecarChain) {}
+
+// wrapPool recycles response wraps: with response rules configured every
+// query installs one, and the clean wire hit must not pay a heap
+// allocation for it (§5.11). The wrap's lifetime is the Next call it
+// brackets — the same discipline every writer wrapper in the tree keeps —
+// so the put after the restore hands back an object nothing can reach.
+var wrapPool = sync.Pool{New: func() any { return new(responseWrap) }}
 
 // responseWrap is the response-side writer: it sees every decoded answer
 // leaving this query — cache hit or fresh resolution — evaluates its
 // records, merges them with the query-time candidates held under §5.4,
 // and applies (enforce) or counts (shadow) the winning action. Byte
-// serves pass through untouched: the gate judged and counted them.
+// serves pass through untouched: the gate admits only none entries.
 type responseWrap struct {
 	middleware.ResponseWriter
 	r   *RPZ
@@ -190,10 +166,7 @@ type responseWrap struct {
 // WriteMsg runs the serve-time merge on the outgoing decoded response.
 func (w *responseWrap) WriteMsg(m *dns.Msg) error {
 	s := w.r.store.Load()
-	var list []rpz.ResponseMatch
-	if rm := s.EvaluateResponse(m.Answer); rm != nil {
-		list = rm.List
-	}
+	list := s.EvaluateResponseList(m.Answer)
 	winner, observed := s.Merge(w.held, w.heldObserved, list)
 	for _, o := range observed {
 		countMatch(o, outcomeObserved)
@@ -204,7 +177,7 @@ func (w *responseWrap) WriteMsg(m *dns.Msg) error {
 	if !w.r.enforce {
 		countMatch(winner, outcomeObserved)
 		if debugLogEnabled() {
-			zlog_debugResponse(winner)
+			debugMatch("RPZ response match in shadow", winner)
 		}
 		return w.ResponseWriter.WriteMsg(m)
 	}
@@ -295,8 +268,4 @@ func (w *responseWrap) AbortWire() {
 	if l, ok := w.ResponseWriter.(middleware.WireBodyLeaser); ok {
 		l.AbortWire()
 	}
-}
-
-func zlog_debugResponse(winner rpz.ZoneMatch) {
-	debugMatch("RPZ response match in shadow", winner)
 }

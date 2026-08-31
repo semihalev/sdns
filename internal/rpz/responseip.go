@@ -71,17 +71,15 @@ type ResponseMatches struct {
 	List []ResponseMatch
 }
 
-// EvaluateResponse computes the per-zone best IP-trigger matches over a
-// response's answer records. It returns nil when no zone carries
-// response triggers — the caller then stamps nothing and the sidecar
-// machinery stays off. Local Data records are deep-copied at this
-// boundary: a slice-header copy would keep the old generation's
-// allocations reachable through every stamped entry.
-func (s *Store) EvaluateResponse(answers []dns.RR) *ResponseMatches {
-	if !s.HasResponseIP() {
-		return nil
-	}
-	rm := &ResponseMatches{Gen: s.Gen}
+// EvaluateResponseList computes the per-zone best IP-trigger matches
+// over a response's answer records, ascending by zone index. nil means
+// nothing matched (or no zone carries response triggers — callers that
+// need the distinction ask HasResponseIP), and nothing was allocated to
+// say so. Local Data records are deep-copied at this boundary: a
+// slice-header copy would keep the old generation's allocations
+// reachable through every stamped entry.
+func (s *Store) EvaluateResponseList(answers []dns.RR) []ResponseMatch {
+	var list []ResponseMatch
 	for idx, z := range s.Zones {
 		if !z.hasResponseTriggers() {
 			continue
@@ -91,9 +89,19 @@ func (s *Store) EvaluateResponse(answers []dns.RR) *ResponseMatches {
 			continue
 		}
 		best.ZoneIdx = idx
-		rm.List = append(rm.List, best)
+		list = append(list, best)
 	}
-	return rm
+	return list
+}
+
+// EvaluateResponse is EvaluateResponseList boxed with the generation:
+// nil when no zone carries response triggers, an empty non-nil result
+// for the explicit none.
+func (s *Store) EvaluateResponse(answers []dns.RR) *ResponseMatches {
+	if !s.HasResponseIP() {
+		return nil
+	}
+	return &ResponseMatches{Gen: s.Gen, List: s.EvaluateResponseList(answers)}
 }
 
 // matchResponse probes every answer address against the zone's family
@@ -165,43 +173,6 @@ func copyRecords(rrs []dns.RR) []dns.RR {
 		out[i] = dns.Copy(rr)
 	}
 	return out
-}
-
-// FoldResponseLists merges the per-segment match lists of one composed
-// chase, deduplicating per zone by the rank key: two segments matching
-// the same zone collapse to that zone's single rule-4 best, so one query
-// counts a zone exactly once (§5.6 item 4). Inputs and output are
-// ascending by zone index.
-func FoldResponseLists(lists ...[]ResponseMatch) []ResponseMatch {
-	var out []ResponseMatch
-	for _, list := range lists {
-		for _, m := range list {
-			pos := -1
-			for i := range out {
-				if out[i].ZoneIdx == m.ZoneIdx {
-					pos = i
-					break
-				}
-			}
-			if pos == -1 {
-				out = append(out, m)
-				continue
-			}
-			if m.betterThan(out[pos]) {
-				out[pos] = m
-			}
-		}
-	}
-	sortResponseMatches(out)
-	return out
-}
-
-func sortResponseMatches(list []ResponseMatch) {
-	for i := 1; i < len(list); i++ {
-		for j := i; j > 0 && list[j].ZoneIdx < list[j-1].ZoneIdx; j-- {
-			list[j], list[j-1] = list[j-1], list[j]
-		}
-	}
 }
 
 // asZoneMatch lifts a response candidate into the ZoneMatch shape the
