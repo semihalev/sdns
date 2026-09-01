@@ -64,13 +64,24 @@ A name that does not exist is an answer worth keeping, and RFC 2308 says how
 long for: the lifetime comes from the SOA in the denial, bounded by the smaller
 of its TTL and its MINIMUM field.
 
-The plain negative entry — the cached NXDOMAIN or NODATA itself — is held like
-any other answer, which means the same five-second floor the rest of the cache
-applies. A denial whose proof is shorter than that is still held for five
-seconds.
+That value is a ceiling, not a target. RFC 2308 says how long a resolver *may*
+cache the denial, so sdns applies no minimum on top of it: a zone that
+publishes a one-second negative TTL gets one second, and a denial carrying no
+lifetime at all is not cached.
+
+Ordinary answers do take a five-second floor. The difference is who is being
+overruled. A negative TTL is the zone's own statement about how long its denial
+holds, and raising it substitutes the resolver's judgement for the only party
+entitled to make that call. The floor on a positive answer overrules nobody —
+it is the resolver deciding how often to re-ask for a short-lived record, which
+is its own business.
+
+A denial arriving without an SOA is not cached either. There is nothing to
+derive a lifetime from, and RFC 2308 is explicit that caching it anyway is what
+lets two misconfigured servers pass the denial back and forth indefinitely.
 
 The two mechanisms that *reuse* a denial for names it was never asked about are
-bounded harder, and deliberately so. Both are on by default and both are
+bounded the same way, and were already. Both are on by default and both are
 covered under
 [Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}):
 RFC 8020 lets one NXDOMAIN answer every name beneath it, and RFC 8198 answers

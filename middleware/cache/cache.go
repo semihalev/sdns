@@ -1701,7 +1701,13 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	}
 	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
 
-	ttl := c.positive.ttl.Calculate(msgTTL)
+	// See Store.setFromResponseWithKey: a denial the zone granted no lifetime
+	// is not admitted (RFC 2308 §5). Unreachable for a positive answer, which
+	// always arrives on its own floor.
+	ttl := c.positive.ttl.CalculateFor(mt, msgTTL)
+	if ttl <= 0 {
+		return
+	}
 
 	entry := NewCacheEntryWithKey(filtered, ttl, c.config.RateLimit, key)
 	if entry == nil {

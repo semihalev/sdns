@@ -521,6 +521,29 @@ func (tm TTLManager) Calculate(msgTTL time.Duration) time.Duration {
 	return msgTTL
 }
 
+// (TTLManager).CalculateFor returns the effective TTL for a response of this
+// type. A denial takes its RFC 2308 lifetime as a ceiling and is bounded from
+// above only: the configured minimum is the resolver's own freshness policy,
+// and applying it to a denial would hold that denial past what the zone's SOA
+// authorised. Everything else keeps both bounds.
+//
+// The distinction has to be drawn on the response type rather than on which
+// sub-cache the entry lands in: NXDOMAIN and NODATA are stored in the positive
+// cache alongside ordinary answers, and the cache named `negative` holds
+// SERVFAIL. Bounding by sub-cache would floor every denial right back.
+func (tm TTLManager) CalculateFor(mt dnsutil.ResponseType, msgTTL time.Duration) time.Duration {
+	if mt != dnsutil.TypeNXDomain && mt != dnsutil.TypeNoRecords {
+		return tm.Calculate(msgTTL)
+	}
+	if msgTTL < 0 {
+		return 0
+	}
+	if msgTTL > tm.max {
+		return tm.max
+	}
+	return msgTTL
+}
+
 // CacheMetrics tracks cache performance metrics.
 type CacheMetrics struct {
 	hits       atomic.Int64

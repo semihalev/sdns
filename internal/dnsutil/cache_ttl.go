@@ -37,6 +37,14 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 
 	// Handle empty responses
 	if !hasRecords(msg) {
+		// A denial carries its lifetime in the SOA of the authority section.
+		// With no records at all there is nothing to derive one from, and RFC
+		// 2308 §5 says such a response should not be cached: without an SOA
+		// there is no way to stop a pair of misconfigured servers looping the
+		// denial between them forever.
+		if isNegative {
+			return 0
+		}
 		return MinCacheTTL
 	}
 
@@ -98,11 +106,29 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	}
 
 	// Apply bounds
-	if minTTL < MinCacheTTL {
-		return MinCacheTTL
-	}
 	if minTTL > MaxCacheTTL {
 		return MaxCacheTTL
+	}
+
+	// RFC 2308 §5 makes the SOA-derived lifetime a ceiling: it says how long a
+	// resolver *may* cache the denial. A floor inverts that — a zone that
+	// publishes a one-second negative TTL means one second, and holding it for
+	// five is the resolver overriding the only party entitled to decide. Zero
+	// is a real answer here, and the caller declines to admit the entry.
+	//
+	// Positive answers keep the floor. Nothing derives it from a zone's own
+	// statement about its data, so nothing is being overridden: it is the
+	// resolver's own guard against re-resolving a one-second record on every
+	// query, and RFC 1035 §3.2.1 leaves that latitude.
+	if isNegative {
+		if minTTL < 0 {
+			return 0
+		}
+		return minTTL
+	}
+
+	if minTTL < MinCacheTTL {
+		return MinCacheTTL
 	}
 
 	return minTTL
@@ -139,9 +165,13 @@ func getRRSIGTTL(sig *dns.RRSIG, now time.Time) time.Duration {
 	expireTime := time.Unix(int64(sig.Expiration), 0)
 	timeUntilExpire := expireTime.Sub(now)
 
-	// If signature has already expired, return minimum TTL
+	// An expired signature bounds the answer at zero. Returning the floor here
+	// made it a floor wearing a bound's clothes: on the denial path, which
+	// takes no floor of its own, it was the one thing still granting five more
+	// seconds of life to data whose proof had already lapsed. Positive answers
+	// land on their own floor immediately afterwards, so they see no change.
 	if timeUntilExpire <= 0 {
-		return MinCacheTTL
+		return 0
 	}
 
 	// Return the minimum of record TTL and time until expiration

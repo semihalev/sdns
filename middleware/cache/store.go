@@ -657,9 +657,16 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
-		ttl := capTTL(s.positive.ttl.Calculate(msgTTL))
-		if entry := newEntry(filtered, ttl); entry != nil {
-			s.positive.Set(key, entry)
+		// A denial the zone granted no lifetime is not cacheable at all (RFC
+		// 2308 §5). Admitting it with a zero TTL would occupy a slot that
+		// every later read has to discard, and the entry could never be
+		// served — the guard cannot fire for a positive answer, which always
+		// arrives on its own floor.
+		ttl := capTTL(s.positive.ttl.CalculateFor(mt, msgTTL))
+		if ttl > 0 {
+			if entry := newEntry(filtered, ttl); entry != nil {
+				s.positive.Set(key, entry)
+			}
 		}
 		// A scoped write has no source prefix here (only its already-hashed
 		// cache key), so it must not reset the unrelated global failure
@@ -723,7 +730,14 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
-		entry := inherit(NewCacheEntryWithKey(filtered, s.positive.ttl.Calculate(msgTTL), s.cfg.RateLimit, key))
+		// A refresh that comes back as a denial with no zone-granted lifetime
+		// is dropped rather than stored. The entry it would have replaced
+		// keeps its own remaining TTL and re-resolves when that runs out.
+		ttl := s.positive.ttl.CalculateFor(mt, msgTTL)
+		if ttl <= 0 {
+			return false
+		}
+		entry := inherit(NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
 		if entry == nil {
 			return false
 		}

@@ -190,6 +190,11 @@ func TestGetRRSIGTTL(t *testing.T) {
 			expectedTTL: 1 * time.Hour,
 		},
 		{
+			// Zero, not the floor. This function reports a bound, and a
+			// lapsed signature bounds the data at nothing; the floor is
+			// applied afterwards and only to the response types that take
+			// one. Returning MinCacheTTL here used to be the last thing
+			// granting a denial five more seconds on an expired proof.
 			name: "Signature already expired",
 			sig: &dns.RRSIG{
 				Hdr: dns.RR_Header{
@@ -197,7 +202,7 @@ func TestGetRRSIGTTL(t *testing.T) {
 				},
 				Expiration: uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp
 			},
-			expectedTTL: MinCacheTTL,
+			expectedTTL: 0,
 		},
 	}
 
