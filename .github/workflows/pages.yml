@@ -55,9 +55,12 @@ jobs:
   # tag or a dead link is caught in review rather than after a deploy.
   #
   # ruby/setup-ruby with the checked-in Gemfile rather than
-  # actions/jekyll-build-pages: that action pins the github-pages gem, which is
-  # Jekyll 3.10, while the site is developed against Jekyll 4.4. Building with
-  # a toolchain nobody runs locally is how a green CI ships a broken page.
+  # actions/jekyll-build-pages. That action pins the github-pages gem, which
+  # pins Jekyll 3.10 and — through commonmarker — Ruby < 4.0. On a machine
+  # running Ruby 4 the gem cannot be installed at all, so nobody could
+  # reproduce the CI build locally; a failure would first appear after a
+  # deploy. The cost of building it ourselves is this lockfile, which is why
+  # it is committed and carries the runner's platform.
   build:
     # The release event only redispatches; the dispatched run does the work.
     if: github.event_name != 'release'
