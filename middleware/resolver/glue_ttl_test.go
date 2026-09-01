@@ -57,7 +57,7 @@ func TestGlueCacheHonorsTTL(t *testing.T) {
 
 // TestGlueCacheHitDoesNotRenewHorizon reproduces the renewal leak: an entry
 // five seconds from expiry is read through the full lookupV4Nss flow, which
-// used to feed the remaining TTL straight back through the 30-second floor —
+// used to feed the remaining TTL straight back through the 30-second floor,
 // so every read of a nearly-expired address bought it another 30 seconds,
 // indefinitely. A hit is not new information; the stored horizon must survive
 // the read untouched.

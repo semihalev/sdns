@@ -27,7 +27,7 @@ func promValue(t *testing.T, c prometheus.Counter) float64 {
 }
 
 // newTestCounter builds a Counter without touching the global
-// Prometheus registry — tests can run repeatedly without
+// Prometheus registry, tests can run repeatedly without
 // duplicate-registration panics.
 func newTestCounter(name string) (*Counter, prometheus.Counter) {
 	prom := prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: "test"})
@@ -193,7 +193,7 @@ func TestCounterConcurrentIncAndFlush(t *testing.T) {
 
 // TestCounterShardsAreUsed sanity-checks that procPin actually spreads
 // writes. With many goroutines, more than one shard should have a non-
-// zero value. This is informational — flaky if Go's scheduler happens
+// zero value. This is informational, flaky if Go's scheduler happens
 // to pin everything to one P during the test, but on multi-core
 // runners that essentially never happens.
 func TestCounterShardsAreUsed(t *testing.T) {
@@ -218,7 +218,7 @@ func TestCounterShardsAreUsed(t *testing.T) {
 		}
 	}
 	if used < 2 {
-		t.Logf("only %d shard(s) used — scheduler may have pinned everything to one P. Not a failure, but unusual.", used)
+		t.Logf("only %d shard(s) used, scheduler may have pinned everything to one P. Not a failure, but unusual.", used)
 	}
 }
 
@@ -288,7 +288,7 @@ func TestCounterVecConcurrentCreate(t *testing.T) {
 }
 
 // TestCounterVecConcurrentCreateDistinct stresses the create() path
-// with many goroutines registering DIFFERENT tuples — exercises the
+// with many goroutines registering DIFFERENT tuples, exercises the
 // map-copy step under the writeMu. Map grows from 0 to N entries.
 func TestCounterVecConcurrentCreateDistinct(t *testing.T) {
 	cv := newTestCounterVec("test_vec_distinct", []string{"outcome"})
@@ -334,7 +334,7 @@ func TestJoinLabels(t *testing.T) {
 		{"three", []string{"a", "b", "c"}},
 		{"with empty", []string{"a", "", "c"}},
 	}
-	// We don't pin exact bytes — the encoding format is internal.
+	// We don't pin exact bytes, the encoding format is internal.
 	// What we DO pin: each input produces a distinct encoding.
 	seen := map[string]string{}
 	for _, tc := range tests {
@@ -351,9 +351,9 @@ func TestJoinLabels(t *testing.T) {
 // TestEncodeKeyCollisionResistance covers the bugs the old
 // separator-based joinLabels would silently allow:
 //
-//   - ("a", "bc") vs ("ab", "c") — boundary ambiguity
-//   - ("a\x1Fb",) vs ("a", "b") — separator-in-value collision
-//   - () vs ("",) — zero-arity vs one-empty-value collision
+//   - ("a", "bc") vs ("ab", "c"), boundary ambiguity
+//   - ("a\x1Fb",) vs ("a", "b"), separator-in-value collision
+//   - () vs ("",), zero-arity vs one-empty-value collision
 //
 // All three pairs must encode to distinct keys.
 func TestEncodeKeyCollisionResistance(t *testing.T) {
@@ -463,7 +463,7 @@ func TestSetFlushIntervalAfterStartPanics(t *testing.T) {
 }
 
 // TestLazyAutoStart: registering a Counter must implicitly start
-// the flusher — no caller-visible StartFlusher needed.
+// the flusher, no caller-visible StartFlusher needed.
 func TestLazyAutoStart(t *testing.T) {
 	t.Cleanup(resetForTest)
 	resetForTest()

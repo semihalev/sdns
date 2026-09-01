@@ -3,7 +3,7 @@ layout: doc
 title: Response Policy Zones
 category: Features
 order: 1
-description: Policy feeds that rewrite, deny or drop answers — by name, by client address, or by the address in the answer.
+description: Policy feeds that rewrite, deny or drop answers, by name, by client address, or by the address in the answer.
 ---
 
 RPZ expresses DNS policy as a zone. The rules are ordinary resource records in
@@ -40,7 +40,7 @@ matches a query for `evil.example`.
 which is how you carve out a network from a policy, or apply one only to it.
 
 **An address in the answer.** A rule under `rpz-ip` matches on what the answer
-turned out to contain — the case a name-based feed cannot cover, because the
+turned out to contain, the case a name-based feed cannot cover, because the
 name is new and only the hosting address is known bad.
 
 Answer-address rules are evaluated after resolution, against the answer that
@@ -83,7 +83,7 @@ policy = "given"
 ```
 
 Files are reloaded automatically when replaced, so a download cron is enough to
-keep a feed current — no restart and no signal.
+keep a feed current, no restart and no signal.
 
 `origin` matters for downloaded feeds. Many publish their SOA as `@` with the
 rules relative to it, leaving the apex for the consuming server to supply. Those
@@ -103,7 +103,7 @@ tsig_key = "feedkey.:hmac-sha256.:c2VjcmV0"
 
 An AXFR-fed zone names its primary and its apex, and never a file. It follows
 the feed's own SOA schedule: refresh, retry, and withdrawal of the rules once
-the zone passes SOA expire. Withdrawal fails open — an expired feed stops
+the zone passes SOA expire. Withdrawal fails open, an expired feed stops
 applying rather than starting to deny.
 
 `tsig_key` is `name:algorithm:base64-secret` and signs the transfer when the

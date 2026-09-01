@@ -249,7 +249,7 @@ func TestCacheSizeMonitoring(t *testing.T) {
 	// insert reaches maxSize+1 and immediately evicts back under the same
 	// segment lock. Samples routinely land inside that window (under the race
 	// detector it covers most of an eviction cycle), so a sample-rate
-	// threshold is a coin flip. Assert the design's hard bound instead —
+	// threshold is a coin flip. Assert the design's hard bound instead,
 	// occupancy may never exceed capacity by more than the one in-flight
 	// insert.
 	if maxObserved > maxSize+1 {

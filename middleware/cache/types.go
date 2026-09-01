@@ -29,7 +29,7 @@ type DCache interface {
 // The response is retained in packed wire form: one pointer-free byte slice
 // instead of a parsed message graph of ~two dozen heap objects. At the field
 // scale that graph was the dominant GC mark cost (18M live objects on a warm
-// 743k-entry canary). Serving unpacks a fresh message per hit — comparable
+// 743k-entry canary). Serving unpacks a fresh message per hit, comparable
 // work to the deep Copy the parsed representation already paid, since a
 // served message must be privately mutable either way.
 type CacheEntry struct {
@@ -53,7 +53,7 @@ type CacheEntry struct {
 	wireServe wireServeFlags
 	// compress preserves the admitted message's Compress flag. Unpack never
 	// sets it, so without this a served message would always repack
-	// uncompressed — invisible inside the standard chain (the edns layer
+	// uncompressed, invisible inside the standard chain (the edns layer
 	// re-enables compression) but a behavior break for exported
 	// Store/CacheEntry consumers writing responses directly.
 	compress   bool
@@ -73,7 +73,7 @@ type CacheEntry struct {
 	// a different ECS audience through a collision.
 	//
 	// The zero value means the shared key. A scoped entry is also not
-	// eligible for background refresh — the prefetch worker can't
+	// eligible for background refresh, the prefetch worker can't
 	// resynthesise the client IP a scoped query implied, so a refresh
 	// would store the wrong audience's answer under the scoped key.
 	// PrefetchEligible() reflects this.
@@ -85,8 +85,8 @@ type CacheEntry struct {
 	// parent-granted lease of the delegation it came from, no matter
 	// how long its own TTL is. Zero means unbounded (forwarder and
 	// local answers, or no learned delegation on the path). Enforced
-	// at read time — remaining() takes the min of the TTL expiry and
-	// this deadline — so it also overrides the configured MinTTL
+	// at read time, remaining() takes the min of the TTL expiry and
+	// this deadline, so it also overrides the configured MinTTL
 	// floor when the cut is shorter.
 	cutUntil time.Time
 
@@ -95,11 +95,11 @@ type CacheEntry struct {
 	// enforcement depends only on cutUntil.
 	cutKey uint64
 
-	// sidecar is policy state stamped beside the immutable entry — the
+	// sidecar is policy state stamped beside the immutable entry, the
 	// same shape as the prefetch claim above: a mutable atomic the entry
 	// carries without ever being copied. The cache never reads its Value;
 	// it is stamped at admission by the wired evaluator and handed to the
-	// wire-hit gate at serve time. nil means unevaluated — unknown, never
+	// wire-hit gate at serve time. nil means unevaluated, unknown, never
 	// clean (middleware.Sidecar's contract).
 	sidecar atomic.Pointer[middleware.Sidecar]
 }
@@ -110,7 +110,7 @@ func (e *CacheEntry) Sidecar() *middleware.Sidecar {
 	return e.sidecar.Load()
 }
 
-// CompareAndStampSidecar installs next if the entry still carries prev —
+// CompareAndStampSidecar installs next if the entry still carries prev,
 // the restamp a serve performs when it finds a stale generation. The
 // generation lives inside the opaque value; the CAS only guarantees no
 // concurrent restamp is silently overwritten.
@@ -206,7 +206,7 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 
 // NewScopedCacheEntry creates a cache entry that's been keyed under
 // an ECS scope. scope MUST be the prefix the entry's key was computed
-// from — the hit-path verifier compares the two exactly, so an entry
+// from, the hit-path verifier compares the two exactly, so an entry
 // admitted under a scope it does not carry is unreachable. A /0 or
 // invalid scope leaves the entry shared, matching CacheKey.Hash, which
 // collapses /0 to the unscoped key.
@@ -230,13 +230,13 @@ func (e *CacheEntry) scoped() bool { return e.scope.IsValid() }
 // PrefetchEligible reports whether the prefetch worker may refresh
 // this entry. Scoped entries are skipped because the worker has no
 // client IP, so a refresh would lose the ECS scope and create a
-// shared-key entry instead — wrong answer for the wrong audience.
+// shared-key entry instead, wrong answer for the wrong audience.
 func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped() }
 
 // NewCacheEntryWithKey creates a new cache entry with a specific key for rate
-// limiting. It returns nil for a message that cannot be packed — such a
+// limiting. It returns nil for a message that cannot be packed, such a
 // response was never servable on the wire, so declining to cache it is the
-// safe outcome — and for an explicit RRSIG answer the stored view would
+// safe outcome, and for an explicit RRSIG answer the stored view would
 // thin, which a hit may not answer with fewer signatures than the first
 // response did. Callers treat nil as "not cacheable" either way.
 func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
@@ -259,8 +259,8 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 	// serves these bytes with each record's TTL set to the entry's remaining
 	// lifetime, and that lifetime is bounded by the usable signatures alone
 	// (dnsutil.CalculateCacheTTL): a signature outside its validity period
-	// — a rollover's lapsed sibling, or one whose inception has not arrived
-	// — was received with whatever TTL it carried and would be handed out
+	//, a rollover's lapsed sibling, or one whose inception has not arrived
+	//, was received with whatever TTL it carried and would be handed out
 	// on the next hit with the entry's, a zero returned as an hour, and the
 	// not-yet-valid one revived once its inception passed. The uncached
 	// first response still carries them as the authority sent them.
@@ -295,7 +295,7 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 	// Name compression keeps the stored form smaller than the upstream wire.
 	// PackClone packs into pooled scratch and returns an exact-size copy:
 	// the compression dictionary and the oversized pack buffer the library
-	// allocated per admission are pooled away, and the entry — long-lived —
+	// allocated per admission are pooled away, and the entry, long-lived,
 	// retains only the bytes it serves.
 	msgCopy.Compress = true
 	wire, err := wirepack.PackClone(msgCopy)
@@ -329,8 +329,8 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 // prepareStripped packs the body a client without DO receives: the same
 // message with its DNSSEC records removed. Most clients do not set DO, and
 // most of what a validating resolver caches is signed, so without this the
-// commonest hit of all decodes the stored bytes into a message — turning
-// every signature into a base64 string on the way — only to drop those very
+// commonest hit of all decodes the stored bytes into a message, turning
+// every signature into a base64 string on the way, only to drop those very
 // records and pack what is left.
 //
 // The stripped body is packed here, once per entry, rather than derived from
@@ -346,14 +346,14 @@ func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg) {
 	}
 
 	// ClearDNSSEC replaces the sections it filters rather than editing them,
-	// so the stored message's own arrays are unaffected by this copy — and
+	// so the stored message's own arrays are unaffected by this copy, and
 	// the body is stripped by exactly the function the Msg path uses, which
 	// is what keeps the two answers identical.
 	stripped := *msgCopy
 	dnsutil.ClearDNSSEC(&stripped)
 	stripped.Compress = true
 
-	// Pooled scratch, exact-size result — the second per-admission pack,
+	// Pooled scratch, exact-size result, the second per-admission pack,
 	// same treatment as the first.
 	body, err := wirepack.PackClone(&stripped)
 	if err != nil {
@@ -506,7 +506,7 @@ func (e *CacheEntry) GetRateLimiter() *rate.Limiter {
 // CacheKey represents a structured cache key.
 //
 // Scope is the ECS prefix (RFC 7871) the authority claimed its
-// answer is scoped to. The zero value means "shared" — an entry
+// answer is scoped to. The zero value means "shared", an entry
 // keyed with no scope is reachable by any client, which is the
 // pre-Stage-2 default and how non-ECS traffic and SCOPE=0
 // authority answers continue to behave after the upgrade.
@@ -519,8 +519,8 @@ type CacheKey struct {
 // (CacheKey).Hash returns the cache key hash. Routes to
 // cache.KeyWithPrefix when Scope is valid (family + bit-length +
 // address are all folded in so /22 and /24 of the same address
-// don't alias), and to the legacy cache.Key — bit-identical to
-// pre-Stage-2 — when Scope is the zero value, so old entries keep
+// don't alias), and to the legacy cache.Key, bit-identical to
+// pre-Stage-2, when Scope is the zero value, so old entries keep
 // hitting after upgrade. A /0 scope collapses to the unscoped key
 // because a /0 answer is semantically "global", same as no scope.
 func (k CacheKey) Hash() uint64 {
@@ -558,7 +558,7 @@ type CacheConfig struct {
 
 	// ECSMaxTTL caps the lifetime of cache entries keyed under an
 	// ECS scope. Geo-routed answers tend to go stale faster than
-	// the resolver's general MaxTTL would suggest — a CDN
+	// the resolver's general MaxTTL would suggest, a CDN
 	// re-pointing a /24 between PoPs is normal traffic. Zero
 	// disables the cap (scoped entries live as long as their
 	// upstream TTL allowed). Populated from cfg.ECS.CacheLimitTTL.
@@ -667,7 +667,7 @@ func (m *CacheMetrics) Stats() (hits, misses, evictions, prefetches int64) {
 
 // storableRecords returns records without the signatures that are outside
 // their validity period at now. The common shape, nothing to drop, passes
-// the caller's slice through untouched — this runs on every admission, and
+// the caller's slice through untouched, this runs on every admission, and
 // a response carries a lapsed or not-yet-valid signature only mid-rollover.
 func storableRecords(records []dns.RR, now time.Time) []dns.RR {
 	drop := 0
@@ -696,7 +696,7 @@ func storableRecords(records []dns.RR, now time.Time) []dns.RR {
 // The additional section bounds neither AD nor the entry's lifetime (RFC
 // 4035 §3.2.3; nothing validates it), and every hit serves each record with
 // that lifetime as its TTL. So a signature here can be kept only when it
-// permits at least the entry's lifetime — a live one carrying a shorter TTL
+// permits at least the entry's lifetime, a live one carrying a shorter TTL
 // would be handed out inflated, and one outside its validity period would be
 // handed out at all. A signed RRset does not go on without its signature,
 // either: RFC 4035 §3.1.1 has the two travel together, and a mail exchanger's
@@ -709,7 +709,7 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 	var ede *dns.EDNS0_EDE
 
 	// honours reports whether the entry's lifetime stays within what sig
-	// permits — exactly. The lifetime and this check read the same clock
+	// permits, exactly. The lifetime and this check read the same clock
 	// (newCacheEntryAt), so there is no measurement gap to forgive, and a
 	// served TTL rounds only at the serve point: RFC 4035 §5.3.3's ceiling
 	// is not a place for tolerance, a one-second signature admitted to a
@@ -733,7 +733,7 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 	}
 	// Names compare as DNS names, not as text: an owner spelled with an
 	// escaped octet packs to the same wire name as its plain spelling, and
-	// a case fold of the presentation form does not see that — a record
+	// a case fold of the presentation form does not see that, a record
 	// received under one spelling slipped past the TTL check made against
 	// its signature under the other.
 	sameName := func(a, b string) bool { return dnsname.CanonicalCompare(a, b) == 0 }

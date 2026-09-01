@@ -24,7 +24,7 @@ import (
 // Nothing may retain it: the storage is reused for the next request.
 //
 // Accessors report the client's original request facts. Materialization is
-// one-way — wire → normalized → Msg — and never rewrites the parsed facts,
+// one-way, wire → normalized → Msg, and never rewrites the parsed facts,
 // so a handler that only needs the question or the EDNS shape never pays
 // for decoding.
 type Request struct {
@@ -90,7 +90,7 @@ func NewRequest(m *dns.Msg) *Request {
 //
 // The decode alone is not the whole transition, though. A handler that
 // goes on to call Next must not hand the job carrier to downstream
-// handlers — Chain.Next detects a request materialized this way and
+// handlers, Chain.Next detects a request materialized this way and
 // detaches for them. A handler that needs the detached context for its
 // own work (it starts recursion, derives a deadline, pins request-tree
 // state) asks for both at once with Chain.Materialize.
@@ -101,7 +101,7 @@ func (r *Request) Msg() *dns.Msg {
 	return r.msg
 }
 
-// Undecoded reports whether the request is still wire-only — no message
+// Undecoded reports whether the request is still wire-only, no message
 // has been built for it. It is the gate a handler puts in front of its
 // wire branch: reading it never triggers a decode, where Msg does.
 func (r *Request) Undecoded() bool { return r.msg == nil }
@@ -125,8 +125,8 @@ func (r *Request) EDNSWriterSlot() any { return r.ednsWriterSlot }
 
 // The accessors below answer from the parsed facts whenever the request
 // came in as bytes, and from the message otherwise. The precedence is the
-// point: materializing a wire-born request normalizes it — SetEdns0
-// attaches an OPT, forces DO, clamps the advertised size — so reading the
+// point: materializing a wire-born request normalizes it, SetEdns0
+// attaches an OPT, forces DO, clamps the advertised size, so reading the
 // message back would tell a handler that a client which sent no OPT had
 // asked for DNSSEC. The parsed facts are what the client actually sent,
 // and they never change.
@@ -256,7 +256,7 @@ func (r *Request) HasECS() bool {
 
 // HasTCPKeepalive reports whether the request carried the RFC 7828
 // edns-tcp-keepalive option. Whether that means anything is the edns
-// layer's call — the option is only honoured on a stream transport.
+// layer's call, the option is only honoured on a stream transport.
 func (r *Request) HasTCPKeepalive() bool {
 	if r.wireBorn() {
 		return r.hasKeepalive
@@ -305,8 +305,8 @@ func (r *Request) ClientCookie() []byte {
 	return r.raw[r.cookieOff : r.cookieOff+8]
 }
 
-// CookieEcho returns the full cookie option bytes the client sent — the
-// client half plus any echoed server half — or nil. Valid only for
+// CookieEcho returns the full cookie option bytes the client sent, the
+// client half plus any echoed server half, or nil. Valid only for
 // wire-born requests.
 func (r *Request) CookieEcho() []byte {
 	if r.cookieLen == 0 {
@@ -349,8 +349,8 @@ func (r *Request) materialize() *dns.Msg {
 
 // ParseWire parses and validates raw into the request. It allocates
 // nothing: every fact is a scalar or an offset into raw. Eligibility is
-// conservative — exactly one question over an uncompressed name, empty
-// answer/authority, at most one well-formed root OPT, plain query opcode —
+// conservative, exactly one question over an uncompressed name, empty
+// answer/authority, at most one well-formed root OPT, plain query opcode,
 // and false means the packet must take the decoded entry instead.
 func (r *Request) ParseWire(raw []byte, readTime time.Time, ednsSlot any) bool {
 	*r = Request{}
@@ -465,7 +465,7 @@ func (r *Request) parseWireOPT(off int) bool {
 		case dns.EDNS0COOKIE:
 			// RFC 7873: client half is 8 bytes, full cookie 8..40. A
 			// packet with more than one cookie option is not a shape the
-			// strict path knows — the decoded entry keeps its option-loop
+			// strict path knows, the decoded entry keeps its option-loop
 			// semantics for it.
 			if optLen < 8 || optLen > 40 || r.cookieLen != 0 {
 				return false
@@ -515,7 +515,7 @@ func (r *Request) parseWireOPT(off int) bool {
 		default:
 			// An option this parser does not validate is a packet it must
 			// not admit. The library checks each option's payload as it
-			// decodes, and a shape it rejects owes the client a FORMERR —
+			// decodes, and a shape it rejects owes the client a FORMERR,
 			// which cannot happen if this path has already answered from
 			// cache. Declining costs such a query a decode, nothing more.
 			return false
@@ -534,8 +534,8 @@ type WireTransportLeaser interface {
 }
 
 // release drops the decoded message this request materialized, if any.
-// The parsed wire facts survive — they are offsets into storage the
-// transport owns — so a wire-born request stays fully readable through
+// The parsed wire facts survive, they are offsets into storage the
+// transport owns, so a wire-born request stays fully readable through
 // its accessors; what goes is the heap graph a decode built.
 func (r *Request) release() {
 	r.msg = nil

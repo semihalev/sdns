@@ -11,7 +11,7 @@ in `gen.go` places `kubernetes` before the `cache` middleware so the
 cache layer doesn't see these answers either. That is by design:
 registry lookups are already O(1), and only the `dns.Msg` setup +
 wire packing in `ServeDNS` cost allocations on the hot path. If you
-are debugging stale answers, the source of truth is the registry —
+are debugging stale answers, the source of truth is the registry,
 the upstream `cache` is not involved.
 
 ## Features
@@ -59,13 +59,13 @@ RWMutexes serialise reads against any concurrent write to the same shard.
 
 ## File structure
 
-- `kubernetes.go` — middleware entry: `New`, `ServeDNS`, `Stats`, demo seed
-- `registry.go` — sharded `Registry`: query resolution + accessors
-- `client.go` — Kubernetes API client (informers for Services, EndpointSlices, Pods)
-- `types.go` — `Service`, `Pod`, `Endpoint`, `Port`
-- `ipv6_utils.go` — IPv6 parsing helpers
-- `constants.go` — TTLs, network octets, etc.
-- `test_helpers.go` — mock `ResponseWriter` for tests
+- `kubernetes.go`: middleware entry, `New`, `ServeDNS`, `Stats`, demo seed
+- `registry.go`: sharded `Registry`, query resolution + accessors
+- `client.go`: Kubernetes API client (informers for Services, EndpointSlices, Pods)
+- `types.go`: `Service`, `Pod`, `Endpoint`, `Port`
+- `ipv6_utils.go`: IPv6 parsing helpers
+- `constants.go`: TTLs, network octets, etc.
+- `test_helpers.go`: mock `ResponseWriter` for tests
 
 ## Configuration
 
@@ -85,7 +85,7 @@ ptr     = 30
 ```
 
 > The legacy `killer_mode` flag is accepted for backward compatibility
-> but has no effect — the middleware always uses the sharded registry.
+> but has no effect, the middleware always uses the sharded registry.
 > Remove it from your config; SDNS logs a deprecation warning if it is
 > set to `true`.
 
@@ -112,7 +112,7 @@ dig @localhost service-name.namespace.svc.cluster.local AAAA
 
 - Node DNS queries not implemented (rarely used in practice).
 - Search domains must be configured in SDNS, not extracted from pods.
-- EndpointSlices only — legacy Endpoints are not consumed.
+- EndpointSlices only, legacy Endpoints are not consumed.
 
 ## RBAC
 
@@ -159,12 +159,12 @@ identity, and RBAC permissions for Services / Pods / EndpointSlices.
 **Queries not resolving.** Ensure `cluster_domain` matches the
 cluster's actual domain (`kubectl get cm -n kube-system coredns -o yaml`
 shows the answer if you're migrating from CoreDNS). Check that
-informers have synced — the middleware passes through to the next
+informers have synced, the middleware passes through to the next
 handler until at least one informer has populated the registry.
 
 **Cache behaviour.** This middleware does not cache responses, and the
 `cache` middleware sits *below* it in the chain (see `gen.go`) so it
 never sees Kubernetes answers either. There is no DNS-message cache in
 this path. Stale answers can therefore only come from stale informer
-state — check `Stats()["registry"]` and the Kubernetes API directly,
+state, check `Stats()["registry"]` and the Kubernetes API directly,
 not the cache middleware.

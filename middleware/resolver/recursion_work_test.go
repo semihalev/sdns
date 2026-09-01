@@ -100,8 +100,8 @@ func TestRecursionWorkNXNSInternalBudget(t *testing.T) {
 	}
 
 	// The NXNS shape: one referral naming many glue-less hosts. The walk
-	// resolves synchronously only until two hosts yield addresses — the
-	// failover floor — so a roster that resolves costs the request two
+	// resolves synchronously only until two hosts yield addresses, the
+	// failover floor, so a roster that resolves costs the request two
 	// internal queries; the rest is lane work that never touches this
 	// request's budget.
 	t.Run("a resolving roster costs the two-host floor", func(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 // httpErrors counts DoH responses sent with a 4xx or 5xx status.
 // Labelled by status code (closed set: 400/405/415/500) so operators
 // can distinguish bad-request floods from server-side decode
-// failures. The 200-path is not counted here — that's what
+// failures. The 200-path is not counted here, that's what
 // dns_queries_total already measures.
 var (
 	httpErrors = metric.NewCounterVec(nil, prometheus.CounterOpts{

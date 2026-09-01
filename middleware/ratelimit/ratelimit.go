@@ -73,7 +73,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// The replay pass finishes a query the inline pass admitted: its
 	// token was consumed and its cookie checked there, and a second
 	// charge would bill one question twice. The limiter is pure entry
-	// effect — nothing here observes the response — so the replay just
+	// effect, nothing here observes the response, so the replay just
 	// passes through.
 	if ch.Replay() {
 		ch.Next(ctx)
@@ -168,7 +168,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 // serveWire mirrors the decoded body over parsed wire facts. The cookie
 // comparison works on the hex form option.String() produces, so a request
-// whose cookie verifies — or that has no cookie and passes the limiter —
+// whose cookie verifies, or that has no cookie and passes the limiter,
 // continues down the chain undecoded. The one branch that must write a
 // cookie back to the client, UDP BADCOOKIE, materializes; it is the
 // stale-cookie retry path, not the steady state.
@@ -221,7 +221,7 @@ func (r *RateLimit) serveWire(ctx context.Context, ch *middleware.Chain) {
 				return
 			}
 
-			// No cookie option in the decoded form — unreachable while
+			// No cookie option in the decoded form, unreachable while
 			// ratelimit precedes edns in the chain, but the decoded body
 			// would take the plain limiter, so take it here too, on the
 			// materialized context.

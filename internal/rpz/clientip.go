@@ -8,14 +8,14 @@ import (
 )
 
 // The CLIENT-IP trigger encodes an address block as an owner name under
-// rpz-client-ip (draft §4.1.1): "prefix.B4.B3.B2.B1" for IPv4 — octets
-// reversed, IN-ADDR.ARPA style — and "prefix.W8...W1" for IPv6, the
+// rpz-client-ip (draft §4.1.1): "prefix.B4.B3.B2.B1" for IPv4, octets
+// reversed, IN-ADDR.ARPA style, and "prefix.W8...W1" for IPv6, the
 // 16-bit hextets reversed, with a single "zz" label standing for a run of
 // zero fields.
 //
 // The two families stay in SEPARATE tables, deliberately. Folding IPv4
 // into the ::ffff/96 corner of one 128-bit space read well and was wrong
-// twice over: a short IPv6 prefix — ::/0 above all — would swallow every
+// twice over: a short IPv6 prefix, ::/0 above all, would swallow every
 // IPv4 client, applying a rule the feed wrote for one family to the
 // other; and an IPv6 ::ffff:0:0/96 rule collided with IPv4 0.0.0.0/0 in
 // the same slot. An encoding names its family, and the family is part of
@@ -28,7 +28,7 @@ import (
 //
 // Shape: one map of masked addresses per prefix length actually present,
 // walked longest-first. The walk is bounded by the feed's distinct
-// lengths, not by us — the adversarial all-lengths benchmark beside this
+// lengths, not by us, the adversarial all-lengths benchmark beside this
 // file is the exit criterion that keeps the shape honest.
 type ipLPM struct {
 	// lens holds the prefix lengths present, sorted descending, so the
@@ -101,7 +101,7 @@ func (l *ipLPM) lookup(addr netip.Addr) (*Rule, int) {
 }
 
 // CanonicalClient is the query-time twin of the rule-side encoding: the
-// client's address in its family's native form. Unmap matters — a
+// client's address in its family's native form. Unmap matters, a
 // transport may hand an IPv4 client over as ::ffff:a.b.c.d, and that
 // spelling must meet the IPv4 rules, not the IPv6 ones.
 func CanonicalClient(a netip.Addr) netip.Addr { return a.Unmap() }
@@ -109,7 +109,7 @@ func CanonicalClient(a netip.Addr) netip.Addr { return a.Unmap() }
 // parseClientIPOwner decodes the owner labels ahead of the rpz-client-ip
 // marker into a 128-bit-space prefix. enc is the relative owner with the
 // marker stripped, e.g. "24.0.2.0.192" or "128.1.zz.db8.2001". ok is
-// false for an encoding the draft does not describe — counted by the
+// false for an encoding the draft does not describe, counted by the
 // caller as SkipOwnerEncoding, never a load failure.
 //
 // Host bits below the prefix are masked rather than refused: feeds vary
@@ -127,7 +127,7 @@ func parseClientIPOwner(enc string) (netip.Prefix, bool) {
 	labels = labels[1:]
 
 	// IPv4: exactly four decimal octet labels, reversed. The prefix
-	// stays in its own family — the family is part of what a rule means.
+	// stays in its own family, the family is part of what a rule means.
 	if len(labels) == 4 && isV4Octets(labels) {
 		if bits > 32 {
 			return netip.Prefix{}, false
@@ -135,7 +135,7 @@ func parseClientIPOwner(enc string) (netip.Prefix, bool) {
 		var b [4]byte
 		for i, s := range labels {
 			// ParseUint's 8-bit cap makes the byte conversion's bound
-			// local and provable — isV4Octets already guaranteed it, but
+			// local and provable, isV4Octets already guaranteed it, but
 			// a guarantee an analyzer cannot see is one a reader has to
 			// chase too.
 			v, err := strconv.ParseUint(s, 10, 8)
@@ -176,7 +176,7 @@ func parseClientIPOwner(enc string) (netip.Prefix, bool) {
 		return netip.Prefix{}, false
 	}
 
-	// Labels run W8..W1 — the address's fields reversed — and zz expands
+	// Labels run W8..W1, the address's fields reversed, and zz expands
 	// in place to whatever count restores eight.
 	full := make([]uint16, 0, 8)
 	zero := 8 - len(fields)

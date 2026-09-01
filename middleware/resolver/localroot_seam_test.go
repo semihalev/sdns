@@ -207,13 +207,13 @@ func TestLocalRootAnswersCarryTheClientRequest(t *testing.T) {
 // TestLocalRootDenialRequiresCoverage pins the evaluator gate: a copy whose
 // NSEC chain does not actually prove the name absent must fall back to the
 // real roots rather than synthesize an authenticated denial. The zone here
-// is sealed and verified — its chain is simply too short to cover, which is
+// is sealed and verified, its chain is simply too short to cover, which is
 // exactly the case a structural covering search can miss.
 func TestLocalRootDenialRequiresCoverage(t *testing.T) {
 	// The chain stops at com.: the apex NSEC spans (., com.) and com. has
 	// no NSEC of its own, so nothing proves anything about names sorting
 	// after com. A structural "greatest owner below the name" search still
-	// hands back the apex NSEC — whose span does not reach — which is
+	// hands back the apex NSEC, whose span does not reach, which is
 	// precisely the shape the evaluator has to catch.
 	lines := []string{
 		". 86400 IN SOA a.root-servers.test. nstld.test. 2026082401 1800 900 604800 86400",
@@ -267,7 +267,7 @@ func TestLocalRootReferralLeaseBoundedByCopy(t *testing.T) {
 
 // TestLocalRootHandlerRestoresRD drives the production path. The handler
 // clears RD before resolution and setTags restores it on the way out, but a
-// local-root answer returns early and misses that restoration — a client
+// local-root answer returns early and misses that restoration, a client
 // receiving RD=0 on its own recursive query may discard it. Calling
 // consultLocalRoot directly cannot see this; the handler must.
 func TestLocalRootHandlerRestoresRD(t *testing.T) {
@@ -371,7 +371,7 @@ func TestLocalRootReferralTakesTheWinningDelegationWhole(t *testing.T) {
 		t.Fatal("the walk did not adopt the winning servers")
 	}
 	if len(rs.parentDS) != 1 || rs.parentDS[0].(*dns.DS).KeyTag != 999 {
-		t.Fatalf("parentDS = %v, want the winning delegation's DS — a mixed "+
+		t.Fatalf("parentDS = %v, want the winning delegation's DS, a mixed "+
 			"delegation validates one zone's answers against another's keys", rs.parentDS)
 	}
 	if !rs.cutDeadline.Equal(rivalDeadline) {
@@ -380,7 +380,7 @@ func TestLocalRootReferralTakesTheWinningDelegationWhole(t *testing.T) {
 }
 
 // unprovableDSZoneLines is a sealed zone whose org. delegation carries an
-// NSEC with the SOA bit — the child apex's own NSEC, which cannot testify
+// NSEC with the SOA bit, the child apex's own NSEC, which cannot testify
 // about its delegation's DS. The zone verifies; only the DS proof is
 // unusable, which is the shape both new tests below need.
 func unprovableDSZoneLines() []string {
@@ -440,13 +440,13 @@ func TestLocalRootUnprovableDSFallsBackOnTheWire(t *testing.T) {
 		t.Fatal("an unprovable DS became a SERVFAIL instead of falling back to the roots")
 	}
 	if queries("org.") == 0 {
-		t.Fatal("the query never reached the wire — the copy answered from a proof it does not have")
+		t.Fatal("the query never reached the wire, the copy answered from a proof it does not have")
 	}
 }
 
 // TestLocalRootDSNODATARequiresParentSideProof pins the bitmap rule the
 // resolver's own VerifyNODATANSEC enforces: DS non-existence is provable
-// only on the parent side, so an NSEC carrying SOA — the child apex's own —
+// only on the parent side, so an NSEC carrying SOA, the child apex's own,
 // cannot serve as the NODATA proof however well the zone verifies.
 //
 // Both entries into the copy are covered, because they reach the same
@@ -490,7 +490,7 @@ func TestLocalRootDSNODATARequiresParentSideProof(t *testing.T) {
 		}
 		if rs.level != 0 || !rs.isRoot {
 			t.Fatal("a delegation was installed with an empty DS set on a proof " +
-				"the copy does not hold — the child would be treated as insecure")
+				"the copy does not hold, the child would be treated as insecure")
 		}
 	})
 }
@@ -500,7 +500,7 @@ func TestLocalRootDSNODATARequiresParentSideProof(t *testing.T) {
 // about a delegation, so treating it as one is the downgrade
 // VerifyDelegationNSEC exists to refuse: a stripped-DS bitmap would become
 // evidence that a signed child is insecure. In a local copy it is also an
-// internal contradiction — the owner's real NS RRset is right there, which
+// internal contradiction, the owner's real NS RRset is right there, which
 // is how the referral was found in the first place.
 func TestLocalRootInsecureDelegationNeedsTheNSBit(t *testing.T) {
 	z, err := roottest.BuildZone(localroot.ComputeDigest, []string{
@@ -536,7 +536,7 @@ func TestLocalRootInsecureDelegationNeedsTheNSBit(t *testing.T) {
 		}
 		if rs.level != 0 || !rs.isRoot {
 			t.Fatal("a delegation was installed as insecure on an NSEC that does " +
-				"not claim the delegation — a stripped DS would read as unsigned")
+				"not claim the delegation, a stripped DS would read as unsigned")
 		}
 	})
 
@@ -589,7 +589,7 @@ func TestLocalRootLeaseBoundedBySecurityEvidence(t *testing.T) {
 			t.Fatal("referral consult synthesized an answer")
 		}
 		if got := time.Until(rs.cutDeadline); got > 61*time.Second {
-			t.Fatalf("lease runs %v, want the DS RRset's 60s — a withdrawn key "+
+			t.Fatalf("lease runs %v, want the DS RRset's 60s, a withdrawn key "+
 				"must not be trusted for the NS set's longer life", got.Round(time.Second))
 		}
 	})
@@ -656,8 +656,8 @@ func TestLocalRootFallbacks(t *testing.T) {
 	t.Run("an apex type the copy cannot evidence", func(t *testing.T) {
 		// The copy answers the apex from what it holds; a type it can
 		// neither produce nor deny goes to the real roots. ANY is that
-		// case by construction — it needs a composition this does not
-		// attempt — so it stands in for the general shape here.
+		// case by construction, it needs a composition this does not
+		// attempt, so it stands in for the general shape here.
 		r, _ := localRootTestResolver(t)
 		rs := localRootState(".", dns.TypeANY, false)
 		if _, handled := r.consultLocalRoot(context.Background(), rs); handled || rs.level != 0 {
@@ -716,7 +716,7 @@ func TestLocalRootApexAnswers(t *testing.T) {
 
 	t.Run("a type the apex lacks is denied from its own NSEC", func(t *testing.T) {
 		// The test root's apex NSEC lists NS, SOA, RRSIG, NSEC, DNSKEY and
-		// ZONEMD — so MX is absent and provably so.
+		// ZONEMD, so MX is absent and provably so.
 		rs := localRootState(".", dns.TypeMX, false)
 		answer, handled := r.consultLocalRoot(context.Background(), rs)
 		if !handled || answer == nil {
@@ -773,7 +773,7 @@ func TestLocalRootAnswersBoundedByCopyHorizon(t *testing.T) {
 
 	// The test zone signs with a one-hour window while its shortest published
 	// TTL is a day, so every record served here has to be clamped for the
-	// assertions below to hold — without this the test could pass on a zone
+	// assertions below to hold, without this the test could pass on a zone
 	// whose TTLs were already short enough.
 	if horizon >= 86400 {
 		t.Fatalf("copy horizon %ds does not bite against the zone's TTLs; the test proves nothing", horizon)
@@ -813,7 +813,7 @@ func TestLocalRootAnswersBoundedByCopyHorizon(t *testing.T) {
 // TestLocalRootAnswersDoNotAliasTheCopy pins that an answer carries copies of
 // the zone's records rather than the records themselves. The Snapshot is
 // immutable and read by every goroutine serving from the copy, while
-// downstream TTL rewrites — clampTTLsToCut is one, and it writes in place —
+// downstream TTL rewrites, clampTTLsToCut is one, and it writes in place,
 // would otherwise reach through an answer into the live copy and change what
 // every later answer says, from an arbitrary request goroutine.
 func TestLocalRootAnswersDoNotAliasTheCopy(t *testing.T) {
@@ -855,10 +855,10 @@ func TestLocalRootAnswersDoNotAliasTheCopy(t *testing.T) {
 			}
 			for _, rr := range tc.section(second) {
 				// The horizon shrinks by the time between the two calls, so
-				// the second answer may be a little shorter — but not by the
+				// the second answer may be a little shorter, but not by the
 				// overwrite above.
 				if rr.Header().Ttl+5 < before {
-					t.Fatalf("%s %s: a rewrite of the served answer reached the shared copy — "+
+					t.Fatalf("%s %s: a rewrite of the served answer reached the shared copy, "+
 						"%s came back with TTL %d, was %d",
 						tc.qname, dns.TypeToString[tc.qtype],
 						dns.TypeToString[rr.Header().Rrtype], rr.Header().Ttl, before)
@@ -871,7 +871,7 @@ func TestLocalRootAnswersDoNotAliasTheCopy(t *testing.T) {
 // TestLocalRootApexNSCarriesPrimingGlue pins the additional section of the
 // copy's answer to ". NS". A root server answers a priming query with the
 // addresses of the servers it names (RFC 9609), and the resolver's own
-// 12-hourly checkPriming reads addresses from Extra and nowhere else — so an
+// 12-hourly checkPriming reads addresses from Extra and nowhere else, so an
 // answer without them leaves the root server list unrefreshed for the life of
 // the process, and a client asking ". NS" gets names it cannot reach.
 func TestLocalRootApexNSCarriesPrimingGlue(t *testing.T) {
@@ -906,7 +906,7 @@ func TestLocalRootApexNSCarriesPrimingGlue(t *testing.T) {
 		reachable[owner] = true
 	}
 	if len(reachable) == 0 {
-		t.Fatal(". NS carried no glue — root priming would find no addresses and abort")
+		t.Fatal(". NS carried no glue, root priming would find no addresses and abort")
 	}
 }
 

@@ -16,7 +16,7 @@ import (
 
 // TestTCPPipelinedBurst pins the burst layer's contract: a client that
 // pipelines many queries on one connection gets every reply, matched to
-// its query, and gets them without having to send anything further —
+// its query, and gets them without having to send anything further,
 // the flush must happen when the connection is about to block, not on a
 // timer and not on the next query.
 func TestTCPPipelinedBurst(t *testing.T) {
@@ -115,7 +115,7 @@ func TestTCPPipelinedBurst(t *testing.T) {
 	}
 
 	// The connection stays usable for an ordinary single query after the
-	// burst — the buffers reset cleanly between bursts.
+	// burst, the buffers reset cleanly between bursts.
 	q := new(dns.Msg)
 	q.SetQuestion("after.burst.test.", dns.TypeA)
 	q.Id = 4242
@@ -183,7 +183,7 @@ func TestTCPStreamOversizedFrame(t *testing.T) {
 
 // TestTCPStreamBeforeReadBoundsWrites pins the choice of SetDeadline over
 // SetReadDeadline at the block point. Two writes hide behind that read:
-// the flush of the staged replies, and — on a DoT connection — the
+// the flush of the staged replies, and, on a DoT connection, the
 // handshake the read itself triggers, which writes as much as it reads.
 // A read-only deadline leaves both of them unbounded.
 func TestTCPStreamBeforeReadBoundsWrites(t *testing.T) {
@@ -249,7 +249,7 @@ func TestTCPStreamWriteDeadline(t *testing.T) {
 //
 // A burst's replies wait in the drain buffer until the connection is
 // about to block. One buffered byte is not a frame waiting to be served,
-// it is half a length prefix — and treating it as "there is still input"
+// it is half a length prefix, and treating it as "there is still input"
 // makes the server block for the other half with answers still in hand.
 // The client is then waiting for replies it has already earned while the
 // server waits for a byte the client will only send once it sees them.
@@ -318,7 +318,7 @@ func TestTCPPartialPrefixStillFlushes(t *testing.T) {
 
 	// Latency is the assertion, not arrival. The replies do eventually
 	// leave when the stalled read hits its deadline and the connection
-	// unwinds — that path is the bug, not the fix, so the window here is
+	// unwinds, that path is the bug, not the fix, so the window here is
 	// far below tcpQueryWait.
 	sent := time.Now()
 	buf := make([]byte, 65535)

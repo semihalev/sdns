@@ -30,7 +30,7 @@ var blocklistHits = metric.NewCounter(nil, prometheus.CounterOpts{
 // It is set by New and read only at scrape time by blocklistEntries.
 // A plain func value (rather than a *BlockList) mirrors the pattern the
 // cache middleware uses for dns_cache_size, and keeps the gauge working
-// when the middleware is absent — it then reports 0 rather than panicking.
+// when the middleware is absent, it then reports 0 rather than panicking.
 var blocklistLen atomic.Pointer[func() int]
 
 // blocklistEntries exposes how many names the blocklist currently holds.
@@ -78,7 +78,7 @@ type BlockList struct {
 
 	// saveMu serializes persistence to local disk. It is taken
 	// independently of mu so the disk write happens *outside* the
-	// map lock — every DNS query goes through ServeDNS which takes
+	// map lock, every DNS query goes through ServeDNS which takes
 	// mu.RLock(), so any code path that holds mu while doing I/O
 	// stalls every concurrent query for the duration of the write.
 	saveMu sync.Mutex
@@ -110,7 +110,7 @@ type blockSnapshot struct {
 // Configured whitelist/blocklist entries and existing local
 // blocklist files are loaded synchronously so filtering is
 // active as soon as New returns. Remote blocklist refresh
-// runs asynchronously — a slow or unreachable source used to
+// runs asynchronously, a slow or unreachable source used to
 // leave ServeDNS with empty maps for the entire HTTP timeout
 // window even when local files were available.
 func New(cfg *config.Config) *BlockList {
@@ -343,7 +343,7 @@ func (b *BlockList) setLocked(key string) bool {
 	key = dns.CanonicalName(key)
 
 	// Refuse to add a block the whitelist would shadow. Exists matches the
-	// whitelist across the hierarchy, so this must too — otherwise adding
+	// whitelist across the hierarchy, so this must too, otherwise adding
 	// sub.example.com. while example.com. is whitelisted would report
 	// success and persist a block that can never take effect.
 	if matchHierarchy(key, b.w) {
@@ -374,7 +374,7 @@ func (b *BlockList) Exists(key string) bool {
 	key = dns.CanonicalName(key)
 
 	// Whitelist overrides every block (exact, parent, or wildcard). It is
-	// matched across the full hierarchy — exact name plus every parent —
+	// matched across the full hierarchy, exact name plus every parent,
 	// so it stays symmetric with the block walk below: just as blocking
 	// "example.com." covers "sub.example.com.", whitelisting "example.com."
 	// now exempts "sub.example.com." too. (Previously the whitelist matched
@@ -471,7 +471,7 @@ func (b *BlockList) snapshotLocked() blockSnapshot {
 
 // persist writes the snapshot to <BlockListDir>/local via a
 // temp-file + atomic rename. saveMu serializes concurrent writers
-// so the rename is the linearisation point — the on-disk file
+// so the rename is the linearisation point, the on-disk file
 // always matches *some* in-memory state, never a half-written
 // intermediate.
 //

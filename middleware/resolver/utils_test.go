@@ -144,7 +144,7 @@ func Test_getDnameTarget(t *testing.T) {
 		t.Errorf("target not empty: %v", target)
 	}
 
-	// Exact-owner match: RFC 6672 §2.3 — the DNAME owner itself is
+	// Exact-owner match: RFC 6672 §2.3, the DNAME owner itself is
 	// *not* redirected, so no target is returned.
 	dname := &dns.DNAME{
 		Hdr: dns.RR_Header{
@@ -194,7 +194,7 @@ func Test_getDnameTarget(t *testing.T) {
 // foreign unsigned RRsets next to signed in-zone data fail the
 // validator. Without this, an attacker could piggyback junk foreign
 // records on an otherwise-valid response and still get AD=true, in
-// violation of RFC 4035 §3.2.3. Signature content is irrelevant — the
+// violation of RFC 4035 §3.2.3. Signature content is irrelevant, the
 // check fires during record collection, before any crypto work.
 func Test_verifyRRSIG_RejectsForeignPiggyback(t *testing.T) {
 	key := &dns.DNSKEY{
@@ -244,7 +244,7 @@ func Test_verifyRRSIG_RejectsForeignPiggyback(t *testing.T) {
 // instead of downgraded to insecure.
 func Test_isSupportedDNSKEYAlgorithm_RSAMD5(t *testing.T) {
 	if dnssec.IsSupportedDNSKEYAlgorithm(dns.RSAMD5) {
-		t.Errorf("%s: dnssec.IsSupportedDNSKEYAlgorithm(dns.RSAMD5) is true", "RSAMD5 must be treated as unsupported — miekg/dns RRSIG.Verify returns ErrAlg for it")
+		t.Errorf("%s: dnssec.IsSupportedDNSKEYAlgorithm(dns.RSAMD5) is true", "RSAMD5 must be treated as unsupported, miekg/dns RRSIG.Verify returns ErrAlg for it")
 	}
 	if !(dnssec.IsSupportedDNSKEYAlgorithm(dns.RSASHA256)) {
 		t.Errorf("dnssec.IsSupportedDNSKEYAlgorithm(dns.RSASHA256) is false")

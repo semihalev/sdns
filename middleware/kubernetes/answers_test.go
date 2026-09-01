@@ -139,7 +139,7 @@ func TestAnswerCachePodByIP(t *testing.T) {
 
 // TestPodIPv6Aliases verifies a single IPv6 pod address resolves
 // under both the canonical compressed encoding (2001-db8--1) and
-// the fully expanded encoding (2001-0db8-...-0001) — clients are
+// the fully expanded encoding (2001-0db8-...-0001), clients are
 // allowed to use either, and the old single-key cache could
 // NXDOMAIN for the full form even though the pod existed.
 func TestPodIPv6Aliases(t *testing.T) {
@@ -173,7 +173,7 @@ func TestPodIPv6Aliases(t *testing.T) {
 
 // TestPodCountIgnoresIPMultiplicity verifies Stats() reports one
 // pod per (namespace, name) regardless of how many IPs the pod
-// has — the old count summed the IP-keyed shard, double-counting
+// has, the old count summed the IP-keyed shard, double-counting
 // dual-stack pods.
 func TestPodCountIgnoresIPMultiplicity(t *testing.T) {
 	r := NewRegistry()
@@ -195,7 +195,7 @@ func TestPodCountIgnoresIPMultiplicity(t *testing.T) {
 }
 
 // TestSRVAdditionalGlue verifies SRV responses include the target's
-// A/AAAA records as Additional glue — both for ClusterIP services
+// A/AAAA records as Additional glue, both for ClusterIP services
 // (target = service FQDN) and headless services (one target per
 // ready endpoint hostname). Without the glue the client has to
 // issue a follow-up A lookup, which is what the removed standard
@@ -258,7 +258,7 @@ func TestSRVAdditionalGlue(t *testing.T) {
 // its IP so SRV clients get per-pod discovery; collapsing to one
 // service-FQDN target was a regression that lost that. The
 // dashed-IP labels (10-0-0-1, etc.) must also resolve as A
-// records — clients query the SRV target after.
+// records, clients query the SRV target after.
 func TestHeadlessSRVAnonymousPerAddressTarget(t *testing.T) {
 	r := NewRegistry()
 	r.AddService(&Service{
@@ -540,7 +540,7 @@ func TestHeadlessReAddPreservesEndpoints(t *testing.T) {
 	}
 
 	// Re-add the same service (informer UPDATE). The answer must
-	// survive — Spec.ClusterIP=None hasn't changed, neither have
+	// survive, Spec.ClusterIP=None hasn't changed, neither have
 	// the endpoints.
 	r.AddService(&Service{Name: "h", Namespace: "default", Headless: true})
 
@@ -728,7 +728,7 @@ func TestDeleteServiceClearsEndpointsWithoutPriorAdd(t *testing.T) {
 		t.Errorf("expected endpoint shard cleared, got %d endpoints", len(eps))
 	}
 
-	// A later AddService for the same service must start clean —
+	// A later AddService for the same service must start clean,
 	// the cached endpoints from before the delete are stale and
 	// must not be revived.
 	r.AddService(&Service{Name: "h", Namespace: "default", Headless: true})
@@ -744,7 +744,7 @@ func TestDeleteServiceClearsEndpointsWithoutPriorAdd(t *testing.T) {
 
 // TestExternalNameFallback verifies the cache fallback path returns
 // the CNAME for any qtype (A, AAAA, TXT, ANY) so ExternalName
-// services keep behaving like aliases — the recursive resolver below
+// services keep behaving like aliases, the recursive resolver below
 // us follows the CNAME chain instead of seeing an empty NOERROR.
 func TestExternalNameFallback(t *testing.T) {
 	r := NewRegistry()
@@ -801,8 +801,8 @@ func TestAnswerCacheANY(t *testing.T) {
 // ready address set is unchanged must keep the SAME *dns.A pointer
 // across rebuilds. The materialise step always rewrites the
 // answerSet wrapper struct (it's a tiny allocation), but the
-// inner RR pointers — the records that carry the actual IP / name
-// / TTL — are reused so a 1000-pod rollout step doesn't re-allocate
+// inner RR pointers, the records that carry the actual IP / name
+// / TTL, are reused so a 1000-pod rollout step doesn't re-allocate
 // 1000 *dns.A records per event.
 func TestSetEndpointsReusesUnchangedHostnameRRs(t *testing.T) {
 	r := NewRegistry()
@@ -851,7 +851,7 @@ func TestSetEndpointsReusesUnchangedHostnameRRs(t *testing.T) {
 
 // TestSetEndpointsRewritesChangedHostname is the inverse contract:
 // when a hostname's ready address set changes, the cache entry
-// MUST be rewritten — pointer identity should differ.
+// MUST be rewritten, pointer identity should differ.
 func TestSetEndpointsRewritesChangedHostname(t *testing.T) {
 	r := NewRegistry()
 	r.AddService(&Service{Name: "h", Namespace: "default", Headless: true})
@@ -872,7 +872,7 @@ func TestSetEndpointsRewritesChangedHostname(t *testing.T) {
 		t.Fatal("web-0 must be cached")
 	}
 
-	// web-0's address changes — must rewrite.
+	// web-0's address changes, must rewrite.
 	r.SetEndpoints("h", "default", []Endpoint{
 		{Addresses: []string{"10.0.0.99"}, Hostname: "web-0", Ready: true},
 	})
@@ -891,7 +891,7 @@ func TestSetEndpointsRewritesChangedHostname(t *testing.T) {
 // same name and protocol, so the SRV qname stays the same)
 // publishes the new port. The materialise step caches *dns.SRV
 // pointers by (srvQname, target) for reuse, but a port-number
-// edit invalidates that cache — without the port-mismatch check
+// edit invalidates that cache, without the port-mismatch check
 // queries would keep returning the stale value.
 func TestHeadlessSRVPortNumberChangeReflected(t *testing.T) {
 	r := NewRegistry()
@@ -935,7 +935,7 @@ func TestHeadlessSRVPortNumberChangeReflected(t *testing.T) {
 // dominating CPU under high-churn workloads.
 //
 // The test compares pointer identity of A records before and after
-// the rebuild — equal pointers prove the registry took the reuse
+// the rebuild, equal pointers prove the registry took the reuse
 // path; differing pointers prove it allocated fresh.
 func TestHeadlessRebuildReusesAggregateRRPointers(t *testing.T) {
 	r := NewRegistry()
@@ -1008,7 +1008,7 @@ func TestHeadlessRebuildReusesSRVPointers(t *testing.T) {
 		prevByTarget[s.Target] = s
 	}
 
-	// Add web-2 — web-0 and web-1's SRVs must be reused.
+	// Add web-2, web-0 and web-1's SRVs must be reused.
 	r.SetEndpoints("h", "default", []Endpoint{
 		{Addresses: []string{"10.0.0.1"}, Hostname: "web-0", Ready: true},
 		{Addresses: []string{"10.0.0.2"}, Hostname: "web-1", Ready: true},
@@ -1084,7 +1084,7 @@ func BenchmarkHeadlessRebuildOneSliceChange(b *testing.B) {
 // service backed by 100 slices x 10 endpoints each (1000 total).
 // ApplyEndpointSlice updates state O(slice size); MaterialiseHeadless
 // rebuilds the answer cache O(state size) but only the dirty
-// dimensions allocate. This is the true rollout-step shape —
+// dimensions allocate. This is the true rollout-step shape,
 // alloc cost tracks slice size, not total endpoint count.
 func BenchmarkHeadlessApplyOneSlice(b *testing.B) {
 	r := NewRegistry()

@@ -1,4 +1,4 @@
-/* sdns.dev — theme switch, generated table of contents, copy buttons, and the
+/* sdns.dev: theme switch, generated table of contents, copy buttons, and the
    live repository counters. No dependencies, no analytics, no cookies. */
 (function () {
   'use strict';
@@ -29,9 +29,9 @@
     });
   }
 
-  /* The drawer is dismissable four ways — the button, the scrim, Escape, and
-     following a link — because a panel that can only be closed by the control
-     that opened it is a trap on a narrow screen. */
+  /* The drawer is dismissable four ways: the button, the scrim, Escape, and
+     following a link. A panel that can only be closed by the control that
+     opened it is a trap on a narrow screen. */
   function mobileMenu() {
     var button = document.querySelector('.menu-toggle');
     var nav = document.getElementById('site-nav');
@@ -173,7 +173,7 @@
     }
     /* Only a complete result is cached. A rate-limited or offline fetch
        resolves to nulls rather than rejecting, and storing that would make
-       readCache truthy for the rest of the session — one failed load would
+       readCache truthy for the rest of the session, one failed load would
        freeze the counters until the tab was closed. */
     function writeCache(d) {
       if (typeof d.stars !== 'number' || !d.release) return;
@@ -213,7 +213,7 @@
 
   /* Section-level search over /search.json. No library: the index is 169
      entries, so a scan per keystroke is cheaper than shipping a search engine
-     to every reader. Fetched on first open — most visitors never search.
+     to every reader. Fetched on first open, most visitors never search.
 
      The panel is a native <dialog> opened with showModal, which supplies the
      focus trap, Escape, and an inert page behind it. Hand-rolling those is how
@@ -240,7 +240,7 @@
 
     /* Clicking the backdrop closes. The dialog element covers only the panel,
        so a click whose coordinates fall outside its box came from the
-       backdrop — on mobile the panel is the whole screen and this never
+       backdrop, on mobile the panel is the whole screen and this never
        fires, which is why the close button exists. */
     dialog.addEventListener('click', function (e) {
       var r = dialog.getBoundingClientRect();
@@ -263,7 +263,7 @@
 
     /* Arrow and Enter handling belongs to the input, not the document. A
        document-level Enter opened the internally selected hit even when the
-       reader had tabbed to a different result — so a focused link now
+       reader had tabbed to a different result, so a focused link now
        activates natively, and only the input drives the selection. */
     input.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
@@ -304,7 +304,7 @@
           /* strip_html leaves &lt; and &amp; behind, so the index held the
              encoded form: a reader searching "<token>" or "&&" matched
              nothing, and a snippet could render as &amp;lt;token&gt;. Decode
-             once here — everything downstream then works on visible text and
+             once here, everything downstream then works on visible text and
              escapes only what it puts into the DOM. */
           var box = document.createElement('textarea');
           var decode = function (s) { box.innerHTML = s; return box.value; };

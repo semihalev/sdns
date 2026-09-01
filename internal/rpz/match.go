@@ -53,11 +53,11 @@ func (s *Store) HasClientIP() bool {
 // enabled zone's match as the winner, together with the matches of any
 // disabled zones met on the way there. Zones past the winner are never
 // probed: precedence rule 1 says they cannot win, and the winner-bounded
-// counting semantic (design §5.5) says they are not counted either — so
+// counting semantic (design §5.5) says they are not counted either, so
 // not probing them is both correct and the cheap path.
 //
 // Within a zone, CLIENT-IP outranks QNAME (rule 2), and among CLIENT-IP
-// prefixes the longest wins (rule 4) — equal-length distinct prefixes
+// prefixes the longest wins (rule 4), equal-length distinct prefixes
 // cannot both contain one address, so the client-side tie-break is
 // vacuous by construction. client is the query's source address in
 // canonical 128-bit form (CanonicalClient), or the zero Addr when no
@@ -68,13 +68,13 @@ func (s *Store) HasClientIP() bool {
 // presentation with the trailing dot, offs[i] the start of label i, n the
 // label count. Both live on the caller's stack; every probe here indexes a
 // map as m[string(bytes)], which Go performs without constructing the
-// string — with the prefix masking being value math, the reason a
+// string, with the prefix masking being value math, the reason a
 // non-matching query allocates nothing.
 //
 // Within a zone the draft's rule 3 falls out of the walk order: the exact
 // probe first, then wildcard suffixes from the longest down (stripping one
 // leading label per step), so the first wildcard hit is the one with the
-// most labels. A wildcard matches proper subdomains only — the walk starts
+// most labels. A wildcard matches proper subdomains only, the walk starts
 // at offs[1], so a name never probes its own spelling as a suffix.
 //
 // observed is nil unless a disabled zone matched, which keeps the miss
@@ -100,7 +100,7 @@ func (s *Store) Match(canon []byte, offs []int, n int, client netip.Addr) (winne
 }
 
 // match applies the within-zone trigger precedence: CLIENT-IP first. The
-// client's family selects its table — the other family's rules do not
+// client's family selects its table, the other family's rules do not
 // exist for it.
 func (z *Zone) match(canon []byte, offs []int, n int, client netip.Addr) ZoneMatch {
 	if client.IsValid() {
@@ -139,7 +139,7 @@ func (z *Zone) matchQNAME(canon []byte, offs []int, n int) (rule *Rule, wildcard
 
 // Effective resolves the zone's override against the rule's own action:
 // the action the zone would take on this match. OverrideCNAME reports
-// ActionLocalData — the synthesis layer reads Zone.CNAMETarget for the
+// ActionLocalData, the synthesis layer reads Zone.CNAMETarget for the
 // record. OverrideDisabled keeps the rule's action, because a disabled
 // zone's log line reports what would otherwise have happened.
 func (m ZoneMatch) Effective() Action {

@@ -17,7 +17,7 @@ type Server struct {
 	//
 	// state is what one exchange says about this server, in one word:
 	// [estimate ns : 62][answered : 1][measured : 1]. They are packed
-	// because they have to change together — a sample that lands between
+	// because they have to change together, a sample that lands between
 	// reading one and writing the other could otherwise replace a
 	// measurement instead of folding into it.
 	state int64
@@ -29,7 +29,7 @@ type Server struct {
 	IPVersion IPVersion
 
 	// canonical records that Addr was printed from a decoded address and is
-	// therefore already the identity spelling — what duplicate suppression
+	// therefore already the identity spelling, what duplicate suppression
 	// compares and what the retry guard keys on. Deriving that identity by
 	// parsing Addr and printing it back produced a string per server per
 	// lookup, for a string this constructor had just built.
@@ -43,7 +43,7 @@ type Server struct {
 	// UDPAddr is Addr pre-parsed as *net.UDPAddr so the upstream
 	// exchange path can use net.DialUDP directly instead of going
 	// through Dialer.DialContext's string-parsing + dialParallel
-	// machinery. Nil only if Addr failed to parse — callers fall
+	// machinery. Nil only if Addr failed to parse, callers fall
 	// back to the string path in that case.
 	UDPAddr *net.UDPAddr
 }
@@ -70,7 +70,7 @@ const (
 )
 
 // NewServer return a new server. addr is expected to be an
-// "IP:port" pair — the IP is parsed once here so upstream exchanges
+// "IP:port" pair, the IP is parsed once here so upstream exchanges
 // can skip Go's DialContext address-resolution path.
 //
 // Addr is stored in canonical netip form (lowercase, compressed,
@@ -94,7 +94,7 @@ func NewServer(addr string, ipVersion IPVersion) *Server {
 	return s
 }
 
-// NewServerFromAddrPort builds a Server straight from a decoded address —
+// NewServerFromAddrPort builds a Server straight from a decoded address,
 // the netip-native producer path (glue records, NS-address lookups) that
 // never materializes an intermediate "IP:port" string. The IP family is
 // derived from the address itself, and the canonical string is created
@@ -241,8 +241,8 @@ func (a *Servers) InvalidateFingerprint() {
 }
 
 const (
-	// rttUnknownSeed is what "no data" is worth. Zero — the value a fresh
-	// Server carries — ranked no-data as instant, which handed the head of
+	// rttUnknownSeed is what "no data" is worth. Zero, the value a fresh
+	// Server carries, ranked no-data as instant, which handed the head of
 	// the list to whichever address had never answered; with the resolver
 	// starting its top two in parallel, that spent one of every miss's two
 	// queries on the one server whose speed nobody had established. The
@@ -266,7 +266,7 @@ const (
 //
 // measured says an exchange has completed, which is what separates an
 // estimate from the seed. answered says the last one came back with an
-// answer, and nothing is decided on it — it is there so an operator
+// answer, and nothing is decided on it, it is there so an operator
 // reading the delegation can tell a slow authority from one that is not
 // replying at all. Priced by the ranking the two look alike, because a
 // server that does not answer is charged a timeout, and a timeout is
@@ -279,12 +279,12 @@ const (
 
 // Observe records a completed exchange: how long this server took to
 // answer. The estimate is blended half and half with each new sample, so
-// one bad sample is visible in the ranking immediately — which is what a
+// one bad sample is visible in the ranking immediately, which is what a
 // resolver needs when an authority starts to degrade. A running average
 // over every sample ever taken needed dozens of them to notice.
 func (s *Server) Observe(d time.Duration) { s.record(d, true) }
 
-// ObserveNoAnswer records an exchange that came back with no answer — a
+// ObserveNoAnswer records an exchange that came back with no answer, a
 // timeout, a transport error, a refusal. The caller prices it, and prices
 // it as a timeout; this only adds that the authority did not reply.
 func (s *Server) ObserveNoAnswer(d time.Duration) { s.record(d, false) }
@@ -301,7 +301,7 @@ func (s *Server) record(d time.Duration, answered bool) {
 	// see. Recording a zero would make it unreadable: the estimate and
 	// "nothing has answered" are told apart by the estimate being zero, so
 	// a sample of zero is a measurement that reports itself as the absence
-	// of one — priced at the seed, explored forever, and never allowed to
+	// of one, priced at the seed, explored forever, and never allowed to
 	// lead however fast it actually is. Windows' coarse timer produces it
 	// for a loopback exchange; a LAN authority on any platform is one
 	// clock granularity away from it.
@@ -352,7 +352,7 @@ func (s *Server) Score() time.Duration {
 }
 
 // score also reports whether what is known about this server is out of
-// date — nothing has answered, or what did answer is old enough that it
+// date, nothing has answered, or what did answer is old enough that it
 // no longer describes the path. It comes back from here because the
 // scoring pass has already paid for both loads, and the ranking needs the
 // count to decide how much of the hedge to spend on finding out.
@@ -371,7 +371,7 @@ func (s *Server) score(nowNs int64) (int64, bool) {
 		// one that was slow an hour ago.
 		//
 		// And it is worth asking about again. A first impression can be
-		// very wrong — an address that timed out once while the resolver
+		// very wrong, an address that timed out once while the resolver
 		// was walking a cold delegation carries that timeout for a long
 		// time, and it is priced below the guesses, so nothing would ever
 		// query it again. Measured on a production resolver: five of com.'s
@@ -393,7 +393,7 @@ func (s *Server) score(nowNs int64) (int64, bool) {
 // treat the two differently: a hedge is a spare answer, worth nothing
 // once the leader has answered, and cancelling it is right. A probe is
 // worth only the measurement it brings back, and cancelling it brings
-// none — which is what happens by default, every time, because the leader
+// none, which is what happens by default, every time, because the leader
 // is by construction the fastest server in the list.
 func Sort(serversList []*Server) *Server {
 	n := len(serversList)
@@ -439,21 +439,21 @@ func rank(list []*Server, scores []int64, now int64) *Server {
 var randN = rand.IntN
 
 // hedge decides which of the servers tied for second place takes the
-// second slot. The leader is left alone — the fastest server answers the
-// query — but everything level with the runner-up is, by definition,
+// second slot. The leader is left alone, the fastest server answers the
+// query, but everything level with the runner-up is, by definition,
 // something the ranking has no reason to choose between.
 //
 // Leaving that to the sort's stability meant the same address took the
 // slot on every single lookup, forever. That matters most where the tie
 // is widest: a delegation's unmeasured addresses all carry the same
 // price, so one of them was queried on every cache miss and the rest were
-// never tried at all — and since the query is cancelled the moment the
+// never tried at all, and since the query is cancelled the moment the
 // leader answers, the one that was tried never came back measured
 // either. Eighteen unmeasured addresses, one of them getting all of the
 // chances and none of them getting measured.
 //
 // Rotating the slot does not make a server slower than the leader
-// measurable — only an attempt that outlives the winner can do that — but
+// measurable, only an attempt that outlives the winner can do that, but
 // it does give every tied candidate its turn at the one thing that can
 // measure it, which is winning the race outright.
 // A delegation settles on two measured addresses and stops there without
@@ -468,7 +468,7 @@ var randN = rand.IntN
 // not already spending: the second query goes out either way, and this
 // only decides where.
 //
-// How often is set by how much there is left to learn — the share of the
+// How often is set by how much there is left to learn, the share of the
 // delegation that is unmeasured or stale. A zone the resolver has just
 // met explores on most lookups, because most of what it could know it
 // does not; a settled one barely explores at all, because there is
@@ -485,7 +485,7 @@ func hedge(list []*Server, scores []int64, now int64, stale int) *Server {
 	if stale > 0 && randN(n) < stale {
 		// Any of them, not the first of them: the unmeasured all carry the
 		// same price, so taking the first would probe one address forever
-		// and leave the rest of the delegation permanently unknown — which
+		// and leave the rest of the delegation permanently unknown, which
 		// is the shape this exists to break.
 		candidates := 0
 		for i := 1; i < n; i++ {

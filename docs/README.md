@@ -30,4 +30,4 @@ description: One line shown under the title.  # optional
 
 The sidebar order comes from `_data/doc_categories.yml` (the order of the list
 is the order on screen); pages sort inside a category by `order`. The table of
-contents and the previous/next links are generated — do not write them by hand.
+contents and the previous/next links are generated, do not write them by hand.

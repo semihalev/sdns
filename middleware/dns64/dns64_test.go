@@ -625,7 +625,7 @@ func TestSynthesise_PrivateA_OperatorPrefix_Synth(t *testing.T) {
 
 // TestSynthesise_TTL_ATtlIsLower pins RFC 6147 §5.1.7: the synth
 // TTL is the lower of the A TTL and the SOA negative-cache TTL.
-// No artificial floor — a 30s A record produces a 30s AAAA.
+// No artificial floor, a 30s A record produces a 30s AAAA.
 func TestSynthesise_TTL_ATtlIsLower(t *testing.T) {
 	d := New(baseConfig())
 	d.queryer = &stubQueryer{resp: aRespMsg("foo.example.org.", 30, "192.0.2.33")}
@@ -733,7 +733,7 @@ func TestSynthesise_MultipleAs_AllSynthesised(t *testing.T) {
 }
 
 // TestSynthesise_RetainsOPT pins the behaviour that lets EDE
-// attachment work — without OPT in Extra, dnsutil.SetEDE is a no-op
+// attachment work, without OPT in Extra, dnsutil.SetEDE is a no-op
 // so the AD-bit downgrade would silently drop its rationale.
 func TestSynthesise_RetainsOPT(t *testing.T) {
 	d := New(baseConfig())
@@ -815,7 +815,7 @@ func TestExcludedAAAA_StripsButPassesThrough(t *testing.T) {
 
 // TestExcludedAAAA_OptOutEmptyList confirms an explicit empty
 // exclude_aaaa_networks (declared in TOML as []) opts out of
-// filtering — the IPv4-mapped AAAA reaches the client unchanged.
+// filtering, the IPv4-mapped AAAA reaches the client unchanged.
 func TestExcludedAAAA_OptOutEmptyList(t *testing.T) {
 	cfg := baseConfig()
 	cfg.DNS64.ExcludeAAAANetworks = []string{} // explicit empty
@@ -848,8 +848,8 @@ func TestExcludedAAAA_OptOutEmptyList(t *testing.T) {
 
 // TestSynthesise_ANXDOMAIN_BecomesClientResponse pins RFC 6147
 // §5.1.6: when the AAAA returned NODATA but the secondary A
-// query yielded NXDOMAIN, the A NXDOMAIN — not the original
-// AAAA NODATA — is the basis for the client reply.
+// query yielded NXDOMAIN, the A NXDOMAIN, not the original
+// AAAA NODATA, is the basis for the client reply.
 func TestSynthesise_ANXDOMAIN_BecomesClientResponse(t *testing.T) {
 	d := New(baseConfig())
 	nx := new(dns.Msg)
@@ -1138,7 +1138,7 @@ func TestServFail_NonDNSSEC_StillSynthesises(t *testing.T) {
 	servfail.Response = true
 	servfail.Rcode = dns.RcodeServerFailure
 	servfail.SetEdns0(4096, true)
-	// No DNSSEC EDE attached — represents a plain network
+	// No DNSSEC EDE attached, represents a plain network
 	// SERVFAIL where synthesis is still permissible.
 
 	ch, mw := makeChain(t, d, &stubAnswerer{msg: servfail}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
@@ -1244,7 +1244,7 @@ func TestSynthesise_AdditionalARecordsPassThrough(t *testing.T) {
 	d := New(baseConfig())
 	aResp := aRespMsg("foo.example.org.", 60, "192.0.2.33")
 	// Stuff a glue-style A into Additional. §5.3.2 says it MUST
-	// reach the client unchanged — neither dropped nor rewritten.
+	// reach the client unchanged, neither dropped nor rewritten.
 	gluedA, _ := dns.NewRR("ns.example.org. 60 IN A 198.51.100.7")
 	aResp.Extra = []dns.RR{gluedA}
 	d.queryer = &stubQueryer{resp: aResp}
@@ -1345,7 +1345,7 @@ func TestPassThrough_FilteredAAAAClearsAD(t *testing.T) {
 }
 
 // TestPassThrough_NoStripPreservesAD confirms a clean pass-through
-// (no AAAA stripped) does NOT clear AD — the RRset is exactly
+// (no AAAA stripped) does NOT clear AD, the RRset is exactly
 // what the validator signed.
 func TestPassThrough_NoStripPreservesAD(t *testing.T) {
 	d := New(baseConfig())
@@ -1609,7 +1609,7 @@ func TestPTR_NoMatchFallsThrough(t *testing.T) {
 	d := New(baseConfig())
 	d.queryer = &stubQueryer{} // would loudly fail if called
 
-	// Address outside 64:ff9b::/96 — operator chose a different
+	// Address outside 64:ff9b::/96, operator chose a different
 	// prefix elsewhere; this address shouldn't be translated by us.
 	qname := "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa."
 

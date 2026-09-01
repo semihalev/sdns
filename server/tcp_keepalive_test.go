@@ -12,7 +12,7 @@ import (
 // The RFC 7828 advertisement is a promise about this engine's behaviour:
 // the client may keep the connection idle for as long as the option
 // says. The edns layer cannot import this package to read tcpIdleWait,
-// so the two constants are pinned to each other here — a server that
+// so the two constants are pinned to each other here, a server that
 // advertises longer than it holds hangs up on clients it told to stay.
 func TestKeepaliveAdvertisesTheRealIdleTimeout(t *testing.T) {
 	if edns.TCPKeepaliveTimeout != tcpIdleWait {
@@ -70,7 +70,7 @@ func keepaliveIn(t *testing.T, wrote []byte) (uint16, bool) {
 // TestKeepaliveFollowsTheTransport is RFC 7828 through the full default
 // chain: a stream client that sent edns-tcp-keepalive is told the idle
 // timeout, a stream client that did not ask is not, and a datagram
-// client never is — the option is forbidden over UDP in both directions,
+// client never is, the option is forbidden over UDP in both directions,
 // and ignoring it there is what the RFC asks of a server.
 func TestKeepaliveFollowsTheTransport(t *testing.T) {
 	s := newRawTestServer(t)

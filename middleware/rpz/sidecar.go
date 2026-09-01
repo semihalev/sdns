@@ -13,15 +13,15 @@ import (
 
 // storeGen numbers policy generations process-wide. Every published
 // store carries one, and every sidecar candidate is stamped with the
-// generation it was computed under — the single-object snapshot §5.6
+// generation it was computed under, the single-object snapshot §5.6
 // item 5 requires: a candidate can never pair old rules with a new
 // generation, because both travel in the same *rpz.Store.
 var storeGen atomic.Uint64
 
 // policyStore is one published generation with its shared explicit-none
 // sidecar. The none sentinel rides the same pointer as the rules, so an
-// evaluator can never stamp one generation's none beside another's rules
-// — and because it is shared, an admission that matched nothing
+// evaluator can never stamp one generation's none beside another's rules,
+// and because it is shared, an admission that matched nothing
 // allocates nothing per entry (§5.11's explicit-none clause).
 type policyStore struct {
 	*rpz.Store
@@ -41,10 +41,10 @@ func (r *RPZ) publishStore(s *rpz.Store) {
 // SidecarEvaluator implements middleware.SidecarPolicyProvider: the
 // admission half of the cache seam. It evaluates a stored answer's
 // records against the response-IP tables and returns the per-zone match
-// list stamped with the generation it read — or the generation's shared
+// list stamped with the generation it read, or the generation's shared
 // none, so the overwhelmingly common clean admission allocates nothing.
 // nil when the middleware is disabled, and a nil Sidecar when no zone
-// carries response rules — the seam then stays entirely off.
+// carries response rules, the seam then stays entirely off.
 func (r *RPZ) SidecarEvaluator() middleware.SidecarEvaluator {
 	if !r.enabled {
 		return nil
@@ -81,7 +81,7 @@ func sidecarMatches(sc *middleware.Sidecar) (*rpz.ResponseMatches, bool) {
 	return rm, ok
 }
 
-// The globally wired gate serves the queries rpz never wrapped — the
+// The globally wired gate serves the queries rpz never wrapped, the
 // exempt ones its own ServeDNS gates out (internal, RD=0, non-INET) and
 // deployments without response rules. It is neutral: it keeps entries
 // healthy (a stale sidecar still restamps) and serves everything else as
@@ -124,7 +124,7 @@ func (r *RPZ) neutralJudge(sc *middleware.Sidecar) middleware.WireHitVerdict {
 // wrapPool recycles response wraps: with response rules configured every
 // query installs one, and the clean wire hit must not pay a heap
 // allocation for it (§5.11). The wrap's lifetime is the Next call it
-// brackets — the same discipline every writer wrapper in the tree keeps —
+// brackets, the same discipline every writer wrapper in the tree keeps,
 // so the put after the restore hands back an object nothing can reach.
 var wrapPool = sync.Pool{New: func() any { return new(responseWrap) }}
 
@@ -141,14 +141,14 @@ const (
 	wrapHold
 	// wrapBypass: the query's decision already fell (a final winner
 	// continuing in shadow or under PASSTHRU); the response side serves
-	// bytes freely and counts nothing — zones past the winner stay
+	// bytes freely and counts nothing, zones past the winner stay
 	// silent in both modes.
 	wrapBypass
 )
 
 // responseWrap is the response-side writer and this query's own wire-hit
-// gate: it sees every decoded answer leaving the query — cache hit or
-// fresh resolution — evaluates its records, merges them with the
+// gate: it sees every decoded answer leaving the query, cache hit or
+// fresh resolution, evaluates its records, merges them with the
 // query-time candidates held under §5.4, and applies (enforce) or counts
 // (shadow) the winning action; on the byte path its gate judges the
 // entry's sidecar with the same merge and memoizes the decision, so the
@@ -179,22 +179,22 @@ func (w *responseWrap) QueryWireHitGate() middleware.WireHitGate { return w }
 
 // JudgeWireHit is the byte-serve decision with the query's context: the
 // entry's matches merge with the held disabled observations, and any
-// outcome that leaves the stored answer intact — nothing matched, no
-// enabled winner, shadow, an enforcing PASSTHRU — serves bytes, with the
+// outcome that leaves the stored answer intact, nothing matched, no
+// enabled winner, shadow, an enforcing PASSTHRU, serves bytes, with the
 // decision memoized for the commit-time count. Only an enforcing rewrite
 // needs the decoded path. A bypass wrap serves everything and decides
 // nothing; a holding wrap never reaches here (its wire is withheld).
 func (w *responseWrap) JudgeWireHit(sc *middleware.Sidecar) middleware.WireHitVerdict {
 	// A fresh judgment voids any earlier one: the cache may judge this
 	// gate again after a lease or transport fallback, and a commit must
-	// only ever count the decision of the judge it followed — never a
+	// only ever count the decision of the judge it followed, never a
 	// memo an abandoned serve left behind.
 	w.decided = false
 	s := w.r.store.Load()
 	if !s.HasResponseIP() {
 		// A reload dropped the last response trigger under this query.
 		// The held disabled observations count under any generation, so
-		// they still enter the merge — an empty response side, not a
+		// they still enter the merge, an empty response side, not a
 		// skipped one.
 		if w.mode == wrapPoliced && len(w.heldObserved) > 0 {
 			return w.judgeList(s, nil)
@@ -252,7 +252,7 @@ func (w *responseWrap) judgeList(s *policyStore, list []rpz.ResponseMatch) middl
 }
 
 // CountWireHit and CountWireChase record the memoized decision after the
-// bytes were committed — exactly once, exactly what was judged.
+// bytes were committed, exactly once, exactly what was judged.
 func (w *responseWrap) CountWireHit(*middleware.Sidecar)       { w.countDecided() }
 func (w *responseWrap) CountWireChase(middleware.SidecarChain) { w.countDecided() }
 
@@ -269,7 +269,7 @@ func (w *responseWrap) countDecided() {
 	}
 	if w.r.enforce {
 		// A byte serve committed under an enforcing winner means the
-		// action was PASSTHRU — acting, by not acting.
+		// action was PASSTHRU, acting, by not acting.
 		countMatch(w.decidedWinner, outcomeEnforced)
 		return
 	}

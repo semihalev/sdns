@@ -17,7 +17,7 @@ import (
 const nxDomainCutHashSalt = 0x8020c07f5a3d91e4
 
 // nxDomainCutHash is the canonical hash of a cut identity: the denied
-// name with a zero qtype — bit-identical whether computed from the
+// name with a zero qtype, bit-identical whether computed from the
 // presentation name (record time) or wire bytes (lookup time).
 func nxDomainCutHash(deniedName string, qclass uint16) uint64 {
 	q := dns.Question{Name: deniedName, Qtype: 0, Qclass: qclass}
@@ -83,7 +83,7 @@ func nxCutWireServable(body []byte) bool {
 
 // lookupWire is lookup for a wire-born question: the same longest-suffix
 // walk over the denied names, probing the hash index and verifying by
-// fold comparison. Expired entries are skipped, not pruned — the Msg
+// fold comparison. Expired entries are skipped, not pruned, the Msg
 // path's lookup owns eviction.
 func (c *nxDomainCutCache) lookupWire(name []byte, qclass uint16) (*nxDomainCutEntry, bool) {
 	if c == nil || qclass == 0 {

@@ -8,7 +8,7 @@ import (
 
 // TestFilterCacheableAnswerShallow pins the copy discipline: a response
 // with nothing to drop passes through as itself, and a response with a
-// chain tail gets a shallow view — same records, same other sections —
+// chain tail gets a shallow view, same records, same other sections,
 // with only the Answer slice rebuilt and the original untouched.
 func TestFilterCacheableAnswerShallow(t *testing.T) {
 	mk := func(owner string, target string) dns.RR {
@@ -66,7 +66,7 @@ func TestFilterCacheableAnswerShallow(t *testing.T) {
 		t.Fatalf("foreign RRSIG over non-DNAME must drop: %v", got.Answer)
 	}
 
-	// Everything dropping leaves an empty — but servable — answer section.
+	// Everything dropping leaves an empty, but servable, answer section.
 	res.Answer = []dns.RR{tail, tailSig}
 	if got = filterCacheableAnswer(res); len(got.Answer) != 0 || got == res {
 		t.Fatalf("all-dropped must yield an empty answer in a new view: %v", got.Answer)

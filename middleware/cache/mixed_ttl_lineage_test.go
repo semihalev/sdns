@@ -16,7 +16,7 @@ import (
 // RRSIG at 1800 (validity weeks away), a consulted DNSKEY entry with only 30
 // seconds left, and a delegation cut of its own. The first query serves the
 // records as resolved; the second serves the cached entry, whose horizon must
-// be min(A, RRSIG) — the admission rule — and not the remaining life of
+// be min(A, RRSIG), the admission rule, and not the remaining life of
 // whatever the resolver consulted on the way. The delegation cut is the one
 // outside bound that still applies.
 func TestMixedTTLRecordsServeTheAnswersOwnHorizon(t *testing.T) {
@@ -96,7 +96,7 @@ func TestMixedTTLRecordsServeTheAnswersOwnHorizon(t *testing.T) {
 
 		const name = "signed.mixed.example."
 		first := query(name, middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
-			// The validation consult, on the request's own context —
+			// The validation consult, on the request's own context,
 			// exactly how subQuery reads keys mid-resolution.
 			if _, ok := c.store.GetWithContext(ctx, keyReq); !ok {
 				t.Error("the DNSKEY consult missed")

@@ -39,7 +39,7 @@ func (q *dnameLineageQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg
 // TestDNAMETargetResolvesUnderItsOwnLineage pins both directions of the rule
 // for the DNAME leg, which is cached under the target's own name.
 //
-// The target must not be resolved under the outer DNAME's bound — a nearly
+// The target must not be resolved under the outer DNAME's bound, a nearly
 // expired alias would otherwise store a freshly resolved target with the
 // alias's seconds. And the outer response must inherit the target's bound,
 // because after the splice the target's records are what the client is

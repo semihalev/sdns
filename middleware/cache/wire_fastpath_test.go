@@ -16,8 +16,8 @@ import (
 
 // transportWriter models the real DNS transport: WriteMsg packs the message
 // before handing bytes to the socket (miekg/dns server.go), while Write
-// sends the caller's bytes untouched. mock.Writer does the opposite —
-// storing the pointer and unpacking raw writes — which would credit the Msg
+// sends the caller's bytes untouched. mock.Writer does the opposite,
+// storing the pointer and unpacking raw writes, which would credit the Msg
 // path with a free Pack and charge the byte path an unpack it never does in
 // production.
 type transportWriter struct {
@@ -188,7 +188,7 @@ func wireFastEntry(tb testing.TB, qname string, qtype uint16, dnssec bool) *dns.
 
 // TestWireFastPathEquivalence pins the whole point of the byte path: for
 // every client profile it serves, the bytes must decode to the same
-// response the Msg path produces — flags, records, and per-client OPT
+// response the Msg path produces, flags, records, and per-client OPT
 // contents (server cookie included) alike.
 func TestWireFastPathEquivalence(t *testing.T) {
 	type client struct {
@@ -201,7 +201,7 @@ func TestWireFastPathEquivalence(t *testing.T) {
 		{"do1_dnssec", func(r *dns.Msg) { r.SetEdns0(1232, true) }, true, true},
 		{"do0_plain", func(r *dns.Msg) { r.SetEdns0(1232, false) }, false, true},
 		// A client without DO is served the stripped body, so the byte path
-		// covers it too — and assertEquivalent is what proves the stripped
+		// covers it too, and assertEquivalent is what proves the stripped
 		// body carries exactly what the Msg path would have sent, DNSSEC
 		// records removed and everything else identical.
 		{"do0_dnssec_stripped", func(r *dns.Msg) { r.SetEdns0(1232, false) }, true, true},
@@ -303,7 +303,7 @@ func TestWireFastPathTruncationFallsBack(t *testing.T) {
 	}
 	if wireFastFallback.Value() != fallbackBefore {
 		t.Fatal("the size ceiling must be caught by the preflight, " +
-			"before a body is built — a late fallback means both paths were paid")
+			"before a body is built, a late fallback means both paths were paid")
 	}
 	if !resp.Truncated || len(resp.Answer) != 0 {
 		t.Fatalf("fallback response tc=%v answers=%d, want truncated empty",
@@ -342,7 +342,7 @@ func TestWireServableGatesRunBeforeCopy(t *testing.T) {
 		t.Fatal("plain entry must be servable to DO=0")
 	}
 	// A signed entry is servable to DO=0 as well, but only from the stripped
-	// body — the stored one must never reach a client that did not ask for
+	// body, the stored one must never reach a client that did not ask for
 	// DNSSEC.
 	signedEntry := entryOf(signed)
 	if !signedEntry.wireFitsChain(do0) {
@@ -426,13 +426,13 @@ func BenchmarkWireFastPath(b *testing.B) {
 		shim := ch.Writer
 
 		// Verify the intended path actually runs, and that the response is
-		// the real cached answer — a benchmark measuring an error return or
+		// the real cached answer, a benchmark measuring an error return or
 		// a silent miss would be worthless.
 		servedBefore := wireFastServed.Value()
 		ch.Next(context.Background())
 		servedDelta := wireFastServed.Value() - servedBefore
 		// A signed entry reaches a client without DO too, from its stripped
-		// body — the gate only turns a request away when there is no body
+		// body, the gate only turns a request away when there is no body
 		// it may be served.
 		wantWire := !forceMsg
 		if wantWire != (servedDelta == 1) {
@@ -469,7 +469,7 @@ func BenchmarkWireFastPath(b *testing.B) {
 
 // TestWireFastPathClearsAuthoritative pins the reply-header contract that
 // the message path gets from SetReply plus its own shaping: a cached answer
-// is never authoritative, and RD/CD come from the request in flight — not
+// is never authoritative, and RD/CD come from the request in flight, not
 // from whatever the upstream stored.
 func TestWireFastPathClearsAuthoritative(t *testing.T) {
 	const qname = "aa.example.com."
@@ -538,8 +538,8 @@ func TestWireFastPathClearsAuthoritative(t *testing.T) {
 }
 
 // TestWireFastPathExcludesNonByteTransports pins the transport gate. DoQ
-// requires the reply ID to be zero (RFC 9250 §4.2.1) — a rewrite its raw
-// byte write does not perform — and the DoH assembly path unpacks whatever
+// requires the reply ID to be zero (RFC 9250 §4.2.1), a rewrite its raw
+// byte write does not perform, and the DoH assembly path unpacks whatever
 // bytes it receives only to pack them again. Both must stay on the message
 // path until they can carry bytes natively.
 func TestWireFastPathExcludesNonByteTransports(t *testing.T) {
@@ -612,8 +612,8 @@ func TestWireFastPathGateRunsBeforeAnyAllocation(t *testing.T) {
 	}
 
 	// Bytes, not counts. The two sides do not do identical work before they
-	// diverge — the ceiling refusal asks the chain what it can take, while
-	// removing the byte path fails the writer type assertion before that —
+	// diverge, the ceiling refusal asks the chain what it can take, while
+	// removing the byte path fails the writer type assertion before that,
 	// so their allocation counts differ by small amounts that say nothing.
 	// What this test exists to notice is a body copy, and that is 2 KB of
 	// difference, not one object.

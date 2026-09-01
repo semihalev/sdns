@@ -58,7 +58,7 @@ func Test_Accesslist(t *testing.T) {
 }
 
 // The access list runs before the cache, so it runs on every query the
-// server answers — and the shipped configuration spells the open default
+// server answers, and the shipped configuration spells the open default
 // out as "0.0.0.0/0" and "::0/0" rather than leaving the list empty. That
 // is the configuration almost every deployment runs, and under it this
 // middleware used to convert the client address into a freshly allocated

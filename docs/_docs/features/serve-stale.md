@@ -22,7 +22,7 @@ actually failed, never a latency optimisation. A query that can be resolved is
 resolved.
 
 **It is positive-only.** Expired positive answers may be served. An expired
-NXDOMAIN or NODATA is not — a name that once did not exist is not evidence that
+NXDOMAIN or NODATA is not, a name that once did not exist is not evidence that
 it still does not.
 
 **The delegation lease is a hard ceiling.** If the parent granted the delegation

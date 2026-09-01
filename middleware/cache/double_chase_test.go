@@ -44,7 +44,7 @@ func TestAdditionalAnswerStopsOnFullChain(t *testing.T) {
 	c := New(cfg)
 	defer c.Stop()
 
-	// Stub queryer returns b.example with a full CNAME+A response —
+	// Stub queryer returns b.example with a full CNAME+A response,
 	// simulating the state where a prior client query for b.example
 	// populated its cache entry with the chased chain.
 	bResp := new(dns.Msg)

@@ -22,8 +22,8 @@ func zlogListenerDisabled(l Listener, err error) {
 // Serve returns when Shutdown is called or the underlying socket closes.
 // Shutdown is idempotent.
 type Listener interface {
-	// Proto returns the transport tag — "udp", "tcp", "tls", "doh",
-	// "doh3", "doq" — used for logging and metrics.
+	// Proto returns the transport tag, "udp", "tcp", "tls", "doh",
+	// "doh3", "doq", used for logging and metrics.
 	Proto() string
 
 	// Addr returns the configured bind address.
@@ -44,7 +44,7 @@ type Listener interface {
 
 	// Critical reports whether a Bind failure on this listener should
 	// abort server startup. Plain DNS (UDP+TCP on cfg.Bind) is
-	// critical; optional services (TLS, DoH, DoH3, DoQ) are not —
+	// critical; optional services (TLS, DoH, DoH3, DoQ) are not,
 	// a missing cert or misconfigured addr only disables that service.
 	Critical() bool
 
@@ -66,7 +66,7 @@ var errListenerNotBound = errors.New("listener: Serve called before Bind")
 //
 // When a critical failure is present, listeners that already bound
 // successfully are shut down before bindAll returns, so the caller
-// never has to remember half-bound state — the invariant is
+// never has to remember half-bound state, the invariant is
 // "err != nil ⇒ no sockets held by this resolver".
 func bindAll(ctx context.Context, listeners []Listener) ([]Listener, error) {
 	var active []Listener

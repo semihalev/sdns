@@ -86,7 +86,7 @@ func TestPrefetchWorkerStoresRefresh(t *testing.T) {
 	fired := make(chan struct{}, 1)
 	c.SetPrefetchQueryer(&signalingPrefetchQueryer{resp: refreshed, fire: fired})
 
-	// Install an existing "hot" entry — that's what the prefetch
+	// Install an existing "hot" entry, that's what the prefetch
 	// refresh replaces.
 	req := new(dns.Msg)
 	req.SetQuestion("prefetch.example.", dns.TypeA)
@@ -125,7 +125,7 @@ func TestPrefetchWorkerStoresRefresh(t *testing.T) {
 	for time.Now().Before(deadline) {
 		got, ok := c.positive.Get(key)
 		if ok && got != entry {
-			// Replaced — worker finished.
+			// Replaced, worker finished.
 			stored := got.storedMsg()
 			if stored == nil || len(stored.Answer) != 1 {
 				t.Fatalf("refreshed entry = %v, want one answer", stored)
@@ -138,7 +138,7 @@ func TestPrefetchWorkerStoresRefresh(t *testing.T) {
 }
 
 // TestPrefetchWorkerReleasesClaimOnError exercises the error-return
-// arm of processPrefetch — when the queryer fails, the deferred
+// arm of processPrefetch, when the queryer fails, the deferred
 // releasePrefetchClaim must still flip the entry's prefetch flag
 // off so future requests can trigger another refresh attempt.
 func TestPrefetchWorkerReleasesClaimOnError(t *testing.T) {

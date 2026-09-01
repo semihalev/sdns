@@ -188,7 +188,7 @@ func TestEDNS_StripsECSWhenPolicyDisabled(t *testing.T) {
 
 func TestEDNS_ForwardsECSClampedDownstream(t *testing.T) {
 	// Client sends /28, policy ceiling is /24. The downstream handler
-	// must see a /24 with the host bits zeroed — proves the forwarding
+	// must see a /24 with the host bits zeroed, proves the forwarding
 	// path round-trips through middleware/edns end-to-end.
 	cfg := new(config.Config)
 	cfg.ECS = config.ECSConfig{
@@ -232,8 +232,8 @@ func TestEDNS_ResponseDoesNotLeakForwardedECS(t *testing.T) {
 	e := New(cfg)
 
 	// Downstream handler mimics the resolver leak path (a): it
-	// re-attaches the request OPT — possibly mutated by SetEdns0 to
-	// include the forwarded ECS — onto its response message.
+	// re-attaches the request OPT, possibly mutated by SetEdns0 to
+	// include the forwarded ECS, onto its response message.
 	leak := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
 		req := ch.Request.Msg()
 		resp := new(dns.Msg)
@@ -338,7 +338,7 @@ func (a *adSetter) Name() string { return "ad-setter" }
 
 // TestEDNS_ClearsADForCheckingDisabled pins the RFC 4035 §3.2.3 / RFC 6840
 // §5.7 rule: a CD=1 client opted out of trusting our validation, so the AD
-// bit must never be asserted to it — even if a downstream handler (e.g. the
+// bit must never be asserted to it, even if a downstream handler (e.g. the
 // forwarder passing an upstream's bit through) set it.
 func TestEDNS_ClearsADForCheckingDisabled(t *testing.T) {
 	e := New(new(config.Config))

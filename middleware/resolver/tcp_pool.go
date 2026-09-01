@@ -149,7 +149,7 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 				// A timeout of zero is the server saying "close now"
 				// (RFC 7828 §3.2.2): no further queries may go out on
 				// this connection, so pooling it would spend the next
-				// query on a socket the server is about to hang up —
+				// query on a socket the server is about to hang up,
 				// observed as exactly that, a send into the dead
 				// connection and a retry.
 				if ka.Timeout == 0 {
@@ -172,7 +172,7 @@ func (p *TCPConnPool) Put(conn *dns.Conn, server string, isRoot, isTLD bool, msg
 
 	// Store in appropriate pool. If another goroutine already
 	// returned an idle connection for this server, keep the existing
-	// one (it's at least as warm) and close this one — otherwise
+	// one (it's at least as warm) and close this one, otherwise
 	// the overwrite would leak the displaced FD and make p.active
 	// drift from the number of open sockets.
 	poolMap := p.getPoolMap(isRoot, isTLD)

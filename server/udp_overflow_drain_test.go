@@ -12,7 +12,7 @@ import (
 // TestUDPDrainWaitsForOverflow pins the other half of the shutdown
 // barrier.
 //
-// A query the pool cannot take is served on its own goroutine — that is
+// A query the pool cannot take is served on its own goroutine, that is
 // what keeps a miss-heavy resolver from being capped at one query per
 // worker. It is still an accepted query, so the drain deadline owes it an
 // answer like any other. Joining only the workers let the drain report
@@ -91,8 +91,8 @@ func TestUDPDrainWaitsForOverflow(t *testing.T) {
 	send("hold.")  // no room left: served on its own goroutine
 	await("hold.")
 
-	// Let the pool finish everything it holds, and wait for the proof —
-	// both replies on the wire — so that what the drain is still waiting
+	// Let the pool finish everything it holds, and wait for the proof,
+	// both replies on the wire, so that what the drain is still waiting
 	// for below can only be the overflow query.
 	close(slow)
 	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))

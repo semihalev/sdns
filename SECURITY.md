@@ -12,10 +12,10 @@ Only the latest minor release line receives security updates:
 ## Reporting a Vulnerability
 
 Please report security vulnerabilities **privately**. Do not open a public
-issue, pull request, or discussion for a vulnerability — that discloses the
+issue, pull request, or discussion for a vulnerability, that discloses the
 problem to attackers before a fix is available.
 
-1.  **Report privately**: Use GitHub's private vulnerability reporting —
+1.  **Report privately**: Use GitHub's private vulnerability reporting,
     ["Report a vulnerability"](https://github.com/semihalev/sdns/security/advisories/new)
     under the repository's **Security** tab. Include a description, the
     affected version(s), impact, and reproduction steps if possible.

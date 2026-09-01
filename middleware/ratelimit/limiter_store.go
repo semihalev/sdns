@@ -45,7 +45,7 @@ func NewLimiterStore(maxSize, rateLimit int) *LimiterStore {
 func (s *LimiterStore) Get(key uint64) *limiter {
 	s.mu.RLock()
 	if tl, ok := s.limiters[key]; ok {
-		tl.touch() // atomic store — safe under RLock
+		tl.touch() // atomic store, safe under RLock
 		s.mu.RUnlock()
 		return tl.limiter
 	}

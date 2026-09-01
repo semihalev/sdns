@@ -118,8 +118,8 @@ func (s *feedServer) serveConn(c net.Conn) {
 }
 
 // startTSIGFeedServer runs the signed primary through the library's own
-// server and Transfer.Out — the pairing that owns the response-side
-// envelope-MAC chain — so our client is verified against what a real
+// server and Transfer.Out, the pairing that owns the response-side
+// envelope-MAC chain, so our client is verified against what a real
 // provider effectively runs, not against a hand-rolled signer. A raw
 // dns.Conn cannot stand in here: it never records the request MAC, so
 // its response MACs verify against nothing.
@@ -141,7 +141,7 @@ func startTSIGFeedServer(t *testing.T, srv *feedServer) {
 			_ = w.WriteMsg(resp)
 		case dns.TypeAXFR:
 			// The signature is what admits a transfer: absent or bad
-			// TSIG is refused — the property the unsigned-client test
+			// TSIG is refused, the property the unsigned-client test
 			// relies on.
 			if req.IsTsig() == nil || w.TsigStatus() != nil {
 				resp := new(dns.Msg)
@@ -168,7 +168,7 @@ func startTSIGFeedServer(t *testing.T, srv *feedServer) {
 	t.Cleanup(func() { _ = server.Shutdown() })
 }
 
-// feedUnderTest builds an RPZ with one AXFR zone and a hand-driven feed —
+// feedUnderTest builds an RPZ with one AXFR zone and a hand-driven feed,
 // the schedule goroutine stays parked so the test drives cycles itself.
 func feedUnderTest(t *testing.T, srv *feedServer, tsig string) (*RPZ, *axfrFeed) {
 	t.Helper()
@@ -229,7 +229,7 @@ func TestAXFRFeedRefusesSerialRollback(t *testing.T) {
 
 	// The source rolls backwards; the probe refuses the cycle whole and
 	// the installed copy stands. "Whole" is load-bearing: the transfer
-	// must not even be attempted — a rejected source gets no second look
+	// must not even be attempted, a rejected source gets no second look
 	// through a dearer channel (RFC 1982's refusal, layered once, at the
 	// probe).
 	before := srv.transfers.Load()
@@ -303,7 +303,7 @@ func TestAXFRFeedTSIG(t *testing.T) {
 		t.Fatal("TSIG-fed rule did not act")
 	}
 
-	// The same primary refuses an unsigned transfer — proof the signature
+	// The same primary refuses an unsigned transfer, proof the signature
 	// was doing the admitting.
 	_, unsigned := feedUnderTest(t, srv, "")
 	if err := unsigned.refreshOnce(context.Background()); err == nil {
@@ -313,7 +313,7 @@ func TestAXFRFeedTSIG(t *testing.T) {
 
 // TestWithdrawnFeedRestoresOnEqualSerial pins the review's first P1: a
 // source that comes back with the SAME serial after a withdrawal must be
-// re-transferred — the equal-serial short-circuit is "nothing to do" only
+// re-transferred, the equal-serial short-circuit is "nothing to do" only
 // while the copy is actually serving.
 func TestWithdrawnFeedRestoresOnEqualSerial(t *testing.T) {
 	srv := startFeedServer(t, "", "")
@@ -335,7 +335,7 @@ func TestWithdrawnFeedRestoresOnEqualSerial(t *testing.T) {
 		t.Fatal("withdrawal did not happen")
 	}
 
-	// The provider recovers — same serial, nothing changed on its side.
+	// The provider recovers, same serial, nothing changed on its side.
 	// The copy must be rebuilt anyway.
 	feed.source = goodSource
 	if err := feed.refreshOnce(context.Background()); err != nil {
@@ -374,7 +374,7 @@ func TestNextWakeBounds(t *testing.T) {
 }
 
 // TestSleepNeverDriftsPastExpire pins the review's deadline finding: the
-// jitter applies to the SOA pace, never to the expire boundary — whatever
+// jitter applies to the SOA pace, never to the expire boundary, whatever
 // the draw, the wake that must withdraw lands at the horizon.
 func TestSleepNeverDriftsPastExpire(t *testing.T) {
 	base := time.Now()
@@ -383,7 +383,7 @@ func TestSleepNeverDriftsPastExpire(t *testing.T) {
 		refresh: 3600 * time.Second, retry: 900 * time.Second, expire: 86400 * time.Second,
 	}
 	// 10s of life left against a 900s retry pace: the cap is the exact
-	// remaining, whatever the jitter draws — not a second more.
+	// remaining, whatever the jitter draws, not a second more.
 	f.loaded = base.Add(-f.expire + 10*time.Second)
 	for range 200 {
 		if got := f.sleepFor(true); got != 10*time.Second {
@@ -401,7 +401,7 @@ func TestSleepNeverDriftsPastExpire(t *testing.T) {
 // startDripTSIGServer is a correctly signed primary that delivers one
 // envelope every interval, indefinitely. Each envelope arrives well inside
 // dns.Transfer's per-envelope read timeout, so only an absolute bound on
-// the whole attempt can stop the stream — the review's exact scenario.
+// the whole attempt can stop the stream, the review's exact scenario.
 func startDripTSIGServer(t *testing.T, name, secret string, interval time.Duration) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -472,7 +472,7 @@ func TestTSIGTransferHonorsItsDeadline(t *testing.T) {
 
 // TestStaleReloadCannotOverwriteANewerOne pins the review's parse-race
 // finding: a reload claim that has been superseded while its parse ran
-// must not commit — the sequence check and the swap share the lock.
+// must not commit, the sequence check and the swap share the lock.
 func TestStaleReloadCannotOverwriteANewerOne(t *testing.T) {
 	path := writeZone(t, testZone)
 	r := newRPZ(t, "enforce", config.RPZZone{Name: "test", File: path})
@@ -500,7 +500,7 @@ newrule.example.com.rpz.test. IN CNAME .
 		t.Fatal("a superseded parse committed")
 	}
 	// The newer generation still serves, and its gauges stand: a refused
-	// commit publishes nothing — metrics travel with the store swap,
+	// commit publishes nothing, metrics travel with the store swap,
 	// inside the same critical section.
 	if w, _ := serve(t, r, "newrule.example.com.", dns.TypeA, "udp", true); !w.Written() {
 		t.Fatal("the stale parse rolled the newer policy back")
@@ -617,7 +617,7 @@ func TestZeroExpireTransferIsRefused(t *testing.T) {
 
 // TestTSIGTransferDoesNotLeakTheProducer pins the drain: a stream whose
 // terminator SOA is not the last record of its envelope makes the
-// consumer return while the producer still has a send ahead of it —
+// consumer return while the producer still has a send ahead of it,
 // without the drain, every such transfer strands the goroutine parked on
 // the unbuffered envelope channel.
 func TestTSIGTransferDoesNotLeakTheProducer(t *testing.T) {
@@ -671,15 +671,15 @@ func TestTSIGTransferDoesNotLeakTheProducer(t *testing.T) {
 }
 
 // TestConcurrentSwapAndServe is the phase's exit criterion in code: one
-// zone slot rewritten through both writer paths — the feed's swap and
-// the watcher's sequenced commit — while readers serve through the
+// zone slot rewritten through both writer paths, the feed's swap and
+// the watcher's sequenced commit, while readers serve through the
 // middleware. Every response must be a whole generation (blocked by the
 // installed rule or passed clean); -race owns the memory-order proof.
 func TestConcurrentSwapAndServe(t *testing.T) {
 	r := newRPZ(t, "enforce", config.RPZZone{Name: "test", File: writeZone(t, testZone)})
 	// The same name carries a different action in each generation, so a
 	// single response tells exactly which one answered: NXDOMAIN is X,
-	// a Local Data answer is Y, and anything else — a pass, a blend — is
+	// a Local Data answer is Y, and anything else, a pass, a blend, is
 	// a torn store. Distinct per-generation names could not see that: a
 	// store wrongly carrying both rules would still produce individually
 	// valid outcomes.
@@ -753,7 +753,7 @@ probe.example.com.rpz.test. IN A 203.0.113.99
 // TestRefreshAttemptCannotOutliveTheHorizon pins the review's P1: a
 // cycle starting just inside the horizon must not let its refresh
 // attempt keep stale rules serving past expire. The attempt is bounded
-// by the copy's remaining trust — cancelled at the boundary, its failure
+// by the copy's remaining trust, cancelled at the boundary, its failure
 // path withdraws there, not a full transfer timeout later.
 func TestRefreshAttemptCannotOutliveTheHorizon(t *testing.T) {
 	srv := startFeedServer(t, "", "")
@@ -789,7 +789,7 @@ func TestRefreshAttemptCannotOutliveTheHorizon(t *testing.T) {
 	feed.cycle(context.Background())
 	elapsed := time.Since(began)
 	// The cut lands at the horizon itself: ~500ms, not 500ms plus the
-	// wake grace — the grace belongs to the timer, never to the attempt.
+	// wake grace, the grace belongs to the timer, never to the attempt.
 	if elapsed > 1200*time.Millisecond {
 		t.Fatalf("the attempt ran %v with the horizon 500ms away", elapsed)
 	}
@@ -801,7 +801,7 @@ func TestRefreshAttemptCannotOutliveTheHorizon(t *testing.T) {
 // TestLateProbeCannotRenewAnExpiredCopy pins the grace hole the review
 // found: a probe that would succeed just past the horizon must not
 // refresh loaded and revalidate a copy that had already outlived its
-// trust — the attempt's clamp is dead by then, healthy source or not.
+// trust, the attempt's clamp is dead by then, healthy source or not.
 func TestLateProbeCannotRenewAnExpiredCopy(t *testing.T) {
 	srv := startFeedServer(t, "", "")
 	r, feed := feedUnderTest(t, srv, "")

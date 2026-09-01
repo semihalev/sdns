@@ -41,8 +41,8 @@ func Test_Failover(t *testing.T) {
 
 	// A fallback that answers, one that refuses immediately, and one that is
 	// not an address at all. The pair used to be a black-holed IPv6 address
-	// and 8.8.8.8, which made this test both slow — the black hole had to
-	// time out — and dependent on Google answering for example.com.
+	// and 8.8.8.8, which made this test both slow, the black hole had to
+	// time out, and dependent on Google answering for example.com.
 	answering, _, stop := startFailoverRcodeServer(t, dns.RcodeSuccess)
 	defer stop()
 	vacant := vacantLoopbackAddr(t)
@@ -722,8 +722,8 @@ func startFailoverServer(t *testing.T, mismatchQuestion bool) (
 
 // vacantLoopbackAddr returns the address of a server that answers with
 // something that is not a DNS message, which is a deterministic failure.
-// An address assumed closed is a race — it can be taken between being
-// released and being used — and a silent one costs a full timeout.
+// An address assumed closed is a race, it can be taken between being
+// released and being used, and a silent one costs a full timeout.
 func vacantLoopbackAddr(t *testing.T) string {
 	t.Helper()
 

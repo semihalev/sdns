@@ -47,7 +47,7 @@ var (
 	}
 	ErrTrustAnchorsUnavailable = &dnsutil.EDEError{
 		Code:    dns.ExtendedErrorCodeOther,
-		Message: "Trust anchors unavailable — refusing to validate",
+		Message: "Trust anchors unavailable, refusing to validate",
 	}
 )
 

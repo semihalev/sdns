@@ -236,7 +236,7 @@ func oversizedKey(algorithm uint8) *dns.DNSKEY {
 // TestDSDigestRefusesOversizedBeforeDecoding pins where the size limit is
 // applied. A DNSKEY can be as large as the message allows and its material is
 // attacker-supplied, so deciding it is too big has to happen on the encoded
-// length — deciding it after decoding pays for the very thing being refused.
+// length, deciding it after decoding pays for the very thing being refused.
 func TestDSDigestRefusesOversizedBeforeDecoding(t *testing.T) {
 	key := oversizedKey(dns.RSASHA256)
 	want := make([]byte, sha256.Size)
@@ -256,7 +256,7 @@ func TestDSDigestRefusesOversizedBeforeDecoding(t *testing.T) {
 // what the library accepts.
 //
 // The limit is judged on the encoded length, but base64 decoding skips CR and
-// LF — so a key at exactly the maximum, wrapped into lines, decodes to a
+// LF, so a key at exactly the maximum, wrapped into lines, decodes to a
 // packable key while measuring longer than the limit. Judging the raw length
 // alone would refuse an input the library turns into a DS.
 func TestDSDigestIgnoresWrappedKeyMaterial(t *testing.T) {
@@ -299,13 +299,13 @@ func TestDSDigestIgnoresWrappedKeyMaterial(t *testing.T) {
 // actually takes, which the helper-level test above does not.
 //
 // VerifyDS reaches usableDSCandidate before any digest, and that begins with
-// KeyTag — which packs the key into a buffer of its own and decodes the
+// KeyTag, which packs the key into a buffer of its own and decodes the
 // material to fill it. Nothing about that decode depends on which DS is being
 // considered, so a DS RRset naming the same key many times paid for it once
 // per mention: one 48 KiB key across 32 DS records amplified to megabytes.
 //
 // The measurement is in bytes rather than allocations because the surrounding
-// bookkeeping — deduplicating and sorting the DS records — allocates by
+// bookkeeping, deduplicating and sorting the DS records, allocates by
 // design. The ceiling is one key's worth of material: crossing it means at
 // least one decode happened, which is the thing being ruled out.
 func TestVerifyDSRefusesOversizedKeyWithoutDecodingIt(t *testing.T) {

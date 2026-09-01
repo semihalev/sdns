@@ -146,7 +146,7 @@ func (w *SingleflightWrapper) retireGeneration(key string, generation *singlefli
 
 // (*SingleflightWrapper).TimedDoChan timedDoChan executes a function
 // with built-in timeout handling. The shared return reflects
-// singleflight.Result.Shared — true when the caller received a value
+// singleflight.Result.Shared, true when the caller received a value
 // that was computed by another goroutine and may therefore be
 // concurrently observed. Callers that mutate or rewrite the value
 // (e.g. set a new message ID) should defensive-copy only when shared

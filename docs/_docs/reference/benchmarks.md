@@ -11,11 +11,11 @@ figures are not re-run on a version bump, so they stay attached to the release
 that was measured rather than following the current one.
 
 This document exists to make one set of claims precisely, with the method and
-configurations needed to check them — not to advertise a bigger number than the
+configurations needed to check them, not to advertise a bigger number than the
 method supports.
 
 **What these numbers are:** the cached-answer serving ceiling of each resolver
-on one machine — how fast the server itself can answer once the answer is in
+on one machine, how fast the server itself can answer once the answer is in
 its cache. **What they are not:** a prediction of production throughput. Real
 traffic mixes hits with misses, and a miss is bound by upstream latency, not by
 the serving engine. What a resolver's engine controls is the hit path; that is
@@ -30,7 +30,7 @@ comparable to each other.
 | | |
 |---|---|
 | Host | 2× Intel Xeon E5-2620 v4 @ 2.10 GHz (32 logical cores), 64 GB RAM |
-| OS | Ubuntu 26.04 LTS, stock kernel and sysctls — no network tuning |
+| OS | Ubuntu 26.04 LTS, stock kernel and sysctls, no network tuning |
 | Load generator | dnsperf 2.15.0, on the same host over loopback |
 | sdns build | Go 1.26.5, `go build`, no build flags |
 
@@ -51,7 +51,7 @@ generator's own CPU cost, identically for every contender.
   only 20 flows (`-c 20`), kernel reuseport hashing leaves most of a 32-socket
   receiver idle and the results measure hash luck. 128 flows approximates real
   traffic, which carries thousands. (For reference, the 20-flow shape puts
-  sdns and PowerDNS at parity around 370–400k and does not change the ordering
+  sdns and PowerDNS at parity around 370 to 400k and does not change the ordering
   of the others.)
 - **TCP load shape:** `dnsperf -m tcp -c 20 -T 4 -l 20`, pipelined persistent
   connections.
@@ -69,7 +69,7 @@ generator's own CPU cost, identically for every contender.
 | Knot Resolver | 6.2.0 | 8 `kresd` instances on one port (SO_REUSEPORT), shared 512 MB LMDB cache |
 
 Two fairness notes, one in each direction. PowerDNS's packet cache echoes a
-stored packet — deliberately less work per query than sdns's full chain, so
+stored packet, deliberately less work per query than sdns's full chain, so
 its number represents its lightest possible path, as does ours. And each
 contender was given a reasonable performance configuration, not an exhaustive
 tuning pass; a specialist could likely move any of these numbers some percent.
@@ -86,7 +86,7 @@ tuning pass; a specialist could likely move any of these numbers some percent.
 | Knot Resolver 6.2.0 | 191k | 192k |
 
 sdns with the untouched default configuration measures in the same band
-(median 406k over three runs) — the result does not depend on tuning knobs.
+(median 406k over three runs), the result does not depend on tuning knobs.
 Answer classes beyond plain hits, measured on sdns freshly warmed: negative
 answers (NXDOMAIN from cached denial) 409k, cached SERVFAIL 399k.
 
@@ -102,14 +102,14 @@ answers (NXDOMAIN from cached denial) 409k, cached SERVFAIL 399k.
 ### Efficiency and scaling: server-process CPU per query
 
 Each server process's own CPU time was read from `/proc` (utime+stime deltas
-across each 20-second run) — so the load generator's cost, which every
+across each 20-second run), so the load generator's cost, which every
 loopback number otherwise includes, is excluded here by construction. All
 rows below come from the same harness cycle (`contrib/bench/resolver_bench.py`:
 readiness gate, verified warm, throwaway run, 3×20 s).
 
 **The 8-way concurrency class.** sdns run with `GOMAXPROCS=8` to match the
 8-worker configurations of the C daemons. This bounds how many threads Go
-executes simultaneously — it is a concurrency limit, not CPU pinning; no
+executes simultaneously, it is a concurrency limit, not CPU pinning; no
 process here is bound to specific cores:
 
 | resolver | median qps | busy cores | qps per busy core |
@@ -120,7 +120,7 @@ process here is bound to specific cores:
 | Knot Resolver 6.2.0, 8 workers | 191k | 6.7 | ~27k |
 
 (Unbound configured with 16 threads still consumed only ~8 busy cores and
-reached 362k / ~45k per core — its observed CPU envelope stays in this
+reached 362k / ~45k per core, its observed CPU envelope stays in this
 class even when its configuration leaves it.)
 
 **Scaled up.** Each resolver allowed more workers:
@@ -136,11 +136,11 @@ class even when its configuration leaves it.)
 Three findings worth stating plainly. First, in the same concurrency
 class sdns leads while running its full middleware chain against
 PowerDNS's packet echo. Second, per-core efficiency is a property of each
-configuration, not an intrinsic constant — PowerDNS's echo does the least
+configuration, not an intrinsic constant, PowerDNS's echo does the least
 work per query of the four and earns the best per-core number for it.
 Third, sdns's own scaling curve bends: ~50k qps/core at 8 procs falling
 to ~30k at the runtime default of 32, and doubling the concurrency from
-8 to 16 buys only ~17% more throughput — on this host, bounding Go's
+8 to 16 buys only ~17% more throughput, on this host, bounding Go's
 parallelism below the runtime default is a material win. The shape is
 consistent with scheduler, shared-state and cache-coherence costs; an
 affinity-controlled check (the process bound to one NUMA node with
@@ -151,14 +151,14 @@ tracked as future engine work.
 ### Run-to-run spread
 
 20-second runs on a busy OS have real variance; the full series behind the
-medians spanned roughly ±7% for sdns UDP (423–444k), ±6% for PowerDNS
-(346–390k), ±3% for Unbound, ±2% for Knot, and ±15% for sdns TCP (195–273k).
+medians spanned roughly ±7% for sdns UDP (423 to 444k), ±6% for PowerDNS
+(346 to 390k), ±3% for Unbound, ±2% for Knot, and ±15% for sdns TCP (195 to 273k).
 Single-run numbers from any resolver should be read with that in mind.
 
 ## Cold cache: resolution rather than serving
 
-Everything above measures the hit path. This measures the other half — what a
-miss costs — by running a corpus the resolver has never seen against an empty
+Everything above measures the hit path. This measures the other half, what a
+miss costs, by running a corpus the resolver has never seen against an empty
 cache. It is a different question, and the answer belongs to a different part
 of the code: how quickly the resolver walks root → TLD → zone, and which
 upstream it picks at each step.
@@ -191,7 +191,7 @@ changed the answer by more than the result itself:
 
 - **File-descriptor limit, 65536 for all four**, verified per run by reading
   `/proc/<pid>/limits` and printed alongside each result. At the shell default
-  of 1024 the resolvers are not equally handicapped — a cold run's concurrency
+  of 1024 the resolvers are not equally handicapped, a cold run's concurrency
   is bound by outgoing sockets, and a resolver configured for more of them
   than the limit allows is silently clamped. Under that limit PowerDNS
   measured 529 qps; with it raised, 799.
@@ -201,17 +201,17 @@ changed the answer by more than the result itself:
   already the more aggressive of the two policies.
 - **Address family: every resolver on its shipped dual-stack default.** An
   earlier revision of this section pinned PowerDNS to one IPv4 address,
-  switched Unbound's IPv6 off and bound Knot to IPv4 — none of which is that
-  resolver's default — while sdns ran dual-stack. On this host the root
+  switched Unbound's IPv6 off and bound Knot to IPv4, none of which is that
+  resolver's default, while sdns ran dual-stack. On this host the root
   answers in 1 ms over IPv4 and ~49 ms over IPv6, so those pins handed three
   resolvers the fast path exclusively. The pins are gone; all four now run
   the dual stack they ship with, and the numbers below replace the earlier
   ones.
 
-QNAME minimisation was not equalised — it was measured both ways. RFC 9156
-§2.3 requires a bound — *"Resolvers supporting QNAME minimisation MUST
+QNAME minimisation was not equalised, it was measured both ways. RFC 9156
+§2.3 requires a bound, *"Resolvers supporting QNAME minimisation MUST
 implement a mechanism to limit the number of outgoing queries per user
-request"* — and names values: MAX_MINIMISE_COUNT with a RECOMMENDED value of
+request"*, and names values: MAX_MINIMISE_COUNT with a RECOMMENDED value of
 10, MINIMISE_ONE_LAB with "a good value is 4". Read from the installed builds:
 
 | | default | step bound |
@@ -229,7 +229,7 @@ off in one run only to compare engines.
 
 ### Results
 
-Medians of three rounds. First with minimisation disabled in all four — the
+Medians of three rounds. First with minimisation disabled in all four, the
 engine comparison:
 
 | minimisation off | queries/sec | avg latency | unanswered | lost | spread |
@@ -239,7 +239,7 @@ engine comparison:
 | Knot Resolver 6.2.0 | 534 | 0.135 s | 910 (1.82%) | 218 / 206 / 236 | 5.3% |
 | Unbound 1.24.2 | 399 | 0.137 s | 905 (1.81%) | 567 / 581 / 554 | 2.4% |
 
-And as shipped — every resolver on its own minimisation defaults:
+And as shipped, every resolver on its own minimisation defaults:
 
 | as shipped | queries/sec | avg latency | unanswered | lost | spread |
 |---|---|---|---|---|---|
@@ -250,7 +250,7 @@ And as shipped — every resolver on its own minimisation defaults:
 
 **"Unanswered" counts SERVFAIL and lost queries together**, and it is the
 column that makes the rest readable. Counting SERVFAIL alone puts Unbound
-first at 0.7% — but it left over five hundred queries with no answer at all,
+first at 0.7%, but it left over five hundred queries with no answer at all,
 which from a client is worse than a SERVFAIL, not better. Summed, the
 minimisation-off run lands all four between 1.72% and 1.82%: they resolved
 the same corpus to the same outcomes, and the residue is names that genuinely
@@ -266,8 +266,8 @@ lost column are where that shows up.
 ### Caveats
 
 - One pass per resolver per round, not a repeated measurement within a round.
-  A cold run cannot be repeated quickly — the cache has to be emptied and the
-  upstreams re-walked — so the spread column is across rounds, which also
+  A cold run cannot be repeated quickly, the cache has to be emptied and the
+  upstreams re-walked, so the spread column is across rounds, which also
   carries the hour's drift.
 - Cold-cache throughput is dominated by upstream latency, not by the local
   machine. These numbers describe how well each resolver walks the tree on
@@ -275,7 +275,7 @@ lost column are where that shows up.
 - The two tables answer different questions and neither replaces the other:
   minimisation-off ranks the engines, as-shipped ranks the deployments. The
   as-shipped gap between them is what each resolver's minimisation policy
-  costs on this corpus — visible on the wire, since minimised queries show
+  costs on this corpus, visible on the wire, since minimised queries show
   up in a capture, and stated per resolver in the defaults table above.
 
 ## What changed in 1.8.0
@@ -305,7 +305,7 @@ dnsperf -s <addr> -p <port> -m tcp -d hits.txt -c 20 -T 4 -l 20    # TCP
 ```
 
 Warm first, discard a throwaway run, take at least three measurements, report
-the median, and state the flow count — it is the parameter that moves these
+the median, and state the flow count, it is the parameter that moves these
 numbers the most.
 
 For the cold-cache section, the shape is different: no warm pass, one full
@@ -320,5 +320,5 @@ dnsperf -s <addr> -p <port> -S 1 -T 100 -t 10 -c 1000 -d queryfile-50000
 
 Alternate the resolvers rather than blocking them, record queries lost
 alongside SERVFAIL, and check that the two summed agree across contenders
-before comparing throughput — if they do not, the resolvers are not doing the
+before comparing throughput, if they do not, the resolvers are not doing the
 same work and the throughput numbers do not mean what they appear to.

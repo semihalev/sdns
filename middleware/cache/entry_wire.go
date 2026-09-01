@@ -27,7 +27,7 @@ const (
 // covers. The DNSSEC flag means "ClearDNSSEC would remove something", and
 // it is taken exactly the way ClearDNSSEC decides: from every section, the
 // additional one included, and leaving out the one authenticating type the
-// question asked for by name — that type is the payload, kept for any DO.
+// question asked for by name, that type is the payload, kept for any DO.
 // Mirroring the Msg path's filter is what keeps the DO=0 wire body
 // identical to it.
 func prepareWireServe(body []byte) wireServeFlags {
@@ -89,7 +89,7 @@ func (e *CacheEntry) wireEligibleFor(req *dns.Msg) bool {
 		req != nil && len(req.Question) == 1
 }
 
-// wireFitsChain is the second half: the facts only the writer chain knows —
+// wireFitsChain is the second half: the facts only the writer chain knows,
 // the client's real DO bit and the transport's size ceiling. Both halves
 // are allocation-free and complete, so no body is ever built for a request
 // that will fall back.
@@ -126,7 +126,7 @@ func (e *CacheEntry) wireEDEReserve() int {
 // wireBodyFor returns the stored body this client may be served, and the
 // verdict that goes with it. A client that asked for DNSSEC gets the stored
 // message; one that did not gets the stripped form, which is nil when the
-// entry has none — that client keeps the Msg path, which strips as it goes.
+// entry has none, that client keeps the Msg path, which strips as it goes.
 // The DNSSEC flag already leaves out the type an explicit RRSIG, NSEC or
 // NSEC3 question asked for, so such an entry serves the stored message for
 // any DO unless it also carries authenticating records of another type.
@@ -191,7 +191,7 @@ func (e *CacheEntry) serveWireInto(
 
 	// The client's question-name spelling is echoed byte-for-byte (0x20
 	// compatibility). Almost always the stored bytes already carry that
-	// spelling — clients overwhelmingly ask in one consistent case — and
+	// spelling, clients overwhelmingly ask in one consistent case, and
 	// then the name needs no re-encoding at all.
 	//
 	// The stored name and the stored bytes come from one message: the entry
@@ -207,7 +207,7 @@ func (e *CacheEntry) serveWireInto(
 	if rewrite {
 		// Encoded straight over the stored name, so the spelling swap needs
 		// no scratch buffer of its own. A length change would mean the
-		// request's name is not the stored one after all — impossible for an
+		// request's name is not the stored one after all, impossible for an
 		// entry the lookup key already matched, since names that fold to the
 		// same key encode to the same length. Checked anyway; the body is
 		// simply dropped.
@@ -224,7 +224,7 @@ func (e *CacheEntry) serveWireInto(
 	}
 
 	// Apply the same header the Msg path derives from the request: ID, QR,
-	// opcode, the copied RD/CD bits, and AA cleared — a cached answer is
+	// opcode, the copied RD/CD bits, and AA cleared, a cached answer is
 	// never authoritative, however the upstream marked it.
 	wire.ApplyReply(body, req.Id, req.Opcode, req.RecursionDesired, req.CheckingDisabled)
 
@@ -250,7 +250,7 @@ func (e *CacheEntry) serveWireInto(
 
 // wireInfoFor assembles the reply facts the writer chain acts on. The
 // DNSSEC bit is the body's flag, which already leaves out the type an
-// explicit RRSIG, NSEC or NSEC3 question asked for — that is the payload,
+// explicit RRSIG, NSEC or NSEC3 question asked for, that is the payload,
 // and the edns layer must not divert such a DO=0 reply back to the Msg
 // path over it. The entry's Extended DNS Error rides along for the OPT
 // append.
@@ -274,7 +274,7 @@ func (e *CacheEntry) wireInfoFor(
 
 // serveWireIntoRequest is serveWireInto for a wire-born request: every
 // reply fact comes from the parsed request, and the 0x20 spelling echo
-// copies the client's wire-form name straight over the stored question —
+// copies the client's wire-form name straight over the stored question,
 // the lookup key already proved the names fold equal, so the lengths match
 // by construction (checked anyway; a mismatch drops the body).
 func (e *CacheEntry) serveWireIntoRequest(
@@ -310,7 +310,7 @@ func (e *CacheEntry) serveWireIntoRequest(
 	}
 	// Echo the client's exact spelling. When it matches the stored bytes
 	// the copy is a no-op-shaped overwrite; when only the case differs it
-	// is the whole rewrite — no re-encoding, the client's wire name IS
+	// is the whole rewrite, no re-encoding, the client's wire name IS
 	// the encoding.
 	copy(body[wire.HeaderLen:wire.HeaderLen+question.NameLen], clientName)
 

@@ -22,13 +22,13 @@ type WireInfo struct {
 	// AuthenticatedData mirrors the AD bit currently set in the body.
 	AuthenticatedData bool
 	// HasDNSSEC reports whether the body carries DNSSEC records the
-	// client did not ask for — the fact the edns layer needs for its
+	// client did not ask for, the fact the edns layer needs for its
 	// DO=0 decision. An explicit RRSIG query's answer is its payload,
 	// not augmentation, and travels with this unset.
 	HasDNSSEC bool
 	// HasEDE carries an RFC 8914 Extended DNS Error for the edns layer
 	// to append to the reply OPT. A client without EDNS never receives
-	// it — exactly the Msg path's re-attach behavior.
+	// it, exactly the Msg path's re-attach behavior.
 	HasEDE  bool
 	EDECode uint16
 	EDEText string
@@ -56,7 +56,7 @@ type WireCapability struct {
 //
 // WireReady is the allocation-free preflight: it walks the whole chain and
 // reports both whether every layer can shape bytes and the facts the caller
-// needs to decide. Callers must consult it before building a body — a late
+// needs to decide. Callers must consult it before building a body, a late
 // refusal would mean paying for both paths.
 //
 // WriteWire keeps ErrWireFallback as a defensive backstop for conditions a
@@ -75,7 +75,7 @@ type WireWriter interface {
 // when the writer cannot lease (the caller falls back to building its own
 // body for WriteWire). Exactly one of CommitWire or AbortWire must follow
 // every successful BeginWire, before any other write on this writer.
-// CommitWire has WriteWire's semantics — including the lazy post-write
+// CommitWire has WriteWire's semantics, including the lazy post-write
 // Msg() retention, which is why the lease belongs to the writer until the
 // request finishes, never returning to any pool at commit time (the #558
 // lesson). AbortWire releases the lease without a send; the caller may then
@@ -96,7 +96,7 @@ func ClearWireAD(body []byte) {
 // embedding the server through ServeMsg supplies its own transport, and
 // one whose RemoteAddr merely looks like a datagram socket would
 // otherwise receive raw wire bytes on cache hits and packed messages on
-// misses — a split its Write may not survive. The owned listeners
+// misses, a split its Write may not survive. The owned listeners
 // declare the capability at ingress (AllowDirectPack); DoQ additionally
 // needs its reply ID normalized to zero (RFC 9250 §4.2.1) and the DoH
 // assembly path reshapes bytes, so neither declares it.
@@ -113,8 +113,8 @@ func (w *responseWriter) WireReady() (WireCapability, bool) {
 }
 
 // StagedFlusher is implemented by transports that stage replies for a
-// batched send. The chain flushes them at the strict-path detach — the
-// moment slow work is certain — so a reply already staged never waits
+// batched send. The chain flushes them at the strict-path detach, the
+// moment slow work is certain, so a reply already staged never waits
 // behind an unrelated recursion.
 type StagedFlusher interface {
 	// FlushStaged sends everything staged so far. Must only be called
@@ -187,7 +187,7 @@ func (w *responseWriter) WriteWire(body []byte, info WireInfo) error {
 // job-owned storage when it offers any (WireTransportLeaser), else a fresh
 // buffer. Either way the lease semantics hold: the body is built in a
 // buffer the writer handed out, and the writer keeps it after CommitWire
-// for the lazy post-write Msg() contract — a job-backed lease stays valid
+// for the lazy post-write Msg() contract, a job-backed lease stays valid
 // until the job releases, which is after the middleware unwind completes.
 func (w *responseWriter) BeginWire(size, reserve int) []byte {
 	if w.Written() {
@@ -199,8 +199,8 @@ func (w *responseWriter) BeginWire(size, reserve int) []byte {
 			// The contract is cap == size+reserve, not "whatever the
 			// slab holds": a transport-backed lease is a reused buffer
 			// whose tail still carries the previous response, and a
-			// wrapper reading past its declared capacity — or appending
-			// past the reserve — must find a boundary, not another
+			// wrapper reading past its declared capacity, or appending
+			// past the reserve, must find a boundary, not another
 			// client's bytes.
 			if cap(buf) < need {
 				return nil
@@ -222,7 +222,7 @@ func (w *responseWriter) CommitWire(body []byte, info WireInfo) error {
 func (w *responseWriter) AbortWire() {}
 
 // Msg returns the written message. After a wire-path write the packed
-// bytes are decoded on first use — post-write readers (DoH assembly,
+// bytes are decoded on first use, post-write readers (DoH assembly,
 // tests) are cold paths and must not tax the hot serve.
 func (w *responseWriter) Msg() *dns.Msg {
 	if w.msg == nil && w.wire != nil {

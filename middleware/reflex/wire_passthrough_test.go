@@ -88,7 +88,7 @@ func TestReflexPassesTheBytePathThrough(t *testing.T) {
 // TestReflexCountsAResponseOnce pins the fallback contract review
 // demonstrated the violation of: the amplification observation commits only
 // when the chain actually served the bytes. On ErrWireFallback the Msg
-// retry records that serve — counting here too would credit the source with
+// retry records that serve, counting here too would credit the source with
 // the same response twice and inflate its score toward the block threshold.
 func TestReflexCountsAResponseOnce(t *testing.T) {
 	sink := &wireSink{Writer: mock.NewWriter("udp", "203.0.113.9:5353")}
@@ -119,7 +119,7 @@ func TestReflexCountsAResponseOnce(t *testing.T) {
 		t.Fatal("the tracker saw no response at all")
 	}
 	if want := uint64(resp.Len()); entry.TotalResponseBytes != want { //nolint:gosec // a message length is positive
-		t.Fatalf("the tracker recorded %d response bytes, want %d — the "+
+		t.Fatalf("the tracker recorded %d response bytes, want %d, the "+
 			"declined wire write was counted on top of the Msg retry",
 			entry.TotalResponseBytes, want)
 	}

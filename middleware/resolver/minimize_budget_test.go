@@ -29,7 +29,7 @@ func walkMinimize(r *Resolver, qname string) []int {
 // asks for: the cap bounds the queries one request spends, not how deep the
 // closest cached delegation happens to sit. Capping on depth charged the
 // budget for labels that were never exposed, so the warmer the cache the less
-// a resolution minimized — stopping exactly where the labels still hidden are
+// a resolution minimized, stopping exactly where the labels still hidden are
 // the private ones.
 func TestMinimizeBudgetCountsProbesNotDepth(t *testing.T) {
 	r := &Resolver{qnameMinCount: 3, qnameMinOneLabel: 3}
@@ -90,7 +90,7 @@ func TestMinimizeOneLabelAtATime(t *testing.T) {
 //
 // This drifted once already: the probe was built with A in 2020, changed to the
 // client's type in 2023 with no reason recorded, and a later refactor removed
-// the line entirely because Copy() already carried the type — so nothing showed
+// the line entirely because Copy() already carried the type, so nothing showed
 // the change. The old test asked its question as A, which made it pass either
 // way. This one does not.
 func TestMinimizeProbesWithA(t *testing.T) {
@@ -129,7 +129,7 @@ func TestMinimizeTakesUnderscoreLabelsTogether(t *testing.T) {
 
 	// mail.example.org. is known, so the step would ordinarily expose _tcp
 	// alone. Both underscore labels belong to the same query, which is the
-	// full name — so there is nothing left to minimize.
+	// full name, so there is nothing left to minimize.
 	got, exposed, min := r.minimize(req, 3, 1, false)
 	if min {
 		t.Fatalf("minimized to %q, want the run of underscore labels to reach the query itself",

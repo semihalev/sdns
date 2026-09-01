@@ -19,7 +19,7 @@ import (
 //
 // The zone's nameserver is named in a different zone on purpose. One named
 // inside its own zone could only be found through the very servers that
-// have stopped answering, so there would be nothing to recover with — and
+// have stopped answering, so there would be nothing to recover with, and
 // the refresh, having nowhere to go, would never be exercised.
 func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 	world := newHermeticNet(t)
@@ -60,8 +60,8 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 	//
 	// The failure comes from a loopback server that answers with something
 	// which is not a DNS message. A TEST-NET address would do as far as the
-	// resolver is concerned, but the packets would really leave the host —
-	// where a VPN or a helpful local network may route or answer them — and
+	// resolver is concerned, but the packets would really leave the host,
+	// where a VPN or a helpful local network may route or answer them, and
 	// each attempt would cost a timeout.
 	stale := malformedResponder(t)
 	match.servers.List = []*authority.Server{
@@ -93,8 +93,8 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 
 	// The refresh is the point, and it shows in two places: the resolver
 	// went and asked where the nameserver lives, and the address it found
-	// is now among the ones it will use. The stale entry stays — the
-	// refresh adds what works rather than pruning what does not — so this
+	// is now among the ones it will use. The stale entry stays, the
+	// refresh adds what works rather than pruning what does not, so this
 	// asks whether the working address is present, not whether the dead one
 	// is gone.
 	if helper.asked("ns1.helper.test.", dns.TypeA) <= lookupsBefore {
@@ -118,7 +118,7 @@ func TestHermeticResolveRefreshesStaleAuthority(t *testing.T) {
 
 // malformedResponder answers every query with something that is not a DNS
 // message. A resolver pointed at it fails at once and for one reason, which
-// is what a test wants from a broken endpoint — no timeout to sit through
+// is what a test wants from a broken endpoint, no timeout to sit through
 // and no packet leaving the host.
 func malformedResponder(t *testing.T) string {
 	t.Helper()

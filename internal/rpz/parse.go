@@ -23,7 +23,7 @@ const (
 	// second zz.
 	SkipOwnerEncoding = "owner-encoding"
 	// SkipUnknownAction is a CNAME into the rpz-* action namespace that
-	// no action this build knows — a future or nonstandard action code,
+	// no action this build knows, a future or nonstandard action code,
 	// which must never be served as Local Data (design §5.2).
 	SkipUnknownAction = "unknown-action"
 	// SkipNotActionData covers the record types the draft excludes from
@@ -47,7 +47,7 @@ const pendingLimit = 64
 
 // IsDNSSECType reports whether t is one of the DNSSEC record types. The
 // parser bars them from being policy data, and the middleware strips them
-// from chased answers — one classification, shared, so the two cannot
+// from chased answers, one classification, shared, so the two cannot
 // drift (a rewrite must never carry DNSSEC credibility, design C2).
 func IsDNSSECType(t uint16) bool {
 	switch t {
@@ -86,7 +86,7 @@ const responseIPMarker = "rpz-ip"
 // origin is the apex the file's relative names hang from, canonical, and
 // may be empty. Feeds distributed as files commonly write their SOA as
 // "@" and every rule relative to it, because the consuming server is
-// expected to supply the origin from its own configuration — so a file
+// expected to supply the origin from its own configuration, so a file
 // that names no apex of its own is not malformed, it is the ordinary
 // shape, and the operator's `origin` setting is what completes it. A
 // file whose SOA carries an absolute owner needs none.
@@ -157,7 +157,7 @@ func loadZone(name string, r io.Reader, file string, policy Override, cnameTarge
 	return z, nil
 }
 
-// CompileRecords compiles an already-received record stream — an AXFR —
+// CompileRecords compiles an already-received record stream, an AXFR,
 // into a Zone, through exactly the classifier the file loader uses, so a
 // feed behaves identically whichever way it arrived. The stream must lead
 // with its apex SOA, which a strict transfer guarantees; the caller
@@ -234,7 +234,7 @@ func (z *Zone) classify(rr dns.RR) {
 
 	// CLIENT-IP and IP: the owner encodes an address block, not a name.
 	// The two triggers share one encoding and one merge semantic; only
-	// the tables differ — one pair judges the querier, the other the
+	// the tables differ, one pair judges the querier, the other the
 	// answer.
 	if enc, ok := strings.CutSuffix(rel, "."+clientIPMarker); ok {
 		z.insertIPOwner(enc, rr, z.insertClientIP)
@@ -378,7 +378,7 @@ func classifyAction(rr dns.RR) (Action, dns.RR) {
 		return ActionTCPOnly, nil
 	default:
 		// A target whose top-level label sits in the rpz-* namespace is
-		// an action code, recognized or not — never Local Data. The
+		// an action code, recognized or not, never Local Data. The
 		// wildcard form steps over "*." so a wildcarded rpz-* target is
 		// judged by the same rule.
 		tld := strings.TrimPrefix(target, "*.")

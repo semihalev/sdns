@@ -199,7 +199,7 @@ func TestVerifyNODATANSEC_Wildcard(t *testing.T) {
 		NextDomain: "zz.w.example.",
 		TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
 	}
-	// Wildcard NSEC at *.w.example. — type bitmap has A but not AAAA.
+	// Wildcard NSEC at *.w.example., type bitmap has A but not AAAA.
 	wildcard := &dns.NSEC{
 		Hdr:        dns.RR_Header{Name: "*.w.example.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
 		NextDomain: "a.w.example.",
@@ -210,7 +210,7 @@ func TestVerifyNODATANSEC_Wildcard(t *testing.T) {
 		t.Errorf("%s: unexpected error: %v", "Wildcard NODATA proof should verify", err)
 	}
 
-	// Same shape but wildcard bitmap *does* include the queried type —
+	// Same shape but wildcard bitmap *does* include the queried type,
 	// must be rejected because the wildcard could synthesize an answer.
 	wildcardWithType := &dns.NSEC{
 		Hdr:        dns.RR_Header{Name: "*.w.example.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
@@ -227,8 +227,8 @@ func TestVerifyNODATANSEC_Wildcard(t *testing.T) {
 // draws: an existing name with descendants but no RRsets owns no NSEC, so a
 // signed zone answers NODATA for it with the covering NSEC alone, whose
 // NextDomain lies strictly below the query name. Both fixtures are shapes
-// captured from live signed zones — an interior service label and an interior
-// reverse-tree label — that the validator used to reject as incomplete,
+// captured from live signed zones, an interior service label and an interior
+// reverse-tree label, that the validator used to reject as incomplete,
 // costing a wasted walk per query that touched them.
 func TestVerifyNODATANSECEmptyNonTerminal(t *testing.T) {
 	cases := []struct {

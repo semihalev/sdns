@@ -19,7 +19,7 @@ import (
 
 // replayWitness stands at the pipeline tail in the resolver's place. The
 // inline pass hands off at the cache, so every invocation this handler
-// sees must carry the replay mark — a call without it means the inline
+// sees must carry the replay mark, a call without it means the inline
 // pass ran past the barrier.
 type replayWitness struct {
 	calls        int
@@ -54,7 +54,7 @@ func newInlineTestServer(t *testing.T, witness *replayWitness) *Server {
 	defaults.RegisterUpTo("resolver")
 	middleware.Register("replay-witness", func(*config.Config) middleware.Handler { return witness })
 
-	cfg := &config.Config{ //nolint:gosec // G101 — the cookie secret is a test fixture, not a credential
+	cfg := &config.Config{ //nolint:gosec // G101, the cookie secret is a test fixture, not a credential
 		Bind:         "127.0.0.1:0",
 		Expire:       600,
 		CacheSize:    10240,
@@ -86,7 +86,7 @@ func TestServeRawInlineContract(t *testing.T) {
 
 	job := &strictTestJob{remote: net.UDPAddr{IP: net.IPv4(203, 0, 113, 40), Port: 4242}}
 
-	// Cold query: the inline pass must stop at the cache — unwritten,
+	// Cold query: the inline pass must stop at the cache, unwritten,
 	// handed off, and the resolver stand-in untouched.
 	raw := packRawQuery(t, "inline.zero.test.", true)
 	if s.ServeRawInline(job, raw, time.Now()) {

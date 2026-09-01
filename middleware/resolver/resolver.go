@@ -53,7 +53,7 @@ type Resolver struct {
 	// TEST-NET-1 (192.0.2.0/24) glue to loopback listeners so a real
 	// root->parent->child->sub referral chain can be driven in-process. It
 	// is atomic because the background priming goroutine dials concurrently
-	// with a test setting the mapper — a plain field would race.
+	// with a test setting the mapper, a plain field would race.
 	resolveTarget atomic.Pointer[func(addr string) string]
 
 	// glue addrs cache
@@ -108,7 +108,7 @@ type Resolver struct {
 	//
 	// atomic.Pointer because r.run() starts a background goroutine
 	// from NewResolver that issues priming sub-queries the instant
-	// middleware.Ready() returns true — and the auto-wire write
+	// middleware.Ready() returns true, and the auto-wire write
 	// happens after NewResolver returns. Production sequences the
 	// autoWire() call before globalPipeline.Store, but tests
 	// construct fresh Resolvers outside that flow and need the
@@ -137,7 +137,7 @@ type resolveState struct {
 	level   int
 	// minSteps counts the minimized queries already sent for this request.
 	// RFC 9156 section 2.3 bounds outgoing queries per user request, so the
-	// budget is spent by probes actually sent — not by how deep the closest
+	// budget is spent by probes actually sent, not by how deep the closest
 	// cached delegation happens to sit. Capping on level instead would hand
 	// a warm resolver a budget already consumed by labels it never had to
 	// expose, and stop minimizing exactly where the remaining labels are the
@@ -157,7 +157,7 @@ type resolveState struct {
 	// cutDeadline is the absolute expiry of the shallowest delegation on
 	// the path descended so far (zero = unbounded, at/above root). A newly
 	// established delegation inherits it via min, so a deep sub-delegation
-	// can never outlive an ancestor cut — the Phoenix downward-delegation
+	// can never outlive an ancestor cut, the Phoenix downward-delegation
 	// (T2) protection (GHSA-mqfw-f48p-2vc8).
 	cutDeadline time.Time
 	cutKey      uint64
@@ -267,8 +267,8 @@ const (
 	maxInflightProbes = 16
 
 	// probeGrace is how much longer than one upstream timeout a probe's
-	// context lives, so a silent server is ended by the socket deadline —
-	// which records a failure — rather than by the context, which would
+	// context lives, so a silent server is ended by the socket deadline,
+	// which records a failure, rather than by the context, which would
 	// only record a cancellation.
 	probeGrace = 250 * time.Millisecond
 )
@@ -421,7 +421,7 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 	}
 
 	// Pre-build UDPAddr forms so the UDP hot path doesn't allocate
-	// one per exchange. Port=0 means "kernel picks" — the ephemeral
+	// one per exchange. Port=0 means "kernel picks", the ephemeral
 	// port is bound at socket creation, just like the Dialer path.
 	r.outboundUDPv4 = make([]*net.UDPAddr, len(r.outboundIPv4))
 	for i, ip := range r.outboundIPv4 {
@@ -494,7 +494,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 
 		// Nothing deeper is cached and the next query would go to a real
 		// root server: the verified local root copy (RFC 8806), when one
-		// is active, answers instead — a referral installed into rs, a
+		// is active, answers instead, a referral installed into rs, a
 		// parent-side DS answer, or a signed NXDOMAIN. No active copy
 		// changes nothing.
 		if rs.level == 0 {
@@ -529,8 +529,8 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	// below: a NODATA prefix exists and carries nothing, which is
 	// minimization working. An NXDOMAIN whose proof locally validates for
 	// the whole subtree ends the resolution (RFC 8020). Every other
-	// non-NOERROR outcome — an unprovable denial, a SERVFAIL or REFUSED
-	// with or without a SOA, a denial dressed in a CNAME answer — stops
+	// non-NOERROR outcome, an unprovable denial, a SERVFAIL or REFUSED
+	// with or without a SOA, a denial dressed in a CNAME answer, stops
 	// hiding labels and asks for the full name from this delegation.
 	// Deciding on sections instead of the RCODE let the dressed shapes
 	// slip past the fallback and back into the label walk.
@@ -611,7 +611,7 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 // groupLookup collapses concurrent identical lookups onto one leader
 // through singleflight. owned declares the request handed over: the leader
 // closure may retain and read it past this call's return, so owned=true is
-// only correct when nothing upstack mutates req afterward — today that is
+// only correct when nothing upstack mutates req afterward, today that is
 // exactly minimize's private copy, which handleLookupError at most reads.
 // A shared request (rs.req) must pass owned=false so the leader gets its
 // own copy, made while the caller still exclusively owns the memory.
@@ -645,15 +645,15 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 	// The leader closure can outlive this caller: TimedDoChan returns on this
 	// caller's timeout/cancel while the shared generation remains registered
 	// until its closure finishes (or bounded stuck cleanup retires it). After
-	// we return, a shared req resumes its lifecycle upstack — the response
-	// re-attaches the request OPT and the edns writer mutates it in place —
+	// we return, a shared req resumes its lifecycle upstack, the response
+	// re-attaches the request OPT and the edns writer mutates it in place,
 	// so an abandoned leader copying req (lookup's per-server CopyTo) would
 	// race on caller-owned memory. Hand the closure its own private copy,
 	// made here while we still exclusively own req.
 	//
 	// An owned req (a minimized copy) needs no second copy: the leader only
-	// reads it — per-server CopyTo sources from it, queryServer mutates the
-	// copies — and after we return its only touch upstack is a read in
+	// reads it, per-server CopyTo sources from it, queryServer mutates the
+	// copies, and after we return its only touch upstack is a read in
 	// handleLookupError's debug log before it is dropped.
 	leaderReq := req
 	if !owned {
@@ -671,7 +671,7 @@ func (r *Resolver) groupLookup(ctx context.Context, rs *resolveState, req *dns.M
 		// again; each caller's context bounds the sequence.
 		result, shared, leader, lookupErr := r.sfGroup.TimedDoChanWithRole(ctx, key, func() (any, error) {
 			// Hard ceiling on in-flight zone lookups, held only for this
-			// wire-level lookup — never across recursion levels, so a
+			// wire-level lookup, never across recursion levels, so a
 			// nested sub-lookup can't deadlock on its parent's slot. When
 			// every slot is pinned by lookups waiting out dead upstreams,
 			// new work is shed immediately instead of joining the queue:
@@ -962,12 +962,12 @@ func (r *Resolver) checkGlueRR(resp *dns.Msg, hosts hostSet, level int) (*author
 const (
 	// nsEnrichWorkers is the fixed size of each enrichment pool. Enrichment
 	// used to spawn one goroutine per referral, capped only by a global
-	// semaphore the size of the whole query budget — under a partial outage
+	// semaphore the size of the whole query budget, under a partial outage
 	// that is a thousand goroutines each living out a full timeout. A fixed
 	// pool makes the goroutine count a constant however the load looks.
 	nsEnrichWorkers = 8
 	// nsEnrichQueue bounds each lane's backlog. A full queue sheds the job:
-	// enrichment is optional work, and the outage lesson stands — a queue
+	// enrichment is optional work, and the outage lesson stands, a queue
 	// that grows at arrival-rate times timeout never drains.
 	nsEnrichQueue = 1024
 )
@@ -986,11 +986,11 @@ type nsEnrichJob struct {
 
 // The lanes are process-wide and started exactly once: a lane is
 // infrastructure, like the GC's workers, and tying its lifetime to a
-// Resolver instance would leak one fixed pool per construction — a test
+// Resolver instance would leak one fixed pool per construction, a test
 // suite builds hundreds of resolvers, and goroutine accounting must see a
 // constant, not a multiple. They are separate lanes on purpose: v4
 // addresses are what the walk falls back on when a leader dies, v6 is
-// opportunistic reach — a flood of one must not starve the other.
+// opportunistic reach, a flood of one must not starve the other.
 var (
 	enrichPoolsOnce sync.Once
 	enrichV4Lane    chan nsEnrichJob
@@ -1047,7 +1047,7 @@ type nsAddrs struct {
 // glueEntry is what the glue caches hold: the addresses and the absolute
 // horizon their source records granted. The caches themselves keep entries
 // until eviction pressure, so without the horizon a nameserver's address
-// survived renumbering indefinitely — served for as long as nothing
+// survived renumbering indefinitely, served for as long as nothing
 // happened to push it out.
 type glueEntry struct {
 	addrs     []netip.Addr
@@ -1131,7 +1131,7 @@ func (r *Resolver) removeIPv6Cache(name string) {
 
 // minimize shortens req to the labels the resolution has reached so far.
 // level is how many labels are already exposed, steps how many minimized
-// queries this request has spent — the budget RFC 9156 section 2.3 bounds. The
+// queries this request has spent, the budget RFC 9156 section 2.3 bounds. The
 // returned count is the labels this query exposes, which the caller carries
 // forward as the next level.
 func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Msg, int, bool) {
@@ -1148,8 +1148,8 @@ func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Ms
 	// RFC 9156 section 2.3: the first qnameMinOneLabel queries add a single
 	// label, then whatever is still hidden is divided over the queries left,
 	// the remainder falling to the last of them. Recomputing the quotient per
-	// query reproduces that distribution — 18 labels under 10/4 gives
-	// 1,1,1,1,2,2,2,2,3,3 — without carrying a schedule between calls.
+	// query reproduces that distribution, 18 labels under 10/4 gives
+	// 1,1,1,1,2,2,2,2,3,3, without carrying a schedule between calls.
 	add := 1
 	if steps >= r.qnameMinOneLabel {
 		if left := r.qnameMinCount - steps; left > 0 {
@@ -1160,7 +1160,7 @@ func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Ms
 	}
 
 	// RFC 9156 section 2.3: a label starting with an underscore is a service
-	// tag — _tcp, _dmarc, a DKIM selector — not an administrative boundary, so
+	// tag, _tcp, _dmarc, a DKIM selector, not an administrative boundary, so
 	// no zone cut hides behind it and asking about it separately buys nothing.
 	// Take the whole run of them in this step. PrevLabel's end flag bounds the
 	// loop, so the name is never counted.
@@ -1184,12 +1184,12 @@ func (r *Resolver) minimize(req *dns.Msg, level, steps int, nomin bool) (*dns.Ms
 	// Only the outcome that queries a different name pays for a private
 	// copy; every other path hands the caller's request back untouched,
 	// exactly as the nomin/disabled entries above already do. The copy is
-	// what makes the returned request lookup-owned — see groupLookup.
+	// what makes the returned request lookup-owned, see groupLookup.
 	minReq := req.Copy()
 	minReq.Question[0].Name = minName
 
 	// RFC 9156 section 2.1: a probe may only carry a type whose authority
-	// lies below the zone cut — never DS, NSEC, NSEC3, ANY, AXFR, IXFR and
+	// lies below the zone cut, never DS, NSEC, NSEC3, ANY, AXFR, IXFR and
 	// the rest, whose authority is elsewhere or which are not questions a
 	// zone answers for a name it does not hold. A is the type the RFC
 	// recommends, and asking it for every client makes one probe serve them
@@ -1213,7 +1213,7 @@ func (r *Resolver) setTags(req, resp *dns.Msg) *dns.Msg {
 
 // checkDname returns the target-side response for a DNAME redirect, or
 // (nil, nil) when no DNAME applies. An error is returned when a DNAME
-// *does* apply but the follow-up cannot be completed — in particular
+// *does* apply but the follow-up cannot be completed, in particular
 // when the alias-chain depth cap is reached, since silently dropping
 // the redirect would let an overlong or cyclic chain degrade into a
 // NOERROR response containing only the outer DNAME and leave the
@@ -1255,7 +1255,7 @@ func (r *Resolver) checkDname(
 	// Mirror the outer request's CD bit onto the follow-up. Without
 	// this, a CD=1 client query can still have the DNAME target
 	// leg re-validated and turned into SERVFAIL on bogus target
-	// data — the opposite of what the client asked for. resp.
+	// data, the opposite of what the client asked for. resp.
 	// CheckingDisabled is set from req.CheckingDisabled in
 	// setTags() so it's the authoritative source here.
 	req.CheckingDisabled = resp.CheckingDisabled
@@ -1288,7 +1288,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		// Depth cap or internal-exchange failure on the DNAME leg.
 		// Surfacing the error prevents a cyclic/overlong DNAME chain
 		// from being silently reported back as a NOERROR answer that
-		// contains only the outer DNAME — the client would follow
+		// contains only the outer DNAME, the client would follow
 		// that partial chain forever, so fail loud instead.
 		return nil, err
 	}
@@ -1509,7 +1509,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 						lastErr = dnssec.ErrDSRecords
 						continue
 					}
-					// Insecure — accept without AD, stop trying alternates.
+					// Insecure, accept without AD, stop trying alternates.
 					settled = true
 					break
 				}
@@ -1539,7 +1539,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				// negative response under a signed zone. Without
 				// it, a forged SOA+RRSIG would be enough to set
 				// the AD bit, since verifyDNSSEC only proves the
-				// authority section is signed — not that the
+				// authority section is signed, not that the
 				// queried name/type really doesn't exist.
 				//
 				// Filter NSEC/NSEC3 records to the validated signer
@@ -1671,7 +1671,7 @@ func (r *Resolver) lookup(ctx context.Context, rs *resolveState, req *dns.Msg, s
 	fatalErrors := []error{}
 
 	// Single unbuffered channel. Stragglers whose result arrives after
-	// lookup has picked a winner drop their send via ctx.Done() — the
+	// lookup has picked a winner drop their send via ctx.Done(), the
 	// WithCancel ctx below is the cancellation signal, so we don't
 	// need a separate "returned" channel.
 	results := make(chan lookupResult)
@@ -1722,7 +1722,7 @@ mainloop:
 			// Got a slot, start the query
 			go r.queryServer(ctx, rs, interrupts, originalID, serverReq, server, results, server == probing)
 		case <-ctx.Done():
-			// Context cancelled while waiting for slot —
+			// Context cancelled while waiting for slot,
 			// return the pre-copied pooled message before
 			// exiting so overload/timeout paths don't leak
 			// pooled dns.Msg buffers.
@@ -1792,7 +1792,7 @@ mainloop:
 						configErrors = append(configErrors, resp)
 
 						// Penalise the server that actually produced this
-						// bogus delegation, not the current loop index —
+						// bogus delegation, not the current loop index,
 						// results arrive out of order from parallel
 						// goroutines, so `server` can be a later peer.
 						// It replied, but with a delegation it had no
@@ -1816,8 +1816,8 @@ mainloop:
 }
 
 // linearDedupeLimit is the list size below which duplicate suppression
-// compares rather than indexes. A delegation names a handful of servers — the
-// root names thirteen — so the quadratic scan is a few dozen comparisons of
+// compares rather than indexes. A delegation names a handful of servers, the
+// root names thirteen, so the quadratic scan is a few dozen comparisons of
 // values already in registers, against a map that has to be built, sized and
 // discarded on every lookup.
 const linearDedupeLimit = 24
@@ -1832,8 +1832,8 @@ func dedupeAuthorityServers(servers []*authority.Server) []*authority.Server {
 // dedupeAuthorityServersLinear suppresses duplicates by comparing each server
 // against the ones already kept, in place and without allocating.
 //
-// The addresses arrive decoded — Endpoint is the value the constructor built
-// Addr from — so identity is a comparison of two netip.AddrPorts. Only a
+// The addresses arrive decoded, Endpoint is the value the constructor built
+// Addr from, so identity is a comparison of two netip.AddrPorts. Only a
 // server whose address is not an IP:port literal needs its spelling
 // canonicalized, and those never reach this path from the delegation
 // producers.
@@ -1910,7 +1910,7 @@ type lookupResult struct {
 // released before the result send so the main loop can keep launching
 // workers while we queue.
 // probeMode marks an attempt as a measurement probe, and rides on the
-// probe's own detached context — the one thing already scoped to a single
+// probe's own detached context, the one thing already scoped to a single
 // attempt, so it cannot reach another one. What it turns off is the retry
 // and the fallbacks to TCP: those exist to get an answer, and a probe's
 // answer has no reader once the lookup it was born in has returned. One
@@ -1949,8 +1949,8 @@ func retainForProbe(rs *resolveState) (release func(), ok bool) {
 // worth is the opposite: an ordinary attempt is worth the answer it may
 // bring and nothing once the leader has answered, while a probe is worth
 // only the measurement, and there is no measurement until the server
-// replies. Cancelling it the moment the leader answers — which is what
-// happens to every other attempt — cancels it before it can say anything,
+// replies. Cancelling it the moment the leader answers, which is what
+// happens to every other attempt, cancels it before it can say anything,
 // every time, because the leader is by construction the fastest server in
 // the list. Exploring at any rate then measures only the addresses quick
 // enough to win outright, which on a production delegation was one new
@@ -1974,7 +1974,7 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 
 				// Detached, so the winner's cancellation does not reach it.
 				// Values are carried through, so the request tree still
-				// meters this query as its own — and the retain above is
+				// meters this query as its own, and the retain above is
 				// what keeps that ledger open long enough to be metered
 				// against.
 				//
@@ -2030,7 +2030,7 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 		// not the lookup's. Reading the lookup's here undid the admission
 		// that had just been granted: a probe took a slot and retained the
 		// ledger, and then returned without reaching the wire because a
-		// fast leader had cancelled in the meantime — which is precisely
+		// fast leader had cancelled in the meantime, which is precisely
 		// the case it exists for.
 		return
 	default:
@@ -2058,8 +2058,8 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 		case err != nil:
 			r.circuitBreaker.recordFailure(server.Addr)
 		case resp != nil:
-			// Any response from the authority — NOERROR,
-			// NXDOMAIN, NODATA — proves the server is
+			// Any response from the authority, NOERROR,
+			// NXDOMAIN, NODATA, proves the server is
 			// reachable and answering, so reset the failure
 			// streak. Scoping recovery to RcodeSuccess only
 			// leaves healthy servers tripped when they keep
@@ -2082,8 +2082,8 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 
 // answeredTheQuestion reports the rcodes that mean the authority did the
 // job it was asked to do: the name exists and here it is, the name does
-// not exist, or — RFC 6672 §2.2, a DNAME substitution that would exceed
-// 255 octets — the question can have no answer at all. Everything else is
+// not exist, or, RFC 6672 §2.2, a DNAME substitution that would exceed
+// 255 octets, the question can have no answer at all. Everything else is
 // a server that did not answer, however quickly it said so.
 //
 // A list of what counts rather than a list of what does not, because the
@@ -2196,7 +2196,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	// returns before the frame that failed, so leaving both to the defer
 	// delivered them backwards. A server that timed out and then answered
 	// on the retry had the timeout recorded last, and a blend that halves
-	// with each sample put it near the timeout — a server that had just
+	// with each sample put it near the timeout, a server that had just
 	// answered, priced as one that had not.
 	observed := false
 	record := func() {
@@ -2228,7 +2228,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 		case isProbe(ctx) && resp.Rcode == dns.RcodeFormatError:
 			// The one rcode a probe reads differently. It says the server
 			// dislikes the shape of our query, not that it failed to
-			// answer — the lookup path replies to it by asking again
+			// answer, the lookup path replies to it by asking again
 			// without EDNS, and prices the attempt at nothing. A probe
 			// cannot price it at nothing: recording nothing leaves the
 			// address as out of date as it was, so it is a candidate
@@ -2360,7 +2360,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	ReleaseConn(co)
 
 	// A probe stops here on both of these, and what it records is the UDP
-	// round trip it completed — deliberately, not by omission. The
+	// round trip it completed, deliberately, not by omission. The
 	// fallbacks exist to get an answer, and by the time a probe has one
 	// the lookup it was born in has returned and nobody is left to read
 	// it.
@@ -2391,7 +2391,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 	if resp != nil && resp.Rcode == dns.RcodeFormatError && req.IsEdns0() != nil {
 		if isProbe(ctx) {
 			// A probe stops here, and it has to leave a measurement behind.
-			// Recording nothing left the address exactly as it was — out of
+			// Recording nothing left the address exactly as it was, out of
 			// date, so a candidate again, so probed again, for as long as
 			// the server keeps refusing our EDNS. The round trip is what a
 			// probe went to find out and the server did make it; that it
@@ -2413,7 +2413,7 @@ func (r *Resolver) exchange(ctx context.Context, rs *resolveState, interrupts *I
 
 // dialerPool recycles net.Dialer structs across upstream queries. The
 // struct is small (~176 bytes) but allocated on every single upstream
-// query — with ~17 MB/60s of allocation observed at typical cold-cache
+// query, with ~17 MB/60s of allocation observed at typical cold-cache
 // load, reuse is worth the pool.
 var dialerPool = sync.Pool{New: func() any { return new(net.Dialer) }}
 
@@ -2586,7 +2586,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 	next, end := dns.NextLabel(q.Name, 0)
 
 	if end {
-		// Reached root zone: use root servers (unbounded — zero deadline).
+		// Reached root zone: use root servers (unbounded, zero deadline).
 		return delegationMatch{servers: r.rootServers, level: 0}
 	}
 
@@ -2598,7 +2598,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 // findRRSIGSigners returns the distinct SignerName values from RRSIGs
 // in the chosen section that cover an RRset actually present in that
 // section. Returning all candidates (ordered by label count, most
-// specific first) lets callers retry validation with each signer — RFC
+// specific first) lets callers retry validation with each signer, RFC
 // 6840 §5.11 says extra signatures from unknown keys must be
 // disregarded, and an attacker may insert a garbage RRSIG with a
 // plausible ancestor SignerName ahead of the legitimate one. Picking
@@ -2680,7 +2680,7 @@ func (r *Resolver) findDS(ctx context.Context, signer, qname string, parentDS []
 			qnameLabels := dns.CountLabel(qname)
 
 			for qnameLabels-n > 0 {
-				// The candidate is qname's last n+1 labels — a suffix of a
+				// The candidate is qname's last n+1 labels, a suffix of a
 				// name that is already rooted, so it is sliced rather than
 				// split, joined and rooted again. The rooting guard costs a
 				// byte check and keeps an unrooted caller, if one ever
@@ -2757,7 +2757,7 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentDS []dn
 	// The DS is from an ancestor zone. Probe the zone's own delegation
 	// point to check whether it has a DS record. If zone is known, probe
 	// it directly rather than walking into internal names that are not
-	// zone cuts (RFC 4034 §5 — DS only exists at delegation points).
+	// zone cuts (RFC 4034 §5, DS only exists at delegation points).
 	probeName := zone
 	if probeName == "" {
 		// No zone info available; fall back to probing the parent of qname:
@@ -2786,11 +2786,11 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentDS []dn
 
 // provenInsecureDelegation reports whether qname falls under a
 // cryptographically proven insecure delegation lying strictly below
-// `zone` — the deepest zone whose DS chain `parentDS` establishes.
+// `zone`, the deepest zone whose DS chain `parentDS` establishes.
 //
 // It exists for the case where one server is authoritative for both a
 // signed parent and an unsigned child delegated from it, and answers a
-// name in the child authoritatively — so the resolver crosses no referral
+// name in the child authoritatively, so the resolver crosses no referral
 // and answer()/authority() never run validateDelegation's proof. Without
 // this, the child's legitimately-unsigned records are misread as a signed
 // zone missing its RRSIGs and bogused out (SERVFAIL).
@@ -2798,7 +2798,7 @@ func (r *Resolver) isZoneSecure(ctx context.Context, qname string, parentDS []dn
 // It walks each zone-cut candidate from just below `zone` toward qname.
 // At a cut with a usable, validated DS it descends (secure). At the first
 // cut with no DS it returns true ONLY when a signed NSEC/NSEC3 proves an
-// insecure delegation (NS bit, no DS, no SOA) — exactly
+// insecure delegation (NS bit, no DS, no SOA), exactly
 // dnssec.VerifyDelegation. A name that merely lacks a DS without that
 // delegation proof (an attacker stripping signatures off ordinary data in
 // the signed parent) yields false and stays bogus, so this can never be
@@ -2829,7 +2829,7 @@ func (r *Resolver) provenInsecureDelegation(ctx context.Context, zone, qname str
 			return true
 		}
 		if len(dsset) > 0 {
-			// Secure delegation — descend and keep checking.
+			// Secure delegation, descend and keep checking.
 			curDS = dsset
 			curSigner = candidate
 			continue
@@ -2851,7 +2851,7 @@ func (r *Resolver) provenInsecureDelegation(ctx context.Context, zone, qname str
 // one turns every legitimate name under the span into a false SERVFAIL
 // (issue #506). This cannot be abused to downgrade signed data: a name that
 // exists in the parent has an exact-match NSEC3 even in opt-out zones, and
-// dnssec.VerifyDelegation tries the exact match first — signature stripping
+// dnssec.VerifyDelegation tries the exact match first, signature stripping
 // then fails on the missing NS bit. Forged names inside an opt-out span are
 // accepted as insecure, which is the documented opt-out tradeoff every
 // validator shares (RFC 5155 §12.2).
@@ -2899,7 +2899,7 @@ func (r *Resolver) authenticatedDelegationDS(ctx context.Context, signer, child 
 }
 
 // hasSupportedDS reports whether dsset contains at least one DS record
-// that this validator can actually use — both its digest type and the
+// that this validator can actually use, both its digest type and the
 // DNSKEY algorithm it advertises must be supported. An unsupported-only
 // DS set (GOST digest, ECCGOST algorithm, etc.) is treated as "no
 // usable DS" per RFC 6840 §5.2, so missing RRSIGs for the child zone
@@ -2959,8 +2959,8 @@ func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg
 
 // subQuery answers a resolver-constructed DNSSEC record lookup (DS
 // or DNSKEY) via cache-first direct resolution. It deliberately
-// bypasses the middleware chain — no failover, no local-answer
-// middleware (hostsfile, blocklist, kubernetes, as112) — because
+// bypasses the middleware chain, no failover, no local-answer
+// middleware (hostsfile, blocklist, kubernetes, as112), because
 // the DNSSEC chain of trust must not be polluted by operator
 // overrides or configured forwarders substituting for authoritative
 // signer-zone records.
@@ -2977,7 +2977,7 @@ func (r *Resolver) internalExchange(ctx context.Context, req *dns.Msg) (*dns.Msg
 // ctx is already plumbed everywhere and carries the same value that
 // Resolve() would read when building a state struct.
 //
-// subQuery is nil-safe for a nil store — tests and forwarder-only
+// subQuery is nil-safe for a nil store, tests and forwarder-only
 // deployments construct a Resolver without one. In that case only
 // the direct-upstream path runs; nothing is cached or read.
 func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
@@ -3042,8 +3042,8 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 		depth:   depth,
 		level:   0,
 		// Minimization hides the client's name. What reaches here is the
-		// resolver's own bookkeeping — a DS or DNSKEY at a delegation point
-		// the parent already serves — so there is nothing left to hide, and
+		// resolver's own bookkeeping, a DS or DNSKEY at a delegation point
+		// the parent already serves, so there is nothing left to hide, and
 		// minimizing it let every internal lookup start a walk of its own.
 		nomin:     true,
 		parentDS:  nil,
@@ -3064,7 +3064,7 @@ func (r *Resolver) subQuery(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
 	if store != nil && resp != nil {
 		// Bound the entry to the delegation cut the sub-resolution
 		// walked (its terminal noteCut calls fed the same ctx sink).
-		// Zero when no sink exists (priming/background) — unbounded,
+		// Zero when no sink exists (priming/background), unbounded,
 		// matching the pre-seam behaviour.
 		var (
 			cutUntil time.Time
@@ -3166,7 +3166,7 @@ func (r *Resolver) resolveV4Host(ctx context.Context, q dns.Question, authserver
 		// entry would make a signed zone look insecure after recovery.
 		//
 		// Bound this provisional entry by the (inherited) cut deadline,
-		// stored as an absolute expiry — a flat one-minute route, or a
+		// stored as an absolute expiry, a flat one-minute route, or a
 		// lease restarted across several NS lookups, would outlive a
 		// 1-4s parent referral and keep a withdrawn child reachable
 		// (GHSA-mqfw-f48p-2vc8). Cap it at one minute so a long-lived cut
@@ -3176,7 +3176,7 @@ func (r *Resolver) resolveV4Host(ctx context.Context, q dns.Question, authserver
 		// Never displace a live entry with the provisional one: the walk
 		// stores the real lease once the NS set is filled, and a deferred
 		// enrichment job re-entering here after that would replace an
-		// hours-long lease with the one-minute cap — capping the served
+		// hours-long lease with the one-minute cap, capping the served
 		// TTL of every answer under the delegation with it. A live entry
 		// already satisfies what this store is for: giving the address
 		// lookup a delegation to find. The guard is atomic (a plain
@@ -3226,7 +3226,7 @@ addrsloop:
 }
 
 // enqueueV4Enrich defers the rest of a delegation's IPv4 host resolutions to
-// the v4 lane. Nothing here gambles — every address still comes from a
+// the v4 lane. Nothing here gambles, every address still comes from a
 // resolution of our own; only the walk stops waiting for them. The job holds
 // nothing of the originating request: a queued job can wait out an outage,
 // so it runs under its own work ledger, and only the attempt guard rides
@@ -3271,7 +3271,7 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 	for _, name := range list {
 		// Hosts is copied by readers (checkHosts) under RLock once
 		// the Servers pointer is published via delegations.Set
-		// below, so this append must take the same Lock —
+		// below, so this append must take the same Lock,
 		// otherwise cold delegation bursts race on the slice
 		// header/backing array.
 		authservers.Lock()
@@ -3290,16 +3290,16 @@ func (r *Resolver) lookupV4Nss(ctx context.Context, q dns.Question, authservers 
 	}
 
 	// A referral's glue is the parent zone telling us where its child
-	// lives, and it is enough to start walking on — but one endpoint is one
+	// lives, and it is enough to start walking on, but one endpoint is one
 	// point of failure, and a query that exhausts it dies before the lane
 	// can finish the roster. So the walk holds out for two dialable
 	// endpoints: with a failover candidate in hand, a lame leader costs a
 	// retry, not the query. The floor counts what the racing lookup
-	// actually spends — deduped endpoints in the server list — not host
+	// actually spends, deduped endpoints in the server list, not host
 	// names: two names glued to one address are still one point of
 	// failure, and one host with two addresses is already a pair. The
 	// count is re-read after every resolution for the same reason.
-	// Everything past the floor is roster work — completed
+	// Everything past the floor is roster work, completed
 	// deterministically, from our own resolutions, on the bounded lane.
 	endpoints := func() int {
 		authservers.RLock()
@@ -3563,7 +3563,7 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 	if err != nil {
 		zlog.Debug("DNSSEC DS verify failed", "signer", signer, "signed", signed, "error", err.Error(), "unsupported only", unsupportedOnly)
 		if unsupportedOnly {
-			// Every DS digest was unsupported — RFC 6840 §5.2
+			// Every DS digest was unsupported, RFC 6840 §5.2
 			// requires treating the zone as if DNSSEC were absent
 			// (insecure), not bogus.
 			return false, nil
@@ -3825,14 +3825,14 @@ func (r *Resolver) clearResolutionZoneFailure(q dns.Question, zone string) {
 // prefix: a locally validated, non-Opt-Out denial of the prefix denies every
 // name under it, the client's included, so no longer name needs asking.
 // denied reports whether the proof held. A denial that fails validation
-// outright fails the resolution closed — unsigned and checking-disabled
+// outright fails the resolution closed, unsigned and checking-disabled
 // answers simply do not produce a proof and come back denied=false, which
 // sends the walk to its full-name fallback.
 func (r *Resolver) minimizedDenialCut(ctx context.Context, rs *resolveState, minReq, resp *dns.Msg) (answer *dns.Msg, denied bool, err error) {
 	// An NXDOMAIN that carries an alias in its answer denies the end of the
 	// chain, not the name that was asked (RFC 2308 section 2.1), so it can
 	// never prove the probed prefix's subtree away. Validating it here would
-	// judge the proof against the wrong owner — failing a legitimately
+	// judge the proof against the wrong owner, failing a legitimately
 	// signed chain closed, or blessing a denial of the alias target as
 	// though it covered the prefix. Leave it to the full-name fallback,
 	// which resolves the alias the ordinary way.
@@ -3876,7 +3876,7 @@ func (r *Resolver) minimizedDenialCut(ctx context.Context, rs *resolveState, min
 // processAuthoritySection handles the authority section of the response.
 func (r *Resolver) processAuthoritySection(ctx context.Context, rs *resolveState, minReq *dns.Msg, resp *dns.Msg, minimized bool) (*dns.Msg, error) {
 	if minimized {
-		// Only NOERROR reaches here for a hidden prefix — resolve() settles
+		// Only NOERROR reaches here for a hidden prefix, resolve() settles
 		// every other RCODE before any section shape is looked at. NODATA
 		// is the walk working as designed: the prefix exists and carries
 		// nothing, so expose more labels. A CNAME in the authority keeps
@@ -3946,7 +3946,7 @@ func (r *Resolver) extractDelegationInfo(resp *dns.Msg) delegationInfo {
 			// A single delegation is one coherent NS RRset: same owner,
 			// same class. Ignore records from a different owner/class
 			// rather than blending their targets and TTLs into one
-			// delegation — a mixed-owner Authority section is not a valid
+			// delegation, a mixed-owner Authority section is not a valid
 			// referral and must not widen the cached nameserver set.
 			if !strings.EqualFold(h.Name, info.nsRecord.Header().Name) || h.Class != info.nsRecord.Header().Class {
 				info.incoherent = true
@@ -3987,7 +3987,7 @@ func progressingReferral(referral, authZone, qname string) bool {
 		return false // out of bailiwick
 	}
 	if strings.EqualFold(dns.CanonicalName(referral), dns.CanonicalName(authZone)) {
-		return false // same zone — not strictly below the authority
+		return false // same zone, not strictly below the authority
 	}
 	return dnsname.Sub(referral, qname) // must be on the path to qname
 }
@@ -4026,8 +4026,8 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 
 	// Ghost-domain guard (GHSA-mqfw-f48p-2vc8): a referral MUST progress
 	// strictly below the zone we queried. A former child that returns its
-	// own same-depth (or shallower) delegation — e.g. after the parent has
-	// withdrawn it — would otherwise reinsert that delegation and resurrect
+	// own same-depth (or shallower) delegation, e.g. after the parent has
+	// withdrawn it, would otherwise reinsert that delegation and resurrect
 	// the domain. The main lookup loop routes such non-progressing referrals
 	// to configErrors, but pickFallbackResponse can still surface one, so
 	// reject it here before it can reach the delegation cache. The referral
@@ -4098,12 +4098,12 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// DS sub-lookups (an insecure delegation must not fail them closed).
 	cd := rs.req.CheckingDisabled || len(rs.parentDS) == 0
 
-	// Key the delegation cache on the CLIENT's CD bit only — never on the
+	// Key the delegation cache on the CLIENT's CD bit only, never on the
 	// delegation's own insecure-ness. searchCache always looks up with
 	// rs.req.CheckingDisabled (see the resolve() seed), so a proven-insecure
 	// delegation reached by a CD=0 query belongs in the CD=0 bucket where
 	// that lookup finds it. Folding len(parentDS)==0 into the key would file
-	// it under CD=1 instead — and a transient/unvalidated CD=1 delegation
+	// it under CD=1 instead, and a transient/unvalidated CD=1 delegation
 	// (client or internal NS/DS lookup) could then be served to CD=0 queries,
 	// silently stripping AD from a genuinely signed zone.
 	if cached, err := r.delegations.Get(key); err == nil {
@@ -4156,7 +4156,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// deadline. The goroutine sleeps defaultTimeout then walks
 	// the NS list, so a small-but-finite budget keeps backlogs
 	// from building under cold-cache bursts when the request
-	// context is gone — an unbounded context.Background here
+	// context is gone, an unbounded context.Background here
 	// used to leak goroutines and mutate authservers long
 	// after the query returned.
 	if r.cfg.IPv6Access {
@@ -4174,7 +4174,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		// outage and anything held per arrival is something an outage
 		// accumulates. Its work runs under its own ledger; only the
 		// attempt guard rides along for RFC 9520 tuple accounting. A full
-		// lane sheds the job — enrichment is optional work, and shedding
+		// lane sheds the job, enrichment is optional work, and shedding
 		// it under pressure is strictly better than becoming the pressure.
 		enqueueEnrich(r.v6Enrich, nsEnrichJob{
 			base: detachedBase,
@@ -4208,7 +4208,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 	if req.CheckingDisabled {
 		// CD=1: the client has opted out of DNSSEC validation.
 		// answer() and authority() already wrap their enforcement in
-		// this same guard — delegation handling must match, otherwise
+		// this same guard, delegation handling must match, otherwise
 		// a CD=1 DS query under a signed parent SERVFAILs instead of
 		// simply resolving. Still walk the DS chain so downstream
 		// resolution has the child's DS available if validation is
@@ -4224,7 +4224,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 
 	// Fail closed when trust anchors are unavailable. Without a
 	// starting anchor, findDS below would happily return an empty
-	// DS set for any signer that isn't the root — processDelegation
+	// DS set for any signer that isn't the root, processDelegation
 	// would then cache that empty-DSSet delegation, and once AutoTA
 	// recovers the cached entry would still make signed zones look
 	// insecure to later CD=false lookups via searchCache.
@@ -4299,7 +4299,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			break
 		}
 		if !hasSupportedDS(candidateDSRR) {
-			// Nothing the validator can verify — treat as insecure.
+			// Nothing the validator can verify, treat as insecure.
 			finalDS = candidateDSRR
 			settled = true
 			break
@@ -4313,7 +4313,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			continue
 		}
 		if !ok {
-			// Every DS in the chain used an unsupported digest — RFC
+			// Every DS in the chain used an unsupported digest, RFC
 			// 6840 §5.2 says treat the child as insecure.
 			finalDS = []dns.RR{}
 			settled = true

@@ -36,7 +36,7 @@ var queries = metric.NewCounterVec(nil, prometheus.CounterOpts{
 type Metrics struct {
 	// Domain metrics with concurrent access tracking. Stays on
 	// direct prometheus.CounterVec because the label cardinality
-	// (per-domain) is unbounded — internal/metric is for closed
+	// (per-domain) is unbounded, internal/metric is for closed
 	// label sets only.
 	domainMetricsEnabled bool
 	domainMetricsLimit   int // Max domains to track (memory limit)
@@ -80,7 +80,7 @@ func (m *Metrics) ClientOnly() bool { return true }
 // (*Metrics).ServeDNS serveDNS implements the Handle interface. The
 // per-query counter reads the parsed qtype, so a wire-born request is
 // observed without a decoded message. Domain metrics used to force
-// materialization up front — which parked the cache's byte path for
+// materialization up front, which parked the cache's byte path for
 // every query the moment the option was enabled, priced on a live
 // profile at a full decode per request, 18% of all allocation. The name
 // is now read from the wire directly after the serve: one string per
@@ -107,7 +107,7 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 // recordWireDomain tracks a wire-born request's domain without building
 // intermediate strings: the label filter reads the wire directly, and the
-// normalized tracking key — lowercase, no trailing dot — is written into a
+// normalized tracking key, lowercase, no trailing dot, is written into a
 // stack buffer, so the one allocation left is the key recordDomain keeps.
 func (m *Metrics) recordWireDomain(wire []byte) {
 	if n, ok := dnsname.WireLabelCount(wire); !ok || n < 2 {
@@ -121,7 +121,7 @@ func (m *Metrics) recordWireDomain(wire []byte) {
 	m.recordDomain(string(key))
 }
 
-// observe records one response with caller-stack key scratch — no pool,
+// observe records one response with caller-stack key scratch, no pool,
 // no allocation on the series-hit path (zero-path handler matrix).
 func (m *Metrics) observe(qtype uint16, rcode int) {
 	var scratch [64]byte

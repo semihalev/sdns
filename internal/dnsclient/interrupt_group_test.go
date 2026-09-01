@@ -110,7 +110,7 @@ func TestInterruptGroup_ArmAfterFire(t *testing.T) {
 	waitForCount(t, sentinel, 1) // the fire has run to completion
 
 	// An operation arming after the domain died must still observe the
-	// cancellation — context.AfterFunc on a canceled context runs its
+	// cancellation, context.AfterFunc on a canceled context runs its
 	// callback too; the group applies the deadline right in arm.
 	late := &recordingConn{}
 	if _, ok := g.arm(late); !ok {

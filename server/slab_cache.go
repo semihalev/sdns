@@ -12,8 +12,8 @@ import "sync"
 // two cycles (measured: after a burst, Put + one FreeOSMemory returned
 // nothing to the OS, because the single GC it runs only moves the pool's
 // primary set to its victim set). An explicit slice makes both moments
-// ours: warm reuse survives any number of GC cycles, and trim — drop the
-// references, then one FreeOSMemory — returns the burst deterministically
+// ours: warm reuse survives any number of GC cycles, and trim, drop the
+// references, then one FreeOSMemory, returns the burst deterministically
 // with a single collection.
 //
 // The cache holds no authority. Admission is the engine's token or lease
@@ -23,7 +23,7 @@ import "sync"
 //
 // The idle set is sharded. A single mutex here was measured as the UDP
 // engine's throughput ceiling: every request is one get and one put, so
-// at wire speed the readers and all the workers convoyed on one lock —
+// at wire speed the readers and all the workers convoyed on one lock,
 // lock and scheduler overhead were a quarter of the CPU while the actual
 // serving was single digits. Callers address a shard by hint (the reader
 // or socket index); a job returns to the shard it was taken from, so
@@ -31,7 +31,7 @@ import "sync"
 type slabCache[T any] struct {
 	// Leading pad: shard zero's mutex must not share a cache line with
 	// whatever hot field the embedding struct keeps just before the
-	// cache — the UDP engine's lease counter sits exactly there.
+	// cache, the UDP engine's lease counter sits exactly there.
 	_      [64]byte
 	shards [slabShardCount]slabShard[T]
 }
@@ -53,7 +53,7 @@ type slabShard[T any] struct {
 // caller should allocate. A dry hinted shard sweeps the others before
 // giving up: the slab design's memory contract is that live slabs never
 // exceed the admission cap, and allocating while a neighbor parks idle
-// slabs would break that bound the moment traffic skews across shards —
+// slabs would break that bound the moment traffic skews across shards,
 // a reuseport flow-hash concentrating on one socket, or the TCP rotor
 // walking sequentially. The sweep costs spare-shard locks only on the
 // path that was about to allocate anyway.
@@ -89,8 +89,8 @@ func (c *slabCache[T]) put(shard int, x *T) {
 	s.mu.Unlock()
 }
 
-// trim drops every idle slab — backing arrays included, so nothing here
-// keeps the burst alive — and reports how many went. The caller decides
+// trim drops every idle slab, backing arrays included, so nothing here
+// keeps the burst alive, and reports how many went. The caller decides
 // when trimming is worth a collection; this only makes the memory
 // collectable.
 func (c *slabCache[T]) trim() int {

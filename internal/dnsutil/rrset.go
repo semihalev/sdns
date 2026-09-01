@@ -99,7 +99,7 @@ func HasNSEC3OptOut(rrs []dns.RR, zone string) bool {
 //
 // The separator has to be a real one. In presentation format a dot inside
 // a label is written `\.`, so `foo\.example.com.` is the two labels
-// `foo.example` and `com` — it ends with the text of `example.com.`
+// `foo.example` and `com`, it ends with the text of `example.com.`
 // without being anywhere below that zone. Reading it as a descendant
 // would let a key for example.com. authenticate an owner it has no
 // authority over.
@@ -115,7 +115,7 @@ func NameInZone(name, zone string) bool {
 	}
 	// Compared in place rather than against "."+zone. The concatenation
 	// stays on the stack while it fits the runtime's temporary buffer,
-	// so a short zone never paid for it — but a zone name of 32 octets
+	// so a short zone never paid for it, but a zone name of 32 octets
 	// or more heap-allocated on every call, and this runs for every
 	// RRset of every signed response.
 	cut := len(name) - len(zone)
@@ -147,7 +147,7 @@ func escapedDot(name string, i int) bool {
 // dns.CompareDomainName counts matching trailing labels regardless of
 // whether one name is actually an ancestor of the other, so a DNAME at
 // sub.example.com. and a query for other.example.com. both share the
-// two-label suffix example.com. — but sub.example.com. is a *sibling*
+// two-label suffix example.com., but sub.example.com. is a *sibling*
 // of other.example.com., not an ancestor, and must not rewrite the
 // query. Require the shared count to exactly equal the DNAME owner's
 // label count (i.e. owner is a proper suffix sequence of qname), and
@@ -168,7 +168,7 @@ func DnameTarget(msg *dns.Msg) string {
 		qLabels := dns.CountLabel(q.Name)
 		if ownerLabels == 0 || qLabels <= ownerLabels {
 			// Exact-owner (per RFC 6672 §2.3) or the owner has more
-			// labels than qname — neither can apply.
+			// labels than qname, neither can apply.
 			return ""
 		}
 		if dnsname.CompareSuffix(dname.Header().Name, q.Name) != ownerLabels {

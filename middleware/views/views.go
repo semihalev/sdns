@@ -6,7 +6,7 @@
 //
 // Views are intentionally evaluated before blocklist and resolver
 // so an admin-curated answer for a specific client always wins.
-// Internal sub-queries skip views entirely — they have no
+// Internal sub-queries skip views entirely, they have no
 // meaningful client IP and views are a client-traffic concept.
 package views
 
@@ -35,8 +35,8 @@ type compiledView struct {
 
 // New parses cfg.Views into compiled in-memory tables. Malformed
 // networks and unparseable RR strings are logged and skipped,
-// matching the lenient pattern accesslist / blocklist already use
-// — a typo in one entry should not knock out the rest of the
+// matching the lenient pattern accesslist / blocklist already use,
+// a typo in one entry should not knock out the rest of the
 // config.
 func New(cfg *config.Config) *Views {
 	v := &Views{}
@@ -107,8 +107,8 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		// Collect exact-name matches and wildcard matches separately
 		// so an exact owner can override a covering wildcard
 		// (RFC 4592 §3.2). Among wildcards, only those rooted at
-		// the longest matching suffix — the closest encloser per
-		// RFC 4592 §2.2.1 — apply, so a "*.sub.example.lan."
+		// the longest matching suffix, the closest encloser per
+		// RFC 4592 §2.2.1, apply, so a "*.sub.example.lan."
 		// entry wins over a covering "*.example.lan." for any
 		// name under sub.example.lan.
 		var exact, wild []dns.RR
@@ -146,7 +146,7 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		if len(answers) == 0 {
 			// The view matched the client but has no answer for
 			// this name/qtype combination. Fall through so the
-			// resolver still answers the query — same fall-through
+			// resolver still answers the query, same fall-through
 			// semantics the feature was requested in #360 to
 			// preserve.
 			break

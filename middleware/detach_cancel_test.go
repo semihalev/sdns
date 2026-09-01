@@ -13,7 +13,7 @@ import (
 // crosses the strict-detach boundary: a middleware that wrapped the
 // strict context with its own cancel must still stop the slow work the
 // detached context now runs. (Custom context values deliberately do not
-// cross — the carrier under the original context is recycled with the
+// cross, the carrier under the original context is recycled with the
 // job, and background work outlives it.)
 func TestDetachPropagatesCancellation(t *testing.T) {
 	req := new(dns.Msg)
@@ -39,7 +39,7 @@ func TestDetachPropagatesCancellation(t *testing.T) {
 		t.Fatal("outer cancellation never reached the detached context")
 	}
 
-	// A parent that can never cancel — the job carrier's shape — must
+	// A parent that can never cancel, the job carrier's shape, must
 	// leave the detached context alone.
 	quiet, quietCleanup := ch.detachStrictContext(context.Background())
 	defer quietCleanup()

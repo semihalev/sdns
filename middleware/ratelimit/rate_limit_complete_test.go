@@ -114,7 +114,7 @@ func TestRateLimitEnforcement(t *testing.T) {
 		}
 
 		// One token's worth, plus enough margin that a slow scheduler does
-		// not turn this into a flake — but well under the two seconds that
+		// not turn this into a flake, but well under the two seconds that
 		// would hand out a second token.
 		time.Sleep(1200 * time.Millisecond)
 
@@ -308,8 +308,8 @@ func TestRateLimitPerformanceUnderAttack(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// The property under test is the bound, not the clock. What an attack
-	// threatens here is unbounded growth — a limiter kept per source
-	// address, a hundred thousand addresses — and the cache size is what
+	// threatens here is unbounded growth, a limiter kept per source
+	// address, a hundred thousand addresses, and the cache size is what
 	// says whether that holds. How long the loop took says more about the
 	// machine that ran it than about this code: most of it is the harness
 	// building a writer and a chain per iteration, and the shared Windows

@@ -48,8 +48,8 @@ func EvaluateAggressiveNSEC(
 // already in canonical form.
 //
 // Canonicalizing a name allocates, and it is a pure function of the record,
-// so a caller holding NSEC records across many queries — a denial-proof
-// cache is why this exists — can pay for it once when the record is
+// so a caller holding NSEC records across many queries, a denial-proof
+// cache is why this exists, can pay for it once when the record is
 // admitted instead of on every evaluation. The canonical form is immutable
 // once built and may be shared by concurrent evaluations.
 type PreparedNSEC struct {
@@ -104,8 +104,8 @@ func EvaluateAggressiveNSECPrepared(
 	return evaluateAggressiveNSECEntries(q, qname, signer, entries)
 }
 
-// AggressiveNSECSet is a prepared NSEC collection whose set-level invariants
-// — class homogeneity, signer containment, interval conflicts — were checked
+// AggressiveNSECSet is a prepared NSEC collection whose set-level invariants,
+// class homogeneity, signer containment, interval conflicts, were checked
 // once at construction. Those checks are static properties of the stored
 // set; re-running them per query rebuilt the entry slice on every negative
 // answer, which was the resolver's single largest allocator under
@@ -118,7 +118,7 @@ type AggressiveNSECSet struct {
 
 // NewAggressiveNSECSet validates prepared as one aggressive-answer set for
 // zone. The checks are exactly EvaluateAggressiveNSECPrepared's set-level
-// checks — a set rejected here would be rejected on every evaluation.
+// checks, a set rejected here would be rejected on every evaluation.
 func NewAggressiveNSECSet(prepared []PreparedNSEC, zone string) (*AggressiveNSECSet, error) {
 	if len(prepared) == 0 {
 		return nil, ErrNSECMissingCoverage

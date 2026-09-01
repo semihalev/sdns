@@ -12,7 +12,7 @@ import (
 // TestEnsureRecursionWorkOffPolicyLeavesPendingPin pins the
 // recursion_firewall mode="off" miss shape: the chain plants the pending
 // pin unconditionally, and the resolver still calls EnsureRecursionWork
-// with its (disabled) policy. The transition must leave the pin pending —
+// with its (disabled) policy. The transition must leave the pin pending,
 // materializing returns nil for a disabled policy, and a typed-nil ledger
 // written into the pin slot is a panic for the next reader (the second
 // ensure, or finishLazyRecursionWork when the request unwinds).

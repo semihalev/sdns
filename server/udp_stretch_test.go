@@ -13,7 +13,7 @@ import (
 // TestUDPAdmissionOutlivesTheSteadyState pins what the lease cap is and
 // is not.
 //
-// A slab is held for the whole request. On a hit that is microseconds —
+// A slab is held for the whole request. On a hit that is microseconds,
 // but a miss holds one for an upstream resolution, so a cap at the
 // steady-state formula (queue + workers + readers) would be a hard
 // ceiling on how many queries the server can have in flight, and
@@ -97,7 +97,7 @@ func TestUDPAdmissionOutlivesTheSteadyState(t *testing.T) {
 			"admission must not be capped at the formula", got, steady)
 	}
 	// Fetch-add admission may transiently overshoot by the number of
-	// concurrent takers — each rolls back before returning — so the
+	// concurrent takers, each rolls back before returning, so the
 	// at-rest bound only holds with the reader slack added.
 	if leased, slack := e.leased.Load(), int64(len(e.pcs)); leased > e.slabCap+slack {
 		t.Fatalf("leased %d slabs past the cap %d (+%d reader slack)", leased, e.slabCap, slack)

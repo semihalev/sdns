@@ -85,7 +85,7 @@ func (wg *WaitGroup) Wait(key uint64) {
 // callers must not mix Join/Done with JoinGeneration/DoneGeneration for the
 // same key. It returns nil and registers the caller as the leader (caller must
 // call Done when finished). If a leader already exists, Join returns a channel
-// that closes when the leader finishes; followers must NOT call Done — they
+// that closes when the leader finishes; followers must NOT call Done, they
 // never registered as a participant, so calling Done would either
 // over-decrement the dup counter or cancel the leader's context out from under
 // it.

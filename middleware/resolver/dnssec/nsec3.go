@@ -512,7 +512,7 @@ func verifyNameErrorWithRing(
 	//   3. An NSEC3 covers the wildcard at the closest encloser
 	//      (proving *.closest-encloser cannot synthesize QNAME).
 	// Accepting a wildcard-only proof lets a signed zone claim any
-	// name is absent as long as some wildcard slot is unallocated —
+	// name is absent as long as some wildcard slot is unallocated,
 	// that is not a real name-error proof, so require all three.
 	_, nextOptOut, err := findCovererWithWork(
 		closest.nextCloser,
@@ -535,7 +535,7 @@ func verifyNameErrorWithRing(
 }
 
 // VerifyNODATA verifies a NODATA proof using NSEC3 records (RFC 5155
-// §8.5–§8.7), including the DS-specific opt-out branch.
+// §8.5 to §8.7), including the DS-specific opt-out branch.
 func VerifyNODATA(msg *dns.Msg, nsec []dns.RR) error {
 	return VerifyNODATAWithWork(msg, nsec, nil)
 }
@@ -590,7 +590,7 @@ func VerifyNODATAForZoneWithWork(
 		return false, err
 	}
 
-	// No exact match — two valid cases remain.
+	// No exact match, two valid cases remain.
 	closest, err := findClosestEncloserWithWork(qname, evaluator)
 	if err != nil {
 		return false, err
@@ -604,7 +604,7 @@ func VerifyNODATAForZoneWithWork(
 		// NSEC3 covering the next closer name with the Opt-Out bit
 		// set. Without that bit the proof cannot distinguish "DS
 		// absent" from "DS unsigned because this delegation was
-		// opted out" — accepting a non-opt-out cover would let a
+		// opted out", accepting a non-opt-out cover would let a
 		// signed child be silently demoted to insecure during
 		// findDS chain walks.
 		_, optOut, err := findCovererWithWork(
@@ -620,7 +620,7 @@ func VerifyNODATAForZoneWithWork(
 		return false, nil
 	}
 
-	// RFC 5155 §8.7: wildcard NODATA proof —
+	// RFC 5155 §8.7: wildcard NODATA proof,
 	//   1. An NSEC3 covers the next closer name (qname has no
 	//      direct match below the closest encloser).
 	//   2. An NSEC3 matches the wildcard at the closest encloser

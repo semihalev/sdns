@@ -93,7 +93,7 @@ func seamA(name string) *dns.A {
 
 // TestEveryAdmissionDoorStampsTheSidecar pins the seam's admission
 // contract: no door admits an entry unevaluated while an evaluator is
-// wired — the writer/resolver funnel, the prefetch CAS replacement, and
+// wired, the writer/resolver funnel, the prefetch CAS replacement, and
 // the compatibility Set alike.
 func TestEveryAdmissionDoorStampsTheSidecar(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -137,7 +137,7 @@ func TestEveryAdmissionDoorStampsTheSidecar(t *testing.T) {
 
 // TestUnwiredSeamLeavesEntriesUnstamped pins the nil half of the
 // contract: with no policy registered, entries carry a nil sidecar and
-// nothing is consulted — today's behavior, byte for byte.
+// nothing is consulted, today's behavior, byte for byte.
 func TestUnwiredSeamLeavesEntriesUnstamped(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
@@ -180,7 +180,7 @@ func seamServe(t *testing.T, c *Cache, name string) *mock.Writer {
 
 // TestWireGateDeclineFallsToTheDecodedPath pins the serve half: a gate
 // that turns a byte serve away is consulted with the entry's own sidecar,
-// and the same query is answered — correctly — by the decoded path.
+// and the same query is answered, correctly, by the decoded path.
 func TestWireGateDeclineFallsToTheDecodedPath(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
@@ -227,7 +227,7 @@ func TestWireGateApprovalServesBytes(t *testing.T) {
 // TestDecodedServeStampsAnUnevaluatedEntry pins the unknown-never-clean
 // recovery: an entry admitted before the seam was wired carries no
 // sidecar, the gate judges it Restamp, and the decoded serve that
-// answers instead evaluates and stamps it — the next hit has a sidecar.
+// answers instead evaluates and stamps it, the next hit has a sidecar.
 func TestDecodedServeStampsAnUnevaluatedEntry(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
@@ -253,7 +253,7 @@ func TestDecodedServeStampsAnUnevaluatedEntry(t *testing.T) {
 
 // TestChaseGateSeesEverySegmentInOrder pins the per-segment principle on
 // the composed chase: the gate is shown one sidecar per segment, alias
-// first — a whole-chain verdict on the alias entry alone would go stale
+// first, a whole-chain verdict on the alias entry alone would go stale
 // when the target refreshed under it.
 func TestChaseGateSeesEverySegmentInOrder(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -315,7 +315,7 @@ func TestCompareAndStampSidecar(t *testing.T) {
 
 // TestRawPathGateKeepsADeclinedHitOffBytes pins the wire-born exact-hit
 // gate specifically: with the gate declining, the byte fast path must not
-// serve — the Msg body answers instead — and the fast-served counter
+// serve, the Msg body answers instead, and the fast-served counter
 // proves which one did.
 func TestRawPathGateKeepsADeclinedHitOffBytes(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -349,7 +349,7 @@ func TestRawPathGateKeepsADeclinedHitOffBytes(t *testing.T) {
 
 // TestStaleSidecarIsRestampedNotStranded pins the review's first P1: a
 // non-nil sidecar the gate judges stale must be replaced by the decoded
-// serve — CAS over the judged pointer, not only over nil — or the entry
+// serve, CAS over the judged pointer, not only over nil, or the entry
 // decodes on every hit until eviction after a policy reload.
 func TestStaleSidecarIsRestampedNotStranded(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -377,13 +377,13 @@ func TestStaleSidecarIsRestampedNotStranded(t *testing.T) {
 	}
 	sc := entry.Sidecar()
 	if sc == nil || sc.Value != "gen2" {
-		t.Fatalf("stale sidecar not restamped: %v — the entry decodes until eviction", sc)
+		t.Fatalf("stale sidecar not restamped: %v, the entry decodes until eviction", sc)
 	}
 }
 
 // TestFallbackAfterApprovalCountsNothing pins the review's second P1: a
 // Serve verdict is a pure decision, and a byte serve that still falls
-// back past it — writer fallback here — must count nothing; the decoded
+// back past it, writer fallback here, must count nothing; the decoded
 // path's own writer owns that outcome.
 func TestFallbackAfterApprovalCountsNothing(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -418,7 +418,7 @@ func TestFallbackAfterApprovalCountsNothing(t *testing.T) {
 }
 
 // TestCommittedByteServeCountsExactlyOnce is the positive half: bytes
-// out means one Count call carrying the judged sidecar — on the Msg-born
+// out means one Count call carrying the judged sidecar, on the Msg-born
 // inline byte path and the wire-born exact hit alike.
 func TestCommittedByteServeCountsExactlyOnce(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -564,8 +564,8 @@ func gatedHitAllocs(t *testing.T, c *Cache, qname string) float64 {
 }
 
 // TestGatedByteHitsAllocateNoMoreThanUngated pins the §5.11 half the CI
-// gates cannot see: with a Serve gate wired, the steady-state byte hit —
-// exact and chase alike — costs exactly what it costs without one. The
+// gates cannot see: with a Serve gate wired, the steady-state byte hit,
+// exact and chase alike, costs exactly what it costs without one. The
 // pin is baseline-relative so it measures the gate's addition, not the
 // harness.
 func TestGatedByteHitsAllocateNoMoreThanUngated(t *testing.T) {

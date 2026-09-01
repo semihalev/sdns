@@ -30,7 +30,7 @@ func addrsOf(list []*Server) []string {
 
 // A server nothing is known about must not outrank one measured fast.
 // "No data" was worth zero, which is not slow but instant, so the head of
-// the list went to whichever address had never answered — and with the
+// the list went to whichever address had never answered, and with the
 // resolver starting its top two in parallel, that is one of every miss's
 // two queries spent on the one server whose speed nobody has established.
 func TestUnmeasuredDoesNotOutrankMeasured(t *testing.T) {
@@ -72,8 +72,8 @@ func TestDegradationSinksOnOneSlowAnswer(t *testing.T) {
 
 // The ranking must survive a long run. The old shape cleared every
 // server's statistics every thousandth sort, which is not aging but
-// amnesia: for the sorts that followed, the whole set read as unmeasured
-// — the state it ranked first — so the fastest server lost the lead
+// amnesia: for the sorts that followed, the whole set read as unmeasured,
+// the state it ranked first, so the fastest server lost the lead
 // periodically for no reason anyone could see from the outside.
 func TestRankingSurvivesLongRuns(t *testing.T) {
 	fast := measured("192.0.2.1:53", 10*time.Millisecond)
@@ -93,7 +93,7 @@ func TestRankingSurvivesLongRuns(t *testing.T) {
 
 // Evidence expires. A server measured fast an hour ago drifts back toward
 // a guess rather than holding the lead on a path that may no longer
-// exist — per server, as its own measurement ages, which is what replaced
+// exist, per server, as its own measurement ages, which is what replaced
 // wiping the whole set at once.
 func TestStaleEvidenceDrifts(t *testing.T) {
 	s := measured("192.0.2.1:53", 10*time.Millisecond)
@@ -165,7 +165,7 @@ func TestRotationLeavesTheOrderedServersAlone(t *testing.T) {
 // The order behind the first two is not decoration: it is what the
 // resolver walks when the leader does not answer, waiting out an adaptive
 // timeout at every step. So exploration moves its candidate into the
-// second slot rather than trading places with whoever held it — a trade
+// second slot rather than trading places with whoever held it, a trade
 // would fling the genuine runner-up down to wherever the guess came from,
 // putting every other guess in the delegation ahead of a server already
 // known to be fast.
@@ -178,8 +178,8 @@ func TestExplorationDoesNotDemoteTheRunnerUp(t *testing.T) {
 	}
 	last := list[len(list)-1]
 
-	// Explore — the roll is randN(len) < staleCount, so zero always
-	// explores — and take the furthest candidate on offer.
+	// Explore, the roll is randN(len) < staleCount, so zero always
+	// explores, and take the furthest candidate on offer.
 	withRand(t, func(n int) int {
 		if n == len(list) {
 			return 0
@@ -212,8 +212,8 @@ func TestExplorationDoesNotDemoteTheRunnerUp(t *testing.T) {
 // told apart by the estimate being zero, so recording a zero makes a
 // measurement report itself as the absence of one: priced at the seed,
 // explored forever, and never allowed to lead however fast it is.
-// Windows' timer produces exactly this for a loopback exchange — it is
-// where CI found it — and a LAN authority on any platform is one clock
+// Windows' timer produces exactly this for a loopback exchange, it is
+// where CI found it, and a LAN authority on any platform is one clock
 // granularity away from it.
 func TestAnInstantAnswerIsStillAnAnswer(t *testing.T) {
 	s := NewServer("192.0.2.1:53", IPv4)
@@ -272,7 +272,7 @@ func TestSortDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// One server is sampled by several lookups at once — a root address is in
+// One server is sampled by several lookups at once, a root address is in
 // flight from most of them, most of the time. Read, halve, write as
 // separate steps keeps only whichever store landed last, which is how an
 // estimate drifts away from what the network is doing under exactly the
@@ -302,7 +302,7 @@ func TestConcurrentSamplesAreNotLost(t *testing.T) {
 		done.Wait()
 
 		if got := s.SmoothedRTT(); int64(got) > worst {
-			t.Fatalf("estimate settled at %v after %d identical samples, want %v or better — samples were dropped",
+			t.Fatalf("estimate settled at %v after %d identical samples, want %v or better, samples were dropped",
 				got, writers, time.Duration(worst))
 		}
 	}

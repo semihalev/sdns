@@ -12,7 +12,7 @@ import (
 // on the mount root, it is on the slice this process was placed in, or
 // on one of the slices above it. Missing it means deriving the ingress
 // bounds from the host's memory inside a service that may have a
-// fraction of it — which is an out-of-memory kill, not a slow server.
+// fraction of it, which is an out-of-memory kill, not a slow server.
 func TestCgroupLimitFoundOnThisProcessCgroup(t *testing.T) {
 	const (
 		mib     = 1 << 20
@@ -145,7 +145,7 @@ func TestParseCgroupMountsAndPaths(t *testing.T) {
 }
 
 // Whatever this machine is, reading its own cgroup must not report a
-// limit smaller than a server could run in — a parsing slip there would
+// limit smaller than a server could run in, a parsing slip there would
 // shrink the ingress bounds silently.
 func TestThisProcessCgroupLimitIsSane(t *testing.T) {
 	limit := containerMemoryLimit()
@@ -161,11 +161,11 @@ func TestThisProcessCgroupLimitIsSane(t *testing.T) {
 // directory that exists is written in the mount's. Appending the first
 // to the second names nothing, the limit reads as absent, and the server
 // sizes itself for the host's memory inside a service that cannot have
-// it — the exact failure this file is here to prevent.
+// it, the exact failure this file is here to prevent.
 func TestCgroupLimitUnderASubtreeRootedMount(t *testing.T) {
 	mount := t.TempDir()
-	// The mount exposes /system.slice, so this process's cgroup —
-	// /system.slice/sdns.service — is simply "sdns.service" here.
+	// The mount exposes /system.slice, so this process's cgroup,
+	// /system.slice/sdns.service, is simply "sdns.service" here.
 	dir := filepath.Join(mount, "sdns.service")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestCgroupLimitUnderASubtreeRootedMount(t *testing.T) {
 	}
 }
 
-// A path outside what the mount exposes cannot be read at all — a
+// A path outside what the mount exposes cannot be read at all, a
 // namespace describing itself in terms this mount does not share. The
 // mount point is then the closest readable thing, and its limit still
 // binds.
@@ -234,13 +234,13 @@ func TestParseCgroupMountsKeepsTheFilesystemRoot(t *testing.T) {
 	}
 }
 
-// A machine can show the same cgroups through more than one mount — a
-// bind mount, a container's own view, a namespace's — and only some of
+// A machine can show the same cgroups through more than one mount, a
+// bind mount, a container's own view, a namespace's, and only some of
 // them expose the subtree this process is in.
 func TestCgroupLimitPrefersTheMountThatMapsThisProcess(t *testing.T) {
 	// Stopping at the first mount is the failure: it does not describe
 	// this process and says nothing about a limit, so the answer becomes
-	// "no limit" and the bounds come from the host's memory — while the
+	// "no limit" and the bounds come from the host's memory, while the
 	// mount that does describe us, and carries the real limit, is one
 	// line further down.
 	t.Run("a mount that says nothing must not end the search", func(t *testing.T) {
@@ -292,7 +292,7 @@ func TestCgroupLimitPrefersTheMountThatMapsThisProcess(t *testing.T) {
 	})
 }
 
-// With nothing that maps, the roots are all there is — a namespace whose
+// With nothing that maps, the roots are all there is, a namespace whose
 // paths this mount does not share still has a limit, and reading it is
 // better than deriving bounds from the host's memory.
 func TestCgroupLimitFallsBackWhenNoMountMaps(t *testing.T) {
@@ -306,7 +306,7 @@ func TestCgroupLimitFallsBackWhenNoMountMaps(t *testing.T) {
 	}
 }
 
-// Several views that all map are all read, and the tightest wins —
+// Several views that all map are all read, and the tightest wins,
 // they describe the same cgroups, so a disagreement means one of them
 // carries a limit the others do not show.
 func TestCgroupLimitTakesTheTightestMappingMount(t *testing.T) {
@@ -346,7 +346,7 @@ func TestParseCgroupMountsKeepsEveryCandidate(t *testing.T) {
 
 // mountinfo escapes the characters that would break its whitespace-
 // separated format. A mount path with a space in it must come out with
-// the space, not with the escape — an escaped path names no directory,
+// the space, not with the escape, an escaped path names no directory,
 // so the limit reads as absent and the bounds fall back to host memory.
 func TestParseCgroupMountsDecodesEscapedPaths(t *testing.T) {
 	mountinfo := `31 25 0:26 /pod\040a /run/host\011cg rw - cgroup2 cgroup2 rw
@@ -380,7 +380,7 @@ func TestCgroupLimitWithASpaceInTheMountPath(t *testing.T) {
 	}
 }
 
-// A namespace can name this process's cgroup above its own root —
+// A namespace can name this process's cgroup above its own root,
 // "/../something". Clean would rewrite that into a sibling that exists
 // but is not this process; its limit is not ours, in either direction.
 // Unmappable means the root fallback, which at least belongs to the

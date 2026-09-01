@@ -98,7 +98,7 @@ func CountFallback() { metricAnswers.WithLabelValues("fallback").Inc() }
 // Manager owns the verified snapshot and its refresh lifecycle. Refresh
 // follows the zone's own SOA schedule (RFC 8806 defers to RFC 1035
 // secondary semantics): probe the serial every REFRESH seconds, fall to
-// RETRY on failure, and never serve a copy past EXPIRE — Active goes nil
+// RETRY on failure, and never serve a copy past EXPIRE, Active goes nil
 // and the resolver walks to the real roots.
 type Manager struct {
 	sources []string
@@ -120,7 +120,7 @@ type Manager struct {
 	// pointer keeps Active() lock-free on the read side, but the two steps
 	// together are one decision: without this, two loads that both observe
 	// an older serial can each pass the check and store in the opposite
-	// order, quietly rolling the copy backwards — a sequence no race
+	// order, quietly rolling the copy backwards, a sequence no race
 	// detector reports, because every individual operation is legal.
 	publish sync.Mutex
 
@@ -167,7 +167,7 @@ func New(sources []string, anchors func() []dns.RR) *Manager {
 
 // anchorRecheckInterval bounds how stale Active's view of the trust anchors
 // may be. Rebuilding the anchor DS set costs a lock and a hash per key, and
-// Active runs on every root consult, so the answer is reused for this long —
+// Active runs on every root consult, so the answer is reused for this long,
 // a second of staleness against an anchor change measured in years.
 const anchorRecheckInterval = time.Second
 
@@ -179,7 +179,7 @@ type anchorState struct {
 }
 
 // Active returns the verified snapshot to serve from, or nil when there is
-// none — never transferred, the copy has outlived its horizon, or the trust
+// none, never transferred, the copy has outlived its horizon, or the trust
 // anchors that verified it are no longer the resolver's.
 func (m *Manager) Active() *Snapshot {
 	s := m.snap.Load()
@@ -198,7 +198,7 @@ func (m *Manager) Active() *Snapshot {
 // Expiry alone is not enough to decide a copy may still be served. RFC 8806
 // §2 requires the copy to be validated with an up-to-date root KSK, and RFC
 // 8976 §6.4 notes that a ZONEMD digest is only as good as the DNSSEC chain
-// behind it — once the anchors are gone, nothing here can be re-derived. So
+// behind it, once the anchors are gone, nothing here can be re-derived. So
 // an anchor set that AutoTA has emptied fail-closed, or one whose keys have
 // been replaced or revoked, withdraws the copy immediately rather than
 // letting days of horizon run on evidence that no longer exists. The walk
@@ -227,7 +227,7 @@ func anchorFingerprint(anchors []dns.RR) (fp [sha256.Size]byte, usable bool) {
 		if rr == nil {
 			continue
 		}
-		// The TTL is not part of a trust anchor's identity — the same key
+		// The TTL is not part of a trust anchor's identity, the same key
 		// material re-read with a different lifetime is the same anchor. It
 		// is zeroed rather than left in, because a fingerprint that moved
 		// with it would withdraw a sound copy and send the walk to the real
@@ -267,7 +267,7 @@ func (m *Manager) Run(ctx context.Context) {
 	// The first transfer waits out the resolver's own cold start rather
 	// than racing it. A couple of megabytes pulled over TCP while the
 	// priming query, the trust-anchor refresh and the first client queries
-	// are all in flight measurably slows them on a modest link — and the
+	// are all in flight measurably slows them on a modest link, and the
 	// copy is an optimization, so it should yield to the path it exists to
 	// make faster. The jitter also keeps a fleet restarted together from
 	// asking one transfer source for the zone in the same second.
@@ -298,7 +298,7 @@ func (m *Manager) Run(ctx context.Context) {
 
 // observe reports what the gauges should say about the copy right now: its
 // age in seconds and its SOA serial, or -1 for both when no copy is active.
-// The two travel together — an age without a serial cannot tell a fleet
+// The two travel together, an age without a serial cannot tell a fleet
 // whether its nodes converged on the same zone, and a serial without an age
 // cannot tell whether the copy behind it is still moving.
 func (m *Manager) observe() (age, serial float64) {
@@ -321,7 +321,7 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 	// Without anchors nothing this cycle transfers can be verified, and the
 	// refusal would come only after the zone was on the wire. Checking first
 	// costs one comparison and saves pulling a few megabytes from every
-	// source, every retry interval, for as long as the anchors stay empty —
+	// source, every retry interval, for as long as the anchors stay empty,
 	// which is a state the resolver can hold indefinitely if the trust
 	// anchors fail closed.
 	if len(m.anchors()) == 0 {
@@ -359,8 +359,8 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 				continue
 			}
 			if serial == cur.serial {
-				// Current: touch nothing. The copy's horizon — SOA expire
-				// or earliest signature expiration, whichever is nearer —
+				// Current: touch nothing. The copy's horizon, SOA expire
+				// or earliest signature expiration, whichever is nearer,
 				// is anchored at its transfer; a probe is not a transfer.
 				// Transfer again once the copy has spent half that
 				// horizon, so it keeps moving on a healthy source well
@@ -397,7 +397,7 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 // gate as a live transfer: full ZONEMD verification against the trust
 // anchors, RFC 1982 serial acceptance against the live copy, then an
 // atomic swap. There is no unverified path into the active snapshot, and
-// no path backwards — a replayed older zone, however validly signed for
+// no path backwards, a replayed older zone, however validly signed for
 // its day, cannot displace a newer copy or restart its expire horizon.
 func (m *Manager) Load(rrs []dns.RR) error {
 	return m.load(rrs, 0, false)

@@ -99,7 +99,7 @@ func TestDnstapWireBornStaysUndecoded(t *testing.T) {
 }
 
 // The replay pass finishes a query the inline pass already tapped: no
-// second query frame — but the response wrapper still installs, because
+// second query frame, but the response wrapper still installs, because
 // the replay is the pass that writes.
 func TestDnstapReplayEmitsOnlyResponseFrame(t *testing.T) {
 	d := newTapForFrames(t)

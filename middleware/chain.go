@@ -13,7 +13,7 @@ import (
 )
 
 // ResponseMeta carries resolver-produced metadata about a response
-// that the wire format cannot express — today the delegation-cut
+// that the wire format cannot express, today the delegation-cut
 // deadline that bounds how long the answer may be cached
 // (GHSA-mqfw-f48p-2vc8, answer-cache ghost).
 //
@@ -124,8 +124,8 @@ type requestLedgers struct {
 	// object per request.
 	//
 	// There is no flag for whether it was established: every path that can
-	// create these ledgers establishes the guard first — the queryer, the
-	// cache, the resolver, the forwarder and failover all do — so inside a
+	// create these ledgers establishes the guard first, the queryer, the
+	// cache, the resolver, the forwarder and failover all do, so inside a
 	// request tree the distinction cannot arise. Outside one there is no
 	// meta at all, and the callers that are meant to skip accounting still
 	// find nothing.
@@ -205,8 +205,8 @@ func (m *ResponseMeta) ensureLedgerHost() *requestLedgers {
 //
 // The original is a field of the transport job's Chain, so it is reset
 // and reused the moment the request finishes. A context is not a value
-// the request can call back: a handler may hold one past its own return
-// — an upstream query still unwinding, a goroutine draining — and a
+// the request can call back: a handler may hold one past its own return,
+// an upstream query still unwinding, a goroutine draining, and a
 // context still pointing at the job's meta would then read, and worse
 // write, the next request's state. What transfers is the delegation cut
 // and, if a request tree established one, the ledger host itself, which
@@ -225,15 +225,15 @@ func (m *ResponseMeta) detachedCopy() *ResponseMeta {
 	return out
 }
 
-// ForkCut returns a meta that shares this one's request-tree state — work
-// ledger, retry guard, failure and proof provenance — but accumulates its own
+// ForkCut returns a meta that shares this one's request-tree state, work
+// ledger, retry guard, failure and proof provenance, but accumulates its own
 // delegation-cut deadline.
 //
 // A sub-query's answer is cached under its own key, so it must be bounded by
 // its own lineage and not by whatever asked for it: a nearly expired alias
 // would otherwise store a freshly resolved target with seconds of life. The
 // deriving request still inherits the sub-query's bound, by folding the fork's
-// deadline back in once the sub-query has returned — the composed answer does
+// deadline back in once the sub-query has returned, the composed answer does
 // contain the sub-query's records.
 func (m *ResponseMeta) ForkCut() *ResponseMeta {
 	if m == nil {
@@ -307,8 +307,8 @@ func (m *ResponseMeta) Reset() {
 		m.cut = responseCut{}
 		m.cutMu.Unlock()
 		// Dropping the reference is the whole of it: the next request gets a
-		// new one on first use, and anything still holding this one — a
-		// resolver goroutine outliving the pooled Chain, a sub-query's fork —
+		// new one on first use, and anything still holding this one, a
+		// resolver goroutine outliving the pooled Chain, a sub-query's fork,
 		// keeps the request it belongs to rather than following this struct
 		// into the next.
 		m.ledgers.Store(nil)
@@ -484,7 +484,7 @@ func validatedNegativeProofFingerprint(proof *dns.Msg) ([sha256.Size]byte, bool)
 	sealed.Ns = proof.Ns
 
 	// The packed form exists only to be hashed, so it is hashed where it
-	// lies — in the packer's pooled buffer — instead of allocated, summed
+	// lies, in the packer's pooled buffer, instead of allocated, summed
 	// and dropped. An authority section the pooled buffer cannot hold takes
 	// the library, exactly as before.
 	var sum [sha256.Size]byte
@@ -602,7 +602,7 @@ func (c *forkedCutContext) Value(key any) any {
 // meta. See ForkCut for what the separation is for.
 //
 // The returned meta is nil, and ctx unchanged, when ctx carries no meta to
-// fork from — a caller with nothing to separate needs no scope.
+// fork from, a caller with nothing to separate needs no scope.
 func WithForkedCut(ctx context.Context) (context.Context, *ResponseMeta) {
 	parent := ResponseMetaFrom(ctx)
 	if parent == nil {
@@ -610,7 +610,7 @@ func WithForkedCut(ctx context.Context) (context.Context, *ResponseMeta) {
 	}
 	host := parent.ensureLedgerHost()
 
-	// The tree's own guard, unless one is already anchored — a detached or
+	// The tree's own guard, unless one is already anchored, a detached or
 	// custom context can carry a guard this meta does not own, and shadowing
 	// it would silently move that sub-query's accounting somewhere else. The
 	// anchor is read through the same selection helper as every other guard
@@ -755,7 +755,7 @@ type Chain struct {
 
 	// base is the chain's own response writer. Middleware wrap it and
 	// restore it on the way out; Writer points here whenever nothing has
-	// wrapped it, so binding a chain — pooled or job-owned — allocates
+	// wrapped it, so binding a chain, pooled or job-owned, allocates
 	// no writer.
 	base responseWriter
 
@@ -778,7 +778,7 @@ type Chain struct {
 	workPolicy RecursionWorkPolicy
 
 	// detachCleanup closes a wire-born request's post-materialization
-	// lifecycle — the recursion-work completion boundary and the detached
+	// lifecycle, the recursion-work completion boundary and the detached
 	// lazy deadline. Established by Materialize, run exactly once after the
 	// serve completes (PutChain, or the next rebind as a backstop).
 	detachCleanup func()
@@ -810,7 +810,7 @@ func newChain(handlers []Handler, workPolicy RecursionWorkPolicy) *Chain {
 // Bind prepares caller-owned storage as a chain over handlers. It is how
 // a transport gives its job slab a chain of its own: the strict path must
 // not draw one from a pool, whose contents the collector empties on the
-// second GC — precisely the state the hard-zero measurement fences for.
+// second GC, precisely the state the hard-zero measurement fences for.
 //
 // It is idempotent and cheap enough to call per request; the pipeline's
 // handler list is immutable, so re-binding only restates it.
@@ -830,8 +830,8 @@ func (ch *Chain) Finish() {
 	ch.finishDetach()
 
 	// And drop what this request left behind. Resetting at the *start* of
-	// the next request is enough for correctness — nothing reads these
-	// after Finish — but it means a slab keeps one request's decoded
+	// the next request is enough for correctness, nothing reads these
+	// after Finish, but it means a slab keeps one request's decoded
 	// message and one response graph reachable until another client
 	// happens to arrive on that slab. On a quiet server that is
 	// unbounded in time, and every slab in the ring holds a set.
@@ -858,7 +858,7 @@ func (ch *Chain) Next(ctx context.Context) {
 		// While the request is wire-born and undecoded the recursion-work
 		// owner is deliberately NOT established here: a served hit performs
 		// no recursive work, and the ledger lifecycle for a miss begins
-		// whole on the detached context at materialization — never split
+		// whole on the detached context at materialization, never split
 		// between the recycled job carrier and a later context.
 		wireOnly := ch.Request != nil && ch.Request.decoded() == nil
 		meta := ResponseMetaFrom(ctx)
@@ -908,8 +908,8 @@ func (ch *Chain) Next(ctx context.Context) {
 
 	// A wire-born request that decoded through Request.Msg carries no
 	// detached context yet: the handler that decoded it may still be
-	// holding the job carrier. Downstream handlers must not — the carrier
-	// is recycled with the job and cannot host request-tree state — so the
+	// holding the job carrier. Downstream handlers must not, the carrier
+	// is recycled with the job and cannot host request-tree state, so the
 	// transition completes here, once, before the next handler runs.
 	// Chain.Materialize callers already own theirs and skip this.
 	if ch.detachCleanup == nil && ch.Request != nil &&
@@ -922,7 +922,7 @@ func (ch *Chain) Next(ctx context.Context) {
 
 // Materialize returns the decoded request, decoding a wire-born request on
 // first call. That first decode is the one-way transition off the strict
-// path: the remaining handlers must run on the returned context — a fresh
+// path: the remaining handlers must run on the returned context, a fresh
 // lazy deadline parented on a stable context (never the recycled job
 // carrier), carrying the ECS marker, the same ResponseMeta, and a fresh
 // recursion-work completion boundary whose lifecycle the chain closes when
@@ -973,8 +973,8 @@ func (ch *Chain) Cancel() {
 func (ch *Chain) CancelWithRcode(rcode int, do bool) {
 	req := ch.Request.Msg()
 	if req == nil {
-		// The rcode reply needs the decoded form, but it is terminal — no
-		// handler runs after it — so no detached context is established.
+		// The rcode reply needs the decoded form, but it is terminal, no
+		// handler runs after it, so no detached context is established.
 		if req = ch.Request.materialize(); req == nil {
 			ch.count = 0
 			return
@@ -1017,8 +1017,8 @@ func (ch *Chain) Reset(w Transport, r *dns.Msg) {
 func (ch *Chain) rebindWriter(w Transport) {
 	base, ok := ch.Writer.(*responseWriter)
 	if !ok {
-		// A wrapper is still in place — a middleware panicked past its
-		// restore — or a test installed its own writer. Either way the
+		// A wrapper is still in place, a middleware panicked past its
+		// restore, or a test installed its own writer. Either way the
 		// chain's own writer is the one to rebind.
 		base = &ch.base
 		ch.Writer = base
@@ -1058,8 +1058,8 @@ func (ch *Chain) Handoff() bool { return ch.handoff }
 
 // SetReplay declares that this serve finishes a query an inline pass
 // handed off: the full pipeline ran once on the transport reader up to
-// the handoff point, so every entry effect — a limiter token, a scored
-// query, a tap's query frame, a per-query statistic — has already
+// the handoff point, so every entry effect, a limiter token, a scored
+// query, a tap's query frame, a per-query statistic, has already
 // happened. A handler with such an effect checks Replay and skips it;
 // its response-side observers (writer wrappers) install as always,
 // because this pass is the one that writes.
@@ -1074,8 +1074,8 @@ func (ch *Chain) Replay() bool { return ch.replay }
 // unchanged, so WriteMsg may pack in pooled storage and skip the library's
 // per-message allocations.
 //
-// It is a declaration with one intended caller — the server's owned-listener
-// ingress, immediately after Reset — never an inference from address types
+// It is a declaration with one intended caller, the server's owned-listener
+// ingress, immediately after Reset, never an inference from address types
 // or proto strings, which plugin writers can share without sharing the
 // byte-sink property. Reset clears it, so a pooled chain cannot carry the
 // capability to the next request. A chain whose writer was replaced by a
@@ -1091,16 +1091,16 @@ func (ch *Chain) AllowDirectPack() {
 func noopStop() bool { return false }
 
 // detachStrictContext builds the context the post-materialization chain
-// runs on: a fresh lazy deadline parented on a stable context — never the
-// recycled job carrier — carrying the deadline as a scalar copy, the ECS
+// runs on: a fresh lazy deadline parented on a stable context, never the
+// recycled job carrier, carrying the deadline as a scalar copy, the ECS
 // marker re-pinned, the same ResponseMeta re-provided, and a fresh
 // recursion-work completion boundary. The returned cleanup runs once the
 // serve completes: it closes the work ledger's lifecycle and releases the
 // deadline context, mirroring what the chain entry does for ordinary
 // requests at pos==0.
 func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func()) {
-	// Leaving the strict path means slow work ahead — an upstream
-	// resolution, a materialized composite — and any replies already
+	// Leaving the strict path means slow work ahead, an upstream
+	// resolution, a materialized composite, and any replies already
 	// staged on this transport's batch must not wait behind it. A cache
 	// hit staged a moment ago would otherwise sit in the burst for the
 	// whole recursion of the unrelated query that followed it. Hits stay
@@ -1116,7 +1116,7 @@ func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func
 	// Parenting on Background is deliberate: background work the
 	// resolver spawns (prefetch, serve-stale refresh) captures the
 	// detached context past this request's life, and the strict carrier
-	// underneath ctx is recycled the moment the job completes — so
+	// underneath ctx is recycled the moment the job completes, so
 	// custom context VALUES do not cross this boundary by design; the
 	// request-scoped semantics the server owns (deadline, ECS,
 	// ResponseMeta) are carried explicitly. Cancellation does cross: a
@@ -1125,7 +1125,7 @@ func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func
 	// carrier itself has no Done channel, so the hook is free there.
 	real := contextutil.WithLazyDeadline(context.Background(), deadline)
 	// The hook only exists for a parent that can actually cancel. The
-	// strict carrier's Done is nil — AfterFunc could never fire — yet
+	// strict carrier's Done is nil, AfterFunc could never fire, yet
 	// registering still allocates, and a live profile priced that dead
 	// registration as the largest single allocator in the process.
 	stopCancel := noopStop

@@ -1,7 +1,7 @@
 # Benchmarks
 
 The benchmark document now lives with the rest of the documentation, at
-**<https://sdns.dev/docs/reference/benchmarks/>** — method, environment, each
+**<https://sdns.dev/docs/reference/benchmarks/>**, method, environment, each
 contender's configuration, the raw tables, the caveats, and the commands to
 reproduce it.
 

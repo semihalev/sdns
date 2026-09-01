@@ -281,7 +281,7 @@ func Test_isZoneSecure(t *testing.T) {
 }
 
 // Test_isZoneSecureIntegration drives isZoneSecure through the paths that
-// reach it — an answer, an insecure delegation, and a denial — against a
+// reach it, an answer, an insecure delegation, and a denial, against a
 // signed loopback namespace. It used to ask dnscheck.tools, stackoverflow.com
 // and ietf.org, which made a resolver test depend on three third parties.
 func Test_isZoneSecureIntegration(t *testing.T) {

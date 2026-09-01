@@ -462,7 +462,7 @@ func TestCertManagerConcurrency(t *testing.T) {
 	// Concurrent reloads. The write+reload pairs are serialized against
 	// each other: two goroutines rewriting the same PEM files can hand
 	// Reload a torn certificate, which is a bug in the test, not in the
-	// manager — the concurrency under test is readers racing reloads,
+	// manager, the concurrency under test is readers racing reloads,
 	// and that stays fully concurrent. (This flaked ~1 run in 10 on an
 	// untouched tree too; it just went unnoticed.)
 	var reloadMu sync.Mutex
@@ -569,7 +569,7 @@ func TestReloadWithRetry(t *testing.T) {
 // A stopped Server must never grow a new certificate manager: the DoQ
 // listener used to fetch its TLS config at serve time, and a Serve
 // goroutine racing a fast start-then-cancel could ask the provider
-// after Stop had already torn the manager down — a fresh file watcher
+// after Stop had already torn the manager down, a fresh file watcher
 // behind a Stopped() that had said true.
 func TestGetTLSConfigRefusedAfterStop(t *testing.T) {
 	dir := t.TempDir()
@@ -584,7 +584,7 @@ func TestGetTLSConfigRefusedAfterStop(t *testing.T) {
 	}
 	s.Stop()
 	if s.GetTLSConfig() != nil {
-		t.Fatal("a stopped provider built a TLS config — and the manager and watcher behind it")
+		t.Fatal("a stopped provider built a TLS config, and the manager and watcher behind it")
 	}
 	s.certMu.Lock()
 	cm := s.certManager

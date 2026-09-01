@@ -14,7 +14,7 @@ import (
 
 // ednsPrefetchQueryer is a faithful stand-in for the real prefetch
 // sub-pipeline: it runs the refresh request through the actual edns
-// middleware (which the real prefetchSub includes — edns is not
+// middleware (which the real prefetchSub includes, edns is not
 // ClientOnly) over a terminal handler that emits a signed answer. edns
 // strips RRSIGs and clears AD whenever the request lacks DO, exactly as
 // it does in production, so this exercises the real downgrade path.
@@ -63,7 +63,7 @@ func (q *ednsPrefetchQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg
 // (not DO) and stores the COMPLETE answer, stripping DNSSEC per-client at
 // serve time. The prefetch sub-pipeline runs edns, so unless the worker
 // forces DO=1 a DO=0 trigger would refresh through edns, strip the RRSIG,
-// clear AD, and overwrite the entry — every later DO=1 client then loses
+// clear AD, and overwrite the entry, every later DO=1 client then loses
 // AD until expiry. With the DO=1 fix the refreshed entry keeps RRSIG+AD.
 func TestPrefetchKeepsDNSSECForDO0Trigger(t *testing.T) {
 	c := New(&config.Config{
@@ -75,7 +75,7 @@ func TestPrefetchKeepsDNSSECForDO0Trigger(t *testing.T) {
 
 	c.SetPrefetchQueryer(&ednsPrefetchQueryer{e: edns.New(&config.Config{})})
 
-	// The triggering client query carries DO=0 (no EDNS DO bit) — a plain
+	// The triggering client query carries DO=0 (no EDNS DO bit), a plain
 	// stub/forwarder, the common case that races prefetch on a hot name.
 	trigger := new(dns.Msg)
 	trigger.SetQuestion("secure.example.", dns.TypeA)
@@ -105,7 +105,7 @@ func TestPrefetchKeepsDNSSECForDO0Trigger(t *testing.T) {
 		got, ok := c.positive.Get(key)
 		if ok && got != entry {
 			// Refreshed. The stored answer must still carry the RRSIG
-			// and the AD bit — proving the DO=0 trigger did not strip
+			// and the AD bit, proving the DO=0 trigger did not strip
 			// DNSSEC via the prefetch sub-pipeline's edns layer.
 			stored := got.storedMsg()
 			if stored == nil {

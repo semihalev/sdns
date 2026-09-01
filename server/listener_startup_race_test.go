@@ -8,7 +8,7 @@ import (
 )
 
 // TestListenerServeShutdownRace drives Serve and Shutdown at each other
-// with no ordering between them — the state a process asked to stop
+// with no ordering between them, the state a process asked to stop
 // while it is still coming up is in, and the one macOS CI found.
 //
 // The accept barrier is a WaitGroup, and an Add that races its own Wait

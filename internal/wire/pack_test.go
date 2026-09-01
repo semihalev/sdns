@@ -34,13 +34,13 @@ func tryPackBytes(tb testing.TB, msg *dns.Msg) ([]byte, bool) {
 }
 
 // libraryPack is the reference: the library packing the original message,
-// with its one write — the extended rcode into the selected OPT's TTL —
+// with its one write, the extended rcode into the selected OPT's TTL,
 // undone afterwards so the corpus message stays as built for the next
 // comparison.
 //
 // It must be the original, not a Copy. Copy duplicates each record
 // separately, so a message carrying the same OPT pointer twice becomes two
-// distinct objects, of which the library mutates only the first — while on
+// distinct objects, of which the library mutates only the first, while on
 // the original it mutates the one object and packs the new TTL at every
 // occurrence. Aliasing is part of the semantics being compared, and a copy
 // destroys it.
@@ -311,7 +311,7 @@ func TestTryPackMatchesLibrary(t *testing.T) {
 
 // TestTryPackRepeatedAgrees drives the pooled state through many messages in
 // sequence. A dictionary or shim returned dirty would not show on the first
-// pack — it would show on the one after it.
+// pack, it would show on the one after it.
 func TestTryPackRepeatedAgrees(t *testing.T) {
 	corpus := packCorpus(t)
 	want := make([][]byte, len(corpus))
@@ -419,7 +419,7 @@ func TestTryPackFallsBack(t *testing.T) {
 	assertFallback("nil record", m)
 
 	// A wrapper embedding dns.RR satisfies the interface through promotion
-	// and packs — but it is not a library record, and a wrapper hiding a
+	// and packs, but it is not a library record, and a wrapper hiding a
 	// PrivateRR would slip past any single-type assertion. Admission is by
 	// dynamic type, so both fall back.
 	m = new(dns.Msg)
@@ -427,8 +427,8 @@ func TestTryPackFallsBack(t *testing.T) {
 	m.Answer = []dns.RR{wrappedRR{mustPackRR(t, "example.com. 300 IN A 192.0.2.1")}}
 	assertFallback("a wrapped builtin record", m)
 
-	// The two shapes that panic IsEdns0 — a nil record in Extra, and a
-	// wrapper wearing the OPT type — must be turned away by admission
+	// The two shapes that panic IsEdns0, a nil record in Extra, and a
+	// wrapper wearing the OPT type, must be turned away by admission
 	// before anything walks Extra looking for the OPT.
 	m = new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeA)
@@ -455,8 +455,8 @@ type wrappedEDNS0 struct{ dns.EDNS0 }
 type wrappedSVCBValue struct{ dns.SVCBKeyValue }
 
 // TestTryPackFallsBackOnNestedExtensions pins the nested half of admission.
-// A record can be the library's own while carrying external code inside it —
-// an EDNS0 option or an SVCB value — and that code runs during the library's
+// A record can be the library's own while carrying external code inside it,
+// an EDNS0 option or an SVCB value, and that code runs during the library's
 // sizing pass as well as during packing, so a stateful implementation can
 // make the two disagree. Nothing foreign may run at all: the fallback has to
 // happen before the size probe, which already executes nested len methods.
@@ -555,9 +555,9 @@ func (c countingSVCBValue) String() string {
 
 // TestTryPackNeverRunsForeignCode pins that a foreign implementation's
 // methods are not invoked on the custom path. The counter can only cover the
-// exported surface — the library's sizing and packing call unexported
+// exported surface, the library's sizing and packing call unexported
 // methods, which promote to the embedded value and cannot be intercepted
-// from outside its package — so the load-bearing guarantee is the admission
+// from outside its package, so the load-bearing guarantee is the admission
 // rejection itself, mutation-checked in TestTryPackFallsBackOnNestedExtensions;
 // this is the belt over those braces.
 func TestTryPackNeverRunsForeignCode(t *testing.T) {
@@ -625,7 +625,7 @@ func TestTryPackCapsTheCallbackSlice(t *testing.T) {
 }
 
 // TestTryPackFallsBackOnPrivateRR keeps the caller-registered packing
-// protocol on the library path, whose sizing pass this one does not run —
+// protocol on the library path, whose sizing pass this one does not run,
 // bare, and hidden inside a wrapper, which is how it would sneak past a type
 // assertion.
 func TestTryPackFallsBackOnPrivateRR(t *testing.T) {
@@ -667,8 +667,8 @@ func TestTryPackFallsBackOnPrivateRR(t *testing.T) {
 		})
 	}
 
-	// Provenance alone would admit PrivateRR — it is declared in the
-	// library — so the by-name refusal has to hold on its own.
+	// Provenance alone would admit PrivateRR, it is declared in the
+	// library, so the by-name refusal has to hold on its own.
 	if admissibleRR(rr) {
 		t.Fatal("*dns.PrivateRR passed admission")
 	}
@@ -772,7 +772,7 @@ func sizedMessage(tb testing.TB, target int) *dns.Msg {
 }
 
 // TestTryPackBufferBoundary pins the pooled buffer's edge: one byte under
-// fits, the exact size fits, one byte over falls back — and a zero-RDATA
+// fits, the exact size fits, one byte over falls back, and a zero-RDATA
 // record arriving exactly at the boundary is refused by the guard, not
 // half-written.
 func TestTryPackBufferBoundary(t *testing.T) {
@@ -948,7 +948,7 @@ func TestTryPackConsumerContract(t *testing.T) {
 // TestPackCloneFallbackDoesNotMutate pins the fallback's half of the
 // immutability promise. The library's Pack writes the extended rcode into the
 // caller's OPT; a message too large for the pooled buffer takes that path,
-// and it must not be the one place the promise breaks — nor a data race when
+// and it must not be the one place the promise breaks, nor a data race when
 // the message is shared.
 func TestPackCloneFallbackDoesNotMutate(t *testing.T) {
 	big := sizedMessage(t, packBufferSize+200)
@@ -1063,7 +1063,7 @@ func TestPackCloneOPTAliasedAcrossSections(t *testing.T) {
 
 // TestPackClonePrivateRRKeepsLibrarySemantics pins the boundary of the
 // immutability promise. A PrivateRR packs through registrant code that can
-// observe anything, including the OPT the library mutates before packing it —
+// observe anything, including the OPT the library mutates before packing it,
 // exact bytes and immutability cannot both be promised there, and parity
 // wins: the message keeps the library's own semantics, mutation included.
 func TestPackClonePrivateRRKeepsLibrarySemantics(t *testing.T) {
@@ -1233,7 +1233,7 @@ func FuzzPackMsg(f *testing.F) {
 				// A fallback needs a reason. Everything Unpack produces is a
 				// library type with an in-range rcode, so the legitimate
 				// reasons are size and an input the library itself cannot
-				// pack — Unpack accepts rdata that Pack refuses, an empty
+				// pack, Unpack accepts rdata that Pack refuses, an empty
 				// ALPN in an SVCB for one. A packer drifting toward blanket
 				// fallback fails loudly instead of passing quietly.
 				if wantErr != nil {

@@ -12,7 +12,7 @@ import (
 
 // TestLookupV4NssDefersRosterBehindGlue pins the endpoint floor: the walk
 // defers the roster only once it holds two dialable endpoints, counted on
-// the deduped server list — not on host names, because two names glued to
+// the deduped server list, not on host names, because two names glued to
 // one address are still one point of failure. Past the floor the roster is
 // lane work: completed deterministically, never gambled on, never stood
 // behind.
@@ -42,7 +42,7 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 	}
 
 	// Two glued NAMES behind one endpoint are one point of failure, so the
-	// floor demands exactly one more synchronous resolution — and not one
+	// floor demands exactly one more synchronous resolution, and not one
 	// more than that.
 	if calls := queryer.calls.Load(); calls != 1 {
 		t.Fatalf("synchronous lookups = %d, want exactly one to reach the endpoint floor", calls)
@@ -50,7 +50,7 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 
 	// The lane completes the roster shortly after, from our own resolution.
 	// The queryer hands every host the same address, so the server list
-	// dedupes — the proof of completion is the glue cache, which keeps a
+	// dedupes, the proof of completion is the glue cache, which keeps a
 	// per-host entry either way.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -68,7 +68,7 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 }
 
 // TestEnrichShedsWithoutPools pins the shed contract for bare resolvers and
-// full lanes alike: offering a job never blocks and never panics — the
+// full lanes alike: offering a job never blocks and never panics, the
 // addresses are simply not learned this time.
 func TestEnrichShedsWithoutPools(t *testing.T) {
 	r := newAttackHarnessResolver(&authority.Servers{Zone: "example."})

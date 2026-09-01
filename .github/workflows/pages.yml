@@ -10,11 +10,11 @@ on:
   # able to report on every pull request: a path filter skips the whole
   # workflow, the status never arrives, and a branch rule waiting on it would
   # block every pull request that did not touch the site. Making it optional
-  # instead was the other way out, and it is worse — a red build merges.
+  # instead was the other way out, and it is worse, a red build merges.
   # The build costs 15-35s, which is not a price worth designing around.
   pull_request:
   # The install commands name the released version, which is resolved at build
-  # time — without this the site keeps advertising the previous release until
+  # time, without this the site keeps advertising the previous release until
   # something else under docs/ happens to change.
   release:
     types: [published]
@@ -38,7 +38,7 @@ concurrency:
 
 jobs:
   # A release run's ref is the tag, and the github-pages environment admits
-  # only main — the deploy job would be refused at the gate. Dispatch the same
+  # only main, the deploy job would be refused at the gate. Dispatch the same
   # workflow against main instead, which enters the environment normally and
   # rebuilds the install commands with the new version.
   redispatch:
@@ -57,7 +57,7 @@ jobs:
   #
   # ruby/setup-ruby with the checked-in Gemfile rather than
   # actions/jekyll-build-pages. That action pins the github-pages gem, which
-  # pins Jekyll 3.10 and — through commonmarker — Ruby < 4.0. On a machine
+  # pins Jekyll 3.10 and, through commonmarker, Ruby < 4.0. On a machine
   # running Ruby 4 the gem cannot be installed at all, so nobody could
   # reproduce the CI build locally; a failure would first appear after a
   # deploy. The cost of building it ourselves is this lockfile, which is why
@@ -135,7 +135,7 @@ jobs:
     permissions:
       pages: write
       id-token: write
-    # Never from a pull request, and never from a branch other than main —
+    # Never from a pull request, and never from a branch other than main,
     # the environment's branch policy is the backstop, not the only gate.
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

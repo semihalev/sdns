@@ -66,14 +66,14 @@ func TestSuffixesMatchesLibrary(t *testing.T) {
 }
 
 // canonicalWireReference is the independent oracle: the name packed to wire
-// by the library — which is the authoritative decoder of presentation
-// escapes — and RFC 4034 §6.3 applied to the resulting label octets. The
+// by the library, which is the authoritative decoder of presentation
+// escapes, and RFC 4034 §6.3 applied to the resulting label octets. The
 // comparator must agree with this, not with the implementation it replaced,
 // whose ordering of escape text is the bug being fixed. ok=false marks a
 // pair the packer refuses, where wire order is undefined.
 func canonicalWireReference(a, b string) (int, bool) {
 	// A name ending in a dangling backslash has no defined wire form, and
-	// the library does not refuse it — Fqdn's appended root dot lands
+	// the library does not refuse it, Fqdn's appended root dot lands
 	// behind the backslash and PackDomainName then collapses the whole
 	// name to the root, silently. The oracle only binds where the wire
 	// form is real; on these shapes the ordering laws still hold and are
@@ -112,8 +112,8 @@ func canonicalWireReference(a, b string) (int, bool) {
 	return 0, true
 }
 
-// fqdnDisagrees reports the shapes where the library's IsFqdn — rune
-// arithmetic on a byte question — answers differently from a byte count of
+// fqdnDisagrees reports the shapes where the library's IsFqdn, rune
+// arithmetic on a byte question, answers differently from a byte count of
 // the trailing backslashes.
 func fqdnDisagrees(s string) bool {
 	byteFqdn := len(s) > 0 && s[len(s)-1] == '.' && !escapedTail(s, len(s)-1)
@@ -156,7 +156,7 @@ func asciiLowerBytes(b []byte) string {
 
 // TestCanonicalCompareMatchesWireOrder pins the RFC 4034 §6.3 ordering
 // against the wire oracle for every packable pair, antisymmetry for every
-// pair packable or not, and rooted/unrooted equivalence — an ordering NSEC
+// pair packable or not, and rooted/unrooted equivalence, an ordering NSEC
 // coverage proofs stand on must not flicker with the spelling.
 func TestCanonicalCompareMatchesWireOrder(t *testing.T) {
 	for _, a := range nameCorpus {
@@ -194,7 +194,7 @@ func TestCanonicalCompareMatchesWireOrder(t *testing.T) {
 // TestCanonicalCompareDecodesEscapes pins the defect this ordering exists to
 // fix, in the three shapes review demonstrated it with: presentation text is
 // an encoding, and the order belongs to the octets behind it. The old
-// comparator — and the first version of this one, which mirrored it —
+// comparator, and the first version of this one, which mirrored it,
 // ordered the escape text, inverting names around `\` (0x5C) and splitting
 // wire-equal spellings apart.
 func TestCanonicalCompareDecodesEscapes(t *testing.T) {
@@ -203,7 +203,7 @@ func TestCanonicalCompareDecodesEscapes(t *testing.T) {
 	if got := CanonicalCompare(`\046.example.`, "0.example."); got != -1 {
 		t.Errorf(`\046 vs 0: got %d, want -1 (0x2E < 0x30)`, got)
 	}
-	// `\065` is the octet 0x41 — the label `a` after the fold.
+	// `\065` is the octet 0x41, the label `a` after the fold.
 	if got := CanonicalCompare(`\065.example.`, "a.example."); got != 0 {
 		t.Errorf(`\065 vs a: got %d, want 0`, got)
 	}
@@ -248,8 +248,8 @@ func TestCanonicalCompareManyLabels(t *testing.T) {
 
 // FuzzLabelWalkers drives all four walkers against their library oracles
 // over arbitrary strings. The escape and boundary handling lives in the
-// library's NextLabel either way, but the walks around it — alignment,
-// streak counting, final-label slicing — are this package's own, and a
+// library's NextLabel either way, but the walks around it, alignment,
+// streak counting, final-label slicing, are this package's own, and a
 // hand-written corpus finds only the mistakes someone imagined.
 func FuzzLabelWalkers(f *testing.F) {
 	for _, name := range nameCorpus {

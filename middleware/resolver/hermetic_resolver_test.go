@@ -111,7 +111,7 @@ func TestHermeticResolveNXDOMAIN(t *testing.T) {
 
 // TestHermeticResolveEmptyNonTerminal asks for a label that only exists
 // because something is delegated beneath it. Such a name holds no records
-// but is not absent, so the answer is NODATA — denying it would deny the
+// but is not absent, so the answer is NODATA, denying it would deny the
 // whole subtree, and a resolver walking down to that subtree would then be
 // relying on its broken-parent fallback to get anywhere.
 func TestHermeticResolveEmptyNonTerminal(t *testing.T) {

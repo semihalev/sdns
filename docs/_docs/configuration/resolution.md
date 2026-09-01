@@ -42,7 +42,7 @@ rollovers on its own (RFC 5011) once running.
 `rfc8198` lets a validated NSEC/NSEC3 record answer later negative queries
 without another authoritative lookup. `rfc9520` caches resolution failures and
 failed-authority state. Both default to on and both are kill switches rather
-than tuning knobs — turning either off costs upstream traffic and, in the case
+than tuning knobs, turning either off costs upstream traffic and, in the case
 of `rfc9520`, standards conformance. Exact negative caching and RFC 8020
 NXDOMAIN subtree cuts stay active regardless.
 
@@ -81,8 +81,8 @@ maxdepth     = 30        # recursion depth ceiling
 everything sdns will do for a single client question, retries and nested
 lookups included. `maxdepth` stops resolution loops.
 
-For bounds on aggregate *work* rather than time — outbound attempts, internal
-queries, DNSSEC operations — see the
+For bounds on aggregate *work* rather than time, outbound attempts, internal
+queries, DNSSEC operations, see the
 [recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }}),
 which is the mechanism designed for that and which also owns the RFC 9520
 failure cache.
@@ -112,5 +112,5 @@ is what you want; list zones explicitly only to narrow it.
 
 RFC 6303 is the citation that applies to a resolver: it defines the zone list
 and says the resolver should answer them itself. The often-quoted RFC 7534 is a
-different document — it describes how to *run* an AS112 node, the sink that
+different document, it describes how to *run* an AS112 node, the sink that
 catches these queries when a resolver does not answer them.

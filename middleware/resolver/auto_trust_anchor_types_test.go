@@ -18,7 +18,7 @@ func (unlimitedSignatureWork) BeginSignature() (func(), error)   { return func()
 
 // dnskeyImpostor answers TypeDNSKEY from its header without being a
 // *dns.DNSKEY. dnsutil.ExtractRRSet selects on the header, so an impostor
-// reaches every loop a real key reaches — and an unchecked type assertion
+// reaches every loop a real key reaches, and an unchecked type assertion
 // there is a panic in the trust-anchor refresh, which takes the resolver with
 // it. The records these loops walk come from a network response and from
 // configuration, so neither source is ours to trust.

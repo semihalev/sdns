@@ -6,7 +6,7 @@
 // It is a package rather than an init in main so that everything which
 // needs the real chain can ask for it: the binary, the benchmarks, a
 // harness. When this lived in main it could not be imported, so each of
-// those kept a list of its own — and they drifted, which is worse than
+// those kept a list of its own, and they drifted, which is worse than
 // duplication because a benchmark that quietly measures five handlers
 // fewer than production still reports a number.
 package defaults
@@ -71,8 +71,8 @@ func Register() { RegisterUpTo("") }
 // RegisterUpTo registers the chain up to but not including name; an empty
 // name registers all of it.
 //
-// It exists for the harnesses that replace the tail — a benchmark
-// standing a stub in for the resolver — so that what runs ahead of the
+// It exists for the harnesses that replace the tail, a benchmark
+// standing a stub in for the resolver, so that what runs ahead of the
 // stub is the real chain rather than a hand-kept approximation of it.
 func RegisterUpTo(stop string) {
 	for _, e := range chain {

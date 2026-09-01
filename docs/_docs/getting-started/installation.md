@@ -30,7 +30,7 @@ tar xzf sdns.tar.gz
 ./sdns-${TAG#v}_linux_amd64/sdns version
 ```
 
-Replace `linux_amd64` with the platform you want — the
+Replace `linux_amd64` with the platform you want, the
 [releases](https://github.com/semihalev/sdns/releases/latest) page lists every
 asset, and pinning a specific tag rather than resolving `latest` is the right
 call in a deployment script.
@@ -38,7 +38,7 @@ call in a deployment script.
 ## Docker
 
 ```bash
-# sdns.conf must set directory = "/var/lib/sdns" and narrow accesslist —
+# sdns.conf must set directory = "/var/lib/sdns" and narrow accesslist,
 # see below for why each half of this command matters.
 docker run -d --name sdns \
   -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
@@ -60,7 +60,7 @@ container writes a default config and uses it.
 
 **`directory = "/var/lib/sdns"` inside that file.** The image is built
 `FROM scratch` with no `WORKDIR`, so the process runs in `/` and the default
-relative `directory = "db"` resolves to `/db` — not the volume. The trust
+relative `directory = "db"` resolves to `/db`, not the volume. The trust
 anchor state then lives in the container's writable layer and is lost on the
 next `docker rm`, which is exactly the failure the volume was meant to prevent
 and which only surfaces at a root KSK rollover.
@@ -99,7 +99,7 @@ verify on a loopback high port rather than as root.
 
 A partial file will not do: settings you leave out are **not** filled in from
 the defaults, and a file without `directory`, `rootservers` and `rootkeys` is
-rejected. Generate a complete one first — pointing `-t` at a path that does not
+rejected. Generate a complete one first, pointing `-t` at a path that does not
 exist writes the full documented file and validates it:
 
 ```bash
@@ -131,4 +131,4 @@ dig @127.0.0.1 -p 5354 example.com A +dnssec
 
 An answer with the `ad` flag means the response was validated. If the first
 query is slow, that is the resolver priming the root and fetching the trust
-anchor — subsequent queries are served from cache.
+anchor, subsequent queries are served from cache.

@@ -24,8 +24,8 @@ the same settings with more room for the reasoning behind them.
 | [Access control and blocking]({{ '/docs/configuration/access-control/' | relative_url }}) | ACLs, rate limits, blocklists, hosts file, reflection defence |
 | [Configuration key index]({{ '/docs/reference/config-keys/' | relative_url }}) | Every key, alphabetically, with its default |
 
-Feature blocks — `[rpz]`, `[recursion_firewall]`, `[ecs]`, `[dns64]`,
-`[kubernetes]`, `[[views]]`, `[[forward_zone]]`, `[plugins]` — are documented on
+Feature blocks (`[rpz]`, `[recursion_firewall]`, `[ecs]`, `[dns64]`,
+`[kubernetes]`, `[[views]]`, `[[forward_zone]]`, `[plugins]`) are documented on
 their own feature pages, since the settings only make sense alongside what the
 feature does.
 
@@ -41,7 +41,7 @@ TLS files are opened, and policy zones are compiled with the loaders the server
 runs. It reports **every** problem it finds, not just the first, and exits 1 if
 there was one.
 
-An unknown key — a typo, or a setting an older sdns understood — fails `-t`.
+An unknown key, a typo, or a setting an older sdns understood, fails `-t`.
 Startup only warns about it. The asymmetry is deliberate: you want the strict
 answer when you are checking a change, and you do not want a stale key left in
 the file to turn an upgrade into an outage.
@@ -66,6 +66,6 @@ Durations are Go duration strings: `"2s"`, `"10s"`, `"5m"`, `"24h"`. A bare
 number where a duration is expected is a validation error rather than a silent
 interpretation as nanoseconds.
 
-Counts are plain integers. Where `0` means something other than zero — usually
-"use the built-in default" or "disabled" — the generated file says so above the
+Counts are plain integers. Where `0` means something other than zero, usually
+"use the built-in default" or "disabled", the generated file says so above the
 key, and so do these pages.

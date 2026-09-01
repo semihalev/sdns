@@ -4,7 +4,7 @@
 // (forwarding side) and middleware/cache (key-shape side) can both
 // import it without bringing each other into their dependency graph.
 //
-// RFC 7871 is opt-in by design — SDNS strips ECS by default to
+// RFC 7871 is opt-in by design, SDNS strips ECS by default to
 // honour §11's privacy guidance, and the operator must enable
 // forwarding explicitly via the [ecs] config block.
 package ecs
@@ -30,7 +30,7 @@ type Policy struct {
 	// ForwardV4Max / ForwardV6Max are the ceilings on the
 	// source-prefix-length we'll forward upstream. Clients that
 	// send a narrower (more specific) prefix get clamped to these
-	// values — narrower prefixes leak more information about the
+	// values, narrower prefixes leak more information about the
 	// client than the operator probably intends. Sensible defaults:
 	// /24 for IPv4 and /56 for IPv6, matching common practice.
 	ForwardV4Max uint8
@@ -57,8 +57,8 @@ type Policy struct {
 // (nil, nil) when the feature is disabled and (nil, error) on any
 // malformed input. Callers (middleware/edns, middleware/cache) log
 // the error context themselves. Keeping the constructor here keeps
-// internal/ecs at the bottom of the dependency graph — no config
-// import — while preventing two middleware from drifting on what
+// internal/ecs at the bottom of the dependency graph, no config
+// import, while preventing two middleware from drifting on what
 // "enabled" means.
 //
 // Bad input is fail-closed: a single typo'd CIDR or out-of-range
@@ -166,8 +166,8 @@ func (p *Policy) Allows(client netip.Addr) bool {
 
 // Clamp returns a normalised EDNS0_SUBNET safe to forward upstream
 // under this policy, or nil when the input is unusable (no address,
-// unsupported family). The returned option is always a fresh value
-// — the caller can attach it to an outgoing OPT without aliasing
+// unsupported family). The returned option is always a fresh value,
+// the caller can attach it to an outgoing OPT without aliasing
 // the inbound request's storage.
 //
 // Source-prefix is capped to ForwardV4Max / ForwardV6Max, then the
@@ -246,8 +246,8 @@ func (p *Policy) ClampScope(scope, source netip.Prefix) netip.Prefix {
 		bits = source.Bits()
 	}
 
-	// bits is always in [0, 128] here — netip.Prefix.Bits() never
-	// returns negative — so the int→uint8 conversion below is safe.
+	// bits is always in [0, 128] here, netip.Prefix.Bits() never
+	// returns negative, so the int→uint8 conversion below is safe.
 	switch {
 	case scope.Addr().Is4():
 		if uint8(bits) > p.MinScopeV4 { //nolint:gosec // bits ≤ 32 for v4

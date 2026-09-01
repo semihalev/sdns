@@ -16,7 +16,7 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-// ednsErrors counts EDNS protocol-level rejections — queries the
+// ednsErrors counts EDNS protocol-level rejections, queries the
 // middleware short-circuits before they reach the resolver chain.
 // Closed-set "reason" labels keep the cardinality bounded.
 var (
@@ -102,7 +102,7 @@ type ResponseWriter struct {
 	hasCookieRaw bool
 	// keepalive marks a stream-transport client that sent the RFC 7828
 	// edns-tcp-keepalive option; the response advertises the server's
-	// idle timeout back. Never set for datagram transports — the option
+	// idle timeout back. Never set for datagram transports, the option
 	// is forbidden over UDP in both directions, and DoQ forbids it
 	// entirely (RFC 9250 §5.5.2).
 	keepalive bool
@@ -186,14 +186,14 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// Clear AD unless the client signalled it wants validation state (DO
 	// or AD bit set) AND did not set CD. RFC 4035 §3.2.3 / RFC 6840 §5.7:
 	// a CD=1 client opted out of trusting our validation, so AD must
-	// never be asserted to it — this is also the last-line backstop for
+	// never be asserted to it, this is also the last-line backstop for
 	// the forwarder, which passes an upstream's AD bit through.
 	rw.noad = req.CheckingDisabled || (!req.AuthenticatedData && !do)
 
 	ch.Writer = rw
 	// Restore via defer so a downstream panic that a higher-up
 	// recovery swallows still unwraps this chain before it
-	// returns to the pool — otherwise the next request picks
+	// returns to the pool, otherwise the next request picks
 	// up a stale EDNS wrapper.
 	defer func() {
 		ch.Writer = w
@@ -205,7 +205,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 // serveWire is the wire branch: every client-facing fact (advertised
 // size, DO, cookie, NSID, AD discipline) comes from the request's
-// wire-parsed OPT — no message exists and nothing is mutated. The
+// wire-parsed OPT, no message exists and nothing is mutated. The
 // normalization the decoded path applies through SetEdns0 is recorded on
 // the request instead, so a later materialization produces the identical
 // upstream shape (wire → normalized → Msg, one-way).
@@ -340,8 +340,8 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		//   (a) the resolver re-attaches the request OPT (which we
 		//       may have mutated to forward ECS upstream) onto the
 		//       response, and
-		//   (b) the merge above copies w.opt.Option — which contains
-		//       our forwarded ECS — onto the response OPT.
+		//   (b) the merge above copies w.opt.Option, which contains
+		//       our forwarded ECS, onto the response OPT.
 		// Either way, the clamped query ECS would otherwise appear
 		// in the client's reply (with SourceScope=0, or duplicated
 		// alongside any ECS the upstream itself returned). Stripping
@@ -352,7 +352,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 
 		// The same closure for RFC 7828: an upstream's keepalive answer
 		// (its idle timeout, negotiated on our pooled connection) is a
-		// hop-by-hop fact that must never reach the client — least of
+		// hop-by-hop fact that must never reach the client, least of
 		// all over UDP, where the option is forbidden outright. The
 		// server's own advertisement is appended after the strip, for
 		// stream clients that asked.
@@ -376,7 +376,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		// A truncated response is a retry signal, not a partial answer
 		// (RFC 2181 §9): the client must discard the content and ask
 		// again over TCP, so everything but the question and the OPT
-		// goes. The OPT survives per RFC 6891 — the EDNS negotiation
+		// goes. The OPT survives per RFC 6891, the EDNS negotiation
 		// state stays visible. Extra in particular must not ride along:
 		// it can be the very section that overflowed, and keeping it
 		// used to send a TC=1 message still larger than the buffer the
@@ -391,7 +391,7 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	return w.ResponseWriter.WriteMsg(m)
 }
 
-// keepOPTOnly returns just the OPT record from extra, or nil without one —
+// keepOPTOnly returns just the OPT record from extra, or nil without one,
 // the additional section a minimal truncated response is allowed to carry.
 // A fresh slice, not an in-place filter: the message's sections may still
 // be referenced by upstream writer layers.
@@ -502,8 +502,8 @@ const name = "edns"
 // The message's own uncompressed length is an upper bound that carries no
 // such risk: compression only replaces name suffixes with two-octet
 // pointers, so it can never make a message longer. Measuring it costs
-// nothing — Msg.Len builds a compression map only for a message that asks
-// to be compressed — and almost every response clears the limit by that
+// nothing, Msg.Len builds a compression map only for a message that asks
+// to be compressed, and almost every response clears the limit by that
 // bound alone. Only the ones that do not are worth measuring exactly.
 func udpOverflow(m *dns.Msg, limit int) bool {
 	// A copy of the header, not of the records: Len only reads, and the

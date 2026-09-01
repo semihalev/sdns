@@ -11,8 +11,8 @@ import (
 // servers for a zone plus the DS RRset that proves the delegation.
 //
 // ExpiresAt is a single immutable absolute expiry (monotonic clock
-// retained). Storing the absolute deadline — rather than a duration
-// re-anchored at insertion — is what lets a descendant delegation inherit
+// retained). Storing the absolute deadline, rather than a duration
+// re-anchored at insertion, is what lets a descendant delegation inherit
 // an ancestor's shorter lease without a scheduler pause between "compute
 // remaining" and "store" silently re-inflating it (GHSA-mqfw-f48p-2vc8,
 // Phoenix downward-delegation variant).
@@ -63,7 +63,7 @@ func (n *Cache) Get(key uint64) (*Delegation, error) {
 // The lease must honour the parent-granted TTL. The former one-hour lower
 // clamp inflated a short referral TTL (e.g. a 4s delegation) into a one-hour
 // lease, which let a withdrawn child zone be kept alive indefinitely from its
-// own authoritative NS answer — the ghost-domain vulnerability
+// own authoritative NS answer, the ghost-domain vulnerability
 // (GHSA-mqfw-f48p-2vc8). Only the upper bound is clamped now; a non-positive
 // TTL is not cached at all (caching an already-expired entry is pointless and
 // a zero TTL means "do not cache").
@@ -79,8 +79,8 @@ func (n *Cache) Set(key uint64, dsSet []dns.RR, servers *Servers, ttl time.Durat
 }
 
 // (*Cache).SetUntil stores a delegation with an ABSOLUTE expiry, capped at
-// the 12h ceiling. Resolver writes use this so a parent-granted deadline —
-// possibly inherited from a shorter-lived ancestor — is stored verbatim
+// the 12h ceiling. Resolver writes use this so a parent-granted deadline,
+// possibly inherited from a shorter-lived ancestor, is stored verbatim
 // rather than reconstructed from time.Until(deadline): any delay (including a
 // scheduler pause) between computing the remaining duration and Set's
 // now.Add(ttl) would otherwise restart the lease.
@@ -97,14 +97,14 @@ func (n *Cache) SetUntil(key uint64, dsSet []dns.RR, servers *Servers, expiresAt
 }
 
 // (*Cache).SetUntilIfAbsent is SetUntil for provisional writers: it stores
-// only when the key holds no live delegation — absent, or present but past
+// only when the key holds no live delegation, absent, or present but past
 // its expiry. A live entry always wins, atomically: the absent case inserts
 // under the segment write lock (AddIfAbsent), and the expired case replaces
 // exactly the expired value it examined (CompareAndSwap), so a real lease
 // published by a concurrent walk can never be displaced by the provisional
 // one racing it.
 //
-// It returns the delegation that is live under the key afterwards — the one
+// It returns the delegation that is live under the key afterwards, the one
 // it stored, or the one that beat it. Callers that go on to use the
 // delegation must use the returned value and not their own inputs: servers,
 // DS set and expiry belong to one entry, and pairing a winner's servers

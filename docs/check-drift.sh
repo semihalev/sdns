@@ -3,8 +3,8 @@
 #
 # Every finding this catches was found by a human reading both, which is not a
 # process that survives the review being forgotten. The project already applies
-# this instinct elsewhere — `sdns -t` judges a config against the runtime, and
-# contrib/linux/sdns.conf is regenerated from the code rather than edited — so
+# this instinct elsewhere, `sdns -t` judges a config against the runtime, and
+# contrib/linux/sdns.conf is regenerated from the code rather than edited, so
 # this is the same idea pointed at the documentation.
 #
 # Run from the repository root: docs/check-drift.sh
@@ -49,7 +49,7 @@ done
 # mentions is the difference between a reference and a rough guide.
 # The schema comes from the parser's own view of the root Config type rather
 # than from a guess about which type names matter, and it carries the table
-# path — rpz.enabled and ecs.enabled are different keys, and collapsing them
+# path, rpz.enabled and ecs.enabled are different keys, and collapsing them
 # meant deleting either row stayed green.
 schema=$(go run ./docs/schemakeys 2>/dev/null | sort -u)
 

@@ -106,7 +106,7 @@ func TestClientIPBeatsQNAMEWithinZone(t *testing.T) {
 }
 
 // TestClientIPLongestPrefixWins pins rule 4: /32 passthru inside the /24
-// drop — the more specific rule prescribes the opposite action.
+// drop, the more specific rule prescribes the opposite action.
 func TestClientIPLongestPrefixWins(t *testing.T) {
 	z := loadClientIPZone(t)
 	s := storeOf(z)
@@ -162,8 +162,8 @@ func TestClientIPMissAllocatesNothing(t *testing.T) {
 
 // BenchmarkClientIPAdversarialAllLengths is the §5.3/§6 exit criterion:
 // a hostile feed carrying every prefix length /1../128, probed by a
-// non-matching client. The stated budget is 2µs per zone walk — well
-// under 6% of the per-query budget at the bench-box scoreboard rate —
+// non-matching client. The stated budget is 2µs per zone walk, well
+// under 6% of the per-query budget at the bench-box scoreboard rate,
 // and the length-map walk must come in under it or be replaced by a
 // radix before merge.
 func BenchmarkClientIPAdversarialAllLengths(b *testing.B) {
@@ -197,7 +197,7 @@ func BenchmarkClientIPRealisticLengths(b *testing.B) {
 		z.insertClientIP(netip.PrefixFrom(netip.AddrFrom16(addr), bits), ActionDrop, nil)
 	}
 	// A v6 client for the v6 table: after the family split, a lookup is
-	// always family-consistent — the router picks the table.
+	// always family-consistent, the router picks the table.
 	client := CanonicalClient(netip.MustParseAddr("fd00::7"))
 
 	b.ReportAllocs()
@@ -209,7 +209,7 @@ func BenchmarkClientIPRealisticLengths(b *testing.B) {
 }
 
 // TestClientIPFamiliesStaySeparate pins the review's merge blocker: an
-// IPv6 rule must never match an IPv4 client and the reverse — folding
+// IPv6 rule must never match an IPv4 client and the reverse, folding
 // IPv4 into the ::ffff/96 corner of one key space let ::/0 swallow every
 // v4 client and collided ::ffff:0:0/96 with 0.0.0.0/0.
 func TestClientIPFamiliesStaySeparate(t *testing.T) {
@@ -232,7 +232,7 @@ rpz.test. IN SOA ns. admin. 1 3600 900 604800 300
 	s := storeOf(z)
 	canon, offs, n := canonFor(t, "x.example.")
 
-	// A v4 client meets only the v4 catch-all — tcp-only, never the v6
+	// A v4 client meets only the v4 catch-all, tcp-only, never the v6
 	// ::/0 nxdomain or the ::ffff drop.
 	v4 := CanonicalClient(netip.MustParseAddr("198.51.100.7"))
 	if w, _ := s.Match(canon, offs[:], n, v4); w.Effective() != ActionTCPOnly {
@@ -243,8 +243,8 @@ rpz.test. IN SOA ns. admin. 1 3600 900 604800 300
 	if w, _ := s.Match(canon, offs[:], n, mapped); w.Effective() != ActionTCPOnly {
 		t.Fatalf("mapped v4 client got %v, want the v4 table's tcp-only", w.Effective())
 	}
-	// An address spelled inside ::ffff:0:0/96 IS an IPv4 client — that is
-	// what mapped means, and CanonicalClient's Unmap enforces it — so it
+	// An address spelled inside ::ffff:0:0/96 IS an IPv4 client, that is
+	// what mapped means, and CanonicalClient's Unmap enforces it, so it
 	// meets the v4 table, never the feed's v6 ::ffff rule. That rule
 	// stays compiled and distinct (asserted above) but no client can
 	// reach it, which is the correct fate for a v6 spelling of v4 space.

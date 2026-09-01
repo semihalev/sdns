@@ -51,8 +51,8 @@ func (a *AS112) Name() string { return name }
 
 // (*AS112).ServeDNS serveDNS implements the Handle interface. A wire-born
 // request never decodes here: non-arpa names pass on one case-folded
-// suffix compare, arpa names that miss the empty zones — every legitimate
-// reverse lookup — pass after a zero-allocation canonical suffix walk, and
+// suffix compare, arpa names that miss the empty zones, every legitimate
+// reverse lookup, pass after a zero-allocation canonical suffix walk, and
 // an empty-zone hit builds its response from parsed scalars.
 func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if ch.Request.Undecoded() {
@@ -145,7 +145,7 @@ func (a *AS112) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 // serveWire answers or passes a wire-born arpa query without decoding it.
 // The canonical form and its label offsets come from one stack-buffered
-// walk, so the suffix probe against the zone set — Match's loop — indexes
+// walk, so the suffix probe against the zone set, Match's loop, indexes
 // the map without building a string. The overwhelmingly common outcome, a
 // reverse lookup under a delegated zone, continues down the chain
 // undecoded; only an empty-zone hit builds strings, for the response it is

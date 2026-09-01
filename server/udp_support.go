@@ -35,7 +35,7 @@ var (
 
 	// udpOverflowServed counts jobs served on their own goroutine because
 	// no worker was free. It is the signal that the pool is too small for
-	// the shape of the traffic — a resolver serving misses spends most of
+	// the shape of the traffic, a resolver serving misses spends most of
 	// its time here, and that is fine; a server that is supposed to be
 	// serving hits should see it near zero.
 	udpOverflow = metric.NewCounterVec(nil, prometheus.CounterOpts{
@@ -45,8 +45,8 @@ var (
 	udpOverflowServed = udpOverflow.Register("served")
 
 	// udpInline splits the reader fast path from the ring: "served" is a
-	// query that finished on its reader — reply on the cycle's transmit
-	// batch, no worker wake — and "handoff" is one the inline pass
+	// query that finished on its reader, reply on the cycle's transmit
+	// batch, no worker wake, and "handoff" is one the inline pass
 	// admitted and guarded but a worker had to finish.
 	udpInline = metric.NewCounterVec(nil, prometheus.CounterOpts{ //nolint:unused // Linux batch path
 		Name: "dns_udp_inline_total",
@@ -63,7 +63,7 @@ var (
 	udpDropError     = udpIngressDrops.Register("error")
 	udpDropPanic     = udpIngressDrops.Register("panic")
 	// tx_error counts replies the transport refused. The send happens
-	// after the middleware has unwound, so this counter — not a WriteMsg
-	// error — is where a failed datagram becomes visible.
+	// after the middleware has unwound, so this counter, not a WriteMsg
+	// error, is where a failed datagram becomes visible.
 	udpTXError = udpIngressDrops.Register("tx_error")
 )

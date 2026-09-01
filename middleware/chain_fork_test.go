@@ -11,7 +11,7 @@ import (
 
 // TestForkDoesNotCrossRequestGenerations pins the isolation a pooled root
 // requires. A root meta is reset and reused by the next request, and a fork
-// of the request before it can still be alive — it must keep reading the
+// of the request before it can still be alive, it must keep reading the
 // state of the request it belongs to, never the one that took the root over.
 func TestForkDoesNotCrossRequestGenerations(t *testing.T) {
 	root := new(ResponseMeta)
@@ -106,8 +106,8 @@ func TestForkResetRacesWithLedgerReaders(t *testing.T) {
 //
 // The cut is its own: a sub-query's answer is cached under its own key, so a
 // nearly expired request that happens to ask for it must not shorten it.
-// Everything else belongs to the request tree — the work ledger, the retry
-// guard, and the provenance a nested lookup records — and the tree must see
+// Everything else belongs to the request tree, the work ledger, the retry
+// guard, and the provenance a nested lookup records, and the tree must see
 // what the sub-query records even though those are created lazily.
 func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 	parent := new(ResponseMeta)
@@ -137,7 +137,7 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 
 	// Ledgers created through the child are the tree's, not copies. They are
 	// created lazily, so a fork that copied their pointers would share
-	// nothing here — this is the case that catches it.
+	// nothing here, this is the case that catches it.
 	guard := child.EnsureResolutionAttemptGuard()
 	if guard == nil {
 		t.Fatal("the sub-query could not establish a retry guard")
@@ -170,7 +170,7 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 //
 // Both the warm and the cold shape are measured. AllocsPerRun establishes
 // the request's ledgers during its warm-up, so a warm-only gate would never
-// see what the first scope of a request costs — which is the one a CNAME or
+// see what the first scope of a request costs, which is the one a CNAME or
 // DNAME leg actually pays.
 func TestForkedCutScopeCostsOneAllocation(t *testing.T) {
 	// What a sub-query actually does: take a scope, then pin the request

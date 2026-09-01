@@ -13,7 +13,7 @@ github:
 # corrected from the releases API at view time, so this is what a reader
 # sees for the first few hundred milliseconds, or with scripting off. It
 # is also the single source for the version written into the install
-# commands, which no script can correct — bump it at release.
+# commands, which no script can correct, bump it at release.
 sdns_version: v1.8.2
 
 exclude:
@@ -21,7 +21,7 @@ exclude:
   - Gemfile.lock
   - README.md
   - vendor
-  # Repository tooling that happens to live under docs/ — it belongs to CI,
+  # Repository tooling that happens to live under docs/, it belongs to CI,
   # not to the published site.
   - check-drift.sh
   - schemakeys
@@ -32,12 +32,12 @@ collections:
     permalink: /:collection/:path/
     sort_by: order
 
-# One defaults block. A second one does not merge — the later key replaces the
+# One defaults block. A second one does not merge, the later key replaces the
 # earlier, which would have silently dropped every layout assignment here.
 #
 # The seo types are set because jekyll-seo-tag treats everything as a
 # BlogPosting, and with no date in the front matter it stamps datePublished and
-# dateModified with the build time — so each deploy announced all 29 documents
+# dateModified with the build time, so each deploy announced all 29 documents
 # as freshly written. Reference documentation is not a blog.
 defaults:
   - scope:

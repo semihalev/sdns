@@ -18,7 +18,7 @@ func packName(t *testing.T, name string) []byte {
 }
 
 // TestAppendPresentationParity: byte-identical to dns.UnpackDomainName on
-// every name both accept — including every possible label byte.
+// every name both accept, including every possible label byte.
 func TestAppendPresentationParity(t *testing.T) {
 	names := []string{
 		".",

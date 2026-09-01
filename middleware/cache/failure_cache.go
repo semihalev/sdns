@@ -128,7 +128,7 @@ type failureEntry struct {
 	zone       FailureZoneKey
 	// witness is the denial-zone state the record-time qname saw (see
 	// denial_proof_witness.go): resolution was attempted, so aggressive
-	// denial provably missed — the wire path may serve this failure
+	// denial provably missed, the wire path may serve this failure
 	// without materializing while the witness still holds.
 	witness []denialWitnessPair
 }
@@ -218,7 +218,7 @@ func (c *FailureCache) Lookup(key FailureQuestionKey) (FailureHit, bool) {
 // LookupWire is Lookup for a wire-born question without an ECS scope: the
 // same exact-question probe and ancestor-zone walk, keyed through the
 // canonical wire hashes (bit-identical to the presentation ones) and
-// verified by fold comparison — no strings, no allocation. Scoped entries
+// verified by fold comparison, no strings, no allocation. Scoped entries
 // never match: the wire path carries no client scope, and scope is part
 // of both the hash and the verification.
 func (c *FailureCache) LookupWire(name []byte, qtype, qclass uint16, cd bool) (FailureHit, bool) {

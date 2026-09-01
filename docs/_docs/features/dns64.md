@@ -18,8 +18,8 @@ Pref64 prefix, which a NAT64 gateway then translates. Off by default.
 
 ## When synthesis happens
 
-When a client's AAAA query returns NOERROR with no data — or any nonzero RCODE
-other than NXDOMAIN — sdns issues an A query for the same name and synthesises
+When a client's AAAA query returns NOERROR with no data, or any nonzero RCODE
+other than NXDOMAIN, sdns issues an A query for the same name and synthesises
 one AAAA per (A record, prefix) pair.
 
 Three cases deliberately pass through untouched:
@@ -72,7 +72,7 @@ as having returned no AAAA at all, so sdns synthesises a routable address from
 the corresponding A instead of handing the client something unusable.
 
 `exclude_a_networks` lists IPv4 networks not to synthesise from when the
-Well-Known Prefix is active — RFC 6147 forbids embedding non-global addresses in
+Well-Known Prefix is active, RFC 6147 forbids embedding non-global addresses in
 it. The shipped defaults mirror the IANA Special-Purpose Address Registry.
 Operator-chosen network-specific prefixes ignore this list, since the constraint
 is specific to the Well-Known Prefix.

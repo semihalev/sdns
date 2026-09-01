@@ -117,7 +117,7 @@ func TestFrameOversizeWriteRefused(t *testing.T) {
 // below is the runtime's socket path. On Windows that path allocates on
 // its own (each read and write composes a WSA message from pooled
 // state), which the allocation contract accounts for by scoping the hard
-// guarantee to the platforms it is measured on — the assertion follows
+// guarantee to the platforms it is measured on, the assertion follows
 // the contract rather than pretending the property holds everywhere.
 func TestFramePrefixedAllocsNothing(t *testing.T) {
 	if runtime.GOOS == "windows" {

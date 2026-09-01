@@ -14,7 +14,7 @@ import (
 //
 // The library packs the key into a 4096-octet buffer behind the four octets
 // of flags, protocol and algorithm, so anything larger fails to pack and no
-// DS is produced — a key that could never match. Computing the digest
+// DS is produced, a key that could never match. Computing the digest
 // directly has no such ceiling of its own, and gaining one silently would
 // widen what this resolver accepts as a chain of trust.
 const maxDSKeyMaterial = 4096 - 4
@@ -55,7 +55,7 @@ func oversizedKeyMaterial(publicKey string) bool {
 	// The decoder skips CR and LF, so a key that is only long because it
 	// is wrapped is not oversized, and refusing it would reject an input
 	// the library accepts. The line breaks are counted out rather than
-	// assumed away — but only as far as the answer needs: once limit+1
+	// assumed away, but only as far as the answer needs: once limit+1
 	// octets of actual material have been seen, nothing in the rest can
 	// bring the decoded length back under the limit. The walk is bounded
 	// by the limit, not by the size of what an attacker sent.
@@ -82,8 +82,8 @@ func oversizedKeyMaterial(publicKey string) bool {
 
 // dsDigestMatches reports whether key hashes to want under digestType.
 //
-// This is the RFC 4034 §5.1.4 digest — hash(canonical owner name | flags |
-// protocol | algorithm | public key) — computed straight into the comparison.
+// This is the RFC 4034 §5.1.4 digest, hash(canonical owner name | flags |
+// protocol | algorithm | public key), computed straight into the comparison.
 // Producing a dns.DS to compare instead costs a 4096-octet key buffer, a
 // 255-octet owner buffer, the record itself and a hexadecimal rendering of
 // the digest, for every candidate key of every delegation; none of it is

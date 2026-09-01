@@ -16,7 +16,7 @@ import (
 // TestUDPPortableFallbackReplyAddressing pins the recvmmsg-fallback TX
 // contract: a socket that fell back to the portable reader stays in the
 // batch TX map, but its jobs carry no freshly armed raw sockaddr. The
-// send path must route such a job through the direct send — a recycled
+// send path must route such a job through the direct send, a recycled
 // slab still holds the previous client's sockaddr from a batched read,
 // and sendmmsg addressed by that stale name answers the wrong client.
 func TestUDPPortableFallbackReplyAddressing(t *testing.T) {
@@ -57,7 +57,7 @@ func TestUDPPortableFallbackReplyAddressing(t *testing.T) {
 	victimPort := victim.LocalAddr().(*net.UDPAddr).Port
 	var sa [unix.SizeofSockaddrInet4]byte
 	sa[0] = byte(unix.AF_INET)
-	sa[2], sa[3] = byte(victimPort>>8), byte(victimPort) //nolint:gosec // G115 — a bound UDP port fits 16 bits
+	sa[2], sa[3] = byte(victimPort>>8), byte(victimPort) //nolint:gosec // G115, a bound UDP port fits 16 bits
 	copy(sa[4:8], net.IPv4(127, 0, 0, 1).To4())
 	if !poisoned.setRemoteRaw(sa[:]) {
 		t.Fatal("victim sockaddr refused")
@@ -110,8 +110,8 @@ func TestUDPPortableFallbackReplyAddressing(t *testing.T) {
 }
 
 // TestUDPBatchTXRetirementServesDirect pins the send half of syscall
-// degradation: with batch TX retired — the state a permanent sendmmsg
-// errno leaves behind — every reply must still reach its client through
+// degradation: with batch TX retired, the state a permanent sendmmsg
+// errno leaves behind, every reply must still reach its client through
 // the direct sender. Without retirement, a seccomp policy permitting
 // recvmmsg but not sendmmsg was a server that read every query and
 // answered none.

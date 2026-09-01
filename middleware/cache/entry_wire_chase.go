@@ -15,20 +15,20 @@ import (
 
 // The cache-contained CNAME chase on the wire: an alias entry whose answer
 // carries no terminal record is completed by walking the target entries
-// directly in the cache and composing one reply into the writer's lease —
+// directly in the cache and composing one reply into the writer's lease,
 // no decoded messages, no sub-pipeline, no allocation. The walk is
 // deliberately narrower than the Msg path's chase: every hop must already
 // be cached, byte-eligible, NOERROR, free of authority/additional
 // baggage, and made of records this composer can re-encode. Anything else
-// declines, and the Msg path — which owns loop SERVFAILs, NXDOMAIN
-// provenance, validated-proof propagation and upstream-requiring chases —
+// declines, and the Msg path, which owns loop SERVFAILs, NXDOMAIN
+// provenance, validated-proof propagation and upstream-requiring chases,
 // answers exactly as before.
 //
 // One knowing divergence: hop entries served through the composer do not
 // tick their own hit/prefetch machinery (the Msg path's chase reaches them
 // through the internal sub-pipeline, which does). A hop that expires ages
 // out of the walk, the next hit declines to the Msg path, and the ordinary
-// chase re-resolves and re-admits it — self-healing at the cost of one
+// chase re-resolves and re-admits it, self-healing at the cost of one
 // decoded serve.
 
 // The chase depth must fit the sidecar chain the gate receives; a
@@ -56,11 +56,11 @@ type wireChaseSegment struct {
 }
 
 // serveChaseHit answers a chase-unsafe exact hit from cache-contained
-// state. A false return took nothing and wrote nothing — including the
+// state. A false return took nothing and wrote nothing, including the
 // per-entry rate-limit token: a chase declines routinely (an uncached or
 // expired hop, a non-recomposable rrtype, an oversized composition), and
 // every decline before the commit must leave the limiter untouched, or
-// the Msg path — or the replay after an inline handoff — would charge
+// the Msg path, or the replay after an inline handoff, would charge
 // the same question a second time.
 func (c *Cache) serveChaseHit(
 	ctx context.Context,
@@ -78,7 +78,7 @@ func (c *Cache) serveChaseHit(
 	}
 
 	// The reply would compose every segment's records, so the gate sees
-	// every segment's sidecar, in chain order — the per-segment principle:
+	// every segment's sidecar, in chain order, the per-segment principle:
 	// a whole-chain verdict on the alias would go stale the moment a
 	// target entry refreshed under it. The chain travels by value: a
 	// slice here escapes through the interface call and puts a heap
@@ -133,7 +133,7 @@ func (c *Cache) serveChaseHit(
 			gate.CountWireChase(chain)
 		}
 		// The reply contains every segment's records, so the request
-		// inherits every segment's cache-lifetime bound — the wire twin of
+		// inherits every segment's cache-lifetime bound, the wire twin of
 		// the Msg chase's lineage inheritance.
 		for i := range n {
 			boundRequestToEntryLifetime(ctx, segs[i].entry)

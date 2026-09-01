@@ -72,7 +72,7 @@ func (s *cannedDNSSECStore) SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil 
 // falls back to provenInsecureDelegation.
 //
 // In an opt-out zone an unsigned delegation has NO exact-match NSEC3
-// by definition (RFC 5155 §6) — the authenticated DS-NODATA proof is
+// by definition (RFC 5155 §6), the authenticated DS-NODATA proof is
 // the covering opt-out NSEC3. Wire shape captured live from
 // c.ns.apple.com for "edge.apple. IN DS" (apex NSEC3, flags=1):
 //
@@ -140,7 +140,7 @@ func Test_provenInsecureDelegation_OptOutSpan(t *testing.T) {
 
 	if !r.provenInsecureDelegation(context.Background(), parent, qname, parentDS) {
 		t.Fatalf("BUG REPRODUCED (issue #506 variant 1): the authenticated opt-out "+
-			"NSEC3 proof of the insecure delegation %s was rejected — every "+
+			"NSEC3 proof of the insecure delegation %s was rejected, every "+
 			"shared-authority answer under an opt-out parent zone becomes a false "+
 			"SERVFAIL", child)
 	}
@@ -150,7 +150,7 @@ func Test_provenInsecureDelegation_OptOutSpan(t *testing.T) {
 // downgrade guard the opt-out fix must NOT relax: for a name that
 // exists as ordinary signed data in the parent zone (an attacker
 // stripping RRSIGs off it), the DS NODATA proof carries an
-// exact-match NSEC3 WITHOUT the NS bit — that is not a delegation,
+// exact-match NSEC3 WITHOUT the NS bit, that is not a delegation,
 // and provenInsecureDelegation must keep failing closed.
 func Test_provenInsecureDelegation_StrippedSignaturesStayBogus(t *testing.T) {
 	parent := "parent-optout.test."

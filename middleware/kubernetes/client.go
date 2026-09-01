@@ -194,7 +194,7 @@ func (c *Client) Run(ctx context.Context) error {
 	)
 
 	// Capture the per-handler registrations so we can wait on each
-	// HasSynced — informer-level HasSynced only reports the store
+	// HasSynced, informer-level HasSynced only reports the store
 	// is populated, not that our AddFunc ran for every item.
 	serviceReg, err := serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.safeServiceAdd,
@@ -392,7 +392,7 @@ func (c *Client) onServiceDelete(obj any) {
 // bindServiceUID stamps svc.UID onto its slicesByService entry,
 // clearing any prior tombstone. Always materialises an entry so
 // the UID guard rejects late slice events from a previous
-// incarnation — without a placeholder, a delete-then-recreate
+// incarnation, without a placeholder, a delete-then-recreate
 // path would lose the guard and accept a stale slice. Slices
 // whose ownerRef disagrees with svc.UID are evicted.
 func (c *Client) bindServiceUID(svc *corev1.Service) {
@@ -555,7 +555,7 @@ func (c *Client) applyEndpointSlice(eps *discoveryv1.EndpointSlice, serviceName 
 		}
 		entry.markDirty(eps.Name)
 	}
-	// Entry deletion is deferred to rebuildService — dropping it
+	// Entry deletion is deferred to rebuildService, dropping it
 	// here would lose the dirtySlices set.
 	c.slicesMu.Unlock()
 
@@ -653,7 +653,7 @@ func (c *Client) rebuildService(namespace, serviceName string) {
 
 	// Snapshot dirty slices and forward individually. Slices missing
 	// from entry.slices were deleted (registry takes Remove). A nil
-	// dirtySlices set means no per-slice tracking yet — forward
+	// dirtySlices set means no per-slice tracking yet, forward
 	// every current slice; the registry deduplicates via its
 	// own equality guard.
 	type sliceUpdate struct {

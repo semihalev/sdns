@@ -10,7 +10,7 @@ import (
 
 // Trim gives a burst's memory back to the operating system.
 //
-// The idle caches make it collectable — trim drops their references —
+// The idle caches make it collectable, trim drops their references,
 // but collectable is not returned: measured, a full burst released into
 // the caches kept its resident set until an explicit collection, because
 // the background scavenger returns freed pages on a timescale of
@@ -21,7 +21,7 @@ import (
 // flight.
 //
 // So the trimmer only acts on a genuinely idle window: every sample in
-// it quiescent *and* the admission counters unmoved across it — an
+// it quiescent *and* the admission counters unmoved across it, an
 // instantaneous Quiesced() can be true between two queries of steady
 // light traffic, and a history cannot. It respects a cooldown, runs as
 // the only one of itself, and is never part of the shutdown path: it
@@ -47,7 +47,7 @@ type memoryTrimmer interface {
 }
 
 // trimGate decides when an idle window is real. Separated from the loop
-// so the decision — not the ticker — is what gets tested.
+// so the decision, not the ticker, is what gets tested.
 type trimGate struct {
 	idleSamples  int
 	lastAdmitted uint64
@@ -55,7 +55,7 @@ type trimGate struct {
 }
 
 // observe records one sample and reports whether a trim may fire. The
-// cooldown clock is not touched here — only a trim that actually
+// cooldown clock is not touched here, only a trim that actually
 // dropped something starts it (committed), because an empty firing
 // costs nothing and must not spend the budget: a server that idles
 // first and bursts after would otherwise find its memory untrimmable
@@ -90,8 +90,8 @@ func (s *Server) trimLoop(ctx context.Context) {
 		case <-ticker.C:
 		}
 
-		// The served counter sees every transport — the owned engines
-		// through ServeRaw, DoH/DoH3/DoQ through ServeMsg — where the
+		// The served counter sees every transport, the owned engines
+		// through ServeRaw, DoH/DoH3/DoQ through ServeMsg, where the
 		// engines' own counters see only theirs, and a trim under active
 		// DoH traffic would be a collection the client pays for.
 		if !gate.observe(time.Now(), s.Quiesced(), s.served.Load()) {

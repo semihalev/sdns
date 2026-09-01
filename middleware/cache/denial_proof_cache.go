@@ -71,7 +71,7 @@ type denialProofEntry struct {
 	// preparedNSEC mirrors data for an NSEC set, with each record's owner
 	// and next-domain names already canonical. Canonicalizing is a pure
 	// function of records that never change while cached, so it is paid for
-	// here — once per admission — instead of on every lookup that consults
+	// here, once per admission, instead of on every lookup that consults
 	// this zone. Empty for SOA and NSEC3 sets.
 	preparedNSEC []dnssec.PreparedNSEC
 	records      []dns.RR
@@ -98,7 +98,7 @@ type denialProofZoneSnapshot struct {
 	nsecSet *dnssec.AggressiveNSECSet
 	// nsecOwners maps each published NSEC record to its entry, for proof
 	// selection without building the same map per query. Valid only while
-	// every snapshot entry is live — an expired subset selects through its
+	// every snapshot entry is live, an expired subset selects through its
 	// own filtered map.
 	nsecOwners map[dns.RR]*denialProofEntry
 	nsec3      map[denialProofNSEC3Params][]*denialProofEntry
@@ -128,7 +128,7 @@ type denialProofCache struct {
 	// zoneWireIndex mirrors zoneIndex under the canonical wire-probeable
 	// hash (see denialZoneHash), so a wire-born suffix walk can find the
 	// zones that could deny a name without building a string per label.
-	// A hash collision is at worst a spurious pointer mismatch — the
+	// A hash collision is at worst a spurious pointer mismatch, the
 	// reader compares snapshot identity, so a collision can only send a
 	// query to the Msg path, never fabricate a witness match.
 	zoneWireIndex map[uint64]*denialProofZoneSnapshot
@@ -853,7 +853,7 @@ func denialProofNSEC3Identity(
 	}
 	owner := dns.CanonicalName(record.Hdr.Name)
 	// One label below the zone, checked by count rather than by splitting
-	// both names into label slices — the counts and the first label's end
+	// both names into label slices, the counts and the first label's end
 	// come out of the same forward walk the split would have done.
 	if dns.CountLabel(owner) != dns.CountLabel(zone)+1 ||
 		!dnsname.Sub(zone, owner) {
@@ -861,7 +861,7 @@ func denialProofNSEC3Identity(
 	}
 	// NextLabel's end answer is not a validity verdict here: a root-zone
 	// NSEC3 owner is the single label <hash>., for which end is true and
-	// next still lands past the root dot — owner[:next-1] is the hash label
+	// next still lands past the root dot, owner[:next-1] is the hash label
 	// either way. The count and containment checks above already proved the
 	// shape; refusing on end rejected every root-zone proof.
 	next, _ := dns.NextLabel(owner, 0)
@@ -943,7 +943,7 @@ func (c *denialProofCache) zoneEntriesLocked(
 
 // publishZoneLocked rebuilds the read-only view readers see. Readers keep a
 // pointer to it without holding the lock, so it is replaced rather than
-// edited — but only the derived views need copying, not the writer's index
+// edited, but only the derived views need copying, not the writer's index
 // of the zone.
 func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 	entries := c.zoneEntries[key]
@@ -951,13 +951,13 @@ func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 		// The wire slot is removed only when it still points at this
 		// zone's snapshot: under a hash collision the slot may belong to
 		// the other zone, and deleting it would make a cached zone
-		// invisible to the wire walk — the one direction the witness
+		// invisible to the wire walk, the one direction the witness
 		// design cannot tolerate. The same direction opens when this
 		// zone owned a contested slot: after the delete, any surviving
 		// zone that hashes to it must be restored, or it stays invisible
 		// until its own next republish. The rescan is O(zones) on the
 		// rare zone-emptying path, and which claimant wins is
-		// irrelevant — readers verify name and pointer, so a wrong
+		// irrelevant, readers verify name and pointer, so a wrong
 		// claimant only sends a query to the Msg path.
 		if hash := denialZoneHash(key.zone, key.qclass); c.zoneWireIndex[hash] == c.zoneIndex[key] {
 			delete(c.zoneWireIndex, hash)

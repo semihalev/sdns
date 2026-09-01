@@ -51,7 +51,7 @@ func makeZoneKey(t *testing.T, zone string) (*dns.DNSKEY, crypto.PrivateKey) {
 // (variant 2, www.edpb.europa.eu): an authoritative server that hosts
 // both the signer zone and ancestors of the CNAME target answers with
 // a validly signed CNAME in ANSWER plus a referral for the target in
-// AUTHORITY — NS records for the target's zone cut and an NSEC proving
+// AUTHORITY, NS records for the target's zone cut and an NSEC proving
 // its insecure delegation, both owned by names OUTSIDE the signer zone
 // (on the wire the NSEC is signed by the parent zone, and that RRSIG's
 // owner is equally out-of-zone).
@@ -81,7 +81,7 @@ func Test_VerifyRRSIG_ForeignReferralInAuthority(t *testing.T) {
 	}
 	cnameSig := signRRSet(t, key, priv, []dns.RR{cname})
 
-	// Referral remnant for the CNAME target's zone cut — owner names
+	// Referral remnant for the CNAME target's zone cut, owner names
 	// live under ec.example., outside the signer zone.
 	foreignNS := &dns.NS{
 		Hdr: dns.RR_Header{Name: "dhs.tech.ec.example.", Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 7200},

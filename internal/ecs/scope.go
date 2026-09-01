@@ -17,7 +17,7 @@ import (
 //     entire address space", i.e. cache shared-key, not scoped).
 //
 // The returned prefix is built from the option's Address truncated
-// to SourceScope bits — that's the slice of IP space the authority
+// to SourceScope bits, that's the slice of IP space the authority
 // is asserting the answer covers. The caller (cache insert path)
 // can hand that prefix to Policy.ClampScope before keying.
 //
@@ -37,7 +37,7 @@ func ReadResponseScope(resp *dns.Msg) (netip.Prefix, bool) {
 			continue
 		}
 		if sub.SourceScope == 0 {
-			// "Global" answer per §6 — no scoping wanted.
+			// "Global" answer per §6, no scoping wanted.
 			return netip.Prefix{}, false
 		}
 		addr, ok := ipToAddr(sub.Address)

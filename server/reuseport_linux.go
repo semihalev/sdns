@@ -21,7 +21,7 @@ func reusePortControl(_, _ string, c syscall.RawConn) error {
 		// File descriptors are small non-negative ints on Linux, so
 		// the uintptr -> int conversion is always safe. gosec G115
 		// can't prove that on its own.
-		sockfd := int(fd) //nolint:gosec // G115 — kernel FDs always fit in int
+		sockfd := int(fd) //nolint:gosec // G115, kernel FDs always fit in int
 		if err := unix.SetsockoptInt(sockfd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1); err != nil {
 			opErr = err
 			return

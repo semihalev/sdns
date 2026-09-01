@@ -101,7 +101,7 @@ func (r *Reflex) Name() string {
 func (r *Reflex) ClientOnly() bool { return true }
 
 // ServeDNS processes queries for amplification attack detection. The
-// scoring facts — qtype and request wire length — come from the parsed
+// scoring facts, qtype and request wire length, come from the parsed
 // request, so a wire-born query is scored without decoding; only the
 // suspicious path materializes (for its logs and the BADCOOKIE-style
 // refusal).
@@ -117,7 +117,7 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// The replay pass finishes a query the inline pass already scored;
 	// recording it again would double its contribution and could tip a
 	// legitimate client over the threshold. What this pass owns is the
-	// response — the inline pass handed off unwritten — so only the
+	// response, the inline pass handed off unwritten, so only the
 	// response-size wrapper installs, and the tracker still learns the
 	// amplification the resolution actually achieved.
 	if ch.Replay() {
@@ -128,7 +128,7 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Only analyze UDP — other transports have an established
+	// Only analyze UDP, other transports have an established
 	// peer and aren't spoofing vectors. DoH/DoQ came in as
 	// "doh"/"doq" and were still scored as if they were
 	// spoofed UDP, so high-amplification DoH/DoQ clients
@@ -172,7 +172,7 @@ func (r *Reflex) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 // wrapAmpTracking installs the response-size wrapper and returns the
 // restore. Chains come from a sync.Pool, so the wrapper must be removed
-// before returning — otherwise a later request starts with a stale reflex
+// before returning, otherwise a later request starts with a stale reflex
 // wrapper that tracks responses against an unrelated source IP.
 func (r *Reflex) wrapAmpTracking(ch *middleware.Chain, ip string, reqLen int) func() {
 	orig := ch.Writer
@@ -185,12 +185,12 @@ func (r *Reflex) wrapAmpTracking(ch *middleware.Chain, ip string, reqLen int) fu
 	return func() { ch.Writer = orig }
 }
 
-// requestFacts returns the question type and the request's wire length —
+// requestFacts returns the question type and the request's wire length,
 // exact for a wire-born request, the library's estimate otherwise.
 func requestFacts(req *middleware.Request) (qtype uint16, size int, ok bool) {
 	// The wire branch first, and by Undecoded rather than by calling
 	// Msg: Msg decodes on demand, so probing with it materialized every
-	// request this middleware analyzed — reflex sits before the cache,
+	// request this middleware analyzed, reflex sits before the cache,
 	// which put the whole byte path behind a decode whenever it was
 	// enabled.
 	if req.Undecoded() {
@@ -301,7 +301,7 @@ func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 }
 
 // WireReady passes the byte path through: this layer only observes sizes, so
-// its presence must not push a cache hit back onto the Msg path — which is
+// its presence must not push a cache hit back onto the Msg path, which is
 // what wrapping without these two methods did.
 // BeginWire/CommitWire/AbortWire pass the body lease through; the commit
 // flows through WriteWire so amplification tracking still records sizes.
@@ -331,7 +331,7 @@ func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 }
 
 // WriteWire records the amplification observation and forwards the bytes.
-// len(body) is the response's true wire length at this layer — WriteMsg has
+// len(body) is the response's true wire length at this layer, WriteMsg has
 // to settle for res.Len(), an estimate that builds a compression dictionary
 // to answer.
 //
@@ -339,7 +339,7 @@ func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 // chain did not decline: on ErrWireFallback the cache retakes the Msg path
 // and WriteMsg records that serve, so counting here too would credit the
 // source with the same response twice and inflate its amplification score.
-// A terminal transport error still records — bytes left the process.
+// A terminal transport error still records, bytes left the process.
 func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
 	next, ok := rw.ResponseWriter.(middleware.WireWriter)
 	if !ok {

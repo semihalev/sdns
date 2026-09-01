@@ -47,7 +47,7 @@ func denialProofNSECZone(tb testing.TB, count int) (*denialProofCache, *dns.Msg)
 	request := denialProofTestRequest(qname, dns.TypeAAAA, true)
 
 	// Assert the verdict, not just that something came back: a mispaired
-	// canonical name would still answer, only with the wrong denial — a
+	// canonical name would still answer, only with the wrong denial, a
 	// synthesized NXDOMAIN where the seeded proof says NODATA.
 	response, ok := cache.Lookup(request, nil)
 	if !ok {

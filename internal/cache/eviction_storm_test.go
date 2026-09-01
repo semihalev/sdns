@@ -14,18 +14,18 @@ import (
 // proved we need (1.43M goroutines, 93% blocked behind cache segment locks
 // while eviction storms dumped glue entries mid-outage):
 //
-//  1. Proportionality — evicting is allowed to remove roughly as much as the
+//  1. Proportionality, evicting is allowed to remove roughly as much as the
 //     overshoot, not a double-digit percentage of the whole cache. During an
 //     upstream outage every dumped glue entry converts directly into a fresh
 //     recursive resolution, so bulk eviction feeds the very load that caused
 //     it.
-//  2. Bounded latency — one Add must never stall behind bulk work done on
+//  2. Bounded latency, one Add must never stall behind bulk work done on
 //     behalf of other keys. The cache is the heart of SDNS; capacity
 //     pressure is its normal operating state on a busy node, not an edge
 //     case.
 
 // TestEvictionProportionalityAtCapacity holds the cache at capacity and
-// feeds it one insert at a time — the steady state of a busy resolver.
+// feeds it one insert at a time, the steady state of a busy resolver.
 // Each insert may evict on the order of its own overshoot (plus a small
 // batch buffer), and the population must never crater.
 func TestEvictionProportionalityAtCapacity(t *testing.T) {
@@ -76,7 +76,7 @@ func TestEvictionProportionalityAtCapacity(t *testing.T) {
 }
 
 // TestAddLatencyUnderEvictionStorm keeps the cache at capacity while
-// concurrent writers insert fresh keys and readers keep probing — the
+// concurrent writers insert fresh keys and readers keep probing, the
 // incident-night workload. It asserts a hard per-operation latency bound:
 // whatever bookkeeping eviction does, no single Add or Get may stall behind
 // bulk work.
@@ -86,7 +86,7 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 	}
 
 	const (
-		maxSize  = 1 << 20 // 1M — production glue/message cache scale
+		maxSize  = 1 << 20 // 1M, production glue/message cache scale
 		writers  = 16
 		readers  = 8
 		duration = 2 * time.Second
@@ -163,7 +163,7 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 	getP99, getMax := stats("get", getLat)
 
 	// p99 is the portable regression signal: bulk-eviction stalls (the
-	// 2026-07-28 mode — writers queued behind segment clearing) drag the
+	// 2026-07-28 mode, writers queued behind segment clearing) drag the
 	// p99 across a fraction of hundreds of thousands of samples, while a
 	// shared CI runner descheduling one goroutine for half a second moves
 	// only the tail maximum. Assert the absolute-stall bound too, but only
@@ -216,7 +216,7 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 }
 
 // BenchmarkAddAtCapacity documents the steady-state insert cost against a
-// full cache — the number that regresses if eviction grows work per Add.
+// full cache, the number that regresses if eviction grows work per Add.
 // Compare with BenchmarkAddUnderCapacity for the eviction overhead itself.
 func BenchmarkAddAtCapacity(b *testing.B) {
 	const maxSize = 1 << 18
@@ -260,7 +260,7 @@ func BenchmarkAddUnderCapacity(b *testing.B) {
 // the delay the host imposes on a loop that touches nothing.
 //
 // The maximum is what this compares against, because the bound it guards is
-// itself a maximum — one sample against one sample.
+// itself a maximum, one sample against one sample.
 func schedulerStallMax(goroutines int, d time.Duration) time.Duration {
 	var (
 		mu   sync.Mutex

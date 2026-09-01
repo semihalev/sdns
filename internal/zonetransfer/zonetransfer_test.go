@@ -58,7 +58,7 @@ func serveZone(t *testing.T, zone string, body []dns.RR) string {
 
 // TestAXFRCarriesTheZoneParameter is the point of the extraction: the
 // primitives serve any apex, not the root the first consumer was welded
-// to. The whole shape discipline — opener, terminator, dropped closer —
+// to. The whole shape discipline, opener, terminator, dropped closer,
 // holds for a policy-feed-shaped zone.
 func TestAXFRCarriesTheZoneParameter(t *testing.T) {
 	const zone = "feed.example."

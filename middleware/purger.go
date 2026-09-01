@@ -4,7 +4,7 @@ import "github.com/miekg/dns"
 
 // Purger is implemented by handlers that maintain cacheable state
 // which can be invalidated by question. The cache middleware and the
-// resolver handler both implement it — Cache purges its positive /
+// resolver handler both implement it, Cache purges its positive /
 // negative entries, the resolver purges its nameserver cache.
 //
 // The api purge endpoint iterates every Purger in the pipeline

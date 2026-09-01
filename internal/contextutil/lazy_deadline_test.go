@@ -437,7 +437,7 @@ func BenchmarkStandardDeadlineFastPath(b *testing.B) {
 	}
 }
 
-// pinBumpOp is a PinTransition on state the caller already owns — the
+// pinBumpOp is a PinTransition on state the caller already owns, the
 // shape the primitive exists for. Its values are pre-boxed: what the
 // hot callers pass through here are pointers, which box for free, and
 // the test must not charge the primitive for its own fixture's string
@@ -452,8 +452,8 @@ func (o *pinBumpOp) NextLocked(current any) (any, bool) {
 }
 
 // TestPinTransitionAllocatesNothing pins why the primitive exists: the
-// closure-based update allocates its adapter and captures on every call
-// — a live profile priced it at two objects per materialized request —
+// closure-based update allocates its adapter and captures on every call,
+// a live profile priced it at two objects per materialized request,
 // while a transition riding a pointer the caller already holds costs
 // nothing.
 func TestPinTransitionAllocatesNothing(t *testing.T) {

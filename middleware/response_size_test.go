@@ -10,7 +10,7 @@ import (
 
 // compressibleReply is a response whose repeated owner names make its
 // compressed form materially shorter than the length a decoded message
-// reports — the gap that made access logs overstate response sizes.
+// reports, the gap that made access logs overstate response sizes.
 func compressibleReply(t *testing.T) *dns.Msg {
 	t.Helper()
 	req := new(dns.Msg)

@@ -20,7 +20,7 @@ func packName(tb testing.TB, name string) []byte {
 	return buf[:off]
 }
 
-// wireLabel builds one raw wire name from literal label byte strings —
+// wireLabel builds one raw wire name from literal label byte strings,
 // bytes the presentation form could only spell through escapes.
 func wireLabels(labels ...[]byte) []byte {
 	var out []byte

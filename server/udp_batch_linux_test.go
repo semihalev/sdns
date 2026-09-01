@@ -147,7 +147,7 @@ var errBadReply = &net.AddrError{Err: "bad reply", Addr: "batch"}
 //
 // With the lease cap reached the reader gets no slab, so it sheds: it
 // keeps consuming the socket into scratch memory, counting the loss.
-// The only thing that ends a shedding reader is its socket — which is
+// The only thing that ends a shedding reader is its socket, which is
 // exactly what shutdown provides through the expired read deadline. A
 // reader that waited for a slab instead would be waiting on workers
 // releasing what they hold, and a worker stuck past the drain deadline
@@ -163,7 +163,7 @@ func TestUDPBatchReaderWakesOnShutdown(t *testing.T) {
 	}
 	e := newUDPEngine(handler, []*net.UDPConn{pc}, false, 1, 1, defaultResourcePlan(1))
 
-	// The cap is exhausted before the reader exists — the state a burst
+	// The cap is exhausted before the reader exists, the state a burst
 	// of slow queries leaves behind, with every slab held by a request
 	// that is not coming back before the deadline.
 	e.leased.Store(e.slabCap)

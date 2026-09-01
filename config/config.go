@@ -101,7 +101,7 @@ type Config struct {
 	// transferred over AXFR from the root servers that publish it,
 	// verified against the ZONEMD digest (RFC 8976) chained to the root
 	// trust anchors, refreshed on the zone's own SOA schedule, and
-	// withdrawn past its SOA expire — the resolver then walks to the real
+	// withdrawn past its SOA expire, the resolver then walks to the real
 	// root servers as if the copy never existed.
 	HyperlocalRoot bool `toml:"hyperlocal_root"`
 	// HyperlocalRootSources overrides the built-in transfer sources
@@ -110,7 +110,7 @@ type Config struct {
 
 	EmptyZones []string
 
-	// RPZ subscribes the resolver to Response Policy Zones — operator- or
+	// RPZ subscribes the resolver to Response Policy Zones, operator- or
 	// vendor-fed zones that rewrite, deny, or drop answers for the names
 	// they list, in the standard RPZ encoding so existing feeds work
 	// unmodified. Off by default; semantics in the README's Response
@@ -175,7 +175,7 @@ type Config struct {
 	// Server ingress bounds. These are deliberately separate from
 	// MaxConcurrentQueries, which is the resolver's upstream fan-out
 	// semaphore. Left at zero, each derives from the machine's resource
-	// plan (memory, CPUs, descriptor limit); nothing is preallocated —
+	// plan (memory, CPUs, descriptor limit); nothing is preallocated,
 	// admission is capped, slabs are created on demand and parked in an
 	// idle cache between requests.
 	IngressWorkers  int // Fixed handler workers per listener (default: derived from CPUs and memory)
@@ -204,7 +204,7 @@ type Config struct {
 }
 
 // UndecodedKeys returns the config keys that were present in the file and
-// matched no setting — typos, or settings a previous version understood.
+// matched no setting, typos, or settings a previous version understood.
 // They have no effect on this server.
 func (c *Config) UndecodedKeys() []string { return c.undecodedKeys }
 
@@ -237,7 +237,7 @@ type ViewConfig struct {
 }
 
 // RPZ is the [rpz] block: the global switch and mode, and the ordered
-// policy zone list. Order is evaluation order — the first zone with a
+// policy zone list. Order is evaluation order, the first zone with a
 // match wins, which is the draft's precedence rule 1.
 type RPZ struct {
 	Enabled bool `toml:"enabled"`
@@ -256,8 +256,8 @@ type RPZZone struct {
 	// File is the policy zone in standard zone-file format.
 	File string `toml:"file"`
 	// Source is the AXFR primary (host:port). The zone then follows its
-	// own SOA schedule — probe on refresh, transfer on serial change,
-	// withdraw past expire — and File must be empty.
+	// own SOA schedule, probe on refresh, transfer on serial change,
+	// withdraw past expire, and File must be empty.
 	Source string `toml:"source"`
 	// Origin is the policy zone's apex, the name the AXFR asks for.
 	// Required with Source.
@@ -279,8 +279,8 @@ type RPZZone struct {
 // ForwardZoneConfig sends one zone's queries to named recursive upstreams
 // instead of resolving them from the root.
 //
-// This is forwarding in the RFC 8499 §6 sense — the query goes out with RD=1
-// to a server that resolves on our behalf — not a stub zone, which points at
+// This is forwarding in the RFC 8499 §6 sense, the query goes out with RD=1
+// to a server that resolves on our behalf, not a stub zone, which points at
 // a zone's own authoritative servers with RD=0.
 //
 // A forwarded zone is not validated here. Answers carry whatever the upstream
@@ -299,7 +299,7 @@ type ForwardZoneConfig struct {
 // validateForwardZones refuses a forward zone the operator cannot have meant.
 //
 // An omitted name is the dangerous one: it canonicalizes to the root, and a
-// root forward zone matches every question — so a block that named only its
+// root forward zone matches every question, so a block that named only its
 // servers would silently turn the whole resolver into a forwarder and give up
 // local recursion and DNSSEC for everything. Forwarding the root is a real
 // choice, but it has to be written as one.
@@ -312,7 +312,7 @@ func (c *Config) validateForwardZones(add func(string, ...any)) {
 	for i := range c.ForwardZones {
 		zone := &c.ForwardZones[i]
 		// The two name problems are alternatives, but a missing server list is
-		// independent of both — reporting only the first would send the
+		// independent of both, reporting only the first would send the
 		// operator back for a second run over the same entry.
 		switch {
 		case strings.TrimSpace(zone.Name) == "":
@@ -426,7 +426,7 @@ type KubernetesTTLConfig struct {
 // "do not translate" set. IPv4 addresses inside any listed CIDR
 // are dropped from synthesis when the well-known prefix
 // 64:ff9b::/96 is in use. Operator-chosen network-specific
-// prefixes ignore this list — they picked the prefix knowing the
+// prefixes ignore this list, they picked the prefix knowing the
 // network's reachability. When the field is omitted entirely
 // (nil) and the well-known prefix is active, a runtime default
 // list mirroring the IANA Special-Purpose Address Registry is
@@ -455,7 +455,7 @@ type DNS64Config struct {
 // matching the §11 privacy stance and SDNS's historical behaviour.
 //
 // When Enabled is true, ForwardV4Max and ForwardV6Max cap the
-// source-prefix length we'll forward — narrower (more specific)
+// source-prefix length we'll forward, narrower (more specific)
 // client prefixes get clamped down. Defaults are /24 and /56,
 // matching common operator practice.
 //
@@ -467,7 +467,7 @@ type DNS64Config struct {
 // cache: an answer the authority marks with a nonzero SCOPE is
 // stored under a scope-specific key, capped at CacheLimitTTL, and
 // its scope is widened to the MinScope floor before it becomes part
-// of that key. All three are consumed — see middleware/cache and
+// of that key. All three are consumed, see middleware/cache and
 // internal/ecs.Policy.ClampScope.
 type ECSConfig struct {
 	Enabled        bool     `toml:"enabled"`
@@ -807,7 +807,7 @@ fallbackservers = [
 # When configured, SDNS acts as a forwarding resolver instead of recursive
 # Supports plain DNS (port 53), DNS-over-TLS (tls:// prefix), and
 # DNS-over-HTTPS (https:// prefix, RFC 8484). DoH URLs accept either an
-# IP literal or a hostname — hostnames are resolved once at startup
+# IP literal or a hostname, hostnames are resolved once at startup
 # through the system resolver and the resulting IPs are pinned for the
 # process lifetime (no per-query DNS dependency).
 forwarderservers = [
@@ -821,11 +821,11 @@ forwarderservers = [
 
 # Per-zone forwarding
 # Sends one zone's queries to its own upstreams while everything else still
-# resolves recursively. This is forwarding in the RFC 8499 sense — the query
-# goes out with RD=1 to a resolver that answers on our behalf — so the
+# resolves recursively. This is forwarding in the RFC 8499 sense, the query
+# goes out with RD=1 to a resolver that answers on our behalf, so the
 # upstreams must be recursive resolvers, not the zone's authoritative servers.
 # The most specific matching zone wins. A zone must name itself and at least
-# one server or startup fails — an omitted name would forward every query —
+# one server or startup fails, an omitted name would forward every query,
 # and a zone whose upstreams all turn out unusable fails its queries rather
 # than borrowing forwarderservers, which would send an internal zone's
 # questions to public resolvers. Servers take the same forms as
@@ -834,7 +834,7 @@ forwarderservers = [
 # A forwarded zone is NOT validated here: answers carry whatever the upstream
 # asserted, exactly as in whole-server forwarder mode. Pointing a signed
 # public zone at an upstream therefore gives up local DNSSEC validation for
-# it. The intended use is the opposite case — an internal zone the public
+# it. The intended use is the opposite case, an internal zone the public
 # namespace cannot resolve at all.
 #
 # [[forward_zone]]
@@ -934,8 +934,8 @@ maxdepth = 30
 # Server Resources
 # ============================
 
-# The serving bounds — worker pool, in-flight query cap, TCP/DoT
-# connection cap — are derived at startup from this machine's memory,
+# The serving bounds (worker pool, in-flight query cap, TCP/DoT
+# connection cap) are derived at startup from this machine's memory,
 # CPUs and file-descriptor limit, and logged as each listener starts.
 # The keys below override the derived defaults; leave them unset unless
 # a measurement says otherwise.
@@ -951,8 +951,8 @@ maxdepth = 30
 
 # Return a traffic burst's memory to the operating system after a long
 # idle (several minutes quiescent). The trim is one synchronous GC over
-# the whole process, so it is meant for memory-constrained devices —
-# containers on routers, small VPSes — not for busy servers.
+# the whole process, so it is meant for memory-constrained devices,
+# containers on routers, small VPSes, not for busy servers.
 # memorytrim = true
 
 # ============================
@@ -1064,7 +1064,7 @@ emptyzones = [
 # file = "/var/lib/sdns/badfeed.zone"
 # policy = "given"
 # Add origin when the file writes its SOA as "@" with rules relative to
-# it — the common shape for downloaded feeds, which leave the apex to the
+# it, the common shape for downloaded feeds, which leave the apex to the
 # consuming server. A file whose SOA carries an absolute owner needs none.
 # origin = "rpz.vendor.example."
 # An AXFR-fed zone instead names its primary and apex (and never a file);
@@ -1389,14 +1389,14 @@ failure_cache_max_ttl = "5m"
 
 // defaultQnameMinimizeOneLabel is RFC 9156 section 2.3's suggested
 // MINIMISE_ONE_LAB. It stands in for an unset qname_minimize_one_label
-// because the alternative reading of zero — group from the very first
-// query — hands a deep name to the first server almost whole.
+// because the alternative reading of zero, group from the very first
+// query, hands a deep name to the first server almost whole.
 const defaultQnameMinimizeOneLabel = 4
 
 // QnameMinimizeParams resolves the RFC 9156 minimization parameters: the
 // deprecated qname_min_level is folded in when the current key is unset, and
 // the pair is clamped into a shape the resolver can use. It is pure and
-// idempotent, so a Config built in code — tests, embedders — reaches the same
+// idempotent, so a Config built in code, tests, embedders, reaches the same
 // values Load produces.
 func (c *Config) QnameMinimizeParams() (maxCount, oneLabel int) {
 	if c.QnameMaxMinimizeCount != nil {
@@ -1447,7 +1447,7 @@ func Load(cfgfile, version string) (*Config, error) {
 		// otherwise get a silent fresh default while their old file sits
 		// ignored. The location the removed fallback actually loaded was
 		// the literal "sdns.toml" in the process working directory,
-		// whenever the requested basename was sdns.conf — so that is the
+		// whenever the requested basename was sdns.conf, so that is the
 		// path that must be probed; the sibling of an explicit -c path is
 		// checked as a courtesy on top.
 		legacies := []string{filepath.Join(filepath.Dir(cfgfile), "sdns.toml")}
@@ -1508,8 +1508,8 @@ func Load(cfgfile, version string) (*Config, error) {
 	// Keys the file carries that no field claims: a typo, or a setting an
 	// older SDNS understood and this one no longer does. Either way the
 	// operator wrote something that will not take effect, so it is recorded
-	// and logged. Startup only warns — refusing to run over a stale key
-	// would turn an upgrade into an outage — while `sdns -t`, whose whole
+	// and logged. Startup only warns, refusing to run over a stale key
+	// would turn an upgrade into an outage, while `sdns -t`, whose whole
 	// job is to answer "is this file right", treats it as a failure.
 	for _, key := range metadata.Undecoded() {
 		config.undecodedKeys = append(config.undecodedKeys, key.String())
@@ -1518,7 +1518,7 @@ func Load(cfgfile, version string) (*Config, error) {
 
 	// One gate, so a file with several mistakes is fixed in one pass rather
 	// than one error per run. When the file is failing anyway, the unknown
-	// keys join the report — they still never cause a failure on their own,
+	// keys join the report, they still never cause a failure on their own,
 	// but omitting them here would send the operator back for a second run.
 	if err := config.validateLoaded(); err != nil {
 		if len(config.undecodedKeys) > 0 {
@@ -1548,7 +1548,7 @@ func Load(cfgfile, version string) (*Config, error) {
 		// 16 random bytes (128-bit) hex-encoded to a 32-char secret.
 		// The previous fmt.Sprintf("%16x", uint64) was *space*-padded,
 		// not zero-padded, so small random values produced low-entropy
-		// secrets like "              2a" — weakening DNS Cookie
+		// secrets like "              2a", weakening DNS Cookie
 		// (RFC 7873) anti-spoofing.
 		secret := make([]byte, 16)
 		if _, err := rand.Read(secret); err != nil {
@@ -1615,7 +1615,7 @@ func generateConfig(path string) error {
 
 // ipv6Probe answers whether this host can reach the IPv6 internet. Loading a
 // configuration that does not already declare IPv6 access asks it, and the
-// answer costs a round trip to a root server — so it is a variable, letting
+// answer costs a round trip to a root server, so it is a variable, letting
 // tests settle the question without going near the network.
 var ipv6Probe = testIPv6Network
 

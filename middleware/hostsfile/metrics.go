@@ -7,7 +7,7 @@ import (
 
 // Mirror of the in-memory db.stats counters so operators can read
 // hostsfile hit/lookup rates from Prometheus without polling the
-// admin Stats() endpoint. Both increments happen — the internal
+// admin Stats() endpoint. Both increments happen, the internal
 // counter is still used by Stats() callers; the metric counter is
 // for scrape.
 var (

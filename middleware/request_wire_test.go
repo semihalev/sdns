@@ -247,8 +247,8 @@ func (p *downstreamProbe) ServeDNS(ctx context.Context, ch *Chain) {
 
 // TestLazyMsgMigrationIsSafe pins the migration contract for middleware
 // written against the old API: reading ch.Request.Msg() on a wire-born
-// request decodes instead of returning nil, and the chain — not the
-// handler — detaches before anything downstream runs on the job carrier.
+// request decodes instead of returning nil, and the chain, not the
+// handler, detaches before anything downstream runs on the job carrier.
 func TestLazyMsgMigrationIsSafe(t *testing.T) {
 	lazy := &lazyMsgHandler{name: "lazy-msg"}
 	down := &downstreamProbe{}
@@ -282,8 +282,8 @@ func TestLazyMsgMigrationIsSafe(t *testing.T) {
 }
 
 // TestAccessorsSurviveMaterialization pins whose facts the accessors
-// report. Materializing a wire-born request normalizes it — SetEdns0
-// attaches an OPT and forces DO — and a handler asking what the client
+// report. Materializing a wire-born request normalizes it, SetEdns0
+// attaches an OPT and forces DO, and a handler asking what the client
 // sent must still be told the truth afterwards.
 func TestAccessorsSurviveMaterialization(t *testing.T) {
 	// A plain query: no OPT, so no DO, no advertised size, no options.

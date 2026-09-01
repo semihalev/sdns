@@ -14,7 +14,7 @@ import (
 
 // dualStackFreeAddr picks a loopback address that both transports will
 // take. The server binds UDP and TCP on one address, but only one of
-// them assigns the ephemeral port — and on Windows a port handed out for
+// them assigns the ephemeral port, and on Windows a port handed out for
 // UDP can fall inside a range excluded for TCP, so the bind fails on the
 // fixture instead of on the property under test.
 // dualStackFreeAddr finds a loopback port both transports will accept.
@@ -23,7 +23,7 @@ import (
 // keeps excluded ephemeral ranges that TCP must avoid and UDP need not, so a
 // port chosen for UDP can be one TCP is never allowed to bind, and every
 // attempt draws from the same forbidden pool. Asking the constrained
-// transport first means the retries are spent only on the genuine race — the
+// transport first means the retries are spent only on the genuine race, the
 // port going to another process between the two binds.
 func dualStackFreeAddr(t *testing.T) string {
 	t.Helper()
@@ -49,7 +49,7 @@ func dualStackFreeAddr(t *testing.T) string {
 //
 // sdns.go polls it to decide that a shutdown is complete. The only thing
 // that decision is ever used for is doing something else with the
-// resources the server held — above all, binding the same address again.
+// resources the server held, above all, binding the same address again.
 // If Stopped() can be true while a socket is still open, an in-process
 // restart fails on "address already in use", and it fails intermittently,
 // which is the worst way for it to fail.
@@ -141,7 +141,7 @@ func TestStoppedIsNotAheadOfTheSockets(t *testing.T) {
 		}
 		if len(held) > 0 {
 			t.Fatalf("round %d: the server reported stopped while it still held "+
-				"%s — an in-process restart binds these next", i, strings.Join(held, ", "))
+				"%s, an in-process restart binds these next", i, strings.Join(held, ", "))
 		}
 	}
 }
@@ -154,7 +154,7 @@ func TestStoppedIsNotAheadOfTheSockets(t *testing.T) {
 // stays open until the supervisor closes it a few statements later. A
 // Stopped() built on the Serve goroutine count alone therefore answered
 // "done" with the UDP port still bound, and the next bind failed with
-// "address already in use" — rarely, which is the worst frequency for
+// "address already in use", rarely, which is the worst frequency for
 // this kind of thing.
 //
 // The poll below is tight on purpose. Production polls every 100ms and

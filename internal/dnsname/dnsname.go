@@ -2,7 +2,7 @@
 //
 // The library answers every label question by materializing it: Split builds
 // an index slice, SplitDomainName a string slice, and CompareDomainName two
-// index slices — per call, for answers that are a handful of comparisons. In
+// index slices, per call, for answers that are a handful of comparisons. In
 // the field the two of them were 4.3% of every object the resolver
 // allocated. The functions here give the same answers out of a single
 // forward walk, using the library's own NextLabel for boundary and escape
@@ -16,7 +16,7 @@ import (
 )
 
 // CompareSuffix returns how many labels a and b share, counted from the
-// right and stopping at the first inequality — dns.CompareDomainName's
+// right and stopping at the first inequality, dns.CompareDomainName's
 // answer without its two index slices.
 //
 // The library's exact comparison is preserved: ASCII case folding only, the
@@ -56,13 +56,13 @@ func CompareSuffix(a, b string) int {
 	return 0
 }
 
-// Sub reports whether name sits at or below zone — dns.IsSubDomain's answer,
+// Sub reports whether name sits at or below zone, dns.IsSubDomain's answer,
 // which is CompareSuffix covering every label of the zone.
 func Sub(zone, name string) bool {
 	return CompareSuffix(zone, name) == dns.CountLabel(zone)
 }
 
-// Suffixes yields the start offset of every label in name, in order —
+// Suffixes yields the start offset of every label in name, in order,
 // dns.Split's answer as an iteration instead of a slice. The root name
 // yields nothing, exactly as Split returns nil for it.
 func Suffixes(name string) iter.Seq[int] {
@@ -85,17 +85,17 @@ func Suffixes(name string) iter.Seq[int] {
 }
 
 // CanonicalCompare orders a and b per RFC 4034 §6.3: the canonical DNS name
-// order — labels compared right to left as the octets they decode to,
+// order, labels compared right to left as the octets they decode to,
 // ASCII-folded, with the name that runs out of labels first sorting first.
 // It is the ordering every NSEC coverage proof stands on.
 //
-// The octets, not the spelling. A presentation label is an encoding — `\065`
+// The octets, not the spelling. A presentation label is an encoding, `\065`
 // is the octet 0x41, the same label as `a`; `\.` inside a label is the octet
-// 0x2E, which sorts before `0` — and the comparison this replaces ordered
+// 0x2E, which sorts before `0`, and the comparison this replaces ordered
 // the escape text instead, so wire-equal names compared unequal and names
-// around the escapes could invert. Every escape is decoded as it is read —
+// around the escapes could invert. Every escape is decoded as it is read,
 // exactly as the library's packer decodes it, wrap quirk included (see
-// decodeOctet) — and nothing is materialized. A dangling backslash, which
+// decodeOctet), and nothing is materialized. A dangling backslash, which
 // no valid name contains, decodes as a literal one, keeping the order total
 // for inputs only a hand can construct.
 //
@@ -107,7 +107,7 @@ func Suffixes(name string) iter.Seq[int] {
 // their separators, so the trailing root dot contributes nothing.
 //
 // The walk is forward, in label lockstep after aligning the starts, and the
-// verdict is the rightmost pair that differed — right-to-left order without
+// verdict is the rightmost pair that differed, right-to-left order without
 // offset arrays, so the frame stays flat instead of carrying two of them.
 func CanonicalCompare(a, b string) int {
 	// Identical spellings are equal names, and they are what a response
@@ -152,7 +152,7 @@ func CanonicalCompare(a, b string) int {
 
 // canonicalLabelCount is the label count CanonicalCompare walks: the
 // library's, except that the empty string counts as the root, which is what
-// rooting it first — as the old implementation did — made of it.
+// rooting it first, as the old implementation did, made of it.
 func canonicalLabelCount(name string) int {
 	if name == "" || name == "." {
 		return 0
@@ -219,7 +219,7 @@ func compareDecodedFold(a, b string) int {
 // decodeOctet reads one octet of a presentation label: a plain byte, an
 // escaped one (`\.`), or a decimal escape (`\046`). The decoding is the
 // library's, quirk included: its dddToByte computes `\DDD` in byte
-// arithmetic, so a value past 255 wraps modulo 256 rather than erroring —
+// arithmetic, so a value past 255 wraps modulo 256 rather than erroring,
 // no valid name carries one, and matching the authoritative decoder is what
 // keeps the order aligned with the wire for the names that do.
 func decodeOctet(s string, i int) (byte, int) {

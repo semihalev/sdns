@@ -18,7 +18,7 @@ import (
 // because every slab is busy, the machine is at its limit, and this is
 // the path that decides whether the queries still queued get served or
 // dropped. A timer allocated per wait puts the allocator on the hot path
-// precisely under the load the whole design exists to survive — and the
+// precisely under the load the whole design exists to survive, and the
 // request that waits and then succeeds is a served hit like any other,
 // so it has to cost nothing too.
 //
@@ -56,7 +56,7 @@ func TestTCPAcquireUnderContentionAllocatesNothing(t *testing.T) {
 	// exist the moment reset returns, before the first contended wait ever
 	// runs. AllocsPerRun runs the body once before it starts counting, so
 	// a timer built lazily on the first wait would be created inside that
-	// unmeasured call and never appear — which is exactly how one stayed
+	// unmeasured call and never appear, which is exactly how one stayed
 	// hidden. A process-wide MemStats delta catches it but also counts
 	// every background goroutine's allocations, and flaked for exactly
 	// that reason; the invariant is about where the timer lives, so assert

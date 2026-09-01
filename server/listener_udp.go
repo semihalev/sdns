@@ -65,7 +65,7 @@ func (l *udpListener) Quiesced() bool {
 	return l.engine == nil || l.engine.quiesced()
 }
 
-// bindWildcard reports whether addr's host is absent or unspecified —
+// bindWildcard reports whether addr's host is absent or unspecified,
 // the binds that need destination-address recovery on replies.
 //
 // The family is deliberately not inferred here. A bind with no host is
@@ -136,8 +136,8 @@ func (l *udpListener) Bind(ctx context.Context) error {
 
 func (l *udpListener) Serve(_ context.Context) error {
 	// The start/shutdown handshake is atomic under the listener lock:
-	// either the engine starts whole — every reader, worker and sender
-	// registered — before Shutdown's drain can observe it, or Shutdown got
+	// either the engine starts whole, every reader, worker and sender
+	// registered, before Shutdown's drain can observe it, or Shutdown got
 	// there first and Serve never arms an engine over closed sockets. A
 	// half-started engine under a concurrent drain waits on coordinators
 	// whose queues the drain never learned to close.
@@ -180,7 +180,7 @@ func (l *udpListener) Serve(_ context.Context) error {
 
 // Shutdown is the listener-scope barrier: stop admission by expiring the
 // read deadline (blocked reads wake, no new datagram is accepted), join
-// the readers, close the ready queue, drain the workers — and only then
+// the readers, close the ready queue, drain the workers, and only then
 // close the sockets.
 //
 // The order is the point. Closing first stops admission just as well, but
@@ -218,7 +218,7 @@ func (l *udpListener) Shutdown(_ context.Context) error {
 		if err := engine.stopAndDrain(time.Now().Add(timeout)); err != nil {
 			l.drainErr = errors.Join(l.drainErr, err)
 		}
-		// The drain is over — served or not, nothing more will be written
+		// The drain is over, served or not, nothing more will be written
 		// through these sockets.
 		for _, pc := range pcs {
 			if err := pc.Close(); err != nil && !errors.Is(err, net.ErrClosed) {

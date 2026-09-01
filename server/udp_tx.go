@@ -1,8 +1,8 @@
 package server
 
 // The worker's TX burst: the jobs whose replies are staged and not yet
-// sent. It is a plain array on the worker's stack — no pool, no channel,
-// no goroutine handoff — because the worker owns every job in it from the
+// sent. It is a plain array on the worker's stack, no pool, no channel,
+// no goroutine handoff, because the worker owns every job in it from the
 // moment it takes it off the ready queue until the send releases it.
 //
 // The burst is what turns one syscall per reply into one syscall per

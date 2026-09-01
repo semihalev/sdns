@@ -399,7 +399,7 @@ func (m *UInt64Map[V]) Len() int {
 // This is eviction's primitive: deleting at the scan cursor skips the
 // second hash-and-probe a collect-then-Del pass would pay per key. The
 // caller derives offset from the key hash, so repeated eviction spreads
-// across the array instead of hollowing out its front — a front-biased
+// across the array instead of hollowing out its front, a front-biased
 // scan degrades to O(buckets) per key once the leading slots empty out.
 func (m *UInt64Map[V]) EvictKeysAt(offset, n int, skip uint64) int {
 	if m == nil || n <= 0 || len(m.data) == 0 {
@@ -422,11 +422,11 @@ func (m *UInt64Map[V]) EvictKeysAt(offset, n int, skip uint64) int {
 		m.size--
 		m.backwardShiftDelete(idx)
 		deleted++
-		// Backward shift may pull a cluster entry into idx — re-examine
+		// Backward shift may pull a cluster entry into idx, re-examine
 		// the same slot rather than advancing past it.
 	}
 	// The zero key lives out of band; take it last so it stays evictable.
-	// skip == 0 means the caller just stored the zero key — protect it.
+	// skip == 0 means the caller just stored the zero key, protect it.
 	if deleted < n && m.hasZeroKey && skip != 0 {
 		m.hasZeroKey = false
 		m.zeroVal = zero
@@ -530,7 +530,7 @@ func (m *UInt64Map[V]) grow() {
 }
 
 // backwardShiftDelete implements backward shift deletion for linear probing
-// (Knuth 6.4 algorithm R). Scanning continues past entries that cannot move —
+// (Knuth 6.4 algorithm R). Scanning continues past entries that cannot move,
 // stopping at the first unmovable entry would leave any later entry whose
 // probe path crosses the gap unfindable (a ghost: present and counted, never
 // returned by Get). Each cluster slot is visited exactly once, so a delete
@@ -546,7 +546,7 @@ func (m *UInt64Map[V]) backwardShiftDelete(deletedIdx int) {
 		}
 
 		// The entry at j may move into the gap at i only if its ideal
-		// slot is NOT cyclically within (i, j] — otherwise the move would
+		// slot is NOT cyclically within (i, j], otherwise the move would
 		// put it before its ideal position and break its probe chain.
 		k := m.primaryIndex(m.data[j].Key)
 		if i <= j {

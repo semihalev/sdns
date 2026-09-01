@@ -13,7 +13,7 @@ accesslist = ["127.0.0.1/32", "::1/128", "192.168.0.0/16"]
 ```
 
 CIDR ranges allowed to query this resolver. Queries from anywhere else are
-refused before any resolution work happens — the access list runs near the front
+refused before any resolution work happens, the access list runs near the front
 of the middleware chain, ahead of the cache and the resolver.
 
 The shipped default is `["0.0.0.0/0", "::0/0"]`, which allows everyone. That is
@@ -31,7 +31,7 @@ clientratelimit = 0     # queries per minute, per client IP; 0 disables
 ```
 
 Both are off by default. `clientratelimit` is the more useful of the two on a
-resolver serving known clients — it contains one misbehaving host without
+resolver serving known clients, it contains one misbehaving host without
 capping the server. `ratelimit` is a blunt ceiling on everything.
 
 Refusals increment `dns_ratelimit_exceeded_total`.
@@ -52,7 +52,7 @@ The two modes matter. With `reflexlearningmode = true` detections are logged and
 nothing is blocked, which is how you calibrate the threshold against your own
 traffic. `reflexblockmode = false` also only logs. Turn on blocking after you
 have watched the detections for a while and are satisfied they are not your own
-clients — the threshold is a score between 0 and 1, and lower is more aggressive.
+clients, the threshold is a score between 0 and 1, and lower is more aggressive.
 
 ## Blocking names
 
@@ -79,9 +79,9 @@ curl http://127.0.0.1:8080/api/v1/block/exists/ads.example.com
 curl http://127.0.0.1:8080/api/v1/block/remove/ads.example.com
 ```
 
-For policy that goes beyond a name list — rewriting to a CNAME, matching on the
+For policy that goes beyond a name list, rewriting to a CNAME, matching on the
 client's address or on the address in the answer, vendor feeds over AXFR, or a
-shadow mode that counts what enforcement *would* do — use
+shadow mode that counts what enforcement *would* do, use
 [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}) instead.
 RPZ runs after the blocklist in the chain and is the richer of the two.
 
@@ -106,6 +106,6 @@ domainmetricslimit = 1000
 ```
 
 Tracks query counts per domain, exported as `dns_domain_queries_total`. Off by
-default because the cardinality is unbounded on a public resolver — that is
+default because the cardinality is unbounded on a public resolver, that is
 what the limit is for. `0` means unlimited, which on a busy resolver will
 consume memory until something gives.

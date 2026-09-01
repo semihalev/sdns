@@ -12,7 +12,7 @@ import (
 )
 
 // accessDenied counts queries dropped because the client IP isn't in
-// the configured access list. Security-relevant — a spike indicates
+// the configured access list. Security-relevant, a spike indicates
 // scanning or a misconfigured client trying repeatedly.
 var accessDenied = metric.NewCounter(nil, prometheus.CounterOpts{
 	Name: "dns_accesslist_denied_total",

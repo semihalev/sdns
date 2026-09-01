@@ -89,7 +89,7 @@ func mustSignatureRR(tb testing.TB, s string) dns.RR {
 // RFC 6605 §4 fixes r and s at the curve's width. The library splits whatever
 // it is handed in half and lets a zero-padded 66-octet P-256 signature
 // through; that is not a P-256 signature, and no signer emits one. Refusing
-// it narrows what this resolver accepts, which is the safe direction — but it
+// it narrows what this resolver accepts, which is the safe direction, but it
 // is a divergence, so it is written down rather than left to be discovered.
 func TestVerifySignatureRefusesLooseECDSALength(t *testing.T) {
 	var fixture signatureFixture
@@ -133,8 +133,8 @@ func TestVerifySignatureRefusesLooseECDSALength(t *testing.T) {
 // package is stricter than the library.
 //
 // RFC 4035 §5.3.1 requires the signer name to be the zone containing the
-// RRset. The library tests that with a plain string suffix — its own comment
-// concedes that is the best it can do without SOA context — which reads
+// RRset. The library tests that with a plain string suffix, its own comment
+// concedes that is the best it can do without SOA context, which reads
 // evilexample.com. as inside example.com. The resolver enforces real zone
 // containment a layer up, so nothing reaches this on that path, but a
 // primitive whose check only means something because of its caller is one
@@ -171,7 +171,7 @@ func TestSignatureBindingRequiresALabelBoundary(t *testing.T) {
 // Test_VerifyRRSIG_EscapedDotIsNotALabelBoundary is the production-path
 // regression for the same defect one level up.
 //
-// `foo\.zone.example.` is a single label `foo.zone` under `example.` — it
+// `foo\.zone.example.` is a single label `foo.zone` under `example.`, it
 // ends with the *text* of the signer zone while living outside it. Signed
 // with the zone's own valid key, a containment check written as a string
 // suffix authenticates it: a zone operator would be able to sign answers for
@@ -228,8 +228,8 @@ func Test_VerifyRRSIG_EscapedDotIsNotALabelBoundary(t *testing.T) {
 // TestVerifySignatureAgreesWithLibrary is the contract that lets this package
 // verify signatures itself: for the signatures a signer produces, and for
 // inputs corrupted in the ways a resolver actually meets, it must reach the
-// same verdict as dns.RRSIG.Verify. The two documented divergences — a
-// malformed ECDSA length, and crypto/rsa's modulus minimum under a GODEBUG —
+// same verdict as dns.RRSIG.Verify. The two documented divergences, a
+// malformed ECDSA length, and crypto/rsa's modulus minimum under a GODEBUG,
 // are covered separately; everything here must agree.
 func TestVerifySignatureAgreesWithLibrary(t *testing.T) {
 	for _, fixture := range signatureFixtures(t) {

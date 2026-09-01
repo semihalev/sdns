@@ -124,7 +124,7 @@ func KeyString(qname string, qtype, qclass uint16, cd bool) uint64 {
 // KeyWithPrefix is an ECS-aware variant of Key. An invalid prefix
 // (the canonical "no scope" value) collapses to Key(q, cd) so cache
 // entries written before this function existed still resolve on
-// lookup — no flush needed on upgrade.
+// lookup, no flush needed on upgrade.
 //
 // When prefix is valid, family + bit-length + the address bytes
 // rounded up to a byte are folded into the hash preimage. The
@@ -132,7 +132,7 @@ func KeyString(qname string, qtype, qclass uint16, cd bool) uint64 {
 // collide with an IPv6 /24 whose first three bytes happen to be
 // [a, b, c]. The distinct bit-length byte means /22 and /24 of
 // 203.0.112.0 hash differently even though their byte-rounded
-// addresses are both [203, 0, 112] — the earlier scope-bytes-only
+// addresses are both [203, 0, 112], the earlier scope-bytes-only
 // encoding aliased here and would serve a wider supernet's answer
 // to a narrower-subnet query.
 func KeyWithPrefix(q dns.Question, cd bool, prefix netip.Prefix) uint64 {

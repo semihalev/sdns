@@ -21,7 +21,7 @@ const interruptGroupSlots = 8
 //
 // The reuse contract matches CancelInterrupt.Stop: once Disarm returns, the
 // group never touches that connection again, and a fire already touching it
-// has finished — both guaranteed by the group mutex.
+// has finished, both guaranteed by the group mutex.
 type InterruptGroup struct {
 	mu    sync.Mutex
 	fired bool
@@ -56,8 +56,8 @@ func (g *InterruptGroup) fire() {
 
 // arm registers conn for interruption and reports the slot to disarm. When
 // the group already fired, the operation about to start must still observe
-// the cancellation — mirroring context.AfterFunc on an already-canceled
-// context — so the deadline is applied here and now. ok is false only when
+// the cancellation, mirroring context.AfterFunc on an already-canceled
+// context, so the deadline is applied here and now. ok is false only when
 // every slot is taken (or conn is nil); the caller falls back to its own
 // registration.
 func (g *InterruptGroup) arm(conn net.Conn) (slot int, ok bool) {
@@ -89,7 +89,7 @@ func (g *InterruptGroup) disarm(slot int) {
 
 // Close detaches the context registration. It does not join a fire already
 // in flight: any connection still armed belongs to an operation that has not
-// disarmed yet, and interrupting it remains correct — per-connection reuse
+// disarmed yet, and interrupting it remains correct, per-connection reuse
 // safety is disarm's guarantee, not Close's. Callers cancel their domain
 // before closing, so stragglers are interrupted, not stranded.
 func (g *InterruptGroup) Close() {

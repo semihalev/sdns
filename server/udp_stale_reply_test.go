@@ -14,7 +14,7 @@ import (
 // recycled slab must never do: answer a request that was decided in
 // silence.
 //
-// A malformed packet gets no reply by design — any answer to an
+// A malformed packet gets no reply by design, any answer to an
 // unparseable header is amplification, and the library keeps quiet for
 // the same reason. But the slab serving it has served before, and if the
 // staged reply from that earlier request is still in its TX, the burst
@@ -83,7 +83,7 @@ func TestUDPSilentTerminalDoesNotResendAStaleReply(t *testing.T) {
 	_ = quiet.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	n, err := quiet.Read(buf)
 	if err == nil {
-		t.Fatalf("a malformed packet drew a %d-byte reply: % x — the slab "+
+		t.Fatalf("a malformed packet drew a %d-byte reply: % x, the slab "+
 			"sent the answer it was still carrying for another client", n, buf[:n])
 	}
 	if nerr, ok := err.(net.Error); !ok || !nerr.Timeout() {
@@ -98,7 +98,7 @@ func TestUDPSilentTerminalDoesNotResendAStaleReply(t *testing.T) {
 // left, but the writer state, the buffers and the staged reply length
 // are still being wiped, and that work is precisely what an allocation
 // measurement is trying to include. So the counts have to drop after the
-// slab is scrubbed and parked, not as the reply goes out — otherwise a
+// slab is scrubbed and parked, not as the reply goes out, otherwise a
 // window can close mid-wipe and charge the rest to whatever comes next.
 //
 // A watcher races the release: the moment the engine calls itself idle,

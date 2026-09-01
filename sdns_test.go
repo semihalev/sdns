@@ -10,8 +10,8 @@ import (
 )
 
 // TestConfigTestReportsOnceWithoutUsage pins what `sdns -t` prints when a
-// config is wrong. It used to say the same thing three times — once from the
-// test path, once from cobra, once from main — and follow it with the flag
+// config is wrong. It used to say the same thing three times, once from the
+// test path, once from cobra, once from main, and follow it with the flag
 // list, which answers a question nobody asked about a file that is simply
 // wrong.
 func TestConfigTestReportsOnceWithoutUsage(t *testing.T) {

@@ -29,7 +29,7 @@ func TestParallelLookupIntegration(t *testing.T) {
 	// Hold the answering nameserver until the silent one has been asked.
 	// Without this the fast server answers first and the second address is
 	// never tried, so the test would pass against a resolver that queries
-	// one server at a time — removing this line makes it fail.
+	// one server at a time, removing this line makes it fail.
 	zone.HoldUntil(func() bool {
 		return zone.silentAsked("www.parallel.test.", dns.TypeA) > 0
 	}, 3*time.Second)

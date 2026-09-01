@@ -7,7 +7,7 @@
   {%- comment -%}
   The theme is resolved before first paint: a stored choice wins, otherwise the
   system preference, and the system is followed live only while no choice is
-  stored. Blocking on purpose — a deferred script would show a flash of the
+  stored. Blocking on purpose, a deferred script would show a flash of the
   wrong theme.
   {%- endcomment -%}
   <script>
@@ -41,7 +41,7 @@
   {%- comment -%}
   seo_omit_dates: jekyll-seo-tag emits datePublished and dateModified from
   page.date, and with no date in the front matter it falls back to the build
-  time — so every deploy claimed all 29 documents had just been written. The
+  time, so every deploy claimed all 29 documents had just been written. The
   wrapper below drops those two properties from the JSON-LD block; the sitemap
   gets the same treatment through a `lastmod`-free page.date.
   {%- endcomment -%}
@@ -64,7 +64,7 @@
   {%- comment -%}
   A native <dialog>: showModal gives the focus trap, Escape, the inert page
   behind and the ::backdrop for free, and all four were hand-rolled or missing
-  before. The index is fetched on first open — it is over 100KB and most
+  before. The index is fetched on first open, it is over 100KB and most
   readers never search.
   {%- endcomment -%}
   <dialog class="search-dialog" data-search-dialog aria-label="Search documentation">
@@ -105,7 +105,7 @@
       Below 900px this becomes the single drawer: the site links, and on a
       documentation page the whole page list under them. Carrying both means
       the sidebar can leave the flow entirely on mobile, so an article starts
-      at the top of the screen rather than below a wall of navigation — and
+      at the top of the screen rather than below a wall of navigation, and
       one panel cannot overlap another.
       {%- endcomment -%}
       <nav class="main-nav" id="site-nav" aria-label="Main">
@@ -115,7 +115,7 @@
           <a href="{{ '/docs/reference/benchmarks/' | relative_url }}">Benchmarks</a>
           <a href="{{ site.github.repository_url }}">Source</a>
           {%- comment -%}
-          Generated from the source by a third party, not written here — the
+          Generated from the source by a third party, not written here, the
           icon marks it as coming from somewhere else, the way the nav's other
           entries do not need to.
           {%- endcomment -%}
@@ -144,7 +144,7 @@
            title="Star on GitHub" aria-label="Stars on GitHub"
            data-repo="{{ site.github.repository_nwo }}">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M12 .6l3.7 7.5 8.3 1.2-6 5.9 1.4 8.2L12 19.5l-7.4 3.9L6 15.2 0 9.3l8.3-1.2z"/></svg>
-          <span class="star-count" data-stars>—</span>
+          <span class="star-count" data-stars>…</span>
         </a>
         <span class="version-pill" title="Latest release">{{ site.sdns_version }}</span>
         <button class="icon-button theme-toggle" type="button" aria-label="Switch theme" title="Switch theme">

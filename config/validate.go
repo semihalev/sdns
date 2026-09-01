@@ -28,14 +28,14 @@ import (
 // Validate reports what is wrong with a loaded configuration.
 //
 // Every problem is collected and reported together. An operator fixing a
-// config file wants the whole list, not one error per run — and a DNS server
+// config file wants the whole list, not one error per run, and a DNS server
 // that refuses to start is a visible failure, where one that starts with a
 // setting it silently ignored is not.
 //
 // The rules only reject what cannot be right: an address that does not parse,
 // a value outside an enumerated set, a file that is not there. Anything this
-// package cannot judge — whether an upstream answers, whether a certificate
-// matches its key — belongs to the component that uses it.
+// package cannot judge, whether an upstream answers, whether a certificate
+// matches its key, belongs to the component that uses it.
 func (c *Config) Validate() error {
 	var problems []string
 	add := func(format string, args ...any) {
@@ -54,7 +54,7 @@ func (c *Config) Validate() error {
 	// filled in as "info" before the logger sees it. Anything else stops the
 	// server there, so a config test that disagreed would send the operator
 	// to production with a file that cannot start. "crit" was documented for
-	// years but never existed — the logger has no such level and startup
+	// years but never existed, the logger has no such level and startup
 	// rejects it.
 	switch c.LogLevel {
 	case "", "debug", "info", "warn", "error":
@@ -95,7 +95,7 @@ func (c *Config) Validate() error {
 				// Port 0 asks the kernel for a free one, and each socket
 				// asks separately: the two transports of this setting would
 				// land on different ports, so a truncated UDP answer has no
-				// TCP to fall back to — and DoH would advertise ":0" as its
+				// TCP to fall back to, and DoH would advertise ":0" as its
 				// HTTP/3 port. Fine where the setting opens one socket.
 				add("%s = %q: port 0 gives each transport a different port; name one", bind.key, bind.value)
 			}
@@ -119,7 +119,7 @@ func (c *Config) Validate() error {
 
 	// Blocked names answer A from the first and AAAA from the second. Swap
 	// them and the A record packs the IPv6 address's nil To4() as 0.0.0.0,
-	// while the AAAA carries an IPv4-mapped address — a wrong answer rather
+	// while the AAAA carries an IPv4-mapped address, a wrong answer rather
 	// than a failure, so nothing downstream complains.
 	for _, ip := range []struct {
 		key, value string
@@ -147,7 +147,7 @@ func (c *Config) Validate() error {
 	for _, entry := range c.AccessList {
 		// The access list is parsed with netip.ParsePrefix and nothing else,
 		// so a bare address is dropped at startup. Accepting one here would
-		// pass a file whose only entry is discarded — leaving an empty allow
+		// pass a file whose only entry is discarded, leaving an empty allow
 		// set, which blocks every client.
 		if !validCIDR(entry) {
 			add("accesslist %q: must be a CIDR block, e.g. 192.0.2.0/24 or 192.0.2.1/32", entry)
@@ -306,8 +306,8 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// record that is not a DNSKEY panics an unchecked type assertion during
 	// verification, and a key that is merely not a root KSK leaves the
 	// anchor set empty so every DNSSEC answer fails on unavailable anchors.
-	// Every record is parsed whatever the settings — NewResolver stops the
-	// process on one that will not — but nothing looks at what a record
+	// Every record is parsed whatever the settings, NewResolver stops the
+	// process on one that will not, but nothing looks at what a record
 	// means unless validation or the hyperlocal root asks it to. Judging the
 	// meaning regardless would refuse a stale key that has no effect.
 	anchorsUsed := c.DNSSEC == "on" || c.HyperlocalRoot
@@ -368,7 +368,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		// AutoTA needs a seed and will not take one from disk when the live
 		// set is empty, so this does not heal on its own: every iterative
 		// validation fails closed from the first query. A global forwarder
-		// skips the resolver entirely and so needs no anchor of its own —
+		// skips the resolver entirely and so needs no anchor of its own,
 		// and neither does a forward zone at the root, which hands every
 		// query to its upstreams by the same early return.
 		add("rootkeys: dnssec is on with no usable root trust anchor, so every validated answer would fail")
@@ -385,7 +385,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		{"outboundip6s", c.OutboundIP6s, false},
 	} {
 		// Read only behind ipv6access, so on a host without v6 the whole
-		// list has no effect — not just the locality of its entries.
+		// list has no effect, not just the locality of its entries.
 		if !out.want4 && !c.IPv6Access {
 			continue
 		}
@@ -407,7 +407,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			}
 			// The resolver binds its outbound sockets to these, and stops
 			// the process outright when one is not an address this machine
-			// holds — after this test has already reported success.
+			// holds, after this test has already reported success.
 			if !localAddress(ip) {
 				add("%s %q: is not an address of this machine", out.key, addr)
 			}
@@ -428,14 +428,14 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	}
 
 	// Both are created when absent, so only a plain file already sitting at
-	// the path is a problem — the Mkdir that follows would fail on it.
+	// the path is a problem, the Mkdir that follows would fail on it.
 	// An empty path is left alone. Load fails loudly on os.Mkdir("") a few
 	// lines further on, and Validate is also called on configurations built
-	// in code, which have no working directory to speak of — requiring one
+	// in code, which have no working directory to speak of, requiring one
 	// here would refuse every such caller to co-report a failure that is
 	// already impossible to miss.
-	// The working directory is written for certain — the trust-anchor store
-	// lives there — so it has to take an entry.
+	// The working directory is written for certain, the trust-anchor store
+	// lives there, so it has to take an entry.
 	pending := c.Directory
 	if c.Directory != "" {
 		if err := writableDir(c.Directory, ""); err != nil {
@@ -450,14 +450,14 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	//
 	// Only what is already at the derived path can be judged, though. Load
 	// creates the working directory after this gate, so on a fresh install
-	// the parent of the default is legitimately not there yet — asking for
+	// the parent of the default is legitimately not there yet, asking for
 	// it would refuse every first run. A blocklistdir the operator wrote
 	// themselves is nobody's to create, so that one is asked in full.
 	//
 	// Write is not required of it, unlike the working directory. The
 	// middleware reads local lists from there and only logs when it cannot
 	// download into it, so a read-only mount carrying nothing but local
-	// lists is a working setup — and refusing it would stop a server that
+	// lists is a working setup, and refusing it would stop a server that
 	// runs today.
 	//
 	// Whether it has to be written depends on what is being loaded into it:
@@ -494,7 +494,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		info, err := os.Stat(c.AccessLog)
 		switch {
 		case os.IsNotExist(err):
-			// Created on open, but only inside a directory already there —
+			// Created on open, but only inside a directory already there,
 			// and for a symlink that is the target's directory, not the
 			// link's, since the open follows the link before creating.
 			target := accessLogTarget(c.AccessLog)
@@ -502,7 +502,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			// A trailing separator says the path is a directory, and the
 			// open refuses it outright. Unlike a directory setting, where
 			// the separator means nothing and is cleaned away, here it
-			// changes what the name asks for — so it is reported as the
+			// changes what the name asks for, so it is reported as the
 			// wrong kind of name rather than as a missing parent.
 			if endsInSeparator(c.AccessLog) || endsInSeparator(target) {
 				add("accesslog = %q: names a directory, want a file", c.AccessLog)
@@ -517,8 +517,8 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("accesslog = %q: is a directory, want a file", c.AccessLog)
 		case info.Mode()&os.ModeNamedPipe != 0:
 			// Left alone on purpose. Opening a pipe to see whether it can be
-			// opened is not a free question: a reader waiting on it — cat, a
-			// log collector, the container runtime behind /dev/stdout — sees
+			// opened is not a free question: a reader waiting on it, cat, a
+			// log collector, the container runtime behind /dev/stdout, sees
 			// EOF the moment the last writer closes, and a probe that opens
 			// and closes is exactly that. The reader exits, and the open the
 			// middleware makes a moment later then waits forever for it.
@@ -530,8 +530,8 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 
 		default:
 			// Judged by opening it, not by its type: a character device is
-			// the usual container spelling — /dev/null, or /dev/stdout when
-			// the output is a file — and os.OpenFile takes it.
+			// the usual container spelling, /dev/null, or /dev/stdout when
+			// the output is a file, and os.OpenFile takes it.
 			if err := openable(c.AccessLog, os.O_WRONLY); err != nil {
 				add("accesslog = %q: %v", c.AccessLog, err)
 			}
@@ -643,7 +643,7 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// threshold otherwise, so a stale value under a disabled feature has no
 	// effect and must not stop the server.
 	//
-	// NaN is called out separately because it slips through a range test —
+	// NaN is called out separately because it slips through a range test,
 	// every comparison against it is false, including the ones the middleware
 	// itself makes, so it lands on the same silent default as an out-of-range
 	// value.
@@ -679,7 +679,7 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 		// Only the blocklist reads the star: set() strips "*." and files the
 		// rest as a wildcard block. The whitelist is stored verbatim and
 		// matched up the hierarchy, so "*.example.com" there becomes a key
-		// with a literal star label that no query ever produces — and the
+		// with a literal star label that no query ever produces, and the
 		// operator who wrote it, meaning to exempt the subdomains, gets
 		// nothing. Whitelisting "example.com" already covers them.
 		{"blocklist", c.Blocklist, true},
@@ -703,8 +703,8 @@ func (c *Config) validateNameLists(add func(string, ...any)) {
 				continue
 			}
 			// An empty zone outside the locally-served tree is dropped, and
-			// a list where every entry is dropped falls back to all of them
-			// — so the operator gets the opposite of a narrowed list.
+			// a list where every entry is dropped falls back to all of them,
+			// so the operator gets the opposite of a narrowed list.
 			if list.key == "emptyzones" && !emptyzones.Covers(name) {
 				add("emptyzones %q: is not one of the locally-served zones (RFC 6303), so it is dropped", entry)
 			}
@@ -752,8 +752,8 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 			}
 		}
 		for _, answer := range view.Answers {
-			// NewRR reports no error for a line that holds no record —
-			// blank, a comment, a directive — and hands back nothing. The
+			// NewRR reports no error for a line that holds no record,
+			// blank, a comment, a directive, and hands back nothing. The
 			// view then answers with one entry fewer than the file lists,
 			// or with none at all.
 			rr, err := dns.NewRR(answer)
@@ -768,7 +768,7 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 
 	// These are the rules middleware/dns64 applies at startup. A prefix that
 	// only looks like IPv6 is dropped there, and if it was the only one the
-	// resolver falls back to 64:ff9b::/96 — so a config test that accepted
+	// resolver falls back to 64:ff9b::/96, so a config test that accepted
 	// it would report success while traffic went to a different NAT64
 	// prefix than the file names.
 	//
@@ -778,7 +778,7 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 	// dns64 reads every one of its lists through TrimSpace, so surrounding
 	// space is not a problem there and rejecting it would refuse a config the
 	// server runs today. The ecs list below is parsed raw, so it is not
-	// trimmed here either — each list is judged the way its own reader reads
+	// trimmed here either, each list is judged the way its own reader reads
 	// it.
 	//
 	// All of it is gated on enabled, because both constructors return before
@@ -871,7 +871,7 @@ func (c *Config) validateDNS64(add func(string, ...any)) {
 	}
 	for _, raw := range c.DNS64.ExcludeZones {
 		// Trimmed, lowercased, and given a trailing dot before use, and a
-		// blank entry is skipped — so none of those is worth reporting.
+		// blank entry is skipped, so none of those is worth reporting.
 		zone := strings.TrimSpace(strings.ToLower(raw))
 		if zone == "" {
 			continue
@@ -923,8 +923,8 @@ func (c *Config) validateECS(add func(string, ...any)) {
 const dnsKeyFlagRevoke = 0x0080
 
 // forwardsRoot reports whether a forward zone takes every query. Matching is
-// the same test ForwardZoneFor makes — a canonical apex of "." covers every
-// name, and a zone with no servers is skipped there — so a name this says is
+// the same test ForwardZoneFor makes, a canonical apex of "." covers every
+// name, and a zone with no servers is skipped there, so a name this says is
 // the root is one the handler will actually forward on.
 func (c *Config) forwardsRoot() bool {
 	for i := range c.ForwardZones {
@@ -963,8 +963,8 @@ func localAddress(ip net.IP) bool {
 }
 
 // validCIDR reports whether a prefix is one the access list, the views and
-// the ECS policy will take. All three reach netip.ParsePrefix — the first two
-// through internal/ipset — and it is stricter than net.ParseCIDR about the
+// the ECS policy will take. All three reach netip.ParsePrefix, the first two
+// through internal/ipset, and it is stricter than net.ParseCIDR about the
 // bits after the slash: "10.0.0.0/08" parses there and not here, so accepting
 // it would pass a file whose only access-list entry is then dropped, leaving
 // an empty allow set that blocks every client.
@@ -978,7 +978,7 @@ func validCIDR(s string) bool {
 	}
 	// A prefix that stays inside the IPv4-mapped range once masked is filed
 	// under IPv6 by internal/ipset, while a client arriving over IPv4 is
-	// unmapped and looked up under IPv4 — so the entry sits in a table
+	// unmapped and looked up under IPv4, so the entry sits in a table
 	// nothing searches. ECS compares prefix to address directly, where the
 	// families disagree just as flatly. Either way it matches nobody, and as
 	// the only access-list entry it would leave an empty allow set. The
@@ -1026,7 +1026,7 @@ var openFile = os.OpenFile
 // creating or truncating anything.
 func openable(path string, flag int) error {
 	// The path is the operator's own config value, opened to answer whether
-	// the server will be able to use it — and opened so that it never waits.
+	// the server will be able to use it, and opened so that it never waits.
 	// Pipes do not reach here, but a character device can hold an open too:
 	// a serial line waits for carrier.
 	f, err := openFile(path, flag|nonBlockingOpen, 0) //nolint:gosec // G304 - the path under test is the input
@@ -1051,7 +1051,7 @@ func fileKind(mode os.FileMode) string {
 }
 
 // writableDir reports whether path can serve as a directory the server writes
-// into. Absence is fine — both callers create it — but a plain file sitting at
+// into. Absence is fine, both callers create it, but a plain file sitting at
 // the path is not, because the Mkdir that would follow fails.
 // pending is the working directory Load creates just after the gate. A parent
 // that is exactly it is treated as present: the server makes it, and then
@@ -1072,7 +1072,7 @@ func dirCheck(path, pending string, mustWrite bool) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		// Created with Mkdir, not MkdirAll, so one missing level is made and
-		// two are not — and Mkdir resolves every component on the way, so a
+		// two are not, and Mkdir resolves every component on the way, so a
 		// "missing/../db" fails on the middle one however it cleans up.
 		return existingDir(literalParent(path), pending)
 	}
@@ -1107,7 +1107,7 @@ func dirCheck(path, pending string, mustWrite bool) error {
 }
 
 // readable reports whether this process can list dir. Stat says nothing about
-// that — a directory with no permission bits at all satisfies it — while the
+// that, a directory with no permission bits at all satisfies it, while the
 // blocklist middleware walks the directory and, when it cannot, logs once and
 // loads no local list at all.
 func readable(dir string) error {
@@ -1127,7 +1127,7 @@ func readable(dir string) error {
 	}
 
 	// Listing is not walking. A directory carrying read but not execute
-	// hands back its entry names and then refuses to stat any of them —
+	// hands back its entry names and then refuses to stat any of them,
 	// which is exactly where the middleware's walk stops, loading nothing.
 	if _, err := os.Lstat(filepath.Join(dir, entries[0].Name())); err != nil {
 		return err
@@ -1139,7 +1139,7 @@ func readable(dir string) error {
 //
 // Cleaning answers that on Windows, which collapses ".." itself. Where the
 // components are walked instead, a ".." only resolves once what comes before
-// it exists — so "missing/../db" is not the directory the server is about to
+// it exists, so "missing/../db" is not the directory the server is about to
 // create, however it cleans up, and the two are compared as written.
 func samePath(a, b string) bool {
 	// Made absolute first, because a relative spelling resolves against the
@@ -1148,7 +1148,7 @@ func samePath(a, b string) bool {
 	a, b = absKeepingComponents(a), absKeepingComponents(b)
 
 	// Where the part before the last element is there, the system resolves
-	// it — through symlinks, through ".." — and so does this. It is what
+	// it, through symlinks, through "..", and so does this. It is what
 	// makes "/var/db" and "/private/var/db" one place on a Mac, and
 	// "there/../db" and "db" one place anywhere.
 	if ra, ok := resolveParent(a); ok {
@@ -1260,7 +1260,7 @@ func existingDir(path, pending string) error {
 // a time.
 //
 // It is a variable rather than a check at each site so a test on either
-// platform can exercise both rules — this file has been wrong about the one
+// platform can exercise both rules, this file has been wrong about the one
 // it does not run twice, and only Windows CI noticed. Which rule is the
 // default here cannot be tested locally, since any assertion would compare
 // this expression against itself; that half stays CI's job.
@@ -1271,7 +1271,7 @@ var cleansPathComponents = runtime.GOOS == "windows"
 // Which parent that is depends on how the system resolves a path. Unix walks
 // it one component at a time, so "missing/../access.log" fails on the
 // "missing" that is not there and the parent has to keep the components as
-// written — filepath.Dir cleans, and would answer "." for a path nothing can
+// written, filepath.Dir cleans, and would answer "." for a path nothing can
 // open. Windows collapses ".." itself before touching the filesystem, so
 // there the cleaned parent is the one that decides, and keeping the
 // components would refuse a path the OS is perfectly happy with.
@@ -1311,8 +1311,8 @@ func endsInSeparator(path string) bool {
 // link as absent, which read as an ordinary missing file and had the link's
 // own directory checked instead of the target's.
 //
-// The bound is above what any system will follow — Linux gives up at forty,
-// this machine at around thirty — so a chain that reaches it is one the stat
+// The bound is above what any system will follow, Linux gives up at forty,
+// this machine at around thirty, so a chain that reaches it is one the stat
 // above has already refused with ELOOP. It is here to end the loop on a link
 // that points at itself, not to judge length.
 func accessLogTarget(path string) string {
@@ -1348,7 +1348,7 @@ func accessLogTarget(path string) string {
 func joinKeepingComponents(dir, target string) string {
 	if cleansPathComponents {
 		joined := filepath.Join(dir, target)
-		// Join cleans, and that takes the trailing separator with it — the
+		// Join cleans, and that takes the trailing separator with it, the
 		// one thing that says the target names a directory, which the open
 		// refuses. The unix branch below keeps it by not cleaning at all, so
 		// this is the only place it has to be put back, and Windows CI is
@@ -1368,8 +1368,8 @@ func joinKeepingComponents(dir, target string) string {
 }
 
 // creatable reports whether this process can make an entry in dir. Mode bits
-// alone do not answer it — ownership, group membership and the mount's own
-// flags all decide — so the question is put the only portable way there is,
+// alone do not answer it, ownership, group membership and the mount's own
+// flags all decide, so the question is put the only portable way there is,
 // by creating something and taking it straight back out. The server creates
 // its working directory here anyway, and a check that skipped this passed a
 // read-only parent whose failure surfaces one run later for the working
@@ -1397,7 +1397,7 @@ func creatable(dir string) error {
 // and it does not.
 //
 // A signature this throwaway fails for many reasons, and only these two are
-// about the key. Every other outcome — a crypto mismatch, a bad signature —
+// about the key. Every other outcome, a crypto mismatch, a bad signature,
 // means the algorithm was recognised and the key parsed, which is all that is
 // being asked. Real keys of every supported algorithm reach those outcomes.
 func anchorKeyProblem(key *dns.DNSKEY) error {
@@ -1418,7 +1418,7 @@ func anchorKeyProblem(key *dns.DNSKEY) error {
 		return fmt.Errorf("algorithm %d (%s) cannot be verified with", key.Algorithm, name)
 	case err == nil, errors.Is(err, expectedProbeFailure(key.Algorithm)):
 		// The key was loaded and used, and only the throwaway signature was
-		// rejected — which is all this is asking.
+		// rejected, which is all this is asking.
 	default:
 		// Anything else means the key itself stopped the verifier. Listing
 		// the failures to reject would miss the ones the crypto packages add
@@ -1430,7 +1430,7 @@ func anchorKeyProblem(key *dns.DNSKEY) error {
 
 	// The probe cannot see this on its own. A throwaway signature decodes to
 	// r = s = 0, and ecdsa.Verify rejects that before it ever looks at the
-	// public point — so a curve key of the right length that is not a point
+	// public point, so a curve key of the right length that is not a point
 	// on the curve comes back as a bad signature and looks usable.
 	if key.Algorithm == dns.ED25519 {
 		if err := ed25519Usable(key.PublicKey); err != nil {
@@ -1475,7 +1475,7 @@ var (
 // ed25519BadSignature is what VerifyWithOptions reports when the key is fine
 // and only the signature is wrong. It is measured from a key generated here
 // rather than written out as a string, so if a future Go release rewords it
-// both sides move together — a hardcoded message would turn this check too
+// both sides move together, a hardcoded message would turn this check too
 // strict, which is the failure worth avoiding.
 var ed25519BadSignature = sync.OnceValue(func() string {
 	pub, _, err := ed25519.GenerateKey(nil)
@@ -1493,7 +1493,7 @@ var ed25519BadSignature = sync.OnceValue(func() string {
 // ed25519Usable reports whether an Ed25519 public key is one the verifier can
 // work with. Unlike ed25519.Verify, which answers false for a bad key and a
 // bad signature alike, VerifyWithOptions separates them: a key that is not a
-// point on the curve — or is encoded above the field prime — is reported as a
+// point on the curve, or is encoded above the field prime, is reported as a
 // bad public key, while a usable key reports only that the signature is
 // wrong. Accepting nothing but the latter makes this fail closed.
 func ed25519Usable(publicKey string) error {
@@ -1520,7 +1520,7 @@ func ed25519Usable(publicKey string) error {
 }
 
 // ecdhCurve returns the curve behind a DNSSEC ECDSA algorithm, or nil for
-// every other algorithm. crypto/ecdh is used only as a point checker here —
+// every other algorithm. crypto/ecdh is used only as a point checker here,
 // it validates on-curve-ness on parse, which is the part the signature probe
 // above cannot reach. Ed25519 and Ed448 have no equivalent parse-time test in
 // the standard library, so a non-canonical point there is still only caught
@@ -1536,8 +1536,8 @@ func ecdhCurve(alg uint8) ecdh.Curve {
 }
 
 // usablePort resolves a port the way the net package does and returns the
-// number it lands on. SplitHostPort only separates the halves — it never reads
-// them — so ":65536" survives it and then fails at bind time, and an upstream
+// number it lands on. SplitHostPort only separates the halves, it never reads
+// them, so ":65536" survives it and then fails at bind time, and an upstream
 // with a port that big fails on every dial instead.
 //
 // LookupPort is the call the net package itself makes when it dials or
@@ -1574,7 +1574,7 @@ func usablePort(port string, networks ...string) (int, error) {
 		}
 		if n != resolved {
 			// A service name can sit at different numbers in the two
-			// tables — "raid-am" is 2007 over UDP and 2013 over TCP on a
+			// tables, "raid-am" is 2007 over UDP and 2013 over TCP on a
 			// Mac. A setting that opens both would answer on one and wait
 			// for the fallback on the other, which is the same split that
 			// makes port 0 unusable there.
@@ -1606,7 +1606,7 @@ func validUpstream(addr string) error {
 	switch {
 	case strings.HasPrefix(addr, "https://"):
 		// DoH may name a host: it is bootstrapped once at startup. What the
-		// forwarder actually uses is Hostname(), not Host — "https://:443/x"
+		// forwarder actually uses is Hostname(), not Host, "https://:443/x"
 		// has a Host and no hostname, and is dropped during bootstrap.
 		u, err := url.Parse(addr)
 		if err != nil || u.Hostname() == "" {
@@ -1638,7 +1638,7 @@ func validUpstream(addr string) error {
 }
 
 // validateLoaded is Validate plus the requirements that only a configuration
-// file has to meet. A Config built in code — a test, an embedder — supplies
+// file has to meet. A Config built in code, a test, an embedder, supplies
 // what it needs directly and legitimately leaves the rest empty, so these
 // cannot live in Validate itself. They belong to the same report all the same:
 // finding them one run later is exactly what the single gate exists to avoid.
@@ -1656,7 +1656,7 @@ func (c *Config) validateLoaded() error {
 
 	// A root server is required of every file, forwarders included. The
 	// resolver is constructed either way and its background goroutine primes
-	// the root as soon as the middleware is ready — an empty list stops the
+	// the root as soon as the middleware is ready, an empty list stops the
 	// process there, before any query arrives. Forwarding only keeps the
 	// resolver out of the query path, not out of the process.
 	roots6 := len(c.Root6Servers)
@@ -1743,7 +1743,7 @@ func (c *Config) validateRPZ(add func(string, ...any)) {
 		}
 
 		// A zone is fed exactly one way. The AXFR side is judged only on
-		// what is knowable offline — whether a source answers is a
+		// what is knowable offline, whether a source answers is a
 		// runtime question, and the feed loop owns it.
 		switch {
 		case zc.File != "" && zc.Source != "":
@@ -1751,7 +1751,7 @@ func (c *Config) validateRPZ(add func(string, ...any)) {
 			continue
 		case zc.Source != "":
 			// The feed dials this with net.Dialer over TCP, so a hostname
-			// is fine — but the halves must both be there and the port
+			// is fine, but the halves must both be there and the port
 			// reachable, exactly as the hyperlocal sources are judged.
 			// SplitHostPort alone waves ":53", "host:" and "host:0"
 			// through, and each builds a feed that fails every cycle.
@@ -1765,7 +1765,7 @@ func (c *Config) validateRPZ(add func(string, ...any)) {
 				}
 			}
 			if zc.Origin == "" {
-				add("%s: source needs an origin — the apex name the transfer asks for", where)
+				add("%s: source needs an origin, the apex name the transfer asks for", where)
 			} else if _, valid := dns.IsDomainName(zc.Origin); !valid || !dns.IsFqdn(zc.Origin) {
 				add("%s: origin = %q: must be a fully qualified domain name", where, zc.Origin)
 			}

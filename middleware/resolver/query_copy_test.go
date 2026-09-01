@@ -20,8 +20,8 @@ func leaderWithOPT() *dns.Msg {
 }
 
 // TestAcquireAttemptReqSharesRecordsOwnsBackings pins the per-attempt copy
-// contract: header and question carry over into the shell's own backings —
-// mutating the attempt never touches the leader — while the OPT record
+// contract: header and question carry over into the shell's own backings,
+// mutating the attempt never touches the leader, while the OPT record
 // itself is shared by pointer.
 func TestAcquireAttemptReqSharesRecordsOwnsBackings(t *testing.T) {
 	leader := leaderWithOPT()
@@ -32,8 +32,8 @@ func TestAcquireAttemptReqSharesRecordsOwnsBackings(t *testing.T) {
 	if att.Question[0] != leader.Question[0] || att.MsgHdr != leader.MsgHdr {
 		t.Fatal("header/question must carry over")
 	}
-	// The OPT shell is private — packing writes the extended rcode into
-	// its header — while its options stay shared.
+	// The OPT shell is private, packing writes the extended rcode into
+	// its header, while its options stay shared.
 	if len(att.Extra) != 1 || att.Extra[0] == leader.Extra[0] {
 		t.Fatal("the OPT shell must be private per attempt")
 	}
@@ -99,7 +99,7 @@ func TestPrivatizeOPTIsolatesKeepalive(t *testing.T) {
 	}
 
 	// The leader's option backing has spare capacity behind its one
-	// option — exactly where an unprivatized append would land.
+	// option, exactly where an unprivatized append would land.
 	spare := leader.IsEdns0().Option[:2]
 
 	SetEDNSKeepalive(att, 0)
@@ -143,7 +143,7 @@ func TestAcquireAttemptReqAllocatesNothing(t *testing.T) {
 
 	// dns.Id stays out of the loop: it allocates its own 2-byte buffer
 	// inside binary.Read, a pre-existing per-attempt cost this test does
-	// not own. The one allocation left is the private OPT shell —
+	// not own. The one allocation left is the private OPT shell,
 	// packing writes into the OPT header, so attempts cannot share it.
 	if n := minAllocsPerRun(5, 100, func() {
 		att := acquireAttemptReq(leader)

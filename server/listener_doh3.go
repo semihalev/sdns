@@ -64,7 +64,7 @@ func (d *doh3Listener) Bind(ctx context.Context) error {
 			// Cap per-connection streams so a single client can't
 			// monopolise the server by opening every stream the
 			// default (100) allows and parking them. DoH3 is a
-			// request/response protocol — 32 concurrent queries per
+			// request/response protocol, 32 concurrent queries per
 			// connection is plenty for any real client and leaves
 			// ample headroom for normal pipelining.
 			MaxIncomingStreams:    32,

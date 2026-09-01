@@ -17,7 +17,7 @@ const keyTagChunk = 256
 // The tag is a checksum over the record's RDATA, and the library computes it
 // by packing that RDATA into a fixed buffer and summing it. The buffer itself
 // stays on the stack; what does not is the key material, decoded in full so
-// that it can be summed and dropped — one allocation the size of the key, per
+// that it can be summed and dropped, one allocation the size of the key, per
 // key, for a number sixteen bits wide.
 //
 // Nothing about the sum needs the octets to exist all at once, so this decodes
@@ -62,7 +62,7 @@ func KeyTag(key *dns.DNSKEY) uint16 {
 
 		decoded, err := base64.StdEncoding.Decode(out[:], in[:n])
 		if err != nil {
-			// Not something a chunked read can judge — line breaks shift
+			// Not something a chunked read can judge, line breaks shift
 			// the group boundaries, and a malformed key has to fail the
 			// way the library fails it.
 			return key.KeyTag()
@@ -95,13 +95,13 @@ func KeyTag(key *dns.DNSKEY) uint16 {
 // had more than one, so material decoding to exactly two octets indexed below
 // the start of a slice and panicked on a record that is attacker-supplied and
 // whose tag is taken before anything about it has been validated. Since
-// v1.1.73 the library does not derive it at all — a deprecated algorithm's
-// special case, dropped — and answers with the checksum every other algorithm
+// v1.1.73 the library does not derive it at all, a deprecated algorithm's
+// special case, dropped, and answers with the checksum every other algorithm
 // uses, so delegating now would return a tag Appendix B.1 does not define.
 //
 // Returning zero for every RSAMD5 key instead would be its own defect: zero is
 // a tag a supported key can legitimately have, and the trust-anchor state
-// keeps one anchor per tag — an RSAMD5 key mapped to zero could displace a
+// keeps one anchor per tag, an RSAMD5 key mapped to zero could displace a
 // real one. Only material too short to have a tag gets zero, which is what the
 // library returns for it as well.
 func rsamd5KeyTag(publicKey string) uint16 {

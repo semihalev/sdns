@@ -34,7 +34,7 @@ var (
 
 	// forwarderResponseMismatch counts responses whose question
 	// section did not match the outstanding query. A non-zero rate
-	// is a security signal — a real upstream never returns a
+	// is a security signal, a real upstream never returns a
 	// mismatched question, so persistent counts here suggest a
 	// poisoning attempt or a broken upstream.
 	forwarderResponseMismatch = metric.NewCounter(nil, prometheus.CounterOpts{
@@ -67,7 +67,7 @@ type Forwarder struct {
 	cfg *config.Config
 
 	// queryTimeout caps the total time ServeDNS spends across every
-	// configured upstream — mirroring how the resolver handler
+	// configured upstream, mirroring how the resolver handler
 	// enforces cfg.QueryTimeout. Without it, three slow upstreams
 	// could take ~3 * per-upstream-timeout, which contradicts the
 	// README description of querytimeout as the maximum time for
@@ -85,15 +85,15 @@ type Forwarder struct {
 // New return forwarder.
 //
 // Accepted forwarder_servers formats:
-//   - "1.1.1.1:53"                         — plain UDP (TCP fallback on TC)
-//   - "tls://1.1.1.1:853"                  — DoT (RFC 7858) over TCP-TLS
-//   - "https://1.1.1.1/dns-query"          — DoH (RFC 8484) with IP literal
-//   - "https://dns.example.com/dns-query"  — DoH with hostname (bootstrapped
+//   - "1.1.1.1:53": plain UDP (TCP fallback on TC)
+//   - "tls://1.1.1.1:853": DoT (RFC 7858) over TCP-TLS
+//   - "https://1.1.1.1/dns-query": DoH (RFC 8484) with IP literal
+//   - "https://dns.example.com/dns-query": DoH with hostname (bootstrapped
 //     via the system resolver once at startup; resolved IPs are pinned for
 //     the process lifetime, no per-query DNS dependency)
 //
 // DoH servers honour cfg.Timeout (per-IP dial budget) and
-// cfg.QueryTimeout (full request budget) — operators tune both via
+// cfg.QueryTimeout (full request budget), operators tune both via
 // the existing top-level config keys, no DoH-specific knob.
 //
 // Each entry is parsed independently; a malformed or unreachable
@@ -198,7 +198,7 @@ func (f *Forwarder) serversFor(qname string) []*server {
 	// A matched zone whose upstreams all turned out unusable does not
 	// quietly borrow the whole-server list. Those are the public
 	// forwarders, and sending an internal zone's questions there is the
-	// leak configuring the zone was meant to prevent — so this returns
+	// leak configuring the zone was meant to prevent, so this returns
 	// nothing and the caller fails the query visibly instead.
 	return f.zones[dns.CanonicalName(zone.Name)]
 }
@@ -243,7 +243,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// UDP/DoT, http.Client.Timeout for DoH); ctx cancellation
 	// short-circuits the loop when the overall budget is gone.
 	//
-	// Guard against zero queryTimeout — that would create an
+	// Guard against zero queryTimeout, that would create an
 	// already-expired context. Production goes through New() which
 	// always sets a positive value; this branch keeps the package
 	// robust if a Forwarder is constructed directly (mostly tests).
@@ -256,7 +256,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// Preserve the client's CD bit. We may set CD=1 on the
 	// upstream query when this server isn't doing DNSSEC, but
 	// the response written back to the client must reflect
-	// what the client asked for — otherwise the cache dedup
+	// what the client asked for, otherwise the cache dedup
 	// key (CD=client) and the stored entry's CD diverge, and
 	// CD=1 clients re-miss every lookup in forwarder mode.
 	clientCD := req.CheckingDisabled
@@ -340,7 +340,7 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 			// A mismatched question section is a security signal
 			// (potential cache poisoning), not a generic upstream
-			// failure — count it separately. Every other error is a
+			// failure, count it separately. Every other error is a
 			// plain forwarder failure.
 			if errors.Is(err, dnsclient.ErrQuestion) {
 				forwarderResponseMismatch.Inc()

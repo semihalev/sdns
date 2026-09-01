@@ -117,7 +117,7 @@ func TestKeyWithPrefix_BitLengthDistinguishesAliasedAddresses(t *testing.T) {
 	// 203.0.112.0/22 and 203.0.112.0/24 both round to the same
 	// three address bytes [203, 0, 112], so an encoder that
 	// folded only the address bytes (with a byte-length prefix
-	// that's also identical) aliased them — and supernet probes
+	// that's also identical) aliased them, and supernet probes
 	// served narrower subnets the wider answer. The explicit
 	// bit-length byte in the hash preimage makes them distinct.
 	q := dns.Question{Name: "example.com.", Qtype: dns.TypeA, Qclass: dns.ClassINET}

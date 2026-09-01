@@ -39,7 +39,7 @@ the single source of truth in gen.go's middlewareList; gen.go generates
 registry.go, whose init registers each middleware with the middleware package.
 Middlewares self-declare their dependencies through marker interfaces (e.g.
 StoreProvider, QueryerSetter), so adding one means adding an entry to
-middlewareList plus an implementation — no central wiring switch to edit.
+middlewareList plus an implementation, no central wiring switch to edit.
 
 The chain order is:
 

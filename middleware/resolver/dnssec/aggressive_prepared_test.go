@@ -29,7 +29,7 @@ func nsecRecordClass(owner, next string, class uint16, types ...uint16) *dns.NSE
 // TestEvaluateAggressiveNSECPreparedMatchesRecords is the contract that lets
 // the denial-proof cache canonicalize once at admission instead of on every
 // lookup: evaluating pre-canonicalized records must reach exactly the same
-// verdict as evaluating the records themselves — same rcode, same proof
+// verdict as evaluating the records themselves, same rcode, same proof
 // records, and the same refusal for the same reason.
 //
 // The cases deliberately include the set-level rejections, since those are
@@ -195,7 +195,7 @@ func TestPrepareAggressiveNSECRejectsNonNSEC(t *testing.T) {
 // TestPrepareAggressiveNSECSizesItsBuffers pins what makes the prepared
 // form safe to retain. Canonicalization packs into a 255-octet scratch
 // buffer and keeps a view of it, which is free for a name used and dropped
-// inside one evaluation — but a cache entry holds its names for as long as
+// inside one evaluation, but a cache entry holds its names for as long as
 // the record lives, and the cache's byte budget does not see them. Sized
 // down, an entry retains its names rather than two 255-octet buffers.
 func TestPrepareAggressiveNSECSizesItsBuffers(t *testing.T) {

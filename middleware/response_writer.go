@@ -9,8 +9,8 @@ import (
 )
 
 // Transport is the transport-side writer contract: the surface a DNS
-// transport — the SDNS-owned UDP/TCP/DoT jobs, the DoH and DoQ writers,
-// mocks and buffer sinks — offers the chain. It is SDNS's own contract;
+// transport, the SDNS-owned UDP/TCP/DoT jobs, the DoH and DoQ writers,
+// mocks and buffer sinks, offers the chain. It is SDNS's own contract;
 // the server does not serve through the miekg handler machinery.
 type Transport interface {
 	LocalAddr() net.Addr
@@ -46,8 +46,8 @@ type responseWriter struct {
 	// SDNS-owned UDP, TCP or DoT sink whose Write sends raw wire bytes
 	// unchanged. It is a declaration, never an inference: the server's
 	// owned-listener ingress is the only caller of AllowDirectPack, so a
-	// plugin writer that merely looks like a datagram transport — same
-	// RemoteAddr type, same proto string — never receives packed bytes it
+	// plugin writer that merely looks like a datagram transport, same
+	// RemoteAddr type, same proto string, never receives packed bytes it
 	// might re-decode or reshape. Reset clears it, so a pooled chain
 	// cannot carry the capability to a writer that did not declare it.
 	directPack bool
@@ -60,7 +60,7 @@ var errAlreadyWritten = errors.New("msg already written")
 // internal query (e.g. a recursion kicked off by the resolver itself
 // rather than arriving from a real client). We compare against it by
 // IP+port rather than formatting to "127.0.0.255:0" on every chain
-// Reset — RemoteAddr().String() goes through net.JoinHostPort +
+// Reset, RemoteAddr().String() goes through net.JoinHostPort +
 // net.IP.String and allocates ~32 bytes per query.
 var internalIP = net.IPv4(127, 0, 0, 255)
 
@@ -153,13 +153,13 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 
 	// The direct path: pack in pooled storage and hand the transport raw
 	// bytes, skipping the library's per-message dictionary and buffer. Only
-	// on a declared SDNS-owned sink — see directPack — and never for an
+	// on a declared SDNS-owned sink, see directPack, and never for an
 	// internal sub-query, whose consumer wants the message, not bytes.
 	//
 	// The bookkeeping runs inside the consumer, before the transport write:
 	// the size marks the response written even if the transport then
 	// errors, so nothing retries a wire that may be partially out. Msg()
-	// keeps returning the caller's message, pointer identity included —
+	// keeps returning the caller's message, pointer identity included,
 	// request-local provenance is keyed on it. A message TryPack cannot
 	// handle falls through untouched to the library path below, which is
 	// byte-identical by TryPack's contract.

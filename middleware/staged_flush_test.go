@@ -38,7 +38,7 @@ func (t *flushRecordingTransport) RemoteAddr() net.Addr {
 func (t *flushRecordingTransport) Close() error { return nil }
 
 // TestDetachFlushesStagedReplies pins the head-of-line fix: the moment a
-// request leaves the strict path — slow work is now certain — replies
+// request leaves the strict path, slow work is now certain, replies
 // already staged on the transport go out. Without this, a cache hit
 // staged a moment earlier sat in the batch for the whole recursion of
 // the unrelated query behind it.
@@ -46,7 +46,7 @@ func TestDetachFlushesStagedReplies(t *testing.T) {
 	transport := &flushRecordingTransport{}
 
 	slow := HandlerFunc(func(ctx context.Context, ch *Chain) {
-		// The handler materializes — the transition every miss makes —
+		// The handler materializes, the transition every miss makes,
 		// and by the time it could start slow work, the staged replies
 		// must already be gone.
 		_, req := ch.Materialize(ctx)

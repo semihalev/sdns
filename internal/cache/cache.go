@@ -77,7 +77,7 @@ func (c *Cache) AddIfAbsent(key uint64, value any) bool {
 
 // CompareAndSwap stores value under key only if the value currently
 // stored is identical (==, i.e. pointer identity for pointer-typed
-// values) to old. Returns false — storing nothing — when the key is
+// values) to old. Returns false, storing nothing, when the key is
 // absent or holds a different value. The check-and-set runs under the
 // key's segment write lock, so a concurrent Add/Remove cannot
 // interleave between the compare and the swap.

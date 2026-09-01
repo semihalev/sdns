@@ -47,8 +47,8 @@ func CheckReverseName(name string) int {
 }
 
 // parseIPv4PTR converts IPv4 PTR name to IP address. PTR is a large slice
-// of real traffic, so this parses and formats by hand — one allocation,
-// the returned string — where Split/Join/ParseIP/String paid six. The
+// of real traffic, so this parses and formats by hand, one allocation,
+// the returned string, where Split/Join/ParseIP/String paid six. The
 // accepted shape is the RFC 1035 one: exactly four decimal labels, each
 // 0-255 with no leading zero, reversed. Deliberate tightening: the old
 // join-then-ParseIP incidentally accepted colon-form garbage whose labels
@@ -96,7 +96,7 @@ func parseIPv4PTR(name string) string {
 }
 
 // parseIPv6PTR converts IPv6 PTR name to IP address. The accepted shape is
-// the RFC 3596 one — exactly 32 single-hex-digit labels, reversed — parsed
+// the RFC 3596 one, exactly 32 single-hex-digit labels, reversed, parsed
 // straight into the address bytes; canonical formatting is the only
 // allocation. The old Split/Join/ParseIP path incidentally admitted some
 // truncated or multi-digit spellings no resolver emits; those now refuse,
@@ -137,7 +137,7 @@ func parseIPv6PTR(name string) string {
 	}
 
 	// Unmap keeps byte parity with the old net.IP.String, which renders a
-	// v4-mapped address in dotted-quad form — the spelling the hostsfile
+	// v4-mapped address in dotted-quad form, the spelling the hostsfile
 	// load side keys its reverse map with.
 	return netip.AddrFrom16(addr).Unmap().String()
 }

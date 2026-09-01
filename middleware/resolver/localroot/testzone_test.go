@@ -9,8 +9,8 @@ import (
 )
 
 // testRoot adapts roottest.Build for this package's tests: a miniature
-// signed root — apex SOA/NS/DNSKEY/NSEC sealed by ZONEMD, a signed com.
-// delegation, an unsigned org. delegation, in-zone glue — chained to one
+// signed root, apex SOA/NS/DNSKEY/NSEC sealed by ZONEMD, a signed com.
+// delegation, an unsigned org. delegation, in-zone glue, chained to one
 // CSK whose DS is the trust anchor.
 type testRoot struct {
 	rrs     []dns.RR
@@ -96,7 +96,7 @@ func TestVerifyZoneChain(t *testing.T) {
 				mangled[i] = evil
 			}
 		}
-		// The ZONEMD content changed, so its signature fails first — either
+		// The ZONEMD content changed, so its signature fails first, either
 		// refusal is correct; what must not happen is acceptance.
 		if _, err := verifyZone(mangled, root.anchors); err == nil {
 			t.Fatal("a ZONEMD serial mismatch verified")

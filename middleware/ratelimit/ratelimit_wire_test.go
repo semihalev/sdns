@@ -167,8 +167,8 @@ func TestRateLimitWireTCPMismatchFallsThrough(t *testing.T) {
 }
 
 // TestRateLimitWireFullEchoMatch pins the recovery leg of the BADCOOKIE
-// cycle: a client echoing the stored full cookie — client half plus server
-// half, the 40-byte maximum — verifies and passes undecoded.
+// cycle: a client echoing the stored full cookie, client half plus server
+// half, the 40-byte maximum, verifies and passes undecoded.
 func TestRateLimitWireFullEchoMatch(t *testing.T) {
 	r := New(&config.Config{ClientRateLimit: 100, CookieSecret: "secret"})
 

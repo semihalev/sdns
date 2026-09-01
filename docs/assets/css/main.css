@@ -1,6 +1,6 @@
-/* sdns.dev — the shell: tokens, header, sidebar, article, footer.
+/* sdns.dev, the shell: tokens, header, sidebar, article, footer.
    Dark is the designed case; light is a deliberate second palette, not an
-   inversion. The [theme] attribute is the only switch — no
+   inversion. The [theme] attribute is the only switch, no
    prefers-color-scheme lives in CSS, so a stored choice and the system
    default go through exactly one code path (set in the head, before paint). */
 
@@ -74,9 +74,9 @@ body.preload * { transition: none !important; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-/* Inside running text the accent alone is not enough to mark a link — its
+/* Inside running text the accent alone is not enough to mark a link, its
    contrast against the surrounding prose is under the 3:1 that colour-only
-   distinction requires — so body links are underlined by default. Navigation,
+   distinction requires, so body links are underlined by default. Navigation,
    where position and grouping already carry the meaning, is left alone. */
 .doc-main p > a, .doc-main li > a, .doc-main td > a, .doc-lede a,
 .home p > a, .home li > a {
@@ -87,7 +87,7 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .home p > a:hover, .home li > a:hover {
   text-decoration-color: var(--accent);
 }
-/* The generated contents list is navigation, not prose — grouping and position
+/* The generated contents list is navigation, not prose, grouping and position
    already mark those as links, so they keep the plain treatment. */
 .toc a { text-decoration: none; }
 .toc a:hover { text-decoration: underline; }
@@ -136,7 +136,7 @@ code, pre, .mono { font-family: var(--mono); }
 .main-nav { margin-left: auto; font-size: .92rem; }
 .nav-links { display: flex; gap: 1.35rem; }
 .nav-external { display: inline-flex; align-items: center; gap: .4rem; }
-/* The mark keeps its own colours, so it is not dimmed with the label — but it
+/* The mark keeps its own colours, so it is not dimmed with the label, but it
    sits at the label's optical weight rather than shouting next to it. */
 .nav-external .codewiki-mark { flex: none; }
 .main-nav a { color: var(--text-dim); }
@@ -308,8 +308,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 
 /* ---------- responsive ---------- */
 
-/* The documentation list is rendered twice — in the sidebar and inside the
-   drawer — and exactly one of them is ever displayed. */
+/* The documentation list is rendered twice, in the sidebar and inside the
+   drawer, and exactly one of them is ever displayed. */
 .nav-docs { display: none; }
 
 @media (max-width: 900px) {
@@ -334,7 +334,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
      Note on the anchor: .site-header carries a backdrop-filter, which makes
      it the containing block for fixed-position descendants. The header is
      full-width and pinned at the top, so right/top resolve to the same
-     coordinates the viewport would give — but give the header a max-width
+     coordinates the viewport would give, but give the header a max-width
      or an offset and this moves with it. left:auto is explicit so a stray
      inherited left cannot fight the right edge.
 
@@ -348,7 +348,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
     margin-left: 0; padding: 1.1rem 1.25rem 3rem;
     background: var(--bg); border-left: 1px solid var(--line);
     transform: translateX(100%); visibility: hidden;
-    /* visibility flips at once on the way in — a discrete property animated
+    /* visibility flips at once on the way in, a discrete property animated
        over a duration changes at the midpoint, which left the panel still
        hidden, and therefore unfocusable, at the moment the script tried to
        move focus into it. On the way out it waits for the slide to finish. */
@@ -453,7 +453,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 .search-hit:hover, .search-hit[aria-selected="true"] { background: var(--bg-raised); text-decoration: none; }
 .search-hit[aria-selected="true"] { outline: 1px solid var(--accent-dim); }
 /* Wraps by structure rather than at a chosen width. The context is kept on
-   one piece — it reads as a unit — but the row is free to break, so the
+   one piece, it reads as a unit, but the row is free to break, so the
    heading and the context share a line whenever they fit and stack when they
    do not. A media query here was tuned to this content and overflowed one
    pixel above whatever number it named. */
@@ -485,7 +485,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
      the main way to reach a page when the sidebar is behind a drawer. */
   .search-trigger-text, .search-trigger-key { display: none; }
   .search-trigger { padding: .32rem; }
-  /* Full screen, so the backdrop is unreachable — the close button is the
+  /* Full screen, so the backdrop is unreachable, the close button is the
      only way out for a touch reader, and esc means nothing to them. */
   .search-dialog {
     width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;

@@ -14,7 +14,7 @@ import (
 // the deferred enrichment lane. resolveV4Host stores a one-minute provisional
 // delegation before its address lookup so the lookup itself can find the
 // servers. Inline that entry is overwritten by the real lease as soon as the
-// walk stores it — but a queued enrichment job runs after that store, and its
+// walk stores it, but a queued enrichment job runs after that store, and its
 // provisional write used to replace an hours-long lease with the one-minute
 // cap, cutting the served TTL of every answer under the delegation to it.
 func TestProvisionalStoreDoesNotClobberDelegationLease(t *testing.T) {

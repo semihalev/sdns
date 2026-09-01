@@ -3,8 +3,8 @@ package dnsname
 // This file renders uncompressed wire-form names into presentation form
 // without heap allocation: the caller supplies the destination, typically a
 // stack buffer. The escape mapping is byte-identical to miekg's
-// UnpackDomainName — the special set {'.', ' ', '\'', '@', ';', '(', ')',
-// '"', '\\'} is backslash-prefixed, bytes outside 0x20–0x7E become \DDD —
+// UnpackDomainName, the special set {'.', ' ', '\'', '@', ';', '(', ')',
+// '"', '\\'} is backslash-prefixed, bytes outside 0x20 to 0x7E become \DDD,
 // which is the same contract internal/cache's wire key hasher already
 // depends on. The parity test drives every byte value through both
 // implementations.
@@ -33,10 +33,10 @@ func isPresentationSpecial(b byte) bool {
 }
 
 // appendWireName is the one walker behind the exported variants. fold
-// lowercases ASCII A–Z (escape digits and specials are never A–Z, so
+// lowercases ASCII A to Z (escape digits and specials are never A to Z, so
 // folding the escaped form equals escaping the folded form). rooted keeps
 // the trailing dot and renders the root name as "."; unrooted drops the
-// trailing dot and renders the root name empty — the lookup-key spelling.
+// trailing dot and renders the root name empty, the lookup-key spelling.
 //
 // A name that is not a plain, exactly-consumed uncompressed name refuses;
 // dst comes back truncated to its original length in that case (a grown
@@ -103,7 +103,7 @@ func appendWireName(dst, wire []byte, fold, rooted bool, offs []int) ([]byte, in
 }
 
 // AppendPresentation appends the presentation form of an uncompressed
-// wire-form name to dst — byte-identical to what dns.UnpackDomainName
+// wire-form name to dst, byte-identical to what dns.UnpackDomainName
 // returns for the same bytes, trailing dot included, case preserved.
 func AppendPresentation(dst, wire []byte) ([]byte, bool) {
 	out, _, ok := appendWireName(dst, wire, false, true, nil)
@@ -111,7 +111,7 @@ func AppendPresentation(dst, wire []byte) ([]byte, bool) {
 }
 
 // AppendFoldedKey appends the lookup-key form: the presentation form with
-// ASCII A–Z lowered and no trailing dot (the root name comes back empty).
+// ASCII A to Z lowered and no trailing dot (the root name comes back empty).
 // This is the spelling hostsfile keys its database with and domain metrics
 // tracks, so a stack-buffered key indexes those maps with zero allocation.
 func AppendFoldedKey(dst, wire []byte) ([]byte, bool) {
@@ -123,20 +123,20 @@ func AppendFoldedKey(dst, wire []byte) ([]byte, bool) {
 // needs a length byte plus one octet inside the 255-octet wire bound.
 const MaxLabels = 127
 
-// AppendCanonicalLabels appends the canonical spelling — the presentation
-// form with ASCII A–Z lowered and the trailing dot kept, dns.CanonicalName's
-// answer — and records where each label starts inside the appended region.
+// AppendCanonicalLabels appends the canonical spelling, the presentation
+// form with ASCII A to Z lowered and the trailing dot kept, dns.CanonicalName's
+// answer, and records where each label starts inside the appended region.
 // offs needs capacity MaxLabels; the returned count says how many entries
 // were filled, and its contents are undefined on refusal. Suffix matching
 // against canonical zone keys then indexes a map with canon[offs[i]:]
-// without ever building a string — a recipe that assumes an empty dst,
+// without ever building a string, a recipe that assumes an empty dst,
 // since the offsets are relative to the appended region, not the slice.
 func AppendCanonicalLabels(dst, wire []byte, offs []int) ([]byte, int, bool) {
 	return appendWireName(dst, wire, true, true, offs)
 }
 
 // WireLabelCount returns the number of labels in an uncompressed wire-form
-// name — dns.CountLabel's answer without the string. The root name has
+// name, dns.CountLabel's answer without the string. The root name has
 // zero.
 func WireLabelCount(wire []byte) (int, bool) {
 	if len(wire) == 0 || len(wire) > maxWireNameOctets {

@@ -12,8 +12,8 @@ import (
 
 // TestPipelineQueryerQueryAllocationBudget gates what one sub-query costs.
 //
-// This is the shape production runs — a request through the whole pipeline,
-// establishing the request-tree state a recursive query needs — so it is
+// This is the shape production runs, a request through the whole pipeline,
+// establishing the request-tree state a recursive query needs, so it is
 // where an accidental extra object shows up, and where counting one scope in
 // isolation would miss it.
 //

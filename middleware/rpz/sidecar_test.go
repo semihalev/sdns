@@ -159,7 +159,7 @@ func (h *sidecarHarness) serve(t *testing.T, qname, clientAddr string, bytePath 
 
 // wireServed reads the cache's byte-fast-path counter for one outcome
 // ("served" for exact hits, "chase_served" for compositions) through the
-// prometheus registry — the only honest way to tell a byte serve from a
+// prometheus registry, the only honest way to tell a byte serve from a
 // decoded one: on a direct-pack chain even decoded WriteMsg reaches the
 // transport as raw bytes, so the transport cannot testify.
 func wireServed(t *testing.T, outcome string) float64 {
@@ -216,7 +216,7 @@ func (h *sidecarHarness) storedTruth(t *testing.T, qname string) *dns.Msg {
 }
 
 // TestTruthInCacheRewriteToClient pins §5.6 item 1: the client is
-// rewritten, the cache stores the resolver's truth untouched — on the
+// rewritten, the cache stores the resolver's truth untouched, on the
 // miss and on every hit after it.
 func TestTruthInCacheRewriteToClient(t *testing.T) {
 	h := newSidecarHarness(t, "enforce", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
@@ -254,7 +254,7 @@ func TestNoneCandidatesServeBytes(t *testing.T) {
 
 // TestP0HeldQNAMEOverridesANoneSidecar is the review's P0 scenario
 // verbatim: zone 1 carries response-IP rules that do NOT match the
-// answer, zone 2's QNAME rule does — the query answers NXDOMAIN on the
+// answer, zone 2's QNAME rule does, the query answers NXDOMAIN on the
 // miss AND on the hit, never the stored truth.
 func TestP0HeldQNAMEOverridesANoneSidecar(t *testing.T) {
 	h := newSidecarHarness(t, "enforce",
@@ -304,7 +304,7 @@ rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 3 3600 900 604800 300
 
 // TestReloadReevaluatesStaleSidecars pins §5.6 item 5 end to end: an
 // entry stamped "none" under generation N must not keep serving bytes
-// after a reload whose rules newly match it — the first serve under N+1
+// after a reload whose rules newly match it, the first serve under N+1
 // re-evaluates and answers from the fresh result.
 func TestReloadReevaluatesStaleSidecars(t *testing.T) {
 	// The initial rules miss 198.51.100.20; the reload adds a rule that
@@ -350,7 +350,7 @@ func TestAdmissionDoorsLeaveEvaluatedSidecars(t *testing.T) {
 
 // TestCountingParityAcrossPaths pins the §6 counting bullet: the same
 // query over the same entry counts the same zone, trigger, action and
-// outcome whether the byte path or the decoded path served it — and the
+// outcome whether the byte path or the decoded path served it, and the
 // byte leg is proven to actually BE the byte path: a matched PASSTHRU
 // hit serves raw bytes, counted through the gate's memoized decision at
 // the commit, with no decode anywhere (§5.6's field-reads-and-counters
@@ -389,7 +389,7 @@ func TestCountingParityAcrossPaths(t *testing.T) {
 
 // TestChaseCountsAZoneOnceWithTheRankBest pins §5.6 item 4 end to end: a
 // chase whose composed answer matches one zone through two competing
-// rules counts that zone exactly once, with the rule-4 best — the gate
+// rules counts that zone exactly once, with the rule-4 best, the gate
 // sends any matching chase to the decoded path, whose composed answer
 // the wrap evaluates whole, so the dedupe holds by construction.
 func TestChaseCountsAZoneOnceWithTheRankBest(t *testing.T) {
@@ -409,7 +409,7 @@ func TestChaseCountsAZoneOnceWithTheRankBest(t *testing.T) {
 	target.SetQuestion("t.chase.test.", dns.TypeA)
 	target.Response = true
 	// Two addresses under one zone's competing rules: the /24 says
-	// NXDOMAIN, the /32 says PASSTHRU — rule 4 picks the /32.
+	// NXDOMAIN, the /32 says PASSTHRU, rule 4 picks the /32.
 	target.Answer = []dns.RR{testA("t.chase.test.", "203.0.113.5"), testA("t.chase.test.", "198.51.100.9")}
 	h.cacheStore().SetFromResponseWithCut(target, false, time.Time{}, 0)
 
@@ -430,7 +430,7 @@ func TestChaseCountsAZoneOnceWithTheRankBest(t *testing.T) {
 }
 
 // TestShadowObservesResponseMatches pins shadow on the response side:
-// nothing rewritten, the winner observed — both paths.
+// nothing rewritten, the winner observed, both paths.
 func TestShadowObservesResponseMatches(t *testing.T) {
 	h := newSidecarHarness(t, "shadow", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
 	h.truth["bad.test."] = "203.0.113.10"
@@ -550,7 +550,7 @@ rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 9 3600 900 604800 300
 
 // TestFinalWinnerSilencesLaterResponseZones pins the winner-bounded cut
 // across the phases' seam: a final query-time winner in zone 0 leaves
-// response zones after it uncounted — in shadow, where the query
+// response zones after it uncounted, in shadow, where the query
 // continues, exactly as in enforce, where it never leaves rpz. Anything
 // else makes the two modes' counters incomparable.
 func TestFinalWinnerSilencesLaterResponseZones(t *testing.T) {
@@ -579,7 +579,7 @@ victim.example.com.rpz.test. IN CNAME .
 // TestCleanServesAllocateNoMoreWithResponseRules pins §5.11 against the
 // two allocation regressions the review found: with response rules
 // configured, the all-candidates-none wire hit and the clean admission
-// must cost exactly what a qname-only configuration costs — the wrap is
+// must cost exactly what a qname-only configuration costs, the wrap is
 // pooled and the explicit none is the generation's shared sentinel.
 func TestCleanServesAllocateNoMoreWithResponseRules(t *testing.T) {
 	const qnameOnlyZone = `
@@ -633,8 +633,8 @@ victim.example.com.rpz.test. IN CNAME .
 }
 
 // TestExplicitNoneIsTheSharedSentinel pins the none representation
-// directly: two clean admissions carry the same sidecar object — the
-// generation's sentinel — not one allocation each.
+// directly: two clean admissions carry the same sidecar object, the
+// generation's sentinel, not one allocation each.
 func TestExplicitNoneIsTheSharedSentinel(t *testing.T) {
 	h := newSidecarHarness(t, "enforce", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
 
@@ -658,7 +658,7 @@ func TestExplicitNoneIsTheSharedSentinel(t *testing.T) {
 // TestVanishedRulesStillCountHeldObservations pins the review's P1: a
 // policed wrap installed while response triggers existed carries
 // disabled query-time observations; a reload that drops the last
-// response trigger before the judge must not shortcut past them — they
+// response trigger before the judge must not shortcut past them, they
 // count under any generation, so the judge still produces the decision
 // token and the commit still counts exactly once.
 func TestVanishedRulesStillCountHeldObservations(t *testing.T) {
@@ -698,7 +698,7 @@ victim.example.com.rpz.test. IN CNAME *.
 
 // TestAbandonedDecisionIsNotCountedLater pins the review's P2: a judge
 // that memoized a decision and was abandoned before its commit must not
-// leak that memo into a later judge's commit — every judge voids the
+// leak that memo into a later judge's commit, every judge voids the
 // token first, and only its own Serve re-arms it.
 func TestAbandonedDecisionIsNotCountedLater(t *testing.T) {
 	h := newSidecarHarness(t, "shadow", config.RPZZone{Name: "resp", File: writeZone(t, respTestZone)})
@@ -726,7 +726,7 @@ victim.example.com.rpz.test. IN CNAME .
 	h.r.publishStore(&rpzengine.Store{Zones: []*rpzengine.Zone{z}})
 
 	// Judge 2 finds nothing to decide; the commit after it must count
-	// nothing — never judge 1's stale memo.
+	// nothing, never judge 1's stale memo.
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "observed")
 	base := testutil.ToFloat64(counter)
 	if v := wrap.JudgeWireHit(sc); v != middleware.WireHitServe {
@@ -808,7 +808,7 @@ rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 1 3600 900 604800 300
 }
 
 // TestNeutralGateServesExemptQueriesUntouched pins the global gate's
-// contract — the gate un-wrapped (exempt) queries reach: entries stay
+// contract, the gate un-wrapped (exempt) queries reach: entries stay
 // healthy (stale restamps) but even a matching sidecar serves the truth
 // and counts nothing, because policy does not apply to those queries.
 func TestNeutralGateServesExemptQueriesUntouched(t *testing.T) {

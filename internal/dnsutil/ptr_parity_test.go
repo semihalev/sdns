@@ -81,7 +81,7 @@ func TestParsePTRParity(t *testing.T) {
 	}
 
 	// Deliberate tightening: shapes the old ParseIP-joining incidentally
-	// admitted now refuse — no resolver emits them, and a refusal is an
+	// admitted now refuse, no resolver emits them, and a refusal is an
 	// ordinary miss downstream.
 	for _, name := range []string{
 		strings.Repeat("0.", 30) + "1" + ReverseDomainV6,         // 31 nibbles

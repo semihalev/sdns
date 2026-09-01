@@ -41,15 +41,15 @@ const (
 //     carry a valid self-signature.
 //  2. The apex SOA and ZONEMD RRsets must verify against those keys.
 //  3. A supported ZONEMD (SIMPLE/SHA-384) must carry the SOA's serial, and
-//     the digest of the whole zone in canonical form — every record, glue
+//     the digest of the whole zone in canonical form, every record, glue
 //     included, deduplicated, excluding the apex ZONEMD RRset and the
-//     RRSIGs covering it — must match it exactly.
+//     RRSIGs covering it, must match it exactly.
 //
 // The ZONEMD match authenticates the entire zone contents in one stroke;
 // individual RRSIGs elsewhere in the zone are carried for clients, not
 // re-verified here.
 //
-// authUntil is when that authentication lapses — the expiration of the
+// authUntil is when that authentication lapses, the expiration of the
 // signature that carried the ZONEMD RRset through verification. The copy
 // may not be served past it: the digest is only evidence for as long as
 // the signature over it holds.
@@ -98,7 +98,7 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) (authUntil time.Time, err error)
 	}
 
 	// The chain order is the whole defense. First, only the keys that
-	// actually match a trust anchor DS may authenticate the DNSKEY RRset —
+	// actually match a trust anchor DS may authenticate the DNSKEY RRset,
 	// handing that verification the full transferred set would let an
 	// attacker include the well-known real KSK for the anchor match while
 	// signing everything with a key of their own, also in the set. Only a
@@ -141,9 +141,9 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) (authUntil time.Time, err error)
 	// RFC 8976 §4 step 4: "If the ZONEMD RRset contains more than one RR
 	// with the same Scheme and Hash Algorithm, digest verification for
 	// those ZONEMD RRs MUST NOT be considered successful." The
-	// disqualification is scoped to the repeated tuple — step 5 adds that
+	// disqualification is scoped to the repeated tuple, step 5 adds that
 	// "a match using any one of the recipient's supported Schemes and Hash
-	// Algorithms is sufficient to verify the zone" — so a zone carrying a
+	// Algorithms is sufficient to verify the zone", so a zone carrying a
 	// duplicated tuple alongside a sound unique one still verifies through
 	// the latter. Counting first, then skipping only the duplicates, is
 	// what keeps an appended digest from being usable without letting it
@@ -191,7 +191,7 @@ func verifyZone(rrs []dns.RR, anchors []dns.RR) (authUntil time.Time, err error)
 }
 
 // dnskeyMatchesAnchor reports whether key's DS, computed at each anchor's
-// own digest type, reproduces that anchor exactly — tag, algorithm and
+// own digest type, reproduces that anchor exactly, tag, algorithm and
 // digest alike.
 func dnskeyMatchesAnchor(key *dns.DNSKEY, anchors []dns.RR) bool {
 	for _, rr := range anchors {
@@ -213,8 +213,8 @@ func dnskeyMatchesAnchor(key *dns.DNSKEY, anchors []dns.RR) bool {
 
 // maxApexSignatureAttempts bounds how many public-key operations one apex
 // RRset may cost. A zone carrying more than a handful of signatures over
-// one RRset is already pathological — the root publishes one, a rollover a
-// few — and the cap cannot be used to hide a sound signature behind
+// one RRset is already pathological, the root publishes one, a rollover a
+// few, and the cap cannot be used to hide a sound signature behind
 // higher-expiring forgeries in any meaningful sense: anyone able to add
 // records to a transfer can already deny the copy outright by disturbing a
 // digested record. What the cap removes is the amplification, which is a
@@ -234,15 +234,15 @@ const maxApexRecords = 32
 // how long the result holds: the expiration of the signature that carried
 // it. Authentication is only as good as the signature behind it (RFC 4035
 // §5.3.3), so the answer must name a specific signature rather than the
-// RRset as a whole — a sibling that fails to verify cannot lend its
+// RRset as a whole, a sibling that fails to verify cannot lend its
 // timestamps to the result.
 //
 // Candidates are deduplicated, ordered by descending expiration and tried
 // until one verifies. Order is what makes stopping correct: the first
 // signature to verify necessarily carries the latest expiration among those
 // that would, because everything longer-lived was tried before it. It is
-// also what keeps the work down — a sound zone verifies on the first
-// attempt — and the cap bounds the rest, since apex RRSIG(ZONEMD) records
+// also what keeps the work down, a sound zone verifies on the first
+// attempt, and the cap bounds the rest, since apex RRSIG(ZONEMD) records
 // sit outside the digest and can be appended freely.
 func verifyApexRRset(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sigs []dns.RR) (time.Time, error) {
 	covered := set[0].Header().Rrtype
@@ -255,7 +255,7 @@ func verifyApexRRset(keys map[uint16][]*dns.DNSKEY, set []dns.RR, sigs []dns.RR)
 	}
 	// Deduplicate on the identity the verifier itself uses. Anything less
 	// can collapse a sound signature into an unsound one that merely
-	// resembles it — two records differing only in, say, original TTL sign
+	// resembles it, two records differing only in, say, original TTL sign
 	// different data, so one may verify where the other cannot.
 	candidates := dnssec.UniqueRRSIGs(covering)
 
@@ -287,9 +287,9 @@ func typedApexSet[T dns.RR](set []T) []dns.RR {
 }
 
 // ComputeDigest is RFC 8976 §3.3.1's SIMPLE scheme over SHA-384: every
-// record in canonical wire form and canonical order — owner order (§6.1 of
+// record in canonical wire form and canonical order, owner order (§6.1 of
 // RFC 4034), then ascending TYPE for RRsets sharing an owner, then RDATA
-// (§6.3) — with duplicates collapsed and two exclusions at the apex: the
+// (§6.3), with duplicates collapsed and two exclusions at the apex: the
 // ZONEMD RRset itself, and the RRSIGs covering it.
 func ComputeDigest(rrs []dns.RR, apex string) ([]byte, error) {
 	type entry struct {
@@ -343,7 +343,7 @@ func ComputeDigest(rrs []dns.RR, apex string) ([]byte, error) {
 		// It does not have to catch that: normalizeZone has already reduced
 		// a transferred zone to one record per identity before verification
 		// begins. This stays as the backstop for callers that hash records
-		// directly — ComputeDigest is exported, and sealing a zone is not a
+		// directly, ComputeDigest is exported, and sealing a zone is not a
 		// transfer.
 		if prev != nil && bytes.Equal(prev, entries[i].wire) {
 			continue

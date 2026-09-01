@@ -12,13 +12,13 @@ import (
 
 // The stream burst layer. A pipelining client keeps several queries in
 // flight, and answering each one with its own read and write syscall is
-// what the profile showed the TCP path spending its time on — the write
+// what the profile showed the TCP path spending its time on, the write
 // side alone outweighed everything the middleware chain does.
 //
 // So a connection reads through a fill buffer and writes through a drain
 // buffer: one read syscall hands over as many frames as the client sent,
 // and their replies leave in one write. The flush point is the moment the
-// connection is about to block for more input — nothing is ever held back
+// connection is about to block for more input, nothing is ever held back
 // waiting for a client that has stopped talking, so a single-query
 // connection still costs exactly one read and one write, and no reply
 // waits on a timer.
@@ -31,7 +31,7 @@ import (
 // lazily. The deadline is a field the engine updates per query and a
 // syscall only where something is really about to block, so a burst
 // answered out of the fill buffer arms nothing and the property the
-// buffers exist for — one read and one write for the whole burst —
+// buffers exist for, one read and one write for the whole burst,
 // survives the bound.
 
 const (
@@ -75,8 +75,8 @@ type tcpStream struct {
 
 	// wait bounds the one place a connection blocks on the server rather
 	// than on its peer: waiting for a slab when the ring is empty. It is
-	// built at most once per connection and reused, because saturation —
-	// the only time it is needed — is the worst moment to be allocating.
+	// built at most once per connection and reused, because saturation,
+	// the only time it is needed, is the worst moment to be allocating.
 	wait *time.Timer
 }
 
@@ -89,7 +89,7 @@ func (s *tcpStream) reset(conn net.Conn) {
 	if s.wait == nil && conn != nil {
 		// Built here, at connection setup, and never inside a query. A
 		// connection's first contended acquire is a served query like any
-		// other, and the envelope opens before its slab is taken — so a
+		// other, and the envelope opens before its slab is taken, so a
 		// timer created lazily on that path is an allocation inside it,
 		// however few connections ever reach it. It is stopped rather
 		// than armed; every wait Resets it.
@@ -106,7 +106,7 @@ func (s *tcpStream) reset(conn net.Conn) {
 // from the previous wait.
 func (s *tcpStream) waitFor(d time.Duration) <-chan time.Time {
 	if s.wait == nil {
-		// Only a stream that never saw reset(conn) — a unit test driving
+		// Only a stream that never saw reset(conn), a unit test driving
 		// the layer directly. Connections always arrive with one.
 		s.wait = time.NewTimer(d)
 		return s.wait.C
@@ -140,11 +140,11 @@ func (s *tcpStream) beforeWrite() error {
 	return s.arm()
 }
 
-// buffered reports whether the fill buffer already holds bytes — the
+// buffered reports whether the fill buffer already holds bytes, the
 // signal that another frame is in hand and the replies may keep
 // accumulating.
 // framePrefixBuffered reports whether a whole length prefix is already in
-// hand — which is the question the loop actually has, and not the same as
+// hand, which is the question the loop actually has, and not the same as
 // whether any bytes are buffered at all. A single buffered byte is half a
 // prefix: reading the other half blocks on the client exactly as an empty
 // buffer does.
@@ -191,7 +191,7 @@ func (s *tcpStream) next(n int) ([]byte, error) {
 }
 
 // body fills dst with the announced frame payload. A payload the fill
-// buffer cannot hold is read straight into dst — the buffer speeds up
+// buffer cannot hold is read straight into dst, the buffer speeds up
 // small frames, it never limits what the transport accepts.
 func (s *tcpStream) body(dst []byte) error {
 	if s.end-s.start < len(dst) {
@@ -207,7 +207,7 @@ func (s *tcpStream) body(dst []byte) error {
 		// split turned the burst's single write into another syscall. It
 		// also protects nobody. The drain buffer holds this connection's
 		// own replies, so a client that stalls mid-frame delays only
-		// itself — unlike a stall between frames, where a correct client
+		// itself, unlike a stall between frames, where a correct client
 		// is waiting for those very replies before it sends more, and the
 		// two of us would wait for each other.
 		if err := s.arm(); err != nil {
@@ -293,7 +293,7 @@ func (s *tcpStream) flush() error {
 }
 
 // beforeRead prepares the connection for the next frame. While the fill
-// buffer still holds one, that is all it does — the frames of a burst are
+// buffer still holds one, that is all it does, the frames of a burst are
 // already in hand, so neither the staged replies nor the deadline need
 // touching. When the buffer is empty the connection is about to block:
 // the replies go out first, so a waiting client is never held by the
@@ -304,7 +304,7 @@ func (s *tcpStream) flush() error {
 // and the read below inherits the same bound at no extra cost.
 func (s *tcpStream) beforeRead(d time.Duration) error {
 	// A partial prefix is not a served frame waiting, it is a read about
-	// to block — and blocking with replies still staged is a deadlock in
+	// to block, and blocking with replies still staged is a deadlock in
 	// the making: the client waits for answers it has already earned
 	// while the server waits for the byte that would release them.
 	if s.framePrefixBuffered() {

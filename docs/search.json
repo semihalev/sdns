@@ -8,7 +8,7 @@ One entry per section rather than per page: a reader searching "shadow" wants
 the RPZ page's shadow-mode section, not the top of a 300-line document. Each
 entry carries the anchor, so a result lands on the heading it matched.
 
-Built from the rendered HTML, so it indexes exactly what the page shows —
+Built from the rendered HTML, so it indexes exactly what the page shows,
 including tables and code, which is where most of the answers on this site are.
 Fetched only when the search is first opened.
 {%- endcomment -%}

@@ -8,7 +8,7 @@ import "syscall"
 // machinery: a wildcard bind replies from the kernel-default source for
 // the destination, which is correct on single-homed hosts. Multihomed
 // wildcard deployments should bind specific addresses (the production
-// posture); Linux — the deployment target — carries the full machinery.
+// posture); Linux, the deployment target, carries the full machinery.
 // The engine's control-truncation drop path never fires here because no
 // control data is requested.
 

@@ -26,7 +26,7 @@ func (h *providerHandler) DNSSECCryptoLimiter() DNSSECCryptoLimiter {
 }
 
 // setterHandler implements QueryerSetter, PrefetchQueryerSetter,
-// and StoreSetter — used to pin that autoWire invokes all three.
+// and StoreSetter, used to pin that autoWire invokes all three.
 type setterHandler struct {
 	n      string
 	gotQ   Queryer
@@ -158,7 +158,7 @@ func TestAutoWire_TypedNilCryptoProviderDoesNotMaskUsableProvider(t *testing.T) 
 }
 
 // TestAutoWire_SetterWithoutProvider covers the
-// "StoreSetter present but no StoreProvider" warning path — the
+// "StoreSetter present but no StoreProvider" warning path, the
 // setter's store stays nil (no store wired).
 func TestAutoWire_SetterWithoutProvider(t *testing.T) {
 	Reset()

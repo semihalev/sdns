@@ -83,7 +83,7 @@ func serveBulk(t *testing.T, e *EDNS, udpSize uint16, b *bulkResponder) *dns.Msg
 }
 
 // TestTruncatedResponseIsMinimal pins RFC 6891 §7: the truncated response
-// is the header, the question, and the OPT record — nothing else.
+// is the header, the question, and the OPT record, nothing else.
 func TestTruncatedResponseIsMinimal(t *testing.T) {
 	e := truncateHarness(t)
 
@@ -109,7 +109,7 @@ func TestTruncatedResponseIsMinimal(t *testing.T) {
 
 // TestTruncationDropsAnOverflowingExtra pins the defect this change fixes:
 // when the additional section itself is what overflows, the truncated
-// message used to keep it — TC=1 on a message still larger than the
+// message used to keep it, TC=1 on a message still larger than the
 // client's buffer.
 func TestTruncationDropsAnOverflowingExtra(t *testing.T) {
 	e := truncateHarness(t)

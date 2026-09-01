@@ -26,7 +26,7 @@ func TestKubernetesMiddleware(t *testing.T) {
 					// Demo=true opts the middleware into its
 					// synthetic service registry so tests
 					// don't need a live cluster. Enabled
-					// stays false — an enabled+failed
+					// stays false, an enabled+failed
 					// deployment must not silently fall back
 					// to demo data in production.
 					Demo:          true,
@@ -146,7 +146,7 @@ func TestKubernetesMiddleware(t *testing.T) {
 // cluster-domain misses fell through to the next handler instead of
 // returning authoritative NXDOMAIN. With kubernetes ahead of cache
 // and resolver in the chain, that fall-through could leak a typo to
-// public DNS — most dangerous with custom cluster domains where the
+// public DNS, most dangerous with custom cluster domains where the
 // public namesake might exist.
 func TestServeDNSAuthoritativeNXDOMAIN(t *testing.T) {
 	cfg := &config.Config{
@@ -176,14 +176,14 @@ func TestServeDNSAuthoritativeNXDOMAIN(t *testing.T) {
 }
 
 // TestServeDNSSERVFAILWhenNotSynced pins the contract that
-// cluster-domain queries return SERVFAIL — not pass through —
+// cluster-domain queries return SERVFAIL, not pass through,
 // when the middleware is configured but the registry isn't ready
 // yet. Falling through could leak internal service names to
 // public DNS, especially with a custom cluster_domain that has a
 // real public namesake.
 func TestServeDNSSERVFAILWhenNotSynced(t *testing.T) {
 	// Build a Kubernetes middleware with a registry but no
-	// client and no demo data — ready() returns false.
+	// client and no demo data, ready() returns false.
 	k := &Kubernetes{
 		registry:      NewRegistry(),
 		clusterDomain: "cluster.local",
@@ -214,7 +214,7 @@ func TestServeDNSSERVFAILWhenNotSynced(t *testing.T) {
 // SERVFAIL change didn't accidentally extend to reverse queries.
 // The middleware never claims authority over in-addr.arpa /
 // ip6.arpa without operator-configured cluster CIDRs, so reverse
-// queries must always pass through — synced or not.
+// queries must always pass through, synced or not.
 func TestServeDNSReverseFallsThroughWhenNotSynced(t *testing.T) {
 	k := &Kubernetes{
 		registry:      NewRegistry(),

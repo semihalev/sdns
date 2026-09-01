@@ -10,8 +10,8 @@ const (
 )
 
 // The plan is derived because the machines differ. This checks the curve
-// at both ends — the router the author never saw and the server the
-// numbers were originally measured on — rather than the one value this
+// at both ends, the router the author never saw and the server the
+// numbers were originally measured on, rather than the one value this
 // build happens to compute here.
 func TestResourcePlanFollowsTheMachine(t *testing.T) {
 	cases := []struct {
@@ -33,7 +33,7 @@ func TestResourcePlanFollowsTheMachine(t *testing.T) {
 		},
 		{
 			// The container case: the cgroup is small, the host is not.
-			// Workers and sockets follow the memory, never the cores —
+			// Workers and sockets follow the memory, never the cores,
 			// measured on a 32-core box, where a 128MB scope was otherwise
 			// given 512 workers and a slab cap to match.
 			name:    "128MB cgroup on a 32-core host",
@@ -90,7 +90,7 @@ func TestResourcePlanFollowsTheMachine(t *testing.T) {
 	}
 }
 
-// The budget is charged what the bounds can actually cost — every slab
+// The budget is charged what the bounds can actually cost, every slab
 // class at its real allocator size, the large pairs included, both
 // stream engines counted. The old arithmetic priced only spares and
 // connections and understated a 64MiB TCP+DoT deployment by more than
@@ -240,7 +240,7 @@ func TestPlanIsServerLocal(t *testing.T) {
 	eSmall := newTCPEngine(echoHandler(), "tcp", 0, small)
 	eBig := newTCPEngine(echoHandler(), "tcp", 0, big)
 	if cap(eSmall.smallTokens) != 3 || cap(eBig.smallTokens) != 300 {
-		t.Fatalf("token caps %d/%d, want 3/300 — the engines are reading a shared plan",
+		t.Fatalf("token caps %d/%d, want 3/300, the engines are reading a shared plan",
 			cap(eSmall.smallTokens), cap(eBig.smallTokens))
 	}
 	if eSmall.maxConns != 3 || eBig.maxConns != 300 {

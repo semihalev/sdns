@@ -24,8 +24,8 @@ func systemMemoryBytes() uint64 {
 }
 
 // containerMemoryLimit is what this process is actually allowed to use,
-// which on a container host — or under systemd, which is the same
-// mechanism — is the only number that matters: the machine may have 64GB
+// which on a container host, or under systemd, which is the same
+// mechanism, is the only number that matters: the machine may have 64GB
 // and this unit 128MB of it.
 //
 // The limit is not a fixed file. It belongs to the cgroup this process is
@@ -33,8 +33,8 @@ func systemMemoryBytes() uint64 {
 // its mount (/proc/self/mountinfo), and then read together with its
 // ancestors: a limit set on a parent slice binds this process just as
 // tightly as one set on its own leaf, and the smallest of them is what
-// the kernel enforces. Reading only the mount root — which is what a
-// container sees, but not what a systemd unit does — misses exactly the
+// the kernel enforces. Reading only the mount root, which is what a
+// container sees, but not what a systemd unit does, misses exactly the
 // case that matters, and a process that misses its limit derives its
 // bounds from the host's memory and gets killed for it.
 //
@@ -47,7 +47,7 @@ func containerMemoryLimit() uint64 {
 
 // cgroupMount is one hierarchy as this process can reach it: where it is
 // visible, and which part of the hierarchy that mount exposes. The second
-// half is not decoration — a delegated or bind-mounted cgroup shows a
+// half is not decoration, a delegated or bind-mounted cgroup shows a
 // subtree, so a path read from /proc/self/cgroup is written in the
 // hierarchy's terms and has to be translated into the mount's before it
 // names a directory that exists.
@@ -60,8 +60,8 @@ type cgroupMount struct {
 // so the walk can be checked against a hierarchy built for the purpose.
 //
 // Every mount of a hierarchy is a candidate, not just the first one seen.
-// A machine regularly has several views of the same cgroups — a bind
-// mount, a container's own view, a namespace's — and only some of them
+// A machine regularly has several views of the same cgroups, a bind
+// mount, a container's own view, a namespace's, and only some of them
 // expose the subtree this process is in. Stopping at the first one and
 // falling back to its root when it does not match is how a process reads
 // a loose limit from a mount that does not describe it while the mount
@@ -106,7 +106,7 @@ func cgroupMemoryLimit(v2Mounts []cgroupMount, v2Path string, v1Mounts []cgroupM
 //
 // A mount rooted at "/" shows the whole hierarchy and the two are the
 // same. A mount rooted at a subtree shows only what is below it, so the
-// root prefix has to come off — appending the full path there would name
+// root prefix has to come off, appending the full path there would name
 // a directory that does not exist, the limit would read as absent, and
 // the bounds would come from the host's memory inside a service that
 // cannot have it.
@@ -115,10 +115,10 @@ func cgroupMemoryLimit(v2Mounts []cgroupMount, v2Path string, v1Mounts []cgroupM
 // path outside it cannot be reached here: that is a cgroup namespace
 // describing itself in terms this mount does not share. The mount point
 // is still returned, because with no better mount anywhere it is the
-// closest readable thing — but the caller prefers a mount that maps.
+// closest readable thing, but the caller prefers a mount that maps.
 func cgroupRelPath(m cgroupMount, cgroupPath string) (string, bool) {
 	// A path that climbs is a namespace naming a cgroup above its own
-	// root — outside anything a mount in this namespace exposes. Clean
+	// root, outside anything a mount in this namespace exposes. Clean
 	// would silently rewrite it into a sibling that exists but is not
 	// this process, and the sibling's limit is not ours to read.
 	if hasDotDot(cgroupPath) {
@@ -193,7 +193,7 @@ func hasDotDot(p string) bool {
 // unescapeMountField decodes the octal escapes mountinfo uses for the
 // characters that would break its whitespace-separated format: \040
 // space, \011 tab, \012 newline, \134 backslash. A mount path with a
-// space in it is otherwise read with the escape still inside — it names
+// space in it is otherwise read with the escape still inside, it names
 // no directory, the limit reads as absent, and the bounds fall back to
 // the host's memory.
 func unescapeMountField(s string) string {

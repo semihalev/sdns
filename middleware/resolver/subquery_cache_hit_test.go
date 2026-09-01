@@ -10,7 +10,7 @@ import (
 )
 
 // stubHitStore implements middleware.Store and always returns the
-// pre-configured response on Get — exercises the cache-hit early
+// pre-configured response on Get, exercises the cache-hit early
 // return in subQuery without needing a running resolver.
 type stubHitStore struct {
 	resp *dns.Msg
@@ -29,7 +29,7 @@ func (s *stubHitStore) SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.
 }
 
 // TestSubQueryReturnsCacheHit pins that subQuery short-circuits on
-// store.Get success — no call to r.resolve, no authoritative
+// store.Get success, no call to r.resolve, no authoritative
 // dispatch. The DS/DNSKEY hot path relies on this: once the first
 // client query primes the cache, subsequent validations of the
 // same zone skip the full recursion.

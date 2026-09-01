@@ -28,8 +28,8 @@ func Test_BlockList(t *testing.T) {
 	// aren't polluted.
 	_ = os.RemoveAll(cfg.BlockListDir)
 
-	// The registry is process-wide, so a second run in the same process —
-	// go test -count=2, say — would otherwise panic on re-registration.
+	// The registry is process-wide, so a second run in the same process,
+	// go test -count=2, say, would otherwise panic on re-registration.
 	middleware.Reset()
 	t.Cleanup(middleware.Reset)
 	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return New(cfg) })
@@ -217,8 +217,8 @@ func Test_BlockList_Wildcard(t *testing.T) {
 
 // Test_BlockList_Issue478 loads a plain-domain list (hagezi
 // "*-onlydomains.txt" style: bare domains, no "*." prefix) through the
-// on-disk blocklist path and verifies that subdomains — what devices
-// actually query — are blocked, not just the apex.
+// on-disk blocklist path and verifies that subdomains, what devices
+// actually query, are blocked, not just the apex.
 func Test_BlockList_Issue478(t *testing.T) {
 	dir := filepath.Join(os.TempDir(), "sdns_temp_issue478")
 	if err := os.RemoveAll(dir); err != nil {
@@ -249,7 +249,7 @@ func Test_BlockList_Issue478(t *testing.T) {
 		t.Errorf("blocklist.Exists('kuyun.com.') is false")
 	}
 
-	// Subdomains are blocked too — the actual fix for #478.
+	// Subdomains are blocked too, the actual fix for #478.
 	if !(blocklist.Exists("tracking.miui.net.")) {
 		t.Errorf("blocklist.Exists('tracking.miui.net.') is false")
 	}
@@ -351,7 +351,7 @@ func Test_BlockList_Batch(t *testing.T) {
 	// a.example added once, b.example, *.evil.com → 4 calls all
 	// reach the map; setLocked returns true for each. The count is
 	// "calls that took effect" rather than "unique keys", which is
-	// fine for the API caller — they get what they asked for.
+	// fine for the API caller, they get what they asked for.
 	if !reflect.DeepEqual(4, added) {
 		t.Errorf("added = %v, want %v", added, 4)
 	}
@@ -398,7 +398,7 @@ func Test_BlockList_Batch(t *testing.T) {
 // issue reporter cared about: a mutation does not block a
 // concurrent ServeDNS read on the blocklist's mu, even when the
 // disk write under saveMu takes time. We can't reliably make the
-// disk slow in CI, so we instead pin the contract structurally —
+// disk slow in CI, so we instead pin the contract structurally,
 // holding saveMu in the test and confirming a mutation acquires
 // b.mu, returns, and releases it without ever waiting on the
 // disk-side lock.
@@ -431,7 +431,7 @@ func Test_BlockList_NoStallDuringSave(t *testing.T) {
 	case <-done:
 		// expected: the read returned without waiting for saveMu.
 	case <-time.After(2 * time.Second):
-		t.Fatal("ServeDNS-style RLock blocked while saveMu was held — disk I/O is back inside the map lock")
+		t.Fatal("ServeDNS-style RLock blocked while saveMu was held, disk I/O is back inside the map lock")
 	}
 }
 
@@ -450,7 +450,7 @@ func Test_BlockList_WhitelistHierarchy(t *testing.T) {
 		t.Errorf("%s: b.Exists('sub.example.com.') is false", "subdomain blocked before whitelist")
 	}
 
-	// Whitelist the parent — subtree is now exempt.
+	// Whitelist the parent, subtree is now exempt.
 	b.w[dns.CanonicalName("example.com.")] = true
 	if b.Exists("sub.example.com.") {
 		t.Errorf("%s: b.Exists('sub.example.com.') is true", "parent whitelist must exempt subdomain")
@@ -546,7 +546,7 @@ func Test_BlockList_PersistOrdering(t *testing.T) {
 
 // Test_BlockList_EntriesGauge pins dns_blocklist_entries to the live map
 // contents. The gauge exists so operators can alert on a list that failed
-// to load or was emptied by a bad update — cases where the hits counter
+// to load or was emptied by a bad update, cases where the hits counter
 // stays at zero and looks indistinguishable from "nothing matched". A
 // gauge captured once at load time would miss exactly those regressions,
 // so this asserts it tracks mutations too.

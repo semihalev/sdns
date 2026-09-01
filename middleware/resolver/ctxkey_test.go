@@ -32,7 +32,7 @@ func Test_checkLoop_DnameDepthNoCollision(t *testing.T) {
 		t.Error("checkLoop panicked")
 	}
 
-	// The DNAME depth is untouched — the two keys are distinct.
+	// The DNAME depth is untouched, the two keys are distinct.
 	depth, _ := ctx.Value(contextKeyDnameDepth).(int)
 	if !reflect.DeepEqual(3, depth) {
 		t.Errorf("depth = %v, want %v", depth, 3)

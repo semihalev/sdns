@@ -32,7 +32,7 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		{"nullroute", Config{Nullroute: "not-an-ip"}, "nullroute"},
 		{"accesslist", Config{AccessList: []string{"999.999.999.999/99"}}, "accesslist"},
 		// The access list is parsed with netip.ParsePrefix alone, so a bare
-		// address is dropped at startup — and if it is the only entry the
+		// address is dropped at startup, and if it is the only entry the
 		// allow set ends up empty, blocking every client.
 		{"accesslist bare IP", Config{AccessList: []string{"192.0.2.1"}}, "accesslist"},
 		// Documented for years, never implemented: startup rejects it.
@@ -127,8 +127,8 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 
 // TestLoadRecordsUndecodedKeys pins the upgrade path: a key this version no
 // longer has, or a typo, takes no effect and must be reported rather than
-// silently ignored. Load only records it — refusing to start over a stale key
-// would turn an upgrade into an outage — and `sdns -t` fails on it.
+// silently ignored. Load only records it, refusing to start over a stale key
+// would turn an upgrade into an outage, and `sdns -t` fails on it.
 func TestLoadRecordsUndecodedKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
@@ -264,7 +264,7 @@ func TestValidateNegativeECSCacheLimit(t *testing.T) {
 // fails every signature it is asked to verify.
 //
 // The accepted cases carry real key material. Truncated material is what an
-// earlier version of this test used, and it passed — the check was only
+// earlier version of this test used, and it passed, the check was only
 // reading the algorithm, so a key of the right algorithm and the wrong shape
 // went through.
 func TestValidateRootKeyAlgorithm(t *testing.T) {
@@ -318,7 +318,7 @@ func TestValidateRootKeyAlgorithm(t *testing.T) {
 
 // TestLoadReportsUnknownKeysAlongsideValueProblems pins the second half of the
 // one-pass promise. The keys are recorded before the gate, but Load returns no
-// Config when validation fails — so without this they reached the operator
+// Config when validation fails, so without this they reached the operator
 // only as a log line, and fixing the value meant a second run to discover the
 // key.
 func TestLoadReportsUnknownKeysAlongsideValueProblems(t *testing.T) {
@@ -338,7 +338,7 @@ func TestLoadReportsUnknownKeysAlongsideValueProblems(t *testing.T) {
 	}
 	for _, want := range []string{"nullroute", "maxdepth_old"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Load() = %v\nmissing %q — the operator would need a second run", err, want)
+			t.Fatalf("Load() = %v\nmissing %q, the operator would need a second run", err, want)
 		}
 	}
 }
@@ -452,7 +452,7 @@ func TestValidateMirrorsRuntimeTrimming(t *testing.T) {
 
 // TestValidateSkipsDisabledFeatures pins the upgrade path. Both constructors
 // return before reading another field when the feature is off, so a stale
-// value under a disabled section has no effect — and refusing to start over it
+// value under a disabled section has no effect, and refusing to start over it
 // would turn an upgrade into an outage.
 func TestValidateSkipsDisabledFeatures(t *testing.T) {
 	stale := &Config{
@@ -516,7 +516,7 @@ func TestValidatePathKinds(t *testing.T) {
 		t.Fatalf("Validate() = %v, want a directory rejected as hostsfile", err)
 	}
 
-	// Absent is fine — the server creates it — but a file at the path is not,
+	// Absent is fine, the server creates it, but a file at the path is not,
 	// because the Mkdir that follows fails on it.
 	if err := (&Config{Directory: filepath.Join(dir, "not-there")}).Validate(); err != nil {
 		t.Fatalf("Validate() rejected a directory the server would create: %v", err)
@@ -591,7 +591,7 @@ func TestValidateSilentlyAdjustedNumbers(t *testing.T) {
 }
 
 // TestLoadValidatesQnameBeforeNormalizing pins the ordering. Normalizing folds
-// a negative count to zero — which turns minimization off — so running it
+// a negative count to zero, which turns minimization off, so running it
 // first handed Validate the settled value and hid what the file said.
 func TestLoadValidatesQnameBeforeNormalizing(t *testing.T) {
 	dir := t.TempDir()
@@ -616,7 +616,7 @@ func TestValidateForwardZoneReportsNameAndServers(t *testing.T) {
 	}
 	for _, want := range []string{"has no name", "has no servers"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Validate() = %v\nmissing %q — one entry, one run", err, want)
+			t.Fatalf("Validate() = %v\nmissing %q, one entry, one run", err, want)
 		}
 	}
 }
@@ -650,7 +650,7 @@ func TestValidateURLsNeedAHostname(t *testing.T) {
 
 // TestLoadTreatsOmittedDNSSECAsOn pins the effective value, not the written
 // one. Load fills an omitted dnssec in as "on", so a file naming neither it
-// nor a trust anchor runs with validation on and nothing to anchor to — every
+// nor a trust anchor runs with validation on and nothing to anchor to, every
 // validated answer then fails closed. The defaulting used to run after the
 // gate, which is how the anchor check saw "off" and let the file through.
 func TestLoadTreatsOmittedDNSSECAsOn(t *testing.T) {
@@ -927,8 +927,8 @@ func TestValidateKubernetesDemoCountsAsEnabled(t *testing.T) {
 }
 
 // TestValidateLeavesListenerHostAlone pins a deliberate absence. A literal may
-// name an address this machine does not hold yet — that is how a floating
-// address is served, and rejecting it would refuse a working HA config — and
+// name an address this machine does not hold yet, that is how a floating
+// address is served, and rejecting it would refuse a working HA config, and
 // whether a name resolves is a runtime question of the same class as whether
 // an upstream answers.
 func TestValidateLeavesListenerHostAlone(t *testing.T) {
@@ -983,7 +983,7 @@ func TestLoadRequiresWhatOnlyAFileNeeds(t *testing.T) {
 
 	// Forwarding is not an exemption. The resolver is built either way and
 	// its background goroutine primes the root as soon as the middleware is
-	// ready, so an empty list stops the process before a query arrives —
+	// ready, so an empty list stops the process before a query arrives,
 	// keeping the resolver out of the query path is not keeping it out of
 	// the process.
 	dir := t.TempDir()
@@ -1055,7 +1055,7 @@ func TestUsablePortUsesTheNetworksGiven(t *testing.T) {
 		t.Fatalf("usablePort() rejected a service name both protocols know: %v", err)
 	}
 	// No networks means nothing to check, which is not a silent pass for a
-	// port that cannot resolve — every caller names at least one.
+	// port that cannot resolve, every caller names at least one.
 	if n, err := usablePort("65536", "udp"); err == nil {
 		t.Fatalf("usablePort() = %d, want an out-of-range port refused", n)
 	}
@@ -1268,7 +1268,7 @@ func TestValidateEd25519Points(t *testing.T) {
 		name string
 		key  []byte
 	}{
-		// Below the field prime, so it decodes — and still not a point on
+		// Below the field prime, so it decodes, and still not a point on
 		// the curve. This is the case a canonical-encoding test misses.
 		{"canonical y=2, not on the curve", yEncoding(big.NewInt(2))},
 		// p+2: above the prime, so no decoder accepts it.
@@ -1297,7 +1297,7 @@ func TestValidateEd25519Points(t *testing.T) {
 func TestValidateAccessLogDanglingSymlink(t *testing.T) {
 	dir := t.TempDir()
 	// The link points into a directory that is not there, so the open that
-	// creates the file fails — but Stat calls the link itself absent, which
+	// creates the file fails, but Stat calls the link itself absent, which
 	// read as an ordinary missing file.
 	link := filepath.Join(dir, "a.log")
 	if err := os.Symlink(filepath.Join(dir, "gone", "real.log"), link); err != nil {
@@ -1365,7 +1365,7 @@ func TestValidateRoot6ServersFollowIPv6Access(t *testing.T) {
 // TestValidateWildcardBelongsToTheBlocklist pins which list reads the star.
 // set() strips "*." and files the rest as a wildcard block; the whitelist is
 // stored verbatim and matched up the hierarchy, so a star there is a literal
-// label no query produces — and the operator who wrote it, meaning to exempt
+// label no query produces, and the operator who wrote it, meaning to exempt
 // the subdomains, gets nothing.
 func TestValidateWildcardBelongsToTheBlocklist(t *testing.T) {
 	if err := (&Config{Blocklist: []string{"*.example.com"}}).Validate(); err != nil {
@@ -1385,7 +1385,7 @@ func TestValidateWildcardBelongsToTheBlocklist(t *testing.T) {
 
 func TestValidateTrailingSlashDirectory(t *testing.T) {
 	dir := t.TempDir()
-	// Dir("/parent/db/") is "/parent/db" — the path itself, which read as a
+	// Dir("/parent/db/") is "/parent/db", the path itself, which read as a
 	// parent that is not there. os.Mkdir takes the trailing slash fine.
 	withSlash := filepath.Join(dir, "db") + string(filepath.Separator)
 	if err := (&Config{Directory: withSlash}).Validate(); err != nil {
@@ -1418,7 +1418,7 @@ func TestValidateEmptyZonesMustBeServedLocally(t *testing.T) {
 }
 
 // TestValidateAccessLogTrailingSlash pins that a file path keeps the meaning
-// of its trailing separator. Cleaning it away — which a directory path wants —
+// of its trailing separator. Cleaning it away, which a directory path wants,
 // took the parent from one level too high and passed a name os.OpenFile
 // refuses, leaving access logging quietly switched off.
 func TestValidateAccessLogTrailingSlash(t *testing.T) {
@@ -1444,7 +1444,7 @@ func TestValidateAccessLogTrailingSlash(t *testing.T) {
 
 // TestValidateAccessLogSymlinkShape pins the two ways a link can name a
 // directory without looking like one. Join cleans a trailing separator off a
-// relative target, and a chain hides the shape of its final hop — in both
+// relative target, and a chain hides the shape of its final hop, in both
 // cases os.OpenFile refuses the name and access logging silently goes off.
 func TestValidateAccessLogSymlinkShape(t *testing.T) {
 	for _, tc := range []struct {
@@ -1515,7 +1515,7 @@ func TestValidateAccessLogSymlinkLoop(t *testing.T) {
 // TestValidateRootKeysOnlyWhereUsed pins that a record's meaning is judged
 // only where something reads it. NewResolver parses every rootkey whatever
 // the settings, but nothing asks what one means unless validation or the
-// hyperlocal root does — so a stale entry under dnssec = "off" has no effect
+// hyperlocal root does, so a stale entry under dnssec = "off" has no effect
 // and must not stop the server.
 func TestValidateRootKeysOnlyWhereUsed(t *testing.T) {
 	stale := []string{". 172800 IN A 192.0.2.1"} // parses, and is not a DNSKEY
@@ -1544,9 +1544,9 @@ func TestValidateRootKeysOnlyWhereUsed(t *testing.T) {
 }
 
 // TestValidateRootForwardZoneNeedsNoAnchor pins the exemption. A forward zone
-// at the root covers every name — ForwardZoneFor matches on IsSubDomain, and
+// at the root covers every name, ForwardZoneFor matches on IsSubDomain, and
 // the handler hands the query on by the same early return a global forwarder
-// takes — so nothing validates locally and no anchor is needed.
+// takes, so nothing validates locally and no anchor is needed.
 func TestValidateRootForwardZoneNeedsNoAnchor(t *testing.T) {
 	root := &Config{
 		DNSSEC:       "on",
@@ -1580,7 +1580,7 @@ func TestValidateRootForwardZoneNeedsNoAnchor(t *testing.T) {
 
 func TestValidateOutboundIPv6ListSkippedWhole(t *testing.T) {
 	// The runtime does not read this list at all without v6, so nothing in
-	// it — not even a value that is not an address — can matter.
+	// it, not even a value that is not an address, can matter.
 	stale := &Config{OutboundIP6s: []string{"stale-value", "192.0.2.1"}}
 	if err := stale.Validate(); err != nil {
 		t.Fatalf("Validate() read outboundip6s with ipv6access off: %v", err)
@@ -1639,7 +1639,7 @@ func TestValidateAcceptsPathsWhoseComponentsExist(t *testing.T) {
 // TestValidateHyperlocalNeedsAnAnchor pins that hyperlocal is not covered by
 // the DNSSEC rule. The manager verifies every transfer against these keys and
 // gives up on each refresh while there are none, so with an empty set the
-// feature never loads the zone at all — whatever dnssec says.
+// feature never loads the zone at all, whatever dnssec says.
 func TestValidateHyperlocalNeedsAnAnchor(t *testing.T) {
 	bare := &Config{DNSSEC: "off", HyperlocalRoot: true}
 	if err := bare.Validate(); err == nil ||
@@ -1672,7 +1672,7 @@ func TestValidateAccessLogLongChain(t *testing.T) {
 	dir := t.TempDir()
 
 	// Twenty hops is well inside what a system follows, so Stat resolves the
-	// whole chain and reports the final target as absent — which means the
+	// whole chain and reports the final target as absent, which means the
 	// chase here has to walk all twenty to find where the file would go. A
 	// shorter bound would stop partway and hand back a path that is itself
 	// another link, whose parent is this directory and exists.
@@ -1705,8 +1705,8 @@ func TestValidateAccessLogLongChain(t *testing.T) {
 }
 
 // TestPathHandlingOnBothPlatforms exercises the join branch this platform does
-// not take. It covers the part that is pure string handling — whether a
-// directory-shaped target stays directory-shaped — because that is the half a
+// not take. It covers the part that is pure string handling, whether a
+// directory-shaped target stays directory-shaped, because that is the half a
 // flag can decide.
 //
 // What a missing component means cannot be simulated: the answer comes from
@@ -1737,7 +1737,7 @@ func TestPathHandlingOnBothPlatforms(t *testing.T) {
 
 // TestLoadAcceptsPathsUnderThePendingDirectory pins the first-run case. Load
 // creates the working directory just after this gate, so a path whose parent
-// is that directory is one the server will be able to make — refusing it made
+// is that directory is one the server will be able to make, refusing it made
 // a fresh install impossible to start.
 func TestLoadAcceptsPathsUnderThePendingDirectory(t *testing.T) {
 	for _, tc := range []struct {
@@ -1801,7 +1801,7 @@ func TestValidateBlocklistDirNeedNotBeWritable(t *testing.T) {
 
 // TestValidateRevokedAnchorIsAllowed pins RFC 5011 section 2.1 seeding. AutoTA
 // records an admin-configured revoked key as a tombstone so the revocation
-// survives a restart, and keeps it out of the active set — so it is a legal
+// survives a restart, and keeps it out of the active set, so it is a legal
 // entry that does not count as an anchor.
 func TestValidateRevokedAnchorIsAllowed(t *testing.T) {
 	const revoked = ". 172800 IN DNSKEY 385 3 13 " + testP256
@@ -1813,7 +1813,7 @@ func TestValidateRevokedAnchorIsAllowed(t *testing.T) {
 	}
 
 	// On its own it leaves nothing to validate with, which the anchor rule
-	// reports — the revoked key itself is not the problem.
+	// reports, the revoked key itself is not the problem.
 	alone := &Config{DNSSEC: "on", RootKeys: []string{revoked}}
 	err := alone.Validate()
 	if err == nil || !strings.Contains(err.Error(), "no usable root trust anchor") {
@@ -1934,8 +1934,8 @@ func TestValidatePendingDirectoryKeepsPathRules(t *testing.T) {
 // The access list, the views and the ECS policy all reach netip.ParsePrefix,
 // which refuses a leading zero in the bits after the slash; dns64 parses with
 // net.ParseCIDR, which takes it. Judging them all the same way would either
-// pass an access-list entry the runtime drops — leaving an empty allow set
-// that blocks every client — or refuse a dns64 prefix that works.
+// pass an access-list entry the runtime drops, leaving an empty allow set
+// that blocks every client, or refuse a dns64 prefix that works.
 func TestValidateCIDRMatchesEachConsumer(t *testing.T) {
 	const leadingZero = "10.0.0.0/08"
 
@@ -1979,7 +1979,7 @@ func TestValidateCIDRMatchesEachConsumer(t *testing.T) {
 
 // TestValidatePortZeroFollowsTransportCount pins where asking the kernel for a
 // free port is safe. Each socket asks separately, so a setting that opens two
-// transports would get two different ports — a truncated UDP answer with no
+// transports would get two different ports, a truncated UDP answer with no
 // TCP to fall back to, and DoH advertising ":0" as its HTTP/3 port. A setting
 // that opens one socket has nothing to disagree with.
 func TestValidatePortZeroFollowsTransportCount(t *testing.T) {
@@ -2022,7 +2022,7 @@ func TestValidatePortZeroFollowsTransportCount(t *testing.T) {
 // TestValidateRejectsMappedPrefixes pins that an IPv4-mapped prefix is refused
 // where it would match nobody. internal/ipset files it under IPv6 while an
 // IPv4 client is unmapped and looked up under IPv4, and ECS compares prefix to
-// address where the families disagree — either way the rule is dead, and as
+// address where the families disagree, either way the rule is dead, and as
 // the only access-list entry it leaves an allow set that blocks everyone.
 func TestValidateRejectsMappedPrefixes(t *testing.T) {
 	const mapped = "::ffff:192.0.2.0/120"
@@ -2074,7 +2074,7 @@ func TestValidateRejectsMappedPrefixes(t *testing.T) {
 // TestValidatePortNameMustAgreeAcrossTransports pins the split a service name
 // can carry. "raid-am" is 2007 over UDP and 2013 over TCP on a Mac, so a
 // setting that opens both would answer on one number and wait for the
-// fallback on the other — the same break that makes port 0 unusable there.
+// fallback on the other, the same break that makes port 0 unusable there.
 func TestValidatePortNameMustAgreeAcrossTransports(t *testing.T) {
 	original := lookupPort
 	defer func() { lookupPort = original }()
@@ -2118,7 +2118,7 @@ func TestValidatePortNameMustAgreeAcrossTransports(t *testing.T) {
 
 // TestValidateRelativeAndAbsoluteAreOnePlace pins that a relative working
 // directory and an absolute log path under it are recognised as the same
-// place. Nothing chdirs, so "db" resolves against the process's directory —
+// place. Nothing chdirs, so "db" resolves against the process's directory,
 // and on a first run the log's parent is one the server is about to make.
 func TestValidateRelativeAndAbsoluteAreOnePlace(t *testing.T) {
 	dir := t.TempDir()

@@ -31,7 +31,7 @@ func wireAS112Request(t *testing.T, qname string, qtype uint16) *middleware.Requ
 }
 
 // TestAS112WireLegitimateReverseStaysUndecoded pins the point: a PTR under
-// a delegated (non-empty) reverse zone — a third of real traffic — passes
+// a delegated (non-empty) reverse zone, a third of real traffic, passes
 // through without being materialized.
 func TestAS112WireLegitimateReverseStaysUndecoded(t *testing.T) {
 	a := New(new(config.Config))
@@ -119,7 +119,7 @@ func TestAS112WireHitParity(t *testing.T) {
 }
 
 // TestAS112WireDSSingleLabel: a DS query for a name whose only label is
-// arpa-suffixed walks the parent — the root — and must pass through.
+// arpa-suffixed walks the parent, the root, and must pass through.
 func TestAS112WireDSSingleLabel(t *testing.T) {
 	a := New(new(config.Config))
 
@@ -140,7 +140,7 @@ func TestAS112WireDSSingleLabel(t *testing.T) {
 }
 
 // TestAS112WireEscapedDotNoFalseMatch: a single label whose bytes spell an
-// empty zone with embedded dots must not match — the suffix walk works on
+// empty zone with embedded dots must not match, the suffix walk works on
 // label boundaries, not rendered dots.
 func TestAS112WireEscapedDotNoFalseMatch(t *testing.T) {
 	a := New(new(config.Config))
@@ -152,7 +152,7 @@ func TestAS112WireEscapedDotNoFalseMatch(t *testing.T) {
 	})
 
 	// One label containing "10.in-addr" (dots inside), then "arpa": the
-	// canonical form renders 10\.in-addr.arpa. — never the zone key.
+	// canonical form renders 10\.in-addr.arpa., never the zone key.
 	raw := []byte{
 		0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		10, '1', '0', '.', 'i', 'n', '-', 'a', 'd', 'd', 'r',
@@ -177,7 +177,7 @@ func TestAS112WireEscapedDotNoFalseMatch(t *testing.T) {
 }
 
 // TestAS112ConfigZoneCaseNormalized: a mixed-case emptyzones entry must
-// serve — the old dns.Fqdn storage left it a dead key that neither path
+// serve, the old dns.Fqdn storage left it a dead key that neither path
 // could ever match.
 func TestAS112ConfigZoneCaseNormalized(t *testing.T) {
 	cfg := new(config.Config)

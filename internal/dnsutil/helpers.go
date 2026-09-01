@@ -36,7 +36,7 @@ func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
 //
 // When `policy` is non-nil, enabled, and allows the supplied client, the
 // client's EDNS Client Subnet option (RFC 7871) is preserved on the
-// outgoing OPT instead of stripped — clamped to the policy's source-
+// outgoing OPT instead of stripped, clamped to the policy's source-
 // prefix ceiling. Every other client-supplied option is still dropped.
 // A nil policy or an empty client address means strip everything, which
 // matches SDNS's historical behaviour and the privacy-first default.
@@ -192,7 +192,7 @@ func explicitDNSSECType(msg *dns.Msg) uint16 {
 // drop returns false. When nothing needs dropping the input is returned
 // unchanged (zero allocation, hot path for non-DNSSEC responses). When
 // a drop is required a new slice is returned so the caller's backing
-// array is never mutated — the incoming Msg may share its Answer/Ns
+// array is never mutated, the incoming Msg may share its Answer/Ns
 // storage with a cache entry (see middleware/cache.NewCacheEntryWithKey)
 // and in-place edits would corrupt the cache.
 func filterOut(rrs []dns.RR, drop func(dns.RR) bool) []dns.RR {

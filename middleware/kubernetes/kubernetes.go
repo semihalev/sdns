@@ -2,7 +2,7 @@
 // It answers cluster-domain queries (services, pods, SRV, PTR) from
 // a sharded in-memory registry populated by Kubernetes informers.
 // ResolveQuery is a single sharded map lookup plus a slice-header
-// copy — zero allocations per query.
+// copy, zero allocations per query.
 package kubernetes
 
 import (
@@ -52,7 +52,7 @@ func New(cfg *config.Config) *Kubernetes {
 	}
 
 	if cfg.Kubernetes.KillerMode {
-		zlog.Warn("kubernetes.killer_mode is deprecated and now a no-op — remove the field from your config")
+		zlog.Warn("kubernetes.killer_mode is deprecated and now a no-op, remove the field from your config")
 	}
 
 	// Normalise so suffix matching works regardless of how the
@@ -79,7 +79,7 @@ func New(cfg *config.Config) *Kubernetes {
 		client, err := NewClient(cfg.Kubernetes.Kubeconfig, k.registry)
 		if err != nil {
 			// Deliberate: don't fall back to demo data on a
-			// live-integration failure — synthetic answers
+			// live-integration failure, synthetic answers
 			// would hide the misconfiguration.
 			zlog.Error("Failed to connect to Kubernetes API",
 				zlog.String("error", err.Error()),
@@ -146,7 +146,7 @@ func (k *Kubernetes) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	// Unsynced cluster-domain queries SERVFAIL rather than fall
-	// through — falling through would leak internal names to
+	// through, falling through would leak internal names to
 	// public DNS. Reverse-zone queries still pass through since we
 	// don't claim authority over in-addr.arpa / ip6.arpa.
 	if !k.ready() {

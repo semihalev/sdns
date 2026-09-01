@@ -11,8 +11,8 @@ that keeps referring, a zone whose nameservers all need resolving themselves, a
 signature set crafted to be expensive to verify. Timeouts bound how *long* that
 takes but not how much work it consumes.
 
-The recursion firewall bounds the work itself, across the complete request tree
-— retries and nested resolver-generated queries included.
+The recursion firewall bounds the work itself, across the complete request tree,
+retries and nested resolver-generated queries included.
 
 ```toml
 [recursion_firewall]
@@ -37,7 +37,7 @@ max_internal_queries = 32    # resolver-generated child queries
 
 An outbound attempt is one packet to one server; retries and UDP-to-TCP
 fallbacks each consume another. An internal query is one the resolver generated
-for itself — a cache-missed DS or DNSKEY, a nameserver address lookup, an alias
+for itself: a cache-missed DS or DNSKEY, a nameserver address lookup, an alias
 chase. `0` means "use the default" for both; to disable accounting use
 `mode = "off"`.
 
@@ -53,7 +53,7 @@ max_concurrent_crypto      = 32   # crypto operations in flight, server-wide
 The first two bound one verification; the next three bound the whole request
 tree; the last bounds the server. Calibrate them from the
 `dnssec_work_per_request` histogram, and pay particular attention to the NSEC3
-p99 — NSEC3 hashing is the operation an attacker can most cheaply make expensive.
+p99, NSEC3 hashing is the operation an attacker can most cheaply make expensive.
 
 ## Failure caching (RFC 9520)
 
@@ -84,4 +84,4 @@ dns_resolution_shed_total                 resolutions abandoned
 
 In shadow mode, `dns_recursion_firewall_exhaustions_total` is exactly the set of
 requests `enforce` would have failed. If it is nonzero for ordinary traffic, the
-limit is too low for your workload — raise it before enforcing, not after.
+limit is too low for your workload, raise it before enforcing, not after.

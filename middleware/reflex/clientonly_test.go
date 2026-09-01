@@ -7,7 +7,7 @@ import (
 )
 
 // TestClientOnly pins Reflex's ClientOnly() == true so
-// middleware.autoWire keeps it out of internal sub-pipelines —
+// middleware.autoWire keeps it out of internal sub-pipelines,
 // amplification-detection heuristics don't apply to sub-queries.
 func TestClientOnly(t *testing.T) {
 	r := New(&config.Config{})

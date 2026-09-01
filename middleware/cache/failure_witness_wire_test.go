@@ -56,7 +56,7 @@ func TestFailureMissWitnessLifecycle(t *testing.T) {
 		t.Fatal("nil witness held with a denial zone on the path")
 	}
 	if !s.denialProofs.missWitnessHoldsWire(offPath.WireName(), dns.ClassINET, nil) {
-		t.Fatal("nil witness did not hold off-path — no zone could deny this name")
+		t.Fatal("nil witness did not hold off-path, no zone could deny this name")
 	}
 
 	// Any admission to an on-path zone replaces its snapshot: the old
@@ -140,7 +140,7 @@ func TestWireFailureServeWitnessGate(t *testing.T) {
 	// exist, just not for the failing name's path.
 	witnessTestProof(t, c.store, "sig.test.", "glib.sig.test.", "help.sig.test.")
 
-	// Tier 1: no denial zone on the failing name's path — no witness
+	// Tier 1: no denial zone on the failing name's path, no witness
 	// needed, the byte path serves outright (the lookup-time walk
 	// re-establishes that nothing could deny the name).
 	offReq := new(dns.Msg)
@@ -150,7 +150,7 @@ func TestWireFailureServeWitnessGate(t *testing.T) {
 		t.Fatal("off-path failure materialized despite no denial zone on its path")
 	}
 
-	// Tier 2: a denial zone on the path — the record-time witness lets
+	// Tier 2: a denial zone on the path, the record-time witness lets
 	// the byte path serve.
 	onReq := new(dns.Msg)
 	onReq.SetQuestion("down.sig.test.", dns.TypeA)
@@ -177,14 +177,14 @@ func TestWireFailureServeWitnessGate(t *testing.T) {
 	}
 
 	// Denial state moves: the witness breaks, and the same query must
-	// fall to the Msg path — same SERVFAIL, different composer.
+	// fall to the Msg path, same SERVFAIL, different composer.
 	witnessTestProof(t, c.store, "sig.test.", "mo.sig.test.", "mu.sig.test.")
 	if serveFailureThrough(t, c, e, "down.sig.test.", false) {
 		t.Fatal("stale-witness failure served from bytes; the Msg ladder owns this decision now")
 	}
 
 	// CD skips shared denial on both ladders, so a CD failure serves from
-	// bytes with no witness at all — zone state on the path included.
+	// bytes with no witness at all, zone state on the path included.
 	cdReq := new(dns.Msg)
 	cdReq.SetQuestion("checking.sig.test.", dns.TypeA)
 	cdReq.CheckingDisabled = true
@@ -197,7 +197,7 @@ func TestWireFailureServeWitnessGate(t *testing.T) {
 // TestWitnessThreadsThroughLadder drives the real mechanism end to end:
 // the first pass misses through ServeDNS (witness captured at the rung,
 // stashed on the writer), the terminal SERVFAILs (write-back records with
-// that witness), and the second pass must serve the failure from bytes —
+// that witness), and the second pass must serve the failure from bytes,
 // something only a genuinely threaded witness allows with a denial zone
 // on the path.
 func TestWitnessThreadsThroughLadder(t *testing.T) {
@@ -247,7 +247,7 @@ func TestWitnessThreadsThroughLadder(t *testing.T) {
 // SERVFAIL write-back must leave the recorded witness stale, so the
 // second pass declines to the Msg path. A witness re-derived at record
 // time would pin the fresh snapshot instead and wrongly serve from
-// bytes — the exact bug class the rung-time capture exists to prevent.
+// bytes, the exact bug class the rung-time capture exists to prevent.
 func TestWitnessCapturedAtRungNotAtRecord(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.RateLimit = 0

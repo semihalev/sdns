@@ -3,7 +3,7 @@ layout: doc
 title: Kubernetes
 category: Features
 order: 8
-description: Serving cluster DNS — services, pods, SRV and PTR — from the Kubernetes API.
+description: Serving cluster DNS (services, pods, SRV and PTR) from the Kubernetes API.
 ---
 
 ```toml
@@ -60,5 +60,5 @@ dns_kubernetes_write_errors_total failures writing the response
 ```
 
 `dns_kubernetes_errors_total` rising usually means the API connection has gone
-away — an expired service account token, or RBAC that no longer permits the
+away, an expired service account token, or RBAC that no longer permits the
 watches.

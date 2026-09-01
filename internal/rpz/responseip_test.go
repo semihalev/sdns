@@ -111,7 +111,7 @@ rpz.test. IN SOA ns.rpz.test. admin.rpz.test. 1 3600 900 604800 300
 }
 
 // TestEvaluateResponseListsEveryZoneUniformly pins §5.6 item 2: the list
-// carries every matching zone — disabled included — because the winner
+// carries every matching zone, disabled included, because the winner
 // is the query's property, not the entry's.
 func TestEvaluateResponseListsEveryZoneUniformly(t *testing.T) {
 	disabled := loadResponseIPZone(t)
@@ -126,8 +126,8 @@ func TestEvaluateResponseListsEveryZoneUniformly(t *testing.T) {
 }
 
 // TestEvaluateResponseDeepCopiesLocalData pins the §5.6 deep-copy
-// clause: mutating a candidate's record must not reach the store's rule
-// — a header copy would satisfy the type and pin the old generation.
+// clause: mutating a candidate's record must not reach the store's rule,
+// a header copy would satisfy the type and pin the old generation.
 func TestEvaluateResponseDeepCopiesLocalData(t *testing.T) {
 	z := loadResponseIPZone(t)
 	s := &Store{Zones: []*Zone{z}}
@@ -177,7 +177,7 @@ func TestMergeZoneOrderOutranksTriggerType(t *testing.T) {
 }
 
 // TestMergeHeldCandidateSurvivesANoneSidecar is the P0 scenario itself:
-// zone 0's response rules do NOT match, zone 1's held QNAME does — the
+// zone 0's response rules do NOT match, zone 1's held QNAME does, the
 // merge must answer with the held action, never the stored truth.
 func TestMergeHeldCandidateSurvivesANoneSidecar(t *testing.T) {
 	s := mergeFixtureStore(t)
@@ -233,7 +233,7 @@ func TestMergeDisabledObservesWithoutConsuming(t *testing.T) {
 func TestMergeIsWinnerBounded(t *testing.T) {
 	s := mergeFixtureStore(t)
 	// Zone 0 wins by response match; zone 1 also "matched" via a held
-	// candidate — but zone 1 is past the winner.
+	// candidate, but zone 1 is past the winner.
 	held := ZoneMatch{ZoneIdx: 1, Zone: s.Zones[1], Rule: &Rule{Action: ActionNODATA}, Trigger: TriggerQNAME}
 	resp := s.EvaluateResponse([]dns.RR{answerA("192.0.2.1")})
 
@@ -248,7 +248,7 @@ func TestMergeIsWinnerBounded(t *testing.T) {
 
 // TestOldGenerationIsCollectible pins §5.6's retention clause with the
 // garbage collector as the judge: after a reload drops the old store, a
-// live Local Data candidate must not keep the old rules reachable — the
+// live Local Data candidate must not keep the old rules reachable, the
 // finalizer on the store's own record only runs if the candidate's copy
 // is truly deep.
 func TestOldGenerationIsCollectible(t *testing.T) {
@@ -294,7 +294,7 @@ func TestOldGenerationIsCollectible(t *testing.T) {
 // TestFoldResponseLists pins the chase fold's dedupe directly: two
 // segment lists matching one zone collapse to the rule-4 best, in zone
 // order. Terminal-only chains never exercise this in composition, but a
-// segment admitted with both alias and address records can — the fold
+// segment admitted with both alias and address records can, the fold
 // must hold whatever shape an admission produced.
 func TestFoldResponseLists(t *testing.T) {
 	s := &Store{Zones: []*Zone{loadResponseIPZone(t)}}
@@ -350,7 +350,7 @@ rpz-ip.rpz.test.              IN CNAME .
 
 // TestFoldOrdersAcrossZones pins the fold's ordering with more than one
 // zone: whatever order the segment lists arrive in, the folded output is
-// ascending by zone index — the shape Merge's single walk requires.
+// ascending by zone index, the shape Merge's single walk requires.
 func TestFoldOrdersAcrossZones(t *testing.T) {
 	z0 := loadResponseIPZone(t)
 	z1 := loadResponseIPZone(t)

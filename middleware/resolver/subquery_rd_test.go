@@ -16,7 +16,7 @@ import (
 // tripping REFUSED on stricter implementations.
 //
 // A Resolver{} with no root servers fails closed in subQuery before
-// r.resolve runs, which is exactly after the RD/AD clear lands —
+// r.resolve runs, which is exactly after the RD/AD clear lands,
 // letting us assert the mutation happened without a real upstream.
 func TestSubQueryClearsRDAD(t *testing.T) {
 	r := &Resolver{}

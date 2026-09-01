@@ -48,8 +48,8 @@ func Test_ClientTimeout(t *testing.T) {
 }
 
 func Test_Client(t *testing.T) {
-	// Answered from loopback. This exercises the connection's own exchange —
-	// write, read, match — which a root server is not needed for, and which
+	// Answered from loopback. This exercises the connection's own exchange,
+	// write, read, match, which a root server is not needed for, and which
 	// used to make the test fail on any machine without internet.
 	addr, stop := startEchoingQuestionServer(t)
 	defer stop()
@@ -131,7 +131,7 @@ func Test_Client_RejectsMismatchedQuestion(t *testing.T) {
 	}
 
 	// The upstream returns a response whose question is victim.test. but the
-	// outstanding request asked for attacker.test. — Exchange must surface
+	// outstanding request asked for attacker.test., Exchange must surface
 	// this as an error rather than handing the unrelated message back to the
 	// caller (which would otherwise cache it under victim.test.).
 	_, _, err = co.Exchange(req)

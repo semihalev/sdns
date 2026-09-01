@@ -150,7 +150,7 @@ func TestStore_CutUntil_OverridesMinTTLFloor(t *testing.T) {
 	key := CacheKey{Question: resp.Question[0], CD: false}.Hash()
 
 	// A cut already in the past: the entry may be stored, but must
-	// never be served — even though the MinTTL floor lifted its TTL
+	// never be served, even though the MinTTL floor lifted its TTL
 	// to 5s.
 	s.SetFromResponseWithKey(key, resp, time.Now().Add(-time.Millisecond), 0)
 
@@ -280,7 +280,7 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 	}
 
 	// Stale expected (the entry it captured is gone): refresh dropped.
-	// This is the late-prefetch-overwrite guard — `claimed` plays the
+	// This is the late-prefetch-overwrite guard, `claimed` plays the
 	// role of the entry a slow prefetch captured before newer state
 	// (here `replaced`, in reality a withdrawal NXDOMAIN) landed.
 	if s.ReplaceIfCurrent(key, claimed, cutTestMsg("cas.example.", dns.RcodeSuccess, 60), time.Time{}, 0) {

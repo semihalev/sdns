@@ -1,6 +1,6 @@
 # HTTP API
 
-SDNS exposes an optional HTTP API for managing the blocklist, purging cached answers, scraping Prometheus metrics, and — with `SDNS_PPROF=1` — serving Go pprof profiles. It listens on whatever address you put in `api` in `sdns.conf` (default `127.0.0.1:8080`); set `api = ""` to turn it off entirely.
+SDNS exposes an optional HTTP API for managing the blocklist, purging cached answers, scraping Prometheus metrics, and, with `SDNS_PPROF=1`, serving Go pprof profiles. It listens on whatever address you put in `api` in `sdns.conf` (default `127.0.0.1:8080`); set `api = ""` to turn it off entirely.
 
 ## Authentication
 
@@ -12,7 +12,7 @@ Authorization: Bearer <token>
 
 Missing, malformed, or mismatched headers get `401 {"error":"unauthorized"}`. The token is never logged.
 
-`/debug/pprof/*` is the one exception — pprof tooling doesn't send `Authorization` headers, so those routes stay open even when a token is set. If you enable pprof, keep the API listener on loopback or behind an authenticating proxy.
+`/debug/pprof/*` is the one exception, pprof tooling doesn't send `Authorization` headers, so those routes stay open even when a token is set. If you enable pprof, keep the API listener on loopback or behind an authenticating proxy.
 
 ## Endpoints
 
@@ -28,7 +28,7 @@ Missing, malformed, or mismatched headers get `401 {"error":"unauthorized"}`. Th
 | GET    | `/metrics`                    | Prometheus exposition                |
 | GET    | `/debug/pprof/*`              | pprof (only with `SDNS_PPROF=1`)     |
 
-The `block/*` routes are only registered when the blocklist middleware is enabled — without it they return `404`.
+The `block/*` routes are only registered when the blocklist middleware is enabled, without it they return `404`.
 
 ## Blocklist
 
@@ -49,7 +49,7 @@ $ curl http://localhost:8080/api/v1/block/remove/domain.com
 {"success":true}
 ```
 
-`set` returns `success:false` when the key was already present or sits on the whitelist; `remove` returns `success:false` when the key wasn't there to begin with. `exists` is the only single-key endpoint that uses an `exists:` payload — the rest all return `success:`.
+`set` returns `success:false` when the key was already present or sits on the whitelist; `remove` returns `success:false` when the key wasn't there to begin with. `exists` is the only single-key endpoint that uses an `exists:` payload, the rest all return `success:`.
 
 ### Bulk operations
 
@@ -94,7 +94,7 @@ HTTP/1.1 400 Bad Request
 
 ## Metrics
 
-`GET /metrics` returns the Prometheus exposition for every metric the running middlewares register via `promauto` — cache, reflex, dns64, plugins, the lot. Auth-gated like everything else when a token is set.
+`GET /metrics` returns the Prometheus exposition for every metric the running middlewares register via `promauto`, cache, reflex, dns64, plugins, the lot. Auth-gated like everything else when a token is set.
 
 ## pprof
 

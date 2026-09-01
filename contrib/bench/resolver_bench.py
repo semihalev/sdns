@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""resolver_bench.py — one disciplined measurement cycle against one resolver.
+"""resolver_bench.py, one disciplined measurement cycle against one resolver.
 
 The harness exists because ad-hoc measurement loops fail quietly: a dead
 instance measures as zeros, a cold cache measures recursion instead of
@@ -17,7 +17,7 @@ Phases:
   6. cool-down    - a final quiet period so the next cycle starts clean
 
 CPU accounting (--pids): utime+stime deltas from /proc/<pid>/stat across
-each run, summed over the given pids — the server's own cost, with the load
+each run, summed over the given pids, the server's own cost, with the load
 generator excluded by construction. Threaded servers need one pid; per-
 process servers (kresd) need the whole set.
 
@@ -61,7 +61,7 @@ RCODES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN",
 
 
 def encode_query(qid: int, name: str) -> bytes:
-    """A plain A/IN query, RD=1, no EDNS — the shape dnsperf sends. The
+    """A plain A/IN query, RD=1, no EDNS, the shape dnsperf sends. The
     root name (".") is a legitimate corpus entry and encodes as the bare
     null label."""
     header = struct.pack("!HHHHHH", qid, 0x0100, 1, 0, 0, 0)
@@ -77,7 +77,7 @@ def encode_query(qid: int, name: str) -> bytes:
 
 
 class Client:
-    """Native UDP DNS questions against the resolver under test — one
+    """Native UDP DNS questions against the resolver under test, one
     socket per thread, no subprocesses. ask() returns (rcode, rtt_ms)."""
 
     def __init__(self, port: int):
@@ -112,7 +112,7 @@ class Client:
 
 
 def cpu_ticks(pids: list[int]) -> int:
-    """Summed utime+stime clock ticks; a vanished pid is a fatal event —
+    """Summed utime+stime clock ticks; a vanished pid is a fatal event,
     measuring a dead server as zero cost is how bad numbers get published."""
     total = 0
     for pid in pids:
@@ -228,12 +228,12 @@ def main() -> None:
 
     pct = verify(client, names)
     if pct < args.warm_verify_pct:
-        log(f"[{args.label}] 3/6 warm sample only {pct}% — re-warming once")
+        log(f"[{args.label}] 3/6 warm sample only {pct}%, re-warming once")
         time.sleep(5)
         warm(client, names, args.warm_par)
         pct = verify(client, names)
         if pct < args.warm_verify_pct:
-            fail(f"cache never warmed ({pct}% < {args.warm_verify_pct}%) — "
+            fail(f"cache never warmed ({pct}% < {args.warm_verify_pct}%), "
                  "refusing to measure recursion and call it serving")
     log(f"[{args.label}] 3/6 warm verified: {pct}% of sample NOERROR <100ms")
 

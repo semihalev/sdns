@@ -28,7 +28,7 @@ answers  = ["*.example.lan. 60 IN A 100.64.0.2"]
 
 Answers are zone-file lines. Wildcards work, and an exact owner overrides a
 covering wildcard. Views are evaluated in declaration order, and they run early
-in the chain — ahead of the blocklist, RPZ and the cache — so a view answer is
+in the chain, ahead of the blocklist, RPZ and the cache, so a view answer is
 not subject to policy or caching.
 
 The example above is the common case: one internal name that must resolve to
@@ -46,7 +46,7 @@ servers = ["10.0.0.53:53", "tls://10.0.0.54:853"]
 ```
 
 The most specific matching zone wins. A zone must name itself and at least one
-server or startup fails — an omitted name would forward every query. A zone
+server or startup fails, an omitted name would forward every query. A zone
 whose upstreams all turn out unusable fails its own queries rather than falling
 back to `forwarderservers`, because sending an internal zone's questions to a
 public resolver is worse than failing them.
@@ -85,7 +85,7 @@ the life of the process, so there is no per-query DNS dependency and no
 bootstrap loop.
 
 Note what this costs: forwarding means trusting the upstream's answers rather
-than validating them yourself, and it means no learned delegation cuts — which
+than validating them yourself, and it means no learned delegation cuts, which
 in turn weakens the bound on
 [serve-stale]({{ '/docs/features/serve-stale/' | relative_url }}).
 
@@ -95,15 +95,16 @@ in turn weakens the bound on
 fallbackservers = ["8.8.8.8:53"]
 ```
 
-Used when normal resolution has returned SERVFAIL — a lame delegation, an
-unreachable upstream, a network fault — not only when the root is unreachable.
+Used when normal resolution has returned SERVFAIL for any reason (a lame
+delegation, an unreachable upstream, a network fault), not only when the root
+is unreachable.
 Unlike `forwarderservers` this does not change the normal mode of operation.
 
 Three limits worth knowing. Fallback servers are queried over plain UDP with a
 hard five-second ceiling per endpoint. Their answers are cached like any other.
-And — the one that matters most — a fallback answer is **not** validated here:
+And, the one that matters most, a fallback answer is **not** validated here:
 it is written as the upstream asserted it, so configuring `fallbackservers`
 means a resolution that failed locally can be answered by an upstream you are
 trusting rather than checking. Note also that a per-zone forward that fails writes SERVFAIL, which is
-itself a fallback trigger — so with `fallbackservers` set, an internal zone's
+itself a fallback trigger, so with `fallbackservers` set, an internal zone's
 questions can reach them.

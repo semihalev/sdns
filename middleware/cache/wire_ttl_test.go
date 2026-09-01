@@ -14,7 +14,7 @@ import (
 // The equivalence tests zero TTLs before comparing, because the two paths
 // compute their remaining TTL a moment apart. That tolerance is necessary,
 // but it means removing the TTL walk entirely leaves the whole suite green
-// while every byte-served hit returns the record's original TTL forever —
+// while every byte-served hit returns the record's original TTL forever,
 // downstream caches would then never expire it. So the decay is asserted
 // here directly, against the value the entry itself reports.
 func TestWireFastPathTTLDecays(t *testing.T) {

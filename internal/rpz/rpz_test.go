@@ -202,7 +202,7 @@ victim.example.com.z2.test. IN CNAME .
 		t.Fatalf("winner = %+v, want first/passthru", winner)
 	}
 
-	// Reversed order, reversed outcome — the assertion that pins rule 1.
+	// Reversed order, reversed outcome, the assertion that pins rule 1.
 	winner, _ = storeOf(second, first).Match(canon, offs[:], n, netip.Addr{})
 	if winner.Zone == nil || winner.Zone.Name != "second" || winner.Effective() != ActionNXDOMAIN {
 		t.Fatalf("winner = %+v, want second/nxdomain", winner)
@@ -273,7 +273,7 @@ z.test. IN SOA ns. admin. 1 3600 900 604800 300
 }
 
 // TestMatchQNAMEMissAllocatesNothing is the §5.11 contract for the engine:
-// the non-matching query — the product's steady state — pays map probes
+// the non-matching query, the product's steady state, pays map probes
 // off the caller's stack buffer and nothing else.
 func TestMatchQNAMEMissAllocatesNothing(t *testing.T) {
 	z := loadFixture(t, OverrideGiven, "")

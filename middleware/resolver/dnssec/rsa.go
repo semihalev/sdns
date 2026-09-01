@@ -22,7 +22,7 @@ const maxStdlibRSAExponent = 1<<31 - 1
 
 // rsaExponentExceedsStdlib reports whether the RFC 3110 RSA public key in
 // pubkey carries an exponent that crypto/rsa cannot load. Such keys are
-// rare but valid — e.g. mailbox.org's alg-7/alg-10 ZSKs use 2^32+1 — and
+// rare but valid, e.g. mailbox.org's alg-7/alg-10 ZSKs use 2^32+1, and
 // must take the verifyRSAWideExponent path instead of sig.Verify. A key we
 // cannot even parse returns false so the caller falls back to the normal
 // path and surfaces the library's own error.
@@ -55,7 +55,7 @@ func rsaExponentExceedsStdlib(pubkey string) bool {
 
 // parseRSAPublicKey decodes an RFC 3110 RSA DNSKEY public key into its
 // modulus and exponent. Unlike crypto/rsa it imposes no upper bound on the
-// exponent — that is the whole point of this path.
+// exponent, that is the whole point of this path.
 func parseRSAPublicKey(pubkey string) (n, e *big.Int, ok bool) {
 	keybuf, err := fromBase64([]byte(pubkey))
 	if err != nil || len(keybuf) < 1 {
@@ -91,7 +91,7 @@ func parseRSAPublicKey(pubkey string) (n, e *big.Int, ok bool) {
 }
 
 // RSA key bounds for the raw verification path. crypto/rsa rejects the
-// exponents this path exists to accept, so it can't enforce these for us —
+// exponents this path exists to accept, so it can't enforce these for us,
 // without them an attacker-delegated zone could publish a DNSKEY with a
 // pathologically large exponent or modulus and force ruinously expensive
 // modular exponentiation on every validation attempt (CPU exhaustion).
@@ -106,8 +106,8 @@ const (
 
 // usableRSAKey reports whether (n, e) is a sane RSA public key worth running
 // a modexp against. It bounds the modulus to a safe range and requires the
-// exponent to be a valid RSA exponent — odd, at least 3, and less than the
-// modulus (RFC 8017 — e is chosen in (1, λ(n)) so e < n always holds) — and
+// exponent to be a valid RSA exponent, odd, at least 3, and less than the
+// modulus (RFC 8017, e is chosen in (1, λ(n)) so e < n always holds), and
 // narrow enough that a single modexp stays sub-millisecond.
 func usableRSAKey(n, e *big.Int) bool {
 	if bits := n.BitLen(); bits < minRSAModulusBits || bits > maxRSAModulusBits {
@@ -216,7 +216,7 @@ func rrsigSignedData(sig *dns.RRSIG, rrset []dns.RR) ([]byte, error) {
 
 // wireRdataOffset returns where a packed record's RDATA begins: past the
 // owner name, and past the ten octets of type, class, TTL and RDLENGTH that
-// follow it. The name is walked rather than unpacked — nothing here needs the
+// follow it. The name is walked rather than unpacked, nothing here needs the
 // name itself, only its length, and these records were packed without
 // compression so the labels run to a terminating zero.
 func wireRdataOffset(wire []byte) (int, bool) {
@@ -258,7 +258,7 @@ func canonicalRRset(rrset []dns.RR, s *dns.RRSIG) ([]byte, error) {
 		// rather than split and joined back.
 		//
 		// The Fqdn is not decoration. For Labels=0 the suffix is empty, and
-		// the old join produced "*.." — a name the packer rejects, so such
+		// the old join produced "*..", a name the packer rejects, so such
 		// signatures failed verification, in this package and in the
 		// library alike. A bare "*." would verify a root-wildcard signature
 		// instead, which is the RFC's own arithmetic but a wider acceptance
@@ -283,13 +283,13 @@ func canonicalRRset(rrset []dns.RR, s *dns.RRSIG) ([]byte, error) {
 
 	// RFC 4034 §6.3 orders an RRset by RDATA and by nothing before it. Every
 	// record here shares an owner, type and class, but RDLENGTH sits between
-	// them and the data — so comparing whole records sorts by length first,
+	// them and the data, so comparing whole records sorts by length first,
 	// and a set whose lengths and contents disagree hashes in an order the
 	// signer never used.
 	//
 	// One offset serves the whole set: the records share an owner name, and
 	// canonicalization has already given them the same spelling of it. It is
-	// found by walking the label lengths, which costs nothing — unpacking the
+	// found by walking the label lengths, which costs nothing, unpacking the
 	// name would build a string per record to measure it.
 	rdataOffset, ok := wireRdataOffset(wires[0])
 	if !ok {

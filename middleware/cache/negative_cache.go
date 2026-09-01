@@ -23,7 +23,7 @@ func NewNegativeCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetr
 }
 
 // (*NegativeCache).Get get retrieves an entry from the negative cache.
-// Hit/Miss metrics are NOT recorded here — see PositiveCache.Get.
+// Hit/Miss metrics are NOT recorded here, see PositiveCache.Get.
 func (nc *NegativeCache) Get(key uint64) (*CacheEntry, bool) {
 	v, ok := nc.cache.Get(key)
 	if !ok {

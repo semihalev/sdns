@@ -12,7 +12,7 @@ import (
 // it reports must be the ones the library decodes.
 //
 // The direction matters. Refusing something the library would take is
-// free — the request simply decodes and takes the ordinary path. Taking
+// free, the request simply decodes and takes the ordinary path. Taking
 // something the library would reject is not: such a packet would be
 // answered from cache, or dropped silently, where the server owes the
 // client a FORMERR.

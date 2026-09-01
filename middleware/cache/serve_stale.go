@@ -124,7 +124,7 @@ func (c *Cache) writeStaleResponse(
 	// attempted, and billing each one as it is tried would charge several
 	// entries for a single question. An accepted residual, on the same
 	// terms as the inline/replay double charge: a refused query has already
-	// paid for one alias completion. It is bounded on both legs — the
+	// paid for one alias completion. It is bounded on both legs, the
 	// resolution that made this answer eligible dominates the cost, and the
 	// chase's own sub-query records its failure under RFC 9520, so the
 	// repeat is a cached-failure hit rather than another walk to the wire.

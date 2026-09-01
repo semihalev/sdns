@@ -11,8 +11,8 @@ import (
 
 // on reports whether a switch is set to a value that asks for the surface.
 //
-// The documented spelling is a boolean — the README uses SDNS_DEBUGNS=true and
-// the API guide uses SDNS_PPROF=1 — so a boolean is what is read, and anything
+// The documented spelling is a boolean, the README uses SDNS_DEBUGNS=true and
+// the API guide uses SDNS_PPROF=1, so a boolean is what is read, and anything
 // else leaves the surface off: unset, empty, "false", "0", or a word Go does
 // not recognize. Presence alone used to be enough, which read an operator's
 // explicit SDNS_PPROF=false as a request to publish pprof; the routes bypass

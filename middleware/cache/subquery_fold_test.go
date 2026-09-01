@@ -36,8 +36,8 @@ func TestSubqueryPositiveHitDoesNotBindRequest(t *testing.T) {
 }
 
 // TestSubqueryNegativeHitStillBindsRequest pins the other side of the line:
-// a cached denial consulted mid-resolution — a DS NODATA holding a
-// delegation insecure — is validation state, and whatever is assembled from
+// a cached denial consulted mid-resolution, a DS NODATA holding a
+// delegation insecure, is validation state, and whatever is assembled from
 // it must not outlive the proof (GHSA-mqfw-f48p-2vc8).
 func TestSubqueryNegativeHitStillBindsRequest(t *testing.T) {
 	s := newTestStore(t)

@@ -18,7 +18,7 @@ import (
 // TestUDPListener_ZeroPortFanoutSharesOnePort pins the fix for
 // Bind rebinding ":0" to a different kernel-picked port per worker.
 // With the fix, the first worker resolves the ephemeral port and
-// every subsequent worker binds to that same port via SO_REUSEPORT —
+// every subsequent worker binds to that same port via SO_REUSEPORT,
 // so all PacketConns report the same LocalAddr.
 func TestUDPListener_ZeroPortFanoutSharesOnePort(t *testing.T) {
 	h := rawHandlerFunc(func(middleware.Transport, []byte, time.Time) bool { return true })
@@ -34,7 +34,7 @@ func TestUDPListener_ZeroPortFanoutSharesOnePort(t *testing.T) {
 	t.Cleanup(func() { _ = l.Shutdown(context.Background()) })
 
 	// One PacketConn per socket. The engine's handler workers are a
-	// separate, independently sized pool — asserting against them was a
+	// separate, independently sized pool, asserting against them was a
 	// leftover from when the two counts were the same field.
 	if len(l.pcs) != l.sockets {
 		t.Fatalf("%s: len(l.pcs) = %d, want %d", "one PacketConn per socket", len(l.pcs), l.sockets)
@@ -101,7 +101,7 @@ func TestUDPWildcardReplySourceAddress(t *testing.T) {
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := conn.Read(buf)
 	if err != nil {
-		t.Fatalf("no reply through the connected socket — wrong source address? %v", err)
+		t.Fatalf("no reply through the connected socket, wrong source address? %v", err)
 	}
 	var r dns.Msg
 	if err := r.Unpack(buf[:n]); err != nil || r.Id != q.Id {
@@ -111,13 +111,13 @@ func TestUDPWildcardReplySourceAddress(t *testing.T) {
 
 // TestUDPDualStackBindServesIPv6 pins the default configuration.
 //
-// A bind with no host — ":53", which is what ships — asks Go for one
+// A bind with no host, ":53", which is what ships, asks Go for one
 // dual-stack socket, and that socket carries IPv6 datagrams as well as
 // v4-mapped ones. A wildcard bind answers from the address the query
 // arrived on, which it learns from a pktinfo control message; a socket
 // armed for IPv4 alone hands the v6 datagrams over without one. The reply
 // path then cannot tell where they landed and refuses them, so IPv6
-// service disappears on the most ordinary configuration there is —
+// service disappears on the most ordinary configuration there is,
 // counted as a drop, and otherwise completely silent.
 func TestUDPDualStackBindServesIPv6(t *testing.T) {
 	if c, err := net.Listen("tcp", "[::1]:0"); err != nil {
@@ -177,7 +177,7 @@ func TestUDPDualStackBindServesIPv6(t *testing.T) {
 		n, err := conn.Read(buf)
 		_ = conn.Close()
 		if err != nil {
-			t.Fatalf("no reply to a query from %s: %v — a wildcard bind that "+
+			t.Fatalf("no reply to a query from %s: %v, a wildcard bind that "+
 				"cannot recover the destination address drops the datagram, "+
 				"and this is what the shipped configuration does to every "+
 				"IPv6 client", target, err)

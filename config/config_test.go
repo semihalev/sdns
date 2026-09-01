@@ -24,7 +24,7 @@ func TestMain(m *testing.M) {
 
 	// Loading a configuration probes for IPv6 connectivity, which is a real
 	// query to a root server. Every test that loads one paid two seconds for
-	// it on any host without IPv6 — including CI. Answer it here instead;
+	// it on any host without IPv6, including CI. Answer it here instead;
 	// TestIPv6ProbeDecidesAccess covers the wiring.
 	ipv6Probe = func() error { return errors.New("no IPv6 in tests") }
 
@@ -165,7 +165,7 @@ func TestLoad(t *testing.T) {
 		{
 			// The sdns.toml fallback is gone with the releases that used
 			// it: a leftover sdns.toml in the working directory must not
-			// hijack the load — least of all for an explicit path.
+			// hijack the load, least of all for an explicit path.
 			name: "leftover sdns.toml is ignored, the asked-for file is generated",
 			setupFunc: func() (string, func()) {
 				tmpDir := t.TempDir()
@@ -186,7 +186,7 @@ func TestLoad(t *testing.T) {
 		},
 		{
 			// The removed fallback loaded the literal cwd sdns.toml
-			// whenever the basename was sdns.conf — explicit -c paths
+			// whenever the basename was sdns.conf, explicit -c paths
 			// included. The upgrade warning probes that historical
 			// location too; either way the asked-for file is generated.
 			name: "explicit path with a leftover cwd sdns.toml still generates",
@@ -416,7 +416,7 @@ func TestGenerateConfig(t *testing.T) {
 // TestIPv6NetworkProbe covers the probe itself against a server it can
 // reach, and against one that is not listening. The test this replaces
 // called the real probe, waited two seconds for a root server, and then
-// discarded the result — so the function was "covered" without anything
+// discarded the result, so the function was "covered" without anything
 // being established about it.
 func TestIPv6NetworkProbe(t *testing.T) {
 	original := ipv6ProbeServer
@@ -444,8 +444,8 @@ func TestIPv6NetworkProbe(t *testing.T) {
 
 	// An exchange that fails has to be reported as a failure, not taken for
 	// a working network. The failure comes from a server that answers with
-	// something that is not a DNS message: a port assumed closed is a race
-	// — the address can be taken between releasing it and using it — and
+	// something that is not a DNS message: a port assumed closed is a race,
+	// the address can be taken between releasing it and using it, and
 	// one that is merely silent costs the probe's whole timeout.
 	broken, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -471,7 +471,7 @@ func TestIPv6NetworkProbe(t *testing.T) {
 
 // TestIPv6ProbeDecidesAccess pins what the probe is for. The test it
 // replaces called the real thing, waited two seconds for the network, and
-// then discarded the result — it asserted nothing at all.
+// then discarded the result, it asserted nothing at all.
 func TestIPv6ProbeDecidesAccess(t *testing.T) {
 	original := ipv6Probe
 	defer func() { ipv6Probe = original }()
@@ -1062,7 +1062,7 @@ func TestPackagedConfigMatchesGeneratedDefault(t *testing.T) {
 	}
 	// A Windows checkout with autocrlf gives the packaged file CRLF line
 	// endings, while the Go spec discards carriage returns from raw string
-	// literals — so the generated text is always LF. Normalize before
+	// literals, so the generated text is always LF. Normalize before
 	// comparing content.
 	packagedText := strings.ReplaceAll(string(packaged), "\r\n", "\n")
 	generated := fmt.Sprintf(defaultConfig, configver)
@@ -1203,7 +1203,7 @@ func TestCookieSecretGenerated(t *testing.T) {
 }
 
 // The -c flag promises "if it doesn't exist, a new one will be
-// generated" — for whatever the file is called. The generation used to
+// generated", for whatever the file is called. The generation used to
 // be gated on the default name, so every custom path was a load error
 // instead of a fresh config.
 func TestLoadGeneratesAConfigAtACustomPath(t *testing.T) {

@@ -3,7 +3,7 @@
 //
 // It lives apart from that middleware so the config package can check an
 // operator's list against it. The middleware imports config, so config cannot
-// import the middleware — and a second copy of the list written by hand would
+// import the middleware, and a second copy of the list written by hand would
 // drift from this one, which is the mistake worth avoiding.
 package emptyzones
 
@@ -116,7 +116,7 @@ var Default = map[string]bool{
 // Covers reports whether name, or any zone above it, is one of the zones
 // above. The middleware walks the same suffixes when it decides which
 // configured zones to keep: an entry it does not cover is dropped with a log
-// line, and a list where every entry is dropped falls back to the whole set —
+// line, and a list where every entry is dropped falls back to the whole set,
 // so an operator who names a zone outside the tree quietly gets all of them.
 func Covers(name string) bool {
 	name = dns.CanonicalName(name)

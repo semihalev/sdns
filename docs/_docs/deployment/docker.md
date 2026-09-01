@@ -21,7 +21,7 @@ docker run -d --name sdns \
 
 `directory` in the configuration must point at a volume. It holds the RFC 5011
 trust anchor database, cached blocklists and the local root copy. Without a
-volume, every restart re-fetches all of it and — more importantly — throws away
+volume, every restart re-fetches all of it and, more importantly, throws away
 the trust anchor state that tracks root KSK rollovers.
 
 This is the mistake worth avoiding: a container that resolves fine will keep
@@ -55,7 +55,7 @@ volumes:
 ```
 
 Binding to `127.0.0.1` keeps the resolver off the host's public addresses. If
-you publish it more widely, set `accesslist` first — see
+you publish it more widely, set `accesslist` first, see
 [Access control]({{ '/docs/configuration/access-control/' | relative_url }}).
 
 ## Ports the image declares
@@ -68,7 +68,7 @@ you publish it more widely, set `accesslist` first — see
 ```
 
 `EXPOSE` in the image declares TCP unless a port says otherwise, so **DoQ and
-HTTP/3 have no declaration** — they are UDP. `docker run -P` will not publish
+HTTP/3 have no declaration**, they are UDP. `docker run -P` will not publish
 them; name them explicitly (`-p 853:853/udp`, `-p 8053:8053/udp`) if you serve
 either.
 
