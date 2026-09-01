@@ -1,0 +1,46 @@
+title: SDNS
+description: A recursive DNS resolver with DNSSEC validation, written in Go.
+url: https://sdns.dev
+baseurl: ""
+permalink: pretty
+lang: en
+
+github:
+  repository_url: https://github.com/semihalev/sdns
+  repository_nwo: semihalev/sdns
+
+# Shown in the header and on the release line; bump with the tag.
+sdns_version: v1.8.2
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - README.md
+  - vendor
+
+collections:
+  docs:
+    output: true
+    permalink: /:collection/:path/
+    sort_by: order
+
+defaults:
+  - scope:
+      path: ""
+      type: "docs"
+    values:
+      layout: "doc"
+  - scope:
+      path: ""
+    values:
+      layout: "default"
+
+plugins:
+  - jekyll-sitemap
+  - jekyll-seo-tag
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+highlighter: rouge

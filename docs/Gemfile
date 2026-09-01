@@ -1,0 +1,11 @@
+source "https://rubygems.org"
+
+gem "jekyll", "~> 4.4"
+gem "jekyll-sitemap"
+gem "jekyll-seo-tag"
+
+# Ruby 3.4+ dropped these from the default gems.
+gem "logger"
+gem "base64"
+gem "bigdecimal"
+gem "csv"

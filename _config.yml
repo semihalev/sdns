@@ -3,3 +3,10 @@ title: SDNS
 show_downloads: true
 plugins:
   - jemoji
+
+# The site under docs/ is built by .github/workflows/pages.yml, not by this
+# legacy root build. Excluded so the two do not both try to render it while
+# the Pages source is still set to "Deploy from a branch". This whole file
+# goes away once the source is switched to GitHub Actions.
+exclude:
+  - docs

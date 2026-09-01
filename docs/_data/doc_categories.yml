@@ -1,0 +1,7 @@
+# The order of this list is the order of the sidebar.
+- name: Getting Started
+- name: Configuration
+- name: Features
+- name: Deployment
+- name: Reference
+- name: Development

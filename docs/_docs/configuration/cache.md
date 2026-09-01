@@ -1,0 +1,92 @@
+---
+layout: doc
+title: Cache and TTLs
+category: Configuration
+order: 4
+description: Cache size, prefetching, expired answers and what the TTL you receive actually means.
+---
+
+## Size and prefetch
+
+```toml
+cachesize = 256000
+prefetch  = 10        # percent; 0 disables
+```
+
+`cachesize` is a record count, not a byte budget. The default holds a busy
+resolver's working set comfortably; raising it costs memory roughly in
+proportion.
+
+`prefetch` refreshes an entry in the background when a query arrives and the
+entry has less than that percentage of its original TTL left. It trades a small
+amount of upstream traffic for hits that stay warm on popular names. The value
+is clamped to 10–90; `0` turns it off.
+
+## Which TTL you receive
+
+The TTL sdns serves is the answer's own remaining TTL, counted down from when
+it was cached. It is not the smallest TTL of everything consulted on the way to
+the answer — a short-lived delegation record on the path does not shorten the
+answer.
+
+There is one deliberate ceiling: a learned delegation lease. When the parent
+granted a delegation for a bounded time, no answer under that delegation is
+served past the point the parent's grant expires. That is why a long-TTL record
+under a short-lived delegation can come back with less than you expected — the
+cut, not the record, is the binding constraint.
+
+## Serving expired answers
+
+```toml
+serve_stale         = false
+serve_stale_max_ttl = "24h"
+```
+
+When resolution ends in SERVFAIL, sdns may answer from an expired positive entry
+rather than failing (RFC 8767). Off by default.
+
+`serve_stale_max_ttl` is measured from the moment the answer's TTL expired, and
+defaults to 24 hours. An explicit `"0"` leaves the delegation lease as the only
+upper bound; in whole-server forwarder mode, which learns no delegation cut,
+`"0"` permits retention until the entry is evicted.
+
+The delegation lease is a hard ceiling here too, so this cannot revive data past
+a known parent-granted cut. It is failure-triggered and positive-only: a stale
+NXDOMAIN is never served. The full design is on the
+[Serve stale]({{ '/docs/features/serve-stale/' | relative_url }}) page.
+
+## Failure caching
+
+```toml
+expire = 600      # legacy; retained for compatibility
+```
+
+`expire` is a legacy error-cache ceiling kept so old configuration files still
+load. Recursive resolution failures are governed by the RFC 9520 failure cache
+in the `[recursion_firewall]` block instead — see the
+[recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }}).
+
+## Purging
+
+```bash
+curl http://127.0.0.1:8080/api/v1/purge/example.com./A
+```
+
+Drops one name and type from the cache. There is no purge-everything endpoint;
+restarting is the way to empty the cache entirely.
+
+## Watching it
+
+```
+dns_cache_size              current entries
+dns_cache_hits_total        hits
+dns_cache_misses_total      misses
+dns_cache_hit_rate          ratio
+dns_cache_evictions_total   entries dropped under pressure
+dns_cache_prefetches_total  background refreshes
+dns_cache_stale_answers_total  answers served past expiry
+dns_cache_wire_fastpath_total  hits served straight from stored bytes
+```
+
+A rising `dns_cache_evictions_total` with a falling hit rate is the signal that
+`cachesize` is too small for the working set.

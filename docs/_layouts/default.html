@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="{{ site.lang | default: 'en' }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  {%- comment -%}
+  The theme is resolved before first paint: a stored choice wins, otherwise the
+  system preference, and the system is followed live only while no choice is
+  stored. Blocking on purpose — a deferred script would show a flash of the
+  wrong theme.
+  {%- endcomment -%}
+  <script>
+    (function () {
+      var stored = null;
+      try { stored = localStorage.getItem('theme'); } catch (e) {}
+      var mq = window.matchMedia('(prefers-color-scheme: dark)');
+      document.documentElement.setAttribute('theme', stored || (mq.matches ? 'dark' : 'light'));
+      if (!stored && mq.addEventListener) {
+        mq.addEventListener('change', function (e) {
+          try { if (localStorage.getItem('theme')) return; } catch (err) {}
+          document.documentElement.setAttribute('theme', e.matches ? 'dark' : 'light');
+        });
+      }
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="{{ '/assets/css/main.css' | relative_url }}">
+  {%- if page.url == '/' %}
+  <link rel="stylesheet" href="{{ '/assets/css/home.css' | relative_url }}">
+  {%- endif %}
+  <link rel="icon" href="{{ '/assets/img/favicon.svg' | relative_url }}" type="image/svg+xml">
+  <meta name="theme-color" content="#0b0f14">
+  {% seo %}
+</head>
+<body class="preload{% if page.layout == 'doc' %} has-sidebar{% endif %}">
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="{{ '/' | relative_url }}" aria-label="SDNS home">
+        {% include logo.html size=26 %}
+        <span class="wordmark">sdns<span class="wordmark-dot">.</span></span>
+      </a>
+
+      <nav class="main-nav" aria-label="Main">
+        <a href="{{ '/docs/' | relative_url }}"{% if page.url contains '/docs' %} aria-current="page"{% endif %}>Documentation</a>
+        <a href="{{ '/docs/getting-started/installation/' | relative_url }}">Install</a>
+        <a href="https://github.com/semihalev/sdns/blob/main/BENCHMARKS.md">Benchmarks</a>
+        <a href="{{ site.github.repository_url }}">Source</a>
+      </nav>
+
+      <div class="header-actions">
+        <span class="version-pill" title="Latest release">{{ site.sdns_version }}</span>
+        <button class="icon-button theme-toggle" type="button" aria-label="Switch theme" title="Switch theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.2" fill="none" stroke-width="1.7"/><path d="M12 2.6v2.6M12 18.8v2.6M2.6 12h2.6M18.8 12h2.6M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9" fill="none" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.3A8.4 8.4 0 0 1 9.7 4a8.4 8.4 0 1 0 10.3 10.3z" fill="none" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="icon-button menu-toggle" type="button" aria-label="Menu" aria-expanded="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  {%- if page.layout == 'doc' %}
+  <div class="docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation">
+      <nav>
+        {%- for category in site.data.doc_categories %}
+        {%- assign pages = site.docs | where: "category", category.name | sort: "order" %}
+        {%- if pages.size > 0 %}
+        <div class="nav-group">
+          <div class="nav-group-title">{{ category.name }}</div>
+          <ul>
+            {%- for doc in pages %}
+            <li><a href="{{ doc.url | relative_url }}"{% if doc.url == page.url %} class="current" aria-current="page"{% endif %}>{{ doc.title }}</a></li>
+            {%- endfor %}
+          </ul>
+        </div>
+        {%- endif %}
+        {%- endfor %}
+      </nav>
+    </aside>
+    <main class="doc-main" id="content">
+      {{ content }}
+    </main>
+  </div>
+  {%- else %}
+  <main id="content">
+    {{ content }}
+  </main>
+  {%- endif %}
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        {% include logo.html size=22 %}
+        <span class="wordmark">sdns<span class="wordmark-dot">.</span></span>
+        <p>A recursive DNS resolver with DNSSEC validation, written in Go.</p>
+      </div>
+      <div class="footer-cols">
+        <div>
+          <h4>Documentation</h4>
+          <a href="{{ '/docs/getting-started/installation/' | relative_url }}">Installation</a>
+          <a href="{{ '/docs/configuration/overview/' | relative_url }}">Configuration</a>
+          <a href="{{ '/docs/' | relative_url }}">All pages</a>
+        </div>
+        <div>
+          <h4>Project</h4>
+          <a href="{{ site.github.repository_url }}">Source</a>
+          <a href="{{ site.github.repository_url }}/releases">Releases</a>
+          <a href="{{ site.github.repository_url }}/issues">Issues</a>
+        </div>
+        <div>
+          <h4>Measurements</h4>
+          <a href="{{ site.github.repository_url }}/blob/main/BENCHMARKS.md">Methodology</a>
+          <a href="{{ site.github.repository_url }}/blob/main/LICENSE">License</a>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>© {{ site.time | date: '%Y' }} SDNS Contributors</span>
+      <span class="footer-note">Built with Jekyll. No trackers, no cookies.</span>
+    </div>
+  </footer>
+
+  <script src="{{ '/assets/js/main.js' | relative_url }}"></script>
+</body>
+</html>

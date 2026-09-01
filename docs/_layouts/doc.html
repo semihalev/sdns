@@ -1,0 +1,31 @@
+---
+layout: default
+---
+<article class="doc-article">
+  <h1>{{ page.title }}</h1>
+  {%- if page.description %}
+  <p class="doc-lede">{{ page.description }}</p>
+  {%- endif %}
+
+  {{ content }}
+
+  {%- assign siblings = site.docs | where: "category", page.category | sort: "order" %}
+  {%- assign prev = nil %}
+  {%- assign next = nil %}
+  {%- assign take_next = false %}
+  {%- for doc in siblings %}
+    {%- if take_next and next == nil %}{% assign next = doc %}{% endif %}
+    {%- if doc.url == page.url %}{% assign take_next = true %}{% endif %}
+    {%- unless take_next %}{% assign prev = doc %}{% endunless %}
+  {%- endfor %}
+  {%- if prev or next %}
+  <nav class="doc-nav" aria-label="Within {{ page.category }}">
+    {%- if prev %}
+    <a href="{{ prev.url | relative_url }}"><span class="dir">Previous</span><span>{{ prev.title }}</span></a>
+    {%- endif %}
+    {%- if next %}
+    <a class="next" href="{{ next.url | relative_url }}"><span class="dir">Next</span><span>{{ next.title }}</span></a>
+    {%- endif %}
+  </nav>
+  {%- endif %}
+</article>
