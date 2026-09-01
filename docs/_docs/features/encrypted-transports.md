@@ -31,7 +31,12 @@ misconfiguration.
 `sdns -t` opens both files, so a wrong path or a key the service user cannot
 read is caught before the restart.
 
-Certificates are read at startup. Renewing means restarting the process.
+Certificates do not need a restart to renew. sdns watches the directories
+holding both files with fsnotify — directories rather than the files
+themselves, so an ACME client swapping a symlink is noticed — and re-checks
+every five minutes in case an event is missed. `SIGHUP` forces an immediate
+reload. A replacement that fails to load leaves the previous certificate in
+place.
 
 ## Which clients reach which
 

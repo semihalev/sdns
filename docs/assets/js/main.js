@@ -64,10 +64,13 @@
       if (e.key === 'Escape' && document.body.classList.contains('nav-open')) set(false);
     });
     /* Leaving the breakpoint with the drawer open would otherwise strand
-       body{overflow:hidden} on a desktop layout. */
-    window.matchMedia('(max-width: 900px)').addEventListener('change', function (e) {
-      if (!e.matches) set(false);
-    });
+       body{overflow:hidden} on a desktop layout. Older WebKit has no
+       addEventListener on MediaQueryList; calling it unguarded threw here and
+       took the table of contents, the copy buttons and the counters with it. */
+    var mq = window.matchMedia('(max-width: 900px)');
+    var onChange = function (e) { if (!e.matches) set(false); };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
   }
 
   /* Built from the rendered headings rather than written by hand, so a page
@@ -119,6 +122,12 @@
         navigator.clipboard.writeText(pre.innerText).then(function () {
           button.textContent = 'copied';
           setTimeout(function () { button.textContent = 'copy'; }, 1400);
+        }).catch(function () {
+          /* Denied permission, an unfocused document, Safari's gesture rules.
+             Say so rather than leaving an uncaught rejection and a button
+             that appears to have done nothing. */
+          button.textContent = 'press \u2318C';
+          setTimeout(function () { button.textContent = 'copy'; }, 1800);
         });
       });
       wrap.appendChild(button);

@@ -19,8 +19,11 @@ proportion.
 
 `prefetch` refreshes an entry in the background when a query arrives and the
 entry has less than that percentage of its original TTL left. It trades a small
-amount of upstream traffic for hits that stay warm on popular names. The value
-is clamped to 10–90; `0` turns it off.
+amount of upstream traffic for hits that stay warm on popular names.
+
+The value must be `0` — which turns prefetching off — or between 10 and 90.
+Anything else is a configuration error rather than being clamped, so `sdns -t`
+rejects it.
 
 ## Which TTL you receive
 
@@ -81,7 +84,7 @@ restarting is the way to empty the cache entirely.
 dns_cache_size              current entries
 dns_cache_hits_total        hits
 dns_cache_misses_total      misses
-dns_cache_hit_rate          ratio
+dns_cache_hit_rate          percentage, 0-100
 dns_cache_evictions_total   entries dropped under pressure
 dns_cache_prefetches_total  background refreshes
 dns_cache_stale_answers_total  answers served past expiry

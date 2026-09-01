@@ -6,8 +6,9 @@ order: 2
 description: What the generated file contains and the few keys worth setting straight away.
 ---
 
-Starting sdns without a configuration writes one next to the binary and uses
-it. The generated file documents every setting in place, so it is worth
+Starting sdns without a configuration writes `sdns.conf` in the current
+working directory and uses it. That matters under systemd, where
+`WorkingDirectory=/var/lib/sdns` decides where it lands. The generated file documents every setting in place, so it is worth
 reading once rather than copying fragments from elsewhere.
 
 ## The keys that matter first

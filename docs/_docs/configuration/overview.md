@@ -9,8 +9,8 @@ description: How the file is organised, and where to find a given setting.
 Configuration is one TOML file. Most settings are top-level keys; features with
 several knobs of their own get a block.
 
-Starting sdns without a configuration file writes one next to the binary and
-uses it. That generated file carries a comment above every setting and is the
+Starting sdns without a configuration file writes `sdns.conf` in the current
+working directory and uses it. That generated file carries a comment above every setting and is the
 authoritative description of the version you are running. These pages describe
 the same settings with more room for the reasoning behind them.
 
@@ -53,8 +53,12 @@ version = "1.8.2"
 ```
 
 This is the configuration *schema* version, not the sdns version. It only
-changes when the schema does. When sdns finds an older schema version it
-migrates the file in place and keeps a backup alongside it.
+changes when the schema does.
+
+When sdns finds a version it does not recognise it logs a warning and loads the
+file **unchanged**. Nothing is migrated and no backup is written. Generate a
+fresh configuration alongside the new binary and carry your settings across by
+hand; `sdns -t` reports any key that no longer exists.
 
 ## Durations and sizes
 

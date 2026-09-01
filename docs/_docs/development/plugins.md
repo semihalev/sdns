@@ -13,8 +13,9 @@ func New(cfg *config.Config) middleware.Handler
 ```
 
 It is loaded at startup and inserted into the chain immediately **before the
-cache**, which is where a plugin can still see every query — including ones the
-cache would otherwise answer.
+cache**, so a plugin sees queries the cache would otherwise have answered. It
+does not see every query: access control, rate limiting, the hosts file, views,
+the blocklist and RPZ all run earlier and any of them can end the chain first.
 
 ## Configuring
 
@@ -25,8 +26,12 @@ cache would otherwise answer.
     config = {key_1 = "value_1", key_2 = 2, key_3 = true}
 ```
 
-Load order follows the order of the blocks, and the `config` table is passed
-through to the plugin.
+The `config` table is passed through to the plugin.
+
+Load order does **not** follow the order of the blocks. Plugins are held in a
+map and registered by iterating it, so with more than one plugin their relative
+order is undefined and can differ between restarts. Do not build behaviour that
+depends on one plugin running before another.
 
 A working example lives at
 [semihalev/sdnsexampleplugin](https://github.com/semihalev/sdnsexampleplugin).

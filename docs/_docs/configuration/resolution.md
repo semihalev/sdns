@@ -14,9 +14,13 @@ root6servers = ["[2001:503:ba3e::2:30]:53", ...]
 ```
 
 The generated file ships the full published list for both families. You would
-only edit these to point at a private root, or to remove a family the host
-cannot reach — an IPv6 list on a host without IPv6 transit costs a timeout on
-every attempt that picks it.
+only edit these to point at a private root, or to point at a private root
+deployment.
+
+You do not need to remove the IPv6 list on a host without IPv6 transit: sdns
+probes for transit at startup and leaves the IPv6 roots out of the rotation when
+the probe fails. `ipv6access = true` overrides the probe when it misjudges the
+network.
 
 If you want the root served locally instead of queried, see
 [Local root zone]({{ '/docs/features/hyperlocal-root/' | relative_url }}).

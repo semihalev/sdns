@@ -4,4 +4,5 @@ _site/
 .sass-cache/
 vendor/
 .bundle/
-Gemfile.lock
+# Gemfile.lock is committed: CI builds with the same locked toolchain the
+# site is developed against, rather than whatever a resolver picks that day.

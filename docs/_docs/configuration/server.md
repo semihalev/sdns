@@ -57,9 +57,17 @@ bearertoken = ""
 Serves `/metrics` in Prometheus format plus the blocklist and cache-purge
 endpoints. Set `api = ""` to disable it entirely.
 
-`bearertoken`, when set, requires `Authorization: Bearer <token>` on every
-request. The API binds to loopback by default; if you move it to a reachable
-address, set a token. See
+`bearertoken`, when set, requires `Authorization: Bearer <token>` on the
+blocklist, purge and metrics routes.
+
+It is not sufficient protection on its own. This listener is plain HTTP with no
+TLS, so a token sent to a reachable address crosses the network in the clear.
+And with `SDNS_PPROF=true` the `/debug/pprof` routes skip the token check
+entirely, because pprof tooling sends no `Authorization` header.
+
+Keep it on loopback. If it must be reachable, put it behind a TLS-terminating
+authenticating proxy, a VPN, or a source-restricted firewall, and treat the
+token as a second layer rather than the first. See
 [Monitoring]({{ '/docs/deployment/monitoring/' | relative_url }}) for what the
 endpoints do.
 

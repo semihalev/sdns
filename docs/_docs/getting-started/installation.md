@@ -31,11 +31,32 @@ call in a deployment script.
 ## Docker
 
 ```bash
+# sdns.conf must set directory = "/var/lib/sdns" and narrow accesslist —
+# see below for why each half of this command matters.
 docker run -d --name sdns \
-  -p 53:53 -p 53:53/udp \
+  -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
   -v sdns-data:/var/lib/sdns \
-  ghcr.io/semihalev/sdns:1.8.2
+  -v "$PWD/sdns.conf:/etc/sdns.conf:ro" \
+  ghcr.io/semihalev/sdns:1.8.2 -c /etc/sdns.conf
 ```
+
+Three parts of that are not decoration.
+
+**`127.0.0.1:` on both publishes.** A bare `-p 53:53` binds every interface on
+the host. The shipped `accesslist` allows every client, so on a machine with a
+public address that is an open recursive resolver, and open resolvers are found
+and used for reflection attacks within hours. Publish to loopback until
+`accesslist` says who may query.
+
+**A configuration file, mounted, and named with `-c`.** Without one the
+container writes a default config and uses it.
+
+**`directory = "/var/lib/sdns"` inside that file.** The image is built
+`FROM scratch` with no `WORKDIR`, so the process runs in `/` and the default
+relative `directory = "db"` resolves to `/db` — not the volume. The trust
+anchor state then lives in the container's writable layer and is lost on the
+next `docker rm`, which is exactly the failure the volume was meant to prevent
+and which only surfaces at a root KSK rollover.
 
 The volume is not optional: it holds the RFC 5011 trust-anchor state, and a
 container without it only reveals the problem at a root KSK rollover. A compose
@@ -66,12 +87,17 @@ only want the binary.
 
 ## Verifying the install
 
-Start it with the generated configuration and ask it something:
+Port 53 needs privilege, and the shipped access list allows every client — so
+verify on a loopback high port instead of running this as root:
 
 ```bash
-./sdns -c sdns.conf &
-dig @127.0.0.1 example.com A +dnssec
+printf 'bind = "127.0.0.1:5353"\napi = ""\naccesslist = ["127.0.0.1/32"]\n' > check.conf
+./sdns -c check.conf &
+dig @127.0.0.1 -p 5353 example.com A +dnssec
 ```
+
+The keys not named there are filled in from the defaults, so this is a real
+resolver — just one only you can reach.
 
 An answer with the `ad` flag means the response was validated. If the first
 query is slow, that is the resolver priming the root and fetching the trust

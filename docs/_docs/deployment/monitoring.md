@@ -27,7 +27,8 @@ bearertoken = "a-long-random-string"
 | `/api/v1/block/set/batch` | POST | Add many |
 | `/api/v1/block/remove/batch` | POST | Remove many |
 
-The block endpoints only exist when a blocklist is configured. Note that the
+The block endpoints are registered whether or not you configured a blocklist —
+the default chain always builds the handler. Note that the
 single-name mutations are GET requests, which means a browser or a link
 preview can trigger them — another reason to keep this listener on loopback or
 behind a token.
@@ -88,7 +89,7 @@ dns_listener_errors_total
 Overflow means queries arrived faster than the workers accepted them. That is a
 capacity signal, not a bug.
 
-**Everything else.** All 60 metrics — with their types, labels, help strings,
+**Everything else.** All 64 metrics — with their types, labels, help strings,
 ready-made PromQL and the alerts worth having — are in the
 [metrics reference]({{ '/docs/reference/metrics/' | relative_url }}).
 

@@ -21,8 +21,16 @@ type Handler interface {
 ```
 
 A middleware either answers the query and stops the chain, or modifies
-something and continues it. Continuing is `ch.Next(ctx)`; stopping is
-`ch.Cancel(ctx)` or `ch.CancelWithRcode(ctx, rcode, authoritative)`.
+something and continues it:
+
+```go
+ch.Next(ctx)                    // continue
+ch.Cancel()                     // stop, writing nothing further
+ch.CancelWithRcode(rcode, do)   // write a reply with this rcode, then stop
+```
+
+Only `Next` takes the context. `do` on `CancelWithRcode` sets the DO bit on the
+response's OPT record — it is not an authoritative flag.
 
 ## The default chain
 

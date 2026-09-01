@@ -74,6 +74,22 @@ body.preload * { transition: none !important; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
+/* Inside running text the accent alone is not enough to mark a link — its
+   contrast against the surrounding prose is under the 3:1 that colour-only
+   distinction requires — so body links are underlined by default. Navigation,
+   where position and grouping already carry the meaning, is left alone. */
+.doc-main p > a, .doc-main li > a, .doc-main td > a, .doc-lede a {
+  text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-thickness: 1px; text-decoration-color: var(--accent-dim);
+}
+.doc-main p > a:hover, .doc-main li > a:hover, .doc-main td > a:hover {
+  text-decoration-color: var(--accent);
+}
+/* The generated contents list is navigation, not prose — grouping and position
+   already mark those as links, so they keep the plain treatment. */
+.toc a { text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+
 code, pre, .mono { font-family: var(--mono); }
 
 .skip-link {
@@ -320,9 +336,16 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
     margin-left: 0; padding: 1.1rem 1.25rem 3rem;
     background: var(--bg); border-left: 1px solid var(--line);
     transform: translateX(100%); visibility: hidden;
-    transition: transform var(--fast), visibility var(--fast);
+    /* visibility flips at once on the way in — a discrete property animated
+       over a duration changes at the midpoint, which left the panel still
+       hidden, and therefore unfocusable, at the moment the script tried to
+       move focus into it. On the way out it waits for the slide to finish. */
+    transition: transform var(--fast), visibility 0s linear var(--fast);
   }
-  body.nav-open .main-nav { transform: translateX(0); visibility: visible; }
+  body.nav-open .main-nav {
+    transform: translateX(0); visibility: visible;
+    transition: transform var(--fast), visibility 0s;
+  }
 
   .nav-links { display: flex; flex-direction: column; gap: .1rem; }
   .nav-links a { padding: .5rem .6rem; border-radius: var(--r-sm); color: var(--text); }
@@ -333,8 +356,12 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 
   /* Dismiss surface. Pointer events only while open, so it never eats a tap
      on the page underneath. */
+  /* Below the header, not above it. .site-header carries z-index:50 and so
+     opens a stacking context; the drawer's z-index:60 is scoped inside it and
+     cannot beat a root-level 55. The scrim then painted over the drawer, and
+     every tap on a drawer link landed on the scrim and closed the menu. */
   .nav-scrim {
-    position: fixed; inset: var(--header-h) 0 0; z-index: 55;
+    position: fixed; inset: var(--header-h) 0 0; z-index: 40;
     background: rgba(0, 0, 0, .45);
     opacity: 0; visibility: hidden; transition: opacity var(--fast), visibility var(--fast);
   }

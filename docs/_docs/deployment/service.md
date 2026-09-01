@@ -76,8 +76,12 @@ process actually derived from the machine.
 ## Restarting safely
 
 ```bash
-sudo sdns -t -c /etc/sdns.conf && sudo systemctl restart sdns
+sudo -u sdns /usr/bin/sdns -t -c /etc/sdns.conf && sudo systemctl restart sdns
 ```
+
+Run the check **as the service user**. As root it reads files the `sdns` user
+cannot — a TLS key with tight ownership passes the test and then fails at
+startup.
 
 Make the validation gate part of the restart, not a thing you remember to run.
 It reports every problem in the file at once and exits nonzero on any of them,

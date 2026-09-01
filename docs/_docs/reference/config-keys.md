@@ -32,7 +32,7 @@ feature is off until you uncomment it.
 | `rfc9520` | `true` | Cache resolution failures; kill switch only |
 | `serve_stale` | `false` | Serve expired answers when resolution fails |
 | `serve_stale_max_ttl` | `"24h"` | Measured from TTL expiry; `"0"` removes this bound |
-| `fallbackservers` | `[]` | Used when the root servers are unreachable |
+| `fallbackservers` | `[]` | Tried after a SERVFAIL from normal resolution |
 | `forwarderservers` | `[]` | Set to make sdns a forwarder instead of a recursor |
 | `api` | `"127.0.0.1:8080"` | HTTP API and metrics; `""` disables |
 | `bearertoken` | *(commented)* | Requires `Authorization: Bearer` on API requests |
@@ -50,8 +50,11 @@ feature is off until you uncomment it.
 | `querytimeout` | `"10s"` | For one whole client query |
 | `expire` | `600` | Legacy error-cache ceiling; superseded by `failure_cache_*` |
 | `cachesize` | `256000` | Cached records |
-| `prefetch` | `10` | Refresh threshold percent (10–90); `0` disables |
+| `prefetch` | `10` | Refresh threshold percent; `0`, or 10–90 — other values are rejected |
 | `maxdepth` | `30` | Recursion depth ceiling |
+| `maxconcurrentqueries` | `10000` | Upstream fan-out semaphore; separate from the ingress bounds |
+| `ipv6access` | probed | Forced on when the startup IPv6-transit probe succeeds; set `true` to override a probe that misjudges the network |
+| `cookiesecret` | generated | RFC 7873 cookie secret; 16 random bytes when empty |
 | `ingressworkers` | *(commented)* | Handler workers per listener; derived at startup |
 | `ingressqueue` | *(commented)* | Ready-queue depth; derived at startup |
 | `ingresstcpconns` | *(commented)* | TCP/DoT connection cap; derived at startup |
@@ -123,11 +126,13 @@ See [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}).
 
 ## `[kubernetes]`
 
-| Key | Default |
-|---|---|
+| Key | Default | Note |
+|---|---|---|
 | `enabled` | `false` |
 | `cluster_domain` | `"cluster.local"` |
 | `kubeconfig` | *(commented)* |
+| `demo` | `false` | **Never enable in production** — answers synthesised names that look real, and works independently of `enabled` |
+| `killer_mode` | — | Deprecated and ignored; still parsed so old files load |
 | `ttl.service` | `30` |
 | `ttl.pod` | `30` |
 | `ttl.srv` | `30` |
@@ -149,12 +154,12 @@ See [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}).
 | Key | Default | Note |
 |---|---|---|
 | `enabled` | `false` | |
-| `forward_v4` | `24` | |
-| `forward_v6` | `56` | |
+| `forward_v4` | `24` | `0` selects 24 |
+| `forward_v6` | `56` | `0` selects 56 |
 | `client_networks` | `[]` (all clients) | |
-| `cache_limit_ttl` | `"5m"` | No-op in this release |
-| `min_scope_v4` | `24` | No-op in this release |
-| `min_scope_v6` | `56` | No-op in this release |
+| `cache_limit_ttl` | `"5m"` | TTL ceiling on scope-keyed entries |
+| `min_scope_v4` | `24` | Scope floor for the cache key; `0` uses `forward_v4` |
+| `min_scope_v6` | `56` | Scope floor for the cache key; `0` uses `forward_v6` |
 
 ## `[recursion_firewall]`
 

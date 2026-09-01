@@ -62,10 +62,15 @@ you publish it more widely, set `accesslist` first — see
 
 ```
 53/tcp  53/udp   plain DNS
-853              DoT and DoQ
-8053             DoH
-8080             HTTP API and metrics
+853/tcp          DoT
+8053/tcp         DoH
+8080/tcp         HTTP API and metrics
 ```
+
+`EXPOSE` in the image declares TCP unless a port says otherwise, so **DoQ and
+HTTP/3 have no declaration** — they are UDP. `docker run -P` will not publish
+them; name them explicitly (`-p 853:853/udp`, `-p 8053:8053/udp`) if you serve
+either.
 
 Publish only what you actually serve. In particular, the API listener should
 stay on loopback or behind a token.

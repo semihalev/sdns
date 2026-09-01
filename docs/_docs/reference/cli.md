@@ -64,7 +64,8 @@ to read the HINFO output, and why that matters are on the
 
 ## First run
 
-Starting with no configuration file writes one next to the binary and uses it:
+Starting with no configuration file writes `sdns.conf` in the current working
+directory and uses it:
 
 ```bash
 ./sdns

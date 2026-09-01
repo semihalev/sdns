@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 60 metrics in Prometheus format on the API listener, alongside the
+sdns exports 64 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -53,7 +53,7 @@ is what `domainmetricslimit` exists for.
 |---|---|---|---|
 | `dns_cache_hits_total` | counter | | Cache hits |
 | `dns_cache_misses_total` | counter | | Cache misses |
-| `dns_cache_hit_rate` | gauge | | Hit rate percentage |
+| `dns_cache_hit_rate` | gauge | | Hit rate as a **percentage**, 0–100 — not a 0–1 ratio |
 | `dns_cache_size` | gauge | `type` | Entries currently held |
 | `dns_cache_evictions_total` | counter | | Entries dropped under pressure |
 | `dns_cache_prefetches_total` | counter | | Background refreshes of popular entries |
@@ -143,6 +143,7 @@ the fixed pool accepted them and were served on their own goroutines.
 | `dns_blocklist_hits_total` | counter | | Queries blocked by the blocklist |
 | `dns_blocklist_entries` | gauge | | Blocklist size (exact names plus wildcard suffixes) |
 | `reflex_blocked_total` | counter | | Queries blocked as amplification-attack suspects |
+| `reflex_detections_total` | counter | | Queries scored as amplification suspects, whether or not blocking is on |
 | `reflex_tracked_ips` | gauge | | IPs currently tracked by reflex |
 
 ### Response Policy Zones
@@ -204,9 +205,9 @@ performance one. It should be zero.
 | `dns64_a_lookup_failures_total` | counter | `reason` | Failures of the secondary A lookup |
 | `dns64_ptr_translated_total` | counter | | `ip6.arpa` PTRs answered with a CNAME to `in-addr.arpa` |
 
-`dns64_passthrough_total{reason="dnssec"}` is worth watching: it counts the
-cases where synthesis was declined because it would have masked a validation
-failure.
+`dns64_passthrough_total{reason="dnssec_fail"}` is worth watching: it counts
+the cases where synthesis was declined because it would have masked a
+validation failure.
 
 ## Runtime
 
@@ -232,9 +233,11 @@ sum(rate(dns_cache_hits_total[5m]))
 **Share of answers that cost no upstream query**
 
 ```promql
-sum(rate(nxdomain_cut_hits_total[5m]))
+(
+  sum(rate(nxdomain_cut_hits_total[5m]))
   + sum(rate(aggressive_negative_hits_total[5m]))
   + sum(rate(dns_localroot_answers_total[5m]))
+) / sum(rate(dns_queries_total[5m]))
 ```
 
 **SERVFAIL rate**
@@ -271,8 +274,13 @@ sum(rate(rpz_action_total[5m])) by (zone, action, outcome)
 
 **Local root copy going stale**
 
+The gauge is the age of the copy, so it is above zero almost all the time on a
+healthy resolver — alert on a threshold, not on the value being positive. The
+root zone refreshes on its own SOA schedule, so a day without a successful
+transfer is the signal:
+
 ```promql
-dns_localroot_copy_age_seconds > 0
+dns_localroot_copy_age_seconds > 86400
 ```
 
 ## Alerts worth having
@@ -282,6 +290,6 @@ dns_localroot_copy_age_seconds > 0
 | `rate(dns_resolver_dnssec_failures_total[10m]) > 0` | Invisible to clients; they only see SERVFAIL |
 | `rate(dns_recovery_panics_total[10m]) > 0` | Should never fire |
 | `rate(dns_forwarder_response_mismatch_total[10m]) > 0` | Poisoning signal |
-| `dns_localroot_copy_age_seconds` rising | Refreshes failing; falls back silently |
-| `rate(dns_cache_evictions_total[10m])` up while `dns_cache_hit_rate` down | `cachesize` below the working set |
+| `dns_localroot_copy_age_seconds > 86400` | Refreshes failing; falls back silently |
+| `rate(dns_cache_evictions_total[10m]) > 0 and dns_cache_hit_rate < 80` | `cachesize` below the working set |
 | `rate(dns_udp_ingress_overflow_total[5m])` sustained | Capacity, not correctness |

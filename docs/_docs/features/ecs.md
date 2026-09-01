@@ -44,7 +44,7 @@ reaches this resolver. Populating it is the useful configuration: forward ECS
 for known internal sources such as load balancers, CDN edges and corporate
 networks, and strip it for the open internet.
 
-## Cache settings
+## The scope-keyed cache
 
 ```toml
 cache_limit_ttl = "5m"
@@ -52,15 +52,19 @@ min_scope_v4    = 24
 min_scope_v6    = 56
 ```
 
-These are declared but are **no-ops in this release**. They exist in the schema
-now so that adding scope-aware caching later does not require another
-configuration schema bump.
+An answer the authority marks with a nonzero SCOPE is stored under a
+scope-specific key and served only to clients inside that scope; SCOPE=0
+answers share the ordinary global entry. A geo-tailored answer does not reach a
+client it was not meant for.
 
-That means the current release forwards ECS upstream but does not yet partition
-the cache by scope. A geo-tailored answer fetched for one client subnet can be
-served to a client in another. If that matters for your deployment, keep ECS
-narrowly scoped with `client_networks`, or leave it off until scoped caching
-ships.
+`cache_limit_ttl` caps the TTL of any scoped entry — geo answers go stale
+faster than a general TTL suggests, and a misconfigured upstream should not be
+able to pin an audience-specific answer for hours.
+
+`min_scope_v4` and `min_scope_v6` widen a narrower SCOPE before it becomes part
+of the key. That is what bounds cardinality: without a floor, a resolver with
+diverse clients would key entries per client. They default to the forwarding
+ceilings, and `0` means "use that ceiling".
 
 ## Watching it
 

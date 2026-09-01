@@ -24,16 +24,27 @@ collections:
     permalink: /:collection/:path/
     sort_by: order
 
+# One defaults block. A second one does not merge — the later key replaces the
+# earlier, which would have silently dropped every layout assignment here.
+#
+# The seo types are set because jekyll-seo-tag treats everything as a
+# BlogPosting, and with no date in the front matter it stamps datePublished and
+# dateModified with the build time — so each deploy announced all 29 documents
+# as freshly written. Reference documentation is not a blog.
 defaults:
   - scope:
       path: ""
       type: "docs"
     values:
       layout: "doc"
+      seo:
+        type: "TechArticle"
   - scope:
       path: ""
     values:
       layout: "default"
+      seo:
+        type: "WebPage"
 
 plugins:
   - jekyll-sitemap

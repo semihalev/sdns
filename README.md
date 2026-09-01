@@ -43,10 +43,13 @@ armv5/6/7 — plus `.deb` and `.rpm` packages — are on the
 [releases](https://github.com/semihalev/sdns/releases/latest) page.
 
 ```shell
-# Docker — publish both protocols, and persist the state directory
+# Docker. Loopback because the default access list allows every client; -c and
+# directory = "/var/lib/sdns" in the file because the image has no WORKDIR, so
+# a relative state directory resolves to /db and misses the volume entirely.
 docker run -d --name sdns \
-  -p 53:53 -p 53:53/udp -v sdns-data:/var/lib/sdns \
-  ghcr.io/semihalev/sdns:latest
+  -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
+  -v sdns-data:/var/lib/sdns -v "$PWD/sdns.conf:/etc/sdns.conf:ro" \
+  ghcr.io/semihalev/sdns:1.8.2 -c /etc/sdns.conf
 
 # macOS
 brew install semihalev/tap/sdns && brew services start sdns

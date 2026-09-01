@@ -1,8 +1,12 @@
-name: Deploy site
+name: Site
 
 on:
   push:
     branches: ["main"]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  pull_request:
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"
@@ -16,25 +20,54 @@ permissions:
 # One deployment at a time. Queued runs collapse, but a run already
 # publishing is never cancelled.
 concurrency:
-  group: "pages"
+  group: "pages-${{ github.ref }}"
   cancel-in-progress: false
 
 jobs:
+  # Builds on every pull request that touches the site, so a broken Liquid
+  # tag or a dead link is caught in review rather than after a deploy.
+  #
+  # ruby/setup-ruby with the checked-in Gemfile rather than
+  # actions/jekyll-build-pages: that action pins the github-pages gem, which is
+  # Jekyll 3.10, while the site is developed against Jekyll 4.4. Building with
+  # a toolchain nobody runs locally is how a green CI ships a broken page.
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/jekyll-build-pages@v1
+      - uses: ruby/setup-ruby@v1
         with:
-          source: ./docs/
-          destination: ./_site
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: docs
+      - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
+      - name: Build
+        working-directory: docs
         env:
           JEKYLL_ENV: production
+        run: bundle exec jekyll build --destination ../_site --trace
+
+      - name: Check internal links resolve
+        run: |
+          fail=0
+          # Every href into /docs/ must have a generated page behind it.
+          grep -rhoE 'href="/docs/[a-z0-9/-]*"' _site --include='*.html' \
+            | sed 's/href="//;s/"//' | sort -u | while read -r u; do
+              if [ ! -f "_site${u}index.html" ]; then
+                echo "broken internal link: $u"; exit 1
+              fi
+            done || fail=1
+          test "$fail" -eq 0
+
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
 
   deploy:
     needs: build
+    # Never from a pull request, and never from a branch other than main —
+    # the environment's branch policy is the backstop, not the only gate.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -16,12 +16,16 @@
       try { stored = localStorage.getItem('theme'); } catch (e) {}
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
       document.documentElement.setAttribute('theme', stored || (mq.matches ? 'dark' : 'light'));
-      if (!stored && mq.addEventListener) {
-        mq.addEventListener('change', function (e) {
-          try { if (localStorage.getItem('theme')) return; } catch (err) {}
-          document.documentElement.setAttribute('theme', e.matches ? 'dark' : 'light');
-        });
-      }
+      // Attached whatever the stored state is: clearing the choice later would
+      // otherwise leave the page with no listener until a reload. The guard
+      // inside already handles the stored case. addListener is the fallback
+      // for WebKit versions without addEventListener on MediaQueryList.
+      var follow = function (e) {
+        try { if (localStorage.getItem('theme')) return; } catch (err) {}
+        document.documentElement.setAttribute('theme', e.matches ? 'dark' : 'light');
+      };
+      if (mq.addEventListener) mq.addEventListener('change', follow);
+      else if (mq.addListener) mq.addListener(follow);
     })();
   </script>
 
@@ -68,7 +72,8 @@
 
       <div class="header-actions">
         <a class="star-pill" href="{{ site.github.repository_url }}" target="_blank" rel="noopener"
-           title="Star on GitHub" data-repo="{{ site.github.repository_nwo }}">
+           title="Star on GitHub" aria-label="Stars on GitHub"
+           data-repo="{{ site.github.repository_nwo }}">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M12 .6l3.7 7.5 8.3 1.2-6 5.9 1.4 8.2L12 19.5l-7.4 3.9L6 15.2 0 9.3l8.3-1.2z"/></svg>
           <span class="star-count" data-stars>—</span>
         </a>
