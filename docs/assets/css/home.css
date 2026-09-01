@@ -1,0 +1,115 @@
+/* Homepage only. Loaded when page.url == '/'. */
+
+.home { max-width: var(--wide); margin: 0 auto; padding: 0 1.25rem; }
+
+/* ---------- hero ---------- */
+
+.hero { padding: 4.5rem 0 3rem; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3.5rem; align-items: center; }
+.hero h1 { font-size: 2.6rem; margin: 0 0 .9rem; letter-spacing: -0.035em; }
+.hero h1 .dot { color: var(--accent); }
+.hero p { color: var(--text-dim); font-size: 1.06rem; margin: 0 0 1.6rem; max-width: 40ch; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; }
+
+.button {
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-family: var(--mono); font-size: .87rem;
+  padding: .5rem .95rem; border-radius: var(--r-md);
+  border: 1px solid var(--line-strong); color: var(--text);
+}
+.button:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); }
+.button-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.button-primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); color: var(--bg); }
+
+/* the terminal is a real transcript, not an animation */
+.terminal {
+  background: var(--bg-code); border: 1px solid var(--line); border-radius: var(--r-lg);
+  overflow: hidden; font-family: var(--mono); font-size: .8rem; line-height: 1.55;
+}
+.terminal-bar {
+  display: flex; align-items: center; gap: .45rem;
+  padding: .5rem .8rem; border-bottom: 1px solid var(--line); background: var(--bg-raised);
+}
+.terminal-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); }
+.terminal-title { margin-left: .4rem; font-size: .72rem; color: var(--text-faint); }
+.terminal pre { margin: 0; border: 0; background: none; padding: .95rem 1.05rem; font-size: .8rem; }
+.terminal .c-prompt { color: var(--accent); }
+.terminal .c-flag { color: var(--text-dim); }
+.terminal .c-key { color: var(--text-faint); }
+.terminal .c-val { color: var(--signal); }
+.terminal .c-ok { color: var(--accent); }
+
+/* ---------- measured numbers ---------- */
+
+.section { padding: 3.2rem 0; border-top: 1px solid var(--line); }
+.section-label {
+  font-family: var(--mono); font-size: .7rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: 1.4rem;
+}
+.section h2 { font-size: 1.45rem; margin: 0 0 .5rem; }
+.section > p { color: var(--text-dim); max-width: var(--measure); margin: 0 0 1.8rem; }
+
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.metric { background: var(--bg); padding: 1.2rem 1.1rem; }
+.metric-value { font-family: var(--mono); font-size: 1.75rem; font-weight: 700; color: var(--signal); letter-spacing: -0.03em; line-height: 1.1; }
+.metric-unit { font-size: .95rem; color: var(--text-faint); font-weight: 400; }
+.metric-name { font-size: .87rem; margin-top: .35rem; }
+.metric-cond { font-family: var(--mono); font-size: .72rem; color: var(--text-faint); margin-top: .2rem; }
+.metrics-note { font-size: .84rem; color: var(--text-faint); margin-top: .9rem; }
+
+/* ---------- comparison ---------- */
+
+.compare { width: 100%; border-collapse: collapse; font-size: .89rem; display: table; }
+.compare th, .compare td { padding: .5rem .8rem; border-bottom: 1px solid var(--line); text-align: left; }
+.compare th { font-family: var(--mono); font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); font-weight: 500; }
+.compare td.num { font-family: var(--mono); text-align: right; }
+.compare tr.self td { color: var(--text); }
+.compare tr.self td.num { color: var(--signal); font-weight: 700; }
+.compare tr:not(.self) td { color: var(--text-dim); }
+
+/* ---------- RFC grid ---------- */
+
+/* Separators are drawn by each cell rather than by a background showing
+   through 1px gaps: the last row rarely fills its tracks, and a background
+   would leave the empty cells painted as if they held something. The
+   negative margins tuck the trailing borders under the container's own. */
+.rfc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.rfc {
+  padding: .7rem .9rem; display: flex; gap: .7rem; align-items: baseline;
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  margin: 0 -1px -1px 0;
+}
+.rfc-num { font-family: var(--mono); font-size: .8rem; color: var(--accent); white-space: nowrap; }
+.rfc-what { font-size: .84rem; color: var(--text-dim); }
+
+/* ---------- config sample ---------- */
+
+.config-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2rem; align-items: start; }
+.config-grid ul { margin: 0; padding-left: 1.1rem; color: var(--text-dim); font-size: .92rem; }
+.config-grid li { margin: .45rem 0; }
+.config-grid li strong { color: var(--text); font-weight: 600; }
+
+/* ---------- github ---------- */
+
+.gh-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.gh-stat { background: var(--bg); padding: 1rem; text-align: center; }
+.gh-value { font-family: var(--mono); font-size: 1.35rem; font-weight: 700; color: var(--text); }
+.gh-value[data-loading="1"] { color: var(--text-faint); }
+.gh-label { font-family: var(--mono); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); margin-top: .25rem; }
+
+/* ---------- feature list ---------- */
+
+.features { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.6rem 2rem; }
+.feature h3 { font-size: .97rem; margin: 0 0 .3rem; }
+.feature h3 a { color: var(--text); }
+.feature h3 a:hover { color: var(--accent); text-decoration: none; }
+.feature p { margin: 0; font-size: .88rem; color: var(--text-dim); }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; gap: 2.2rem; padding-top: 3rem; }
+  .hero h1 { font-size: 2.1rem; }
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .config-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .metrics { grid-template-columns: 1fr; }
+}

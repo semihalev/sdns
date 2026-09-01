@@ -1,0 +1,10 @@
+{%- comment -%}
+The resolver at the centre with its clients around it, drawn as a filled root
+inside a hexagon. Two shapes and no stroke thin enough to dissolve at 16px,
+which is what the earlier stroke-and-dot drafts failed at.
+{%- endcomment -%}
+<svg class="logo-mark" viewBox="0 0 24 24" width="{{ include.size | default: 24 }}" height="{{ include.size | default: 24 }}" aria-hidden="true" focusable="false">
+  <path class="logo-hex" d="M12 2.4 L20.3 7.2 V16.8 L12 21.6 L3.7 16.8 V7.2 Z"
+        fill="none" stroke-width="2.5" stroke-linejoin="round"/>
+  <circle class="logo-root" cx="12" cy="12" r="3.5"/>
+</svg>

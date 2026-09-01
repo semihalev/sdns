@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="120" height="120" role="img" aria-label="sdns">
+  <title>sdns</title>
+  <style>
+    @media (prefers-color-scheme: dark)  { .hex { stroke: #dfe6ee; } }
+    @media (prefers-color-scheme: light) { .hex { stroke: #101820; } }
+  </style>
+  <!-- The stroke attribute below is the fallback, not decoration: CSS wins
+       where the style block survives, and where it is stripped the mark
+       stays a mid tone that carries on white and on a dark canvas alike. -->
+  <path class="hex" d="M12 2.4 L20.3 7.2 V16.8 L12 21.6 L3.7 16.8 V7.2 Z" fill="none"
+        stroke="#7a8896" stroke-width="2.5" stroke-linejoin="round"/>
+  <circle cx="12" cy="12" r="3.5" fill="#34c6d8"/>
+</svg>

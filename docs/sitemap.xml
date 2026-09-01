@@ -1,0 +1,24 @@
+---
+layout: null
+sitemap: false
+---
+{%- comment -%}
+Overrides jekyll-sitemap, which takes lastmod from page.last_modified_at or
+page.date — and a collection document with neither falls back to the build
+time, so every deploy claimed all 28 pages had just changed. A sitemap with no
+lastmod tells crawlers nothing, which is better than telling them something
+untrue. Restore the field the day pages carry a real modification date.
+{%- endcomment -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{%- assign pages = site.pages | where_exp: "p", "p.sitemap != false" -%}
+{%- for page in pages -%}
+{%- if page.url contains '.html' or page.url contains '.xml' or page.url contains '.txt' -%}
+{%- unless page.url == '/index.html' -%}{% continue %}{%- endunless -%}
+{%- endif %}
+  <url><loc>{{ page.url | replace: '/index.html', '/' | absolute_url | xml_escape }}</loc></url>
+{%- endfor -%}
+{%- for doc in site.docs %}
+  <url><loc>{{ doc.url | absolute_url | xml_escape }}</loc></url>
+{%- endfor %}
+</urlset>

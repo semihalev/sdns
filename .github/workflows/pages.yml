@@ -1,0 +1,147 @@
+name: Site
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  # Unfiltered on purpose, unlike the push above. A required check has to be
+  # able to report on every pull request: a path filter skips the whole
+  # workflow, the status never arrives, and a branch rule waiting on it would
+  # block every pull request that did not touch the site. Making it optional
+  # instead was the other way out, and it is worse — a red build merges.
+  # The build costs 15-35s, which is not a price worth designing around.
+  pull_request:
+  # The install commands name the released version, which is resolved at build
+  # time — without this the site keeps advertising the previous release until
+  # something else under docs/ happens to change.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Read-only at the top: a job that runs on a pull request must not hold the
+# credentials that can publish. Pages write and OIDC are granted to the deploy
+# job alone, which never runs from a pull request.
+permissions:
+  contents: read
+
+# One deployment at a time. Queued runs collapse, but a run already
+# publishing is never cancelled.
+# Production deploys share one lane whatever triggered them. Keying the group
+# on the ref put a main push and a release run in different lanes, so they
+# could publish concurrently and land out of order. Pull requests keep their
+# own lanes; they never deploy.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages-production' }}
+  cancel-in-progress: false
+
+jobs:
+  # A release run's ref is the tag, and the github-pages environment admits
+  # only main — the deploy job would be refused at the gate. Dispatch the same
+  # workflow against main instead, which enters the environment normally and
+  # rebuilds the install commands with the new version.
+  redispatch:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # Builds on every pull request, so a broken Liquid tag or a dead link is
+  # caught in review rather than by a deploy that fails after the merge and
+  # leaves the site quietly serving the previous version.
+  #
+  # ruby/setup-ruby with the checked-in Gemfile rather than
+  # actions/jekyll-build-pages. That action pins the github-pages gem, which
+  # pins Jekyll 3.10 and — through commonmarker — Ruby < 4.0. On a machine
+  # running Ruby 4 the gem cannot be installed at all, so nobody could
+  # reproduce the CI build locally; a failure would first appear after a
+  # deploy. The cost of building it ourselves is this lockfile, which is why
+  # it is committed and carries the runner's platform.
+  build:
+    # Named, because this is a required check and "build" as a bare context in
+    # a branch rule says nothing about which workflow owns it.
+    name: The site builds
+    # The release event only redispatches; the dispatched run does the work.
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: docs
+      # No configure-pages step: its only useful output is base_url, and the
+      # site's url/baseurl come from _config.yml. Dropping it keeps the build
+      # job on contents:read with nothing to grant it.
+      # The released version is resolved here rather than kept in _config.yml,
+      # so nobody has to remember to bump it: the install commands and the
+      # pre-JavaScript header pill name the real latest release on every build.
+      # The pill is corrected again from the API at view time, which covers a
+      # release published between deploys.
+      - name: Resolve the released version
+        working-directory: docs
+        run: |
+          tag=$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
+                | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+          if [ -n "$tag" ]; then
+            echo "sdns_version: $tag" > _config.release.yml
+            echo "building with sdns_version=$tag"
+          else
+            echo "sdns_version: ${FALLBACK}" > _config.release.yml
+            echo "::warning::could not resolve the latest release; keeping the checked-in value"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FALLBACK: ""
+
+      - name: Build
+        working-directory: docs
+        env:
+          JEKYLL_ENV: production
+        run: |
+          cfg=_config.yml
+          if [ -s _config.release.yml ] && grep -q 'sdns_version: .' _config.release.yml; then
+            cfg="_config.yml,_config.release.yml"
+          fi
+          bundle exec jekyll build --config "$cfg" --destination ../_site --trace
+
+      - name: Check internal links resolve
+        run: |
+          fail=0
+          # Every href into /docs/ must have a generated page behind it.
+          grep -rhoE 'href="/docs/[a-z0-9/-]*"' _site --include='*.html' \
+            | sed 's/href="//;s/"//' | sort -u | while read -r u; do
+              if [ ! -f "_site${u}index.html" ]; then
+                echo "broken internal link: $u"; exit 1
+              fi
+            done || fail=1
+          test "$fail" -eq 0
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+
+  deploy:
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    # Never from a pull request, and never from a branch other than main —
+    # the environment's branch policy is the backstop, not the only gate.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

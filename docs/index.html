@@ -1,0 +1,209 @@
+---
+layout: default
+title: A recursive DNS resolver with DNSSEC validation
+description: A recursive DNS resolver written in Go, with DNSSEC validation, DoT/DoH/DoQ, and a serving path that answers warm cache hits straight from stored bytes.
+---
+
+<div class="home">
+
+  <section class="hero">
+    <div>
+      <h1>sdns<span class="dot">.</span></h1>
+      <p>
+        A recursive DNS resolver with DNSSEC validation, written in Go. It
+        resolves from the root, serves DoT, DoH and DoQ alongside plain
+        UDP/TCP, and answers warm cache hits from the bytes it already holds.
+      </p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="{{ '/docs/getting-started/installation/' | relative_url }}">Install</a>
+        <a class="button" href="{{ '/docs/' | relative_url }}">Documentation</a>
+        <a class="button" href="{{ site.github.repository_url }}">Source</a>
+      </div>
+    </div>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span>
+        <span class="terminal-title">a warm cache hit, validated</span>
+      </div>
+<pre><span class="c-prompt">$</span> dig @127.0.0.1 example.com A +dnssec +multiline
+
+<span class="c-key">;; -&gt;&gt;HEADER&lt;&lt;-</span> opcode: QUERY, status: <span class="c-ok">NOERROR</span>, id: 41022
+<span class="c-key">;; flags:</span> qr rd ra <span class="c-val">ad</span>; QUERY: 1, ANSWER: 2
+
+<span class="c-key">;; ANSWER SECTION:</span>
+example.com.  <span class="c-val">3600</span> IN A     93.184.215.14
+example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
+
+<span class="c-key">;; Query time:</span> <span class="c-val">0 msec</span>
+<span class="c-key">;; SERVER:</span> 127.0.0.1#53(127.0.0.1)</pre>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-label">Measured</div>
+    <h2>Throughput and cost, with the conditions attached</h2>
+    <p>
+      Every figure below was produced by a documented run on one host, against
+      the same corpus, with the methodology and the fairness notes written
+      down. Read how they were taken before you trust them.
+    </p>
+
+    <div class="metrics">
+      <div class="metric">
+        <div class="metric-value">424<span class="metric-unit">k/s</span></div>
+        <div class="metric-name">UDP, cached answers</div>
+        <div class="metric-cond">median, 3×20 s, -c 128 -T 8</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">226<span class="metric-unit">k/s</span></div>
+        <div class="metric-name">TCP, cached answers</div>
+        <div class="metric-cond">median, 5×20 s, -c 20 -T 4</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">0</div>
+        <div class="metric-name">allocations per wire-served hit</div>
+        <div class="metric-cond">pinned by a test in CI</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">658<span class="metric-unit">/s</span></div>
+        <div class="metric-name">cold resolution, 50k names</div>
+        <div class="metric-cond">empty cache, as shipped</div>
+      </div>
+    </div>
+    <p class="metrics-note">
+      sdns 1.8.0 at <code>8b36b91</code>, 2×Xeon E5-2620 v4 (32 logical cores).
+      The cold figure is the configuration sdns ships, with QNAME minimisation on;
+      turning it off measures 905/s and gives up privacy the resolver is meant to keep.
+      <a href="{{ '/docs/reference/benchmarks/' | relative_url }}">Methodology, tuning of each contender, and the raw tables →</a>
+    </p>
+  </section>
+
+  <section class="section">
+    <div class="section-label">Alongside others</div>
+    <h2>Same host, same corpus, same day</h2>
+    <p>
+      Each contender was given a reasonable configuration, not an exhaustive
+      tuning pass. PowerDNS answers these from its packet cache — its lightest
+      path, as this is ours.
+    </p>
+    <table class="compare">
+      <thead>
+        <tr><th>Resolver</th><th style="text-align:right">UDP median</th><th style="text-align:right">TCP median</th></tr>
+      </thead>
+      <tbody>
+        <tr class="self"><td>sdns 1.8.0</td><td class="num">424k</td><td class="num">226k</td></tr>
+        <tr><td>PowerDNS Recursor 5.4.1</td><td class="num">371k</td><td class="num">56k</td></tr>
+        <tr><td>Unbound 1.24.2</td><td class="num">343k</td><td class="num">136k</td></tr>
+        <tr><td>Knot Resolver 6.2.0</td><td class="num">191k</td><td class="num">142k</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="section">
+    <div class="section-label">Protocols</div>
+    <h2>What is implemented</h2>
+    <p>Standards the resolver implements, not a list of things it is aware of.</p>
+    <div class="rfc-grid">
+      <div class="rfc"><span class="rfc-num">RFC 4035</span><span class="rfc-what">DNSSEC validation</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 5011</span><span class="rfc-what">Trust anchor updates</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 6147</span><span class="rfc-what">DNS64 synthesis</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 6672</span><span class="rfc-what">DNAME redirection</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 7858</span><span class="rfc-what">DNS over TLS</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 7871</span><span class="rfc-what">EDNS Client Subnet</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 7873</span><span class="rfc-what">DNS cookies</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 2308</span><span class="rfc-what">Negative caching</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 6303</span><span class="rfc-what">Locally served zones</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8020</span><span class="rfc-what">NXDOMAIN cuts the subtree</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8198</span><span class="rfc-what">Aggressive NSEC use</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8484</span><span class="rfc-what">DNS over HTTPS</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8767</span><span class="rfc-what">Serve stale on failure</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8806</span><span class="rfc-what">Local root zone</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8914</span><span class="rfc-what">Extended DNS errors</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8976</span><span class="rfc-what">ZONEMD verification</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 9156</span><span class="rfc-what">QNAME minimisation</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 9250</span><span class="rfc-what">DNS over QUIC</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 9520</span><span class="rfc-what">Caching resolution failures</span></div>
+      <div class="rfc"><span class="rfc-num">draft-vixie</span><span class="rfc-what">Response Policy Zones</span></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-label">Configuration</div>
+    <h2>A working configuration is short</h2>
+    <p>
+      sdns writes a complete, commented configuration on first run. Most
+      deployments change a handful of its lines and leave the rest — these
+      three are the ones worth reading first.
+    </p>
+    <div class="config-grid">
+      <div>
+<pre><code># three lines of the generated file
+
+bind = ":53"
+dnssec = "on"
+
+# The default allows everyone. Narrow it
+# before binding to a reachable address.
+accesslist = ["192.168.0.0/16"]</code></pre>
+      </div>
+      <div>
+        <ul>
+          <li><strong>Everything new ships off or in shadow.</strong> Enabling a feature is a decision you make, never one made for you by an upgrade.</li>
+          <li><strong><code>sdns -t</code> judges the whole file</strong> and reports every problem at once — addresses, CIDRs, enumerations, TLS files, policy zones — with the same loaders the server runs.</li>
+          <li><strong>A key no setting claims fails the test</strong> and only warns at startup, so a stale key from an older version cannot become an outage.</li>
+        </ul>
+        <p style="margin-top:1rem"><a href="{{ '/docs/configuration/overview/' | relative_url }}">Full configuration reference →</a></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-label">Repository</div>
+    <h2>Current state</h2>
+    <div class="gh-stats" data-repo="{{ site.github.repository_nwo }}">
+      <div class="gh-stat"><div class="gh-value" data-stat="release" data-loading="1">{{ site.sdns_version }}</div><div class="gh-label">Release</div></div>
+      <div class="gh-stat"><div class="gh-value" data-stat="stars" data-loading="1">—</div><div class="gh-label">Stars</div></div>
+      <div class="gh-stat"><div class="gh-value" data-stat="forks" data-loading="1">—</div><div class="gh-label">Forks</div></div>
+      <div class="gh-stat"><div class="gh-value" data-stat="issues" data-loading="1">—</div><div class="gh-label">Open issues &amp; PRs</div></div>
+      <div class="gh-stat"><div class="gh-value">Go</div><div class="gh-label">Language</div></div>
+      <div class="gh-stat"><div class="gh-value">MIT</div><div class="gh-label">License</div></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-label">Capabilities</div>
+    <h2>Beyond resolving</h2>
+    <div class="features">
+      <div class="feature">
+        <h3><a href="{{ '/docs/features/rpz/' | relative_url }}">Response Policy Zones</a></h3>
+        <p>Name, client-address and answer-address triggers; file and TSIG-signed AXFR feeds; a shadow mode whose counters predict what enforcement would do.</p>
+      </div>
+      <div class="feature">
+        <h3><a href="{{ '/docs/features/hyperlocal-root/' | relative_url }}">Local root zone</a></h3>
+        <p>The root served from a ZONEMD-verified local copy, refreshed on its own SOA schedule. Referrals and junk-TLD denials cost no upstream query.</p>
+      </div>
+      <div class="feature">
+        <h3><a href="{{ '/docs/features/recursion-firewall/' | relative_url }}">Recursion firewall</a></h3>
+        <p>Per-request-tree budgets on outbound queries, internal work and DNSSEC operations, with shadow and enforce modes.</p>
+      </div>
+      <div class="feature">
+        <h3><a href="{{ '/docs/features/serve-stale/' | relative_url }}">Serve stale</a></h3>
+        <p>An expired answer as a last resort when resolution fails, always bounded by the delegation lease the parent granted.</p>
+      </div>
+      <div class="feature">
+        <h3><a href="{{ '/docs/features/views/' | relative_url }}">Views and forwarding</a></h3>
+        <p>Static answers scoped to client networks, and per-zone conditional forwarding to their own upstreams.</p>
+      </div>
+      <div class="feature">
+        <h3><a href="{{ '/docs/development/middleware/' | relative_url }}">Middleware and plugins</a></h3>
+        <p>The query path is a chain of middlewares; external plugins load into it without forking the server.</p>
+      </div>
+      <div class="feature">
+        <h3><a href="{{ '/docs/reference/metrics/' | relative_url }}">64 metrics</a></h3>
+        <p>Cache, resolution, DNSSEC work, ingress, policy — each with its labels documented, and the PromQL to answer the questions operators actually ask.</p>
+      </div>
+    </div>
+  </section>
+
+</div>

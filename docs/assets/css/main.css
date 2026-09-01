@@ -1,0 +1,496 @@
+/* sdns.dev — the shell: tokens, header, sidebar, article, footer.
+   Dark is the designed case; light is a deliberate second palette, not an
+   inversion. The [theme] attribute is the only switch — no
+   prefers-color-scheme lives in CSS, so a stored choice and the system
+   default go through exactly one code path (set in the head, before paint). */
+
+:root {
+  --bg:          #0b0f14;
+  --bg-raised:   #10161e;
+  --bg-inset:    #080c11;
+  --bg-code:     #0d131a;
+  --text:        #dfe6ee;
+  --text-dim:    #93a1b1;
+  --text-faint:  #7c8a99;
+  --line:        #1a2531;
+  --line-strong: #24323f;
+
+  /* Structure and links read teal; measured quantities read amber, so a
+     number is never mistaken for a control. */
+  --accent:      #34c6d8;
+  --accent-dim:  #1d8e9d;
+  --accent-wash: rgba(52, 198, 216, 0.10);
+  --signal:      #f0a94c;
+  --signal-wash: rgba(240, 169, 76, 0.12);
+
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  --header-h: 58px;
+  --sidebar-w: 262px;
+  --wide: 1180px;
+  --measure: 46rem;
+
+  --r-sm: 4px;
+  --r-md: 7px;
+  --r-lg: 12px;
+  --fast: 120ms ease;
+}
+
+:root[theme="light"] {
+  --bg:          #ffffff;
+  --bg-raised:   #f7f9fb;
+  --bg-inset:    #eef2f6;
+  --bg-code:     #f4f7fa;
+  --text:        #101820;
+  --text-dim:    #4a5763;
+  --text-faint:  #6b7883;
+  --line:        #e0e7ee;
+  --line-strong: #cfd9e3;
+
+  --accent:      #0b7c8c;
+  --accent-dim:  #0a6675;
+  --accent-wash: rgba(11, 124, 140, 0.08);
+  --signal:      #a4610a;
+  --signal-wash: rgba(164, 97, 10, 0.10);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: calc(var(--header-h) + 1rem); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; animation: none !important; } }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15.5px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+body.preload * { transition: none !important; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Inside running text the accent alone is not enough to mark a link — its
+   contrast against the surrounding prose is under the 3:1 that colour-only
+   distinction requires — so body links are underlined by default. Navigation,
+   where position and grouping already carry the meaning, is left alone. */
+.doc-main p > a, .doc-main li > a, .doc-main td > a, .doc-lede a,
+.home p > a, .home li > a {
+  text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-thickness: 1px; text-decoration-color: var(--accent-dim);
+}
+.doc-main p > a:hover, .doc-main li > a:hover, .doc-main td > a:hover,
+.home p > a:hover, .home li > a:hover {
+  text-decoration-color: var(--accent);
+}
+/* The generated contents list is navigation, not prose — grouping and position
+   already mark those as links, so they keep the plain treatment. */
+.toc a { text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+
+code, pre, .mono { font-family: var(--mono); }
+
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--accent); color: var(--bg); padding: .6rem 1rem; border-radius: 0 0 var(--r-md) 0;
+}
+.skip-link:focus { left: 0; }
+
+/* ---------- header ---------- */
+
+/* The blur lives on a pseudo-element, not on the header itself. A non-none
+   backdrop-filter makes an element the containing block for its fixed-position
+   descendants, and the mobile drawer is one: anchored to the header instead of
+   the viewport it joins the document's scrollable overflow, and a drawer parked
+   off the right edge then let every page scroll 260px sideways into nothing.
+   The pseudo-element has no descendants, so it can carry the filter safely. */
+.site-header {
+  position: sticky; top: 0; z-index: 50;
+  height: var(--header-h);
+  border-bottom: 1px solid var(--line);
+}
+.site-header::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: var(--bg);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(140%) blur(10px);
+}
+.header-inner {
+  max-width: var(--wide); margin: 0 auto; height: 100%;
+  padding: 0 1.25rem;
+  display: flex; align-items: center; gap: 1.5rem;
+}
+
+.brand { display: flex; align-items: center; gap: .55rem; color: var(--text); }
+.brand:hover { text-decoration: none; }
+.wordmark { font-family: var(--mono); font-weight: 700; font-size: 1.05rem; letter-spacing: -0.02em; }
+.wordmark-dot { color: var(--accent); }
+
+.logo-mark .logo-hex { stroke: var(--text); }
+.logo-mark .logo-root { fill: var(--accent); }
+
+.main-nav { margin-left: auto; font-size: .92rem; }
+.nav-links { display: flex; gap: 1.35rem; }
+.nav-external { display: inline-flex; align-items: center; gap: .4rem; }
+/* The mark keeps its own colours, so it is not dimmed with the label — but it
+   sits at the label's optical weight rather than shouting next to it. */
+.nav-external .codewiki-mark { flex: none; }
+.main-nav a { color: var(--text-dim); }
+.main-nav a:hover { color: var(--text); text-decoration: none; }
+.main-nav a[aria-current] { color: var(--text); }
+
+.header-actions { display: flex; align-items: center; gap: .6rem; }
+.version-pill {
+  font-family: var(--mono); font-size: .74rem; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 100px; padding: .16rem .55rem;
+}
+.star-pill {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-family: var(--mono); font-size: .74rem; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 100px; padding: .16rem .55rem;
+  transition: color var(--fast), border-color var(--fast);
+}
+.star-pill:hover { color: var(--signal); border-color: var(--line-strong); text-decoration: none; }
+.star-pill svg { color: var(--signal); flex: none; }
+.icon-button {
+  display: inline-grid; place-items: center;
+  width: 32px; height: 32px; padding: 0;
+  background: none; border: 1px solid var(--line); border-radius: var(--r-md);
+  color: var(--text-dim); cursor: pointer; transition: color var(--fast), border-color var(--fast);
+}
+.icon-button:hover { color: var(--text); border-color: var(--line-strong); }
+.icon-button svg { stroke: currentColor; fill: none; }
+.menu-toggle { display: none; }
+
+/* Three bars that fold into a cross, so the control shows its own state:
+   the middle bar fades and the outer two rotate onto the centre line. */
+.menu-toggle .bars { position: relative; display: block; width: 18px; height: 12px; }
+.menu-toggle .bars span {
+  position: absolute; left: 0; width: 100%; height: 2px; border-radius: 1px;
+  background: currentColor;
+  transition: transform var(--fast), opacity var(--fast);
+}
+.menu-toggle .bars span:nth-child(1) { top: 0; }
+.menu-toggle .bars span:nth-child(2) { top: 5px; }
+.menu-toggle .bars span:nth-child(3) { top: 10px; }
+body.nav-open .menu-toggle .bars span:nth-child(1) { transform: translateY(5px) rotate(45deg); }
+body.nav-open .menu-toggle .bars span:nth-child(2) { opacity: 0; }
+body.nav-open .menu-toggle .bars span:nth-child(3) { transform: translateY(-5px) rotate(-45deg); }
+body.nav-open .menu-toggle { color: var(--text); border-color: var(--line-strong); }
+
+:root[theme="dark"] .icon-sun { display: none; }
+:root[theme="light"] .icon-moon { display: none; }
+
+/* ---------- documentation shell ---------- */
+
+.docs-shell {
+  max-width: var(--wide); margin: 0 auto; padding: 0 1.25rem;
+  display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); gap: 3rem;
+}
+.docs-sidebar {
+  position: sticky; top: var(--header-h); align-self: start;
+  max-height: calc(100vh - var(--header-h)); overflow-y: auto;
+  padding: 2rem 0 3rem; border-right: 1px solid var(--line);
+}
+.nav-group { margin-bottom: 1.6rem; padding-right: 1.25rem; }
+.nav-group-title {
+  font-family: var(--mono); font-size: .7rem; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: .5rem;
+}
+.nav-group ul { list-style: none; margin: 0; padding: 0; }
+.nav-group li { margin: 0; }
+.nav-group a {
+  display: block; padding: .26rem 0 .26rem .7rem;
+  color: var(--text-dim); font-size: .89rem;
+  border-left: 2px solid transparent;
+}
+.nav-group a:hover { color: var(--text); text-decoration: none; }
+.nav-group a.current { color: var(--accent); border-left-color: var(--accent); }
+
+.doc-main { padding: 2.4rem 0 5rem; min-width: 0; }
+.doc-main > * { max-width: var(--measure); }
+.doc-main pre, .doc-main table { max-width: none; }
+
+/* ---------- article typography ---------- */
+
+h1, h2, h3, h4 { font-family: var(--mono); font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; }
+.doc-main h1 { font-size: 1.85rem; margin: 0 0 .4rem; }
+.doc-lede { color: var(--text-dim); font-size: 1.02rem; margin: 0 0 2rem; max-width: var(--measure); }
+.doc-main h2 { font-size: 1.28rem; margin: 2.6rem 0 .8rem; padding-top: .4rem; }
+.doc-main h3 { font-size: 1.05rem; margin: 1.9rem 0 .6rem; }
+.doc-main p, .doc-main li { color: var(--text); }
+.doc-main ul, .doc-main ol { padding-left: 1.3rem; }
+.doc-main li { margin: .3rem 0; }
+.doc-main strong { font-weight: 600; }
+
+.doc-main :not(pre) > code {
+  font-size: .875em; padding: .12em .38em;
+  overflow-wrap: anywhere;
+  background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-sm);
+  color: var(--text);
+}
+pre {
+  background: var(--bg-code); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: .95rem 1.05rem; overflow-x: auto; font-size: .855rem; line-height: 1.6;
+}
+pre code { background: none; border: 0; padding: 0; }
+
+blockquote {
+  margin: 1.4rem 0; padding: .1rem 0 .1rem 1rem;
+  border-left: 2px solid var(--accent-dim); color: var(--text-dim);
+}
+
+table { border-collapse: collapse; width: 100%; font-size: .89rem; margin: 1.4rem 0; display: block; overflow-x: auto; }
+th, td { text-align: left; padding: .5rem .8rem; border-bottom: 1px solid var(--line); }
+th { font-family: var(--mono); font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); font-weight: 500; }
+td code { white-space: nowrap; }
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+
+/* ---------- generated bits ---------- */
+
+.toc {
+  margin: 0 0 2.2rem; padding: .85rem 1rem;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--r-md);
+  font-size: .88rem;
+}
+.toc-title { font-family: var(--mono); font-size: .7rem; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); margin-bottom: .45rem; }
+.toc ul { list-style: none; margin: 0; padding: 0; }
+.toc li { margin: .18rem 0; }
+.toc li.lvl-3 { padding-left: .9rem; }
+.toc a { color: var(--text-dim); }
+.toc a:hover { color: var(--accent); text-decoration: none; }
+
+.copy-button {
+  position: absolute; top: .45rem; right: .45rem;
+  font-family: var(--mono); font-size: .68rem;
+  padding: .2rem .45rem; border-radius: var(--r-sm);
+  background: var(--bg-raised); border: 1px solid var(--line); color: var(--text-faint);
+  cursor: pointer; opacity: 0; transition: opacity var(--fast), color var(--fast);
+}
+.code-wrap { position: relative; }
+.code-wrap:hover .copy-button, .copy-button:focus { opacity: 1; }
+.copy-button:hover { color: var(--text); }
+
+.doc-nav {
+  display: flex; justify-content: space-between; gap: 1rem;
+  margin-top: 3.5rem; padding-top: 1.4rem; border-top: 1px solid var(--line);
+  font-size: .9rem;
+}
+.doc-nav a { display: flex; flex-direction: column; gap: .1rem; max-width: 48%; }
+.doc-nav .dir { font-family: var(--mono); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); }
+.doc-nav .next { text-align: right; margin-left: auto; }
+
+/* ---------- footer ---------- */
+
+.site-footer { border-top: 1px solid var(--line); background: var(--bg-raised); margin-top: 4rem; }
+.footer-inner {
+  max-width: var(--wide); margin: 0 auto; padding: 2.6rem 1.25rem 2rem;
+  display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 2fr); gap: 2.5rem;
+}
+.footer-brand { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.footer-brand p { flex-basis: 100%; margin: .5rem 0 0; color: var(--text-dim); font-size: .88rem; max-width: 34ch; }
+.footer-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.5rem; }
+.footer-cols h4 { font-family: var(--mono); font-size: .7rem; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 .6rem; }
+.footer-cols a { display: block; color: var(--text-dim); font-size: .88rem; padding: .15rem 0; }
+.footer-cols a:hover { color: var(--text); text-decoration: none; }
+.footer-bottom {
+  max-width: var(--wide); margin: 0 auto; padding: 1rem 1.25rem 2rem;
+  border-top: 1px solid var(--line);
+  display: flex; justify-content: space-between; gap: 1rem;
+  font-size: .82rem; color: var(--text-faint);
+}
+.footer-note { font-family: var(--mono); }
+
+/* ---------- responsive ---------- */
+
+/* The documentation list is rendered twice — in the sidebar and inside the
+   drawer — and exactly one of them is ever displayed. */
+.nav-docs { display: none; }
+
+@media (max-width: 900px) {
+  .docs-shell { grid-template-columns: 1fr; gap: 0; }
+
+  /* Off the flow entirely: on mobile the drawer carries this list, so an
+     article begins at the top of the screen instead of below 26 links. */
+  .docs-sidebar { display: none; }
+
+  .menu-toggle { display: inline-grid; }
+
+  /* The push to the right edge lived on .main-nav's margin-left:auto. Once the
+     nav becomes the fixed drawer it leaves the flex flow and takes that margin
+     with it, leaving the theme and menu buttons parked against the wordmark.
+     The actions carry the margin themselves at this width. */
+  .header-actions { margin-left: auto; }
+
+  /* A drawer rather than a panel dropped under the header. A panel shares
+     the page with whatever is beneath it and buries the first thing there;
+     a drawer sits above everything and is dismissed.
+
+     Note on the anchor: .site-header carries a backdrop-filter, which makes
+     it the containing block for fixed-position descendants. The header is
+     full-width and pinned at the top, so right/top resolve to the same
+     coordinates the viewport would give — but give the header a max-width
+     or an offset and this moves with it. left:auto is explicit so a stray
+     inherited left cannot fight the right edge.
+
+     The width leaves a real margin of page visible. Filling 300 of 390px
+     reads as a screen the reader has been taken to, not a panel over the
+     one they were on. */
+  .main-nav {
+    position: fixed; top: var(--header-h); right: 0; left: auto; z-index: 60;
+    width: min(260px, 72vw); height: calc(100vh - var(--header-h));
+    display: block; overflow-y: auto; overscroll-behavior: contain;
+    margin-left: 0; padding: 1.1rem 1.25rem 3rem;
+    background: var(--bg); border-left: 1px solid var(--line);
+    transform: translateX(100%); visibility: hidden;
+    /* visibility flips at once on the way in — a discrete property animated
+       over a duration changes at the midpoint, which left the panel still
+       hidden, and therefore unfocusable, at the moment the script tried to
+       move focus into it. On the way out it waits for the slide to finish. */
+    transition: transform var(--fast), visibility 0s linear var(--fast);
+  }
+  body.nav-open .main-nav {
+    transform: translateX(0); visibility: visible;
+    transition: transform var(--fast), visibility 0s;
+  }
+
+  .nav-links { display: flex; flex-direction: column; gap: .1rem; }
+  .nav-links a { padding: .5rem .6rem; border-radius: var(--r-sm); color: var(--text); }
+  .nav-links a:hover { background: var(--bg-raised); text-decoration: none; }
+
+  .nav-docs { display: block; margin-top: 1.4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
+  .nav-docs .nav-group { padding-right: 0; }
+
+  /* Dismiss surface. Pointer events only while open, so it never eats a tap
+     on the page underneath. */
+  /* Below the header, not above it. .site-header carries z-index:50 and so
+     opens a stacking context; the drawer's z-index:60 is scoped inside it and
+     cannot beat a root-level 55. The scrim then painted over the drawer, and
+     every tap on a drawer link landed on the scrim and closed the menu. */
+  .nav-scrim {
+    position: fixed; inset: var(--header-h) 0 0; z-index: 40;
+    background: rgba(0, 0, 0, .45);
+    opacity: 0; visibility: hidden; transition: opacity var(--fast), visibility var(--fast);
+  }
+  body.nav-open .nav-scrim { opacity: 1; visibility: visible; }
+  body.nav-open { overflow: hidden; }
+
+  .footer-inner { grid-template-columns: 1fr; }
+  .footer-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .footer-bottom { flex-direction: column; gap: .3rem; }
+}
+
+/* The version and the star count are one pair: a release number with no
+   project attached, or a star count with no version, each read as a stray
+   number. They leave together when the row runs out of room. */
+@media (max-width: 400px) {
+  .star-pill, .version-pill { display: none; }
+}
+
+/* ---------- search ---------- */
+
+.search-trigger {
+  display: inline-flex; align-items: center; gap: .45rem;
+  font-family: var(--sans); font-size: .8rem; color: var(--text-dim);
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: .3rem .5rem .3rem .55rem;
+  cursor: pointer; transition: color var(--fast), border-color var(--fast);
+}
+.search-trigger:hover { color: var(--text); border-color: var(--line-strong); }
+.search-trigger-key {
+  font-family: var(--mono); font-size: .68rem; color: var(--text-faint);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 .3rem;
+}
+
+.search-dialog {
+  width: min(640px, calc(100vw - 2rem)); max-width: none; max-height: 74vh;
+  margin: 10vh auto auto; padding: 0; border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg); background: var(--bg); color: var(--text);
+  overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
+}
+.search-dialog[open] { display: flex; flex-direction: column; }
+.search-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+
+.search-field {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .8rem .9rem; border-bottom: 1px solid var(--line);
+  color: var(--text-faint); flex: none;
+}
+.search-field input {
+  flex: 1; min-width: 0;
+  background: none; border: 0;
+  font-family: var(--sans); font-size: 1rem; color: var(--text);
+}
+/* The outline stays: this is the one control in the dialog that always has
+   focus, and removing its ring leaves a keyboard user with no anchor. */
+.search-field input:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 3px; border-radius: var(--r-sm); }
+.search-field input::placeholder { color: var(--text-faint); }
+.search-field input::-webkit-search-cancel-button { display: none; }
+
+.search-close {
+  display: none; place-items: center;
+  width: 30px; height: 30px; padding: 0; flex: none;
+  background: none; border: 1px solid var(--line); border-radius: var(--r-md);
+  color: var(--text-dim); cursor: pointer;
+}
+.search-close:hover { color: var(--text); border-color: var(--line-strong); }
+
+.search-results { overflow-y: auto; overscroll-behavior: contain; padding: .35rem; }
+.search-empty { padding: 1.6rem .9rem; color: var(--text-faint); font-size: .9rem; text-align: center; }
+
+.search-hit {
+  display: block; padding: .55rem .65rem; border-radius: var(--r-md);
+  color: var(--text); text-decoration: none;
+}
+.search-hit:hover, .search-hit[aria-selected="true"] { background: var(--bg-raised); text-decoration: none; }
+.search-hit[aria-selected="true"] { outline: 1px solid var(--accent-dim); }
+/* Wraps by structure rather than at a chosen width. The context is kept on
+   one piece — it reads as a unit — but the row is free to break, so the
+   heading and the context share a line whenever they fit and stack when they
+   do not. A media query here was tuned to this content and overflowed one
+   pixel above whatever number it named. */
+.search-hit-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .5rem; }
+.search-hit-title { font-weight: 600; font-size: .92rem; min-width: 0; overflow-wrap: anywhere; }
+.search-hit-page {
+  font-family: var(--mono); font-size: .68rem; color: var(--text-faint);
+  margin-left: auto; white-space: nowrap; max-width: 100%; overflow-wrap: anywhere;
+}
+.search-hit-body {
+  font-size: .82rem; color: var(--text-dim); margin-top: .15rem;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.search-hit mark { background: var(--signal-wash); color: inherit; border-radius: 2px; padding: 0 .1em; }
+
+.search-foot {
+  display: flex; align-items: center; gap: 1rem; flex: none;
+  padding: .5rem .9rem; border-top: 1px solid var(--line);
+  font-size: .74rem; color: var(--text-faint);
+}
+.search-foot span:last-child { margin-left: auto; }
+.search-foot kbd, .search-field kbd {
+  font-family: var(--mono); font-size: .68rem;
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 .28rem; margin-right: .15rem;
+}
+
+@media (max-width: 900px) {
+  /* The label and the shortcut hint go; the control stays, because search is
+     the main way to reach a page when the sidebar is behind a drawer. */
+  .search-trigger-text, .search-trigger-key { display: none; }
+  .search-trigger { padding: .32rem; }
+  /* Full screen, so the backdrop is unreachable — the close button is the
+     only way out for a touch reader, and esc means nothing to them. */
+  .search-dialog {
+    width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;
+    margin: 0; border: 0; border-radius: 0;
+  }
+  .search-close { display: grid; }
+  .search-esc-hint { display: none; }
+}
