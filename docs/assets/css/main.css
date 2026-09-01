@@ -11,7 +11,7 @@
   --bg-code:     #0d131a;
   --text:        #dfe6ee;
   --text-dim:    #93a1b1;
-  --text-faint:  #63707f;
+  --text-faint:  #7c8a99;
   --line:        #1a2531;
   --line-strong: #24323f;
 
@@ -44,7 +44,7 @@
   --bg-code:     #f4f7fa;
   --text:        #101820;
   --text-dim:    #4a5763;
-  --text-faint:  #77848f;
+  --text-faint:  #6b7883;
   --line:        #e0e7ee;
   --line-strong: #cfd9e3;
 
@@ -181,6 +181,7 @@ h1, h2, h3, h4 { font-family: var(--mono); font-weight: 700; letter-spacing: -0.
 
 .doc-main :not(pre) > code {
   font-size: .875em; padding: .12em .38em;
+  overflow-wrap: anywhere;
   background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-sm);
   color: var(--text);
 }

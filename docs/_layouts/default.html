@@ -49,7 +49,7 @@
       <nav class="main-nav" aria-label="Main">
         <a href="{{ '/docs/' | relative_url }}"{% if page.url contains '/docs' %} aria-current="page"{% endif %}>Documentation</a>
         <a href="{{ '/docs/getting-started/installation/' | relative_url }}">Install</a>
-        <a href="https://github.com/semihalev/sdns/blob/main/BENCHMARKS.md">Benchmarks</a>
+        <a href="{{ '/docs/reference/benchmarks/' | relative_url }}">Benchmarks</a>
         <a href="{{ site.github.repository_url }}">Source</a>
       </nav>
 
@@ -122,7 +122,7 @@
         </div>
         <div>
           <h4>Measurements</h4>
-          <a href="{{ site.github.repository_url }}/blob/main/BENCHMARKS.md">Methodology</a>
+          <a href="{{ '/docs/reference/benchmarks/' | relative_url }}">Benchmarks</a>
           <a href="{{ site.github.repository_url }}/blob/main/LICENSE">License</a>
         </div>
       </div>

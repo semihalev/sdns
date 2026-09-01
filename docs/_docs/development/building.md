@@ -8,7 +8,7 @@ description: The build pipeline, the test suite, and the conventions a patch is 
 
 ## Requirements
 
-Go 1.24 or newer.
+Go 1.26 or newer. `go.mod` pins the toolchain at 1.27.
 
 ```bash
 git clone https://github.com/semihalev/sdns
@@ -84,4 +84,4 @@ Performance claims need an A/B of real binaries, not a microbenchmark and an
 argument. An optimisation that cannot be measured on the serving path is
 reverted rather than kept on principle. The methodology and the published
 numbers are in
-[BENCHMARKS.md](https://github.com/semihalev/sdns/blob/main/BENCHMARKS.md).
+[Benchmarks]({{ '/docs/reference/benchmarks/' | relative_url }}).

@@ -66,14 +66,16 @@ example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
         <div class="metric-cond">pinned by a test in CI</div>
       </div>
       <div class="metric">
-        <div class="metric-value">905<span class="metric-unit">/s</span></div>
+        <div class="metric-value">658<span class="metric-unit">/s</span></div>
         <div class="metric-name">cold resolution, 50k names</div>
-        <div class="metric-cond">empty cache, minimisation off</div>
+        <div class="metric-cond">empty cache, as shipped</div>
       </div>
     </div>
     <p class="metrics-note">
-      Version 1.8.0 at <code>8b36b91</code> on a 32-core host.
-      <a href="{{ site.github.repository_url }}/blob/main/BENCHMARKS.md">Methodology, tuning of each contender, and the raw tables →</a>
+      sdns 1.8.0 at <code>8b36b91</code>, 2×Xeon E5-2620 v4 (32 logical cores).
+      The cold figure is the configuration sdns ships, with QNAME minimisation on;
+      turning it off measures 905/s and gives up privacy the resolver is meant to keep.
+      <a href="{{ '/docs/reference/benchmarks/' | relative_url }}">Methodology, tuning of each contender, and the raw tables →</a>
     </p>
   </section>
 

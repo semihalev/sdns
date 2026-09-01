@@ -128,7 +128,12 @@
         return raw ? JSON.parse(raw) : null;
       } catch (e) { return null; }
     }
+    /* Only a complete result is cached. A rate-limited or offline fetch
+       resolves to nulls rather than rejecting, and storing that would make
+       readCache truthy for the rest of the session — one failed load would
+       freeze the counters until the tab was closed. */
     function writeCache(d) {
+      if (typeof d.stars !== 'number' || !d.release) return;
       try { sessionStorage.setItem('repo:' + repo, JSON.stringify(d)); } catch (e) {}
     }
 

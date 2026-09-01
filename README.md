@@ -20,7 +20,7 @@
   <b><a href="https://sdns.dev/docs/">Documentation</a></b> ·
   <a href="https://sdns.dev/docs/getting-started/installation/">Install</a> ·
   <a href="https://sdns.dev/docs/configuration/overview/">Configuration</a> ·
-  <a href="BENCHMARKS.md">Benchmarks</a>
+  <a href="https://sdns.dev/docs/reference/benchmarks/">Benchmarks</a>
 </p>
 
 ***
@@ -116,7 +116,7 @@ what they cost and what they deliberately do not do.
 ## Performance
 
 Throughput measurements, the methodology, resolver comparisons and their
-caveats are in [BENCHMARKS.md](BENCHMARKS.md).
+caveats are in the [benchmarks](https://sdns.dev/docs/reference/benchmarks/) document.
 
 ## Development
 
