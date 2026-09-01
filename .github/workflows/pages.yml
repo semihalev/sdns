@@ -25,11 +25,29 @@ permissions:
 
 # One deployment at a time. Queued runs collapse, but a run already
 # publishing is never cancelled.
+# Production deploys share one lane whatever triggered them. Keying the group
+# on the ref put a main push and a release run in different lanes, so they
+# could publish concurrently and land out of order. Pull requests keep their
+# own lanes; they never deploy.
 concurrency:
-  group: "pages-${{ github.ref }}"
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages-production' }}
   cancel-in-progress: false
 
 jobs:
+  # A release run's ref is the tag, and the github-pages environment admits
+  # only main — the deploy job would be refused at the gate. Dispatch the same
+  # workflow against main instead, which enters the environment normally and
+  # rebuilds the install commands with the new version.
+  redispatch:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   # Builds on every pull request that touches the site, so a broken Liquid
   # tag or a dead link is caught in review rather than after a deploy.
   #
@@ -38,6 +56,8 @@ jobs:
   # Jekyll 3.10, while the site is developed against Jekyll 4.4. Building with
   # a toolchain nobody runs locally is how a green CI ships a broken page.
   build:
+    # The release event only redispatches; the dispatched run does the work.
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,7 +135,7 @@ jobs:
       id-token: write
     # Never from a pull request, and never from a branch other than main —
     # the environment's branch policy is the backstop, not the only gate.
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

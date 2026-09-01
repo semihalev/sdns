@@ -454,6 +454,12 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
   font-family: var(--mono); font-size: .68rem; color: var(--text-faint);
   margin-left: auto; white-space: nowrap;
 }
+/* Below ~360px the nowrap context cannot share a line with the heading and
+   pushed the results area wider than the viewport. Give it its own line. */
+@media (max-width: 380px) {
+  .search-hit-top { display: block; }
+  .search-hit-page { margin-left: 0; display: block; white-space: normal; margin-top: .1rem; }
+}
 .search-hit-body {
   font-size: .82rem; color: var(--text-dim); margin-top: .15rem;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;

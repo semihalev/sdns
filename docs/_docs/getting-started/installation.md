@@ -8,8 +8,15 @@ description: Packages, containers and building from source.
 
 ## Pre-built binaries
 
-Every release publishes archives for Linux, macOS, FreeBSD and Windows on
-amd64, arm64 and armv5/6/7, plus `.deb` and `.rpm` packages.
+Every release publishes archives, plus `.deb` and `.rpm` packages. The
+architectures differ by platform:
+
+| Platform | Architectures |
+|---|---|
+| Linux | amd64, arm64, armv5/6/7, mips, mipsle, mips64, mips64le (softfloat) |
+| macOS | amd64, arm64 |
+| Windows | amd64 |
+| FreeBSD, OpenBSD, NetBSD | amd64 |
 
 Asset names carry the version, so there is no version-less `latest/download/`
 URL to fetch. Resolve the tag first:

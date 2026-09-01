@@ -21,6 +21,10 @@ exclude:
   - Gemfile.lock
   - README.md
   - vendor
+  # Repository tooling that happens to live under docs/ — it belongs to CI,
+  # not to the published site.
+  - check-drift.sh
+  - schemakeys
 
 collections:
   docs:

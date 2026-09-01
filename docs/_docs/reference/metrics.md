@@ -233,23 +233,33 @@ sum(rate(dns_cache_hits_total[5m]))
   / (sum(rate(dns_cache_hits_total[5m])) + sum(rate(dns_cache_misses_total[5m])))
 ```
 
-**Share of answers that cost no upstream query**
+**Share of client queries answered without an upstream query**
 
 ```promql
 (
   sum(rate(nxdomain_cut_hits_total[5m]))
   + sum(rate(aggressive_negative_hits_total[5m]))
-  + sum(rate(dns_localroot_answers_total{kind=~"denial|apex"}[5m]))
 ) / sum(rate(dns_queries_total[5m]))
 ```
 
+Both terms are whole client queries answered from locally validated proof, and
+the denominator counts client queries, so this is a real share.
+
+The local root is deliberately **not** in it.
 `dns_localroot_answers_total` carries a `kind` of `referral`, `denial`, `ds`,
-`apex` or `fallback`, and only two of those are a whole client query answered
-without leaving the machine. `fallback` counts consultations the local copy
-declined, so they went upstream. `referral` and `ds` are steps *within* a walk
-that usually continues upstream afterwards — counting them makes the ratio
-climb past 1. Use them separately if you want to measure how much of the walk
-the local root absorbed.
+`apex` or `fallback`, and none of them fits this ratio: `fallback` counts
+consultations the copy declined, which went upstream; `referral` and `ds` are
+steps *within* a walk that usually continues upstream; and `apex` includes the
+resolver's own background trust-anchor lookups, which never were client
+queries. Adding any of them mixes series counted at different levels and can
+push the result above 1. With `hyperlocal_root = false` the series does not
+exist at all, and one absent term would empty the whole expression.
+
+Measure the local root on its own terms instead:
+
+```promql
+sum(rate(dns_localroot_answers_total[5m])) by (kind)
+```
 
 **SERVFAIL rate**
 

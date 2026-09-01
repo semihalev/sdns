@@ -46,20 +46,23 @@ done
 # mentions is the difference between a reference and a rough guide.
 echo "config keys"
 before=$fail
-# Both halves of the schema: fields with an explicit toml tag, and fields
-# without one — the decoder matches those case-insensitively on the field
-# name, so `api`, `directory` and `cookiesecret` are accepted keys that a
-# tag-only scan reports as absent, which is a false green.
-tagged=$(grep -oE '`toml:"[a-z_0-9]+"' config/config.go | sed 's/.*"\(.*\)"/\1/')
-untagged=$(awk '/^type (Config|.*Config) struct/,/^}/' config/config.go \
-    | grep -vE 'toml:|^\}|^type|^[[:space:]]*//|^[[:space:]]*$' \
-    | awk '{print $1}' | grep -E '^[A-Z][A-Za-z0-9]*$' | tr 'A-Z' 'a-z')
-keys=$(printf '%s\n%s\n' "$tagged" "$untagged" | sort -u | grep -v '^$')
+# The schema comes from the parser's own view of the root Config type rather
+# than from a guess about which type names matter. Selecting structs whose
+# names end in Config missed Plugin.Path and Plugin.Config — untagged fields
+# the decoder still accepts — and reported all-clear.
+keys=$(go run ./docs/schemakeys 2>/dev/null)
+if [ -z "$keys" ]; then
+    note "could not extract the config schema"
+else
 undocumented=""
 for k in $keys; do
-    grep -rqF "$k" docs/_docs docs/index.html 2>/dev/null || undocumented="$undocumented $k"
+    # The index is the page that calls itself complete, so that is where a key
+    # has to appear — a passing mention on some feature page is not a
+    # reference entry.
+    grep -qF "$k" docs/_docs/reference/config-keys.md || undocumented="$undocumented $k"
 done
-[ -n "$undocumented" ] && note "accepted by the parser, absent from the site:$undocumented"
+[ -n "$undocumented" ] && note "accepted by the parser, absent from the key index:$undocumented"
+fi
 [ "$fail" -eq "$before" ] && echo "  $(echo "$keys" | grep -c .) keys, all present"
 
 # ---------------------------------------------------------------- toolchain
