@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="https://github.com/semihalev/sdns/blob/main/logo.png?raw=true" width="200">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="logo.svg">
+    <img src="logo.svg" alt="sdns" width="120">
+  </picture>
 </p>
 
 <h1 align="center">SDNS</h1>
@@ -10,8 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/semihalev/sdns/actions"><img src="https://img.shields.io/github/actions/workflow/status/semihalev/sdns/ci.yml?style=flat-square"></a>
-  <a href="https://goreportcard.com/report/github.com/semihalev/sdns"><img src="https://goreportcard.com/badge/github.com/semihalev/sdns?style=flat-square"></a>
-  <a href="http://godoc.org/github.com/semihalev/sdns"><img src="https://img.shields.io/badge/godoc-reference-blue.svg?style=flat-square"></a>
+  <a href="https://pkg.go.dev/github.com/semihalev/sdns"><img src="https://img.shields.io/badge/pkg.go.dev-reference-blue.svg?style=flat-square"></a>
   <a href="https://codecov.io/gh/semihalev/sdns"><img src="https://img.shields.io/codecov/c/github/semihalev/sdns?style=flat-square"></a>
   <a href="https://github.com/semihalev/sdns/releases"><img src="https://img.shields.io/github/v/release/semihalev/sdns?style=flat-square"></a>
   <a href="https://github.com/semihalev/sdns/blob/main/LICENSE"><img src="https://img.shields.io/github/license/semihalev/sdns?style=flat-square"></a>
