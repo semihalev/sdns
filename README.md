@@ -366,7 +366,7 @@ Each `[[rpz.zone]]` entry (a zone is fed exactly one way — `file` or `source`)
 | **name**     | Zone label used in metrics, logs, and the EDE text. Required, unique across zones |
 | **file**     | Path to a local policy zone file. Reloaded automatically when the file is replaced — the file's directory is watched, so atomic renames are caught. Best practice: deploy the file in its own directory |
 | **source**   | AXFR primary (`host:port`) of a vendor feed. The feed keeps itself current on the zone's own SOA schedule: probe on refresh, transfer on serial change, retry on retry, and withdraw past expire |
-| **origin**   | The policy zone's apex as an FQDN. Required with `source`; refused with `file` (the file's own SOA names the apex) |
+| **origin**   | The policy zone's apex as an FQDN. Required with `source`. Optional with `file`, and usually needed: feeds distributed as files commonly write their SOA as `@` with every rule relative to it, leaving the apex to the consuming server — such a file cannot be parsed without it. A file whose SOA carries an absolute owner needs none |
 | **tsig_key** | `name:algorithm:base64-secret` for signed transfers. Algorithms: `hmac-sha1`, `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`. Only meaningful with `source` |
 | **policy**   | Per-zone action override; default `given`. See the override list below |
 | **cname**    | Walled-garden target FQDN; required exactly when `policy = "cname"` |

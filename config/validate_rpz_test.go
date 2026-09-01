@@ -166,8 +166,27 @@ func TestValidateRPZSourceZones(t *testing.T) {
 		}
 	})
 
-	t.Run("origin and tsig are refused on file zones", func(t *testing.T) {
-		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: good, Origin: "z."}), "file-fed")
+	t.Run("tsig is refused on file zones", func(t *testing.T) {
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: good, TsigKey: "k.:a.:YQ=="}), "only transfers are signed")
+	})
+
+	t.Run("a file zone may name its apex, and it must be an FQDN", func(t *testing.T) {
+		// The shape feeds are actually distributed in: the SOA is "@"
+		// and every rule hangs off it, so the file alone cannot say what
+		// zone it is — the origin does.
+		relative := rpzZoneFile(t, `
+$TTL 30
+@ SOA rpz.vendor.example. hostmaster.vendor.example. 1 300 1800 604800 30
+  NS localhost.
+bad.example.com CNAME .
+`)
+		withOrigin := RPZZone{Name: "vendor", File: relative, Origin: "rpz.vendor.example."}
+		if err := rpzConfig(withOrigin).Validate(); err != nil {
+			t.Fatalf("a relative feed with its origin was refused: %v", err)
+		}
+		// Without the origin the same file cannot be parsed at all.
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "vendor", File: relative}), "bad owner name")
+		// And a non-FQDN origin is a config error, not a silent default.
+		wantRPZProblem(t, rpzConfig(RPZZone{Name: "vendor", File: relative, Origin: "rpz.vendor.example"}), "fully qualified")
 	})
 }

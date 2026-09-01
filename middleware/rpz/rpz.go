@@ -103,7 +103,7 @@ func loadZone(zc config.RPZZone) *rpz.Zone {
 	if zc.Cname != "" {
 		target = dns.CanonicalName(zc.Cname)
 	}
-	z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, target)
+	z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, target, zc.Origin)
 	if err != nil {
 		zlog.Error("RPZ zone failed to load and will filter nothing", "zone", zc.Name, "file", zc.File, "error", err.Error())
 		reloadErrors.WithLabelValues(zc.Name).Inc()

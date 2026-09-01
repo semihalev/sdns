@@ -1779,13 +1779,20 @@ func (c *Config) validateRPZ(add func(string, ...any)) {
 			add("%s: either file or source is required", where)
 			continue
 		}
+		// A file zone may name its apex here: feeds distributed as files
+		// commonly write "@" for the SOA and every rule relative to it,
+		// leaving the origin to the consuming server's configuration.
+		// Without one such a file cannot be parsed at all, so this is a
+		// setting operators need, not a contradiction.
 		if zc.Origin != "" {
-			add("%s: origin is set but the zone is file-fed; the file's own SOA names the apex", where)
+			if _, valid := dns.IsDomainName(zc.Origin); !valid || !dns.IsFqdn(zc.Origin) {
+				add("%s: origin = %q: must be a fully qualified domain name", where, zc.Origin)
+			}
 		}
 		if zc.TsigKey != "" {
 			add("%s: tsig_key is set but the zone is file-fed; only transfers are signed", where)
 		}
-		z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, dns.CanonicalName(zc.Cname))
+		z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, dns.CanonicalName(zc.Cname), zc.Origin)
 		if err != nil {
 			add("%s: %v", where, err)
 			continue
