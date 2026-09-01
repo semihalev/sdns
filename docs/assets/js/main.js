@@ -113,11 +113,17 @@
     fetch('https://api.github.com/repos/' + repo + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function (d) {
+        if (!d.tag_name) return;
         var el = container.querySelector('[data-stat="release"]');
-        if (el && d.tag_name) {
+        if (el) {
           el.textContent = d.tag_name;
           el.removeAttribute('data-loading');
         }
+        /* The header pill is built from a config value, which is correct until
+           the next release and wrong forever after. Correct it here rather
+           than relying on someone remembering to edit _config.yml. */
+        var pill = document.querySelector('.version-pill');
+        if (pill) pill.textContent = d.tag_name;
       })
       .catch(function () {});
 
