@@ -65,6 +65,21 @@ jobs:
         run: go test -count=1 -run 'Alloc|ServeRawHitClasses' ./...
 
 
+  docs-drift:
+    # Lives here rather than in the site workflow because the pull requests it
+    # exists to catch are the ones that never touch docs/: adding a metric or a
+    # config key and leaving the reference behind. No Ruby, no Jekyll — it
+    # reads the schema out of the Go types and compares inventories.
+    name: Docs match the code
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: bash docs/check-drift.sh
+
   release-targets:
     # The release ships architectures no test job builds for. A transport
     # written against 64-bit kernel descriptors compiles cleanly on the

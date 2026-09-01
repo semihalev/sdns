@@ -6,11 +6,13 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"
-  # No paths filter on pull requests: a required check that does not run leaves
-  # a merge waiting on it forever, so this builds on every PR. It is a ~30s
-  # Jekyll build. The push filter below stays — main only redeploys when the
-  # site actually changed.
+  # Filtered, and deliberately not a required check: it has nothing to say
+  # about a pull request that did not touch the site. What must run everywhere
+  # is the drift gate, which lives in the CI workflow.
   pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
   # The install commands name the released version, which is resolved at build
   # time — without this the site keeps advertising the previous release until
   # something else under docs/ happens to change.
@@ -105,14 +107,6 @@ jobs:
             cfg="_config.yml,_config.release.yml"
           fi
           bundle exec jekyll build --config "$cfg" --destination ../_site --trace
-
-      # Fails when the site disagrees with the repository: a metric added and
-      # not documented, a config key the parser accepts and no page mentions,
-      # a Go version out of step with go.mod, install commands that differ
-      # between the README and the installation page.
-      - name: Check the site against the repository
-        working-directory: ${{ github.workspace }}
-        run: bash docs/check-drift.sh
 
       - name: Check internal links resolve
         run: |
