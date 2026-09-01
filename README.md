@@ -49,7 +49,7 @@ armv5/6/7 — plus `.deb` and `.rpm` packages — are on the
 docker run -d --name sdns \
   -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
   -v sdns-data:/var/lib/sdns -v "$PWD/sdns.conf:/etc/sdns.conf:ro" \
-  ghcr.io/semihalev/sdns:1.8.2 -c /etc/sdns.conf
+  ghcr.io/semihalev/sdns:latest -c /etc/sdns.conf
 
 # macOS
 brew install semihalev/tap/sdns && brew services start sdns
@@ -64,7 +64,9 @@ yay -S sdns-git
 Images are published to
 [ghcr.io/semihalev/sdns](https://github.com/semihalev/sdns/pkgs/container/sdns)
 and [c1982/sdns](https://hub.docker.com/r/c1982/sdns) on every tagged release.
-Pin a version in production.
+Pin a tag in production rather than following `latest` — the
+[installation page](https://sdns.dev/docs/getting-started/installation/) names
+the current one, since this file cannot.
 
 ## Quick start
 

@@ -20,7 +20,7 @@ Fetched only when the search is first opened.
     {%- if forloop.first -%}
       {%- assign body = s | strip_html | normalize_whitespace | strip -%}
       {%- if body != "" -%}
-{{ sep }}{"t":{{ doc.title | jsonify }},"p":{{ doc.title | jsonify }},"c":{{ doc.category | jsonify }},"u":"{{ doc.url | relative_url }}","b":{{ body | truncate: 1200 | jsonify }}}
+{{ sep }}{"t":{{ doc.title | jsonify }},"p":{{ doc.title | jsonify }},"c":{{ doc.category | jsonify }},"u":"{{ doc.url | relative_url }}","b":{{ body | jsonify }}}
         {%- assign sep = "," -%}
       {%- endif -%}
     {%- else -%}
@@ -33,7 +33,7 @@ Fetched only when the search is first opened.
       {%- assign head_raw = s | split: '</h2>' | first -%}
       {%- assign heading = head_raw | split: '">' | last | strip_html | strip -%}
       {%- assign body = s | split: '</h2>' | last | strip_html | normalize_whitespace | strip -%}
-{{ sep }}{"t":{{ heading | jsonify }},"p":{{ doc.title | jsonify }},"c":{{ doc.category | jsonify }},"u":"{{ doc.url | relative_url }}#{{ anchor }}","b":{{ body | truncate: 1200 | jsonify }}}
+{{ sep }}{"t":{{ heading | jsonify }},"p":{{ doc.title | jsonify }},"c":{{ doc.category | jsonify }},"u":"{{ doc.url | relative_url }}#{{ anchor }}","b":{{ body | jsonify }}}
       {%- assign sep = "," -%}
     {%- endif -%}
   {%- endfor -%}

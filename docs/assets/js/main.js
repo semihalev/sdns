@@ -213,15 +213,19 @@
 
   /* Section-level search over /search.json. No library: the index is 169
      entries, so a scan per keystroke is cheaper than shipping a search engine
-     to every reader. Fetched on first open — most visitors never search. */
+     to every reader. Fetched on first open — most visitors never search.
+
+     The panel is a native <dialog> opened with showModal, which supplies the
+     focus trap, Escape, and an inert page behind it. Hand-rolling those is how
+     the first version let Tab wander out of the modal. */
   function search() {
-    var overlay = document.querySelector('[data-search-overlay]');
+    var dialog = document.querySelector('[data-search-dialog]');
     var input = document.querySelector('[data-search-input]');
     var results = document.querySelector('[data-search-results]');
     var count = document.querySelector('[data-search-count]');
-    if (!overlay || !input || !results) return;
+    if (!dialog || !input || !results || !dialog.showModal) return;
 
-    var index = null, hits = [], active = -1, opener = null, timer = null;
+    var index = null, hits = [], active = -1, timer = null;
 
     var mac = /Mac|iPhone|iPad/.test(navigator.userAgent);
     var keyHint = document.querySelector('[data-search-key]');
@@ -230,13 +234,38 @@
     document.querySelectorAll('[data-search-open]').forEach(function (b) {
       b.addEventListener('click', open);
     });
+    document.querySelectorAll('[data-search-close]').forEach(function (b) {
+      b.addEventListener('click', function () { dialog.close(); });
+    });
+
+    /* Clicking the backdrop closes. The dialog element covers only the panel,
+       so a click whose coordinates fall outside its box came from the
+       backdrop — on mobile the panel is the whole screen and this never
+       fires, which is why the close button exists. */
+    dialog.addEventListener('click', function (e) {
+      var r = dialog.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+        dialog.close();
+      }
+    });
+    dialog.addEventListener('close', function () {
+      document.documentElement.style.overflow = '';
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+      active = -1;
+    });
 
     document.addEventListener('keydown', function (e) {
       var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); open(); return; }
-      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); open(); return; }
-      if (overlay.hidden) return;
-      if (e.key === 'Escape') { close(); return; }
+      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); open(); }
+    });
+
+    /* Arrow and Enter handling belongs to the input, not the document. A
+       document-level Enter opened the internally selected hit even when the
+       reader had tabbed to a different result — so a focused link now
+       activates natively, and only the input drives the selection. */
+    input.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
       else if (e.key === 'Enter' && active >= 0 && hits[active]) {
@@ -245,31 +274,19 @@
       }
     });
 
-    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
     input.addEventListener('input', function () {
       clearTimeout(timer);
       timer = setTimeout(function () { run(input.value); }, 90);
     });
 
     function open() {
-      if (!overlay.hidden) { input.focus(); input.select(); return; }
-      opener = document.activeElement;
-      overlay.hidden = false;
-      document.body.classList.add('search-open');
-      document.body.style.overflow = 'hidden';
+      if (dialog.open) { input.focus(); input.select(); return; }
       input.value = '';
       render([], '');
+      dialog.showModal();
+      document.documentElement.style.overflow = 'hidden';
       input.focus();
       load();
-    }
-
-    function close() {
-      overlay.hidden = true;
-      document.body.classList.remove('search-open');
-      document.body.style.overflow = '';
-      input.setAttribute('aria-expanded', 'false');
-      active = -1;
-      if (opener && opener.focus) opener.focus();
     }
 
     function load() {
@@ -300,15 +317,15 @@
         var t = e.t.toLowerCase(), p = e.p.toLowerCase(), b = e.b.toLowerCase();
         var score = 0, all = true;
         for (var j = 0; j < terms.length; j++) {
-          var term = terms[j], s = 0;
+          var term = terms[j], sc = 0;
           /* A heading match is what the reader is usually after; the page
              title next; the body last and only once, so a long section does
              not outrank a precise heading by repetition. */
-          if (t.indexOf(term) >= 0) s += t.indexOf(term) === 0 ? 12 : 8;
-          if (p.indexOf(term) >= 0) s += 4;
-          if (b.indexOf(term) >= 0) s += 1;
-          if (s === 0) { all = false; break; }
-          score += s;
+          if (t.indexOf(term) >= 0) sc += t.indexOf(term) === 0 ? 12 : 8;
+          if (p.indexOf(term) >= 0) sc += 4;
+          if (b.indexOf(term) >= 0) sc += 1;
+          if (sc === 0) { all = false; break; }
+          score += sc;
         }
         if (all) scored.push({ e: e, score: score });
       }
@@ -319,6 +336,7 @@
 
     function render(list, term) {
       active = -1;
+      input.removeAttribute('aria-activedescendant');
       input.setAttribute('aria-expanded', list.length ? 'true' : 'false');
       if (count) count.textContent = list.length ? list.length + (list.length === 30 ? '+ results' : ' results') : '';
       if (!list.length) {
@@ -330,9 +348,9 @@
       var html = '';
       for (var i = 0; i < list.length; i++) {
         var e = list[i];
-        html += '<a class="search-hit" role="option" aria-selected="false" href="' + e.u + '">' +
+        html += '<a class="search-hit" role="option" id="search-hit-' + i + '" aria-selected="false" href="' + e.u + '">' +
           '<span class="search-hit-top"><span class="search-hit-title">' + mark(e.t, term) + '</span>' +
-          '<span class="search-hit-page">' + esc(e.c) + ' · ' + esc(e.p) + '</span></span>' +
+          '<span class="search-hit-page">' + esc(e.c) + ' \u00b7 ' + esc(e.p) + '</span></span>' +
           '<span class="search-hit-body">' + mark(snippet(e.b, term), term) + '</span></a>';
       }
       results.innerHTML = html;
@@ -342,7 +360,8 @@
       select(0);
     }
 
-    /* Show the text around the match rather than the start of the section. */
+    /* Show the text around the match rather than the start of the section:
+       sections are indexed whole, so the match is often far into one. */
     function snippet(body, term) {
       if (!term) return body.slice(0, 160);
       var at = body.toLowerCase().indexOf(term);
@@ -372,6 +391,7 @@
       if (active >= 0 && items[active]) items[active].setAttribute('aria-selected', 'false');
       active = Math.max(0, Math.min(i, items.length - 1));
       items[active].setAttribute('aria-selected', 'true');
+      input.setAttribute('aria-activedescendant', items[active].id);
       items[active].scrollIntoView({ block: 'nearest' });
     }
 

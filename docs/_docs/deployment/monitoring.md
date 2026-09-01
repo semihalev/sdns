@@ -13,8 +13,9 @@ api         = "127.0.0.1:8080"
 bearertoken = "a-long-random-string"
 ```
 
-`api = ""` disables it. When `bearertoken` is set every request must carry
-`Authorization: Bearer <token>`.
+`api = ""` disables it. When `bearertoken` is set, the blocklist, purge and
+metrics routes require `Authorization: Bearer <token>`. The `/debug/pprof`
+routes are the exception and are covered below.
 
 | Endpoint | Method | Purpose |
 |---|---|---|

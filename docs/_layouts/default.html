@@ -46,40 +46,53 @@
   gets the same treatment through a `lastmod`-free page.date.
   {%- endcomment -%}
   {%- capture seo_block %}{% seo %}{% endcapture -%}
-  {%- capture published %}"datePublished":"{{ site.time | date_to_xmlschema }}",{% endcapture -%}
-  {%- capture modified %}"dateModified":"{{ site.time | date_to_xmlschema }}",{% endcapture -%}
-  {{ seo_block | replace: published, "" | replace: modified, "" }}
+  {%- capture stamp %}{{ site.time | date_to_xmlschema }}{% endcapture -%}
+  {%- capture ld_published %}"datePublished":"{{ stamp }}",{% endcapture -%}
+  {%- capture ld_modified %}"dateModified":"{{ stamp }}",{% endcapture -%}
+  {%- capture og_published %}<meta property="article:published_time" content="{{ stamp }}" />{% endcapture -%}
+  {%- capture og_modified %}<meta property="article:modified_time" content="{{ stamp }}" />{% endcapture -%}
+  {{ seo_block
+     | replace: ld_published, ""
+     | replace: ld_modified, ""
+     | replace: og_published, ""
+     | replace: og_modified, "" }}
 </head>
 <body class="preload{% if page.layout == 'doc' %} has-sidebar{% endif %}">
   <a class="skip-link" href="#content">Skip to content</a>
   <div class="nav-scrim" hidden></div>
 
   {%- comment -%}
-  The index is fetched on first open, not on page load — it is 107KB and most
-  readers never search. Everything below is inert until then.
+  A native <dialog>: showModal gives the focus trap, Escape, the inert page
+  behind and the ::backdrop for free, and all four were hand-rolled or missing
+  before. The index is fetched on first open — it is over 100KB and most
+  readers never search.
   {%- endcomment -%}
-  <div class="search-overlay" data-search-overlay hidden>
-    <div class="search-panel" role="dialog" aria-modal="true" aria-label="Search documentation">
-      <div class="search-field">
-        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none"
-             stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-          <circle cx="10.8" cy="10.8" r="6.4"/><path d="M15.6 15.6 L21 21"/>
+  <dialog class="search-dialog" data-search-dialog aria-label="Search documentation">
+    <div class="search-field">
+      <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none"
+           stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+        <circle cx="10.8" cy="10.8" r="6.4"/><path d="M15.6 15.6 L21 21"/>
+      </svg>
+      <input type="search" data-search-input autocomplete="off" spellcheck="false"
+             placeholder="Search the documentation" aria-label="Search the documentation"
+             role="combobox" aria-expanded="false" aria-controls="search-results"
+             aria-autocomplete="list">
+      <kbd class="search-esc-hint">esc</kbd>
+      <button type="button" class="search-close" data-search-close aria-label="Close search">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M6 6 L18 18 M18 6 L6 18"/>
         </svg>
-        <input type="search" data-search-input autocomplete="off" spellcheck="false"
-               placeholder="Search the documentation" aria-label="Search the documentation"
-               role="combobox" aria-expanded="false" aria-controls="search-results"
-               aria-autocomplete="list">
-        <kbd>esc</kbd>
-      </div>
-      <div class="search-results" id="search-results" role="listbox"
-           aria-label="Results" data-search-results></div>
-      <div class="search-foot">
-        <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
-        <span><kbd>↵</kbd> open</span>
-        <span data-search-count></span>
-      </div>
+      </button>
     </div>
-  </div>
+    <div class="search-results" id="search-results" role="listbox"
+         aria-label="Results" data-search-results></div>
+    <div class="search-foot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+      <span><kbd>↵</kbd> open</span>
+      <span data-search-count role="status" aria-live="polite"></span>
+    </div>
+  </dialog>
 
   <header class="site-header">
     <div class="header-inner">

@@ -239,15 +239,17 @@ sum(rate(dns_cache_hits_total[5m]))
 (
   sum(rate(nxdomain_cut_hits_total[5m]))
   + sum(rate(aggressive_negative_hits_total[5m]))
-  + sum(rate(dns_localroot_answers_total{kind!="fallback"}[5m]))
+  + sum(rate(dns_localroot_answers_total{kind=~"denial|apex"}[5m]))
 ) / sum(rate(dns_queries_total[5m]))
 ```
 
 `dns_localroot_answers_total` carries a `kind` of `referral`, `denial`, `ds`,
-`apex` or `fallback`. Only the first four were answered from the local copy —
-`fallback` counts the consultations it declined, which went to the real root
-servers. Summing the metric without excluding it counts upstream work as if it
-had been saved.
+`apex` or `fallback`, and only two of those are a whole client query answered
+without leaving the machine. `fallback` counts consultations the local copy
+declined, so they went upstream. `referral` and `ds` are steps *within* a walk
+that usually continues upstream afterwards — counting them makes the ratio
+climb past 1. Use them separately if you want to measure how much of the walk
+the local root absorbed.
 
 **SERVFAIL rate**
 

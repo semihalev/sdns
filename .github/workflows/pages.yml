@@ -10,6 +10,11 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"
+  # The install commands name the released version, which is resolved at build
+  # time — without this the site keeps advertising the previous release until
+  # something else under docs/ happens to change.
+  release:
+    types: [published]
   workflow_dispatch:
 
 # Read-only at the top: a job that runs on a pull request must not hold the
@@ -110,7 +115,7 @@ jobs:
       id-token: write
     # Never from a pull request, and never from a branch other than main —
     # the environment's branch policy is the backstop, not the only gate.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'release')
     runs-on: ubuntu-latest
     environment:
       name: github-pages

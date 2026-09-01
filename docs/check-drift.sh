@@ -46,7 +46,15 @@ done
 # mentions is the difference between a reference and a rough guide.
 echo "config keys"
 before=$fail
-keys=$(grep -oE '`toml:"[a-z_0-9]+"' config/config.go | sed 's/.*"\(.*\)"/\1/' | sort -u)
+# Both halves of the schema: fields with an explicit toml tag, and fields
+# without one — the decoder matches those case-insensitively on the field
+# name, so `api`, `directory` and `cookiesecret` are accepted keys that a
+# tag-only scan reports as absent, which is a false green.
+tagged=$(grep -oE '`toml:"[a-z_0-9]+"' config/config.go | sed 's/.*"\(.*\)"/\1/')
+untagged=$(awk '/^type (Config|.*Config) struct/,/^}/' config/config.go \
+    | grep -vE 'toml:|^\}|^type|^[[:space:]]*//|^[[:space:]]*$' \
+    | awk '{print $1}' | grep -E '^[A-Z][A-Za-z0-9]*$' | tr 'A-Z' 'a-z')
+keys=$(printf '%s\n%s\n' "$tagged" "$untagged" | sort -u | grep -v '^$')
 undocumented=""
 for k in $keys; do
     grep -rqF "$k" docs/_docs docs/index.html 2>/dev/null || undocumented="$undocumented $k"
@@ -77,6 +85,18 @@ for cmd in 'yay -S' 'snap install' 'brew install'; do
     [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ] && note "README: '$a' vs installation page: '$b'"
 done
 [ "$fail" -eq "$before" ] && echo "  README and installation page agree"
+
+# ---------------------------------------------------------------- versions
+# The install commands name a release; the workflow resolves it at build time,
+# so the checked-in fallback only has to be a plausible one. A hard-coded
+# version anywhere else is a value nobody will remember to bump.
+echo "pinned versions"
+before=$fail
+# README.md is excluded on purpose: it is plain markdown on GitHub with no
+# templating, so it uses :latest and points at the site for the current tag.
+hard=$(grep -rnE 'ghcr\.io/semihalev/sdns:[0-9]' docs/_docs docs/index.html 2>/dev/null || true)
+[ -n "$hard" ] && note "hard-coded image tag (use site.sdns_version): $(echo "$hard" | cut -d: -f1-2 | tr '\n' ' ')"
+[ "$fail" -eq "$before" ] && echo "  no hard-coded image tags"
 
 echo
 if [ "$fail" -ne 0 ]; then
