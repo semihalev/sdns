@@ -1,0 +1,29 @@
+{%- comment -%}
+The Code Wiki mark, taken from the wordmark Google serves and cropped to the
+mark alone — the nav already writes the words next to it. Inlined rather than
+linked: hotlinking gstatic would add a third-party origin to every page load
+for one 14px icon, on a site whose footer claims it does not do that.
+
+The gradient ids are prefixed because a bare "a"/"b"/"c" in a page-wide DOM is
+a collision waiting for the next inline SVG. Left in its own colours: it is
+someone else's mark, and flattening it to the accent would be redrawing it.
+{%- endcomment -%}
+<svg class="codewiki-mark" viewBox="0 0 280 280" width="{{ include.size | default: 14 }}"
+     height="{{ include.size | default: 14 }}" aria-hidden="true" focusable="false">
+  <path fill="#007af4" d="M119.166 4.013a56.1 56.1 0 0 1 41.668 0l113.289 45.316c7.836 3.135 7.836 14.228 0 17.363L206.34 93.805c-4.694 1.877-4.694 8.521 0 10.399l67.782 27.114c7.837 3.134 7.836 14.227 0 17.362l-67.781 27.113c-4.694 1.877-4.694 8.522 0 10.399l67.781 27.113c7.837 3.134 7.836 14.228 0 17.362l-113.289 45.317a56.1 56.1 0 0 1-41.667 0L5.877 230.667c-7.836-3.134-7.836-14.227 0-17.362l67.78-27.113c4.695-1.877 4.695-8.522 0-10.399L5.878 148.68c-7.836-3.135-7.836-14.228 0-17.362l67.782-27.114c4.694-1.878 4.694-8.522 0-10.4L5.879 66.693c-7.837-3.135-7.837-14.228 0-17.363z"/>
+  <path fill="url(#cw-a)" d="M119.166 4.013a56.1 56.1 0 0 1 41.668 0l113.289 45.316c7.836 3.135 7.836 14.228 0 17.363L206.34 93.805c-4.694 1.877-4.694 8.521 0 10.399l67.782 27.114c7.837 3.134 7.836 14.227 0 17.362l-67.781 27.113c-4.694 1.877-4.694 8.522 0 10.399l67.781 27.113c7.837 3.134 7.836 14.228 0 17.362l-113.289 45.317a56.1 56.1 0 0 1-41.667 0L5.877 230.667c-7.836-3.134-7.836-14.227 0-17.362l67.78-27.113c4.695-1.877 4.695-8.522 0-10.399L5.878 148.68c-7.836-3.135-7.836-14.228 0-17.362l67.782-27.114c4.694-1.878 4.694-8.522 0-10.4L5.879 66.693c-7.837-3.135-7.837-14.228 0-17.363z"/>
+  <path fill="url(#cw-b)" d="M119.166 4.013a56.1 56.1 0 0 1 41.668 0l113.289 45.316c7.836 3.135 7.836 14.228 0 17.363L206.34 93.805c-4.694 1.877-4.694 8.521 0 10.399l67.782 27.114c7.837 3.134 7.836 14.227 0 17.362l-67.781 27.113c-4.694 1.877-4.694 8.522 0 10.399l67.781 27.113c7.837 3.134 7.836 14.228 0 17.362l-113.289 45.317a56.1 56.1 0 0 1-41.667 0L5.877 230.667c-7.836-3.134-7.836-14.227 0-17.362l67.78-27.113c4.695-1.877 4.695-8.522 0-10.399L5.878 148.68c-7.836-3.135-7.836-14.228 0-17.362l67.782-27.114c4.694-1.878 4.694-8.522 0-10.4L5.879 66.693c-7.837-3.135-7.837-14.228 0-17.363z"/>
+  <path fill="url(#cw-c)" d="M119.167 4.012a56.1 56.1 0 0 1 41.667 0L274.123 49.33c7.836 3.134 7.836 14.226 0 17.36L206.34 93.806c-4.694 1.877-4.694 8.521 0 10.399l67.782 27.114c7.836 3.134 7.836 14.228 0 17.362l-67.781 27.113c-4.693 1.878-4.693 8.522 0 10.399l67.781 27.113c7.836 3.135 7.836 14.228 0 17.362l-113.288 45.317a56.1 56.1 0 0 1-41.668 0L5.877 230.667c-7.836-3.134-7.836-14.227 0-17.362l67.78-27.113c4.694-1.877 4.694-8.521 0-10.399L5.877 148.68c-7.836-3.134-7.836-14.227 0-17.362l67.783-27.114c4.693-1.878 4.693-8.522 0-10.4L5.878 66.692c-7.836-3.135-7.836-14.227 0-17.361z"/>
+  <defs>
+    <linearGradient id="cw-a" x1="82.447" x2="127.557" y1="259.773" y2="161.773" gradientUnits="userSpaceOnUse">
+      <stop offset=".206" stop-color="#08b962"/><stop offset=".987" stop-color="#08b962" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="cw-b" x1="99.558" x2="150.891" y1="43.553" y2="139.996" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f94543"/><stop offset="1" stop-color="#f94543" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="cw-c" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse"
+                    gradientTransform="matrix(438.114 0 0 438.11 11.9 139.972)">
+      <stop stop-color="#fabc12"/><stop offset=".423" stop-color="#fabc12" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+</svg>
