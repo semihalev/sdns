@@ -84,13 +84,22 @@ code, pre, .mono { font-family: var(--mono); }
 
 /* ---------- header ---------- */
 
+/* The blur lives on a pseudo-element, not on the header itself. A non-none
+   backdrop-filter makes an element the containing block for its fixed-position
+   descendants, and the mobile drawer is one: anchored to the header instead of
+   the viewport it joins the document's scrollable overflow, and a drawer parked
+   off the right edge then let every page scroll 260px sideways into nothing.
+   The pseudo-element has no descendants, so it can carry the filter safely. */
 .site-header {
   position: sticky; top: 0; z-index: 50;
   height: var(--header-h);
+  border-bottom: 1px solid var(--line);
+}
+.site-header::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
   background: var(--bg);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: saturate(140%) blur(10px);
-  border-bottom: 1px solid var(--line);
 }
 .header-inner {
   max-width: var(--wide); margin: 0 auto; height: 100%;
@@ -292,10 +301,21 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 
   /* A drawer rather than a panel dropped under the header. A panel shares
      the page with whatever is beneath it and buries the first thing there;
-     a drawer sits above everything and is dismissed. */
+     a drawer sits above everything and is dismissed.
+
+     Note on the anchor: .site-header carries a backdrop-filter, which makes
+     it the containing block for fixed-position descendants. The header is
+     full-width and pinned at the top, so right/top resolve to the same
+     coordinates the viewport would give — but give the header a max-width
+     or an offset and this moves with it. left:auto is explicit so a stray
+     inherited left cannot fight the right edge.
+
+     The width leaves a real margin of page visible. Filling 300 of 390px
+     reads as a screen the reader has been taken to, not a panel over the
+     one they were on. */
   .main-nav {
-    position: fixed; top: var(--header-h); right: 0; z-index: 60;
-    width: min(300px, 84vw); height: calc(100vh - var(--header-h));
+    position: fixed; top: var(--header-h); right: 0; left: auto; z-index: 60;
+    width: min(260px, 72vw); height: calc(100vh - var(--header-h));
     display: block; overflow-y: auto; overscroll-behavior: contain;
     margin-left: 0; padding: 1.1rem 1.25rem 3rem;
     background: var(--bg); border-left: 1px solid var(--line);
@@ -325,6 +345,12 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
   .footer-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
-  .version-pill { display: none; }
   .footer-bottom { flex-direction: column; gap: .3rem; }
+}
+
+/* The version and the star count are one pair: a release number with no
+   project attached, or a star count with no version, each read as a stray
+   number. They leave together when the row runs out of room. */
+@media (max-width: 400px) {
+  .star-pill, .version-pill { display: none; }
 }
