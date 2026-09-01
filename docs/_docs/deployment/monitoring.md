@@ -32,7 +32,11 @@ single-name mutations are GET requests, which means a browser or a link
 preview can trigger them — another reason to keep this listener on loopback or
 behind a token.
 
-`/debug/pprof` is served only when `SDNS_PPROF=true` is in the environment.
+`/debug/pprof` is served only when `SDNS_PPROF=true` is in the environment — and
+those routes are the one exception to the token, since pprof tooling sends no
+`Authorization` header. With pprof on, a token is not sufficient protection for
+this listener; keep it on loopback or behind an authenticating proxy. See
+[diagnostics]({{ '/docs/deployment/diagnostics/' | relative_url }}).
 
 ## Metrics worth an alert
 

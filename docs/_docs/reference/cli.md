@@ -51,12 +51,16 @@ an outage.
 
 | Variable | Effect |
 |---|---|
-| `SDNS_PPROF` | `true` serves Go's `/debug/pprof` endpoints on the API listener |
-| `SDNS_DEBUGNS` | `true` serves the CHAOS-class nameserver debug view |
+| `SDNS_PPROF` | Serves Go's `/debug/pprof` endpoints on the API listener |
+| `SDNS_DEBUGNS` | Answers CHAOS HINFO with the delegation sdns holds, per-server RTT and health |
 
 Both default off, and the shipped systemd unit sets both to `false` explicitly.
-Turn `SDNS_PPROF` on only while profiling, and not on a listener anyone else can
-reach.
+Each is parsed as a boolean, so `1`, `t` and `TRUE` work as well as `true`, and
+each is read once at startup — changing either means a restart.
+
+`bearertoken` does **not** cover the pprof routes. What each switch exposes, how
+to read the HINFO output, and why that matters are on the
+[diagnostics]({{ '/docs/deployment/diagnostics/' | relative_url }}) page.
 
 ## First run
 

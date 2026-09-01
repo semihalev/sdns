@@ -105,6 +105,11 @@ SDNS_PPROF=false     # serve /debug/pprof on the API listener
 SDNS_DEBUGNS=false   # serve the CHAOS-class nameserver debug view
 ```
 
-`SDNS_PPROF=true` exposes Go's profiling endpoints on the API address. Leave it
-off unless you are actively profiling, and never expose that listener publicly
-while it is on.
+`SDNS_PPROF=true` exposes Go's profiling endpoints on the API address, and
+`bearertoken` does not cover them — pprof tooling sends no `Authorization`
+header, so those routes stay open even when a token is set. Leave it off unless
+you are actively profiling, and keep the listener on loopback while it is on.
+
+`SDNS_DEBUGNS=true` answers CHAOS HINFO queries with the delegation sdns holds
+for a name, its per-server RTT and its health. Both are covered on the
+[diagnostics]({{ '/docs/deployment/diagnostics/' | relative_url }}) page.
