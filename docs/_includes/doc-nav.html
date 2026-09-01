@@ -1,0 +1,18 @@
+{%- comment -%}
+The documentation navigation, rendered from _data/doc_categories.yml. Used
+twice — in the desktop sidebar and inside the mobile drawer — so the two can
+never drift into different orderings.
+{%- endcomment -%}
+{%- for category in site.data.doc_categories %}
+{%- assign pages = site.docs | where: "category", category.name | sort: "order" %}
+{%- if pages.size > 0 %}
+<div class="nav-group">
+  <div class="nav-group-title">{{ category.name }}</div>
+  <ul>
+    {%- for doc in pages %}
+    <li><a href="{{ doc.url | relative_url }}"{% if doc.url == page.url %} class="current" aria-current="page"{% endif %}>{{ doc.title }}</a></li>
+    {%- endfor %}
+  </ul>
+</div>
+{%- endif %}
+{%- endfor %}

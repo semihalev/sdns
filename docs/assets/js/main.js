@@ -28,12 +28,42 @@
     });
   }
 
+  /* The drawer is dismissable four ways — the button, the scrim, Escape, and
+     following a link — because a panel that can only be closed by the control
+     that opened it is a trap on a narrow screen. */
   function mobileMenu() {
     var button = document.querySelector('.menu-toggle');
-    if (!button) return;
-    button.addEventListener('click', function () {
-      var open = document.body.classList.toggle('nav-open');
+    var nav = document.getElementById('site-nav');
+    var scrim = document.querySelector('.nav-scrim');
+    if (!button || !nav) return;
+
+    if (scrim) scrim.removeAttribute('hidden');
+
+    function set(open) {
+      document.body.classList.toggle('nav-open', open);
       button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        var first = nav.querySelector('a');
+        if (first) first.focus();
+      } else if (document.activeElement && nav.contains(document.activeElement)) {
+        button.focus();
+      }
+    }
+
+    button.addEventListener('click', function () {
+      set(!document.body.classList.contains('nav-open'));
+    });
+    if (scrim) scrim.addEventListener('click', function () { set(false); });
+    nav.addEventListener('click', function (e) {
+      if (e.target.closest('a')) set(false);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && document.body.classList.contains('nav-open')) set(false);
+    });
+    /* Leaving the breakpoint with the drawer open would otherwise strand
+       body{overflow:hidden} on a desktop layout. */
+    window.matchMedia('(max-width: 900px)').addEventListener('change', function (e) {
+      if (!e.matches) set(false);
     });
   }
 
