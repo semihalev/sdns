@@ -1061,6 +1061,10 @@ emptyzones = [
 # name = "badfeed"
 # file = "/var/lib/sdns/badfeed.zone"
 # policy = "given"
+# Add origin when the file writes its SOA as "@" with rules relative to
+# it — the common shape for downloaded feeds, which leave the apex to the
+# consuming server. A file whose SOA carries an absolute owner needs none.
+# origin = "rpz.vendor.example."
 # An AXFR-fed zone instead names its primary and apex (and never a file);
 # it follows the feed's own SOA schedule and withdraws its rules past SOA
 # expire. tsig_key ("name:algorithm:base64-secret") signs the transfer

@@ -94,7 +94,7 @@ func (r *RPZ) reload(idx int) {
 	if zc.Cname != "" {
 		target = dns.CanonicalName(zc.Cname)
 	}
-	z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, target)
+	z, err := rpz.LoadZoneFile(zc.Name, zc.File, policy, target, zc.Origin)
 	if err != nil {
 		reloadErrors.WithLabelValues(zc.Name).Inc()
 		zlog.Warn("RPZ zone reload failed; the previous rules keep serving", "zone", zc.Name, "error", err.Error())

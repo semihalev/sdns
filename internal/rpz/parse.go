@@ -82,19 +82,38 @@ const responseIPMarker = "rpz-ip"
 // LoadZoneFile parses one policy zone file into a compiled Zone. name is
 // the config label; policy and cnameTarget come from the zone's config
 // entry (cnameTarget canonical, used only with OverrideCNAME).
-func LoadZoneFile(name, path string, policy Override, cnameTarget string) (*Zone, error) {
+//
+// origin is the apex the file's relative names hang from, canonical, and
+// may be empty. Feeds distributed as files commonly write their SOA as
+// "@" and every rule relative to it, because the consuming server is
+// expected to supply the origin from its own configuration — so a file
+// that names no apex of its own is not malformed, it is the ordinary
+// shape, and the operator's `origin` setting is what completes it. A
+// file whose SOA carries an absolute owner needs none.
+func LoadZoneFile(name, path string, policy Override, cnameTarget, origin string) (*Zone, error) {
 	f, err := os.Open(path) //nolint:gosec // G304 - the operator's configured policy file
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only descriptor
 
-	return LoadZone(name, f, path, policy, cnameTarget)
+	// Canonicalized here rather than by callers: dns.CanonicalName("")
+	// is the root, so a caller that canonicalizes an unset origin would
+	// hand the parser "." and a relative feed would load silently under
+	// the root instead of failing for want of an apex.
+	if origin != "" {
+		origin = dns.CanonicalName(origin)
+	}
+	return loadZone(name, f, path, policy, cnameTarget, origin)
 }
 
-// LoadZone is LoadZoneFile over a reader; file names the source in parse
-// errors.
+// LoadZone is LoadZoneFile over a reader, for zones that name their own
+// apex; file names the source in parse errors.
 func LoadZone(name string, r io.Reader, file string, policy Override, cnameTarget string) (*Zone, error) {
+	return loadZone(name, r, file, policy, cnameTarget, "")
+}
+
+func loadZone(name string, r io.Reader, file string, policy Override, cnameTarget, origin string) (*Zone, error) {
 	z := &Zone{
 		Name:        name,
 		Policy:      policy,
@@ -109,7 +128,7 @@ func LoadZone(name string, r io.Reader, file string, policy Override, cnameTarge
 	// there is refused as not a zone.
 	var pending []dns.RR
 
-	zp := dns.NewZoneParser(r, "", file)
+	zp := dns.NewZoneParser(r, origin, file)
 	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
 		if z.Origin == "" {
 			if soa, isSOA := rr.(*dns.SOA); isSOA {

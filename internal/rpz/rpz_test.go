@@ -2,6 +2,8 @@ package rpz
 
 import (
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -298,4 +300,73 @@ func TestMatchQNAMEMissAllocatesNothing(t *testing.T) {
 	}); allocs != 0 {
 		t.Fatalf("a miss cost %.0f allocations, want 0", allocs)
 	}
+}
+
+// TestLoadZoneFileRelativeNames pins the shape feeds are actually
+// distributed in: the SOA written as "@" with every rule relative to it,
+// the origin supplied by the consuming server rather than the file. This
+// is what a real vendor feed looks like, and without the origin it does
+// not parse at all.
+func TestLoadZoneFileRelativeNames(t *testing.T) {
+	const vendorShape = `
+$TTL 30
+@ SOA rpz.vendor.example. hostmaster.vendor.example. 1 300 1800 604800 30
+  NS localhost.
+malware.example.com CNAME .
+phish.example.net CNAME .
+`
+	path := filepath.Join(t.TempDir(), "vendor.zone")
+	if err := os.WriteFile(path, []byte(vendorShape), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadZoneFile("v", path, OverrideGiven, "", ""); err == nil {
+		t.Fatal("a relative feed parsed without an origin; it names no apex")
+	}
+
+	z, err := LoadZoneFile("v", path, OverrideGiven, "", "rpz.vendor.example.")
+	if err != nil {
+		t.Fatalf("relative feed with its origin: %v", err)
+	}
+	if z.Origin != "rpz.vendor.example." {
+		t.Fatalf("origin = %q", z.Origin)
+	}
+	if z.Rules != 2 {
+		t.Fatalf("rules = %d, want 2 (skipped: %v)", z.Rules, z.Skipped)
+	}
+	// The rules must be reachable under the qnames they name, not under
+	// the origin-suffixed spelling the file carries.
+	s := storeOf(z)
+	match := func(qname string) *Rule {
+		canon, offs, n := canonFor(t, qname)
+		w, _ := s.Match(canon, offs[:], n, netip.Addr{})
+		return w.Rule
+	}
+	for _, qname := range []string{"malware.example.com.", "phish.example.net."} {
+		if match(qname) == nil {
+			t.Fatalf("%s did not match", qname)
+		}
+	}
+	if match("innocent.example.org.") != nil {
+		t.Fatal("an unlisted name matched")
+	}
+
+	// A file that names its own apex still needs no origin.
+	if _, err := LoadZoneFile("f", writeFixture(t, testAbsoluteZone), OverrideGiven, "", ""); err != nil {
+		t.Fatalf("absolute feed without origin: %v", err)
+	}
+}
+
+const testAbsoluteZone = `
+rpz.self. IN SOA ns.rpz.self. admin.rpz.self. 1 3600 900 604800 300
+blocked.example.com.rpz.self. IN CNAME .
+`
+
+func writeFixture(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "zone")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
