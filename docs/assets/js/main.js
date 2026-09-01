@@ -101,36 +101,64 @@
     if (!container) return;
     var repo = container.getAttribute('data-repo');
 
-    fetch('https://api.github.com/repos/' + repo, { headers: { Accept: 'application/vnd.github+json' } })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        set('stars', d.stargazers_count);
-        set('forks', d.forks_count);
-        set('issues', d.open_issues_count);
-      })
-      .catch(function () {});
+    /* One scrape per tab rather than one per page view. The unauthenticated
+       API allows 60 requests an hour per address, and a reader walking ten
+       documentation pages would otherwise spend a third of that. */
+    var cached = readCache();
+    if (cached) { paint(cached); return; }
 
-    fetch('https://api.github.com/repos/' + repo + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        if (!d.tag_name) return;
-        var el = container.querySelector('[data-stat="release"]');
-        if (el) {
-          el.textContent = d.tag_name;
-          el.removeAttribute('data-loading');
-        }
-        /* The header pill is built from a config value, which is correct until
-           the next release and wrong forever after. Correct it here rather
-           than relying on someone remembering to edit _config.yml. */
-        var pill = document.querySelector('.version-pill');
-        if (pill) pill.textContent = d.tag_name;
-      })
-      .catch(function () {});
+    Promise.all([
+      json('https://api.github.com/repos/' + repo),
+      json('https://api.github.com/repos/' + repo + '/releases/latest')
+    ]).then(function (r) {
+      var d = { stars: r[0] && r[0].stargazers_count, forks: r[0] && r[0].forks_count,
+                issues: r[0] && r[0].open_issues_count, release: r[1] && r[1].tag_name };
+      writeCache(d);
+      paint(d);
+    }).catch(function () {});
+
+    function json(url) {
+      return fetch(url, { headers: { Accept: 'application/vnd.github+json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; });
+    }
+    function readCache() {
+      try {
+        var raw = sessionStorage.getItem('repo:' + repo);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) { return null; }
+    }
+    function writeCache(d) {
+      try { sessionStorage.setItem('repo:' + repo, JSON.stringify(d)); } catch (e) {}
+    }
+
+    function paint(d) {
+      set('stars', d.stars);
+      set('forks', d.forks);
+      set('issues', d.issues);
+
+      /* The star pill is on every page; the repository panel is only on the
+         homepage. Both read the same fetch. */
+      var star = document.querySelector('[data-stars]');
+      if (star && typeof d.stars === 'number') star.textContent = compact(d.stars);
+
+      if (!d.release) return;
+      var el = document.querySelector('[data-stat="release"]');
+      if (el) { el.textContent = d.release; el.removeAttribute('data-loading'); }
+      /* The header pill renders a config value, which is correct until the
+         next release and wrong forever after. Correct it from the real tag. */
+      var pill = document.querySelector('.version-pill');
+      if (pill) pill.textContent = d.release;
+    }
+
+    function compact(v) {
+      return v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(v);
+    }
 
     function set(name, value) {
-      var el = container.querySelector('[data-stat="' + name + '"]');
+      var el = document.querySelector('[data-stat="' + name + '"]');
       if (!el || typeof value !== 'number') return;
-      el.textContent = value >= 1000 ? (value / 1000).toFixed(1) + 'k' : String(value);
+      el.textContent = compact(value);
       el.removeAttribute('data-loading');
     }
   }

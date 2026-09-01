@@ -84,10 +84,9 @@ dns_listener_errors_total
 Overflow means queries arrived faster than the workers accepted them. That is a
 capacity signal, not a bug.
 
-**Feature-specific.** Each feature page lists its own metrics —
-[RPZ]({{ '/docs/features/rpz/' | relative_url }}),
-[local root]({{ '/docs/features/hyperlocal-root/' | relative_url }}),
-[recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }}).
+**Everything else.** All 60 metrics — with their types, labels, help strings,
+ready-made PromQL and the alerts worth having — are in the
+[metrics reference]({{ '/docs/reference/metrics/' | relative_url }}).
 
 ## Query logging
 

@@ -116,6 +116,14 @@ code, pre, .mono { font-family: var(--mono); }
   font-family: var(--mono); font-size: .74rem; color: var(--text-dim);
   border: 1px solid var(--line); border-radius: 100px; padding: .16rem .55rem;
 }
+.star-pill {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-family: var(--mono); font-size: .74rem; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 100px; padding: .16rem .55rem;
+  transition: color var(--fast), border-color var(--fast);
+}
+.star-pill:hover { color: var(--signal); border-color: var(--line-strong); text-decoration: none; }
+.star-pill svg { color: var(--signal); flex: none; }
 .icon-button {
   display: inline-grid; place-items: center;
   width: 32px; height: 32px; padding: 0;
