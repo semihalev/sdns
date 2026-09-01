@@ -20,8 +20,11 @@ note() { printf '  %s\n' "$1"; fail=1; }
 # the code exported 64.
 echo "metrics"
 metrics_page=docs/_docs/reference/metrics.md
+# --exclude, not a `grep -v '_test.go'` downstream: -h has already stripped the
+# filenames by then, so the filter could never match and test fixtures counted
+# as registered metrics. Excluding at the source is the only place it works.
 registered=$(grep -rhoE 'Name:[[:space:]]*"(dns|dns64|rpz|reflex|failure|nxdomain|aggressive|dnssec)_[a-z0-9_]+"' \
-    --include='*.go' . | grep -v '_test.go' | sed 's/.*"\(.*\)"/\1/' | sort -u)
+    --include='*.go' --exclude='*_test.go' . | sed 's/.*"\(.*\)"/\1/' | sort -u)
 documented=$(grep -oE '^\| `[a-z][a-z0-9_]+` \|' "$metrics_page" | tr -d '|` ' | sort -u)
 
 missing=$(comm -23 <(echo "$registered") <(echo "$documented"))
@@ -114,6 +117,41 @@ for cmd in 'yay -S' 'snap install' 'brew install'; do
     fi
 done
 [ "$fail" -eq "$before" ] && echo "  README and installation page agree"
+
+# ---------------------------------------------------------------- platforms
+# The installation page prints a matrix and calls it the list of pre-built
+# binaries. That claim is only true while it tracks the release config: the
+# page missed OpenBSD, NetBSD and the whole mips family for as long as nobody
+# reread .goreleaser.yml next to it.
+echo "release platforms"
+before=$fail
+release_os=$(awk '
+    /^ *(targets|goos):/ { collect = 1; next }
+    /^ *[a-z_]+:/         { collect = 0 }
+    collect && /^ *- /    { t = $2; sub(/_.*$/, "", t); print t }
+' .goreleaser.yml | sort -u)
+release_arch=$(awk '
+    /^ *(targets|goarch):/ { collect = 1; next }
+    /^ *[a-z_]+:/          { collect = 0 }
+    collect && /^ *- /     { t = $2; sub(/^[a-z]+_/, "", t); print t }
+' .goreleaser.yml | sort -u)
+
+install_page=docs/_docs/getting-started/installation.md
+for os in $release_os; do
+    # The page writes these the way a reader says them, not the way Go spells
+    # them. Only darwin actually differs; the rest match case-insensitively.
+    case "$os" in darwin) shown="macOS" ;; *) shown="$os" ;; esac
+    grep -qi "| *$shown\b\|, *$shown\b\|$shown," "$install_page" \
+        || note "goreleaser builds $os, the installation page does not list it"
+done
+for arch in $release_arch; do
+    # goarm turns `arm` into armv5/6/7 in the artifact names, and that is how
+    # the page writes it.
+    case "$arch" in arm) shown="armv" ;; *) shown="$arch" ;; esac
+    grep -q "$shown" "$install_page" \
+        || note "goreleaser builds $arch, the installation page does not list it"
+done
+[ "$fail" -eq "$before" ] && echo "  installation page covers every released platform"
 
 # ---------------------------------------------------------------- versions
 # The install commands name a release; the workflow resolves it at build time,

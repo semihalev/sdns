@@ -233,17 +233,28 @@ sum(rate(dns_cache_hits_total[5m]))
   / (sum(rate(dns_cache_hits_total[5m])) + sum(rate(dns_cache_misses_total[5m])))
 ```
 
-**Answers served without an upstream query**
+**Denials answered from a proof already held**
 
 ```promql
 sum(rate(nxdomain_cut_hits_total[5m]))
+```
+
+```promql
 sum(rate(aggressive_negative_hits_total[5m]))
+```
+
+**Local-root consultations, by kind**
+
+```promql
 sum(rate(dns_localroot_answers_total[5m])) by (kind)
 ```
 
+One expression per block, because each of these is a query in its own right —
+pasting the three together is not valid PromQL.
+
 Rates, not a share — and that is not a presentation choice. There is no
-correct way to express this as a fraction of client traffic with the series
-that exist today.
+correct way to express any of them as a fraction of client traffic with the
+series that exist today.
 
 `dns_queries_total` is client-only by construction: the metrics middleware
 declares itself a client-traffic observer and the sub-pipeline leaves it out,
@@ -271,7 +282,7 @@ sum(rate(dns_queries_total{rcode="SERVFAIL"}[5m]))
   / sum(rate(dns_queries_total[5m]))
 ```
 
-**Fan-out p99 — how much work an average query causes**
+**Fan-out p99 — how much work the heaviest one percent of queries causes**
 
 ```promql
 histogram_quantile(0.99, sum(rate(dns_recursion_fanout_ratio_bucket[5m])) by (le))

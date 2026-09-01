@@ -38,9 +38,11 @@ covers installing it and getting a first answer out of it.
 go install github.com/semihalev/sdns@latest
 ```
 
-Pre-built binaries for Linux, macOS, FreeBSD and Windows on amd64, arm64 and
-armv5/6/7 — plus `.deb` and `.rpm` packages — are on the
-[releases](https://github.com/semihalev/sdns/releases/latest) page.
+Pre-built binaries for Linux, macOS, Windows and the BSDs — plus `.deb` and
+`.rpm` packages — are on the
+[releases](https://github.com/semihalev/sdns/releases/latest) page. The full
+architecture matrix is in the
+[installation guide](https://sdns.dev/docs/getting-started/installation/).
 
 ```shell
 # Docker. Loopback because the default access list allows every client; -c and

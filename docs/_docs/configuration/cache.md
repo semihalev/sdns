@@ -62,17 +62,26 @@ NXDOMAIN is never served. The full design is on the
 
 A name that does not exist is an answer worth keeping, and RFC 2308 says how
 long for: the lifetime comes from the SOA in the denial, bounded by the smaller
-of its TTL and its MINIMUM field. sdns takes the smallest value across every
-component of the proof — the SOA, the records in the authority section, and the
-signatures over them — so a cached denial can never outlive any part of what
-made it authoritative. No configured floor is applied on top, because a floor
-would do exactly that.
+of its TTL and its MINIMUM field.
 
-Two mechanisms build on it, both on by default and both covered under
+The plain negative entry — the cached NXDOMAIN or NODATA itself — is held like
+any other answer, which means the same five-second floor the rest of the cache
+applies. A denial whose proof is shorter than that is still held for five
+seconds.
+
+The two mechanisms that *reuse* a denial for names it was never asked about are
+bounded harder, and deliberately so. Both are on by default and both are
+covered under
 [Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}):
 RFC 8020 lets one NXDOMAIN answer every name beneath it, and RFC 8198 answers
-later denials from a validated NSEC or NSEC3 record already held. They are
-counted by `nxdomain_cut_hits_total` and `aggressive_negative_hits_total`.
+later denials from a validated NSEC or NSEC3 record already held. For these,
+sdns takes the smallest value across every component of the proof — the SOA,
+the records in the authority section, the signatures over them, and the
+delegation lease — and applies no floor on top, because a floor there would let
+a cache setting extend an authenticated denial past the proof that authorised
+it. Answering one name from another's denial is a claim about a whole subtree,
+and it expires with the weakest thing supporting it. They are counted by
+`nxdomain_cut_hits_total` and `aggressive_negative_hits_total`.
 
 ## Failure caching
 

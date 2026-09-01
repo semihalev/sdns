@@ -6,13 +6,13 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"
-  # Filtered, and deliberately not a required check: it has nothing to say
-  # about a pull request that did not touch the site. What must run everywhere
-  # is the drift gate, which lives in the CI workflow.
+  # Unfiltered on purpose, unlike the push above. A required check has to be
+  # able to report on every pull request: a path filter skips the whole
+  # workflow, the status never arrives, and a branch rule waiting on it would
+  # block every pull request that did not touch the site. Making it optional
+  # instead was the other way out, and it is worse — a red build merges.
+  # The build costs 15-35s, which is not a price worth designing around.
   pull_request:
-    paths:
-      - "docs/**"
-      - ".github/workflows/pages.yml"
   # The install commands name the released version, which is resolved at build
   # time — without this the site keeps advertising the previous release until
   # something else under docs/ happens to change.
@@ -51,8 +51,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  # Builds on every pull request that touches the site, so a broken Liquid
-  # tag or a dead link is caught in review rather than after a deploy.
+  # Builds on every pull request, so a broken Liquid tag or a dead link is
+  # caught in review rather than by a deploy that fails after the merge and
+  # leaves the site quietly serving the previous version.
   #
   # ruby/setup-ruby with the checked-in Gemfile rather than
   # actions/jekyll-build-pages. That action pins the github-pages gem, which
