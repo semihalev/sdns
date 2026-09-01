@@ -315,6 +315,12 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 
   .menu-toggle { display: inline-grid; }
 
+  /* The push to the right edge lived on .main-nav's margin-left:auto. Once the
+     nav becomes the fixed drawer it leaves the flex flow and takes that margin
+     with it, leaving the theme and menu buttons parked against the wordmark.
+     The actions carry the margin themselves at this width. */
+  .header-actions { margin-left: auto; }
+
   /* A drawer rather than a panel dropped under the header. A panel shares
      the page with whatever is beneath it and buries the first thing there;
      a drawer sits above everything and is dismissed.
