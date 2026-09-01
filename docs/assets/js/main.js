@@ -42,6 +42,9 @@
     function set(open) {
       document.body.classList.toggle('nav-open', open);
       button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      /* The glyph says "close" once it is a cross; the accessible name has to
+         say the same thing rather than staying "Open menu". */
+      button.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
       if (open) {
         var first = nav.querySelector('a');
         if (first) first.focus();

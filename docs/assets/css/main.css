@@ -135,6 +135,22 @@ code, pre, .mono { font-family: var(--mono); }
 .icon-button svg { stroke: currentColor; fill: none; }
 .menu-toggle { display: none; }
 
+/* Three bars that fold into a cross, so the control shows its own state:
+   the middle bar fades and the outer two rotate onto the centre line. */
+.menu-toggle .bars { position: relative; display: block; width: 18px; height: 12px; }
+.menu-toggle .bars span {
+  position: absolute; left: 0; width: 100%; height: 2px; border-radius: 1px;
+  background: currentColor;
+  transition: transform var(--fast), opacity var(--fast);
+}
+.menu-toggle .bars span:nth-child(1) { top: 0; }
+.menu-toggle .bars span:nth-child(2) { top: 5px; }
+.menu-toggle .bars span:nth-child(3) { top: 10px; }
+body.nav-open .menu-toggle .bars span:nth-child(1) { transform: translateY(5px) rotate(45deg); }
+body.nav-open .menu-toggle .bars span:nth-child(2) { opacity: 0; }
+body.nav-open .menu-toggle .bars span:nth-child(3) { transform: translateY(-5px) rotate(-45deg); }
+body.nav-open .menu-toggle { color: var(--text); border-color: var(--line-strong); }
+
 :root[theme="dark"] .icon-sun { display: none; }
 :root[theme="light"] .icon-moon { display: none; }
 
