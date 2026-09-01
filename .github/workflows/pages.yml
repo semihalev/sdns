@@ -63,6 +63,9 @@ jobs:
   # deploy. The cost of building it ourselves is this lockfile, which is why
   # it is committed and carries the runner's platform.
   build:
+    # Named, because this is a required check and "build" as a bare context in
+    # a branch rule says nothing about which workflow owns it.
+    name: The site builds
     # The release event only redispatches; the dispatched run does the work.
     if: github.event_name != 'release'
     runs-on: ubuntu-latest
