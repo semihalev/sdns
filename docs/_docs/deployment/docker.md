@@ -72,8 +72,11 @@ HTTP/3 have no declaration** — they are UDP. `docker run -P` will not publish
 them; name them explicitly (`-p 853:853/udp`, `-p 8053:8053/udp`) if you serve
 either.
 
-Publish only what you actually serve. In particular, the API listener should
-stay on loopback or behind a token.
+Publish only what you actually serve. The API listener in particular is plain
+HTTP with no TLS, so a bearer token sent to it crosses the network in the clear
+and can be replayed. Keep it unpublished, or publish it to loopback only; if it
+has to be reachable, the protection is a TLS-terminating authenticating proxy,
+a VPN or a source-restricted firewall, with the token as a second layer.
 
 ## Validating the config
 

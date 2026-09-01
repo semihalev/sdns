@@ -30,8 +30,13 @@ bearertoken = "a-long-random-string"
 The block endpoints are registered whether or not you configured a blocklist —
 the default chain always builds the handler. Note that the
 single-name mutations are GET requests, which means a browser or a link
-preview can trigger them — another reason to keep this listener on loopback or
-behind a token.
+preview can trigger them.
+
+That is one reason to keep this listener on loopback. The other is that it is
+plain HTTP: `bearertoken` travels in the clear to a reachable address and can
+be replayed, so it is a second layer rather than the protection. A reachable
+deployment needs a TLS-terminating authenticating proxy, a VPN, or a firewall
+that restricts the source.
 
 `/debug/pprof` is served only when `SDNS_PPROF=true` is in the environment — and
 those routes are the one exception to the token, since pprof tooling sends no

@@ -38,11 +38,48 @@
   {%- endif %}
   <link rel="icon" href="{{ '/assets/img/favicon.svg' | relative_url }}" type="image/svg+xml">
   <meta name="theme-color" content="#0b0f14">
-  {% seo %}
+  {%- comment -%}
+  seo_omit_dates: jekyll-seo-tag emits datePublished and dateModified from
+  page.date, and with no date in the front matter it falls back to the build
+  time — so every deploy claimed all 29 documents had just been written. The
+  wrapper below drops those two properties from the JSON-LD block; the sitemap
+  gets the same treatment through a `lastmod`-free page.date.
+  {%- endcomment -%}
+  {%- capture seo_block %}{% seo %}{% endcapture -%}
+  {%- capture published %}"datePublished":"{{ site.time | date_to_xmlschema }}",{% endcapture -%}
+  {%- capture modified %}"dateModified":"{{ site.time | date_to_xmlschema }}",{% endcapture -%}
+  {{ seo_block | replace: published, "" | replace: modified, "" }}
 </head>
 <body class="preload{% if page.layout == 'doc' %} has-sidebar{% endif %}">
   <a class="skip-link" href="#content">Skip to content</a>
   <div class="nav-scrim" hidden></div>
+
+  {%- comment -%}
+  The index is fetched on first open, not on page load — it is 107KB and most
+  readers never search. Everything below is inert until then.
+  {%- endcomment -%}
+  <div class="search-overlay" data-search-overlay hidden>
+    <div class="search-panel" role="dialog" aria-modal="true" aria-label="Search documentation">
+      <div class="search-field">
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+          <circle cx="10.8" cy="10.8" r="6.4"/><path d="M15.6 15.6 L21 21"/>
+        </svg>
+        <input type="search" data-search-input autocomplete="off" spellcheck="false"
+               placeholder="Search the documentation" aria-label="Search the documentation"
+               role="combobox" aria-expanded="false" aria-controls="search-results"
+               aria-autocomplete="list">
+        <kbd>esc</kbd>
+      </div>
+      <div class="search-results" id="search-results" role="listbox"
+           aria-label="Results" data-search-results></div>
+      <div class="search-foot">
+        <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+        <span><kbd>↵</kbd> open</span>
+        <span data-search-count></span>
+      </div>
+    </div>
+  </div>
 
   <header class="site-header">
     <div class="header-inner">
@@ -71,6 +108,15 @@
       </nav>
 
       <div class="header-actions">
+        <button class="search-trigger" type="button" aria-label="Search documentation"
+                aria-haspopup="dialog" data-search-open>
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+            <circle cx="10.8" cy="10.8" r="6.4"/><path d="M15.6 15.6 L21 21"/>
+          </svg>
+          <span class="search-trigger-text">Search</span>
+          <kbd class="search-trigger-key" data-search-key>/</kbd>
+        </button>
         <a class="star-pill" href="{{ site.github.repository_url }}" target="_blank" rel="noopener"
            title="Star on GitHub" aria-label="Stars on GitHub"
            data-repo="{{ site.github.repository_nwo }}">

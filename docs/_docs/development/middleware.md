@@ -74,9 +74,11 @@ resolving to the wrong one.
 
 Position is a design decision, not a detail:
 
-- **Before `cache`** if it must see every query, including ones the cache would
-  answer. Policy and filtering belong here — this is where dynamic plugins are
-  inserted.
+- **Before `cache`** if it must see queries the cache would otherwise answer.
+  Policy and filtering belong here — this is where dynamic plugins are
+  inserted. Note that this is not "every query": access control, rate limiting,
+  the hosts file, views, the blocklist and RPZ all run earlier and any of them
+  can end the chain first.
 - **After `cache`** if it only concerns queries that actually need resolving.
 - **Before `accesslist`** essentially never; nothing should run ahead of access
   control except recovery and instrumentation.

@@ -10,6 +10,7 @@
     tableOfContents();
     copyButtons();
     repoStats();
+    search();
   });
 
   /* The stored value is removed when the choice matches the system, so the
@@ -207,6 +208,179 @@
       if (!el || typeof value !== 'number') return;
       el.textContent = compact(value);
       el.removeAttribute('data-loading');
+    }
+  }
+
+  /* Section-level search over /search.json. No library: the index is 169
+     entries, so a scan per keystroke is cheaper than shipping a search engine
+     to every reader. Fetched on first open — most visitors never search. */
+  function search() {
+    var overlay = document.querySelector('[data-search-overlay]');
+    var input = document.querySelector('[data-search-input]');
+    var results = document.querySelector('[data-search-results]');
+    var count = document.querySelector('[data-search-count]');
+    if (!overlay || !input || !results) return;
+
+    var index = null, hits = [], active = -1, opener = null, timer = null;
+
+    var mac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+    var keyHint = document.querySelector('[data-search-key]');
+    if (keyHint) keyHint.textContent = mac ? '\u2318K' : 'Ctrl K';
+
+    document.querySelectorAll('[data-search-open]').forEach(function (b) {
+      b.addEventListener('click', open);
+    });
+
+    document.addEventListener('keydown', function (e) {
+      var typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); open(); return; }
+      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); open(); return; }
+      if (overlay.hidden) return;
+      if (e.key === 'Escape') { close(); return; }
+      if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+      else if (e.key === 'Enter' && active >= 0 && hits[active]) {
+        e.preventDefault();
+        window.location.href = hits[active].u;
+      }
+    });
+
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
+    input.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { run(input.value); }, 90);
+    });
+
+    function open() {
+      if (!overlay.hidden) { input.focus(); input.select(); return; }
+      opener = document.activeElement;
+      overlay.hidden = false;
+      document.body.classList.add('search-open');
+      document.body.style.overflow = 'hidden';
+      input.value = '';
+      render([], '');
+      input.focus();
+      load();
+    }
+
+    function close() {
+      overlay.hidden = true;
+      document.body.classList.remove('search-open');
+      document.body.style.overflow = '';
+      input.setAttribute('aria-expanded', 'false');
+      active = -1;
+      if (opener && opener.focus) opener.focus();
+    }
+
+    function load() {
+      if (index) return;
+      var base = document.querySelector('link[rel="icon"]');
+      var prefix = '';
+      if (base) {
+        var href = base.getAttribute('href');
+        var cut = href.indexOf('/assets/');
+        if (cut > 0) prefix = href.substring(0, cut);
+      }
+      fetch(prefix + '/search.json')
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (data) { index = data; if (input.value) run(input.value); })
+        .catch(function () {
+          results.innerHTML = '<div class="search-empty">The search index could not be loaded.</div>';
+        });
+    }
+
+    function run(q) {
+      q = q.trim();
+      if (!q) { render([], ''); return; }
+      if (!index) { results.innerHTML = '<div class="search-empty">Loading\u2026</div>'; return; }
+      var terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+      var scored = [];
+      for (var i = 0; i < index.length; i++) {
+        var e = index[i];
+        var t = e.t.toLowerCase(), p = e.p.toLowerCase(), b = e.b.toLowerCase();
+        var score = 0, all = true;
+        for (var j = 0; j < terms.length; j++) {
+          var term = terms[j], s = 0;
+          /* A heading match is what the reader is usually after; the page
+             title next; the body last and only once, so a long section does
+             not outrank a precise heading by repetition. */
+          if (t.indexOf(term) >= 0) s += t.indexOf(term) === 0 ? 12 : 8;
+          if (p.indexOf(term) >= 0) s += 4;
+          if (b.indexOf(term) >= 0) s += 1;
+          if (s === 0) { all = false; break; }
+          score += s;
+        }
+        if (all) scored.push({ e: e, score: score });
+      }
+      scored.sort(function (a, b) { return b.score - a.score; });
+      hits = scored.slice(0, 30).map(function (x) { return x.e; });
+      render(hits, terms[0]);
+    }
+
+    function render(list, term) {
+      active = -1;
+      input.setAttribute('aria-expanded', list.length ? 'true' : 'false');
+      if (count) count.textContent = list.length ? list.length + (list.length === 30 ? '+ results' : ' results') : '';
+      if (!list.length) {
+        results.innerHTML = '<div class="search-empty">' +
+          (input.value.trim() ? 'Nothing matched.' : 'Search headings and text across every page.') +
+          '</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i];
+        html += '<a class="search-hit" role="option" aria-selected="false" href="' + e.u + '">' +
+          '<span class="search-hit-top"><span class="search-hit-title">' + mark(e.t, term) + '</span>' +
+          '<span class="search-hit-page">' + esc(e.c) + ' · ' + esc(e.p) + '</span></span>' +
+          '<span class="search-hit-body">' + mark(snippet(e.b, term), term) + '</span></a>';
+      }
+      results.innerHTML = html;
+      Array.prototype.forEach.call(results.children, function (el, i) {
+        el.addEventListener('mouseenter', function () { select(i); });
+      });
+      select(0);
+    }
+
+    /* Show the text around the match rather than the start of the section. */
+    function snippet(body, term) {
+      if (!term) return body.slice(0, 160);
+      var at = body.toLowerCase().indexOf(term);
+      if (at < 0) return body.slice(0, 160);
+      var from = Math.max(0, at - 60);
+      return (from > 0 ? '\u2026' : '') + body.slice(from, from + 170);
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+      });
+    }
+
+    function mark(text, term) {
+      var out = esc(text);
+      if (!term) return out;
+      var at = out.toLowerCase().indexOf(esc(term).toLowerCase());
+      if (at < 0) return out;
+      return out.slice(0, at) + '<mark>' + out.slice(at, at + term.length) + '</mark>' +
+             out.slice(at + term.length);
+    }
+
+    function select(i) {
+      var items = results.children;
+      if (!items.length) return;
+      if (active >= 0 && items[active]) items[active].setAttribute('aria-selected', 'false');
+      active = Math.max(0, Math.min(i, items.length - 1));
+      items[active].setAttribute('aria-selected', 'true');
+      items[active].scrollIntoView({ block: 'nearest' });
+    }
+
+    function move(step) {
+      if (!results.children.length) return;
+      var next = active + step;
+      if (next < 0) next = results.children.length - 1;
+      if (next >= results.children.length) next = 0;
+      select(next);
     }
   }
 })();

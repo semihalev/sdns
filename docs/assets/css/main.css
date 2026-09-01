@@ -78,11 +78,13 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
    contrast against the surrounding prose is under the 3:1 that colour-only
    distinction requires — so body links are underlined by default. Navigation,
    where position and grouping already carry the meaning, is left alone. */
-.doc-main p > a, .doc-main li > a, .doc-main td > a, .doc-lede a {
+.doc-main p > a, .doc-main li > a, .doc-main td > a, .doc-lede a,
+.home p > a, .home li > a {
   text-decoration: underline; text-underline-offset: 2px;
   text-decoration-thickness: 1px; text-decoration-color: var(--accent-dim);
 }
-.doc-main p > a:hover, .doc-main li > a:hover, .doc-main td > a:hover {
+.doc-main p > a:hover, .doc-main li > a:hover, .doc-main td > a:hover,
+.home p > a:hover, .home li > a:hover {
   text-decoration-color: var(--accent);
 }
 /* The generated contents list is navigation, not prose — grouping and position
@@ -386,4 +388,88 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
    number. They leave together when the row runs out of room. */
 @media (max-width: 400px) {
   .star-pill, .version-pill { display: none; }
+}
+
+/* ---------- search ---------- */
+
+.search-trigger {
+  display: inline-flex; align-items: center; gap: .45rem;
+  font-family: var(--sans); font-size: .8rem; color: var(--text-dim);
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: .3rem .5rem .3rem .55rem;
+  cursor: pointer; transition: color var(--fast), border-color var(--fast);
+}
+.search-trigger:hover { color: var(--text); border-color: var(--line-strong); }
+.search-trigger-key {
+  font-family: var(--mono); font-size: .68rem; color: var(--text-faint);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 .3rem;
+}
+
+.search-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(0, 0, 0, .5);
+  display: grid; align-items: start; justify-items: center;
+  padding: 10vh 1rem 1rem;
+}
+.search-overlay[hidden] { display: none; }
+
+.search-panel {
+  width: min(640px, 100%); max-height: 74vh;
+  display: flex; flex-direction: column;
+  background: var(--bg); border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg); overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
+}
+.search-field {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .8rem .9rem; border-bottom: 1px solid var(--line);
+  color: var(--text-faint); flex: none;
+}
+.search-field input {
+  flex: 1; min-width: 0;
+  background: none; border: 0; outline: none;
+  font-family: var(--sans); font-size: 1rem; color: var(--text);
+}
+.search-field input::placeholder { color: var(--text-faint); }
+.search-field input::-webkit-search-cancel-button { display: none; }
+
+.search-results { overflow-y: auto; overscroll-behavior: contain; padding: .35rem; }
+.search-empty { padding: 1.6rem .9rem; color: var(--text-faint); font-size: .9rem; text-align: center; }
+
+.search-hit {
+  display: block; padding: .55rem .65rem; border-radius: var(--r-md);
+  color: var(--text); text-decoration: none;
+}
+.search-hit:hover, .search-hit[aria-selected="true"] { background: var(--bg-raised); text-decoration: none; }
+.search-hit[aria-selected="true"] { outline: 1px solid var(--accent-dim); }
+.search-hit-top { display: flex; align-items: baseline; gap: .5rem; }
+.search-hit-title { font-weight: 600; font-size: .92rem; }
+.search-hit-page {
+  font-family: var(--mono); font-size: .68rem; color: var(--text-faint);
+  margin-left: auto; white-space: nowrap;
+}
+.search-hit-body {
+  font-size: .82rem; color: var(--text-dim); margin-top: .15rem;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.search-hit mark { background: var(--signal-wash); color: inherit; border-radius: 2px; padding: 0 .1em; }
+
+.search-foot {
+  display: flex; align-items: center; gap: 1rem; flex: none;
+  padding: .5rem .9rem; border-top: 1px solid var(--line);
+  font-size: .74rem; color: var(--text-faint);
+}
+.search-foot span:last-child { margin-left: auto; }
+.search-foot kbd, .search-field kbd {
+  font-family: var(--mono); font-size: .68rem;
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 .28rem; margin-right: .15rem;
+}
+
+@media (max-width: 900px) {
+  /* The label and the shortcut hint go; the control stays, because search is
+     the main way to reach a page when the sidebar is behind a drawer. */
+  .search-trigger-text, .search-trigger-key { display: none; }
+  .search-trigger { padding: .32rem; }
+  .search-overlay { padding: 0; }
+  .search-panel { width: 100%; max-height: 100%; height: 100%; border: 0; border-radius: 0; }
 }

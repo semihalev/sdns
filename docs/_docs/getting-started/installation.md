@@ -87,17 +87,40 @@ only want the binary.
 
 ## Verifying the install
 
-Port 53 needs privilege, and the shipped access list allows every client — so
-verify on a loopback high port instead of running this as root:
+Port 53 needs privilege and the shipped access list allows every client, so
+verify on a loopback high port rather than as root.
+
+A partial file will not do: settings you leave out are **not** filled in from
+the defaults, and a file without `directory`, `rootservers` and `rootkeys` is
+rejected. Generate a complete one first — pointing `-t` at a path that does not
+exist writes the full documented file and validates it:
 
 ```bash
-printf 'bind = "127.0.0.1:5353"\napi = ""\naccesslist = ["127.0.0.1/32"]\n' > check.conf
-./sdns -c check.conf &
-dig @127.0.0.1 -p 5353 example.com A +dnssec
+./sdns -t -c check.conf
 ```
 
-The keys not named there are filled in from the defaults, so this is a real
-resolver — just one only you can reach.
+Then change three lines in `check.conf`:
+
+```toml
+bind       = "127.0.0.1:5354"     # 5353 is mDNS; pick something else
+api        = ""
+accesslist = ["127.0.0.1/32"]
+```
+
+Check it again, start it, and ask it what it is:
+
+```bash
+./sdns -t -c check.conf
+./sdns -c check.conf &
+dig @127.0.0.1 -p 5354 version.bind TXT CHAOS +short
+```
+
+`"SDNS v1.8.2"` means it is up. A real query works too, but the first one is
+slow while the resolver primes the root and fetches the trust anchor:
+
+```bash
+dig @127.0.0.1 -p 5354 example.com A +dnssec
+```
 
 An answer with the `ad` flag means the response was validated. If the first
 query is slow, that is the resolver priming the root and fetching the trust

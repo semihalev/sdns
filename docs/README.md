@@ -1,7 +1,7 @@
 # sdns.dev
 
 The site behind <https://sdns.dev>: a Jekyll build deployed to GitHub Pages by
-`.github/workflows/jekyll-gh-pages.yml` on every push to `main`.
+`.github/workflows/pages.yml` on every push to `main`.
 
 ## Running it locally
 

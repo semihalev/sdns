@@ -1,0 +1,41 @@
+---
+layout: null
+permalink: /search.json
+sitemap: false
+---
+{%- comment -%}
+One entry per section rather than per page: a reader searching "shadow" wants
+the RPZ page's shadow-mode section, not the top of a 300-line document. Each
+entry carries the anchor, so a result lands on the heading it matched.
+
+Built from the rendered HTML, so it indexes exactly what the page shows —
+including tables and code, which is where most of the answers on this site are.
+Fetched only when the search is first opened.
+{%- endcomment -%}
+[
+{%- assign sep = "" -%}
+{%- for doc in site.docs -%}
+  {%- assign sections = doc.content | split: '<h2 id="' -%}
+  {%- for s in sections -%}
+    {%- if forloop.first -%}
+      {%- assign body = s | strip_html | normalize_whitespace | strip -%}
+      {%- if body != "" -%}
+{{ sep }}{"t":{{ doc.title | jsonify }},"p":{{ doc.title | jsonify }},"c":{{ doc.category | jsonify }},"u":"{{ doc.url | relative_url }}","b":{{ body | truncate: 1200 | jsonify }}}
+        {%- assign sep = "," -%}
+      {%- endif -%}
+    {%- else -%}
+      {%- comment -%}
+      Split on the closing tag first. Splitting on '">' and taking the last
+      part reaches past every <a href="..."> in the section body and returns
+      the tail of the section as the heading.
+      {%- endcomment -%}
+      {%- assign anchor = s | split: '"' | first -%}
+      {%- assign head_raw = s | split: '</h2>' | first -%}
+      {%- assign heading = head_raw | split: '">' | last | strip_html | strip -%}
+      {%- assign body = s | split: '</h2>' | last | strip_html | normalize_whitespace | strip -%}
+{{ sep }}{"t":{{ heading | jsonify }},"p":{{ doc.title | jsonify }},"c":{{ doc.category | jsonify }},"u":"{{ doc.url | relative_url }}#{{ anchor }}","b":{{ body | truncate: 1200 | jsonify }}}
+      {%- assign sep = "," -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endfor -%}
+]

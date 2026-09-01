@@ -74,9 +74,15 @@ directory and uses it:
 The generated file documents every setting in place. Read it once — it is the
 authoritative description of the version you are running.
 
-## Schema migration
+## Schema version
 
-When sdns finds a configuration written for an older schema version, it migrates
-the file in place and keeps a backup alongside it. The `version` key at the top
-of the file is the schema version, not the sdns version, and only changes when
-the schema does.
+The `version` key at the top of the file is the schema version, not the sdns
+version, and only changes when the schema does.
+
+A file whose version does not match produces a warning and is then loaded
+exactly as written. sdns does **not** rewrite it and does **not** keep a
+backup.
+
+Upgrading across a schema change is therefore manual: generate a fresh file —
+pointing `-t` at a path that does not exist writes one — carry your settings
+across, and use `sdns -t` to catch keys that have gone away.

@@ -28,7 +28,10 @@ before the first query — is absent from the scrape rather than present at zero
 Alerts should therefore use `absent()` deliberately or tolerate the gap, and a
 dashboard panel that is empty on a fresh process is not necessarily broken.
 
-Feature-gated metrics only register when the feature is configured at all.
+Registration is not uniform: some metrics appear only once their feature is
+configured — the RPZ zone gauges need a policy zone loaded — while others, DNS64
+among them, are registered by their package whatever the configuration says and
+simply stay at zero.
 
 ---
 
@@ -143,7 +146,7 @@ the fixed pool accepted them and were served on their own goroutines.
 | `dns_blocklist_hits_total` | counter | | Queries blocked by the blocklist |
 | `dns_blocklist_entries` | gauge | | Blocklist size (exact names plus wildcard suffixes) |
 | `reflex_blocked_total` | counter | | Queries blocked as amplification-attack suspects |
-| `reflex_detections_total` | counter | | Queries scored as amplification suspects, whether or not blocking is on |
+| `reflex_detections_total` | counter | `qtype` | Queries scored as amplification suspects, whether or not blocking is on |
 | `reflex_tracked_ips` | gauge | | IPs currently tracked by reflex |
 
 ### Response Policy Zones
@@ -236,9 +239,15 @@ sum(rate(dns_cache_hits_total[5m]))
 (
   sum(rate(nxdomain_cut_hits_total[5m]))
   + sum(rate(aggressive_negative_hits_total[5m]))
-  + sum(rate(dns_localroot_answers_total[5m]))
+  + sum(rate(dns_localroot_answers_total{kind!="fallback"}[5m]))
 ) / sum(rate(dns_queries_total[5m]))
 ```
+
+`dns_localroot_answers_total` carries a `kind` of `referral`, `denial`, `ds`,
+`apex` or `fallback`. Only the first four were answered from the local copy —
+`fallback` counts the consultations it declined, which went to the real root
+servers. Summing the metric without excluding it counts upstream work as if it
+had been saved.
 
 **SERVFAIL rate**
 

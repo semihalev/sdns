@@ -99,8 +99,11 @@ Used when normal resolution has returned SERVFAIL — a lame delegation, an
 unreachable upstream, a network fault — not only when the root is unreachable.
 Unlike `forwarderservers` this does not change the normal mode of operation.
 
-Two limits worth knowing: fallback servers are queried over plain UDP with a
-hard five-second ceiling per endpoint, and their answers are cached like any
-other. Note also that a per-zone forward that fails writes SERVFAIL, which is
+Three limits worth knowing. Fallback servers are queried over plain UDP with a
+hard five-second ceiling per endpoint. Their answers are cached like any other.
+And — the one that matters most — a fallback answer is **not** validated here:
+it is written as the upstream asserted it, so configuring `fallbackservers`
+means a resolution that failed locally can be answered by an upstream you are
+trusting rather than checking. Note also that a per-zone forward that fails writes SERVFAIL, which is
 itself a fallback trigger — so with `fallbackservers` set, an internal zone's
 questions can reach them.
