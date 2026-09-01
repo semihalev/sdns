@@ -6,10 +6,11 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"
+  # No paths filter on pull requests: a required check that does not run leaves
+  # a merge waiting on it forever, so this builds on every PR. It is a ~30s
+  # Jekyll build. The push filter below stays — main only redeploys when the
+  # site actually changed.
   pull_request:
-    paths:
-      - "docs/**"
-      - ".github/workflows/pages.yml"
   # The install commands name the released version, which is resolved at build
   # time — without this the site keeps advertising the previous release until
   # something else under docs/ happens to change.
