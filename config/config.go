@@ -147,10 +147,10 @@ type Config struct {
 	// ECS (EDNS Client Subnet, RFC 7871) policy. Default-disabled
 	// per §11 privacy guidance: the resolver strips client ECS on
 	// the way out unless the operator opts in via [ecs].enabled.
-	// Stage 1 of the feature uses Enabled / ForwardV4Max /
-	// ForwardV6Max / ClientNetworks for upstream forwarding; the
-	// remaining fields ride along for the Stage 2 cache changes
-	// so the on-disk schema only bumps once.
+	// Enabled / ForwardV4Max / ForwardV6Max / ClientNetworks govern
+	// what leaves the resolver; CacheLimitTTL / MinScopeV4 /
+	// MinScopeV6 govern the scope-keyed cache that keeps a
+	// geo-tailored answer from reaching a client outside its scope.
 	ECS ECSConfig `toml:"ecs"`
 
 	// RecursionFirewall bounds aggregate work across one recursive
@@ -463,10 +463,12 @@ type DNS64Config struct {
 // networks, internal load balancers, CDN edges); empty means every
 // eligible client.
 //
-// CacheLimitTTL, MinScopeV4, and MinScopeV6 control how scoped
-// answers are stored (Stage 2). They live here so the on-disk
-// schema only bumps once across the rollout, even though Stage 1
-// doesn't consume them yet.
+// CacheLimitTTL, MinScopeV4, and MinScopeV6 govern the scope-keyed
+// cache: an answer the authority marks with a nonzero SCOPE is
+// stored under a scope-specific key, capped at CacheLimitTTL, and
+// its scope is widened to the MinScope floor before it becomes part
+// of that key. All three are consumed — see middleware/cache and
+// internal/ecs.Policy.ClampScope.
 type ECSConfig struct {
 	Enabled        bool     `toml:"enabled"`
 	ForwardV4Max   uint8    `toml:"forward_v4"`
@@ -1282,12 +1284,11 @@ exclude_a_networks = [
 # ECS by default per RFC 7871 §11 privacy guidance; this section is
 # strictly opt-in.
 #
-# Stage 1 of the feature (this release) ships upstream forwarding.
-# Stage 2 (subsequent release) will partition the cache so a
-# geo-tailored answer for one client subnet isn't served to a
-# client in a different subnet (cache pollution). The cache_limit
-# and min_scope knobs below already live in the schema so the
-# Stage 2 upgrade doesn't bump configver again.
+# Two halves: forward_* and client_networks decide what leaves this
+# resolver, and the cache_limit/min_scope knobs below decide how a
+# geo-tailored answer is stored. An answer the authority marks with
+# a nonzero SCOPE is cached under a scope-specific key, so it is
+# never served to a client outside that scope.
 [ecs]
 
 # Master switch. When false (default) every option below is ignored
@@ -1307,9 +1308,6 @@ forward_v6 = 56
 # forwarding to known internal sources (load balancers, CDN edges,
 # corporate networks) and strip ECS for the open internet.
 client_networks = []
-
-# Stage 2 (cache) knobs — declared here so the config schema only
-# bumps once. They are no-ops in this release.
 
 # Ceiling on the TTL of any scoped (per-subnet) cache entry. Geo
 # answers tend to go stale faster than the resolver's general TTL
