@@ -135,6 +135,8 @@ code, pre, .mono { font-family: var(--mono); }
 
 .main-nav { margin-left: auto; font-size: .92rem; }
 .nav-links { display: flex; gap: 1.35rem; }
+.nav-external { display: inline-flex; align-items: center; gap: .35rem; }
+.nav-external svg { flex: none; opacity: .75; }
 .main-nav a { color: var(--text-dim); }
 .main-nav a:hover { color: var(--text); text-decoration: none; }
 .main-nav a[aria-current] { color: var(--text); }

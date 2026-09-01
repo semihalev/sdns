@@ -108,7 +108,7 @@ rate limits, and reflection-attack detection.
 
 **Other namespaces.** Per-zone conditional forwarding, whole-server forwarder
 mode, Kubernetes cluster DNS, DNS64 synthesis (RFC 6147), EDNS Client Subnet
-(RFC 7871), AS112 empty zones (RFC 7534).
+(RFC 7871), locally served zones (RFC 6303).
 
 **Operations.** Prometheus metrics, an HTTP API, dnstap, a recursion firewall
 that bounds the work one request may cause, serving bounds derived from the

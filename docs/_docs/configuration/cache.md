@@ -58,6 +58,22 @@ a known parent-granted cut. It is failure-triggered and positive-only: a stale
 NXDOMAIN is never served. The full design is on the
 [Serve stale]({{ '/docs/features/serve-stale/' | relative_url }}) page.
 
+## Negative caching
+
+A name that does not exist is an answer worth keeping, and RFC 2308 says how
+long for: the lifetime comes from the SOA in the denial, bounded by the smaller
+of its TTL and its MINIMUM field. sdns takes the smallest value across every
+component of the proof — the SOA, the records in the authority section, and the
+signatures over them — so a cached denial can never outlive any part of what
+made it authoritative. No configured floor is applied on top, because a floor
+would do exactly that.
+
+Two mechanisms build on it, both on by default and both covered under
+[Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}):
+RFC 8020 lets one NXDOMAIN answer every name beneath it, and RFC 8198 answers
+later denials from a validated NSEC or NSEC3 record already held. They are
+counted by `nxdomain_cut_hits_total` and `aggressive_negative_hits_total`.
+
 ## Failure caching
 
 ```toml

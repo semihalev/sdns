@@ -106,6 +106,11 @@ it costs sockets otherwise. `tcpmaxconnections = 0` uses the built-in 100.
 emptyzones = []
 ```
 
-Answers queries for the private-address reverse zones locally instead of leaking
-them to the root (RFC 7534). An empty list uses the built-in set, which is what
-you want; list zones explicitly only to narrow it.
+Answers queries for the private-address reverse zones locally instead of
+leaking them to the root (RFC 6303). An empty list uses the built-in set, which
+is what you want; list zones explicitly only to narrow it.
+
+RFC 6303 is the citation that applies to a resolver: it defines the zone list
+and says the resolver should answer them itself. The often-quoted RFC 7534 is a
+different document — it describes how to *run* an AS112 node, the sink that
+catches these queries when a resolver does not answer them.
