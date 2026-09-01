@@ -821,3 +821,33 @@ func TestLateProbeCannotRenewAnExpiredCopy(t *testing.T) {
 		t.Fatalf("expired copy kept serving after a late probe (err=%v)", err)
 	}
 }
+
+// TestAXFRFeedRunLoopLifecycle runs the feed's real schedule loop: the
+// first transfer lands without being hand-driven, and cancelling the
+// context ends the loop.
+func TestAXFRFeedRunLoopLifecycle(t *testing.T) {
+	srv := startFeedServer(t, "", "")
+	r, feed := feedUnderTest(t, srv, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); feed.run(ctx) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, passed := serve(t, r, "blocked.example.com.", dns.TypeA, "udp", true); !passed {
+			break // the first transfer landed and the rule enforces
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run loop never completed its first transfer")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelling the context did not end the run loop")
+	}
+}
