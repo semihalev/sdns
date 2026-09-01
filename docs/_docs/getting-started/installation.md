@@ -37,7 +37,7 @@ docker run -d --name sdns \
   -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
   -v sdns-data:/var/lib/sdns \
   -v "$PWD/sdns.conf:/etc/sdns.conf:ro" \
-  ghcr.io/semihalev/sdns:1.8.2 -c /etc/sdns.conf
+  ghcr.io/semihalev/sdns:{{ site.sdns_version | remove_first: 'v' }} -c /etc/sdns.conf
 ```
 
 Three parts of that are not decoration.
@@ -115,7 +115,7 @@ Check it again, start it, and ask it what it is:
 dig @127.0.0.1 -p 5354 version.bind TXT CHAOS +short
 ```
 
-`"SDNS v1.8.2"` means it is up. A real query works too, but the first one is
+`"SDNS {{ site.sdns_version }}"` means it is up. A real query works too, but the first one is
 slow while the resolver primes the root and fetches the trust anchor:
 
 ```bash

@@ -46,11 +46,47 @@ jobs:
       # No configure-pages step: its only useful output is base_url, and the
       # site's url/baseurl come from _config.yml. Dropping it keeps the build
       # job on contents:read with nothing to grant it.
+      # The released version is resolved here rather than kept in _config.yml,
+      # so nobody has to remember to bump it: the install commands and the
+      # pre-JavaScript header pill name the real latest release on every build.
+      # The pill is corrected again from the API at view time, which covers a
+      # release published between deploys.
+      - name: Resolve the released version
+        working-directory: docs
+        run: |
+          tag=$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
+                | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+          if [ -n "$tag" ]; then
+            echo "sdns_version: $tag" > _config.release.yml
+            echo "building with sdns_version=$tag"
+          else
+            echo "sdns_version: ${FALLBACK}" > _config.release.yml
+            echo "::warning::could not resolve the latest release; keeping the checked-in value"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FALLBACK: ""
+
       - name: Build
         working-directory: docs
         env:
           JEKYLL_ENV: production
-        run: bundle exec jekyll build --destination ../_site --trace
+        run: |
+          cfg=_config.yml
+          if [ -s _config.release.yml ] && grep -q 'sdns_version: .' _config.release.yml; then
+            cfg="_config.yml,_config.release.yml"
+          fi
+          bundle exec jekyll build --config "$cfg" --destination ../_site --trace
+
+      # Fails when the site disagrees with the repository: a metric added and
+      # not documented, a config key the parser accepts and no page mentions,
+      # a Go version out of step with go.mod, install commands that differ
+      # between the README and the installation page.
+      - name: Check the site against the repository
+        working-directory: ${{ github.workspace }}
+        run: bash docs/check-drift.sh
 
       - name: Check internal links resolve
         run: |

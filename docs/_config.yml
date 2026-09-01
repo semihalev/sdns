@@ -9,7 +9,11 @@ github:
   repository_url: https://github.com/semihalev/sdns
   repository_nwo: semihalev/sdns
 
-# Shown in the header and on the release line; bump with the tag.
+# Pre-JavaScript fallback only: the header pill and the release panel are
+# corrected from the releases API at view time, so this is what a reader
+# sees for the first few hundred milliseconds, or with scripting off. It
+# is also the single source for the version written into the install
+# commands, which no script can correct — bump it at release.
 sdns_version: v1.8.2
 
 exclude:

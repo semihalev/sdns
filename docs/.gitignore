@@ -6,3 +6,4 @@ vendor/
 .bundle/
 # Gemfile.lock is committed: CI builds with the same locked toolchain the
 # site is developed against, rather than whatever a resolver picks that day.
+_config.release.yml
