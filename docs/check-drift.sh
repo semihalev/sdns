@@ -44,26 +44,47 @@ done
 # ---------------------------------------------------------------- config keys
 # The index calls itself complete. A key the parser accepts and the site never
 # mentions is the difference between a reference and a rough guide.
+# The schema comes from the parser's own view of the root Config type rather
+# than from a guess about which type names matter, and it carries the table
+# path — rpz.enabled and ecs.enabled are different keys, and collapsing them
+# meant deleting either row stayed green.
+schema=$(go run ./docs/schemakeys 2>/dev/null | sort -u)
+
+# The documented side is read the same way: a row's key is qualified by the
+# section heading above it, so the comparison is path against path.
+documented_keys=$(awk '
+    /^## `?\[\[?[a-z0-9_.]+\]?\]`?/ {
+        s = $0
+        sub(/^## `?\[+/, "", s); sub(/\]+`?.*$/, "", s)
+        prefix = s "."; next
+    }
+    /^### `?\[\[?[a-z0-9_.]+\]?\]`?/ {
+        s = $0
+        sub(/^### `?\[+/, "", s); sub(/\]+`?.*$/, "", s)
+        prefix = s "."; next
+    }
+    /^## / { prefix = ""; next }
+    /^\| `[a-z]/ {
+        k = $0
+        sub(/^\| `/, "", k); sub(/`.*$/, "", k)
+        print prefix k
+    }
+' docs/_docs/reference/config-keys.md | sed 's/\.ttl\./.ttl./' | sort -u)
+
 echo "config keys"
 before=$fail
-# The schema comes from the parser's own view of the root Config type rather
-# than from a guess about which type names matter. Selecting structs whose
-# names end in Config missed Plugin.Path and Plugin.Config — untagged fields
-# the decoder still accepts — and reported all-clear.
-keys=$(go run ./docs/schemakeys 2>/dev/null)
-if [ -z "$keys" ]; then
+if [ -z "$schema" ]; then
     note "could not extract the config schema"
 else
-undocumented=""
-for k in $keys; do
-    # The index is the page that calls itself complete, so that is where a key
-    # has to appear — a passing mention on some feature page is not a
-    # reference entry.
-    grep -qF "$k" docs/_docs/reference/config-keys.md || undocumented="$undocumented $k"
-done
-[ -n "$undocumented" ] && note "accepted by the parser, absent from the key index:$undocumented"
+    # Both directions. A key the parser accepts and the index omits is a hole;
+    # a key the index carries and the parser no longer knows is a leftover that
+    # sends readers to a setting that does nothing.
+    missing_keys=$(comm -23 <(echo "$schema") <(echo "$documented_keys"))
+    stale_keys=$(comm -13 <(echo "$schema") <(echo "$documented_keys"))
+    [ -n "$missing_keys" ] && note "accepted by the parser, absent from the key index: $(echo "$missing_keys" | tr '\n' ' ')"
+    [ -n "$stale_keys" ] && note "in the key index, not accepted by the parser: $(echo "$stale_keys" | tr '\n' ' ')"
+    [ "$fail" -eq "$before" ] && echo "  $(echo "$schema" | grep -c .) keys, index agrees in both directions"
 fi
-[ "$fail" -eq "$before" ] && echo "  $(echo "$keys" | grep -c .) keys, all present"
 
 # ---------------------------------------------------------------- toolchain
 # Two pages agreed with each other and disagreed with go.mod, sending readers
@@ -85,7 +106,12 @@ before=$fail
 for cmd in 'yay -S' 'snap install' 'brew install'; do
     a=$(grep -hoE "$cmd [^ ]+" README.md | head -1)
     b=$(grep -hoE "$cmd [^ ]+" docs/_docs/getting-started/installation.md | head -1)
-    [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ] && note "README: '$a' vs installation page: '$b'"
+    # A missing side used to skip the comparison silently, so deleting a
+    # command from either document passed.
+    if [ -z "$a" ]; then note "'$cmd' missing from README.md"
+    elif [ -z "$b" ]; then note "'$cmd' missing from the installation page"
+    elif [ "$a" != "$b" ]; then note "README: '$a' vs installation page: '$b'"
+    fi
 done
 [ "$fail" -eq "$before" ] && echo "  README and installation page agree"
 

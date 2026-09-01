@@ -182,6 +182,14 @@ The `failure_cache_*` settings are active regardless of `mode`.
 
 ## `[plugins]` *(commented)*
 
+Each block under `[plugins]` names one plugin; the block's own name is the
+label, and the keys inside it are:
+
+| Key | Meaning |
+|---|---|
+| `path` | Path to the `.so` built with `-buildmode=plugin` |
+| `config` | Inline table handed to the plugin's `New` |
+
 ```toml
 [plugins]
     [plugins.example]

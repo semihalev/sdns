@@ -300,7 +300,19 @@
       }
       fetch(prefix + '/search.json')
         .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-        .then(function (data) { index = data; if (input.value) run(input.value); })
+        .then(function (data) {
+          /* strip_html leaves &lt; and &amp; behind, so the index held the
+             encoded form: a reader searching "<token>" or "&&" matched
+             nothing, and a snippet could render as &amp;lt;token&gt;. Decode
+             once here — everything downstream then works on visible text and
+             escapes only what it puts into the DOM. */
+          var box = document.createElement('textarea');
+          var decode = function (s) { box.innerHTML = s; return box.value; };
+          index = data.map(function (e) {
+            return { t: decode(e.t), p: decode(e.p), c: decode(e.c), u: e.u, b: decode(e.b) };
+          });
+          if (input.value) run(input.value);
+        })
         .catch(function () {
           results.innerHTML = '<div class="search-empty">The search index could not be loaded.</div>';
         });
@@ -376,13 +388,15 @@
       });
     }
 
+    /* Find the match in the plain text, then escape each piece separately.
+       Escaping first and searching the escaped string made the offsets wrong
+       for any text containing < & or ", and could split an entity in half. */
     function mark(text, term) {
-      var out = esc(text);
-      if (!term) return out;
-      var at = out.toLowerCase().indexOf(esc(term).toLowerCase());
-      if (at < 0) return out;
-      return out.slice(0, at) + '<mark>' + out.slice(at, at + term.length) + '</mark>' +
-             out.slice(at + term.length);
+      if (!term) return esc(text);
+      var at = text.toLowerCase().indexOf(term.toLowerCase());
+      if (at < 0) return esc(text);
+      return esc(text.slice(0, at)) + '<mark>' + esc(text.slice(at, at + term.length)) +
+             '</mark>' + esc(text.slice(at + term.length));
     }
 
     function select(i) {

@@ -233,33 +233,36 @@ sum(rate(dns_cache_hits_total[5m]))
   / (sum(rate(dns_cache_hits_total[5m])) + sum(rate(dns_cache_misses_total[5m])))
 ```
 
-**Share of client queries answered without an upstream query**
+**Answers served without an upstream query**
 
 ```promql
-(
-  sum(rate(nxdomain_cut_hits_total[5m]))
-  + sum(rate(aggressive_negative_hits_total[5m]))
-) / sum(rate(dns_queries_total[5m]))
-```
-
-Both terms are whole client queries answered from locally validated proof, and
-the denominator counts client queries, so this is a real share.
-
-The local root is deliberately **not** in it.
-`dns_localroot_answers_total` carries a `kind` of `referral`, `denial`, `ds`,
-`apex` or `fallback`, and none of them fits this ratio: `fallback` counts
-consultations the copy declined, which went upstream; `referral` and `ds` are
-steps *within* a walk that usually continues upstream; and `apex` includes the
-resolver's own background trust-anchor lookups, which never were client
-queries. Adding any of them mixes series counted at different levels and can
-push the result above 1. With `hyperlocal_root = false` the series does not
-exist at all, and one absent term would empty the whole expression.
-
-Measure the local root on its own terms instead:
-
-```promql
+sum(rate(nxdomain_cut_hits_total[5m]))
+sum(rate(aggressive_negative_hits_total[5m]))
 sum(rate(dns_localroot_answers_total[5m])) by (kind)
 ```
+
+Rates, not a share — and that is not a presentation choice. There is no
+correct way to express this as a fraction of client traffic with the series
+that exist today.
+
+`dns_queries_total` is client-only by construction: the metrics middleware
+declares itself a client-traffic observer and the sub-pipeline leaves it out,
+so a resolver-private lookup never reaches it. The cache counters have no such
+gate. A DS or DNSKEY fetch, a DNS64 secondary lookup, an alias chase — each can
+be answered from a validated cut or a denial proof and increment the numerator
+without the denominator moving. Divide one by the other and the result can
+exceed 1, which is the tell that the two are counted at different levels.
+
+The local-root counter has the same problem twice over: `fallback` counts
+consultations the copy declined, which went upstream; `referral` and `ds` are
+steps *within* a walk that usually continues; and `apex` includes the
+resolver's own background trust-anchor lookups. With `hyperlocal_root = false`
+the series does not exist at all, so a term referencing it would empty an
+expression it was part of.
+
+Read these as absolute rates and watch their shape. A real share would need
+either a client/internal dimension on the cache counters or a counter
+incremented at the point the client's answer is written.
 
 **SERVFAIL rate**
 

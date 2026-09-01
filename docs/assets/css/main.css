@@ -452,17 +452,16 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 }
 .search-hit:hover, .search-hit[aria-selected="true"] { background: var(--bg-raised); text-decoration: none; }
 .search-hit[aria-selected="true"] { outline: 1px solid var(--accent-dim); }
-.search-hit-top { display: flex; align-items: baseline; gap: .5rem; }
-.search-hit-title { font-weight: 600; font-size: .92rem; }
+/* Wraps by structure rather than at a chosen width. The context is kept on
+   one piece — it reads as a unit — but the row is free to break, so the
+   heading and the context share a line whenever they fit and stack when they
+   do not. A media query here was tuned to this content and overflowed one
+   pixel above whatever number it named. */
+.search-hit-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem .5rem; }
+.search-hit-title { font-weight: 600; font-size: .92rem; min-width: 0; overflow-wrap: anywhere; }
 .search-hit-page {
   font-family: var(--mono); font-size: .68rem; color: var(--text-faint);
-  margin-left: auto; white-space: nowrap;
-}
-/* Below ~360px the nowrap context cannot share a line with the heading and
-   pushed the results area wider than the viewport. Give it its own line. */
-@media (max-width: 380px) {
-  .search-hit-top { display: block; }
-  .search-hit-page { margin-left: 0; display: block; white-space: normal; margin-top: .1rem; }
+  margin-left: auto; white-space: nowrap; max-width: 100%; overflow-wrap: anywhere;
 }
 .search-hit-body {
   font-size: .82rem; color: var(--text-dim); margin-top: .15rem;

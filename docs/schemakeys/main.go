@@ -30,7 +30,7 @@ func scalar(t reflect.Type) bool {
 
 func main() {
 	seen := map[string]bool{}
-	walk(reflect.TypeOf(config.Config{}), seen)
+	walk(reflect.TypeOf(config.Config{}), "", seen)
 
 	keys := make([]string, 0, len(seen))
 	for k := range seen {
@@ -40,7 +40,10 @@ func main() {
 	fmt.Println(strings.Join(keys, "\n"))
 }
 
-func walk(t reflect.Type, out map[string]bool) {
+// prefix carries the dotted path of the table this struct sits in. Without it
+// every section's "enabled" collapsed onto one key, and deleting the row for
+// any one of rpz/ecs/dns64/kubernetes left the check green.
+func walk(t reflect.Type, prefix string, out map[string]bool) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -64,16 +67,23 @@ func walk(t reflect.Type, out map[string]bool) {
 			// field name.
 			name = strings.ToLower(f.Name)
 		}
-		out[name] = true
+		path := prefix + name
 
 		ft := f.Type
 		if scalar(ft) {
+			out[path] = true
 			continue
 		}
 		for ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice ||
 			ft.Kind() == reflect.Array || ft.Kind() == reflect.Map {
 			ft = ft.Elem()
 		}
-		walk(ft, out)
+		// A field that opens a table is a heading, not a setting an operator
+		// assigns to — only its leaves are keys.
+		if ft.Kind() == reflect.Struct && !scalar(ft) {
+			walk(ft, path+".", out)
+			continue
+		}
+		out[path] = true
 	}
 }
