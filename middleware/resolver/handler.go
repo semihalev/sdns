@@ -73,6 +73,17 @@ func (h *DNSHandler) Name() string { return name }
 
 // (*DNSHandler).ServeDNS serveDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	// ANY is declined on every path, the forwarding ones included: the
+	// policy is this server's, not an upstream's, so a forwarder never sees
+	// the question. Read off the wire facts, so a server that hands its
+	// questions on still pays no decode for them.
+	if ch.Request != nil && ch.Request.Qtype() == dns.TypeANY {
+		if _, req := ch.Materialize(ctx); req != nil {
+			_ = ch.Writer.WriteMsg(anyNotImplemented(req))
+		}
+		return
+	}
+
 	// Skip resolver if forwarders are configured
 	if len(h.cfg.ForwarderServers) > 0 {
 		ch.Next(ctx)
@@ -132,7 +143,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if q.Qtype == dns.TypeANY {
-		return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+		return anyNotImplemented(req)
 	}
 
 	// CHAOS queries: debug nameserver stats (HINFO) or cache purge (NULL)
@@ -326,3 +337,15 @@ func (h *DNSHandler) Stop() {
 }
 
 const name = "resolver"
+
+// anyNotImplemented is the answer to a QTYPE=ANY question: NOTIMP, with the
+// client's DO echoed on the OPT. It is a policy answer about the question,
+// not a resolution failure, and the cache classifies it as neither storable
+// nor a failure, so the next question for the name resolves normally.
+func anyNotImplemented(req *dns.Msg) *dns.Msg {
+	do := false
+	if opt := req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+}

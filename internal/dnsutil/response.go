@@ -105,6 +105,14 @@ func ClassifyResponse(msg *dns.Msg, now time.Time) (ResponseType, *dns.OPT) {
 		// NXDOMAIN - domain doesn't exist
 		return TypeNXDomain, opt
 
+	case dns.RcodeNotImplemented:
+		// NOTIMP is a statement about the question, not about the upstream:
+		// this server declines the query type (ANY). It is not a resolution
+		// failure in RFC 9520's sense, and classifying it as one recorded it
+		// in the failure cache, so the next identical question was answered
+		// SERVFAIL from there instead of NOTIMP from the policy.
+		return TypeNotCacheable, opt
+
 	default:
 		// Other errors
 		return TypeServerFailure, opt
@@ -336,6 +344,12 @@ func answerHasQType(msg *dns.Msg) bool {
 		return false
 	}
 	qtype := msg.Question[0].Qtype
+	// ANY is satisfied by whatever the answer holds; no record carries type
+	// 255 itself. Looking for the literal type turned a full ANY answer that
+	// happened to carry a SOA into a NODATA denial.
+	if qtype == dns.TypeANY {
+		return len(msg.Answer) > 0
+	}
 	for _, rr := range msg.Answer {
 		if rr.Header().Rrtype == qtype {
 			return true

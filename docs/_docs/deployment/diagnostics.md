@@ -152,7 +152,9 @@ resolver is already routing around the bad ones.
 in enforce, an expensive resolution can be terminated. Check
 `dns_recursion_firewall_exhaustions_total` by `reason`.
 
-**7. Is it a query type sdns declines?** `ANY` is answered NOTIMP by design.
+**7. Is it a query type sdns declines?** `ANY` is answered NOTIMP by design,
+in every mode, forwarding included, and the refusal is never cached as a
+failure: the next question for the same name resolves normally.
 
 ## Confirming what is running
 
