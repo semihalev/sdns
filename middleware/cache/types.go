@@ -209,11 +209,21 @@ func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped() }
 func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
 	// Assemble the storable view and filter out OPT records (matching V1
 	// behavior): OPT is per-client hop metadata the serve path rebuilds.
+	now := time.Now().UTC()
 	msgCopy := new(dns.Msg)
 	msgCopy.MsgHdr = msg.MsgHdr
 	msgCopy.Question = msg.Question
-	msgCopy.Answer = msg.Answer
-	msgCopy.Ns = msg.Ns
+	// The entry keeps only the signatures it vouches for. Every hit path
+	// serves these bytes with each record's TTL set to the entry's remaining
+	// lifetime, and that lifetime is bounded by the usable signatures alone
+	// (dnsutil.CalculateCacheTTL): a signature outside its validity period
+	// — a rollover's lapsed sibling, or one whose inception has not arrived
+	// — was received with whatever TTL it carried and would be handed out
+	// on the next hit with the entry's, a zero returned as an hour, and the
+	// not-yet-valid one revived once its inception passed. The uncached
+	// first response still carries them as the authority sent them.
+	msgCopy.Answer = storableRecords(msg.Answer, now)
+	msgCopy.Ns = storableRecords(msg.Ns, now)
 
 	// An entry never carries AD over data whose signatures have lapsed
 	// (RFC 4035 §3.2.3). The writer clears the bit on the response it sends,
@@ -221,17 +231,21 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	// hand it back on every later hit. Normalised here, on the storable view
 	// and before packing, so no admission path can miss it. Checked only
 	// when the bit is set: unsigned and unvalidated data pays nothing.
-	if msgCopy.AuthenticatedData && dnsutil.HasExpiredSignatures(msg, time.Now().UTC()) {
+	if msgCopy.AuthenticatedData && dnsutil.HasExpiredSignatures(msg, now) {
 		msgCopy.AuthenticatedData = false
 	}
 
 	var ede *dns.EDNS0_EDE
 
-	// Filter Extra section to remove OPT records but preserve EDE
+	// Filter Extra section to remove OPT records but preserve EDE. Its
+	// signatures go too: the additional section bounds neither AD nor the
+	// entry's lifetime (RFC 4035 §3.2.3, nothing validates glue), so a glue
+	// signature's TTL would be inflated on every hit the same way.
 	if len(msg.Extra) > 0 {
 		extra := make([]dns.RR, 0, len(msg.Extra))
 		for _, rr := range msg.Extra {
-			if opt, ok := rr.(*dns.OPT); ok {
+			switch opt := rr.(type) {
+			case *dns.OPT:
 				// Extract EDE from OPT record if present. By value: the
 				// long-lived entry must not alias an option inside the
 				// caller's live message.
@@ -242,7 +256,8 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 						break
 					}
 				}
-			} else {
+			case *dns.RRSIG:
+			default:
 				extra = append(extra, rr)
 			}
 		}
@@ -620,4 +635,28 @@ func (m *CacheMetrics) Prefetch() {
 // (*CacheMetrics).Stats stats returns current metrics.
 func (m *CacheMetrics) Stats() (hits, misses, evictions, prefetches int64) {
 	return m.hits.Load(), m.misses.Load(), m.evictions.Load(), m.prefetches.Load()
+}
+
+// storableRecords returns records without the signatures that are outside
+// their validity period at now. The common shape, nothing to drop, passes
+// the caller's slice through untouched — this runs on every admission, and
+// a response carries a lapsed or not-yet-valid signature only mid-rollover.
+func storableRecords(records []dns.RR, now time.Time) []dns.RR {
+	drop := 0
+	for _, rr := range records {
+		if sig, ok := rr.(*dns.RRSIG); ok && !sig.ValidityPeriod(now) {
+			drop++
+		}
+	}
+	if drop == 0 {
+		return records
+	}
+	kept := make([]dns.RR, 0, len(records)-drop)
+	for _, rr := range records {
+		if sig, ok := rr.(*dns.RRSIG); ok && !sig.ValidityPeriod(now) {
+			continue
+		}
+		kept = append(kept, rr)
+	}
+	return kept
 }
