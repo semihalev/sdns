@@ -820,3 +820,109 @@ func TestClampRoundsLikeAHit(t *testing.T) {
 		t.Errorf("a spent lease clamped to %d, want 0", got)
 	}
 }
+
+// TestExpiredProofIsNeverAuthenticated is the matrix the positive case alone
+// could not cover.
+//
+// A response is classified for what it is: a denial, an alias chain, an
+// answer. Only the NOERROR-with-records shape has anywhere to record "and its
+// signatures lapsed", so an expired NXDOMAIN is still an NXDOMAIN and a guard
+// written against the classification never fired for it. Their lifetimes were
+// clamped to nothing, correctly, while the bit that says the client may trust
+// them went out set (RFC 4035 §3.2.3).
+func TestExpiredProofIsNeverAuthenticated(t *testing.T) {
+	const zone, name = "lapsed.example.", "x.lapsed.example."
+	past := uint32(time.Now().Add(-time.Hour).Unix()) //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+
+	lapsedSig := func(owner string, covered uint16) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+			TypeCovered: covered,
+			OrigTtl:     3600,
+			Expiration:  past,
+		}
+	}
+	soa := func() dns.RR {
+		return &dns.SOA{
+			Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300},
+			Ns:  "ns." + zone, Mbox: "hostmaster." + zone, Minttl: 300,
+		}
+	}
+
+	shapes := []struct {
+		what  string
+		build func(*dns.Msg)
+	}{
+		{"an answer", func(r *dns.Msg) {
+			r.Answer = []dns.RR{
+				&dns.A{
+					Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+					A:   []byte{192, 0, 2, 1},
+				},
+				lapsedSig(name, dns.TypeA),
+			}
+		}},
+		{"an NXDOMAIN", func(r *dns.Msg) {
+			r.Rcode = dns.RcodeNameError
+			r.Ns = []dns.RR{soa(), lapsedSig(zone, dns.TypeSOA)}
+		}},
+		{"an empty NODATA", func(r *dns.Msg) {
+			r.Ns = []dns.RR{soa(), lapsedSig(zone, dns.TypeSOA)}
+		}},
+		{"an alias ending in a denial", func(r *dns.Msg) {
+			r.Rcode = dns.RcodeNameError
+			r.Answer = []dns.RR{&dns.CNAME{
+				Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+				Target: "target." + zone,
+			}}
+			r.Ns = []dns.RR{soa(), lapsedSig(zone, dns.TypeSOA)}
+		}},
+	}
+
+	for _, shape := range shapes {
+		for _, cd := range []bool{false, true} {
+			label := shape.what
+			if cd {
+				label += " (CD set)"
+			}
+			t.Run(label, func(t *testing.T) {
+				c := New(&config.Config{CacheSize: 1024, Expire: 600})
+				defer c.Stop()
+
+				req := new(dns.Msg)
+				req.SetQuestion(name, dns.TypeA)
+				req.CheckingDisabled = cd
+				w := mock.NewWriter("udp", "127.0.0.1:0")
+				ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(
+					func(_ context.Context, ch *middleware.Chain) {
+						resp := new(dns.Msg)
+						resp.SetReply(ch.Request.Msg())
+						shape.build(resp)
+						resp.AuthenticatedData = true
+						_ = ch.Writer.WriteMsg(resp)
+						ch.Cancel()
+					})})
+				ch.Reset(w, req)
+				ch.Next(context.Background())
+
+				if !w.Written() {
+					t.Fatal("no response written")
+				}
+				out := w.Msg()
+				if out.AuthenticatedData {
+					t.Error("a lapsed proof was presented as authenticated")
+				}
+				for _, section := range [][]dns.RR{out.Answer, out.Ns} {
+					for _, rr := range section {
+						if got := rr.Header().Ttl; got != 0 {
+							t.Errorf("%s carries TTL %d, want 0", dns.TypeToString[rr.Header().Rrtype], got)
+						}
+					}
+				}
+				if got := c.store.PositiveLen(); got != 0 {
+					t.Errorf("a lapsed proof was admitted, cache holds %d", got)
+				}
+			})
+		}
+	}
+}

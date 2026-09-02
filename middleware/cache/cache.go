@@ -1980,11 +1980,18 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// write.
 	if !w.internal {
 		// This resolver has determined the signatures lapsed, so it must not
-		// pass on a claim that the data is authenticated (RFC 4035 §5.3.3).
+		// pass on a claim that the data is authenticated (RFC 4035 §3.2.3).
 		// A forwarded answer carries whatever AD the upstream asserted, and
 		// relaying it here would let a client trust data we know is bogus.
 		// The clamp below reduces its TTL to zero; the bit is the other half.
-		if mt == dnsutil.TypeExpiredSignature {
+		//
+		// Asked as a fact about the records, not read off the classification.
+		// Only the NOERROR-with-records shape is ever *named* for an expired
+		// signature; a denial whose proof has lapsed is still classified a
+		// denial, so an expired NXDOMAIN, an empty NODATA and an alias chain
+		// ending in either all kept the bit while their TTLs were correctly
+		// clamped to nothing.
+		if dnsutil.HasExpiredSignatures(res, time.Now().UTC()) {
 			res.AuthenticatedData = false
 		}
 		clampTTLsToEffective(res, cutUntil, mt)

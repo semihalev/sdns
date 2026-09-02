@@ -140,6 +140,17 @@ func hasSOA(msg *dns.Msg) bool {
 	return false
 }
 
+// HasExpiredSignatures reports whether any RRSIG in msg has already expired.
+//
+// Exported because the classification cannot carry this on its own. A response
+// is named for what it is, a denial, a referral, an answer, and only the
+// NOERROR-with-records shape has anywhere to put "and its signatures lapsed".
+// An expired NXDOMAIN is still an NXDOMAIN. Callers that need the fact rather
+// than the name ask here.
+func HasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
+	return hasExpiredSignatures(msg, now)
+}
+
 // hasExpiredSignatures checks if any RRSIG records have expired.
 func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 	nowUnix := uint32(now.Unix()) //nolint:gosec // G115 - time conversion for DNS record
