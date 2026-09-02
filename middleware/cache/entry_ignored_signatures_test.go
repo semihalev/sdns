@@ -347,3 +347,97 @@ func mustUnpack(t *testing.T, body []byte) *dns.Msg {
 	}
 	return m
 }
+
+// TestDOZeroBodyKeepsOnlyTheTypeAskedFor pins the wire path's DNSSEC verdict
+// to ClearDNSSEC's exception. A question for NSEC is answered with NSEC for
+// any DO, and the signatures over it go for DO=0; a question for RRSIG keeps
+// its signatures for any DO, and an NSEC that came along as a proof goes for
+// DO=0; a question for RRSIG answered with signatures alone has nothing to
+// strip and serves the stored body to both.
+func TestDOZeroBodyKeepsOnlyTheTypeAskedFor(t *testing.T) {
+	now := time.Now()
+	sig, _ := ignoredSigFixtures(now)
+	const name = "proof.example."
+	nsec := func() dns.RR {
+		return &dns.NSEC{
+			Hdr:        dns.RR_Header{Name: name, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 3600},
+			NextDomain: "z.example.", TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
+		}
+	}
+	nsecSig := func() dns.RR {
+		s := sig(name, 3600, 700, -2*time.Hour, time.Hour).(*dns.RRSIG)
+		s.TypeCovered = dns.TypeNSEC
+		return s
+	}
+	build := func(qtype uint16, answer []dns.RR) *CacheEntry {
+		t.Helper()
+		req := new(dns.Msg)
+		req.SetQuestion(name, qtype)
+		req.SetEdns0(1232, true)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Answer = answer
+		entry := NewCacheEntryWithKey(resp, time.Hour, 0, 0)
+		if entry == nil {
+			t.Fatal("entry not built")
+		}
+		return entry
+	}
+	types := func(records []dns.RR) map[uint16]int {
+		got := map[uint16]int{}
+		for _, rr := range records {
+			got[rr.Header().Rrtype]++
+		}
+		return got
+	}
+
+	t.Run("NSEC asked for: the NSEC stays, its signature goes", func(t *testing.T) {
+		entry := build(dns.TypeNSEC, []dns.RR{nsec(), nsecSig()})
+		if entry.wireServe&wireHasDNSSEC == 0 {
+			t.Fatal("the signature did not mark the body as carrying DNSSEC")
+		}
+		body, _ := entry.wireBodyFor(false)
+		if body == nil {
+			t.Fatal("no DO=0 body")
+		}
+		if got := types(mustUnpack(t, body).Answer); got[dns.TypeNSEC] != 1 || got[dns.TypeRRSIG] != 0 {
+			t.Errorf("DO=0 answer types %v, want the NSEC alone", got)
+		}
+		do, _ := entry.wireBodyFor(true)
+		if got := types(mustUnpack(t, do).Answer); got[dns.TypeNSEC] != 1 || got[dns.TypeRRSIG] != 1 {
+			t.Errorf("DO=1 answer types %v, want the NSEC and its signature", got)
+		}
+	})
+
+	t.Run("RRSIG asked for: the signatures stay, the proof goes", func(t *testing.T) {
+		entry := build(dns.TypeRRSIG, []dns.RR{
+			sig(name, 3600, 701, -2*time.Hour, time.Hour),
+			sig(name, 3600, 702, -2*time.Hour, 2*time.Hour),
+			nsec(),
+		})
+		if entry.wireServe&wireHasDNSSEC == 0 {
+			t.Fatal("the NSEC did not mark the body as carrying DNSSEC")
+		}
+		body, _ := entry.wireBodyFor(false)
+		if body == nil {
+			t.Fatal("no DO=0 body")
+		}
+		if got := types(mustUnpack(t, body).Answer); got[dns.TypeRRSIG] != 2 || got[dns.TypeNSEC] != 0 {
+			t.Errorf("DO=0 answer types %v, want both signatures and no NSEC", got)
+		}
+	})
+
+	t.Run("RRSIG asked for and answered with signatures alone: nothing to strip", func(t *testing.T) {
+		entry := build(dns.TypeRRSIG, []dns.RR{
+			sig(name, 3600, 701, -2*time.Hour, time.Hour),
+			sig(name, 3600, 702, -2*time.Hour, 2*time.Hour),
+		})
+		if entry.wireServe&wireHasDNSSEC != 0 {
+			t.Fatal("an answer of nothing but the signatures asked for was marked as carrying DNSSEC to strip")
+		}
+		body, _ := entry.wireBodyFor(false)
+		if got := types(mustUnpack(t, body).Answer); got[dns.TypeRRSIG] != 2 {
+			t.Errorf("DO=0 answer types %v, want both signatures", got)
+		}
+	})
+}

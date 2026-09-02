@@ -24,13 +24,12 @@ const (
 
 // prepareWireServe records the byte-serving verdict. Admission strips OPT,
 // so any additional records in an eligible body are real RRs the TTL walk
-// covers. The DNSSEC flag is taken from every section, the additional one
-// included: ClearDNSSEC filters all three, and mirroring it is what keeps
-// the DO=0 wire body identical to the Msg path's — a signed additional
-// RRset the entry kept with its signature would otherwise reach a DO=0
-// client as bytes. An explicit RRSIG question is eligible too: its
-// signatures are the payload, which ClearDNSSEC leaves untouched for any
-// DO.
+// covers. The DNSSEC flag means "ClearDNSSEC would remove something", and
+// it is taken exactly the way ClearDNSSEC decides: from every section, the
+// additional one included, and leaving out the one authenticating type the
+// question asked for by name — that type is the payload, kept for any DO.
+// Mirroring the Msg path's filter is what keeps the DO=0 wire body
+// identical to it.
 func prepareWireServe(body []byte) wireServeFlags {
 	var flags wireServeFlags
 	header, ok := wire.ParseHeader(body)
@@ -52,7 +51,9 @@ func prepareWireServe(body []byte) wireServeFlags {
 		}
 		switch rr.Type {
 		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
-			flags |= wireHasDNSSEC
+			if rr.Type != question.Qtype {
+				flags |= wireHasDNSSEC
+			}
 		}
 		if i < int(header.ANCount) {
 			if rr.Type == question.Qtype {
@@ -126,10 +127,11 @@ func (e *CacheEntry) wireEDEReserve() int {
 // verdict that goes with it. A client that asked for DNSSEC gets the stored
 // message; one that did not gets the stripped form, which is nil when the
 // entry has none — that client keeps the Msg path, which strips as it goes.
-// An explicit RRSIG question serves the stored message for any DO, exactly
-// as ClearDNSSEC leaves such a response untouched.
+// The DNSSEC flag already leaves out the type an explicit RRSIG, NSEC or
+// NSEC3 question asked for, so such an entry serves the stored message for
+// any DO unless it also carries authenticating records of another type.
 func (e *CacheEntry) wireBodyFor(do bool) ([]byte, wireServeFlags) {
-	if do || e.wireServe&wireHasDNSSEC == 0 || e.question.Qtype == dns.TypeRRSIG {
+	if do || e.wireServe&wireHasDNSSEC == 0 {
 		return e.wire, e.wireServe
 	}
 	if e.stripped == nil {
@@ -247,10 +249,11 @@ func (e *CacheEntry) serveWireInto(
 }
 
 // wireInfoFor assembles the reply facts the writer chain acts on. The
-// DNSSEC bit is suppressed for an explicit RRSIG question — its
-// signatures are the payload, and the edns layer must not divert such a
-// DO=0 reply back to the Msg path. The entry's Extended DNS Error rides
-// along for the OPT append.
+// DNSSEC bit is the body's flag, which already leaves out the type an
+// explicit RRSIG, NSEC or NSEC3 question asked for — that is the payload,
+// and the edns layer must not divert such a DO=0 reply back to the Msg
+// path over it. The entry's Extended DNS Error rides along for the OPT
+// append.
 func (e *CacheEntry) wireInfoFor(
 	header wire.Header,
 	flags wireServeFlags,
@@ -259,7 +262,7 @@ func (e *CacheEntry) wireInfoFor(
 	info := middleware.WireInfo{
 		Rcode:             header.Rcode(),
 		AuthenticatedData: authData,
-		HasDNSSEC:         flags&wireHasDNSSEC != 0 && e.question.Qtype != dns.TypeRRSIG,
+		HasDNSSEC:         flags&wireHasDNSSEC != 0,
 	}
 	if e.ede != nil {
 		info.HasEDE = true

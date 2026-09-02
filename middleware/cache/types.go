@@ -300,10 +300,10 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 // interdependent, so records cannot be cut out of a packed message without
 // re-encoding it.
 func (e *CacheEntry) prepareStripped(msgCopy *dns.Msg) {
-	// An explicit RRSIG question keeps its signatures for any DO —
-	// ClearDNSSEC would return the message unchanged, so the stripped
-	// body would only duplicate the stored one.
-	if e.wireServe&wireHasDNSSEC == 0 || e.question.Qtype == dns.TypeRRSIG {
+	// The flag already leaves out the type an explicit RRSIG, NSEC or NSEC3
+	// question asked for: without it ClearDNSSEC would return the message
+	// unchanged, and the stripped body would only duplicate the stored one.
+	if e.wireServe&wireHasDNSSEC == 0 {
 		return
 	}
 
