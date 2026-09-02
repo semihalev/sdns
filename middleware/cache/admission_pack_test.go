@@ -31,10 +31,16 @@ func admissionMsg(tb testing.TB) *dns.Msg {
 	m.Id = 7 // pinned: admission stores the message as handed over
 	m.Response = true
 	m.AuthenticatedData = true
+	// Validity relative to now: a fixed expiration lapsed one day, and an
+	// entry admitted with AD over a lapsed signature has the bit normalised
+	// away, which is a different wire from the reference.
+	now := time.Now()
 	m.Answer = []dns.RR{
 		rr("www.example.com. 300 IN A 192.0.2.1"),
-		rr("www.example.com. 300 IN RRSIG A 8 3 300 20260901000000 " +
-			"20260801000000 12345 example.com. AwEAAcQ8"),
+		rr(fmt.Sprintf("www.example.com. 300 IN RRSIG A 8 3 300 %s %s 12345 example.com. AwEAAcQ8",
+			dns.TimeToString(uint32(now.Add(30*24*time.Hour).Unix())),  //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			dns.TimeToString(uint32(now.Add(-30*24*time.Hour).Unix())), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		)),
 	}
 	m.Ns = []dns.RR{
 		rr("example.com. 3600 IN NS ns1.example.com."),

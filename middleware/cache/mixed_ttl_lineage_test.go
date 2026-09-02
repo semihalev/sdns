@@ -112,12 +112,17 @@ func TestMixedTTLRecordsServeTheAnswersOwnHorizon(t *testing.T) {
 			ch.Cancel()
 		}))
 
-		// First query: the records as resolved.
-		if got := answerTTL(first); got != 3600 {
-			t.Fatalf("first query A TTL = %d, want the authority's 3600", got)
-		}
-		// Second query: the entry's own horizon — min(A 3600, RRSIG 1800) —
+		// Both queries: the entry's own horizon, min(A 3600, RRSIG 1800), and
 		// not the consulted key's 30 seconds.
+		//
+		// The first used to get the A record's bare 3600 while every later one
+		// got 1800, two different promises about the same records, and the
+		// client that asked first was invited to hold the answer for half an
+		// hour past the signature bounding it. RFC 4035 §5.3.3 does not leave
+		// that to the resolver's discretion.
+		if got := answerTTL(first); got < 1700 || got > 1800 {
+			t.Fatalf("first query A TTL = %d, want ~1800, the signature's horizon", got)
+		}
 		if got := answerTTL(second); got < 1700 || got > 1800 {
 			t.Fatalf("second query A TTL = %d, want ~1800, not the key's 30", got)
 		}

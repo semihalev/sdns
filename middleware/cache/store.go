@@ -609,9 +609,12 @@ func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, scope netip.Pre
 }
 
 func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Prefix, cutUntil time.Time, cutKey uint64, keyCD bool) {
-	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
+	// One clock for the whole admission: classification, the lifetime, the
+	// entry's stored instant and what it may carry all read now.
+	now := time.Now()
+	mt, _ := dnsutil.ClassifyResponse(resp, now)
 	filtered := filterCacheableAnswer(resp)
-	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
+	msgTTL := dnsutil.CalculateCacheTTLAt(filtered, mt, now)
 
 	scope = normalizeKeyScope(scope)
 	scoped := scope.IsValid()
@@ -632,9 +635,9 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 	newEntry := func(msg *dns.Msg, ttl time.Duration) *CacheEntry {
 		var e *CacheEntry
 		if scoped {
-			e = NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit, scope)
+			e = newScopedCacheEntryAt(msg, ttl, s.cfg.RateLimit, scope, now)
 		} else {
-			e = NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
+			e = newCacheEntryAt(msg, ttl, s.cfg.RateLimit, key, now)
 		}
 		if e == nil {
 			// Unpackable response: never cacheable, callers skip the write.
@@ -657,9 +660,17 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
-		ttl := capTTL(s.positive.ttl.Calculate(msgTTL))
-		if entry := newEntry(filtered, ttl); entry != nil {
-			s.positive.Set(key, entry)
+		// A denial the zone granted no lifetime is not cacheable at all (RFC
+		// 2308 §5). Admitting it with a zero TTL would occupy a slot that
+		// every later read has to discard, and the entry could never be
+		// served. A positive answer reaches zero too when a signature fixes
+		// it there, an Original TTL of zero or a signature in its last
+		// second, and this guard is what keeps that one out.
+		ttl := capTTL(s.positive.ttl.Bound(msgTTL))
+		if ttl > 0 {
+			if entry := newEntry(filtered, ttl); entry != nil {
+				s.positive.Set(key, entry)
+			}
 		}
 		// A scoped write has no source prefix here (only its already-hashed
 		// cache key), so it must not reset the unrelated global failure
@@ -701,9 +712,12 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		return false
 	}
 
-	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
+	// One clock for the whole admission: classification, the lifetime, the
+	// entry's stored instant and what it may carry all read now.
+	now := time.Now()
+	mt, _ := dnsutil.ClassifyResponse(resp, now)
 	filtered := filterCacheableAnswer(resp)
-	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
+	msgTTL := dnsutil.CalculateCacheTTLAt(filtered, mt, now)
 
 	// A replacement takes over the key expected occupies, so it inherits
 	// that key's CD partition and ECS scope. A refresh that carried the
@@ -723,13 +737,20 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 
 	switch mt {
 	case dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeNXDomain, dnsutil.TypeNoRecords:
-		entry := inherit(NewCacheEntryWithKey(filtered, s.positive.ttl.Calculate(msgTTL), s.cfg.RateLimit, key))
+		// A refresh that comes back as a denial with no zone-granted lifetime
+		// is dropped rather than stored. The entry it would have replaced
+		// keeps its own remaining TTL and re-resolves when that runs out.
+		ttl := s.positive.ttl.Bound(msgTTL)
+		if ttl <= 0 {
+			return false
+		}
+		entry := inherit(newCacheEntryAt(filtered, ttl, s.cfg.RateLimit, key, now))
 		if entry == nil {
 			return false
 		}
 		return s.positive.cache.CompareAndSwap(key, expected, entry)
 	case dnsutil.TypeServerFailure:
-		entry := inherit(NewCacheEntryWithKey(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key))
+		entry := inherit(newCacheEntryAt(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key, now))
 		if entry == nil {
 			return false
 		}

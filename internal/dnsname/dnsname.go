@@ -110,6 +110,13 @@ func Suffixes(name string) iter.Seq[int] {
 // verdict is the rightmost pair that differed — right-to-left order without
 // offset arrays, so the frame stays flat instead of carrying two of them.
 func CanonicalCompare(a, b string) int {
+	// Identical spellings are equal names, and they are what a response
+	// carries: one owner, spelled one way, on every record and signature
+	// of an RRset. A byte comparison settles that case before the label
+	// walk, which admission otherwise paid several times per response.
+	if a == b {
+		return 0
+	}
 	ca, cb := canonicalLabelCount(a), canonicalLabelCount(b)
 	offA, offB := 0, 0
 	for i := ca; i > cb; i-- {
@@ -247,4 +254,36 @@ func equalFold(a, b string) bool {
 		}
 	}
 	return true
+}
+
+// AppendCanonicalKey appends the canonical identity of a presentation name
+// to dst: each label as the octets it decodes to, ASCII-folded and
+// length-prefixed, then the root. Two names get the same key exactly when
+// CanonicalCompare orders them equal — escaped and plain spellings, rooted
+// and unrooted, ASCII case — and a fold that is not the wire's never merges
+// what the wire keeps apart: a Kelvin sign is not a k. For the places a
+// comparison cannot serve, a map keyed by string(key).
+func AppendCanonicalKey(dst []byte, name string) []byte {
+	labels := canonicalLabelCount(name)
+	off := 0
+	for i := labels; i > 0; i-- {
+		var label string
+		label, off = canonicalLabel(name, off, i == 1)
+		dst = append(dst, 0)
+		at := len(dst) - 1
+		n := 0
+		for j := 0; j < len(label); {
+			var oct byte
+			oct, j = decodeOctet(label, j)
+			if oct >= 'A' && oct <= 'Z' {
+				oct |= 'a' - 'A'
+			}
+			dst = append(dst, oct)
+			n++
+		}
+		// A wire label holds at most 63 octets; a hand-built name past 255
+		// wraps, and only needs a key consistent with itself.
+		dst[at] = byte(n) //nolint:gosec // G115 - see above
+	}
+	return append(dst, 0)
 }

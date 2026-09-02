@@ -13,6 +13,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsname"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
@@ -1646,26 +1647,19 @@ func denialProofResponse(
 		}
 	}
 
-	ttl := uint32(remaining / time.Second) //nolint:gosec // lifetime is positive and capped at three hours
+	ttl := servedSeconds(remaining)
 	for _, rr := range response.Ns {
 		rr.Header().Ttl = ttl
 	}
-	// An explicit RRSIG query keeps the signatures regardless of DO —
-	// the same exception the exact-entry and subtree-cut serves apply,
-	// so the answer does not change body depending on which rung of the
-	// negative ladder holds the state.
-	if opt := req.IsEdns0(); (opt == nil || !opt.Do()) &&
-		(len(req.Question) == 0 || req.Question[0].Qtype != dns.TypeRRSIG) {
-		kept := response.Ns[:0]
-		for _, rr := range response.Ns {
-			switch rr.Header().Rrtype {
-			case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
-				continue
-			default:
-				kept = append(kept, rr)
-			}
-		}
-		response.Ns = kept
+	// The DO=0 shape is ClearDNSSEC's, exactly as the exact-entry and
+	// subtree-cut serves apply it, so the answer does not change body
+	// depending on which rung of the negative ladder holds the state: the
+	// one authenticating type the question asked for by name stays, every
+	// other goes (RFC 4035 §3.2.1). The question is the client's, set by
+	// SetReply above, which is what the exception reads. In place: the
+	// authority section was built just above and is this response's own.
+	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
+		dnsutil.ClearDNSSECInPlace(response)
 	}
 	return response, expires
 }

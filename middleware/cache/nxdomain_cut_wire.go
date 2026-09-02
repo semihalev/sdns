@@ -125,7 +125,15 @@ func (e *nxDomainCutEntry) serveWireInto(
 		return nil, false
 	}
 	tmpl := e.wireFull
-	if !do && req.Qtype() != dns.TypeRRSIG {
+	if !do {
+		// The stripped template was cut behind a SOA question, so it holds
+		// no authenticating record at all. A DO=0 question for RRSIG, NSEC
+		// or NSEC3 keeps the one type it named (RFC 4035 §3.2.1), which
+		// neither template is: the Msg path shapes that answer.
+		switch req.Qtype() {
+		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
+			return nil, false
+		}
 		tmpl = e.wireStripped
 	}
 	if tmpl == nil || cap(dst) < wire.HeaderLen {
@@ -152,7 +160,7 @@ func (e *nxDomainCutEntry) serveWireInto(
 		return nil, false
 	}
 
-	ttl := uint32(remaining / time.Second) //nolint:gosec // positive duration bounded by the cut TTL
+	ttl := servedSeconds(remaining)
 	off := question.End
 	for range int(header.NSCount) {
 		rr, parsed := wire.ParseRR(tmpl, off)
@@ -208,10 +216,18 @@ func (c *Cache) serveCutHitFromWire(
 		return false
 	}
 
-	// The DO test mirrors serveWireInto's, RRSIG exception included, so
-	// this precheck never rejects a template the composer would pick.
+	// The DO test mirrors serveWireInto's, the explicit-question decline
+	// included, so this precheck never leases a body the composer would
+	// refuse: a DO=0 question for RRSIG, NSEC or NSEC3 is the Msg path's
+	// by design, and leasing for it only to abort counted a deliberate
+	// fallback as a build failure.
 	tmpl := cut.wireFull
-	if !capability.DO && ch.Request.Qtype() != dns.TypeRRSIG {
+	if !capability.DO {
+		switch ch.Request.Qtype() {
+		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
+			wireSkipDNSSEC.Inc()
+			return false
+		}
 		tmpl = cut.wireStripped
 	}
 	if tmpl == nil {

@@ -12,6 +12,15 @@ import (
 	"github.com/semihalev/sdns/middleware"
 )
 
+const (
+	// targetDenialTTL is the lifetime the authority hands out for the target
+	// denial, and targetRemaining is what is left of it by the time the alias
+	// chases it. Both are whole seconds because a denial is served with its
+	// remaining lifetime truncated to whole seconds.
+	targetDenialTTL = 30
+	targetRemaining = 4 * time.Second
+)
+
 // entryExpiry is the absolute instant past which an entry may not be served:
 // its own lifetime, further bounded by the delegation lease it inherited.
 func entryExpiry(e *CacheEntry) time.Time {
@@ -77,10 +86,10 @@ func assertChainInheritsTargetLifetime(
 		resp.Ns = []dns.RR{&dns.SOA{
 			Hdr: dns.RR_Header{
 				Name: "lineage.", Rrtype: dns.TypeSOA,
-				Class: dns.ClassINET, Ttl: 1,
+				Class: dns.ClassINET, Ttl: targetDenialTTL,
 			},
 			Ns: "ns.lineage.", Mbox: "hostmaster.lineage.",
-			Serial: 1, Refresh: 1, Retry: 1, Expire: 1, Minttl: 1,
+			Serial: 1, Refresh: 1, Retry: 1, Expire: 1, Minttl: targetDenialTTL,
 		}}
 		_ = ch.Writer.WriteMsg(resp)
 		ch.Cancel()
@@ -102,10 +111,18 @@ func assertChainInheritsTargetLifetime(
 	if !ok {
 		t.Fatal("the target denial was not cached")
 	}
-	// Age the target so it is near the end of its life when the alias asks
-	// for it — the state a cached denial spends most of its time in, and the
-	// one where the floor below has the most to extend.
-	targetEntry.stored = targetEntry.stored.Add(-targetEntry.ttl + time.Second)
+	// Age the target so it is late in its life when the alias asks for it —
+	// the state a cached denial spends most of its time in, and where a
+	// derived answer stored on its own terms would overhang the most.
+	//
+	// The remainder left here is deliberately more than a second. A denial is
+	// served with its remaining lifetime truncated to whole seconds, so a
+	// target with under a second left hands the chase an SOA of TTL zero, and
+	// a zero-lifetime denial is no longer cacheable at all (RFC 2308 §5) —
+	// the merged answer would never be stored and the rule below would go
+	// untested. That case is covered on its own in
+	// TestExhaustedTargetLeavesNoCachedChain.
+	targetEntry.stored = targetEntry.stored.Add(-targetEntry.ttl + targetRemaining)
 	targetExpiry := entryExpiry(targetEntry)
 
 	// The alias is resolved, and its chase finds the target in cache.
@@ -143,6 +160,101 @@ func assertChainInheritsTargetLifetime(
 				"  alias expires  %v\n  target expires %v\n  overhang       %v\n"+
 				"  alias cutUntil %v (zero means no bound was inherited)",
 			got, targetExpiry, got.Sub(targetExpiry), aliasEntry.cutUntil)
+	}
+}
+
+// TestExhaustedTargetLeavesNoCachedChain is the limit of the lineage rule: a
+// target denial down to its last fraction of a second, and an answer merged
+// from it that must not outlive what is left.
+//
+// It used to be stored for five seconds. The floor lifted the target's spent
+// lifetime back to the cache minimum, so a derived denial resting on a proof
+// with nothing left in it was cached as if the proof were fresh, and the
+// lineage rule was left to bound the damage rather than prevent it. What
+// remains is the second the wire format cannot express any finer.
+func TestExhaustedTargetLeavesNoCachedChain(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+
+	const alias, target = "alias.exhausted.", "target.exhausted."
+
+	reached := 0
+	targetHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		reached++
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request.Msg())
+		resp.Rcode = dns.RcodeNameError
+		resp.Ns = []dns.RR{&dns.SOA{
+			Hdr: dns.RR_Header{
+				Name: "exhausted.", Rrtype: dns.TypeSOA,
+				Class: dns.ClassINET, Ttl: targetDenialTTL,
+			},
+			Ns: "ns.exhausted.", Mbox: "hostmaster.exhausted.",
+			Serial: 1, Refresh: 1, Retry: 1, Expire: 1, Minttl: targetDenialTTL,
+		}}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	primeReq := new(dns.Msg)
+	primeReq.SetQuestion(target, dns.TypeA)
+	primeReq.RecursionDesired = true
+	primeChain := middleware.NewChain([]middleware.Handler{c, targetHandler})
+	primeChain.Reset(mock.NewWriter("udp", "127.0.0.1:0"), primeReq)
+	primeChain.Next(context.Background())
+
+	targetKey := CacheKey{Question: dns.Question{
+		Name: target, Qtype: dns.TypeA, Qclass: dns.ClassINET,
+	}, CD: false}.Hash()
+	targetEntry, ok := c.store.LookupByKey(targetKey)
+	if !ok {
+		t.Fatal("the target denial was not cached")
+	}
+	// Spend all but a fraction of a second, which is what the chase sees as
+	// a zero TTL.
+	targetEntry.stored = targetEntry.stored.Add(-targetEntry.ttl + 100*time.Millisecond)
+
+	c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, targetHandler}})
+	outerHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request.Msg())
+		resp.Answer = []dns.RR{&dns.CNAME{
+			Hdr: dns.RR_Header{
+				Name: alias, Rrtype: dns.TypeCNAME,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Target: target,
+		}}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion(alias, dns.TypeA)
+	req.RecursionDesired = true
+	chain := middleware.NewChain([]middleware.Handler{c, outerHandler})
+	w := mock.NewWriter("udp", "127.0.0.1:0")
+	chain.Reset(w, req)
+	reached = 0
+	chain.Next(context.Background())
+	// The outcome below only means something if the chase ran: an exhausted
+	// target that was never asked for proves nothing about what a merge from
+	// it would have stored. The chase reads the cached denial, so the proof
+	// it ran is the target's SOA in the outer answer, or, had the entry gone
+	// in the meantime, the handler being asked again.
+	if reached == 0 && (!w.Written() || !hasTargetSOA(w.Msg())) {
+		t.Fatal("the chase never reached the target")
+	}
+
+	aliasKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
+	entry, ok := c.store.LookupByKey(aliasKey)
+	if !ok {
+		return // nothing stored at all is the stronger outcome
+	}
+	if entry.ttl > time.Second {
+		t.Fatalf(
+			"an answer merged from an exhausted denial was cached for %v; "+
+				"the proof it rests on had under a second left", entry.ttl)
 	}
 }
 
@@ -436,4 +548,18 @@ func TestUnusedSubQueryLineageIsNotInherited(t *testing.T) {
 		t.Fatalf("the alias was bound to %v by a sub-query that produced "+
 			"nothing for it", got)
 	}
+}
+
+// hasTargetSOA reports whether an alias answer carries the SOA the chased
+// target's denial was merged from.
+func hasTargetSOA(msg *dns.Msg) bool {
+	if msg == nil {
+		return false
+	}
+	for _, rr := range msg.Ns {
+		if soa, ok := rr.(*dns.SOA); ok && soa.Hdr.Name == "exhausted." {
+			return true
+		}
+	}
+	return false
 }

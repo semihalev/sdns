@@ -199,14 +199,18 @@ func TestClassifyResponse(t *testing.T) {
 			hasOpt:       false,
 		},
 		{
-			name: "Success with no answers and no NS/SOA - cacheable query type",
+			// No answer, no delegation, no SOA. There is nothing to serve and
+			// nothing to derive a lifetime from, and RFC 2308 §5 wants a
+			// negative answer without an SOA left uncached. This used to be
+			// classified a success and held for the cache's minimum.
+			name: "Success with no answers and no NS/SOA",
 			msg: func() *dns.Msg {
 				m := new(dns.Msg)
 				m.SetQuestion("example.com.", dns.TypeA)
 				m.Rcode = dns.RcodeSuccess
 				return m
 			}(),
-			expectedType: TypeSuccess, // A query is cacheable even without answers
+			expectedType: TypeNotCacheable,
 			hasOpt:       false,
 		},
 	}
@@ -389,6 +393,11 @@ func TestHasExpiredSignatures(t *testing.T) {
 			expected: true,
 		},
 		{
+			// AD is a statement about the answer and authority sections
+			// (RFC 4035 §3.2.3), so a lapsed signature over additional
+			// records is not grounds for withdrawing it. This asked the
+			// opposite, from when the check was a flat scan of all three
+			// sections. The lifetime bound still takes the section in.
 			name: "Expired RRSIG in extra",
 			msg: func() *dns.Msg {
 				m := new(dns.Msg)
@@ -402,7 +411,7 @@ func TestHasExpiredSignatures(t *testing.T) {
 				}
 				return m
 			}(),
-			expected: true,
+			expected: false,
 		},
 		{
 			name: "Valid RRSIG",
@@ -439,59 +448,6 @@ func TestHasExpiredSignatures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := hasExpiredSignatures(tt.msg, now)
-			if !reflect.DeepEqual(tt.expected, result) {
-				t.Errorf("result = %v, want %v", result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestShouldCache(t *testing.T) {
-	tests := []struct {
-		name     string
-		msg      *dns.Msg
-		expected bool
-	}{
-		{
-			name: "A query - should cache",
-			msg: func() *dns.Msg {
-				m := new(dns.Msg)
-				m.SetQuestion("example.com.", dns.TypeA)
-				return m
-			}(),
-			expected: true,
-		},
-		{
-			name: "AAAA query - should cache",
-			msg: func() *dns.Msg {
-				m := new(dns.Msg)
-				m.SetQuestion("example.com.", dns.TypeAAAA)
-				return m
-			}(),
-			expected: true,
-		},
-		{
-			name: "DNSKEY query - should not cache",
-			msg: func() *dns.Msg {
-				m := new(dns.Msg)
-				m.SetQuestion("example.com.", dns.TypeDNSKEY)
-				return m
-			}(),
-			expected: false,
-		},
-		{
-			name: "Empty question - should not cache",
-			msg: func() *dns.Msg {
-				m := new(dns.Msg)
-				return m
-			}(),
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := shouldCache(tt.msg)
 			if !reflect.DeepEqual(tt.expected, result) {
 				t.Errorf("result = %v, want %v", result, tt.expected)
 			}

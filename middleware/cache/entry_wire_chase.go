@@ -219,7 +219,7 @@ func (c *Cache) collectWireChase(
 			entry:   entry,
 			body:    body,
 			flags:   flags,
-			ttl:     uint32(remaining.Seconds()),
+			ttl:     entry.servedTTL(now),
 			anCount: int(header.ANCount),
 			ansOff:  question.End,
 			ad:      header.AD(),
@@ -331,7 +331,7 @@ func composeWireChase(
 	info := middleware.WireInfo{
 		Rcode:             dns.RcodeSuccess,
 		AuthenticatedData: authData,
-		HasDNSSEC:         hasDNSSEC && req.Qtype() != dns.TypeRRSIG,
+		HasDNSSEC:         hasDNSSEC,
 	}
 	if alias.ede != nil {
 		info.HasEDE = true

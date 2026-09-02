@@ -129,19 +129,63 @@ func ClearOPT(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// ClearDNSSEC removes RRSIG, NSEC and NSEC3 records from Answer and Ns
-// sections in place. Short-circuits when the sections already hold
-// nothing to strip (typical for non-DNSSEC responses), and reuses the
-// slice backing array when a filter is actually needed.
+// ClearDNSSEC removes RRSIG, NSEC and NSEC3 records from every section in
+// place — the additional section included, since RFC 4035 §3.2.1 has a
+// DO=0 response carry no authenticating records it was not asked for, and
+// a signed additional RRset is carried with its signature. The one type
+// the question asked for by name is the exception, and only that type: a
+// query for RRSIG keeps its signatures and still loses the NSEC that came
+// along as a proof, a query for NSEC keeps the NSEC and loses the
+// signatures over it. Short-circuits when the sections already hold nothing
+// to strip (typical for non-DNSSEC responses), and reuses the slice backing
+// array when a filter is actually needed.
 func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
-	// An explicit RRSIG query must retain its RRSIG answers.
-	if len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeRRSIG {
-		return msg
+	asked := explicitDNSSECType(msg)
+	drop := func(rr dns.RR) bool {
+		return isDNSSEC(rr) && rr.Header().Rrtype != asked
 	}
-
-	msg.Answer = filterOut(msg.Answer, isDNSSEC)
-	msg.Ns = filterOut(msg.Ns, isDNSSEC)
+	msg.Answer = filterOut(msg.Answer, drop)
+	msg.Ns = filterOut(msg.Ns, drop)
+	msg.Extra = filterOut(msg.Extra, drop)
 	return msg
+}
+
+// ClearDNSSECInPlace is ClearDNSSEC for a message that owns its sections:
+// the same rule, compacting each section in place instead of allocating a
+// filtered copy. For an answer synthesized per hit, whose slices are its
+// own and are about to be handed out — filtering through a copy there was
+// an allocation on every DO=0 hit.
+func ClearDNSSECInPlace(msg *dns.Msg) *dns.Msg {
+	asked := explicitDNSSECType(msg)
+	compact := func(rrs []dns.RR) []dns.RR {
+		kept := rrs[:0]
+		for _, rr := range rrs {
+			if isDNSSEC(rr) && rr.Header().Rrtype != asked {
+				continue
+			}
+			kept = append(kept, rr)
+		}
+		return kept
+	}
+	msg.Answer = compact(msg.Answer)
+	msg.Ns = compact(msg.Ns)
+	msg.Extra = compact(msg.Extra)
+	return msg
+}
+
+// explicitDNSSECType is the authenticating type the question named, if
+// any: RRSIG, NSEC or NSEC3, zero otherwise. The packed body's DNSSEC
+// verdict (prepareWireServe) leaves the same type out of account, so the
+// two agree on what is payload.
+func explicitDNSSECType(msg *dns.Msg) uint16 {
+	if len(msg.Question) == 0 {
+		return 0
+	}
+	switch q := msg.Question[0].Qtype; q {
+	case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
+		return q
+	}
+	return 0
 }
 
 // filterOut returns a slice that contains every RR from rrs for which

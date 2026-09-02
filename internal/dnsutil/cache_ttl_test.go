@@ -37,6 +37,7 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Class:  dns.ClassINET,
 							Ttl:    3600, // 1 hour
 						},
+						OrigTtl:     3600,
 						TypeCovered: dns.TypeA,
 						Expiration:  uint32(now.Add(10 * time.Minute).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 						Inception:   uint32(now.Add(-1 * time.Hour).Unix()),   //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
@@ -66,6 +67,7 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Class:  dns.ClassINET,
 							Ttl:    300, // 5 minutes
 						},
+						OrigTtl:     300,
 						TypeCovered: dns.TypeA,
 						Expiration:  uint32(now.Add(2 * time.Hour).Unix()),  //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 						Inception:   uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
@@ -95,14 +97,21 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Class:  dns.ClassINET,
 							Ttl:    3600,
 						},
+						OrigTtl:     3600,
 						TypeCovered: dns.TypeA,
 						Expiration:  uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 						Inception:   uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 					},
 				},
 			},
-			respType:    TypeSuccess,
-			expectedTTL: MinCacheTTL, // Should use minimum TTL
+			respType: TypeSuccess,
+			// Zero, not the floor. A lapsed signature is a bound the protocol
+			// fixes (RFC 4035 §5.3.3), and the cache's own minimum is not
+			// entitled to lift an answer past it. The floor used to win here
+			// and bought the expired data another five seconds. In the running
+			// server this shape never arrives as a success anyway,
+			// ClassifyResponse names it TypeExpiredSignature first.
+			expectedTTL: 0,
 		},
 		{
 			name: "Multiple RRSIGs with different expirations",
@@ -124,6 +133,7 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Class:  dns.ClassINET,
 							Ttl:    3600,
 						},
+						OrigTtl:     3600,
 						TypeCovered: dns.TypeA,
 						Algorithm:   dns.RSASHA256,
 						Expiration:  uint32(now.Add(30 * time.Minute).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
@@ -136,6 +146,7 @@ func TestCalculateCacheTTLWithRRSIG(t *testing.T) {
 							Class:  dns.ClassINET,
 							Ttl:    3600,
 						},
+						OrigTtl:     3600,
 						TypeCovered: dns.TypeA,
 						Algorithm:   dns.ECDSAP256SHA256,
 						Expiration:  uint32(now.Add(15 * time.Minute).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
@@ -175,6 +186,7 @@ func TestGetRRSIGTTL(t *testing.T) {
 				Hdr: dns.RR_Header{
 					Ttl: 7200, // 2 hours
 				},
+				OrigTtl:    7200,
 				Expiration: uint32(now.Add(1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
 			},
 			expectedTTL: 1 * time.Hour,
@@ -185,19 +197,26 @@ func TestGetRRSIGTTL(t *testing.T) {
 				Hdr: dns.RR_Header{
 					Ttl: 3600, // 1 hour
 				},
+				OrigTtl:    3600,
 				Expiration: uint32(now.Add(2 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp
 			},
 			expectedTTL: 1 * time.Hour,
 		},
 		{
+			// Zero, not the floor. This function reports a bound, and a
+			// lapsed signature bounds the data at nothing; the floor is
+			// applied afterwards and only to the response types that take
+			// one. Returning MinCacheTTL here used to be the last thing
+			// granting a denial five more seconds on an expired proof.
 			name: "Signature already expired",
 			sig: &dns.RRSIG{
 				Hdr: dns.RR_Header{
 					Ttl: 3600,
 				},
+				OrigTtl:    3600,
 				Expiration: uint32(now.Add(-1 * time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp
 			},
-			expectedTTL: MinCacheTTL,
+			expectedTTL: 0,
 		},
 	}
 
