@@ -29,7 +29,7 @@ SDNS resolves from the root, validates answers against the DNSSEC trust
 anchors, and caches them. It serves DNS over TLS, HTTPS and QUIC alongside
 plain UDP and TCP, and answers warm cache hits from the bytes it already holds.
 
-Full documentation lives at **[sdns.dev](https://sdns.dev/docs/)**, this file
+Full documentation lives at **[sdns.dev](https://sdns.dev/docs/)**. This file
 covers installing it and getting a first answer out of it.
 
 ## Install

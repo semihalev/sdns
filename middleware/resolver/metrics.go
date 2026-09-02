@@ -13,7 +13,7 @@ import (
 
 // Resolution failure metrics. Classified at the central handler
 // error-return point so individual return sites stay clean. Closed
-// label sets, every reason is pre-registered below so the dynamic
+// label sets. Every reason is pre-registered below so the dynamic
 // path never hits a cold-create.
 var (
 	resolverFailures = metric.NewCounterVec(nil, prometheus.CounterOpts{

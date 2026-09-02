@@ -341,7 +341,7 @@ func (r *RPZ) chaseNeeded(winner rpz.ZoneMatch, qtype uint16) bool {
 // decodedKey builds the canonical-labels key for a decoded request by
 // packing the question name back to wire form. The decoded path is the
 // slow lane already; keeping the packing buffer here, behind a call, is
-// what keeps it out of the wire path's frame, inlined, its escape would
+// what keeps it out of the wire path's frame. Inlined, its escape would
 // cost every query an allocation.
 //
 //go:noinline
@@ -527,7 +527,7 @@ func (r *RPZ) chase(ctx context.Context, m *dns.Msg, target string, qtype uint16
 
 // stamp marks a rewritten answer the way the draft requires: the policy
 // zone's SOA in the additional section names the source, EDE 17 says
-// "Filtered" in modern terms, and AD is clear, the rewrite is not the
+// "Filtered" in modern terms, and AD is clear. The rewrite is not the
 // signed truth and must never claim to be (design C2).
 func stamp(m *dns.Msg, winner rpz.ZoneMatch) {
 	m.AuthenticatedData = false

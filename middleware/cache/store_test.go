@@ -219,7 +219,7 @@ func TestStoreGetMiss(t *testing.T) {
 
 // TestStorePurge pins that Purge removes both CD variants of an
 // entry. SetFromResponse for CD=false and CD=true, then Purge once,
-// then Lookup for both, both must miss.
+// then Lookup for both. Both must miss.
 func TestStorePurge(t *testing.T) {
 	s := newTestStore(t)
 

@@ -116,7 +116,7 @@ func (r *Resolver) AutoTA() {
 	// must not republish from disk in that case because disk could
 	// still carry the un-revoked anchor whose revocation we already
 	// observed in memory. A non-empty value means either the
-	// initial config seed or a previous successful AutoTA, both
+	// initial config seed or a previous successful AutoTA. Both
 	// are safe upper bounds, so a tombstone-filtered subset of disk
 	// state is at least as restrictive and may safely be published
 	// before the external fetch.
@@ -218,7 +218,7 @@ func (r *Resolver) AutoTA() {
 	}
 
 	// Merge admin-configured root keys into state. Keys placed in
-	// cfg.RootKeys are trust anchors of record, they must not be
+	// cfg.RootKeys are trust anchors of record. They must not be
 	// silently dropped just because the state file was written before
 	// the operator added them. Use configuredRootKeys (the immutable
 	// startup snapshot) rather than r.rootKeys: r.rootKeys is
@@ -521,8 +521,8 @@ func (r *Resolver) AutoTA() {
 			if ta.State == StateMissing {
 				// RFC 5011 §4 state table: a Missing key re-appearing in
 				// a validated DNSKEY RRset (KeyPres event) transitions
-				// straight back to Valid. It was already a trust anchor,
-				// the absence was transient, and forcing another
+				// straight back to Valid. It was already a trust anchor.
+				// The absence was transient, and forcing another
 				// AddPend hold-down would strip trust for 30 days even
 				// though nothing about the key's authority changed.
 				taReappeared.Inc()
@@ -713,7 +713,7 @@ func stageRevocationSelfSignatures(
 // accepted if *at least one* RRSIG from a currently-valid trust anchor
 // verifies it. RRSIGs from unknown keys (e.g. a newly published KSK
 // that hasn't cleared hold-down yet) are ignored rather than treated
-// as failure, this is required for KSK rollovers where the zone is
+// as failure. This is required for KSK rollovers where the zone is
 // co-signed by the old and new KSK.
 //
 // Revoked keys are a narrow exception. Per RFC 5011 §2.1 a revoked
@@ -773,7 +773,7 @@ func verifyFetchedKeysWithWork(
 	var lastErr error = dnssec.ErrMissingDNSKEY
 
 	// Pass 1: non-revoked current trust anchors. A success here is
-	// full authentication, the caller may process any state
+	// full authentication. The caller may process any state
 	// transition against this RRset.
 	if verified, verifyErr := dnssec.VerifyRRSIGWithWork(rootzone, currentKeys, msg, work); verified {
 		return true, false, nil

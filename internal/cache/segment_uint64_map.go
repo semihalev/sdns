@@ -168,7 +168,7 @@ func (m *SegmentUInt64Map[V]) PutIfNotExistsWithCap(key uint64, value V, capacit
 }
 
 // collectRemainingToll finishes an over-capacity insert's eviction toll when
-// the writer's own segment couldn't cover it, it happens when entries are
+// the writer's own segment couldn't cover it. It happens when entries are
 // sparse relative to the segment count (small caches). Collect the remainder
 // from the following segments, one lock at a time and never nested, so two
 // writers can never hold each other's segment. Stop as soon as the map is

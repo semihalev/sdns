@@ -150,7 +150,7 @@ func (c *jobCarrier) TrySetProvider(p contextutil.ValueProvider) bool {
 
 // rawHandler is the engines' one ingress contract: raw bytes in;
 // eligibility, decode, and context are the server's business. A false
-// return means the payload was undecodable, the engine answers with its
+// return means the payload was undecodable. The engine answers with its
 // in-place wire FORMERR, keeping the rejection in job storage.
 type rawHandler interface {
 	ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool

@@ -10,8 +10,8 @@ import (
 )
 
 // TestNegativeProofFingerprintUnchanged pins that hashing the proof in the
-// packer's pooled buffer produces the same seal the library-packed form did,
-// the fingerprint is persisted identity, and a changed formula would orphan
+// packer's pooled buffer produces the same seal the library-packed form did.
+// The fingerprint is persisted identity, and a changed formula would orphan
 // every seal taken before it.
 func TestNegativeProofFingerprintUnchanged(t *testing.T) {
 	soa, err := dns.NewRR("example.com. 3600 IN SOA ns1.example.com. " +

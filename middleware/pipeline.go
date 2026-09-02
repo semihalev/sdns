@@ -71,7 +71,7 @@ func (p *Pipeline) List() []string {
 // middlewares (hostsfile, blocklist, kubernetes, as112), cache,
 // failover, and resolver/forwarder stay.
 //
-// The returned Pipeline is independent of the receiver, it has its
+// The returned Pipeline is independent of the receiver. It has its
 // own byName index and handler slice. The names list carries forward
 // the full registered list for diagnostics.
 func (p *Pipeline) SubPipeline(skip ...string) *Pipeline {

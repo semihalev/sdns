@@ -92,7 +92,7 @@ func closestEncloserFromNSEC(qname string, nsec *dns.NSEC) string {
 	qn := strings.ToLower(dns.Fqdn(qname))
 	qLabelCount := dns.CountLabel(qn)
 
-	// CompareSuffix folds case on its own, so only qn needs lowering, the
+	// CompareSuffix folds case on its own, so only qn needs lowering. The
 	// result is a slice of it. An unrooted owner or next is rooted first,
 	// exactly as the old label split did; names off the wire already are.
 	shared := func(other string) int {

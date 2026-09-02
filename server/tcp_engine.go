@@ -201,7 +201,7 @@ type tcpEngine struct {
 	largeCache  slabCache[tcpJob]
 	closing     chan struct{}
 	// streams are per-connection framing buffers. Unlike the job ring
-	// they are not strict-path state, a connection holds one for its
+	// they are not strict-path state. A connection holds one for its
 	// whole life, so a pool is the right shape: an idle server keeps
 	// none, and a busy one reuses what its connection churn frees.
 	streams sync.Pool
@@ -312,7 +312,7 @@ func (e *tcpEngine) put(j *tcpJob) {
 }
 
 // quiesced reports whether every admission token is home. Idle
-// connections hold none, a slab is taken only once a frame's length
+// connections hold none. A slab is taken only once a frame's length
 // prefix has arrived, so this is true whenever no frame is mid-flight.
 func (e *tcpEngine) quiesced() bool {
 	return len(e.smallTokens) == cap(e.smallTokens) && len(e.largeTokens) == cap(e.largeTokens)
@@ -334,7 +334,7 @@ func (e *tcpEngine) trimIdle() int {
 // the engine lock, because a WaitGroup gives no ordering of its own: an
 // Add racing a Wait is a race whether or not the counter happens to be
 // zero, and at zero it is also a loop the drain never sees. Starting
-// after shutdown is refused rather than joined, the listener goes back
+// after shutdown is refused rather than joined. The listener goes back
 // to the caller closed, which is the same state it would have reached a
 // moment later anyway.
 func (e *tcpEngine) startAccepting(ln net.Listener, onExit func()) bool {

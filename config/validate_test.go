@@ -264,7 +264,7 @@ func TestValidateNegativeECSCacheLimit(t *testing.T) {
 // fails every signature it is asked to verify.
 //
 // The accepted cases carry real key material. Truncated material is what an
-// earlier version of this test used, and it passed, the check was only
+// earlier version of this test used, and it passed. The check was only
 // reading the algorithm, so a key of the right algorithm and the wrong shape
 // went through.
 func TestValidateRootKeyAlgorithm(t *testing.T) {
@@ -338,7 +338,7 @@ func TestLoadReportsUnknownKeysAlongsideValueProblems(t *testing.T) {
 	}
 	for _, want := range []string{"nullroute", "maxdepth_old"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("Load() = %v\nmissing %q, the operator would need a second run", err, want)
+			t.Fatalf("Load() = %v\nmissing %q. The operator would need a second run", err, want)
 		}
 	}
 }

@@ -77,7 +77,7 @@ dig @127.0.0.1 CH HINFO example.com
 ```
 
 **The name must match exactly.** The lookup is for an NS entry under the name
-you asked about, it does not walk up to the enclosing zone. `CH HINFO
+you asked about. It does not walk up to the enclosing zone. `CH HINFO
 www.example.com` shows the root servers unless `www.example.com` is itself a
 cut. Ask about the zone apex.
 

@@ -16,8 +16,8 @@ import (
 
 // TestTCPPipelinedBurst pins the burst layer's contract: a client that
 // pipelines many queries on one connection gets every reply, matched to
-// its query, and gets them without having to send anything further,
-// the flush must happen when the connection is about to block, not on a
+// its query, and gets them without having to send anything further.
+// The flush must happen when the connection is about to block, not on a
 // timer and not on the next query.
 func TestTCPPipelinedBurst(t *testing.T) {
 	echo := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
@@ -318,7 +318,7 @@ func TestTCPPartialPrefixStillFlushes(t *testing.T) {
 
 	// Latency is the assertion, not arrival. The replies do eventually
 	// leave when the stalled read hits its deadline and the connection
-	// unwinds, that path is the bug, not the fix, so the window here is
+	// unwinds. That path is the bug, not the fix, so the window here is
 	// far below tcpQueryWait.
 	sent := time.Now()
 	buf := make([]byte, 65535)

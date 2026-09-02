@@ -199,7 +199,7 @@ func (f *axfrFeed) refreshOnce(ctx context.Context) error {
 			return nil
 		case serial == f.serial:
 			// Withdrawn: the store holds an empty zone, so an equal
-			// serial is not "nothing to do", the copy must be rebuilt.
+			// serial is not "nothing to do". The copy must be rebuilt.
 			// Fall through to the transfer.
 		case !zonetransfer.SerialNewer(f.serial, serial):
 			// A source advertising an older zone is refused whole:

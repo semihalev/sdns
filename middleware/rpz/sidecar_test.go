@@ -254,7 +254,7 @@ func TestNoneCandidatesServeBytes(t *testing.T) {
 
 // TestP0HeldQNAMEOverridesANoneSidecar is the review's P0 scenario
 // verbatim: zone 1 carries response-IP rules that do NOT match the
-// answer, zone 2's QNAME rule does, the query answers NXDOMAIN on the
+// answer, zone 2's QNAME rule does. The query answers NXDOMAIN on the
 // miss AND on the hit, never the stored truth.
 func TestP0HeldQNAMEOverridesANoneSidecar(t *testing.T) {
 	h := newSidecarHarness(t, "enforce",
@@ -579,7 +579,7 @@ victim.example.com.rpz.test. IN CNAME .
 // TestCleanServesAllocateNoMoreWithResponseRules pins §5.11 against the
 // two allocation regressions the review found: with response rules
 // configured, the all-candidates-none wire hit and the clean admission
-// must cost exactly what a qname-only configuration costs, the wrap is
+// must cost exactly what a qname-only configuration costs. The wrap is
 // pooled and the explicit none is the generation's shared sentinel.
 func TestCleanServesAllocateNoMoreWithResponseRules(t *testing.T) {
 	const qnameOnlyZone = `

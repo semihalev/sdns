@@ -318,7 +318,7 @@ func TestActiveFollowsTheTrustAnchors(t *testing.T) {
 	}
 
 	// The observation is cached for anchorRecheckInterval, so move past it
-	// before each change, the staleness is deliberate and bounded.
+	// before each change. The staleness is deliberate and bounded.
 	advance := func() { now = now.Add(2 * anchorRecheckInterval) }
 
 	anchors = nil

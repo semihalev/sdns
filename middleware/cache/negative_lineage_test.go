@@ -111,13 +111,15 @@ func assertChainInheritsTargetLifetime(
 	if !ok {
 		t.Fatal("the target denial was not cached")
 	}
-	// Age the target so it is late in its life when the alias asks for it, // the state a cached denial spends most of its time in, and where a
+	// Age the target so it is late in its life when the alias asks for it,
+	// the state a cached denial spends most of its time in, and where a
 	// derived answer stored on its own terms would overhang the most.
 	//
 	// The remainder left here is deliberately more than a second. A denial is
 	// served with its remaining lifetime truncated to whole seconds, so a
 	// target with under a second left hands the chase an SOA of TTL zero, and
-	// a zero-lifetime denial is no longer cacheable at all (RFC 2308 §5), // the merged answer would never be stored and the rule below would go
+	// a zero-lifetime denial is no longer cacheable at all (RFC 2308 §5),
+	// the merged answer would never be stored and the rule below would go
 	// untested. That case is covered on its own in
 	// TestExhaustedTargetLeavesNoCachedChain.
 	targetEntry.stored = targetEntry.stored.Add(-targetEntry.ttl + targetRemaining)

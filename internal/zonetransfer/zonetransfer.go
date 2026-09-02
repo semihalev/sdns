@@ -6,8 +6,8 @@
 // them to share a lifecycle: the hyperlocal root (which verifies with
 // ZONEMD against the trust anchors and schedules around a signature
 // horizon) and RPZ policy feeds (which verify nothing cryptographic and
-// withdraw on SOA expire). The refresh loops stay with their owners,
-// each is welded to its own verification and withdrawal semantics, and
+// withdraw on SOA expire). The refresh loops stay with their owners.
+// Each is welded to its own verification and withdrawal semantics, and
 // what is shared is the part with one right answer: how a zone is pulled,
 // probed, compared, and deduplicated.
 package zonetransfer
@@ -43,7 +43,7 @@ type Limits struct {
 
 // AXFR transfers zone from addr over TCP and returns its records, the
 // closing duplicate apex SOA dropped. The transfer is bounded by ctx and
-// lim; any structural surprise refuses the whole transfer, there is no
+// lim; any structural surprise refuses the whole transfer. There is no
 // partial acceptance of a zone copy.
 func AXFR(ctx context.Context, addr, zone string, timeout time.Duration, lim Limits) ([]dns.RR, error) {
 	zone = dns.CanonicalName(zone)

@@ -18,7 +18,7 @@ import (
 // So a connection reads through a fill buffer and writes through a drain
 // buffer: one read syscall hands over as many frames as the client sent,
 // and their replies leave in one write. The flush point is the moment the
-// connection is about to block for more input, nothing is ever held back
+// connection is about to block for more input. Nothing is ever held back
 // waiting for a client that has stopped talking, so a single-query
 // connection still costs exactly one read and one write, and no reply
 // waits on a timer.

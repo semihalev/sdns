@@ -11,7 +11,7 @@ import (
 
 // TestForkDoesNotCrossRequestGenerations pins the isolation a pooled root
 // requires. A root meta is reset and reused by the next request, and a fork
-// of the request before it can still be alive, it must keep reading the
+// of the request before it can still be alive. It must keep reading the
 // state of the request it belongs to, never the one that took the root over.
 func TestForkDoesNotCrossRequestGenerations(t *testing.T) {
 	root := new(ResponseMeta)
@@ -137,7 +137,7 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 
 	// Ledgers created through the child are the tree's, not copies. They are
 	// created lazily, so a fork that copied their pointers would share
-	// nothing here, this is the case that catches it.
+	// nothing here. This is the case that catches it.
 	guard := child.EnsureResolutionAttemptGuard()
 	if guard == nil {
 		t.Fatal("the sub-query could not establish a retry guard")

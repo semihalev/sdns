@@ -266,7 +266,7 @@ const (
 //
 // measured says an exchange has completed, which is what separates an
 // estimate from the seed. answered says the last one came back with an
-// answer, and nothing is decided on it, it is there so an operator
+// answer, and nothing is decided on it. It is there so an operator
 // reading the delegation can tell a slow authority from one that is not
 // replying at all. Priced by the ranking the two look alike, because a
 // server that does not answer is charged a timeout, and a timeout is
@@ -352,7 +352,7 @@ func (s *Server) Score() time.Duration {
 }
 
 // score also reports whether what is known about this server is out of
-// date, nothing has answered, or what did answer is old enough that it
+// date. Nothing has answered, or what did answer is old enough that it
 // no longer describes the path. It comes back from here because the
 // scoring pass has already paid for both loads, and the ranking needs the
 // count to decide how much of the hedge to spend on finding out.

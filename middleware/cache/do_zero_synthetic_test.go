@@ -65,7 +65,8 @@ func TestSynthesizedDenialKeepsOnlyTheTypeAskedFor(t *testing.T) {
 // TestNXDomainCutWireDeclinesExplicitDNSSECQuestionsAtDOZero pins the cut's
 // wire template against the same rule. The stripped template was cut behind
 // a SOA question and holds no authenticating record at all, so a DO=0
-// question for RRSIG, NSEC or NSEC3, which keeps the one type it named, // is handed to the Msg path, where ClearDNSSEC shapes it. Ordinary DO=0
+// question for RRSIG, NSEC or NSEC3, which keeps the one type it named,
+// is handed to the Msg path, where ClearDNSSEC shapes it. Ordinary DO=0
 // questions and every DO=1 question still serve as bytes.
 func TestNXDomainCutWireDeclinesExplicitDNSSECQuestionsAtDOZero(t *testing.T) {
 	cut := newNXDomainCutCache(32, time.Hour)

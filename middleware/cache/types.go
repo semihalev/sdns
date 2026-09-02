@@ -258,9 +258,9 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 	// The entry keeps only the signatures it vouches for. Every hit path
 	// serves these bytes with each record's TTL set to the entry's remaining
 	// lifetime, and that lifetime is bounded by the usable signatures alone
-	// (dnsutil.CalculateCacheTTL): a signature outside its validity period
-	//, a rollover's lapsed sibling, or one whose inception has not arrived
-	//, was received with whatever TTL it carried and would be handed out
+	// (dnsutil.CalculateCacheTTL): a signature outside its validity period,
+	// a rollover's lapsed sibling, or one whose inception has not arrived,
+	// was received with whatever TTL it carried and would be handed out
 	// on the next hit with the entry's, a zero returned as an hour, and the
 	// not-yet-valid one revived once its inception passed. The uncached
 	// first response still carries them as the authority sent them.
@@ -667,7 +667,7 @@ func (m *CacheMetrics) Stats() (hits, misses, evictions, prefetches int64) {
 
 // storableRecords returns records without the signatures that are outside
 // their validity period at now. The common shape, nothing to drop, passes
-// the caller's slice through untouched, this runs on every admission, and
+// the caller's slice through untouched. This runs on every admission, and
 // a response carries a lapsed or not-yet-valid signature only mid-rollover.
 func storableRecords(records []dns.RR, now time.Time) []dns.RR {
 	drop := 0

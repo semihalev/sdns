@@ -1288,7 +1288,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		// Depth cap or internal-exchange failure on the DNAME leg.
 		// Surfacing the error prevents a cyclic/overlong DNAME chain
 		// from being silently reported back as a NOERROR answer that
-		// contains only the outer DNAME, the client would follow
+		// contains only the outer DNAME. The client would follow
 		// that partial chain forever, so fail loud instead.
 		return nil, err
 	}

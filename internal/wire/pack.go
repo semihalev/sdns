@@ -67,7 +67,7 @@ func admissibleSVCBValues(values []dns.SVCBKeyValue) bool {
 
 // libraryOwned reports whether v's dynamic type is declared in the library:
 // a non-nil pointer (or a plain value) whose type's package is libraryPkg.
-// A typed-nil pointer is refused, it would carry the right provenance into
+// A typed-nil pointer is refused. It would carry the right provenance into
 // a method call that dereferences nothing.
 func libraryOwned(v any) bool {
 	t := reflect.TypeOf(v)
@@ -105,7 +105,7 @@ func libraryOwned(v any) bool {
 //     that, prepackaged.
 //
 // handled=true with a non-nil error is the consumer's error, reported after
-// bytes may already have left the process, the caller must not fall back and
+// bytes may already have left the process. The caller must not fall back and
 // write a second response.
 func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error) {
 	if msg == nil || msg.Rcode < 0 || msg.Rcode > 0xFFF {
@@ -120,7 +120,7 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	//
 	// Admission also runs before anything walks Extra looking for the OPT:
 	// IsEdns0 dereferences each record's header and type-asserts the match,
-	// so on a nil record or an OPT-shaped wrapper it panics, this preflight
+	// so on a nil record or an OPT-shaped wrapper it panics. This preflight
 	// is what turns those into a clean fallback instead.
 	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
@@ -347,7 +347,7 @@ func (state *packState) packInto(
 			//
 			// At off == len(out) there is no room even for a header. On the
 			// current library PackRR's own per-field bounds checks refuse
-			// this too, the guard is defense in depth, so a change in those
+			// this too. The guard is defense in depth, so a change in those
 			// checks cannot turn an exactly-full buffer into a record packed
 			// over the payload's tail.
 			if off >= len(out) {

@@ -143,7 +143,7 @@ func compileConfig(cfg *config.Config) *compiled {
 	// Exclude-A networks are only consulted under the well-known
 	// prefix (RFC 6147 §5.1.4 / RFC 6052 §3.1). When that prefix
 	// is active we apply a runtime default if the field was
-	// omitted (nil), the operator can opt out by declaring an
+	// omitted (nil). The operator can opt out by declaring an
 	// explicit empty list. When no configured prefix is the
 	// well-known one, skip the parse entirely.
 	if out.hasWellKnown() {
@@ -246,7 +246,7 @@ func (c *compiled) zoneExcluded(qname string) bool {
 			return true
 		}
 		// z always ends with "." (FQDN'd at compile time), so
-		// "."+z forces the label boundary check, no fragment
+		// "."+z forces the label boundary check. No fragment
 		// can match a longer label here.
 		if strings.HasSuffix(qname, "."+z) {
 			return true

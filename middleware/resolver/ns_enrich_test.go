@@ -68,7 +68,7 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 }
 
 // TestEnrichShedsWithoutPools pins the shed contract for bare resolvers and
-// full lanes alike: offering a job never blocks and never panics, the
+// full lanes alike: offering a job never blocks and never panics. The
 // addresses are simply not learned this time.
 func TestEnrichShedsWithoutPools(t *testing.T) {
 	r := newAttackHarnessResolver(&authority.Servers{Zone: "example."})

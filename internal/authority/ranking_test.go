@@ -165,7 +165,7 @@ func TestRotationLeavesTheOrderedServersAlone(t *testing.T) {
 // The order behind the first two is not decoration: it is what the
 // resolver walks when the leader does not answer, waiting out an adaptive
 // timeout at every step. So exploration moves its candidate into the
-// second slot rather than trading places with whoever held it, a trade
+// second slot rather than trading places with whoever held it. A trade
 // would fling the genuine runner-up down to wherever the guess came from,
 // putting every other guess in the delegation ahead of a server already
 // known to be fast.
@@ -178,7 +178,7 @@ func TestExplorationDoesNotDemoteTheRunnerUp(t *testing.T) {
 	}
 	last := list[len(list)-1]
 
-	// Explore, the roll is randN(len) < staleCount, so zero always
+	// Explore. The roll is randN(len) < staleCount, so zero always
 	// explores, and take the furthest candidate on offer.
 	withRand(t, func(n int) int {
 		if n == len(list) {
@@ -212,7 +212,7 @@ func TestExplorationDoesNotDemoteTheRunnerUp(t *testing.T) {
 // told apart by the estimate being zero, so recording a zero makes a
 // measurement report itself as the absence of one: priced at the seed,
 // explored forever, and never allowed to lead however fast it is.
-// Windows' timer produces exactly this for a loopback exchange, it is
+// Windows' timer produces exactly this for a loopback exchange. It is
 // where CI found it, and a LAN authority on any platform is one clock
 // granularity away from it.
 func TestAnInstantAnswerIsStillAnAnswer(t *testing.T) {

@@ -56,7 +56,7 @@ func TestFailureMissWitnessLifecycle(t *testing.T) {
 		t.Fatal("nil witness held with a denial zone on the path")
 	}
 	if !s.denialProofs.missWitnessHoldsWire(offPath.WireName(), dns.ClassINET, nil) {
-		t.Fatal("nil witness did not hold off-path, no zone could deny this name")
+		t.Fatal("nil witness did not hold off-path. No zone could deny this name")
 	}
 
 	// Any admission to an on-path zone replaces its snapshot: the old

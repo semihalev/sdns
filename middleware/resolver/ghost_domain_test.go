@@ -74,7 +74,7 @@ func mustRR(t *testing.T, s string) dns.RR {
 //     parent-granted lease is live; once the lease expires, re-resolution
 //     walks back to the parent and returns NXDOMAIN. The former one-hour
 //     lower clamp inflated the short lease into an hour and kept the withdrawn
-//     child alive, this sub-test fails on that pre-fix behaviour.
+//     child alive. This sub-test fails on that pre-fix behaviour.
 func TestGhostDomain_DelegationLeaseExpiry(t *testing.T) {
 	var parentHits, childHits int64
 

@@ -44,7 +44,7 @@ place.
 one to enable if you want ordinary devices to use your resolver privately.
 
 **DoH** is what browsers speak. It shares port 443 with HTTPS, which is the
-point, it is indistinguishable from ordinary web traffic on the wire.
+point. It is indistinguishable from ordinary web traffic on the wire.
 
 **DoQ** is the newest and least widely supported. It avoids the head-of-line
 blocking DoT inherits from TCP.

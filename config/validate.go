@@ -54,7 +54,7 @@ func (c *Config) Validate() error {
 	// filled in as "info" before the logger sees it. Anything else stops the
 	// server there, so a config test that disagreed would send the operator
 	// to production with a file that cannot start. "crit" was documented for
-	// years but never existed, the logger has no such level and startup
+	// years but never existed. The logger has no such level and startup
 	// rejects it.
 	switch c.LogLevel {
 	case "", "debug", "info", "warn", "error":
@@ -1260,7 +1260,7 @@ func existingDir(path, pending string) error {
 // a time.
 //
 // It is a variable rather than a check at each site so a test on either
-// platform can exercise both rules, this file has been wrong about the one
+// platform can exercise both rules. This file has been wrong about the one
 // it does not run twice, and only Windows CI noticed. Which rule is the
 // default here cannot be tested locally, since any assertion would compare
 // this expression against itself; that half stays CI's job.

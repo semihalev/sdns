@@ -350,7 +350,7 @@ func fillQuery(msg *DnstapMessage, query *dns.Msg, queryWire []byte) {
 // prepareWireTap is logMessage's assembly for a response that already exists
 // as wire bytes: the tap keeps an owned copy of them instead of packing the
 // message a second time. The body is borrowed pooled storage, valid only for
-// this call, and the queue is asynchronous, the copy is not an optimization
+// this call, and the queue is asynchronous. The copy is not an optimization
 // choice but the ownership rule.
 //
 // It prepares without enqueueing, because whether this response was actually
@@ -468,7 +468,7 @@ func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 }
 
 // WriteWire taps the response and forwards the bytes. The tap is prepared
-// before the downstream write, the body is borrowed and valid only for
+// before the downstream write. The body is borrowed and valid only for
 // this call, but committed after it, and only if the chain did not decline:
 // on ErrWireFallback the cache retakes the Msg path and WriteMsg taps that
 // serve, so enqueueing here would log the same response twice. A terminal

@@ -28,7 +28,7 @@ type SidecarEvaluator func(msg *dns.Msg) *Sidecar
 type WireHitVerdict uint8
 
 const (
-	// WireHitServe permits the byte serve. Nothing is counted here, a
+	// WireHitServe permits the byte serve. Nothing is counted here. A
 	// serve can still decline past the gate (writer readiness, build,
 	// transport fallback) and land on the decoded path, so accounting
 	// waits for the committed-bytes callback below.

@@ -74,7 +74,7 @@ func (s *Store) HasClientIP() bool {
 // Within a zone the draft's rule 3 falls out of the walk order: the exact
 // probe first, then wildcard suffixes from the longest down (stripping one
 // leading label per step), so the first wildcard hit is the one with the
-// most labels. A wildcard matches proper subdomains only, the walk starts
+// most labels. A wildcard matches proper subdomains only. The walk starts
 // at offs[1], so a name never probes its own spelling as a suffix.
 //
 // observed is nil unless a disabled zone matched, which keeps the miss

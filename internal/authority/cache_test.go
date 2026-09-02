@@ -182,7 +182,7 @@ func Test_CacheSetUntil(t *testing.T) {
 
 // TestSetUntilIfAbsent pins the provisional writer's contract: a live lease
 // always survives it, an absent or expired slot accepts it. The concurrent
-// leg hammers provisional writes against a live lease, the guard runs under
+// leg hammers provisional writes against a live lease. The guard runs under
 // the segment lock, so none of them may displace it.
 func TestSetUntilIfAbsent(t *testing.T) {
 	nscache := NewCache()

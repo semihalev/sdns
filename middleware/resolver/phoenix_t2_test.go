@@ -146,7 +146,7 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 
 	// The nested cut must never outlive its ancestor, despite the 12h
 	// referral. In this topology the inherited deadline is stored verbatim
-	// (SetUntil, no re-anchoring), so the two must be EXACTLY equal, any
+	// (SetUntil, no re-anchoring), so the two must be EXACTLY equal. Any
 	// drift means the deadline was recomputed or the wrong minimum won.
 	if !subDeleg.ExpiresAt.Equal(ghostDeleg.ExpiresAt) {
 		t.Fatalf("Phoenix T2: nested sub.ghostzone. cut (ExpiresAt=%s) != ancestor ghostzone. "+

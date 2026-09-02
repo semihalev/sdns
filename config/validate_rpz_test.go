@@ -173,7 +173,7 @@ func TestValidateRPZSourceZones(t *testing.T) {
 	t.Run("a file zone may name its apex, and it must be an FQDN", func(t *testing.T) {
 		// The shape feeds are actually distributed in: the SOA is "@"
 		// and every rule hangs off it, so the file alone cannot say what
-		// zone it is, the origin does.
+		// zone it is. The origin does.
 		relative := rpzZoneFile(t, `
 $TTL 30
 @ SOA rpz.vendor.example. hostmaster.vendor.example. 1 300 1800 604800 30

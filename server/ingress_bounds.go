@@ -199,7 +199,7 @@ func computeResourcePlan(in planInputs) resourcePlan {
 	// Socket fan-out follows the same logic: each reader can hold a
 	// batch of slabs, so sockets are slots in the slab cap too, and a
 	// small budget throttles throughput long before fan-out does. The
-	// descriptor allowance binds here as well, every socket is an open
+	// descriptor allowance binds here as well. Every socket is an open
 	// descriptor, and a fan-out the kernel answers with EMFILE at bind
 	// is a listener that never comes up at all.
 	sockets := in.sockets

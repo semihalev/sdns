@@ -615,7 +615,7 @@ func (r *Registry) cachePodAnswers(pod *Pod) {
 		if parsed == nil {
 			continue
 		}
-		// PTR points back at the canonical (first) FQDN, there
+		// PTR points back at the canonical (first) FQDN. There
 		// is only one PTR per IP, regardless of how many forward
 		// aliases the pod has.
 		canonical := fqdns[0]

@@ -101,7 +101,7 @@ func (r *Request) Msg() *dns.Msg {
 	return r.msg
 }
 
-// Undecoded reports whether the request is still wire-only, no message
+// Undecoded reports whether the request is still wire-only. No message
 // has been built for it. It is the gate a handler puts in front of its
 // wire branch: reading it never triggers a decode, where Msg does.
 func (r *Request) Undecoded() bool { return r.msg == nil }
@@ -256,7 +256,7 @@ func (r *Request) HasECS() bool {
 
 // HasTCPKeepalive reports whether the request carried the RFC 7828
 // edns-tcp-keepalive option. Whether that means anything is the edns
-// layer's call, the option is only honoured on a stream transport.
+// layer's call. The option is only honoured on a stream transport.
 func (r *Request) HasTCPKeepalive() bool {
 	if r.wireBorn() {
 		return r.hasKeepalive
@@ -534,7 +534,7 @@ type WireTransportLeaser interface {
 }
 
 // release drops the decoded message this request materialized, if any.
-// The parsed wire facts survive, they are offsets into storage the
+// The parsed wire facts survive. They are offsets into storage the
 // transport owns, so a wire-born request stays fully readable through
 // its accessors; what goes is the heap graph a decode built.
 func (r *Request) release() {

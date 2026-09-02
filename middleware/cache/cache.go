@@ -593,7 +593,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	// Miss. Dedup upstream work: followers wait for the leader
-	// to finish, then re-check the cache, the leader may have
+	// to finish, then re-check the cache. The leader may have
 	// just filled it. Ordinary followers that still see a miss
 	// proceed to run the upstream chain themselves. Followers of
 	// an expired RFC 9520 failure probe re-elect one leader while
@@ -1025,7 +1025,7 @@ func (c *Cache) lookupFailure(req *dns.Msg, clientScope netip.Prefix) (FailureHi
 
 // forwardedZoneQuestion reports whether qname belongs to a forward zone.
 //
-// Covering denial and failure state describes the public namespace, it was
+// Covering denial and failure state describes the public namespace. It was
 // learned by resolving from the root. A forward zone says that subtree is
 // answered somewhere else, so an NXDOMAIN cut, aggressive denial or authority
 // failure inherited from above it must not answer for it: a name that does
@@ -1482,7 +1482,7 @@ func (c *Cache) handleCacheHit(
 	// The policy verdict is judged once per hit, before the byte/decoded
 	// split, because both halves read it: the byte path serves only on
 	// WireHitServe, and the decoded fallback restamps on WireHitRestamp.
-	// It is judged for internal serves too, the verdict is a pure
+	// It is judged for internal serves too. The verdict is a pure
 	// function of the stored state, and the Msg-path chase reaches its
 	// segments through internal sub-queries, which is where a stale
 	// segment gets its restamp.
@@ -2102,7 +2102,7 @@ func honestOutgoing(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType, n
 
 // clampTTLsToEffective lowers every record TTL in res to the shortest bound
 // the answer is subject to: the delegation lease, and the lifetime the records
-// and their signatures themselves permit. A past cut clamps to zero, the
+// and their signatures themselves permit. A past cut clamps to zero. The
 // answer is still delivered, but nothing downstream is invited to keep it.
 // OPT is hop metadata whose TTL field is not a TTL.
 func clampTTLsToEffective(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType) {

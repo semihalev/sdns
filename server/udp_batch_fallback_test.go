@@ -111,7 +111,7 @@ func TestUDPPortableFallbackReplyAddressing(t *testing.T) {
 
 // TestUDPBatchTXRetirementServesDirect pins the send half of syscall
 // degradation: with batch TX retired, the state a permanent sendmmsg
-// errno leaves behind, every reply must still reach its client through
+// errno leaves behind. Every reply must still reach its client through
 // the direct sender. Without retirement, a seccomp policy permitting
 // recvmmsg but not sendmmsg was a server that read every query and
 // answered none.

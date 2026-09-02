@@ -163,7 +163,7 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 // Internal() always reports true. middleware.responseWriter.Reset
 // propagates that through the interface check so the cache
 // middleware's remaining Internal() branches keep behaving
-// correctly during Phase 3, those branches are replaced with
+// correctly during Phase 3. Those branches are replaced with
 // queryer.IsInternal(ctx) in Phase 4.
 type BufferWriter struct {
 	msg    *dns.Msg

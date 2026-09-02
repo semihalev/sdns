@@ -78,7 +78,7 @@ func TestClearDNSSECKeepsOnlyTheTypeAskedFor(t *testing.T) {
 
 // TestClearDNSSECInPlaceMatchesAndAllocatesNothing pins the in-place
 // variant to the same rule as ClearDNSSEC, compacting the message's own
-// sections without allocating, it runs on every DO=0 aggressive hit.
+// sections without allocating. It runs on every DO=0 aggressive hit.
 func TestClearDNSSECInPlaceMatchesAndAllocatesNothing(t *testing.T) {
 	build := func(qtype uint16) *dns.Msg {
 		m := new(dns.Msg)

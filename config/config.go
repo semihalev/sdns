@@ -279,7 +279,7 @@ type RPZZone struct {
 // ForwardZoneConfig sends one zone's queries to named recursive upstreams
 // instead of resolving them from the root.
 //
-// This is forwarding in the RFC 8499 §6 sense, the query goes out with RD=1
+// This is forwarding in the RFC 8499 §6 sense. The query goes out with RD=1
 // to a server that resolves on our behalf, not a stub zone, which points at
 // a zone's own authoritative servers with RD=0.
 //
@@ -821,7 +821,7 @@ forwarderservers = [
 
 # Per-zone forwarding
 # Sends one zone's queries to its own upstreams while everything else still
-# resolves recursively. This is forwarding in the RFC 8499 sense, the query
+# resolves recursively. This is forwarding in the RFC 8499 sense. The query
 # goes out with RD=1 to a resolver that answers on our behalf, so the
 # upstreams must be recursive resolvers, not the zone's authoritative servers.
 # The most specific matching zone wins. A zone must name itself and at least

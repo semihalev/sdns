@@ -30,7 +30,7 @@ ch.CancelWithRcode(rcode, do)   // write a reply with this rcode, then stop
 ```
 
 Only `Next` takes the context. `do` on `CancelWithRcode` sets the DO bit on the
-response's OPT record, it is not an authoritative flag.
+response's OPT record. It is not an authoritative flag.
 
 ## The default chain
 
@@ -75,7 +75,7 @@ resolving to the wrong one.
 Position is a design decision, not a detail:
 
 - **Before `cache`** if it must see queries the cache would otherwise answer.
-  Policy and filtering belong here, this is where dynamic plugins are
+  Policy and filtering belong here. This is where dynamic plugins are
   inserted. Note that this is not "every query": access control, rate limiting,
   the hosts file, views, the blocklist and RPZ all run earlier and any of them
   can end the chain first.

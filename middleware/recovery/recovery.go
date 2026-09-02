@@ -15,7 +15,7 @@ import (
 )
 
 // panics counts caught panics in downstream middleware. A non-zero
-// rate is a critical signal, every panic is a bug that the recovery
+// rate is a critical signal. Every panic is a bug that the recovery
 // middleware turned into a SERVFAIL for the client. Alert on rate(),
 // not on absolute value.
 var panics = metric.NewCounter(nil, prometheus.CounterOpts{

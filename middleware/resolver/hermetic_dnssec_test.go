@@ -257,7 +257,7 @@ func TestHermeticDNSSECNODATA(t *testing.T) {
 
 // TestHermeticDNSSECNSEC3OptOut pins what an Opt-Out span is worth. Such a
 // span may contain unsigned delegations, so a denial resting on one does
-// not establish that the name is absent, the answer may be served, but it
+// not establish that the name is absent. The answer may be served, but it
 // must not be presented as authenticated (RFC 5155 §6, §9.2).
 func TestHermeticDNSSECNSEC3OptOut(t *testing.T) {
 	net := newHermeticNet(t)

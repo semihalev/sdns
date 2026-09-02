@@ -453,7 +453,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
 .search-hit:hover, .search-hit[aria-selected="true"] { background: var(--bg-raised); text-decoration: none; }
 .search-hit[aria-selected="true"] { outline: 1px solid var(--accent-dim); }
 /* Wraps by structure rather than at a chosen width. The context is kept on
-   one piece, it reads as a unit, but the row is free to break, so the
+   one piece. It reads as a unit, but the row is free to break, so the
    heading and the context share a line whenever they fit and stack when they
    do not. A media query here was tuned to this content and overflowed one
    pixel above whatever number it named. */

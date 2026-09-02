@@ -738,7 +738,7 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 			entry.ttl, cfg.ECS.CacheLimitTTL.Duration)
 	}
 
-	// Unscoped writes must NOT be capped, the cap is per
+	// Unscoped writes must NOT be capped. The cap is per
 	// CacheConfig.ECSMaxTTL gated by `scoped == true`.
 	plainKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
 	c.store.SetFromResponseWithKey(plainKey, resp, time.Time{}, 0)

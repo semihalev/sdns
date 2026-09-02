@@ -71,8 +71,8 @@ type udpJob struct {
 	pktinfoLen int
 
 	// Cached classic views handed to the middleware chain. RemoteAddr's
-	// IP always points into ipScratch; observers must copy, never retain,
-	// the slab is reused for the next request.
+	// IP always points into ipScratch; observers must copy, never retain.
+	// The slab is reused for the next request.
 	remote    net.UDPAddr
 	ipScratch [16]byte
 
@@ -282,7 +282,7 @@ type udpEngine struct {
 	txConns   map[*net.UDPConn]syscall.RawConn
 	// txRetired flips once when sendmmsg proves permanently unusable
 	// (ENOSYS/EOPNOTSUPP); every send after that goes direct. The map
-	// above stays untouched, it is read without a lock.
+	// above stays untouched. It is read without a lock.
 	txRetired atomic.Bool //nolint:unused // Linux batch path (udp_batch_linux.go)
 }
 
@@ -530,7 +530,7 @@ func (e *udpEngine) enqueueCounted(j *udpJob) {
 	default:
 	}
 
-	// The queue is full, so the pool is not momentarily busy, it is
+	// The queue is full, so the pool is not momentarily busy. It is
 	// behind. A miss holds its worker for the whole recursion, hundreds
 	// of milliseconds, so a fixed pool caps concurrency at the number of
 	// workers: measured at exactly four queries in flight with four
@@ -591,7 +591,7 @@ func (j *udpJob) release(from uint8) {
 	// Quiescence is what a measurement takes as the end of the request,
 	// and clearing a slab is inside the request, not after it: decrement
 	// any earlier and the window can close while this job is still being
-	// wiped. The count may briefly read high, the slab can be taken and
+	// wiped. The count may briefly read high. The slab can be taken and
 	// queued again before this line runs, which is the safe direction
 	// for a barrier: it delays quiescence, it never claims it early.
 	if from == udpJobQueued || from == udpJobServing {
@@ -658,7 +658,7 @@ func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 
 	header, ok := wire.ParseHeader(j.rx[:j.rxLen])
 	if !ok {
-		// Unparseable header: let the client hang, any reply can
+		// Unparseable header: let the client hang. Any reply can
 		// amplify. (Library-server parity.)
 		udpDropMalformed.Inc()
 		return

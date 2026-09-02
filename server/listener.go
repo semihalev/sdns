@@ -66,7 +66,7 @@ var errListenerNotBound = errors.New("listener: Serve called before Bind")
 //
 // When a critical failure is present, listeners that already bound
 // successfully are shut down before bindAll returns, so the caller
-// never has to remember half-bound state, the invariant is
+// never has to remember half-bound state. The invariant is
 // "err != nil ⇒ no sockets held by this resolver".
 func bindAll(ctx context.Context, listeners []Listener) ([]Listener, error) {
 	var active []Listener

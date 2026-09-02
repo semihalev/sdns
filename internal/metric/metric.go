@@ -57,7 +57,7 @@
 // Concurrency: Counter.Inc/Add and CounterVec.WithLabelValues are
 // safe for unlimited concurrent calls. The flusher runs in one
 // dedicated goroutine and reads each Counter's lastSent without
-// synchronization, that field is owned by the flusher; the
+// synchronization. That field is owned by the flusher; the
 // registry's flushMu serialises all flush passes.
 //
 // # Limitations
@@ -352,7 +352,7 @@ func (cv *CounterVec) create(key string, values []string) *Counter {
 	// publicly findable via cv.m. If we published first, a brief
 	// window exists where another goroutine could WithLabelValues +
 	// Inc, while a concurrent FlushAll snapshot misses the not-yet-
-	// registered counter, the increment would never reach
+	// registered counter. The increment would never reach
 	// Prometheus, and at shutdown a final flush would drop it
 	// silently. Counter.flush on an empty (un-incremented) counter
 	// is a no-op, so a spuriously-early flush here is harmless.

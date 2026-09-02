@@ -731,7 +731,7 @@ func startTruncatingForwarderServers(t *testing.T) (
 
 // vacantLoopbackAddr returns the address of a server that answers with
 // something that is not a DNS message, which is a deterministic failure.
-// An address assumed closed is a race, it can be taken between being
+// An address assumed closed is a race. It can be taken between being
 // released and being used, and a silent one costs a full timeout.
 func vacantLoopbackAddr(t *testing.T) string {
 	t.Helper()

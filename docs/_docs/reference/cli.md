@@ -34,7 +34,7 @@ sdns -t -c /etc/sdns.conf
 ```
 
 Exit code `0` if the file is valid, `1` if it is not. Every problem found is
-reported, not just the first, the gate is meant to be run once and fixed once,
+reported, not just the first. The gate is meant to be run once and fixed once,
 rather than run in a loop.
 
 What it checks: addresses parse; ports resolve through the same lookup a dial
@@ -71,7 +71,7 @@ directory and uses it:
 ./sdns
 ```
 
-The generated file documents every setting in place. Read it once, it is the
+The generated file documents every setting in place. Read it once. It is the
 authoritative description of the version you are running.
 
 ## Schema version

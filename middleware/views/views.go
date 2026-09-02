@@ -6,7 +6,7 @@
 //
 // Views are intentionally evaluated before blocklist and resolver
 // so an admin-curated answer for a specific client always wins.
-// Internal sub-queries skip views entirely, they have no
+// Internal sub-queries skip views entirely. They have no
 // meaningful client IP and views are a client-traffic concept.
 package views
 

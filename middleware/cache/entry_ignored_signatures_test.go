@@ -447,7 +447,8 @@ func TestDOZeroBodyKeepsOnlyTheTypeAskedFor(t *testing.T) {
 // TestAdditionalSignatureIsJudgedOnTheEntrysClock pins the admission clock.
 // The lifetime, the entry's stored instant and the verdict on each
 // additional signature read the same now, so the comparison is exact: a
-// signature permitting one second is not carried by a two-second entry, // the tolerance that let it through served it a whole second past its
+// signature permitting one second is not carried by a two-second entry,
+// the tolerance that let it through served it a whole second past its
 // ceiling, and one sharing the answer's own validity window, which trailed
 // a lifetime measured a moment earlier by that moment, is carried.
 func TestAdditionalSignatureIsJudgedOnTheEntrysClock(t *testing.T) {

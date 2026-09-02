@@ -830,7 +830,7 @@ func (ch *Chain) Finish() {
 	ch.finishDetach()
 
 	// And drop what this request left behind. Resetting at the *start* of
-	// the next request is enough for correctness, nothing reads these
+	// the next request is enough for correctness. Nothing reads these
 	// after Finish, but it means a slab keeps one request's decoded
 	// message and one response graph reachable until another client
 	// happens to arrive on that slab. On a quiet server that is
@@ -908,7 +908,7 @@ func (ch *Chain) Next(ctx context.Context) {
 
 	// A wire-born request that decoded through Request.Msg carries no
 	// detached context yet: the handler that decoded it may still be
-	// holding the job carrier. Downstream handlers must not, the carrier
+	// holding the job carrier. Downstream handlers must not. The carrier
 	// is recycled with the job and cannot host request-tree state, so the
 	// transition completes here, once, before the next handler runs.
 	// Chain.Materialize callers already own theirs and skip this.
@@ -973,7 +973,7 @@ func (ch *Chain) Cancel() {
 func (ch *Chain) CancelWithRcode(rcode int, do bool) {
 	req := ch.Request.Msg()
 	if req == nil {
-		// The rcode reply needs the decoded form, but it is terminal, no
+		// The rcode reply needs the decoded form, but it is terminal. No
 		// handler runs after it, so no detached context is established.
 		if req = ch.Request.materialize(); req == nil {
 			ch.count = 0

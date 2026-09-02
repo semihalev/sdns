@@ -758,7 +758,7 @@ func TestNXDomainCutIntegrationShortCutClampsClientNotProof(t *testing.T) {
 		}
 	}
 	if cache.store.NXDomainCutLen() != 1 {
-		t.Fatalf("cut entries = %d, want 1, the clamp must not disqualify the proof",
+		t.Fatalf("cut entries = %d, want 1. The clamp must not disqualify the proof",
 			cache.store.NXDomainCutLen())
 	}
 

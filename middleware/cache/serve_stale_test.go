@@ -1103,7 +1103,7 @@ func TestServeStaleReEvaluatesLeaseAfterASlowChase(t *testing.T) {
 	}}
 	seedStaleEntry(t, c, aliasBody, scope, time.Second, time.Hour)
 
-	// The shared candidate is servable when the walk starts, its lease is
+	// The shared candidate is servable when the walk starts. Its lease is
 	// over the one-second floor an advertised TTL needs, and is expired by
 	// the time the chase above returns.
 	const lease = 1200 * time.Millisecond

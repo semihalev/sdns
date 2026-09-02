@@ -12,7 +12,7 @@ import (
 
 // The replay pass finishes a query the inline pass already scored:
 // recording it again would double its contribution, but the response
-// wrapper must still install, the replay is the pass that writes, and
+// wrapper must still install. The replay is the pass that writes, and
 // the tracker's amplification feedback comes from that wrapper.
 func TestReflexReplayWrapsWithoutScoring(t *testing.T) {
 	cfg := &config.Config{ReflexEnabled: true, ReflexThreshold: 0.99}

@@ -444,8 +444,8 @@ func TestIPv6NetworkProbe(t *testing.T) {
 
 	// An exchange that fails has to be reported as a failure, not taken for
 	// a working network. The failure comes from a server that answers with
-	// something that is not a DNS message: a port assumed closed is a race,
-	// the address can be taken between releasing it and using it, and
+	// something that is not a DNS message: a port assumed closed is a race.
+	// The address can be taken between releasing it and using it, and
 	// one that is merely silent costs the probe's whole timeout.
 	broken, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

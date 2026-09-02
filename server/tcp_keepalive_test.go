@@ -70,7 +70,7 @@ func keepaliveIn(t *testing.T, wrote []byte) (uint16, bool) {
 // TestKeepaliveFollowsTheTransport is RFC 7828 through the full default
 // chain: a stream client that sent edns-tcp-keepalive is told the idle
 // timeout, a stream client that did not ask is not, and a datagram
-// client never is, the option is forbidden over UDP in both directions,
+// client never is. The option is forbidden over UDP in both directions,
 // and ignoring it there is what the RFC asks of a server.
 func TestKeepaliveFollowsTheTransport(t *testing.T) {
 	s := newRawTestServer(t)

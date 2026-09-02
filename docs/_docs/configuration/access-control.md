@@ -52,7 +52,7 @@ The two modes matter. With `reflexlearningmode = true` detections are logged and
 nothing is blocked, which is how you calibrate the threshold against your own
 traffic. `reflexblockmode = false` also only logs. Turn on blocking after you
 have watched the detections for a while and are satisfied they are not your own
-clients, the threshold is a score between 0 and 1, and lower is more aggressive.
+clients. The threshold is a score between 0 and 1, and lower is more aggressive.
 
 ## Blocking names
 

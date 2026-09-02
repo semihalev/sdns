@@ -68,7 +68,7 @@ you publish it more widely, set `accesslist` first, see
 ```
 
 `EXPOSE` in the image declares TCP unless a port says otherwise, so **DoQ and
-HTTP/3 have no declaration**, they are UDP. `docker run -P` will not publish
+HTTP/3 have no declaration**. They are UDP. `docker run -P` will not publish
 them; name them explicitly (`-p 853:853/udp`, `-p 8053:8053/udp`) if you serve
 either.
 

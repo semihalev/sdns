@@ -86,7 +86,7 @@ tuning pass; a specialist could likely move any of these numbers some percent.
 | Knot Resolver 6.2.0 | 191k | 192k |
 
 sdns with the untouched default configuration measures in the same band
-(median 406k over three runs), the result does not depend on tuning knobs.
+(median 406k over three runs). The result does not depend on tuning knobs.
 Answer classes beyond plain hits, measured on sdns freshly warmed: negative
 answers (NXDOMAIN from cached denial) 409k, cached SERVFAIL 399k.
 
@@ -109,7 +109,7 @@ readiness gate, verified warm, throwaway run, 3×20 s).
 
 **The 8-way concurrency class.** sdns run with `GOMAXPROCS=8` to match the
 8-worker configurations of the C daemons. This bounds how many threads Go
-executes simultaneously, it is a concurrency limit, not CPU pinning; no
+executes simultaneously. It is a concurrency limit, not CPU pinning; no
 process here is bound to specific cores:
 
 | resolver | median qps | busy cores | qps per busy core |
@@ -208,7 +208,7 @@ changed the answer by more than the result itself:
   the dual stack they ship with, and the numbers below replace the earlier
   ones.
 
-QNAME minimisation was not equalised, it was measured both ways. RFC 9156
+QNAME minimisation was not equalised. It was measured both ways. RFC 9156
 §2.3 requires a bound, *"Resolvers supporting QNAME minimisation MUST
 implement a mechanism to limit the number of outgoing queries per user
 request"*, and names values: MAX_MINIMISE_COUNT with a RECOMMENDED value of
@@ -266,7 +266,7 @@ lost column are where that shows up.
 ### Caveats
 
 - One pass per resolver per round, not a repeated measurement within a round.
-  A cold run cannot be repeated quickly, the cache has to be emptied and the
+  A cold run cannot be repeated quickly. The cache has to be emptied and the
   upstreams re-walked, so the spread column is across rounds, which also
   carries the hour's drift.
 - Cold-cache throughput is dominated by upstream latency, not by the local
@@ -305,7 +305,7 @@ dnsperf -s <addr> -p <port> -m tcp -d hits.txt -c 20 -T 4 -l 20    # TCP
 ```
 
 Warm first, discard a throwaway run, take at least three measurements, report
-the median, and state the flow count, it is the parameter that moves these
+the median, and state the flow count. It is the parameter that moves these
 numbers the most.
 
 For the cold-cache section, the shape is different: no warm pass, one full
@@ -320,5 +320,5 @@ dnsperf -s <addr> -p <port> -S 1 -T 100 -t 10 -c 1000 -d queryfile-50000
 
 Alternate the resolvers rather than blocking them, record queries lost
 alongside SERVFAIL, and check that the two summed agree across contenders
-before comparing throughput, if they do not, the resolvers are not doing the
+before comparing throughput. If they do not, the resolvers are not doing the
 same work and the throughput numbers do not mean what they appear to.

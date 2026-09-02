@@ -7,8 +7,8 @@ import (
 
 // listenerErrors counts listener Serve loops that exited with a
 // non-nil error. Bumped per protocol so operators can tell whether
-// UDP is degrading independently from TLS or DoH. Bounded label set,
-// the value is l.Proto() which is one of udp/tcp/tls/doh/doh3/doq.
+// UDP is degrading independently from TLS or DoH. Bounded label set.
+// The value is l.Proto() which is one of udp/tcp/tls/doh/doh3/doq.
 var (
 	listenerErrors = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_listener_errors_total",

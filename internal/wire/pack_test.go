@@ -311,7 +311,7 @@ func TestTryPackMatchesLibrary(t *testing.T) {
 
 // TestTryPackRepeatedAgrees drives the pooled state through many messages in
 // sequence. A dictionary or shim returned dirty would not show on the first
-// pack, it would show on the one after it.
+// pack. It would show on the one after it.
 func TestTryPackRepeatedAgrees(t *testing.T) {
 	corpus := packCorpus(t)
 	want := make([][]byte, len(corpus))
@@ -667,7 +667,7 @@ func TestTryPackFallsBackOnPrivateRR(t *testing.T) {
 		})
 	}
 
-	// Provenance alone would admit PrivateRR, it is declared in the
+	// Provenance alone would admit PrivateRR. It is declared in the
 	// library, so the by-name refusal has to hold on its own.
 	if admissibleRR(rr) {
 		t.Fatal("*dns.PrivateRR passed admission")

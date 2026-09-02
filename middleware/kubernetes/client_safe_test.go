@@ -123,7 +123,7 @@ func TestSafeWrappersDispatchValidObjects(t *testing.T) {
 }
 
 // TestTombstoneUnwrapping covers the DeletedFinalStateUnknown branch
-// in the on*Delete handlers, the informer can deliver a tombstone
+// in the on*Delete handlers. The informer can deliver a tombstone
 // when the original object was missed, and the handler must unwrap it
 // so deletions still propagate.
 func TestTombstoneUnwrapping(t *testing.T) {

@@ -41,7 +41,7 @@ var resolver ipResolver = net.DefaultResolver
 // newDoHServer parses a DoH upstream URL, resolves the hostname (if
 // any) via the system resolver, and returns a server entry ready to
 // be added to Forwarder.servers. Hostname resolution happens once at
-// boot, there is no per-query DNS dependency. The resolved IPs are
+// boot. There is no per-query DNS dependency. The resolved IPs are
 // pinned into a custom DialContext on the returned http.Client so
 // Go's transport never re-resolves at connect time.
 //
@@ -150,7 +150,7 @@ func newDoHServer(rawURL string, dialTimeout, requestTimeout time.Duration) (*se
 			// ServerName is the original hostname so SNI is sent
 			// correctly and the cert is validated against the
 			// name the operator typed, not against the IP. For
-			// IP-literal URLs, host == ip.String(), the cert
+			// IP-literal URLs, host == ip.String(). The cert
 			// must have a matching SAN.
 			ServerName: host,
 			MinVersion: tls.VersionTLS12,

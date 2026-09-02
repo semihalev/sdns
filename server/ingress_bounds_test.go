@@ -240,7 +240,7 @@ func TestPlanIsServerLocal(t *testing.T) {
 	eSmall := newTCPEngine(echoHandler(), "tcp", 0, small)
 	eBig := newTCPEngine(echoHandler(), "tcp", 0, big)
 	if cap(eSmall.smallTokens) != 3 || cap(eBig.smallTokens) != 300 {
-		t.Fatalf("token caps %d/%d, want 3/300, the engines are reading a shared plan",
+		t.Fatalf("token caps %d/%d, want 3/300. The engines are reading a shared plan",
 			cap(eSmall.smallTokens), cap(eBig.smallTokens))
 	}
 	if eSmall.maxConns != 3 || eBig.maxConns != 300 {

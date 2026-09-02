@@ -67,7 +67,7 @@ func TestEntryQuestionMatchesPackedName(t *testing.T) {
 
 // TestWireFastPathEscapedNameEcho drives an escaped name through the byte
 // path end to end. The shortcut compares presentation names, so an escaped
-// name that matches exactly is served without re-encoding, the reply must
+// name that matches exactly is served without re-encoding. The reply must
 // still carry the client's name unchanged.
 func TestWireFastPathEscapedNameEcho(t *testing.T) {
 	const qname = `esc\.aped.example.com.`

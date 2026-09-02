@@ -101,7 +101,7 @@ func (l *ipLPM) lookup(addr netip.Addr) (*Rule, int) {
 }
 
 // CanonicalClient is the query-time twin of the rule-side encoding: the
-// client's address in its family's native form. Unmap matters, a
+// client's address in its family's native form. Unmap matters. A
 // transport may hand an IPv4 client over as ::ffff:a.b.c.d, and that
 // spelling must meet the IPv4 rules, not the IPv6 ones.
 func CanonicalClient(a netip.Addr) netip.Addr { return a.Unmap() }
@@ -127,7 +127,7 @@ func parseClientIPOwner(enc string) (netip.Prefix, bool) {
 	labels = labels[1:]
 
 	// IPv4: exactly four decimal octet labels, reversed. The prefix
-	// stays in its own family, the family is part of what a rule means.
+	// stays in its own family. The family is part of what a rule means.
 	if len(labels) == 4 && isV4Octets(labels) {
 		if bits > 32 {
 			return netip.Prefix{}, false

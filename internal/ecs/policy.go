@@ -166,8 +166,8 @@ func (p *Policy) Allows(client netip.Addr) bool {
 
 // Clamp returns a normalised EDNS0_SUBNET safe to forward upstream
 // under this policy, or nil when the input is unusable (no address,
-// unsupported family). The returned option is always a fresh value,
-// the caller can attach it to an outgoing OPT without aliasing
+// unsupported family). The returned option is always a fresh value.
+// The caller can attach it to an outgoing OPT without aliasing
 // the inbound request's storage.
 //
 // Source-prefix is capped to ForwardV4Max / ForwardV6Max, then the

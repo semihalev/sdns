@@ -99,7 +99,7 @@ func HasNSEC3OptOut(rrs []dns.RR, zone string) bool {
 //
 // The separator has to be a real one. In presentation format a dot inside
 // a label is written `\.`, so `foo\.example.com.` is the two labels
-// `foo.example` and `com`, it ends with the text of `example.com.`
+// `foo.example` and `com`. It ends with the text of `example.com.`
 // without being anywhere below that zone. Reading it as a descendant
 // would let a key for example.com. authenticate an owner it has no
 // authority over.
@@ -168,7 +168,7 @@ func DnameTarget(msg *dns.Msg) string {
 		qLabels := dns.CountLabel(q.Name)
 		if ownerLabels == 0 || qLabels <= ownerLabels {
 			// Exact-owner (per RFC 6672 §2.3) or the owner has more
-			// labels than qname, neither can apply.
+			// labels than qname. Neither can apply.
 			return ""
 		}
 		if dnsname.CompareSuffix(dname.Header().Name, q.Name) != ownerLabels {

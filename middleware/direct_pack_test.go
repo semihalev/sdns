@@ -176,7 +176,7 @@ func TestDirectPackFallsBackThroughTheMsgPath(t *testing.T) {
 }
 
 // TestDirectPackTransportErrorIsFinal pins the no-retry contract: after a
-// transport error, bytes may be partially out, the response is marked
+// transport error, bytes may be partially out. The response is marked
 // written and nothing writes a second one.
 func TestDirectPackTransportErrorIsFinal(t *testing.T) {
 	sink := externalUDPSink()

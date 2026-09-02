@@ -104,7 +104,7 @@ func TestVerifyZoneRefusesForeignSignerWithRealKSKPresent(t *testing.T) {
 	forged = append(forged, zonemd, sign([]dns.RR{zonemd}))
 
 	// The anchor is the victim's DS, and the forged zone carries the key
-	// that matches it, the zone must still be refused, because that key
+	// that matches it. The zone must still be refused, because that key
 	// signed nothing here.
 	if _, err := verifyZone(forged, victim.anchors); err == nil {
 		t.Fatal("a zone signed by a foreign key was accepted because the anchor-matching key rode along unsigned")
@@ -138,7 +138,7 @@ func TestManagerRefusesSerialRollback(t *testing.T) {
 	if err := m.Load(newer.RRs); err != nil {
 		t.Fatalf("load newer: %v", err)
 	}
-	// Sanity: the older zone is itself perfectly valid, it is refused for
+	// Sanity: the older zone is itself perfectly valid. It is refused for
 	// being older, not for being unverifiable.
 	if _, err := verifyZone(older.RRs, newer.Anchors); err != nil {
 		t.Fatalf("the older zone must verify on its own merits: %v", err)
@@ -280,7 +280,7 @@ func TestDSAnswerRequiresProvableNODATA(t *testing.T) {
 		t.Fatalf("build zone: %v", err)
 	}
 	if _, err := verifyZone(z.RRs, z.Anchors); err != nil {
-		t.Fatalf("the zone itself must verify, the defect is semantic: %v", err)
+		t.Fatalf("the zone itself must verify. The defect is semantic: %v", err)
 	}
 	snap, err := buildSnapshot(z.RRs, time.Now())
 	if err != nil {
@@ -379,7 +379,7 @@ func TestVerifyZoneAcceptsUniqueTupleBesideDuplicates(t *testing.T) {
 // leaving the newer copy displaced by the older one. Every operation
 // involved is individually legal, so the race detector reports nothing, and
 // the window is a few instructions wide, so volume testing does not find it
-// either, the section has to be held open to prove it is exclusive.
+// either. The section has to be held open to prove it is exclusive.
 //
 // Held open: the first load pauses between its check and its swap while a
 // second load runs to completion with a newer serial. Under an exclusive
@@ -456,7 +456,7 @@ func TestLoadPublishIsExclusive(t *testing.T) {
 
 // TestSnapshotHorizonIgnoresUnverifiedZONEMDSignature pins which signatures
 // may shorten a copy's life. RFC 8976 excludes the apex RRSIG(ZONEMD) from
-// the digest, it is written after the digest is computed, and apex
+// the digest. It is written after the digest is computed, and apex
 // verification accepts an RRset when one covering signature validates. So
 // an appended, already-expired RRSIG(ZONEMD) is the one record in a
 // transfer that is neither authenticated by the digest nor rejected by
@@ -693,15 +693,15 @@ func TestApexSignatureWorkIsBounded(t *testing.T) {
 	// is the observable proof that the attempt window is bounded.
 	start := time.Now()
 	if _, err := verifyZone(flooded, z.Anchors); err == nil {
-		t.Fatal("every attempt went to a forgery, yet the zone verified, the window is not bounded")
+		t.Fatal("every attempt went to a forgery, yet the zone verified. The window is not bounded")
 	}
 	// And the refusal is cheap. Bounded, this is a handful of public-key
 	// operations; unbounded it is one per forgery, which on this input
 	// takes hundreds of milliseconds and scales with whatever a transfer
-	// carries. The threshold is loose on purpose, it is a guard against
+	// carries. The threshold is loose on purpose. It is a guard against
 	// the work scaling, not a benchmark.
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("verification of %d appended signatures took %v, the work is not bounded",
+		t.Fatalf("verification of %d appended signatures took %v. The work is not bounded",
 			forgeries, elapsed)
 	}
 }

@@ -102,7 +102,7 @@ type ResponseWriter struct {
 	hasCookieRaw bool
 	// keepalive marks a stream-transport client that sent the RFC 7828
 	// edns-tcp-keepalive option; the response advertises the server's
-	// idle timeout back. Never set for datagram transports, the option
+	// idle timeout back. Never set for datagram transports. The option
 	// is forbidden over UDP in both directions, and DoQ forbids it
 	// entirely (RFC 9250 §5.5.2).
 	keepalive bool
@@ -186,7 +186,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// Clear AD unless the client signalled it wants validation state (DO
 	// or AD bit set) AND did not set CD. RFC 4035 §3.2.3 / RFC 6840 §5.7:
 	// a CD=1 client opted out of trusting our validation, so AD must
-	// never be asserted to it, this is also the last-line backstop for
+	// never be asserted to it. This is also the last-line backstop for
 	// the forwarder, which passes an upstream's AD bit through.
 	rw.noad = req.CheckingDisabled || (!req.AuthenticatedData && !do)
 

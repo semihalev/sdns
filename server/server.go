@@ -43,7 +43,7 @@ type Server struct {
 	// statements later, by the supervisor.
 	shutdownDone chan struct{}
 	// trimDone closes when the opt-in trimmer goroutine has exited; nil
-	// when it was never started. Stopped waits on it, a trim is a
+	// when it was never started. Stopped waits on it. A trim is a
 	// process-wide collection, and "stopped" must not be true while one
 	// may still be running.
 	trimDone chan struct{}
@@ -343,7 +343,7 @@ func (s *Server) queryTimeout() time.Duration {
 //
 // It is the completion barrier a measurement needs. A client holding its
 // last reply proves the bytes left, not that the slab that carried them
-// was released, the release runs after the send, on the server's own
+// was released. The release runs after the send, on the server's own
 // goroutine, so anything that samples the process at that moment (an
 // allocation gate, a leak check, a drain assertion) is otherwise reduced
 // to sleeping and hoping. Transports that own no slabs are quiescent by
@@ -417,8 +417,8 @@ func (s *Server) GetTLSConfig() *tls.Config {
 // in use", rarely for DoH3 and often for DoQ.
 //
 // It does not mean nothing is running. A handler that outlasts its
-// listener's drain deadline is force-closed and left to finish on its own,
-// the alternative is a shutdown that a single stuck request can hang
+// listener's drain deadline is force-closed and left to finish on its own.
+// The alternative is a shutdown that a single stuck request can hang
 // forever, so work can outlive this by as long as that handler takes.
 // Process exit is the backstop for that, and an in-process restart is
 // safe from the socket's point of view but not a guarantee that the old

@@ -494,7 +494,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 			healthyRes.Load(), healthyIss.Load(), 100*ratio, darkIss.Load())
 
 		// The healthy half must be essentially untouched by the dead
-		// destination, this is the property that makes shedding
+		// destination. This is the property that makes shedding
 		// destination-scoped rather than resolver-wide.
 		if ratio < 0.9 {
 			t.Errorf("healthy resolution collapsed during a single-destination outage: "+

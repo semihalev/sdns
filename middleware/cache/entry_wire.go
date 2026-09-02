@@ -27,7 +27,7 @@ const (
 // covers. The DNSSEC flag means "ClearDNSSEC would remove something", and
 // it is taken exactly the way ClearDNSSEC decides: from every section, the
 // additional one included, and leaving out the one authenticating type the
-// question asked for by name, that type is the payload, kept for any DO.
+// question asked for by name. That type is the payload, kept for any DO.
 // Mirroring the Msg path's filter is what keeps the DO=0 wire body
 // identical to it.
 func prepareWireServe(body []byte) wireServeFlags {
@@ -126,7 +126,7 @@ func (e *CacheEntry) wireEDEReserve() int {
 // wireBodyFor returns the stored body this client may be served, and the
 // verdict that goes with it. A client that asked for DNSSEC gets the stored
 // message; one that did not gets the stripped form, which is nil when the
-// entry has none, that client keeps the Msg path, which strips as it goes.
+// entry has none. That client keeps the Msg path, which strips as it goes.
 // The DNSSEC flag already leaves out the type an explicit RRSIG, NSEC or
 // NSEC3 question asked for, so such an entry serves the stored message for
 // any DO unless it also carries authenticating records of another type.

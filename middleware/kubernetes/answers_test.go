@@ -540,7 +540,7 @@ func TestHeadlessReAddPreservesEndpoints(t *testing.T) {
 	}
 
 	// Re-add the same service (informer UPDATE). The answer must
-	// survive, Spec.ClusterIP=None hasn't changed, neither have
+	// survive. Spec.ClusterIP=None hasn't changed, neither have
 	// the endpoints.
 	r.AddService(&Service{Name: "h", Namespace: "default", Headless: true})
 

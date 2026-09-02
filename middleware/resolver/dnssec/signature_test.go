@@ -171,7 +171,7 @@ func TestSignatureBindingRequiresALabelBoundary(t *testing.T) {
 // Test_VerifyRRSIG_EscapedDotIsNotALabelBoundary is the production-path
 // regression for the same defect one level up.
 //
-// `foo\.zone.example.` is a single label `foo.zone` under `example.`, it
+// `foo\.zone.example.` is a single label `foo.zone` under `example.`. It
 // ends with the *text* of the signer zone while living outside it. Signed
 // with the zone's own valid key, a containment check written as a string
 // suffix authenticates it: a zone operator would be able to sign answers for

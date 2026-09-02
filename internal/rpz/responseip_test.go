@@ -177,7 +177,7 @@ func TestMergeZoneOrderOutranksTriggerType(t *testing.T) {
 }
 
 // TestMergeHeldCandidateSurvivesANoneSidecar is the P0 scenario itself:
-// zone 0's response rules do NOT match, zone 1's held QNAME does, the
+// zone 0's response rules do NOT match, zone 1's held QNAME does. The
 // merge must answer with the held action, never the stored truth.
 func TestMergeHeldCandidateSurvivesANoneSidecar(t *testing.T) {
 	s := mergeFixtureStore(t)
@@ -294,7 +294,7 @@ func TestOldGenerationIsCollectible(t *testing.T) {
 // TestFoldResponseLists pins the chase fold's dedupe directly: two
 // segment lists matching one zone collapse to the rule-4 best, in zone
 // order. Terminal-only chains never exercise this in composition, but a
-// segment admitted with both alias and address records can, the fold
+// segment admitted with both alias and address records can. The fold
 // must hold whatever shape an admission produced.
 func TestFoldResponseLists(t *testing.T) {
 	s := &Store{Zones: []*Zone{loadResponseIPZone(t)}}

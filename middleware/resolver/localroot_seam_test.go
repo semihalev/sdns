@@ -207,7 +207,7 @@ func TestLocalRootAnswersCarryTheClientRequest(t *testing.T) {
 // TestLocalRootDenialRequiresCoverage pins the evaluator gate: a copy whose
 // NSEC chain does not actually prove the name absent must fall back to the
 // real roots rather than synthesize an authenticated denial. The zone here
-// is sealed and verified, its chain is simply too short to cover, which is
+// is sealed and verified. Its chain is simply too short to cover, which is
 // exactly the case a structural covering search can miss.
 func TestLocalRootDenialRequiresCoverage(t *testing.T) {
 	// The chain stops at com.: the apex NSEC spans (., com.) and com. has
@@ -490,7 +490,7 @@ func TestLocalRootDSNODATARequiresParentSideProof(t *testing.T) {
 		}
 		if rs.level != 0 || !rs.isRoot {
 			t.Fatal("a delegation was installed with an empty DS set on a proof " +
-				"the copy does not hold, the child would be treated as insecure")
+				"the copy does not hold. The child would be treated as insecure")
 		}
 	})
 }
@@ -656,7 +656,7 @@ func TestLocalRootFallbacks(t *testing.T) {
 	t.Run("an apex type the copy cannot evidence", func(t *testing.T) {
 		// The copy answers the apex from what it holds; a type it can
 		// neither produce nor deny goes to the real roots. ANY is that
-		// case by construction, it needs a composition this does not
+		// case by construction. It needs a composition this does not
 		// attempt, so it stands in for the general shape here.
 		r, _ := localRootTestResolver(t)
 		rs := localRootState(".", dns.TypeANY, false)

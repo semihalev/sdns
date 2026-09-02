@@ -110,7 +110,7 @@ These are the numbers to read before switching the
 [recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }})
 from shadow to enforce. In shadow mode,
 `dns_recursion_firewall_exhaustions_total` is exactly the set of requests
-enforce would have failed, if it is nonzero for ordinary traffic, the limit is
+enforce would have failed. If it is nonzero for ordinary traffic, the limit is
 too low for your workload.
 
 The `mode` label distinguishes enforced from observed, so a shadow soak and the
@@ -134,7 +134,7 @@ cap, given the machine's memory, CPUs and file-descriptor limit. If a container
 is performing worse than the host it replaced, compare this gauge before
 anything else.
 
-Overflow is a capacity signal, not a bug, it means queries arrived faster than
+Overflow is a capacity signal, not a bug. It means queries arrived faster than
 the fixed pool accepted them and were served on their own goroutines.
 
 ## Policy and access
@@ -259,7 +259,7 @@ series that exist today.
 `dns_queries_total` is client-only by construction: the metrics middleware
 declares itself a client-traffic observer and the sub-pipeline leaves it out,
 so a resolver-private lookup never reaches it. The cache counters have no such
-gate. A DS or DNSKEY fetch, a DNS64 secondary lookup, an alias chase, each can
+gate. A DS or DNSKEY fetch, a DNS64 secondary lookup, an alias chase. Each can
 be answered from a validated cut or a denial proof and increment the numerator
 without the denominator moving. Divide one by the other and the result can
 exceed 1, which is the tell that the two are counted at different levels.

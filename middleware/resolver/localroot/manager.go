@@ -179,7 +179,7 @@ type anchorState struct {
 }
 
 // Active returns the verified snapshot to serve from, or nil when there is
-// none, never transferred, the copy has outlived its horizon, or the trust
+// none: never transferred, the copy has outlived its horizon, or the trust
 // anchors that verified it are no longer the resolver's.
 func (m *Manager) Active() *Snapshot {
 	s := m.snap.Load()
