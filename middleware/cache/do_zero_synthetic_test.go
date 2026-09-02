@@ -65,8 +65,7 @@ func TestSynthesizedDenialKeepsOnlyTheTypeAskedFor(t *testing.T) {
 // TestNXDomainCutWireDeclinesExplicitDNSSECQuestionsAtDOZero pins the cut's
 // wire template against the same rule. The stripped template was cut behind
 // a SOA question and holds no authenticating record at all, so a DO=0
-// question for RRSIG, NSEC or NSEC3 — which keeps the one type it named —
-// is handed to the Msg path, where ClearDNSSEC shapes it. Ordinary DO=0
+// question for RRSIG, NSEC or NSEC3, which keeps the one type it named, // is handed to the Msg path, where ClearDNSSEC shapes it. Ordinary DO=0
 // questions and every DO=1 question still serve as bytes.
 func TestNXDomainCutWireDeclinesExplicitDNSSECQuestionsAtDOZero(t *testing.T) {
 	cut := newNXDomainCutCache(32, time.Hour)
@@ -145,8 +144,8 @@ func (s *leaseSpy) LeaseWire(need int) []byte {
 // TestCutPrecheckDeclinesExplicitDNSSECBeforeLeasing pins the cut's wire
 // precheck through the wrapper the live chain calls: a DO=0 question for
 // RRSIG, NSEC or NSEC3 is the Msg path's by design, so it is declined
-// before any lease is taken — counted as a DNSSEC-shape skip, never as a
-// build failure — while an ordinary DO=0 question leases once and serves.
+// before any lease is taken, counted as a DNSSEC-shape skip, never as a
+// build failure, while an ordinary DO=0 question leases once and serves.
 func TestCutPrecheckDeclinesExplicitDNSSECBeforeLeasing(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()

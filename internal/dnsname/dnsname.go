@@ -259,8 +259,8 @@ func equalFold(a, b string) bool {
 // AppendCanonicalKey appends the canonical identity of a presentation name
 // to dst: each label as the octets it decodes to, ASCII-folded and
 // length-prefixed, then the root. Two names get the same key exactly when
-// CanonicalCompare orders them equal — escaped and plain spellings, rooted
-// and unrooted, ASCII case — and a fold that is not the wire's never merges
+// CanonicalCompare orders them equal, escaped and plain spellings, rooted
+// and unrooted, ASCII case, and a fold that is not the wire's never merges
 // what the wire keeps apart: a Kelvin sign is not a k. For the places a
 // comparison cannot serve, a map keyed by string(key).
 func AppendCanonicalKey(dst []byte, name string) []byte {

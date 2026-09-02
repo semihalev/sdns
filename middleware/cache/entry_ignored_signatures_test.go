@@ -66,7 +66,7 @@ func hasA(records []dns.RR, owner string) bool {
 // TestHitDoesNotReviveSignaturesTheEntryIgnores pins the stored view against
 // the hit paths. The entry's lifetime is bounded by its usable signatures
 // alone, and every hit path serves each record with the entry's remaining
-// lifetime as its TTL — so a signature the lifetime ignores, if stored,
+// lifetime as its TTL, so a signature the lifetime ignores, if stored,
 // comes back inflated: a lapsed sibling received with TTL 0 as an hour, and
 // one whose inception has not arrived revived once it has. Neither is stored.
 func TestHitDoesNotReviveSignaturesTheEntryIgnores(t *testing.T) {
@@ -131,7 +131,7 @@ func TestAdditionalRRsetTravelsWithItsSignature(t *testing.T) {
 		// Signed, but its signature permits less than the entry's hour.
 		a("short.example."),
 		sig("short.example.", 30, 444, -2*time.Hour, time.Hour),
-		// Signed, and its signature permits the hour — with a lapsed
+		// Signed, and its signature permits the hour, with a lapsed
 		// sibling beside it that leaves alone. Its validity runs past the
 		// lifetime: the entry's clock is read after this fixture's, and
 		// the comparison is exact.
@@ -222,8 +222,8 @@ func TestStorableRecordsPassesTheCommonShapeThrough(t *testing.T) {
 }
 
 // TestZeroLifetimeSignatureIsNeverKept pins the tolerance's floor: a
-// signature permitting nothing — a header TTL of zero, or an Original TTL of
-// zero — is RFC 4035 §5.3.3's ceiling exactly, and a one-second entry may
+// signature permitting nothing, a header TTL of zero, or an Original TTL of
+// zero, is RFC 4035 §5.3.3's ceiling exactly, and a one-second entry may
 // not serve it as one. Each field separately.
 func TestZeroLifetimeSignatureIsNeverKept(t *testing.T) {
 	now := time.Now()
@@ -271,7 +271,7 @@ func TestZeroLifetimeSignatureIsNeverKept(t *testing.T) {
 // TestDOZeroHitCarriesNoAdditionalSignature pins the DO=0 body on the wire
 // path: the entry keeps a signed additional RRset with its signature, and a
 // client that did not set DO must not receive that signature (RFC 4035
-// §3.2.1) — on the wire path as on the Msg path. Both shapes: an entry
+// §3.2.1), on the wire path as on the Msg path. Both shapes: an entry
 // signed in the answer as well, and one whose only signature is additional.
 func TestDOZeroHitCarriesNoAdditionalSignature(t *testing.T) {
 	now := time.Now()
@@ -447,9 +447,8 @@ func TestDOZeroBodyKeepsOnlyTheTypeAskedFor(t *testing.T) {
 // TestAdditionalSignatureIsJudgedOnTheEntrysClock pins the admission clock.
 // The lifetime, the entry's stored instant and the verdict on each
 // additional signature read the same now, so the comparison is exact: a
-// signature permitting one second is not carried by a two-second entry —
-// the tolerance that let it through served it a whole second past its
-// ceiling — and one sharing the answer's own validity window, which trailed
+// signature permitting one second is not carried by a two-second entry, // the tolerance that let it through served it a whole second past its
+// ceiling, and one sharing the answer's own validity window, which trailed
 // a lifetime measured a moment earlier by that moment, is carried.
 func TestAdditionalSignatureIsJudgedOnTheEntrysClock(t *testing.T) {
 	now := time.Now()
@@ -497,7 +496,7 @@ func TestAdditionalSignatureIsJudgedOnTheEntrysClock(t *testing.T) {
 		// The answer's own signature sets the lifetime to the window's end;
 		// the additional signature ends at the same instant. Through the
 		// store, which measures the lifetime and anchors the entry at one
-		// now — a second reading in between made this signature fall short
+		// now, a second reading in between made this signature fall short
 		// by microseconds every time. The window ends under the test
 		// store's one-minute cap, so the two signatures really do set the
 		// same boundary and nothing else clamps it.
@@ -595,7 +594,7 @@ func TestAdditionalMixedSignersGoWhole(t *testing.T) {
 // exceed the TTL it was received with. An unsigned answer takes the
 // positive floor, so an additional address received with a one-second TTL
 // and a long-lived signature was lifted to the floor, kept, and served at
-// it — with its signature. The tuple goes whole; one received with enough
+// it, with its signature. The tuple goes whole; one received with enough
 // TTL stays.
 func TestAdditionalRRsetKeepsItsReceivedTTL(t *testing.T) {
 	now := time.Now()

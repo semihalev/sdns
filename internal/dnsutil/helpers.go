@@ -130,7 +130,7 @@ func ClearOPT(msg *dns.Msg) *dns.Msg {
 }
 
 // ClearDNSSEC removes RRSIG, NSEC and NSEC3 records from every section in
-// place — the additional section included, since RFC 4035 §3.2.1 has a
+// place, the additional section included, since RFC 4035 §3.2.1 has a
 // DO=0 response carry no authenticating records it was not asked for, and
 // a signed additional RRset is carried with its signature. The one type
 // the question asked for by name is the exception, and only that type: a
@@ -153,7 +153,7 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 // ClearDNSSECInPlace is ClearDNSSEC for a message that owns its sections:
 // the same rule, compacting each section in place instead of allocating a
 // filtered copy. For an answer synthesized per hit, whose slices are its
-// own and are about to be handed out — filtering through a copy there was
+// own and are about to be handed out, filtering through a copy there was
 // an allocation on every DO=0 hit.
 func ClearDNSSECInPlace(msg *dns.Msg) *dns.Msg {
 	asked := explicitDNSSECType(msg)
