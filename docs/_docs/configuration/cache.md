@@ -38,6 +38,34 @@ served past the point the parent's grant expires. That is why a long-TTL record
 under a short-lived delegation can come back with less than you expected — the
 cut, not the record, is the binding constraint.
 
+## What a hit contains
+
+A hit is served from what the cache stored, and the cache stores only what it
+can vouch for. Four things follow from that, and they are visible from a
+client.
+
+An entry keeps the signatures that cover its records inside their validity
+period. A signature that has lapsed, or one whose inception has not arrived,
+goes out in the first response exactly as the authority sent it and is absent
+from every hit. This is what a key rollover looks like from the outside: the
+outgoing key's signature disappears from cached answers as soon as it expires,
+while the incoming key's keeps the answer authenticated.
+
+An explicit `RRSIG` query is the one case where the signatures are the answer
+itself, so such an answer is cached only when every signature in it can be
+kept. Otherwise each query for it goes upstream.
+
+A signed RRset in the additional section, a mail exchanger's address for
+instance, is served complete with its signatures or not at all. It stays only
+when its signatures cover the whole of the entry's lifetime and its records
+arrived with at least that much TTL; a shorter-lived one is left out rather
+than served past what its signature permits. Unsigned glue is unaffected.
+
+A query without the DO bit receives no `RRSIG`, `NSEC` or `NSEC3` record it did
+not ask for, in any section, on a miss and on a hit alike, and from a
+synthesized denial as well (RFC 4035 §3.2.1). A query for one of those types
+keeps exactly that type and loses the others.
+
 ## Serving expired answers
 
 ```toml
@@ -95,6 +123,16 @@ signature expires. The floor never lifts an entry past that, so a signed record
 that arrives with a one-second TTL is held for one second. An answer served
 after its signature has lapsed is bogus to every validator downstream, which is
 not a freshness question at all.
+
+Which signature sets that bound matters. A signature counts only inside its own
+validity period, and only for the RRset it covers, under the zone that made
+it. During a key rollover an RRset carries a signature from the outgoing key
+beside one from the incoming key; once the outgoing one expires it bounds
+nothing, because the incoming one still covers the RRset, and the answer is
+held for as long as that one permits. An RRset that no valid signature covers
+is not admitted at all. Signatures in the additional section bound neither the
+lifetime nor the AD bit: what the resolver vouches for is the answer and
+authority sections (RFC 4035 §3.2.3).
 
 The lower bound is settled once, where all of that evidence is in hand, and
 every layer after it may only shorten. A second floor applied at admission
