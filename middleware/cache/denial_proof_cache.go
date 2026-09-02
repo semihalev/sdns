@@ -1646,7 +1646,7 @@ func denialProofResponse(
 		}
 	}
 
-	ttl := uint32(remaining / time.Second) //nolint:gosec // lifetime is positive and capped at three hours
+	ttl := servedSeconds(remaining)
 	for _, rr := range response.Ns {
 		rr.Header().Ttl = ttl
 	}

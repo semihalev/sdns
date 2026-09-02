@@ -1704,7 +1704,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	// See Store.setFromResponseWithKey: a denial the zone granted no lifetime
 	// is not admitted (RFC 2308 §5). Unreachable for a positive answer, which
 	// always arrives on its own floor.
-	ttl := c.positive.ttl.CalculateFor(mt, msgTTL)
+	ttl := c.positive.ttl.Bound(msgTTL)
 	if ttl <= 0 {
 		return
 	}

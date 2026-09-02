@@ -152,7 +152,7 @@ func (e *nxDomainCutEntry) serveWireInto(
 		return nil, false
 	}
 
-	ttl := uint32(remaining / time.Second) //nolint:gosec // positive duration bounded by the cut TTL
+	ttl := servedSeconds(remaining)
 	off := question.End
 	for range int(header.NSCount) {
 		rr, parsed := wire.ParseRR(tmpl, off)

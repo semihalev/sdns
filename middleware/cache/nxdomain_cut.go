@@ -508,7 +508,7 @@ func (e *nxDomainCutEntry) response(req *dns.Msg) *dns.Msg {
 	resp.Answer = nil
 	resp.Extra = nil
 
-	ttl := uint32(remaining / time.Second) //nolint:gosec // positive duration bounded by configured cache TTL
+	ttl := servedSeconds(remaining)
 	for _, rr := range resp.Ns {
 		rr.Header().Ttl = ttl
 	}

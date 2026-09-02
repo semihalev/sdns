@@ -58,33 +58,28 @@ func denialResponse(name string, nameError bool, soaTTL, soaMin uint32) (*dns.Ms
 	return req, resp
 }
 
-// TestTTLManagerDoesNotFloorDenials covers the second of the two stacked
-// floors on its own. The derivation can be correct and the denial still get
-// raised right back here, so this has to be asserted separately rather than
-// only through the store.
-func TestTTLManagerDoesNotFloorDenials(t *testing.T) {
+// TestAdmissionOnlyShortens pins the rule that keeps the two layers honest:
+// the lifetime is decided once, by the derivation that can see the SOA and the
+// signatures, and admission may only shorten it.
+//
+// A floor here looks harmless and is not. It cannot see that a signature has
+// two seconds left, so it lifted correctly-bounded answers back over their own
+// expiry, and the derivation's care was undone one call later.
+func TestAdmissionOnlyShortens(t *testing.T) {
 	tm := NewTTLManager(dnsutil.MinCacheTTL, time.Hour)
 
-	for _, mt := range []dnsutil.ResponseType{dnsutil.TypeNXDomain, dnsutil.TypeNoRecords} {
-		for _, seconds := range []int{0, 1, 4, 5} {
-			in := time.Duration(seconds) * time.Second
-			if got := tm.CalculateFor(mt, in); got != in {
-				t.Errorf("CalculateFor(%v, %v) = %v, want it left alone", mt, in, got)
-			}
-		}
-		if got, want := tm.CalculateFor(mt, 2*time.Hour), time.Hour; got != want {
-			t.Errorf("CalculateFor(%v, 2h) = %v, want the %v cap still applied", mt, got, want)
+	for _, seconds := range []int{0, 1, 2, 4, 5} {
+		in := time.Duration(seconds) * time.Second
+		if got := tm.Bound(in); got != in {
+			t.Errorf("Bound(%v) = %v, want it left alone", in, got)
 		}
 	}
 
-	// Everything that is not a denial keeps both bounds. TypeReferral matters
-	// here because referrals live in the same sub-cache as denials.
-	for _, mt := range []dnsutil.ResponseType{
-		dnsutil.TypeSuccess, dnsutil.TypeReferral, dnsutil.TypeServerFailure,
-	} {
-		if got, want := tm.CalculateFor(mt, time.Second), dnsutil.MinCacheTTL; got != want {
-			t.Errorf("CalculateFor(%v, 1s) = %v, want the %v floor kept", mt, got, want)
-		}
+	if got, want := tm.Bound(2*time.Hour), time.Hour; got != want {
+		t.Errorf("Bound(2h) = %v, want the %v cap", got, want)
+	}
+	if got := tm.Bound(-time.Second); got != 0 {
+		t.Errorf("Bound(-1s) = %v, want 0", got)
 	}
 }
 
@@ -314,5 +309,187 @@ func TestUncacheableResponseIsNotAdmitted(t *testing.T) {
 	}
 	if _, ok := store.Lookup(req); ok {
 		t.Fatal("an uncacheable response was served from cache")
+	}
+}
+
+// signedAnswer builds a positive answer whose RRSIG carries the given bounds.
+func signedAnswer(name string, recordTTL, sigTTL, origTTL uint32, expiresIn time.Duration) (*dns.Msg, *dns.Msg) {
+	req := new(dns.Msg)
+	req.SetQuestion(name, dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Answer = []dns.RR{
+		&dns.A{
+			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: recordTTL},
+			A:   []byte{192, 0, 2, 1},
+		},
+		&dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: sigTTL},
+			TypeCovered: dns.TypeA,
+			OrigTtl:     origTTL,
+			Expiration:  uint32(time.Now().Add(expiresIn).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+		},
+	}
+	return req, resp
+}
+
+// TestSignedAnswerKeepsItsCeilingThroughAdmission is the end-to-end half of RFC
+// 4035 §5.3.3, and the half a helper test cannot reach. The derivation had the
+// bound right and admission raised it again: a signature with two seconds left
+// was stored for five, and the entry outlived the signature it rested on.
+//
+// Driven through every door, because each one bounds the lifetime for itself.
+func TestSignedAnswerKeepsItsCeilingThroughAdmission(t *testing.T) {
+	// name, record TTL, signature TTL, original TTL, expiry, and the ceiling
+	// all four of those imply.
+	cases := []struct {
+		what      string
+		recordTTL uint32
+		sigTTL    uint32
+		origTTL   uint32
+		expiresIn time.Duration
+		ceiling   time.Duration
+	}{
+		{"expiry is nearest", 3600, 3600, 3600, 2 * time.Second, 2 * time.Second},
+		{"original TTL is nearest", 3600, 3600, 1, time.Hour, time.Second},
+		{"signature TTL is nearest", 3600, 2, 3600, time.Hour, 2 * time.Second},
+		{"received RRset TTL is nearest", 1, 3600, 3600, time.Hour, time.Second},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.what, func(t *testing.T) {
+			// Store, the ordinary door.
+			store := newCeilingStore(t)
+			req, resp := signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
+			store.SetFromResponse(resp, false, time.Time{})
+			entry, ok := store.Lookup(req)
+			if !ok {
+				t.Fatal("the signed answer was not admitted")
+			}
+			if entry.ttl > tc.ceiling {
+				t.Errorf("SetFromResponse stored %v, want at most %v", entry.ttl, tc.ceiling)
+			}
+
+			// Scoped, the ECS door.
+			store = newCeilingStore(t)
+			req, resp = signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
+			key := CacheKey{Question: req.Question[0], CD: false}.Hash()
+			store.SetFromResponseScoped(key, resp, netip.MustParsePrefix("203.0.113.0/24"), time.Time{}, 0)
+			if entry, ok = store.Lookup(req); ok && entry.ttl > tc.ceiling {
+				t.Errorf("scoped admission stored %v, want at most %v", entry.ttl, tc.ceiling)
+			}
+
+			// The compatibility door.
+			c := New(&config.Config{CacheSize: 1024, Expire: 600})
+			defer c.Stop()
+			req, resp = signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
+			key = CacheKey{Question: req.Question[0], CD: false}.Hash()
+			c.Set(key, resp)
+			if entry, ok = c.store.Lookup(req); ok && entry.ttl > tc.ceiling {
+				t.Errorf("Cache.Set stored %v, want at most %v", entry.ttl, tc.ceiling)
+			}
+
+			// The refresh door.
+			store = newCeilingStore(t)
+			req, seed := signedAnswer("signed.example.org.", 3600, 3600, 3600, time.Hour)
+			store.SetFromResponse(seed, false, time.Time{})
+			existing, found := store.Lookup(req)
+			if !found {
+				t.Fatal("the seed answer was not admitted")
+			}
+			key = CacheKey{Question: req.Question[0], CD: false}.Hash()
+			_, refreshed := signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
+			if !store.ReplaceIfCurrent(key, existing, refreshed, time.Time{}, 0) {
+				t.Fatal("the refresh was refused")
+			}
+			if entry, ok = store.Lookup(req); ok && entry.ttl > tc.ceiling {
+				t.Errorf("ReplaceIfCurrent stored %v, want at most %v", entry.ttl, tc.ceiling)
+			}
+		})
+	}
+}
+
+// TestServedTTLIsNeverZero pins the wire-format half. An entry with a fraction
+// of a second left is alive, and telling the client zero would mean "do not
+// reuse this" from a cache that is reusing it; RFC 2308 §5 forbids it for a
+// denial outright.
+func TestServedTTLIsNeverZero(t *testing.T) {
+	for _, remaining := range []time.Duration{time.Nanosecond, 991 * time.Millisecond, time.Second - 1} {
+		if got := servedSeconds(remaining); got != 1 {
+			t.Errorf("servedSeconds(%v) = %d, want 1", remaining, got)
+		}
+	}
+	if got := servedSeconds(0); got != 0 {
+		t.Errorf("servedSeconds(0) = %d, want 0", got)
+	}
+	if got := servedSeconds(-time.Second); got != 0 {
+		t.Errorf("servedSeconds(-1s) = %d, want 0", got)
+	}
+	if got := servedSeconds(90 * time.Second); got != 90 {
+		t.Errorf("servedSeconds(90s) = %d, want 90", got)
+	}
+
+	// End to end: a live entry down to its last fraction still serves a
+	// usable TTL rather than telling the client not to cache it.
+	store := newCeilingStore(t)
+	req, resp := denialResponse("fading.example.org.", true, 86400, 60)
+	store.SetFromResponse(resp, false, time.Time{})
+	entry, ok := store.Lookup(req)
+	if !ok {
+		t.Fatal("the denial was not admitted")
+	}
+	entry.stored = entry.stored.Add(-entry.ttl + 991*time.Millisecond)
+
+	out := entry.ToMsg(req)
+	if out == nil {
+		t.Fatal("a live entry served nothing")
+	}
+	if len(out.Ns) == 0 || out.Ns[0].Header().Ttl == 0 {
+		t.Fatal("a denial with 991ms left was served with a TTL of zero")
+	}
+}
+
+// TestSignedReferralNeverOutlivesItsSignature covers the delegation path, which
+// used to return the cache minimum without ever looking at its records. A
+// referral is still short-lived whatever its NS records advertise; it just may
+// not outlive a signature it carries.
+func TestSignedReferralNeverOutlivesItsSignature(t *testing.T) {
+	referral := func(sigExpiresIn time.Duration) *dns.Msg {
+		req := new(dns.Msg)
+		req.SetQuestion("child.example.org.", dns.TypeA)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Ns = []dns.RR{
+			&dns.NS{
+				Hdr: dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 172800},
+				Ns:  "ns.example.org.",
+			},
+		}
+		if sigExpiresIn > 0 {
+			resp.Ns = append(resp.Ns, &dns.RRSIG{
+				Hdr:         dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 172800},
+				TypeCovered: dns.TypeNS,
+				OrigTtl:     172800,
+				Expiration:  uint32(time.Now().Add(sigExpiresIn).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+			})
+		}
+		return resp
+	}
+
+	signed := referral(2 * time.Second)
+	mt, _ := dnsutil.ClassifyResponse(signed, time.Now().UTC())
+	if mt != dnsutil.TypeReferral {
+		t.Fatalf("classified %v, want TypeReferral", mt)
+	}
+	if got := dnsutil.CalculateCacheTTL(signed, mt); got > 2*time.Second {
+		t.Errorf("signed referral: got %v, want at most the signature's 2s", got)
+	}
+
+	// An unsigned referral keeps the short lifetime it has always had, rather
+	// than picking up the two days its NS records advertise.
+	plain := referral(0)
+	mt, _ = dnsutil.ClassifyResponse(plain, time.Now().UTC())
+	if got, want := dnsutil.CalculateCacheTTL(plain, mt), dnsutil.MinCacheTTL; got != want {
+		t.Errorf("unsigned referral: got %v, want %v unchanged", got, want)
 	}
 }

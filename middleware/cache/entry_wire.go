@@ -226,7 +226,7 @@ func (e *CacheEntry) serveWireInto(
 	// never authoritative, however the upstream marked it.
 	wire.ApplyReply(body, req.Id, req.Opcode, req.RecursionDesired, req.CheckingDisabled)
 
-	ttl := uint32(remaining.Seconds())
+	ttl := servedSeconds(remaining)
 	off := question.End
 	for range int(header.ANCount) + int(header.NSCount) + int(header.ARCount) {
 		rr, ok := wire.ParseRR(body, off)
@@ -313,7 +313,7 @@ func (e *CacheEntry) serveWireIntoRequest(
 
 	wire.ApplyReply(body, req.ID(), req.Opcode(), req.RD(), req.CD())
 
-	ttl := uint32(remaining.Seconds())
+	ttl := servedSeconds(remaining)
 	off := question.End
 	for range int(header.ANCount) + int(header.NSCount) + int(header.ARCount) {
 		rr, ok := wire.ParseRR(body, off)

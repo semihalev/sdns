@@ -20,9 +20,15 @@ const (
 func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// Only cache successful responses and negative responses (NXDOMAIN/NODATA)
 	isNegative := false
+	isReferral := false
 	switch respType {
 	case TypeSuccess:
 		// Continue with TTL calculation
+	case TypeReferral:
+		// A referral used to return the floor without ever looking at its
+		// records, so a signed delegation's expiry and Original TTL bounded
+		// nothing. It walks the sections now; its lifetime stays what it was.
+		isReferral = true
 	case TypeNXDomain, TypeNoRecords:
 		isNegative = true
 	case TypeServerFailure:
@@ -65,6 +71,7 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// downstream, and no local policy is entitled to decide otherwise.
 	recordTTL := MaxCacheTTL
 	hardTTL := MaxCacheTTL
+	signed := false
 	now := time.Now()
 
 	// negativeSOA folds in the RFC 2308 cap, min(SOA header TTL, SOA.Minttl):
@@ -82,6 +89,7 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 			}
 		}
 		if sig, ok := rr.(*dns.RRSIG); ok {
+			signed = true
 			if ttl := getRRSIGTTL(sig, now); ttl < hardTTL {
 				hardTTL = ttl
 			}
@@ -100,6 +108,15 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 			continue
 		}
 		bound(rr, false)
+	}
+
+	// RFC 4035 §5.3.3 names four values and the served lifetime may exceed
+	// none of them: the RRset's TTL as received, the RRSIG's TTL, its Original
+	// TTL, and the time left before it expires. The first is a record TTL, so
+	// on signed data the floor may not lift that either. A signed A record with
+	// a one-second TTL was being held for five.
+	if signed && recordTTL < hardTTL {
+		hardTTL = recordTTL
 	}
 
 	minTTL := recordTTL
@@ -122,6 +139,15 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// is a real answer here, and the caller declines to admit the entry.
 	if isNegative {
 		return minTTL
+	}
+
+	// A referral is held briefly whatever its NS records advertise, which is
+	// what it has always done, but never past a signature it carries.
+	if isReferral {
+		if hardTTL < MinCacheTTL {
+			return hardTTL
+		}
+		return MinCacheTTL
 	}
 
 	// Positive answers take a floor, and it is a deliberate deviation rather

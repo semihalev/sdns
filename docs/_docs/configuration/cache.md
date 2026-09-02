@@ -88,11 +88,23 @@ denial is not the same case: there the TTL is a zone's statement about a name
 it is authoritative for.
 
 The floor is a preference, not a right, and it stops at anything the protocol
-fixes. On signed data RFC 4035 §5.3.3 caps the lifetime at the smallest of the
-RRSIG's header TTL, its Original TTL and the time left before it expires, and
-the floor never lifts an entry past that. An answer served after its signature
-has lapsed is bogus to every validator downstream, which is not a freshness
-question at all.
+fixes. On signed data RFC 4035 §5.3.3 caps the lifetime at the smallest of four
+values, and none of them may be exceeded: the RRset's TTL as received, the
+RRSIG's own TTL, the RRSIG's Original TTL field, and the time left before the
+signature expires. The floor never lifts an entry past that, so a signed record
+that arrives with a one-second TTL is held for one second. An answer served
+after its signature has lapsed is bogus to every validator downstream, which is
+not a freshness question at all.
+
+The lower bound is settled once, where all of that evidence is in hand, and
+every layer after it may only shorten. A second floor applied at admission
+cannot see any of it, and would quietly undo the work.
+
+One consequence worth stating: an answer this cache serves never carries a TTL
+of zero. Zero tells the client not to reuse the answer, and a cache that says so
+while reusing it is contradicting itself; for a denial RFC 2308 §5 rules it out
+directly. An entry down to its last fraction of a second is served as one
+second, which is the finest a DNS message can express, and then it is gone.
 
 The two mechanisms that *reuse* a denial for names it was never asked about are
 bounded the same way, and were already. Both are on by default and both are

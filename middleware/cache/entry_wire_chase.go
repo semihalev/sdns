@@ -219,7 +219,7 @@ func (c *Cache) collectWireChase(
 			entry:   entry,
 			body:    body,
 			flags:   flags,
-			ttl:     uint32(remaining.Seconds()),
+			ttl:     servedSeconds(remaining),
 			anCount: int(header.ANCount),
 			ansOff:  question.End,
 			ad:      header.AD(),

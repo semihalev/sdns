@@ -129,11 +129,37 @@ func (e *CacheEntry) remaining(now time.Time) time.Duration {
 	return rem
 }
 
+// servedSeconds is the TTL written into an answer this cache is serving.
+//
+// A hit never carries a TTL of zero. Zero tells the client the answer must not
+// be reused, while this cache is doing exactly that, and for a denial RFC 2308
+// §5 forbids reusing one whose lifetime has reached zero at all. An entry with
+// 991ms left was reported alive and then served with a TTL of zero.
+//
+// The last fraction of a second rounds up, which is the only thing a
+// whole-second field leaves to do once the entry is still alive. It is bounded
+// by that fraction: the entry stops being served at its own expiry either way.
+func servedSeconds(remaining time.Duration) uint32 {
+	if remaining <= 0 {
+		return 0
+	}
+	if secs := remaining / time.Second; secs > 0 {
+		return uint32(secs) //nolint:gosec // G115 - bounded by MaxCacheTTL
+	}
+	return 1
+}
+
 // remainingBounds returns the two independent lifetimes that remaining folds
 // together: the answer TTL and the delegation lease. A zero cutUntil is
 // unbounded and therefore returns zero for leaseRemaining; callers must check
 // cutUntil before interpreting that value as an expired lease.
 func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemaining time.Duration) {
+	// Both are exact. Quantising the age here to whole seconds was tried and
+	// is wrong twice over: it lets an answer outlive the delegation lease,
+	// which is a security bound (GHSA-mqfw-f48p-2vc8), and it keeps an entry
+	// whose own lifetime is under a second alive for a full one. Whether the
+	// entry is alive is a question about time; what TTL to write is a question
+	// about the wire format, and servedSeconds answers that one.
 	ttlRemaining = e.ttl - now.Sub(e.stored)
 	if !e.cutUntil.IsZero() {
 		leaseRemaining = e.cutUntil.Sub(now)
@@ -320,7 +346,7 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	}
 
 	// Update TTLs
-	ttl := uint32(remainingTTL.Seconds())
+	ttl := servedSeconds(remainingTTL)
 	for _, rr := range resp.Answer {
 		rr.Header().Ttl = ttl
 	}
@@ -521,20 +547,19 @@ func (tm TTLManager) Calculate(msgTTL time.Duration) time.Duration {
 	return msgTTL
 }
 
-// (TTLManager).CalculateFor returns the effective TTL for a response of this
-// type. A denial takes its RFC 2308 lifetime as a ceiling and is bounded from
-// above only: the configured minimum is the resolver's own freshness policy,
-// and applying it to a denial would hold that denial past what the zone's SOA
-// authorised. Everything else keeps both bounds.
+// (TTLManager).Bound applies the upper bound to a lifetime that has already
+// been decided, and nothing else.
 //
-// The distinction has to be drawn on the response type rather than on which
-// sub-cache the entry lands in: NXDOMAIN and NODATA are stored in the positive
-// cache alongside ordinary answers, and the cache named `negative` holds
-// SERVFAIL. Bounding by sub-cache would floor every denial right back.
-func (tm TTLManager) CalculateFor(mt dnsutil.ResponseType, msgTTL time.Duration) time.Duration {
-	if mt != dnsutil.TypeNXDomain && mt != dnsutil.TypeNoRecords {
-		return tm.Calculate(msgTTL)
-	}
+// It deliberately carries no floor. dnsutil.CalculateCacheTTL is the only place
+// that knows what may not be lifted: a signature with two seconds left, an SOA
+// that granted one. A second floor here cannot see any of that, and it does not
+// merely duplicate the first one, it undoes it. A signed answer correctly
+// bounded to two seconds on the way in was admitted for five, and served after
+// its signature had lapsed.
+//
+// The rule this leaves is simple enough to keep: the lower bound is decided
+// once, where the evidence is, and every layer after it may only shorten.
+func (tm TTLManager) Bound(msgTTL time.Duration) time.Duration {
 	if msgTTL < 0 {
 		return 0
 	}

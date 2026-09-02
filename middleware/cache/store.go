@@ -662,7 +662,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		// every later read has to discard, and the entry could never be
 		// served — the guard cannot fire for a positive answer, which always
 		// arrives on its own floor.
-		ttl := capTTL(s.positive.ttl.CalculateFor(mt, msgTTL))
+		ttl := capTTL(s.positive.ttl.Bound(msgTTL))
 		if ttl > 0 {
 			if entry := newEntry(filtered, ttl); entry != nil {
 				s.positive.Set(key, entry)
@@ -733,7 +733,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		// A refresh that comes back as a denial with no zone-granted lifetime
 		// is dropped rather than stored. The entry it would have replaced
 		// keeps its own remaining TTL and re-resolves when that runs out.
-		ttl := s.positive.ttl.CalculateFor(mt, msgTTL)
+		ttl := s.positive.ttl.Bound(msgTTL)
 		if ttl <= 0 {
 			return false
 		}

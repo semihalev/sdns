@@ -163,14 +163,15 @@ func assertChainInheritsTargetLifetime(
 	}
 }
 
-// TestExhaustedTargetLeavesNoCachedChain is the limit of the lineage rule. A
-// target denial with under a second left is served with its lifetime truncated
-// to zero, and a denial the zone grants no lifetime is not cacheable at all
-// (RFC 2308 §5) — so the answer merged from it must not be stored either.
+// TestExhaustedTargetLeavesNoCachedChain is the limit of the lineage rule: a
+// target denial down to its last fraction of a second, and an answer merged
+// from it that must not outlive what is left.
 //
-// This used to go the other way. The cache floor lifted that zero back to five
-// seconds, which cached a derived denial whose entire proof had run out, and
-// the lineage rule above was left to bound the damage rather than prevent it.
+// It used to be stored for five seconds. The floor lifted the target's spent
+// lifetime back to the cache minimum, so a derived denial resting on a proof
+// with nothing left in it was cached as if the proof were fresh, and the
+// lineage rule was left to bound the damage rather than prevent it. What
+// remains is the second the wire format cannot express any finer.
 func TestExhaustedTargetLeavesNoCachedChain(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
 	defer c.Stop()
@@ -234,10 +235,14 @@ func TestExhaustedTargetLeavesNoCachedChain(t *testing.T) {
 	chain.Next(context.Background())
 
 	aliasKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
-	if entry, ok := c.store.LookupByKey(aliasKey); ok {
+	entry, ok := c.store.LookupByKey(aliasKey)
+	if !ok {
+		return // nothing stored at all is the stronger outcome
+	}
+	if entry.ttl > time.Second {
 		t.Fatalf(
 			"an answer merged from an exhausted denial was cached for %v; "+
-				"the proof it rests on had nothing left", entry.ttl)
+				"the proof it rests on had under a second left", entry.ttl)
 	}
 }
 
