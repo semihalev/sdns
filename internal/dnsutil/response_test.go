@@ -393,6 +393,11 @@ func TestHasExpiredSignatures(t *testing.T) {
 			expected: true,
 		},
 		{
+			// AD is a statement about the answer and authority sections
+			// (RFC 4035 §3.2.3), so a lapsed signature over additional
+			// records is not grounds for withdrawing it. This asked the
+			// opposite, from when the check was a flat scan of all three
+			// sections. The lifetime bound still takes the section in.
 			name: "Expired RRSIG in extra",
 			msg: func() *dns.Msg {
 				m := new(dns.Msg)
@@ -406,7 +411,7 @@ func TestHasExpiredSignatures(t *testing.T) {
 				}
 				return m
 			}(),
-			expected: true,
+			expected: false,
 		},
 		{
 			name: "Valid RRSIG",

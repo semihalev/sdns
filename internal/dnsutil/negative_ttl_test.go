@@ -311,3 +311,128 @@ func TestSignatureBoundsAreHard(t *testing.T) {
 		t.Errorf("unsigned one-second answer: got %v, want the %v floor", got, want)
 	}
 }
+
+// TestSiblingSignatureKeepsTheRRsetAlive is the key-rollover case. An RRset
+// carries a signature from the outgoing key beside one from the incoming key
+// for as long as the rollover takes, and the outgoing one lapses first.
+//
+// Judging the message on the worst signature anywhere in it condemned every
+// such answer: AD stripped, lifetime zero, admission refused, while the
+// resolver's own validator (dnssec.VerifyRRSIG) was correctly accepting the
+// RRset on the strength of the sibling.
+func TestSiblingSignatureKeepsTheRRsetAlive(t *testing.T) {
+	now := time.Now()
+	sig := func(owner string, covered uint16, tag uint16, expiresIn time.Duration) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+			TypeCovered: covered,
+			OrigTtl:     3600,
+			KeyTag:      tag,
+			Expiration:  uint32(now.Add(expiresIn).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+		}
+	}
+	answer := func() dns.RR {
+		return &dns.A{
+			Hdr: dns.RR_Header{Name: "x.example.org.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+			A:   []byte{192, 0, 2, 1},
+		}
+	}
+	ask := func(build func(*dns.Msg)) *dns.Msg {
+		msg := new(dns.Msg)
+		msg.SetQuestion("x.example.org.", dns.TypeA)
+		build(msg)
+		return msg
+	}
+
+	t.Run("a lapsed sibling condemns nothing", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{
+				answer(),
+				sig("x.example.org.", dns.TypeA, 111, -time.Hour),
+				sig("x.example.org.", dns.TypeA, 222, time.Hour),
+			}
+		})
+		if HasExpiredSignatures(msg, now) {
+			t.Error("an RRset with a live signature was reported as lapsed")
+		}
+		mt, _ := ClassifyResponse(msg, now)
+		if mt != TypeSuccess {
+			t.Errorf("classified %v, want TypeSuccess", mt)
+		}
+		// Bounded by the sibling that is still good, not by the one that is not.
+		if got := CalculateCacheTTL(msg, mt); got < 59*time.Minute {
+			t.Errorf("lifetime %v, want the live sibling's hour", got)
+		}
+	})
+
+	t.Run("the same during a denial", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Rcode = dns.RcodeNameError
+			m.Ns = []dns.RR{
+				&dns.SOA{
+					Hdr: dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300},
+					Ns:  "ns.example.org.", Mbox: "hostmaster.example.org.", Minttl: 300,
+				},
+				sig("example.org.", dns.TypeSOA, 111, -time.Hour),
+				sig("example.org.", dns.TypeSOA, 222, time.Hour),
+			}
+		})
+		if HasExpiredSignatures(msg, now) {
+			t.Error("a denial with a live signature was reported as lapsed")
+		}
+		if got, want := CalculateCacheTTL(msg, TypeNXDomain), 5*time.Minute; got != want {
+			t.Errorf("lifetime %v, want the SOA's %v", got, want)
+		}
+	})
+
+	t.Run("every sibling lapsed is still lapsed", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{
+				answer(),
+				sig("x.example.org.", dns.TypeA, 111, -time.Hour),
+				sig("x.example.org.", dns.TypeA, 222, -time.Minute),
+			}
+		})
+		if !HasExpiredSignatures(msg, now) {
+			t.Error("an RRset with nothing left covering it was reported as usable")
+		}
+	})
+
+	t.Run("siblings are per RRset, not per message", func(t *testing.T) {
+		// The A RRset is covered; the AAAA RRset beside it is not. A live
+		// signature over one does not vouch for the other.
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{
+				answer(),
+				sig("x.example.org.", dns.TypeA, 222, time.Hour),
+				&dns.AAAA{Hdr: dns.RR_Header{
+					Name: "x.example.org.", Rrtype: dns.TypeAAAA,
+					Class: dns.ClassINET, Ttl: 3600,
+				}},
+				sig("x.example.org.", dns.TypeAAAA, 111, -time.Hour),
+			}
+		})
+		if !HasExpiredSignatures(msg, now) {
+			t.Error("an uncovered RRset was excused by a sibling covering a different type")
+		}
+	})
+
+	t.Run("the additional section does not withdraw AD", func(t *testing.T) {
+		// AD is a statement about the answer and authority sections
+		// (RFC 4035 §3.2.3). A lapsed signature over glue is not grounds for
+		// taking it back.
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{answer(), sig("x.example.org.", dns.TypeA, 222, time.Hour)}
+			m.Extra = []dns.RR{
+				&dns.A{Hdr: dns.RR_Header{
+					Name: "ns.example.org.", Rrtype: dns.TypeA,
+					Class: dns.ClassINET, Ttl: 3600,
+				}},
+				sig("ns.example.org.", dns.TypeA, 111, -time.Hour),
+			}
+		})
+		if HasExpiredSignatures(msg, now) {
+			t.Error("a lapsed glue signature withdrew AD from the answer")
+		}
+	})
+}

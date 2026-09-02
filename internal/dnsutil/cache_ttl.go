@@ -95,12 +95,6 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 				}
 			}
 		}
-		if sig, ok := rr.(*dns.RRSIG); ok {
-			signed = true
-			if ttl := getRRSIGTTL(sig, now); ttl < hardTTL {
-				hardTTL = ttl
-			}
-		}
 	}
 
 	for _, rr := range msg.Answer {
@@ -116,6 +110,17 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 		}
 		bound(rr, false)
 	}
+
+	// The signature bound is taken per RRset, and within an RRset from the
+	// signature that still permits the most. Folding every signature into one
+	// minimum let a lapsed sibling speak for an RRset another signature still
+	// covers, which is exactly the shape of a key rollover.
+	eachSignedRRset([][]dns.RR{msg.Answer, msg.Ns, msg.Extra}, now, func(_ bool, usable time.Duration) {
+		signed = true
+		if usable < hardTTL {
+			hardTTL = usable
+		}
+	})
 
 	// RFC 4035 §5.3.3 names four values and the served lifetime may exceed
 	// none of them: the RRset's TTL as received, the RRSIG's TTL, its Original
