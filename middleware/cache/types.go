@@ -205,8 +205,11 @@ func (e *CacheEntry) scoped() bool { return e.scope.IsValid() }
 func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped() }
 
 // NewCacheEntryWithKey creates a new cache entry with a specific key for rate
-// limiting. A message that cannot be packed returns nil — such a response was
-// never servable on the wire, so declining to cache it is the safe outcome.
+// limiting. It returns nil for a message that cannot be packed — such a
+// response was never servable on the wire, so declining to cache it is the
+// safe outcome — and for an explicit RRSIG answer the stored view would
+// thin, which a hit may not answer with fewer signatures than the first
+// response did. Callers treat nil as "not cacheable" either way.
 func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
 	// Assemble the storable view and filter out OPT records (matching V1
 	// behavior): OPT is per-client hop metadata the serve path rebuilds.
@@ -672,10 +675,13 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 	// moment before this check, so a signature sharing the answer's own
 	// validity window trails it by that moment, and a served TTL is whole
 	// seconds anyway — the last fraction is the wire's granularity, which
-	// servedSeconds already concedes.
+	// servedSeconds already concedes. Not so for a signature permitting
+	// nothing at all: a header or Original TTL of zero is RFC 4035 §5.3.3's
+	// ceiling exactly, and the tolerance was letting a one-second entry
+	// serve it as one.
 	honours := func(sig *dns.RRSIG) bool {
 		permits, valid := dnsutil.SignatureLifetime(sig, now)
-		return valid && permits+time.Second >= lifetime
+		return valid && permits > 0 && permits+time.Second >= lifetime
 	}
 
 	// Signatures the entry cannot carry, and those it can. Both are empty

@@ -129,10 +129,13 @@ func ClearOPT(msg *dns.Msg) *dns.Msg {
 	return msg
 }
 
-// ClearDNSSEC removes RRSIG, NSEC and NSEC3 records from Answer and Ns
-// sections in place. Short-circuits when the sections already hold
-// nothing to strip (typical for non-DNSSEC responses), and reuses the
-// slice backing array when a filter is actually needed.
+// ClearDNSSEC removes RRSIG, NSEC and NSEC3 records from every section in
+// place — the additional section included, since RFC 4035 §3.2.1 has a
+// DO=0 response carry no authenticating records it was not asked for, and
+// a signed additional RRset is carried with its signature. Short-circuits
+// when the sections already hold nothing to strip (typical for non-DNSSEC
+// responses), and reuses the slice backing array when a filter is actually
+// needed.
 func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 	// An explicit RRSIG query must retain its RRSIG answers.
 	if len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeRRSIG {
@@ -141,6 +144,7 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 
 	msg.Answer = filterOut(msg.Answer, isDNSSEC)
 	msg.Ns = filterOut(msg.Ns, isDNSSEC)
+	msg.Extra = filterOut(msg.Extra, isDNSSEC)
 	return msg
 }
 

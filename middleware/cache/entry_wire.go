@@ -24,11 +24,13 @@ const (
 
 // prepareWireServe records the byte-serving verdict. Admission strips OPT,
 // so any additional records in an eligible body are real RRs the TTL walk
-// covers. The DNSSEC flag is taken from the answer and authority sections
-// only — ClearDNSSEC never filters the additional section, and mirroring
-// that keeps the DO=0 wire body identical to the Msg path's. An explicit
-// RRSIG question is eligible too: its signatures are the payload, which
-// ClearDNSSEC leaves untouched for any DO.
+// covers. The DNSSEC flag is taken from every section, the additional one
+// included: ClearDNSSEC filters all three, and mirroring it is what keeps
+// the DO=0 wire body identical to the Msg path's — a signed additional
+// RRset the entry kept with its signature would otherwise reach a DO=0
+// client as bytes. An explicit RRSIG question is eligible too: its
+// signatures are the payload, which ClearDNSSEC leaves untouched for any
+// DO.
 func prepareWireServe(body []byte) wireServeFlags {
 	var flags wireServeFlags
 	header, ok := wire.ParseHeader(body)
@@ -48,11 +50,9 @@ func prepareWireServe(body []byte) wireServeFlags {
 		if !ok {
 			return 0
 		}
-		if i < answered {
-			switch rr.Type {
-			case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
-				flags |= wireHasDNSSEC
-			}
+		switch rr.Type {
+		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
+			flags |= wireHasDNSSEC
 		}
 		if i < int(header.ANCount) {
 			if rr.Type == question.Qtype {

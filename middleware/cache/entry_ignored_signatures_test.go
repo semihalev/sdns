@@ -218,3 +218,132 @@ func TestStorableRecordsPassesTheCommonShapeThrough(t *testing.T) {
 		t.Errorf("common shape allocated %v times, want none", allocs)
 	}
 }
+
+// TestZeroLifetimeSignatureIsNeverKept pins the tolerance's floor: a
+// signature permitting nothing — a header TTL of zero, or an Original TTL of
+// zero — is RFC 4035 §5.3.3's ceiling exactly, and a one-second entry may
+// not serve it as one. Each field separately.
+func TestZeroLifetimeSignatureIsNeverKept(t *testing.T) {
+	now := time.Now()
+	_, a := ignoredSigFixtures(now)
+	const name = "mx.example."
+
+	for _, tc := range []struct {
+		name            string
+		hdrTTL, origTTL uint32
+	}{
+		{"header TTL zero", 0, 3600},
+		{"original TTL zero", 3600, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := new(dns.Msg)
+			req.SetQuestion(name, dns.TypeMX)
+			req.SetEdns0(1232, true)
+			resp := new(dns.Msg)
+			resp.SetReply(req)
+			resp.Answer = []dns.RR{
+				&dns.MX{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 1}, Preference: 10, Mx: "target.example."},
+			}
+			resp.Extra = []dns.RR{
+				a("target.example."),
+				&dns.RRSIG{
+					Hdr:         dns.RR_Header{Name: "target.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: tc.hdrTTL},
+					TypeCovered: dns.TypeA, Algorithm: 8, Labels: 2, OrigTtl: tc.origTTL, KeyTag: 7,
+					SignerName: "example.", Signature: "MTIzNDU2Nzg5MGFiY2RlZg==",
+					Inception:  uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+					Expiration: uint32(now.Add(time.Hour).Unix()),      //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+				},
+			}
+
+			served := serveFromEntry(t, req, resp, time.Second)
+			if tags := sigTags(served.Extra); len(tags) != 0 {
+				t.Errorf("a signature permitting nothing was served: %v", tags)
+			}
+			if hasA(served.Extra, "target.example.") {
+				t.Error("the RRset was served without the signature it arrived with")
+			}
+		})
+	}
+}
+
+// TestDOZeroHitCarriesNoAdditionalSignature pins the DO=0 body on the wire
+// path: the entry keeps a signed additional RRset with its signature, and a
+// client that did not set DO must not receive that signature (RFC 4035
+// §3.2.1) — on the wire path as on the Msg path. Both shapes: an entry
+// signed in the answer as well, and one whose only signature is additional.
+func TestDOZeroHitCarriesNoAdditionalSignature(t *testing.T) {
+	now := time.Now()
+	sig, a := ignoredSigFixtures(now)
+	const name = "mx.example."
+
+	build := func(signedAnswer bool) *CacheEntry {
+		t.Helper()
+		req := new(dns.Msg)
+		req.SetQuestion(name, dns.TypeMX)
+		req.SetEdns0(1232, true)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Answer = []dns.RR{
+			&dns.MX{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 3600}, Preference: 10, Mx: "target.example."},
+		}
+		if signedAnswer {
+			resp.Answer = append(resp.Answer, &dns.RRSIG{
+				Hdr:         dns.RR_Header{Name: name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+				TypeCovered: dns.TypeMX, Algorithm: 8, Labels: 2, OrigTtl: 3600, KeyTag: 9,
+				SignerName: "example.", Signature: "MTIzNDU2Nzg5MGFiY2RlZg==",
+				Inception:  uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+				Expiration: uint32(now.Add(time.Hour).Unix()),      //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			})
+		}
+		resp.Extra = []dns.RR{a("target.example."), sig("target.example.", 3600, 600, -2*time.Hour, time.Hour)}
+		entry := NewCacheEntryWithKey(resp, time.Hour, 0, 0)
+		if entry == nil {
+			t.Fatal("entry not built")
+		}
+		return entry
+	}
+
+	for _, tc := range []struct {
+		name         string
+		signedAnswer bool
+	}{
+		{"signed in the answer too", true},
+		{"signed only in the additional section", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := build(tc.signedAnswer)
+			if entry.wireServe&wireHasDNSSEC == 0 {
+				t.Fatal("the additional signature did not mark the body as carrying DNSSEC")
+			}
+			body, _ := entry.wireBodyFor(false)
+			if body == nil {
+				t.Fatal("no DO=0 body")
+			}
+			var served dns.Msg
+			if err := served.Unpack(body); err != nil {
+				t.Fatal(err)
+			}
+			if tags := sigTags(served.Extra); len(tags) != 0 {
+				t.Errorf("DO=0 body carries additional signatures %v", tags)
+			}
+			if tags := sigTags(served.Answer); len(tags) != 0 {
+				t.Errorf("DO=0 body carries answer signatures %v", tags)
+			}
+			if !hasA(served.Extra, "target.example.") {
+				t.Error("DO=0 body lost the additional address itself")
+			}
+			if do, _ := entry.wireBodyFor(true); len(sigTags(mustUnpack(t, do).Extra)) != 1 {
+				t.Error("DO=1 body lost the additional signature")
+			}
+		})
+	}
+}
+
+func mustUnpack(t *testing.T, body []byte) *dns.Msg {
+	t.Helper()
+	m := new(dns.Msg)
+	if err := m.Unpack(body); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
