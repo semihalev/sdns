@@ -187,7 +187,12 @@ type signedRRset struct {
 	covered uint16
 }
 
+// signedRRsetState is one RRset's standing while the signatures are walked.
+// Its identity is read off the first signature seen for it, compared in
+// place, so the common path folds no names and allocates nothing.
 type signedRRsetState struct {
+	section int
+	first   *dns.RRSIG
 	// covered: some signature in its validity period vouches for the RRset.
 	covered bool
 	// usable: the shortest lifetime the covering signatures permit, and
@@ -198,6 +203,34 @@ type signedRRsetState struct {
 	usable  time.Duration
 	bounded bool
 }
+
+func (s *signedRRsetState) is(section int, sig *dns.RRSIG) bool {
+	return s.section == section &&
+		s.first.TypeCovered == sig.TypeCovered &&
+		s.first.Hdr.Class == sig.Hdr.Class &&
+		strings.EqualFold(s.first.Hdr.Name, sig.Hdr.Name) &&
+		strings.EqualFold(s.first.SignerName, sig.SignerName)
+}
+
+func (s *signedRRsetState) identity() signedRRset {
+	return signedRRsetIdentity(s.section, s.first)
+}
+
+func signedRRsetIdentity(section int, sig *dns.RRSIG) signedRRset {
+	return signedRRset{
+		section: section,
+		owner:   strings.ToLower(sig.Hdr.Name),
+		signer:  strings.ToLower(sig.SignerName),
+		class:   sig.Hdr.Class,
+		covered: sig.TypeCovered,
+	}
+}
+
+// signedRRsetInline is how many distinct signed RRsets are tracked in place
+// before the walk switches to a map. A response carries one or two outside
+// a rollover and a few more during one; only a message stuffed with distinct
+// signed RRsets goes past it.
+const signedRRsetInline = 8
 
 // eachSignedRRset calls fn once for every RRset in sections that carries a
 // signature, reporting whether any of that RRset's signatures is still within
@@ -218,52 +251,69 @@ type signedRRsetState struct {
 // needs. Among the survivors the shortest wins, because a downstream
 // validator picks its own signature to verify with and may pick that one.
 //
-// One pass, grouped through a map. A response carries a handful of
-// signatures, but the sibling test was quadratic in that count, and a
-// response filled to the wire limit with distinct signed RRsets made it
-// pay for it. Callbacks come in order of first appearance.
+// One pass. Up to signedRRsetInline distinct RRsets live in a stack array
+// and are matched by comparing names in place, which is every ordinary
+// response at no allocation; past that the walk indexes what it has through
+// a map of folded identities, so a response filled to the wire limit with
+// distinct signed RRsets stays linear instead of paying a quadratic sibling
+// scan. This runs more than once on a miss, so the cheap path matters.
+// Callbacks come in order of first appearance.
 func eachSignedRRset(sections [][]dns.RR, now time.Time, fn func(covered bool, usable time.Duration)) {
-	var (
-		groups map[signedRRset]*signedRRsetState
-		order  []signedRRset
-	)
+	var inline [signedRRsetInline]signedRRsetState
+	groups := inline[:0]
+	var index map[signedRRset]int
+
 	for section, records := range sections {
 		for _, rr := range records {
 			sig, ok := rr.(*dns.RRSIG)
 			if !ok {
 				continue
 			}
-			id := signedRRset{
-				section: section,
-				owner:   strings.ToLower(sig.Hdr.Name),
-				signer:  strings.ToLower(sig.SignerName),
-				class:   sig.Hdr.Class,
-				covered: sig.TypeCovered,
-			}
-			state := groups[id]
-			if state == nil {
-				if groups == nil {
-					groups = make(map[signedRRset]*signedRRsetState)
+
+			at := -1
+			if index == nil {
+				for i := range groups {
+					if groups[i].is(section, sig) {
+						at = i
+						break
+					}
 				}
-				state = &signedRRsetState{}
-				groups[id] = state
-				order = append(order, id)
+				if at < 0 && len(groups) == signedRRsetInline {
+					index = make(map[signedRRset]int, 2*signedRRsetInline)
+					for i := range groups {
+						index[groups[i].identity()] = i
+					}
+				}
 			}
+			if at < 0 && index != nil {
+				id := signedRRsetIdentity(section, sig)
+				if i, ok := index[id]; ok {
+					at = i
+				} else {
+					groups = append(groups, signedRRsetState{section: section, first: sig})
+					at = len(groups) - 1
+					index[id] = at
+				}
+			} else if at < 0 {
+				groups = append(groups, signedRRsetState{section: section, first: sig})
+				at = len(groups) - 1
+			}
+
 			if !sig.ValidityPeriod(now) {
 				// Outside its period, spent or not yet begun. It says
 				// nothing about the RRset while a sibling still covers it,
 				// and if none does, covered stays false.
 				continue
 			}
+			state := &groups[at]
 			state.covered = true
 			if ttl := getRRSIGTTL(sig, now); !state.bounded || ttl < state.usable {
 				state.usable, state.bounded = ttl, true
 			}
 		}
 	}
-	for _, id := range order {
-		state := groups[id]
-		fn(state.covered, state.usable)
+	for i := range groups {
+		fn(groups[i].covered, groups[i].usable)
 	}
 }
 

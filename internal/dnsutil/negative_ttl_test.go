@@ -1,6 +1,7 @@
 package dnsutil
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -565,6 +566,141 @@ func TestSiblingIdentityAndValidity(t *testing.T) {
 		})
 		if got := CalculateCacheTTL(msg, TypeSuccess); got < 59*time.Minute {
 			t.Errorf("lifetime %v, want the answer's own hour: glue is not the answer", got)
+		}
+	})
+}
+
+// TestSignatureHeaderTTLBoundsOnlyWhileUsable pins the record scan: a
+// signature's header TTL reaches the lifetime only through the usable
+// signature it belongs to. A lapsed sibling, or a glue signature, carrying a
+// header TTL of zero used to zero an answer whose live signature permitted an
+// hour.
+func TestSignatureHeaderTTLBoundsOnlyWhileUsable(t *testing.T) {
+	now := time.Now()
+	sig := func(owner string, hdrTTL uint32, until time.Duration) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: hdrTTL},
+			TypeCovered: dns.TypeA,
+			OrigTtl:     3600,
+			SignerName:  "example.org.",
+			Inception:   uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			Expiration:  uint32(now.Add(until).Unix()),          //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		}
+	}
+	a := func(owner string) dns.RR {
+		return &dns.A{
+			Hdr: dns.RR_Header{Name: owner, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+			A:   []byte{192, 0, 2, 1},
+		}
+	}
+	ask := func(build func(*dns.Msg)) *dns.Msg {
+		msg := new(dns.Msg)
+		msg.SetQuestion("x.example.org.", dns.TypeA)
+		build(msg)
+		return msg
+	}
+
+	t.Run("a lapsed sibling's header TTL bounds nothing", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{
+				a("x.example.org."),
+				sig("x.example.org.", 0, -time.Hour),
+				sig("x.example.org.", 3600, time.Hour),
+			}
+		})
+		if HasExpiredSignatures(msg, now) {
+			t.Error("a live sibling covers the RRset, yet it was reported lapsed")
+		}
+		if got := CalculateCacheTTL(msg, TypeSuccess); got < 59*time.Minute {
+			t.Errorf("lifetime %v, want the live sibling's hour, not the lapsed one's zero header", got)
+		}
+	})
+
+	t.Run("a glue signature's header TTL bounds nothing", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{a("x.example.org."), sig("x.example.org.", 3600, time.Hour)}
+			m.Extra = []dns.RR{a("ns.example.org."), sig("ns.example.org.", 0, time.Hour)}
+		})
+		if got := CalculateCacheTTL(msg, TypeSuccess); got < 59*time.Minute {
+			t.Errorf("lifetime %v, want the answer's hour: glue signatures do not bound it", got)
+		}
+	})
+
+	t.Run("a live signature's own header TTL still bounds", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{a("x.example.org."), sig("x.example.org.", 30, time.Hour)}
+		})
+		if got, want := CalculateCacheTTL(msg, TypeSuccess), 30*time.Second; got != want {
+			t.Errorf("lifetime %v, want the signature's %v header TTL", got, want)
+		}
+	})
+}
+
+// TestEachSignedRRsetCostsNothingOnTheCommonPath pins the walk's price where
+// it runs several times per miss: an ordinary response, one or a few signed
+// RRsets, is grouped in place without allocating. Past the inline capacity
+// the walk indexes through a map and must still report every RRset exactly
+// once, with siblings that arrive after the switch matched to their RRset.
+func TestEachSignedRRsetCostsNothingOnTheCommonPath(t *testing.T) {
+	now := time.Now()
+	sig := func(owner string, tag uint16, until time.Duration) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+			TypeCovered: dns.TypeA,
+			OrigTtl:     3600,
+			KeyTag:      tag,
+			SignerName:  "example.org.",
+			Inception:   uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			Expiration:  uint32(now.Add(until).Unix()),          //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		}
+	}
+
+	t.Run("a rollover answer allocates nothing", func(t *testing.T) {
+		answer := []dns.RR{
+			sig("x.example.org.", 111, -time.Hour),
+			sig("x.example.org.", 222, time.Hour),
+		}
+		authority := []dns.RR{sig("example.org.", 333, time.Hour)}
+		reported := 0
+		allocs := testing.AllocsPerRun(100, func() {
+			reported = 0
+			eachSignedRRset([][]dns.RR{answer, authority}, now, func(bool, time.Duration) { reported++ })
+		})
+		if allocs != 0 {
+			t.Errorf("common path allocated %v times per walk, want none", allocs)
+		}
+		if reported != 2 {
+			t.Errorf("reported %d RRsets, want 2", reported)
+		}
+	})
+
+	t.Run("past the inline capacity every RRset is still reported once", func(t *testing.T) {
+		const n = signedRRsetInline + 4
+		var answer []dns.RR
+		// Every lapsed signature first, then every live sibling: the live
+		// half arrives after the walk has switched to the map, so each has
+		// to find the RRset its lapsed sibling opened.
+		for i := range n {
+			answer = append(answer, sig(fmt.Sprintf("r%d.example.org.", i), 111, -time.Hour))
+		}
+		for i := range n {
+			answer = append(answer, sig(fmt.Sprintf("R%d.EXAMPLE.ORG.", i), 222, time.Hour))
+		}
+		reported, lapsed := 0, 0
+		eachSignedRRset([][]dns.RR{answer}, now, func(covered bool, usable time.Duration) {
+			reported++
+			if !covered {
+				lapsed++
+			}
+			if usable < 59*time.Minute {
+				t.Errorf("usable %v, want the live sibling's hour", usable)
+			}
+		})
+		if reported != n {
+			t.Errorf("reported %d RRsets, want %d", reported, n)
+		}
+		if lapsed != 0 {
+			t.Errorf("%d RRsets reported lapsed after their live sibling arrived past the switch", lapsed)
 		}
 	})
 }

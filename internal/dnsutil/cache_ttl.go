@@ -85,6 +85,15 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// a denial with SOA header TTL 86400 and Minttl 300 must not be cached for
 	// a day. It applies to the authority section of a negative answer only.
 	bound := func(rr dns.RR, negativeSOA bool) {
+		// A signature's header TTL is a bound only while the signature is
+		// usable, and eachSignedRRset applies it then, alongside its
+		// Original TTL and its expiry. Read here it spoke for signatures
+		// that walk had rightly set aside: a lapsed sibling or a glue
+		// signature carrying a header TTL of zero was zeroing the lifetime
+		// of an answer whose live signature permitted an hour.
+		if _, isSig := rr.(*dns.RRSIG); isSig {
+			return
+		}
 		if ttl := getTTL(rr); ttl < recordTTL {
 			recordTTL = ttl
 		}
@@ -111,10 +120,12 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 		bound(rr, false)
 	}
 
-	// The signature bound is taken per RRset, and within an RRset from the
-	// signature that still permits the most. Folding every signature into one
-	// minimum let a lapsed sibling speak for an RRset another signature still
-	// covers, which is exactly the shape of a key rollover.
+	// The signature bound is taken per RRset, from its signatures that are
+	// still usable, and among those from the one that permits the least —
+	// a downstream validator picks its own signature to verify with. Folding
+	// every signature into one minimum let a lapsed sibling speak for an
+	// RRset another signature still covers, which is exactly the shape of a
+	// key rollover.
 	//
 	// The additional section is left out, as it is for AD: RFC 4035 §3.2.3
 	// makes the answer and authority sections what this resolver vouches
