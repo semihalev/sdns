@@ -16,7 +16,7 @@ import (
 
 func handleTest(w http.ResponseWriter, r *http.Request) {
 	// Answer locally. These tests are about the HTTP framing DoH puts
-	// around a DNS message — status codes, media types, JSON shape — and
+	// around a DNS message, status codes, media types, JSON shape, and
 	// none of that needs a real resolver. Every request used to go to
 	// 8.8.8.8, so the whole file failed on a machine without internet, and
 	// what it verified depended on Google's answer for www.google.com.

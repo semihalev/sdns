@@ -175,7 +175,7 @@ func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 // made it: at a delegation the parent's NSEC over the child's name and the
 // child's own apex NSEC share owner, class and type while being different
 // RRsets under different keys, and one must not vouch for the other. The
-// section is part of it for the same reason — the same owner and type can
+// section is part of it for the same reason, the same owner and type can
 // sit in the authority section as a proof and in the additional section as
 // glue, and those are different data.
 type signedRRset struct {
@@ -205,7 +205,7 @@ type signedRRsetState struct {
 
 // is reports whether sig belongs to this RRset. Names compare as DNS names
 // (dnsname.CanonicalCompare): escapes decoded, case folded over ASCII only.
-// A text fold is wrong in both directions — an escaped spelling of the same
+// A text fold is wrong in both directions, an escaped spelling of the same
 // owner was a different RRset, and a Kelvin sign, which the Unicode fold
 // turns into a k, was the same one, so a live signature under one wire
 // name vouched for an expired RRset under another and kept AD on it.

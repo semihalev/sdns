@@ -58,7 +58,7 @@ func Test_TrySort(t *testing.T) {
 	// However the samples fell, the head of the list is the cheapest
 	// server in it. The old shape could not promise this: every thousandth
 	// sort wiped every server's statistics, and for the sorts that
-	// followed the whole set read as unmeasured — which it ranked first.
+	// followed the whole set read as unmeasured, which it ranked first.
 	lead := s.List[0].Score()
 	for _, srv := range s.List[1:] {
 		if srv.Score() < lead {

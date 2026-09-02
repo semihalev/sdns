@@ -57,8 +57,8 @@ resolver with nowhere to write.
 | `/etc/sdns.conf` | Configuration |
 | `/var/lib/sdns` | Trust anchors, cached blocklists, the local root copy |
 
-`/var/lib/sdns` must be writable by the `sdns` user. It holds real state — the
-RFC 5011 trust anchor database in particular — so it belongs on persistent
+`/var/lib/sdns` must be writable by the `sdns` user. It holds real state, the
+RFC 5011 trust anchor database in particular, so it belongs on persistent
 storage, not in a tmpfs.
 
 ## Operating it
@@ -69,7 +69,7 @@ sudo systemctl status sdns
 sudo journalctl -u sdns -f
 ```
 
-The listener bounds — worker pool, in-flight cap, TCP connection cap — are
+The listener bounds (worker pool, in-flight cap, TCP connection cap) are
 logged as each listener starts, which is the quickest way to confirm what the
 process actually derived from the machine.
 
@@ -80,7 +80,7 @@ sudo -u sdns /usr/bin/sdns -t -c /etc/sdns.conf && sudo systemctl restart sdns
 ```
 
 Run the check **as the service user**. As root it reads files the `sdns` user
-cannot — a TLS key with tight ownership passes the test and then fails at
+cannot, a TLS key with tight ownership passes the test and then fails at
 startup.
 
 Make the validation gate part of the restart, not a thing you remember to run.
@@ -89,7 +89,7 @@ so the `&&` is doing real work.
 
 ## Conflicting resolvers
 
-On most distributions something already holds port 53 — `systemd-resolved`,
+On most distributions something already holds port 53: `systemd-resolved`,
 `dnsmasq`, or an existing recursor. Check before the first start:
 
 ```bash
@@ -110,7 +110,7 @@ SDNS_DEBUGNS=false   # serve the CHAOS-class nameserver debug view
 ```
 
 `SDNS_PPROF=true` exposes Go's profiling endpoints on the API address, and
-`bearertoken` does not cover them — pprof tooling sends no `Authorization`
+`bearertoken` does not cover them, pprof tooling sends no `Authorization`
 header, so those routes stay open even when a token is set. Leave it off unless
 you are actively profiling, and keep the listener on loopback while it is on.
 

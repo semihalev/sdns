@@ -140,12 +140,12 @@ func libraryCanonicalRRset(tb testing.TB, rrset []dns.RR, sig *dns.RRSIG) []byte
 // TestCanonicalRRsetLabelsZeroStaysRejected pins the acceptance boundary
 // review caught this construction drifting across. For Labels=0 the RFC's
 // wildcard arithmetic yields "*.", a name that would verify a root-wildcard
-// signature — but the library's construction yields "*.." and the packer
+// signature, but the library's construction yields "*.." and the packer
 // rejects it, so such signatures have always failed verification, there and
 // here. Accepting them may well be the RFC's intent; it is also a wider
 // acceptance than the library's, and this package promises never to be
 // wider. Root-wildcard support, if ever wanted, is a deliberate change with
-// its own cryptographic and denial-proof tests — not a side effect of an
+// its own cryptographic and denial-proof tests, not a side effect of an
 // allocation rewrite.
 func TestCanonicalRRsetLabelsZeroStaysRejected(t *testing.T) {
 	rrset := []dns.RR{mustSignatureRR(t, "foo. 300 IN A 192.0.2.1")}

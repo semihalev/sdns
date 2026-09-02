@@ -123,7 +123,7 @@ func (b *BlockList) downloadBlocklist(uri, name string) (err error) {
 		return fmt.Errorf("error creating file: %w", err)
 	}
 
-	// If this function returns an error, drop the partial file — it
+	// If this function returns an error, drop the partial file, it
 	// otherwise lingers in the blocklist directory until the next
 	// successful download of the same (host, count) and, critically,
 	// is parsed by readBlocklists() in the meantime so truncated or
@@ -169,7 +169,7 @@ func (b *BlockList) downloadBlocklist(uri, name string) (err error) {
 // fileNameForHost makes a URL host safe to use as a file name, and keeps
 // distinct hosts distinct.
 //
-// A host carrying a port — "lists.example:8080" — spells a name Windows
+// A host carrying a port, "lists.example:8080", spells a name Windows
 // refuses to create, and the download was then discarded with only a log
 // line, so a list configured with an explicit port silently never loaded
 // there. Replacing the offending characters fixes that but is not
@@ -183,7 +183,7 @@ func fileNameForHost(host string) string {
 }
 
 // sanitizeHostLabel keeps the readable part of a file name within what every
-// filesystem accepts. It is a label, not an identity — fileNameForHost
+// filesystem accepts. It is a label, not an identity, fileNameForHost
 // appends the digest that makes the name unique.
 func sanitizeHostLabel(host string) string {
 	const maxLabel = 48

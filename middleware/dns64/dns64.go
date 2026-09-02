@@ -15,19 +15,19 @@
 //
 //   - Chain placement is between kubernetes and cache. The cache
 //     stores the original AAAA response (NODATA, NXDOMAIN, or AAAA
-//     RRset) — synthesis runs per client query against that
+//     RRset), synthesis runs per client query against that
 //     cached response. The secondary A lookup is itself cached, so
 //     repeat synthesis costs an O(few-µs) memcpy plus a cache hit;
 //     this preserves per-client correctness when client_networks
 //     restricts synthesis.
 //   - RCODE handling follows RFC 6147 §5.1.2 / §5.1.3 / §5.5.
 //     NOERROR with no usable AAAA triggers synthesis. NXDOMAIN
-//     passes through unchanged — the name doesn't exist, so it
+//     passes through unchanged, the name doesn't exist, so it
 //     has no A either. SERVFAIL carrying a DNSSEC-failure
 //     Extended DNS Error (Unsupported DNSKEY Algorithm /
 //     DS Digest Type / NSEC3 Iterations Value, Indeterminate,
 //     Bogus, Signature Expired/Not Yet Valid, DNSKEY/RRSIGs/NSEC
-//     Missing, No Zone Key Bit Set) also passes through — DNS64
+//     Missing, No Zone Key Bit Set) also passes through, DNS64
 //     must never paper over a validation failure. Any other
 //     nonzero RCODE (plain SERVFAIL, REFUSED, etc.) is treated
 //     as "no answer" and attempts synthesis; if the A query is
@@ -70,7 +70,7 @@ import (
 const name = "dns64"
 
 // noSOATTLCeiling is the cap RFC 6147 §5.1.7 mandates when the
-// upstream AAAA response carries no SOA — i.e. there's no
+// upstream AAAA response carries no SOA, i.e. there's no
 // negative-cache TTL to take the minimum against. A synthesised
 // AAAA may still use a lower TTL via the A record's own TTL.
 const noSOATTLCeiling uint32 = 600
@@ -81,7 +81,7 @@ const noSOATTLCeiling uint32 = 600
 var errQueryerNotWired = errors.New("dns64: queryer not wired")
 
 // DNS64 is the middleware handler. The receiver may legitimately be
-// nil — New returns a typed-nil pointer when the middleware is
+// nil, New returns a typed-nil pointer when the middleware is
 // disabled in config. Methods invoked on the typed-nil are no-ops
 // where it makes sense; ServeDNS in particular is never called on
 // a typed-nil because Registry.Build skips disabled handlers.
@@ -120,7 +120,7 @@ func (d *DNS64) Name() string { return name }
 
 // ClientOnly excludes DNS64 from the internal sub-pipeline. Internal
 // sub-queries (resolver NS chase, our own secondary A lookup, cache
-// CNAME chase) must not re-enter DNS64 — that would cause infinite
+// CNAME chase) must not re-enter DNS64, that would cause infinite
 // synthesis loops and leak synthesised AAAAs into delegation logic.
 func (d *DNS64) ClientOnly() bool { return true }
 
@@ -142,7 +142,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// wire-born query (the overwhelming majority) passes through without
 	// decoding; only a real synthesis candidate materializes for its
 	// name. The question-count probe therefore runs on the decoded form
-	// only — Msg decodes on demand, and calling it here made line one
+	// only, Msg decodes on demand, and calling it here made line one
 	// defeat everything this comment promises.
 	if !req.Undecoded() {
 		if m := req.Msg(); m != nil && len(m.Question) != 1 {
@@ -180,7 +180,7 @@ func (d *DNS64) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 	if req.CD() {
-		// RFC 6147 §5.5 — a CD=1 client has opted to validate
+		// RFC 6147 §5.5, a CD=1 client has opted to validate
 		// itself; do not synthesise. Symmetric for PTR: the
 		// CNAME we'd synthesise points at an unsigned name we
 		// fabricated, so respect the bit.
@@ -276,7 +276,7 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 			continue
 		}
 		// Apply the same RFC 6147 §5.1.4 IPv4 exclusion that
-		// AAAA synthesis does — refuse to translate ip6.arpa
+		// AAAA synthesis does, refuse to translate ip6.arpa
 		// names whose corresponding IPv4 address is in the
 		// "do not translate" set under the well-known prefix.
 		if d.cfg.shouldExcludeAOnPrefix(ext, p) {
@@ -306,7 +306,7 @@ func (d *DNS64) handlePTR(ctx context.Context, ch *middleware.Chain, qname strin
 
 	// Best-effort chase the in-addr.arpa PTR through the internal
 	// sub-pipeline so the client gets a complete answer. Failures
-	// drop us back to "CNAME only" — RFC-compliant; the client can
+	// drop us back to "CNAME only", RFC-compliant; the client can
 	// follow the CNAME themselves.
 	if d.queryer != nil {
 		sub := new(dns.Msg)
@@ -458,8 +458,8 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	// Filter the upstream Answer section against the AAAA
 	// exclude list. If anything survives, the response is
 	// "non-empty" per §5.1.4 and we forward the (possibly
-	// modified) version. If nothing survives — every AAAA was
-	// excluded, or there were none to begin with — fall through
+	// modified) version. If nothing survives, every AAAA was
+	// excluded, or there were none to begin with, fall through
 	// to the synthesis path.
 	if m.Rcode == dns.RcodeSuccess {
 		filtered, hadAAAA, kept, stripped := w.filterUpstreamAAAA(m)
@@ -540,7 +540,7 @@ func (w *responseWriter) writeResolutionAttemptFailure(err error) error {
 //   - kept: count of AAAA records retained after filtering;
 //   - stripped: count of AAAA records actually dropped.
 //
-// The dns.Msg.Copy is only made when stripped > 0 — a response
+// The dns.Msg.Copy is only made when stripped > 0, a response
 // with non-AAAA records (CNAME, RRSIG, etc.) is otherwise
 // returned as-is to keep the common pass-through path
 // allocation-free.
@@ -577,7 +577,7 @@ func (w *responseWriter) filterUpstreamAAAA(m *dns.Msg) (*dns.Msg, bool, int, in
 
 // synthesise issues the secondary A-record lookup and builds the
 // replacement message. Returns nil only when the queryer itself
-// failed to deliver an A response — caller then falls back to the
+// failed to deliver an A response, caller then falls back to the
 // original. When the A response simply has no usable records
 // (empty answer, NXDOMAIN, SERVFAIL), RFC 6147 §5.1.6 says the
 // A response is the basis for the client reply, so we return a
@@ -593,7 +593,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 	aReq.RecursionDesired = true
 	// Inherit CD from the client request so the A lookup honours
 	// the same validation policy. CD=1 was already filtered out at
-	// ServeDNS — this preserves whatever bit was set on the AAAA
+	// ServeDNS, this preserves whatever bit was set on the AAAA
 	// query's path through DO/AD.
 	aReq.CheckingDisabled = w.req.CheckingDisabled
 
@@ -620,7 +620,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 
 	chain, addresses := splitChainAndA(aResp)
 	if len(addresses) == 0 {
-		// NOERROR with no A records — RFC 6147 §5.1.6 still
+		// NOERROR with no A records, RFC 6147 §5.1.6 still
 		// applies: the empty A response is the basis for the
 		// client reply.
 		aLookupNoA.Inc()
@@ -630,7 +630,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 	// RFC 6147 §5.1.7: synthesised TTL = min(A TTL, negative-cache
 	// TTL of the original AAAA response). When no SOA is present
 	// the upper bound is 600 seconds. The lower bound is whatever
-	// the A records carry — short-lived A records intentionally
+	// the A records carry, short-lived A records intentionally
 	// keep DNS64 answers short-lived too.
 	ttl := noSOATTLCeiling
 	if negTTL := negativeAAAATTL(orig); negTTL > 0 {
@@ -650,7 +650,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 		}
 		answers = append(answers, cp)
 	}
-	// Synthesised AAAAs adopt the A record's owner — that's the
+	// Synthesised AAAAs adopt the A record's owner, that's the
 	// terminal name after any CNAME / DNAME chain has been
 	// resolved by the upstream, and matches what the client
 	// expects in the Answer section. RFC 6147 §5.2 lets multiple
@@ -673,7 +673,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 	}
 	// All (A, prefix) pairs were excluded (e.g. only the well-known
 	// prefix is configured and every A is in private space). RFC
-	// 6147 §5.1.4 — we treat the response as if no A records
+	// 6147 §5.1.4, we treat the response as if no A records
 	// existed. Fall back to the original NODATA.
 	if !hasAAAAInList(answers) {
 		passthroughAExcluded.Inc()
@@ -689,7 +689,7 @@ func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 	// RFC 6147 §5.4 + §5.3.2: Authority and Additional sections
 	// come from the final A response unmodified. §5.3.2 explicitly
 	// forbids the DNS64 from rewriting any RR type other than the
-	// AAAA-from-A synthesis above and CNAME/RRSIG handling — A
+	// AAAA-from-A synthesis above and CNAME/RRSIG handling, A
 	// records elsewhere in the message MUST pass through verbatim.
 	// The client's OPT (carrying DO/UDP-size/cookie state) is
 	// taken from the original AAAA reply so downstream writers
@@ -711,8 +711,8 @@ func (w *responseWriter) synthesise(orig *dns.Msg) (*dns.Msg, error) {
 
 // buildAResponseAsBasis implements RFC 6147 §5.1.6: when the
 // secondary A query yielded no usable records (empty answer,
-// NXDOMAIN, SERVFAIL, etc.), the A response — not the original
-// AAAA reply — is the basis for what the client receives. We
+// NXDOMAIN, SERVFAIL, etc.), the A response, not the original
+// AAAA reply, is the basis for what the client receives. We
 // preserve the A response's RCODE and Authority/Additional
 // sections but rewrite the question to AAAA so the client sees
 // an answer addressed to its actual query. RFC 6147 §5.1.5
@@ -821,11 +821,11 @@ func splitChainAndA(resp *dns.Msg) ([]dns.RR, []*dns.A) {
 // DNS64 must surface to the client unchanged:
 //
 //   - codes 1, 2, 27: unsupported DNSKEY algorithm, unsupported
-//     DS digest type, unsupported NSEC3 iterations — the
+//     DS digest type, unsupported NSEC3 iterations, the
 //     validator couldn't process the chain at all;
 //   - codes 5-12: indeterminate, bogus, signature expired/not
-//     yet valid, DNSKEY/RRSIG/NSEC missing, no zone key bit set
-//     — the validator processed it and rejected.
+//     yet valid, DNSKEY/RRSIG/NSEC missing, no zone key bit set,
+//     the validator processed it and rejected.
 //
 // In either cluster, papering over the SERVFAIL with synthesised
 // AAAAs would let a client reach a target whose AAAA the upstream
@@ -888,8 +888,8 @@ func isCachedFailureResponse(ctx context.Context, m *dns.Msg) bool {
 }
 
 // negativeAAAATTL returns the SOA-derived minimum negative TTL of
-// the original AAAA response, or 0 if no SOA is present. RFC 2308
-// — the negative TTL is min(SOA.MINIMUM, SOA.TTL).
+// the original AAAA response, or 0 if no SOA is present. RFC 2308,
+// the negative TTL is min(SOA.MINIMUM, SOA.TTL).
 func negativeAAAATTL(m *dns.Msg) uint32 {
 	for _, rr := range m.Ns {
 		if soa, ok := rr.(*dns.SOA); ok {

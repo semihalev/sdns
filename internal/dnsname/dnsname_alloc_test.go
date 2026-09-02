@@ -5,7 +5,7 @@ package dnsname
 import "testing"
 
 // TestWalkersDoNotAllocate is the reason this package exists: every answer
-// out of a forward walk, nothing materialized — CanonicalCompare included,
+// out of a forward walk, nothing materialized, CanonicalCompare included,
 // whose escape decoding happens octet by octet as the labels are read.
 func TestWalkersDoNotAllocate(t *testing.T) {
 	allocs := testing.AllocsPerRun(200, func() {

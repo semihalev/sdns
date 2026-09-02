@@ -108,7 +108,7 @@ func Test_JoinLeaderWakesFollowers(t *testing.T) {
 	}
 
 	// Give followers time to block on the channel before the leader
-	// calls Done — that's the case the regression would mishandle.
+	// calls Done, that's the case the regression would mishandle.
 	time.Sleep(50 * time.Millisecond)
 	if !reflect.DeepEqual(int32(0), woken.Load()) {
 		t.Errorf("%s: woken.Load() = %v, want %v", "followers must wait for leader's Done", woken.Load(), int32(0))

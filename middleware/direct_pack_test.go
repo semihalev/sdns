@@ -70,8 +70,8 @@ func directPackChain(tb testing.TB, sink dns.ResponseWriter) *Chain {
 
 // TestDirectPackWritesRawBytes pins the declared path end to end at the
 // writer level: raw library-parity bytes through Write, nothing through
-// WriteMsg, and the observable state — Written, Size, Rcode, Msg with
-// pointer identity — exactly as the Msg path would leave it.
+// WriteMsg, and the observable state, Written, Size, Rcode, Msg with
+// pointer identity, exactly as the Msg path would leave it.
 func TestDirectPackWritesRawBytes(t *testing.T) {
 	sink := externalUDPSink()
 	ch := directPackChain(t, sink)
@@ -176,7 +176,7 @@ func TestDirectPackFallsBackThroughTheMsgPath(t *testing.T) {
 }
 
 // TestDirectPackTransportErrorIsFinal pins the no-retry contract: after a
-// transport error, bytes may be partially out — the response is marked
+// transport error, bytes may be partially out. The response is marked
 // written and nothing writes a second one.
 func TestDirectPackTransportErrorIsFinal(t *testing.T) {
 	sink := externalUDPSink()

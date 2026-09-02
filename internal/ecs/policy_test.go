@@ -99,7 +99,7 @@ func TestPolicy_Clamp_ClampsV4PrefixAndAddress(t *testing.T) {
 		t.Errorf("source netmask = %d, want 24", out.SourceNetmask)
 	}
 	// Address must be truncated to /24 so the wire form matches what
-	// we're claiming the source is — without truncation, an upstream
+	// we're claiming the source is, without truncation, an upstream
 	// that hashes (Address, SourceNetmask) sees inconsistent state.
 	if got := out.Address.String(); got != "203.0.113.0" {
 		t.Errorf("address = %s, want 203.0.113.0 (host bits zeroed)", got)
@@ -113,7 +113,7 @@ func TestPolicy_Clamp_ClampsV4PrefixAndAddress(t *testing.T) {
 }
 
 func TestPolicy_Clamp_PassesNarrowerThanCeiling(t *testing.T) {
-	// Client already sent /20 — the ceiling (/24) shouldn't widen.
+	// Client already sent /20, the ceiling (/24) shouldn't widen.
 	p := &Policy{Enabled: true, ForwardV4Max: 24}
 	in := &dns.EDNS0_SUBNET{
 		Family:        1,

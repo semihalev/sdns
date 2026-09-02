@@ -37,7 +37,7 @@ func TestSwitchNeedsABooleanNotMerePresence(t *testing.T) {
 	}
 }
 
-// Each switch answers for its own variable — the two must not collapse onto
+// Each switch answers for its own variable. The two must not collapse onto
 // one name, which is the way a shared helper would fail silently.
 func TestSwitchesReadTheirOwnVariable(t *testing.T) {
 	t.Setenv("SDNS_PPROF", "true")

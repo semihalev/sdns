@@ -36,7 +36,7 @@ func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
 //
 // When `policy` is non-nil, enabled, and allows the supplied client, the
 // client's EDNS Client Subnet option (RFC 7871) is preserved on the
-// outgoing OPT instead of stripped — clamped to the policy's source-
+// outgoing OPT instead of stripped, clamped to the policy's source-
 // prefix ceiling. Every other client-supplied option is still dropped.
 // A nil policy or an empty client address means strip everything, which
 // matches SDNS's historical behaviour and the privacy-first default.
@@ -130,7 +130,7 @@ func ClearOPT(msg *dns.Msg) *dns.Msg {
 }
 
 // ClearDNSSEC removes RRSIG, NSEC and NSEC3 records from every section in
-// place — the additional section included, since RFC 4035 §3.2.1 has a
+// place, the additional section included, since RFC 4035 §3.2.1 has a
 // DO=0 response carry no authenticating records it was not asked for, and
 // a signed additional RRset is carried with its signature. The one type
 // the question asked for by name is the exception, and only that type: a
@@ -153,7 +153,7 @@ func ClearDNSSEC(msg *dns.Msg) *dns.Msg {
 // ClearDNSSECInPlace is ClearDNSSEC for a message that owns its sections:
 // the same rule, compacting each section in place instead of allocating a
 // filtered copy. For an answer synthesized per hit, whose slices are its
-// own and are about to be handed out — filtering through a copy there was
+// own and are about to be handed out, filtering through a copy there was
 // an allocation on every DO=0 hit.
 func ClearDNSSECInPlace(msg *dns.Msg) *dns.Msg {
 	asked := explicitDNSSECType(msg)
@@ -192,7 +192,7 @@ func explicitDNSSECType(msg *dns.Msg) uint16 {
 // drop returns false. When nothing needs dropping the input is returned
 // unchanged (zero allocation, hot path for non-DNSSEC responses). When
 // a drop is required a new slice is returned so the caller's backing
-// array is never mutated — the incoming Msg may share its Answer/Ns
+// array is never mutated, the incoming Msg may share its Answer/Ns
 // storage with a cache entry (see middleware/cache.NewCacheEntryWithKey)
 // and in-place edits would corrupt the cache.
 func filterOut(rrs []dns.RR, drop func(dns.RR) bool) []dns.RR {

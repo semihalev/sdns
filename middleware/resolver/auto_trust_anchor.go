@@ -66,7 +66,7 @@ type Tombstone struct {
 	FirstSeen time.Time
 }
 
-// Tombstones are keyed by DNSKEY material fingerprint — never by key
+// Tombstones are keyed by DNSKEY material fingerprint, never by key
 // tag. Tag-keyed storage would let a future KSK with a colliding
 // 16-bit tag suppress itself against an unrelated tombstone.
 type Tombstones map[string]*Tombstone
@@ -116,13 +116,13 @@ func (r *Resolver) AutoTA() {
 	// must not republish from disk in that case because disk could
 	// still carry the un-revoked anchor whose revocation we already
 	// observed in memory. A non-empty value means either the
-	// initial config seed or a previous successful AutoTA — both
+	// initial config seed or a previous successful AutoTA. Both
 	// are safe upper bounds, so a tombstone-filtered subset of disk
 	// state is at least as restrictive and may safely be published
 	// before the external fetch.
 	priorTrustValid := r.hasTrustAnchors()
 
-	// Track whether this run produced a fresh contraction event —
+	// Track whether this run produced a fresh contraction event,
 	// a brand-new revocation that exists only in memory until the
 	// writes land. Only that case requires fail-closed handling on
 	// dual-write failure; an unrelated refresh that happens to
@@ -163,20 +163,20 @@ func (r *Resolver) AutoTA() {
 		// corruption". A sharing violation on Windows (concurrent
 		// writer renaming over the file) or a permission hiccup is
 		// not the same as a malformed gob payload. We only fail
-		// closed when we successfully read bytes that don't decode
-		// — readTombstones surfaces that as errCorruptTombstones.
+		// closed when we successfully read bytes that don't decode,
+		// readTombstones surfaces that as errCorruptTombstones.
 		// Other open errors leave us with an empty in-memory map
 		// and the next AutoTA tick (or a process restart in the
 		// non-transient case) can re-load.
 		if errors.Is(err, errCorruptTombstones) {
-			zlog.Error("Trust anchor tombstones file corrupted — clearing in-memory trust set and aborting refresh", "path", tombstonePath, "error", err.Error())
+			zlog.Error("Trust anchor tombstones file corrupted, clearing in-memory trust set and aborting refresh", "path", tombstonePath, "error", err.Error())
 			r.Lock()
 			r.rootKeys = nil
 			r.Unlock()
 			refreshResult = taRefreshPersistenceError
 			return
 		}
-		zlog.Warn("Trust anchor tombstones file unreadable — proceeding with empty in-memory tombstones", "path", tombstonePath, "error", err.Error())
+		zlog.Warn("Trust anchor tombstones file unreadable, proceeding with empty in-memory tombstones", "path", tombstonePath, "error", err.Error())
 		tombstones = make(Tombstones)
 	}
 
@@ -201,7 +201,7 @@ func (r *Resolver) AutoTA() {
 	// Enforce tombstone precedence over any kskCurrent entry. This
 	// covers the first-run fallback branch, which seeds kskCurrent
 	// from cfg.RootKeys as Valid before the merge-loop tombstone
-	// check can run — a revoked key lingering in config would
+	// check can run, a revoked key lingering in config would
 	// otherwise be republished as active trust material. Skip
 	// StateRevoked/StateRemoved entries: they *are* the revocation
 	// markers we just migrated into tombstones, and dropping them
@@ -212,13 +212,13 @@ func (r *Resolver) AutoTA() {
 			continue
 		}
 		if _, tombstoned := tombstones[dnskeyMaterialFP(ta.DNSKey)]; tombstoned {
-			zlog.Warn("Seeded trust anchor is tombstoned — dropping", "keytag", tag)
+			zlog.Warn("Seeded trust anchor is tombstoned, dropping", "keytag", tag)
 			delete(kskCurrent, tag)
 		}
 	}
 
 	// Merge admin-configured root keys into state. Keys placed in
-	// cfg.RootKeys are trust anchors of record — they must not be
+	// cfg.RootKeys are trust anchors of record. They must not be
 	// silently dropped just because the state file was written before
 	// the operator added them. Use configuredRootKeys (the immutable
 	// startup snapshot) rather than r.rootKeys: r.rootKeys is
@@ -235,18 +235,18 @@ func (r *Resolver) AutoTA() {
 			continue
 		}
 		// Tombstone check by key material. RFC 5011 §2.1 requires
-		// revocation to be "immediate and permanent" — a stale admin
+		// revocation to be "immediate and permanent", a stale admin
 		// config must not resurrect a revoked key, and the check is
 		// by cryptographic identity, not key tag.
 		if _, tombstoned := tombstones[dnskeyMaterialFP(dnskey)]; tombstoned {
-			zlog.Info("Skipping admin-configured trust anchor — tombstoned", "keytag", tag)
+			zlog.Info("Skipping admin-configured trust anchor, tombstoned", "keytag", tag)
 			continue
 		}
 		if dnskey.Flags&DNSKEYFlagRevoke != 0 {
 			// Admin explicitly pre-seeded a revoked key. Record the
 			// tombstone and do not insert into active anchors.
 			tombstones[dnskeyMaterialFP(dnskey)] = &Tombstone{DNSKey: dnskey, FirstSeen: time.Now()}
-			zlog.Info("Admin-configured trust anchor carries REVOKE bit — recorded as tombstone", "keytag", tag)
+			zlog.Info("Admin-configured trust anchor carries REVOKE bit, recorded as tombstone", "keytag", tag)
 			continue
 		}
 		zlog.Info("Adding admin-configured trust anchor to state", "keytag", tag)
@@ -292,7 +292,7 @@ func (r *Resolver) AutoTA() {
 	// the prior trust set was valid (initial config seed or a
 	// successful previous run). This guarantees that tombstoned or
 	// removed keys exit r.rootKeys *before* the external DNSKEY
-	// fetch can return early — otherwise NewResolver's cfg.RootKeys
+	// fetch can return early, otherwise NewResolver's cfg.RootKeys
 	// copy would keep a revoked-but-still-configured key trusted
 	// until the next successful refresh. When priorTrustValid is
 	// false the resolver is already in the persistence-failed
@@ -334,7 +334,7 @@ func (r *Resolver) AutoTA() {
 		return
 	}
 	if revocationOnly {
-		zlog.Warn("Fetched root DNSKEY RRset authenticated only by revoked-key self-signature — restricting to revocation processing")
+		zlog.Warn("Fetched root DNSKEY RRset authenticated only by revoked-key self-signature, restricting to revocation processing")
 	}
 
 	kskFetched := make(TrustAnchors)
@@ -381,13 +381,13 @@ func (r *Resolver) AutoTA() {
 	for _, tag := range fetchedTags {
 		ta := kskFetched[tag]
 		// Tombstoned by material? RFC 5011 §2.1 says revocation is
-		// permanent — ignore this fetched key regardless of tag.
+		// permanent, ignore this fetched key regardless of tag.
 		if _, tombstoned := tombstones[dnskeyMaterialFP(ta.DNSKey)]; tombstoned {
 			continue
 		}
 
 		existing := kskCurrent[tag]
-		// Already tracked with matching material — nothing to do.
+		// Already tracked with matching material, nothing to do.
 		if existing != nil &&
 			existing.DNSKey.Algorithm == ta.DNSKey.Algorithm &&
 			existing.DNSKey.Protocol == ta.DNSKey.Protocol &&
@@ -412,11 +412,11 @@ func (r *Resolver) AutoTA() {
 				// the trust anchor (key-material match, not just
 				// a colliding tag).
 				if !sameKeyExceptRevoke(oldTA.DNSKey, ta.DNSKey) {
-					zlog.Warn("Trust anchor REVOKE bit matches tag but not key material — ignoring revocation", "keytag", tag)
+					zlog.Warn("Trust anchor REVOKE bit matches tag but not key material, ignoring revocation", "keytag", tag)
 					continue
 				}
 				if !revocationSelfSigned[tag] {
-					zlog.Warn("Trust anchor REVOKE bit present but no valid self-signed RRSIG — ignoring revocation", "keytag", tag)
+					zlog.Warn("Trust anchor REVOKE bit present but no valid self-signed RRSIG, ignoring revocation", "keytag", tag)
 					continue
 				}
 				taRevoked.Inc()
@@ -440,7 +440,7 @@ func (r *Resolver) AutoTA() {
 		}
 
 		// New-key processing. Unsafe under revocation-only
-		// authentication — RFC 5011 §2.1 restricts revoked-key
+		// authentication, RFC 5011 §2.1 restricts revoked-key
 		// signatures to validating the revocation itself, not
 		// seeding new trust anchors.
 		if revocationOnly {
@@ -451,7 +451,7 @@ func (r *Resolver) AutoTA() {
 		// vanishingly rare but would silently overwrite real trust
 		// material. Log and skip rather than corrupt state.
 		if existing != nil {
-			zlog.Warn("Fetched KSK tag collides with different active key — ignoring new key", "keytag", tag)
+			zlog.Warn("Fetched KSK tag collides with different active key, ignoring new key", "keytag", tag)
 			continue
 		}
 
@@ -466,7 +466,7 @@ func (r *Resolver) AutoTA() {
 	// The KeyRem / KeyPres / add-hold-down transitions below infer
 	// "key is no longer in the zone" or "key is still in the zone"
 	// from the fetched RRset. That inference is only sound when the
-	// RRset was fully authenticated by a non-revoked trust anchor —
+	// RRset was fully authenticated by a non-revoked trust anchor,
 	// revocation-only auth (RFC 5011 §2.1) cannot speak to absent
 	// keys or to adjacent state changes.
 	if !revocationOnly {
@@ -478,10 +478,10 @@ func (r *Resolver) AutoTA() {
 				case StateAddPend, StateStart:
 					// Add hold-down aborts: the candidate key never
 					// completed its 30d waiting period, and a validated
-					// RRset now omits it. Delete without tombstoning —
+					// RRset now omits it. Delete without tombstoning,
 					// if the root republishes the key later, a fresh
 					// AddPend cycle is the correct response.
-					zlog.Warn("Trust anchor pending but absent from fetched RRset — aborting add hold-down", "keytag", tag)
+					zlog.Warn("Trust anchor pending but absent from fetched RRset, aborting add hold-down", "keytag", tag)
 					delete(kskCurrent, tag)
 					continue
 				case StateValid:
@@ -496,7 +496,7 @@ func (r *Resolver) AutoTA() {
 
 				// Missing keys age out after the hold-down. RFC 5011
 				// §2.4.2 describes remove-hold-down as a bookkeeping
-				// parameter — the deletion isn't a security boundary,
+				// parameter, the deletion isn't a security boundary,
 				// so we don't tombstone. RFC 5011 §2.1 reserves
 				// "immediate and permanent" semantics for RevBit
 				// revocations; an admin-configured key that simply
@@ -521,12 +521,12 @@ func (r *Resolver) AutoTA() {
 			if ta.State == StateMissing {
 				// RFC 5011 §4 state table: a Missing key re-appearing in
 				// a validated DNSKEY RRset (KeyPres event) transitions
-				// straight back to Valid. It was already a trust anchor
-				// — the absence was transient, and forcing another
+				// straight back to Valid. It was already a trust anchor.
+				// The absence was transient, and forcing another
 				// AddPend hold-down would strip trust for 30 days even
 				// though nothing about the key's authority changed.
 				taReappeared.Inc()
-				zlog.Info("Missing trust anchor reappeared — restored to Valid", "keytag", tag)
+				zlog.Info("Missing trust anchor reappeared, restored to Valid", "keytag", tag)
 				ta.State = StateValid
 			}
 		}
@@ -535,14 +535,14 @@ func (r *Resolver) AutoTA() {
 	// Persist tombstones first. On success we can drop transitional
 	// StateRevoked markers from main state (they were only there to
 	// survive a tombstone-write failure). On failure we still write
-	// state so the StateRevoked markers persist — the legacy
+	// state so the StateRevoked markers persist, the legacy
 	// migration loop at the top of AutoTA re-tries the tombstone
 	// move next run, and the post-success r.rootKeys publish below
 	// excludes Revoked from the live trust set, so the key stays
 	// fail-closed across retries.
 	tombErr := writeTombstones(tombstonePath, tombstones)
 	if tombErr != nil {
-		zlog.Error("Refresh trust anchor tombstones failed — revocation kept in state as StateRevoked for next-run retry", "error", tombErr.Error())
+		zlog.Error("Refresh trust anchor tombstones failed, revocation kept in state as StateRevoked for next-run retry", "error", tombErr.Error())
 	} else {
 		// Tombstones are durable; drop the in-state markers for
 		// both this run's newly-revoked keys and any legacy
@@ -563,7 +563,7 @@ func (r *Resolver) AutoTA() {
 
 	// Publication policy: r.rootKeys is the live trust set that
 	// query validation paths consult. We refresh it only after a
-	// successful state mutation has been durably recorded — either
+	// successful state mutation has been durably recorded, either
 	// tombstones or the main state file must reflect this run's
 	// outcome before we let it influence validation. The fail-
 	// closed clear is gated on newRevocation: only a brand-new
@@ -573,14 +573,14 @@ func (r *Resolver) AutoTA() {
 	// working trust anchors into total SERVFAIL just because the
 	// tombstones/state write failed for an orthogonal reason.
 	if tombErr != nil && stateErr != nil && newRevocation {
-		zlog.Error("Refresh trust anchors: both tombstones and state writes failed during a new revocation — clearing in-memory trust set to fail closed")
+		zlog.Error("Refresh trust anchors: both tombstones and state writes failed during a new revocation, clearing in-memory trust set to fail closed")
 		r.Lock()
 		r.rootKeys = nil
 		r.Unlock()
 		return
 	}
 	if tombErr != nil && stateErr != nil {
-		zlog.Error("Refresh trust anchors: both tombstones and state writes failed (no new revocation this run) — keeping current trust set")
+		zlog.Error("Refresh trust anchors: both tombstones and state writes failed (no new revocation this run), keeping current trust set")
 		return
 	}
 
@@ -713,7 +713,7 @@ func stageRevocationSelfSignatures(
 // accepted if *at least one* RRSIG from a currently-valid trust anchor
 // verifies it. RRSIGs from unknown keys (e.g. a newly published KSK
 // that hasn't cleared hold-down yet) are ignored rather than treated
-// as failure — this is required for KSK rollovers where the zone is
+// as failure. This is required for KSK rollovers where the zone is
 // co-signed by the old and new KSK.
 //
 // Revoked keys are a narrow exception. Per RFC 5011 §2.1 a revoked
@@ -773,7 +773,7 @@ func verifyFetchedKeysWithWork(
 	var lastErr error = dnssec.ErrMissingDNSKEY
 
 	// Pass 1: non-revoked current trust anchors. A success here is
-	// full authentication — the caller may process any state
+	// full authentication. The caller may process any state
 	// transition against this RRset.
 	if verified, verifyErr := dnssec.VerifyRRSIGWithWork(rootzone, currentKeys, msg, work); verified {
 		return true, false, nil
@@ -835,7 +835,7 @@ func readTombstones(filename string) (Tombstones, error) {
 	t := make(Tombstones)
 	if err := gob.NewDecoder(f).Decode(&t); err != nil {
 		// Wrap so AutoTA can distinguish "I read bytes that don't
-		// parse" (real corruption — fail closed) from "I couldn't
+		// parse" (real corruption, fail closed) from "I couldn't
 		// open the file at all" (transient, e.g. Windows sharing
 		// violation during a concurrent rename).
 		return nil, fmt.Errorf("%w: %v", errCorruptTombstones, err)
@@ -855,7 +855,7 @@ func writeTombstones(filename string, t Tombstones) error {
 // post-return state to be the full previous content, never a
 // half-written intermediate. The temp file name is randomized so
 // concurrent writers (e.g. parallel test goroutines sharing a
-// directory) can safely race — each owns its own tmp inode until
+// directory) can safely race, each owns its own tmp inode until
 // rename.
 //
 // The parent-directory fsync matters for ordering: tombstones are
@@ -863,7 +863,7 @@ func writeTombstones(filename string, t Tombstones) error {
 // revocation markers only after this returns success. Without the
 // directory sync, a crash could leave the file contents on disk but
 // lose the directory entry update, so a remount could see the old
-// state file with no tombstone — exactly the "lost revocation"
+// state file with no tombstone, exactly the "lost revocation"
 // failure mode dual-writes are meant to prevent.
 func atomicGobWrite(filename string, v interface{}) error {
 	dir := filepath.Dir(filename)

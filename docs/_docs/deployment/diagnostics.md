@@ -18,7 +18,7 @@ Both are read once at startup, so changing either means restarting the process.
 Either value is parsed as a boolean, so `1`, `t` and `TRUE` work as well as
 `true`.
 
-## `SDNS_DEBUGNS` — which authority would answer, and how well
+## `SDNS_DEBUGNS`, which authority would answer, and how well
 
 With this on, a CHAOS-class HINFO query returns the delegation sdns holds for
 that name, one record per server, in the order the resolver would try them.
@@ -47,7 +47,7 @@ TTL 0. There is no answer to a question like this.
 ordering sorts on, and it is deliberately not the same number: a server that has
 never been measured is priced at a seed value rather than treated as instant,
 and an old measurement drifts back toward that seed. Printing both is what makes
-the order explicable — when a server with the lowest `rtt` is not first, its
+the order explicable, when a server with the lowest `rtt` is not first, its
 `rank` says why.
 
 `health` has four states:
@@ -77,11 +77,11 @@ dig @127.0.0.1 CH HINFO example.com
 ```
 
 **The name must match exactly.** The lookup is for an NS entry under the name
-you asked about — it does not walk up to the enclosing zone. `CH HINFO
+you asked about. It does not walk up to the enclosing zone. `CH HINFO
 www.example.com` shows the root servers unless `www.example.com` is itself a
 cut. Ask about the zone apex.
 
-## `SDNS_PPROF` — Go profiles on the API listener
+## `SDNS_PPROF`, Go profiles on the API listener
 
 ```
 GET /debug/pprof/          index
@@ -102,7 +102,7 @@ go tool pprof http://127.0.0.1:8080/debug/pprof/heap
 ### `bearertoken` does not protect these routes
 
 Every other API route checks the token. The pprof routes do not, because pprof
-tooling does not send an `Authorization` header — so they stay open even when a
+tooling does not send an `Authorization` header, so they stay open even when a
 token is set.
 
 That makes the advice elsewhere on this site incomplete for this case: a token
@@ -126,7 +126,7 @@ dig @127.0.0.1 problem.example A +dnssec
 
 **2. Is it policy rather than resolution?** A blocked or rewritten name is not a
 failure. Check `dns_blocklist_hits_total`, and if you run policy zones check
-`rpz_action_total` — in shadow mode it tells you what a match *would* have done
+`rpz_action_total`, in shadow mode it tells you what a match *would* have done
 without anything having happened.
 
 **3. Is the failure being cached back at you?** The RFC 9520 failure cache holds
@@ -140,7 +140,7 @@ curl http://127.0.0.1:8080/api/v1/purge/problem.example./A
 
 **4. Is it DNSSEC?** `dns_resolver_dnssec_failures_total` broken out by `reason`
 separates a genuinely broken signer from a validation problem of your own. To
-confirm the name resolves when validation is not applied, ask with `+cd` — if
+confirm the name resolves when validation is not applied, ask with `+cd`, if
 `+cd` succeeds and the plain query does not, it is validation.
 
 **5. Are the authorities reachable?** This is what `SDNS_DEBUGNS` is for. All

@@ -26,7 +26,7 @@ import (
 //
 // The nested sub.ghostzone. delegation must NOT be cached for 12h: it inherits
 // the 3s ghostzone cut. We assert the nested ExpiresAt is never after the
-// ancestor's — the strong, deterministic form of the invariant.
+// ancestor's, the strong, deterministic form of the invariant.
 func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 	var ignore int64
 
@@ -39,7 +39,7 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 		return m
 	}
 
-	// sub.ghostzone. — authoritative leaf.
+	// sub.ghostzone., authoritative leaf.
 	subAddr, stopSub := startMockAuth(t, &ignore, func(q dns.Question) *dns.Msg {
 		if q.Qtype == dns.TypeA && dns.CanonicalName(q.Name) == "www.sub.ghostzone." {
 			m := &dns.Msg{}
@@ -51,7 +51,7 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 	})
 	defer stopSub()
 
-	// ghostzone. — delegates sub.ghostzone. with a LONG (12h) NS TTL.
+	// ghostzone., delegates sub.ghostzone. with a LONG (12h) NS TTL.
 	ghostAddr, stopGhost := startMockAuth(t, &ignore, func(q dns.Question) *dns.Msg {
 		if q.Qtype == dns.TypeDS {
 			return softNeg("ghostzone.")
@@ -66,7 +66,7 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 	})
 	defer stopGhost()
 
-	// root — delegates ghostzone. with a SHORT (3s) NS TTL.
+	// root, delegates ghostzone. with a SHORT (3s) NS TTL.
 	rootAddr, stopRoot := startMockAuth(t, &ignore, func(q dns.Question) *dns.Msg {
 		if dns.CanonicalName(q.Name) == "." && q.Qtype == dns.TypeNS {
 			m := &dns.Msg{}
@@ -146,11 +146,11 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 
 	// The nested cut must never outlive its ancestor, despite the 12h
 	// referral. In this topology the inherited deadline is stored verbatim
-	// (SetUntil, no re-anchoring), so the two must be EXACTLY equal — any
+	// (SetUntil, no re-anchoring), so the two must be EXACTLY equal. Any
 	// drift means the deadline was recomputed or the wrong minimum won.
 	if !subDeleg.ExpiresAt.Equal(ghostDeleg.ExpiresAt) {
 		t.Fatalf("Phoenix T2: nested sub.ghostzone. cut (ExpiresAt=%s) != ancestor ghostzone. "+
-			"(ExpiresAt=%s) — the inherited deadline was re-anchored or the 12h child referral won",
+			"(ExpiresAt=%s), the inherited deadline was re-anchored or the 12h child referral won",
 			subDeleg.ExpiresAt, ghostDeleg.ExpiresAt)
 	}
 	// And it must be far below the 12h it advertised.
@@ -159,7 +159,7 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 	}
 
 	// Phase 1b: the answer's reported cache bound must be the deepest
-	// cut on the path — exactly the (inherited) sub delegation deadline.
+	// cut on the path, exactly the (inherited) sub delegation deadline.
 	if !meta.CutUntil().Equal(subDeleg.ExpiresAt) {
 		t.Fatalf("ResponseMeta.CutUntil = %s, want the answering cut's deadline %s",
 			meta.CutUntil(), subDeleg.ExpiresAt)
@@ -174,7 +174,7 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 // branch of processDelegation: a referral is received but the delegation is
 // ALREADY in the cache (a concurrent resolution inserted it while this one was
 // in flight). The freshly observed referral deadline must still bound the
-// descent — "the shortest applicable cut always wins" — rather than being
+// descent, "the shortest applicable cut always wins", rather than being
 // discarded in favour of the (longer) cached lease.
 //
 // The race is made deterministic by seeding a 2h ghostzone. entry from inside
@@ -197,7 +197,7 @@ func TestPhoenixT2_CachedHitCarriesCurrentReferralDeadline(t *testing.T) {
 		return m
 	}
 
-	// sub.ghostzone. — authoritative leaf.
+	// sub.ghostzone., authoritative leaf.
 	subAddr, stopSub := startMockAuth(t, &ignore, func(q dns.Question) *dns.Msg {
 		if q.Qtype == dns.TypeA && dns.CanonicalName(q.Name) == "www.sub.ghostzone." {
 			m := &dns.Msg{}
@@ -209,7 +209,7 @@ func TestPhoenixT2_CachedHitCarriesCurrentReferralDeadline(t *testing.T) {
 	})
 	defer stopSub()
 
-	// ghostzone. — delegates sub.ghostzone. with a LONG (12h) NS TTL.
+	// ghostzone., delegates sub.ghostzone. with a LONG (12h) NS TTL.
 	ghostAddr, stopGhost := startMockAuth(t, &ignore, func(q dns.Question) *dns.Msg {
 		if q.Qtype == dns.TypeDS {
 			return softNeg("ghostzone.")
@@ -226,7 +226,7 @@ func TestPhoenixT2_CachedHitCarriesCurrentReferralDeadline(t *testing.T) {
 
 	ghostKey := cache.Key(dns.Question{Name: "ghostzone.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}, true)
 
-	// root — delegates ghostzone. with a SHORT (3s) NS TTL, and seeds the
+	// root, delegates ghostzone. with a SHORT (3s) NS TTL, and seeds the
 	// delegation cache with a LONG (2h) ghostzone. entry while doing so.
 	rootAddr, stopRoot := startMockAuth(t, &ignore, func(q dns.Question) *dns.Msg {
 		if dns.CanonicalName(q.Name) == "." && q.Qtype == dns.TypeNS {
@@ -300,7 +300,7 @@ func TestPhoenixT2_CachedHitCarriesCurrentReferralDeadline(t *testing.T) {
 		t.Fatalf("ghostzone. delegation not cached: %v", gerr)
 	}
 	if ghostDeleg.ExpiresAt.Before(time.Now().Add(time.Hour)) {
-		t.Fatalf("test harness: seeded 2h ghostzone. entry was replaced (ExpiresAt=%s) — "+
+		t.Fatalf("test harness: seeded 2h ghostzone. entry was replaced (ExpiresAt=%s), "+
 			"the cached-hit branch was not exercised", ghostDeleg.ExpiresAt)
 	}
 
@@ -314,7 +314,7 @@ func TestPhoenixT2_CachedHitCarriesCurrentReferralDeadline(t *testing.T) {
 	t.Logf("seeded ghostzone ExpiresAt=%s  sub ExpiresAt=%s", ghostDeleg.ExpiresAt, subDeleg.ExpiresAt)
 
 	if subDeleg.ExpiresAt.After(time.Now().Add(time.Minute)) {
-		t.Fatalf("Phoenix T2 cached-hit: nested sub.ghostzone. cut cached until %s — the freshly "+
+		t.Fatalf("Phoenix T2 cached-hit: nested sub.ghostzone. cut cached until %s, the freshly "+
 			"observed 3s referral deadline was discarded in favour of the 2h cached lease",
 			subDeleg.ExpiresAt)
 	}

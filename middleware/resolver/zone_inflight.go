@@ -6,20 +6,20 @@ import (
 )
 
 // zoneInflightBuckets is the size of the per-zone in-flight table. Zones
-// hash into a fixed bucket array — no locks, no allocation, no cleanup.
+// hash into a fixed bucket array, no locks, no allocation, no cleanup.
 // Two zones sharing a bucket share a quota; with in-flight lookups bounded
 // by resolutionSlots (≤ a few thousand) collisions are rare and the only
 // consequence is a slightly stricter shared limit.
 const zoneInflightBuckets = 4096
 
-// zoneInflightLimiter bounds concurrent zone-level lookups PER ZONE — the
+// zoneInflightLimiter bounds concurrent zone-level lookups PER ZONE, the
 // destination-fairness layer of the outage defenses (the analog of BIND's
 // fetches-per-zone). The global resolutionSlots pool bounds the aggregate,
 // but it is blind to who consumes it: one popular destination going dark
 // (say, a cloud provider's authority set) would otherwise pin slots at
 // arrival-rate × timeout and shed HEALTHY destinations along with the dead
 // one. With a per-zone quota, a hanging zone can never occupy more than its
-// slice, no matter how popular it is — resolution for everyone else keeps
+// slice, no matter how popular it is, resolution for everyone else keeps
 // flowing at full speed through every phase of the incident, including the
 // window before per-server circuit breakers open.
 type zoneInflightLimiter struct {

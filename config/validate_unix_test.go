@@ -11,14 +11,14 @@ import (
 )
 
 // TestValidateRejectsSpecialFiles lives here because syscall.Mkfifo does not
-// exist on Windows — a runtime skip would still fail to build there.
+// exist on Windows, a runtime skip would still fail to build there.
 func TestValidateRejectsSpecialFiles(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "fifo")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
-	// Not a directory, and still not something to read a hosts file from —
+	// Not a directory, and still not something to read a hosts file from,
 	// opening it would block startup rather than fail.
 	if err := (&Config{HostsFile: fifo}).Validate(); err == nil ||
 		!strings.Contains(err.Error(), "named pipe") {
@@ -28,7 +28,7 @@ func TestValidateRejectsSpecialFiles(t *testing.T) {
 
 // These two turn on POSIX file modes. Windows does not enforce them the same
 // way, and os.Getuid there returns -1, so a runtime root check would not skip
-// either — hence the build tag rather than a skip.
+// either, hence the build tag rather than a skip.
 
 func TestValidateUnreadableFile(t *testing.T) {
 	if os.Getuid() == 0 {
@@ -39,7 +39,7 @@ func TestValidateUnreadableFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("x"), 0o000); err != nil {
 		t.Fatal(err)
 	}
-	// A regular file, and still not one this process can read — every
+	// A regular file, and still not one this process can read, every
 	// consumer here opens it, so the type test alone was not enough.
 	if err := (&Config{HostsFile: path}).Validate(); err == nil {
 		t.Fatal("Validate() accepted a file it cannot read")
@@ -106,7 +106,7 @@ func TestValidateSymlinkToUnwritableDirectory(t *testing.T) {
 
 // TestValidatePathsKeepTheirComponents pins the unix rule. A path is resolved
 // one component at a time here, so "missing/../x" fails on the "missing" that
-// is not there — while filepath.Dir cleans it away and would call the path
+// is not there, while filepath.Dir cleans it away and would call the path
 // perfectly fine. Windows collapses ".." itself, so this is not its rule and
 // the test does not run there.
 func TestValidatePathsKeepTheirComponents(t *testing.T) {
@@ -127,7 +127,7 @@ func TestValidatePathsKeepTheirComponents(t *testing.T) {
 
 // TestValidateSymlinkTargetKeepsComponents pins the unix rule for a relative
 // target. filepath.Join would clean "missing/../real.log" down to
-// "real.log" — which looks like it lives somewhere that exists, while the
+// "real.log", which looks like it lives somewhere that exists, while the
 // open follows the target as written and fails on the missing component.
 func TestValidateSymlinkTargetKeepsComponents(t *testing.T) {
 	dir := t.TempDir()
@@ -185,8 +185,8 @@ func TestValidateReadOnlyBlocklistDir(t *testing.T) {
 }
 
 // TestValidateUnreadableBlocklistDir pins that a blocklist directory has to be
-// listable. Stat says nothing about that — a directory with no permission bits
-// satisfies it — while the middleware walks it and, when it cannot, logs once
+// listable. Stat says nothing about that, a directory with no permission bits
+// satisfies it, while the middleware walks it and, when it cannot, logs once
 // and loads no local list at all.
 func TestValidateUnreadableBlocklistDir(t *testing.T) {
 	if os.Getuid() == 0 {
@@ -226,7 +226,7 @@ func TestValidateUnreadableBlocklistDir(t *testing.T) {
 // TestValidateBlocklistDirMustBeTraversable pins the difference between
 // listing a directory and walking into it. A directory carrying read but not
 // execute hands back its entry names and then refuses to stat any of them,
-// which is where the middleware's walk stops — loading no list while every
+// which is where the middleware's walk stops, loading no list while every
 // name is visible.
 func TestValidateBlocklistDirMustBeTraversable(t *testing.T) {
 	if os.Getuid() == 0 {
@@ -288,7 +288,7 @@ func TestValidateRemoteBlocklistNeedsAWritableDir(t *testing.T) {
 }
 
 // TestValidateEquivalentDotDotPaths pins the P3 case. With "there" present,
-// mkdir resolves "/tmp/there/../db" to "/tmp/db" and the log opens inside it —
+// mkdir resolves "/tmp/there/../db" to "/tmp/db" and the log opens inside it,
 // so the two spellings name one place and the pending-directory shortcut has
 // to see that. Unix only: Windows collapses ".." lexically and never reaches
 // this comparison.
@@ -316,7 +316,7 @@ func TestValidateEquivalentDotDotPaths(t *testing.T) {
 	}
 	f.Close() //nolint:errcheck,gosec // nothing was written
 
-	// A component that is not there is still refused — and the working
+	// A component that is not there is still refused, and the working
 	// directory here is one the server could make, so the shortcut is the
 	// only thing that decides.
 	missing := &Config{
@@ -342,7 +342,7 @@ func TestValidateAccessLogDeviceTargets(t *testing.T) {
 
 // TestValidateLeavesAPipeAlone pins that validating does not disturb the thing
 // it is validating. A reader waiting on the pipe sees EOF the moment the last
-// writer closes, so a probe that opens and closes would end it — and the open
+// writer closes, so a probe that opens and closes would end it, and the open
 // the middleware makes a moment later would then wait forever for a reader
 // that this check just sent away. The property is that the pipe is never
 // opened at all, so the test records the calls rather than timing a process.

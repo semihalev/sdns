@@ -44,13 +44,13 @@ feature is off until you uncomment it.
 | `whitelist` | `[]` | Names that bypass all blocking |
 | `nullroute` | `"0.0.0.0"` | Answer for blocked A queries |
 | `nullroutev6` | `"::0"` | Answer for blocked AAAA queries |
-| `accesslist` | `["0.0.0.0/0", "::0/0"]` | Clients allowed to query — narrow this |
+| `accesslist` | `["0.0.0.0/0", "::0/0"]` | Clients allowed to query, narrow this |
 | `hostsfile` | `""` | Serve entries from a hosts file |
 | `timeout` | `"2s"` | Per upstream query |
 | `querytimeout` | `"10s"` | For one whole client query |
 | `expire` | `600` | Legacy error-cache ceiling; superseded by `failure_cache_*` |
 | `cachesize` | `256000` | Cached records |
-| `prefetch` | `10` | Refresh threshold percent; `0`, or 10–90 — other values are rejected |
+| `prefetch` | `10` | Refresh threshold percent; `0`, or 10 to 90, other values are rejected |
 | `maxdepth` | `30` | Recursion depth ceiling |
 | `maxconcurrentqueries` | `10000` | Upstream fan-out semaphore; separate from the ingress bounds |
 | `ipv6access` | probed | Forced on when the startup IPv6-transit probe succeeds; set `true` to override a probe that misjudges the network |
@@ -67,7 +67,7 @@ feature is off until you uncomment it.
 | `chaos` | `true` | Answer `version.bind` and friends in the CHAOS class |
 | `qname_max_minimize_count` | `10` | Minimised queries per lookup; `0` disables |
 | `qname_minimize_one_label` | `4` | How many add a single label; `0` selects 4 |
-| `qname_min_level` | — | Superseded; read only when the above is unset |
+| `qname_min_level` | *(none)* | Superseded; read only when the above is unset |
 | `hyperlocal_root` | `false` | Serve the root from a verified local copy |
 | `hyperlocal_root_sources` | *(commented)* | Override the built-in transfer hosts |
 | `emptyzones` | `[]` | AS112 zones; empty uses the built-in set |
@@ -78,7 +78,7 @@ feature is off until you uncomment it.
 | `reflexenabled` | `false` | Amplification/reflection detection |
 | `reflexblockmode` | `true` | `false` logs without blocking |
 | `reflexlearningmode` | `false` | `true` logs without blocking, for tuning |
-| `reflexthreshold` | *(commented)* | Suspicion score 0.0–1.0; default 0.7 |
+| `reflexthreshold` | *(commented)* | Suspicion score 0.0 to 1.0; default 0.7 |
 | `dnstapsocket` | *(commented)* | Unix socket for binary query logging |
 | `dnstapidentity` | *(commented)* | Server identity in dnstap frames |
 | `dnstapversion` | *(commented)* | Version string in dnstap frames |
@@ -131,8 +131,8 @@ See [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}).
 | `enabled` | `false` |
 | `cluster_domain` | `"cluster.local"` |
 | `kubeconfig` | *(commented)* |
-| `demo` | `false` | **Never enable in production** — answers synthesised names that look real, and works independently of `enabled` |
-| `killer_mode` | — | Deprecated and ignored; still parsed so old files load |
+| `demo` | `false` | **Never enable in production**, answers synthesised names that look real, and works independently of `enabled` |
+| `killer_mode` | *(none)* | Deprecated and ignored; still parsed so old files load |
 | `ttl.service` | `30` |
 | `ttl.pod` | `30` |
 | `ttl.srv` | `30` |

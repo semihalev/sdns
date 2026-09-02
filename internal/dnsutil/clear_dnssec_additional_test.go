@@ -78,7 +78,7 @@ func TestClearDNSSECKeepsOnlyTheTypeAskedFor(t *testing.T) {
 
 // TestClearDNSSECInPlaceMatchesAndAllocatesNothing pins the in-place
 // variant to the same rule as ClearDNSSEC, compacting the message's own
-// sections without allocating — it runs on every DO=0 aggressive hit.
+// sections without allocating. It runs on every DO=0 aggressive hit.
 func TestClearDNSSECInPlaceMatchesAndAllocatesNothing(t *testing.T) {
 	build := func(qtype uint16) *dns.Msg {
 		m := new(dns.Msg)
@@ -122,7 +122,7 @@ func TestClearDNSSECInPlaceMatchesAndAllocatesNothing(t *testing.T) {
 // pin to every section and to NSEC3, and to the order the aggressive cache
 // runs it in: a DO=0 answer compacted in place must not thin the records a
 // later DO=1 answer is built from, which holds because each synthesis copies
-// its records into a fresh slice — pinned here by compacting one message and
+// its records into a fresh slice, pinned here by compacting one message and
 // checking the source it was built from is whole.
 func TestClearDNSSECInPlaceAcrossSectionsAndTypes(t *testing.T) {
 	source := func() []dns.RR {

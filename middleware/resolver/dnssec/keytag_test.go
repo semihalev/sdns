@@ -11,7 +11,7 @@ import (
 
 // TestKeyTagMatchesLibrary is the contract: for every key a resolver meets,
 // the tag must be the one dns.DNSKEY.KeyTag computes. A tag that differs by
-// one does not fail loudly — it silently stops a DS or an RRSIG from finding
+// one does not fail loudly, it silently stops a DS or an RRSIG from finding
 // the key that would have validated it.
 func TestKeyTagMatchesLibrary(t *testing.T) {
 	for _, key := range dsDigestTestKeys(t) {
@@ -159,7 +159,7 @@ func rsamd5Key(publicKey string) *dns.DNSKEY {
 // RFC 4034 Appendix B.1 with errata 193 takes the RSAMD5 tag from the two
 // octets below the last of the modulus. The library reads those three octets
 // after checking only that the modulus has more than one, so material that
-// decodes to exactly two octets indexes below the start of a slice — on a
+// decodes to exactly two octets indexes below the start of a slice, on a
 // record that arrives from the network and is tagged before anything about it
 // has been validated.
 //

@@ -49,7 +49,7 @@ func (a *Log) ClientOnly() bool { return true }
 // (*Log).ServeDNS implements the Handle interface. With no log file the
 // handler is inert and a wire-born request passes undecoded; with one it
 // needs the decoded question for every line, which forces materialization
-// and — documented in the zero-path matrix — disables the zero guarantee
+// and, documented in the zero-path matrix, disables the zero guarantee
 // while enabled.
 func (a *Log) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if a.logFile != nil {

@@ -26,7 +26,7 @@ func rootNSEC3(owner, next string) *dns.NSEC3 {
 }
 
 // TestDenialProofAdmitsRootZoneNSEC3 pins the regression review found: a
-// root-zone NSEC3 owner is one label — <hash>. — and NextLabel legitimately
+// root-zone NSEC3 owner is one label, <hash>., and NextLabel legitimately
 // answers end=true for it. Treating that answer as invalid rejected every
 // root-zone proof, which the split-based code this replaced accepted; the
 // failure was fail-closed, but a root that serves NSEC3 lost aggressive

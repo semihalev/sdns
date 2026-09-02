@@ -17,7 +17,7 @@ const reloadDebounce = 100 * time.Millisecond
 // watch follows hostsfile's proven shape: the parent directory is
 // watched and events are filtered to the zone's file, because a watch on
 // the file itself dies with the old inode when the feed is replaced by
-// atomic rename — which is exactly how feeds are pushed.
+// atomic rename, which is exactly how feeds are pushed.
 func (r *RPZ) watch() {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -78,9 +78,9 @@ func (r *RPZ) watchLoop(watcher *fsnotify.Watcher) {
 }
 
 // reload re-reads one zone and swaps a store carrying it. A failed parse
-// keeps the old zone serving and says so — a bad push never leaves the
+// keeps the old zone serving and says so, a bad push never leaves the
 // resolver unprotected or half-loaded. The parse runs outside the lock,
-// so a slow file never stalls an AXFR feed's install — which opens a
+// so a slow file never stalls an AXFR feed's install, which opens a
 // race the sequence below closes: a slow parse of the *previous* push
 // finishing after a fast parse of the next one must not write the old
 // generation back over the new. Each reload claims the zone's sequence
@@ -101,7 +101,7 @@ func (r *RPZ) reload(idx int) {
 		return
 	}
 	// The same zero-rule semantic the config gate enforces: a push that
-	// parses but compiles nothing — SOA/NS only, or every record skipped —
+	// parses but compiles nothing, SOA/NS only, or every record skipped,
 	// would silently strip a working policy. That is a broken push, not a
 	// smaller feed, and the previous generation keeps serving.
 	if z.Rules == 0 {
@@ -120,7 +120,7 @@ func (r *RPZ) reload(idx int) {
 }
 
 // commitReload installs a parsed zone only if seq is still the latest
-// claim for idx — the check and the swap share the lock, so a superseded
+// claim for idx, the check and the swap share the lock, so a superseded
 // parse cannot slip between them. The gauges are published inside the
 // same critical section: published after it, a commit that finished
 // first could write its counts over a newer generation's.
@@ -136,8 +136,8 @@ func (r *RPZ) commitReload(idx int, seq uint64, z *rpz.Zone) bool {
 }
 
 // swapZone publishes a new compiled zone at idx: a copied slice, a fresh
-// immutable store, one atomic swap. reloadMu serializes writers — the
-// file watcher and the AXFR feeds share it — so two swaps cannot build
+// immutable store, one atomic swap. reloadMu serializes writers, the
+// file watcher and the AXFR feeds share it, so two swaps cannot build
 // from the same old slice and lose one another.
 func (r *RPZ) swapZone(idx int, z *rpz.Zone) {
 	r.reloadMu.Lock()

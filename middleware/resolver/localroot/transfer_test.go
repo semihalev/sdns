@@ -12,7 +12,7 @@ import (
 )
 
 // axfrServer serves one AXFR of rrs on a loopback TCP listener: the apex SOA
-// first, the body split across two envelopes, the closing SOA last — the
+// first, the body split across two envelopes, the closing SOA last, the
 // shape a real transfer host produces.
 func axfrServer(t *testing.T, rrs []dns.RR) string {
 	t.Helper()

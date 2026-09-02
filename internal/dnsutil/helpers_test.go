@@ -267,7 +267,7 @@ func TestSetEdns0_DropsECSWhenClientNotInAllowList(t *testing.T) {
 }
 
 func TestSetEdns0_NoECSInRequestNoForwarding(t *testing.T) {
-	// Client didn't send ECS at all — Stage 1 is forward-only,
+	// Client didn't send ECS at all, Stage 1 is forward-only,
 	// not synthesise, so the outgoing OPT must have no ECS option.
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)

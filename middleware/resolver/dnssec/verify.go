@@ -23,7 +23,7 @@ import (
 // implemented locally. RFC 6840 §5.2 requires validators to ignore DS
 // records that use unknown or unimplemented digest algorithms. Only the
 // three digest types miekg/dns' DNSKEY.ToDS actually computes are
-// treated as supported here — anything else (GOST94, future digest
+// treated as supported here, anything else (GOST94, future digest
 // types, unknown values) is skipped.
 func IsSupportedDSDigest(t uint8) bool {
 	switch t {
@@ -35,7 +35,7 @@ func IsSupportedDSDigest(t uint8) bool {
 
 // IsSupportedDNSKEYAlgorithm reports whether miekg/dns' RRSIG.Verify can
 // process signatures of the given algorithm without returning ErrAlg.
-// DS records advertising unsupported DNSKEY algorithms are unusable —
+// DS records advertising unsupported DNSKEY algorithms are unusable,
 // DNSKEY.ToDS will still hash them, but later RRSIG verification would
 // fail. Per RFC 6840 §5.2 such DS entries must be disregarded so an
 // unsupported-only DS RRset is treated as insecure rather than bogus.
@@ -69,10 +69,10 @@ func IsSupportedDS(ds *dns.DS) bool {
 // VerifyDS looks for a DS record in parentDSSet that authenticates one
 // of the KSKs in keyMap. It returns (unsupportedOnly, err):
 //
-//   - (false, nil)  — at least one supported DS matched a KSK.
-//   - (false, err)  — at least one supported DS was present but none
+//   - (false, nil) , at least one supported DS matched a KSK.
+//   - (false, err) , at least one supported DS was present but none
 //     matched; the zone is bogus (not "insecure").
-//   - (true, err)   — every DS in the RRset uses an unsupported digest
+//   - (true, err)  , every DS in the RRset uses an unsupported digest
 //     type. Per RFC 6840 §5.2 validators MUST ignore such records, and
 //     if none remain the caller must treat the zone as insecure.
 //
@@ -339,8 +339,8 @@ func runDSDigestMatch(
 //
 // The signer zone is supplied by the caller (verifyDNSSEC / verifyRootKeys)
 // and represents the zone whose keys should authenticate this response.
-// RRsets whose owner name is not in that zone — for example, target
-// records appended via DNAME synthesis — are validated by their own
+// RRsets whose owner name is not in that zone, for example, target
+// records appended via DNAME synthesis, are validated by their own
 // recursion and are skipped here. An unsigned RRset inside the zone is
 // rejected; a signature that fails (missing key, bad exponent, verify
 // error, expired) only causes the RRset to fail if no sibling signature
@@ -434,8 +434,8 @@ func verifyRRSIGWithWork(
 				if fromAuthority {
 					// Referral remnant: an upstream that also hosts
 					// ancestors of a CNAME target may append the
-					// target's zone-cut NS and DS-denial records —
-					// owned outside the signer zone — to a positive
+					// target's zone-cut NS and DS-denial records,
+					// owned outside the signer zone, to a positive
 					// answer (issue #506). They are advisory (RFC
 					// 2181 §5.4.1 ranks authority data below answer
 					// data) and the caller re-resolves the target
@@ -571,8 +571,8 @@ func rrsigID(sig *dns.RRSIG) rrsigIdentity {
 
 // UniqueRRSIGs returns signatures with exact duplicates removed, in a
 // deterministic order. Identity spans every field a verification depends
-// on — owner, class, covered type, algorithm, labels, original TTL,
-// validity window, key tag, signer and the signature bytes — so two
+// on, owner, class, covered type, algorithm, labels, original TTL,
+// validity window, key tag, signer and the signature bytes, so two
 // records that differ anywhere that matters are kept apart. A caller
 // deduplicating on less can discard a sound signature as a copy of an
 // unsound one that merely resembles it.
@@ -789,8 +789,8 @@ func runSignatureVerification(
 // canonical signed data is the same, and the cryptography is the standard
 // library's on both sides.
 //
-// Keys whose public exponent exceeds crypto/rsa's ceiling — mailbox.org's
-// alg-7/alg-10 ZSKs, exponent 2^32+1 — keep the raw modexp path inside that
+// Keys whose public exponent exceeds crypto/rsa's ceiling, mailbox.org's
+// alg-7/alg-10 ZSKs, exponent 2^32+1, keep the raw modexp path inside that
 // verifier, so they validate instead of bogusing out.
 func cryptoVerify(k *dns.DNSKEY, sig *dns.RRSIG, set []dns.RR) error {
 	if verifySignatureSupported(k.Algorithm) {
@@ -828,7 +828,7 @@ func isSynthesizedCNAME(cname *dns.CNAME, dnames []*dns.DNAME) bool {
 }
 
 // ValidateSigner checks that the signer claimed by an RRSIG is a
-// plausible zone apex for qname — either qname itself or a proper
+// plausible zone apex for qname, either qname itself or a proper
 // ancestor. The check must run before the DS-chain lookup because
 // RRSIG.SignerName is unauthenticated RDATA until a key verifies the
 // signature: without it, an on-path attacker can rewrite SignerName to

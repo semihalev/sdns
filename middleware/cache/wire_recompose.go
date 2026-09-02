@@ -10,7 +10,7 @@ import (
 // The record recomposer: one stored, name-compressed record re-encoded
 // into a composed reply whose offsets differ from the source body's. Owner
 // names and compressible rdata names are decompressed; everything else is
-// copied verbatim — which is only sound for types whose rdata cannot carry
+// copied verbatim, which is only sound for types whose rdata cannot carry
 // a compressed name. Every append is capacity-guarded against the caller's
 // lease, so composition never allocates and refuses cleanly when it does
 // not fit.
@@ -19,7 +19,7 @@ import (
 // record of this type. CNAME and SOA are rewritten (their rdata names may
 // be compressed); the rest are verbatim-safe: their rdata is name-free or
 // their names are packed uncompressed (RRSIG signer per RFC 4034 §6.2,
-// NSEC next-domain per RFC 4034 §4.1.1 — miekg's packer honors both).
+// NSEC next-domain per RFC 4034 §4.1.1, miekg's packer honors both).
 func wireRecomposable(rrtype uint16) bool {
 	switch rrtype {
 	case dns.TypeCNAME, dns.TypeSOA,

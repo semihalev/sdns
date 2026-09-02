@@ -8,10 +8,10 @@ import (
 )
 
 // Counters use the internal/metric package (sharded + background
-// flush) — they're on the per-query hot path and benefit ~20x from
+// flush), they're on the per-query hot path and benefit ~20x from
 // avoiding the direct prometheus.Counter atomic.
 //
-// Gauges (cacheSize, cacheHitRate) stay on direct Prometheus —
+// Gauges (cacheSize, cacheHitRate) stay on direct Prometheus,
 // internal/metric is scalar-counter only, and these are scraped
 // once per Prometheus pull, not on every request.
 var (

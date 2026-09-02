@@ -103,7 +103,7 @@ func (d *Dnstap) ClientOnly() bool { return true }
 // (*Dnstap).ServeDNS serveDNS logs DNS messages in dnstap format.
 // Disconnected dnstap is a read-lock check and a wire-born request passes
 // undecoded. A connected tap stays on the byte path too: a dnstap frame
-// carries wire bytes, and a wire-born request already is wire bytes — an
+// carries wire bytes, and a wire-born request already is wire bytes, an
 // owned copy taps it without decoding, so the cache's wire ladder (and
 // the inline fast path behind it) keeps working with the tap on. Only a
 // request that arrived decoded (DoH, internal entries) packs.
@@ -143,7 +143,7 @@ func (d *Dnstap) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// Create response writer wrapper to capture response.
 	// Chains are pooled and reused across requests, so the wrapper
-	// must be removed before returning — otherwise a later request
+	// must be removed before returning, otherwise a later request
 	// picks up a stale dnstap wrapper and duplicates response logs
 	// for a query it never observed.
 	if d.logResponses {
@@ -334,7 +334,7 @@ func (d *Dnstap) logMessage(w middleware.ResponseWriter, query *dns.Msg, queryWi
 
 // fillQuery sets the frame's query bytes from whichever form the request
 // had: an owned wire copy verbatim, or a pack of the decoded message. The
-// wire copy is shared between the query frame and the response wrapper —
+// wire copy is shared between the query frame and the response wrapper,
 // both only read it, and the frame encoder copies on write.
 func fillQuery(msg *DnstapMessage, query *dns.Msg, queryWire []byte) {
 	if queryWire != nil {
@@ -350,7 +350,7 @@ func fillQuery(msg *DnstapMessage, query *dns.Msg, queryWire []byte) {
 // prepareWireTap is logMessage's assembly for a response that already exists
 // as wire bytes: the tap keeps an owned copy of them instead of packing the
 // message a second time. The body is borrowed pooled storage, valid only for
-// this call, and the queue is asynchronous — the copy is not an optimization
+// this call, and the queue is asynchronous. The copy is not an optimization
 // choice but the ownership rule.
 //
 // It prepares without enqueueing, because whether this response was actually
@@ -439,7 +439,7 @@ func (rw *responseWriter) WriteMsg(res *dns.Msg) error {
 
 // WireReady passes the byte path through: this layer only observes
 // responses, so its presence must not push a cache hit back onto the Msg
-// path — which is what wrapping without these two methods did.
+// path, which is what wrapping without these two methods did.
 // BeginWire/CommitWire/AbortWire pass the body lease through; the commit
 // flows through WriteWire so the tap still observes (and copies) the body.
 func (rw *responseWriter) BeginWire(size, reserve int) []byte {
@@ -468,11 +468,11 @@ func (rw *responseWriter) WireReady() (middleware.WireCapability, bool) {
 }
 
 // WriteWire taps the response and forwards the bytes. The tap is prepared
-// before the downstream write — the body is borrowed and valid only for
-// this call — but committed after it, and only if the chain did not decline:
+// before the downstream write. The body is borrowed and valid only for
+// this call, but committed after it, and only if the chain did not decline:
 // on ErrWireFallback the cache retakes the Msg path and WriteMsg taps that
 // serve, so enqueueing here would log the same response twice. A terminal
-// transport error still commits — the response left, or partially left, the
+// transport error still commits, the response left, or partially left, the
 // process, which is exactly what a tap records.
 func (rw *responseWriter) WriteWire(body []byte, info middleware.WireInfo) error {
 	next, ok := rw.ResponseWriter.(middleware.WireWriter)

@@ -12,7 +12,7 @@ import (
 
 // The replay pass finishes a query whose token was already consumed on
 // the inline pass; running the limiter again would bill one question
-// twice. Ten replay passes must leave the bucket untouched — if any of
+// twice. Ten replay passes must leave the bucket untouched, if any of
 // them consumed, the normal pass at the end would find it empty.
 func TestRateLimitReplayPassesThrough(t *testing.T) {
 	cfg := &config.Config{ClientRateLimit: 1, CookieSecret: "6c6f6f6b61686172646c6f6f6b6168617264"} //nolint:gosec // test fixture

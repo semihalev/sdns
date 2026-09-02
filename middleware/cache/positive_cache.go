@@ -23,7 +23,7 @@ func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetr
 }
 
 // (*PositiveCache).Get get retrieves an entry from the positive cache.
-// Hit/Miss metrics are NOT recorded here — checkCache consults both
+// Hit/Miss metrics are NOT recorded here, checkCache consults both
 // positive and negative caches per request and records the aggregate
 // result once, so pushing metrics in here would double-count both
 // sides of a single miss.

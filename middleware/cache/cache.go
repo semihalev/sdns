@@ -100,7 +100,7 @@ type Cache struct {
 	// store is the public-facing storage facade backed by the same
 	// answer caches and RFC 9520 failure cache. External callers (resolver
 	// sub-queries, queryer-driven prefetch, future API purge wiring)
-	// route through Store; the middleware itself uses both views —
+	// route through Store; the middleware itself uses both views,
 	// Store for the new API surface, direct sub-cache access for
 	// the few existing answer hot paths that already have a key in hand.
 	store *Store
@@ -168,7 +168,7 @@ func New(cfg *config.Config) *Cache {
 
 	// Validate configuration and actually apply defaults when
 	// validation fails. Previously the log claimed fallback
-	// behaviour that never happened — an omitted cachesize
+	// behaviour that never happened, an omitted cachesize
 	// passed Size=0 straight into NewPositiveCache/NewNegativeCache
 	// (each got 0/2 = 0 entries), reducing the cache to one
 	// entry and causing severe churn.
@@ -277,7 +277,7 @@ func New(cfg *config.Config) *Cache {
 func (c *Cache) Name() string { return name }
 
 // InlineBarrier declares that the cache honors Chain.InlineOnly: an
-// inline pass gets the wire ladder and nothing below it — everything
+// inline pass gets the wire ladder and nothing below it, everything
 // past the ladder can materialize, wait, or resolve, and a transport
 // reader can afford none of those. Its presence is what lets the server
 // turn the reader fast path on at all.
@@ -359,7 +359,7 @@ func (c *Cache) internalExchange(
 
 	// The sub-query accumulates its own delegation-cut deadline. Its answer
 	// is cached under its own key and must carry its own lineage, not the
-	// lifetime of whatever asked for it — a nearly expired alias would
+	// lifetime of whatever asked for it, a nearly expired alias would
 	// otherwise store a freshly resolved target with seconds of life.
 	parent := middleware.ResponseMetaFrom(ctx)
 	ctx, child := middleware.WithForkedCut(ctx)
@@ -372,8 +372,8 @@ func (c *Cache) internalExchange(
 // caller knows whether it used the answer.
 //
 // The deriving request inherits the bound because the composed answer
-// contains the sub-query's records. A sub-query that contributed none — it
-// failed, or returned something the chase did not consume — describes an
+// contains the sub-query's records. A sub-query that contributed none, it
+// failed, or returned something the chase did not consume, describes an
 // answer nobody is caching, and folding its bound in anyway would shorten an
 // outer entry that has not changed.
 type subQueryLineage struct {
@@ -406,11 +406,11 @@ func (c *Cache) prefetchExchange(ctx context.Context, req *dns.Msg) (*dns.Msg, e
 }
 
 // (*Cache).ServeDNS serveDNS implements the middleware.Handler interface.
-// A wire-born request first tries the wire fast path — the exact-entry
+// A wire-born request first tries the wire fast path, the exact-entry
 // lookup on the wire question through the canonical key, served through
-// the writer lease without a decoded request. Everything else — misses,
+// the writer lease without a decoded request. Everything else, misses,
 // composite candidates (NXDOMAIN cut, aggressive denial, failure cache),
-// scoped/ECS traffic, prefetch-due entries, Msg-path-only hit shapes —
+// scoped/ECS traffic, prefetch-due entries, Msg-path-only hit shapes,
 // falls through to materialization and the ordinary body with every gate
 // and lookup it has today.
 func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
@@ -419,7 +419,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// same call, so a plain local is enough to keep one question from
 	// costing two tokens. It holds the limiter itself rather than the
 	// entry, because a refresh replacing the entry under the same key
-	// shares that same limiter — charging the replacement would drop a
+	// shares that same limiter, charging the replacement would drop a
 	// question that had already paid.
 	// The replay pass skips the ladder outright: the inline pass ran it
 	// microseconds ago and declined, the Msg body below carries the full
@@ -434,7 +434,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// An inline serve runs on a transport reader that must not block.
 	// The wire ladder above was its whole budget: everything from here
 	// down materializes, may consult the Msg-path cache, and on a miss
-	// starts an upstream resolution — none of which a reader can wait
+	// starts an upstream resolution, none of which a reader can wait
 	// out. Decline, unwritten; the transport replays on a worker.
 	if ch.InlineOnly() {
 		ch.MarkHandoff()
@@ -493,7 +493,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	clientScope := c.requestScope(req, clientAddr)
 
-	// Cache key uses (name, qtype, class, CD) — same granularity
+	// Cache key uses (name, qtype, class, CD), same granularity
 	// as the dedup key so followers release into a lookup that
 	// matches what the leader wrote.
 	cacheKey := CacheKey{Question: q, CD: req.CheckingDisabled}.Hash()
@@ -515,7 +515,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// hit metrics are recorded only after handleCacheHit accepts and
 	// serves the entry, so retained expired candidates remain misses.
 	// ecsLookups breaks ECS
-	// requests down by which path served them — operators read it
+	// requests down by which path served them, operators read it
 	// to see how much of the ECS-aware code path is actually
 	// carrying traffic (non-ECS lookups are already counted by
 	// dns_cache_hits_total / dns_cache_misses_total).
@@ -569,8 +569,8 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		failureProbe = true
 	}
 	// This is the moment the miss witness describes: the denial rung just
-	// ran for this question and found nothing. Captured here — not when a
-	// failure is eventually recorded, seconds of timeouts later — so a
+	// ran for this question and found nothing. Captured here, not when a
+	// failure is eventually recorded, seconds of timeouts later, so a
 	// proof admitted during the failing resolution can never be pinned as
 	// evidence of its own absence. Nil when the tree bypassed the rung.
 	//
@@ -578,7 +578,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// separately, so an admission landing in the microseconds between
 	// them can be pinned although the rung never saw it. The wire path
 	// then keeps serving the RFC 9520 failure where a Msg evaluation
-	// would synthesize from the fresh proof — an RFC-legal answer (8198
+	// would synthesize from the fresh proof, an RFC-legal answer (8198
 	// is SHOULD-level), bounded by the failure TTL, in a window the
 	// width of two lock acquisitions. Closing it means threading the
 	// rung's own candidate set through an exported lookup signature;
@@ -593,7 +593,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	// Miss. Dedup upstream work: followers wait for the leader
-	// to finish, then re-check the cache — the leader may have
+	// to finish, then re-check the cache. The leader may have
 	// just filled it. Ordinary followers that still see a miss
 	// proceed to run the upstream chain themselves. Followers of
 	// an expired RFC 9520 failure probe re-elect one leader while
@@ -896,7 +896,7 @@ func (c *Cache) checkCache(key uint64) *CacheEntry {
 // apply to this request (policy off, client not in allow-list, no
 // ECS option, malformed option). Uses the (already-clamped) ECS
 // source the edns middleware preserved on req.Extra rather than
-// re-clamping from the writer's RemoteIP — keeps lookup and insert
+// re-clamping from the writer's RemoteIP, keeps lookup and insert
 // keying agreed on a single derivation.
 func (c *Cache) requestScope(req *dns.Msg, client netip.Addr) netip.Prefix {
 	if c.ecsPolicy == nil || !c.ecsPolicy.Allows(client) {
@@ -955,16 +955,16 @@ func hasEDNSClientSubnet(req *dns.Msg) bool {
 // upper bound is the client's own prefix because a stored prefix
 // narrower than the client's address could never contain it. The
 // lower bound is /1 because ClampScope allows arbitrarily-broad
-// response scopes (min_scope is a *storage* floor — refuse to
-// store anything narrower — not a *lookup* floor): a /24 source
+// response scopes (min_scope is a *storage* floor, refuse to
+// store anything narrower, not a *lookup* floor): a /24 source
 // with a /20 SCOPE response stores an entry at /20, and a later
 // /24 query from the same client has to probe /20 to find it.
 // Probing the unscoped /0 key would duplicate the shared-key
 // check the caller does after this returns; we stop at /1.
 //
 // Worst case ~32 probes for IPv4 (one per bit-length 1..32) and
-// ~128 for IPv6. Each probe is one hash compute + one map lookup
-// — ~100 ns total — well below the cost of an upstream lookup
+// ~128 for IPv6. Each probe is one hash compute + one map lookup,
+// ~100 ns total, well below the cost of an upstream lookup
 // or a single GC sweep.
 func (c *Cache) scopedLookup(q dns.Question, cd bool, clientPrefix netip.Prefix) (*CacheEntry, uint64, netip.Prefix) {
 	if !clientPrefix.IsValid() {
@@ -1025,13 +1025,13 @@ func (c *Cache) lookupFailure(req *dns.Msg, clientScope netip.Prefix) (FailureHi
 
 // forwardedZoneQuestion reports whether qname belongs to a forward zone.
 //
-// Covering denial and failure state describes the public namespace — it was
+// Covering denial and failure state describes the public namespace. It was
 // learned by resolving from the root. A forward zone says that subtree is
 // answered somewhere else, so an NXDOMAIN cut, aggressive denial or authority
 // failure inherited from above it must not answer for it: a name that does
 // not exist publicly is precisely what an internal zone is for, and serving
 // the public denial would make the zone unreachable for as long as the cut
-// lives. Exact entries are deliberately left alone — those were admitted for
+// lives. Exact entries are deliberately left alone, those were admitted for
 // this very question, by whichever path answered it.
 func (c *Cache) forwardedZoneQuestion(qname string) bool {
 	if c == nil || c.cfg == nil || len(c.cfg.ForwardZones) == 0 {
@@ -1168,7 +1168,7 @@ func (c *Cache) handleFailureHit(
 // serveWire is the wire fast path: the exact-entry lookup on the wire
 // question through the canonical key, and a verified, wire-eligible hit
 // answered through the writer lease without a decoded request. A false
-// return is the composite-miss transition point — the caller materializes
+// return is the composite-miss transition point, the caller materializes
 // and runs the ordinary body.
 func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rate.Limiter) bool {
 	req := ch.Request
@@ -1189,7 +1189,7 @@ func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rat
 	// Full-preimage collision verification on the wire: name
 	// (case-insensitive), type, class, CD, and the shared/scoped
 	// partition. A mismatch is a miss, exactly as at the Msg-path
-	// chokepoint. An exact hit that declines materializes — the Msg body
+	// chokepoint. An exact hit that declines materializes, the Msg body
 	// re-runs its whole ladder in order, prefetch claims included.
 	if entry := c.checkCache(key); entry != nil && entryMatchesWire(entry, req) {
 		return c.serveHitFromWire(ctx, ch, entry, spent)
@@ -1197,8 +1197,8 @@ func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rat
 	return c.serveCompositeFromWire(ctx, ch)
 }
 
-// serveCompositeFromWire walks the Msg path's composite ladder — RFC 8020
-// subtree cut, RFC 8198 aggressive denial, RFC 9520 failure state — in
+// serveCompositeFromWire walks the Msg path's composite ladder, RFC 8020
+// subtree cut, RFC 8198 aggressive denial, RFC 9520 failure state, in
 // its exact order for a wire-born request. Each rung either answers from
 // bytes or sends the request to the decoded body, never to a later rung
 // it might shadow.
@@ -1224,12 +1224,12 @@ func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain
 		// anything: the failure entry carries a record-time proof that
 		// denial missed (the miss witness), and the serve happens only
 		// while that proof demonstrably still holds. The proof names one
-		// question — witness serving is therefore restricted to
+		// question, witness serving is therefore restricted to
 		// question-kind hits, where the lookup and the record coincide in
 		// name, type, class and CD; a zone-kind hit answers names the
 		// record never proved anything about, so it materializes. Any
-		// doubt — a replaced snapshot, a newly cached zone on the path, a
-		// pre-witness entry — falls to the Msg path, whose evaluators
+		// doubt, a replaced snapshot, a newly cached zone on the path, a
+		// pre-witness entry, falls to the Msg path, whose evaluators
 		// decide; the client's answer is identical either way. CD skips
 		// shared denial on the Msg path too, so it serves directly.
 		if cd || ((hit.Kind == FailureKindQuestion || c.store.sharedDenialImpossible()) &&
@@ -1249,18 +1249,18 @@ func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
 
 // chargeEntryLimiter pays the per-entry rate-limit token immediately
 // before a wire serve commits to answering. A false return means the
-// token was refused: the query is cancelled and counted as a hit — the
+// token was refused: the query is cancelled and counted as a hit, the
 // Msg path counts a rate-limited hit as a hit, and the byte path must
 // answer the same question the same way.
 //
 // The permit is remembered in spent, keyed by the limiter it was spent
-// on: the declines that remain past this point — a lease the writer
-// cannot grant, a body that fails to build, a transport fallback — fall
+// on: the declines that remain past this point, a lease the writer
+// cannot grant, a body that fails to build, a transport fallback, fall
 // to the Msg body of the same call, which checks the same limiter again
 // and must not charge the same question twice. (A refresh replacing the
 // entry under the same key shares the limiter, so the memo survives it.)
 // Across the inline/replay boundary no local can carry the permit, which
-// is why both serve branches — the flat copy and the chase composition —
+// is why both serve branches, the flat copy and the chase composition,
 // check every decline they can before this charge; what stays past it
 // are commit-time backstops, and an inline query dropped there pays a
 // second token on the replay, accepted as the rare case.
@@ -1294,7 +1294,7 @@ func (c *Cache) serveHitFromWire(
 	// The deterministic declines run before the limiter spends anything:
 	// a prefetch-due entry, an ineligible body, a writer without the
 	// lease all fall to the Msg path (or, inline, to the replay), and a
-	// token paid here would be paid again there — the exact double
+	// token paid here would be paid again there, the exact double
 	// charge the spent memo below exists to prevent within one pass, and
 	// which no local can prevent across the inline/replay boundary.
 	//
@@ -1386,7 +1386,7 @@ func (c *Cache) serveHitFromWire(
 }
 
 // handleCacheHit processes a cache hit. scope is the ECS scope the lookup
-// keyed with — zero for the shared key — and is part of what the hit is
+// keyed with, zero for the shared key, and is part of what the hit is
 // verified against.
 func (c *Cache) handleCacheHit(
 	ctx context.Context,
@@ -1401,8 +1401,8 @@ func (c *Cache) handleCacheHit(
 
 	// Full-preimage verification (defends against xxhash64 key collisions).
 	// The cache key is a non-cryptographic 64-bit hash of the query
-	// preimage, so a collision — accidental, or attacker-searched on a
-	// chosen qname — would otherwise serve one query's answer to another:
+	// preimage, so a collision, accidental, or attacker-searched on a
+	// chosen qname, would otherwise serve one query's answer to another:
 	// across qnames, but equally across the CD partition and the ECS
 	// audience, which is why every dimension is compared and not just the
 	// question. Returning false treats it as a miss so the chain resolves
@@ -1457,12 +1457,12 @@ func (c *Cache) handleCacheHit(
 	// entry.prefetch) must be released if Add drops the
 	// request, otherwise the hot entry stays with
 	// prefetch=true and ShouldPrefetch returns false until an
-	// unrelated expiry or replacement clears it — prefetch
+	// unrelated expiry or replacement clears it, prefetch
 	// would silently disable itself for that key.
 	//
 	// PrefetchEligible() gates scoped entries out: the prefetch
 	// worker has no client IP, so a refresh would forward without
-	// ECS and create a shared-key entry under the scoped key —
+	// ECS and create a shared-key entry under the scoped key,
 	// wrong audience, wrong answer. Scoped entries just expire.
 	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
 		if entry.prefetch.CompareAndSwap(false, true) {
@@ -1482,7 +1482,7 @@ func (c *Cache) handleCacheHit(
 	// The policy verdict is judged once per hit, before the byte/decoded
 	// split, because both halves read it: the byte path serves only on
 	// WireHitServe, and the decoded fallback restamps on WireHitRestamp.
-	// It is judged for internal serves too — the verdict is a pure
+	// It is judged for internal serves too. The verdict is a pure
 	// function of the stored state, and the Msg-path chase reaches its
 	// segments through internal sub-queries, which is where a stale
 	// segment gets its restamp.
@@ -1499,7 +1499,7 @@ func (c *Cache) handleCacheHit(
 	}
 
 	// Byte fast path: serve the stored wire directly. The entry-local gate
-	// runs first, then the writer chain's preflight — both allocation-free
+	// runs first, then the writer chain's preflight, both allocation-free
 	// and together complete, so a request bound for the Msg path never
 	// builds a body nor makes the chain compose anything. A hit that never
 	// reaches WriteWire records which gate turned it away.
@@ -1536,7 +1536,7 @@ func (c *Cache) handleCacheHit(
 			}
 			// The answer is out, so bind the request tree to this entry's
 			// lifetime. The byte path is normally reached only by external
-			// clients, whose responses nothing derives from — but Queryer is
+			// clients, whose responses nothing derives from, but Queryer is
 			// a public interface and SetQueryer does not require a
 			// sub-query's writer to report Internal(), so the rule cannot
 			// rest on that. Bound only after the write reported success, and
@@ -1550,7 +1550,7 @@ func (c *Cache) handleCacheHit(
 			wireFastFallback.Inc()
 			// fall through to the Msg path below
 		default:
-			// Transport-level failure after commit — mirror the Msg
+			// Transport-level failure after commit, mirror the Msg
 			// path's ignored WriteMsg error. The body was handed over
 			// before the transport was called and the response counts
 			// as written, so a caller reading it back through Msg()
@@ -1580,8 +1580,8 @@ func (c *Cache) handleCacheHit(
 	}
 
 	// The decoded serve is where an unusable sidecar gets replaced: the
-	// gate judged Restamp — unevaluated, or stamped under a generation it
-	// no longer accepts — and this message, TTL-adjusted but
+	// gate judged Restamp, unevaluated, or stamped under a generation it
+	// no longer accepts, and this message, TTL-adjusted but
 	// record-identical to the stored truth, before the chase below
 	// appends other entries' records, is exactly what the admission
 	// evaluator would have seen. The CAS is against the judged pointer,
@@ -1635,7 +1635,7 @@ func (c *Cache) handleCacheHit(
 // tree's bound, so anything derived from it inherits its lifetime.
 //
 // The bound is the earlier of the entry's own expiry and the delegation lease
-// it inherited — not the lease alone. A cached answer near the end of its TTL
+// it inherited, not the lease alone. A cached answer near the end of its TTL
 // has the shorter claim, and passing only the lease would let the TTL floor
 // re-publish it under whatever is being assembled.
 func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
@@ -1652,9 +1652,9 @@ func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
 	}
 }
 
-// boundRequestTo folds an absolute expiry that is already exact — a subtree
+// boundRequestTo folds an absolute expiry that is already exact, a subtree
 // cut's, or the earliest among the records an RFC 8198 answer was synthesized
-// from — into the request tree.
+// from, into the request tree.
 func boundRequestTo(ctx context.Context, expires time.Time) {
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		meta.BoundCutFor(expires, 0)
@@ -1676,7 +1676,7 @@ func (c *Cache) isValidQuery(q dns.Question) bool {
 // Cache invalidation previously flowed through here via a
 // base64-encoded CHAOS NULL request dispatched by
 // dnsutil.ExchangeInternal; that path retired alongside
-// ExchangeInternal itself — api/api.go now calls Cache.Purge
+// ExchangeInternal itself, api/api.go now calls Cache.Purge
 // directly via middleware.Pipeline.Purgers(). Only the debug-ns
 // HINFO pass-through remains.
 func (c *Cache) handleSpecialQuery(ctx context.Context, ch *middleware.Chain, q dns.Question) bool {
@@ -1757,7 +1757,7 @@ func (c *Cache) SetSidecarPolicy(p middleware.SidecarPolicyProvider) {
 }
 
 // effectiveGate resolves the gate for one hit: the query's own, when the
-// policy layer's writer carries one (middleware.QueryPolicyGate — that
+// policy layer's writer carries one (middleware.QueryPolicyGate, that
 // is how held candidates, an already-fallen decision, or an exemption
 // reach the byte-serve judgment), else the globally wired gate. Resolved
 // once per hit and used for the judge and the count alike, so a
@@ -1817,8 +1817,8 @@ type ResponseWriter struct {
 	// clientScope is the prefix derived from the request's ECS
 	// option (already clamped by the edns middleware to the policy
 	// ceiling). Zero value when ECS doesn't apply, in which case
-	// WriteMsg falls back to the unscoped insert path bit-for-bit
-	// — that's how pre-Stage-2 traffic and SCOPE=0 responses keep
+	// WriteMsg falls back to the unscoped insert path bit-for-bit,
+	// that's how pre-Stage-2 traffic and SCOPE=0 responses keep
 	// the same cache shape they had before.
 	clientScope netip.Prefix
 	// denialMissWitness is the miss witness captured at the denial rung
@@ -1895,20 +1895,20 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	}
 
 	// Classify, filter, and store via Store. Key is derived from
-	// the response's CD bit — today's behaviour and the contract
+	// the response's CD bit, today's behaviour and the contract
 	// the cache dedup leader and follower agree on.
 	//
 	// When the request carried an ECS scope this writer was set up
 	// to understand, read the authority's SCOPE off the response.
 	// SCOPE=0 ("global") means the authority's answer is suitable
-	// for everyone — fall back to the shared key so any later
+	// for everyone, fall back to the shared key so any later
 	// client (with or without ECS) hits the same entry. SCOPE>0
 	// means the answer is geo-tailored and gets a scoped key,
 	// clamped to the policy ceiling so cardinality stays bounded.
 	// The delegation-cut bound for this response, folded into the
 	// meta sink by the resolver while producing it. Zero (no meta,
 	// or no learned delegation on the path) leaves the entry
-	// unbounded — forwarder and local answers keep today's shape.
+	// unbounded, forwarder and local answers keep today's shape.
 	var (
 		cutUntil time.Time
 		cutKey   uint64
@@ -1982,7 +1982,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// The delegation lease caps the TTL the client sees, on this uncached
 	// response exactly as remaining() caps it on every later hit. Without
 	// this the first response advertised the records' own TTL while hits
-	// advertised the lease remainder — two promises for the same records —
+	// advertised the lease remainder, two promises for the same records,
 	// and, worse than inconsistent, the first client's downstream cache
 	// could retain a withdrawn delegation's answer past the parent-granted
 	// lease the ghost fix (GHSA-mqfw-f48p-2vc8) bounds everything else to.
@@ -1992,12 +1992,12 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// seals the authority section TTLs included, so clamping before
 	// ValidatedNegativeProofForResponse silently disqualified every
 	// NXDOMAIN/NODATA proof whose delegation lease ran shorter than its
-	// records — the entry stores are unaffected either way, since packing
+	// records, the entry stores are unaffected either way, since packing
 	// happens inside the Set calls and cutUntil bounds reads regardless.
 	//
 	// And external writers only: an internal write hands this same message
 	// back to a CNAME/DNAME caller that re-verifies the fingerprint before
-	// propagating the denial into the outer answer — mutating it here would
+	// propagating the denial into the outer answer, mutating it here would
 	// lose short-lease provenance mid-chain. The outer response inherits
 	// the cut through the shared meta and is clamped at the real client
 	// write.
@@ -2102,7 +2102,7 @@ func honestOutgoing(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType, n
 
 // clampTTLsToEffective lowers every record TTL in res to the shortest bound
 // the answer is subject to: the delegation lease, and the lifetime the records
-// and their signatures themselves permit. A past cut clamps to zero — the
+// and their signatures themselves permit. A past cut clamps to zero. The
 // answer is still delivered, but nothing downstream is invited to keep it.
 // OPT is hop metadata whose TTL field is not a TTL.
 func clampTTLsToEffective(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType) {
@@ -2187,9 +2187,9 @@ func filterCacheableAnswer(res *dns.Msg) *dns.Msg {
 	}
 
 	// Every consumer reads the result synchronously and retains bytes, not
-	// records — NewCacheEntryWithKey builds its own shallow storable view,
+	// records, NewCacheEntryWithKey builds its own shallow storable view,
 	// PackClones it on the spot, and value-copies the one option it keeps
-	// (the EDE) — so a deep copy duplicated every RR in every section for
+	// (the EDE), so a deep copy duplicated every RR in every section for
 	// a reader that only wants a different Answer slice. The common shape,
 	// no chain tail to drop, passes through untouched.
 	drop := false
@@ -2409,7 +2409,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 		// answer alongside the CNAME, stop. Otherwise the next
 		// goto would re-query the CNAME's target and
 		// searchAdditionalAnswer would append the same final
-		// record a second time — reachable now that inner
+		// record a second time, reachable now that inner
 		// cache hits also run additionalAnswer (Phase 3d) and
 		// short-circuit by returning the full cached chain
 		// (CNAME + final A/AAAA) in one response.
@@ -2425,7 +2425,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 // respCnameHasType reports whether the CNAME-chase response
 // already contains a record of the final qtype. Used to short-
 // circuit the outer chase loop when the inner hop supplied both
-// the CNAME and its target's final answer in one message —
+// the CNAME and its target's final answer in one message,
 // without this check, the outer loop would ask for the CNAME's
 // target again and searchAdditionalAnswer would append the same
 // final record a second time.

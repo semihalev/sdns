@@ -6,8 +6,8 @@
 // them to share a lifecycle: the hyperlocal root (which verifies with
 // ZONEMD against the trust anchors and schedules around a signature
 // horizon) and RPZ policy feeds (which verify nothing cryptographic and
-// withdraw on SOA expire). The refresh loops stay with their owners —
-// each is welded to its own verification and withdrawal semantics — and
+// withdraw on SOA expire). The refresh loops stay with their owners.
+// Each is welded to its own verification and withdrawal semantics, and
 // what is shared is the part with one right answer: how a zone is pulled,
 // probed, compared, and deduplicated.
 package zonetransfer
@@ -43,7 +43,7 @@ type Limits struct {
 
 // AXFR transfers zone from addr over TCP and returns its records, the
 // closing duplicate apex SOA dropped. The transfer is bounded by ctx and
-// lim; any structural surprise refuses the whole transfer — there is no
+// lim; any structural surprise refuses the whole transfer. There is no
 // partial acceptance of a zone copy.
 func AXFR(ctx context.Context, addr, zone string, timeout time.Duration, lim Limits) ([]dns.RR, error) {
 	zone = dns.CanonicalName(zone)
@@ -189,12 +189,12 @@ type rrKey struct {
 
 // NormalizeZone drops duplicate RRs from a received zone, keeping the first
 // of each. RFC 5936 §2.2 requires an AXFR client to ignore duplicates, and
-// RFC 8976 §3.3.1.1 fixes the identity as owner, class, type and RDATA — the
+// RFC 8976 §3.3.1.1 fixes the identity as owner, class, type and RDATA, the
 // TTL is not part of it.
 //
 // This runs once, before anything else reads the records, because every stage
 // downstream counts them: a doubled record must not look to any consumer like
-// a zone with two — whether the consumer is a digest, an index, or a policy
+// a zone with two, whether the consumer is a digest, an index, or a policy
 // rule that accumulates local data.
 func NormalizeZone(rrs []dns.RR) []dns.RR {
 	seen := make(map[rrKey][]dns.RR, len(rrs))
@@ -209,7 +209,7 @@ func NormalizeZone(rrs []dns.RR) []dns.RR {
 		if kept := firstDuplicate(seen[key], rr); kept != nil {
 			// RFC 2181 §5.2: a receiver holding records of one RRset with
 			// differing TTLs treats them as if all carried the lowest. The
-			// duplicate is dropped, but its TTL still has a say — otherwise
+			// duplicate is dropped, but its TTL still has a say, otherwise
 			// the surviving record's lifetime depends on which copy the
 			// source happened to send first.
 			if rr.Header().Ttl < kept.Header().Ttl {
@@ -227,7 +227,7 @@ func NormalizeZone(rrs []dns.RR) []dns.RR {
 }
 
 // firstDuplicate returns the record in rrs that rr duplicates, or nil when
-// it is new. Identity is owner, class, type and RDATA — dns.IsDuplicate
+// it is new. Identity is owner, class, type and RDATA, dns.IsDuplicate
 // excludes the TTL. The sets it searches are one owner's records of one
 // type, small enough that a linear scan is the whole of it.
 func firstDuplicate(rrs []dns.RR, rr dns.RR) dns.RR {

@@ -7,21 +7,21 @@ import (
 
 // The miss witness: RFC 9520 failure state exists only because a real
 // resolution was attempted, and the Msg ladder attempts resolution only
-// after RFC 8198 aggressive denial missed — so at the moment a failure is
+// after RFC 8198 aggressive denial missed, so at the moment a failure is
 // recorded, denial provably does not apply to that name. The witness
 // captures that proof as the (zone hash, snapshot pointer) pairs of every
 // cached denial zone on the name's ancestor path. The wire path may serve
 // the failure without materializing exactly while the witness still
 // holds: every denial zone on the lookup name's path is pointer-identical
 // to what the record saw. A replaced snapshot, a newly admitted zone, or
-// a missing witness sends the query to the Msg path, which re-evaluates —
+// a missing witness sends the query to the Msg path, which re-evaluates,
 // the answer a client receives is therefore identical on both paths by
 // construction; only where it is composed differs.
 //
 // The RFC grounding, for the reviewer: RFC 8198 is SHOULD-level and its
 // Appendix B discards parent-zone NSECs below a delegation, so aggressive
 // denial for a name is answerable only from the name's cached ancestor
-// zones — the exact set the witness pins. RFC 9520 §3.2 constrains
+// zones, the exact set the witness pins. RFC 9520 §3.2 constrains
 // outgoing queries, not cache-lookup order, and leaves precedence between
 // failure state and other cached data open.
 
@@ -29,7 +29,7 @@ import (
 // every other user of the canonical question hash.
 const denialZoneHashSalt = 0x8198f00dd1a70b3c
 
-// denialZoneHash is the canonical hash of a denial zone identity —
+// denialZoneHash is the canonical hash of a denial zone identity,
 // bit-identical whether computed from the presentation name (publish
 // time) or wire bytes (lookup time, via KeyWire with a zero qtype).
 func denialZoneHash(zone string, qclass uint16) uint64 {
@@ -38,7 +38,7 @@ func denialZoneHash(zone string, qclass uint16) uint64 {
 }
 
 // denialWitnessPair is one cached denial zone as the failure record saw
-// it. The pointer is compared for identity only, never dereferenced —
+// it. The pointer is compared for identity only, never dereferenced,
 // the snapshot's content is irrelevant, its replacement is the signal.
 type denialWitnessPair struct {
 	hash     uint64
@@ -48,7 +48,7 @@ type denialWitnessPair struct {
 
 // missWitness captures the denial zones on qname's ancestor path the
 // moment the denial rung misses. A nil result means no on-path zone was
-// cached — a state the wire gate can re-establish for itself at lookup
+// cached, a state the wire gate can re-establish for itself at lookup
 // time, so nil is not a weaker witness, just a cheaper one.
 //
 // A path that crosses a zone holding NSEC3 state yields no witness at
@@ -88,7 +88,7 @@ func (c *denialProofCache) missWitness(qname string, qclass uint16) []denialWitn
 // missWitnessHoldsWire reports whether aggressive denial still provably
 // misses the wire-born name: every cached denial zone on its suffix path
 // must be pointer-identical to the witness. No on-path zones at all is a
-// hold with any witness, the empty one included — with no candidate
+// hold with any witness, the empty one included, with no candidate
 // zones, the Msg evaluator has nothing to evaluate.
 func (c *denialProofCache) missWitnessHoldsWire(
 	name []byte,

@@ -119,8 +119,8 @@ func (h *Hostsfile) Name() string {
 }
 
 // (*Hostsfile).ServeDNS serveDNS handles DNS queries using the hosts database.
-// A wire-born request is looked up by its wire question name — one string,
-// no decode — and on the overwhelmingly common miss continues down the
+// A wire-born request is looked up by its wire question name, one string,
+// no decode, and on the overwhelmingly common miss continues down the
 // chain undecoded; a hit builds its response from parsed scalars, so this
 // handler never materializes anything.
 func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
@@ -146,7 +146,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	q := req.Question[0]
 	db := h.getDB()
 
-	// Increment lookup counter — once per query: the replay pass after an
+	// Increment lookup counter, once per query: the replay pass after an
 	// inline handoff walks this handler again for the same question.
 	if !ch.Replay() {
 		atomic.AddUint64(&db.stats.lookups, 1)
@@ -191,7 +191,7 @@ func (h *Hostsfile) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 }
 
 // serveWire answers a wire-born request from the hosts database without
-// decoding it — and, on the miss that is this handler's whole life, without
+// decoding it, and, on the miss that is this handler's whole life, without
 // allocating: the folded lookup key is written into a stack buffer and
 // indexes the database directly. Only a hit builds strings, for the
 // response it is about to write anyway. PTR keeps the presentation form
@@ -242,9 +242,9 @@ func (h *Hostsfile) serveWire(ctx context.Context, ch *middleware.Chain) {
 
 	// A hit finally pays for its strings: the echoed question wants the
 	// client's exact spelling, case included. The key is spent, so the
-	// buffer is reused. Derived before the hit counters so a refusal —
+	// buffer is reused. Derived before the hit counters so a refusal,
 	// unreachable while AppendFoldedKey and AppendPresentation share
-	// acceptance — could never count a hit it does not serve.
+	// acceptance, could never count a hit it does not serve.
 	if qname == "" {
 		pres, ok := dnsname.AppendPresentation(buf[:0], req.WireName())
 		if !ok {
@@ -300,8 +300,8 @@ func (h *Hostsfile) lookup(db *HostsDB, qname string, qtype uint16) ([]dns.RR, b
 
 // lookupKeyed answers every hosts-database question except PTR from a
 // pre-derived lookup key. The key type is generic so the wire path can
-// pass a stack buffer — string(key) at a map index costs nothing for
-// either instantiation — and the decoded path its lookupKey string.
+// pass a stack buffer, string(key) at a map index costs nothing for
+// either instantiation, and the decoded path its lookupKey string.
 // Wildcard fallback still builds RRs at query time because the owner name
 // depends on the query; wildcards are uncommon in practice, so the
 // conversion and allocation there are acceptable.
@@ -646,7 +646,7 @@ func parseLine(line string) (net.IP, []string, string) {
 // matchWildcard checks if a name matches a wildcard pattern.
 //
 // For "*.example.com" this must match the apex "example.com"
-// and any subdomain like "foo.example.com" — but NOT a sibling
+// and any subdomain like "foo.example.com", but NOT a sibling
 // like "badexample.com". The earlier HasSuffix(name, suffix)
 // check would accept the sibling because the dot boundary
 // wasn't enforced.
@@ -756,7 +756,7 @@ func lookupKey(name string) string {
 	for i := 0; i < n; i++ {
 		c := name[i]
 		if c >= 'A' && c <= 'Z' {
-			// Uppercase found — fall through to the allocating path.
+			// Uppercase found, fall through to the allocating path.
 			b := make([]byte, n)
 			copy(b, name)
 			for j := i; j < n; j++ {

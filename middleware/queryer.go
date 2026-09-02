@@ -1,6 +1,6 @@
 package middleware
 
-// queryer.go runs a DNS request through an internal sub-pipeline —
+// queryer.go runs a DNS request through an internal sub-pipeline,
 // typically every middleware from the "answer surface" inward
 // (hostsfile, blocklist, as112, kubernetes, cache, failover, and
 // the resolver or forwarder) with client-only guards filtered out
@@ -8,7 +8,7 @@ package middleware
 //
 // Sub-pipelines are constructed in Setup and installed on
 // middlewares via QueryerSetter / PrefetchQueryerSetter. A
-// BufferWriter captures the downstream reply in memory — it
+// BufferWriter captures the downstream reply in memory, it
 // presents as TCP so edns.ServeDNS picks the MaxMsgSize buffer
 // instead of truncating internal replies at 512 bytes.
 //
@@ -74,7 +74,7 @@ var internalKeyVal = &internalCtxKey{}
 // the BufferWriter's Internal() flag (e.g. when a plugin spawns
 // its own internal work without going through Queryer.Query).
 //
-// sdns's own Queryer.Query does NOT call MarkInternal — the
+// sdns's own Queryer.Query does NOT call MarkInternal, the
 // BufferWriter it installs already reports Internal()==true, and
 // every in-tree consumer (cache.ServeDNS dedup guard, cache-hit
 // rate limiter) reads the writer flag. Skipping MarkInternal on
@@ -106,7 +106,7 @@ type pipelineQueryer struct {
 func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	ctx, _ = EnsureResolutionAttemptGuard(ctx)
 
-	// Generic recursion bound — see ErrMaxRecursion doc for the
+	// Generic recursion bound, see ErrMaxRecursion doc for the
 	// motivation. A plugin middleware that dispatches an internal
 	// sub-query from inside its own ServeDNS and ends up back in
 	// itself (directly or via another handler) will hit this gate
@@ -125,7 +125,7 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 	// Reset interface check), which is what every in-tree
 	// consumer reads. MarkInternal/IsInternal remain a public
 	// ctx-based API for plugin code that wants to tag internal
-	// traffic without a writer in scope — not called here
+	// traffic without a writer in scope, not called here
 	// because it would add a context.WithValue alloc per
 	// sub-query on the hot path for no in-tree benefit.
 	w := getBufferWriter()
@@ -163,7 +163,7 @@ func (q *pipelineQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, er
 // Internal() always reports true. middleware.responseWriter.Reset
 // propagates that through the interface check so the cache
 // middleware's remaining Internal() branches keep behaving
-// correctly during Phase 3 — those branches are replaced with
+// correctly during Phase 3. Those branches are replaced with
 // queryer.IsInternal(ctx) in Phase 4.
 type BufferWriter struct {
 	msg    *dns.Msg

@@ -86,7 +86,7 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	// A forward zone hands its subtree to its own upstreams; everything else
 	// still resolves here. The question is needed to decide, so this sits
-	// after materialization rather than beside the whole-server check above —
+	// after materialization rather than beside the whole-server check above,
 	// and the request was going to be materialized anyway, so a server with
 	// no forward zones pays only the length check.
 	if len(h.cfg.ForwardZones) > 0 && len(req.Question) > 0 &&
@@ -224,7 +224,7 @@ var noopCancel context.CancelFunc = func() {}
 // withQueryDeadline bounds ctx by the configured query timeout. The server
 // bounds every request context the same way on entry, so on the ordinary
 // path the parent's deadline is this one shifted earlier by the queueing
-// delay — deriving a child context there would allocate a cancelCtx whose
+// delay, deriving a child context there would allocate a cancelCtx whose
 // deadline can never fire first. Only a context that arrives unbounded, or
 // bounded later than the timeout, gets a child.
 func withQueryDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -288,7 +288,7 @@ func (h *DNSHandler) nsStats(req *dns.Msg) *dns.Msg {
 }
 
 // (*DNSHandler).Purge removes the nameserver cache entry for q
-// under both CD=true and CD=false. Only TypeNS is acted on —
+// under both CD=true and CD=false. Only TypeNS is acted on,
 // purging A/AAAA or other record types is the cache middleware's
 // concern, not the resolver's NS cache. Implements
 // middleware.Purger so the api purge endpoint reaches both stores.

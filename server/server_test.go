@@ -248,7 +248,7 @@ func Test_Server(t *testing.T) {
 }
 
 // Test_ServerEmptyQuestion verifies a malformed QDCOUNT (0 questions) is
-// answered with FORMERR at the entry point and never reaches — and panics —
+// answered with FORMERR at the entry point and never reaches, and panics,
 // a downstream handler that indexes req.Question[0].
 func Test_ServerEmptyQuestion(t *testing.T) {
 	s := New(&config.Config{})

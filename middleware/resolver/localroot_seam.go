@@ -25,8 +25,8 @@ import (
 //   - the TLD does not exist: the zone's own signed NSEC proof synthesizes
 //     the NXDOMAIN (handled=true).
 //
-// No active verified copy — disabled, never transferred, or past its SOA
-// expire — reports consulted=false and the walk proceeds to the real roots
+// No active verified copy, disabled, never transferred, or past its SOA
+// expire, reports consulted=false and the walk proceeds to the real roots
 // unchanged.
 func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answer *dns.Msg, handled bool) {
 	mgr := r.localRoot.Load()
@@ -41,8 +41,8 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 
 	q := rs.req.Question[0]
 	if q.Qclass != dns.ClassINET {
-		// The copy is an IN zone and every answer built from it — the
-		// delegation key, the NSEC question, the SOA — is IN. Answering a
+		// The copy is an IN zone and every answer built from it, the
+		// delegation key, the NSEC question, the SOA, is IN. Answering a
 		// CHAOS or HESIOD question from it would pair the client's class
 		// with another class's records, so those go to the real roots.
 		localroot.CountFallback()
@@ -52,7 +52,7 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 	cd := rs.req.CheckingDisabled
 	tld := localroot.TLDOf(qname)
 	if tld == "" {
-		// The root's own records — NS, SOA, DNSKEY — are in the copy, and
+		// The root's own records, NS, SOA, DNSKEY, are in the copy, and
 		// asking a root server for an answer already held here is the one
 		// thing this package exists to stop doing.
 		answer, handled := r.localRootApexAnswer(rs, snap, q.Qtype, cd)
@@ -97,8 +97,8 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 
 	// The proof must independently classify as this exact NXDOMAIN under
 	// the strict RFC 8198 evaluator before anything is served from it: a
-	// chain gap the covering search cannot see — an NSEC whose span does
-	// not actually reach the name — must fall back to the real roots, not
+	// chain gap the covering search cannot see, an NSEC whose span does
+	// not actually reach the name, must fall back to the real roots, not
 	// become an authenticated denial.
 	var nsecSet []dns.RR
 	for _, rr := range proof {
@@ -123,14 +123,14 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 //
 // Bounding the wire TTLs is not enough on its own. The cache applies a
 // five-second floor to any TTL below it (dnsutil.MinCacheTTL), so an answer
-// taken in the last seconds of the horizon — TTL bounded to zero or one —
+// taken in the last seconds of the horizon, TTL bounded to zero or one,
 // would still be admitted for five, and served from cache after Active() had
 // already withdrawn the copy. RFC 8806 asks for an immediate return to the
 // real root servers at that instant, not a few seconds later.
 //
 // The referral path bounds the tree the same way, through the delegation
 // lease. The key is zero because this deadline is an exact instant rather
-// than one a delegation entry supplied — the same shape the cache's own
+// than one a delegation entry supplied, the same shape the cache's own
 // boundRequestTo uses.
 func noteCopyHorizon(ctx context.Context, snap *localroot.Snapshot) {
 	noteCut(ctx, snap.ValidUntil(), 0)
@@ -145,12 +145,12 @@ func noteCopyHorizon(ctx context.Context, snap *localroot.Snapshot) {
 //     RRSIG expiration anywhere in the zone, so bounding by it is at least as
 //     strict as the rule demands for every RRset served here. It is the same
 //     third bound installLocalRootReferral already applies to a delegation
-//     lease, applied now to the answers the copy serves directly — without
+//     lease, applied now to the answers the copy serves directly, without
 //     it, an answer taken shortly before the horizon can advertise days of
 //     TTL for records whose signatures lapse within the hour.
 //   - The Snapshot is immutable and read by every goroutine serving from the
-//     copy. Handing out its records would let any downstream TTL rewrite —
-//     clampTTLsToCut is one, and it writes in place — reach into the live
+//     copy. Handing out its records would let any downstream TTL rewrite,
+//     clampTTLsToCut is one, and it writes in place, reach into the live
 //     copy and silently change what every later answer says, from an
 //     arbitrary request goroutine.
 //
@@ -188,7 +188,7 @@ func copyBoundedTTL(rrs []dns.RR, ttl uint32) []dns.RR {
 // that query is answered from the copy too. That is sound and deliberate:
 // the copy's DNSKEY RRset is the published one, transferred within the
 // refresh interval and verified under an anchor-matched key before
-// anything was built from it — a faithful observation of the zone, against
+// anything was built from it, a faithful observation of the zone, against
 // a hold-down measured in weeks. It is also fail-safe in the direction that
 // matters: a rollover the current anchors can no longer verify leaves no
 // copy at all, so the refresh falls back to querying the roots live, which
@@ -220,7 +220,7 @@ func (r *Resolver) localRootApexAnswer(
 			// A root server answers ". NS" with the addresses of the servers
 			// it names (RFC 9609), and the copy holds them as glue. Without
 			// them this answer names thirteen servers and gives no way to
-			// reach any of them — which is also what the resolver's own
+			// reach any of them, which is also what the resolver's own
 			// 12-hourly priming reads, so it would find no addresses and
 			// leave its root server list unrefreshed.
 			resp.Extra = append(resp.Extra, snap.ApexGlue()...)
@@ -277,8 +277,8 @@ func (r *Resolver) installLocalRootReferral(
 	// them (GHSA-mqfw-f48p-2vc8):
 	//
 	//   - the NS TTL, which is how long the delegation itself may be held;
-	//   - the delegation's security evidence — the DS RRset's TTL when
-	//     signed, the denying NSEC's when not — exactly as
+	//   - the delegation's security evidence, the DS RRset's TTL when
+	//     signed, the denying NSEC's when not, exactly as
 	//     processDelegation bounds a referral learned off the wire, so a
 	//     withdrawn DS cannot be trusted for the NS set's longer life;
 	//   - the copy's own serving horizon, since nothing derived from it may
@@ -296,8 +296,8 @@ func (r *Resolver) installLocalRootReferral(
 	if until := snap.ValidUntil(); until.Before(deadline) {
 		deadline = until
 	}
-	// The store returns whatever is live under the key — this call's entry,
-	// or the one a racing walk published first — and the walk takes that
+	// The store returns whatever is live under the key, this call's entry,
+	// or the one a racing walk published first, and the walk takes that
 	// delegation whole. Servers, DS set and lease belong to one entry:
 	// pairing a winner's servers with this call's DS chain would validate
 	// one delegation's answers against another's keys, so there is no
@@ -319,7 +319,7 @@ func (r *Resolver) installLocalRootReferral(
 // localRootDSAnswer serves the parent-side DS question for a TLD from the
 // verified copy: the signed DS set, or the exact-owner NSEC NODATA proof
 // for an unsigned delegation. It returns nil when the copy holds no proof
-// of either — the caller falls back to the real roots rather than inventing
+// of either, the caller falls back to the real roots rather than inventing
 // a failure. The reply is built on the live request so the transaction ID
 // and flags survive, since this answer returns directly, without the
 // normalization the exchange path would apply.
@@ -356,7 +356,7 @@ func (r *Resolver) localRootDSAnswer(rs *resolveState, snap *localroot.Snapshot,
 
 // localRootDenial synthesizes the NXDOMAIN a root server would return for a
 // name under an absent TLD, from the copy's own signed proof, and marks the
-// validated-denial provenance exactly as the live validation path does — the
+// validated-denial provenance exactly as the live validation path does, the
 // RFC 8020 cut and RFC 8198 stores fill from it through their normal seams.
 func (r *Resolver) localRootDenial(
 	ctx context.Context,
@@ -386,7 +386,7 @@ func (r *Resolver) localRootDenial(
 	}
 	// The caller's evaluator gate already classified this exact proof as
 	// the NXDOMAIN being served, so the provenance carries the aggressive
-	// bit outright — an unclassifiable proof never reaches this builder.
+	// bit outright, an unclassifiable proof never reaches this builder.
 	resp.AuthenticatedData = true
 	middleware.MarkValidatedNegativeProofResponse(ctx, resp, middleware.ValidatedNegativeProof{
 		Subject:    qname,

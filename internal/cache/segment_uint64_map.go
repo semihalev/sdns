@@ -105,7 +105,7 @@ func (m *SegmentUInt64Map[V]) Set(key uint64, value V) {
 }
 
 // SetWithCap adds or updates a key-value pair and, when total occupancy
-// exceeds capacity, evicts up to two other entries from the same segment —
+// exceeds capacity, evicts up to two other entries from the same segment,
 // under the same write lock the insert already holds. This is the whole
 // eviction design: no extra lock, no evictor handoff, no bulk pass for
 // other writers to sleep behind. Every over-capacity insert pays a small
@@ -168,7 +168,7 @@ func (m *SegmentUInt64Map[V]) PutIfNotExistsWithCap(key uint64, value V, capacit
 }
 
 // collectRemainingToll finishes an over-capacity insert's eviction toll when
-// the writer's own segment couldn't cover it — it happens when entries are
+// the writer's own segment couldn't cover it. It happens when entries are
 // sparse relative to the segment count (small caches). Collect the remainder
 // from the following segments, one lock at a time and never nested, so two
 // writers can never hold each other's segment. Stop as soon as the map is

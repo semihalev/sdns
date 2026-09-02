@@ -8,7 +8,7 @@ import (
 var (
 	// Synthesised counts AAAA records produced from A records.
 	// Bumped once per client query that resulted in synthesis,
-	// not per individual record — the metric tracks how often
+	// not per individual record, the metric tracks how often
 	// DNS64 had to step in, not how many addresses were embedded.
 	Synthesised = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "dns64_synthesised_total",
@@ -24,7 +24,7 @@ var (
 		Help: "AAAA queries DNS64 left untouched, by reason",
 	}, []string{"reason"})
 
-	// Pre-resolved Passthrough handles — closed set; new reason
+	// Pre-resolved Passthrough handles, closed set; new reason
 	// strings introduced in dns64.go must be added here too.
 	passthroughInternal       = Passthrough.Register("internal")
 	passthroughNoRD           = Passthrough.Register("no_rd")

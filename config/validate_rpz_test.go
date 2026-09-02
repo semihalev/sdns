@@ -109,7 +109,7 @@ func TestValidateRPZ(t *testing.T) {
 		noSOA := rpzZoneFile(t, "bad.example.com.rpz.test. IN CNAME .\n")
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: noSOA}), "no SOA")
 
-		// A zone that parses but compiles nothing would filter nothing —
+		// A zone that parses but compiles nothing would filter nothing,
 		// which is never what an operator enabling RPZ meant.
 		empty := rpzZoneFile(t, "rpz.test. IN SOA ns. admin. 1 3600 900 604800 300\n")
 		wantRPZProblem(t, rpzConfig(RPZZone{Name: "feed", File: empty}), "compiled no rules")
@@ -173,7 +173,7 @@ func TestValidateRPZSourceZones(t *testing.T) {
 	t.Run("a file zone may name its apex, and it must be an FQDN", func(t *testing.T) {
 		// The shape feeds are actually distributed in: the SOA is "@"
 		// and every rule hangs off it, so the file alone cannot say what
-		// zone it is — the origin does.
+		// zone it is. The origin does.
 		relative := rpzZoneFile(t, `
 $TTL 30
 @ SOA rpz.vendor.example. hostmaster.vendor.example. 1 300 1800 604800 30

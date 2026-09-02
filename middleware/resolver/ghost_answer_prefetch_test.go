@@ -13,7 +13,7 @@ import (
 	cachemw "github.com/semihalev/sdns/middleware/cache"
 )
 
-// chainQueryer runs a request through the given handlers — the
+// chainQueryer runs a request through the given handlers, the
 // minimal stand-in for the sub-pipeline Queryer that sdns.go wiring
 // installs in production.
 type chainQueryer struct{ handlers []middleware.Handler }
@@ -36,7 +36,7 @@ func (q *chainQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error
 //
 //   - Phase 1b (answer-cache ghost): an answer with a long TTL (600s)
 //     obtained through a short delegation lease (1s) must stop being
-//     served when the lease expires — the entry's cutUntil, fed
+//     served when the lease expires, the entry's cutUntil, fed
 //     through the Chain.Meta seam, overrides both the answer TTL and
 //     the 5s MinTTL floor.
 //   - Phase 2 (late prefetch overwrite): a prefetch refresh that
@@ -63,7 +63,7 @@ func TestGhostDomain_AnswerCacheAndPrefetch_FullPipeline(t *testing.T) {
 		return m
 	}
 
-	// ghost. — the former child. Keeps answering with a LONG TTL. The
+	// ghost., the former child. Keeps answering with a LONG TTL. The
 	// second-and-later A query is the prefetch refresh: signal it and
 	// block until the test releases it (bounded well under the 2s
 	// exchange timeout so the refresh completes rather than erroring).
@@ -89,7 +89,7 @@ func TestGhostDomain_AnswerCacheAndPrefetch_FullPipeline(t *testing.T) {
 	})
 	defer stopGhost()
 
-	// root — delegates ghost. with a 1s lease until the withdrawal
+	// root, delegates ghost. with a 1s lease until the withdrawal
 	// flag flips, then answers NXDOMAIN for everything under it.
 	var withdrawn atomic.Bool
 	rootAddr, stopRoot := startMockAuth(t, &ignore, func(q dns.Question) *dns.Msg {
@@ -190,7 +190,7 @@ func TestGhostDomain_AnswerCacheAndPrefetch_FullPipeline(t *testing.T) {
 	time.Sleep(1300 * time.Millisecond)
 
 	// 4. Phase 1b: the 600s answer must NOT be served past its 1s cut
-	// (without cutUntil this is a cache hit — TTL and the 5s MinTTL
+	// (without cutUntil this is a cache hit, TTL and the 5s MinTTL
 	// floor both leave the entry valid). The miss re-resolves via the
 	// parent and caches the withdrawal NXDOMAIN.
 	if resp := ask("post-withdrawal"); resp.Rcode != dns.RcodeNameError {
@@ -199,7 +199,7 @@ func TestGhostDomain_AnswerCacheAndPrefetch_FullPipeline(t *testing.T) {
 	}
 
 	// 5. Phase 2: release the stale refresh. Its positive answer must
-	// be dropped by the pointer-CAS write-back — the entry it claimed
+	// be dropped by the pointer-CAS write-back, the entry it claimed
 	// was replaced by the NXDOMAIN.
 	close(releaseRefresh)
 

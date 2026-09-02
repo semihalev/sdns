@@ -97,7 +97,7 @@ func setup() error {
 
 func runServer(cmd *cobra.Command, args []string) error {
 	// The flags parsed, so anything that fails from here is a problem with
-	// the configuration or the server, not with how the command was called —
+	// the configuration or the server, not with how the command was called,
 	// and the flag list is no help. Set here rather than on the command, so
 	// a genuine usage error still prints it.
 	cmd.SilenceUsage = true

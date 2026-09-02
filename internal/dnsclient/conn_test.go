@@ -14,7 +14,7 @@ import (
 // readN lets a test report fewer bytes than it copied into the caller's
 // buffer, simulating a pooled buffer whose tail still holds stale data.
 type fakePacketConn struct {
-	net.PacketConn // nil — only the promoted method set is needed for the type assertion
+	net.PacketConn // nil, only the promoted method set is needed for the type assertion
 	readData       []byte
 	readN          int
 }
@@ -54,7 +54,7 @@ func TestReadMsg_UnpacksOnlyBytesRead(t *testing.T) {
 		t.Fatalf("pack: %v", err)
 	}
 
-	// The datagram is three bytes short of the full message — those
+	// The datagram is three bytes short of the full message, those
 	// bytes land inside the TXT rdata. With the fix, only full[:n] is
 	// unpacked and the truncated record is rejected. Without it, the
 	// trailing bytes (still present in the buffer) would be parsed as
@@ -101,7 +101,7 @@ func TestExchange_UDP_SkipsMismatchedID(t *testing.T) {
 	stray := new(dns.Msg)
 	stray.SetQuestion("example.com.", dns.TypeA)
 	stray.Response = true
-	stray.Id = 0x9999 // mismatched — a reply to some earlier query
+	stray.Id = 0x9999 // mismatched, a reply to some earlier query
 	strayWire, err := stray.Pack()
 	if err != nil {
 		t.Fatalf("pack stray: %v", err)
@@ -158,7 +158,7 @@ func TestQuestionMatchesUsesDNSASCIICaseFolding(t *testing.T) {
 
 // fakeStreamConn is a net.Conn (not a net.PacketConn, so (*Conn).ReadMsg
 // takes its stream branch) that replays a fixed byte script across Reads
-// and then reports EOF — letting a test deliver a length prefix followed
+// and then reports EOF, letting a test deliver a length prefix followed
 // by a short body.
 type fakeStreamConn struct {
 	net.Conn

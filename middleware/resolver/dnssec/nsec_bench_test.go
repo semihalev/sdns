@@ -7,7 +7,7 @@ import (
 )
 
 // BenchmarkNSECCovers exercises the canonical-order comparisons every NSEC
-// coverage decision makes — three per candidate record, for every record of
+// coverage decision makes, three per candidate record, for every record of
 // every aggressive-cache probe.
 func BenchmarkNSECCovers(b *testing.B) {
 	b.ReportAllocs()

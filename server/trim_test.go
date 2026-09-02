@@ -7,7 +7,7 @@ import (
 
 // The trim gate fires on a genuinely idle window, not on an instant. An
 // instantaneous Quiesced() is regularly true between two queries of
-// steady light traffic — sampling it three times proves nothing. The
+// steady light traffic, sampling it three times proves nothing. The
 // admission counters are a history: a window in which they did not move
 // carried no traffic at all.
 func TestTrimGateNeedsARealIdleWindow(t *testing.T) {
@@ -54,7 +54,7 @@ func TestTrimGateNeedsARealIdleWindow(t *testing.T) {
 		const admitted = 1000
 		// The caches are empty: the gate fires, the caller finds nothing
 		// to drop and never commits. A burst arrives, the server idles
-		// again — and the trim must be available immediately, not ten
+		// again, and the trim must be available immediately, not ten
 		// minutes after a firing that did nothing.
 		fired := 0
 		for sample := 0; sample < 10; sample++ {

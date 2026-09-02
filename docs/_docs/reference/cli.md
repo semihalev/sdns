@@ -34,7 +34,7 @@ sdns -t -c /etc/sdns.conf
 ```
 
 Exit code `0` if the file is valid, `1` if it is not. Every problem found is
-reported, not just the first — the gate is meant to be run once and fixed once,
+reported, not just the first. The gate is meant to be run once and fixed once,
 rather than run in a loop.
 
 What it checks: addresses parse; ports resolve through the same lookup a dial
@@ -56,7 +56,7 @@ an outage.
 
 Both default off, and the shipped systemd unit sets both to `false` explicitly.
 Each is parsed as a boolean, so `1`, `t` and `TRUE` work as well as `true`, and
-each is read once at startup — changing either means a restart.
+each is read once at startup, changing either means a restart.
 
 `bearertoken` does **not** cover the pprof routes. What each switch exposes, how
 to read the HINFO output, and why that matters are on the
@@ -71,7 +71,7 @@ directory and uses it:
 ./sdns
 ```
 
-The generated file documents every setting in place. Read it once — it is the
+The generated file documents every setting in place. Read it once. It is the
 authoritative description of the version you are running.
 
 ## Schema version
@@ -83,6 +83,6 @@ A file whose version does not match produces a warning and is then loaded
 exactly as written. sdns does **not** rewrite it and does **not** keep a
 backup.
 
-Upgrading across a schema change is therefore manual: generate a fresh file —
-pointing `-t` at a path that does not exist writes one — carry your settings
+Upgrading across a schema change is therefore manual: generate a fresh file,
+pointing `-t` at a path that does not exist writes one, carry your settings
 across, and use `sdns -t` to catch keys that have gone away.

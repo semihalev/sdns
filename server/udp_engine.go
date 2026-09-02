@@ -23,7 +23,7 @@ import (
 //     demand and parked in an explicit idle cache between requests, so
 //     resident memory follows traffic while the cap bounds it. Cap
 //     reached ⇒ the packet is consumed into a reserved discard buffer
-//     and dropped, counted — the reader never blocks for a slab and
+//     and dropped, counted, the reader never blocks for a slab and
 //     never stalls the socket.
 //   - Workers are fixed for the server's lifetime and serve from the ready
 //     queue, so their stacks stay grown across requests instead of paying
@@ -33,7 +33,7 @@ import (
 //   - Header-level accept runs on raw bytes before any decode, with the
 //     library server's exact semantics: unparseable or QR-set packets are
 //     silently ignored (any reply is amplification), foreign opcodes get
-//     NOTIMP, count violations and unpack failures get FORMERR — all
+//     NOTIMP, count violations and unpack failures get FORMERR, all
 //     built in place, allocation-free.
 //
 // The request *dns.Msg is still decoded per packet here; it leaves in Z1
@@ -53,7 +53,7 @@ type udpJob struct {
 	engine *udpEngine
 	pc     *net.UDPConn
 
-	// slabShard is where this job's slab goes back when released — the
+	// slabShard is where this job's slab goes back when released, the
 	// shard of the reader that took it, so slab traffic spreads with the
 	// socket fan-out instead of convoying on one lock.
 	slabShard uint8
@@ -71,8 +71,8 @@ type udpJob struct {
 	pktinfoLen int
 
 	// Cached classic views handed to the middleware chain. RemoteAddr's
-	// IP always points into ipScratch; observers must copy, never retain
-	// — the slab is reused for the next request.
+	// IP always points into ipScratch; observers must copy, never retain.
+	// The slab is reused for the next request.
 	remote    net.UDPAddr
 	ipScratch [16]byte
 
@@ -90,7 +90,7 @@ type udpJob struct {
 	// worker's burst, so a job stays owned from read to send and nothing
 	// on the reply path is copied twice or handed between goroutines.
 	// rawSA holds the client's kernel sockaddr verbatim, so a batched
-	// reply needs no address re-encoding — scoped IPv6 sources included.
+	// reply needs no address re-encoding, scoped IPv6 sources included.
 	rawSA    [28]byte //nolint:unused // Linux batch path (udp_batch_linux.go)
 	rawSALen uint32   //nolint:unused // Linux batch path
 	txLen    int
@@ -133,15 +133,15 @@ func (j *udpJob) setRemote(ap netip.AddrPort) {
 	j.remote.Zone = addr.Zone()
 }
 
-// middleware.Transport — the transport half. The middleware chain's base
+// middleware.Transport, the transport half. The middleware chain's base
 // writer wraps this and derives proto/remote identity from RemoteAddr.
 
 func (j *udpJob) LocalAddr() net.Addr  { return j.pc.LocalAddr() }
 func (j *udpJob) RemoteAddr() net.Addr { return &j.remote }
 
 // Write stages the reply in the job's own TX buffer and leaves the send
-// to the worker's burst. Bytes that already live there — the wire path
-// builds its body in the lease this buffer backs — are staged by their
+// to the worker's burst. Bytes that already live there, the wire path
+// builds its body in the lease this buffer backs, are staged by their
 // length alone; anything else is copied in, because a caller's buffer
 // (the packer's pooled scratch, most of all) is only valid until it
 // returns.
@@ -205,8 +205,8 @@ func (j *udpJob) WriteMsg(m *dns.Msg) error {
 
 func (j *udpJob) Close() error { return nil }
 
-// FlushStaged sends the worker's staged burst — the replies of requests
-// served before this one — so they never wait behind this request's slow
+// FlushStaged sends the worker's staged burst, the replies of requests
+// served before this one, so they never wait behind this request's slow
 // path. Runs on the worker goroutine that owns the burst; the overflow
 // path has no burst and nothing staged.
 func (j *udpJob) FlushStaged() {
@@ -222,7 +222,7 @@ func (j *udpJob) StrictSlots() (*middleware.Request, *middleware.Chain, *jobCarr
 
 // LeaseWire hands out the job's TX buffer for the response-body lease: the
 // reply is born where the send happens. The lease lives until the job
-// releases — after the middleware unwind — satisfying the post-write
+// releases, after the middleware unwind, satisfying the post-write
 // retention contract.
 func (j *udpJob) LeaseWire(capacity int) []byte {
 	if capacity > len(j.tx) {
@@ -245,20 +245,20 @@ type udpEngine struct {
 
 	// inFlight counts the slabs between the ready queue and their
 	// release: queued, being served, or staged for a send. Slabs parked
-	// in a reader are excluded — the readers hold one each by design, so
+	// in a reader are excluded, the readers hold one each by design, so
 	// counting them would mean an idle server never reads as settled.
 	// It is the quiescence barrier, deliberately separate from leased:
 	// admission and settlement answer different questions.
 	inFlight atomic.Int64
 
 	// leased is the admission authority: how many queries hold a slab
-	// right now, capped at slabCap. Nothing else bounds memory here —
+	// right now, capped at slabCap. Nothing else bounds memory here,
 	// not the cache, which is only where scrubbed slabs wait for reuse,
 	// and never the collector. A slab is held for the whole request, so
 	// a hit returns it in microseconds while a miss holds it for an
 	// upstream resolution; the cap is therefore sized for concurrency
 	// (the steady-state formula plus the plan's burst headroom), not for
-	// the steady state alone — a fixed steady-state ring was measured as
+	// the steady state alone, a fixed steady-state ring was measured as
 	// a hard ceiling of ring-size over resolution latency.
 	leased  atomic.Int64
 	slabCap int64
@@ -282,7 +282,7 @@ type udpEngine struct {
 	txConns   map[*net.UDPConn]syscall.RawConn
 	// txRetired flips once when sendmmsg proves permanently unusable
 	// (ENOSYS/EOPNOTSUPP); every send after that goes direct. The map
-	// above stays untouched — it is read without a lock.
+	// above stays untouched. It is read without a lock.
 	txRetired atomic.Bool //nolint:unused // Linux batch path (udp_batch_linux.go)
 }
 
@@ -336,7 +336,7 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 	// The send handles are resolved here, before a single goroutine
 	// exists, so nothing ever writes this map while a worker reads it. A
 	// socket that will not surrender its descriptor takes the whole
-	// engine down the portable path — mixed modes would split the job
+	// engine down the portable path, mixed modes would split the job
 	// ring's assumptions.
 	for _, pc := range pcs {
 		rc, err := pc.SyscallConn()
@@ -347,8 +347,8 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 		e.txConns[pc] = rc
 	}
 	// Capacity equation: the admission cap is the
-	// steady-state formula — queue depth + one per busy worker + what
-	// each reader may arm — plus the plan's burst headroom, which is
+	// steady-state formula, queue depth + one per busy worker + what
+	// each reader may arm, plus the plan's burst headroom, which is
 	// what lets a miss-heavy burst run at the offered concurrency
 	// instead of at slab-count over resolution latency. Nothing is
 	// allocated here: slabs are made when a query needs one and parked
@@ -360,8 +360,8 @@ func newUDPEngine(handler rawHandler, pcs []*net.UDPConn, wildcard bool, workers
 }
 
 // take leases a slab to read into. A nil return is the shedding case:
-// the admission cap is reached, and the cap — not the cache, not the
-// collector — is the memory authority here.
+// the admission cap is reached, and the cap, not the cache, not the
+// collector, is the memory authority here.
 func (e *udpEngine) take(shard int) *udpJob {
 	// Add-then-rollback instead of a CAS loop: under wire-speed load
 	// sixteen readers spinning Load+CAS on one cache line burned more
@@ -385,8 +385,8 @@ func (e *udpEngine) start() {
 		e.workerG.Add(1)
 		go e.worker(i)
 	}
-	// Linux takes the batched recvmmsg/sendmmsg path; everywhere else —
-	// and on any socket that refuses its raw descriptor — the portable
+	// Linux takes the batched recvmmsg/sendmmsg path; everywhere else,
+	// and on any socket that refuses its raw descriptor, the portable
 	// single-datagram reader serves.
 	if e.startBatched() {
 		return
@@ -441,7 +441,7 @@ func (e *udpEngine) reader(idx int, pc *net.UDPConn) {
 		j := e.take(idx)
 		if j == nil {
 			// Ring empty and the stretch at its bound: consume and shed.
-			// The reader never blocks for a slab — a deep queue only
+			// The reader never blocks for a slab, a deep queue only
 			// converts drops to timeouts.
 			_, _, _, _, err := pc.ReadMsgUDPAddrPort(discard[:], nil)
 			if err != nil {
@@ -514,7 +514,7 @@ func (e *udpEngine) enqueue(j *udpJob) {
 
 // enqueueCounted is enqueue for a job whose in-flight count is already
 // carried: serveInline counts a job when it takes it into serving, and a
-// handoff keeps that count — decrementing across the hand-back would let
+// handoff keeps that count, decrementing across the hand-back would let
 // the counter dip through zero with the job still owned, and a quiescence
 // barrier could close over it.
 func (e *udpEngine) enqueueCounted(j *udpJob) {
@@ -522,7 +522,7 @@ func (e *udpEngine) enqueueCounted(j *udpJob) {
 
 	// The pool first, while it can keep up. A served hit is microseconds,
 	// so the queue is empty in the ordinary case and the reply rides the
-	// worker's send burst — which is what keeps the hit path free of both
+	// worker's send burst, which is what keeps the hit path free of both
 	// syscalls and allocations.
 	select {
 	case e.ready <- j:
@@ -530,7 +530,7 @@ func (e *udpEngine) enqueueCounted(j *udpJob) {
 	default:
 	}
 
-	// The queue is full, so the pool is not momentarily busy — it is
+	// The queue is full, so the pool is not momentarily busy. It is
 	// behind. A miss holds its worker for the whole recursion, hundreds
 	// of milliseconds, so a fixed pool caps concurrency at the number of
 	// workers: measured at exactly four queries in flight with four
@@ -539,7 +539,7 @@ func (e *udpEngine) enqueueCounted(j *udpJob) {
 	// gives one to the packets the pool cannot take, which restores the
 	// ceiling without giving up the burst on the path that has one.
 	//
-	// It is still bounded — by the ring, which this job came out of and
+	// It is still bounded, by the ring, which this job came out of and
 	// which is the memory bound the design already states.
 	udpOverflowServed.Inc()
 	e.overflowG.Add(1)
@@ -561,7 +561,7 @@ func (e *udpEngine) trimIdle() int { return e.cache.trim() }
 
 // quiesced reports whether every slab is back in the ring: nothing is
 // being read into, served, or staged for a send. It is the completion
-// barrier a measurement needs — the last reply reaching a client says
+// barrier a measurement needs, the last reply reaching a client says
 // nothing about the slab that produced it having been released.
 func (e *udpEngine) quiesced() bool { return e.inFlight.Load() == 0 }
 
@@ -574,14 +574,14 @@ func (j *udpJob) release(from uint8) {
 	// The staged reply dies with the request that produced it. txLen is
 	// what the worker reads to decide whether a served job has something
 	// to send, so a slab that kept a stale length would answer the next
-	// request the chain decided in silence — a malformed packet, an
-	// ignored opcode, a panic — with the previous client's bytes, to the
+	// request the chain decided in silence, a malformed packet, an
+	// ignored opcode, a panic, with the previous client's bytes, to the
 	// new client's address.
 	j.txLen = 0
 	j.replay = false
 	// Read before the slab leaves: once it is in the cache it belongs to
 	// whoever takes it next, and nothing here may touch it again. The
-	// lease is released after the slab is parked — count down earlier
+	// lease is released after the slab is parked, count down earlier
 	// and the cap could admit a query the cache cannot yet serve.
 	e := j.engine
 	e.cache.put(int(j.slabShard), j)
@@ -591,8 +591,8 @@ func (j *udpJob) release(from uint8) {
 	// Quiescence is what a measurement takes as the end of the request,
 	// and clearing a slab is inside the request, not after it: decrement
 	// any earlier and the window can close while this job is still being
-	// wiped. The count may briefly read high — the slab can be taken and
-	// queued again before this line runs — which is the safe direction
+	// wiped. The count may briefly read high. The slab can be taken and
+	// queued again before this line runs, which is the safe direction
 	// for a barrier: it delays quiescence, it never claims it early.
 	if from == udpJobQueued || from == udpJobServing {
 		e.inFlight.Add(-1)
@@ -602,7 +602,7 @@ func (j *udpJob) release(from uint8) {
 // worker serves ready jobs and sends their replies in bursts. A reply is
 // staged in its own job's TX buffer while the chain unwinds, and the
 // staged set leaves together the moment the worker would block for more
-// work — the same shape the stream path uses, for the same reason: under
+// work, the same shape the stream path uses, for the same reason: under
 // load the syscall is amortized across whatever arrived together, and
 // with nothing else to serve there is nothing to wait for, so a lone
 // query still leaves immediately.
@@ -658,7 +658,7 @@ func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 
 	header, ok := wire.ParseHeader(j.rx[:j.rxLen])
 	if !ok {
-		// Unparseable header: let the client hang — any reply can
+		// Unparseable header: let the client hang. Any reply can
 		// amplify. (Library-server parity.)
 		udpDropMalformed.Inc()
 		return
@@ -675,7 +675,7 @@ func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 
 	// The one ingress: the server decides eligibility, decode, and
 	// context. A false return means the accepted header hid an
-	// undecodable body — FORMERR, library parity. A replayed job
+	// undecodable body, FORMERR, library parity. A replayed job
 	// finishes on the replay contract: its entry-effect middlewares
 	// already fired on the inline pass.
 	if j.replay {
@@ -693,7 +693,7 @@ func (e *udpEngine) serve(j *udpJob, burst *udpTXBurst) {
 // carries the inline-only mark, and a query it cannot finish comes back
 // unserved for the ring. done reports whether the job reached a terminal
 // here; false hands ownership back to the caller with the job returned to
-// the reading state, marked for replay, and its in-flight count carried —
+// the reading state, marked for replay, and its in-flight count carried,
 // the caller continues with enqueueCounted.
 //
 //nolint:unused // Linux batch path (udp_batch_linux.go)
@@ -715,7 +715,7 @@ func (e *udpEngine) serveInline(j *udpJob, burst *udpTXBurst) (done bool) {
 			// A staged reply is terminal even when a handler also marked
 			// handoff: these bytes answer this query, and a replay after
 			// them could only resolve a question the client already has
-			// an answer to — or transmit a stale reply if the replay
+			// an answer to, or transmit a stale reply if the replay
 			// declined to write.
 			done = true
 			udpInlineServed.Inc()
@@ -776,8 +776,8 @@ func acceptHeader(h wire.Header) acceptVerdict {
 	return acceptOK
 }
 
-// rejectInPlace writes the library-shaped rejection — a bare header with
-// the request ID and opcode echoed, QR set, sections zeroed — without
+// rejectInPlace writes the library-shaped rejection, a bare header with
+// the request ID and opcode echoed, QR set, sections zeroed, without
 // touching the allocator.
 func (j *udpJob) rejectInPlace(verdict acceptVerdict) {
 	var reply [wire.HeaderLen]byte

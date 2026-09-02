@@ -188,7 +188,7 @@ func ParseRR(body []byte, off int) (RR, bool) {
 
 // AppendName appends the uncompressed wire form of the (possibly
 // compressed) name starting at off in src. ok is false on malformed
-// input, a name exceeding 255 octets, or insufficient dst capacity — the
+// input, a name exceeding 255 octets, or insufficient dst capacity, the
 // append never grows dst's backing array, so a caller composing into a
 // fixed lease can treat false as a clean refusal.
 func AppendName(dst, src []byte, off int) ([]byte, bool) {
@@ -270,7 +270,7 @@ const (
 // AppendOPTHeader writes an OPT record's fixed part and returns the buffer
 // along with the offset of its RDLENGTH field, which FinishOPT fills in
 // once the options are known. Encoding the record directly avoids building
-// a dns.OPT and its option objects only for the library to pack them —
+// a dns.OPT and its option objects only for the library to pack them,
 // and, for options carried as hex text, avoids encoding bytes to hex just
 // so the packer can decode them back.
 func AppendOPTHeader(dst []byte, udpSize uint16, do bool) ([]byte, int) {
@@ -288,8 +288,8 @@ func AppendOPTHeader(dst []byte, udpSize uint16, do bool) ([]byte, int) {
 
 // AppendOption writes one EDNS0 option in wire form.
 //
-// Options are written as the bytes the wire carries. Several of them —
-// NSID and the cookies among them — are held in text form by the library's
+// Options are written as the bytes the wire carries. Several of them,
+// NSID and the cookies among them, are held in text form by the library's
 // option types and hex-decoded during packing, so producing that text only
 // to have it decoded back is pure waste on a hot path.
 func AppendOption(dst []byte, code uint16, data []byte) []byte {
@@ -309,8 +309,8 @@ func AppendOptionString(dst []byte, code uint16, data string) []byte {
 // optCodeEDE is the RFC 8914 Extended DNS Error option code.
 const optCodeEDE = 15
 
-// AppendOptionEDE writes an RFC 8914 Extended DNS Error option — the
-// two-byte info code followed by the extra text — without materializing a
+// AppendOptionEDE writes an RFC 8914 Extended DNS Error option, the
+// two-byte info code followed by the extra text, without materializing a
 // payload buffer or a library option object.
 func AppendOptionEDE(dst []byte, infoCode uint16, text string) []byte {
 	dst = binary.BigEndian.AppendUint16(dst, optCodeEDE)

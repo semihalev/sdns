@@ -17,7 +17,7 @@ binddoq = ":853"      # DNS over QUIC
 
 `bind` opens both UDP and TCP. A bare `":53"` means every address on both
 families; give an address to narrow it (`"192.0.2.10:53"`, `"[2001:db8::1]:53"`).
-Leaving a key unset means that listener is not started — the encrypted
+Leaving a key unset means that listener is not started, the encrypted
 transports are all unset by default.
 
 `bindtls` and `binddoq` can share port 853 because one is TCP and the other UDP.
@@ -127,6 +127,6 @@ leave them unset unless a measurement on your own hardware says otherwise:
 ```
 
 `memorytrim` runs one synchronous garbage collection over the whole process
-after several quiet minutes. It is meant for memory-constrained devices —
-containers on routers, small VPSes — where returning a traffic burst's memory
+after several quiet minutes. It is meant for memory-constrained devices,
+containers on routers, small VPSes, where returning a traffic burst's memory
 matters more than the pause. On a busy server it is the wrong trade.

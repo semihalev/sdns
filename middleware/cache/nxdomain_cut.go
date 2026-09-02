@@ -79,7 +79,7 @@ type nxDomainCutCache struct {
 
 	entries map[nxDomainCutID]*nxDomainCutEntry
 	// byHash is the wire lookup's accelerator: canonical-hash → entry,
-	// last write wins. The string map stays the truth — a hash collision
+	// last write wins. The string map stays the truth, a hash collision
 	// fails the fold verification at lookup and simply declines to the
 	// Msg path.
 	byHash map[uint64]*nxDomainCutEntry
@@ -240,7 +240,7 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 	// The wire templates are retained alongside the decoded proof, so
 	// they are bytes this entry costs. Counting only the proof let a
 	// signed zone hold roughly three bodies per entry against a budget
-	// that believed it held one — live heap profiles showed the cut
+	// that believed it held one, live heap profiles showed the cut
 	// cache among the largest resident owners while its accounting said
 	// it was well inside its bound. The stripped body only counts when
 	// it is its own buffer; for unsigned proofs it aliases the full one.

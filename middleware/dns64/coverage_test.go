@@ -64,7 +64,7 @@ func TestCompileConfig_BadEntriesSkipped(t *testing.T) {
 		Prefixes: []string{
 			"not-a-cidr",    // unparseable → skip
 			"2001:db8::/49", // wrong length → skip
-			"64:ff9b::/96",  // good — picked
+			"64:ff9b::/96",  // good, picked
 			"2001:db8::/96", // ignored (first valid wins)
 		},
 		ClientNetworks:   []string{"bad-cidr", "10.0.0.0/8"},
@@ -135,7 +135,7 @@ func TestCompileConfig_NoUsablePrefixFallsBackToWellKnown(t *testing.T) {
 }
 
 // TestCompileConfig_DisabledReturnsNil pins that explicit
-// enabled=false still bypasses the §5.2 default — operators have
+// enabled=false still bypasses the §5.2 default, operators have
 // the final word on whether DNS64 runs.
 func TestCompileConfig_DisabledReturnsNil(t *testing.T) {
 	cfg := &config.Config{DNS64: config.DNS64Config{Enabled: false}}
@@ -285,7 +285,7 @@ func TestZoneExcluded(t *testing.T) {
 }
 
 // TestWriteMsg_Truncated_PassThrough pins the truncated-response
-// short-circuit branch — DNS64 must never rewrite a TC=1 reply
+// short-circuit branch, DNS64 must never rewrite a TC=1 reply
 // because the client will retry over TCP.
 func TestWriteMsg_Truncated_PassThrough(t *testing.T) {
 	d := New(baseConfig())
@@ -303,8 +303,8 @@ func TestWriteMsg_Truncated_PassThrough(t *testing.T) {
 
 // TestWriteMsg_ServFail_AResponseIsBasis covers RFC 6147 §5.1.6:
 // when the AAAA was SERVFAIL and the A lookup yielded a real
-// (empty) NOERROR answer, the A response — not the original
-// SERVFAIL — is the basis for the client reply. The client
+// (empty) NOERROR answer, the A response, not the original
+// SERVFAIL, is the basis for the client reply. The client
 // therefore sees NOERROR-NODATA addressed to its AAAA question.
 func TestWriteMsg_ServFail_AResponseIsBasis(t *testing.T) {
 	d := New(baseConfig())
@@ -346,8 +346,8 @@ func TestWriteMsg_ServFail_AResponseIsBasis(t *testing.T) {
 }
 
 // TestSynthesise_QueryerNotWired pins the early-out when the
-// Queryer is nil. Production never reaches this branch — Setup
-// always wires before publishing the pipeline — but the guard
+// Queryer is nil. Production never reaches this branch, Setup
+// always wires before publishing the pipeline, but the guard
 // keeps tests from segfaulting and the metric label set documented.
 func TestSynthesise_QueryerNotWired(t *testing.T) {
 	d := New(baseConfig())

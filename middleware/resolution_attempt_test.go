@@ -293,7 +293,7 @@ func TestEnsureResolutionAttemptGuardForeignContextFallsBack(t *testing.T) {
 
 // TestResolutionAttemptGuardShadowingWinsOverPin pins the anchor precedence:
 // a derived value node must shadow the request's pinned guard for its
-// subtree, exactly as it did when every anchor was a value node — otherwise
+// subtree, exactly as it did when every anchor was a value node, otherwise
 // custom or forked flows would account retries against the wrong guard.
 func TestResolutionAttemptGuardShadowingWinsOverPin(t *testing.T) {
 	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
@@ -325,8 +325,8 @@ func TestResolutionAttemptGuardShadowingWinsOverPin(t *testing.T) {
 // TestGuardOverrideStaysOnItsSubtree pins the P1 review finding: overriding
 // a value- or fork-anchored guard while the shared carrier has no guard pin
 // must scope the override to the target subtree. Pinning it instead hands
-// the override to the base and sibling contexts — RFC 9520 attempt
-// accounting split across scopes — while the target keeps its old guard.
+// the override to the base and sibling contexts, RFC 9520 attempt
+// accounting split across scopes, while the target keeps its old guard.
 func TestGuardOverrideStaysOnItsSubtree(t *testing.T) {
 	lazy := contextutil.WithLazyTimeout(context.Background(), time.Minute)
 	defer lazy.Cancel()

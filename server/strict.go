@@ -12,7 +12,7 @@ import (
 )
 
 // The strict path: eligible packets enter the chain as a wire-born
-// middleware.Request on the job carrier — no decoded message, no
+// middleware.Request on the job carrier, no decoded message, no
 // per-request context allocation. Eligibility (Request.ParseWire) is
 // conservative: exactly one question over an uncompressed
 // name, empty answer/authority, at most one well-formed root OPT, plain
@@ -22,7 +22,7 @@ import (
 // jobCarrier is the job-owned contextutil.Carrier: fixed pin slots and a
 // provider hook behind a cheap mutex (a job serves on one goroutine; the
 // lock is uncontended and exists for the interface's safety contract),
-// no Done channel — cancellation is not observable on a path that never
+// no Done channel, cancellation is not observable on a path that never
 // blocks, and the composite-miss transition detaches to a real context
 // before anything can.
 type jobCarrier struct {
@@ -150,7 +150,7 @@ func (c *jobCarrier) TrySetProvider(p contextutil.ValueProvider) bool {
 
 // rawHandler is the engines' one ingress contract: raw bytes in;
 // eligibility, decode, and context are the server's business. A false
-// return means the payload was undecodable — the engine answers with its
+// return means the payload was undecodable. The engine answers with its
 // in-place wire FORMERR, keeping the rejection in job storage.
 type rawHandler interface {
 	ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool
@@ -159,7 +159,7 @@ type rawHandler interface {
 // inlineRawHandler is the optional fast-path contract: a handler that can
 // run a query on the transport reader without blocking, handing off what
 // needs a worker. Engines type-assert it once at construction and consult
-// InlineReady — a handler whose pipeline carries no middleware.InlineBarrier
+// InlineReady, a handler whose pipeline carries no middleware.InlineBarrier
 // must not serve inline, or the reader would block in the resolver. A
 // handler without the interface (test stubs) simply keeps every query on
 // the ring.
@@ -179,7 +179,7 @@ type strictSlots interface {
 
 // The owned transports must satisfy it. The match is structural, so a
 // signature change would otherwise drop them onto the decoding path in
-// silence — no compile error, no test failure until an allocation gate
+// silence, no compile error, no test failure until an allocation gate
 // notices, which is how it was found the first time.
 var (
 	_ strictSlots = (*udpJob)(nil)
@@ -187,8 +187,8 @@ var (
 )
 
 // ServeRaw is the single raw-transport ingress. An eligible packet on a
-// job transport enters the chain as a wire-born request on the job carrier
-// — no decode, no context allocation; anything else decodes here and takes
+// job transport enters the chain as a wire-born request on the job carrier,
+// no decode, no context allocation; anything else decodes here and takes
 // the ordinary lazy-deadline entry with the direct-pack capability (the
 // owned transports are raw byte sinks).
 func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool {
@@ -209,7 +209,7 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 		// Accepted header, undecodable body: engine-side FORMERR parity.
 		return false
 	}
-	// The decoded fallback is the slow lane by definition — the same
+	// The decoded fallback is the slow lane by definition, the same
 	// reason a strict materialization flushes applies from the first
 	// instruction here: replies already staged on this transport must
 	// not wait out this query's resolution.
@@ -221,8 +221,8 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 }
 
 // ServeRawInline is ServeRaw for a transport reader that must not block:
-// the full chain runs with the inline-only mark, and the cache — the one
-// handler whose downstream can block on the network — declines a query it
+// the full chain runs with the inline-only mark, and the cache, the one
+// handler whose downstream can block on the network, declines a query it
 // cannot answer from its wire ladder, unwritten. handled reports whether
 // the query reached a terminal here; a false return with handoff true
 // means the caller owns an admitted, guarded, unanswered job it must
@@ -298,7 +298,7 @@ func (s *Server) ServeRawReplay(w middleware.Transport, raw []byte, readTime tim
 }
 
 // serveWire runs one wire-born request through the pipeline on the job
-// carrier. No deadline context, no decoded message — the composite-miss
+// carrier. No deadline context, no decoded message, the composite-miss
 // transition inside the chain builds both when, and only when, they are
 // needed.
 func (s *Server) serveWire(

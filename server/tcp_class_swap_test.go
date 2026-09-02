@@ -15,7 +15,7 @@ import (
 
 // scriptedConn replays a preloaded byte stream to the engine and keeps
 // what the engine writes back. Reads come from memory, so a pipelined
-// burst is guaranteed to reach the fill buffer in one read — which is
+// burst is guaranteed to reach the fill buffer in one read, which is
 // exactly the state the class swap is about, and which a real socket
 // would only usually produce.
 type scriptedConn struct {
@@ -111,14 +111,14 @@ func plainQuery(t *testing.T, name string) []byte {
 // TestTCPLargeSlabReturnsWhenTheBurstShrinks pins the class swap in the
 // direction that keeps the server up.
 //
-// The large ring is deliberately shallow — large frames are rare, and
+// The large ring is deliberately shallow, large frames are rare, and
 // sizing the ring for them would make the resident set about the rarest
 // case. That only holds if a large slab is given back as soon as the
 // frames stop being large. A connection that met one 2-4KB frame and then
 // went back to ordinary queries used to hold its large slab for the rest
 // of the burst, so defaultTCPLargeJobs busy connections owned the class
 // outright and the next client to announce a large frame waited its whole
-// budget and was dropped — with a ring nobody needed.
+// budget and was dropped, with a ring nobody needed.
 func TestTCPLargeSlabReturnsWhenTheBurstShrinks(t *testing.T) {
 	hold := make(chan struct{})
 	var releaseOnce sync.Once

@@ -17,7 +17,7 @@ import (
 // The batch reader's inline path, end to end over real sockets: hits
 // finish on the reader and ride the cycle's transmit burst, handoffs
 // travel the ring and finish on a worker via ServeRawReplay, a panicking
-// inline serve is dropped without killing the reader — and through all of
+// inline serve is dropped without killing the reader, and through all of
 // it the in-flight accounting balances, which the quiescence barrier at
 // the end proves. The pre-fix engine failed exactly there: every inline
 // terminal decremented a count enqueue never incremented, so Quiesced()

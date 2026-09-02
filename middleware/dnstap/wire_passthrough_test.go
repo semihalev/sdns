@@ -55,7 +55,7 @@ func tapWrapped(next middleware.ResponseWriter, d *Dnstap) *responseWriter {
 }
 
 // TestDnstapPassesTheBytePathThrough pins the whole point of the pair: the
-// tap observes, the bytes pass unchanged, and the tap's copy is its own —
+// tap observes, the bytes pass unchanged, and the tap's copy is its own,
 // the body it saw is borrowed pooled storage that will be overwritten by the
 // next response.
 func TestDnstapPassesTheBytePathThrough(t *testing.T) {
@@ -108,7 +108,7 @@ func TestDnstapPassesTheBytePathThrough(t *testing.T) {
 // TestDnstapTapsOncePerServe pins the fallback contract review demonstrated
 // the violation of: WriteWire's side effect commits only when the chain
 // actually served the bytes. On ErrWireFallback the cache retakes the Msg
-// path and WriteMsg taps that serve — a tap enqueued before the downstream
+// path and WriteMsg taps that serve, a tap enqueued before the downstream
 // answered would log the same response twice. A terminal transport error is
 // the opposite case: bytes left the process, and the tap records exactly
 // that.
@@ -148,7 +148,7 @@ func TestDnstapTapsOncePerServe(t *testing.T) {
 			t.Fatalf("WriteWire = %v, want the transport's error", err)
 		}
 		if got := len(d.messageQueue); got != 1 {
-			t.Fatalf("an errored serve was tapped %d times, want 1 — the "+
+			t.Fatalf("an errored serve was tapped %d times, want 1, the "+
 				"bytes left the process", got)
 		}
 	})

@@ -56,16 +56,16 @@ func (e *ResolutionAttemptLimitError) Error() string {
 func (e *ResolutionAttemptLimitError) Unwrap() error { return ErrResolutionAttemptLimit }
 
 // resolutionAttemptHash folds one RFC 9520 tuple to a 64-bit key. The old
-// key held the tuple's strings — five words plus two retained strings per
+// key held the tuple's strings, five words plus two retained strings per
 // slot, in a store allocated for every request tree that resolves anything.
 // The guard is request-tree-local, so a crafted hash collision can only
 // merge two of the attacker's own tuples and trip their own limit early;
 // no cross-request state exists to poison. That locality is the entire
-// security argument — the hash is seedless, so collisions are offline
+// security argument. The hash is seedless, so collisions are offline
 // precomputable, and a refactor that ever shared one guard across
 // different clients' request trees would turn them into cross-client
-// attempt exhaustion. The name hashes in its dns.CanonicalName spelling —
-// ASCII A-Z folded, rooted — without building it, and every component is
+// attempt exhaustion. The name hashes in its dns.CanonicalName spelling,
+// ASCII A-Z folded, rooted, without building it, and every component is
 // length-framed so tuple boundaries cannot alias.
 func resolutionAttemptHash(q dns.Question, endpoint, transport string) uint64 {
 	var h xxhash.Digest
@@ -172,7 +172,7 @@ func (g *ResolutionAttemptGuard) Begin(q dns.Question, endpoint, transport strin
 }
 
 // BeginCanonical is Begin for a caller whose endpoint is already spelled the
-// way CanonicalResolutionEndpoint would spell it — the delegation path, where
+// way CanonicalResolutionEndpoint would spell it, the delegation path, where
 // the address was decoded from glue and its "IP:port" form was printed from
 // that value once, at construction. Normalizing it again parses the string
 // and prints an identical one back, per attempt.
@@ -317,12 +317,12 @@ var resolutionAttemptContextKey = &resolutionAttemptKeyType{}
 // WithResolutionAttemptGuard anchors guard to ctx. Anchoring is required for
 // detached work because its originating ResponseMeta can be reset and reused.
 // The request tree's first anchor lands in the deadline carrier's
-// request-lifetime pin — every internal sub-query then finds it without
+// request-lifetime pin, every internal sub-query then finds it without
 // deriving a context. Anchoring over any existing, different anchor always
 // derives an ordinary value node instead: the pin lives on the carrier the
 // whole tree shares, so pinning an override would hand the new guard to the
-// base and sibling contexts while the target subtree kept its nearer anchor
-// — the exact opposite of the caller's intent.
+// base and sibling contexts while the target subtree kept its nearer anchor,
+// the exact opposite of the caller's intent.
 func WithResolutionAttemptGuard(ctx context.Context, guard *ResolutionAttemptGuard) context.Context {
 	anchored := resolutionAttemptGuardAnchored(ctx)
 	if anchored == guard {

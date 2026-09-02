@@ -41,23 +41,23 @@ var resolver ipResolver = net.DefaultResolver
 // newDoHServer parses a DoH upstream URL, resolves the hostname (if
 // any) via the system resolver, and returns a server entry ready to
 // be added to Forwarder.servers. Hostname resolution happens once at
-// boot — there is no per-query DNS dependency. The resolved IPs are
+// boot. There is no per-query DNS dependency. The resolved IPs are
 // pinned into a custom DialContext on the returned http.Client so
 // Go's transport never re-resolves at connect time.
 //
-// dialTimeout bounds a single per-IP TCP dial — sourced from
+// dialTimeout bounds a single per-IP TCP dial, sourced from
 // cfg.Timeout so operators tune all upstream timeouts through one
 // knob. A blackholed pinned IP gets bypassed in dialTimeout
 // instead of consuming the entire requestTimeout, which keeps the
 // rotation effective even when a hostname resolves to mixed A/AAAA
 // on a host with broken v6.
 //
-// requestTimeout caps the full POST round-trip — sourced from
+// requestTimeout caps the full POST round-trip, sourced from
 // cfg.QueryTimeout. Zero on either disables that ceiling; production
 // callers should always pass non-zero values.
 //
 // TLS ServerName is set to the original hostname even when we dial
-// an IP literal — this preserves SNI and cert-chain validation.
+// an IP literal, this preserves SNI and cert-chain validation.
 //
 // Returns an error if the URL is malformed, the scheme is not https,
 // the URL has no host, or the hostname fails to resolve at boot
@@ -84,10 +84,10 @@ func newDoHServer(rawURL string, dialTimeout, requestTimeout time.Duration) (*se
 
 	var ips []net.IP
 	if ip := net.ParseIP(host); ip != nil {
-		// IP literal — no bootstrap needed.
+		// IP literal, no bootstrap needed.
 		ips = []net.IP{ip}
 	} else {
-		// Hostname — bootstrap via the system resolver. Short
+		// Hostname, bootstrap via the system resolver. Short
 		// timeout so a broken /etc/resolv.conf can't block startup
 		// for minutes.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -102,7 +102,7 @@ func newDoHServer(rawURL string, dialTimeout, requestTimeout time.Duration) (*se
 	}
 
 	// Snapshot the IPs into a fresh slice we own, then the custom
-	// DialContext below closes over it. We don't refresh — DoH
+	// DialContext below closes over it. We don't refresh, DoH
 	// provider IPs rarely move, and a refresh ticker is more
 	// complexity than the MVP warrants. If the IPs ever drift,
 	// restart picks them up.
@@ -150,7 +150,7 @@ func newDoHServer(rawURL string, dialTimeout, requestTimeout time.Duration) (*se
 			// ServerName is the original hostname so SNI is sent
 			// correctly and the cert is validated against the
 			// name the operator typed, not against the IP. For
-			// IP-literal URLs, host == ip.String() — the cert
+			// IP-literal URLs, host == ip.String(). The cert
 			// must have a matching SAN.
 			ServerName: host,
 			MinVersion: tls.VersionTLS12,

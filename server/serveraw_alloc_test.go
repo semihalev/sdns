@@ -16,7 +16,7 @@ import (
 //
 // The subprocess gate measures a whole process and can only bound what
 // traffic adds over ambient noise; this runs the same path in-process,
-// where AllocsPerRun sees every object. Both matter — the gate proves
+// where AllocsPerRun sees every object. Both matter, the gate proves
 // the shape survives real sockets and two GCs, this proves the number is
 // zero rather than small.
 //

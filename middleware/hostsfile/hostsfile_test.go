@@ -131,7 +131,7 @@ func TestServeDNS_Basic(t *testing.T) {
 // TestServeDNS_PreservesHeaderBits guards the manual response
 // construction that bypasses miekg/dns SetReply. CheckingDisabled
 // and RecursionDesired are wire-visible header bits, and CD in
-// particular is used as part of the cache key elsewhere in sdns —
+// particular is used as part of the cache key elsewhere in sdns,
 // a clean-bit regression would silently poison cache lookups.
 func TestServeDNS_PreservesHeaderBits(t *testing.T) {
 	content := `127.0.0.1 localhost`

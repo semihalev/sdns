@@ -196,7 +196,7 @@ func TestParseRSAPublicKey_NonCanonical(t *testing.T) {
 // TestVerifyRSAWideExponent_NonCanonicalModulus reproduces the Codex finding:
 // padding two leading zero bytes into the modulus leaves the value and the
 // key tag unchanged (an even byte count preserves the checksum), so it
-// survives candidate lookup — but the canonical-encoding check must reject it.
+// survives candidate lookup, but the canonical-encoding check must reject it.
 func TestVerifyRSAWideExponent_NonCanonicalModulus(t *testing.T) {
 	key := mustRR(t, mboxZSK7).(*dns.DNSKEY)
 	sig := mustRR(t, mboxSig7).(*dns.RRSIG)

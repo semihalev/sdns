@@ -5,12 +5,12 @@ import "github.com/miekg/dns"
 // acquireAttemptReq builds the per-server view of a lookup's immutable
 // leader request from the message pool: header by value, every section
 // re-appended into the shell's own backings, records shared by
-// pointer — except the OPT, which gets a private shell. PackBuffer
+// pointer, except the OPT, which gets a private shell. PackBuffer
 // writes the extended rcode into the OPT header on every pack (miekg
 // msg.go, "set extended rcode unconditionally"), so concurrent attempts
 // cannot share the OPT struct; its options CAN stay shared, because
-// packing only reads them and the one appender — the TCP leg's
-// keepalive — privatizes the whole OPT first (privatizeOPT). One small
+// packing only reads them and the one appender, the TCP leg's
+// keepalive, privatizes the whole OPT first (privatizeOPT). One small
 // allocation per attempt replaces the full deep copy that priced every
 // upstream fan-out at an OPT-and-options clone per server.
 func acquireAttemptReq(leader *dns.Msg) *dns.Msg {

@@ -23,8 +23,8 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 
 // CalculateCacheTTLAt is CalculateCacheTTL measured at now. Admission passes
 // the one instant it anchors the entry at, so the lifetime, the entry's
-// stored time and every decision taken against that lifetime — which
-// additional signatures it can carry — read the same clock: a lifetime
+// stored time and every decision taken against that lifetime, which
+// additional signatures it can carry, read the same clock: a lifetime
 // measured a moment earlier than the entry it bounds is that moment too
 // long, and a signature sharing the answer's own validity window fell short
 // of it by exactly that much.
@@ -131,7 +131,7 @@ func CalculateCacheTTLAt(msg *dns.Msg, respType ResponseType, now time.Time) tim
 	}
 
 	// The signature bound is taken per RRset, from its signatures that are
-	// still usable, and among those from the one that permits the least —
+	// still usable, and among those from the one that permits the least,
 	// a downstream validator picks its own signature to verify with. Folding
 	// every signature into one minimum let a lapsed sibling speak for an
 	// RRset another signature still covers, which is exactly the shape of a
@@ -172,7 +172,7 @@ func CalculateCacheTTLAt(msg *dns.Msg, respType ResponseType, now time.Time) tim
 	}
 
 	// RFC 2308 §5 makes the SOA-derived lifetime a ceiling: it says how long a
-	// resolver *may* cache the denial. A floor inverts that — a zone that
+	// resolver *may* cache the denial. A floor inverts that, a zone that
 	// publishes a one-second negative TTL means one second, and holding it for
 	// five is the resolver overriding the only party entitled to decide. Zero
 	// is a real answer here, and the caller declines to admit the entry.
@@ -234,7 +234,7 @@ func getTTL(rr dns.RR) time.Duration {
 // getRRSIGTTL returns the hard ceiling one signature places on the data it
 // covers. RFC 4035 §5.3.3 names three bounds and the answer is the smallest:
 // the RRSIG's own header TTL, its Original TTL field, and the time left before
-// it expires. The Original TTL is not decoration — it is what the signature
+// it expires. The Original TTL is not decoration. It is what the signature
 // was computed over, so a signer that publishes a large header TTL and a small
 // original one has authorised the small one, and reading only the header let a
 // denial whose signature said one second live for an hour.

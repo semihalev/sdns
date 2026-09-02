@@ -18,7 +18,7 @@ import (
 //
 // The byte path takes the entry's rate-limit permit before it knows
 // whether it can answer, and several things below that point hand the
-// request to the Msg body instead — a prefetch-due entry, a transport
+// request to the Msg body instead, a prefetch-due entry, a transport
 // without the wire lease, a body the capability cannot express, a lease
 // too small to commit. The Msg body checks the same limiter. At a limit
 // of one the second check finds the bucket empty and cancels a hit the
@@ -86,7 +86,7 @@ func TestWireDeclineDoesNotSpendTheLimiterTwice(t *testing.T) {
 // added to fix, one race narrower: the same question paid twice and the
 // second payment cancelled it.
 //
-// One question, one token — however many entry objects it passed through.
+// One question, one token, however many entry objects it passed through.
 func TestReplacedEntryStillCostsOneToken(t *testing.T) {
 	cfg := makeTestConfig()
 	cfg.RateLimit = 1

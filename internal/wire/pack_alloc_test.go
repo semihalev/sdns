@@ -25,7 +25,7 @@ func TestTryPackDoesNotAllocate(t *testing.T) {
 		msg.Compress = true
 
 		// The library side is measured on its own long-lived copy so the
-		// comparison is against Pack alone — folding a per-run Copy into it
+		// comparison is against Pack alone, folding a per-run Copy into it
 		// would inflate the number this is compared to.
 		libMsg := msg.Copy()
 		library := testing.AllocsPerRun(200, func() {
@@ -40,8 +40,8 @@ func TestTryPackDoesNotAllocate(t *testing.T) {
 			}
 		})
 
-		// Records that allocate while packing their own RDATA — a signature
-		// decoded from base64, service parameters, character strings — do so
+		// Records that allocate while packing their own RDATA, a signature
+		// decoded from base64, service parameters, character strings, do so
 		// on both paths; the comparison is not against zero for those. But
 		// the storage this pools must be gone, and for the plain shapes that
 		// dominate a resolver's traffic the whole pack must be free.
@@ -52,7 +52,7 @@ func TestTryPackDoesNotAllocate(t *testing.T) {
 	}
 	_ = sink
 
-	// The plain shapes — A, a CNAME chain, a referral with glue, NXDOMAIN —
+	// The plain shapes, A, a CNAME chain, a referral with glue, NXDOMAIN,
 	// must be exactly zero. The corpus entries after them carry records
 	// whose RDATA allocates on any path (a signature is decoded from
 	// base64), which the differential half above accounts for.
@@ -90,7 +90,7 @@ func TestPackCloneAllocatesOnlyTheClone(t *testing.T) {
 // TestPackCloneOversizedCostsOnePack pins that the size preflight keeps a
 // too-large message off the custom path entirely: the cost must be one
 // library pack plus the clone, not a partial custom pack thrown away first.
-// Allocation-heavy RDATA is where a double pack would show — an SVCB's
+// Allocation-heavy RDATA is where a double pack would show, an SVCB's
 // parameters are built on every pack of every record.
 func TestPackCloneOversizedCostsOnePack(t *testing.T) {
 	msg := new(dns.Msg)
@@ -121,7 +121,7 @@ func TestPackCloneOversizedCostsOnePack(t *testing.T) {
 	})
 
 	// The fallback adds the exact-size clone, the shallow message copy and
-	// its Extra slice — a handful on top, never a second pack of every
+	// its Extra slice, a handful on top, never a second pack of every
 	// record's RDATA.
 	const fallbackOverhead = 4
 	if clone > library+fallbackOverhead {

@@ -98,7 +98,7 @@ func TestNameInZoneRequiresARealSeparator(t *testing.T) {
 
 // TestNameInZoneDoesNotAllocate keeps the check off the allocator. It runs
 // for every RRset of every signed response, and the old form compared against
-// a freshly built "."+zone — free on the stack for a short zone, a heap
+// a freshly built "."+zone, free on the stack for a short zone, a heap
 // allocation per call once the zone name reached the runtime's 32-octet
 // temporary buffer, which ordinary delegation names do.
 func TestNameInZoneDoesNotAllocate(t *testing.T) {

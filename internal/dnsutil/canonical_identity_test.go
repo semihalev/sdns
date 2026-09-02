@@ -9,8 +9,8 @@ import (
 )
 
 // TestSiblingIdentityIsTheWireName is the canonical-identity matrix for
-// sibling grouping. Two spellings of one wire name — escaped and plain,
-// rooted and unrooted, ASCII case — are one RRset, so a live signature
+// sibling grouping. Two spellings of one wire name, escaped and plain,
+// rooted and unrooted, ASCII case, are one RRset, so a live signature
 // under either covers an expired one under the other. A Kelvin sign is not a
 // k: the Unicode fold says so, the wire does not, and a live signature under
 // the one must not rescue an expired RRset under the other. Owner and signer

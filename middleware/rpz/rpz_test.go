@@ -174,7 +174,7 @@ func TestEnforceActions(t *testing.T) {
 	})
 
 	// The wildcard rule's answer carries the client's qname as owner,
-	// never the wildcard — the §5.2 owner rule, pinned.
+	// never the wildcard, the §5.2 owner rule, pinned.
 	t.Run("wildcard local data owner is the qname", func(t *testing.T) {
 		w, _ := serve(t, r, "deep.wild.example.com.", dns.TypeA, "udp", true)
 		answers := w.Msg().Answer
@@ -246,7 +246,7 @@ func TestReloadSwapsTheZone(t *testing.T) {
 		t.Fatal("fresh name matched before the reload")
 	}
 
-	// The push replaces the file; reload is driven directly — the watcher
+	// The push replaces the file; reload is driven directly, the watcher
 	// wiring is exercised, but waiting on fsnotify timing is a flake, not
 	// a test.
 	if err := os.WriteFile(path, []byte(`
@@ -282,7 +282,7 @@ func TestReloadFailureKeepsServing(t *testing.T) {
 }
 
 // TestNonMatchingQueryAllocatesNothing is §5.11's headline commitment at
-// the middleware level: the steady state — a query no rule names — pays
+// the middleware level: the steady state, a query no rule names, pays
 // the stack key build and the map probes, and allocates nothing.
 //
 // The pin is measured against the harness itself: the same wire query
@@ -390,7 +390,7 @@ func counterValue(t *testing.T, zone, action, outcome string) float64 {
 // TestReplayDoesNotDoubleCount pins the counting rule for the inline
 // handoff dance: a pass-through match counted on the first pass must not
 // count again when the worker replays the whole chain after a cache
-// handoff — otherwise the same query counts once or twice depending on
+// handoff, otherwise the same query counts once or twice depending on
 // the cache's mood.
 func TestReplayDoesNotDoubleCount(t *testing.T) {
 	r := testRPZ(t, "shadow")
@@ -427,7 +427,7 @@ func TestReplayDoesNotDoubleCount(t *testing.T) {
 // TestChaseHandsOffTheInlinePass pins the reader-safety rule: a Local
 // Data match whose CNAME needs the sub-pipeline must decline an
 // inline-only pass unwritten (the cache's own discipline), act on the
-// worker replay instead, and count exactly once — on the pass that acted.
+// worker replay instead, and count exactly once, on the pass that acted.
 func TestChaseHandsOffTheInlinePass(t *testing.T) {
 	r := testRPZ(t, "enforce")
 	r.SetQueryer(&chaseQueryer{})
@@ -454,7 +454,7 @@ func TestChaseHandsOffTheInlinePass(t *testing.T) {
 	ch.SetInlineOnly()
 	ch.Next(context.Background())
 	if w.Written() {
-		t.Fatal("a chase ran on the inline pass — that blocks the transport reader")
+		t.Fatal("a chase ran on the inline pass, that blocks the transport reader")
 	}
 	if !ch.Handoff() {
 		t.Fatal("the inline pass must mark a handoff for the worker replay")
@@ -510,7 +510,7 @@ func TestWildcardCNAMETargetExpandsForEveryQtype(t *testing.T) {
 	r := testRPZ(t, "enforce")
 	// wildtarget's rule is `CNAME *.garden.example.net.`; asked for the
 	// CNAME itself (the direct type-match branch), the wildcard must
-	// still expand — a `*.` target may never reach a client.
+	// still expand, a `*.` target may never reach a client.
 	for _, qtype := range []uint16{dns.TypeCNAME, dns.TypeANY, dns.TypeA} {
 		w, _ := serve(t, r, "wildtarget.example.com.", qtype, "udp", true)
 		if len(w.Msg().Answer) == 0 {

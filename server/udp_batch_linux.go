@@ -16,8 +16,8 @@ import (
 
 // The batched UDP I/O layer: raw recvmmsg/sendmmsg over preallocated
 // mmsghdr/iovec/sockaddr/OOB arrays. The receive iovecs point straight
-// into the job ring's RX buffers, and every descriptor-referenced fact —
-// sockaddr, control message, flags — is copied into the job before the
+// into the job ring's RX buffers, and every descriptor-referenced fact,
+// sockaddr, control message, flags, is copied into the job before the
 // arrays are re-armed for the next cycle. Sends are armed from the jobs
 // of a worker's burst, so a reply is never copied between goroutines and
 // never waits on one. The netpoller callbacks are bound once per reader
@@ -26,7 +26,7 @@ import (
 
 // udpReaderPollErr counts poller failures a batch reader survived. A
 // reader is its socket's only consumer, so this rate is the signal that
-// one socket of a reuseport group is degraded — invisible in the query
+// one socket of a reuseport group is degraded, invisible in the query
 // counters, which only show the group's aggregate.
 var udpReaderPollErr = udpIngressDrops.Register("pollerr")
 
@@ -82,7 +82,7 @@ type udpBatchReader struct {
 	// permanentErrs counts consecutive errnos that no retry will fix. A
 	// seccomp profile that filters recvmmsg answers EPERM or ENOSYS on
 	// every call, and a reader that retries forever is a spinning core
-	// serving nothing — with shutdown hung behind it in readers.Wait().
+	// serving nothing, with shutdown hung behind it in readers.Wait().
 	permanentErrs int
 
 	jobs  [udpBatchSize]*udpJob
@@ -115,7 +115,7 @@ func newUDPBatchReader(e *udpEngine, idx int, pc *net.UDPConn, rc syscall.RawCon
 			unix.SYS_RECVMMSG,
 			fd,
 			uintptr(unsafe.Pointer(&r.hdrs[0])), //nolint:gosec // preallocated array armed for exactly this call
-			uintptr(r.armed),                    //nolint:gosec // G115 — armed is 1..udpBatchSize
+			uintptr(r.armed),                    //nolint:gosec // G115, armed is 1..udpBatchSize
 			0, 0, 0,
 		)
 		if errno != 0 {
@@ -125,7 +125,7 @@ func newUDPBatchReader(e *udpEngine, idx int, pc *net.UDPConn, rc syscall.RawCon
 			r.received, r.rerr = 0, errno
 			return true
 		}
-		r.received, r.rerr = int(n), nil //nolint:gosec // G115 — the kernel returns at most vlen
+		r.received, r.rerr = int(n), nil //nolint:gosec // G115, the kernel returns at most vlen
 		return true
 	}
 	return r
@@ -136,7 +136,7 @@ func (r *udpBatchReader) run() {
 	// held counts the armed jobs that persist across cycles. A batch
 	// rarely fills: the kernel hands back what the queue holds, and the
 	// old shape released every unfilled slot just to take it again on
-	// the next spin — a full take/release round trip (lease atomics,
+	// the next spin, a full take/release round trip (lease atomics,
 	// shard traffic, state transitions) per slot per cycle, priced at
 	// wire speed. A job the kernel did not fill stays armed; only what
 	// was consumed is re-taken, and every exit path below releases the
@@ -162,7 +162,7 @@ func (r *udpBatchReader) run() {
 		// one does: waiting for a slab instead leaves the socket unread,
 		// and what overflows then is dropped by the kernel, off our
 		// counters and invisible to the operator watching for saturation.
-		// It also arrives late — the packets that survive a backed-up
+		// It also arrives late, the packets that survive a backed-up
 		// receive queue are the oldest ones, whose clients have often
 		// stopped waiting. Shedding keeps the loss ours to report and
 		// keeps what is served fresh.
@@ -189,7 +189,7 @@ func (r *udpBatchReader) run() {
 			// A reader is the only consumer of its socket: it exits when
 			// the socket is gone and for nothing else. A transient errno
 			// drops the cycle, and a poller error that is not a closed
-			// socket is loud — silently returning would leave a live
+			// socket is loud, silently returning would leave a live
 			// socket with no reader, which the engine cannot detect
 			// until every other reader has exited too.
 			if err != nil {
@@ -270,7 +270,7 @@ func (r *udpBatchReader) shed() bool {
 // armScrap points slot i at the shed buffer. Every slot shares it: the
 // bytes are on their way to being discarded, so the kernel overwriting
 // one message with the next costs nothing. No sockaddr and no control
-// data are collected — nothing here is going to be answered.
+// data are collected, nothing here is going to be answered.
 func (r *udpBatchReader) armScrap(i int) {
 	r.jobs[i] = nil
 	r.iovs[i] = unix.Iovec{Base: &r.scrap[0], Len: uint64(len(r.scrap))}
@@ -323,7 +323,7 @@ func (r *udpBatchReader) arm(j *udpJob, i int) {
 }
 
 // finishRecv copies everything the kernel wrote for message i into the
-// job — before the arrays are re-armed — and hands it to the workers.
+// job, before the arrays are re-armed, and hands it to the workers.
 func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 	j := r.jobs[i]
 	h := &r.hdrs[i]
@@ -356,7 +356,7 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 	}
 
 	// The inline pass first: a hit finishes here and its reply rides the
-	// cycle's transmit batch — no ring, no worker wake, no lone send. A
+	// cycle's transmit batch, no ring, no worker wake, no lone send. A
 	// handoff continues on the ring with its in-flight count carried; a
 	// handler without the fast path takes the counted enqueue.
 	if e := r.engine; e.inline != nil {
@@ -370,7 +370,7 @@ func (r *udpBatchReader) finishRecv(i int, now time.Time) {
 
 // setRemoteRaw rewrites the cached classic views from a kernel sockaddr.
 // The netip view drops an IPv6 scope zone (its string form would
-// allocate); the reply never needs it — the batched send answers with the
+// allocate); the reply never needs it, the batched send answers with the
 // verbatim sockaddr.
 func (j *udpJob) setRemoteRaw(sa []byte) bool {
 	if len(sa) < 2 {
@@ -408,7 +408,7 @@ func (j *udpJob) setRemoteRaw(sa []byte) bool {
 // udpTXSender is a worker's sendmmsg state: preallocated headers and
 // iovecs, armed from the jobs of one burst. It lives on the worker (via
 // the engine's per-worker slot) so a send costs no allocation and no
-// handoff — the worker owns every job it is sending for.
+// handoff, the worker owns every job it is sending for.
 type udpTXSender struct {
 	hdrs [udpTXMax]mmsgHdr
 	iovs [udpTXMax]unix.Iovec
@@ -467,12 +467,12 @@ func (e *udpEngine) sendGroup(s *udpTXSender, jobs []*udpJob, pc *net.UDPConn) {
 		if j.rawSALen == 0 {
 			// No raw sockaddr was armed for this job: it was read by the
 			// portable reader (a socket that fell back off recvmmsg stays
-			// in txConns). sendmmsg would send it nowhere — or, on a
+			// in txConns). sendmmsg would send it nowhere, or, on a
 			// recycled slab, to the previous client.
 			j.sendDirect()
 			continue
 		}
-		s.iovs[k] = unix.Iovec{Base: &j.tx[0], Len: uint64(j.txLen)} //nolint:gosec // G115 — txLen is a staged reply length, bounded by the TX buffer
+		s.iovs[k] = unix.Iovec{Base: &j.tx[0], Len: uint64(j.txLen)} //nolint:gosec // G115, txLen is a staged reply length, bounded by the TX buffer
 		s.jobs[k] = j
 		h := &s.hdrs[k]
 		h.dlen = 0
@@ -501,10 +501,10 @@ func (e *udpEngine) sendGroup(s *udpTXSender, jobs []*udpJob, pc *net.UDPConn) {
 		}
 		if err != nil || s.sent <= 0 {
 			// A batch the syscall refuses falls through to the direct
-			// sender, job by job. That isolates a poisoned destination —
+			// sender, job by job. That isolates a poisoned destination,
 			// sendmmsg stops the whole batch at the first refused message
 			// (a netfilter EPERM for one client used to drop everyone
-			// behind it) — and it is what keeps replies flowing when the
+			// behind it), and it is what keeps replies flowing when the
 			// syscall itself is denied. An errno retries cannot fix
 			// retires batch TX outright; without that, a seccomp policy
 			// that permits recvmmsg but not sendmmsg was a server that
@@ -534,7 +534,7 @@ func newUDPTXSender(s *udpTXSender) {
 			unix.SYS_SENDMMSG,
 			fd,
 			uintptr(unsafe.Pointer(&s.hdrs[s.start])), //nolint:gosec // preallocated array armed for exactly this call
-			uintptr(s.count-s.start),                  //nolint:gosec // G115 — a positive remainder of a 1..udpTXMax burst
+			uintptr(s.count-s.start),                  //nolint:gosec // G115, a positive remainder of a 1..udpTXMax burst
 			0, 0, 0,
 		)
 		if errno != 0 {
@@ -544,7 +544,7 @@ func newUDPTXSender(s *udpTXSender) {
 			s.sent, s.werr = 0, errno
 			return true
 		}
-		s.sent, s.werr = int(n), nil //nolint:gosec // G115 — the kernel returns at most vlen
+		s.sent, s.werr = int(n), nil //nolint:gosec // G115, the kernel returns at most vlen
 		return true
 	}
 }

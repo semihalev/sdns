@@ -10,7 +10,7 @@ import (
 // which is the only place this code shows: the serving path never reaches it,
 // and a cold start walks the same names whatever the budget's unit is. The
 // case that separates them is a second deep name under a delegation the first
-// one cached — there the budget is either spent on probes or already gone.
+// one cached, there the budget is either spent on probes or already gone.
 //
 // The counted zone holds every interior label as an empty non-terminal, so
 // each probe is answered rather than denied. That is the most expensive shape
@@ -24,8 +24,8 @@ func TestMinimizeUpstreamQueryCount(t *testing.T) {
 	)
 
 	// asked reports which of the names a resolution put to the zone. Counts
-	// are per name and larger than one — a zone advertises both an A and a
-	// AAAA address and the resolver tries both — so presence is what this
+	// are per name and larger than one, a zone advertises both an A and a
+	// AAAA address and the resolver tries both, so presence is what this
 	// pins, not the tally.
 	setup := func(t *testing.T, maxCount, oneLabel int) (*hermeticZone, *DNSHandler) {
 		t.Helper()
@@ -71,8 +71,8 @@ func TestMinimizeUpstreamQueryCount(t *testing.T) {
 	t.Run("budget spent on probes, not on cached depth", func(t *testing.T) {
 		zone, handler := setup(t, 3, 3)
 
-		// Cold. Two of the three probes go to the root — test. and
-		// deep.test. — so one is left for the zone before the full name.
+		// Cold. Two of the three probes go to the root, test. and
+		// deep.test., so one is left for the zone before the full name.
 		resolve(t, handler, first)
 		check(t, zone,
 			[]string{"e.deep.test.", first},
@@ -101,7 +101,7 @@ func TestMinimizeUpstreamQueryCount(t *testing.T) {
 // TestMinimizeNXDOMAINFallsBackToFullName pins the walk's answer to a denial
 // it cannot prove. In an unsigned zone an NXDOMAIN for a hidden prefix says
 // nothing verifiable about the subtree, and the walk used to keep exposing
-// labels one at a time — collecting one unprovable denial per label from the
+// labels one at a time, collecting one unprovable denial per label from the
 // same servers. What the client's answer depends on is the full name, so that
 // is the next and last question. The securely proven denial keeps its early
 // RFC 8020 cut and is covered by the nxdomain_cut tests.

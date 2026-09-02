@@ -185,7 +185,7 @@ func TestServeRawJobReuse(t *testing.T) {
 }
 
 // TestServeRawClassicFallback pins the ineligible branch: a shape the
-// strict parser refuses still gets the ordinary decoded serve — here the
+// strict parser refuses still gets the ordinary decoded serve, here the
 // two-question packet, which the shared entry guard answers with FORMERR.
 func TestServeRawClassicFallback(t *testing.T) {
 	s := newRawTestServer(t)

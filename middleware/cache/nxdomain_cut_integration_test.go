@@ -726,7 +726,7 @@ func TestNXDomainCutIntegrationCNAMETransfersTerminalProvenance(t *testing.T) {
 // the client-TTL clamp against proof admission. The provenance fingerprint
 // seals the authority section TTLs included, so clamping the response before
 // ValidatedNegativeProofForResponse ran silently disqualified every validated
-// denial whose delegation lease was shorter than its records — the RFC
+// denial whose delegation lease was shorter than its records, the RFC
 // 8020/8198 stores stayed empty exactly when the lease said to be careful.
 // Admission sees the resolver's response untouched; the clamp applies to the
 // client write alone.
@@ -758,7 +758,7 @@ func TestNXDomainCutIntegrationShortCutClampsClientNotProof(t *testing.T) {
 		}
 	}
 	if cache.store.NXDomainCutLen() != 1 {
-		t.Fatalf("cut entries = %d, want 1 — the clamp must not disqualify the proof",
+		t.Fatalf("cut entries = %d, want 1. The clamp must not disqualify the proof",
 			cache.store.NXDomainCutLen())
 	}
 
@@ -775,7 +775,7 @@ func TestNXDomainCutIntegrationShortCutClampsClientNotProof(t *testing.T) {
 // resolution) hands the same dns.Msg back to its caller, which re-verifies
 // the provenance fingerprint before propagating the denial into the outer
 // answer. Clamping that message would break the fingerprint and lose
-// short-lease provenance mid-chain — the clamp belongs to the real client
+// short-lease provenance mid-chain, the clamp belongs to the real client
 // write alone, and the outer response inherits the cut through the shared
 // meta.
 func TestNXDomainCutIntegrationInternalWriteKeepsProvenance(t *testing.T) {
@@ -808,7 +808,7 @@ func TestNXDomainCutIntegrationInternalWriteKeepsProvenance(t *testing.T) {
 
 	for _, rr := range resp.Ns {
 		if ttl := rr.Header().Ttl; ttl != 300 {
-			t.Fatalf("internal %s TTL = %d, want the untouched 300 — the clamp leaked into the sub-pipeline",
+			t.Fatalf("internal %s TTL = %d, want the untouched 300, the clamp leaked into the sub-pipeline",
 				dns.TypeToString[rr.Header().Rrtype], ttl)
 		}
 	}

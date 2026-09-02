@@ -65,7 +65,7 @@ func (co *Conn) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) 
 
 	if _, ok := co.Conn.(net.PacketConn); ok {
 		// UDP: a connected socket can still surface a stray or late
-		// datagram — a reply to an earlier query that already timed out,
+		// datagram, a reply to an earlier query that already timed out,
 		// or a packet spoofed from the peer address. Skip mismatched IDs
 		// and keep reading until the matching response or the read
 		// deadline, matching miekg/dns.Client so a single stray packet
@@ -110,7 +110,7 @@ func QuestionMatches(req dns.Question, resp []dns.Question) bool {
 // ReadMsg reads a single DNS message from co. The buffer is always
 // returned to the pool, even on a timed-out UDP read or a truncated
 // TCP read, so failed upstream reads never leak the buffer. On success
-// only the bytes actually read are unpacked — feeding Unpack the
+// only the bytes actually read are unpacked, feeding Unpack the
 // trailing capacity of a pooled UDP buffer would let stale bytes from a
 // previous use bleed into the parsed message.
 func (co *Conn) ReadMsg() (*dns.Msg, error) {

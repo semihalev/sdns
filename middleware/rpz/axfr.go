@@ -23,14 +23,14 @@ var feedTransferLimits = zonetransfer.Limits{
 const (
 	// axfrTimeout bounds one probe or transfer attempt.
 	axfrTimeout = 2 * time.Minute
-	// axfrInitialRetry paces attempts until the first copy lands — before
+	// axfrInitialRetry paces attempts until the first copy lands, before
 	// that there is no SOA to take a retry interval from.
 	axfrInitialRetry = time.Minute
 )
 
 // axfrFeed keeps one AXFR-sourced zone current: probe on the SOA refresh
 // interval, transfer on serial change, retry on the SOA retry interval,
-// and withdraw the rules past SOA expire — a feed that cannot be
+// and withdraw the rules past SOA expire, a feed that cannot be
 // refreshed must not keep enforcing what it said long ago. The loop's
 // schedule is deliberately its own (see internal/zonetransfer's package
 // note): it is welded to exactly this withdrawal semantic.
@@ -102,7 +102,7 @@ func (f *axfrFeed) run(ctx context.Context) {
 }
 
 // cycle is one wake of the feed: withdrawal first, then the refresh.
-// The order is the expire contract — a copy past its horizon stops
+// The order is the expire contract, a copy past its horizon stops
 // serving before the refresh attempt starts, not up to a transfer
 // timeout later; the next successful transfer rebuilds it.
 func (f *axfrFeed) cycle(ctx context.Context) time.Duration {
@@ -139,7 +139,7 @@ func (f *axfrFeed) nextWake(afterFailure bool) time.Duration {
 }
 
 // expireCap is the exact time left before the installed copy must be
-// withdrawn — no grace, no floor: the refresh clamp built on it has to
+// withdrawn, no grace, no floor: the refresh clamp built on it has to
 // die at the horizon itself, or a probe succeeding just past it would
 // renew a copy that had already outlived its trust. ok is false when
 // nothing is aging toward a horizon.
@@ -152,7 +152,7 @@ func (f *axfrFeed) expireCap() (time.Duration, bool) {
 
 // sleepFor is the actual sleep: the SOA-paced interval jittered so a
 // fleet does not probe in lockstep, then capped at the copy's remaining
-// expire. The cap is applied after the jitter and never jittered itself —
+// expire. The cap is applied after the jitter and never jittered itself,
 // the expire boundary is a deadline, and a wake that must withdraw cannot
 // be allowed to drift past it. Nor is there anything to add to it: a Go
 // timer never fires early, and the withdrawal check treats the exact
@@ -172,7 +172,7 @@ func (f *axfrFeed) refreshOnce(ctx context.Context) error {
 	timeout := f.timeout
 	// While a live copy is aging, the attempt itself is bounded by the
 	// copy's horizon: an attempt still running at expire is cancelled so
-	// its failure path withdraws at the boundary — otherwise a cycle
+	// its failure path withdraws at the boundary, otherwise a cycle
 	// starting just inside the horizon would keep stale rules serving
 	// for a full transfer timeout past it, and a probe succeeding late
 	// would renew a copy that had already outlived its trust. Withdrawn
@@ -192,14 +192,14 @@ func (f *axfrFeed) refreshOnce(ctx context.Context) error {
 		case err != nil:
 			// The probe travels unsigned; a TSIG provider may gate even
 			// the SOA question. The signed transfer below then serves as
-			// the probe — dearer, but the alternative is a feed that can
+			// the probe, dearer, but the alternative is a feed that can
 			// never refresh.
 		case serial == f.serial && !f.withdrawn:
 			f.loaded = f.now() // a healthy probe restarts the expire clock
 			return nil
 		case serial == f.serial:
 			// Withdrawn: the store holds an empty zone, so an equal
-			// serial is not "nothing to do" — the copy must be rebuilt.
+			// serial is not "nothing to do". The copy must be rebuilt.
 			// Fall through to the transfer.
 		case !zonetransfer.SerialNewer(f.serial, serial):
 			// A source advertising an older zone is refused whole:
@@ -281,8 +281,8 @@ func (f *axfrFeed) transfer(ctx context.Context) ([]dns.RR, error) {
 }
 
 // transferTSIG pulls the zone through miekg's dns.Transfer, which owns
-// the RFC 8945 envelope-MAC chain — the one part of a signed transfer
-// that must not be re-implemented here — and then applies the same shape
+// the RFC 8945 envelope-MAC chain, the one part of a signed transfer
+// that must not be re-implemented here, and then applies the same shape
 // and bound discipline the strict core applies: SOA-bracketed, terminator
 // duplicating the opener, caller-owned limits, closing SOA dropped.
 func (f *axfrFeed) transferTSIG(ctx context.Context) ([]dns.RR, error) {
@@ -292,11 +292,11 @@ func (f *axfrFeed) transferTSIG(ctx context.Context) ([]dns.RR, error) {
 
 	// The connection is dialed here, not left to dns.Transfer: its read
 	// deadline restarts on every envelope, so a source dripping one
-	// envelope per interval could hold an attempt open indefinitely —
+	// envelope per interval could hold an attempt open indefinitely,
 	// past the attempt budget, past the caller's cancellation, and past
 	// the expire boundary the feed loop must be awake for. A deadline
 	// cannot bound the whole attempt (the per-envelope reset overwrites
-	// whatever is set on the socket); closing the socket can — a closed
+	// whatever is set on the socket); closing the socket can, a closed
 	// connection wakes the blocked read and refuses every one after it.
 	// The watchdog fires at the attempt budget, the AfterFunc on the
 	// caller's cancellation.
@@ -308,8 +308,8 @@ func (f *axfrFeed) transferTSIG(ctx context.Context) ([]dns.RR, error) {
 	// Deferred in this order so the drain runs after the close: closing
 	// the socket fails the producer's next read, but a producer already
 	// parked on the unbuffered envelope send needs a reader to get there.
-	// Without the drain, every early return below — shape, limit, even
-	// the terminator — can strand the transfer goroutine for good.
+	// Without the drain, every early return below, shape, limit, even
+	// the terminator, can strand the transfer goroutine for good.
 	var env chan *dns.Envelope
 	defer func() {
 		if env == nil {

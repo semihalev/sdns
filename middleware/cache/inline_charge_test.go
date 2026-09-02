@@ -14,8 +14,8 @@ import (
 )
 
 // A wire-ladder decline must not spend the per-entry rate-limit token:
-// the query falls to the Msg body — or, on an inline pass, to the replay
-// on a worker — and that path checks the same limiter. A token paid by a
+// the query falls to the Msg body, or, on an inline pass, to the replay
+// on a worker, and that path checks the same limiter. A token paid by a
 // serve that then declined billed one client question twice, and at
 // burst 1 the second check cancelled a hit the client had already paid
 // for. The charge therefore runs after every deterministic decline gate.
@@ -37,7 +37,7 @@ func TestWireDeclineDoesNotChargeEntryLimiter(t *testing.T) {
 	req, _ := wireTestRequest(t, "charge.zone.test.", dns.TypeA, false)
 	ch := middleware.NewChain(nil)
 	// A mock writer has no wire capability, so the ladder must decline
-	// this serve to the Msg path — before the limiter spends anything.
+	// this serve to the Msg path, before the limiter spends anything.
 	ch.ResetWire(mock.NewWriter("udp", "203.0.113.50:4242"), req)
 
 	var spent *rate.Limiter
@@ -66,8 +66,8 @@ func (l *leaseTransport) LeaseWire(capacity int) []byte {
 	return l.buf[:0]
 }
 
-// The chase branch declines routinely — an uncached hop is the everyday
-// case — and none of its declines may spend the per-entry token: the
+// The chase branch declines routinely, an uncached hop is the everyday
+// case, and none of its declines may spend the per-entry token: the
 // query falls to the Msg path (or the replay after an inline handoff),
 // which checks the same limiter, and a pre-spent token there drops a
 // paid-for hit at burst 1.

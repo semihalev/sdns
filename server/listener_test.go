@@ -93,7 +93,7 @@ func TestBindAll_CriticalFailureUnwindsSuccessfulBinds(t *testing.T) {
 }
 
 func TestBindAll_NonCriticalFailureDoesNotAbort(t *testing.T) {
-	// TLS bind fails (missing cert) but UDP+TCP are fine — startup
+	// TLS bind fails (missing cert) but UDP+TCP are fine, startup
 	// should continue with a disabled TLS listener.
 	udp := &fakeListener{proto: "udp", addr: ":53", critical: true}
 	tcp := &fakeListener{proto: "tcp", addr: ":53", critical: true}
@@ -116,7 +116,7 @@ func TestBindAll_NonCriticalFailureDoesNotAbort(t *testing.T) {
 	if tls.bound.Load() {
 		t.Errorf("tls.bound.Load() is true")
 	}
-	// Nothing should be shut down — everything currently bound is
+	// Nothing should be shut down, everything currently bound is
 	// still serving.
 	if udp.shutdown.Load() {
 		t.Errorf("udp.shutdown.Load() is true")
@@ -128,7 +128,7 @@ func TestBindAll_NonCriticalFailureDoesNotAbort(t *testing.T) {
 
 // TestListenerShutdownBeforeServeReleasesSocket verifies that every
 // socket-owning listener actually closes its underlying FD in
-// Shutdown, even when Serve was never called — the bind-but-not-serve
+// Shutdown, even when Serve was never called, the bind-but-not-serve
 // path that bindAll's partial-failure cleanup hits.
 //
 // miekg/dns's ShutdownContext and http.Server.Shutdown are both
@@ -172,7 +172,7 @@ func TestListenerShutdownBeforeServeReleasesSocket(t *testing.T) {
 
 			// If Shutdown actually released the FD, we can open a
 			// fresh socket on the same port immediately. Use the
-			// matching transport — UDP probe for UDP listeners, TCP
+			// matching transport, UDP probe for UDP listeners, TCP
 			// probe for the rest.
 			if udpProto(tc.name) {
 				probeUDP(t, addr)
@@ -267,7 +267,7 @@ type fakeCerts struct{ cfg *tls.Config }
 func (f *fakeCerts) GetTLSConfig() *tls.Config { return f.cfg }
 
 // minimalTLSConfig returns a tls.Config with one ephemeral
-// self-signed cert — enough to satisfy Bind's nil-check without
+// self-signed cert, enough to satisfy Bind's nil-check without
 // actually performing any handshake.
 func minimalTLSConfig(t *testing.T) *tls.Config {
 	t.Helper()

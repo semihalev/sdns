@@ -13,7 +13,7 @@ import (
 // tells us which local address a datagram arrived on (IP_PKTINFO /
 // IPV6_PKTINFO), and the reply carries a control message pinning that
 // address as the source. The control messages are parsed and built by
-// hand into job-owned scratch — the portable parsers allocate per
+// hand into job-owned scratch, the portable parsers allocate per
 // datagram, which is exactly the cost this path exists to remove.
 
 // msgTrunc is the kernel's datagram-truncation flag.
@@ -23,7 +23,7 @@ const msgTrunc = unix.MSG_TRUNC
 // to hold *both* pktinfo messages: a dual-stack socket armed for each
 // family delivers an IPv4 one (16 + 12, aligned to 32) and an IPv6 one
 // (16 + 20, aligned to 40) for the same v4-mapped datagram. Sized for one
-// of them, the kernel truncates the control data, sets MSG_CTRUNC — and
+// of them, the kernel truncates the control data, sets MSG_CTRUNC, and
 // the wildcard path drops every datagram it cannot place. 128 covers both
 // on every Linux ABI with room to spare, and costs a job slab nothing
 // worth counting.
@@ -36,7 +36,7 @@ const pktinfoSpace = 128
 // a dual-stack socket, which carries IPv6 datagrams as well as
 // v4-mapped ones, and a socket armed for IPv4 alone hands those v6
 // datagrams over with no control message at all. The reply path cannot
-// know which local address they arrived on, so it refuses them — and
+// know which local address they arrived on, so it refuses them, and
 // IPv6 service disappears on the most ordinary configuration there is,
 // counted as a drop and otherwise silent.
 //
@@ -68,7 +68,7 @@ func pktinfoControl(network string) func(network, address string, c syscall.RawC
 
 // preparePktinfoReply walks the received control data and builds the reply
 // control message in the job's scratch: the reply's source address is the
-// query's destination address. Unknown or truncated control data refuses —
+// query's destination address. Unknown or truncated control data refuses,
 // the caller drops rather than misattribute.
 func preparePktinfoReply(oob []byte, j *udpJob) bool {
 	// Both may be present, and then the IPv4 one is used: a v4-mapped
@@ -80,7 +80,7 @@ func preparePktinfoReply(oob []byte, j *udpJob) bool {
 	var v6 *unix.Inet6Pktinfo
 	for len(oob) >= unix.SizeofCmsghdr {
 		h := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0])) //nolint:gosec // bounded cmsg walk
-		l := int(h.Len)                               //nolint:gosec // G115 — validated against the buffer bound on the next line
+		l := int(h.Len)                               //nolint:gosec // G115, validated against the buffer bound on the next line
 		if l < unix.SizeofCmsghdr || l > len(oob) {
 			return false
 		}

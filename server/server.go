@@ -43,18 +43,18 @@ type Server struct {
 	// statements later, by the supervisor.
 	shutdownDone chan struct{}
 	// trimDone closes when the opt-in trimmer goroutine has exited; nil
-	// when it was never started. Stopped waits on it — a trim is a
+	// when it was never started. Stopped waits on it. A trim is a
 	// process-wide collection, and "stopped" must not be true while one
 	// may still be running.
 	trimDone chan struct{}
 
 	// served counts queries entering either serve entry point, whatever
-	// transport carried them — the owned engines through ServeRaw, DoH,
+	// transport carried them, the owned engines through ServeRaw, DoH,
 	// DoH3 and DoQ through ServeMsg. The trimmer reads it to prove a
 	// window carried no traffic at all: the engines' own counters see
 	// only their transports, and a trim under active DoH traffic is a
-	// collection the client pays for. Counted only when the trimmer —
-	// its one reader — exists, so the default configuration pays not
+	// collection the client pays for. Counted only when the trimmer,
+	// its one reader, exists, so the default configuration pays not
 	// even the atomic.
 	served      atomic.Uint64
 	trimEnabled bool
@@ -85,7 +85,7 @@ func New(cfg *config.Config) *Server {
 
 	// One resource plan for every listener, derived before any exists:
 	// the stream engines share a budget, so the plan has to know how
-	// many there are. The plan is a value on this Server — a second
+	// many there are. The plan is a value on this Server, a second
 	// Server in the same process lives inside its own arithmetic.
 	engines := 1
 	if cfg.BindTLS != "" {
@@ -95,9 +95,9 @@ func New(cfg *config.Config) *Server {
 	plan.publish()
 
 	timeout := cfg.QueryTimeout.Duration
-	// The owned transports feed ServeRaw: raw bytes in, and the server —
-	// not the transport — decides eligibility, decode, and context. DoH
-	// and DoQ enter through ServeMsg with a decoded message — one reshapes
+	// The owned transports feed ServeRaw: raw bytes in, and the server,
+	// not the transport, decides eligibility, decode, and context. DoH
+	// and DoQ enter through ServeMsg with a decoded message, one reshapes
 	// bytes and the other rewrites the reply ID, so neither is a raw sink.
 	s.listeners = []Listener{
 		newUDPListener(cfg.Bind, s, timeout, cfg.IngressWorkers, cfg.IngressQueue, plan),
@@ -121,8 +121,8 @@ func New(cfg *config.Config) *Server {
 
 // ServeMsg serves one decoded DNS request under the transport's lifetime
 // and the configured end-to-end middleware/resolution timeout. It is the
-// entry for transports that already hold a message — DNS-over-HTTP and
-// DNS-over-QUIC supply client-aware parents — and for embedders. Its
+// entry for transports that already hold a message, DNS-over-HTTP and
+// DNS-over-QUIC supply client-aware parents, and for embedders. Its
 // writers made no byte-sink promise, so they never receive raw packed
 // bytes; the owned raw transports enter through ServeRaw instead, which is
 // the one road to the direct-pack capability.
@@ -157,7 +157,7 @@ func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns
 // serveMsgBy is serveMsg with the deadline stated rather than started
 // here. The raw ingress passes one anchored at the packet's arrival, so
 // a query that has already spent part of its budget waiting for a slab
-// does not get a fresh full budget the moment it leaves the byte path —
+// does not get a fresh full budget the moment it leaves the byte path,
 // under saturation that is exactly the query that would hold a worker
 // and an upstream lookup longest, and precisely when neither can spare
 // it. Callers with no arrival time (the decoded-message API) start the
@@ -176,7 +176,7 @@ func (s *Server) serveMsgBy(
 	}
 
 	// A standard query carries exactly one question. Reject a malformed
-	// QDCOUNT here — at the single entry shared by every transport — with
+	// QDCOUNT here, at the single entry shared by every transport, with
 	// FORMERR, so downstream middlewares can index req.Question[0] without
 	// guarding. A 0-question packet would otherwise hit an unguarded
 	// req.Question[0] in several handlers and force a panic/recover/log
@@ -237,7 +237,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Run binds every configured listener synchronously, returns a non-nil
 // error if a critical listener (plain DNS UDP/TCP) could not bind, and
 // otherwise spawns Serve goroutines that run until ctx is cancelled.
-// Run itself is non-blocking — main waits on ctx and polls Stopped
+// Run itself is non-blocking, main waits on ctx and polls Stopped
 // for graceful shutdown.
 func (s *Server) Run(ctx context.Context) error {
 	s.listenersMu.Lock()
@@ -274,13 +274,13 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Supervisor: on ctx cancellation, shut every active listener down.
-	go s.superviseShutdown(ctx, active, done) //nolint:gosec // G118 — ctx is the server lifecycle context, not request-scoped
+	go s.superviseShutdown(ctx, active, done) //nolint:gosec // G118, ctx is the server lifecycle context, not request-scoped
 	if s.cfg.MemoryTrim {
 		trimDone := make(chan struct{})
 		s.listenersMu.Lock()
 		s.trimDone = trimDone
 		s.listenersMu.Unlock()
-		go func() { //nolint:gosec // G118 — same lifecycle context
+		go func() { //nolint:gosec // G118, same lifecycle context
 			defer close(trimDone)
 			s.trimLoop(ctx)
 		}()
@@ -296,8 +296,8 @@ func (s *Server) superviseShutdown(ctx context.Context, active []Listener, done 
 	defer cancel()
 
 	// All at once, on one shared deadline. Taken in turn, every listener
-	// after the first keeps admitting work — new connections, new queries
-	// — for as long as the ones ahead of it take to drain, which is the
+	// after the first keeps admitting work, new connections, new queries,
+	// for as long as the ones ahead of it take to drain, which is the
 	// opposite of what a shutdown is for. Each listener stops its own
 	// admission before it drains, so starting them together closes the
 	// door everywhere first.
@@ -333,7 +333,7 @@ func (s *Server) queryTimeout() time.Duration {
 }
 
 // HasListener reports whether a listener with the given proto tag is
-// actually serving right now — stricter than "Bind succeeded". DoH3
+// actually serving right now, stricter than "Bind succeeded". DoH3
 // and DoQ do their real QUIC bring-up inside Serve, so checking only
 // membership in s.active can report success even when the transport
 // never started. Asking the listener via Serving() gives the truth.
@@ -343,8 +343,8 @@ func (s *Server) queryTimeout() time.Duration {
 //
 // It is the completion barrier a measurement needs. A client holding its
 // last reply proves the bytes left, not that the slab that carried them
-// was released — the release runs after the send, on the server's own
-// goroutine — so anything that samples the process at that moment (an
+// was released. The release runs after the send, on the server's own
+// goroutine, so anything that samples the process at that moment (an
 // allocation gate, a leak check, a drain assertion) is otherwise reduced
 // to sleeping and hoping. Transports that own no slabs are quiescent by
 // construction and answer for themselves.
@@ -382,7 +382,7 @@ func (s *Server) GetTLSConfig() *tls.Config {
 	}
 
 	// The lazy creation below is for startup. After Stop it would leave
-	// a file watcher alive behind a Stopped() that already said true —
+	// a file watcher alive behind a Stopped() that already said true,
 	// the defence in depth for any caller still holding this provider.
 	if s.certStopped {
 		return nil
@@ -405,7 +405,7 @@ func (s *Server) GetTLSConfig() *tls.Config {
 // has exited *and* the supervisor has finished with every listener. That
 // is the question a caller polling for shutdown actually has, because the
 // only use for the answer is doing something else with what the server
-// held — exiting, or binding the same addresses again.
+// held, exiting, or binding the same addresses again.
 //
 // Both halves are needed. The plain UDP and TCP listeners close their
 // sockets inside Shutdown before the Serve they unblock returns, so for
@@ -417,9 +417,9 @@ func (s *Server) GetTLSConfig() *tls.Config {
 // in use", rarely for DoH3 and often for DoQ.
 //
 // It does not mean nothing is running. A handler that outlasts its
-// listener's drain deadline is force-closed and left to finish on its own
-// — the alternative is a shutdown that a single stuck request can hang
-// forever — so work can outlive this by as long as that handler takes.
+// listener's drain deadline is force-closed and left to finish on its own.
+// The alternative is a shutdown that a single stuck request can hang
+// forever, so work can outlive this by as long as that handler takes.
 // Process exit is the backstop for that, and an in-process restart is
 // safe from the socket's point of view but not a guarantee that the old
 // server's last requests have unwound.

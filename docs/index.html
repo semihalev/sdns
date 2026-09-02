@@ -84,7 +84,7 @@ example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
     <h2>Same host, same corpus, same day</h2>
     <p>
       Each contender was given a reasonable configuration, not an exhaustive
-      tuning pass. PowerDNS answers these from its packet cache — its lightest
+      tuning pass. PowerDNS answers these from its packet cache, its lightest
       path, as this is ours.
     </p>
     <table class="compare">
@@ -133,7 +133,7 @@ example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
     <h2>A working configuration is short</h2>
     <p>
       sdns writes a complete, commented configuration on first run. Most
-      deployments change a handful of its lines and leave the rest — these
+      deployments change a handful of its lines and leave the rest. These
       three are the ones worth reading first.
     </p>
     <div class="config-grid">
@@ -150,7 +150,7 @@ accesslist = ["192.168.0.0/16"]</code></pre>
       <div>
         <ul>
           <li><strong>Everything new ships off or in shadow.</strong> Enabling a feature is a decision you make, never one made for you by an upgrade.</li>
-          <li><strong><code>sdns -t</code> judges the whole file</strong> and reports every problem at once — addresses, CIDRs, enumerations, TLS files, policy zones — with the same loaders the server runs.</li>
+          <li><strong><code>sdns -t</code> judges the whole file</strong> and reports every problem at once (addresses, CIDRs, enumerations, TLS files, policy zones) with the same loaders the server runs.</li>
           <li><strong>A key no setting claims fails the test</strong> and only warns at startup, so a stale key from an older version cannot become an outage.</li>
         </ul>
         <p style="margin-top:1rem"><a href="{{ '/docs/configuration/overview/' | relative_url }}">Full configuration reference →</a></p>
@@ -163,9 +163,9 @@ accesslist = ["192.168.0.0/16"]</code></pre>
     <h2>Current state</h2>
     <div class="gh-stats" data-repo="{{ site.github.repository_nwo }}">
       <div class="gh-stat"><div class="gh-value" data-stat="release" data-loading="1">{{ site.sdns_version }}</div><div class="gh-label">Release</div></div>
-      <div class="gh-stat"><div class="gh-value" data-stat="stars" data-loading="1">—</div><div class="gh-label">Stars</div></div>
-      <div class="gh-stat"><div class="gh-value" data-stat="forks" data-loading="1">—</div><div class="gh-label">Forks</div></div>
-      <div class="gh-stat"><div class="gh-value" data-stat="issues" data-loading="1">—</div><div class="gh-label">Open issues &amp; PRs</div></div>
+      <div class="gh-stat"><div class="gh-value" data-stat="stars" data-loading="1">…</div><div class="gh-label">Stars</div></div>
+      <div class="gh-stat"><div class="gh-value" data-stat="forks" data-loading="1">…</div><div class="gh-label">Forks</div></div>
+      <div class="gh-stat"><div class="gh-value" data-stat="issues" data-loading="1">…</div><div class="gh-label">Open issues &amp; PRs</div></div>
       <div class="gh-stat"><div class="gh-value">Go</div><div class="gh-label">Language</div></div>
       <div class="gh-stat"><div class="gh-value">MIT</div><div class="gh-label">License</div></div>
     </div>
@@ -201,7 +201,7 @@ accesslist = ["192.168.0.0/16"]</code></pre>
       </div>
       <div class="feature">
         <h3><a href="{{ '/docs/reference/metrics/' | relative_url }}">64 metrics</a></h3>
-        <p>Cache, resolution, DNSSEC work, ingress, policy — each with its labels documented, and the PromQL to answer the questions operators actually ask.</p>
+        <p>Cache, resolution, DNSSEC work, ingress and policy, each with its labels documented, and the PromQL to answer the questions operators actually ask.</p>
       </div>
     </div>
   </section>

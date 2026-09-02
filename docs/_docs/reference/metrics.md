@@ -23,13 +23,13 @@ from the source, so they are what your scrape will actually see.
 ## A note on what appears when
 
 Counters with labels materialise on first use. A metric that has never been
-incremented — `rpz_action_total` before any policy match, `dns_queries_total`
-before the first query — is absent from the scrape rather than present at zero.
+incremented, `rpz_action_total` before any policy match, `dns_queries_total`
+before the first query, is absent from the scrape rather than present at zero.
 Alerts should therefore use `absent()` deliberately or tolerate the gap, and a
 dashboard panel that is empty on a fresh process is not necessarily broken.
 
 Registration is not uniform: some metrics appear only once their feature is
-configured — the RPZ zone gauges need a policy zone loaded — while others, DNS64
+configured, the RPZ zone gauges need a policy zone loaded, while others, DNS64
 among them, are registered by their package whatever the configuration says and
 simply stay at zero.
 
@@ -40,7 +40,7 @@ simply stay at zero.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `dns_queries_total` | counter | `qtype`, `rcode` | Queries processed |
-| `dns_domain_queries_total` | counter | `domain` | Queries per domain — only with `domainmetrics = true` |
+| `dns_domain_queries_total` | counter | `domain` | Queries per domain, only with `domainmetrics = true` |
 | `dns_recovery_panics_total` | counter | | Panics caught by the recovery middleware |
 
 `dns_queries_total` split by `rcode` is the health of the resolver in one line.
@@ -56,7 +56,7 @@ is what `domainmetricslimit` exists for.
 |---|---|---|---|
 | `dns_cache_hits_total` | counter | | Cache hits |
 | `dns_cache_misses_total` | counter | | Cache misses |
-| `dns_cache_hit_rate` | gauge | | Hit rate as a **percentage**, 0–100 — not a 0–1 ratio |
+| `dns_cache_hit_rate` | gauge | | Hit rate as a **percentage**, 0 to 100, not a 0 to 1 ratio |
 | `dns_cache_size` | gauge | `type` | Entries currently held |
 | `dns_cache_evictions_total` | counter | | Entries dropped under pressure |
 | `dns_cache_prefetches_total` | counter | | Background refreshes of popular entries |
@@ -88,8 +88,8 @@ is served straight from stored bytes rather than being re-encoded.
 | `dns_edns_errors_total` | counter | `reason` | EDNS protocol errors that rejected a query |
 
 `dns_resolver_dnssec_failures_total` deserves an alert. Clients see only
-SERVFAIL, so a zone that has broken its signing — or something interfering with
-your traffic — is otherwise invisible.
+SERVFAIL, so a zone that has broken its signing, or something interfering with
+your traffic, is otherwise invisible.
 
 `dns_trust_anchor_lifecycle_total` is quiet for years and then matters
 enormously. Watch it around a root KSK rollover.
@@ -103,14 +103,14 @@ enormously. Watch it around a root KSK rollover.
 | `dnssec_work_per_request` | histogram | `operation`, `mode` | DNSSEC operations per completed request tree |
 | `dnssec_work_total` | counter | `operation`, `mode` | Accepted or observed DNSSEC work across request trees |
 
-Buckets: `dns_recursion_fanout_ratio` is 1–128, `dnssec_work_per_request` is
-0–512.
+Buckets: `dns_recursion_fanout_ratio` is 1 to 128, `dnssec_work_per_request` is
+0 to 512.
 
 These are the numbers to read before switching the
 [recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }})
 from shadow to enforce. In shadow mode,
 `dns_recursion_firewall_exhaustions_total` is exactly the set of requests
-enforce would have failed — if it is nonzero for ordinary traffic, the limit is
+enforce would have failed. If it is nonzero for ordinary traffic, the limit is
 too low for your workload.
 
 The `mode` label distinguishes enforced from observed, so a shadow soak and the
@@ -134,7 +134,7 @@ cap, given the machine's memory, CPUs and file-descriptor limit. If a container
 is performing worse than the host it replaced, compare this gauge before
 anything else.
 
-Overflow is a capacity signal, not a bug — it means queries arrived faster than
+Overflow is a capacity signal, not a bug. It means queries arrived faster than
 the fixed pool accepted them and were served on their own goroutines.
 
 ## Policy and access
@@ -165,7 +165,7 @@ that acted, `observed` counts matches that only would have. Summing over
 shadow soak comparable to the enforcing run that follows it.
 
 `rpz_zone_rules_skipped` climbing after a feed update means the publisher
-started emitting something the loader will not accept — the zone still works,
+started emitting something the loader will not accept, the zone still works,
 with fewer rules than intended.
 
 ## Local root
@@ -214,7 +214,7 @@ validation failure.
 
 ## Runtime
 
-The standard Go collectors are exported too — `go_goroutines`,
+The standard Go collectors are exported too: `go_goroutines`,
 `go_memstats_*`, `go_gc_duration_seconds`, `process_resident_memory_bytes`,
 `process_open_fds` and the rest.
 
@@ -249,17 +249,17 @@ sum(rate(aggressive_negative_hits_total[5m]))
 sum(rate(dns_localroot_answers_total[5m])) by (kind)
 ```
 
-One expression per block, because each of these is a query in its own right —
+One expression per block, because each of these is a query in its own right,
 pasting the three together is not valid PromQL.
 
-Rates, not a share — and that is not a presentation choice. There is no
+Rates, not a share, and that is not a presentation choice. There is no
 correct way to express any of them as a fraction of client traffic with the
 series that exist today.
 
 `dns_queries_total` is client-only by construction: the metrics middleware
 declares itself a client-traffic observer and the sub-pipeline leaves it out,
 so a resolver-private lookup never reaches it. The cache counters have no such
-gate. A DS or DNSKEY fetch, a DNS64 secondary lookup, an alias chase — each can
+gate. A DS or DNSKEY fetch, a DNS64 secondary lookup, an alias chase. Each can
 be answered from a validated cut or a denial proof and increment the numerator
 without the denominator moving. Divide one by the other and the result can
 exceed 1, which is the tell that the two are counted at different levels.
@@ -282,7 +282,7 @@ sum(rate(dns_queries_total{rcode="SERVFAIL"}[5m]))
   / sum(rate(dns_queries_total[5m]))
 ```
 
-**Fan-out p99 — how much work the heaviest one percent of queries causes**
+**Fan-out p99, how much work the heaviest one percent of queries causes**
 
 ```promql
 histogram_quantile(0.99, sum(rate(dns_recursion_fanout_ratio_bucket[5m])) by (le))
@@ -310,7 +310,7 @@ sum(rate(rpz_action_total[5m])) by (zone, action, outcome)
 **Local root copy going stale**
 
 The gauge is the age of the copy, so it is above zero almost all the time on a
-healthy resolver — alert on a threshold, not on the value being positive. The
+healthy resolver, alert on a threshold, not on the value being positive. The
 root zone refreshes on its own SOA schedule, so a day without a successful
 transfer is the signal:
 

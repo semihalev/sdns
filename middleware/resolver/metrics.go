@@ -13,7 +13,7 @@ import (
 
 // Resolution failure metrics. Classified at the central handler
 // error-return point so individual return sites stay clean. Closed
-// label sets — every reason is pre-registered below so the dynamic
+// label sets. Every reason is pre-registered below so the dynamic
 // path never hits a cold-create.
 var (
 	resolverFailures = metric.NewCounterVec(nil, prometheus.CounterOpts{
@@ -53,7 +53,7 @@ var (
 	resolverDNSSECUnsupAlg   = resolverDNSSECFailures.Register("unsupported_algorithm")
 	resolverDNSSECOther      = resolverDNSSECFailures.Register("other")
 
-	// Circuit breaker transitions. No per-server label — in resolver
+	// Circuit breaker transitions. No per-server label, in resolver
 	// mode the auth-server set is unbounded (every zone's
 	// nameservers). The aggregate trip/reset rate is the operator
 	// signal; per-server diagnosis lives in the existing zlog lines
@@ -69,7 +69,7 @@ var (
 	})
 
 	// Trust-anchor RFC 5011 lifecycle events. Keyed by transition
-	// only — the per-keytag breakdown lives in the zlog lines next
+	// only, the per-keytag breakdown lives in the zlog lines next
 	// to each increment. Operators alert on revoked/missing rates.
 	trustAnchorLifecycle = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_trust_anchor_lifecycle_total",

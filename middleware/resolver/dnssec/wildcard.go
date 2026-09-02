@@ -15,7 +15,7 @@ import (
 // against any owner name deeper than the wildcard because it canonicalises
 // the owner back to "*.<closest-encloser>" before hashing. On its own that
 // lets an attacker replay a zone's legitimately-signed wildcard RRSIG over
-// a concrete name that actually exists and hand it back with AD=1 — a
+// a concrete name that actually exists and hand it back with AD=1, a
 // forged-but-"authenticated" answer. RFC 4035 closes this by additionally
 // requiring proof that the owner name has no closer match than the
 // wildcard, i.e. that the "next closer" name does not exist.

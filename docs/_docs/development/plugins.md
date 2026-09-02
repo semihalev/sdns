@@ -67,7 +67,7 @@ go build -buildmode=plugin -o exampleplugin.so
 ## What loading enforces
 
 Three things are checked, and each failure is logged and skipped rather than
-fatal — one bad plugin does not stop the server:
+fatal, one bad plugin does not stop the server:
 
 - the file opens as a Go plugin;
 - it exports `New`;
@@ -81,6 +81,6 @@ your plugin whenever you upgrade sdns, and it means the plugin cannot be
 distributed as a binary independent of the sdns build it targets.
 
 If that is too brittle for your deployment, the alternative is to add the
-middleware to the tree and build sdns with it —
+middleware to the tree and build sdns with it,
 [Middleware]({{ '/docs/development/middleware/' | relative_url }}) describes the
 same interface, without the loading constraints.

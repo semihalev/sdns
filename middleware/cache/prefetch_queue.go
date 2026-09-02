@@ -116,7 +116,7 @@ func (pq *PrefetchQueue) worker() {
 }
 
 // processPrefetch executes a prefetch request. The claim on
-// req.Entry is released on every exit path — SetFromResponse
+// req.Entry is released on every exit path, SetFromResponse
 // classifies and stores (or skips, for rcodes it doesn't cache)
 // a fresh entry under the same key; the hot entry's prefetch
 // flag has to be cleared whether the new write happened or not,
@@ -138,7 +138,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	prefetchReq := req.Request.Copy()
 
 	// Force DO=1 on the refresh. The cache stores the COMPLETE answer
-	// (RRSIGs + AD) and is keyed on CD, not DO — DNSSEC is stripped
+	// (RRSIGs + AD) and is keyed on CD, not DO, DNSSEC is stripped
 	// per-client at serve time by edns. On the external path the cache
 	// sits below edns and stores the full answer; the prefetch sub-
 	// pipeline runs edns, so copying a DO=0 trigger's bit would let edns
@@ -173,7 +173,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 		return
 	}
 
-	// Key off the client request's CD bit — the same keying rule
+	// Key off the client request's CD bit, the same keying rule
 	// as the external chain writeback. prefetchReq may have been
 	// mutated by upstream middleware; using req.Request.CD
 	// preserves the dedup invariant that CD=1 and CD=0 entries
@@ -181,7 +181,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	//
 	// Pointer-CAS write-back (GHSA-mqfw-f48p-2vc8): this refresh
 	// started while req.Entry was live. If newer state replaced it
-	// meanwhile — a withdrawal NXDOMAIN, a re-delegated answer —
+	// meanwhile, a withdrawal NXDOMAIN, a re-delegated answer,
 	// storing the stale refresh would resurrect the old answer past
 	// the parent's decision. Only the exact entry that claimed the
 	// prefetch may be replaced.

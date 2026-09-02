@@ -70,7 +70,7 @@ func countingUpstream(t *testing.T, answer bool) (string, *atomic.Int64) {
 // The end of the arc, over real sockets: a delegation where every
 // address but the leader is slower than the leader. Those are the ones
 // exploring could never measure, because an explored address only ever
-// came back measured by winning its race — so the field showed a
+// came back measured by winning its race, so the field showed a
 // delegation gaining one address a minute with seventeen waiting, and the
 // genuinely slower ones waiting for good.
 func TestSlowerAuthoritiesAreMeasuredNotJustExplored(t *testing.T) {
@@ -79,7 +79,7 @@ func TestSlowerAuthoritiesAreMeasuredNotJustExplored(t *testing.T) {
 	// A lookup against loopback costs a fraction of a millisecond and a
 	// probe to these costs eighty, so an unpaced loop starts probes
 	// hundreds of times faster than the pool can retire them and the pool
-	// sheds nearly all of them — correctly, that being what it is for.
+	// sheds nearly all of them, correctly, that being what it is for.
 	// Real misses do not arrive at that rate. The pause keeps the test out
 	// of a regime it is not trying to measure.
 	const pace = 3 * time.Millisecond
@@ -151,8 +151,8 @@ func TestSlowerAuthoritiesAreMeasuredNotJustExplored(t *testing.T) {
 // a TLD's remaining ten or eleven authorities are never contacted again.
 //
 // Measured on a production resolver running this branch: two of thirteen
-// in use for com., net. and org. alike. This is that, in a fixture — two
-// authorities answering at similar speeds, eight silent — and it is the
+// in use for com., net. and org. alike. This is that, in a fixture, two
+// authorities answering at similar speeds, eight silent, and it is the
 // case the exploration exists for. Without it, all eight take zero
 // queries across two hundred lookups.
 func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
@@ -201,7 +201,7 @@ func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
 	// Waited for rather than counted out in lookups. Which of the two
 	// answering addresses takes the second slot is a random choice, so a
 	// fixed warm-up leaves the other one unmeasured about one run in
-	// seven — a coin this test has no reason to be flipping.
+	// seven, a coin this test has no reason to be flipping.
 	settled := time.Now().Add(5 * time.Second)
 	for !allMeasured(answered) && time.Now().Before(settled) {
 		runLookup()
@@ -236,8 +236,8 @@ func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
 // The ranking's decision has to reach the wire, and this is the shape it
 // reaches it in: a delegation of ten addresses where one answers and the
 // rest are unmeasured. The resolver starts the top two of every lookup in
-// parallel, so each miss sends exactly one query to an unmeasured address
-// — and that query is cancelled the moment the leader answers, so the
+// parallel, so each miss sends exactly one query to an unmeasured address,
+// and that query is cancelled the moment the leader answers, so the
 // address never comes back measured and stays tied with its peers.
 //
 // Which is the whole point. Nine addresses sharing one price is nine
@@ -289,7 +289,7 @@ func TestEveryUnmeasuredAuthorityIsEventuallyQueried(t *testing.T) {
 
 	// One lookup to establish a leader. On the first one nothing is
 	// measured, so the whole delegation is tied and the resolver walks
-	// down it until something answers — which contacts every address once
+	// down it until something answers, which contacts every address once
 	// and says nothing about how the slot behind the leader is chosen.
 	runLookup()
 	for _, hits := range silent {
@@ -324,7 +324,7 @@ func TestEveryUnmeasuredAuthorityIsEventuallyQueried(t *testing.T) {
 			untried, unmeasured, lookups, counts)
 	}
 
-	// None of them may be measured either — every one of those attempts
+	// None of them may be measured either, every one of those attempts
 	// was cancelled when the leader answered, and what an attempt took to
 	// be cancelled is not what the server is worth.
 	for _, s := range servers.List {

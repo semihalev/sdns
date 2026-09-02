@@ -39,11 +39,11 @@ are resolved through the same lookup a dial uses, CIDRs and enumerations are
 checked, TLS files are opened, and policy zones are compiled with the loaders
 the server runs. It reports **every** problem it finds, not just the first.
 
-A key that no setting claims fails `-t` — a typo, or a setting an older sdns
+A key that no setting claims fails `-t`, a typo, or a setting an older sdns
 understood. Startup only warns about those, so upgrading with a stale key in
 the file does not turn into an outage.
 
 ## Next
 
-- [Configuration reference]({{ '/docs/configuration/overview/' | relative_url }}) — every key, grouped by what it does
-- [Running as a service]({{ '/docs/deployment/service/' | relative_url }}) — systemd, containers, file permissions
+- [Configuration reference]({{ '/docs/configuration/overview/' | relative_url }}): every key, grouped by what it does
+- [Running as a service]({{ '/docs/deployment/service/' | relative_url }}): systemd, containers, file permissions

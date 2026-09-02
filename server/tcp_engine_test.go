@@ -115,10 +115,10 @@ func TestTCPEnginePrefixFirstHoldsNoJob(t *testing.T) {
 	}
 	// Every token is still home: idle connections acquired nothing.
 	if free, want := len(l.engine.smallTokens), cap(l.engine.smallTokens); free != want {
-		t.Fatalf("%d small tokens free, want %d — idle connections pinned slabs", free, want)
+		t.Fatalf("%d small tokens free, want %d, idle connections pinned slabs", free, want)
 	}
 	if free, want := len(l.engine.largeTokens), cap(l.engine.largeTokens); free != want {
-		t.Fatalf("%d large tokens free, want %d — idle connections pinned slabs", free, want)
+		t.Fatalf("%d large tokens free, want %d, idle connections pinned slabs", free, want)
 	}
 	// And they still serve.
 	q := new(dns.Msg)
@@ -148,14 +148,14 @@ func waitForRing(t *testing.T, e *tcpEngine, within time.Duration) {
 
 // ringSize is the small-slab ring these tests exhaust. It is the
 // connection cap, because a server cannot have more frames in flight
-// than connections — so the number of stalled clients it takes to own
+// than connections, so the number of stalled clients it takes to own
 // the ring is the number the cap admits.
 const ringSize = 8
 
 // TestTCPEngineStalledPrefixReleasesRing pins the slow-client bound: a
 // client that announces a frame and then goes quiet owns its slab for one
 // query budget, not for as long as it keeps the socket open. Enough of
-// them to own the whole ring is the availability case — before the bound,
+// them to own the whole ring is the availability case, before the bound,
 // they held it for free.
 func TestTCPEngineStalledPrefixReleasesRing(t *testing.T) {
 	addr, l, stop := startTCPEngine(t, echoHandler(), ringSize)
@@ -202,7 +202,7 @@ func TestTCPEngineStalledPrefixReleasesRing(t *testing.T) {
 // TestTCPEngineJobWaitBounded pins the other end of the same budget: with
 // every slab out, a connection arriving behind them waits inside its own
 // query budget and is dropped when it runs out. An unbounded wait here is
-// what turns a held ring into a wedged listener — nothing but shutdown
+// what turns a held ring into a wedged listener, nothing but shutdown
 // would ever wake the connections queued on it.
 func TestTCPEngineJobWaitBounded(t *testing.T) {
 	release := make(chan struct{})
@@ -301,7 +301,7 @@ func TestTCPEngineSilentClientReleasesJob(t *testing.T) {
 		out = append(out, prefix[:]...)
 		out = append(out, wireQ...)
 	}
-	// One burst, so the slab is held across every reply — and not a byte
+	// One burst, so the slab is held across every reply, and not a byte
 	// of them is ever read.
 	if _, err := conn.Write(out); err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestTCPEngineAcceptParityOverStream(t *testing.T) {
 }
 
 // TestDoTEngineRoundTrip drives one query through the owned engine behind
-// a tls.Listener — the DoT path is the TCP path plus the handshake, which
+// a tls.Listener, the DoT path is the TCP path plus the handshake, which
 // the first-frame deadline covers.
 func TestDoTEngineRoundTrip(t *testing.T) {
 	cert, key := generateTestCert(t, "dot.test")
@@ -570,7 +570,7 @@ func TestTCPEngineShutdownForcesBlockedConns(t *testing.T) {
 // its reply is not, and a signed answer of several kilobytes is ordinary
 // rather than exceptional. When the reply side was briefly sized like the
 // receive side, every one of those answers declined the byte path and was
-// packed into a buffer instead — an allocation on the path whose whole
+// packed into a buffer instead, an allocation on the path whose whole
 // point is not to have one, and invisible to a gate whose corpus is A
 // records.
 //
@@ -656,7 +656,7 @@ func TestSmallSlabServesASignedSizedReplyEndToEnd(t *testing.T) {
 		t.Fatalf("answer %v", resp.Answer)
 	}
 	if got := resp.Len(); got < replySize {
-		t.Fatalf("reply is %d bytes, want at least %d — the fixture no longer "+
+		t.Fatalf("reply is %d bytes, want at least %d, the fixture no longer "+
 			"exercises the size this pins", got, replySize)
 	}
 }

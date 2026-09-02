@@ -107,7 +107,7 @@ func TestWireChainMismatchNamesTheGate(t *testing.T) {
 // TestStrippedBodyCarriesNoDNSSEC pins what the stripped body is allowed to
 // contain. It is what a client that did not ask for DNSSEC receives, so a
 // signature surviving here would send DNSSEC records to a client that never
-// asked — the exact leak the DO=0 gate exists to prevent.
+// asked, the exact leak the DO=0 gate exists to prevent.
 func TestStrippedBodyCarriesNoDNSSEC(t *testing.T) {
 	signedMsg := wireFastEntry(t, "strip.example.com.", dns.TypeA, true)
 	entry := NewCacheEntryWithKey(signedMsg, time.Minute, 0, 1)
@@ -174,7 +174,7 @@ func TestUnsignedEntryHasNoStrippedBody(t *testing.T) {
 }
 
 // BenchmarkAdmitSignedEntry measures what the stripped body costs where it
-// is paid: admission, which happens on a cache miss — after a full recursion
+// is paid: admission, which happens on a cache miss, after a full recursion
 // and validation, and once per entry rather than once per hit.
 func BenchmarkAdmitSignedEntry(b *testing.B) {
 	const qname = "signed.example.com."

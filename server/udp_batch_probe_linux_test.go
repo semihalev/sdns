@@ -58,7 +58,7 @@ func TestRawMmsgProbe(t *testing.T) {
 		if errno == unix.EAGAIN {
 			return false
 		}
-		recvN, rerrn = int(n), errno //nolint:gosec // G115 — one-message probe
+		recvN, rerrn = int(n), errno //nolint:gosec // G115, one-message probe
 		return true
 	})
 	if err != nil || rerrn != 0 {
@@ -97,7 +97,7 @@ func TestRawMmsgProbe(t *testing.T) {
 		if errno == unix.EAGAIN {
 			return false
 		}
-		sentN, serrn = int(n), errno //nolint:gosec // G115 — one-message probe
+		sentN, serrn = int(n), errno //nolint:gosec // G115, one-message probe
 		return true
 	})
 	if err != nil || serrn != 0 || sentN != 1 {

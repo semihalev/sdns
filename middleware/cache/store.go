@@ -22,7 +22,7 @@ import (
 //
 // SetFromResponse keys on the caller-supplied keyCD rather than on
 // resp.CheckingDisabled to make the keying contract explicit at every
-// call site — Forwarder and Resolver both temporarily mutate CD on
+// call site, Forwarder and Resolver both temporarily mutate CD on
 // the upstream request, and silent reliance on resp.CheckingDisabled
 // is the kind of thing that splits CD=1 and CD=0 lookups across
 // stale entries when a future change forgets to restore.
@@ -53,7 +53,7 @@ type Store struct {
 	// sidecarEvaluator, when wired, is called once per admitted entry with
 	// that entry's own stored message; its result is stamped as the
 	// entry's sidecar before publication. Every admission door funnels
-	// through a stamp — the seam's contract is that no entry reaches the
+	// through a stamp, the seam's contract is that no entry reaches the
 	// positive cache unevaluated while an evaluator is wired. Written once
 	// at Setup, before the pipeline publishes; nil costs one field check.
 	sidecarEvaluator middleware.SidecarEvaluator
@@ -65,7 +65,7 @@ func (s *Store) SetSidecarEvaluator(ev middleware.SidecarEvaluator) {
 	s.sidecarEvaluator = ev
 }
 
-// stampSidecar evaluates msg — the entry's own stored records — and
+// stampSidecar evaluates msg, the entry's own stored records, and
 // stamps the result. Pre-publication entries are stamped with a plain
 // store; nothing else can hold them yet.
 func (s *Store) stampSidecar(e *CacheEntry, msg *dns.Msg) {
@@ -173,7 +173,7 @@ func (s *Store) LookupByKey(key uint64) (*CacheEntry, bool) {
 // LookupByKeyVerified is LookupByKey plus a full-key check: it confirms the
 // stored entry was admitted under exactly the preimage want describes before
 // returning it. Without this, two distinct preimages that collide under
-// xxhash64 would silently serve each other's answers — and because qnames
+// xxhash64 would silently serve each other's answers, and because qnames
 // are attacker-chosen, a collision can be searched for offline and used to
 // poison the cache.
 func (s *Store) LookupByKeyVerified(key uint64, want CacheKey) (*CacheEntry, bool) {
@@ -216,7 +216,7 @@ func entryMatchesWireQuestion(entry *CacheEntry, wireName []byte, qtype, qclass 
 // Both verifiers route through here so neither can quietly stop checking a
 // dimension the other still does: a 64-bit hash match is not evidence that
 // the entry belongs to this question, this CD partition, or this ECS
-// audience — only the preimage is.
+// audience, only the preimage is.
 func entryMatchesPreimage(entry *CacheEntry, qtype, qclass uint16, cd bool, scope netip.Prefix) bool {
 	if entry == nil || entry.question.Name == "" {
 		return false
@@ -227,8 +227,8 @@ func entryMatchesPreimage(entry *CacheEntry, qtype, qclass uint16, cd bool, scop
 }
 
 // equalNameASCIIFold reports whether two DNS names are equal under
-// ASCII-only case folding — exactly the normalization the cache key uses
-// (internal/cache.Key lowercases A–Z and nothing else). strings.EqualFold
+// ASCII-only case folding, exactly the normalization the cache key uses
+// (internal/cache.Key lowercases A to Z and nothing else). strings.EqualFold
 // would be broader (full Unicode case folding), so two names the key hash
 // treats as distinct could compare equal here and weaken the collision
 // check; matching the hash's folding keeps the verification exact.
@@ -265,11 +265,11 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 	if req == nil {
 		return nil, false
 	}
-	// Answers handed out here are consumed by the resolver — DS and DNSKEY
+	// Answers handed out here are consumed by the resolver, DS and DNSKEY
 	// lookups above all. Only denial shapes bind the request tree to their
 	// lifetime: a delegation held insecure by a cached DS denial must not
 	// outlive the proof that said so. A positive consult is a validation
-	// input, not part of the answer's lineage — folding its remaining life
+	// input, not part of the answer's lineage, folding its remaining life
 	// into the tree collapsed every fresh answer's served TTL to the oldest
 	// key consulted on the walk, and signature validity already bounds
 	// validated answers at admission.
@@ -332,7 +332,7 @@ func (s *Store) LookupNXDomainCut(req *dns.Msg) (*nxDomainCutEntry, bool) {
 }
 
 // LookupNXDomainCutWire is LookupNXDomainCut for a wire-born question:
-// same store, same walk, no decoded message. CD gating is the caller's —
+// same store, same walk, no decoded message. CD gating is the caller's,
 // the wire path mirrors the Msg entry's bypass conditions inline.
 func (s *Store) LookupNXDomainCutWire(name []byte, qclass uint16) (*nxDomainCutEntry, bool) {
 	if s == nil || s.nxDomainCuts == nil || s.sharedDenialDisabled {
@@ -351,7 +351,7 @@ func (s *Store) LookupFailureWire(name []byte, qtype, qclass uint16, cd bool) (F
 }
 
 // sharedDenialImpossible reports that no RFC 8198 evaluation can ever
-// run in this process — construction-time configuration. With denial
+// run in this process, construction-time configuration. With denial
 // impossible on every path, a zone-kind failure hit cannot be shadowed
 // by synthesis, so the wire gate may serve it without a witness.
 func (s *Store) sharedDenialImpossible() bool {
@@ -465,7 +465,7 @@ func (s *Store) FailureRetryKey(req *dns.Msg, scope netip.Prefix) (uint64, bool)
 // RecordFailure records a question-specific terminal resolution failure.
 // witness must be the miss witness captured at the moment the recording
 // request's denial rung ran and missed (Cache.ServeDNS stashes it on the
-// response writer), and nil from every path that never ran the rung — a
+// response writer), and nil from every path that never ran the rung, a
 // CD or client-ECS tree that bypassed it, a compatibility Set, a scoped
 // insert. A witness fabricated later would assert a miss nobody
 // established at a moment nobody checked.
@@ -494,7 +494,7 @@ func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefi
 
 // failureMissWitness captures the denial-zone state a failing question
 // saw (denial_proof_witness.go). With RFC 8198 handling disabled the
-// witness is moot — the wire gate treats disabled the same way.
+// witness is moot, the wire gate treats disabled the same way.
 func (s *Store) failureMissWitness(qname string, qclass uint16) []denialWitnessPair {
 	if s == nil || s.rfc8198Disabled || s.sharedDenialDisabled || s.denialProofs == nil {
 		return nil
@@ -504,7 +504,7 @@ func (s *Store) failureMissWitness(qname string, qclass uint16) []denialWitnessP
 
 // DenialMissHoldsWire reports whether a failure entry's record-time
 // proof that aggressive denial does not apply is still valid for this
-// wire-born name — the condition under which the wire path may serve
+// wire-born name, the condition under which the wire path may serve
 // the failure without materializing.
 func (s *Store) DenialMissHoldsWire(name []byte, qclass uint16, hit FailureHit) bool {
 	if s == nil || s.rfc8198Disabled || s.sharedDenialDisabled || s.denialProofs == nil {
@@ -601,7 +601,7 @@ func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.
 // were keyed under an ECS scope (RFC 7871 §7.1.2). scope must be the
 // prefix key was computed from: the entry carries it, and the hit-path
 // verifier compares the two so a colliding key cannot cross ECS
-// audiences. The entry's PrefetchEligible is false — the prefetch worker
+// audiences. The entry's PrefetchEligible is false, the prefetch worker
 // has no client IP to derive ECS from, so refreshing a scoped entry would
 // lose its scope and store the wrong-audience answer.
 func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, scope netip.Prefix, cutUntil time.Time, cutKey uint64) {
@@ -690,7 +690,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 }
 
 // ReplaceIfCurrent stores resp under key only if expected is still
-// the live entry for that key — the pointer-CAS late-write guard for
+// the live entry for that key, the pointer-CAS late-write guard for
 // asynchronous refreshes (GHSA-mqfw-f48p-2vc8). A prefetch captures
 // the entry that claimed it; by the time its refresh returns, newer
 // state (a withdrawal NXDOMAIN, a re-delegated answer) may have
@@ -704,7 +704,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 //     FailureCache; this branch preserves the exported Store/NegativeCache
 //     contract for programmatic callers and manually seeded legacy entries.
 //   - The CAS stays within one sub-cache. A negative entry refreshing
-//     to a positive answer is dropped rather than promoted — the two
+//     to a positive answer is dropped rather than promoted, the two
 //     caches can't be swapped atomically, and the negative entry's
 //     short TTL re-resolves naturally.
 func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg, cutUntil time.Time, cutKey uint64) bool {
@@ -785,7 +785,7 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 //
 // Scoped entries don't have a deterministic key the caller could
 // reproduce without enumerating every (qname, scope) the cache
-// has ever seen — there's no per-qname index. We sweep them with
+// has ever seen, there's no per-qname index. We sweep them with
 // ForEach: collect matching keys in one pass (snapshotting the
 // per-segment locks individually), then Remove outside the
 // iteration to avoid mutate-during-iterate hazards.
@@ -820,7 +820,7 @@ func (s *Store) Purge(q dns.Question) {
 		}
 		eq := e.question
 		// DNS names compare case-insensitively (RFC 4343). The
-		// unscoped purge path is already case-insensitive — its
+		// unscoped purge path is already case-insensitive, its
 		// key derives from internal/cache.Key which lowercases the
 		// name during hashing. The scoped sweep enumerates raw
 		// stored Questions, so the comparison has to match the

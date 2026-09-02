@@ -9,14 +9,14 @@ import (
 
 // ClientOnly marks a Handler as serving real client traffic only.
 // Middlewares that implement this method returning true are excluded
-// from the internal sub-pipeline built in Setup — they exist to
+// from the internal sub-pipeline built in Setup, they exist to
 // observe, rate-limit, or authorise external client queries, and
 // either add noise (metrics, dnstap, accesslog) or actively hurt
 // (ratelimit, accesslist, reflex) when an internal sub-query
 // traverses them.
 //
 // The default for handlers that do NOT implement ClientOnly is
-// "include in the internal sub-pipeline" — safe for anything
+// "include in the internal sub-pipeline", safe for anything
 // participating in query resolution (hostsfile, blocklist, cache,
 // failover, resolver, forwarder, etc).
 type ClientOnly interface {
@@ -24,8 +24,8 @@ type ClientOnly interface {
 }
 
 // InlineBarrier marks the Handler that makes a pipeline safe to run on a
-// transport reader: it honors Chain.InlineOnly by declining blocking work
-// — an upstream resolution, a queue wait — with MarkHandoff instead of
+// transport reader: it honors Chain.InlineOnly by declining blocking work,
+// an upstream resolution, a queue wait, with MarkHandoff instead of
 // running it. The cache is the barrier in the standard pipeline. The
 // server enables the inline fast path only when some handler declares
 // this; a pipeline without a barrier would carry a reader all the way
@@ -33,12 +33,12 @@ type ClientOnly interface {
 // every packet behind it on that socket.
 //
 // Handlers whose ServeDNS entry has side effects that must happen exactly
-// once per client query — a rate-limit token, a scored query, a tap's
-// query frame, a per-query statistic — check Chain.Replay and skip the
+// once per client query, a rate-limit token, a scored query, a tap's
+// query frame, a per-query statistic, check Chain.Replay and skip the
 // effect on the worker pass that finishes a handed-off query; their
 // response-side writer wrappers install on both passes, because only the
 // pass that writes will trip them. Handlers keying purely off the
-// response — metrics and accesslog gate on Written() — need no check.
+// response, metrics and accesslog gate on Written(), need no check.
 type InlineBarrier interface {
 	InlineBarrier() bool
 }

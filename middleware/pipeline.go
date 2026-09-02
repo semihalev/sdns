@@ -12,7 +12,7 @@ import (
 // Registry.Build. Handler fields are set at construction time and
 // never mutated, so every read is safe without synchronization.
 // chainPool is internally mutable (sync.Pool's contract) but serves
-// the same Pipeline across all callers — pooling *Chain keeps
+// the same Pipeline across all callers, pooling *Chain keeps
 // per-internal-query allocations off the hot path for Queryer.
 type Pipeline struct {
 	handlers   []Handler
@@ -71,7 +71,7 @@ func (p *Pipeline) List() []string {
 // middlewares (hostsfile, blocklist, kubernetes, as112), cache,
 // failover, and resolver/forwarder stay.
 //
-// The returned Pipeline is independent of the receiver — it has its
+// The returned Pipeline is independent of the receiver. It has its
 // own byName index and handler slice. The names list carries forward
 // the full registered list for diagnostics.
 func (p *Pipeline) SubPipeline(skip ...string) *Pipeline {
@@ -108,7 +108,7 @@ func (p *Pipeline) NewChain() *Chain {
 }
 
 // PutChain returns ch to the pipeline's pool. Safe to call with a
-// chain from any pipeline — the sync.Pool is per-pipeline so cross
+// chain from any pipeline, the sync.Pool is per-pipeline so cross
 // put/get only causes a pool mismatch (never a correctness bug),
 // but callers should pair PutChain with NewChain from the same
 // Pipeline to keep the pool warm.
@@ -168,7 +168,7 @@ var (
 //  1. Build queryerSub by filtering handlers that report
 //     ClientOnly()==true.
 //  2. Build prefetchSub as queryerSub without the cache handler
-//     (named "cache") — prefetch must reach the upstream resolver
+//     (named "cache"), prefetch must reach the upstream resolver
 //     / forwarder instead of returning its own about-to-expire
 //     entry.
 //  3. Construct a PipelineQueryer for each sub-pipeline.
@@ -176,7 +176,7 @@ var (
 //     / SetStore on anything that implements them, sourcing the
 //     Store from whichever handler implements StoreProvider.
 //
-// This keeps the main package free of wiring logic — every
+// This keeps the main package free of wiring logic, every
 // middleware declares its participation in the internal chain
 // (ClientOnly), and every consumer declares what it needs
 // (QueryerSetter, StoreSetter, etc.).
@@ -198,13 +198,13 @@ func Setup(cfg *config.Config) {
 }
 
 // cacheHandlerName is the registered name of the cache middleware,
-// special-cased in prefetchSub construction — the prefetch
+// special-cased in prefetchSub construction, the prefetch
 // sub-pipeline drops the cache middleware's ServeDNS/WriteMsg
 // path so a refresh reaches upstream instead of returning its
 // own about-to-expire entry. The cache STORE is still shared:
 // resolver.subQuery reads and writes through the injected
 // middleware.Store even when it runs inside the prefetch
-// sub-pipeline, which is intentional — DNSSEC records warmed by
+// sub-pipeline, which is intentional, DNSSEC records warmed by
 // a prefetch are immediately available to subsequent client
 // queries.
 const cacheHandlerName = "cache"
@@ -232,10 +232,10 @@ func (p *Pipeline) autoWire() {
 	pq := NewPipelineQueryer(prefetchSub)
 
 	// Collect every StoreProvider so we can warn on multiple
-	// registrations (first wins — stable order matches pipeline
+	// registrations (first wins, stable order matches pipeline
 	// order, which matches registry order). Track StoreSetter
 	// presence separately so we can warn if setters exist with
-	// no provider — sub-queries in that deployment silently run
+	// no provider, sub-queries in that deployment silently run
 	// uncached.
 	var (
 		store             Store

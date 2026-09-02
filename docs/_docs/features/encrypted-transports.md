@@ -23,7 +23,7 @@ tlsprivatekey  = "/etc/sdns/privkey.pem"
 
 ## Certificates
 
-Both files are PEM. Use the full chain for the certificate, not just the leaf —
+Both files are PEM. Use the full chain for the certificate, not just the leaf,
 clients that cannot build a path to a trusted root will refuse the connection,
 and a DoT client failing that way looks like an outage rather than a
 misconfiguration.
@@ -32,8 +32,8 @@ misconfiguration.
 read is caught before the restart.
 
 Certificates do not need a restart to renew. sdns watches the directories
-holding both files with fsnotify — directories rather than the files
-themselves, so an ACME client swapping a symlink is noticed — and re-checks
+holding both files with fsnotify, directories rather than the files
+themselves, so an ACME client swapping a symlink is noticed, and re-checks
 every five minutes in case an event is missed. `SIGHUP` forces an immediate
 reload. A replacement that fails to load leaves the previous certificate in
 place.
@@ -44,7 +44,7 @@ place.
 one to enable if you want ordinary devices to use your resolver privately.
 
 **DoH** is what browsers speak. It shares port 443 with HTTPS, which is the
-point — it is indistinguishable from ordinary web traffic on the wire.
+point. It is indistinguishable from ordinary web traffic on the wire.
 
 **DoQ** is the newest and least widely supported. It avoids the head-of-line
 blocking DoT inherits from TCP.
@@ -74,5 +74,5 @@ dns_listener_errors_total   listener errors, by transport
 ## Access control still applies
 
 `accesslist` is enforced on every transport. Enabling DoH does not create a
-second door into the resolver with different rules — a client refused on UDP is
+second door into the resolver with different rules, a client refused on UDP is
 refused over HTTPS too.

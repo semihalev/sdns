@@ -9,7 +9,7 @@ import (
 )
 
 // authorityServers builds a delegation's worth of servers the way the
-// resolver's own producers do — from decoded glue addresses.
+// resolver's own producers do, from decoded glue addresses.
 func authorityServers(tb testing.TB, count int) []*authority.Server {
 	tb.Helper()
 	servers := make([]*authority.Server, 0, count)
@@ -171,7 +171,7 @@ func TestDedupeAuthorityServersDoesNotAllocate(t *testing.T) {
 // only sound while a server carrying a decoded Endpoint spells that endpoint
 // exactly as CanonicalResolutionEndpoint would. If a constructor ever stored a
 // different spelling, one tuple would count under two keys and the RFC 9520
-// attempt limit would admit twice what it should — silently.
+// attempt limit would admit twice what it should, silently.
 func TestServerAddrIsAlreadyCanonical(t *testing.T) {
 	for _, spelling := range []string{
 		"192.0.2.1:53",

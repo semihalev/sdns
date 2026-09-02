@@ -27,7 +27,7 @@ const contentTypeDNS = "application/dns-message"
 
 // dohExchange POSTs req to a DoH endpoint (RFC 8484) and decodes the
 // wire-format response. The http.Client is supplied by the caller and
-// reused across queries — it carries the pinned-IP transport / HTTP2
+// reused across queries, it carries the pinned-IP transport / HTTP2
 // connection pool, so it must never be constructed per call.
 func dohExchange(ctx context.Context, req *dns.Msg, url string, client *http.Client) (*dns.Msg, error) {
 	body, err := req.Pack()
@@ -86,7 +86,7 @@ func dohExchange(ctx context.Context, req *dns.Msg, url string, client *http.Cli
 	// Validate the response transaction ID. RFC 8484 §4.1 says DoH
 	// clients SHOULD use DNS ID 0 for cache friendliness, and several
 	// compliant servers normalise the response ID to 0 regardless of
-	// what the request carried — so accept either an exact echo or a
+	// what the request carried, so accept either an exact echo or a
 	// zero. Anything else is a buggy or hostile upstream.
 	if resp.Id != req.Id && resp.Id != 0 {
 		return nil, fmt.Errorf("doh response ID mismatch: got %d, want %d or 0", resp.Id, req.Id)

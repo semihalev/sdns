@@ -1077,7 +1077,7 @@ func TestServeStaleReadPreservesPrefetchCAS(t *testing.T) {
 
 // TestServeStaleReEvaluatesLeaseAfterASlowChase pins the clock each candidate
 // is judged on. Completing an earlier candidate's alias can spend real time on
-// a failing sub-resolution, and the delegation lease is an absolute instant —
+// a failing sub-resolution, and the delegation lease is an absolute instant,
 // so a later candidate must be re-checked against the time it is actually
 // reached at, or one whose lease ran out during that chase is served after the
 // ceiling that GHSA-mqfw-f48p-2vc8 put in place.
@@ -1094,7 +1094,7 @@ func TestServeStaleReEvaluatesLeaseAfterASlowChase(t *testing.T) {
 	scope := netip.MustParsePrefix("203.0.113.0/24")
 
 	// The narrow candidate needs completion, and its chase will be slow and
-	// end in failure — so the loop moves on to the shared candidate.
+	// end in failure, so the loop moves on to the shared candidate.
 	aliasBody := new(dns.Msg)
 	aliasBody.SetReply(req)
 	aliasBody.Answer = []dns.RR{&dns.CNAME{
@@ -1103,8 +1103,8 @@ func TestServeStaleReEvaluatesLeaseAfterASlowChase(t *testing.T) {
 	}}
 	seedStaleEntry(t, c, aliasBody, scope, time.Second, time.Hour)
 
-	// The shared candidate is servable when the walk starts — its lease is
-	// over the one-second floor an advertised TTL needs — and is expired by
+	// The shared candidate is servable when the walk starts. Its lease is
+	// over the one-second floor an advertised TTL needs, and is expired by
 	// the time the chase above returns.
 	const lease = 1200 * time.Millisecond
 	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.90"), netip.Prefix{}, time.Second, lease)

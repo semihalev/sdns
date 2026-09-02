@@ -29,8 +29,8 @@ func (directPackStub) ServeDNS(_ context.Context, ch *middleware.Chain) {
 
 // TestDirectPackOverRealSockets sends real queries through the SDNS-owned
 // UDP and TCP listeners, which are constructed with the direct handler: the
-// response travels as pooled-packed bytes through the transport's raw Write —
-// with its two-byte length prefix on the stream side — and a stock DNS
+// response travels as pooled-packed bytes through the transport's raw Write,
+// with its two-byte length prefix on the stream side, and a stock DNS
 // client has to parse it as if nothing changed.
 func TestDirectPackOverRealSockets(t *testing.T) {
 	middleware.Reset()

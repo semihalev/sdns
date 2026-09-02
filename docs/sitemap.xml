@@ -4,7 +4,7 @@ sitemap: false
 ---
 {%- comment -%}
 Overrides jekyll-sitemap, which takes lastmod from page.last_modified_at or
-page.date — and a collection document with neither falls back to the build
+page.date, and a collection document with neither falls back to the build
 time, so every deploy claimed all 28 pages had just changed. A sitemap with no
 lastmod tells crawlers nothing, which is better than telling them something
 untrue. Restore the field the day pages carry a real modification date.

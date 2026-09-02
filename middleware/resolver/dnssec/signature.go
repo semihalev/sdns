@@ -46,8 +46,8 @@ func signatureBinding(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 		// On a label boundary, not a string suffix. RFC 4035 §5.3.1 requires
 		// the signer to name the zone containing the RRset, and a plain
 		// suffix test reads evilexample.com. as inside example.com. The
-		// library settles for the suffix — its own comment calls that the
-		// best it can do without SOA context — and the resolver's zone
+		// library settles for the suffix, its own comment calls that the
+		// best it can do without SOA context, and the resolver's zone
 		// containment check catches it a layer up, but a check that means
 		// something only in the presence of another one is worth fixing
 		// where it is written.
@@ -60,8 +60,8 @@ func signatureBinding(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 // verifySignature checks an RRSIG against a DNSKEY, returning nil when the
 // signature is valid.
 //
-// The canonical signed data is this package's own — the construction the
-// wide-exponent RSA path has always used — and the cryptography is the
+// The canonical signed data is this package's own, the construction the
+// wide-exponent RSA path has always used, and the cryptography is the
 // standard library's. What it avoids is the library's fixed 4096-octet
 // signed-data buffer, allocated for every signature of every response, and
 // re-deriving the key material and key tag on each one.
@@ -93,7 +93,7 @@ func verifySignature(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 		return err
 	}
 	// A signature that does not decode, or does not have the shape its
-	// algorithm requires, is a bad signature — the key it names is present
+	// algorithm requires, is a bad signature, the key it names is present
 	// and fine. The distinction is wire-visible: it decides which EDE the
 	// client is told.
 	signature, err := fromBase64([]byte(sig.Signature))

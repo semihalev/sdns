@@ -112,7 +112,7 @@ func TestUDPEngineServes(t *testing.T) {
 // TestUDPEngineAcceptParity pins the library server's pre-handler
 // semantics on raw datagrams: silence for garbage and responses, NOTIMP
 // for foreign opcodes, FORMERR for count violations and undecodable
-// bodies — with ID, opcode, and RD echoed on rejects.
+// bodies, with ID, opcode, and RD echoed on rejects.
 func TestUDPEngineAcceptParity(t *testing.T) {
 	handlerCalled := make(chan struct{}, 16)
 	addr, stop := startEngine(t, rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
@@ -203,7 +203,7 @@ func TestUDPEngineAcceptParity(t *testing.T) {
 
 	// Library parity quirk, pinned deliberately: Unpack tolerates a
 	// truncated question section (QDCOUNT=1, no bytes), so the packet
-	// reaches the handler with an empty question — where the real
+	// reaches the handler with an empty question, where the real
 	// pipeline's ingress guard answers FORMERR (Test_ServerEmptyQuestion).
 	{
 		pkt := header(13, 0, 1, 0, 0, 0)
@@ -244,7 +244,7 @@ func TestUDPEngineAcceptParity(t *testing.T) {
 
 // TestUDPEngineShedsWhenSaturated pins the load-shedding contract: with a
 // blocked handler, an empty ring and the stretch at its bound, excess
-// packets are dropped while the reader keeps consuming — and the engine
+// packets are dropped while the reader keeps consuming, and the engine
 // drains cleanly afterwards.
 func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 	// Saturation is the whole lease cap, so the plan's headroom is
@@ -279,7 +279,7 @@ func TestUDPEngineShedsWhenSaturated(t *testing.T) {
 	// What bounds this is the ring plus the stretch: two workers, four
 	// queued, a batch in the reader's hand, and the spares above. A packet
 	// arriving with no slab left anywhere must be shed rather than block
-	// the reader — saturation costs drops, never the socket. (Neither a
+	// the reader, saturation costs drops, never the socket. (Neither a
 	// full queue nor an empty ring is a drop on its own: the first is
 	// served on its own goroutine and the second borrows a spare, which is
 	// what a miss-heavy resolver needs and what a fixed ring used to cap.)

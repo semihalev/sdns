@@ -106,8 +106,8 @@ func runAttemptWith(t *testing.T, r *Resolver, server *authority.Server, probing
 
 // Exploring is worth only what it brings back, and until now it brought
 // back nothing. The ranking picked an address whose worth was out of
-// date, the resolver sent it the second query, the leader answered first
-// — as it must, being the fastest server in the list — and the lookup
+// date, the resolver sent it the second query, the leader answered first,
+// as it must, being the fastest server in the list, and the lookup
 // returned and cancelled it before it could reply. So an address was only
 // ever measured by winning the race outright, which on a production
 // delegation meant one new address a minute with seventeen waiting, and
@@ -157,7 +157,7 @@ func TestAProbeIsShedWhenThePoolIsFull(t *testing.T) {
 	runAttempt(t, r, server, true, 10*time.Millisecond)
 
 	if got := server.SmoothedRTT(); got != 0 {
-		t.Fatalf("a shed probe measured %v — it outlived its lookup without a slot", got)
+		t.Fatalf("a shed probe measured %v, it outlived its lookup without a slot", got)
 	}
 }
 

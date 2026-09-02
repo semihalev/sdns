@@ -9,9 +9,9 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Resolution itself — an ordinary answer, QNAME minimisation, NXDOMAIN,
+// Resolution itself, an ordinary answer, QNAME minimisation, NXDOMAIN,
 // NODATA, an authority that never replies, the root's own keys, and every
-// DNSSEC verdict from a valid chain to a DS that matches no key — is
+// DNSSEC verdict from a valid chain to a DS that matches no key, is
 // covered against a signed loopback namespace in hermetic_resolver_test.go
 // and hermetic_dnssec_test.go. Those cases used to be borrowed from
 // third-party zones, which made them fail whenever a zone changed its

@@ -5,7 +5,7 @@ import "testing"
 // TestAppendCanonicalKeyAgreesWithCanonicalCompare pins the key to the
 // comparison: names the comparison orders equal share a key, names it keeps
 // apart do not. Escaped and plain spellings, rooted and unrooted, ASCII
-// case merge; a Kelvin sign — which a Unicode fold turns into k — stays a
+// case merge; a Kelvin sign, which a Unicode fold turns into k, stays a
 // different name, as it is on the wire.
 func TestAppendCanonicalKeyAgreesWithCanonicalCompare(t *testing.T) {
 	key := func(name string) string {

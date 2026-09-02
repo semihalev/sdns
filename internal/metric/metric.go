@@ -3,7 +3,7 @@
 //
 // # Why it exists
 //
-// A direct Prometheus counter is already one atomic add internally —
+// A direct Prometheus counter is already one atomic add internally,
 // fast in isolation, but a single shared cache line under heavy
 // concurrent contention (~33 ns/op on an 8-core M5). The Vec form
 // adds a per-call WithLabelValues map lookup that pushes the
@@ -14,7 +14,7 @@
 //
 //   - For an unlabeled Counter: runtime.procPin + an atomic add on a
 //     per-CPU shard. ~2 ns/op under 8-core contention. There is no
-//     shared cache line — each P writes its own.
+//     shared cache line, each P writes its own.
 //   - For a CounterVec: an atomic.Pointer load of an immutable label-
 //     tuple map (rare write, COW) + map lookup, then the same
 //     per-CPU shard add as above. ~7 ns/op under 8-core contention
@@ -29,12 +29,12 @@
 // 1 s; override with SetFlushInterval BEFORE the first counter is
 // created). Each tick sums every Counter's shards and pushes the
 // delta into the underlying Prometheus counter via Add. Prometheus'
-// scraped value therefore lags by at most one flush interval —
+// scraped value therefore lags by at most one flush interval,
 // invisible at the typical 15-s scrape, since rate() operates over
 // windows that dwarf the flush interval.
 //
 // At shutdown, callers MUST invoke Stop() to drain the final flush
-// before the process exits — otherwise up to one flush interval of
+// before the process exits, otherwise up to one flush interval of
 // counts is lost. Stop is safe to call multiple times and from
 // multiple goroutines concurrently.
 //
@@ -57,13 +57,13 @@
 // Concurrency: Counter.Inc/Add and CounterVec.WithLabelValues are
 // safe for unlimited concurrent calls. The flusher runs in one
 // dedicated goroutine and reads each Counter's lastSent without
-// synchronization — that field is owned by the flusher; the
+// synchronization. That field is owned by the flusher; the
 // registry's flushMu serialises all flush passes.
 //
 // # Limitations
 //
-// CounterVec is intended for CLOSED label sets — qtypes, rcodes,
-// named outcomes, etc. — where the cardinality is bounded by code
+// CounterVec is intended for CLOSED label sets, qtypes, rcodes,
+// named outcomes, etc., where the cardinality is bounded by code
 // rather than by traffic. There is no Delete or unregister API:
 // every distinct label tuple stays in the COW map and the flush
 // registry for the rest of the process lifetime. Metrics with
@@ -150,7 +150,7 @@ func NewCounter(reg prometheus.Registerer, opts prometheus.CounterOpts) *Counter
 func (c *Counter) Inc() { c.Add(1) }
 
 // Add adds delta to the counter. Panics on negative delta, matching
-// prometheus.Counter.Add semantics — a negative add would also
+// prometheus.Counter.Add semantics, a negative add would also
 // silently deduct from a future positive add by lowering sum below
 // lastSent, so refusing it at the call site is the loud-failure
 // behaviour callers expect.
@@ -164,7 +164,7 @@ func (c *Counter) Add(delta int64) {
 }
 
 // Value returns the live cross-shard sum. Cheap (8 atomic loads),
-// but not free — callers should not poll it on a hot path. Used by
+// but not free, callers should not poll it on a hot path. Used by
 // the flusher and by tests.
 func (c *Counter) Value() int64 {
 	var sum int64
@@ -246,7 +246,7 @@ func (cv *CounterVec) Register(values ...string) *Counter {
 }
 
 // WithLabelValues returns the sharded Counter for the given label
-// tuple, creating one on first use. Panics on arity mismatch — same
+// tuple, creating one on first use. Panics on arity mismatch, same
 // loud failure as prometheus.CounterVec.WithLabelValues; without
 // this guard a bad-arity call could collide-hit an existing cached
 // key and silently increment the wrong series.
@@ -279,7 +279,7 @@ func (cv *CounterVec) WithLabelValues(values ...string) *Counter {
 	pb := keyBufPool.Get().(*[]byte)
 	*pb = encodeKey((*pb)[:0], values)
 
-	// Alloc-free string view of the encoded bytes — valid only while
+	// Alloc-free string view of the encoded bytes, valid only while
 	// pb is checked out and unmodified. Used purely for the map
 	// lookup, which neither retains nor mutates the key. The unsafe
 	// is bounded: the resulting string never escapes this function
@@ -303,7 +303,7 @@ func (cv *CounterVec) WithLabelValues(values ...string) *Counter {
 // With2 is WithLabelValues for a two-label vector with caller-owned key
 // scratch: the encoded lookup key lives in scratch (a stack array at the
 // observation site), so the hot hit path touches neither the buffer pool
-// nor the allocator — the pool's contents are collectable, which the
+// nor the allocator, the pool's contents are collectable, which the
 // zero-path gates count. scratch needs room for both values plus their
 // uvarint length prefixes; too small falls back to the pooled path.
 func (cv *CounterVec) With2(scratch []byte, v1, v2 string) *Counter {
@@ -338,7 +338,7 @@ func (cv *CounterVec) create(key string, values []string) *Counter {
 	cv.writeMu.Lock()
 	defer cv.writeMu.Unlock()
 
-	// Re-check under the lock — another goroutine may have created
+	// Re-check under the lock, another goroutine may have created
 	// this tuple between our Load and our acquire of writeMu.
 	cur := cv.m.Load()
 	if c, ok := (*cur)[key]; ok {
@@ -352,7 +352,7 @@ func (cv *CounterVec) create(key string, values []string) *Counter {
 	// publicly findable via cv.m. If we published first, a brief
 	// window exists where another goroutine could WithLabelValues +
 	// Inc, while a concurrent FlushAll snapshot misses the not-yet-
-	// registered counter — the increment would never reach
+	// registered counter. The increment would never reach
 	// Prometheus, and at shutdown a final flush would drop it
 	// silently. Counter.flush on an empty (un-incremented) counter
 	// is a no-op, so a spuriously-early flush here is harmless.
@@ -388,7 +388,7 @@ func encodeKey(b []byte, values []string) []byte {
 // There is exactly one default registry per process.
 //
 // mu guards the counters slice (write side: add; read side: snapshot
-// inside flushAll). flushMu serialises flushAll itself — Counter.flush
+// inside flushAll). flushMu serialises flushAll itself, Counter.flush
 // performs a read-modify-write on lastSent without atomics, so two
 // concurrent flushes on the same counter would race on lastSent and
 // could double-count or lose deltas. flushMu is taken for the whole
@@ -410,7 +410,7 @@ func (r *Registry) add(c *Counter) {
 // flushAll snapshots the slice under r.mu, then runs flush on each
 // counter under r.flushMu. The two locks are intentionally separate:
 // mu must not be held while a Counter is flushing (the flush might
-// allocate, and Prometheus' Add takes its own lock — holding mu
+// allocate, and Prometheus' Add takes its own lock, holding mu
 // across that would block new metric registrations). flushMu must
 // be held across the whole pass to keep Counter.flush single-writer.
 //
@@ -431,7 +431,7 @@ func (r *Registry) flushAll() {
 // shutdown and in tests.
 func FlushAll() { defaultRegistry.flushAll() }
 
-// Flusher state — process-singleton, started lazily on the first
+// Flusher state, process-singleton, started lazily on the first
 // NewCounter / NewCounterVec call so the package is impossible to
 // use unsafely (a forgotten StartFlusher used to mean silent zeros
 // on scrape, which is worse than any complexity).
@@ -466,14 +466,14 @@ func SetFlushInterval(d time.Duration) {
 }
 
 // ensureFlusher starts the background goroutine on first call.
-// Idempotent — subsequent calls are no-ops. Called automatically
+// Idempotent, subsequent calls are no-ops. Called automatically
 // by NewCounter and NewCounterVec.
 //
 // The interval read and the started transition both happen under
 // flusherIntervalMu so SetFlushInterval can't slip between them:
 // either it runs before the lock is taken (its update is observed),
 // or it runs after Store(true) commits (it panics). It cannot
-// "succeed too late" — return successfully while the goroutine
+// "succeed too late", return successfully while the goroutine
 // silently uses the old interval. Channels are allocated BEFORE
 // the lock so a concurrent Stop() that observes started=true
 // always finds non-nil channels.
@@ -510,7 +510,7 @@ func ensureFlusher() {
 // never started (no counters were ever registered), Stop is a
 // no-op.
 //
-// Callers MUST invoke Stop at shutdown — otherwise the last flush
+// Callers MUST invoke Stop at shutdown, otherwise the last flush
 // interval of counts is lost.
 func Stop() {
 	if !flusherStarted.Load() {
@@ -523,7 +523,7 @@ func Stop() {
 }
 
 // resetForTest clears registry + flusher state so a follow-up test
-// starts from scratch. Tests only — never call from production code.
+// starts from scratch. Tests only, never call from production code.
 func resetForTest() {
 	defaultRegistry.mu.Lock()
 	defaultRegistry.counters = nil

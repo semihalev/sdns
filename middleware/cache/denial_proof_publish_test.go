@@ -13,8 +13,8 @@ import (
 // TestDenialProofAdmissionPublishesOnce pins the cost of admitting one proof
 // into a zone that already holds many.
 //
-// A snapshot is the zone's whole derived view, so publishing per entry — and
-// again per entry replaced — rebuilt it several times to arrive at the state
+// A snapshot is the zone's whole derived view, so publishing per entry, and
+// again per entry replaced, rebuilt it several times to arrive at the state
 // the last publish produced. The budget is what one rebuild costs; a return
 // to per-entry publishing multiplies it.
 func TestDenialProofAdmissionPublishesOnce(t *testing.T) {
@@ -116,11 +116,11 @@ func TestDenialProofAdmissionKeepsZoneIndex(t *testing.T) {
 
 // TestDenialProofZoneIndexesStayInStep pins that the writer's index does not
 // outlive the published view. The two are updated together, and a zone that
-// empties has to disappear from both — otherwise the map the writer keeps
+// empties has to disappear from both, otherwise the map the writer keeps
 // grows for every zone ever seen.
 func TestDenialProofZoneIndexesStayInStep(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
-	// Two entries — one SOA and one NSEC — so admitting a second zone
+	// Two entries, one SOA and one NSEC, so admitting a second zone
 	// evicts the first one whole.
 	cache := newDenialProofTestCache(&now, 2, 2, maxDenialProofTTL)
 
@@ -146,7 +146,7 @@ func TestDenialProofZoneIndexesStayInStep(t *testing.T) {
 	admit("second.example.")
 
 	if len(cache.zoneEntries) != len(cache.zoneIndex) {
-		t.Fatalf("after eviction: %d writer zones, %d published zones — the "+
+		t.Fatalf("after eviction: %d writer zones, %d published zones, the "+
 			"writer index is retaining zones nobody can see",
 			len(cache.zoneEntries), len(cache.zoneIndex))
 	}
@@ -329,7 +329,7 @@ func TestDenialProofLookupRetiresExpiredEntry(t *testing.T) {
 	cache.Lookup(denialProofTestRequest("q.example.", dns.TypeA, true), nil)
 
 	if got := cache.len(); got != 2 {
-		t.Fatalf("cached entries after the lookup = %d, want 2 — the expired "+
+		t.Fatalf("cached entries after the lookup = %d, want 2, the expired "+
 			"entry was filtered but never retired", got)
 	}
 
@@ -372,7 +372,7 @@ func TestDenialProofLookupRetiresExpiredZone(t *testing.T) {
 	cache.Lookup(denialProofTestRequest("q.example.", dns.TypeA, true), nil)
 
 	if got := cache.len(); got != 0 {
-		t.Fatalf("cached entries = %d, want 0 — an expired zone was retained", got)
+		t.Fatalf("cached entries = %d, want 0, an expired zone was retained", got)
 	}
 	if len(cache.zoneIndex) != 0 || len(cache.zoneEntries) != 0 {
 		t.Fatalf("zones left behind: %d published, %d writer-side",
@@ -381,7 +381,7 @@ func TestDenialProofLookupRetiresExpiredZone(t *testing.T) {
 }
 
 // BenchmarkDenialProofStaleZoneLookup measures repeated lookups against a zone
-// that holds one expired entry among many live ones — the shape a resolver
+// that holds one expired entry among many live ones, the shape a resolver
 // settles into, since a proof no one re-queries is never replaced.
 func BenchmarkDenialProofStaleZoneLookup(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0)
@@ -417,7 +417,7 @@ func BenchmarkDenialProofStaleZoneLookup(b *testing.B) {
 // TestDenialProofLookupRetiresZoneWhenSOAExpiresFirst covers the case where
 // the SOA is shorter-lived than the proofs beneath it, which a server can
 // cause at any time by lowering its negative TTL. Retiring only the expired
-// entries would leave the zone published without a SOA — unable to answer,
+// entries would leave the zone published without a SOA, unable to answer,
 // and invisible to every later lookup, which stops evaluating at the missing
 // SOA and so never notices the remaining proofs expiring either.
 func TestDenialProofLookupRetiresZoneWhenSOAExpiresFirst(t *testing.T) {
@@ -467,7 +467,7 @@ func TestDenialProofLookupRetiresZoneWhenSOAExpiresFirst(t *testing.T) {
 	cache.Lookup(denialProofTestRequest("q.example.", dns.TypeA, true), nil)
 
 	if got := cache.len(); got != 0 {
-		t.Fatalf("cached entries = %d, want 0 — the zone outlived its SOA", got)
+		t.Fatalf("cached entries = %d, want 0, the zone outlived its SOA", got)
 	}
 	if len(cache.zoneIndex) != 0 || len(cache.zoneEntries) != 0 {
 		t.Fatalf("zones left behind: %d published, %d writer-side",

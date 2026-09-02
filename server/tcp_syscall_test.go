@@ -15,8 +15,8 @@ import (
 // countingConn is a net.Conn whose reads come from a script and whose
 // writes are counted. It exists to make the burst path's syscall shape
 // observable: throughput on a shared machine is too noisy to gate on,
-// but the property that produces it — one read and one write per burst,
-// however many queries the burst carries — is exact.
+// but the property that produces it, one read and one write per burst,
+// however many queries the burst carries, is exact.
 type countingConn struct {
 	mu      sync.Mutex
 	script  [][]byte // successive read payloads

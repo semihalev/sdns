@@ -13,8 +13,8 @@ import (
 
 // A server that does not answer must never be scored by how quickly it
 // failed to. The exchange reports the elapsed time whatever the outcome,
-// and a refused connection comes back in microseconds — faster than any
-// authority on earth — so recording it as a latency made the one address
+// and a refused connection comes back in microseconds, faster than any
+// authority on earth, so recording it as a latency made the one address
 // in the delegation that serves nothing into its permanent leader: ranked
 // first, queried first, refused again, and re-recorded as instant.
 //
@@ -41,7 +41,7 @@ func TestAServerThatRefusesIsNotTheFastest(t *testing.T) {
 
 	got := server.SmoothedRTT()
 	if got != 0 && got < 500*time.Millisecond {
-		t.Fatalf("a server that refused the query is measured at %v — it now leads the delegation", got)
+		t.Fatalf("a server that refused the query is measured at %v, it now leads the delegation", got)
 	}
 }
 
@@ -115,8 +115,8 @@ func TestASuccessfulRetryIsNotPricedAsATimeout(t *testing.T) {
 		t.Fatalf("the retry never succeeded: resp=%v err=%v", resp, err)
 	}
 
-	// Both attempts are on the record — the timeout happened and cost what
-	// it cost — but the answer came last, so it is what the estimate leans
+	// Both attempts are on the record, the timeout happened and cost what
+	// it cost, but the answer came last, so it is what the estimate leans
 	// toward: (10ms, 200ms) blends to 105ms and the answer halves it to
 	// ~52ms. Delivered backwards the answer is absorbed first and the
 	// timeout lands on top, which leaves ~102ms: twice the price, for a
@@ -161,7 +161,7 @@ func answeringUpstream(t *testing.T, rcode int) string {
 
 // A refusal is the fastest answer an authority can give, so scoring it by
 // the clock taught the ranking to prefer the servers that turn us away.
-// What counts is whether the question was answered — while a negative
+// What counts is whether the question was answered, while a negative
 // answer is still an answer, and a zone that mostly says no must not cost
 // its authorities their standing.
 func TestRcodeDecidesWhetherAnAnswerCounts(t *testing.T) {
@@ -180,7 +180,7 @@ func TestRcodeDecidesWhetherAnAnswerCounts(t *testing.T) {
 		{"noerror", dns.RcodeSuccess, true},
 		// RFC 6672 §2.2: a DNAME substitution past 255 octets is answered
 		// YXDOMAIN. It reads like an UPDATE prerequisite failure and is not
-		// one — the authority answered, and the answer is that the question
+		// one, the authority answered, and the answer is that the question
 		// cannot have one.
 		{"yxdomain", dns.RcodeYXDomain, true},
 	} {

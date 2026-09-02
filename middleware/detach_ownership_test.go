@@ -32,8 +32,8 @@ func (h *stashingHandler) ServeDNS(ctx context.Context, ch *Chain) {
 // The meta a wire-born request starts on is a field of the transport
 // job's Chain, so it is reset and handed to the next client the moment
 // this one finishes. A context is not a value the request can call back:
-// whoever still holds one after the handler returns would be reading —
-// and, through the delegation cut, writing — whatever request owns the
+// whoever still holds one after the handler returns would be reading,
+// and, through the delegation cut, writing, whatever request owns the
 // slab by then.
 func TestDetachedContextOutlivesTheSlab(t *testing.T) {
 	h := new(stashingHandler)
@@ -62,7 +62,7 @@ func TestDetachedContextOutlivesTheSlab(t *testing.T) {
 			"request to take this slab shares state with the last one")
 	}
 	if got := h.meta.CutUntil(); !got.Equal(cut) {
-		t.Fatalf("detached cut %v, want %v — state did not transfer", got, cut)
+		t.Fatalf("detached cut %v, want %v, state did not transfer", got, cut)
 	}
 
 	// The slab goes to the next client.

@@ -251,7 +251,7 @@ func TestCacheTTL(t *testing.T) {
 
 	// Age the entry past its TTL rather than waiting it out: expiry is
 	// derived from stored+ttl, so moving stored back is exactly equivalent
-	// to five seconds passing — and the minimum TTL the configuration
+	// to five seconds passing, and the minimum TTL the configuration
 	// accepts is five seconds, so waiting is the only alternative.
 	entry.stored = entry.stored.Add(-6 * time.Second)
 
@@ -453,7 +453,7 @@ func TestCacheInvalidation(t *testing.T) {
 
 	// Clear cache by creating new instances. checkCache reads through
 	// c.store, so the swap has to update both the direct fields and
-	// the store facade — they share pointers and must stay in sync.
+	// the store facade, they share pointers and must stay in sync.
 	c.positive = NewPositiveCache(c.config.Size/2, c.config.MinTTL, c.config.MaxTTL, c.metrics)
 	c.negative = NewNegativeCache(c.config.Size/2, c.config.MinTTL, c.config.NegativeTTL, c.metrics)
 	c.store = NewStore(c.positive, c.negative, c.config)
@@ -520,7 +520,7 @@ func TestCacheEDNS(t *testing.T) {
 // state. An NXDOMAIN cut is learned by resolving publicly and denies a whole
 // subtree; a forward zone says that subtree is answered elsewhere. Without the
 // gate the public denial answers first and the zone is unreachable for as long
-// as the cut lives — which is the split-horizon case the feature exists for.
+// as the cut lives, which is the split-horizon case the feature exists for.
 func TestForwardZoneBypassesCoveringDenial(t *testing.T) {
 	// The forward zone sits inside the denied subtree, so one cut covers both
 	// the control name and the forwarded one.

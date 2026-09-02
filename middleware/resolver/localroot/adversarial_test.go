@@ -21,7 +21,7 @@ import (
 // TestVerifyZoneRefusesForeignSignerWithRealKSKPresent reproduces the
 // verification bypass a review caught. The real root KSK is public
 // knowledge, so an attacker builds a zone whose DNSKEY RRset CONTAINS the
-// anchor-matching key while every signature — DNSKEY, SOA, ZONEMD — is made
+// anchor-matching key while every signature, DNSKEY, SOA, ZONEMD, is made
 // by a second key of their own, also in the set. Matching an anchor and
 // signing the zone are different claims: the first alone proved nothing,
 // and verifying signatures against the whole transferred set accepted the
@@ -42,7 +42,7 @@ func TestVerifyZoneRefusesForeignSignerWithRealKSKPresent(t *testing.T) {
 
 	// The attacker's own zone, rebuilt with the victim's key spliced into
 	// the DNSKEY RRset. The set changed, so its RRSIG and the ZONEMD seal
-	// are remade — with the ATTACKER's key, exactly as the attack would.
+	// are remade, with the ATTACKER's key, exactly as the attack would.
 	az, err := roottest.Build(ComputeDigest)
 	if err != nil {
 		t.Fatalf("attacker zone: %v", err)
@@ -104,7 +104,7 @@ func TestVerifyZoneRefusesForeignSignerWithRealKSKPresent(t *testing.T) {
 	forged = append(forged, zonemd, sign([]dns.RR{zonemd}))
 
 	// The anchor is the victim's DS, and the forged zone carries the key
-	// that matches it — the zone must still be refused, because that key
+	// that matches it. The zone must still be refused, because that key
 	// signed nothing here.
 	if _, err := verifyZone(forged, victim.anchors); err == nil {
 		t.Fatal("a zone signed by a foreign key was accepted because the anchor-matching key rode along unsigned")
@@ -112,8 +112,8 @@ func TestVerifyZoneRefusesForeignSignerWithRealKSKPresent(t *testing.T) {
 }
 
 // TestManagerRefusesSerialRollback pins RFC 1982 acceptance: an older,
-// validly signed zone replayed at the manager cannot displace a newer copy
-// — neither through Load nor by a probe steering a transfer. Without it a
+// validly signed zone replayed at the manager cannot displace a newer copy,
+// neither through Load nor by a probe steering a transfer. Without it a
 // captured older root, still correctly signed for its day, could be fed
 // back to reinstate withdrawn delegations and restart the expire horizon.
 func TestManagerRefusesSerialRollback(t *testing.T) {
@@ -138,7 +138,7 @@ func TestManagerRefusesSerialRollback(t *testing.T) {
 	if err := m.Load(newer.RRs); err != nil {
 		t.Fatalf("load newer: %v", err)
 	}
-	// Sanity: the older zone is itself perfectly valid — it is refused for
+	// Sanity: the older zone is itself perfectly valid. It is refused for
 	// being older, not for being unverifiable.
 	if _, err := verifyZone(older.RRs, newer.Anchors); err != nil {
 		t.Fatalf("the older zone must verify on its own merits: %v", err)
@@ -195,7 +195,7 @@ func TestSerialNewer(t *testing.T) {
 // multiple ZONEMD RRs are present, each MUST specify a unique Scheme and
 // Hash Algorithm tuple." The duplicate here is validly signed as part of
 // the ZONEMD RRset and does not disturb the digest (apex ZONEMD records are
-// excluded from it), so nothing else in the chain can catch it — only the
+// excluded from it), so nothing else in the chain can catch it, only the
 // uniqueness rule stands between a malformed RRset and a verifier that
 // takes whichever digest it happens to read first.
 func TestVerifyZoneRefusesDuplicateZONEMDTuple(t *testing.T) {
@@ -262,8 +262,8 @@ func TestVerifyZoneRefusesDuplicateZONEMDTuple(t *testing.T) {
 
 // TestDSAnswerRequiresProvableNODATA pins the unsigned-delegation proof: an
 // exact-owner NSEC denies DS only when its type bitmap says so. A bitmap
-// asserting DS contradicts the missing record — a truncated index, or a
-// zone the copy did not fully hold — and must not be dressed as an
+// asserting DS contradicts the missing record, a truncated index, or a
+// zone the copy did not fully hold, and must not be dressed as an
 // authenticated NODATA.
 func TestDSAnswerRequiresProvableNODATA(t *testing.T) {
 	// org. has no DS record, but its NSEC claims the type exists.
@@ -280,7 +280,7 @@ func TestDSAnswerRequiresProvableNODATA(t *testing.T) {
 		t.Fatalf("build zone: %v", err)
 	}
 	if _, err := verifyZone(z.RRs, z.Anchors); err != nil {
-		t.Fatalf("the zone itself must verify — the defect is semantic: %v", err)
+		t.Fatalf("the zone itself must verify. The defect is semantic: %v", err)
 	}
 	snap, err := buildSnapshot(z.RRs, time.Now())
 	if err != nil {
@@ -307,7 +307,7 @@ func TestDSAnswerRequiresProvableNODATA(t *testing.T) {
 
 // TestVerifyZoneAcceptsUniqueTupleBesideDuplicates pins the scope of the
 // duplicate rule. RFC 8976 §4 disqualifies "those ZONEMD RRs" that repeat a
-// tuple — not the zone — and §4 step 5 adds that "a match using any one of
+// tuple, not the zone, and §4 step 5 adds that "a match using any one of
 // the recipient's supported Schemes and Hash Algorithms is sufficient to
 // verify the zone". So a zone carrying a repeated *unsupported* tuple
 // alongside a sound unique SIMPLE/SHA-384 record still verifies through the
@@ -379,7 +379,7 @@ func TestVerifyZoneAcceptsUniqueTupleBesideDuplicates(t *testing.T) {
 // leaving the newer copy displaced by the older one. Every operation
 // involved is individually legal, so the race detector reports nothing, and
 // the window is a few instructions wide, so volume testing does not find it
-// either — the section has to be held open to prove it is exclusive.
+// either. The section has to be held open to prove it is exclusive.
 //
 // Held open: the first load pauses between its check and its swap while a
 // second load runs to completion with a newer serial. Under an exclusive
@@ -449,14 +449,14 @@ func TestLoadPublishIsExclusive(t *testing.T) {
 		t.Fatal("no copy active after the loads")
 	}
 	if active.Serial() != newest {
-		t.Fatalf("active serial = %d, want the newest %d — a paused load rolled the copy backwards",
+		t.Fatalf("active serial = %d, want the newest %d, a paused load rolled the copy backwards",
 			active.Serial(), newest)
 	}
 }
 
 // TestSnapshotHorizonIgnoresUnverifiedZONEMDSignature pins which signatures
 // may shorten a copy's life. RFC 8976 excludes the apex RRSIG(ZONEMD) from
-// the digest — it is written after the digest is computed — and apex
+// the digest. It is written after the digest is computed, and apex
 // verification accepts an RRset when one covering signature validates. So
 // an appended, already-expired RRSIG(ZONEMD) is the one record in a
 // transfer that is neither authenticated by the digest nor rejected by
@@ -481,7 +481,7 @@ func TestSnapshotHorizonIgnoresUnverifiedZONEMDSignature(t *testing.T) {
 	poisoned = append(poisoned, long)
 
 	if _, err := verifyZone(poisoned, z.Anchors); err != nil {
-		t.Fatalf("the zone must still verify — the appended signature is not "+
+		t.Fatalf("the zone must still verify, the appended signature is not "+
 			"part of the digest and a sound one covers the RRset: %v", err)
 	}
 
@@ -624,7 +624,7 @@ func TestHorizonFollowsTheVerifyingZONEMDSignature(t *testing.T) {
 
 	m := New(nil, func() []dns.RR { return z.Anchors })
 	if err := m.Load(shortLived); err != nil {
-		t.Fatalf("the zone must verify — only its authentication is short: %v", err)
+		t.Fatalf("the zone must verify, only its authentication is short: %v", err)
 	}
 	snap := m.Active()
 	if snap == nil {
@@ -642,7 +642,7 @@ func TestHorizonFollowsTheVerifyingZONEMDSignature(t *testing.T) {
 // TestApexSignatureWorkIsBounded pins the cost of verifying an apex RRset.
 // Apex RRSIG(ZONEMD) records sit outside the digest, so a transfer can
 // carry any number of them, and verifying each in turn turns the generous
-// transfer limits into cryptographic work — the refresh worker stalls for
+// transfer limits into cryptographic work, the refresh worker stalls for
 // as long as an attacker cares to make it. Deduplication, descending
 // expiration order and a small attempt cap bound it, and a sound zone
 // still verifies on its first attempt.
@@ -670,7 +670,7 @@ func TestApexSignatureWorkIsBounded(t *testing.T) {
 	// Thousands of forgeries, each claiming to outlive the sound signature
 	// so ordering cannot skip them, each distinct so deduplication cannot
 	// collapse them, and each the exact width RFC 6605 §4 gives a P-256
-	// signature — a wrong length is refused before any public-key
+	// signature, a wrong length is refused before any public-key
 	// operation, which would make this measure nothing at all.
 	const forgeries = 4096
 	flooded := make([]dns.RR, 0, len(base)+forgeries+1)
@@ -688,20 +688,20 @@ func TestApexSignatureWorkIsBounded(t *testing.T) {
 
 	// The cap is in force: the sound signature sits below thousands of
 	// higher-expiring forgeries, so it never gets an attempt and the zone
-	// is refused. Denial is not a capability this hands anyone — whoever
-	// can append these records can already break a digested one — but it
+	// is refused. Denial is not a capability this hands anyone, whoever
+	// can append these records can already break a digested one, but it
 	// is the observable proof that the attempt window is bounded.
 	start := time.Now()
 	if _, err := verifyZone(flooded, z.Anchors); err == nil {
-		t.Fatal("every attempt went to a forgery, yet the zone verified — the window is not bounded")
+		t.Fatal("every attempt went to a forgery, yet the zone verified. The window is not bounded")
 	}
 	// And the refusal is cheap. Bounded, this is a handful of public-key
 	// operations; unbounded it is one per forgery, which on this input
 	// takes hundreds of milliseconds and scales with whatever a transfer
-	// carries. The threshold is loose on purpose — it is a guard against
+	// carries. The threshold is loose on purpose. It is a guard against
 	// the work scaling, not a benchmark.
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("verification of %d appended signatures took %v — the work is not bounded",
+		t.Fatalf("verification of %d appended signatures took %v. The work is not bounded",
 			forgeries, elapsed)
 	}
 }
@@ -759,7 +759,7 @@ func TestApexSignatureOrderPicksTheLatestVerifying(t *testing.T) {
 	}
 
 	// The shorter one first in the slice, so only the ordering can find the
-	// longer — and a forgery claiming to outlive both, which must not.
+	// longer, and a forgery claiming to outlive both, which must not.
 	forged := dns.Copy(longer).(*dns.RRSIG)
 	forged.Expiration = uint32(now.Add(72 * time.Hour).Unix()) //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
 	forged.Signature = "AAAAAAAA"
@@ -783,7 +783,7 @@ func TestApexSignatureOrderPicksTheLatestVerifying(t *testing.T) {
 // over is part of its identity: two records differing in one of them sign
 // different data, so one may verify where the other cannot. Dedupe on less
 // and a sound signature is discarded as a copy of the unsound sibling that
-// happened to arrive first — the flood then succeeds by resemblance where
+// happened to arrive first, the flood then succeeds by resemblance where
 // it could not succeed by volume.
 func TestApexSignatureDedupeKeepsDistinctSignatures(t *testing.T) {
 	z, err := roottest.Build(ComputeDigest)
@@ -812,8 +812,8 @@ func TestApexSignatureDedupeKeepsDistinctSignatures(t *testing.T) {
 	// sees a duplicate and drops the sound record.
 	//
 	// The owner name is deliberately absent. Moving it off the apex takes
-	// the record out of the set this function is handed, and — because
-	// only apex RRSIG(ZONEMD) records are excluded from the digest — puts
+	// the record out of the set this function is handed, and, because
+	// only apex RRSIG(ZONEMD) records are excluded from the digest, puts
 	// it into the digest instead, where the mismatch refuses the zone
 	// outright. That field is guarded by a different mechanism, not this
 	// one, and asserting it here would be asserting the wrong defense.
@@ -899,9 +899,9 @@ func TestApexCardinalityIsBounded(t *testing.T) {
 			bloated := tc.bulk(append([]dns.RR(nil), z.RRs...))
 
 			// The assertion is *which* check refused it, not merely that
-			// something did. Such a zone fails several ways — a changed
+			// something did. Such a zone fails several ways, a changed
 			// DNSKEY RRset breaks the digest, a changed ZONEMD RRset breaks
-			// its signature — and every one of those verdicts costs the
+			// its signature, and every one of those verdicts costs the
 			// cryptography this cap exists to avoid. Only errApexTooLarge
 			// says the refusal came from the size check, before any of it.
 			_, err := verifyZone(bloated, z.Anchors)

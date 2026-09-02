@@ -12,7 +12,7 @@ import (
 
 // admissionMsg builds the response shape admission actually stores: a signed
 // answer with authority material and an OPT to be filtered out. No EDE and
-// no glue — an entry carrying either is not byte-servable (established
+// no glue, an entry carrying either is not byte-servable (established
 // behavior: prepareWireServe wants ARCOUNT==0 and no EDE) and would get no
 // stripped body, which is half of what this exercises.
 func admissionMsg(tb testing.TB) *dns.Msg {
@@ -145,7 +145,7 @@ func TestAdmissionOversizedFallsBackToTheLibrary(t *testing.T) {
 	}
 }
 
-// BenchmarkCacheAdmission measures a whole admission — assembly, both packs,
+// BenchmarkCacheAdmission measures a whole admission, assembly, both packs,
 // the entry. This file compiles unchanged against the pre-packer tree, which
 // is how the before/after comparison is taken: the same benchmark, run on
 // both.

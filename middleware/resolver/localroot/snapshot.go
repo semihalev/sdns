@@ -55,9 +55,9 @@ func (s *Snapshot) Serial() uint32 { return s.serial }
 // Loaded returns when this copy was transferred.
 func (s *Snapshot) Loaded() time.Time { return s.loaded }
 
-// Expired reports whether the copy has outlived its horizon — the SOA
+// Expired reports whether the copy has outlived its horizon, the SOA
 // expire interval (RFC 1035 secondary semantics) or the earliest RRSIG
-// expiration in the zone, whichever comes first — and must no longer be
+// expiration in the zone, whichever comes first, and must no longer be
 // served.
 func (s *Snapshot) Expired(now time.Time) bool { return now.After(s.expireAt) }
 
@@ -66,7 +66,7 @@ func (s *Snapshot) Expired(now time.Time) bool { return now.After(s.expireAt) }
 func (s *Snapshot) ValidUntil() time.Time { return s.expireAt }
 
 // BoundTo shortens the horizon to at most until. The caller uses it for a
-// bound the records themselves cannot express — the expiration of the
+// bound the records themselves cannot express, the expiration of the
 // signature that authenticated the zone digest, which is what makes the
 // whole copy evidence in the first place.
 func (s *Snapshot) BoundTo(until time.Time) {
@@ -81,7 +81,7 @@ func (s *Snapshot) SOA() (*dns.SOA, []dns.RR) { return s.soa, s.soaSig }
 // ApexAnswer returns what the copy holds at the root's own name for qtype:
 // the RRset with its signatures when the type exists there, or the apex
 // NSEC with its signatures as the NODATA proof when it does not. ok=false
-// when the copy can say neither — the caller then asks the real roots.
+// when the copy can say neither, the caller then asks the real roots.
 //
 // The apex is the one part of the zone the copy is authoritative-shaped
 // about in the ordinary sense: NS, SOA, DNSKEY and the rest are the root's
@@ -93,7 +93,7 @@ func (s *Snapshot) ApexAnswer(qtype uint16) (rrs, sigs, nsec, nsecSig []dns.RR, 
 	// a bare RRSIG query has no RRset to cover, and ANY needs a composition
 	// this does not attempt. ZONEMD joins them for a different reason: RFC
 	// 8976 excludes the apex ZONEMD RRset's own signatures from the digest,
-	// so an appended RRSIG(ZONEMD) rides into the transfer unauthenticated —
+	// so an appended RRSIG(ZONEMD) rides into the transfer unauthenticated,
 	// harmless where it already is (verification accepts the RRset on one
 	// good signature, and the expiry fold skips the group), but serving the
 	// set to a client would put unauthenticated records behind AD=1. The
@@ -118,7 +118,7 @@ func (s *Snapshot) ApexAnswer(qtype uint16) (rrs, sigs, nsec, nsecSig []dns.RR, 
 	}
 
 	// Absent: the apex NSEC denies it, provided its bitmap agrees. RFC 4035
-	// §5.4 — an NSEC listing the type proves the opposite of what is being
+	// §5.4, an NSEC listing the type proves the opposite of what is being
 	// claimed, and a copy that disagrees with itself answers nothing.
 	if s.apexNSEC == nil || len(s.apexNSECSig) == 0 {
 		return nil, nil, nil, nil, false
@@ -132,7 +132,7 @@ func (s *Snapshot) ApexAnswer(qtype uint16) (rrs, sigs, nsec, nsecSig []dns.RR, 
 }
 
 // ApexGlue returns the address records the copy holds for the root's own NS
-// targets — the additional section of a priming response (RFC 9609). The
+// targets, the additional section of a priming response (RFC 9609). The
 // root zone carries these as glue below the delegation that owns them, so
 // they have no signatures of their own; the ZONEMD digest is what
 // authenticates them, and the additional section is outside what AD claims
@@ -207,7 +207,7 @@ func (s *Snapshot) Referral(tld string) (Referral, bool) {
 	} else if nsec, _, ok := dsAbsenceProof(sets); ok {
 		// Unsigned: the evidence is the NSEC that actually denies DS at
 		// this owner, and its lifetime is what bounds the claim. An NSEC
-		// that does not deny it leaves SecurityTTL at zero — installing the
+		// that does not deny it leaves SecurityTTL at zero, installing the
 		// delegation with an empty DS set would assert the child is
 		// insecure on a proof the copy does not hold.
 		ref.SecurityTTL = minRRSetTTL(nsec)
@@ -229,7 +229,7 @@ func (s *Snapshot) Referral(tld string) (Referral, bool) {
 // the DS set with its RRSIGs when the delegation is signed, or the TLD's
 // own NSEC with its RRSIGs as the exact-owner NODATA proof when it is not.
 // ok=false when the TLD does not exist, or when the copy holds no NSEC
-// that actually proves the DS absent — the absence of a DS record in the
+// that actually proves the DS absent, the absence of a DS record in the
 // index is not itself a proof, and an answer that cannot be proven is left
 // to the real roots.
 func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns.RR, ok bool) {
@@ -240,7 +240,7 @@ func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns
 	if ds := sets[dns.TypeDS]; len(ds) > 0 {
 		// An unsigned DS set is not something the root publishes, and
 		// serving one would mean asserting a secure delegation the copy
-		// cannot evidence — the same refusal ApexAnswer makes.
+		// cannot evidence, the same refusal ApexAnswer makes.
 		dsSig = sigsCovering(sets[dns.TypeRRSIG], dns.TypeDS)
 		if len(dsSig) == 0 {
 			return nil, nil, nil, nil, false
@@ -267,12 +267,12 @@ func (s *Snapshot) DSAnswer(tld string) (ds, dsSig []dns.RR, nsec, nsecSig []dns
 //
 //   - NS must be present, because that is what makes the record the
 //     parent's word about a delegation. Without it, a stripped-DS bitmap
-//     would be taken as evidence that a signed child is insecure — the
+//     would be taken as evidence that a signed child is insecure, the
 //     downgrade the requirement exists to prevent. Here it is also an
 //     internal contradiction: the copy holds the owner's real NS RRset, so
 //     a bitmap that omits NS disagrees with the zone it came from.
 //   - DS must be absent, because a bitmap asserting the type contradicts
-//     the missing record — a truncated or tampered index, or a zone the
+//     the missing record, a truncated or tampered index, or a zone the
 //     copy did not fully hold.
 //   - SOA must be absent, because DS non-existence is only provable on the
 //     parent side: an NSEC carrying SOA is the child apex's own, and the
@@ -303,7 +303,7 @@ func dsAbsenceProof(sets map[uint16][]dns.RR) (nsec, nsecSig []dns.RR, ok bool) 
 		}
 	}
 	// A proof needs the signature that makes it one. The records themselves
-	// are authentic — the digest covered them — but an answer built from an
+	// are authentic, the digest covered them, but an answer built from an
 	// unsigned NSEC would carry AD=1 with nothing a client could check, and
 	// the same refusal already guards the apex NODATA branch and the DS set.
 	nsecSig = sigsCovering(sets[dns.TypeRRSIG], dns.TypeNSEC)
@@ -316,7 +316,7 @@ func dsAbsenceProof(sets map[uint16][]dns.RR) (nsec, nsecSig []dns.RR, ok bool) 
 // Denial returns the NSEC records proving name does not exist under the
 // root: the covering NSEC for the name and the apex NSEC as the wildcard
 // proof (deduplicated when they are the same record), each with RRSIGs.
-// ok=false when the chain cannot cover the name — a snapshot in that state
+// ok=false when the chain cannot cover the name, a snapshot in that state
 // is not usable for denial and the caller falls back.
 func (s *Snapshot) Denial(name string) (proof []dns.RR, ok bool) {
 	owner, found := s.coveringOwner(name)
@@ -373,7 +373,7 @@ func (s *Snapshot) coveringOwner(name string) (string, bool) {
 	return owner, true
 }
 
-// minRRSetTTL returns the smallest TTL among rrs, or 0 when rrs is empty —
+// minRRSetTTL returns the smallest TTL among rrs, or 0 when rrs is empty,
 // the same shape the resolver's delegation path uses, where "has records"
 // and "their TTL is positive" are deliberately separate questions.
 func minRRSetTTL(rrs []dns.RR) uint32 {
@@ -444,8 +444,8 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 			continue
 		}
 		// The apex RRSIG(ZONEMD) records are the one part of the zone the
-		// digest does not cover — RFC 8976 excludes them, because they are
-		// written after the digest is computed — and verification accepts
+		// digest does not cover, RFC 8976 excludes them, because they are
+		// written after the digest is computed, and verification accepts
 		// the RRset as long as one covering signature validates. So an
 		// appended, already-expired RRSIG(ZONEMD) rides in unauthenticated,
 		// and trusting its expiration here would let anyone who can add a

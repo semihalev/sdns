@@ -72,7 +72,7 @@ func TestHostsfileWireMissStaysUndecoded(t *testing.T) {
 
 // TestHostsfileWireHitParity serves the same query once wire-born and once
 // message-born and requires identical responses; the wire serve must also
-// leave the request undecoded — a hit is built from parsed scalars.
+// leave the request undecoded. A hit is built from parsed scalars.
 func TestHostsfileWireHitParity(t *testing.T) {
 	h := wireHostsfile(t)
 

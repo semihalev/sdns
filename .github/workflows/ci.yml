@@ -68,7 +68,7 @@ jobs:
   docs-drift:
     # Lives here rather than in the site workflow because the pull requests it
     # exists to catch are the ones that never touch docs/: adding a metric or a
-    # config key and leaving the reference behind. No Ruby, no Jekyll — it
+    # config key and leaving the reference behind. No Ruby, no Jekyll. It
     # reads the schema out of the Go types and compares inventories.
     name: Docs match the code
     runs-on: ubuntu-latest
@@ -84,7 +84,7 @@ jobs:
     # The release ships architectures no test job builds for. A transport
     # written against 64-bit kernel descriptors compiles cleanly on the
     # runner and breaks the release, which is exactly what happened once
-    # already — so every published target is compiled here.
+    # already, so every published target is compiled here.
     name: Release targets build
     runs-on: ubuntu-latest
 
@@ -99,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          # This list mirrors .goreleaser.yml exactly — targets and env
+          # This list mirrors .goreleaser.yml exactly, targets and env
           # both. The MIPS release ships softfloat only, so that is the
           # variant compiled here; a hardfloat-only pass would be a gate
           # that never guards what ships. CGO_ENABLED=0 for the same

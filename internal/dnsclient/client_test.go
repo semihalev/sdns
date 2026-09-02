@@ -162,7 +162,7 @@ func TestClientExchange_DoT(t *testing.T) {
 // On UDP a wrong-ID reply is treated as a stray packet and skipped (it
 // might be a late reply to a timed-out query, or a spoof). With no
 // matching response, the exchange times out rather than accepting the
-// wrong answer or failing fast — matching miekg/dns.Client.
+// wrong answer or failing fast, matching miekg/dns.Client.
 func TestClientExchange_IDMismatch_UDPSkipsAndTimesOut(t *testing.T) {
 	addr, stop := startServer(t, "udp", func(w dns.ResponseWriter, r *dns.Msg) {
 		m := new(dns.Msg)

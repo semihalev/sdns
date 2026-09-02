@@ -123,7 +123,7 @@ func TestSafeWrappersDispatchValidObjects(t *testing.T) {
 }
 
 // TestTombstoneUnwrapping covers the DeletedFinalStateUnknown branch
-// in the on*Delete handlers — the informer can deliver a tombstone
+// in the on*Delete handlers. The informer can deliver a tombstone
 // when the original object was missed, and the handler must unwrap it
 // so deletions still propagate.
 func TestTombstoneUnwrapping(t *testing.T) {
@@ -173,8 +173,8 @@ func TestTombstoneUnwrapping(t *testing.T) {
 	c.onEndpointSliceDelete(cache.DeletedFinalStateUnknown{Key: "default/svc-abc", Obj: eps})
 }
 
-// TestMockResponseWriter exercises every method the test mock exposes
-// — they're glue for the dns.ResponseWriter / middleware.ResponseWriter
+// TestMockResponseWriter exercises every method the test mock exposes,
+// they're glue for the dns.ResponseWriter / middleware.ResponseWriter
 // interfaces and otherwise wouldn't show up in coverage.
 func TestMockResponseWriter(t *testing.T) {
 	w := &mockResponseWriter{}
@@ -281,7 +281,7 @@ func TestStaleSliceAggregationCleanup(t *testing.T) {
 // a burst of EndpointSlice events for one service must produce far
 // fewer rebuilds than events. Without coalescing every event drives
 // a full SetEndpoints (aggregate A/AAAA + per-port SRV + per-host
-// diff) — for a 1000-pod headless StatefulSet with 100 slices, a
+// diff), for a 1000-pod headless StatefulSet with 100 slices, a
 // rolling update would O(slices x total endpoints) the registry.
 func TestRebuildCoalescesBurst(t *testing.T) {
 	c := newTestClient()
@@ -302,7 +302,7 @@ func TestRebuildCoalescesBurst(t *testing.T) {
 	}
 
 	// Seed a headless service so the rebuild has something to write
-	// to the registry — otherwise SetEndpoints returns early.
+	// to the registry, otherwise SetEndpoints returns early.
 	c.registry.AddService(&Service{Name: "h", Namespace: "default", Headless: true})
 
 	const burst = 100
@@ -336,13 +336,13 @@ func TestRebuildCoalescesBurst(t *testing.T) {
 	}
 	got = c.Rebuilds()
 	if got == 0 {
-		t.Fatal("no rebuilds fired — worker isn't running")
+		t.Fatal("no rebuilds fired, worker isn't running")
 	}
 	if got >= burst {
 		t.Errorf("expected coalesced rebuilds (<<%d), got %d", burst, got)
 	}
 
-	// Final state must reflect the LAST event — coalescing must
+	// Final state must reflect the LAST event, coalescing must
 	// not lose updates.
 	rrs, _, ok := c.registry.ResolveQuery("h.default.svc.cluster.local.", dns.TypeA)
 	if !ok || len(rrs) != 1 {
@@ -363,7 +363,7 @@ func ptrBool(b bool) *bool { return &b }
 // flushRebuilds returns, the registry must reflect every queued
 // rebuild. Run calls flushRebuilds before synced.Store(true), so
 // any consumer gating on Synced (ServeDNS does, via the middleware)
-// sees a fully-rebuilt registry — not a registry where headless
+// sees a fully-rebuilt registry, not a registry where headless
 // services NODATA for tens of ms while the worker drains the
 // initial-LIST backlog.
 func TestFlushRebuildsDrainsBacklog(t *testing.T) {
@@ -373,7 +373,7 @@ func TestFlushRebuildsDrainsBacklog(t *testing.T) {
 
 	c.registry.AddService(&Service{Name: "h", Namespace: "default", Headless: true})
 
-	// Worker is NOT running — scheduleRebuild would normally
+	// Worker is NOT running, scheduleRebuild would normally
 	// fall back to inline rebuild. Stage state via slicesByService
 	// and queue the rebuild so flush can drain it.
 	c.slicesMu.Lock()
@@ -422,7 +422,7 @@ func TestFlushRebuildsWaitsForInflight(t *testing.T) {
 
 	select {
 	case <-done:
-		t.Fatal("flushRebuilds returned while processingMu was held — must have waited for in-flight cycle")
+		t.Fatal("flushRebuilds returned while processingMu was held, must have waited for in-flight cycle")
 	case <-time.After(20 * time.Millisecond):
 	}
 
@@ -487,7 +487,7 @@ func TestLateSliceForDeletedServiceRejected(t *testing.T) {
 		t.Fatalf("tombstone not set after delete: ok=%v uid=%q", ok, tomb)
 	}
 
-	// Late slice update from the SAME UID arrives — must be
+	// Late slice update from the SAME UID arrives, must be
 	// rejected. Without the tombstone check this would
 	// re-populate slicesByService and trigger a rebuild.
 	c.onEndpointSliceUpdate(slice, slice)
@@ -500,7 +500,7 @@ func TestLateSliceForDeletedServiceRejected(t *testing.T) {
 	}
 
 	// Recreate with a NEW UID. cacheServiceAnswers must read an
-	// empty endpoint shard — no leftover IPs from u1 should
+	// empty endpoint shard, no leftover IPs from u1 should
 	// surface.
 	svc2 := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -527,7 +527,7 @@ func TestLateSliceForDeletedServiceRejected(t *testing.T) {
 // before the headless Service event, they're stashed as one
 // synthetic contribution on the registry side. The first
 // non-synthetic ApplyEndpointSlice retracts that synthetic
-// contribution — so unless the Client re-pushes every other
+// contribution, so unless the Client re-pushes every other
 // slice on the AddService path, the other slices' endpoints
 // would vanish from A/SRV answers until each one was replayed
 // individually.
@@ -687,7 +687,7 @@ func TestNoOpUpdateSkipsRebuild(t *testing.T) {
 		t.Fatal("first add should have rebuilt")
 	}
 
-	// Same slice payload, replayed as an UPDATE — must be a no-op.
+	// Same slice payload, replayed as an UPDATE, must be a no-op.
 	for i := 0; i < 50; i++ {
 		c.onEndpointSliceUpdate(slice, slice)
 	}
@@ -745,7 +745,7 @@ func TestRecreatedServiceRejectsLateOldSlice(t *testing.T) {
 	c.onServiceDelete(svc1)
 
 	// Recreate before any slice for u1 is replayed. AddService
-	// sees no entry — must still bind a UID guard.
+	// sees no entry, must still bind a UID guard.
 	svc2 := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "h", Namespace: "default", UID: "uid-2",
@@ -757,7 +757,7 @@ func TestRecreatedServiceRejectsLateOldSlice(t *testing.T) {
 	}
 	c.onServiceAdd(svc2)
 
-	// Now the late u1 slice arrives. It must be rejected — the
+	// Now the late u1 slice arrives. It must be rejected, the
 	// new Service is uid-2, this slice belongs to uid-1.
 	c.onEndpointSliceAdd(oldSlice)
 
@@ -846,7 +846,7 @@ func TestStaleSliceFromStartupListEvicted(t *testing.T) {
 		t.Fatalf("expected 1 record, got ok=%v rrs=%v", ok, rrs)
 	}
 	if got := rrs[0].(*dns.A).A.String(); got != "10.0.0.1" {
-		t.Errorf("expected 10.0.0.1 (fresh slice), got %s — stale slice survived UID check", got)
+		t.Errorf("expected 10.0.0.1 (fresh slice), got %s, stale slice survived UID check", got)
 	}
 }
 

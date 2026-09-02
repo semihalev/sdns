@@ -22,7 +22,7 @@ import (
 // blackholeAuthority is an authoritative fixture whose "network" can be cut
 // mid-flight. When dropping is set it still receives the packet but never
 // answers, which is what a blackholed route looks like to the resolver: no
-// REFUSED, no ICMP unreachable, no connection error — every in-flight
+// REFUSED, no ICMP unreachable, no connection error, every in-flight
 // exchange has to wait out its full timeout instead of failing fast.
 //
 // That distinction is the whole point of the fixture. Fast failures are
@@ -120,7 +120,7 @@ func newOutageResolver(root *authority.Servers, maxConcurrent int) *Resolver {
 		zoneInflight:    newZoneInflightLimiter(max(maxConcurrent/16, 16)),
 	}
 	// The enrichment lanes are a fixed number of workers, so they belong to
-	// the pre-load baseline this test subtracts — what it measures is
+	// the pre-load baseline this test subtracts, what it measures is
 	// whether anything still scales with the outage.
 	r.startEnrichPools()
 	return r
@@ -132,7 +132,7 @@ func newOutageResolver(root *authority.Servers, maxConcurrent int) *Resolver {
 // system looks "leakier" purely because more of its own callers are parked.
 //
 // backlog subtracts both the pre-test baseline and the harness's own caller
-// goroutines. What remains is resolver-internal machinery — the number that
+// goroutines. What remains is resolver-internal machinery, the number that
 // blew from 139 to ~400k in production.
 type outageSample struct {
 	goroutines int
@@ -177,7 +177,7 @@ func dumpTopStacks(t *testing.T, label string, limit int) {
 			continue
 		}
 		// Group by where the goroutine is parked (its top frame plus the
-		// wait reason) — under an outage the question is what work is
+		// wait reason), under an outage the question is what work is
 		// being held open, not which site spawned it.
 		state := ""
 		if open := strings.Index(lines[0], "["); open >= 0 {
@@ -221,15 +221,15 @@ func glueIPFor(zone string) net.IP {
 }
 
 // TestNetworkOutageGoroutineBacklog reproduces the production incident shape:
-// a PARTIAL network failure — root and TLD authorities keep answering, the
-// leaf authorities go dark — while client queries keep arriving at a steady
+// a PARTIAL network failure, root and TLD authorities keep answering, the
+// leaf authorities go dark, while client queries keep arriving at a steady
 // rate. Inbound QPS never changes; only the network does. (A total blackhole
 // is the easy case: every path fails fast at the root and the circuit breaker
 // sheds the load. Production died on the partial case.)
 //
 // Each request walks a fresh delegation (distinct zone per query, distinct
 // glue address per zone) so the delegation cache, singleflight, and the
-// per-server circuit breaker cannot collapse the load — which is what makes
+// per-server circuit breaker cannot collapse the load, which is what makes
 // every arrival pay the full referral + NS-address + detached-V6 cost.
 //
 // The test asserts two properties that together bound a network incident:
@@ -244,7 +244,7 @@ func glueIPFor(zone string) net.IP {
 func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	const (
 		maxConcurrent = 64
-		// ~200 qps — the production node's real inbound rate. The point of
+		// ~200 qps, the production node's real inbound rate. The point of
 		// the fixture is a network incident under NORMAL load; an offered
 		// rate that saturates the healthy arm invalidates the comparison.
 		arrivalRate  = 5 * time.Millisecond
@@ -258,7 +258,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	// Zones named dead*.test model a breaker-resistant dark destination:
 	// every referral advertises a FRESH nameserver name and glue address
 	// (172.16.x.y), so the per-server circuit breaker never accumulates
-	// five failures against any single address — the resolver's slot pools
+	// five failures against any single address, the resolver's slot pools
 	// are the only thing standing between one dark provider and everyone
 	// else.
 	var darkGlue atomic.Uint32
@@ -295,7 +295,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 		return msg
 	})
 
-	// darkChild swallows every packet from the start — it exists only to be
+	// darkChild swallows every packet from the start, it exists only to be
 	// the dead destination behind 172.16.x.y glue.
 	darkChild := startBlackholeAuthority(t, func(dns.Question) *dns.Msg { return nil })
 	darkChild.dropping.Store(true)
@@ -303,7 +303,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	// Every 10.x.y.z glue address dials the shared child fixture and every
 	// 172.16.x.y address dials the dark one; the root keeps its real
 	// address. The resolver still sees thousands of distinct server
-	// identities — RTT stats, circuit breaker and connection pooling all
+	// identities, RTT stats, circuit breaker and connection pooling all
 	// operate per unique address, as they did in production.
 	rootAddr := root.addr()
 	mapper := func(addr string) string {
@@ -333,7 +333,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 
 	// runArm builds a FRESH resolver (its own circuit breaker, delegation
 	// cache, singleflight group), proves the wiring resolves while healthy,
-	// then drives a fixed-rate query stream — optionally with the leaf
+	// then drives a fixed-rate query stream, optionally with the leaf
 	// authorities dark. Fresh state per arm matters: breaker trips earned
 	// under one arm's load must not leak into the next arm's measurements.
 	// Naming is namespaced per arm so the shared fixtures stay stateless.
@@ -416,30 +416,30 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 		return <-worstCh, issuedN.Load(), resolvedN.Load(), baseline
 	}
 
-	// Control arm — healthy network. This is what separates "the load
+	// Control arm, healthy network. This is what separates "the load
 	// generator is holding goroutines" from "the outage is making SDNS
 	// hold goroutines".
 	healthy, healthyIssued, healthyOK, _ := runArm("ok", false)
 	t.Logf("healthy: offered=%d resolved=%d peak_backlog=%d (goroutines=%d inflight=%d)",
 		healthyIssued, healthyOK, healthy.backlog, healthy.goroutines, healthy.inflight)
 	if healthyOK*10 < healthyIssued*8 {
-		t.Fatalf("healthy arm resolved only %d/%d — the offered load saturates the resolver "+
+		t.Fatalf("healthy arm resolved only %d/%d, the offered load saturates the resolver "+
 			"even without an outage, so the arms are not comparable; lower the arrival rate",
 			healthyOK, healthyIssued)
 	}
 
-	// Partial outage arm — leaf authorities dark, root keeps answering
+	// Partial outage arm, leaf authorities dark, root keeps answering
 	// referrals, queries keep arriving at the same rate.
 	rootBefore, childBefore := root.received.Load(), child.received.Load()
 	outage, outageIssued, outageOK, baseline := runArm("z", true)
 
 	t.Logf("outage:  offered=%d resolved=%d peak_backlog=%d (goroutines=%d inflight=%d)",
 		outageIssued, outageOK, outage.backlog, outage.goroutines, outage.inflight)
-	t.Logf("wire during outage: root_rx=%d child_rx=%d (offered=%d) — "+
+	t.Logf("wire during outage: root_rx=%d child_rx=%d (offered=%d), "+
 		"referrals answered, leaf queries swallowed",
 		root.received.Load()-rootBefore, child.received.Load()-childBefore, outageIssued)
 
-	// Destination-fairness arm — the "one provider's network is down"
+	// Destination-fairness arm, the "one provider's network is down"
 	// scenario. Two dead zones (each hiding behind ever-fresh NS addresses,
 	// so the circuit breaker cannot collapse them) receive half the load;
 	// unique healthy zones receive the other half. The claim: the dead
@@ -481,7 +481,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 					return
 				}
 				darkIss.Add(1)
-				// Half the load hammers two dead zones — many hosts, few
+				// Half the load hammers two dead zones, many hosts, few
 				// zones, exactly the popular-destination outage shape.
 				_ = resolve(fmt.Sprintf("www%d.dead%d.test.", n, n%4/2))
 			}(i)
@@ -494,7 +494,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 			healthyRes.Load(), healthyIss.Load(), 100*ratio, darkIss.Load())
 
 		// The healthy half must be essentially untouched by the dead
-		// destination — this is the property that makes shedding
+		// destination. This is the property that makes shedding
 		// destination-scoped rather than resolver-wide.
 		if ratio < 0.9 {
 			t.Errorf("healthy resolution collapsed during a single-destination outage: "+
@@ -503,7 +503,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 		}
 	}
 
-	// Recovery — network restored, load stopped. Detached jobs get their
+	// Recovery, network restored, load stopped. Detached jobs get their
 	// full 30s budget to retire; sample until they do or the budget expires.
 	drained := runtime.NumGoroutine()
 	if drained > baseline*2 {
@@ -529,7 +529,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	// The enrichment lanes add a constant envelope on top: during an outage
 	// every worker grinds a resolution against dead upstreams, and each such
 	// resolution transiently holds a lookup, its racing exchange pair and
-	// their reads. That envelope scales with the fixed worker count — never
+	// their reads. That envelope scales with the fixed worker count, never
 	// with the offered load, which is the property this test defends.
 	const perWorkerEnvelope = 6
 	enrichEnvelope := 2 * nsEnrichWorkers * perWorkerEnvelope

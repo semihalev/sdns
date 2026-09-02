@@ -147,8 +147,8 @@ func TestNXDomainCutWireServeParity(t *testing.T) {
 
 	// An explicit RRSIG query names the DNSSEC type it wants: at DO=0 it
 	// keeps the signatures and loses the NSEC that came along (RFC 4035
-	// §3.2.1). Neither wire template holds that shape — the stripped one
-	// was cut behind a SOA question — so the wire path declines and the
+	// §3.2.1). Neither wire template holds that shape, the stripped one
+	// was cut behind a SOA question, so the wire path declines and the
 	// Msg path shapes it.
 	reqRRSIG, qRRSIG := wireTestRequest(t, "d.gone.zone.test.", dns.TypeRRSIG, false)
 	if _, built := entry.serveWireInto(dst, reqRRSIG, false); built {

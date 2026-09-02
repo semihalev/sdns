@@ -98,8 +98,8 @@ type Rule struct {
 	Local  []dns.RR
 }
 
-// Zone is one compiled policy zone. The maps are keyed in canonical form —
-// dns.CanonicalName's spelling, lowercase with the trailing dot — which is
+// Zone is one compiled policy zone. The maps are keyed in canonical form,
+// dns.CanonicalName's spelling, lowercase with the trailing dot, which is
 // the same spelling dnsname.AppendCanonicalLabels builds on the stack at
 // query time, so lookups index the maps without constructing a string.
 type Zone struct {
@@ -121,7 +121,7 @@ type Zone struct {
 	// walk included. Rare, so it is a field rather than a map probe.
 	matchAll *Rule
 	// clientIP4/clientIP6 hold the zone's CLIENT-IP trigger rules, one
-	// table per family — an IPv6 rule must never match an IPv4 client or
+	// table per family, an IPv6 rule must never match an IPv4 client or
 	// the reverse. nil when the feed carries none, so a qname-only zone
 	// pays two nil checks.
 	clientIP4 *ipLPM
@@ -134,7 +134,7 @@ type Zone struct {
 
 	// Rules counts all compiled rules; RulesClientIP and RulesResponseIP
 	// the per-trigger shares (the per-trigger gauges want the split).
-	// Skipped counts what the load stepped over, by reason — all of them
+	// Skipped counts what the load stepped over, by reason, all of them
 	// feed the load-time gauges and the `sdns -t` report.
 	Rules           int
 	RulesClientIP   int
@@ -143,7 +143,7 @@ type Zone struct {
 }
 
 // hasResponseTriggers reports whether this zone carries any response
-// trigger — the bit §5.4's hold decision scans.
+// trigger, the bit §5.4's hold decision scans.
 func (z *Zone) hasResponseTriggers() bool {
 	return z.responseIP4 != nil || z.responseIP6 != nil
 }
@@ -163,7 +163,7 @@ type Store struct {
 	Gen uint64
 }
 
-// Empty reports whether no zone carries any rule — the whole engine is
+// Empty reports whether no zone carries any rule, the whole engine is
 // then skipped per query at the cost of one nil/len check.
 func (s *Store) Empty() bool {
 	if s == nil {

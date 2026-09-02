@@ -13,7 +13,7 @@ import (
 )
 
 // Client is a high-level, dial-per-Exchange DNS client for callers that
-// don't maintain their own connection pool — the forwarder, failover,
+// don't maintain their own connection pool, the forwarder, failover,
 // and the config IPv6 probe. The resolver hot path uses Conn directly
 // so it keeps its own pooling, circuit breaker and retry policy.
 //

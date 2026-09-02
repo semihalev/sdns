@@ -68,8 +68,8 @@ func BenchmarkGet(b *testing.B) {
 	}
 }
 
-// BenchmarkGet_Legacy reproduces the 1.6.2 Get() behaviour — linear scan
-// over the registered handlers under an RWMutex — to quantify the delta
+// BenchmarkGet_Legacy reproduces the 1.6.2 Get() behaviour, linear scan
+// over the registered handlers under an RWMutex, to quantify the delta
 // versus the new atomic-pointer + map lookup. The reproduction walks the
 // same Pipeline.handlers that Get uses, but through a locked index search
 // instead of the byName map.

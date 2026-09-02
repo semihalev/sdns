@@ -37,15 +37,15 @@ func entryExpiry(e *CacheEntry) time.Time {
 //
 // The existing shortest-cut test covers the case where the target leg is
 // resolved, because resolution folds the leg's cut into the request meta. A
-// target served from cache folds nothing — nothing calls BoundCutFor on a hit
-// — so the merged answer is stored with no bound at all, and the TTL floor
+// target served from cache folds nothing, nothing calls BoundCutFor on a hit,
+// so the merged answer is stored with no bound at all, and the TTL floor
 // then extends a nearly-expired denial proof to the cache's minimum.
 func TestCNAMEChainInheritsCachedTargetLifetime(t *testing.T) {
 	// Both sub-query shapes a Queryer may take. The built-in pipeline hands
 	// the nested chain an internal writer, which keeps derived work off the
 	// byte path; SetQueryer is public and does not require that, so a
 	// wire-capable queryer reaches the byte path with a derived request. The
-	// rule has to hold either way — it cannot rest on a contract the API
+	// rule has to hold either way, it cannot rest on a contract the API
 	// does not enforce.
 	for _, tc := range []struct {
 		name    string
@@ -96,7 +96,7 @@ func assertChainInheritsTargetLifetime(
 	})
 
 	// Prime the target so the chase below is served from cache rather than
-	// resolved — the case in which no cut is folded into the meta.
+	// resolved, the case in which no cut is folded into the meta.
 	primeReq := new(dns.Msg)
 	primeReq.SetQuestion(target, dns.TypeA)
 	primeReq.RecursionDesired = true
@@ -111,14 +111,14 @@ func assertChainInheritsTargetLifetime(
 	if !ok {
 		t.Fatal("the target denial was not cached")
 	}
-	// Age the target so it is late in its life when the alias asks for it —
+	// Age the target so it is late in its life when the alias asks for it,
 	// the state a cached denial spends most of its time in, and where a
 	// derived answer stored on its own terms would overhang the most.
 	//
 	// The remainder left here is deliberately more than a second. A denial is
 	// served with its remaining lifetime truncated to whole seconds, so a
 	// target with under a second left hands the chase an SOA of TTL zero, and
-	// a zero-lifetime denial is no longer cacheable at all (RFC 2308 §5) —
+	// a zero-lifetime denial is no longer cacheable at all (RFC 2308 §5),
 	// the merged answer would never be stored and the rule below would go
 	// untested. That case is covered on its own in
 	// TestExhaustedTargetLeavesNoCachedChain.
@@ -320,7 +320,7 @@ func TestDenialProofLookupReportsEarliestExpiry(t *testing.T) {
 // TestStoreGetWithContextLeavesPositiveUnbound pins the lineage line on the
 // resolver-private path. DS and DNSKEY lookups come through here; a denial
 // binds the request tree to its own lifetime, but a positive answer is a
-// validation input, not lineage — binding it collapsed every fresh answer's
+// validation input, not lineage, binding it collapsed every fresh answer's
 // served TTL to the oldest key consulted on the walk.
 func TestStoreGetWithContextLeavesPositiveUnbound(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})
@@ -364,8 +364,8 @@ func TestStoreGetWithContextLeavesPositiveUnbound(t *testing.T) {
 	}
 }
 
-// failingWireWriter hands the body to the writer beneath it — which retains
-// it and marks the response written — and then reports a transport failure
+// failingWireWriter hands the body to the writer beneath it, which retains
+// it and marks the response written, and then reports a transport failure
 // that is not a fallback. The cache treats that outcome as terminal, and a
 // caller reading the response back through Msg() still gets the answer, so
 // the lifetime binding has to happen there too.
@@ -412,7 +412,7 @@ func (q *failingWireQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg,
 }
 
 // TestChildEntryKeepsItsOwnLifetime is the other half of the lineage rule.
-// A derived answer must not outlive its source — but the source must not be
+// A derived answer must not outlive its source, but the source must not be
 // shortened to the deriver's lifetime either. They share one request tree,
 // and today they share one bound, so a nearly expired alias drags a freshly
 // resolved target down to its own seconds.
@@ -509,7 +509,7 @@ func (q *boundThenSilentQueryer) Query(ctx context.Context, _ *dns.Msg) (*dns.Ms
 
 // TestUnusedSubQueryLineageIsNotInherited pins when a sub-query's bound
 // counts. It travels to the deriving request because the composed answer
-// carries the sub-query's records — so a sub-query that contributed no
+// carries the sub-query's records, so a sub-query that contributed no
 // records must not shorten anything.
 func TestUnusedSubQueryLineageIsNotInherited(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 600})

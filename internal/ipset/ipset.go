@@ -3,7 +3,7 @@
 //
 // It replaces a prefix-trie library that converted the address into a
 // freshly allocated slice on every lookup. That allocation sat on the
-// hottest path a resolver has — the access list runs before the cache,
+// hottest path a resolver has, the access list runs before the cache,
 // so every query paid it.
 //
 // A prefix is a contiguous range of addresses, so a set of prefixes is a
@@ -148,7 +148,7 @@ func (s *Set) Contains(addr netip.Addr) bool {
 }
 
 // ContainsIP is Contains for callers holding a net.IP. The conversion is
-// a value copy — nothing escapes, nothing allocates.
+// a value copy, nothing escapes, nothing allocates.
 func (s *Set) ContainsIP(ip net.IP) bool {
 	addr, ok := netip.AddrFromSlice(ip)
 	if !ok {

@@ -474,7 +474,7 @@ func allocSites(runs int, fn func()) []string {
 		if now.measuring {
 			// The snapshot walks thousands of records and allocates while
 			// doing it. Left in, it buries the site being looked for
-			// under its own — which is exactly what it did the first time
+			// under its own, which is exactly what it did the first time
 			// this ran.
 			continue
 		}

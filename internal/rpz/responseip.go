@@ -7,7 +7,7 @@ import (
 )
 
 // HasResponseIP reports whether any zone carries IP (response) trigger
-// rules — the switch that turns the whole sidecar machinery on.
+// rules, the switch that turns the whole sidecar machinery on.
 func (s *Store) HasResponseIP() bool {
 	if s == nil {
 		return false
@@ -21,7 +21,7 @@ func (s *Store) HasResponseIP() bool {
 }
 
 // ResponseTriggerBefore reports whether any zone ahead of idx carries
-// response triggers — §5.4's hold decision: a query-time match in zone
+// response triggers, §5.4's hold decision: a query-time match in zone
 // idx is final immediately iff this is false. A same-zone response
 // trigger never displaces a query-time match (rule 2: CLIENT-IP > QNAME
 // > IP), which is why the scan is strictly before idx.
@@ -39,8 +39,8 @@ func (s *Store) ResponseTriggerBefore(idx int) bool {
 
 // ResponseMatch is one zone's best IP-trigger match over a response's
 // answer addresses, carried value-only: zone index, action, rank key
-// (prefix length and matched address, both canonical 128-bit — IPv4
-// mapped, +96), and — for Local Data — deep copies of the rule's
+// (prefix length and matched address, both canonical 128-bit, IPv4
+// mapped, +96), and, for Local Data, deep copies of the rule's
 // records. Nothing here points into the policy store: a stamped
 // candidate must not pin the generation it was computed under (§5.6).
 type ResponseMatch struct {
@@ -62,7 +62,7 @@ func (m ResponseMatch) betterThan(o ResponseMatch) bool {
 
 // ResponseMatches is the entry-local evaluation result the sidecar
 // carries: the generation it was computed under and one best match per
-// matching zone, ascending zone index, over ALL zones uniformly —
+// matching zone, ascending zone index, over ALL zones uniformly,
 // enabled, disabled, and shadow alike. An empty List is the explicit
 // "evaluated, nothing matched"; the winner is a property of the query
 // and is computed at the serve-time merge, never here (§5.6 item 2).
@@ -73,7 +73,7 @@ type ResponseMatches struct {
 
 // EvaluateResponseList computes the per-zone best IP-trigger matches
 // over a response's answer records, ascending by zone index. nil means
-// nothing matched (or no zone carries response triggers — callers that
+// nothing matched (or no zone carries response triggers, callers that
 // need the distinction ask HasResponseIP), and nothing was allocated to
 // say so. Local Data records are deep-copied at this boundary: a
 // slice-header copy would keep the old generation's allocations
@@ -229,13 +229,13 @@ func (m ResponseMatch) asZoneMatch(s *Store) ZoneMatch {
 // query-time candidates meet the response-trigger candidates, and the
 // ordinary precedence rules pick one decision per zone (rule 2), then
 // the first enabled zone with a decision wins (rule 1, over enabled
-// zones only — a disabled zone observes without consuming, §5.5).
+// zones only, a disabled zone observes without consuming, §5.5).
 //
 // held is the enabled-zone query match Match returned (zero when none);
 // heldObserved the disabled-zone query matches it collected; resp the
 // sidecar's (or a fresh evaluation's) uniform per-zone response list.
-// observed carries every matched zone before the winner — and every
-// matched zone at all when no enabled zone decides — each with the
+// observed carries every matched zone before the winner, and every
+// matched zone at all when no enabled zone decides, each with the
 // decision it would have taken; winner-bounded counting reads it
 // directly.
 func (s *Store) Merge(held ZoneMatch, heldObserved []ZoneMatch, resp []ResponseMatch) (winner ZoneMatch, observed []ZoneMatch) {

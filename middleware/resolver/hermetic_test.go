@@ -17,8 +17,8 @@ import (
 	"github.com/semihalev/sdns/middleware"
 )
 
-// A signed DNS namespace served from loopback, so that resolution — including
-// DNSSEC validation from a trust anchor down to an answer — can be tested
+// A signed DNS namespace served from loopback, so that resolution, including
+// DNSSEC validation from a trust anchor down to an answer, can be tested
 // without reaching the internet.
 //
 // Three things about it are forced rather than chosen:
@@ -28,13 +28,13 @@ import (
 //     establishes a signer, and returns the data unvalidated. Only a referral
 //     makes validation happen at all.
 //   - Each zone needs its own socket. The root and the child are asked the
-//     same question — one to delegate it, the other to answer it — and a
+//     same question, one to delegate it, the other to answer it, and a
 //     single socket could not tell those apart.
 //   - Glue is remapped rather than seeded. A glue address always means port
 //     53, which a test cannot bind, so zones advertise TEST-NET-1 addresses
 //     and the resolver is told to dial the loopback socket serving each one.
 //     Seeding the delegation cache instead would hand the resolver a child
-//     it already knows, and the referral — with the DS inside it — would
+//     it already knows, and the referral, with the DS inside it, would
 //     never be processed or checked against the parent.
 //   - Denials carry proof. A signed zone answers NODATA and NXDOMAIN with a
 //     signed SOA and an NSEC, because a validator cannot tell a denial from
@@ -102,7 +102,7 @@ type hermeticRRSetKey struct {
 // nextInZone names something that sorts after everything else the fixture
 // publishes under owner, and still lies inside it. An NSEC whose interval
 // leaves its own zone is discarded before it is ever examined, since it says
-// nothing about that zone's contents — and the root is its own suffix, so
+// nothing about that zone's contents, and the root is its own suffix, so
 // the obvious spelling would produce a doubled dot.
 func nextInZone(owner string) string {
 	if owner == "." {
@@ -124,8 +124,8 @@ func emptyNonTerminals(zone string) []string {
 }
 
 // hermeticReferral is what a parent hands back for a name below a zone cut:
-// the child's nameserver, its address as glue, and — when the child is
-// signed — the DS that makes it verifiable.
+// the child's nameserver, its address as glue, and, when the child is
+// signed, the DS that makes it verifiable.
 type hermeticReferral struct {
 	zone  string
 	ns    []dns.RR
@@ -142,7 +142,7 @@ type hermeticServer struct {
 	// proofs are the authority-section records a negative answer carries:
 	// the zone's SOA and an NSEC denying the queried type. Without them a
 	// validating resolver cannot tell "does not exist" from "was stripped",
-	// and must refuse — so a signed zone has to supply them.
+	// and must refuse, so a signed zone has to supply them.
 	proofs   map[hermeticRRSetKey][]dns.RR
 	soaProof []dns.RR
 	// nxProof is the NSEC a denial carries. One record spanning the whole
@@ -171,7 +171,7 @@ type hermeticServer struct {
 	// authority looks like from the resolver's side.
 	silent bool
 	// beforeReply, when set, runs before this server answers. It lets a
-	// test hold one server's reply until something else has happened —
+	// test hold one server's reply until something else has happened,
 	// the only way to observe whether two servers were asked at once.
 	beforeReply func(dns.Question)
 
@@ -222,7 +222,7 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 		nodataProof := s.nodataProof[q.Name]
 		// The zone cut itself is below the cut too: a query for the child's
 		// apex belongs to the child, not the parent. Only the records the
-		// parent genuinely holds there — the DS — are answered here, and the
+		// parent genuinely holds there, the DS, are answered here, and the
 		// switch below reaches those first.
 		var referral *hermeticReferral
 		for zone, delegation := range s.children {
@@ -245,7 +245,7 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 			reply.Authoritative = true
 			reply.Answer = append(reply.Answer, rrs...)
 		case proof != nil:
-			// A fact the parent holds about the cut — that there is no DS
+			// A fact the parent holds about the cut, that there is no DS
 			// here, say. It has to be answered rather than referred, or the
 			// denial the child cannot make for itself never gets made.
 			reply.Authoritative = true
@@ -253,7 +253,7 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 			reply.Ns = append(reply.Ns, proof...)
 		case referral != nil:
 			// A referral names the child's servers and carries their
-			// addresses as glue, which is how the resolver reaches them —
+			// addresses as glue, which is how the resolver reaches them,
 			// and carries the DS, which is what makes the next zone
 			// verifiable. Both have to travel on the wire for the
 			// delegation to be processed and validated at all.
@@ -298,7 +298,7 @@ func (s *hermeticServer) serve(name string, qtype uint16, rrs ...dns.RR) {
 
 // rebuildNODATAProofLocked recomputes the NSEC for one name from the types it
 // now holds. A NODATA answer must show which types exist at the name, so the
-// proof cannot be written once — it changes as the zone is populated.
+// proof cannot be written once, it changes as the zone is populated.
 func (s *hermeticServer) rebuildNODATAProofLocked(name string) {
 	if s.key == nil {
 		return
@@ -453,20 +453,20 @@ type hermeticZone struct {
 	signed bool
 	// glue is the address the parent advertises for this zone. It is a
 	// TEST-NET-1 literal, remapped to the zone's loopback socket when the
-	// resolver dials — glue cannot name a port, so the address the
+	// resolver dials, glue cannot name a port, so the address the
 	// delegation carries can never be the one a test binds.
 	glue net.IP
 	// glue6 is the same nameserver's IPv6 address. Advertising both is what
-	// sends the resolver down its AAAA paths — looking a nameserver's v6
-	// address up, caching it, choosing between families — which a v4-only
+	// sends the resolver down its AAAA paths, looking a nameserver's v6
+	// address up, caching it, choosing between families, which a v4-only
 	// fixture leaves untouched. Both are remapped to the same socket.
 	glue6 net.IP
 	// extra are further nameservers the parent advertises for this zone,
 	// so a lookup has more than one address to choose between.
 	extra []hermeticAuthority
 	// ds is exactly what the parent published, so the delegation seeding
-	// cannot hand the resolver a different — and in a broken-chain fixture,
-	// a working — trust path than the referral does.
+	// cannot hand the resolver a different, and in a broken-chain fixture,
+	// a working, trust path than the referral does.
 	ds []dns.RR
 }
 
@@ -485,7 +485,7 @@ func (z *hermeticZone) Serve(rrs ...dns.RR) {
 }
 
 // ServeUnsigned publishes an RRset without its signature. In a signed zone
-// that is a bogus answer, which a validating resolver must refuse — the case
+// that is a bogus answer, which a validating resolver must refuse, the case
 // a live "missing signatures" probe used to cover.
 func (z *hermeticZone) ServeUnsigned(rrs ...dns.RR) {
 	z.tb.Helper()
@@ -501,7 +501,7 @@ func (z *hermeticZone) ServeUnsigned(rrs ...dns.RR) {
 // for the labels above a cut; a deep name needs it below one too.
 //
 // Without them a minimized query for an interior label draws a signed
-// NXDOMAIN, and RFC 8020 ends the resolution there — so a fixture missing them
+// NXDOMAIN, and RFC 8020 ends the resolution there, so a fixture missing them
 // can only be resolved with validation switched off, which quietly tests
 // something else.
 func (z *hermeticZone) ServeEmptyNonTerminals(name string) {
@@ -551,7 +551,7 @@ func (z *hermeticZone) WithholdDenialCoverage() {
 	}
 
 	// An NSEC's interval is over names, and the apex record spans the whole
-	// zone — keeping it would still cover everything. This one stops just
+	// zone, keeping it would still cover everything. This one stops just
 	// after the apex, so it covers almost nothing and certainly not the
 	// names these tests ask about.
 	narrow := &dns.NSEC{
@@ -616,7 +616,7 @@ func (z *hermeticZone) AddSilentAuthority(n *hermeticNet) {
 	n.root.mu.Unlock()
 }
 
-// signedSOA publishes a zone's SOA — signed when the zone is — and makes it
+// signedSOA publishes a zone's SOA, signed when the zone is, and makes it
 // the record every negative answer from that server carries.
 func signedSOA(tb testing.TB, server *hermeticServer, zone string, key *hermeticKey) {
 	tb.Helper()
@@ -726,8 +726,8 @@ func (n *hermeticNet) Delegate(zone string) *hermeticZone {
 }
 
 // DelegateVia is Delegate for a zone whose nameserver is named in some
-// other zone. The parent then has no glue to offer — an address record for
-// a name it is not authoritative for would be ignored — so the resolver has
+// other zone. The parent then has no glue to offer, an address record for
+// a name it is not authoritative for would be ignored, so the resolver has
 // to look the nameserver up before it can reach the child at all. That is
 // also the only way the address can later be refreshed: a nameserver named
 // inside its own zone can only be found through the very servers that have
@@ -864,7 +864,7 @@ func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *he
 	if !publishDS {
 		// The parent must say, in a way that can be verified, that this cut
 		// carries no DS. Absent that proof a validator cannot distinguish an
-		// unsigned child from a stripped one, and must refuse — so an
+		// unsigned child from a stripped one, and must refuse, so an
 		// insecure delegation is only insecure if the denial is signed.
 		denyType(n.tb, n.root, n.rootKey, zone, "zz-"+zone, dns.TypeDS, dns.TypeNS)
 	}
@@ -872,7 +872,7 @@ func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *he
 	n.root.mu.Lock()
 	n.root.children[zone] = referral
 	// Every label between the root and the cut exists as an empty
-	// non-terminal. Denying it outright would be wrong — and the resolver
+	// non-terminal. Denying it outright would be wrong, and the resolver
 	// only gets past it through its broken-parent fallback, so a fixture
 	// that does so quietly tests the fallback instead of the descent.
 	for _, ent := range emptyNonTerminals(zone) {
@@ -893,7 +893,7 @@ func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *he
 // state depend on test order and two test processes write the same file.
 //
 // It is not TempDir, whose cleanup fails the test if anything appears in the
-// directory while it is being removed — and the resolver's trust-anchor
+// directory while it is being removed, and the resolver's trust-anchor
 // upkeep runs in the background, so something does.
 func (n *hermeticNet) workDir() string {
 	n.tb.Helper()
@@ -934,7 +934,7 @@ func (n *hermeticNet) Handler() *DNSHandler {
 }
 
 // handlerWithConfig is Handler for a caller that adjusted the configuration
-// first — qname minimisation, for one.
+// first, qname minimisation, for one.
 func (n *hermeticNet) handlerWithConfig(cfg *config.Config) *DNSHandler {
 	n.tb.Helper()
 
@@ -944,7 +944,7 @@ func (n *hermeticNet) handlerWithConfig(cfg *config.Config) *DNSHandler {
 	// and leave everything else alone. Seeding the delegation cache instead
 	// would be simpler and would also be a lie: the resolver would find the
 	// child already known, so the referral would never be processed and the
-	// DS in it never validated against the parent — the very links these
+	// DS in it never validated against the parent, the very links these
 	// tests exist to cover.
 	byGlue := make(map[string]string, len(n.zones))
 	for _, z := range n.zones {

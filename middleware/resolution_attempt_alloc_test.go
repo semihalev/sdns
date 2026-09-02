@@ -145,7 +145,7 @@ func TestBeginCanonicalCostsOneAllocationForATypicalRecursion(t *testing.T) {
 
 // TestResolutionAttemptGuardCountsAcrossTheOverflow pins the limit through the
 // boundary between the inline table and the map. A tuple lives in one store or
-// the other, and a tuple that moved between them — or was recorded in both —
+// the other, and a tuple that moved between them, or was recorded in both,
 // would either lose its count or double it.
 func TestResolutionAttemptGuardCountsAcrossTheOverflow(t *testing.T) {
 	trace := resolutionAttemptTrace(4, 4)
@@ -208,8 +208,8 @@ func TestResolutionAttemptGuardConcurrentOverflow(t *testing.T) {
 
 // guardLayoutReference is what the guard is allowed to be: a mutex and the two
 // pointers it stores through. Comparing against it rather than a byte count
-// keeps the claim — "no third field, and the slots and their overflow share
-// one pointer" — true on every ABI rather than only a 64-bit one.
+// keeps the claim, "no third field, and the slots and their overflow share
+// one pointer", true on every ABI rather than only a 64-bit one.
 // Only the shapes matter, so the fields are unnamed: a mutex, the pointer the
 // slots and their overflow share, and the failure-response map.
 type guardLayoutReference struct {
@@ -220,7 +220,7 @@ type guardLayoutReference struct {
 
 // TestGuardLayoutStaysSmall pins what this change is for. The guard is
 // embedded in every request tree's ledgers, so a field added here is bytes on
-// every request that resolves anything — including the ones that never record
+// every request that resolves anything, including the ones that never record
 // an attempt. The store's own size matters far less: it is allocated once per
 // resolving tree, and only for those.
 func TestGuardLayoutStaysSmall(t *testing.T) {

@@ -79,7 +79,7 @@ func walk(t reflect.Type, prefix string, out map[string]bool) {
 			ft = ft.Elem()
 		}
 		// A field that opens a table is a heading, not a setting an operator
-		// assigns to — only its leaves are keys.
+		// assigns to, only its leaves are keys.
 		if ft.Kind() == reflect.Struct && !scalar(ft) {
 			walk(ft, path+".", out)
 			continue

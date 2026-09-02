@@ -49,7 +49,7 @@ CI runs the same linter configuration, so a clean local run is the same answer.
 
 ## Conventions
 
-**No assertion libraries.** Tests use plain `testing` idioms — `if got != want
+**No assertion libraries.** Tests use plain `testing` idioms, `if got != want
 { t.Errorf(...) }`. testify was removed from the repository deliberately; do
 not reintroduce it or an equivalent.
 
@@ -63,7 +63,7 @@ test of this code; it is a test of the machine it runs on. Stand up a loopback
 authority instead.
 
 **Every new behaviour gets a test.** Including the ones that are about what
-does *not* happen — an allocation that must not occur, a code path that must
+does *not* happen, an allocation that must not occur, a code path that must
 not be reachable. Those are the ones that silently regress.
 
 ## Regenerating the packaged configuration

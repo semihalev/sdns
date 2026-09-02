@@ -53,7 +53,7 @@ func newHitChainServerWith(tb testing.TB, respond func(req *dns.Msg) *dns.Msg) *
 	tb.Helper()
 	middleware.Reset()
 	tb.Cleanup(middleware.Reset)
-	// The real chain, up to the resolver — which the stub below stands in
+	// The real chain, up to the resolver, which the stub below stands in
 	// for. Taking it from the generated list rather than repeating it here
 	// is the difference between benchmarking what production runs and
 	// benchmarking a list that was accurate when it was written: this one
@@ -61,7 +61,7 @@ func newHitChainServerWith(tb testing.TB, respond func(req *dns.Msg) *dns.Msg) *
 	defaults.RegisterUpTo("resolver")
 	middleware.Register("bench-answer-stub", func(*config.Config) middleware.Handler { return benchAnswerStub{respond: respond} })
 
-	cfg := &config.Config{ //nolint:gosec // G101 — the cookie secret is a test fixture, not a credential
+	cfg := &config.Config{ //nolint:gosec // G101, the cookie secret is a test fixture, not a credential
 		Bind:         "127.0.0.1:0",
 		Expire:       600,
 		CacheSize:    10240,
@@ -74,7 +74,7 @@ func newHitChainServerWith(tb testing.TB, respond func(req *dns.Msg) *dns.Msg) *
 
 // TestServeRawWarmHitWithEDNS pins the warm exact-entry hit for an EDNS
 // client end to end: NOERROR, the cached answer, and a well-formed reply
-// OPT. This is the shape the wire fast path serves in production — a
+// OPT. This is the shape the wire fast path serves in production, a
 // regression here (the nil-OPT wireOPTLen crash was one) hides behind
 // recovery's SERVFAIL otherwise.
 func TestServeRawWarmHitWithEDNS(t *testing.T) {

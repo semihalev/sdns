@@ -12,7 +12,7 @@ import (
 // is by provenance of the dynamic type, not by interface assertion or by a
 // registry snapshot: an external type embedding a library interface
 // satisfies it through promotion and slips past any single-type assertion,
-// and the library's public registry is mutable at runtime — checking where a
+// and the library's public registry is mutable at runtime, checking where a
 // type is declared depends on neither.
 const libraryPkg = "github.com/miekg/dns"
 
@@ -21,8 +21,8 @@ const libraryPkg = "github.com/miekg/dns"
 // it.
 //
 // The nesting matters as much as the record. OPT carries []dns.EDNS0 and
-// SVCB/HTTPS carry []dns.SVCBKeyValue — the library's only interface-valued
-// record fields — and an external implementation behind either is code this
+// SVCB/HTTPS carry []dns.SVCBKeyValue, the library's only interface-valued
+// record fields, and an external implementation behind either is code this
 // path does not control. It runs during the library's sizing pass as well as
 // during packing, so a stateful one can change between the two and make this
 // path succeed where the library errors, or the reverse. Every nested value
@@ -67,7 +67,7 @@ func admissibleSVCBValues(values []dns.SVCBKeyValue) bool {
 
 // libraryOwned reports whether v's dynamic type is declared in the library:
 // a non-nil pointer (or a plain value) whose type's package is libraryPkg.
-// A typed-nil pointer is refused — it would carry the right provenance into
+// A typed-nil pointer is refused. It would carry the right provenance into
 // a method call that dereferences nothing.
 func libraryOwned(v any) bool {
 	t := reflect.TypeOf(v)
@@ -95,7 +95,7 @@ func libraryOwned(v any) bool {
 //     produced. Where this cannot be guaranteed, TryPack does not try: it
 //     reports handled=false, no bytes are produced, and the caller uses the
 //     library path it was already using.
-//   - msg is not modified — not its header, not its records, not its OPT.
+//   - msg is not modified, not its header, not its records, not its OPT.
 //     This is deliberately stronger than the library, which writes the
 //     extended rcode into the caller's OPT and, through the public PackRR,
 //     the computed Rdlength into the caller's record headers. Both writes
@@ -105,7 +105,7 @@ func libraryOwned(v any) bool {
 //     that, prepackaged.
 //
 // handled=true with a non-nil error is the consumer's error, reported after
-// bytes may already have left the process — the caller must not fall back and
+// bytes may already have left the process. The caller must not fall back and
 // write a second response.
 func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error) {
 	if msg == nil || msg.Rcode < 0 || msg.Rcode > 0xFFF {
@@ -113,14 +113,14 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	}
 
 	// Everything that decides handled-or-not runs before any byte is
-	// written — and before the size probe, whose Len walk already executes
-	// nested option code — so a message this path cannot finish is never
+	// written, and before the size probe, whose Len walk already executes
+	// nested option code, so a message this path cannot finish is never
 	// half-packed, probed, or mutated, and then handed to the fallback in a
 	// different state than it arrived in.
 	//
 	// Admission also runs before anything walks Extra looking for the OPT:
 	// IsEdns0 dereferences each record's header and type-asserts the match,
-	// so on a nil record or an OPT-shaped wrapper it panics — this preflight
+	// so on a nil record or an OPT-shaped wrapper it panics. This preflight
 	// is what turns those into a clean fallback instead.
 	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
@@ -133,7 +133,7 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 	// The extended rcode travels in the OPT record. With no OPT to carry it,
 	// the library errors; that path is left to the library so the error is
 	// its own. A shape whose OPT selection would panic the library is not
-	// selected here — the caller's library path owns that behavior.
+	// selected here, the caller's library path owns that behavior.
 	opt, safe := selectOPT(msg)
 	if !safe {
 		return false, nil
@@ -178,7 +178,7 @@ func TryPack(msg *dns.Msg, consume func([]byte) error) (handled bool, err error)
 }
 
 // PackClone packs msg and returns an exact-size copy the caller owns. It is
-// for the callsites that keep the bytes — a cache entry, an async queue —
+// for the callsites that keep the bytes, a cache entry, an async queue,
 // where a borrowed buffer must never travel. The library path is the
 // fallback, trimmed to size the same way, so the caller sees one shape.
 func PackClone(msg *dns.Msg) ([]byte, error) {
@@ -207,13 +207,13 @@ func PackClone(msg *dns.Msg) ([]byte, error) {
 // selectOPT finds the OPT record the library's IsEdns0 would select, without
 // its two panics: IsEdns0 dereferences each record's header on the way and
 // type-asserts the OPT-typed one it stops at. safe=false marks the shapes it
-// would panic on — a nil record, or a record wearing the OPT type without
-// being one — which stay on the library path so its behavior remains its own.
+// would panic on, a nil record, or a record wearing the OPT type without
+// being one, which stay on the library path so its behavior remains its own.
 //
 // The scan runs backwards, because that is the library's scan: RFC 6891 puts
 // the OPT anywhere in the additional section but usually last, so IsEdns0
 // starts from the end. With more than one OPT in the message the direction
-// decides which record carries the extended rcode — a forward scan here
+// decides which record carries the extended rcode, a forward scan here
 // picked the wrong one, and only a reference that preserved the message's
 // aliasing could show it.
 func selectOPT(msg *dns.Msg) (opt *dns.OPT, safe bool) {
@@ -238,14 +238,14 @@ func selectOPT(msg *dns.Msg) (opt *dns.OPT, safe bool) {
 // message: Pack stores the extended rcode into the caller's OPT, which on a
 // shared message is a data race and on any message breaks the promise this
 // package makes. The pack runs on a shallow copy in which every occurrence
-// of the selected OPT — whichever section it appears in — is the same copy,
+// of the selected OPT, whichever section it appears in, is the same copy,
 // so the library mutates that and the caller's record stays as built.
 // Everything else is shared, because a library-defined record's packing
 // reads only its own fields.
 //
 // That last clause is the boundary of the promise. A PrivateRR packs through
 // registrant code that can observe anything, including the original OPT the
-// library would have mutated by now — for such a message, byte parity and
+// library would have mutated by now, for such a message, byte parity and
 // immutability cannot both be promised, and parity wins: the message keeps
 // the library's own semantics wholesale, mutation included. The same applies
 // to any shape the library would reject or panic on, so its errors stay its
@@ -313,9 +313,9 @@ type packState struct {
 }
 
 // packInto encodes msg into state.buf, returning the length and whether the
-// custom path accounted for everything it saw. Anything it did not — a record
+// custom path accounted for everything it saw. Anything it did not, a record
 // kind with its own packing protocol, a message that does not fit, an
-// encoding error — is a fallback, never a guess.
+// encoding error, is a fallback, never a guess.
 func (state *packState) packInto(
 	msg *dns.Msg,
 	opt *dns.OPT,
@@ -342,12 +342,12 @@ func (state *packState) packInto(
 
 	for _, section := range [3][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
 		for _, rr := range section {
-			// Record admission — non-nil, and a type the library defines —
+			// Record admission, non-nil, and a type the library defines,
 			// happened in TryPack's preflight, before anything was written.
 			//
 			// At off == len(out) there is no room even for a header. On the
 			// current library PackRR's own per-field bounds checks refuse
-			// this too — the guard is defense in depth, so a change in those
+			// this too. The guard is defense in depth, so a change in those
 			// checks cannot turn an exactly-full buffer into a record packed
 			// over the payload's tail.
 			if off >= len(out) {
@@ -360,7 +360,7 @@ func (state *packState) packInto(
 				// OPT and packs the mutated record. Same bytes, different
 				// home: a copy carries the rewritten TTL, and the caller's
 				// record keeps its own. The write is unconditional in the
-				// library — a low rcode clears stale extended bits — so it
+				// library, a low rcode clears stale extended bits, so it
 				// is unconditional here.
 				state.opt = *o
 				state.opt.Hdr.Ttl = o.Hdr.Ttl&0x00FFFFFF |
@@ -388,7 +388,7 @@ func (state *packState) packInto(
 // successful pack by writing the computed Rdlength through Header(); routed
 // here, that write lands in hdr and the caller's record is never touched. The
 // wire bytes come from the embedded record's own packing, which reads its own
-// fields — identical to the copy by construction.
+// fields, identical to the copy by construction.
 type rrView struct {
 	dns.RR
 	hdr dns.RR_Header
@@ -446,7 +446,7 @@ func msgBits(msg *dns.Msg) uint16 {
 //
 // The question count is part of it. A message with more than one question does
 // not occur in practice, and leaving that clause out is why an earlier version
-// packed one uncompressed while the library compressed it — a difference no
+// packed one uncompressed while the library compressed it, a difference no
 // hand-written case would have found.
 func msgIsCompressible(msg *dns.Msg) bool {
 	return len(msg.Question) > 1 || len(msg.Answer) > 0 ||
@@ -472,7 +472,7 @@ var packStatePool = sync.Pool{
 
 // release returns the state to the pool with nothing of the message left in
 // it. The shim held the last record packed, the OPT copy holds the caller's
-// option list, and the dictionary's keys are the message's owner names — any
+// option list, and the dictionary's keys are the message's owner names, any
 // of them still referenced from the pool would keep the whole message alive.
 func (state *packState) release() {
 	state.rr.RR = nil

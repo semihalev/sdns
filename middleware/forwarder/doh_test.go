@@ -90,7 +90,7 @@ func startDoHServer(t *testing.T, path string, handler func(*http.Request) (stat
 }
 
 // dohServerWithSkipVerify builds a *server pointing at testURL but
-// with TLS verification skipped — httptest.NewTLSServer uses a self-
+// with TLS verification skipped, httptest.NewTLSServer uses a self-
 // signed cert that the production newDoHServer rejects.
 func dohServerWithSkipVerify(t *testing.T, testURL string) *server {
 	t.Helper()
@@ -114,7 +114,7 @@ func dohServerWithSkipVerify(t *testing.T, testURL string) *server {
 			return d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		},
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec // test-only — httptest TLS cert is self-signed
+			InsecureSkipVerify: true, //nolint:gosec // test-only, httptest TLS cert is self-signed
 			MinVersion:         tls.VersionTLS12,
 		},
 	}
@@ -224,7 +224,7 @@ func TestNewDoHServer_HostnameBootstrapFails(t *testing.T) {
 }
 
 // TestNewDoHServer_HostnameBootstrapEmpty covers the edge case
-// where the resolver returns nil/empty without error — newDoHServer
+// where the resolver returns nil/empty without error, newDoHServer
 // must reject this rather than build a client with no IPs.
 func TestNewDoHServer_HostnameBootstrapEmpty(t *testing.T) {
 	orig := resolver
@@ -333,7 +333,7 @@ func TestForwarder_DoH_FallthroughOnError(t *testing.T) {
 	}
 }
 
-// TestDoHGETBase64Ignored confirms that we POST, not GET — sending a
+// TestDoHGETBase64Ignored confirms that we POST, not GET, sending a
 // GET-formatted request to our handler shouldn't happen.
 func TestDoHRequestIsPOST(t *testing.T) {
 	var sawMethod string
@@ -427,7 +427,7 @@ func TestForwarder_DoH_MismatchedID(t *testing.T) {
 		req := readDoHRequest(t, r)
 		resp := new(dns.Msg)
 		resp.SetReply(req)
-		// Forge a bogus TXID — neither echoed nor 0.
+		// Forge a bogus TXID, neither echoed nor 0.
 		resp.Id = req.Id ^ 0x5555
 		if resp.Id == 0 { // vanishingly unlikely but cover it
 			resp.Id = 0x1234
@@ -451,7 +451,7 @@ func TestForwarder_DoH_MismatchedID(t *testing.T) {
 
 // TestForwarder_DoH_ZeroIDAccepted ensures the RFC 8484
 // normalisation case (server returns ID=0 regardless of request ID)
-// is accepted — otherwise we'd break interop with RFC-strict DoH
+// is accepted, otherwise we'd break interop with RFC-strict DoH
 // servers.
 func TestForwarder_DoH_ZeroIDAccepted(t *testing.T) {
 	dohURL, stop := startDoHServer(t, "/dns-query", func(r *http.Request) (int, []byte, string) {
@@ -514,7 +514,7 @@ func TestForwarder_SharedQueryBudget(t *testing.T) {
 	elapsed := time.Since(start)
 
 	// 3 upstreams * 500ms would be 1.5s. With the shared 300ms
-	// budget we should bail well before 1 second — pick a generous
+	// budget we should bail well before 1 second, pick a generous
 	// upper bound that still proves the budget worked.
 	if elapsed > time.Second {
 		t.Errorf("elapsed = %v, want < 1s (shared budget was 300ms; 3 sequential 500ms calls would be 1.5s)", elapsed)
@@ -566,7 +566,7 @@ func runForwarderQuery(t *testing.T, f *Forwarder, qname string, qtype uint16) *
 }
 
 // runForwarderQueryExpectSERVFAIL is runForwarderQuery's twin for
-// the explicit failure path — when every server errors out the
+// the explicit failure path, when every server errors out the
 // forwarder issues CancelWithRcode(SERVFAIL).
 func runForwarderQueryExpectSERVFAIL(t *testing.T, f *Forwarder, qname string, qtype uint16) {
 	t.Helper()
@@ -608,7 +608,7 @@ func TestNew_DoH_SkipsBadEntries(t *testing.T) {
 	cfg := stubConfig([]string{
 		"https:///dns-query", // missing host
 		"https://not-a-real-hostname-zzz-xyz-9999.invalid/q", // bootstrap fails
-		"1.1.1.1:53", // valid — must survive
+		"1.1.1.1:53", // valid, must survive
 	})
 	f := New(cfg)
 	if len(f.servers) != 1 {

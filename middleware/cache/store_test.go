@@ -38,7 +38,7 @@ func newTestSuccessResp(name string) *dns.Msg {
 }
 
 // TestLookupByKeyVerifiedRejectsCollision plants two distinct questions
-// under the SAME key — deterministically simulating an xxhash64 collision —
+// under the SAME key, deterministically simulating an xxhash64 collision,
 // and confirms full-key verification serves only the matching question.
 // Without it, an attacker who searches a colliding qname could poison the
 // cache (the cache previously returned an entry on a bare hash match).
@@ -75,8 +75,8 @@ func TestLookupByKeyVerifiedRejectsCollision(t *testing.T) {
 }
 
 // TestCacheHitRejectsCollisionAcrossScopeAndCD plants an entry under a key
-// its own preimage does not hash to — a deterministic stand-in for the
-// xxhash64 collision an attacker can search for offline on a chosen qname —
+// its own preimage does not hash to, a deterministic stand-in for the
+// xxhash64 collision an attacker can search for offline on a chosen qname,
 // and pins that the hit chokepoint declines it instead of serving one ECS
 // audience's (or CD partition's) answer to a client that belongs to
 // neither. Verifying the question alone would let both through.
@@ -126,7 +126,7 @@ func TestCacheHitRejectsCollisionAcrossScopeAndCD(t *testing.T) {
 		req := new(dns.Msg)
 		req.SetQuestion("cdcollide.example.", dns.TypeA)
 
-		// A checking-disabled answer — unvalidated by definition — planted
+		// A checking-disabled answer, unvalidated by definition, planted
 		// under the key a validating (CD=0) client computes.
 		cdResp := reply(req, "10.9.9.9", 0)
 		cdResp.CheckingDisabled = true
@@ -168,7 +168,7 @@ func TestCacheHitRejectsCollisionAcrossScopeAndCD(t *testing.T) {
 }
 
 // TestStoreGetLookupRoundTrip covers Store.Lookup and Store.Get via
-// SetFromResponse — the three public facade methods every caller
+// SetFromResponse, the three public facade methods every caller
 // outside the middleware goes through.
 func TestStoreGetLookupRoundTrip(t *testing.T) {
 	s := newTestStore(t)
@@ -219,7 +219,7 @@ func TestStoreGetMiss(t *testing.T) {
 
 // TestStorePurge pins that Purge removes both CD variants of an
 // entry. SetFromResponse for CD=false and CD=true, then Purge once,
-// then Lookup for both — both must miss.
+// then Lookup for both. Both must miss.
 func TestStorePurge(t *testing.T) {
 	s := newTestStore(t)
 
@@ -254,7 +254,7 @@ func TestStorePurge(t *testing.T) {
 }
 
 // TestCachePurgePublicAPI exercises the *Cache.Purge adapter that
-// satisfies middleware.Purger — called by api/api.go via
+// satisfies middleware.Purger, called by api/api.go via
 // Pipeline.Purgers() iteration.
 func TestCachePurgePublicAPI(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024, Expire: 60})
@@ -277,7 +277,7 @@ func TestCachePurgePublicAPI(t *testing.T) {
 }
 
 // TestEqualNameASCIIFold verifies the cache-key verification folds ASCII
-// case only — matching internal/cache.Key — and does NOT do Unicode folding
+// case only, matching internal/cache.Key, and does NOT do Unicode folding
 // (which strings.EqualFold would), so it can't accept names the key hash
 // treats as distinct.
 func TestEqualNameASCIIFold(t *testing.T) {
@@ -288,7 +288,7 @@ func TestEqualNameASCIIFold(t *testing.T) {
 		t.Fatal("different names must not be equal")
 	}
 	// U+017F (ſ, 2 bytes UTF-8) Unicode-folds to 's', but must NOT fold
-	// here — different byte length, and the key hash treats it as distinct.
+	// here, different byte length, and the key hash treats it as distinct.
 	if equalNameASCIIFold("ſ.example.", "s.example.") {
 		t.Fatal("must not Unicode-fold (would diverge from the key hash)")
 	}

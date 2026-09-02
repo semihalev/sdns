@@ -28,7 +28,7 @@ routes are the exception and are covered below.
 | `/api/v1/block/set/batch` | POST | Add many |
 | `/api/v1/block/remove/batch` | POST | Remove many |
 
-The block endpoints are registered whether or not you configured a blocklist —
+The block endpoints are registered whether or not you configured a blocklist,
 the default chain always builds the handler. Note that the
 single-name mutations are GET requests, which means a browser or a link
 preview can trigger them.
@@ -39,7 +39,7 @@ be replayed, so it is a second layer rather than the protection. A reachable
 deployment needs a TLS-terminating authenticating proxy, a VPN, or a firewall
 that restricts the source.
 
-`/debug/pprof` is served only when `SDNS_PPROF=true` is in the environment — and
+`/debug/pprof` is served only when `SDNS_PPROF=true` is in the environment, and
 those routes are the one exception to the token, since pprof tooling sends no
 `Authorization` header. With pprof on, a token is not sufficient protection for
 this listener; keep it on loopback or behind an authenticating proxy. See
@@ -57,7 +57,7 @@ dns_resolver_dnssec_failures_total
 
 A rise in `dns_resolver_dnssec_failures_total` is either an upstream zone that
 broke its signing or something interfering with your traffic. It is worth
-alerting on because it is invisible to clients — they just see SERVFAIL.
+alerting on because it is invisible to clients, they just see SERVFAIL.
 
 **Is the cache doing its job?**
 
@@ -79,7 +79,7 @@ dns_recursion_fanout_ratio
 dns_recursion_firewall_exhaustions_total
 ```
 
-`dns_recursion_fanout_ratio` — outbound queries per client query — is the single
+`dns_recursion_fanout_ratio`, outbound queries per client query, is the single
 most useful number for spotting a query pattern designed to cost you work. It
 sits low and flat in normal operation.
 
@@ -95,8 +95,8 @@ dns_listener_errors_total
 Overflow means queries arrived faster than the workers accepted them. That is a
 capacity signal, not a bug.
 
-**Everything else.** All 64 metrics — with their types, labels, help strings,
-ready-made PromQL and the alerts worth having — are in the
+**Everything else.** All 64 metrics, with their types, labels, help strings,
+ready-made PromQL and the alerts worth having, live in the
 [metrics reference]({{ '/docs/reference/metrics/' | relative_url }}).
 
 ## Query logging

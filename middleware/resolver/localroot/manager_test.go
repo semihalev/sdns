@@ -179,7 +179,7 @@ func TestManagerRefusesUnverifiedSwap(t *testing.T) {
 // TestRunDefersTheFirstTransfer pins that the copy yields to the resolver's
 // cold start. Pulling the zone the instant the process comes up shares the
 // link with the priming query, the trust-anchor refresh and the first
-// client queries — measurably slowing them on a modest connection, which is
+// client queries, measurably slowing them on a modest connection, which is
 // the opposite of what the copy is for. The delay is generous compared to
 // the window this test watches, so a regression to an immediate transfer
 // shows up immediately rather than as a timing flake.
@@ -202,7 +202,7 @@ func TestRunDefersTheFirstTransfer(t *testing.T) {
 
 	time.Sleep(250 * time.Millisecond)
 	if got := transfers.Load(); got != 0 {
-		t.Fatalf("%d transfers within 250ms of start — the first one must wait out "+
+		t.Fatalf("%d transfers within 250ms of start, the first one must wait out "+
 			"the resolver's cold start (%v)", got, initialTransferDelay)
 	}
 	if m.Active() != nil {
@@ -212,7 +212,7 @@ func TestRunDefersTheFirstTransfer(t *testing.T) {
 
 // TestRefreshWithoutAnchorsDoesNotTransfer pins the guard in front of the
 // wire. Trust anchors can fail closed and stay empty, and nothing transferred
-// in that state could ever verify — so pulling a few megabytes from every
+// in that state could ever verify, so pulling a few megabytes from every
 // source on every retry interval, indefinitely, is waste aimed at root
 // infrastructure.
 func TestRefreshWithoutAnchorsDoesNotTransfer(t *testing.T) {
@@ -297,7 +297,7 @@ func TestObserveReportsSerialAndAge(t *testing.T) {
 // moment the anchors that verified it stop being the resolver's. Expiry alone
 // is not enough: an anchor set emptied fail-closed, or one whose keys were
 // replaced, withdraws the basis on which every answer built from the copy
-// claims AD=1 — and days of horizon could otherwise run on evidence that no
+// claims AD=1, and days of horizon could otherwise run on evidence that no
 // longer exists.
 func TestActiveFollowsTheTrustAnchors(t *testing.T) {
 	root := buildTestRoot(t)
@@ -318,7 +318,7 @@ func TestActiveFollowsTheTrustAnchors(t *testing.T) {
 	}
 
 	// The observation is cached for anchorRecheckInterval, so move past it
-	// before each change — the staleness is deliberate and bounded.
+	// before each change. The staleness is deliberate and bounded.
 	advance := func() { now = now.Add(2 * anchorRecheckInterval) }
 
 	anchors = nil
@@ -335,7 +335,7 @@ func TestActiveFollowsTheTrustAnchors(t *testing.T) {
 		t.Fatal("the copy is still served under a foreign anchor set")
 	}
 
-	// Restored anchors restore the copy — the snapshot never changed, only
+	// Restored anchors restore the copy, the snapshot never changed, only
 	// the basis for trusting it did.
 	anchors = root.anchors
 	advance()

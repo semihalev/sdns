@@ -7,7 +7,7 @@ import (
 )
 
 // The outcome label separates what acted from what would have: exactly one
-// enforced count per acting query, everything else observed — shadow mode,
+// enforced count per acting query, everything else observed, shadow mode,
 // disabled zones, and (in later phases) losers under precedence. Summing
 // over outcome gives a zone's match rate in any mode, which is what makes
 // a soak-then-flip comparable (design §5.5).
@@ -43,14 +43,14 @@ var (
 	}, []string{"zone"})
 )
 
-// countMatch runs on the match path only — the non-matching query touches
+// countMatch runs on the match path only, the non-matching query touches
 // no counter (design §5.11).
 func countMatch(m rpzengine.ZoneMatch, outcome string) {
 	actionTotal.WithLabelValues(m.Zone.Name, m.Trigger, m.Effective().String(), outcome).Inc()
 }
 
 // skipReasons is every reason the engine can count, so a reload publishes
-// the full set — a reason that dropped to zero reads as zero, rather than
+// the full set, a reason that dropped to zero reads as zero, rather than
 // keeping the previous generation's value on the board.
 var skipReasons = []string{
 	rpzengine.SkipTrigger,

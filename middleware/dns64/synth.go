@@ -43,7 +43,7 @@ func validatePrefix(p *net.IPNet) error {
 		return fmt.Errorf("dns64: nil prefix")
 	}
 	// Use mask length, not IP.To4(), to distinguish IPv4 from
-	// IPv6 inputs — IPv4-mapped IPv6 ranges like ::ffff:0:0/96
+	// IPv6 inputs, IPv4-mapped IPv6 ranges like ::ffff:0:0/96
 	// have a non-nil To4() but are still legal Pref64 inputs.
 	if len(p.Mask) != net.IPv6len {
 		return fmt.Errorf("dns64: prefix %s is IPv4, want IPv6", p.String())
@@ -69,7 +69,7 @@ func validatePrefix(p *net.IPNet) error {
 // The v4 octets are interleaved around byte 8 (the "u" octet) for
 // /32, /40, /48, /56, /64 prefixes. Byte 8 itself is always written
 // as zero, regardless of any value the operator may have placed
-// there in the configured prefix — RFC 6052 §2.2 reserves it.
+// there in the configured prefix, RFC 6052 §2.2 reserves it.
 //
 // Trailing octets beyond the embedded v4 are zeroed (the "suffix"
 // in the RFC's terminology). Suffix is reserved for future use and
@@ -144,7 +144,7 @@ func isWellKnownPrefix(p *net.IPNet) bool {
 
 // synthesizeAAAA builds a synthetic AAAA RR for qname from the given
 // A record using prefix. The synthesised record uses ttl as its TTL
-// (caller selects per RFC 6147 §5.1.7 — the lower of the original
+// (caller selects per RFC 6147 §5.1.7, the lower of the original
 // AAAA negative TTL and the A TTL). qname is used as the owner so
 // the record matches the client's question regardless of any CNAME
 // chain that landed on the A record's owner.

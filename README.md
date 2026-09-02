@@ -29,7 +29,7 @@ SDNS resolves from the root, validates answers against the DNSSEC trust
 anchors, and caches them. It serves DNS over TLS, HTTPS and QUIC alongside
 plain UDP and TCP, and answers warm cache hits from the bytes it already holds.
 
-Full documentation lives at **[sdns.dev](https://sdns.dev/docs/)** — this file
+Full documentation lives at **[sdns.dev](https://sdns.dev/docs/)**. This file
 covers installing it and getting a first answer out of it.
 
 ## Install
@@ -38,8 +38,8 @@ covers installing it and getting a first answer out of it.
 go install github.com/semihalev/sdns@latest
 ```
 
-Pre-built binaries for Linux, macOS, Windows and the BSDs — plus `.deb` and
-`.rpm` packages — are on the
+Pre-built binaries for Linux, macOS, Windows and the BSDs, plus `.deb` and
+`.rpm` packages, are on the
 [releases](https://github.com/semihalev/sdns/releases/latest) page. The full
 architecture matrix is in the
 [installation guide](https://sdns.dev/docs/getting-started/installation/).
@@ -66,7 +66,7 @@ yay -S sdns-git
 Images are published to
 [ghcr.io/semihalev/sdns](https://github.com/semihalev/sdns/pkgs/container/sdns)
 and [c1982/sdns](https://hub.docker.com/r/c1982/sdns) on every tagged release.
-Pin a tag in production rather than following `latest` — the
+Pin a tag in production rather than following `latest`, the
 [installation page](https://sdns.dev/docs/getting-started/installation/) names
 the current one, since this file cannot.
 
@@ -88,7 +88,7 @@ resolver primes the root and fetches the trust anchor; after that it is served
 from cache.
 
 See [Your first configuration](https://sdns.dev/docs/getting-started/first-config/)
-for the handful of settings worth changing straight away — in particular
+for the handful of settings worth changing straight away, in particular
 `accesslist`, which allows everyone by default.
 
 ## What it does
@@ -133,8 +133,8 @@ make test    # tests only
 go build     # binary only
 ```
 
-Conventions a patch is expected to follow — plain `testing` idioms with no
-assertion library, no live-network tests, `gofmt` and `golangci-lint` clean —
+Conventions a patch is expected to follow (plain `testing` idioms with no
+assertion library, no live-network tests, `gofmt` and `golangci-lint` clean)
 are on the [building and testing](https://sdns.dev/docs/development/building/)
 page. The middleware interface and the plugin contract are documented
 [there too](https://sdns.dev/docs/development/middleware/).

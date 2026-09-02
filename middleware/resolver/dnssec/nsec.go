@@ -92,7 +92,7 @@ func closestEncloserFromNSEC(qname string, nsec *dns.NSEC) string {
 	qn := strings.ToLower(dns.Fqdn(qname))
 	qLabelCount := dns.CountLabel(qn)
 
-	// CompareSuffix folds case on its own, so only qn needs lowering — the
+	// CompareSuffix folds case on its own, so only qn needs lowering. The
 	// result is a slice of it. An unrooted owner or next is rooted first,
 	// exactly as the old label split did; names off the wire already are.
 	shared := func(other string) int {
@@ -153,7 +153,7 @@ func VerifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 			}
 
 			// DS queries are only authoritative in the parent zone.
-			// Reject an NSEC whose bitmap contains SOA — that NSEC
+			// Reject an NSEC whose bitmap contains SOA, that NSEC
 			// belongs to the child-zone apex and cannot prove DS
 			// non-existence at the delegation point. The NS bit is
 			// not required: findDS() may probe ordinary non-
@@ -171,10 +171,10 @@ func VerifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 
 	// Wildcard NODATA (RFC 4035 §3.1.3.4): when qname has no exact
 	// NSEC owner, the proof is
-	//   1. An NSEC covering qname — proves qname doesn't exist
+	//   1. An NSEC covering qname, proves qname doesn't exist
 	//      directly.
 	//   2. An NSEC whose owner is *.<closest-encloser> whose type
-	//      bitmap does not contain qtype or CNAME — proves the
+	//      bitmap does not contain qtype or CNAME, proves the
 	//      wildcard synthesis that would otherwise answer qname
 	//      doesn't carry the queried type.
 	var covering *dns.NSEC
@@ -191,7 +191,7 @@ func VerifyNODATANSEC(msg *dns.Msg, nsecSet []dns.RR) error {
 
 	// Empty non-terminal (RFC 4035 §3.1.3, RFC 4592 §2.2.2): a name with
 	// descendants but no RRsets of its own owns no NSEC, so its NODATA
-	// proof is the covering NSEC alone — recognisable by a NextDomain
+	// proof is the covering NSEC alone, recognisable by a NextDomain
 	// lying strictly below qname. Only a zone in which qname owns nothing
 	// can sign that record: had qname owned any RRset it would own an
 	// NSEC, and the chain would step through qname exactly rather than

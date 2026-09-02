@@ -8,7 +8,7 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-// compiled holds the runtime form of cfg.DNS64 — prefixes and CIDR
+// compiled holds the runtime form of cfg.DNS64, prefixes and CIDR
 // lists as net.IPNet structs, the exclude-zone list canonicalised
 // to lower-case fully-qualified form, and the active prefix
 // pre-selected. compileConfig returns nil when DNS64 is disabled
@@ -67,7 +67,7 @@ var defaultExcludeAv4 = []*net.IPNet{
 	mustCIDR("172.16.0.0/12"),
 	mustCIDR("192.0.0.0/24"),
 	mustCIDR("192.0.2.0/24"),
-	// 192.88.99.0/24 — 6to4 anycast relay range, deprecated by
+	// 192.88.99.0/24, 6to4 anycast relay range, deprecated by
 	// RFC 7526. The IANA Special-Purpose Address Registry marks
 	// 192.88.99.2/32 as Globally Reachable: False; we cover the
 	// whole /24 to stay aligned with RFC 6052 §3.1.
@@ -85,7 +85,7 @@ var defaultExcludeAv4 = []*net.IPNet{
 // entries are logged and skipped (matching the views / accesslist
 // pattern), so a single typo in one prefix doesn't disable the
 // middleware. Returns nil when DNS64 is not enabled or has no
-// usable prefix — New translates that into a typed-nil Handler so
+// usable prefix, New translates that into a typed-nil Handler so
 // the registry skips the middleware entirely.
 func compileConfig(cfg *config.Config) *compiled {
 	c := cfg.DNS64
@@ -113,7 +113,7 @@ func compileConfig(cfg *config.Config) *compiled {
 		// RFC 6147 §5.2: when no usable prefix is configured the
 		// default is the IANA Well-Known Prefix 64:ff9b::/96.
 		// We arrive here either because the operator omitted
-		// the field entirely or every entry failed validation —
+		// the field entirely or every entry failed validation,
 		// either way, the default keeps DNS64 functional rather
 		// than silently disabling.
 		zlog.Info("DNS64 enabled with no configured prefix; defaulting to 64:ff9b::/96 per RFC 6147 §5.2")
@@ -143,7 +143,7 @@ func compileConfig(cfg *config.Config) *compiled {
 	// Exclude-A networks are only consulted under the well-known
 	// prefix (RFC 6147 §5.1.4 / RFC 6052 §3.1). When that prefix
 	// is active we apply a runtime default if the field was
-	// omitted (nil) — the operator can opt out by declaring an
+	// omitted (nil). The operator can opt out by declaring an
 	// explicit empty list. When no configured prefix is the
 	// well-known one, skip the parse entirely.
 	if out.hasWellKnown() {
@@ -167,8 +167,8 @@ func compileConfig(cfg *config.Config) *compiled {
 
 	// Exclude-AAAA networks (RFC 6147 §5.1.4): apply the default
 	// only when the operator left the field unset (nil). A
-	// declared-but-empty list opts out of filtering deliberately
-	// — the TOML decoder distinguishes nil from a zero-length
+	// declared-but-empty list opts out of filtering deliberately,
+	// the TOML decoder distinguishes nil from a zero-length
 	// slice for us.
 	if c.ExcludeAAAANetworks == nil {
 		out.excludeAAAA = defaultExcludeAAAA
@@ -180,7 +180,7 @@ func compileConfig(cfg *config.Config) *compiled {
 				continue
 			}
 			// net.ParseCIDR returns a 4-byte mask for IPv4 inputs
-			// and a 16-byte mask for IPv6 — IP.To4() is the wrong
+			// and a 16-byte mask for IPv6, IP.To4() is the wrong
 			// discriminator because IPv4-mapped IPv6 ranges like
 			// ::ffff:0:0/96 are themselves 16-byte addresses with
 			// a non-nil To4(). Use the mask length so the
@@ -198,7 +198,7 @@ func compileConfig(cfg *config.Config) *compiled {
 }
 
 // shouldExcludeAAAA reports whether ip falls in any of the
-// configured exclude-AAAA prefixes. RFC 6147 §5.1.4 — applied
+// configured exclude-AAAA prefixes. RFC 6147 §5.1.4, applied
 // before deciding whether the upstream answer counts as
 // non-empty.
 func (c *compiled) shouldExcludeAAAA(ip net.IP) bool {
@@ -214,7 +214,7 @@ func (c *compiled) shouldExcludeAAAA(ip net.IP) bool {
 }
 
 // clientEligible reports whether ip should receive DNS64 synthesis.
-// An empty client-network list is treated as "all clients" — same
+// An empty client-network list is treated as "all clients", same
 // shape as accesslist's default.
 func (c *compiled) clientEligible(ip net.IP) bool {
 	if len(c.clientNetworks) == 0 {
@@ -246,7 +246,7 @@ func (c *compiled) zoneExcluded(qname string) bool {
 			return true
 		}
 		// z always ends with "." (FQDN'd at compile time), so
-		// "."+z forces the label boundary check — no fragment
+		// "."+z forces the label boundary check. No fragment
 		// can match a longer label here.
 		if strings.HasSuffix(qname, "."+z) {
 			return true

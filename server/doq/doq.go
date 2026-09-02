@@ -27,7 +27,7 @@ const (
 )
 
 // Handler serves one decoded DoQ request through the server's message
-// entry — SDNS's own contract, not the miekg handler machinery.
+// entry, SDNS's own contract, not the miekg handler machinery.
 type Handler interface {
 	ServeMsg(ctx context.Context, w middleware.Transport, m *dns.Msg)
 }
@@ -141,7 +141,7 @@ func doqQUICConfig() *quic.Config {
 		// uni) allows and park them, pinning server memory. DoQ is
 		// one-query-per-stream, so 32 concurrent queries per client
 		// is more than enough for real traffic patterns. Uni streams
-		// aren't used by DoQ at all — allow a handful only for
+		// aren't used by DoQ at all, allow a handful only for
 		// protocol extensions.
 		MaxIncomingStreams:    32,
 		MaxIncomingUniStreams: 4,

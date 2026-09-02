@@ -97,7 +97,7 @@ func FuzzTypesSet(f *testing.F) {
 
 // FuzzKeyTag drives the key tag against the library's for arbitrary key
 // material. The tag decides which key a DS or an RRSIG is matched against, so
-// a disagreement does not fail loudly — it quietly stops the right key from
+// a disagreement does not fail loudly, it quietly stops the right key from
 // being tried. A checksum read in chunks is exactly the kind of thing that
 // agrees on the inputs someone thought to write down, so this looks for the
 // ones nobody did.

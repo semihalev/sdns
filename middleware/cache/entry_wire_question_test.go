@@ -15,7 +15,7 @@ import (
 // as proof the packed bytes already carry the client's spelling. That holds
 // only because both come from one message and neither is rewritten
 // afterwards. Should a future constructor ever let the two drift, the byte
-// path would echo a spelling the client never sent — so the agreement is
+// path would echo a spelling the client never sent, so the agreement is
 // asserted here rather than left as a property of the code that built it.
 func TestEntryQuestionMatchesPackedName(t *testing.T) {
 	names := []struct {
@@ -67,7 +67,7 @@ func TestEntryQuestionMatchesPackedName(t *testing.T) {
 
 // TestWireFastPathEscapedNameEcho drives an escaped name through the byte
 // path end to end. The shortcut compares presentation names, so an escaped
-// name that matches exactly is served without re-encoding — the reply must
+// name that matches exactly is served without re-encoding. The reply must
 // still carry the client's name unchanged.
 func TestWireFastPathEscapedNameEcho(t *testing.T) {
 	const qname = `esc\.aped.example.com.`

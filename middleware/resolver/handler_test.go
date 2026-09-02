@@ -31,7 +31,7 @@ func makeTestConfig() *config.Config {
 	// The resolver primes its root list in the background as soon as it is
 	// built, so a real root address here would send every test in this
 	// package to the internet whether it wanted to go or not. Tests that
-	// need a root that answers stand one up themselves — see hermetic_test.go.
+	// need a root that answers stand one up themselves, see hermetic_test.go.
 	cfg.RootServers = []string{"192.0.2.1:53"}
 	cfg.Root6Servers = nil
 	cfg.RootKeys = []string{
@@ -119,8 +119,8 @@ func startTestAuthority(t *testing.T, zone map[string][]dns.RR) (string, func(st
 	return pc.LocalAddr().String(), count, func() { _ = server.Shutdown() }
 }
 
-// Test_handler drives the handler's own behaviour — what it answers, what
-// it costs upstream, and what it refuses — against a loopback authority.
+// Test_handler drives the handler's own behaviour, what it answers, what
+// it costs upstream, and what it refuses, against a loopback authority.
 //
 // It used to resolve www.apple.com., dnssec-failed.org. and a dnscheck.tools
 // probe from the live root, which made it fail for reasons that had nothing
@@ -165,7 +165,7 @@ func Test_handler(t *testing.T) {
 	}
 
 	// The same question again. Answers are cached by the cache middleware,
-	// which this chain does not carry, so the resolver asks again — one
+	// which this chain does not carry, so the resolver asks again, one
 	// query, not a fresh walk.
 	m = new(dns.Msg)
 	m.SetQuestion("www.test.", dns.TypeA)

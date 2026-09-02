@@ -21,7 +21,7 @@ proportion.
 entry has less than that percentage of its original TTL left. It trades a small
 amount of upstream traffic for hits that stay warm on popular names.
 
-The value must be `0` — which turns prefetching off — or between 10 and 90.
+The value must be `0`, which turns prefetching off, or between 10 and 90.
 Anything else is a configuration error rather than being clamped, so `sdns -t`
 rejects it.
 
@@ -29,13 +29,13 @@ rejects it.
 
 The TTL sdns serves is the answer's own remaining TTL, counted down from when
 it was cached. It is not the smallest TTL of everything consulted on the way to
-the answer — a short-lived delegation record on the path does not shorten the
+the answer, a short-lived delegation record on the path does not shorten the
 answer.
 
 There is one deliberate ceiling: a learned delegation lease. When the parent
 granted a delegation for a bounded time, no answer under that delegation is
 served past the point the parent's grant expires. That is why a long-TTL record
-under a short-lived delegation can come back with less than you expected — the
+under a short-lived delegation can come back with less than you expected, the
 cut, not the record, is the binding constraint.
 
 ## What a hit contains
@@ -99,7 +99,7 @@ lifetime at all is not cached.
 
 A denial does not have to arrive as an empty answer to be one. The common shape
 on the wire is a CNAME chain that never reaches the type you asked for, and the
-SOA at the end of it is what says how long that holds — not the alias TTL in
+SOA at the end of it is what says how long that holds, not the alias TTL in
 front of it.
 
 A denial arriving without an SOA is not cached at all. There is nothing to
@@ -153,9 +153,9 @@ covered under
 [Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}):
 RFC 8020 lets one NXDOMAIN answer every name beneath it, and RFC 8198 answers
 later denials from a validated NSEC or NSEC3 record already held. For these,
-sdns takes the smallest value across every component of the proof — the SOA,
+sdns takes the smallest value across every component of the proof, the SOA,
 the records in the authority section, the signatures over them, and the
-delegation lease — and applies no floor on top, because a floor there would let
+delegation lease, and applies no floor on top, because a floor there would let
 a cache setting extend an authenticated denial past the proof that authorised
 it. Answering one name from another's denial is a claim about a whole subtree,
 and it expires with the weakest thing supporting it. They are counted by
@@ -169,7 +169,7 @@ expire = 600      # legacy; retained for compatibility
 
 `expire` is a legacy error-cache ceiling kept so old configuration files still
 load. Recursive resolution failures are governed by the RFC 9520 failure cache
-in the `[recursion_firewall]` block instead — see the
+in the `[recursion_firewall]` block instead, see the
 [recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }}).
 
 ## Purging

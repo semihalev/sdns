@@ -26,7 +26,7 @@ const Serial = 2026082401
 // Zone is one built test root.
 type Zone struct {
 	RRs     []dns.RR
-	Anchors []dns.RR // the CSK's DS — the trust anchor the zone chains to
+	Anchors []dns.RR // the CSK's DS, the trust anchor the zone chains to
 	Key     *dns.DNSKEY
 	Priv    crypto.PrivateKey
 }
@@ -54,7 +54,7 @@ func DefaultLines(serial uint32) []string {
 }
 
 // Build generates a fresh key and assembles the sealed default zone. digest
-// is the RFC 8976 computation to seal with — localroot.ComputeDigest in
+// is the RFC 8976 computation to seal with, localroot.ComputeDigest in
 // every real caller; a parameter so this package does not import the one it
 // exists to test.
 func Build(digest func(rrs []dns.RR, apex string) ([]byte, error)) (*Zone, error) {
@@ -65,7 +65,7 @@ func Build(digest func(rrs []dns.RR, apex string) ([]byte, error)) (*Zone, error
 // must carry serial, under a freshly generated key.
 func BuildZone(digest func(rrs []dns.RR, apex string) ([]byte, error), lines []string, serial uint32) (*Zone, error) {
 	// A key tag is a checksum over the key's own bytes, so roughly one
-	// generated key in 65536 lands on zero — and miekg's signer rejects a
+	// generated key in 65536 lands on zero, and miekg's signer rejects a
 	// zero tag outright ("dns: bad key"), which surfaced as a rare, entirely
 	// unrelated-looking test failure. Draw again rather than sign with it.
 	// The loop is bounded: it can only repeat if the generator keeps landing
@@ -90,7 +90,7 @@ func BuildZone(digest func(rrs []dns.RR, apex string) ([]byte, error), lines []s
 }
 
 // BuildZoneWithKey is BuildZone under an existing key, so a test can produce
-// two zones — different serials, different contents — that chain to the same
+// two zones, different serials, different contents, that chain to the same
 // trust anchor.
 func BuildZoneWithKey(
 	digest func(rrs []dns.RR, apex string) ([]byte, error),

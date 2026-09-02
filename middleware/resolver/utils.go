@@ -24,7 +24,7 @@ func init() {
 }
 
 // debugLogEnabled reports whether debug logging is on. zlog.Debug drops
-// disabled records, but only after the caller has evaluated its arguments —
+// disabled records, but only after the caller has evaluated its arguments,
 // per-query call sites format the question and box it into ...any on every
 // query regardless, which showed up at ~2% of all allocated objects in
 // production with debug off. Sites on the normal query path check this
@@ -35,7 +35,7 @@ func debugLogEnabled() bool {
 
 // searchAddrs collects usable NS addresses from an answer as heap-free
 // netip values, together with the smallest TTL among the records it
-// accepted — the horizon the whole set may be cached to. Address strings
+// accepted, the horizon the whole set may be cached to. Address strings
 // are deliberately never materialized here: the whole downstream pipeline
 // (glue caches, Server construction, dedup) is netip-native and derives
 // its one canonical string per Server.
@@ -179,8 +179,8 @@ func ReleaseMsg(req *dns.Msg) {
 	req.CheckingDisabled = false
 	req.Rcode = 0
 	req.Compress = false
-	// clear zeroes the elements — no released message pins records for the
-	// GC — while the trim keeps the backing arrays, so a recycled shell
+	// clear zeroes the elements, no released message pins records for the
+	// GC, while the trim keeps the backing arrays, so a recycled shell
 	// rebuilds its sections without reallocating them.
 	clear(req.Question)
 	clear(req.Answer)

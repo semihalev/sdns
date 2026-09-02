@@ -15,8 +15,8 @@ func Test_RateLimit(t *testing.T) {
 	cfg := new(config.Config)
 	cfg.ClientRateLimit = 1
 
-	// The registry is process-wide, so a second run in the same process —
-	// go test -count=2, say — would otherwise panic on re-registration.
+	// The registry is process-wide, so a second run in the same process,
+	// go test -count=2, say, would otherwise panic on re-registration.
 	middleware.Reset()
 	t.Cleanup(middleware.Reset)
 	middleware.Register("ratelimit", func(cfg *config.Config) middleware.Handler { return New(cfg) })

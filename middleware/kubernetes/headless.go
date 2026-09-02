@@ -14,7 +14,7 @@ import (
 const syntheticSliceName = "_set_endpoints"
 
 // ApplyEndpointSlice records sliceName's contribution to a headless
-// service. The answer cache is NOT refreshed here — call
+// service. The answer cache is NOT refreshed here, call
 // MaterialiseHeadless once the burst of Apply/Remove calls has
 // settled. Returns true when state actually changed.
 //

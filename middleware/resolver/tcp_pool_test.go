@@ -199,7 +199,7 @@ func TestTCPConnPoolRefusesKeepaliveZero(t *testing.T) {
 		t.Errorf("%s: pooled = %v, want nil", "a connection the server asked to close was pooled", pooled)
 	}
 	if !(conn.closed) {
-		t.Errorf("%s: conn.closed is false", "the connection was neither pooled nor closed — leaked")
+		t.Errorf("%s: conn.closed is false", "the connection was neither pooled nor closed, leaked")
 	}
 	if !reflect.DeepEqual(0, active) {
 		t.Errorf("active = %v, want %v", active, 0)

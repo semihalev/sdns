@@ -85,7 +85,7 @@ func (c *Chaos) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Increment query counter — once per query: the replay pass after an
+	// Increment query counter, once per query: the replay pass after an
 	// inline handoff walks this handler again for the same question.
 	if !ch.Replay() {
 		c.mu.Lock()

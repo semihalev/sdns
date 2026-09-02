@@ -33,7 +33,7 @@ const FramePrefixLen = 2
 // ReadFrameInto reads one length-prefixed frame into dst and returns the
 // payload length. Partial reads are completed. The prefix is staged in
 // dst's first bytes and overwritten by the payload, which keeps the read
-// allocation-free — a stack prefix array would escape through the reader
+// allocation-free, a stack prefix array would escape through the reader
 // interface. dst therefore needs capacity for at least the prefix.
 func ReadFrameInto(conn net.Conn, dst []byte) (int, error) {
 	if len(dst) < FramePrefixLen {
@@ -66,7 +66,7 @@ func WriteFrameFrom(conn net.Conn, p []byte) (int, error) {
 
 // WriteFramePrefixed writes buf's payload as one frame using buf's own
 // prefix headroom: buf[0:2] is writable scratch and the payload occupies
-// buf[2 : 2+payloadLen]. One conn.Write, no gather, no allocation — the
+// buf[2 : 2+payloadLen]. One conn.Write, no gather, no allocation, the
 // strict-path TX buffer is laid out with this headroom for exactly this
 // call. The returned count includes the prefix bytes.
 func WriteFramePrefixed(conn net.Conn, buf []byte, payloadLen int) (int, error) {

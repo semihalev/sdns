@@ -35,8 +35,8 @@ type API struct {
 	router      *Router
 	blocklist   *blocklist.BlockList
 	// metricsHandler is built once: promhttp.Handler() constructed a new
-	// instrumented handler per call — fresh collectors and a registry
-	// registration attempt per scrape — and its gzip writers, though
+	// instrumented handler per call, fresh collectors and a registry
+	// registration attempt per scrape, and its gzip writers, though
 	// pooled, were drained by GC between scrapes on a busy heap, so each
 	// scrape paid a ~34KB deflate window in practice; together 1% of
 	// process allocation under a frequent scraper. Compression stays off:
@@ -207,7 +207,7 @@ func (a *API) purge(ctx *Context) {
 		Qclass: dns.ClassINET,
 	}
 
-	// Invalidate every purger the pipeline exposes — today that's
+	// Invalidate every purger the pipeline exposes, today that's
 	// the cache middleware (positive + negative entries) and the
 	// resolver handler (NS cache, TypeNS only). No synthesised
 	// CHAOS-NULL query, no base64 encoding; just a direct call.
@@ -269,7 +269,7 @@ func (a *API) Run(ctx context.Context) {
 
 	zlog.Info("API server listening...", "addr", a.addr)
 	if a.bearerToken != "" {
-		// Never log the token itself — anyone who can read process
+		// Never log the token itself, anyone who can read process
 		// or aggregated logs would be able to call the protected
 		// endpoints (cache purge, blocklist mutation, metrics).
 		zlog.Info("API bearer-token authorization enabled")

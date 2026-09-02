@@ -44,7 +44,7 @@ func TestHermeticDNSSECSecure(t *testing.T) {
 }
 
 // TestHermeticDNSSECZoneApex asks the child's own apex. The name sits on
-// the cut, so the parent must refer it rather than answer for it — the DS
+// the cut, so the parent must refer it rather than answer for it, the DS
 // is the only record there the parent legitimately holds.
 func TestHermeticDNSSECZoneApex(t *testing.T) {
 	net := newHermeticNet(t)
@@ -156,7 +156,7 @@ func TestHermeticDNSSECWrongDSFailsClosed(t *testing.T) {
 
 // TestHermeticDNSSECNSEC3NODATA covers the hashed-denial path. NSEC and
 // NSEC3 are verified by different code in the resolver, so a fixture that
-// only ever produces NSEC leaves the other branch untouched — which is what
+// only ever produces NSEC leaves the other branch untouched, which is what
 // the removed Test_resolverNSEC3nodata used a third-party zone for.
 func TestHermeticDNSSECNSEC3NODATA(t *testing.T) {
 	net := newHermeticNet(t)
@@ -179,9 +179,9 @@ func TestHermeticDNSSECNSEC3NODATA(t *testing.T) {
 }
 
 // TestHermeticDNSSECNSEC3NameError covers the hashed proof that a name does
-// not exist. RFC 5155 §8.4 wants three things together — a record matching
+// not exist. RFC 5155 §8.4 wants three things together, a record matching
 // the closest encloser, one covering the next closer, and one covering the
-// wildcard beneath the closest encloser — and they are what the zone's
+// wildcard beneath the closest encloser, and they are what the zone's
 // NSEC3 chain supplies.
 func TestHermeticDNSSECNSEC3NameError(t *testing.T) {
 	net := newHermeticNet(t)
@@ -214,7 +214,7 @@ func TestHermeticDNSSECNSEC3NameError(t *testing.T) {
 
 // TestHermeticDNSSECInsecureDelegation pins the other half of fail-closed:
 // a zone with no DS at the cut is unsigned, not broken, so its answers are
-// served — just not authenticated.
+// served, just not authenticated.
 func TestHermeticDNSSECInsecureDelegation(t *testing.T) {
 	net := newHermeticNet(t)
 	zone := net.DelegateInsecure("plain.test.")
@@ -235,7 +235,7 @@ func TestHermeticDNSSECInsecureDelegation(t *testing.T) {
 }
 
 // TestHermeticDNSSECNODATA covers a signed negative answer for a name that
-// exists without the queried type — the shape Test_resolverNSEC3nodataerror
+// exists without the queried type, the shape Test_resolverNSEC3nodataerror
 // used a third-party zone for.
 func TestHermeticDNSSECNODATA(t *testing.T) {
 	net := newHermeticNet(t)
@@ -257,7 +257,7 @@ func TestHermeticDNSSECNODATA(t *testing.T) {
 
 // TestHermeticDNSSECNSEC3OptOut pins what an Opt-Out span is worth. Such a
 // span may contain unsigned delegations, so a denial resting on one does
-// not establish that the name is absent — the answer may be served, but it
+// not establish that the name is absent. The answer may be served, but it
 // must not be presented as authenticated (RFC 5155 §6, §9.2).
 func TestHermeticDNSSECNSEC3OptOut(t *testing.T) {
 	net := newHermeticNet(t)
@@ -285,7 +285,7 @@ func TestHermeticDNSSECNSEC3OptOut(t *testing.T) {
 // TestHermeticDNSSECDenialWithoutCoverageRefused is the negative case the
 // positive ones cannot make: a zone that answers a denial with records that
 // cover nothing. The proof is signed and well formed, so a validator that
-// only checks signatures accepts it — and would then accept a denial for a
+// only checks signatures accepts it, and would then accept a denial for a
 // name that exists. Both denial families are checked, since each is
 // verified by its own code.
 func TestHermeticDNSSECDenialWithoutCoverageRefused(t *testing.T) {
@@ -315,8 +315,8 @@ func TestHermeticDNSSECDenialWithoutCoverageRefused(t *testing.T) {
 			resp := hermeticAsk(t, net.Handler(),
 				"absent.nocover-"+tc.name+".test.", dns.TypeA)
 
-			// Refusing has to mean SERVFAIL. Anything else — NODATA,
-			// REFUSED, an empty NOERROR — would let a resolver that quietly
+			// Refusing has to mean SERVFAIL. Anything else, NODATA,
+			// REFUSED, an empty NOERROR, would let a resolver that quietly
 			// gave up pass a test that only ruled out NXDOMAIN.
 			if resp.Rcode != dns.RcodeServerFailure {
 				t.Fatalf("rcode = %s, want SERVFAIL: a denial that covers "+
@@ -330,7 +330,7 @@ func TestHermeticDNSSECDenialWithoutCoverageRefused(t *testing.T) {
 				t.Fatalf("SERVFAIL carries %d answers", len(resp.Answer))
 			}
 
-			// And the client should be told why — which means the extended
+			// And the client should be told why, which means the extended
 			// error has to be there at all, not merely carry the right code
 			// whenever it happens to be present.
 			opt := resp.IsEdns0()

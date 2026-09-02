@@ -16,7 +16,7 @@ import (
 )
 
 // countingWriter is the transport beneath the chain. It records the bytes it
-// receives and, crucially, never decodes them — so a log line that reports
+// receives and, crucially, never decodes them, so a log line that reports
 // the right size can only have got it without a decode.
 type countingWriter struct {
 	*mock.Writer
@@ -41,7 +41,7 @@ func (w *countingWriter) WriteMsg(m *dns.Msg) error {
 // against the bytes that actually left the server, with the EDNS wrapper in
 // place exactly as the standard chain arranges it. The wrapper embeds the
 // narrow writer interface, so unless it forwards the optional size accessor
-// the log falls back to decoding the response — the very work the byte path
+// the log falls back to decoding the response, the very work the byte path
 // exists to avoid, and a measurement that overstates compressed replies.
 func TestLogsWireSizeThroughEDNSWrapper(t *testing.T) {
 	dir := t.TempDir()
@@ -79,7 +79,7 @@ func TestLogsWireSizeThroughEDNSWrapper(t *testing.T) {
 	}
 
 	// Respond the way a cache hit does: hand the chain packed bytes. This is
-	// the only route where the fallback is both wrong and expensive — a
+	// the only route where the fallback is both wrong and expensive, a
 	// message written as an object still carries its Compress flag, so
 	// measuring it happens to agree.
 	responder := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {

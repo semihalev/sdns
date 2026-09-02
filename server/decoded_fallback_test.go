@@ -21,9 +21,9 @@ func (f *flushRecorder) FlushStaged() { f.flushed = true }
 
 // TestDecodedFallbackFlushesStaged pins the slow lane's entry contract: a
 // packet the strict parser refuses but Unpack accepts enters potentially
-// slow resolution, and replies already staged on the transport — the
+// slow resolution, and replies already staged on the transport, the
 // previous pipelined answers on TCP, other clients' answers in the same
-// UDP worker burst — must leave first, exactly as a strict
+// UDP worker burst, must leave first, exactly as a strict
 // materialization flushes them.
 func TestDecodedFallbackFlushesStaged(t *testing.T) {
 	s := New(&config.Config{})
@@ -70,5 +70,5 @@ func TestServeDNSCompatibilityEntries(t *testing.T) {
 	q.SetQuestion("example.com.", dns.TypeA)
 
 	s.ServeDNS(dnsWriterShim{mock.NewWriter("udp", "127.0.0.1:0")}, q)
-	s.ServeDNSContext(nil, dnsWriterShim{mock.NewWriter("udp", "127.0.0.1:0")}, q) //nolint:staticcheck // SA1012 — the nil-parent default is the compatibility contract under test
+	s.ServeDNSContext(nil, dnsWriterShim{mock.NewWriter("udp", "127.0.0.1:0")}, q) //nolint:staticcheck // SA1012, the nil-parent default is the compatibility contract under test
 }

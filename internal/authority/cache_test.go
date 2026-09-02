@@ -87,7 +87,7 @@ func Test_CacheSetTTL(t *testing.T) {
 	nscache.Set(zero, nil, servers, 0)
 	nscache.Set(neg, nil, servers, -time.Second)
 
-	// A 4s delegation is valid at 3s and expired by 5s — proving it was NOT
+	// A 4s delegation is valid at 3s and expired by 5s, proving it was NOT
 	// inflated to the old one-hour floor.
 	nscache.now = func() time.Time { return base.Add(3 * time.Second) }
 	if _, err := nscache.Get(short); err != nil {
@@ -182,7 +182,7 @@ func Test_CacheSetUntil(t *testing.T) {
 
 // TestSetUntilIfAbsent pins the provisional writer's contract: a live lease
 // always survives it, an absent or expired slot accepts it. The concurrent
-// leg hammers provisional writes against a live lease — the guard runs under
+// leg hammers provisional writes against a live lease. The guard runs under
 // the segment lock, so none of them may displace it.
 func TestSetUntilIfAbsent(t *testing.T) {
 	nscache := NewCache()

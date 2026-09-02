@@ -61,7 +61,7 @@ func TestBufferWriterCapturesMsg(t *testing.T) {
 	}
 }
 
-// TestBufferWriterWriteUnpacks covers the Write([]byte) path —
+// TestBufferWriterWriteUnpacks covers the Write([]byte) path,
 // used when a middleware calls Write with packed DNS bytes instead
 // of WriteMsg (uncommon in-tree, supported for
 // dns.ResponseWriter-interface completeness).
@@ -166,7 +166,7 @@ func buildPipeline(t *testing.T, handlers ...Handler) *Pipeline {
 		DefaultRegistry.Register(h.Name(), func(_ *config.Config) Handler { return h })
 	}
 	// Build requires a *config.Config but none of these handlers
-	// consume it — a zero-value pointer is safe.
+	// consume it, a zero-value pointer is safe.
 	Setup(&config.Config{})
 	return GlobalPipeline()
 }
@@ -287,7 +287,7 @@ func (h *reentrantHandler) ServeDNS(ctx context.Context, ch *Chain) {
 		h.sawMaxErr = true
 	}
 	// Write a trivial reply so the outer Query unwinds with a
-	// response instead of ErrNoResponse — the point of the test
+	// response instead of ErrNoResponse, the point of the test
 	// is the inner cap fires, not the outer one.
 	reply := new(dns.Msg)
 	reply.SetReply(ch.Request.Msg())

@@ -8,9 +8,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// The front door's bounds — how many queries may hold a slab at once,
+// The front door's bounds, how many queries may hold a slab at once,
 // how many connections the stream engines admit, how many workers and
-// sockets serve — are not constants. They are the answer to "what can
+// sockets serve, are not constants. They are the answer to "what can
 // this machine afford", and that answer is different on a 32-core
 // server and on a 128MB router. A number compiled in is a guess about
 // hardware the author never saw: too small on the server it was meant
@@ -20,14 +20,14 @@ import (
 // So one plan is derived per Server from what the process actually has:
 // the memory it may use (the machine's, a container's limit, or
 // GOMEMLIMIT, whichever binds first), its CPUs, its file-descriptor
-// allowance, and which listeners are enabled — the stream engines share
+// allowance, and which listeners are enabled, the stream engines share
 // one stream budget rather than each assuming it is alone. The plan is
 // a value handed down through the listeners to the engines: no global,
 // so two Servers in one process each live inside their own arithmetic.
 //
 // The budget is charged what the bounds can actually cost. Every slab
-// class is priced at its real allocator size — the UDP job, the TCP
-// small pair, the 128KB large pair, the connection's stream state — and
+// class is priced at its real allocator size, the UDP job, the TCP
+// small pair, the 128KB large pair, the connection's stream state, and
 // a bound is shrunk until its worst case fits its share. The floors can
 // still win on a very small budget, because a server with no room has
 // to be a server before it is a small one; the accounting test states
@@ -43,7 +43,7 @@ const (
 	// ingressMemoryShare is the fraction of the memory budget one
 	// ingress subsystem may reach under saturation. Two of them (the UDP
 	// slabs and the stream engines) take a share each, so the front
-	// door's worst case is a sixteenth of what the process may use —
+	// door's worst case is a sixteenth of what the process may use,
 	// leaving the cache, the resolver's in-flight work and the runtime
 	// itself the rest, which is what a resolver actually spends memory
 	// on.
@@ -69,8 +69,8 @@ const (
 	maxSpareSlabs = 8192
 	maxTCPConns   = 4096
 
-	// fdReserve is what the rest of the process needs open — upstream
-	// sockets, the API listener, log and database files — before
+	// fdReserve is what the rest of the process needs open, upstream
+	// sockets, the API listener, log and database files, before
 	// connections may have the remainder. The descriptor cap is a hard
 	// cap: no floor rises above it, because a connection the kernel
 	// refuses with EMFILE is worse than one the server never admitted.
@@ -84,8 +84,8 @@ const (
 
 // ingressPlanGauge publishes the derived bounds where an operator can
 // read them at any time. The startup log line carries the same numbers,
-// but it lands in the middle of the startup burst — measured on a
-// canary, journald's throttle dropped exactly that line — and a bound
+// but it lands in the middle of the startup burst, measured on a
+// canary, journald's throttle dropped exactly that line, and a bound
 // nobody can observe might as well be a constant. One process, one
 // plan: with several Servers in a process the last one published wins,
 // which the metric help states.
@@ -176,9 +176,9 @@ func computeResourcePlan(in planInputs) resourcePlan {
 
 	// Workers are concurrency, not CPUs: a worker runs the chain inline
 	// and a miss holds one for the length of an upstream resolution. On
-	// the low-memory tiers the count is fixed rather than CPU-scaled — a
+	// the low-memory tiers the count is fixed rather than CPU-scaled, a
 	// container on a many-core host still gets the pool its memory can
-	// carry, because every worker is a stack and a slot in the slab cap —
+	// carry, because every worker is a stack and a slot in the slab cap,
 	// and the overflow path keeps miss concurrency unbounded either way.
 	var workers int
 	switch {
@@ -199,7 +199,7 @@ func computeResourcePlan(in planInputs) resourcePlan {
 	// Socket fan-out follows the same logic: each reader can hold a
 	// batch of slabs, so sockets are slots in the slab cap too, and a
 	// small budget throttles throughput long before fan-out does. The
-	// descriptor allowance binds here as well — every socket is an open
+	// descriptor allowance binds here as well. Every socket is an open
 	// descriptor, and a fan-out the kernel answers with EMFILE at bind
 	// is a listener that never comes up at all.
 	sockets := in.sockets
@@ -272,8 +272,8 @@ func computeResourcePlan(in planInputs) resourcePlan {
 
 	// The descriptor allowance is a hard cap, applied after every floor:
 	// admission above it is a promise the kernel will break with EMFILE.
-	// What is already spoken for — the reserve, the UDP sockets, one
-	// accept descriptor per stream engine — comes off the top first, so
+	// What is already spoken for, the reserve, the UDP sockets, one
+	// accept descriptor per stream engine, comes off the top first, so
 	// the same descriptor is never promised twice; an allowance at or
 	// below that is the severest case, not an exemption, and each engine
 	// gets one connection. The arithmetic stays in uint64 until the

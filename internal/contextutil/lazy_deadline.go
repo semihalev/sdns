@@ -44,8 +44,8 @@ type lazyDeadlineHolder struct {
 // request ID, NSEC3 hash memo, client-ECS marker); a pin that finds the
 // table full falls back to an ordinary context.WithValue at the call site.
 // The inventory once said four and left the ECS marker out, so every
-// ECS-marked miss overflowed the table and the last pinner — the NSEC3
-// memo — lost exactly the cross-subquery sharing pinning exists for.
+// ECS-marked miss overflowed the table and the last pinner, the NSEC3
+// memo, lost exactly the cross-subquery sharing pinning exists for.
 const lazyDeadlinePins = 5
 
 // lazyDeadlinePin is one request-lifetime slot. The non-nil value is both
@@ -66,8 +66,8 @@ func (p *lazyDeadlinePin) match(key any) bool {
 }
 
 // lazyDeadlineOverflow holds every pin beyond the first. It is allocated only
-// when a second distinct key is pinned, so a request that pins one value — a
-// terminal cache hit carries just the recursion-work ledger — keeps the
+// when a second distinct key is pinned, so a request that pins one value, a
+// terminal cache hit carries just the recursion-work ledger, keeps the
 // LazyDeadline in its original size and allocation class (gated by test).
 type lazyDeadlineOverflow [lazyDeadlinePins - 1]lazyDeadlinePin
 

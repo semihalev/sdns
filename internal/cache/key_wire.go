@@ -19,10 +19,10 @@ import (
 //	(+ ECS: [family 4|6][prefix bits][address bytes, bit-rounded])
 //
 // where "folded presentation qname" is the presentation form with ASCII
-// A–Z lowered. Escapes mirror UnpackDomainName exactly: the special set
+// A to Z lowered. Escapes mirror UnpackDomainName exactly: the special set
 // {'.', ' ', '\”, '@', ';', '(', ')', '"', '\\'} is backslash-prefixed,
-// bytes outside 0x20–0x7E become \DDD (three decimal digits), everything
-// else passes literally. Escape digits and specials are never A–Z, so
+// bytes outside 0x20 to 0x7E become \DDD (three decimal digits), everything
+// else passes literally. Escape digits and specials are never A to Z, so
 // folding the escaped form equals escaping the folded form.
 
 // maxWireNameOctets is the RFC 1035 name length bound in wire form.
@@ -138,9 +138,9 @@ func (h *wireKeyHasher) writeWireName(wireName []byte) bool {
 
 // WireNameEqualsPresentation reports whether an uncompressed wire-form name
 // decodes to the same DNS name a stored presentation-format string spells,
-// under the cache's folding rule (ASCII A–Z only). It walks the wire name
-// emitting the presentation form byte-for-byte — the same escape mapping as
-// the hasher — and compares as it goes, so the full-preimage collision
+// under the cache's folding rule (ASCII A to Z only). It walks the wire name
+// emitting the presentation form byte-for-byte, the same escape mapping as
+// the hasher, and compares as it goes, so the full-preimage collision
 // verification never allocates. A malformed wire name compares unequal.
 func WireNameEqualsPresentation(wireName []byte, name string) bool {
 	if len(wireName) == 0 || len(wireName) > maxWireNameOctets {
@@ -208,7 +208,7 @@ func WireNameEqualsPresentation(wireName []byte, name string) bool {
 
 // KeyWire computes Key/KeyString's hash from an uncompressed wire-form
 // question name. ok is false when the name is not a plain, exactly-consumed
-// uncompressed name — the caller falls back to the decoded path.
+// uncompressed name, the caller falls back to the decoded path.
 func KeyWire(wireName []byte, qtype, qclass uint16, cd bool) (hash uint64, ok bool) {
 	var h wireKeyHasher
 	h.init()

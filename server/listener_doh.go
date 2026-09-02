@@ -69,7 +69,7 @@ func (d *dohListener) Bind(ctx context.Context) error {
 	d.srv = &http.Server{
 		Handler: d.handler,
 		// ReadHeaderTimeout bounds slow-loris style attacks that
-		// trickle request headers. DoH headers are small — anything
+		// trickle request headers. DoH headers are small, anything
 		// legitimate arrives well under 5s.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -128,7 +128,7 @@ func (d *dohListener) Shutdown(_ context.Context) error {
 	// http.Server.Shutdown only closes listeners that were
 	// registered with it via Serve / ServeTLS (trackListener).
 	// Our ln is pre-bound in Bind and isn't handed to ServeTLS
-	// until Serve runs — so in the bind-before-serve rollback path
+	// until Serve runs, so in the bind-before-serve rollback path
 	// (bindAll partial-failure cleanup) the listener would stay
 	// open. Close it ourselves; net.ErrClosed is the normal-close
 	// race when Serve did run.

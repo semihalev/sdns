@@ -35,7 +35,7 @@ func makeECSTestConfig(t *testing.T) *config.Config {
 }
 
 // reqWithECS builds an A query for `name` carrying an ECS option
-// at the requested family / netmask / address — mirrors what the
+// at the requested family / netmask / address, mirrors what the
 // edns middleware would leave on req.Extra after clamping.
 func reqWithECS(name string, family uint16, src uint8, addr string) *dns.Msg {
 	req := new(dns.Msg)
@@ -137,7 +137,7 @@ func answerA(m *dns.Msg) string {
 //
 // Drives the chain with ch.Next so the chain index advances through
 // the handlers normally. Calling c.ServeDNS directly would dispatch
-// the cache at chain index 0 — then the cache's own ch.Next would
+// the cache at chain index 0, then the cache's own ch.Next would
 // re-dispatch index 0 (itself) instead of advancing to h, causing
 // recursive entry on the same dedup key. The follower path would
 // then wait 15 s for the leader to release.
@@ -179,7 +179,7 @@ func TestECSCache_NoCrossContamination(t *testing.T) {
 	// Authority now answers a different address for the next miss.
 	h.aRecord = "10.20.30.99"
 
-	// Second: client B in 198.51.100.0/24 — must NOT see client A's
+	// Second: client B in 198.51.100.0/24, must NOT see client A's
 	// cached answer (#417 regression). The cache miss falls through
 	// to the upstream which serves the new audience-B answer.
 	respB := sendAndExpect(t, c, h, reqWithECS("cdn.example.", 1, 24, "198.51.100.0"), "198.51.100.5")
@@ -231,7 +231,7 @@ func TestECSCache_SharedKeyOnGlobalScope(t *testing.T) {
 		t.Errorf("%s: answerA(respPlain) = %v, want %v", "non-ECS client must hit the SCOPE=0 shared entry", answerA(respPlain), "10.0.0.1")
 	}
 	if !reflect.DeepEqual(1, h.Calls()) {
-		t.Errorf("%s: h.Calls() = %v, want %v", "no extra upstream — shared-key hit", h.Calls(), 1)
+		t.Errorf("%s: h.Calls() = %v, want %v", "no extra upstream, shared-key hit", h.Calls(), 1)
 	}
 }
 
@@ -288,7 +288,7 @@ func TestECSCache_SupernetHit(t *testing.T) {
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
 	c.store.SetFromResponseScoped(key, reply(req, "10.1.1.1", 22), scope, time.Time{}, 0)
 
-	// Client at 203.0.113.42 — its /24 is 203.0.113.0, which falls
+	// Client at 203.0.113.42, its /24 is 203.0.113.0, which falls
 	// inside 203.0.112.0/22. Lookup probes /24 (miss), /23 (miss),
 	// /22 (hit).
 	h := &echoHandler{aRecord: "should-not-be-used", scopeBits: 0}
@@ -314,7 +314,7 @@ func TestECSCache_PolicyOffBypassesEverything(t *testing.T) {
 	h := &echoHandler{aRecord: "10.10.10.10", scopeBits: 24}
 
 	// Two clients in different /24s with ECS in the request still
-	// see the same cached answer — because policy is off and the
+	// see the same cached answer, because policy is off and the
 	// cache keys both under the shared key.
 	respA := sendAndExpect(t, c, h, reqWithECS("nopolicy.example.", 1, 24, "203.0.113.0"), "203.0.113.5")
 	if !reflect.DeepEqual("10.10.10.10", answerA(respA)) {
@@ -392,7 +392,7 @@ func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
 
 // TestECSCache_BroaderScopeOnNormalClientHits pins the fifth-round
 // ultrareview P2 fix: when an authority returns a broader-than-min
-// SCOPE for a normal client (the common case — a /24 source with a
+// SCOPE for a normal client (the common case, a /24 source with a
 // /20 SCOPE response, meaning "this answer covers the whole /20"),
 // the inserted /20 entry must be reachable by the same /24 client
 // on its next query. The earlier loop capped probes at min_scope_v4
@@ -426,7 +426,7 @@ func TestECSCache_BroaderScopeOnNormalClientHits(t *testing.T) {
 		t.Fatalf("h.Calls() = %v, want %v", h.Calls(), 1)
 	}
 
-	// Second /24 query from the same client must HIT — same source
+	// Second /24 query from the same client must HIT, same source
 	// prefix, the stored /20 entry covers it.
 	h.aRecord = "should-not-be-used"
 	respB := sendAndExpect(t, c, h,
@@ -439,7 +439,7 @@ func TestECSCache_BroaderScopeOnNormalClientHits(t *testing.T) {
 		t.Errorf("%s: h.Calls() = %v, want %v", "second /24 query went upstream instead of hitting the broader cached entry", h.Calls(), 1)
 	}
 
-	// A different /24 *within* the same /20 must also hit — that's
+	// A different /24 *within* the same /20 must also hit, that's
 	// the whole point of caching at a broader SCOPE.
 	respC := sendAndExpect(t, c, h,
 		reqWithECS("broad-scope.example.", 1, 24, "203.0.113.0"),
@@ -469,7 +469,7 @@ func TestECSCache_BroaderThanMinClientScopeHits(t *testing.T) {
 	c := New(cfg)
 	defer c.Stop()
 
-	// echoHandler returns SCOPE=20 to match the client's /20 source —
+	// echoHandler returns SCOPE=20 to match the client's /20 source,
 	// RFC 7871 §7.1.2 forbids SCOPE > SOURCE, so /20 is the strictest
 	// scope this authority can claim for this audience.
 	h := &echoHandler{aRecord: "10.20.30.40", scopeBits: 20}
@@ -499,8 +499,8 @@ func TestECSCache_BroaderThanMinClientScopeHits(t *testing.T) {
 // ultrareview P3 fix: dns_cache_ecs_lookups_total{outcome=...} must
 // count every request that went through the ECS-aware lookup path
 // exactly once (no skipped misses). Non-ECS lookups stay on the
-// existing dns_cache_hits_total / dns_cache_misses_total counters
-// — we don't duplicate them here.
+// existing dns_cache_hits_total / dns_cache_misses_total counters,
+// we don't duplicate them here.
 func TestECSCache_LookupsMetricCountsOnlyECSPaths(t *testing.T) {
 	cfg := makeECSTestConfig(t)
 	defer os.RemoveAll(cfg.Directory)
@@ -525,7 +525,7 @@ func TestECSCache_LookupsMetricCountsOnlyECSPaths(t *testing.T) {
 		reqWithECS("metric.example.", 1, 24, "203.0.113.0"),
 		"203.0.113.5")
 
-	// (3) Non-ECS request — must NOT touch the ECS metric at all.
+	// (3) Non-ECS request, must NOT touch the ECS metric at all.
 	plain := new(dns.Msg)
 	plain.SetQuestion("metric.example.", dns.TypeA)
 	_ = sendAndExpect(t, c, h, plain, "10.0.0.7")
@@ -562,7 +562,7 @@ func metricValue(t *testing.T, outcome string) float64 {
 // buildCacheECSPolicy: a malformed [ecs] config (bad CIDR in
 // client_networks, out-of-range forward ceiling, etc.) disables
 // ECS-aware caching with a single log line. The cache continues
-// to operate, just on the unscoped key path — matching what
+// to operate, just on the unscoped key path, matching what
 // the edns middleware does on the forwarding side.
 func TestECSCache_BuildPolicyFailClosed(t *testing.T) {
 	cfg := makeTestConfig()
@@ -636,7 +636,7 @@ func TestECSCache_RequestScopeMalformedReturnsZero(t *testing.T) {
 		req.SetEdns0(4096, false)
 		req.IsEdns0().Option = append(req.IsEdns0().Option, &dns.EDNS0_SUBNET{
 			Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24,
-			// Address intentionally nil — AddrFromSlice should fail
+			// Address intentionally nil, AddrFromSlice should fail
 			// and requestScope returns the zero prefix.
 		})
 		if got := c.requestScope(req, client); got.IsValid() {
@@ -671,7 +671,7 @@ func TestECSCache_PurgeIsCaseInsensitive(t *testing.T) {
 	c := New(cfg)
 	defer c.Stop()
 
-	// Seed under the stored Question with mixed case — that's what
+	// Seed under the stored Question with mixed case, that's what
 	// the cache would record if the client (or upstream response)
 	// used mixed case. The hash key itself is case-insensitive
 	// (Key + KeyWithPrefix both lowercase during hashing), so the
@@ -709,7 +709,7 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 	c := New(cfg)
 	defer c.Stop()
 
-	// Build a response with a 1-hour TTL — well over the 30 s cap.
+	// Build a response with a 1-hour TTL, well over the 30 s cap.
 	req := new(dns.Msg)
 	req.SetQuestion("ttlcap.example.", dns.TypeA)
 	resp := new(dns.Msg)
@@ -738,7 +738,7 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 			entry.ttl, cfg.ECS.CacheLimitTTL.Duration)
 	}
 
-	// Unscoped writes must NOT be capped — the cap is per
+	// Unscoped writes must NOT be capped. The cap is per
 	// CacheConfig.ECSMaxTTL gated by `scoped == true`.
 	plainKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
 	c.store.SetFromResponseWithKey(plainKey, resp, time.Time{}, 0)

@@ -17,8 +17,8 @@ const maxTextualAddrLen = len("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255")
 
 // TCPKeepaliveTimeout is the idle timeout this server advertises to
 // stream clients that sent the RFC 7828 edns-tcp-keepalive option. It
-// must state what the engine actually enforces — the server package's
-// per-connection idle wait — and a test over there pins the two
+// must state what the engine actually enforces, the server package's
+// per-connection idle wait, and a test over there pins the two
 // together, since neither package can import the other's constant.
 const TCPKeepaliveTimeout = 8 * time.Second
 
@@ -33,7 +33,7 @@ const (
 	// clientCookieHexLen is the client half's text length, the only shape
 	// SetEdns0 admits.
 	clientCookieHexLen = 16
-	// cookiePreimageMax bounds the stack buffer the digest is taken over —
+	// cookiePreimageMax bounds the stack buffer the digest is taken over,
 	// a textual address, the client cookie, and the configured secret. A
 	// longer secret simply keeps the response on the Msg path.
 	cookiePreimageMax = 256
@@ -41,8 +41,8 @@ const (
 
 // Size forwards the response's wire length from the writer beneath. The
 // wrapper embeds the narrow ResponseWriter interface, which deliberately
-// does not carry Size, so without this an observer above this layer — the
-// access log is one — would fall back to decoding the response just to
+// does not carry Size, so without this an observer above this layer, the
+// access log is one, would fall back to decoding the response just to
 // measure it, which on the byte path is the whole cost this path avoids.
 func (w *ResponseWriter) Size() int {
 	return middleware.ResponseSize(w.ResponseWriter)
@@ -54,7 +54,7 @@ func (w *ResponseWriter) Size() int {
 // built once, later, in WriteWire.
 //
 // It answers with the client's own DO bit, which the request no longer
-// carries — SetEdns0 turns DO on so upstream validation happens regardless
+// carries, SetEdns0 turns DO on so upstream validation happens regardless
 // of what the client asked for, and only the writer remembers the original.
 func (w *ResponseWriter) WireReady() (middleware.WireCapability, bool) {
 	next, ok := w.ResponseWriter.(middleware.WireWriter)
@@ -119,7 +119,7 @@ func (w *ResponseWriter) wireOPTLen() (int, bool) {
 }
 
 // BeginWire delegates the pre-build lease down the writer chain; edns has
-// no buffer of its own — its OPT lands in the reserve the lease carries.
+// no buffer of its own, its OPT lands in the reserve the lease carries.
 func (w *ResponseWriter) BeginWire(size, reserve int) []byte {
 	if leaser, ok := w.ResponseWriter.(middleware.WireBodyLeaser); ok {
 		return leaser.BeginWire(size, reserve)
@@ -140,8 +140,8 @@ func (w *ResponseWriter) AbortWire() {
 	}
 }
 
-// appendWireOPT encodes the per-client OPT — the same record WriteMsg
-// attaches — directly into the reply's reserved tail. Nothing is
+// appendWireOPT encodes the per-client OPT, the same record WriteMsg
+// attaches, directly into the reply's reserved tail. Nothing is
 // materialized: no OPT record, no option objects, and no text form for
 // options the library holds as hex only to decode again while packing.
 // An Extended DNS Error carried by info (a cached entry's provenance)
@@ -172,15 +172,15 @@ func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([
 }
 
 // serverCookie writes the RFC 7873 server cookie into dst. It reproduces
-// exactly what dnsutil.GenerateServerCookie derives — the same digest over
-// the same preimage — without materializing that value's hex form.
+// exactly what dnsutil.GenerateServerCookie derives, the same digest over
+// the same preimage, without materializing that value's hex form.
 func (w *ResponseWriter) serverCookie(dst []byte) bool {
 	if len(dst) < serverCookieLen {
 		return false
 	}
 	// The client half and its canonical hex text, from whichever form the
 	// writer carries: the strict path holds raw wire bytes, the Msg path a
-	// hex string. The digest preimage always uses the text form —
+	// hex string. The digest preimage always uses the text form,
 	// GenerateServerCookie's exact contract.
 	var cookieText [clientCookieHexLen]byte
 	switch {

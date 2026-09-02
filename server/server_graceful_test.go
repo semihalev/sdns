@@ -10,7 +10,7 @@ import (
 )
 
 func TestServerGracefulDegradation(t *testing.T) {
-	// Plain DNS still comes up when TLS material is missing — the TLS,
+	// Plain DNS still comes up when TLS material is missing, the TLS,
 	// DoH, DoH3 and DoQ listeners mark themselves non-critical, log,
 	// and let startup continue.
 	cfg := &config.Config{
@@ -178,7 +178,7 @@ func TestServerHasListenerReflectsServeState(t *testing.T) {
 		t.Errorf("s.HasListener('doq') is false")
 	}
 
-	// Stop the server — every listener's Serve goroutine exits and
+	// Stop the server, every listener's Serve goroutine exits and
 	// HasListener must flip back to false.
 	cancel()
 	stopDeadline := time.Now().Add(5 * time.Second)

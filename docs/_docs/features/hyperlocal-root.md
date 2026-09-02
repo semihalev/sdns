@@ -23,8 +23,8 @@ Root referrals, NXDOMAINs for junk TLDs, and questions asked at the root itself
 are answered locally. They cost no upstream query and disclose nothing to the
 root servers.
 
-On a resolver that sees a lot of made-up names — misconfigured clients, search
-suffixes, malware — that is a meaningful share of the query load that stops
+On a resolver that sees a lot of made-up names (misconfigured clients, search
+suffixes, malware) that is a meaningful share of the query load that stops
 leaving the machine.
 
 ## How the copy is trusted

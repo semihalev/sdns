@@ -111,7 +111,7 @@ func TestSnapshotExpiry(t *testing.T) {
 		t.Fatal("expired inside the signature validity window")
 	}
 	if !snap.Expired(now.Add(61 * time.Minute)) {
-		t.Fatal("not expired past the signature window — the SOA expire must not extend dead signatures")
+		t.Fatal("not expired past the signature window, the SOA expire must not extend dead signatures")
 	}
 	if !snap.ValidUntil().Before(now.Add(2 * time.Hour)) {
 		t.Fatalf("ValidUntil = %v, not bounded by the signature window", snap.ValidUntil())
@@ -275,7 +275,7 @@ func TestSnapshotProofsRequireTheirSignatures(t *testing.T) {
 	}
 
 	// org. is the unsigned delegation, so its DS answer is the NSEC NODATA
-	// proof — which is a proof only while it is signed.
+	// proof, which is a proof only while it is signed.
 	if _, _, _, _, ok := withoutNSECSig("org.").DSAnswer("org."); ok {
 		t.Fatal("a DS NODATA proof with no signature was served")
 	}

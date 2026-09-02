@@ -30,7 +30,7 @@ ch.CancelWithRcode(rcode, do)   // write a reply with this rcode, then stop
 ```
 
 Only `Next` takes the context. `do` on `CancelWithRcode` sets the DO bit on the
-response's OPT record — it is not an authoritative flag.
+response's OPT record. It is not an authoritative flag.
 
 ## The default chain
 
@@ -42,7 +42,7 @@ recovery → metrics → dnstap → accesslist → ratelimit → reflex → edns
 
 The order lives in `middleware/defaults`, which is generated. It is a package
 rather than an `init` in `main` specifically so that everything needing the real
-chain can ask for it — the binary, the benchmarks, a test harness. When the list
+chain can ask for it: the binary, the benchmarks, a test harness. When the list
 lived in `main` each of those kept its own copy, and they drifted; a benchmark
 quietly measuring five handlers fewer than production still reports a number.
 
@@ -62,8 +62,8 @@ func init() {
 
 `Register` appends to the end. When placement matters:
 
-- `RegisterAt(name, ctor, idx)` — at an index; out of range panics.
-- `RegisterBefore(name, ctor, before)` — immediately before a named middleware;
+- `RegisterAt(name, ctor, idx)`, at an index; out of range panics.
+- `RegisterBefore(name, ctor, before)`, immediately before a named middleware;
   panics if the target is not registered.
 
 Registering a name twice panics. That is intentional: a duplicate name means
@@ -75,7 +75,7 @@ resolving to the wrong one.
 Position is a design decision, not a detail:
 
 - **Before `cache`** if it must see queries the cache would otherwise answer.
-  Policy and filtering belong here — this is where dynamic plugins are
+  Policy and filtering belong here. This is where dynamic plugins are
   inserted. Note that this is not "every query": access control, rate limiting,
   the hosts file, views, the blocklist and RPZ all run earlier and any of them
   can end the chain first.
@@ -96,5 +96,5 @@ Build a chain with just your handler and a stub behind it, feed it a
 `*dns.Msg`, and assert on what came back. `middleware.HandlerFunc` adapts a
 plain function into a `Handler`, which is enough for the stub.
 
-No assertion library, and no network — see
+No assertion library, and no network, see
 [Building and testing]({{ '/docs/development/building/' | relative_url }}).

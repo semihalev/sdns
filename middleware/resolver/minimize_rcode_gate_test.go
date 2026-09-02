@@ -15,7 +15,7 @@ import (
 // TestMinimizedRcodeGateFallsBack pins the fallback decision to the RCODE
 // rather than to section shapes. The first version of the fallback keyed on
 // "no answer, no authority", so a REFUSED dressed with a SOA or an NXDOMAIN
-// dressed in a CNAME answer slipped past it and back into the label walk —
+// dressed in a CNAME answer slipped past it and back into the label walk,
 // one unreadable error per hidden label. Whatever a hidden prefix draws
 // besides NOERROR and a provable denial, the next question is the full name.
 func TestMinimizedRcodeGateFallsBack(t *testing.T) {
@@ -120,7 +120,7 @@ func TestMinimizedRcodeGateFallsBack(t *testing.T) {
 // TestMinimizedDenialCutRefusesAliasAnswers pins RFC 2308 section 2.1 onto the
 // prefix cut: an NXDOMAIN that carries a CNAME or DNAME answer denies the end
 // of the alias chain, not the probed name, so it must never be validated as a
-// denial of the prefix — judging the proof against the wrong owner fails a
+// denial of the prefix, judging the proof against the wrong owner fails a
 // legitimately signed chain closed, or blesses a denial of the alias target as
 // though it covered the prefix.
 //
