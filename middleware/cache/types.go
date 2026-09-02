@@ -3,6 +3,7 @@ package cache
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -225,6 +226,16 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	msgCopy.Answer = storableRecords(msg.Answer, now)
 	msgCopy.Ns = storableRecords(msg.Ns, now)
 
+	// An explicit RRSIG question asks for the signatures themselves, and
+	// the lapsed and pending ones are as much the answer as the live one
+	// (RFC 4035 §3.2.1): the record is the data, so a hit may not answer
+	// with fewer than the first response did. If storing would drop any,
+	// the answer is not stored.
+	if len(msg.Question) > 0 && msg.Question[0].Qtype == dns.TypeRRSIG &&
+		(len(msgCopy.Answer) != len(msg.Answer) || len(msgCopy.Ns) != len(msg.Ns)) {
+		return nil
+	}
+
 	// An entry never carries AD over data whose signatures have lapsed
 	// (RFC 4035 §3.2.3). The writer clears the bit on the response it sends,
 	// but it does so after the stores, and an entry that kept the bit would
@@ -236,32 +247,8 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	}
 
 	var ede *dns.EDNS0_EDE
-
-	// Filter Extra section to remove OPT records but preserve EDE. Its
-	// signatures go too: the additional section bounds neither AD nor the
-	// entry's lifetime (RFC 4035 §3.2.3, nothing validates glue), so a glue
-	// signature's TTL would be inflated on every hit the same way.
 	if len(msg.Extra) > 0 {
-		extra := make([]dns.RR, 0, len(msg.Extra))
-		for _, rr := range msg.Extra {
-			switch opt := rr.(type) {
-			case *dns.OPT:
-				// Extract EDE from OPT record if present. By value: the
-				// long-lived entry must not alias an option inside the
-				// caller's live message.
-				for _, option := range opt.Option {
-					if e, ok := option.(*dns.EDNS0_EDE); ok {
-						private := *e
-						ede = &private
-						break
-					}
-				}
-			case *dns.RRSIG:
-			default:
-				extra = append(extra, rr)
-			}
-		}
-		msgCopy.Extra = extra
+		msgCopy.Extra, ede = storableAdditional(msg.Extra, now, ttl)
 	}
 
 	// Name compression keeps the stored form smaller than the upstream wire.
@@ -659,4 +646,89 @@ func storableRecords(records []dns.RR, now time.Time) []dns.RR {
 		kept = append(kept, rr)
 	}
 	return kept
+}
+
+// storableAdditional returns the additional section as the entry stores it:
+// without the OPT, whose EDE is returned by value, and with every signed
+// RRset either kept with its signatures or removed with them.
+//
+// The additional section bounds neither AD nor the entry's lifetime (RFC
+// 4035 §3.2.3; nothing validates it), and every hit serves each record with
+// that lifetime as its TTL. So a signature here can be kept only when it
+// permits at least the entry's lifetime — a live one carrying a shorter TTL
+// would be handed out inflated, and one outside its validity period would be
+// handed out at all. A signed RRset does not go on without its signature,
+// either: RFC 4035 §3.1.1 has the two travel together, and a mail exchanger's
+// address that arrived signed and was served bare on the next hit is a
+// different answer. An RRset none of whose signatures can be kept leaves with
+// them; a lapsed sibling beside a signature that can be kept leaves alone, as
+// it does in the answer. Unsigned records already bound the lifetime through
+// their own TTLs and stay.
+func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration) ([]dns.RR, *dns.EDNS0_EDE) {
+	var ede *dns.EDNS0_EDE
+
+	// honours reports whether the entry's lifetime stays within what sig
+	// permits. Within a second of it counts: the lifetime was measured a
+	// moment before this check, so a signature sharing the answer's own
+	// validity window trails it by that moment, and a served TTL is whole
+	// seconds anyway — the last fraction is the wire's granularity, which
+	// servedSeconds already concedes.
+	honours := func(sig *dns.RRSIG) bool {
+		permits, valid := dnsutil.SignatureLifetime(sig, now)
+		return valid && permits+time.Second >= lifetime
+	}
+
+	// Signatures the entry cannot carry, and those it can. Both are empty
+	// on the common path, an unsigned additional section, and cost nothing.
+	var unsafe, safe []*dns.RRSIG
+	for _, rr := range records {
+		if sig, ok := rr.(*dns.RRSIG); ok {
+			if honours(sig) {
+				safe = append(safe, sig)
+			} else {
+				unsafe = append(unsafe, sig)
+			}
+		}
+	}
+	covers := func(sigs []*dns.RRSIG, name string, class, rrtype uint16) bool {
+		for _, sig := range sigs {
+			if sig.TypeCovered == rrtype && sig.Hdr.Class == class && strings.EqualFold(sig.Hdr.Name, name) {
+				return true
+			}
+		}
+		return false
+	}
+	// condemned: a signed RRset with nothing left to sign it.
+	condemned := func(name string, class, rrtype uint16) bool {
+		return len(unsafe) > 0 && covers(unsafe, name, class, rrtype) && !covers(safe, name, class, rrtype)
+	}
+
+	extra := make([]dns.RR, 0, len(records))
+	for _, rr := range records {
+		switch r := rr.(type) {
+		case *dns.OPT:
+			// Extract EDE from OPT record if present. By value: the
+			// long-lived entry must not alias an option inside the
+			// caller's live message.
+			for _, option := range r.Option {
+				if e, ok := option.(*dns.EDNS0_EDE); ok {
+					private := *e
+					ede = &private
+					break
+				}
+			}
+			continue
+		case *dns.RRSIG:
+			if !honours(r) {
+				continue
+			}
+		default:
+			h := r.Header()
+			if condemned(h.Name, h.Class, h.Rrtype) {
+				continue
+			}
+		}
+		extra = append(extra, rr)
+	}
+	return extra, ede
 }

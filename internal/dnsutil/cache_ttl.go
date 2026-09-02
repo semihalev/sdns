@@ -232,6 +232,19 @@ func getTTL(rr dns.RR) time.Duration {
 // A lapsed signature bounds the data at zero. Returning the cache floor here
 // made it a floor wearing a bound's clothes, granting five more seconds of
 // life to material whose proof had already run out.
+// SignatureLifetime reports whether sig is within its validity period at now
+// and, if so, the longest lifetime it permits the RRset it covers: the least
+// of its header TTL, its Original TTL and the time left before it expires
+// (RFC 4035 §5.3.3). The same two questions eachSignedRRset answers per
+// RRset, asked of one signature, for a caller deciding whether an entry of a
+// given lifetime can carry it.
+func SignatureLifetime(sig *dns.RRSIG, now time.Time) (time.Duration, bool) {
+	if !sig.ValidityPeriod(now) {
+		return 0, false
+	}
+	return getRRSIGTTL(sig, now), true
+}
+
 func getRRSIGTTL(sig *dns.RRSIG, now time.Time) time.Duration {
 	ttl := time.Duration(sig.Header().Ttl) * time.Second
 
