@@ -1861,7 +1861,13 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
 		res = w.cache.additionalAnswer(withCnameChaseDepth(ctx, depth+1), res)
 	}
-	if chasedType, _ := dnsutil.ClassifyResponse(res, time.Now().UTC()); chasedType == dnsutil.TypeServerFailure {
+	// Re-classified, not merely re-checked. A CNAME that arrived as a success
+	// can come back from the chase as a terminal NXDOMAIN or NODATA, and
+	// keeping the pre-chase verdict meant the clamp below read the alias TTL
+	// while the SOA at the end of the chain said one second. The stores
+	// classify for themselves; this is the copy the client gets.
+	mt, _ = dnsutil.ClassifyResponse(res, time.Now().UTC())
+	if mt == dnsutil.TypeServerFailure {
 		return w.writeResolutionFailure(ctx, res)
 	}
 
@@ -2066,20 +2072,28 @@ func clampTTLsToEffective(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseT
 	//
 	// Only downward. The derivation applies the positive floor, which is about
 	// how long this cache re-asks, and is no business of the client's.
-	// The same view the entry is bounded by. Walking the whole response
-	// instead pulled in material the entry never keeps, a DNSKEY consulted to
-	// validate the answer among it, and capped the answer at the lifetime of
-	// its own validation input. Provenance is not lineage.
-	if derived := dnsutil.CalculateCacheTTL(filterCacheableAnswer(res), mt); derived > 0 {
-		if ceiling < 0 || derived < ceiling {
-			ceiling = derived
-		}
+	// Every record being handed over, not the narrower set the entry keeps.
+	// The stored view drops the CNAME target's own RRset, which belongs to a
+	// different owner, and that RRset is in this message and is what the
+	// client will act on: a target expiring in two seconds went out under an
+	// alias advertising five minutes.
+	//
+	// Zero is folded in like any other value. It is a real ceiling, an SOA
+	// granting no lifetime or a signature whose Original TTL is zero, and
+	// treating it as "nothing found" left the first client holding, at its
+	// full advertised TTL, data this cache had just refused to admit.
+	derived := dnsutil.CalculateCacheTTL(res, mt)
+	if ceiling < 0 || derived < ceiling {
+		ceiling = derived
 	}
 	if ceiling < 0 {
 		return
 	}
 
-	secs := uint32(ceiling / time.Second) //nolint:gosec // G115 - bounded by MaxCacheTTL
+	// The same rounding a cache hit gets. The two paths answer the same
+	// question about the same records and disagreeing on the last fraction of
+	// a second is how one client is told nothing and the next is told one.
+	secs := servedSeconds(ceiling)
 	clamp := func(rrs []dns.RR) {
 		for _, rr := range rrs {
 			if rr.Header().Rrtype == dns.TypeOPT {

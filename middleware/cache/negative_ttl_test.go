@@ -580,6 +580,98 @@ func TestFirstResponseCarriesTheEffectiveTTL(t *testing.T) {
 		}
 	})
 
+	t.Run("a zone that granted no lifetime at all", func(t *testing.T) {
+		// Zero is a ceiling, not a missing one. The cache declines to admit
+		// this, and the client used to be handed it at the SOA's full three
+		// hundred seconds regardless.
+		const name = "nolife.first.example."
+		up := new(dns.Msg)
+		up.Rcode = dns.RcodeNameError
+		up.Ns = []dns.RR{&dns.SOA{
+			Hdr: dns.RR_Header{
+				Name: "first.example.", Rrtype: dns.TypeSOA,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Ns: "ns.first.example.", Mbox: "hostmaster.first.example.", Minttl: 0,
+		}}
+		if got := authorityTTL(ask(t, up, name)); got != 0 {
+			t.Errorf("first client got TTL %d for a denial the SOA grants no lifetime", got)
+		}
+	})
+
+	t.Run("a signature whose original TTL is zero", func(t *testing.T) {
+		const name = "zerosig.first.example."
+		up := new(dns.Msg)
+		up.AuthenticatedData = true
+		up.Answer = []dns.RR{
+			&dns.A{
+				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+				A:   []byte{192, 0, 2, 1},
+			},
+			&dns.RRSIG{
+				Hdr:         dns.RR_Header{Name: name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+				TypeCovered: dns.TypeA,
+				OrigTtl:     0,
+				Expiration:  uint32(time.Now().Add(time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+			},
+		}
+		if got := answerTTL(ask(t, up, name)); got != 0 {
+			t.Errorf("first client got TTL %d for data its signature authorises for none", got)
+		}
+	})
+
+	t.Run("an alias onto a target about to expire", func(t *testing.T) {
+		// The target's RRset belongs to a different owner, so the stored view
+		// drops it. It is still in this message and still what the client
+		// acts on, and it expires in two seconds while the alias in front of
+		// it advertises five minutes.
+		const name, target = "alias.first.example.", "target.first.example."
+		up := new(dns.Msg)
+		up.AuthenticatedData = true
+		up.Answer = []dns.RR{
+			&dns.CNAME{
+				Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+				Target: target,
+			},
+			&dns.A{
+				Hdr: dns.RR_Header{Name: target, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+				A:   []byte{192, 0, 2, 1},
+			},
+			&dns.RRSIG{
+				Hdr:         dns.RR_Header{Name: target, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+				TypeCovered: dns.TypeA,
+				OrigTtl:     3600,
+				Expiration:  uint32(time.Now().Add(2 * time.Second).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+			},
+		}
+		if got := answerTTL(ask(t, up, name)); got > 2 {
+			t.Errorf("first client got TTL %d for an alias onto a target bounded at 2s", got)
+		}
+	})
+
+	t.Run("an alias that ends in a denial", func(t *testing.T) {
+		// The chase turns a success into a terminal NXDOMAIN. Classifying
+		// once, before it ran, left the clamp reading the alias TTL while the
+		// SOA at the end of the chain said one second.
+		const name = "aliasgone.first.example."
+		up := new(dns.Msg)
+		up.Rcode = dns.RcodeNameError
+		up.Answer = []dns.RR{&dns.CNAME{
+			Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+			Target: "target.first.example.",
+		}}
+		up.Ns = []dns.RR{&dns.SOA{
+			Hdr: dns.RR_Header{
+				Name: "first.example.", Rrtype: dns.TypeSOA,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Ns: "ns.first.example.", Mbox: "hostmaster.first.example.", Minttl: 1,
+		}}
+		if got := answerTTL(ask(t, up, name)); got > 1 {
+			t.Errorf("first client got TTL %d for an alias onto a denial granted 1s", got)
+		}
+	})
+
 	t.Run("a denial the zone granted one second", func(t *testing.T) {
 		const name = "gone.first.example."
 		up := new(dns.Msg)
@@ -595,4 +687,104 @@ func TestFirstResponseCarriesTheEffectiveTTL(t *testing.T) {
 			t.Errorf("first client got TTL %d for a denial the SOA grants for 1s", got)
 		}
 	})
+}
+
+// TestChasedDenialBoundsTheFirstResponse exercises the case the fixtures above
+// cannot: the upstream answer is a success carrying only an alias, and the
+// chase is what turns it into a denial. Classifying once, before the chase ran,
+// left the client clamp reading the alias TTL while the SOA at the end of the
+// chain granted one second.
+func TestChasedDenialBoundsTheFirstResponse(t *testing.T) {
+	const name, target = "chased.example.", "target.chased.example."
+
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+
+	// The target resolves to a denial the zone grants for one second.
+	targetHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		resp := new(dns.Msg)
+		resp.SetReply(ch.Request.Msg())
+		resp.Rcode = dns.RcodeNameError
+		resp.Ns = []dns.RR{&dns.SOA{
+			Hdr: dns.RR_Header{
+				Name: "chased.example.", Rrtype: dns.TypeSOA,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Ns: "ns.chased.example.", Mbox: "hostmaster.chased.example.", Minttl: 1,
+		}}
+		_ = ch.Writer.WriteMsg(resp)
+		ch.Cancel()
+	})
+	c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, targetHandler}})
+
+	// The outer answer is a plain success: an alias, and nothing else.
+	req := new(dns.Msg)
+	req.SetQuestion(name, dns.TypeA)
+	w := mock.NewWriter("udp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(
+		func(_ context.Context, ch *middleware.Chain) {
+			resp := new(dns.Msg)
+			resp.SetReply(ch.Request.Msg())
+			resp.Answer = []dns.RR{&dns.CNAME{
+				Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+				Target: target,
+			}}
+			_ = ch.Writer.WriteMsg(resp)
+			ch.Cancel()
+		})})
+	ch.Reset(w, req)
+	ch.Next(context.Background())
+
+	if !w.Written() {
+		t.Fatal("no response written")
+	}
+	out := w.Msg()
+	if len(out.Answer) == 0 {
+		t.Fatal("no answer section")
+	}
+	if got := out.Answer[0].Header().Ttl; got > 1 {
+		t.Errorf("first client got TTL %d; the chase ended in a denial granted 1s", got)
+	}
+}
+
+// TestClampRoundsLikeAHit pins the two paths to one rule. The clamp on the
+// first response and the TTL written on every later hit answer the same
+// question about the same records, and they disagreed on the last fraction of
+// a second: one told the client nothing, the next told it one.
+//
+// Driven through the delegation lease, whose deadline is an absolute instant
+// this test can place with sub-second precision. A signature cannot: RRSIG
+// expiration is a whole-second timestamp.
+func TestClampRoundsLikeAHit(t *testing.T) {
+	build := func() *dns.Msg {
+		msg := new(dns.Msg)
+		msg.SetQuestion("rounding.example.", dns.TypeA)
+		msg.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{
+				Name: "rounding.example.", Rrtype: dns.TypeA,
+				Class: dns.ClassINET, Ttl: 3600,
+			},
+			A: []byte{192, 0, 2, 1},
+		}}
+		return msg
+	}
+
+	for _, lease := range []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 999 * time.Millisecond} {
+		res := build()
+		clampTTLsToEffective(res, time.Now().Add(lease), dnsutil.TypeSuccess)
+
+		got := res.Answer[0].Header().Ttl
+		want := servedSeconds(lease)
+		if got != want {
+			t.Errorf("a %v lease clamped the first response to %d, while a hit serves %d",
+				lease, got, want)
+		}
+	}
+
+	// A lease already spent is zero on both paths.
+	res := build()
+	clampTTLsToEffective(res, time.Now().Add(-time.Second), dnsutil.TypeSuccess)
+	if got := res.Answer[0].Header().Ttl; got != 0 {
+		t.Errorf("a spent lease clamped to %d, want 0", got)
+	}
 }
