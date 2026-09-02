@@ -143,6 +143,9 @@ of zero. Zero tells the client not to reuse the answer, and a cache that says so
 while reusing it is contradicting itself; for a denial RFC 2308 §5 rules it out
 directly. An entry down to its last fraction of a second is served as one
 second, which is the finest a DNS message can express, and then it is gone.
+The one exception is a delegation lease in its last fraction of a second:
+that bound is the parent's, not this cache's to round, so the answer goes out
+with a TTL of zero rather than a second the parent never granted.
 
 The two mechanisms that *reuse* a denial for names it was never asked about are
 bounded the same way, and were already. Both are on by default and both are

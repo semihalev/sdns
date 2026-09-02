@@ -1444,7 +1444,11 @@ func (c *Cache) handleCacheHit(
 	// one question must cost one token however many entry objects it
 	// passed through.
 	limiter := entry.GetRateLimiter()
-	if !w.Internal() && limiter != nil && limiter != spent && !limiter.Allow() {
+	// Asked once and kept: the chase below needs the answer too, and a
+	// writer may make more of the question than a field read (a test double
+	// treats each call as a rendezvous).
+	internal := w.Internal()
+	if !internal && limiter != nil && limiter != spent && !limiter.Allow() {
 		ch.Cancel()
 		return true
 	}
@@ -1601,7 +1605,25 @@ func (c *Cache) handleCacheHit(
 	// chasing once the chain passes maxCnameChaseDepth. Replaces
 	// the pre-Phase-3d !w.Internal() guard.
 	if depth := cnameChaseDepth(ctx); depth < maxCnameChaseDepth {
+		answers, authority, rcode := len(msg.Answer), len(msg.Ns), msg.Rcode
 		msg = c.additionalAnswer(withCnameChaseDepth(ctx, depth+1), msg)
+		// The chase may have merged records the entry never vouched for: a
+		// target resolved fresh by the internal sub-query, whose own write
+		// skipped the outgoing checks as every internal write does. Those
+		// records reach the client through this write alone, so it applies
+		// what WriteMsg applies on a miss: AD withdrawn when a signature
+		// has lapsed, and every TTL bounded by the merged records and the
+		// request's cut. Without it a hit on an alias served the target at
+		// its raw TTL, with AD, and with its lapsed signature.
+		if !internal && (len(msg.Answer) != answers || len(msg.Ns) != authority || msg.Rcode != rcode) {
+			now := time.Now().UTC()
+			mt, _ := dnsutil.ClassifyResponse(msg, now)
+			var cut time.Time
+			if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
+				cut, _ = meta.Cut()
+			}
+			honestOutgoing(msg, cut, mt, now)
+		}
 	}
 
 	_ = w.WriteMsg(msg)
@@ -1703,8 +1725,8 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	msgTTL := dnsutil.CalculateCacheTTLAt(filtered, mt, now)
 
 	// See Store.setFromResponseWithKey: a denial the zone granted no lifetime
-	// is not admitted (RFC 2308 §5). Unreachable for a positive answer, which
-	// always arrives on its own floor.
+	// is not admitted (RFC 2308 §5), and neither is a signed positive answer
+	// whose signature fixes its lifetime at zero.
 	ttl := c.positive.ttl.Bound(msgTTL)
 	if ttl <= 0 {
 		return
@@ -1992,10 +2014,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		// denial, so an expired NXDOMAIN, an empty NODATA and an alias chain
 		// ending in either all kept the bit while their TTLs were correctly
 		// clamped to nothing.
-		if dnsutil.HasExpiredSignatures(res, time.Now().UTC()) {
-			res.AuthenticatedData = false
-		}
-		clampTTLsToEffective(res, cutUntil, mt)
+		honestOutgoing(res, cutUntil, mt, time.Now().UTC())
 	}
 
 	return w.ResponseWriter.WriteMsg(res)
@@ -2068,6 +2087,19 @@ func (w *ResponseWriter) recursionWorkFailure(fallback *dns.Msg) *dns.Msg {
 	)
 }
 
+// honestOutgoing applies, to a message about to leave for an external client,
+// the two facts this resolver has established about it: AD is withdrawn when
+// an answer or authority RRset has no usable signature left (RFC 4035
+// §3.2.3), and every TTL is lowered to the shortest bound the records are
+// subject to. The miss path runs it from WriteMsg; the hit path runs it after
+// an alias chase merged records the entry never vouched for.
+func honestOutgoing(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType, now time.Time) {
+	if dnsutil.HasExpiredSignatures(res, now) {
+		res.AuthenticatedData = false
+	}
+	clampTTLsToEffective(res, cutUntil, mt)
+}
+
 // clampTTLsToEffective lowers every record TTL in res to the shortest bound
 // the answer is subject to: the delegation lease, and the lifetime the records
 // and their signatures themselves permit. A past cut clamps to zero — the
@@ -2099,6 +2131,7 @@ func clampTTLsToEffective(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseT
 	// treating it as "nothing found" left the first client holding, at its
 	// full advertised TTL, data this cache had just refused to admit.
 	derived := dnsutil.CalculateCacheTTL(res, mt)
+	leaseBinding := ceiling >= 0 && derived >= ceiling
 	if ceiling < 0 || derived < ceiling {
 		ceiling = derived
 	}
@@ -2109,7 +2142,13 @@ func clampTTLsToEffective(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseT
 	// The same rounding a cache hit gets. The two paths answer the same
 	// question about the same records and disagreeing on the last fraction of
 	// a second is how one client is told nothing and the next is told one.
+	// And the same exception: a sub-second delegation lease is not rounded
+	// up into a second the parent never granted; the answer goes out with
+	// nothing to keep, exactly as a hit in that state does (servedTTL).
 	secs := servedSeconds(ceiling)
+	if leaseBinding && ceiling < time.Second {
+		secs = 0
+	}
 	clamp := func(rrs []dns.RR) {
 		for _, rr := range rrs {
 			if rr.Header().Rrtype == dns.TypeOPT {

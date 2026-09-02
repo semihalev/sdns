@@ -801,15 +801,50 @@ func TestClampRoundsLikeAHit(t *testing.T) {
 		return msg
 	}
 
+	// A sub-second lease is the parent's grant, and the round-up to one
+	// second is not applied to it on either path: the answer still goes
+	// out, from the first response and from a hit alike, with nothing to
+	// keep.
 	for _, lease := range []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 999 * time.Millisecond} {
 		res := build()
 		clampTTLsToEffective(res, time.Now().Add(lease), dnsutil.TypeSuccess)
+		if got := res.Answer[0].Header().Ttl; got != 0 {
+			t.Errorf("a %v lease clamped the first response to %d, want 0: the grant is under a second", lease, got)
+		}
 
-		got := res.Answer[0].Header().Ttl
-		want := servedSeconds(lease)
-		if got != want {
-			t.Errorf("a %v lease clamped the first response to %d, while a hit serves %d",
-				lease, got, want)
+		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
+		entry.cutUntil = time.Now().Add(lease)
+		req := new(dns.Msg)
+		req.SetQuestion("rounding.example.", dns.TypeA)
+		served := entry.ToMsg(req)
+		if served == nil {
+			t.Fatalf("a hit under a %v lease was not served; the grant has time left", lease)
+		}
+		if got := served.Answer[0].Header().Ttl; got != 0 {
+			t.Errorf("a hit under a %v lease served TTL %d, want 0: rounded past the grant", lease, got)
+		}
+	}
+
+	// A lease with whole seconds left is served at those seconds, on both
+	// paths, never rounded past them.
+	for _, lease := range []time.Duration{1500 * time.Millisecond, 2999 * time.Millisecond} {
+		res := build()
+		clampTTLsToEffective(res, time.Now().Add(lease), dnsutil.TypeSuccess)
+		want := uint32(lease / time.Second) //nolint:gosec // G115 - a test lease of seconds
+		if got := res.Answer[0].Header().Ttl; got != want {
+			t.Errorf("a %v lease clamped the first response to %d, want %d", lease, got, want)
+		}
+
+		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
+		entry.cutUntil = time.Now().Add(lease)
+		req := new(dns.Msg)
+		req.SetQuestion("rounding.example.", dns.TypeA)
+		served := entry.ToMsg(req)
+		if served == nil {
+			t.Fatalf("a hit under a %v lease was not served", lease)
+		}
+		if got := served.Answer[0].Header().Ttl; got != want {
+			t.Errorf("a hit under a %v lease served TTL %d, want %d", lease, got, want)
 		}
 	}
 

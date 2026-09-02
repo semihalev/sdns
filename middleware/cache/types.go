@@ -119,7 +119,8 @@ func (e *CacheEntry) CompareAndStampSidecar(prev, next *middleware.Sidecar) bool
 }
 
 // remaining returns the entry's effective remaining lifetime at now:
-// the stored TTL minus elapsed time, further bounded by cutUntil.
+// the stored TTL minus elapsed time, further bounded by cutUntil. It says
+// whether the entry may be served; servedTTL says what TTL to write.
 func (e *CacheEntry) remaining(now time.Time) time.Duration {
 	rem, leaseRem := e.remainingBounds(now)
 	if !e.cutUntil.IsZero() {
@@ -128,6 +129,27 @@ func (e *CacheEntry) remaining(now time.Time) time.Duration {
 		}
 	}
 	return rem
+}
+
+// servedTTL is the TTL a hit writes at now: servedSeconds of the entry's
+// remaining lifetime, with one exception. When the delegation lease is the
+// binding bound it is a security bound, the parent's grant
+// (GHSA-mqfw-f48p-2vc8), and its last fraction of a second is not rounded up
+// into a whole second the parent never granted: the answer goes out with a
+// TTL of zero, nothing to keep. The round-up is the entry's own concession
+// about its own lifetime. A one-second lease stays servable for its second
+// this way, where declining the hit instead made it unservable from the
+// moment it was stored; the stale path, which RFC 8767 forbids a zero,
+// declines the same remainder.
+func (e *CacheEntry) servedTTL(now time.Time) uint32 {
+	rem, leaseRem := e.remainingBounds(now)
+	if !e.cutUntil.IsZero() && leaseRem < rem {
+		if leaseRem < time.Second {
+			return 0
+		}
+		rem = leaseRem
+	}
+	return servedSeconds(rem)
 }
 
 // servedSeconds is the TTL written into an answer this cache is serving.
@@ -145,7 +167,10 @@ func (e *CacheEntry) remaining(now time.Time) time.Duration {
 //
 // What is left is the granularity of the wire format: a client can hold the
 // last fraction of a second past the bound, because a DNS TTL cannot express
-// less. This cache stops serving at the bound exactly.
+// less. This cache stops serving at the bound exactly. That concession is
+// the entry's own to make, about its own lifetime; servedTTL withholds it
+// from a delegation lease, so a client is never rounded past the parent's
+// grant.
 func servedSeconds(remaining time.Duration) uint32 {
 	if remaining <= 0 {
 		return 0
@@ -380,7 +405,7 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 	}
 
 	// Update TTLs
-	ttl := servedSeconds(remainingTTL)
+	ttl := e.servedTTL(now)
 	for _, rr := range resp.Answer {
 		rr.Header().Ttl = ttl
 	}

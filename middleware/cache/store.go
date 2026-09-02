@@ -663,8 +663,9 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		// A denial the zone granted no lifetime is not cacheable at all (RFC
 		// 2308 §5). Admitting it with a zero TTL would occupy a slot that
 		// every later read has to discard, and the entry could never be
-		// served — the guard cannot fire for a positive answer, which always
-		// arrives on its own floor.
+		// served. A positive answer reaches zero too when a signature fixes
+		// it there, an Original TTL of zero or a signature in its last
+		// second, and this guard is what keeps that one out.
 		ttl := capTTL(s.positive.ttl.Bound(msgTTL))
 		if ttl > 0 {
 			if entry := newEntry(filtered, ttl); entry != nil {

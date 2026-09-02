@@ -178,7 +178,9 @@ func TestExhaustedTargetLeavesNoCachedChain(t *testing.T) {
 
 	const alias, target = "alias.exhausted.", "target.exhausted."
 
+	reached := 0
 	targetHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		reached++
 		resp := new(dns.Msg)
 		resp.SetReply(ch.Request.Msg())
 		resp.Rcode = dns.RcodeNameError
@@ -231,8 +233,18 @@ func TestExhaustedTargetLeavesNoCachedChain(t *testing.T) {
 	req.SetQuestion(alias, dns.TypeA)
 	req.RecursionDesired = true
 	chain := middleware.NewChain([]middleware.Handler{c, outerHandler})
-	chain.Reset(mock.NewWriter("udp", "127.0.0.1:0"), req)
+	w := mock.NewWriter("udp", "127.0.0.1:0")
+	chain.Reset(w, req)
+	reached = 0
 	chain.Next(context.Background())
+	// The outcome below only means something if the chase ran: an exhausted
+	// target that was never asked for proves nothing about what a merge from
+	// it would have stored. The chase reads the cached denial, so the proof
+	// it ran is the target's SOA in the outer answer, or, had the entry gone
+	// in the meantime, the handler being asked again.
+	if reached == 0 && (!w.Written() || !hasTargetSOA(w.Msg())) {
+		t.Fatal("the chase never reached the target")
+	}
 
 	aliasKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
 	entry, ok := c.store.LookupByKey(aliasKey)
@@ -536,4 +548,18 @@ func TestUnusedSubQueryLineageIsNotInherited(t *testing.T) {
 		t.Fatalf("the alias was bound to %v by a sub-query that produced "+
 			"nothing for it", got)
 	}
+}
+
+// hasTargetSOA reports whether an alias answer carries the SOA the chased
+// target's denial was merged from.
+func hasTargetSOA(msg *dns.Msg) bool {
+	if msg == nil {
+		return false
+	}
+	for _, rr := range msg.Ns {
+		if soa, ok := rr.(*dns.SOA); ok && soa.Hdr.Name == "exhausted." {
+			return true
+		}
+	}
+	return false
 }
