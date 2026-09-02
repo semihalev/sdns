@@ -2,7 +2,6 @@
 package dnsutil
 
 import (
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -170,8 +169,8 @@ func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 }
 
 // signedRRset names the RRset a signature belongs to, which is what makes two
-// signatures siblings. Every field has to agree. Owner and signer fold case,
-// as everything else that compares names here does. The signer is part of
+// signatures siblings. Every field has to agree. Owner and signer are DNS
+// names, compared and keyed as the wire would. The signer is part of
 // the identity because RFC 4035 §5.3.2 ties a signature to the zone that
 // made it: at a delegation the parent's NSEC over the child's name and the
 // child's own apex NSEC share owner, class and type while being different
@@ -204,23 +203,35 @@ type signedRRsetState struct {
 	bounded bool
 }
 
+// is reports whether sig belongs to this RRset. Names compare as DNS names
+// (dnsname.CanonicalCompare): escapes decoded, case folded over ASCII only.
+// A text fold is wrong in both directions — an escaped spelling of the same
+// owner was a different RRset, and a Kelvin sign, which the Unicode fold
+// turns into a k, was the same one, so a live signature under one wire
+// name vouched for an expired RRset under another and kept AD on it.
 func (s *signedRRsetState) is(section int, sig *dns.RRSIG) bool {
 	return s.section == section &&
 		s.first.TypeCovered == sig.TypeCovered &&
 		s.first.Hdr.Class == sig.Hdr.Class &&
-		strings.EqualFold(s.first.Hdr.Name, sig.Hdr.Name) &&
-		strings.EqualFold(s.first.SignerName, sig.SignerName)
+		dnsname.CanonicalCompare(s.first.Hdr.Name, sig.Hdr.Name) == 0 &&
+		dnsname.CanonicalCompare(s.first.SignerName, sig.SignerName) == 0
 }
 
 func (s *signedRRsetState) identity() signedRRset {
 	return signedRRsetIdentity(s.section, s.first)
 }
 
+// signedRRsetIdentity is the map form of is: the names as the canonical
+// keys the comparison agrees with, so the two paths group identically.
+// Each key is built in its own fresh slice. Building both in one stack
+// buffer and converting each to a string left the owner aliasing the
+// buffer the signer then overwrote; this runs only past the inline
+// capacity, where the map already allocates.
 func signedRRsetIdentity(section int, sig *dns.RRSIG) signedRRset {
 	return signedRRset{
 		section: section,
-		owner:   strings.ToLower(sig.Hdr.Name),
-		signer:  strings.ToLower(sig.SignerName),
+		owner:   string(dnsname.AppendCanonicalKey(nil, sig.Hdr.Name)),
+		signer:  string(dnsname.AppendCanonicalKey(nil, sig.SignerName)),
 		class:   sig.Hdr.Class,
 		covered: sig.TypeCovered,
 	}

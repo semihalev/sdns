@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/contextutil"
 	"github.com/semihalev/sdns/internal/debugenv"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/metric"
@@ -2137,8 +2137,10 @@ func filterCacheableAnswer(res *dns.Msg) *dns.Msg {
 	}
 
 	keep := func(r dns.RR) bool {
+		// As DNS names: a text fold kept a record whose owner is
+		// wire-distinct from the question but folds to it in Unicode.
 		if r.Header().Rrtype == dns.TypeDNAME ||
-			strings.EqualFold(res.Question[0].Name, r.Header().Name) {
+			dnsname.CanonicalCompare(res.Question[0].Name, r.Header().Name) == 0 {
 			return true
 		}
 		rrsig, ok := r.(*dns.RRSIG)
