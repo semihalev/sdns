@@ -169,6 +169,36 @@ func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 	return HasExpiredSignatures(msg, now)
 }
 
+// signedRRset names the RRset a signature belongs to, which is what makes two
+// signatures siblings. Every field has to agree. Owner and signer fold case,
+// as everything else that compares names here does. The signer is part of
+// the identity because RFC 4035 §5.3.2 ties a signature to the zone that
+// made it: at a delegation the parent's NSEC over the child's name and the
+// child's own apex NSEC share owner, class and type while being different
+// RRsets under different keys, and one must not vouch for the other. The
+// section is part of it for the same reason — the same owner and type can
+// sit in the authority section as a proof and in the additional section as
+// glue, and those are different data.
+type signedRRset struct {
+	section int
+	owner   string
+	signer  string
+	class   uint16
+	covered uint16
+}
+
+type signedRRsetState struct {
+	// covered: some signature in its validity period vouches for the RRset.
+	covered bool
+	// usable: the shortest lifetime the covering signatures permit, and
+	// bounded says whether any set it. Zero is a real value here (a
+	// signature with an Original TTL of zero authorises no lifetime), so
+	// it cannot double as the unset sentinel: with it, the wire order of
+	// two siblings decided between a zero and an hour.
+	usable  time.Duration
+	bounded bool
+}
+
 // eachSignedRRset calls fn once for every RRset in sections that carries a
 // signature, reporting whether any of that RRset's signatures is still within
 // its validity period, and the shortest lifetime those still-valid ones
@@ -180,61 +210,60 @@ func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 // Original TTL (RFC 4035 §5.3.3). A signature authorising no lifetime still
 // covers the RRset, so it bounds the TTL at nothing without withdrawing AD.
 //
-// Lapsed siblings are skipped rather than folded in, which is what a key
-// rollover needs. Among the survivors the shortest wins, because a downstream
+// Validity is the validator's own test, RRSIG.ValidityPeriod, and it checks
+// both ends: RFC 4035 §5.3.1 requires the current time to sit within the
+// inception and expiration bounds, so a signature whose inception has not
+// arrived is no more use than one that has lapsed. Siblings outside the
+// period are skipped rather than folded in, which is what a key rollover
+// needs. Among the survivors the shortest wins, because a downstream
 // validator picks its own signature to verify with and may pick that one.
 //
-// Grouping is by owner, class and covered type, which is what makes two
-// signatures siblings. Case-insensitive on the owner, as everything else that
-// compares names here is.
+// One pass, grouped through a map. A response carries a handful of
+// signatures, but the sibling test was quadratic in that count, and a
+// response filled to the wire limit with distinct signed RRsets made it
+// pay for it. Callbacks come in order of first appearance.
 func eachSignedRRset(sections [][]dns.RR, now time.Time, fn func(covered bool, usable time.Duration)) {
-	var sigs []*dns.RRSIG
-	for _, section := range sections {
-		for _, rr := range section {
-			if sig, ok := rr.(*dns.RRSIG); ok {
-				sigs = append(sigs, sig)
+	var (
+		groups map[signedRRset]*signedRRsetState
+		order  []signedRRset
+	)
+	for section, records := range sections {
+		for _, rr := range records {
+			sig, ok := rr.(*dns.RRSIG)
+			if !ok {
+				continue
+			}
+			id := signedRRset{
+				section: section,
+				owner:   strings.ToLower(sig.Hdr.Name),
+				signer:  strings.ToLower(sig.SignerName),
+				class:   sig.Hdr.Class,
+				covered: sig.TypeCovered,
+			}
+			state := groups[id]
+			if state == nil {
+				if groups == nil {
+					groups = make(map[signedRRset]*signedRRsetState)
+				}
+				state = &signedRRsetState{}
+				groups[id] = state
+				order = append(order, id)
+			}
+			if !sig.ValidityPeriod(now) {
+				// Outside its period, spent or not yet begun. It says
+				// nothing about the RRset while a sibling still covers it,
+				// and if none does, covered stays false.
+				continue
+			}
+			state.covered = true
+			if ttl := getRRSIGTTL(sig, now); !state.bounded || ttl < state.usable {
+				state.usable, state.bounded = ttl, true
 			}
 		}
 	}
-
-	siblings := func(a, b *dns.RRSIG) bool {
-		return a.TypeCovered == b.TypeCovered &&
-			a.Hdr.Class == b.Hdr.Class &&
-			strings.EqualFold(a.Hdr.Name, b.Hdr.Name)
-	}
-
-	// Quadratic, over a handful of records. A response carries one signature
-	// per RRset outside a rollover and a few during one, so the map this
-	// would otherwise need costs more than the comparisons.
-	for i, sig := range sigs {
-		reported := false
-		for j := range i {
-			if siblings(sigs[j], sig) {
-				reported = true
-				break
-			}
-		}
-		if reported {
-			continue
-		}
-
-		covered := false
-		usable := time.Duration(0)
-		for j := i; j < len(sigs); j++ {
-			if !siblings(sigs[j], sig) {
-				continue
-			}
-			if time.Unix(int64(sigs[j].Expiration), 0).Sub(now) <= 0 {
-				// Spent. It says nothing about the RRset while a sibling
-				// still covers it, and if none does, covered stays false.
-				continue
-			}
-			covered = true
-			if ttl := getRRSIGTTL(sigs[j], now); usable == 0 || ttl < usable {
-				usable = ttl
-			}
-		}
-		fn(covered, usable)
+	for _, id := range order {
+		state := groups[id]
+		fn(state.covered, state.usable)
 	}
 }
 

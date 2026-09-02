@@ -115,7 +115,13 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// signature that still permits the most. Folding every signature into one
 	// minimum let a lapsed sibling speak for an RRset another signature still
 	// covers, which is exactly the shape of a key rollover.
-	eachSignedRRset([][]dns.RR{msg.Answer, msg.Ns, msg.Extra}, now, func(_ bool, usable time.Duration) {
+	//
+	// The additional section is left out, as it is for AD: RFC 4035 §3.2.3
+	// makes the answer and authority sections what this resolver vouches
+	// for, and nothing validates glue. A lapsed signature over an additional
+	// record was zeroing the lifetime of a fully covered answer and sending
+	// every query for it back upstream. Its record TTLs still bound below.
+	eachSignedRRset([][]dns.RR{msg.Answer, msg.Ns}, now, func(_ bool, usable time.Duration) {
 		signed = true
 		if usable < hardTTL {
 			hardTTL = usable

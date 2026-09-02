@@ -215,6 +215,16 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 	msgCopy.Answer = msg.Answer
 	msgCopy.Ns = msg.Ns
 
+	// An entry never carries AD over data whose signatures have lapsed
+	// (RFC 4035 §3.2.3). The writer clears the bit on the response it sends,
+	// but it does so after the stores, and an entry that kept the bit would
+	// hand it back on every later hit. Normalised here, on the storable view
+	// and before packing, so no admission path can miss it. Checked only
+	// when the bit is set: unsigned and unvalidated data pays nothing.
+	if msgCopy.AuthenticatedData && dnsutil.HasExpiredSignatures(msg, time.Now().UTC()) {
+		msgCopy.AuthenticatedData = false
+	}
+
 	var ede *dns.EDNS0_EDE
 
 	// Filter Extra section to remove OPT records but preserve EDE

@@ -436,3 +436,135 @@ func TestSiblingSignatureKeepsTheRRsetAlive(t *testing.T) {
 		}
 	})
 }
+
+// TestSiblingIdentityAndValidity pins what makes two signatures siblings and
+// what makes one usable. A signature vouches for an RRset only while the
+// current time sits inside both of its bounds (RFC 4035 §5.3.1), only for
+// the RRset its signer owns (§5.3.2), and only in the section it arrived in.
+// Among usable siblings the shortest lifetime wins whichever order the wire
+// put them in, and a lapsed signature over glue bounds nothing.
+func TestSiblingIdentityAndValidity(t *testing.T) {
+	now := time.Now()
+	sig := func(owner, signer string, covered uint16, origTTL uint32, from, until time.Duration) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+			TypeCovered: covered,
+			OrigTtl:     origTTL,
+			SignerName:  signer,
+			Inception:   uint32(now.Add(from).Unix()),  //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			Expiration:  uint32(now.Add(until).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		}
+	}
+	a := func(owner string) dns.RR {
+		return &dns.A{
+			Hdr: dns.RR_Header{Name: owner, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+			A:   []byte{192, 0, 2, 1},
+		}
+	}
+	ask := func(build func(*dns.Msg)) *dns.Msg {
+		msg := new(dns.Msg)
+		msg.SetQuestion("x.example.org.", dns.TypeA)
+		build(msg)
+		return msg
+	}
+
+	t.Run("a signature whose inception has not arrived covers nothing", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{
+				a("x.example.org."),
+				sig("x.example.org.", "example.org.", dns.TypeA, 3600, -2*time.Hour, -time.Hour),
+				sig("x.example.org.", "example.org.", dns.TypeA, 3600, time.Hour, 2*time.Hour),
+			}
+		})
+		if !HasExpiredSignatures(msg, now) {
+			t.Error("a future signature rescued an RRset whose only other signature had lapsed")
+		}
+		if mt, _ := ClassifyResponse(msg, now); mt != TypeExpiredSignature {
+			t.Errorf("classified %v, want TypeExpiredSignature", mt)
+		}
+		if got := CalculateCacheTTL(msg, TypeSuccess); got != 0 {
+			t.Errorf("lifetime %v, want nothing: no signature is valid now", got)
+		}
+	})
+
+	t.Run("a sibling under another signer covers nothing", func(t *testing.T) {
+		// At a delegation the parent's NSEC over the child's name and the
+		// child's apex NSEC share owner, class and type. The parent's proof
+		// has lapsed; the child's live signature is not its sibling.
+		msg := ask(func(m *dns.Msg) {
+			m.Rcode = dns.RcodeNameError
+			m.Ns = []dns.RR{
+				&dns.SOA{
+					Hdr: dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300},
+					Ns:  "ns.example.org.", Mbox: "hostmaster.example.org.", Minttl: 300,
+				},
+				sig("example.org.", "example.org.", dns.TypeSOA, 300, -2*time.Hour, time.Hour),
+				&dns.NSEC{
+					Hdr:        dns.RR_Header{Name: "child.example.org.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+					NextDomain: "d.example.org.",
+					TypeBitMap: []uint16{dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC},
+				},
+				sig("child.example.org.", "example.org.", dns.TypeNSEC, 300, -2*time.Hour, -time.Hour),
+				sig("child.example.org.", "child.example.org.", dns.TypeNSEC, 300, -2*time.Hour, time.Hour),
+			}
+		})
+		if !HasExpiredSignatures(msg, now) {
+			t.Error("the child's live signature excused the parent's lapsed proof")
+		}
+		if got := CalculateCacheTTL(msg, TypeNXDomain); got != 0 {
+			t.Errorf("lifetime %v, want nothing: the proof's own signature lapsed", got)
+		}
+	})
+
+	t.Run("a sibling in another section covers nothing", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{
+				a("x.example.org."),
+				sig("x.example.org.", "example.org.", dns.TypeA, 3600, -2*time.Hour, time.Hour),
+			}
+			m.Ns = []dns.RR{
+				a("x.example.org."),
+				sig("x.example.org.", "example.org.", dns.TypeA, 3600, -2*time.Hour, -time.Hour),
+			}
+		})
+		if !HasExpiredSignatures(msg, now) {
+			t.Error("a live answer signature excused the same RRset's lapsed copy in the authority section")
+		}
+		if got := CalculateCacheTTL(msg, TypeSuccess); got != 0 {
+			t.Errorf("lifetime %v, want nothing: an authority RRset is uncovered", got)
+		}
+	})
+
+	t.Run("a zero and an hour bound the same whichever comes first", func(t *testing.T) {
+		zero := sig("x.example.org.", "example.org.", dns.TypeA, 0, -2*time.Hour, time.Hour)
+		hour := sig("x.example.org.", "example.org.", dns.TypeA, 3600, -2*time.Hour, time.Hour)
+		for name, order := range map[string][]dns.RR{
+			"zero first": {a("x.example.org."), zero, hour},
+			"hour first": {a("x.example.org."), hour, zero},
+		} {
+			msg := ask(func(m *dns.Msg) { m.Answer = order })
+			if HasExpiredSignatures(msg, now) {
+				t.Errorf("%s: both signatures are valid, yet the RRset was reported lapsed", name)
+			}
+			if got := CalculateCacheTTL(msg, TypeSuccess); got != 0 {
+				t.Errorf("%s: lifetime %v, want nothing: a sibling authorises no lifetime", name, got)
+			}
+		}
+	})
+
+	t.Run("a lapsed signature over glue does not zero the answer", func(t *testing.T) {
+		msg := ask(func(m *dns.Msg) {
+			m.Answer = []dns.RR{
+				a("x.example.org."),
+				sig("x.example.org.", "example.org.", dns.TypeA, 3600, -2*time.Hour, time.Hour),
+			}
+			m.Extra = []dns.RR{
+				a("ns.example.org."),
+				sig("ns.example.org.", "example.org.", dns.TypeA, 3600, -2*time.Hour, -time.Hour),
+			}
+		})
+		if got := CalculateCacheTTL(msg, TypeSuccess); got < 59*time.Minute {
+			t.Errorf("lifetime %v, want the answer's own hour: glue is not the answer", got)
+		}
+	})
+}
