@@ -657,35 +657,49 @@ func startTruncatingForwarderServers(t *testing.T) (
 		_ = w.WriteMsg(resp)
 	})
 	// The forwarder retries TCP against the same server address, so both
-	// listeners must hold the same port. Only one of the two draws it from
-	// :0, and it is the TCP one on purpose: a port the kernel hands out for
-	// TCP is one TCP can bind, whereas a port drawn for UDP carries no such
-	// promise for TCP — on Windows it can sit inside a range excluded for
-	// the other protocol, where the bind fails with a permission error.
-	// Drawing on the constrained side turns the likely failure into the
-	// unlikely one; the redraw covers what is left.
+	// listeners must hold the same port, and only one of them can draw it
+	// from :0. Windows keeps per-protocol exclusion ranges, so a port one
+	// protocol is given is not necessarily one the other may bind; the bind
+	// fails there with a permission error rather than "in use".
+	//
+	// Which side draws is alternated rather than fixed. Ten consecutive
+	// TCP-first draws failed on a CI runner, which is what a fixed choice
+	// looks like when the allocator hands out a sequential run inside one
+	// exclusion block: every redraw lands in the same place. The two
+	// protocols allocate from different state, so letting each take a turn
+	// means a block that swallows one side's run does not swallow the
+	// other's.
+	const attempts = 64
 	var (
 		packet   net.PacketConn
 		listener net.Listener
 	)
 	for attempt := 1; ; attempt++ {
 		var err error
-		listener, err = net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("listen TCP: %v", err)
-		}
-		host, port, err := net.SplitHostPort(listener.Addr().String())
-		if err != nil {
+		if attempt%2 == 1 {
+			listener, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen TCP: %v", err)
+			}
+			packet, err = net.ListenPacket("udp", listener.Addr().String())
+			if err == nil {
+				break
+			}
 			_ = listener.Close()
-			t.Fatalf("split TCP address: %v", err)
+		} else {
+			packet, err = net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen UDP: %v", err)
+			}
+			listener, err = net.Listen("tcp", packet.LocalAddr().String())
+			if err == nil {
+				break
+			}
+			_ = packet.Close()
 		}
-		packet, err = net.ListenPacket("udp", net.JoinHostPort(host, port))
-		if err == nil {
-			break
-		}
-		_ = listener.Close()
-		if attempt == 10 {
-			t.Fatalf("listen UDP on TCP port after %d attempts: %v", attempt, err)
+		if attempt == attempts {
+			t.Fatalf("no loopback port both transports would accept in %d attempts: %v",
+				attempts, err)
 		}
 	}
 	udpServer := &dns.Server{Net: "udp", PacketConn: packet, Handler: udpMux}
