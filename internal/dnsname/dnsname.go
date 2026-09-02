@@ -110,6 +110,13 @@ func Suffixes(name string) iter.Seq[int] {
 // verdict is the rightmost pair that differed — right-to-left order without
 // offset arrays, so the frame stays flat instead of carrying two of them.
 func CanonicalCompare(a, b string) int {
+	// Identical spellings are equal names, and they are what a response
+	// carries: one owner, spelled one way, on every record and signature
+	// of an RRset. A byte comparison settles that case before the label
+	// walk, which admission otherwise paid several times per response.
+	if a == b {
+		return 0
+	}
 	ca, cb := canonicalLabelCount(a), canonicalLabelCount(b)
 	offA, offB := 0, 0
 	for i := ca; i > cb; i-- {
