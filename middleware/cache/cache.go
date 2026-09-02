@@ -1973,7 +1973,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// the cut through the shared meta and is clamped at the real client
 	// write.
 	if !w.internal {
-		clampTTLsToCut(res, cutUntil)
+		clampTTLsToEffective(res, cutUntil, mt)
 	}
 
 	return w.ResponseWriter.WriteMsg(res)
@@ -2046,23 +2046,47 @@ func (w *ResponseWriter) recursionWorkFailure(fallback *dns.Msg) *dns.Msg {
 	)
 }
 
-// clampTTLsToCut lowers every record TTL in res to the delegation lease's
-// remaining seconds. A zero cut leaves the response untouched; a past cut
-// clamps to zero — the answer is still delivered, but nothing downstream is
-// invited to keep it. OPT is hop metadata whose TTL field is not a TTL.
-func clampTTLsToCut(res *dns.Msg, cutUntil time.Time) {
-	if cutUntil.IsZero() {
+// clampTTLsToEffective lowers every record TTL in res to the shortest bound
+// the answer is subject to: the delegation lease, and the lifetime the records
+// and their signatures themselves permit. A past cut clamps to zero — the
+// answer is still delivered, but nothing downstream is invited to keep it.
+// OPT is hop metadata whose TTL field is not a TTL.
+func clampTTLsToEffective(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType) {
+	ceiling := time.Duration(-1)
+	if !cutUntil.IsZero() {
+		ceiling = max(time.Until(cutUntil), 0)
+	}
+
+	// Everything the entry will be bounded by, applied to the copy the client
+	// is about to receive. Storing the short lifetime and advertising the long
+	// one made two different promises about the same records: a signed answer
+	// held for a second went out with the hour its records claimed, and a
+	// denial the SOA granted one second went out with three hundred. The first
+	// client's own cache then outlived the ceiling by the whole difference.
+	//
+	// Only downward. The derivation applies the positive floor, which is about
+	// how long this cache re-asks, and is no business of the client's.
+	// The same view the entry is bounded by. Walking the whole response
+	// instead pulled in material the entry never keeps, a DNSKEY consulted to
+	// validate the answer among it, and capped the answer at the lifetime of
+	// its own validation input. Provenance is not lineage.
+	if derived := dnsutil.CalculateCacheTTL(filterCacheableAnswer(res), mt); derived > 0 {
+		if ceiling < 0 || derived < ceiling {
+			ceiling = derived
+		}
+	}
+	if ceiling < 0 {
 		return
 	}
-	lease := max(time.Until(cutUntil), 0)
-	leaseSecs := uint32(lease.Seconds())
+
+	secs := uint32(ceiling / time.Second) //nolint:gosec // G115 - bounded by MaxCacheTTL
 	clamp := func(rrs []dns.RR) {
 		for _, rr := range rrs {
 			if rr.Header().Rrtype == dns.TypeOPT {
 				continue
 			}
-			if rr.Header().Ttl > leaseSecs {
-				rr.Header().Ttl = leaseSecs
+			if rr.Header().Ttl > secs {
+				rr.Header().Ttl = secs
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"net/netip"
 	"testing"
 	"time"
@@ -8,6 +9,8 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/mock"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // newCeilingStore mirrors production: the configured minimum is the same five
@@ -370,12 +373,20 @@ func TestSignedAnswerKeepsItsCeilingThroughAdmission(t *testing.T) {
 				t.Errorf("SetFromResponse stored %v, want at most %v", entry.ttl, tc.ceiling)
 			}
 
-			// Scoped, the ECS door.
+			// Scoped, the ECS door. A scoped entry is filed and verified
+			// under the scope it was admitted with, so it has to be asked for
+			// the same way; looking it up unscoped simply misses, which is
+			// how this door quietly went untested.
 			store = newCeilingStore(t)
 			req, resp = signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
-			key := CacheKey{Question: req.Question[0], CD: false}.Hash()
-			store.SetFromResponseScoped(key, resp, netip.MustParsePrefix("203.0.113.0/24"), time.Time{}, 0)
-			if entry, ok = store.Lookup(req); ok && entry.ttl > tc.ceiling {
+			scope := netip.MustParsePrefix("203.0.113.0/24")
+			want := CacheKey{Question: req.Question[0], CD: false, Scope: scope}
+			store.SetFromResponseScoped(want.Hash(), resp, scope, time.Time{}, 0)
+			entry, ok = store.LookupByKeyVerified(want.Hash(), want)
+			if !ok {
+				t.Fatal("scoped admission stored nothing")
+			}
+			if entry.ttl > tc.ceiling {
 				t.Errorf("scoped admission stored %v, want at most %v", entry.ttl, tc.ceiling)
 			}
 
@@ -383,9 +394,13 @@ func TestSignedAnswerKeepsItsCeilingThroughAdmission(t *testing.T) {
 			c := New(&config.Config{CacheSize: 1024, Expire: 600})
 			defer c.Stop()
 			req, resp = signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
-			key = CacheKey{Question: req.Question[0], CD: false}.Hash()
+			key := CacheKey{Question: req.Question[0], CD: false}.Hash()
 			c.Set(key, resp)
-			if entry, ok = c.store.Lookup(req); ok && entry.ttl > tc.ceiling {
+			entry, ok = c.store.Lookup(req)
+			if !ok {
+				t.Fatal("Cache.Set stored nothing")
+			}
+			if entry.ttl > tc.ceiling {
 				t.Errorf("Cache.Set stored %v, want at most %v", entry.ttl, tc.ceiling)
 			}
 
@@ -402,7 +417,11 @@ func TestSignedAnswerKeepsItsCeilingThroughAdmission(t *testing.T) {
 			if !store.ReplaceIfCurrent(key, existing, refreshed, time.Time{}, 0) {
 				t.Fatal("the refresh was refused")
 			}
-			if entry, ok = store.Lookup(req); ok && entry.ttl > tc.ceiling {
+			entry, ok = store.Lookup(req)
+			if !ok {
+				t.Fatal("ReplaceIfCurrent left nothing behind")
+			}
+			if entry.ttl > tc.ceiling {
 				t.Errorf("ReplaceIfCurrent stored %v, want at most %v", entry.ttl, tc.ceiling)
 			}
 		})
@@ -492,4 +511,88 @@ func TestSignedReferralNeverOutlivesItsSignature(t *testing.T) {
 	if got, want := dnsutil.CalculateCacheTTL(plain, mt), dnsutil.MinCacheTTL; got != want {
 		t.Errorf("unsigned referral: got %v, want %v unchanged", got, want)
 	}
+}
+
+// TestFirstResponseCarriesTheEffectiveTTL is the client-facing half of the
+// bound. The entry was already stored with the short lifetime; the answer
+// handed to the client that caused the miss still advertised what the records
+// claimed, so that one client was invited to hold the data long after every
+// bound had run out, and every later client got a different number for the
+// same records.
+func TestFirstResponseCarriesTheEffectiveTTL(t *testing.T) {
+	answerTTL := func(msg *dns.Msg) uint32 {
+		t.Helper()
+		if len(msg.Answer) == 0 {
+			t.Fatal("no answer section")
+		}
+		return msg.Answer[0].Header().Ttl
+	}
+	authorityTTL := func(msg *dns.Msg) uint32 {
+		t.Helper()
+		if len(msg.Ns) == 0 {
+			t.Fatal("no authority section")
+		}
+		return msg.Ns[0].Header().Ttl
+	}
+
+	ask := func(t *testing.T, upstream *dns.Msg, qname string) *dns.Msg {
+		t.Helper()
+		c := New(&config.Config{CacheSize: 1024, Expire: 600})
+		t.Cleanup(c.Stop)
+
+		req := new(dns.Msg)
+		req.SetQuestion(qname, dns.TypeA)
+		w := mock.NewWriter("udp", "127.0.0.1:0")
+		ch := middleware.NewChain([]middleware.Handler{c, middleware.HandlerFunc(
+			func(_ context.Context, ch *middleware.Chain) {
+				out := upstream.Copy()
+				out.SetReply(ch.Request.Msg())
+				out.Rcode = upstream.Rcode
+				out.Answer, out.Ns = upstream.Answer, upstream.Ns
+				_ = ch.Writer.WriteMsg(out)
+				ch.Cancel()
+			})})
+		ch.Reset(w, req)
+		ch.Next(context.Background())
+		if !w.Written() {
+			t.Fatal("no response written")
+		}
+		return w.Msg()
+	}
+
+	t.Run("a signature about to expire", func(t *testing.T) {
+		const name = "signed.first.example."
+		up := new(dns.Msg)
+		up.Answer = []dns.RR{
+			&dns.A{
+				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+				A:   []byte{192, 0, 2, 1},
+			},
+			&dns.RRSIG{
+				Hdr:         dns.RR_Header{Name: name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+				TypeCovered: dns.TypeA,
+				OrigTtl:     3600,
+				Expiration:  uint32(time.Now().Add(2 * time.Second).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+			},
+		}
+		if got := answerTTL(ask(t, up, name)); got > 2 {
+			t.Errorf("first client got TTL %d for data its signature bounds at 2s", got)
+		}
+	})
+
+	t.Run("a denial the zone granted one second", func(t *testing.T) {
+		const name = "gone.first.example."
+		up := new(dns.Msg)
+		up.Rcode = dns.RcodeNameError
+		up.Ns = []dns.RR{&dns.SOA{
+			Hdr: dns.RR_Header{
+				Name: "first.example.", Rrtype: dns.TypeSOA,
+				Class: dns.ClassINET, Ttl: 300,
+			},
+			Ns: "ns.first.example.", Mbox: "hostmaster.first.example.", Minttl: 1,
+		}}
+		if got := authorityTTL(ask(t, up, name)); got > 1 {
+			t.Errorf("first client got TTL %d for a denial the SOA grants for 1s", got)
+		}
+	})
 }

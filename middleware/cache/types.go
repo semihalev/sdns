@@ -131,14 +131,20 @@ func (e *CacheEntry) remaining(now time.Time) time.Duration {
 
 // servedSeconds is the TTL written into an answer this cache is serving.
 //
-// A hit never carries a TTL of zero. Zero tells the client the answer must not
-// be reused, while this cache is doing exactly that, and for a denial RFC 2308
-// §5 forbids reusing one whose lifetime has reached zero at all. An entry with
-// 991ms left was reported alive and then served with a TTL of zero.
+// A hit never carries a TTL of zero: that tells the client not to reuse an
+// answer the cache is reusing, and RFC 2308 §5 rules it out for a denial
+// outright. The last fraction of a second therefore rounds up to one.
 //
-// The last fraction of a second rounds up, which is the only thing a
-// whole-second field leaves to do once the entry is still alive. It is bounded
-// by that fraction: the entry stops being served at its own expiry either way.
+// Retiring such an entry instead was tried and does not work. An entry admitted
+// for exactly one second, which is what a zone publishing a one-second SOA
+// MINIMUM asks for, is already under a second by the time anything looks it up,
+// so the rule that refuses to serve it also makes every one-second lifetime
+// uncacheable. Honouring the zone's one second and then never using it is not a
+// stricter reading, it is a pointless one.
+//
+// What is left is the granularity of the wire format: a client can hold the
+// last fraction of a second past the bound, because a DNS TTL cannot express
+// less. This cache stops serving at the bound exactly.
 func servedSeconds(remaining time.Duration) uint32 {
 	if remaining <= 0 {
 		return 0
