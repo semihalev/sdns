@@ -105,16 +105,12 @@ func ClassifyResponse(msg *dns.Msg, now time.Time) (ResponseType, *dns.OPT) {
 		// NXDOMAIN - domain doesn't exist
 		return TypeNXDomain, opt
 
-	case dns.RcodeNotImplemented:
-		// NOTIMP is a statement about the question, not about the upstream:
-		// this server declines the query type (ANY). It is not a resolution
-		// failure in RFC 9520's sense, and classifying it as one recorded it
-		// in the failure cache, so the next identical question was answered
-		// SERVFAIL from there instead of NOTIMP from the policy.
-		return TypeNotCacheable, opt
-
 	default:
-		// Other errors
+		// Other errors. NOTIMP stays here on purpose: from an upstream it
+		// says that server does not support the question, and the
+		// forwarder and failover move to the next server only on a failure
+		// classification. The local ANY policy answer never reaches this
+		// classifier, the cache passes ANY through unwrapped.
 		return TypeServerFailure, opt
 	}
 }

@@ -426,6 +426,18 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// capability set the decline fell back for, and a second ladder walk
 	// would double the decline diagnostics and the per-entry limiter
 	// charge for the same client question.
+	// ANY never touches the cache. The answer to it is the resolver
+	// handler's policy (NOTIMP), and nothing this cache holds for the name,
+	// an exact entry, a subtree cut, an aggressive denial, a zone in failure
+	// backoff, may stand in for it: a zone in backoff was answering ANY
+	// with SERVFAIL. Passed through with the writer unwrapped, so the policy
+	// answer is neither classified, stored, recorded as a failure, nor taken
+	// as the recovery that resets a zone's backoff.
+	if ch.Request != nil && ch.Request.Qtype() == dns.TypeANY {
+		ch.Next(ctx)
+		return
+	}
+
 	var spent *rate.Limiter
 	if ch.Request.Undecoded() && !ch.Replay() && c.serveWire(ctx, ch, &spent) {
 		return

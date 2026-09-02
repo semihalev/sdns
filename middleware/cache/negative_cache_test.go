@@ -47,21 +47,17 @@ func TestResolutionFailureRcodeClassification(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024})
 	defer c.Stop()
 
-	// NOTIMP is the one rcode that is neither stored nor a failure: it is
-	// this server's answer to a question type it declines (ANY), and a
-	// failure entry for it answered the next question SERVFAIL.
 	tests := []struct {
-		name         string
-		rcode        int
-		wantFailure  bool
-		wantPositive bool
+		name        string
+		rcode       int
+		wantFailure bool
 	}{
-		{"SUCCESS", dns.RcodeSuccess, false, true},
-		{"SERVFAIL", dns.RcodeServerFailure, true, false},
-		{"NXDOMAIN", dns.RcodeNameError, false, true},
-		{"REFUSED", dns.RcodeRefused, true, false},
-		{"FORMERR", dns.RcodeFormatError, true, false},
-		{"NOTIMP", dns.RcodeNotImplemented, false, false},
+		{"SUCCESS", dns.RcodeSuccess, false},
+		{"SERVFAIL", dns.RcodeServerFailure, true},
+		{"NXDOMAIN", dns.RcodeNameError, false},
+		{"REFUSED", dns.RcodeRefused, true},
+		{"FORMERR", dns.RcodeFormatError, true},
+		{"NOTIMP", dns.RcodeNotImplemented, true},
 	}
 
 	for _, tt := range tests {
@@ -102,8 +98,8 @@ func TestResolutionFailureRcodeClassification(t *testing.T) {
 			if !reflect.DeepEqual(tt.wantFailure, inFailure) {
 				t.Errorf("inFailure = %v, want %v", inFailure, tt.wantFailure)
 			}
-			if !reflect.DeepEqual(tt.wantPositive, inPositive) {
-				t.Errorf("inPositive = %v, want %v", inPositive, tt.wantPositive)
+			if !reflect.DeepEqual(!tt.wantFailure, inPositive) {
+				t.Errorf("inPositive = %v, want %v", inPositive, !tt.wantFailure)
 			}
 		})
 	}
