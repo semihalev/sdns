@@ -173,3 +173,141 @@ func TestNegativeTTLStillCapped(t *testing.T) {
 		t.Errorf("oversized SOA: got %v, want the %v cap", got, want)
 	}
 }
+
+// cnameTo builds an alias record for the chain fixtures below.
+func cnameTo(name, target string, ttl uint32) dns.RR {
+	return &dns.CNAME{
+		Hdr: dns.RR_Header{
+			Name:   name,
+			Rrtype: dns.TypeCNAME,
+			Class:  dns.ClassINET,
+			Ttl:    ttl,
+		},
+		Target: target,
+	}
+}
+
+func askedFor(msg *dns.Msg, qtype uint16) *dns.Msg {
+	msg.Question = []dns.Question{{
+		Name:   "alias.example.org.",
+		Qtype:  qtype,
+		Qclass: dns.ClassINET,
+	}}
+	return msg
+}
+
+// TestAliasChainEndingInNodataIsNegative covers the commonest denial shape on
+// the wire: the answer section carries a CNAME chain that never reaches the
+// type asked for, and the terminal SOA is what says how long that holds.
+// Reading the alias TTL instead treated the whole thing as an ordinary answer,
+// so the SOA's MINIMUM was never consulted and the positive floor applied.
+func TestAliasChainEndingInNodataIsNegative(t *testing.T) {
+	build := func(soaMin uint32) *dns.Msg {
+		msg := askedFor(new(dns.Msg), dns.TypeA)
+		msg.Answer = []dns.RR{cnameTo("alias.example.org.", "target.example.org.", 300)}
+		msg.Ns = denial(dns.RcodeSuccess, 300, soaMin).Ns
+		return msg
+	}
+
+	for _, seconds := range []uint32{0, 1, 4, 5} {
+		msg := build(seconds)
+
+		mt, _ := ClassifyResponse(msg, time.Now())
+		if mt != TypeNoRecords {
+			t.Fatalf("SOA MINIMUM %ds: classified %v, want TypeNoRecords", seconds, mt)
+		}
+
+		want := time.Duration(seconds) * time.Second
+		if got := CalculateCacheTTL(msg, mt); got != want {
+			t.Errorf("SOA MINIMUM %ds: got %v, want %v", seconds, got, want)
+		}
+	}
+
+	// A chain that does reach the type asked for is an ordinary answer, and
+	// keeps the floor. Without this the fix would swallow every alias.
+	resolved := askedFor(new(dns.Msg), dns.TypeA)
+	resolved.Answer = []dns.RR{
+		cnameTo("alias.example.org.", "target.example.org.", 300),
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "target.example.org.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1},
+			A:   []byte{192, 0, 2, 1},
+		},
+	}
+	if mt, _ := ClassifyResponse(resolved, time.Now()); mt != TypeSuccess {
+		t.Fatalf("a resolved alias classified %v, want TypeSuccess", mt)
+	}
+
+	// An explicit CNAME question is answered by the CNAME itself.
+	asked := askedFor(new(dns.Msg), dns.TypeCNAME)
+	asked.Answer = []dns.RR{cnameTo("alias.example.org.", "target.example.org.", 300)}
+	asked.Ns = denial(dns.RcodeSuccess, 300, 1).Ns
+	if mt, _ := ClassifyResponse(asked, time.Now()); mt != TypeSuccess {
+		t.Fatalf("an explicit CNAME question classified %v, want TypeSuccess", mt)
+	}
+}
+
+// TestDenialWithoutSOAIsNotCacheableInAnyShape is the rest of RFC 2308 §5. The
+// check has to look for the SOA itself: a denial carrying an alias chain and
+// no SOA is full of records and still says nothing about how long it holds.
+func TestDenialWithoutSOAIsNotCacheableInAnyShape(t *testing.T) {
+	withAlias := askedFor(new(dns.Msg), dns.TypeA)
+	withAlias.Rcode = dns.RcodeNameError
+	withAlias.Answer = []dns.RR{cnameTo("alias.example.org.", "target.example.org.", 60)}
+	if got := CalculateCacheTTL(withAlias, TypeNXDomain); got != 0 {
+		t.Errorf("NXDOMAIN carrying an alias and no SOA: got %v, want 0", got)
+	}
+
+	// Nothing at all is not a denial anyone can cache either, and it must not
+	// arrive at the positive floor by way of TypeSuccess.
+	bare := askedFor(new(dns.Msg), dns.TypeA)
+	if mt, _ := ClassifyResponse(bare, time.Now()); mt != TypeNotCacheable {
+		t.Errorf("empty NOERROR with no SOA classified %v, want TypeNotCacheable", mt)
+	}
+}
+
+// TestSignatureBoundsAreHard is RFC 4035 §5.3.3: the served lifetime may not
+// exceed the smallest of the RRSIG's header TTL, its Original TTL, and the
+// time left before it expires. Neither the record TTLs nor the cache's own
+// floor may lift it past that.
+func TestSignatureBoundsAreHard(t *testing.T) {
+	now := time.Now()
+	sig := func(hdrTTL, origTTL uint32, expiresIn time.Duration) dns.RR {
+		return &dns.RRSIG{
+			Hdr:        dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: hdrTTL},
+			OrigTtl:    origTTL,
+			Expiration: uint32(now.Add(expiresIn).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+		}
+	}
+
+	// Original TTL is a bound in its own right. Reading only the header TTL
+	// let a denial whose signature authorised one second live for an hour.
+	msg := denial(dns.RcodeNameError, 86400, 86400, sig(86400, 1, time.Hour))
+	if got, want := CalculateCacheTTL(msg, TypeNXDomain), time.Second; got != want {
+		t.Errorf("RRSIG OrigTtl 1s: got %v, want %v", got, want)
+	}
+
+	// The positive floor may not lift a signature bound. A signature with two
+	// seconds left bounds the answer at two seconds, floor or no floor.
+	positive := askedFor(new(dns.Msg), dns.TypeA)
+	positive.Answer = []dns.RR{
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "alias.example.org.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+			A:   []byte{192, 0, 2, 1},
+		},
+		sig(3600, 3600, 2*time.Second),
+	}
+	if got := CalculateCacheTTL(positive, TypeSuccess); got > 2*time.Second {
+		t.Errorf("positive answer with a 2s signature: got %v, want at most 2s", got)
+	}
+
+	// Unsigned data still takes the floor, which is the whole point of keeping
+	// the two bounds apart.
+	unsigned := askedFor(new(dns.Msg), dns.TypeA)
+	unsigned.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{Name: "alias.example.org.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1},
+		A:   []byte{192, 0, 2, 1},
+	}}
+	if got, want := CalculateCacheTTL(unsigned, TypeSuccess), MinCacheTTL; got != want {
+		t.Errorf("unsigned one-second answer: got %v, want the %v floor", got, want)
+	}
+}

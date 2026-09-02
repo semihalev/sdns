@@ -74,6 +74,14 @@ func ClassifyResponse(msg *dns.Msg, now time.Time) (ResponseType, *dns.OPT) {
 			if hasExpiredSignatures(msg, now) {
 				return TypeExpiredSignature, opt
 			}
+			// An answer section that never reaches the type asked for is a
+			// NODATA answer wearing a CNAME chain, and the terminal denial is
+			// what decides its lifetime. Classifying it as a success read the
+			// alias TTL instead of the SOA the last hop returned, which is the
+			// commonest denial shape on the wire.
+			if !answerHasQType(msg) && hasSOA(msg) {
+				return TypeNoRecords, opt
+			}
 			return TypeSuccess, opt
 		}
 
@@ -87,12 +95,11 @@ func ClassifyResponse(msg *dns.Msg, now time.Time) (ResponseType, *dns.OPT) {
 			return TypeNoRecords, opt
 		}
 
-		// Certain queries without answers shouldn't be cached
-		if !shouldCache(msg) {
-			return TypeNotCacheable, opt
-		}
-
-		return TypeSuccess, opt
+		// Nothing at all: no answer, no delegation, no SOA. There is no
+		// lifetime to derive and nothing to serve, and RFC 2308 §5 wants a
+		// negative answer without an SOA left uncached rather than held on a
+		// guess.
+		return TypeNotCacheable, opt
 
 	case dns.RcodeNameError:
 		// NXDOMAIN - domain doesn't exist
@@ -166,12 +173,18 @@ func hasExpiredSignatures(msg *dns.Msg, now time.Time) bool {
 	return false
 }
 
-// shouldCache determines if a query type should be cached when empty.
-func shouldCache(msg *dns.Msg) bool {
+// answerHasQType reports whether the answer section carries a record of the
+// type that was asked for. A chain of CNAMEs and their signatures does not:
+// those are the road to the answer, not the answer.
+func answerHasQType(msg *dns.Msg) bool {
 	if len(msg.Question) == 0 {
 		return false
 	}
-
-	// Don't cache empty DNSKEY responses
-	return msg.Question[0].Qtype != dns.TypeDNSKEY
+	qtype := msg.Question[0].Qtype
+	for _, rr := range msg.Answer {
+		if rr.Header().Rrtype == qtype {
+			return true
+		}
+	}
+	return false
 }

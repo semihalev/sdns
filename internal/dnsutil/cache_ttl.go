@@ -35,74 +35,79 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 		return MinCacheTTL
 	}
 
+	// A denial carries its lifetime in the SOA of the authority section, and
+	// RFC 2308 §5 says one arriving without that record should not be cached
+	// at all: there is nothing to derive a lifetime from, and holding it on a
+	// guess is what lets a pair of misconfigured servers loop the denial
+	// between them forever. Checked on the SOA itself rather than on the
+	// message being empty, because an NXDOMAIN that carries an alias chain and
+	// no SOA has records aplenty and still says nothing about how long it
+	// holds.
+	if isNegative && !hasSOA(msg) {
+		return 0
+	}
+
 	// Handle empty responses
 	if !hasRecords(msg) {
-		// A denial carries its lifetime in the SOA of the authority section.
-		// With no records at all there is nothing to derive one from, and RFC
-		// 2308 §5 says such a response should not be cached: without an SOA
-		// there is no way to stop a pair of misconfigured servers looping the
-		// denial between them forever.
-		if isNegative {
-			return 0
-		}
 		return MinCacheTTL
 	}
 
-	// Find minimum TTL across all sections
-	minTTL := MaxCacheTTL
+	// Two bounds, tracked apart. recordTTL is what the records themselves
+	// advertise, and for a denial the SOA's MINIMUM alongside it. hardTTL is
+	// what RFC 4035 §5.3.3 fixes for signed data: the smallest of every
+	// signature's header TTL, its Original TTL field, and the time left before
+	// it expires.
+	//
+	// They are kept apart because only one of them is negotiable. The floor
+	// applied at the end is this resolver's freshness preference and may lift a
+	// short recordTTL, but it must never lift anything past hardTTL. An entry
+	// served after its signature has lapsed is bogus to every validator
+	// downstream, and no local policy is entitled to decide otherwise.
+	recordTTL := MaxCacheTTL
+	hardTTL := MaxCacheTTL
 	now := time.Now()
 
-	// Check Answer section
-	for _, rr := range msg.Answer {
-		if ttl := getTTL(rr); ttl < minTTL {
-			minTTL = ttl
+	// negativeSOA folds in the RFC 2308 cap, min(SOA header TTL, SOA.Minttl):
+	// a denial with SOA header TTL 86400 and Minttl 300 must not be cached for
+	// a day. It applies to the authority section of a negative answer only.
+	bound := func(rr dns.RR, negativeSOA bool) {
+		if ttl := getTTL(rr); ttl < recordTTL {
+			recordTTL = ttl
 		}
-		// Check RRSIG expiration
-		if sig, ok := rr.(*dns.RRSIG); ok {
-			if ttl := getRRSIGTTL(sig, now); ttl < minTTL {
-				minTTL = ttl
-			}
-		}
-	}
-
-	// Check Authority section. For negative responses, RFC 2308
-	// caps the cache TTL at min(SOA header TTL, SOA.Minttl) — a
-	// response with SOA header TTL 86400 and Minttl 300 must not
-	// be cached for a day.
-	for _, rr := range msg.Ns {
-		if ttl := getTTL(rr); ttl < minTTL {
-			minTTL = ttl
-		}
-		if isNegative {
+		if negativeSOA {
 			if soa, ok := rr.(*dns.SOA); ok {
-				if ttl := time.Duration(soa.Minttl) * time.Second; ttl < minTTL {
-					minTTL = ttl
+				if ttl := time.Duration(soa.Minttl) * time.Second; ttl < recordTTL {
+					recordTTL = ttl
 				}
 			}
 		}
-		// Check RRSIG expiration
 		if sig, ok := rr.(*dns.RRSIG); ok {
-			if ttl := getRRSIGTTL(sig, now); ttl < minTTL {
-				minTTL = ttl
+			if ttl := getRRSIGTTL(sig, now); ttl < hardTTL {
+				hardTTL = ttl
 			}
 		}
 	}
 
-	// Check Additional section (excluding OPT)
+	for _, rr := range msg.Answer {
+		bound(rr, false)
+	}
+	for _, rr := range msg.Ns {
+		bound(rr, isNegative)
+	}
 	for _, rr := range msg.Extra {
 		// Skip OPT pseudo-records
 		if rr.Header().Rrtype == dns.TypeOPT {
 			continue
 		}
-		if ttl := getTTL(rr); ttl < minTTL {
-			minTTL = ttl
-		}
-		// Check RRSIG expiration
-		if sig, ok := rr.(*dns.RRSIG); ok {
-			if ttl := getRRSIGTTL(sig, now); ttl < minTTL {
-				minTTL = ttl
-			}
-		}
+		bound(rr, false)
+	}
+
+	minTTL := recordTTL
+	if hardTTL < minTTL {
+		minTTL = hardTTL
+	}
+	if minTTL < 0 {
+		minTTL = 0
 	}
 
 	// Apply bounds
@@ -115,19 +120,25 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	// publishes a one-second negative TTL means one second, and holding it for
 	// five is the resolver overriding the only party entitled to decide. Zero
 	// is a real answer here, and the caller declines to admit the entry.
-	//
-	// Positive answers keep the floor. Nothing derives it from a zone's own
-	// statement about its data, so nothing is being overridden: it is the
-	// resolver's own guard against re-resolving a one-second record on every
-	// query, and RFC 1035 §3.2.1 leaves that latitude.
 	if isNegative {
-		if minTTL < 0 {
-			return 0
-		}
 		return minTTL
 	}
 
+	// Positive answers take a floor, and it is a deliberate deviation rather
+	// than a right: RFC 1035 §3.2.1 makes a record's TTL the time after which
+	// the source should be consulted again, so holding a one-second record for
+	// five seconds is this resolver choosing not to re-resolve on every query.
+	// It is a defensible local policy about local data.
+	//
+	// It is not a licence to outlive a signature. hardTTL is fixed by the
+	// protocol, and the floor stops there: past that bound the records are
+	// bogus to anything that validates them, which is not a freshness question
+	// at all. Unsigned data leaves hardTTL at the maximum, so the floor
+	// applies to it exactly as before.
 	if minTTL < MinCacheTTL {
+		if hardTTL < MinCacheTTL {
+			return minTTL
+		}
 		return MinCacheTTL
 	}
 
@@ -155,28 +166,30 @@ func getTTL(rr dns.RR) time.Duration {
 	return time.Duration(rr.Header().Ttl) * time.Second
 }
 
-// getRRSIGTTL calculates the effective TTL for a RRSIG record based on its expiration time.
-// The cache TTL should not exceed the time until the signature expires.
+// getRRSIGTTL returns the hard ceiling one signature places on the data it
+// covers. RFC 4035 §5.3.3 names three bounds and the answer is the smallest:
+// the RRSIG's own header TTL, its Original TTL field, and the time left before
+// it expires. The Original TTL is not decoration — it is what the signature
+// was computed over, so a signer that publishes a large header TTL and a small
+// original one has authorised the small one, and reading only the header let a
+// denial whose signature said one second live for an hour.
+//
+// A lapsed signature bounds the data at zero. Returning the cache floor here
+// made it a floor wearing a bound's clothes, granting five more seconds of
+// life to material whose proof had already run out.
 func getRRSIGTTL(sig *dns.RRSIG, now time.Time) time.Duration {
-	// Get the regular TTL from the record
-	recordTTL := time.Duration(sig.Header().Ttl) * time.Second
+	ttl := time.Duration(sig.Header().Ttl) * time.Second
 
-	// Calculate time until expiration
-	expireTime := time.Unix(int64(sig.Expiration), 0)
-	timeUntilExpire := expireTime.Sub(now)
+	if orig := time.Duration(sig.OrigTtl) * time.Second; orig < ttl {
+		ttl = orig
+	}
 
-	// An expired signature bounds the answer at zero. Returning the floor here
-	// made it a floor wearing a bound's clothes: on the denial path, which
-	// takes no floor of its own, it was the one thing still granting five more
-	// seconds of life to data whose proof had already lapsed. Positive answers
-	// land on their own floor immediately afterwards, so they see no change.
-	if timeUntilExpire <= 0 {
+	if untilExpiry := time.Unix(int64(sig.Expiration), 0).Sub(now); untilExpiry < ttl {
+		ttl = untilExpiry
+	}
+
+	if ttl < 0 {
 		return 0
 	}
-
-	// Return the minimum of record TTL and time until expiration
-	if timeUntilExpire < recordTTL {
-		return timeUntilExpire
-	}
-	return recordTTL
+	return ttl
 }

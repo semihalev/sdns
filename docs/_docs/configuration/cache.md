@@ -69,16 +69,30 @@ cache the denial, so sdns applies no minimum on top of it: a zone that
 publishes a one-second negative TTL gets one second, and a denial carrying no
 lifetime at all is not cached.
 
-Ordinary answers do take a five-second floor. The difference is who is being
-overruled. A negative TTL is the zone's own statement about how long its denial
-holds, and raising it substitutes the resolver's judgement for the only party
-entitled to make that call. The floor on a positive answer overrules nobody —
-it is the resolver deciding how often to re-ask for a short-lived record, which
-is its own business.
+A denial does not have to arrive as an empty answer to be one. The common shape
+on the wire is a CNAME chain that never reaches the type you asked for, and the
+SOA at the end of it is what says how long that holds — not the alias TTL in
+front of it.
 
-A denial arriving without an SOA is not cached either. There is nothing to
+A denial arriving without an SOA is not cached at all. There is nothing to
 derive a lifetime from, and RFC 2308 is explicit that caching it anyway is what
 lets two misconfigured servers pass the denial back and forth indefinitely.
+
+Ordinary answers do take a five-second floor, and it is worth being straight
+about what that is: RFC 1035 §3.2.1 makes a record's TTL the point at which the
+source should be consulted again, so holding a one-second record for five is a
+deliberate deviation. It is a defensible one, about this resolver's own data
+and nobody else's namespace, and it is the difference between a hot short-TTL
+name being re-resolved on every single query or once every five seconds. A
+denial is not the same case: there the TTL is a zone's statement about a name
+it is authoritative for.
+
+The floor is a preference, not a right, and it stops at anything the protocol
+fixes. On signed data RFC 4035 §5.3.3 caps the lifetime at the smallest of the
+RRSIG's header TTL, its Original TTL and the time left before it expires, and
+the floor never lifts an entry past that. An answer served after its signature
+has lapsed is bogus to every validator downstream, which is not a freshness
+question at all.
 
 The two mechanisms that *reuse* a denial for names it was never asked about are
 bounded the same way, and were already. Both are on by default and both are
