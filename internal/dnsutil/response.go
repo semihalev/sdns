@@ -106,7 +106,11 @@ func ClassifyResponse(msg *dns.Msg, now time.Time) (ResponseType, *dns.OPT) {
 		return TypeNXDomain, opt
 
 	default:
-		// Other errors
+		// Other errors. NOTIMP stays here on purpose: from an upstream it
+		// says that server does not support the question, and the
+		// forwarder and failover move to the next server only on a failure
+		// classification. The local ANY policy answer never reaches this
+		// classifier, the cache passes ANY through unwrapped.
 		return TypeServerFailure, opt
 	}
 }
@@ -336,6 +340,12 @@ func answerHasQType(msg *dns.Msg) bool {
 		return false
 	}
 	qtype := msg.Question[0].Qtype
+	// ANY is satisfied by whatever the answer holds; no record carries type
+	// 255 itself. Looking for the literal type turned a full ANY answer that
+	// happened to carry a SOA into a NODATA denial.
+	if qtype == dns.TypeANY {
+		return len(msg.Answer) > 0
+	}
 	for _, rr := range msg.Answer {
 		if rr.Header().Rrtype == qtype {
 			return true
