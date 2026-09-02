@@ -75,3 +75,45 @@ func TestClearDNSSECKeepsOnlyTheTypeAskedFor(t *testing.T) {
 		})
 	}
 }
+
+// TestClearDNSSECInPlaceMatchesAndAllocatesNothing pins the in-place
+// variant to the same rule as ClearDNSSEC, compacting the message's own
+// sections without allocating — it runs on every DO=0 aggressive hit.
+func TestClearDNSSECInPlaceMatchesAndAllocatesNothing(t *testing.T) {
+	build := func(qtype uint16) *dns.Msg {
+		m := new(dns.Msg)
+		m.SetQuestion("m.example.", qtype)
+		m.Ns = []dns.RR{
+			&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 300},
+			&dns.RRSIG{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 300}, TypeCovered: dns.TypeSOA, SignerName: "example."},
+			&dns.NSEC{Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300}, NextDomain: "z.example."},
+			&dns.RRSIG{Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 300}, TypeCovered: dns.TypeNSEC, SignerName: "example."},
+		}
+		return m
+	}
+	for _, qtype := range []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC} {
+		want := ClearDNSSEC(build(qtype))
+		got := build(qtype)
+		backing := &got.Ns[0]
+		ClearDNSSECInPlace(got)
+		if len(got.Ns) != len(want.Ns) {
+			t.Fatalf("qtype %d: in place kept %d records, ClearDNSSEC kept %d", qtype, len(got.Ns), len(want.Ns))
+		}
+		for i := range got.Ns {
+			if got.Ns[i].String() != want.Ns[i].String() {
+				t.Fatalf("qtype %d: record %d differs: %v vs %v", qtype, i, got.Ns[i], want.Ns[i])
+			}
+		}
+		if len(got.Ns) > 0 && &got.Ns[0] != backing {
+			t.Fatalf("qtype %d: in place did not compact the message's own slice", qtype)
+		}
+	}
+
+	m := build(dns.TypeA)
+	if allocs := testing.AllocsPerRun(100, func() {
+		m.Ns = m.Ns[:4]
+		ClearDNSSECInPlace(m)
+	}); allocs != 0 {
+		t.Errorf("in-place filter allocated %v times, want none", allocs)
+	}
+}

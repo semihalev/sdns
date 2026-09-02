@@ -216,10 +216,18 @@ func (c *Cache) serveCutHitFromWire(
 		return false
 	}
 
-	// The DO test mirrors serveWireInto's, RRSIG exception included, so
-	// this precheck never rejects a template the composer would pick.
+	// The DO test mirrors serveWireInto's, the explicit-question decline
+	// included, so this precheck never leases a body the composer would
+	// refuse: a DO=0 question for RRSIG, NSEC or NSEC3 is the Msg path's
+	// by design, and leasing for it only to abort counted a deliberate
+	// fallback as a build failure.
 	tmpl := cut.wireFull
-	if !capability.DO && ch.Request.Qtype() != dns.TypeRRSIG {
+	if !capability.DO {
+		switch ch.Request.Qtype() {
+		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
+			wireSkipDNSSEC.Inc()
+			return false
+		}
 		tmpl = cut.wireStripped
 	}
 	if tmpl == nil {

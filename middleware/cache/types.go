@@ -709,14 +709,19 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 	over := func(sig *dns.RRSIG, name string, class, rrtype uint16) bool {
 		return sig.TypeCovered == rrtype && sig.Hdr.Class == class && strings.EqualFold(sig.Hdr.Name, name)
 	}
-	// condemned: a signed RRset the entry cannot carry honestly. Either
-	// nothing left signs it, or its signatures name more than one signer.
+	// condemned: a signed RRset the entry cannot carry honestly. Nothing
+	// left signs it; or its signatures name more than one signer; or its
+	// own records were received with less TTL than the entry's lifetime.
+	//
 	// The second is the delegation boundary, where the parent's NSEC over
 	// the child's name and the child's apex NSEC share owner, class and
 	// type (RFC 4035 §5.3.2): on the wire that is one RRset, its records
 	// cannot be told apart by signer, and a live child signature was
-	// carrying the parent's lapsed records with it. Such a tuple goes
-	// whole, signatures included.
+	// carrying the parent's lapsed records with it. The third is §5.3.3's
+	// other ceiling, the RRset's TTL as received: an unsigned answer takes
+	// the positive floor, and a signed additional address received with a
+	// one-second TTL was lifted to it and served at five. Such a tuple
+	// goes whole, signatures included.
 	condemned := func(name string, class, rrtype uint16) bool {
 		signed, kept := false, false
 		var signer string
@@ -730,7 +735,20 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 			signed, signer = true, j.sig.SignerName
 			kept = kept || j.kept
 		}
-		return signed && !kept
+		if !signed {
+			return false
+		}
+		if !kept {
+			return true
+		}
+		for _, rr := range records {
+			h := rr.Header()
+			if h.Rrtype == rrtype && h.Class == class && strings.EqualFold(h.Name, name) &&
+				time.Duration(h.Ttl)*time.Second < lifetime {
+				return true
+			}
+		}
+		return false
 	}
 
 	extra := make([]dns.RR, 0, len(records))

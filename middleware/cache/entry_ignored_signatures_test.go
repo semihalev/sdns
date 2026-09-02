@@ -498,8 +498,10 @@ func TestAdditionalSignatureIsJudgedOnTheEntrysClock(t *testing.T) {
 		// the additional signature ends at the same instant. Through the
 		// store, which measures the lifetime and anchors the entry at one
 		// now — a second reading in between made this signature fall short
-		// by microseconds every time.
-		expires := now.Add(30 * time.Minute)
+		// by microseconds every time. The window ends under the test
+		// store's one-minute cap, so the two signatures really do set the
+		// same boundary and nothing else clamps it.
+		expires := now.Add(30 * time.Second)
 		s := newTestStore(t)
 		req := new(dns.Msg)
 		req.SetQuestion(name, dns.TypeMX)
@@ -585,5 +587,73 @@ func TestAdditionalMixedSignersGoWhole(t *testing.T) {
 	}
 	if tags := sigTags(served.Extra); len(tags) != 1 || tags[0] != 3 {
 		t.Errorf("additional signatures served: %v, want only the single-signer 3", tags)
+	}
+}
+
+// TestAdditionalRRsetKeepsItsReceivedTTL pins RFC 4035 §5.3.3's other
+// ceiling on the additional section: a signed RRset's lifetime may not
+// exceed the TTL it was received with. An unsigned answer takes the
+// positive floor, so an additional address received with a one-second TTL
+// and a long-lived signature was lifted to the floor, kept, and served at
+// it — with its signature. The tuple goes whole; one received with enough
+// TTL stays.
+func TestAdditionalRRsetKeepsItsReceivedTTL(t *testing.T) {
+	now := time.Now()
+	const name = "mx.example."
+	rrsig := func(owner string) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+			TypeCovered: dns.TypeA, Algorithm: 8, Labels: 2, OrigTtl: 3600, KeyTag: 9,
+			SignerName: "example.", Signature: "MTIzNDU2Nzg5MGFiY2RlZg==",
+			Inception:  uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			Expiration: uint32(now.Add(2 * time.Hour).Unix()),  //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		}
+	}
+	addr := func(owner string, ttl uint32) dns.RR {
+		return &dns.A{Hdr: dns.RR_Header{Name: owner, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}, A: []byte{192, 0, 2, 1}}
+	}
+
+	for _, tc := range []struct {
+		name string
+		ttl  uint32
+		kept bool
+	}{
+		{"received with one second, lifted to the floor: dropped with its signature", 1, false},
+		{"received with an hour: kept with its signature", 3600, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			req := new(dns.Msg)
+			req.SetQuestion(name, dns.TypeMX)
+			req.SetEdns0(1232, true)
+			resp := new(dns.Msg)
+			resp.SetReply(req)
+			// Unsigned answer: the entry takes the positive floor.
+			resp.Answer = []dns.RR{
+				&dns.MX{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 3600}, Preference: 10, Mx: "target.example."},
+			}
+			resp.Extra = []dns.RR{addr("target.example.", tc.ttl), rrsig("target.example.")}
+			s.SetFromResponse(resp, false, time.Time{})
+
+			entry, ok := s.LookupByKey(CacheKey{Question: req.Question[0], CD: false}.Hash())
+			if !ok {
+				t.Fatal("the answer was not cached")
+			}
+			served := entry.ToMsg(req)
+			if served == nil {
+				t.Fatal("entry did not serve")
+			}
+			if got := hasA(served.Extra, "target.example."); got != tc.kept {
+				t.Errorf("address carried = %v, want %v", got, tc.kept)
+			}
+			if got := len(sigTags(served.Extra)) == 1; got != tc.kept {
+				t.Errorf("signature carried = %v, want %v", got, tc.kept)
+			}
+			for _, rr := range served.Extra {
+				if h := rr.Header(); h.Ttl > tc.ttl {
+					t.Errorf("%s served at TTL %d, received with %d", h.Name, h.Ttl, tc.ttl)
+				}
+			}
+		})
 	}
 }

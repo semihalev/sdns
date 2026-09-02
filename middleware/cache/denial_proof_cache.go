@@ -1656,9 +1656,10 @@ func denialProofResponse(
 	// depending on which rung of the negative ladder holds the state: the
 	// one authenticating type the question asked for by name stays, every
 	// other goes (RFC 4035 §3.2.1). The question is the client's, set by
-	// SetReply above, which is what the exception reads.
+	// SetReply above, which is what the exception reads. In place: the
+	// authority section was built just above and is this response's own.
 	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
-		dnsutil.ClearDNSSEC(response)
+		dnsutil.ClearDNSSECInPlace(response)
 	}
 	return response, expires
 }
