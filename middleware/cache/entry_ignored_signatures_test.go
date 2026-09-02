@@ -657,3 +657,47 @@ func TestAdditionalRRsetKeepsItsReceivedTTL(t *testing.T) {
 		})
 	}
 }
+
+// TestAdditionalRRsetIsMatchedAsADNSName pins name matching in the
+// additional section to DNS-name equality: an owner spelled with an escaped
+// octet packs to the same wire name as its plain spelling, and a fold of the
+// presentation text did not see that, so a one-second address under one
+// spelling slipped past the received-TTL check made against its signature
+// under the other and was served past its TTL.
+func TestAdditionalRRsetIsMatchedAsADNSName(t *testing.T) {
+	now := time.Now()
+	const name = "mx.example."
+	s := newTestStore(t)
+	req := new(dns.Msg)
+	req.SetQuestion(name, dns.TypeMX)
+	req.SetEdns0(1232, true)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	// Unsigned answer: the entry takes the positive floor.
+	resp.Answer = []dns.RR{
+		&dns.MX{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 3600}, Preference: 10, Mx: "target.example."},
+	}
+	resp.Extra = []dns.RR{
+		&dns.A{Hdr: dns.RR_Header{Name: `t\097rget.example.`, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1}, A: []byte{192, 0, 2, 1}},
+		&dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: "target.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+			TypeCovered: dns.TypeA, Algorithm: 8, Labels: 2, OrigTtl: 3600, KeyTag: 9,
+			SignerName: "example.", Signature: "MTIzNDU2Nzg5MGFiY2RlZg==",
+			Inception:  uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			Expiration: uint32(now.Add(2 * time.Hour).Unix()),  //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		},
+	}
+	s.SetFromResponse(resp, false, time.Time{})
+
+	entry, ok := s.LookupByKey(CacheKey{Question: req.Question[0], CD: false}.Hash())
+	if !ok {
+		t.Fatal("the answer was not cached")
+	}
+	served := entry.ToMsg(req)
+	if served == nil {
+		t.Fatal("entry did not serve")
+	}
+	if len(served.Extra) != 0 {
+		t.Fatalf("a one-second signed address under an escaped spelling was carried: %v", served.Extra)
+	}
+}

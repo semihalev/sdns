@@ -1,10 +1,14 @@
 package cache
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/mock"
+	"github.com/semihalev/sdns/middleware"
 )
 
 // TestSynthesizedDenialKeepsOnlyTheTypeAskedFor pins the aggressive-cache
@@ -123,4 +127,95 @@ func TestNXDomainCutWireDeclinesExplicitDNSSECQuestionsAtDOZero(t *testing.T) {
 			}
 		})
 	}
+}
+
+// leaseSpy is a udp transport that counts the wire leases taken from it:
+// the chain writer's BeginWire leases from the transport when it offers
+// storage, so a lease here is a BeginWire the precheck let through.
+type leaseSpy struct {
+	*mock.Writer
+	leases int
+}
+
+func (s *leaseSpy) LeaseWire(need int) []byte {
+	s.leases++
+	return make([]byte, 0, need)
+}
+
+// TestCutPrecheckDeclinesExplicitDNSSECBeforeLeasing pins the cut's wire
+// precheck through the wrapper the live chain calls: a DO=0 question for
+// RRSIG, NSEC or NSEC3 is the Msg path's by design, so it is declined
+// before any lease is taken — counted as a DNSSEC-shape skip, never as a
+// build failure — while an ordinary DO=0 question leases once and serves.
+func TestCutPrecheckDeclinesExplicitDNSSECBeforeLeasing(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024, Expire: 600})
+	defer c.Stop()
+
+	sig := func(owner string, covered uint16) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 300},
+			TypeCovered: covered, Algorithm: dns.RSASHA256, Labels: 2, OrigTtl: 300, KeyTag: 4242,
+			SignerName: "zone.test.", Signature: "Tm90QVJlYWxTaWduYXR1cmVCdXRWYWxpZEJhc2U2NA==",
+			Expiration: uint32(time.Now().Add(24 * time.Hour).Unix()), //nolint:gosec // test fixture
+			Inception:  uint32(time.Now().Add(-time.Hour).Unix()),     //nolint:gosec // test fixture
+		}
+	}
+	proof := new(dns.Msg)
+	proof.SetQuestion("gone.zone.test.", dns.TypeA)
+	proof.Rcode = dns.RcodeNameError
+	proof.Ns = []dns.RR{
+		&dns.SOA{
+			Hdr: dns.RR_Header{Name: "zone.test.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 300},
+			Ns:  "ns.zone.test.", Mbox: "hostmaster.zone.test.", Serial: 1, Refresh: 3600, Retry: 600, Expire: 86400, Minttl: 300,
+		},
+		sig("zone.test.", dns.TypeSOA),
+		&dns.NSEC{
+			Hdr:        dns.RR_Header{Name: "glib.zone.test.", Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 300},
+			NextDomain: "help.zone.test.", TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
+		},
+		sig("glib.zone.test.", dns.TypeNSEC),
+	}
+	if !c.store.RecordNXDomainCut(proof, "gone.zone.test.", "zone.test.", time.Time{}) {
+		t.Fatal("cut refused")
+	}
+
+	serve := func(t *testing.T, qtype uint16) (served bool, leases int, dnssecSkips, buildSkips int64) {
+		t.Helper()
+		req, _ := wireTestRequest(t, "sub.gone.zone.test.", qtype, false)
+		cut, ok := c.store.LookupNXDomainCutWire(req.WireName(), dns.ClassINET)
+		if !ok {
+			t.Fatal("wire lookup missed the covering cut")
+		}
+		spy := &leaseSpy{Writer: mock.NewWriter("udp", "198.51.100.77:40000")}
+		ch := middleware.NewChain(nil)
+		ch.ResetWire(spy, req)
+		ch.AllowDirectPack()
+		d0, b0 := wireSkipDNSSEC.Value(), wireSkipBuild.Value()
+		served = c.serveCutHitFromWire(context.Background(), ch, cut)
+		return served, spy.leases, wireSkipDNSSEC.Value() - d0, wireSkipBuild.Value() - b0
+	}
+
+	for _, qtype := range []uint16{dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3} {
+		t.Run(dns.TypeToString[qtype]+" at DO=0 is declined before the lease", func(t *testing.T) {
+			served, leases, dnssecSkips, buildSkips := serve(t, qtype)
+			if served {
+				t.Fatal("served as bytes")
+			}
+			if leases != 0 {
+				t.Errorf("%d wire leases taken for a question the composer refuses", leases)
+			}
+			if dnssecSkips != 1 || buildSkips != 0 {
+				t.Errorf("skip counters: dnssec +%d build +%d, want dnssec +1 build +0", dnssecSkips, buildSkips)
+			}
+		})
+	}
+	t.Run("A at DO=0 leases once and serves", func(t *testing.T) {
+		served, leases, dnssecSkips, buildSkips := serve(t, dns.TypeA)
+		if !served {
+			t.Fatal("not served as bytes")
+		}
+		if leases != 1 || dnssecSkips != 0 || buildSkips != 0 {
+			t.Errorf("leases %d, skips dnssec +%d build +%d; want one lease and no skips", leases, dnssecSkips, buildSkips)
+		}
+	})
 }

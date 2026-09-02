@@ -3,12 +3,12 @@ package cache
 import (
 	"errors"
 	"net/netip"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/middleware"
 	// Aliased: this file's local "wire" is the packed body itself.
@@ -706,8 +706,14 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 			sigs = append(sigs, judged{sig: sig, kept: honours(sig)})
 		}
 	}
+	// Names compare as DNS names, not as text: an owner spelled with an
+	// escaped octet packs to the same wire name as its plain spelling, and
+	// a case fold of the presentation form does not see that — a record
+	// received under one spelling slipped past the TTL check made against
+	// its signature under the other.
+	sameName := func(a, b string) bool { return dnsname.CanonicalCompare(a, b) == 0 }
 	over := func(sig *dns.RRSIG, name string, class, rrtype uint16) bool {
-		return sig.TypeCovered == rrtype && sig.Hdr.Class == class && strings.EqualFold(sig.Hdr.Name, name)
+		return sig.TypeCovered == rrtype && sig.Hdr.Class == class && sameName(sig.Hdr.Name, name)
 	}
 	// condemned: a signed RRset the entry cannot carry honestly. Nothing
 	// left signs it; or its signatures name more than one signer; or its
@@ -729,7 +735,7 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 			if !over(j.sig, name, class, rrtype) {
 				continue
 			}
-			if signed && !strings.EqualFold(signer, j.sig.SignerName) {
+			if signed && !sameName(signer, j.sig.SignerName) {
 				return true
 			}
 			signed, signer = true, j.sig.SignerName
@@ -743,7 +749,7 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 		}
 		for _, rr := range records {
 			h := rr.Header()
-			if h.Rrtype == rrtype && h.Class == class && strings.EqualFold(h.Name, name) &&
+			if h.Rrtype == rrtype && h.Class == class && sameName(h.Name, name) &&
 				time.Duration(h.Ttl)*time.Second < lifetime {
 				return true
 			}

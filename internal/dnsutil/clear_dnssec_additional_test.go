@@ -117,3 +117,67 @@ func TestClearDNSSECInPlaceMatchesAndAllocatesNothing(t *testing.T) {
 		t.Errorf("in-place filter allocated %v times, want none", allocs)
 	}
 }
+
+// TestClearDNSSECInPlaceAcrossSectionsAndTypes widens the in-place variant's
+// pin to every section and to NSEC3, and to the order the aggressive cache
+// runs it in: a DO=0 answer compacted in place must not thin the records a
+// later DO=1 answer is built from, which holds because each synthesis copies
+// its records into a fresh slice — pinned here by compacting one message and
+// checking the source it was built from is whole.
+func TestClearDNSSECInPlaceAcrossSectionsAndTypes(t *testing.T) {
+	source := func() []dns.RR {
+		return []dns.RR{
+			&dns.A{Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}, A: []byte{192, 0, 2, 1}},
+			&dns.RRSIG{Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 300}, TypeCovered: dns.TypeA, SignerName: "example."},
+			&dns.NSEC3{Hdr: dns.RR_Header{Name: "hash.example.", Rrtype: dns.TypeNSEC3, Class: dns.ClassINET, Ttl: 300}, Hash: 1, Iterations: 0, NextDomain: "HASH2"},
+			&dns.RRSIG{Hdr: dns.RR_Header{Name: "hash.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 300}, TypeCovered: dns.TypeNSEC3, SignerName: "example."},
+		}
+	}
+	synthesize := func(qtype uint16, from []dns.RR) *dns.Msg {
+		m := new(dns.Msg)
+		m.SetQuestion("a.example.", qtype)
+		for _, rr := range from {
+			m.Answer = append(m.Answer, dns.Copy(rr))
+			m.Ns = append(m.Ns, dns.Copy(rr))
+			m.Extra = append(m.Extra, dns.Copy(rr))
+		}
+		return m
+	}
+	count := func(rrs []dns.RR, rrtype uint16) int {
+		n := 0
+		for _, rr := range rrs {
+			if rr.Header().Rrtype == rrtype {
+				n++
+			}
+		}
+		return n
+	}
+
+	kept := source()
+	for _, tc := range []struct {
+		name                        string
+		qtype                       uint16
+		wantA, wantRRSIG, wantNSEC3 int
+	}{
+		{"ordinary question", dns.TypeA, 1, 0, 0},
+		{"question for RRSIG", dns.TypeRRSIG, 1, 2, 0},
+		{"question for NSEC3", dns.TypeNSEC3, 1, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := ClearDNSSECInPlace(synthesize(tc.qtype, kept))
+			for name, section := range map[string][]dns.RR{"answer": m.Answer, "authority": m.Ns, "additional": m.Extra} {
+				if count(section, dns.TypeA) != tc.wantA || count(section, dns.TypeRRSIG) != tc.wantRRSIG || count(section, dns.TypeNSEC3) != tc.wantNSEC3 {
+					t.Errorf("%s section: %v", name, section)
+				}
+			}
+			// The source a DO=1 answer would be built from next is whole.
+			if len(kept) != 4 {
+				t.Fatalf("in-place compaction reached the source records: %v", kept)
+			}
+			do1 := synthesize(tc.qtype, kept)
+			if count(do1.Ns, dns.TypeRRSIG) != 2 || count(do1.Ns, dns.TypeNSEC3) != 1 {
+				t.Errorf("a DO=1 answer built after the compaction is thinned: %v", do1.Ns)
+			}
+		})
+	}
+}
