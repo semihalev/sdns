@@ -125,7 +125,15 @@ func (e *nxDomainCutEntry) serveWireInto(
 		return nil, false
 	}
 	tmpl := e.wireFull
-	if !do && req.Qtype() != dns.TypeRRSIG {
+	if !do {
+		// The stripped template was cut behind a SOA question, so it holds
+		// no authenticating record at all. A DO=0 question for RRSIG, NSEC
+		// or NSEC3 keeps the one type it named (RFC 4035 §3.2.1), which
+		// neither template is: the Msg path shapes that answer.
+		switch req.Qtype() {
+		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
+			return nil, false
+		}
 		tmpl = e.wireStripped
 	}
 	if tmpl == nil || cap(dst) < wire.HeaderLen {

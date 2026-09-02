@@ -145,20 +145,29 @@ func TestNXDomainCutWireServeParity(t *testing.T) {
 		t.Fatalf("stripped authority kept %v", strippedResp.Ns[0])
 	}
 
-	// An explicit RRSIG query names the DNSSEC type it wants: DO=0 still
-	// gets the full proof, on both paths.
+	// An explicit RRSIG query names the DNSSEC type it wants: at DO=0 it
+	// keeps the signatures and loses the NSEC that came along (RFC 4035
+	// §3.2.1). Neither wire template holds that shape — the stripped one
+	// was cut behind a SOA question — so the wire path declines and the
+	// Msg path shapes it.
 	reqRRSIG, qRRSIG := wireTestRequest(t, "d.gone.zone.test.", dns.TypeRRSIG, false)
-	bodyRRSIG, built := entry.serveWireInto(dst, reqRRSIG, false)
-	if !built {
-		t.Fatal("explicit-RRSIG wire synthesis refused")
-	}
-	rrsigResp := new(dns.Msg)
-	if err := rrsigResp.Unpack(bodyRRSIG); err != nil {
-		t.Fatalf("explicit-RRSIG body unpack: %v", err)
+	if _, built := entry.serveWireInto(dst, reqRRSIG, false); built {
+		t.Fatal("explicit-RRSIG DO=0 question served as bytes; it has no template")
 	}
 	msgRRSIG := entry.response(qRRSIG)
-	if len(rrsigResp.Ns) != len(proof.Ns) || len(msgRRSIG.Ns) != len(proof.Ns) {
-		t.Fatalf("explicit RRSIG query lost the signatures: wire %v msg %v", rrsigResp.Ns, msgRRSIG.Ns)
+	var soa, rrsig, nsec int
+	for _, rr := range msgRRSIG.Ns {
+		switch rr.Header().Rrtype {
+		case dns.TypeSOA:
+			soa++
+		case dns.TypeRRSIG:
+			rrsig++
+		case dns.TypeNSEC:
+			nsec++
+		}
+	}
+	if soa != 1 || rrsig != 2 || nsec != 0 {
+		t.Fatalf("explicit RRSIG query at DO=0: soa=%d rrsig=%d nsec=%d, want the SOA and its two signatures: %v", soa, rrsig, nsec, msgRRSIG.Ns)
 	}
 
 	if allocs := testing.AllocsPerRun(200, func() {

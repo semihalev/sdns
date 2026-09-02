@@ -513,10 +513,11 @@ func (e *nxDomainCutEntry) response(req *dns.Msg) *dns.Msg {
 		rr.Header().Ttl = ttl
 	}
 
-	// An explicit RRSIG query keeps the signatures regardless of DO —
-	// the client named the DNSSEC type it wants (same exception the
-	// exact-entry serve applies).
-	if opt := req.IsEdns0(); (opt == nil || !opt.Do()) && req.Question[0].Qtype != dns.TypeRRSIG {
+	// The DO=0 shape is ClearDNSSEC's, the same as the exact-entry serve's:
+	// the one authenticating type the question named stays, every other
+	// goes (RFC 4035 §3.2.1). The wire template declines these questions
+	// and lands here for exactly this.
+	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
 		resp = dnsutil.ClearDNSSEC(resp)
 	}
 	return resp

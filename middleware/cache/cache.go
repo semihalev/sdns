@@ -1693,13 +1693,14 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 	}
 
 	filtered := filterCacheableAnswer(msg)
-	mt, _ := dnsutil.ClassifyResponse(filtered, time.Now().UTC())
+	now := time.Now()
+	mt, _ := dnsutil.ClassifyResponse(filtered, now)
 	if mt == dnsutil.TypeServerFailure {
 		// A compatibility Set runs no ladder, so it can vouch for no miss.
 		c.store.RecordFailure(filtered, netip.Prefix{}, FailureProvenance("response"), nil)
 		return
 	}
-	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
+	msgTTL := dnsutil.CalculateCacheTTLAt(filtered, mt, now)
 
 	// See Store.setFromResponseWithKey: a denial the zone granted no lifetime
 	// is not admitted (RFC 2308 §5). Unreachable for a positive answer, which
@@ -1709,7 +1710,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 		return
 	}
 
-	entry := NewCacheEntryWithKey(filtered, ttl, c.config.RateLimit, key)
+	entry := newCacheEntryAt(filtered, ttl, c.config.RateLimit, key, now)
 	if entry == nil {
 		return
 	}

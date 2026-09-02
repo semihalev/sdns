@@ -18,6 +18,17 @@ const (
 // It scans all resource records and returns the minimum TTL found, with bounds checking.
 // For DNSSEC-signed responses, it also considers RRSIG expiration times.
 func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
+	return CalculateCacheTTLAt(msg, respType, time.Now())
+}
+
+// CalculateCacheTTLAt is CalculateCacheTTL measured at now. Admission passes
+// the one instant it anchors the entry at, so the lifetime, the entry's
+// stored time and every decision taken against that lifetime — which
+// additional signatures it can carry — read the same clock: a lifetime
+// measured a moment earlier than the entry it bounds is that moment too
+// long, and a signature sharing the answer's own validity window fell short
+// of it by exactly that much.
+func CalculateCacheTTLAt(msg *dns.Msg, respType ResponseType, now time.Time) time.Duration {
 	// Only cache successful responses and negative responses (NXDOMAIN/NODATA)
 	isNegative := false
 	isReferral := false
@@ -79,7 +90,6 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 	recordTTL := MaxCacheTTL
 	hardTTL := MaxCacheTTL
 	signed := false
-	now := time.Now()
 
 	// negativeSOA folds in the RFC 2308 cap, min(SOA header TTL, SOA.Minttl):
 	// a denial with SOA header TTL 86400 and Minttl 300 must not be cached for

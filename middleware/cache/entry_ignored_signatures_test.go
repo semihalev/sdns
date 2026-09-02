@@ -132,9 +132,11 @@ func TestAdditionalRRsetTravelsWithItsSignature(t *testing.T) {
 		a("short.example."),
 		sig("short.example.", 30, 444, -2*time.Hour, time.Hour),
 		// Signed, and its signature permits the hour — with a lapsed
-		// sibling beside it that leaves alone.
+		// sibling beside it that leaves alone. Its validity runs past the
+		// lifetime: the entry's clock is read after this fixture's, and
+		// the comparison is exact.
 		a("kept.example."),
-		sig("kept.example.", 3600, 555, -2*time.Hour, time.Hour),
+		sig("kept.example.", 3600, 555, -2*time.Hour, 2*time.Hour),
 		sig("kept.example.", 0, 556, -2*time.Hour, -time.Hour),
 		// Unsigned, as real delegation glue is.
 		a("glue.example."),
@@ -295,7 +297,7 @@ func TestDOZeroHitCarriesNoAdditionalSignature(t *testing.T) {
 				Expiration: uint32(now.Add(time.Hour).Unix()),      //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
 			})
 		}
-		resp.Extra = []dns.RR{a("target.example."), sig("target.example.", 3600, 600, -2*time.Hour, time.Hour)}
+		resp.Extra = []dns.RR{a("target.example."), sig("target.example.", 3600, 600, -2*time.Hour, 2*time.Hour)}
 		entry := NewCacheEntryWithKey(resp, time.Hour, 0, 0)
 		if entry == nil {
 			t.Fatal("entry not built")
@@ -440,4 +442,148 @@ func TestDOZeroBodyKeepsOnlyTheTypeAskedFor(t *testing.T) {
 			t.Errorf("DO=0 answer types %v, want both signatures", got)
 		}
 	})
+}
+
+// TestAdditionalSignatureIsJudgedOnTheEntrysClock pins the admission clock.
+// The lifetime, the entry's stored instant and the verdict on each
+// additional signature read the same now, so the comparison is exact: a
+// signature permitting one second is not carried by a two-second entry —
+// the tolerance that let it through served it a whole second past its
+// ceiling — and one sharing the answer's own validity window, which trailed
+// a lifetime measured a moment earlier by that moment, is carried.
+func TestAdditionalSignatureIsJudgedOnTheEntrysClock(t *testing.T) {
+	now := time.Now()
+	_, a := ignoredSigFixtures(now)
+	const name = "mx.example."
+	rrsig := func(owner string, covered uint16, hdrTTL uint32, expires time.Time) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: hdrTTL},
+			TypeCovered: covered, Algorithm: 8, Labels: 2, OrigTtl: hdrTTL, KeyTag: 9,
+			SignerName: "example.", Signature: "MTIzNDU2Nzg5MGFiY2RlZg==",
+			Inception:  uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			Expiration: uint32(expires.Unix()),                 //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		}
+	}
+	mx := func(ttl uint32) dns.RR {
+		return &dns.MX{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: ttl}, Preference: 10, Mx: "target.example."}
+	}
+
+	t.Run("a one-second signature is not carried by a two-second entry", func(t *testing.T) {
+		req := new(dns.Msg)
+		req.SetQuestion(name, dns.TypeMX)
+		req.SetEdns0(1232, true)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Answer = []dns.RR{mx(2)}
+		resp.Extra = []dns.RR{a("target.example."), rrsig("target.example.", dns.TypeA, 1, now.Add(time.Hour))}
+
+		entry := newCacheEntryAt(resp, 2*time.Second, 0, 0, now)
+		if entry == nil {
+			t.Fatal("entry not built")
+		}
+		served := entry.ToMsg(req)
+		if served == nil {
+			t.Fatal("entry did not serve")
+		}
+		if tags := sigTags(served.Extra); len(tags) != 0 {
+			t.Errorf("a one-second signature was carried by a two-second entry: %v", tags)
+		}
+		if hasA(served.Extra, "target.example.") {
+			t.Error("the RRset was served without the signature it arrived with")
+		}
+	})
+
+	t.Run("a signature sharing the answer's validity window is carried", func(t *testing.T) {
+		// The answer's own signature sets the lifetime to the window's end;
+		// the additional signature ends at the same instant. Through the
+		// store, which measures the lifetime and anchors the entry at one
+		// now — a second reading in between made this signature fall short
+		// by microseconds every time.
+		expires := now.Add(30 * time.Minute)
+		s := newTestStore(t)
+		req := new(dns.Msg)
+		req.SetQuestion(name, dns.TypeMX)
+		req.SetEdns0(1232, true)
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Answer = []dns.RR{mx(3600), rrsig(name, dns.TypeMX, 3600, expires)}
+		resp.Extra = []dns.RR{a("target.example."), rrsig("target.example.", dns.TypeA, 3600, expires)}
+		s.SetFromResponse(resp, false, time.Time{})
+
+		entry, ok := s.LookupByKey(CacheKey{Question: req.Question[0], CD: false}.Hash())
+		if !ok {
+			t.Fatal("the answer was not cached")
+		}
+		served := entry.ToMsg(req)
+		if served == nil {
+			t.Fatal("entry did not serve")
+		}
+		if tags := sigTags(served.Extra); len(tags) != 1 {
+			t.Errorf("a signature ending with the answer's own was dropped: %v", tags)
+		}
+		if !hasA(served.Extra, "target.example.") {
+			t.Error("the additional address was dropped")
+		}
+	})
+}
+
+// TestAdditionalMixedSignersGoWhole pins the delegation boundary in the
+// additional section: the parent's NSEC over the child's name and the
+// child's apex NSEC share owner, class and type, so on the wire they are
+// one RRset whose records cannot be told apart by signer. A live child
+// signature must not carry the parent's lapsed records with it (RFC 4035
+// §5.3.2); the tuple goes whole. A single-signer tuple beside it is judged
+// as before.
+func TestAdditionalMixedSignersGoWhole(t *testing.T) {
+	now := time.Now()
+	_, a := ignoredSigFixtures(now)
+	const name = "mx.example."
+	nsec := func(owner string) dns.RR {
+		return &dns.NSEC{
+			Hdr:        dns.RR_Header{Name: owner, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 3600},
+			NextDomain: "z." + owner, TypeBitMap: []uint16{dns.TypeNS, dns.TypeRRSIG, dns.TypeNSEC},
+		}
+	}
+	rrsig := func(owner, signer string, covered uint16, tag uint16, until time.Duration) dns.RR {
+		return &dns.RRSIG{
+			Hdr:         dns.RR_Header{Name: owner, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+			TypeCovered: covered, Algorithm: 8, Labels: 2, OrigTtl: 3600, KeyTag: tag,
+			SignerName: signer, Signature: "MTIzNDU2Nzg5MGFiY2RlZg==",
+			Inception:  uint32(now.Add(-2 * time.Hour).Unix()), //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+			Expiration: uint32(now.Add(until).Unix()),          //nolint:gosec // test timestamp is in DNSSEC's uint32 era.
+		}
+	}
+
+	req := new(dns.Msg)
+	req.SetQuestion(name, dns.TypeMX)
+	req.SetEdns0(1232, true)
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Answer = []dns.RR{
+		&dns.MX{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeMX, Class: dns.ClassINET, Ttl: 3600}, Preference: 10, Mx: "target.example."},
+	}
+	resp.Extra = []dns.RR{
+		// The boundary: two NSEC records under one owner, the parent's
+		// signature lapsed, the child's live.
+		nsec("child.example."),
+		nsec("child.example."),
+		rrsig("child.example.", "example.", dns.TypeNSEC, 1, -time.Hour),
+		rrsig("child.example.", "child.example.", dns.TypeNSEC, 2, 2*time.Hour),
+		// A single-signer tuple, live: carried.
+		a("target.example."),
+		rrsig("target.example.", "example.", dns.TypeA, 3, 2*time.Hour),
+	}
+
+	served := serveFromEntry(t, req, resp, time.Hour)
+	for _, rr := range served.Extra {
+		if rr.Header().Name == "child.example." {
+			t.Errorf("a mixed-signer tuple was carried: %s", rr.Header().String())
+		}
+	}
+	if !hasA(served.Extra, "target.example.") {
+		t.Error("the single-signer RRset was dropped")
+	}
+	if tags := sigTags(served.Extra); len(tags) != 1 || tags[0] != 3 {
+		t.Errorf("additional signatures served: %v, want only the single-signer 3", tags)
+	}
 }

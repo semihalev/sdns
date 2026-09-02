@@ -609,9 +609,12 @@ func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, scope netip.Pre
 }
 
 func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Prefix, cutUntil time.Time, cutKey uint64, keyCD bool) {
-	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
+	// One clock for the whole admission: classification, the lifetime, the
+	// entry's stored instant and what it may carry all read now.
+	now := time.Now()
+	mt, _ := dnsutil.ClassifyResponse(resp, now)
 	filtered := filterCacheableAnswer(resp)
-	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
+	msgTTL := dnsutil.CalculateCacheTTLAt(filtered, mt, now)
 
 	scope = normalizeKeyScope(scope)
 	scoped := scope.IsValid()
@@ -632,9 +635,9 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 	newEntry := func(msg *dns.Msg, ttl time.Duration) *CacheEntry {
 		var e *CacheEntry
 		if scoped {
-			e = NewScopedCacheEntry(msg, ttl, s.cfg.RateLimit, scope)
+			e = newScopedCacheEntryAt(msg, ttl, s.cfg.RateLimit, scope, now)
 		} else {
-			e = NewCacheEntryWithKey(msg, ttl, s.cfg.RateLimit, key)
+			e = newCacheEntryAt(msg, ttl, s.cfg.RateLimit, key, now)
 		}
 		if e == nil {
 			// Unpackable response: never cacheable, callers skip the write.
@@ -708,9 +711,12 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		return false
 	}
 
-	mt, _ := dnsutil.ClassifyResponse(resp, time.Now().UTC())
+	// One clock for the whole admission: classification, the lifetime, the
+	// entry's stored instant and what it may carry all read now.
+	now := time.Now()
+	mt, _ := dnsutil.ClassifyResponse(resp, now)
 	filtered := filterCacheableAnswer(resp)
-	msgTTL := dnsutil.CalculateCacheTTL(filtered, mt)
+	msgTTL := dnsutil.CalculateCacheTTLAt(filtered, mt, now)
 
 	// A replacement takes over the key expected occupies, so it inherits
 	// that key's CD partition and ECS scope. A refresh that carried the
@@ -737,13 +743,13 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		if ttl <= 0 {
 			return false
 		}
-		entry := inherit(NewCacheEntryWithKey(filtered, ttl, s.cfg.RateLimit, key))
+		entry := inherit(newCacheEntryAt(filtered, ttl, s.cfg.RateLimit, key, now))
 		if entry == nil {
 			return false
 		}
 		return s.positive.cache.CompareAndSwap(key, expected, entry)
 	case dnsutil.TypeServerFailure:
-		entry := inherit(NewCacheEntryWithKey(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key))
+		entry := inherit(newCacheEntryAt(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key, now))
 		if entry == nil {
 			return false
 		}

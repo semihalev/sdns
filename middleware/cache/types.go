@@ -186,7 +186,11 @@ func NewCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int) *CacheEntry {
 // invalid scope leaves the entry shared, matching CacheKey.Hash, which
 // collapses /0 to the unscoped key.
 func NewScopedCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int, scope netip.Prefix) *CacheEntry {
-	e := NewCacheEntryWithKey(msg, ttl, rateLimit, 0)
+	return newScopedCacheEntryAt(msg, ttl, rateLimit, scope, time.Now())
+}
+
+func newScopedCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, scope netip.Prefix, now time.Time) *CacheEntry {
+	e := newCacheEntryAt(msg, ttl, rateLimit, 0, now)
 	if e == nil {
 		return nil
 	}
@@ -211,9 +215,18 @@ func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped() }
 // thin, which a hit may not answer with fewer signatures than the first
 // response did. Callers treat nil as "not cacheable" either way.
 func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
+	return newCacheEntryAt(msg, ttl, rateLimit, key, time.Now())
+}
+
+// newCacheEntryAt is NewCacheEntryWithKey anchored at now: the instant the
+// entry is stored at, the one its ttl was measured at, and the one every
+// decision about what the entry may carry is taken at. One clock, so a
+// lifetime and the signatures judged against it never disagree by the
+// moment between two readings. Monotonic, never UTC-converted: a backward
+// wall-clock step must not extend the entry.
+func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64, now time.Time) *CacheEntry {
 	// Assemble the storable view and filter out OPT records (matching V1
 	// behavior): OPT is per-client hop metadata the serve path rebuilds.
-	now := time.Now().UTC()
 	msgCopy := new(dns.Msg)
 	msgCopy.MsgHdr = msg.MsgHdr
 	msgCopy.Question = msg.Question
@@ -267,10 +280,10 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 
 	entry := &CacheEntry{
 		wire: wire,
-		// Keep the monotonic clock reading. Converting to UTC strips it and
-		// would let a backward wall-clock adjustment extend both the TTL and
-		// an inherited delegation cut.
-		stored:     time.Now(),
+		// The anchoring instant, monotonic reading kept. Converting to UTC
+		// strips it and would let a backward wall-clock adjustment extend
+		// both the TTL and an inherited delegation cut.
+		stored:     now,
 		ttl:        ttl,
 		origTTL:    uint32(ttl.Seconds()),
 		rateLimit:  rateLimit,
@@ -671,42 +684,53 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 	var ede *dns.EDNS0_EDE
 
 	// honours reports whether the entry's lifetime stays within what sig
-	// permits. Within a second of it counts: the lifetime was measured a
-	// moment before this check, so a signature sharing the answer's own
-	// validity window trails it by that moment, and a served TTL is whole
-	// seconds anyway — the last fraction is the wire's granularity, which
-	// servedSeconds already concedes. Not so for a signature permitting
-	// nothing at all: a header or Original TTL of zero is RFC 4035 §5.3.3's
-	// ceiling exactly, and the tolerance was letting a one-second entry
-	// serve it as one.
+	// permits — exactly. The lifetime and this check read the same clock
+	// (newCacheEntryAt), so there is no measurement gap to forgive, and a
+	// served TTL rounds only at the serve point: RFC 4035 §5.3.3's ceiling
+	// is not a place for tolerance, a one-second signature admitted to a
+	// two-second entry was served past it whole.
 	honours := func(sig *dns.RRSIG) bool {
 		permits, valid := dnsutil.SignatureLifetime(sig, now)
-		return valid && permits > 0 && permits+time.Second >= lifetime
+		return valid && permits >= lifetime
 	}
 
-	// Signatures the entry cannot carry, and those it can. Both are empty
-	// on the common path, an unsigned additional section, and cost nothing.
-	var unsafe, safe []*dns.RRSIG
+	// Every signature, with its verdict. Empty on the common path, an
+	// unsigned additional section, and costs nothing there.
+	type judged struct {
+		sig  *dns.RRSIG
+		kept bool
+	}
+	var sigs []judged
 	for _, rr := range records {
 		if sig, ok := rr.(*dns.RRSIG); ok {
-			if honours(sig) {
-				safe = append(safe, sig)
-			} else {
-				unsafe = append(unsafe, sig)
-			}
+			sigs = append(sigs, judged{sig: sig, kept: honours(sig)})
 		}
 	}
-	covers := func(sigs []*dns.RRSIG, name string, class, rrtype uint16) bool {
-		for _, sig := range sigs {
-			if sig.TypeCovered == rrtype && sig.Hdr.Class == class && strings.EqualFold(sig.Hdr.Name, name) {
+	over := func(sig *dns.RRSIG, name string, class, rrtype uint16) bool {
+		return sig.TypeCovered == rrtype && sig.Hdr.Class == class && strings.EqualFold(sig.Hdr.Name, name)
+	}
+	// condemned: a signed RRset the entry cannot carry honestly. Either
+	// nothing left signs it, or its signatures name more than one signer.
+	// The second is the delegation boundary, where the parent's NSEC over
+	// the child's name and the child's apex NSEC share owner, class and
+	// type (RFC 4035 §5.3.2): on the wire that is one RRset, its records
+	// cannot be told apart by signer, and a live child signature was
+	// carrying the parent's lapsed records with it. Such a tuple goes
+	// whole, signatures included.
+	condemned := func(name string, class, rrtype uint16) bool {
+		signed, kept := false, false
+		var signer string
+		for _, j := range sigs {
+			if !over(j.sig, name, class, rrtype) {
+				continue
+			}
+			if signed && !strings.EqualFold(signer, j.sig.SignerName) {
 				return true
 			}
+			signed, signer = true, j.sig.SignerName
+			kept = kept || j.kept
 		}
-		return false
-	}
-	// condemned: a signed RRset with nothing left to sign it.
-	condemned := func(name string, class, rrtype uint16) bool {
-		return len(unsafe) > 0 && covers(unsafe, name, class, rrtype) && !covers(safe, name, class, rrtype)
+		return signed && !kept
 	}
 
 	extra := make([]dns.RR, 0, len(records))
@@ -725,7 +749,7 @@ func storableAdditional(records []dns.RR, now time.Time, lifetime time.Duration)
 			}
 			continue
 		case *dns.RRSIG:
-			if !honours(r) {
+			if !honours(r) || condemned(r.Hdr.Name, r.Hdr.Class, r.TypeCovered) {
 				continue
 			}
 		default:
