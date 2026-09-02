@@ -1979,6 +1979,14 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// the cut through the shared meta and is clamped at the real client
 	// write.
 	if !w.internal {
+		// This resolver has determined the signatures lapsed, so it must not
+		// pass on a claim that the data is authenticated (RFC 4035 §5.3.3).
+		// A forwarded answer carries whatever AD the upstream asserted, and
+		// relaying it here would let a client trust data we know is bogus.
+		// The clamp below reduces its TTL to zero; the bit is the other half.
+		if mt == dnsutil.TypeExpiredSignature {
+			res.AuthenticatedData = false
+		}
 		clampTTLsToEffective(res, cutUntil, mt)
 	}
 

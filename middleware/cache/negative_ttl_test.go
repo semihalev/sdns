@@ -549,6 +549,7 @@ func TestFirstResponseCarriesTheEffectiveTTL(t *testing.T) {
 				out.SetReply(ch.Request.Msg())
 				out.Rcode = upstream.Rcode
 				out.Answer, out.Ns = upstream.Answer, upstream.Ns
+				out.AuthenticatedData = upstream.AuthenticatedData
 				_ = ch.Writer.WriteMsg(out)
 				ch.Cancel()
 			})})
@@ -669,6 +670,37 @@ func TestFirstResponseCarriesTheEffectiveTTL(t *testing.T) {
 		}}
 		if got := answerTTL(ask(t, up, name)); got > 1 {
 			t.Errorf("first client got TTL %d for an alias onto a denial granted 1s", got)
+		}
+	})
+
+	t.Run("a signature that lapsed before the answer arrived", func(t *testing.T) {
+		// A forwarding deployment relays whatever the upstream asserted. This
+		// resolver can see the signatures are spent, so it may neither invite
+		// the client to keep the data nor pass on the claim that it is
+		// authenticated. The store already declines it; the client used to be
+		// handed it anyway, with AD set and five seconds to hold it.
+		const name = "lapsed.first.example."
+		up := new(dns.Msg)
+		up.AuthenticatedData = true
+		up.Answer = []dns.RR{
+			&dns.A{
+				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+				A:   []byte{192, 0, 2, 1},
+			},
+			&dns.RRSIG{
+				Hdr:         dns.RR_Header{Name: name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 3600},
+				TypeCovered: dns.TypeA,
+				OrigTtl:     3600,
+				Expiration:  uint32(time.Now().Add(-time.Hour).Unix()), //nolint:gosec // G115 - Unix timestamp fits in uint32 for valid dates
+			},
+		}
+
+		out := ask(t, up, name)
+		if got := answerTTL(out); got != 0 {
+			t.Errorf("first client got TTL %d for data whose signature has lapsed", got)
+		}
+		if out.AuthenticatedData {
+			t.Error("first client was told lapsed data is authenticated")
 		}
 	})
 

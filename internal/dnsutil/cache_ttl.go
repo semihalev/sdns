@@ -36,6 +36,13 @@ func CalculateCacheTTL(msg *dns.Msg, respType ResponseType) time.Duration {
 		// hammering broken servers, but not too long in case it's temporary
 		// Default to 30 seconds, but this will be capped by the negative cache max TTL
 		return 30 * time.Second
+	case TypeExpiredSignature:
+		// Nothing. The signatures over this data lapsed before it arrived, so
+		// there is no interval during which it may be relied on, and the
+		// default's five seconds handed the classification straight back what
+		// it had just refused. The store already declines it; this is what
+		// stops the client that caused the miss from being invited to keep it.
+		return 0
 	default:
 		// Other response types get minimal cache time
 		return MinCacheTTL
