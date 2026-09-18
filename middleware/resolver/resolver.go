@@ -1786,6 +1786,15 @@ mainloop:
 					continue mainloop
 				}
 
+				if resp.Truncated {
+					responseErrors = append(responseErrors, resp)
+
+					if left > 0 && len(serversList)-1 == index {
+						continue fallbackloop
+					}
+					continue mainloop
+				}
+
 				if resp.Rcode == dns.RcodeSuccess && len(resp.Ns) > 0 && len(resp.Answer) == 0 {
 					info := r.extractDelegationInfo(resp)
 					if info.nsRecord != nil && !validReferral(info, servers.Zone, req.Question[0]) {
@@ -2066,6 +2075,14 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 			// (correctly) returning negative answers
 			// interleaved with transient timeouts.
 			r.circuitBreaker.recordSuccess(server.Addr)
+		}
+		if isProbe(exchangeCtx) && resp != nil && resp.Truncated {
+			// A probe only measured the UDP round trip and intentionally
+			// did not fall back to TCP. Its truncated reply is not an
+			// answer and must not win the race ahead of a peer completing
+			// TCP fallback.
+			err = errTruncated
+			resp = nil
 		}
 		res.resp = resp
 		res.err = err
