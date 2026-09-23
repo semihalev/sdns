@@ -10,7 +10,7 @@ require (
 	github.com/quic-go/quic-go v0.62.0
 	github.com/semihalev/zlog/v2 v2.0.8
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/time v0.15.0
 	k8s.io/api v0.37.0
