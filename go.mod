@@ -6,7 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/miekg/dns v1.1.73
 	github.com/prometheus/client_golang v1.24.1
-	github.com/prometheus/client_model v0.6.2
+	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.62.0
 	github.com/semihalev/zlog/v2 v2.0.8
 	github.com/spf13/cobra v1.10.2
@@ -59,7 +59,7 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
