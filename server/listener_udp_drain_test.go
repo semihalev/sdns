@@ -15,7 +15,10 @@ import (
 // Closing the sockets to stop admission also took away the socket the
 // reply had to leave through, so the client saw a timeout instead.
 func TestUDPShutdownDrainsInFlight(t *testing.T) {
-	serving := make(chan struct{})
+	// Buffered: the handler may announce itself before the test is waiting
+	// to hear it, and a non-blocking send on an unbuffered channel would
+	// drop that announcement and fail the test for nothing.
+	serving := make(chan struct{}, 1)
 	proceed := make(chan struct{})
 
 	slow := rawHandlerFunc(func(w middleware.Transport, raw []byte, _ time.Time) bool {
